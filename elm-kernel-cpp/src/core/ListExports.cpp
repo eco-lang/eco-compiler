@@ -130,6 +130,31 @@ inline uint64_t getConsHead(Cons* cons, Header* hdr) {
     }
 }
 
+// Snapshot of a Cons cell — extracted with raw access while no allocation
+// occurs, so subsequent boxing/closure calls cannot invalidate the bits.
+struct ConsBits {
+    Unboxable head;
+    HPointer  tail;
+    uint8_t   kind;  // 0 = boxed HPointer, otherwise primitive kind code
+};
+
+inline ConsBits readCons(HPointer listHP) {
+    Cons* c = static_cast<Cons*>(Elm::Allocator::instance().resolve(listHP));
+    ConsBits cb;
+    cb.head = c->head;
+    cb.tail = c->tail;
+    cb.kind = static_cast<uint8_t>(Elm::tupleFieldKind(c->header.unboxed, 0));
+    return cb;
+}
+
+// Box a ConsBits head, returning an HPointer. Allocates iff the head is an
+// unboxed primitive. Caller must root any other live HPointers across the
+// call when kind != 0.
+inline Elm::HPointer boxConsBitsHead(const ConsBits& cb) {
+    if (cb.kind == 0) return cb.head.p;
+    return Elm::alloc::boxElement(cb.head, cb.kind);
+}
+
 } // anonymous namespace
 
 extern "C" {
@@ -207,18 +232,35 @@ HPtr Elm_Kernel_List_toArray(HPtr list) {
     }
 
     // Genuine Array-to-List conversion (fallback for other callers).
+    // listToVectorU64 may allocate (via boxElement on unboxed cons heads), so
+    // its output uint64_t HPointer-encoded values must be range-rooted while
+    // we then call alloc::allocArray.
     std::vector<uint64_t> vec = listToVectorU64(Export::decode(list_bits));
 
-    HPointer arr = alloc::allocArray(static_cast<u32>(vec.size()));
+    // Re-pack the encoded values into HPointers so we can root them as a
+    // contiguous range across the array allocation.
+    std::vector<HPointer> rooted;
+    rooted.reserve(vec.size());
+    for (uint64_t e : vec) rooted.push_back(Export::decode(e));
+
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRangePoint();
+    if (!rooted.empty()) {
+        rs.pushStackRootRange(rooted.data(), rooted.size(),
+                              /*hpointer_mask=*/~uint64_t(0));
+    }
+
+    HPointer arr = alloc::allocArray(static_cast<u32>(rooted.size()));
     void* arr_ptr = Allocator::instance().resolve(arr);
     ElmArray* elmArr = static_cast<ElmArray*>(arr_ptr);
 
-    for (size_t i = 0; i < vec.size(); i++) {
-        elmArr->elements[i].p = Export::decode(vec[i]);
+    for (size_t i = 0; i < rooted.size(); i++) {
+        elmArr->elements[i].p = rooted[i];
     }
-    elmArr->length = static_cast<u32>(vec.size());
+    elmArr->length = static_cast<u32>(rooted.size());
     elmArr->header.unboxed = 0;  // Elements are boxed
 
+    rs.restoreStackRangePoint(saved);
     return HPtr::fromBits(Export::encode(arr));
 }
 
@@ -226,199 +268,355 @@ HPtr Elm_Kernel_List_toArray(HPtr list) {
 // Higher-order List functions (implemented with closure calling)
 //===----------------------------------------------------------------------===//
 
+// ----------------------------------------------------------------------------
+// GC-rooting helpers shared by List_mapN.
+//
+// Box up to N cons heads (returning an HPointer per head) while keeping all
+// previously-boxed heads alive. Each `boxElement` call may trigger a GC, so
+// the rolling-frontier of already-boxed HPointers must remain rooted.
+//
+// `boxed` must point to an array of length n; on input each entry should
+// equal the corresponding `bits[i].head.p` if `bits[i].kind == 0`. On output
+// each entry holds the boxed HPointer.
+// ----------------------------------------------------------------------------
+inline void boxConsHeadsRooted(const ConsBits* bits, Elm::HPointer* boxed, size_t n) {
+    auto& rs = Elm::Allocator::instance().getRootSet();
+    size_t saved = rs.stackRangePoint();
+    for (size_t i = 0; i < n; ++i) {
+        // Re-pin the rolling prefix [0..i) of already-boxed HPointers.
+        rs.restoreStackRangePoint(saved);
+        if (i > 0) rs.pushStackRootRange(boxed, i, /*hpointer_mask=*/~uint64_t(0));
+        boxed[i] = boxConsBitsHead(bits[i]);
+    }
+    rs.restoreStackRangePoint(saved);
+}
+
+// Push a rolling-pin set onto the root set covering: `lists` (n entries),
+// `results` buffer, and any additional pointers in `extras`. Caller must
+// `restoreStackRangePoint(saved)` before returning.
+inline size_t pinMapRoots(Elm::HPointer* lists, size_t n,
+                          Elm::HPointer* results, size_t resultCount,
+                          std::initializer_list<Elm::HPointer*> extras) {
+    auto& rs = Elm::Allocator::instance().getRootSet();
+    size_t saved = rs.stackRangePoint();
+    rs.pushStackRootRange(lists, n, /*hpointer_mask=*/~uint64_t(0));
+    if (resultCount > 0) {
+        rs.pushStackRootRange(results, resultCount, /*hpointer_mask=*/~uint64_t(0));
+    }
+    for (Elm::HPointer* p : extras) rs.pushStackRootRange(p, 1, 1);
+    return saved;
+}
+
 HPtr Elm_Kernel_List_map2(HPtr closure, HPtr xs, HPtr ys) {
-    uint64_t closure_bits = closure.toBits();
-    HPointer xList = Export::decode(xs.toBits());
-    HPointer yList = Export::decode(ys.toBits());
     auto& allocator = Allocator::instance();
+    HPointer lists[2] = { Export::decode(xs.toBits()), Export::decode(ys.toBits()) };
+    std::vector<HPointer> results;
 
-    std::vector<uint64_t> results;
+    auto& rs = allocator.getRootSet();
+    size_t outerSaved = rs.stackRangePoint();
+    rs.pushStackRootRange(lists, 2, /*hpointer_mask=*/~uint64_t(0));
 
-    while (!alloc::isNil(xList) && !alloc::isNil(yList)) {
-        Cons* xCons = static_cast<Cons*>(allocator.resolve(xList));
-        Cons* yCons = static_cast<Cons*>(allocator.resolve(yList));
+    while (!alloc::isNil(lists[0]) && !alloc::isNil(lists[1])) {
+        ConsBits cb[2];
+        cb[0] = readCons(lists[0]);
+        cb[1] = readCons(lists[1]);
 
-        // Save stable values BEFORE closure call (which may trigger GC)
-        HPointer xTail = xCons->tail;
-        HPointer yTail = yCons->tail;
+        HPointer boxed[2];
+        boxConsHeadsRooted(cb, boxed, 2);
 
-        // getConsHead returns HPointer-encoded values (boxes unboxed ints)
-        uint64_t x = getConsHead(xCons, &xCons->header);
-        uint64_t y = getConsHead(yCons, &yCons->header);
+        // Root boxed heads + lists + results across the closure call.
+        rs.restoreStackRangePoint(outerSaved);
+        rs.pushStackRootRange(lists, 2, /*hpointer_mask=*/~uint64_t(0));
+        rs.pushStackRootRange(boxed, 2, /*hpointer_mask=*/~uint64_t(0));
+        if (!results.empty()) {
+            rs.pushStackRootRange(results.data(), results.size(),
+                                  /*hpointer_mask=*/~uint64_t(0));
+        }
 
-        // Closure result is always HPointer-encoded (wrapper boxes return)
-        uint64_t result = callBinaryClosure(closure, x, y);
-        results.push_back(result);
+        uint64_t result = callBinaryClosure(closure,
+            Export::encode(boxed[0]), Export::encode(boxed[1]));
+        results.push_back(Export::decode(result));
 
-        xList = xTail;
-        yList = yTail;
+        lists[0] = cb[0].tail;
+        lists[1] = cb[1].tail;
+        // Re-pin lists+results for the next iteration.
+        rs.restoreStackRangePoint(outerSaved);
+        rs.pushStackRootRange(lists, 2, /*hpointer_mask=*/~uint64_t(0));
+        if (!results.empty()) {
+            rs.pushStackRootRange(results.data(), results.size(),
+                                  /*hpointer_mask=*/~uint64_t(0));
+        }
     }
 
-    // Results are always HPointer-encoded (boxed)
-    return HPtr::fromBits(Export::encode(vectorU64ToList(results, true)));
+    // Convert results (HPointer) back to encoded uint64_t for the existing
+    // vectorU64ToList helper. Keep results pinned across the encode/listFrom.
+    std::vector<uint64_t> encoded;
+    encoded.reserve(results.size());
+    for (auto& hp : results) encoded.push_back(Export::encode(hp));
+
+    HPointer listResult = vectorU64ToList(encoded, true);
+    rs.restoreStackRangePoint(outerSaved);
+    return HPtr::fromBits(Export::encode(listResult));
 }
 
 HPtr Elm_Kernel_List_map3(HPtr closure, HPtr xs, HPtr ys, HPtr zs) {
-    HPointer xList = Export::decode(xs.toBits());
-    HPointer yList = Export::decode(ys.toBits());
-    HPointer zList = Export::decode(zs.toBits());
     auto& allocator = Allocator::instance();
+    HPointer lists[3] = {
+        Export::decode(xs.toBits()),
+        Export::decode(ys.toBits()),
+        Export::decode(zs.toBits())
+    };
+    std::vector<HPointer> results;
 
-    std::vector<uint64_t> results;
+    auto& rs = allocator.getRootSet();
+    size_t outerSaved = rs.stackRangePoint();
+    rs.pushStackRootRange(lists, 3, /*hpointer_mask=*/~uint64_t(0));
 
-    while (!alloc::isNil(xList) && !alloc::isNil(yList) && !alloc::isNil(zList)) {
-        Cons* xCons = static_cast<Cons*>(allocator.resolve(xList));
-        Cons* yCons = static_cast<Cons*>(allocator.resolve(yList));
-        Cons* zCons = static_cast<Cons*>(allocator.resolve(zList));
+    while (!alloc::isNil(lists[0]) && !alloc::isNil(lists[1]) && !alloc::isNil(lists[2])) {
+        ConsBits cb[3];
+        for (int i = 0; i < 3; i++) cb[i] = readCons(lists[i]);
 
-        HPointer xTail = xCons->tail, yTail = yCons->tail, zTail = zCons->tail;
+        HPointer boxed[3];
+        boxConsHeadsRooted(cb, boxed, 3);
 
-        uint64_t x = getConsHead(xCons, &xCons->header);
-        uint64_t y = getConsHead(yCons, &yCons->header);
-        uint64_t z = getConsHead(zCons, &zCons->header);
+        rs.restoreStackRangePoint(outerSaved);
+        rs.pushStackRootRange(lists, 3, /*hpointer_mask=*/~uint64_t(0));
+        rs.pushStackRootRange(boxed, 3, /*hpointer_mask=*/~uint64_t(0));
+        if (!results.empty()) {
+            rs.pushStackRootRange(results.data(), results.size(),
+                                  /*hpointer_mask=*/~uint64_t(0));
+        }
 
-        uint64_t result = callTernaryClosure(closure, x, y, z);
-        results.push_back(result);
+        uint64_t result = callTernaryClosure(closure,
+            Export::encode(boxed[0]), Export::encode(boxed[1]), Export::encode(boxed[2]));
+        results.push_back(Export::decode(result));
 
-        xList = xTail; yList = yTail; zList = zTail;
+        for (int i = 0; i < 3; i++) lists[i] = cb[i].tail;
+        rs.restoreStackRangePoint(outerSaved);
+        rs.pushStackRootRange(lists, 3, /*hpointer_mask=*/~uint64_t(0));
+        if (!results.empty()) {
+            rs.pushStackRootRange(results.data(), results.size(),
+                                  /*hpointer_mask=*/~uint64_t(0));
+        }
     }
 
-    return HPtr::fromBits(Export::encode(vectorU64ToList(results, true)));
+    std::vector<uint64_t> encoded;
+    encoded.reserve(results.size());
+    for (auto& hp : results) encoded.push_back(Export::encode(hp));
+
+    HPointer listResult = vectorU64ToList(encoded, true);
+    rs.restoreStackRangePoint(outerSaved);
+    return HPtr::fromBits(Export::encode(listResult));
 }
 
 HPtr Elm_Kernel_List_map4(HPtr closure, HPtr ws, HPtr xs, HPtr ys, HPtr zs) {
-    HPointer wList = Export::decode(ws.toBits());
-    HPointer xList = Export::decode(xs.toBits());
-    HPointer yList = Export::decode(ys.toBits());
-    HPointer zList = Export::decode(zs.toBits());
     auto& allocator = Allocator::instance();
+    HPointer lists[4] = {
+        Export::decode(ws.toBits()),
+        Export::decode(xs.toBits()),
+        Export::decode(ys.toBits()),
+        Export::decode(zs.toBits())
+    };
+    std::vector<HPointer> results;
 
-    std::vector<uint64_t> results;
+    auto& rs = allocator.getRootSet();
+    size_t outerSaved = rs.stackRangePoint();
+    rs.pushStackRootRange(lists, 4, /*hpointer_mask=*/~uint64_t(0));
 
-    while (!alloc::isNil(wList) && !alloc::isNil(xList) &&
-           !alloc::isNil(yList) && !alloc::isNil(zList)) {
-        Cons* wCons = static_cast<Cons*>(allocator.resolve(wList));
-        Cons* xCons = static_cast<Cons*>(allocator.resolve(xList));
-        Cons* yCons = static_cast<Cons*>(allocator.resolve(yList));
-        Cons* zCons = static_cast<Cons*>(allocator.resolve(zList));
+    while (!alloc::isNil(lists[0]) && !alloc::isNil(lists[1]) &&
+           !alloc::isNil(lists[2]) && !alloc::isNil(lists[3])) {
+        ConsBits cb[4];
+        for (int i = 0; i < 4; i++) cb[i] = readCons(lists[i]);
 
-        HPointer wT = wCons->tail, xT = xCons->tail, yT = yCons->tail, zT = zCons->tail;
+        HPointer boxed[4];
+        boxConsHeadsRooted(cb, boxed, 4);
 
-        uint64_t w = getConsHead(wCons, &wCons->header);
-        uint64_t x = getConsHead(xCons, &xCons->header);
-        uint64_t y = getConsHead(yCons, &yCons->header);
-        uint64_t z = getConsHead(zCons, &zCons->header);
+        rs.restoreStackRangePoint(outerSaved);
+        rs.pushStackRootRange(lists, 4, /*hpointer_mask=*/~uint64_t(0));
+        rs.pushStackRootRange(boxed, 4, /*hpointer_mask=*/~uint64_t(0));
+        if (!results.empty()) {
+            rs.pushStackRootRange(results.data(), results.size(),
+                                  /*hpointer_mask=*/~uint64_t(0));
+        }
 
-        uint64_t result = callQuaternaryClosure(closure, w, x, y, z);
-        results.push_back(result);
+        uint64_t result = callQuaternaryClosure(closure,
+            Export::encode(boxed[0]), Export::encode(boxed[1]),
+            Export::encode(boxed[2]), Export::encode(boxed[3]));
+        results.push_back(Export::decode(result));
 
-        wList = wT; xList = xT; yList = yT; zList = zT;
+        for (int i = 0; i < 4; i++) lists[i] = cb[i].tail;
+        rs.restoreStackRangePoint(outerSaved);
+        rs.pushStackRootRange(lists, 4, /*hpointer_mask=*/~uint64_t(0));
+        if (!results.empty()) {
+            rs.pushStackRootRange(results.data(), results.size(),
+                                  /*hpointer_mask=*/~uint64_t(0));
+        }
     }
 
-    return HPtr::fromBits(Export::encode(vectorU64ToList(results, true)));
+    std::vector<uint64_t> encoded;
+    encoded.reserve(results.size());
+    for (auto& hp : results) encoded.push_back(Export::encode(hp));
+
+    HPointer listResult = vectorU64ToList(encoded, true);
+    rs.restoreStackRangePoint(outerSaved);
+    return HPtr::fromBits(Export::encode(listResult));
 }
 
 HPtr Elm_Kernel_List_map5(HPtr closure, HPtr vs, HPtr ws,
                            HPtr xs, HPtr ys, HPtr zs) {
-    HPointer vList = Export::decode(vs.toBits());
-    HPointer wList = Export::decode(ws.toBits());
-    HPointer xList = Export::decode(xs.toBits());
-    HPointer yList = Export::decode(ys.toBits());
-    HPointer zList = Export::decode(zs.toBits());
     auto& allocator = Allocator::instance();
+    HPointer lists[5] = {
+        Export::decode(vs.toBits()),
+        Export::decode(ws.toBits()),
+        Export::decode(xs.toBits()),
+        Export::decode(ys.toBits()),
+        Export::decode(zs.toBits())
+    };
+    std::vector<HPointer> results;
 
-    std::vector<uint64_t> results;
+    auto& rs = allocator.getRootSet();
+    size_t outerSaved = rs.stackRangePoint();
+    rs.pushStackRootRange(lists, 5, /*hpointer_mask=*/~uint64_t(0));
 
-    while (!alloc::isNil(vList) && !alloc::isNil(wList) && !alloc::isNil(xList) &&
-           !alloc::isNil(yList) && !alloc::isNil(zList)) {
-        Cons* vCons = static_cast<Cons*>(allocator.resolve(vList));
-        Cons* wCons = static_cast<Cons*>(allocator.resolve(wList));
-        Cons* xCons = static_cast<Cons*>(allocator.resolve(xList));
-        Cons* yCons = static_cast<Cons*>(allocator.resolve(yList));
-        Cons* zCons = static_cast<Cons*>(allocator.resolve(zList));
+    while (!alloc::isNil(lists[0]) && !alloc::isNil(lists[1]) && !alloc::isNil(lists[2]) &&
+           !alloc::isNil(lists[3]) && !alloc::isNil(lists[4])) {
+        ConsBits cb[5];
+        for (int i = 0; i < 5; i++) cb[i] = readCons(lists[i]);
 
-        HPointer vT = vCons->tail, wT = wCons->tail, xT = xCons->tail;
-        HPointer yT = yCons->tail, zT = zCons->tail;
+        HPointer boxed[5];
+        boxConsHeadsRooted(cb, boxed, 5);
 
-        uint64_t v = getConsHead(vCons, &vCons->header);
-        uint64_t w = getConsHead(wCons, &wCons->header);
-        uint64_t x = getConsHead(xCons, &xCons->header);
-        uint64_t y = getConsHead(yCons, &yCons->header);
-        uint64_t z = getConsHead(zCons, &zCons->header);
+        rs.restoreStackRangePoint(outerSaved);
+        rs.pushStackRootRange(lists, 5, /*hpointer_mask=*/~uint64_t(0));
+        rs.pushStackRootRange(boxed, 5, /*hpointer_mask=*/~uint64_t(0));
+        if (!results.empty()) {
+            rs.pushStackRootRange(results.data(), results.size(),
+                                  /*hpointer_mask=*/~uint64_t(0));
+        }
 
-        uint64_t result = callQuinaryClosure(closure, v, w, x, y, z);
-        results.push_back(result);
+        uint64_t result = callQuinaryClosure(closure,
+            Export::encode(boxed[0]), Export::encode(boxed[1]),
+            Export::encode(boxed[2]), Export::encode(boxed[3]), Export::encode(boxed[4]));
+        results.push_back(Export::decode(result));
 
-        vList = vT; wList = wT; xList = xT; yList = yT; zList = zT;
+        for (int i = 0; i < 5; i++) lists[i] = cb[i].tail;
+        rs.restoreStackRangePoint(outerSaved);
+        rs.pushStackRootRange(lists, 5, /*hpointer_mask=*/~uint64_t(0));
+        if (!results.empty()) {
+            rs.pushStackRootRange(results.data(), results.size(),
+                                  /*hpointer_mask=*/~uint64_t(0));
+        }
     }
 
-    return HPtr::fromBits(Export::encode(vectorU64ToList(results, true)));
+    std::vector<uint64_t> encoded;
+    encoded.reserve(results.size());
+    for (auto& hp : results) encoded.push_back(Export::encode(hp));
+
+    HPointer listResult = vectorU64ToList(encoded, true);
+    rs.restoreStackRangePoint(outerSaved);
+    return HPtr::fromBits(Export::encode(listResult));
 }
 
 HPtr Elm_Kernel_List_sortBy(HPtr closure, HPtr list) {
-    uint64_t list_bits = list.toBits();
-    std::vector<uint64_t> elements = listToVectorU64(Export::decode(list_bits));
     auto& allocator = Allocator::instance();
 
-    if (elements.empty()) {
+    // Materialise input list once. listToVectorU64 may allocate (boxElement).
+    std::vector<uint64_t> elemEnc = listToVectorU64(Export::decode(list.toBits()));
+    if (elemEnc.empty()) {
         return HPtr::fromBits(Export::encode(alloc::listNil()));
     }
 
-    // Build key cache: extract key for each element via closure
-    std::vector<uint64_t> keys;
+    // Move HPointer-encoded values into a contiguous HPointer buffer that we
+    // can range-root for the duration of the closure-driven key extraction.
+    std::vector<HPointer> elements;
+    elements.reserve(elemEnc.size());
+    for (uint64_t e : elemEnc) elements.push_back(Export::decode(e));
+
+    auto& rs = allocator.getRootSet();
+    size_t saved = rs.stackRangePoint();
+    rs.pushStackRootRange(elements.data(), elements.size(),
+                          /*hpointer_mask=*/~uint64_t(0));
+
+    // Extract keys via closure, range-rooting both elements and keys.
+    std::vector<HPointer> keys;
     keys.reserve(elements.size());
-    for (uint64_t elem : elements) {
-        uint64_t key = callUnaryClosure(closure, elem);
-        keys.push_back(key);
+    for (size_t i = 0; i < elements.size(); ++i) {
+        uint64_t k = callUnaryClosure(closure, Export::encode(elements[i]));
+        keys.push_back(Export::decode(k));
+
+        // Re-pin: keys may have grown its buffer, and the closure call may
+        // have invalidated the old base addresses.
+        rs.restoreStackRangePoint(saved);
+        rs.pushStackRootRange(elements.data(), elements.size(),
+                              /*hpointer_mask=*/~uint64_t(0));
+        rs.pushStackRootRange(keys.data(), keys.size(),
+                              /*hpointer_mask=*/~uint64_t(0));
     }
 
-    // Create index array and sort by keys using Utils::compare
+    // Sort indices by keys. `Utils::compare` may allocate (Order Custom);
+    // both elements and keys are still range-rooted from above.
     std::vector<size_t> indices(elements.size());
     std::iota(indices.begin(), indices.end(), 0);
-
     std::stable_sort(indices.begin(), indices.end(), [&](size_t a, size_t b) {
-        // Utils::compare returns Order (heap Custom with ctor 0=LT, 1=EQ, 2=GT)
-        // Re-resolve each time since compare may trigger GC
-        void* keyA = Export::toPtr(keys[a]);
-        void* keyB = Export::toPtr(keys[b]);
+        // Resolve raw pointers strictly for the call to Utils::compare; do
+        // not retain them across the call.
+        void* keyA = allocator.resolve(keys[a]);
+        void* keyB = allocator.resolve(keys[b]);
         HPointer orderHP = Utils::compare(keyA, keyB);
-        void* orderObj = allocator.resolve(orderHP);
-        Custom* order = static_cast<Custom*>(orderObj);
+        Custom* order = static_cast<Custom*>(allocator.resolve(orderHP));
         return order->ctor == 0;  // LT
     });
 
-    // Reorder elements according to sorted indices
-    std::vector<uint64_t> sorted;
+    // Reorder elements; build the result list while keeping the sorted
+    // buffer rooted (vectorU64ToList allocates).
+    std::vector<HPointer> sorted;
     sorted.reserve(elements.size());
-    for (size_t idx : indices) {
-        sorted.push_back(elements[idx]);
-    }
+    for (size_t idx : indices) sorted.push_back(elements[idx]);
+    rs.restoreStackRangePoint(saved);
+    rs.pushStackRootRange(sorted.data(), sorted.size(),
+                          /*hpointer_mask=*/~uint64_t(0));
 
-    // The sorted vector holds HPointer-encoded values; build a boxed-head list.
-    // Callers can re-unbox via projection if they need primitive-kind slots.
-    (void)list_bits;
-    return HPtr::fromBits(Export::encode(vectorU64ToList(sorted, true)));
+    std::vector<uint64_t> encoded;
+    encoded.reserve(sorted.size());
+    for (auto& hp : sorted) encoded.push_back(Export::encode(hp));
+
+    HPointer result = vectorU64ToList(encoded, true);
+    rs.restoreStackRangePoint(saved);
+    return HPtr::fromBits(Export::encode(result));
 }
 
 HPtr Elm_Kernel_List_sortWith(HPtr closure, HPtr list) {
-    uint64_t list_bits = list.toBits();
-    std::vector<uint64_t> elements = listToVectorU64(Export::decode(list_bits));
     auto& allocator = Allocator::instance();
 
-    if (elements.empty()) {
+    std::vector<uint64_t> elemEnc = listToVectorU64(Export::decode(list.toBits()));
+    if (elemEnc.empty()) {
         return HPtr::fromBits(Export::encode(alloc::listNil()));
     }
 
-    std::stable_sort(elements.begin(), elements.end(), [&](uint64_t a, uint64_t b) {
-        uint64_t order = callBinaryClosure(closure, a, b);
-        // Order is heap-allocated Custom: ctor 0=LT, 1=EQ, 2=GT
+    std::vector<HPointer> elements;
+    elements.reserve(elemEnc.size());
+    for (uint64_t e : elemEnc) elements.push_back(Export::decode(e));
+
+    auto& rs = allocator.getRootSet();
+    size_t saved = rs.stackRangePoint();
+    rs.pushStackRootRange(elements.data(), elements.size(),
+                          /*hpointer_mask=*/~uint64_t(0));
+
+    std::stable_sort(elements.begin(), elements.end(),
+                     [&](HPointer a, HPointer b) {
+        uint64_t order = callBinaryClosure(closure, Export::encode(a), Export::encode(b));
         HPointer orderHP = Export::decode(order);
         Custom* orderVal = static_cast<Custom*>(allocator.resolve(orderHP));
         return orderVal->ctor == 0;  // LT means a < b
     });
 
-    // Boxed-head result list; projection handles re-unboxing as needed.
-    return HPtr::fromBits(Export::encode(vectorU64ToList(elements, true)));
+    std::vector<uint64_t> encoded;
+    encoded.reserve(elements.size());
+    for (auto& hp : elements) encoded.push_back(Export::encode(hp));
+
+    HPointer result = vectorU64ToList(encoded, true);
+    rs.restoreStackRangePoint(saved);
+    return HPtr::fromBits(Export::encode(result));
 }
 
 } // extern "C"

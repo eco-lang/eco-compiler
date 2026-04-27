@@ -96,12 +96,17 @@ static std::string elmStringToStd(uint64_t strEnc) {
     return Elm::StringOps::toStdString(ptr);
 }
 
-// Create Ok result.
+// Create Ok result. Roots `value` across the Custom allocate so callers may
+// pass an HPointer captured before this call.
 static uint64_t makeOk(HPointer value) {
     auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* result = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    Custom* result;
+    {
+        StackRootGuard guard(&value);
+        result = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    }
     result->header.size = 1;
     result->ctor = 0;  // Ok
     result->unboxed = 0;
@@ -111,27 +116,38 @@ static uint64_t makeOk(HPointer value) {
 
 // Create Err result with a Json.Error.
 static uint64_t makeErr(const std::string& message) {
+    auto& allocator = Allocator::instance();
+
     HPointer msgStr = allocElmString(message);
 
-    auto& allocator = Allocator::instance();
     // Create Error.Failure message value (simplified).
     size_t size = sizeof(Custom) + 2 * sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* failure = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
-    failure->header.size = 2;
-    failure->ctor = 0;  // Failure ctor
-    failure->unboxed = 0;
-    failure->values[0].p = msgStr;  // message
-    failure->values[1].p = listNil();  // context (empty)
+    HPointer failureHP;
+    {
+        // Root msgStr across the Failure custom allocate.
+        StackRootGuard guard(&msgStr);
+        Custom* failure = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+        failure->header.size = 2;
+        failure->ctor = 0;  // Failure ctor
+        failure->unboxed = 0;
+        failure->values[0].p = msgStr;     // message
+        failure->values[1].p = listNil();  // context (empty)
+        failureHP = allocator.wrap(failure);
+    }
 
-    // Wrap in Err.
+    // Wrap in Err. Root the failure handle across the Err allocate.
     size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* err = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    Custom* err;
+    {
+        StackRootGuard guard(&failureHP);
+        err = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    }
     err->header.size = 1;
     err->ctor = 1;  // Err
     err->unboxed = 0;
-    err->values[0].p = allocator.wrap(failure);
+    err->values[0].p = failureHP;
 
     return Export::encode(allocator.wrap(err));
 }
@@ -409,13 +425,18 @@ static uint64_t makeDecoder0(u16 ctor) {
 
 static uint64_t makeDecoder1(u16 ctor, uint64_t arg) {
     auto& allocator = Allocator::instance();
+    HPointer payload = Export::decode(arg);
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* dec = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    Custom* dec;
+    {
+        StackRootGuard guard(&payload);
+        dec = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    }
     dec->header.size = 1;
     dec->ctor = ctor;
     dec->unboxed = 0;
-    dec->values[0].p = Export::decode(arg);
+    dec->values[0].p = payload;
     return Export::encode(allocator.wrap(dec));
 }
 
@@ -433,27 +454,38 @@ static uint64_t makeDecoder1i(u16 ctor, int64_t arg) {
 
 static uint64_t makeDecoder2(u16 ctor, uint64_t arg1, uint64_t arg2) {
     auto& allocator = Allocator::instance();
+    HPointer p0 = Export::decode(arg1);
+    HPointer p1 = Export::decode(arg2);
     size_t size = sizeof(Custom) + 2 * sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* dec = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    Custom* dec;
+    {
+        StackRootGuard guard(&p0, &p1);
+        dec = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    }
     dec->header.size = 2;
     dec->ctor = ctor;
     dec->unboxed = 0;
-    dec->values[0].p = Export::decode(arg1);
-    dec->values[1].p = Export::decode(arg2);
+    dec->values[0].p = p0;
+    dec->values[1].p = p1;
     return Export::encode(allocator.wrap(dec));
 }
 
 static uint64_t makeDecoder2ip(u16 ctor, int64_t arg1, uint64_t arg2) {
     auto& allocator = Allocator::instance();
+    HPointer p1 = Export::decode(arg2);
     size_t size = sizeof(Custom) + 2 * sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* dec = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    Custom* dec;
+    {
+        StackRootGuard guard(&p1);
+        dec = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    }
     dec->header.size = 2;
     dec->ctor = ctor;
     dec->unboxed = 1;  // first field unboxed
     dec->values[0].i = arg1;
-    dec->values[1].p = Export::decode(arg2);
+    dec->values[1].p = p1;
     return Export::encode(allocator.wrap(dec));
 }
 
@@ -462,14 +494,32 @@ static uint64_t makeDecoder2ip(u16 ctor, int64_t arg1, uint64_t arg2) {
 //===----------------------------------------------------------------------===//
 
 // Run decoder on a heap-resident JSON value and return Result.
-// jvalEnc is an encoded HPointer to a CTOR_JSON_* Custom object.
-static uint64_t runDecoder(Custom* decoder, uint64_t jvalEnc) {
+//
+// Both `decoderHP` and the JSON value referenced by `jvalEnc` are rooted for
+// the lifetime of the body so the GC keeps them valid across recursive
+// `runDecoder` calls, closure invocations, and any other allocator activity.
+// Raw `Custom*` for `decoder` / `jval` MUST be re-derived through the rooted
+// handles after every potential GC point.
+static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
     auto& allocator = Allocator::instance();
 
-    // Resolve the JSON value to inspect its ctor.
-    void* jvalPtr = Export::toPtr(jvalEnc);
-    Custom* jval = (jvalPtr && static_cast<Header*>(jvalPtr)->tag == Tag_Custom)
-                   ? static_cast<Custom*>(jvalPtr) : nullptr;
+    HPointer jvalHP = Export::decode(jvalEnc);
+    StackRootGuard topRoots(&decoderHP, &jvalHP);
+
+    // Helpers — always re-resolve after a potential GC.
+    auto resolveDecoder = [&]() -> Custom* {
+        return static_cast<Custom*>(allocator.resolve(decoderHP));
+    };
+    auto resolveJval = [&]() -> Custom* {
+        if (jvalHP.constant != 0) return nullptr;
+        void* p = allocator.resolve(jvalHP);
+        if (!p) return nullptr;
+        if (static_cast<Header*>(p)->tag != Tag_Custom) return nullptr;
+        return static_cast<Custom*>(p);
+    };
+
+    Custom* decoder = resolveDecoder();
+    Custom* jval = resolveJval();
     u16 jctor = jval ? jval->ctor : 0;
 
     switch (decoder->ctor) {
@@ -515,13 +565,15 @@ static uint64_t runDecoder(Custom* decoder, uint64_t jvalEnc) {
             if (!jval || jctor != CTOR_JSON_NULL) {
                 return makeErr("Expecting null");
             }
+            // `decoder` is still fresh here (no allocations between top-of-fn and now).
             HPointer fallback = decoder->values[0].p;
+            // makeOk roots its argument internally.
             return makeOk(fallback);
         }
 
         case DEC_VALUE: {
             // Return the heap-resident JSON value directly.
-            return makeOk(Export::decode(jvalEnc));
+            return makeOk(jvalHP);
         }
 
         case DEC_LIST: {
@@ -529,42 +581,39 @@ static uint64_t runDecoder(Custom* decoder, uint64_t jvalEnc) {
                 return makeErr("Expecting a LIST");
             }
 
-            // Get element decoder.
-            void* elemDecPtr = allocator.resolve(decoder->values[0].p);
-            Custom* elemDec = static_cast<Custom*>(elemDecPtr);
-
-            // Decide element kind for Cons cells based on the element decoder.
-            // The monomorphizer specializes `List a` for concrete `a`:
-            //   `a = Int`/`Float`/`Char` → caller expects unboxed cons head.
-            //   otherwise (Bool/String/Value/composite) → boxed HPointer head.
-            // We must match that convention here or the caller will read garbage
-            // when it projects `head` at the expected kind.
+            // Get element decoder handle and infer cons-head kind. The kind
+            // decision is made up-front on the *static* sub-decoder type, so a
+            // brief raw-pointer use here (no GC point) is safe.
+            HPointer elemDecHP = decoder->values[0].p;
+            HPointer arrayHP   = jval->values[0].p;
             u8 elemConsKind = 0;  // 0 = boxed
-            switch (elemDec->ctor) {
-                case DEC_INT:   elemConsKind = 1; break;  // unboxed i64
-                case DEC_FLOAT: elemConsKind = 2; break;  // unboxed f64
-                default:        elemConsKind = 0; break;  // boxed HPointer
+            {
+                Custom* elemDec0 = static_cast<Custom*>(allocator.resolve(elemDecHP));
+                switch (elemDec0->ctor) {
+                    case DEC_INT:   elemConsKind = 1; break;  // unboxed i64
+                    case DEC_FLOAT: elemConsKind = 2; break;  // unboxed f64
+                    default:        elemConsKind = 0; break;  // boxed HPointer
+                }
             }
 
-            // Get the ElmArray.
-            void* arrPtr = allocator.resolve(jval->values[0].p);
-            ElmArray* arr = static_cast<ElmArray*>(arrPtr);
-            u32 len = arr->header.size;
+            // Get the ElmArray length (primitive snapshot).
+            u32 len;
+            {
+                ElmArray* arr0 = static_cast<ElmArray*>(allocator.resolve(arrayHP));
+                len = arr0->header.size;
+            }
 
-            // Decode each element in reverse to build list.
+            // Decode each element in reverse to build the list. `result` is
+            // the accumulator; `arrayHP` and `elemDecHP` may be moved by GC
+            // during the recursion or `cons`. Root all three.
             HPointer result = listNil();
-            for (i64 i = static_cast<i64>(len) - 1; i >= 0; i--) {
-                // Re-resolve after allocations in recursive calls.
-                arrPtr = allocator.resolve(jval->values[0].p);
-                arr = static_cast<ElmArray*>(arrPtr);
+            StackRootGuard listRoots(&result, &arrayHP, &elemDecHP);
 
+            for (i64 i = static_cast<i64>(len) - 1; i >= 0; i--) {
+                ElmArray* arr = static_cast<ElmArray*>(allocator.resolve(arrayHP));
                 uint64_t elemEnc = Export::encode(arr->elements[i].p);
 
-                // Re-resolve decoder after potential GC.
-                elemDecPtr = allocator.resolve(decoder->values[0].p);
-                elemDec = static_cast<Custom*>(elemDecPtr);
-
-                uint64_t elemResult = runDecoder(elemDec, elemEnc);
+                uint64_t elemResult = runDecoder(elemDecHP, elemEnc);
                 if (!isOk(elemResult)) {
                     return elemResult;
                 }
@@ -582,7 +631,14 @@ static uint64_t runDecoder(Custom* decoder, uint64_t jvalEnc) {
                 } else {
                     headSlot.p = elemVal;
                 }
-                result = cons(headSlot, result, elemConsKind);
+                // `cons` allocates; `result` is rooted via listRoots above.
+                // For boxed heads the head HPointer must also stay valid.
+                if (elemConsKind == 0) {
+                    StackRootGuard headRoot(&headSlot.p);
+                    result = cons(headSlot, result, /*head_kind=*/(u8)0);
+                } else {
+                    result = cons(headSlot, result, /*head_kind=*/elemConsKind);
+                }
             }
             return makeOk(result);
         }
@@ -592,42 +648,61 @@ static uint64_t runDecoder(Custom* decoder, uint64_t jvalEnc) {
                 return makeErr("Expecting an ARRAY");
             }
 
-            // Determine element kind from the element decoder so the result's
-            // JsArray stores the same representation that Elm's Array.fromList
-            // would produce (required for structural equality on Array a).
-            void* elemDecPtr = allocator.resolve(decoder->values[0].p);
-            Custom* elemDec = static_cast<Custom*>(elemDecPtr);
+            // Snapshot the element decoder handle and source-array handle.
+            HPointer elemDecHP = decoder->values[0].p;
+            HPointer arrayHP   = jval->values[0].p;
+
+            // Determine element kind from the element decoder (pure read,
+            // pre-loop, no GC point yet).
             u8 elemKind = 0;  // 0=boxed, 1=Int, 2=Float, 3=Char
-            switch (elemDec->ctor) {
-                case DEC_INT:   elemKind = 1; break;
-                case DEC_FLOAT: elemKind = 2; break;
-                // DEC_STRING / composites stay boxed (kind 0)
-                default:        elemKind = 0; break;
+            {
+                Custom* elemDec0 = static_cast<Custom*>(allocator.resolve(elemDecHP));
+                switch (elemDec0->ctor) {
+                    case DEC_INT:   elemKind = 1; break;
+                    case DEC_FLOAT: elemKind = 2; break;
+                    // DEC_STRING / composites stay boxed (kind 0)
+                    default:        elemKind = 0; break;
+                }
             }
 
-            // Get the source JSON array's ElmArray. This was built via
-            // arrayFromPointers so its length == header.size (use length).
-            void* arrPtr = allocator.resolve(jval->values[0].p);
-            ElmArray* arr = static_cast<ElmArray*>(arrPtr);
-            u32 len = arr->length;
+            // Snapshot length (primitive).
+            u32 len;
+            {
+                ElmArray* arr0 = static_cast<ElmArray*>(allocator.resolve(arrayHP));
+                len = arr0->length;
+            }
 
-            // Decode each element, collecting results.
+            // Decode each element, collecting result HPointers. The collected
+            // vector is range-rooted so each subsequent recursive `runDecoder`
+            // can't invalidate already-decoded entries. Because `push_back`
+            // may reallocate the vector storage, we re-pin the buffer after
+            // every push.
             std::vector<HPointer> elements;
             elements.reserve(len);
-            for (u32 i = 0; i < len; i++) {
-                arrPtr = allocator.resolve(jval->values[0].p);
-                arr = static_cast<ElmArray*>(arrPtr);
 
+            auto& rs = allocator.getRootSet();
+            size_t savedRoots = rs.stackRangePoint();
+            rs.pushStackRootRange(&elemDecHP, 1, 1);
+            rs.pushStackRootRange(&arrayHP,   1, 1);
+
+            for (u32 i = 0; i < len; i++) {
+                ElmArray* arr = static_cast<ElmArray*>(allocator.resolve(arrayHP));
                 uint64_t elemEnc = Export::encode(arr->elements[i].p);
 
-                elemDecPtr = allocator.resolve(decoder->values[0].p);
-                elemDec = static_cast<Custom*>(elemDecPtr);
-
-                uint64_t elemResult = runDecoder(elemDec, elemEnc);
+                uint64_t elemResult = runDecoder(elemDecHP, elemEnc);
                 if (!isOk(elemResult)) {
+                    rs.restoreStackRangePoint(savedRoots);
                     return elemResult;
                 }
                 elements.push_back(getOkValue(elemResult));
+
+                // Re-pin: vector may have reallocated, invalidating the prior
+                // base address.
+                rs.restoreStackRangePoint(savedRoots);
+                rs.pushStackRootRange(&elemDecHP, 1, 1);
+                rs.pushStackRootRange(&arrayHP,   1, 1);
+                rs.pushStackRootRange(elements.data(), elements.size(),
+                                      /*hpointer_mask=*/~uint64_t(0));
             }
 
             // Build Elm `Array a` = `Array_elm_builtin Int Int (Tree a) (JsArray a)`.
@@ -760,6 +835,7 @@ static uint64_t runDecoder(Custom* decoder, uint64_t jvalEnc) {
             }
 
             HPointer resultArr = buildElmArray(treeJsArr, tailJsArr, len);
+            rs.restoreStackRangePoint(savedRoots);
             return makeOk(resultArr);
         }
 
@@ -768,30 +844,34 @@ static uint64_t runDecoder(Custom* decoder, uint64_t jvalEnc) {
                 return makeErr("Expecting an OBJECT");
             }
 
-            // Get field name from decoder.
-            std::string fieldName = elmStringToStd(Export::encode(decoder->values[0].p));
-
-            // Search the key-value list for a matching key.
+            // Snapshot the field name (std::string copy, GC-immune) and the
+            // nested decoder handle. `elmStringToStd` may walk a slice or
+            // rope but does not allocate.
+            std::string fieldName =
+                elmStringToStd(Export::encode(decoder->values[0].p));
+            HPointer nestedDecHP = decoder->values[1].p;
             HPointer kvList = jval->values[0].p;
+
+            // Walk the key/value list. `kvList` and `nestedDecHP` survive
+            // a recursive `runDecoder` (in the matching branch) and any
+            // future allocations.
+            StackRootGuard fieldRoots(&kvList, &nestedDecHP);
+
             while (!isNil(kvList)) {
-                void* cellPtr = allocator.resolve(kvList);
-                Cons* cell = static_cast<Cons*>(cellPtr);
+                Cons* cell = static_cast<Cons*>(allocator.resolve(kvList));
+                HPointer headHP = cell->head.p;
+                HPointer tailHP = cell->tail;
 
-                void* tuplePtr = allocator.resolve(cell->head.p);
-                Tuple2* tup = static_cast<Tuple2*>(tuplePtr);
+                Tuple2* tup = static_cast<Tuple2*>(allocator.resolve(headHP));
+                HPointer keyHP = tup->a.p;
+                HPointer valHP = tup->b.p;
 
-                std::string key = elmStringToStd(Export::encode(tup->a.p));
+                std::string key = elmStringToStd(Export::encode(keyHP));
                 if (key == fieldName) {
-                    // Found: run the nested decoder on the value.
-                    uint64_t valEnc = Export::encode(tup->b.p);
-
-                    void* nestedDecPtr = allocator.resolve(decoder->values[1].p);
-                    Custom* nestedDec = static_cast<Custom*>(nestedDecPtr);
-
-                    return runDecoder(nestedDec, valEnc);
+                    return runDecoder(nestedDecHP, Export::encode(valHP));
                 }
 
-                kvList = cell->tail;
+                kvList = tailHP;
             }
 
             return makeErr("Expecting an OBJECT with a field named `" + fieldName + "`");
@@ -803,22 +883,16 @@ static uint64_t runDecoder(Custom* decoder, uint64_t jvalEnc) {
             }
 
             int64_t index = decoder->values[0].i;
+            HPointer nestedDecHP = decoder->values[1].p;
+            HPointer arrayHP = jval->values[0].p;
 
-            // Get the ElmArray.
-            void* arrPtr = allocator.resolve(jval->values[0].p);
-            ElmArray* arr = static_cast<ElmArray*>(arrPtr);
-
+            ElmArray* arr = static_cast<ElmArray*>(allocator.resolve(arrayHP));
             if (index < 0 || static_cast<u32>(index) >= arr->header.size) {
                 return makeErr("Expecting a LONGER array");
             }
 
             uint64_t elemEnc = Export::encode(arr->elements[index].p);
-
-            // Get nested decoder.
-            void* nestedDecPtr = allocator.resolve(decoder->values[1].p);
-            Custom* nestedDec = static_cast<Custom*>(nestedDecPtr);
-
-            return runDecoder(nestedDec, elemEnc);
+            return runDecoder(nestedDecHP, elemEnc);
         }
 
         case DEC_KEYVALUE: {
@@ -826,62 +900,63 @@ static uint64_t runDecoder(Custom* decoder, uint64_t jvalEnc) {
                 return makeErr("Expecting an OBJECT");
             }
 
-            // Get value decoder.
-            void* valDecPtr = allocator.resolve(decoder->values[0].p);
-            Custom* valDec = static_cast<Custom*>(valDecPtr);
-
-            // Decide value kind for the tuple's second slot based on the value
-            // decoder. Matches DEC_LIST's convention — the monomorphizer
-            // specializes `(String, a)` for concrete `a`, so the caller expects
-            // an unboxed slot for primitive `a` and a boxed slot otherwise.
-            // Key is always String (boxed, kind 0).
-            u8 valKind = 0;  // 0 = boxed
-            switch (valDec->ctor) {
-                case DEC_INT:   valKind = 1; break;  // unboxed i64
-                case DEC_FLOAT: valKind = 2; break;  // unboxed f64
-                default:        valKind = 0; break;  // boxed HPointer
+            // Snapshot the value-decoder handle and infer the unboxed kind for
+            // the tuple's value slot up front (no GC point in this block).
+            HPointer valDecHP = decoder->values[0].p;
+            u8 valKind;
+            {
+                Custom* valDec0 = static_cast<Custom*>(allocator.resolve(valDecHP));
+                switch (valDec0->ctor) {
+                    case DEC_INT:   valKind = 1; break;  // unboxed i64
+                    case DEC_FLOAT: valKind = 2; break;  // unboxed f64
+                    default:        valKind = 0; break;  // boxed HPointer
+                }
             }
-            // Tuple bitmap: slot 0 (key) always boxed (kind 0), slot 1 (value)
-            // kind = valKind. 2-bit-per-slot encoding: slot1 kind occupies bits 2-3.
             u64 tupleBitmap = static_cast<u64>(valKind) << 2;
 
-            // Collect key-value pairs into a vector first, then build the list
-            // in reverse to preserve original order.
-            HPointer kvList = jval->values[0].p;
-
-            // First, collect all pairs into a vector.
+            // Collect key/value tuple HPointers into a buffer (no allocations
+            // here; safe to walk with raw pointers if we re-resolve cell on
+            // each iteration).
             std::vector<HPointer> tuples;
-            while (!isNil(kvList)) {
-                void* cellPtr = allocator.resolve(kvList);
-                Cons* cell = static_cast<Cons*>(cellPtr);
-                tuples.push_back(cell->head.p);
-                kvList = cell->tail;
+            {
+                HPointer kvList = jval->values[0].p;
+                while (!isNil(kvList)) {
+                    Cons* cell = static_cast<Cons*>(allocator.resolve(kvList));
+                    tuples.push_back(cell->head.p);
+                    kvList = cell->tail;
+                }
             }
 
-            // Build result list in reverse.
+            // Build the result list in reverse. Pin `result`, `valDecHP`, and
+            // the `tuples` buffer across each `runDecoder` (which may GC) and
+            // each `cons` / `tuple2` (which allocate).
             HPointer result = listNil();
-            for (auto it = tuples.rbegin(); it != tuples.rend(); ++it) {
-                void* tuplePtr = allocator.resolve(*it);
-                Tuple2* srcTup = static_cast<Tuple2*>(tuplePtr);
 
-                // Decode the value.
+            auto& rs = allocator.getRootSet();
+            size_t kvSaved = rs.stackRangePoint();
+            rs.pushStackRootRange(&result,    1, 1);
+            rs.pushStackRootRange(&valDecHP,  1, 1);
+            if (!tuples.empty()) {
+                rs.pushStackRootRange(tuples.data(), tuples.size(),
+                                      /*hpointer_mask=*/~uint64_t(0));
+            }
+
+            for (auto it = tuples.rbegin(); it != tuples.rend(); ++it) {
+                Tuple2* srcTup = static_cast<Tuple2*>(allocator.resolve(*it));
                 uint64_t valEnc = Export::encode(srcTup->b.p);
                 HPointer keyStr = srcTup->a.p;
 
-                // Re-resolve decoder after potential GC.
-                valDecPtr = allocator.resolve(decoder->values[0].p);
-                valDec = static_cast<Custom*>(valDecPtr);
+                // Root keyStr across the recursive decode + tuple2 + cons.
+                rs.pushStackRootRange(&keyStr, 1, 1);
 
-                uint64_t valResult = runDecoder(valDec, valEnc);
+                uint64_t valResult = runDecoder(valDecHP, valEnc);
                 if (!isOk(valResult)) {
+                    rs.restoreStackRangePoint(kvSaved);
                     return valResult;
                 }
 
                 HPointer decodedVal = getOkValue(valResult);
 
-                // Unwrap primitive wrappers so tuple slot 1 matches the kind
-                // the caller's destructure expects (see comment above about
-                // tupleBitmap).
                 Unboxable valSlot;
                 if (valKind == 1) {
                     ElmInt* ei = static_cast<ElmInt*>(allocator.resolve(decodedVal));
@@ -893,11 +968,31 @@ static uint64_t runDecoder(Custom* decoder, uint64_t jvalEnc) {
                     valSlot.p = decodedVal;
                 }
 
-                // Create result Tuple2 (key, decodedValue) with the inferred
-                // bitmap so primitive values are stored unboxed.
+                // Root the (possibly heap-pointer) value slot across `tuple2`.
+                if (valKind == 0) rs.pushStackRootRange(&valSlot.p, 1, 1);
                 HPointer resTup = tuple2(boxed(keyStr), valSlot, tupleBitmap);
+                if (valKind == 0) {
+                    rs.restoreStackRangePoint(kvSaved);
+                    rs.pushStackRootRange(&result,   1, 1);
+                    rs.pushStackRootRange(&valDecHP, 1, 1);
+                    if (!tuples.empty()) {
+                        rs.pushStackRootRange(tuples.data(), tuples.size(),
+                                              /*hpointer_mask=*/~uint64_t(0));
+                    }
+                }
+
+                rs.pushStackRootRange(&resTup, 1, 1);
                 result = cons(boxed(resTup), result, true);
+                // Pop the `resTup` and `keyStr` roots now that result owns them.
+                rs.restoreStackRangePoint(kvSaved);
+                rs.pushStackRootRange(&result,    1, 1);
+                rs.pushStackRootRange(&valDecHP,  1, 1);
+                if (!tuples.empty()) {
+                    rs.pushStackRootRange(tuples.data(), tuples.size(),
+                                          /*hpointer_mask=*/~uint64_t(0));
+                }
             }
+            rs.restoreStackRangePoint(kvSaved);
             return makeOk(result);
         }
 
@@ -911,90 +1006,107 @@ static uint64_t runDecoder(Custom* decoder, uint64_t jvalEnc) {
         }
 
         case DEC_ANDTHEN: {
-            // Run the inner decoder first.
-            void* innerDecPtr = allocator.resolve(decoder->values[1].p);
-            Custom* innerDec = static_cast<Custom*>(innerDecPtr);
+            // Snapshot inner decoder + callback handles before any recursion.
+            HPointer innerDecHP = decoder->values[1].p;
+            HPointer callbackHP = decoder->values[0].p;
 
-            uint64_t innerResult = runDecoder(innerDec, jvalEnc);
-            if (!isOk(innerResult)) {
-                return innerResult;
+            // Root callback (and our own jvalHP, already top-rooted) across
+            // the inner runDecoder.
+            uint64_t innerResult;
+            {
+                StackRootGuard guard(&callbackHP);
+                innerResult = runDecoder(innerDecHP, jvalEnc);
+            }
+            if (!isOk(innerResult)) return innerResult;
+
+            HPointer value = getOkValue(innerResult);
+            HPointer newDecHP;
+            {
+                // Root callback + decoded value + new-decoder slot across the
+                // closure call. eco_apply_closure may GC.
+                StackRootGuard guard(&callbackHP, &value);
+                uint64_t args[1] = { Export::encode(value) };
+                uint64_t newDecEnc = eco_apply_closure(
+                    HPtr::fromBits(Export::encode(callbackHP)), args, 1).toBits();
+                newDecHP = Export::decode(newDecEnc);
             }
 
-            // Call the callback closure with the decoded value to get a new decoder.
-            HPointer callback = decoder->values[0].p;
-            HPointer value = getOkValue(innerResult);
-
-            uint64_t args[1] = { Export::encode(value) };
-            uint64_t newDecEnc = eco_apply_closure(HPtr::fromBits(Export::encode(callback)), args, 1).toBits();
-
-            // Run the new decoder on the same JSON value.
-            void* newDecPtr = Export::toPtr(newDecEnc);
-            Custom* newDec = static_cast<Custom*>(newDecPtr);
-
-            return runDecoder(newDec, jvalEnc);
+            return runDecoder(newDecHP, jvalEnc);
         }
 
         case DEC_ONEOF: {
             HPointer decoders = decoder->values[0].p;
 
+            // `decoders` (the cons-list head) and the running tail must
+            // survive recursive `runDecoder` calls.
+            StackRootGuard guard(&decoders);
+
             while (!isNil(decoders)) {
-                void* cellPtr = allocator.resolve(decoders);
-                Cons* cell = static_cast<Cons*>(cellPtr);
+                Cons* cell = static_cast<Cons*>(allocator.resolve(decoders));
+                HPointer decHP = cell->head.p;
+                HPointer tailHP = cell->tail;
 
-                void* decPtr = allocator.resolve(cell->head.p);
-                Custom* dec = static_cast<Custom*>(decPtr);
-
-                uint64_t result = runDecoder(dec, jvalEnc);
+                uint64_t result = runDecoder(decHP, jvalEnc);
                 if (isOk(result)) {
                     return result;
                 }
 
-                // Re-resolve after potential GC in runDecoder.
-                cellPtr = allocator.resolve(decoders);
-                cell = static_cast<Cons*>(cellPtr);
-                decoders = cell->tail;
+                decoders = tailHP;
             }
 
             return makeErr("Ran into a oneOf with no possibilities");
         }
 
         case DEC_MAP1: {
-            void* dec1Ptr = allocator.resolve(decoder->values[1].p);
-            Custom* dec1 = static_cast<Custom*>(dec1Ptr);
+            HPointer dec1HP = decoder->values[1].p;
+            HPointer callbackHP = decoder->values[0].p;
 
-            uint64_t result1 = runDecoder(dec1, jvalEnc);
+            uint64_t result1;
+            {
+                StackRootGuard guard(&callbackHP);
+                result1 = runDecoder(dec1HP, jvalEnc);
+            }
             if (!isOk(result1)) return result1;
 
-            HPointer callback = decoder->values[0].p;
-            uint64_t args[1] = { Export::encode(getOkValue(result1)) };
-            uint64_t mapped = eco_apply_closure(HPtr::fromBits(Export::encode(callback)), args, 1).toBits();
-
+            HPointer v1 = getOkValue(result1);
+            uint64_t mapped;
+            {
+                StackRootGuard guard(&callbackHP, &v1);
+                uint64_t args[1] = { Export::encode(v1) };
+                mapped = eco_apply_closure(
+                    HPtr::fromBits(Export::encode(callbackHP)), args, 1).toBits();
+            }
             return makeOk(Export::decode(mapped));
         }
 
         case DEC_MAP2: {
-            void* dec1Ptr = allocator.resolve(decoder->values[1].p);
-            void* dec2Ptr = allocator.resolve(decoder->values[2].p);
-            Custom* dec1 = static_cast<Custom*>(dec1Ptr);
-            Custom* dec2 = static_cast<Custom*>(dec2Ptr);
+            HPointer dec1HP = decoder->values[1].p;
+            HPointer dec2HP = decoder->values[2].p;
+            HPointer callbackHP = decoder->values[0].p;
 
-            uint64_t result1 = runDecoder(dec1, jvalEnc);
+            uint64_t result1;
+            {
+                StackRootGuard guard(&dec2HP, &callbackHP);
+                result1 = runDecoder(dec1HP, jvalEnc);
+            }
             if (!isOk(result1)) return result1;
 
-            // Re-resolve dec2 after potential GC.
-            dec2Ptr = allocator.resolve(decoder->values[2].p);
-            dec2 = static_cast<Custom*>(dec2Ptr);
-
-            uint64_t result2 = runDecoder(dec2, jvalEnc);
+            HPointer v1 = getOkValue(result1);
+            uint64_t result2;
+            {
+                StackRootGuard guard(&v1, &callbackHP);
+                result2 = runDecoder(dec2HP, jvalEnc);
+            }
             if (!isOk(result2)) return result2;
 
-            HPointer callback = decoder->values[0].p;
-            uint64_t args[2] = {
-                Export::encode(getOkValue(result1)),
-                Export::encode(getOkValue(result2))
-            };
-            uint64_t mapped = eco_apply_closure(HPtr::fromBits(Export::encode(callback)), args, 2).toBits();
-
+            HPointer v2 = getOkValue(result2);
+            uint64_t mapped;
+            {
+                StackRootGuard guard(&v1, &v2, &callbackHP);
+                uint64_t args[2] = { Export::encode(v1), Export::encode(v2) };
+                mapped = eco_apply_closure(
+                    HPtr::fromBits(Export::encode(callbackHP)), args, 2).toBits();
+            }
             return makeOk(Export::decode(mapped));
         }
 
@@ -1007,23 +1119,54 @@ static uint64_t runDecoder(Custom* decoder, uint64_t jvalEnc) {
         case DEC_MAP8: {
             int n = decoder->ctor - DEC_MAP1 + 1;
 
-            uint64_t results[8];
+            // Snapshot the callback and all sub-decoder handles up front.
+            HPointer callbackHP = decoder->values[0].p;
+            std::vector<HPointer> subDecHPs;
+            subDecHPs.reserve(n);
             for (int i = 0; i < n; i++) {
-                // Re-resolve decoder sub-field each iteration.
-                void* decIPtr = allocator.resolve(decoder->values[i+1].p);
-                Custom* decI = static_cast<Custom*>(decIPtr);
-
-                results[i] = runDecoder(decI, jvalEnc);
-                if (!isOk(results[i])) return results[i];
+                subDecHPs.push_back(decoder->values[i + 1].p);
             }
 
-            HPointer callback = decoder->values[0].p;
+            // `results` accumulates fresh HPointer-encoded ok-values; the
+            // buffer must be range-rooted because each subsequent runDecoder
+            // may GC and invalidate previously-decoded entries.
+            std::vector<HPointer> results;
+            results.reserve(n);
+
+            auto& rs = allocator.getRootSet();
+            size_t mapSaved = rs.stackRangePoint();
+            rs.pushStackRootRange(&callbackHP, 1, 1);
+            if (!subDecHPs.empty()) {
+                rs.pushStackRootRange(subDecHPs.data(), subDecHPs.size(),
+                                      /*hpointer_mask=*/~uint64_t(0));
+            }
+
+            for (int i = 0; i < n; i++) {
+                uint64_t r = runDecoder(subDecHPs[i], jvalEnc);
+                if (!isOk(r)) {
+                    rs.restoreStackRangePoint(mapSaved);
+                    return r;
+                }
+                results.push_back(getOkValue(r));
+
+                // Re-pin every range — `results` may have reallocated.
+                rs.restoreStackRangePoint(mapSaved);
+                rs.pushStackRootRange(&callbackHP, 1, 1);
+                if (!subDecHPs.empty()) {
+                    rs.pushStackRootRange(subDecHPs.data(), subDecHPs.size(),
+                                          /*hpointer_mask=*/~uint64_t(0));
+                }
+                rs.pushStackRootRange(results.data(), results.size(),
+                                      /*hpointer_mask=*/~uint64_t(0));
+            }
+
             uint64_t args[8];
             for (int i = 0; i < n; i++) {
-                args[i] = Export::encode(getOkValue(results[i]));
+                args[i] = Export::encode(results[i]);
             }
-            uint64_t mapped = eco_apply_closure(HPtr::fromBits(Export::encode(callback)), args, static_cast<u32>(n)).toBits();
-
+            uint64_t mapped = eco_apply_closure(
+                HPtr::fromBits(Export::encode(callbackHP)), args, static_cast<u32>(n)).toBits();
+            rs.restoreStackRangePoint(mapSaved);
             return makeOk(Export::decode(mapped));
         }
 
@@ -1223,123 +1366,63 @@ HPtr Elm_Kernel_Json_map1(HPtr closure, HPtr d1) {
     return HPtr::fromBits(makeDecoder2(DEC_MAP1, closure.toBits(), d1.toBits()));
 }
 
-HPtr Elm_Kernel_Json_map2(HPtr closure, HPtr d1, HPtr d2) {
+// Pre-decode every input handle, root the buffer across allocate, then store.
+// `nFields` includes the closure and all decoder slots.
+static uint64_t buildMapDecoder(u16 ctor, u32 nFields, std::initializer_list<uint64_t> args) {
     auto& allocator = Allocator::instance();
-    size_t size = sizeof(Custom) + 3 * sizeof(Unboxable);
+    std::vector<HPointer> roots;
+    roots.reserve(args.size());
+    for (uint64_t a : args) roots.push_back(Export::decode(a));
+
+    size_t size = sizeof(Custom) + nFields * sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* dec = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
-    dec->header.size = 3;
-    dec->ctor = DEC_MAP2;
+    Custom* dec;
+    {
+        StackRootRangeGuard guard(roots.data(), roots.size(), /*hpointer_mask=*/~uint64_t(0));
+        dec = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    }
+    dec->header.size = nFields;
+    dec->ctor = ctor;
     dec->unboxed = 0;
-    dec->values[0].p = Export::decode(closure.toBits());
-    dec->values[1].p = Export::decode(d1.toBits());
-    dec->values[2].p = Export::decode(d2.toBits());
-    return HPtr::fromBits(Export::encode(allocator.wrap(dec)));
+    for (size_t i = 0; i < roots.size(); ++i) {
+        dec->values[i].p = roots[i];
+    }
+    return Export::encode(allocator.wrap(dec));
+}
+
+HPtr Elm_Kernel_Json_map2(HPtr closure, HPtr d1, HPtr d2) {
+    return HPtr::fromBits(buildMapDecoder(DEC_MAP2, 3,
+        { closure.toBits(), d1.toBits(), d2.toBits() }));
 }
 
 HPtr Elm_Kernel_Json_map3(HPtr closure, HPtr d1, HPtr d2, HPtr d3) {
-    auto& allocator = Allocator::instance();
-    size_t size = sizeof(Custom) + 4 * sizeof(Unboxable);
-    size = (size + 7) & ~7;
-    Custom* dec = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
-    dec->header.size = 4;
-    dec->ctor = DEC_MAP3;
-    dec->unboxed = 0;
-    dec->values[0].p = Export::decode(closure.toBits());
-    dec->values[1].p = Export::decode(d1.toBits());
-    dec->values[2].p = Export::decode(d2.toBits());
-    dec->values[3].p = Export::decode(d3.toBits());
-    return HPtr::fromBits(Export::encode(allocator.wrap(dec)));
+    return HPtr::fromBits(buildMapDecoder(DEC_MAP3, 4,
+        { closure.toBits(), d1.toBits(), d2.toBits(), d3.toBits() }));
 }
 
 HPtr Elm_Kernel_Json_map4(HPtr closure, HPtr d1, HPtr d2, HPtr d3, HPtr d4) {
-    auto& allocator = Allocator::instance();
-    size_t size = sizeof(Custom) + 5 * sizeof(Unboxable);
-    size = (size + 7) & ~7;
-    Custom* dec = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
-    dec->header.size = 5;
-    dec->ctor = DEC_MAP4;
-    dec->unboxed = 0;
-    dec->values[0].p = Export::decode(closure.toBits());
-    dec->values[1].p = Export::decode(d1.toBits());
-    dec->values[2].p = Export::decode(d2.toBits());
-    dec->values[3].p = Export::decode(d3.toBits());
-    dec->values[4].p = Export::decode(d4.toBits());
-    return HPtr::fromBits(Export::encode(allocator.wrap(dec)));
+    return HPtr::fromBits(buildMapDecoder(DEC_MAP4, 5,
+        { closure.toBits(), d1.toBits(), d2.toBits(), d3.toBits(), d4.toBits() }));
 }
 
 HPtr Elm_Kernel_Json_map5(HPtr closure, HPtr d1, HPtr d2, HPtr d3, HPtr d4, HPtr d5) {
-    auto& allocator = Allocator::instance();
-    size_t size = sizeof(Custom) + 6 * sizeof(Unboxable);
-    size = (size + 7) & ~7;
-    Custom* dec = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
-    dec->header.size = 6;
-    dec->ctor = DEC_MAP5;
-    dec->unboxed = 0;
-    dec->values[0].p = Export::decode(closure.toBits());
-    dec->values[1].p = Export::decode(d1.toBits());
-    dec->values[2].p = Export::decode(d2.toBits());
-    dec->values[3].p = Export::decode(d3.toBits());
-    dec->values[4].p = Export::decode(d4.toBits());
-    dec->values[5].p = Export::decode(d5.toBits());
-    return HPtr::fromBits(Export::encode(allocator.wrap(dec)));
+    return HPtr::fromBits(buildMapDecoder(DEC_MAP5, 6,
+        { closure.toBits(), d1.toBits(), d2.toBits(), d3.toBits(), d4.toBits(), d5.toBits() }));
 }
 
 HPtr Elm_Kernel_Json_map6(HPtr closure, HPtr d1, HPtr d2, HPtr d3, HPtr d4, HPtr d5, HPtr d6) {
-    auto& allocator = Allocator::instance();
-    size_t size = sizeof(Custom) + 7 * sizeof(Unboxable);
-    size = (size + 7) & ~7;
-    Custom* dec = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
-    dec->header.size = 7;
-    dec->ctor = DEC_MAP6;
-    dec->unboxed = 0;
-    dec->values[0].p = Export::decode(closure.toBits());
-    dec->values[1].p = Export::decode(d1.toBits());
-    dec->values[2].p = Export::decode(d2.toBits());
-    dec->values[3].p = Export::decode(d3.toBits());
-    dec->values[4].p = Export::decode(d4.toBits());
-    dec->values[5].p = Export::decode(d5.toBits());
-    dec->values[6].p = Export::decode(d6.toBits());
-    return HPtr::fromBits(Export::encode(allocator.wrap(dec)));
+    return HPtr::fromBits(buildMapDecoder(DEC_MAP6, 7,
+        { closure.toBits(), d1.toBits(), d2.toBits(), d3.toBits(), d4.toBits(), d5.toBits(), d6.toBits() }));
 }
 
 HPtr Elm_Kernel_Json_map7(HPtr closure, HPtr d1, HPtr d2, HPtr d3, HPtr d4, HPtr d5, HPtr d6, HPtr d7) {
-    auto& allocator = Allocator::instance();
-    size_t size = sizeof(Custom) + 8 * sizeof(Unboxable);
-    size = (size + 7) & ~7;
-    Custom* dec = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
-    dec->header.size = 8;
-    dec->ctor = DEC_MAP7;
-    dec->unboxed = 0;
-    dec->values[0].p = Export::decode(closure.toBits());
-    dec->values[1].p = Export::decode(d1.toBits());
-    dec->values[2].p = Export::decode(d2.toBits());
-    dec->values[3].p = Export::decode(d3.toBits());
-    dec->values[4].p = Export::decode(d4.toBits());
-    dec->values[5].p = Export::decode(d5.toBits());
-    dec->values[6].p = Export::decode(d6.toBits());
-    dec->values[7].p = Export::decode(d7.toBits());
-    return HPtr::fromBits(Export::encode(allocator.wrap(dec)));
+    return HPtr::fromBits(buildMapDecoder(DEC_MAP7, 8,
+        { closure.toBits(), d1.toBits(), d2.toBits(), d3.toBits(), d4.toBits(), d5.toBits(), d6.toBits(), d7.toBits() }));
 }
 
 HPtr Elm_Kernel_Json_map8(HPtr closure, HPtr d1, HPtr d2, HPtr d3, HPtr d4, HPtr d5, HPtr d6, HPtr d7, HPtr d8) {
-    auto& allocator = Allocator::instance();
-    size_t size = sizeof(Custom) + 9 * sizeof(Unboxable);
-    size = (size + 7) & ~7;
-    Custom* dec = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
-    dec->header.size = 9;
-    dec->ctor = DEC_MAP8;
-    dec->unboxed = 0;
-    dec->values[0].p = Export::decode(closure.toBits());
-    dec->values[1].p = Export::decode(d1.toBits());
-    dec->values[2].p = Export::decode(d2.toBits());
-    dec->values[3].p = Export::decode(d3.toBits());
-    dec->values[4].p = Export::decode(d4.toBits());
-    dec->values[5].p = Export::decode(d5.toBits());
-    dec->values[6].p = Export::decode(d6.toBits());
-    dec->values[7].p = Export::decode(d7.toBits());
-    dec->values[8].p = Export::decode(d8.toBits());
-    return HPtr::fromBits(Export::encode(allocator.wrap(dec)));
+    return HPtr::fromBits(buildMapDecoder(DEC_MAP8, 9,
+        { closure.toBits(), d1.toBits(), d2.toBits(), d3.toBits(), d4.toBits(), d5.toBits(), d6.toBits(), d7.toBits(), d8.toBits() }));
 }
 
 //===----------------------------------------------------------------------===//
@@ -1348,33 +1431,31 @@ HPtr Elm_Kernel_Json_map8(HPtr closure, HPtr d1, HPtr d2, HPtr d3, HPtr d4, HPtr
 
 HPtr Elm_Kernel_Json_run(HPtr decoder, HPtr value) {
     // Value is a heap-resident JSON value (CTOR_JSON_* Custom).
-    uint64_t decoderEnc = decoder.toBits();
-    uint64_t valueEnc = value.toBits();
-    void* decPtr = Export::toPtr(decoderEnc);
-    if (!decPtr) {
+    HPointer decoderHP = Export::decode(decoder.toBits());
+    if (decoderHP.constant != 0 ||
+        !Allocator::instance().resolve(decoderHP)) {
         return HPtr::fromBits(makeErr("Invalid decoder"));
     }
-    Custom* dec = static_cast<Custom*>(decPtr);
-
-    return HPtr::fromBits(runDecoder(dec, valueEnc));
+    return HPtr::fromBits(runDecoder(decoderHP, value.toBits()));
 }
 
 HPtr Elm_Kernel_Json_runOnString(HPtr decoder, HPtr jsonString) {
-    uint64_t decoderEnc = decoder.toBits();
     uint64_t jsonStringEnc = jsonString.toBits();
     std::string str = elmStringToStd(jsonStringEnc);
 
     try {
         json jval = json::parse(str);
 
-        // Convert the parsed JSON tree to heap-resident objects.
-        HPointer heapJson = jsonToHeap(jval);
-        // nlohmann::json falls out of scope here - no leak.
+        // Convert the parsed JSON tree to heap-resident objects. `jsonToHeap`
+        // allocates; the decoder handle must be rooted across that.
+        HPointer decoderHP = Export::decode(decoder.toBits());
+        HPointer heapJson;
+        {
+            StackRootGuard guard(&decoderHP);
+            heapJson = jsonToHeap(jval);
+        }
 
-        void* decPtr = Export::toPtr(decoderEnc);
-        Custom* dec = static_cast<Custom*>(decPtr);
-
-        return HPtr::fromBits(runDecoder(dec, Export::encode(heapJson)));
+        return HPtr::fromBits(runDecoder(decoderHP, Export::encode(heapJson)));
     } catch (const json::parse_error& e) {
         return HPtr::fromBits(makeErr(std::string("Problem with the given value:\n\n") + e.what()));
     }
@@ -1420,6 +1501,7 @@ HPtr Elm_Kernel_Json_wrap(HPtr value) {
     // (The heap-string path below also builds an ENC_STRING; both must serialize via
     // elmStringToStd, which handles the Const_EmptyString constant itself.)
     if (h.constant == Const_EmptyString + 1) {
+        // h is an embedded constant: stable across GC, no rooting needed.
         size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
         Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
         enc->header.size = 1;
@@ -1440,30 +1522,37 @@ HPtr Elm_Kernel_Json_wrap(HPtr value) {
     Header* header = static_cast<Header*>(ptr);
 
     if (header->tag == Tag_Int) {
-        ElmInt* i = static_cast<ElmInt*>(ptr);
+        // Snapshot the unboxed int before any allocation may move the source.
+        int64_t intVal = static_cast<ElmInt*>(ptr)->value;
         size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
         Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
         enc->header.size = 1;
         enc->ctor = ENC_INT;
         enc->unboxed = 1;
-        enc->values[0].i = i->value;
+        enc->values[0].i = intVal;
         return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
     }
 
     if (header->tag == Tag_Float) {
-        ElmFloat* f = static_cast<ElmFloat*>(ptr);
+        // Snapshot the unboxed float before any allocation may move the source.
+        double floatVal = static_cast<ElmFloat*>(ptr)->value;
         size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
         Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
         enc->header.size = 1;
         enc->ctor = ENC_FLOAT;
         enc->unboxed = 2;  // kind=Float at slot 0
-        enc->values[0].f = f->value;
+        enc->values[0].f = floatVal;
         return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
     }
 
     if (header->tag == Tag_String) {
+        // Root the string handle across the Custom allocation.
         size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
-        Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+        Custom* enc;
+        {
+            StackRootGuard guard(&h);
+            enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+        }
         enc->header.size = 1;
         enc->ctor = ENC_STRING;
         enc->unboxed = 0;
@@ -1512,23 +1601,36 @@ HPtr Elm_Kernel_Json_emptyObject() {
 
 HPtr Elm_Kernel_Json_addEntry(HPtr func, HPtr entry, HPtr array) {
     auto& allocator = Allocator::instance();
-    uint64_t funcEnc = func.toBits();
-    uint64_t entryEnc = entry.toBits();
-    uint64_t arrayEnc = array.toBits();
 
-    // Call the encoder function on the entry: encoded = func(entry)
-    uint64_t args[] = { entryEnc };
-    uint64_t encoded = eco_apply_closure(HPtr::fromBits(funcEnc), args, 1).toBits();
+    // Call the encoder function on the entry: encoded = func(entry).
+    // The closure call is a GC point; re-resolve everything afterwards through
+    // rooted handles.
+    HPointer arrayHP = Export::decode(array.toBits());
+    HPointer encodedHP;
+    {
+        StackRootGuard guard(&arrayHP);
+        uint64_t args[] = { entry.toBits() };
+        uint64_t encoded = eco_apply_closure(func, args, 1).toBits();
+        encodedHP = Export::decode(encoded);
+    }
 
-    // Re-resolve array after potential GC from the closure call
-    void* arrPtr = Export::toPtr(arrayEnc);
-    Custom* arr = static_cast<Custom*>(arrPtr);
-
-    HPointer newList = cons(boxed(Export::decode(encoded)), arr->values[0].p, true);
+    // Build the new cons cell. `cons` allocates; root the inputs across it.
+    HPointer newList;
+    {
+        StackRootGuard guard(&arrayHP, &encodedHP);
+        Custom* arr = static_cast<Custom*>(allocator.resolve(arrayHP));
+        HPointer tailHP = arr->values[0].p;
+        StackRootGuard guard2(&tailHP);
+        newList = cons(boxed(encodedHP), tailHP, true);
+    }
 
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    Custom* enc;
+    {
+        StackRootGuard guard(&newList);
+        enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    }
     enc->header.size = 1;
     enc->ctor = ENC_ARRAY;
     enc->unboxed = 0;
@@ -1539,23 +1641,38 @@ HPtr Elm_Kernel_Json_addEntry(HPtr func, HPtr entry, HPtr array) {
 
 HPtr Elm_Kernel_Json_addField(HPtr key, HPtr value, HPtr object) {
     auto& allocator = Allocator::instance();
-    uint64_t keyEnc = key.toBits();
-    uint64_t valueEnc = value.toBits();
-    uint64_t objectEnc = object.toBits();
+    HPointer keyHP    = Export::decode(key.toBits());
+    HPointer valueHP  = Export::decode(value.toBits());
+    HPointer objectHP = Export::decode(object.toBits());
 
-    void* objPtr = Export::toPtr(objectEnc);
-    Custom* obj = static_cast<Custom*>(objPtr);
+    // Build (key, value) Tuple2, rooting the boxed inputs across the allocate.
+    HPointer tupleHP;
+    {
+        StackRootGuard guard(&keyHP, &valueHP, &objectHP);
+        Tuple2* tuple = static_cast<Tuple2*>(allocator.allocate(sizeof(Tuple2), Tag_Tuple2));
+        tuple->header.unboxed = 0;
+        tuple->a.p = keyHP;
+        tuple->b.p = valueHP;
+        tupleHP = allocator.wrap(tuple);
+    }
 
-    Tuple2* tuple = static_cast<Tuple2*>(allocator.allocate(sizeof(Tuple2), Tag_Tuple2));
-    tuple->header.unboxed = 0;
-    tuple->a.p = Export::decode(keyEnc);
-    tuple->b.p = Export::decode(valueEnc);
-
-    HPointer newList = cons(boxed(allocator.wrap(tuple)), obj->values[0].p, true);
+    // cons (the new tuple, prior list head) and root across the call.
+    HPointer newList;
+    {
+        StackRootGuard guard(&tupleHP, &objectHP);
+        Custom* obj = static_cast<Custom*>(allocator.resolve(objectHP));
+        HPointer tailHP = obj->values[0].p;
+        StackRootGuard guard2(&tailHP);
+        newList = cons(boxed(tupleHP), tailHP, true);
+    }
 
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    Custom* enc;
+    {
+        StackRootGuard guard(&newList);
+        enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    }
     enc->header.size = 1;
     enc->ctor = ENC_OBJECT;
     enc->unboxed = 0;

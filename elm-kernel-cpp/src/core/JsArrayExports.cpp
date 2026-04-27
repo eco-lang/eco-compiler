@@ -304,6 +304,8 @@ HPtr Elm_Kernel_JsArray_initialize(HPtr size_val, HPtr offset_val, HPtr closure)
     HPointer arr = alloc::allocArray(static_cast<size_t>(size));
     auto& allocator = Allocator::instance();
 
+    // Root `arr` so the GC keeps it valid across each closure call.
+    StackRootGuard arrRoot(&arr);
     for (int64_t i = 0; i < size; i++) {
         uint64_t value = callUnaryInitClosure(closure, offset + i);
         void* arrObj = allocator.resolve(arr);
@@ -319,20 +321,27 @@ HPtr Elm_Kernel_JsArray_initializeFromList(HPtr max_val, HPtr list) {
 }
 
 HPtr Elm_Kernel_JsArray_map(HPtr closure, HPtr array) {
-    uint64_t array_bits = array.toBits();
-    void* srcPtr = Export::toPtr(array_bits);
-    ElmArray* src = static_cast<ElmArray*>(srcPtr);
-    uint32_t len = src->length;
-    uint32_t srcKind = src->header.unboxed & 0x3;
-
-    HPointer arr = alloc::allocArray(len);
     auto& allocator = Allocator::instance();
+    HPointer srcHP = Export::decode(array.toBits());
 
+    uint32_t len;
+    uint32_t srcKind;
+    {
+        ElmArray* src0 = static_cast<ElmArray*>(allocator.resolve(srcHP));
+        len = src0->length;
+        srcKind = src0->header.unboxed & 0x3;
+    }
+
+    HPointer arr;
+    {
+        StackRootGuard guard(&srcHP);
+        arr = alloc::allocArray(len);
+    }
+
+    // Root both source and destination across every closure call.
+    StackRootGuard loopRoots(&srcHP, &arr);
     for (uint32_t i = 0; i < len; i++) {
-        // Re-resolve source after potential GC from callback
-        srcPtr = Export::toPtr(array_bits);
-        src = static_cast<ElmArray*>(srcPtr);
-        // For unboxed arrays, box the element using the array's kind.
+        ElmArray* src = static_cast<ElmArray*>(allocator.resolve(srcHP));
         uint64_t elem;
         if (srcKind != 0) {
             elem = Export::encode(alloc::boxElement(src->elements[i], srcKind));
@@ -350,19 +359,26 @@ HPtr Elm_Kernel_JsArray_map(HPtr closure, HPtr array) {
 HPtr Elm_Kernel_JsArray_indexedMap(HPtr closure, HPtr offset_val, HPtr array) {
     int64_t offset = unboxInt(offset_val);
 
-    uint64_t array_bits = array.toBits();
-    void* srcPtr = Export::toPtr(array_bits);
-    ElmArray* src = static_cast<ElmArray*>(srcPtr);
-    uint32_t len = src->length;
-    uint32_t srcKind = src->header.unboxed & 0x3;
-
-    HPointer arr = alloc::allocArray(len);
     auto& allocator = Allocator::instance();
+    HPointer srcHP = Export::decode(array.toBits());
 
+    uint32_t len;
+    uint32_t srcKind;
+    {
+        ElmArray* src0 = static_cast<ElmArray*>(allocator.resolve(srcHP));
+        len = src0->length;
+        srcKind = src0->header.unboxed & 0x3;
+    }
+
+    HPointer arr;
+    {
+        StackRootGuard guard(&srcHP);
+        arr = alloc::allocArray(len);
+    }
+
+    StackRootGuard loopRoots(&srcHP, &arr);
     for (uint32_t i = 0; i < len; i++) {
-        // Re-resolve source after potential GC
-        srcPtr = Export::toPtr(array_bits);
-        src = static_cast<ElmArray*>(srcPtr);
+        ElmArray* src = static_cast<ElmArray*>(allocator.resolve(srcHP));
         uint64_t elem;
         if (srcKind != 0) {
             elem = Export::encode(alloc::boxElement(src->elements[i], srcKind));
@@ -378,50 +394,60 @@ HPtr Elm_Kernel_JsArray_indexedMap(HPtr closure, HPtr offset_val, HPtr array) {
 }
 
 HPtr Elm_Kernel_JsArray_foldl(HPtr closure, HPtr acc, HPtr array) {
-    uint64_t array_bits = array.toBits();
-    void* srcPtr = Export::toPtr(array_bits);
-    ElmArray* src = static_cast<ElmArray*>(srcPtr);
-    uint32_t len = src->length;
-    uint32_t srcKind = src->header.unboxed & 0x3;
+    auto& allocator = Allocator::instance();
+    HPointer srcHP = Export::decode(array.toBits());
+    HPointer accHP = Export::decode(acc.toBits());
 
-    uint64_t accumulator = acc.toBits();
+    uint32_t len;
+    uint32_t srcKind;
+    {
+        ElmArray* src0 = static_cast<ElmArray*>(allocator.resolve(srcHP));
+        len = src0->length;
+        srcKind = src0->header.unboxed & 0x3;
+    }
+
+    StackRootGuard loopRoots(&srcHP, &accHP);
     for (uint32_t i = 0; i < len; i++) {
-        // Re-resolve source after potential GC from callback
-        srcPtr = Export::toPtr(array_bits);
-        src = static_cast<ElmArray*>(srcPtr);
+        ElmArray* src = static_cast<ElmArray*>(allocator.resolve(srcHP));
         uint64_t elem;
         if (srcKind != 0) {
             elem = Export::encode(alloc::boxElement(src->elements[i], srcKind));
         } else {
             elem = Export::encode(src->elements[i].p);
         }
-        accumulator = callBinaryFoldClosure(closure, elem, accumulator);
+        uint64_t newAcc = callBinaryFoldClosure(closure, elem, Export::encode(accHP));
+        accHP = Export::decode(newAcc);
     }
-    return HPtr::fromBits(accumulator);
+    return HPtr::fromBits(Export::encode(accHP));
 }
 
 HPtr Elm_Kernel_JsArray_foldr(HPtr closure, HPtr acc, HPtr array) {
-    uint64_t array_bits = array.toBits();
-    void* srcPtr = Export::toPtr(array_bits);
-    ElmArray* src = static_cast<ElmArray*>(srcPtr);
-    uint32_t len = src->length;
-    uint32_t srcKind = src->header.unboxed & 0x3;
+    auto& allocator = Allocator::instance();
+    HPointer srcHP = Export::decode(array.toBits());
+    HPointer accHP = Export::decode(acc.toBits());
 
-    uint64_t accumulator = acc.toBits();
+    uint32_t len;
+    uint32_t srcKind;
+    {
+        ElmArray* src0 = static_cast<ElmArray*>(allocator.resolve(srcHP));
+        len = src0->length;
+        srcKind = src0->header.unboxed & 0x3;
+    }
+
+    StackRootGuard loopRoots(&srcHP, &accHP);
     for (uint32_t i = len; i > 0; i--) {
         uint32_t idx = i - 1;
-        // Re-resolve source after potential GC from callback
-        srcPtr = Export::toPtr(array_bits);
-        src = static_cast<ElmArray*>(srcPtr);
+        ElmArray* src = static_cast<ElmArray*>(allocator.resolve(srcHP));
         uint64_t elem;
         if (srcKind != 0) {
             elem = Export::encode(alloc::boxElement(src->elements[idx], srcKind));
         } else {
             elem = Export::encode(src->elements[idx].p);
         }
-        accumulator = callBinaryFoldClosure(closure, elem, accumulator);
+        uint64_t newAcc = callBinaryFoldClosure(closure, elem, Export::encode(accHP));
+        accHP = Export::decode(newAcc);
     }
-    return HPtr::fromBits(accumulator);
+    return HPtr::fromBits(Export::encode(accHP));
 }
 
 } // extern "C"

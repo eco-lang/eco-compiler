@@ -361,26 +361,31 @@ int64_t Elm_Kernel_Bytes_getStringWidth(HPtr str) {
 }
 
 HPtr Elm_Kernel_Bytes_encode(HPtr encoderVal) {
-    uint64_t encoderBits = encoderVal.toBits();
     auto& allocator = Allocator::instance();
-    HPointer h = Export::decode(encoderBits);
-    void* ptr = allocator.resolve(h);
-    Custom* encoder = static_cast<Custom*>(ptr);
+    HPointer h = Export::decode(encoderVal.toBits());
 
-    size_t totalSize = encoderSize(encoder);
+    // Compute size before any allocation: encoderSize doesn't allocate.
+    size_t totalSize = encoderSize(static_cast<Custom*>(allocator.resolve(h)));
     size_t allocSize = sizeof(ByteBuffer) + totalSize;
     allocSize = (allocSize + 7) & ~7;
-    ByteBuffer* result = static_cast<ByteBuffer*>(
-        allocator.allocate(allocSize, Tag_ByteBuffer));
+
+    // Root the encoder handle so the GC updates h in place if it fires.
+    ByteBuffer* result;
+    {
+        StackRootGuard guard(&h);
+        result = static_cast<ByteBuffer*>(
+            allocator.allocate(allocSize, Tag_ByteBuffer));
+    }
     result->header.size = static_cast<u32>(totalSize);
 
+    // Re-resolve the encoder via the (post-GC) handle before walking it.
+    Custom* encoder = static_cast<Custom*>(allocator.resolve(h));
     size_t offset = 0;
     writeEncoder(encoder, result->bytes, offset);
     return HPtr::fromBits(Export::encode(allocator.wrap(result)));
 }
 
 HPtr Elm_Kernel_Bytes_decode(HPtr decoder, HPtr bytes) {
-    uint64_t decoderBits = decoder.toBits();
     uint64_t bytesBits = bytes.toBits();
     auto& allocator = Allocator::instance();
 
@@ -390,17 +395,23 @@ HPtr Elm_Kernel_Bytes_decode(HPtr decoder, HPtr bytes) {
     uint64_t args[2] = { bytesBits, eco_alloc_int(0).toBits() };
     uint64_t result = eco_closure_call_saturated(decoder, args, 2, /*layout=*/nullptr).toBits();
 
-    // Result is a Tuple2(new_offset: i64, decoded_value).
+    // Result is a Tuple2(new_offset: i64, decoded_value). Root the handle so
+    // the Tuple2 raw pointer can be re-resolved post-allocation if GC moves it.
     HPointer resultHP = Export::decode(result);
-    void* resultPtr = allocator.resolve(resultHP);
-    Tuple2* tuple = static_cast<Tuple2*>(resultPtr);
 
     // Construct Just(decoded_value) = Custom tag=0, 1 field.
     size_t justSize = sizeof(Custom) + sizeof(Unboxable);
     justSize = (justSize + 7) & ~7;
-    Custom* just = static_cast<Custom*>(allocator.allocate(justSize, Tag_Custom));
+    Custom* just;
+    {
+        StackRootGuard guard(&resultHP);
+        just = static_cast<Custom*>(allocator.allocate(justSize, Tag_Custom));
+    }
     just->header.size = 1;
     just->ctor = 0;  // Just
+
+    // Re-resolve the tuple via the rooted (and possibly updated) handle.
+    Tuple2* tuple = static_cast<Tuple2*>(allocator.resolve(resultHP));
 
     // Copy decoded value from Tuple2 field b, preserving kind.
     uint32_t bKind = Elm::tupleFieldKind(tuple->header.unboxed, 1);
@@ -533,12 +544,21 @@ HPtr Elm_Kernel_Bytes_read_f64(HPtr isLE, HPtr bytes, int64_t offset) {
 
 HPtr Elm_Kernel_Bytes_read_bytes(int64_t length, HPtr bytes, int64_t offset) {
     auto& allocator = Allocator::instance();
-    ByteBuffer* src = resolveByteBuffer(bytes.toBits());
+
+    // Root the source handle so it survives the allocation, then re-resolve
+    // the raw pointer afterwards (allocate may compact / move the source).
+    HPointer srcHP = Export::decode(bytes.toBits());
 
     size_t allocSize = sizeof(ByteBuffer) + length;
     allocSize = (allocSize + 7) & ~7;
-    ByteBuffer* slice = static_cast<ByteBuffer*>(allocator.allocate(allocSize, Tag_ByteBuffer));
+    ByteBuffer* slice;
+    {
+        StackRootGuard guard(&srcHP);
+        slice = static_cast<ByteBuffer*>(allocator.allocate(allocSize, Tag_ByteBuffer));
+    }
     slice->header.size = static_cast<u32>(length);
+
+    ByteBuffer* src = static_cast<ByteBuffer*>(allocator.resolve(srcHP));
     std::memcpy(slice->bytes, src->bytes + offset, length);
 
     return HPtr::fromBits(makeTuple2_ip(offset + length, allocator.wrap(slice)));
@@ -556,7 +576,11 @@ HPtr Elm_Kernel_Bytes_read_string(int64_t length, HPtr bytes, int64_t offset) {
         return HPtr::fromBits(makeTuple2_ip(offset, alloc::emptyString()));
     }
 
-    ByteBuffer* bb = resolveByteBuffer(bytes.toBits());
+    // Root the source-bytes handle. The width-counting pass below reads from
+    // the buffer before any allocation, so a raw pointer is safe there; the
+    // post-allocation copy must re-resolve through the rooted handle.
+    HPointer srcHP = Export::decode(bytes.toBits());
+    ByteBuffer* bb = static_cast<ByteBuffer*>(allocator.resolve(srcHP));
     const u8* src = bb->bytes + offset;
 
     // Count UTF-16 code units needed for the UTF-8 input.
@@ -579,11 +603,20 @@ HPtr Elm_Kernel_Bytes_read_string(int64_t length, HPtr bytes, int64_t offset) {
         }
     }
 
-    // Allocate ElmString
+    // Allocate ElmString. GC during this allocate may relocate the source
+    // ByteBuffer; the StackRootGuard keeps srcHP up to date so the post-alloc
+    // re-resolve below produces a valid raw pointer for the conversion loop.
     size_t strAllocSize = sizeof(ElmString) + utf16Count * sizeof(u16);
     strAllocSize = (strAllocSize + 7) & ~7;
-    ElmString* str = static_cast<ElmString*>(allocator.allocate(strAllocSize, Tag_String));
+    ElmString* str;
+    {
+        StackRootGuard guard(&srcHP);
+        str = static_cast<ElmString*>(allocator.allocate(strAllocSize, Tag_String));
+    }
     str->header.size = static_cast<u32>(utf16Count);
+
+    bb = static_cast<ByteBuffer*>(allocator.resolve(srcHP));
+    src = bb->bytes + offset;
 
     // Convert UTF-8 to UTF-16
     size_t srcPos = 0, dstPos = 0;
@@ -643,28 +676,39 @@ static uint64_t makeEncoder1(u16 tag, int64_t value) {
 // Field 1: value (unboxed int or float)
 static uint64_t makeEncoder2_pi(u16 tag, uint64_t endianness, int64_t value) {
     auto& allocator = Allocator::instance();
+    HPointer endHP = Export::decode(endianness);
     size_t size = sizeof(Custom) + 2 * sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    Custom* enc;
+    {
+        // Root the endianness handle so the GC keeps it valid across allocate.
+        StackRootGuard guard(&endHP);
+        enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    }
     enc->header.size = 2;
     enc->ctor = tag;
     // 2-bit kinds: slot 0 boxed (00) + slot 1 Int (01) = 0b0100 = 4
     enc->unboxed = 4;
-    enc->values[0].p = Export::decode(endianness);
+    enc->values[0].p = endHP;
     enc->values[1].i = value;
     return Export::encode(allocator.wrap(enc));
 }
 
 static uint64_t makeEncoder2_pf(u16 tag, uint64_t endianness, double value) {
     auto& allocator = Allocator::instance();
+    HPointer endHP = Export::decode(endianness);
     size_t size = sizeof(Custom) + 2 * sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    Custom* enc;
+    {
+        StackRootGuard guard(&endHP);
+        enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    }
     enc->header.size = 2;
     enc->ctor = tag;
     // 2-bit kinds: slot 0 boxed (00) + slot 1 Float (10) = 0b1000 = 8
     enc->unboxed = 8;
-    enc->values[0].p = Export::decode(endianness);
+    enc->values[0].p = endHP;
     enc->values[1].f = value;
     return Export::encode(allocator.wrap(enc));
 }
@@ -672,13 +716,18 @@ static uint64_t makeEncoder2_pf(u16 tag, uint64_t endianness, double value) {
 // Helper to create a 1-field encoder with boxed HPointer (for bytes, string)
 static uint64_t makeEncoder1_p(u16 tag, uint64_t ptr) {
     auto& allocator = Allocator::instance();
+    HPointer payload = Export::decode(ptr);
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    Custom* enc;
+    {
+        StackRootGuard guard(&payload);
+        enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    }
     enc->header.size = 1;
     enc->ctor = tag;
     enc->unboxed = 0;  // value is boxed
-    enc->values[0].p = Export::decode(ptr);
+    enc->values[0].p = payload;
     return Export::encode(allocator.wrap(enc));
 }
 
@@ -686,30 +735,40 @@ static uint64_t makeEncoder1_p(u16 tag, uint64_t ptr) {
 static uint64_t makeEncoderUtf8(HPtr str) {
     auto& allocator = Allocator::instance();
 
-    // Calculate UTF-8 byte count
+    // Calculate UTF-8 byte count (no allocation inside).
     int64_t utf8Size = Elm_Kernel_Bytes_getStringWidth(str);
 
+    HPointer strHP = Export::decode(str.toBits());
     size_t size = sizeof(Custom) + 2 * sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    Custom* enc;
+    {
+        StackRootGuard guard(&strHP);
+        enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    }
     enc->header.size = 2;
     enc->ctor = ENC_UTF8;
     enc->unboxed = 1;  // field 0 unboxed (size), field 1 boxed (string)
     enc->values[0].i = utf8Size;
-    enc->values[1].p = Export::decode(str.toBits());
+    enc->values[1].p = strHP;
     return Export::encode(allocator.wrap(enc));
 }
 
 // Helper to create BYTES encoder
 static uint64_t makeEncoderBytes(uint64_t bytes) {
     auto& allocator = Allocator::instance();
+    HPointer payload = Export::decode(bytes);
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    Custom* enc;
+    {
+        StackRootGuard guard(&payload);
+        enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    }
     enc->header.size = 1;
     enc->ctor = ENC_BYTES;
     enc->unboxed = 0;
-    enc->values[0].p = Export::decode(bytes);
+    enc->values[0].p = payload;
     return Export::encode(allocator.wrap(enc));
 }
 
