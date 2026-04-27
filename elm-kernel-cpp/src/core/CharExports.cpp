@@ -14,29 +14,38 @@ uint16_t Elm_Kernel_Char_fromCode(int64_t code) {
     return static_cast<uint16_t>(clamped);
 }
 
-int64_t Elm_Kernel_Char_toCode(uint16_t c) {
-    // Zero-extend to int64_t
-    return static_cast<int64_t>(c);
+// ABI note (x86-64 SysV): MLIR-emitted callers wrap kernel calls in LLVM
+// `gc.statepoint` intrinsics. The statepoint represents the call's element
+// type *without* per-arg attributes (no `zeroext`), so LLVM CodeGen emits a
+// narrow `mov %ax, %di` that leaves the upper bits of %rdi with leftover
+// state. If the C++ callees declared the parameter as `uint16_t`, the
+// compiler would trust the SysV zero-extension contract and read only %edi
+// — surfacing the leaked bits as the high half of the int64_t return.
+//
+// Receiving the parameter as `uint64_t` forces a full-register read; we
+// then mask down to the canonical 16-bit Char value. The wider type also
+// keeps the C++ compiler from optimising the mask away.
+int64_t Elm_Kernel_Char_toCode(uint64_t c_raw) {
+    return static_cast<int64_t>(c_raw & 0xFFFFu);
 }
 
-uint16_t Elm_Kernel_Char_toLower(uint16_t c) {
-    char32_t result = Char::toLower(static_cast<char32_t>(c));
-    // Result should stay in BMP; truncate just in case
+uint16_t Elm_Kernel_Char_toLower(uint64_t c_raw) {
+    char32_t result = Char::toLower(static_cast<char32_t>(c_raw & 0xFFFFu));
     return static_cast<uint16_t>(result & 0xFFFF);
 }
 
-uint16_t Elm_Kernel_Char_toUpper(uint16_t c) {
-    char32_t result = Char::toUpper(static_cast<char32_t>(c));
+uint16_t Elm_Kernel_Char_toUpper(uint64_t c_raw) {
+    char32_t result = Char::toUpper(static_cast<char32_t>(c_raw & 0xFFFFu));
     return static_cast<uint16_t>(result & 0xFFFF);
 }
 
-uint16_t Elm_Kernel_Char_toLocaleLower(uint16_t c) {
-    char32_t result = Char::toLocaleLower(static_cast<char32_t>(c));
+uint16_t Elm_Kernel_Char_toLocaleLower(uint64_t c_raw) {
+    char32_t result = Char::toLocaleLower(static_cast<char32_t>(c_raw & 0xFFFFu));
     return static_cast<uint16_t>(result & 0xFFFF);
 }
 
-uint16_t Elm_Kernel_Char_toLocaleUpper(uint16_t c) {
-    char32_t result = Char::toLocaleUpper(static_cast<char32_t>(c));
+uint16_t Elm_Kernel_Char_toLocaleUpper(uint64_t c_raw) {
+    char32_t result = Char::toLocaleUpper(static_cast<char32_t>(c_raw & 0xFFFFu));
     return static_cast<uint16_t>(result & 0xFFFF);
 }
 

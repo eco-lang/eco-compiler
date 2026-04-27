@@ -72,11 +72,15 @@ uint64_t Elm_Kernel_Bitwise_shiftRightZfBy(int64_t offset, int64_t a);
 //===----------------------------------------------------------------------===//
 
 uint16_t Elm_Kernel_Char_fromCode(int64_t code);
-int64_t Elm_Kernel_Char_toCode(uint16_t c);
-uint16_t Elm_Kernel_Char_toLower(uint16_t c);
-uint16_t Elm_Kernel_Char_toUpper(uint16_t c);
-uint16_t Elm_Kernel_Char_toLocaleLower(uint16_t c);
-uint16_t Elm_Kernel_Char_toLocaleUpper(uint16_t c);
+// Char ABI: parameters declared as uint64_t (instead of uint16_t) so the
+// C++ side reads the entire register and masks. See CharExports.cpp for the
+// rationale (SysV i16-zero-extension contract is not honoured through LLVM
+// gc.statepoint — the upper bits of %rdi can leak from the caller).
+int64_t Elm_Kernel_Char_toCode(uint64_t c_raw);
+uint16_t Elm_Kernel_Char_toLower(uint64_t c_raw);
+uint16_t Elm_Kernel_Char_toUpper(uint64_t c_raw);
+uint16_t Elm_Kernel_Char_toLocaleLower(uint64_t c_raw);
+uint16_t Elm_Kernel_Char_toLocaleUpper(uint64_t c_raw);
 
 //===----------------------------------------------------------------------===//
 // String Module (elm/core)
@@ -85,7 +89,8 @@ uint16_t Elm_Kernel_Char_toLocaleUpper(uint16_t c);
 int64_t Elm_Kernel_String_length(HPtr str);
 HPtr Elm_Kernel_String_append(HPtr a, HPtr b);
 HPtr Elm_Kernel_String_join(HPtr sep, HPtr stringList);
-HPtr Elm_Kernel_String_cons(uint16_t c, HPtr str);
+// First arg widened to uint64_t — same rationale as Char_toCode.
+HPtr Elm_Kernel_String_cons(uint64_t c_raw, HPtr str);
 HPtr Elm_Kernel_String_uncons(HPtr str);
 HPtr Elm_Kernel_String_fromList(HPtr chars);
 HPtr Elm_Kernel_String_slice(int64_t start, int64_t end, HPtr str);

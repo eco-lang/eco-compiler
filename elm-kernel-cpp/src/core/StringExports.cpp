@@ -36,7 +36,9 @@ HPtr Elm_Kernel_String_join(HPtr sep, HPtr stringList) {
     return HPtr::fromBits(Export::encode(result));
 }
 
-HPtr Elm_Kernel_String_cons(uint16_t c, HPtr str) {
+// See CharExports.cpp for why this takes uint64_t instead of uint16_t.
+HPtr Elm_Kernel_String_cons(uint64_t c_raw, HPtr str) {
+    uint16_t c = static_cast<uint16_t>(c_raw & 0xFFFFu);
     HPointer result = String::cons(c, Export::toPtr(str.toBits()));
     return HPtr::fromBits(Export::encode(result));
 }
