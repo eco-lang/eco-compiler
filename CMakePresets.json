@@ -14,8 +14,7 @@
         "CMAKE_SHARED_LINKER_FLAGS_INIT": "-fuse-ld=lld",
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CMAKE_C_FLAGS_RELWITHDEBINFO": "-O2 -g -UNDEBUG",
-        "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O2 -g -UNDEBUG",
-        "ECO_GC_DEBUG": "ON"
+        "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O2 -g -UNDEBUG"
       }
     },
     {
