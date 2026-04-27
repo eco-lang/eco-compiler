@@ -67,6 +67,11 @@ in the eco dialect and standard dialects (arith, scf, func).
 
 @docs ecoCaseMany, ecoCaseStringMany, ecoYieldMany, scfYieldMany
 
+
+# PAP Group Creation
+
+@docs ecoPapCreateGroup, GroupSibling
+
 -}
 
 import Compiler.Generate.MLIR.Context as Ctx
