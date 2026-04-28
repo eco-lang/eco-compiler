@@ -48,11 +48,16 @@ constexpr size_t ALLOC_BUFFER_SIZE = 128 * 1024;  // 128 KB default AllocBuffer.
 
 // Nursery sizing (in blocks, same size as AllocBuffer).
 // Block count must be even (split into from-space and to-space).
-constexpr size_t NURSERY_BLOCK_COUNT = 32;  // 32 blocks = 4 MB total (16 per semi-space).
+constexpr size_t NURSERY_BLOCK_COUNT = 64;  // 32 blocks = 4 MB total (16 per semi-space).
 
 // Promotion and GC triggers.
 constexpr u32 PROMOTION_AGE = 2;                            // Promote after surviving 2 minor GCs.
 constexpr float NURSERY_GC_THRESHOLD = 0.9f;                // Trigger minor GC at 90% full.
+
+// Adaptive nursery growth: after a minor GC, request more blocks if to-space
+// occupancy exceeds this fraction. Lower values grow the nursery more
+// aggressively (cheaper minor GCs, larger working set).
+constexpr float NURSERY_GROWTH_THRESHOLD = 0.1f;
 
 // Returns the header of a heap object.
 inline Header *getHeader(void *obj) { return static_cast<Header *>(obj); }
@@ -172,6 +177,10 @@ struct HeapConfig {
     // Promotion & GC triggers.
     u32 promotion_age = PROMOTION_AGE;
     float nursery_gc_threshold = NURSERY_GC_THRESHOLD;
+
+    // After a minor GC, NurserySpace requests additional blocks when the
+    // to-space occupancy after evacuation exceeds this fraction.
+    float nursery_growth_threshold = NURSERY_GROWTH_THRESHOLD;
 
     // Major GC policy (old-gen).
     //  * initiating_occupancy: fraction of old-gen cap that, once crossed by
@@ -334,6 +343,12 @@ struct HeapConfig {
         if (nursery_gc_threshold <= 0.0f || nursery_gc_threshold > 1.0f) {
             throw std::invalid_argument(
                 "nursery_gc_threshold must be in (0.0, 1.0]");
+        }
+
+        if (nursery_growth_threshold <= 0.0f ||
+            nursery_growth_threshold >= 1.0f) {
+            throw std::invalid_argument(
+                "nursery_growth_threshold must be in (0.0, 1.0)");
         }
 
         if (major_gc_initiating_occupancy <= 0.0f ||

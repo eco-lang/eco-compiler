@@ -12,6 +12,7 @@
  */
 
 #include "Allocator.hpp"
+#include "HeapConfigJson.hpp"
 #include "ThreadLocalHeap.hpp"
 #include <cassert>
 #include <cstdio>
@@ -127,9 +128,12 @@ void Allocator::initialize(const HeapConfig& config) {
         return;
     }
 
-    // Validate configuration before proceeding.
-    config.validate();
+    // Apply JSON overrides from $ECO_HEAP_CONFIG, if set, on top of the
+    // caller-supplied defaults. Lets us tweak heap parameters without a
+    // rebuild — see HeapConfigJson.hpp for the recognised keys.
     config_ = config;
+    applyHeapConfigFromEnv(config_);
+    config_.validate();
 
     heap_reserved = config_.max_heap_size;
 

@@ -304,6 +304,7 @@ add_llvm_executable(ecoc
     ../allocator/StackUnwind.cpp
     ../allocator/RuntimeExports.cpp
     ../allocator/Allocator.cpp
+    ../allocator/HeapConfigJson.cpp
     ../allocator/NurserySpace.cpp
     ../allocator/OldGenSpace.cpp
     ../allocator/RootSet.cpp
@@ -389,6 +390,7 @@ add_mlir_library(EcoRunner
     ../allocator/StackUnwind.cpp
     ../allocator/RuntimeExports.cpp
     ../allocator/Allocator.cpp
+    ../allocator/HeapConfigJson.cpp
     ../allocator/NurserySpace.cpp
     ../allocator/OldGenSpace.cpp
     ../allocator/RootSet.cpp
@@ -468,6 +470,7 @@ target_link_libraries(EcoRunner PUBLIC eco::llvm_libunwind)
 add_library(EcoRuntimeStatic STATIC
     ../allocator/RuntimeExports.cpp
     ../allocator/Allocator.cpp
+    ../allocator/HeapConfigJson.cpp
     ../allocator/NurserySpace.cpp
     ../allocator/OldGenSpace.cpp
     ../allocator/RootSet.cpp

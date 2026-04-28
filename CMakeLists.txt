@@ -27,6 +27,7 @@ option(ECO_GC_DEBUG_COMP "Enable compile-time GC diagnostics (root dump during M
 add_executable(ecor
         runtime/src/main.cpp
         runtime/src/allocator/RootSet.cpp
+        runtime/src/allocator/HeapConfigJson.cpp
         runtime/src/allocator/OldGenSpace.cpp
         runtime/src/allocator/NurserySpace.cpp
         runtime/src/allocator/Allocator.cpp

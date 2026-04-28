@@ -53,7 +53,7 @@ NurserySpace::NurserySpace() :
     current_from_idx_(0), alloc_ptr_(nullptr), alloc_end_(nullptr),
     current_to_idx_(0), copy_ptr_(nullptr), copy_end_(nullptr),
     scan_block_idx_(0), scan_ptr_(nullptr),
-    growth_threshold_(0.75f), thread_heap_(nullptr) {
+    growth_threshold_(NURSERY_GROWTH_THRESHOLD), thread_heap_(nullptr) {
     // Initialization happens in initialize() method.
 }
 
@@ -78,7 +78,7 @@ void NurserySpace::initialize(Allocator* allocator, const HeapConfig* config) {
     allocator_ = allocator;
     thread_heap_ = nullptr;  // Legacy single-threaded mode (not using ThreadLocalHeap).
     block_size_ = config->alloc_buffer_size;
-    growth_threshold_ = 0.75f;  // Grow when to-space exceeds 75% full after GC.
+    growth_threshold_ = config->nursery_growth_threshold;
 
     size_t blocks_per_space = config->nursery_block_count / 2;
 
@@ -116,7 +116,7 @@ void NurserySpace::initialize(ThreadLocalHeap* heap, const HeapConfig* config) {
     thread_heap_ = heap;
     allocator_ = heap->getParent();  // Reference to Allocator for block acquisition during growth.
     block_size_ = config->alloc_buffer_size;
-    growth_threshold_ = 0.75f;  // Grow when to-space exceeds 75% full after GC.
+    growth_threshold_ = config->nursery_growth_threshold;
 
     size_t blocks_per_space = config->nursery_block_count / 2;
 

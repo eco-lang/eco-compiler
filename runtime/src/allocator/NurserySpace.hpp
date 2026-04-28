@@ -82,8 +82,10 @@ private:
     // Unused entry value = corresponding block_end (= block_start + block_size_).
     std::vector<char*> block_end_of_objects_;
 
-    // Growth tracking for adaptive nursery sizing.
-    float growth_threshold_;          // Request more blocks when to-space exceeds this occupancy.
+    // Growth tracking for adaptive nursery sizing. Mirrors
+    // HeapConfig::nursery_growth_threshold; cached in initialize() so the
+    // hot post-minor-GC growth check doesn't dereference config_ each call.
+    float growth_threshold_;
 
     RootSet root_set;                 // Root set for this nursery.
 
