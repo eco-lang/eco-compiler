@@ -21,6 +21,7 @@
 #include "allocator/OldGenCapacityTest.hpp"
 #include "allocator/OldGenHeapBaseSentinelTest.hpp"
 #include "allocator/OldGenLazySweepTest.hpp"
+#include "allocator/OldGenSweepOnDemandTest.hpp"
 #include "allocator/HeapHelpersTest.hpp"
 #include "allocator/StringOpsTest.hpp"
 #include "allocator/ListOpsTest.hpp"
@@ -604,6 +605,11 @@ int main(int argc, char* argv[]) {
     oldGenTests.add(testShrinkUsesMarkLiveBytes);
     oldGenTests.add(testCompactionBlockedDuringSweep);
     oldGenTests.add(testPageIndexBlockLookup);
+    // Sweep-on-demand allocation (plans/sweep-on-demand-allocation.md).
+    oldGenTests.add(testSweepBeforeGrow);
+    oldGenTests.add(testPerAllocSweepCap);
+    oldGenTests.add(testPendingBlocksCounterTracksFullySwept);
+    oldGenTests.add(testMidCycleBlockReleaseDecrementsCounter);
     // Heap-base sentinel discipline (plans/heap-base-sentinel-fix.md).
     oldGenTests.add(testInitialUnassignedBlocksAreFullPages);
     oldGenTests.add(testNoAllocationLandsAtHeapBase);

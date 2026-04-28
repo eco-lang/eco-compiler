@@ -301,6 +301,14 @@ private:
     char* sweep_cursor_;              // Current position within sweep block.
     std::vector<BufferMetadata> buffer_meta_;  // Per-block metadata for compaction.
 
+    // Number of blocks that still need sweeping in the current GC cycle.
+    // Initialised in finishMarkAndSweep AFTER reclaimAllDeadBlocksFromMeta has
+    // removed all-dead blocks from buffer_meta_; decremented by
+    // markBlockFullySwept whenever a block transitions to fully_swept;
+    // zeroed in onSweepComplete and on reset/ctor. Drives the
+    // sweep-before-grow gate in allocateFromSizeClass.
+    size_t sweep_pending_blocks_;
+
     // ========== Per-Block Mark Bitmaps ==========
     //
     // Liveness for old-gen objects is tracked in per-block bitmaps (1 bit per
@@ -454,6 +462,40 @@ private:
     void transitionToSweeping();
     void lazySweep(size_t target_class, size_t work_budget);
     void onSweepComplete();
+
+    // True if the current GC cycle still has blocks that haven't been fully
+    // swept. False when gc_phase_ != Sweeping or when every BufferMetadata
+    // entry has fully_swept == true.
+    bool hasPendingSweepWork() const {
+        return gc_phase_ == GCPhase::Sweeping && sweep_pending_blocks_ > 0;
+    }
+    bool sweepComplete() const {
+        return gc_phase_ != GCPhase::Sweeping || sweep_pending_blocks_ == 0;
+    }
+
+    // Recomputes sweep_pending_blocks_ from buffer_meta_. Called once per
+    // major-GC cycle from finishMarkAndSweep, AFTER all-dead reclaim and
+    // BEFORE the initial lazy-sweep slice runs.
+    void recomputeSweepPendingBlocks();
+
+    // Centralised "this block is fully swept" mutation: sets the flag and
+    // decrements sweep_pending_blocks_ if the transition is fresh.
+    void markBlockFullySwept(size_t block_index);
+
+    // Free-list-only allocation attempt: pop from free_lists_[cls], else
+    // try splitting a larger free cell. Does NOT consume a bag page or
+    // grow capacity. Returns nullptr on failure. Behaviour-preserving
+    // refactor of the first two paragraphs of allocateFromSizeClass.
+    void* tryAllocateFromFreeLists(size_t cls, size_t requested_size);
+
+    // Sweep-on-demand driver: while hasPendingSweepWork(), runs a
+    // SWEEP_WORK_BUDGET-sized lazy-sweep slice and retries the free-list
+    // path. Returns the allocation on success, or nullptr if sweep finishes
+    // (or the per-allocation MAX_SWEEP_BYTES_PER_ALLOC cap is hit) without
+    // satisfying the request. Called from allocateFromSizeClass on the
+    // slow path before falling through to populateFromBlock /
+    // allocateFromBagPage.
+    void* sweepOnDemandAllocate(size_t cls, size_t requested_size);
 
     // Post-major-GC growth: if live/capacity > initiating_occupancy, grow
     // committed capacity so live/capacity <= target_utilization. Bounded by
@@ -811,6 +853,15 @@ public:
     // Sweep state.
     static size_t getSweepBufferIndex(const OldGenSpace& oldgen) { return oldgen.sweep_buffer_index_; }
     static const char* getSweepCursor(const OldGenSpace& oldgen) { return oldgen.sweep_cursor_; }
+    static size_t getSweepPendingBlocks(const OldGenSpace& oldgen) {
+        return oldgen.sweep_pending_blocks_;
+    }
+    static bool hasPendingSweepWork(const OldGenSpace& oldgen) {
+        return oldgen.hasPendingSweepWork();
+    }
+    static bool sweepComplete(const OldGenSpace& oldgen) {
+        return oldgen.sweepComplete();
+    }
 
     // Fragmentation stats.
     static const FragmentationStats& getFragStats(const OldGenSpace& oldgen) { return oldgen.frag_stats_; }

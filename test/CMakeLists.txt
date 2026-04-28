@@ -25,6 +25,7 @@ add_executable(test
         allocator/OldGenCapacityTest.cpp
         allocator/OldGenHeapBaseSentinelTest.cpp
         allocator/OldGenLazySweepTest.cpp
+        allocator/OldGenSweepOnDemandTest.cpp
         allocator/AllocatorTest.cpp
         allocator/AllocatorCommonTest.cpp
         allocator/ElmTest.cpp

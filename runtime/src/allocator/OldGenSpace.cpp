@@ -77,6 +77,7 @@ OldGenSpace::OldGenSpace() :
     gc_phase_(GCPhase::Idle),
     current_epoch(0), marking_active(false), allocator_ref_(nullptr),
     sweep_buffer_index_(0), sweep_cursor_(nullptr),
+    sweep_pending_blocks_(0),
     frag_stats_{0, 0, 0},
     compact_phase_(CompactionPhase::Idle),
     current_evac_index_(0), evac_cursor_(nullptr),
@@ -177,6 +178,7 @@ void OldGenSpace::reset(const HeapConfig* new_config) {
     mark_stack.clear();
     sweep_buffer_index_ = 0;
     sweep_cursor_ = nullptr;
+    sweep_pending_blocks_ = 0;
 
     // Clear all free lists.
     for (size_t i = 0; i < NUM_SIZE_CLASSES; i++) {
@@ -456,16 +458,13 @@ static inline void padCellSlack(void* obj, size_t requested_size,
 // ---------------------------------------------------------------------------
 // Size-class fast path.
 // ---------------------------------------------------------------------------
-void* OldGenSpace::allocateFromSizeClass(size_t cls, size_t requested_size) {
-    assert(cls < num_size_classes_ && "size class out of range");
 
-    // 1) Pop from this class's free list if non-empty.
-    //    Cell carries the full class size; the slack between requested_size
-    //    and classToSize(cls) is unrecoverable for re-allocation, so the
-    //    cell-size is the correct figure for getAllocatedBytes() until the
-    //    next sweep. We DO write a Tag_Free trailing into the slack so
-    //    sweep walks past this cell correctly even when it lives in a
-    //    MIXED block (size_class == NUM_SIZE_CLASSES).
+// Free-list-only allocation. Pure refactor of the original first two
+// paragraphs of allocateFromSizeClass — does NOT consume a bag page or
+// grow committed capacity.
+void* OldGenSpace::tryAllocateFromFreeLists(size_t cls, size_t requested_size) {
+    assert(cls < NUM_SIZE_CLASSES);
+
     if (free_lists_[cls] != nullptr) {
         FreeCell* cell = free_lists_[cls];
         free_lists_[cls] = cell->next;
@@ -476,18 +475,56 @@ void* OldGenSpace::allocateFromSizeClass(size_t cls, size_t requested_size) {
         return result;
     }
 
-    // 2) Try splitting a larger free cell. The split path itself accounts
-    //    for the carved-out portion via allocated_bytes += alloc_size and
-    //    pads the slack with a Tag_Free trailing for MIXED-block sweeps.
     if (void* result = tryAllocateBySplittingLarger(cls, classToSize(cls))) {
         padCellSlack(result, requested_size, classToSize(cls));
         return result;
     }
 
-    // 3) Pull a page from the bag and slice it into uniform cells. Cells
-    //    from a freshly-populated page are in a size-class block (sweep
-    //    walks by classToSize), so the slack pad is a no-op for sweep
-    //    correctness, but still safe.
+    return nullptr;
+}
+
+// Sweep-on-demand emergency driver. Runs lazy-sweep slices and retries the
+// free-list path until either the request can be satisfied or the per-call
+// cap is reached. The single-allocation cap prevents any one slow-path
+// allocation from monopolising sweep work on a multi-GB heap; once it's hit,
+// the caller falls through to populateFromBlock / allocateFromBagPage.
+void* OldGenSpace::sweepOnDemandAllocate(size_t cls, size_t requested_size) {
+    constexpr size_t MAX_SWEEP_BYTES_PER_ALLOC = SWEEP_WORK_BUDGET * 256;
+    size_t swept = 0;
+    while (hasPendingSweepWork()) {
+        lazySweep(cls, SWEEP_WORK_BUDGET);
+        swept += SWEEP_WORK_BUDGET;
+        if (void* obj = tryAllocateFromFreeLists(cls, requested_size)) {
+            return obj;
+        }
+        if (swept >= MAX_SWEEP_BYTES_PER_ALLOC) break;
+    }
+    return nullptr;
+}
+
+void* OldGenSpace::allocateFromSizeClass(size_t cls, size_t requested_size) {
+    assert(cls < num_size_classes_ && "size class out of range");
+
+    // 1) Free-list / split fast path.
+    if (void* result = tryAllocateFromFreeLists(cls, requested_size)) {
+        return result;
+    }
+
+    // 2) Sweep-before-grow: while unswept blocks remain, drive lazy sweep
+    //    until either the request is satisfied or the per-call cap is hit.
+    //    This is the emergency driver layered on top of the gentle
+    //    SWEEP_WORK_BUDGET slice already done in OldGenSpace::allocate().
+    if (hasPendingSweepWork()) {
+        if (void* result = sweepOnDemandAllocate(cls, requested_size)) {
+            return result;
+        }
+    }
+
+    // 3) Pull a page from the bag and slice it into uniform cells.
+    //    populateFromBlock is intentionally NOT gated behind sweepComplete():
+    //    consuming an already-precommitted bag page is part of normal
+    //    allocation behaviour, and gating it would underutilise capacity
+    //    without bounded benefit.
     if (populateFromBlock(cls)) {
         FreeCell* cell = free_lists_[cls];
         if (cell != nullptr) {
@@ -1326,6 +1363,7 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats) {
     transitionToSweeping();
     reclaimAllDeadBlocksFromMeta();
     adjustCapacityAfterMajorGC();
+    recomputeSweepPendingBlocks();
     lazySweep(NUM_SIZE_CLASSES, INITIAL_SWEEP_BUDGET);
 
     marking_active = false;
@@ -1357,6 +1395,7 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats,
     transitionToSweeping();
     AllDeadReclaimStats alldead = reclaimAllDeadBlocksFromMeta();
     adjustCapacityAfterMajorGC();
+    recomputeSweepPendingBlocks();
     lazySweep(NUM_SIZE_CLASSES, INITIAL_SWEEP_BUDGET);
 
     auto t_sweep_end = std::chrono::high_resolution_clock::now();
@@ -1374,12 +1413,9 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats,
     profile.alldead_blocks_released = alldead.blocks_released;
     profile.alldead_bytes_released  = alldead.bytes_released;
     profile.initial_sweep_budget_bytes = INITIAL_SWEEP_BUDGET;
-    // After the initial slice, sweep_buffer_index_ tracks how far we got.
-    // Anything from there to blocks_.size() is deferred to the mutator.
-    profile.sweep_pending_blocks =
-        (sweep_buffer_index_ < blocks_.size())
-            ? (blocks_.size() - sweep_buffer_index_)
-            : 0;
+    // True post-initial-slice pending count, fed by markBlockFullySwept
+    // throughout the slice.
+    profile.sweep_pending_blocks = sweep_pending_blocks_;
 
     marking_active = false;
 
@@ -1395,6 +1431,7 @@ void OldGenSpace::finishMarkAndSweep() {
     transitionToSweeping();
     reclaimAllDeadBlocksFromMeta();
     adjustCapacityAfterMajorGC();
+    recomputeSweepPendingBlocks();
     lazySweep(NUM_SIZE_CLASSES, INITIAL_SWEEP_BUDGET);
 
     marking_active = false;
@@ -1421,6 +1458,7 @@ void OldGenSpace::finishMarkAndSweep(MajorGCPhaseProfile &profile) {
     transitionToSweeping();
     AllDeadReclaimStats alldead = reclaimAllDeadBlocksFromMeta();
     adjustCapacityAfterMajorGC();
+    recomputeSweepPendingBlocks();
     lazySweep(NUM_SIZE_CLASSES, INITIAL_SWEEP_BUDGET);
 
     auto t_sweep_end = std::chrono::high_resolution_clock::now();
@@ -1438,10 +1476,7 @@ void OldGenSpace::finishMarkAndSweep(MajorGCPhaseProfile &profile) {
     profile.alldead_blocks_released = alldead.blocks_released;
     profile.alldead_bytes_released  = alldead.bytes_released;
     profile.initial_sweep_budget_bytes = INITIAL_SWEEP_BUDGET;
-    profile.sweep_pending_blocks =
-        (sweep_buffer_index_ < blocks_.size())
-            ? (blocks_.size() - sweep_buffer_index_)
-            : 0;
+    profile.sweep_pending_blocks = sweep_pending_blocks_;
 
     marking_active = false;
 }
@@ -1624,6 +1659,29 @@ void OldGenSpace::transitionToSweeping() {
     free_large_blocks_.clear();
 
     prepareMetaForLazySweep();
+
+    // Initialise the sweep-pending counter from the prepared meta. After
+    // prepareMetaForLazySweep, every entry has fully_swept == false, so
+    // this is just buffer_meta_.size(). Subsequent block releases (via
+    // reclaimAllDeadBlocksFromMeta or releaseBlockToAllocator) decrement
+    // the counter as those !fully_swept entries are removed, so by the
+    // time the first lazySweep slice runs the counter is accurate.
+    // finishMarkAndSweep also recomputes after reclaim as a safety reset.
+    recomputeSweepPendingBlocks();
+}
+
+void OldGenSpace::recomputeSweepPendingBlocks() {
+    sweep_pending_blocks_ = 0;
+    for (const auto& meta : buffer_meta_) {
+        if (!meta.fully_swept) ++sweep_pending_blocks_;
+    }
+}
+
+void OldGenSpace::markBlockFullySwept(size_t block_index) {
+    if (block_index >= buffer_meta_.size()) return;
+    if (buffer_meta_[block_index].fully_swept) return;
+    buffer_meta_[block_index].fully_swept = true;
+    if (sweep_pending_blocks_ > 0) --sweep_pending_blocks_;
 }
 
 /**
@@ -1710,7 +1768,7 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
                     meta.garbage_bytes = block.totalBytes();
                     markBlockAsFreeLarge(sweep_buffer_index_);
                 }
-                meta.fully_swept = true;
+                markBlockFullySwept(sweep_buffer_index_);
             }
             work_done += static_cast<size_t>(used_end - sweep_cursor_);
             sweep_cursor_ = used_end;
@@ -1745,9 +1803,7 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
         if (sweep_cursor_ >= used_end) {
             // Block boundary -- flush any trailing garbage run.
             flushRun(sweep_buffer_index_);
-            if (sweep_buffer_index_ < buffer_meta_.size()) {
-                buffer_meta_[sweep_buffer_index_].fully_swept = true;
-            }
+            markBlockFullySwept(sweep_buffer_index_);
             sweep_buffer_index_++;
             sweep_cursor_ = nullptr;
         }
@@ -1770,6 +1826,36 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
         gc_phase_ = GCPhase::Idle;
         onSweepComplete();
     }
+
+    // Debug-only: re-derive sweep_pending_blocks_ from buffer_meta_ and
+    // assert it matches the maintained counter. Catches accounting drift
+    // before it can mislead the sweep-on-demand gate. Release builds with
+    // ECO_OLDGEN_DEBUG=1 emit a single mismatch line instead of crashing.
+#ifndef NDEBUG
+    {
+        size_t recount = 0;
+        for (const auto& meta : buffer_meta_) {
+            if (!meta.fully_swept) ++recount;
+        }
+        assert((gc_phase_ != GCPhase::Sweeping
+                  || recount == sweep_pending_blocks_) &&
+               "sweep_pending_blocks_ drift vs buffer_meta_ recount");
+    }
+#else
+    static const bool kSweepPendingDebug =
+        std::getenv("ECO_OLDGEN_DEBUG") != nullptr;
+    if (kSweepPendingDebug && gc_phase_ == GCPhase::Sweeping) {
+        size_t recount = 0;
+        for (const auto& meta : buffer_meta_) {
+            if (!meta.fully_swept) ++recount;
+        }
+        if (recount != sweep_pending_blocks_) {
+            std::fprintf(stderr,
+                "[oldgen-debug] sweep_pending_blocks_=%zu but recount=%zu\n",
+                sweep_pending_blocks_, recount);
+        }
+    }
+#endif
 }
 
 /**
@@ -1780,6 +1866,7 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
  * the post-sweep stats.
  */
 void OldGenSpace::onSweepComplete() {
+    sweep_pending_blocks_ = 0;
     computeFragmentationStats();
 
     // Light-pass shrink: only fires if heap is still well above desired.
@@ -1841,6 +1928,13 @@ bool OldGenSpace::shouldTriggerMajorGC() const {
 }
 
 void OldGenSpace::adjustCapacityAfterMajorGC() {
+    // Counter is initialised by recomputeSweepPendingBlocks immediately
+    // after this call, so we cannot assert sweepComplete() here. We can
+    // assert that we are NOT in some half-state where Sweeping has already
+    // started without buffer_meta_ being prepared.
+    assert((gc_phase_ == GCPhase::Sweeping || gc_phase_ == GCPhase::Idle) &&
+           "adjustCapacityAfterMajorGC: unexpected gc_phase_");
+
     if (region_base_ == nullptr || region_end_ <= region_base_) return;
 
     const size_t capacity = static_cast<size_t>(region_end_ - region_base_);
@@ -2149,6 +2243,16 @@ void OldGenSpace::releaseBlockToAllocator(size_t block_index) {
     assert((blk.is_large || total == config_->alloc_buffer_size) &&
            "releaseBlockToAllocator: non-large block must be one full page");
 
+    // If this block was tracked as still needing sweep, drop it from the
+    // pending count BEFORE the buffer_meta_ swap-remove (so the post-swap
+    // entry, which moved into block_index from the last slot, doesn't get
+    // accidentally double-counted on its own future fully_swept transition).
+    if (block_index < buffer_meta_.size() &&
+        !buffer_meta_[block_index].fully_swept &&
+        sweep_pending_blocks_ > 0) {
+        --sweep_pending_blocks_;
+    }
+
     // Unlink any free-list entries that overlap this block before the
     // virtual address range becomes reusable.
     removeFreeCellsForBlock(block_index);
@@ -2403,6 +2507,8 @@ void OldGenSpace::scheduleCompaction() {
     // Same gate as shouldCompact: compaction must wait for lazy sweep to
     // finish so meta is fully rebuilt and free_lists_ are stable.
     if (gc_phase_ != GCPhase::Idle) return;
+    assert(sweepComplete() &&
+           "scheduleCompaction: sweep must be complete (gc_phase_ == Idle)");
 
     evacuation_set_ = selectEvacuationSet(COMPACTION_WORK_BUDGET * 10);
     if (evacuation_set_.empty()) return;
