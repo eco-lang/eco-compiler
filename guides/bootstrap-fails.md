@@ -1,5 +1,95 @@
 # Bootstrap Failures
 
+## Failure #4: Stage 7 — `Pointer above heap end` in Bytes.Encode (FIXED)
+
+**Stage:** 7 (native self-compile)
+**Symptom:** `Allocator::resolve: Pointer above heap end` while
+walking an encoder list during per-module artifact write
+(`Utils.Main.binaryEncodeFile` → `Bytes.Encode.encode`). HPointer
+`0x0000003800000012` decodes to a 1.75 TB byte offset, far beyond
+the 24 GB reserved range; the underlying value is the `Tag_Free`
+header of a recycled cell at `heap_base + 0`.
+
+**Root cause:** OldGen mark bits persist across GC cycles when a
+cell is allocated mid-sweep. `OldGenSpace::initObjectHeader` sets
+the mark bit during Marking and Sweeping phases so the cell
+survives the current sweep. If the allocation lands in a block
+sweep has already advanced past, the bit is never cleared, and the
+next mark cycle's `pushMarkRoot` sees `isMarkedInBlock == true`,
+returns early, and never calls `markOneObject`. The cell's bytes
+are then absent from `buffer_meta_[block].live_bytes`. A block
+whose entire live content went through this path then reads
+`live_bytes == 0`, and `reclaimAllDeadBlocksFromMeta` releases it
+via `madvise(MADV_DONTNEED)`. Long-lived references through that
+block (here a Cons spine inside the Encoder list) read zero pages.
+
+**Fix:** Clear `mark_bits_` and `large_block_mark_` at the top of
+`OldGenSpace::startMark` so each new mark cycle starts with the
+"bitmap is zero between cycles" invariant intact, even when the
+previous sweep didn't visit every cell. Two-line change in
+`runtime/src/allocator/OldGenSpace.cpp`.
+
+**Verification:** Stage 7 progresses from 4 to 8 major GCs and
+past dependency verification into the per-module compile loop,
+where it hits a different stale-pointer crash (Failure #5).
+
+**Status:** FIXED
+**Attempts:** 1
+**Report:** `/work/reports/stage7_pointer_above_heap_end/REPORT.md`
+
+## Failure #5: Stage 7 — `Eco crash: Error on unsafeIndex!` (OPEN, attempts: 2)
+
+**Stage:** 7 (native self-compile)
+**Symptom:** `Eco crash: Error on unsafeIndex!` from
+`Compiler.Parse.Primitives.unsafeIndex`. The 9811-character
+`Tag_String` source code for the first module being parsed
+(Terminal.Bump) is read correctly for ~94,339 calls, then a major
+GC fires between calls 94,339 and 94,340 and the cell at the same
+HPointer (`0xef3fc00`) reads back as 24 bytes of zeros. The
+parser keeps using the same `state.src` HPointer; `String.uncons
+(String.dropLeft index str)` returns `Nothing` because `header.size`
+is 0; `unsafeIndex` falls through to `crash`.
+
+**Root cause hypothesis:** Same RS4GC-liveness gap pattern as
+Failure #3. The parser State is held in a stack slot whose stack-
+map entry RS4GC didn't include in its gc-live bundle (likely
+because the State pointer was `ptrtoint`-ed at some boundary, and
+RS4GC stopped tracking the resulting `i64`). Major GC mark misses
+the string, `live_bytes` for its block reads 0, and
+`reclaimAllDeadBlocksFromMeta` / `maybeShrinkCapacity` release the
+block via `madvise(MADV_DONTNEED)`, zero-filling the string's
+pages. The block is `is_large=0` because the 19,632 B string fits
+in a 32 KB cell of a regular size-class block (below the 128 KB
+`alloc_buffer_size` threshold), so `Header::pin = 1` doesn't put
+it on the large-block accounting path.
+
+**Attempt 1 — `has_pinned` block flag (REVERTED):** Set a
+per-block `has_pinned` flag in `BufferMetadata` when
+`allocateLargePinned` ran on a cell in the block; consult it in
+`reclaimAllDeadBlocksFromMeta` and `maybeShrinkCapacity` to skip
+release. Combined with a sweep change to keep `pin=1` cells alive
+even when their mark bit was clear and attribute their bytes to
+`live_bytes`. Result: parser ran 9 minutes without crash but heap
+ballooned to 4.7 GB (10 MB live, the rest retained). Reverted.
+
+**Attempt 2 — disable `decommit_on_oldgen_release` (IN PROGRESS):**
+Default `HeapConfig::decommit_on_oldgen_release` to `false` so
+`releaseOldGenBlock` doesn't `madvise(MADV_DONTNEED)`. The
+released block's content stays valid (just queued for reuse).
+Trade-off: physical RSS doesn't shrink mid-process, so peak RSS
+is bounded by peak working-set rather than mark-set.
+
+**Status:** SKIPPED — 2 attempts exhausted; no forward progress.
+The underlying RS4GC liveness gap (Failure #3 family) requires a
+codegen-level fix (likely in `EcoGCPrepare`/`EcoGCLiveness.h` or
+the `widenToI64ForInit` boundary helpers) and is beyond the scope
+of a single bootstrap-fix loop iteration. Recommend the user
+investigate stackmap coverage for the parser State HPointer
+across the safepoint immediately preceding the failing
+`unsafeIndex` call.
+**Attempts:** 2
+**Report:** `/work/reports/stage7_unsafeindex_crash/REPORT.md`
+
 ## Failure #1: Stage 7 — GC Tag_Forward assertion (FIXED)
 
 **Stage:** 7 (native self-compile)  
