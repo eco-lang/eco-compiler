@@ -513,6 +513,7 @@ private:
     // Black during marking/sweeping (so the object is not treated as garbage
     // mid-cycle), White otherwise. Tag/size are written by the caller.
     void initObjectHeader(void* obj);
+    void initObjectHeaderWithSize(void* obj, size_t cell_bytes);
 
     // Allocates a single object that exceeds alloc_buffer_size by acquiring
     // a dedicated old-gen block sized exactly to fit it. The caller is

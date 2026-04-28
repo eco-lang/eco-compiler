@@ -37,7 +37,38 @@ where it hits a different stale-pointer crash (Failure #5).
 **Attempts:** 1
 **Report:** `/work/reports/stage7_pointer_above_heap_end/REPORT.md`
 
-## Failure #5: Stage 7 — `Eco crash: Error on unsafeIndex!` (OPEN, attempts: 2)
+## Failure #5: Stage 7 — `Eco crash: Error on unsafeIndex!` (FIXED 2026-04-28)
+
+**Root cause (real):** mid-cycle old-gen allocations bumped the per-cell
+mark bit in `initObjectHeader` but **not** the owning block's
+`buffer_meta_[blk].live_bytes`. A block whose only live content was
+allocated between two major GCs reported `live_bytes == 0` to
+`maybeShrinkCapacity`'s light pass at the start of the next GC; the
+block was released via `madvise(MADV_DONTNEED)`, zero-filling pages
+that long-lived `State.src` HPointers still referenced.
+
+**Fix:** add `OldGenSpace::initObjectHeaderWithSize(obj, cell_bytes)`
+that mirrors `initObjectHeader` and, when called mid-cycle, also adds
+`cell_bytes` to the owning block's `buffer_meta_[blk].live_bytes`.
+Plumbed through size-class fast path, splitter, and bag-page paths.
+Large-block fresh acquisition already wrote `live_bytes = size` at
+construction so it keeps the no-size helper.
+
+**Verification:** Stage 7 self-compile no longer aborts with
+`Error on unsafeIndex!`. In a 1500 s timeout run it completed 226
+major / 420 minor GCs without the crash; per-cycle reclaim and
+latency unchanged. Remaining gating issue is bootstrap throughput
+(separate from this bug). See
+`/work/reports/stage7_unsafeindex_crash_fixed/REPORT.md`.
+
+**Files:** `runtime/src/allocator/OldGenSpace.cpp`,
+`runtime/src/allocator/OldGenSpace.hpp`.
+
+---
+
+### Original failure record below (kept for history)
+
+## Failure #5 (history): Stage 7 — `Eco crash: Error on unsafeIndex!` (OPEN, attempts: 2)
 
 **Stage:** 7 (native self-compile)
 **Symptom:** `Eco crash: Error on unsafeIndex!` from

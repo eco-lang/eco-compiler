@@ -687,6 +687,7 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
                                   ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
         auto *ctx = rewriter.getContext();
+        auto i8Ty = IntegerType::get(ctx, 8);
         auto i32Ty = IntegerType::get(ctx, 32);
         auto i64Ty = IntegerType::get(ctx, 64);
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
@@ -808,6 +809,58 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
         Value capturesArr = rewriter.create<LLVM::AllocaOp>(
             loc, ptrTy, i64Ty, totalCapturesConst);
 
+        // Compute the HPointer mask for the FLAT captures array. Bit k is
+        // set iff captures[k] is a boxed HPointer slot in its sibling's
+        // closure (kind 00 in the per-sibling unboxed bitmap, 2 bits/slot).
+        // This is the mask we must hand to eco_gc_push_stack_range so a
+        // major GC firing inside eco_alloc_closure_group_slow scans the
+        // captures correctly: without it, RS4GC sees the i64 stores into
+        // the array but stops tracking the source ptr addrspace(1) values
+        // once they go through ptrtoint, and the captures the runtime
+        // copies into the new closures are stale (post-GC) addresses —
+        // see Stage 7 unsafeIndex crash report.
+        uint64_t hpointerMask = 0;
+        {
+            uint32_t flatOffset = 0;
+            for (unsigned i = 0; i < numSiblings; ++i) {
+                uint64_t bitmap = static_cast<uint64_t>(
+                    cast<IntegerAttr>(unboxedBitmaps[i]).getInt());
+                uint32_t cc = static_cast<uint32_t>(
+                    cast<IntegerAttr>(captureCounts[i]).getInt());
+                for (uint32_t k = 0; k < cc; ++k) {
+                    if (flatOffset + k >= 64) break;
+                    uint64_t kind = (bitmap >> (2 * k)) & 0x3;
+                    if (kind == 0) {
+                        hpointerMask |= (1ULL << (flatOffset + k));
+                    }
+                }
+                flatOffset += cc;
+            }
+        }
+
+        // Zero the captures array, save the GC range stack point, and push
+        // the array as a GC root range BEFORE storing any values into it.
+        // (totalCaptures must fit in 64 slots — the runtime asserts this.)
+        Value savedRangeDepth;
+        const bool needRootRange = totalCaptures > 0;
+        if (needRootRange) {
+            auto zeroI8 = rewriter.create<LLVM::ConstantOp>(loc, i8Ty, 0);
+            auto bytesLen = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+                rewriter.getI64IntegerAttr(totalCaptures * 8));
+            rewriter.create<LLVM::MemsetOp>(loc, capturesArr, zeroI8,
+                bytesLen, /*isVolatile=*/false);
+            auto rangePointFunc = runtime.getOrCreateGcStackRangePoint(rewriter);
+            savedRangeDepth = rewriter.create<LLVM::CallOp>(
+                loc, rangePointFunc, ValueRange{}).getResult();
+            auto pushFunc = runtime.getOrCreateGcPushStackRange(rewriter);
+            auto countConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+                rewriter.getI64IntegerAttr(totalCaptures));
+            auto maskConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+                rewriter.getI64IntegerAttr(static_cast<int64_t>(hpointerMask)));
+            rewriter.create<LLVM::CallOp>(loc, pushFunc,
+                ValueRange{capturesArr, countConst, maskConst});
+        }
+
         // Convert each capture to i64 and store in captures[].
         // realOperands is ordered [sibling0_caps..., sibling1_caps..., ...].
         for (uint32_t k = 0; k < totalCaptures; ++k) {
@@ -862,6 +915,14 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
             numCrossConst,
             outClosuresArr
         });
+
+        // Restore the range point so the captures array no longer counts as
+        // a GC root once the new closures hold their own copies.
+        if (needRootRange) {
+            auto restoreFunc = runtime.getOrCreateGcRestoreStackRangePoint(rewriter);
+            rewriter.create<LLVM::CallOp>(loc, restoreFunc,
+                ValueRange{savedRangeDepth});
+        }
 
         // Load result HPointers from outClosures[] and deliver them as the
         // op's results. Each load yields an i64 which we turn into ptr<1>

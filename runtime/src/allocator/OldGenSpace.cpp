@@ -204,6 +204,16 @@ void OldGenSpace::reset(const HeapConfig* new_config) {
 // Header initialization helper.
 // ---------------------------------------------------------------------------
 void OldGenSpace::initObjectHeader(void* obj) {
+    initObjectHeaderWithSize(obj, 0);
+}
+
+// `cell_bytes` is the number of bytes occupied by this cell (size-class slot
+// size for size-class blocks, the requested size for large blocks). When
+// non-zero and the alloc happens mid-cycle, the cell's bytes are added to
+// the owning block's `live_bytes` so it isn't reported as all-dead during
+// the next finalize/reclaim/shrink. Mark-time `live_bytes` attribution only
+// covers cells discovered by `markOneObject`; mid-cycle cells bypass mark.
+void OldGenSpace::initObjectHeaderWithSize(void* obj, size_t cell_bytes) {
     // Defense: never hand out heap_base+0. Its HPointer encoding is bits=0,
     // which the runtime treats as null (eco_get_tag asserts). The bag is
     // initialized in OldGenSpace::initialize so the first page skips offset 0,
@@ -223,6 +233,12 @@ void OldGenSpace::initObjectHeader(void* obj) {
             const size_t block_index = blockIndexFor(obj);
             if (block_index < blocks_.size()) {
                 setMarkBitInBlock(block_index, obj);
+                if (cell_bytes > 0 && block_index < buffer_meta_.size()) {
+                    // Attribute the cell's bytes so a block that contained
+                    // only mid-cycle allocations isn't seen as all-dead by
+                    // finalize/reclaim/shrink.
+                    buffer_meta_[block_index].live_bytes += cell_bytes;
+                }
             }
         }
     } else {
@@ -438,7 +454,7 @@ void* OldGenSpace::allocateFromSizeClass(size_t cls, size_t requested_size) {
         FreeCell* cell = free_lists_[cls];
         free_lists_[cls] = cell->next;
         void* result = static_cast<void*>(cell);
-        initObjectHeader(result);
+        initObjectHeaderWithSize(result, classToSize(cls));
         padCellSlack(result, requested_size, classToSize(cls));
         allocated_bytes += classToSize(cls);
         return result;
@@ -461,7 +477,7 @@ void* OldGenSpace::allocateFromSizeClass(size_t cls, size_t requested_size) {
         if (cell != nullptr) {
             free_lists_[cls] = cell->next;
             void* result = static_cast<void*>(cell);
-            initObjectHeader(result);
+            initObjectHeaderWithSize(result, classToSize(cls));
             padCellSlack(result, requested_size, classToSize(cls));
             allocated_bytes += classToSize(cls);
             return result;
@@ -541,7 +557,7 @@ void* OldGenSpace::tryAllocateBySplittingLarger(size_t target_cls,
                 }
 
                 void* result = static_cast<void*>(base);
-                initObjectHeader(result);
+                initObjectHeaderWithSize(result, alloc_size);
                 allocated_bytes += alloc_size;
                 return result;
             }
@@ -619,7 +635,7 @@ void* OldGenSpace::allocateFromBagPage(size_t requested_size) {
     }
 
     void* result = static_cast<void*>(page_start);
-    initObjectHeader(result);
+    initObjectHeaderWithSize(result, requested_size);
     allocated_bytes += requested_size;
     return result;
 }
