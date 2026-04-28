@@ -109,6 +109,11 @@ struct FreeCell {
 // Smallest free cell that can be linked into a free list.
 static constexpr size_t MIN_FREE_CELL_SIZE = sizeof(FreeCell);
 
+// 8-byte Tag_Free sentinel parked at heap_base + 0 so HPointer{ptr=0} stays
+// unambiguously null. NOT a FreeCell (size < MIN_FREE_CELL_SIZE), never on
+// a free list, never returned to the mutator.
+static constexpr size_t HEAP_BASE_SENTINEL_SIZE = sizeof(Header);
+
 // ============================================================================
 // Block Info Structure
 // ============================================================================
@@ -508,6 +513,17 @@ private:
     // of `classToSize(cls)`, and links them onto `free_lists_[cls]`. Returns
     // true if a page was available and populated.
     bool populateFromBlock(size_t cls);
+
+    // True if `page_start` is the heap-base page (i.e. addr == g_heap_base /
+    // allocator_->getHeapBase()). The heap-base page must always be
+    // materialized as a mixed block with an 8-byte Tag_Free sentinel parked
+    // at offset 0, so allocations never observe HPointer{ptr=0}.
+    bool isHeapBasePage(char* page_start) const;
+
+    // Writes the 8-byte Tag_Free sentinel at `page_start` (== heap_base).
+    // Idempotent; safe to call any time the heap-base block is being
+    // (re-)materialized.
+    void installHeapBaseSentinel(char* page_start);
 
     // Initializes an object header in newly allocated memory. Sets color to
     // Black during marking/sweeping (so the object is not treated as garbage

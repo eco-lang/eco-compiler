@@ -322,6 +322,12 @@ public:
     static ThreadLocalHeap* getThreadHeap(Allocator& alloc) {
         return alloc.getThreadHeap();
     }
+
+    // Heap base address — used by sentinel-discipline tests to verify no
+    // allocation lands at heap_base + 0.
+    static char* getHeapBase(Allocator& alloc) {
+        return alloc.getHeapBase();
+    }
 };
 
 } // namespace Elm

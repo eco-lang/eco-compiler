@@ -443,11 +443,27 @@ char* Allocator::acquireOldGenBlock(size_t size) {
     // Align size to 8 bytes.
     size = (size + 7) & ~7;
 
+    // BBoP page-sized requests must always land on a page-aligned, page-sized
+    // extent and must never base at heap_base (the heap-base block is pinned
+    // by OldGenSpace's release path; this is a regression guard). For
+    // arbitrary large-block requests, the existing first-fit logic is
+    // unchanged — large blocks legitimately use non-page-multiple extents.
+    constexpr size_t PAGE_SIZE = 4096;
+    const bool page_request = (size == config_.alloc_buffer_size);
+    if (page_request) {
+        assert(size % PAGE_SIZE == 0 &&
+               "acquireOldGenBlock: page request size must be page-multiple");
+    }
+
     // First-fit reuse from previously-released old-gen blocks. Splitting an
     // oversized cell is out of scope; we accept the slack on a larger reuse
     // since current callers request whole pages or whole large-block extents.
     for (auto it = old_gen_free_blocks_.begin();
          it != old_gen_free_blocks_.end(); ++it) {
+        if (page_request) {
+            if (it->first == heap_base) continue;       // pinned heap-base
+            if (it->second % PAGE_SIZE != 0) continue;  // alignment guard
+        }
         if (it->second >= size) {
             char* block = it->first;
             size_t block_size = it->second;
@@ -461,6 +477,11 @@ char* Allocator::acquireOldGenBlock(size_t size) {
             madvise(block, block_size, MADV_WILLNEED);
 
             old_gen_committed += block_size;
+
+            if (page_request) {
+                assert(old_gen_committed % PAGE_SIZE == 0 &&
+                       "acquireOldGenBlock: committed misaligned after page reuse");
+            }
 
             if (heapTraceEnabled()) {
                 dumpHeapState("oldgen reused released block", block_size);
@@ -493,6 +514,11 @@ char* Allocator::acquireOldGenBlock(size_t size) {
     size_t before = old_gen_committed;
     old_gen_committed += size;
 
+    if (page_request) {
+        assert(old_gen_committed % PAGE_SIZE == 0 &&
+               "acquireOldGenBlock: committed misaligned after page bump");
+    }
+
     // Milestone-based growth log so we can see the committed counter
     // climbing through the available old-gen region.
     if (heapTraceEnabled() &&
@@ -523,6 +549,14 @@ void Allocator::releaseOldGenBlock(char* block, size_t size) {
     assert(old_gen_committed >= size &&
            "releaseOldGenBlock: committed underflow");
     old_gen_committed -= size;
+
+    constexpr size_t PAGE_SIZE = 4096;
+    if (size == config_.alloc_buffer_size) {
+        assert(size % PAGE_SIZE == 0 &&
+               "releaseOldGenBlock: page release size must be page-multiple");
+        assert(old_gen_committed % PAGE_SIZE == 0 &&
+               "releaseOldGenBlock: committed misaligned after page release");
+    }
 
     if (heapTraceEnabled()) {
         dumpHeapState("oldgen released block", size);

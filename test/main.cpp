@@ -19,6 +19,7 @@
 #include "allocator/AllocatorTest.hpp"
 #include "allocator/OldGenSpaceTest.hpp"
 #include "allocator/OldGenCapacityTest.hpp"
+#include "allocator/OldGenHeapBaseSentinelTest.hpp"
 #include "allocator/OldGenLazySweepTest.hpp"
 #include "allocator/HeapHelpersTest.hpp"
 #include "allocator/StringOpsTest.hpp"
@@ -603,6 +604,11 @@ int main(int argc, char* argv[]) {
     oldGenTests.add(testShrinkUsesMarkLiveBytes);
     oldGenTests.add(testCompactionBlockedDuringSweep);
     oldGenTests.add(testPageIndexBlockLookup);
+    // Heap-base sentinel discipline (plans/heap-base-sentinel-fix.md).
+    oldGenTests.add(testInitialUnassignedBlocksAreFullPages);
+    oldGenTests.add(testNoAllocationLandsAtHeapBase);
+    oldGenTests.add(testReleaseLeavesCommittedPageAligned);
+    oldGenTests.add(testHeapBaseBlockNotReleasedOnAllDeadReclaim);
 
     Testing::TestSuite allocatorTests("Allocator");
     allocatorTests.add(testPromotionToOldGen);
