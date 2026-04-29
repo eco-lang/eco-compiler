@@ -1400,6 +1400,7 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats) {
     transitionToSweeping();
     reclaimAllDeadBlocksFromMeta();
     adjustCapacityAfterMajorGC();
+    gatherResidencyInto(stats);
     recomputeSweepPendingBlocks();
     lazySweep(NUM_SIZE_CLASSES, INITIAL_SWEEP_BUDGET);
 
@@ -1432,6 +1433,7 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats,
     transitionToSweeping();
     AllDeadReclaimStats alldead = reclaimAllDeadBlocksFromMeta();
     adjustCapacityAfterMajorGC();
+    gatherResidencyInto(stats);
     recomputeSweepPendingBlocks();
     lazySweep(NUM_SIZE_CLASSES, INITIAL_SWEEP_BUDGET);
 
@@ -2499,6 +2501,23 @@ OldGenSpace::reclaimAllDeadBlocksFromMeta() {
 
     return stats;
 }
+
+#if ENABLE_GC_STATS
+// Walks the surviving blocks at major-GC end and accumulates a residency
+// snapshot into `stats`. live_bytes is the mark-derived per-block value
+// from buffer_meta_ (lazy sweep may not yet have run when this is called,
+// so we cannot rely on garbage_bytes / sweep watermarks here).
+void OldGenSpace::gatherResidencyInto(GCStats& stats) const {
+    for (size_t i = 0; i < blocks_.size() && i < buffer_meta_.size(); ++i) {
+        const BlockInfo& blk = blocks_[i];
+        const BufferMetadata& meta = buffer_meta_[i];
+        const size_t total = blk.totalBytes();
+        if (total == 0) continue;
+        stats.recordBlockResidency(total, meta.live_bytes, blk.is_large);
+    }
+    stats.recordResidencySnapshot();
+}
+#endif
 
 /**
  * Computes heap-wide fragmentation statistics from per-block metadata.

@@ -784,6 +784,17 @@ private:
     // through markBlockAsFreeLarge / allocateFromFreeLargeBlocks).
     AllDeadReclaimStats reclaimAllDeadBlocksFromMeta();
 
+#if ENABLE_GC_STATS
+    // Walks the surviving blocks at major-GC end and accumulates a
+    // residency snapshot into `stats`. Called once per major after
+    // adjustCapacityAfterMajorGC has run, so the histogram reflects the
+    // committed pages the collector chose to keep — i.e. the answer to
+    // "what's still in old-gen after every release decision?". Must use
+    // mark-derived buffer_meta_[i].live_bytes (sweep is lazy and may not
+    // have run when we sample).
+    void gatherResidencyInto(GCStats& stats) const;
+#endif
+
     friend class Allocator;
     friend class NurserySpace;
     friend class ThreadLocalHeap;

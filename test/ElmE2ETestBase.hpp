@@ -73,6 +73,18 @@ struct ElmSharedTestResult {
     uint64_t total_incremental_mark_work_units;
     uint64_t nursery_alloc_size_histogram[Elm::GCStats::NURSERY_ALLOC_BUCKETS];
     uint64_t oldgen_alloc_size_histogram[Elm::GCStats::OLDGEN_ALLOC_BUCKETS];
+
+    // Old-gen page residency histogram. Cumulative across every major-GC
+    // end snapshot in the child process; the parent merges it into the
+    // run-wide accumulator so the final printout shows residency totals
+    // for the entire test run.
+    uint64_t residency_pages[Elm::GCStats::RESIDENCY_BUCKETS];
+    uint64_t residency_page_bytes[Elm::GCStats::RESIDENCY_BUCKETS];
+    uint64_t residency_live_bytes[Elm::GCStats::RESIDENCY_BUCKETS];
+    uint64_t residency_pinned_pages;
+    uint64_t residency_pinned_page_bytes;
+    uint64_t residency_pinned_live_bytes;
+    uint64_t residency_snapshots;
 };
 
 inline Elm::GCStats& getAccumulatedStats() {
@@ -114,6 +126,15 @@ inline void copyStatsToShared(ElmSharedTestResult* shared) {
     for (int i = 0; i < Elm::GCStats::OLDGEN_ALLOC_BUCKETS; i++) {
         shared->oldgen_alloc_size_histogram[i] = stats.oldgen_alloc_size_histogram[i];
     }
+    for (int i = 0; i < Elm::GCStats::RESIDENCY_BUCKETS; i++) {
+        shared->residency_pages[i]      = stats.residency_pages[i];
+        shared->residency_page_bytes[i] = stats.residency_page_bytes[i];
+        shared->residency_live_bytes[i] = stats.residency_live_bytes[i];
+    }
+    shared->residency_pinned_pages      = stats.residency_pinned_pages;
+    shared->residency_pinned_page_bytes = stats.residency_pinned_page_bytes;
+    shared->residency_pinned_live_bytes = stats.residency_pinned_live_bytes;
+    shared->residency_snapshots         = stats.residency_snapshots;
 #endif
 }
 
@@ -150,6 +171,15 @@ inline void accumulateFromShared(const ElmSharedTestResult* shared) {
     for (int i = 0; i < Elm::GCStats::OLDGEN_ALLOC_BUCKETS; i++) {
         childStats.oldgen_alloc_size_histogram[i] = shared->oldgen_alloc_size_histogram[i];
     }
+    for (int i = 0; i < Elm::GCStats::RESIDENCY_BUCKETS; i++) {
+        childStats.residency_pages[i]      = shared->residency_pages[i];
+        childStats.residency_page_bytes[i] = shared->residency_page_bytes[i];
+        childStats.residency_live_bytes[i] = shared->residency_live_bytes[i];
+    }
+    childStats.residency_pinned_pages      = shared->residency_pinned_pages;
+    childStats.residency_pinned_page_bytes = shared->residency_pinned_page_bytes;
+    childStats.residency_pinned_live_bytes = shared->residency_pinned_live_bytes;
+    childStats.residency_snapshots         = shared->residency_snapshots;
 
     getAccumulatedStats().combine(childStats);
 }

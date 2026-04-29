@@ -107,6 +107,45 @@ void GCStats::recordMinorGCEnd(uint64_t elapsed_ns, size_t freed) {
     minor_time_histogram[bucket]++;
 }
 
+// Maps a per-block live fraction to its residency-histogram bucket.
+// Buckets match the documentation in GCStats.hpp.
+static inline int residencyBucket(double live_frac) {
+    if (live_frac <= 0.0)  return 0;   // Fully empty.
+    if (live_frac <= 0.01) return 1;
+    if (live_frac <= 0.05) return 2;
+    if (live_frac <= 0.10) return 3;
+    if (live_frac <= 0.25) return 4;
+    if (live_frac <= 0.50) return 5;
+    if (live_frac <= 0.75) return 6;
+    return 7;                          // (0.75, 1.00].
+}
+
+// Buckets a single block's residency by live fraction. Accumulates
+// pages, total committed bytes, and live bytes per bucket so the
+// printed histogram can surface shape, mass, and waste together.
+void GCStats::recordBlockResidency(size_t total_bytes,
+                                   size_t live_bytes,
+                                   bool   is_large) {
+    if (total_bytes == 0) return;
+    double live_frac = static_cast<double>(live_bytes) /
+                       static_cast<double>(total_bytes);
+    int bucket = residencyBucket(live_frac);
+
+    residency_pages[bucket]++;
+    residency_page_bytes[bucket] += total_bytes;
+    residency_live_bytes[bucket] += live_bytes;
+
+    if (is_large) {
+        residency_pinned_pages++;
+        residency_pinned_page_bytes += total_bytes;
+        residency_pinned_live_bytes += live_bytes;
+    }
+}
+
+void GCStats::recordResidencySnapshot() {
+    residency_snapshots++;
+}
+
 // Records completion of a major GC cycle with timing.
 void GCStats::recordMajorGCEnd(uint64_t elapsed_ns) {
     major_gc_count++;
@@ -223,6 +262,17 @@ void GCStats::combine(const GCStats& other) {
     for (int i = 0; i < OLDGEN_ALLOC_BUCKETS; i++) {
         oldgen_alloc_size_histogram[i] += other.oldgen_alloc_size_histogram[i];
     }
+
+    // Combine page residency histogram.
+    for (int i = 0; i < RESIDENCY_BUCKETS; i++) {
+        residency_pages[i]      += other.residency_pages[i];
+        residency_page_bytes[i] += other.residency_page_bytes[i];
+        residency_live_bytes[i] += other.residency_live_bytes[i];
+    }
+    residency_pinned_pages      += other.residency_pinned_pages;
+    residency_pinned_page_bytes += other.residency_pinned_page_bytes;
+    residency_pinned_live_bytes += other.residency_pinned_live_bytes;
+    residency_snapshots         += other.residency_snapshots;
 }
 
 // Prints a formatted summary to stdout with histograms.
@@ -491,6 +541,125 @@ void GCStats::print() const {
                         oldgen_alloc_size_histogram,
                         OLDGEN_ALLOC_BUCKETS);
 
+    // ========== Old-Gen Page Residency Histogram ==========
+    //
+    // Cumulative across every major-GC end snapshot. Each row is a
+    // live-fraction band; columns are: number of (block, major) samples
+    // in that band, total committed MB those samples represent, total
+    // live MB inside them, and the resulting band-wide live percentage.
+    // The pinned-row is a subset of the histogram totals, broken out
+    // because is_large pages cannot be released by sweep.
+    if (residency_snapshots > 0) {
+        // Bucket label strings, parallel to the bucket layout in GCStats.hpp.
+        static const char* RESIDENCY_LABELS[RESIDENCY_BUCKETS] = {
+            "  0.00      ",  // exact zero
+            "(0.00, 0.01]",
+            "(0.01, 0.05]",
+            "(0.05, 0.10]",
+            "(0.10, 0.25]",
+            "(0.25, 0.50]",
+            "(0.50, 0.75]",
+            "(0.75, 1.00]",
+        };
+
+        uint64_t total_pages   = 0;
+        uint64_t total_pbytes  = 0;
+        uint64_t total_lbytes  = 0;
+        uint64_t max_pages_b   = 0;
+        for (int i = 0; i < RESIDENCY_BUCKETS; i++) {
+            total_pages  += residency_pages[i];
+            total_pbytes += residency_page_bytes[i];
+            total_lbytes += residency_live_bytes[i];
+            max_pages_b   = std::max(max_pages_b, residency_pages[i]);
+        }
+
+        std::cout << "\nOld-Gen Page Residency Histogram (cumulative over "
+                  << residency_snapshots << " major-GC end snapshots):"
+                  << std::endl;
+        std::cout << "  live_frac        pages       page_MB      live_MB"
+                  << "    live%" << std::endl;
+
+        const int BAR_WIDTH = 30;
+        const double MB = 1024.0 * 1024.0;
+        for (int i = 0; i < RESIDENCY_BUCKETS; i++) {
+            if (residency_pages[i] == 0) continue;
+
+            double page_mb = residency_page_bytes[i] / MB;
+            double live_mb = residency_live_bytes[i] / MB;
+            double live_pct = residency_page_bytes[i] > 0
+                ? (residency_live_bytes[i] * 100.0)
+                  / residency_page_bytes[i]
+                : 0.0;
+
+            std::cout << "  " << RESIDENCY_LABELS[i] << " "
+                      << std::setw(11) << residency_pages[i] << " "
+                      << std::setw(11) << std::fixed << std::setprecision(2)
+                      << page_mb << " "
+                      << std::setw(11) << std::fixed << std::setprecision(2)
+                      << live_mb << "  "
+                      << std::setw(6) << std::fixed << std::setprecision(2)
+                      << live_pct << "%  ";
+
+            int bar_len = max_pages_b > 0
+                ? static_cast<int>((residency_pages[i] * BAR_WIDTH)
+                                   / max_pages_b)
+                : 0;
+            for (int j = 0; j < bar_len; j++) std::cout << "█";
+            std::cout << std::endl;
+        }
+
+        // Totals + pinned subset.
+        double total_page_mb = total_pbytes / MB;
+        double total_live_mb = total_lbytes / MB;
+        double total_pct = total_pbytes > 0
+            ? (total_lbytes * 100.0) / total_pbytes
+            : 0.0;
+        std::cout << "  total        " << std::setw(11) << total_pages << " "
+                  << std::setw(11) << std::fixed << std::setprecision(2)
+                  << total_page_mb << " "
+                  << std::setw(11) << std::fixed << std::setprecision(2)
+                  << total_live_mb << "  "
+                  << std::setw(6) << std::fixed << std::setprecision(2)
+                  << total_pct << "%" << std::endl;
+
+        if (residency_pinned_pages > 0) {
+            double pin_page_mb = residency_pinned_page_bytes / MB;
+            double pin_live_mb = residency_pinned_live_bytes / MB;
+            double pin_pct = residency_pinned_page_bytes > 0
+                ? (residency_pinned_live_bytes * 100.0)
+                  / residency_pinned_page_bytes
+                : 0.0;
+            std::cout << "  pinned       "
+                      << std::setw(11) << residency_pinned_pages << " "
+                      << std::setw(11) << std::fixed << std::setprecision(2)
+                      << pin_page_mb << " "
+                      << std::setw(11) << std::fixed << std::setprecision(2)
+                      << pin_live_mb << "  "
+                      << std::setw(6) << std::fixed << std::setprecision(2)
+                      << pin_pct << "%   (subset; cannot be sweep-released)"
+                      << std::endl;
+        }
+
+        // Per-major averages — useful when comparing across runs of
+        // different lengths (averages factor out wall time).
+        if (residency_snapshots > 0) {
+            double avg_pages_per_major =
+                static_cast<double>(total_pages) / residency_snapshots;
+            double avg_committed_mb_per_major =
+                total_page_mb / residency_snapshots;
+            double avg_live_mb_per_major =
+                total_live_mb / residency_snapshots;
+            std::cout << "  per-major avg: "
+                      << std::fixed << std::setprecision(1)
+                      << avg_pages_per_major << " pages, "
+                      << std::fixed << std::setprecision(2)
+                      << avg_committed_mb_per_major << " committed MB, "
+                      << std::fixed << std::setprecision(2)
+                      << avg_live_mb_per_major << " live MB"
+                      << std::endl;
+        }
+    }
+
     std::cout << std::endl;
 }
 
@@ -541,6 +710,17 @@ void GCStats::reset() {
     for (int i = 0; i < OLDGEN_ALLOC_BUCKETS; i++) {
         oldgen_alloc_size_histogram[i] = 0;
     }
+
+    // Reset page residency histogram.
+    for (int i = 0; i < RESIDENCY_BUCKETS; i++) {
+        residency_pages[i]      = 0;
+        residency_page_bytes[i] = 0;
+        residency_live_bytes[i] = 0;
+    }
+    residency_pinned_pages      = 0;
+    residency_pinned_page_bytes = 0;
+    residency_pinned_live_bytes = 0;
+    residency_snapshots         = 0;
 }
 
 } // namespace Elm

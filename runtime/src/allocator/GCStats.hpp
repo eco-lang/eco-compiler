@@ -90,6 +90,46 @@ public:
     uint64_t nursery_alloc_size_histogram[NURSERY_ALLOC_BUCKETS] = {0};
     uint64_t oldgen_alloc_size_histogram[OLDGEN_ALLOC_BUCKETS]   = {0};
 
+    // ========== Old-Gen Page Residency Histogram ==========
+    //
+    // Snapshot taken at every major-GC end (after all-dead reclaim and
+    // adjustCapacityAfterMajorGC) by walking the surviving old-gen blocks
+    // and bucketing each by live_bytes / totalBytes. Counts accumulate
+    // across all majors for the lifetime of this GCStats — over a test
+    // run, the histogram answers "of all old-gen blocks the collector
+    // saw committed across all majors, what fraction of their bytes were
+    // live?". A pile-up in the lowest non-zero bucket (a few % live)
+    // indicates sparse retention blocking page release.
+    //
+    // Buckets are non-overlapping. The first matches live_bytes == 0
+    // exactly (block fully empty); the rest are upper-inclusive ranges:
+    //   0 : live_frac == 0           (fully empty after mark)
+    //   1 : (0.00, 0.01]
+    //   2 : (0.01, 0.05]
+    //   3 : (0.05, 0.10]
+    //   4 : (0.10, 0.25]
+    //   5 : (0.25, 0.50]
+    //   6 : (0.50, 0.75]
+    //   7 : (0.75, 1.00]
+    static constexpr int RESIDENCY_BUCKETS = 8;
+
+    uint64_t residency_pages[RESIDENCY_BUCKETS]      = {0};
+    uint64_t residency_page_bytes[RESIDENCY_BUCKETS] = {0};
+    uint64_t residency_live_bytes[RESIDENCY_BUCKETS] = {0};
+
+    // Pinned (is_large) blocks are also recorded into the buckets above,
+    // but additionally tracked here so the printer can highlight how much
+    // of the residency is structurally locked (large blocks cannot be
+    // released by sweep until their single object dies).
+    uint64_t residency_pinned_pages       = 0;
+    uint64_t residency_pinned_page_bytes  = 0;
+    uint64_t residency_pinned_live_bytes  = 0;
+
+    // Number of major-GC end snapshots that contributed to the histogram.
+    // Equal to the count of recordResidencySnapshot() calls. Used by the
+    // printer to derive "average pages per major" alongside the totals.
+    uint64_t residency_snapshots = 0;
+
     // ========== AllocBuffer Stats ==========
     uint64_t buffers_allocated = 0;
     uint64_t buffers_filled = 0;
@@ -166,6 +206,19 @@ public:
 
     // Records completion of a major GC cycle with timing.
     void recordMajorGCEnd(uint64_t elapsed_ns);
+
+    // Adds one block's contribution to the residency histogram. Called
+    // once per surviving old-gen block at major-GC end. `total_bytes`
+    // is the block's full committed size; `live_bytes` is the
+    // mark-derived live size in this block; `is_large` flags pinned
+    // large-object blocks.
+    void recordBlockResidency(size_t total_bytes,
+                              size_t live_bytes,
+                              bool   is_large);
+
+    // Increments residency_snapshots; call once per major-GC end after
+    // every block has been recorded.
+    void recordResidencySnapshot();
 
     // Merges statistics from another GCStats instance (for combining thread stats).
     void combine(const GCStats& other);
