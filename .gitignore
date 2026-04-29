@@ -11,3 +11,4 @@ settings.json
 .crag.json
 elm-kernel/
 .ccache/
+__pycache__/
