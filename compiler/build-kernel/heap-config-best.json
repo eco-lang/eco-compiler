@@ -1,0 +1,14 @@
+{
+  "max_heap_size":                 "24G",
+  "initial_old_gen_size":          "16M",
+  "alloc_buffer_size":             "256K",
+  "nursery_block_count":           64,
+  "promotion_age":                 2,
+  "nursery_gc_threshold":          0.9,
+  "nursery_growth_threshold":      0.1,
+  "major_gc_initiating_occupancy": 0.75,
+  "major_gc_target_utilization":   0.70,
+  "use_hybrid_dfs":                true,
+  "large_object_threshold":        "8K",
+  "decommit_on_oldgen_release":    true
+}
