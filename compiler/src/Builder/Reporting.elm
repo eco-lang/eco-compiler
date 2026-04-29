@@ -546,7 +546,20 @@ handleBuildMessage decoder chan done msg =
 
 updateBuildProgress : Bytes.Decode.Decoder a -> Chan (Result BMsg (BResult a)) -> Int -> Task Never ()
 updateBuildProgress decoder chan done =
+    -- Always update the in-place terminal counter.
     putStrFlush ("\u{000D}Compiling (" ++ String.fromInt done ++ ")")
+        -- Plus a newline-terminated progression line every 50 modules so
+        -- captured stderr/stdout logs (no terminal carriage-return rewrite)
+        -- show real progression rather than a single overwritten line.
+        |> Task.andThen
+            (\_ ->
+                if modBy 50 done == 0 then
+                    IO.writeLn IO.stderr
+                        ("[build] " ++ String.fromInt done ++ " modules done")
+
+                else
+                    Task.succeed ()
+            )
         |> Task.andThen (\_ -> buildLoop decoder chan done)
 
 

@@ -17,6 +17,8 @@
 #include <cstring>
 #include <atomic>
 #include <csignal>
+#include <iostream>
+#include <unistd.h>
 #include <elf.h>
 #include <link.h>
 
@@ -182,10 +184,26 @@ static std::atomic<bool> g_stats_printed{false};
 
 static void printGCStatsOnce(const char *reason) {
     if (g_stats_printed.exchange(true)) return;
-    std::fprintf(stderr, "\n[gc-stats] %s — printing GC statistics\n", reason);
-    std::fflush(stderr);
+    // Use write() syscall for the marker (async-signal-safe). If the
+    // process dies mid-print we still know the handler ran.
+    {
+        char buf[128];
+        int n = std::snprintf(buf, sizeof(buf),
+                              "\n[gc-stats] %s — printing GC statistics\n",
+                              reason);
+        if (n > 0) {
+            ::write(STDERR_FILENO, buf, static_cast<size_t>(n));
+        }
+    }
     Elm::Allocator::instance().getCombinedStats().print();
+    // Flush BOTH the C++ stream buffer and the underlying FILE* buffer.
+    // print() writes via std::cout, which has its own buffer separate from
+    // stdout's; without the explicit cout.flush(), an immediate
+    // std::raise(sig) → SIG_DFL termination can drop everything past the
+    // last sync point.
+    std::cout.flush();
     std::fflush(stdout);
+    std::fflush(stderr);
 }
 
 static void atexitPrintStats() {
@@ -233,6 +251,13 @@ static void installStatsHandlers() {}
 #endif
 
 int main(int argc, char **argv) {
+    // Disable stdio buffering so progress lines and (more importantly) the
+    // GCStats summary printed by signal handlers reach the captured log
+    // files even when the process is killed mid-print. Stdout in particular
+    // is fully-buffered by default when not connected to a terminal.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
+
     installStatsHandlers();
 
     MainArgs args{argc, argv, 0};

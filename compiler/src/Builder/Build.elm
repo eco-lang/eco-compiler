@@ -82,7 +82,7 @@ import Compiler.Reporting.Render.Type.Localizer as L
 import Data.Map
 import Data.Set as EverySet
 import Dict exposing (Dict)
-import System.IO exposing (FilePath, MVar(..))
+import System.IO as IO exposing (FilePath, MVar(..))
 import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
@@ -1381,12 +1381,37 @@ compile (Env envData) docsNeed (Details.Local localData) source ifaces modul =
         pkg : Pkg.Name
         pkg =
             projectTypeToPkg envData.projectType
-    in
-    if envData.needsTypedOpt then
-        compileWithTypedOpt envData.key envData.root pkg envData.buildID docsNeed localData.path localData.time localData.deps localData.hasMain localData.lastChange source ifaces modul
 
-    else
-        compileWithoutTypedOpt envData.key envData.root pkg envData.buildID docsNeed localData.path localData.time localData.deps localData.hasMain localData.lastChange source ifaces modul
+        -- Per-module progress log: one newline-terminated line per module
+        -- so captured stderr (where the in-place "\rCompiling (N)" counter
+        -- doesn't render usefully) shows which module is being worked on
+        -- and at what rate. Stays quiet when stderr is the terminal — the
+        -- existing in-place counter still runs in parallel.
+        modName : Name
+        modName =
+            Src.getName modul
+
+        traceMsg : String
+        traceMsg =
+            "[build] compile "
+                ++ modName
+                ++ "  ("
+                ++ String.fromInt (String.length source)
+                ++ " B, "
+                ++ String.fromInt (List.length localData.deps)
+                ++ " deps"
+                ++ (if envData.needsTypedOpt then ", typed-opt" else "")
+                ++ ")"
+    in
+    IO.writeLn IO.stderr traceMsg
+        |> Task.andThen
+            (\_ ->
+                if envData.needsTypedOpt then
+                    compileWithTypedOpt envData.key envData.root pkg envData.buildID docsNeed localData.path localData.time localData.deps localData.hasMain localData.lastChange source ifaces modul
+
+                else
+                    compileWithoutTypedOpt envData.key envData.root pkg envData.buildID docsNeed localData.path localData.time localData.deps localData.hasMain localData.lastChange source ifaces modul
+            )
 
 
 {-| Context for compilation results, carrying all the values needed for finalization.
