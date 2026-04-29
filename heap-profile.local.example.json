@@ -1,0 +1,4 @@
+{
+  "machine_name": "ws-dev-01",
+  "results_root": "/var/data/heap-profile"
+}

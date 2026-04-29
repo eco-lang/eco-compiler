@@ -422,11 +422,15 @@ void GCStats::recordBlockResidency(size_t total_bytes,
     residency_garbage_bytes[bucket] += garbage_bytes;
     residency_free_bytes[bucket]    += free_bytes;
 
-    latest_residency_pages[bucket]++;
-    latest_residency_page_bytes[bucket]    += total_bytes;
-    latest_residency_live_bytes[bucket]    += live_bytes;
-    latest_residency_garbage_bytes[bucket] += garbage_bytes;
-    latest_residency_free_bytes[bucket]    += free_bytes;
+    // Accumulate into the staging buffer for the in-progress snapshot.
+    // The visible `latest_*` mirror is only updated when
+    // recordResidencySnapshot() commits this batch — so a SIGTERM
+    // landing mid-snapshot leaves the prior completed snapshot intact.
+    pending_residency_pages[bucket]++;
+    pending_residency_page_bytes[bucket]    += total_bytes;
+    pending_residency_live_bytes[bucket]    += live_bytes;
+    pending_residency_garbage_bytes[bucket] += garbage_bytes;
+    pending_residency_free_bytes[bucket]    += free_bytes;
 
     if (is_large) {
         residency_pinned_pages++;
@@ -435,32 +439,47 @@ void GCStats::recordBlockResidency(size_t total_bytes,
         residency_pinned_garbage_bytes += garbage_bytes;
         residency_pinned_free_bytes    += free_bytes;
 
-        latest_residency_pinned_pages++;
-        latest_residency_pinned_page_bytes    += total_bytes;
-        latest_residency_pinned_live_bytes    += live_bytes;
-        latest_residency_pinned_garbage_bytes += garbage_bytes;
-        latest_residency_pinned_free_bytes    += free_bytes;
+        pending_residency_pinned_pages++;
+        pending_residency_pinned_page_bytes    += total_bytes;
+        pending_residency_pinned_live_bytes    += live_bytes;
+        pending_residency_pinned_garbage_bytes += garbage_bytes;
+        pending_residency_pinned_free_bytes    += free_bytes;
     }
 }
 
 void GCStats::beginResidencySnapshot() {
+    // Clear ONLY the staging buffer. `latest_*` keeps the prior
+    // completed snapshot until recordResidencySnapshot() commits this
+    // new one — see crash-forensics rationale in GCStats.hpp.
     for (int i = 0; i < RESIDENCY_BUCKETS; i++) {
-        latest_residency_pages[i]         = 0;
-        latest_residency_page_bytes[i]    = 0;
-        latest_residency_live_bytes[i]    = 0;
-        latest_residency_garbage_bytes[i] = 0;
-        latest_residency_free_bytes[i]    = 0;
+        pending_residency_pages[i]         = 0;
+        pending_residency_page_bytes[i]    = 0;
+        pending_residency_live_bytes[i]    = 0;
+        pending_residency_garbage_bytes[i] = 0;
+        pending_residency_free_bytes[i]    = 0;
     }
-    latest_residency_pinned_pages         = 0;
-    latest_residency_pinned_page_bytes    = 0;
-    latest_residency_pinned_live_bytes    = 0;
-    latest_residency_pinned_garbage_bytes = 0;
-    latest_residency_pinned_free_bytes    = 0;
-    latest_residency_snapshots            = 0;
+    pending_residency_pinned_pages         = 0;
+    pending_residency_pinned_page_bytes    = 0;
+    pending_residency_pinned_live_bytes    = 0;
+    pending_residency_pinned_garbage_bytes = 0;
+    pending_residency_pinned_free_bytes    = 0;
 }
 
 void GCStats::recordResidencySnapshot() {
     residency_snapshots++;
+    // Commit the staging buffer: pending_* -> latest_*.
+    for (int i = 0; i < RESIDENCY_BUCKETS; i++) {
+        latest_residency_pages[i]         = pending_residency_pages[i];
+        latest_residency_page_bytes[i]    = pending_residency_page_bytes[i];
+        latest_residency_live_bytes[i]    = pending_residency_live_bytes[i];
+        latest_residency_garbage_bytes[i] = pending_residency_garbage_bytes[i];
+        latest_residency_free_bytes[i]    = pending_residency_free_bytes[i];
+    }
+    latest_residency_pinned_pages         = pending_residency_pinned_pages;
+    latest_residency_pinned_page_bytes    = pending_residency_pinned_page_bytes;
+    latest_residency_pinned_live_bytes    = pending_residency_pinned_live_bytes;
+    latest_residency_pinned_garbage_bytes = pending_residency_pinned_garbage_bytes;
+    latest_residency_pinned_free_bytes    = pending_residency_pinned_free_bytes;
     latest_residency_snapshots = 1;
 }
 
@@ -470,30 +489,36 @@ void GCStats::recordFreeListClass(size_t size_class,
     if (size_class >= FREELIST_CLASS_BUCKETS) return;
     freelist_cells_by_class[size_class] += cell_count;
     freelist_bytes_by_class[size_class] += cell_bytes;
-    latest_freelist_cells_by_class[size_class] += cell_count;
-    latest_freelist_bytes_by_class[size_class] += cell_bytes;
+    pending_freelist_cells_by_class[size_class] += cell_count;
+    pending_freelist_bytes_by_class[size_class] += cell_bytes;
 }
 
 void GCStats::recordFreeListLargeBlocks(uint64_t block_count,
                                         uint64_t total_bytes) {
     freelist_large_block_count += block_count;
     freelist_large_block_bytes += total_bytes;
-    latest_freelist_large_block_count += block_count;
-    latest_freelist_large_block_bytes += total_bytes;
+    pending_freelist_large_block_count += block_count;
+    pending_freelist_large_block_bytes += total_bytes;
 }
 
 void GCStats::beginFreeListSnapshot() {
+    // Staging buffer only — latest_* retains the prior completed snapshot.
     for (int i = 0; i < FREELIST_CLASS_BUCKETS; i++) {
-        latest_freelist_cells_by_class[i] = 0;
-        latest_freelist_bytes_by_class[i] = 0;
+        pending_freelist_cells_by_class[i] = 0;
+        pending_freelist_bytes_by_class[i] = 0;
     }
-    latest_freelist_large_block_count = 0;
-    latest_freelist_large_block_bytes = 0;
-    latest_freelist_snapshots         = 0;
+    pending_freelist_large_block_count = 0;
+    pending_freelist_large_block_bytes = 0;
 }
 
 void GCStats::recordFreeListSnapshot() {
     freelist_snapshots++;
+    for (int i = 0; i < FREELIST_CLASS_BUCKETS; i++) {
+        latest_freelist_cells_by_class[i] = pending_freelist_cells_by_class[i];
+        latest_freelist_bytes_by_class[i] = pending_freelist_bytes_by_class[i];
+    }
+    latest_freelist_large_block_count = pending_freelist_large_block_count;
+    latest_freelist_large_block_bytes = pending_freelist_large_block_bytes;
     latest_freelist_snapshots = 1;
 }
 
@@ -646,6 +671,9 @@ void GCStats::combine(const GCStats& other) {
     latest_residency_pinned_garbage_bytes += other.latest_residency_pinned_garbage_bytes;
     latest_residency_pinned_free_bytes    += other.latest_residency_pinned_free_bytes;
     latest_residency_snapshots            += other.latest_residency_snapshots;
+    // Pending residency staging: not exposed by the printer, so combining
+    // would leak partial in-progress snapshots into the merged view. Leave
+    // pending_* on `this` untouched.
 
     // Combine free-list size-class histogram.
     for (int i = 0; i < FREELIST_CLASS_BUCKETS; i++) {
@@ -664,6 +692,7 @@ void GCStats::combine(const GCStats& other) {
     latest_freelist_large_block_count += other.latest_freelist_large_block_count;
     latest_freelist_large_block_bytes += other.latest_freelist_large_block_bytes;
     latest_freelist_snapshots         += other.latest_freelist_snapshots;
+    // Pending free-list staging: not exposed by the printer; left untouched.
 }
 
 // Prints a formatted summary to stdout with histograms.
@@ -1064,6 +1093,11 @@ void GCStats::reset() {
         latest_residency_live_bytes[i]    = 0;
         latest_residency_garbage_bytes[i] = 0;
         latest_residency_free_bytes[i]    = 0;
+        pending_residency_pages[i]         = 0;
+        pending_residency_page_bytes[i]    = 0;
+        pending_residency_live_bytes[i]    = 0;
+        pending_residency_garbage_bytes[i] = 0;
+        pending_residency_free_bytes[i]    = 0;
     }
     latest_residency_pinned_pages         = 0;
     latest_residency_pinned_page_bytes    = 0;
@@ -1071,6 +1105,11 @@ void GCStats::reset() {
     latest_residency_pinned_garbage_bytes = 0;
     latest_residency_pinned_free_bytes    = 0;
     latest_residency_snapshots            = 0;
+    pending_residency_pinned_pages         = 0;
+    pending_residency_pinned_page_bytes    = 0;
+    pending_residency_pinned_live_bytes    = 0;
+    pending_residency_pinned_garbage_bytes = 0;
+    pending_residency_pinned_free_bytes    = 0;
 
     // Reset free-list size-class histogram.
     for (int i = 0; i < FREELIST_CLASS_BUCKETS; i++) {
@@ -1085,10 +1124,14 @@ void GCStats::reset() {
     for (int i = 0; i < FREELIST_CLASS_BUCKETS; i++) {
         latest_freelist_cells_by_class[i] = 0;
         latest_freelist_bytes_by_class[i] = 0;
+        pending_freelist_cells_by_class[i] = 0;
+        pending_freelist_bytes_by_class[i] = 0;
     }
     latest_freelist_large_block_count = 0;
     latest_freelist_large_block_bytes = 0;
     latest_freelist_snapshots         = 0;
+    pending_freelist_large_block_count = 0;
+    pending_freelist_large_block_bytes = 0;
 }
 
 } // namespace Elm

@@ -144,15 +144,17 @@ public:
     // printer to derive "average pages per major" alongside the totals.
     uint64_t residency_snapshots = 0;
 
-    // ---- Latest-only snapshot (most recent major-GC end) ----
+    // ---- Latest-only snapshot (most recent COMPLETED major-GC end) ----
     //
-    // Mirrors the residency arrays above but holds only the contributions
-    // from the most recent major-GC end snapshot. Cleared on
-    // beginResidencySnapshot() and re-populated by recordBlockResidency()
-    // before recordResidencySnapshot() bumps `latest_residency_snapshots`
-    // to 1. The printer surfaces this separately from the cumulative
-    // histogram so the final state at program end can be inspected
-    // unmerged from earlier majors.
+    // Holds the most recent fully-recorded snapshot. Per-record events
+    // accumulate into the `pending_*` mirrors; on
+    // recordResidencySnapshot() we atomically swap pending_* into
+    // latest_* and reset pending_* to zero. This guarantees that if
+    // SIGTERM lands mid-snapshot (after beginResidencySnapshot() but
+    // before recordResidencySnapshot()), the printer still sees the
+    // PRIOR completed snapshot rather than an empty / partially-filled
+    // mirror — important for crash forensics where the last completed
+    // major's heap shape pins down what the runtime was doing.
     uint64_t latest_residency_pages[RESIDENCY_BUCKETS]         = {0};
     uint64_t latest_residency_page_bytes[RESIDENCY_BUCKETS]    = {0};
     uint64_t latest_residency_live_bytes[RESIDENCY_BUCKETS]    = {0};
@@ -164,6 +166,22 @@ public:
     uint64_t latest_residency_pinned_garbage_bytes = 0;
     uint64_t latest_residency_pinned_free_bytes    = 0;
     uint64_t latest_residency_snapshots            = 0;
+
+    // ---- Staging buffer for the in-progress residency snapshot ----
+    //
+    // beginResidencySnapshot() zeroes these (NOT latest_*). Per-block
+    // recordBlockResidency() calls accumulate here. recordResidencySnapshot()
+    // copies pending_* into latest_*, then zeroes pending_*.
+    uint64_t pending_residency_pages[RESIDENCY_BUCKETS]         = {0};
+    uint64_t pending_residency_page_bytes[RESIDENCY_BUCKETS]    = {0};
+    uint64_t pending_residency_live_bytes[RESIDENCY_BUCKETS]    = {0};
+    uint64_t pending_residency_garbage_bytes[RESIDENCY_BUCKETS] = {0};
+    uint64_t pending_residency_free_bytes[RESIDENCY_BUCKETS]    = {0};
+    uint64_t pending_residency_pinned_pages         = 0;
+    uint64_t pending_residency_pinned_page_bytes    = 0;
+    uint64_t pending_residency_pinned_live_bytes    = 0;
+    uint64_t pending_residency_pinned_garbage_bytes = 0;
+    uint64_t pending_residency_pinned_free_bytes    = 0;
 
     // ========== Free-List Size-Class Histogram ==========
     //
@@ -190,18 +208,22 @@ public:
     uint64_t freelist_large_block_count  = 0;
     uint64_t freelist_snapshots          = 0;
 
-    // ---- Latest-only snapshot (most recent major-GC end) ----
+    // ---- Latest-only snapshot (most recent COMPLETED major-GC end) ----
     //
-    // Mirrors the free-list histogram fields above but holds only the
-    // contributions from the most recent major-GC end snapshot. Cleared
-    // on beginFreeListSnapshot() and re-populated by recordFreeListClass /
-    // recordFreeListLargeBlocks before recordFreeListSnapshot() bumps
-    // `latest_freelist_snapshots` to 1.
+    // Holds the most recent fully-recorded snapshot. See the
+    // residency latest/pending comment above for the rationale —
+    // mid-snapshot SIGTERM keeps the previous completed mirror visible.
     uint64_t latest_freelist_cells_by_class[FREELIST_CLASS_BUCKETS] = {0};
     uint64_t latest_freelist_bytes_by_class[FREELIST_CLASS_BUCKETS] = {0};
     uint64_t latest_freelist_large_block_bytes  = 0;
     uint64_t latest_freelist_large_block_count  = 0;
     uint64_t latest_freelist_snapshots          = 0;
+
+    // ---- Staging buffer for the in-progress free-list snapshot ----
+    uint64_t pending_freelist_cells_by_class[FREELIST_CLASS_BUCKETS] = {0};
+    uint64_t pending_freelist_bytes_by_class[FREELIST_CLASS_BUCKETS] = {0};
+    uint64_t pending_freelist_large_block_bytes  = 0;
+    uint64_t pending_freelist_large_block_count  = 0;
 
     // ========== AllocBuffer Stats ==========
     uint64_t buffers_allocated = 0;
