@@ -22,6 +22,7 @@
 #include "allocator/OldGenHeapBaseSentinelTest.hpp"
 #include "allocator/OldGenLazySweepTest.hpp"
 #include "allocator/OldGenSweepOnDemandTest.hpp"
+#include "allocator/OldGenSweepBudgetTest.hpp"
 #include "allocator/HeapHelpersTest.hpp"
 #include "allocator/StringOpsTest.hpp"
 #include "allocator/ListOpsTest.hpp"
@@ -610,6 +611,11 @@ int main(int argc, char* argv[]) {
     oldGenTests.add(testPerAllocSweepCap);
     oldGenTests.add(testPendingBlocksCounterTracksFullySwept);
     oldGenTests.add(testMidCycleBlockReleaseDecrementsCounter);
+    // Adaptive lazy-sweep pacing (plans/dynamic-pressure-aware-sweep.md).
+    oldGenTests.add(testSweepBudgetMonotonicByPressure);
+    oldGenTests.add(testSweepBudgetUnsweptRatioBoost);
+    oldGenTests.add(testSweepBudgetMinimumIsSweepWorkBudget);
+    oldGenTests.add(testSweepBudgetClampedToHardCap);
     // Heap-base sentinel discipline (plans/heap-base-sentinel-fix.md).
     oldGenTests.add(testInitialUnassignedBlocksAreFullPages);
     oldGenTests.add(testNoAllocationLandsAtHeapBase);
@@ -731,6 +737,8 @@ int main(int argc, char* argv[]) {
     gcPressureTests->add(testRetentionRateSweep);
     gcPressureTests->add(testStackRootRangeUnderPressure);
     gcPressureTests->add(testSafepointPollingDrainsPressure);
+    // Group E — Adaptive lazy-sweep pacing.
+    gcPressureTests->add(testPanicSweepDrivesAllocationToCompletion);
 
     // Codegen tests (MLIR lowering and JIT execution) - parallel isolated execution
     auto codegenTests = CodegenIsolatedTest::buildCodegenTestSuite();

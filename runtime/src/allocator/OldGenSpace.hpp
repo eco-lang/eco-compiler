@@ -95,6 +95,58 @@ static constexpr size_t INITIAL_SWEEP_BUDGET = SWEEP_WORK_BUDGET * 16;
 static constexpr size_t MARK_WORK_RATIO = 2;
 
 // ============================================================================
+// Adaptive Lazy-Sweep Pacing
+// ============================================================================
+//
+// Per-allocation lazy-sweep work scales with (a) allocation size, (b) old-gen
+// committed-to-cap pressure, and (c) the fraction of unswept blocks. The
+// scaled budget caps allocator slow-path work for any single allocation;
+// when the global cap is reached and no further capacity can be acquired, the
+// panic path drives any remaining lazy-sweep work to completion before
+// declaring OOM. See `sweepOnDemandAllocate` and
+// `panicSweepAndRetryAllocation` for the call sites.
+
+// Base proportionality factor: bytes of sweep work per byte of requested
+// allocation, before pressure scaling. Conservative default; the same
+// pressure test in test/allocator/GCPressureTest.cpp doubles as a calibration
+// harness.
+// TODO: calibrate via GCPressureTest.
+static constexpr double SWEEP_BYTES_PER_ALLOC_BYTE = 2.0;
+
+// Soft cap on the per-allocation budget BEFORE pressure scaling: the base
+// budget never grows beyond this value just from `requested_size` alone.
+static constexpr size_t MAX_SWEEP_BYTES_PER_ALLOC = 1u << 20;  // 1 MiB.
+
+// Hard cap applied AFTER pressure scaling and unswept-ratio boost. If Stage 7
+// still dies under pressure, switch to
+// `std::max<size_t>(4u << 20, getCommittedBytes() / 256)` so a 12 GiB heap
+// allows up to ~48 MiB sweep per allocation in extreme cases.
+static constexpr size_t MAX_SWEEP_BYTES_HARD = 4u << 20;       // 4 MiB.
+
+// Pressure thresholds on committedToCapRatio (committed / cap). Each step
+// multiplies the base budget by the matching SWEEP_SCALE_*.
+static constexpr double SWEEP_CAP_RATIO_LOW    = 0.50;
+static constexpr double SWEEP_CAP_RATIO_MEDIUM = 0.75;
+static constexpr double SWEEP_CAP_RATIO_HIGH   = 0.90;
+
+static constexpr double SWEEP_SCALE_LOW    = 1.0;
+static constexpr double SWEEP_SCALE_MEDIUM = 2.0;
+static constexpr double SWEEP_SCALE_HIGH   = 4.0;
+static constexpr double SWEEP_SCALE_CRIT   = 8.0;
+
+// Unswept-fraction boost: when more than this fraction of in-cycle blocks
+// haven't been fully swept, multiply the budget by SWEEP_UNSWEPT_SCALE on
+// top of the pressure scaling.
+static constexpr double SWEEP_UNSWEPT_RATIO_BOOST = 0.50;
+static constexpr double SWEEP_UNSWEPT_SCALE       = 2.0;
+
+// Per-slice budget when the panic path is driving sweep to completion.
+// Larger than SWEEP_WORK_BUDGET because by the time panic mode fires the
+// mutator has already failed to grow capacity — there is no smaller slice
+// to wait for.
+static constexpr size_t PANIC_SWEEP_SLICE_BYTES = 1u << 20;    // 1 MiB.
+
+// ============================================================================
 // Free Cell Structure
 // ============================================================================
 //
@@ -309,6 +361,15 @@ private:
     // sweep-before-grow gate in allocateFromSizeClass.
     size_t sweep_pending_blocks_;
 
+    // Total in-cycle blocks (i.e. eligible to be swept this cycle) used as
+    // the denominator for the unswept-fraction boost in
+    // `computeSweepBudgetForAlloc`. Counts entries in `buffer_meta_` with
+    // `!fully_swept && garbage_bytes > 0` at sweep entry, so it excludes
+    // mid-cycle blocks pre-marked as fully_swept that would otherwise
+    // dilute the ratio. Set in `recomputeSweepPendingBlocks` and zeroed in
+    // `onSweepComplete` / reset / ctor.
+    size_t sweep_total_blocks_;
+
     // ========== Per-Block Mark Bitmaps ==========
     //
     // Liveness for old-gen objects is tracked in per-block bitmaps (1 bit per
@@ -488,14 +549,37 @@ private:
     // refactor of the first two paragraphs of allocateFromSizeClass.
     void* tryAllocateFromFreeLists(size_t cls, size_t requested_size);
 
-    // Sweep-on-demand driver: while hasPendingSweepWork(), runs a
-    // SWEEP_WORK_BUDGET-sized lazy-sweep slice and retries the free-list
-    // path. Returns the allocation on success, or nullptr if sweep finishes
-    // (or the per-allocation MAX_SWEEP_BYTES_PER_ALLOC cap is hit) without
-    // satisfying the request. Called from allocateFromSizeClass on the
+    // Sweep-on-demand driver: computes a dynamic per-allocation sweep
+    // budget via `computeSweepBudgetForAlloc` and, while
+    // `hasPendingSweepWork()` and the budget remains, runs SWEEP_WORK_BUDGET
+    // slices of `lazySweep` and retries `tryAllocateFromFreeLists`. Returns
+    // the allocation on success, or nullptr when the sweep finishes or the
+    // dynamic budget is exhausted. Called from allocateFromSizeClass on the
     // slow path before falling through to populateFromBlock /
     // allocateFromBagPage.
     void* sweepOnDemandAllocate(size_t cls, size_t requested_size);
+
+    // Returns committed / cap as a fraction in [0, 1]. Approximate:
+    // numerator is `getCommittedBytes()` (this thread's old-gen extent),
+    // denominator is `config_->max_heap_size / 2` as a stand-in for the
+    // global old-gen cap. If Allocator later exposes a cheap
+    // `getOldGenCapBytes()` / `getOldGenCommittedBytes()`, swap to that
+    // without changing call sites.
+    double committedToCapRatio() const;
+
+    // Returns the per-allocation lazy-sweep byte budget for a request of
+    // `requested_size` bytes. Combines base proportionality, pressure
+    // scaling, and the unswept-fraction boost; clamped to
+    // MAX_SWEEP_BYTES_HARD.
+    size_t computeSweepBudgetForAlloc(size_t requested_size) const;
+
+    // Panic-mode sweep driver: while `hasPendingSweepWork()`, sweeps in
+    // PANIC_SWEEP_SLICE_BYTES slices and retries the free-list path.
+    // Invariant lives at the call site: panic only fires after the bag-page
+    // / capacity-grow paths in `allocateFromSizeClass` have failed, meaning
+    // growth is impossible. Returns the allocation on success, or nullptr
+    // once sweep is exhausted.
+    void* panicSweepAndRetryAllocation(size_t cls, size_t requested_size);
 
     // Post-major-GC growth: if live/capacity > initiating_occupancy, grow
     // committed capacity so live/capacity <= target_utilization. Bounded by
@@ -877,11 +961,34 @@ public:
     static size_t getSweepPendingBlocks(const OldGenSpace& oldgen) {
         return oldgen.sweep_pending_blocks_;
     }
+    static size_t getSweepTotalBlocks(const OldGenSpace& oldgen) {
+        return oldgen.sweep_total_blocks_;
+    }
     static bool hasPendingSweepWork(const OldGenSpace& oldgen) {
         return oldgen.hasPendingSweepWork();
     }
     static bool sweepComplete(const OldGenSpace& oldgen) {
         return oldgen.sweepComplete();
+    }
+
+    // Adaptive lazy-sweep pacing (Stage 5 §13).
+    static size_t computeSweepBudgetForAlloc(OldGenSpace& oldgen,
+                                             size_t requested_size) {
+        return oldgen.computeSweepBudgetForAlloc(requested_size);
+    }
+    static double committedToCapRatio(const OldGenSpace& oldgen) {
+        return oldgen.committedToCapRatio();
+    }
+
+    // Forces the "no growth available + pending sweep" precondition so
+    // panic-path tests are deterministic: empties unassigned bag pages by
+    // pretending they were already consumed (caller is responsible for not
+    // touching the released memory). Returns the bag size before the drain
+    // so the test can assert the precondition was non-trivial.
+    static size_t drainUnassignedBlocksForTest(OldGenSpace& oldgen) {
+        size_t n = oldgen.unassigned_blocks_.size();
+        oldgen.unassigned_blocks_.clear();
+        return n;
     }
 
     // Fragmentation stats.

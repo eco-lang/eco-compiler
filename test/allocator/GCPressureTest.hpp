@@ -36,3 +36,8 @@ extern Testing::TestCase testRandomizedPressureWorkload;
 extern Testing::TestCase testRetentionRateSweep;
 extern Testing::TestCase testStackRootRangeUnderPressure;
 extern Testing::TestCase testSafepointPollingDrainsPressure;
+
+// ============================================================================
+// Group E — Adaptive lazy-sweep pacing (plans/dynamic-pressure-aware-sweep.md)
+// ============================================================================
+extern Testing::TestCase testPanicSweepDrivesAllocationToCompletion;

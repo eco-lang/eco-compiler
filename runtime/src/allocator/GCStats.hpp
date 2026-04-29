@@ -266,6 +266,22 @@ public:
     uint64_t total_lazy_sweep_in_minor_ns = 0;
     uint64_t total_lazy_sweep_in_mutator_ns = 0;
 
+    // ========== Adaptive Lazy-Sweep Pacing (bytes) ==========
+    //
+    // Cumulative bytes the dynamic lazy-sweep pacer asked the sweeper to
+    // do on the mutator allocation slow path. Counts requested slice bytes
+    // (not actual swept bytes — see "requested slice == accounted bytes"
+    // in OldGenSpace::sweepOnDemandAllocate). Survives without
+    // ECO_GC_PHASE_PROFILE; merged via existing Allocator::getCombinedStats.
+    uint64_t total_lazy_sweep_bytes_in_mutator = 0;
+    // Cumulative bytes asked of the sweeper from
+    // OldGenSpace::panicSweepAndRetryAllocation, i.e. the slow path that
+    // fires only when bag-page acquisition has failed and growth is
+    // impossible. A non-zero value here means the heap was at the cap and
+    // the panic path successfully (or unsuccessfully) tried to recover by
+    // finishing the sweep.
+    uint64_t total_panic_sweep_bytes = 0;
+
     // ========== Major GC Timing Stats ==========
     uint64_t major_gc_count = 0;
     uint64_t total_major_gc_time_ns = 0;

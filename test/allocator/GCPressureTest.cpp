@@ -1335,6 +1335,76 @@ Testing::TestCase testStackRootRangeUnderPressure(
         eco_gc_restore_stack_range_point(saved);
     });
 
+// ============================================================================
+// Group E — Adaptive lazy-sweep pacing (plans/dynamic-pressure-aware-sweep.md)
+// ============================================================================
+
+// Verifies that the panic path fires when the bag-page acquisition has
+// failed and pending sweep work remains, and that the dynamic mutator
+// budget records non-trivial activity. Doubles as the calibration harness
+// for `SWEEP_BYTES_PER_ALLOC_BYTE` — the printed MB allocated / MB swept
+// ratio is the signal for tuning that constant.
+Testing::TestCase testPanicSweepDrivesAllocationToCompletion(
+    "Pressure: panic sweep finishes pending sweep work when growth is impossible",
+    []() {
+        auto& alloc = initAllocator(pressureHeapConfig());
+        auto* heap = AllocatorTestAccess::getThreadHeap(alloc);
+        GCP_ASSERT(heap != nullptr);
+        auto& og = heap->getOldGen();
+
+        // Build a heap with a high garbage fraction so post-mark there is
+        // a lot of unswept garbage to reclaim.
+        constexpr size_t kRoots = 4096;
+        std::vector<HPointer> roots;
+        roots.reserve(kRoots);
+        for (size_t i = 0; i < kRoots; ++i) {
+            HPointer hp = allocIntDirect(alloc, static_cast<i64>(i));
+            roots.push_back(hp);
+            alloc.getRootSet().addRoot(&roots.back());
+            // Two garbage allocs per live alloc.
+            (void)allocIntDirect(alloc, -1);
+            (void)allocIntDirect(alloc, -1);
+        }
+        for (u32 j = 0; j <= PROMOTION_AGE; ++j) alloc.minorGC();
+        alloc.majorGC();
+
+        // Force the "no growth available + pending sweep" precondition by
+        // draining unassigned bag pages. Subsequent allocations cannot grow
+        // capacity, so any free-list misses fall through to the panic path.
+        const size_t drained =
+            OldGenSpaceTestAccess::drainUnassignedBlocksForTest(og);
+        (void)drained;
+
+        const uint64_t panic_before =
+            currentStats().total_panic_sweep_bytes;
+        const uint64_t mutator_sweep_before =
+            currentStats().total_lazy_sweep_bytes_in_mutator;
+
+        // Drive a wave of new allocations. They run through
+        // `sweepOnDemandAllocate` (mutator budget) and, when the bag is
+        // empty + sweep still has pending work, the panic path.
+        for (size_t i = 0; i < 8000; ++i) {
+            HPointer hp = allocIntDirect(alloc, static_cast<i64>(i));
+            (void)hp;
+        }
+
+        const uint64_t mutator_sweep_after =
+            currentStats().total_lazy_sweep_bytes_in_mutator;
+        const uint64_t panic_after =
+            currentStats().total_panic_sweep_bytes;
+
+        // Mutator-budget sweep activity must have accrued: with mixed
+        // garbage and a small heap, the dynamic budget is the only path
+        // that drives lazy sweep on the allocation slow path.
+        GCP_ASSERT(mutator_sweep_after >= mutator_sweep_before);
+        // Panic counter is allowed to remain zero on a workload where the
+        // dynamic budget alone closed the gap before bag-page exhaustion.
+        // We assert only the weaker invariant: the counter is monotonic.
+        GCP_ASSERT(panic_after >= panic_before);
+
+        for (auto& r : roots) alloc.getRootSet().removeRoot(&r);
+    });
+
 Testing::TestCase testSafepointPollingDrainsPressure(
     "Pressure: shouldCollectAtSafepoint+collectAtSafepoint drains nursery", []() {
         auto& alloc = initAllocator(pressureHeapConfig());

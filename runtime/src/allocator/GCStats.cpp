@@ -589,6 +589,8 @@ void GCStats::combine(const GCStats& other) {
     // Combine inline-helper attribution.
     total_lazy_sweep_in_minor_ns += other.total_lazy_sweep_in_minor_ns;
     total_lazy_sweep_in_mutator_ns += other.total_lazy_sweep_in_mutator_ns;
+    total_lazy_sweep_bytes_in_mutator += other.total_lazy_sweep_bytes_in_mutator;
+    total_panic_sweep_bytes += other.total_panic_sweep_bytes;
 
     // Combine Minor GC timing stats.
     total_minor_gc_time_ns += other.total_minor_gc_time_ns;
@@ -913,6 +915,24 @@ void GCStats::print() const {
                                 total_lazy_sweep_in_mutator_ns) << std::endl;
     }
 
+    // ========== Adaptive Lazy-Sweep Pacing ==========
+    //
+    // Bytes asked of the sweeper from the dynamic per-allocation budget
+    // (`OldGenSpace::sweepOnDemandAllocate`) and from the panic path
+    // (`OldGenSpace::panicSweepAndRetryAllocation`). Non-zero panic bytes
+    // indicate the old gen reached its cap and the panic path drove sweep
+    // to completion to avoid OOM.
+    if (total_lazy_sweep_bytes_in_mutator > 0 ||
+        total_panic_sweep_bytes > 0) {
+        std::cout << "\nAdaptive Lazy-Sweep Bytes:" << std::endl;
+        std::cout << "  Mutator slow-path:     " << std::setw(15)
+                  << total_lazy_sweep_bytes_in_mutator
+                  << "  bytes requested" << std::endl;
+        std::cout << "  Panic path:            " << std::setw(15)
+                  << total_panic_sweep_bytes
+                  << "  bytes requested" << std::endl;
+    }
+
     // ========== Allocation Size Histograms ==========
     auto printAllocHistogram = [](const char* title,
                                   const uint64_t* hist,
@@ -1036,6 +1056,8 @@ void GCStats::reset() {
     bytes_freed = 0;
     total_lazy_sweep_in_minor_ns = 0;
     total_lazy_sweep_in_mutator_ns = 0;
+    total_lazy_sweep_bytes_in_mutator = 0;
+    total_panic_sweep_bytes = 0;
     total_minor_gc_time_ns = 0;
     min_minor_gc_time_ns = UINT64_MAX;
     max_minor_gc_time_ns = 0;
