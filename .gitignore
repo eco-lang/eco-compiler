@@ -13,3 +13,4 @@ elm-kernel/
 .ccache/
 __pycache__/
 heap-profile.local.json
+heap-profiles/
