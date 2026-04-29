@@ -26,6 +26,13 @@
 
 namespace Elm {
 
+// True only while the calling thread is inside NurserySpace::minorGC.
+// Read by OldGenSpace::allocate to attribute its inline mark/sweep helper
+// work to the GCStats::total_lazy_sweep_in_minor_ns counter when the
+// allocation comes from a promotion (rather than a direct mutator alloc).
+// Always-on (not gated on ECO_GC_DEBUG) because the stats path needs it.
+extern thread_local bool g_in_minor_gc;
+
 /**
  * Collects performance metrics for garbage collection.
  *
@@ -98,6 +105,31 @@ public:
     // the old-gen cap (hard, inline in the alloc slow path).
     uint64_t major_gc_occupancy_triggers    = 0;
     uint64_t major_gc_alloc_failure_triggers = 0;
+
+    // ========== Inline GC-helper attribution ==========
+    //
+    // OldGenSpace::allocate runs allocation-paced incremental mark and lazy
+    // sweep work as a side effect. This is conceptually major-GC work but
+    // it runs inline on the allocation hot path, so it doesn't show up in
+    // the major-GC timer. Two counters split the wall-clock attribution by
+    // calling context:
+    //
+    //   total_lazy_sweep_in_minor_ns
+    //     Helper time accumulated while the calling thread is mid-minorGC
+    //     (g_in_minor_gc == true), i.e. via promotion → oldgen.allocate.
+    //     NurserySpace::minorGC subtracts this per-cycle from elapsed_ns
+    //     before recording, so the minor histogram/min/max/avg reflect
+    //     pure nursery-copy time.
+    //
+    //   total_lazy_sweep_in_mutator_ns
+    //     Helper time accumulated when the mutator (not a minor GC) is
+    //     calling oldgen.allocate (large-pinned, permanent, large region).
+    //     Without this counter, this helper time is silently included in
+    //     mutator_s; with it, the printout / parser can split it out so
+    //     wall_s = minor + major + helper_in_minor + helper_in_mutator +
+    //              mutator (all five buckets sum to wall clock).
+    uint64_t total_lazy_sweep_in_minor_ns = 0;
+    uint64_t total_lazy_sweep_in_mutator_ns = 0;
 
     // ========== Major GC Timing Stats ==========
     uint64_t major_gc_count = 0;

@@ -15,6 +15,9 @@
 
 namespace Elm {
 
+// Definition for the in-minor-GC flag declared in GCStats.hpp.
+thread_local bool g_in_minor_gc = false;
+
 // Maps an allocation size in bytes to its power-of-two histogram bucket.
 // Bucket k covers [8 << k, 8 << (k+1)); the last bucket absorbs anything
 // at or above the histogram's upper bound.
@@ -168,6 +171,10 @@ void GCStats::combine(const GCStats& other) {
     objects_promoted += other.objects_promoted;
     bytes_freed += other.bytes_freed;
 
+    // Combine inline-helper attribution.
+    total_lazy_sweep_in_minor_ns += other.total_lazy_sweep_in_minor_ns;
+    total_lazy_sweep_in_mutator_ns += other.total_lazy_sweep_in_mutator_ns;
+
     // Combine Minor GC timing stats.
     total_minor_gc_time_ns += other.total_minor_gc_time_ns;
     if (other.min_minor_gc_time_ns < min_minor_gc_time_ns) {
@@ -258,7 +265,13 @@ void GCStats::print() const {
     if (minor_gc_count > 0) {
         std::cout << "\nMinor GC Timing:" << std::endl;
 
-        std::cout << "  Total time:            " << std::setw(15) << formatTime(total_minor_gc_time_ns) << std::endl;
+        // total_minor_gc_time_ns is the PURE nursery-copy time per cycle:
+        // NurserySpace::minorGC subtracts the inline-helper time
+        // (incremental mark + lazy sweep run via promotion → oldgen.allocate)
+        // before recording. The histogram/min/max/avg below all reflect the
+        // same pure-cycle accounting.
+        std::cout << "  Total time:            " << std::setw(15) << formatTime(total_minor_gc_time_ns)
+                  << "  (pure nursery-copy)" << std::endl;
 
         uint64_t avg_ns = total_minor_gc_time_ns / minor_gc_count;
         std::cout << "  Average time:          " << std::setw(15) << formatTime(avg_ns) << std::endl;
@@ -268,6 +281,7 @@ void GCStats::print() const {
         }
 
         std::cout << "  Max time:              " << std::setw(15) << formatTime(max_minor_gc_time_ns) << std::endl;
+
         std::cout << std::endl;
 
         // ========== Minor GC Histogram ==========
@@ -406,6 +420,29 @@ void GCStats::print() const {
         }
     }
 
+    // ========== Inline GC Helper Time ==========
+    //
+    // Allocation-paced incremental mark + lazy sweep work that runs as a
+    // side effect of OldGenSpace::allocate. This is GC work but doesn't
+    // appear in the major-GC timer (it's incremental, not stop-the-world)
+    // and is split into two buckets by calling context. Together with
+    // minor + major above, the four GC buckets sum to the total GC wall
+    // time; the remainder of wall_clock is mutator time.
+    if (total_lazy_sweep_in_minor_ns > 0 ||
+        total_lazy_sweep_in_mutator_ns > 0) {
+        std::cout << "\nInline GC Helper Time:" << std::endl;
+        std::cout << "  In minor pauses:       " << std::setw(15)
+                  << formatTime(total_lazy_sweep_in_minor_ns)
+                  << "  (subtracted from minor histogram)" << std::endl;
+        std::cout << "  In mutator alloc:      " << std::setw(15)
+                  << formatTime(total_lazy_sweep_in_mutator_ns)
+                  << "  (subtract from mutator wall when accounting)"
+                  << std::endl;
+        std::cout << "  Total:                 " << std::setw(15)
+                  << formatTime(total_lazy_sweep_in_minor_ns +
+                                total_lazy_sweep_in_mutator_ns) << std::endl;
+    }
+
     // ========== Allocation Size Histograms ==========
     auto printAllocHistogram = [](const char* title,
                                   const uint64_t* hist,
@@ -468,6 +505,8 @@ void GCStats::reset() {
     objects_survived = 0;
     objects_promoted = 0;
     bytes_freed = 0;
+    total_lazy_sweep_in_minor_ns = 0;
+    total_lazy_sweep_in_mutator_ns = 0;
     total_minor_gc_time_ns = 0;
     min_minor_gc_time_ns = UINT64_MAX;
     max_minor_gc_time_ns = 0;

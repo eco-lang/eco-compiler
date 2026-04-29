@@ -377,6 +377,24 @@ void *OldGenSpace::allocate(size_t size) {
     // still show up as demand on the old-gen size-class distribution.
     GC_STATS_OLDGEN_RECORD_ALLOC(alloc_stats_, size);
 
+    // Inline allocation-paced GC helpers (incremental mark + lazy sweep).
+    // These run on every old-gen allocation and pace major-GC work against
+    // mutator allocation rate. The wall time they consume is conceptually
+    // major-GC work but happens on the allocation hot path, so it doesn't
+    // show up in the major-GC timer. Bracket the work with a timer and
+    // route the elapsed wall-time to one of two GCStats counters based on
+    // the calling context, so wall_s = minor + major + helper_in_minor +
+    // helper_in_mutator + mutator (every nanosecond accounted for).
+    //
+    // Only take the timer when there's real work to time (gc_phase_ != Idle);
+    // skipping the chrono reads in steady-state allocations keeps the
+    // hot-path overhead at zero for the common case.
+#if ENABLE_GC_STATS
+    const bool helper_active = (gc_phase_ != GCPhase::Idle);
+    auto helper_t0 = helper_active ? GC_STATS_TIMER_START()
+                                   : decltype(GC_STATS_TIMER_START()){};
+#endif
+
     // Allocation-paced marking: do marking work proportional to allocation.
     // Both branches now call markOneObject so live-bytes attribution stays
     // consistent regardless of which path runs.
@@ -408,20 +426,42 @@ void *OldGenSpace::allocate(size_t size) {
         lazySweep(cls_for_sweep, SWEEP_WORK_BUDGET);
     }
 
-    // Path 2: large objects bypass the BBoP and get a dedicated pinned block.
+    // Path 2/3/4 dispatch. These are inside the helper bracket because
+    // allocateFromSizeClass can invoke sweepOnDemandAllocate, which runs
+    // up to MAX_SWEEP_BYTES_PER_ALLOC (= 1 MiB) of lazySweep work — this
+    // is the dominant source of "minor GC outliers" when promotion calls
+    // hit it during an old-gen sweep phase. allocateFromBagPage and
+    // allocateLargeBlock are also covered for completeness; their cost is
+    // small but non-zero (bag-page pulls, mmap commit) and they too can
+    // run in either gc_phase_ context.
+    void* result;
     if (size >= config_->alloc_buffer_size) {
-        return allocateLargeBlock(size);
+        // Path 2: large objects bypass the BBoP and get a dedicated pinned block.
+        result = allocateLargeBlock(size);
+    } else {
+        size_t cls = sizeClass(size);
+        if (cls < num_size_classes_) {
+            // Path 3: size-class fast path (small or medium).
+            result = allocateFromSizeClass(cls, size);
+        } else {
+            // Path 4: in [largest fixed-cell size, alloc_buffer_size). Pull a
+            // page, wrap as one big Tag_Free, split off the requested chunk.
+            result = allocateFromBagPage(size);
+        }
     }
 
-    size_t cls = sizeClass(size);
-    if (cls < num_size_classes_) {
-        // Path 3: size-class fast path (small or medium).
-        return allocateFromSizeClass(cls, size);
+#if ENABLE_GC_STATS
+    if (helper_active) {
+        uint64_t helper_ns = GC_STATS_TIMER_ELAPSED_NS(helper_t0);
+        if (g_in_minor_gc) {
+            alloc_stats_.total_lazy_sweep_in_minor_ns += helper_ns;
+        } else {
+            alloc_stats_.total_lazy_sweep_in_mutator_ns += helper_ns;
+        }
     }
+#endif
 
-    // Path 4: in [largest fixed-cell size, alloc_buffer_size). Pull a page,
-    // wrap it as one big Tag_Free, and split off the requested chunk.
-    return allocateFromBagPage(size);
+    return result;
 }
 
 // ---------------------------------------------------------------------------

@@ -437,6 +437,10 @@ void NurserySpace::checkAndGrow() {
  * that is a bug (heap corruption), not a case to handle gracefully.
  */
 void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_roots) {
+    // Set the cross-allocator in-minor-GC flag (always on, used by the
+    // OldGenSpace::allocate inline-helper attribution counter).
+    g_in_minor_gc = true;
+
 #if ECO_GC_DEBUG
     in_minor_gc_ = true;
     static size_t gc_cycle_count = 0;
@@ -448,6 +452,11 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // Capture state before GC.
     size_t from_space_used = bytesAllocated();
     auto gc_start = GC_STATS_TIMER_START();
+    // Snapshot the inline-helper counter so we can subtract this cycle's
+    // helper work from `elapsed_ns` before recording into the histogram.
+    // OldGenSpace::allocate increments this counter every time it does
+    // mark/sweep work while g_in_minor_gc is true (set above).
+    uint64_t helper_ns_at_start = oldgen.getStats().total_lazy_sweep_in_minor_ns;
 #endif
 
     std::vector<char*>& to_blocks = from_is_low_ ? high_blocks_ : low_blocks_;
@@ -839,8 +848,23 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     size_t bytes_freed = from_space_used > to_space_used ? from_space_used - to_space_used : 0;
     uint64_t elapsed_ns = GC_STATS_TIMER_ELAPSED_NS(gc_start);
 
-    GC_STATS_MINOR_RECORD_GC_END(stats, elapsed_ns, bytes_freed);
+    // Subtract the inline mark/sweep helper work that ran during this
+    // minor cycle so the histogram and per-cycle min/max/avg reflect
+    // pure nursery-copy time. The aggregate helper time across all
+    // cycles is preserved via GCStats::total_lazy_sweep_in_minor_ns
+    // (still incremented by OldGenSpace::allocate on every helper run).
+    uint64_t helper_ns_this_cycle =
+        oldgen.getStats().total_lazy_sweep_in_minor_ns - helper_ns_at_start;
+    uint64_t pure_elapsed_ns = (elapsed_ns > helper_ns_this_cycle)
+                                   ? elapsed_ns - helper_ns_this_cycle
+                                   : 0;
+    GC_STATS_MINOR_RECORD_GC_END(stats, pure_elapsed_ns, bytes_freed);
 #endif
+
+    // Clear the cross-allocator in-minor-GC flag last, after the timer
+    // has captured the full minor pause but before control returns to
+    // ThreadLocalHeap::minorGC (which may then fire majorGC).
+    g_in_minor_gc = false;
 }
 
 /**
