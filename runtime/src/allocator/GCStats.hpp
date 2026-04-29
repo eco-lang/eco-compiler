@@ -114,9 +114,20 @@ public:
     void recordAllocation(size_t bytes);
 
     // Records an old-generation allocation event into the size histogram.
-    // Old-gen byte totals live elsewhere (Allocator::getOldGenAllocatedBytes);
-    // this only feeds the size-distribution histogram.
+    // Called for EVERY old-gen allocation regardless of source (mutator
+    // direct, promotion during minor GC, evacuation during compaction);
+    // distinguishing them on this hot path would cost a branch per alloc.
+    // Bytes/object totals are NOT incremented here — those are only updated
+    // for mutator-initiated allocations via recordOldGenDirectAllocation.
     void recordOldGenAllocation(size_t bytes);
+
+    // Records a mutator-initiated direct old-gen allocation (large objects,
+    // permanent strings, large regions). Increments the cross-generation
+    // bytes_allocated/objects_allocated totals so MBps-style metrics
+    // include allocations that bypass the nursery. The size histogram is
+    // already bumped by recordOldGenAllocation inside OldGenSpace::allocate,
+    // so this method does NOT touch the histogram (avoids double-counting).
+    void recordOldGenDirectAllocation(size_t bytes);
 
     // Records completion of a minor GC cycle with timing and reclaimed bytes.
     void recordMinorGCEnd(uint64_t elapsed_ns, size_t freed);
@@ -150,6 +161,9 @@ private:
 
     #define GC_STATS_OLDGEN_RECORD_ALLOC(stats, bytes) \
         do { (stats).recordOldGenAllocation(bytes); } while(0)
+
+    #define GC_STATS_OLDGEN_DIRECT_RECORD_ALLOC(stats, bytes) \
+        do { (stats).recordOldGenDirectAllocation(bytes); } while(0)
 
     #define GC_STATS_MINOR_RECORD_GC_END(stats, elapsed_ns, freed) \
         do { (stats).recordMinorGCEnd(elapsed_ns, freed); } while(0)
@@ -195,6 +209,7 @@ private:
     // Stats disabled - all macros expand to nothing (zero overhead).
     #define GC_STATS_MINOR_RECORD_ALLOC(stats, bytes) do {} while(0)
     #define GC_STATS_OLDGEN_RECORD_ALLOC(stats, bytes) do {} while(0)
+    #define GC_STATS_OLDGEN_DIRECT_RECORD_ALLOC(stats, bytes) do {} while(0)
     #define GC_STATS_MINOR_RECORD_GC_END(stats, elapsed_ns, freed) do {} while(0)
     #define GC_STATS_MINOR_INC_SURVIVORS(stats) do {} while(0)
     #define GC_STATS_MINOR_INC_PROMOTED(stats) do {} while(0)

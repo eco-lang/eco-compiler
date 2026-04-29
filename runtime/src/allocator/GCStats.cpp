@@ -80,6 +80,15 @@ void GCStats::recordOldGenAllocation(size_t bytes) {
     oldgen_alloc_size_histogram[bucket]++;
 }
 
+// Mutator-direct old-gen allocation: counted toward the cross-generation
+// totals so the printed "Bytes allocated" line reflects all mutator
+// allocations, not just nursery. Histogram is not touched here — that's
+// already done by recordOldGenAllocation inside OldGenSpace::allocate.
+void GCStats::recordOldGenDirectAllocation(size_t bytes) {
+    objects_allocated++;
+    bytes_allocated += bytes;
+}
+
 // Records completion of a minor GC cycle with timing and reclaimed bytes.
 void GCStats::recordMinorGCEnd(uint64_t elapsed_ns, size_t freed) {
     minor_gc_count++;

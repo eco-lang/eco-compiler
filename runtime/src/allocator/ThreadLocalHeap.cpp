@@ -177,6 +177,7 @@ void* ThreadLocalHeap::allocateRegionSlow(size_t total) {
             assert(false && "Failed to allocate large region in old gen.");
             return nullptr;
         }
+        GC_STATS_OLDGEN_DIRECT_RECORD_ALLOC(stats_, total);
         return obj;
     }
 
@@ -194,6 +195,7 @@ void* ThreadLocalHeap::allocateRegionSlow(size_t total) {
             assert(false && "Failed to allocate large region in old gen.");
             return nullptr;
         }
+        GC_STATS_OLDGEN_DIRECT_RECORD_ALLOC(stats_, total);
         return obj;
     }
 
@@ -221,6 +223,7 @@ void* ThreadLocalHeap::allocateLargePinned(size_t size, Tag tag) {
         assert(false && "Failed to allocate large pinned object in old gen.");
         return nullptr;
     }
+    GC_STATS_OLDGEN_DIRECT_RECORD_ALLOC(stats_, size);
 
     Header* hdr = getHeader(obj);
     // OldGenSpace::allocate already memset/colored the header. Re-init for
@@ -239,6 +242,7 @@ void* ThreadLocalHeap::allocatePermanent(size_t size, Tag tag) {
     size = (size + 7) & ~static_cast<size_t>(7);
     void* obj = old_gen_.allocate(size);
     if (obj) {
+        GC_STATS_OLDGEN_DIRECT_RECORD_ALLOC(stats_, size);
         Header* hdr = getHeader(obj);
         u32 saved_color = hdr->color;
         initHeaderForTag(hdr, tag, size);
