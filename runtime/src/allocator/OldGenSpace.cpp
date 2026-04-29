@@ -613,10 +613,15 @@ void* OldGenSpace::tryAllocateBySplittingLarger(size_t target_cls,
     // >= num_size_classes_ exist only in mixed blocks (no uniform block
     // populates those classes), so splits from those are safe with a
     // null block-context.
-    for (size_t cls = target_cls + 1; cls < NUM_SIZE_CLASSES; ++cls) {
+    //
+    // Skip uniform classes outright: cls > target_cls implies
+    // classToSize(cls) > alloc_size, and cells on free_lists_[cls] are at
+    // least classToSize(cls) bytes, so remainder > 0 always — the exact-fit
+    // gate above can never pass for a uniform class. Start the walk at the
+    // first non-uniform class instead.
+    const size_t start_cls = std::max(target_cls + 1, num_size_classes_);
+    for (size_t cls = start_cls; cls < NUM_SIZE_CLASSES; ++cls) {
         if (free_lists_[cls] == nullptr) continue;
-
-        const bool maybe_uniform_block = cls < num_size_classes_;
 
         FreeCell** prev = &free_lists_[cls];
         FreeCell* curr = free_lists_[cls];
@@ -626,16 +631,8 @@ void* OldGenSpace::tryAllocateBySplittingLarger(size_t target_cls,
                                          ? cell_bytes - alloc_size
                                          : 0;
 
-            // For potentially-uniform classes (cls < num_size_classes_)
-            // accept only exact fits to preserve the uniform-block invariant
-            // without paying for an O(N) lookup. For higher classes, splits
-            // are always safe.
-            const bool acceptable_for_block =
-                !maybe_uniform_block || remainder == 0;
-
             if (cell_bytes >= alloc_size &&
-                (remainder == 0 || remainder >= MIN_FREE_CELL_SIZE) &&
-                acceptable_for_block) {
+                (remainder == 0 || remainder >= MIN_FREE_CELL_SIZE)) {
                 // Unlink curr from this list.
                 *prev = curr->next;
 
