@@ -785,13 +785,23 @@ private:
     AllDeadReclaimStats reclaimAllDeadBlocksFromMeta();
 
 #if ENABLE_GC_STATS
-    // Walks the surviving blocks at major-GC end and accumulates a
-    // residency snapshot into `stats`. Called once per major after
-    // adjustCapacityAfterMajorGC has run, so the histogram reflects the
-    // committed pages the collector chose to keep — i.e. the answer to
-    // "what's still in old-gen after every release decision?". Must use
-    // mark-derived buffer_meta_[i].live_bytes (sweep is lazy and may not
-    // have run when we sample).
+    // Walks every surviving block at major-GC end and accumulates a
+    // residency snapshot plus a per-class free-list snapshot into
+    // `stats`. Must be called AFTER finalizeMetaAfterMark (live_bytes
+    // populated) and BEFORE transitionToSweeping (which clears
+    // free_lists_), so the per-block four-way breakdown
+    // {live, free, garbage, unallocated-tail} is meaningful:
+    //   live    = mark-derived live_bytes
+    //   free    = bytes inside the block that are linked into a
+    //             per-class free list or `free_large_blocks_` (residual
+    //             from the previous major's lazy sweep that the mutator
+    //             didn't drain)
+    //   garbage = total - live - free   (dead bytes the previous lazy
+    //             sweep never reached; the new major must walk these)
+    // The all-dead blocks reclaimed seconds later by
+    // reclaimAllDeadBlocksFromMeta are intentionally counted here —
+    // they show up in the live_frac == 0 bucket and document the
+    // (good) case where a page was fully released.
     void gatherResidencyInto(GCStats& stats) const;
 #endif
 

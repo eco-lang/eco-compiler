@@ -1397,10 +1397,14 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats) {
     }
 
     finalizeMetaAfterMark();
+    // Sample residency + free-list state BEFORE transitionToSweeping
+    // wipes free_lists_, so the per-block free vs garbage split is
+    // meaningful (free_lists_ at this point hold the previous major's
+    // residual cells the mutator hasn't drained yet).
+    gatherResidencyInto(stats);
     transitionToSweeping();
     reclaimAllDeadBlocksFromMeta();
     adjustCapacityAfterMajorGC();
-    gatherResidencyInto(stats);
     recomputeSweepPendingBlocks();
     lazySweep(NUM_SIZE_CLASSES, INITIAL_SWEEP_BUDGET);
 
@@ -1424,6 +1428,11 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats,
     auto t_sweep_start = t_mark_end;
 
     finalizeMetaAfterMark();
+    // Sample residency + free-list state BEFORE transitionToSweeping
+    // wipes free_lists_, so the per-block free vs garbage split is
+    // meaningful (free_lists_ at this point hold the previous major's
+    // residual cells the mutator hasn't drained yet).
+    gatherResidencyInto(stats);
     // transitionToSweeping clears free_lists_ and free_large_blocks_, which
     // makes the per-block removeFreeCellsForBlock inside releaseBlockToAllocator
     // a no-op. Doing it BEFORE reclaim turns reclaim from O(B*F) (B blocks
@@ -1433,7 +1442,6 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats,
     transitionToSweeping();
     AllDeadReclaimStats alldead = reclaimAllDeadBlocksFromMeta();
     adjustCapacityAfterMajorGC();
-    gatherResidencyInto(stats);
     recomputeSweepPendingBlocks();
     lazySweep(NUM_SIZE_CLASSES, INITIAL_SWEEP_BUDGET);
 
@@ -2503,17 +2511,62 @@ OldGenSpace::reclaimAllDeadBlocksFromMeta() {
 }
 
 #if ENABLE_GC_STATS
-// Walks the surviving blocks at major-GC end and accumulates a residency
-// snapshot into `stats`. live_bytes is the mark-derived per-block value
-// from buffer_meta_ (lazy sweep may not yet have run when this is called,
-// so we cannot rely on garbage_bytes / sweep watermarks here).
+// Keeps GCStats's free-list size-class histogram in lockstep with the
+// allocator's class table; the printer reconstructs `classToSize`
+// arithmetically from this width.
+static_assert(NUM_SIZE_CLASSES <= GCStats::FREELIST_CLASS_BUCKETS,
+              "GCStats::FREELIST_CLASS_BUCKETS must cover every "
+              "OldGenSpace size class");
+
+// Sampled at major-GC end, after finalizeMetaAfterMark and BEFORE
+// transitionToSweeping clears free_lists_. Walks each per-class free
+// list to derive (a) per-block free-list bytes for the residency
+// histogram's four-way breakdown and (b) per-class cell/byte totals
+// for the free-list size-class histogram. `free_large_blocks_` is
+// rolled into the per-block totals (whole-block free entries) and
+// reported separately to the size-class histogram.
 void OldGenSpace::gatherResidencyInto(GCStats& stats) const {
+    std::vector<size_t> per_block_free_bytes(blocks_.size(), 0);
+
+    for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) {
+        uint64_t cell_count = 0;
+        uint64_t cell_bytes = 0;
+        for (FreeCell* cell = free_lists_[cls]; cell != nullptr;
+             cell = cell->next) {
+            const size_t sz = cell->header.size;
+            cell_count++;
+            cell_bytes += sz;
+            const size_t bi = blockIndexFor(cell);
+            if (bi < per_block_free_bytes.size()) {
+                per_block_free_bytes[bi] += sz;
+            }
+        }
+        if (cell_count > 0) {
+            stats.recordFreeListClass(cls, cell_count, cell_bytes);
+        }
+    }
+
+    uint64_t large_count = 0;
+    uint64_t large_bytes = 0;
+    for (size_t bi : free_large_blocks_) {
+        if (bi >= blocks_.size()) continue;
+        const size_t total = blocks_[bi].totalBytes();
+        per_block_free_bytes[bi] += total;
+        large_count++;
+        large_bytes += total;
+    }
+    if (large_count > 0) {
+        stats.recordFreeListLargeBlocks(large_count, large_bytes);
+    }
+    stats.recordFreeListSnapshot();
+
     for (size_t i = 0; i < blocks_.size() && i < buffer_meta_.size(); ++i) {
         const BlockInfo& blk = blocks_[i];
         const BufferMetadata& meta = buffer_meta_[i];
         const size_t total = blk.totalBytes();
         if (total == 0) continue;
-        stats.recordBlockResidency(total, meta.live_bytes, blk.is_large);
+        stats.recordBlockResidency(total, meta.live_bytes,
+                                   per_block_free_bytes[i], blk.is_large);
     }
     stats.recordResidencySnapshot();
 }

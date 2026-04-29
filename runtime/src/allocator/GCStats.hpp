@@ -92,15 +92,25 @@ public:
 
     // ========== Old-Gen Page Residency Histogram ==========
     //
-    // Snapshot taken at every major-GC end (after all-dead reclaim and
-    // adjustCapacityAfterMajorGC) by walking the surviving old-gen blocks
-    // and bucketing each by live_bytes / totalBytes. Counts accumulate
-    // across all majors for the lifetime of this GCStats — over a test
-    // run, the histogram answers "of all old-gen blocks the collector
-    // saw committed across all majors, what fraction of their bytes were
-    // live?". A pile-up in the lowest non-zero bucket (a few % live)
-    // indicates sparse retention blocking page release.
+    // Snapshot taken once per major after finalizeMetaAfterMark and before
+    // transitionToSweeping clears free_lists_. Each surviving old-gen block
+    // is bucketed by live_bytes / totalBytes, and within the bucket we
+    // accumulate a four-way byte breakdown:
     //
+    //   live    — bytes the mark phase reached (mark-derived live_bytes)
+    //   free    — bytes already parked on per-class free lists from the
+    //             previous major's lazy sweep (allocatable, "good" non-live)
+    //   garbage — dead bytes the previous lazy sweep never reached (still
+    //             unswept; the new major must walk these again)
+    //   (implicit) unallocated tail = total - live - free - garbage
+    //
+    // The free vs garbage split is the diagnostic question:
+    //   - free dominates → fragmentation (unused space is allocatable but
+    //     in the wrong size class for current demand)
+    //   - garbage dominates → the lazy sweep is falling behind (we cannot
+    //     even reclaim the dead bytes fast enough to put them on free lists)
+    //
+    // Counts accumulate across all majors for the lifetime of this GCStats.
     // Buckets are non-overlapping. The first matches live_bytes == 0
     // exactly (block fully empty); the rest are upper-inclusive ranges:
     //   0 : live_frac == 0           (fully empty after mark)
@@ -113,22 +123,51 @@ public:
     //   7 : (0.75, 1.00]
     static constexpr int RESIDENCY_BUCKETS = 8;
 
-    uint64_t residency_pages[RESIDENCY_BUCKETS]      = {0};
-    uint64_t residency_page_bytes[RESIDENCY_BUCKETS] = {0};
-    uint64_t residency_live_bytes[RESIDENCY_BUCKETS] = {0};
+    uint64_t residency_pages[RESIDENCY_BUCKETS]         = {0};
+    uint64_t residency_page_bytes[RESIDENCY_BUCKETS]    = {0};
+    uint64_t residency_live_bytes[RESIDENCY_BUCKETS]    = {0};
+    uint64_t residency_garbage_bytes[RESIDENCY_BUCKETS] = {0};
+    uint64_t residency_free_bytes[RESIDENCY_BUCKETS]    = {0};
 
     // Pinned (is_large) blocks are also recorded into the buckets above,
     // but additionally tracked here so the printer can highlight how much
     // of the residency is structurally locked (large blocks cannot be
     // released by sweep until their single object dies).
-    uint64_t residency_pinned_pages       = 0;
-    uint64_t residency_pinned_page_bytes  = 0;
-    uint64_t residency_pinned_live_bytes  = 0;
+    uint64_t residency_pinned_pages         = 0;
+    uint64_t residency_pinned_page_bytes    = 0;
+    uint64_t residency_pinned_live_bytes    = 0;
+    uint64_t residency_pinned_garbage_bytes = 0;
+    uint64_t residency_pinned_free_bytes    = 0;
 
     // Number of major-GC end snapshots that contributed to the histogram.
     // Equal to the count of recordResidencySnapshot() calls. Used by the
     // printer to derive "average pages per major" alongside the totals.
     uint64_t residency_snapshots = 0;
+
+    // ========== Free-List Size-Class Histogram ==========
+    //
+    // Snapshot of the per-class free-list contents at every major-GC end
+    // (sampled at the same instant as the residency histogram, just before
+    // transitionToSweeping clears the free lists). Counts accumulate across
+    // every major for the lifetime of this GCStats.
+    //
+    // FREELIST_CLASS_BUCKETS must equal OldGenSpace::NUM_SIZE_CLASSES. We
+    // do not include OldGenSpace.hpp here to avoid a header cycle; a
+    // static_assert in OldGenSpace.cpp keeps the two values in sync.
+    //
+    // The histogram shows whether unused old-gen bytes are concentrated in
+    // small cells (8B..256B; chronic small-object churn left the heap full
+    // of slivers too small to satisfy larger requests) or in medium/large
+    // cells (allocatable but the program isn't asking for sizes that fit).
+    static constexpr int FREELIST_CLASS_BUCKETS = 40;  // 32 small + 8 medium
+    uint64_t freelist_cells_by_class[FREELIST_CLASS_BUCKETS] = {0};
+    uint64_t freelist_bytes_by_class[FREELIST_CLASS_BUCKETS] = {0};
+    // Bytes parked in `free_large_blocks_` (whole-block free entries that
+    // bypass the size-class lists). Recorded as one aggregate counter
+    // because they don't have a size class.
+    uint64_t freelist_large_block_bytes  = 0;
+    uint64_t freelist_large_block_count  = 0;
+    uint64_t freelist_snapshots          = 0;
 
     // ========== AllocBuffer Stats ==========
     uint64_t buffers_allocated = 0;
@@ -208,17 +247,41 @@ public:
     void recordMajorGCEnd(uint64_t elapsed_ns);
 
     // Adds one block's contribution to the residency histogram. Called
-    // once per surviving old-gen block at major-GC end. `total_bytes`
-    // is the block's full committed size; `live_bytes` is the
-    // mark-derived live size in this block; `is_large` flags pinned
-    // large-object blocks.
+    // once per surviving old-gen block at major-GC end (sampled BEFORE
+    // transitionToSweeping clears free lists, so `free_bytes` carries
+    // the previous-major free-list residual for this block).
+    //   total_bytes — block's full committed size (includes any tail).
+    //   live_bytes  — mark-derived live size for this block.
+    //   free_bytes  — bytes inside this block that are linked into a
+    //                 per-class free list or `free_large_blocks_`.
+    //   is_large    — flags pinned large-object blocks.
+    // garbage_bytes is derived as max(0, total - live - free), i.e.
+    // dead bytes that the previous lazy sweep didn't get to.
     void recordBlockResidency(size_t total_bytes,
                               size_t live_bytes,
+                              size_t free_bytes,
                               bool   is_large);
 
     // Increments residency_snapshots; call once per major-GC end after
     // every block has been recorded.
     void recordResidencySnapshot();
+
+    // Records the contents of one per-class free list into the size-class
+    // histogram. `cell_count` and `cell_bytes` are the totals across the
+    // sampled list at major-GC end. Call once per non-empty class per
+    // snapshot (empty classes can be skipped with no effect).
+    void recordFreeListClass(size_t size_class,
+                             uint64_t cell_count,
+                             uint64_t cell_bytes);
+
+    // Records aggregate `free_large_blocks_` contribution at major-GC end.
+    // These are whole-block free entries that bypass the size-class lists.
+    void recordFreeListLargeBlocks(uint64_t block_count,
+                                   uint64_t total_bytes);
+
+    // Increments freelist_snapshots; call once per major-GC end after
+    // every per-class entry has been recorded.
+    void recordFreeListSnapshot();
 
     // Merges statistics from another GCStats instance (for combining thread stats).
     void combine(const GCStats& other);

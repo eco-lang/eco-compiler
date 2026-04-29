@@ -77,14 +77,30 @@ struct ElmSharedTestResult {
     // Old-gen page residency histogram. Cumulative across every major-GC
     // end snapshot in the child process; the parent merges it into the
     // run-wide accumulator so the final printout shows residency totals
-    // for the entire test run.
+    // for the entire test run. The garbage/free byte arrays carry the
+    // four-way breakdown (live / free / garbage / unallocated-tail)
+    // sampled before transitionToSweeping clears free lists.
     uint64_t residency_pages[Elm::GCStats::RESIDENCY_BUCKETS];
     uint64_t residency_page_bytes[Elm::GCStats::RESIDENCY_BUCKETS];
     uint64_t residency_live_bytes[Elm::GCStats::RESIDENCY_BUCKETS];
+    uint64_t residency_garbage_bytes[Elm::GCStats::RESIDENCY_BUCKETS];
+    uint64_t residency_free_bytes[Elm::GCStats::RESIDENCY_BUCKETS];
     uint64_t residency_pinned_pages;
     uint64_t residency_pinned_page_bytes;
     uint64_t residency_pinned_live_bytes;
+    uint64_t residency_pinned_garbage_bytes;
+    uint64_t residency_pinned_free_bytes;
     uint64_t residency_snapshots;
+
+    // Free-list size-class histogram. Cells parked on each per-class
+    // free list at major-GC end, plus the aggregate `free_large_blocks_`
+    // count/bytes; the parent merges these so the printout shows the
+    // shape of unused old-gen bytes across the whole run.
+    uint64_t freelist_cells_by_class[Elm::GCStats::FREELIST_CLASS_BUCKETS];
+    uint64_t freelist_bytes_by_class[Elm::GCStats::FREELIST_CLASS_BUCKETS];
+    uint64_t freelist_large_block_count;
+    uint64_t freelist_large_block_bytes;
+    uint64_t freelist_snapshots;
 };
 
 inline Elm::GCStats& getAccumulatedStats() {
@@ -127,14 +143,25 @@ inline void copyStatsToShared(ElmSharedTestResult* shared) {
         shared->oldgen_alloc_size_histogram[i] = stats.oldgen_alloc_size_histogram[i];
     }
     for (int i = 0; i < Elm::GCStats::RESIDENCY_BUCKETS; i++) {
-        shared->residency_pages[i]      = stats.residency_pages[i];
-        shared->residency_page_bytes[i] = stats.residency_page_bytes[i];
-        shared->residency_live_bytes[i] = stats.residency_live_bytes[i];
+        shared->residency_pages[i]         = stats.residency_pages[i];
+        shared->residency_page_bytes[i]    = stats.residency_page_bytes[i];
+        shared->residency_live_bytes[i]    = stats.residency_live_bytes[i];
+        shared->residency_garbage_bytes[i] = stats.residency_garbage_bytes[i];
+        shared->residency_free_bytes[i]    = stats.residency_free_bytes[i];
     }
-    shared->residency_pinned_pages      = stats.residency_pinned_pages;
-    shared->residency_pinned_page_bytes = stats.residency_pinned_page_bytes;
-    shared->residency_pinned_live_bytes = stats.residency_pinned_live_bytes;
-    shared->residency_snapshots         = stats.residency_snapshots;
+    shared->residency_pinned_pages         = stats.residency_pinned_pages;
+    shared->residency_pinned_page_bytes    = stats.residency_pinned_page_bytes;
+    shared->residency_pinned_live_bytes    = stats.residency_pinned_live_bytes;
+    shared->residency_pinned_garbage_bytes = stats.residency_pinned_garbage_bytes;
+    shared->residency_pinned_free_bytes    = stats.residency_pinned_free_bytes;
+    shared->residency_snapshots            = stats.residency_snapshots;
+    for (int i = 0; i < Elm::GCStats::FREELIST_CLASS_BUCKETS; i++) {
+        shared->freelist_cells_by_class[i] = stats.freelist_cells_by_class[i];
+        shared->freelist_bytes_by_class[i] = stats.freelist_bytes_by_class[i];
+    }
+    shared->freelist_large_block_count = stats.freelist_large_block_count;
+    shared->freelist_large_block_bytes = stats.freelist_large_block_bytes;
+    shared->freelist_snapshots         = stats.freelist_snapshots;
 #endif
 }
 
@@ -172,14 +199,25 @@ inline void accumulateFromShared(const ElmSharedTestResult* shared) {
         childStats.oldgen_alloc_size_histogram[i] = shared->oldgen_alloc_size_histogram[i];
     }
     for (int i = 0; i < Elm::GCStats::RESIDENCY_BUCKETS; i++) {
-        childStats.residency_pages[i]      = shared->residency_pages[i];
-        childStats.residency_page_bytes[i] = shared->residency_page_bytes[i];
-        childStats.residency_live_bytes[i] = shared->residency_live_bytes[i];
+        childStats.residency_pages[i]         = shared->residency_pages[i];
+        childStats.residency_page_bytes[i]    = shared->residency_page_bytes[i];
+        childStats.residency_live_bytes[i]    = shared->residency_live_bytes[i];
+        childStats.residency_garbage_bytes[i] = shared->residency_garbage_bytes[i];
+        childStats.residency_free_bytes[i]    = shared->residency_free_bytes[i];
     }
-    childStats.residency_pinned_pages      = shared->residency_pinned_pages;
-    childStats.residency_pinned_page_bytes = shared->residency_pinned_page_bytes;
-    childStats.residency_pinned_live_bytes = shared->residency_pinned_live_bytes;
-    childStats.residency_snapshots         = shared->residency_snapshots;
+    childStats.residency_pinned_pages         = shared->residency_pinned_pages;
+    childStats.residency_pinned_page_bytes    = shared->residency_pinned_page_bytes;
+    childStats.residency_pinned_live_bytes    = shared->residency_pinned_live_bytes;
+    childStats.residency_pinned_garbage_bytes = shared->residency_pinned_garbage_bytes;
+    childStats.residency_pinned_free_bytes    = shared->residency_pinned_free_bytes;
+    childStats.residency_snapshots            = shared->residency_snapshots;
+    for (int i = 0; i < Elm::GCStats::FREELIST_CLASS_BUCKETS; i++) {
+        childStats.freelist_cells_by_class[i] = shared->freelist_cells_by_class[i];
+        childStats.freelist_bytes_by_class[i] = shared->freelist_bytes_by_class[i];
+    }
+    childStats.freelist_large_block_count = shared->freelist_large_block_count;
+    childStats.freelist_large_block_bytes = shared->freelist_large_block_bytes;
+    childStats.freelist_snapshots         = shared->freelist_snapshots;
 
     getAccumulatedStats().combine(childStats);
 }

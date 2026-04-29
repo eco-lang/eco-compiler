@@ -121,29 +121,60 @@ static inline int residencyBucket(double live_frac) {
 }
 
 // Buckets a single block's residency by live fraction. Accumulates
-// pages, total committed bytes, and live bytes per bucket so the
-// printed histogram can surface shape, mass, and waste together.
+// pages, committed bytes, and the live/free/garbage three-way byte
+// breakdown per bucket so the printed histogram can surface shape,
+// mass, and waste together. Garbage is derived as the residual
+// (total - live - free), clamped to >= 0 in case rounding or partial
+// sweep state pushes the sum slightly past total.
 void GCStats::recordBlockResidency(size_t total_bytes,
                                    size_t live_bytes,
+                                   size_t free_bytes,
                                    bool   is_large) {
     if (total_bytes == 0) return;
-    double live_frac = static_cast<double>(live_bytes) /
-                       static_cast<double>(total_bytes);
-    int bucket = residencyBucket(live_frac);
+    if (live_bytes > total_bytes) live_bytes = total_bytes;
+    if (free_bytes > total_bytes - live_bytes)
+        free_bytes = total_bytes - live_bytes;
+    const size_t garbage_bytes = total_bytes - live_bytes - free_bytes;
+
+    const double live_frac = static_cast<double>(live_bytes) /
+                             static_cast<double>(total_bytes);
+    const int bucket = residencyBucket(live_frac);
 
     residency_pages[bucket]++;
-    residency_page_bytes[bucket] += total_bytes;
-    residency_live_bytes[bucket] += live_bytes;
+    residency_page_bytes[bucket]    += total_bytes;
+    residency_live_bytes[bucket]    += live_bytes;
+    residency_garbage_bytes[bucket] += garbage_bytes;
+    residency_free_bytes[bucket]    += free_bytes;
 
     if (is_large) {
         residency_pinned_pages++;
-        residency_pinned_page_bytes += total_bytes;
-        residency_pinned_live_bytes += live_bytes;
+        residency_pinned_page_bytes    += total_bytes;
+        residency_pinned_live_bytes    += live_bytes;
+        residency_pinned_garbage_bytes += garbage_bytes;
+        residency_pinned_free_bytes    += free_bytes;
     }
 }
 
 void GCStats::recordResidencySnapshot() {
     residency_snapshots++;
+}
+
+void GCStats::recordFreeListClass(size_t size_class,
+                                  uint64_t cell_count,
+                                  uint64_t cell_bytes) {
+    if (size_class >= FREELIST_CLASS_BUCKETS) return;
+    freelist_cells_by_class[size_class] += cell_count;
+    freelist_bytes_by_class[size_class] += cell_bytes;
+}
+
+void GCStats::recordFreeListLargeBlocks(uint64_t block_count,
+                                        uint64_t total_bytes) {
+    freelist_large_block_count += block_count;
+    freelist_large_block_bytes += total_bytes;
+}
+
+void GCStats::recordFreeListSnapshot() {
+    freelist_snapshots++;
 }
 
 // Records completion of a major GC cycle with timing.
@@ -265,14 +296,27 @@ void GCStats::combine(const GCStats& other) {
 
     // Combine page residency histogram.
     for (int i = 0; i < RESIDENCY_BUCKETS; i++) {
-        residency_pages[i]      += other.residency_pages[i];
-        residency_page_bytes[i] += other.residency_page_bytes[i];
-        residency_live_bytes[i] += other.residency_live_bytes[i];
+        residency_pages[i]         += other.residency_pages[i];
+        residency_page_bytes[i]    += other.residency_page_bytes[i];
+        residency_live_bytes[i]    += other.residency_live_bytes[i];
+        residency_garbage_bytes[i] += other.residency_garbage_bytes[i];
+        residency_free_bytes[i]    += other.residency_free_bytes[i];
     }
-    residency_pinned_pages      += other.residency_pinned_pages;
-    residency_pinned_page_bytes += other.residency_pinned_page_bytes;
-    residency_pinned_live_bytes += other.residency_pinned_live_bytes;
-    residency_snapshots         += other.residency_snapshots;
+    residency_pinned_pages         += other.residency_pinned_pages;
+    residency_pinned_page_bytes    += other.residency_pinned_page_bytes;
+    residency_pinned_live_bytes    += other.residency_pinned_live_bytes;
+    residency_pinned_garbage_bytes += other.residency_pinned_garbage_bytes;
+    residency_pinned_free_bytes    += other.residency_pinned_free_bytes;
+    residency_snapshots            += other.residency_snapshots;
+
+    // Combine free-list size-class histogram.
+    for (int i = 0; i < FREELIST_CLASS_BUCKETS; i++) {
+        freelist_cells_by_class[i] += other.freelist_cells_by_class[i];
+        freelist_bytes_by_class[i] += other.freelist_bytes_by_class[i];
+    }
+    freelist_large_block_count += other.freelist_large_block_count;
+    freelist_large_block_bytes += other.freelist_large_block_bytes;
+    freelist_snapshots         += other.freelist_snapshots;
 }
 
 // Prints a formatted summary to stdout with histograms.
@@ -576,29 +620,55 @@ void GCStats::print() const {
         std::cout << "\nOld-Gen Page Residency Histogram (cumulative over "
                   << residency_snapshots << " major-GC end snapshots):"
                   << std::endl;
-        std::cout << "  live_frac        pages       page_MB      live_MB"
-                  << "    live%" << std::endl;
+        std::cout << "  Each row shows live / free / garbage MB inside the\n"
+                     "  blocks of that liveness band. free = bytes already\n"
+                     "  on per-class free lists from the previous lazy\n"
+                     "  sweep (allocatable). garbage = dead bytes the\n"
+                     "  previous sweep never reached (still unswept). The\n"
+                     "  live% column is live_MB / page_MB; free% and garb%\n"
+                     "  are over the same total." << std::endl;
+        std::cout << "  live_frac        pages    page_MB    live_MB    "
+                     "free_MB    garb_MB   live%   free%   garb%"
+                  << std::endl;
 
         const int BAR_WIDTH = 30;
         const double MB = 1024.0 * 1024.0;
+        uint64_t total_garb  = 0;
+        uint64_t total_free  = 0;
+        for (int i = 0; i < RESIDENCY_BUCKETS; i++) {
+            total_garb += residency_garbage_bytes[i];
+            total_free += residency_free_bytes[i];
+        }
         for (int i = 0; i < RESIDENCY_BUCKETS; i++) {
             if (residency_pages[i] == 0) continue;
 
-            double page_mb = residency_page_bytes[i] / MB;
-            double live_mb = residency_live_bytes[i] / MB;
-            double live_pct = residency_page_bytes[i] > 0
-                ? (residency_live_bytes[i] * 100.0)
-                  / residency_page_bytes[i]
+            const double page_mb = residency_page_bytes[i] / MB;
+            const double live_mb = residency_live_bytes[i] / MB;
+            const double free_mb = residency_free_bytes[i] / MB;
+            const double garb_mb = residency_garbage_bytes[i] / MB;
+            const double inv_pb  = residency_page_bytes[i] > 0
+                ? 100.0 / residency_page_bytes[i]
                 : 0.0;
+            const double live_pct = residency_live_bytes[i]    * inv_pb;
+            const double free_pct = residency_free_bytes[i]    * inv_pb;
+            const double garb_pct = residency_garbage_bytes[i] * inv_pb;
 
             std::cout << "  " << RESIDENCY_LABELS[i] << " "
-                      << std::setw(11) << residency_pages[i] << " "
-                      << std::setw(11) << std::fixed << std::setprecision(2)
+                      << std::setw(8)  << residency_pages[i] << " "
+                      << std::setw(10) << std::fixed << std::setprecision(2)
                       << page_mb << " "
-                      << std::setw(11) << std::fixed << std::setprecision(2)
-                      << live_mb << "  "
-                      << std::setw(6) << std::fixed << std::setprecision(2)
-                      << live_pct << "%  ";
+                      << std::setw(10) << std::fixed << std::setprecision(2)
+                      << live_mb << " "
+                      << std::setw(10) << std::fixed << std::setprecision(2)
+                      << free_mb << " "
+                      << std::setw(10) << std::fixed << std::setprecision(2)
+                      << garb_mb << "  "
+                      << std::setw(5) << std::fixed << std::setprecision(1)
+                      << live_pct << "%  "
+                      << std::setw(5) << std::fixed << std::setprecision(1)
+                      << free_pct << "%  "
+                      << std::setw(5) << std::fixed << std::setprecision(1)
+                      << garb_pct << "%  ";
 
             int bar_len = max_pages_b > 0
                 ? static_cast<int>((residency_pages[i] * BAR_WIDTH)
@@ -609,34 +679,55 @@ void GCStats::print() const {
         }
 
         // Totals + pinned subset.
-        double total_page_mb = total_pbytes / MB;
-        double total_live_mb = total_lbytes / MB;
-        double total_pct = total_pbytes > 0
-            ? (total_lbytes * 100.0) / total_pbytes
-            : 0.0;
-        std::cout << "  total        " << std::setw(11) << total_pages << " "
-                  << std::setw(11) << std::fixed << std::setprecision(2)
+        const double total_page_mb = total_pbytes / MB;
+        const double total_live_mb = total_lbytes / MB;
+        const double total_free_mb = total_free  / MB;
+        const double total_garb_mb = total_garb  / MB;
+        const double total_inv_pb  = total_pbytes > 0
+            ? 100.0 / total_pbytes : 0.0;
+        std::cout << "  total        " << std::setw(8) << total_pages << " "
+                  << std::setw(10) << std::fixed << std::setprecision(2)
                   << total_page_mb << " "
-                  << std::setw(11) << std::fixed << std::setprecision(2)
-                  << total_live_mb << "  "
-                  << std::setw(6) << std::fixed << std::setprecision(2)
-                  << total_pct << "%" << std::endl;
+                  << std::setw(10) << std::fixed << std::setprecision(2)
+                  << total_live_mb << " "
+                  << std::setw(10) << std::fixed << std::setprecision(2)
+                  << total_free_mb << " "
+                  << std::setw(10) << std::fixed << std::setprecision(2)
+                  << total_garb_mb << "  "
+                  << std::setw(5) << std::fixed << std::setprecision(1)
+                  << (total_lbytes * total_inv_pb) << "%  "
+                  << std::setw(5) << std::fixed << std::setprecision(1)
+                  << (total_free  * total_inv_pb) << "%  "
+                  << std::setw(5) << std::fixed << std::setprecision(1)
+                  << (total_garb  * total_inv_pb) << "%"
+                  << std::endl;
 
         if (residency_pinned_pages > 0) {
-            double pin_page_mb = residency_pinned_page_bytes / MB;
-            double pin_live_mb = residency_pinned_live_bytes / MB;
-            double pin_pct = residency_pinned_page_bytes > 0
-                ? (residency_pinned_live_bytes * 100.0)
-                  / residency_pinned_page_bytes
-                : 0.0;
+            const double pin_page_mb = residency_pinned_page_bytes    / MB;
+            const double pin_live_mb = residency_pinned_live_bytes    / MB;
+            const double pin_free_mb = residency_pinned_free_bytes    / MB;
+            const double pin_garb_mb = residency_pinned_garbage_bytes / MB;
+            const double pin_inv_pb  = residency_pinned_page_bytes > 0
+                ? 100.0 / residency_pinned_page_bytes : 0.0;
             std::cout << "  pinned       "
-                      << std::setw(11) << residency_pinned_pages << " "
-                      << std::setw(11) << std::fixed << std::setprecision(2)
+                      << std::setw(8) << residency_pinned_pages << " "
+                      << std::setw(10) << std::fixed << std::setprecision(2)
                       << pin_page_mb << " "
-                      << std::setw(11) << std::fixed << std::setprecision(2)
-                      << pin_live_mb << "  "
-                      << std::setw(6) << std::fixed << std::setprecision(2)
-                      << pin_pct << "%   (subset; cannot be sweep-released)"
+                      << std::setw(10) << std::fixed << std::setprecision(2)
+                      << pin_live_mb << " "
+                      << std::setw(10) << std::fixed << std::setprecision(2)
+                      << pin_free_mb << " "
+                      << std::setw(10) << std::fixed << std::setprecision(2)
+                      << pin_garb_mb << "  "
+                      << std::setw(5) << std::fixed << std::setprecision(1)
+                      << (residency_pinned_live_bytes    * pin_inv_pb)
+                      << "%  "
+                      << std::setw(5) << std::fixed << std::setprecision(1)
+                      << (residency_pinned_free_bytes    * pin_inv_pb)
+                      << "%  "
+                      << std::setw(5) << std::fixed << std::setprecision(1)
+                      << (residency_pinned_garbage_bytes * pin_inv_pb)
+                      << "%   (subset; cannot be sweep-released)"
                       << std::endl;
         }
 
@@ -649,15 +740,124 @@ void GCStats::print() const {
                 total_page_mb / residency_snapshots;
             double avg_live_mb_per_major =
                 total_live_mb / residency_snapshots;
+            double avg_free_mb_per_major =
+                total_free_mb / residency_snapshots;
+            double avg_garb_mb_per_major =
+                total_garb_mb / residency_snapshots;
             std::cout << "  per-major avg: "
                       << std::fixed << std::setprecision(1)
                       << avg_pages_per_major << " pages, "
                       << std::fixed << std::setprecision(2)
                       << avg_committed_mb_per_major << " committed MB, "
                       << std::fixed << std::setprecision(2)
-                      << avg_live_mb_per_major << " live MB"
+                      << avg_live_mb_per_major << " live MB, "
+                      << std::fixed << std::setprecision(2)
+                      << avg_free_mb_per_major << " free MB, "
+                      << std::fixed << std::setprecision(2)
+                      << avg_garb_mb_per_major << " garb MB"
                       << std::endl;
         }
+    }
+
+    // ========== Free-List Size-Class Histogram ==========
+    //
+    // Cumulative across every major-GC end. Each size class shows the
+    // running total of cells parked on its free list and the byte mass
+    // those cells represent. classToSize must agree with OldGenSpace —
+    // small classes 0..31 are (i+1)*8 bytes; medium classes 32+ are
+    // 512 << (i - 32) bytes (i.e. 512, 1024, 2048, ...).
+    if (freelist_snapshots > 0) {
+        // Total mass for the percentage column.
+        uint64_t total_cells = 0;
+        uint64_t total_bytes = 0;
+        uint64_t max_cells   = 0;
+        for (int i = 0; i < FREELIST_CLASS_BUCKETS; i++) {
+            total_cells += freelist_cells_by_class[i];
+            total_bytes += freelist_bytes_by_class[i];
+            max_cells    = std::max(max_cells, freelist_cells_by_class[i]);
+        }
+        // Include the large-block aggregate in the byte-share denominator
+        // so a heap dominated by `free_large_blocks_` reads correctly.
+        const uint64_t total_with_large =
+            total_bytes + freelist_large_block_bytes;
+
+        std::cout << "\nOld-Gen Free-List Size-Class Histogram (cumulative "
+                  << "over " << freelist_snapshots << " major-GC end "
+                  << "snapshots):" << std::endl;
+        std::cout << "  Cells parked on per-class free lists at each\n"
+                     "  sample, just before the next major's transition\n"
+                     "  clears them. cell_size is the exact byte size of\n"
+                     "  every cell on that class. Concentration in tiny\n"
+                     "  classes (8B..256B) means the heap is full of\n"
+                     "  slivers that can't satisfy bigger requests."
+                  << std::endl;
+        std::cout << "  cell_size       cells       bytes     bytes_MB"
+                     "    %bytes"
+                  << std::endl;
+
+        const int BAR_WIDTH = 30;
+        const double MB = 1024.0 * 1024.0;
+        constexpr int NUM_SMALL = 32;
+        constexpr int MEDIUM_BASE = 512;
+        for (int i = 0; i < FREELIST_CLASS_BUCKETS; i++) {
+            if (freelist_cells_by_class[i] == 0) continue;
+
+            const size_t cell_size = (i < NUM_SMALL)
+                ? static_cast<size_t>((i + 1) * 8)
+                : static_cast<size_t>(MEDIUM_BASE) << (i - NUM_SMALL);
+            const double bytes_mb = freelist_bytes_by_class[i] / MB;
+            const double bytes_pct = total_with_large > 0
+                ? (freelist_bytes_by_class[i] * 100.0) / total_with_large
+                : 0.0;
+
+            std::cout << "  " << std::setw(8) << formatBytes(cell_size)
+                      << "   " << std::setw(10)
+                      << freelist_cells_by_class[i] << " "
+                      << std::setw(11) << freelist_bytes_by_class[i] << " "
+                      << std::setw(10) << std::fixed << std::setprecision(2)
+                      << bytes_mb << "  "
+                      << std::setw(5) << std::fixed << std::setprecision(1)
+                      << bytes_pct << "%  ";
+
+            int bar_len = max_cells > 0
+                ? static_cast<int>((freelist_cells_by_class[i] * BAR_WIDTH)
+                                   / max_cells)
+                : 0;
+            for (int j = 0; j < bar_len; j++) std::cout << "█";
+            std::cout << std::endl;
+        }
+
+        if (freelist_large_block_count > 0) {
+            const double lb_mb  = freelist_large_block_bytes / MB;
+            const double lb_pct = total_with_large > 0
+                ? (freelist_large_block_bytes * 100.0) / total_with_large
+                : 0.0;
+            std::cout << "  large-blk    " << std::setw(10)
+                      << freelist_large_block_count << " "
+                      << std::setw(11) << freelist_large_block_bytes << " "
+                      << std::setw(10) << std::fixed << std::setprecision(2)
+                      << lb_mb << "  "
+                      << std::setw(5) << std::fixed << std::setprecision(1)
+                      << lb_pct << "%   (whole-block free entries)"
+                      << std::endl;
+        }
+
+        const double total_bytes_mb = total_with_large / MB;
+        std::cout << "  total        " << std::setw(10) << total_cells << " "
+                  << std::setw(11) << total_with_large << " "
+                  << std::setw(10) << std::fixed << std::setprecision(2)
+                  << total_bytes_mb << "  100.0%" << std::endl;
+
+        const double avg_cells_per_major =
+            static_cast<double>(total_cells) / freelist_snapshots;
+        const double avg_bytes_mb_per_major =
+            total_bytes_mb / freelist_snapshots;
+        std::cout << "  per-major avg: "
+                  << std::fixed << std::setprecision(1)
+                  << avg_cells_per_major << " cells, "
+                  << std::fixed << std::setprecision(2)
+                  << avg_bytes_mb_per_major << " MB on free lists"
+                  << std::endl;
     }
 
     std::cout << std::endl;
@@ -713,14 +913,27 @@ void GCStats::reset() {
 
     // Reset page residency histogram.
     for (int i = 0; i < RESIDENCY_BUCKETS; i++) {
-        residency_pages[i]      = 0;
-        residency_page_bytes[i] = 0;
-        residency_live_bytes[i] = 0;
+        residency_pages[i]         = 0;
+        residency_page_bytes[i]    = 0;
+        residency_live_bytes[i]    = 0;
+        residency_garbage_bytes[i] = 0;
+        residency_free_bytes[i]    = 0;
     }
-    residency_pinned_pages      = 0;
-    residency_pinned_page_bytes = 0;
-    residency_pinned_live_bytes = 0;
-    residency_snapshots         = 0;
+    residency_pinned_pages         = 0;
+    residency_pinned_page_bytes    = 0;
+    residency_pinned_live_bytes    = 0;
+    residency_pinned_garbage_bytes = 0;
+    residency_pinned_free_bytes    = 0;
+    residency_snapshots            = 0;
+
+    // Reset free-list size-class histogram.
+    for (int i = 0; i < FREELIST_CLASS_BUCKETS; i++) {
+        freelist_cells_by_class[i] = 0;
+        freelist_bytes_by_class[i] = 0;
+    }
+    freelist_large_block_count = 0;
+    freelist_large_block_bytes = 0;
+    freelist_snapshots         = 0;
 }
 
 } // namespace Elm
