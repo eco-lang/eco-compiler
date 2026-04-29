@@ -7,7 +7,19 @@
 #include <stdexcept>
 #include <string>
 
+#if defined(__clang__)
+#  pragma clang diagnostic push
+#  pragma clang diagnostic ignored "-Wcovered-switch-default"
+#elif defined(__GNUC__)
+#  pragma GCC diagnostic push
+#  pragma GCC diagnostic ignored "-Wcovered-switch-default"
+#endif
 #include "../../../elm-kernel-cpp/vendor/nlohmann/json.hpp"
+#if defined(__clang__)
+#  pragma clang diagnostic pop
+#elif defined(__GNUC__)
+#  pragma GCC diagnostic pop
+#endif
 
 namespace Elm {
 
