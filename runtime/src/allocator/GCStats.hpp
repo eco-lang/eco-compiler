@@ -144,6 +144,27 @@ public:
     // printer to derive "average pages per major" alongside the totals.
     uint64_t residency_snapshots = 0;
 
+    // ---- Latest-only snapshot (most recent major-GC end) ----
+    //
+    // Mirrors the residency arrays above but holds only the contributions
+    // from the most recent major-GC end snapshot. Cleared on
+    // beginResidencySnapshot() and re-populated by recordBlockResidency()
+    // before recordResidencySnapshot() bumps `latest_residency_snapshots`
+    // to 1. The printer surfaces this separately from the cumulative
+    // histogram so the final state at program end can be inspected
+    // unmerged from earlier majors.
+    uint64_t latest_residency_pages[RESIDENCY_BUCKETS]         = {0};
+    uint64_t latest_residency_page_bytes[RESIDENCY_BUCKETS]    = {0};
+    uint64_t latest_residency_live_bytes[RESIDENCY_BUCKETS]    = {0};
+    uint64_t latest_residency_garbage_bytes[RESIDENCY_BUCKETS] = {0};
+    uint64_t latest_residency_free_bytes[RESIDENCY_BUCKETS]    = {0};
+    uint64_t latest_residency_pinned_pages         = 0;
+    uint64_t latest_residency_pinned_page_bytes    = 0;
+    uint64_t latest_residency_pinned_live_bytes    = 0;
+    uint64_t latest_residency_pinned_garbage_bytes = 0;
+    uint64_t latest_residency_pinned_free_bytes    = 0;
+    uint64_t latest_residency_snapshots            = 0;
+
     // ========== Free-List Size-Class Histogram ==========
     //
     // Snapshot of the per-class free-list contents at every major-GC end
@@ -168,6 +189,19 @@ public:
     uint64_t freelist_large_block_bytes  = 0;
     uint64_t freelist_large_block_count  = 0;
     uint64_t freelist_snapshots          = 0;
+
+    // ---- Latest-only snapshot (most recent major-GC end) ----
+    //
+    // Mirrors the free-list histogram fields above but holds only the
+    // contributions from the most recent major-GC end snapshot. Cleared
+    // on beginFreeListSnapshot() and re-populated by recordFreeListClass /
+    // recordFreeListLargeBlocks before recordFreeListSnapshot() bumps
+    // `latest_freelist_snapshots` to 1.
+    uint64_t latest_freelist_cells_by_class[FREELIST_CLASS_BUCKETS] = {0};
+    uint64_t latest_freelist_bytes_by_class[FREELIST_CLASS_BUCKETS] = {0};
+    uint64_t latest_freelist_large_block_bytes  = 0;
+    uint64_t latest_freelist_large_block_count  = 0;
+    uint64_t latest_freelist_snapshots          = 0;
 
     // ========== AllocBuffer Stats ==========
     uint64_t buffers_allocated = 0;
@@ -262,8 +296,15 @@ public:
                               size_t free_bytes,
                               bool   is_large);
 
-    // Increments residency_snapshots; call once per major-GC end after
-    // every block has been recorded.
+    // Clears the latest_residency_* arrays so the next round of
+    // recordBlockResidency() calls populates a fresh "most recent major"
+    // snapshot. Call once per major-GC end BEFORE the per-block
+    // recordBlockResidency() calls. Cumulative arrays are left untouched.
+    void beginResidencySnapshot();
+
+    // Increments residency_snapshots and sets latest_residency_snapshots
+    // to 1; call once per major-GC end after every block has been
+    // recorded.
     void recordResidencySnapshot();
 
     // Records the contents of one per-class free list into the size-class
@@ -279,8 +320,15 @@ public:
     void recordFreeListLargeBlocks(uint64_t block_count,
                                    uint64_t total_bytes);
 
-    // Increments freelist_snapshots; call once per major-GC end after
-    // every per-class entry has been recorded.
+    // Clears the latest_freelist_* arrays so the next round of
+    // recordFreeListClass / recordFreeListLargeBlocks calls populates a
+    // fresh "most recent major" snapshot. Call once per major-GC end
+    // BEFORE the per-class recordFreeListClass calls.
+    void beginFreeListSnapshot();
+
+    // Increments freelist_snapshots and sets latest_freelist_snapshots
+    // to 1; call once per major-GC end after every per-class entry has
+    // been recorded.
     void recordFreeListSnapshot();
 
     // Merges statistics from another GCStats instance (for combining thread stats).

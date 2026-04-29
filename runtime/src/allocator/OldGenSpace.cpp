@@ -2526,6 +2526,12 @@ static_assert(NUM_SIZE_CLASSES <= GCStats::FREELIST_CLASS_BUCKETS,
 // rolled into the per-block totals (whole-block free entries) and
 // reported separately to the size-class histogram.
 void OldGenSpace::gatherResidencyInto(GCStats& stats) const {
+    // Clear the latest_* mirror arrays so this snapshot replaces (rather
+    // than accumulates onto) the previously-recorded "most recent"
+    // residency / free-list state. Cumulative arrays are left untouched.
+    stats.beginFreeListSnapshot();
+    stats.beginResidencySnapshot();
+
     std::vector<size_t> per_block_free_bytes(blocks_.size(), 0);
 
     for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) {
