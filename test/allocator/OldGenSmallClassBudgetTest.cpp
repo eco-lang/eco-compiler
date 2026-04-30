@@ -130,23 +130,28 @@ Testing::TestCase testSmallClassBudgetExhaustedResumesSplitting(
 
 Testing::TestCase testSmallClassAboveCapClassesUnaffected(
     "Classes above small_class_cell_max_bytes are not budgeted", []() {
-    // cell_max=8: only the smallest class (cellSize=8) qualifies as small.
+    // cell_max=16: only classes cls=0 (cellSize=8) and cls=1 (cellSize=16)
+    // qualify as small. Allocations in cls >= 2 (cellSize >= 24) are
+    // unaffected by the budget.
     auto& alloc =
         initAllocator(smallClassBudgetConfig(/*budget=*/256 * 1024,
-                                             /*cell_max=*/8));
+                                             /*cell_max=*/16));
     auto& og = threadOldGen(alloc);
 
-    // cls=0 (cellSize=8) is small; cls=1 (cellSize=16) is not.
     TEST_ASSERT(OldGenSpaceTestAccess::shouldPreferBagForSmallClass(og, 0));
-    TEST_ASSERT(!OldGenSpaceTestAccess::shouldPreferBagForSmallClass(og, 1));
-    TEST_ASSERT(OldGenSpaceTestAccess::getSmallClassIndexLimit(og) == 1);
+    TEST_ASSERT(OldGenSpaceTestAccess::shouldPreferBagForSmallClass(og, 1));
+    TEST_ASSERT(!OldGenSpaceTestAccess::shouldPreferBagForSmallClass(og, 2));
+    TEST_ASSERT(OldGenSpaceTestAccess::getSmallClassIndexLimit(og) == 2);
 
-    // ElmInt is 16 B → cls=1 → not small. Allocations in this class should
-    // never bump small_class_bytes_.
+    // Allocate Tuple3-sized objects (40 B → cls=4, cellSize=40). cls=4 is
+    // above the budget cap, so populateFromBlock for this class must not
+    // bump small_class_bytes_.
     const size_t before = OldGenSpaceTestAccess::getSmallClassBytes(og);
     for (size_t i = 0; i < 1024; ++i) {
-        void* obj = allocateIntInOldGen(og, static_cast<i64>(i));
+        void* obj = og.allocate(40);
         TEST_ASSERT(obj != nullptr);
+        Header* hdr = reinterpret_cast<Header*>(obj);
+        hdr->tag = Tag_Tuple3;
     }
     TEST_ASSERT(OldGenSpaceTestAccess::getSmallClassBytes(og) == before);
 });
@@ -183,11 +188,27 @@ Testing::TestCase testSmallClassBudgetDisabledMatchesLegacy(
 Testing::TestCase testSmallClassBudgetDebitsOnRelease(
     "Block release debits small_class_bytes_", []() {
     constexpr size_t kPage = 32 * 1024;
-    auto& alloc = initAllocator(smallClassBudgetConfig(/*budget=*/8 * kPage));
+    // Tighter initial heap (one page) so the reclaim floor doesn't keep
+    // every dedicated small-class page after major GC. With initial=1 page,
+    // post-GC reclaim can release any extra pages dedicated to size classes.
+    HeapConfig cfg;
+    cfg.alloc_buffer_size       = kPage;
+    cfg.nursery_block_count     = 4;
+    cfg.initial_old_gen_size    = kPage;          // floor = 1 page.
+    cfg.max_heap_size           = 64ULL * 1024 * 1024;
+    cfg.large_object_threshold  = 8 * 1024;
+    cfg.major_gc_initiating_occupancy = 0.75f;
+    cfg.major_gc_target_utilization   = 0.50f;
+    cfg.decommit_on_oldgen_release    = false;
+    cfg.small_class_heap_budget_bytes = 8 * kPage;
+    cfg.small_class_cell_max_bytes    = 8 * 1024;
+    cfg.validate();
+    auto& alloc = initAllocator(cfg);
     auto& og = threadOldGen(alloc);
 
-    // Allocate unrooted ints; they will all be garbage at major-GC time.
-    for (size_t i = 0; i < 4 * 1024; ++i) {
+    // Allocate enough unrooted ints to dedicate several small-class pages
+    // beyond the floor.
+    for (size_t i = 0; i < 8 * 1024; ++i) {
         void* obj = allocateIntInOldGen(og, static_cast<i64>(i));
         TEST_ASSERT(obj != nullptr);
     }
