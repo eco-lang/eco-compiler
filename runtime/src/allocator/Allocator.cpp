@@ -104,7 +104,9 @@ void Allocator::dumpHeapState(const char* label, size_t pending_size) const {
 thread_local ThreadLocalHeap* Allocator::tl_heap_ = nullptr;
 
 Allocator::Allocator() :
-    heap_base(nullptr), heap_reserved(0), old_gen_committed(0), nursery_offset(0),
+    heap_base(nullptr), heap_reserved(0),
+    old_gen_committed(0), old_gen_in_use_bytes_(0),
+    nursery_offset(0),
     nursery_low_committed_(0), nursery_high_committed_(0), initialized(false) {
     // Initialization happens in initialize() method.
 }
@@ -480,12 +482,12 @@ char* Allocator::acquireOldGenBlock(size_t size) {
             // a no-op if the pages were never decommitted.
             madvise(block, block_size, MADV_WILLNEED);
 
-            old_gen_committed += block_size;
-
-            if (page_request) {
-                assert(old_gen_committed % PAGE_SIZE == 0 &&
-                       "acquireOldGenBlock: committed misaligned after page reuse");
-            }
+            // Do NOT increment `old_gen_committed` (the bump pointer):
+            // this block is already inside the
+            // [heap_base, heap_base + old_gen_committed) bump range.
+            // Track it as in-use so getOldGenCommittedBytes() reflects
+            // the round-trip correctly.
+            old_gen_in_use_bytes_ += block_size;
 
             if (heapTraceEnabled()) {
                 dumpHeapState("oldgen reused released block", block_size);
@@ -517,6 +519,7 @@ char* Allocator::acquireOldGenBlock(size_t size) {
 
     size_t before = old_gen_committed;
     old_gen_committed += size;
+    old_gen_in_use_bytes_ += size;
 
     if (page_request) {
         assert(old_gen_committed % PAGE_SIZE == 0 &&
@@ -548,19 +551,23 @@ void Allocator::releaseOldGenBlock(char* block, size_t size) {
         madvise(block, size, MADV_DONTNEED);
     }
 
+    // Do NOT decrement `old_gen_committed`. The field is the bump pointer
+    // (high-water mark) for fresh mmap calls — `acquireOldGenBlock`'s
+    // bump path computes the next mapping address as
+    //   `heap_base + old_gen_committed`
+    // and any size+address check uses the same value. Decrementing here
+    // for non-LIFO releases (e.g. major-GC reclaimAllDeadBlocksFromMeta
+    // releasing low-address blocks) would move the bump pointer back over
+    // still-mapped, still-live high-address regions; the next bump+mmap
+    // would then `MAP_FIXED`-overlay live data with a fresh allocation.
+    // Released bytes are recovered by `acquireOldGenBlock`'s first-fit
+    // scan over `old_gen_free_blocks_`, not by reusing the bump.
     old_gen_free_blocks_.emplace_back(block, size);
 
-    assert(old_gen_committed >= size &&
-           "releaseOldGenBlock: committed underflow");
-    old_gen_committed -= size;
-
-    constexpr size_t PAGE_SIZE = 4096;
-    if (size == config_.alloc_buffer_size) {
-        assert(size % PAGE_SIZE == 0 &&
-               "releaseOldGenBlock: page release size must be page-multiple");
-        assert(old_gen_committed % PAGE_SIZE == 0 &&
-               "releaseOldGenBlock: committed misaligned after page release");
-    }
+    // Decrement the in-use byte counter so post-shrink reporting is correct.
+    assert(old_gen_in_use_bytes_ >= size &&
+           "releaseOldGenBlock: in-use underflow");
+    old_gen_in_use_bytes_ -= size;
 
     if (heapTraceEnabled()) {
         dumpHeapState("oldgen released block", size);
@@ -643,6 +650,7 @@ char* Allocator::acquireOldGenRegion(size_t initial_size, size_t /*max_size*/) {
     }
 
     old_gen_committed += initial_size;
+    old_gen_in_use_bytes_ += initial_size;
     return region_base;
 }
 
@@ -672,6 +680,7 @@ void Allocator::reset(const HeapConfig* new_config) {
 
     // Reset committed memory tracking.
     old_gen_committed = 0;
+    old_gen_in_use_bytes_ = 0;
     nursery_low_committed_ = 0;
     nursery_high_committed_ = 0;
 

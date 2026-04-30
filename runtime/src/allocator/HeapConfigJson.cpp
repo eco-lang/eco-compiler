@@ -161,6 +161,8 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         "use_hybrid_dfs",
         "large_object_threshold",
         "decommit_on_oldgen_release",
+        "small_class_heap_budget_bytes",
+        "small_class_cell_max_bytes",
     };
 
     for (auto it = doc.begin(); it != doc.end(); ++it) {
@@ -204,6 +206,12 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
     if (auto it = doc.find("decommit_on_oldgen_release"); it != doc.end())
         cfg.decommit_on_oldgen_release =
             parseBool(*it, "decommit_on_oldgen_release");
+    if (auto it = doc.find("small_class_heap_budget_bytes"); it != doc.end())
+        cfg.small_class_heap_budget_bytes =
+            parseByteSize(*it, "small_class_heap_budget_bytes");
+    if (auto it = doc.find("small_class_cell_max_bytes"); it != doc.end())
+        cfg.small_class_cell_max_bytes =
+            parseByteSize(*it, "small_class_cell_max_bytes");
 }
 
 void applyHeapConfigFromEnv(HeapConfig &cfg) {

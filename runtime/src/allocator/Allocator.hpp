@@ -125,7 +125,7 @@ public:
     size_t getOldGenAllocatedBytes() const;
 
     // Returns committed bytes in the shared old-gen region (all threads).
-    size_t getOldGenCommittedBytes() const { return old_gen_committed; }
+    size_t getOldGenCommittedBytes() const { return old_gen_in_use_bytes_; }
 
     // Returns committed bytes in the low / high nursery regions.
     size_t getNurseryLowCommittedBytes() const { return nursery_low_committed_; }
@@ -159,7 +159,15 @@ private:
     HeapConfig config_;           // Heap configuration parameters.
     char *heap_base;              // Base of reserved address space.
     size_t heap_reserved;         // Total address space reserved (bytes).
-    size_t old_gen_committed;     // Committed bytes in old gen region (grows on demand).
+    // Bump-pointer high-water mark for old-gen mmap. Always grows (never
+    // decremented) so a `MAP_FIXED` mmap from this position is guaranteed
+    // to land on un-mapped address space, never overlaying live data at a
+    // non-LIFO-released block.
+    size_t old_gen_committed;
+    // Bytes currently in use in the old gen — i.e. acquired minus released.
+    // Decremented when a block is returned via `releaseOldGenBlock`. Used
+    // by `getOldGenCommittedBytes()` and tests; not used for mmap arithmetic.
+    size_t old_gen_in_use_bytes_;
     size_t nursery_offset;        // Byte offset where nursery region begins (heap midpoint).
     size_t nursery_low_committed_;   // Committed bytes in first half of nursery region.
     size_t nursery_high_committed_;  // Committed bytes in second half of nursery region.
