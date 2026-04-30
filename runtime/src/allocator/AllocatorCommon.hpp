@@ -43,6 +43,11 @@ enum class Color : u32 {
 constexpr size_t DEFAULT_MAX_HEAP_SIZE = 24ULL * 1024 * 1024 * 1024;  // 32 GB address space (12 GB old gen + 12 GB nursery).
 constexpr size_t INITIAL_OLD_GEN_SIZE = 16 * 1024 * 1024;            // 16 MB initial commit.
 
+// Default cap on bytes committed to uniform small-class pages before
+// the allocator starts splitting larger free cells to satisfy
+// fixed-size-class requests. See HeapConfig::small_class_heap_budget_bytes.
+constexpr size_t DEFAULT_SMALL_CLASS_HEAP_BUDGET = 1024ULL * 1024 * 1024;  // 1 GiB
+
 // AllocBuffer sizing.
 constexpr size_t ALLOC_BUFFER_SIZE = 128 * 1024;  // 128 KB default AllocBuffer.
 
@@ -219,6 +224,14 @@ struct HeapConfig {
     // zero reads) or shifts to a clearly observable mark-phase issue.
     bool decommit_on_oldgen_release = true;
 
+    // Cap on bytes committed to uniform small-class pages before we start
+    // splitting larger free cells down into those classes. 0 disables.
+    size_t small_class_heap_budget_bytes = DEFAULT_SMALL_CLASS_HEAP_BUDGET;
+
+    // Cell-size cap that defines "small" for budgeting. Defaults to the
+    // large-object threshold so the heuristic covers all fast-path classes.
+    size_t small_class_cell_max_bytes = large_object_threshold;
+
     // Derived value: total nursery size in bytes.
     size_t nurserySize() const { return nursery_block_count * alloc_buffer_size; }
 
@@ -367,6 +380,31 @@ struct HeapConfig {
             throw std::invalid_argument(
                 "major_gc_initiating_occupancy must be > "
                 "major_gc_target_utilization");
+        }
+
+        // ========== 7. Small-Class Block Budget ==========
+        //
+        // small_class_heap_budget_bytes can be set to any value. When it
+        // exceeds the old-gen cap (max_heap_size / 2), the heuristic is
+        // effectively unbounded: small-class allocations always prefer
+        // bag-first until the cap itself is hit. The default of 1 GiB is
+        // well within the default 12 GiB old-gen cap; smaller test heaps
+        // simply get the unbounded behaviour, which still respects
+        // committedToCapRatio < 1.0.
+
+        // FreeCell footprint: Header + a pointer link. The small-class
+        // cell-size cap must be at least this so any class included in the
+        // budget can legitimately host a FreeCell on its free list.
+        constexpr size_t MIN_FREE_CELL_FOOTPRINT = sizeof(Header) + sizeof(void*);
+        if (small_class_cell_max_bytes != 0 &&
+            small_class_cell_max_bytes < MIN_FREE_CELL_FOOTPRINT) {
+            throw std::invalid_argument(
+                "small_class_cell_max_bytes must be >= sizeof(FreeCell)");
+        }
+        if (small_class_cell_max_bytes > large_object_threshold) {
+            throw std::invalid_argument(
+                "small_class_cell_max_bytes must be <= large_object_threshold "
+                "(above-LOT bypasses fixed-cell classes)");
         }
     }
 };

@@ -23,6 +23,7 @@
 #include "allocator/OldGenLazySweepTest.hpp"
 #include "allocator/OldGenSweepOnDemandTest.hpp"
 #include "allocator/OldGenSweepBudgetTest.hpp"
+#include "allocator/OldGenSmallClassBudgetTest.hpp"
 #include "allocator/HeapHelpersTest.hpp"
 #include "allocator/StringOpsTest.hpp"
 #include "allocator/ListOpsTest.hpp"
@@ -616,6 +617,13 @@ int main(int argc, char* argv[]) {
     oldGenTests.add(testSweepBudgetUnsweptRatioBoost);
     oldGenTests.add(testSweepBudgetMinimumIsSweepWorkBudget);
     oldGenTests.add(testSweepBudgetClampedToHardCap);
+    // Small-class block budget (plans/small-class-block-budget.md).
+    oldGenTests.add(testSmallClassBudgetUnderCapPullsFreshPages);
+    oldGenTests.add(testSmallClassBudgetExhaustedResumesSplitting);
+    oldGenTests.add(testSmallClassAboveCapClassesUnaffected);
+    oldGenTests.add(testSmallClassBudgetDisabledMatchesLegacy);
+    oldGenTests.add(testSmallClassBudgetDebitsOnRelease);
+    oldGenTests.add(testSmallClassBudgetIgnoresHeapBasePage);
     // Heap-base sentinel discipline (plans/heap-base-sentinel-fix.md).
     oldGenTests.add(testInitialUnassignedBlocksAreFullPages);
     oldGenTests.add(testNoAllocationLandsAtHeapBase);

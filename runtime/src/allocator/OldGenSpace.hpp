@@ -69,6 +69,12 @@ struct MajorGCPhaseProfile {
 //   - Sweep coalesces adjacent garbage into a single Tag_Free cell and pushes
 //     it onto the free list of the appropriate size class. Splitting is the
 //     only mechanism that re-divides large free cells into smaller ones.
+//
+//   - Below `small_class_heap_budget_bytes`, small-class allocations prefer
+//     pulling a fresh uniform bag page over splitting larger free cells. This
+//     trades early committed capacity for less fragmentation of medium/large
+//     free spans into tiny cells. See `shouldPreferBagForSmallClass` and
+//     `HeapConfig::small_class_heap_budget_bytes`.
 
 // Small classes: 32 classes covering 8..256 bytes in steps of 8.
 static constexpr size_t NUM_SMALL_CLASSES = 32;
@@ -407,6 +413,44 @@ private:
     // before asking the Allocator for a fresh block.
     std::vector<size_t> free_large_blocks_;
 
+    // ========== Small-Class Block Budget ==========
+    //
+    // While `small_class_bytes_ < config_->small_class_heap_budget_bytes`,
+    // small-class (cellSize <= small_class_cell_max_bytes) allocations
+    // prefer pulling a fresh uniform bag page over splitting a larger
+    // free cell. See `shouldPreferBagForSmallClass`.
+
+    // Sum of totalBytes() of UNIFORM small-class pages currently in
+    // `blocks_` (size_class < num_size_classes_ AND size_class is a
+    // small class).
+    size_t small_class_bytes_;
+
+    // Exclusive upper bound on size-class indices considered "small" for
+    // budget purposes. Recomputed from config_ in initialize/reset.
+    size_t small_class_index_limit_;
+
+    // Recomputes small_class_index_limit_ from config_->small_class_cell_max_bytes.
+    void recomputeSmallClassLimit();
+
+    // True iff `cls` is a small-class index (cls < small_class_index_limit_).
+    bool isSmallClassIndex(size_t cls) const {
+        return cls < small_class_index_limit_;
+    }
+
+    // Credits the given block's totalBytes() to small_class_bytes_ if it
+    // is a uniform small-class page. Called immediately after
+    // `populateFromBlock` materialises a uniform block.
+    void onUniformBlockDedicated(size_t block_index);
+
+    // Debits the given block's totalBytes() from small_class_bytes_ if it
+    // was a uniform small-class page. Called from any path that drops a
+    // block from blocks_.
+    void onBlockReleased(size_t block_index);
+
+    // Same as onBlockReleased but used for in-place transitions to is_large
+    // (no swap-remove). See allocateFromEmptyRegularBlocks.
+    void onBlockTransitioningToLarge(size_t block_index);
+
     // ========== Size Class Helpers ==========
 
     // Maps an allocation request size to its size-class index. Used at
@@ -548,6 +592,22 @@ private:
     // grow capacity. Returns nullptr on failure. Behaviour-preserving
     // refactor of the first two paragraphs of allocateFromSizeClass.
     void* tryAllocateFromFreeLists(size_t cls, size_t requested_size);
+
+    // Pure free-list manipulation. Pops the head cell of free_lists_[cls]
+    // and returns it as a raw pointer (or nullptr if the list is empty).
+    // Does NOT touch the header, padding, allocated_bytes, or stats; the
+    // caller finalises the cell into an object via finalizePoppedCell.
+    FreeCell* tryPopFromFreeList(size_t cls);
+
+    // Behaviour-preserving extraction of the "turn this cell into an
+    // object" sequence: initObjectHeaderWithSize → padCellSlack →
+    // allocated_bytes += cellSize. Returns the cell as void*.
+    void* finalizePoppedCell(FreeCell* cell, size_t cls,
+                             size_t requested_size);
+
+    // Returns true while small-class allocations should bag-first instead
+    // of splitting larger free cells. See implementation for the predicate.
+    bool shouldPreferBagForSmallClass(size_t cls) const;
 
     // Sweep-on-demand driver: computes a dynamic per-allocation sweep
     // budget via `computeSweepBudgetForAlloc` and, while
@@ -1069,6 +1129,18 @@ public:
     static OldGenSpace::AllDeadReclaimStats reclaimAllDeadBlocksFromMeta(
             OldGenSpace& oldgen) {
         return oldgen.reclaimAllDeadBlocksFromMeta();
+    }
+
+    // Small-class budget access for tests.
+    static size_t getSmallClassBytes(const OldGenSpace& oldgen) {
+        return oldgen.small_class_bytes_;
+    }
+    static size_t getSmallClassIndexLimit(const OldGenSpace& oldgen) {
+        return oldgen.small_class_index_limit_;
+    }
+    static bool shouldPreferBagForSmallClass(const OldGenSpace& oldgen,
+                                             size_t cls) {
+        return oldgen.shouldPreferBagForSmallClass(cls);
     }
 
     // Compaction control for testing.

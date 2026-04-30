@@ -83,7 +83,9 @@ OldGenSpace::OldGenSpace() :
     compact_phase_(CompactionPhase::Idle),
     current_evac_index_(0), evac_cursor_(nullptr),
     evac_block_index_(NO_BLOCK), evac_alloc_ptr_(nullptr),
-    fixup_buffer_index_(0), fixup_cursor_(nullptr) {
+    fixup_buffer_index_(0), fixup_cursor_(nullptr),
+    small_class_bytes_(0),
+    small_class_index_limit_(0) {
     // Initialize free lists to empty.
     for (size_t i = 0; i < NUM_SIZE_CLASSES; i++) {
         free_lists_[i] = nullptr;
@@ -117,6 +119,8 @@ void OldGenSpace::initialize(Allocator* allocator, const HeapConfig* config) {
     allocator_ = allocator;
     num_size_classes_ = computeNumSizeClasses(config_->large_object_threshold);
     allocated_bytes = 0;
+    small_class_bytes_ = 0;
+    recomputeSmallClassLimit();
 
     // Pre-commit the initial region as one contiguous mmap, then slice into
     // pages and push each page extent into the bag of unassigned blocks.
@@ -181,6 +185,8 @@ void OldGenSpace::reset(const HeapConfig* new_config) {
     sweep_cursor_ = nullptr;
     sweep_pending_blocks_ = 0;
     sweep_total_blocks_ = 0;
+    small_class_bytes_ = 0;
+    recomputeSmallClassLimit();
 
     // Clear all free lists.
     for (size_t i = 0; i < NUM_SIZE_CLASSES; i++) {
@@ -335,6 +341,57 @@ void OldGenSpace::clearPageIndexForBlock(size_t block_index) {
             page_to_block_index_[p] = NO_BLOCK;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Small-class block budget bookkeeping.
+// ---------------------------------------------------------------------------
+
+void OldGenSpace::recomputeSmallClassLimit() {
+    if (config_ == nullptr ||
+        config_->small_class_heap_budget_bytes == 0) {
+        small_class_index_limit_ = 0;
+        return;
+    }
+    const size_t cap = config_->small_class_cell_max_bytes;
+    size_t limit = 0;
+    while (limit < num_size_classes_ && classToSize(limit) <= cap) {
+        ++limit;
+    }
+    small_class_index_limit_ = limit;
+}
+
+void OldGenSpace::onUniformBlockDedicated(size_t block_index) {
+    if (block_index >= blocks_.size()) return;
+    const BlockInfo& blk = blocks_[block_index];
+    if (blk.is_large) return;
+    if (!isSmallClassIndex(blk.size_class)) return;
+    small_class_bytes_ += blk.totalBytes();
+}
+
+void OldGenSpace::onBlockReleased(size_t block_index) {
+    if (block_index >= blocks_.size()) return;
+    const BlockInfo& blk = blocks_[block_index];
+    if (blk.is_large) return;
+    if (!isSmallClassIndex(blk.size_class)) return;
+    const size_t bytes = blk.totalBytes();
+    small_class_bytes_ = (small_class_bytes_ >= bytes)
+                             ? small_class_bytes_ - bytes
+                             : 0;
+}
+
+void OldGenSpace::onBlockTransitioningToLarge(size_t block_index) {
+    onBlockReleased(block_index);
+}
+
+bool OldGenSpace::shouldPreferBagForSmallClass(size_t cls) const {
+    if (config_ == nullptr) return false;
+    if (config_->small_class_heap_budget_bytes == 0) return false;
+    if (!isSmallClassIndex(cls)) return false;
+    if (small_class_bytes_ >= config_->small_class_heap_budget_bytes) {
+        return false;
+    }
+    return committedToCapRatio() < 1.0;
 }
 
 size_t OldGenSpace::blockIndexFor(const void* obj) const {
@@ -501,20 +558,36 @@ static inline void padCellSlack(void* obj, size_t requested_size,
 // Size-class fast path.
 // ---------------------------------------------------------------------------
 
+// Pure free-list pop. Splitting and finalisation are split helpers below
+// so the small-class budget path can interpose between exact-fit and split.
+FreeCell* OldGenSpace::tryPopFromFreeList(size_t cls) {
+    assert(cls < NUM_SIZE_CLASSES);
+    FreeCell* cell = free_lists_[cls];
+    if (cell == nullptr) return nullptr;
+    free_lists_[cls] = cell->next;
+    return cell;
+}
+
+// Finalises a popped free cell into a usable object: writes the header,
+// pads any slack, and accounts for the cell's bytes.
+void* OldGenSpace::finalizePoppedCell(FreeCell* cell, size_t cls,
+                                      size_t requested_size) {
+    void* result = static_cast<void*>(cell);
+    const size_t cell_size = classToSize(cls);
+    initObjectHeaderWithSize(result, cell_size);
+    padCellSlack(result, requested_size, cell_size);
+    allocated_bytes += cell_size;
+    return result;
+}
+
 // Free-list-only allocation. Pure refactor of the original first two
 // paragraphs of allocateFromSizeClass — does NOT consume a bag page or
 // grow committed capacity.
 void* OldGenSpace::tryAllocateFromFreeLists(size_t cls, size_t requested_size) {
     assert(cls < NUM_SIZE_CLASSES);
 
-    if (free_lists_[cls] != nullptr) {
-        FreeCell* cell = free_lists_[cls];
-        free_lists_[cls] = cell->next;
-        void* result = static_cast<void*>(cell);
-        initObjectHeaderWithSize(result, classToSize(cls));
-        padCellSlack(result, requested_size, classToSize(cls));
-        allocated_bytes += classToSize(cls);
-        return result;
+    if (FreeCell* cell = tryPopFromFreeList(cls)) {
+        return finalizePoppedCell(cell, cls, requested_size);
     }
 
     if (void* result = tryAllocateBySplittingLarger(cls, classToSize(cls))) {
@@ -649,53 +722,57 @@ void* OldGenSpace::panicSweepAndRetryAllocation(size_t cls,
 void* OldGenSpace::allocateFromSizeClass(size_t cls, size_t requested_size) {
     assert(cls < num_size_classes_ && "size class out of range");
 
-    // 1) Free-list / split fast path.
-    if (void* result = tryAllocateFromFreeLists(cls, requested_size)) {
+    // (1) Exact-fit pop from free_lists_[cls]. No splitting yet.
+    if (FreeCell* cell = tryPopFromFreeList(cls)) {
+        return finalizePoppedCell(cell, cls, requested_size);
+    }
+
+    // (2) Bag-first for small classes while under the budget. Re-pop after
+    //     population; the heap-base detour produces non-uniform output, in
+    //     which case the re-pop misses and we fall through.
+    if (shouldPreferBagForSmallClass(cls)) {
+        if (populateFromBlock(cls)) {
+            if (FreeCell* cell = tryPopFromFreeList(cls)) {
+                return finalizePoppedCell(cell, cls, requested_size);
+            }
+        }
+    }
+
+    // (3) Splitting: try carving a cell out of a larger free cell.
+    if (void* result = tryAllocateBySplittingLarger(cls, classToSize(cls))) {
+        padCellSlack(result, requested_size, classToSize(cls));
         return result;
     }
 
-    // 2) Sweep-before-grow: while unswept blocks remain, drive lazy sweep
-    //    until either the request is satisfied or the per-call cap is hit.
-    //    This is the emergency driver layered on top of the gentle
-    //    SWEEP_WORK_BUDGET slice already done in OldGenSpace::allocate().
+    // (4) Sweep-before-grow: while unswept blocks remain, drive lazy sweep
+    //     until either the request is satisfied or the per-call cap is hit.
     if (hasPendingSweepWork()) {
         if (void* result = sweepOnDemandAllocate(cls, requested_size)) {
             return result;
         }
     }
 
-    // 3) Pull a page from the bag and slice it into uniform cells.
-    //    populateFromBlock is intentionally NOT gated behind sweepComplete():
-    //    consuming an already-precommitted bag page is part of normal
-    //    allocation behaviour, and gating it would underutilise capacity
-    //    without bounded benefit.
+    // (5) Pull a page from the bag and slice it into uniform cells. Used
+    //     both when the small-class budget is exhausted and when (2) was
+    //     skipped because the class is not in the small-class budget range.
     if (populateFromBlock(cls)) {
-        FreeCell* cell = free_lists_[cls];
-        if (cell != nullptr) {
-            free_lists_[cls] = cell->next;
-            void* result = static_cast<void*>(cell);
-            initObjectHeaderWithSize(result, classToSize(cls));
-            padCellSlack(result, requested_size, classToSize(cls));
-            allocated_bytes += classToSize(cls);
-            return result;
+        if (FreeCell* cell = tryPopFromFreeList(cls)) {
+            return finalizePoppedCell(cell, cls, requested_size);
         }
     }
 
-    // 4) Last resort: split from a freshly-pulled page treated as one big
-    //    cell. allocateFromBagPage accounts for its own bytes.
+    // (6) Last resort: split from a freshly-pulled page treated as one big
+    //     cell. allocateFromBagPage accounts for its own bytes.
     if (void* result = allocateFromBagPage(requested_size)) {
         return result;
     }
 
-    // 5) Panic sweep: bag-page acquisition failed, so growth is impossible.
-    //    Drive any remaining lazy-sweep work to completion before declaring
-    //    OOM. The growth-impossible precondition is established by reaching
-    //    this point; panicSweepAndRetryAllocation does not re-check pressure.
+    // (7) Panic sweep: bag-page acquisition failed, so growth is impossible.
+    //     Drive any remaining lazy-sweep work to completion before OOM.
     if (void* result = panicSweepAndRetryAllocation(cls, requested_size)) {
         return result;
     }
 
-    // 6) Truly out of memory in this old gen.
     return nullptr;
 }
 
@@ -969,6 +1046,9 @@ bool OldGenSpace::populateFromBlock(size_t cls) {
         free_lists_[cls] = cell;
     }
 
+    // Credit the small-class budget for this uniform page.
+    onUniformBlockDedicated(block_idx);
+
     return true;
 }
 
@@ -1051,6 +1131,10 @@ void* OldGenSpace::allocateFromEmptyRegularBlocks(size_t size) {
         // the next sweep would walk the now-large block as if it were a
         // size-class page.
         removeFreeCellsForBlock(i);
+
+        // Debit the small-class budget for this block (if it was a uniform
+        // small-class page) BEFORE we flip size_class to NUM_SIZE_CLASSES.
+        onBlockTransitioningToLarge(i);
 
         BlockInfo& blk = blocks_[i];
         const size_t total = blk.totalBytes();
@@ -2403,6 +2487,10 @@ void OldGenSpace::releaseBlockToAllocator(size_t block_index) {
         blocks_[block_index].start == allocator_->getHeapBase()) {
         return;
     }
+
+    // Debit the small-class budget BEFORE we touch blocks_; the helper
+    // reads blocks_[block_index].size_class to decide whether to debit.
+    onBlockReleased(block_index);
 
     BlockInfo blk = blocks_[block_index];
     const size_t total = blk.totalBytes();
