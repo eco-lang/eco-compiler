@@ -450,4 +450,205 @@ HPtr Elm_Kernel_JsArray_foldr(HPtr closure, HPtr acc, HPtr array) {
     return HPtr::fromBits(Export::encode(accHP));
 }
 
+//===----------------------------------------------------------------------===//
+// Unboxed-arg trampolines for the eco.array.* intrinsic lowering.
+// These let the EcoToLLVMHeap lowering route Int/Float/Char/Boxed pushes
+// directly without a redundant box→unbox round-trip via the kernel ABI.
+//===----------------------------------------------------------------------===//
+
+HPtr elm_array_empty() {
+    HPointer arr = alloc::allocArray(0);
+    return HPtr::fromBits(Export::encode(arr));
+}
+
+HPtr elm_array_singleton_int(int64_t v) {
+    HPointer arr = alloc::allocArray(1);
+    void* arrObj = Allocator::instance().resolve(arr);
+    Unboxable u; u.i = v;
+    alloc::arrayPushKind(arrObj, u, 1);
+    return HPtr::fromBits(Export::encode(arr));
+}
+
+HPtr elm_array_singleton_float(double v) {
+    HPointer arr = alloc::allocArray(1);
+    void* arrObj = Allocator::instance().resolve(arr);
+    Unboxable u; u.f = v;
+    alloc::arrayPushKind(arrObj, u, 2);
+    return HPtr::fromBits(Export::encode(arr));
+}
+
+HPtr elm_array_singleton_char(uint16_t v) {
+    HPointer arr = alloc::allocArray(1);
+    void* arrObj = Allocator::instance().resolve(arr);
+    Unboxable u; u.c = v;
+    alloc::arrayPushKind(arrObj, u, 3);
+    return HPtr::fromBits(Export::encode(arr));
+}
+
+HPtr elm_array_singleton_box(HPtr value) {
+    uint64_t value_bits = value.toBits();
+    // Root the inbound HPointer across the allocate.
+    HPointer hp = Export::decode(value_bits);
+    StackRootGuard guard(&hp);
+    HPointer arr = alloc::allocArray(1);
+    void* arrObj = Allocator::instance().resolve(arr);
+    Unboxable u; u.p = hp;
+    alloc::arrayPush(arrObj, u, /*is_boxed=*/true);
+    return HPtr::fromBits(Export::encode(arr));
+}
+
+namespace {
+
+// Build a new array with `srcLen + 1` capacity, copy src elements, and
+// fix up length/kind. Returns the new HPointer; caller writes the new
+// element into elements[srcLen].
+static HPointer copyAndExtendForPush(HPtr array, uint32_t &outSrcLen,
+                                     uint32_t &outSrcKind) {
+    uint64_t array_bits = array.toBits();
+    void* srcPtr = Export::toPtr(array_bits);
+    ElmArray* src = static_cast<ElmArray*>(srcPtr);
+    uint32_t len = src->length;
+    uint32_t srcKind = src->header.unboxed & 0x3;
+
+    HPointer result = alloc::allocArray(len + 1);
+    // Re-resolve after allocate (may have GC'd).
+    srcPtr = Export::toPtr(array_bits);
+    src = static_cast<ElmArray*>(srcPtr);
+    void* dstPtr = Allocator::instance().resolve(result);
+    ElmArray* dst = static_cast<ElmArray*>(dstPtr);
+
+    for (uint32_t i = 0; i < len; i++) {
+        dst->elements[i] = src->elements[i];
+    }
+    dst->length = len + 1;
+    dst->header.unboxed = srcKind;
+    outSrcLen = len;
+    outSrcKind = srcKind;
+    return result;
+}
+
+} // namespace
+
+HPtr elm_array_push_int(int64_t v, HPtr array) {
+    uint32_t len, kind;
+    HPointer result = copyAndExtendForPush(array, len, kind);
+    void* dstPtr = Allocator::instance().resolve(result);
+    ElmArray* dst = static_cast<ElmArray*>(dstPtr);
+    dst->elements[len].i = v;
+    if (len == 0) dst->header.unboxed = 1;  // bind kind on first write
+    return HPtr::fromBits(Export::encode(result));
+}
+
+HPtr elm_array_push_float(double v, HPtr array) {
+    uint32_t len, kind;
+    HPointer result = copyAndExtendForPush(array, len, kind);
+    void* dstPtr = Allocator::instance().resolve(result);
+    ElmArray* dst = static_cast<ElmArray*>(dstPtr);
+    dst->elements[len].f = v;
+    if (len == 0) dst->header.unboxed = 2;
+    return HPtr::fromBits(Export::encode(result));
+}
+
+HPtr elm_array_push_char(uint16_t v, HPtr array) {
+    uint32_t len, kind;
+    HPointer result = copyAndExtendForPush(array, len, kind);
+    void* dstPtr = Allocator::instance().resolve(result);
+    ElmArray* dst = static_cast<ElmArray*>(dstPtr);
+    dst->elements[len].c = v;
+    if (len == 0) dst->header.unboxed = 3;
+    return HPtr::fromBits(Export::encode(result));
+}
+
+HPtr elm_array_push_box(HPtr value, HPtr array) {
+    HPointer valHP = Export::decode(value.toBits());
+    HPointer srcHP = Export::decode(array.toBits());
+    auto& allocator = Allocator::instance();
+    StackRootGuard guard(&srcHP, &valHP);
+
+    uint32_t len = static_cast<ElmArray*>(allocator.resolve(srcHP))->length;
+    HPointer result = alloc::allocArray(len + 1);
+    ElmArray* src = static_cast<ElmArray*>(allocator.resolve(srcHP));
+    ElmArray* dst = static_cast<ElmArray*>(allocator.resolve(result));
+    for (uint32_t i = 0; i < len; i++) dst->elements[i] = src->elements[i];
+    dst->length = len + 1;
+    dst->header.unboxed = 0;
+    dst->elements[len].p = valHP;
+    return HPtr::fromBits(Export::encode(result));
+}
+
+HPtr elm_array_slice(int64_t start, int64_t end, HPtr array) {
+    uint64_t array_bits = array.toBits();
+    void* srcPtr = Export::toPtr(array_bits);
+    ElmArray* src = static_cast<ElmArray*>(srcPtr);
+    int64_t len = static_cast<int64_t>(src->length);
+
+    if (start < 0) start += len;
+    if (end < 0) end += len;
+    if (start < 0) start = 0;
+    if (end > len) end = len;
+    if (start > end) start = end;
+
+    int64_t newLen = end - start;
+    HPointer result = alloc::allocArray(static_cast<size_t>(newLen));
+    srcPtr = Export::toPtr(array_bits);
+    src = static_cast<ElmArray*>(srcPtr);
+    void* dstPtr = Allocator::instance().resolve(result);
+    ElmArray* dst = static_cast<ElmArray*>(dstPtr);
+
+    for (int64_t i = 0; i < newLen; i++) {
+        dst->elements[i] = src->elements[start + i];
+    }
+    dst->length = static_cast<uint32_t>(newLen);
+    dst->header.unboxed = src->header.unboxed;
+
+    return HPtr::fromBits(Export::encode(result));
+}
+
+HPtr elm_array_append_n(int64_t n_signed, HPtr dest, HPtr source) {
+    uint32_t n = static_cast<uint32_t>(n_signed);
+    uint64_t dest_bits = dest.toBits();
+    uint64_t source_bits = source.toBits();
+    void* destPtr = Export::toPtr(dest_bits);
+    void* srcPtr = Export::toPtr(source_bits);
+    ElmArray* destArr = static_cast<ElmArray*>(destPtr);
+    ElmArray* srcArr = static_cast<ElmArray*>(srcPtr);
+
+    uint32_t destLen = destArr->length;
+    uint32_t srcLen = srcArr->length;
+    uint32_t available = (destLen < n) ? (n - destLen) : 0u;
+    uint32_t toCopy = (available < srcLen) ? available : srcLen;
+    uint32_t newLen = destLen + toCopy;
+
+    HPointer result = alloc::allocArray(newLen);
+    destPtr = Export::toPtr(dest_bits);
+    srcPtr = Export::toPtr(source_bits);
+    destArr = static_cast<ElmArray*>(destPtr);
+    srcArr = static_cast<ElmArray*>(srcPtr);
+    void* resultPtr = Allocator::instance().resolve(result);
+    ElmArray* resultArr = static_cast<ElmArray*>(resultPtr);
+
+    for (uint32_t i = 0; i < destLen; i++) {
+        resultArr->elements[i] = destArr->elements[i];
+    }
+    for (uint32_t i = 0; i < toCopy; i++) {
+        resultArr->elements[destLen + i] = srcArr->elements[i];
+    }
+    resultArr->length = newLen;
+    uint32_t destKind = destArr->header.unboxed & 0x3;
+    uint32_t srcKind = srcArr->header.unboxed & 0x3;
+    uint32_t resultKind;
+    if (destLen == 0) {
+        resultKind = srcKind;
+    } else if (toCopy == 0) {
+        resultKind = destKind;
+    } else {
+        assert(destKind == srcKind &&
+               "elm_array_append_n: dest and src kinds disagree");
+        resultKind = destKind;
+    }
+    resultArr->header.unboxed = resultKind;
+
+    return HPtr::fromBits(Export::encode(result));
+}
+
 } // extern "C"

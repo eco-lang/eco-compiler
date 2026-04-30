@@ -110,6 +110,10 @@ HPtr Elm_Kernel_String_indexes(HPtr needle, HPtr haystack);
 HPtr Elm_Kernel_String_toInt(HPtr str);
 HPtr Elm_Kernel_String_toFloat(HPtr str);
 HPtr Elm_Kernel_String_fromNumber(HPtr n);
+// Unboxed-arg trampolines for eco.string.from_int / eco.string.from_float
+// intrinsics (route through StringOps::fromInt/fromFloat).
+HPtr elm_string_from_int(int64_t n);
+HPtr elm_string_from_double(double f);
 // Higher-order String functions (closure is a pointer to Closure object)
 HPtr Elm_Kernel_String_map(HPtr closure, HPtr str);
 HPtr Elm_Kernel_String_filter(HPtr closure, HPtr str);
@@ -161,6 +165,20 @@ HPtr Elm_Kernel_JsArray_unsafeSet(HPtr index, HPtr value, HPtr array);
 HPtr Elm_Kernel_JsArray_push(HPtr value, HPtr array);
 HPtr Elm_Kernel_JsArray_slice(HPtr start, HPtr end, HPtr array);
 HPtr Elm_Kernel_JsArray_appendN(HPtr n, HPtr dest, HPtr source);
+// Unboxed-arg trampolines for eco.array.* intrinsics. Element kind for
+// singleton/push is selected by the caller (LLVM lowering picks the typed
+// helper based on the operand's MLIR type, mirroring eco.array.set).
+HPtr elm_array_empty();
+HPtr elm_array_singleton_int(int64_t v);
+HPtr elm_array_singleton_float(double v);
+HPtr elm_array_singleton_char(uint16_t v);
+HPtr elm_array_singleton_box(HPtr value);
+HPtr elm_array_push_int(int64_t v, HPtr array);
+HPtr elm_array_push_float(double v, HPtr array);
+HPtr elm_array_push_char(uint16_t v, HPtr array);
+HPtr elm_array_push_box(HPtr value, HPtr array);
+HPtr elm_array_slice(int64_t start, int64_t end, HPtr array);
+HPtr elm_array_append_n(int64_t n, HPtr dest, HPtr source);
 // Higher-order JsArray functions
 HPtr Elm_Kernel_JsArray_initialize(HPtr size, HPtr offset, HPtr closure);
 HPtr Elm_Kernel_JsArray_initializeFromList(HPtr max, HPtr list);

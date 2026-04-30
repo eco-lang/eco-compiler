@@ -851,6 +851,61 @@ def Eco_ArrayLengthOp : Eco_Op<"array.length", [Pure]> {
   let assemblyFormat = "$array attr-dict";
 }
 
+def Eco_ArrayEmptyOp : Eco_Op<"array.empty"> {
+  let summary = "Allocate empty Elm array";
+  let description = [{
+    Allocate an empty ElmArray. Element kind is unbound — fixed by the first
+    `eco.array.set` / `eco.array.push` write.
+  }];
+  let arguments = (ins);
+  let results = (outs Eco_Value:$result);
+  let assemblyFormat = "attr-dict `:` type($result)";
+}
+
+def Eco_ArraySingletonOp : Eco_Op<"array.singleton"> {
+  let summary = "Allocate single-element Elm array";
+  let description = [{
+    Allocate a 1-element ElmArray. Element kind comes from the operand's
+    MLIR type (i64/f64/i16 unboxed, !eco.value boxed).
+  }];
+  let arguments = (ins Eco_AnyValue:$value);
+  let results = (outs Eco_Value:$result);
+  let assemblyFormat = "$value attr-dict `:` type($value) `->` type($result)";
+}
+
+def Eco_ArrayPushOp : Eco_Op<"array.push"> {
+  let summary = "Push value onto Elm array (returns new array)";
+  let description = [{
+    Functional push: returns a new ElmArray with `value` appended. Element
+    kind comes from the operand MLIR type, mirroring `eco.array.set`.
+  }];
+  let arguments = (ins Eco_AnyValue:$value, Eco_Value:$array);
+  let results = (outs Eco_Value:$result);
+  let assemblyFormat = "$value `,` $array attr-dict `:` type($value) `->` type($result)";
+}
+
+def Eco_ArraySliceOp : Eco_Op<"array.slice"> {
+  let summary = "Slice an Elm array";
+  let description = [{
+    Allocate a new ElmArray containing array[start:end]. Element kind is
+    inherited from the source array at runtime.
+  }];
+  let arguments = (ins Eco_Int:$start, Eco_Int:$end, Eco_Value:$array);
+  let results = (outs Eco_Value:$result);
+  let assemblyFormat = "$start `,` $end `,` $array attr-dict `:` type($result)";
+}
+
+def Eco_ArrayAppendNOp : Eco_Op<"array.append_n"> {
+  let summary = "Append up to N elements from source onto dest";
+  let description = [{
+    Allocate a new ElmArray with up to `n` total elements from `dest` then
+    `source`. Element kind inherited at runtime.
+  }];
+  let arguments = (ins Eco_Int:$n, Eco_Value:$dest, Eco_Value:$source);
+  let results = (outs Eco_Value:$result);
+  let assemblyFormat = "$n `,` $dest `,` $source attr-dict `:` type($result)";
+}
+
 //===----------------------------------------------------------------------===//
 // 3. String Operations
 //===----------------------------------------------------------------------===//
@@ -879,6 +934,29 @@ def Eco_StringLiteralOp : Eco_Op<"string_literal", [Pure]> {
   let results = (outs Eco_Value:$result);
 
   let assemblyFormat = "$value attr-dict `:` type($result)";
+}
+
+def Eco_StringFromIntOp : Eco_Op<"string.from_int"> {
+  let summary = "Convert unboxed Int to String (String.fromInt)";
+  let description = [{
+    Allocates a String representation of the integer. Operand is unboxed i64;
+    result is `!eco.value` carrying a Tag_String leaf. Allocates — RS4GC
+    inserts statepoint at the lowered call site.
+  }];
+  let arguments = (ins Eco_Int:$value);
+  let results = (outs Eco_Value:$result);
+  let assemblyFormat = "$value attr-dict `:` type($value) `->` type($result)";
+}
+
+def Eco_StringFromFloatOp : Eco_Op<"string.from_float"> {
+  let summary = "Convert unboxed Float to String (String.fromFloat)";
+  let description = [{
+    Allocates a String representation of the float. Operand is unboxed f64;
+    result is `!eco.value` carrying a Tag_String leaf. Allocates.
+  }];
+  let arguments = (ins Eco_Float:$value);
+  let results = (outs Eco_Value:$result);
+  let assemblyFormat = "$value attr-dict `:` type($value) `->` type($result)";
 }
 
 //===----------------------------------------------------------------------===//
@@ -2421,6 +2499,52 @@ def Eco_CharFromIntOp : Eco_Op<"char.fromInt", [Pure]> {
   let arguments = (ins Eco_Int:$value);
   let results = (outs Eco_Char:$result);
   let assemblyFormat = "$value attr-dict `:` type($value) `->` type($result)";
+}
+
+// Char comparisons - all return i1 (Bool)
+// Char is i16 representing a Unicode code point. Use unsigned predicates
+// for ordering (eq/ne are signedness-agnostic).
+
+def Eco_CharLtOp : Eco_Op<"char.lt", [Pure]> {
+  let summary = "Char less-than comparison (unsigned)";
+  let arguments = (ins Eco_Char:$lhs, Eco_Char:$rhs);
+  let results = (outs Eco_Bool:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
+}
+
+def Eco_CharLeOp : Eco_Op<"char.le", [Pure]> {
+  let summary = "Char less-than-or-equal comparison (unsigned)";
+  let arguments = (ins Eco_Char:$lhs, Eco_Char:$rhs);
+  let results = (outs Eco_Bool:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
+}
+
+def Eco_CharGtOp : Eco_Op<"char.gt", [Pure]> {
+  let summary = "Char greater-than comparison (unsigned)";
+  let arguments = (ins Eco_Char:$lhs, Eco_Char:$rhs);
+  let results = (outs Eco_Bool:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
+}
+
+def Eco_CharGeOp : Eco_Op<"char.ge", [Pure]> {
+  let summary = "Char greater-than-or-equal comparison (unsigned)";
+  let arguments = (ins Eco_Char:$lhs, Eco_Char:$rhs);
+  let results = (outs Eco_Bool:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
+}
+
+def Eco_CharEqOp : Eco_Op<"char.eq", [Pure, Commutative]> {
+  let summary = "Char equality comparison";
+  let arguments = (ins Eco_Char:$lhs, Eco_Char:$rhs);
+  let results = (outs Eco_Bool:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
+}
+
+def Eco_CharNeOp : Eco_Op<"char.ne", [Pure, Commutative]> {
+  let summary = "Char not-equal comparison";
+  let arguments = (ins Eco_Char:$lhs, Eco_Char:$rhs);
+  let results = (outs Eco_Bool:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
 }
 
 //===----------------------------------------------------------------------===//

@@ -450,6 +450,10 @@ tupleMapSecondK expectFn _ =
 stringCases : (Src.Module -> Expectation) -> List TestCase
 stringCases expectFn =
     [ { label = "K String.fromNumber", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.String" "fromNumber") [ intExpr 42 ])) }
+    , { label = "K String.fromNumber Int (intrinsic)", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.String" "fromNumber") [ intExpr 12345 ])) }
+    , { label = "K String.fromNumber Float (intrinsic)", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.String" "fromNumber") [ floatExpr 3.14 ])) }
+    , { label = "K Char.toCode (intrinsic)", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Char" "toCode") [ callExpr (qualVarExpr "Elm.Kernel.Char" "fromCode") [ intExpr 65 ] ])) }
+    , { label = "K Char.fromCode (intrinsic)", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Char" "fromCode") [ intExpr 97 ])) }
     ]
 
 

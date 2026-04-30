@@ -1036,6 +1036,164 @@ struct ArraySetOpLowering : public OpConversionPattern<ArraySetOp> {
     }
 };
 
+//===----------------------------------------------------------------------===//
+// eco.array.empty / singleton / push / slice / append_n
+//
+// Each lowers to a call to a typed runtime trampoline that takes unboxed
+// primitives directly. The variant of singleton/push is chosen by the
+// element operand's MLIR type (mirroring eco.array.set).
+//===----------------------------------------------------------------------===//
+
+struct ArrayEmptyOpLowering : public OpConversionPattern<ArrayEmptyOp> {
+    const EcoRuntime &runtime;
+    ArrayEmptyOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                         const EcoRuntime &runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult
+    matchAndRewrite(ArrayEmptyOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto fn = runtime.getOrCreateArrayEmpty(rewriter);
+        auto call = rewriter.create<LLVM::CallOp>(op.getLoc(), fn, ValueRange{});
+        rewriter.replaceOp(op, call.getResult());
+        return success();
+    }
+};
+
+struct ArraySingletonOpLowering : public OpConversionPattern<ArraySingletonOp> {
+    const EcoRuntime &runtime;
+    ArraySingletonOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                             const EcoRuntime &runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult
+    matchAndRewrite(ArraySingletonOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        Type origValueType = op.getValue().getType();
+        Value v = adaptor.getValue();
+        LLVM::LLVMFuncOp fn;
+        if (origValueType.isInteger(64)) {
+            fn = runtime.getOrCreateArraySingletonInt(rewriter);
+        } else if (origValueType.isF64()) {
+            fn = runtime.getOrCreateArraySingletonFloat(rewriter);
+        } else if (origValueType.isInteger(16)) {
+            fn = runtime.getOrCreateArraySingletonChar(rewriter);
+        } else if (isa<eco::ValueType>(origValueType)) {
+            fn = runtime.getOrCreateArraySingletonBox(rewriter);
+        } else {
+            return op.emitError("unsupported element type for eco.array.singleton");
+        }
+        auto call = rewriter.create<LLVM::CallOp>(op.getLoc(), fn, ValueRange{v});
+        rewriter.replaceOp(op, call.getResult());
+        return success();
+    }
+};
+
+struct ArrayPushOpLowering : public OpConversionPattern<ArrayPushOp> {
+    const EcoRuntime &runtime;
+    ArrayPushOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                        const EcoRuntime &runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult
+    matchAndRewrite(ArrayPushOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        Type origValueType = op.getValue().getType();
+        Value v = adaptor.getValue();
+        Value arr = adaptor.getArray();
+        LLVM::LLVMFuncOp fn;
+        if (origValueType.isInteger(64)) {
+            fn = runtime.getOrCreateArrayPushInt(rewriter);
+        } else if (origValueType.isF64()) {
+            fn = runtime.getOrCreateArrayPushFloat(rewriter);
+        } else if (origValueType.isInteger(16)) {
+            fn = runtime.getOrCreateArrayPushChar(rewriter);
+        } else if (isa<eco::ValueType>(origValueType)) {
+            fn = runtime.getOrCreateArrayPushBox(rewriter);
+        } else {
+            return op.emitError("unsupported element type for eco.array.push");
+        }
+        auto call = rewriter.create<LLVM::CallOp>(op.getLoc(), fn,
+                                                   ValueRange{v, arr});
+        rewriter.replaceOp(op, call.getResult());
+        return success();
+    }
+};
+
+struct ArraySliceOpLowering : public OpConversionPattern<ArraySliceOp> {
+    const EcoRuntime &runtime;
+    ArraySliceOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                         const EcoRuntime &runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult
+    matchAndRewrite(ArraySliceOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto fn = runtime.getOrCreateArraySlice(rewriter);
+        auto call = rewriter.create<LLVM::CallOp>(
+            op.getLoc(), fn,
+            ValueRange{adaptor.getStart(), adaptor.getEnd(), adaptor.getArray()});
+        rewriter.replaceOp(op, call.getResult());
+        return success();
+    }
+};
+
+struct ArrayAppendNOpLowering : public OpConversionPattern<ArrayAppendNOp> {
+    const EcoRuntime &runtime;
+    ArrayAppendNOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                           const EcoRuntime &runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult
+    matchAndRewrite(ArrayAppendNOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto fn = runtime.getOrCreateArrayAppendN(rewriter);
+        auto call = rewriter.create<LLVM::CallOp>(
+            op.getLoc(), fn,
+            ValueRange{adaptor.getN(), adaptor.getDest(), adaptor.getSource()});
+        rewriter.replaceOp(op, call.getResult());
+        return success();
+    }
+};
+
+//===----------------------------------------------------------------------===//
+// eco.string.from_int / from_float
+//===----------------------------------------------------------------------===//
+
+struct StringFromIntOpLowering : public OpConversionPattern<StringFromIntOp> {
+    const EcoRuntime &runtime;
+    StringFromIntOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                            const EcoRuntime &runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult
+    matchAndRewrite(StringFromIntOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto fn = runtime.getOrCreateStringFromInt(rewriter);
+        auto call = rewriter.create<LLVM::CallOp>(op.getLoc(), fn,
+                                                   ValueRange{adaptor.getValue()});
+        rewriter.replaceOp(op, call.getResult());
+        return success();
+    }
+};
+
+struct StringFromFloatOpLowering : public OpConversionPattern<StringFromFloatOp> {
+    const EcoRuntime &runtime;
+    StringFromFloatOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                              const EcoRuntime &runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult
+    matchAndRewrite(StringFromFloatOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto fn = runtime.getOrCreateStringFromDouble(rewriter);
+        auto call = rewriter.create<LLVM::CallOp>(op.getLoc(), fn,
+                                                   ValueRange{adaptor.getValue()});
+        rewriter.replaceOp(op, call.getResult());
+        return success();
+    }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -1532,4 +1690,11 @@ void eco::detail::populateEcoHeapPatterns(
     patterns.add<ArrayLengthOpLowering>(typeConverter, ctx, runtime);
     patterns.add<ArrayGetOpLowering>(typeConverter, ctx, runtime);
     patterns.add<ArraySetOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<ArrayEmptyOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<ArraySingletonOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<ArrayPushOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<ArraySliceOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<ArrayAppendNOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<StringFromIntOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<StringFromFloatOpLowering>(typeConverter, ctx, runtime);
 }

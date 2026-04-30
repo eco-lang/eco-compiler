@@ -35,11 +35,21 @@ type Intrinsic
     | FloatToInt { op : String }
     | IntComparison { op : String }
     | FloatComparison { op : String }
+    | CharComparison { op : String }
     | FloatClassify { op : String }
     | ConstantFloat { value : Float }
+    | CharToInt
+    | CharFromInt
+    | StringFromInt
+    | StringFromFloat
     | ArrayGet { elementMlirType : MlirType }
     | ArraySet { elementMlirType : MlirType }
     | ArrayLength
+    | ArrayEmpty
+    | ArraySingleton { elementMlirType : MlirType }
+    | ArrayPush { elementMlirType : MlirType }
+    | ArraySlice
+    | ArrayAppendN
 
 
 
@@ -81,11 +91,26 @@ intrinsicResultMlirType intrinsic =
         FloatComparison _ ->
             I1
 
+        CharComparison _ ->
+            I1
+
         FloatClassify _ ->
             I1
 
         ConstantFloat _ ->
             Types.ecoFloat
+
+        CharToInt ->
+            Types.ecoInt
+
+        CharFromInt ->
+            Types.ecoChar
+
+        StringFromInt ->
+            Types.ecoValue
+
+        StringFromFloat ->
+            Types.ecoValue
 
         ArrayGet { elementMlirType } ->
             elementMlirType
@@ -95,6 +120,21 @@ intrinsicResultMlirType intrinsic =
 
         ArrayLength ->
             Types.ecoInt
+
+        ArrayEmpty ->
+            Types.ecoValue
+
+        ArraySingleton _ ->
+            Types.ecoValue
+
+        ArrayPush _ ->
+            Types.ecoValue
+
+        ArraySlice ->
+            Types.ecoValue
+
+        ArrayAppendN ->
+            Types.ecoValue
 
 
 {-| Get the expected operand types for an intrinsic operation.
@@ -132,11 +172,26 @@ intrinsicOperandTypes intrinsic =
         FloatComparison _ ->
             [ F64, F64 ]
 
+        CharComparison _ ->
+            [ Types.ecoChar, Types.ecoChar ]
+
         FloatClassify _ ->
             [ F64 ]
 
         ConstantFloat _ ->
             []
+
+        CharToInt ->
+            [ Types.ecoChar ]
+
+        CharFromInt ->
+            [ I64 ]
+
+        StringFromInt ->
+            [ I64 ]
+
+        StringFromFloat ->
+            [ F64 ]
 
         ArrayGet _ ->
             -- Elm arg order: unsafeGet index array
@@ -149,6 +204,24 @@ intrinsicOperandTypes intrinsic =
         ArrayLength ->
             -- array : !eco.value
             [ Types.ecoValue ]
+
+        ArrayEmpty ->
+            []
+
+        ArraySingleton { elementMlirType } ->
+            [ elementMlirType ]
+
+        ArrayPush { elementMlirType } ->
+            -- Elm arg order: push value array
+            [ elementMlirType, Types.ecoValue ]
+
+        ArraySlice ->
+            -- Elm arg order: slice start end array
+            [ I64, I64, Types.ecoValue ]
+
+        ArrayAppendN ->
+            -- Elm arg order: appendN n dest source
+            [ I64, Types.ecoValue, Types.ecoValue ]
 
 
 
@@ -227,6 +300,12 @@ kernelIntrinsic home name argTypes resultType =
 
         "JsArray" ->
             jsArrayIntrinsic name argTypes resultType
+
+        "Char" ->
+            charIntrinsic name argTypes resultType
+
+        "String" ->
+            stringIntrinsic name argTypes resultType
 
         _ ->
             Nothing
@@ -493,6 +572,63 @@ utilsIntrinsic name argTypes _ =
         ( "ge", [ Mono.MFloat, Mono.MFloat ] ) ->
             Just (FloatComparison { op = "eco.float.ge" })
 
+        -- Char comparisons (i16 unboxed). Equality is signedness-agnostic;
+        -- ordering uses unsigned predicates because Char is a Unicode code
+        -- point.
+        ( "equal", [ Mono.MChar, Mono.MChar ] ) ->
+            Just (CharComparison { op = "eco.char.eq" })
+
+        ( "notEqual", [ Mono.MChar, Mono.MChar ] ) ->
+            Just (CharComparison { op = "eco.char.ne" })
+
+        ( "lt", [ Mono.MChar, Mono.MChar ] ) ->
+            Just (CharComparison { op = "eco.char.lt" })
+
+        ( "le", [ Mono.MChar, Mono.MChar ] ) ->
+            Just (CharComparison { op = "eco.char.le" })
+
+        ( "gt", [ Mono.MChar, Mono.MChar ] ) ->
+            Just (CharComparison { op = "eco.char.gt" })
+
+        ( "ge", [ Mono.MChar, Mono.MChar ] ) ->
+            Just (CharComparison { op = "eco.char.ge" })
+
+        _ ->
+            Nothing
+
+
+charIntrinsic : Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
+charIntrinsic name argTypes _ =
+    case ( name, argTypes ) of
+        ( "toCode", [ Mono.MChar ] ) ->
+            Just CharToInt
+
+        ( "fromCode", [ Mono.MInt ] ) ->
+            Just CharFromInt
+
+        _ ->
+            Nothing
+
+
+stringIntrinsic : Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
+stringIntrinsic name argTypes _ =
+    case ( name, argTypes ) of
+        ( "fromNumber", [ Mono.MInt ] ) ->
+            Just StringFromInt
+
+        ( "fromNumber", [ Mono.MFloat ] ) ->
+            Just StringFromFloat
+
+        _ ->
+            Nothing
+
+
+arrayElementType : Mono.MonoType -> Maybe Mono.MonoType
+arrayElementType ty =
+    case ty of
+        Mono.MCustom _ "Array" [ elt ] ->
+            Just elt
+
         _ ->
             Nothing
 
@@ -500,6 +636,54 @@ utilsIntrinsic name argTypes _ =
 jsArrayIntrinsic : Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
 jsArrayIntrinsic name argTypes resultType =
     case name of
+        "empty" ->
+            -- JsArray.empty : Array a — element kind is recovered later when
+            -- the array is first written. No element-type attribute on the op.
+            case argTypes of
+                [] ->
+                    Just ArrayEmpty
+
+                _ ->
+                    Nothing
+
+        "singleton" ->
+            -- JsArray.singleton : a -> Array a — element kind from the result
+            -- (resultType = MCustom _ "Array" [elt]); robust when the value
+            -- arg type is a polymorphic var.
+            case ( argTypes, arrayElementType resultType ) of
+                ( [ _ ], Just elt ) ->
+                    Just (ArraySingleton { elementMlirType = Types.monoTypeToAbi elt })
+
+                _ ->
+                    Nothing
+
+        "push" ->
+            -- JsArray.push : a -> Array a -> Array a
+            case argTypes of
+                [ elt, _ ] ->
+                    Just (ArrayPush { elementMlirType = Types.monoTypeToAbi elt })
+
+                _ ->
+                    Nothing
+
+        "slice" ->
+            -- JsArray.slice : Int -> Int -> Array a -> Array a
+            case argTypes of
+                [ Mono.MInt, Mono.MInt, _ ] ->
+                    Just ArraySlice
+
+                _ ->
+                    Nothing
+
+        "appendN" ->
+            -- JsArray.appendN : Int -> Array a -> Array a -> Array a
+            case argTypes of
+                [ Mono.MInt, _, _ ] ->
+                    Just ArrayAppendN
+
+                _ ->
+                    Nothing
+
         "length" ->
             -- JsArray.length : Array a -> Int
             case resultType of
@@ -652,3 +836,76 @@ generateIntrinsicOp ctx intrinsic resultVar argVars =
 
                 _ ->
                     Ops.ecoArrayLength ctx resultVar "%error"
+
+        CharComparison { op } ->
+            case argVars of
+                [ lhs, rhs ] ->
+                    Ops.ecoBinaryOp ctx op resultVar ( lhs, Types.ecoChar ) ( rhs, Types.ecoChar ) I1
+
+                _ ->
+                    Ops.ecoBinaryOp ctx op resultVar ( "%error", Types.ecoChar ) ( "%error", Types.ecoChar ) I1
+
+        CharToInt ->
+            let
+                operand =
+                    List.head argVars |> Maybe.withDefault "%error"
+            in
+            Ops.ecoUnaryOp ctx "eco.char.toInt" resultVar ( operand, Types.ecoChar ) Types.ecoInt
+
+        CharFromInt ->
+            let
+                operand =
+                    List.head argVars |> Maybe.withDefault "%error"
+            in
+            Ops.ecoUnaryOp ctx "eco.char.fromInt" resultVar ( operand, I64 ) Types.ecoChar
+
+        StringFromInt ->
+            let
+                operand =
+                    List.head argVars |> Maybe.withDefault "%error"
+            in
+            Ops.ecoUnaryOp ctx "eco.string.from_int" resultVar ( operand, I64 ) Types.ecoValue
+
+        StringFromFloat ->
+            let
+                operand =
+                    List.head argVars |> Maybe.withDefault "%error"
+            in
+            Ops.ecoUnaryOp ctx "eco.string.from_float" resultVar ( operand, F64 ) Types.ecoValue
+
+        ArrayEmpty ->
+            Ops.ecoNullaryOp ctx "eco.array.empty" resultVar Types.ecoValue
+
+        ArraySingleton { elementMlirType } ->
+            let
+                operand =
+                    List.head argVars |> Maybe.withDefault "%error"
+            in
+            Ops.ecoUnaryOp ctx "eco.array.singleton" resultVar ( operand, elementMlirType ) Types.ecoValue
+
+        ArrayPush { elementMlirType } ->
+            -- Elm arg order: push value array
+            case argVars of
+                [ valueVar, arrayVar ] ->
+                    Ops.ecoBinaryOp ctx "eco.array.push" resultVar ( valueVar, elementMlirType ) ( arrayVar, Types.ecoValue ) Types.ecoValue
+
+                _ ->
+                    Ops.ecoBinaryOp ctx "eco.array.push" resultVar ( "%error", elementMlirType ) ( "%error", Types.ecoValue ) Types.ecoValue
+
+        ArraySlice ->
+            -- Elm arg order: slice start end array
+            case argVars of
+                [ startVar, endVar, arrayVar ] ->
+                    Ops.ecoTernaryOp ctx "eco.array.slice" resultVar ( startVar, I64 ) ( endVar, I64 ) ( arrayVar, Types.ecoValue ) Types.ecoValue
+
+                _ ->
+                    Ops.ecoTernaryOp ctx "eco.array.slice" resultVar ( "%error", I64 ) ( "%error", I64 ) ( "%error", Types.ecoValue ) Types.ecoValue
+
+        ArrayAppendN ->
+            -- Elm arg order: appendN n dest source
+            case argVars of
+                [ nVar, destVar, sourceVar ] ->
+                    Ops.ecoTernaryOp ctx "eco.array.append_n" resultVar ( nVar, I64 ) ( destVar, Types.ecoValue ) ( sourceVar, Types.ecoValue ) Types.ecoValue
+
+                _ ->
+                    Ops.ecoTernaryOp ctx "eco.array.append_n" resultVar ( "%error", I64 ) ( "%error", Types.ecoValue ) ( "%error", Types.ecoValue ) Types.ecoValue

@@ -911,6 +911,82 @@ struct CharFromIntOpLowering : public OpConversionPattern<CharFromIntOp> {
     }
 };
 
+//===----------------------------------------------------------------------===//
+// Char Comparisons
+//===----------------------------------------------------------------------===//
+
+struct CharLtOpLowering : public OpConversionPattern<CharLtOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(CharLtOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        rewriter.replaceOpWithNewOp<arith::CmpIOp>(
+            op, arith::CmpIPredicate::ult, adaptor.getLhs(), adaptor.getRhs());
+        return success();
+    }
+};
+
+struct CharLeOpLowering : public OpConversionPattern<CharLeOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(CharLeOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        rewriter.replaceOpWithNewOp<arith::CmpIOp>(
+            op, arith::CmpIPredicate::ule, adaptor.getLhs(), adaptor.getRhs());
+        return success();
+    }
+};
+
+struct CharGtOpLowering : public OpConversionPattern<CharGtOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(CharGtOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        rewriter.replaceOpWithNewOp<arith::CmpIOp>(
+            op, arith::CmpIPredicate::ugt, adaptor.getLhs(), adaptor.getRhs());
+        return success();
+    }
+};
+
+struct CharGeOpLowering : public OpConversionPattern<CharGeOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(CharGeOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        rewriter.replaceOpWithNewOp<arith::CmpIOp>(
+            op, arith::CmpIPredicate::uge, adaptor.getLhs(), adaptor.getRhs());
+        return success();
+    }
+};
+
+struct CharEqOpLowering : public OpConversionPattern<CharEqOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(CharEqOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        rewriter.replaceOpWithNewOp<arith::CmpIOp>(
+            op, arith::CmpIPredicate::eq, adaptor.getLhs(), adaptor.getRhs());
+        return success();
+    }
+};
+
+struct CharNeOpLowering : public OpConversionPattern<CharNeOp> {
+    using OpConversionPattern::OpConversionPattern;
+
+    LogicalResult
+    matchAndRewrite(CharNeOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        rewriter.replaceOpWithNewOp<arith::CmpIOp>(
+            op, arith::CmpIPredicate::ne, adaptor.getLhs(), adaptor.getRhs());
+        return success();
+    }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -991,7 +1067,13 @@ void eco::detail::populateEcoArithPatterns(
         BoolXorOpLowering,
         // Character
         CharToIntOpLowering,
-        CharFromIntOpLowering
+        CharFromIntOpLowering,
+        CharLtOpLowering,
+        CharLeOpLowering,
+        CharGtOpLowering,
+        CharGeOpLowering,
+        CharEqOpLowering,
+        CharNeOpLowering
     >(typeConverter, ctx);
 }
 

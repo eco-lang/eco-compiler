@@ -402,6 +402,21 @@ struct EcoRuntime {
 
     // Array functions
     mlir::LLVM::LLVMFuncOp getOrCreateCloneArray(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateArrayEmpty(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateArraySingletonInt(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateArraySingletonFloat(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateArraySingletonChar(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateArraySingletonBox(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateArrayPushInt(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateArrayPushFloat(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateArrayPushChar(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateArrayPushBox(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateArraySlice(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateArrayAppendN(mlir::OpBuilder &builder) const;
+
+    // String functions (unboxed-arg trampolines)
+    mlir::LLVM::LLVMFuncOp getOrCreateStringFromInt(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateStringFromDouble(mlir::OpBuilder &builder) const;
 
     // Debug functions
     mlir::LLVM::LLVMFuncOp getOrCreateDbgPrint(mlir::OpBuilder &builder) const;

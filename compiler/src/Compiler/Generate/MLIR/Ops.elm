@@ -3,7 +3,7 @@ module Compiler.Generate.MLIR.Ops exposing
     , ecoConstantUnit, ecoConstantEmptyRec, ecoConstantTrue, ecoConstantFalse, ecoConstantNil, ecoConstantNothing, ecoConstantEmptyString
     , ecoConstructList, ecoConstructTuple2, ecoConstructTuple3, ecoConstructRecord, ecoConstructCustom
     , ecoProjectListHead, ecoProjectListTail, ecoProjectTuple2, ecoProjectTuple3, ecoProjectRecord, ecoProjectCustom
-    , ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoCase, ecoCaseString, ecoGetTag
+    , ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoNullaryOp, ecoTernaryOp, ecoCase, ecoCaseString, ecoGetTag
     , ecoArrayGet, ecoArraySet, ecoArrayLength
     , ecoSafepoint
     , arithConstantInt, arithConstantInt32, arithConstantFloat, arithConstantBool, arithConstantChar, arithCmpI
@@ -40,7 +40,7 @@ in the eco dialect and standard dialects (arith, scf, func).
 
 # Eco Operations
 
-@docs ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoCase, ecoCaseString, ecoGetTag
+@docs ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoNullaryOp, ecoTernaryOp, ecoCase, ecoCaseString, ecoGetTag
 
 
 # Eco Array Operations
@@ -699,6 +699,41 @@ ecoBinaryOp ctx opName resultVar ( lhs, lhsTy ) ( rhs, rhsTy ) resultTy =
     in
     mlirOp ctx opName
         |> opBuilder.withOperands [ lhs, rhs ]
+        |> opBuilder.withResults [ ( resultVar, resultTy ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| Build a nullary eco op (no operands), e.g., eco.array.empty.
+-}
+ecoNullaryOp : Ctx.Context -> String -> String -> MlirType -> ( Ctx.Context, MlirOp )
+ecoNullaryOp ctx opName resultVar resultTy =
+    mlirOp ctx opName
+        |> opBuilder.withResults [ ( resultVar, resultTy ) ]
+        |> opBuilder.build
+
+
+{-| Build a ternary eco op (e.g., eco.array.slice). Each operand carries
+its MLIR type so the standard `_operand_types` attribute is set correctly
+for downstream type-aware passes.
+-}
+ecoTernaryOp :
+    Ctx.Context
+    -> String
+    -> String
+    -> ( String, MlirType )
+    -> ( String, MlirType )
+    -> ( String, MlirType )
+    -> MlirType
+    -> ( Ctx.Context, MlirOp )
+ecoTernaryOp ctx opName resultVar ( a, aTy ) ( b, bTy ) ( c, cTy ) resultTy =
+    let
+        attrs =
+            Dict.singleton "_operand_types"
+                (ArrayAttr Nothing [ TypeAttr aTy, TypeAttr bTy, TypeAttr cTy ])
+    in
+    mlirOp ctx opName
+        |> opBuilder.withOperands [ a, b, c ]
         |> opBuilder.withResults [ ( resultVar, resultTy ) ]
         |> opBuilder.withAttrs attrs
         |> opBuilder.build

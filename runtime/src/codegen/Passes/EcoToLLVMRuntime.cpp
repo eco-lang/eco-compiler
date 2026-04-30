@@ -529,6 +529,71 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateCloneArray(OpBuilder &builder) const {
     return getOrCreateFunc(builder, "eco_clone_array", funcTy);
 }
 
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateStringFromInt(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY});
+    return getOrCreateFunc(builder, "elm_string_from_int", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateStringFromDouble(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {F64_TY});
+    return getOrCreateFunc(builder, "elm_string_from_double", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateArrayEmpty(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {});
+    return getOrCreateFunc(builder, "elm_array_empty", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateArraySingletonInt(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY});
+    return getOrCreateFunc(builder, "elm_array_singleton_int", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateArraySingletonFloat(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {F64_TY});
+    return getOrCreateFunc(builder, "elm_array_singleton_float", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateArraySingletonChar(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I16_TY});
+    return getOrCreateFunc(builder, "elm_array_singleton_char", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateArraySingletonBox(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "elm_array_singleton_box", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateArrayPushInt(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY, HPTR_TY});
+    return getOrCreateFunc(builder, "elm_array_push_int", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateArrayPushFloat(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {F64_TY, HPTR_TY});
+    return getOrCreateFunc(builder, "elm_array_push_float", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateArrayPushChar(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I16_TY, HPTR_TY});
+    return getOrCreateFunc(builder, "elm_array_push_char", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateArrayPushBox(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY, HPTR_TY});
+    return getOrCreateFunc(builder, "elm_array_push_box", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateArraySlice(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY, I64_TY, HPTR_TY});
+    return getOrCreateFunc(builder, "elm_array_slice", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateArrayAppendN(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY, HPTR_TY, HPTR_TY});
+    return getOrCreateFunc(builder, "elm_array_append_n", funcTy);
+}
+
 //===----------------------------------------------------------------------===//
 // Debug Functions
 //===----------------------------------------------------------------------===//

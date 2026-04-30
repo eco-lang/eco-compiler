@@ -520,6 +520,9 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         KERNEL_SYM(Elm_Kernel_String_all)
         KERNEL_SYM(Elm_Kernel_String_foldl)
         KERNEL_SYM(Elm_Kernel_String_foldr)
+        // Unboxed-arg trampolines (eco.string.from_int / from_float lowering)
+        KERNEL_SYM(elm_string_from_int)
+        KERNEL_SYM(elm_string_from_double)
 
         // List module
         KERNEL_SYM(Elm_Kernel_List_cons)
@@ -557,6 +560,18 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         KERNEL_SYM(Elm_Kernel_JsArray_indexedMap)
         KERNEL_SYM(Elm_Kernel_JsArray_foldl)
         KERNEL_SYM(Elm_Kernel_JsArray_foldr)
+        // Unboxed-arg trampolines (eco.array.* lowering)
+        KERNEL_SYM(elm_array_empty)
+        KERNEL_SYM(elm_array_singleton_int)
+        KERNEL_SYM(elm_array_singleton_float)
+        KERNEL_SYM(elm_array_singleton_char)
+        KERNEL_SYM(elm_array_singleton_box)
+        KERNEL_SYM(elm_array_push_int)
+        KERNEL_SYM(elm_array_push_float)
+        KERNEL_SYM(elm_array_push_char)
+        KERNEL_SYM(elm_array_push_box)
+        KERNEL_SYM(elm_array_slice)
+        KERNEL_SYM(elm_array_append_n)
 
         // VirtualDom module
         KERNEL_SYM(Elm_Kernel_VirtualDom_text)
