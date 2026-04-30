@@ -38,6 +38,11 @@ struct MajorGCPhaseProfile {
     // scanning their cells.
     size_t   alldead_blocks_released = 0;
     size_t   alldead_bytes_released  = 0;
+    // Uniform→mixed demotion: blocks whose live_bytes <= 50% of total at the
+    // mark/sweep boundary, retagged so their freed space lands in the
+    // splittable mixed-only free-list classes.
+    size_t   demoted_blocks          = 0;
+    size_t   demoted_bytes           = 0;
     // Lazy sweep (Step 4): how much sweep work is being deferred to the mutator
     // after finishMarkAndSweep returns.
     size_t   initial_sweep_budget_bytes = 0;
@@ -902,6 +907,23 @@ private:
     // O(#blocks) reset of buffer_meta_ to match blocks_, called at major-GC
     // start so live_bytes attribution can begin from zero.
     void resetBufferMetaForMark();
+
+    // Demotes uniform size-class blocks whose mark-derived live_bytes is at
+    // most half of their total bytes to mixed (`size_class = NUM_SIZE_CLASSES`).
+    // Run after `finalizeMetaAfterMark` and before `transitionToSweeping` so
+    // that (a) the residency snapshot still sees the pre-demotion class
+    // assignments and (b) `transitionToSweeping` then wipes free_lists_,
+    // discarding any stale uniform-class cells without us having to walk
+    // them. Lazy sweep parses demoted blocks by `getObjectSize` (the
+    // mixed-block walk step) and re-emits coalesced runs through the
+    // any-class packer in `pushSpanOnFreeLists`, so the freed space lands on
+    // mixed-only classes (>= num_size_classes_) and becomes splittable for
+    // smaller demand. Returns {blocks_demoted, total_bytes_in_demoted_blocks}.
+    struct DemotionStats {
+        size_t blocks_demoted = 0;
+        size_t bytes_demoted  = 0;
+    };
+    DemotionStats demoteMostlyDeadUniformBlocks();
 
     // After the mark stack drains: clamp meta.live_bytes <= block.totalBytes(),
     // set meta.garbage_bytes = block.totalBytes() - meta.live_bytes, and

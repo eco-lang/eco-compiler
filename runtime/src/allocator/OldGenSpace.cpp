@@ -803,12 +803,21 @@ void* OldGenSpace::tryAllocateBySplittingLarger(size_t target_cls,
     // populates those classes), so splits from those are safe with a
     // null block-context.
     //
-    // Skip uniform classes outright: cls > target_cls implies
-    // classToSize(cls) > alloc_size, and cells on free_lists_[cls] are at
-    // least classToSize(cls) bytes, so remainder > 0 always — the exact-fit
-    // gate above can never pass for a uniform class. Start the walk at the
-    // first non-uniform class instead.
-    const size_t start_cls = std::max(target_cls + 1, num_size_classes_);
+    // Skip uniform classes outright: only walk classes >= num_size_classes_.
+    //
+    // Two callers shape the start formula:
+    //   * `allocateFromSizeClass` (target_cls < num_size_classes_): an
+    //     exact-fit pop has already been tried at target_cls in step 1, and
+    //     for cls in (target_cls, num_size_classes_) the cells (uniform-class)
+    //     can't be split safely, so we begin at num_size_classes_. The
+    //     `target_cls + 0 vs +1` distinction is irrelevant here because
+    //     max(...) clamps to num_size_classes_ anyway.
+    //   * `allocateFromBagPage` (target_cls >= num_size_classes_): cells on
+    //     free_lists_[target_cls] live in mixed blocks and CAN be exact-fit
+    //     popped or split. Walking should begin AT target_cls, not above it,
+    //     so the reuse ladder finds them. Hence `max(target_cls, ...)` rather
+    //     than `max(target_cls + 1, ...)`.
+    const size_t start_cls = std::max(target_cls, num_size_classes_);
     for (size_t cls = start_cls; cls < NUM_SIZE_CLASSES; ++cls) {
         if (free_lists_[cls] == nullptr) continue;
 
@@ -853,6 +862,69 @@ void* OldGenSpace::tryAllocateBySplittingLarger(size_t target_cls,
 // Page-as-single-cell + split path.
 // ---------------------------------------------------------------------------
 void* OldGenSpace::allocateFromBagPage(size_t requested_size) {
+    // ----- Reuse ladder for the (LOT, alloc_buffer_size) band -----
+    //
+    // Before committing or pulling a fresh page, try to satisfy the request
+    // out of existing free space living on the mixed-only large free-list
+    // classes (16 KiB / 32 KiB / 64 KiB with the default config). These
+    // cells are produced by:
+    //   * sweep coalescing dead spans in mixed blocks (the
+    //     `pushSpanOnFreeLists` mixed packer routes the bulk of any large
+    //     coalesced run onto these classes), and
+    //   * uniform → mixed demotion in `demoteMostlyDeadUniformBlocks`.
+    // The previous code path skipped this pool entirely and grew `blocks_`
+    // by one page per visit, making the ≥-LOT allocator the dominant driver
+    // of committed-heap growth. The ladder below mirrors steps 1, 3, and 4
+    // of `allocateFromSizeClass` for size-classed requests.
+
+    const size_t request_cls = sizeClass(requested_size);
+    // Branch (C) is the only caller; the routing in `OldGenSpace::allocate`
+    // ensures `request_cls >= num_size_classes_`.
+    assert(request_cls >= num_size_classes_ &&
+           "allocateFromBagPage: caller must route size-classed requests "
+           "through allocateFromSizeClass");
+
+    // Step 1: split or exact-fit from the mixed-only free lists. The widened
+    // `start_cls = max(target_cls, num_size_classes_)` in
+    // `tryAllocateBySplittingLarger` makes the walk include `request_cls`
+    // itself, so cells of size classToSize(request_cls) (the common case
+    // produced by `pushSpanOnFreeLists`) participate. `requested_size` is
+    // passed as `alloc_size` so the carve matches the request exactly and
+    // the tail goes back as a Tag_Free cell — no internal slack.
+    if (void* result =
+            tryAllocateBySplittingLarger(request_cls, requested_size)) {
+        return result;
+    }
+
+    // Step 2: drive bounded lazy sweep and retry. Sweep coalesces dead spans
+    // in survivor blocks into bigger Tag_Free cells, which often unlocks a
+    // fit when the free pool is exhausted of cells >= requested_size but
+    // the heap still has plenty of unswept garbage. Same dynamic budget the
+    // size-classed path uses (see `sweepOnDemandAllocate` / step 4 of
+    // `allocateFromSizeClass`).
+    if (hasPendingSweepWork()) {
+        const size_t budget = computeSweepBudgetForAlloc(requested_size);
+        size_t swept = 0;
+        while (hasPendingSweepWork() && swept < budget) {
+            const size_t slice =
+                std::min<size_t>(SWEEP_WORK_BUDGET, budget - swept);
+            lazySweep(request_cls, slice);
+            swept += slice;
+#if ENABLE_GC_STATS
+            alloc_stats_.total_lazy_sweep_bytes_in_mutator += slice;
+#endif
+            if (void* result =
+                    tryAllocateBySplittingLarger(request_cls, requested_size)) {
+                return result;
+            }
+        }
+    }
+
+    // Step 3: fresh-page fallback. This is the original body of
+    // `allocateFromBagPage` — pop (or commit) a page, wrap it as one
+    // Tag_Free cell, carve off `requested_size`, push the remainder via
+    // the mixed any-class packer.
+
     // Same fall-through as populateFromBlock: try to acquire a fresh page
     // from the OS if the bag is empty but address space remains.
     if (unassigned_blocks_.empty() && allocator_ != nullptr) {
@@ -1566,6 +1638,73 @@ void OldGenSpace::finalizeMetaAfterMark() {
     allocated_bytes = total_live;
 }
 
+// Walks `blocks_` once and demotes any non-large uniform block whose
+// mark-derived `live_bytes` is at most half of the block's total bytes.
+// "Demotion" flips `block.size_class` to NUM_SIZE_CLASSES so the next
+// lazy-sweep walk parses the block by `getObjectSize` (mixed-block step)
+// and re-emits its coalesced free runs through the mixed any-class packer
+// in `pushSpanOnFreeLists`. The packer routes the bulk of the run to the
+// large mixed-only classes (16K/32K/64K with the default config), where
+// `tryAllocateBySplittingLarger` can carve smaller cells out of them.
+//
+// Why this is safe:
+//   - Live cells in a uniform block were padded by `finalizePoppedCell`
+//     (which calls `padCellSlack`) at allocation time. The padding is a
+//     trailing Tag_Free header that makes mixed-mode walking step over
+//     the unused tail of the cell. So a mixed-mode walk of a previously
+//     uniform block lands on every cell start exactly as the uniform-step
+//     walk did.
+//   - Free cells in a uniform block already have `header.size = cell_size`
+//     and `tag = Tag_Free`, so a mixed-mode walk steps over them by
+//     `getObjectSize` returning the same `cell_size`.
+//   - `transitionToSweeping`, which the caller invokes immediately after
+//     this method, clears `free_lists_` so any cells currently parked on
+//     `free_lists_[old_uniform_class]` are dropped without a per-cell walk.
+//
+// Caller order (see `finishMarkAndSweep`):
+//   finalizeMetaAfterMark()                  // live_bytes is authoritative
+//   gatherResidencyInto()                    // pre-demotion residency
+//   demoteMostlyDeadUniformBlocks()          // <-- this method
+//   transitionToSweeping()                   // wipes free_lists_
+//   reclaimAllDeadBlocksFromMeta()           // releases live_bytes==0 blocks
+//   ... lazy sweep ...
+OldGenSpace::DemotionStats
+OldGenSpace::demoteMostlyDeadUniformBlocks() {
+    DemotionStats stats;
+    char* heap_base = (allocator_ != nullptr)
+                          ? allocator_->getHeapBase() : nullptr;
+
+    for (size_t i = 0; i < blocks_.size() && i < buffer_meta_.size(); ++i) {
+        BlockInfo& block = blocks_[i];
+        if (block.is_large) continue;
+        if (block.size_class >= num_size_classes_) continue;  // already mixed.
+
+        // The heap-base page is already materialised as mixed (see the
+        // heap-base detour in populateFromBlock), so this guard normally
+        // never trips. Keep it as a safety net in case a future change
+        // ever creates a uniform heap-base page.
+        if (heap_base != nullptr && block.start == heap_base) continue;
+
+        const size_t total = block.totalBytes();
+        const size_t live  = buffer_meta_[i].live_bytes;
+        // Threshold: live <= total / 2  <=>  2 * live <= total. Computed
+        // multiplicatively to avoid losing the odd byte to integer
+        // division. Equivalently: dead_bytes >= total / 2.
+        if (live * 2 > total) continue;
+
+        // Debit the small-class block-budget if this was a uniform
+        // small-class page. The helper is named after the
+        // is_large transition but only touches small_class_bytes_, which
+        // is exactly what an in-place "uniform → mixed" change needs.
+        onBlockTransitioningToLarge(i);
+
+        block.size_class = NUM_SIZE_CLASSES;
+        ++stats.blocks_demoted;
+        stats.bytes_demoted += total;
+    }
+    return stats;
+}
+
 void OldGenSpace::prepareMetaForLazySweep() {
     if (buffer_meta_.size() < blocks_.size()) {
         buffer_meta_.resize(blocks_.size(), {0, 0, 0, false});
@@ -1598,6 +1737,11 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats) {
     // meaningful (free_lists_ at this point hold the previous major's
     // residual cells the mutator hasn't drained yet).
     gatherResidencyInto(stats);
+    // Retag mostly-dead uniform blocks as mixed BEFORE transitionToSweeping.
+    // The wipe of free_lists_ then drops their stale uniform-class cells
+    // for free; lazy sweep re-emits the coalesced runs on mixed-only
+    // classes where the splitter can carve smaller cells.
+    demoteMostlyDeadUniformBlocks();
     transitionToSweeping();
     reclaimAllDeadBlocksFromMeta();
     adjustCapacityAfterMajorGC();
@@ -1629,6 +1773,11 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats,
     // meaningful (free_lists_ at this point hold the previous major's
     // residual cells the mutator hasn't drained yet).
     gatherResidencyInto(stats);
+    // Retag mostly-dead uniform blocks as mixed BEFORE transitionToSweeping
+    // so lazy sweep parses them with the mixed-block walk step and the
+    // mixed any-class packer. See demoteMostlyDeadUniformBlocks for the
+    // safety argument.
+    DemotionStats demotion = demoteMostlyDeadUniformBlocks();
     // transitionToSweeping clears free_lists_ and free_large_blocks_, which
     // makes the per-block removeFreeCellsForBlock inside releaseBlockToAllocator
     // a no-op. Doing it BEFORE reclaim turns reclaim from O(B*F) (B blocks
@@ -1655,6 +1804,8 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats,
     profile.garbage_bytes    = frag_stats_.total_free_bytes;
     profile.alldead_blocks_released = alldead.blocks_released;
     profile.alldead_bytes_released  = alldead.bytes_released;
+    profile.demoted_blocks  = demotion.blocks_demoted;
+    profile.demoted_bytes   = demotion.bytes_demoted;
     profile.initial_sweep_budget_bytes = INITIAL_SWEEP_BUDGET;
     // True post-initial-slice pending count, fed by markBlockFullySwept
     // throughout the slice.
@@ -1671,6 +1822,7 @@ void OldGenSpace::finishMarkAndSweep() {
     }
 
     finalizeMetaAfterMark();
+    demoteMostlyDeadUniformBlocks();
     transitionToSweeping();
     reclaimAllDeadBlocksFromMeta();
     adjustCapacityAfterMajorGC();
@@ -1692,6 +1844,7 @@ void OldGenSpace::finishMarkAndSweep(MajorGCPhaseProfile &profile) {
     auto t_mark_end = std::chrono::high_resolution_clock::now();
 
     finalizeMetaAfterMark();
+    DemotionStats demotion = demoteMostlyDeadUniformBlocks();
     // transitionToSweeping clears free_lists_ and free_large_blocks_, which
     // makes the per-block removeFreeCellsForBlock inside releaseBlockToAllocator
     // a no-op. Doing it BEFORE reclaim turns reclaim from O(B*F) (B blocks
@@ -1718,6 +1871,8 @@ void OldGenSpace::finishMarkAndSweep(MajorGCPhaseProfile &profile) {
     profile.garbage_bytes    = frag_stats_.total_free_bytes;
     profile.alldead_blocks_released = alldead.blocks_released;
     profile.alldead_bytes_released  = alldead.bytes_released;
+    profile.demoted_blocks  = demotion.blocks_demoted;
+    profile.demoted_bytes   = demotion.bytes_demoted;
     profile.initial_sweep_budget_bytes = INITIAL_SWEEP_BUDGET;
     profile.sweep_pending_blocks = sweep_pending_blocks_;
 
