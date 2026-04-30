@@ -695,7 +695,13 @@ checkKernelExistsInDirs name pkg foreignHomes srcDirs =
 
 crawlFile : Env -> MVar StatusDict -> DocsNeed -> ModuleName.Raw -> FilePath -> File.Time -> Details.BuildID -> Task Never Status
 crawlFile ((Env envData) as env) mvar docsNeed expectedName path time lastChange =
-    File.readUtf8 (Utils.fpCombine envData.root path)
+    -- Per-file parse log: emitted as soon as we start reading + parsing the
+    -- module during dependency discovery. Gives visibility into the crawl
+    -- phase, which runs before any module's compile and which Stage 7 spends
+    -- a long time in.
+    IO.writeLn IO.stderr ("[crawl] parse " ++ expectedName)
+        |> Task.andThen
+            (\_ -> File.readUtf8 (Utils.fpCombine envData.root path))
         |> Task.andThen
             (\source ->
                 case Parse.fromByteString envData.projectType source of
