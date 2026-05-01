@@ -1,4 +1,4 @@
-module Compiler.Generate.MLIR.Intrinsics exposing (Intrinsic(..), kernelIntrinsic, intrinsicResultMlirType, unboxArgsForIntrinsic, unboxToType, generateIntrinsicOp)
+module Compiler.Generate.MLIR.Intrinsics exposing (CompareKind(..), Intrinsic(..), kernelIntrinsic, intrinsicResultMlirType, unboxArgsForIntrinsic, unboxToType, generateIntrinsicOp)
 
 {-| Intrinsic operations for the MLIR backend.
 
@@ -50,6 +50,15 @@ type Intrinsic
     | ArrayPush { elementMlirType : MlirType }
     | ArraySlice
     | ArrayAppendN
+    | CompareToOrder { kind : CompareKind }
+
+
+{-| Operand kind selector for the `Utils.compare` intrinsic.
+-}
+type CompareKind
+    = CompareIntKind
+    | CompareFloatKind
+    | CompareCharKind
 
 
 
@@ -134,6 +143,9 @@ intrinsicResultMlirType intrinsic =
             Types.ecoValue
 
         ArrayAppendN ->
+            Types.ecoValue
+
+        CompareToOrder _ ->
             Types.ecoValue
 
 
@@ -222,6 +234,17 @@ intrinsicOperandTypes intrinsic =
         ArrayAppendN ->
             -- Elm arg order: appendN n dest source
             [ I64, Types.ecoValue, Types.ecoValue ]
+
+        CompareToOrder { kind } ->
+            case kind of
+                CompareIntKind ->
+                    [ I64, I64 ]
+
+                CompareFloatKind ->
+                    [ F64, F64 ]
+
+                CompareCharKind ->
+                    [ Types.ecoChar, Types.ecoChar ]
 
 
 
@@ -593,6 +616,18 @@ utilsIntrinsic name argTypes _ =
         ( "ge", [ Mono.MChar, Mono.MChar ] ) ->
             Just (CharComparison { op = "eco.char.ge" })
 
+        -- Compare-to-Order intrinsics: return one of the three pre-allocated
+        -- Order singletons. Boxed-key compares (Strings, lists, tuples,
+        -- records, user comparables) keep falling through to the kernel call.
+        ( "compare", [ Mono.MInt, Mono.MInt ] ) ->
+            Just (CompareToOrder { kind = CompareIntKind })
+
+        ( "compare", [ Mono.MFloat, Mono.MFloat ] ) ->
+            Just (CompareToOrder { kind = CompareFloatKind })
+
+        ( "compare", [ Mono.MChar, Mono.MChar ] ) ->
+            Just (CompareToOrder { kind = CompareCharKind })
+
         _ ->
             Nothing
 
@@ -909,3 +944,23 @@ generateIntrinsicOp ctx intrinsic resultVar argVars =
 
                 _ ->
                     Ops.ecoTernaryOp ctx "eco.array.append_n" resultVar ( "%error", I64 ) ( "%error", Types.ecoValue ) ( "%error", Types.ecoValue ) Types.ecoValue
+
+        CompareToOrder { kind } ->
+            let
+                ( opName, lhsType, rhsType ) =
+                    case kind of
+                        CompareIntKind ->
+                            ( "eco.int.cmp_order", I64, I64 )
+
+                        CompareFloatKind ->
+                            ( "eco.float.cmp_order", F64, F64 )
+
+                        CompareCharKind ->
+                            ( "eco.char.cmp_order", Types.ecoChar, Types.ecoChar )
+            in
+            case argVars of
+                [ lhs, rhs ] ->
+                    Ops.ecoBinaryOp ctx opName resultVar ( lhs, lhsType ) ( rhs, rhsType ) Types.ecoValue
+
+                _ ->
+                    Ops.ecoBinaryOp ctx opName resultVar ( "%error", lhsType ) ( "%error", rhsType ) Types.ecoValue

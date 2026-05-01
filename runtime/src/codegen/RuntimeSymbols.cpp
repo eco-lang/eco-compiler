@@ -549,6 +549,10 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         KERNEL_SYM(Elm_Kernel_Utils_gt)
         KERNEL_SYM(Elm_Kernel_Utils_ge)
         KERNEL_SYM(Elm_Kernel_Utils_append)
+        // Order singleton getters for eco.{int,float,char}.cmp_order lowering
+        KERNEL_SYM(Eco_Runtime_getOrderLT)
+        KERNEL_SYM(Eco_Runtime_getOrderEQ)
+        KERNEL_SYM(Eco_Runtime_getOrderGT)
 
         // JsArray module
         KERNEL_SYM(Elm_Kernel_JsArray_empty)

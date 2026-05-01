@@ -400,6 +400,14 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateIntPow(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateUtilsEqual(mlir::OpBuilder &builder) const;
 
+    // Order singleton getters used by eco.{int,float,char}.cmp_order. Each
+    // returns the encoded HPointer of one of the three pre-allocated Order
+    // Custom values (LT/EQ/GT). gc-leaf: a single load from a value-rooted
+    // slot, no GC inside.
+    mlir::LLVM::LLVMFuncOp getOrCreateGetOrderLT(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateGetOrderEQ(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateGetOrderGT(mlir::OpBuilder &builder) const;
+
     // Array functions
     mlir::LLVM::LLVMFuncOp getOrCreateCloneArray(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateArraySetFixKind(mlir::OpBuilder &builder) const;

@@ -26,7 +26,15 @@ extern "C" void Eco_Kernel_Runtime_register_gc_roots() {
     Runtime::registerGcRootScanner();
 }
 
+// Registers the Order LT/EQ/GT singleton slots used by the
+// eco.{int,float,char}.cmp_order intrinsics. Defined in elm-kernel-cpp/Utils;
+// declared weak here so this aggregator still links if ElmKernel is omitted
+// (e.g. minimal Eco-only builds).
+extern "C" __attribute__((weak)) void Eco_Kernel_Order_register_gc_roots();
+
 extern "C" void Eco_Kernel_register_all_gc_roots() {
     Eco_Kernel_MVar_register_gc_roots();
     Eco_Kernel_Runtime_register_gc_roots();
+    if (Eco_Kernel_Order_register_gc_roots)
+        Eco_Kernel_Order_register_gc_roots();
 }

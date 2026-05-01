@@ -478,6 +478,12 @@ void* eco_resolve_hptr(HPtr hptr);
 /// @return HPointer to new ElmArray copy (as uint64_t)
 HPtr eco_clone_array(HPtr array_hptr);
 
+/// Force the unboxed-kind flag on an ElmArray to match what its slots actually
+/// hold. Emitted right after `eco_clone_array` by the eco.array.set lowering
+/// so the cloned array's kind flag tracks the value the new slot stores —
+/// otherwise the next minor GC misreads a raw i64 as an HPointer.
+void eco_array_set_fix_kind(HPtr array_hptr, uint32_t intended_kind);
+
 } // extern "C"
 
 #endif // ECO_RUNTIME_EXPORTS_H

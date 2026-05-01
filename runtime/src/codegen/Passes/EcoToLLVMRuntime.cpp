@@ -519,6 +519,22 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateUtilsEqual(OpBuilder &builder) const {
     return getOrCreateFunc(builder, "Elm_Kernel_Utils_equal", funcTy);
 }
 
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateGetOrderLT(OpBuilder &builder) const {
+    // Eco_Runtime_getOrderLT() -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {});
+    return getOrCreateFunc(builder, "Eco_Runtime_getOrderLT", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateGetOrderEQ(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {});
+    return getOrCreateFunc(builder, "Eco_Runtime_getOrderEQ", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateGetOrderGT(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {});
+    return getOrCreateFunc(builder, "Eco_Runtime_getOrderGT", funcTy, /*gcLeaf=*/true);
+}
+
 //===----------------------------------------------------------------------===//
 // Array Functions
 //===----------------------------------------------------------------------===//

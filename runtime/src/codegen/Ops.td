@@ -2548,6 +2548,59 @@ def Eco_CharNeOp : Eco_Op<"char.ne", [Pure, Commutative]> {
 }
 
 //===----------------------------------------------------------------------===//
+// 9.5 Compare-to-Order Intrinsics
+//===----------------------------------------------------------------------===//
+//
+// Direct primitive `compare` ops that return one of three pre-allocated Order
+// singletons (LT/EQ/GT) instead of allocating a fresh Order Custom per call.
+// These intrinsics are dispatched in MLIRGen for `Utils.compare` on monomorphic
+// Int/Float/Char operands and replace the usual `eco.box`+kernel call shape.
+
+def Eco_IntCmpOrderOp : Eco_Op<"int.cmp_order", [Pure]> {
+  let summary = "Compare two ints; return Order singleton (LT/EQ/GT)";
+  let description = [{
+    Returns a pre-allocated Order Custom value as `!eco.value`.
+
+    ```mlir
+    %ord = eco.int.cmp_order %a, %b : i64
+    ```
+  }];
+  let arguments = (ins Eco_Int:$lhs, Eco_Int:$rhs);
+  let results = (outs Eco_Value:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
+}
+
+def Eco_FloatCmpOrderOp : Eco_Op<"float.cmp_order", [Pure]> {
+  let summary = "Compare two floats; return Order singleton (LT/EQ/GT)";
+  let description = [{
+    Returns a pre-allocated Order Custom value as `!eco.value`. Uses ordered
+    `<` and `>`, so any NaN routes to EQ (matches Elm's Basics.compare).
+
+    ```mlir
+    %ord = eco.float.cmp_order %a, %b : f64
+    ```
+  }];
+  let arguments = (ins Eco_Float:$lhs, Eco_Float:$rhs);
+  let results = (outs Eco_Value:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
+}
+
+def Eco_CharCmpOrderOp : Eco_Op<"char.cmp_order", [Pure]> {
+  let summary = "Compare two chars; return Order singleton (LT/EQ/GT)";
+  let description = [{
+    Returns a pre-allocated Order Custom value as `!eco.value`. Char compares
+    are unsigned (mirrors `eco.char.lt`).
+
+    ```mlir
+    %ord = eco.char.cmp_order %a, %b : i16
+    ```
+  }];
+  let arguments = (ins Eco_Char:$lhs, Eco_Char:$rhs);
+  let results = (outs Eco_Value:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
+}
+
+//===----------------------------------------------------------------------===//
 // 12. Reference Counting Placeholders (Future Perceus Support)
 //===----------------------------------------------------------------------===//
 //

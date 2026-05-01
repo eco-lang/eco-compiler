@@ -85,6 +85,7 @@ static struct EcoGCStrategyLinker {
 #include "KernelExports.h"
 
 extern "C" __attribute__((weak)) void Eco_Kernel_register_all_gc_roots();
+extern "C" __attribute__((weak)) void Eco_Kernel_Order_register_gc_roots();
 
 using namespace mlir;
 
@@ -331,6 +332,11 @@ static int runJIT(ModuleOp module) {
     // Weak symbol: only present when the Eco kernel is linked in.
     if (Eco_Kernel_register_all_gc_roots)
         Eco_Kernel_register_all_gc_roots();
+
+    // Order singleton roots: lives in ElmKernel (always linked into the JIT),
+    // separate from the EcoKernel aggregator above. Weak only as belt-and-braces.
+    if (Eco_Kernel_Order_register_gc_roots)
+        Eco_Kernel_Order_register_gc_roots();
 
     // Call __eco_init_globals if it exists to register globals as GC roots.
     auto initGlobalsSymbol = engine->lookup("__eco_init_globals");

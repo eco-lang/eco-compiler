@@ -987,6 +987,102 @@ struct CharNeOpLowering : public OpConversionPattern<CharNeOp> {
     }
 };
 
+//===----------------------------------------------------------------------===//
+// Compare-to-Order Intrinsics (Int/Float/Char)
+//===----------------------------------------------------------------------===//
+//
+// Each lowering produces:
+//   %lt = call ptr addrspace(1) @Eco_Runtime_getOrderLT()
+//   %eq = call ptr addrspace(1) @Eco_Runtime_getOrderEQ()
+//   %gt = call ptr addrspace(1) @Eco_Runtime_getOrderGT()
+//   %isLt = <pred-lt> %a, %b
+//   %isGt = <pred-gt> %a, %b
+//   %tmp  = select %isGt, %gt, %eq
+//   %ord  = select %isLt, %lt, %tmp
+// All three getters are gc-leaf (single load from a value-rooted slot), so
+// RS4GC won't insert statepoints around them. The `Pure` op trait lets MLIR
+// CSE/hoist redundant cmp_order calls.
+
+namespace {
+
+static Value emitOrderSelect(Location loc, Value isLt, Value isGt,
+                              const EcoRuntime &runtime,
+                              ConversionPatternRewriter &rewriter) {
+    auto ltFn = runtime.getOrCreateGetOrderLT(rewriter);
+    auto eqFn = runtime.getOrCreateGetOrderEQ(rewriter);
+    auto gtFn = runtime.getOrCreateGetOrderGT(rewriter);
+    Value lt = rewriter.create<LLVM::CallOp>(loc, ltFn, ValueRange{}).getResult();
+    Value eq = rewriter.create<LLVM::CallOp>(loc, eqFn, ValueRange{}).getResult();
+    Value gt = rewriter.create<LLVM::CallOp>(loc, gtFn, ValueRange{}).getResult();
+    Value gtOrEq = rewriter.create<LLVM::SelectOp>(loc, isGt, gt, eq);
+    return rewriter.create<LLVM::SelectOp>(loc, isLt, lt, gtOrEq);
+}
+
+} // namespace
+
+struct IntCmpOrderOpLowering : public OpConversionPattern<IntCmpOrderOp> {
+    const EcoRuntime &runtime;
+
+    IntCmpOrderOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                          const EcoRuntime &runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult
+    matchAndRewrite(IntCmpOrderOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        Value isLt = rewriter.create<arith::CmpIOp>(
+            loc, arith::CmpIPredicate::slt, adaptor.getLhs(), adaptor.getRhs());
+        Value isGt = rewriter.create<arith::CmpIOp>(
+            loc, arith::CmpIPredicate::sgt, adaptor.getLhs(), adaptor.getRhs());
+        rewriter.replaceOp(op, emitOrderSelect(loc, isLt, isGt, runtime, rewriter));
+        return success();
+    }
+};
+
+struct FloatCmpOrderOpLowering : public OpConversionPattern<FloatCmpOrderOp> {
+    const EcoRuntime &runtime;
+
+    FloatCmpOrderOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                            const EcoRuntime &runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult
+    matchAndRewrite(FloatCmpOrderOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        // Ordered predicates: both fcmp olt and fcmp ogt are false on any NaN,
+        // routing NaN-vs-anything to EQ. Matches Elm Basics.compare semantics.
+        Value isLt = rewriter.create<arith::CmpFOp>(
+            loc, arith::CmpFPredicate::OLT, adaptor.getLhs(), adaptor.getRhs());
+        Value isGt = rewriter.create<arith::CmpFOp>(
+            loc, arith::CmpFPredicate::OGT, adaptor.getLhs(), adaptor.getRhs());
+        rewriter.replaceOp(op, emitOrderSelect(loc, isLt, isGt, runtime, rewriter));
+        return success();
+    }
+};
+
+struct CharCmpOrderOpLowering : public OpConversionPattern<CharCmpOrderOp> {
+    const EcoRuntime &runtime;
+
+    CharCmpOrderOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                           const EcoRuntime &runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult
+    matchAndRewrite(CharCmpOrderOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        // Char compares are unsigned (mirrors eco.char.lt).
+        Value isLt = rewriter.create<arith::CmpIOp>(
+            loc, arith::CmpIPredicate::ult, adaptor.getLhs(), adaptor.getRhs());
+        Value isGt = rewriter.create<arith::CmpIOp>(
+            loc, arith::CmpIPredicate::ugt, adaptor.getLhs(), adaptor.getRhs());
+        rewriter.replaceOp(op, emitOrderSelect(loc, isLt, isGt, runtime, rewriter));
+        return success();
+    }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -1089,4 +1185,7 @@ void eco::detail::populateEcoArithPatternsWithRuntime(
     patterns.add<FloatAcosOpLowering>(typeConverter, ctx, runtime);
     patterns.add<FloatAtanOpLowering>(typeConverter, ctx, runtime);
     patterns.add<FloatAtan2OpLowering>(typeConverter, ctx, runtime);
+    patterns.add<IntCmpOrderOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<FloatCmpOrderOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<CharCmpOrderOpLowering>(typeConverter, ctx, runtime);
 }

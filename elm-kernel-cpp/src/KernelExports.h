@@ -150,6 +150,19 @@ HPtr Elm_Kernel_Utils_gt(HPtr a, HPtr b);
 HPtr Elm_Kernel_Utils_ge(HPtr a, HPtr b);
 HPtr Elm_Kernel_Utils_append(HPtr a, HPtr b);
 
+// Pre-allocated Order singletons backing the eco.{int,float,char}.cmp_order
+// intrinsics. Each returns an encoded HPointer; the slots are registered as
+// GC value roots and updated in place if the underlying Custom moves.
+HPtr Eco_Runtime_getOrderLT();
+HPtr Eco_Runtime_getOrderEQ();
+HPtr Eco_Runtime_getOrderGT();
+
+// Allocates the three Order singletons (idempotent) and registers their slots
+// as GC value roots. Called once per Elm thread, after Allocator::initThread()
+// and before any Elm code runs. Wired into Eco_Kernel_register_all_gc_roots
+// for the AOT path; called directly by the JIT runners.
+void Eco_Kernel_Order_register_gc_roots();
+
 //===----------------------------------------------------------------------===//
 // JsArray Module (elm/core)
 //===----------------------------------------------------------------------===//

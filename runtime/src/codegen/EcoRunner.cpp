@@ -43,6 +43,7 @@
 #include "llvm/Support/MemoryBuffer.h"
 
 extern "C" __attribute__((weak)) void Eco_Kernel_register_all_gc_roots();
+extern "C" __attribute__((weak)) void Eco_Kernel_Order_register_gc_roots();
 
 #include "EcoDialect.h"
 #include "Passes.h"
@@ -243,6 +244,12 @@ private:
         // Weak symbol: only present when the Eco kernel is linked in.
         if (Eco_Kernel_register_all_gc_roots)
             Eco_Kernel_register_all_gc_roots();
+
+        // Register Order singleton roots independently of the Eco aggregator —
+        // Order lives in ElmKernel which IS linked into the JIT, so this hook
+        // fires even when EcoKernel isn't linked (weak just for safety).
+        if (Eco_Kernel_Order_register_gc_roots)
+            Eco_Kernel_Order_register_gc_roots();
 
         // Initialize globals if present
         auto initGlobalsSymbol = engine->lookup("__eco_init_globals");

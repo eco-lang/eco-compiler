@@ -51,4 +51,22 @@ HPtr Elm_Kernel_Utils_append(HPtr a, HPtr b) {
     return HPtr::fromBits(Export::encode(result));
 }
 
+// ============================================================================
+// Order Singletons
+// ============================================================================
+//
+// Three pre-allocated Order Custom values shared by every primitive `compare`
+// call. The encoded HPointer slots are registered as value roots so the GC
+// updates them in place if the underlying object moves; the lowering for
+// eco.{int,float,char}.cmp_order calls these helpers and treats the return
+// value as a regular Elm value.
+
+HPtr Eco_Runtime_getOrderLT() { return HPtr::fromBits(Utils::getOrderLT()); }
+HPtr Eco_Runtime_getOrderEQ() { return HPtr::fromBits(Utils::getOrderEQ()); }
+HPtr Eco_Runtime_getOrderGT() { return HPtr::fromBits(Utils::getOrderGT()); }
+
+void Eco_Kernel_Order_register_gc_roots() {
+    Utils::initOrderSingletons();
+}
+
 } // extern "C"

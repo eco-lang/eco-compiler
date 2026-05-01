@@ -6,7 +6,9 @@
  */
 
 #include "Utils.hpp"
+#include "ExportHelpers.hpp"
 #include "allocator/Allocator.hpp"
+#include "allocator/RuntimeExports.h"
 #include "allocator/StringOps.hpp"
 #include "allocator/ListOps.hpp"
 
@@ -19,6 +21,32 @@ constexpr u16 ORDER_TYPE_ID = 0;
 constexpr u16 ORDER_LT = 0;
 constexpr u16 ORDER_EQ = 1;
 constexpr u16 ORDER_GT = 2;
+
+// Pre-allocated Order singletons. Slots hold encoded HPointer Elm values,
+// registered with eco_gc_add_value_root so the GC keeps them live and updates
+// the encoded HPointer in place if the underlying Custom moves.
+static uint64_t ORDER_LT_SINGLETON = 0;
+static uint64_t ORDER_EQ_SINGLETON = 0;
+static uint64_t ORDER_GT_SINGLETON = 0;
+static bool ORDER_SINGLETONS_INITIALIZED = false;
+
+void initOrderSingletons() {
+    if (ORDER_SINGLETONS_INITIALIZED) return;
+    HPointer lt = alloc::custom(ORDER_LT, {}, 0);
+    ORDER_LT_SINGLETON = Export::encode(lt);
+    HPointer eq = alloc::custom(ORDER_EQ, {}, 0);
+    ORDER_EQ_SINGLETON = Export::encode(eq);
+    HPointer gt = alloc::custom(ORDER_GT, {}, 0);
+    ORDER_GT_SINGLETON = Export::encode(gt);
+    eco_gc_add_value_root(&ORDER_LT_SINGLETON);
+    eco_gc_add_value_root(&ORDER_EQ_SINGLETON);
+    eco_gc_add_value_root(&ORDER_GT_SINGLETON);
+    ORDER_SINGLETONS_INITIALIZED = true;
+}
+
+uint64_t getOrderLT() { return ORDER_LT_SINGLETON; }
+uint64_t getOrderEQ() { return ORDER_EQ_SINGLETON; }
+uint64_t getOrderGT() { return ORDER_GT_SINGLETON; }
 
 // Reserved ctor tags for runtime-recognised types. Must match
 // `Compiler.Data.CtorTag` in the compiler.
@@ -349,10 +377,10 @@ static int cmp(void* a, void* b) {
 
 HPointer compare(void* a, void* b) {
     int n = cmp(a, b);
-
-    u16 orderCtor = (n < 0) ? ORDER_LT : (n > 0) ? ORDER_GT : ORDER_EQ;
-    // Order has no fields, just the constructor tag
-    return alloc::custom(orderCtor, {}, 0);
+    uint64_t enc = (n < 0) ? ORDER_LT_SINGLETON
+                : (n > 0) ? ORDER_GT_SINGLETON
+                          : ORDER_EQ_SINGLETON;
+    return Export::decode(enc);
 }
 
 // ============================================================================
