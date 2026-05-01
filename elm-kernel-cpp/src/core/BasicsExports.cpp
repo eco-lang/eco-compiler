@@ -22,13 +22,6 @@ inline Elm::HPointer toHPointer(uint64_t val) {
     return ptr;
 }
 
-// Helper to reinterpret HPointer as uint64_t.
-inline uint64_t fromHPointer(Elm::HPointer ptr) {
-    uint64_t val;
-    memcpy(&val, &ptr, sizeof(val));
-    return val;
-}
-
 // Convert uint64_t to void pointer, handling both raw pointers and HPointers.
 // Same logic as in ExportHelpers.hpp::toPtr().
 inline void* toPtr(uint64_t val) {
@@ -79,27 +72,12 @@ inline bool getNumericValue(uint64_t hptr, Elm::i64& intVal, Elm::f64& floatVal)
     return true;
 }
 
-// Helper to box an integer result.
-// Returns HPointer for consistency with JIT's eco_alloc_int.
-inline uint64_t boxInt(Elm::i64 val) {
-    void* obj = Elm::Allocator::instance().allocate(sizeof(Elm::ElmInt), Elm::Tag_Int);
-    Elm::ElmInt* intObj = static_cast<Elm::ElmInt*>(obj);
-    intObj->value = val;
-    Elm::HPointer hp = Elm::Allocator::instance().wrap(obj);
-    return fromHPointer(hp);
-}
-
-// Helper to box a float result.
-// Returns HPointer for consistency with JIT's eco_alloc_float.
-inline uint64_t boxFloat(Elm::f64 val) {
-    void* obj = Elm::Allocator::instance().allocate(sizeof(Elm::ElmFloat), Elm::Tag_Float);
-    Elm::ElmFloat* floatObj = static_cast<Elm::ElmFloat*>(obj);
-    floatObj->value = val;
-    Elm::HPointer hp = Elm::Allocator::instance().wrap(obj);
-    return fromHPointer(hp);
-}
-
 } // anonymous namespace
+
+// Route boxing through the canonical runtime symbols so a counter on
+// eco_alloc_int / eco_alloc_float catches polymorphic arithmetic too.
+extern "C" Elm::HPtr eco_alloc_int(int64_t value);
+extern "C" Elm::HPtr eco_alloc_float(double value);
 
 extern "C" {
 
@@ -153,7 +131,7 @@ HPtr Elm_Kernel_Basics_pow(HPtr base, HPtr exp) {
         // Integer power - use repeated multiplication for positive exponents
         if (exp_i < 0) {
             // Negative exponent with ints -> result is 0 (integer division)
-            return HPtr::fromBits(boxInt(0));
+            return eco_alloc_int(0);
         }
         Elm::i64 result = 1;
         Elm::i64 b = base_i;
@@ -163,13 +141,13 @@ HPtr Elm_Kernel_Basics_pow(HPtr base, HPtr exp) {
             b *= b;
             e >>= 1;
         }
-        return HPtr::fromBits(boxInt(result));
+        return eco_alloc_int(result);
     }
 
     // At least one is a float - convert to float arithmetic
     Elm::f64 base_val = base_is_int ? static_cast<Elm::f64>(base_i) : base_f;
     Elm::f64 exp_val = exp_is_int ? static_cast<Elm::f64>(exp_i) : exp_f;
-    return HPtr::fromBits(boxFloat(std::pow(base_val, exp_val)));
+    return eco_alloc_float(std::pow(base_val, exp_val));
 }
 
 // Polymorphic add - examines tags to determine Int or Float arithmetic.
@@ -183,13 +161,13 @@ HPtr Elm_Kernel_Basics_add(HPtr a, HPtr b) {
 
     // If both are ints, do integer addition
     if (a_is_int && b_is_int) {
-        return HPtr::fromBits(boxInt(a_i + b_i));
+        return eco_alloc_int(a_i + b_i);
     }
 
     // At least one is a float - convert to float arithmetic
     Elm::f64 a_val = a_is_int ? static_cast<Elm::f64>(a_i) : a_f;
     Elm::f64 b_val = b_is_int ? static_cast<Elm::f64>(b_i) : b_f;
-    return HPtr::fromBits(boxFloat(a_val + b_val));
+    return eco_alloc_float(a_val + b_val);
 }
 
 // Polymorphic sub - examines tags to determine Int or Float arithmetic.
@@ -203,13 +181,13 @@ HPtr Elm_Kernel_Basics_sub(HPtr a, HPtr b) {
 
     // If both are ints, do integer subtraction
     if (a_is_int && b_is_int) {
-        return HPtr::fromBits(boxInt(a_i - b_i));
+        return eco_alloc_int(a_i - b_i);
     }
 
     // At least one is a float - convert to float arithmetic
     Elm::f64 a_val = a_is_int ? static_cast<Elm::f64>(a_i) : a_f;
     Elm::f64 b_val = b_is_int ? static_cast<Elm::f64>(b_i) : b_f;
-    return HPtr::fromBits(boxFloat(a_val - b_val));
+    return eco_alloc_float(a_val - b_val);
 }
 
 // Polymorphic mul - examines tags to determine Int or Float arithmetic.
@@ -223,13 +201,13 @@ HPtr Elm_Kernel_Basics_mul(HPtr a, HPtr b) {
 
     // If both are ints, do integer multiplication
     if (a_is_int && b_is_int) {
-        return HPtr::fromBits(boxInt(a_i * b_i));
+        return eco_alloc_int(a_i * b_i);
     }
 
     // At least one is a float - convert to float arithmetic
     Elm::f64 a_val = a_is_int ? static_cast<Elm::f64>(a_i) : a_f;
     Elm::f64 b_val = b_is_int ? static_cast<Elm::f64>(b_i) : b_f;
-    return HPtr::fromBits(boxFloat(a_val * b_val));
+    return eco_alloc_float(a_val * b_val);
 }
 
 double Elm_Kernel_Basics_e() {

@@ -212,19 +212,6 @@ static HPointer createNil() {
     return ptr;
 }
 
-// Allocates an ElmInt on the heap with the given value.
-// Throws AllocationError if allocation fails.
-static HPointer allocateInt(Allocator& alloc, i64 value) {
-    void* obj = alloc.allocate(sizeof(ElmInt), Tag_Int);
-    if (!obj) {
-        throw AllocationError("Failed to allocate ElmInt");
-    }
-
-    ElmInt* elm_int = static_cast<ElmInt*>(obj);
-    elm_int->value = value;
-    return alloc.wrap(obj);
-}
-
 // Allocates a Cons cell with an unboxed integer as its head.
 // The integer value is stored directly in the cell rather than as a pointer.
 // Throws AllocationError if allocation fails.
