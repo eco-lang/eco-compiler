@@ -557,7 +557,8 @@ def _run_capturing(cmd, *, cwd, env, out_path: Path, err_path: Path,
 
 
 def run_variant(*, name: str, change: str, heap_config: dict,
-                variant_dir: Path, wall_seconds: int, tee: bool) -> dict:
+                variant_dir: Path, wall_seconds: int, tee: bool,
+                heap_trace: bool) -> dict:
     """Runs the binary once and writes all per-variant TSVs. Returns the
     summary row (a dict keyed by SUMMARY_COLUMNS)."""
     variant_dir.mkdir(parents=True, exist_ok=True)
@@ -573,7 +574,7 @@ def run_variant(*, name: str, change: str, heap_config: dict,
 
     env = os.environ | {
         "ECO_HEAP_CONFIG": str(cfg_path),
-        "ECO_HEAP_TRACE": "1",
+        "ECO_HEAP_TRACE": "1" if heap_trace else "0",
         "ECO_GC_PHASE_PROFILE": "1",
     }
     cmd = [
@@ -763,7 +764,7 @@ def cmd_run(args, machine: str, results_root: Path) -> None:
         name=name, change=f"config={cfg_path.name}",
         heap_config=heap_config,
         variant_dir=variant_dir, wall_seconds=args.wall_seconds,
-        tee=args.tee)
+        tee=args.tee, heap_trace=args.heap_trace)
 
     append_tsv_row(group_dir / "runs.tsv", SUMMARY_COLUMNS, summary)
     (group_dir / "args.json").write_text(json.dumps({
@@ -812,7 +813,7 @@ def cmd_sweep(args, machine: str, results_root: Path) -> None:
         summary = run_variant(
             name=name, change=change, heap_config=heap_config,
             variant_dir=variant_dir, wall_seconds=args.wall_seconds,
-            tee=args.tee)
+            tee=args.tee, heap_trace=args.heap_trace)
         append_tsv_row(group_dir / "runs.tsv", SUMMARY_COLUMNS, summary)
         summary_rows.append(summary)
 
@@ -851,6 +852,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tee", action="store_true",
                    help="also stream eco-compiler stdout/stderr to the "
                         "console (logs are still written to the variant dir)")
+    p.add_argument("--heap-trace", action="store_true",
+                   help="enable ECO_HEAP_TRACE in the runtime. Off by "
+                        "default; the peak_commit_MB and final_live_MB "
+                        "summary columns require this and will read as 0 "
+                        "when disabled.")
     p.add_argument("--list-variants", action="store_true",
                    help="print the sweep variants table and exit")
 
