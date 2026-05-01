@@ -1401,7 +1401,7 @@ Testing::TestCase testTaskChildrenSurviveMinorGC("Task children survive minor GC
         RC_ASSERT(static_cast<bool>(tp));
         RC_ASSERT(tp->header.tag == Tag_Task);
 
-        ElmInt* rv = static_cast<ElmInt*>(alloc.resolve(tp->value));
+        ElmInt* rv = static_cast<ElmInt*>(alloc.resolve(tp->value.p));
         ElmInt* rcb = static_cast<ElmInt*>(alloc.resolve(tp->callback));
         ElmInt* rk = static_cast<ElmInt*>(alloc.resolve(tp->kill));
         ElmInt* rt = static_cast<ElmInt*>(alloc.resolve(tp->task));

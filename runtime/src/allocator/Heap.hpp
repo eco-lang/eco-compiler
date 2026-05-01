@@ -344,12 +344,16 @@ typedef struct {
     HPointer mailbox;
 } Process;
 
+// Task.value carries either a boxed HPointer (header.unboxed slot 0 == 0) or
+// an unboxed primitive (slot 0 == 1=Int, 2=Float, 3=Char). The other Unboxable
+// fields are always pointers; the GC scanners and scheduler dispatch to the
+// right path by reading slot 0 of header.unboxed.
 typedef struct {
     Header header;
     u64 ctor : CTOR_BITS;
     u64 id : ID_BITS;
     u64 padding : 32;
-    HPointer value;
+    Unboxable value;
     HPointer callback;
     HPointer kill;
     HPointer task;

@@ -174,7 +174,11 @@ HPointer PlatformRuntime::setupEffects(HPointer sendToAppClosure) {
                 if (rootPtr) {
                     Task* rootTask = static_cast<Task*>(rootPtr);
                     if (rootTask->ctor == Task_Succeed) {
-                        initialState = rootTask->value;
+                        // Effect-manager init state is structural — never a
+                        // primitive — so the value is always a boxed HPointer.
+                        assert((rootTask->header.unboxed & 0x3) == 0
+                               && "effect-manager init state must be boxed");
+                        initialState = rootTask->value.p;
                     }
                 }
             }
@@ -297,7 +301,9 @@ void PlatformRuntime::dispatchEffects() {
             if (rootPtr) {
                 Task* rootTask = static_cast<Task*>(rootPtr);
                 if (rootTask->ctor == Task_Succeed) {
-                    ms.state = encodeHP(rootTask->value);
+                    assert((rootTask->header.unboxed & 0x3) == 0
+                           && "effect-manager state must be boxed");
+                    ms.state = encodeHP(rootTask->value.p);
                 }
             }
         }

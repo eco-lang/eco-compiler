@@ -248,12 +248,10 @@ uint64_t read(uint64_t id) {
     if (it->second.value.has_value()) {
         return taskSucceed(it->second.value.value());
     }
-    HPointer idHP = allocInt(mvarId);
-    Elm::StackRootGuard guard(&idHP);
     HPointer cb = allocClosure(
         reinterpret_cast<Elm::EvalFunction>(readBindingEvaluator), 2);
     if (void* clPtr = Elm::Allocator::instance().resolve(cb)) {
-        closureCapture(clPtr, boxed(idHP), true);
+        closureCapture(clPtr, unboxedInt(mvarId), Elm::PK_Int);
     }
     HPointer task = Elm::Platform::Scheduler::instance().taskBinding(cb);
     return Export::encode(task);
@@ -272,12 +270,10 @@ uint64_t take(uint64_t id) {
         }
         return taskSucceed(v);
     }
-    HPointer idHP = allocInt(mvarId);
-    Elm::StackRootGuard guard(&idHP);
     HPointer cb = allocClosure(
         reinterpret_cast<Elm::EvalFunction>(takeBindingEvaluator), 2);
     if (void* clPtr = Elm::Allocator::instance().resolve(cb)) {
-        closureCapture(clPtr, boxed(idHP), true);
+        closureCapture(clPtr, unboxedInt(mvarId), Elm::PK_Int);
     }
     HPointer task = Elm::Platform::Scheduler::instance().taskBinding(cb);
     return Export::encode(task);
@@ -295,12 +291,11 @@ uint64_t put(uint64_t id, uint64_t value) {
         }
         return taskSucceedUnit();
     }
-    HPointer idHP = allocInt(mvarId);
-    Elm::StackRootGuard guard(&idHP, &valueHP);
+    Elm::StackRootGuard guard(&valueHP);
     HPointer cb = allocClosure(
         reinterpret_cast<Elm::EvalFunction>(putBindingEvaluator), 3);
     if (void* clPtr = Elm::Allocator::instance().resolve(cb)) {
-        closureCapture(clPtr, boxed(idHP), true);
+        closureCapture(clPtr, unboxedInt(mvarId), Elm::PK_Int);
         closureCapture(clPtr, boxed(valueHP), true);
     }
     HPointer task = Elm::Platform::Scheduler::instance().taskBinding(cb);

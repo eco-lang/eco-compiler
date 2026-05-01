@@ -107,8 +107,8 @@ uint64_t spawnProcess(uint64_t cmd, uint64_t args,
     if (pipeStdin) {
         int64_t handleId = stdinPipe[1];
         s_streamHandles[handleId] = stdinPipe[1];
-        HPointer handleInt = allocInt(handleId);
-        fields[1].p = just(boxed(handleInt), true);
+        // Maybe Int with the handle stored unboxed in the Just payload.
+        fields[1].p = justKind(unboxedInt(handleId), 1);
     } else {
         fields[1].p = nothing();
     }

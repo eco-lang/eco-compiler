@@ -46,18 +46,14 @@ static void* sleepBindingEvaluator(void* rawArgs[]) {
 extern "C" {
 
 HPtr Elm_Kernel_Process_sleep(double time) {
-    // Create a boxed Float for the time value
-    HPointer timeHP = Elm::alloc::allocFloat(time);
-
-    // Root timeHP across allocClosure (which may trigger GC)
-    Elm::StackRootGuard guard(&timeHP);
-
-    // Create a binding callback closure that captures the time
+    // Create a binding callback closure that captures the time as an unboxed
+    // Float; the runtime re-boxes it before invoking sleepBindingEvaluator.
     HPointer bindingCB = Elm::alloc::allocClosure(
         reinterpret_cast<EvalFunction>(sleepBindingEvaluator), 2);
     void* cbPtr = Allocator::instance().resolve(bindingCB);
     if (cbPtr) {
-        Elm::alloc::closureCapture(cbPtr, Elm::alloc::boxed(timeHP), true);
+        Elm::alloc::closureCapture(cbPtr, Elm::alloc::unboxedFloat(time),
+                                   Elm::PK_Float);
     }
 
     // Create a Binding task with this callback

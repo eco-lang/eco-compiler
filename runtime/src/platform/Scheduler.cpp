@@ -108,6 +108,17 @@ HPointer Scheduler::taskSucceed(HPointer value) {
     return allocTask(Task_Succeed, value, nil, nil, nil);
 }
 
+HPointer Scheduler::taskSucceedKind(Unboxable value, u8 kind) {
+    HPointer nil = listNil();
+    if ((kind & 0x3) == 0) {
+        // Caller asked for an unboxed payload but kind=0 means boxed; fall
+        // through to the HPointer path so the value's `.p` is treated as a
+        // pointer by the GC scanners.
+        return allocTask(Task_Succeed, value.p, nil, nil, nil);
+    }
+    return allocTaskUnboxed(Task_Succeed, value, kind, nil, nil, nil);
+}
+
 HPointer Scheduler::taskFail(HPointer error) {
     HPointer nil = listNil();
     return allocTask(Task_Fail, error, nil, nil, nil);
@@ -608,7 +619,28 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
                 if (!proc) break;
                 task = resolveRoot(proc);
                 if (!task) break;
-                HPointer taskValue = task->value;
+                // Closure ABI takes a boxed HPointer arg; re-box if Task.value
+                // was carried unboxed. The saving is upstream — no boxed
+                // primitive lived across the andThen chain or any GCs in
+                // between — we only pay the alloc here, at dispatch.
+                HPointer taskValue;
+                u8 valKind = static_cast<u8>(task->header.unboxed & 0x3);
+                if (valKind == 0) {
+                    taskValue = task->value.p;
+                } else {
+                    Unboxable v = task->value;
+                    switch (valKind) {
+                        case 1:
+                            taskValue = eco_alloc_int(v.i).toHPointer();
+                            break;
+                        case 2:
+                            taskValue = eco_alloc_float(v.f).toHPointer();
+                            break;
+                        default:
+                            taskValue = eco_alloc_char(static_cast<uint32_t>(v.c)).toHPointer();
+                            break;
+                    }
+                }
                 HPointer callback = popRes.callback;
 
                 HPointer newTask = callClosure1(callback, taskValue);

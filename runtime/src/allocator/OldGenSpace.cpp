@@ -1485,7 +1485,9 @@ void OldGenSpace::markChildren(void *obj) {
         }
         case Tag_Task: {
             Task *t = static_cast<Task *>(obj);
-            markHPointer(t->value);
+            if ((t->header.unboxed & 0x3) == 0) {
+                markHPointer(t->value.p);
+            }
             markHPointer(t->callback);
             markHPointer(t->kill);
             markHPointer(t->task);
@@ -3341,7 +3343,9 @@ void OldGenSpace::fixPointersInObject(void* obj) {
         }
         case Tag_Task: {
             Task* t = static_cast<Task*>(obj);
-            fixHPointer(t->value);
+            if ((t->header.unboxed & 0x3) == 0) {
+                fixHPointer(t->value.p);
+            }
             fixHPointer(t->callback);
             fixHPointer(t->kill);
             fixHPointer(t->task);

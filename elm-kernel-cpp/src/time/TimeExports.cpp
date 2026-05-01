@@ -155,16 +155,15 @@ std::string getTimezoneName() {
 extern "C" {
 
 HPtr Elm_Kernel_Time_now() {
-    // Returns Task x Posix
-    // Posix is just an Int (milliseconds since epoch)
-
+    // Returns Task x Posix; Posix is an Int (ms since epoch) stored unboxed
+    // in the Task's payload slot.
     auto now = std::chrono::system_clock::now();
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         now.time_since_epoch()
     ).count();
 
-    HPointer posix = allocInt(ms);
-    HPointer task = Scheduler::instance().taskSucceed(posix);
+    HPointer task = Scheduler::instance().taskSucceedKind(
+        Elm::alloc::unboxedInt(ms), 1);
     return HPtr::fromBits(Export::encode(task));
 }
 

@@ -1280,9 +1280,11 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
 
         case Tag_Task: {
             Task *t = static_cast<Task *>(obj);
-            // Evacuate all children - no special handling needed.
-            // Task chains will be processed via Cheney's BFS.
-            evacuate(t->value, oldgen, promoted_objects);
+            // Skip t->value when it carries an unboxed primitive (slot 0 of
+            // header.unboxed != 0); only the boxed-payload case has a child.
+            if ((t->header.unboxed & 0x3) == 0) {
+                evacuate(t->value.p, oldgen, promoted_objects);
+            }
             evacuate(t->callback, oldgen, promoted_objects);
             evacuate(t->kill, oldgen, promoted_objects);
             evacuate(t->task, oldgen, promoted_objects);

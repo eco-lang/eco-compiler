@@ -126,6 +126,7 @@ static uint64_t makeOk(HPointer value) {
     return Export::encode(allocator.wrap(result));
 }
 
+
 // Create Err result with a Json.Error.
 static uint64_t makeErr(const std::string& message) {
     auto& allocator = Allocator::instance();

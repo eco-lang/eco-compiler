@@ -72,18 +72,19 @@ inline uint64_t taskSucceedBool(bool b) {
     return taskSucceed(b ? elmTrue() : elmFalse());
 }
 
-// Wrap an unboxed Int in Task.succeed (boxes it first).
+// Wrap an unboxed Int in Task.succeed. The value lives in the Task's payload
+// slot directly; no separate ElmInt is allocated.
 inline uint64_t taskSucceedInt(int64_t value) {
-    HPointer v = allocInt(value);
-    Elm::StackRootGuard guard(&v);
-    return taskSucceed(v);
+    HPointer task = Elm::Platform::Scheduler::instance().taskSucceedKind(
+        Elm::alloc::unboxedInt(value), 1);
+    return Export::encode(task);
 }
 
-// Wrap an unboxed Float in Task.succeed (boxes it first).
+// Wrap an unboxed Float in Task.succeed (payload slot carries f64 directly).
 inline uint64_t taskSucceedFloat(double value) {
-    HPointer v = allocFloat(value);
-    Elm::StackRootGuard guard(&v);
-    return taskSucceed(v);
+    HPointer task = Elm::Platform::Scheduler::instance().taskSucceedKind(
+        Elm::alloc::unboxedFloat(value), 2);
+    return Export::encode(task);
 }
 
 // Wrap an ElmString (as uint64_t) in Task.succeed.

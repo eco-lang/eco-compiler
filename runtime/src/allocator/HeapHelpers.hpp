@@ -1096,6 +1096,7 @@ enum FxBagTag : u16 {
     Fx_Map  = 2,
 };
 
+// Allocate a Task whose `value` is a boxed HPointer (kind 0).
 inline HPointer allocTask(u16 ctor, HPointer value, HPointer callback,
                           HPointer kill, HPointer innerTask) {
     auto& allocator = Allocator::instance();
@@ -1107,6 +1108,27 @@ inline HPointer allocTask(u16 ctor, HPointer value, HPointer callback,
     // garbage Task ctors when the scheduler later follows the chain).
     Elm::StackRootGuard guard(&value, &callback, &kill, &innerTask);
     Task* t = static_cast<Task*>(allocator.allocate(total_size, Tag_Task));
+    t->header.unboxed = 0;  // value slot is boxed.
+    t->ctor = ctor;
+    t->id = 0;
+    t->padding = 0;
+    t->value.p = value;
+    t->callback = callback;
+    t->kill = kill;
+    t->task = innerTask;
+    return allocator.wrap(t);
+}
+
+// Allocate a Task whose `value` is an unboxed primitive (kind 1=Int, 2=Float,
+// 3=Char). Other fields (callback/kill/innerTask) are always boxed pointers.
+inline HPointer allocTaskUnboxed(u16 ctor, Unboxable value, u8 valueKind,
+                                 HPointer callback, HPointer kill,
+                                 HPointer innerTask) {
+    auto& allocator = Allocator::instance();
+    size_t total_size = (sizeof(Task) + 7) & ~7;
+    Elm::StackRootGuard guard(&callback, &kill, &innerTask);
+    Task* t = static_cast<Task*>(allocator.allocate(total_size, Tag_Task));
+    t->header.unboxed = static_cast<u32>(valueKind & 0x3);
     t->ctor = ctor;
     t->id = 0;
     t->padding = 0;

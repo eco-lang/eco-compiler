@@ -19,6 +19,8 @@ public:
 
     // Task constructors - allocate heap Task objects
     HPointer taskSucceed(HPointer value);
+    // Variant carrying an unboxed primitive payload (kind 1=Int, 2=Float, 3=Char).
+    HPointer taskSucceedKind(Unboxable value, u8 kind);
     HPointer taskFail(HPointer error);
     HPointer taskBinding(HPointer callback);
     HPointer taskAndThen(HPointer callback, HPointer task);

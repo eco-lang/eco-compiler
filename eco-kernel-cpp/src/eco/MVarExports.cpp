@@ -12,9 +12,8 @@ extern "C" {
 
 HPtr Eco_Kernel_MVar_new() {
     int64_t id = MVar::newEmpty();
-    // Wrap as Task Never Int: taskSucceed(boxed Int).
-    Elm::HPointer boxedId = Elm::alloc::allocInt(id);
-    return HPtr::fromBits(taskSucceed(boxedId));
+    // Wrap as Task Never Int with the id stored unboxed in Task.value.
+    return HPtr::fromBits(taskSucceedInt(id));
 }
 
 HPtr Eco_Kernel_MVar_read(uint64_t id) {
