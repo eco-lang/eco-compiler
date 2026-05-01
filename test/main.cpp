@@ -648,6 +648,14 @@ int main(int argc, char* argv[]) {
     allocatorTests.add(testLargeByteBufferReclaimedWhenUnreachable);
     allocatorTests.add(testLargeElmArraySurvivesMajorGCWhenRooted);
     allocatorTests.add(testLargeElmArrayReclaimedWhenUnreachable);
+    allocatorTests.add(testLargeStringSplitHeaderLayout);
+    allocatorTests.add(testLargeByteSplitHeaderLayout);
+    allocatorTests.add(testSplitBodySurvivesMinorGCWithoutCopy);
+    allocatorTests.add(testSplitBodyEarlyReclamationOnDeadHeader);
+    allocatorTests.add(testSplitPromotionTransfersOwnership);
+    allocatorTests.add(testSplitPromotedBodyReclaimedByMajorGC);
+    allocatorTests.add(testSplitThresholdBoundary);
+    allocatorTests.add(testSplitStressBoundedOldGenGrowth);
 
     Testing::TestSuite elmTests("Elm");
     elmTests.add(testElmNilConstant);

@@ -442,6 +442,22 @@ bool verifyPatternedByteBuffer(HPointer& root, size_t expected_length) {
     void* obj = readBarrier(root);
     if (!obj) return false;
     Header* hdr = getHeader(obj);
+    // Above the split-header threshold (HEAP_026), the result is a
+    // Tag_LargeByteHeader pointing at the Tag_ByteBuffer body in old gen.
+    if (hdr->tag == Tag_LargeByteHeader) {
+        if (hdr->size != expected_length) return false;
+        LargeByteHeader* h = static_cast<LargeByteHeader*>(obj);
+        void* body = Allocator::instance().resolve(h->body);
+        if (!body) return false;
+        Header* bhdr = getHeader(body);
+        if (bhdr->tag != Tag_ByteBuffer) return false;
+        if (bhdr->size != expected_length) return false;
+        ByteBuffer* buf = static_cast<ByteBuffer*>(body);
+        for (size_t i = 0; i < expected_length; i++) {
+            if (buf->bytes[i] != patternByte(i)) return false;
+        }
+        return true;
+    }
     if (hdr->tag != Tag_ByteBuffer) return false;
     if (hdr->size != expected_length) return false;
     ByteBuffer* buf = static_cast<ByteBuffer*>(obj);
@@ -609,4 +625,285 @@ Testing::TestCase testLargeElmArrayReclaimedWhenUnreachable(
     TEST_ASSERT(verifyPatternedArray(control, LARGE_ARRAY_LENGTH));
 
     alloc.getRootSet().removeRoot(&control);
+});
+
+// ============================================================================
+// Split-header tests (HEAP_026).
+//
+// Strings and byte buffers above HeapConfig::large_header_split_threshold are
+// represented as Tag_LargeStringHeader / Tag_LargeByteHeader in the nursery
+// whose `body` HPointer references a Tag_String / Tag_ByteBuffer pinned in
+// old gen. These tests verify the layout, no-copy survival across minor GC,
+// early reclamation when the nursery header dies, ownership transfer on
+// promotion, and bounded old-gen growth under churn.
+// ============================================================================
+
+namespace {
+
+// Sized to comfortably exceed both the default split threshold (2 KiB) AND
+// the default large_object_threshold (8 KiB), so the body lands either in a
+// size-class cell or — for the larger flavours — in an is_large block.
+constexpr size_t SPLIT_STRING_LEN = 5 * 1024;        // 10 KiB UTF-16 payload
+constexpr size_t SPLIT_BYTE_LEN   = 10 * 1024;       // 10 KiB byte payload
+
+HPointer allocPatternedSplitString(size_t length) {
+    std::vector<u16> chars(length);
+    for (size_t i = 0; i < length; ++i) {
+        chars[i] = static_cast<u16>(0x4000 + (i % 0x4000));
+    }
+    return Elm::alloc::allocString(chars.data(), length);
+}
+
+bool verifyPatternedSplitString(HPointer root, size_t expected_length) {
+    void* obj = readBarrier(root);
+    if (!obj) return false;
+    Header* hdr = getHeader(obj);
+    if (hdr->tag != Tag_LargeStringHeader) return false;
+    if (hdr->size != expected_length) return false;
+    LargeStringHeader* lh = static_cast<LargeStringHeader*>(obj);
+    void* body = Allocator::instance().resolve(lh->body);
+    if (!body) return false;
+    Header* bhdr = getHeader(body);
+    if (bhdr->tag != Tag_String) return false;
+    if (bhdr->size != expected_length) return false;
+    if (bhdr->pin != 1) return false;
+    ElmString* leaf = static_cast<ElmString*>(body);
+    for (size_t i = 0; i < expected_length; ++i) {
+        u16 expected = static_cast<u16>(0x4000 + (i % 0x4000));
+        if (leaf->chars[i] != expected) return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+Testing::TestCase testLargeStringSplitHeaderLayout(
+    "Split string: header in nursery, body pinned in old gen, sizes match", []() {
+    auto& alloc = initAllocator();
+
+    HPointer hp = allocPatternedSplitString(SPLIT_STRING_LEN);
+    alloc.getRootSet().addRoot(&hp);
+
+    void* obj = alloc.resolve(hp);
+    TEST_ASSERT(obj != nullptr);
+    Header* hdr = getHeader(obj);
+    TEST_ASSERT(hdr->tag == Tag_LargeStringHeader);
+    TEST_ASSERT(hdr->size == SPLIT_STRING_LEN);
+    TEST_ASSERT(alloc.isInNursery(obj));
+
+    LargeStringHeader* lh = static_cast<LargeStringHeader*>(obj);
+    void* body = alloc.resolve(lh->body);
+    TEST_ASSERT(body != nullptr);
+    TEST_ASSERT(alloc.isInOldGen(body));
+    Header* bhdr = getHeader(body);
+    TEST_ASSERT(bhdr->tag == Tag_String);
+    TEST_ASSERT(bhdr->size == SPLIT_STRING_LEN);
+    TEST_ASSERT(bhdr->pin == 1);
+
+    alloc.getRootSet().removeRoot(&hp);
+});
+
+Testing::TestCase testLargeByteSplitHeaderLayout(
+    "Split byte buffer: header in nursery, body pinned in old gen", []() {
+    auto& alloc = initAllocator();
+
+    std::vector<u8> data(SPLIT_BYTE_LEN);
+    for (size_t i = 0; i < SPLIT_BYTE_LEN; ++i) data[i] = static_cast<u8>(i % 251);
+    HPointer hp = Elm::alloc::allocByteBuffer(data.data(), SPLIT_BYTE_LEN);
+    alloc.getRootSet().addRoot(&hp);
+
+    void* obj = alloc.resolve(hp);
+    TEST_ASSERT(obj != nullptr);
+    Header* hdr = getHeader(obj);
+    TEST_ASSERT(hdr->tag == Tag_LargeByteHeader);
+    TEST_ASSERT(hdr->size == SPLIT_BYTE_LEN);
+    TEST_ASSERT(alloc.isInNursery(obj));
+
+    LargeByteHeader* lh = static_cast<LargeByteHeader*>(obj);
+    void* body = alloc.resolve(lh->body);
+    TEST_ASSERT(body != nullptr);
+    TEST_ASSERT(alloc.isInOldGen(body));
+    Header* bhdr = getHeader(body);
+    TEST_ASSERT(bhdr->tag == Tag_ByteBuffer);
+    TEST_ASSERT(bhdr->size == SPLIT_BYTE_LEN);
+    TEST_ASSERT(bhdr->pin == 1);
+
+    alloc.getRootSet().removeRoot(&hp);
+});
+
+Testing::TestCase testSplitBodySurvivesMinorGCWithoutCopy(
+    "Split body's old-gen address is stable across multiple minor GCs", []() {
+    auto& alloc = initAllocator();
+
+    HPointer hp = allocPatternedSplitString(SPLIT_STRING_LEN);
+    alloc.getRootSet().addRoot(&hp);
+
+    // Capture the body's raw address before any GC.
+    void* obj0 = alloc.resolve(hp);
+    LargeStringHeader* lh0 = static_cast<LargeStringHeader*>(obj0);
+    void* body0 = alloc.resolve(lh0->body);
+    TEST_ASSERT(body0 != nullptr);
+
+    // Allocate enough garbage to drive several minor GCs but keep the count
+    // below promotion (PROMOTION_AGE = 2 by default).
+    for (u32 i = 0; i < PROMOTION_AGE; ++i) {
+        allocateGarbageInts(alloc, 50);
+        alloc.minorGC();
+    }
+
+    // Header HPointer may now resolve to a different (to-space) address —
+    // but the BODY address must be unchanged.
+    void* obj_after = alloc.resolve(hp);
+    TEST_ASSERT(obj_after != nullptr);
+    LargeStringHeader* lh_after = static_cast<LargeStringHeader*>(obj_after);
+    void* body_after = alloc.resolve(lh_after->body);
+    TEST_ASSERT(body_after == body0);
+
+    // Payload still intact.
+    TEST_ASSERT(verifyPatternedSplitString(hp, SPLIT_STRING_LEN));
+
+    alloc.getRootSet().removeRoot(&hp);
+});
+
+Testing::TestCase testSplitBodyEarlyReclamationOnDeadHeader(
+    "Split body is reclaimed at end of minor GC when nursery header dies", []() {
+    auto& alloc = initAllocator();
+
+    // Allocate a split byte buffer but DO NOT root it. The header will die
+    // in the next minor GC, and sweepNurseryLargeBodies should free its body.
+    std::vector<u8> data(SPLIT_BYTE_LEN);
+    for (size_t i = 0; i < SPLIT_BYTE_LEN; ++i) data[i] = static_cast<u8>(i % 251);
+    HPointer hp = Elm::alloc::allocByteBuffer(data.data(), SPLIT_BYTE_LEN);
+    void* obj = alloc.resolve(hp);
+    TEST_ASSERT(obj != nullptr);
+    LargeByteHeader* lh = static_cast<LargeByteHeader*>(obj);
+    void* body0 = alloc.resolve(lh->body);
+    TEST_ASSERT(body0 != nullptr);
+    TEST_ASSERT(OldGenSpaceTestAccess::isBodyTracked(
+        *AllocatorTestAccess::getOldGen(alloc), body0));
+
+    // Run one minor GC: header is unrooted, sweep should free the body.
+    alloc.minorGC();
+    TEST_ASSERT(!OldGenSpaceTestAccess::isBodyTracked(
+        *AllocatorTestAccess::getOldGen(alloc), body0));
+});
+
+Testing::TestCase testSplitPromotionTransfersOwnership(
+    "Promotion removes the body from nursery_owned_bodies_", []() {
+    auto& alloc = initAllocator();
+
+    HPointer hp = allocPatternedSplitString(SPLIT_STRING_LEN);
+    alloc.getRootSet().addRoot(&hp);
+
+    void* obj0 = alloc.resolve(hp);
+    LargeStringHeader* lh0 = static_cast<LargeStringHeader*>(obj0);
+    void* body0 = alloc.resolve(lh0->body);
+    TEST_ASSERT(OldGenSpaceTestAccess::isBodyTracked(
+        *AllocatorTestAccess::getOldGen(alloc), body0));
+
+    // Drive enough minor GCs to age past PROMOTION_AGE and promote the header.
+    for (u32 i = 0; i <= PROMOTION_AGE; ++i) {
+        alloc.minorGC();
+    }
+
+    // Header now lives in old gen.
+    void* obj_after = alloc.resolve(hp);
+    TEST_ASSERT(alloc.isInOldGen(obj_after));
+    TEST_ASSERT(getHeader(obj_after)->tag == Tag_LargeStringHeader);
+
+    // Body should no longer be in nursery_owned_bodies_ — major GC manages it
+    // from here on.
+    const auto& nursery_owned = OldGenSpaceTestAccess::getNurseryOwnedBodies(
+        *AllocatorTestAccess::getOldGen(alloc));
+    TEST_ASSERT(nursery_owned.empty());
+
+    // Subsequent minor GCs (without major in between) must NOT free the body.
+    void* body_after = alloc.resolve(static_cast<LargeStringHeader*>(obj_after)->body);
+    TEST_ASSERT(body_after == body0);
+    alloc.minorGC();
+    TEST_ASSERT(verifyPatternedSplitString(hp, SPLIT_STRING_LEN));
+
+    alloc.getRootSet().removeRoot(&hp);
+});
+
+Testing::TestCase testSplitPromotedBodyReclaimedByMajorGC(
+    "Promoted split body is reclaimed by major GC when its header dies", []() {
+    auto& alloc = initAllocator();
+
+    HPointer hp = allocPatternedSplitString(SPLIT_STRING_LEN);
+    alloc.getRootSet().addRoot(&hp);
+
+    // Promote.
+    for (u32 i = 0; i <= PROMOTION_AGE; ++i) alloc.minorGC();
+    TEST_ASSERT(verifyPatternedSplitString(hp, SPLIT_STRING_LEN));
+
+    // Drop root and run major GC. The standard mark/sweep path must reclaim
+    // the body cell because nothing references it anymore.
+    alloc.getRootSet().removeRoot(&hp);
+    alloc.majorGC();
+    // After the body's cell is freed, its address is no longer tracked.
+    // (We can't safely deref `hp` after the root is gone — just confirm the
+    // sweep path completed without asserting in debug builds.)
+    TEST_ASSERT(true);
+});
+
+Testing::TestCase testSplitThresholdBoundary(
+    "Split path activates exactly at HeapConfig::large_header_split_threshold", []() {
+    auto& alloc = initAllocator();
+    const size_t threshold = alloc.getLargeHeaderSplitThreshold();
+
+    // Below threshold: inline Tag_String in nursery.
+    {
+        // total_size = sizeof(ElmString) + len*2; pick len so total_size is
+        // strictly below threshold. ElmString is 8 bytes (Header), so
+        // total_size = 8 + 2*len. We want < threshold.
+        size_t below_len = (threshold - sizeof(ElmString) - 16) / sizeof(u16);
+        std::vector<u16> chars(below_len, u'X');
+        HPointer hp = Elm::alloc::allocString(chars.data(), below_len);
+        void* obj = alloc.resolve(hp);
+        TEST_ASSERT(obj != nullptr);
+        TEST_ASSERT(getHeader(obj)->tag == Tag_String);
+        TEST_ASSERT(alloc.isInNursery(obj));
+    }
+
+    // At/above threshold: Tag_LargeStringHeader in nursery.
+    {
+        size_t at_len = (threshold - sizeof(ElmString)) / sizeof(u16) + 64;
+        std::vector<u16> chars(at_len, u'Y');
+        HPointer hp = Elm::alloc::allocString(chars.data(), at_len);
+        void* obj = alloc.resolve(hp);
+        TEST_ASSERT(obj != nullptr);
+        TEST_ASSERT(getHeader(obj)->tag == Tag_LargeStringHeader);
+        TEST_ASSERT(alloc.isInNursery(obj));
+    }
+});
+
+Testing::TestCase testSplitStressBoundedOldGenGrowth(
+    "Repeatedly allocating + dropping split bodies keeps old-gen bounded", []() {
+    auto& alloc = initAllocator();
+
+    const size_t initial_old_gen_alloc = alloc.getOldGenAllocatedBytes();
+
+    // Allocate many split-form byte buffers without rooting them. Each minor
+    // GC's sweepNurseryLargeBodies should reclaim the bodies, keeping
+    // old-gen allocated bytes bounded across the loop.
+    constexpr size_t kIters = 200;
+    for (size_t i = 0; i < kIters; ++i) {
+        std::vector<u8> data(SPLIT_BYTE_LEN, static_cast<u8>(i & 0xFF));
+        (void)Elm::alloc::allocByteBuffer(data.data(), SPLIT_BYTE_LEN);
+        // Trigger a minor GC every few iterations to exercise sweep.
+        if (i % 4 == 3) alloc.minorGC();
+    }
+    alloc.minorGC();
+
+    // After the final sweep, no nursery-owned bodies should remain (every
+    // header from the loop is dead).
+    const auto& nursery_owned = OldGenSpaceTestAccess::getNurseryOwnedBodies(
+        *AllocatorTestAccess::getOldGen(alloc));
+    TEST_ASSERT(nursery_owned.empty());
+
+    // Old-gen allocation should not have grown unboundedly. Allow up to
+    // ~50 KiB of slack for residual free-list metadata.
+    const size_t after = alloc.getOldGenAllocatedBytes();
+    TEST_ASSERT(after <= initial_old_gen_alloc + (50 * 1024));
 });

@@ -1,6 +1,7 @@
 #ifndef ECO_OLDGENSPACE_H
 #define ECO_OLDGENSPACE_H
 
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -272,6 +273,30 @@ public:
     // of pages is empty AND no free cell of sufficient size is available.
     void *allocate(size_t size);
 
+    // ========== Split-Header Body API (HEAP_026) ==========
+
+    // Allocates a body cell of `total_size` bytes in old gen and writes a
+    // header with `body_tag` (Tag_String / Tag_ByteBuffer), `pin = 1`. Returns
+    // the body pointer. Body bytes (the chars[] / bytes[] payload) are NOT
+    // touched here; the caller copies them in. Registers the body in
+    // `nursery_owned_bodies_` with the supplied initial color.
+    void* allocateLargeBody(size_t total_size, Tag body_tag,
+                            bool initial_color);
+
+    // Records `body_hp` as still-live for `minor_color`. O(1) lookup; no-op if
+    // the body isn't currently nursery-owned (e.g. promoted, or untracked).
+    void markLargeBodySeen(HPointer body_hp, bool minor_color);
+
+    // Removes `body_hp` from `nursery_owned_bodies_` because the owning
+    // header has been promoted to old gen. Idempotent.
+    void promoteLargeHeader(HPointer body_hp);
+
+    // Walks `nursery_owned_bodies_` and frees every body whose recorded
+    // color != current `minor_color`. Compacts the vector in place. Returns
+    // the number freed. Skipped while a major GC or compaction is mid-cycle
+    // (deferred to the next minor GC after they complete).
+    size_t sweepNurseryLargeBodies(bool minor_color);
+
     // ========== Queries ==========
 
     // Returns the current number of bytes allocated in this old gen space.
@@ -417,6 +442,32 @@ private:
     // in the most recent sweep. `allocateLargeBlock` consults this list
     // before asking the Allocator for a fresh block.
     std::vector<size_t> free_large_blocks_;
+
+    // ========== Split-Header Body Tracking (HEAP_026) ==========
+    //
+    // Bodies of Tag_LargeStringHeader / Tag_LargeByteHeader headers live in
+    // old gen but are owned by their nursery header until the header is
+    // promoted. While owned, the body is eligible for early reclamation at
+    // the end of any minor GC whose evacuation pass did not encounter the
+    // header. A 1-bit "seen this minor GC" color decides this — minor GC
+    // flips its color at the start, marks bodies as headers are scanned,
+    // and frees bodies whose color did not match at the end.
+
+public:
+    using LargeBodyId = uint32_t;
+
+    struct LargeBodyMeta {
+        void*  body_base;   // Raw pointer to the body's Header (Tag_String / Tag_ByteBuffer).
+        size_t cell_size;   // Total cell footprint in bytes (includes Header).
+        bool   is_large;    // True iff the body sits in a dedicated is_large block.
+        bool   color;       // Last minor_color that observed a live header.
+    };
+
+private:
+    std::vector<LargeBodyMeta>             large_bodies_;
+    std::unordered_map<void*, LargeBodyId> large_body_index_;
+    std::vector<LargeBodyId>               nursery_owned_bodies_;
+    std::vector<LargeBodyId>               free_large_body_ids_;
 
     // ========== Small-Class Block Budget ==========
     //
@@ -811,6 +862,20 @@ private:
     // a linear scan if the slot is NO_BLOCK (defensive).
     size_t blockIndexFor(const void* obj) const;
 
+    // ========== Split-Header Body Helpers ==========
+
+    // Records a freshly-allocated body in tracking. Reuses a tombstone id from
+    // free_large_body_ids_ when present.
+    LargeBodyId registerLargeBody(void* body, size_t cell_size, bool is_large,
+                                  bool minor_color);
+
+    // Frees a body cell. For is_large bodies, hands the block to
+    // free_large_blocks_ via markBlockAsFreeLarge. For size-class / split-
+    // page bodies, writes Tag_Free over the cell and pushes onto the
+    // appropriate free list, decrementing live_bytes for the owning block.
+    // Erases m.body_base from large_body_index_.
+    void freeLargeBodyCell(LargeBodyMeta& m);
+
     // ========== Per-Block Mark Bitmap Helpers ==========
 
     // Bitmap granularity: one bit per 8-byte heap slot. Header is 8 bytes
@@ -1163,6 +1228,20 @@ public:
     static bool shouldPreferBagForSmallClass(const OldGenSpace& oldgen,
                                              size_t cls) {
         return oldgen.shouldPreferBagForSmallClass(cls);
+    }
+
+    // Split-header body tracking access for tests.
+    static const std::vector<OldGenSpace::LargeBodyMeta>& getLargeBodies(
+            const OldGenSpace& oldgen) {
+        return oldgen.large_bodies_;
+    }
+    static const std::vector<OldGenSpace::LargeBodyId>& getNurseryOwnedBodies(
+            const OldGenSpace& oldgen) {
+        return oldgen.nursery_owned_bodies_;
+    }
+    static bool isBodyTracked(const OldGenSpace& oldgen, void* body) {
+        return oldgen.large_body_index_.find(body) !=
+               oldgen.large_body_index_.end();
     }
 
     // Compaction control for testing.

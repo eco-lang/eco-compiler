@@ -22,3 +22,14 @@ extern Testing::TestCase testLargeByteBufferSurvivesMajorGCWhenRooted;
 extern Testing::TestCase testLargeByteBufferReclaimedWhenUnreachable;
 extern Testing::TestCase testLargeElmArraySurvivesMajorGCWhenRooted;
 extern Testing::TestCase testLargeElmArrayReclaimedWhenUnreachable;
+
+// Split-header (HEAP_026) tests: large strings/byte buffers use
+// Tag_LargeStringHeader/Tag_LargeByteHeader in nursery + body in old gen.
+extern Testing::TestCase testLargeStringSplitHeaderLayout;
+extern Testing::TestCase testLargeByteSplitHeaderLayout;
+extern Testing::TestCase testSplitBodySurvivesMinorGCWithoutCopy;
+extern Testing::TestCase testSplitBodyEarlyReclamationOnDeadHeader;
+extern Testing::TestCase testSplitPromotionTransfersOwnership;
+extern Testing::TestCase testSplitPromotedBodyReclaimedByMajorGC;
+extern Testing::TestCase testSplitThresholdBoundary;
+extern Testing::TestCase testSplitStressBoundedOldGenGrowth;

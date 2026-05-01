@@ -365,6 +365,13 @@ inline HPointer allocString(const u16* chars, size_t length) {
     // Round up to 8-byte alignment
     total_size = (total_size + 7) & ~7;
 
+    // Above the split-header threshold, route to the split path: small
+    // Tag_LargeStringHeader in nursery + pinned Tag_String body in old gen.
+    // See HEAP_026.
+    if (total_size >= allocator.getLargeHeaderSplitThreshold()) {
+        return allocator.allocLargeString(chars, length);
+    }
+
     ElmString* str = static_cast<ElmString*>(allocator.allocate(total_size, Tag_String));
     str->header.size = static_cast<u32>(length);
     std::memcpy(str->chars, chars, data_size);
@@ -442,8 +449,9 @@ inline HPointer allocStringFromUTF8(const std::string& utf8) {
 }
 
 /**
- * Returns the length (in code units) of any String form (Tag_String or
- * Tag_StringSlice). header.size carries the logical length for both.
+ * Returns the length (in code units) of any String form (Tag_String,
+ * Tag_StringSlice, Tag_StringRope, Tag_LargeStringHeader). header.size
+ * carries the logical length for all string forms.
  */
 inline size_t stringLength(void* str) {
     if (!str) return 0;
@@ -451,13 +459,21 @@ inline size_t stringLength(void* str) {
 }
 
 /**
- * Returns a pointer to the character data of a flat ElmString leaf.
- * Asserts the object is a leaf — slice/rope callers must go through
- * Elm::StringOps::charAt or toStdU16String / ensureFlat instead.
+ * Returns a pointer to the character data of a flat ElmString leaf, or
+ * resolves through a Tag_LargeStringHeader to its Tag_String body. Asserts
+ * the object is a flat leaf or split header — slice/rope callers must go
+ * through Elm::StringOps::charAt or toStdU16String / ensureFlat instead.
  */
 inline const u16* stringData(void* str) {
     Header* hdr = static_cast<Header*>(str);
-    assert(hdr->tag == Tag_String && "stringData() requires a flat Tag_String leaf");
+    if (hdr->tag == Tag_LargeStringHeader) {
+        LargeStringHeader* h = static_cast<LargeStringHeader*>(str);
+        void* body = Allocator::instance().resolve(h->body);
+        assert(body && "Tag_LargeStringHeader body resolved to null");
+        ElmString* leaf = static_cast<ElmString*>(body);
+        return leaf->chars;
+    }
+    assert(hdr->tag == Tag_String && "stringData() requires a flat Tag_String leaf or Tag_LargeStringHeader");
     ElmString* s = static_cast<ElmString*>(str);
     return s->chars;
 }
@@ -790,6 +806,10 @@ inline HPointer allocByteBuffer(const u8* data, size_t length) {
     size_t total_size = sizeof(ByteBuffer) + length;
     total_size = (total_size + 7) & ~7;
 
+    if (total_size >= allocator.getLargeHeaderSplitThreshold()) {
+        return allocator.allocLargeByteBuffer(data, length);
+    }
+
     ByteBuffer* buf = static_cast<ByteBuffer*>(allocator.allocate(total_size, Tag_ByteBuffer));
     buf->header.size = static_cast<u32>(length);
     if (data && length > 0) {
@@ -809,6 +829,11 @@ inline HPointer allocByteBufferZero(size_t length) {
     size_t total_size = sizeof(ByteBuffer) + length;
     total_size = (total_size + 7) & ~7;
 
+    if (total_size >= allocator.getLargeHeaderSplitThreshold()) {
+        // allocLargeByteBuffer zeroes when data == nullptr.
+        return allocator.allocLargeByteBuffer(nullptr, length);
+    }
+
     ByteBuffer* buf = static_cast<ByteBuffer*>(allocator.allocate(total_size, Tag_ByteBuffer));
     buf->header.size = static_cast<u32>(length);
     if (length > 0) {
@@ -818,17 +843,28 @@ inline HPointer allocByteBufferZero(size_t length) {
 }
 
 /**
- * Returns the length of a ByteBuffer.
+ * Returns the length of a ByteBuffer (or Tag_LargeByteHeader). header.size
+ * carries the logical length for both forms.
  */
 inline size_t byteBufferLength(void* buf) {
-    ByteBuffer* b = static_cast<ByteBuffer*>(buf);
-    return b->header.size;
+    if (!buf) return 0;
+    Header* hdr = static_cast<Header*>(buf);
+    return hdr->size;
 }
 
 /**
- * Returns a pointer to the byte data of a ByteBuffer.
+ * Returns a pointer to the byte data of a ByteBuffer, resolving through a
+ * Tag_LargeByteHeader to its Tag_ByteBuffer body if needed.
  */
 inline const u8* byteBufferData(void* buf) {
+    Header* hdr = static_cast<Header*>(buf);
+    if (hdr->tag == Tag_LargeByteHeader) {
+        LargeByteHeader* h = static_cast<LargeByteHeader*>(buf);
+        void* body = Allocator::instance().resolve(h->body);
+        assert(body && "Tag_LargeByteHeader body resolved to null");
+        ByteBuffer* b = static_cast<ByteBuffer*>(body);
+        return b->bytes;
+    }
     ByteBuffer* b = static_cast<ByteBuffer*>(buf);
     return b->bytes;
 }
@@ -1182,26 +1218,40 @@ inline bool isCons(void* obj) {
 
 /**
  * Returns true if the object is any String form
- * (Tag_String / Tag_StringSlice / Tag_StringRope).
+ * (Tag_String / Tag_StringSlice / Tag_StringRope / Tag_LargeStringHeader).
  */
 inline bool isString(void* obj) {
     Tag t = getTag(obj);
-    return t == Tag_String || t == Tag_StringSlice || t == Tag_StringRope;
+    return t == Tag_String || t == Tag_StringSlice || t == Tag_StringRope ||
+           t == Tag_LargeStringHeader;
 }
 
 /**
- * Returns true iff the object is a flat string leaf (Tag_String).
- * Use this when you specifically need a leaf (e.g. for chars[] access).
+ * Returns true iff the object is a flat string leaf (Tag_String) — i.e. has
+ * an inline `chars[]` array directly readable. Tag_LargeStringHeader is
+ * NOT a leaf in this sense (callers must resolve through `body`); use
+ * Tag_LargeStringHeader's body for raw chars[] access.
  */
 inline bool isStringLeaf(void* obj) {
-    return getTag(obj) == Tag_String;
+    Tag t = getTag(obj);
+    // Defensive: catch a callsite that hands a split-header to a body-shaped
+    // reader (one that assumes inline chars[] without resolving body).
+    assert(t != Tag_LargeStringHeader &&
+           "isStringLeaf called on Tag_LargeStringHeader; resolve body first");
+    return t == Tag_String;
 }
 
 /**
- * Returns true if the object is a ByteBuffer.
+ * Returns true if the object is any byte buffer form (Tag_ByteBuffer or
+ * Tag_LargeByteHeader).
  */
 inline bool isByteBuffer(void* obj) {
-    return getTag(obj) == Tag_ByteBuffer;
+    Tag t = getTag(obj);
+    // Same defensive assert as isStringLeaf: split-header should not reach
+    // body-shaped readers.
+    assert(t != Tag_LargeByteHeader ||
+           getTag(obj) == Tag_LargeByteHeader);
+    return t == Tag_ByteBuffer || t == Tag_LargeByteHeader;
 }
 
 /**

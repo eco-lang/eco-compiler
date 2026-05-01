@@ -270,6 +270,16 @@ void *Allocator::allocatePermanent(size_t size, Tag tag) {
     return tl_heap_->allocatePermanent(size, tag);
 }
 
+HPointer Allocator::allocLargeString(const u16* chars, size_t length) {
+    assert(tl_heap_ && "Thread not initialized - call initThread() first");
+    return tl_heap_->allocLargeString(chars, length);
+}
+
+HPointer Allocator::allocLargeByteBuffer(const u8* data, size_t length) {
+    assert(tl_heap_ && "Thread not initialized - call initThread() first");
+    return tl_heap_->allocLargeByteBuffer(data, length);
+}
+
 // Triggers a minor GC on the thread-local nursery.
 void Allocator::minorGC() {
     assert(tl_heap_ && "Thread not initialized - call initThread() first");

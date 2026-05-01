@@ -1888,7 +1888,8 @@ static void print_value(uint64_t val, int depth) {
 
         case Tag_String:
         case Tag_StringSlice:
-        case Tag_StringRope: {
+        case Tag_StringRope:
+        case Tag_LargeStringHeader: {
             print_string(ptr);
             break;
         }
@@ -1956,9 +1957,12 @@ static void print_value(uint64_t val, int depth) {
             break;
         }
 
-        case Tag_ByteBuffer: {
-            ByteBuffer* buf = static_cast<ByteBuffer*>(ptr);
-            output_format("<bytes:%u>", buf->header.size);
+        case Tag_ByteBuffer:
+        case Tag_LargeByteHeader: {
+            // Both forms carry the logical byte count in header.size; the
+            // split-header form's body lives elsewhere and we don't need it
+            // for the size-only debug rendering.
+            output_format("<bytes:%u>", header->size);
             break;
         }
 

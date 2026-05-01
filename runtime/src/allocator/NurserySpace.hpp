@@ -100,6 +100,12 @@ private:
     bool in_phase3_   = false;        // True only during phase 3 (promoted-object scan).
 #endif
 
+    // Per-minor-GC 1-bit color for split-header bodies (HEAP_026). Flipped at
+    // the start of every minor GC; the to-space scan calls
+    // OldGenSpace::markLargeBodySeen with this color for every live header,
+    // and the end-of-cycle sweep frees bodies whose color does not match.
+    bool minor_color_ = false;
+
     // ========== Internal Methods ==========
 
     // Initializes this nursery by requesting blocks from the Allocator.

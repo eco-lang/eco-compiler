@@ -84,6 +84,19 @@ public:
     // Use for permanent objects like string literals that should never be collected.
     void *allocatePermanent(size_t size, Tag tag);
 
+    // Split-header allocation paths (HEAP_026): the body lives pinned in old
+    // gen; the small header lives in the nursery. Returns the header's
+    // HPointer. See plans/large-object-split-header-bodies.md.
+    HPointer allocLargeString(const u16* chars, size_t length);
+    HPointer allocLargeByteBuffer(const u8* data, size_t length);
+
+    // Returns the configured split-header threshold in bytes; allocations
+    // whose total payload size meets or exceeds this should route through
+    // the split path.
+    size_t getLargeHeaderSplitThreshold() const {
+        return config_.large_header_split_threshold;
+    }
+
     // ========== Garbage Collection ==========
 
     // Triggers a minor GC on the thread-local nursery.

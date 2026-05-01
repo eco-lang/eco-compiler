@@ -82,6 +82,23 @@ public:
      */
     void* allocatePermanent(size_t size, Tag tag);
 
+    /**
+     * Allocates a large string via the split-header path (HEAP_026): the
+     * body (Tag_String, length UTF-16 chars) lives pinned in old gen, and
+     * a small Tag_LargeStringHeader header lives in the nursery. Returns
+     * the header's HPointer. Used internally by alloc::allocString when
+     * the requested size exceeds large_header_split_threshold.
+     */
+    HPointer allocLargeString(const u16* chars, size_t length);
+
+    /**
+     * Allocates a large byte buffer via the split-header path (HEAP_026):
+     * the body (Tag_ByteBuffer) lives pinned in old gen and a small
+     * Tag_LargeByteHeader header lives in the nursery. If `data` is
+     * nullptr the body is zero-initialized.
+     */
+    HPointer allocLargeByteBuffer(const u8* data, size_t length);
+
 private:
     /**
      * Allocates an object directly in old gen, bypassing the nursery, and

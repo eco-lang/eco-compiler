@@ -441,6 +441,11 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // OldGenSpace::allocate inline-helper attribution counter).
     g_in_minor_gc = true;
 
+    // Flip the split-header body color for this cycle. Every live header
+    // scanned in to-space gets recorded with this color via markLargeBodySeen;
+    // bodies whose recorded color doesn't match at the end are freed.
+    minor_color_ = !minor_color_;
+
 #if ECO_GC_DEBUG
     in_minor_gc_ = true;
     static size_t gc_cycle_count = 0;
@@ -861,6 +866,11 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     GC_STATS_MINOR_RECORD_GC_END(stats, pure_elapsed_ns, bytes_freed);
 #endif
 
+    // Reclaim split-header bodies whose nursery header did not survive this
+    // cycle. Skipped if a major GC is mid-cycle (deferred until after major
+    // completes). See OldGenSpace::sweepNurseryLargeBodies.
+    oldgen.sweepNurseryLargeBodies(minor_color_);
+
     // Clear the cross-allocator in-minor-GC flag last, after the timer
     // has captured the full minor pause but before control returns to
     // ThreadLocalHeap::minorGC (which may then fire majorGC).
@@ -975,6 +985,16 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         // color should already be White. Reset anyway to keep the promotion
         // path independent of that invariant.
         new_hdr->color = static_cast<u32>(Color::White);
+
+        // Split-header forms transfer body ownership from nursery_owned to
+        // major-GC-managed on promotion (HEAP_026).
+        if (new_hdr->tag == Tag_LargeStringHeader) {
+            LargeStringHeader* h = static_cast<LargeStringHeader*>(new_obj);
+            oldgen.promoteLargeHeader(h->body);
+        } else if (new_hdr->tag == Tag_LargeByteHeader) {
+            LargeByteHeader* h = static_cast<LargeByteHeader*>(new_obj);
+            oldgen.promoteLargeHeader(h->body);
+        }
 
         if (promoted_objects) {
             promoted_objects->push_back(new_obj);
@@ -1320,6 +1340,21 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
             ElmStringRope *r = static_cast<ElmStringRope *>(obj);
             evacuate(r->left, oldgen, promoted_objects);
             evacuate(r->right, oldgen, promoted_objects);
+            break;
+        }
+
+        case Tag_LargeStringHeader: {
+            // Body lives in old gen and is never copied. Record that the
+            // header is still live for this minor cycle, then return without
+            // touching the body HPointer (it stays as-is).
+            LargeStringHeader *h = static_cast<LargeStringHeader *>(obj);
+            oldgen.markLargeBodySeen(h->body, minor_color_);
+            break;
+        }
+
+        case Tag_LargeByteHeader: {
+            LargeByteHeader *h = static_cast<LargeByteHeader *>(obj);
+            oldgen.markLargeBodySeen(h->body, minor_color_);
             break;
         }
 

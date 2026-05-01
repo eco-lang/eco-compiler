@@ -35,10 +35,15 @@ namespace StringOps {
 // ============================================================================
 
 /**
- * True if `obj` is a flat string leaf (Tag_String).
+ * True if `obj` is a flat string leaf for rope/slice purposes — either a
+ * Tag_String (inline chars[]) or a Tag_LargeStringHeader (resolves to a
+ * Tag_String body in old gen, conceptually flat).
  * Caller must have already verified `obj` is non-null and a string-like tag.
  */
-inline bool isLeaf(void* obj) { return alloc::getTag(obj) == Tag_String; }
+inline bool isLeaf(void* obj) {
+    Tag t = alloc::getTag(obj);
+    return t == Tag_String || t == Tag_LargeStringHeader;
+}
 
 /**
  * True if `obj` is a structural string slice (Tag_StringSlice).
@@ -187,10 +192,24 @@ inline u16 charAt(void* str, i64 index) {
             ElmString* s = static_cast<ElmString*>(str);
             return s->chars[index];
         }
+        if (hdr->tag == Tag_LargeStringHeader) {
+            // Split header: resolve to the Tag_String body and read chars[].
+            LargeStringHeader* h = static_cast<LargeStringHeader*>(str);
+            void* body = allocator.resolve(h->body);
+            if (!body) return 0;
+            ElmString* leaf = static_cast<ElmString*>(body);
+            return leaf->chars[index];
+        }
         if (hdr->tag == Tag_StringSlice) {
             ElmStringSlice* slc = static_cast<ElmStringSlice*>(str);
             void* base = allocator.resolve(slc->base);
             if (!base) return 0;
+            // Slice's base may itself be a split header — resolve through it.
+            if (static_cast<Header*>(base)->tag == Tag_LargeStringHeader) {
+                LargeStringHeader* h = static_cast<LargeStringHeader*>(base);
+                base = allocator.resolve(h->body);
+                if (!base) return 0;
+            }
             ElmString* leaf = static_cast<ElmString*>(base);
             return leaf->chars[slc->offset + index];
         }
@@ -778,12 +797,26 @@ inline std::u16string toStdU16String(void* str) {
         ElmString* s = static_cast<ElmString*>(str);
         return std::u16string(reinterpret_cast<const char16_t*>(s->chars), s->header.size);
     }
+    if (hdr->tag == Tag_LargeStringHeader) {
+        LargeStringHeader* h = static_cast<LargeStringHeader*>(str);
+        void* body = Allocator::instance().resolve(h->body);
+        if (!body) return {};
+        ElmString* leaf = static_cast<ElmString*>(body);
+        return std::u16string(reinterpret_cast<const char16_t*>(leaf->chars),
+                              leaf->header.size);
+    }
     if (hdr->tag == Tag_StringSlice) {
         ElmStringSlice* slc = static_cast<ElmStringSlice*>(str);
         u32 len = slc->header.size;
         u32 offset = slc->offset;
         void* base = Allocator::instance().resolve(slc->base);
         if (!base) return {};
+        // A slice's base can be a split-header — resolve through it.
+        if (static_cast<Header*>(base)->tag == Tag_LargeStringHeader) {
+            LargeStringHeader* h = static_cast<LargeStringHeader*>(base);
+            base = Allocator::instance().resolve(h->body);
+            if (!base) return {};
+        }
         ElmString* leaf = static_cast<ElmString*>(base);
         return std::u16string(reinterpret_cast<const char16_t*>(leaf->chars + offset), len);
     }
@@ -806,6 +839,15 @@ inline std::u16string toStdU16String(void* str) {
             ElmString* s = static_cast<ElmString*>(top);
             std::memcpy(dst, s->chars, s->header.size * sizeof(u16));
             dst += s->header.size;
+        } else if (h->tag == Tag_LargeStringHeader) {
+            // Split header: resolve to body and copy from its chars[].
+            LargeStringHeader* lh = static_cast<LargeStringHeader*>(top);
+            void* body = allocator.resolve(lh->body);
+            if (body) {
+                ElmString* leaf = static_cast<ElmString*>(body);
+                std::memcpy(dst, leaf->chars, leaf->header.size * sizeof(u16));
+                dst += leaf->header.size;
+            }
         } else if (h->tag == Tag_StringSlice) {
             ElmStringSlice* slc = static_cast<ElmStringSlice*>(top);
             void* base = allocator.resolve(slc->base);

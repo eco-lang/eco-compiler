@@ -82,6 +82,12 @@ typedef enum {
     // Tag_Tensor - Tensors (future).
     Tag_StringRope,  // Concat tree node: HPointer left, HPointer right, height, leafCount.
     Tag_StringSlice, // Structural view: HPointer base + offset + length over a String leaf.
+    // Split-header forms for large strings / byte buffers. The header (these
+    // tags) lives in the nursery, while the body (Tag_String / Tag_ByteBuffer)
+    // lives in old gen and is never copied. See HEAP_026 and
+    // plans/large-object-split-header-bodies.md.
+    Tag_LargeStringHeader, // header.size = logical UTF-16 length, body -> Tag_String.
+    Tag_LargeByteHeader,   // header.size = logical byte count,    body -> Tag_ByteBuffer.
     Tag_Free,        // Free cell on a segregated free list (header.size = byte size).
     Tag_Forward,     // Used for forwarding pointers during GC.
 } Tag;
@@ -250,6 +256,27 @@ struct ALIGN(8) elm_string_rope {
     u32 leafCount;  // sum of left + right leaf counts.
 };
 typedef struct elm_string_rope ElmStringRope;
+
+// Split-header for large strings: a small fixed-size object that lives in the
+// nursery and points to a Tag_String body in old gen. header.size is the
+// logical UTF-16 length (matches the body's own header.size). The body is
+// never copied; minor GC reads `body` only to mark the body as still-live.
+// See plans/large-object-split-header-bodies.md.
+struct ALIGN(8) elm_large_string_header {
+    Header header;     // tag = Tag_LargeStringHeader; header.size = logical UTF-16 length.
+    HPointer body;     // -> Tag_String body in old gen.
+};
+typedef struct elm_large_string_header LargeStringHeader;
+
+// Split-header for large byte buffers; mirrors LargeStringHeader but the body
+// is a Tag_ByteBuffer in old gen. header.size is the logical byte count.
+struct ALIGN(8) elm_large_byte_header {
+    Header header;     // tag = Tag_LargeByteHeader; header.size = logical byte count.
+    HPointer body;     // -> Tag_ByteBuffer body in old gen.
+};
+typedef struct elm_large_byte_header LargeByteHeader;
+static_assert(sizeof(LargeStringHeader) == 16, "LargeStringHeader must be 16 bytes");
+static_assert(sizeof(LargeByteHeader) == 16, "LargeByteHeader must be 16 bytes");
 
 typedef struct {
     Header header; // Header.unboxed indicates which fields are unboxed.
@@ -456,6 +483,8 @@ typedef union HeapValue {
     Forward fwd;
     ByteBuffer bytebuffer;
     ElmArray array;
+    LargeStringHeader largeStringHeader;
+    LargeByteHeader   largeByteHeader;
 } HeapValue;
 
 } // namespace Elm

@@ -148,6 +148,16 @@ inline size_t getObjectSize(void *obj) {
             size = sizeof(ElmArray) + arr->header.size * sizeof(Unboxable);
             break;
         }
+        case Tag_LargeStringHeader:
+            // Fixed-size split header. header.size carries the body's logical
+            // UTF-16 length (not a byte count for this object).
+            size = sizeof(LargeStringHeader);
+            break;
+        case Tag_LargeByteHeader:
+            // Fixed-size split header. header.size carries the body's logical
+            // byte count (not a byte count for this object).
+            size = sizeof(LargeByteHeader);
+            break;
         default:
             size = sizeof(Header);
             break;
@@ -212,6 +222,14 @@ struct HeapConfig {
     // alloc_buffer_size of 128 KiB this resolves to 8 KiB.
     size_t large_object_threshold =
         (ALLOC_BUFFER_SIZE / 16 > 8 * 1024) ? (ALLOC_BUFFER_SIZE / 16) : (8 * 1024);
+
+    // Split-header threshold for Tag_String / Tag_ByteBuffer (bytes). Strings
+    // and byte buffers whose total payload size meets or exceeds this go
+    // through the split-header path: a small Tag_LargeStringHeader /
+    // Tag_LargeByteHeader in the nursery whose `body` HPointer points at a
+    // Tag_String / Tag_ByteBuffer sitting in old gen and never copied. See
+    // HEAP_026 and plans/large-object-split-header-bodies.md.
+    size_t large_header_split_threshold = 2048;
 
     // When `releaseOldGenBlock` is called, also `madvise(MADV_DONTNEED)` the
     // released extent so its physical RSS drops. The virtual mapping is
@@ -337,6 +355,20 @@ struct HeapConfig {
                 "(otherwise objects in [alloc_buffer_size, "
                 "large_object_threshold) take the nursery path but cannot "
                 "fit in a single nursery block)");
+        }
+
+        // ========== 4c. Split-Header Threshold Constraints ==========
+        // Split-header form covers [large_header_split_threshold, ∞) for
+        // Tag_String / Tag_ByteBuffer; below the split threshold these stay
+        // inline in the nursery (status quo).
+        if (large_header_split_threshold < sizeof(Header)) {
+            throw std::invalid_argument(
+                "large_header_split_threshold must be >= sizeof(Header)");
+        }
+        if (large_header_split_threshold > old_gen_space) {
+            throw std::invalid_argument(
+                "large_header_split_threshold must be <= max_heap_size / 2 "
+                "(can't exceed old gen space)");
         }
 
         // ========== 5. Promotion Constraints ==========

@@ -194,6 +194,12 @@ void OldGenSpace::reset(const HeapConfig* new_config) {
     }
     free_large_blocks_.clear();
 
+    // Clear split-header body tracking.
+    large_bodies_.clear();
+    large_body_index_.clear();
+    nursery_owned_bodies_.clear();
+    free_large_body_ids_.clear();
+
     // Reset fragmentation stats.
     frag_stats_ = {0, 0, 0};
 
@@ -1510,6 +1516,18 @@ void OldGenSpace::markChildren(void *obj) {
             ElmStringRope *r = static_cast<ElmStringRope *>(obj);
             markHPointer(r->left);
             markHPointer(r->right);
+            break;
+        }
+        case Tag_LargeStringHeader: {
+            // Split header: trace the body so it survives major GC. The body
+            // is pointer-free (Tag_String chars[]), so no further traversal.
+            LargeStringHeader *h = static_cast<LargeStringHeader *>(obj);
+            markHPointer(h->body);
+            break;
+        }
+        case Tag_LargeByteHeader: {
+            LargeByteHeader *h = static_cast<LargeByteHeader *>(obj);
+            markHPointer(h->body);
             break;
         }
         // Tag_ByteBuffer: No pointers to mark (raw bytes only).
@@ -3370,6 +3388,20 @@ void OldGenSpace::fixPointersInObject(void* obj) {
             fixHPointer(r->right);
             break;
         }
+        case Tag_LargeStringHeader: {
+            // Split-header bodies are pinned (header.pin = 1) and never
+            // evacuated by the compactor, so their HPointer never moves.
+            // fixHPointer is a no-op for non-forwarded targets, so this
+            // case is here purely for tag coverage (HEAP_004).
+            LargeStringHeader* h = static_cast<LargeStringHeader*>(obj);
+            fixHPointer(h->body);
+            break;
+        }
+        case Tag_LargeByteHeader: {
+            LargeByteHeader* h = static_cast<LargeByteHeader*>(obj);
+            fixHPointer(h->body);
+            break;
+        }
         default:
             // Tag_Int, Tag_Float, Tag_Char, Tag_String, Tag_FieldGroup,
             // Tag_ByteBuffer, Tag_Free, Tag_Forward: nothing to fix.
@@ -3492,6 +3524,231 @@ void OldGenSpace::freeEvacuatedBuffers() {
     evacuation_set_.clear();
 
     computeFragmentationStats();
+}
+
+// ---------------------------------------------------------------------------
+// Split-header body tracking (HEAP_026).
+// ---------------------------------------------------------------------------
+
+void* OldGenSpace::allocateLargeBody(size_t total_size, Tag body_tag,
+                                     bool initial_color) {
+    assert(body_tag == Tag_String || body_tag == Tag_ByteBuffer);
+    total_size = (total_size + 7) & ~static_cast<size_t>(7);
+
+    void* body = allocate(total_size);
+    if (!body) return nullptr;
+    GC_STATS_OLDGEN_DIRECT_RECORD_ALLOC(alloc_stats_, total_size);
+
+    // The body is pointer-free; pinning keeps `body_base` stable for the
+    // entire lifetime so large_body_index_'s key remains valid. allocate()
+    // already zero-initialised the header and set color appropriately for
+    // the current GC phase; we only need to set tag/pin and the size.
+    Header* hdr = static_cast<Header*>(body);
+    hdr->tag = body_tag;
+    hdr->pin = 1;
+    if (body_tag == Tag_String) {
+        hdr->size = static_cast<u32>(
+            (total_size - sizeof(ElmString)) / sizeof(u16));
+    } else {
+        hdr->size = static_cast<u32>(total_size - sizeof(ByteBuffer));
+    }
+
+    // Decide whether the body landed in a dedicated is_large block. The
+    // BBoP allocator places sizes >= alloc_buffer_size into is_large blocks.
+    const bool body_is_large = (total_size >= config_->alloc_buffer_size);
+
+    // Cell footprint: for is_large the body owns the entire block (which may
+    // be page-aligned and larger than total_size). For size-class / split-
+    // page cells, total_size IS the cell size we requested — the allocator
+    // may have rounded up to the size-class slot, but freeing rounds-back
+    // through pushSpanOnFreeLists which is class-size aware.
+    size_t cell_size = total_size;
+    if (body_is_large && contains(body)) {
+        const size_t blk_idx = blockIndexFor(body);
+        if (blk_idx < blocks_.size() && blocks_[blk_idx].is_large) {
+            cell_size = blocks_[blk_idx].totalBytes();
+        }
+    }
+
+    registerLargeBody(body, cell_size, body_is_large, initial_color);
+    return body;
+}
+
+OldGenSpace::LargeBodyId OldGenSpace::registerLargeBody(
+        void* body, size_t cell_size, bool is_large, bool minor_color) {
+    LargeBodyId id;
+    if (!free_large_body_ids_.empty()) {
+        id = free_large_body_ids_.back();
+        free_large_body_ids_.pop_back();
+        large_bodies_[id] = LargeBodyMeta{body, cell_size, is_large, minor_color};
+    } else {
+        id = static_cast<LargeBodyId>(large_bodies_.size());
+        large_bodies_.push_back(LargeBodyMeta{body, cell_size, is_large, minor_color});
+    }
+    large_body_index_[body] = id;
+    nursery_owned_bodies_.push_back(id);
+    return id;
+}
+
+void OldGenSpace::markLargeBodySeen(HPointer body_hp, bool minor_color) {
+    if (body_hp.constant != 0) return;
+    void* body = Allocator::fromPointerRaw(body_hp);
+    if (!body) return;
+    auto it = large_body_index_.find(body);
+    if (it == large_body_index_.end()) return;
+    LargeBodyId id = it->second;
+    if (id < large_bodies_.size()) {
+        large_bodies_[id].color = minor_color;
+    }
+}
+
+void OldGenSpace::promoteLargeHeader(HPointer body_hp) {
+    if (body_hp.constant != 0) return;
+    void* body = Allocator::fromPointerRaw(body_hp);
+    if (!body) return;
+    auto it = large_body_index_.find(body);
+    if (it == large_body_index_.end()) return;
+    LargeBodyId id = it->second;
+    // Swap-remove from nursery_owned_bodies_.
+    for (size_t k = 0; k < nursery_owned_bodies_.size(); ++k) {
+        if (nursery_owned_bodies_[k] == id) {
+            nursery_owned_bodies_[k] = nursery_owned_bodies_.back();
+            nursery_owned_bodies_.pop_back();
+            break;
+        }
+    }
+    // Fully untrack: the body is now governed by standard major-GC mark/sweep
+    // through the promoted header. Reclaiming the meta slot keeps the index
+    // map small and lets a future allocateLargeBody at the same address
+    // register cleanly.
+    large_body_index_.erase(it);
+    if (id < large_bodies_.size()) {
+        large_bodies_[id].body_base = nullptr;
+        free_large_body_ids_.push_back(id);
+    }
+}
+
+size_t OldGenSpace::sweepNurseryLargeBodies(bool minor_color) {
+    // Defensive: reject during compaction phases where blocks_ is mid-shuffle.
+    assert(compact_phase_ != CompactionPhase::Evacuating &&
+           compact_phase_ != CompactionPhase::FixingRefs &&
+           "sweepNurseryLargeBodies must not run during compaction");
+
+    // Defer if a major GC mark/sweep is mid-cycle. Freeing a body cell while
+    // the major GC's sweep cursor is mid-walk would put the cell on a free
+    // list that the same sweep might re-visit, and the body's mark bit
+    // (which testAndClear sees) would mismatch the freed Tag_Free header.
+    // The bodies stay in nursery_owned_bodies_ and a subsequent minor GC
+    // (post major) drains them.
+    if (gc_phase_ != GCPhase::Idle) return 0;
+    if (compact_phase_ != CompactionPhase::Idle) return 0;
+
+    size_t freed = 0;
+    size_t k = 0;
+    while (k < nursery_owned_bodies_.size()) {
+        LargeBodyId id = nursery_owned_bodies_[k];
+        if (id >= large_bodies_.size()) {
+            nursery_owned_bodies_[k] = nursery_owned_bodies_.back();
+            nursery_owned_bodies_.pop_back();
+            continue;
+        }
+        LargeBodyMeta& m = large_bodies_[id];
+        if (m.color == minor_color) {
+            ++k;
+            continue;
+        }
+        // Body's header in nursery did not survive this minor GC; free.
+        freeLargeBodyCell(m);
+        free_large_body_ids_.push_back(id);
+        nursery_owned_bodies_[k] = nursery_owned_bodies_.back();
+        nursery_owned_bodies_.pop_back();
+        ++freed;
+    }
+    return freed;
+}
+
+void OldGenSpace::freeLargeBodyCell(LargeBodyMeta& m) {
+    if (m.body_base == nullptr) return;
+    large_body_index_.erase(m.body_base);
+
+    if (m.is_large) {
+        // Body owns its block; route to free_large_blocks_ and reset metadata.
+        if (!contains(m.body_base)) { m.body_base = nullptr; return; }
+        const size_t idx = blockIndexFor(m.body_base);
+        if (idx >= blocks_.size() || !blocks_[idx].is_large) {
+            m.body_base = nullptr;
+            return;
+        }
+        // Avoid double-free: only mark as free if not already on free_large_blocks_.
+        bool already_free = false;
+        for (size_t fb : free_large_blocks_) {
+            if (fb == idx) { already_free = true; break; }
+        }
+        if (!already_free) {
+            // Reset live attribution before declaring the block free.
+            if (idx < buffer_meta_.size()) {
+                buffer_meta_[idx].live_bytes = 0;
+                buffer_meta_[idx].garbage_bytes = blocks_[idx].totalBytes();
+                buffer_meta_[idx].fully_swept = true;
+            }
+            if (idx < large_block_mark_.size()) large_block_mark_[idx] = 0;
+            // Reset the header on the body so any walker observes Tag_Free.
+            Header* hdr = reinterpret_cast<Header*>(m.body_base);
+            std::memset(hdr, 0, sizeof(Header));
+            hdr->tag = Tag_Free;
+            hdr->size = static_cast<u32>(blocks_[idx].totalBytes());
+            hdr->color = static_cast<u32>(Color::White);
+            // allocated_bytes was incremented when allocateLargeBlock landed
+            // the body. Decrement now so the next major-GC trigger calculation
+            // doesn't double-count the released block.
+            const size_t total = blocks_[idx].totalBytes();
+            allocated_bytes = (allocated_bytes >= total)
+                ? (allocated_bytes - total) : 0;
+            if (frag_stats_.live_bytes >= total) {
+                frag_stats_.live_bytes -= total;
+            } else {
+                frag_stats_.live_bytes = 0;
+            }
+            free_large_blocks_.push_back(idx);
+        }
+    } else {
+        // Size-class or split-page cell: clear the mark bit first so the
+        // next sweep cycle doesn't think this address is still live, then
+        // overlay a Tag_Free cell and push it onto the free list.
+        if (contains(m.body_base)) {
+            const size_t idx = blockIndexFor(m.body_base);
+            if (idx < blocks_.size() && !blocks_[idx].is_large) {
+                // Clear the mark bit (no-op if already zero).
+                testAndClearMarkBitInBlock(idx, m.body_base);
+                pushSpanOnFreeLists(free_lists_,
+                                    static_cast<char*>(m.body_base),
+                                    m.cell_size,
+                                    &blocks_[idx]);
+                if (idx < buffer_meta_.size()) {
+                    BufferMetadata& bm = buffer_meta_[idx];
+                    if (bm.live_bytes >= m.cell_size) {
+                        bm.live_bytes -= m.cell_size;
+                    } else {
+                        bm.live_bytes = 0;
+                    }
+                    bm.garbage_bytes += m.cell_size;
+                }
+                allocated_bytes = (allocated_bytes >= m.cell_size)
+                    ? (allocated_bytes - m.cell_size) : 0;
+                if (frag_stats_.live_bytes >= m.cell_size) {
+                    frag_stats_.live_bytes -= m.cell_size;
+                } else {
+                    frag_stats_.live_bytes = 0;
+                }
+                if (frag_stats_.total_free_bytes + m.cell_size >=
+                        frag_stats_.total_free_bytes) {
+                    frag_stats_.total_free_bytes += m.cell_size;
+                }
+            }
+        }
+    }
+
+    m.body_base = nullptr;
 }
 
 } // namespace Elm

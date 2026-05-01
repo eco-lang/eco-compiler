@@ -97,6 +97,10 @@ HPointer flattenToLeaf(HPointer s) {
 
     Header* hdr = static_cast<Header*>(obj);
     if (hdr->tag == Tag_String) return s;  // already a leaf
+    // Split-header forms are conceptually leaves: their body is a flat
+    // Tag_String. Returning the header preserves the split optimisation
+    // (flatten consumers should not need to materialise an inline copy).
+    if (hdr->tag == Tag_LargeStringHeader) return s;
     if (hdr->size == 0) return alloc::emptyString();
 
     // Materialise the bytes BEFORE allocation (the resolved void* is invalid
@@ -115,6 +119,7 @@ HPointer maybeFlattenOrRebalance(HPointer s, FlattenReason reason) {
     if (!obj) return s;
     Header* hdr = static_cast<Header*>(obj);
     if (hdr->tag == Tag_String) return s;  // already flat
+    if (hdr->tag == Tag_LargeStringHeader) return s;  // split-header is leaf-like
     if (hdr->size <= detail::FLATTEN_LIMIT) {
         return flattenToLeaf(s);
     }
@@ -170,6 +175,15 @@ HPointer slice(void* str, i64 start, i64 end) {
             std::vector<u16> data(s->chars + start, s->chars + start + slice_len);
             return alloc::allocString(data.data(), slice_len);
         }
+        if (hdr->tag == Tag_LargeStringHeader) {
+            // Resolve to the body and treat like a leaf for tiny-slice copy.
+            LargeStringHeader* h = static_cast<LargeStringHeader*>(str);
+            void* body = allocator.resolve(h->body);
+            if (!body) return alloc::emptyString();
+            ElmString* leaf = static_cast<ElmString*>(body);
+            std::vector<u16> data(leaf->chars + start, leaf->chars + start + slice_len);
+            return alloc::allocString(data.data(), slice_len);
+        }
         if (hdr->tag == Tag_StringSlice) {
             ElmStringSlice* slc = static_cast<ElmStringSlice*>(str);
             u32 baseOffset = slc->offset;
@@ -192,6 +206,18 @@ HPointer slice(void* str, i64 start, i64 end) {
     if (hdr->tag == Tag_String) {
         HPointer baseHp = allocator.wrap(str);
         return makeSlice(baseHp, static_cast<u32>(start), static_cast<u32>(slice_len));
+    }
+    // Large slice over a split-header: keep the slice's `base` pointing at
+    // the Tag_LargeStringHeader itself, NOT at the body. The body's lifetime
+    // is governed by nursery_owned_bodies_ + sweepNurseryLargeBodies, which
+    // tracks reachability via the header. If we set base = h->body, dropping
+    // the original header (and any intervening references) would let
+    // sweepNurseryLargeBodies free the body even though the slice still
+    // references it. Reads through the slice resolve through the header
+    // (charAt / toStdU16String handle this case).
+    if (hdr->tag == Tag_LargeStringHeader) {
+        HPointer headerHp = allocator.wrap(str);
+        return makeSlice(headerHp, static_cast<u32>(start), static_cast<u32>(slice_len));
     }
 
     // Large slice over a slice: collapse to a single slice over the deepest

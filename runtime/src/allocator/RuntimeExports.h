@@ -482,6 +482,8 @@ HPtr eco_clone_array(HPtr array_hptr);
 /// hold. Emitted right after `eco_clone_array` by the eco.array.set lowering
 /// so the cloned array's kind flag tracks the value the new slot stores —
 /// otherwise the next minor GC misreads a raw i64 as an HPointer.
+/// @param array_hptr HPointer to ElmArray.
+/// @param intended_kind Desired uniform kind (0=boxed, 1=Int, 2=Float, 3=Char).
 void eco_array_set_fix_kind(HPtr array_hptr, uint32_t intended_kind);
 
 } // extern "C"
