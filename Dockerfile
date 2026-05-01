@@ -52,7 +52,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Archive extraction for the package downloader (eco-kernel Http.getArchive)
     libzip-dev \
     # Debugging and profiling tools (essential for GC development)
-    gdb lldb linux-perf strace \
+    gdb lldb linux-perf strace bpftrace \
     # Code quality tools
     clang-format clang-tidy \
     # Developer convenience
