@@ -42,7 +42,10 @@ ECO_COMPILER = REPO_ROOT / "compiler/build-kernel/bin/eco-compiler"
 ECO_BOOT_NATIVE = REPO_ROOT / "build/runtime/src/codegen/eco-boot-native"
 ECO_COMPILER_MLIR = REPO_ROOT / "compiler/build-kernel/bin/eco-compiler.mlir"
 BUILD_KERNEL = REPO_ROOT / "compiler/build-kernel"
+ECO_BOOT_2_RUNNER = BUILD_KERNEL / "bin/eco-boot-2-runner.js"
+ECO_KERNEL_CPP = REPO_ROOT / "eco-kernel-cpp"
 ELM_ENTRY = REPO_ROOT / "compiler/src/Terminal/Main.elm"
+COMPILER_SRC = REPO_ROOT / "compiler/src"
 RUNTIME_SRC = REPO_ROOT / "runtime/src"
 DEFAULT_HEAP_CONFIG = REPO_ROOT / "compiler/build-kernel/heap-config.json"
 LOCAL_CONFIG = REPO_ROOT / "heap-profile.local.json"
@@ -227,12 +230,59 @@ def _newest_mtime_under(root: Path, suffixes: tuple[str, ...]) -> float:
     return newest
 
 
+def _relink_eco_compiler() -> None:
+    """Re-lower eco-compiler.mlir to the eco-compiler ELF via eco-boot-native."""
+    if not ECO_COMPILER_MLIR.exists():
+        sys.exit(f"ERROR: {ECO_COMPILER_MLIR} not found; cannot relink "
+                 "eco-compiler. Run Stage 5 first.")
+    print(f"[heap-profile] re-lowering {ECO_COMPILER_MLIR.name} via "
+          "eco-boot-native...", flush=True)
+    subprocess.run(
+        [str(ECO_BOOT_NATIVE), str(ECO_COMPILER_MLIR),
+         "-o", str(ECO_COMPILER)],
+        cwd=REPO_ROOT, check=True)
+
+
+def _rebuild_compiler_mlir() -> None:
+    """Run Stage 5: eco-boot-2-runner.js compiles the Elm sources to MLIR.
+    Stale .ecot caches are removed first — JS-output stages do not invalidate
+    them, and leftovers from a previous MLIR build crash monomorphization."""
+    if not ECO_BOOT_2_RUNNER.exists():
+        sys.exit(f"ERROR: {ECO_BOOT_2_RUNNER} not found; cannot rebuild "
+                 f"{ECO_COMPILER_MLIR.name}. Run Stages 1-4 first.")
+    eco_stuff = BUILD_KERNEL / "eco-stuff"
+    if eco_stuff.exists():
+        for ecot in eco_stuff.rglob("*.ecot"):
+            try:
+                ecot.unlink()
+            except FileNotFoundError:
+                continue
+    print(f"[heap-profile] Elm sources newer than {ECO_COMPILER_MLIR.name} — "
+          "rebuilding via eco-boot-2-runner...", flush=True)
+    subprocess.run(
+        ["node", "--stack-size=65536", str(ECO_BOOT_2_RUNNER), "make",
+         "--optimize",
+         "--kernel-package", "eco/compiler",
+         "--local-package", f"eco/kernel={ECO_KERNEL_CPP}",
+         f"--output=bin/{ECO_COMPILER_MLIR.name}",
+         str(ELM_ENTRY)],
+        cwd=BUILD_KERNEL, check=True)
+
+
 def ensure_binaries_fresh(skip: bool) -> dict:
-    """Rebuild eco-boot-native and re-link eco-compiler if any runtime source
-    is newer than the produced artefact. Returns a dict describing what
-    happened (recorded into args.json)."""
+    """Bring all build artefacts up to date in dependency order:
+
+      1. Rebuild eco-boot-native if any runtime C++ source is newer.
+      2. Relink eco-compiler if eco-boot-native or runtime sources moved.
+      3. Rebuild eco-compiler.mlir (Stage 5) if any compiler/src .elm
+         source is newer than it.
+      4. If Stage 5 ran, relink eco-compiler against the fresh .mlir.
+
+    Steps 1-2 (the C++ side) always run before step 3 so that, if a Stage 5
+    rebuild is also needed, it happens against an up-to-date toolchain."""
     outcome = {"checked": True, "rebuilt_eco_boot_native": False,
-               "relinked_eco_compiler": False, "skipped": False}
+               "relinked_eco_compiler": False,
+               "rebuilt_compiler_mlir": False, "skipped": False}
     if skip:
         outcome["checked"] = False
         outcome["skipped"] = True
@@ -254,16 +304,21 @@ def ensure_binaries_fresh(skip: bool) -> dict:
     if (not ECO_COMPILER.exists()
             or compiler_mtime < boot_mtime
             or compiler_mtime < src_mtime):
-        if not ECO_COMPILER_MLIR.exists():
-            sys.exit(f"ERROR: {ECO_COMPILER_MLIR} not found; cannot relink "
-                     "eco-compiler. Run Stage 5 first.")
-        print(f"[heap-profile] re-lowering {ECO_COMPILER_MLIR.name} via "
-              "eco-boot-native...", flush=True)
-        subprocess.run(
-            [str(ECO_BOOT_NATIVE), str(ECO_COMPILER_MLIR),
-             "-o", str(ECO_COMPILER)],
-            cwd=REPO_ROOT, check=True)
+        _relink_eco_compiler()
         outcome["relinked_eco_compiler"] = True
+
+    elm_mtime = _newest_mtime_under(COMPILER_SRC, (".elm",))
+    mlir_mtime = (ECO_COMPILER_MLIR.stat().st_mtime
+                  if ECO_COMPILER_MLIR.exists() else 0.0)
+    if not ECO_COMPILER_MLIR.exists() or mlir_mtime < elm_mtime:
+        _rebuild_compiler_mlir()
+        outcome["rebuilt_compiler_mlir"] = True
+        mlir_mtime = ECO_COMPILER_MLIR.stat().st_mtime
+        compiler_mtime = (ECO_COMPILER.stat().st_mtime
+                          if ECO_COMPILER.exists() else 0.0)
+        if not ECO_COMPILER.exists() or compiler_mtime < mlir_mtime:
+            _relink_eco_compiler()
+            outcome["relinked_eco_compiler"] = True
     return outcome
 
 
