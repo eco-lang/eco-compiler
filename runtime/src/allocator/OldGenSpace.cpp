@@ -2193,6 +2193,24 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
                 if (live) {
                     // live_bytes was attributed during mark; nothing to do.
                 } else {
+                    // Split-header body cells (HEAP_026) are tracked in
+                    // large_body_index_ until either promoteLargeHeader or
+                    // sweepNurseryLargeBodies retires them. Major GC sweep
+                    // can reach a body cell first when its only nursery
+                    // header died; clear the side-table entry so future
+                    // recycling doesn't clash with a stale id.
+                    Header* hdr = reinterpret_cast<Header*>(sweep_cursor_);
+                    if (hdr->pin && (hdr->tag == Tag_String ||
+                                     hdr->tag == Tag_ByteBuffer)) {
+                        auto it = large_body_index_.find(sweep_cursor_);
+                        if (it != large_body_index_.end()) {
+                            LargeBodyId id = it->second;
+                            if (id < large_bodies_.size()) {
+                                large_bodies_[id].body_base = nullptr;
+                            }
+                            large_body_index_.erase(it);
+                        }
+                    }
                     meta.garbage_bytes = block.totalBytes();
                     markBlockAsFreeLarge(sweep_buffer_index_);
                 }
@@ -2217,6 +2235,20 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
                 // live_bytes was attributed by markOneObject during mark.
                 flushRun(sweep_buffer_index_);
             } else {
+                // See is_large branch above for rationale: clear the
+                // large_body_index_ entry for body cells that major GC sweep
+                // reaches before nursery sweep does.
+                if (hdr->pin && (hdr->tag == Tag_String ||
+                                 hdr->tag == Tag_ByteBuffer)) {
+                    auto it = large_body_index_.find(sweep_cursor_);
+                    if (it != large_body_index_.end()) {
+                        LargeBodyId id = it->second;
+                        if (id < large_bodies_.size()) {
+                            large_bodies_[id].body_base = nullptr;
+                        }
+                        large_body_index_.erase(it);
+                    }
+                }
                 if (run_start == nullptr) {
                     run_start = sweep_cursor_;
                     run_bytes = 0;
@@ -3557,16 +3589,27 @@ void* OldGenSpace::allocateLargeBody(size_t total_size, Tag body_tag,
     // BBoP allocator places sizes >= alloc_buffer_size into is_large blocks.
     const bool body_is_large = (total_size >= config_->alloc_buffer_size);
 
-    // Cell footprint: for is_large the body owns the entire block (which may
-    // be page-aligned and larger than total_size). For size-class / split-
-    // page cells, total_size IS the cell size we requested — the allocator
-    // may have rounded up to the size-class slot, but freeing rounds-back
-    // through pushSpanOnFreeLists which is class-size aware.
+    // Cell footprint:
+    //   - For is_large: body owns the entire block (page-aligned, possibly
+    //     larger than total_size). cell_size = block totalBytes.
+    //   - For size-class cells: the allocator rounded our request up to the
+    //     block's size-class slot. We MUST record the slot size, not the
+    //     requested size, because pushSpanOnFreeLists uses cell_size to
+    //     re-emit free cells of exactly classToSize(cls). A request of
+    //     2056 in a 2048 slot, freed via pushSpanOnFreeLists with
+    //     span_bytes=2056 and cellSize=2048, would push one 2048 cell and
+    //     orphan an 8-byte Tag_Free placeholder past the slot boundary —
+    //     which lands in the next cell's header and corrupts the heap.
     size_t cell_size = total_size;
-    if (body_is_large && contains(body)) {
+    if (contains(body)) {
         const size_t blk_idx = blockIndexFor(body);
-        if (blk_idx < blocks_.size() && blocks_[blk_idx].is_large) {
-            cell_size = blocks_[blk_idx].totalBytes();
+        if (blk_idx < blocks_.size()) {
+            const BlockInfo& blk = blocks_[blk_idx];
+            if (blk.is_large) {
+                cell_size = blk.totalBytes();
+            } else if (blk.size_class < NUM_SIZE_CLASSES) {
+                cell_size = classToSize(blk.size_class);
+            }
         }
     }
 
@@ -3653,6 +3696,16 @@ size_t OldGenSpace::sweepNurseryLargeBodies(bool minor_color) {
             continue;
         }
         LargeBodyMeta& m = large_bodies_[id];
+        // Stale slot: body_base was already cleared (e.g. by an earlier
+        // promoteLargeHeader) but the id wasn't drained from
+        // nursery_owned_bodies_ because the swap-remove search bailed at the
+        // first match. Drop it without re-pushing onto free_large_body_ids_
+        // (it's already there).
+        if (m.body_base == nullptr) {
+            nursery_owned_bodies_[k] = nursery_owned_bodies_.back();
+            nursery_owned_bodies_.pop_back();
+            continue;
+        }
         if (m.color == minor_color) {
             ++k;
             continue;

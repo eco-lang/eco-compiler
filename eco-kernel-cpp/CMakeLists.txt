@@ -29,6 +29,15 @@ else()
     message(STATUS "eco-kernel: libzip not found - archive extraction will use stubs")
 endif()
 
+# Re-publish libzip detection at the parent scope so the codegen layer can
+# decide whether to append `-lzip` to the AOT linker command line invoked by
+# eco-boot-native (Http.cpp's libzip symbols come from the EcoKernel_Http
+# static archive's PRIVATE link interface and aren't transitively pulled in).
+if(LIBZIP_FOUND AND NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    set(ECO_KERNEL_LIBZIP_FOUND TRUE PARENT_SCOPE)
+    set(ECO_KERNEL_LIBZIP_LIBRARIES "${LIBZIP_LIBRARIES}" PARENT_SCOPE)
+endif()
+
 #------------------------------------------------------------------------------
 # Per-module static libraries
 #------------------------------------------------------------------------------

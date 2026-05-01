@@ -86,14 +86,14 @@ HPtr elm_alloc_bytebuffer(u32 byteCount) {
 u32 elm_bytebuffer_len(HPtr bbVal) {
     void* ptr = u64ToPtr(bbVal.toBits());
     if (!ptr) return 0;
-    Elm::ByteBuffer* bb = static_cast<Elm::ByteBuffer*>(ptr);
+    Elm::ByteBuffer* bb = Elm::alloc::resolveByteBufferBody(ptr);
     return bb->header.size;
 }
 
 u8* elm_bytebuffer_data(HPtr bbVal) {
     void* ptr = u64ToPtr(bbVal.toBits());
     if (!ptr) return nullptr;
-    Elm::ByteBuffer* bb = static_cast<Elm::ByteBuffer*>(ptr);
+    Elm::ByteBuffer* bb = Elm::alloc::resolveByteBufferBody(ptr);
     return bb->bytes;
 }
 

@@ -442,6 +442,13 @@ static int linkExecutable(const std::string &objectFile,
     args.push_back("-lcurl");
     args.push_back("-lssl");
     args.push_back("-lcrypto");
+    // Optional kernel system libs detected at CMake configure time — currently
+    // libzip when present (Http.cpp's archive-extraction path). Empty when the
+    // host had no libzip; Http.cpp falls back to stubs in that case.
+    auto kernelSysLibs = eco::config::kernelSystemLibs();
+    for (const auto &lib : kernelSysLibs)
+        args.push_back(lib);
+    args.push_back("-lzip");
     // LLVM libunwind — passed by absolute path (NOT -lunwind) so the linker
     // cannot silently pick up the system (nongnu) libunwind instead.
     args.push_back(eco::config::unwindLib);

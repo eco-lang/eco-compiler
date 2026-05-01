@@ -40,7 +40,7 @@ HPointer fromString(void* str) {
 
 // Decodes a ByteBuffer as UTF-8 into an ElmString.
 HPointer decodeUtf8(void* buf) {
-    ByteBuffer* b = static_cast<ByteBuffer*>(buf);
+    ByteBuffer* b = alloc::resolveByteBufferBody(buf);
     size_t len = b->header.size;
 
     if (len == 0) {
@@ -155,7 +155,7 @@ HPointer encodeUtf8(void* str) {
 
 // Converts a ByteBuffer to a list of integers (0-255).
 HPointer toList(void* buf) {
-    ByteBuffer* b = static_cast<ByteBuffer*>(buf);
+    ByteBuffer* b = alloc::resolveByteBufferBody(buf);
     size_t len = b->header.size;
 
     HPointer result = alloc::listNil();
@@ -183,7 +183,7 @@ HPointer concat(HPointer bufferList) {
         Cons* c = static_cast<Cons*>(cell);
         void* bufObj = allocator.resolve(c->head.p);
         if (bufObj) {
-            ByteBuffer* b = static_cast<ByteBuffer*>(bufObj);
+            ByteBuffer* b = alloc::resolveByteBufferBody(bufObj);
             total_len += b->header.size;
         }
         current = c->tail;
@@ -212,7 +212,7 @@ HPointer concat(HPointer bufferList) {
         Cons* c = static_cast<Cons*>(cell);
         void* bufObj = allocator.resolve(c->head.p);
         if (bufObj) {
-            ByteBuffer* b = static_cast<ByteBuffer*>(bufObj);
+            ByteBuffer* b = alloc::resolveByteBufferBody(bufObj);
             std::memcpy(result->bytes + offset, b->bytes, b->header.size);
             offset += b->header.size;
         }
@@ -230,7 +230,7 @@ static const char base64_chars[] =
 
 // Encodes a ByteBuffer as Base64, returning an ElmString.
 HPointer toBase64(void* buf) {
-    ByteBuffer* b = static_cast<ByteBuffer*>(buf);
+    ByteBuffer* b = alloc::resolveByteBufferBody(buf);
     size_t len = b->header.size;
 
     if (len == 0) return alloc::emptyString();
@@ -318,7 +318,7 @@ static const char hex_chars[] = "0123456789abcdef";
 
 // Encodes a ByteBuffer as lowercase hexadecimal.
 HPointer toHex(void* buf) {
-    ByteBuffer* b = static_cast<ByteBuffer*>(buf);
+    ByteBuffer* b = alloc::resolveByteBufferBody(buf);
     size_t len = b->header.size;
 
     if (len == 0) return alloc::emptyString();

@@ -235,7 +235,7 @@ HPointer read_f64(bool littleEndian, void* bytes, i64 offset) {
 }
 
 HPointer read_bytes(i64 length, void* bytes, i64 offset) {
-    ByteBuffer* b = static_cast<ByteBuffer*>(bytes);
+    ByteBuffer* b = alloc::resolveByteBufferBody(bytes);
 
     if (offset < 0 || static_cast<size_t>(offset + length) > b->header.size) {
         return decodeFailure();
@@ -246,7 +246,7 @@ HPointer read_bytes(i64 length, void* bytes, i64 offset) {
 }
 
 HPointer read_string(i64 length, void* bytes, i64 offset) {
-    ByteBuffer* b = static_cast<ByteBuffer*>(bytes);
+    ByteBuffer* b = alloc::resolveByteBufferBody(bytes);
 
     if (offset < 0 || static_cast<size_t>(offset + length) > b->header.size) {
         return decodeFailure();
@@ -309,7 +309,7 @@ HPointer write_f64(bool littleEndian, f64 value) {
 
 HPointer write_bytes(void* bytes) {
     // Just return a copy (ByteBuffer is immutable)
-    ByteBuffer* b = static_cast<ByteBuffer*>(bytes);
+    ByteBuffer* b = alloc::resolveByteBufferBody(bytes);
     return BytesOps::fromData(b->bytes, b->header.size);
 }
 

@@ -564,6 +564,29 @@ foreach(mod ${ECO_KERNEL_MODS})
     string(APPEND ECO_BOOT_CONFIG_CONTENT "        \"$<TARGET_FILE:EcoKernel_${mod}>\",\n")
 endforeach()
 string(APPEND ECO_BOOT_CONFIG_CONTENT "    };\n}\n\n")
+
+# System libraries pulled in by static kernel archives. The static archives
+# only carry their own object code; their PRIVATE link interface (libcurl,
+# libssl, libcrypto, libzip) doesn't propagate, so the AOT linker driven by
+# eco-boot-native must repeat them on its own command line. We list the
+# always-present ones (curl/ssl/crypto/pthread/m/stdc++) directly in
+# eco-boot.cpp; libzip is conditional on host availability and travels
+# through this generated config.
+string(APPEND ECO_BOOT_CONFIG_CONTENT "inline std::vector<std::string> kernelSystemLibs() {\n")
+string(APPEND ECO_BOOT_CONFIG_CONTENT "    return {\n")
+if(ECO_KERNEL_LIBZIP_FOUND)
+    foreach(libzip_entry IN LISTS ECO_KERNEL_LIBZIP_LIBRARIES)
+        # pkg-config returns bare lib names ("zip"); turn each into "-l<name>"
+        # for the linker-args list. Absolute paths are passed as-is.
+        if(IS_ABSOLUTE "${libzip_entry}")
+            string(APPEND ECO_BOOT_CONFIG_CONTENT "        \"${libzip_entry}\",\n")
+        else()
+            string(APPEND ECO_BOOT_CONFIG_CONTENT "        \"-l${libzip_entry}\",\n")
+        endif()
+    endforeach()
+endif()
+string(APPEND ECO_BOOT_CONFIG_CONTENT "    };\n}\n\n")
+
 string(APPEND ECO_BOOT_CONFIG_CONTENT "} // namespace config\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT "} // namespace eco\n")
 

@@ -378,7 +378,7 @@ bool extractRequest(uint64_t requestEnc, HttpContext& ctx, uint64_t& expectHandl
             HPointer bytesHP = body->values[0].p;
             void* bytesPtr = Allocator::instance().resolve(bytesHP);
             if (bytesPtr) {
-                ByteBuffer* buf = static_cast<ByteBuffer*>(bytesPtr);
+                ByteBuffer* buf = resolveByteBufferBody(bytesPtr);
                 ctx.requestBody = std::string(reinterpret_cast<char*>(buf->bytes), buf->header.size);
             }
         }

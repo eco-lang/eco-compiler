@@ -1233,12 +1233,49 @@ inline bool isString(void* obj) {
  * Tag_LargeStringHeader's body for raw chars[] access.
  */
 inline bool isStringLeaf(void* obj) {
-    Tag t = getTag(obj);
-    // Defensive: catch a callsite that hands a split-header to a body-shaped
-    // reader (one that assumes inline chars[] without resolving body).
-    assert(t != Tag_LargeStringHeader &&
-           "isStringLeaf called on Tag_LargeStringHeader; resolve body first");
-    return t == Tag_String;
+    return getTag(obj) == Tag_String;
+}
+
+/**
+ * If `obj` is a Tag_LargeByteHeader (HEAP_026 split form), follow its body
+ * HPointer to the underlying Tag_ByteBuffer in old gen and return that.
+ * Otherwise return `obj` unchanged. Returns nullptr if `obj` is null or the
+ * body resolves to nullptr.
+ *
+ * Use at every entry point that takes a `void* bytes` from the runtime/JIT
+ * boundary (or from `Allocator::resolve`) and then accesses `bb->bytes[]` or
+ * does pointer arithmetic on the byte payload. The returned `ByteBuffer*`
+ * has the same field layout (`header.size`, `bytes[]`) as a flat ByteBuffer,
+ * so downstream code keeps working unchanged.
+ */
+inline ByteBuffer* resolveByteBufferBody(void* obj) {
+    if (!obj) return nullptr;
+    Header* hdr = static_cast<Header*>(obj);
+    if (hdr->tag == Tag_LargeByteHeader) {
+        LargeByteHeader* h = static_cast<LargeByteHeader*>(obj);
+        void* body = Allocator::instance().resolve(h->body);
+        return static_cast<ByteBuffer*>(body);
+    }
+    return static_cast<ByteBuffer*>(obj);
+}
+
+/**
+ * Same idea for strings: resolves through Tag_LargeStringHeader to its
+ * Tag_String body so callers can keep using `s->chars[i]` directly.
+ *
+ * Use this where a hot path bypasses StringOps::charAt for performance and
+ * indexes `chars[]` directly. Code that goes through StringOps::charAt /
+ * toStdU16String already handles the split form transparently.
+ */
+inline ElmString* resolveStringBody(void* obj) {
+    if (!obj) return nullptr;
+    Header* hdr = static_cast<Header*>(obj);
+    if (hdr->tag == Tag_LargeStringHeader) {
+        LargeStringHeader* h = static_cast<LargeStringHeader*>(obj);
+        void* body = Allocator::instance().resolve(h->body);
+        return static_cast<ElmString*>(body);
+    }
+    return static_cast<ElmString*>(obj);
 }
 
 /**
@@ -1247,10 +1284,6 @@ inline bool isStringLeaf(void* obj) {
  */
 inline bool isByteBuffer(void* obj) {
     Tag t = getTag(obj);
-    // Same defensive assert as isStringLeaf: split-header should not reach
-    // body-shaped readers.
-    assert(t != Tag_LargeByteHeader ||
-           getTag(obj) == Tag_LargeByteHeader);
     return t == Tag_ByteBuffer || t == Tag_LargeByteHeader;
 }
 

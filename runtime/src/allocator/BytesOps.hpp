@@ -93,7 +93,7 @@ HPointer fromString(void* str);
  * Returns the number of bytes in a ByteBuffer.
  */
 inline i64 length(void* buf) {
-    ByteBuffer* b = static_cast<ByteBuffer*>(buf);
+    ByteBuffer* b = alloc::resolveByteBufferBody(buf);
     return static_cast<i64>(b->header.size);
 }
 
@@ -102,7 +102,7 @@ inline i64 length(void* buf) {
  * Returns -1 if index is out of bounds.
  */
 inline i64 getAt(void* buf, i64 index) {
-    ByteBuffer* b = static_cast<ByteBuffer*>(buf);
+    ByteBuffer* b = alloc::resolveByteBufferBody(buf);
     if (index < 0 || static_cast<size_t>(index) >= b->header.size) {
         return -1;
     }
@@ -113,7 +113,7 @@ inline i64 getAt(void* buf, i64 index) {
  * Extracts a slice from start (inclusive) to end (exclusive).
  */
 inline HPointer slice(void* buf, i64 start, i64 end) {
-    ByteBuffer* b = static_cast<ByteBuffer*>(buf);
+    ByteBuffer* b = alloc::resolveByteBufferBody(buf);
     i64 len = static_cast<i64>(b->header.size);
 
     // Clamp to bounds
@@ -174,7 +174,7 @@ inline HPointer encodeSignedInt(i64 value, Width width, Endianness endian) {
  * @return Just(int) on success, Nothing if not enough bytes.
  */
 inline HPointer decodeUnsignedInt(void* buf, i64 offset, Width width, Endianness endian) {
-    ByteBuffer* b = static_cast<ByteBuffer*>(buf);
+    ByteBuffer* b = alloc::resolveByteBufferBody(buf);
     size_t w = static_cast<size_t>(width);
     size_t off = static_cast<size_t>(offset);
 
@@ -200,7 +200,7 @@ inline HPointer decodeUnsignedInt(void* buf, i64 offset, Width width, Endianness
  * Decodes a signed integer from bytes (two's complement).
  */
 inline HPointer decodeSignedInt(void* buf, i64 offset, Width width, Endianness endian) {
-    ByteBuffer* b = static_cast<ByteBuffer*>(buf);
+    ByteBuffer* b = alloc::resolveByteBufferBody(buf);
     size_t w = static_cast<size_t>(width);
     size_t off = static_cast<size_t>(offset);
 
@@ -281,7 +281,7 @@ inline HPointer encodeFloat64(f64 value, Endianness endian) {
  * Decodes a 32-bit float from bytes.
  */
 inline HPointer decodeFloat32(void* buf, i64 offset, Endianness endian) {
-    ByteBuffer* b = static_cast<ByteBuffer*>(buf);
+    ByteBuffer* b = alloc::resolveByteBufferBody(buf);
     size_t off = static_cast<size_t>(offset);
 
     if (offset < 0 || off + 4 > b->header.size) {
@@ -307,7 +307,7 @@ inline HPointer decodeFloat32(void* buf, i64 offset, Endianness endian) {
  * Decodes a 64-bit float from bytes.
  */
 inline HPointer decodeFloat64(void* buf, i64 offset, Endianness endian) {
-    ByteBuffer* b = static_cast<ByteBuffer*>(buf);
+    ByteBuffer* b = alloc::resolveByteBufferBody(buf);
     size_t off = static_cast<size_t>(offset);
 
     if (offset < 0 || off + 8 > b->header.size) {
@@ -363,8 +363,8 @@ HPointer toList(void* buf);
  * Appends two ByteBuffers.
  */
 inline HPointer append(void* a, void* b) {
-    ByteBuffer* ba = static_cast<ByteBuffer*>(a);
-    ByteBuffer* bb = static_cast<ByteBuffer*>(b);
+    ByteBuffer* ba = alloc::resolveByteBufferBody(a);
+    ByteBuffer* bb = alloc::resolveByteBufferBody(b);
 
     size_t len_a = ba->header.size;
     size_t len_b = bb->header.size;
@@ -394,7 +394,7 @@ HPointer concat(HPointer bufferList);
  * Converts a ByteBuffer to a std::vector of bytes.
  */
 inline std::vector<u8> toVector(void* buf) {
-    ByteBuffer* b = static_cast<ByteBuffer*>(buf);
+    ByteBuffer* b = alloc::resolveByteBufferBody(buf);
     return std::vector<u8>(b->bytes, b->bytes + b->header.size);
 }
 
@@ -402,8 +402,8 @@ inline std::vector<u8> toVector(void* buf) {
  * Returns true if two ByteBuffers have equal contents.
  */
 inline bool equal(void* a, void* b) {
-    ByteBuffer* ba = static_cast<ByteBuffer*>(a);
-    ByteBuffer* bb = static_cast<ByteBuffer*>(b);
+    ByteBuffer* ba = alloc::resolveByteBufferBody(a);
+    ByteBuffer* bb = alloc::resolveByteBufferBody(b);
 
     if (ba->header.size != bb->header.size) return false;
 
@@ -414,7 +414,7 @@ inline bool equal(void* a, void* b) {
  * Computes a simple hash of a ByteBuffer (for debugging/testing).
  */
 inline u32 hash(void* buf) {
-    ByteBuffer* b = static_cast<ByteBuffer*>(buf);
+    ByteBuffer* b = alloc::resolveByteBufferBody(buf);
     u32 h = 0;
     for (size_t i = 0; i < b->header.size; ++i) {
         h = h * 31 + b->bytes[i];

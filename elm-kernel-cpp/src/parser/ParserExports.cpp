@@ -30,13 +30,18 @@ constexpr u32 TUPLE3_INT_INT_INT   = 0x15;
 // become leaves) so the parser hot loops can index ->chars[] directly. Per
 // the plan, the parser is the heaviest consumer of String operations and
 // pays a single flatten allocation rather than per-char tag dispatch.
+//
+// Split-header awareness (HEAP_026): ensureFlat may return a
+// Tag_LargeStringHeader (it treats the split form as leaf-like). Resolve
+// through `body` so the returned ElmString* points at the actual flat leaf
+// with a usable chars[] inline array.
 inline ElmString* resolveString(HPtr str) {
     HPointer hp;
     uint64_t bits = str.toBits();
     std::memcpy(&hp, &bits, sizeof(hp));
     HPointer flat = StringOps::ensureFlat(hp);
     if (alloc::isEmbeddedConstant(flat)) return nullptr;
-    return static_cast<ElmString*>(Allocator::instance().resolve(flat));
+    return alloc::resolveStringBody(Allocator::instance().resolve(flat));
 }
 
 inline int64_t stringLen(const ElmString* s) {

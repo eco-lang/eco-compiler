@@ -78,11 +78,21 @@ static uint64_t makeTuple2_ip(int64_t a, HPointer b) {
     return Export::encode(allocator.wrap(t));
 }
 
-// Resolve a ByteBuffer from an eco.value encoded uint64_t.
+// Resolve a ByteBuffer from an eco.value encoded uint64_t. Transparently
+// follows Tag_LargeByteHeader (HEAP_026) split headers to the underlying
+// Tag_ByteBuffer body in old gen, so callers downstream can keep accessing
+// bb->bytes[] and bb->header.size as if they had a flat ByteBuffer.
 static ByteBuffer* resolveByteBuffer(uint64_t bytes) {
     auto& allocator = Allocator::instance();
     HPointer hp = Export::decode(bytes);
-    return static_cast<ByteBuffer*>(allocator.resolve(hp));
+    void* obj = allocator.resolve(hp);
+    if (!obj) return nullptr;
+    Header* hdr = static_cast<Header*>(obj);
+    if (hdr->tag == Tag_LargeByteHeader) {
+        LargeByteHeader* lh = static_cast<LargeByteHeader*>(obj);
+        obj = allocator.resolve(lh->body);
+    }
+    return static_cast<ByteBuffer*>(obj);
 }
 
 // ============================================================================
@@ -126,7 +136,7 @@ static size_t encoderSize(Custom* c) {
         case ENC_BYTES: {
             auto& allocator = Allocator::instance();
             void* bbPtr = allocator.resolve(c->values[0].p);
-            ByteBuffer* bb = static_cast<ByteBuffer*>(bbPtr);
+            ByteBuffer* bb = alloc::resolveByteBufferBody(bbPtr);
             return bb->header.size;
         }
         default: return 0;
@@ -284,7 +294,7 @@ static void writeEncoder(Custom* encoder, u8* buf, size_t& offset) {
         }
         case ENC_BYTES: {
             void* bbPtr = allocator.resolve(encoder->values[0].p);
-            ByteBuffer* bb = static_cast<ByteBuffer*>(bbPtr);
+            ByteBuffer* bb = alloc::resolveByteBufferBody(bbPtr);
             std::memcpy(buf + offset, bb->bytes, bb->header.size);
             offset += bb->header.size;
             break;
@@ -558,7 +568,7 @@ HPtr Elm_Kernel_Bytes_read_bytes(int64_t length, HPtr bytes, int64_t offset) {
     }
     slice->header.size = static_cast<u32>(length);
 
-    ByteBuffer* src = static_cast<ByteBuffer*>(allocator.resolve(srcHP));
+    ByteBuffer* src = alloc::resolveByteBufferBody(allocator.resolve(srcHP));
     std::memcpy(slice->bytes, src->bytes + offset, length);
 
     return HPtr::fromBits(makeTuple2_ip(offset + length, allocator.wrap(slice)));
@@ -580,7 +590,7 @@ HPtr Elm_Kernel_Bytes_read_string(int64_t length, HPtr bytes, int64_t offset) {
     // the buffer before any allocation, so a raw pointer is safe there; the
     // post-allocation copy must re-resolve through the rooted handle.
     HPointer srcHP = Export::decode(bytes.toBits());
-    ByteBuffer* bb = static_cast<ByteBuffer*>(allocator.resolve(srcHP));
+    ByteBuffer* bb = alloc::resolveByteBufferBody(allocator.resolve(srcHP));
     const u8* src = bb->bytes + offset;
 
     // Count UTF-16 code units needed for the UTF-8 input.
@@ -615,7 +625,7 @@ HPtr Elm_Kernel_Bytes_read_string(int64_t length, HPtr bytes, int64_t offset) {
     }
     str->header.size = static_cast<u32>(utf16Count);
 
-    bb = static_cast<ByteBuffer*>(allocator.resolve(srcHP));
+    bb = alloc::resolveByteBufferBody(allocator.resolve(srcHP));
     src = bb->bytes + offset;
 
     // Convert UTF-8 to UTF-16
