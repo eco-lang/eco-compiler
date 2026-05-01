@@ -51,9 +51,51 @@ import Compiler.Reporting.Doc as D
 import System.Exit as Exit
 import System.IO as IO exposing (MVar)
 import Task exposing (Task)
+import Time
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 import Utils.Main as Utils exposing (Chan)
+
+
+{-| Pad an Int with leading zeros to the given width. -}
+padInt : Int -> Int -> String
+padInt width n =
+    let
+        s : String
+        s =
+            String.fromInt n
+    in
+    if String.length s >= width then
+        s
+
+    else
+        String.repeat (width - String.length s) "0" ++ s
+
+
+{-| Format a Posix timestamp as `HH:MM:SS.mmm` in UTC. -}
+formatPosixUtc : Time.Posix -> String
+formatPosixUtc now =
+    padInt 2 (Time.toHour Time.utc now)
+        ++ ":"
+        ++ padInt 2 (Time.toMinute Time.utc now)
+        ++ ":"
+        ++ padInt 2 (Time.toSecond Time.utc now)
+        ++ "."
+        ++ padInt 3 (Time.toMillis Time.utc now)
+
+
+{-| Prepend a UTC `[HH:MM:SS.mmm]` timestamp to a log message. -}
+withTimestamp : String -> Task Never String
+withTimestamp message =
+    Time.now
+        |> Task.map (\now -> "[" ++ formatPosixUtc now ++ "] " ++ message)
+
+
+{-| Write a timestamped line to stderr. -}
+stampedStderrLine : String -> Task Never ()
+stampedStderrLine message =
+    withTimestamp message
+        |> Task.andThen (IO.writeLn IO.stderr)
 
 
 
@@ -298,6 +340,7 @@ trackDetailsWithChan mvar callback chan =
 runDetailsWorker : MVar () -> Chan (Maybe DMsg) -> Task Never ()
 runDetailsWorker mvar chan =
     Utils.takeMVar (Bytes.Decode.succeed ()) mvar
+        |> Task.andThen (\_ -> stampedStderrLine "[deps] verifying dependencies")
         |> Task.andThen (\_ -> detailsLoop chan (DState { total = 0, cached = 0, requested = 0, received = 0, failed = 0, built = 0, broken = 0 }))
         |> Task.andThen (\_ -> Utils.putMVar (\_ -> BE.bool True) mvar ())
 
@@ -442,8 +485,18 @@ putTransition ((DState ds) as state) =
 
 putBuilt : DState -> Task Never DState
 putBuilt ((DState ds) as state) =
+    let
+        completed : Int
+        completed =
+            ds.built + ds.broken + ds.failed
+    in
     (if ds.total == ds.cached + ds.received + ds.failed then
-        putStrFlush (String.cons '\u{000D}' (toBuildProgress (ds.built + ds.broken + ds.failed) ds.total))
+        putStrFlush (String.cons '\u{000D}' (toBuildProgress completed ds.total))
+            |> Task.andThen
+                (\_ ->
+                    stampedStderrLine
+                        ("[deps] " ++ String.fromInt completed ++ "/" ++ String.fromInt ds.total ++ " verified")
+                )
 
      else
         Task.succeed ()
@@ -512,6 +565,7 @@ runBuildWorker : Bytes.Decode.Decoder a -> MVar () -> Chan (Result BMsg (BResult
 runBuildWorker decoder mvar chan =
     Utils.takeMVar (Bytes.Decode.succeed ()) mvar
         |> Task.andThen (\_ -> putStrFlush "Compiling ...")
+        |> Task.andThen (\_ -> stampedStderrLine "[build] Compiling ...")
         |> Task.andThen (\_ -> buildLoop decoder chan 0)
         |> Task.andThen (\_ -> Utils.putMVar (\_ -> BE.bool True) mvar ())
 
@@ -548,13 +602,13 @@ updateBuildProgress : Bytes.Decode.Decoder a -> Chan (Result BMsg (BResult a)) -
 updateBuildProgress decoder chan done =
     -- Always update the in-place terminal counter.
     putStrFlush ("\u{000D}Compiling (" ++ String.fromInt done ++ ")")
-        -- Plus a newline-terminated progression line for *every* module so
-        -- captured stderr (where the in-place "\rCompiling (N)" counter
-        -- doesn't render usefully) shows which module is being worked on
+        -- Plus a timestamped, newline-terminated progression line for *every*
+        -- module so captured stderr (where the in-place "\rCompiling (N)"
+        -- counter doesn't render usefully) shows when each module finished
         -- and at what rate.
         |> Task.andThen
             (\_ ->
-                IO.writeLn IO.stderr
+                stampedStderrLine
                     ("[build] " ++ String.fromInt done ++ " modules done")
             )
         |> Task.andThen (\_ -> buildLoop decoder chan done)
@@ -579,6 +633,7 @@ printFinalBuildMessage done result =
          else
             String.cons '\u{000D}' message
         )
+        |> Task.andThen (\_ -> stampedStderrLine ("[build] " ++ message))
 
 
 toFinalMessage : Int -> BResult a -> String
