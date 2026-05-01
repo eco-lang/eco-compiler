@@ -415,11 +415,10 @@ struct HeapConfig {
             throw std::invalid_argument(
                 "small_class_cell_max_bytes must be >= sizeof(FreeCell)");
         }
-        if (small_class_cell_max_bytes > large_object_threshold) {
-            throw std::invalid_argument(
-                "small_class_cell_max_bytes must be <= large_object_threshold "
-                "(above-LOT bypasses fixed-cell classes)");
-        }
+        // Note: small_class_cell_max_bytes may exceed large_object_threshold.
+        // Allocations below LOT but at/below small_class_cell_max_bytes still
+        // route through fixed-size cell classes; cells larger than the
+        // requested size simply waste the slack space.
     }
 };
 
