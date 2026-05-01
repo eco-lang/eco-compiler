@@ -4,7 +4,9 @@ Heap profiler for the Eco runtime.
 
 Two modes:
   run    — compile Stage 7 once with one heap-config JSON.
-  sweep  — compile Stage 7 once per entry of a hard-coded VARIANTS matrix.
+  sweep  — compile Stage 7 once per entry of a VARIANTS matrix
+           (the built-in one in this file, or a JSON file passed via
+           `--variants-file`).
 
 Each invocation creates one timestamped folder under
     <results_root>/<machine>/<YYYY-MM-DDTHH-MM-SSZ>__<label>/
@@ -87,6 +89,33 @@ VARIANTS = [
     ("E1_page64K",   "alloc_buffer_size=64K",          {"alloc_buffer_size": "64K"}),
     ("E2_page256K",  "alloc_buffer_size=256K",         {"alloc_buffer_size": "256K"}),
 ]
+
+
+def load_variants_file(path: Path) -> list[tuple[str, str, dict]]:
+    """Load a sweep matrix from a JSON file. The file must be a list of
+    objects with keys 'name', 'change', 'overrides'. 'change' defaults to
+    a `key=value` summary of overrides if omitted."""
+    data = json.loads(Path(path).read_text())
+    if not isinstance(data, list):
+        sys.exit(f"ERROR: {path}: top level must be a list of variants")
+    out: list[tuple[str, str, dict]] = []
+    seen: set[str] = set()
+    for i, item in enumerate(data):
+        if not isinstance(item, dict):
+            sys.exit(f"ERROR: {path}[{i}]: each variant must be an object")
+        name = item.get("name")
+        if not name or not isinstance(name, str):
+            sys.exit(f"ERROR: {path}[{i}]: missing string 'name'")
+        if name in seen:
+            sys.exit(f"ERROR: {path}: duplicate variant name {name!r}")
+        seen.add(name)
+        overrides = item.get("overrides", {})
+        if not isinstance(overrides, dict):
+            sys.exit(f"ERROR: {path}[{i}]: 'overrides' must be an object")
+        change = item.get("change") or ", ".join(
+            f"{k}={v}" for k, v in overrides.items()) or "(no overrides)"
+        out.append((name, change, overrides))
+    return out
 
 SUMMARY_COLUMNS = [
     "name", "change",
@@ -670,6 +699,8 @@ def cmd_sweep(args, machine: str, results_root: Path) -> None:
     selected = None
     if args.variants:
         selected = set(s.strip() for s in args.variants.split(",") if s.strip())
+    variants = (load_variants_file(args.variants_file)
+                if args.variants_file else VARIANTS)
     group_dir, ts = make_group_dir(results_root, machine, "sweep",
                                    args.label, args.resume_dir)
     done = previously_done_names(group_dir)
@@ -682,7 +713,7 @@ def cmd_sweep(args, machine: str, results_root: Path) -> None:
                 cells = line.rstrip("\n").split("\t")
                 summary_rows.append(dict(zip(cols, cells)))
 
-    for name, change, overrides in VARIANTS:
+    for name, change, overrides in variants:
         if selected is not None and name not in selected:
             continue
         if name in done:
@@ -702,6 +733,7 @@ def cmd_sweep(args, machine: str, results_root: Path) -> None:
         "results_root": str(results_root),
         "timestamp_utc": ts,
         "wall_seconds": args.wall_seconds,
+        "variants_file": str(args.variants_file) if args.variants_file else None,
         "variants_filter": sorted(selected) if selected else None,
         "rebuild": rebuild,
     }, indent=2))
@@ -746,6 +778,9 @@ def build_parser() -> argparse.ArgumentParser:
     ps = sub.add_parser("sweep", help="run the hard-coded variants matrix")
     ps.add_argument("--variants",
                     help="comma-separated subset of variant names")
+    ps.add_argument("--variants-file", type=Path,
+                    help="JSON file with a list of {name, change?, "
+                         "overrides} objects, replacing the built-in matrix")
     ps.add_argument("--label", help="folder label (default: 'sweep')")
     ps.add_argument("--wall-seconds", type=int, default=DEFAULT_WALL_SECONDS,
                     help=f"per-run wall budget (default {DEFAULT_WALL_SECONDS})")
