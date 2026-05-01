@@ -3562,8 +3562,8 @@ void OldGenSpace::freeEvacuatedBuffers() {
 // Split-header body tracking (HEAP_026).
 // ---------------------------------------------------------------------------
 
-void* OldGenSpace::allocateLargeBody(size_t total_size, Tag body_tag,
-                                     bool initial_color) {
+void* OldGenSpace::allocateLargeBody(size_t total_size, size_t logical_size,
+                                     Tag body_tag, bool initial_color) {
     assert(body_tag == Tag_String || body_tag == Tag_ByteBuffer);
     total_size = (total_size + 7) & ~static_cast<size_t>(7);
 
@@ -3575,15 +3575,17 @@ void* OldGenSpace::allocateLargeBody(size_t total_size, Tag body_tag,
     // entire lifetime so large_body_index_'s key remains valid. allocate()
     // already zero-initialised the header and set color appropriately for
     // the current GC phase; we only need to set tag/pin and the size.
+    //
+    // `header.size` is the LOGICAL content length (chars for Tag_String,
+    // bytes for Tag_ByteBuffer), not derived from `total_size`. The caller's
+    // 8-byte alignment of `total_size` would otherwise round the apparent
+    // length up and expose uninitialised padding bytes as content — see
+    // Heap.hpp:261-263 for the contract that the body's `header.size`
+    // matches the owning split-header's logical length.
     Header* hdr = static_cast<Header*>(body);
     hdr->tag = body_tag;
     hdr->pin = 1;
-    if (body_tag == Tag_String) {
-        hdr->size = static_cast<u32>(
-            (total_size - sizeof(ElmString)) / sizeof(u16));
-    } else {
-        hdr->size = static_cast<u32>(total_size - sizeof(ByteBuffer));
-    }
+    hdr->size = static_cast<u32>(logical_size);
 
     // Decide whether the body landed in a dedicated is_large block. The
     // BBoP allocator places sizes >= alloc_buffer_size into is_large blocks.

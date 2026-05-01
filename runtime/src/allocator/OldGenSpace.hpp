@@ -276,12 +276,18 @@ public:
     // ========== Split-Header Body API (HEAP_026) ==========
 
     // Allocates a body cell of `total_size` bytes in old gen and writes a
-    // header with `body_tag` (Tag_String / Tag_ByteBuffer), `pin = 1`. Returns
-    // the body pointer. Body bytes (the chars[] / bytes[] payload) are NOT
-    // touched here; the caller copies them in. Registers the body in
-    // `nursery_owned_bodies_` with the supplied initial color.
-    void* allocateLargeBody(size_t total_size, Tag body_tag,
-                            bool initial_color);
+    // header with `body_tag` (Tag_String / Tag_ByteBuffer), `pin = 1`. The
+    // body's `header.size` is set to `logical_size`, which must match the
+    // owning Tag_LargeStringHeader / Tag_LargeByteHeader's `header.size` (the
+    // logical UTF-16 char count for strings, byte count for buffers). It is
+    // NOT derived from `total_size` because the caller's 8-byte alignment
+    // padding would inflate the count and expose uninitialised slack bytes
+    // as content (see Heap.hpp:261-263 for the design contract). Body bytes
+    // (the chars[] / bytes[] payload) are NOT touched here; the caller copies
+    // them in. Registers the body in `nursery_owned_bodies_` with the supplied
+    // initial color.
+    void* allocateLargeBody(size_t total_size, size_t logical_size,
+                            Tag body_tag, bool initial_color);
 
     // Records `body_hp` as still-live for `minor_color`. O(1) lookup; no-op if
     // the body isn't currently nursery-owned (e.g. promoted, or untracked).

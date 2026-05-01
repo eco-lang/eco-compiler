@@ -271,7 +271,7 @@ HPointer ThreadLocalHeap::allocLargeString(const u16* chars, size_t length) {
     const size_t body_size =
         (sizeof(ElmString) + length * sizeof(u16) + 7) & ~static_cast<size_t>(7);
     void* body =
-        old_gen_.allocateLargeBody(body_size, Tag_String,
+        old_gen_.allocateLargeBody(body_size, length, Tag_String,
                                    nursery_.minor_color_);
     assert(body && "Failed to allocate large string body in old gen");
 
@@ -302,7 +302,7 @@ HPointer ThreadLocalHeap::allocLargeByteBuffer(const u8* data, size_t length) {
     const size_t body_size =
         (sizeof(ByteBuffer) + length + 7) & ~static_cast<size_t>(7);
     void* body =
-        old_gen_.allocateLargeBody(body_size, Tag_ByteBuffer,
+        old_gen_.allocateLargeBody(body_size, length, Tag_ByteBuffer,
                                    nursery_.minor_color_);
     assert(body && "Failed to allocate large byte buffer body in old gen");
 
