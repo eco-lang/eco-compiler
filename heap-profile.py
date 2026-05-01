@@ -29,6 +29,7 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -523,8 +524,40 @@ def parse_freelist_histogram(text: str, header_substr: str) -> list[dict]:
 # Per-variant run
 # ---------------------------------------------------------------------------
 
+def _pump(src, dests: list) -> None:
+    """Read chunks from `src` and write each to every dest, flushing as we go."""
+    for chunk in iter(lambda: src.read(4096), b""):
+        for d in dests:
+            d.write(chunk)
+            d.flush()
+
+
+def _run_capturing(cmd, *, cwd, env, out_path: Path, err_path: Path,
+                   tee: bool) -> int:
+    """Run `cmd`, writing stdout/stderr to the given log files. When `tee` is
+    set, the output is also forwarded live to the parent's stdout/stderr."""
+    if not tee:
+        with out_path.open("wb") as out, err_path.open("wb") as err:
+            return subprocess.run(cmd, cwd=cwd, env=env,
+                                  stdout=out, stderr=err).returncode
+    with out_path.open("wb") as out_f, err_path.open("wb") as err_f:
+        proc = subprocess.Popen(cmd, cwd=cwd, env=env,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE)
+        t_out = threading.Thread(
+            target=_pump, args=(proc.stdout, [out_f, sys.stdout.buffer]))
+        t_err = threading.Thread(
+            target=_pump, args=(proc.stderr, [err_f, sys.stderr.buffer]))
+        t_out.start()
+        t_err.start()
+        rc = proc.wait()
+        t_out.join()
+        t_err.join()
+        return rc
+
+
 def run_variant(*, name: str, change: str, heap_config: dict,
-                variant_dir: Path, wall_seconds: int) -> dict:
+                variant_dir: Path, wall_seconds: int, tee: bool) -> dict:
     """Runs the binary once and writes all per-variant TSVs. Returns the
     summary row (a dict keyed by SUMMARY_COLUMNS)."""
     variant_dir.mkdir(parents=True, exist_ok=True)
@@ -556,9 +589,8 @@ def run_variant(*, name: str, change: str, heap_config: dict,
     print(f"\n=== {name}  ({change}) — wall_seconds={wall_seconds} ===",
           flush=True)
     t0 = time.time()
-    with out_path.open("wb") as out, err_path.open("wb") as err:
-        rc = subprocess.run(cmd, cwd=BUILD_KERNEL, env=env,
-                            stdout=out, stderr=err).returncode
+    rc = _run_capturing(cmd, cwd=BUILD_KERNEL, env=env,
+                        out_path=out_path, err_path=err_path, tee=tee)
     elapsed = time.time() - t0
     out_text = out_path.read_text(errors="replace")
     err_text = err_path.read_text(errors="replace")
@@ -730,7 +762,8 @@ def cmd_run(args, machine: str, results_root: Path) -> None:
     summary = run_variant(
         name=name, change=f"config={cfg_path.name}",
         heap_config=heap_config,
-        variant_dir=variant_dir, wall_seconds=args.wall_seconds)
+        variant_dir=variant_dir, wall_seconds=args.wall_seconds,
+        tee=args.tee)
 
     append_tsv_row(group_dir / "runs.tsv", SUMMARY_COLUMNS, summary)
     (group_dir / "args.json").write_text(json.dumps({
@@ -778,7 +811,8 @@ def cmd_sweep(args, machine: str, results_root: Path) -> None:
         variant_dir = group_dir / "variants" / name
         summary = run_variant(
             name=name, change=change, heap_config=heap_config,
-            variant_dir=variant_dir, wall_seconds=args.wall_seconds)
+            variant_dir=variant_dir, wall_seconds=args.wall_seconds,
+            tee=args.tee)
         append_tsv_row(group_dir / "runs.tsv", SUMMARY_COLUMNS, summary)
         summary_rows.append(summary)
 
@@ -814,6 +848,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="fail if local config is missing instead of prompting")
     p.add_argument("--skip-rebuild", action="store_true",
                    help="skip the build-freshness check")
+    p.add_argument("--tee", action="store_true",
+                   help="also stream eco-compiler stdout/stderr to the "
+                        "console (logs are still written to the variant dir)")
     p.add_argument("--list-variants", action="store_true",
                    help="print the sweep variants table and exit")
 
