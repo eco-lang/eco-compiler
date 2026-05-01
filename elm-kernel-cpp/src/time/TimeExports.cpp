@@ -150,20 +150,40 @@ std::string getTimezoneName() {
     return "";
 }
 
-} // anonymous namespace
+// Binding evaluator for Time.now: invoked when the scheduler consumes the
+// Task_Binding. Reads system_clock at consumption time (not at module init)
+// so successive Time.now references see distinct timestamps. Mirrors the JS
+// kernel's `_Scheduler_binding(callback => callback(_Scheduler_succeed(...)))`.
+// Argument: rawArgs[0] = resume closure (HPointer encoded).
+static void* timeNowBindingEvaluator(void* rawArgs[]) {
+    uint64_t resumeEnc = reinterpret_cast<uint64_t>(rawArgs[0]);
+    HPointer resumeHP = Export::decode(resumeEnc);
 
-extern "C" {
-
-HPtr Elm_Kernel_Time_now() {
-    // Returns Task x Posix; Posix is an Int (ms since epoch) stored unboxed
-    // in the Task's payload slot.
     auto now = std::chrono::system_clock::now();
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         now.time_since_epoch()
     ).count();
 
-    HPointer task = Scheduler::instance().taskSucceedKind(
+    HPointer succeededTask = Elm::Platform::Scheduler::instance().taskSucceedKind(
         Elm::alloc::unboxedInt(ms), 1);
+    Elm::Platform::Scheduler::callClosure1(resumeHP, succeededTask);
+
+    // Kill handle: Unit (Time.now is synchronous, nothing to cancel).
+    return reinterpret_cast<void*>(Export::encode(Elm::alloc::unit()));
+}
+
+} // anonymous namespace
+
+extern "C" {
+
+HPtr Elm_Kernel_Time_now() {
+    // Returns Task x Posix; Posix is an Int (ms since epoch). The clock read
+    // is deferred into a Task_Binding so it fires when the scheduler consumes
+    // the task, not at module init time (which would freeze every reference
+    // to Time.now to a single timestamp).
+    HPointer bindingCB = Elm::alloc::allocClosure(
+        reinterpret_cast<EvalFunction>(timeNowBindingEvaluator), 1);
+    HPointer task = Scheduler::instance().taskBinding(bindingCB);
     return HPtr::fromBits(Export::encode(task));
 }
 
