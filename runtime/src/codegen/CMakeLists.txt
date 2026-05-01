@@ -97,6 +97,28 @@ mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_DIR}/EcoEnums.cpp.inc -gen-enum-defs)
 # Create a target that depends on all generated files
 add_public_tablegen_target(EcoOpsIncGen)
 
+# Concrete list of generated tablegen outputs that the dialect/passes #include.
+# Used as explicit OBJECT_DEPENDS so ninja rebuilds the .o files whenever the
+# generated headers change, even if a stale depfile from a previous configure
+# cycle would otherwise hide the dep.
+set(ECO_TABLEGEN_OUTPUTS
+    ${MLIR_TABLEGEN_OUTPUT_DIR}/EcoOps.h.inc
+    ${MLIR_TABLEGEN_OUTPUT_DIR}/EcoOps.cpp.inc
+    ${MLIR_TABLEGEN_OUTPUT_DIR}/EcoOpInterfaces.h.inc
+    ${MLIR_TABLEGEN_OUTPUT_DIR}/EcoOpInterfaces.cpp.inc
+    ${MLIR_TABLEGEN_OUTPUT_DIR}/EcoDialect.h.inc
+    ${MLIR_TABLEGEN_OUTPUT_DIR}/EcoDialect.cpp.inc
+    ${MLIR_TABLEGEN_OUTPUT_DIR}/EcoTypes.h.inc
+    ${MLIR_TABLEGEN_OUTPUT_DIR}/EcoTypes.cpp.inc
+    ${MLIR_TABLEGEN_OUTPUT_DIR}/EcoEnums.h.inc
+    ${MLIR_TABLEGEN_OUTPUT_DIR}/EcoEnums.cpp.inc
+)
+
+set_source_files_properties(
+    EcoDialect.cpp EcoOps.cpp EcoTypes.cpp
+    PROPERTIES OBJECT_DEPENDS "${ECO_TABLEGEN_OUTPUTS}"
+)
+
 #------------------------------------------------------------------------------
 # Create a library target for the dialect
 #------------------------------------------------------------------------------
@@ -162,6 +184,50 @@ mlir_tablegen(${BF_TABLEGEN_OUTPUT_DIR}/BFEnums.cpp.inc -gen-enum-defs)
 
 # Create a target that depends on all generated BF files
 add_public_tablegen_target(BFOpsIncGen)
+
+set(BF_TABLEGEN_OUTPUTS
+    ${BF_TABLEGEN_OUTPUT_DIR}/BFOps.h.inc
+    ${BF_TABLEGEN_OUTPUT_DIR}/BFOps.cpp.inc
+    ${BF_TABLEGEN_OUTPUT_DIR}/BFDialect.h.inc
+    ${BF_TABLEGEN_OUTPUT_DIR}/BFDialect.cpp.inc
+    ${BF_TABLEGEN_OUTPUT_DIR}/BFTypes.h.inc
+    ${BF_TABLEGEN_OUTPUT_DIR}/BFTypes.cpp.inc
+    ${BF_TABLEGEN_OUTPUT_DIR}/BFEnums.h.inc
+    ${BF_TABLEGEN_OUTPUT_DIR}/BFEnums.cpp.inc
+)
+
+set_source_files_properties(
+    BF/BFDialect.cpp BF/BFOps.cpp BF/BFTypes.cpp
+    PROPERTIES OBJECT_DEPENDS "${BF_TABLEGEN_OUTPUTS}"
+)
+
+# All EcoPasses sources transitively include EcoOps.cpp.inc / EcoOps.h.inc via
+# EcoDialect.h, and the EcoToLLVM* sources also pull in BF op headers. Re-declaring
+# the dependency explicitly guards against stale ninja depfiles after .td edits.
+set_source_files_properties(
+    Passes/RCElimination.cpp
+    Passes/EcoPAPSimplify.cpp
+    Passes/JoinpointNormalization.cpp
+    Passes/EcoControlFlowToSCF.cpp
+    Passes/UndefinedFunction.cpp
+    Passes/CheckEcoClosureCaptures.cpp
+    Passes/EcoGCPrepare.cpp
+    Passes/EcoGCLivenessAudit.cpp
+    Passes/EcoToLLVM.cpp
+    Passes/EcoToLLVMRuntime.cpp
+    Passes/EcoToLLVMTypes.cpp
+    Passes/EcoToLLVMHeap.cpp
+    Passes/EcoToLLVMClosures.cpp
+    Passes/EcoToLLVMControlFlow.cpp
+    Passes/EcoToLLVMArith.cpp
+    Passes/EcoToLLVMGlobals.cpp
+    Passes/EcoToLLVMErrorDebug.cpp
+    Passes/EcoToLLVMFunc.cpp
+    Passes/EcoGCStrategy.cpp
+    Passes/EcoPtrIntVerify.cpp
+    Passes/BFToLLVM.cpp
+    PROPERTIES OBJECT_DEPENDS "${ECO_TABLEGEN_OUTPUTS};${BF_TABLEGEN_OUTPUTS}"
+)
 
 #------------------------------------------------------------------------------
 # Create BF dialect library
@@ -646,14 +712,22 @@ target_link_libraries(eco-boot-native PRIVATE
     LLVMPasses
 )
 
-# eco-boot must be built after the static libraries it references
-add_dependencies(eco-boot-native
-    EcoEntryStatic
-    EcoRuntimeStatic
-    ElmKernel
-    EcoKernel
-    EcoKernel_Crash
-)
+# eco-boot-native shells out to clang at runtime to link these archives into
+# the user's output binary, so they aren't in eco-boot-native's own link line —
+# but we still need them up-to-date whenever eco-boot-native itself is built.
+#
+# NB: ElmKernel and EcoKernel are INTERFACE libraries; add_dependencies() on an
+# INTERFACE target is a no-op (no build action attached), so we must list each
+# concrete static lib explicitly. Reuse ECO_ELM_KERNEL_MODS / ECO_KERNEL_MODS
+# defined above so this list can't drift from the generated EcoBootConfig.h.
+set(ECO_BOOT_NATIVE_RUNTIME_DEPS EcoEntryStatic EcoRuntimeStatic)
+foreach(mod ${ECO_ELM_KERNEL_MODS})
+    list(APPEND ECO_BOOT_NATIVE_RUNTIME_DEPS ElmKernel_${mod})
+endforeach()
+foreach(mod ${ECO_KERNEL_MODS})
+    list(APPEND ECO_BOOT_NATIVE_RUNTIME_DEPS EcoKernel_${mod})
+endforeach()
+add_dependencies(eco-boot-native ${ECO_BOOT_NATIVE_RUNTIME_DEPS})
 
 target_compile_features(eco-boot-native PRIVATE cxx_std_20)
 target_compile_options(eco-boot-native PRIVATE -Wno-ambiguous-reversed-operator -fexceptions)
