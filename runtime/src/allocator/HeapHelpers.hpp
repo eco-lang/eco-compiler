@@ -365,10 +365,10 @@ inline HPointer allocString(const u16* chars, size_t length) {
     // Round up to 8-byte alignment
     total_size = (total_size + 7) & ~7;
 
-    // Above the split-header threshold, route to the split path: small
+    // At/above the large-object threshold, route to the split path: small
     // Tag_LargeStringHeader in nursery + pinned Tag_String body in old gen.
     // See HEAP_026.
-    if (total_size >= allocator.getLargeHeaderSplitThreshold()) {
+    if (total_size >= allocator.getLargeObjectThreshold()) {
         return allocator.allocLargeString(chars, length);
     }
 
@@ -806,7 +806,7 @@ inline HPointer allocByteBuffer(const u8* data, size_t length) {
     size_t total_size = sizeof(ByteBuffer) + length;
     total_size = (total_size + 7) & ~7;
 
-    if (total_size >= allocator.getLargeHeaderSplitThreshold()) {
+    if (total_size >= allocator.getLargeObjectThreshold()) {
         return allocator.allocLargeByteBuffer(data, length);
     }
 
@@ -829,7 +829,7 @@ inline HPointer allocByteBufferZero(size_t length) {
     size_t total_size = sizeof(ByteBuffer) + length;
     total_size = (total_size + 7) & ~7;
 
-    if (total_size >= allocator.getLargeHeaderSplitThreshold()) {
+    if (total_size >= allocator.getLargeObjectThreshold()) {
         // allocLargeByteBuffer zeroes when data == nullptr.
         return allocator.allocLargeByteBuffer(nullptr, length);
     }

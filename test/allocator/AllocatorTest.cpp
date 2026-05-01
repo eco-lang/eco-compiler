@@ -630,7 +630,7 @@ Testing::TestCase testLargeElmArrayReclaimedWhenUnreachable(
 // ============================================================================
 // Split-header tests (HEAP_026).
 //
-// Strings and byte buffers above HeapConfig::large_header_split_threshold are
+// Strings and byte buffers at or above HeapConfig::large_object_threshold are
 // represented as Tag_LargeStringHeader / Tag_LargeByteHeader in the nursery
 // whose `body` HPointer references a Tag_String / Tag_ByteBuffer pinned in
 // old gen. These tests verify the layout, no-copy survival across minor GC,
@@ -640,9 +640,9 @@ Testing::TestCase testLargeElmArrayReclaimedWhenUnreachable(
 
 namespace {
 
-// Sized to comfortably exceed both the default split threshold (2 KiB) AND
-// the default large_object_threshold (8 KiB), so the body lands either in a
-// size-class cell or — for the larger flavours — in an is_large block.
+// Sized to comfortably exceed the default large_object_threshold (8 KiB), so
+// the body lands either in a size-class cell or — for the larger flavours —
+// in an is_large block.
 constexpr size_t SPLIT_STRING_LEN = 5 * 1024;        // 10 KiB UTF-16 payload
 constexpr size_t SPLIT_BYTE_LEN   = 10 * 1024;       // 10 KiB byte payload
 
@@ -848,9 +848,9 @@ Testing::TestCase testSplitPromotedBodyReclaimedByMajorGC(
 });
 
 Testing::TestCase testSplitThresholdBoundary(
-    "Split path activates exactly at HeapConfig::large_header_split_threshold", []() {
+    "Split path activates exactly at HeapConfig::large_object_threshold", []() {
     auto& alloc = initAllocator();
-    const size_t threshold = alloc.getLargeHeaderSplitThreshold();
+    const size_t threshold = alloc.getLargeObjectThreshold();
 
     // Below threshold: inline Tag_String in nursery.
     {

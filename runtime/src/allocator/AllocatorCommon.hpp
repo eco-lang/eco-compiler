@@ -217,19 +217,15 @@ struct HeapConfig {
 
     // Large-object threshold (bytes). Allocations of this size or larger
     // bypass the nursery and are placed directly in old gen as pinned
-    // objects (Header.pin = 1) so the compactor leaves them in place.
+    // objects (Header.pin = 1) so the compactor leaves them in place. For
+    // Tag_String / Tag_ByteBuffer this same threshold also triggers the
+    // split-header path (HEAP_026): a small Tag_LargeStringHeader /
+    // Tag_LargeByteHeader lives in the nursery while the body lives pinned
+    // in old gen and is never copied. See plans/large-object-split-header-bodies.md.
     // Default: max(8 KiB, alloc_buffer_size / 16). With the default
     // alloc_buffer_size of 128 KiB this resolves to 8 KiB.
     size_t large_object_threshold =
         (ALLOC_BUFFER_SIZE / 16 > 8 * 1024) ? (ALLOC_BUFFER_SIZE / 16) : (8 * 1024);
-
-    // Split-header threshold for Tag_String / Tag_ByteBuffer (bytes). Strings
-    // and byte buffers whose total payload size meets or exceeds this go
-    // through the split-header path: a small Tag_LargeStringHeader /
-    // Tag_LargeByteHeader in the nursery whose `body` HPointer points at a
-    // Tag_String / Tag_ByteBuffer sitting in old gen and never copied. See
-    // HEAP_026 and plans/large-object-split-header-bodies.md.
-    size_t large_header_split_threshold = 2048;
 
     // When `releaseOldGenBlock` is called, also `madvise(MADV_DONTNEED)` the
     // released extent so its physical RSS drops. The virtual mapping is
@@ -355,20 +351,6 @@ struct HeapConfig {
                 "(otherwise objects in [alloc_buffer_size, "
                 "large_object_threshold) take the nursery path but cannot "
                 "fit in a single nursery block)");
-        }
-
-        // ========== 4c. Split-Header Threshold Constraints ==========
-        // Split-header form covers [large_header_split_threshold, ∞) for
-        // Tag_String / Tag_ByteBuffer; below the split threshold these stay
-        // inline in the nursery (status quo).
-        if (large_header_split_threshold < sizeof(Header)) {
-            throw std::invalid_argument(
-                "large_header_split_threshold must be >= sizeof(Header)");
-        }
-        if (large_header_split_threshold > old_gen_space) {
-            throw std::invalid_argument(
-                "large_header_split_threshold must be <= max_heap_size / 2 "
-                "(can't exceed old gen space)");
         }
 
         // ========== 5. Promotion Constraints ==========

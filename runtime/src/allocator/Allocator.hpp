@@ -90,11 +90,12 @@ public:
     HPointer allocLargeString(const u16* chars, size_t length);
     HPointer allocLargeByteBuffer(const u8* data, size_t length);
 
-    // Returns the configured split-header threshold in bytes; allocations
-    // whose total payload size meets or exceeds this should route through
-    // the split path.
-    size_t getLargeHeaderSplitThreshold() const {
-        return config_.large_header_split_threshold;
+    // Returns the configured large-object threshold in bytes. Allocations
+    // whose total payload size meets or exceeds this either bypass the
+    // nursery (generic LOT path) or, for Tag_String / Tag_ByteBuffer, route
+    // through the split-header path.
+    size_t getLargeObjectThreshold() const {
+        return config_.large_object_threshold;
     }
 
     // ========== Garbage Collection ==========

@@ -10,6 +10,5 @@
   "major_gc_target_utilization":   0.70,
   "use_hybrid_dfs":                true,
   "large_object_threshold":        "16K",
-  "large_header_split_threshold":  "2K",
   "decommit_on_oldgen_release":    true
 }

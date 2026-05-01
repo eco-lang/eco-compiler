@@ -160,7 +160,6 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         "major_gc_target_utilization",
         "use_hybrid_dfs",
         "large_object_threshold",
-        "large_header_split_threshold",
         "decommit_on_oldgen_release",
         "small_class_heap_budget_bytes",
         "small_class_cell_max_bytes",
@@ -204,9 +203,6 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
     if (auto it = doc.find("large_object_threshold"); it != doc.end())
         cfg.large_object_threshold =
             parseByteSize(*it, "large_object_threshold");
-    if (auto it = doc.find("large_header_split_threshold"); it != doc.end())
-        cfg.large_header_split_threshold =
-            parseByteSize(*it, "large_header_split_threshold");
     if (auto it = doc.find("decommit_on_oldgen_release"); it != doc.end())
         cfg.decommit_on_oldgen_release =
             parseBool(*it, "decommit_on_oldgen_release");

@@ -87,7 +87,7 @@ public:
      * body (Tag_String, length UTF-16 chars) lives pinned in old gen, and
      * a small Tag_LargeStringHeader header lives in the nursery. Returns
      * the header's HPointer. Used internally by alloc::allocString when
-     * the requested size exceeds large_header_split_threshold.
+     * the requested size meets or exceeds large_object_threshold.
      */
     HPointer allocLargeString(const u16* chars, size_t length);
 
