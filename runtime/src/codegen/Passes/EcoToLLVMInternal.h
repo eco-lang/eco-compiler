@@ -402,6 +402,7 @@ struct EcoRuntime {
 
     // Array functions
     mlir::LLVM::LLVMFuncOp getOrCreateCloneArray(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateArraySetFixKind(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateArrayEmpty(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateArraySingletonInt(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateArraySingletonFloat(mlir::OpBuilder &builder) const;

@@ -529,6 +529,14 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateCloneArray(OpBuilder &builder) const {
     return getOrCreateFunc(builder, "eco_clone_array", funcTy);
 }
 
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateArraySetFixKind(OpBuilder &builder) const {
+    // eco_array_set_fix_kind(array_hptr: hptr, intended_kind: i32) -> void
+    auto i32Ty = mlir::IntegerType::get(builder.getContext(), 32);
+    auto voidTy = LLVM::LLVMVoidType::get(builder.getContext());
+    auto funcTy = LLVM::LLVMFunctionType::get(voidTy, {HPTR_TY, i32Ty});
+    return getOrCreateFunc(builder, "eco_array_set_fix_kind", funcTy);
+}
+
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateStringFromInt(OpBuilder &builder) const {
     auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY});
     return getOrCreateFunc(builder, "elm_string_from_int", funcTy);

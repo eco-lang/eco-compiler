@@ -356,6 +356,11 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_clone_array),
                 llvm::JITSymbolFlags::Exported);
 
+        symbolMap[interner("eco_array_set_fix_kind")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_array_set_fix_kind),
+                llvm::JITSymbolFlags::Exported);
+
         // HPointer conversion.
         symbolMap[interner("eco_resolve_hptr")] =
             llvm::orc::ExecutorSymbolDef(

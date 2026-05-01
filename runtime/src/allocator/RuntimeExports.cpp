@@ -2795,6 +2795,27 @@ extern "C" void* eco_resolve_hptr(HPtr hptr) {
     return ptr;
 }
 
+// Update an ElmArray's `header.unboxed` to the kind of the value about
+// to be stored at one of its element slots. Called from the JIT lowering
+// of `eco.array.set` immediately after `eco_clone_array`, so the cloned
+// array's kind flag always matches what `elements[]` actually contains.
+//
+// Without this, an `Array.empty`-derived array (header.unboxed=0) that
+// receives a raw-i64 store via `eco.array.set` keeps `unboxed=0` while
+// the slot holds an int — the next minor GC then mis-traces that int
+// as an HPointer and aborts on the heap-bounds check in
+// NurserySpace::evacuate.
+extern "C" void eco_array_set_fix_kind(HPtr array_hptr, uint32_t intended_kind) {
+    HPointer hp;
+    uint64_t bits = array_hptr.toBits();
+    std::memcpy(&hp, &bits, sizeof(hp));
+    if (hp.constant != 0) return;
+    void* ptr = Allocator::instance().resolve(hp);
+    if (!ptr) return;
+    ElmArray* arr = static_cast<ElmArray*>(ptr);
+    arr->header.unboxed = intended_kind & 0x3F;
+}
+
 extern "C" HPtr eco_clone_array(HPtr array_hptr) {
     uint64_t array_bits = array_hptr.toBits();
 

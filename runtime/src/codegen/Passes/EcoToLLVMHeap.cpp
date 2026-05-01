@@ -993,6 +993,24 @@ struct ArraySetOpLowering : public OpConversionPattern<ArraySetOp> {
         auto cloneCall = rewriter.create<LLVM::CallOp>(loc, cloneFunc, ValueRange{arrayVal});
         Value newArrayHPtr = cloneCall.getResult();
 
+        // Update the cloned array's header.unboxed to match the value
+        // kind we're about to store. Without this, an `Array.empty`-
+        // derived array (header.unboxed=0) that receives a raw-i64 store
+        // would keep unboxed=0 while elements[] holds an int; the next
+        // minor GC would then mis-trace that int as an HPointer.
+        Type setValueType = op.getValue().getType();
+        uint32_t intendedKind = 0;
+        if (isa<eco::ValueType>(setValueType))      intendedKind = 0;
+        else if (setValueType.isInteger(64))         intendedKind = 1;
+        else if (setValueType.isF64())               intendedKind = 2;
+        else if (setValueType.isInteger(16))         intendedKind = 3;
+        auto kindConst = rewriter.create<LLVM::ConstantOp>(
+            loc, IntegerType::get(ctx, 32),
+            static_cast<int64_t>(intendedKind));
+        auto fixKindFn = runtime.getOrCreateArraySetFixKind(rewriter);
+        rewriter.create<LLVM::CallOp>(
+            loc, fixKindFn, ValueRange{newArrayHPtr, kindConst});
+
         // Resolve new array HPointer to raw pointer
         auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
         auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{newArrayHPtr});
