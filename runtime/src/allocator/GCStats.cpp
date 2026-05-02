@@ -586,6 +586,15 @@ void GCStats::combine(const GCStats& other) {
     objects_promoted += other.objects_promoted;
     bytes_freed += other.bytes_freed;
 
+    // Combine nursery sizing stats. nursery_size_bytes is reduced by max so
+    // the merged value reports the largest individual per-thread nursery
+    // observed (rather than summing independent per-thread nurseries, which
+    // would conflate fan-out with growth).
+    nursery_grow_events += other.nursery_grow_events;
+    if (other.nursery_size_bytes > nursery_size_bytes) {
+        nursery_size_bytes = other.nursery_size_bytes;
+    }
+
     // Combine inline-helper attribution.
     total_lazy_sweep_in_minor_ns += other.total_lazy_sweep_in_minor_ns;
     total_lazy_sweep_in_mutator_ns += other.total_lazy_sweep_in_mutator_ns;
@@ -733,6 +742,11 @@ void GCStats::print() const {
     double freed_mb = bytes_freed / (1024.0 * 1024.0);
     std::cout << "  Bytes reclaimed:       " << std::setw(12) << std::fixed << std::setprecision(2)
               << freed_mb << " MB" << std::endl;
+
+    double nursery_mb = nursery_size_bytes / (1024.0 * 1024.0);
+    std::cout << "  Nursery grow events:   " << std::setw(12) << nursery_grow_events << std::endl;
+    std::cout << "  Maximum nursery size:  " << std::setw(12) << std::fixed << std::setprecision(2)
+              << nursery_mb << " MB" << std::endl;
     std::cout << std::endl;
 
     // ========== Minor GC Timing Stats ==========
@@ -1058,6 +1072,8 @@ void GCStats::reset() {
     objects_survived = 0;
     objects_promoted = 0;
     bytes_freed = 0;
+    nursery_grow_events = 0;
+    nursery_size_bytes = 0;
     total_lazy_sweep_in_minor_ns = 0;
     total_lazy_sweep_in_mutator_ns = 0;
     total_lazy_sweep_bytes_in_mutator = 0;

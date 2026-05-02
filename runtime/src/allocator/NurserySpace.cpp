@@ -108,6 +108,11 @@ void NurserySpace::initialize(Allocator* allocator, const HeapConfig* config) {
     current_from_idx_ = 0;
     alloc_ptr_ = low_blocks_[0];
     alloc_end_ = low_blocks_[0] + block_size_;
+
+#if ENABLE_GC_STATS
+    stats.nursery_size_bytes =
+        (low_blocks_.size() + high_blocks_.size()) * block_size_;
+#endif
 }
 
 void NurserySpace::initialize(ThreadLocalHeap* heap, const HeapConfig* config) {
@@ -145,6 +150,11 @@ void NurserySpace::initialize(ThreadLocalHeap* heap, const HeapConfig* config) {
     current_from_idx_ = 0;
     alloc_ptr_ = low_blocks_[0];
     alloc_end_ = low_blocks_[0] + block_size_;
+
+#if ENABLE_GC_STATS
+    stats.nursery_size_bytes =
+        (low_blocks_.size() + high_blocks_.size()) * block_size_;
+#endif
 }
 
 void NurserySpace::reset(OldGenSpace &oldgen, const HeapConfig* new_config) {
@@ -187,6 +197,14 @@ void NurserySpace::reset(OldGenSpace &oldgen, const HeapConfig* new_config) {
 
     // Reset the root set.
     root_set.reset();
+
+#if ENABLE_GC_STATS
+    // GC stats counters are intentionally preserved across reset() (they
+    // accumulate over the process lifetime), but the live nursery_size_bytes
+    // snapshot must follow the reconfigured block layout.
+    stats.nursery_size_bytes =
+        (low_blocks_.size() + high_blocks_.size()) * block_size_;
+#endif
 
     // Note: GC stats are not reset here - they accumulate across multiple runs.
 }
@@ -407,6 +425,12 @@ void NurserySpace::checkAndGrow() {
 
     // Update cached bounds.
     updateBounds();
+
+#if ENABLE_GC_STATS
+    stats.nursery_grow_events++;
+    stats.nursery_size_bytes =
+        (low_blocks_.size() + high_blocks_.size()) * block_size_;
+#endif
 
     if (Allocator::heapTraceEnabled()) {
         std::fprintf(stderr,

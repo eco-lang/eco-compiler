@@ -51,6 +51,20 @@ public:
     uint64_t objects_promoted = 0;
     uint64_t bytes_freed = 0;             // Cumulative total across all GC cycles.
 
+    // ========== Nursery Sizing ==========
+    //
+    // Cumulative count of successful NurserySpace::checkAndGrow events: each
+    // increment reflects one post-minor-GC growth where to-space occupancy
+    // exceeded `nursery_growth_threshold` and both semi-spaces were able to
+    // acquire equal block counts from the allocator.
+    uint64_t nursery_grow_events = 0;
+    // Largest total committed nursery size observed in bytes (sum of
+    // low_blocks_.size() + high_blocks_.size() times block_size_, sampled
+    // by NurserySpace after initialize / successful grow / reset). Combined
+    // across threads by max, so the printed value is the largest single
+    // per-thread nursery rather than the sum across independent threads.
+    uint64_t nursery_size_bytes = 0;
+
     // ========== Minor GC Timing Stats ==========
     uint64_t total_minor_gc_time_ns = 0;
     uint64_t min_minor_gc_time_ns = UINT64_MAX;
