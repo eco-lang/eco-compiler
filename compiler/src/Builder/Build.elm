@@ -878,7 +878,12 @@ handleCachedDepsStatus ((Env envData) as env) root projectType name path time de
                     |> Task.andThen (handleCachedWithTypedOptCheck env root projectType name path time deps hasMain lastChange same cached)
 
             else
-                Utils.newEmptyMVar
+                -- The MVar wraps a CachedInterface and starts as `Unneeded`
+                -- (interface bytes not yet read from disk). loadInterface
+                -- takes-then-puts this slot, so it MUST be filled here —
+                -- leaving it empty deadlocks any later changed module that
+                -- tries to load this dep's interface.
+                Utils.newMVar cachedInterfaceEncoder Unneeded
                     |> Task.map (\mvar -> RCached hasMain lastChange mvar)
 
         DepsChange ifaces ->
@@ -910,8 +915,11 @@ handleCachedWithTypedOptCheck :
     -> Task Never BResult
 handleCachedWithTypedOptCheck env root projectType name path time deps hasMain lastChange same cached ecotExists =
     if ecotExists then
-        -- .ecot exists, can use cached
-        Utils.newEmptyMVar
+        -- .ecot exists, can use cached.
+        -- See sibling note in handleCachedDepsStatus: the CachedInterface
+        -- slot must be initialised to `Unneeded` rather than left empty,
+        -- otherwise loadInterface's takeMVar will park indefinitely.
+        Utils.newMVar cachedInterfaceEncoder Unneeded
             |> Task.map (\mvar -> RCached hasMain lastChange mvar)
 
     else
