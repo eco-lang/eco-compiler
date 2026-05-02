@@ -26,6 +26,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import socket
 import subprocess
 import sys
@@ -525,8 +526,13 @@ def parse_freelist_histogram(text: str, header_substr: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def _pump(src, dests: list) -> None:
-    """Read chunks from `src` and write each to every dest, flushing as we go."""
-    for chunk in iter(lambda: src.read(4096), b""):
+    """Forward bytes from `src` to every dest as soon as they arrive.
+    `read1` returns whatever the kernel has buffered without waiting to fill
+    a 4 KiB block, so each line the child emits surfaces immediately."""
+    while True:
+        chunk = src.read1(4096)
+        if not chunk:
+            return
         for d in dests:
             d.write(chunk)
             d.flush()
@@ -535,25 +541,91 @@ def _pump(src, dests: list) -> None:
 def _run_capturing(cmd, *, cwd, env, out_path: Path, err_path: Path,
                    tee: bool) -> int:
     """Run `cmd`, writing stdout/stderr to the given log files. When `tee` is
-    set, the output is also forwarded live to the parent's stdout/stderr."""
+    set, the output is also forwarded live to the parent's stdout/stderr.
+
+    Two reliability tweaks:
+
+    * The child is force-line-buffered via `stdbuf -oL -eL`. Without this, glibc
+      switches stdio to block-buffered mode whenever stdout is a pipe (which is
+      exactly the case under tee), and you see no output until 4 KiB have
+      accumulated or the process exits.
+    * The child runs in its own process group (`start_new_session=True`) so a
+      Ctrl+C in the parent doesn't double-fire on the child. We translate
+      KeyboardInterrupt into SIGTERM-to-the-process-group, which lets
+      eco-compiler's SIGTERM handler print GC stats before exiting; we then
+      drain its stdout/stderr (which carries those stats) before re-raising.
+    """
+    line_buffered_cmd = ["stdbuf", "-oL", "-eL", *cmd]
+
     if not tee:
         with out_path.open("wb") as out, err_path.open("wb") as err:
-            return subprocess.run(cmd, cwd=cwd, env=env,
-                                  stdout=out, stderr=err).returncode
+            proc = subprocess.Popen(line_buffered_cmd, cwd=cwd, env=env,
+                                    stdout=out, stderr=err,
+                                    start_new_session=True)
+            try:
+                return proc.wait()
+            except KeyboardInterrupt:
+                _shutdown_child(proc)
+                raise
+
     with out_path.open("wb") as out_f, err_path.open("wb") as err_f:
-        proc = subprocess.Popen(cmd, cwd=cwd, env=env,
+        proc = subprocess.Popen(line_buffered_cmd, cwd=cwd, env=env,
                                 stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE)
+                                stderr=subprocess.PIPE,
+                                start_new_session=True)
         t_out = threading.Thread(
             target=_pump, args=(proc.stdout, [out_f, sys.stdout.buffer]))
         t_err = threading.Thread(
             target=_pump, args=(proc.stderr, [err_f, sys.stderr.buffer]))
         t_out.start()
         t_err.start()
-        rc = proc.wait()
+        try:
+            rc = proc.wait()
+        except KeyboardInterrupt:
+            _shutdown_child(proc)
+            t_out.join()
+            t_err.join()
+            raise
         t_out.join()
         t_err.join()
         return rc
+
+
+_SHUTDOWN_GRACE_S = 15
+
+
+def _shutdown_child(proc: subprocess.Popen) -> None:
+    """Translate a Ctrl+C in the parent into a graceful shutdown of the child:
+
+    1. SIGTERM the timeout(1) wrapper's process group. timeout(1) forwards
+       SIGTERM to eco-compiler, whose SIGTERM handler in eco_entry.cpp
+       writes the `[gc-stats] SIGTERM — printing GC statistics` marker and
+       then prints the full GC-stats block to stdout.
+    2. Wait up to _SHUTDOWN_GRACE_S seconds for the wrapper to exit. The
+       grace window is generous because eco-compiler's stats handler is
+       not async-signal-safe — if SIGTERM lands during a critical section
+       (e.g. mid-allocation), getCombinedStats() may take a while to clear.
+    3. If still alive, SIGKILL as a last resort.
+    """
+    print("\n[heap-profile] Ctrl+C — sending SIGTERM to eco-compiler "
+          "(GC stats will follow)...", flush=True)
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=_SHUTDOWN_GRACE_S)
+    except subprocess.TimeoutExpired:
+        print(f"[heap-profile] eco-compiler did not exit within "
+              f"{_SHUTDOWN_GRACE_S}s — sending SIGKILL", flush=True)
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 def run_variant(*, name: str, change: str, heap_config: dict,
@@ -919,4 +991,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        # The child has already been SIGTERMed and its GC stats drained by
+        # _run_capturing's KeyboardInterrupt handler. Exit cleanly with the
+        # standard 128+SIGINT code, no Python traceback.
+        sys.exit(130)
