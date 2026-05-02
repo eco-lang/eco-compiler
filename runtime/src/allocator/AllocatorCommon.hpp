@@ -208,6 +208,15 @@ struct HeapConfig {
     float major_gc_initiating_occupancy = 0.75f;
     float major_gc_target_utilization   = 0.50f;
 
+    //  * garbage_fraction: fraction of this thread's old-gen committed bytes
+    //    that, once exceeded by `bytes-allocated-since-last-major`, schedules
+    //    a major GC. Without this, a long-running compile whose live set is
+    //    much smaller than committed never re-crosses
+    //    `initiating_occupancy` (free-list reuse keeps the heap from
+    //    growing), and dead bytes accumulate as un-swept garbage between
+    //    cycles. 0.0 disables.
+    float major_gc_garbage_fraction = 0.40f;
+
     // List locality optimization: two-pass spine copying.
     // When enabled, Cons list spines are copied contiguously using a two-pass
     // algorithm (pass 1: copy tail chain, pass 2: evacuate heads), which
@@ -394,6 +403,12 @@ struct HeapConfig {
             throw std::invalid_argument(
                 "major_gc_initiating_occupancy must be > "
                 "major_gc_target_utilization");
+        }
+
+        if (major_gc_garbage_fraction < 0.0f ||
+            major_gc_garbage_fraction >= 1.0f) {
+            throw std::invalid_argument(
+                "major_gc_garbage_fraction must be in [0.0, 1.0)");
         }
 
         // ========== 7. Small-Class Block Budget ==========

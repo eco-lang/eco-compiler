@@ -69,6 +69,7 @@ BASELINE_HEAP = {
     "nursery_growth_threshold":      0.1,
     "major_gc_initiating_occupancy": 0.85,
     "major_gc_target_utilization":   0.70,
+    "major_gc_garbage_fraction":     0.40,
     "use_hybrid_dfs":                True,
     "large_object_threshold":        "16K",
     "decommit_on_oldgen_release":    True,

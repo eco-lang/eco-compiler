@@ -617,6 +617,8 @@ void GCStats::combine(const GCStats& other) {
     total_incremental_mark_work_units += other.total_incremental_mark_work_units;
     major_gc_occupancy_triggers += other.major_gc_occupancy_triggers;
     major_gc_alloc_failure_triggers += other.major_gc_alloc_failure_triggers;
+    major_gc_garbage_triggers += other.major_gc_garbage_triggers;
+    major_gc_global_pressure_triggers += other.major_gc_global_pressure_triggers;
 
     // Combine Major GC timing stats.
     major_gc_count += other.major_gc_count;
@@ -821,6 +823,8 @@ void GCStats::print() const {
     std::cout << "  Total work units:      " << std::setw(12) << total_incremental_mark_work_units << std::endl;
     std::cout << "  Occupancy triggers:    " << std::setw(12) << major_gc_occupancy_triggers << std::endl;
     std::cout << "  Alloc-fail triggers:   " << std::setw(12) << major_gc_alloc_failure_triggers << std::endl;
+    std::cout << "  Global-pressure trig.: " << std::setw(12) << major_gc_global_pressure_triggers << std::endl;
+    std::cout << "  Garbage-frac triggers: " << std::setw(12) << major_gc_garbage_triggers << std::endl;
 
     // ========== Major GC Timing Stats ==========
     if (major_gc_count > 0) {
@@ -1077,6 +1081,8 @@ void GCStats::reset() {
     total_incremental_mark_work_units = 0;
     major_gc_occupancy_triggers = 0;
     major_gc_alloc_failure_triggers = 0;
+    major_gc_garbage_triggers = 0;
+    major_gc_global_pressure_triggers = 0;
     major_gc_count = 0;
     total_major_gc_time_ns = 0;
     min_major_gc_time_ns = UINT64_MAX;

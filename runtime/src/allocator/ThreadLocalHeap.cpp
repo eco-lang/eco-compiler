@@ -42,6 +42,29 @@ inline uint64_t nsBetween(
 
 namespace Elm {
 
+#if ENABLE_GC_STATS
+// Bumps the per-thread counter that matches the trigger reason returned by
+// OldGenSpace::evaluateMajorGCTrigger, so the printed GC summary attributes
+// each major GC to a specific cause.
+static inline void
+recordMajorTriggerReason(GCStats& stats,
+                         OldGenSpace::MajorGCTriggerReason reason) {
+    switch (reason) {
+        case OldGenSpace::MajorGCTriggerReason::Occupancy:
+            stats.major_gc_occupancy_triggers++;
+            break;
+        case OldGenSpace::MajorGCTriggerReason::GlobalPressure:
+            stats.major_gc_global_pressure_triggers++;
+            break;
+        case OldGenSpace::MajorGCTriggerReason::GarbageFraction:
+            stats.major_gc_garbage_triggers++;
+            break;
+        case OldGenSpace::MajorGCTriggerReason::None:
+            break;
+    }
+}
+#endif
+
 // Initializes a freshly-allocated object header for the given tag.
 // `size` is the total aligned byte size returned by the allocator. For
 // variable-size types, hdr->size is overwritten with the per-type element
@@ -353,11 +376,14 @@ void ThreadLocalHeap::collectAtSafepoint() {
     // covering the non-nursery-full case is enough here.
     if (isNurseryNearFull(config_->nursery_gc_threshold)) {
         minorGC();
-    } else if (old_gen_.shouldTriggerMajorGC()) {
+    } else {
+        const auto reason = old_gen_.evaluateMajorGCTrigger();
+        if (reason != OldGenSpace::MajorGCTriggerReason::None) {
 #if ENABLE_GC_STATS
-        stats_.major_gc_occupancy_triggers++;
+            recordMajorTriggerReason(stats_, reason);
 #endif
-        majorGC();
+            majorGC();
+        }
     }
 }
 
@@ -376,9 +402,10 @@ void ThreadLocalHeap::minorGC() {
     // not dense in MLIR-generated code, so we also check at the end of
     // every minor GC to avoid filling the old gen before the next
     // safepoint fires.
-    if (old_gen_.shouldTriggerMajorGC()) {
+    const auto reason = old_gen_.evaluateMajorGCTrigger();
+    if (reason != OldGenSpace::MajorGCTriggerReason::None) {
 #if ENABLE_GC_STATS
-        stats_.major_gc_occupancy_triggers++;
+        recordMajorTriggerReason(stats_, reason);
 #endif
         majorGC();
     }

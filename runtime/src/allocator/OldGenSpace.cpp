@@ -1656,6 +1656,10 @@ void OldGenSpace::finalizeMetaAfterMark() {
     frag_stats_.total_free_bytes =
         (total_heap >= total_live) ? (total_heap - total_live) : 0;
     allocated_bytes = total_live;
+    // Same baseline as in computeFragmentationStats: this also runs as part
+    // of the major-GC end-of-mark sequence, so the garbage-fraction trigger
+    // restarts from the current live set.
+    post_sweep_live_bytes_ = total_live;
 }
 
 // Walks `blocks_` once and demotes any non-large uniform block whose
@@ -2342,7 +2346,8 @@ void OldGenSpace::onSweepComplete() {
     maybeShrinkCapacity(desired_heap, /*light_pass=*/true);
 }
 
-bool OldGenSpace::shouldTriggerMajorGC() const {
+OldGenSpace::MajorGCTriggerReason
+OldGenSpace::evaluateMajorGCTrigger() const {
     // With lazy sweep replacing STW sweep, "earlier" major GC triggers are
     // cheap: the post-mark pause is bounded by mark + initial sweep slice;
     // remaining sweep work is amortized across mutator allocations. The
@@ -2356,7 +2361,7 @@ bool OldGenSpace::shouldTriggerMajorGC() const {
     const size_t committed = getCommittedBytes();
     if (committed != 0 &&
         static_cast<double>(allocated_bytes) / committed >= threshold) {
-        return true;
+        return MajorGCTriggerReason::Occupancy;
     }
 
     // Global pressure trigger: total old-gen committed grew well past the
@@ -2382,10 +2387,28 @@ bool OldGenSpace::shouldTriggerMajorGC() const {
         if (cap > 0 &&
             static_cast<double>(global_committed) / cap >=
                 global_pressure_threshold) {
-            return true;
+            return MajorGCTriggerReason::GlobalPressure;
         }
     }
-    return false;
+
+    // Garbage-fraction trigger: long-running compiles whose live working set
+    // is much smaller than the post-first-major committed never re-cross the
+    // occupancy threshold (free-list reuse keeps the heap from growing), so
+    // dead bytes accumulate as un-swept garbage. Catch that case by tracking
+    // bytes mutator-allocated since the last sweep finished and triggering
+    // when they cross a fraction of committed — i.e. "if even all of those
+    // bytes died and stayed un-swept, the heap would be that fraction
+    // garbage". 0 disables.
+    const float garb_frac = config_->major_gc_garbage_fraction;
+    if (garb_frac > 0.0f && committed > 0) {
+        const size_t alloc_since_major =
+            (allocated_bytes >= post_sweep_live_bytes_)
+                ? (allocated_bytes - post_sweep_live_bytes_) : 0;
+        if (static_cast<double>(alloc_since_major) / committed >= garb_frac) {
+            return MajorGCTriggerReason::GarbageFraction;
+        }
+    }
+    return MajorGCTriggerReason::None;
 }
 
 void OldGenSpace::adjustCapacityAfterMajorGC() {
@@ -3015,6 +3038,10 @@ void OldGenSpace::computeFragmentationStats() {
 
     // allocated_bytes reflects actual live bytes after sweep.
     allocated_bytes = frag_stats_.live_bytes;
+    // Baseline for the garbage-fraction trigger: every byte the mutator
+    // allocates from this point on is "post-major" allocation, even when it
+    // lands on a free-list cell that was just reclaimed.
+    post_sweep_live_bytes_ = frag_stats_.live_bytes;
 }
 
 /**

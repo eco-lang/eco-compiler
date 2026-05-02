@@ -315,9 +315,25 @@ public:
                    : 0;
     }
 
-    // True when allocated/committed has reached major_gc_initiating_occupancy.
-    // Thread-local: each thread's old gen triggers its own major GC.
-    bool shouldTriggerMajorGC() const;
+    // Reason `evaluateMajorGCTrigger` fired (or `None` if no trigger is live).
+    // The order of evaluation in shouldTriggerMajorGC mirrors the priority
+    // here: Occupancy > GlobalPressure > GarbageFraction.
+    enum class MajorGCTriggerReason {
+        None,
+        Occupancy,        // per-thread allocated/committed >= initiating
+        GlobalPressure,   // global old-gen committed/cap >= initiating/3
+        GarbageFraction,  // (allocated - post-sweep-live) / committed >=
+                          // major_gc_garbage_fraction
+    };
+
+    // Returns which trigger condition (if any) is live. Thread-local: each
+    // thread's old gen triggers its own major GC.
+    MajorGCTriggerReason evaluateMajorGCTrigger() const;
+
+    // True when any trigger condition is live.
+    bool shouldTriggerMajorGC() const {
+        return evaluateMajorGCTrigger() != MajorGCTriggerReason::None;
+    }
 
     // Returns true if the pointer is within this old gen's committed region.
     // O(1) check using cached bounds. Inlined for performance.
@@ -348,6 +364,13 @@ private:
 
     std::vector<BlockInfo> blocks_;        // Pages currently in use.
     size_t allocated_bytes;                // Total bytes currently allocated.
+
+    // Snapshot of `allocated_bytes` taken right after each major GC's sweep
+    // completes (computeFragmentationStats sets it to live_bytes there). The
+    // garbage-fraction trigger uses this as the baseline against which to
+    // measure post-major mutator allocation, so the threshold expresses
+    // "allocated since last major" rather than "currently held".
+    size_t post_sweep_live_bytes_ = 0;
 
 #if ENABLE_GC_STATS
     // Records the allocation-size histogram for this old gen. Combined with

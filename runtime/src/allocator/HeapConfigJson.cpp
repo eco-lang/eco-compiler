@@ -158,6 +158,7 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         "nursery_growth_threshold",
         "major_gc_initiating_occupancy",
         "major_gc_target_utilization",
+        "major_gc_garbage_fraction",
         "use_hybrid_dfs",
         "large_object_threshold",
         "decommit_on_oldgen_release",
@@ -198,6 +199,9 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
     if (auto it = doc.find("major_gc_target_utilization"); it != doc.end())
         cfg.major_gc_target_utilization =
             parseFraction(*it, "major_gc_target_utilization");
+    if (auto it = doc.find("major_gc_garbage_fraction"); it != doc.end())
+        cfg.major_gc_garbage_fraction =
+            parseFraction(*it, "major_gc_garbage_fraction");
     if (auto it = doc.find("use_hybrid_dfs"); it != doc.end())
         cfg.use_hybrid_dfs = parseBool(*it, "use_hybrid_dfs");
     if (auto it = doc.find("large_object_threshold"); it != doc.end())

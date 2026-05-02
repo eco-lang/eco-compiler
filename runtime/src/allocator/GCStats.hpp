@@ -236,10 +236,17 @@ public:
     uint64_t total_incremental_mark_work_units = 0;
 
     // Distinguishes *why* a major GC ran: the 75% occupancy-initiating
-    // trigger (soft, scheduled at a safepoint) vs. an allocation hitting
-    // the old-gen cap (hard, inline in the alloc slow path).
-    uint64_t major_gc_occupancy_triggers    = 0;
+    // trigger (soft, scheduled at a safepoint), an allocation hitting the
+    // old-gen cap (hard, inline in the alloc slow path), or the
+    // garbage-fraction trigger (soft, fires on long-running compiles whose
+    // live working set sits well below committed).
+    uint64_t major_gc_occupancy_triggers     = 0;
     uint64_t major_gc_alloc_failure_triggers = 0;
+    uint64_t major_gc_garbage_triggers       = 0;
+    // Global-pressure trigger: reported separately from the per-thread
+    // occupancy trigger so a heap that's small per-thread but big globally
+    // doesn't masquerade as either of the simpler reasons.
+    uint64_t major_gc_global_pressure_triggers = 0;
 
     // ========== Inline GC-helper attribution ==========
     //
