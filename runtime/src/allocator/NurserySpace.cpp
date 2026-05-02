@@ -46,7 +46,6 @@ thread_local Elm::u32 g_scan_size = 0;
 
 namespace Elm {
 
-
 NurserySpace::NurserySpace() :
     config_(nullptr), allocator_(nullptr), block_size_(0), from_is_low_(true),
     low_base_(nullptr), low_end_(nullptr), high_base_(nullptr), high_end_(nullptr),
@@ -386,6 +385,9 @@ void NurserySpace::checkAndGrow() {
 
     // Only proceed if we got equal blocks for both (keep spaces balanced).
     if (low_added != high_added || low_added == 0) {
+        std::fprintf(stderr,
+            "[grow-check] ABORT asymmetric: low_added=%zu high_added=%zu\n",
+            low_added, high_added);
         // Failed to grow symmetrically - don't add any blocks.
         // Note: The blocks we did acquire are lost (minor leak), but this
         // is acceptable for the rare case of asymmetric growth failure.
@@ -448,9 +450,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
 
 #if ECO_GC_DEBUG
     in_minor_gc_ = true;
-    static size_t gc_cycle_count = 0;
-    gc_cycle_count++;
-    std::fprintf(stderr, "[gc] minorGC start #%zu from_is_low=%d\n", gc_cycle_count, (int)from_is_low_);
+    std::fprintf(stderr, "[gc] minorGC start from_is_low=%d\n", (int)from_is_low_);
 #endif
 
 #if ENABLE_GC_STATS
@@ -581,46 +581,8 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     clearToSpaceFreeRegion();
 
 #if ECO_GC_DEBUG
-    // Post-GC validation: check that all stack root ranges have been relocated.
-    // If any entry still points to from-space, it was missed during evacuation.
-    for (const auto &range : root_set.getStackRootRanges()) {
-        HPointer *base = range.base;
-        uint64_t mask  = range.hpointer_mask;
-        for (size_t i = 0; i < range.count; ++i) {
-            if (!(mask & (1ULL << i))) continue;
-            HPointer hp = base[i];
-            if (hp.constant != 0 || hp.ptr == 0) continue;
-            void *obj = Allocator::fromPointerRaw(hp);
-            if (obj && isInFromSpace(obj)) {
-                Header *hdr = getHeader(obj);
-                if (hdr->tag != Tag_Forward) {
-                    uint64_t raw = 0;
-                    memcpy(&raw, &hp, sizeof(raw));
-                    std::fprintf(stderr,
-                        "[gc-post-check] UNRELOCATED stack range root! range base=%p idx=%zu raw=0x%lx obj=%p tag=%u\n",
-                        (void*)base, i, (unsigned long)raw, obj, (unsigned)hdr->tag);
-                }
-            }
-        }
-    }
-    // Also check stackmap-derived roots
-    for (HPointer *root : stackmap_roots.get()) {
-        HPointer hp = *root;
-        if (hp.constant != 0 || hp.ptr == 0) continue;
-        void *obj = Allocator::fromPointerRaw(hp);
-        if (obj && isInFromSpace(obj)) {
-            Header *hdr = getHeader(obj);
-            if (hdr->tag != Tag_Forward) {
-                uint64_t raw = 0;
-                memcpy(&raw, &hp, sizeof(raw));
-                std::fprintf(stderr,
-                    "[gc-post-check] UNRELOCATED stack root! slot=%p raw=0x%lx obj=%p tag=%u\n",
-                    (void*)root, (unsigned long)raw, obj, (unsigned)hdr->tag);
-            }
-        }
-    }
     // Post-GC heap integrity check: walk all surviving objects in to-space
-    // and verify every boxed child pointer is NOT in from-space.
+    // and verify every boxed child pointer points outside from-space.
     {
         std::vector<char*>& to = from_is_low_ ? high_blocks_ : low_blocks_;
         for (size_t blk = 0; blk <= current_to_idx_ && blk < to.size(); ++blk) {
@@ -714,7 +676,6 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
 
     // Post-GC old-gen integrity check: scan every old-gen object and report
     // any boxed field that still points into (old) from-space.
-    // This catches old→nursery pointers that bypass the normal promotion path.
     {
         // The GC has not yet flipped from_is_low_, so from-space is still the
         // space we just evacuated FROM.  Objects there are garbage / stale.

@@ -1350,9 +1350,8 @@ extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args
     Closure* closure = static_cast<Closure*>(closure_ptr);
     uint32_t max_values = closure->max_values;
 
-    // Sanity check: n_values + num_newargs should equal max_values for a saturated call.
-    assert(closure->n_values + num_newargs == max_values &&
-           "eco_closure_call_saturated: argument count mismatch");
+    assert(closure->n_values + num_newargs == max_values
+           && "eco_closure_call_saturated: argument count mismatch");
     assert(max_values <= 63 && "max_values exceeds 6-bit field cap");
 
     // Build the combined argument array.
