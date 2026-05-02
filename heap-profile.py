@@ -26,6 +26,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -51,6 +52,7 @@ COMPILER_SRC = REPO_ROOT / "compiler/src"
 RUNTIME_SRC = REPO_ROOT / "runtime/src"
 DEFAULT_HEAP_CONFIG = REPO_ROOT / "compiler/build-kernel/heap-config.json"
 LOCAL_CONFIG = REPO_ROOT / "heap-profile.local.json"
+ECO_STUFF_1_0_0 = REPO_ROOT / "compiler/build-kernel/eco-stuff/1.0.0"
 
 KILL_AFTER_S = 10
 DEFAULT_WALL_SECONDS = 60
@@ -818,9 +820,17 @@ def _shutdown_child(proc: subprocess.Popen) -> None:
             pass
 
 
+def _clear_eco_stuff() -> None:
+    """Remove `compiler/build-kernel/eco-stuff/1.0.0/` so each variant starts
+    from the same cold cache. eco-compiler recreates the directory and
+    repopulates it on its next `make`."""
+    if ECO_STUFF_1_0_0.exists():
+        shutil.rmtree(ECO_STUFF_1_0_0)
+
+
 def run_variant(*, name: str, change: str, heap_config: dict,
                 variant_dir: Path, wall_seconds: int, tee: bool,
-                heap_trace: bool) -> dict:
+                heap_trace: bool, preserve_eco_stuff: bool) -> dict:
     """Runs the binary once and writes all per-variant TSVs. Returns the
     summary row (a dict keyed by SUMMARY_COLUMNS)."""
     variant_dir.mkdir(parents=True, exist_ok=True)
@@ -829,6 +839,9 @@ def run_variant(*, name: str, change: str, heap_config: dict,
 
     out_path = variant_dir / "stdout.log"
     err_path = variant_dir / "stderr.log"
+
+    if not preserve_eco_stuff:
+        _clear_eco_stuff()
 
     boot_mlir = BUILD_KERNEL / "bin" / "eco-compiler-boot.mlir"
     if boot_mlir.exists():
@@ -1026,7 +1039,8 @@ def cmd_run(args, machine: str, results_root: Path) -> None:
         name=name, change=f"config={cfg_path.name}",
         heap_config=heap_config,
         variant_dir=variant_dir, wall_seconds=args.wall_seconds,
-        tee=args.tee, heap_trace=args.heap_trace)
+        tee=args.tee, heap_trace=args.heap_trace,
+        preserve_eco_stuff=args.preserve_eco_stuff)
 
     append_tsv_row(group_dir / "runs.tsv", SUMMARY_COLUMNS, summary)
     (group_dir / "args.json").write_text(json.dumps({
@@ -1075,7 +1089,8 @@ def cmd_sweep(args, machine: str, results_root: Path) -> None:
         summary = run_variant(
             name=name, change=change, heap_config=heap_config,
             variant_dir=variant_dir, wall_seconds=args.wall_seconds,
-            tee=args.tee, heap_trace=args.heap_trace)
+            tee=args.tee, heap_trace=args.heap_trace,
+            preserve_eco_stuff=args.preserve_eco_stuff)
         append_tsv_row(group_dir / "runs.tsv", SUMMARY_COLUMNS, summary)
         summary_rows.append(summary)
 
@@ -1119,6 +1134,11 @@ def build_parser() -> argparse.ArgumentParser:
                         "default; the peak_commit_MB and final_live_MB "
                         "summary columns require this and will read as 0 "
                         "when disabled.")
+    p.add_argument("--preserve-eco-stuff", action="store_true",
+                   help="do NOT delete compiler/build-kernel/eco-stuff/1.0.0 "
+                        "before each variant run. Off by default; the "
+                        "directory is wiped per-run so every variant starts "
+                        "from the same cold cache.")
     p.add_argument("--list-variants", action="store_true",
                    help="print the sweep variants table and exit")
 
