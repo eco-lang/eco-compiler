@@ -525,30 +525,74 @@ def parse_freelist_histogram(text: str, header_substr: str) -> list[dict]:
 # Per-variant run
 # ---------------------------------------------------------------------------
 
-def _pump(src, dests: list) -> None:
-    """Forward bytes from `src` to every dest as soon as they arrive.
+def _pump(src, dest) -> None:
+    """Forward bytes from `src` to `dest` as soon as they arrive.
+
+    The destination is always the on-disk log file. Console echo (when --tee
+    is set) is handled out-of-process by a `tail -F` subprocess so a slow or
+    stalled terminal can never apply back-pressure to the child via the pipe.
     `read1` returns whatever the kernel has buffered without waiting to fill
-    a 4 KiB block, so each line the child emits surfaces immediately."""
+    a 4 KiB block, so each line the child emits hits disk immediately."""
     while True:
         chunk = src.read1(4096)
         if not chunk:
             return
-        for d in dests:
-            d.write(chunk)
-            d.flush()
+        dest.write(chunk)
+        dest.flush()
+
+
+def _start_tail(path: Path, dest_fd) -> subprocess.Popen | None:
+    """Spawn `tail -n +1 -F <path>` writing to `dest_fd` (the parent's stdout
+    or stderr). Returns the Popen, or None if `tail` is unavailable."""
+    try:
+        return subprocess.Popen(
+            ["tail", "-n", "+1", "-F", str(path)],
+            stdout=dest_fd, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+    except FileNotFoundError:
+        print("[heap-profile] WARNING: `tail` not found on PATH; --tee will "
+              "be silent. Logs are still written to the variant dir.",
+              file=sys.stderr, flush=True)
+        return None
+
+
+def _stop_tail(tp: subprocess.Popen | None) -> None:
+    if tp is None:
+        return
+    try:
+        tp.terminate()
+        try:
+            tp.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            tp.kill()
+            try:
+                tp.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+    except ProcessLookupError:
+        pass
 
 
 def _run_capturing(cmd, *, cwd, env, out_path: Path, err_path: Path,
                    tee: bool) -> int:
     """Run `cmd`, writing stdout/stderr to the given log files. When `tee` is
-    set, the output is also forwarded live to the parent's stdout/stderr.
+    set, the output is also forwarded live to the parent's stdout/stderr via
+    a `tail -F` subprocess on each log file.
 
-    Two reliability tweaks:
+    Reliability notes:
 
-    * The child is force-line-buffered via `stdbuf -oL -eL`. Without this, glibc
-      switches stdio to block-buffered mode whenever stdout is a pipe (which is
-      exactly the case under tee), and you see no output until 4 KiB have
+    * The child is force-line-buffered via `stdbuf -oL -eL`. Without this,
+      glibc switches stdio to block-buffered mode whenever stdout is a pipe
+      (which is the case under tee), and you see no output until 4 KiB have
       accumulated or the process exits.
+    * The pump threads write only to the log file. The on-disk write goes to
+      the page cache and essentially never blocks, so the child's pipe is
+      drained as fast as it produces bytes. Earlier versions also wrote to
+      `sys.stdout.buffer` from the pump thread; a slow or stopped terminal
+      could stall that flush, fill the 64 KiB pipe, and park eco-compiler in
+      a kernel `write(2)` (visible as a 0%-CPU "freeze" in `top`). Console
+      echo now lives in a separate `tail -F` process that the child cannot
+      see, so terminal back-pressure can no longer reach it.
     * The child runs in its own process group (`start_new_session=True`) so a
       Ctrl+C in the parent doesn't double-fire on the child. We translate
       KeyboardInterrupt into SIGTERM-to-the-process-group, which lets
@@ -556,42 +600,187 @@ def _run_capturing(cmd, *, cwd, env, out_path: Path, err_path: Path,
       drain its stdout/stderr (which carries those stats) before re-raising.
     """
     line_buffered_cmd = ["stdbuf", "-oL", "-eL", *cmd]
+    variant_dir = out_path.parent
+
+    def _start_watchdog(proc: subprocess.Popen) -> tuple[threading.Thread, threading.Event]:
+        stop_evt = threading.Event()
+        t = threading.Thread(target=_watchdog, kwargs={
+            "proc": proc, "out_path": out_path, "err_path": err_path,
+            "variant_dir": variant_dir, "stop_evt": stop_evt})
+        t.daemon = True
+        t.start()
+        return t, stop_evt
 
     if not tee:
         with out_path.open("wb") as out, err_path.open("wb") as err:
             proc = subprocess.Popen(line_buffered_cmd, cwd=cwd, env=env,
                                     stdout=out, stderr=err,
                                     start_new_session=True)
+            wd_t, wd_stop = _start_watchdog(proc)
             try:
                 return proc.wait()
             except KeyboardInterrupt:
                 _shutdown_child(proc)
                 raise
+            finally:
+                wd_stop.set()
+                wd_t.join(timeout=5)
 
-    with out_path.open("wb") as out_f, err_path.open("wb") as err_f:
-        proc = subprocess.Popen(line_buffered_cmd, cwd=cwd, env=env,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE,
-                                start_new_session=True)
-        t_out = threading.Thread(
-            target=_pump, args=(proc.stdout, [out_f, sys.stdout.buffer]))
-        t_err = threading.Thread(
-            target=_pump, args=(proc.stderr, [err_f, sys.stderr.buffer]))
-        t_out.start()
-        t_err.start()
+    # Open the log files unbuffered (buffering=0) so `tail -F` sees bytes the
+    # instant the pump thread writes them, without depending on Python's
+    # block buffer being flushed by an explicit call.
+    with out_path.open("wb", buffering=0) as out_f, \
+            err_path.open("wb", buffering=0) as err_f:
+        tail_out = _start_tail(out_path, sys.stdout)
+        tail_err = _start_tail(err_path, sys.stderr)
         try:
-            rc = proc.wait()
-        except KeyboardInterrupt:
-            _shutdown_child(proc)
+            proc = subprocess.Popen(line_buffered_cmd, cwd=cwd, env=env,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE,
+                                    start_new_session=True)
+            t_out = threading.Thread(target=_pump, args=(proc.stdout, out_f))
+            t_err = threading.Thread(target=_pump, args=(proc.stderr, err_f))
+            t_out.start()
+            t_err.start()
+            wd_t, wd_stop = _start_watchdog(proc)
+            try:
+                rc = proc.wait()
+            except KeyboardInterrupt:
+                _shutdown_child(proc)
+                t_out.join()
+                t_err.join()
+                raise
+            finally:
+                wd_stop.set()
+                wd_t.join(timeout=5)
             t_out.join()
             t_err.join()
-            raise
-        t_out.join()
-        t_err.join()
-        return rc
+            return rc
+        finally:
+            _stop_tail(tail_out)
+            _stop_tail(tail_err)
 
 
 _SHUTDOWN_GRACE_S = 15
+
+# How long the child can be silent (no growth in either log file) before the
+# watchdog dumps its kernel stacks. 60 s is short enough to catch a stall
+# within the user's patience, long enough that a slow major GC or an
+# expensive typed-opt phase on a large module is not misclassified as stuck.
+_STALL_THRESHOLD_S = 60
+_WATCHDOG_POLL_S = 2
+
+
+def _proc_descendants(root_pid: int) -> list[int]:
+    """Return [root_pid] followed by every PID transitively descended from
+    it, using /proc/<pid>/task/<tid>/children. Best-effort: exited PIDs are
+    silently dropped."""
+    out = [root_pid]
+    seen = {root_pid}
+    queue = [root_pid]
+    while queue:
+        pid = queue.pop()
+        try:
+            for tid_dir in Path(f"/proc/{pid}/task").iterdir():
+                try:
+                    children = (tid_dir / "children").read_text().split()
+                except (FileNotFoundError, ProcessLookupError):
+                    continue
+                for c in children:
+                    cp = int(c)
+                    if cp not in seen:
+                        seen.add(cp)
+                        out.append(cp)
+                        queue.append(cp)
+        except (FileNotFoundError, NotADirectoryError, ProcessLookupError):
+            continue
+    return out
+
+
+def _read_proc_file(path: Path) -> str:
+    try:
+        text = path.read_text(errors="replace")
+    except (FileNotFoundError, PermissionError, ProcessLookupError) as e:
+        return f"# could not read {path}: {e}\n"
+    if not text.endswith("\n"):
+        text += "\n"
+    return text
+
+
+def _dump_proc_tree(root_pid: int, dump_path: Path) -> None:
+    """Dump kernel state of the entire process tree under `root_pid`.
+
+    For each PID we record `comm`, `status`, `wchan`, `syscall`, `stack`. Then
+    — crucially for diagnosing pthread_join / futex stalls — we walk
+    /proc/<pid>/task/<tid>/ and dump the same fields for every thread, since
+    the main thread alone tells you nothing about which worker is hung.
+    """
+    pids = _proc_descendants(root_pid)
+    with dump_path.open("w") as f:
+        f.write(f"# stall dump @ {datetime.now(timezone.utc).isoformat()}\n")
+        f.write(f"# root pid: {root_pid}\n")
+        f.write(f"# tree: {pids}\n")
+        for pid in pids:
+            f.write(f"\n## pid {pid}\n")
+            for fname in ("comm", "status", "wchan", "syscall", "stack"):
+                f.write(f"### {fname}\n")
+                f.write(_read_proc_file(Path(f"/proc/{pid}/{fname}")))
+            task_dir = Path(f"/proc/{pid}/task")
+            try:
+                tids = sorted(int(p.name) for p in task_dir.iterdir())
+            except (FileNotFoundError, NotADirectoryError, ProcessLookupError):
+                continue
+            for tid in tids:
+                if tid == pid:
+                    continue
+                f.write(f"\n### thread {tid} (pid {pid})\n")
+                for fname in ("comm", "status", "wchan", "syscall", "stack"):
+                    f.write(f"#### {fname}\n")
+                    f.write(_read_proc_file(
+                        Path(f"/proc/{pid}/task/{tid}/{fname}")))
+
+
+def _watchdog(*, proc: subprocess.Popen, out_path: Path, err_path: Path,
+              variant_dir: Path, stop_evt: threading.Event) -> None:
+    """Detects stalls and dumps kernel stacks for the child process tree.
+
+    Heuristic: if neither log file has grown for `_STALL_THRESHOLD_S`, the
+    child is no longer producing output. We dump `/proc/<pid>/{status,wchan,
+    syscall,stack,comm}` for `proc.pid` (the timeout(1) wrapper) and every
+    descendant; eco-compiler is one of those descendants. The dump goes into
+    `variant_dir/stall_NNN.txt` so it survives the run for offline analysis.
+    After dumping we re-arm: another `_STALL_THRESHOLD_S` of silence triggers
+    another dump (with a fresh sequence number), so a long stall produces a
+    timeline rather than a single snapshot."""
+
+    def _sizes() -> tuple[int, int]:
+        try:
+            return out_path.stat().st_size, err_path.stat().st_size
+        except FileNotFoundError:
+            return 0, 0
+
+    last_size = _sizes()
+    last_change = time.monotonic()
+    seq = 0
+    while not stop_evt.wait(_WATCHDOG_POLL_S):
+        cur = _sizes()
+        if cur != last_size:
+            last_size = cur
+            last_change = time.monotonic()
+            continue
+        if time.monotonic() - last_change < _STALL_THRESHOLD_S:
+            continue
+        seq += 1
+        dump_path = variant_dir / f"stall_{seq:03d}.txt"
+        try:
+            _dump_proc_tree(proc.pid, dump_path)
+            print(f"[heap-profile] stall detected (no log growth for "
+                  f"{_STALL_THRESHOLD_S}s) — dumped {dump_path}",
+                  file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"[heap-profile] watchdog dump failed: {e}",
+                  file=sys.stderr, flush=True)
+        last_change = time.monotonic()
 
 
 def _shutdown_child(proc: subprocess.Popen) -> None:
