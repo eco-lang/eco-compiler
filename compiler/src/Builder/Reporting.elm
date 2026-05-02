@@ -57,7 +57,8 @@ import Utils.Bytes.Encode as BE
 import Utils.Main as Utils exposing (Chan)
 
 
-{-| Pad an Int with leading zeros to the given width. -}
+{-| Pad an Int with leading zeros to the given width.
+-}
 padInt : Int -> Int -> String
 padInt width n =
     let
@@ -72,7 +73,8 @@ padInt width n =
         String.repeat (width - String.length s) "0" ++ s
 
 
-{-| Format a Posix timestamp as `HH:MM:SS.mmm` in UTC. -}
+{-| Format a Posix timestamp as `HH:MM:SS.mmm` in UTC.
+-}
 formatPosixUtc : Time.Posix -> String
 formatPosixUtc now =
     padInt 2 (Time.toHour Time.utc now)
@@ -84,18 +86,11 @@ formatPosixUtc now =
         ++ padInt 3 (Time.toMillis Time.utc now)
 
 
-{-| Prepend a UTC `[HH:MM:SS.mmm]` timestamp to a log message. -}
-withTimestamp : String -> Task Never String
-withTimestamp message =
-    Time.now
-        |> Task.map (\now -> "[" ++ formatPosixUtc now ++ "] " ++ message)
-
-
-{-| Write a timestamped line to stderr. -}
-stampedStderrLine : String -> Task Never ()
-stampedStderrLine message =
-    withTimestamp message
-        |> Task.andThen (IO.writeLn IO.stderr)
+{-| Write a timestamped line to stderr.
+-}
+stderrLine : String -> Task Never ()
+stderrLine message =
+    IO.writeLn IO.stderr message
 
 
 
@@ -340,7 +335,7 @@ trackDetailsWithChan mvar callback chan =
 runDetailsWorker : MVar () -> Chan (Maybe DMsg) -> Task Never ()
 runDetailsWorker mvar chan =
     Utils.takeMVar (Bytes.Decode.succeed ()) mvar
-        |> Task.andThen (\_ -> stampedStderrLine "[deps] verifying dependencies")
+        |> Task.andThen (\_ -> stderrLine "[deps] verifying dependencies")
         |> Task.andThen (\_ -> detailsLoop chan (DState { total = 0, cached = 0, requested = 0, received = 0, failed = 0, built = 0, broken = 0 }))
         |> Task.andThen (\_ -> Utils.putMVar (\_ -> BE.bool True) mvar ())
 
@@ -494,7 +489,7 @@ putBuilt ((DState ds) as state) =
         putStrFlush (String.cons '\u{000D}' (toBuildProgress completed ds.total))
             |> Task.andThen
                 (\_ ->
-                    stampedStderrLine
+                    stderrLine
                         ("[deps] " ++ String.fromInt completed ++ "/" ++ String.fromInt ds.total ++ " verified")
                 )
 
@@ -565,7 +560,7 @@ runBuildWorker : Bytes.Decode.Decoder a -> MVar () -> Chan (Result BMsg (BResult
 runBuildWorker decoder mvar chan =
     Utils.takeMVar (Bytes.Decode.succeed ()) mvar
         |> Task.andThen (\_ -> putStrFlush "Compiling ...")
-        |> Task.andThen (\_ -> stampedStderrLine "[build] Compiling ...")
+        |> Task.andThen (\_ -> stderrLine "[build] Compiling ...")
         |> Task.andThen (\_ -> buildLoop decoder chan 0)
         |> Task.andThen (\_ -> Utils.putMVar (\_ -> BE.bool True) mvar ())
 
@@ -608,7 +603,7 @@ updateBuildProgress decoder chan done =
         -- and at what rate.
         |> Task.andThen
             (\_ ->
-                stampedStderrLine
+                stderrLine
                     ("[build] " ++ String.fromInt done ++ " modules done")
             )
         |> Task.andThen (\_ -> buildLoop decoder chan done)
@@ -633,7 +628,7 @@ printFinalBuildMessage done result =
          else
             String.cons '\u{000D}' message
         )
-        |> Task.andThen (\_ -> stampedStderrLine ("[build] " ++ message))
+        |> Task.andThen (\_ -> stderrLine ("[build] " ++ message))
 
 
 toFinalMessage : Int -> BResult a -> String
