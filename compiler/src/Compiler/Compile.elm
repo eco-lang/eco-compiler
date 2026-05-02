@@ -53,7 +53,6 @@ import Compiler.Type.Solve as Type
 import Compiler.Type.SolverRoots as SolverRoots
 import Compiler.TypedCanonical.Build as TCanBuild
 import Dict
-import System.IO as IO
 import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)
 
@@ -112,40 +111,23 @@ Returns artifacts suitable for JavaScript code generation.
 -}
 compile : Pkg.Name -> Dict.Dict ModuleName.Raw I.Interface -> Src.Module -> Task Never (Result E.Error Artifacts)
 compile pkg ifaces modul =
-    let
-        modName : Name
-        modName =
-            Src.getName modul
-    in
-    -- Phase logs: emit one stderr line per pipeline phase so we can see
-    -- which phase the compiler is working in (canonicalize / type-check /
-    -- nitpick / optimize). Each phase boundary is also a Task scheduling
-    -- point, so even when the pipeline is single-threaded the GC has a
-    -- chance to interleave between phases. The original implementation
-    -- ran the whole pipeline inside one Task.succeed, which made the
-    -- outside world blind to per-phase progress.
-    phase modName "canonicalize"
-        |> Task.map (\_ -> canonicalize pkg ifaces modul)
+    Task.succeed (canonicalize pkg ifaces modul)
         |> Task.andThen
             (\canonicalResult ->
                 case canonicalResult of
                     Ok canonical ->
-                        phase modName "type-check"
-                            |> Task.map (\_ -> typeCheck modul canonical)
+                        Task.succeed (typeCheck modul canonical)
                             |> Task.andThen
                                 (\tcResult ->
-                                    phase modName "nitpick"
-                                        |> Task.map (\_ -> nitpick canonical)
+                                    Task.succeed (nitpick canonical)
                                         |> Task.andThen
                                             (\nitpickResult ->
                                                 case Result.map2 (\annotations () -> annotations) tcResult nitpickResult of
                                                     Ok annotations ->
-                                                        phase modName "optimize"
-                                                            |> Task.map
-                                                                (\_ ->
-                                                                    optimize modul annotations canonical
-                                                                        |> Result.map (\objects -> Artifacts canonical annotations objects)
-                                                                )
+                                                        Task.succeed
+                                                            (optimize modul annotations canonical
+                                                                |> Result.map (\objects -> Artifacts canonical annotations objects)
+                                                            )
 
                                                     Err err ->
                                                         Task.succeed (Err err)
@@ -155,14 +137,6 @@ compile pkg ifaces modul =
                     Err err ->
                         Task.succeed (Err err)
             )
-
-
-{-| Per-phase stderr log helper. One line per (phase, module) pair so a
-captured log shows the exact sequence the compiler is walking through.
--}
-phase : Name -> String -> Task Never ()
-phase modName name =
-    IO.writeLn IO.stderr ("[phase] " ++ name ++ " " ++ modName)
 
 
 {-| Compiles an Elm module with typed optimization for native code generation.
@@ -178,13 +152,7 @@ and direct lowering to MLIR/LLVM.
 -}
 compileTyped : Pkg.Name -> Dict.Dict ModuleName.Raw I.Interface -> Src.Module -> Task Never (Result E.Error TypedArtifacts)
 compileTyped pkg ifaces modul =
-    let
-        modName : Name
-        modName =
-            Src.getName modul
-    in
-    phase modName "canonicalize"
-        |> Task.map (\_ -> canonicalize pkg ifaces modul)
+    Task.succeed (canonicalize pkg ifaces modul)
         |> Task.andThen
             (\canonicalResult ->
                 case canonicalResult of
@@ -194,39 +162,34 @@ compileTyped pkg ifaces modul =
                             moduleTypeEnv =
                                 TypeEnv.fromCanonical canonical
                         in
-                        phase modName "type-check"
-                            |> Task.map (\_ -> typeCheckTyped modul canonical)
+                        Task.succeed (typeCheckTyped modul canonical)
                             |> Task.andThen
                                 (\tcResult ->
                                     case tcResult of
                                         Ok { annotations, typedCanonical, nodeTypes, kernelEnv, nodeVars, annotationVars, allSchemeRoots } ->
-                                            phase modName "nitpick"
-                                                |> Task.map (\_ -> nitpick canonical)
+                                            Task.succeed (nitpick canonical)
                                                 |> Task.andThen
                                                     (\nitpickResult ->
                                                         case nitpickResult of
                                                             Ok () ->
-                                                                phase modName "optimize"
-                                                                    |> Task.map (\_ -> optimize modul annotations canonical)
+                                                                Task.succeed (optimize modul annotations canonical)
                                                                     |> Task.andThen
                                                                         (\optResult ->
                                                                             case optResult of
                                                                                 Ok objects ->
-                                                                                    phase modName "typed-opt"
-                                                                                        |> Task.map
-                                                                                            (\_ ->
-                                                                                                typedOptimizeFromTyped modul annotations nodeTypes nodeVars kernelEnv annotationVars allSchemeRoots typedCanonical
-                                                                                                    |> Result.map
-                                                                                                        (\typedObjects ->
-                                                                                                            TypedArtifacts
-                                                                                                                { canonical = canonical
-                                                                                                                , annotations = annotations
-                                                                                                                , objects = objects
-                                                                                                                , typedObjects = typedObjects
-                                                                                                                , typeEnv = moduleTypeEnv
-                                                                                                                }
-                                                                                                        )
-                                                                                            )
+                                                                                    Task.succeed
+                                                                                        (typedOptimizeFromTyped modul annotations nodeTypes nodeVars kernelEnv annotationVars allSchemeRoots typedCanonical
+                                                                                            |> Result.map
+                                                                                                (\typedObjects ->
+                                                                                                    TypedArtifacts
+                                                                                                        { canonical = canonical
+                                                                                                        , annotations = annotations
+                                                                                                        , objects = objects
+                                                                                                        , typedObjects = typedObjects
+                                                                                                        , typeEnv = moduleTypeEnv
+                                                                                                        }
+                                                                                                )
+                                                                                        )
 
                                                                                 Err err ->
                                                                                     Task.succeed (Err err)

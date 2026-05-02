@@ -296,19 +296,8 @@ compileAndFinalize root maybeBuildDir details foreigns statuses env =
 
 compileAllModules : Env -> Dependencies -> Dict ModuleName.Raw Status -> MVar ResultDict -> Task Never ( MVar ResultDict, Dict ModuleName.Raw (MVar BResult) )
 compileAllModules env foreigns statuses rmvar =
-    -- Phase boundary marker: crawl is done, dispatching N modules into
-    -- checkModule. Lets us see we left the crawl phase even when the
-    -- per-[check] lines lag behind.
-    IO.writeLn IO.stderr
-        ("[phase] crawl done; dispatching "
-            ++ String.fromInt (Dict.size statuses)
-            ++ " modules to checkModule"
-        )
-        |> Task.andThen
-            (\_ ->
-                dictForkWithKey bResultEncoder (checkModule env foreigns rmvar) statuses
-                    |> Task.map (\resultMVars -> ( rmvar, resultMVars ))
-            )
+    dictForkWithKey bResultEncoder (checkModule env foreigns rmvar) statuses
+        |> Task.map (\resultMVars -> ( rmvar, resultMVars ))
 
 
 collectResultsAndWriteDetails : FilePath -> Maybe String -> Details.Details -> ( MVar (Dict ModuleName.Raw (MVar BResult)), Dict ModuleName.Raw (MVar BResult) ) -> Task Never (Dict ModuleName.Raw BResult)
@@ -576,16 +565,8 @@ crawlModule ((Env envData) as env) mvar ((DocsNeed needsDocs) as docsNeed) name 
         elmFileName =
             ModuleName.toFilePath name ++ ".elm"
     in
-    -- Per-module crawl trace: fires once per module reachable from main
-    -- during the dependency-resolution phase. Lets captured stderr show
-    -- whether the compiler is making forward progress through the module
-    -- graph before any compile() is invoked.
-    IO.writeLn IO.stderr ("[crawl] " ++ name)
-        |> Task.andThen
-            (\_ ->
-                findModulePaths envData.srcDirs elmFileName
-                    |> Task.andThen (crawlFoundPaths env mvar docsNeed name needsDocs envData.root envData.projectType envData.buildID envData.locals envData.foreigns)
-            )
+    findModulePaths envData.srcDirs elmFileName
+        |> Task.andThen (crawlFoundPaths env mvar docsNeed name needsDocs envData.root envData.projectType envData.buildID envData.locals envData.foreigns)
 
 
 findModulePaths : List AbsoluteSrcDir -> String -> Task Never (List FilePath)
@@ -695,13 +676,7 @@ checkKernelExistsInDirs name pkg foreignHomes srcDirs =
 
 crawlFile : Env -> MVar StatusDict -> DocsNeed -> ModuleName.Raw -> FilePath -> File.Time -> Details.BuildID -> Task Never Status
 crawlFile ((Env envData) as env) mvar docsNeed expectedName path time lastChange =
-    -- Per-file parse log: emitted as soon as we start reading + parsing the
-    -- module during dependency discovery. Gives visibility into the crawl
-    -- phase, which runs before any module's compile and which Stage 7 spends
-    -- a long time in.
-    IO.writeLn IO.stderr ("[crawl] parse " ++ expectedName)
-        |> Task.andThen
-            (\_ -> File.readUtf8 (Utils.fpCombine envData.root path))
+    File.readUtf8 (Utils.fpCombine envData.root path)
         |> Task.andThen
             (\source ->
                 case Parse.fromByteString envData.projectType source of
@@ -782,58 +757,29 @@ type CachedInterface
 
 checkModule : Env -> Dependencies -> MVar ResultDict -> ModuleName.Raw -> Status -> Task Never BResult
 checkModule ((Env envData) as env) foreigns resultsMVar name status =
-    let
-        -- Per-status check trace: fires once per module dispatched from
-        -- compileAllModules. The branch tag tells us which path each
-        -- module took (cached, recompile-pending, foreign, kernel, etc.).
-        branchTag : String
-        branchTag =
-            case status of
-                SCached _ ->
-                    "cached"
+    case status of
+        SCached ((Details.Local localData) as local) ->
+            checkCachedModule env envData.root envData.projectType resultsMVar name localData.path localData.time localData.deps localData.hasMain localData.lastChange localData.lastCompile local
 
-                SChanged _ _ _ _ ->
-                    "changed"
+        SChanged ((Details.Local localData) as local) source ((Src.Module srcData) as modul) docsNeed ->
+            checkChangedModule env envData.root resultsMVar name localData.path localData.time localData.deps localData.lastCompile local source srcData.imports modul docsNeed
 
-                SBadImport _ ->
-                    "bad-import"
+        SBadImport importProblem ->
+            Task.succeed (RNotFound importProblem)
 
-                SBadSyntax _ _ _ _ ->
-                    "bad-syntax"
+        SBadSyntax path time source err ->
+            Error.BadSyntax err |> Error.Module name path time source |> RProblem |> Task.succeed
 
-                SForeign _ ->
-                    "foreign"
+        SForeign home ->
+            case Utils.find ModuleName.toComparableCanonical (TypeCheck.Canonical home name) foreigns of
+                I.Public iface ->
+                    Task.succeed (RForeign iface)
 
-                SKernel ->
-                    "kernel"
-    in
-    IO.writeLn IO.stderr ("[check] " ++ name ++ " " ++ branchTag)
-        |> Task.andThen
-            (\_ ->
-                case status of
-                    SCached ((Details.Local localData) as local) ->
-                        checkCachedModule env envData.root envData.projectType resultsMVar name localData.path localData.time localData.deps localData.hasMain localData.lastChange localData.lastCompile local
+                I.Private _ _ _ ->
+                    ("mistakenly seeing private interface for " ++ Pkg.toChars home ++ " " ++ name) |> crash
 
-                    SChanged ((Details.Local localData) as local) source ((Src.Module srcData) as modul) docsNeed ->
-                        checkChangedModule env envData.root resultsMVar name localData.path localData.time localData.deps localData.lastCompile local source srcData.imports modul docsNeed
-
-                    SBadImport importProblem ->
-                        Task.succeed (RNotFound importProblem)
-
-                    SBadSyntax path time source err ->
-                        Error.BadSyntax err |> Error.Module name path time source |> RProblem |> Task.succeed
-
-                    SForeign home ->
-                        case Utils.find ModuleName.toComparableCanonical (TypeCheck.Canonical home name) foreigns of
-                            I.Public iface ->
-                                Task.succeed (RForeign iface)
-
-                            I.Private _ _ _ ->
-                                ("mistakenly seeing private interface for " ++ Pkg.toChars home ++ " " ++ name) |> crash
-
-                    SKernel ->
-                        Task.succeed RKernel
-            )
+        SKernel ->
+            Task.succeed RKernel
 
 
 checkCachedModule :
