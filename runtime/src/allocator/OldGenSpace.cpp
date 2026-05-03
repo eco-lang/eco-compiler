@@ -3712,8 +3712,30 @@ size_t OldGenSpace::sweepNurseryLargeBodies(bool minor_color) {
     // (which testAndClear sees) would mismatch the freed Tag_Free header.
     // The bodies stay in nursery_owned_bodies_ and a subsequent minor GC
     // (post major) drains them.
-    if (gc_phase_ != GCPhase::Idle) return 0;
-    if (compact_phase_ != CompactionPhase::Idle) return 0;
+    //
+    // On the deferred path, walk the list once to estimate how many bytes
+    // would have been freed if we'd been allowed to run, and attribute
+    // those bytes to `large_body_deferred_to_major_bytes` so the printed
+    // stats can quantify how much work the small-threshold case is
+    // pushing off onto major GC's slow per-cell sweep.
+    if (gc_phase_ != GCPhase::Idle ||
+        compact_phase_ != CompactionPhase::Idle) {
+#if ENABLE_GC_STATS
+        alloc_stats_.large_body_minor_sweep_skips++;
+        for (LargeBodyId id : nursery_owned_bodies_) {
+            if (id >= large_bodies_.size()) continue;
+            const LargeBodyMeta& m = large_bodies_[id];
+            if (m.body_base == nullptr) continue;
+            if (m.color == minor_color) continue;
+            alloc_stats_.large_body_deferred_to_major_bytes += m.cell_size;
+        }
+#endif
+        return 0;
+    }
+
+#if ENABLE_GC_STATS
+    alloc_stats_.large_body_minor_sweep_runs++;
+#endif
 
     size_t freed = 0;
     size_t k = 0;
@@ -3740,11 +3762,17 @@ size_t OldGenSpace::sweepNurseryLargeBodies(bool minor_color) {
             continue;
         }
         // Body's header in nursery did not survive this minor GC; free.
+#if ENABLE_GC_STATS
+        const size_t freed_bytes = m.cell_size;
+#endif
         freeLargeBodyCell(m);
         free_large_body_ids_.push_back(id);
         nursery_owned_bodies_[k] = nursery_owned_bodies_.back();
         nursery_owned_bodies_.pop_back();
         ++freed;
+#if ENABLE_GC_STATS
+        alloc_stats_.large_body_minor_freed_bytes += freed_bytes;
+#endif
     }
     return freed;
 }

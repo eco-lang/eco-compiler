@@ -629,6 +629,12 @@ void GCStats::combine(const GCStats& other) {
     major_gc_garbage_triggers += other.major_gc_garbage_triggers;
     major_gc_global_pressure_triggers += other.major_gc_global_pressure_triggers;
 
+    // Combine split-header large-body minor-reclaim stats.
+    large_body_minor_sweep_runs        += other.large_body_minor_sweep_runs;
+    large_body_minor_sweep_skips       += other.large_body_minor_sweep_skips;
+    large_body_minor_freed_bytes       += other.large_body_minor_freed_bytes;
+    large_body_deferred_to_major_bytes += other.large_body_deferred_to_major_bytes;
+
     // Combine Major GC timing stats.
     major_gc_count += other.major_gc_count;
     total_major_gc_time_ns += other.total_major_gc_time_ns;
@@ -839,6 +845,50 @@ void GCStats::print() const {
     std::cout << "  Alloc-fail triggers:   " << std::setw(12) << major_gc_alloc_failure_triggers << std::endl;
     std::cout << "  Global-pressure trig.: " << std::setw(12) << major_gc_global_pressure_triggers << std::endl;
     std::cout << "  Garbage-frac triggers: " << std::setw(12) << major_gc_garbage_triggers << std::endl;
+
+    // Split-header large-body minor-reclaim stats. Each minor GC tries to
+    // free Tag_LargeStringHeader / Tag_LargeByteHeader bodies whose
+    // nursery header died this cycle by routing them straight back to
+    // the per-class free lists / free_large_blocks_, bypassing the major
+    // GC's per-cell sweep walk. The fast path is skipped if a major GC or
+    // compaction is in flight; those bodies wait for a future minor that
+    // fires while major is idle (or for major-GC's slow sweep to reach
+    // them). Skip-rate and deferred bytes quantify how much of this
+    // fast-path reclamation is being lost to in-flight major GCs.
+    {
+        const uint64_t total_attempts =
+            large_body_minor_sweep_runs + large_body_minor_sweep_skips;
+        const uint64_t total_lb_bytes =
+            large_body_minor_freed_bytes + large_body_deferred_to_major_bytes;
+        const double freed_mb =
+            large_body_minor_freed_bytes / (1024.0 * 1024.0);
+        const double deferred_mb =
+            large_body_deferred_to_major_bytes / (1024.0 * 1024.0);
+        const double skip_pct = total_attempts > 0
+            ? (large_body_minor_sweep_skips * 100.0) / total_attempts
+            : 0.0;
+        const double deferred_pct = total_lb_bytes > 0
+            ? (large_body_deferred_to_major_bytes * 100.0) / total_lb_bytes
+            : 0.0;
+        std::cout << "  Lg-body sweep runs:    " << std::setw(12)
+                  << large_body_minor_sweep_runs << std::endl;
+        std::cout << "  Lg-body sweep skips:   " << std::setw(12)
+                  << large_body_minor_sweep_skips
+                  << "  ("
+                  << std::fixed << std::setprecision(1) << skip_pct
+                  << "% of attempts; major/compact in flight)"
+                  << std::endl;
+        std::cout << "  Lg-body freed (minor): " << std::setw(12)
+                  << std::fixed << std::setprecision(2)
+                  << freed_mb << " MB" << std::endl;
+        std::cout << "  Lg-body deferred:      " << std::setw(12)
+                  << std::fixed << std::setprecision(2)
+                  << deferred_mb << " MB"
+                  << "  ("
+                  << std::fixed << std::setprecision(1) << deferred_pct
+                  << "% of attempts left to major GC)"
+                  << std::endl;
+    }
 
     // ========== Major GC Timing Stats ==========
     if (major_gc_count > 0) {
@@ -1099,6 +1149,10 @@ void GCStats::reset() {
     major_gc_alloc_failure_triggers = 0;
     major_gc_garbage_triggers = 0;
     major_gc_global_pressure_triggers = 0;
+    large_body_minor_sweep_runs        = 0;
+    large_body_minor_sweep_skips       = 0;
+    large_body_minor_freed_bytes       = 0;
+    large_body_deferred_to_major_bytes = 0;
     major_gc_count = 0;
     total_major_gc_time_ns = 0;
     min_major_gc_time_ns = UINT64_MAX;
