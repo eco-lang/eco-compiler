@@ -628,42 +628,35 @@ void ThreadLocalHeap::collectStackRootsFromStackMap() {
             continue;
         }
 
-        for (size_t locIdx = 0; locIdx < rec->locations.size(); ++locIdx) {
-            const StackMapLocation& loc = rec->locations[locIdx];
-#if ECO_GC_DEBUG
+        for (const StackMapLocation& loc : rec->locations) {
             if (loc.kind != StackMapLocation::Indirect) {
-                fprintf(stderr, "[gc-stackmap]   loc[%zu] kind=%u reg=%u off=%d size=%u (NOT Indirect — SKIPPED)\n",
-                        locIdx, (unsigned)loc.kind, (unsigned)loc.dwarfRegNum,
-                        (int)loc.offset, (unsigned)loc.sizeInBytes);
+                continue;
             }
-#endif
-            if (loc.kind == StackMapLocation::Indirect) {
-                uintptr_t base = 0;
-                if (!cur.getRegister(loc.dwarfRegNum, base)) {
-                    continue;
-                }
-                uintptr_t addr = base + static_cast<int32_t>(loc.offset);
-                auto* slot = reinterpret_cast<HPointer*>(addr);
+            uintptr_t base = 0;
+            if (!cur.getRegister(loc.dwarfRegNum, base)) {
+                continue;
+            }
+            uintptr_t addr = base + static_cast<int32_t>(loc.offset);
+            auto* slot = reinterpret_cast<HPointer*>(addr);
 
-                Allocator& alloc = Allocator::instance();
-                HPointer potential = *slot;
-                // Embedded-constant HPointers (Unit/True/False/Nil/etc.) are not
-                // heap-allocated and do not need GC. Skip them before calling
-                // resolve(), which asserts constant == 0.
-                if (potential.constant != 0) {
-                    continue;
-                }
-                // Null HPointers are legitimately tracked by RS4GC (e.g.
-                // unfilled closure capture slots, statically-null derived
-                // pointers). resolve(null) would dereference heap_base, which
-                // is part of the reserved-but-not-committed address range.
-                if (potential.ptr == 0) {
-                    continue;
-                }
-                void* phys = alloc.resolve(potential);
-                if (phys != nullptr && alloc.isInHeap(phys)) {
-                    sm_roots.push(slot);
-                }
+            Allocator& alloc = Allocator::instance();
+            HPointer potential = *slot;
+            // Embedded-constant HPointers (Unit/True/False/Nil/etc.) are not
+            // heap-allocated and do not need GC. Skip them before calling
+            // resolve(), which asserts constant == 0.
+            if (potential.constant != 0) {
+                continue;
+            }
+            // Null HPointers are legitimately tracked by RS4GC (e.g.
+            // unfilled closure capture slots, statically-null derived
+            // pointers). resolve(null) would dereference heap_base, which
+            // is part of the reserved-but-not-committed address range.
+            if (potential.ptr == 0) {
+                continue;
+            }
+            void* phys = alloc.resolve(potential);
+            if (phys != nullptr && alloc.isInHeap(phys)) {
+                sm_roots.push(slot);
             }
         }
     } while (cur.step());

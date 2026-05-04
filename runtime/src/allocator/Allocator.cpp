@@ -13,12 +13,14 @@
 
 #include "Allocator.hpp"
 #include "HeapConfigJson.hpp"
+#include "OldGenSpace.hpp"
 #include "ThreadLocalHeap.hpp"
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#include <execinfo.h>
 #include <sys/mman.h>
 
 namespace Elm {
@@ -745,6 +747,7 @@ HPointer Allocator::wrap(void* obj) {
     assert(isInHeap(obj) && "Pointer must be within heap");
     return toPointerRaw(obj);
 }
+
 
 #if ENABLE_GC_STATS
 // Returns combined statistics from all thread heaps.

@@ -3,7 +3,6 @@
 #include "../KernelExports.h"
 #include "../ExportHelpers.hpp"
 #include "Utils.hpp"
-#include <cstdio>
 
 using namespace Elm;
 using namespace Elm::Kernel;
