@@ -189,7 +189,22 @@ HPointer slice(void* str, i64 start, i64 end) {
             u32 baseOffset = slc->offset;
             void* baseObj = allocator.resolve(slc->base);
             if (!baseObj) return alloc::emptyString();
+            // A slice's base may be a Tag_LargeStringHeader; the actual
+            // chars[] live in the body it points to (Heap.hpp:232-244).
+            // Match the resolution that charAt / toStdU16String use.
+            if (static_cast<Header*>(baseObj)->tag == Tag_LargeStringHeader) {
+                LargeStringHeader* lh = static_cast<LargeStringHeader*>(baseObj);
+                baseObj = allocator.resolve(lh->body);
+                if (!baseObj) return alloc::emptyString();
+            }
             ElmString* leaf = static_cast<ElmString*>(baseObj);
+            assert(leaf->header.tag == Tag_String &&
+                   "Tag_StringSlice base must resolve to Tag_String "
+                   "(directly or via Tag_LargeStringHeader::body)");
+            assert(static_cast<u64>(baseOffset) + static_cast<u64>(start) +
+                       static_cast<u64>(slice_len) <=
+                   static_cast<u64>(leaf->header.size) &&
+                   "slice range exceeds underlying leaf");
             std::vector<u16> data(leaf->chars + baseOffset + start,
                                   leaf->chars + baseOffset + start + slice_len);
             return alloc::allocString(data.data(), slice_len);

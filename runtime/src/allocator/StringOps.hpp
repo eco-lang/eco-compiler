@@ -852,9 +852,18 @@ inline std::u16string toStdU16String(void* str) {
             ElmStringSlice* slc = static_cast<ElmStringSlice*>(top);
             void* base = allocator.resolve(slc->base);
             if (base) {
-                ElmString* leaf = static_cast<ElmString*>(base);
-                std::memcpy(dst, leaf->chars + slc->offset, slc->header.size * sizeof(u16));
-                dst += slc->header.size;
+                // A slice's base may be a Tag_LargeStringHeader; resolve
+                // through it to the body (mirrors charAt / top-level slice
+                // handler in this file).
+                if (static_cast<Header*>(base)->tag == Tag_LargeStringHeader) {
+                    LargeStringHeader* lh = static_cast<LargeStringHeader*>(base);
+                    base = allocator.resolve(lh->body);
+                }
+                if (base) {
+                    ElmString* leaf = static_cast<ElmString*>(base);
+                    std::memcpy(dst, leaf->chars + slc->offset, slc->header.size * sizeof(u16));
+                    dst += slc->header.size;
+                }
             }
         } else if (h->tag == Tag_StringRope) {
             ElmStringRope* r = static_cast<ElmStringRope*>(top);
