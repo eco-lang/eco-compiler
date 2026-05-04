@@ -173,6 +173,29 @@ struct FreeCell {
 // Smallest free cell that can be linked into a free list.
 static constexpr size_t MIN_FREE_CELL_SIZE = sizeof(FreeCell);
 
+// ============================================================================
+// Free-Cell Sentinel Helpers (Header.age repurposed for Tag_Free)
+// ============================================================================
+//
+// For Tag_Free cells in old gen, `Header.age` is repurposed:
+//   age & 0b01 == 1  → "already on a free list" sentinel. Lazy sweep must
+//                      treat this as a hard run boundary; do NOT merge,
+//                      rewrite, or follow the free-list link.
+//   age & 0b01 == 0  → ordinary coalescable Tag_Free cell.
+//   age & 0b10       → reserved for future use; must remain 0.
+//
+// The heap-base sentinel (installHeapBaseSentinel) is EXEMPT — it stays at
+// age=0 and is identified by address, not by the age bit. See Heap.hpp.
+inline bool isFreeCellSentinel(const Header* hdr) {
+    return (hdr->tag == Tag_Free) && ((hdr->age & 0b01u) != 0);
+}
+inline void setFreeCellSentinel(Header* hdr) {
+    hdr->age = (hdr->age & ~0b11u) | 0b01u;
+}
+inline void clearFreeCellSentinel(Header* hdr) {
+    hdr->age = (hdr->age & ~0b11u);
+}
+
 // 8-byte Tag_Free sentinel parked at heap_base + 0 so HPointer{ptr=0} stays
 // unambiguously null. NOT a FreeCell (size < MIN_FREE_CELL_SIZE), never on
 // a free list, never returned to the mutator.
@@ -481,6 +504,16 @@ private:
     // header. A 1-bit "seen this minor GC" color decides this — minor GC
     // flips its color at the start, marks bodies as headers are scanned,
     // and frees bodies whose color did not match at the end.
+    //
+    // Bodies are freed in all GC phases except compaction (sweepNurseryLargeBodies
+    // defers only when compact_phase_ != Idle, since compaction reshuffles
+    // blocks_). When the body is freed mid-major-GC, freeLargeBodyCell
+    // installs the on-free-list sentinel (Header.age & 0b01 = 1) on the
+    // resulting Tag_Free cell, so the in-progress lazy sweep treats the
+    // cell as a hard run boundary and never coalesces or rewrites it.
+    // freeLargeBodyCell is the authoritative ownership transition for
+    // split-header bodies — the defensive `large_body_index_.erase` calls
+    // in major sweep are idempotent guards only.
 
 public:
     using LargeBodyId = uint32_t;

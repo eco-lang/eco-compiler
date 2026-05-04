@@ -98,11 +98,26 @@ typedef enum {
 // 10=Float (f64), 11=Char (u16). Cons uses 1 slot (bits 1:0), Tuple2 uses 2
 // slots (bits 3:0), Tuple3 uses 3 slots (bits 5:0), ElmArray uses 1 uniform
 // kind (bits 1:0).
+//
+// `age` semantics depend on `tag`:
+//   - For non-`Tag_Free` tags: nursery promotion counter (0..3 minor cycles).
+//   - For `Tag_Free` in old gen:
+//       * `age & 0b01 == 1`  → "already on a free list" sentinel; the lazy
+//         sweep coalescer must NOT merge across this cell, NOT rewrite its
+//         header, and NOT touch its free-list link.
+//       * `age & 0b01 == 0`  → coalescable free cell (default).
+//       * `age & 0b10`       → reserved for future use; must remain 0 in
+//         `Tag_Free` cells. Legal `age` values for `Tag_Free` are exactly
+//         `0` (coalescable) and `1` (sentinel).
+//   - The 8-byte heap-base sentinel installed by `installHeapBaseSentinel`
+//     is EXEMPT from the `age & 1` convention: it carries `age = 0` and is
+//     identified by address (`isHeapBasePage`), not by the age bit.
 typedef struct {
     u32 tag : TAG_BITS;
     u32 color : 2; // White, Grey, or Black for tri-color mark-and-sweep.
     u32 pin : 1; // Memory-pinned object (prevents relocation).
-    u32 age : 2; // Number of minor GC cycles survived.
+    u32 age : 2; // Nursery promotion counter; doubles as on-free-list
+                 // sentinel for Tag_Free cells (see above).
     u32 unboxed : 6; // 2 bits per slot; used by Cons/Tuple2/Tuple3/ElmArray.
     u32 refcount : 16; // Reference count (unused currently).
     u32 size; // Object size in type-specific units.

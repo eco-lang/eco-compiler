@@ -307,20 +307,25 @@ public:
     //
     // sweepNurseryLargeBodies runs at the end of each minor GC to free
     // bodies of Tag_LargeStringHeader / Tag_LargeByteHeader headers that
-    // did not survive the minor cycle. It early-returns if a major GC is
-    // mid-cycle (gc_phase_ != Idle) or compaction is in flight, deferring
-    // those dead bodies to the next minor that fires while major is idle.
+    // did not survive the minor cycle. The sweep early-returns ONLY while
+    // compaction is in flight — during major-GC mark/sweep it runs as
+    // normal, with freeLargeBodyCell installing the on-free-list sentinel
+    // (Header.age & 0b01 = 1) on the resulting Tag_Free cells so the
+    // in-progress lazy sweep treats them as hard run boundaries instead of
+    // coalescing across them.
     //
     // - large_body_minor_sweep_runs: number of times the sweep actually
     //   ran (took the full pass).
     // - large_body_minor_sweep_skips: number of times it early-returned
-    //   because of an in-flight major or compaction.
+    //   because compaction was in flight.
     // - large_body_minor_freed_bytes: total cell bytes freed straight back
     //   to free lists / free_large_blocks_ via the minor-GC fast path.
     // - large_body_deferred_to_major_bytes: total cell bytes that *would*
     //   have been freed by the minor-GC fast path but were left on
-    //   nursery_owned_bodies_ because the sweep was skipped — this is the
-    //   work the major GC ends up doing instead.
+    //   nursery_owned_bodies_ because compaction blocked the sweep. The
+    //   bytes are drained on the next minor that fires once compaction
+    //   completes. (Field name retained for stat-printer compatibility;
+    //   it now means "deferred until compaction completes".)
     uint64_t large_body_minor_sweep_runs        = 0;
     uint64_t large_body_minor_sweep_skips       = 0;
     uint64_t large_body_minor_freed_bytes       = 0;

@@ -30,7 +30,8 @@ extern char* g_heap_base;
 namespace {
 inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
                                 size_t span_bytes,
-                                const BlockInfo* block);
+                                const BlockInfo* block,
+                                bool age_sentinel = false);
 
 // When non-zero, releaseBlockToAllocator skips the per-call recomputation
 // of region_base_/region_end_ — the caller (typically `maybeShrinkCapacity`)
@@ -277,6 +278,10 @@ void OldGenSpace::installHeapBaseSentinel(char* page_start) {
     hdr->pin = 1;
     hdr->size = static_cast<u32>(HEAP_BASE_SENTINEL_SIZE);
     // color stays White; the sentinel is never marked.
+    // age stays 0: the heap-base sentinel is EXEMPT from the on-free-list
+    // sentinel convention (Heap.hpp). Sweep identifies it by address via
+    // isHeapBasePage, not by the age bit. Conflating the two would muddle
+    // "heap-base guard" with "already on free list".
 }
 
 // ---------------------------------------------------------------------------
@@ -559,6 +564,8 @@ static inline void padCellSlack(void* obj, size_t requested_size,
     trailing->tag = Tag_Free;
     trailing->size = static_cast<u32>(slack);
     trailing->color = static_cast<u32>(Color::White);
+    // age stays 0 (memset): trailing slack is not on a free list, so it must
+    // remain coalescable for the next sweep walk.
 }
 
 // ---------------------------------------------------------------------------
@@ -999,6 +1006,9 @@ void* OldGenSpace::allocateFromBagPage(size_t requested_size) {
     whole->header.tag = Tag_Free;
     whole->header.size = static_cast<u32>(alloc_span);
     whole->header.color = static_cast<u32>(Color::White);
+    // age stays 0 (memset): this wrapper is immediately split via
+    // pushSpanOnFreeLists with age_sentinel=false, so the coalescable default
+    // is correct.
 
     // Carve the request off the front; route the remainder via the recursive
     // span-pusher so each placed cell exactly matches its class's cellSize.
@@ -1114,6 +1124,10 @@ bool OldGenSpace::populateFromBlock(size_t cls) {
 
     // Slice into uniform Tag_Free cells and link onto the class's free list.
     // Push in reverse so iteration order matches address order.
+    // age stays 0 (memset): uniform-page free cells are non-sentinel — when
+    // mid-cycle, the block is pre-flagged fully_swept (mid_cycle below) so
+    // sweep won't re-walk and rewrite them; when not mid-cycle, they're just
+    // ordinary coalescable free cells. Resolved Decisions §1.
     for (size_t i = num_cells; i > 0; --i) {
         char* cell_addr = page_start + (i - 1) * cell_bytes;
         FreeCell* cell = reinterpret_cast<FreeCell*>(cell_addr);
@@ -1923,9 +1937,17 @@ namespace {
 // the size-class fast path can pop without any size check. Trailing bytes
 // (< MIN_FREE_CELL_SIZE) get a non-linked Tag_Free header so block-walking
 // sweep can still parse them.
+//
+// `age_sentinel`: when true, every Tag_Free header written by this call has
+// `age = 0b01` (the on-free-list sentinel). Used by `freeLargeBodyCell` to
+// install cells onto a free list mid-major-GC; lazy sweep honors the
+// sentinel as a hard run boundary so the cell isn't coalesced/rewritten.
+// When false (default), `age = 0` (coalescable). See Heap.hpp for the
+// `Header.age` repurposing convention.
 inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
                                 size_t span_bytes,
-                                const BlockInfo* block = nullptr) {
+                                const BlockInfo* block,
+                                bool age_sentinel) {
     // Diagnostic (gated on ECO_OLDGEN_DEBUG): catch sweep bugs where step >
     // remaining bytes pushes a coalesced run past the block boundary, which
     // would corrupt cells in subsequent blocks. Shipped guarded so production
@@ -1958,6 +1980,10 @@ inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
             cell->header.tag = Tag_Free;
             cell->header.size = static_cast<u32>(cellSize);
             cell->header.color = static_cast<u32>(Color::White);
+            // memset already zeroed `age`; the explicit assign here is for
+            // readability and to make the sentinel decision visible.
+            if (age_sentinel) cell->header.age = 0b01;
+            else              cell->header.age = 0;
             cell->next = free_lists[cls];
             free_lists[cls] = cell;
             span_start += cellSize;
@@ -1986,6 +2012,8 @@ inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
         cell->header.tag = Tag_Free;
         cell->header.size = static_cast<u32>(cellSize);
         cell->header.color = static_cast<u32>(Color::White);
+        if (age_sentinel) cell->header.age = 0b01;
+        else              cell->header.age = 0;
         cell->next = free_lists[cls];
         free_lists[cls] = cell;
 
@@ -2002,13 +2030,19 @@ inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
         hdr->tag = Tag_Free;
         hdr->size = static_cast<u32>(span_bytes);
         hdr->color = static_cast<u32>(Color::White);
+        if (age_sentinel) hdr->age = 0b01;
+        else              hdr->age = 0;
     }
 }
 
 inline void pushCoalescedFreeCell(FreeCell** free_lists, char* span_start,
                                   size_t span_bytes,
                                   const BlockInfo* block = nullptr) {
-    pushSpanOnFreeLists(free_lists, span_start, span_bytes, block);
+    // Coalesced runs from sweep are always non-sentinel: they go onto a free
+    // list and stay there until allocation; the next major's sweep can safely
+    // re-merge them with neighbours.
+    pushSpanOnFreeLists(free_lists, span_start, span_bytes, block,
+                        /*age_sentinel=*/false);
 }
 
 // Per-block step size. Defers to the hoisted file-scope `walkStepFor` so
@@ -2232,7 +2266,10 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
             size_t step = walkStep(block, getObjectSize(sweep_cursor_));
 
             // Liveness from per-block bitmap. testAndClear keeps the
-            // post-sweep invariant that mark_bits_ is all-zero.
+            // post-sweep invariant that mark_bits_ is all-zero. Tag_Free
+            // short-circuits to dead — including sentinel cells, whose mark
+            // bit was already cleared by freeLargeBodyCell, so this branch
+            // never re-reads it for them. (Resolved Decisions §4.)
             const bool live = (hdr->tag != Tag_Free) &&
                 testAndClearMarkBitInBlock(sweep_buffer_index_, sweep_cursor_);
 
@@ -2240,10 +2277,19 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
                 // Flush pending garbage run before processing live object.
                 // live_bytes was attributed by markOneObject during mark.
                 flushRun(sweep_buffer_index_);
+            } else if (isFreeCellSentinel(hdr)) {
+                // Already on a size-class free list, accounted for by
+                // freeLargeBodyCell. Treat as a hard run boundary: flush any
+                // pending coalesced run *before* this cell, then step over
+                // it. Do NOT touch the header or its free-list link, and do
+                // NOT increment garbage_bytes again — freeLargeBodyCell is
+                // the authoritative accounting site (Resolved Decisions §2).
+                flushRun(sweep_buffer_index_);
             } else {
                 // See is_large branch above for rationale: clear the
                 // large_body_index_ entry for body cells that major GC sweep
-                // reaches before nursery sweep does.
+                // reaches before nursery sweep does. Defensive idempotent
+                // guard — freeLargeBodyCell is authoritative (§3).
                 if (hdr->pin && (hdr->tag == Tag_String ||
                                  hdr->tag == Tag_ByteBuffer)) {
                     auto it = large_body_index_.find(sweep_cursor_);
@@ -2255,6 +2301,11 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
                         large_body_index_.erase(it);
                     }
                 }
+                // Non-sentinel dead cells (and non-sentinel Tag_Free cells
+                // from padCellSlack/trailing-leftover/uniform-page slicing,
+                // which weren't on a size-class free list when sweep got
+                // here) extend the coalescing run; the eventual flushRun
+                // updates garbage_bytes for the run.
                 if (run_start == nullptr) {
                     run_start = sweep_cursor_;
                     run_bytes = 0;
@@ -3745,20 +3796,21 @@ size_t OldGenSpace::sweepNurseryLargeBodies(bool minor_color) {
            compact_phase_ != CompactionPhase::FixingRefs &&
            "sweepNurseryLargeBodies must not run during compaction");
 
-    // Defer if a major GC mark/sweep is mid-cycle. Freeing a body cell while
-    // the major GC's sweep cursor is mid-walk would put the cell on a free
-    // list that the same sweep might re-visit, and the body's mark bit
-    // (which testAndClear sees) would mismatch the freed Tag_Free header.
-    // The bodies stay in nursery_owned_bodies_ and a subsequent minor GC
-    // (post major) drains them.
+    // Defer ONLY when compaction is in flight: compaction reshuffles blocks_
+    // and BufferMetadata, so freeing a body cell mid-compaction can race with
+    // evacuation. For mid-major-GC mark/sweep, freeLargeBodyCell installs the
+    // on-free-list sentinel (Header.age & 0b01 = 1) on the resulting Tag_Free
+    // cell, which lazy sweep honors as a hard run boundary — no coalescing
+    // across, no rewriting of the header. That makes immediate reclaim safe
+    // during Marking and Sweeping phases, returning the freed bytes to the
+    // size-class free lists right away instead of waiting for the next major.
     //
-    // On the deferred path, walk the list once to estimate how many bytes
-    // would have been freed if we'd been allowed to run, and attribute
-    // those bytes to `large_body_deferred_to_major_bytes` so the printed
-    // stats can quantify how much work the small-threshold case is
-    // pushing off onto major GC's slow per-cell sweep.
-    if (gc_phase_ != GCPhase::Idle ||
-        compact_phase_ != CompactionPhase::Idle) {
+    // On the deferred (compaction) path, walk the list once to estimate how
+    // many bytes would have been freed if we'd been allowed to run, and
+    // attribute those bytes to `large_body_deferred_to_major_bytes` so the
+    // printed stats can quantify how much work compaction is pushing off
+    // onto the next minor.
+    if (compact_phase_ != CompactionPhase::Idle) {
 #if ENABLE_GC_STATS
         alloc_stats_.large_body_minor_sweep_skips++;
         for (LargeBodyId id : nursery_owned_bodies_) {
@@ -3819,6 +3871,11 @@ size_t OldGenSpace::sweepNurseryLargeBodies(bool minor_color) {
 
 void OldGenSpace::freeLargeBodyCell(LargeBodyMeta& m) {
     if (m.body_base == nullptr) return;
+    // Authoritative ownership transition for split-header bodies (HEAP_026,
+    // Resolved Decisions §3): erasing here is what retires the LargeBodyId.
+    // Major sweep's defensive `large_body_index_.erase` calls (in lazySweep
+    // and the is_large branch) are idempotent guards — they must NOT push
+    // onto free_large_body_ids_; only this path recycles ids.
     large_body_index_.erase(m.body_base);
 
     if (m.is_large) {
@@ -3843,11 +3900,16 @@ void OldGenSpace::freeLargeBodyCell(LargeBodyMeta& m) {
             }
             if (idx < large_block_mark_.size()) large_block_mark_[idx] = 0;
             // Reset the header on the body so any walker observes Tag_Free.
+            // is_large blocks are parked in free_large_blocks_, not on a
+            // size-class free list; lazy sweep doesn't walk inside them, so
+            // age = 0 is correct here (the on-free-list sentinel only applies
+            // to size-class free-list cells).
             Header* hdr = reinterpret_cast<Header*>(m.body_base);
             std::memset(hdr, 0, sizeof(Header));
             hdr->tag = Tag_Free;
             hdr->size = static_cast<u32>(blocks_[idx].totalBytes());
             hdr->color = static_cast<u32>(Color::White);
+            hdr->age = 0;
             // allocated_bytes was incremented when allocateLargeBlock landed
             // the body. Decrement now so the next major-GC trigger calculation
             // doesn't double-count the released block.
@@ -3870,10 +3932,34 @@ void OldGenSpace::freeLargeBodyCell(LargeBodyMeta& m) {
             if (idx < blocks_.size() && !blocks_[idx].is_large) {
                 // Clear the mark bit (no-op if already zero).
                 testAndClearMarkBitInBlock(idx, m.body_base);
+                // The cell goes onto a size-class free list. If the in-progress
+                // major-GC sweep might still walk past this address, mark the
+                // cell as a sentinel so the lazy-sweep coalescer leaves it
+                // alone. Cases:
+                //   - Idle:     no sweep in progress; coalescable.
+                //   - Marking:  sweep hasn't started yet but will walk every
+                //               block; sentinel required.
+                //   - Sweeping: sentinel required iff this block hasn't been
+                //               fully swept yet (or buffer_meta_ entry is
+                //               missing — defensive).
+                bool need_sentinel = false;
+                switch (gc_phase_) {
+                    case GCPhase::Idle:
+                        need_sentinel = false;
+                        break;
+                    case GCPhase::Marking:
+                        need_sentinel = true;
+                        break;
+                    case GCPhase::Sweeping:
+                        need_sentinel = (idx >= buffer_meta_.size()) ||
+                                        !buffer_meta_[idx].fully_swept;
+                        break;
+                }
                 pushSpanOnFreeLists(free_lists_,
                                     static_cast<char*>(m.body_base),
                                     m.cell_size,
-                                    &blocks_[idx]);
+                                    &blocks_[idx],
+                                    need_sentinel);
                 if (idx < buffer_meta_.size()) {
                     BufferMetadata& bm = buffer_meta_[idx];
                     if (bm.live_bytes >= m.cell_size) {
@@ -3881,6 +3967,9 @@ void OldGenSpace::freeLargeBodyCell(LargeBodyMeta& m) {
                     } else {
                         bm.live_bytes = 0;
                     }
+                    // Authoritative garbage_bytes accounting for this cell —
+                    // sweep's run-coalescer skips sentinel cells (Step 6), so
+                    // the bytes are recorded exactly once here.
                     bm.garbage_bytes += m.cell_size;
                 }
                 allocated_bytes = (allocated_bytes >= m.cell_size)
