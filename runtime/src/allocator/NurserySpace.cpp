@@ -231,16 +231,35 @@ void *NurserySpace::allocate(size_t size) {
     // Align to 8 bytes.
     size = (size + 7) & ~7;
 
+    // Bracket the nursery allocator body so its wall-clock cost is billed
+    // to total_nursery_alloc_in_mutator_ns instead of leaking into mutator
+    // time. The mutator-only branch is correct because nursery_.allocate is
+    // never invoked from inside minorGC (promotions go to oldgen.allocate).
+    // The fast path is two clock reads + one increment — ~40 ns — which
+    // is negligible vs the cache miss on the bump-pointer write itself.
+#if ENABLE_GC_STATS
+    auto t0 = GC_STATS_TIMER_START();
+#endif
+
+    void* result;
     // Fast path: fits in current block.
     if (alloc_ptr_ + size <= alloc_end_) {
-        void *result = alloc_ptr_;
+        result = alloc_ptr_;
         alloc_ptr_ += size;
         GC_STATS_MINOR_RECORD_ALLOC(stats, size);
-        return result;
+    } else {
+        // Slow path: need next block.
+        result = allocateSlow(size);
     }
 
-    // Slow path: need next block.
-    return allocateSlow(size);
+#if ENABLE_GC_STATS
+    if (!g_in_minor_gc) {
+        stats.total_nursery_alloc_in_mutator_ns +=
+            GC_STATS_TIMER_ELAPSED_NS(t0);
+    }
+#endif
+
+    return result;
 }
 
 void* NurserySpace::allocateSlow(size_t size) {
@@ -481,11 +500,12 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // Capture state before GC.
     size_t from_space_used = bytesAllocated();
     auto gc_start = GC_STATS_TIMER_START();
-    // Snapshot the inline-helper counter so we can subtract this cycle's
-    // helper work from `elapsed_ns` before recording into the histogram.
-    // OldGenSpace::allocate increments this counter every time it does
-    // mark/sweep work while g_in_minor_gc is true (set above).
-    uint64_t helper_ns_at_start = oldgen.getStats().total_lazy_sweep_in_minor_ns;
+    // Snapshot the old-gen-alloc-in-minor counter so we can subtract this
+    // cycle's old-gen helper work from `elapsed_ns` before recording into
+    // the histogram. OldGenSpace::allocate increments this counter every
+    // time it runs while g_in_minor_gc is true (set above), regardless of
+    // whether actual mark/sweep work happens in that call.
+    uint64_t helper_ns_at_start = oldgen.getStats().total_oldgen_alloc_in_minor_ns;
 #endif
 
     std::vector<char*>& to_blocks = from_is_low_ ? high_blocks_ : low_blocks_;
@@ -838,13 +858,12 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     size_t bytes_freed = from_space_used > to_space_used ? from_space_used - to_space_used : 0;
     uint64_t elapsed_ns = GC_STATS_TIMER_ELAPSED_NS(gc_start);
 
-    // Subtract the inline mark/sweep helper work that ran during this
-    // minor cycle so the histogram and per-cycle min/max/avg reflect
-    // pure nursery-copy time. The aggregate helper time across all
-    // cycles is preserved via GCStats::total_lazy_sweep_in_minor_ns
-    // (still incremented by OldGenSpace::allocate on every helper run).
+    // Subtract the old-gen allocator work that ran during this minor
+    // cycle so the histogram and per-cycle min/max/avg reflect pure
+    // nursery-copy time. The aggregate is preserved via
+    // GCStats::total_oldgen_alloc_in_minor_ns.
     uint64_t helper_ns_this_cycle =
-        oldgen.getStats().total_lazy_sweep_in_minor_ns - helper_ns_at_start;
+        oldgen.getStats().total_oldgen_alloc_in_minor_ns - helper_ns_at_start;
     uint64_t pure_elapsed_ns = (elapsed_ns > helper_ns_this_cycle)
                                    ? elapsed_ns - helper_ns_this_cycle
                                    : 0;

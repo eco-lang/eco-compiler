@@ -448,22 +448,19 @@ void *OldGenSpace::allocate(size_t size) {
     // still show up as demand on the old-gen size-class distribution.
     GC_STATS_OLDGEN_RECORD_ALLOC(alloc_stats_, size);
 
-    // Inline allocation-paced GC helpers (incremental mark + lazy sweep).
-    // These run on every old-gen allocation and pace major-GC work against
-    // mutator allocation rate. The wall time they consume is conceptually
-    // major-GC work but happens on the allocation hot path, so it doesn't
-    // show up in the major-GC timer. Bracket the work with a timer and
-    // route the elapsed wall-time to one of two GCStats counters based on
-    // the calling context, so wall_s = minor + major + helper_in_minor +
-    // helper_in_mutator + mutator (every nanosecond accounted for).
-    //
-    // Only take the timer when there's real work to time (gc_phase_ != Idle);
-    // skipping the chrono reads in steady-state allocations keeps the
-    // hot-path overhead at zero for the common case.
+    // Bracket the entire allocate() body. Even with gc_phase_ == Idle the
+    // dispatch tail can do real allocator work (free-list walks, page
+    // splits, BBoP page acquire); when gc_phase_ != Idle the body also
+    // runs incremental mark + lazy sweep slices, plus — via lazySweep →
+    // onSweepComplete — a maybeShrinkCapacity → releaseBlockToAllocator
+    // cascade. None of that is mutator user code. Two clock reads on the
+    // slow path is ~40 ns, negligible vs the dispatch (microseconds for
+    // splitter + free-list walks). Routes elapsed wall-time to one of
+    // two counters by calling context; so the accounting identity is:
+    //   wall_s = minor + major + nursery_alloc_in_mutator
+    //          + oldgen_alloc_in_mutator + true_mutator.
 #if ENABLE_GC_STATS
-    const bool helper_active = (gc_phase_ != GCPhase::Idle);
-    auto helper_t0 = helper_active ? GC_STATS_TIMER_START()
-                                   : decltype(GC_STATS_TIMER_START()){};
+    auto helper_t0 = GC_STATS_TIMER_START();
 #endif
 
     // Allocation-paced marking: do marking work proportional to allocation.
@@ -522,13 +519,11 @@ void *OldGenSpace::allocate(size_t size) {
     }
 
 #if ENABLE_GC_STATS
-    if (helper_active) {
-        uint64_t helper_ns = GC_STATS_TIMER_ELAPSED_NS(helper_t0);
-        if (g_in_minor_gc) {
-            alloc_stats_.total_lazy_sweep_in_minor_ns += helper_ns;
-        } else {
-            alloc_stats_.total_lazy_sweep_in_mutator_ns += helper_ns;
-        }
+    uint64_t helper_ns = GC_STATS_TIMER_ELAPSED_NS(helper_t0);
+    if (g_in_minor_gc) {
+        alloc_stats_.total_oldgen_alloc_in_minor_ns += helper_ns;
+    } else {
+        alloc_stats_.total_oldgen_alloc_in_mutator_ns += helper_ns;
     }
 #endif
 
@@ -2180,7 +2175,14 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
         if (sweep_cursor_ == nullptr) {
             if (sweep_buffer_index_ >= blocks_.size()) {
                 gc_phase_ = GCPhase::Idle;
+#if ENABLE_GC_STATS
+                auto t0_shrink = GC_STATS_TIMER_START();
+#endif
                 onSweepComplete();
+#if ENABLE_GC_STATS
+                alloc_stats_.total_post_sweep_shrink_ns +=
+                    GC_STATS_TIMER_ELAPSED_NS(t0_shrink);
+#endif
                 return;
             }
             // Skip blocks that were materialized mid-cycle (populated /
@@ -2341,7 +2343,14 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
 
     if (sweep_buffer_index_ >= blocks_.size()) {
         gc_phase_ = GCPhase::Idle;
+#if ENABLE_GC_STATS
+        auto t0_shrink = GC_STATS_TIMER_START();
+#endif
         onSweepComplete();
+#if ENABLE_GC_STATS
+        alloc_stats_.total_post_sweep_shrink_ns +=
+            GC_STATS_TIMER_ELAPSED_NS(t0_shrink);
+#endif
     }
 
     // Debug-only: re-derive sweep_pending_blocks_ from buffer_meta_ and
@@ -2529,6 +2538,19 @@ void OldGenSpace::adjustCapacityAfterMajorGC() {
 // from `blocks_` cannot race against `allocateFromEmptyRegularBlocks`.
 void OldGenSpace::maybeShrinkCapacity(size_t desired_heap_bytes,
                                       bool light_pass) {
+#if ENABLE_GC_STATS
+    auto t0_shrink = GC_STATS_TIMER_START();
+    auto bill = [&]() {
+        uint64_t ns = GC_STATS_TIMER_ELAPSED_NS(t0_shrink);
+        if (light_pass) alloc_stats_.total_maybe_shrink_light_ns += ns;
+        else            alloc_stats_.total_maybe_shrink_heavy_ns += ns;
+    };
+    struct Billing {
+        std::function<void()> bill;
+        ~Billing() { bill(); }
+    } billing{bill};
+#endif
+
     if (compact_phase_ != CompactionPhase::Idle) return;
     if (allocator_     == nullptr)               return;
     // Note: gc_phase_ may now be Sweeping when called from finishMarkAndSweep

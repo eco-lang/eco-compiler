@@ -27,9 +27,9 @@
 namespace Elm {
 
 // True only while the calling thread is inside NurserySpace::minorGC.
-// Read by OldGenSpace::allocate to attribute its inline mark/sweep helper
-// work to the GCStats::total_lazy_sweep_in_minor_ns counter when the
-// allocation comes from a promotion (rather than a direct mutator alloc).
+// Read by OldGenSpace::allocate to attribute its body wall-time to the
+// GCStats::total_oldgen_alloc_in_minor_ns counter when the allocation
+// comes from a promotion (rather than a direct mutator alloc).
 // Always-on (not gated on ECO_GC_DEBUG) because the stats path needs it.
 extern thread_local bool g_in_minor_gc;
 
@@ -262,30 +262,55 @@ public:
     // doesn't masquerade as either of the simpler reasons.
     uint64_t major_gc_global_pressure_triggers = 0;
 
-    // ========== Inline GC-helper attribution ==========
+    // ========== Old-gen allocator-helper attribution ==========
     //
-    // OldGenSpace::allocate runs allocation-paced incremental mark and lazy
-    // sweep work as a side effect. This is conceptually major-GC work but
-    // it runs inline on the allocation hot path, so it doesn't show up in
-    // the major-GC timer. Two counters split the wall-clock attribution by
-    // calling context:
+    // The body of OldGenSpace::allocate is wholly allocator/GC work — even
+    // when gc_phase_ == Idle the dispatch tail can walk free lists, split
+    // larger cells, pull a fresh BBoP page, or — via lazySweep →
+    // onSweepComplete — drive a maybeShrinkCapacity → releaseBlockToAllocator
+    // cascade. None of that is mutator user code. These counters bracket
+    // the whole function unconditionally and split by calling context:
     //
-    //   total_lazy_sweep_in_minor_ns
-    //     Helper time accumulated while the calling thread is mid-minorGC
+    //   total_oldgen_alloc_in_minor_ns
+    //     Time accumulated while the calling thread is mid-minorGC
     //     (g_in_minor_gc == true), i.e. via promotion → oldgen.allocate.
     //     NurserySpace::minorGC subtracts this per-cycle from elapsed_ns
     //     before recording, so the minor histogram/min/max/avg reflect
     //     pure nursery-copy time.
     //
-    //   total_lazy_sweep_in_mutator_ns
-    //     Helper time accumulated when the mutator (not a minor GC) is
-    //     calling oldgen.allocate (large-pinned, permanent, large region).
-    //     Without this counter, this helper time is silently included in
-    //     mutator_s; with it, the printout / parser can split it out so
-    //     wall_s = minor + major + helper_in_minor + helper_in_mutator +
-    //              mutator (all five buckets sum to wall clock).
-    uint64_t total_lazy_sweep_in_minor_ns = 0;
-    uint64_t total_lazy_sweep_in_mutator_ns = 0;
+    //   total_oldgen_alloc_in_mutator_ns
+    //     Time accumulated when the mutator (not a minor GC) is calling
+    //     oldgen.allocate (large-pinned, permanent, large region). Without
+    //     this counter, this allocator time was silently included in
+    //     mutator_s; with it, the printout / parser can split it out.
+    //
+    // Sub-counters (nested inside the above; subtract when summing buckets
+    // to avoid double counting):
+    //   total_post_sweep_shrink_ns
+    //     Time spent inside onSweepComplete (light-pass shrink) when fired
+    //     from inside lazySweep on the allocation hot path. Captures the
+    //     post-sweep page-release cascade explicitly.
+    //   total_maybe_shrink_heavy_ns / total_maybe_shrink_light_ns
+    //     Time spent inside maybeShrinkCapacity, split by pass kind. The
+    //     heavy-pass case nests inside major_s (called from
+    //     adjustCapacityAfterMajorGC); the light-pass case nests inside
+    //     total_oldgen_alloc_in_mutator_ns or total_post_sweep_shrink_ns.
+    //
+    // Identity (after subtracting nested counters):
+    //   wall_s = minor + major + nursery_alloc_in_mutator
+    //          + oldgen_alloc_in_mutator + true_mutator
+    uint64_t total_oldgen_alloc_in_minor_ns   = 0;
+    uint64_t total_oldgen_alloc_in_mutator_ns = 0;
+    uint64_t total_post_sweep_shrink_ns       = 0;
+    uint64_t total_maybe_shrink_heavy_ns      = 0;
+    uint64_t total_maybe_shrink_light_ns      = 0;
+
+    // ========== Nursery-side allocator attribution ==========
+    //
+    // Mirrors the old-gen counter for the nursery fast/slow paths
+    // (NurserySpace::allocate). Captures bump-pointer + block-rotation
+    // overhead as allocator time rather than letting it leak into mutator_s.
+    uint64_t total_nursery_alloc_in_mutator_ns = 0;
 
     // ========== Adaptive Lazy-Sweep Pacing (bytes) ==========
     //

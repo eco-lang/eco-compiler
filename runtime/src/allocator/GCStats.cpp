@@ -595,11 +595,15 @@ void GCStats::combine(const GCStats& other) {
         nursery_size_bytes = other.nursery_size_bytes;
     }
 
-    // Combine inline-helper attribution.
-    total_lazy_sweep_in_minor_ns += other.total_lazy_sweep_in_minor_ns;
-    total_lazy_sweep_in_mutator_ns += other.total_lazy_sweep_in_mutator_ns;
+    // Combine allocator-helper attribution.
+    total_oldgen_alloc_in_minor_ns    += other.total_oldgen_alloc_in_minor_ns;
+    total_oldgen_alloc_in_mutator_ns  += other.total_oldgen_alloc_in_mutator_ns;
+    total_post_sweep_shrink_ns        += other.total_post_sweep_shrink_ns;
+    total_maybe_shrink_heavy_ns       += other.total_maybe_shrink_heavy_ns;
+    total_maybe_shrink_light_ns       += other.total_maybe_shrink_light_ns;
+    total_nursery_alloc_in_mutator_ns += other.total_nursery_alloc_in_mutator_ns;
     total_lazy_sweep_bytes_in_mutator += other.total_lazy_sweep_bytes_in_mutator;
-    total_panic_sweep_bytes += other.total_panic_sweep_bytes;
+    total_panic_sweep_bytes           += other.total_panic_sweep_bytes;
 
     // Combine Minor GC timing stats.
     total_minor_gc_time_ns += other.total_minor_gc_time_ns;
@@ -960,27 +964,64 @@ void GCStats::print() const {
         }
     }
 
-    // ========== Inline GC Helper Time ==========
+    // ========== Old-gen Allocator Helper Time ==========
     //
-    // Allocation-paced incremental mark + lazy sweep work that runs as a
-    // side effect of OldGenSpace::allocate. This is GC work but doesn't
-    // appear in the major-GC timer (it's incremental, not stop-the-world)
-    // and is split into two buckets by calling context. Together with
-    // minor + major above, the four GC buckets sum to the total GC wall
-    // time; the remainder of wall_clock is mutator time.
-    if (total_lazy_sweep_in_minor_ns > 0 ||
-        total_lazy_sweep_in_mutator_ns > 0) {
-        std::cout << "\nInline GC Helper Time:" << std::endl;
+    // Wall time spent inside OldGenSpace::allocate, split by calling
+    // context. This is allocator work that runs on the mutator's stack —
+    // free-list walks, page splits, lazy-sweep slices, the post-sweep
+    // shrink cascade. Without these counters all of it is silently
+    // included in mutator_s.
+    if (total_oldgen_alloc_in_minor_ns > 0 ||
+        total_oldgen_alloc_in_mutator_ns > 0) {
+        std::cout << "\nOld-gen Allocator Helper Time:" << std::endl;
         std::cout << "  In minor pauses:       " << std::setw(15)
-                  << formatTime(total_lazy_sweep_in_minor_ns)
+                  << formatTime(total_oldgen_alloc_in_minor_ns)
                   << "  (subtracted from minor histogram)" << std::endl;
         std::cout << "  In mutator alloc:      " << std::setw(15)
-                  << formatTime(total_lazy_sweep_in_mutator_ns)
+                  << formatTime(total_oldgen_alloc_in_mutator_ns)
                   << "  (subtract from mutator wall when accounting)"
                   << std::endl;
         std::cout << "  Total:                 " << std::setw(15)
-                  << formatTime(total_lazy_sweep_in_minor_ns +
-                                total_lazy_sweep_in_mutator_ns) << std::endl;
+                  << formatTime(total_oldgen_alloc_in_minor_ns +
+                                total_oldgen_alloc_in_mutator_ns) << std::endl;
+    }
+
+    // ========== Nursery Allocator Helper Time ==========
+    //
+    // Wall time spent inside NurserySpace::allocate (bump path + slow
+    // block rotation). Mutator-only — this counter is not incremented
+    // during minor GC.
+    if (total_nursery_alloc_in_mutator_ns > 0) {
+        std::cout << "\nNursery Allocator Helper Time:" << std::endl;
+        std::cout << "  In mutator alloc:      " << std::setw(15)
+                  << formatTime(total_nursery_alloc_in_mutator_ns)
+                  << "  (subtract from mutator wall when accounting)"
+                  << std::endl;
+    }
+
+    // ========== Old-gen Shrink Breakouts ==========
+    //
+    // Nested sub-counters of the totals above. Subtract these from the
+    // outer Old-gen Allocator Helper number when summing buckets, to
+    // avoid double-counting; report them on their own line so callers
+    // can see how much of the allocator-helper or major-GC time is
+    // actually page-release / free-list-rewalk work.
+    if (total_post_sweep_shrink_ns > 0 ||
+        total_maybe_shrink_heavy_ns > 0 ||
+        total_maybe_shrink_light_ns > 0) {
+        std::cout << "\nOld-gen Shrink Breakouts:" << std::endl;
+        std::cout << "  Post-sweep shrink:     " << std::setw(15)
+                  << formatTime(total_post_sweep_shrink_ns)
+                  << "  (nested in mutator alloc; via lazySweep→onSweepComplete)"
+                  << std::endl;
+        std::cout << "  maybeShrink heavy:     " << std::setw(15)
+                  << formatTime(total_maybe_shrink_heavy_ns)
+                  << "  (nested in major-GC; from adjustCapacityAfterMajorGC)"
+                  << std::endl;
+        std::cout << "  maybeShrink light:     " << std::setw(15)
+                  << formatTime(total_maybe_shrink_light_ns)
+                  << "  (nested in post-sweep shrink)"
+                  << std::endl;
     }
 
     // ========== Adaptive Lazy-Sweep Pacing ==========
@@ -1124,10 +1165,14 @@ void GCStats::reset() {
     bytes_freed = 0;
     nursery_grow_events = 0;
     nursery_size_bytes = 0;
-    total_lazy_sweep_in_minor_ns = 0;
-    total_lazy_sweep_in_mutator_ns = 0;
+    total_oldgen_alloc_in_minor_ns    = 0;
+    total_oldgen_alloc_in_mutator_ns  = 0;
+    total_post_sweep_shrink_ns        = 0;
+    total_maybe_shrink_heavy_ns       = 0;
+    total_maybe_shrink_light_ns       = 0;
+    total_nursery_alloc_in_mutator_ns = 0;
     total_lazy_sweep_bytes_in_mutator = 0;
-    total_panic_sweep_bytes = 0;
+    total_panic_sweep_bytes           = 0;
     total_minor_gc_time_ns = 0;
     min_minor_gc_time_ns = UINT64_MAX;
     max_minor_gc_time_ns = 0;

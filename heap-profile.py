@@ -130,6 +130,8 @@ SUMMARY_COLUMNS = [
     "wall_s", "major_gcs", "minor_gcs",
     "major_s", "minor_s",
     "helper_min_s", "helper_mut_s", "helper_s",
+    "nursery_alloc_s",
+    "post_sweep_shrink_s", "shrink_heavy_s", "shrink_light_s",
     "mutator_s", "mutator_pct",
     "bytes_alloc_MB", "alloc_MBps", "objs_alloc",
     "peak_commit_MB", "final_live_MB",
@@ -372,13 +374,40 @@ def parse_summary(out_text: str, err_text: str, wall_s: float) -> dict:
         out_text, r"Major GC Timing:.*?Total time:\s+" + _TIME_RE)
     minor_s = _first_time_seconds(
         out_text, r"Minor GC Timing:.*?Total time:\s+" + _TIME_RE)
+    # The runtime now prints two helper-time blocks. Restrict the parser to
+    # the "Old-gen Allocator Helper Time" section so the labels in the new
+    # "Nursery Allocator Helper Time" block can't bleed into these counters.
+    oldgen_block_re = (r"Old-gen Allocator Helper Time:\n"
+                       r"(?P<body>(?:.*\n)+?)\n")
+    m_old = re.search(oldgen_block_re, out_text)
+    oldgen_body = m_old.group("body") if m_old else ""
     helper_in_minor_s = _first_time_seconds(
-        out_text, r"In minor pauses:\s+" + _TIME_RE)
+        oldgen_body, r"In minor pauses:\s+" + _TIME_RE)
     helper_in_mutator_s = _first_time_seconds(
-        out_text, r"In mutator alloc:\s+" + _TIME_RE)
+        oldgen_body, r"In mutator alloc:\s+" + _TIME_RE)
+
+    nursery_block_re = (r"Nursery Allocator Helper Time:\n"
+                        r"(?P<body>(?:.*\n)+?)\n")
+    m_nur = re.search(nursery_block_re, out_text)
+    nursery_body = m_nur.group("body") if m_nur else ""
+    nursery_alloc_s = _first_time_seconds(
+        nursery_body, r"In mutator alloc:\s+" + _TIME_RE)
+
+    post_sweep_shrink_s = _first_time_seconds(
+        out_text, r"Post-sweep shrink:\s+" + _TIME_RE)
+    shrink_heavy_s = _first_time_seconds(
+        out_text, r"maybeShrink heavy:\s+" + _TIME_RE)
+    shrink_light_s = _first_time_seconds(
+        out_text, r"maybeShrink light:\s+" + _TIME_RE)
 
     helper_s = helper_in_minor_s + helper_in_mutator_s
-    raw_mutator_s = wall_s - major_s - minor_s - helper_s
+    # Accounting identity: wall = minor + major + nursery_alloc
+    #                          + oldgen_alloc_in_mutator + true_mutator.
+    # helper_in_minor is already subtracted from minor_s by NurserySpace
+    # before the histogram records the cycle, so it's reflected in minor_s
+    # already and must not be subtracted a second time here.
+    raw_mutator_s = (wall_s - major_s - minor_s
+                     - helper_in_mutator_s - nursery_alloc_s)
     mutator_s = max(0.0, raw_mutator_s)
     mutator_pct = (mutator_s / wall_s * 100.0) if wall_s > 0 else 0.0
     alloc_mbps = bytes_mb / wall_s if wall_s > 0 else 0.0
@@ -400,6 +429,10 @@ def parse_summary(out_text: str, err_text: str, wall_s: float) -> dict:
         "helper_min_s": f"{helper_in_minor_s:.2f}",
         "helper_mut_s": f"{helper_in_mutator_s:.2f}",
         "helper_s": f"{helper_s:.2f}",
+        "nursery_alloc_s": f"{nursery_alloc_s:.2f}",
+        "post_sweep_shrink_s": f"{post_sweep_shrink_s:.2f}",
+        "shrink_heavy_s": f"{shrink_heavy_s:.2f}",
+        "shrink_light_s": f"{shrink_light_s:.2f}",
         "mutator_s": f"{mutator_s:.2f}",
         "mutator_pct": f"{mutator_pct:.1f}",
         "bytes_alloc_MB": f"{bytes_mb:.2f}",
