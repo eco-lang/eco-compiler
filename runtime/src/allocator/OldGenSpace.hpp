@@ -905,27 +905,6 @@ private:
     // Erases m.body_base from large_body_index_.
     void freeLargeBodyCell(LargeBodyMeta& m);
 
-public:
-    // Debug-only invariant checker for the segregated-fits free lists.
-    //
-    // For every cell on every free_lists_[cls] this asserts:
-    //   - The FreeCell* pointer is unique across all free lists (no duplicate
-    //     entries on the same list, no cell on two lists).
-    //   - header.tag == Tag_Free, header.size is a multiple of 8 and >=
-    //     MIN_FREE_CELL_SIZE.
-    //   - The cell lies inside exactly one block in `blocks_`, and the cell's
-    //     extent [cell, cell + header.size) does not exceed `block.end`.
-    //   - Spans of distinct free cells do not overlap.
-    //
-    // Aborts with a diagnostic on violation. Intended to be called at trusted
-    // checkpoints (post-sweep, post-immediate-free) to catch double-link or
-    // overlapping-span corruption between the immediate-free path
-    // (sweepNurseryLargeBodies → freeLargeBodyCell → pushSpanOnFreeLists) and
-    // the lazy-sweep coalescing path. Heavy: O(N log N) over all free cells.
-    // Gated by callers (typically `ECO_OLDGEN_DEBUG=1`); the helper itself
-    // does no env-var check, so callers can bypass when they want.
-    void debugCheckFreeLists(const char* site) const;
-private:
 
     // ========== Per-Block Mark Bitmap Helpers ==========
 

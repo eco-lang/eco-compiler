@@ -2058,16 +2058,6 @@ void OldGenSpace::sweep() {
             }
         }
     }
-
-    // Stronger end-of-sweep invariant: free-list duplicates / overlaps. This
-    // catches double-link or boundary-shifted overlaps introduced by the
-    // sweep coalescing path, which the simpler in-heap check above misses.
-    static const bool kFreeListsDebug =
-        std::getenv("ECO_OLDGEN_DEBUG") != nullptr ||
-        std::getenv("ECO_FREELIST_DEBUG") != nullptr;
-    if (kFreeListsDebug) {
-        debugCheckFreeLists("sweep:exit");
-    }
 }
 
 /**
@@ -3786,16 +3776,6 @@ size_t OldGenSpace::sweepNurseryLargeBodies(bool minor_color) {
     alloc_stats_.large_body_minor_sweep_runs++;
 #endif
 
-    // Pre-condition check: free lists must be internally consistent before we
-    // start adding bodies to them. Any violation here means the corruption
-    // was introduced earlier (lazy sweep, transitionToSweeping, etc.).
-    static const bool kFreeListsDebug =
-        std::getenv("ECO_OLDGEN_DEBUG") != nullptr ||
-        std::getenv("ECO_FREELIST_DEBUG") != nullptr;
-    if (kFreeListsDebug) {
-        debugCheckFreeLists("sweepNurseryLargeBodies:enter");
-    }
-
     size_t freed = 0;
     size_t k = 0;
     while (k < nursery_owned_bodies_.size()) {
@@ -3834,123 +3814,7 @@ size_t OldGenSpace::sweepNurseryLargeBodies(bool minor_color) {
 #endif
     }
 
-    // Post-condition check: after pushing immediate-freed bodies, the free
-    // lists must still be internally consistent. A violation here points at
-    // freeLargeBodyCell / pushSpanOnFreeLists racing or double-linking with
-    // the lazy-sweep coalescer.
-    if (kFreeListsDebug && freed > 0) {
-        debugCheckFreeLists("sweepNurseryLargeBodies:exit");
-    }
     return freed;
-}
-
-// ============================================================================
-// Free-list invariant checker (debug)
-// ============================================================================
-//
-// Walks every free_lists_[cls] and validates:
-//   - Cells are unique (no double-link across or within lists).
-//   - Each header is Tag_Free with a sane size.
-//   - Each cell sits within exactly one block.
-//   - No two free cells overlap in memory.
-//
-// Calls std::abort() with a stderr diagnostic on the first violation. Intended
-// to be called from trusted checkpoints to catch double-link or overlap
-// corruption between sweepNurseryLargeBodies' immediate-free path and the
-// lazy-sweep coalescing path.
-void OldGenSpace::debugCheckFreeLists(const char* site) const {
-    std::unordered_set<const FreeCell*> seen;
-    struct Span { const char* start; const char* end; size_t cls; };
-    std::vector<Span> spans;
-    spans.reserve(256);
-
-    auto die = [&](const char* msg, const FreeCell* cell, size_t cls,
-                   uint64_t extra) {
-        std::fprintf(stderr,
-            "[oldgen-debug:freelists] FATAL at site=%s: %s\n"
-            "  cell=%p cls=%zu extra=0x%lx\n",
-            site ? site : "?", msg,
-            (const void*)cell, cls, (unsigned long)extra);
-        if (cell) {
-            uint64_t hdr_raw = 0;
-            std::memcpy(&hdr_raw, cell, sizeof(hdr_raw));
-            std::fprintf(stderr,
-                "  header raw=0x%016lx tag=%u size=%u\n",
-                (unsigned long)hdr_raw,
-                (unsigned)(hdr_raw & 0x1F),
-                (unsigned)(hdr_raw >> 32));
-        }
-        std::fflush(stderr);
-        std::abort();
-    };
-
-    for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) {
-        size_t depth = 0;
-        for (const FreeCell* c = free_lists_[cls]; c != nullptr;
-             c = c->next, ++depth) {
-            // (1) duplicate on/across lists
-            if (!seen.insert(c).second) {
-                die("free cell appears more than once across free lists",
-                    c, cls, depth);
-            }
-
-            // (2) header sanity
-            if (c->header.tag != Tag_Free) {
-                die("non-Tag_Free header on free list", c, cls,
-                    static_cast<uint64_t>(c->header.tag));
-            }
-            const u32 sz = c->header.size;
-            if (sz < MIN_FREE_CELL_SIZE) {
-                die("free cell header.size < MIN_FREE_CELL_SIZE",
-                    c, cls, sz);
-            }
-            if ((sz & 7u) != 0) {
-                die("free cell header.size not 8-aligned", c, cls, sz);
-            }
-
-            // (3) record span
-            const char* start = reinterpret_cast<const char*>(c);
-            const char* end = start + sz;
-            spans.push_back({start, end, cls});
-
-            // (4) cross-check against blocks_
-            const size_t blkIdx = blockIndexFor(start);
-            if (blkIdx >= blocks_.size()) {
-                die("free cell outside any known block", c, cls, blkIdx);
-            }
-            const BlockInfo& blk = blocks_[blkIdx];
-            if (start < blk.start || end > blk.end) {
-                die("free cell range exceeds block.end", c, cls,
-                    static_cast<uint64_t>(end - blk.end));
-            }
-
-            // Defensive: if the block is uniform size-class N, every cell on
-            // free_lists_[N] for this block must match the class's cellSize.
-            if (blk.size_class < NUM_SIZE_CLASSES &&
-                blk.size_class == cls) {
-                const size_t expected = classToSize(cls);
-                if (sz != expected) {
-                    die("uniform-class block free cell size mismatch",
-                        c, cls, expected);
-                }
-            }
-
-            // Sanity break: a free list deeper than the heap's cell capacity
-            // means a cycle in the next pointers.
-            if (depth > 10'000'000ULL) {
-                die("free list too deep — likely cycle in `next` pointers",
-                    c, cls, depth);
-            }
-        }
-    }
-
-    // (5) overlap check (disabled: O(N log N) sort is too slow for repro
-    // runs, perturbs timing enough to mask the LOT=8K bug). Uniqueness +
-    // block-containment in the loop above already catch the most useful
-    // shape of free-list corruption (a cell on two lists, or a cell out of
-    // bounds). Leave the spans vector populated so future debug code can
-    // re-enable a cheap variant if needed.
-    (void)spans;
 }
 
 void OldGenSpace::freeLargeBodyCell(LargeBodyMeta& m) {
