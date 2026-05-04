@@ -285,7 +285,6 @@ HPtr Elm_Kernel_Regex_findAtMost(int64_t n, HPtr regex, HPtr str) {
 
 HPtr Elm_Kernel_Regex_replaceAtMost(int64_t n, HPtr regex, HPtr closure, HPtr str) {
     uint64_t regexEnc = regex.toBits();
-    uint64_t closureEnc = closure.toBits();
     uint64_t strEnc = str.toBits();
     // Replaces up to n matches using the callback closure
     // closure : Match -> String
@@ -301,7 +300,17 @@ HPtr Elm_Kernel_Regex_replaceAtMost(int64_t n, HPtr regex, HPtr closure, HPtr st
         return str;
     }
 
+    // Snapshot the input string into UTF-8 BEFORE rooting begins. After the
+    // first GC point inside the loop, `strEnc` (the original heap string)
+    // may have been moved, but the std::string copy on the C stack is stable.
     std::string strUtf8 = elmStringToUTF8(strEnc);
+
+    // Root the closure across every iteration: createMatch + eco_apply_closure
+    // + utf8ToElmString (called transitively by elmStringToUTF8 on the result)
+    // are all GC points.
+    HPointer closureHP = Export::decode(closure.toBits());
+    Elm::StackRootGuard closureRoot(&closureHP);
+
     std::string result;
     size_t lastEnd = 0;
     int64_t matchNum = 0;
@@ -335,9 +344,14 @@ HPtr Elm_Kernel_Regex_replaceAtMost(int64_t n, HPtr regex, HPtr closure, HPtr st
 
             HPointer matchRecord = createMatch(matchStr, charIndex, matchNum + 1, submatches);
 
-            // Call the closure with the Match record
+            // Root the just-built Match record over the closure call too:
+            // closureHP is rooted by the outer guard, but matchRecord lives
+            // only in this iteration's frame.
+            Elm::StackRootGuard matchRoot(&matchRecord);
+            HPtr cl = HPtr::fromBits(Export::encode(closureHP));
             uint64_t matchEnc = Export::encode(matchRecord);
-            uint64_t replacementEnc = eco_apply_closure(HPtr::fromBits(closureEnc), &matchEnc, 1).toBits();
+            uint64_t replacementEnc =
+                eco_apply_closure(cl, &matchEnc, 1).toBits();
 
             // Get replacement string
             std::string replacement = elmStringToUTF8(replacementEnc);

@@ -310,11 +310,13 @@ inline size_t pinMapRoots(Elm::HPointer* lists, size_t n,
 HPtr Elm_Kernel_List_map2(HPtr closure, HPtr xs, HPtr ys) {
     auto& allocator = Allocator::instance();
     HPointer lists[2] = { Export::decode(xs.toBits()), Export::decode(ys.toBits()) };
+    HPointer closureHP = Export::decode(closure.toBits());
     std::vector<HPointer> results;
 
     auto& rs = allocator.getRootSet();
     size_t outerSaved = rs.stackRangePoint();
     rs.pushStackRootRange(lists, 2, /*hpointer_mask=*/~uint64_t(0));
+    rs.pushStackRootRange(&closureHP, 1, 1);
 
     while (!alloc::isNil(lists[0]) && !alloc::isNil(lists[1])) {
         ConsBits cb[2];
@@ -324,24 +326,27 @@ HPtr Elm_Kernel_List_map2(HPtr closure, HPtr xs, HPtr ys) {
         HPointer boxed[2];
         boxConsHeadsRooted(cb, boxed, 2);
 
-        // Root boxed heads + lists + results across the closure call.
+        // Root boxed heads + lists + closure + results across the closure call.
         rs.restoreStackRangePoint(outerSaved);
         rs.pushStackRootRange(lists, 2, /*hpointer_mask=*/~uint64_t(0));
+        rs.pushStackRootRange(&closureHP, 1, 1);
         rs.pushStackRootRange(boxed, 2, /*hpointer_mask=*/~uint64_t(0));
         if (!results.empty()) {
             rs.pushStackRootRange(results.data(), results.size(),
                                   /*hpointer_mask=*/~uint64_t(0));
         }
 
-        uint64_t result = callBinaryClosure(closure,
+        HPtr cl = HPtr::fromBits(Export::encode(closureHP));
+        uint64_t result = callBinaryClosure(cl,
             Export::encode(boxed[0]), Export::encode(boxed[1]));
         results.push_back(Export::decode(result));
 
         lists[0] = cb[0].tail;
         lists[1] = cb[1].tail;
-        // Re-pin lists+results for the next iteration.
+        // Re-pin lists+closure+results for the next iteration.
         rs.restoreStackRangePoint(outerSaved);
         rs.pushStackRootRange(lists, 2, /*hpointer_mask=*/~uint64_t(0));
+        rs.pushStackRootRange(&closureHP, 1, 1);
         if (!results.empty()) {
             rs.pushStackRootRange(results.data(), results.size(),
                                   /*hpointer_mask=*/~uint64_t(0));
@@ -366,11 +371,13 @@ HPtr Elm_Kernel_List_map3(HPtr closure, HPtr xs, HPtr ys, HPtr zs) {
         Export::decode(ys.toBits()),
         Export::decode(zs.toBits())
     };
+    HPointer closureHP = Export::decode(closure.toBits());
     std::vector<HPointer> results;
 
     auto& rs = allocator.getRootSet();
     size_t outerSaved = rs.stackRangePoint();
     rs.pushStackRootRange(lists, 3, /*hpointer_mask=*/~uint64_t(0));
+    rs.pushStackRootRange(&closureHP, 1, 1);
 
     while (!alloc::isNil(lists[0]) && !alloc::isNil(lists[1]) && !alloc::isNil(lists[2])) {
         ConsBits cb[3];
@@ -381,19 +388,22 @@ HPtr Elm_Kernel_List_map3(HPtr closure, HPtr xs, HPtr ys, HPtr zs) {
 
         rs.restoreStackRangePoint(outerSaved);
         rs.pushStackRootRange(lists, 3, /*hpointer_mask=*/~uint64_t(0));
+        rs.pushStackRootRange(&closureHP, 1, 1);
         rs.pushStackRootRange(boxed, 3, /*hpointer_mask=*/~uint64_t(0));
         if (!results.empty()) {
             rs.pushStackRootRange(results.data(), results.size(),
                                   /*hpointer_mask=*/~uint64_t(0));
         }
 
-        uint64_t result = callTernaryClosure(closure,
+        HPtr cl = HPtr::fromBits(Export::encode(closureHP));
+        uint64_t result = callTernaryClosure(cl,
             Export::encode(boxed[0]), Export::encode(boxed[1]), Export::encode(boxed[2]));
         results.push_back(Export::decode(result));
 
         for (int i = 0; i < 3; i++) lists[i] = cb[i].tail;
         rs.restoreStackRangePoint(outerSaved);
         rs.pushStackRootRange(lists, 3, /*hpointer_mask=*/~uint64_t(0));
+        rs.pushStackRootRange(&closureHP, 1, 1);
         if (!results.empty()) {
             rs.pushStackRootRange(results.data(), results.size(),
                                   /*hpointer_mask=*/~uint64_t(0));
@@ -417,11 +427,13 @@ HPtr Elm_Kernel_List_map4(HPtr closure, HPtr ws, HPtr xs, HPtr ys, HPtr zs) {
         Export::decode(ys.toBits()),
         Export::decode(zs.toBits())
     };
+    HPointer closureHP = Export::decode(closure.toBits());
     std::vector<HPointer> results;
 
     auto& rs = allocator.getRootSet();
     size_t outerSaved = rs.stackRangePoint();
     rs.pushStackRootRange(lists, 4, /*hpointer_mask=*/~uint64_t(0));
+    rs.pushStackRootRange(&closureHP, 1, 1);
 
     while (!alloc::isNil(lists[0]) && !alloc::isNil(lists[1]) &&
            !alloc::isNil(lists[2]) && !alloc::isNil(lists[3])) {
@@ -433,13 +445,15 @@ HPtr Elm_Kernel_List_map4(HPtr closure, HPtr ws, HPtr xs, HPtr ys, HPtr zs) {
 
         rs.restoreStackRangePoint(outerSaved);
         rs.pushStackRootRange(lists, 4, /*hpointer_mask=*/~uint64_t(0));
+        rs.pushStackRootRange(&closureHP, 1, 1);
         rs.pushStackRootRange(boxed, 4, /*hpointer_mask=*/~uint64_t(0));
         if (!results.empty()) {
             rs.pushStackRootRange(results.data(), results.size(),
                                   /*hpointer_mask=*/~uint64_t(0));
         }
 
-        uint64_t result = callQuaternaryClosure(closure,
+        HPtr cl = HPtr::fromBits(Export::encode(closureHP));
+        uint64_t result = callQuaternaryClosure(cl,
             Export::encode(boxed[0]), Export::encode(boxed[1]),
             Export::encode(boxed[2]), Export::encode(boxed[3]));
         results.push_back(Export::decode(result));
@@ -447,6 +461,7 @@ HPtr Elm_Kernel_List_map4(HPtr closure, HPtr ws, HPtr xs, HPtr ys, HPtr zs) {
         for (int i = 0; i < 4; i++) lists[i] = cb[i].tail;
         rs.restoreStackRangePoint(outerSaved);
         rs.pushStackRootRange(lists, 4, /*hpointer_mask=*/~uint64_t(0));
+        rs.pushStackRootRange(&closureHP, 1, 1);
         if (!results.empty()) {
             rs.pushStackRootRange(results.data(), results.size(),
                                   /*hpointer_mask=*/~uint64_t(0));
@@ -472,11 +487,13 @@ HPtr Elm_Kernel_List_map5(HPtr closure, HPtr vs, HPtr ws,
         Export::decode(ys.toBits()),
         Export::decode(zs.toBits())
     };
+    HPointer closureHP = Export::decode(closure.toBits());
     std::vector<HPointer> results;
 
     auto& rs = allocator.getRootSet();
     size_t outerSaved = rs.stackRangePoint();
     rs.pushStackRootRange(lists, 5, /*hpointer_mask=*/~uint64_t(0));
+    rs.pushStackRootRange(&closureHP, 1, 1);
 
     while (!alloc::isNil(lists[0]) && !alloc::isNil(lists[1]) && !alloc::isNil(lists[2]) &&
            !alloc::isNil(lists[3]) && !alloc::isNil(lists[4])) {
@@ -488,13 +505,15 @@ HPtr Elm_Kernel_List_map5(HPtr closure, HPtr vs, HPtr ws,
 
         rs.restoreStackRangePoint(outerSaved);
         rs.pushStackRootRange(lists, 5, /*hpointer_mask=*/~uint64_t(0));
+        rs.pushStackRootRange(&closureHP, 1, 1);
         rs.pushStackRootRange(boxed, 5, /*hpointer_mask=*/~uint64_t(0));
         if (!results.empty()) {
             rs.pushStackRootRange(results.data(), results.size(),
                                   /*hpointer_mask=*/~uint64_t(0));
         }
 
-        uint64_t result = callQuinaryClosure(closure,
+        HPtr cl = HPtr::fromBits(Export::encode(closureHP));
+        uint64_t result = callQuinaryClosure(cl,
             Export::encode(boxed[0]), Export::encode(boxed[1]),
             Export::encode(boxed[2]), Export::encode(boxed[3]), Export::encode(boxed[4]));
         results.push_back(Export::decode(result));
@@ -502,6 +521,7 @@ HPtr Elm_Kernel_List_map5(HPtr closure, HPtr vs, HPtr ws,
         for (int i = 0; i < 5; i++) lists[i] = cb[i].tail;
         rs.restoreStackRangePoint(outerSaved);
         rs.pushStackRootRange(lists, 5, /*hpointer_mask=*/~uint64_t(0));
+        rs.pushStackRootRange(&closureHP, 1, 1);
         if (!results.empty()) {
             rs.pushStackRootRange(results.data(), results.size(),
                                   /*hpointer_mask=*/~uint64_t(0));
@@ -532,16 +552,20 @@ HPtr Elm_Kernel_List_sortBy(HPtr closure, HPtr list) {
     elements.reserve(elemEnc.size());
     for (uint64_t e : elemEnc) elements.push_back(Export::decode(e));
 
+    HPointer closureHP = Export::decode(closure.toBits());
+
     auto& rs = allocator.getRootSet();
     size_t saved = rs.stackRangePoint();
     rs.pushStackRootRange(elements.data(), elements.size(),
                           /*hpointer_mask=*/~uint64_t(0));
+    rs.pushStackRootRange(&closureHP, 1, 1);
 
-    // Extract keys via closure, range-rooting both elements and keys.
+    // Extract keys via closure, range-rooting elements, keys, and closure.
     std::vector<HPointer> keys;
     keys.reserve(elements.size());
     for (size_t i = 0; i < elements.size(); ++i) {
-        uint64_t k = callUnaryClosure(closure, Export::encode(elements[i]));
+        HPtr cl = HPtr::fromBits(Export::encode(closureHP));
+        uint64_t k = callUnaryClosure(cl, Export::encode(elements[i]));
         keys.push_back(Export::decode(k));
 
         // Re-pin: keys may have grown its buffer, and the closure call may
@@ -549,6 +573,7 @@ HPtr Elm_Kernel_List_sortBy(HPtr closure, HPtr list) {
         rs.restoreStackRangePoint(saved);
         rs.pushStackRootRange(elements.data(), elements.size(),
                               /*hpointer_mask=*/~uint64_t(0));
+        rs.pushStackRootRange(&closureHP, 1, 1);
         rs.pushStackRootRange(keys.data(), keys.size(),
                               /*hpointer_mask=*/~uint64_t(0));
     }
@@ -597,17 +622,32 @@ HPtr Elm_Kernel_List_sortWith(HPtr closure, HPtr list) {
     elements.reserve(elemEnc.size());
     for (uint64_t e : elemEnc) elements.push_back(Export::decode(e));
 
+    HPointer closureHP = Export::decode(closure.toBits());
+
     auto& rs = allocator.getRootSet();
     size_t saved = rs.stackRangePoint();
     rs.pushStackRootRange(elements.data(), elements.size(),
                           /*hpointer_mask=*/~uint64_t(0));
+    rs.pushStackRootRange(&closureHP, 1, 1);
 
     std::stable_sort(elements.begin(), elements.end(),
                      [&](HPointer a, HPointer b) {
-        uint64_t order = callBinaryClosure(closure, Export::encode(a), Export::encode(b));
+        // a, b are by-value HPointer copies. They originate from `elements`
+        // (range-rooted) but the comparator's local copies need their own
+        // root: callBinaryClosure may GC and move both.
+        HPointer aRoot = a;
+        HPointer bRoot = b;
+        size_t innerSaved = rs.stackRangePoint();
+        rs.pushStackRootRange(&aRoot, 1, 1);
+        rs.pushStackRootRange(&bRoot, 1, 1);
+
+        HPtr cl = HPtr::fromBits(Export::encode(closureHP));
+        uint64_t order = callBinaryClosure(cl, Export::encode(aRoot), Export::encode(bRoot));
         HPointer orderHP = Export::decode(order);
         Custom* orderVal = static_cast<Custom*>(allocator.resolve(orderHP));
-        return orderVal->ctor == 0;  // LT means a < b
+        bool lt = orderVal->ctor == 0;  // LT means a < b
+        rs.restoreStackRangePoint(innerSaved);
+        return lt;
     });
 
     std::vector<uint64_t> encoded;

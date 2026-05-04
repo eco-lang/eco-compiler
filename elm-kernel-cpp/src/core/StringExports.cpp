@@ -202,10 +202,14 @@ HPtr Elm_Kernel_String_map(HPtr closure, HPtr str) {
         return HPtr::fromBits(Export::encode(Elm::alloc::emptyString()));
     }
 
+    HPointer closureHP = Export::decode(closure.toBits());
+    Elm::StackRootGuard closureRoot(&closureHP);
+
     std::vector<u16> result;
     result.reserve(chars.size());
     for (u16 c : chars) {
-        result.push_back(callCharToCharClosure(closure, c));
+        HPtr cl = HPtr::fromBits(Export::encode(closureHP));
+        result.push_back(callCharToCharClosure(cl, c));
     }
     return HPtr::fromBits(Export::encode(Elm::alloc::allocString(result.data(), result.size())));
 }
@@ -216,10 +220,14 @@ HPtr Elm_Kernel_String_filter(HPtr closure, HPtr str) {
         return HPtr::fromBits(Export::encode(Elm::alloc::emptyString()));
     }
 
+    HPointer closureHP = Export::decode(closure.toBits());
+    Elm::StackRootGuard closureRoot(&closureHP);
+
     std::vector<u16> result;
     result.reserve(chars.size());
     for (u16 c : chars) {
-        if (callCharToBoolClosure(closure, c)) result.push_back(c);
+        HPtr cl = HPtr::fromBits(Export::encode(closureHP));
+        if (callCharToBoolClosure(cl, c)) result.push_back(c);
     }
     return HPtr::fromBits(Export::encode(Elm::alloc::allocString(result.data(), result.size())));
 }
@@ -229,8 +237,13 @@ HPtr Elm_Kernel_String_any(HPtr closure, HPtr str) {
     if (chars.empty()) {
         return HPtr::fromBits(Export::encodeBoxedBool(false));
     }
+
+    HPointer closureHP = Export::decode(closure.toBits());
+    Elm::StackRootGuard closureRoot(&closureHP);
+
     for (u16 c : chars) {
-        if (callCharToBoolClosure(closure, c)) {
+        HPtr cl = HPtr::fromBits(Export::encode(closureHP));
+        if (callCharToBoolClosure(cl, c)) {
             return HPtr::fromBits(Export::encodeBoxedBool(true));
         }
     }
@@ -243,8 +256,13 @@ HPtr Elm_Kernel_String_all(HPtr closure, HPtr str) {
         // Empty string: all chars satisfy any predicate.
         return HPtr::fromBits(Export::encodeBoxedBool(true));
     }
+
+    HPointer closureHP = Export::decode(closure.toBits());
+    Elm::StackRootGuard closureRoot(&closureHP);
+
     for (u16 c : chars) {
-        if (!callCharToBoolClosure(closure, c)) {
+        HPtr cl = HPtr::fromBits(Export::encode(closureHP));
+        if (!callCharToBoolClosure(cl, c)) {
             return HPtr::fromBits(Export::encodeBoxedBool(false));
         }
     }
@@ -255,22 +273,32 @@ HPtr Elm_Kernel_String_foldl(HPtr closure, HPtr acc, HPtr str) {
     auto chars = snapshotChars(Export::toPtr(str.toBits()));
     if (chars.empty()) return acc;
 
-    uint64_t accumulator = acc.toBits();
+    HPointer closureHP = Export::decode(closure.toBits());
+    HPointer accHP     = Export::decode(acc.toBits());
+    Elm::StackRootGuard loopRoots(&closureHP, &accHP);
+
     for (u16 c : chars) {
-        accumulator = callFoldClosure(closure, c, accumulator);
+        HPtr cl = HPtr::fromBits(Export::encode(closureHP));
+        uint64_t newAcc = callFoldClosure(cl, c, Export::encode(accHP));
+        accHP = Export::decode(newAcc);
     }
-    return HPtr::fromBits(accumulator);
+    return HPtr::fromBits(Export::encode(accHP));
 }
 
 HPtr Elm_Kernel_String_foldr(HPtr closure, HPtr acc, HPtr str) {
     auto chars = snapshotChars(Export::toPtr(str.toBits()));
     if (chars.empty()) return acc;
 
-    uint64_t accumulator = acc.toBits();
+    HPointer closureHP = Export::decode(closure.toBits());
+    HPointer accHP     = Export::decode(acc.toBits());
+    Elm::StackRootGuard loopRoots(&closureHP, &accHP);
+
     for (size_t i = chars.size(); i > 0; --i) {
-        accumulator = callFoldClosure(closure, chars[i - 1], accumulator);
+        HPtr cl = HPtr::fromBits(Export::encode(closureHP));
+        uint64_t newAcc = callFoldClosure(cl, chars[i - 1], Export::encode(accHP));
+        accHP = Export::decode(newAcc);
     }
-    return HPtr::fromBits(accumulator);
+    return HPtr::fromBits(Export::encode(accHP));
 }
 
 } // extern "C"

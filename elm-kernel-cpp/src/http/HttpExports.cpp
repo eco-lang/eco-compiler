@@ -15,8 +15,12 @@
 #ifdef HTTP_CURL_AVAILABLE
 #include <curl/curl.h>
 #endif
+#include "allocator/Allocator.hpp"
+#include "allocator/RootSet.hpp"
+#include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <thread>
 #include <cstring>
@@ -196,8 +200,54 @@ struct HttpContext {
     uint64_t expectHandlerEnc;  // Encoded expect handler closure
 };
 
-// Perform HTTP request in thread and call resume closure
-void httpWorkerThread(HttpContext ctx) {
+// ============================================================================
+// In-flight HttpContext registry (cross-thread GC root tracking)
+// ============================================================================
+//
+// httpWorkerThread runs concurrently with main-thread GC. The closure handles
+// in HttpContext (resumeClosureEnc, expectHandlerEnc) must therefore be
+// visible to any major GC the main thread runs while the worker is in flight.
+// We register an ExternalRootScanner once that walks every live context and
+// evacuates both fields in place.
+static std::mutex g_httpCtxMutex;
+static std::unordered_set<HttpContext*> g_inFlightCtxs;
+
+static void httpRegisterScannerOnce() {
+    static std::once_flag flag;
+    std::call_once(flag, []() {
+        Allocator::instance().getRootSet().addExternalRootScanner(
+            [](Elm::RootSet::EvacuateFn evac) {
+                std::lock_guard<std::mutex> lock(g_httpCtxMutex);
+                for (HttpContext* c : g_inFlightCtxs) {
+                    if (c->resumeClosureEnc) evac(c->resumeClosureEnc);
+                    if (c->expectHandlerEnc) evac(c->expectHandlerEnc);
+                }
+            });
+    });
+}
+
+static void httpRegisterCtx(HttpContext* c) {
+    std::lock_guard<std::mutex> lock(g_httpCtxMutex);
+    g_inFlightCtxs.insert(c);
+}
+
+static void httpUnregisterCtx(HttpContext* c) {
+    std::lock_guard<std::mutex> lock(g_httpCtxMutex);
+    g_inFlightCtxs.erase(c);
+}
+
+// Perform HTTP request in thread and call resume closure. Takes ownership
+// of `ctxPtr` (allocated by the spawning code) and registers/unregisters it
+// with the GC scanner over the worker's lifetime.
+void httpWorkerThread(HttpContext* ctxPtr) {
+    std::unique_ptr<HttpContext> owned(ctxPtr);
+    HttpContext& ctx = *owned;
+    httpRegisterCtx(ctxPtr);
+    struct Unregister {
+        HttpContext* p;
+        ~Unregister() { httpUnregisterCtx(p); }
+    } unreg{ctxPtr};
+
     CURL* curl = curl_easy_init();
     if (!curl) {
         // Create NetworkError and call resume with Task.fail
@@ -408,6 +458,12 @@ static void* composeExpectEvaluator(void* args[]) {
     uint64_t handlerEnc = reinterpret_cast<uint64_t>(args[1]);
     uint64_t responseEnc = reinterpret_cast<uint64_t>(args[2]);
 
+    // Root the mapper across the first eco_apply_closure (handler call):
+    // the handler may GC, leaving `mapperEnc` stale by the time we use it
+    // for the second closure call below.
+    HPointer mapperHP = decodeHP(mapperEnc);
+    Elm::StackRootGuard mapperRoot(&mapperHP);
+
     // First call handler with response
     uint64_t resultEnc = eco_apply_closure(HPtr::fromBits(handlerEnc), &responseEnc, 1).toBits();
 
@@ -419,12 +475,20 @@ static void* composeExpectEvaluator(void* args[]) {
     if (resultPtr) {
         Custom* resultCustom = static_cast<Custom*>(resultPtr);
         if (resultCustom->ctor == 0) {
-            // Ok value - apply mapper
-            uint64_t okValueEnc = encodeHP(resultCustom->values[0].p);
-            uint64_t mappedEnc = eco_apply_closure(HPtr::fromBits(mapperEnc), &okValueEnc, 1).toBits();
+            // Ok value - apply mapper. The Ok value lives in resultCustom,
+            // which is a freshly-resolved raw pointer; root the value HP
+            // explicitly so a GC inside the mapper cannot orphan it before
+            // we wrap it back into an Ok.
+            HPointer okValueHP = resultCustom->values[0].p;
+            Elm::StackRootGuard okRoot(&okValueHP);
+
+            HPtr mapperCl = HPtr::fromBits(encodeHP(mapperHP));
+            uint64_t okValueEnc = encodeHP(okValueHP);
+            uint64_t mappedEnc = eco_apply_closure(mapperCl, &okValueEnc, 1).toBits();
 
             // Wrap in Ok
             HPointer mappedValue = decodeHP(mappedEnc);
+            Elm::StackRootGuard mappedRoot(&mappedValue);
             HPointer okResult = ok(boxed(mappedValue), true);
             return reinterpret_cast<void*>(encodeHP(okResult));
         }
@@ -505,15 +569,21 @@ HPtr Elm_Kernel_Http_toTask(HPtr request) {
         auto* cap = it->second;
         table.erase(it);
 
-        // Set resume closure in context and spawn thread
-        cap->ctx.resumeClosureEnc = resumeEnc;
-        cap->ctx.expectHandlerEnc = cap->expectHandler;
+        // Set resume closure in context and spawn thread. The worker thread
+        // takes ownership of the heap-allocated HttpContext (so its closure
+        // handles have a stable address visible to the GC's external
+        // scanner). httpRegisterScannerOnce installs that scanner the first
+        // time we get here.
+        httpRegisterScannerOnce();
+        auto* threadCtx = new HttpContext(std::move(cap->ctx));
+        threadCtx->resumeClosureEnc = resumeEnc;
+        threadCtx->expectHandlerEnc = cap->expectHandler;
 
-        // Spawn worker thread
-        std::thread worker(httpWorkerThread, cap->ctx);
+        // Spawn worker thread (worker takes ownership of threadCtx).
+        std::thread worker(httpWorkerThread, threadCtx);
         worker.detach();
 
-        // Delete capture data after copying to ctx
+        // Delete capture data; threadCtx remains alive with the worker.
         delete cap;
 
         // Return Unit as kill handle (no cleanup needed)

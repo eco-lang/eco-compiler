@@ -10,6 +10,7 @@
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
 #include "allocator/Allocator.hpp"
+#include "allocator/RootSet.hpp"
 #include "allocator/RuntimeExports.h"
 #include "platform/Scheduler.hpp"
 #include "platform/PlatformRuntime.hpp"
@@ -19,6 +20,7 @@
 #include <unordered_map>
 #include <atomic>
 #include <cstring>
+#include <vector>
 
 using namespace Elm;
 using namespace Elm::alloc;
@@ -55,6 +57,25 @@ static std::mutex g_timerMutex;
 static std::unordered_map<double, std::unique_ptr<TimerState>> g_activeTimers;
 static std::unordered_map<double, std::thread> g_timerThreads;
 
+// Register, exactly once, an external root scanner that walks every live
+// TimerState and evacuates its taggerEnc / routerEnc fields. Without this, a
+// main-thread major GC during a timer's sleep can sweep the captured
+// closure/router and leave timerWorker reading stale HPointer bits.
+static void timerRegisterScannerOnce() {
+    static std::once_flag flag;
+    std::call_once(flag, []() {
+        Elm::Allocator::instance().getRootSet().addExternalRootScanner(
+            [](Elm::RootSet::EvacuateFn evac) {
+                std::lock_guard<std::mutex> lock(g_timerMutex);
+                for (auto& [interval, state] : g_activeTimers) {
+                    if (!state) continue;
+                    if (state->taggerEnc) evac(state->taggerEnc);
+                    if (state->routerEnc) evac(state->routerEnc);
+                }
+            });
+    });
+}
+
 // Timer thread function
 void timerWorker(double intervalMs) {
     TimerState* state = nullptr;
@@ -87,12 +108,30 @@ void timerWorker(double intervalMs) {
         // Create Posix value (Int)
         HPointer posix = allocInt(ms);
 
-        // Call tagger(posix) to get the message
+        // Snapshot the rooted closure/router AFTER any allocation: the
+        // external scanner above keeps state->taggerEnc / state->routerEnc
+        // valid across GCs, so reading them now (just before each call)
+        // gives the up-to-date HPointer bits.
         uint64_t posixEnc = encodeHP(posix);
-        uint64_t msgEnc = eco_apply_closure(HPtr::fromBits(state->taggerEnc), &posixEnc, 1).toBits();
+        uint64_t taggerSnap;
+        uint64_t routerSnap;
+        {
+            std::lock_guard<std::mutex> lock(g_timerMutex);
+            taggerSnap = state->taggerEnc;
+            routerSnap = state->routerEnc;
+        }
 
-        // Send to app via router
-        HPointer router = decodeHP(state->routerEnc);
+        // Call tagger(posix) to get the message
+        uint64_t msgEnc = eco_apply_closure(HPtr::fromBits(taggerSnap), &posixEnc, 1).toBits();
+
+        // Send to app via router. Re-read the router *after* the tagger
+        // call: the scanner has updated state->routerEnc in place if a GC
+        // ran inside the tagger.
+        {
+            std::lock_guard<std::mutex> lock(g_timerMutex);
+            routerSnap = state->routerEnc;
+        }
+        HPointer router = decodeHP(routerSnap);
         HPointer msg = decodeHP(msgEnc);
         PlatformRuntime::instance().sendToApp(router, msg);
     }
@@ -122,6 +161,10 @@ void stopTimers(const std::vector<double>& intervals) {
 
 // Start a timer for given interval
 void startTimer(double intervalMs, uint64_t taggerEnc, uint64_t routerEnc) {
+    // Install the GC external root scanner for TimerState before exposing
+    // any taggerEnc/routerEnc closure handle to the timer thread.
+    timerRegisterScannerOnce();
+
     std::lock_guard<std::mutex> lock(g_timerMutex);
 
     // Check if already running with same interval
@@ -251,11 +294,20 @@ static void* composedTaggerEvaluator(void* args[]) {
     uint64_t taggerEnc = reinterpret_cast<uint64_t>(args[1]);
     uint64_t timeEnc = reinterpret_cast<uint64_t>(args[2]);
 
+    // Root the mapper across the first eco_apply_closure (origTagger): the
+    // tagger body may GC and move the mapper, leaving `mapperEnc` stale.
+    HPointer mapperHP = decodeHP(mapperEnc);
+    Elm::StackRootGuard mapperRoot(&mapperHP);
+
     // Call origTagger(time)
     uint64_t msgEnc = eco_apply_closure(HPtr::fromBits(taggerEnc), &timeEnc, 1).toBits();
 
-    // Call mapper(msg)
-    uint64_t resultEnc = eco_apply_closure(HPtr::fromBits(mapperEnc), &msgEnc, 1).toBits();
+    // Call mapper(msg). Root the freshly-produced msg over the mapper call.
+    HPointer msgHP = decodeHP(msgEnc);
+    Elm::StackRootGuard msgRoot(&msgHP);
+    HPtr mapperCl = HPtr::fromBits(encodeHP(mapperHP));
+    uint64_t msgArg = encodeHP(msgHP);
+    uint64_t resultEnc = eco_apply_closure(mapperCl, &msgArg, 1).toBits();
 
     return reinterpret_cast<void*>(resultEnc);
 }

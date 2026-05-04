@@ -302,12 +302,16 @@ HPtr Elm_Kernel_JsArray_initialize(HPtr size_val, HPtr offset_val, HPtr closure)
     int64_t offset = unboxInt(offset_val);
 
     HPointer arr = alloc::allocArray(static_cast<size_t>(size));
+    HPointer closureHP = Export::decode(closure.toBits());
     auto& allocator = Allocator::instance();
 
-    // Root `arr` so the GC keeps it valid across each closure call.
-    StackRootGuard arrRoot(&arr);
+    // Root `arr` AND the closure across every iteration: a minor GC inside
+    // the closure call would otherwise leave the kernel's `closure` HPtr
+    // pointing at the closure's old nursery cell.
+    StackRootGuard loopRoots(&arr, &closureHP);
     for (int64_t i = 0; i < size; i++) {
-        uint64_t value = callUnaryInitClosure(closure, offset + i);
+        HPtr cl = HPtr::fromBits(Export::encode(closureHP));
+        uint64_t value = callUnaryInitClosure(cl, offset + i);
         void* arrObj = allocator.resolve(arr);
         pushUnboxedResult(arrObj, value);
     }

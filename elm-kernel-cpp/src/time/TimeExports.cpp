@@ -164,9 +164,15 @@ static void* timeNowBindingEvaluator(void* rawArgs[]) {
         now.time_since_epoch()
     ).count();
 
-    HPointer succeededTask = Elm::Platform::Scheduler::instance().taskSucceedKind(
-        Elm::alloc::unboxedInt(ms), 1);
-    Elm::Platform::Scheduler::callClosure1(resumeHP, succeededTask);
+    // Root resumeHP across taskSucceedKind (which allocates a Task) and
+    // callClosure1 (which may GC inside user code).
+    HPointer succeededTask = Elm::alloc::listNil();
+    {
+        Elm::StackRootGuard guard(&resumeHP, &succeededTask);
+        succeededTask = Elm::Platform::Scheduler::instance().taskSucceedKind(
+            Elm::alloc::unboxedInt(ms), 1);
+        Elm::Platform::Scheduler::callClosure1(resumeHP, succeededTask);
+    }
 
     // Kill handle: Unit (Time.now is synchronous, nothing to cancel).
     return reinterpret_cast<void*>(Export::encode(Elm::alloc::unit()));
