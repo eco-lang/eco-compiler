@@ -126,7 +126,7 @@ static cl::opt<unsigned> optLevel(
     "O",
     cl::desc("Optimization level (0-3)"),
     cl::value_desc("level"),
-    cl::init(0));
+    cl::init(2));
 
 static cl::opt<std::string> frontendRunner(
     "frontend",
