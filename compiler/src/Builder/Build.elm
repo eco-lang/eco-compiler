@@ -577,9 +577,7 @@ crawlModule ((Env envData) as env) mvar ((DocsNeed needsDocs) as docsNeed) name 
             ModuleName.toFilePath name ++ ".elm"
     in
     -- Per-module crawl trace: fires once per module reachable from main
-    -- during the dependency-resolution phase. Lets captured stderr show
-    -- whether the compiler is making forward progress through the module
-    -- graph before any compile() is invoked.
+    -- during the dependency-resolution phase.
     IO.writeLn IO.stderr ("[crawl] " ++ name)
         |> Task.andThen
             (\_ ->
@@ -695,13 +693,7 @@ checkKernelExistsInDirs name pkg foreignHomes srcDirs =
 
 crawlFile : Env -> MVar StatusDict -> DocsNeed -> ModuleName.Raw -> FilePath -> File.Time -> Details.BuildID -> Task Never Status
 crawlFile ((Env envData) as env) mvar docsNeed expectedName path time lastChange =
-    -- Per-file parse log: emitted as soon as we start reading + parsing the
-    -- module during dependency discovery. Gives visibility into the crawl
-    -- phase, which runs before any module's compile and which Stage 7 spends
-    -- a long time in.
-    IO.writeLn IO.stderr ("[crawl] parse " ++ expectedName)
-        |> Task.andThen
-            (\_ -> File.readUtf8 (Utils.fpCombine envData.root path))
+    File.readUtf8 (Utils.fpCombine envData.root path)
         |> Task.andThen
             (\source ->
                 case Parse.fromByteString envData.projectType source of
@@ -1462,7 +1454,12 @@ compile (Env envData) docsNeed (Details.Local localData) source ifaces modul =
                 ++ " B, "
                 ++ String.fromInt (List.length localData.deps)
                 ++ " deps"
-                ++ (if envData.needsTypedOpt then ", typed-opt" else "")
+                ++ (if envData.needsTypedOpt then
+                        ", typed-opt"
+
+                    else
+                        ""
+                   )
                 ++ ")"
     in
     IO.writeLn IO.stderr traceMsg

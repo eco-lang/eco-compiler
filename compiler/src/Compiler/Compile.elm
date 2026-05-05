@@ -162,7 +162,8 @@ captured log shows the exact sequence the compiler is walking through.
 -}
 phase : Name -> String -> Task Never ()
 phase modName name =
-    IO.writeLn IO.stderr ("[phase] " ++ name ++ " " ++ modName)
+    --IO.writeLn IO.stderr ("[phase] " ++ name ++ " " ++ modName)
+    Task.succeed ()
 
 
 {-| Compiles an Elm module with typed optimization for native code generation.
