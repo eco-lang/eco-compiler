@@ -5,6 +5,7 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Format.h"
+#include "llvm/Support/FormatVariadic.h"
 
 #include <algorithm>
 #include <unordered_map>
@@ -30,8 +31,32 @@ void LoweringStats::recordPass(llvm::StringRef name, Duration duration) {
 
 namespace {
 
-double toMs(LoweringStats::Duration d) {
-    return std::chrono::duration<double, std::milli>(d).count();
+/// Pick a unit that keeps the displayed magnitude in [1, 1000) where possible:
+///   < 1 ms    -> microseconds ("us")
+///   < 1 s     -> milliseconds ("ms")
+///   >= 1 s    -> seconds ("s")
+/// The zero case falls through to "us" so dashes don't appear for never-run
+/// passes.
+std::string formatDuration(LoweringStats::Duration d, int width) {
+    using namespace std::chrono;
+    double us = duration<double, std::micro>(d).count();
+    const char *unit;
+    double value;
+    if (us < 1000.0) {
+        value = us;
+        unit = "us";
+    } else if (us < 1'000'000.0) {
+        value = us / 1000.0;
+        unit = "ms";
+    } else {
+        value = us / 1'000'000.0;
+        unit = "s";
+    }
+    // Right-aligned in `width` columns, e.g. "  12.34 ms" or " 1.23 s".
+    std::string body = llvm::formatv("{0:f2} {1}", value, unit).str();
+    if (static_cast<int>(body.size()) < width)
+        body.insert(body.begin(), width - body.size(), ' ');
+    return body;
 }
 
 struct Row {
@@ -70,9 +95,11 @@ void printSection(llvm::raw_ostream &os, llvm::StringRef title,
         return out;
     };
 
+    constexpr int kTimeWidth = 12;
+
     os << "\n" << title << "\n";
     os << "  " << padString("name", 44)
-       << padString("ms", 12)
+       << padString("time", kTimeWidth)
        << padString(" %", 8)
        << padString("calls", 8) << "\n";
     os << "  " << std::string(72, '-') << "\n";
@@ -85,7 +112,7 @@ void printSection(llvm::raw_ostream &os, llvm::StringRef title,
         if (nm.size() > 44)
             nm = nm.substr(0, 41) + "...";
         os << "  " << padString(nm, 44)
-           << llvm::format("%12.2f", toMs(r.total))
+           << formatDuration(r.total, kTimeWidth)
            << llvm::format("%7.1f%%", pct)
            << llvm::format("%8llu",
                            static_cast<unsigned long long>(r.count))
@@ -93,7 +120,7 @@ void printSection(llvm::raw_ostream &os, llvm::StringRef title,
     }
     os << "  " << std::string(72, '-') << "\n";
     os << "  " << padString("total", 44)
-       << llvm::format("%12.2f", toMs(sum)) << "\n";
+       << formatDuration(sum, kTimeWidth) << "\n";
 }
 
 } // namespace
