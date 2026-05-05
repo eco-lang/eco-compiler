@@ -30,7 +30,8 @@ extern char* g_heap_base;
 namespace {
 inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
                                 size_t span_bytes,
-                                const BlockInfo* block,
+                                BlockInfo* block,
+                                size_t block_index,
                                 bool age_sentinel = false);
 
 // When non-zero, releaseBlockToAllocator skips the per-call recomputation
@@ -39,7 +40,118 @@ inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
 // O(N) scan inside each release call when shrink is freeing thousands of
 // blocks in one pass.
 thread_local int g_batch_release_depth = 0;
+
+// ====================================================================
+// Tier-M per-block-thread helpers.
+//
+// A cell is Tier-M when its byte size is >= MIN_TIER_M_SIZE (24 B). Such
+// a cell's last 4 bytes carry next_in_block / prev_in_block (16-bit
+// offsets/8 within its owning block), and its bytes 16..19 carry a
+// 4-byte CellHandle prev_in_class back-link. Class 1 (16 B) cells are
+// Tier-S — those fields don't exist, callers must dispatch on size.
+// ====================================================================
+
+inline bool isTierM(const FreeCell* cell) {
+    return cell->header.size >= MIN_TIER_M_SIZE;
 }
+inline bool isTierMSize(size_t bytes) { return bytes >= MIN_TIER_M_SIZE; }
+
+inline FreeCellMid* asTierM(FreeCell* c) {
+    return reinterpret_cast<FreeCellMid*>(c);
+}
+
+// Resolve a 16-bit per-block offset (offset/8 from blk.start) to a
+// FreeCell*. Returns nullptr for FREE_CELLS_EMPTY.
+inline FreeCell* resolveOff(const BlockInfo& blk, uint16_t off) {
+    return (off == FREE_CELLS_EMPTY)
+        ? nullptr
+        : reinterpret_cast<FreeCell*>(blk.start + size_t(off) * 8);
+}
+
+// Encode a FreeCell* address as a 16-bit offset/8 within `blk`.
+// Caller ensures `c != nullptr` and `c` lies inside [blk.start, blk.end).
+inline uint16_t encodeOff(const BlockInfo& blk, const FreeCell* c) {
+    if (c == nullptr) return FREE_CELLS_EMPTY;
+    const size_t bytes =
+        static_cast<size_t>(reinterpret_cast<const char*>(c) - blk.start);
+    return static_cast<uint16_t>(bytes / 8);
+}
+
+// Resolve a CellHandle (in `prev_in_class`) to a FreeCell* via the blocks_
+// vector. Returns nullptr when the handle is HEAD_SENTINEL (caller checks
+// `&free_lists_[cls]` instead).
+inline FreeCell* resolveHandle(const std::vector<BlockInfo>& blocks,
+                               CellHandle h) {
+    if (h.isHead()) return nullptr;
+    return reinterpret_cast<FreeCell*>(
+        blocks[h.block_index].start + size_t(h.cell_offset_8) * 8);
+}
+
+// Tier-M only: link `c` at the head of `blk.free_cells_in_block`.
+inline void blockThreadPushHead(BlockInfo& blk, FreeCell* c) {
+    FreeCellMid* m = asTierM(c);
+    const uint16_t old_head = blk.free_cells_in_block;
+    m->prev_in_block = FREE_CELLS_EMPTY;
+    m->next_in_block = old_head;
+    if (old_head != FREE_CELLS_EMPTY) {
+        asTierM(resolveOff(blk, old_head))->prev_in_block = encodeOff(blk, c);
+    }
+    blk.free_cells_in_block = encodeOff(blk, c);
+}
+
+// Tier-M only: unlink `c` from its block thread. O(1).
+inline void blockThreadUnlink(BlockInfo& blk, FreeCell* c) {
+    FreeCellMid* m = asTierM(c);
+    if (m->prev_in_block == FREE_CELLS_EMPTY) {
+        blk.free_cells_in_block = m->next_in_block;
+    } else {
+        asTierM(resolveOff(blk, m->prev_in_block))->next_in_block =
+            m->next_in_block;
+    }
+    if (m->next_in_block != FREE_CELLS_EMPTY) {
+        asTierM(resolveOff(blk, m->next_in_block))->prev_in_block =
+            m->prev_in_block;
+    }
+}
+
+// Tier-M only: O(1) class-list unlink via the cell's CellHandle back-link.
+// Caller has already ensured `c` is on `free_lists[cls]` and is Tier-M.
+inline void classListUnlinkTierM(FreeCell** free_lists, FreeCell* c, size_t cls,
+                                 const std::vector<BlockInfo>& blocks) {
+    FreeCellMid* m = asTierM(c);
+    FreeCell* prev = resolveHandle(blocks, m->prev_in_class);
+    if (prev == nullptr) {
+        // c was the head of free_lists[cls].
+        free_lists[cls] = m->next_in_class;
+    } else {
+        prev->next_in_class = m->next_in_class;
+    }
+    if (m->next_in_class != nullptr) {
+        // Successor's prev becomes whatever c's prev was (head sentinel
+        // or the predecessor handle).
+        asTierM(m->next_in_class)->prev_in_class = m->prev_in_class;
+    }
+}
+
+// Tier-M only: push `c` at the head of `free_lists[cls]`. Updates the
+// previous head's prev_in_class to point at the new head via a CellHandle
+// computed from the new head's owning block + offset.
+inline void classListPushHeadTierM(FreeCell** free_lists, FreeCell* c,
+                                   size_t cls,
+                                   uint16_t c_block_index,
+                                   const BlockInfo& c_block) {
+    FreeCellMid* m = asTierM(c);
+    FreeCell* old_head = free_lists[cls];
+    m->prev_in_class = CellHandle::head();
+    m->next_in_class = old_head;
+    if (old_head != nullptr) {
+        CellHandle h{c_block_index, encodeOff(c_block, c)};
+        asTierM(old_head)->prev_in_class = h;
+    }
+    free_lists[cls] = c;
+}
+
+}  // namespace
 
 // Read barrier - converts logical pointer to physical address.
 // Does not follow forwarding pointers (use Allocator::resolve() for that).
@@ -123,6 +235,24 @@ void OldGenSpace::initialize(Allocator* allocator, const HeapConfig* config) {
     allocated_bytes = 0;
     small_class_bytes_ = 0;
     recomputeSmallClassLimit();
+
+    // Tier-M per-block-thread bounds on alloc_buffer_size: every cell sits
+    // at byte-offset 8N from block.start with N < 65535, so the page byte
+    // size must be at most 524288 (2^19). Enforced unconditionally because
+    // it depends only on the chosen page size, not on actual heap growth.
+    if (config_->alloc_buffer_size > (size_t{1} << 19)) {
+        std::fprintf(stderr,
+            "[oldgen] alloc_buffer_size (%zu B) exceeds 524288 B; the "
+            "16-bit per-cell offset field cannot encode addresses past "
+            "this within a block.\n",
+            config_->alloc_buffer_size);
+        std::abort();
+    }
+    // The block-count bound (`blocks_.size() < 65535` so CellHandle's
+    // 16-bit block_index can address every block + reserve 0xFFFF for
+    // HEAD_SENTINEL) is checked at each block-push in materializeBlock,
+    // not here — the configured max_heap_size is a ceiling, not a
+    // commitment, and most heaps stay far below it.
 
     // Pre-commit the initial region as one contiguous mmap, then slice into
     // pages and push each page extent into the bag of unassigned blocks.
@@ -573,7 +703,18 @@ FreeCell* OldGenSpace::tryPopFromFreeList(size_t cls) {
     assert(cls < NUM_SIZE_CLASSES);
     FreeCell* cell = free_lists_[cls];
     if (cell == nullptr) return nullptr;
-    free_lists_[cls] = cell->next;
+    free_lists_[cls] = cell->next_in_class;
+    if (isTierM(cell)) {
+        // Tier-M head pop: repaint new head's prev_in_class to HEAD_SENTINEL,
+        // then unlink the popped cell from its block thread.
+        if (free_lists_[cls] != nullptr) {
+            asTierM(free_lists_[cls])->prev_in_class = CellHandle::head();
+        }
+        const size_t blk_idx = blockIndexFor(cell);
+        if (blk_idx < blocks_.size()) {
+            blockThreadUnlink(blocks_[blk_idx], cell);
+        }
+    }
     return cell;
 }
 
@@ -840,17 +981,29 @@ void* OldGenSpace::tryAllocateBySplittingLarger(size_t target_cls,
 
             if (cell_bytes >= alloc_size &&
                 (remainder == 0 || remainder >= MIN_FREE_CELL_SIZE)) {
-                // Unlink curr from this list.
-                *prev = curr->next;
+                // start_cls is clamped to >= num_size_classes_, so every
+                // cell we walk here is a mixed-class cell of size >=
+                // MIN_TIER_M_SIZE — i.e. always Tier-M.
+                FreeCell* next_in_class = curr->next_in_class;
+                // Class-list unlink (O(1) for Tier-M via the back-link).
+                *prev = next_in_class;
+                if (next_in_class != nullptr) {
+                    asTierM(next_in_class)->prev_in_class =
+                        asTierM(curr)->prev_in_class;
+                }
 
                 char* base = reinterpret_cast<char*>(curr);
+                const size_t blk_idx = blockIndexFor(base);
+                if (blk_idx < blocks_.size()) {
+                    blockThreadUnlink(blocks_[blk_idx], curr);
+                }
+
                 if (remainder > 0) {
-                    // No block context passed: cells we split came from a
-                    // class >= num_size_classes_, which only exists in mixed
-                    // blocks, so the mixed (any-class packing) path in
-                    // pushSpanOnFreeLists is correct.
+                    BlockInfo* blk =
+                        (blk_idx < blocks_.size()) ? &blocks_[blk_idx]
+                                                   : nullptr;
                     pushSpanOnFreeLists(free_lists_, base + alloc_size,
-                                        remainder, nullptr);
+                                        remainder, blk, blk_idx);
                 }
 
                 void* result = static_cast<void*>(base);
@@ -859,8 +1012,8 @@ void* OldGenSpace::tryAllocateBySplittingLarger(size_t target_cls,
                 return result;
             }
 
-            prev = &curr->next;
-            curr = curr->next;
+            prev = &curr->next_in_class;
+            curr = curr->next_in_class;
         }
     }
 
@@ -1012,7 +1165,8 @@ void* OldGenSpace::allocateFromBagPage(size_t requested_size) {
     const size_t remainder = alloc_span - requested_size;
     if (remainder >= MIN_FREE_CELL_SIZE) {
         pushSpanOnFreeLists(free_lists_, alloc_base + requested_size,
-                            remainder, &blocks_.back());
+                            remainder, &blocks_.back(),
+                            blocks_.size() - 1);
     }
 
     void* result = static_cast<void*>(alloc_base);
@@ -1082,7 +1236,7 @@ bool OldGenSpace::populateFromBlock(size_t cls) {
         pushSpanOnFreeLists(free_lists_,
                             page_start + HEAP_BASE_SENTINEL_SIZE,
                             page_size - HEAP_BASE_SENTINEL_SIZE,
-                            &blocks_.back());
+                            &blocks_.back(), block_idx);
         return true;
     }
 
@@ -1123,6 +1277,10 @@ bool OldGenSpace::populateFromBlock(size_t cls) {
     // mid-cycle, the block is pre-flagged fully_swept (mid_cycle below) so
     // sweep won't re-walk and rewrite them; when not mid-cycle, they're just
     // ordinary coalescable free cells. Resolved Decisions §1.
+    const bool tier_m = isTierMSize(cell_bytes) && (block_idx <= 0xFFFE);
+    const uint16_t b_idx16 =
+        tier_m ? static_cast<uint16_t>(block_idx) : static_cast<uint16_t>(0);
+    BlockInfo& blk_ref = blocks_[block_idx];
     for (size_t i = num_cells; i > 0; --i) {
         char* cell_addr = page_start + (i - 1) * cell_bytes;
         FreeCell* cell = reinterpret_cast<FreeCell*>(cell_addr);
@@ -1130,8 +1288,20 @@ bool OldGenSpace::populateFromBlock(size_t cls) {
         cell->header.tag = Tag_Free;
         cell->header.size = static_cast<u32>(cell_bytes);
         cell->header.color = static_cast<u32>(Color::White);
-        cell->next = free_lists_[cls];
-        free_lists_[cls] = cell;
+        if (tier_m) {
+            FreeCellMid* m = asTierM(cell);
+            m->prev_in_class = CellHandle::head();
+            m->next_in_class = free_lists_[cls];
+            if (m->next_in_class != nullptr) {
+                CellHandle h{b_idx16, encodeOff(blk_ref, cell)};
+                asTierM(m->next_in_class)->prev_in_class = h;
+            }
+            free_lists_[cls] = cell;
+            blockThreadPushHead(blk_ref, cell);
+        } else {
+            cell->next_in_class = free_lists_[cls];
+            free_lists_[cls] = cell;
+        }
     }
 
     // Credit the small-class budget for this uniform page.
@@ -1941,7 +2111,8 @@ namespace {
 // `Header.age` repurposing convention.
 inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
                                 size_t span_bytes,
-                                const BlockInfo* block,
+                                BlockInfo* block,
+                                size_t block_index,
                                 bool age_sentinel) {
     // Diagnostic (gated on ECO_OLDGEN_DEBUG): catch sweep bugs where step >
     // remaining bytes pushes a coalesced run past the block boundary, which
@@ -1962,6 +2133,48 @@ inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
             std::abort();
         }
     }
+    // Tier-M maintenance is enabled only when we have a block context AND
+    // its index fits in the 16-bit CellHandle field. Without these we
+    // can't construct valid back-links; the cell remains on free_lists
+    // but stays invisible to the per-block fast bulk-release path.
+    const bool can_thread =
+        (block != nullptr) && (block_index <= 0xFFFE);
+    const uint16_t b_idx16 = can_thread
+        ? static_cast<uint16_t>(block_index)
+        : static_cast<uint16_t>(0);
+
+    // Helper: place a fresh Tag_Free cell of `cellSize` bytes at `addr` and
+    // link it onto free_lists[cls] + (Tier-M only) onto block's per-block
+    // thread.
+    auto placeAndLink = [&](char* addr, size_t cellSize, size_t cls) {
+        FreeCell* cell = reinterpret_cast<FreeCell*>(addr);
+        std::memset(&cell->header, 0, sizeof(Header));
+        cell->header.tag = Tag_Free;
+        cell->header.size = static_cast<u32>(cellSize);
+        cell->header.color = static_cast<u32>(Color::White);
+        cell->header.age = age_sentinel ? 0b01 : 0;
+
+        // Class-list push at head.
+        if (isTierMSize(cellSize) && can_thread) {
+            FreeCellMid* m = asTierM(cell);
+            m->prev_in_class = CellHandle::head();
+            m->next_in_class = free_lists[cls];
+            if (m->next_in_class != nullptr) {
+                CellHandle h{b_idx16, encodeOff(*block, cell)};
+                asTierM(m->next_in_class)->prev_in_class = h;
+            }
+            free_lists[cls] = cell;
+            // Per-block thread push at head.
+            blockThreadPushHead(*block, cell);
+        } else {
+            // Tier-S (class 1) OR Tier-M without block context: link only on
+            // the class list. Tier-M-without-context is the rare nullptr
+            // caller; bulk release falls back to a global walk for those.
+            cell->next_in_class = free_lists[cls];
+            free_lists[cls] = cell;
+        }
+    };
+
     // For UNIFORM size-class blocks, walkStep advances by classToSize(cls),
     // so every cell in the block must be exactly classToSize(cls) bytes.
     // Slice the span into class-sized cells so sweep's next walk does not
@@ -1970,17 +2183,7 @@ inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
         size_t cls = block->size_class;
         size_t cellSize = OldGenSpaceTestAccess::classToSize(cls);
         while (span_bytes >= cellSize) {
-            FreeCell* cell = reinterpret_cast<FreeCell*>(span_start);
-            std::memset(&cell->header, 0, sizeof(Header));
-            cell->header.tag = Tag_Free;
-            cell->header.size = static_cast<u32>(cellSize);
-            cell->header.color = static_cast<u32>(Color::White);
-            // memset already zeroed `age`; the explicit assign here is for
-            // readability and to make the sentinel decision visible.
-            if (age_sentinel) cell->header.age = 0b01;
-            else              cell->header.age = 0;
-            cell->next = free_lists[cls];
-            free_lists[cls] = cell;
+            placeAndLink(span_start, cellSize, cls);
             span_start += cellSize;
             span_bytes -= cellSize;
         }
@@ -2001,17 +2204,7 @@ inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
         size_t cls = OldGenSpaceTestAccess::freeListClassFor(span_bytes);
         if (cls >= NUM_SIZE_CLASSES) break;  // Below smallest class.
         size_t cellSize = OldGenSpaceTestAccess::classToSize(cls);
-
-        FreeCell* cell = reinterpret_cast<FreeCell*>(span_start);
-        std::memset(&cell->header, 0, sizeof(Header));
-        cell->header.tag = Tag_Free;
-        cell->header.size = static_cast<u32>(cellSize);
-        cell->header.color = static_cast<u32>(Color::White);
-        if (age_sentinel) cell->header.age = 0b01;
-        else              cell->header.age = 0;
-        cell->next = free_lists[cls];
-        free_lists[cls] = cell;
-
+        placeAndLink(span_start, cellSize, cls);
         span_start += cellSize;
         span_bytes -= cellSize;
     }
@@ -2032,11 +2225,12 @@ inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
 
 inline void pushCoalescedFreeCell(FreeCell** free_lists, char* span_start,
                                   size_t span_bytes,
-                                  const BlockInfo* block = nullptr) {
+                                  BlockInfo* block,
+                                  size_t block_index) {
     // Coalesced runs from sweep are always non-sentinel: they go onto a free
     // list and stay there until allocation; the next major's sweep can safely
     // re-merge them with neighbours.
-    pushSpanOnFreeLists(free_lists, span_start, span_bytes, block,
+    pushSpanOnFreeLists(free_lists, span_start, span_bytes, block, block_index,
                         /*age_sentinel=*/false);
 }
 
@@ -2082,7 +2276,7 @@ void OldGenSpace::sweep() {
                         cls, depth, (void*)curr);
                     std::abort();
                 }
-                curr = curr->next;
+                curr = curr->next_in_class;
                 if (++depth > 100000000ULL) break;
             }
         }
@@ -2104,6 +2298,11 @@ void OldGenSpace::transitionToSweeping() {
     // Clear free lists - they'll be rebuilt during lazy sweep.
     for (size_t i = 0; i < NUM_SIZE_CLASSES; i++) {
         free_lists_[i] = nullptr;
+    }
+    // Clear per-block free-cell threads. Sweep will rebuild them as it
+    // emits Tier-M cells via pushSpanOnFreeLists.
+    for (auto& blk : blocks_) {
+        blk.free_cells_in_block = FREE_CELLS_EMPTY;
     }
     // free_large_blocks_ entries reference blocks_ indices; the blocks
     // themselves remain (large dead blocks are reclaimed via this path,
@@ -2161,9 +2360,10 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
 
     auto flushRun = [&](size_t buf_idx) {
         if (run_start == nullptr) return;
-        const BlockInfo* block_for_run =
+        BlockInfo* block_for_run =
             (buf_idx < blocks_.size()) ? &blocks_[buf_idx] : nullptr;
-        pushCoalescedFreeCell(free_lists_, run_start, run_bytes, block_for_run);
+        pushCoalescedFreeCell(free_lists_, run_start, run_bytes,
+                              block_for_run, buf_idx);
         if (buf_idx < buffer_meta_.size()) {
             buffer_meta_[buf_idx].garbage_bytes += run_bytes;
         }
@@ -2659,12 +2859,10 @@ void OldGenSpace::maybeShrinkCapacity(size_t desired_heap_bytes,
     }
 
     if (!to_release.empty()) {
-        // O(N+M) batch unlink: walk every per-class free list ONCE, dropping
-        // any cell whose address falls in ANY block we're about to release.
-        // Avoids the O(N*M) cost of calling `removeFreeCellsForBlock` per
-        // released block, which is the dominant cost when blocks_ contains
-        // tens of thousands of pages with millions of free cells (the
-        // Stage 7 workload).
+        // Tier-S (class 1) batched pre-clean: walk free_lists_[1] ONCE,
+        // dropping any cell whose address falls in ANY block we're about
+        // to release. Only class 1 needs this — all other classes use the
+        // O(cells_in_block) per-block thread inside removeFreeCellsForBlock.
         std::sort(to_release.begin(), to_release.end());
         std::vector<std::pair<char*, char*>> ranges;
         ranges.reserve(to_release.size());
@@ -2673,7 +2871,6 @@ void OldGenSpace::maybeShrinkCapacity(size_t desired_heap_bytes,
         }
         std::sort(ranges.begin(), ranges.end());
         auto inAnyRange = [&](char* p) -> bool {
-            // Binary search for the range whose start <= p, then check end.
             auto it = std::upper_bound(
                 ranges.begin(), ranges.end(),
                 std::make_pair(p, static_cast<char*>(nullptr)));
@@ -2681,28 +2878,23 @@ void OldGenSpace::maybeShrinkCapacity(size_t desired_heap_bytes,
             --it;
             return p < it->second;
         };
-        for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) {
-            FreeCell** prev = &free_lists_[cls];
-            FreeCell* curr = free_lists_[cls];
+        if (free_lists_[1] != nullptr) {
+            FreeCell** prev = &free_lists_[1];
+            FreeCell* curr = free_lists_[1];
             while (curr != nullptr) {
-                FreeCell* next = curr->next;
+                FreeCell* next = curr->next_in_class;
                 if (inAnyRange(reinterpret_cast<char*>(curr))) {
-                    *prev = next;  // unlink
+                    *prev = next;  // unlink (Tier-S has no per-block thread)
                 } else {
-                    prev = &curr->next;
+                    prev = &curr->next_in_class;
                 }
                 curr = next;
             }
         }
-        // Now release each block. The per-block `removeFreeCellsForBlock`
-        // call inside `releaseBlockToAllocator` becomes a no-op since we
-        // already cleared the lists above — kept for safety against a
-        // future caller that doesn't pre-clean.
-        // Walk back-to-front (highest indices first) so the swap-remove in
-        // releaseBlockToAllocator never moves an index we're still planning
-        // to release. (We sorted ascending above; iterate reversed.)
-        // Bracket the loop with the batch flag so each release skips its
-        // O(N) bounds recomputation; we recompute once after.
+        // Now release each block. Tier-M classes are unlinked via the
+        // per-block thread inside removeFreeCellsForBlock; class 1 has
+        // already been pre-cleaned above so the per-block call's class-1
+        // walk finds nothing.
         ++g_batch_release_depth;
         for (auto it = to_release.rbegin(); it != to_release.rend(); ++it) {
             releaseBlockToAllocator(*it);
@@ -2739,19 +2931,43 @@ void OldGenSpace::maybeShrinkCapacity(size_t desired_heap_bytes,
 
 void OldGenSpace::removeFreeCellsForBlock(size_t block_index) {
     if (block_index >= blocks_.size()) return;
-    char* lo = blocks_[block_index].start;
-    char* hi = blocks_[block_index].end;
+    BlockInfo& blk = blocks_[block_index];
 
-    for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) {
-        FreeCell** prev = &free_lists_[cls];
-        FreeCell* curr = free_lists_[cls];
+    // Tier-M cells: O(cells in this block) walk via the per-block thread.
+    // Each cell is unlinked from its class list in O(1) via the back-link,
+    // and from the per-block thread in O(1) via blockThreadUnlink. We
+    // walk the thread destructively, advancing to next_in_block before
+    // unlink.
+    {
+        FreeCell* curr = resolveOff(blk, blk.free_cells_in_block);
+        while (curr != nullptr) {
+            FreeCell* next = resolveOff(blk, asTierM(curr)->next_in_block);
+            const size_t cls = sizeClass(curr->header.size);
+            // Class-list unlink (O(1)).
+            classListUnlinkTierM(free_lists_, curr, cls, blocks_);
+            // Per-block thread unlink — actually unnecessary here because
+            // we're tearing the whole thread down; clearing the head at
+            // the end suffices. Skipped for speed.
+            curr = next;
+        }
+        blk.free_cells_in_block = FREE_CELLS_EMPTY;
+    }
+
+    // Tier-S (class 1) cells: bounded global walk of free_lists_[1].
+    // Skip when running inside a maybeShrinkCapacity batch — that caller
+    // already pre-cleaned class 1 once across all blocks.
+    if (g_batch_release_depth == 0 && free_lists_[1] != nullptr) {
+        char* lo = blk.start;
+        char* hi = blk.end;
+        FreeCell** prev = &free_lists_[1];
+        FreeCell* curr = free_lists_[1];
         while (curr != nullptr) {
             char* p = reinterpret_cast<char*>(curr);
-            FreeCell* next = curr->next;
+            FreeCell* next = curr->next_in_class;
             if (p >= lo && p < hi) {
-                *prev = next;  // unlink
+                *prev = next;
             } else {
-                prev = &curr->next;
+                prev = &curr->next_in_class;
             }
             curr = next;
         }
@@ -2778,6 +2994,39 @@ void OldGenSpace::fixupIndicesAfterBlockMove(size_t old_idx, size_t new_idx) {
     if (evac_block_index_ == old_idx)  evac_block_index_  = new_idx;
     if (sweep_buffer_index_ == old_idx) sweep_buffer_index_ = new_idx;
     if (fixup_buffer_index_ == old_idx) fixup_buffer_index_ = new_idx;
+
+    // Tier-M CellHandle fixup: cells in the moved block carry, in their
+    // own `prev_in_class`, a CellHandle whose block_index might be old_idx
+    // (pointing at a *predecessor* in the moved block — wait, no: their
+    // own prev_in_class points at their predecessor in the *class* list,
+    // which can live in any block). So the prev_in_class of cells in the
+    // moved block doesn't necessarily reference the moved block itself.
+    //
+    // What DOES need fixing: cells whose `prev_in_class.block_index ==
+    // old_idx`. Those handles encode "my predecessor lives at block
+    // old_idx". After the swap, that predecessor (still the same cell,
+    // since BlockInfo was copied verbatim) now lives at new_idx.
+    //
+    // The straightforward fix is to walk the moved block's per-block
+    // thread. Each cell C in this block has zero or more successors in
+    // the class list whose prev_in_class points back at C — and C now
+    // lives at new_idx, not old_idx. We walk via C->next_in_class to
+    // reach the successor and rewrite its handle's block_index.
+    if (new_idx <= 0xFFFE) {
+        const uint16_t new_idx16 = static_cast<uint16_t>(new_idx);
+        BlockInfo& blk = blocks_[new_idx];
+        FreeCell* c = resolveOff(blk, blk.free_cells_in_block);
+        while (c != nullptr) {
+            FreeCellMid* m = asTierM(c);
+            if (m->next_in_class != nullptr) {
+                FreeCellMid* succ = asTierM(m->next_in_class);
+                if (succ->prev_in_class.block_index == old_idx) {
+                    succ->prev_in_class.block_index = new_idx16;
+                }
+            }
+            c = resolveOff(blk, m->next_in_block);
+        }
+    }
 }
 
 void OldGenSpace::releaseBlockToAllocator(size_t block_index) {
@@ -3091,7 +3340,7 @@ void OldGenSpace::gatherResidencyInto(GCStats& stats) const {
         uint64_t cell_count = 0;
         uint64_t cell_bytes = 0;
         for (FreeCell* cell = free_lists_[cls]; cell != nullptr;
-             cell = cell->next) {
+             cell = cell->next_in_class) {
             const size_t sz = cell->header.size;
             cell_count++;
             cell_bytes += sz;
@@ -3634,16 +3883,19 @@ void OldGenSpace::freeEvacuatedBuffers() {
         FreeCell* new_head = nullptr;
         FreeCell** tail_link = &new_head;
         while (head != nullptr) {
-            FreeCell* next = head->next;
+            FreeCell* next = head->next_in_class;
             if (!inEvacuated(reinterpret_cast<char*>(head))) {
                 *tail_link = head;
-                tail_link = &head->next;
+                tail_link = &head->next_in_class;
             }
             head = next;
         }
         *tail_link = nullptr;
         free_lists_[cls] = new_head;
     }
+    // prev_in_class CellHandles in the surviving cells reference pre-erase
+    // block indices. Rebuilding them is deferred until after the erase
+    // loop below shifts blocks_ indices to their final values.
 
     // Push evacuated extents into the bag for reuse.
     for (const auto& e : evacuated_extents) {
@@ -3693,6 +3945,48 @@ void OldGenSpace::freeEvacuatedBuffers() {
     }
 
     evacuation_set_.clear();
+
+    // Rebuild Tier-M per-block threads + prev_in_class CellHandles from
+    // the post-erase blocks_ layout. Cells in surviving blocks kept their
+    // class-list chain via the filter pass earlier, but their
+    // prev_in_class.block_index values may reference indices that just
+    // shifted (or were erased), and per-block thread heads may also be
+    // stale. Clear all heads and walk each class list once, re-threading
+    // and re-encoding back-links from scratch. O(total free cells), runs
+    // only on compaction completion.
+    for (auto& blk : blocks_) {
+        blk.free_cells_in_block = FREE_CELLS_EMPTY;
+    }
+    for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) {
+        FreeCell* prev_kept = nullptr;
+        for (FreeCell* c = free_lists_[cls]; c != nullptr;
+             c = c->next_in_class) {
+            if (!isTierM(c)) { prev_kept = c; continue; }
+            FreeCellMid* m = asTierM(c);
+            // Rebuild class-list back-link.
+            if (prev_kept == nullptr) {
+                m->prev_in_class = CellHandle::head();
+            } else {
+                const size_t prev_blk_idx = blockIndexFor(prev_kept);
+                if (prev_blk_idx <= 0xFFFE) {
+                    m->prev_in_class = CellHandle{
+                        static_cast<uint16_t>(prev_blk_idx),
+                        encodeOff(blocks_[prev_blk_idx], prev_kept)};
+                } else {
+                    m->prev_in_class = CellHandle::head();
+                }
+            }
+            // Re-thread onto own block.
+            const size_t blk_idx = blockIndexFor(c);
+            if (blk_idx < blocks_.size()) {
+                blockThreadPushHead(blocks_[blk_idx], c);
+            } else {
+                m->next_in_block = FREE_CELLS_EMPTY;
+                m->prev_in_block = FREE_CELLS_EMPTY;
+            }
+            prev_kept = c;
+        }
+    }
 
     computeFragmentationStats();
 }
@@ -3981,6 +4275,7 @@ void OldGenSpace::freeLargeBodyCell(LargeBodyMeta& m) {
                                     static_cast<char*>(m.body_base),
                                     m.cell_size,
                                     &blocks_[idx],
+                                    idx,
                                     need_sentinel);
                 if (idx < buffer_meta_.size()) {
                     BufferMetadata& bm = buffer_meta_[idx];

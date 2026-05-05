@@ -159,19 +159,85 @@ static constexpr double SWEEP_UNSWEPT_SCALE       = 2.0;
 static constexpr size_t PANIC_SWEEP_SLICE_BYTES = 1u << 20;    // 1 MiB.
 
 // ============================================================================
-// Free Cell Structure
+// Free Cell Structure (tiered: 16-B Tier-S for class 1, 24-B Tier-M for ≥ 2)
 // ============================================================================
 //
-// A free cell overlays a span of unallocated bytes and chains into a per-class
-// free list. The header carries Tag_Free and the cell's full byte size, so
-// any sweep walk can skip over it just like any other heap object.
-struct FreeCell {
-    Header header;    // Tag_Free; header.size = byte size of this cell.
-    FreeCell* next;   // Free-list link, stored in the cell's data area.
-};
+// A free cell overlays a span of unallocated bytes and chains into a
+// per-class free list. The header carries Tag_Free and the cell's full byte
+// size, so any sweep walk can skip over it just like any other heap object.
+//
+// Two flavours share the same starting layout (Header + next_in_class). The
+// size class determines which view applies:
+//   * Tier-S (cls == 1, cellSize == 16 B): no per-block thread, no class
+//     back-link. Bulk release walks free_lists_[1] end-to-end (bounded —
+//     class 1 is the smallest list).
+//   * Tier-M (cls ≥ 2, cellSize ≥ 24 B): cell additionally carries a
+//     compact 4-byte CellHandle back-link in the size-class list and
+//     16-bit per-block offsets, so removeFreeCellsForBlock can walk only
+//     this block's cells and unlink each in O(1) from both threads.
+//
+// `prev_in_class` is a CellHandle (4 B): {block_index, cell_offset_8}.
+// HEAD_SENTINEL == 0xFFFF in block_index marks the cell as the current
+// head of its size-class list (no predecessor cell exists; the slot is
+// `&free_lists_[cls]`).
+//
+// `next_in_block` / `prev_in_block` are 16-bit offsets, encoded as
+// (cell_addr - block.start) / 8. FREE_CELLS_EMPTY == 0xFFFF marks the
+// chain end.
+//
+// Bounds:
+//   * block_index in [0, 0xFFFE]: max 65,535 blocks. With 24 GB max heap
+//     and 512 KiB pages this is 49,152 — comfortably within range.
+//   * cell_offset_8 in [0, 0xFFFF]: max byte offset 524,280 ⇒ block byte
+//     size ≤ 524,288 (= 512 KiB). Enforced at OldGenSpace::initialize.
+struct FreeCell;
 
-// Smallest free cell that can be linked into a free list.
+static constexpr uint16_t FREE_CELLS_EMPTY = 0xFFFF;
+static constexpr uint16_t HEAD_SENTINEL    = 0xFFFF;
+
+// Forward decl so CellHandle::resolve can name BlockInfo.
+struct BlockInfo;
+
+// 4-byte compact reference to a free cell.
+//   block_index == HEAD_SENTINEL  ⇒ cell is current head of its class list
+//                                   (no predecessor cell; slot = &free_lists_[cls])
+//   otherwise  ⇒ cell lives at  blocks[block_index].start + cell_offset_8 * 8
+struct CellHandle {
+    uint16_t block_index;
+    uint16_t cell_offset_8;
+
+    static CellHandle head() { return {HEAD_SENTINEL, 0}; }
+    bool isHead() const { return block_index == HEAD_SENTINEL; }
+};
+static_assert(sizeof(CellHandle) == 4, "CellHandle must be 4 bytes");
+
+// Tier-S (16 B): minimal layout for class 1. Tier-M is laid out so its
+// header + next_in_class share offsets with the Tier-S view.
+struct FreeCell {
+    Header     header;          // 8 B  Tag_Free; header.size = byte size of this cell.
+    FreeCell*  next_in_class;   // 8 B  Free-list link, stored in the cell's data area.
+};
+static_assert(sizeof(FreeCell) == 16, "Tier-S FreeCell must be 16 bytes");
+
+// Tier-M (24 B): used for cells of size ≥ MIN_TIER_M_SIZE. The first two
+// fields overlay Tier-S so a `FreeCell*` view can read header / next_in_class
+// without a downcast.
+struct FreeCellMid {
+    Header     header;          // 8 B
+    FreeCell*  next_in_class;   // 8 B
+    CellHandle prev_in_class;   // 4 B   compact back-link in the size-class list
+    uint16_t   next_in_block;   // 2 B   offset/8 within block; FREE_CELLS_EMPTY = end
+    uint16_t   prev_in_block;   // 2 B   offset/8 within block; FREE_CELLS_EMPTY = head
+};
+static_assert(sizeof(FreeCellMid) == 24, "Tier-M FreeCellMid must be 24 bytes");
+static_assert(offsetof(FreeCell,    next_in_class) ==
+              offsetof(FreeCellMid, next_in_class),
+              "FreeCell and FreeCellMid must share next_in_class offset");
+
+// Smallest free cell that can be linked into a free list (Tier-S, class 1).
 static constexpr size_t MIN_FREE_CELL_SIZE = sizeof(FreeCell);
+// Smallest free cell that gets the per-block thread treatment (Tier-M).
+static constexpr size_t MIN_TIER_M_SIZE    = sizeof(FreeCellMid);
 
 // ============================================================================
 // Free-Cell Sentinel Helpers (Header.age repurposed for Tag_Free)
@@ -215,6 +281,13 @@ struct BlockInfo {
     size_t size_class;      // Advisory: preferred class for this page (or
                             // NUM_SIZE_CLASSES if mixed/large).
     bool is_large;          // True for dedicated large-object (pinned) blocks.
+
+    // Head (16-bit offset/8 from `start`) of this block's intrusive Tier-M
+    // free-cell thread. Tier-S (class 1) cells are NOT in this thread.
+    // FREE_CELLS_EMPTY (0xFFFF) when no Tier-M cells from this block are
+    // currently linked. Stored as an offset (not a pointer) so the thread is
+    // independent of `std::vector<BlockInfo>` reallocation.
+    uint16_t free_cells_in_block = FREE_CELLS_EMPTY;
 
     size_t totalBytes() const { return static_cast<size_t>(end - start); }
 };
