@@ -640,11 +640,11 @@ Testing::TestCase testLargeElmArrayReclaimedWhenUnreachable(
 
 namespace {
 
-// Sized to comfortably exceed the default large_object_threshold (8 KiB), so
-// the body lands either in a size-class cell or — for the larger flavours —
-// in an is_large block.
-constexpr size_t SPLIT_STRING_LEN = 5 * 1024;        // 10 KiB UTF-16 payload
-constexpr size_t SPLIT_BYTE_LEN   = 10 * 1024;       // 10 KiB byte payload
+// Sized to comfortably exceed the default large_object_threshold (16 KiB),
+// so the body lands either in a size-class cell or — for the larger flavours
+// — in an is_large block.
+constexpr size_t SPLIT_STRING_LEN = 10 * 1024;       // 20 KiB UTF-16 payload
+constexpr size_t SPLIT_BYTE_LEN   = 20 * 1024;       // 20 KiB byte payload
 
 HPointer allocPatternedSplitString(size_t length) {
     std::vector<u16> chars(length);
