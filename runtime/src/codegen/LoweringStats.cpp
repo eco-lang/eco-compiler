@@ -42,9 +42,14 @@ std::string formatDuration(LoweringStats::Duration d, int width) {
     double us = duration<double, std::micro>(d).count();
     const char *unit;
     double value;
+    // `extraBytes` accounts for unit strings whose UTF-8 byte length exceeds
+    // their displayed column width (µ is 2 bytes, 1 column). Without this the
+    // padding step would over-count and shift the µs rows left by one column.
+    int extraBytes = 0;
     if (us < 1000.0) {
         value = us;
-        unit = "us";
+        unit = "\xC2\xB5s"; // "µs"
+        extraBytes = 1;
     } else if (us < 1'000'000.0) {
         value = us / 1000.0;
         unit = "ms";
@@ -52,10 +57,11 @@ std::string formatDuration(LoweringStats::Duration d, int width) {
         value = us / 1'000'000.0;
         unit = "s";
     }
-    // Right-aligned in `width` columns, e.g. "  12.34 ms" or " 1.23 s".
+    // Right-aligned in `width` columns, e.g. " 12.34 ms" or " 1.23 s".
     std::string body = llvm::formatv("{0:f2} {1}", value, unit).str();
-    if (static_cast<int>(body.size()) < width)
-        body.insert(body.begin(), width - body.size(), ' ');
+    int visibleWidth = static_cast<int>(body.size()) - extraBytes;
+    if (visibleWidth < width)
+        body.insert(body.begin(), width - visibleWidth, ' ');
     return body;
 }
 
