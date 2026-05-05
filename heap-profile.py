@@ -66,6 +66,7 @@ BASELINE_HEAP = {
     "initial_old_gen_size":          "16M",
     "alloc_buffer_size":             "128K",
     "nursery_block_count":           64,
+    "nursery_max_block_count":       2048,
     "promotion_age":                 2,
     "nursery_gc_threshold":          0.9,
     "nursery_growth_threshold":      0.025,

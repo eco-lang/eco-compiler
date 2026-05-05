@@ -55,6 +55,12 @@ constexpr size_t ALLOC_BUFFER_SIZE = 128 * 1024;  // 128 KB default AllocBuffer.
 // Block count must be even (split into from-space and to-space).
 constexpr size_t NURSERY_BLOCK_COUNT = 64;  // 32 blocks = 4 MB total (16 per semi-space).
 
+// Hard upper bound on adaptive nursery growth. checkAndGrow() will refuse
+// to add blocks past this total (low + high). Default 2048 blocks at the
+// default 128 KB block size = 256 MB total nursery (128 MB per semi-space).
+// Block count must be even (split into from-space and to-space).
+constexpr size_t NURSERY_MAX_BLOCKS = 2048;
+
 // Promotion and GC triggers.
 constexpr u32 PROMOTION_AGE = 2;                            // Promote after surviving 2 minor GCs.
 constexpr float NURSERY_GC_THRESHOLD = 0.9f;                // Trigger minor GC at 90% full.
@@ -189,6 +195,11 @@ struct HeapConfig {
     // Block count must be even (split into from-space and to-space).
     size_t nursery_block_count = NURSERY_BLOCK_COUNT;
 
+    // Hard upper bound on adaptive nursery growth (in blocks). Adaptive
+    // growth (checkAndGrow) will refuse to expand the nursery past this
+    // total (low + high). Must be even and >= nursery_block_count.
+    size_t nursery_max_block_count = NURSERY_MAX_BLOCKS;
+
     // Promotion & GC triggers.
     u32 promotion_age = PROMOTION_AGE;
     float nursery_gc_threshold = NURSERY_GC_THRESHOLD;
@@ -311,6 +322,21 @@ struct HeapConfig {
         if (nursery_block_count < 2) {
             throw std::invalid_argument(
                 "nursery_block_count must be >= 2 (at least 1 block per semi-space)");
+        }
+
+        if (nursery_max_block_count == 0) {
+            throw std::invalid_argument("nursery_max_block_count must be > 0");
+        }
+
+        if (nursery_max_block_count % 2 != 0) {
+            throw std::invalid_argument(
+                "nursery_max_block_count must be even (split into from-space and to-space)");
+        }
+
+        if (nursery_block_count > nursery_max_block_count) {
+            throw std::invalid_argument(
+                "nursery_block_count must be <= nursery_max_block_count "
+                "(initial size cannot exceed the adaptive-growth cap)");
         }
 
         // ========== 4. AllocBuffer Constraints ==========

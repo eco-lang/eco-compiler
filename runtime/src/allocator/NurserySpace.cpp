@@ -434,10 +434,25 @@ void NurserySpace::checkAndGrow() {
         return;  // No growth needed.
     }
 
-    // Grow by adding blocks to both spaces.
-    size_t blocks_to_add = to_blocks.size() / 2;  // Grow by 50%.
+    // The configured hard cap (nursery_max_block_count) is the total over
+    // both semi-spaces; per-side cap is half that. Bail if we've already
+    // reached the cap.
+    const size_t per_side_cap = config_->nursery_max_block_count / 2;
+    const size_t per_side_now = to_blocks.size();  // == low_blocks_.size()
+    if (per_side_now >= per_side_cap) {
+        return;  // Already at the configured ceiling.
+    }
+    const size_t per_side_room = per_side_cap - per_side_now;
+
+    // Default policy: grow by 50%. Truncate against per_side_room so the
+    // last step before the cap fills the remaining room exactly rather than
+    // overshooting (e.g. cap=512, total=500, room=6/side → add 6/side, not
+    // the 50% ask of 125/side and not zero).
+    size_t blocks_to_add = to_blocks.size() / 2;  // 50% growth.
     if (blocks_to_add < 1) blocks_to_add = 1;
-    if (blocks_to_add % 2 != 0) blocks_to_add++;  // Keep even for symmetry.
+    if (blocks_to_add > per_side_room) {
+        blocks_to_add = per_side_room;
+    }
 
     // Track how many we successfully add to each space.
     size_t low_added = 0;

@@ -13,6 +13,7 @@ namespace Elm {
 //   "initial_old_gen_size"           size_t (bytes)
 //   "alloc_buffer_size"              size_t (bytes)
 //   "nursery_block_count"            size_t
+//   "nursery_max_block_count"        size_t (must be >= nursery_block_count)
 //   "promotion_age"                  unsigned (0..3)
 //   "nursery_gc_threshold"           number (0..1)
 //   "nursery_growth_threshold"       number (0..1)

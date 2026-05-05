@@ -153,6 +153,7 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         "initial_old_gen_size",
         "alloc_buffer_size",
         "nursery_block_count",
+        "nursery_max_block_count",
         "promotion_age",
         "nursery_gc_threshold",
         "nursery_growth_threshold",
@@ -186,6 +187,9 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         cfg.alloc_buffer_size = parseByteSize(*it, "alloc_buffer_size");
     if (auto it = doc.find("nursery_block_count"); it != doc.end())
         cfg.nursery_block_count = parseByteSize(*it, "nursery_block_count");
+    if (auto it = doc.find("nursery_max_block_count"); it != doc.end())
+        cfg.nursery_max_block_count =
+            parseByteSize(*it, "nursery_max_block_count");
     if (auto it = doc.find("promotion_age"); it != doc.end())
         cfg.promotion_age = parseU32(*it, "promotion_age");
     if (auto it = doc.find("nursery_gc_threshold"); it != doc.end())
