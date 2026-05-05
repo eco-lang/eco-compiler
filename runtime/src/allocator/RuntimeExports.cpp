@@ -138,12 +138,30 @@ extern "C" HPtr eco_alloc_custom(uint32_t ctor_id, uint32_t field_count, uint32_
     // Calculate size: Header + ctor/unboxed (8 bytes) + fields
     size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable) + scalar_bytes;
 
-    void* obj = Allocator::instance().allocate(size, Tag_Custom);
+    // Fast path: bump-pointer with no rooting. allocateFast cannot trigger
+    // GC, so the caller's HPointer args (none here, but constructed below)
+    // do not need to be parked on a stack root range.
+    void* obj = Allocator::instance().allocateFast(size);
+    if (obj) {
+        Header* hdr = getHeader(obj);
+        std::memset(hdr, 0, sizeof(Header));
+        hdr->tag = Tag_Custom;
+        hdr->size = (size - sizeof(Custom)) / sizeof(Unboxable);
+        Custom* custom = static_cast<Custom*>(obj);
+        custom->ctor = ctor_id;
+        custom->unboxed = 0;
+        return ptrToHPointer(obj);
+    }
+
+    // Slow path: allocateSlow may run a minor GC. No HPointer args to root
+    // for plain custom allocation (ctor_id/field_count/scalar_bytes are
+    // scalars).
+    obj = Allocator::instance().allocateSlow(size, Tag_Custom);
     if (!obj) return HPtr::fromBits(0);
 
     Custom* custom = static_cast<Custom*>(obj);
     custom->ctor = ctor_id;
-    custom->unboxed = 0;  // Will be set by caller if needed
+    custom->unboxed = 0;
 
     return ptrToHPointer(obj);
 }
@@ -189,14 +207,32 @@ extern "C" HPtr eco_alloc_cons(uint64_t head, HPtr tail, uint32_t head_kind) {
     size_t size = sizeof(Cons);
     uint64_t tail_bits = tail.toBits();
 
-    // Root head and tail across allocate() which may trigger GC.
-    // Mask bit i set iff slot i is an HPointer.
+    // Fast path: bump-pointer with no rooting. allocateFast cannot trigger
+    // GC, so head/tail cannot move out from under us between the bump and
+    // the field stores.
+    void* fast_obj = Allocator::instance().allocateFast(size);
+    if (fast_obj) {
+        Header* hdr = getHeader(fast_obj);
+        std::memset(hdr, 0, sizeof(Header));
+        hdr->tag = Tag_Cons;
+        hdr->size = static_cast<u32>(size);
+        Cons* cons = static_cast<Cons*>(fast_obj);
+        cons->header.unboxed = static_cast<u8>(head_kind & 0x3);
+        cons->head.i = static_cast<i64>(head);
+        HPointer tail_hp;
+        memcpy(&tail_hp, &tail_bits, sizeof(tail_hp));
+        cons->tail = tail_hp;
+        return ptrToHPointer(fast_obj);
+    }
+
+    // Slow path: allocateSlow may run a minor GC. Root head and tail across
+    // it. Mask bit i set iff slot i is an HPointer.
     uint64_t roots[2] = { head, tail_bits };
     uint64_t mask = (head_kind != 0) ? 0x2 : 0x3;
     size_t saved = eco_gc_stack_range_point();
     eco_gc_push_stack_range(roots, 2, mask);
 
-    void* obj = Allocator::instance().allocate(size, Tag_Cons);
+    void* obj = Allocator::instance().allocateSlow(size, Tag_Cons);
     if (!obj) {
         eco_gc_restore_stack_range_point(saved);
         return HPtr::fromBits(0);
@@ -222,13 +258,27 @@ extern "C" HPtr eco_alloc_cons(uint64_t head, HPtr tail, uint32_t head_kind) {
 extern "C" HPtr eco_alloc_tuple2(uint64_t a, uint64_t b, uint32_t unboxed_mask) {
     size_t size = sizeof(Tuple2);
 
-    // Root a and b across allocate().
+    // Fast path: bump-pointer with no rooting.
+    void* fast_obj = Allocator::instance().allocateFast(size);
+    if (fast_obj) {
+        Header* hdr = getHeader(fast_obj);
+        std::memset(hdr, 0, sizeof(Header));
+        hdr->tag = Tag_Tuple2;
+        hdr->size = static_cast<u32>(size);
+        Tuple2* tup = static_cast<Tuple2*>(fast_obj);
+        tup->header.unboxed = static_cast<u8>(unboxed_mask & 0xF);
+        tup->a.i = static_cast<i64>(a);
+        tup->b.i = static_cast<i64>(b);
+        return ptrToHPointer(fast_obj);
+    }
+
+    // Slow path: root HPointer args across the GC that allocateSlow may run.
     uint64_t roots[2] = { a, b };
     uint64_t mask = pointerMaskFromKindBitmap(unboxed_mask, 2);
     size_t saved = eco_gc_stack_range_point();
     if (mask) eco_gc_push_stack_range(roots, 2, mask);
 
-    void* obj = Allocator::instance().allocate(size, Tag_Tuple2);
+    void* obj = Allocator::instance().allocateSlow(size, Tag_Tuple2);
     if (!obj) { eco_gc_restore_stack_range_point(saved); return HPtr::fromBits(0); }
 
     a = roots[0]; b = roots[1];
@@ -246,12 +296,28 @@ extern "C" HPtr eco_alloc_tuple2(uint64_t a, uint64_t b, uint32_t unboxed_mask) 
 extern "C" HPtr eco_alloc_tuple3(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask) {
     size_t size = sizeof(Tuple3);
 
+    // Fast path: bump-pointer with no rooting.
+    void* fast_obj = Allocator::instance().allocateFast(size);
+    if (fast_obj) {
+        Header* hdr = getHeader(fast_obj);
+        std::memset(hdr, 0, sizeof(Header));
+        hdr->tag = Tag_Tuple3;
+        hdr->size = static_cast<u32>(size);
+        Tuple3* tup = static_cast<Tuple3*>(fast_obj);
+        tup->header.unboxed = static_cast<u8>(unboxed_mask & 0x3F);
+        tup->a.i = static_cast<i64>(a);
+        tup->b.i = static_cast<i64>(b);
+        tup->c.i = static_cast<i64>(c);
+        return ptrToHPointer(fast_obj);
+    }
+
+    // Slow path.
     uint64_t roots[3] = { a, b, c };
     uint64_t mask = pointerMaskFromKindBitmap(unboxed_mask, 3);
     size_t saved = eco_gc_stack_range_point();
     if (mask) eco_gc_push_stack_range(roots, 3, mask);
 
-    void* obj = Allocator::instance().allocate(size, Tag_Tuple3);
+    void* obj = Allocator::instance().allocateSlow(size, Tag_Tuple3);
     if (!obj) { eco_gc_restore_stack_range_point(saved); return HPtr::fromBits(0); }
 
     a = roots[0]; b = roots[1]; c = roots[2];
@@ -269,7 +335,19 @@ extern "C" HPtr eco_alloc_tuple3(uint64_t a, uint64_t b, uint64_t c, uint32_t un
 extern "C" HPtr eco_alloc_record(uint32_t field_count, uint64_t unboxed_bitmap) {
     // Size: Header (8) + unboxed bitmap (8) + fields (N * 8).
     size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable);
-    void* obj = Allocator::instance().allocate(size, Tag_Record);
+
+    void* obj = Allocator::instance().allocateFast(size);
+    if (obj) {
+        Header* hdr = getHeader(obj);
+        std::memset(hdr, 0, sizeof(Header));
+        hdr->tag = Tag_Record;
+        hdr->size = field_count;
+        Record* rec = static_cast<Record*>(obj);
+        rec->unboxed = unboxed_bitmap;
+        return ptrToHPointer(obj);
+    }
+
+    obj = Allocator::instance().allocateSlow(size, Tag_Record);
     if (!obj) return HPtr::fromBits(0);
 
     Record* rec = static_cast<Record*>(obj);
@@ -306,7 +384,16 @@ extern "C" HPtr eco_alloc_string(uint32_t length) {
     size_t size = sizeof(Header) + length * sizeof(u16);
     size = (size + 7) & ~7;  // Align to 8 bytes
 
-    void* obj = Allocator::instance().allocate(size, Tag_String);
+    void* obj = Allocator::instance().allocateFast(size);
+    if (obj) {
+        Header* hdr = getHeader(obj);
+        std::memset(hdr, 0, sizeof(Header));
+        hdr->tag = Tag_String;
+        hdr->size = length;
+        return ptrToHPointer(obj);
+    }
+
+    obj = Allocator::instance().allocateSlow(size, Tag_String);
     if (!obj) return HPtr::fromBits(0);
 
     ElmString* str = static_cast<ElmString*>(obj);
@@ -335,7 +422,21 @@ extern "C" HPtr eco_alloc_closure(void* func_ptr, uint32_t num_captures) {
     // Size: Header + metadata (8 bytes) + evaluator ptr + captures
     size_t size = sizeof(Header) + 8 + sizeof(EvalFunction) + num_captures * sizeof(Unboxable);
 
-    void* obj = Allocator::instance().allocate(size, Tag_Closure);
+    void* obj = Allocator::instance().allocateFast(size);
+    if (obj) {
+        Header* hdr = getHeader(obj);
+        std::memset(hdr, 0, sizeof(Header));
+        hdr->tag = Tag_Closure;
+        hdr->size = (size - sizeof(Closure)) / sizeof(Unboxable);
+        Closure* closure = static_cast<Closure*>(obj);
+        closure->n_values = 0;
+        closure->max_values = num_captures;
+        closure->unboxed = 0;
+        closure->evaluator = reinterpret_cast<EvalFunction>(func_ptr);
+        return ptrToHPointer(obj);
+    }
+
+    obj = Allocator::instance().allocateSlow(size, Tag_Closure);
     if (!obj) return HPtr::fromBits(0);
 
     Closure* closure = static_cast<Closure*>(obj);
@@ -348,7 +449,18 @@ extern "C" HPtr eco_alloc_closure(void* func_ptr, uint32_t num_captures) {
 }
 
 extern "C" HPtr eco_alloc_int(int64_t value) {
-    void* obj = Allocator::instance().allocate(sizeof(ElmInt), Tag_Int);
+    void* obj = Allocator::instance().allocateFast(sizeof(ElmInt));
+    if (obj) {
+        Header* hdr = getHeader(obj);
+        std::memset(hdr, 0, sizeof(Header));
+        hdr->tag = Tag_Int;
+        hdr->size = static_cast<u32>(sizeof(ElmInt));
+        ElmInt* elmInt = static_cast<ElmInt*>(obj);
+        elmInt->value = value;
+        return ptrToHPointer(obj);
+    }
+
+    obj = Allocator::instance().allocateSlow(sizeof(ElmInt), Tag_Int);
     if (!obj) return HPtr::fromBits(0);
 
     ElmInt* elmInt = static_cast<ElmInt*>(obj);
@@ -358,7 +470,18 @@ extern "C" HPtr eco_alloc_int(int64_t value) {
 }
 
 extern "C" HPtr eco_alloc_float(double value) {
-    void* obj = Allocator::instance().allocate(sizeof(ElmFloat), Tag_Float);
+    void* obj = Allocator::instance().allocateFast(sizeof(ElmFloat));
+    if (obj) {
+        Header* hdr = getHeader(obj);
+        std::memset(hdr, 0, sizeof(Header));
+        hdr->tag = Tag_Float;
+        hdr->size = static_cast<u32>(sizeof(ElmFloat));
+        ElmFloat* elmFloat = static_cast<ElmFloat*>(obj);
+        elmFloat->value = value;
+        return ptrToHPointer(obj);
+    }
+
+    obj = Allocator::instance().allocateSlow(sizeof(ElmFloat), Tag_Float);
     if (!obj) return HPtr::fromBits(0);
 
     ElmFloat* elmFloat = static_cast<ElmFloat*>(obj);
@@ -368,7 +491,18 @@ extern "C" HPtr eco_alloc_float(double value) {
 }
 
 extern "C" HPtr eco_alloc_char(uint32_t value) {
-    void* obj = Allocator::instance().allocate(sizeof(ElmChar), Tag_Char);
+    void* obj = Allocator::instance().allocateFast(sizeof(ElmChar));
+    if (obj) {
+        Header* hdr = getHeader(obj);
+        std::memset(hdr, 0, sizeof(Header));
+        hdr->tag = Tag_Char;
+        hdr->size = static_cast<u32>(sizeof(ElmChar));
+        ElmChar* elmChar = static_cast<ElmChar*>(obj);
+        elmChar->value = static_cast<u16>(value);
+        return ptrToHPointer(obj);
+    }
+
+    obj = Allocator::instance().allocateSlow(sizeof(ElmChar), Tag_Char);
     if (!obj) return HPtr::fromBits(0);
 
     ElmChar* elmChar = static_cast<ElmChar*>(obj);
@@ -378,9 +512,20 @@ extern "C" HPtr eco_alloc_char(uint32_t value) {
 }
 
 extern "C" HPtr eco_allocate(uint64_t size, uint32_t tag) {
-    // Generic allocation with specified size and tag.
-    // The tag should be one of the Tag enum values from Heap.hpp.
-    void* obj = Allocator::instance().allocate(static_cast<size_t>(size), static_cast<Tag>(tag));
+    // Generic allocation with specified size and tag. Used by the JIT for
+    // sizes/tags not covered by the per-type entry points; rare. No
+    // type-specific header init beyond what allocate() does, so a single
+    // fast/slow split mirrors the per-type pattern.
+    Tag t = static_cast<Tag>(tag);
+    void* obj = Allocator::instance().allocateFast(static_cast<size_t>(size));
+    if (obj) {
+        Header* hdr = getHeader(obj);
+        std::memset(hdr, 0, sizeof(Header));
+        hdr->tag = t;
+        hdr->size = static_cast<u32>(size);
+        return ptrToHPointer(obj);
+    }
+    obj = Allocator::instance().allocateSlow(static_cast<size_t>(size), t);
     return ptrToHPointer(obj);
 }
 
@@ -1291,27 +1436,40 @@ extern "C" HPtr eco_pap_extend(HPtr closure_hptr, uint64_t* args, uint32_t num_n
         return HPtr::fromBits(0);
     }
 
-    // Root `closure_bits` and `args` across the allocate() call below.
-    // allocate() may trigger GC. Without rooting, closure_bits and the
-    // HPointer entries in `args` would be stale post-GC.
-    size_t saved_range = eco_gc_stack_range_point();
-    eco_gc_push_stack_range(&closure_bits, 1, 1);
-    if (num_newargs > 0) {
-        uint64_t mask = pointerMaskFromKindBitmap(new_unboxed_bitmap, num_newargs);
-        if (mask != 0) {
-            eco_gc_push_stack_range(args, num_newargs, mask);
+    // Allocate a new closure with room for all captured values.
+    size_t size = sizeof(Header) + 8 + sizeof(EvalFunction) + new_n_values * sizeof(Unboxable);
+
+    // Fast path: bump-pointer with no rooting. allocateFast cannot GC, so
+    // closure_bits and args remain valid across the allocation.
+    void* obj = Allocator::instance().allocateFast(size);
+    bool slow_path_rooted = false;
+    size_t saved_range = 0;
+    if (obj) {
+        Header* hdr = getHeader(obj);
+        std::memset(hdr, 0, sizeof(Header));
+        hdr->tag = Tag_Closure;
+        hdr->size = (size - sizeof(Closure)) / sizeof(Unboxable);
+    } else {
+        // Slow path: root closure_bits and HPointer args across the GC that
+        // allocateSlow may run.
+        saved_range = eco_gc_stack_range_point();
+        slow_path_rooted = true;
+        eco_gc_push_stack_range(&closure_bits, 1, 1);
+        if (num_newargs > 0) {
+            uint64_t mask = pointerMaskFromKindBitmap(new_unboxed_bitmap, num_newargs);
+            if (mask != 0) {
+                eco_gc_push_stack_range(args, num_newargs, mask);
+            }
+        }
+        obj = Allocator::instance().allocateSlow(size, Tag_Closure);
+        if (!obj) {
+            eco_gc_restore_stack_range_point(saved_range);
+            return HPtr::fromBits(0);
         }
     }
 
-    // Allocate a new closure with room for all captured values.
-    size_t size = sizeof(Header) + 8 + sizeof(EvalFunction) + new_n_values * sizeof(Unboxable);
-    void* obj = Allocator::instance().allocate(size, Tag_Closure);
-    if (!obj) {
-        eco_gc_restore_stack_range_point(saved_range);
-        return HPtr::fromBits(0);
-    }
-
-    // Re-resolve old_closure: allocate() may have triggered GC and moved it.
+    // Re-resolve old_closure: allocateSlow may have triggered GC and moved it.
+    // (Cheap on the fast path: hpointerToPtr is a single shift+add.)
     old_closure = static_cast<Closure*>(hpointerToPtr(closure_bits));
 
     Closure* new_closure = static_cast<Closure*>(obj);
@@ -1338,7 +1496,11 @@ extern "C" HPtr eco_pap_extend(HPtr closure_hptr, uint64_t* args, uint32_t num_n
         new_closure->values[old_n_values + i].i = static_cast<i64>(args[i]);
     }
 
-    eco_gc_restore_stack_range_point(saved_range);
+    // Only the slow path opened a root range; fast path skipped rooting
+    // entirely.
+    if (slow_path_rooted) {
+        eco_gc_restore_stack_range_point(saved_range);
+    }
     return ptrToHPointer(obj);
 }
 

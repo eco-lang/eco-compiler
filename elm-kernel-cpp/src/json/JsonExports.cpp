@@ -727,7 +727,29 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
             //   3: tail        (JsArray a     → boxed HPointer)
             // Unboxed bitmap (2 bits/slot): slot0=01, slot1=01, slot2=00, slot3=00 → 0b0101 = 0x5.
             auto buildElmArray = [&](HPointer tree_hp, HPointer tail_hp, u32 length) -> HPointer {
-                // Root tree and tail HPointers across the allocation.
+                size_t sz = sizeof(Custom) + 4 * sizeof(Unboxable);
+                sz = (sz + 7) & ~7;
+
+                // Fast path: bump-pointer with no rooting. allocateFast cannot
+                // GC, so tree_hp / tail_hp cannot move out from under us.
+                Custom* c = static_cast<Custom*>(
+                    Allocator::instance().allocateFast(sz));
+                if (c) {
+                    Header* hdr = &c->header;
+                    std::memset(hdr, 0, sizeof(Header));
+                    hdr->tag = Tag_Custom;
+                    hdr->size = 4;
+                    c->ctor = 0;       // Array_elm_builtin
+                    c->unboxed = 0x5;
+                    c->values[0].i = static_cast<i64>(length);
+                    c->values[1].i = 5;  // shiftStep
+                    c->values[2].p = tree_hp;
+                    c->values[3].p = tail_hp;
+                    return Allocator::instance().wrap(c);
+                }
+
+                // Slow path: root tree/tail across the GC that allocateSlow
+                // may run, then re-read after the call.
                 auto& rs = Allocator::instance().getRootSet();
                 size_t saved = rs.stackRangePoint();
                 HPointer tree_root = tree_hp;
@@ -735,10 +757,8 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
                 rs.pushStackRootRange(&tree_root, 1, 1);
                 rs.pushStackRootRange(&tail_root, 1, 1);
 
-                size_t sz = sizeof(Custom) + 4 * sizeof(Unboxable);
-                sz = (sz + 7) & ~7;
-                Custom* c = static_cast<Custom*>(
-                    Allocator::instance().allocate(sz, Tag_Custom));
+                c = static_cast<Custom*>(
+                    Allocator::instance().allocateSlow(sz, Tag_Custom));
                 c->header.size = 4;
                 c->ctor = 0;       // Array_elm_builtin
                 c->unboxed = 0x5;  // field 0 and 1 are unboxed Int
@@ -816,16 +836,33 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
 
                     // Build `Leaf (JsArray a)` Custom. In Array.elm's Node type,
                     // `SubTree` is ctor 0 and `Leaf` is ctor 1 (declaration order).
-                    HPointer leafRoot = leafJsArr;
-                    rs.pushStackRootRange(&leafRoot, 1, 1);
                     size_t sz = sizeof(Custom) + 1 * sizeof(Unboxable);
                     sz = (sz + 7) & ~7;
+
+                    // Fast path: bump-pointer with no extra rooting.
+                    // leafJsArr cannot move because allocateFast cannot GC.
                     Custom* node = static_cast<Custom*>(
-                        Allocator::instance().allocate(sz, Tag_Custom));
-                    node->header.size = 1;
-                    node->ctor = 1;      // Leaf
-                    node->unboxed = 0;   // field 0 (JsArray) is boxed
-                    node->values[0].p = leafRoot;
+                        Allocator::instance().allocateFast(sz));
+                    if (node) {
+                        Header* hdr = &node->header;
+                        std::memset(hdr, 0, sizeof(Header));
+                        hdr->tag = Tag_Custom;
+                        hdr->size = 1;
+                        node->ctor = 1;      // Leaf
+                        node->unboxed = 0;   // field 0 (JsArray) is boxed
+                        node->values[0].p = leafJsArr;
+                    } else {
+                        // Slow path: extend rooting to leafJsArr across the
+                        // GC that allocateSlow may run.
+                        HPointer leafRoot = leafJsArr;
+                        rs.pushStackRootRange(&leafRoot, 1, 1);
+                        node = static_cast<Custom*>(
+                            Allocator::instance().allocateSlow(sz, Tag_Custom));
+                        node->header.size = 1;
+                        node->ctor = 1;      // Leaf
+                        node->unboxed = 0;
+                        node->values[0].p = leafRoot;
+                    }
                     leafNodes.push_back(Allocator::instance().wrap(node));
 
                     rs.restoreStackRangePoint(saved);

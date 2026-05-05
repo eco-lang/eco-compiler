@@ -52,7 +52,9 @@ NurserySpace::NurserySpace() :
     current_from_idx_(0), alloc_ptr_(nullptr), alloc_end_(nullptr),
     current_to_idx_(0), copy_ptr_(nullptr), copy_end_(nullptr),
     scan_block_idx_(0), scan_ptr_(nullptr),
-    growth_threshold_(NURSERY_GROWTH_THRESHOLD), thread_heap_(nullptr) {
+    growth_threshold_(NURSERY_GROWTH_THRESHOLD),
+    gc_threshold_(0.0f), from_capacity_bytes_(0), threshold_total_bytes_(0),
+    thread_heap_(nullptr) {
     // Initialization happens in initialize() method.
 }
 
@@ -78,6 +80,7 @@ void NurserySpace::initialize(Allocator* allocator, const HeapConfig* config) {
     thread_heap_ = nullptr;  // Legacy single-threaded mode (not using ThreadLocalHeap).
     block_size_ = config->alloc_buffer_size;
     growth_threshold_ = config->nursery_growth_threshold;
+    gc_threshold_ = config->nursery_gc_threshold;
 
     size_t blocks_per_space = config->nursery_block_count / 2;
 
@@ -106,8 +109,9 @@ void NurserySpace::initialize(Allocator* allocator, const HeapConfig* config) {
     // Start with low as from-space.
     from_is_low_ = true;
     current_from_idx_ = 0;
+    refreshCapacityCaches();
     alloc_ptr_ = low_blocks_[0];
-    alloc_end_ = low_blocks_[0] + block_size_;
+    alloc_end_ = computeAllocEndForBlock(low_blocks_[0]);
 
 #if ENABLE_GC_STATS
     stats.nursery_size_bytes =
@@ -121,6 +125,7 @@ void NurserySpace::initialize(ThreadLocalHeap* heap, const HeapConfig* config) {
     allocator_ = heap->getParent();  // Reference to Allocator for block acquisition during growth.
     block_size_ = config->alloc_buffer_size;
     growth_threshold_ = config->nursery_growth_threshold;
+    gc_threshold_ = config->nursery_gc_threshold;
 
     size_t blocks_per_space = config->nursery_block_count / 2;
 
@@ -148,8 +153,9 @@ void NurserySpace::initialize(ThreadLocalHeap* heap, const HeapConfig* config) {
     // Start with low as from-space.
     from_is_low_ = true;
     current_from_idx_ = 0;
+    refreshCapacityCaches();
     alloc_ptr_ = low_blocks_[0];
-    alloc_end_ = low_blocks_[0] + block_size_;
+    alloc_end_ = computeAllocEndForBlock(low_blocks_[0]);
 
 #if ENABLE_GC_STATS
     stats.nursery_size_bytes =
@@ -162,6 +168,7 @@ void NurserySpace::reset(OldGenSpace &oldgen, const HeapConfig* new_config) {
     if (new_config) {
         config_ = new_config;
         block_size_ = new_config->alloc_buffer_size;
+        gc_threshold_ = new_config->nursery_gc_threshold;
     }
 
     // Clear existing blocks (memory will be recommitted on next init).
@@ -192,8 +199,9 @@ void NurserySpace::reset(OldGenSpace &oldgen, const HeapConfig* new_config) {
     // Reset allocation state.
     from_is_low_ = true;
     current_from_idx_ = 0;
+    refreshCapacityCaches();
     alloc_ptr_ = low_blocks_[0];
-    alloc_end_ = low_blocks_[0] + block_size_;
+    alloc_end_ = computeAllocEndForBlock(low_blocks_[0]);
 
     // Reset the root set.
     root_set.reset();
@@ -265,11 +273,27 @@ void *NurserySpace::allocate(size_t size) {
 void* NurserySpace::allocateSlow(size_t size) {
     std::vector<char*>& from_blocks = from_is_low_ ? low_blocks_ : high_blocks_;
 
-    // Try next block in from-space.
+    // The fast path fell through (alloc_ptr_ + size > alloc_end_).
+    // `alloc_end_` is the earlier of (block end, threshold trip point) —
+    // see computeAllocEndForBlock. The disambiguator is `alloc_end_ <
+    // block_end`: that means the threshold cap fired inside this block,
+    // and the right action is to signal a minor GC (return nullptr).
+    // Otherwise the block is genuinely exhausted (alloc_end_ == block_end)
+    // and we should advance to the next block.
+
+    char* block_start = from_blocks[current_from_idx_];
+    char* block_end = block_start + block_size_;
+
+    if (alloc_end_ < block_end) {
+        // Threshold trip inside the current block. Signal GC.
+        return nullptr;
+    }
+
+    // Block exhausted: try next block in from-space.
     ++current_from_idx_;
     if (current_from_idx_ < from_blocks.size()) {
         alloc_ptr_ = from_blocks[current_from_idx_];
-        alloc_end_ = alloc_ptr_ + block_size_;
+        alloc_end_ = computeAllocEndForBlock(alloc_ptr_);
 
         if (alloc_ptr_ + size <= alloc_end_) {
             void* result = alloc_ptr_;
@@ -277,9 +301,15 @@ void* NurserySpace::allocateSlow(size_t size) {
             GC_STATS_MINOR_RECORD_ALLOC(stats, size);
             return result;
         }
+        // The new block is also threshold-clamped (alloc_end_ <= alloc_ptr_
+        // + size). Signal GC. Note: computeAllocEndForBlock returns
+        // block_end once already_full passes threshold_total_bytes_, so
+        // this can only happen when the trip point falls exactly on a
+        // block boundary or earlier — i.e. legitimately needs a GC.
+        return nullptr;
     }
 
-    // No more blocks - return nullptr to trigger GC.
+    // No more blocks: signal GC.
     return nullptr;
 }
 
@@ -287,29 +317,42 @@ void* NurserySpace::allocateSlow(size_t size) {
 
 size_t NurserySpace::bytesAllocated() const {
     const std::vector<char*>& from_blocks = from_is_low_ ? low_blocks_ : high_blocks_;
-
-    size_t bytes = 0;
-
-    // Count full blocks before current.
-    for (size_t i = 0; i < current_from_idx_ && i < from_blocks.size(); i++) {
-        bytes += block_size_;
-    }
-
-    // Add partial current block.
+    size_t bytes = current_from_idx_ * block_size_;
     if (current_from_idx_ < from_blocks.size()) {
-        bytes += (alloc_ptr_ - from_blocks[current_from_idx_]);
+        bytes += static_cast<size_t>(alloc_ptr_ - from_blocks[current_from_idx_]);
     }
-
     return bytes;
 }
 
-bool NurserySpace::wouldExceedThreshold(size_t size, float threshold) const {
+void NurserySpace::refreshCapacityCaches() {
     const std::vector<char*>& from_blocks = from_is_low_ ? low_blocks_ : high_blocks_;
+    from_capacity_bytes_ = from_blocks.size() * block_size_;
+    threshold_total_bytes_ =
+        static_cast<size_t>(static_cast<double>(from_capacity_bytes_) * gc_threshold_);
+}
 
-    size_t aligned_size = (size + 7) & ~7;
-    size_t total_capacity = from_blocks.size() * block_size_;
-    size_t usage_after = bytesAllocated() + aligned_size;
-    return usage_after >= (size_t)(total_capacity * threshold);
+char* NurserySpace::computeAllocEndForBlock(char* block_start) const {
+    char* block_end = block_start + block_size_;
+    size_t already_full = current_from_idx_ * block_size_;
+    if (already_full >= threshold_total_bytes_) {
+        // The threshold has already been crossed by survivors of a prior
+        // GC. Tripping the threshold again before this block fills cannot
+        // free any new space (no allocations have happened since the GC
+        // that produced these survivors), so re-engaging it would only
+        // GC-loop. Fail soft: use the full block, and let the next
+        // genuine block exhaustion drive the GC. This matches the
+        // pre-fold semantics where wouldExceedThreshold was advisory.
+        return block_end;
+    }
+    size_t remaining_to_threshold = threshold_total_bytes_ - already_full;
+    if (remaining_to_threshold >= block_size_) {
+        return block_end;
+    }
+    return block_start + remaining_to_threshold;
+}
+
+bool NurserySpace::wouldExceedThreshold(size_t size, float /*threshold*/) const {
+    return bytesAllocated() + ((size + 7) & ~7) >= threshold_total_bytes_;
 }
 
 void* NurserySpace::copyToSpace(size_t size) {
@@ -444,6 +487,12 @@ void NurserySpace::checkAndGrow() {
 
     // Update cached bounds.
     updateBounds();
+
+    // Both low and high block counts changed; refresh capacity caches so
+    // the post-GC alloc_end_ reflects the new threshold. (from_is_low_ may
+    // have just been flipped by the caller — refresh against whichever
+    // side is now from-space.)
+    refreshCapacityCaches();
 
 #if ENABLE_GC_STATS
     stats.nursery_grow_events++;
@@ -837,13 +886,19 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // Phase 5: Swap spaces by flipping which is from/to.
     from_is_low_ = !from_is_low_;
 
+    // The from-space changed; refresh capacity-derived caches before deriving
+    // the new alloc_end_. (Block counts of the two spaces are kept equal,
+    // but we still want from_capacity_bytes_ recomputed against the
+    // possibly-new from-blocks vector.)
+    refreshCapacityCaches();
+
     // Reset from-space allocation to continue after survivors.
     // After swap: the old to_blocks (with survivors) is now from-space.
     std::vector<char*>& new_from = from_is_low_ ? low_blocks_ : high_blocks_;
     current_from_idx_ = current_to_idx_;
     alloc_ptr_ = copy_ptr_;
     if (current_from_idx_ < new_from.size()) {
-        alloc_end_ = new_from[current_from_idx_] + block_size_;
+        alloc_end_ = computeAllocEndForBlock(new_from[current_from_idx_]);
     }
 
 #if ENABLE_GC_STATS

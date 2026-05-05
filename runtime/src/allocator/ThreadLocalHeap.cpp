@@ -143,20 +143,33 @@ void* ThreadLocalHeap::allocate(size_t size, Tag tag) {
         return allocateLargePinned(size, tag);
     }
 
-    // Check if allocation would exceed threshold - trigger GC proactively.
-    if (nursery_.wouldExceedThreshold(size, config_->nursery_gc_threshold)) {
-        minorGC();
-    }
-
+    // Fast path. NurserySpace::allocate's bump-pointer compares against
+    // alloc_end_, which is pre-clamped at block-acquisition time to the
+    // earlier of (block end, proactive-GC threshold trip point) by
+    // computeAllocEndForBlock. So a single compare enforces both
+    // block-fit and threshold-fit; no separate wouldExceedThreshold call
+    // is needed on the hot path.
     void* obj = nursery_.allocate(size);
     if (obj) {
         initHeaderForTag(getHeader(obj), tag, size);
         return obj;
     }
 
-    // Nursery allocation failed - currently treated as fatal error.
-    // Cannot fall back to old gen allocation: would create old-to-young pointers
-    // when the object's fields are filled in, violating generational GC invariants.
+    // Slow path: nursery returned nullptr. This means either the threshold
+    // tripped or the nursery is genuinely full. minorGC handles both —
+    // after evacuation, the from-space allocation pointer resets and a
+    // fresh alloc_end_ is computed.
+    minorGC();
+    obj = nursery_.allocate(size);
+    if (obj) {
+        initHeaderForTag(getHeader(obj), tag, size);
+        return obj;
+    }
+
+    // Nursery allocation still failed after a GC — fatal. Cannot fall back
+    // to old-gen allocation: the object's fields would be filled in
+    // afterwards, potentially creating old→young pointers that violate
+    // the generational GC invariant.
     assert(false && "Failed to allocate to nursery, it is full.");
     return nullptr;
 }

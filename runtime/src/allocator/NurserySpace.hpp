@@ -87,6 +87,23 @@ private:
     // hot post-minor-GC growth check doesn't dereference config_ each call.
     float growth_threshold_;
 
+    // Cached `nursery_gc_threshold` from HeapConfig (the proactive minor-GC
+    // trigger fraction). Read once at init/reset, then consumed at block
+    // transitions to derive `alloc_end_`; never touched on the alloc fast
+    // path.
+    float gc_threshold_;
+
+    // Cached total from-space capacity in bytes
+    // (= from_blocks.size() * block_size_). Updated whenever blocks are
+    // added/swapped so wouldExceedThreshold avoids the per-allocation
+    // multiply.
+    size_t from_capacity_bytes_;
+
+    // Pre-computed `from_capacity_bytes_ * gc_threshold_`. The proactive-GC
+    // trip point in absolute bytes-allocated terms. Recomputed only when
+    // capacity or threshold changes.
+    size_t threshold_total_bytes_;
+
     RootSet root_set;                 // Root set for this nursery.
 
 #if ENABLE_GC_STATS
@@ -167,8 +184,26 @@ private:
     // Returns the number of bytes currently allocated in the nursery.
     size_t bytesAllocated() const;
 
-    // Returns true if allocating size bytes would exceed the occupancy threshold.
+    // Returns true if allocating size bytes would exceed the occupancy
+    // threshold. Retained for diagnostic call sites; the hot allocation
+    // path no longer invokes this — the threshold is folded into
+    // `alloc_end_` at block transitions instead. The `threshold` parameter
+    // is ignored; the cached `gc_threshold_` is used.
     bool wouldExceedThreshold(size_t size, float threshold) const;
+
+    // Recomputes capacity-derived caches (`from_capacity_bytes_`,
+    // `threshold_total_bytes_`) from the current from-space block count.
+    // Call after any operation that adds, removes, or swaps from-space
+    // blocks.
+    void refreshCapacityCaches();
+
+    // Returns the address at which `alloc_end_` should be capped for the
+    // current from-space block (`block_start`) so a single
+    // `alloc_ptr_ + size <= alloc_end_` test enforces both block-fit and
+    // proactive-GC threshold-fit. Allocation that would push total
+    // bytesAllocated past `threshold_total_bytes_` will fall through to
+    // the slow path and trigger `minorGC`.
+    char* computeAllocEndForBlock(char* block_start) const;
 
     // Resets the nursery to initial state (clears all blocks and stats).
     // If new_config is provided, reconfigures with new parameters. Used for testing.
