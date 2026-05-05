@@ -10,11 +10,11 @@ date: 2026-05-02
 
 Find a parameter set that beats the current baseline by:
 
-1. Sweeping each tunable **one at a time** with 3-minute (180 s) runs.
+1. Sweeping each tunable **one at a time** with 60 s runs.
 2. Picking the best value per parameter (the "promising" set).
-3. Combining promising values and running a second round of 3-minute runs.
+3. Combining promising values and running a second round of 60 s runs.
 
-Driver: `heap-profile.py sweep --variants-file <file> --wall-seconds 180`.
+Driver: `heap-profile.py sweep --variants-file <file> --wall-seconds 60`.
 Workload: Stage 7 self-compile (`eco-compiler make ... eco-compiler-boot.mlir`)
 — the workload baked into `run_variant`. Each cell is run once (N=1), serially.
 
@@ -24,11 +24,12 @@ Workload: Stage 7 self-compile (`eco-compiler make ... eco-compiler-boot.mlir`)
 {
   "max_heap_size":                 "24G",
   "initial_old_gen_size":          "16M",
-  "alloc_buffer_size":             "256K",
+  "alloc_buffer_size":             "128K",
   "nursery_block_count":           64,
+  "nursery_max_block_count":       2048,
   "promotion_age":                 2,
   "nursery_gc_threshold":          0.9,
-  "nursery_growth_threshold":      0.1,
+  "nursery_growth_threshold":      0.025,
   "major_gc_initiating_occupancy": 0.75,
   "major_gc_target_utilization":   0.70,
   "major_gc_garbage_fraction":     0.40,
@@ -38,19 +39,11 @@ Workload: Stage 7 self-compile (`eco-compiler make ... eco-compiler-boot.mlir`)
 }
 ```
 
-### Updating `BASELINE_HEAP` in `heap-profile.py`
-
-`heap-profile.py:cmd_sweep` builds each cell's config as
-`BASELINE_HEAP | overrides`, so any field a variant does not override
-inherits from the script's `BASELINE_HEAP` constant. Today that constant
-differs from the baseline above in two values: `alloc_buffer_size` is
-`512K` (we want `256K`) and `major_gc_initiating_occupancy` is `0.85`
-(we want `0.75`).
-
-**Step 0 of this experiment** is to edit `heap-profile.py` so
-`BASELINE_HEAP` matches the baseline JSON in this plan exactly. After
-that, each variant in `phase1.json` overrides only the single parameter
-being swept, and the `baseline` cell uses an empty `overrides` dict.
+The baseline above matches the `BASELINE_HEAP` constant in
+`heap-profile.py` exactly. `heap-profile.py:cmd_sweep` builds each cell's
+config as `BASELINE_HEAP | overrides`, so each variant in `phase1.json`
+overrides only the single parameter being swept, and the `baseline` cell
+uses an empty `overrides` dict.
 
 ## Metrics
 
@@ -73,23 +66,23 @@ from `BASELINE_HEAP`.
 
 | # | Parameter | Sweep values (baseline **bold**) | Non-baseline runs |
 |---|---|---|---|
-| 1 | `alloc_buffer_size` | 64K, 128K, **256K**, 512K, 1M | 4 |
-| 2 | `nursery_block_count` | 16, 32, **64**, 128, 256 | 4 |
-| 3 | `promotion_age` | 1, **2**, 3 | 2 |
-| 4 | `nursery_growth_threshold` | 0.025, 0.05, **0.10**, 0.20, 0.40 | 4 |
-| 5 | `major_gc_initiating_occupancy` | 0.55, 0.65, **0.75**, 0.85, 0.95 | 4 |
-| 6 | `major_gc_target_utilization` | 0.50, 0.60, **0.70**, 0.80, 0.90 | 4 |
-| 7 | `large_object_threshold` | 128, 256, 512, 1K, 2K, 4K, 8K, **16K**, 32K, 64K | 9 |
-| 8 | `major_gc_garbage_fraction` | 0.20, 0.30, **0.40**, 0.55, 0.70 | 4 |
+| 1 | `alloc_buffer_size` | 64K, **128K**, 256K, 512K, 1M | 4 |
+| 2 | `promotion_age` | 1, **2**, 3 | 2 |
+| 3 | `nursery_growth_threshold` | **0.025**, 0.05, 0.10, 0.15, 0.20 | 4 |
+| 4 | `major_gc_initiating_occupancy` | 0.55, 0.65, **0.75**, 0.85, 0.95 | 4 |
+| 5 | `major_gc_target_utilization` | 0.50, 0.60, **0.70**, 0.80, 0.90 | 4 |
+| 6 | `large_object_threshold` | 128, 256, 512, 1K, 2K, 4K, 8K, **16K**, 32K, 64K | 9 |
+| 7 | `major_gc_garbage_fraction` | 0.20, 0.30, **0.40**, 0.55, 0.70 | 4 |
+| 8 | `nursery_max_block_count` | 1024, **2048**, 4096 | 2 |
 
-**Run count:** 1 baseline + 35 sweep cells = **36 runs × 180 s ≈ 1 h 48 min**
+**Run count:** 1 baseline + 33 sweep cells = **34 runs × 60 s ≈ 34 min**
 of pure runtime. Serial; no parallelism.
 
 ### Variant naming convention
 
-`<param_short>_<value>`, e.g. `abuf_64K`, `nbc_128`, `age_3`, `ngt_0.025`,
-`mio_0.95`, `mtu_0.50`, `lot_4K`, `lot_128`, `lot_512`, `mgf_0.70`. Plus one
-explicit `baseline`.
+`<param_short>_<value>`, e.g. `abuf_64K`, `nbc_128`, `age_3`, `ngt_0.05`,
+`mio_0.95`, `mtu_0.50`, `lot_4K`, `lot_128`, `lot_512`, `mgf_0.70`,
+`nmbc_4096`. Plus one explicit `baseline`.
 Names go straight into the JSON variants file and become folder names under
 `variants/<name>/`.
 
@@ -98,7 +91,7 @@ Names go straight into the JSON variants file and become folder names under
 ```
 ./heap-profile.py sweep \
     --variants-file plans/gc-param-sweep/phase1.json \
-    --wall-seconds 180 \
+    --wall-seconds 60 \
     --label gc-sweep-phase1
 ```
 
