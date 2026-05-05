@@ -16,6 +16,7 @@
 #include "OldGenSpace.hpp"
 #include "ThreadLocalHeap.hpp"
 #include <cassert>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -156,6 +157,10 @@ void Allocator::initialize(const HeapConfig& config) {
 
     // Nursery region starts at halfway point.
     nursery_offset = heap_reserved / 2;
+
+    runtime_start_ns_ = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
 
     initialized = true;
 }
@@ -764,6 +769,12 @@ GCStats Allocator::getCombinedStats() const {
         combined.combine(heap->getNursery().getStats());
         combined.combine(heap->getOldGen().getStats());
         combined.combine(heap->getStats());
+    }
+    if (runtime_start_ns_ != 0) {
+        const uint64_t now_ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
+        combined.wall_time_ns = now_ns - runtime_start_ns_;
     }
     return combined;
 }

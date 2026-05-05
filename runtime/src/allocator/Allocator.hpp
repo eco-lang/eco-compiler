@@ -204,6 +204,11 @@ private:
     GCStats accumulated_stats_;
 #endif
 
+    // steady_clock anchor stamped at the end of initialize(); read by
+    // getCombinedStats() to populate GCStats::wall_time_ns. Zero before
+    // initialize() runs.
+    uint64_t runtime_start_ns_ = 0;
+
     // ========== Thread-Local Heaps ==========
 
     mutable std::recursive_mutex thread_mutex_;  // Protects thread_heaps_ map and region allocation.

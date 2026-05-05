@@ -312,6 +312,12 @@ public:
     // overhead as allocator time rather than letting it leak into mutator_s.
     uint64_t total_nursery_alloc_in_mutator_ns = 0;
 
+    // Total wall time of the runtime instance, stamped by the caller
+    // (Allocator::getCombinedStats) just before print(). Zero means the
+    // caller did not stamp it and the Allocator Timings block will fall
+    // back to printing only the bracket totals (no True mutator line).
+    uint64_t wall_time_ns = 0;
+
     // ========== Adaptive Lazy-Sweep Pacing (bytes) ==========
     //
     // Cumulative bytes the dynamic lazy-sweep pacer asked the sweeper to
