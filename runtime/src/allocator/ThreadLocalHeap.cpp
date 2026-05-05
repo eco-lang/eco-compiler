@@ -456,9 +456,16 @@ void ThreadLocalHeap::majorGC() {
 
     collectStackRootsFromStackMap();
 
+    // Hoist nursery_.getRootSet() to a single resolution per major GC. The
+    // accessor itself is cheap, but the previous code re-fetched it four
+    // times (once for jit_roots, once for stack root ranges, once for
+    // external scanners, plus the implicit hits in collectRoots) — visible
+    // in profiles when major GC fires often.
+    RootSet& root_set = nursery_.getRootSet();
+
     // Collect long-lived roots from this thread.
     std::unordered_set<HPointer*> roots = collectRoots();
-    const std::unordered_set<uint64_t*>& jit_roots = nursery_.getRootSet().getJitRoots();
+    const std::unordered_set<uint64_t*>& jit_roots = root_set.getJitRoots();
 
     auto t_after_root_collect = std::chrono::high_resolution_clock::now();
 
@@ -480,7 +487,7 @@ void ThreadLocalHeap::majorGC() {
     }
 
     // Mark stack root ranges.
-    for (const auto& range : nursery_.getRootSet().getStackRootRanges()) {
+    for (const auto& range : root_set.getStackRootRanges()) {
         HPointer* base = range.base;
         uint64_t mask = range.hpointer_mask;
         for (size_t i = 0; i < range.count; ++i) {
@@ -493,7 +500,7 @@ void ThreadLocalHeap::majorGC() {
 
     // Mark external roots (Scheduler run queue, PlatformRuntime state,
     // MVar slots, Eco kernel Runtime state).
-    for (auto& scanner : nursery_.getRootSet().getExternalRootScanners()) {
+    for (auto& scanner : root_set.getExternalRootScanners()) {
         scanner([this, &external_roots_pushed](uint64_t& ref) {
             HPointer hp;
             std::memcpy(&hp, &ref, sizeof(hp));
@@ -639,6 +646,11 @@ void ThreadLocalHeap::collectStackRootsFromStackMap() {
     Context ctx;
     Cursor cur(ctx);
 
+    // Hoist Allocator::instance() above the unwind loop. The original code
+    // re-resolved TLS once per stackmap location processed; on stack-walk-
+    // heavy paths (many roots per frame) this showed up in profiles.
+    Allocator& alloc = Allocator::instance();
+
     do {
         uintptr_t ip = cur.ip();
         const StackMapRecord* rec = sm.findRecord(ip + kIpToReturnAddressBias);
@@ -657,7 +669,6 @@ void ThreadLocalHeap::collectStackRootsFromStackMap() {
             uintptr_t addr = base + static_cast<int32_t>(loc.offset);
             auto* slot = reinterpret_cast<HPointer*>(addr);
 
-            Allocator& alloc = Allocator::instance();
             HPointer potential = *slot;
             // Embedded-constant HPointers (Unit/True/False/Nil/etc.) are not
             // heap-allocated and do not need GC. Skip them before calling

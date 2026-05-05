@@ -446,6 +446,16 @@ public:
     const GCStats& getStats() const { return alloc_stats_; }
 #endif
 
+    // Up to two owning blocks_ indices per page slot. Two are required because
+    // non-page-aligned block extents (e.g. a 512 KiB large block whose start
+    // is not page-aligned) can intersect the same slot as a sibling block; a
+    // single-owner table would lose one. For ordinary one-page blocks the
+    // secondary owner stays NO_BLOCK.
+    struct PageOwners {
+        size_t primary;
+        size_t secondary;
+    };
+
 private:
     // ========== Configuration ==========
 
@@ -483,14 +493,35 @@ private:
     char* region_base_;                    // Start of old gen region.
     char* region_end_;                     // End of committed old gen region.
 
-    // Maps page slot (= (p - region_base_) / alloc_buffer_size) to the
-    // blocks_ index that owns the page, enabling O(1) blockIndexFor. Sized
-    // to ceil(committed / alloc_buffer_size) and grown alongside region_end_.
-    // Slots whose page currently belongs to no entry in blocks_ (bag pages
-    // before population, or just-released pages) hold the sentinel NO_BLOCK.
-    // For is_large blocks, every page slot the extent spans is filled with
-    // the same blocks_ index so the O(1) lookup works regardless of kind.
-    std::vector<size_t> page_to_block_index_;
+    // Page slot (= (p - region_base_) / alloc_buffer_size) → up to two
+    // owning blocks_ indices (see PageOwners above). Sized to
+    // ceil(committed / alloc_buffer_size) and grown alongside region_end_;
+    // bag pages and just-released pages hold {NO_BLOCK, NO_BLOCK}.
+    std::vector<PageOwners> page_to_block_index_;
+
+    // Recomputes region_base_/region_end_ from blocks_ + unassigned_blocks_
+    // and rebuilds page_to_block_index_ from scratch. Called after any path
+    // that releases or reshapes the address range (post-mark shrink, all-dead
+    // reclaim, single-block release tail, compaction free pass) so the
+    // page-index slots line up with the new region geometry. The initial
+    // setup paths (initialize / reset) populate the index incrementally as
+    // blocks are added and don't need this call.
+    void recomputeRegionBoundsAndRebuildIndex();
+
+    // Resets every page_to_block_index_ slot to {NO_BLOCK, NO_BLOCK} and
+    // re-runs assignPageIndexForBlock for every block in blocks_. Cheap when
+    // blocks_ is small relative to the slot count.
+    void rebuildPageIndexFromBlocks();
+
+    // Walks the page slots covered by blocks_[new_idx] and rewrites every
+    // owner field that currently holds `old_idx` to point at `new_idx`. Used
+    // by releaseBlockToAllocator's swap-remove tail: when blocks_[last] is
+    // moved into block_index, slots that referred to `last` (the now-stale
+    // index) must be retargeted to `block_index` (the new home of the same
+    // BlockInfo). Without this, stale owner entries linger in the table —
+    // inert against blockIndexFor (which screens via idx < blocks_.size())
+    // but blocking future assignments at the same slot.
+    void renamePageIndexSlots(size_t old_idx, size_t new_idx);
 
     // ========== GC State Machine ==========
 
@@ -498,7 +529,22 @@ private:
 
     // ========== Marking State ==========
 
-    std::vector<void *> mark_stack;   // Stack of objects awaiting marking (grey set).
+    // Each entry on the mark stack pairs an object with the blocks_ index
+    // that owns it (NO_BLOCK_U32 for nursery objects and any stale entry
+    // pointing at a since-released block). Caching the index on push avoids a
+    // second blockIndexFor call when markOneObject attributes the object's
+    // walkStep-aligned size to buffer_meta_[idx].live_bytes. uint32_t keeps
+    // the entry packed at 16 bytes; CellHandle's 16-bit block_index already
+    // bounds blocks_ at 65,535, well within range.
+    static constexpr uint32_t NO_BLOCK_U32 = static_cast<uint32_t>(-1);
+    struct MarkStackEntry {
+        void* obj;
+        uint32_t block_index;
+    };
+    static_assert(sizeof(MarkStackEntry) == 16,
+                  "MarkStackEntry must pack to 16 bytes");
+
+    std::vector<MarkStackEntry> mark_stack;  // Grey set: object + cached block index.
     // Nursery objects pushed during the current major-GC mark. Major GC must
     // not write color into nursery headers (minor GC owns them), so we use
     // this set instead of the header `color` field to break cycles when
@@ -1098,11 +1144,17 @@ private:
 
     // Performs the White → Grey → Black transition on `obj`, recursively
     // pushes children via markChildren, and attributes the object's
-    // walkStep-aligned size to buffer_meta_[blockIndexFor(obj)].live_bytes.
+    // walkStep-aligned size to buffer_meta_[block_index].live_bytes.
     // Skips Tag_Free and already-Black objects. For nursery objects, only
     // calls markChildren — major GC must not write into nursery headers and
     // nursery cells aren't tracked in buffer_meta_. Returns true if the
     // object did real work (popped one work unit).
+    //
+    // The two-arg form takes the cached `block_index` produced by
+    // pushMarkRoot so the hot path skips a redundant blockIndexFor lookup
+    // (NO_BLOCK_U32 means "unknown / nursery"). The one-arg wrapper looks
+    // up the index itself; only cold callers (lazy-sweep adjacency) use it.
+    bool markOneObject(void* obj, uint32_t block_index);
     bool markOneObject(void* obj);
 
     // O(#blocks) reset of buffer_meta_ to match blocks_, called at major-GC
@@ -1309,7 +1361,7 @@ public:
     static size_t blockIndexFor(const OldGenSpace& oldgen, const void* obj) {
         return oldgen.blockIndexFor(obj);
     }
-    static const std::vector<size_t>& getPageToBlockIndex(
+    static const std::vector<OldGenSpace::PageOwners>& getPageToBlockIndex(
             const OldGenSpace& oldgen) {
         return oldgen.page_to_block_index_;
     }

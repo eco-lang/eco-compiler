@@ -425,8 +425,52 @@ void OldGenSpace::resizePageIndexForRegion() {
     const size_t span = static_cast<size_t>(region_end_ - region_base_);
     const size_t needed = (span + page_size - 1) / page_size;
     if (page_to_block_index_.size() < needed) {
-        page_to_block_index_.resize(needed, NO_BLOCK);
+        page_to_block_index_.resize(needed, PageOwners{NO_BLOCK, NO_BLOCK});
     }
+}
+
+void OldGenSpace::rebuildPageIndexFromBlocks() {
+    resizePageIndexForRegion();
+    std::fill(page_to_block_index_.begin(), page_to_block_index_.end(),
+              PageOwners{NO_BLOCK, NO_BLOCK});
+    for (size_t i = 0; i < blocks_.size(); ++i) {
+        assignPageIndexForBlock(i);
+    }
+}
+
+void OldGenSpace::renamePageIndexSlots(size_t old_idx, size_t new_idx) {
+    if (new_idx >= blocks_.size()) return;
+    const BlockInfo& block = blocks_[new_idx];
+    const size_t first = firstPageIndex(block);
+    const size_t last  = lastPageIndex(block);
+    if (first == std::numeric_limits<size_t>::max() ||
+        last == std::numeric_limits<size_t>::max()) {
+        return;
+    }
+    const size_t cap = page_to_block_index_.size();
+    if (first >= cap) return;
+    const size_t end = std::min(last, cap - 1);
+    for (size_t p = first; p <= end; ++p) {
+        PageOwners& slot = page_to_block_index_[p];
+        if (slot.primary == old_idx)   slot.primary = new_idx;
+        if (slot.secondary == old_idx) slot.secondary = new_idx;
+    }
+}
+
+void OldGenSpace::recomputeRegionBoundsAndRebuildIndex() {
+    char* new_base = nullptr;
+    char* new_end = nullptr;
+    for (const auto& b : blocks_) {
+        if (new_base == nullptr || b.start < new_base) new_base = b.start;
+        if (b.end > new_end) new_end = b.end;
+    }
+    for (const auto& e : unassigned_blocks_) {
+        if (new_base == nullptr || e.first < new_base) new_base = e.first;
+        if (e.second > new_end) new_end = e.second;
+    }
+    region_base_ = new_base;
+    region_end_  = new_end;
+    rebuildPageIndexFromBlocks();
 }
 
 size_t OldGenSpace::firstPageIndex(const BlockInfo& block) const {
@@ -457,10 +501,33 @@ void OldGenSpace::assignPageIndexForBlock(size_t block_index) {
         return;
     }
     if (last >= page_to_block_index_.size()) {
-        page_to_block_index_.resize(last + 1, NO_BLOCK);
+        page_to_block_index_.resize(last + 1, PageOwners{NO_BLOCK, NO_BLOCK});
     }
     for (size_t p = first; p <= last; ++p) {
-        page_to_block_index_[p] = block_index;
+        PageOwners& slot = page_to_block_index_[p];
+        if (slot.primary == block_index || slot.secondary == block_index) {
+            // Already recorded.
+            continue;
+        }
+        if (slot.primary == NO_BLOCK) {
+            slot.primary = block_index;
+        } else if (slot.secondary == NO_BLOCK) {
+            slot.secondary = block_index;
+        } else {
+#ifdef ECO_BIDX_DEBUG
+            std::fprintf(stderr,
+                "[oldgen] assignPageIndexForBlock: page slot %zu already has "
+                "two distinct owners (%zu, %zu); cannot record %zu\n",
+                p, slot.primary, slot.secondary, block_index);
+            std::abort();
+#else
+            // Release builds: keep the primary stable (the older owner —
+            // typically a large block straddling many slots) and overwrite
+            // the secondary. blockIndexFor's contains-check still gates the
+            // returned index on actual extent membership.
+            slot.secondary = block_index;
+#endif
+        }
     }
 }
 
@@ -477,10 +544,13 @@ void OldGenSpace::clearPageIndexForBlock(size_t block_index) {
     if (first >= cap) return;
     const size_t end = std::min(last, cap - 1);
     for (size_t p = first; p <= end; ++p) {
-        // Only clear slots we actually own; an overlapping clear from a sibling
-        // path could otherwise wipe a valid index.
-        if (page_to_block_index_[p] == block_index) {
-            page_to_block_index_[p] = NO_BLOCK;
+        PageOwners& slot = page_to_block_index_[p];
+        // Clear whichever owner matches; leave the other owner in place.
+        if (slot.primary == block_index) {
+            slot.primary = slot.secondary;
+            slot.secondary = NO_BLOCK;
+        } else if (slot.secondary == block_index) {
+            slot.secondary = NO_BLOCK;
         }
     }
 }
@@ -543,21 +613,31 @@ size_t OldGenSpace::blockIndexFor(const void* obj) const {
     if (page_size == 0) return blocks_.size();
     const size_t page = static_cast<size_t>(p - region_base_) / page_size;
     if (page < page_to_block_index_.size()) {
-        const size_t idx = page_to_block_index_[page];
-        if (idx != NO_BLOCK && idx < blocks_.size()) {
-            // Defensive: confirm the block actually contains the pointer
-            // (handles rare cases where a block was just released and the
-            // index slot wasn't cleared yet).
-            const BlockInfo& blk = blocks_[idx];
-            if (p >= blk.start && p < blk.end) return idx;
+        const PageOwners& slot = page_to_block_index_[page];
+        if (slot.primary != NO_BLOCK && slot.primary < blocks_.size()) {
+            const BlockInfo& blk = blocks_[slot.primary];
+            if (p >= blk.start && p < blk.end) return slot.primary;
+        }
+        if (slot.secondary != NO_BLOCK && slot.secondary < blocks_.size()) {
+            const BlockInfo& blk = blocks_[slot.secondary];
+            if (p >= blk.start && p < blk.end) return slot.secondary;
         }
     }
-    // Fallback: linear scan. Should be unreachable in steady state; guards
-    // against the page index being stale or sized too small.
+#ifdef ECO_BIDX_DEBUG
+    // Diagnostic: a linear-scan hit here means the page index is missing an
+    // owner that should have been recorded. With the two-owner table plus
+    // post-shrink rebuilds this should be unreachable.
     for (size_t i = 0; i < blocks_.size(); ++i) {
         const BlockInfo& blk = blocks_[i];
-        if (p >= blk.start && p < blk.end) return i;
+        if (p >= blk.start && p < blk.end) {
+            std::fprintf(stderr,
+                "[oldgen] blockIndexFor: linear-scan fallback found block %zu "
+                "for ptr %p (page %zu); two-owner table missed it\n",
+                i, obj, page);
+            std::abort();
+        }
     }
+#endif
     return blocks_.size();
 }
 
@@ -602,9 +682,9 @@ void *OldGenSpace::allocate(size_t size) {
         // Stats are not available on the allocation hot path; loop
         // markOneObject directly to avoid touching the stats counters.
         while (mark_budget > 0 && !mark_stack.empty()) {
-            void *obj = mark_stack.back();
+            MarkStackEntry entry = mark_stack.back();
             mark_stack.pop_back();
-            if (markOneObject(obj)) {
+            if (markOneObject(entry.obj, entry.block_index)) {
                 mark_budget = (mark_budget > 1) ? mark_budget - 1 : 0;
             }
         }
@@ -1592,9 +1672,9 @@ bool OldGenSpace::incrementalMark(size_t work_units) {
     size_t units_done = 0;
 
     while (!mark_stack.empty() && units_done < work_units) {
-        void *obj = mark_stack.back();
+        MarkStackEntry entry = mark_stack.back();
         mark_stack.pop_back();
-        if (markOneObject(obj)) ++units_done;
+        if (markOneObject(entry.obj, entry.block_index)) ++units_done;
     }
 
 #if ENABLE_GC_STATS
@@ -1739,7 +1819,7 @@ void OldGenSpace::pushMarkRoot(void *obj) {
     // objects, instead of per-block bitmaps (which only cover old gen).
     if (allocator_ref_->isInNursery(obj)) {
         if (nursery_visited_.insert(obj).second) {
-            mark_stack.push_back(obj);
+            mark_stack.push_back(MarkStackEntry{obj, NO_BLOCK_U32});
         }
         return;
     }
@@ -1753,7 +1833,10 @@ void OldGenSpace::pushMarkRoot(void *obj) {
 
     if (isMarkedInBlock(block_index, obj)) return;
     setMarkBitInBlock(block_index, obj);
-    mark_stack.push_back(obj);
+    // Cache the block index on the entry so markOneObject can skip a second
+    // blockIndexFor lookup when attributing live bytes.
+    mark_stack.push_back(MarkStackEntry{
+        obj, static_cast<uint32_t>(block_index)});
 }
 
 void OldGenSpace::markUnboxable(Unboxable &val, bool is_boxed) {
@@ -1766,7 +1849,7 @@ void OldGenSpace::markUnboxable(Unboxable &val, bool is_boxed) {
 // Mark-time live-bytes attribution (Step 2).
 // ---------------------------------------------------------------------------
 
-bool OldGenSpace::markOneObject(void* obj) {
+bool OldGenSpace::markOneObject(void* obj, uint32_t block_index) {
     if (!obj) return false;
     Header* hdr = getHeader(obj);
 
@@ -1790,8 +1873,15 @@ bool OldGenSpace::markOneObject(void* obj) {
     // call back into pushMarkRoot for child references; those will set
     // their own bits and push themselves on the mark stack.
     if (!contains(obj)) return false;
-    const size_t blk_idx = blockIndexFor(obj);
-    if (blk_idx >= blocks_.size()) return false;
+    // Use the cached block_index when valid; fall back to blockIndexFor
+    // only when the cache is empty (cold callers / nursery sentinel).
+    size_t blk_idx;
+    if (block_index != NO_BLOCK_U32 && block_index < blocks_.size()) {
+        blk_idx = block_index;
+    } else {
+        blk_idx = blockIndexFor(obj);
+        if (blk_idx >= blocks_.size()) return false;
+    }
 
     const size_t step = walkStepFor(blocks_[blk_idx], getObjectSize(obj));
     if (blk_idx < buffer_meta_.size()) {
@@ -1799,6 +1889,10 @@ bool OldGenSpace::markOneObject(void* obj) {
     }
     markChildren(obj);
     return true;
+}
+
+bool OldGenSpace::markOneObject(void* obj) {
+    return markOneObject(obj, NO_BLOCK_U32);
 }
 
 void OldGenSpace::resetBufferMetaForMark() {
@@ -2901,19 +2995,11 @@ void OldGenSpace::maybeShrinkCapacity(size_t desired_heap_bytes,
         }
         --g_batch_release_depth;
 
-        // One-shot recompute of region_base_ / region_end_ over the new state.
-        char* new_base = nullptr;
-        char* new_end = nullptr;
-        for (const auto& b : blocks_) {
-            if (new_base == nullptr || b.start < new_base) new_base = b.start;
-            if (b.end > new_end) new_end = b.end;
-        }
-        for (const auto& e : unassigned_blocks_) {
-            if (new_base == nullptr || e.first < new_base) new_base = e.first;
-            if (e.second > new_end) new_end = e.second;
-        }
-        region_base_ = new_base;
-        region_end_  = new_end;
+        // One-shot recompute of region_base_ / region_end_ over the new state,
+        // then rebuild page_to_block_index_ from blocks_ — slot indices are
+        // computed from (start - region_base_) / page_size, so a region_base_
+        // shift requires a full rebuild.
+        recomputeRegionBoundsAndRebuildIndex();
     }
 
     // Pass 3: unassigned bag pages.
@@ -3170,29 +3256,22 @@ void OldGenSpace::releaseBlockToAllocator(size_t block_index) {
     if (block_index != last) {
         fixupIndicesAfterBlockMove(last, block_index);
         // The swap-remove moved the last entry into block_index; rewrite its
-        // page-index slots so future blockIndexFor lookups land at the new
-        // index instead of the now-stale `last`.
-        assignPageIndexForBlock(block_index);
+        // page-index owner entries from the now-stale `last` to `block_index`
+        // so blockIndexFor lookups land at the new home of the same block.
+        // Plain assignPageIndexForBlock would not work under the two-owner
+        // table because it would treat the stale `last` entry as a sibling
+        // owner instead of replacing it.
+        renamePageIndexSlots(last, block_index);
     }
 
     // Recompute region_base_ / region_end_ if either was anchored to the
     // released extent. A linear scan is fine for one-off releases — but in
     // batch mode (shrink path) we let the caller recompute once at the end
-    // to avoid an O(N²) per-release cost.
+    // to avoid an O(N²) per-release cost. When region_base_ shifts the page
+    // slot indices change, so this branch rebuilds the page index too.
     if (g_batch_release_depth == 0 &&
         (blk.start == region_base_ || blk.end == region_end_)) {
-        char* new_base = nullptr;
-        char* new_end = nullptr;
-        for (const auto& b : blocks_) {
-            if (new_base == nullptr || b.start < new_base) new_base = b.start;
-            if (b.end > new_end) new_end = b.end;
-        }
-        for (const auto& e : unassigned_blocks_) {
-            if (new_base == nullptr || e.first < new_base) new_base = e.first;
-            if (e.second > new_end) new_end = e.second;
-        }
-        region_base_ = new_base;
-        region_end_  = new_end;
+        recomputeRegionBoundsAndRebuildIndex();
     }
 }
 
@@ -3222,20 +3301,11 @@ void OldGenSpace::releaseUnassignedBlockToAllocator(size_t unassigned_index) {
     }
     unassigned_blocks_.pop_back();
 
-    // Recompute bounds if anchored to the released extent.
+    // Recompute bounds if anchored to the released extent. Slot indices are
+    // computed from (start - region_base_) / page_size, so when region_base_
+    // shifts we also have to rebuild the page index.
     if (start == region_base_ || end == region_end_) {
-        char* new_base = nullptr;
-        char* new_end = nullptr;
-        for (const auto& b : blocks_) {
-            if (new_base == nullptr || b.start < new_base) new_base = b.start;
-            if (b.end > new_end) new_end = b.end;
-        }
-        for (const auto& e : unassigned_blocks_) {
-            if (new_base == nullptr || e.first < new_base) new_base = e.first;
-            if (e.second > new_end) new_end = e.second;
-        }
-        region_base_ = new_base;
-        region_end_  = new_end;
+        recomputeRegionBoundsAndRebuildIndex();
     }
 }
 
@@ -3295,19 +3365,10 @@ OldGenSpace::reclaimAllDeadBlocksFromMeta() {
     }
     --g_batch_release_depth;
 
-    // One-shot recompute of region_base_ / region_end_.
-    char* new_base = nullptr;
-    char* new_end = nullptr;
-    for (const auto& b : blocks_) {
-        if (new_base == nullptr || b.start < new_base) new_base = b.start;
-        if (b.end > new_end) new_end = b.end;
-    }
-    for (const auto& e : unassigned_blocks_) {
-        if (new_base == nullptr || e.first < new_base) new_base = e.first;
-        if (e.second > new_end) new_end = e.second;
-    }
-    region_base_ = new_base;
-    region_end_  = new_end;
+    // One-shot recompute of region_base_ / region_end_, then rebuild the
+    // page-index from blocks_ (region_base_ may have shifted, invalidating
+    // every (start - region_base_)/page_size slot computation).
+    recomputeRegionBoundsAndRebuildIndex();
 
     return stats;
 }
@@ -3939,10 +4000,7 @@ void OldGenSpace::freeEvacuatedBuffers() {
     // post-compaction blocks_ size is bounded (<= original count), and this
     // path runs only at compaction completion, so the O(#pages + #blocks)
     // rebuild is acceptable.
-    std::fill(page_to_block_index_.begin(), page_to_block_index_.end(), NO_BLOCK);
-    for (size_t i = 0; i < blocks_.size(); ++i) {
-        assignPageIndexForBlock(i);
-    }
+    rebuildPageIndexFromBlocks();
 
     evacuation_set_.clear();
 
