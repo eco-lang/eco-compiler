@@ -49,17 +49,17 @@ constexpr size_t INITIAL_OLD_GEN_SIZE = 16 * 1024 * 1024;            // 16 MB in
 constexpr size_t DEFAULT_SMALL_CLASS_HEAP_BUDGET = 1024ULL * 1024 * 1024;  // 1 GiB
 
 // AllocBuffer sizing.
-constexpr size_t ALLOC_BUFFER_SIZE = 128 * 1024;  // 128 KB default AllocBuffer.
+constexpr size_t ALLOC_BUFFER_SIZE = 512 * 1024;  // 512 KB default AllocBuffer.
 
 // Nursery sizing (in blocks, same size as AllocBuffer).
 // Block count must be even (split into from-space and to-space).
 constexpr size_t NURSERY_BLOCK_COUNT = 64;  // 32 blocks = 4 MB total (16 per semi-space).
 
 // Hard upper bound on adaptive nursery growth. checkAndGrow() will refuse
-// to add blocks past this total (low + high). Default 2048 blocks at the
-// default 128 KB block size = 256 MB total nursery (128 MB per semi-space).
+// to add blocks past this total (low + high). Default 1024 blocks at the
+// default 512 KB block size = 512 MB total nursery (256 MB per semi-space).
 // Block count must be even (split into from-space and to-space).
-constexpr size_t NURSERY_MAX_BLOCKS = 2048;
+constexpr size_t NURSERY_MAX_BLOCKS = 1024;
 
 // Promotion and GC triggers.
 constexpr u32 PROMOTION_AGE = 2;                            // Promote after surviving 2 minor GCs.
@@ -68,7 +68,7 @@ constexpr float NURSERY_GC_THRESHOLD = 0.9f;                // Trigger minor GC 
 // Adaptive nursery growth: after a minor GC, request more blocks if to-space
 // occupancy exceeds this fraction. Lower values grow the nursery more
 // aggressively (cheaper minor GCs, larger working set).
-constexpr float NURSERY_GROWTH_THRESHOLD = 0.1f;
+constexpr float NURSERY_GROWTH_THRESHOLD = 0.20f;
 
 // Returns the header of a heap object.
 inline Header *getHeader(void *obj) { return static_cast<Header *>(obj); }
@@ -216,7 +216,7 @@ struct HeapConfig {
     //    that live / committed <= target (bounded by the global old-gen cap).
     // Invariant: initiating_occupancy > target_utilization (prevents a
     // grow-loop where post-grow occupancy re-triggers the rule).
-    float major_gc_initiating_occupancy = 0.75f;
+    float major_gc_initiating_occupancy = 0.85f;
     float major_gc_target_utilization   = 0.50f;
 
     //  * garbage_fraction: fraction of this thread's old-gen committed bytes
@@ -226,7 +226,7 @@ struct HeapConfig {
     //    `initiating_occupancy` (free-list reuse keeps the heap from
     //    growing), and dead bytes accumulate as un-swept garbage between
     //    cycles. 0.0 disables.
-    float major_gc_garbage_fraction = 0.40f;
+    float major_gc_garbage_fraction = 0.70f;
 
     // List locality optimization: two-pass spine copying.
     // When enabled, Cons list spines are copied contiguously using a two-pass
@@ -242,10 +242,10 @@ struct HeapConfig {
     // split-header path (HEAP_026): a small Tag_LargeStringHeader /
     // Tag_LargeByteHeader lives in the nursery while the body lives pinned
     // in old gen and is never copied. See plans/large-object-split-header-bodies.md.
-    // Default: max(8 KiB, alloc_buffer_size / 16). With the default
-    // alloc_buffer_size of 128 KiB this resolves to 8 KiB.
-    size_t large_object_threshold =
-        (ALLOC_BUFFER_SIZE / 16 > 8 * 1024) ? (ALLOC_BUFFER_SIZE / 16) : (8 * 1024);
+    // Default: 16 KiB. Empirically optimal for the self-compile workload
+    // (Phase 1 sweep at 180 s: 32 KiB regressed mutator% by ~16 pp vs 16 KiB,
+    // and ≤ 8 KiB falls off a cliff into the large-object path).
+    size_t large_object_threshold = 16 * 1024;
 
     // When `releaseOldGenBlock` is called, also `madvise(MADV_DONTNEED)` the
     // released extent so its physical RSS drops. The virtual mapping is
