@@ -71,6 +71,7 @@
 #include "EcoOps.h"
 #include "Passes.h"
 #include "EcoPipeline.h"
+#include "LoweringStats.h"
 
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
@@ -156,6 +157,11 @@ static cl::opt<std::string> dumpPreRS4GCIR(
     cl::desc("Dump LLVM IR to file before RS4GC pass (for GC diagnostics)"),
     cl::value_desc("filename"),
     cl::init(""));
+
+static cl::opt<bool> printStats(
+    "lowering-stats",
+    cl::desc("Print lowering-pipeline timing breakdown to stderr at exit"),
+    cl::init(true));
 
 //===----------------------------------------------------------------------===//
 // Frontend Invocation
@@ -274,11 +280,15 @@ static OwningOpRef<ModuleOp> loadMLIR(MLIRContext &context,
     return module;
 }
 
-static int runPipeline(ModuleOp module) {
+static int runPipeline(ModuleOp module, eco::LoweringStats &stats) {
     PassManager pm(module->getName());
 
     if (failed(applyPassManagerCLOptions(pm)))
         return 1;
+
+    // Per-pass timing — installed before passes are added so every pass
+    // (including ones registered by buildEcoToLLVMPipeline) is observed.
+    pm.addInstrumentation(stats.makePassInstrumentation());
 
     eco::buildEcoToLLVMPipeline(pm);
 
@@ -533,6 +543,10 @@ int main(int argc, char **argv) {
 
     std::string output = getOutputPath();
 
+    // Lifetime spans the whole driver — phases below add to it via Scope, and
+    // we print the aggregated table just before main() returns.
+    eco::LoweringStats stats;
+
     // Step 1: Get MLIR input (either directly or via frontend compilation)
     std::string mlirFile;
     std::string tempMlirFile;
@@ -543,7 +557,14 @@ int main(int argc, char **argv) {
         if (emitAction == EmitMLIR) {
             // Just run the frontend and output the MLIR
             std::string mlirOutput = (output == "-") ? "/dev/stdout" : output;
-            return compileElmToMlir(inputFilename, mlirOutput);
+            int rc;
+            {
+                eco::LoweringStats::Scope scope(stats, "frontend (Elm -> MLIR)");
+                rc = compileElmToMlir(inputFilename, mlirOutput);
+            }
+            if (printStats)
+                stats.print(llvm::errs());
+            return rc;
         }
 
         // Create a temp file for the MLIR intermediate
@@ -557,9 +578,12 @@ int main(int argc, char **argv) {
         tempMlirFile = std::string(tempPath);
         mlirFile = tempMlirFile;
 
-        if (compileElmToMlir(inputFilename, mlirFile) != 0) {
-            llvm::sys::fs::remove(tempMlirFile);
-            return 1;
+        {
+            eco::LoweringStats::Scope scope(stats, "frontend (Elm -> MLIR)");
+            if (compileElmToMlir(inputFilename, mlirFile) != 0) {
+                llvm::sys::fs::remove(tempMlirFile);
+                return 1;
+            }
         }
     } else {
         llvm::errs() << "Error: Input file must be .elm or .mlir\n";
@@ -586,34 +610,45 @@ int main(int argc, char **argv) {
     llvm::SourceMgr sourceMgr;
     sourceMgr.AddNewSourceBuffer(std::move(inputFile), llvm::SMLoc());
 
-    auto module = loadMLIR(context, sourceMgr);
-    if (!module) {
-        if (!tempMlirFile.empty())
-            llvm::sys::fs::remove(tempMlirFile);
-        return 1;
-    }
+    OwningOpRef<ModuleOp> module;
+    {
+        eco::LoweringStats::Scope scope(stats, "MLIR parse + verify");
+        module = loadMLIR(context, sourceMgr);
+        if (!module) {
+            if (!tempMlirFile.empty())
+                llvm::sys::fs::remove(tempMlirFile);
+            return 1;
+        }
 
-    if (failed(verify(*module))) {
-        llvm::errs() << "Error: Module verification failed\n";
-        if (!tempMlirFile.empty())
-            llvm::sys::fs::remove(tempMlirFile);
-        return 1;
+        if (failed(verify(*module))) {
+            llvm::errs() << "Error: Module verification failed\n";
+            if (!tempMlirFile.empty())
+                llvm::sys::fs::remove(tempMlirFile);
+            return 1;
+        }
     }
 
     // Step 3: Run MLIR lowering pipeline (Eco -> LLVM dialect)
-    if (runPipeline(*module) != 0) {
-        if (!tempMlirFile.empty())
-            llvm::sys::fs::remove(tempMlirFile);
-        return 1;
+    {
+        eco::LoweringStats::Scope scope(stats, "MLIR lowering pipeline");
+        if (runPipeline(*module, stats) != 0) {
+            if (!tempMlirFile.empty())
+                llvm::sys::fs::remove(tempMlirFile);
+            return 1;
+        }
     }
 
     // Step 4: Translate to LLVM IR
     llvm::LLVMContext llvmContext;
-    auto llvmModule = translateToLLVMIR(*module, llvmContext);
-    if (!llvmModule) {
-        if (!tempMlirFile.empty())
-            llvm::sys::fs::remove(tempMlirFile);
-        return 1;
+    std::unique_ptr<llvm::Module> llvmModule;
+    {
+        eco::LoweringStats::Scope scope(stats, "MLIR -> LLVM IR translation");
+        llvmModule = translateToLLVMIR(*module, llvmContext);
+        if (!llvmModule) {
+            if (!tempMlirFile.empty())
+                llvm::sys::fs::remove(tempMlirFile);
+            return 1;
+        }
     }
 
     // Optionally dump LLVM IR before RS4GC for comparison.
@@ -629,6 +664,7 @@ int main(int argc, char **argv) {
     // Run RS4GC: inserts gc.statepoint/gc.relocate for all
     // GC-triggering calls in functions with gc "eco-gc".
     {
+        eco::LoweringStats::Scope scope(stats, "LLVM RS4GC pipeline");
         llvm::LoopAnalysisManager LAM;
         llvm::FunctionAnalysisManager FAM;
         llvm::CGSCCAnalysisManager CGAM;
@@ -662,12 +698,17 @@ int main(int argc, char **argv) {
         llvm::sys::fs::remove(tempMlirFile);
 
     // Step 5: Create target machine and set data layout
-    auto tm = createTargetMachine(*llvmModule);
-    if (!tm)
-        return 1;
+    std::unique_ptr<llvm::TargetMachine> tm;
+    {
+        eco::LoweringStats::Scope scope(stats, "TargetMachine init");
+        tm = createTargetMachine(*llvmModule);
+        if (!tm)
+            return 1;
+    }
 
     // Step 6: Optionally run LLVM optimization passes
     if (optLevel > 0) {
+        eco::LoweringStats::Scope scope(stats, "LLVM optimization (-O>0)");
         auto optPipeline = makeOptimizingTransformer(
             optLevel, /*sizeLevel=*/0, /*targetMachine=*/tm.get());
         if (auto err = optPipeline(llvmModule.get())) {
@@ -685,18 +726,23 @@ int main(int argc, char **argv) {
 
     // Handle LLVM IR output mode
     if (emitAction == EmitLLVM) {
-        if (output == "-") {
-            llvm::outs() << *llvmModule << "\n";
-        } else {
-            std::error_code ec;
-            llvm::raw_fd_ostream out(output, ec, llvm::sys::fs::OF_None);
-            if (ec) {
-                llvm::errs() << "Error: Could not open output file: "
-                             << ec.message() << "\n";
-                return 1;
+        {
+            eco::LoweringStats::Scope scope(stats, "Emit LLVM IR");
+            if (output == "-") {
+                llvm::outs() << *llvmModule << "\n";
+            } else {
+                std::error_code ec;
+                llvm::raw_fd_ostream out(output, ec, llvm::sys::fs::OF_None);
+                if (ec) {
+                    llvm::errs() << "Error: Could not open output file: "
+                                 << ec.message() << "\n";
+                    return 1;
+                }
+                out << *llvmModule << "\n";
             }
-            out << *llvmModule << "\n";
         }
+        if (printStats)
+            stats.print(llvm::errs());
         return 0;
     }
 
@@ -719,21 +765,34 @@ int main(int argc, char **argv) {
         objFile = tempObjFile;
     }
 
-    if (emitObjectFile(*llvmModule, *tm, objFile) != 0) {
-        if (!tempObjFile.empty())
-            llvm::sys::fs::remove(tempObjFile);
-        return 1;
+    {
+        eco::LoweringStats::Scope scope(stats, "Object file emission");
+        if (emitObjectFile(*llvmModule, *tm, objFile) != 0) {
+            if (!tempObjFile.empty())
+                llvm::sys::fs::remove(tempObjFile);
+            return 1;
+        }
     }
 
-    if (emitAction == EmitObj)
+    if (emitAction == EmitObj) {
+        if (printStats)
+            stats.print(llvm::errs());
         return 0;
+    }
 
     // Step 8: Link executable
-    int rc = linkExecutable(objFile, output);
+    int rc;
+    {
+        eco::LoweringStats::Scope scope(stats, "Link (clang++ driver)");
+        rc = linkExecutable(objFile, output);
+    }
 
     // Clean up temp object file
     if (!tempObjFile.empty())
         llvm::sys::fs::remove(tempObjFile);
+
+    if (printStats)
+        stats.print(llvm::errs());
 
     return rc;
 }

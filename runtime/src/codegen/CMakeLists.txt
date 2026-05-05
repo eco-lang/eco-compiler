@@ -664,6 +664,7 @@ file(GENERATE
 add_llvm_executable(eco-boot-native
     eco-boot.cpp
     EcoPipeline.cpp
+    LoweringStats.cpp
     PARTIAL_SOURCES_INTENDED
 )
 
