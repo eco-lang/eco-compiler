@@ -64,11 +64,11 @@ DEFAULT_WALL_SECONDS = 60
 BASELINE_HEAP = {
     "max_heap_size":                 "24G",
     "initial_old_gen_size":          "16M",
-    "alloc_buffer_size":             "256K",
+    "alloc_buffer_size":             "128K",
     "nursery_block_count":           64,
     "promotion_age":                 2,
     "nursery_gc_threshold":          0.9,
-    "nursery_growth_threshold":      0.1,
+    "nursery_growth_threshold":      0.025,
     "major_gc_initiating_occupancy": 0.75,
     "major_gc_target_utilization":   0.70,
     "major_gc_garbage_fraction":     0.40,
@@ -374,31 +374,31 @@ def parse_summary(out_text: str, err_text: str, wall_s: float) -> dict:
         out_text, r"Major GC Timing:.*?Total time:\s+" + _TIME_RE)
     minor_s = _first_time_seconds(
         out_text, r"Minor GC Timing:.*?Total time:\s+" + _TIME_RE)
-    # The runtime now prints two helper-time blocks. Restrict the parser to
-    # the "Old-gen Allocator Helper Time" section so the labels in the new
-    # "Nursery Allocator Helper Time" block can't bleed into these counters.
-    oldgen_block_re = (r"Old-gen Allocator Helper Time:\n"
-                       r"(?P<body>(?:.*\n)+?)\n")
-    m_old = re.search(oldgen_block_re, out_text)
-    oldgen_body = m_old.group("body") if m_old else ""
-    helper_in_minor_s = _first_time_seconds(
-        oldgen_body, r"In minor pauses:\s+" + _TIME_RE)
-    helper_in_mutator_s = _first_time_seconds(
-        oldgen_body, r"In mutator alloc:\s+" + _TIME_RE)
-
-    nursery_block_re = (r"Nursery Allocator Helper Time:\n"
+    # The runtime prints two top-level allocator-timing blocks:
+    #   "Allocator Timings:" — top-level mutually-exclusive buckets
+    #   "Allocator Nested Timings (...):" — sub-counters, do not sum
+    # Both are scoped tightly so their labels cannot bleed into each other.
+    timings_block_re = (r"Allocator Timings:\n"
                         r"(?P<body>(?:.*\n)+?)\n")
-    m_nur = re.search(nursery_block_re, out_text)
-    nursery_body = m_nur.group("body") if m_nur else ""
+    m_top = re.search(timings_block_re, out_text)
+    top_body = m_top.group("body") if m_top else ""
+    helper_in_mutator_s = _first_time_seconds(
+        top_body, r"Old-gen alloc in mutator:\s+" + _TIME_RE)
     nursery_alloc_s = _first_time_seconds(
-        nursery_body, r"In mutator alloc:\s+" + _TIME_RE)
+        top_body, r"Nursery alloc in mutator:\s+" + _TIME_RE)
 
+    nested_block_re = (r"Allocator Nested Timings[^:\n]*:\n"
+                       r"(?P<body>(?:.*\n)+?)\n")
+    m_nest = re.search(nested_block_re, out_text)
+    nested_body = m_nest.group("body") if m_nest else ""
+    helper_in_minor_s = _first_time_seconds(
+        nested_body, r"In minor pauses[^:]*:\s+" + _TIME_RE)
     post_sweep_shrink_s = _first_time_seconds(
-        out_text, r"Post-sweep shrink:\s+" + _TIME_RE)
+        nested_body, r"Post-sweep shrink[^:]*:\s+" + _TIME_RE)
     shrink_heavy_s = _first_time_seconds(
-        out_text, r"maybeShrink heavy:\s+" + _TIME_RE)
+        nested_body, r"maybeShrink heavy[^:]*:\s+" + _TIME_RE)
     shrink_light_s = _first_time_seconds(
-        out_text, r"maybeShrink light:\s+" + _TIME_RE)
+        nested_body, r"maybeShrink light[^:]*:\s+" + _TIME_RE)
 
     helper_s = helper_in_minor_s + helper_in_mutator_s
     # Accounting identity: wall = minor + major + nursery_alloc
