@@ -111,19 +111,19 @@ static std::string elmStringToStd(uint64_t strEnc) {
 // Create Ok result. Roots `value` across the Custom allocate so callers may
 // pass an HPointer captured before this call.
 static uint64_t makeOk(HPointer value) {
-    auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* result;
-    {
-        StackRootGuard guard(&value);
-        result = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
-    }
+
+    uint64_t roots[1];
+    std::memcpy(&roots[0], &value, sizeof(value));
+    Custom* result = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, roots, 1, 0x1));
+    std::memcpy(&value, &roots[0], sizeof(value));
     result->header.size = 1;
     result->ctor = 0;  // Ok
     result->unboxed = 0;
     result->values[0].p = value;
-    return Export::encode(allocator.wrap(result));
+    return Export::encode(Allocator::instance().wrap(result));
 }
 
 
@@ -136,27 +136,28 @@ static uint64_t makeErr(const std::string& message) {
     // Create Error.Failure message value (simplified).
     size_t size = sizeof(Custom) + 2 * sizeof(Unboxable);
     size = (size + 7) & ~7;
-    HPointer failureHP;
-    {
-        // Root msgStr across the Failure custom allocate.
-        StackRootGuard guard(&msgStr);
-        Custom* failure = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
-        failure->header.size = 2;
-        failure->ctor = 0;  // Failure ctor
-        failure->unboxed = 0;
-        failure->values[0].p = msgStr;     // message
-        failure->values[1].p = listNil();  // context (empty)
-        failureHP = allocator.wrap(failure);
-    }
 
-    // Wrap in Err. Root the failure handle across the Err allocate.
+    uint64_t failureRoots[1];
+    std::memcpy(&failureRoots[0], &msgStr, sizeof(msgStr));
+    Custom* failure = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, failureRoots, 1, 0x1));
+    std::memcpy(&msgStr, &failureRoots[0], sizeof(msgStr));
+    failure->header.size = 2;
+    failure->ctor = 0;  // Failure ctor
+    failure->unboxed = 0;
+    failure->values[0].p = msgStr;     // message
+    failure->values[1].p = listNil();  // context (empty)
+    HPointer failureHP = allocator.wrap(failure);
+
+    // Wrap in Err.
     size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* err;
-    {
-        StackRootGuard guard(&failureHP);
-        err = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
-    }
+
+    uint64_t errRoots[1];
+    std::memcpy(&errRoots[0], &failureHP, sizeof(failureHP));
+    Custom* err = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, errRoots, 1, 0x1));
+    std::memcpy(&failureHP, &errRoots[0], sizeof(failureHP));
     err->header.size = 1;
     err->ctor = 1;  // Err
     err->unboxed = 0;
@@ -186,92 +187,102 @@ static HPointer getOkValue(uint64_t result) {
 
 // Create a heap-resident JSON null.
 static HPointer makeJsonNull() {
-    auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom);
     size = (size + 7) & ~7;
-    Custom* c = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    Custom* c = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
     c->header.size = 0;
     c->ctor = CTOR_JSON_NULL;
     c->unboxed = 0;
-    return allocator.wrap(c);
+    return Allocator::instance().wrap(c);
 }
 
 // Create a heap-resident JSON bool.
 static HPointer makeJsonBool(bool b) {
-    auto& allocator = Allocator::instance();
+    // No HPointer args (elmTrue/elmFalse return embedded constants).
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* c = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    Custom* c = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
     c->header.size = 1;
     c->ctor = CTOR_JSON_BOOL;
     c->unboxed = 0;
     c->values[0].p = b ? elmTrue() : elmFalse();
-    return allocator.wrap(c);
+    return Allocator::instance().wrap(c);
 }
 
 // Create a heap-resident JSON int.
 static HPointer makeJsonInt(i64 val) {
-    auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* c = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    Custom* c = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
     c->header.size = 1;
     c->ctor = CTOR_JSON_INT;
     c->unboxed = 1;
     c->values[0].i = val;
-    return allocator.wrap(c);
+    return Allocator::instance().wrap(c);
 }
 
 // Create a heap-resident JSON float.
 static HPointer makeJsonFloat(f64 val) {
-    auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* c = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    Custom* c = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
     c->header.size = 1;
     c->ctor = CTOR_JSON_FLOAT;
     c->unboxed = 2;  // kind=Float at slot 0
     c->values[0].f = val;
-    return allocator.wrap(c);
+    return Allocator::instance().wrap(c);
 }
 
 // Create a heap-resident JSON string.
 static HPointer makeJsonString(HPointer elmStr) {
-    auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* c = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    uint64_t roots[1];
+    std::memcpy(&roots[0], &elmStr, sizeof(elmStr));
+    Custom* c = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, roots, 1, 0x1));
+    std::memcpy(&elmStr, &roots[0], sizeof(elmStr));
     c->header.size = 1;
     c->ctor = CTOR_JSON_STRING;
     c->unboxed = 0;
     c->values[0].p = elmStr;
-    return allocator.wrap(c);
+    return Allocator::instance().wrap(c);
 }
 
 // Create a heap-resident JSON array from an ElmArray of JSON values.
 static HPointer makeJsonArray(HPointer elmArray) {
-    auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* c = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    uint64_t roots[1];
+    std::memcpy(&roots[0], &elmArray, sizeof(elmArray));
+    Custom* c = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, roots, 1, 0x1));
+    std::memcpy(&elmArray, &roots[0], sizeof(elmArray));
     c->header.size = 1;
     c->ctor = CTOR_JSON_ARRAY;
     c->unboxed = 0;
     c->values[0].p = elmArray;
-    return allocator.wrap(c);
+    return Allocator::instance().wrap(c);
 }
 
 // Create a heap-resident JSON object from an Elm List of (String, JsonValue) tuples.
 static HPointer makeJsonObject(HPointer kvList) {
-    auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* c = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    uint64_t roots[1];
+    std::memcpy(&roots[0], &kvList, sizeof(kvList));
+    Custom* c = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, roots, 1, 0x1));
+    std::memcpy(&kvList, &roots[0], sizeof(kvList));
     c->header.size = 1;
     c->ctor = CTOR_JSON_OBJECT;
     c->unboxed = 0;
     c->values[0].p = kvList;
-    return allocator.wrap(c);
+    return Allocator::instance().wrap(c);
 }
 
 //===----------------------------------------------------------------------===//
@@ -426,80 +437,80 @@ static json heapJsonToNlohmann(uint64_t jvalEnc) {
 //===----------------------------------------------------------------------===//
 
 static uint64_t makeDecoder0(u16 ctor) {
-    auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom);
     size = (size + 7) & ~7;
-    Custom* dec = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    Custom* dec = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
     dec->header.size = 0;
     dec->ctor = ctor;
     dec->unboxed = 0;
-    return Export::encode(allocator.wrap(dec));
+    return Export::encode(Allocator::instance().wrap(dec));
 }
 
 static uint64_t makeDecoder1(u16 ctor, uint64_t arg) {
-    auto& allocator = Allocator::instance();
     HPointer payload = Export::decode(arg);
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* dec;
-    {
-        StackRootGuard guard(&payload);
-        dec = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
-    }
+    uint64_t roots[1];
+    std::memcpy(&roots[0], &payload, sizeof(payload));
+    Custom* dec = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, roots, 1, 0x1));
+    std::memcpy(&payload, &roots[0], sizeof(payload));
     dec->header.size = 1;
     dec->ctor = ctor;
     dec->unboxed = 0;
     dec->values[0].p = payload;
-    return Export::encode(allocator.wrap(dec));
+    return Export::encode(Allocator::instance().wrap(dec));
 }
 
 static uint64_t makeDecoder1i(u16 ctor, int64_t arg) {
-    auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* dec = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    Custom* dec = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
     dec->header.size = 1;
     dec->ctor = ctor;
     dec->unboxed = 1;
     dec->values[0].i = arg;
-    return Export::encode(allocator.wrap(dec));
+    return Export::encode(Allocator::instance().wrap(dec));
 }
 
 static uint64_t makeDecoder2(u16 ctor, uint64_t arg1, uint64_t arg2) {
-    auto& allocator = Allocator::instance();
     HPointer p0 = Export::decode(arg1);
     HPointer p1 = Export::decode(arg2);
     size_t size = sizeof(Custom) + 2 * sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* dec;
-    {
-        StackRootGuard guard(&p0, &p1);
-        dec = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
-    }
+    uint64_t roots[2];
+    std::memcpy(&roots[0], &p0, sizeof(p0));
+    std::memcpy(&roots[1], &p1, sizeof(p1));
+    Custom* dec = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, roots, 2, 0x3));
+    std::memcpy(&p0, &roots[0], sizeof(p0));
+    std::memcpy(&p1, &roots[1], sizeof(p1));
     dec->header.size = 2;
     dec->ctor = ctor;
     dec->unboxed = 0;
     dec->values[0].p = p0;
     dec->values[1].p = p1;
-    return Export::encode(allocator.wrap(dec));
+    return Export::encode(Allocator::instance().wrap(dec));
 }
 
 static uint64_t makeDecoder2ip(u16 ctor, int64_t arg1, uint64_t arg2) {
-    auto& allocator = Allocator::instance();
     HPointer p1 = Export::decode(arg2);
     size_t size = sizeof(Custom) + 2 * sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* dec;
-    {
-        StackRootGuard guard(&p1);
-        dec = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
-    }
+    // arg1 is unboxed Int (slot 0); p1 is HPointer (slot 1). mask = 0b10 = 0x2.
+    uint64_t roots[2] = { static_cast<uint64_t>(arg1), 0 };
+    std::memcpy(&roots[1], &p1, sizeof(p1));
+    Custom* dec = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, roots, 2, 0x2));
+    std::memcpy(&p1, &roots[1], sizeof(p1));
     dec->header.size = 2;
     dec->ctor = ctor;
     dec->unboxed = 1;  // first field unboxed
     dec->values[0].i = arg1;
     dec->values[1].p = p1;
-    return Export::encode(allocator.wrap(dec));
+    return Export::encode(Allocator::instance().wrap(dec));
 }
 
 //===----------------------------------------------------------------------===//
@@ -730,46 +741,28 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
                 size_t sz = sizeof(Custom) + 4 * sizeof(Unboxable);
                 sz = (sz + 7) & ~7;
 
-                // Fast path: bump-pointer with no rooting. allocateFast cannot
-                // GC, so tree_hp / tail_hp cannot move out from under us.
+                // Pattern A: tree_hp + tail_hp are HPointer fields at slots
+                // 2 and 3. Pack length and 5 (Int slots) into roots[0,1]
+                // alongside; mask = 0b1100 = 0xC roots only the HPointer
+                // slots.
+                uint64_t roots[4] = {
+                    static_cast<uint64_t>(length),
+                    5,
+                    0,
+                    0,
+                };
+                std::memcpy(&roots[2], &tree_hp, sizeof(tree_hp));
+                std::memcpy(&roots[3], &tail_hp, sizeof(tail_hp));
+
                 Custom* c = static_cast<Custom*>(
-                    Allocator::instance().allocateFast(sz));
-                if (c) {
-                    Header* hdr = &c->header;
-                    std::memset(hdr, 0, sizeof(Header));
-                    hdr->tag = Tag_Custom;
-                    hdr->size = 4;
-                    c->ctor = 0;       // Array_elm_builtin
-                    c->unboxed = 0x5;
-                    c->values[0].i = static_cast<i64>(length);
-                    c->values[1].i = 5;  // shiftStep
-                    c->values[2].p = tree_hp;
-                    c->values[3].p = tail_hp;
-                    return Allocator::instance().wrap(c);
-                }
-
-                // Slow path: root tree/tail across the GC that allocateSlow
-                // may run, then re-read after the call.
-                auto& rs = Allocator::instance().getRootSet();
-                size_t saved = rs.stackRangePoint();
-                HPointer tree_root = tree_hp;
-                HPointer tail_root = tail_hp;
-                rs.pushStackRootRange(&tree_root, 1, 1);
-                rs.pushStackRootRange(&tail_root, 1, 1);
-
-                c = static_cast<Custom*>(
-                    Allocator::instance().allocateSlow(sz, Tag_Custom));
-                c->header.size = 4;
+                    eco_alloc_with_roots(Tag_Custom, sz, roots, 4, 0xC));
                 c->ctor = 0;       // Array_elm_builtin
                 c->unboxed = 0x5;  // field 0 and 1 are unboxed Int
-                c->values[0].i = static_cast<i64>(length);
-                c->values[1].i = 5;  // shiftStep
-                c->values[2].p = tree_root;
-                c->values[3].p = tail_root;
-
-                HPointer result = Allocator::instance().wrap(c);
-                rs.restoreStackRangePoint(saved);
-                return result;
+                c->values[0].i = static_cast<i64>(roots[0]);
+                c->values[1].i = static_cast<i64>(roots[1]);
+                std::memcpy(&c->values[2].p, &roots[2], sizeof(HPointer));
+                std::memcpy(&c->values[3].p, &roots[3], sizeof(HPointer));
+                return Allocator::instance().wrap(c);
             };
 
             // Helper: allocate a JsArray of a given uniform kind and length,
@@ -839,30 +832,14 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
                     size_t sz = sizeof(Custom) + 1 * sizeof(Unboxable);
                     sz = (sz + 7) & ~7;
 
-                    // Fast path: bump-pointer with no extra rooting.
-                    // leafJsArr cannot move because allocateFast cannot GC.
+                    uint64_t roots[1];
+                    std::memcpy(&roots[0], &leafJsArr, sizeof(leafJsArr));
                     Custom* node = static_cast<Custom*>(
-                        Allocator::instance().allocateFast(sz));
-                    if (node) {
-                        Header* hdr = &node->header;
-                        std::memset(hdr, 0, sizeof(Header));
-                        hdr->tag = Tag_Custom;
-                        hdr->size = 1;
-                        node->ctor = 1;      // Leaf
-                        node->unboxed = 0;   // field 0 (JsArray) is boxed
-                        node->values[0].p = leafJsArr;
-                    } else {
-                        // Slow path: extend rooting to leafJsArr across the
-                        // GC that allocateSlow may run.
-                        HPointer leafRoot = leafJsArr;
-                        rs.pushStackRootRange(&leafRoot, 1, 1);
-                        node = static_cast<Custom*>(
-                            Allocator::instance().allocateSlow(sz, Tag_Custom));
-                        node->header.size = 1;
-                        node->ctor = 1;      // Leaf
-                        node->unboxed = 0;
-                        node->values[0].p = leafRoot;
-                    }
+                        eco_alloc_with_roots(Tag_Custom, sz, roots, 1, 0x1));
+                    std::memcpy(&leafJsArr, &roots[0], sizeof(leafJsArr));
+                    node->ctor = 1;      // Leaf
+                    node->unboxed = 0;
+                    node->values[0].p = leafJsArr;
                     leafNodes.push_back(Allocator::instance().wrap(node));
 
                     rs.restoreStackRangePoint(saved);
@@ -1416,28 +1393,33 @@ HPtr Elm_Kernel_Json_map1(HPtr closure, HPtr d1) {
     return HPtr::fromBits(makeDecoder2(DEC_MAP1, closure.toBits(), d1.toBits()));
 }
 
-// Pre-decode every input handle, root the buffer across allocate, then store.
+// Pre-decode every input handle and pass them as roots to the helper.
 // `nFields` includes the closure and all decoder slots.
 static uint64_t buildMapDecoder(u16 ctor, u32 nFields, std::initializer_list<uint64_t> args) {
-    auto& allocator = Allocator::instance();
-    std::vector<HPointer> roots;
+    // All args are HPointers (closure + N decoders).
+    std::vector<uint64_t> roots;
     roots.reserve(args.size());
-    for (uint64_t a : args) roots.push_back(Export::decode(a));
+    for (uint64_t a : args) {
+        HPointer hp = Export::decode(a);
+        uint64_t b;
+        std::memcpy(&b, &hp, sizeof(b));
+        roots.push_back(b);
+    }
 
     size_t size = sizeof(Custom) + nFields * sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* dec;
-    {
-        StackRootRangeGuard guard(roots.data(), roots.size(), /*hpointer_mask=*/~uint64_t(0));
-        dec = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
-    }
+    uint64_t mask = (roots.size() >= 64) ? ~uint64_t{0}
+                                         : ((uint64_t{1} << roots.size()) - 1);
+    Custom* dec = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, roots.data(),
+                             static_cast<uint32_t>(roots.size()), mask));
     dec->header.size = nFields;
     dec->ctor = ctor;
     dec->unboxed = 0;
     for (size_t i = 0; i < roots.size(); ++i) {
-        dec->values[i].p = roots[i];
+        std::memcpy(&dec->values[i].p, &roots[i], sizeof(HPointer));
     }
-    return Export::encode(allocator.wrap(dec));
+    return Export::encode(Allocator::instance().wrap(dec));
 }
 
 HPtr Elm_Kernel_Json_map2(HPtr closure, HPtr d1, HPtr d2) {
@@ -1539,7 +1521,8 @@ HPtr Elm_Kernel_Json_wrap(HPtr value) {
     // Embedded constant booleans → ENC_BOOL
     if (h.constant == Const_True + 1 || h.constant == Const_False + 1) {
         size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
-        Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+        Custom* enc = static_cast<Custom*>(
+            eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
         enc->header.size = 1;
         enc->ctor = ENC_BOOL;
         enc->unboxed = 0;
@@ -1548,12 +1531,11 @@ HPtr Elm_Kernel_Json_wrap(HPtr value) {
     }
 
     // Embedded empty-string constant → ENC_STRING wrapping the Const_EmptyString pointer.
-    // (The heap-string path below also builds an ENC_STRING; both must serialize via
-    // elmStringToStd, which handles the Const_EmptyString constant itself.)
     if (h.constant == Const_EmptyString + 1) {
         // h is an embedded constant: stable across GC, no rooting needed.
         size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
-        Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+        Custom* enc = static_cast<Custom*>(
+            eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
         enc->header.size = 1;
         enc->ctor = ENC_STRING;
         enc->unboxed = 0;
@@ -1575,7 +1557,8 @@ HPtr Elm_Kernel_Json_wrap(HPtr value) {
         // Snapshot the unboxed int before any allocation may move the source.
         int64_t intVal = static_cast<ElmInt*>(ptr)->value;
         size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
-        Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+        Custom* enc = static_cast<Custom*>(
+            eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
         enc->header.size = 1;
         enc->ctor = ENC_INT;
         enc->unboxed = 1;
@@ -1587,7 +1570,8 @@ HPtr Elm_Kernel_Json_wrap(HPtr value) {
         // Snapshot the unboxed float before any allocation may move the source.
         double floatVal = static_cast<ElmFloat*>(ptr)->value;
         size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
-        Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+        Custom* enc = static_cast<Custom*>(
+            eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
         enc->header.size = 1;
         enc->ctor = ENC_FLOAT;
         enc->unboxed = 2;  // kind=Float at slot 0
@@ -1596,13 +1580,13 @@ HPtr Elm_Kernel_Json_wrap(HPtr value) {
     }
 
     if (header->tag == Tag_String) {
-        // Root the string handle across the Custom allocation.
+        // Pattern A: h is the only HPointer field.
         size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
-        Custom* enc;
-        {
-            StackRootGuard guard(&h);
-            enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
-        }
+        uint64_t roots[1];
+        std::memcpy(&roots[0], &h, sizeof(h));
+        Custom* enc = static_cast<Custom*>(
+            eco_alloc_with_roots(Tag_Custom, size, roots, 1, 0x1));
+        std::memcpy(&h, &roots[0], sizeof(h));
         enc->header.size = 1;
         enc->ctor = ENC_STRING;
         enc->unboxed = 0;
@@ -1615,38 +1599,38 @@ HPtr Elm_Kernel_Json_wrap(HPtr value) {
 }
 
 HPtr Elm_Kernel_Json_encodeNull() {
-    auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom);
     size = (size + 7) & ~7;
-    Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    Custom* enc = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
     enc->header.size = 0;
     enc->ctor = ENC_NULL;
     enc->unboxed = 0;
-    return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
+    return HPtr::fromBits(Export::encode(Allocator::instance().wrap(enc)));
 }
 
 HPtr Elm_Kernel_Json_emptyArray() {
-    auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    Custom* enc = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
     enc->header.size = 1;
     enc->ctor = ENC_ARRAY;
     enc->unboxed = 0;
     enc->values[0].p = listNil();
-    return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
+    return HPtr::fromBits(Export::encode(Allocator::instance().wrap(enc)));
 }
 
 HPtr Elm_Kernel_Json_emptyObject() {
-    auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    Custom* enc = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
     enc->header.size = 1;
     enc->ctor = ENC_OBJECT;
     enc->unboxed = 0;
     enc->values[0].p = listNil();
-    return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
+    return HPtr::fromBits(Export::encode(Allocator::instance().wrap(enc)));
 }
 
 HPtr Elm_Kernel_Json_addEntry(HPtr func, HPtr entry, HPtr array) {
@@ -1674,13 +1658,14 @@ HPtr Elm_Kernel_Json_addEntry(HPtr func, HPtr entry, HPtr array) {
         newList = cons(boxed(encodedHP), tailHP, true);
     }
 
+    // Build the ENC_ARRAY Custom; newList is the only HPointer field.
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* enc;
-    {
-        StackRootGuard guard(&newList);
-        enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
-    }
+    uint64_t roots[1];
+    std::memcpy(&roots[0], &newList, sizeof(newList));
+    Custom* enc = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, roots, 1, 0x1));
+    std::memcpy(&newList, &roots[0], sizeof(newList));
     enc->header.size = 1;
     enc->ctor = ENC_ARRAY;
     enc->unboxed = 0;
@@ -1695,11 +1680,19 @@ HPtr Elm_Kernel_Json_addField(HPtr key, HPtr value, HPtr object) {
     HPointer valueHP  = Export::decode(value.toBits());
     HPointer objectHP = Export::decode(object.toBits());
 
-    // Build (key, value) Tuple2, rooting the boxed inputs across the allocate.
+    // Build (key, value) Tuple2. Pattern A: keyHP and valueHP are fields;
+    // objectHP is live-across (we use it later via resolve).
     HPointer tupleHP;
     {
-        StackRootGuard guard(&keyHP, &valueHP, &objectHP);
-        Tuple2* tuple = static_cast<Tuple2*>(allocator.allocate(sizeof(Tuple2), Tag_Tuple2));
+        // objectHP isn't a field of the tuple but must survive the allocate.
+        StackRootGuard guardObj(&objectHP);
+        uint64_t roots[2];
+        std::memcpy(&roots[0], &keyHP, sizeof(keyHP));
+        std::memcpy(&roots[1], &valueHP, sizeof(valueHP));
+        Tuple2* tuple = static_cast<Tuple2*>(
+            eco_alloc_with_roots(Tag_Tuple2, sizeof(Tuple2), roots, 2, 0x3));
+        std::memcpy(&keyHP, &roots[0], sizeof(keyHP));
+        std::memcpy(&valueHP, &roots[1], sizeof(valueHP));
         tuple->header.unboxed = 0;
         tuple->a.p = keyHP;
         tuple->b.p = valueHP;
@@ -1718,11 +1711,11 @@ HPtr Elm_Kernel_Json_addField(HPtr key, HPtr value, HPtr object) {
 
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* enc;
-    {
-        StackRootGuard guard(&newList);
-        enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
-    }
+    uint64_t roots[1];
+    std::memcpy(&roots[0], &newList, sizeof(newList));
+    Custom* enc = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, roots, 1, 0x1));
+    std::memcpy(&newList, &roots[0], sizeof(newList));
     enc->header.size = 1;
     enc->ctor = ENC_OBJECT;
     enc->unboxed = 0;

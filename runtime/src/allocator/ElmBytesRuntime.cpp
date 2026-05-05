@@ -72,14 +72,14 @@ inline uint64_t ptrToU64(void* obj) {
 extern "C" {
 
 HPtr elm_alloc_bytebuffer(u32 byteCount) {
-    auto& allocator = Elm::Allocator::instance();
     size_t total_size = sizeof(Elm::ByteBuffer) + byteCount;
     total_size = (total_size + 7) & ~7;
 
+    // No HPointer args to root: byteCount is scalar; bytes are filled by
+    // caller after the allocation.
     Elm::ByteBuffer* bb = static_cast<Elm::ByteBuffer*>(
-        allocator.allocate(total_size, Elm::Tag_ByteBuffer));
+        eco_alloc_with_roots(Elm::Tag_ByteBuffer, total_size, nullptr, 0, 0));
     bb->header.size = byteCount;
-
     return Elm::HPtr::fromBits(ptrToU64(bb));
 }
 

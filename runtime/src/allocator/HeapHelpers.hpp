@@ -54,6 +54,7 @@
 #include "AllocatorCommon.hpp"
 #include "Heap.hpp"
 #include "RootSet.hpp"
+#include "RuntimeExports.h"
 #include <cstring>
 #include <string>
 #include <vector>
@@ -266,11 +267,10 @@ inline bool isEmbeddedConstant(HPointer ptr) {
  * Only use this when a heap-allocated Int object is required.
  */
 inline HPointer allocInt(i64 value) {
-    auto& allocator = Allocator::instance();
-    ElmInt* obj = static_cast<ElmInt*>(allocator.allocate(sizeof(ElmInt), Tag_Int));
-    obj->header.size = 0;
+    ElmInt* obj = static_cast<ElmInt*>(
+        eco_alloc_with_roots(Tag_Int, sizeof(ElmInt), nullptr, 0, 0));
     obj->value = value;
-    return allocator.wrap(obj);
+    return Allocator::instance().wrap(obj);
 }
 
 /**
@@ -280,11 +280,10 @@ inline HPointer allocInt(i64 value) {
  * Only use this when a heap-allocated Float object is required.
  */
 inline HPointer allocFloat(f64 value) {
-    auto& allocator = Allocator::instance();
-    ElmFloat* obj = static_cast<ElmFloat*>(allocator.allocate(sizeof(ElmFloat), Tag_Float));
-    obj->header.size = 0;
+    ElmFloat* obj = static_cast<ElmFloat*>(
+        eco_alloc_with_roots(Tag_Float, sizeof(ElmFloat), nullptr, 0, 0));
     obj->value = value;
-    return allocator.wrap(obj);
+    return Allocator::instance().wrap(obj);
 }
 
 /**
@@ -294,11 +293,10 @@ inline HPointer allocFloat(f64 value) {
  * Only use this when a heap-allocated Char object is required.
  */
 inline HPointer allocChar(u16 value) {
-    auto& allocator = Allocator::instance();
-    ElmChar* obj = static_cast<ElmChar*>(allocator.allocate(sizeof(ElmChar), Tag_Char));
-    obj->header.size = 0;
+    ElmChar* obj = static_cast<ElmChar*>(
+        eco_alloc_with_roots(Tag_Char, sizeof(ElmChar), nullptr, 0, 0));
     obj->value = value;
-    return allocator.wrap(obj);
+    return Allocator::instance().wrap(obj);
 }
 
 // ============================================================================
@@ -372,7 +370,8 @@ inline HPointer allocString(const u16* chars, size_t length) {
         return allocator.allocLargeString(chars, length);
     }
 
-    ElmString* str = static_cast<ElmString*>(allocator.allocate(total_size, Tag_String));
+    ElmString* str = static_cast<ElmString*>(
+        eco_alloc_with_roots(Tag_String, total_size, nullptr, 0, 0));
     str->header.size = static_cast<u32>(length);
     std::memcpy(str->chars, chars, data_size);
 
@@ -494,20 +493,19 @@ inline const u16* stringData(void* str) {
  */
 // `head_kind`: 2-bit slot kind (0=boxed HPointer, 1=Int, 2=Float, 3=Char).
 inline HPointer cons(Unboxable head, HPointer tail, u8 head_kind) {
-    auto& allocator = Allocator::instance();
-    // Root tail and head across allocate() using stack root ranges.
-    auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRangePoint();
-    rs.pushStackRootRange(&tail, 1, 1);
-    const bool head_is_boxed = (head_kind == 0);
-    if (head_is_boxed) rs.pushStackRootRange(&head.p, 1, 1);
-    Cons* cell = static_cast<Cons*>(allocator.allocate(sizeof(Cons), Tag_Cons));
+    // Pack head + tail as roots; the helper roots only on the slow path.
+    uint64_t roots[2] = { static_cast<uint64_t>(head.i), 0 };
+    std::memcpy(&roots[1], &tail, sizeof(tail));
+    uint64_t mask = (head_kind == 0) ? 0x3 : 0x2;
+
+    Cons* cell = static_cast<Cons*>(
+        eco_alloc_with_roots(Tag_Cons, sizeof(Cons), roots, 2, mask));
     cell->header.size = 0;
     cell->header.unboxed = head_kind & 0x3;
-    cell->head = head;
-    cell->tail = tail;
-    rs.restoreStackRangePoint(saved);
-    return allocator.wrap(cell);
+    // Read post-GC field values back from roots[].
+    cell->head.i = static_cast<i64>(roots[0]);
+    std::memcpy(&cell->tail, &roots[1], sizeof(cell->tail));
+    return Allocator::instance().wrap(cell);
 }
 
 // Boolean-friendly overload: true = boxed (kind 0), false = Int (kind 1).
@@ -622,18 +620,17 @@ inline HPointer listFromUnboxables(
  */
 // `unboxed_mask`: 2-bit-per-slot kind bitmap (4 bits used for 2 slots).
 inline HPointer tuple2(Unboxable a, Unboxable b, u32 unboxed_mask) {
-    auto& allocator = Allocator::instance();
-    auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRangePoint();
-    if (tupleFieldKind(unboxed_mask, 0) == 0) rs.pushStackRootRange(&a.p, 1, 1);
-    if (tupleFieldKind(unboxed_mask, 1) == 0) rs.pushStackRootRange(&b.p, 1, 1);
-    Tuple2* tuple = static_cast<Tuple2*>(allocator.allocate(sizeof(Tuple2), Tag_Tuple2));
-    tuple->header.size = 0;
+    uint64_t roots[2] = { static_cast<uint64_t>(a.i), static_cast<uint64_t>(b.i) };
+    uint64_t mask = 0;
+    if (tupleFieldKind(unboxed_mask, 0) == 0) mask |= 0x1;
+    if (tupleFieldKind(unboxed_mask, 1) == 0) mask |= 0x2;
+
+    Tuple2* tuple = static_cast<Tuple2*>(
+        eco_alloc_with_roots(Tag_Tuple2, sizeof(Tuple2), roots, 2, mask));
     tuple->header.unboxed = unboxed_mask & 0xF;
-    tuple->a = a;
-    tuple->b = b;
-    rs.restoreStackRangePoint(saved);
-    return allocator.wrap(tuple);
+    tuple->a.i = static_cast<i64>(roots[0]);
+    tuple->b.i = static_cast<i64>(roots[1]);
+    return Allocator::instance().wrap(tuple);
 }
 
 /**
@@ -647,20 +644,23 @@ inline HPointer tuple2(Unboxable a, Unboxable b, u32 unboxed_mask) {
  */
 // `unboxed_mask`: 2-bit-per-slot kind bitmap (6 bits used for 3 slots).
 inline HPointer tuple3(Unboxable a, Unboxable b, Unboxable c, u32 unboxed_mask) {
-    auto& allocator = Allocator::instance();
-    auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRangePoint();
-    if (tupleFieldKind(unboxed_mask, 0) == 0) rs.pushStackRootRange(&a.p, 1, 1);
-    if (tupleFieldKind(unboxed_mask, 1) == 0) rs.pushStackRootRange(&b.p, 1, 1);
-    if (tupleFieldKind(unboxed_mask, 2) == 0) rs.pushStackRootRange(&c.p, 1, 1);
-    Tuple3* tuple = static_cast<Tuple3*>(allocator.allocate(sizeof(Tuple3), Tag_Tuple3));
-    tuple->header.size = 0;
+    uint64_t roots[3] = {
+        static_cast<uint64_t>(a.i),
+        static_cast<uint64_t>(b.i),
+        static_cast<uint64_t>(c.i),
+    };
+    uint64_t mask = 0;
+    if (tupleFieldKind(unboxed_mask, 0) == 0) mask |= 0x1;
+    if (tupleFieldKind(unboxed_mask, 1) == 0) mask |= 0x2;
+    if (tupleFieldKind(unboxed_mask, 2) == 0) mask |= 0x4;
+
+    Tuple3* tuple = static_cast<Tuple3*>(
+        eco_alloc_with_roots(Tag_Tuple3, sizeof(Tuple3), roots, 3, mask));
     tuple->header.unboxed = unboxed_mask & 0x3F;
-    tuple->a = a;
-    tuple->b = b;
-    tuple->c = c;
-    rs.restoreStackRangePoint(saved);
-    return allocator.wrap(tuple);
+    tuple->a.i = static_cast<i64>(roots[0]);
+    tuple->b.i = static_cast<i64>(roots[1]);
+    tuple->c.i = static_cast<i64>(roots[2]);
+    return Allocator::instance().wrap(tuple);
 }
 
 // ============================================================================
@@ -678,31 +678,32 @@ inline HPointer tuple3(Unboxable a, Unboxable b, Unboxable c, u32 unboxed_mask) 
 // `unboxed_mask`: 2-bit-per-slot kind bitmap (up to 24 fields, 48 bits used).
 inline HPointer custom(u16 ctor, const std::vector<Unboxable>& values, u64 unboxed_mask) {
     assert((unboxed_mask >> 48) == 0 && "Custom unboxed bitmap overflow (>48 bits)");
-    auto& allocator = Allocator::instance();
     size_t total_size = sizeof(Custom) + values.size() * sizeof(Unboxable);
     total_size = (total_size + 7) & ~7;
 
-    // Copy values into a mutable buffer and root the pointer-typed entries
-    // (those whose kind is 0) across the allocation, so a minor GC inside
-    // allocate() updates them in place.
-    std::vector<Unboxable> rooted_values = values;
-    auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRangePoint();
-    for (size_t i = 0; i < rooted_values.size(); ++i) {
-        if (fieldKind(unboxed_mask, i) == 0) {
-            rs.pushStackRootRange(&rooted_values[i].p, 1, 1);
+    // Pack values into a contiguous uint64_t buffer for the helper. Build
+    // an HPointer mask that mirrors `unboxed_mask` but with one bit per
+    // slot (boxed → 1, unboxed → 0). The helper roots only on slow path.
+    std::vector<uint64_t> roots(values.size());
+    uint64_t hptr_mask = 0;
+    for (size_t i = 0; i < values.size(); ++i) {
+        std::memcpy(&roots[i], &values[i], sizeof(uint64_t));
+        if (fieldKind(unboxed_mask, i) == 0 && i < 64) {
+            hptr_mask |= (uint64_t{1} << i);
         }
     }
 
-    Custom* obj = static_cast<Custom*>(allocator.allocate(total_size, Tag_Custom));
-    obj->header.size = static_cast<u32>(rooted_values.size());
+    Custom* obj = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, total_size,
+                             roots.empty() ? nullptr : roots.data(),
+                             static_cast<uint32_t>(values.size()),
+                             hptr_mask));
     obj->ctor = ctor;
     obj->unboxed = unboxed_mask;
-    for (size_t i = 0; i < rooted_values.size(); ++i) {
-        obj->values[i] = rooted_values[i];
+    for (size_t i = 0; i < values.size(); ++i) {
+        std::memcpy(&obj->values[i], &roots[i], sizeof(Unboxable));
     }
-    rs.restoreStackRangePoint(saved);
-    return allocator.wrap(obj);
+    return Allocator::instance().wrap(obj);
 }
 
 /**
@@ -766,28 +767,27 @@ inline HPointer record(const std::vector<Unboxable>& values, u64 unboxed_mask) {
         return emptyRecord();
     }
 
-    auto& allocator = Allocator::instance();
     size_t total_size = sizeof(Record) + values.size() * sizeof(Unboxable);
     total_size = (total_size + 7) & ~7;
 
-    // See custom() — same rooting strategy for pointer-typed fields.
-    std::vector<Unboxable> rooted_values = values;
-    auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRangePoint();
-    for (size_t i = 0; i < rooted_values.size(); ++i) {
-        if (fieldKind(unboxed_mask, i) == 0) {
-            rs.pushStackRootRange(&rooted_values[i].p, 1, 1);
+    // Same packing strategy as custom() above.
+    std::vector<uint64_t> roots(values.size());
+    uint64_t hptr_mask = 0;
+    for (size_t i = 0; i < values.size(); ++i) {
+        std::memcpy(&roots[i], &values[i], sizeof(uint64_t));
+        if (fieldKind(unboxed_mask, i) == 0 && i < 64) {
+            hptr_mask |= (uint64_t{1} << i);
         }
     }
 
-    Record* obj = static_cast<Record*>(allocator.allocate(total_size, Tag_Record));
-    obj->header.size = static_cast<u32>(rooted_values.size());
+    Record* obj = static_cast<Record*>(
+        eco_alloc_with_roots(Tag_Record, total_size, roots.data(),
+                             static_cast<uint32_t>(values.size()), hptr_mask));
     obj->unboxed = unboxed_mask;
-    for (size_t i = 0; i < rooted_values.size(); ++i) {
-        obj->values[i] = rooted_values[i];
+    for (size_t i = 0; i < values.size(); ++i) {
+        std::memcpy(&obj->values[i], &roots[i], sizeof(Unboxable));
     }
-    rs.restoreStackRangePoint(saved);
-    return allocator.wrap(obj);
+    return Allocator::instance().wrap(obj);
 }
 
 // ============================================================================
@@ -810,7 +810,8 @@ inline HPointer allocByteBuffer(const u8* data, size_t length) {
         return allocator.allocLargeByteBuffer(data, length);
     }
 
-    ByteBuffer* buf = static_cast<ByteBuffer*>(allocator.allocate(total_size, Tag_ByteBuffer));
+    ByteBuffer* buf = static_cast<ByteBuffer*>(
+        eco_alloc_with_roots(Tag_ByteBuffer, total_size, nullptr, 0, 0));
     buf->header.size = static_cast<u32>(length);
     if (data && length > 0) {
         std::memcpy(buf->bytes, data, length);
@@ -834,7 +835,8 @@ inline HPointer allocByteBufferZero(size_t length) {
         return allocator.allocLargeByteBuffer(nullptr, length);
     }
 
-    ByteBuffer* buf = static_cast<ByteBuffer*>(allocator.allocate(total_size, Tag_ByteBuffer));
+    ByteBuffer* buf = static_cast<ByteBuffer*>(
+        eco_alloc_with_roots(Tag_ByteBuffer, total_size, nullptr, 0, 0));
     buf->header.size = static_cast<u32>(length);
     if (length > 0) {
         std::memset(buf->bytes, 0, length);
@@ -880,16 +882,16 @@ inline const u8* byteBufferData(void* buf) {
  * @return HPointer to the allocated Array (length starts at 0).
  */
 inline HPointer allocArray(size_t capacity) {
-    auto& allocator = Allocator::instance();
     size_t total_size = sizeof(ElmArray) + capacity * sizeof(Unboxable);
     total_size = (total_size + 7) & ~7;
 
-    ElmArray* arr = static_cast<ElmArray*>(allocator.allocate(total_size, Tag_Array));
+    ElmArray* arr = static_cast<ElmArray*>(
+        eco_alloc_with_roots(Tag_Array, total_size, nullptr, 0, 0));
     arr->header.size = static_cast<u32>(capacity);
     arr->length = 0;
     arr->padding = 0;
     arr->header.unboxed = 0;
-    return allocator.wrap(arr);
+    return Allocator::instance().wrap(arr);
 }
 
 /**
@@ -899,28 +901,27 @@ inline HPointer allocArray(size_t capacity) {
  * @return HPointer to the allocated Array.
  */
 inline HPointer arrayFromPointers(const std::vector<HPointer>& elements) {
-    auto& allocator = Allocator::instance();
     size_t capacity = elements.size();
     size_t total_size = sizeof(ElmArray) + capacity * sizeof(Unboxable);
     total_size = (total_size + 7) & ~7;
 
-    // Root every element pointer across allocate().
+    // Element count can exceed 64; the eco_alloc_with_roots single-call
+    // hptr_mask only covers 64 slots. Keep an outer batch rooting via
+    // StackRootRangeGuard around the whole construction so the inner
+    // helper's slow-path rooting is redundant-but-harmless.
     std::vector<HPointer> rooted = elements;
-    auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRangePoint();
-    for (auto& hp : rooted) rs.pushStackRootRange(&hp, 1, 1);
+    Elm::StackRootRangeGuard guard(rooted.data(), rooted.size(), ~uint64_t{0});
 
-    ElmArray* arr = static_cast<ElmArray*>(allocator.allocate(total_size, Tag_Array));
+    ElmArray* arr = static_cast<ElmArray*>(
+        eco_alloc_with_roots(Tag_Array, total_size, nullptr, 0, 0));
     arr->header.size = static_cast<u32>(capacity);
     arr->length = static_cast<u32>(rooted.size());
     arr->padding = 0;
     arr->header.unboxed = 0;  // All elements are boxed pointers
-
     for (size_t i = 0; i < rooted.size(); ++i) {
         arr->elements[i].p = rooted[i];
     }
-    rs.restoreStackRangePoint(saved);
-    return allocator.wrap(arr);
+    return Allocator::instance().wrap(arr);
 }
 
 /**
@@ -930,21 +931,20 @@ inline HPointer arrayFromPointers(const std::vector<HPointer>& elements) {
  * @return HPointer to the allocated Array.
  */
 inline HPointer arrayFromInts(const std::vector<i64>& elements) {
-    auto& allocator = Allocator::instance();
     size_t capacity = elements.size();
     size_t total_size = sizeof(ElmArray) + capacity * sizeof(Unboxable);
     total_size = (total_size + 7) & ~7;
 
-    ElmArray* arr = static_cast<ElmArray*>(allocator.allocate(total_size, Tag_Array));
+    ElmArray* arr = static_cast<ElmArray*>(
+        eco_alloc_with_roots(Tag_Array, total_size, nullptr, 0, 0));
     arr->header.size = static_cast<u32>(capacity);
     arr->length = static_cast<u32>(elements.size());
     arr->header.unboxed = 1;  // Uniform kind: Int (kind 01)
     arr->padding = 0;
-
     for (size_t i = 0; i < elements.size(); ++i) {
         arr->elements[i].i = elements[i];
     }
-    return allocator.wrap(arr);
+    return Allocator::instance().wrap(arr);
 }
 
 /**
@@ -1051,17 +1051,19 @@ inline u32 arrayElementKind(void* arr) {
  * @return HPointer to the allocated Closure.
  */
 inline HPointer allocClosure(EvalFunction evaluator, u32 max_values) {
-    auto& allocator = Allocator::instance();
     size_t total_size = sizeof(Closure) + max_values * sizeof(Unboxable);
     total_size = (total_size + 7) & ~7;
 
-    Closure* cl = static_cast<Closure*>(allocator.allocate(total_size, Tag_Closure));
+    // Captures are filled later via closureCapture; nothing to root here
+    // (evaluator is a code pointer).
+    Closure* cl = static_cast<Closure*>(
+        eco_alloc_with_roots(Tag_Closure, total_size, nullptr, 0, 0));
     cl->header.size = max_values;
     cl->n_values = 0;
     cl->max_values = max_values;
     cl->unboxed = 0;
     cl->evaluator = evaluator;
-    return allocator.wrap(cl);
+    return Allocator::instance().wrap(cl);
 }
 
 /**
@@ -1135,24 +1137,26 @@ enum FxBagTag : u16 {
 // Allocate a Task whose `value` is a boxed HPointer (kind 0).
 inline HPointer allocTask(u16 ctor, HPointer value, HPointer callback,
                           HPointer kill, HPointer innerTask) {
-    auto& allocator = Allocator::instance();
     size_t total_size = (sizeof(Task) + 7) & ~7;
-    // Root incoming HPointers across the allocation so a minor GC inside
-    // allocate() updates them to post-evacuation locations before we store
-    // them into the new Task. Without this, the field stores below would
-    // write stale from-space pointers and corrupt the heap (manifests as
-    // garbage Task ctors when the scheduler later follows the chain).
-    Elm::StackRootGuard guard(&value, &callback, &kill, &innerTask);
-    Task* t = static_cast<Task*>(allocator.allocate(total_size, Tag_Task));
-    t->header.unboxed = 0;  // value slot is boxed.
+    // All four fields are HPointers. Pack them as roots; the helper roots
+    // only on slow path. Reading values back out post-call picks up GC
+    // relocations.
+    uint64_t roots[4];
+    std::memcpy(&roots[0], &value, 8);
+    std::memcpy(&roots[1], &callback, 8);
+    std::memcpy(&roots[2], &kill, 8);
+    std::memcpy(&roots[3], &innerTask, 8);
+    Task* t = static_cast<Task*>(
+        eco_alloc_with_roots(Tag_Task, total_size, roots, 4, 0xF));
+    t->header.unboxed = 0;
     t->ctor = ctor;
     t->id = 0;
     t->padding = 0;
-    t->value.p = value;
-    t->callback = callback;
-    t->kill = kill;
-    t->task = innerTask;
-    return allocator.wrap(t);
+    std::memcpy(&t->value.p, &roots[0], 8);
+    std::memcpy(&t->callback,   &roots[1], 8);
+    std::memcpy(&t->kill,       &roots[2], 8);
+    std::memcpy(&t->task,       &roots[3], 8);
+    return Allocator::instance().wrap(t);
 }
 
 // Allocate a Task whose `value` is an unboxed primitive (kind 1=Int, 2=Float,
@@ -1160,33 +1164,41 @@ inline HPointer allocTask(u16 ctor, HPointer value, HPointer callback,
 inline HPointer allocTaskUnboxed(u16 ctor, Unboxable value, u8 valueKind,
                                  HPointer callback, HPointer kill,
                                  HPointer innerTask) {
-    auto& allocator = Allocator::instance();
     size_t total_size = (sizeof(Task) + 7) & ~7;
-    Elm::StackRootGuard guard(&callback, &kill, &innerTask);
-    Task* t = static_cast<Task*>(allocator.allocate(total_size, Tag_Task));
+    // value is unboxed; only callback/kill/innerTask are HPointers to root.
+    // Pack value at slot 0 (mask bit 0 cleared), HPointer fields at 1..3.
+    uint64_t roots[4];
+    std::memcpy(&roots[0], &value, 8);
+    std::memcpy(&roots[1], &callback, 8);
+    std::memcpy(&roots[2], &kill, 8);
+    std::memcpy(&roots[3], &innerTask, 8);
+    Task* t = static_cast<Task*>(
+        eco_alloc_with_roots(Tag_Task, total_size, roots, 4, /*mask=*/0xE));
     t->header.unboxed = static_cast<u32>(valueKind & 0x3);
     t->ctor = ctor;
     t->id = 0;
     t->padding = 0;
-    t->value = value;
-    t->callback = callback;
-    t->kill = kill;
-    t->task = innerTask;
-    return allocator.wrap(t);
+    std::memcpy(&t->value,    &roots[0], 8);
+    std::memcpy(&t->callback, &roots[1], 8);
+    std::memcpy(&t->kill,     &roots[2], 8);
+    std::memcpy(&t->task,     &roots[3], 8);
+    return Allocator::instance().wrap(t);
 }
 
 inline HPointer allocProcess(u16 id, HPointer root, HPointer stack, HPointer mailbox) {
-    auto& allocator = Allocator::instance();
     size_t total_size = (sizeof(Process) + 7) & ~7;
-    // Root incoming HPointers across allocate(); see allocTask for rationale.
-    Elm::StackRootGuard guard(&root, &stack, &mailbox);
-    Process* p = static_cast<Process*>(allocator.allocate(total_size, Tag_Process));
+    uint64_t roots[3];
+    std::memcpy(&roots[0], &root, 8);
+    std::memcpy(&roots[1], &stack, 8);
+    std::memcpy(&roots[2], &mailbox, 8);
+    Process* p = static_cast<Process*>(
+        eco_alloc_with_roots(Tag_Process, total_size, roots, 3, 0x7));
     p->id = id;
     p->padding = 0;
-    p->root = root;
-    p->stack = stack;
-    p->mailbox = mailbox;
-    return allocator.wrap(p);
+    std::memcpy(&p->root,    &roots[0], 8);
+    std::memcpy(&p->stack,   &roots[1], 8);
+    std::memcpy(&p->mailbox, &roots[2], 8);
+    return Allocator::instance().wrap(p);
 }
 
 inline HPointer stackFrame(u64 expectedTag, HPointer callback, HPointer rest) {

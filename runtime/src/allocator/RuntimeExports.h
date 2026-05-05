@@ -37,6 +37,35 @@ void* eco_get_output_stream();
 // Allocation Functions
 //===----------------------------------------------------------------------===//
 
+/// Generic allocation with caller-supplied roots. The primary entry point
+/// for kernel C++ allocation: handles the fast-path (no rooting) /
+/// slow-path (rooted) split internally. Returns the raw heap object
+/// pointer with `Header.tag` and `Header.size` pre-initialised by
+/// initHeaderForTag; the caller fills in tag-specific fields (ctor,
+/// unboxed bitmap, values, etc.) afterwards.
+///
+/// On the fast path no rooting happens — `allocateFast` cannot trigger
+/// GC, so values in `roots[]` are not at risk. On the slow path the
+/// helper opens a stack root range over `roots[]` with `hptr_mask`,
+/// runs `allocateSlow` (which may GC), then closes the range. After the
+/// call returns, callers must read post-GC HPointer values back from
+/// `roots[]` (the GC updates the addresses in place).
+///
+/// @param tag        Heap tag of the object to allocate (Tag_Cons, ...).
+/// @param size       Aligned byte size of the object.
+/// @param roots      Caller-owned uint64_t buffer of HPointer-bearing
+///                   values to keep live across a possible slow-path GC.
+///                   May be nullptr if `n_roots`/`hptr_mask` are 0.
+/// @param n_roots    Number of slots in `roots[]` (max 64).
+/// @param hptr_mask  Bit i set iff `roots[i]` is an HPointer the GC
+///                   should evacuate; cleared bits are left untouched
+///                   (use for unboxed Int/Float/Char fields).
+/// @return Raw heap pointer (NOT an HPointer); use `Allocator::wrap` if
+///         you need an HPointer.
+void* eco_alloc_with_roots(uint32_t tag, uint64_t size,
+                            uint64_t* roots, uint32_t n_roots,
+                            uint64_t hptr_mask);
+
 /// Allocates a Custom ADT object.
 /// @param ctor_id     Constructor tag (per Elm ADT, stored in Custom.ctor)
 /// @param field_count Number of pointer-sized fields

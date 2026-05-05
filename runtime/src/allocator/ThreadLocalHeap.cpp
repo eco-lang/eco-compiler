@@ -72,7 +72,12 @@ recordMajorTriggerReason(GCStats& stats,
 //
 // The header is zeroed first; callers may set additional fields (e.g. pin,
 // color) after this returns.
-static void initHeaderForTag(Header* hdr, Tag tag, size_t size) {
+//
+// Exposed (non-static) so the generic eco_alloc_with_roots helper in
+// RuntimeExports.cpp can apply the same header-init policy on its fast
+// path (allocateFast does not touch the header; only allocateSlow does
+// via this function).
+void initHeaderForTag(Header* hdr, Tag tag, size_t size) {
     std::memset(hdr, 0, sizeof(Header));
     hdr->tag = tag;
 

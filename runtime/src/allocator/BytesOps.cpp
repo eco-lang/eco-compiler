@@ -191,14 +191,18 @@ HPointer concat(HPointer bufferList) {
 
     if (total_len == 0) return empty();
 
-    // Root bufferList across allocation so GC updates it
-    Elm::StackRootGuard guard(&bufferList);
-
-    // Allocate result
+    // Allocate result. Pattern B: bufferList is walked AFTER the allocate
+    // to copy bytes into the result, so it must remain valid across the
+    // possible slow-path GC. Helper roots only on slow path, then we
+    // re-read bufferList from roots[].
     size_t total_size = sizeof(ByteBuffer) + total_len;
     total_size = (total_size + 7) & ~7;
 
-    ByteBuffer* result = static_cast<ByteBuffer*>(allocator.allocate(total_size, Tag_ByteBuffer));
+    uint64_t roots[1];
+    std::memcpy(&roots[0], &bufferList, sizeof(bufferList));
+    ByteBuffer* result = static_cast<ByteBuffer*>(
+        eco_alloc_with_roots(Tag_ByteBuffer, total_size, roots, 1, 0x1));
+    std::memcpy(&bufferList, &roots[0], sizeof(bufferList));
     result->header.size = static_cast<u32>(total_len);
 
     // Second pass: copy buffers (bufferList updated by GC if needed)

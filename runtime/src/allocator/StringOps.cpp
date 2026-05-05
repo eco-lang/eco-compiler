@@ -20,21 +20,21 @@ HPointer makeLeafFromBuffer(const u16* data, u32 len) {
 HPointer makeSlice(HPointer base, u32 offset, u32 len) {
     if (len == 0) return alloc::emptyString();
 
-    auto& allocator = Allocator::instance();
-
-    // Caller is expected to have rooted `base` already, but be defensive
-    // (StackRootGuard is cheap).
-    Elm::StackRootGuard guard(&base);
-
     size_t total_size = sizeof(ElmStringSlice);
     total_size = (total_size + 7) & ~7;
-    void* obj = allocator.allocate(total_size, Tag_StringSlice);
+
+    // base is the only HPointer needing rooting; pack it as the single
+    // root. Helper roots only on slow path.
+    uint64_t roots[1];
+    std::memcpy(&roots[0], &base, sizeof(base));
+
+    void* obj = eco_alloc_with_roots(Tag_StringSlice, total_size, roots, 1, 0x1);
     ElmStringSlice* slc = static_cast<ElmStringSlice*>(obj);
     slc->header.size = len;
-    slc->base = base;
+    std::memcpy(&slc->base, &roots[0], sizeof(slc->base));
     slc->offset = offset;
     slc->_padding = 0;
-    return allocator.wrap(slc);
+    return Allocator::instance().wrap(slc);
 }
 
 HPointer makeRope(HPointer left, HPointer right) {
@@ -73,16 +73,19 @@ HPointer makeRope(HPointer left, HPointer right) {
     u32 newHeight = 1 + std::max(lh, rh);
     u32 newLeafCount = lc + rc;
 
-    // Root both children across the allocation.
-    Elm::StackRootGuard guard(&left, &right);
-
     size_t total_size = sizeof(ElmStringRope);
     total_size = (total_size + 7) & ~7;
-    void* obj = allocator.allocate(total_size, Tag_StringRope);
+
+    // Pack left/right as roots; helper handles slow-path rooting.
+    uint64_t roots[2];
+    std::memcpy(&roots[0], &left,  sizeof(left));
+    std::memcpy(&roots[1], &right, sizeof(right));
+
+    void* obj = eco_alloc_with_roots(Tag_StringRope, total_size, roots, 2, 0x3);
     ElmStringRope* rope = static_cast<ElmStringRope*>(obj);
     rope->header.size = leftLen + rightLen;
-    rope->left = left;
-    rope->right = right;
+    std::memcpy(&rope->left,  &roots[0], sizeof(rope->left));
+    std::memcpy(&rope->right, &roots[1], sizeof(rope->right));
     rope->height = newHeight;
     rope->leafCount = newLeafCount;
     return allocator.wrap(rope);
@@ -365,15 +368,20 @@ HPointer concat(HPointer stringList) {
 
     if (total_len == 0) return alloc::emptyString();
 
-    // Root stringList across the allocation so GC updates it.
-    Elm::StackRootGuard guard(&stringList);
-
+    // Pattern B: stringList is NOT a field of the result string — it's
+    // walked AFTER the allocation to populate result->chars. So we must
+    // keep it live across the allocate via the helper's slow-path
+    // rooting, then re-read the (possibly relocated) handle from roots[].
     if (total_len <= detail::FLATTEN_LIMIT) {
         size_t data_size = total_len * sizeof(u16);
         size_t total_size = sizeof(ElmString) + data_size;
         total_size = (total_size + 7) & ~7;
 
-        ElmString* result = static_cast<ElmString*>(allocator.allocate(total_size, Tag_String));
+        uint64_t roots[1];
+        std::memcpy(&roots[0], &stringList, sizeof(stringList));
+        ElmString* result = static_cast<ElmString*>(
+            eco_alloc_with_roots(Tag_String, total_size, roots, 1, 0x1));
+        std::memcpy(&stringList, &roots[0], sizeof(stringList));
         result->header.size = static_cast<u32>(total_len);
 
         // Second pass: copy via tag-aware toStdU16String to handle slice/rope.
@@ -464,15 +472,21 @@ HPointer join(void* sep, HPointer stringList) {
     if (count == 0) return alloc::emptyString();
     total_len += sep_len * (count - 1);
 
-    // Root stringList + sepHp across allocation.
-    Elm::StackRootGuard guard(&stringList, &sepHp);
-
     if (total_len <= detail::FLATTEN_LIMIT) {
         size_t data_size = total_len * sizeof(u16);
         size_t total_size = sizeof(ElmString) + data_size;
         total_size = (total_size + 7) & ~7;
 
-        ElmString* result = static_cast<ElmString*>(allocator.allocate(total_size, Tag_String));
+        // Pattern B: both stringList and sepHp are walked AFTER the allocate
+        // to populate result->chars; root them via the helper's slow-path
+        // mechanism and re-read post-call.
+        uint64_t roots[2];
+        std::memcpy(&roots[0], &stringList, sizeof(stringList));
+        std::memcpy(&roots[1], &sepHp, sizeof(sepHp));
+        ElmString* result = static_cast<ElmString*>(
+            eco_alloc_with_roots(Tag_String, total_size, roots, 2, 0x3));
+        std::memcpy(&stringList, &roots[0], sizeof(stringList));
+        std::memcpy(&sepHp, &roots[1], sizeof(sepHp));
         result->header.size = static_cast<u32>(total_len);
 
         size_t offset = 0;

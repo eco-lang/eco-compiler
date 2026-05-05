@@ -12,6 +12,13 @@ namespace Elm {
 
 class Allocator;
 
+// Initializes a freshly-allocated object header for the given tag, applying
+// the per-tag rule for hdr->size (variable-size types store an element
+// count; fixed-size types store the byte size). Used by the slow path
+// inside ThreadLocalHeap::allocate and by the generic
+// eco_alloc_with_roots fast-path init in RuntimeExports.cpp.
+void initHeaderForTag(Header* hdr, Tag tag, size_t size);
+
 /**
  * Thread-local heap space containing nursery, old gen, and GC stats.
  *

@@ -40,42 +40,36 @@ static bool isLittleEndian(uint64_t isLE) {
 
 // Create a Tuple2 with both fields unboxed (i64/i64 or i64/f64).
 static uint64_t makeTuple2_ii(int64_t a, int64_t b) {
-    auto& allocator = Allocator::instance();
-    Tuple2* t = static_cast<Tuple2*>(allocator.allocate(sizeof(Tuple2), Tag_Tuple2));
+    Tuple2* t = static_cast<Tuple2*>(
+        eco_alloc_with_roots(Tag_Tuple2, sizeof(Tuple2), nullptr, 0, 0));
     // 2-bit kinds: slot 0 Int (01) + slot 1 Int (01) = 0b0101 = 5
     t->header.unboxed = 5;
     t->a.i = a;
     t->b.i = b;
-    return Export::encode(allocator.wrap(t));
+    return Export::encode(Allocator::instance().wrap(t));
 }
 
 static uint64_t makeTuple2_if(int64_t a, double b) {
-    auto& allocator = Allocator::instance();
-    Tuple2* t = static_cast<Tuple2*>(allocator.allocate(sizeof(Tuple2), Tag_Tuple2));
+    Tuple2* t = static_cast<Tuple2*>(
+        eco_alloc_with_roots(Tag_Tuple2, sizeof(Tuple2), nullptr, 0, 0));
     // 2-bit kinds: slot 0 Int (01) + slot 1 Float (10) = 0b1001 = 9
     t->header.unboxed = 9;
     t->a.i = a;
     t->b.f = b;
-    return Export::encode(allocator.wrap(t));
+    return Export::encode(Allocator::instance().wrap(t));
 }
 
 static uint64_t makeTuple2_ip(int64_t a, HPointer b) {
-    auto& allocator = Allocator::instance();
-    // Root `b` across the allocation: Allocator::allocate may fire a minor GC
-    // that relocates `b`'s referent. `b` is a C++ parameter and is not visible
-    // to the compiler's stackmap, so without a manual stack-range push, `b`
-    // would hold a stale HPointer after GC.
-    uint64_t roots[1];
-    std::memcpy(&roots[0], &b, sizeof(b));
-    size_t saved = eco_gc_stack_range_point();
-    eco_gc_push_stack_range(roots, 1, 1);
-    Tuple2* t = static_cast<Tuple2*>(allocator.allocate(sizeof(Tuple2), Tag_Tuple2));
-    std::memcpy(&b, &roots[0], sizeof(b));
-    eco_gc_restore_stack_range_point(saved);
+    // b is the only HPointer to root; helper pushes only on slow path.
+    uint64_t roots[2] = { static_cast<uint64_t>(a), 0 };
+    std::memcpy(&roots[1], &b, sizeof(b));
+    Tuple2* t = static_cast<Tuple2*>(
+        eco_alloc_with_roots(Tag_Tuple2, sizeof(Tuple2), roots, 2, 0x2));
+    std::memcpy(&b, &roots[1], sizeof(b));
     t->header.unboxed = 1;  // only field a unboxed
     t->a.i = a;
     t->b.p = b;
-    return Export::encode(allocator.wrap(t));
+    return Export::encode(Allocator::instance().wrap(t));
 }
 
 // Resolve a ByteBuffer from an eco.value encoded uint64_t. Transparently
@@ -379,16 +373,16 @@ HPtr Elm_Kernel_Bytes_encode(HPtr encoderVal) {
     size_t allocSize = sizeof(ByteBuffer) + totalSize;
     allocSize = (allocSize + 7) & ~7;
 
-    // Root the encoder handle so the GC updates h in place if it fires.
-    ByteBuffer* result;
-    {
-        StackRootGuard guard(&h);
-        result = static_cast<ByteBuffer*>(
-            allocator.allocate(allocSize, Tag_ByteBuffer));
-    }
+    // Pattern B: h is re-resolved AFTER the allocate to walk the encoder
+    // tree. Helper roots only on slow path; we re-read h from roots[]
+    // afterwards.
+    uint64_t roots[1];
+    std::memcpy(&roots[0], &h, sizeof(h));
+    ByteBuffer* result = static_cast<ByteBuffer*>(
+        eco_alloc_with_roots(Tag_ByteBuffer, allocSize, roots, 1, 0x1));
+    std::memcpy(&h, &roots[0], sizeof(h));
     result->header.size = static_cast<u32>(totalSize);
 
-    // Re-resolve the encoder via the (post-GC) handle before walking it.
     Custom* encoder = static_cast<Custom*>(allocator.resolve(h));
     size_t offset = 0;
     writeEncoder(encoder, result->bytes, offset);
@@ -405,18 +399,20 @@ HPtr Elm_Kernel_Bytes_decode(HPtr decoder, HPtr bytes) {
     uint64_t args[2] = { bytesBits, eco_alloc_int(0).toBits() };
     uint64_t result = eco_closure_call_saturated(decoder, args, 2, /*layout=*/nullptr).toBits();
 
-    // Result is a Tuple2(new_offset: i64, decoded_value). Root the handle so
-    // the Tuple2 raw pointer can be re-resolved post-allocation if GC moves it.
+    // Result is a Tuple2(new_offset: i64, decoded_value). Pattern B: resultHP
+    // is re-resolved AFTER the allocate to copy field b into Just; root via
+    // the helper's slow-path mechanism.
     HPointer resultHP = Export::decode(result);
 
     // Construct Just(decoded_value) = Custom tag=0, 1 field.
     size_t justSize = sizeof(Custom) + sizeof(Unboxable);
     justSize = (justSize + 7) & ~7;
-    Custom* just;
-    {
-        StackRootGuard guard(&resultHP);
-        just = static_cast<Custom*>(allocator.allocate(justSize, Tag_Custom));
-    }
+
+    uint64_t roots[1];
+    std::memcpy(&roots[0], &resultHP, sizeof(resultHP));
+    Custom* just = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, justSize, roots, 1, 0x1));
+    std::memcpy(&resultHP, &roots[0], sizeof(resultHP));
     just->header.size = 1;
     just->ctor = 0;  // Just
 
@@ -554,18 +550,18 @@ HPtr Elm_Kernel_Bytes_read_f64(HPtr isLE, HPtr bytes, int64_t offset) {
 
 HPtr Elm_Kernel_Bytes_read_bytes(int64_t length, HPtr bytes, int64_t offset) {
     auto& allocator = Allocator::instance();
-
-    // Root the source handle so it survives the allocation, then re-resolve
-    // the raw pointer afterwards (allocate may compact / move the source).
     HPointer srcHP = Export::decode(bytes.toBits());
 
     size_t allocSize = sizeof(ByteBuffer) + length;
     allocSize = (allocSize + 7) & ~7;
-    ByteBuffer* slice;
-    {
-        StackRootGuard guard(&srcHP);
-        slice = static_cast<ByteBuffer*>(allocator.allocate(allocSize, Tag_ByteBuffer));
-    }
+
+    // Pattern B: srcHP re-resolved after the allocate to memcpy bytes into
+    // the new slice. Root via helper, re-read post-call.
+    uint64_t roots[1];
+    std::memcpy(&roots[0], &srcHP, sizeof(srcHP));
+    ByteBuffer* slice = static_cast<ByteBuffer*>(
+        eco_alloc_with_roots(Tag_ByteBuffer, allocSize, roots, 1, 0x1));
+    std::memcpy(&srcHP, &roots[0], sizeof(srcHP));
     slice->header.size = static_cast<u32>(length);
 
     ByteBuffer* src = alloc::resolveByteBufferBody(allocator.resolve(srcHP));
@@ -613,16 +609,16 @@ HPtr Elm_Kernel_Bytes_read_string(int64_t length, HPtr bytes, int64_t offset) {
         }
     }
 
-    // Allocate ElmString. GC during this allocate may relocate the source
-    // ByteBuffer; the StackRootGuard keeps srcHP up to date so the post-alloc
-    // re-resolve below produces a valid raw pointer for the conversion loop.
+    // Pattern B: srcHP re-resolved after the allocate to copy/convert chars.
+    // Root via helper, re-read post-call.
     size_t strAllocSize = sizeof(ElmString) + utf16Count * sizeof(u16);
     strAllocSize = (strAllocSize + 7) & ~7;
-    ElmString* str;
-    {
-        StackRootGuard guard(&srcHP);
-        str = static_cast<ElmString*>(allocator.allocate(strAllocSize, Tag_String));
-    }
+
+    uint64_t roots[1];
+    std::memcpy(&roots[0], &srcHP, sizeof(srcHP));
+    ElmString* str = static_cast<ElmString*>(
+        eco_alloc_with_roots(Tag_String, strAllocSize, roots, 1, 0x1));
+    std::memcpy(&srcHP, &roots[0], sizeof(srcHP));
     str->header.size = static_cast<u32>(utf16Count);
 
     bb = alloc::resolveByteBufferBody(allocator.resolve(srcHP));
@@ -670,116 +666,119 @@ HPtr Elm_Kernel_Bytes_read_string(int64_t length, HPtr bytes, int64_t offset) {
 
 // Helper to create a 1-field encoder Custom (for i8, u8)
 static uint64_t makeEncoder1(u16 tag, int64_t value) {
-    auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    Custom* enc = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
     enc->header.size = 1;
     enc->ctor = tag;
     enc->unboxed = 1;  // value is unboxed
     enc->values[0].i = value;
-    return Export::encode(allocator.wrap(enc));
+    return Export::encode(Allocator::instance().wrap(enc));
 }
 
 // Helper to create a 2-field encoder Custom (for i16, i32, u16, u32, f32, f64)
 // Field 0: endianness (boxed HPointer to LE/BE Custom)
 // Field 1: value (unboxed int or float)
 static uint64_t makeEncoder2_pi(u16 tag, uint64_t endianness, int64_t value) {
-    auto& allocator = Allocator::instance();
     HPointer endHP = Export::decode(endianness);
     size_t size = sizeof(Custom) + 2 * sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* enc;
-    {
-        // Root the endianness handle so the GC keeps it valid across allocate.
-        StackRootGuard guard(&endHP);
-        enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
-    }
+
+    // Pattern A: endHP is the only HPointer field. Pack endHP at slot 0,
+    // value (Int) at slot 1; mask covers slot 0 only.
+    uint64_t roots[2];
+    std::memcpy(&roots[0], &endHP, sizeof(endHP));
+    roots[1] = static_cast<uint64_t>(value);
+
+    Custom* enc = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, roots, 2, 0x1));
     enc->header.size = 2;
     enc->ctor = tag;
-    // 2-bit kinds: slot 0 boxed (00) + slot 1 Int (01) = 0b0100 = 4
-    enc->unboxed = 4;
-    enc->values[0].p = endHP;
-    enc->values[1].i = value;
-    return Export::encode(allocator.wrap(enc));
+    enc->unboxed = 4;  // slot 0 boxed (00) + slot 1 Int (01) = 0b0100
+    std::memcpy(&enc->values[0].p, &roots[0], sizeof(HPointer));
+    enc->values[1].i = static_cast<int64_t>(roots[1]);
+    return Export::encode(Allocator::instance().wrap(enc));
 }
 
 static uint64_t makeEncoder2_pf(u16 tag, uint64_t endianness, double value) {
-    auto& allocator = Allocator::instance();
     HPointer endHP = Export::decode(endianness);
     size_t size = sizeof(Custom) + 2 * sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* enc;
-    {
-        StackRootGuard guard(&endHP);
-        enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
-    }
+
+    uint64_t roots[1];
+    std::memcpy(&roots[0], &endHP, sizeof(endHP));
+
+    Custom* enc = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, roots, 1, 0x1));
+    std::memcpy(&endHP, &roots[0], sizeof(endHP));
     enc->header.size = 2;
     enc->ctor = tag;
-    // 2-bit kinds: slot 0 boxed (00) + slot 1 Float (10) = 0b1000 = 8
-    enc->unboxed = 8;
+    enc->unboxed = 8;  // slot 0 boxed (00) + slot 1 Float (10) = 0b1000
     enc->values[0].p = endHP;
     enc->values[1].f = value;
-    return Export::encode(allocator.wrap(enc));
+    return Export::encode(Allocator::instance().wrap(enc));
 }
 
 // Helper to create a 1-field encoder with boxed HPointer (for bytes, string)
 static uint64_t makeEncoder1_p(u16 tag, uint64_t ptr) {
-    auto& allocator = Allocator::instance();
     HPointer payload = Export::decode(ptr);
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* enc;
-    {
-        StackRootGuard guard(&payload);
-        enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
-    }
+
+    uint64_t roots[1];
+    std::memcpy(&roots[0], &payload, sizeof(payload));
+
+    Custom* enc = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, roots, 1, 0x1));
+    std::memcpy(&payload, &roots[0], sizeof(payload));
     enc->header.size = 1;
     enc->ctor = tag;
-    enc->unboxed = 0;  // value is boxed
+    enc->unboxed = 0;
     enc->values[0].p = payload;
-    return Export::encode(allocator.wrap(enc));
+    return Export::encode(Allocator::instance().wrap(enc));
 }
 
 // Helper to create UTF8 encoder with size + string pointer
 static uint64_t makeEncoderUtf8(HPtr str) {
-    auto& allocator = Allocator::instance();
-
     // Calculate UTF-8 byte count (no allocation inside).
     int64_t utf8Size = Elm_Kernel_Bytes_getStringWidth(str);
 
     HPointer strHP = Export::decode(str.toBits());
     size_t size = sizeof(Custom) + 2 * sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* enc;
-    {
-        StackRootGuard guard(&strHP);
-        enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
-    }
+
+    uint64_t roots[1];
+    std::memcpy(&roots[0], &strHP, sizeof(strHP));
+
+    Custom* enc = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, roots, 1, 0x1));
+    std::memcpy(&strHP, &roots[0], sizeof(strHP));
     enc->header.size = 2;
     enc->ctor = ENC_UTF8;
     enc->unboxed = 1;  // field 0 unboxed (size), field 1 boxed (string)
     enc->values[0].i = utf8Size;
     enc->values[1].p = strHP;
-    return Export::encode(allocator.wrap(enc));
+    return Export::encode(Allocator::instance().wrap(enc));
 }
 
 // Helper to create BYTES encoder
 static uint64_t makeEncoderBytes(uint64_t bytes) {
-    auto& allocator = Allocator::instance();
     HPointer payload = Export::decode(bytes);
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
-    Custom* enc;
-    {
-        StackRootGuard guard(&payload);
-        enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
-    }
+
+    uint64_t roots[1];
+    std::memcpy(&roots[0], &payload, sizeof(payload));
+
+    Custom* enc = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, roots, 1, 0x1));
+    std::memcpy(&payload, &roots[0], sizeof(payload));
     enc->header.size = 1;
     enc->ctor = ENC_BYTES;
     enc->unboxed = 0;
     enc->values[0].p = payload;
-    return Export::encode(allocator.wrap(enc));
+    return Export::encode(Allocator::instance().wrap(enc));
 }
 
 HPtr Elm_Kernel_Bytes_write_i8(int64_t value) {
