@@ -1009,9 +1009,17 @@ The stub body is required by MLIR's func dialect (func.func must have a region).
 The stub will be replaced with an external declaration during lowering to LLVM.
 We mark it with an `is_kernel` attribute so the lowering pass can identify it.
 -}
-generateKernelDecl : Ctx.Context -> String -> ( List MlirType, MlirType ) -> ( Ctx.Context, MlirOp )
-generateKernelDecl ctx funcName ( argMlirTypes, resultMlirType ) =
+generateKernelDecl : Ctx.Context -> Ctx.KernelDeclInfo -> ( Ctx.Context, MlirOp )
+generateKernelDecl ctx info =
     let
+        argMlirTypes : List MlirType
+        argMlirTypes =
+            info.abiArgTypes
+
+        resultMlirType : MlirType
+        resultMlirType =
+            info.abiResultType
+
         -- Create block argument pairs (arg0, arg1, etc.)
         argPairs : List ( String, MlirType )
         argPairs =
@@ -1039,7 +1047,7 @@ generateKernelDecl ctx funcName ( argMlirTypes, resultMlirType ) =
 
         attrs =
             Dict.fromList
-                [ ( "sym_name", StringAttr funcName )
+                [ ( "sym_name", StringAttr info.symbolName )
                 , ( "sym_visibility", VisibilityAttr Private )
                 , ( "is_kernel", BoolAttr True ) -- Mark as kernel for lowering
                 , ( "function_type"

@@ -101,10 +101,10 @@ generateMlirModule mode monoGraph0 =
         -- Generate kernel function declarations from tracked calls
         ( kernelDeclOps, _ ) =
             Dict.foldl
-                (\name sig ( accOps, accCtx ) ->
+                (\_ info ( accOps, accCtx ) ->
                     let
                         ( newCtx, declOp ) =
-                            Functions.generateKernelDecl accCtx name sig
+                            Functions.generateKernelDecl accCtx info
                     in
                     ( declOp :: accOps, newCtx )
                 )
@@ -187,10 +187,10 @@ streamMlirToWriter mode monoGraph0 writeChunk =
 
                                                         ( kernelDeclOps, _ ) =
                                                             Dict.foldl
-                                                                (\name sig ( accOps, accCtx ) ->
+                                                                (\_ info ( accOps, accCtx ) ->
                                                                     let
                                                                         ( newCtx, declOp ) =
-                                                                            Functions.generateKernelDecl accCtx name sig
+                                                                            Functions.generateKernelDecl accCtx info
                                                                     in
                                                                     ( declOp :: accOps, newCtx )
                                                                 )
@@ -317,10 +317,10 @@ streamMlirBytecode mode monoGraph0 target =
                     -- Kernel declarations
                     ( kernelDeclOps, _ ) =
                         Dict.foldl
-                            (\name sig ( accOps, accCtx ) ->
+                            (\_ info ( accOps, accCtx ) ->
                                 let
                                     ( newCtx, declOp ) =
-                                        Functions.generateKernelDecl accCtx name sig
+                                        Functions.generateKernelDecl accCtx info
                                 in
                                 ( declOp :: accOps, newCtx )
                             )

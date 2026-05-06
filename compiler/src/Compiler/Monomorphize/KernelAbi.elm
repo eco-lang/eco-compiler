@@ -3,6 +3,9 @@ module Compiler.Monomorphize.KernelAbi exposing
     , canTypeToMonoType_preserveVars, canTypeToMonoType_numberBoxed
     , containerSpecializedKernels, comparePair
     , freeVarIds
+    , KernelBackendAbiPolicy(..), kernelBackendAbiPolicy
+    , KernelInstanceKey, KernelInstanceAbi
+    , deriveKernelInstanceAbi, kernelInstanceSymbol
     )
 
 {-| Kernel ABI type derivation for monomorphization.
@@ -45,6 +48,17 @@ Three cases:
 
 @docs freeVarIds
 
+
+# Kernel Backend ABI Policy
+
+@docs KernelBackendAbiPolicy, kernelBackendAbiPolicy
+
+
+# Per-Instance Kernel ABI
+
+@docs KernelInstanceKey, KernelInstanceAbi
+@docs deriveKernelInstanceAbi, kernelInstanceSymbol
+
 -}
 
 import Compiler.AST.Canonical as Can
@@ -52,11 +66,14 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeIds exposing (MVarId)
 import Compiler.Data.Id as Id
 import Compiler.Data.Name exposing (Name)
+import Compiler.Generate.MLIR.Types as MlirTypes
 import Compiler.Monomorphize.State as State exposing (MVarEnv)
 import Data.Set as EverySet exposing (EverySet)
 import Dict
+import Mlir.Mlir exposing (MlirType)
 import Set exposing (Set)
 import System.TypeCheck.IO as IO
+import Utils.Crash exposing (crash)
 
 
 
@@ -456,3 +473,364 @@ convertTType convert env canonical name args =
 
     else
         ( Mono.MCustom canonical name monoArgs, env1 )
+
+
+
+-- ============================================================================
+-- KERNEL BACKEND ABI POLICY
+-- ============================================================================
+--
+-- During the per-instance kernel ABI rollout (see plans/per-instance-kernel-abi.md)
+-- this table acts as a coarse "always boxed" guardrail. As each kernel migrates
+-- to monomorphic variants, its broad-policy entry is replaced with explicit
+-- per-name entries for the kernels that *stay* AllBoxed. Phase E retires the
+-- table entirely.
+-- ============================================================================
+
+
+{-| Backend ABI policy for kernel function calls.
+
+    AllBoxed   -> All args and result are !eco.value in MLIR, regardless of
+                  the monomorphized Elm wrapper type. Used for kernels whose
+                  C++ implementation uniformly takes boxed uint64_t values
+                  (e.g., List.cons).
+
+    ElmDerived -> ABI is derived from the Elm wrapper's funcType via
+                  monoTypeToAbi. Used for kernels with typed C++ signatures
+                  (e.g., Basics.fdiv takes double, String.cons takes uint16_t).
+
+-}
+type KernelBackendAbiPolicy
+    = AllBoxed
+    | ElmDerived
+
+
+{-| Determine the backend ABI policy for a kernel call.
+
+Only kernels whose C++ implementation takes ALL arguments as boxed
+uint64\_t (eco.value) and returns uint64\_t should be marked AllBoxed.
+When in doubt, use ElmDerived (safe default — preserves current behavior).
+
+-}
+kernelBackendAbiPolicy : String -> String -> KernelBackendAbiPolicy
+kernelBackendAbiPolicy home name =
+    case ( home, name ) of
+        --
+        -- AllBoxed: C++ ABI is uniformly uint64_t for all params and return.
+        -- Audited against elm-kernel-cpp/src/KernelExports.h.
+        --
+        -- List: cons, fromArray, toArray, map2..map5, sortBy, sortWith
+        ( "List", _ ) ->
+            AllBoxed
+
+        -- Utils: compare, equal, notEqual, lt, le, gt, ge, append
+        ( "Utils", _ ) ->
+            AllBoxed
+
+        -- String.fromNumber: number-polymorphic, C++ takes boxed uint64_t
+        ( "String", "fromNumber" ) ->
+            AllBoxed
+
+        -- JsArray: C++ ABI now uniformly uint64_t for all params and return.
+        -- Integer arguments (index, length, etc.) are boxed Elm Int HPointers
+        -- and unboxed inside the C++ implementations.
+        ( "JsArray", _ ) ->
+            AllBoxed
+
+        -- Json.wrap: polymorphic (a -> Value), C++ inspects heap tag at runtime.
+        ( "Json", "wrap" ) ->
+            AllBoxed
+
+        -- Basics.add/sub/mul/pow: number-boxed polymorphic kernels.
+        -- C++ inspects the HPointer tag to dispatch Int vs Float at runtime.
+        ( "Basics", "add" ) ->
+            AllBoxed
+
+        ( "Basics", "sub" ) ->
+            AllBoxed
+
+        ( "Basics", "mul" ) ->
+            AllBoxed
+
+        ( "Basics", "pow" ) ->
+            AllBoxed
+
+        _ ->
+            ElmDerived
+
+
+
+-- ============================================================================
+-- PER-INSTANCE KERNEL ABI
+-- ============================================================================
+--
+-- A KernelInstanceKey identifies one specific monomorphic instantiation of a
+-- kernel. deriveKernelInstanceAbi maps a key to the C symbol name and MLIR
+-- ABI types that its declaration and call sites must use.
+--
+-- Phase A behaviour: every kernel returns its today's symbol (no suffix).
+-- Phase B onwards: per-instance suffixes (e.g. "_Int", "_Float", "_Char")
+-- are introduced kernel-by-kernel.
+-- ============================================================================
+
+
+{-| Identifies a logical instantiation of a kernel: same `(home, name)` with
+different MonoTypes maps to different instances.
+-}
+type alias KernelInstanceKey =
+    { home : String
+    , name : String
+    , argTypes : List Mono.MonoType
+    , resultType : Mono.MonoType
+    }
+
+
+{-| The C symbol name and MLIR ABI types that a kernel call site must use for
+a given `KernelInstanceKey`.
+-}
+type alias KernelInstanceAbi =
+    { symbolName : String
+    , abiArgTypes : List MlirType
+    , abiResultType : MlirType
+    }
+
+
+{-| Compute the C symbol name plus MLIR ABI types for a per-instance kernel
+call.
+
+Phase A: the symbol is exactly the legacy `Elm_Kernel_<home>_<name>` and the
+ABI types are determined by `kernelBackendAbiPolicy` (AllBoxed → all
+`!eco.value`; ElmDerived → `monoTypeToAbi` of each argument and the result).
+This produces the same wire format as today.
+
+Phase B onwards adds suffix branches for primitive instantiations (see
+Appendix A of `plans/per-instance-kernel-abi.md`).
+
+-}
+deriveKernelInstanceAbi : KernelInstanceKey -> KernelInstanceAbi
+deriveKernelInstanceAbi key =
+    let
+        _ =
+            assertNoCNumberInKey key
+
+        symbolName : String
+        symbolName =
+            kernelInstanceSymbol key
+
+        ( abiArgTypes, abiResultType ) =
+            case kernelBackendAbiPolicy key.home key.name of
+                AllBoxed ->
+                    ( List.map (\_ -> MlirTypes.ecoValue) key.argTypes
+                    , MlirTypes.ecoValue
+                    )
+
+                ElmDerived ->
+                    ( List.map MlirTypes.monoTypeToAbi key.argTypes
+                    , MlirTypes.monoTypeToAbi key.resultType
+                    )
+
+        abi : KernelInstanceAbi
+        abi =
+            { symbolName = symbolName
+            , abiArgTypes = abiArgTypes
+            , abiResultType = abiResultType
+            }
+    in
+    ensurePrimitiveAbi key abi
+
+
+{-| Compute the C symbol name for a per-instance kernel call. Phase A always
+returns the legacy `Elm_Kernel_<home>_<name>`; later phases append suffixes
+for primitive monomorphic instances.
+
+The kernel-prefix is supplied by the call-site (`MonoVarKernel`) and is not
+embedded here; this function only computes the suffix portion of the
+final symbol when one is needed.
+
+-}
+kernelInstanceSymbol : KernelInstanceKey -> String
+kernelInstanceSymbol key =
+    -- Phase A: identity. Per-instance suffixes (e.g. "_Int", "_Float", "_Char")
+    -- are added kernel-by-kernel starting in Phase B per the rollout plan.
+    "Elm_Kernel_" ++ key.home ++ "_" ++ key.name
+
+
+{-| Self-check (REP_ABI_001 / KERN_006): an `MInt`/`MFloat`/`MChar` parameter
+or result must be paired with the corresponding primitive MLIR type, and a
+non-primitive Mono type must not be paired with a primitive MLIR type. Crashes
+if the invariant is violated; otherwise returns the abi unchanged.
+-}
+ensurePrimitiveAbi : KernelInstanceKey -> KernelInstanceAbi -> KernelInstanceAbi
+ensurePrimitiveAbi key abi =
+    let
+        slotErr : String -> Mono.MonoType -> MlirType -> String
+        slotErr where_ monoTy mlirTy =
+            "Kernel ABI primitive mismatch for "
+                ++ key.home
+                ++ "."
+                ++ key.name
+                ++ " "
+                ++ where_
+                ++ ": MonoType "
+                ++ monoTypeTag monoTy
+                ++ " paired with MLIR "
+                ++ MlirTypes.mlirTypeToString mlirTy
+
+        checkSlot : String -> ( Mono.MonoType, MlirType ) -> Maybe String
+        checkSlot where_ ( monoTy, mlirTy ) =
+            case ( monoTy, mlirTy ) of
+                ( Mono.MInt, _ ) ->
+                    if mlirTy == MlirTypes.ecoInt then
+                        Nothing
+
+                    else
+                        Just (slotErr where_ monoTy mlirTy)
+
+                ( Mono.MFloat, _ ) ->
+                    if mlirTy == MlirTypes.ecoFloat then
+                        Nothing
+
+                    else
+                        Just (slotErr where_ monoTy mlirTy)
+
+                ( Mono.MChar, _ ) ->
+                    if mlirTy == MlirTypes.ecoChar then
+                        Nothing
+
+                    else
+                        Just (slotErr where_ monoTy mlirTy)
+
+                _ ->
+                    -- Non-primitive Mono types: ABI may be either !eco.value
+                    -- (the common case) or any other MLIR type allowed by
+                    -- monoTypeToAbi. Nothing further to check here.
+                    Nothing
+
+        argErrors : List String
+        argErrors =
+            List.indexedMap
+                (\i pair ->
+                    checkSlot ("arg" ++ String.fromInt i) pair
+                )
+                (List.map2 Tuple.pair key.argTypes abi.abiArgTypes)
+                |> List.filterMap identity
+
+        resultErrors : List String
+        resultErrors =
+            checkSlot "result" ( key.resultType, abi.abiResultType )
+                |> Maybe.map List.singleton
+                |> Maybe.withDefault []
+
+        errors : List String
+        errors =
+            argErrors ++ resultErrors
+    in
+    case errors of
+        [] ->
+            abi
+
+        _ ->
+            crash ("ensurePrimitiveAbi: " ++ String.join "; " errors)
+
+
+{-| MONO_002 spot-check: any reachable kernel call site must have its numeric
+type variables resolved to concrete `MInt`/`MFloat` before MLIR codegen. An
+`MVar _ CNumber` in a `KernelInstanceKey` is a compiler bug.
+-}
+assertNoCNumberInKey : KernelInstanceKey -> ()
+assertNoCNumberInKey key =
+    let
+        bad : List Mono.MonoType
+        bad =
+            (key.resultType :: key.argTypes)
+                |> List.filter containsCNumber
+    in
+    case bad of
+        [] ->
+            ()
+
+        _ ->
+            crash
+                ("KernelInstanceKey for "
+                    ++ key.home
+                    ++ "."
+                    ++ key.name
+                    ++ " contains MVar _ CNumber after monomorphization (MONO_002 violation)"
+                )
+
+
+{-| Predicate: does this MonoType contain any `MVar _ CNumber` in any
+reachable position?
+-}
+containsCNumber : Mono.MonoType -> Bool
+containsCNumber monoType =
+    case monoType of
+        Mono.MVar _ Mono.CNumber ->
+            True
+
+        Mono.MVar _ _ ->
+            False
+
+        Mono.MList t ->
+            containsCNumber t
+
+        Mono.MTuple ts ->
+            List.any containsCNumber ts
+
+        Mono.MRecord fields ->
+            Dict.foldl (\_ t acc -> acc || containsCNumber t) False fields
+
+        Mono.MCustom _ _ args ->
+            List.any containsCNumber args
+
+        Mono.MFunction args result ->
+            List.any containsCNumber args || containsCNumber result
+
+        _ ->
+            False
+
+
+{-| Short tag string for a MonoType, used in error messages produced by
+`ensurePrimitiveAbi`.
+-}
+monoTypeTag : Mono.MonoType -> String
+monoTypeTag monoType =
+    case monoType of
+        Mono.MInt ->
+            "MInt"
+
+        Mono.MFloat ->
+            "MFloat"
+
+        Mono.MBool ->
+            "MBool"
+
+        Mono.MChar ->
+            "MChar"
+
+        Mono.MString ->
+            "MString"
+
+        Mono.MUnit ->
+            "MUnit"
+
+        Mono.MList _ ->
+            "MList"
+
+        Mono.MTuple _ ->
+            "MTuple"
+
+        Mono.MRecord _ ->
+            "MRecord"
+
+        Mono.MCustom _ n _ ->
+            "MCustom " ++ n
+
+        Mono.MFunction _ _ ->
+            "MFunction"
+
+        Mono.MVar _ Mono.CEcoValue ->
+            "MVar CEcoValue"
+
+        Mono.MVar _ Mono.CNumber ->
+            "MVar CNumber"

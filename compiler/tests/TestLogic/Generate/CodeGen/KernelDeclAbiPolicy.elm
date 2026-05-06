@@ -11,7 +11,7 @@ all params and return as !eco.value.
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.Generate.MLIR.Context exposing (KernelBackendAbiPolicy(..), kernelBackendAbiPolicy)
+import Compiler.Monomorphize.KernelAbi exposing (KernelBackendAbiPolicy(..), kernelBackendAbiPolicy)
 import Dict
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirAttr(..), MlirModule, MlirOp, MlirType(..))

@@ -61,6 +61,7 @@ import Compiler.Generate.MLIR.Patterns as Patterns
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Compiler.Monomorphize.Closure as Closure
+import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.Registry as Registry
 import Dict
 import Hex
@@ -715,16 +716,16 @@ generateVarKernel ctx kernelPrefix home name monoType =
                         -- Register kernel call so func.func declaration is emitted,
                         -- enabling the closure wrapper to know parameter types.
                         let
-                            policy : Ctx.KernelBackendAbiPolicy
+                            policy : KernelAbi.KernelBackendAbiPolicy
                             policy =
-                                Ctx.kernelBackendAbiPolicy home name
+                                KernelAbi.kernelBackendAbiPolicy home name
 
                             ( paramMlirTypes, resultMlirType ) =
                                 case policy of
-                                    Ctx.AllBoxed ->
+                                    KernelAbi.AllBoxed ->
                                         ( List.repeat arity Types.ecoValue, Types.ecoValue )
 
-                                    Ctx.ElmDerived ->
+                                    KernelAbi.ElmDerived ->
                                         Types.flattenFunctionType monoType
 
                             ctxWithKernel =
@@ -806,16 +807,16 @@ generateVarKernel ctx kernelPrefix home name monoType =
                         -- Register kernel call so func.func declaration is emitted,
                         -- enabling the closure wrapper to know parameter types.
                         let
-                            policy : Ctx.KernelBackendAbiPolicy
+                            policy : KernelAbi.KernelBackendAbiPolicy
                             policy =
-                                Ctx.kernelBackendAbiPolicy home name
+                                KernelAbi.kernelBackendAbiPolicy home name
 
                             ( paramMlirTypes, resultMlirType ) =
                                 case policy of
-                                    Ctx.AllBoxed ->
+                                    KernelAbi.AllBoxed ->
                                         ( List.repeat arity Types.ecoValue, Types.ecoValue )
 
-                                    Ctx.ElmDerived ->
+                                    KernelAbi.ElmDerived ->
                                         Types.flattenFunctionType monoType
 
                             ctxWithKernel =
@@ -2961,12 +2962,12 @@ generateSaturatedCall ctx func args resultType callInfo =
 
                         Nothing ->
                             let
-                                policy : Ctx.KernelBackendAbiPolicy
+                                policy : KernelAbi.KernelBackendAbiPolicy
                                 policy =
-                                    Ctx.kernelBackendAbiPolicy home name
+                                    KernelAbi.kernelBackendAbiPolicy home name
                             in
                             case policy of
-                                Ctx.AllBoxed ->
+                                KernelAbi.AllBoxed ->
                                     -- Underlying C++ ABI: all args and result are !eco.value,
                                     -- regardless of the monomorphic Elm wrapper type.
                                     -- Box any primitive SSA values to match the kernel ABI.
@@ -3011,7 +3012,7 @@ generateSaturatedCall ctx func args resultType callInfo =
                                     , isTerminated = False
                                     }
 
-                                Ctx.ElmDerived ->
+                                KernelAbi.ElmDerived ->
                                     -- ABI derived from the Elm wrapper's funcType.
                                     -- Polymorphic kernels have MVar in their funcType, which
                                     -- Types.monoTypeToAbi maps to !eco.value, so they naturally

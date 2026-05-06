@@ -1,11 +1,10 @@
 module Compiler.Generate.MLIR.Context exposing
-    ( Context, FuncSignature, PendingLambda, TypeRegistry, VarInfo
+    ( Context, FuncSignature, KernelDeclInfo, PendingLambda, TypeRegistry, VarInfo
     , initContext
     , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp, liveEcoValueVars, resetDefinedSsaVars
-    , getOrCreateTypeIdForMonoType, registerKernelCall
+    , getOrCreateTypeIdForMonoType, registerKernelCall, registerKernelInstance
     , buildSignatures, kernelFuncSignatureFromType
     , isTypeVar, hasKernelImplementation
-    , KernelBackendAbiPolicy(..), kernelBackendAbiPolicy
     )
 
 {-| MLIR code generation context.
@@ -44,9 +43,14 @@ state during MLIR code generation.
 @docs isTypeVar, hasKernelImplementation
 
 
-# Kernel Backend ABI Policy
+# Kernel Declaration Info
 
-@docs KernelBackendAbiPolicy, kernelBackendAbiPolicy
+@docs KernelDeclInfo
+
+
+# Kernel Instance Registration
+
+@docs registerKernelInstance
 
 -}
 
@@ -55,6 +59,7 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.Generate.Mode as Mode
+import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Dict
 import Mlir.Mlir exposing (MlirOp, MlirType(..))
 import Set
@@ -93,101 +98,11 @@ kernelFuncSignatureFromType funcType =
     }
 
 
-{-| Backend ABI policy for kernel function calls.
-
-    AllBoxed   -> All args and result are !eco.value in MLIR, regardless of
-                  the monomorphized Elm wrapper type. Used for kernels whose
-                  C++ implementation uniformly takes boxed uint64_t values
-                  (e.g., List.cons).
-
-    ElmDerived -> ABI is derived from the Elm wrapper's funcType via
-                  kernelFuncSignatureFromType + monoTypeToAbi. Used for
-                  kernels with typed C++ signatures (e.g., Basics.fdiv takes
-                  double, String.cons takes uint16_t).
-
--}
-type KernelBackendAbiPolicy
-    = AllBoxed
-    | ElmDerived
-
-
-{-| Determine the backend ABI policy for a kernel call.
-
-Only kernels whose C++ implementation takes ALL arguments as boxed
-uint64\_t (eco.value) and returns uint64\_t should be marked AllBoxed.
-When in doubt, use ElmDerived (safe default — preserves current behavior).
-
--}
-kernelBackendAbiPolicy : String -> String -> KernelBackendAbiPolicy
-kernelBackendAbiPolicy home name =
-    case ( home, name ) of
-        --
-        -- AllBoxed: C++ ABI is uniformly uint64_t for all params and return.
-        -- Audited against elm-kernel-cpp/src/KernelExports.h.
-        --
-        -- List: cons, fromArray, toArray, map2..map5, sortBy, sortWith
-        ( "List", _ ) ->
-            AllBoxed
-
-        -- Utils: compare, equal, notEqual, lt, le, gt, ge, append
-        ( "Utils", _ ) ->
-            AllBoxed
-
-        -- String.fromNumber: number-polymorphic, C++ takes boxed uint64_t
-        ( "String", "fromNumber" ) ->
-            AllBoxed
-
-        -- JsArray: C++ ABI now uniformly uint64_t for all params and return.
-        -- Integer arguments (index, length, etc.) are boxed Elm Int HPointers
-        -- and unboxed inside the C++ implementations.
-        ( "JsArray", _ ) ->
-            AllBoxed
-
-        -- Json.wrap: polymorphic (a -> Value), C++ inspects heap tag at runtime.
-        -- Must be AllBoxed to avoid signature mismatch across monomorphized
-        -- call sites (Encode.int passes i64, Encode.string passes !eco.value).
-        ( "Json", "wrap" ) ->
-            AllBoxed
-
-        --
-        -- ElmDerived: C++ ABI has typed (non-uint64_t) params or returns.
-        -- ABI is derived from the Elm wrapper's funcType via monoTypeToAbi.
-        --
-        -- Basics:  double (trig, fdiv, toFloat), int64_t (idiv, modBy, floor, etc.)
-        -- Bitwise: all int64_t
-        -- Char:    uint16_t, int64_t
-        -- String:  length->int64_t, cons(uint16_t,...), slice(int64_t,int64_t,...)
-        -- Json:    decodeIndex(int64_t,...), encode(int64_t,...)
-        -- Browser: reload(bool), go(int64_t), setViewport(double,double)
-        -- Bytes:   int64_t offsets, bool endianness, double floats
-        -- Parser:  int64_t offsets
-        -- Regex:   infinity->double, int64_t counts
-        -- File:    size->int64_t, lastModified->int64_t
-        -- Process: sleep(double)
-        -- Time:    setInterval(double,...)
-        -- Debugger: download(int64_t,...)
-        -- Platform: sendToApp->void
-        --
-        -- Also ElmDerived (all uint64_t in C++ but no mismatch bug today):
-        -- Debug, Scheduler, VirtualDom, Url, Http
-        --
-        -- Basics.add/sub/mul/pow: number-boxed polymorphic kernels.
-        -- C++ inspects the HPointer tag to dispatch Int vs Float at runtime.
-        -- Must be AllBoxed to avoid wrapper unboxing HPointers as raw i64.
-        ( "Basics", "add" ) ->
-            AllBoxed
-
-        ( "Basics", "sub" ) ->
-            AllBoxed
-
-        ( "Basics", "mul" ) ->
-            AllBoxed
-
-        ( "Basics", "pow" ) ->
-            AllBoxed
-
-        _ ->
-            ElmDerived
+-- The KernelBackendAbiPolicy type and the kernelBackendAbiPolicy lookup table
+-- now live in Compiler.Monomorphize.KernelAbi as part of the per-instance
+-- kernel ABI rollout (see plans/per-instance-kernel-abi.md, Phase A).
+-- Callers should use KernelAbi.AllBoxed / KernelAbi.ElmDerived /
+-- KernelAbi.kernelBackendAbiPolicy directly.
 
 
 {-| Check if a type is a type variable (MVar).
@@ -236,7 +151,7 @@ type alias Context =
     , signatures : Array (Maybe FuncSignature) -- SpecId -> signature for invariant checking
     , varMappings : Dict.Dict String VarInfo -- Let-bound name -> variable info with call model
     , currentLetSiblings : Dict.Dict String VarInfo -- Sibling mappings for current let-rec group
-    , kernelDecls : Dict.Dict String ( List MlirType, MlirType ) -- Kernel function name -> (argTypes, returnType)
+    , kernelDecls : Dict.Dict String KernelDeclInfo -- Kernel symbol -> ABI declaration info
     , typeRegistry : TypeRegistry -- Type graph: MonoType -> TypeId for debug printing
     , decoderExprs : Dict.Dict String Mono.MonoExpr -- Cache of let-bound decoder expressions for BytesFusion
     , externBoxedVars : Set.Set String -- Local vars that alias extern/kernel functions (evaluator has all !eco.value params)
@@ -581,27 +496,73 @@ addDecoderExpr name expr ctx =
 -- ======= KERNEL DECLARATION TRACKING
 
 
+{-| Recorded ABI for one kernel symbol. Populated by `registerKernelCall`
+(legacy MLIR-types-only path) and `registerKernelInstance` (per-instance path
+introduced in Phase A of the per-instance kernel ABI rollout). Backend
+iteration uses these fields to emit the matching `func.func private` decl.
+-}
+type alias KernelDeclInfo =
+    { symbolName : String
+    , abiArgTypes : List MlirType
+    , abiResultType : MlirType
+    }
+
+
 {-| Register a kernel function call, tracking it for declaration generation.
 
 The canonical signature for a kernel is taken directly from the call site.
 Subsequent calls to the same kernel name must use exactly the same argument
-and result MLIR types, or we crash with a mismatch error.
+and result MLIR types, or we crash with a mismatch error (CGEN_038).
 
-This keeps declaration generation in sync with the ABI chosen at the call
-site (which is derived from the Elm MonoType via Types.monoTypeToMlir).
+This shim keeps the legacy MLIR-types-only entry point working for callers
+that have not yet been ported to `registerKernelInstance`. It populates the
+same `KernelDeclInfo` records.
 
 -}
 registerKernelCall : Context -> String -> List MlirType -> MlirType -> Context
 registerKernelCall ctx name callSiteArgTypes callSiteReturnType =
-    case Dict.get name ctx.kernelDecls of
-        Nothing ->
-            { ctx
-                | kernelDecls =
-                    Dict.insert name ( callSiteArgTypes, callSiteReturnType ) ctx.kernelDecls
-            }
+    insertKernelDecl ctx
+        { symbolName = name
+        , abiArgTypes = callSiteArgTypes
+        , abiResultType = callSiteReturnType
+        }
 
-        Just ( existingArgs, existingReturn ) ->
-            if existingArgs == callSiteArgTypes && existingReturn == callSiteReturnType then
+
+{-| Register a per-instance kernel call, returning the resolved ABI for the
+caller to use when emitting boxing/unboxing and the `eco.call` operands.
+
+Crashes if a previous call registered a different ABI for the same symbol
+(CGEN_038).
+
+-}
+registerKernelInstance : KernelAbi.KernelInstanceKey -> Context -> ( KernelAbi.KernelInstanceAbi, Context )
+registerKernelInstance key ctx =
+    let
+        abi : KernelAbi.KernelInstanceAbi
+        abi =
+            KernelAbi.deriveKernelInstanceAbi key
+
+        info : KernelDeclInfo
+        info =
+            { symbolName = abi.symbolName
+            , abiArgTypes = abi.abiArgTypes
+            , abiResultType = abi.abiResultType
+            }
+    in
+    ( abi, insertKernelDecl ctx info )
+
+
+{-| Insert (or verify) a `KernelDeclInfo` for the given symbol. Crashes on
+ABI mismatch with an existing entry (CGEN_038).
+-}
+insertKernelDecl : Context -> KernelDeclInfo -> Context
+insertKernelDecl ctx info =
+    case Dict.get info.symbolName ctx.kernelDecls of
+        Nothing ->
+            { ctx | kernelDecls = Dict.insert info.symbolName info ctx.kernelDecls }
+
+        Just existing ->
+            if existing.abiArgTypes == info.abiArgTypes && existing.abiResultType == info.abiResultType then
                 ctx
 
             else
@@ -611,15 +572,15 @@ registerKernelCall ctx name callSiteArgTypes callSiteReturnType =
                 in
                 crash
                     ("Kernel signature mismatch for "
-                        ++ name
+                        ++ info.symbolName
                         ++ ": existing ("
-                        ++ showTypes existingArgs
+                        ++ showTypes existing.abiArgTypes
                         ++ " -> "
-                        ++ Types.mlirTypeToString existingReturn
+                        ++ Types.mlirTypeToString existing.abiResultType
                         ++ ") vs new ("
-                        ++ showTypes callSiteArgTypes
+                        ++ showTypes info.abiArgTypes
                         ++ " -> "
-                        ++ Types.mlirTypeToString callSiteReturnType
+                        ++ Types.mlirTypeToString info.abiResultType
                         ++ ")"
                     )
 
