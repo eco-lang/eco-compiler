@@ -61,21 +61,49 @@ DEFAULT_WALL_SECONDS = 60
 # Variants (hard-coded for sweep mode)
 # ---------------------------------------------------------------------------
 
+# Field order mirrors HeapConfig in runtime/src/allocator/AllocatorCommon.hpp:
+# heap-wide, then string / rope, nursery, old generation, sweep & mark pacing.
 BASELINE_HEAP = {
+    # Heap-wide.
     "max_heap_size":                 "24G",
-    "initial_old_gen_size":          "16M",
     "alloc_buffer_size":             "512K",
+    "large_object_threshold":        "16K",
+    # String / rope heuristics.
+    "string_flatten_limit":          "32K",
+    "string_tiny_slice_limit":       "8K",
+    "rope_max_height":               32,
+    "rope_leaf_count_limit":         64,
+    "rope_min_leaf_size":            128,
+    # Nursery.
     "nursery_block_count":           64,
     "nursery_max_block_count":       1024,
-    "promotion_age":                 2,
     "nursery_gc_threshold":          0.9,
     "nursery_growth_threshold":      0.20,
+    "promotion_age":                 2,
+    "use_hybrid_dfs":                True,
+    # Old generation.
+    "initial_old_gen_size":          "16M",
     "major_gc_initiating_occupancy": 0.85,
     "major_gc_target_utilization":   0.70,
     "major_gc_garbage_fraction":     0.70,
-    "use_hybrid_dfs":                True,
-    "large_object_threshold":        "16K",
     "decommit_on_oldgen_release":    True,
+    # Old-gen sweep & mark pacing.
+    "sweep_work_budget":             "4K",
+    "initial_sweep_budget":          "64K",
+    "mark_work_ratio":               2,
+    "sweep_bytes_per_alloc_byte":    2.0,
+    "max_sweep_bytes_per_alloc":     "1M",
+    "max_sweep_bytes_hard":          "4M",
+    "sweep_cap_ratio_low":           0.50,
+    "sweep_cap_ratio_medium":        0.75,
+    "sweep_cap_ratio_high":          0.90,
+    "sweep_scale_low":               1.0,
+    "sweep_scale_medium":            2.0,
+    "sweep_scale_high":              4.0,
+    "sweep_scale_crit":              8.0,
+    "sweep_unswept_ratio_boost":     0.50,
+    "sweep_unswept_scale":           2.0,
+    "panic_sweep_slice_bytes":       "1M",
 }
 
 VARIANTS = [

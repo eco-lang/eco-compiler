@@ -66,6 +66,9 @@ public:
     // Must be called before any thread calls initThread().
     void initialize(const HeapConfig& config = HeapConfig());
 
+    // Returns the heap configuration. Read-only.
+    const HeapConfig& getConfig() const { return config_; }
+
     // Initializes the calling thread's heap space.
     // Creates a ThreadLocalHeap with dedicated nursery and old gen regions.
     // Thread-safe: acquires mutex to carve out regions from the unified heap.
@@ -258,9 +261,6 @@ private:
 
     // Returns the total reserved heap size.
     size_t getHeapReserved() const { return heap_reserved; }
-
-    // Returns the heap configuration.
-    const HeapConfig& getConfig() const { return config_; }
 
     // Acquires a block of memory from the lower nursery region.
     // Thread-safe: acquires thread_mutex_.

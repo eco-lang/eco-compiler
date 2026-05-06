@@ -118,12 +118,14 @@ HPointer flattenToLeaf(HPointer s) {
 
 HPointer maybeFlattenOrRebalance(HPointer s, FlattenReason reason) {
     if (alloc::isEmbeddedConstant(s)) return s;
-    void* obj = Allocator::instance().resolve(s);
+    auto& allocator = Allocator::instance();
+    void* obj = allocator.resolve(s);
     if (!obj) return s;
     Header* hdr = static_cast<Header*>(obj);
     if (hdr->tag == Tag_String) return s;  // already flat
     if (hdr->tag == Tag_LargeStringHeader) return s;  // split-header is leaf-like
-    if (hdr->size <= detail::FLATTEN_LIMIT) {
+    const HeapConfig& cfg = allocator.getConfig();
+    if (hdr->size <= cfg.string_flatten_limit) {
         return flattenToLeaf(s);
     }
     // Oversized: keep structural form to bound memory. For ropes, this is
@@ -132,9 +134,9 @@ HPointer maybeFlattenOrRebalance(HPointer s, FlattenReason reason) {
     // future rebalancer; today we only emit a debug TODO.
     if (hdr->tag == Tag_StringRope && reason == FlattenReason::Structural) {
         ElmStringRope* r = static_cast<ElmStringRope*>(obj);
-        bool tall = r->height > detail::MAX_HEIGHT;
-        bool tooManyTinyLeaves = r->leafCount > detail::LEAFCOUNT_LIMIT &&
-                                 (r->header.size / r->leafCount) < detail::MIN_LEAF_SIZE;
+        bool tall = r->height > cfg.rope_max_height;
+        bool tooManyTinyLeaves = r->leafCount > cfg.rope_leaf_count_limit &&
+                                 (r->header.size / r->leafCount) < cfg.rope_min_leaf_size;
         if (tall || tooManyTinyLeaves) {
             // TODO: rebalance — keep this rope as-is for now.
         }
@@ -172,7 +174,7 @@ HPointer slice(void* str, i64 start, i64 end) {
 
     // Tiny slice: flatten directly into a leaf — avoids slice metadata for
     // short ranges and matches the prior behaviour.
-    if (slice_len <= detail::TINY_SLICE_LIMIT) {
+    if (slice_len <= allocator.getConfig().string_tiny_slice_limit) {
         if (hdr->tag == Tag_String) {
             ElmString* s = static_cast<ElmString*>(str);
             std::vector<u16> data(s->chars + start, s->chars + start + slice_len);
@@ -372,7 +374,7 @@ HPointer concat(HPointer stringList) {
     // walked AFTER the allocation to populate result->chars. So we must
     // keep it live across the allocate via the helper's slow-path
     // rooting, then re-read the (possibly relocated) handle from roots[].
-    if (total_len <= detail::FLATTEN_LIMIT) {
+    if (total_len <= allocator.getConfig().string_flatten_limit) {
         size_t data_size = total_len * sizeof(u16);
         size_t total_size = sizeof(ElmString) + data_size;
         total_size = (total_size + 7) & ~7;
@@ -472,7 +474,7 @@ HPointer join(void* sep, HPointer stringList) {
     if (count == 0) return alloc::emptyString();
     total_len += sep_len * (count - 1);
 
-    if (total_len <= detail::FLATTEN_LIMIT) {
+    if (total_len <= allocator.getConfig().string_flatten_limit) {
         size_t data_size = total_len * sizeof(u16);
         size_t total_size = sizeof(ElmString) + data_size;
         total_size = (total_size + 7) & ~7;

@@ -636,7 +636,7 @@ void *OldGenSpace::allocate(size_t size) {
     // Both branches now call markOneObject so live-bytes attribution stays
     // consistent regardless of which path runs.
     if (gc_phase_ == GCPhase::Marking && !mark_stack.empty()) {
-        size_t mark_budget = size * MARK_WORK_RATIO;
+        size_t mark_budget = size * config_->mark_work_ratio;
 #if ENABLE_GC_STATS
         // Stats are not available on the allocation hot path; loop
         // markOneObject directly to avoid touching the stats counters.
@@ -660,12 +660,12 @@ void *OldGenSpace::allocate(size_t size) {
     // sweep ever returns garbage to a free list.
     if (gc_phase_ == GCPhase::Sweeping) {
         size_t cls_for_sweep = sizeClass(size);
-        lazySweep(cls_for_sweep, SWEEP_WORK_BUDGET);
+        lazySweep(cls_for_sweep, config_->sweep_work_budget);
     }
 
     // Path 2/3/4 dispatch. These are inside the helper bracket because
     // allocateFromSizeClass can invoke sweepOnDemandAllocate, which runs
-    // up to MAX_SWEEP_BYTES_PER_ALLOC (= 1 MiB) of lazySweep work — this
+    // up to max_sweep_bytes_per_alloc of lazySweep work — this
     // is the dominant source of "minor GC outliers" when promotion calls
     // hit it during an old-gen sweep phase. allocateFromBagPage and
     // allocateLargeBlock are also covered for completeness; their cost is
@@ -805,32 +805,34 @@ double OldGenSpace::committedToCapRatio() const {
 // Computes the dynamic per-allocation lazy-sweep byte budget. Combines a
 // base proportional to `requested_size`, a piecewise pressure step on the
 // committed/cap ratio, and an unswept-fraction boost. Final value is
-// clamped to MAX_SWEEP_BYTES_HARD.
+// clamped to config.max_sweep_bytes_hard.
 size_t OldGenSpace::computeSweepBudgetForAlloc(size_t requested_size) const {
-    // Base: bytes-per-alloc-byte, clamped to [SWEEP_WORK_BUDGET,
-    // MAX_SWEEP_BYTES_PER_ALLOC]. Anything smaller than SWEEP_WORK_BUDGET
+    const HeapConfig& cfg = *config_;
+
+    // Base: bytes-per-alloc-byte, clamped to [sweep_work_budget,
+    // max_sweep_bytes_per_alloc]. Anything smaller than sweep_work_budget
     // would not even cover a single slice; anything larger pre-scaling
     // would let a single allocation monopolise the sweeper before the
     // pressure scaling has a chance to kick in.
     double base = static_cast<double>(requested_size) *
-                  SWEEP_BYTES_PER_ALLOC_BYTE;
-    if (base < static_cast<double>(SWEEP_WORK_BUDGET)) {
-        base = static_cast<double>(SWEEP_WORK_BUDGET);
-    } else if (base > static_cast<double>(MAX_SWEEP_BYTES_PER_ALLOC)) {
-        base = static_cast<double>(MAX_SWEEP_BYTES_PER_ALLOC);
+                  cfg.sweep_bytes_per_alloc_byte;
+    if (base < static_cast<double>(cfg.sweep_work_budget)) {
+        base = static_cast<double>(cfg.sweep_work_budget);
+    } else if (base > static_cast<double>(cfg.max_sweep_bytes_per_alloc)) {
+        base = static_cast<double>(cfg.max_sweep_bytes_per_alloc);
     }
 
     // Piecewise pressure scale. Pressure is committed/cap on the old gen.
     const double pressure = committedToCapRatio();
     double scale;
-    if (pressure < SWEEP_CAP_RATIO_LOW) {
-        scale = SWEEP_SCALE_LOW;
-    } else if (pressure < SWEEP_CAP_RATIO_MEDIUM) {
-        scale = SWEEP_SCALE_MEDIUM;
-    } else if (pressure < SWEEP_CAP_RATIO_HIGH) {
-        scale = SWEEP_SCALE_HIGH;
+    if (pressure < cfg.sweep_cap_ratio_low) {
+        scale = cfg.sweep_scale_low;
+    } else if (pressure < cfg.sweep_cap_ratio_medium) {
+        scale = cfg.sweep_scale_medium;
+    } else if (pressure < cfg.sweep_cap_ratio_high) {
+        scale = cfg.sweep_scale_high;
     } else {
-        scale = SWEEP_SCALE_CRIT;
+        scale = cfg.sweep_scale_crit;
     }
     double budget = base * scale;
 
@@ -842,23 +844,23 @@ size_t OldGenSpace::computeSweepBudgetForAlloc(size_t requested_size) const {
         const double unswept_fraction =
             static_cast<double>(sweep_pending_blocks_) /
             static_cast<double>(sweep_total_blocks_);
-        if (unswept_fraction > SWEEP_UNSWEPT_RATIO_BOOST) {
-            budget *= SWEEP_UNSWEPT_SCALE;
+        if (unswept_fraction > cfg.sweep_unswept_ratio_boost) {
+            budget *= cfg.sweep_unswept_scale;
         }
     }
 
-    if (budget > static_cast<double>(MAX_SWEEP_BYTES_HARD)) {
-        budget = static_cast<double>(MAX_SWEEP_BYTES_HARD);
+    if (budget > static_cast<double>(cfg.max_sweep_bytes_hard)) {
+        budget = static_cast<double>(cfg.max_sweep_bytes_hard);
     }
-    if (budget < static_cast<double>(SWEEP_WORK_BUDGET)) {
-        budget = static_cast<double>(SWEEP_WORK_BUDGET);
+    if (budget < static_cast<double>(cfg.sweep_work_budget)) {
+        budget = static_cast<double>(cfg.sweep_work_budget);
     }
     return static_cast<size_t>(budget);
 }
 
 // Sweep-on-demand emergency driver. Computes a dynamic byte budget from
 // allocation size, committed/cap pressure, and unswept-fraction; runs
-// SWEEP_WORK_BUDGET-sized slices of `lazySweep` until either the free-list
+// sweep_work_budget-sized slices of `lazySweep` until either the free-list
 // path can satisfy the request or the dynamic budget is exhausted. The
 // caller falls through to populateFromBlock / allocateFromBagPage when this
 // returns nullptr. Note: requested slice == accounted bytes — `lazySweep`
@@ -875,7 +877,7 @@ void* OldGenSpace::sweepOnDemandAllocate(size_t cls, size_t requested_size) {
     size_t swept = 0;
     while (hasPendingSweepWork() && swept < max_sweep_bytes) {
         const size_t remaining = max_sweep_bytes - swept;
-        const size_t slice = std::min<size_t>(SWEEP_WORK_BUDGET, remaining);
+        const size_t slice = std::min<size_t>(config_->sweep_work_budget, remaining);
         lazySweep(cls, slice);
         swept += slice;
 #if ENABLE_GC_STATS
@@ -889,17 +891,18 @@ void* OldGenSpace::sweepOnDemandAllocate(size_t cls, size_t requested_size) {
 }
 
 // Panic-mode sweep: drives any remaining lazy-sweep work to completion in
-// PANIC_SWEEP_SLICE_BYTES slices and retries the free-list path between
+// panic_sweep_slice_bytes slices and retries the free-list path between
 // slices. The "growth impossible" precondition lives at the call site —
 // `allocateFromSizeClass` only invokes this once `allocateFromBagPage` has
 // already failed to grow capacity.
 void* OldGenSpace::panicSweepAndRetryAllocation(size_t cls,
                                                 size_t requested_size) {
     if (!hasPendingSweepWork()) return nullptr;
+    const size_t panic_slice = config_->panic_sweep_slice_bytes;
     while (hasPendingSweepWork()) {
-        lazySweep(cls, PANIC_SWEEP_SLICE_BYTES);
+        lazySweep(cls, panic_slice);
 #if ENABLE_GC_STATS
-        alloc_stats_.total_panic_sweep_bytes += PANIC_SWEEP_SLICE_BYTES;
+        alloc_stats_.total_panic_sweep_bytes += panic_slice;
 #endif
         if (void* obj = tryAllocateFromFreeLists(cls, requested_size)) {
             return obj;
@@ -1108,7 +1111,7 @@ void* OldGenSpace::allocateFromBagPage(size_t requested_size) {
         size_t swept = 0;
         while (hasPendingSweepWork() && swept < budget) {
             const size_t slice =
-                std::min<size_t>(SWEEP_WORK_BUDGET, budget - swept);
+                std::min<size_t>(config_->sweep_work_budget, budget - swept);
             lazySweep(request_cls, slice);
             swept += slice;
 #if ENABLE_GC_STATS
@@ -2011,7 +2014,7 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats) {
     // rather than candidates about to be released.
     gatherResidencySnapshotFrom(stats, free_by_start);
     recomputeSweepPendingBlocks();
-    lazySweep(NUM_SIZE_CLASSES, INITIAL_SWEEP_BUDGET);
+    lazySweep(NUM_SIZE_CLASSES, config_->initial_sweep_budget);
 
     marking_active = false;
 
@@ -2059,7 +2062,7 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats,
     // rather than candidates about to be released.
     gatherResidencySnapshotFrom(stats, free_by_start);
     recomputeSweepPendingBlocks();
-    lazySweep(NUM_SIZE_CLASSES, INITIAL_SWEEP_BUDGET);
+    lazySweep(NUM_SIZE_CLASSES, config_->initial_sweep_budget);
 
     auto t_sweep_end = std::chrono::high_resolution_clock::now();
 
@@ -2077,7 +2080,7 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats,
     profile.alldead_bytes_released  = alldead.bytes_released;
     profile.demoted_blocks  = demotion.blocks_demoted;
     profile.demoted_bytes   = demotion.bytes_demoted;
-    profile.initial_sweep_budget_bytes = INITIAL_SWEEP_BUDGET;
+    profile.initial_sweep_budget_bytes = config_->initial_sweep_budget;
     // True post-initial-slice pending count, fed by markBlockFullySwept
     // throughout the slice.
     profile.sweep_pending_blocks = sweep_pending_blocks_;
@@ -2098,7 +2101,7 @@ void OldGenSpace::finishMarkAndSweep() {
     reclaimAllDeadBlocksFromMeta();
     adjustCapacityAfterMajorGC();
     recomputeSweepPendingBlocks();
-    lazySweep(NUM_SIZE_CLASSES, INITIAL_SWEEP_BUDGET);
+    lazySweep(NUM_SIZE_CLASSES, config_->initial_sweep_budget);
 
     marking_active = false;
 }
@@ -2126,7 +2129,7 @@ void OldGenSpace::finishMarkAndSweep(MajorGCPhaseProfile &profile) {
     AllDeadReclaimStats alldead = reclaimAllDeadBlocksFromMeta();
     adjustCapacityAfterMajorGC();
     recomputeSweepPendingBlocks();
-    lazySweep(NUM_SIZE_CLASSES, INITIAL_SWEEP_BUDGET);
+    lazySweep(NUM_SIZE_CLASSES, config_->initial_sweep_budget);
 
     auto t_sweep_end = std::chrono::high_resolution_clock::now();
 
@@ -2144,7 +2147,7 @@ void OldGenSpace::finishMarkAndSweep(MajorGCPhaseProfile &profile) {
     profile.alldead_bytes_released  = alldead.bytes_released;
     profile.demoted_blocks  = demotion.blocks_demoted;
     profile.demoted_bytes   = demotion.bytes_demoted;
-    profile.initial_sweep_budget_bytes = INITIAL_SWEEP_BUDGET;
+    profile.initial_sweep_budget_bytes = config_->initial_sweep_budget;
     profile.sweep_pending_blocks = sweep_pending_blocks_;
 
     marking_active = false;

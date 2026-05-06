@@ -83,15 +83,8 @@ inline u32 leafCountOf(void* obj) {
     return 1;
 }
 
-// Configuration constants (rope/slice heuristics).
-namespace detail {
-    constexpr size_t FLATTEN_LIMIT = 32 * 1024; // ~64 KiB of UTF-16 code units
-    constexpr size_t TINY_SLICE_LIMIT = FLATTEN_LIMIT / 4; // small ranges flatten directly
-    // Rope shape thresholds — only consulted when ropes exist (Phase 2).
-    constexpr u32 MAX_HEIGHT = 32;        // emit rebalance TODO above this depth
-    constexpr u32 LEAFCOUNT_LIMIT = 64;   // many leaves with low avg = candidate for rebalance
-    constexpr u32 MIN_LEAF_SIZE = 128;    // avg below this triggers the TODO when over LEAFCOUNT_LIMIT
-}
+// Rope/slice heuristic thresholds live on HeapConfig (see AllocatorCommon.hpp);
+// access them via Allocator::instance().getConfig().{string_flatten_limit, ...}.
 
 enum class FlattenReason {
     Structural,
@@ -133,8 +126,8 @@ HPointer flattenToLeaf(HPointer s);
 /**
  * Decision point for "should I flatten this string before further work?".
  * Phase 1 behaviour: leaves and the empty constant pass through; slices
- * with len <= FLATTEN_LIMIT are flattened; larger slices pass through (the
- * caller is then responsible for using charAt-style access).
+ * with len <= string_flatten_limit are flattened; larger slices pass
+ * through (the caller is then responsible for using charAt-style access).
  */
 HPointer maybeFlattenOrRebalance(HPointer s, FlattenReason reason);
 
@@ -234,10 +227,10 @@ inline u16 charAt(void* str, i64 index) {
 /**
  * Appends two strings: a ++ b
  *
- * Builds a flat leaf when the total fits in FLATTEN_LIMIT (so short strings
- * keep the existing memcpy fast path). Above that threshold, builds a
- * Tag_StringRope joining the two HPointers — sharing both subtrees and
- * giving O(1) amortised concat for repeated appends.
+ * Builds a flat leaf when the total fits in config.string_flatten_limit (so
+ * short strings keep the existing memcpy fast path). Above that threshold,
+ * builds a Tag_StringRope joining the two HPointers — sharing both subtrees
+ * and giving O(1) amortised concat for repeated appends.
  */
 inline HPointer append(void* a, void* b) {
     if (!a && !b) return alloc::emptyString();
@@ -251,7 +244,7 @@ inline HPointer append(void* a, void* b) {
     if (len_b == 0) return Allocator::instance().wrap(a);
 
     size_t total_len = len_a + len_b;
-    if (total_len <= detail::FLATTEN_LIMIT) {
+    if (total_len <= Allocator::instance().getConfig().string_flatten_limit) {
         auto bufA = toStdU16String(a);
         auto bufB = toStdU16String(b);
         std::vector<u16> data(total_len);
@@ -289,8 +282,8 @@ HPointer join(void* sep, HPointer stringList);
  * Extracts a substring from start (inclusive) to end (exclusive).
  * Negative indices count from end. Clamps to valid range.
  *
- * For ranges below TINY_SLICE_LIMIT, builds a flat leaf (avoids the slice
- * metadata for short ranges). Larger ranges over a leaf build a
+ * For ranges below string_tiny_slice_limit, builds a flat leaf (avoids the
+ * slice metadata for short ranges). Larger ranges over a leaf build a
  * Tag_StringSlice that shares the source buffer. Slice-of-slice collapses
  * to a single slice over the deepest leaf base.
  */
@@ -885,9 +878,10 @@ std::string toStdString(void* str);
 /**
  * Compares two strings for equality. Pure leaf+leaf path is unchanged
  * (memcmp on chars[]). If either side is a slice or rope and the total
- * length is below FLATTEN_LIMIT, both are snapshotted via toStdU16String
- * and compared with memcmp. Above the limit, falls back to a char-by-char
- * walk via charAt to keep peak memory bounded (// TODO: streaming compare).
+ * length is below config.string_flatten_limit, both are snapshotted via
+ * toStdU16String and compared with memcmp. Above the limit, falls back to
+ * a char-by-char walk via charAt to keep peak memory bounded
+ * (// TODO: streaming compare).
  */
 inline bool equal(void* a, void* b) {
     if (!a || !b) return a == b;  // both nullptr means both EmptyString
@@ -901,7 +895,7 @@ inline bool equal(void* a, void* b) {
         return std::memcmp(sa->chars, sb->chars, ha->size * sizeof(u16)) == 0;
     }
 
-    if (ha->size <= detail::FLATTEN_LIMIT) {
+    if (ha->size <= Allocator::instance().getConfig().string_flatten_limit) {
         auto sa = toStdU16String(a);
         auto sb = toStdU16String(b);
         if (sa.size() != sb.size()) return false;
@@ -924,8 +918,9 @@ inline bool equal(void* a, void* b) {
  * Returns negative if a < b, 0 if a == b, positive if a > b.
  *
  * Pure leaf+leaf path is unchanged. Otherwise, snapshots via toStdU16String
- * when the longest side fits in FLATTEN_LIMIT, falling back to a charAt
- * walk for very large mixed-form inputs (// TODO: streaming compare).
+ * when the longest side fits in config.string_flatten_limit, falling back
+ * to a charAt walk for very large mixed-form inputs
+ * (// TODO: streaming compare).
  */
 inline int compare(void* a, void* b) {
     if (!a && !b) return 0;
@@ -947,7 +942,7 @@ inline int compare(void* a, void* b) {
     }
 
     size_t maxLen = std::max<size_t>(ha->size, hb->size);
-    if (maxLen <= detail::FLATTEN_LIMIT) {
+    if (maxLen <= Allocator::instance().getConfig().string_flatten_limit) {
         auto sa = toStdU16String(a);
         auto sb = toStdU16String(b);
         size_t min_len = std::min(sa.size(), sb.size());

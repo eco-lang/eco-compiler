@@ -36,39 +36,141 @@ enum class Color : u32 {
 };
 
 // ============================================================================
-// Sizing Constants
+// Default Configuration Constants
 // ============================================================================
+// Every HeapConfig field's default initializer pulls its value from one of
+// these constants — keep them in sync. Grouped by scope: heap-wide, string /
+// rope heuristics, nursery, then old generation. HeapConfig declares its
+// fields in the same order.
 
-// Heap sizing.
-constexpr size_t DEFAULT_MAX_HEAP_SIZE = 24ULL * 1024 * 1024 * 1024;  // 32 GB address space (12 GB old gen + 12 GB nursery).
-constexpr size_t INITIAL_OLD_GEN_SIZE = 16 * 1024 * 1024;            // 16 MB initial commit.
+// ---- Heap-wide ----
 
-// Default cap on bytes committed to uniform small-class pages before
-// the allocator starts splitting larger free cells to satisfy
-// fixed-size-class requests. See HeapConfig::small_class_heap_budget_bytes.
-constexpr size_t DEFAULT_SMALL_CLASS_HEAP_BUDGET = 1024ULL * 1024 * 1024;  // 1 GiB
+// Reserved virtual address space for the heap (24 GiB; ~12 GiB old gen + ~12 GiB nursery).
+constexpr size_t DEFAULT_MAX_HEAP_SIZE = 24ULL * 1024 * 1024 * 1024;
 
-// AllocBuffer sizing.
-constexpr size_t ALLOC_BUFFER_SIZE = 512 * 1024;  // 512 KB default AllocBuffer.
+// Size of one AllocBuffer / nursery block / old-gen BBoP page in bytes.
+constexpr size_t ALLOC_BUFFER_SIZE = 512 * 1024;
 
-// Nursery sizing (in blocks, same size as AllocBuffer).
-// Block count must be even (split into from-space and to-space).
-constexpr size_t NURSERY_BLOCK_COUNT = 64;  // 32 blocks = 4 MB total (16 per semi-space).
+// Allocations of this size or larger bypass the nursery and are pinned in old gen (also triggers split-header path for strings/byte buffers).
+constexpr size_t LARGE_OBJECT_THRESHOLD = 16 * 1024;
 
-// Hard upper bound on adaptive nursery growth. checkAndGrow() will refuse
-// to add blocks past this total (low + high). Default 1024 blocks at the
-// default 512 KB block size = 512 MB total nursery (256 MB per semi-space).
-// Block count must be even (split into from-space and to-space).
+// ---- String / rope heuristics ----
+
+// Concat results <= this many UTF-16 code units flatten to a single leaf; larger totals build a Tag_StringRope.
+constexpr size_t STRING_FLATTEN_LIMIT = 32 * 1024;
+
+// slice() ranges <= this many UTF-16 code units flatten directly instead of allocating a Tag_StringSlice.
+constexpr size_t STRING_TINY_SLICE_LIMIT = STRING_FLATTEN_LIMIT / 4;
+
+// Rope tree depth above which the rebalance heuristic flags the rope (rebalance itself is TODO).
+constexpr u32 ROPE_MAX_HEIGHT = 32;
+
+// Leaf count above which the rebalance heuristic checks for too-many-small-leaves (paired with ROPE_MIN_LEAF_SIZE).
+constexpr u32 ROPE_LEAF_COUNT_LIMIT = 64;
+
+// Average leaf size below which a rope at/over ROPE_LEAF_COUNT_LIMIT is flagged as a rebalance candidate.
+constexpr u32 ROPE_MIN_LEAF_SIZE = 128;
+
+// ---- Nursery ----
+
+// Initial nursery size in blocks (must be even; split into from/to semi-spaces).
+constexpr size_t NURSERY_BLOCK_COUNT = 64;
+
+// Hard upper bound on adaptive nursery growth, in blocks (must be even).
 constexpr size_t NURSERY_MAX_BLOCKS = 1024;
 
-// Promotion and GC triggers.
-constexpr u32 PROMOTION_AGE = 2;                            // Promote after surviving 2 minor GCs.
-constexpr float NURSERY_GC_THRESHOLD = 0.9f;                // Trigger minor GC at 90% full.
+// Nursery occupancy fraction that triggers a minor GC.
+constexpr float NURSERY_GC_THRESHOLD = 0.9f;
 
-// Adaptive nursery growth: after a minor GC, request more blocks if to-space
-// occupancy exceeds this fraction. Lower values grow the nursery more
-// aggressively (cheaper minor GCs, larger working set).
+// Post-minor-GC to-space occupancy above which the nursery requests more blocks.
 constexpr float NURSERY_GROWTH_THRESHOLD = 0.20f;
+
+// Minor-GC survivals required before an object is promoted to old gen (header age field is 2 bits).
+constexpr u32 PROMOTION_AGE = 2;
+
+// Enable two-pass DFS spine copying for Cons lists during minor GC (else BFS for all types).
+constexpr bool USE_HYBRID_DFS = true;
+
+// ---- Old generation ----
+
+// Initial committed bytes of the old generation at startup.
+constexpr size_t INITIAL_OLD_GEN_SIZE = 16 * 1024 * 1024;
+
+// Old-gen committed/cap fraction above which a major GC is scheduled (must exceed MAJOR_GC_TARGET_UTILIZATION).
+constexpr float MAJOR_GC_INITIATING_OCCUPANCY = 0.85f;
+
+// Post-major-GC live/committed target; the old-gen cap is grown to keep utilization below this.
+constexpr float MAJOR_GC_TARGET_UTILIZATION = 0.50f;
+
+// Fraction of old-gen committed that, once allocated since the last major, schedules another (0.0 disables).
+constexpr float MAJOR_GC_GARBAGE_FRACTION = 0.70f;
+
+// On releaseOldGenBlock, also madvise(MADV_DONTNEED) to drop physical RSS (virtual mapping is retained either way).
+constexpr bool DECOMMIT_ON_OLDGEN_RELEASE = true;
+
+// Default cap on bytes committed to uniform small-class pages before splitting larger free cells.
+constexpr size_t DEFAULT_SMALL_CLASS_HEAP_BUDGET = 1024ULL * 1024 * 1024;
+
+// ---- Old-gen sweep & mark pacing ----
+
+// Bytes of lazy-sweep work the allocator does per slow-path invocation (per slice).
+constexpr size_t SWEEP_WORK_BUDGET = 4096;
+
+// Bytes of sweep work `finishMarkAndSweep` runs synchronously before returning (seeds free lists for the first allocations).
+constexpr size_t INITIAL_SWEEP_BUDGET = SWEEP_WORK_BUDGET * 16;
+
+// Incremental marking work ratio: bytes marked per byte allocated during the marking phase.
+constexpr size_t MARK_WORK_RATIO = 2;
+
+// Base proportionality factor for the per-allocation sweep budget (bytes swept per byte requested), pre pressure scaling.
+constexpr double SWEEP_BYTES_PER_ALLOC_BYTE = 2.0;
+
+// Soft cap on the per-allocation sweep budget BEFORE pressure scaling (1 MiB).
+constexpr size_t MAX_SWEEP_BYTES_PER_ALLOC = 1u << 20;
+
+// Hard cap applied AFTER pressure scaling and unswept-ratio boost (4 MiB).
+constexpr size_t MAX_SWEEP_BYTES_HARD = 4u << 20;
+
+// Pressure thresholds on committedToCapRatio: each step picks the matching SWEEP_SCALE_*.
+constexpr double SWEEP_CAP_RATIO_LOW    = 0.50;
+constexpr double SWEEP_CAP_RATIO_MEDIUM = 0.75;
+constexpr double SWEEP_CAP_RATIO_HIGH   = 0.90;
+
+// Per-allocation sweep budget multipliers, indexed by pressure step (must be non-decreasing and >= 1.0).
+constexpr double SWEEP_SCALE_LOW    = 1.0;
+constexpr double SWEEP_SCALE_MEDIUM = 2.0;
+constexpr double SWEEP_SCALE_HIGH   = 4.0;
+constexpr double SWEEP_SCALE_CRIT   = 8.0;
+
+// Unswept-block fraction above which the per-allocation sweep budget gets a SWEEP_UNSWEPT_SCALE boost.
+constexpr double SWEEP_UNSWEPT_RATIO_BOOST = 0.50;
+
+// Multiplier applied on top of pressure scaling when the unswept-block fraction is above the boost threshold.
+constexpr double SWEEP_UNSWEPT_SCALE = 2.0;
+
+// Per-slice budget for the panic-path sweeper (drives lazy sweep to completion before declaring OOM).
+constexpr size_t PANIC_SWEEP_SLICE_BYTES = 1u << 20;
+
+// ---- Old-gen free-list layout (compile-time, not runtime-configurable) ----
+// These size class-counts compile into static array dimensions
+// (e.g. OldGenSpace::free_lists_[NUM_SIZE_CLASSES]) and the corresponding
+// telemetry buckets in GCStats, so they cannot be moved into HeapConfig
+// without converting those arrays to dynamic containers.
+
+// Number of small-cell size classes: 8 B steps from 8 up through MAX_SMALL_SIZE.
+constexpr size_t NUM_SMALL_CLASSES = 32;
+
+// Largest cell size served by a small class (last small class is exactly this many bytes).
+constexpr size_t MAX_SMALL_SIZE = 256;
+
+// First medium class size in bytes; subsequent medium classes are powers-of-two from here.
+constexpr size_t MEDIUM_CLASS_BASE = 512;
+
+// Medium-class slots reserved at compile time; the runtime cap depends on large_object_threshold.
+constexpr size_t NUM_MEDIUM_CLASSES_MAX = 8;
+
+// Total fixed-size class count; sizes the per-class free-list array.
+constexpr size_t NUM_SIZE_CLASSES = NUM_SMALL_CLASSES + NUM_MEDIUM_CLASSES_MAX;
 
 // Returns the header of a heap object.
 inline Header *getHeader(void *obj) { return static_cast<Header *>(obj); }
@@ -184,87 +286,116 @@ inline size_t getObjectSize(void *obj) {
  * override any field before passing to Allocator::initialize().
  */
 struct HeapConfig {
-    // Heap sizing.
-    size_t max_heap_size = DEFAULT_MAX_HEAP_SIZE;
-    size_t initial_old_gen_size = INITIAL_OLD_GEN_SIZE;
+    // ---- Heap-wide ----
 
-    // AllocBuffer sizing.
+    // Reserved virtual address space for the heap.
+    size_t max_heap_size = DEFAULT_MAX_HEAP_SIZE;
+
+    // Size of one AllocBuffer / nursery block / old-gen BBoP page in bytes.
     size_t alloc_buffer_size = ALLOC_BUFFER_SIZE;
 
-    // Nursery sizing (in blocks, not bytes).
-    // Block count must be even (split into from-space and to-space).
+    // Allocations of this size or larger bypass the nursery and are pinned in old gen.
+    size_t large_object_threshold = LARGE_OBJECT_THRESHOLD;
+
+    // ---- String / rope heuristics ----
+
+    // Concat results <= this many UTF-16 code units flatten to a single leaf; larger totals build a rope.
+    size_t string_flatten_limit = STRING_FLATTEN_LIMIT;
+
+    // slice() ranges <= this many UTF-16 code units flatten directly instead of allocating a slice.
+    size_t string_tiny_slice_limit = STRING_TINY_SLICE_LIMIT;
+
+    // Rope tree depth above which the rebalance heuristic flags the rope.
+    u32 rope_max_height = ROPE_MAX_HEIGHT;
+
+    // Leaf count above which the rebalance heuristic checks for too-many-small-leaves.
+    u32 rope_leaf_count_limit = ROPE_LEAF_COUNT_LIMIT;
+
+    // Average leaf size below which a rope at/over rope_leaf_count_limit is flagged as a rebalance candidate.
+    u32 rope_min_leaf_size = ROPE_MIN_LEAF_SIZE;
+
+    // ---- Nursery ----
+
+    // Initial nursery size in blocks (even; split into from/to semi-spaces).
     size_t nursery_block_count = NURSERY_BLOCK_COUNT;
 
-    // Hard upper bound on adaptive nursery growth (in blocks). Adaptive
-    // growth (checkAndGrow) will refuse to expand the nursery past this
-    // total (low + high). Must be even and >= nursery_block_count.
+    // Hard upper bound on adaptive nursery growth, in blocks (even; >= nursery_block_count).
     size_t nursery_max_block_count = NURSERY_MAX_BLOCKS;
 
-    // Promotion & GC triggers.
-    u32 promotion_age = PROMOTION_AGE;
+    // Nursery occupancy fraction that triggers a minor GC.
     float nursery_gc_threshold = NURSERY_GC_THRESHOLD;
 
-    // After a minor GC, NurserySpace requests additional blocks when the
-    // to-space occupancy after evacuation exceeds this fraction.
+    // Post-minor-GC to-space occupancy above which the nursery requests more blocks.
     float nursery_growth_threshold = NURSERY_GROWTH_THRESHOLD;
 
-    // Major GC policy (old-gen).
-    //  * initiating_occupancy: fraction of old-gen cap that, once crossed by
-    //    `old_gen_committed`, schedules a major GC at the next safepoint.
-    //  * target_utilization:   immediately after a major GC, if
-    //    live / committed > initiating_occupancy, grow committed capacity so
-    //    that live / committed <= target (bounded by the global old-gen cap).
-    // Invariant: initiating_occupancy > target_utilization (prevents a
-    // grow-loop where post-grow occupancy re-triggers the rule).
-    float major_gc_initiating_occupancy = 0.85f;
-    float major_gc_target_utilization   = 0.50f;
+    // Minor-GC survivals required before an object is promoted to old gen.
+    u32 promotion_age = PROMOTION_AGE;
 
-    //  * garbage_fraction: fraction of this thread's old-gen committed bytes
-    //    that, once exceeded by `bytes-allocated-since-last-major`, schedules
-    //    a major GC. Without this, a long-running compile whose live set is
-    //    much smaller than committed never re-crosses
-    //    `initiating_occupancy` (free-list reuse keeps the heap from
-    //    growing), and dead bytes accumulate as un-swept garbage between
-    //    cycles. 0.0 disables.
-    float major_gc_garbage_fraction = 0.70f;
+    // Enable two-pass DFS spine copying for Cons lists during minor GC (else BFS for all types).
+    bool use_hybrid_dfs = USE_HYBRID_DFS;
 
-    // List locality optimization: two-pass spine copying.
-    // When enabled, Cons list spines are copied contiguously using a two-pass
-    // algorithm (pass 1: copy tail chain, pass 2: evacuate heads), which
-    // provides better cache locality when traversing lists later.
-    // All other types use standard Cheney's BFS evacuation.
-    bool use_hybrid_dfs = true;
+    // ---- Old generation ----
 
-    // Large-object threshold (bytes). Allocations of this size or larger
-    // bypass the nursery and are placed directly in old gen as pinned
-    // objects (Header.pin = 1) so the compactor leaves them in place. For
-    // Tag_String / Tag_ByteBuffer this same threshold also triggers the
-    // split-header path (HEAP_026): a small Tag_LargeStringHeader /
-    // Tag_LargeByteHeader lives in the nursery while the body lives pinned
-    // in old gen and is never copied. See plans/large-object-split-header-bodies.md.
-    // Default: 16 KiB. Empirically optimal for the self-compile workload
-    // (Phase 1 sweep at 180 s: 32 KiB regressed mutator% by ~16 pp vs 16 KiB,
-    // and ≤ 8 KiB falls off a cliff into the large-object path).
-    size_t large_object_threshold = 16 * 1024;
+    // Initial committed bytes of the old generation at startup.
+    size_t initial_old_gen_size = INITIAL_OLD_GEN_SIZE;
 
-    // When `releaseOldGenBlock` is called, also `madvise(MADV_DONTNEED)` the
-    // released extent so its physical RSS drops. The virtual mapping is
-    // retained either way; this flag controls only the RSS behaviour.
-    //
-    // TEMP: defaulting to false while debugging missed-mark-roots that
-    // produce stale HPointers into released pages. With decommit ON, those
-    // stale pointers read zero (madvise zeros); with decommit OFF, the bytes
-    // stay intact so the symptom either disappears (if it really was just
-    // zero reads) or shifts to a clearly observable mark-phase issue.
-    bool decommit_on_oldgen_release = true;
+    // Old-gen committed/cap fraction above which a major GC is scheduled (must be > target_utilization).
+    float major_gc_initiating_occupancy = MAJOR_GC_INITIATING_OCCUPANCY;
 
-    // Cap on bytes committed to uniform small-class pages before we start
-    // splitting larger free cells down into those classes. 0 disables.
+    // Post-major-GC live/committed target; the old-gen cap is grown to stay below this.
+    float major_gc_target_utilization = MAJOR_GC_TARGET_UTILIZATION;
+
+    // Fraction of old-gen committed allocated-since-last-major that schedules another major (0.0 disables).
+    float major_gc_garbage_fraction = MAJOR_GC_GARBAGE_FRACTION;
+
+    // On releaseOldGenBlock, also madvise(MADV_DONTNEED) to drop physical RSS.
+    bool decommit_on_oldgen_release = DECOMMIT_ON_OLDGEN_RELEASE;
+
+    // Cap on bytes committed to uniform small-class pages before splitting larger free cells (0 disables).
     size_t small_class_heap_budget_bytes = DEFAULT_SMALL_CLASS_HEAP_BUDGET;
 
-    // Cell-size cap that defines "small" for budgeting. Defaults to the
-    // large-object threshold so the heuristic covers all fast-path classes.
-    size_t small_class_cell_max_bytes = large_object_threshold;
+    // Cell-size cap that defines "small" for budgeting; allocations larger than this are not budgeted.
+    size_t small_class_cell_max_bytes = LARGE_OBJECT_THRESHOLD;
+
+    // ---- Old-gen sweep & mark pacing ----
+
+    // Bytes of lazy-sweep work the allocator does per slow-path invocation.
+    size_t sweep_work_budget = SWEEP_WORK_BUDGET;
+
+    // Bytes of sweep work finishMarkAndSweep runs synchronously before returning.
+    size_t initial_sweep_budget = INITIAL_SWEEP_BUDGET;
+
+    // Incremental marking work ratio: bytes marked per byte allocated during the marking phase.
+    size_t mark_work_ratio = MARK_WORK_RATIO;
+
+    // Base proportionality factor for the per-allocation sweep budget (bytes swept per byte requested).
+    double sweep_bytes_per_alloc_byte = SWEEP_BYTES_PER_ALLOC_BYTE;
+
+    // Soft cap on the per-allocation sweep budget BEFORE pressure scaling.
+    size_t max_sweep_bytes_per_alloc = MAX_SWEEP_BYTES_PER_ALLOC;
+
+    // Hard cap applied AFTER pressure scaling and unswept-ratio boost.
+    size_t max_sweep_bytes_hard = MAX_SWEEP_BYTES_HARD;
+
+    // Pressure thresholds on committed/cap ratio (must satisfy 0 < low < medium < high < 1).
+    double sweep_cap_ratio_low    = SWEEP_CAP_RATIO_LOW;
+    double sweep_cap_ratio_medium = SWEEP_CAP_RATIO_MEDIUM;
+    double sweep_cap_ratio_high   = SWEEP_CAP_RATIO_HIGH;
+
+    // Per-allocation sweep-budget multipliers per pressure step (must be non-decreasing and >= 1.0).
+    double sweep_scale_low    = SWEEP_SCALE_LOW;
+    double sweep_scale_medium = SWEEP_SCALE_MEDIUM;
+    double sweep_scale_high   = SWEEP_SCALE_HIGH;
+    double sweep_scale_crit   = SWEEP_SCALE_CRIT;
+
+    // Unswept-block fraction above which the per-allocation sweep budget gets a sweep_unswept_scale boost.
+    double sweep_unswept_ratio_boost = SWEEP_UNSWEPT_RATIO_BOOST;
+
+    // Multiplier applied on top of pressure scaling when the unswept-block fraction exceeds the boost threshold.
+    double sweep_unswept_scale = SWEEP_UNSWEPT_SCALE;
+
+    // Per-slice budget for the panic-path sweeper.
+    size_t panic_sweep_slice_bytes = PANIC_SWEEP_SLICE_BYTES;
 
     // Derived value: total nursery size in bytes.
     size_t nurserySize() const { return nursery_block_count * alloc_buffer_size; }
@@ -460,6 +591,72 @@ struct HeapConfig {
         // Allocations below LOT but at/below small_class_cell_max_bytes still
         // route through fixed-size cell classes; cells larger than the
         // requested size simply waste the slack space.
+
+        // ========== 8. Old-gen Sweep & Mark Pacing ==========
+
+        if (sweep_work_budget == 0) {
+            throw std::invalid_argument("sweep_work_budget must be > 0");
+        }
+        if (initial_sweep_budget < sweep_work_budget) {
+            throw std::invalid_argument(
+                "initial_sweep_budget must be >= sweep_work_budget "
+                "(at least one slice per startup pass)");
+        }
+        if (mark_work_ratio < 1) {
+            throw std::invalid_argument("mark_work_ratio must be >= 1");
+        }
+        if (sweep_bytes_per_alloc_byte <= 0.0) {
+            throw std::invalid_argument(
+                "sweep_bytes_per_alloc_byte must be > 0.0");
+        }
+        if (max_sweep_bytes_per_alloc < sweep_work_budget) {
+            throw std::invalid_argument(
+                "max_sweep_bytes_per_alloc must be >= sweep_work_budget "
+                "(soft cap below one slice would degenerate)");
+        }
+        if (max_sweep_bytes_hard < max_sweep_bytes_per_alloc) {
+            throw std::invalid_argument(
+                "max_sweep_bytes_hard must be >= max_sweep_bytes_per_alloc "
+                "(hard cap is applied AFTER pressure scaling)");
+        }
+        if (panic_sweep_slice_bytes < sweep_work_budget) {
+            throw std::invalid_argument(
+                "panic_sweep_slice_bytes must be >= sweep_work_budget");
+        }
+
+        // Pressure thresholds: 0 < low < medium < high < 1.
+        if (sweep_cap_ratio_low <= 0.0 || sweep_cap_ratio_high >= 1.0) {
+            throw std::invalid_argument(
+                "sweep_cap_ratio_{low,high} must lie in (0.0, 1.0)");
+        }
+        if (!(sweep_cap_ratio_low < sweep_cap_ratio_medium &&
+              sweep_cap_ratio_medium < sweep_cap_ratio_high)) {
+            throw std::invalid_argument(
+                "sweep_cap_ratio_low < sweep_cap_ratio_medium < "
+                "sweep_cap_ratio_high required");
+        }
+
+        // Pressure scales: non-decreasing and >= 1.0.
+        if (sweep_scale_low < 1.0) {
+            throw std::invalid_argument("sweep_scale_low must be >= 1.0");
+        }
+        if (!(sweep_scale_low <= sweep_scale_medium &&
+              sweep_scale_medium <= sweep_scale_high &&
+              sweep_scale_high <= sweep_scale_crit)) {
+            throw std::invalid_argument(
+                "sweep_scale_{low,medium,high,crit} must be non-decreasing");
+        }
+
+        // Unswept boost: ratio in (0, 1), scale >= 1.0.
+        if (sweep_unswept_ratio_boost <= 0.0 ||
+            sweep_unswept_ratio_boost >= 1.0) {
+            throw std::invalid_argument(
+                "sweep_unswept_ratio_boost must be in (0.0, 1.0)");
+        }
+        if (sweep_unswept_scale < 1.0) {
+            throw std::invalid_argument(
+                "sweep_unswept_scale must be >= 1.0 (scale never shrinks the budget)");
+        }
     }
 };
 

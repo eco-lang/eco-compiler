@@ -82,81 +82,15 @@ struct MajorGCPhaseProfile {
 //     free spans into tiny cells. See `shouldPreferBagForSmallClass` and
 //     `HeapConfig::small_class_heap_budget_bytes`.
 
-// Small classes: 32 classes covering 8..256 bytes in steps of 8.
-static constexpr size_t NUM_SMALL_CLASSES = 32;
-static constexpr size_t MAX_SMALL_SIZE = 256;
-
-// Medium classes: powers of two starting at 512 B. We statically reserve room
-// up through 65536 B (8 medium classes), but the runtime cap is set from
-// `large_object_threshold` so the actual class count is config-dependent.
-static constexpr size_t MEDIUM_CLASS_BASE = 512;
-static constexpr size_t NUM_MEDIUM_CLASSES_MAX = 8;  // 512..65536
-static constexpr size_t NUM_SIZE_CLASSES =
-    NUM_SMALL_CLASSES + NUM_MEDIUM_CLASSES_MAX;
-
-// Bytes to sweep per allocation slow-path invocation.
-static constexpr size_t SWEEP_WORK_BUDGET = 4096;
-
-// Bytes to sweep in the initial slice that finishMarkAndSweep runs before
-// returning. Sized to seed free lists for the first few allocations after
-// major GC; small enough that the post-mark pause stays bounded on a
-// multi-GB heap. Per-allocation slices use SWEEP_WORK_BUDGET.
-static constexpr size_t INITIAL_SWEEP_BUDGET = SWEEP_WORK_BUDGET * 16;
-
-// Incremental marking work ratio (mark N bytes for each byte allocated).
-static constexpr size_t MARK_WORK_RATIO = 2;
-
-// ============================================================================
-// Adaptive Lazy-Sweep Pacing
-// ============================================================================
-//
-// Per-allocation lazy-sweep work scales with (a) allocation size, (b) old-gen
-// committed-to-cap pressure, and (c) the fraction of unswept blocks. The
-// scaled budget caps allocator slow-path work for any single allocation;
-// when the global cap is reached and no further capacity can be acquired, the
-// panic path drives any remaining lazy-sweep work to completion before
-// declaring OOM. See `sweepOnDemandAllocate` and
-// `panicSweepAndRetryAllocation` for the call sites.
-
-// Base proportionality factor: bytes of sweep work per byte of requested
-// allocation, before pressure scaling. Conservative default; the same
-// pressure test in test/allocator/GCPressureTest.cpp doubles as a calibration
-// harness.
-// TODO: calibrate via GCPressureTest.
-static constexpr double SWEEP_BYTES_PER_ALLOC_BYTE = 2.0;
-
-// Soft cap on the per-allocation budget BEFORE pressure scaling: the base
-// budget never grows beyond this value just from `requested_size` alone.
-static constexpr size_t MAX_SWEEP_BYTES_PER_ALLOC = 1u << 20;  // 1 MiB.
-
-// Hard cap applied AFTER pressure scaling and unswept-ratio boost. If Stage 7
-// still dies under pressure, switch to
-// `std::max<size_t>(4u << 20, getCommittedBytes() / 256)` so a 12 GiB heap
-// allows up to ~48 MiB sweep per allocation in extreme cases.
-static constexpr size_t MAX_SWEEP_BYTES_HARD = 4u << 20;       // 4 MiB.
-
-// Pressure thresholds on committedToCapRatio (committed / cap). Each step
-// multiplies the base budget by the matching SWEEP_SCALE_*.
-static constexpr double SWEEP_CAP_RATIO_LOW    = 0.50;
-static constexpr double SWEEP_CAP_RATIO_MEDIUM = 0.75;
-static constexpr double SWEEP_CAP_RATIO_HIGH   = 0.90;
-
-static constexpr double SWEEP_SCALE_LOW    = 1.0;
-static constexpr double SWEEP_SCALE_MEDIUM = 2.0;
-static constexpr double SWEEP_SCALE_HIGH   = 4.0;
-static constexpr double SWEEP_SCALE_CRIT   = 8.0;
-
-// Unswept-fraction boost: when more than this fraction of in-cycle blocks
-// haven't been fully swept, multiply the budget by SWEEP_UNSWEPT_SCALE on
-// top of the pressure scaling.
-static constexpr double SWEEP_UNSWEPT_RATIO_BOOST = 0.50;
-static constexpr double SWEEP_UNSWEPT_SCALE       = 2.0;
-
-// Per-slice budget when the panic path is driving sweep to completion.
-// Larger than SWEEP_WORK_BUDGET because by the time panic mode fires the
-// mutator has already failed to grow capacity — there is no smaller slice
-// to wait for.
-static constexpr size_t PANIC_SWEEP_SLICE_BYTES = 1u << 20;    // 1 MiB.
+// Free-list size-class layout constants (NUM_SMALL_CLASSES, MAX_SMALL_SIZE,
+// MEDIUM_CLASS_BASE, NUM_MEDIUM_CLASSES_MAX, NUM_SIZE_CLASSES) and the
+// sweep / mark pacing knobs (SWEEP_WORK_BUDGET, INITIAL_SWEEP_BUDGET,
+// MARK_WORK_RATIO, SWEEP_BYTES_PER_ALLOC_BYTE, MAX_SWEEP_BYTES_PER_ALLOC,
+// MAX_SWEEP_BYTES_HARD, SWEEP_CAP_RATIO_*, SWEEP_SCALE_*,
+// SWEEP_UNSWEPT_RATIO_BOOST, SWEEP_UNSWEPT_SCALE, PANIC_SWEEP_SLICE_BYTES)
+// now live in AllocatorCommon.hpp. The pacing knobs are mirrored as fields
+// on HeapConfig and are read at runtime via `config_->...`. The size-class
+// constants stay compile-time because they size static arrays.
 
 // ============================================================================
 // Free Cell Structure (tiered: 16-B Tier-S for class 1, 24-B Tier-M for ≥ 2)
@@ -848,7 +782,7 @@ private:
 
     // Sweep-on-demand driver: computes a dynamic per-allocation sweep
     // budget via `computeSweepBudgetForAlloc` and, while
-    // `hasPendingSweepWork()` and the budget remains, runs SWEEP_WORK_BUDGET
+    // `hasPendingSweepWork()` and the budget remains, runs sweep_work_budget
     // slices of `lazySweep` and retries `tryAllocateFromFreeLists`. Returns
     // the allocation on success, or nullptr when the sweep finishes or the
     // dynamic budget is exhausted. Called from allocateFromSizeClass on the
@@ -867,11 +801,11 @@ private:
     // Returns the per-allocation lazy-sweep byte budget for a request of
     // `requested_size` bytes. Combines base proportionality, pressure
     // scaling, and the unswept-fraction boost; clamped to
-    // MAX_SWEEP_BYTES_HARD.
+    // config.max_sweep_bytes_hard.
     size_t computeSweepBudgetForAlloc(size_t requested_size) const;
 
     // Panic-mode sweep driver: while `hasPendingSweepWork()`, sweeps in
-    // PANIC_SWEEP_SLICE_BYTES slices and retries the free-list path.
+    // panic_sweep_slice_bytes slices and retries the free-list path.
     // Invariant lives at the call site: panic only fires after the bag-page
     // / capacity-grow paths in `allocateFromSizeClass` have failed, meaning
     // growth is impossible. Returns the allocation on success, or nullptr

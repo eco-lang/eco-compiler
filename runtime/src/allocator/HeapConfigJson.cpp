@@ -105,6 +105,16 @@ float parseFraction(const json &value, const char *key) {
     return static_cast<float>(d);
 }
 
+// Parses any JSON number into a double. Range checks are deferred to
+// HeapConfig::validate(); this helper just enforces "is a number".
+double parseDouble(const json &value, const char *key) {
+    if (!value.is_number()) {
+        throw std::invalid_argument(std::string("HeapConfig key '") + key +
+                                    "' must be a number");
+    }
+    return value.get<double>();
+}
+
 bool parseBool(const json &value, const char *key) {
     if (!value.is_boolean()) {
         throw std::invalid_argument(std::string("HeapConfig key '") + key +
@@ -165,6 +175,27 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         "decommit_on_oldgen_release",
         "small_class_heap_budget_bytes",
         "small_class_cell_max_bytes",
+        "string_flatten_limit",
+        "string_tiny_slice_limit",
+        "rope_max_height",
+        "rope_leaf_count_limit",
+        "rope_min_leaf_size",
+        "sweep_work_budget",
+        "initial_sweep_budget",
+        "mark_work_ratio",
+        "sweep_bytes_per_alloc_byte",
+        "max_sweep_bytes_per_alloc",
+        "max_sweep_bytes_hard",
+        "sweep_cap_ratio_low",
+        "sweep_cap_ratio_medium",
+        "sweep_cap_ratio_high",
+        "sweep_scale_low",
+        "sweep_scale_medium",
+        "sweep_scale_high",
+        "sweep_scale_crit",
+        "sweep_unswept_ratio_boost",
+        "sweep_unswept_scale",
+        "panic_sweep_slice_bytes",
     };
 
     for (auto it = doc.begin(); it != doc.end(); ++it) {
@@ -220,6 +251,58 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
     if (auto it = doc.find("small_class_cell_max_bytes"); it != doc.end())
         cfg.small_class_cell_max_bytes =
             parseByteSize(*it, "small_class_cell_max_bytes");
+    if (auto it = doc.find("string_flatten_limit"); it != doc.end())
+        cfg.string_flatten_limit =
+            parseByteSize(*it, "string_flatten_limit");
+    if (auto it = doc.find("string_tiny_slice_limit"); it != doc.end())
+        cfg.string_tiny_slice_limit =
+            parseByteSize(*it, "string_tiny_slice_limit");
+    if (auto it = doc.find("rope_max_height"); it != doc.end())
+        cfg.rope_max_height = parseU32(*it, "rope_max_height");
+    if (auto it = doc.find("rope_leaf_count_limit"); it != doc.end())
+        cfg.rope_leaf_count_limit = parseU32(*it, "rope_leaf_count_limit");
+    if (auto it = doc.find("rope_min_leaf_size"); it != doc.end())
+        cfg.rope_min_leaf_size = parseU32(*it, "rope_min_leaf_size");
+    if (auto it = doc.find("sweep_work_budget"); it != doc.end())
+        cfg.sweep_work_budget = parseByteSize(*it, "sweep_work_budget");
+    if (auto it = doc.find("initial_sweep_budget"); it != doc.end())
+        cfg.initial_sweep_budget = parseByteSize(*it, "initial_sweep_budget");
+    if (auto it = doc.find("mark_work_ratio"); it != doc.end())
+        cfg.mark_work_ratio = parseByteSize(*it, "mark_work_ratio");
+    if (auto it = doc.find("sweep_bytes_per_alloc_byte"); it != doc.end())
+        cfg.sweep_bytes_per_alloc_byte =
+            parseDouble(*it, "sweep_bytes_per_alloc_byte");
+    if (auto it = doc.find("max_sweep_bytes_per_alloc"); it != doc.end())
+        cfg.max_sweep_bytes_per_alloc =
+            parseByteSize(*it, "max_sweep_bytes_per_alloc");
+    if (auto it = doc.find("max_sweep_bytes_hard"); it != doc.end())
+        cfg.max_sweep_bytes_hard =
+            parseByteSize(*it, "max_sweep_bytes_hard");
+    if (auto it = doc.find("sweep_cap_ratio_low"); it != doc.end())
+        cfg.sweep_cap_ratio_low =
+            parseDouble(*it, "sweep_cap_ratio_low");
+    if (auto it = doc.find("sweep_cap_ratio_medium"); it != doc.end())
+        cfg.sweep_cap_ratio_medium =
+            parseDouble(*it, "sweep_cap_ratio_medium");
+    if (auto it = doc.find("sweep_cap_ratio_high"); it != doc.end())
+        cfg.sweep_cap_ratio_high =
+            parseDouble(*it, "sweep_cap_ratio_high");
+    if (auto it = doc.find("sweep_scale_low"); it != doc.end())
+        cfg.sweep_scale_low = parseDouble(*it, "sweep_scale_low");
+    if (auto it = doc.find("sweep_scale_medium"); it != doc.end())
+        cfg.sweep_scale_medium = parseDouble(*it, "sweep_scale_medium");
+    if (auto it = doc.find("sweep_scale_high"); it != doc.end())
+        cfg.sweep_scale_high = parseDouble(*it, "sweep_scale_high");
+    if (auto it = doc.find("sweep_scale_crit"); it != doc.end())
+        cfg.sweep_scale_crit = parseDouble(*it, "sweep_scale_crit");
+    if (auto it = doc.find("sweep_unswept_ratio_boost"); it != doc.end())
+        cfg.sweep_unswept_ratio_boost =
+            parseDouble(*it, "sweep_unswept_ratio_boost");
+    if (auto it = doc.find("sweep_unswept_scale"); it != doc.end())
+        cfg.sweep_unswept_scale = parseDouble(*it, "sweep_unswept_scale");
+    if (auto it = doc.find("panic_sweep_slice_bytes"); it != doc.end())
+        cfg.panic_sweep_slice_bytes =
+            parseByteSize(*it, "panic_sweep_slice_bytes");
 }
 
 void applyHeapConfigFromEnv(HeapConfig &cfg) {
