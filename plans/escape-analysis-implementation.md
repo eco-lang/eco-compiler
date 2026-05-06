@@ -288,6 +288,19 @@ allocate less.
       type — the projection ops already accept either after Phase 0.4.
   - Emits a `LoweringStats` counter so we can measure rewrites/run.
 
+**1.3 RS4GC FCA constraint — Phase 1 restriction.** LLVM's
+`RewriteStatepointsForGC` asserts `"support for FCA unimplemented"` if a
+first-class aggregate type contains GC pointers (`ptr addrspace(1)`)
+and is live across a statepoint. Phase 1 does not yet wire SROA into the
+LLVM-IR pipeline before RS4GC, so we conservatively restrict the
+escape-analysis classifier: a candidate is rewritten only when **every
+element type is a primitive** (`i64`, `f64`, `i16`). Any `!eco.value`
+operand disqualifies the construct, even when the result is locally
+projected and trivially eliminable. The restriction is implemented in
+`EcoEscapeAnalysisPass::allElementsPrimitive` and is lifted in Phase 2's
+SROA wiring (see Phase 2 prerequisites). Until then, real-Elm wins are
+limited to numeric tuples.
+
 **1.3 Pipeline wiring in `EcoPipeline.cpp::buildEcoToEcoPipeline`**
   - Add the two passes after `createEcoPAPSimplifyPass`, gated behind a
     CLI option `-enable-unboxed-agg` plumbed through `ecoc.cpp`.
@@ -305,7 +318,29 @@ allocate less.
 
 ### Phase 2 — Records, customs, lists/cons
 
-Extend the analysis and rewrite to:
+**Prerequisite — wire SROA before RS4GC at the LLVM-IR level.** Phase 1's
+all-primitive restriction (§1.3) is unworkable for records, customs,
+and cons cells because in real Elm code those almost always have at
+least one `!eco.value` field. Before Phase 2 lifts the rewrite to those
+shapes, the LLVM-IR pipeline must run SROA (and `mem2reg`) to scalarise
+value-aggregate structs **before** `RewriteStatepointsForGC` is invoked,
+so a struct of `(i64, ptr addrspace(1))` is broken into independent
+scalar values that RS4GC can track per-element. Concretely:
+- Audit each LLVM-IR pipeline construction site: `ecoc.cpp`,
+  `EcoRunner.cpp`, `eco-boot.cpp`. Currently each builds a `PassManager`
+  via `PB.buildPerModuleDefaultPipeline(...)` and then bolts on
+  `RewriteStatepointsForGC`; verify SROA actually runs before that
+  point at the relevant optimisation level.
+- If SROA isn't reliably scheduled before RS4GC, add it explicitly in
+  the same place RS4GC is added. Mirror the design's sketch in §H of
+  the source design (`design_docs/escape-analysis.md`).
+- Drop the `allElementsPrimitive` guard from `EcoEscapeAnalysisPass`
+  once a stress run with the relaxed classifier is clean.
+- Add a regression fixture exercising `(i64, !eco.value)` and
+  `(!eco.value, !eco.value)` tuples as a non-escaping rewrite to lock
+  in the lifted restriction.
+
+After the prerequisite lands, extend the analysis and rewrite to:
 - `RecordConstructOp` → `RecordMakeOp`.
 - `CustomConstructOp` → `CustomMakeOp`. Per Q4, when a custom value
   flows into `eco.case` (the scrutinee path that reads the tag), the

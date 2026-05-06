@@ -57,14 +57,45 @@ static bool isNonEscapingUse(OpOperand &use) {
     return false;
 }
 
+/// True iff every element type of the construct op is one of the
+/// primitive SSA types (i64, f64, i16). LLVM's RewriteStatepointsForGC
+/// asserts "support for FCA unimplemented" if a first-class aggregate
+/// type contains GC pointers (ptr addrspace(1)) and is live across a
+/// statepoint. Phase 1 doesn't yet run SROA before RS4GC, so we
+/// conservatively reject any construct whose operands include
+/// `!eco.value` — even when the result is locally projected — so the
+/// resulting LLVM struct can never carry a GC pointer.
+static bool isPrimitive(Type t) {
+    return t.isInteger(64) || t.isF64() || t.isInteger(16);
+}
+
+static bool allElementsPrimitive(Operation *op) {
+    if (auto t2 = dyn_cast<eco::Tuple2ConstructOp>(op)) {
+        return isPrimitive(t2.getA().getType()) &&
+               isPrimitive(t2.getB().getType());
+    }
+    if (auto t3 = dyn_cast<eco::Tuple3ConstructOp>(op)) {
+        return isPrimitive(t3.getA().getType()) &&
+               isPrimitive(t3.getB().getType()) &&
+               isPrimitive(t3.getC().getType());
+    }
+    return false;
+}
+
 /// Classify a single tuple-construct op's result and tag it with the
 /// `eco.escape` attribute. Returns true iff classified as non-escaping.
 static bool classifyConstruct(Operation *op, OpBuilder &builder) {
     bool nonEscaping = true;
-    for (OpOperand &use : op->getResult(0).getUses()) {
-        if (!isNonEscapingUse(use)) {
-            nonEscaping = false;
-            break;
+    // RS4GC FCA constraint: any !eco.value element disqualifies.
+    if (!allElementsPrimitive(op)) {
+        nonEscaping = false;
+    }
+    if (nonEscaping) {
+        for (OpOperand &use : op->getResult(0).getUses()) {
+            if (!isNonEscapingUse(use)) {
+                nonEscaping = false;
+                break;
+            }
         }
     }
     op->setAttr(kEscapeAttr,
