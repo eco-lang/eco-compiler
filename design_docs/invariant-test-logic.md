@@ -1861,16 +1861,18 @@ oracle: Scrutinee type matches case_kind.
 tests: compiler/tests/Compiler/Generate/CodeGen/CaseScrutineeTypeTest.elm, compiler/tests/Compiler/Generate/CodeGen/CaseKindScrutineeTest.elm
 --
 --
-name: Kernel calls use consistent types across module
+name: Kernel calls use types matching the func.func declaration
 phase: MLIR codegen
 invariants: CGEN_038
-ir: Calls to kernel functions
-logic: All calls to the same kernel function name:
-  * Use exactly the same MLIR argument and result types across the whole module.
-  * Any mismatch is a codegen bug.
-inputs: MLIR with kernel calls
-oracle: Kernel call types are consistent.
-tests: compiler/tests/Compiler/Generate/CodeGen/KernelAbiConsistencyTest.elm
+ir: func.func is_kernel=true declarations and every eco.call / eco.papCreate / eco.papExtend referencing an Elm_Kernel_* symbol
+logic: For every Elm_Kernel_* symbol used anywhere in the module:
+  * Build the set of func.func declarations with is_kernel=true keyed by sym_name, value = (function_type inputs, function_type result).
+  * For each eco.call whose callee is Elm_Kernel_*: read _operand_types as the canonical operand types and compare them against the decl's inputs; compare the call's single result type against the decl's result. Any mismatch is a violation.
+  * For each eco.papCreate whose function attribute is Elm_Kernel_*: read _operand_types as the captured slot types (may be empty when num_captured = 0); assert it equals the decl's inputs prefix of the same length. Any mismatch or out-of-bounds prefix is a violation.
+  * For each eco.papExtend whose function attribute is Elm_Kernel_* (current codegen rarely sets this; defensive check): read _operand_types and assert it is a length-bounded prefix of the decl's inputs. Saturated cases (remaining_arity = 0 or absent with full operand list) additionally check the result type against the decl's result.
+inputs: MLIR from programs that exercise kernel calls in direct, partial, and saturated forms (the standard test-case corpus drives this via StandardTestSuites.expectSuite).
+oracle: Every Elm_Kernel_* reference has operand and result types identical to the matching func.func declaration's function_type.
+tests: compiler/tests/TestLogic/Generate/CodeGen/KernelDeclInstanceConsistencyTest.elm
 --
 --
 name: MLIR codegen does not emit allocation ops directly
