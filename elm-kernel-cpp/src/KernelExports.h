@@ -347,7 +347,7 @@ HPtr Elm_Kernel_Json_addField(HPtr key, HPtr value, HPtr object);
 // Time Module (elm/time)
 //===----------------------------------------------------------------------===//
 
-HPtr Elm_Kernel_Time_now();
+HPtr Elm_Kernel_Time_now(HPtr millisToPosix);
 HPtr Elm_Kernel_Time_here();
 HPtr Elm_Kernel_Time_getZoneName();
 HPtr Elm_Kernel_Time_setInterval(double intervalMs, HPtr task);

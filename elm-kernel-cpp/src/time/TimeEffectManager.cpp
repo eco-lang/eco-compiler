@@ -1,7 +1,10 @@
 //===- TimeEffectManager.cpp - Time effect manager implementation ----------===//
 //
-// Manages Time.every subscriptions by maintaining timer threads that periodically
-// send time updates to the Elm application.
+// Manages Time.every subscriptions by chaining one-shot timers via
+// Scheduler::pendingResumes_ + TimerService. All HPointer / GC interaction
+// runs on the main scheduler thread; the TimerService worker thread only
+// ever sees (deadline, uint64_t token) pairs.
+// See plans/time-every-via-scheduler-timerservice.md.
 //
 //===----------------------------------------------------------------------===//
 
@@ -14,12 +17,13 @@
 #include "allocator/RuntimeExports.h"
 #include "platform/Scheduler.hpp"
 #include "platform/PlatformRuntime.hpp"
+#include "platform/TimerService.hpp"
+#include <atomic>
 #include <chrono>
-#include <thread>
+#include <cmath>
+#include <cstring>
 #include <mutex>
 #include <unordered_map>
-#include <atomic>
-#include <cstring>
 #include <vector>
 
 using namespace Elm;
@@ -44,151 +48,154 @@ static inline HPointer decodeHP(uint64_t val) {
     return u.hp;
 }
 
-// Timer thread management
-struct TimerState {
-    std::atomic<bool> running{true};
-    double intervalMs;
-    uint64_t taggerEnc;  // Encoded closure
-    uint64_t routerEnc;  // Encoded router for sendToApp
+// Per-interval state. Lives only on the main scheduler thread.
+//
+// Invariant: ALL accesses to g_intervals (mutation, lookup, scanning) take
+// g_timerMutex. We must NOT hold g_timerMutex across any Allocator call —
+// the GC scanner re-enters this mutex during evacuation, and any allocation
+// can trigger GC. Copy primitives out, drop the lock, then allocate.
+struct IntervalState {
+    double   intervalMs;
+    uint64_t generation;  // bumped on (re)subscription; stale ticks self-cancel
+    uint64_t taggerEnc;   // encoded HPointer to (Posix -> msg) closure
+    uint64_t routerEnc;   // encoded HPointer to Router
 };
 
-// Global timer state (keyed by interval for deduplication)
 static std::mutex g_timerMutex;
-static std::unordered_map<double, std::unique_ptr<TimerState>> g_activeTimers;
-static std::unordered_map<double, std::thread> g_timerThreads;
+static std::unordered_map<double, IntervalState> g_intervals;
+static std::atomic<uint64_t> g_nextGeneration{1};
 
 // Register, exactly once, an external root scanner that walks every live
-// TimerState and evacuates its taggerEnc / routerEnc fields. Without this, a
-// main-thread major GC during a timer's sleep can sweep the captured
-// closure/router and leave timerWorker reading stale HPointer bits.
+// IntervalState and evacuates its taggerEnc / routerEnc fields. The scanner
+// runs on the main thread during GC (which is triggered by allocations).
+//
+// Invariant: no Allocator calls while holding g_timerMutex. If a thread
+// held the mutex across an allocation, GC's scanner would deadlock on the
+// same (non-recursive) mutex on the same thread.
 static void timerRegisterScannerOnce() {
     static std::once_flag flag;
     std::call_once(flag, []() {
         Elm::Allocator::instance().getRootSet().addExternalRootScanner(
             [](Elm::RootSet::EvacuateFn evac) {
                 std::lock_guard<std::mutex> lock(g_timerMutex);
-                for (auto& [interval, state] : g_activeTimers) {
-                    if (!state) continue;
-                    if (state->taggerEnc) evac(state->taggerEnc);
-                    if (state->routerEnc) evac(state->routerEnc);
+                for (auto& [interval, state] : g_intervals) {
+                    (void)interval;
+                    if (state.taggerEnc) evac(state.taggerEnc);
+                    if (state.routerEnc) evac(state.routerEnc);
                 }
             });
     });
 }
 
-// Timer thread function
-void timerWorker(double intervalMs) {
-    TimerState* state = nullptr;
+// Forward declaration: defined below.
+static void* timerTickEvaluator(void* args[]);
+
+// Schedule a single Time.every tick for (intervalMs, generation).
+// Mirrors sleepBindingEvaluator (ProcessExports.cpp): registerPendingResume
+// → incrementPendingAsync → TimerService::schedule.
+static void scheduleTimerTick(double intervalMs, uint64_t generation) {
+    // Box metadata as Elm values so they're GC-visible and travel through
+    // the closure's captures.
+    HPointer intervalHP = allocFloat(intervalMs);
+    HPointer genHP      = allocInt(static_cast<i64>(generation));
+
+    HPointer tickCl = listNil();
+    {
+        Elm::StackRootGuard guard({ &intervalHP, &genHP, &tickCl });
+        tickCl = allocClosure(timerTickEvaluator, /*max_values=*/3);
+        if (void* clPtr = Allocator::instance().resolve(tickCl)) {
+            closureCapture(clPtr, boxed(intervalHP), /*is_boxed=*/true);
+            closureCapture(clPtr, boxed(genHP),      /*is_boxed=*/true);
+        }
+    }
+
+    auto& sched = Scheduler::instance();
+    uint64_t token = sched.registerPendingResume(tickCl);
+    sched.incrementPendingAsync();
+    TimerService::instance().schedule(intervalMs, token);
+}
+
+// Per-tick evaluator. Runs entirely on the main scheduler thread, fired by
+// Scheduler::processReadyAsync via callClosure1(tickCl, taskSucceed(unit)).
+//
+//   args[0] = intervalHP   (boxed ElmFloat capture)
+//   args[1] = genHP        (boxed ElmInt capture)
+//   args[2] = Task succeed unit  (applied by processReadyAsync; ignored here)
+static void* timerTickEvaluator(void* args[]) {
+    HPointer intervalHP = decodeHP(reinterpret_cast<uint64_t>(args[0]));
+    HPointer genHP      = decodeHP(reinterpret_cast<uint64_t>(args[1]));
+    (void)args[2];
+
+    auto& allocator = Allocator::instance();
+    void* intervalPtr = allocator.resolve(intervalHP);
+    void* genPtr      = allocator.resolve(genHP);
+    if (!intervalPtr || !genPtr) {
+        return reinterpret_cast<void*>(
+            encodeHP(Scheduler::instance().taskSucceed(unit())));
+    }
+    double   intervalMs = static_cast<ElmFloat*>(intervalPtr)->value;
+    uint64_t generation = static_cast<uint64_t>(
+                              static_cast<ElmInt*>(genPtr)->value);
+    if (intervalMs == 0.0) intervalMs = 0.0;  // fold -0.0 to +0.0 (Q6)
+
+    // Snapshot encodings under the mutex; drop it before any allocation.
+    uint64_t taggerEnc = 0, routerEnc = 0;
+    bool active = false;
     {
         std::lock_guard<std::mutex> lock(g_timerMutex);
-        auto it = g_activeTimers.find(intervalMs);
-        if (it == g_activeTimers.end()) {
-            Scheduler::instance().decrementPendingAsync();
-            return;
+        auto it = g_intervals.find(intervalMs);
+        if (it != g_intervals.end() && it->second.generation == generation) {
+            taggerEnc = it->second.taggerEnc;
+            routerEnc = it->second.routerEnc;
+            active = true;
         }
-        state = it->second.get();
     }
 
-    // Init GC for this thread so we can allocate heap objects
-    Allocator::instance().initThread();
-
-    auto interval = std::chrono::milliseconds(static_cast<int64_t>(intervalMs));
-
-    while (state->running.load()) {
-        std::this_thread::sleep_for(interval);
-
-        if (!state->running.load()) break;
-
-        // Get current time
-        auto now = std::chrono::system_clock::now();
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            now.time_since_epoch()
-        ).count();
-
-        // Create Posix value (Int)
-        HPointer posix = allocInt(ms);
-
-        // Snapshot the rooted closure/router AFTER any allocation: the
-        // external scanner above keeps state->taggerEnc / state->routerEnc
-        // valid across GCs, so reading them now (just before each call)
-        // gives the up-to-date HPointer bits.
-        uint64_t posixEnc = encodeHP(posix);
-        uint64_t taggerSnap;
-        uint64_t routerSnap;
-        {
-            std::lock_guard<std::mutex> lock(g_timerMutex);
-            taggerSnap = state->taggerEnc;
-            routerSnap = state->routerEnc;
-        }
-
-        // Call tagger(posix) to get the message
-        uint64_t msgEnc = eco_apply_closure(HPtr::fromBits(taggerSnap), &posixEnc, 1).toBits();
-
-        // Send to app via router. Re-read the router *after* the tagger
-        // call: the scanner has updated state->routerEnc in place if a GC
-        // ran inside the tagger.
-        {
-            std::lock_guard<std::mutex> lock(g_timerMutex);
-            routerSnap = state->routerEnc;
-        }
-        HPointer router = decodeHP(routerSnap);
-        HPointer msg = decodeHP(msgEnc);
-        PlatformRuntime::instance().sendToApp(router, msg);
+    HPointer succeedTask = Scheduler::instance().taskSucceed(unit());
+    if (!active) {
+        // Interval was unsubscribed (or re-created with a new generation).
+        // processReadyAsync decrements pendingAsync_ for us; just return.
+        return reinterpret_cast<void*>(encodeHP(succeedTask));
     }
 
-    Allocator::instance().cleanupThread();
-    Scheduler::instance().decrementPendingAsync();
-}
+    // Per Q2: decode immediately, root before any allocation, and re-encode
+    // from the rooted HPointers at every use site. Do NOT reuse taggerEnc /
+    // routerEnc after allocations — the encodings would be stale if GC ran.
+    HPointer taggerHP = decodeHP(taggerEnc);
+    HPointer routerHP = decodeHP(routerEnc);
+    HPointer posixHP  = listNil();
+    HPointer msgHP    = listNil();
 
-// Stop all timers for given intervals
-void stopTimers(const std::vector<double>& intervals) {
-    std::lock_guard<std::mutex> lock(g_timerMutex);
-    for (double interval : intervals) {
-        auto it = g_activeTimers.find(interval);
-        if (it != g_activeTimers.end()) {
-            it->second->running.store(false);
-        }
-        auto threadIt = g_timerThreads.find(interval);
-        if (threadIt != g_timerThreads.end()) {
-            if (threadIt->second.joinable()) {
-                threadIt->second.detach();  // Don't block, just let it finish
-            }
-            g_timerThreads.erase(threadIt);
-        }
-        g_activeTimers.erase(interval);
-    }
-}
+    {
+        Elm::StackRootGuard guard(
+            { &taggerHP, &routerHP, &posixHP, &msgHP, &succeedTask });
 
-// Start a timer for given interval
-void startTimer(double intervalMs, uint64_t taggerEnc, uint64_t routerEnc) {
-    // Install the GC external root scanner for TimerState before exposing
-    // any taggerEnc/routerEnc closure handle to the timer thread.
-    timerRegisterScannerOnce();
+        // Q1 — build the Posix Custom directly. Posix is
+        // `type Posix = Posix Int` (CtorTag.elm: ctor index 0, single
+        // unboxed Int field). Passing a raw Tag_Int would alias the
+        // tagger/posixToMillis pattern match's offset-16 read past the
+        // end of the ElmInt — same heap-layout-punning bug we fixed in
+        // Time.now.
+        std::vector<Unboxable> vals(1);
+        vals[0].i = static_cast<i64>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+        posixHP = custom(/*ctor=*/0, vals, /*kind_bitmap=*/0b01);
 
-    std::lock_guard<std::mutex> lock(g_timerMutex);
+        uint64_t posixArg = encodeHP(posixHP);
+        uint64_t msgEnc = eco_apply_closure(
+            HPtr::fromBits(encodeHP(taggerHP)), &posixArg, 1).toBits();
+        msgHP = decodeHP(msgEnc);
 
-    // Check if already running with same interval
-    auto it = g_activeTimers.find(intervalMs);
-    if (it != g_activeTimers.end()) {
-        // Update tagger if interval already exists
-        it->second->taggerEnc = taggerEnc;
-        it->second->routerEnc = routerEnc;
-        return;
+        PlatformRuntime::instance().sendToApp(routerHP, msgHP);
     }
 
-    // Create new timer state
-    auto state = std::make_unique<TimerState>();
-    state->intervalMs = intervalMs;
-    state->taggerEnc = taggerEnc;
-    state->routerEnc = routerEnc;
+    // Chain the next tick. scheduleTimerTick allocates; the previous
+    // guard has been released, but we no longer need taggerHP/routerHP
+    // alive past sendToApp.
+    scheduleTimerTick(intervalMs, generation);
 
-    g_activeTimers[intervalMs] = std::move(state);
-
-    // Track pending async work before spawning thread
-    Scheduler::instance().incrementPendingAsync();
-
-    // Start timer thread
-    g_timerThreads[intervalMs] = std::thread(timerWorker, intervalMs);
+    return reinterpret_cast<void*>(encodeHP(succeedTask));
 }
 
 // ============================================================================
@@ -247,25 +254,67 @@ static void* timeOnEffectsEvaluator(void* args[]) {
         current = cell->tail;
     }
 
-    // Find intervals to stop (in g_activeTimers but not in requestedIntervals)
-    std::vector<double> toStop;
+    // Q6: fold -0.0 to +0.0 so the double map key is stable across
+    // subscription/lookup paths. Skip NaN intervals — nonsensical and would
+    // never match in the lookup map anyway.
+    auto normalize = [](double d) -> double {
+        return d == 0.0 ? 0.0 : d;
+    };
+
+    std::unordered_map<double, uint64_t> normalizedRequested;
+    for (auto& [interval, taggerEnc] : requestedIntervals) {
+        if (std::isnan(interval)) continue;
+        normalizedRequested[normalize(interval)] = taggerEnc;
+    }
+
+    timerRegisterScannerOnce();
+
+    struct PendingStart {
+        double   intervalMs;
+        uint64_t generation;
+    };
+    std::vector<PendingStart> toStart;
+
+    // Update g_intervals under the mutex; do NOT allocate while holding it.
     {
         std::lock_guard<std::mutex> lock(g_timerMutex);
-        for (auto& [interval, _] : g_activeTimers) {
-            if (requestedIntervals.find(interval) == requestedIntervals.end()) {
-                toStop.push_back(interval);
+
+        // Erase intervals that are no longer requested. In-flight ticks
+        // for those intervals will see the missing entry and self-cancel
+        // via the generation check.
+        for (auto it = g_intervals.begin(); it != g_intervals.end(); ) {
+            if (normalizedRequested.find(it->first) == normalizedRequested.end()) {
+                it = g_intervals.erase(it);
+            } else {
+                ++it;
+            }
+        }
+
+        // Insert new intervals or update existing ones in place.
+        for (auto& [intervalMs, taggerEnc] : normalizedRequested) {
+            auto it = g_intervals.find(intervalMs);
+            if (it == g_intervals.end()) {
+                uint64_t gen = g_nextGeneration.fetch_add(1);
+                g_intervals.emplace(intervalMs, IntervalState{
+                    intervalMs, gen, taggerEnc, routerEnc
+                });
+                toStart.push_back({ intervalMs, gen });
+            } else {
+                // Q7: in-place mutation is safe under the Q2 rooting
+                // discipline. Old encodings lose their root the moment we
+                // overwrite, but any in-flight tick that already
+                // snapshotted them has rooted the decoded HPointers on
+                // its stack, so the old closures stay alive until that
+                // tick returns.
+                it->second.taggerEnc = taggerEnc;
+                it->second.routerEnc = routerEnc;
             }
         }
     }
 
-    // Stop unused timers
-    if (!toStop.empty()) {
-        stopTimers(toStop);
-    }
-
-    // Start/update needed timers
-    for (auto& [interval, taggerEnc] : requestedIntervals) {
-        startTimer(interval, taggerEnc, routerEnc);
+    // Allocations only AFTER releasing g_timerMutex.
+    for (const auto& ps : toStart) {
+        scheduleTimerTick(ps.intervalMs, ps.generation);
     }
 
     // Return Task.succeed(Nil) - state unchanged

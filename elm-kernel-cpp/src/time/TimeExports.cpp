@@ -8,6 +8,7 @@
 #include "../ExportHelpers.hpp"
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
+#include "allocator/RuntimeExports.h"
 #include "platform/Scheduler.hpp"
 #include <chrono>
 #include <ctime>
@@ -154,9 +155,21 @@ std::string getTimezoneName() {
 // Task_Binding. Reads system_clock at consumption time (not at module init)
 // so successive Time.now references see distinct timestamps. Mirrors the JS
 // kernel's `_Scheduler_binding(callback => callback(_Scheduler_succeed(...)))`.
-// Argument: rawArgs[0] = resume closure (HPointer encoded).
+//
+// Arguments:
+//   rawArgs[0] = millisToPosix closure (captured by the binding) — the
+//                Elm `Posix` constructor wrapped as `Int -> Posix`.
+//   rawArgs[1] = resume closure (applied by the scheduler).
+//
+// We cannot return a bare Int here because `Time.now : Task x Posix` —
+// downstream pattern matches like `posixToMillis (Posix m) = m` read field 0
+// of a Tag_Custom and a raw Tag_Int has the wrong layout (values[0] is at
+// offset 16 on a Custom, but past the end of an ElmInt). Applying
+// millisToPosix builds the Tag_Custom with the right ctor.
 static void* timeNowBindingEvaluator(void* rawArgs[]) {
-    uint64_t resumeEnc = reinterpret_cast<uint64_t>(rawArgs[0]);
+    uint64_t mtpEnc = reinterpret_cast<uint64_t>(rawArgs[0]);
+    uint64_t resumeEnc = reinterpret_cast<uint64_t>(rawArgs[1]);
+    HPointer mtpHP = Export::decode(mtpEnc);
     HPointer resumeHP = Export::decode(resumeEnc);
 
     auto now = std::chrono::system_clock::now();
@@ -164,13 +177,28 @@ static void* timeNowBindingEvaluator(void* rawArgs[]) {
         now.time_since_epoch()
     ).count();
 
-    // Root resumeHP across taskSucceedKind (which allocates a Task) and
-    // callClosure1 (which may GC inside user code).
+    // Three allocations follow (allocInt, eco_apply_closure for the Posix
+    // ctor, taskSucceed). Root mtpHP / resumeHP across all three; root the
+    // intermediate Posix and Task as they appear.
+    HPointer posixHP = Elm::alloc::listNil();
     HPointer succeededTask = Elm::alloc::listNil();
     {
-        Elm::StackRootGuard guard(&resumeHP, &succeededTask);
-        succeededTask = Elm::Platform::Scheduler::instance().taskSucceedKind(
-            Elm::alloc::unboxedInt(ms), 1);
+        Elm::StackRootGuard guard(&mtpHP, &resumeHP, &posixHP, &succeededTask);
+
+        // millisToPosix is `Posix : Int -> Posix` and its closure ABI takes
+        // a boxed Int (HPointer to ElmInt), per the eco_apply_closure
+        // convention used elsewhere in the kernel. Allocate a heap ElmInt,
+        // root it across the apply (which itself may GC inside the ctor).
+        HPointer msHP = Elm::alloc::allocInt(ms);
+        {
+            Elm::StackRootGuard msGuard(&msHP);
+            uint64_t msArg = Export::encode(msHP);
+            uint64_t posixEnc = eco_apply_closure(
+                HPtr::fromBits(Export::encode(mtpHP)), &msArg, 1).toBits();
+            posixHP = Export::decode(posixEnc);
+        }
+
+        succeededTask = Elm::Platform::Scheduler::instance().taskSucceed(posixHP);
         Elm::Platform::Scheduler::callClosure1(resumeHP, succeededTask);
     }
 
@@ -182,14 +210,32 @@ static void* timeNowBindingEvaluator(void* rawArgs[]) {
 
 extern "C" {
 
-HPtr Elm_Kernel_Time_now() {
-    // Returns Task x Posix; Posix is an Int (ms since epoch). The clock read
-    // is deferred into a Task_Binding so it fires when the scheduler consumes
-    // the task, not at module init time (which would freeze every reference
-    // to Time.now to a single timestamp).
-    HPointer bindingCB = Elm::alloc::allocClosure(
-        reinterpret_cast<EvalFunction>(timeNowBindingEvaluator), 1);
-    HPointer task = Scheduler::instance().taskBinding(bindingCB);
+HPtr Elm_Kernel_Time_now(HPtr millisToPosix) {
+    // Returns Task x Posix. The clock read AND the Posix ctor application
+    // are deferred into a Task_Binding so they fire each time the scheduler
+    // consumes the task; otherwise every reference to Time.now would freeze
+    // to the timestamp captured at module init.
+    //
+    // millisToPosix is captured into the binding closure so the evaluator
+    // can apply `Posix : Int -> Posix` to wrap the raw ms count — the Elm
+    // type is `Task x Posix`, not `Task x Int`. (Building the Posix Custom
+    // by hand in C++ is also possible, but pulling the closure through is
+    // the same path the JS kernel uses and it doesn't hardcode the ctor id
+    // on the C++ side.)
+    HPointer mtpHP = Export::decode(millisToPosix.toBits());
+    HPointer bindingCB = Elm::alloc::listNil();
+    HPointer task = Elm::alloc::listNil();
+    {
+        Elm::StackRootGuard guard(&mtpHP, &bindingCB, &task);
+        bindingCB = Elm::alloc::allocClosure(
+            reinterpret_cast<EvalFunction>(timeNowBindingEvaluator),
+            /*max_values=*/2);
+        void* clPtr = Allocator::instance().resolve(bindingCB);
+        if (clPtr) {
+            Elm::alloc::closureCapture(clPtr, Elm::alloc::boxed(mtpHP), true);
+        }
+        task = Scheduler::instance().taskBinding(bindingCB);
+    }
     return HPtr::fromBits(Export::encode(task));
 }
 
