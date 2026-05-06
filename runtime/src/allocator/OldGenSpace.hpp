@@ -1204,24 +1204,37 @@ private:
     AllDeadReclaimStats reclaimAllDeadBlocksFromMeta();
 
 #if ENABLE_GC_STATS
-    // Walks every surviving block at major-GC end and accumulates a
-    // residency snapshot plus a per-class free-list snapshot into
-    // `stats`. Must be called AFTER finalizeMetaAfterMark (live_bytes
-    // populated) and BEFORE transitionToSweeping (which clears
-    // free_lists_), so the per-block four-way breakdown
-    // {live, free, garbage, unallocated-tail} is meaningful:
-    //   live    = mark-derived live_bytes
-    //   free    = bytes inside the block that are linked into a
-    //             per-class free list or `free_large_blocks_` (residual
-    //             from the previous major's lazy sweep that the mutator
-    //             didn't drain)
-    //   garbage = total - live - free   (dead bytes the previous lazy
-    //             sweep never reached; the new major must walk these)
-    // The all-dead blocks reclaimed seconds later by
-    // reclaimAllDeadBlocksFromMeta are intentionally counted here —
-    // they show up in the live_frac == 0 bucket and document the
-    // (good) case where a page was fully released.
-    void gatherResidencyInto(GCStats& stats) const;
+    // Per-block free-bytes map keyed by `BlockInfo::start`. The key is
+    // stable across `releaseBlockToAllocator`'s swap-remove of `blocks_`
+    // entries, so a snapshot taken before reclaim can be looked up after
+    // reclaim has completed.
+    using FreeBytesByBlockStart = std::unordered_map<const char*, size_t>;
+
+    // Phase A of the major-GC end residency snapshot. Walks `free_lists_`
+    // and `free_large_blocks_` to record the per-class free-list
+    // histogram into `stats` and to populate `out` with the per-block
+    // free byte totals (keyed by start address). MUST be called BEFORE
+    // `transitionToSweeping`, which wipes `free_lists_` /
+    // `free_large_blocks_`. The four-way breakdown
+    // {live, free, garbage, unallocated-tail} relies on this map being
+    // captured here while the free-list state is still meaningful.
+    void gatherFreeListSnapshotInto(GCStats& stats,
+                                    FreeBytesByBlockStart& out) const;
+
+    // Phase B of the major-GC end residency snapshot. Walks every
+    // surviving block in `blocks_` and records its live / free / garbage
+    // breakdown into `stats`. MUST be called AFTER
+    // `reclaimAllDeadBlocksFromMeta` and `adjustCapacityAfterMajorGC` so
+    // that the histogram reflects the true post-reclaim block set: the
+    // `live_frac == 0` bucket is then the genuinely retained dead pages
+    // (held by the min-heap floor, the heap-base sentinel, `is_large`
+    // exclusion, or pinning), not blocks about to be released. Per-block
+    // free bytes are looked up in `free_by_start`, which the caller must
+    // have populated via `gatherFreeListSnapshotInto` BEFORE
+    // `transitionToSweeping`.
+    void gatherResidencySnapshotFrom(
+        GCStats& stats,
+        const FreeBytesByBlockStart& free_by_start) const;
 #endif
 
     friend class Allocator;

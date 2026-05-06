@@ -1961,10 +1961,12 @@ void OldGenSpace::finalizeMetaAfterMark() {
 //
 // Caller order (see `finishMarkAndSweep`):
 //   finalizeMetaAfterMark()                  // live_bytes is authoritative
-//   gatherResidencyInto()                    // pre-demotion residency
+//   gatherFreeListSnapshotInto()             // Phase A: free-list state
 //   demoteMostlyDeadUniformBlocks()          // <-- this method
 //   transitionToSweeping()                   // wipes free_lists_
 //   reclaimAllDeadBlocksFromMeta()           // releases live_bytes==0 blocks
+//   adjustCapacityAfterMajorGC()             // post-mark shrink
+//   gatherResidencySnapshotFrom()            // Phase B: post-reclaim residency
 //   ... lazy sweep ...
 OldGenSpace::DemotionStats
 OldGenSpace::demoteMostlyDeadUniformBlocks() {
@@ -2030,11 +2032,13 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats) {
     }
 
     finalizeMetaAfterMark();
-    // Sample residency + free-list state BEFORE transitionToSweeping
-    // wipes free_lists_, so the per-block free vs garbage split is
-    // meaningful (free_lists_ at this point hold the previous major's
-    // residual cells the mutator hasn't drained yet).
-    gatherResidencyInto(stats);
+    // Phase A of the residency snapshot: capture free-list state BEFORE
+    // transitionToSweeping wipes free_lists_ / free_large_blocks_. The
+    // per-block free-bytes map is keyed by BlockInfo::start so it
+    // survives reclaim's swap-remove of blocks_ entries, and is consumed
+    // by Phase B after reclaim + shrink.
+    FreeBytesByBlockStart free_by_start;
+    gatherFreeListSnapshotInto(stats, free_by_start);
     // Retag mostly-dead uniform blocks as mixed BEFORE transitionToSweeping.
     // The wipe of free_lists_ then drops their stale uniform-class cells
     // for free; lazy sweep re-emits the coalesced runs on mixed-only
@@ -2043,6 +2047,10 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats) {
     transitionToSweeping();
     reclaimAllDeadBlocksFromMeta();
     adjustCapacityAfterMajorGC();
+    // Phase B of the residency snapshot: post-reclaim, post-shrink, so
+    // the live_frac == 0 bucket reflects the truly retained dead pages
+    // rather than candidates about to be released.
+    gatherResidencySnapshotFrom(stats, free_by_start);
     recomputeSweepPendingBlocks();
     lazySweep(NUM_SIZE_CLASSES, INITIAL_SWEEP_BUDGET);
 
@@ -2066,11 +2074,13 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats,
     auto t_sweep_start = t_mark_end;
 
     finalizeMetaAfterMark();
-    // Sample residency + free-list state BEFORE transitionToSweeping
-    // wipes free_lists_, so the per-block free vs garbage split is
-    // meaningful (free_lists_ at this point hold the previous major's
-    // residual cells the mutator hasn't drained yet).
-    gatherResidencyInto(stats);
+    // Phase A of the residency snapshot: capture free-list state BEFORE
+    // transitionToSweeping wipes free_lists_ / free_large_blocks_. The
+    // per-block free-bytes map is keyed by BlockInfo::start so it
+    // survives reclaim's swap-remove of blocks_ entries, and is consumed
+    // by Phase B after reclaim + shrink.
+    FreeBytesByBlockStart free_by_start;
+    gatherFreeListSnapshotInto(stats, free_by_start);
     // Retag mostly-dead uniform blocks as mixed BEFORE transitionToSweeping
     // so lazy sweep parses them with the mixed-block walk step and the
     // mixed any-class packer. See demoteMostlyDeadUniformBlocks for the
@@ -2085,6 +2095,10 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats,
     transitionToSweeping();
     AllDeadReclaimStats alldead = reclaimAllDeadBlocksFromMeta();
     adjustCapacityAfterMajorGC();
+    // Phase B of the residency snapshot: post-reclaim, post-shrink, so
+    // the live_frac == 0 bucket reflects the truly retained dead pages
+    // rather than candidates about to be released.
+    gatherResidencySnapshotFrom(stats, free_by_start);
     recomputeSweepPendingBlocks();
     lazySweep(NUM_SIZE_CLASSES, INITIAL_SWEEP_BUDGET);
 
@@ -3381,21 +3395,22 @@ static_assert(NUM_SIZE_CLASSES <= GCStats::FREELIST_CLASS_BUCKETS,
               "GCStats::FREELIST_CLASS_BUCKETS must cover every "
               "OldGenSpace size class");
 
-// Sampled at major-GC end, after finalizeMetaAfterMark and BEFORE
-// transitionToSweeping clears free_lists_. Walks each per-class free
-// list to derive (a) per-block free-list bytes for the residency
-// histogram's four-way breakdown and (b) per-class cell/byte totals
-// for the free-list size-class histogram. `free_large_blocks_` is
-// rolled into the per-block totals (whole-block free entries) and
+// Phase A of the major-GC end residency snapshot. Sampled after
+// finalizeMetaAfterMark and BEFORE transitionToSweeping clears
+// free_lists_ / free_large_blocks_. Walks each per-class free list to
+// record (a) per-class cell/byte totals for the free-list size-class
+// histogram and (b) per-block free-list bytes (keyed by BlockInfo::start
+// so the map survives reclaim's swap-remove). `free_large_blocks_` is
+// rolled into the per-block totals as whole-block free entries and
 // reported separately to the size-class histogram.
-void OldGenSpace::gatherResidencyInto(GCStats& stats) const {
-    // Clear the latest_* mirror arrays so this snapshot replaces (rather
-    // than accumulates onto) the previously-recorded "most recent"
-    // residency / free-list state. Cumulative arrays are left untouched.
+void OldGenSpace::gatherFreeListSnapshotInto(
+    GCStats& stats, FreeBytesByBlockStart& out) const {
+    // Clear the latest_* mirror for the free-list portion only. The
+    // residency mirror is cleared by Phase B once reclaim and shrink
+    // have run.
     stats.beginFreeListSnapshot();
-    stats.beginResidencySnapshot();
 
-    std::vector<size_t> per_block_free_bytes(blocks_.size(), 0);
+    out.clear();
 
     for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) {
         uint64_t cell_count = 0;
@@ -3406,8 +3421,8 @@ void OldGenSpace::gatherResidencyInto(GCStats& stats) const {
             cell_count++;
             cell_bytes += sz;
             const size_t bi = blockIndexFor(cell);
-            if (bi < per_block_free_bytes.size()) {
-                per_block_free_bytes[bi] += sz;
+            if (bi < blocks_.size()) {
+                out[blocks_[bi].start] += sz;
             }
         }
         if (cell_count > 0) {
@@ -3420,7 +3435,7 @@ void OldGenSpace::gatherResidencyInto(GCStats& stats) const {
     for (size_t bi : free_large_blocks_) {
         if (bi >= blocks_.size()) continue;
         const size_t total = blocks_[bi].totalBytes();
-        per_block_free_bytes[bi] += total;
+        out[blocks_[bi].start] += total;
         large_count++;
         large_bytes += total;
     }
@@ -3428,14 +3443,31 @@ void OldGenSpace::gatherResidencyInto(GCStats& stats) const {
         stats.recordFreeListLargeBlocks(large_count, large_bytes);
     }
     stats.recordFreeListSnapshot();
+}
+
+// Phase B of the major-GC end residency snapshot. Sampled after
+// reclaimAllDeadBlocksFromMeta and adjustCapacityAfterMajorGC, so the
+// histogram reflects the true post-reclaim block set: the live_frac == 0
+// bucket holds genuinely retained dead pages (min-heap floor, heap-base
+// sentinel, is_large exclusion, pinning), not the candidates that were
+// already released. Per-block free bytes come from the map captured by
+// Phase A — surviving blocks' `start` keys are stable across reclaim's
+// swap-remove. Reclaimed blocks drop out of `blocks_` and their entries
+// in `free_by_start` are simply unused.
+void OldGenSpace::gatherResidencySnapshotFrom(
+    GCStats& stats, const FreeBytesByBlockStart& free_by_start) const {
+    stats.beginResidencySnapshot();
 
     for (size_t i = 0; i < blocks_.size() && i < buffer_meta_.size(); ++i) {
         const BlockInfo& blk = blocks_[i];
         const BufferMetadata& meta = buffer_meta_[i];
         const size_t total = blk.totalBytes();
         if (total == 0) continue;
+        size_t free_bytes = 0;
+        auto it = free_by_start.find(blk.start);
+        if (it != free_by_start.end()) free_bytes = it->second;
         stats.recordBlockResidency(total, meta.live_bytes,
-                                   per_block_free_bytes[i], blk.is_large);
+                                   free_bytes, blk.is_large);
     }
     stats.recordResidencySnapshot();
 }
