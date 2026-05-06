@@ -19,8 +19,7 @@ module {
 // CHECK: llvm.insertvalue
 // CHECK: llvm.extractvalue
 //
-// CHECK-NOT (informational only — this runner does literal CHECK matching
-// and silently ignores CHECK-NOT, but the negative assertions are part of
-// the design contract for this test):
-//   CHECK-NOT: eco_alloc_tuple2
-//   CHECK-NOT: eco_alloc_
+// No allocation must survive into the lowered LLVM dialect for a tuple
+// that is built and immediately projected.
+// CHECK-NOT: eco_alloc_tuple2
+// CHECK-NOT: eco_resolve_hptr

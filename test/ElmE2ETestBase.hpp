@@ -292,25 +292,51 @@ inline std::string extractExpectedOutput(const std::string& content) {
     return "";
 }
 
-inline std::vector<std::string> extractCheckPatterns(const std::string& content) {
-    std::vector<std::string> patterns;
+/**
+ * One CHECK directive parsed out of an Elm test file. Elm uses `--` as
+ * the line-comment marker, so the directives are `-- CHECK:` (positive)
+ * and `-- CHECK-NOT:` (negative).
+ */
+struct CheckPattern {
+    std::string pattern;
+    bool negated;
+};
+
+inline std::string trimCheckPattern(std::string pattern) {
+    size_t start = pattern.find_first_not_of(" \t");
+    if (start != std::string::npos) {
+        pattern = pattern.substr(start);
+    }
+    size_t end = pattern.find_last_not_of(" \t\r\n");
+    if (end != std::string::npos) {
+        pattern = pattern.substr(0, end + 1);
+    }
+    return pattern;
+}
+
+inline std::vector<CheckPattern> extractCheckPatterns(const std::string& content) {
+    static constexpr const char kCheckNot[] = "-- CHECK-NOT:";
+    static constexpr const char kCheck[]    = "-- CHECK:";
+    static constexpr size_t kCheckNotLen = sizeof(kCheckNot) - 1;
+    static constexpr size_t kCheckLen    = sizeof(kCheck) - 1;
+
+    std::vector<CheckPattern> patterns;
     std::istringstream stream(content);
     std::string line;
-
     while (std::getline(stream, line)) {
-        size_t pos = line.find("-- CHECK:");
-        if (pos != std::string::npos) {
-            std::string pattern = line.substr(pos + 10);
-            size_t start = pattern.find_first_not_of(" \t");
-            if (start != std::string::npos) {
-                pattern = pattern.substr(start);
-            }
-            size_t end = pattern.find_last_not_of(" \t\r\n");
-            if (end != std::string::npos) {
-                pattern = pattern.substr(0, end + 1);
-            }
+        size_t notPos = line.find(kCheckNot);
+        if (notPos != std::string::npos) {
+            std::string pattern = trimCheckPattern(line.substr(notPos + kCheckNotLen));
             if (!pattern.empty()) {
-                patterns.push_back(pattern);
+                patterns.push_back({std::move(pattern), /*negated=*/true});
+            }
+            continue;
+        }
+        size_t pos = line.find(kCheck);
+        if (pos != std::string::npos) {
+            std::string pattern = trimCheckPattern(line.substr(pos + kCheckLen));
+            if (!pattern.empty()) {
+                patterns.push_back({std::move(pattern), /*negated=*/false});
             }
         }
     }
@@ -318,10 +344,14 @@ inline std::vector<std::string> extractCheckPatterns(const std::string& content)
 }
 
 inline std::string verifyPatterns(const std::string& output,
-                                   const std::vector<std::string>& patterns) {
-    for (const auto& pattern : patterns) {
-        if (output.find(pattern) == std::string::npos) {
-            return "Missing pattern: " + pattern;
+                                   const std::vector<CheckPattern>& patterns) {
+    for (const auto& cp : patterns) {
+        bool found = (output.find(cp.pattern) != std::string::npos);
+        if (cp.negated && found) {
+            return "Unexpected pattern (CHECK-NOT): " + cp.pattern;
+        }
+        if (!cp.negated && !found) {
+            return "Missing pattern: " + cp.pattern;
         }
     }
     return "";
@@ -555,7 +585,9 @@ inline void runElmTestFromMlir(const std::string& mlirPath,
     std::string expectedOutput = extractExpectedOutput(elmContent);
 
     if (checkPatterns.empty() && !expectedOutput.empty()) {
-        checkPatterns.push_back(expectedOutput);
+        // Synthesise a positive CHECK from the legacy `expected output`
+        // block so `verifyPatterns` can consume it uniformly.
+        checkPatterns.push_back({expectedOutput, /*negated=*/false});
     }
 
     if (!std::filesystem::exists(mlirPath)) {

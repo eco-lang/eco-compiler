@@ -94,27 +94,59 @@ inline bool isExpectedFail(const std::string& content) {
 }
 
 /**
- * Extract CHECK patterns from test file content.
+ * One CHECK directive parsed out of a test file. Positive (CHECK:) means
+ * the pattern must appear somewhere in the output; negative (CHECK-NOT:)
+ * means it must NOT appear anywhere.
  */
-inline std::vector<std::string> extractCheckPatterns(const std::string& content) {
-    std::vector<std::string> patterns;
+struct CheckPattern {
+    std::string pattern;
+    bool negated;
+};
+
+/**
+ * Strip leading and trailing whitespace from a pattern body extracted
+ * from a CHECK / CHECK-NOT line.
+ */
+inline std::string trimCheckPattern(std::string pattern) {
+    size_t start = pattern.find_first_not_of(" \t");
+    if (start != std::string::npos) {
+        pattern = pattern.substr(start);
+    }
+    size_t end = pattern.find_last_not_of(" \t\r\n");
+    if (end != std::string::npos) {
+        pattern = pattern.substr(0, end + 1);
+    }
+    return pattern;
+}
+
+/**
+ * Extract CHECK and CHECK-NOT patterns from test file content. We test
+ * for the longer CHECK-NOT prefix first because the shorter CHECK prefix
+ * is a prefix of CHECK-NOT and would otherwise swallow it.
+ */
+inline std::vector<CheckPattern> extractCheckPatterns(const std::string& content) {
+    static constexpr const char kCheckNot[] = "// CHECK-NOT:";
+    static constexpr const char kCheck[]    = "// CHECK:";
+    static constexpr size_t kCheckNotLen = sizeof(kCheckNot) - 1;
+    static constexpr size_t kCheckLen    = sizeof(kCheck) - 1;
+
+    std::vector<CheckPattern> patterns;
     std::istringstream stream(content);
     std::string line;
-
     while (std::getline(stream, line)) {
-        size_t pos = line.find("// CHECK:");
-        if (pos != std::string::npos) {
-            std::string pattern = line.substr(pos + 10);
-            size_t start = pattern.find_first_not_of(" \t");
-            if (start != std::string::npos) {
-                pattern = pattern.substr(start);
-            }
-            size_t end = pattern.find_last_not_of(" \t\r\n");
-            if (end != std::string::npos) {
-                pattern = pattern.substr(0, end + 1);
-            }
+        size_t notPos = line.find(kCheckNot);
+        if (notPos != std::string::npos) {
+            std::string pattern = trimCheckPattern(line.substr(notPos + kCheckNotLen));
             if (!pattern.empty()) {
-                patterns.push_back(pattern);
+                patterns.push_back({std::move(pattern), /*negated=*/true});
+            }
+            continue;
+        }
+        size_t pos = line.find(kCheck);
+        if (pos != std::string::npos) {
+            std::string pattern = trimCheckPattern(line.substr(pos + kCheckLen));
+            if (!pattern.empty()) {
+                patterns.push_back({std::move(pattern), /*negated=*/false});
             }
         }
     }
@@ -122,14 +154,19 @@ inline std::vector<std::string> extractCheckPatterns(const std::string& content)
 }
 
 /**
- * Verify that output contains all CHECK patterns.
+ * Verify that the output satisfies all extracted CHECK directives:
+ * positive patterns must appear, negative ones must not.
  * Returns empty string on success, error message on failure.
  */
 inline std::string verifyPatterns(const std::string& output,
-                                   const std::vector<std::string>& patterns) {
-    for (const auto& pattern : patterns) {
-        if (output.find(pattern) == std::string::npos) {
-            return "Missing pattern: " + pattern;
+                                   const std::vector<CheckPattern>& patterns) {
+    for (const auto& cp : patterns) {
+        bool found = (output.find(cp.pattern) != std::string::npos);
+        if (cp.negated && found) {
+            return "Unexpected pattern (CHECK-NOT): " + cp.pattern;
+        }
+        if (!cp.negated && !found) {
+            return "Missing pattern: " + cp.pattern;
         }
     }
     return "";
