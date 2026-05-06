@@ -133,24 +133,6 @@ inline void classListUnlinkTierM(FreeCell** free_lists, FreeCell* c, size_t cls,
     }
 }
 
-// Tier-M only: push `c` at the head of `free_lists[cls]`. Updates the
-// previous head's prev_in_class to point at the new head via a CellHandle
-// computed from the new head's owning block + offset.
-inline void classListPushHeadTierM(FreeCell** free_lists, FreeCell* c,
-                                   size_t cls,
-                                   uint16_t c_block_index,
-                                   const BlockInfo& c_block) {
-    FreeCellMid* m = asTierM(c);
-    FreeCell* old_head = free_lists[cls];
-    m->prev_in_class = CellHandle::head();
-    m->next_in_class = old_head;
-    if (old_head != nullptr) {
-        CellHandle h{c_block_index, encodeOff(c_block, c)};
-        asTierM(old_head)->prev_in_class = h;
-    }
-    free_lists[cls] = c;
-}
-
 }  // namespace
 
 // Read barrier - converts logical pointer to physical address.
