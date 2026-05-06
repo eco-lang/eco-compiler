@@ -47,6 +47,24 @@ std::unique_ptr<mlir::Pass> createCheckEcoClosureCapturesPass();
 // - Enables DCE of unused closures (P3)
 std::unique_ptr<mlir::Pass> createEcoPAPSimplifyPass();
 
+// ========== Phase 1: Escape analysis for value-level aggregates ==========
+
+// Per-function escape analysis for small-aggregate construct ops.
+// Walks each Tuple2ConstructOp / Tuple3ConstructOp result and classifies
+// its uses; tags every classified op with an `eco.escape` string
+// attribute ("non_escaping" or "escapes") for the specialise pass to
+// consume. Off by default — only added to the pipeline when
+// EcoPipelineOptions::enableUnboxedAgg is true.
+std::unique_ptr<mlir::Pass> createEcoEscapeAnalysisPass();
+
+// Specialisation pass that consumes EcoEscapeAnalysisPass's classification
+// and rewrites non-escaping Tuple2/Tuple3ConstructOp results to the
+// corresponding eco.make.tuple2 / eco.make.tuple3 value-aggregate ops
+// (Phase 0 plumbing). Existing project ops accept either operand form
+// after Phase 0.4, so direct projection users need no change. Off by
+// default — only added to the pipeline alongside the analysis pass.
+std::unique_ptr<mlir::Pass> createEcoUnboxedAggSpecializePass();
+
 // ========== Stage 2: Eco -> Standard MLIR (func/cf/arith) ==========
 
 // Analyzes and classifies joinpoints for SCF lowering eligibility.

@@ -133,6 +133,14 @@ static cl::opt<bool> enableOpt(
     cl::desc("Enable LLVM optimizations"),
     cl::init(false));
 
+static cl::opt<bool> enableUnboxedAgg(
+    "enable-unboxed-agg",
+    cl::desc("Enable Phase 1 escape analysis + unboxed-aggregate "
+             "specialise pass for non-escaping tuple constructs "
+             "(off by default; rewrites eco.construct.tuple2/3 -> "
+             "eco.make.tuple2/3 when uses are local)"),
+    cl::init(false));
+
 static cl::opt<bool> verifyDiagnostics(
     "verify-diagnostics",
     cl::desc("Check that emitted diagnostics match expected"),
@@ -174,7 +182,9 @@ static int runPipeline(ModuleOp module, bool lowerToLLVM) {
     // Build the appropriate pipeline based on the emit action.
     if (lowerToLLVM) {
         // Use the shared pipeline from EcoPipeline.cpp
-        eco::buildEcoToLLVMPipeline(pm);
+        eco::EcoPipelineOptions pipeOpts;
+        pipeOpts.enableUnboxedAgg = enableUnboxedAgg;
+        eco::buildEcoToLLVMPipeline(pm, pipeOpts);
     }
 
     if (failed(pm.run(module)))

@@ -28,18 +28,31 @@ void registerRequiredDialects(mlir::DialectRegistry &registry);
 /// Call this after creating an MLIRContext.
 void loadRequiredDialects(mlir::MLIRContext &context);
 
+/// Forward-compatible options struct. New flags are added here and
+/// default OFF so existing callers don't need to change.
+struct EcoPipelineOptions {
+    /// Phase 1 escape analysis + specialise pass for value-level
+    /// aggregates. Off by default (rolls out gradually behind
+    /// `-enable-unboxed-agg`).
+    bool enableUnboxedAgg = false;
+};
+
 /// Builds the Stage 1 pipeline: Eco -> Eco transformations.
 /// This includes:
 ///   - RC elimination (removes reference counting placeholders)
 ///   - Undefined function stub generation
-void buildEcoToEcoPipeline(mlir::PassManager &pm);
+///   - (optional) escape analysis + unboxed aggregate specialisation
+///     when `opts.enableUnboxedAgg` is true.
+void buildEcoToEcoPipeline(mlir::PassManager &pm,
+                           const EcoPipelineOptions &opts = {});
 
 /// Builds the full Eco -> LLVM lowering pipeline.
 /// This includes:
 ///   - Stage 1: Eco -> Eco transformations
 ///   - Stage 2: Eco -> Standard MLIR (SCF, CF)
 ///   - Stage 3: Eco/Standard -> LLVM dialect
-void buildEcoToLLVMPipeline(mlir::PassManager &pm);
+void buildEcoToLLVMPipeline(mlir::PassManager &pm,
+                            const EcoPipelineOptions &opts = {});
 
 } // namespace eco
 

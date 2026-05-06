@@ -135,7 +135,7 @@ public:
         }
 
         // Run the lowering pipeline
-        if (!runPipeline(*module)) {
+        if (!runPipeline(*module, options)) {
             result.errorMessage = "Lowering pipeline failed";
             return result;
         }
@@ -173,11 +173,13 @@ private:
         return parseSourceFile<ModuleOp>(sourceMgr, &context);
     }
 
-    bool runPipeline(ModuleOp module) {
+    bool runPipeline(ModuleOp module, const Options& options) {
         PassManager pm(module->getName());
 
         // Use the shared pipeline from EcoPipeline.cpp
-        eco::buildEcoToLLVMPipeline(pm);
+        eco::EcoPipelineOptions pipeOpts;
+        pipeOpts.enableUnboxedAgg = options.enableUnboxedAgg;
+        eco::buildEcoToLLVMPipeline(pm, pipeOpts);
 
         return succeeded(pm.run(module));
     }

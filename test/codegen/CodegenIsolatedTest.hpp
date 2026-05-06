@@ -65,6 +65,24 @@ inline std::string readFile(const std::string& path) {
 }
 
 /**
+ * True iff the // RUN: line contains the `-enable-unboxed-agg` flag.
+ * Used to flip the Phase 1 escape-analysis pass on for fixtures that
+ * specifically exercise it. Defaults to false so the rest of the suite
+ * stays on the default pipeline.
+ */
+inline bool parseEnableUnboxedAgg(const std::string& content) {
+    std::istringstream stream(content);
+    std::string line;
+    while (std::getline(stream, line)) {
+        if (line.find("// RUN:") == std::string::npos) continue;
+        if (line.find("-enable-unboxed-agg") != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
  * Parse the // RUN: line from a test file.
  * Returns the emit mode (jit, mlir-llvm, llvm, mlir).
  */
@@ -249,6 +267,11 @@ inline void runJITTest(const std::string& testPath, const std::string& content) 
     // Reset heap for test isolation
     runner.reset();
 
+    // Forward Phase 1 -enable-unboxed-agg flag if the fixture requested it.
+    auto opts = runner.getOptions();
+    opts.enableUnboxedAgg = parseEnableUnboxedAgg(content);
+    runner.setOptions(opts);
+
     // Run the test
     auto result = runner.runFile(testPath);
 
@@ -286,6 +309,9 @@ inline void runSubprocessTest(const std::string& testPath, const std::string& co
                                const std::string& emitMode) {
     std::string ecocPath = getEcocPath();
     std::string cmd = ecocPath + " \"" + testPath + "\" -emit=" + emitMode;
+    if (parseEnableUnboxedAgg(content)) {
+        cmd += " -enable-unboxed-agg";
+    }
 
     auto [exitCode, output] = executeCommand(cmd);
 

@@ -217,6 +217,8 @@ set_source_files_properties(
 set_source_files_properties(
     Passes/RCElimination.cpp
     Passes/EcoPAPSimplify.cpp
+    Passes/EcoEscapeAnalysis.cpp
+    Passes/EcoUnboxedAggSpecialize.cpp
     Passes/JoinpointNormalization.cpp
     Passes/EcoControlFlowToSCF.cpp
     Passes/UndefinedFunction.cpp
@@ -277,6 +279,10 @@ target_compile_options(obj.BFDialect PRIVATE -Wno-ambiguous-reversed-operator)
 add_mlir_library(EcoPasses
     Passes/RCElimination.cpp
     Passes/EcoPAPSimplify.cpp
+    # Phase 1 escape analysis + specialise (Stage 1 Eco->Eco; gated
+    # behind -enable-unboxed-agg)
+    Passes/EcoEscapeAnalysis.cpp
+    Passes/EcoUnboxedAggSpecialize.cpp
     Passes/JoinpointNormalization.cpp
     Passes/EcoControlFlowToSCF.cpp
     Passes/UndefinedFunction.cpp

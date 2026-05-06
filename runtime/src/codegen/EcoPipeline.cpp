@@ -46,7 +46,7 @@ void loadRequiredDialects(MLIRContext &context) {
     context.getOrLoadDialect<LLVM::LLVMDialect>();
 }
 
-void buildEcoToEcoPipeline(PassManager &pm) {
+void buildEcoToEcoPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     // Stage 1: Eco -> Eco transformations.
     // TODO: Add construct lowering pass.
     // pm.addPass(eco::createConstructLoweringPass());
@@ -62,13 +62,25 @@ void buildEcoToEcoPipeline(PassManager &pm) {
     // PAP simplification: fuse closures, convert saturated PAPs to direct calls
     pm.addPass(eco::createEcoPAPSimplifyPass());
 
+    // Phase 1 escape analysis + unboxed-aggregate specialise. OFF by
+    // default; only added when -enable-unboxed-agg is set so existing
+    // pipelines retain identical IR. Both passes are per-function and
+    // run in lockstep: analysis tags Tuple2/3ConstructOp results that
+    // never escape, specialise rewrites them to eco.make.tuple2/3.
+    // Must run before EcoGCPrepare so the construct ops haven't yet
+    // accumulated GC root operands.
+    if (opts.enableUnboxedAgg) {
+        pm.addNestedPass<func::FuncOp>(eco::createEcoEscapeAnalysisPass());
+        pm.addNestedPass<func::FuncOp>(eco::createEcoUnboxedAggSpecializePass());
+    }
+
     // Generate external declarations for undefined functions (kernel functions, etc.)
     pm.addPass(eco::createUndefinedFunctionPass());
 }
 
-void buildEcoToLLVMPipeline(PassManager &pm) {
+void buildEcoToLLVMPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     // Stage 1: Eco -> Eco transformations.
-    buildEcoToEcoPipeline(pm);
+    buildEcoToEcoPipeline(pm, opts);
 
     // Stage 2: Eco -> Standard MLIR (func/cf/arith).
     pm.addPass(eco::createJoinpointNormalizationPass());
