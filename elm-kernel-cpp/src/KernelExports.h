@@ -142,6 +142,11 @@ HPtr Elm_Kernel_List_sortWith(HPtr closure, HPtr list);
 //===----------------------------------------------------------------------===//
 
 HPtr Elm_Kernel_Utils_compare(HPtr a, HPtr b);
+// Phase B per-instance variants. Result type stays HPtr because Order is an
+// Elm custom type. See plans/per-instance-kernel-abi.md Appendix A.
+HPtr Elm_Kernel_Utils_compare_Int  (int64_t  a, int64_t  b);
+HPtr Elm_Kernel_Utils_compare_Float(double   a, double   b);
+HPtr Elm_Kernel_Utils_compare_Char (uint16_t a, uint16_t b);
 HPtr Elm_Kernel_Utils_equal(HPtr a, HPtr b);
 HPtr Elm_Kernel_Utils_notEqual(HPtr a, HPtr b);
 HPtr Elm_Kernel_Utils_lt(HPtr a, HPtr b);

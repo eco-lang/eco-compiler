@@ -14,6 +14,30 @@ HPtr Elm_Kernel_Utils_compare(HPtr a, HPtr b) {
     return HPtr::fromBits(Export::encode(result));
 }
 
+// Phase B per-instance variants. Each takes the corresponding primitive ABI
+// type (int64_t / double / uint16_t) directly and returns the encoded HPtr
+// of the appropriate Order singleton.
+HPtr Elm_Kernel_Utils_compare_Int(int64_t a, int64_t b) {
+    uint64_t enc = (a < b) ? Utils::getOrderLT()
+                 : (a > b) ? Utils::getOrderGT()
+                           : Utils::getOrderEQ();
+    return HPtr::fromBits(enc);
+}
+
+HPtr Elm_Kernel_Utils_compare_Float(double a, double b) {
+    uint64_t enc = (a < b) ? Utils::getOrderLT()
+                 : (a > b) ? Utils::getOrderGT()
+                           : Utils::getOrderEQ();
+    return HPtr::fromBits(enc);
+}
+
+HPtr Elm_Kernel_Utils_compare_Char(uint16_t a, uint16_t b) {
+    uint64_t enc = (a < b) ? Utils::getOrderLT()
+                 : (a > b) ? Utils::getOrderGT()
+                           : Utils::getOrderEQ();
+    return HPtr::fromBits(enc);
+}
+
 HPtr Elm_Kernel_Utils_equal(HPtr a, HPtr b) {
     return HPtr::fromBits(Export::encodeBoxedBool(Utils::equal(Export::toPtr(a.toBits()), Export::toPtr(b.toBits()))));
 }

@@ -1,7 +1,7 @@
 module Compiler.Monomorphize.KernelAbi exposing
     ( KernelAbiMode(..), deriveKernelAbiMode
     , canTypeToMonoType_preserveVars, canTypeToMonoType_numberBoxed
-    , containerSpecializedKernels, comparePair
+    , concreteTypeAwareKernels, comparePair
     , freeVarIds
     , KernelBackendAbiPolicy(..), kernelBackendAbiPolicy
     , KernelInstanceKey, KernelInstanceAbi
@@ -36,9 +36,9 @@ Three cases:
 @docs canTypeToMonoType_preserveVars, canTypeToMonoType_numberBoxed
 
 
-# Container Specialized Kernels
+# Concrete-Type-Aware Kernels
 
-@docs containerSpecializedKernels, comparePair
+@docs concreteTypeAwareKernels, comparePair
 
 
 # Free Variable Extraction (for AssignMVarIds, operates on Can.Type Name)
@@ -161,19 +161,33 @@ numberBoxedKernels =
         ]
 
 
-{-| Kernels that benefit from element-aware specialization at fully monomorphic
-call sites. The specialized MonoType drives Elm-level wrapper generation
-(different List\_cons\_$\_N closures per element type), NOT the C++ kernel ABI.
+{-| Kernels whose call-site `MonoType` should retain its *concrete*
+monomorphic shape when fully resolved, rather than being erased to
+`CEcoValue`-typed type variables by `canTypeToMonoType_preserveVars`.
 
-The actual C++ kernel ABI is determined by kernelBackendAbiPolicy in
-MLIR codegen (Context.elm), which may force all-boxed !eco.value arguments
-regardless of the wrapper's specialized types.
+Two distinct downstream consumers benefit:
+
+  - **Element-aware container kernels** (e.g. `List.cons`): the concrete
+    MonoType drives Elm-level wrapper generation — different
+    `List_cons_$_N` closures per element type — even though the underlying
+    C++ kernel ABI is still all-boxed.
+
+  - **Primitive-specialized kernels** (e.g. `Utils.compare`, Phase B of the
+    per-instance kernel ABI rollout): the concrete MonoType lets
+    `deriveKernelInstanceAbi` pattern-match on `[MInt, MInt]` /
+    `[MFloat, MFloat]` / `[MChar, MChar]` and select the `_Int` / `_Float` /
+    `_Char` C++ symbol variants.
+
+For polymorphic call sites (e.g. `compare "a" "b"` reaching `Utils.compare`
+with `[MString, MString]`), the kernel ABI falls back to the all-boxed
+`KernelBackendAbiPolicy.AllBoxed` path via the policy table.
 
 -}
-containerSpecializedKernels : EverySet (List String) ( String, String )
-containerSpecializedKernels =
+concreteTypeAwareKernels : EverySet (List String) ( String, String )
+concreteTypeAwareKernels =
     EverySet.fromList comparePair
         [ ( "List", "cons" )
+        , ( "Utils", "compare" )
         ]
 
 
@@ -523,8 +537,31 @@ kernelBackendAbiPolicy home name =
         ( "List", _ ) ->
             AllBoxed
 
-        -- Utils: compare, equal, notEqual, lt, le, gt, ge, append
-        ( "Utils", _ ) ->
+        -- Utils: equal, notEqual, lt, le, gt, ge, append.
+        -- Phase B (per-instance kernel ABI rollout): Utils.compare is now
+        -- governed by deriveKernelInstanceAbi (which selects _Int / _Float /
+        -- _Char monomorphic variants for primitive comparables, falling back
+        -- to the boxed root for String/List/Tuple). The other Utils kernels
+        -- still use the all-boxed C++ ABI; they migrate in Phase C.
+        ( "Utils", "equal" ) ->
+            AllBoxed
+
+        ( "Utils", "notEqual" ) ->
+            AllBoxed
+
+        ( "Utils", "lt" ) ->
+            AllBoxed
+
+        ( "Utils", "le" ) ->
+            AllBoxed
+
+        ( "Utils", "gt" ) ->
+            AllBoxed
+
+        ( "Utils", "ge" ) ->
+            AllBoxed
+
+        ( "Utils", "append" ) ->
             AllBoxed
 
         -- String.fromNumber: number-polymorphic, C++ takes boxed uint64_t
@@ -574,11 +611,15 @@ kernelBackendAbiPolicy home name =
 -- ============================================================================
 
 
-{-| Identifies a logical instantiation of a kernel: same `(home, name)` with
-different MonoTypes maps to different instances.
+{-| Identifies a logical instantiation of a kernel: same `(prefix, home, name)`
+with different MonoTypes maps to different instances. `prefix` is the package
+namespace prefix (`"Elm"` for elm-core kernels, `"Eco"` for user-package
+kernels via `Eco.Kernel.*`); the resulting C symbol begins with
+`<prefix>_Kernel_`.
 -}
 type alias KernelInstanceKey =
-    { home : String
+    { prefix : String
+    , home : String
     , name : String
     , argTypes : List Mono.MonoType
     , resultType : Mono.MonoType
@@ -617,8 +658,12 @@ deriveKernelInstanceAbi key =
         symbolName =
             kernelInstanceSymbol key
 
+        policy : KernelBackendAbiPolicy
+        policy =
+            kernelBackendAbiPolicy key.home key.name
+
         ( abiArgTypes, abiResultType ) =
-            case kernelBackendAbiPolicy key.home key.name of
+            case policy of
                 AllBoxed ->
                     ( List.map (\_ -> MlirTypes.ecoValue) key.argTypes
                     , MlirTypes.ecoValue
@@ -636,23 +681,54 @@ deriveKernelInstanceAbi key =
             , abiResultType = abiResultType
             }
     in
-    ensurePrimitiveAbi key abi
+    case policy of
+        AllBoxed ->
+            -- Transitional path: primitives are intentionally boxed to match
+            -- the unmigrated C++ all-uint64_t signature. The ensurePrimitiveAbi
+            -- self-check only applies under ElmDerived, which is the
+            -- end-state invariant (REP_ABI_001).
+            abi
+
+        ElmDerived ->
+            ensurePrimitiveAbi key abi
 
 
-{-| Compute the C symbol name for a per-instance kernel call. Phase A always
-returns the legacy `Elm_Kernel_<home>_<name>`; later phases append suffixes
-for primitive monomorphic instances.
+{-| Compute the C symbol name for a per-instance kernel call.
 
-The kernel-prefix is supplied by the call-site (`MonoVarKernel`) and is not
-embedded here; this function only computes the suffix portion of the
-final symbol when one is needed.
+Phase B onwards adds suffixes for kernels that have been migrated to
+per-primitive C++ variants. For unmigrated kernels and for kernel
+instantiations that don't match a known primitive specialization (e.g.
+`compare "a" "b"`), the legacy `Elm_Kernel_<home>_<name>` is returned.
 
 -}
 kernelInstanceSymbol : KernelInstanceKey -> String
 kernelInstanceSymbol key =
-    -- Phase A: identity. Per-instance suffixes (e.g. "_Int", "_Float", "_Char")
-    -- are added kernel-by-kernel starting in Phase B per the rollout plan.
-    "Elm_Kernel_" ++ key.home ++ "_" ++ key.name
+    let
+        rootSymbol : String
+        rootSymbol =
+            key.prefix ++ "_Kernel_" ++ key.home ++ "_" ++ key.name
+
+        suffixed : String -> String
+        suffixed s =
+            rootSymbol ++ s
+    in
+    case ( key.home, key.name, key.argTypes ) of
+        --
+        -- Phase B (Utils.compare): primitive comparables get a typed
+        -- monomorphic C++ entry point. All other comparables (String,
+        -- List, Tuple, ...) keep the boxed root symbol.
+        --
+        ( "Utils", "compare", [ Mono.MInt, Mono.MInt ] ) ->
+            suffixed "_Int"
+
+        ( "Utils", "compare", [ Mono.MFloat, Mono.MFloat ] ) ->
+            suffixed "_Float"
+
+        ( "Utils", "compare", [ Mono.MChar, Mono.MChar ] ) ->
+            suffixed "_Char"
+
+        _ ->
+            rootSymbol
 
 
 {-| Self-check (REP_ABI_001 / KERN_006): an `MInt`/`MFloat`/`MChar` parameter

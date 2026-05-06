@@ -26,7 +26,7 @@ This plan is staged so each step is independently testable.
 
 - `compiler/src/Compiler/Monomorphize/KernelAbi.elm`
   - `KernelAbiMode = UseSubstitution | PreserveVars | NumberBoxed`
-  - `deriveKernelAbiMode`, `numberBoxedKernels`, `containerSpecializedKernels`
+  - `deriveKernelAbiMode`, `numberBoxedKernels`, `concreteTypeAwareKernels`
   - `canTypeToMonoType_preserveVars`, `canTypeToMonoType_numberBoxed`
 - `compiler/src/Compiler/Monomorphize/Specialize.elm:4483` — `deriveKernelAbiType`
   consumes `KernelAbiMode`; the only consumer of `NumberBoxed`.
@@ -286,14 +286,36 @@ just reuse it: pass `instanceAbi.abiArgTypes` as the target.
 
 ### 3.4 Acceptance for Phase B
 
-- New Elm-side test `UtilsCompareInstanceAbi` verifies that for `compare 1 2`
-  in fully monomorphic context, the emitted `eco.call` has callee
-  `Elm_Kernel_Utils_compare_Int` with `i64, i64` operand types.
-- C++ unit test for each variant in `elm-kernel-cpp/tests/`.
-- Existing E2E tests pass.
-- A heap-allocation counter test (Elm program calling
-  `compare a b` in a tight loop with `a, b : Int`) shows zero
-  `eco_alloc_int` calls in the loop body.
+Phase B's deliverable is **per-instance machinery in place, unit-tested, no
+regressions**. Runtime exercise of the new `_Int` / `_Float` / `_Char`
+variants is **deferred to Phase D**: the existing `eco.{int,float,char}.cmp_order`
+intrinsics intercept every `compare` call site at primitive types — including
+inside the `Basics.compare` wrapper body — so the new kernel symbols are not
+reachable via the current codegen path. They become load-bearing in Phase D
+when generic apply stops collapsing through the intrinsic dispatcher.
+
+- Unit tests in `compiler/tests/Compiler/Monomorphize/KernelAbiTest.elm`
+  pin down `deriveKernelInstanceAbi` directly:
+    - `Utils.compare` with `[MInt, MInt]` → `Elm_Kernel_Utils_compare_Int`
+      with `(i64, i64) → !eco.value` ABI; analogous for `MFloat` / `MChar`.
+    - `Utils.compare` with `[MString, MString]` and `[MList _, MList _]`
+      falls back to the boxed root.
+    - Unmigrated AllBoxed kernels (`Utils.equal`, `JsArray.appendN`) keep
+      their all-`!eco.value` ABI even on primitive args.
+    - User-package prefix (`Eco.Kernel.MVar.put`) produces `Eco_Kernel_*`
+      symbol — regression test for the prefix bug.
+- C++ implementations of the three variants linked into the kernel binary
+  (`elm-kernel-cpp/src/core/UtilsExports.cpp`) and declared in
+  `KernelExports.h`. Runtime exercise via Elm E2E happens in Phase D.
+- Existing front-end and E2E tests continue to pass; the
+  `KernelDeclInstanceConsistency` invariant test stays green.
+
+C++ unit tests under `elm-kernel-cpp/tests/` and the
+heap-allocation counter test originally listed as Phase-B acceptance are
+**not part of this phase**: the former because the project's kernel testing
+happens through Elm E2E, the latter because primitive `compare` already
+doesn't allocate (the intrinsic produces an `Order` singleton without a
+heap call), so a counter test would measure zero on `main` too.
 
 ---
 
@@ -393,9 +415,9 @@ fix is an `eco.bool.eq` / `icmp eq i1` intrinsic in
 fast paths. Track that as a separate optimization rather than rolling it into
 this plan.
 
-**Container kernels (decision Q4)**: keep `containerSpecializedKernels` for the
+**Container kernels (decision Q4)**: keep `concreteTypeAwareKernels` for the
 duration of the rollout. After `List.cons` and `JsArray` index ops have
-per-instance ABIs landed and tested, retire `containerSpecializedKernels` in a
+per-instance ABIs landed and tested, retire `concreteTypeAwareKernels` in a
 follow-up — by then, element specialization is already happening through the
 per-instance ABI machinery and the separate knob is redundant.
 
@@ -528,7 +550,7 @@ those land:
    carries useful signal; delete it if not.
 6. Remove the per-evaluator `accepts_typed_newargs` capability bit once
    every evaluator has been migrated to the typed path (decision Q6).
-7. Drop `containerSpecializedKernels` once `List.cons` and `JsArray` index
+7. Drop `concreteTypeAwareKernels` once `List.cons` and `JsArray` index
    ops have been migrated and verified (decision Q4).
 8. Update `KERN_006` to drop the `kernelBackendAbiPolicy` reference if the
    table is removed.
@@ -595,7 +617,7 @@ The eight original open questions have been resolved:
 | 1 | Where does `deriveKernelInstanceAbi` live? | Both data types and function in `KernelAbi.elm`. `Context` is a pure consumer. |
 | 2 | Keep `KernelBackendAbiPolicy` during rollout? | Keep. Use as a coarse "always boxed" guardrail; flip entries kernel-by-kernel; collapse or remove in Phase E. |
 | 3 | `_Char` parameter ABI? | Standard `uint16_t`, **not** `uint64_t c_raw`. EcoToLLVM handles any `zext`/`trunc` for generic apply. |
-| 4 | `containerSpecializedKernels` wrappers? | Keep during rollout; retire in Phase E once `List`/`JsArray` per-instance ABIs are stable. |
+| 4 | `concreteTypeAwareKernels` wrappers? | Keep during rollout; retire in Phase E once `List`/`JsArray` per-instance ABIs are stable. |
 | 5 | Primitive variants for `Basics.add/sub/mul/pow`? | **No.** Concrete uses are already intrinsic-lowered; the kernel symbol only handles polymorphic fallbacks where boxing is correct. |
 | 6 | Per-evaluator "accepts typed newargs" capability bit? | **Yes.** Add to `EvalParamLayout`, default `0`. `eco_apply_closure_typed` re-boxes for evaluators that don't accept primitives. Flip on per-evaluator as they migrate. |
 | 7 | MONO_002 holds at `generateVarKernel`? | Yes per the invariant. Add a defensive assertion in `KernelInstanceKey` construction. |

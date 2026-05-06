@@ -122,21 +122,24 @@ canTypeToMonoType_numberBoxed : Can.Type -> Mono.MonoType
 -- TVar "n" CNumber → MVar "n" CEcoValue (boxed for ABI)
 ```
 
-## Container Specialization
+## Concrete-Type-Aware Kernels
 
-Some kernels can benefit from element-aware specialization at the **Elm wrapper level**, even though the C++ ABI remains boxed.
+Some kernels need their fully-monomorphic call-site `MonoType` preserved (rather than erased to `CEcoValue`-typed type variables) so downstream phases can specialize on the concrete types.
 
 ```elm
-containerSpecializedKernels : Set ( String, String )
-containerSpecializedKernels =
+concreteTypeAwareKernels : Set ( String, String )
+concreteTypeAwareKernels =
     [ ( "List", "cons" )
+    , ( "Utils", "compare" )
     ]
 ```
 
-For `List.cons`:
-- The C++ kernel always uses boxed ABI (`eco.value`)
-- But the Elm wrapper can specialize: `List_cons_Int`, `List_cons_String`, etc.
-- This enables unboxing in heap representation (storing `Int` unboxed in Cons cells)
+Two consumers benefit from this preserved concrete type:
+
+- **Element-aware container kernels** (`List.cons`): the Elm wrapper can specialize per element type — `List_cons_Int`, `List_cons_String`, etc. — enabling unboxed heap representation in Cons cells. The underlying C++ kernel ABI remains boxed.
+- **Primitive-specialized kernels** (`Utils.compare`, added in the per-instance kernel ABI rollout): `deriveKernelInstanceAbi` pattern-matches on the concrete arg types and selects `_Int` / `_Float` / `_Char` C++ symbol variants with typed ABIs.
+
+For polymorphic call sites (e.g. `compare "a" "b"` reaching `Utils.compare` with `[MString, MString]`), the kernel ABI falls back to the all-boxed root via `KernelBackendAbiPolicy`.
 
 ### Backend ABI Policy
 
@@ -384,15 +387,16 @@ These receive boxed numbers and dispatch by runtime tag.
 
 **Note**: In practice, the `Basics` operations listed above (`add`, `sub`, `mul`, `pow`) are almost always handled by [intrinsics](intrinsics_theory.md) when argument types are concrete (`MInt` or `MFloat`). The NumberBoxed kernel path is only taken when types remain polymorphic after monomorphization—which is rare. The primary user of NumberBoxed is `String.fromNumber`, which has no intrinsic equivalent.
 
-### Container-Specialized Kernels
+### Concrete-Type-Aware Kernels
 
 ```elm
-containerSpecializedKernels =
+concreteTypeAwareKernels =
     [ ( "List", "cons" )
+    , ( "Utils", "compare" )
     ]
 ```
 
-These can have specialized Elm wrappers even though the C++ ABI is boxed.
+These kernels keep their concrete monomorphic type at the call site so downstream phases can specialize: `List.cons` drives Elm-wrapper specialization per element type; `Utils.compare` drives per-instance C++ symbol selection (`_Int` / `_Float` / `_Char`) when arguments are primitive.
 
 ## Invariants
 

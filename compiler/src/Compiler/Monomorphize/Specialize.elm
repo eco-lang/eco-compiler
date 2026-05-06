@@ -4518,12 +4518,14 @@ deriveKernelAbiType mvarEnv kernelId canFuncType callSubst =
             monoAfterSubst
 
         KernelAbi.PreserveVars ->
-            -- Container-specializable kernels get monomorphic, element-aware type
-            -- for Elm-level wrapper specialization. The C++ kernel ABI is determined
-            -- separately by kernelBackendAbiPolicy in MLIR codegen, which may
-            -- override this type with all-boxed !eco.value arguments.
+            -- Concrete-type-aware kernels keep the monomorphic call-site type
+            -- so it can drive Elm-level wrapper specialization (e.g. List.cons
+            -- per element type) and per-instance kernel symbol selection (e.g.
+            -- Utils.compare → _Int / _Float / _Char). The C++ kernel ABI is
+            -- determined separately by kernelBackendAbiPolicy in MLIR codegen,
+            -- which may override this type with all-boxed !eco.value arguments.
             if
-                EverySet.member KernelAbi.comparePair kernelId KernelAbi.containerSpecializedKernels
+                EverySet.member KernelAbi.comparePair kernelId KernelAbi.concreteTypeAwareKernels
                     && isFullyMonomorphicType monoAfterSubst
             then
                 -- e.g. List.cons : Int -> List Int -> List Int at this site

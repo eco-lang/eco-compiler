@@ -715,41 +715,12 @@ generateVarKernel ctx kernelPrefix home name monoType =
                         -- Function-typed kernel with arity > 0: create a closure (papCreate)
                         -- Register kernel call so func.func declaration is emitted,
                         -- enabling the closure wrapper to know parameter types.
-                        let
-                            policy : KernelAbi.KernelBackendAbiPolicy
-                            policy =
-                                KernelAbi.kernelBackendAbiPolicy home name
-
-                            ( paramMlirTypes, resultMlirType ) =
-                                case policy of
-                                    KernelAbi.AllBoxed ->
-                                        ( List.repeat arity Types.ecoValue, Types.ecoValue )
-
-                                    KernelAbi.ElmDerived ->
-                                        Types.flattenFunctionType monoType
-
-                            ctxWithKernel =
-                                Ctx.registerKernelCall ctx1 kernelName paramMlirTypes resultMlirType
-
-                            attrs =
-                                Dict.fromList
-                                    [ ( "function", SymbolRefAttr kernelName )
-                                    , ( "arity", IntAttr Nothing arity )
-                                    , ( "num_captured", IntAttr Nothing 0 )
-                                    ]
-
-                            ( ctx2, papOp ) =
-                                Ops.mlirOp ctxWithKernel "eco.papCreate"
-                                    |> Ops.opBuilder.withResults [ ( var, Types.ecoValue ) ]
-                                    |> Ops.opBuilder.withAttrs attrs
-                                    |> Ops.opBuilder.build
-                        in
-                        { ops = [ papOp ]
-                        , resultVar = var
-                        , resultType = Types.ecoValue
-                        , ctx = ctx2
-                        , isTerminated = False
-                        }
+                        --
+                        -- Phase B: route symbol-name selection through registerKernelInstance
+                        -- so Utils.compare on primitive comparables gets the typed
+                        -- _Int / _Float / _Char variant. AllBoxed kernels continue to
+                        -- get the boxed root symbol with all-!eco.value ABI.
+                        instanceClosureResult ctx1 var kernelPrefix home name monoType arity
 
                 _ ->
                     -- Non-function type: call directly
@@ -804,43 +775,8 @@ generateVarKernel ctx kernelPrefix home name monoType =
 
                     else
                         -- Function-typed kernel with arity > 0: create a closure (papCreate)
-                        -- Register kernel call so func.func declaration is emitted,
-                        -- enabling the closure wrapper to know parameter types.
-                        let
-                            policy : KernelAbi.KernelBackendAbiPolicy
-                            policy =
-                                KernelAbi.kernelBackendAbiPolicy home name
-
-                            ( paramMlirTypes, resultMlirType ) =
-                                case policy of
-                                    KernelAbi.AllBoxed ->
-                                        ( List.repeat arity Types.ecoValue, Types.ecoValue )
-
-                                    KernelAbi.ElmDerived ->
-                                        Types.flattenFunctionType monoType
-
-                            ctxWithKernel =
-                                Ctx.registerKernelCall ctx1 kernelName paramMlirTypes resultMlirType
-
-                            attrs =
-                                Dict.fromList
-                                    [ ( "function", SymbolRefAttr kernelName )
-                                    , ( "arity", IntAttr Nothing arity )
-                                    , ( "num_captured", IntAttr Nothing 0 )
-                                    ]
-
-                            ( ctx2, papOp ) =
-                                Ops.mlirOp ctxWithKernel "eco.papCreate"
-                                    |> Ops.opBuilder.withResults [ ( var, Types.ecoValue ) ]
-                                    |> Ops.opBuilder.withAttrs attrs
-                                    |> Ops.opBuilder.build
-                        in
-                        { ops = [ papOp ]
-                        , resultVar = var
-                        , resultType = Types.ecoValue
-                        , ctx = ctx2
-                        , isTerminated = False
-                        }
+                        -- (Phase B: see instanceClosureResult helper.)
+                        instanceClosureResult ctx1 var kernelPrefix home name monoType arity
 
                 _ ->
                     -- Non-function type: call the kernel directly
@@ -860,6 +796,54 @@ generateVarKernel ctx kernelPrefix home name monoType =
                     , ctx = ctx2
                     , isTerminated = False
                     }
+
+
+{-| Build a no-capture papCreate for a function-typed kernel referenced as a
+value, routing the symbol-name decision through `registerKernelInstance`
+(per-instance kernel ABI rollout, Phase B).
+
+The kernel's monomorphized function type drives both the ABI types
+(via `KernelBackendAbiPolicy` + `monoTypeToAbi`) and the symbol suffix
+(e.g. `_Int` for `Utils.compare` on `Int -> Int -> Order`).
+
+-}
+instanceClosureResult : Ctx.Context -> String -> Name.Name -> Name.Name -> Name.Name -> Mono.MonoType -> Int -> ExprResult
+instanceClosureResult ctx var kernelPrefix home name monoType arity =
+    let
+        ( argTypes, returnType ) =
+            Mono.decomposeFunctionType monoType
+
+        instanceKey : KernelAbi.KernelInstanceKey
+        instanceKey =
+            { prefix = kernelPrefix
+            , home = home
+            , name = name
+            , argTypes = argTypes
+            , resultType = returnType
+            }
+
+        ( instanceAbi, ctxWithKernel ) =
+            Ctx.registerKernelInstance instanceKey ctx
+
+        attrs =
+            Dict.fromList
+                [ ( "function", SymbolRefAttr instanceAbi.symbolName )
+                , ( "arity", IntAttr Nothing arity )
+                , ( "num_captured", IntAttr Nothing 0 )
+                ]
+
+        ( ctx2, papOp ) =
+            Ops.mlirOp ctxWithKernel "eco.papCreate"
+                |> Ops.opBuilder.withResults [ ( var, Types.ecoValue ) ]
+                |> Ops.opBuilder.withAttrs attrs
+                |> Ops.opBuilder.build
+    in
+    { ops = [ papOp ]
+    , resultVar = var
+    , resultType = Types.ecoValue
+    , ctx = ctx2
+    , isTerminated = False
+    }
 
 
 
@@ -3017,6 +3001,13 @@ generateSaturatedCall ctx func args resultType callInfo =
                                     -- Polymorphic kernels have MVar in their funcType, which
                                     -- Types.monoTypeToAbi maps to !eco.value, so they naturally
                                     -- get all-boxed ABI without name-based checks.
+                                    --
+                                    -- Phase B: route the symbol-name decision through
+                                    -- registerKernelInstance so per-instance suffixes
+                                    -- (e.g. "_Int" for Utils.compare on Int args) take
+                                    -- effect. The decl ABI types come from monoTypeToAbi
+                                    -- of the Mono types, which agrees with
+                                    -- boxToMatchSignatureTyped's coercion below.
                                     let
                                         elmSig : Ctx.FuncSignature
                                         elmSig =
@@ -3025,16 +3016,28 @@ generateSaturatedCall ctx func args resultType callInfo =
                                         ( boxOps, argVarPairs, ctx1b ) =
                                             boxToMatchSignatureTyped ctx1 argsWithTypes elmSig.paramTypes
 
+                                        instanceKey : KernelAbi.KernelInstanceKey
+                                        instanceKey =
+                                            { prefix = kernelPrefix
+                                            , home = home
+                                            , name = name
+                                            , argTypes = elmSig.paramTypes
+                                            , resultType = elmSig.returnType
+                                            }
+
+                                        ( instanceAbi, ctx1c ) =
+                                            Ctx.registerKernelInstance instanceKey ctx1b
+
                                         ( resVar, ctx2 ) =
-                                            Ctx.freshVar ctx1b
+                                            Ctx.freshVar ctx1c
 
                                         kernelName : String
                                         kernelName =
-                                            kernelPrefix ++ "_Kernel_" ++ home ++ "_" ++ name
+                                            instanceAbi.symbolName
 
                                         resultMlirType : MlirType
                                         resultMlirType =
-                                            Types.monoTypeToAbi elmSig.returnType
+                                            instanceAbi.abiResultType
 
                                         ( ctxSp, spOp ) =
                                             emitSafepoint ctx2
