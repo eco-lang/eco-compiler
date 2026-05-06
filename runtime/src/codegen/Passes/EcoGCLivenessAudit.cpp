@@ -40,7 +40,7 @@ struct EcoGCLivenessAuditPass
     }
 
     void runOnOperation() override {
-#ifndef ECO_GC_DEBUG_LIVENESS
+#ifndef ECO_LOWERING_VALIDATION
         return;
 #else
         auto func = getOperation();

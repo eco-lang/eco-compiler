@@ -17,7 +17,7 @@
 //
 // Diagnostic severity: hard error via llvm::report_fatal_error.
 //
-// Entirely gated by #ifdef ECO_GC_DEBUG_LIVENESS.
+// Entirely gated by #ifdef ECO_LOWERING_VALIDATION.
 //
 //===----------------------------------------------------------------------===//
 
@@ -34,7 +34,7 @@
 
 using namespace llvm;
 
-#ifdef ECO_GC_DEBUG_LIVENESS
+#ifdef ECO_LOWERING_VALIDATION
 
 namespace {
 
@@ -324,7 +324,7 @@ PreservedAnalyses eco::EcoPtrIntVerifyPass::run(
     return PreservedAnalyses::all();
 }
 
-#endif // ECO_GC_DEBUG_LIVENESS
+#endif // ECO_LOWERING_VALIDATION
 
 //===----------------------------------------------------------------------===//
 // Central GC pipeline helper
@@ -332,7 +332,7 @@ PreservedAnalyses eco::EcoPtrIntVerifyPass::run(
 
 void eco::addEcoGCPipeline(ModulePassManager &MPM) {
     MPM.addPass(RewriteStatepointsForGC());
-#ifdef ECO_GC_DEBUG_LIVENESS
+#ifdef ECO_LOWERING_VALIDATION
     // Run ptr<1>↔i64 boundary verification after RS4GC.
     MPM.addPass(createModuleToFunctionPassAdaptor(EcoPtrIntVerifyPass()));
 #endif

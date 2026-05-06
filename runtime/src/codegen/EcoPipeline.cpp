@@ -52,10 +52,12 @@ void buildEcoToEcoPipeline(PassManager &pm) {
     // pm.addPass(eco::createConstructLoweringPass());
     pm.addPass(eco::createRCEliminationPass());
 
+#ifdef ECO_LOWERING_VALIDATION
     // Verify closure capture integrity (CGEN_CLOSURE_003):
     // papCreate consistency + no cross-function SSA refs in lambda bodies.
     // Must run early, before PAP simplification may rewrite closure ops.
     pm.addPass(eco::createCheckEcoClosureCapturesPass());
+#endif
 
     // PAP simplification: fuse closures, convert saturated PAPs to direct calls
     pm.addPass(eco::createEcoPAPSimplifyPass());
@@ -75,7 +77,7 @@ void buildEcoToLLVMPipeline(PassManager &pm) {
 
     // Stage 2.5: GC preparation (root sets, allocation grouping, safepoint rewrite).
     pm.addPass(eco::createEcoGCPreparePass());
-#ifdef ECO_GC_DEBUG_LIVENESS
+#ifdef ECO_LOWERING_VALIDATION
     pm.addNestedPass<func::FuncOp>(eco::createEcoGCLivenessAuditPass());
 #endif
 

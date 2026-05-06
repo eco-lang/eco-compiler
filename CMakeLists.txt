@@ -19,11 +19,6 @@ if(ECO_GC_DEBUG)
     add_compile_definitions(ECO_GC_DEBUG=1)
 endif()
 
-# Compile-time GC diagnostics: dumps GCRootCarrier root info during MLIR
-# lowering. Independent of ECO_GC_DEBUG so runtime checks can run without
-# the enormous compile-time output.
-option(ECO_GC_DEBUG_COMP "Enable compile-time GC diagnostics (root dump during MLIR lowering)" OFF)
-
 add_executable(ecor
         runtime/src/main.cpp
         runtime/src/allocator/RootSet.cpp

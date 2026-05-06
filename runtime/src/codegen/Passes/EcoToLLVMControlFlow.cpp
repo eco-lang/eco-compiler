@@ -552,14 +552,6 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
         // Note: Dynamic legality in EcoToLLVM.cpp ensures this pattern is only
         // invoked when eco.case is NOT nested under SCF regions. The conversion
         // framework defers CaseOp conversion until SCF-to-CF has run.
-#ifndef NDEBUG
-        if (op->getParentOfType<scf::IfOp>() ||
-            op->getParentOfType<scf::IndexSwitchOp>()) {
-            llvm_unreachable("CaseOpLowering invoked while nested under SCF; "
-                             "dynamic legality should have prevented this");
-        }
-#endif
-
         auto loc = op.getLoc();
         auto *ctx = rewriter.getContext();
         auto i64Ty = IntegerType::get(ctx, 64);

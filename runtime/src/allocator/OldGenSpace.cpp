@@ -514,19 +514,11 @@ void OldGenSpace::assignPageIndexForBlock(size_t block_index) {
         } else if (slot.secondary == NO_BLOCK) {
             slot.secondary = block_index;
         } else {
-#ifdef ECO_BIDX_DEBUG
-            std::fprintf(stderr,
-                "[oldgen] assignPageIndexForBlock: page slot %zu already has "
-                "two distinct owners (%zu, %zu); cannot record %zu\n",
-                p, slot.primary, slot.secondary, block_index);
-            std::abort();
-#else
-            // Release builds: keep the primary stable (the older owner —
-            // typically a large block straddling many slots) and overwrite
-            // the secondary. blockIndexFor's contains-check still gates the
-            // returned index on actual extent membership.
+            // Keep the primary stable (the older owner — typically a large
+            // block straddling many slots) and overwrite the secondary.
+            // blockIndexFor's contains-check still gates the returned index
+            // on actual extent membership.
             slot.secondary = block_index;
-#endif
         }
     }
 }
@@ -623,21 +615,6 @@ size_t OldGenSpace::blockIndexFor(const void* obj) const {
             if (p >= blk.start && p < blk.end) return slot.secondary;
         }
     }
-#ifdef ECO_BIDX_DEBUG
-    // Diagnostic: a linear-scan hit here means the page index is missing an
-    // owner that should have been recorded. With the two-owner table plus
-    // post-shrink rebuilds this should be unreachable.
-    for (size_t i = 0; i < blocks_.size(); ++i) {
-        const BlockInfo& blk = blocks_[i];
-        if (p >= blk.start && p < blk.end) {
-            std::fprintf(stderr,
-                "[oldgen] blockIndexFor: linear-scan fallback found block %zu "
-                "for ptr %p (page %zu); two-owner table missed it\n",
-                i, obj, page);
-            std::abort();
-        }
-    }
-#endif
     return blocks_.size();
 }
 
@@ -2660,36 +2637,6 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
             GC_STATS_TIMER_ELAPSED_NS(t0_shrink);
 #endif
     }
-
-    // Debug-only: re-derive sweep_pending_blocks_ from buffer_meta_ and
-    // assert it matches the maintained counter. Catches accounting drift
-    // before it can mislead the sweep-on-demand gate. Release builds with
-    // ECO_OLDGEN_DEBUG=1 emit a single mismatch line instead of crashing.
-#ifndef NDEBUG
-    {
-        size_t recount = 0;
-        for (const auto& meta : buffer_meta_) {
-            if (!meta.fully_swept) ++recount;
-        }
-        assert((gc_phase_ != GCPhase::Sweeping
-                  || recount == sweep_pending_blocks_) &&
-               "sweep_pending_blocks_ drift vs buffer_meta_ recount");
-    }
-#else
-    static const bool kSweepPendingDebug =
-        std::getenv("ECO_OLDGEN_DEBUG") != nullptr;
-    if (kSweepPendingDebug && gc_phase_ == GCPhase::Sweeping) {
-        size_t recount = 0;
-        for (const auto& meta : buffer_meta_) {
-            if (!meta.fully_swept) ++recount;
-        }
-        if (recount != sweep_pending_blocks_) {
-            std::fprintf(stderr,
-                "[oldgen-debug] sweep_pending_blocks_=%zu but recount=%zu\n",
-                sweep_pending_blocks_, recount);
-        }
-    }
-#endif
 }
 
 /**

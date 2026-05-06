@@ -359,28 +359,6 @@ private:
             if (auto carrier = dyn_cast<eco::GCRootCarrier>(&op))
                 carrier.setGCRoots(liveRoots);
         }
-
-#if ECO_GC_DEBUG_COMP
-        // Dump all GCRootCarrier ops in this block with their final roots.
-        for (auto &op : block) {
-            auto carrier = dyn_cast<eco::GCRootCarrier>(&op);
-            if (!carrier) continue;
-            auto funcOp = op.getParentOfType<func::FuncOp>();
-            auto roots = carrier.getGCRoots();
-            llvm::errs() << "[gc-liveness] func="
-                         << (funcOp ? funcOp.getName() : StringRef("?"))
-                         << " op=" << op.getName()
-                         << " loc=" << op.getLoc() << "\n";
-            llvm::errs() << "  eco.value operands:";
-            for (Value v : op.getOperands())
-                if (isEcoValue(v))
-                    llvm::errs() << " " << v;
-            llvm::errs() << "\n  attached roots (" << roots.size() << "):";
-            for (Value r : roots)
-                llvm::errs() << " " << r;
-            llvm::errs() << "\n";
-        }
-#endif
     }
 };
 

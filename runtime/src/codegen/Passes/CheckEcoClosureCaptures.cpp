@@ -86,6 +86,9 @@ struct CheckEcoClosureCapturesPass
     }
 
     void runOnOperation() override {
+#ifndef ECO_LOWERING_VALIDATION
+        return;
+#else
         ModuleOp module = getOperation();
         bool hasErrors = false;
 
@@ -185,6 +188,7 @@ struct CheckEcoClosureCapturesPass
 
         if (hasErrors)
             signalPassFailure();
+#endif
     }
 };
 

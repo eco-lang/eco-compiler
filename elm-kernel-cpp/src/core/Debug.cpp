@@ -44,14 +44,10 @@ Value* log(const std::string& tag, Value* value) {
      *
      * LIBRARIES: std::cout or similar for console output
      */
-#ifdef NDEBUG
-    // PROD mode: no-op
-    return value;
-#else
-    // DEBUG mode: log and return
+    // The compiler omits Debug.log calls in optimized builds, so this is
+    // only reached when debug output is wanted.
     std::cout << tag << ": " << toString(value) << std::endl;
     return value;
-#endif
 }
 
 std::string toString(Value* value) {
@@ -101,14 +97,8 @@ std::string toString(Value* value) {
      *
      * LIBRARIES: None (string manipulation)
      */
-#ifdef NDEBUG
-    // PROD mode: minimal info
-    return "<internals>";
-#else
-    // DEBUG mode: full string representation
     // TODO: Implement when Value type is available
     return "<internals>";
-#endif
 }
 
 [[noreturn]] void todo(const std::string& message) {

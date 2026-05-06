@@ -22,8 +22,7 @@ else()
     option(ECO_GC_DEBUG "Enable runtime GC debug checks (nursery stale-pointer detection)" OFF)
 endif()
 
-option(ECO_GC_DEBUG_COMP "Enable compile-time GC diagnostics (root dump during MLIR lowering)" OFF)
-option(ECO_GC_DEBUG_LIVENESS "Enable GC liveness audit pass (slow, independent of ECO_GC_DEBUG)" OFF)
+option(ECO_LOWERING_VALIDATION "Enable validation-only lowering passes (GC liveness audit, post-RS4GC ptr<1>↔i64 boundary verifier; slow, independent of ECO_GC_DEBUG)" OFF)
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
@@ -286,7 +285,7 @@ add_mlir_library(EcoPasses
     Passes/EcoToLLVMFunc.cpp
     # GC strategy registration + post-MLIR LLVM IR passes
     Passes/EcoGCStrategy.cpp
-    # Post-RS4GC ptr<1>↔i64 boundary verifier (gated by ECO_GC_DEBUG_LIVENESS)
+    # Post-RS4GC ptr<1>↔i64 boundary verifier (gated by ECO_LOWERING_VALIDATION)
     Passes/EcoPtrIntVerify.cpp
     # BF (ByteFusion) dialect lowering
     Passes/BFToLLVM.cpp
@@ -324,11 +323,8 @@ add_mlir_library(EcoPasses
 
 target_compile_features(obj.EcoPasses PRIVATE cxx_std_17)
 target_compile_options(obj.EcoPasses PRIVATE -Wno-ambiguous-reversed-operator)
-if(ECO_GC_DEBUG_COMP)
-    target_compile_definitions(obj.EcoPasses PRIVATE ECO_GC_DEBUG_COMP=1)
-endif()
-if(ECO_GC_DEBUG_LIVENESS)
-    target_compile_definitions(obj.EcoPasses PRIVATE ECO_GC_DEBUG_LIVENESS=1)
+if(ECO_LOWERING_VALIDATION)
+    target_compile_definitions(obj.EcoPasses PRIVATE ECO_LOWERING_VALIDATION=1)
 endif()
 
 #------------------------------------------------------------------------------
@@ -431,8 +427,8 @@ target_compile_options(ecoc PRIVATE -Wno-ambiguous-reversed-operator)
 # The runtime code uses exceptions, so we need to enable them
 # (LLVM/MLIR disables exceptions by default)
 target_compile_options(ecoc PRIVATE -fexceptions)
-if(ECO_GC_DEBUG_LIVENESS)
-    target_compile_definitions(ecoc PRIVATE ECO_GC_DEBUG_LIVENESS=1)
+if(ECO_LOWERING_VALIDATION)
+    target_compile_definitions(ecoc PRIVATE ECO_LOWERING_VALIDATION=1)
 endif()
 
 # Need pthreads for the runtime
@@ -521,8 +517,8 @@ target_compile_options(obj.EcoRunner PRIVATE -Wno-ambiguous-reversed-operator -f
 if(ECO_GC_DEBUG)
     target_compile_definitions(obj.EcoRunner PRIVATE ECO_GC_DEBUG=1)
 endif()
-if(ECO_GC_DEBUG_LIVENESS)
-    target_compile_definitions(obj.EcoRunner PRIVATE ECO_GC_DEBUG_LIVENESS=1)
+if(ECO_LOWERING_VALIDATION)
+    target_compile_definitions(obj.EcoRunner PRIVATE ECO_LOWERING_VALIDATION=1)
 endif()
 target_link_libraries(obj.EcoRunner PRIVATE Threads::Threads)
 # PUBLIC so that test/stress-test, which link against EcoRunner, transitively
@@ -732,8 +728,8 @@ add_dependencies(eco-boot-native ${ECO_BOOT_NATIVE_RUNTIME_DEPS})
 
 target_compile_features(eco-boot-native PRIVATE cxx_std_20)
 target_compile_options(eco-boot-native PRIVATE -Wno-ambiguous-reversed-operator -fexceptions)
-if(ECO_GC_DEBUG_LIVENESS)
-    target_compile_definitions(eco-boot-native PRIVATE ECO_GC_DEBUG_LIVENESS=1)
+if(ECO_LOWERING_VALIDATION)
+    target_compile_definitions(eco-boot-native PRIVATE ECO_LOWERING_VALIDATION=1)
 endif()
 
 #------------------------------------------------------------------------------
