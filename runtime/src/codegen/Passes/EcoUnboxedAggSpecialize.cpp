@@ -1,19 +1,25 @@
-//===- EcoUnboxedAggSpecialize.cpp - Phase 1 specialize ------------------===//
+//===- EcoUnboxedAggSpecialize.cpp - Phase 1+2 specialize ----------------===//
 //
-// Phase 1: rewrite Tuple2ConstructOp / Tuple3ConstructOp results that
-// EcoEscapeAnalysisPass tagged as `eco.escape = "non_escaping"` into the
-// corresponding eco.make.tuple2 / eco.make.tuple3 value-aggregate ops.
+// Rewrite construct-op results that EcoEscapeAnalysisPass tagged as
+// `eco.escape = "non_escaping"` into the corresponding eco.make.* value-
+// aggregate ops:
+//   - Tuple2ConstructOp  → Tuple2MakeOp
+//   - Tuple3ConstructOp  → Tuple3MakeOp
+//   - RecordConstructOp  → RecordMakeOp
+//   - CustomConstructOp  → CustomMakeOp  (preserves the `tag` and
+//                                          optional `constructor` attrs)
+//   - ListConstructOp    → ConsMakeOp
 //
-// The Phase 0 plumbing widened eco.project.tuple2 / eco.project.tuple3
-// to accept either an !eco.value operand (heap path) or the matching
-// aggregate type (value-level path). The lowering dispatches on the
+// The Phase 0 plumbing widened the matching projection ops to accept
+// either an !eco.value operand (heap path) or the aggregate type
+// (value-level path), and the LLVM-side lowering dispatches on the
 // converted operand type. So the rewrite here just changes the producer
 // — projection users automatically migrate to the value-level path.
 //
 // Operand layout: this pass runs BEFORE EcoGCPrepare, so a construct op
-// has only its plain `a`/`b`/`c` operands at this point — no GC roots
-// have been appended yet. We therefore copy operands directly without
-// having to split off a roots tail.
+// has only its plain field operands at this point — no GC roots have
+// been appended yet. We therefore copy operands directly without having
+// to split off a roots tail.
 //
 //===----------------------------------------------------------------------===//
 
@@ -56,7 +62,11 @@ struct EcoUnboxedAggSpecializePass
         // invalidating the walk iterator.
         SmallVector<Operation *, 16> toRewrite;
         func.walk([&](Operation *op) {
-            if (!isa<eco::Tuple2ConstructOp, eco::Tuple3ConstructOp>(op))
+            if (!isa<eco::Tuple2ConstructOp,
+                     eco::Tuple3ConstructOp,
+                     eco::RecordConstructOp,
+                     eco::CustomConstructOp,
+                     eco::ListConstructOp>(op))
                 return;
             auto attr = op->getAttrOfType<StringAttr>(kEscapeAttr);
             if (!attr || attr.getValue() != kNonEscapingTag)
@@ -82,6 +92,35 @@ struct EcoUnboxedAggSpecializePass
                     t3.getA(), t3.getB(), t3.getC());
                 t3.getResult().replaceAllUsesWith(makeOp.getResult());
                 t3.erase();
+            } else if (auto rec = dyn_cast<eco::RecordConstructOp>(op)) {
+                auto fields = rec.getFields();
+                SmallVector<Type, 8> elementTypes;
+                elementTypes.reserve(fields.size());
+                for (Value f : fields) elementTypes.push_back(f.getType());
+                Type aggTy = eco::RecordType::get(ctx, elementTypes);
+                auto makeOp = builder.create<eco::RecordMakeOp>(
+                    rec.getLoc(), aggTy, fields);
+                rec.getResult().replaceAllUsesWith(makeOp.getResult());
+                rec.erase();
+            } else if (auto cus = dyn_cast<eco::CustomConstructOp>(op)) {
+                auto fields = cus.getFields();
+                SmallVector<Type, 8> elementTypes;
+                elementTypes.reserve(fields.size());
+                for (Value f : fields) elementTypes.push_back(f.getType());
+                Type aggTy = eco::CustomType::get(ctx, elementTypes);
+                auto makeOp = builder.create<eco::CustomMakeOp>(
+                    cus.getLoc(), aggTy, fields,
+                    builder.getI64IntegerAttr(cus.getTag()),
+                    cus.getConstructorAttr());
+                cus.getResult().replaceAllUsesWith(makeOp.getResult());
+                cus.erase();
+            } else if (auto lst = dyn_cast<eco::ListConstructOp>(op)) {
+                Type aggTy = eco::ConsType::get(
+                    ctx, lst.getHead().getType(), lst.getTail().getType());
+                auto makeOp = builder.create<eco::ConsMakeOp>(
+                    lst.getLoc(), aggTy, lst.getHead(), lst.getTail());
+                lst.getResult().replaceAllUsesWith(makeOp.getResult());
+                lst.erase();
             }
         }
 
@@ -90,7 +129,11 @@ struct EcoUnboxedAggSpecializePass
         // to this one, and leaving it on the heap-backed construct ops
         // would clutter the lowered IR.
         func.walk([&](Operation *op) {
-            if (isa<eco::Tuple2ConstructOp, eco::Tuple3ConstructOp>(op))
+            if (isa<eco::Tuple2ConstructOp,
+                    eco::Tuple3ConstructOp,
+                    eco::RecordConstructOp,
+                    eco::CustomConstructOp,
+                    eco::ListConstructOp>(op))
                 op->removeAttr(kEscapeAttr);
         });
     }

@@ -28,9 +28,12 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Module.h"
-#include "llvm/Transforms/Scalar/RewriteStatepointsForGC.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/Scalar/RewriteStatepointsForGC.h"
+#include "llvm/Transforms/Scalar/SROA.h"
+#include "llvm/Transforms/Utils/Local.h"
+#include "llvm/Transforms/Utils/Mem2Reg.h"
 
 using namespace llvm;
 
@@ -330,7 +333,105 @@ PreservedAnalyses eco::EcoPtrIntVerifyPass::run(
 // Central GC pipeline helper
 //===----------------------------------------------------------------------===//
 
+namespace {
+
+/// Tiny function pass that folds `extractvalue (insertvalue ..., %v, i), i`
+/// register-form chains into `%v`, and folds extracts of plain undef /
+/// poison aggregates into matching undef. This is the SINGLE LLVM IR
+/// transform we need before `RewriteStatepointsForGC` to scalarise the
+/// first-class aggregates produced by Phase 0 value-aggregate ops, so
+/// RS4GC never sees a struct value carrying a ptr addrspace(1) field
+/// across a statepoint (its "FCA unimplemented" assertion).
+///
+/// Why not InstCombine or InstSimplify? Both also constant-fold
+/// undefined behaviour — notably `fptosi(±Inf|NaN)` (poison in LLVM)
+/// folds to whatever the optimiser prefers, breaking our arithmetic
+/// edge-case tests that rely on the unoptimised x86 hardware fallback
+/// (INT_MIN). This pass touches *only* extractvalue+insertvalue chains
+/// with matching indices; it never introduces new instructions and
+/// never reasons about poison. SROA handles allocas; this handles
+/// register-form FCAs; together they cover every shape our codegen
+/// produces.
+struct FoldExtractValuePass : public PassInfoMixin<FoldExtractValuePass> {
+    static bool indicesEq(ArrayRef<unsigned> a, ArrayRef<unsigned> b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i)
+            if (a[i] != b[i]) return false;
+        return true;
+    }
+
+    /// Walk back through an insertvalue chain looking for an
+    /// insertvalue whose indices exactly match `wantIndices`. Returns
+    /// the inserted value, or nullptr if no exact match is reachable
+    /// (e.g. chain ends at a phi, call, or load that doesn't match).
+    /// Falls through any insertvalue whose indices differ from the
+    /// requested ones — those modify a different field and don't
+    /// affect what the extract reads.
+    static Value *traceMatchingInsert(Value *agg,
+                                      ArrayRef<unsigned> wantIndices) {
+        while (auto *IV = dyn_cast<InsertValueInst>(agg)) {
+            if (indicesEq(IV->getIndices(), wantIndices))
+                return IV->getInsertedValueOperand();
+            agg = IV->getAggregateOperand();
+        }
+        if (isa<UndefValue>(agg) || isa<PoisonValue>(agg))
+            return UndefValue::get(nullptr); // sentinel; replaced below
+        return nullptr;
+    }
+
+    PreservedAnalyses run(Function &F, FunctionAnalysisManager &) {
+        bool changed = false;
+        SmallVector<ExtractValueInst *, 16> work;
+        for (auto &BB : F)
+            for (auto &I : BB)
+                if (auto *EV = dyn_cast<ExtractValueInst>(&I))
+                    work.push_back(EV);
+
+        for (auto *EV : work) {
+            Value *originalAgg = EV->getAggregateOperand();
+            Value *folded = traceMatchingInsert(originalAgg, EV->getIndices());
+            if (!folded) continue;
+            // Sentinel: undef-typed agg → fold to undef of the result type.
+            if (isa<UndefValue>(folded) && folded->getType() != EV->getType())
+                folded = UndefValue::get(EV->getType());
+            EV->replaceAllUsesWith(folded);
+            EV->eraseFromParent();
+            // Recursively delete the now-dead insertvalue chain. RS4GC
+            // walks ALL instructions (live or not) and asserts on FCA
+            // result types, so leaving dead aggregate-typed insertvalues
+            // around defeats the purpose of folding the extracts.
+            RecursivelyDeleteTriviallyDeadInstructions(originalAgg);
+            changed = true;
+        }
+        return changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
+    }
+};
+
+} // namespace
+
 void eco::addEcoGCPipeline(ModulePassManager &MPM) {
+    // SROA-before-RS4GC (Phase 2 prerequisite). LLVM's
+    // RewriteStatepointsForGC asserts "support for FCA unimplemented"
+    // when a first-class aggregate (LLVM struct value) carrying a
+    // ptr addrspace(1) field is live across a statepoint. Phase 0
+    // value-aggregate ops lower to insertvalue/extractvalue chains; if
+    // those chains survive into RS4GC, the assertion fires for any
+    // boxed-element shape (records, customs, mixed tuples, ...).
+    //
+    // mem2reg + SROA + FoldExtractValuePass together scalarise the
+    // FCA: SROA handles alloca slots; FoldExtractValuePass folds
+    // register-form `extractvalue (insertvalue undef, %v, i), i`
+    // chains. We deliberately do NOT use InstSimplify or InstCombine
+    // here because they also fold undefined behaviour (notably
+    // `fptosi(±Inf|NaN)`) and break unrelated arithmetic-edge tests.
+    {
+        FunctionPassManager FPM;
+        FPM.addPass(PromotePass());                         // mem2reg
+        FPM.addPass(SROAPass(SROAOptions::ModifyCFG));
+        FPM.addPass(FoldExtractValuePass());
+        MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+    }
+
     MPM.addPass(RewriteStatepointsForGC());
 #ifdef ECO_LOWERING_VALIDATION
     // Run ptr<1>↔i64 boundary verification after RS4GC.

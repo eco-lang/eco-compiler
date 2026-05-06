@@ -1,28 +1,39 @@
 //===- EcoEscapeAnalysis.cpp - Escape analysis for value aggregates -------===//
 //
-// Phase 1: per-function escape analysis for small-aggregate `eco.construct.*`
-// ops (Tuple2/Tuple3 only in this phase). Classifies each construct op's
-// result as either `non_escaping` (every use is a known projection on the
-// same value) or `escapes` (anything else — call, return, store, capture,
-// case, etc.). The classification is recorded as a string attribute
-// `eco.escape` on the construct op so the specialise pass can act on it
-// without re-walking uses.
+// Per-function escape analysis for small-aggregate `eco.construct.*` ops.
+// Classifies each construct op's result as either `non_escaping` (every
+// use is a known projection on the same value) or `escapes` (anything
+// else — call, return, store, capture, case, etc.). The classification
+// is recorded as a string attribute `eco.escape` on the construct op so
+// the specialise pass can act on it without re-walking uses.
+//
+// Phase 1 covered Tuple2/Tuple3. Phase 2 extends the candidate set to
+// records, customs, and list cons cells:
+//   - eco.construct.tuple2  → eco.project.tuple2  (Phase 1)
+//   - eco.construct.tuple3  → eco.project.tuple3  (Phase 1)
+//   - eco.construct.record  → eco.project.record  (Phase 2)
+//   - eco.construct.custom  → eco.project.custom  (Phase 2)
+//   - eco.construct.list    → eco.project.list_head / list_tail (Phase 2)
 //
 // Conservative rules:
 //   - A use is NON-escaping iff:
-//       * user is eco.project.tuple2 / eco.project.tuple3, AND
-//       * the operand position is the `tuple` operand (operand 0).
+//       * user is the matching projection op, AND
+//       * the operand position is the receiver (operand 0).
 //   - Anything else is escaping. In particular:
-//       * any other op (eco.construct.*, eco.allocate_*, eco.box,
+//       * any other op (other eco.construct.*, eco.allocate_*, eco.box,
 //         eco.store_global, eco.return, eco.yield, eco.case, eco.call,
-//         eco.papCreate, eco.papExtend, ...);
+//         eco.papCreate, eco.papExtend, eco.to_heap, ...);
 //       * the construct op's result being a function return value;
-//       * being passed as an `eco.project.tuple2` operand at a position
-//         other than `tuple` (defensive — shouldn't happen in well-typed
-//         IR, but we don't want to silently misclassify).
+//       * being passed as a projection operand at a non-receiver position
+//         (defensive — shouldn't happen in well-typed IR).
 //
 // This pass must run BEFORE EcoGCPrepare so the construct op's operand
 // list is just `[a, b, ... ]` (no GC roots appended yet).
+//
+// Phase 2's RS4GC FCA prerequisite is satisfied by addEcoGCPipeline, which
+// now runs mem2reg + SROA + a tiny custom extractvalue/insertvalue fold
+// before RewriteStatepointsForGC. Aggregates carrying ptr addrspace(1)
+// fields are therefore safe to rewrite.
 //
 //===----------------------------------------------------------------------===//
 
@@ -43,59 +54,36 @@ constexpr llvm::StringLiteral kEscapeAttr     = "eco.escape";
 constexpr llvm::StringLiteral kNonEscapingTag = "non_escaping";
 constexpr llvm::StringLiteral kEscapesTag     = "escapes";
 
-/// True iff `use` is a projection of the construct op's tuple via one of
-/// the known tuple-projection ops, with the construct result occupying
-/// the `tuple` operand position. Anything else is treated as escaping.
+/// True iff `use` is a known projection of the construct op's result
+/// in the receiver operand position. Each construct shape has its own
+/// projection op(s); the receiver is always operand 0. Anything else
+/// is treated as escaping.
 static bool isNonEscapingUse(OpOperand &use) {
     Operation *user = use.getOwner();
-    if (auto p = dyn_cast<eco::Tuple2ProjectOp>(user)) {
-        return use.getOperandNumber() == 0; // operand 0 is `$tuple`
-    }
-    if (auto p = dyn_cast<eco::Tuple3ProjectOp>(user)) {
-        return use.getOperandNumber() == 0;
-    }
-    return false;
-}
-
-/// True iff every element type of the construct op is one of the
-/// primitive SSA types (i64, f64, i16). LLVM's RewriteStatepointsForGC
-/// asserts "support for FCA unimplemented" if a first-class aggregate
-/// type contains GC pointers (ptr addrspace(1)) and is live across a
-/// statepoint. Phase 1 doesn't yet run SROA before RS4GC, so we
-/// conservatively reject any construct whose operands include
-/// `!eco.value` — even when the result is locally projected — so the
-/// resulting LLVM struct can never carry a GC pointer.
-static bool isPrimitive(Type t) {
-    return t.isInteger(64) || t.isF64() || t.isInteger(16);
-}
-
-static bool allElementsPrimitive(Operation *op) {
-    if (auto t2 = dyn_cast<eco::Tuple2ConstructOp>(op)) {
-        return isPrimitive(t2.getA().getType()) &&
-               isPrimitive(t2.getB().getType());
-    }
-    if (auto t3 = dyn_cast<eco::Tuple3ConstructOp>(op)) {
-        return isPrimitive(t3.getA().getType()) &&
-               isPrimitive(t3.getB().getType()) &&
-               isPrimitive(t3.getC().getType());
-    }
-    return false;
+    if (use.getOperandNumber() != 0) return false;
+    return isa<eco::Tuple2ProjectOp,
+               eco::Tuple3ProjectOp,
+               eco::RecordProjectOp,
+               eco::CustomProjectOp,
+               eco::ListHeadOp,
+               eco::ListTailOp>(user);
 }
 
 /// Classify a single tuple-construct op's result and tag it with the
 /// `eco.escape` attribute. Returns true iff classified as non-escaping.
+///
+/// Phase 1 had an additional `allElementsPrimitive` guard here as a
+/// workaround for LLVM's "FCA unimplemented" assertion when a struct
+/// value carrying ptr addrspace(1) was live across a statepoint. The
+/// guard is no longer needed: Phase 2 wires mem2reg + SROA into
+/// addEcoGCPipeline so any FCA is scalarised before RS4GC sees it.
+/// Boxed-element tuples are now first-class candidates.
 static bool classifyConstruct(Operation *op, OpBuilder &builder) {
     bool nonEscaping = true;
-    // RS4GC FCA constraint: any !eco.value element disqualifies.
-    if (!allElementsPrimitive(op)) {
-        nonEscaping = false;
-    }
-    if (nonEscaping) {
-        for (OpOperand &use : op->getResult(0).getUses()) {
-            if (!isNonEscapingUse(use)) {
-                nonEscaping = false;
-                break;
-            }
+    for (OpOperand &use : op->getResult(0).getUses()) {
+        if (!isNonEscapingUse(use)) {
+            nonEscaping = false;
+            break;
         }
     }
     op->setAttr(kEscapeAttr,
@@ -118,7 +106,11 @@ struct EcoEscapeAnalysisPass
         func::FuncOp func = getOperation();
         OpBuilder builder(func.getContext());
         func.walk([&](Operation *op) {
-            if (isa<eco::Tuple2ConstructOp, eco::Tuple3ConstructOp>(op)) {
+            if (isa<eco::Tuple2ConstructOp,
+                    eco::Tuple3ConstructOp,
+                    eco::RecordConstructOp,
+                    eco::CustomConstructOp,
+                    eco::ListConstructOp>(op)) {
                 classifyConstruct(op, builder);
             }
         });
