@@ -95,6 +95,20 @@ LogicalResult AllocateClosureOp::verifySymbolUses(SymbolTableCollection &symbolT
   return verifySymRef(*this, getFunctionAttr(), symbolTable, "function");
 }
 
+LogicalResult MakeClosureOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  if (failed(verifySymRef(*this, getFunctionAttr(), symbolTable, "function")))
+    return failure();
+  // Mirror PapCreateOp::verifySymbolUses kernel-existence check (CGEN_057):
+  // kernel functions must have a func.func declaration in the module.
+  auto funcName = getFunctionAttr().getValue();
+  if (funcName.starts_with("Elm_Kernel_")) {
+    if (!symbolTable.lookupNearestSymbolFrom<func::FuncOp>(*this, getFunctionAttr()))
+      return emitOpError("kernel function '") << funcName
+             << "' has no func.func declaration; compiler must emit one (CGEN_057)";
+  }
+  return success();
+}
+
 LogicalResult GlobalOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   if (auto init = getInitializerAttr())
     return verifySymRef(*this, init, symbolTable, "initializer");
@@ -725,9 +739,27 @@ LogicalResult ProjectClosureOp::verify() {
     return emitOpError("index must be non-negative, got ") << index;
   }
 
-  // Verify closure operand is !eco.value type
-  if (!isa<eco::ValueType>(getClosure().getType())) {
-    return emitOpError("closure operand must be !eco.value type");
+  // Operand may be either !eco.value (heap closure) or !eco.closure_env
+  // (value-level env, Phase 0 plumbing). The TableGen constraint
+  // Eco_ClosureOrEnv enforces this at the operand level; here we just
+  // additionally bounds-check the index against the env's capture count
+  // when we have a value-level operand.
+  Type closureType = getClosure().getType();
+  if (auto envTy = dyn_cast<eco::ClosureEnvType>(closureType)) {
+    if (static_cast<size_t>(index) >= envTy.getCaptures().size()) {
+      return emitOpError("index ") << index
+             << " out of range for closure env with "
+             << envTy.getCaptures().size() << " captures";
+    }
+    // Result type must match the env's slot type at this index.
+    Type expected = envTy.getCaptures()[index];
+    if (getResult().getType() != expected) {
+      return emitOpError("result type ") << getResult().getType()
+             << " does not match env slot type " << expected
+             << " at index " << index;
+    }
+  } else if (!isa<eco::ValueType>(closureType)) {
+    return emitOpError("closure operand must be !eco.value or !eco.closure_env");
   }
 
   return success();
@@ -935,6 +967,154 @@ void PapCreateGroupOp::setGCRoots(ValueRange newRoots) {
     OpBuilder b(getOperation());
     getOperation()->setAttr("eco.gc_roots_count",
         b.getI64IntegerAttr(newRoots.size()));
+}
+
+//===----------------------------------------------------------------------===//
+// Value-level Aggregate Op Verifiers (Phase 0 escape-analysis plumbing)
+//===----------------------------------------------------------------------===//
+
+// Helper: verify that `actual` matches the result type's element list `expected`.
+static LogicalResult verifyAggElements(Operation *op,
+                                       ArrayRef<Type> actual,
+                                       ArrayRef<Type> expected,
+                                       StringRef label) {
+  if (actual.size() != expected.size()) {
+    return op->emitOpError(label) << " count " << actual.size()
+           << " does not match result aggregate element count "
+           << expected.size();
+  }
+  for (size_t i = 0; i < actual.size(); ++i) {
+    if (actual[i] != expected[i]) {
+      return op->emitOpError(label) << " " << i << " has SSA type "
+             << actual[i] << " but result aggregate expects "
+             << expected[i];
+    }
+  }
+  return success();
+}
+
+LogicalResult Tuple2MakeOp::verify() {
+  auto resTy = cast<eco::Tuple2Type>(getResult().getType());
+  Type expected[2] = { resTy.getFirst(), resTy.getSecond() };
+  Type actual[2]   = { getA().getType(), getB().getType() };
+  return verifyAggElements(getOperation(), actual, expected, "operand");
+}
+
+LogicalResult Tuple3MakeOp::verify() {
+  auto resTy = cast<eco::Tuple3Type>(getResult().getType());
+  Type expected[3] = { resTy.getFirst(), resTy.getSecond(), resTy.getThird() };
+  Type actual[3]   = { getA().getType(), getB().getType(), getC().getType() };
+  return verifyAggElements(getOperation(), actual, expected, "operand");
+}
+
+LogicalResult RecordMakeOp::verify() {
+  auto resTy = cast<eco::RecordType>(getResult().getType());
+  SmallVector<Type, 8> actual;
+  for (Value f : getFields()) actual.push_back(f.getType());
+  return verifyAggElements(getOperation(), actual, resTy.getFields(), "field");
+}
+
+LogicalResult CustomMakeOp::verify() {
+  auto resTy = cast<eco::CustomType>(getResult().getType());
+  SmallVector<Type, 8> actual;
+  for (Value f : getFields()) actual.push_back(f.getType());
+  if (failed(verifyAggElements(getOperation(), actual, resTy.getFields(), "field")))
+    return failure();
+  // tag must be non-negative; the heap encoding uses 16 bits so guard
+  // against absurd values that would silently truncate at to_heap time.
+  int64_t tag = getTag();
+  if (tag < 0 || tag > 0xFFFF) {
+    return emitOpError("tag (") << tag << ") must fit in 16 bits";
+  }
+  return success();
+}
+
+LogicalResult ConsMakeOp::verify() {
+  auto resTy = cast<eco::ConsType>(getResult().getType());
+  if (getHead().getType() != resTy.getHead()) {
+    return emitOpError("head SSA type ") << getHead().getType()
+           << " does not match cons head element type " << resTy.getHead();
+  }
+  if (getTail().getType() != resTy.getTail()) {
+    return emitOpError("tail SSA type ") << getTail().getType()
+           << " does not match cons tail element type " << resTy.getTail();
+  }
+  // Phase 0 constraint: tail is fixed to !eco.value.
+  if (!isa<eco::ValueType>(resTy.getTail())) {
+    return emitOpError("cons tail element type must be !eco.value in this phase, got ")
+           << resTy.getTail();
+  }
+  return success();
+}
+
+LogicalResult ClosureEnvMakeOp::verify() {
+  auto resTy = cast<eco::ClosureEnvType>(getResult().getType());
+  SmallVector<Type, 8> actual;
+  for (Value c : getCaptures()) actual.push_back(c.getType());
+  return verifyAggElements(getOperation(), actual, resTy.getCaptures(), "capture");
+}
+
+LogicalResult ToHeapOp::verify() {
+  // CGEN_029: !eco.closure_env operands are rejected; closure realisation
+  // goes through eco.make.closure.
+  Type valTy = getValue().getType();
+  if (isa<eco::ClosureEnvType>(valTy)) {
+    return emitOpError("eco.to_heap rejects !eco.closure_env operands; use "
+                       "eco.make.closure to realise heap closures (CGEN_029)");
+  }
+  // The TableGen Eco_DataAggregate constraint already restricts to
+  // tuple2/3/record/custom/cons; this is just defensive belt-and-braces.
+  if (!isa<eco::Tuple2Type, eco::Tuple3Type, eco::RecordType,
+           eco::CustomType, eco::ConsType>(valTy)) {
+    return emitOpError("operand must be a data aggregate, got ") << valTy;
+  }
+  return success();
+}
+
+LogicalResult MakeClosureOp::verify() {
+  auto envTy = cast<eco::ClosureEnvType>(getEnv().getType());
+  int64_t numCaptures = static_cast<int64_t>(envTy.getCaptures().size());
+  int64_t arity = getArity();
+  // Mirror PapCreateOp constraints: num_captured < arity, both within
+  // closure-header bit limits.
+  if (numCaptures >= arity) {
+    return emitOpError("env captures (") << numCaptures
+           << ") must be less than arity (" << arity << ")";
+  }
+  if (numCaptures > 26) {
+    return emitOpError("env captures (") << numCaptures
+           << ") exceeds 26-slot limit under 2-bit kind encoding";
+  }
+  if (arity > 63) {
+    return emitOpError("arity (") << arity
+           << ") exceeds 6-bit max_values limit (63)";
+  }
+  // REP_CLOSURE_001: Bool (i1) must NOT be captured at closure boundary.
+  for (size_t i = 0; i < envTy.getCaptures().size(); ++i) {
+    Type ty = envTy.getCaptures()[i];
+    if (ty.isInteger(1)) {
+      return emitOpError("captured Bool (i1) at index ") << i
+             << " violates REP_CLOSURE_001: Bool must be boxed to !eco.value "
+                "at closure boundary";
+    }
+  }
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// Value-level Aggregate GCRootCarrier impls
+//===----------------------------------------------------------------------===//
+// Only the boundary ops (eco.to_heap, eco.make.closure) are GCRootCarriers;
+// the value-level eco.make.* ops are Pure with no live_roots.
+
+ValueRange ToHeapOp::getGCRoots() { return getLiveRoots(); }
+void ToHeapOp::setGCRoots(ValueRange newRoots) {
+    getLiveRootsMutable().clear(); getLiveRootsMutable().append(newRoots);
+}
+
+ValueRange MakeClosureOp::getGCRoots() { return getLiveRoots(); }
+void MakeClosureOp::setGCRoots(ValueRange newRoots) {
+    getLiveRootsMutable().clear(); getLiveRootsMutable().append(newRoots);
 }
 
 //===----------------------------------------------------------------------===//

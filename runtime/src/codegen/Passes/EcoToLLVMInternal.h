@@ -598,6 +598,19 @@ void populateEcoFuncPatterns(
     EcoTypeConverter &typeConverter,
     mlir::RewritePatternSet &patterns);
 
+/// Populate patterns for value-level aggregate ops (Phase 0 plumbing):
+/// - eco.make.tuple2/3, eco.make.record, eco.make.custom,
+///   eco.make.cons, eco.make.closure_env (Pure; insertvalue chains).
+/// - eco.to_heap (data-aggregate -> !eco.value heap object).
+/// - eco.make.closure (closure_env + function/arity -> !eco.value).
+/// - project.closure for !eco.closure_env operands (small parallel
+///   pattern; the heap-side eco.project.closure lowering in
+///   EcoToLLVMClosures.cpp is intentionally untouched in Phase 0).
+void populateEcoValueAggPatterns(
+    EcoTypeConverter &typeConverter,
+    mlir::RewritePatternSet &patterns,
+    const EcoRuntime &runtime);
+
 //===----------------------------------------------------------------------===//
 // Shadow Root Frame (TCO-safe GC rooting for func.func parameters)
 //===----------------------------------------------------------------------===//

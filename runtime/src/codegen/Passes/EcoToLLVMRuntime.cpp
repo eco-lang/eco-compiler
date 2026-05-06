@@ -33,6 +33,55 @@ EcoTypeConverter::EcoTypeConverter(MLIRContext *ctx)
         return LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
     });
 
+    // Phase 0 plumbing: convert each value-level aggregate type to an
+    // LLVM literal struct of its converted element types. The "value
+    // layout" intentionally does NOT mirror the heap layout — boundary
+    // ops (eco.to_heap, eco.make.closure) translate explicitly. (REP_AGG_001)
+    auto convertElements = [this](ArrayRef<Type> elements,
+                                  SmallVectorImpl<Type> &out) -> bool {
+        out.reserve(elements.size());
+        for (Type t : elements) {
+            Type converted = convertType(t);
+            if (!converted) return false;
+            out.push_back(converted);
+        }
+        return true;
+    };
+
+    addConversion([ctx, convertElements](eco::Tuple2Type type) -> Type {
+        SmallVector<Type, 2> body;
+        Type elts[2] = { type.getFirst(), type.getSecond() };
+        if (!convertElements(elts, body)) return Type();
+        return LLVM::LLVMStructType::getLiteral(ctx, body);
+    });
+    addConversion([ctx, convertElements](eco::Tuple3Type type) -> Type {
+        SmallVector<Type, 3> body;
+        Type elts[3] = { type.getFirst(), type.getSecond(), type.getThird() };
+        if (!convertElements(elts, body)) return Type();
+        return LLVM::LLVMStructType::getLiteral(ctx, body);
+    });
+    addConversion([ctx, convertElements](eco::RecordType type) -> Type {
+        SmallVector<Type, 8> body;
+        if (!convertElements(type.getFields(), body)) return Type();
+        return LLVM::LLVMStructType::getLiteral(ctx, body);
+    });
+    addConversion([ctx, convertElements](eco::CustomType type) -> Type {
+        SmallVector<Type, 8> body;
+        if (!convertElements(type.getFields(), body)) return Type();
+        return LLVM::LLVMStructType::getLiteral(ctx, body);
+    });
+    addConversion([ctx, convertElements](eco::ConsType type) -> Type {
+        SmallVector<Type, 2> body;
+        Type elts[2] = { type.getHead(), type.getTail() };
+        if (!convertElements(elts, body)) return Type();
+        return LLVM::LLVMStructType::getLiteral(ctx, body);
+    });
+    addConversion([ctx, convertElements](eco::ClosureEnvType type) -> Type {
+        SmallVector<Type, 8> body;
+        if (!convertElements(type.getCaptures(), body)) return Type();
+        return LLVM::LLVMStructType::getLiteral(ctx, body);
+    });
+
     // Source materialization: create ptr<1> from !eco.value
     // This is called when converted operations need values from unconverted operations.
     // Use UnrealizedConversionCastOp which works with any types.

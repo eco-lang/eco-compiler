@@ -349,6 +349,16 @@ struct ListHeadOpLowering : public OpConversionPattern<ListHeadOp> {
         // Check the original ECO result type to decide how to extract the head.
         Type origResultType = op.getResult().getType();
 
+        // Value-aggregate path: operand is an LLVM struct (from !eco.cons).
+        // Head is field 0; emit extractvalue, no resolve_hptr / runtime helper.
+        if (isa<LLVM::LLVMStructType>(input.getType())) {
+            Type resultType = getTypeConverter()->convertType(origResultType);
+            Value result = rewriter.create<LLVM::ExtractValueOp>(
+                loc, resultType, input, ArrayRef<int64_t>{0});
+            rewriter.replaceOp(op, result);
+            return success();
+        }
+
         // For primitive types (i64, f64, i16), use runtime helpers that handle
         // both boxed and unboxed heads correctly.
         if (origResultType.isInteger(64)) {
@@ -412,6 +422,17 @@ struct ListTailOpLowering : public OpConversionPattern<ListTailOp> {
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
         Value input = adaptor.getList();
+
+        // Value-aggregate path: operand is an LLVM struct (from !eco.cons).
+        // Tail is field 1; emit extractvalue.
+        if (isa<LLVM::LLVMStructType>(input.getType())) {
+            Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+            Value result = rewriter.create<LLVM::ExtractValueOp>(
+                loc, resultType, input, ArrayRef<int64_t>{1});
+            rewriter.replaceOp(op, result);
+            return success();
+        }
+
         auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
         auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{input});
         Value ptr = resolveCall.getResult();
@@ -542,8 +563,17 @@ struct Tuple2ProjectOpLowering : public OpConversionPattern<Tuple2ProjectOp> {
 
         Value input = adaptor.getTuple();
         int64_t field = op.getField();
-
         Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+
+        // Value-aggregate path: operand is an LLVM struct (lowered from
+        // !eco.tuple2). Emit extractvalue instead of the heap-load
+        // sequence.
+        if (isa<LLVM::LLVMStructType>(input.getType())) {
+            Value result = rewriter.create<LLVM::ExtractValueOp>(
+                loc, resultType, input, ArrayRef<int64_t>{field});
+            rewriter.replaceOp(op, result);
+            return success();
+        }
 
         if (isHPtrLLVMType(resultType)) {
             // Boxed branch: resolve + GEP + load i64 + heapLoadI64ToValue.
@@ -606,8 +636,15 @@ struct Tuple3ProjectOpLowering : public OpConversionPattern<Tuple3ProjectOp> {
 
         Value input = adaptor.getTuple();
         int64_t field = op.getField();
-
         Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+
+        // Value-aggregate path: operand is an LLVM struct (from !eco.tuple3).
+        if (isa<LLVM::LLVMStructType>(input.getType())) {
+            Value result = rewriter.create<LLVM::ExtractValueOp>(
+                loc, resultType, input, ArrayRef<int64_t>{field});
+            rewriter.replaceOp(op, result);
+            return success();
+        }
 
         if (isHPtrLLVMType(resultType)) {
             // Boxed branch unchanged; primitive branch goes through the
@@ -746,8 +783,15 @@ struct RecordProjectOpLowering : public OpConversionPattern<RecordProjectOp> {
 
         Value input = adaptor.getRecord();
         int64_t index = op.getFieldIndex();
-
         Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+
+        // Value-aggregate path: operand is an LLVM struct (from !eco.record).
+        if (isa<LLVM::LLVMStructType>(input.getType())) {
+            Value result = rewriter.create<LLVM::ExtractValueOp>(
+                loc, resultType, input, ArrayRef<int64_t>{index});
+            rewriter.replaceOp(op, result);
+            return success();
+        }
 
         if (isHPtrLLVMType(resultType)) {
             // Boxed branch unchanged; primitive branch is Pattern-C-safe below.
@@ -882,8 +926,15 @@ struct CustomProjectOpLowering : public OpConversionPattern<CustomProjectOp> {
 
         Value input = adaptor.getContainer();
         int64_t index = op.getFieldIndex();
-
         Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+
+        // Value-aggregate path: operand is an LLVM struct (from !eco.custom).
+        if (isa<LLVM::LLVMStructType>(input.getType())) {
+            Value result = rewriter.create<LLVM::ExtractValueOp>(
+                loc, resultType, input, ArrayRef<int64_t>{index});
+            rewriter.replaceOp(op, result);
+            return success();
+        }
 
         if (isHPtrLLVMType(resultType)) {
             // Boxed branch unchanged; primitive branch is Pattern-C-safe below.

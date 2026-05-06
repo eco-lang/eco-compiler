@@ -14,6 +14,8 @@
 using namespace mlir;
 using namespace eco;
 
-// Include the auto-generated type definitions.
-#define GET_TYPEDEF_CLASSES
-#include "eco/EcoTypes.cpp.inc"
+// Auto-generated type definitions (storage classes, parse/print, getters)
+// have been moved to EcoDialect.cpp so the dialect's initialize() method,
+// which calls addTypes<>, can see complete TypeStorage types.
+// This TU is intentionally minimal but kept around for the include path
+// and for potential future hand-written type helpers.

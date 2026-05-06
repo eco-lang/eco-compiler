@@ -97,6 +97,83 @@ def Eco_ValueType : Eco_Type<"Value", "value"> {
 }
 
 //===----------------------------------------------------------------------===//
+// Value-level Aggregate Types (Phase 0 escape-analysis plumbing)
+//===----------------------------------------------------------------------===//
+//
+// These types are an SSA-only representation independent of heap layout
+// (REP_AGG_001). They lower to LLVM struct values held in registers, never
+// to ptr addrspace(1). Heap-layout artifacts (unboxed_bitmap, field_count,
+// tag, head_kind) live on heap construct/`eco.to_heap`/`eco.make.closure`
+// ops, never on these types.
+//
+// Parameterisation: each carries its element types so the EcoTypeConverter
+// can map it to LLVMStructType without an op context.
+//
+
+def Eco_Tuple2Type : Eco_Type<"Tuple2", "tuple2"> {
+  let summary = "Unboxed logical 2-tuple";
+  let description = [{
+    Logical representation of a 2-tuple at the SSA level. Lowers to
+    LLVM struct of two converted element types. Does not imply any
+    particular heap layout.
+  }];
+  let parameters = (ins "::mlir::Type":$first, "::mlir::Type":$second);
+  let assemblyFormat = "`<` $first `,` $second `>`";
+}
+
+def Eco_Tuple3Type : Eco_Type<"Tuple3", "tuple3"> {
+  let summary = "Unboxed logical 3-tuple";
+  let parameters = (ins "::mlir::Type":$first,
+                        "::mlir::Type":$second,
+                        "::mlir::Type":$third);
+  let assemblyFormat = "`<` $first `,` $second `,` $third `>`";
+}
+
+def Eco_RecordType : Eco_Type<"Record", "record"> {
+  let summary = "Unboxed logical record";
+  let description = [{
+    Logical representation of a record. Field types are carried directly
+    on the type. Does not carry an unboxed_bitmap — that lives on heap
+    construct/to_heap ops.
+  }];
+  let parameters = (ins ArrayRefParameter<"::mlir::Type">:$fields);
+  let assemblyFormat = "`<` $fields `>`";
+}
+
+def Eco_CustomType : Eco_Type<"Custom", "custom"> {
+  let summary = "Unboxed logical custom ADT value";
+  let description = [{
+    Logical representation of a Custom ADT value. The constructor tag is
+    structural (op attribute on `eco.make.custom` and `eco.to_heap`), not
+    on the type — the type stays generic over field types.
+  }];
+  let parameters = (ins ArrayRefParameter<"::mlir::Type">:$fields);
+  let assemblyFormat = "`<` $fields `>`";
+}
+
+def Eco_ConsType : Eco_Type<"Cons", "cons"> {
+  let summary = "Unboxed logical cons cell";
+  let description = [{
+    Logical representation of a list node (head/tail) at the SSA level.
+    Tail is fixed to !eco.value (matches the existing heap list spine);
+    fully unboxed list spines are out of scope for the initial phase.
+  }];
+  let parameters = (ins "::mlir::Type":$head, "::mlir::Type":$tail);
+  let assemblyFormat = "`<` $head `,` $tail `>`";
+}
+
+def Eco_ClosureEnvType : Eco_Type<"ClosureEnv", "closure_env"> {
+  let summary = "Unboxed closure environment";
+  let description = [{
+    Logical representation of a closure environment. Carries captured
+    value slot types, not the function symbol or arity — those are
+    attached at heap-realisation time by `eco.make.closure`.
+  }];
+  let parameters = (ins ArrayRefParameter<"::mlir::Type">:$captures);
+  let assemblyFormat = "`<` $captures `>`";
+}
+
+//===----------------------------------------------------------------------===//
 // Type Constraints
 //===----------------------------------------------------------------------===//
 
@@ -105,6 +182,43 @@ def Eco_Value : Type<CPred<"llvm::isa<eco::ValueType>($_self)">,
                      "eco.value",
                      "eco::ValueType">,
                      BuildableType<"$_builder.getType<eco::ValueType>()">;
+
+// Aggregate type constraints — used as op operand/result constraints.
+def Eco_Tuple2     : Type<CPred<"llvm::isa<eco::Tuple2Type>($_self)">,
+                          "eco.tuple2", "eco::Tuple2Type">;
+def Eco_Tuple3     : Type<CPred<"llvm::isa<eco::Tuple3Type>($_self)">,
+                          "eco.tuple3", "eco::Tuple3Type">;
+def Eco_Record     : Type<CPred<"llvm::isa<eco::RecordType>($_self)">,
+                          "eco.record", "eco::RecordType">;
+def Eco_Custom     : Type<CPred<"llvm::isa<eco::CustomType>($_self)">,
+                          "eco.custom", "eco::CustomType">;
+def Eco_Cons       : Type<CPred<"llvm::isa<eco::ConsType>($_self)">,
+                          "eco.cons", "eco::ConsType">;
+def Eco_ClosureEnv : Type<CPred<"llvm::isa<eco::ClosureEnvType>($_self)">,
+                          "eco.closure_env", "eco::ClosureEnvType">;
+
+// Data aggregates (everything except closure env). Used to constrain the
+// `eco.to_heap` operand: the verifier rejects `!eco.closure_env` here
+// because closure realisation goes through `eco.make.closure`.
+def Eco_DataAggregate : AnyTypeOf<[Eco_Tuple2, Eco_Tuple3, Eco_Record,
+                                   Eco_Custom, Eco_Cons],
+                                  "eco data aggregate">;
+
+// Operand constraints for projection ops: accept either the heap form
+// (!eco.value) or the matching value-aggregate form. Lowering dispatches
+// on the converted operand LLVM type (struct vs ptr addrspace(1)).
+def Eco_Tuple2OrValue : AnyTypeOf<[Eco_Value, Eco_Tuple2],
+                                  "!eco.value or !eco.tuple2">;
+def Eco_Tuple3OrValue : AnyTypeOf<[Eco_Value, Eco_Tuple3],
+                                  "!eco.value or !eco.tuple3">;
+def Eco_RecordOrValue : AnyTypeOf<[Eco_Value, Eco_Record],
+                                  "!eco.value or !eco.record">;
+def Eco_CustomOrValue : AnyTypeOf<[Eco_Value, Eco_Custom],
+                                  "!eco.value or !eco.custom">;
+def Eco_ConsOrValue   : AnyTypeOf<[Eco_Value, Eco_Cons],
+                                  "!eco.value or !eco.cons">;
+def Eco_ClosureOrEnv  : AnyTypeOf<[Eco_Value, Eco_ClosureEnv],
+                                  "!eco.value or !eco.closure_env">;
 
 //===----------------------------------------------------------------------===//
 // Constant Attribute Definition
@@ -522,13 +636,17 @@ def Eco_ListHeadOp : Eco_Op<"project.list_head", [Pure]> {
     Project the head field of a non-empty list (Cons cell).
     Result type depends on whether head is unboxed.
 
+    Operand may be either `!eco.value` (heap Cons — current heap-load
+    lowering) or `!eco.cons<head, tail>` (value-level cons — lowers to
+    LLVM extractvalue at index 0).
+
     Example:
     ```mlir
     %head = eco.project.list_head %list : !eco.value -> !eco.value
     ```
   }];
 
-  let arguments = (ins Eco_Value:$list);
+  let arguments = (ins Eco_ConsOrValue:$list);
   let results = (outs Eco_AnyValue:$head);
 
   let assemblyFormat = "$list attr-dict `:` type($list) `->` type($head)";
@@ -540,13 +658,18 @@ def Eco_ListTailOp : Eco_Op<"project.list_tail", [Pure]> {
     Project the tail field of a non-empty list (Cons cell).
     Tail is always a boxed list pointer (!eco.value).
 
+    Operand may be either `!eco.value` (heap Cons) or
+    `!eco.cons<head, tail>` (value-level cons; tail is fixed to
+    `!eco.value` for now). Lowering dispatches on the converted operand
+    LLVM type.
+
     Example:
     ```mlir
     %tail = eco.project.list_tail %list : !eco.value -> !eco.value
     ```
   }];
 
-  let arguments = (ins Eco_Value:$list);
+  let arguments = (ins Eco_ConsOrValue:$list);
   let results = (outs Eco_Value:$tail);
 
   let assemblyFormat = "$list attr-dict `:` type($list) `->` type($tail)";
@@ -622,13 +745,18 @@ def Eco_Tuple2ProjectOp : Eco_Op<"project.tuple2", [Pure]> {
     Project element 0 or 1 from a 2-tuple. Result type is the concrete
     SSA type (primitive or !eco.value) based on unboxed status.
 
+    Operand may be either `!eco.value` (heap-backed Tuple2 — existing
+    heap-load lowering) or `!eco.tuple2<...>` (value-level aggregate —
+    lowers to LLVM extractvalue).
+
     Example:
     ```mlir
     %first = eco.project.tuple2 %tuple[0] : !eco.value -> !eco.value
+    %a     = eco.project.tuple2 %agg[0]   : !eco.tuple2<i64, !eco.value> -> i64
     ```
   }];
 
-  let arguments = (ins Eco_Value:$tuple, I64Attr:$field);
+  let arguments = (ins Eco_Tuple2OrValue:$tuple, I64Attr:$field);
   let results = (outs Eco_AnyValue:$result);
 
   let assemblyFormat = "$tuple `[` $field `]` attr-dict `:` type($tuple) `->` type($result)";
@@ -639,13 +767,16 @@ def Eco_Tuple3ProjectOp : Eco_Op<"project.tuple3", [Pure]> {
   let description = [{
     Project element 0, 1, or 2 from a 3-tuple.
 
+    Operand may be either `!eco.value` or `!eco.tuple3<...>`; lowering
+    dispatches on the converted operand LLVM type.
+
     Example:
     ```mlir
     %second = eco.project.tuple3 %tuple[1] : !eco.value -> !eco.value
     ```
   }];
 
-  let arguments = (ins Eco_Value:$tuple, I64Attr:$field);
+  let arguments = (ins Eco_Tuple3OrValue:$tuple, I64Attr:$field);
   let results = (outs Eco_AnyValue:$result);
 
   let assemblyFormat = "$tuple `[` $field `]` attr-dict `:` type($tuple) `->` type($result)";
@@ -695,13 +826,17 @@ def Eco_RecordProjectOp : Eco_Op<"project.record", [Pure]> {
     Project the field at a given index from a record. Result type is
     the concrete SSA type based on unboxed status.
 
+    Operand may be either `!eco.value` (heap record — current heap-load
+    lowering) or `!eco.record<...>` (value-level aggregate — lowers to
+    LLVM extractvalue).
+
     Example:
     ```mlir
     %x = eco.project.record %rec[0] : !eco.value -> !eco.value
     ```
   }];
 
-  let arguments = (ins Eco_Value:$record, I64Attr:$field_index);
+  let arguments = (ins Eco_RecordOrValue:$record, I64Attr:$field_index);
   let results = (outs Eco_AnyValue:$result);
 
   let assemblyFormat = "$record `[` $field_index `]` attr-dict `:` type($record) `->` type($result)";
@@ -768,13 +903,17 @@ def Eco_CustomProjectOp : Eco_Op<"project.custom", [Pure]> {
     Project field at given index from a Custom ADT value.
     Only use for Custom ADTs, not for Lists/Tuples/Records.
 
+    Operand may be either `!eco.value` (heap Custom — current heap-load
+    lowering) or `!eco.custom<...>` (value-level aggregate — lowers to
+    LLVM extractvalue).
+
     Example:
     ```mlir
     %inner = eco.project.custom %just[0] : !eco.value -> !eco.value
     ```
   }];
 
-  let arguments = (ins Eco_Value:$container, I64Attr:$field_index);
+  let arguments = (ins Eco_CustomOrValue:$container, I64Attr:$field_index);
   let results = (outs Eco_AnyValue:$result);
 
   let assemblyFormat = "$container `[` $field_index `]` attr-dict `:` type($container) `->` type($result)";
@@ -1206,6 +1345,13 @@ def Eco_ProjectClosureOp : Eco_Op<"project.closure", [Pure]> {
     The `is_unboxed` attribute indicates whether the capture is stored
     as an unboxed primitive.
 
+    Operand may be either `!eco.value` (heap closure — existing closure
+    lowering in `EcoToLLVMClosures.cpp`) or `!eco.closure_env<...>`
+    (value-level env — handled by a small parallel pattern in
+    `EcoToLLVMValueAgg.cpp` that emits `extractvalue` at the requested
+    index). The heavy closure dispatch file is intentionally untouched
+    in Phase 0.
+
     Example:
     ```mlir
     // Load the first capture (unboxed i64) from closure
@@ -1223,7 +1369,7 @@ def Eco_ProjectClosureOp : Eco_Op<"project.closure", [Pure]> {
   }];
 
   let arguments = (ins
-    Eco_Value:$closure,
+    Eco_ClosureOrEnv:$closure,
     I64Attr:$index,
     DefaultValuedAttr<BoolAttr, "false">:$is_unboxed
   );
@@ -2700,4 +2846,202 @@ def Eco_ResetRefOp : Eco_Op<"reset_ref"> {
 
   let arguments = (ins Eco_Value:$ref);
   let results = (outs Eco_AnyValue:$result);
+}
+
+//===----------------------------------------------------------------------===//
+// 11. Value-level Aggregate Operations (Phase 0 escape-analysis plumbing)
+//===----------------------------------------------------------------------===//
+//
+// `eco.make.*` ops produce SSA-only aggregate values; they are Pure, do
+// NOT participate in GC root sets, and never carry heap-layout artifacts
+// (`unboxed_bitmap`, `field_count`, `head_kind`).  Phase 1 escape analysis
+// rewrites non-escaping `eco.construct.*` heap ops into these.
+//
+// `eco.to_heap` is the boxing op for the four data-aggregate shapes
+// (tuple2/3, record, custom, cons); it allocates and is `GCRootCarrier`.
+// Closure realisation goes through the dedicated `eco.make.closure` op
+// (Q-A): it is the only `make.*` that allocates, the only one returning
+// `!eco.value`, and the only one carrying a function symbol + arity.
+//
+
+//=== Value-level constructors ============================================//
+
+def Eco_Tuple2MakeOp : Eco_Op<"make.tuple2", [Pure]> {
+  let summary = "Create unboxed 2-tuple aggregate";
+  let description = [{
+    Build a value-level 2-tuple aggregate. Pure; never allocates; not a
+    GCRootCarrier. Result is `!eco.tuple2<T0, T1>` with element types
+    matching the operand SSA types.
+  }];
+
+  let arguments = (ins Eco_AnyValue:$a, Eco_AnyValue:$b);
+  let results = (outs Eco_Tuple2:$result);
+  // functional-type renders `(T0, T1) -> !eco.tuple2<T0, T1>` so the
+  // dialect-qualified result type is preserved on round-trip.
+  let assemblyFormat =
+    "$a `,` $b attr-dict `:` functional-type(operands, $result)";
+
+  let hasVerifier = 1;
+}
+
+def Eco_Tuple3MakeOp : Eco_Op<"make.tuple3", [Pure]> {
+  let summary = "Create unboxed 3-tuple aggregate";
+
+  let arguments = (ins Eco_AnyValue:$a, Eco_AnyValue:$b, Eco_AnyValue:$c);
+  let results = (outs Eco_Tuple3:$result);
+  let assemblyFormat =
+    "$a `,` $b `,` $c attr-dict `:` functional-type(operands, $result)";
+
+  let hasVerifier = 1;
+}
+
+def Eco_RecordMakeOp : Eco_Op<"make.record", [Pure]> {
+  let summary = "Create unboxed record aggregate";
+  let description = [{
+    Build a value-level record aggregate. Field types are taken from the
+    operand SSA types; the result type's parameter list must match.
+  }];
+
+  let arguments = (ins Variadic<Eco_AnyValue>:$fields);
+  let results = (outs Eco_Record:$result);
+  let assemblyFormat = "`(` $fields `)` attr-dict `:` functional-type($fields, $result)";
+
+  let hasVerifier = 1;
+}
+
+def Eco_CustomMakeOp : Eco_Op<"make.custom", [Pure]> {
+  let summary = "Create unboxed custom ADT aggregate";
+  let description = [{
+    Build a value-level Custom ADT aggregate. The tag attribute is the
+    structural constructor discriminant (Q-B: tag stays on the op, never
+    on the type).
+  }];
+
+  let arguments = (ins
+    Variadic<Eco_AnyValue>:$fields,
+    I64Attr:$tag,
+    OptionalAttr<StrAttr>:$constructor
+  );
+  let results = (outs Eco_Custom:$result);
+  let assemblyFormat = "`(` $fields `)` attr-dict `:` functional-type($fields, $result)";
+
+  let hasVerifier = 1;
+}
+
+def Eco_ConsMakeOp : Eco_Op<"make.cons", [Pure]> {
+  let summary = "Create unboxed cons cell aggregate";
+  let description = [{
+    Build a value-level cons cell. Tail is fixed to `!eco.value` (matches
+    the existing heap list spine); fully unboxed list spines are out of
+    scope for this phase. Naming asymmetry with the existing heap op
+    `eco.construct.list` is deliberate (Q-D): heap-level list constructor
+    vs value-level cons cell constructor.
+  }];
+
+  let arguments = (ins Eco_AnyValue:$head, Eco_Value:$tail);
+  let results = (outs Eco_Cons:$result);
+  let assemblyFormat =
+    "$head `,` $tail attr-dict `:` functional-type(operands, $result)";
+
+  let hasVerifier = 1;
+}
+
+def Eco_ClosureEnvMakeOp : Eco_Op<"make.closure_env", [Pure]> {
+  let summary = "Create unboxed closure environment aggregate";
+  let description = [{
+    Build a value-level closure environment from a list of captured
+    values. Captures only — no function symbol or arity. Heap closures
+    are realised by `eco.make.closure`, which combines this env with
+    a function/arity into `!eco.value`.
+  }];
+
+  let arguments = (ins Variadic<Eco_AnyValue>:$captures);
+  let results = (outs Eco_ClosureEnv:$result);
+  let assemblyFormat = "`(` $captures `)` attr-dict `:` functional-type($captures, $result)";
+
+  let hasVerifier = 1;
+}
+
+//=== Heap/value boundary ops =============================================//
+
+def Eco_ToHeapOp : Eco_Op<"to_heap", [
+    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
+]> {
+  let summary = "Box a data aggregate into a heap object";
+  let description = [{
+    Allocate a heap object matching the input aggregate kind and store
+    the aggregate's fields into it. Output layout is identical to what
+    the corresponding `eco.construct.*` heap op produces.
+
+    Accepts only data-aggregate inputs (tuple2/3, record, custom, cons).
+    `!eco.closure_env` is rejected by the verifier (CGEN_029) — closure
+    realisation goes through `eco.make.closure`.
+
+    Heap-layout attributes (record/custom `unboxed_bitmap`, custom `tag`,
+    cons `head_unboxed`/`head_kind`) live on this op, mirroring the
+    corresponding `eco.construct.*` shapes (Q-B). Unspecified attributes
+    default to zero / inferred from operand types at lowering time.
+
+    Example:
+    ```mlir
+    %heap = eco.to_heap %t : !eco.tuple2<i64, !eco.value> -> !eco.value
+    ```
+  }];
+
+  let arguments = (ins
+    Eco_DataAggregate:$value,
+    Variadic<Eco_Value>:$live_roots,
+
+    // Heap-layout attributes (per kind; only the relevant ones are read
+    // at lowering time):
+    DefaultValuedAttr<I64Attr, "0">:$unboxed_bitmap,   // record/custom
+    DefaultValuedAttr<I64Attr, "0">:$tag,              // custom
+    DefaultValuedAttr<I64Attr, "0">:$head_kind,        // cons
+    DefaultValuedAttr<BoolAttr, "false">:$head_unboxed // cons
+  );
+  let results = (outs Eco_Value:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat =
+    "$value (`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict "
+    "`:` functional-type($value, $result)";
+}
+
+def Eco_MakeClosureOp : Eco_Op<"make.closure", [
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>,
+    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
+]> {
+  let summary = "Realise a heap closure from a value-level environment";
+  let description = [{
+    Allocate a heap closure for `function` with `arity` total value slots
+    and populate its captures from the input `!eco.closure_env`. Layout
+    matches what `eco.allocate_closure` + capture stores produces today.
+
+    This is the **only** `eco.make.*` op that allocates; it is the only
+    one that returns `!eco.value`; it is the only one that is a
+    `GCRootCarrier` rather than `Pure`. Documented exception to the
+    `make.*` family convention (Q-A-b, see CGEN_028).
+
+    Example:
+    ```mlir
+    %clo = eco.make.closure @add$cap, %env(%r0 : !eco.value) {
+      arity = 2 : i64
+    } : !eco.closure_env<i64> -> !eco.value
+    ```
+  }];
+
+  let arguments = (ins
+    Eco_ClosureEnv:$env,
+    Variadic<Eco_Value>:$live_roots,
+    FlatSymbolRefAttr:$function,
+    I64Attr:$arity
+  );
+  let results = (outs Eco_Value:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat =
+    "$function `,` $env (`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict "
+    "`:` functional-type($env, $result)";
 }

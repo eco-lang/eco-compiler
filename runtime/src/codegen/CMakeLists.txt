@@ -227,6 +227,7 @@ set_source_files_properties(
     Passes/EcoToLLVMRuntime.cpp
     Passes/EcoToLLVMTypes.cpp
     Passes/EcoToLLVMHeap.cpp
+    Passes/EcoToLLVMValueAgg.cpp
     Passes/EcoToLLVMClosures.cpp
     Passes/EcoToLLVMControlFlow.cpp
     Passes/EcoToLLVMArith.cpp
@@ -289,6 +290,8 @@ add_mlir_library(EcoPasses
     Passes/EcoToLLVMRuntime.cpp
     Passes/EcoToLLVMTypes.cpp
     Passes/EcoToLLVMHeap.cpp
+    # Phase 0 escape-analysis plumbing — value-level aggregates
+    Passes/EcoToLLVMValueAgg.cpp
     Passes/EcoToLLVMClosures.cpp
     Passes/EcoToLLVMControlFlow.cpp
     Passes/EcoToLLVMArith.cpp

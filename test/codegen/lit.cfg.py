@@ -31,8 +31,14 @@ os.makedirs(config.test_exec_root, exist_ok=True)
 build_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'build')
 ecoc_path = os.path.join(build_dir, 'runtime', 'src', 'codegen', 'ecoc')
 
-# Path to FileCheck (from LLVM installation)
-filecheck_path = '/opt/llvm-mlir/bin/FileCheck'
+# Path to FileCheck. The MLIR install at /opt/llvm-mlir doesn't ship the
+# FileCheck binary, so prefer that path if present, else fall back to the
+# distro LLVM (Debian's llvm-14 package ships /usr/lib/llvm-14/bin/FileCheck).
+_candidates = [
+    '/opt/llvm-mlir/bin/FileCheck',
+    '/usr/lib/llvm-14/bin/FileCheck',
+]
+filecheck_path = next((p for p in _candidates if os.path.isfile(p)), _candidates[0])
 
 # Substitutions: %ecoc -> path to ecoc, %FileCheck -> path to FileCheck
 config.substitutions.append(('%ecoc', ecoc_path))

@@ -336,6 +336,10 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         populateEcoTypePatterns(typeConverter, patterns, runtime);
         populateEcoHeapPatterns(typeConverter, patterns, runtime);
         populateEcoClosurePatterns(typeConverter, patterns, runtime);
+        // Phase 0 escape-analysis plumbing: value-level aggregate ops
+        // (eco.make.*, eco.to_heap, eco.make.closure) and a parallel
+        // higher-benefit project.closure pattern for !eco.closure_env.
+        populateEcoValueAggPatterns(typeConverter, patterns, runtime);
         populateEcoControlFlowPatterns(typeConverter, patterns, runtime, cfCtx);
         populateEcoArithPatterns(typeConverter, patterns);
         populateEcoArithPatternsWithRuntime(typeConverter, patterns, runtime);
