@@ -31,9 +31,28 @@
 #include "ThreadLocalHeap.hpp"
 #include <cassert>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #if ECO_GC_DEBUG
 #include <execinfo.h>
+#endif
+
+#if ENABLE_GC_STATS
+namespace {
+// Latched once per process. Gates the per-allocation wall-clock bracket
+// in NurserySpace::allocate (the bracket's clock_gettime calls were ~25%
+// of total CPU in the Stage 7 profile). Reads ECO_GC_ALLOC_TIMING:
+//   "0" / unset / empty -> disabled (default)
+//   any other value     -> enabled
+inline bool nurseryAllocTimingEnabled() {
+    static const bool enabled = []{
+        const char* e = std::getenv("ECO_GC_ALLOC_TIMING");
+        if (e == nullptr || e[0] == '\0') return false;
+        return !(e[0] == '0' && e[1] == '\0');
+    }();
+    return enabled;
+}
+}  // namespace
 #endif
 
 #if ECO_GC_DEBUG
@@ -239,14 +258,21 @@ void *NurserySpace::allocate(size_t size) {
     // Align to 8 bytes.
     size = (size + 7) & ~7;
 
-    // Bracket the nursery allocator body so its wall-clock cost is billed
-    // to total_nursery_alloc_in_mutator_ns instead of leaking into mutator
-    // time. The mutator-only branch is correct because nursery_.allocate is
-    // never invoked from inside minorGC (promotions go to oldgen.allocate).
-    // The fast path is two clock reads + one increment — ~40 ns — which
-    // is negligible vs the cache miss on the bump-pointer write itself.
+    // Optionally bracket the nursery allocator body so its wall-clock cost
+    // is billed to total_nursery_alloc_in_mutator_ns. The bracket goes
+    // through two clock_gettime calls per allocation, which on the Stage 7
+    // self-compile profile measured at ~25% of total CPU — far from the
+    // "negligible" the original comment claimed. The bracket is therefore
+    // gated on ECO_GC_ALLOC_TIMING; when unset (default) the timer reads
+    // are skipped entirely. The mutator-only check is still correct because
+    // nursery_.allocate is never invoked from inside minorGC (promotions
+    // go to oldgen.allocate).
 #if ENABLE_GC_STATS
-    auto t0 = GC_STATS_TIMER_START();
+    const bool time_alloc = nurseryAllocTimingEnabled();
+    std::chrono::high_resolution_clock::time_point t0;
+    if (time_alloc) {
+        t0 = GC_STATS_TIMER_START();
+    }
 #endif
 
     void* result;
@@ -261,7 +287,7 @@ void *NurserySpace::allocate(size_t size) {
     }
 
 #if ENABLE_GC_STATS
-    if (!g_in_minor_gc) {
+    if (time_alloc && !g_in_minor_gc) {
         stats.total_nursery_alloc_in_mutator_ns +=
             GC_STATS_TIMER_ELAPSED_NS(t0);
     }

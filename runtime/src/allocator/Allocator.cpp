@@ -175,11 +175,11 @@ void Allocator::commitNursery(char *nursery_base, size_t size) {
     }
 }
 
-// Returns the singleton Allocator instance.
-Allocator &Allocator::instance() {
-    static Allocator alloc;
-    return alloc;
-}
+// Singleton storage for `Allocator::instance()`. Namespace-scope so the
+// accessor can be inlined to a single fixed-address load. The default
+// constructor is trivial (just zeros pointers/counters), so static-init-order
+// concerns do not apply — real initialization runs in `initialize()`.
+Allocator g_allocator_storage;
 
 // Initializes the calling thread's heap space.
 void Allocator::initThread() {
@@ -239,8 +239,10 @@ void Allocator::cleanupThread() {
     tl_heap_ = nullptr;
 }
 
-// Returns the thread-local root set, auto-initializing the thread if needed.
-RootSet &Allocator::getRootSet() {
+// Slow path for `getRootSet()` — used by external callers that may run
+// before `initThread()` has been called on the current thread (e.g.
+// Scheduler, PlatformRuntime registering external root scanners).
+RootSet &Allocator::getRootSetSlow() {
     if (!tl_heap_) {
         initThread();
     }

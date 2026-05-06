@@ -51,7 +51,9 @@ PlatformRuntime& PlatformRuntime::instance() {
 
 PlatformRuntime::PlatformRuntime() {
     // Register external root scanner so the GC can trace our state.
-    Allocator::instance().getRootSet().addExternalRootScanner(
+    // Use the slow form: the constructor may run before the calling thread
+    // has been registered with `initThread()`.
+    Allocator::instance().getRootSetSlow().addExternalRootScanner(
         [this](RootSet::EvacuateFn evacuate) {
             // sendToApp closure
             if (sendToAppClosure_ != 0)

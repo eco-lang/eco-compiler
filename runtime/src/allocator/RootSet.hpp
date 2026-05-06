@@ -21,6 +21,14 @@ namespace Elm {
  */
 class RootSet {
 public:
+    // Pre-reserve the stack-root range vector so saturated closure calls
+    // (which push_back on every call) do not trigger libc realloc. Steady-state
+    // depth in the Stage 7 self-compile stays under a few hundred entries; a
+    // 4096-slot reservation is generous and costs ~96 KB per thread.
+    RootSet() {
+        stack_root_ranges.reserve(4096);
+    }
+
     // ===== Long-lived roots =====
 
     // Registers a pointer location as a GC root. O(1) average.

@@ -31,10 +31,21 @@ class ThreadLocalHeap;
  *   - allocate(), minorGC(), majorGC() are lock-free (use thread-local heap)
  *   - getCombinedStats() acquires mutex to iterate all thread heaps
  */
+class Allocator;
+// Namespace-scope storage for the singleton. Defined in Allocator.cpp.
+// Used directly by the inline `Allocator::instance()` accessor below to avoid
+// the magic-static guard-variable load + function call that previously cost
+// ~5% of CPU on the Stage 7 self-compile.
+extern Allocator g_allocator_storage;
+
 class Allocator {
 public:
     // Returns the singleton Allocator instance.
-    static Allocator &instance();
+    // Trivially default-constructed; real initialization happens in
+    // `initialize()` which must be called before any allocation.
+    static inline Allocator &instance() noexcept {
+        return g_allocator_storage;
+    }
 
     // ========== Safe Public Pointer API ==========
 
@@ -108,8 +119,19 @@ public:
 
     // ========== Root Management ==========
 
-    // Returns the thread-local root set.
-    RootSet &getRootSet();
+    // Returns the thread-local root set. The slow form lazily initializes the
+    // calling thread's heap if it has not been set up yet — used by external
+    // callers (Scheduler, PlatformRuntime) that may run before `initThread()`.
+    // The hot path goes through `getRootSet()` below, which is inlined.
+    RootSet &getRootSetSlow();
+
+    // Hot-path inline accessor. By the time runtime helpers call this
+    // (eco_gc_push_stack_range etc.), the calling thread has long since been
+    // initialized, so the null check would always fall through. Skipping it
+    // here eliminates the function call to `getRootSetSlow()` plus its
+    // null-check branch on the runtime hot path. Callers that may run
+    // pre-initThread should use `getRootSetSlow()`.
+    inline RootSet &getRootSet() noexcept;
 
     // ========== Diagnostics ==========
 
@@ -164,9 +186,14 @@ public:
     GCStats getCombinedStats() const;
 #endif
 
-private:
+    // Default ctor/dtor are public so the namespace-scope `g_allocator_storage`
+    // can construct the singleton. The trivial constructor only zero-initializes
+    // pointers/counters; real setup runs in `initialize()`. Singleton discipline
+    // is enforced by convention — every caller goes through `instance()`.
     Allocator();
     ~Allocator();
+
+private:
 
     // ========== Unified Heap ==========
 
@@ -356,6 +383,22 @@ public:
         return alloc.getHeapBase();
     }
 };
+
+} // namespace Elm
+
+// `Allocator::getRootSet()` is defined out-of-line here because the body
+// requires the full definition of `ThreadLocalHeap` (for `getRootSet()`),
+// which is included after `Allocator.hpp` consumers typically pull in
+// `ThreadLocalHeap.hpp`. The accessor compiles to a single TLS load + the
+// already-inline `nursery_.getRootSet()` member access — no function call,
+// no null check.
+#include "ThreadLocalHeap.hpp"
+
+namespace Elm {
+
+inline RootSet &Allocator::getRootSet() noexcept {
+    return tl_heap_->getRootSet();
+}
 
 } // namespace Elm
 

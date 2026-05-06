@@ -45,8 +45,10 @@ Scheduler& Scheduler::instance() {
 Scheduler::Scheduler() {
     // Register external root scanner so the GC can trace processes in the run
     // queue AND the latest-process registry. Both hold encoded HPointers to
-    // live Process values that must survive minor GC.
-    Allocator::instance().getRootSet().addExternalRootScanner(
+    // live Process values that must survive minor GC. The slow form is used
+    // because the constructor may run before the calling thread has been
+    // registered with `initThread()`.
+    Allocator::instance().getRootSetSlow().addExternalRootScanner(
         [this](RootSet::EvacuateFn evacuate) {
             for (auto& rp : runQueue_) {
                 evacuate(rp.encoded);

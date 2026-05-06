@@ -1,603 +1,346 @@
 # C++ Backend Profiling Hints
 
-## Status: Profiling baseline captured (2026-03-22)
+## Status: Stage 7 cumulative -44 % CPU after fixes 1+2+3 (2026-05-05)
+
+| Marker | Cycles (B) | vs baseline |
+|---|---:|---:|
+| Original baseline | 327.9 | — |
+| After fix #1 (alloc-fast-path timer) | 230.4 | **-29.7 %** |
+| After fix #2 (Allocator::instance inline) | 189.4 | **-42.2 %** |
+| After fix #3 (root-set inline + reserve) | 184.6 | **-43.7 %** |
+
+Profile target is now the **native compiler self-compiling** (Stage 7 of @bootstrap.md):
+`bin/eco-compiler` running `make` on `compiler/src/Terminal/Main.elm` from
+`/work/compiler/build-kernel`. The MLIR-codegen profile (Stage 6 of bootstrap, the
+former target) has been retired now that the eco-boot-native lowering pipeline is
+healthy. The new bottlenecks live in the **runtime / GC / closure-dispatch fast
+paths** in `runtime/src/`.
+
+See @perf-profiling.md for the recording recipe.
 
 ## Open Issues (ranked by impact)
 
-### 1. `mlir::SymbolTable::lookupSymbolIn` — 45% → 38% of CPU
+### 1. `system_clock::now()` on the per-allocation fast path — ~25 % of run
 
-**Status:** FIXED (partial — verifier + EcoRuntime cache)
+**Status:** FIXED (2026-05-05) — gated the per-allocation timer behind a
+runtime envvar `ECO_GC_ALLOC_TIMING`. Default off. The `total_nursery_alloc_in_mutator_ns`
+counter is purely diagnostic (only read at process-exit summary), so paying
+two `clock_gettime` calls per allocation in normal runs was pure overhead.
 
-**Evidence:** 30s perf profile of Stage 6 (eco-boot-native on eco-compiler.mlir, 75MB).
-All 12 worker threads show identical ~3.75% each, totalling ~45% of all samples.
+**Change:** `runtime/src/allocator/NurserySpace.cpp` — added
+`nurseryAllocTimingEnabled()` (latched-once envvar check, same pattern as
+`ECO_GC_PHASE_PROFILE`) and wrapped both timer reads with `if (time_alloc)`.
+The check folds to a perfectly-predicted branch on a `static const bool`.
+
+**Result:** Stage 7 self-compile, 100 s window
+- CPU cycles: 327.9 B → **230.4 B** (-29.7 %)
+- Sample count: 37 k → **26 k** (-29.7 %)
+- DSO `[vdso]`: 23.79 % → **0.68 %**
+- DSO `eco-compiler` (real work): 61.31 % → **84.78 %**
+- `__vdso_clock_gettime`, `clock_gettime`, `system_clock::now` no longer in top symbols.
+
+**Evidence:** Stage-7 perf, 100 s, 37 k samples. `__vdso_clock_gettime` accounts for
+23.95 % inclusive (8.13 % self in the vdso entry plus 14.39 % in the unsymbolized
+vdso inner) and the entire stack consistently terminates in
+`Elm::NurserySpace::allocate → eco_alloc_with_roots`. `clock_gettime` itself is
+2.30 % self, `std::chrono::_V2::system_clock::now` is 1.50 % self —
+~25 % of total CPU spent obtaining a timestamp on every allocation.
 
 **Root cause analysis:**
 
-The hot path comes from two sources:
-
-1. **Op verifiers in EcoOps.cpp** — `PapCreateOp::verify()` (line 329),
-   `PapExtendOp::verify()` (line 484), and `CallOp::verify()` (line 569) all call
-   `lookupFunc()` → `SymbolTable::lookupNearestSymbolFrom()`. Verifiers run on
-   *every* operation during pass pipeline execution. With thousands of
-   pap_create/pap_extend/call ops in the 75MB MLIR, each doing a symbol table walk,
-   this is extremely expensive.
-
-2. **Lowering pass lookups** — `module.lookupSymbol()` is called in:
-   - `EcoToLLVMClosures.cpp:getOrCreateWrapper()` — 6 calls per papCreate
-     (lines 153, 164, 193, 194, 201, 213)
-   - `EcoToLLVMRuntime.cpp:getOrCreateFunc()` — called per runtime helper, per op
-     (line 56). Every `getOrCreateAlloc*`, `getOrCreateResolve*`, etc. calls this.
-   - `BFToLLVM.cpp` — 15+ per-op lookups for `elm_alloc_bytebuffer`,
-     `elm_bytebuffer_data`, etc. (lines 164, 189, 190, 409, 410, 454, ...)
-   - `CheckEcoClosureCaptures.cpp` — `module.lookupSymbol<func::FuncOp>` per papCreate (line 57)
-   - `EcoPAPSimplify.cpp` — `module.lookupSymbol` per saturated papExtend (line 101)
+Almost certainly feeding `Elm::GCStats::recordAllocation` (1.39 % self in the same
+stack), which is called unconditionally per allocation. The timestamp is gathered
+even when GC profiling output is disabled (no `ECO_GC_PHASE_PROFILE=1` was set on
+this run, yet the cost is fully present).
 
 **Suggested fixes (try in this order):**
 
-**(a) Cache a `SymbolTable` instance in EcoRuntime and passes.**
-MLIR's `SymbolTable` class, when constructed from a `ModuleOp`, builds an internal
-`DenseMap` for O(1) lookups. The problem is that `module.lookupSymbol()` and
-`SymbolTable::lookupNearestSymbolFrom()` do NOT use a cached table — they walk the
-module's body each time. Fix: add `mlir::SymbolTable symTable` to `EcoRuntime` (constructed
-once) and use `symTable.lookup<T>(name)` instead of `module.lookupSymbol<T>(name)`.
-Note: must invalidate/rebuild after operations that insert new symbols (like
-`getOrCreateFunc` adding declarations).
+**(a)** Gate the `system_clock::now()` call (and the surrounding
+`recordAllocation`) behind a `static thread_local bool` that mirrors the
+`ECO_GC_PHASE_PROFILE` envvar. When disabled, skip the timestamp entirely. This
+is the minimal-risk fix.
 
-**(b) Cache runtime function references in `EcoRuntime` fields.**
-`EcoRuntime::getOrCreateFunc()` calls `module.lookupSymbol()` every time. Each of the
-40+ `getOrCreate*` methods calls it. Store the result in a `DenseMap<StringRef, LLVMFuncOp>`
-member so lookup happens once per function name.
+**(b)** If the allocation rate timestamp is genuinely needed by an always-on
+metric, replace `std::chrono::system_clock::now()` with `__rdtsc()` — a single
+non-serializing instruction with no syscall path.
 
-**(c) Simplify op verifiers to avoid symbol lookups.**
-The verifiers in EcoOps.cpp call `lookupFunc()` to validate function signatures match.
-These run on EVERY op mutation during the pass pipeline. Options:
-- Remove cross-reference signature checks from verifiers, rely on the dedicated
-  `CheckEcoClosureCapturesPass` which runs once instead
-- Guard expensive verifier checks with a `#ifndef NDEBUG`
+**(c)** Move per-allocation timing out of the inner allocate path entirely:
+sample wallclock once per minor-GC cycle (start + end) and infer per-allocation
+amortized time from the bytes-allocated counter, rather than instrumenting each
+individual allocation.
 
-**Applied fixes:**
-- (a) Added `DenseMap<StringAttr, Operation*> symCache` to `EcoRuntime` for O(1) lookups
-- (b) Changed `getOrCreateFunc` and `getOrCreateWrapper` to use cached lookups
-- (c) Removed expensive cross-reference signature validation from PapCreateOp,
-  PapExtendOp, and CallOp verifiers. Only CGEN_057 kernel existence checks remain.
-  Signature validation is done once by CheckEcoClosureCapturesPass.
-- Changed EcoRuntime to pass by `const &` instead of by value (fixes issue #10)
-- Remaining 38% is likely from MLIR framework internals + BFToLLVM/other passes
+**Expected impact:** ~25 % wall-clock reduction (1.33× speedup) for option (a).
+
+**Attempted fixes:** (none yet)
 
 ---
 
-### 2. `mlir::Attribute::getContext` — 40% → 37% of CPU
+### 2. `Elm::Allocator::instance` not inlined — ~4.6 % self
 
-**Status:** FIXED (partial — improved proportionally with #1)
+**Status:** FIXED (2026-05-05) — replaced the function-local Meyers singleton
+with a namespace-scope storage object and an `inline` accessor in the header.
+Each `Allocator::instance()` call site now compiles to a single fixed-address
+load (no function call, no guard-variable load).
 
-**Evidence:** Same 30s perf profile. All 12 threads ~3.25% each, totalling ~39%.
+**Change:**
+- `runtime/src/allocator/Allocator.hpp` — added
+  `extern Allocator g_allocator_storage;` and inlined the body of
+  `instance()` to `return g_allocator_storage;`. Made the (still-trivial)
+  default constructor public so the namespace-scope storage can construct it.
+- `runtime/src/allocator/Allocator.cpp` — replaced the function-local
+  static with `Allocator g_allocator_storage;`.
+
+The default constructor is trivial (zero-initializes pointers and counters)
+so static-initialization-order is not an issue — real setup runs in
+`Allocator::initialize()`.
+
+**Result:** Stage 7 self-compile, 100 s window
+- CPU cycles: 230.4 B → **189.4 B** (-17.8 %, cumulative -42.2 % vs original baseline)
+- `Elm::Allocator::instance`: 6.26 % → **0 %** (no longer in top symbols).
+
+**Evidence:** Stage-7 perf. `Elm::Allocator::instance` is 4.62 % self with
+effectively no callees (4.63 % inclusive ≈ self), meaning the function body is
+itself the cost — strongly suggesting a non-inlined singleton accessor.
 
 **Root cause analysis:**
 
-`Attribute::getContext()` is called pervasively during attribute construction,
-type conversion, and builder operations. This is likely a secondary effect —
-`lookupSymbolIn` calls `getInherentAttr("sym_name")` which calls
-`getContext()` on the attribute. Fixing #1 should reduce this proportionally.
-
-Additionally, the per-op lowering patterns in `EcoToLLVMClosures.cpp` repeatedly
-create common types like `IntegerType::get(ctx, 64)`, `Float64Type::get(ctx)`,
-`LLVM::LLVMPointerType::get(ctx)` in every `matchAndRewrite()` invocation.
-While MLIR caches these internally via uniquing, the lookup still costs.
+The accessor is hit from the allocation, resolve, and root-set code paths. If
+it's a Meyers singleton (`static T inst; return inst;`) the compiler emits a
+guard-variable load + acquire fence on every call. If it's a `__thread` /
+`thread_local` access, GCC emits a `__tls_get_addr` call (much heavier than
+expected). Either way, four million+ calls per second across the whole run.
 
 **Suggested fixes:**
 
-Wait to see if fixing #1 reduces this. If still hot, pre-create common types
-as member fields of the pattern structs (i64Ty, f64Ty, ptrTy, i8Ty).
+**(a)** Mark `Elm::Allocator::instance` `[[gnu::always_inline]] inline` and
+ensure the storage is in a header-visible TU. Verify with `objdump -d` that the
+call site no longer has a `call` instruction.
+
+**(b)** If `instance()` returns a globally-unique pointer for the lifetime of
+the process, cache it in a static variable in each TU (or in `eco_alloc_with_roots`)
+and pass it down explicitly to the inner callees that currently re-fetch it
+(`resolve`, `wrap`, `getRootSet`).
+
+**(c)** If thread-local, switch to the GCC `__attribute__((tls_model("initial-exec")))`
+TLS model — single GS-relative load instead of `__tls_get_addr`.
+
+**Expected impact:** ~3–4 % wall-clock reduction.
 
 **Attempted fixes:** (none yet)
 
 ---
 
-### 3. `EcoToLLVMClosures.cpp:getOrCreateWrapper` — cascading symbol lookups
+### 3. Stack-root vector traffic on every saturated call — ~9–10 % combined
 
-**Status:** FIXED (uses cached lookups via EcoRuntime.lookupSymbol, wrapper check moved first)
+**Status:** FIXED (partial — 2026-05-05) — applied two of the three suggested
+fixes; remaining cost is the `std::vector::push_back` body itself.
 
-**Evidence:** Code review. `getOrCreateWrapper()` (lines 144–381) performs up to 6
-sequential `module.lookupSymbol()` calls per invocation: check existing LLVM func (153),
-check existing wrapper (164), check if func::FuncOp exists (193), check if LLVMFuncOp
-exists (194), lookup func::FuncOp (201), lookup LLVMFuncOp (213). Called once per
-`PapCreateOp` lowering — with thousands of closures in the compiler MLIR, this
-multiplies into hundreds of thousands of linear module walks.
+**Changes:**
+- `runtime/src/allocator/Allocator.hpp` / `Allocator.cpp` — split
+  `Allocator::getRootSet()` into an inline fast path (just `tl_heap_->getRootSet()`,
+  no null check) and a slow path `getRootSetSlow()` that lazily initializes
+  the calling thread.
+- `runtime/src/platform/Scheduler.cpp`, `runtime/src/platform/PlatformRuntime.cpp` —
+  switched the constructor-time root-scanner registrations to use
+  `getRootSetSlow()` since they can run before `initThread()`.
+- `runtime/src/allocator/RootSet.hpp` — added a `RootSet()` ctor that
+  `reserve()`s 4096 entries on the stack-root vector, eliminating libc
+  realloc traffic for steady-state depths up to a few thousand.
 
-**Root cause:** The function first checks for existing LLVM func, then wrapper, then
-tries origFuncTypes map, then falls back to func::FuncOp or LLVMFuncOp lookup.
-Each lookup is a separate linear scan.
+**Result:** Stage 7 self-compile, 100 s window
+- CPU cycles: 189.4 B → **184.6 B** (-2.5 %, cumulative -43.7 % vs original baseline).
+- `Elm::Allocator::getRootSet` (4.31 % self) — absorbed into the inlined call sites.
+- `eco_gc_push_stack_range` self time stayed at ~11 % — the residual is in the
+  `std::vector<StackRootRange>::push_back` body itself (capacity check + finish
+  pointer bump + StackRootRange copy). Eliminating that further would require
+  switching to a fixed-capacity inline buffer or a hand-rolled bump-pointer
+  stack — left as future work because the compounding effect of fixes 1+2+3
+  has already moved the bottleneck elsewhere.
 
-**Suggested fix:**
+**Evidence:** Stage-7 perf:
+```
+6.05% self  eco_gc_push_stack_range
+3.06% self  Elm::Allocator::getRootSet
+1.28% self  eco_gc_restore_stack_range_point
+0.87% self  eco_gc_stack_range_point
+```
+Inclusive callgraphs trace from `eco_closure_call_saturated` →
+`std::vector<StackRootRange>::emplace_back` (3.92 % inclusive) →
+`eco_gc_push_stack_range`. Every saturated closure call pushes a
+`StackRootRange` onto a `std::vector` and pops it on return.
 
-Use a cached `SymbolTable` (from fix 1a). Additionally, the wrapper-existence check
-at line 164 should be done FIRST (before checking the target func at line 153),
-since the wrapper being found is the fast path that short-circuits everything.
-Better yet, maintain a local `DenseMap<StringRef, LLVM::LLVMFuncOp>` of already-created
-wrappers.
+**Root cause analysis:**
 
-**Attempted fixes:** (none yet)
+The 6 % self in `eco_gc_push_stack_range` is dominated by `std::vector::emplace_back`
+overhead — capacity check, possibly a libc realloc hop when the vector grows.
+`Allocator::getRootSet` (3 %) is a separate hot accessor invoked alongside the
+push/pop pair. Combined, the rooting machinery costs as much as the entire
+allocation fast path.
 
----
+**Suggested fixes:**
 
-### 4. Verifiers re-walk closure definition chains per mutation
+**(a)** Replace `std::vector<StackRootRange>` with a fixed-size ring buffer or a
+hand-rolled stack-allocated `SmallVector`-style structure with a generous
+inline capacity (e.g. 1024 entries). Saturated calls will almost never exceed
+the inline capacity in steady state, eliminating libc malloc churn.
 
-**Status:** FIXED (removed cross-ref signature validation from verifiers, kept only CGEN_057 check)
+**(b)** Cache the result of `getRootSet` for the lifetime of a call frame.
+Currently every push/pop pair re-fetches the root set; once per frame is enough.
 
-**Evidence:** Code review of `PapExtendOp::verify()` (EcoOps.cpp lines 373–540).
-This verifier walks the closure definition chain (`while (currentDef)` loop at line 444)
-to find the root `PapCreateOp`, then calls `lookupFunc()` to validate types.
-This runs after EVERY operation that touches the parent region during pass execution.
-For a chain of N papExtends, each verification walks O(N) ops + does a symbol lookup.
+**(c)** Inline `eco_gc_push_stack_range` and `eco_gc_restore_stack_range_point`.
+The bodies are tiny; the call/ret overhead alone is comparable to the work
+done.
 
-**Root cause:** MLIR verifiers are invoked after each rewrite during
-`applyFullConversion()`. With thousands of papExtend ops, each verifying its chain
-plus a symbol lookup, this is O(N * chain_length * module_size).
-
-**Suggested fix:**
-
-Remove or reduce the work done in `PapExtendOp::verify()`:
-- The chain walk + signature check duplicates what `CheckEcoClosureCapturesPass` does
-  (which runs once, not per-mutation)
-- Keep only cheap local checks (bitmap validity, REP_CLOSURE_001) in the verifier
-- Move the expensive chain walk + `lookupFunc` to a dedicated pass
-
-**Attempted fixes:** (none yet)
-
----
-
-### 5. BFToLLVM per-op `module.lookupSymbol` for runtime functions
-
-**Status:** SKIPPED (BF ops are relatively rare; remaining lookupSymbolIn is dominated by MLIR framework internals)
-
-**Evidence:** Code review of `BFToLLVM.cpp`. Every BF lowering pattern does
-`module.lookupSymbol<LLVM::LLVMFuncOp>("elm_...")` per op. For example:
-- `CursorInitOpLowering` (line 189–190): lookups for `elm_bytebuffer_data` AND `elm_bytebuffer_len`
-- `CursorDecodeOpLowering` (line 944): lookup for `elm_utf8_decode`
-- `CursorAdvanceOpLowering` (lines 409–410): lookups for `elm_bytebuffer_data` AND `elm_bytebuffer_len`
-- `CursorWidthOpLowering` (line 484): lookup for `elm_utf8_width`
-- `CursorCopyOpLowering` (line 454): lookup for `elm_utf8_copy`
-- etc. (15+ total lookup calls across patterns)
-
-Despite `ensureRuntimeFunctions()` being called at pass start to declare them all,
-each pattern re-looks them up from the module per invocation.
-
-**Root cause:** The BFToLLVM pass doesn't use the `EcoRuntime` helper
-(which at least has `getOrCreateFunc`). Instead, each pattern independently calls
-`module.lookupSymbol`. There's no caching.
-
-**Suggested fix:**
-
-Either add a shared struct (like `EcoRuntime`) with cached function references
-for the BF pass, or — since `ensureRuntimeFunctions` guarantees they exist —
-look them up once in the pass's `runOnOperation()` and pass them to patterns.
+**Expected impact:** ~5–8 % wall-clock reduction.
 
 **Attempted fixes:** (none yet)
 
 ---
 
-### 6. `UndefinedFunctionPass` uses `std::set<std::string>` with string copies
+### 4. Parser allocates a fresh string per slice/uncons — ~5 %
 
-**Status:** SKIPPED (runs once, not visible in profile)
+**Status:** OPEN — deferred. Honest implementation requires introducing a
+StringView heap representation (a `(source HPointer, offset, length)` triple
+that holds a strong reference to the source so the GC's evacuator keeps the
+source alive while any view references it). That is a real heap-layout
+change touching REP_HEAP_* invariants and the runtime's `slice` / `uncons`
+/ `dropLeft` / `unsafeIndex` paths plus the GC scan for string-tagged
+objects, not a one-line tweak. Best tackled as its own session.
 
-**Evidence:** Code review of `UndefinedFunction.cpp` (lines 40–81). The pass collects
-all defined function names into `std::set<std::string>` (line 44) by calling
-`.str()` on each StringRef, making a heap allocation per function. Then for each
-`CallOp`, it calls `.str()` on the callee name for lookup. With thousands of functions
-in the 75MB MLIR, this creates thousands of heap-allocated strings.
+In this session, fixes 1+2+3 reduced overall CPU by ~44 %, which already
+moved the bottleneck off the allocation/root-set hot paths and onto
+`Elm::Allocator::resolve` (HPointer→raw pointer) and the closure-dispatch
+inner — see issue #5 below for the next viable target.
 
-**Root cause:** Uses `std::set<std::string>` where `llvm::DenseSet<StringRef>` or
-`llvm::StringSet<>` would work without heap allocations (StringRefs point into MLIR's
-string pool which is stable for the module's lifetime).
+**Evidence:** Stage-7 perf:
+```
+5.31% inclusive  Elm::alloc::allocString          (0.02 % self)
+6.87% inclusive  Elm::StringOps::slice            (0.11 % self)
+5.03% inclusive  Elm::StringOps::uncons           (0.07 % self)
+3.92% inclusive  String_dropLeft_$_954
+8.88% inclusive  Compiler_Parse_Primitives_unsafeIndex_$_1378
+1.21% self       libc 0x152cca  (memcpy in allocString)
+```
+The dominant string-allocation traffic comes from the parser fast path: every
+`unsafeIndex` / `dropLeft` / `slice` / `uncons` call materializes a new heap
+string by copying source bytes.
 
-**Suggested fix:**
+**Root cause analysis:**
 
-Replace `std::set<std::string>` with `llvm::StringSet<>` and avoid `.str()` calls.
-Similarly replace `reportedFunctions` set and `UndefinedCall::name`.
+The parser primitives operate on `String` values. Each combinator that
+"advances" the parser produces a new `String` for the remainder. With ~hundreds
+of thousands of parse primitive calls per source file, this drives a large
+fraction of the nursery allocation rate (which in turn pays the §1 timestamp
+cost on every allocation).
+
+**Suggested fixes:**
+
+**(a)** Introduce a `StringView`-like representation in the runtime: a triple
+of `(source HPointer, offset, length)` with no payload copy. Slice / dropLeft
+operations would simply produce a new view into the original source. The view
+materializes a real string only when actually consumed (e.g. into an AST node).
+
+**(b)** As a cheaper interim step, special-case `slice` and `dropLeft` to
+return a string that aliases into the source buffer when source remains live.
+
+**(c)** Audit the parser for `slice`/`dropLeft` calls whose result is
+immediately compared, indexed, or discarded — those should never have allocated
+a new string in the first place.
+
+**Expected impact:** ~3–5 % wall-clock reduction directly, plus secondary
+benefits from reduced nursery churn (fewer minor GCs, less §1 cost).
 
 **Attempted fixes:** (none yet)
 
 ---
 
-### 7. `containsNestedStringCase` does full walk without early exit
+### 5. `Elm::Allocator::resolve` — 11.4 % self (newly dominant)
 
-**Status:** FIXED (uses WalkResult::interrupt for early exit)
+**Status:** OPEN — surfaced after fixes 1+2 removed the previous top hitters.
 
-**Evidence:** Code review of `EcoControlFlowToSCF.cpp` (lines 105–112).
-`containsNestedStringCase()` walks all nested ops even after finding a match.
-Called per 2-alternative case op during pattern matching.
-
-**Root cause:** The `op.walk` lambda sets `found = true` but doesn't abort.
-MLIR's `walk` supports `WalkResult::interrupt()` for early termination.
-
-**Suggested fix:**
-
-```cpp
-bool containsNestedStringCase(CaseOp op) {
-    auto result = op.walk([&](CaseOp nested) -> WalkResult {
-        if (nested != op && isStringCase(nested))
-            return WalkResult::interrupt();
-        return WalkResult::advance();
-    });
-    return result.wasInterrupted();
-}
+**Evidence:** Stage-7 perf after fixes 1+2+3.
+```
+11.39% self  Elm::Allocator::resolve   (HPointer → raw pointer)
+ 1.53% self  eco_resolve_hptr          (calls resolve)
 ```
 
-**Attempted fixes:** (none yet)
-
----
-
-### 8. Repeated common type construction in pattern `matchAndRewrite`
-
-**Status:** SKIPPED (not visible in profile; MLIR uniquing makes this cheap)
-
-**Evidence:** Code review of `EcoToLLVMClosures.cpp`. Every lowering pattern constructs
-`IntegerType::get(ctx, 8)`, `IntegerType::get(ctx, 64)`, `Float64Type::get(ctx)`,
-`LLVM::LLVMPointerType::get(ctx)` at the start of each `matchAndRewrite()`. While MLIR
-uniquing makes this cheap-ish, it still involves hash lookups per call. With thousands
-of ops, this adds up.
-
-**Suggested fix:** Pre-create common types as member fields of pattern structs,
-initialized once in the constructor.
-
-**Attempted fixes:** (none yet)
-
----
-
-### 9. `SmallVector` used without `reserve()` in hot loops
-
-**Status:** SKIPPED (not visible in profile; SmallVector inline buffer handles typical cases)
-
-**Evidence:** Code review. Multiple locations build `SmallVector`s in loops without
-reserving capacity:
-- `EcoToLLVMClosures.cpp:271` — `callArgs` in wrapper generation (size = arity, known)
-- `EcoToLLVMClosures.cpp:510–511` — `callArgs` and `paramTypes` in `emitFastClosureCall`
-  (size = captureAbiTypes.size() + newArgs.size(), known)
-- `EcoToLLVMGlobals.cpp:549` — `ecoGlobals` in `createGlobalRootInitFunction`
-
-**Suggested fix:** Add `.reserve(knownSize)` before loops where the final size is known.
-
-**Attempted fixes:** (none yet)
-
----
-
-### 10. `EcoRuntime` passed by value — deep-copies `StringMap`
-
-**Status:** FIXED (changed all signatures to const &, EcoRuntime is now non-copyable)
-
-**Evidence:** Code review of `EcoToLLVMInternal.h` (line 122) and `EcoToLLVM.cpp`
-(lines 324–331). `EcoRuntime` is passed by value to 8 `populateEco*Patterns()`
-functions. It contains `StringMap<FunctionType> origFuncTypes` which is deep-copied
-each time. With thousands of function types in the map for the 75MB compiler MLIR,
-each copy allocates and copies the entire hash table. The header comment says "cheap
-to copy since it only holds a ModuleOp handle" — this was true before `origFuncTypes`
-was added.
-
-**Suggested fix:** Pass `EcoRuntime` by `const &` instead of by value. The pattern
-structs already store a copy; they can take a `const EcoRuntime &` and copy once.
-Or better, make `EcoRuntime` non-copyable and use `shared_ptr<EcoRuntime>`.
-
-**Attempted fixes:** (none yet)
-
----
-
-### 11. String concatenation in hot path
-
-**Status:** FIXED (changed to SmallString<64> with toVector)
-
-**Evidence:** Code review of `EcoToLLVMClosures.cpp:161`.
-`std::string wrapperName = ("__closure_wrapper_" + funcName).str()` creates a
-temporary `StringRef` concatenation then converts to heap-allocated `std::string`.
-Called per `PapCreateOp` lowering.
-
-**Suggested fix:** Use `llvm::SmallString<64>` with `Twine`:
-```cpp
-SmallString<64> wrapperName;
-("__closure_wrapper_" + funcName).toVector(wrapperName);
-```
-
-**Attempted fixes:** (none yet)
-
----
-
-### 12. `CheckEcoClosureCapturesPass` does two separate module walks
-
-**Status:** SKIPPED (runs once, not visible in profile)
-
-**Evidence:** Code review of `CheckEcoClosureCaptures.cpp`. Phase 1 (line 47) walks
-all ops looking for `PapCreateOp`. Phase 2 (line 92) walks all ops again looking for
-`func::FuncOp`. Each walk traverses every operation in the module.
-
-**Suggested fix:** Fuse into a single walk that dispatches on `isa<PapCreateOp>` vs
-`isa<func::FuncOp>`.
-
-**Attempted fixes:** (none yet)
-
----
-
-### 13. Redundant `module.lookupSymbol` in `getOrCreateWrapper` decision tree
-
-**Status:** FIXED (consolidated to single cached lookup via EcoRuntime.lookupSymbol)
-
-**Evidence:** Code review of `EcoToLLVMClosures.cpp:193–194`. After
-`origFuncTypes.find(funcName)` succeeds (line 179), the code does two MORE
-`module.lookupSymbol` calls to check if the function exists as either `func::FuncOp`
-or `LLVMFuncOp`. This is redundant — the origFuncTypes entry was populated from a
-`func::FuncOp` that existed at pre-scan time; if it's gone, the conversion already
-handled it.
-
-**Suggested fix:** Skip the existence check when origFuncTypes already has the entry,
-or use a cached SymbolTable (fix 1a) to make it O(1) if the check must remain.
-
-**Attempted fixes:** (none yet)
-
----
-
-### 14. Disable inter-pass verification in PassManager (Option A)
-
-**Status:** FIXED
-
-**Evidence:** MLIR's PassManager runs `verify()` after every pass by default.
-With 13 passes in the pipeline plus one explicit `verify()` call before the pipeline,
-the verifier runs 14 times. Each run resolves every `SymbolRefAttr` in the module
-(~165K symbol references) via `SymbolTable::lookupSymbolIn`, which does a linear scan
-of all ~49K top-level ops. This accounts for the bulk of the 38-42% CPU in
-`lookupSymbolIn`.
-
-**Fix:** Call `pm.enableVerifier(false)` in `runPipeline()` to disable inter-pass
-verification. Keep the single explicit `verify()` call before the pipeline to catch
-MLIR parse errors. For debug builds, verification can remain enabled.
-
-**Risk:** If a pass produces malformed IR, errors surface later (in LLVM translation
-or at runtime) instead of immediately after the offending pass. Acceptable for
-release/profile builds.
-
----
-
-### 15. Use `SymbolTableCollection` or cached lookups in BFToLLVM and early passes (Option C)
-
-**Status:** FIXED
-
-**Evidence:** `BFToLLVM.cpp` has 14 uncached `module.lookupSymbol<>()` calls across
-its lowering patterns. `EcoPAPSimplify.cpp` (line 101), `CheckEcoClosureCaptures.cpp`
-(line 57), and `EcoToLLVMFunc.cpp` (line 39) each do uncached per-op lookups.
-These are all O(N) linear scans of the module body (N = ~49K ops).
-
-The `EcoToLLVMClosures.cpp` patterns already use `EcoRuntime::symCache` for O(1)
-lookups — the same pattern should be extended to the other passes.
-
-**Fix:** For each pass with uncached lookups:
-- Build a `DenseMap<StringAttr, Operation*>` or `mlir::SymbolTable` at pass start
-- Pass it to patterns or use it directly
-- Incrementally update when new symbols are created (as `EcoRuntime::cacheSymbol` does)
-
-For `BFToLLVM`, since `ensureRuntimeFunctions()` declares all needed functions upfront,
-look them up once into local variables after declaration and pass to patterns.
-
----
-
-### 16. Remove `symbolExists` O(N) lookups from PapCreate/PapExtend verifiers
-
-**Status:** FIXED
-
-**Evidence:** `PapCreateOp::verify()` and `PapExtendOp::verify()` call `symbolExists()` →
-`SymbolTable::lookupNearestSymbolFrom()` → static `lookupSymbolIn()` for every kernel
-function reference. `lookupSymbolIn` does a linear scan of all ~49K top-level ops.
-With 1,333 kernel papCreate ops, that's 1,333 × 49K ≈ 65 million comparisons in the
-single `verify(*module)` call — the dominant remaining cost after Option A.
-
-**Fix:** Remove `symbolExists` calls from `verify()`. The CGEN_057 kernel existence
-check moves to the new `verifySymbolUses` (issue #17).
-
----
-
-### 17. Implement `SymbolUserOpInterface` on all symbol-referencing Eco ops
-
-**Status:** FIXED
-
-**Evidence:** No Eco ops implement `SymbolUserOpInterface`. The MLIR `verifySymbolTable`
-framework creates a `SymbolTableCollection` (O(1) cached lookups) and calls
-`verifySymbolUses(collection)` on implementing ops. Since no Eco ops implement it,
-all symbol verification uses the static O(N) `lookupSymbolIn` instead.
-
-**Ops to implement:**
-
-| Op | Symbol Attr | Count | What to verify |
-|---|---|---|---|
-| `eco.call` | `callee` (optional) | 92K | Callee function exists |
-| `eco.papCreate` | `function`, `_fast_evaluator` (optional) | 30K | Both symbols exist (CGEN_057) |
-| `eco.papExtend` | `_fast_evaluator` (optional) | 43K | Symbol exists if present |
-| `eco.load_global` | `global` | 0 (lowering) | Global symbol exists |
-| `eco.store_global` | `global` | 0 (lowering) | Global symbol exists |
-| `eco.allocate_closure` | `function` | 0 (lowering) | Function exists |
-| `eco.global` | `initializer` (optional) | 0 (lowering) | Initializer func exists |
-
-**Fix:** Add `DeclareOpInterfaceMethods<SymbolUserOpInterface>` to each op in Ops.td,
-implement `verifySymbolUses(SymbolTableCollection &)` in EcoOps.cpp using O(1) cached
-lookups.
-
----
-
-### 18. Skip O(N) bare-ptr lookup in MLIR's CallOpLowering
-
-**Status:** FIXED
-
-**Evidence:** Full-run profile (7 min, 203K samples) shows `lookupSymbolIn` at 46.4%.
-Call-graph confirms the hot path is `CallOpLowering::matchAndRewrite` → static
-`SymbolTable::lookupNearestSymbolFrom` (O(N) linear scan). This is MLIR's own
-`func::CallOp → llvm.call` lowering pattern from `populateFuncToLLVMConversionPatterns`.
-
-The function accepts an optional `SymbolTableCollection *symbolTables` third parameter.
-When provided, `CallOpLowering` uses cached O(1) lookups. When `nullptr` (the default),
-it falls back to the O(N) static `lookupSymbolIn`. The MLIR header documents:
-> "If provided, the lookups will have O(calls) cumulative runtime, otherwise O(calls × functions)."
-
-With 92K calls × 49K functions = ~4.5 billion operation comparisons.
-
-**Fix:** Set `useBarePtrCallConv = true` in `EcoTypeConverter`'s `LowerToLLVMOptions`.
-This makes MLIR's `CallOpLowering` skip the per-call symbol lookup entirely (it only
-checks for `llvm.bareptr` attribute, which Eco never uses). Cannot use
-`SymbolTableCollection` directly because `applyFullConversion` creates temporary
-duplicate symbol names during func→llvm conversion, causing `SymbolTable` assertion
-failures.
-
-**Applied fix:** `EcoToLLVMRuntime.cpp` — `EcoTypeConverter` now constructs with
-`LowerToLLVMOptions{useBarePtrCallConv=true}`. This is safe because Eco never uses
-memref types or bare pointer calling convention.
-
----
-
-### 19. MLIR framework `lookupSymbolIn` — architectural bottleneck (residual)
-
-**Status:** SKIPPED (investigate after issue #18 is fixed)
-
-**Possible future architectural fixes:**
-- Split the MLIR module into smaller sub-modules per SCC or package
-- Use manual lowering (walk + replace) instead of `applyFullConversion`
-- Build MLIR with a patched SymbolTable that caches lookups
-
----
+**Likely fix:** `Allocator::resolve` is currently in `Allocator.cpp` and
+called from many sites (every field load that returns an HPointer). Most
+calls follow the no-forwarding fast path: just `heap_base + (ptr.ptr << 3)`.
+Inlining the fast path into a header function — same pattern as fix #2 —
+plus an out-of-line slow path for forwarding chains, should cut most of
+this self time. The forwarding-pointer following is rare (only after a
+minor GC and only for objects that were evacuated).
+
+**Suggested approach:**
+1. Move the no-forwarding branch of `resolve()` into the header as
+   `inline static void* resolve(HPointer)`.
+2. Keep `resolveSlow()` (forwarding-aware) in the `.cpp` for the rare path.
+3. The branch predictor will perfectly predict the no-forwarding case
+   in steady state.
 
 ## Baseline Measurements
 
-### Profile: 2026-03-22, 30s timeout, 997Hz, 275K samples (BEFORE fixes)
+### Profile: 2026-05-05, Stage 7 self-compile, after fixes 1+2+3, 100 s, 499 Hz
 
-| Function (aggregated) | CPU % |
+- 21 k samples, 184.6 B cycles (down from 37 k / 327.9 B baseline).
+- DSO breakdown: `eco-compiler` 81.8 %, `libc` 12.6 %, kernel 2.1 %,
+  libunwind 1.2 %, libm 1.2 %, `[vdso]` 0.8 %, libstdc++ 0.3 %.
+- New top symbols (self):
+  - `Elm::Allocator::resolve` 11.4 %  ← see issue #5
+  - `eco_gc_push_stack_range` 11.1 %  ← residual after fix #3
+  - `eco_closure_call_saturated` 7.8 %
+  - libc memset (clearToSpaceFreeRegion) 5.6 %
+  - `Elm::GCStats::recordAllocation` 4.5 %
+  - `eco_alloc_with_roots` 4.0 %
+  - `Elm::NurserySpace::allocate` 3.7 %
+
+### Profile: 2026-05-05, Stage 7 self-compile, ORIGINAL baseline, 100 s, 499 Hz, 37k samples
+
+Stage 7: `bin/eco-compiler make --optimize ... --output=bin/eco-compiler-boot.mlir
+/work/compiler/src/Terminal/Main.elm` from `/work/compiler/build-kernel`.
+
+DSO breakdown:
+
+| DSO | CPU % |
 |---|---|
-| `mlir::SymbolTable::lookupSymbolIn` | 45.0% |
-| `mlir::Attribute::getContext` | 39.1% |
-| `mlir::func::FuncOp::getInherentAttr` | 4.6% |
-| `mlir::Operation::getInherentAttr` | 3.7% |
-| `RegisteredOperationName::...::getInherentAttr` | 1.8% |
+| `eco-compiler` | 61.31% |
+| `[vdso]` | 23.79% |
+| `libc.so.6` | 10.01% |
+| `libstdc++.so.6` | 2.16% |
+| `[kernel.kallsyms]` | 1.28% |
+| `libm.so.6` | 0.75% |
+| `libunwind.so.1` | 0.67% |
 
-Process was killed at 30s — still in MLIR lowering phase (had not reached LLVM codegen).
+Top symbols by self-time (≥ 0.5 %):
 
-### Profile: 2026-03-22, 60s timeout, AFTER fixes (issues 1,3,4,7,10,11,13)
-
-| Function (aggregated) | CPU % |
+| Symbol | Self % |
 |---|---|
-| `mlir::SymbolTable::lookupSymbolIn` | 38.0% |
-| `mlir::Attribute::getContext` | 36.8% |
-| `mlir::func::FuncOp::getInherentAttr` | 4.5% |
-| `mlir::Operation::getInherentAttr` | 3.0% |
-| `RegisteredOperationName::...::getInherentAttr` | 1.3% |
+| `__vdso_clock_gettime` (incl. unsymbolized inner) | 22.52% |
+| `Elm::Allocator::resolve` | 8.34% |
+| `eco_gc_push_stack_range` | 6.05% |
+| `eco_closure_call_saturated` | 5.25% |
+| `Elm::Allocator::instance` | 4.62% |
+| `libc memset/memcpy` (clearToSpaceFreeRegion + allocString) | ~5.3% |
+| `Elm::Allocator::getRootSet` | 3.06% |
+| `Elm::NurserySpace::allocate` | 2.50% |
+| `eco_alloc_with_roots` | 2.47% |
+| `clock_gettime` | 2.30% |
+| `eco_apply_closure` | 1.95% |
+| `Elm::initHeaderForTag` | 1.86% |
+| `Elm::NurserySpace::evacuate` | 1.63% |
+| `std::chrono::system_clock::now` | 1.57% |
+| `eco_apply_segmentation_unknown` | 1.52% |
+| `Elm::GCStats::recordAllocation` | 1.39% |
+| `eco_resolve_hptr` | 1.32% |
+| `eco_gc_restore_stack_range_point` | 1.28% |
+| `eco_pap_extend` | 1.01% |
+| `Elm::Allocator::wrap` | 0.99% |
+| `eco_store_field` | 0.97% |
+| `Elm::Allocator::allocateFast` | 0.93% |
+| `eco_gc_stack_range_point` | 0.87% |
+| `eco_alloc_closure` | 0.62% |
+| `eco_get_tag` | 0.59% |
 
-### Profile: 2026-03-22, 5min timeout, AFTER fixes
-
-| Function (aggregated) | CPU % |
-|---|---|
-| `mlir::SymbolTable::lookupSymbolIn` | 42.1% |
-| `mlir::Attribute::getContext` | 29.7% |
-| `mlir::LLVM::LLVMFuncOp::getInherentAttr` | 6.9% |
-| `mlir::Operation::getInherentAttr` | 3.2% |
-| `mlir::func::FuncOp::getInherentAttr` | 2.0% |
-
-Process still in MLIR lowering at 5min — remaining bottleneck is MLIR framework internals.
-
-### Profile: 2026-03-23, 30s timeout, AFTER Option A + C fixes
-
-| Function (aggregated) | CPU % |
-|---|---|
-| `mlir::SymbolTable::lookupSymbolIn` | 81.0% |
-| `mlir::Attribute::getContext` | 61.3% |
-| `mlir::func::FuncOp::getInherentAttr` | 10.2% |
-| `RegisteredOperationName::...FuncOp::getInherentAttr` | 5.4% |
-| `mlir::Operation::getInherentAttr` | 3.6% |
-
-30s window dominated by initial parsing + single verify() call. Profile percentages similar
-but absolute CPU time reduced by **21.5%** (47.2s → 37.1s task-clock in 5s perf stat).
-
-### Profile: 2026-03-23, 60s timeout, AFTER Option A + C fixes
-
-| Function (aggregated) | CPU % |
-|---|---|
-| `mlir::SymbolTable::lookupSymbolIn` | 73.8% |
-| `mlir::Attribute::getContext` | 55.5% |
-| `mlir::func::FuncOp::getInherentAttr` | 7.9% |
-| `mlir::LLVM::LLVMFuncOp::getInherentAttr` | 1.5% |
-| `mlir::Operation::getInherentAttr` | 3.8% |
-| `propagateLiveness` | 0.3% |
-| `mlir::simplifyRegions` | 0.2% |
-
-60s window shows pipeline phases becoming visible (LLVM lowering, liveness, simplification).
-Pipeline progresses significantly further than baseline within same wall-clock budget.
-
-### perf stat comparison: 5s runs
-
-| Metric | Before (baseline) | After (A+C) | Change |
-|---|---|---|---|
-| task-clock (ms) | 47,230 | 37,074 | **-21.5%** |
-| instructions (core) | 110.6B | 95.5B | **-13.7%** |
-| cycles (core) | 157.8B | 131.7B | **-16.5%** |
-| CPUs utilized | 9.47 | 7.46 | — |
-| IPC | 0.70 | 0.73 | +4.3% |
-| Memory Bound | 50.8% | 52.1% | — |
-
-### Profile: 2026-03-23, 30s timeout, AFTER fixes 14-17 (A+C+SymbolUserOpInterface)
-
-| Function (aggregated) | CPU % |
-|---|---|
-| `mlir::SymbolTable::lookupSymbolIn` | 34.0% |
-| `mlir::Attribute::getContext` | 24.3% |
-| `mlir::func::FuncOp::getInherentAttr` | 7.7% |
-| `RegisteredOperationName::...FuncOp::getInherentAttr` | 5.1% |
-| `mlir::Operation::getInherentAttr` | 3.1% |
-| `OperationVerifier::verifyOpAndDominance` | 2.3% |
-| `ParametricStorageUniquer::insert_as` | 1.1% |
-| `mlir::Lexer::lexToken` | 0.3% |
-
-`lookupSymbolIn` dropped from 83.6% → 34.0%. The verifier and general framework
-functions are now visible, indicating the initial verify() completes much faster
-and the pipeline progresses further in the same 30s window.
-
-### perf stat comparison: 5s runs (cumulative)
-
-| Metric | Baseline (no fixes) | After A+C | After A+C+16+17 | Total change |
-|---|---|---|---|---|
-| task-clock (ms) | 47,230 | 37,074 | **7,845** | **-83.4%** |
-| instructions (core) | 110.6B | 95.5B | **49.1B** | **-55.6%** |
-| cycles (core) | 157.8B | 131.7B | **27.4B** | **-82.7%** |
-| CPUs utilized | 9.47 | 7.46 | **1.58** | — |
-| IPC | 0.70 | 0.73 | **1.79** | **+156%** |
-| Backend Bound | 58.4% | 60.1% | **25.6%** | — |
-| Memory Bound | 50.8% | 52.1% | **18.9%** | — |
-| Frontend Bound | 17.4% | 17.4% | **35.4%** | — |
-| Retiring | 21.9% | 20.6% | **34.1%** | — |
-
-### Profile: 2026-03-23, full run (~48s), AFTER fix #18 (useBarePtrCallConv)
-
-| Function (aggregated) | CPU % |
-|---|---|
-| `mlir::SymbolTable::lookupSymbolIn` | 24.5% |
-| `mlir::Attribute::getContext` | 16.7% |
-| `mlir::func::FuncOp::getInherentAttr` | 5.4% |
-| `mlir::Operation::getInherentAttr` | 2.1% |
-| `propagateLiveness` | 0.6% |
-| `ConversionValueMapping::lookupOrDefault` | 0.4% |
-| `mlir::simplifyRegions` | 0.3% |
-
-Full pipeline completes + crashes in SCFToControlFlow (pre-existing codegen bug).
-`lookupSymbolIn` down from 46.4% → 24.5%. Pipeline functions (liveness, simplify,
-conversion mapping) now visible. Remaining `lookupSymbolIn` is from initial `verify()`
-and `applyPartialConversion` in SCFToControlFlow pass.
-
-### Stage 6 wall-time comparison
-
-| Config | Wall time | Speedup |
-|---|---|---|
-| Original (pre all fixes) | >5 min (never finished in 5 min profile) | — |
-| After A+C+16+17 | 395s (6m35s, crash in SCFToControlFlow) | ~1× |
-| **After A+C+16+17+18** | **48s** (crash in SCFToControlFlow) | **~8.3×** |
-
-### perf stat: full run comparison
-
-| Metric | Before #18 (395s run) | After #18 (48s run) | Change |
-|---|---|---|---|
-| task-clock | 397,273 ms | 50,471 ms | **-87.3%** |
-| instructions (core) | 824.9B | 238.8B | **-71.1%** |
-| cycles (core) | 989.0B | 166.7B | **-83.1%** |
-| IPC (core) | 0.83 | **1.43** | **+72.3%** |
-| Backend Bound | 64.6% | 53.6% | -11pp |
-| Memory Bound | 45.9% | 37.9% | -8pp |
-| Frontend Bound | 12.1% | 19.0% | +6.9pp |
-| Retiring | 22.4% | 25.1% | +2.7pp |
+No major GC fired in the 100 s window (front-end / typed-opt phase). 0 lost
+samples.
