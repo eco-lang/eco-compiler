@@ -31,28 +31,9 @@
 #include "ThreadLocalHeap.hpp"
 #include <cassert>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #if ECO_GC_DEBUG
 #include <execinfo.h>
-#endif
-
-#if ENABLE_GC_STATS
-namespace {
-// Latched once per process. Gates the per-allocation wall-clock bracket
-// in NurserySpace::allocate (the bracket's clock_gettime calls were ~25%
-// of total CPU in the Stage 7 profile). Reads ECO_GC_ALLOC_TIMING:
-//   "0" / unset / empty -> disabled (default)
-//   any other value     -> enabled
-inline bool nurseryAllocTimingEnabled() {
-    static const bool enabled = []{
-        const char* e = std::getenv("ECO_GC_ALLOC_TIMING");
-        if (e == nullptr || e[0] == '\0') return false;
-        return !(e[0] == '0' && e[1] == '\0');
-    }();
-    return enabled;
-}
-}  // namespace
 #endif
 
 #if ECO_GC_DEBUG
@@ -258,85 +239,76 @@ void *NurserySpace::allocate(size_t size) {
     // Align to 8 bytes.
     size = (size + 7) & ~7;
 
-    // Optionally bracket the nursery allocator body so its wall-clock cost
-    // is billed to total_nursery_alloc_in_mutator_ns. The bracket goes
-    // through two clock_gettime calls per allocation, which on the Stage 7
-    // self-compile profile measured at ~25% of total CPU — far from the
-    // "negligible" the original comment claimed. The bracket is therefore
-    // gated on ECO_GC_ALLOC_TIMING; when unset (default) the timer reads
-    // are skipped entirely. The mutator-only check is still correct because
-    // nursery_.allocate is never invoked from inside minorGC (promotions
-    // go to oldgen.allocate).
-#if ENABLE_GC_STATS
-    const bool time_alloc = nurseryAllocTimingEnabled();
-    std::chrono::high_resolution_clock::time_point t0;
-    if (time_alloc) {
-        t0 = GC_STATS_TIMER_START();
-    }
-#endif
-
-    void* result;
-    // Fast path: fits in current block.
+    // Fast path: fits in current block. No wall-clock timing here — the
+    // bump-pointer body is too short for `clock_gettime` brackets to be
+    // anything but pure overhead (~25% of total CPU on the Stage 7 profile).
+    // Slow-path timing is done inside `allocateSlow` below.
     if (alloc_ptr_ + size <= alloc_end_) {
-        result = alloc_ptr_;
+        void* result = alloc_ptr_;
         alloc_ptr_ += size;
         GC_STATS_MINOR_RECORD_ALLOC(stats, size);
-    } else {
-        // Slow path: need next block.
-        result = allocateSlow(size);
+        return result;
     }
 
-#if ENABLE_GC_STATS
-    if (time_alloc && !g_in_minor_gc) {
-        stats.total_nursery_alloc_in_mutator_ns +=
-            GC_STATS_TIMER_ELAPSED_NS(t0);
-    }
-#endif
-
-    return result;
+    // Slow path: needs to advance to the next block (or return nullptr to
+    // signal GC). Wall-clock the body so its cost lands in
+    // total_nursery_alloc_in_mutator_ns rather than leaking into mutator
+    // time. The mutator-only check is correct because nursery_.allocate is
+    // never invoked from inside minorGC (promotions go to oldgen.allocate).
+    return allocateSlow(size);
 }
 
 void* NurserySpace::allocateSlow(size_t size) {
+#if ENABLE_GC_STATS
+    auto t0 = GC_STATS_TIMER_START();
+#endif
+
+    void* result = nullptr;
+
     std::vector<char*>& from_blocks = from_is_low_ ? low_blocks_ : high_blocks_;
 
     // The fast path fell through (alloc_ptr_ + size > alloc_end_).
     // `alloc_end_` is the earlier of (block end, threshold trip point) —
     // see computeAllocEndForBlock. The disambiguator is `alloc_end_ <
     // block_end`: that means the threshold cap fired inside this block,
-    // and the right action is to signal a minor GC (return nullptr).
+    // and the right action is to signal a minor GC (`result` stays null).
     // Otherwise the block is genuinely exhausted (alloc_end_ == block_end)
     // and we should advance to the next block.
 
     char* block_start = from_blocks[current_from_idx_];
     char* block_end = block_start + block_size_;
 
-    if (alloc_end_ < block_end) {
-        // Threshold trip inside the current block. Signal GC.
-        return nullptr;
-    }
+    if (alloc_end_ >= block_end) {
+        // Block exhausted: try next block in from-space.
+        ++current_from_idx_;
+        if (current_from_idx_ < from_blocks.size()) {
+            alloc_ptr_ = from_blocks[current_from_idx_];
+            alloc_end_ = computeAllocEndForBlock(alloc_ptr_);
 
-    // Block exhausted: try next block in from-space.
-    ++current_from_idx_;
-    if (current_from_idx_ < from_blocks.size()) {
-        alloc_ptr_ = from_blocks[current_from_idx_];
-        alloc_end_ = computeAllocEndForBlock(alloc_ptr_);
-
-        if (alloc_ptr_ + size <= alloc_end_) {
-            void* result = alloc_ptr_;
-            alloc_ptr_ += size;
-            GC_STATS_MINOR_RECORD_ALLOC(stats, size);
-            return result;
+            if (alloc_ptr_ + size <= alloc_end_) {
+                result = alloc_ptr_;
+                alloc_ptr_ += size;
+                GC_STATS_MINOR_RECORD_ALLOC(stats, size);
+            }
+            // Else the new block is also threshold-clamped
+            // (alloc_end_ <= alloc_ptr_ + size). Signal GC. Note:
+            // computeAllocEndForBlock returns block_end once already_full
+            // passes threshold_total_bytes_, so this can only happen when
+            // the trip point falls exactly on a block boundary or earlier
+            // — i.e. legitimately needs a GC.
         }
-        // The new block is also threshold-clamped (alloc_end_ <= alloc_ptr_
-        // + size). Signal GC. Note: computeAllocEndForBlock returns
-        // block_end once already_full passes threshold_total_bytes_, so
-        // this can only happen when the trip point falls exactly on a
-        // block boundary or earlier — i.e. legitimately needs a GC.
-        return nullptr;
+        // Else no more blocks: signal GC.
     }
+    // Else threshold trip inside the current block: signal GC.
 
-    // No more blocks: signal GC.
-    return nullptr;
+#if ENABLE_GC_STATS
+    if (!g_in_minor_gc) {
+        stats.total_nursery_alloc_in_mutator_ns +=
+            GC_STATS_TIMER_ELAPSED_NS(t0);
+    }
+#endif
+
+    return result;
 }
 
 // contains(), isInFromSpace(), isInToSpace() are now inline in the header.

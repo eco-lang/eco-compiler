@@ -116,13 +116,6 @@ static void printResidencyHistogramBlock(
 
     std::cout << "\nOld-Gen Page Residency Histogram (" << header_label
               << "):" << std::endl;
-    std::cout << "  Each row shows live / free / garbage MB inside the\n"
-                 "  blocks of that liveness band. free = bytes already\n"
-                 "  on per-class free lists from the previous lazy\n"
-                 "  sweep (allocatable). garbage = dead bytes the\n"
-                 "  previous sweep never reached (still unswept). The\n"
-                 "  live% column is live_MB / page_MB; free% and garb%\n"
-                 "  are over the same total." << std::endl;
     std::cout << "  live_frac        pages    page_MB    live_MB    "
                  "free_MB    garb_MB   live%   free%   garb%"
               << std::endl;
@@ -266,13 +259,6 @@ static void printFreelistHistogramBlock(
 
     std::cout << "\nOld-Gen Free-List Size-Class Histogram ("
               << header_label << "):" << std::endl;
-    std::cout << "  Cells parked on per-class free lists at each\n"
-                 "  sample, just before the next major's transition\n"
-                 "  clears them. cell_size is the exact byte size of\n"
-                 "  every cell on that class. Concentration in tiny\n"
-                 "  classes (8B..256B) means the heap is full of\n"
-                 "  slivers that can't satisfy bigger requests."
-              << std::endl;
     std::cout << "  cell_size       cells       bytes     bytes_MB    %bytes"
               << std::endl;
 
