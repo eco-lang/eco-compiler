@@ -416,17 +416,19 @@ When Phase 1 lands and `eco.make.*` ops exist, update:
     must not participate in GC root sets, **except `eco.make.closure`**
     which is documented as the dedicated closure‑realisation op (Q‑A‑b)
     and is itself a heap allocation returning `!eco.value`."
-  - Add **CGEN_028 (new)**: every `eco.make.*` op except
-    `eco.make.closure` is `Pure`, never carries `live_roots`, and never
-    appears as an operand of any `Eco_GCRootCarrier` interface method.
-    `eco.make.closure` is `GCRootCarrier`, returns `!eco.value`, and is
-    the only opt allowed to bridge the value‑aggregate and heap worlds
-    by allocating.
-  - Add **CGEN_029 (new)**: `eco.to_heap` accepts only
-    *data‑aggregate* operands (`!eco.tuple2/3`, `!eco.record`,
-    `!eco.custom`, `!eco.cons`); a `!eco.closure_env` operand fails
-    verification. Closure realisation is exclusively the job of
-    `eco.make.closure`.
+  - Add **CGEN_061 (new — was CGEN_028 in earlier plan; CGEN_028
+    already taken by `eco.case` yield invariant)**: every
+    `eco.make.*` op except `eco.make.closure` is `Pure`, never carries
+    `live_roots`, and never appears as an operand of any
+    `Eco_GCRootCarrier` interface method. `eco.make.closure` is
+    `GCRootCarrier`, returns `!eco.value`, and is the only op allowed
+    to bridge the value‑aggregate and heap worlds by allocating.
+  - Add **CGEN_062 (new — was CGEN_029 in earlier plan; CGEN_029
+    already taken by `eco.case` tag‑array length invariant)**:
+    `eco.to_heap` accepts only *data‑aggregate* operands
+    (`!eco.tuple2/3`, `!eco.record`, `!eco.custom`, `!eco.cons`);
+    a `!eco.closure_env` operand fails verification. Closure
+    realisation is exclusively the job of `eco.make.closure`.
   - Add **REP_AGG_001 (new)**: aggregate types
     (`!eco.tuple2/3`, `!eco.record`, `!eco.custom`, `!eco.cons`,
     `!eco.closure_env`) are an SSA‑only representation independent of
