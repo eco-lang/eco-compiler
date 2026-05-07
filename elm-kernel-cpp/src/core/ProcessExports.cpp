@@ -7,6 +7,7 @@
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
 #include "allocator/Allocator.hpp"
+#include <cstring>
 
 using namespace Elm;
 using namespace Elm::Kernel;
@@ -22,14 +23,17 @@ using Export::decode;
 // expiration — including taskSucceed/callClosure1 — runs on main via
 // Scheduler::processReadyAsync; no cross-thread GC interaction.
 static void* sleepBindingEvaluator(void* rawArgs[]) {
-    uint64_t timeEnc   = reinterpret_cast<uint64_t>(rawArgs[0]);
+    // Captured: [0] = unboxed Float (PK_Float). Passed: [1] = resume closure.
+    //
+    // Per the Phase E typed-args convention (REP_ABI_001),
+    // `eco_closure_call_saturated` delivers a PK_Float capture as the raw
+    // IEEE-754 bits in rawArgs[0], NOT as an HPointer-to-ElmFloat. Recover
+    // the double by bit-casting from the uint64_t.
+    uint64_t timeBits  = reinterpret_cast<uint64_t>(rawArgs[0]);
     uint64_t resumeEnc = reinterpret_cast<uint64_t>(rawArgs[1]);
 
-    HPointer timeHP = Export::decode(timeEnc);
-    double millis = 0.0;
-    if (void* timePtr = Allocator::instance().resolve(timeHP)) {
-        millis = static_cast<ElmFloat*>(timePtr)->value;
-    }
+    double millis;
+    std::memcpy(&millis, &timeBits, sizeof(double));
 
     HPointer resumeHP = Export::decode(resumeEnc);
     uint64_t resumeToken =

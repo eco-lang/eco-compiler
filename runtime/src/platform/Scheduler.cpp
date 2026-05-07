@@ -411,6 +411,7 @@ static void* resumeEvaluator(void* args[]) {
     if (resolveHP(procHP)) {
         HPointer newProcHP = Scheduler::procWithRoot(procHP, newTask);
         Scheduler::instance().enqueue(newProcHP);
+    } else {
     }
 
     return reinterpret_cast<void*>(encodeHP(unit()));

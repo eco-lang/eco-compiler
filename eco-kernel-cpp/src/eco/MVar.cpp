@@ -128,16 +128,16 @@ static void processTakeDeparture(MVarSlot& slot) {
 // rawArgs layout mirrors the capture order in the kernel export: captured
 // values first, resume closure last.
 
-// Captured: [0]=boxed Int (mvar id). Passed: [1]=resume closure.
+// Captured: [0]=unboxed Int (mvar id, PK_Int). Passed: [1]=resume closure (PK_Boxed HPointer).
+//
+// Per the Phase E typed-args convention (REP_ABI_001), `eco_closure_call_saturated`
+// delivers each capture in `combined_args[i]` as raw primitive bits when its
+// `closure->unboxed[i]` kind is PK_Int / PK_Float / PK_Char, NOT as an
+// HPointer-to-boxed-prim. So the captured mvar id is the raw int64; only
+// the resume closure (a true HPointer arg) goes through Export::decode.
 static void* readBindingEvaluator(void* rawArgs[]) {
-    uint64_t idEnc     = reinterpret_cast<uint64_t>(rawArgs[0]);
+    int64_t id = static_cast<int64_t>(reinterpret_cast<uint64_t>(rawArgs[0]));
     uint64_t resumeEnc = reinterpret_cast<uint64_t>(rawArgs[1]);
-
-    HPointer idHP = Export::decode(idEnc);
-    int64_t id = 0;
-    if (void* idPtr = Elm::Allocator::instance().resolve(idHP)) {
-        id = static_cast<Elm::ElmInt*>(idPtr)->value;
-    }
     HPointer resumeHP = Export::decode(resumeEnc);
 
     auto& sched = Elm::Platform::Scheduler::instance();
@@ -160,16 +160,11 @@ static void* readBindingEvaluator(void* rawArgs[]) {
     return reinterpret_cast<void*>(Export::encode(unit()));
 }
 
-// Captured: [0]=boxed Int (mvar id). Passed: [1]=resume closure.
+// Captured: [0]=unboxed Int (mvar id, PK_Int). Passed: [1]=resume closure (PK_Boxed HPointer).
+// See readBindingEvaluator for the typed-args convention rationale.
 static void* takeBindingEvaluator(void* rawArgs[]) {
-    uint64_t idEnc     = reinterpret_cast<uint64_t>(rawArgs[0]);
+    int64_t id = static_cast<int64_t>(reinterpret_cast<uint64_t>(rawArgs[0]));
     uint64_t resumeEnc = reinterpret_cast<uint64_t>(rawArgs[1]);
-
-    HPointer idHP = Export::decode(idEnc);
-    int64_t id = 0;
-    if (void* idPtr = Elm::Allocator::instance().resolve(idHP)) {
-        id = static_cast<Elm::ElmInt*>(idPtr)->value;
-    }
     HPointer resumeHP = Export::decode(resumeEnc);
 
     auto& sched = Elm::Platform::Scheduler::instance();
@@ -195,18 +190,13 @@ static void* takeBindingEvaluator(void* rawArgs[]) {
     return reinterpret_cast<void*>(Export::encode(unit()));
 }
 
-// Captured: [0]=boxed Int (mvar id), [1]=value HPointer.
-// Passed:   [2]=resume closure.
+// Captured: [0]=unboxed Int (mvar id, PK_Int), [1]=value HPointer (PK_Boxed).
+// Passed:   [2]=resume closure (PK_Boxed HPointer).
+// See readBindingEvaluator for the typed-args convention rationale.
 static void* putBindingEvaluator(void* rawArgs[]) {
-    uint64_t idEnc     = reinterpret_cast<uint64_t>(rawArgs[0]);
+    int64_t id = static_cast<int64_t>(reinterpret_cast<uint64_t>(rawArgs[0]));
     uint64_t valueEnc  = reinterpret_cast<uint64_t>(rawArgs[1]);
     uint64_t resumeEnc = reinterpret_cast<uint64_t>(rawArgs[2]);
-
-    HPointer idHP = Export::decode(idEnc);
-    int64_t id = 0;
-    if (void* idPtr = Elm::Allocator::instance().resolve(idHP)) {
-        id = static_cast<Elm::ElmInt*>(idPtr)->value;
-    }
     HPointer valueHP  = Export::decode(valueEnc);
     HPointer resumeHP = Export::decode(resumeEnc);
 
