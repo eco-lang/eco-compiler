@@ -1246,6 +1246,94 @@ extern "C" HPtr eco_apply_closure(HPtr closure_hptr, uint64_t* args, uint32_t nu
     return result;
 }
 
+// Phase D: typed-args entry point for generic apply.
+//
+// Takes args as a typed `int64_t*` buffer alongside an `EvalParamLayout`
+// describing each slot's primitive kind. Re-boxes any non-PK_Boxed slot
+// into an HPointer (via eco_alloc_int / eco_alloc_float / eco_alloc_char),
+// then forwards to the existing all-boxed `eco_apply_closure` path.
+//
+// Behaviorally identical to the previous LLVM-side boxing inside
+// `lowerGenericApply`: the same eco_alloc_* calls happen, just one
+// indirection later. The benefit is centralisation: when a per-evaluator
+// "accepts typed newargs" capability bit is added (Phase E), this function
+// becomes the single dispatcher that chooses between re-box-and-call vs.
+// pass-typed-through.
+//
+// `args_layout` may be null, in which case all slots are treated as
+// PK_Boxed (legacy semantics). Phase D's lowerGenericApply always emits
+// a non-null layout.
+extern "C" HPtr eco_apply_closure_typed(HPtr closure_hptr,
+                                        int64_t* typed_args,
+                                        uint32_t num_args,
+                                        const EvalParamLayout* args_layout) {
+    if (num_args == 0) {
+        return eco_apply_closure(closure_hptr, nullptr, 0);
+    }
+
+    // Stack-allocate the boxed-args buffer for typical arities; alloca otherwise.
+    uint64_t stack_buf[16];
+    uint64_t* boxed = (num_args <= 16) ? stack_buf
+                      : static_cast<uint64_t*>(alloca(num_args * sizeof(uint64_t)));
+
+    // Zero-initialise so GC can scan the buffer safely before all slots are
+    // populated. A 0-bit pattern decodes as a const HPointer (constant=0
+    // → non-constant) which the GC traces harmlessly.
+    memset(boxed, 0, num_args * sizeof(uint64_t));
+
+    // Push the buffer as an all-HPointer root range up-front. Slots not yet
+    // populated are zero (null); slots already populated by the first pass
+    // are valid HPointers; slots populated by the boxing pass below will be
+    // valid HPointers as soon as the alloc returns. Same discipline as
+    // emitRootedBoxedArgsArray on the LLVM side previously used.
+    size_t saved_range = eco_gc_stack_range_point();
+    uint64_t mask = hptr_mask_all(num_args);
+    eco_gc_push_stack_range(boxed, num_args, mask);
+
+    // First pass: copy PK_Boxed slots directly. These are already HPointers.
+    for (uint32_t i = 0; i < num_args; ++i) {
+        uint8_t kind = args_layout ? args_layout->kinds[i] : 0;
+        if (kind == 0) {
+            boxed[i] = static_cast<uint64_t>(typed_args[i]);
+        }
+    }
+
+    // Second pass: box primitive slots. Each alloc may trigger GC, but the
+    // buffer is rooted with all-HPointer mask so already-populated slots
+    // are evacuated correctly.
+    for (uint32_t i = 0; i < num_args; ++i) {
+        uint8_t kind = args_layout ? args_layout->kinds[i] : 0;
+        switch (kind) {
+            case 0:
+                continue;
+            case 1: { // PK_Int
+                boxed[i] = eco_alloc_int(typed_args[i]).toBits();
+                break;
+            }
+            case 2: { // PK_Float
+                double f;
+                memcpy(&f, &typed_args[i], sizeof(double));
+                boxed[i] = eco_alloc_float(f).toBits();
+                break;
+            }
+            case 3: { // PK_Char
+                boxed[i] = eco_alloc_char(static_cast<uint32_t>(
+                    static_cast<uint64_t>(typed_args[i]) & 0xFFFFu)).toBits();
+                break;
+            }
+            default:
+                assert(false && "eco_apply_closure_typed: unknown ParamKind");
+                __builtin_unreachable();
+        }
+    }
+
+    // All args are now HPointer-encoded; forward through the existing path.
+    HPtr result = eco_apply_closure(closure_hptr, boxed, num_args);
+
+    eco_gc_restore_stack_range_point(saved_range);
+    return result;
+}
+
 extern "C" HPtr eco_apply_segmentation_unknown(HPtr closure_hptr,
                                                     uint64_t* typed_args,
                                                     uint32_t num_args,

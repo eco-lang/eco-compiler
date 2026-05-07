@@ -1496,30 +1496,101 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
                                     Location loc, Value closureI64,
                                     ValueRange newargs,
                                     ValueRange liveRoots) const {
+        // Phase D: build a typed `i64*` args buffer (no LLVM-side boxing) and
+        // pass it to `eco_apply_closure_typed` along with an EvalParamLayout
+        // describing each slot's primitive kind. The runtime helper re-boxes
+        // primitives into HPointers (centralising what used to be inline
+        // LLVM boxing) before forwarding to `eco_apply_closure`. Allocation
+        // count is unchanged — the boxing locus has just moved from the
+        // JIT'd IR to the runtime, where a future per-evaluator capability
+        // bit can elide it for evaluators that accept typed newargs.
         auto *ctx = rewriter.getContext();
         auto i32Ty = IntegerType::get(ctx, 32);
+        auto i64Ty = IntegerType::get(ctx, 64);
+        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
         int64_t numNewArgs = newargs.size();
 
-        // Collect original (pre-conversion) MLIR types for boxing decisions.
+        // Collect original (pre-conversion) MLIR types for kind decisions.
         SmallVector<Type> origNewArgTypes;
         auto origNewargs = op.getNewargs();
         for (size_t i = 0; i < newargs.size(); ++i)
             origNewArgTypes.push_back(origNewargs[i].getType());
 
-        // Build all-boxed args array: alloca + zero-init + root + populate.
-        auto boxed = emitRootedBoxedArgsArray(
-            rewriter, loc, runtime, newargs, origNewArgTypes, liveRoots, op);
+        // Allocate typed args buffer at function entry.
+        Value typedArgsArray;
+        {
+            OpBuilder::InsertionGuard allocaGuard(rewriter);
+            auto parentFunc = op->getParentOfType<LLVM::LLVMFuncOp>();
+            if (parentFunc) rewriter.setInsertionPointToStart(&parentFunc.getBody().front());
+            auto numArgsI64 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, numNewArgs);
+            typedArgsArray = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, i64Ty, numArgsI64);
+        }
 
-        // Call eco_apply_closure(closure, args, num_args)
-        auto applyFunc = runtime.getOrCreateApplyClosure(rewriter);
+        // Zero-init so the GC scan that follows is safe.
+        if (numNewArgs > 0) {
+            auto i8Ty = IntegerType::get(ctx, 8);
+            auto zeroVal = rewriter.create<LLVM::ConstantOp>(loc, i8Ty, 0);
+            auto bytesLen = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, numNewArgs * 8);
+            rewriter.create<LLVM::MemsetOp>(loc, typedArgsArray, zeroVal, bytesLen, /*isVolatile=*/false);
+        }
+
+        // Compute the per-slot kind sequence for the layout global, and the
+        // GC mask (1-bit per slot, set iff slot is HPointer) for rooting.
+        SmallVector<uint8_t> kinds;
+        kinds.reserve(numNewArgs);
+        uint64_t hptrMask = 0;
+        for (size_t i = 0; i < origNewArgTypes.size(); ++i) {
+            uint8_t k = mlirTypeToParamKind(origNewArgTypes[i]);
+            kinds.push_back(k);
+            if (k == 0) hptrMask |= (uint64_t{1} << i);
+        }
+
+        // Populate slots with typed values directly (no boxing here).
+        for (size_t i = 0; i < newargs.size(); ++i) {
+            auto idxConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, static_cast<int64_t>(i));
+            auto slotPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty, typedArgsArray, ValueRange{idxConst});
+            Value arg = newargs[i];
+            if (arg.getType() != i64Ty && isa<LLVM::LLVMPointerType>(arg.getType())) {
+                arg = argsSlotStoreValueToI64(rewriter, loc, arg);
+            } else if (auto intTy = dyn_cast<IntegerType>(arg.getType())) {
+                if (intTy.getWidth() < 64) {
+                    arg = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, arg);
+                }
+            } else if (arg.getType().isF64()) {
+                arg = rewriter.create<LLVM::BitcastOp>(loc, i64Ty, arg);
+            }
+            rewriter.create<LLVM::StoreOp>(loc, arg, slotPtr);
+        }
+
+        // Push the buffer as a GC root range covering only the HPointer slots.
+        // Primitive slots are zero-initialised and not traced.
+        Value savedDepth;
+        if (numNewArgs > 0) {
+            auto rangePointFunc = runtime.getOrCreateGcStackRangePoint(rewriter);
+            savedDepth = rewriter.create<LLVM::CallOp>(loc, rangePointFunc, ValueRange{}).getResult();
+            auto pushFunc = runtime.getOrCreateGcPushStackRange(rewriter);
+            auto countConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, numNewArgs);
+            auto maskConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+                rewriter.getI64IntegerAttr(static_cast<int64_t>(hptrMask)));
+            rewriter.create<LLVM::CallOp>(loc, pushFunc,
+                ValueRange{typedArgsArray, countConst, maskConst});
+        }
+
+        // Build (or reuse) an EvalParamLayout global describing the new args.
+        auto module = op->getParentOfType<ModuleOp>();
+        Value layoutPtr = getOrCreateEvalLayout(rewriter, loc, module, kinds);
+
+        // Call eco_apply_closure_typed(closure, typed_args, num_args, args_layout).
+        auto applyFunc = runtime.getOrCreateApplyClosureTyped(rewriter);
         emitSafepointMarker(op, rewriter, runtime, liveRoots);
         auto numNewArgsConst = rewriter.create<LLVM::ConstantOp>(
             loc, i32Ty, static_cast<int32_t>(numNewArgs));
         auto call = rewriter.create<LLVM::CallOp>(
-            loc, applyFunc, ValueRange{closureI64, boxed.array, numNewArgsConst});
+            loc, applyFunc, ValueRange{closureI64, typedArgsArray, numNewArgsConst, layoutPtr});
 
-        // Restore GC root range stack.
-        emitRestoreArgsRootRange(rewriter, loc, runtime, boxed.savedDepth);
+        if (numNewArgs > 0) {
+            emitRestoreArgsRootRange(rewriter, loc, runtime, savedDepth);
+        }
 
         rewriter.replaceOp(op, call.getResult());
         return success();

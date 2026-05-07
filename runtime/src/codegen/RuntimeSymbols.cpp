@@ -253,6 +253,11 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_apply_closure),
                 llvm::JITSymbolFlags::Exported);
+        // Phase D: typed-args entry point for generic apply.
+        symbolMap[interner("eco_apply_closure_typed")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_apply_closure_typed),
+                llvm::JITSymbolFlags::Exported);
         symbolMap[interner("eco_pap_extend")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_pap_extend),

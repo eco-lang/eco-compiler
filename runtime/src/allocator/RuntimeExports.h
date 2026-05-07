@@ -276,6 +276,22 @@ void eco_store_field_f64(HPtr obj, uint32_t index, double value);
 /// @return Result value or new closure (as HPointer uint64_t)
 HPtr eco_apply_closure(HPtr closure, uint64_t* args, uint32_t num_args);
 
+/// Phase D typed-args entry point for generic apply.
+/// Takes args as a typed `int64_t*` buffer where each slot's interpretation
+/// is given by `args_layout->kinds[i]` (0=PK_Boxed HPointer, 1=PK_Int,
+/// 2=PK_Float, 3=PK_Char). Re-boxes any non-PK_Boxed slot via
+/// `eco_alloc_int` / `eco_alloc_float` / `eco_alloc_char` then forwards to
+/// `eco_apply_closure`. When `args_layout` is null all slots are treated
+/// as PK_Boxed (legacy semantics).
+/// @param closure HPointer to the Closure object
+/// @param typed_args Typed args buffer (slot interpretation per `args_layout->kinds`)
+/// @param num_args Number of new arguments
+/// @param args_layout Per-slot kind descriptor (may be null)
+/// @return Result value or new closure
+HPtr eco_apply_closure_typed(HPtr closure, int64_t* typed_args,
+                             uint32_t num_args,
+                             const Elm::EvalParamLayout* args_layout);
+
 /// Extends a PAP with more arguments (partial application).
 /// Creates a new closure with the combined captured values.
 /// @param closure HPointer (as uint64_t) to the Closure object
