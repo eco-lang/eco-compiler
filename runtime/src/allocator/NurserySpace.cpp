@@ -703,13 +703,12 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // Phase 4: Check occupancy and grow if needed.
     checkAndGrow();
 
-#if ECO_GC_DEBUG
-    // Debug safety net: zero free to-space region to prevent ghost headers
-    // from surviving into the next GC cycle. Called after checkAndGrow() so
-    // newly added blocks are also zeroed. Hot path — debug-only; the
-    // mutator does not depend on free regions reading as zero.
+    // Safety net: zero free to-space region to prevent ghost headers from
+    // surviving into the next GC cycle. Load-bearing — disabling this
+    // produces "Pointer above heap end!" aborts in evacuate when stale
+    // bytes in the free tail decode as out-of-range raw pointers. Called
+    // after checkAndGrow() so newly added blocks are also zeroed.
     clearToSpaceFreeRegion();
-#endif
 
 #if ECO_GC_DEBUG
     // Post-GC heap integrity check: walk all surviving objects in to-space

@@ -139,11 +139,9 @@ private:
     // Performs minor GC, evacuating live objects to to_space or promoting to old gen.
     void minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_roots);
 
-    // Zeros the free region of to-space after evacuation completes,
-    // preventing ghost headers from surviving into the next GC cycle.
-    // Only invoked from minorGC under ECO_GC_DEBUG; the function itself is
-    // always defined so test fixtures (and the TestOnly accessor below) can
-    // exercise it directly.
+    // Zeros the free region of to-space after evacuation completes.
+    // Prevents ghost headers from surviving into the next GC cycle.
+    // Unconditional (not debug-gated) — this is a safety net.
     void clearToSpaceFreeRegion();
 
 #if ECO_GC_DEBUG
