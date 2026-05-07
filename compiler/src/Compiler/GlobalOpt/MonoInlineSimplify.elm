@@ -1427,25 +1427,58 @@ tryInlineCall ctx specId args resultType =
                     -- Inlining a non-closure value that's being called.
                     -- The body is likely a function reference. Inline it and
                     -- wrap with a call to apply the remaining arguments.
+                    --
+                    -- Exception: when the body is a bare MonoVarKernel and the
+                    -- call's result is a function type (partial application),
+                    -- DON'T inline. Inlining would replace the typed user
+                    -- wrapper (e.g. `Basics_add_$_1` whose body is the
+                    -- `eco.int.add` intrinsic) with a direct kernel reference
+                    -- (`Elm_Kernel_Basics_add`), forcing the partial-app
+                    -- target to use the polymorphic boxed kernel decl. The
+                    -- user wrapper already specializes correctly via
+                    -- registerKernelInstance / monoTypeToAbi, so leaving the
+                    -- call alone gets us the typed `papCreate function =
+                    -- @Basics_add_$_1` we want.
                     let
-                        ( remappedBody, ctx1 ) =
-                            remapLambdaIds ctx body
+                        bodyIsKernelRef =
+                            case body of
+                                MonoVarKernel _ _ _ _ _ ->
+                                    True
 
-                        inlined =
-                            MonoCall A.zero remappedBody args resultType Mono.defaultCallInfo
+                                _ ->
+                                    False
 
-                        newMetrics =
-                            { inlineCount = ctx1.metrics.inlineCount + 1
-                            , betaReductions = ctx1.metrics.betaReductions
-                            , letEliminations = ctx1.metrics.letEliminations
-                            }
+                        resultIsFunctionType =
+                            case resultType of
+                                Mono.MFunction _ _ ->
+                                    True
+
+                                _ ->
+                                    False
                     in
-                    ( Just inlined
-                    , { ctx1
-                        | metrics = newMetrics
-                        , inlineCountThisFunction = ctx1.inlineCountThisFunction + 1
-                      }
-                    )
+                    if bodyIsKernelRef && resultIsFunctionType then
+                        ( Nothing, ctx )
+
+                    else
+                        let
+                            ( remappedBody, ctx1 ) =
+                                remapLambdaIds ctx body
+
+                            inlined =
+                                MonoCall A.zero remappedBody args resultType Mono.defaultCallInfo
+
+                            newMetrics =
+                                { inlineCount = ctx1.metrics.inlineCount + 1
+                                , betaReductions = ctx1.metrics.betaReductions
+                                , letEliminations = ctx1.metrics.letEliminations
+                                }
+                        in
+                        ( Just inlined
+                        , { ctx1
+                            | metrics = newMetrics
+                            , inlineCountThisFunction = ctx1.inlineCountThisFunction + 1
+                          }
+                        )
 
                 else if numArgs < numParams then
                     -- Partial application: bind available params, return closure with remaining
