@@ -1253,12 +1253,17 @@ extern "C" HPtr eco_apply_closure(HPtr closure_hptr, uint64_t* args, uint32_t nu
 // into an HPointer (via eco_alloc_int / eco_alloc_float / eco_alloc_char),
 // then forwards to the existing all-boxed `eco_apply_closure` path.
 //
+// `args_layout->flags` carries per-evaluator capability bits. Phase D
+// Part 2 wires the flag through; the typed-newargs fast path
+// (`EVAL_LAYOUT_FLAG_ACCEPTS_TYPED_NEWARGS`) is reserved for a follow-up
+// migration of evaluator wrappers and currently falls through to the
+// re-boxing path.
+//
 // Behaviorally identical to the previous LLVM-side boxing inside
 // `lowerGenericApply`: the same eco_alloc_* calls happen, just one
-// indirection later. The benefit is centralisation: when a per-evaluator
-// "accepts typed newargs" capability bit is added (Phase E), this function
-// becomes the single dispatcher that chooses between re-box-and-call vs.
-// pass-typed-through.
+// indirection later. The benefit is centralisation — once evaluators
+// flip the capability bit, this function becomes the single dispatcher
+// that chooses between re-box-and-call vs. pass-typed-through.
 //
 // `args_layout` may be null, in which case all slots are treated as
 // PK_Boxed (legacy semantics). Phase D's lowerGenericApply always emits
@@ -1269,6 +1274,17 @@ extern "C" HPtr eco_apply_closure_typed(HPtr closure_hptr,
                                         const EvalParamLayout* args_layout) {
     if (num_args == 0) {
         return eco_apply_closure(closure_hptr, nullptr, 0);
+    }
+
+    // TODO(phase-D-followup): when args_layout->flags has
+    // EVAL_LAYOUT_FLAG_ACCEPTS_TYPED_NEWARGS set, dispatch to a typed-newargs
+    // entry on the closure's evaluator instead of re-boxing here. Today every
+    // emitter sets flags=0 so this branch is unreachable; leaving the gate
+    // in place documents the contract.
+    if (args_layout != nullptr &&
+        (args_layout->flags & EVAL_LAYOUT_FLAG_ACCEPTS_TYPED_NEWARGS) != 0) {
+        // Fall through to the re-boxing path until the typed-newargs evaluator
+        // entry exists.
     }
 
     // Stack-allocate the boxed-args buffer for typical arities; alloca otherwise.
@@ -1334,11 +1350,22 @@ extern "C" HPtr eco_apply_closure_typed(HPtr closure_hptr,
     return result;
 }
 
+// Phase D Part 2: typed-args entry point for segmentation-unknown apply.
+//
+// Takes a single typed `int64_t*` buffer plus an `EvalParamLayout` (instead
+// of the previous dual buffer + bitmap form). The runtime decides at the
+// closure header whether the call is under- or saturated, and routes:
+//
+//   under-saturated  → eco_pap_extend (with a bitmap derived from layout)
+//   saturated/over   → eco_apply_closure_typed (which centralises any
+//                      necessary primitive re-boxing for the saturated path)
+//
+// `args_layout` may be null only for the all-boxed fallback case; every
+// emitter today passes a non-null layout.
 extern "C" HPtr eco_apply_segmentation_unknown(HPtr closure_hptr,
-                                                    uint64_t* typed_args,
-                                                    uint32_t num_args,
-                                                    uint64_t unboxed_bitmap,
-                                                    uint64_t* boxed_args) {
+                                               int64_t* typed_args,
+                                               uint32_t num_args,
+                                               const EvalParamLayout* args_layout) {
     uint64_t closure_bits = closure_hptr.toBits();
     void* closure_ptr = hpointerToPtr(closure_bits);
     if (!closure_ptr) return HPtr::fromBits(0);
@@ -1364,44 +1391,39 @@ extern "C" HPtr eco_apply_segmentation_unknown(HPtr closure_hptr,
     }
     uint32_t remaining = max_values - n_values;
 
-    // Root closure_bits and the appropriate arg array across the inner call.
+    // Root closure_bits across the inner call.
     size_t saved_range = eco_gc_stack_range_point();
     eco_gc_push_stack_range(&closure_bits, 1, 1);
     HPtr result;
 
     if (num_args < remaining) {
-        // Under-saturated: use typed args with bitmap to preserve unboxed values.
-        // The 2-bit-per-slot `unboxed_bitmap` encodes kinds; slot i is an HPointer
-        // iff its kind is 0.
+        // Under-saturated: hand the typed args to eco_pap_extend along with a
+        // 2-bit-per-slot bitmap derived from the layout's kinds. This matches
+        // the encoding `eco_pap_extend` expects (kind 0 = HPointer; non-zero =
+        // primitive index into ParamKind).
+        uint64_t bitmap = 0;
+        if (args_layout != nullptr) {
+            // Cap to 32 slots — bitmap is 2 bits per slot in a u64.
+            uint32_t lim = num_args < 32 ? num_args : 32u;
+            for (uint32_t i = 0; i < lim; ++i) {
+                bitmap |= (static_cast<uint64_t>(args_layout->kinds[i]) & 0x3ULL) << (2 * i);
+            }
+        }
         if (num_args > 0) {
-            uint64_t mask = pointerMaskFromKindBitmap(unboxed_bitmap, num_args);
+            uint64_t mask = pointerMaskFromKindBitmap(bitmap, num_args);
             if (mask != 0) {
-                eco_gc_push_stack_range(typed_args, num_args, mask);
+                eco_gc_push_stack_range(reinterpret_cast<uint64_t*>(typed_args), num_args, mask);
             }
         }
-        result = eco_pap_extend(HPtr::fromBits(closure_bits), typed_args, num_args, unboxed_bitmap);
+        result = eco_pap_extend(HPtr::fromBits(closure_bits),
+                                reinterpret_cast<uint64_t*>(typed_args),
+                                num_args, bitmap);
     } else {
-        // Exactly saturated or over-saturated: use boxed args via eco_apply_closure
-        // which handles both cases (exact call or chain of saturate + recursive apply).
-        // boxed_args entries are all HPointer-encoded `!eco.value`.
-        if (num_args > 0) {
-            eco_gc_push_stack_range(boxed_args, num_args, hptr_mask_all(num_args));
-        }
-#if ECO_HEAP_VALIDATE
-        // Stale-arg tripwire: catches the case where ECO-compiled code (or
-        // a kernel C++ helper) passes a stale pointer at the C++ call
-        // boundary, before eco_apply_closure roots them. Hot path —
-        // debug-only.
-        for (uint32_t dbg_i = 0; dbg_i < num_args; ++dbg_i) {
-            uint64_t raw = boxed_args[dbg_i];
-            HPointer hp;
-            memcpy(&hp, &raw, sizeof(hp));
-            if (hp.constant == 0 && hp.ptr != 0) {
-                hpointerToPtr(raw); // triggers debugAssertValidNurseryPointer if stale
-            }
-        }
-#endif
-        result = eco_apply_closure(HPtr::fromBits(closure_bits), boxed_args, num_args);
+        // Saturated/over-saturated: forward to the typed-apply entry point,
+        // which centralises any required primitive re-boxing before invoking
+        // the evaluator. No parallel boxed buffer is needed.
+        result = eco_apply_closure_typed(HPtr::fromBits(closure_bits),
+                                         typed_args, num_args, args_layout);
     }
 
     eco_gc_restore_stack_range_point(saved_range);

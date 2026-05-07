@@ -30,6 +30,7 @@
 #include "allocator/BytesOpsTest.hpp"
 #include "allocator/RuntimeExportsTest.hpp"
 #include "allocator/GenericApplyBoxingTest.hpp"
+#include "allocator/EcoApplyClosureTypedTest.hpp"
 #include "allocator/GCPressureTest.hpp"
 #include "codegen/CodegenIsolatedTest.hpp"
 #include "bf-codegen/BFCodegenTest.hpp"
@@ -726,6 +727,10 @@ int main(int argc, char* argv[]) {
     Testing::TestSuite genericApplyBoxingTests("GenericApplyBoxing");
     registerGenericApplyBoxingTests(genericApplyBoxingTests);
 
+    // Phase D typed-apply runtime correctness tests
+    Testing::TestSuite ecoApplyClosureTypedTests("EcoApplyClosureTyped");
+    registerEcoApplyClosureTypedTests(ecoApplyClosureTypedTests);
+
     // Sustained-pressure GC tests (multi-MB nursery + old gen, real eco_alloc_*).
     // Run each case in a forked child so a SEGV/abort in one test only fails
     // that test instead of taking down the whole binary.
@@ -795,6 +800,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(bytesOpsTests));
     suite.add(std::move(runtimeExportsTests));
     suite.add(std::move(genericApplyBoxingTests));
+    suite.add(std::move(ecoApplyClosureTypedTests));
     suite.add(std::move(gcPressureTests));
     suite.add(std::move(codegenTests));
     suite.add(std::move(bfCodegenTests));

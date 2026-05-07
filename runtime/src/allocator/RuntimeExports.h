@@ -310,18 +310,17 @@ HPtr eco_pap_extend(HPtr closure, uint64_t* args, uint32_t num_newargs, uint64_t
 HPtr eco_closure_call_saturated(HPtr closure, uint64_t* new_args, uint32_t num_newargs, const Elm::EvalParamLayout* layout);
 
 /// Applies arguments to a closure with known ABI but unknown staging.
-/// Reads the closure header to determine saturation at runtime.
-/// Under-saturated: uses eco_pap_extend with typed args + bitmap (preserves unboxed).
-/// Saturated/over-saturated: uses eco_apply_closure with boxed args.
+/// Reads the closure header to determine saturation at runtime, then routes:
+///   - under-saturated → eco_pap_extend (typed args + bitmap derived from layout)
+///   - saturated/over → eco_apply_closure_typed (centralises any re-boxing)
 /// @param closure HPointer (as uint64_t) to the Closure object
-/// @param typed_args Array of typed args (raw i64 values, may be unboxed per bitmap)
+/// @param typed_args Array of typed args (raw i64 storage; per-slot kind in `args_layout`)
 /// @param num_args Number of new arguments
-/// @param unboxed_bitmap Bitmap indicating which typed_args are unboxed primitives
-/// @param boxed_args Array of same args but all HPointer-encoded
+/// @param args_layout Per-slot ParamKind descriptor (may be null = all PK_Boxed)
 /// @return Result of the application (as HPointer i64)
-HPtr eco_apply_segmentation_unknown(HPtr closure, uint64_t* typed_args,
-                                        uint32_t num_args, uint64_t unboxed_bitmap,
-                                        uint64_t* boxed_args);
+HPtr eco_apply_segmentation_unknown(HPtr closure, int64_t* typed_args,
+                                    uint32_t num_args,
+                                    const Elm::EvalParamLayout* args_layout);
 
 //===----------------------------------------------------------------------===//
 // Runtime Utilities

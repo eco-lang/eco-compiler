@@ -37,6 +37,7 @@ add_executable(test
         allocator/BytesOpsTest.cpp
         allocator/RuntimeExportsTest.cpp
         allocator/GenericApplyBoxingTest.cpp
+        allocator/EcoApplyClosureTypedTest.cpp
         allocator/GCPressureTest.cpp
 )
 

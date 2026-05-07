@@ -521,6 +521,193 @@ can be removed.
 
 ---
 
+## 5.bis Phase D Part 2 — Completing the deferred work
+
+Phase D Part 1 landed the typed-args entry point (`eco_apply_closure_typed`)
+and rewrote `lowerGenericApply` to use it. Two pieces remain before the
+phase is fully delivered:
+
+- **The runtime helper still re-boxes every primitive** before forwarding
+  to `eco_apply_closure`. This is *structurally* correct (allocations equal
+  the previous IR-side scheme) but does not yet reduce allocator traffic.
+  The optimisation needs a per-evaluator capability bit so migrated
+  evaluators can receive typed args directly.
+- **`lowerSegmentationUnknown` still emits the dual-buffer scheme**
+  (`emitRootedBoxedArgsArray` + the typed `i64*` buffer) and calls
+  `eco_apply_segmentation_unknown(typed, num, bitmap, boxed)`. Symmetry with
+  generic apply means dropping the boxed buffer and routing the
+  saturated/over branch through `eco_apply_closure_typed`.
+
+Plus: tests covering both static IR shape and the runtime helper itself.
+
+### 5.bis.1 `accepts_typed_newargs` capability bit
+
+The bit lives on `EvalParamLayout` (decision Q6 in §9 — chosen because the
+typed-apply path already needs to load the layout). Schema change:
+
+```cpp
+// runtime/src/allocator/Heap.hpp
+enum EvalLayoutFlags : unsigned char {
+    EVAL_LAYOUT_FLAG_ACCEPTS_TYPED_NEWARGS = 1 << 0,
+};
+
+struct EvalParamLayout {
+    unsigned char num_params;
+    unsigned char flags;        // NEW — defaults to 0 in all globals emitted in Phase D Part 2
+    unsigned char kinds[];      // length = num_params, byte 2 onward
+};
+```
+
+**Layout discipline.** `num_params, flags, kinds[]` is a back-compatible
+extension only if every consumer that reads `kinds[]` accounts for the
+extra prefix byte. There are two consumers today:
+
+1. `eco_closure_call_saturated` reads `layout->kinds[i]` to decide how to
+   re-box captured slots (`RuntimeExports.cpp:1036`).
+2. `eco_apply_closure_typed` (Phase D Part 1) reads `layout->kinds[i]` for
+   each new arg.
+
+Both pick up the extra byte automatically because `kinds[]` is now offset
++2 instead of +1; the change is invisible to readers that use the struct
+field name. The emitter (`getOrCreateEvalLayout` in
+`EcoToLLVMClosures.cpp`) is updated to insert the extra `i8 0` between
+`num_params` and the kinds array, and to fold a flag bit into a uniqueness
+suffix so layouts with different flags don't dedupe.
+
+**Flag default.** All callers in Phase D Part 2 pass `flags = 0` — i.e.
+"evaluator does not accept typed newargs." That preserves current behaviour
+exactly. The point of adding the field now is to give a single, named
+location for a future migration of `_fast_evaluator` clones (and Phase B/C
+kernel variants accessed through closures) to flip the bit.
+
+**Consumer wiring.** `eco_apply_closure_typed` reads
+`args_layout->flags & EVAL_LAYOUT_FLAG_ACCEPTS_TYPED_NEWARGS`. If set, it
+forwards `typed_args` directly to a new entry point (call it
+`eco_apply_closure_with_typed_newargs`) instead of re-boxing. **Phase D
+Part 2 does not implement that fast path** — it adds the gate, with the
+fast branch left as a `// TODO: typed-newargs path` returning to the
+re-boxing fallback. The actual fast path (selecting an
+`evaluator_typed_newargs` slot, or providing a typed-newargs trampoline)
+is deferred to a follow-up phase that migrates evaluators.
+
+### 5.bis.2 `lowerSegmentationUnknown` migration
+
+Today the lowering builds *both* a typed `i64*` buffer (for the
+under-saturated `eco_pap_extend` path) and a boxed `uint64_t*` buffer (for
+the saturated `eco_apply_closure` path). After Phase D Part 2 the boxed
+buffer is gone:
+
+```cpp
+// new lowering shape (sketch):
+typed_args = alloca i64, num_args
+populate typed_args from origNewArgTypes (no boxing)
+push GC root range over typed_args with hptr-only mask
+layout = getOrCreateEvalLayout(kinds derived from origNewArgTypes, flags=0)
+result = eco_apply_segmentation_unknown(closure, typed_args, num_args, layout)
+restore GC range
+```
+
+Runtime side (`eco_apply_segmentation_unknown` in
+`runtime/src/allocator/RuntimeExports.cpp`):
+
+- Signature changes from
+  `(HPtr, uint64_t* typed_args, uint32_t, uint64_t bitmap, uint64_t* boxed_args)`
+  to
+  `(HPtr, int64_t* typed_args, uint32_t, const Elm::EvalParamLayout* layout)`.
+- Under-saturated branch: derive the 2-bit-per-slot bitmap on the fly from
+  `layout->kinds` (a tight loop; bounded by max closure arity), then call
+  `eco_pap_extend(typed_args_as_uint64, num_args, bitmap)` exactly as
+  today. We do not change `eco_pap_extend`'s signature in this phase —
+  only its caller — so the under-saturated shape is unchanged.
+- Saturated/over branch: forward to
+  `eco_apply_closure_typed(closure, typed_args, num_args, layout)`. The
+  re-boxing centralisation already in `eco_apply_closure_typed` provides
+  the correct semantics; no separate boxed buffer is needed.
+
+`getOrCreateApplySegmentationUnknown` in `EcoToLLVMRuntime.cpp` updates to
+the new function type (drops the `uint64_t bitmap, ptr boxed_args` pair,
+adds a single `ptr layout`).
+
+CGEN_060's text is rewritten in lockstep to mirror the new path:
+> "EcoToLLVM lowers `_call_kind = segmentation_unknown` with `remaining_arity`
+> absent by building a typed `i64*` args buffer (no LLVM-side boxing) plus an
+> EvalParamLayout describing each slot kind, and calling
+> `eco_apply_segmentation_unknown` which dispatches to either
+> `eco_pap_extend` (under-saturated) or `eco_apply_closure_typed`
+> (saturated/over) per the closure header."
+
+### 5.bis.3 Static-IR enforcement test for CGEN_059 / CGEN_060
+
+Add a single MLIR-level test fixture (one module containing both a generic
+apply and a segmentation_unknown apply at primitive types) and feed it
+through the EcoToLLVM pass via the existing codegen-test harness in
+`/work/test/codegen/`. Assertion shape (text-grep against the dumped LLVM
+IR):
+
+- For each call to `@eco_apply_closure_typed` in the dumped IR, walk the
+  preceding instructions in the same basic block and assert there is no
+  `call @eco_alloc_int`, `@eco_alloc_float`, or `@eco_alloc_char` between
+  the operand definitions and the call site.
+- Same check around `@eco_apply_segmentation_unknown`.
+
+Using the basic-block window (rather than a whole-function scan) keeps the
+test resistant to unrelated alloc calls earlier in the function. A whole-
+function scan would still work today but is more brittle.
+
+If `/work/test/codegen/` lacks an "extract LLVM IR" harness, add the test
+in `/work/test/bf-codegen/`-style with a fixture `.mlir` and an assertion
+function in C++ that runs the pass pipeline and inspects the resulting
+`llvm::Module`. Either home is acceptable; the choice is local to the
+codegen test infrastructure.
+
+### 5.bis.4 Runtime correctness test for `eco_apply_closure_typed`
+
+Add a test in `/work/test/allocator/EcoApplyClosureTypedTest.cpp` modelled
+on `GenericApplyBoxingTest.cpp`:
+
+1. Build a mock evaluator that asserts `args[i]` are HPointer-encoded and
+   point to ElmInt/ElmFloat/ElmChar with expected payloads.
+2. Allocate a closure for the evaluator with arity 4, no captures.
+3. Construct `typed_args[4]` and a stack-built `EvalParamLayout` with
+   `kinds = {PK_Int, PK_Float, PK_Char, PK_Boxed}` and `flags = 0`.
+4. Call `eco_apply_closure_typed(closure, typed_args, 4, &layout)` and
+   verify (a) the evaluator was invoked, (b) every received arg was a
+   valid HPointer with the expected payload, (c) the boxed return value
+   round-trips.
+
+Plus a regression case: pass `args_layout = nullptr` (legacy behaviour)
+and verify all four slots are treated as PK_Boxed.
+
+### 5.bis.5 Cleanup notes
+
+These are *not* implemented in Phase D Part 2 — listed here for the plan
+record:
+
+- **Retire `eco_apply_closure` as a public API** once every direct caller
+  is migrated to `eco_apply_closure_typed`. Today the typed entry point
+  forwards through it; once the typed-newargs fast path lands the
+  forwarding will move into a single internal helper.
+- **Update CGEN_059 text** to drop the "centralised re-boxing in the
+  runtime" caveat once the runtime no longer re-boxes (i.e. once the
+  `accepts_typed_newargs` flag is set on every reachable evaluator).
+- **Consider folding `EvalParamLayout` kinds into the closure header**
+  (so the layout pointer is no longer a separate runtime argument). This
+  is a closure-format change and belongs in Phase E or a successor.
+
+### 5.bis.6 Acceptance for Phase D Part 2
+
+- `EvalParamLayout` schema extended with `flags`; emitter and runtime
+  consumers updated; all flag values are `0` in this phase.
+- `lowerSegmentationUnknown` no longer emits a parallel boxed buffer;
+  `eco_apply_segmentation_unknown` runtime helper updated to the new
+  signature; CGEN_060 text updated.
+- New runtime correctness test passes; the static-IR test passes.
+- Existing E2E and allocator suites green (no regressions); allocation
+  count for primitive generic-apply call sites unchanged versus Phase D
+  Part 1 (the optimisation lands in a follow-up).
+
+---
+
 ## 6. Phase E — Retire `NumberBoxed` mode and clean up
 
 Per decision Q5, `Basics.add/sub/mul/pow` do **not** get primitive variants

@@ -439,8 +439,8 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateApplyClosureTyped(OpBuilder &builder) co
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateApplySegmentationUnknown(OpBuilder &builder) const {
     // eco_apply_segmentation_unknown(closure: hptr, typed_args: ptr, num_args: i32,
-    //                                bitmap: i64, boxed_args: ptr) -> hptr
-    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY, PTR_TY, I32_TY, I64_TY, PTR_TY});
+    //                                args_layout: ptr) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY, PTR_TY, I32_TY, PTR_TY});
     return getOrCreateFunc(builder, "eco_apply_segmentation_unknown", funcTy);
 }
 

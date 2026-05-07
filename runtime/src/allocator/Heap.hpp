@@ -369,11 +369,20 @@ enum ParamKind : unsigned char {
     PK_Char   = 3,
 };
 
+/// Per-evaluator capability bits stored in EvalParamLayout::flags.
+/// Bit 0 — evaluator accepts typed newargs without re-boxing
+/// (currently always 0; reserved for a future fast path that lets
+/// eco_apply_closure_typed forward typed args directly).
+enum EvalLayoutFlags : unsigned char {
+    EVAL_LAYOUT_FLAG_ACCEPTS_TYPED_NEWARGS = 1u << 0,
+};
+
 /// Layout descriptor for evaluator parameters. Emitted as an LLVM global
 /// constant by the compiler when capture type info is available.
-/// Memory layout: { num_params: u8, kinds[num_params]: u8[] }
+/// Memory layout: { num_params: u8, flags: u8, kinds[num_params]: u8[] }
 struct EvalParamLayout {
     unsigned char num_params;
+    unsigned char flags;
     unsigned char kinds[];  // flexible array member, length = num_params
 };
 
