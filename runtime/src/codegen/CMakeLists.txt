@@ -219,6 +219,7 @@ set_source_files_properties(
     Passes/EcoPAPSimplify.cpp
     Passes/EcoEscapeAnalysis.cpp
     Passes/EcoUnboxedAggSpecialize.cpp
+    Passes/EcoUnboxedAggCrossSpec.cpp
     Passes/JoinpointNormalization.cpp
     Passes/EcoControlFlowToSCF.cpp
     Passes/UndefinedFunction.cpp
@@ -283,6 +284,7 @@ add_mlir_library(EcoPasses
     # behind -enable-unboxed-agg)
     Passes/EcoEscapeAnalysis.cpp
     Passes/EcoUnboxedAggSpecialize.cpp
+    Passes/EcoUnboxedAggCrossSpec.cpp
     Passes/JoinpointNormalization.cpp
     Passes/EcoControlFlowToSCF.cpp
     Passes/UndefinedFunction.cpp

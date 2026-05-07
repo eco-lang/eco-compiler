@@ -3008,6 +3008,36 @@ def Eco_ToHeapOp : Eco_Op<"to_heap", [
     "`:` functional-type($value, $result)";
 }
 
+def Eco_FromHeapOp : Eco_Op<"from_heap", [Pure]> {
+  let summary = "Unbox a heap aggregate into a value-level aggregate";
+  let description = [{
+    Read a heap aggregate (tuple2/3, record, custom, cons) addressed by
+    `!eco.value` and pack its fields into the corresponding aggregate
+    SSA value (`!eco.tuple2<...>`, `!eco.record<...>`, etc.).
+
+    `Pure` (no memory effect: the heap object is immutable in Elm).
+    Mirror of `eco.to_heap` — together they form the entry/exit points
+    of worker functions in Phase 3 cross-function specialisation.
+
+    Accepts only data-aggregate result types; `!eco.closure_env` is
+    rejected (CGEN_063) — closure environments come out of the
+    eco_alloc_closure header path, not from a heap object.
+
+    Example:
+    ```mlir
+    %t = eco.from_heap %hp : !eco.value -> !eco.tuple2<i64, i64>
+    ```
+  }];
+
+  let arguments = (ins Eco_Value:$value);
+  let results = (outs Eco_DataAggregate:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat =
+    "$value attr-dict `:` functional-type($value, $result)";
+}
+
 def Eco_MakeClosureOp : Eco_Op<"make.closure", [
     DeclareOpInterfaceMethods<SymbolUserOpInterface>,
     DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>

@@ -1071,6 +1071,23 @@ LogicalResult ToHeapOp::verify() {
   return success();
 }
 
+LogicalResult FromHeapOp::verify() {
+  // CGEN_063 mirror of CGEN_029: !eco.closure_env results are rejected;
+  // closure environments are produced by eco.make.closure_env (or read out
+  // of the closure header at lower levels), not from heap-aggregate loads.
+  Type resTy = getResult().getType();
+  if (isa<eco::ClosureEnvType>(resTy)) {
+    return emitOpError("eco.from_heap rejects !eco.closure_env results; "
+                       "closure environments do not flow through heap "
+                       "aggregates (CGEN_063)");
+  }
+  if (!isa<eco::Tuple2Type, eco::Tuple3Type, eco::RecordType,
+           eco::CustomType, eco::ConsType>(resTy)) {
+    return emitOpError("result must be a data aggregate, got ") << resTy;
+  }
+  return success();
+}
+
 LogicalResult MakeClosureOp::verify() {
   auto envTy = cast<eco::ClosureEnvType>(getEnv().getType());
   int64_t numCaptures = static_cast<int64_t>(envTy.getCaptures().size());

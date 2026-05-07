@@ -65,6 +65,15 @@ std::unique_ptr<mlir::Pass> createEcoEscapeAnalysisPass();
 // default — only added to the pipeline alongside the analysis pass.
 std::unique_ptr<mlir::Pass> createEcoUnboxedAggSpecializePass();
 
+// Phase 3: Module-level cross-function specialization. For each func.func
+// whose `eco.logical_param_types` / `eco.logical_result_types`
+// attributes mark a small aggregate (tuple2/tuple3/record), clones the
+// function as `@f$unboxed` with aggregate-typed parameters/results and
+// replaces the original `@f` body with a thin wrapper using
+// `eco.from_heap` / `eco.to_heap`. Off by default — only added to the
+// pipeline when EcoPipelineOptions::enableUnboxedAgg is true.
+std::unique_ptr<mlir::Pass> createEcoUnboxedAggCrossSpecPass();
+
 // ========== Stage 2: Eco -> Standard MLIR (func/cf/arith) ==========
 
 // Analyzes and classifies joinpoints for SCF lowering eligibility.

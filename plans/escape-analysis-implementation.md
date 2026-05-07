@@ -363,21 +363,222 @@ shapes are recognised.
 ### Phase 3 — Worker/wrapper specialization (tuples / records / customs / lists)
 
 Cross‑function unboxing per design §E, **excluding closure envs**.
-- Module pass that, for each `func.func @f` whose params/results include
-  small aggregates with all uses non‑escaping in `f`:
-  - Clone `f` as `@f$unboxed` with rewritten signature (aggregate params
-    / results in unboxed form).
-  - Convert `@f` body to a wrapper: unpack incoming `!eco.value`
-    aggregate via existing heap projections, call `@f$unboxed`, then
-    either return primitive scalars directly or `to_heap` aggregates
-    back into `!eco.value` results.
-  - Rewrite call sites where caller is also "unboxed‑aware" to call the
-    worker with aggregate operands.
-- Introduce `eco.from_heap` here (deferred from Phase 0.3) — wrappers
-  need it to convert incoming `!eco.value` parameters into aggregate
-  forms that the worker consumes.
-- Closure ABI / `_capture_abi` / `_fast_evaluator` paths are **not**
-  touched — closure envs are Phase 4.
+
+#### Overview
+
+Lift the SROA opportunity from intra‑function (Phase 2) to
+cross‑function: when `@f` takes/returns a small aggregate and **none**
+of its uses on either side of the call boundary escapes, split `@f`
+into:
+
+- `@f$unboxed` — worker with aggregate‑typed params/results.
+- `@f` — wrapper retaining the original `!eco.value` ABI, calling the
+  worker via `eco.from_heap` / `eco.to_heap`.
+
+Internal direct calls are rewritten to the worker; external‑ABI callers
+(closures, kernels, PAP captures) continue calling `@f`.
+
+#### Pipeline placement
+
+New module‑level pass `EcoUnboxedAggCrossSpec` running **before** the
+existing per‑func `EcoEscapeAnalysis` + `EcoUnboxedAggSpecialize`:
+
+```
+... ParseAndElaborate ...
+EcoPAPSimplify
+EcoUnboxedAggCrossSpec        ← NEW (module pass, gated)
+EcoEscapeAnalysis             (per‑func, existing)
+EcoUnboxedAggSpecialize       (per‑func, existing)
+... rest of pipeline ...
+```
+
+Order rationale: cross‑spec creates new worker funcs whose bodies are
+then cleaned up by the per‑func specialize pass to rewrite their
+internal `eco.construct.* → eco.make.*` for any aggregates that don't
+escape locally either.
+
+#### Step 1 — Add `eco.from_heap`
+
+New op in `Ops.td`, mirror of `eco.to_heap`:
+
+```
+eco.from_heap %hp : !eco.value -> !eco.tuple2<i64, i64>
+```
+
+`Pure` (`NoMemoryEffect`); lowering reads each field via the same
+heap‑projection helpers used by `eco.project.*`, packs into an LLVM
+struct value. Verifier rejects `!eco.closure_env` (mirrors the
+`eco.to_heap` rejection rule, CGEN_062).
+
+#### Step 2 — Logical‑type metadata (Q1, resolved)
+
+Add new `func.func` attributes — **the authoritative source** for
+"logical Elm type of this `!eco.value` param/result":
+
+- `eco.logical_param_types` (array, one entry per parameter)
+- `eco.logical_result_types` (array, one per result)
+
+Have the Elm→MLIR generator (Compiler.Generate.MLIR.Functions) populate
+these from MonoType.
+
+In the cross‑spec pass these attributes are read directly; do not
+reverse‑engineer from `_operand_types` at call sites. A debug‑only
+consistency check (`#ifdef ECO_LOWERING_VALIDATION`) verifies that
+`_operand_types` at call sites match the callee's
+`eco.logical_param_types`.
+
+#### Step 3 — Two‑phase eligibility analysis (Q2, resolved)
+
+Module‑level fixpoint analysis over functions:
+
+- **Phase 3a (leaf pass)** — Scan all functions and identify **leaf
+  candidates**: aggregate params/results never flow into `eco.call`
+  arguments, or only flow into calls that don't take aggregates
+  (primitives, runtime intrinsics with kernel ABI). Run an
+  intra‑function escape check on those and mark **eligible** if all
+  relevant values are NonEscaping.
+
+- **Phase 3b (propagate upwards)** — Repeatedly scan remaining
+  functions: if a function only passes aggregate params/results into
+  callees that are **already marked eligible**, and its own
+  intra‑function uses are NonEscaping, mark it eligible too. Iterate
+  to a fixpoint (no new eligibles).
+
+At call sites within an eligible caller:
+- Callee marked eligible → may unbox this boundary.
+- Callee not yet eligible → treat the aggregate as escaping for
+  cross‑spec purposes (stay boxed at this call site).
+
+This admits chained pipelines `f → g → h` once all satisfy the
+constraints while remaining conservative for everything else.
+
+#### Step 4 — Worker creation
+
+For each eligible `@f`:
+
+1. Clone with name `@f$unboxed` (uniquified via the symbol table per
+   Q6 — start with `@f$unboxed`, fall back to `@f$unboxed_0`,
+   `@f$unboxed_1`, ...) and attribute `eco.unboxed_worker = true`. Use
+   `mlir::OpBuilder` + `cloneRegion`.
+2. Rewrite signature: each eligible aggregate param becomes its
+   aggregate type (`!eco.tuple2<...>` etc.); each eligible aggregate
+   result likewise. **One‑level unboxing only** (Q5) — fields that are
+   themselves aggregates stay as `!eco.value` in v1.
+3. Walk the worker body and rewrite:
+   - Param uses: `eco.project.* %p[i]` over the old `!eco.value`
+     becomes plain `eco.project.tuple2 %agg[i] : !eco.tuple2<...> -> ...`
+     (existing `EcoToLLVMHeap` extension for aggregates handles this).
+   - Construct ops whose result was the function's return:
+     `eco.construct.tuple2 ...` → `eco.make.tuple2 ...`.
+   - `return %v : !eco.value` → `return %agg : !eco.tuple2<...>`.
+4. **Recursive calls** (Q4, in scope): self‑recursive
+   `eco.call @f` inside `@f$unboxed`'s body must be rewritten to call
+   `@f$unboxed` directly (otherwise we'd box on every recursion).
+   Mutual recursion: any call to a name already marked eligible in the
+   fixpoint is rewritten to its `$unboxed` variant.
+
+#### Step 5 — Wrapper construction (Q3, resolved — no shortcut)
+
+Replace `@f`'s original body with a thin wrapper that always uses true
+aggregate types between wrapper and worker. **Reject** the design
+§E2.4 stage‑1 shortcut of keeping worker params as `!eco.value` —
+workers must be "pure aggregate" internally so LLVM sees aggregates at
+the function boundary and SROA can do its job.
+
+```
+func.func @f(%a: !eco.value, %b: !eco.value) -> !eco.value {
+  %a_agg = eco.from_heap %a : !eco.value -> !eco.tuple2<i64, i64>
+  %r_agg = func.call @f$unboxed(%a_agg, %b) : ...
+  %r     = eco.to_heap %r_agg : !eco.tuple2<i64, i64> -> !eco.value
+  return %r : !eco.value
+}
+```
+
+#### Step 6 — Call‑site rewriting
+
+For each `func.call @f(...)` / `eco.call @f(...)` in the module:
+
+- Caller is itself eligible (specialized) **and** the operand is an
+  aggregate value already in scope **and** the callee `@f` is
+  eligible → rewrite to `func.call @f$unboxed`, threading the
+  aggregate value through.
+- Otherwise → leave calling the wrapper (`@f`).
+
+PAP / indirect‑call conservatism: `eco.papCreate %f` and
+`eco.papExtend %f` capture the function symbol. These must continue
+to reference the wrapper (`@f`). A quick scan tags the wrapper with
+`eco.has_pap_users = true`; this does **not** disable specialization
+(the wrapper remains callable), it only disables rewriting indirect
+call sites and any direct‑call sites whose callee may flow through a
+closure.
+
+#### Step 7 — Tests
+
+Codegen fixtures (`test/codegen/cross_spec_*.mlir`):
+- `cross_spec_tuple_pair_pass.mlir` — function returning a tuple,
+  caller projects, expect worker with `!eco.tuple2` return + wrapper
+  using `eco.to_heap`.
+- `cross_spec_record_param_pass.mlir` — function taking a record,
+  caller passes a fresh aggregate, expect worker with `!eco.record`
+  param + wrapper using `eco.from_heap`.
+- `cross_spec_recursive.mlir` — self‑recursive function over a tuple
+  accumulator; expect recursion rewritten to `@f$unboxed`.
+- `cross_spec_chained.mlir` — `f → g → h` pipeline where all three are
+  eligible after fixpoint; assert all three end up specialized.
+- `cross_spec_pap_negative.mlir` — same shape but the function is
+  also captured via `papCreate`; expect worker created but external
+  call sites (and any sites with a flow through closure) kept on the
+  wrapper.
+- `cross_spec_no_change_off.mlir` — flag off → no worker, no wrapper.
+- `cross_spec_jit_contract.mlir` — JIT path proves behavioural
+  equivalence end‑to‑end.
+
+Elm‑source fixture: a small program where a top‑level helper takes /
+returns a tuple and is called from `main`, exercising the pipeline
+end‑to‑end.
+
+Keep gated behind `-enable-unboxed-agg` until Phase 4 validation
+lands.
+
+#### Step 8 — Invariants
+
+- **CGEN_063** (new): `eco.from_heap` is `Pure`, accepts
+  `!eco.value`, produces an aggregate type, never `!eco.closure_env`.
+- **CGEN_064** (new): `@f$unboxed` worker functions
+  (`eco.unboxed_worker = true`) are direct‑callable only by symbols
+  that have themselves been adapted; PAP capture of `@f` always
+  references the wrapper.
+- **CGEN_065** (new): `eco.logical_param_types` and
+  `eco.logical_result_types` are present on every `func.func` emitted
+  by the Elm→MLIR generator and must be array attributes whose length
+  matches the function type's param / result count.
+- Update `REP_AGG_001` to permit aggregate types as `func.func`
+  parameter / result types **only** on functions tagged
+  `eco.unboxed_worker = true` (currently they're SSA‑only
+  intra‑function).
+
+#### Implementation staging (Q7, resolved — accepted ~600–900 LOC, all gated)
+
+Split into small reviewable steps, each landing as its own commit:
+
+1. Add `eco.from_heap` op + lowering + basic invariants (CGEN_063) +
+   roundtrip / negative fixtures.
+2. Add `eco.logical_param_types` / `eco.logical_result_types`
+   attributes (CGEN_065) — Elm→MLIR generator emits, debug check
+   verifies.
+3. Implement `EcoUnboxedAggCrossSpec` worker creation + wrapper
+   construction (no call‑site rewrite yet); fixtures: leaf functions
+   only, no recursion.
+4. Add the two‑phase fixpoint eligibility analysis + call‑site
+   rewriting (including recursion); fixtures: chained pipeline,
+   recursive accumulator.
+5. Add PAP / indirect‑call conservatism + Elm‑source integration test
+   + final invariant updates (CGEN_064, REP_AGG_001 amendment).
+
+All five steps gated behind `-enable-unboxed-agg`.
+
+Closure ABI / `_capture_abi` / `_fast_evaluator` paths are **not**
+touched — closure envs are Phase 4.
 
 ### Phase 4 — Closure environment escape analysis (separate later phase)
 

@@ -20,6 +20,7 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Expr as Expr
+import Compiler.Generate.MLIR.LogicalTypes as LogicalTypes
 import Compiler.Generate.MLIR.Names as Names
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.TailRec as TailRec
@@ -346,8 +347,15 @@ generateClosureFuncSingle ctx funcName closureInfo body monoType =
 
         ( ctx2, funcOp ) =
             Ops.funcFunc exprResult.ctx funcName argPairs returnType region
+
+        argMonoTypes : List Mono.MonoType
+        argMonoTypes =
+            List.map Tuple.second closureInfo.params
+
+        funcOpWithLogical =
+            LogicalTypes.addLogicalTypesAttr argMonoTypes extractedReturnType funcOp
     in
-    ( [ funcOp ], ctx2 )
+    ( [ funcOpWithLogical ], ctx2 )
 
 
 {-| Generate two clones for closures with captures:
@@ -667,8 +675,15 @@ generateTailFunc ctx funcName params expr monoType =
 
         ( ctx2, funcOp ) =
             Ops.funcFunc ctx1 funcName funcArgPairs retTy funcBodyRegion
+
+        argMonoTypes : List Mono.MonoType
+        argMonoTypes =
+            List.map Tuple.second params
+
+        funcOpWithLogical =
+            LogicalTypes.addLogicalTypesAttr argMonoTypes actualReturnType funcOp
     in
-    ( funcOp, ctx2 )
+    ( funcOpWithLogical, ctx2 )
 
 
 

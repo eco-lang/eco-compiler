@@ -416,6 +416,123 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// eco.from_heap -> resolve HPtr + per-field load + insertvalue chain.
+//
+// Mirror of eco.to_heap. Reads from the heap layout produced by
+// eco.construct.* / eco.to_heap and packs into the value-aggregate
+// struct expected by eco.make.* consumers (and by SROA-friendly
+// downstream code).
+//===----------------------------------------------------------------------===//
+
+struct FromHeapOpLowering : public OpConversionPattern<FromHeapOp> {
+    const EcoRuntime &runtime;
+
+    FromHeapOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                       const EcoRuntime &runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    /// Load one field at `offsetBytes` from the resolved heap pointer
+    /// `ptr`. `slotBaseTy` selects how the slot is interpreted: if the
+    /// destination element type is HPointer-shaped, load i64 then convert;
+    /// otherwise load directly at the destination width (i64 / f64 / i16
+    /// reinterpreted from the i64-wide slot).
+    Value loadFieldAt(ConversionPatternRewriter &rewriter, Location loc,
+                      Value ptr, int64_t offsetBytes, Type elemTy) const {
+        auto *ctx = rewriter.getContext();
+        auto i64Ty = IntegerType::get(ctx, 64);
+        auto i8Ty = IntegerType::get(ctx, 8);
+        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+        auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, offsetBytes);
+        auto fieldPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
+                                                     ValueRange{offset});
+        if (isHPtrLLVMType(elemTy)) {
+            Value loaded = rewriter.create<LLVM::LoadOp>(loc, i64Ty, fieldPtr);
+            return heapLoadI64ToValue(rewriter, loc, loaded);
+        }
+        // Heap stores the field in a 64-bit slot; load i64, then narrow /
+        // bitcast to the SSA element type.
+        Value slot = rewriter.create<LLVM::LoadOp>(loc, i64Ty, fieldPtr);
+        if (elemTy.isInteger(64)) return slot;
+        if (elemTy.isF64())
+            return rewriter.create<LLVM::BitcastOp>(loc, elemTy, slot);
+        if (auto intTy = dyn_cast<IntegerType>(elemTy)) {
+            if (intTy.getWidth() < 64)
+                return rewriter.create<LLVM::TruncOp>(loc, elemTy, slot);
+        }
+        // Fallback: direct load at the requested type. This path covers
+        // unforeseen primitive widths; existing dialect element types are
+        // restricted to the cases above.
+        return rewriter.create<LLVM::LoadOp>(loc, elemTy, fieldPtr);
+    }
+
+    LogicalResult
+    matchAndRewrite(FromHeapOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        Type resTy = op.getResult().getType();
+        Type structTy = getTypeConverter()->convertType(resTy);
+        if (!structTy) return failure();
+
+        // Resolve HPointer to a raw pointer, then GEP per field.
+        auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
+        auto resolveCall = rewriter.create<LLVM::CallOp>(
+            loc, resolveFunc, ValueRange{adaptor.getValue()});
+        Value ptr = resolveCall.getResult();
+
+        SmallVector<Value, 8> fields;
+
+        if (auto tup2 = dyn_cast<eco::Tuple2Type>(resTy)) {
+            Type a = getTypeConverter()->convertType(tup2.getFirst());
+            Type b = getTypeConverter()->convertType(tup2.getSecond());
+            fields.push_back(loadFieldAt(rewriter, loc, ptr,
+                layout::Tuple2FirstOffset + 0 * layout::PtrSize, a));
+            fields.push_back(loadFieldAt(rewriter, loc, ptr,
+                layout::Tuple2FirstOffset + 1 * layout::PtrSize, b));
+        } else if (auto tup3 = dyn_cast<eco::Tuple3Type>(resTy)) {
+            Type a = getTypeConverter()->convertType(tup3.getFirst());
+            Type b = getTypeConverter()->convertType(tup3.getSecond());
+            Type c = getTypeConverter()->convertType(tup3.getThird());
+            fields.push_back(loadFieldAt(rewriter, loc, ptr,
+                layout::Tuple3FirstOffset + 0 * layout::PtrSize, a));
+            fields.push_back(loadFieldAt(rewriter, loc, ptr,
+                layout::Tuple3FirstOffset + 1 * layout::PtrSize, b));
+            fields.push_back(loadFieldAt(rewriter, loc, ptr,
+                layout::Tuple3FirstOffset + 2 * layout::PtrSize, c));
+        } else if (auto rec = dyn_cast<eco::RecordType>(resTy)) {
+            ArrayRef<Type> elts = rec.getFields();
+            for (int64_t i = 0; i < static_cast<int64_t>(elts.size()); ++i) {
+                Type llvmElt = getTypeConverter()->convertType(elts[i]);
+                fields.push_back(loadFieldAt(rewriter, loc, ptr,
+                    layout::RecordFieldsOffset + i * layout::PtrSize, llvmElt));
+            }
+        } else if (auto cus = dyn_cast<eco::CustomType>(resTy)) {
+            ArrayRef<Type> elts = cus.getFields();
+            for (int64_t i = 0; i < static_cast<int64_t>(elts.size()); ++i) {
+                Type llvmElt = getTypeConverter()->convertType(elts[i]);
+                fields.push_back(loadFieldAt(rewriter, loc, ptr,
+                    layout::CustomFieldsOffset + i * layout::PtrSize, llvmElt));
+            }
+        } else if (auto cons = dyn_cast<eco::ConsType>(resTy)) {
+            Type llvmHead = getTypeConverter()->convertType(cons.getHead());
+            Type llvmTail = getTypeConverter()->convertType(cons.getTail());
+            fields.push_back(loadFieldAt(rewriter, loc, ptr,
+                layout::ConsHeadOffset, llvmHead));
+            fields.push_back(loadFieldAt(rewriter, loc, ptr,
+                layout::ConsTailOffset, llvmTail));
+        } else {
+            return rewriter.notifyMatchFailure(op,
+                "eco.from_heap: unsupported aggregate kind (closure_env "
+                "was rejected by verifier)");
+        }
+
+        Value result = buildStruct(rewriter, loc, structTy, fields);
+        rewriter.replaceOp(op, result);
+        return success();
+    }
+};
+
+//===----------------------------------------------------------------------===//
 // eco.make.closure -> eco_alloc_closure + capture stores.
 //
 // Mirrors AllocateClosureOp + papCreate's capture-store sequence (without
@@ -563,6 +680,7 @@ void eco::detail::populateEcoValueAggPatterns(
     patterns.add<ConsMakeOpLowering>(typeConverter, ctx);
     patterns.add<ClosureEnvMakeOpLowering>(typeConverter, ctx);
     patterns.add<ToHeapOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<FromHeapOpLowering>(typeConverter, ctx, runtime);
     patterns.add<MakeClosureOpLowering>(typeConverter, ctx, runtime);
     patterns.add<ProjectClosureFromEnvLowering>(typeConverter, ctx);
 }

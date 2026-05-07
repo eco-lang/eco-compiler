@@ -70,6 +70,12 @@ void buildEcoToEcoPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     // Must run before EcoGCPrepare so the construct ops haven't yet
     // accumulated GC root operands.
     if (opts.enableUnboxedAgg) {
+        // Phase 3 cross-function specialisation runs FIRST: it looks at
+        // each func.func's logical-types attributes and clones eligible
+        // candidates as @f$unboxed workers, replacing the original body
+        // with a from_heap/to_heap wrapper. The per-func passes below
+        // then clean up both the worker body and the wrapper body.
+        pm.addPass(eco::createEcoUnboxedAggCrossSpecPass());
         pm.addNestedPass<func::FuncOp>(eco::createEcoEscapeAnalysisPass());
         pm.addNestedPass<func::FuncOp>(eco::createEcoUnboxedAggSpecializePass());
     }
