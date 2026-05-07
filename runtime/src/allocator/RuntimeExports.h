@@ -17,6 +17,14 @@ namespace Elm { struct EvalParamLayout; }
 
 using Elm::HPtr;
 
+/// Inline helper: reinterpret a `void*` from the evaluator-return ABI as an
+/// HPtr. The wrapper protocol (`void *(void *[])`) carries the closure
+/// result as a raw 64-bit pointer-shaped word; this helper centralises the
+/// cast at one site so future ABI tweaks have a single place to land.
+inline HPtr ptr0ToHPtr(void* p) {
+    return HPtr::fromBits(reinterpret_cast<uint64_t>(p));
+}
+
 extern "C" {
 
 //===----------------------------------------------------------------------===//

@@ -59,7 +59,7 @@ This plan is staged so each step is independently testable.
 
 ## 1. Phasing
 
-The plan is split into five phases that can land as separate commits/PRs:
+The plan is split into six phases that can land as separate commits/PRs:
 
 1. **A. Per-instance ABI plumbing in Elm** — introduce `KernelInstanceKey` and
    `KernelInstanceAbi`, switch `kernelDecls` to be keyed by symbol, update
@@ -77,10 +77,20 @@ The plan is split into five phases that can land as separate commits/PRs:
    `lowerGenericApply` and the saturated branch of `lowerSegmentationUnknown`
    to build a tagged `i64*` array (using `EvalParamLayout`/operand types) and
    update `eco_apply_closure` to interpret slots accordingly.
-5. **E. Retire `NumberBoxed` mode** — once all number-boxed kernels have
-   monomorphic variants and `Specialize.deriveKernelAbiType` no longer needs
-   the boxed fallback for `Basics.add/sub/mul/pow`, remove `KernelAbiMode =
-   NumberBoxed` and `canTypeToMonoType_numberBoxed`.
+5. **E. Roll out the typed-newargs optimisation** — generate
+   `__closure_wrapper_typed_*` variants, set `CLOSURE_FLAG_TYPED_NEWARGS`
+   on `papCreate`/`papCreateGroup` closures with a valid layout, migrate
+   `eco_closure_call_saturated` and `emitInlineClosureCall` to the typed
+   convention in lockstep, then delete the runtime re-boxing branch and
+   reduce `eco_apply_closure` to an all-boxed shim. First phase that
+   actually reduces allocator traffic on real Elm code.
+6. **F. Retire `NumberBoxed` mode and clean up** — once all number-boxed
+   kernels have monomorphic variants and `Specialize.deriveKernelAbiType`
+   no longer needs the boxed fallback for `Basics.add/sub/mul/pow`,
+   remove `KernelAbiMode = NumberBoxed`, `canTypeToMonoType_numberBoxed`,
+   `concreteTypeAwareKernels`, `kernelBackendAbiPolicy` (if collapsible),
+   and `CLOSURE_FLAG_TYPED_NEWARGS` (if every layout-less / hand-built
+   closure can also be migrated or documented as a permanent exception).
 
 The `lowerSegmentationUnknown` typed-args path already uses primitives for the
 under-saturated case (the `typedArgsArray` populated at line 1419), so phase D
@@ -228,7 +238,7 @@ ABI types), the root symbol stays all-boxed.
   a boxed kernel.
 - As each kernel migrates, flip its entry from `AllBoxed` to `ElmDerived`
   in the same PR that adds the C++ variants.
-- Phase E removes the policy table once everything that mattered has been
+- Phase F removes the policy table once everything that mattered has been
   flipped to `ElmDerived`.
 
 ### 3.2 C++ variants
@@ -692,7 +702,7 @@ record:
   `accepts_typed_newargs` flag is set on every reachable evaluator).
 - **Consider folding `EvalParamLayout` kinds into the closure header**
   (so the layout pointer is no longer a separate runtime argument). This
-  is a closure-format change and belongs in Phase E or a successor.
+  is a closure-format change and belongs in Phase F or a successor.
 
 ### 5.bis.6 Acceptance for Phase D Part 2
 
@@ -923,7 +933,451 @@ works, even though no compiler path emits flag-set closures yet.
 
 ---
 
-## 6. Phase E — Retire `NumberBoxed` mode and clean up
+## 6. Phase E — Roll out the typed-newargs optimisation
+
+Phase D Part 3 shipped the runtime infrastructure for typed-newargs
+dispatch (`CLOSURE_FLAG_TYPED_NEWARGS`, the closure-side capability
+gate, the runtime fast path) but no compiler path actually sets the
+flag — every closure today still goes through the legacy re-boxing path
+inside `eco_apply_closure_typed`. **Phase E delivers the actual
+allocator-traffic reduction.**
+
+### 6.0 Current state we're building on
+
+- `Closure` header packs `n_values:6 | max_values:6 | unboxed:50 | flags:2`,
+  with `CLOSURE_FLAG_TYPED_NEWARGS = 1u << 0` already defined in `Heap.hpp`
+  (Phase D Part 3).
+- `EvalParamLayout = { num_params: u8, kinds[]: u8[] }` describes per-slot
+  `ParamKind` (`PK_Boxed/PK_Int/PK_Float/PK_Char`).
+- `eco.papCreate` / `eco.papExtend` enforce the 25-slot bitmap cap with
+  bits 62–63 reserved for `Closure::flags` (verifier in `EcoOps.cpp`).
+- `eco_apply_closure_typed` exists and takes typed `int64_t*` args plus an
+  `EvalParamLayout*`, but still re-boxes any non-`PK_Boxed` slot via
+  `eco_alloc_int/_float/_char` and forwards to `eco_apply_closure`.
+- `eco_apply_segmentation_unknown` takes the same typed buffer and layout;
+  under-saturated dispatches to `eco_pap_extend`, saturated/over to
+  `eco_apply_closure_typed` (Phase D Part 2).
+- EcoToLLVM has helpers `wrapperLoadArgSlotToValue` and
+  `wrapperReturnValueToPtr0` used by the existing `getOrCreateWrapper` to
+  build evaluator wrappers over the `EvalFunction = void *(*)(void *[])`
+  ABI.
+- Typed closure calling (fast/generic clones) already exists per
+  `typed_closure_calling_theory.md`; Phase E piggy-backs on that
+  infrastructure to build the typed wrappers.
+
+### 6.1 Goals and non-goals
+
+**Goals for the end of Phase E:**
+
+- For generic apply (`CallGenericApply` / `_call_kind=segmentation_unknown`),
+  every Elm-visible closure created at `papCreate` / `papCreateGroup` sites
+  with a valid `EvalParamLayout` (i.e. that participates in typed closure
+  calling):
+  - uses a wrapper that understands a typed `int64_t*` args buffer, and
+  - has `closure->flags & CLOSURE_FLAG_TYPED_NEWARGS != 0`.
+- `eco_apply_closure_typed`:
+  - is the only "real" generic-apply entry point, and
+  - does **not** allocate boxing objects for primitive args on typed-flag
+    closures.
+- Existing typed-mode call paths (`eco.papExtend` with `remaining_arity`)
+  reach the wrapper through `eco_closure_call_saturated` and
+  `emitInlineClosureCall`; both are migrated in lockstep so the wrapper
+  has a single calling convention (typed) for the closures it serves.
+
+**Non-goals (deferred to Phase F or beyond):**
+
+- No whole-program closure-kind analysis. We work at the lowering boundary.
+- No result-side typed convention. Wrappers continue to box primitive
+  results via `eco_alloc_int/_float/_char` and return an HPtr. Result-side
+  optimisation requires a richer evaluator ABI (multi-kind return) and is
+  reasonable to defer until arg-side wins are stable.
+- Closures **not** created via `papCreate`/`papCreateGroup` (e.g. those
+  built by runtime helpers, hand-written kernels, test fixtures) stay
+  **legacy** — no flag, no typed wrapper. They reach the runtime via the
+  all-boxed shim (§6.5) and continue to work without optimisation. A grep
+  for direct `eco_alloc_closure*` callers should enumerate them; either
+  document the exception or migrate explicitly in a later phase.
+
+### 6.2 Compiler — `getOrCreateTypedWrapper`
+
+**File:** `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp`
+
+Add `getOrCreateTypedWrapper` parallel to `getOrCreateWrapper`. Sketch:
+
+```cpp
+mlir::LLVM::LLVMFuncOp getOrCreateTypedWrapper(EcoRuntime &rt,
+                                               mlir::LLVM::LLVMFuncOp target,
+                                               /* no layout — kinds are
+                                                  derived from target's
+                                                  function type */);
+```
+
+The wrapper derives kinds purely from `target.getFunctionType()` — its
+parameter types already encode `i64 / f64 / i16 / !eco.value`. Passing a
+separate `EvalParamLayout` would couple the layers unnecessarily; the
+layout is a runtime apply concern, not a wrapper concern.
+
+Body:
+
+1. Symbol name: `__closure_wrapper_typed_<targetName>`. Register via
+   `EcoRuntime::cacheSymbol` like the legacy wrapper.
+2. LLVM signature: `ptr(ptr)` — same as legacy.
+3. Entry block takes `%args: !llvm.ptr` (opaque pointer to `void*[]`).
+4. For each parameter slot `i` of the target:
+   - GEP into `%args` to load the i-th slot as `i64`.
+   - Use `wrapperLoadArgSlotToValue` to coerce the `i64` into the target
+     param type (HPointer / `i64` / `double` / `i16`). Crucially, **no**
+     `eco_resolve_hptr` + offset-8 load — that's the legacy wrapper's
+     job, replaced here by direct primitive interpretation.
+5. Call the target function with the typed values.
+6. If the result is a primitive, box via `eco_alloc_int/_float/_char`
+   (result-side convention is unchanged — see Non-goals). If the result
+   is an HPtr (`!eco.value`), use `wrapperReturnValueToPtr0` to convert
+   to the `ptr` ABI.
+7. Return `ptr` (LLVM) / `void*` (C).
+
+The wrapper is typed-newargs aware: each arg slot is already a raw
+primitive or HPointer, so no `eco_alloc_*` calls appear on the args side.
+
+### 6.3 Compiler — `papCreate` / `papCreateGroup` migration
+
+**File:** same as above.
+
+`papCreate` and `papCreateGroup` currently:
+
+- Allocate the closure via `eco_alloc_closure[_fast/_slow]` with a
+  function pointer at the legacy wrapper.
+- Pack `n_values | (max_values << 6) | (unboxed_bitmap << 12)` into the
+  closure's 64-bit packed word at offset 8.
+
+Phase-E changes (apply uniformly to **both** `papCreate` and
+`papCreateGroup` — share a small helper that does "allocate closure, set
+header fields, choose wrapper" so they stay in sync):
+
+1. **Select the typed wrapper:**
+
+   ```cpp
+   auto eval = getOrCreateTypedWrapper(runtime, fastCloneOrKernelFunc);
+   ```
+
+   Apply this only when the closure has a valid layout / `_capture_abi`
+   (i.e. it participates in typed closure calling). Layout-less closures
+   stay on the legacy wrapper and reach the runtime via the all-boxed
+   shim — they remain correct, they just don't get optimised.
+
+2. **Set the typed-newargs flag in the packed word.** Define a named
+   mask in the C++ side (mirroring the bit position of `flags:0` in the
+   bitfield):
+
+   ```cpp
+   // In EcoToLLVMInternal.h or a new closure-layout header:
+   constexpr uint64_t ClosureFlagTypedNewargsMask = 1ULL << 62;
+   // Sanity: bit 62 corresponds to flags bit 0 under our LSB-first
+   // bitfield ABI. Verified by static_assert in Heap.hpp (§6.7).
+   ```
+
+   In the lowering, OR it into `packed` before storing:
+
+   ```cpp
+   auto flagBit = builder.create<LLVM::ConstantOp>(
+       loc, i64Ty, builder.getI64IntegerAttr(ClosureFlagTypedNewargsMask));
+   auto packedWithFlag = builder.create<LLVM::OrOp>(loc, packed, flagBit);
+   store packedWithFlag at [closure + ClosurePackedOffset];
+   ```
+
+3. **Scope of rollout — which closures?**
+
+   Set the flag for every `papCreate` / `papCreateGroup` closure that has
+   a valid `EvalParamLayout`. There is no need to subdivide further:
+
+   - Closures reachable via generic apply use the runtime's typed fast
+     path (§6.4).
+   - Closures reachable via typed-mode saturated apply reach the same
+     wrapper through `eco_closure_call_saturated` /
+     `emitInlineClosureCall`, which we migrate in lockstep (§6.5) so
+     they pass typed args.
+   - Closures only ever called via direct fast-clone paths
+     (`emitFastClosureCall`) bypass the wrapper entirely; the flag is
+     harmless on them.
+
+   Layout-less closures stay unflagged. So do non-`papCreate*` closures
+   built directly via `eco_alloc_closure*`.
+
+### 6.4 Runtime — `eco_apply_closure_typed` honours the flag
+
+**File:** `runtime/src/allocator/RuntimeExports.cpp`.
+
+Two-step migration so each landing is independently testable.
+
+**Step 1 (behaviour-preserving):** add a fast branch keyed on
+`closure->flags & CLOSURE_FLAG_TYPED_NEWARGS`, but keep the legacy
+re-boxing path for unflagged closures. This step lands *before* §6.3
+flips any closures, so behaviour is unchanged at this point.
+
+```cpp
+HPtr eco_apply_closure_typed(HPtr closureBits, int64_t* typed_args,
+                             uint32_t num_args,
+                             const Elm::EvalParamLayout* args_layout) {
+    if (num_args == 0)
+        return eco_apply_closure(closureBits, nullptr, 0);
+
+    Closure* closure = (Closure*)hpointerToPtr(closureBits.toBits());
+    if (closure && (closure->flags & CLOSURE_FLAG_TYPED_NEWARGS)) {
+        EvalFunction eval = closure->evaluator;
+        void** asVoidPtrArray = reinterpret_cast<void**>(typed_args);
+        void* resultPtr = eval(asVoidPtrArray);
+        return ptr0ToHPtr(resultPtr);
+    }
+
+    // Legacy re-boxing path — unchanged for now (refactored into a
+    // helper `applyClosureTyped_legacyBoxed` for readability).
+}
+```
+
+Add a small inline helper (centralises the convention; one line, but
+better than ad-hoc casts at every call site):
+
+```cpp
+// In RuntimeExports.h or a small Pointer.hpp:
+inline HPtr ptr0ToHPtr(void* p) {
+    return HPtr::fromBits(reinterpret_cast<uint64_t>(p));
+}
+```
+
+**Step 2 (after §6.3 lands and the test suite is green):** delete the
+legacy re-boxing branch.
+
+```cpp
+HPtr eco_apply_closure_typed(HPtr closureBits, int64_t* typed_args,
+                             uint32_t num_args,
+                             const Elm::EvalParamLayout* /*unused*/) {
+    if (num_args == 0)
+        return eco_apply_closure(closureBits, nullptr, 0);
+    Closure* closure = (Closure*)hpointerToPtr(closureBits.toBits());
+    debug_assert(closure->flags & CLOSURE_FLAG_TYPED_NEWARGS);
+    EvalFunction eval = closure->evaluator;
+    void* resultPtr = eval(reinterpret_cast<void**>(typed_args));
+    return ptr0ToHPtr(resultPtr);
+}
+```
+
+The `args_layout` parameter is kept for ABI stability (callers in JIT'd
+IR pass a layout pointer; removing the parameter is a Phase F cleanup).
+
+### 6.5 Migrate other wrapper consumers
+
+The wrapper isn't only reached through `eco_apply_closure_typed`. The
+typed-mode saturated path goes through `eco_closure_call_saturated` and
+`emitInlineClosureCall`. Both currently feed HPtr-encoded args to the
+wrapper. Once the wrapper is typed-convention, they would mis-feed.
+
+Generating two wrappers per closure (legacy + typed) and threading
+"which one to call" is heavier and complicates eventual cleanup. Instead,
+migrate both paths in lockstep with §6.3:
+
+- **`eco_closure_call_saturated`** (`RuntimeExports.cpp`): stop boxing
+  new args before storing into the call buffer. The wrapper now expects
+  raw primitives at primitive slots and HPtr passthrough at `!eco.value`
+  slots.
+- **`emitInlineClosureCall`** (`EcoToLLVMClosures.cpp`): stop boxing new
+  args inline — store the SSA value directly into the `i64*` buffer
+  (with the existing `i16` zext / `f64` bitcast for ABI uniformity).
+
+Both updates are mechanical: remove the `eco_alloc_int/_float/_char`
+calls in the new-arg-population loops; keep capture-decode logic
+unchanged (captures are re-boxed as needed by the wrapper itself).
+
+### 6.6 Runtime — `eco_apply_closure` becomes an all-boxed shim
+
+**File:** `RuntimeExports.cpp`.
+
+After §6.4 step 2, re-implement `eco_apply_closure` as a thin shim:
+
+```cpp
+HPtr eco_apply_closure(HPtr closureBits, uint64_t* boxed_args,
+                       uint32_t num_args) {
+    const Elm::EvalParamLayout* layout = kAllBoxedLayouts[num_args];
+    int64_t* typed = reinterpret_cast<int64_t*>(boxed_args);
+    return eco_apply_closure_typed(closureBits, typed, num_args, layout);
+}
+```
+
+Static cache: `kAllBoxedLayouts[0..63]` — one tiny layout per arity, all
+slots `PK_Boxed`. 64 layouts total (`max_values:6 = 63`), negligible
+size, O(1) lookup. Initialise at startup or as `constexpr` data.
+
+```cpp
+constexpr int kMaxClosureArity = 63;
+extern const Elm::EvalParamLayout* const kAllBoxedLayouts[kMaxClosureArity + 1];
+```
+
+Behaviour: the caller passes pre-boxed `uint64_t* args` (legacy
+convention). All slots are HPtrs, so an all-`PK_Boxed` layout describes
+them correctly. `eco_apply_closure_typed` then dispatches them through
+the closure's wrapper — if the closure is typed-flag, the typed wrapper
+treats `PK_Boxed` slots as HPtr passthrough (matching the legacy
+behaviour). If the closure is unflagged, we're in step-1 transition
+state (legacy re-boxing path) — also correct.
+
+This keeps test fixtures and hand-written kernel callers working without
+changes. They migrate at their own pace.
+
+### 6.7 Compile-time sanity check on bit position
+
+Currently the lowering encodes `packed = ... | (unboxed_bitmap << 12)`.
+Phase E adds `| (1ULL << 62)` for typed closures. This relies on the
+LSB-first bitfield ABI of clang/gcc on x86-64. Make the assumption
+explicit:
+
+```cpp
+// In Heap.hpp, alongside the Closure struct:
+namespace detail {
+    constexpr uint64_t computeFlagMaskFor(unsigned char flagBit) {
+        Closure c{};
+        std::memset(&c, 0, sizeof(c));
+        c.flags = flagBit;
+        uint64_t packed;
+        std::memcpy(&packed, reinterpret_cast<char*>(&c) + sizeof(Header),
+                    sizeof(uint64_t));
+        return packed;
+    }
+}
+static_assert(detail::computeFlagMaskFor(CLOSURE_FLAG_TYPED_NEWARGS)
+              == (1ULL << 62),
+              "CLOSURE_FLAG_TYPED_NEWARGS expected to occupy bit 62 of the "
+              "Closure packed word; bitfield layout has changed");
+```
+
+If a future compiler or packing change breaks the assumption, the build
+fails loudly. Define `ClosureFlagTypedNewargsMask = 1ULL << 62` next to
+the `static_assert` so the LLVM emitter and the runtime share one named
+constant.
+
+### 6.8 Over-saturated chaining
+
+`eco_apply_closure`'s over-saturated branch saturates the current stage
+then recursively applies the remaining args to the result closure.
+Because §6.6 reduces `eco_apply_closure` to an all-boxed shim that
+forwards to `eco_apply_closure_typed`, the recursive apply also goes
+through the typed path with an all-boxed layout. Slots are genuinely
+HPtr values; the layout marks them `PK_Boxed`; the typed dispatch
+treats them as HPtr passthrough. **No special chaining logic is
+needed.** This is purely a consequence of the shim design.
+
+### 6.9 Tests and invariants
+
+**Static-IR tests.** Extend the existing CGEN_059/060 fixtures:
+
+- `/work/test/codegen/papextend_no_realloc.mlir` already asserts no
+  `eco_alloc_*` in JIT'd IR for generic apply. Add a parallel fixture
+  for `_call_kind=segmentation_unknown` if not already covered.
+- After §6.4 step 2, both fixtures should pass without any
+  `eco_alloc_*` calls anywhere in the LLVM output around the apply
+  call sites.
+
+**Runtime tests.** Extend `/work/test/allocator/EcoApplyClosureTypedTest.cpp`:
+
+1. Build a typed-flag closure manually:
+   - `eco_alloc_closure` to allocate.
+   - Point `closure->evaluator` at a small C evaluator that interprets
+     `void*[]` slots as raw primitives per a known kind sequence.
+   - Set `closure->flags |= CLOSURE_FLAG_TYPED_NEWARGS`.
+2. Snapshot `Allocator::getCombinedStats().objects_allocated`, call
+   `eco_apply_closure_typed` with primitive args and a matching
+   `EvalParamLayout`, snapshot again. **Assert delta == 0.**
+3. Negative control: same closure setup *without* the flag, OR call via
+   `eco_apply_closure` (boxed entry). **Assert delta > 0** (re-boxing
+   happened) — proves the test isn't trivially passing.
+
+The Phase D Part 3 tests already cover most of this; extend coverage to
+include over-saturation chaining (verify it still works through the shim).
+
+**E2E allocation-count benchmarks** (new). Under `/work/test/elm/` (or a
+dedicated `/work/test/perf/`):
+
+| Benchmark | Expected drop |
+| --- | --- |
+| `Utils.compare_Int` in a tight loop | N → 0 allocs per iter |
+| `List.map (\x -> x + 1) intList` | N → small constant per element |
+| `JsArray.indexedMap` over primitive elements | proportional → proportional - N |
+
+Each snapshots `Allocator::getCombinedStats().objects_allocated` across
+the workload and asserts the drop versus a captured baseline. **First
+measurements proving Phase E delivers savings on real Elm code.**
+
+**Invariant updates:**
+
+- **CGEN_059** — drop "the runtime helper interprets the buffer per the
+  layout and is the single locus where any required re-boxing occurs".
+  Replace with: "the runtime forwards the typed buffer to the closure's
+  evaluator without re-boxing; no `eco_alloc_*` calls happen on the
+  apply path at all".
+- **CGEN_060** — same edit for the segmentation_unknown saturated branch.
+
+### 6.10 Concrete edits checklist
+
+**Runtime:**
+
+- `Heap.hpp`
+  - Confirm `Closure::flags` and `CLOSURE_FLAG_TYPED_NEWARGS` are present
+    (already so from Part 3).
+  - Add the `ClosureFlagTypedNewargsMask` constant + `static_assert`
+    on bit position (§6.7).
+- `RuntimeExports.h`
+  - Add inline `ptr0ToHPtr(void*)` helper (§6.4).
+  - No signature changes for `eco_apply_closure_typed` or
+    `eco_apply_segmentation_unknown`.
+- `RuntimeExports.cpp`
+  - **Step 1:** Add fast branch in `eco_apply_closure_typed` keyed on
+    `closure->flags`. Refactor legacy boxing into a helper.
+  - **Step 2 (after compiler migration):** Delete the legacy branch.
+  - Re-implement `eco_apply_closure` as the all-boxed shim (§6.6).
+  - Add `kAllBoxedLayouts[64]` static cache.
+  - Update `eco_closure_call_saturated` to stop boxing new args (§6.5).
+
+**Compiler (LLVM lowering):**
+
+- `EcoToLLVMClosures.cpp`
+  - Add `getOrCreateTypedWrapper` (§6.2). Wrapper derives kinds from
+    `target.getFunctionType()`; **no** layout argument.
+  - In the shared `papCreate` / `papCreateGroup` allocation helper:
+    - Replace `getOrCreateWrapper` with `getOrCreateTypedWrapper` for
+      closures with a valid layout.
+    - OR `ClosureFlagTypedNewargsMask` into the `packed` word before
+      storing.
+  - Update `emitInlineClosureCall` to stop boxing new args (§6.5).
+
+**Tests:**
+
+- `papextend_no_realloc.mlir` — extend to cover segmentation_unknown if
+  not already.
+- `EcoApplyClosureTypedTest.cpp` — extend with over-saturation chain
+  test, layout-less closure (legacy fallback) test.
+- New benchmark suite under `/work/test/elm/` or `/work/test/perf/`.
+
+### 6.11 Acceptance for Phase E
+
+- `getOrCreateTypedWrapper` exists and is used at every `papCreate` /
+  `papCreateGroup` site that produces a closure with a valid
+  `EvalParamLayout`.
+- Those closures carry `CLOSURE_FLAG_TYPED_NEWARGS = 1` in their header.
+- `eco_closure_call_saturated` and `emitInlineClosureCall` pass typed
+  args (no inline `eco_alloc_*`).
+- `eco_apply_closure_typed`'s legacy re-boxing branch is removed.
+- `eco_apply_closure` is reduced to an all-boxed shim.
+- New E2E benchmarks demonstrate measurable allocation drops on
+  representative Elm programs.
+- `static_assert` on bit-62 layout passes.
+- CGEN_059 / CGEN_060 updated.
+- All existing test suites green.
+
+The flag is universal *for closures with a layout* at end of Phase E;
+layout-less and non-`papCreate*` closures stay legacy until a future
+phase decides whether to migrate them. Phase F retires the flag.
+
+---
+
+## 7. Phase F — Retire `NumberBoxed` mode and clean up
 
 Per decision Q5, `Basics.add/sub/mul/pow` do **not** get primitive variants
 in this plan — concrete uses are already handled by intrinsics and the
@@ -950,14 +1404,33 @@ those land:
    `kernelBackendAbiPolicy` can be inlined into `deriveKernelInstanceAbi`
    as a small constant table or removed entirely. Keep it if it still
    carries useful signal; delete it if not.
-6. Remove the per-evaluator `accepts_typed_newargs` capability bit once
-   every evaluator has been migrated to the typed path (decision Q6).
+6. **Retire `CLOSURE_FLAG_TYPED_NEWARGS`** — once every closure
+   construction site sets the flag. After Phase E the flag is `1` for
+   every closure built via `papCreate`/`papCreateGroup` with a valid
+   layout, but layout-less closures and those built by hand (runtime
+   helpers, test fixtures, hand-written kernels calling
+   `eco_alloc_closure*` directly) still have flag `0` and reach the
+   runtime via the all-boxed shim. Phase F has two options:
+   - **Option A — migrate the holdouts.** Enumerate every direct
+     `eco_alloc_closure*` caller, switch each to set the flag and use
+     a typed wrapper (or, for layout-less closures, generate a
+     synthetic all-boxed-typed-ish wrapper). Once universal, drop the
+     bit from `Closure::flags`, widen `unboxed` back to 52 bits, and
+     restore the 26-capture limit.
+   - **Option B — keep the bit.** If holdouts are few and stable
+     (e.g. a handful of test fixtures), document them as permanent
+     legacy users of the all-boxed shim and keep the discriminator
+     bit. The 25-capture limit stays.
+   Pick A if the migration effort is small relative to the saved bit;
+   B otherwise. The decision should be made after the grep enumerating
+   non-`papCreate*` closure constructors that §6.1 of Phase E flagged
+   as out of scope.
 7. Drop `concreteTypeAwareKernels` once `List.cons` and `JsArray` index
    ops have been migrated and verified (decision Q4).
 8. Update `KERN_006` to drop the `kernelBackendAbiPolicy` reference if the
    table is removed.
 
-Phase E is mostly deletion; it can land as several smaller PRs.
+Phase F is mostly deletion; it can land as several smaller PRs.
 
 ---
 
@@ -1017,9 +1490,9 @@ The eight original open questions have been resolved:
 | # | Question | Decision |
 | --- | --- | --- |
 | 1 | Where does `deriveKernelInstanceAbi` live? | Both data types and function in `KernelAbi.elm`. `Context` is a pure consumer. |
-| 2 | Keep `KernelBackendAbiPolicy` during rollout? | Keep. Use as a coarse "always boxed" guardrail; flip entries kernel-by-kernel; collapse or remove in Phase E. |
+| 2 | Keep `KernelBackendAbiPolicy` during rollout? | Keep. Use as a coarse "always boxed" guardrail; flip entries kernel-by-kernel; collapse or remove in Phase F. |
 | 3 | `_Char` parameter ABI? | Standard `uint16_t`, **not** `uint64_t c_raw`. EcoToLLVM handles any `zext`/`trunc` for generic apply. |
-| 4 | `concreteTypeAwareKernels` wrappers? | Keep during rollout; retire in Phase E once `List`/`JsArray` per-instance ABIs are stable. |
+| 4 | `concreteTypeAwareKernels` wrappers? | Keep during rollout; retire in Phase F once `List`/`JsArray` per-instance ABIs are stable. |
 | 5 | Primitive variants for `Basics.add/sub/mul/pow`? | **No.** Concrete uses are already intrinsic-lowered; the kernel symbol only handles polymorphic fallbacks where boxing is correct. |
 | 6 | Per-evaluator "accepts typed newargs" capability bit? | **Yes.** Add to `EvalParamLayout`, default `0`. `eco_apply_closure_typed` re-boxes for evaluators that don't accept primitives. Flip on per-evaluator as they migrate. |
 | 7 | MONO_002 holds at `generateVarKernel`? | Yes per the invariant. Add a defensive assertion in `KernelInstanceKey` construction. |

@@ -10,6 +10,8 @@
 #include "../EcoTypes.h"
 #include "EcoToLLVMInternal.h"
 
+#include "../../allocator/Heap.hpp"
+
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 
@@ -18,6 +20,14 @@ using namespace eco;
 using namespace eco::detail;
 
 namespace {
+
+// Forward declarations for helpers defined later in this TU but referenced
+// by the closure-construction lowerings (PapCreate / PapCreateGroup).
+static uint8_t mlirTypeToParamKind(Type ty);
+static uint64_t deriveAllParamKindsBitmap(const EcoRuntime &runtime,
+                                          StringRef funcSymbol, int64_t arity);
+static bool wrapperWillBeTypedNewargs(const EcoRuntime &runtime,
+                                       StringRef funcSymbol);
 
 /// Extract GC live roots from adapted operands for append-pattern ops.
 /// Returns the adapted operands split into {real operands, live roots}.
@@ -201,9 +211,25 @@ static bool usesArgsArrayConvention(LLVM::LLVMFuncOp func) {
 /// 2. Bitcasts to the target type (i64->f64 for floats, i64->ptr for pointers)
 /// 3. Calls the typed target function
 /// 4. Bitcasts the result back to i64/ptr for the runtime
+/// Build (or fetch from cache) an evaluator wrapper of signature
+/// `ptr (*)(ptr)` that adapts the runtime's `void *(void *[])` ABI to the
+/// target function's typed signature.
+///
+/// Two arg-side conventions are supported:
+///   - typedNewargs=false (legacy): every slot in the args array is an
+///     HPointer-encoded i64. Primitive params are extracted by resolving
+///     the HPointer and loading the boxed value at offset 8.
+///   - typedNewargs=true (Phase E): primitive slots carry the raw value
+///     directly (i64 / f64 bits / i16 zero-extended); HPointer slots are
+///     unchanged. The caller is responsible for arranging that, see the
+///     `CLOSURE_FLAG_TYPED_NEWARGS` capability bit on the closure.
+///
+/// The result side is identical between the two conventions: primitive
+/// results are boxed via `eco_alloc_*` and returned as a `ptr` HPointer.
 static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp module, StringRef funcName,
                                            int64_t arity, Location loc, const TypeConverter *typeConverter,
-                                           const EcoRuntime &runtime) {
+                                           const EcoRuntime &runtime,
+                                           bool typedNewargs = false) {
     auto *ctx = rewriter.getContext();
     auto i64Ty = IntegerType::get(ctx, 64);
     auto f64Ty = Float64Type::get(ctx);
@@ -211,16 +237,25 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
 
     // Check if wrapper already exists (check first — fast path)
     llvm::SmallString<64> wrapperName;
-    ("__closure_wrapper_" + funcName).toVector(wrapperName);
+    if (typedNewargs) {
+        ("__closure_wrapper_typed_" + funcName).toVector(wrapperName);
+    } else {
+        ("__closure_wrapper_" + funcName).toVector(wrapperName);
+    }
 
     if (auto existingWrapper = runtime.lookupSymbol<LLVM::LLVMFuncOp>(StringRef(wrapperName))) {
         return existingWrapper;
     }
 
-    // Check if target function already uses args-array convention
+    // Check if target function already uses args-array convention.
+    // The args-array convention assumes boxed HPointer slots — i.e. it is
+    // already a hand-written legacy wrapper. There is no typed signature
+    // to derive a typed wrapper from, so we reuse it as-is regardless of
+    // the typedNewargs flag. The caller is responsible for NOT setting
+    // CLOSURE_FLAG_TYPED_NEWARGS on closures whose evaluator resolves to
+    // an args-array-convention function (see wrapperIsTypedNewargs below).
     if (auto existingFunc = runtime.lookupSymbol<LLVM::LLVMFuncOp>(funcName)) {
         if (usesArgsArrayConvention(existingFunc)) {
-            // Function already takes (ptr) -> i64/ptr, use it directly
             return existingFunc;
         }
     }
@@ -359,10 +394,33 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
 
         if (origType && isa<eco::ValueType>(origType)) {
             // !eco.value param: arg is HPointer i64 from wrapper args array.
-            // Inner function expects ptr<1>; convert via wrapper arg slot helper.
+            // Identical between the legacy and typed conventions — boxed
+            // slots are HPointer-encoded in both.
             convertedArg = wrapperLoadArgSlotToValue(rewriter, loc, argI64, getHPtrLLVMType(*ctx));
+        } else if (typedNewargs && origType && origType.isInteger(64)) {
+            // Typed Int slot: the wrapper args slot already carries the raw
+            // i64 value (no HPointer indirection).
+            convertedArg = argI64;
+        } else if (typedNewargs && origType && origType.isF64()) {
+            // Typed Float slot: slot bits are the f64 already; bitcast directly.
+            convertedArg = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, argI64);
+        } else if (typedNewargs && origType && isa<IntegerType>(origType) &&
+                   cast<IntegerType>(origType).getWidth() < 64) {
+            // Typed Char slot: slot bits are zero-extended into the i64; trunc back.
+            convertedArg = rewriter.create<LLVM::TruncOp>(loc, origType, argI64);
+        } else if (typedNewargs && !origType) {
+            // Typed convention with unknown orig type: fall back to type-based
+            // direct interpretation (raw bits, no HPointer resolve).
+            if (auto intTy = dyn_cast<IntegerType>(targetType); intTy && intTy.getWidth() < 64) {
+                convertedArg = rewriter.create<LLVM::TruncOp>(loc, targetType, argI64);
+            } else if (targetType == f64Ty) {
+                convertedArg = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, argI64);
+            } else if (isa<LLVM::LLVMPointerType>(targetType)) {
+                convertedArg = wrapperLoadArgSlotToValue(rewriter, loc, argI64, targetType);
+            }
+            // i64 target → pass through.
         } else if (origType && origType.isInteger(64)) {
-            // Int param: arg is HPointer to ElmInt → resolve and read value at offset 8
+            // Legacy Int param: arg is HPointer to ElmInt → resolve and read value at offset 8
             Value hptr = wrapperLoadArgSlotToValue(rewriter, loc, argI64, getHPtrLLVMType(*ctx));
             auto resolved = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{hptr});
             auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
@@ -370,7 +428,7 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
                                                         resolved.getResult(), ValueRange{off8});
             convertedArg = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valPtr);
         } else if (origType && origType.isF64()) {
-            // Float param: arg is HPointer to ElmFloat → resolve, read i64 at offset 8, bitcast
+            // Legacy Float param: arg is HPointer to ElmFloat → resolve, read i64 at offset 8, bitcast
             Value hptr = wrapperLoadArgSlotToValue(rewriter, loc, argI64, getHPtrLLVMType(*ctx));
             auto resolved = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{hptr});
             auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
@@ -379,7 +437,7 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
             Value loadedI64 = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valPtr);
             convertedArg = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, loadedI64);
         } else if (auto intTy = dyn_cast<IntegerType>(targetType); intTy && intTy.getWidth() < 64) {
-            // Char (i16/i32): arg is HPointer to ElmChar → resolve and read value at offset 8
+            // Legacy Char (i16/i32): arg is HPointer to ElmChar → resolve and read value at offset 8
             Value hptr = wrapperLoadArgSlotToValue(rewriter, loc, argI64, getHPtrLLVMType(*ctx));
             auto resolved = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{hptr});
             auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
@@ -388,7 +446,7 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
             Value fullVal = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valPtr);
             convertedArg = rewriter.create<LLVM::TruncOp>(loc, targetType, fullVal);
         } else if (targetType == f64Ty && !origType) {
-            // Fallback: no orig types, target is f64 → unbox from HPointer
+            // Legacy fallback: no orig types, target is f64 → unbox from HPointer
             Value hptr = wrapperLoadArgSlotToValue(rewriter, loc, argI64, getHPtrLLVMType(*ctx));
             auto resolved = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{hptr});
             auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
@@ -511,7 +569,16 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
             // No fast clone - use the function attribute directly (zero-capture or legacy)
             funcSymbol = op.getFunction();
         }
-        auto wrapperFunc = getOrCreateWrapper(rewriter, module, funcSymbol, arity, loc, getTypeConverter(), runtime);
+        // Phase E: every papCreate closure uses the typed-newargs wrapper
+        // and advertises CLOSURE_FLAG_TYPED_NEWARGS. The wrapper reads each
+        // slot directly per the target's parameter type — no HPointer→
+        // primitive resolve. Caller paths that build the args buffer (JIT
+        // and the migrated kernel-cpp callers) must use REP_ABI_001's
+        // typed convention: raw primitives for Int/Float/Char, HPointers
+        // for everything else.
+        auto wrapperFunc = getOrCreateWrapper(rewriter, module, funcSymbol, arity, loc,
+                                              getTypeConverter(), runtime,
+                                              /*typedNewargs=*/true);
         Value funcPtr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, wrapperFunc.getSymName());
 
         // Allocate closure with max_values = arity, n_values = 0
@@ -523,12 +590,23 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
         auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{closureHPtr});
         Value closurePtr = resolveCall.getResult();
 
-        // Use unboxed_bitmap attribute as source-of-truth (verifier ensures consistency)
-        uint64_t unboxedBitmap = op.getUnboxedBitmap();
+        // Closure bitmap covers ALL params (captures + remaining newargs)
+        // so the runtime can read slot N's kind from `closure->unboxed`
+        // alone — no separate layout descriptor is needed at apply sites.
+        // The captures portion must agree with op.getUnboxedBitmap() (the
+        // verifier already ties op.unboxed_bitmap to capture SSA types and
+        // CLONE_RELATION_001 ties capture types to the target's first
+        // num_captured params).
+        bool isTyped = wrapperWillBeTypedNewargs(runtime, funcSymbol);
+        uint64_t unboxedBitmap =
+            isTyped ? deriveAllParamKindsBitmap(runtime, funcSymbol, arity)
+                    : op.getUnboxedBitmap();
         auto f64Ty = Float64Type::get(ctx);
 
+        uint64_t flagMask = isTyped ? Elm::ClosureFlagTypedNewargsMask : 0;
         uint64_t packedValue =
-            static_cast<uint64_t>(numCaptured) | (static_cast<uint64_t>(arity) << 6) | (unboxedBitmap << 12);
+            static_cast<uint64_t>(numCaptured) | (static_cast<uint64_t>(arity) << 6) | (unboxedBitmap << 12)
+            | flagMask;
 
         auto packedConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(packedValue));
 
@@ -621,6 +699,8 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
 
         // Resolve wrapper-function pointer for each sibling. Group members
         // always have captures so we use the fast_evaluator ($cap) form.
+        // Phase E: typed-newargs wrappers; the typed flag and full-params
+        // kinds bitmap are written by eco_alloc_closure_group_slow.
         auto module = op->getParentOfType<ModuleOp>();
         SmallVector<Value> wrapperPtrs;
         wrapperPtrs.reserve(numSiblings);
@@ -630,7 +710,8 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
             int64_t arity = cast<IntegerAttr>(arities[i]).getInt();
             auto wrapperFunc = getOrCreateWrapper(
                 rewriter, module, funcSymbol, arity, loc,
-                getTypeConverter(), runtime);
+                getTypeConverter(), runtime,
+                /*typedNewargs=*/true);
             Value funcPtr = rewriter.create<LLVM::AddressOfOp>(
                 loc, ptrTy, wrapperFunc.getSymName());
             wrapperPtrs.push_back(funcPtr);
@@ -662,8 +743,14 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
                 cast<IntegerAttr>(arities[i]).getInt());
             uint32_t nc = static_cast<uint32_t>(
                 cast<IntegerAttr>(numCapturedArr[i]).getInt());
-            uint64_t bitmap = static_cast<uint64_t>(
-                cast<IntegerAttr>(unboxedBitmaps[i]).getInt());
+            // All-params bitmap derived from the target's typed signature
+            // (Phase E). Subsumes the captures-only attribute on the op,
+            // which is still verified for SSA-type consistency at MLIR
+            // level but not used here.
+            StringRef funcSymbol =
+                cast<FlatSymbolRefAttr>(fastEvaluators[i]).getValue();
+            uint64_t bitmap = deriveAllParamKindsBitmap(runtime, funcSymbol,
+                                                        static_cast<int64_t>(arity));
             uint32_t cc = static_cast<uint32_t>(
                 cast<IntegerAttr>(captureCounts[i]).getInt());
 
@@ -1047,6 +1134,44 @@ static uint8_t mlirTypeToParamKind(Type ty) {
     return 0;                        // PK_Boxed
 }
 
+/// Derive the 2-bit-per-slot kinds bitmap covering every parameter of the
+/// target function (captures + remaining newargs). Used by PapCreate to
+/// publish a complete kinds bitmap on the closure header so the runtime can
+/// interpret slot N's kind without a separate layout descriptor.
+///
+/// Slot i's kind comes from the i-th parameter of the target function via
+/// mlirTypeToParamKind. Returns 0 if `funcSymbol` has no entry in
+/// origFuncTypes (rare; the wrapper builder reports a fatal error in that
+/// case for kernels).
+static uint64_t deriveAllParamKindsBitmap(const EcoRuntime &runtime,
+                                          StringRef funcSymbol, int64_t arity) {
+    auto it = runtime.origFuncTypes.find(funcSymbol);
+    if (it == runtime.origFuncTypes.end()) return 0;
+    auto fnType = it->second;
+    uint64_t bitmap = 0;
+    int64_t lim = arity;
+    if (lim > (int64_t)fnType.getNumInputs()) lim = (int64_t)fnType.getNumInputs();
+    for (int64_t i = 0; i < lim; ++i) {
+        uint64_t kind = mlirTypeToParamKind(fnType.getInput(i)) & 0x3ULL;
+        bitmap |= kind << (2 * i);
+    }
+    return bitmap;
+}
+
+/// Predict whether `getOrCreateWrapper(.., typedNewargs=true)` will produce
+/// a real typed wrapper, or short-circuit to an existing args-array-style
+/// function. The latter happens for hand-written test fixtures whose
+/// target already has signature `(ptr) -> {ptr,i64}`; those carry the
+/// legacy boxed convention and must not be flagged with
+/// CLOSURE_FLAG_TYPED_NEWARGS.
+static bool wrapperWillBeTypedNewargs(const EcoRuntime &runtime,
+                                       StringRef funcSymbol) {
+    if (auto existingFunc = runtime.lookupSymbol<LLVM::LLVMFuncOp>(funcSymbol)) {
+        if (usesArgsArrayConvention(existingFunc)) return false;
+    }
+    return true;
+}
+
 /// Emit (or reuse) an LLVM global constant for an EvalParamLayout with the
 /// given kind sequence. Layout is `{ i8 num_params, [N x i8] kinds }`,
 /// matching `EvalParamLayout` in `Heap.hpp`. Deduplicates by encoding the
@@ -1112,16 +1237,14 @@ static Value getOrCreateEvalLayout(ConversionPatternRewriter &rewriter, Location
 /// origResultType:  pre-conversion result type (to distinguish Int from !eco.value)
 /// layoutPtr:       optional layout pointer for type-aware re-boxing (nullptr = legacy)
 ///
-/// Convention: the evaluator wrapper (getOrCreateWrapper) expects arguments
-/// as HPointer-encoded i64. This function:
-///   1. Copies captured values from the closure, boxing raw (unboxed) captures
-///      to HPointer using the unboxed bitmap.
-///   2. Boxes new arguments to HPointer based on origNewArgTypes.
-///   3. Calls the wrapper and unboxes the result based on origResultType.
+/// Phase E: this function feeds the closure's typed wrapper, which reads
+/// each slot per its compile-time function-type slot kind (REP_ABI_001).
+/// New args are stored as raw 64-bit slots — primitive args go in raw,
+/// HPointer args go in as HPointer bits — without any eco_alloc_*
+/// re-boxing on the args side.
 ///
-/// This function uses scf.while for the captured values copy loop, ensuring
-/// it can be used inside scf.if regions without violating the single-block
-/// constraint. No block splitting occurs.
+/// The result side still re-boxes primitive returns into HPointers (the
+/// wrapper does this on return), so the post-call unbox path is unchanged.
 static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location loc, const EcoRuntime &runtime,
                                    Value closureI64, ValueRange newArgs, Type resultType,
                                    ArrayRef<Type> origNewArgTypes = {},
@@ -1135,16 +1258,7 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
     auto f64Ty = Float64Type::get(ctx);
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
-    // INV_2: Route through eco_closure_call_saturated instead of inline
-    // bitmap interpretation + evaluator call.
-    // We only need to: (1) box new args to HPointer, (2) call the runtime.
-
     int64_t numNewArgs = newArgs.size();
-
-    // === Box new arguments to HPointer-encoded i64 ===
-    auto allocIntFunc = runtime.getOrCreateAllocInt(rewriter);
-    auto allocCharFunc = runtime.getOrCreateAllocChar(rewriter);
-    auto allocFloatFunc = runtime.getOrCreateAllocFloat(rewriter);
     bool hasOrigNewArgTypes = !origNewArgTypes.empty();
 
     // Allocate array for new args only — hoisted to entry block.
@@ -1157,59 +1271,74 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
         newArgsArray = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, i64Ty, numNewArgsConst);
     }
 
-    // All-boxed array: register as GC root range before population.
-    // The shadow-stack mask is 1-bit-per-slot (GC treats every slot as HPointer);
-    // distinct from the 2-bit-per-slot kind encoding used in heap/closure bitmaps.
-    uint64_t allBoxedMask = (numNewArgs >= 64) ? ~0ULL : ((1ULL << numNewArgs) - 1);
-    Value savedRange = emitPushArgsRootRange(rewriter, loc, runtime, newArgsArray, numNewArgs, allBoxedMask);
+    // GC root mask for the args buffer: only HPointer-typed slots scan as
+    // pointers, primitive slots are skipped. Compute statically from
+    // origNewArgTypes (the SSA types pre-conversion) so the mask reflects
+    // the typed convention rather than the old all-boxed assumption.
+    uint64_t hptrMask = 0;
+    for (size_t j = 0; j < newArgs.size() && j < 64; ++j) {
+        Type t = (hasOrigNewArgTypes && j < origNewArgTypes.size())
+                     ? origNewArgTypes[j] : newArgs[j].getType();
+        bool isBoxed = false;
+        if (isa<eco::ValueType>(t)) {
+            isBoxed = true;
+        } else if (isa<LLVM::LLVMPointerType>(t)) {
+            isBoxed = true;
+        }
+        if (isBoxed) hptrMask |= (uint64_t{1} << j);
+    }
+    Value savedRange = emitPushArgsRootRange(rewriter, loc, runtime, newArgsArray, numNewArgs, hptrMask);
 
+    // Store each arg as a raw 64-bit slot. Primitive Int/Char slots are
+    // zero-extended to i64; Float slots are bitcast through i64; HPointer
+    // slots are stored via closureStoreValueToI64.
     for (size_t j = 0; j < newArgs.size(); ++j) {
         auto jConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, static_cast<int64_t>(j));
         auto argDstPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty, newArgsArray, ValueRange{jConst});
         Value arg = newArgs[j];
 
-        Type origArgType = (hasOrigNewArgTypes && j < origNewArgTypes.size())
-                               ? origNewArgTypes[j] : Type();
-
-        if (origArgType && isa<eco::ValueType>(origArgType)) {
-            // !eco.value → already HPointer i64, pass through
-        } else if (origArgType && origArgType.isInteger(64)) {
-            // Int → box via eco_alloc_int
-            if (safeOp) emitSafepointMarker(safeOp, rewriter, runtime, liveRoots);
-            auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocIntFunc, ValueRange{arg});
-            arg = boxCall.getResult();
-        } else if (origArgType && origArgType.isF64()) {
-            // Float → box via eco_alloc_float
-            if (safeOp) emitSafepointMarker(safeOp, rewriter, runtime, liveRoots);
-            auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocFloatFunc, ValueRange{arg});
-            arg = boxCall.getResult();
-        } else if (origArgType && isa<IntegerType>(origArgType) &&
-                   cast<IntegerType>(origArgType).getWidth() < 64) {
-            // Char → box via eco_alloc_char
-            if (safeOp) emitSafepointMarker(safeOp, rewriter, runtime, liveRoots);
-            auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocCharFunc, ValueRange{arg});
-            arg = boxCall.getResult();
-        } else {
-            // No orig type → fallback heuristics
-            if (auto intTy = dyn_cast<IntegerType>(arg.getType())) {
-                if (intTy.getWidth() == 16) {
-                    if (safeOp) emitSafepointMarker(safeOp, rewriter, runtime, liveRoots);
-                    auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocCharFunc, ValueRange{arg});
-                    arg = boxCall.getResult();
-                }
-                // i64 without orig type → assume !eco.value, pass through
-            } else if (arg.getType() == f64Ty) {
-                auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocFloatFunc, ValueRange{arg});
-                arg = boxCall.getResult();
-            }
+        if (auto intTy = dyn_cast<IntegerType>(arg.getType()); intTy && intTy.getWidth() < 64) {
+            arg = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, arg);
+        } else if (arg.getType() == f64Ty) {
+            arg = rewriter.create<LLVM::BitcastOp>(loc, i64Ty, arg);
+        } else if (isa<LLVM::LLVMPointerType>(arg.getType())) {
+            arg = closureStoreValueToI64(rewriter, loc, arg);
         }
+        // i64 (Int) is stored directly.
         rewriter.create<LLVM::StoreOp>(loc, arg, argDstPtr);
     }
 
     // === Call eco_closure_call_saturated(closure_hptr, new_args, num_newargs, layout) ===
+    //
+    // The runtime needs the per-slot ParamKind for new_args to decide
+    // whether to un-box (caller passed PK_Boxed; closure expects a
+    // primitive) or box (rare opposite). Stop dropping the layout: build
+    // one from origNewArgTypes (or fall back to the SSA types when those
+    // aren't available).
     auto closureCallFunc = runtime.getOrCreateClosureCallSaturated(rewriter);
     auto numNewArgsI32 = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int64_t>(numNewArgs));
-    Value layoutArg = layoutPtr ? layoutPtr : rewriter.create<LLVM::ZeroOp>(loc, ptrTy).getResult();
+
+    Value layoutArg;
+    if (layoutPtr) {
+        layoutArg = layoutPtr;
+    } else if (numNewArgs > 0) {
+        SmallVector<uint8_t> kinds;
+        kinds.reserve(numNewArgs);
+        for (size_t j = 0; j < newArgs.size(); ++j) {
+            Type t = (hasOrigNewArgTypes && j < origNewArgTypes.size())
+                         ? origNewArgTypes[j] : newArgs[j].getType();
+            kinds.push_back(mlirTypeToParamKind(t));
+        }
+        auto module = safeOp ? safeOp->getParentOfType<ModuleOp>() : ModuleOp{};
+        if (module) {
+            layoutArg = getOrCreateEvalLayout(rewriter, loc, module, kinds);
+        } else {
+            layoutArg = rewriter.create<LLVM::ZeroOp>(loc, ptrTy).getResult();
+        }
+    } else {
+        layoutArg = rewriter.create<LLVM::ZeroOp>(loc, ptrTy).getResult();
+    }
+
     if (safeOp)
         emitSafepointMarker(safeOp, rewriter, runtime, liveRoots);
     auto runtimeCall = rewriter.create<LLVM::CallOp>(

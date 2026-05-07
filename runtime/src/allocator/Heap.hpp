@@ -27,6 +27,8 @@
 #define ECO_HEAP_H
 
 #include <assert.h>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace Elm {
@@ -369,6 +371,60 @@ typedef struct {
 enum ClosureFlags : unsigned char {
     CLOSURE_FLAG_TYPED_NEWARGS = 1u << 0,
 };
+
+/// Mask of CLOSURE_FLAG_TYPED_NEWARGS in the 64-bit packed word that the
+/// LLVM lowering writes at offset 8 of a Closure (the word that carries
+/// `n_values | max_values | unboxed | flags`). The compiler ORs this mask
+/// into the packed value when building a typed-newargs closure; the
+/// runtime reads `closure->flags` directly. Keeping a single named mask
+/// here pins the compiler/runtime contract to one place. Bit 62 is the
+/// LSB of `flags:2` under the LSB-first bitfield ABI used by clang/gcc on
+/// x86-64; the static_assert below tests that empirically.
+constexpr u64 ClosureFlagTypedNewargsMask = u64{1} << 62;
+
+namespace detail {
+// Mirrors the bitfield section of `Closure` (the 64-bit word at offset 8)
+// without the flex array or function pointer, so the layout can be checked
+// against the named mask via memcpy. Field declarations must stay in
+// lockstep with `Closure`'s.
+struct ClosurePackedProbe {
+    u64 n_values  : 6;
+    u64 max_values: 6;
+    u64 unboxed   : 50;
+    u64 flags     : 2;
+};
+static_assert(sizeof(ClosurePackedProbe) == 8,
+              "ClosurePackedProbe must be a single 64-bit word");
+
+inline u64 closurePackedMaskForFlag(unsigned char flagBit) {
+    ClosurePackedProbe p{};
+    p.flags = flagBit;
+    u64 packed = 0;
+    std::memcpy(&packed, &p, sizeof(p));
+    return packed;
+}
+
+// Confirms the LSB-first bitfield ABI used by clang/gcc on x86-64 places
+// `flags:0` at bit 62. Done at first call (and via the unit test harness)
+// rather than as a `static_assert`: clang+libstdc++ on this toolchain do
+// not yet implement constexpr `bit_cast` involving bit-fields, and the
+// codegen passes object compiles at C++17 where `std::bit_cast` is absent.
+inline bool verifyClosureFlagBitOnce() {
+    static const bool ok = [] {
+        u64 mask = closurePackedMaskForFlag(CLOSURE_FLAG_TYPED_NEWARGS);
+        if (mask != ClosureFlagTypedNewargsMask) {
+            std::fprintf(stderr,
+                "CLOSURE_FLAG_TYPED_NEWARGS bit position drift: got 0x%llx, "
+                "expected 0x%llx (compiler bitfield layout has changed)\n",
+                static_cast<unsigned long long>(mask),
+                static_cast<unsigned long long>(ClosureFlagTypedNewargsMask));
+            std::abort();
+        }
+        return true;
+    }();
+    return ok;
+}
+} // namespace detail
 
 /// Type tag for each evaluator parameter slot, used by buildEvaluatorArgs
 /// to re-box unboxed captured values with the correct heap allocator.

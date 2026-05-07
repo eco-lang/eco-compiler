@@ -301,9 +301,10 @@ static void test_typed_newargs_skips_reboxing() {
         reinterpret_cast<void*>(&mock_typed_evaluator), 3);
     TEST_ASSERT(closure_hptr.toBits() != 0);
 
-    // Manually flip CLOSURE_FLAG_TYPED_NEWARGS on the closure header — no
-    // compiler path emits this yet (Phase D Part 3 only delivers runtime
-    // infrastructure; flag-setting in the compiler is a follow-up).
+    // Phase E semantics: the closure header advertises both the typed flag
+    // AND the full-params kinds bitmap that the wrapper expects. Together
+    // they tell the runtime "the layout the caller will pass matches what
+    // the wrapper reads — no per-slot conversion."
     {
         void* p = Allocator::instance().resolve(
             HPointer{closure_hptr.toBits()});
@@ -311,6 +312,9 @@ static void test_typed_newargs_skips_reboxing() {
         Closure* closure = static_cast<Closure*>(p);
         closure->flags = static_cast<unsigned char>(
             closure->flags | CLOSURE_FLAG_TYPED_NEWARGS);
+        // kinds: slot0=PK_Int(0b01), slot1=PK_Float(0b10), slot2=PK_Char(0b11)
+        // packed 2-bit-per-slot bitmap = 0b11_10_01 = 0x39.
+        closure->unboxed = 0x39;
     }
 
     // Build typed args: Int 7, Float 1.25, Char 'X' (0x58).
