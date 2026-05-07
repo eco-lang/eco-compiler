@@ -1030,7 +1030,7 @@ namespace {
 /// This function is the SINGLE implementation of closure bitmap interpretation
 /// and evaluator argument construction (RUNTIME_CLOSURE_001 / INV_1).
 size_t buildEvaluatorArgs(
-    uint64_t closure_hptr,
+    const uint64_t* closure_hptr_slot,
     const uint64_t* new_args, uint32_t num_newargs,
     void** out_args,
     const EvalParamLayout* layout
@@ -1041,17 +1041,32 @@ size_t buildEvaluatorArgs(
     // the closure object. Reading from a stale raw pointer would return
     // un-relocated HPointers for boxed captured values, leading to stale
     // pointers that corrupt heap objects downstream.
-    Closure* closure = static_cast<Closure*>(hpointerToPtr(closure_hptr));
+    //
+    // closure_hptr_slot points at the caller's *rooted* HPointer slot
+    // (eco_gc_push_stack_range registered it), so each load picks up the
+    // latest post-GC value. Passing the HPointer by-value here would defeat
+    // that: this function's parameter would be a separate, unrooted stack
+    // copy that the GC cannot find or update.
+    Closure* closure = static_cast<Closure*>(hpointerToPtr(*closure_hptr_slot));
     const uint32_t nCaptured = closure->n_values;
     const uint64_t bitmap    = closure->unboxed;
-    size_t idx = 0;
 
     assert(!layout || layout->num_params == nCaptured + num_newargs);
 
-    // 1. Captured values: box unboxed ones using type-aware allocation.
+    // 1. Copy new_args into out_args FIRST. out_args is the caller's rooted
+    //    combined_args buffer (registered as a stack root range with all
+    //    slots marked HPointer); new_args is the caller's *unrooted* arg
+    //    buffer. Copying first lets any GC triggered by the boxing loop
+    //    below evacuate these slots via out_args's root entry. Doing this
+    //    after the loop would leave new_args stale across the GC.
+    for (uint32_t j = 0; j < num_newargs; ++j) {
+        out_args[nCaptured + j] = reinterpret_cast<void*>(new_args[j]);
+    }
+
+    // 2. Captured values: box unboxed ones using type-aware allocation.
     for (uint32_t i = 0; i < nCaptured; ++i) {
         // Re-resolve: a prior iteration's alloc may have triggered GC.
-        closure = static_cast<Closure*>(hpointerToPtr(closure_hptr));
+        closure = static_cast<Closure*>(hpointerToPtr(*closure_hptr_slot));
         uint64_t val = closure->values[i].i;
         const uint64_t kind = fieldKind(bitmap, i);
         // Cross-check: when both _capture_abi layout and the closure bitmap are
@@ -1102,15 +1117,10 @@ size_t buildEvaluatorArgs(
                 }
             }
         }
-        out_args[idx++] = reinterpret_cast<void*>(val);
+        out_args[i] = reinterpret_cast<void*>(val);
     }
 
-    // 2. New args (already HPointer-encoded).
-    for (uint32_t j = 0; j < num_newargs; ++j) {
-        out_args[idx++] = reinterpret_cast<void*>(new_args[j]);
-    }
-
-    return idx;
+    return static_cast<size_t>(nCaptured) + num_newargs;
 }
 
 // Build (1<<count)-1, safely handling count==64 (avoids UB).
@@ -1387,7 +1397,9 @@ extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args
     }
 
     // Single implementation of bitmap interpretation + boxing (INV_1).
-    buildEvaluatorArgs(closure_bits, new_args, num_newargs, combined_args, layout);
+    // Pass the address of the rooted closure_bits slot so re-resolves inside
+    // pick up post-GC updates rather than a stale by-value copy.
+    buildEvaluatorArgs(&closure_bits, new_args, num_newargs, combined_args, layout);
 
     // Re-resolve closure after buildEvaluatorArgs: boxing allocs inside
     // may have triggered GC and moved the closure.

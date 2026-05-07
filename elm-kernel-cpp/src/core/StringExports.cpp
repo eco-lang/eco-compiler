@@ -161,10 +161,18 @@ HPtr elm_string_from_double(double f) {
 
 // Call a closure with a single Char argument and get Char result.
 // Char arg is boxed via eco_alloc_char. Result is unboxed from ElmChar.
+//
+// closure_hptr is held as a rooted HPointer across eco_alloc_char: that
+// allocation can trigger a minor GC, and a stack-local HPtr/uint64_t copy
+// would survive the swap unevacuated and become a stale to-space pointer.
+// Same idea applies to callCharToBoolClosure and callFoldClosure below.
 static uint16_t callCharToCharClosure(HPtr closure_hptr, uint16_t c) {
+    HPointer cl = Export::decode(closure_hptr.toBits());
+    Elm::StackRootGuard guard(&cl);
     uint64_t boxed_char = eco_alloc_char(static_cast<uint32_t>(c)).toBits();
     uint64_t args[1] = { boxed_char };
-    HPtr result_hptr = eco_closure_call_saturated(closure_hptr, args, 1, /*layout=*/nullptr);
+    HPtr result_hptr = eco_closure_call_saturated(
+        HPtr::fromBits(Export::encode(cl)), args, 1, /*layout=*/nullptr);
     // Unbox: resolve HPointer, read Char value
     void* charObj = reinterpret_cast<void*>(eco_resolve_hptr(result_hptr));
     ElmChar* ec = static_cast<ElmChar*>(charObj);
@@ -174,17 +182,25 @@ static uint16_t callCharToCharClosure(HPtr closure_hptr, uint16_t c) {
 // Call a closure with a single Char argument and get Bool result.
 // Bool is !eco.value (True/False embedded constants), not a primitive.
 static bool callCharToBoolClosure(HPtr closure_hptr, uint16_t c) {
+    HPointer cl = Export::decode(closure_hptr.toBits());
+    Elm::StackRootGuard guard(&cl);
     uint64_t boxed_char = eco_alloc_char(static_cast<uint32_t>(c)).toBits();
     uint64_t args[1] = { boxed_char };
-    HPtr result_hptr = eco_closure_call_saturated(closure_hptr, args, 1, /*layout=*/nullptr);
+    HPtr result_hptr = eco_closure_call_saturated(
+        HPtr::fromBits(Export::encode(cl)), args, 1, /*layout=*/nullptr);
     return Export::decodeBoxedBool(result_hptr.toBits());
 }
 
 // Call a fold closure: (Char, acc) -> acc
 // Char is boxed via eco_alloc_char, acc flows through as HPointer-encoded.
 static uint64_t callFoldClosure(HPtr closure_hptr, uint16_t c, uint64_t acc) {
-    uint64_t args[2] = { eco_alloc_char(static_cast<uint32_t>(c)).toBits(), acc };
-    return eco_closure_call_saturated(closure_hptr, args, 2, /*layout=*/nullptr).toBits();
+    HPointer cl = Export::decode(closure_hptr.toBits());
+    HPointer ac = Export::decode(acc);
+    Elm::StackRootGuard guard(&cl, &ac);
+    uint64_t boxed_char = eco_alloc_char(static_cast<uint32_t>(c)).toBits();
+    uint64_t args[2] = { boxed_char, Export::encode(ac) };
+    return eco_closure_call_saturated(
+        HPtr::fromBits(Export::encode(cl)), args, 2, /*layout=*/nullptr).toBits();
 }
 
 // Snapshot a String (any form) into a stable std::vector<u16>. The snapshot

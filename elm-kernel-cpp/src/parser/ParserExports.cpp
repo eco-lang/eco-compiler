@@ -122,9 +122,14 @@ int64_t Elm_Kernel_Parser_isSubChar(HPtr closure, int64_t offset, HPtr str) {
         }
     }
 
-    // Box the char and invoke the predicate closure.
+    // Box the char and invoke the predicate closure. closure is held in a
+    // stack-rooted HPointer across eco_alloc_char so that a GC triggered by
+    // the alloc does not leave this frame's by-value HPtr pointing at the
+    // pre-swap location.
+    HPointer closureHP = Export::decode(closure.toBits());
+    Elm::StackRootGuard closureRoot(&closureHP);
     uint64_t args[1] = { eco_alloc_char(codePoint).toBits() };
-    HPtr result = eco_apply_closure(closure, args, 1);
+    HPtr result = eco_apply_closure(HPtr::fromBits(Export::encode(closureHP)), args, 1);
     if (!Export::decodeBoxedBool(result.toBits())) {
         return -1;
     }
