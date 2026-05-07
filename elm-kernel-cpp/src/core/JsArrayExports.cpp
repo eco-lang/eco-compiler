@@ -681,6 +681,175 @@ HPtr elm_array_slice(int64_t start, int64_t end, HPtr array) {
     return HPtr::fromBits(Export::encode(result));
 }
 
+//===----------------------------------------------------------------------===//
+// Phase C per-instance JsArray kernel variants.
+//
+// Element-axis variants (singleton, push, unsafeSet) take a typed primitive
+// element. Int-axis variants (unsafeGet, slice, appendN, initialize,
+// initializeFromList, indexedMap) take typed int64_t for their Int
+// parameters. Most simply delegate to existing helpers (the eco.array.*
+// intrinsic trampolines already cover singleton/push/slice/appendN); the
+// rest replicate the matching boxed-root behaviour with the unboxing step
+// elided.
+//===----------------------------------------------------------------------===//
+
+// singleton: delegate to the existing typed trampolines.
+HPtr Elm_Kernel_JsArray_singleton_Int  (int64_t  v) { return elm_array_singleton_int(v); }
+HPtr Elm_Kernel_JsArray_singleton_Float(double   v) { return elm_array_singleton_float(v); }
+HPtr Elm_Kernel_JsArray_singleton_Char (uint16_t v) { return elm_array_singleton_char(v); }
+
+// push: delegate to the existing typed trampolines.
+HPtr Elm_Kernel_JsArray_push_Int  (int64_t  v, HPtr array) { return elm_array_push_int(v, array); }
+HPtr Elm_Kernel_JsArray_push_Float(double   v, HPtr array) { return elm_array_push_float(v, array); }
+HPtr Elm_Kernel_JsArray_push_Char (uint16_t v, HPtr array) { return elm_array_push_char(v, array); }
+
+// slice: delegate to the existing typed trampoline.
+HPtr Elm_Kernel_JsArray_slice_Int(int64_t start, int64_t end, HPtr array) {
+    return elm_array_slice(start, end, array);
+}
+
+// appendN: delegate to the existing typed trampoline.
+HPtr Elm_Kernel_JsArray_appendN_Int(int64_t n, HPtr dest, HPtr source) {
+    return elm_array_append_n(n, dest, source);
+}
+
+// unsafeGet: same logic as the boxed root but takes a typed int64_t index.
+HPtr Elm_Kernel_JsArray_unsafeGet_Int(int64_t idx, HPtr array) {
+    uint64_t array_bits = array.toBits();
+    void* ptr = Export::toPtr(array_bits);
+    ElmArray* arr = static_cast<ElmArray*>(ptr);
+    Unboxable val = alloc::arrayGet(ptr, static_cast<uint32_t>(idx));
+
+    uint32_t kind = arr->header.unboxed & 0x3;
+    if (kind != 0) {
+        return HPtr::fromBits(Export::encode(alloc::boxElement(val, kind)));
+    } else {
+        return HPtr::fromBits(Export::encode(val.p));
+    }
+}
+
+namespace {
+
+// Copy `src` into a new array of the same length. Used by the unsafeSet
+// variants below; returns the new array's HPointer plus its length and kind.
+// Caller must overwrite elements[idx] with the new typed value before the
+// returned HPointer escapes.
+inline HPointer copyForUnsafeSet(HPtr array, uint32_t &outLen, uint32_t &outKind) {
+    uint64_t array_bits = array.toBits();
+    void* srcPtr = Export::toPtr(array_bits);
+    ElmArray* src = static_cast<ElmArray*>(srcPtr);
+    uint32_t len = src->length;
+    uint32_t kind = src->header.unboxed & 0x3;
+
+    HPointer result = alloc::allocArray(len);
+    srcPtr = Export::toPtr(array_bits);
+    src = static_cast<ElmArray*>(srcPtr);
+    void* dstPtr = Allocator::instance().resolve(result);
+    ElmArray* dst = static_cast<ElmArray*>(dstPtr);
+
+    for (uint32_t i = 0; i < len; i++) {
+        dst->elements[i] = src->elements[i];
+    }
+    dst->length = len;
+    dst->header.unboxed = kind;
+    outLen = len;
+    outKind = kind;
+    return result;
+}
+
+} // namespace
+
+HPtr Elm_Kernel_JsArray_unsafeSet_Int(int64_t idx, int64_t value, HPtr array) {
+    uint32_t len, kind;
+    HPointer result = copyForUnsafeSet(array, len, kind);
+    void* dstPtr = Allocator::instance().resolve(result);
+    ElmArray* dst = static_cast<ElmArray*>(dstPtr);
+    if (static_cast<uint32_t>(idx) < len) dst->elements[idx].i = value;
+    dst->header.unboxed = 1;
+    return HPtr::fromBits(Export::encode(result));
+}
+
+HPtr Elm_Kernel_JsArray_unsafeSet_Float(int64_t idx, double value, HPtr array) {
+    uint32_t len, kind;
+    HPointer result = copyForUnsafeSet(array, len, kind);
+    void* dstPtr = Allocator::instance().resolve(result);
+    ElmArray* dst = static_cast<ElmArray*>(dstPtr);
+    if (static_cast<uint32_t>(idx) < len) dst->elements[idx].f = value;
+    dst->header.unboxed = 2;
+    return HPtr::fromBits(Export::encode(result));
+}
+
+HPtr Elm_Kernel_JsArray_unsafeSet_Char(int64_t idx, uint16_t value, HPtr array) {
+    uint32_t len, kind;
+    HPointer result = copyForUnsafeSet(array, len, kind);
+    void* dstPtr = Allocator::instance().resolve(result);
+    ElmArray* dst = static_cast<ElmArray*>(dstPtr);
+    if (static_cast<uint32_t>(idx) < len) dst->elements[idx].c = value;
+    dst->header.unboxed = 3;
+    return HPtr::fromBits(Export::encode(result));
+}
+
+// initialize: same loop as the boxed root with typed Int parameters.
+HPtr Elm_Kernel_JsArray_initialize_Int(int64_t size, int64_t offset, HPtr closure) {
+    HPointer arr = alloc::allocArray(static_cast<size_t>(size));
+    HPointer closureHP = Export::decode(closure.toBits());
+    auto& allocator = Allocator::instance();
+
+    StackRootGuard loopRoots(&arr, &closureHP);
+    for (int64_t i = 0; i < size; i++) {
+        HPtr cl = HPtr::fromBits(Export::encode(closureHP));
+        uint64_t value = callUnaryInitClosure(cl, offset + i);
+        void* arrObj = allocator.resolve(arr);
+        pushUnboxedResult(arrObj, value);
+    }
+    return HPtr::fromBits(Export::encode(arr));
+}
+
+// initializeFromList: typed Int max parameter.
+HPtr Elm_Kernel_JsArray_initializeFromList_Int(int64_t max, HPtr list) {
+    HPointer result = JsArray::initializeFromList(static_cast<uint32_t>(max),
+                                                  Export::decode(list.toBits()));
+    return HPtr::fromBits(Export::encode(result));
+}
+
+// indexedMap: same loop as the boxed root with typed Int offset.
+HPtr Elm_Kernel_JsArray_indexedMap_Int(HPtr closure, int64_t offset, HPtr array) {
+    auto& allocator = Allocator::instance();
+    HPointer srcHP = Export::decode(array.toBits());
+    HPointer closureHP = Export::decode(closure.toBits());
+
+    uint32_t len;
+    uint32_t srcKind;
+    {
+        ElmArray* src0 = static_cast<ElmArray*>(allocator.resolve(srcHP));
+        len = src0->length;
+        srcKind = src0->header.unboxed & 0x3;
+    }
+
+    HPointer arr;
+    {
+        StackRootGuard guard(&srcHP, &closureHP);
+        arr = alloc::allocArray(len);
+    }
+
+    StackRootGuard loopRoots(&srcHP, &arr, &closureHP);
+    for (uint32_t i = 0; i < len; i++) {
+        ElmArray* src = static_cast<ElmArray*>(allocator.resolve(srcHP));
+        uint64_t elem;
+        if (srcKind != 0) {
+            elem = Export::encode(alloc::boxElement(src->elements[i], srcKind));
+        } else {
+            elem = Export::encode(src->elements[i].p);
+        }
+        HPtr cl = HPtr::fromBits(Export::encode(closureHP));
+        uint64_t result = callBinaryIndexMapClosure(cl, offset + i, elem);
+
+        void* arrObj = allocator.resolve(arr);
+        pushUnboxedResult(arrObj, result);
+    }
+    return HPtr::fromBits(Export::encode(arr));
+}
+
 HPtr elm_array_append_n(int64_t n_signed, HPtr dest, HPtr source) {
     uint32_t n = static_cast<uint32_t>(n_signed);
     auto& allocator = Allocator::instance();

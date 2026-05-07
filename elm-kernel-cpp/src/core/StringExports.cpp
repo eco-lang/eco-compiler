@@ -138,6 +138,19 @@ HPtr Elm_Kernel_String_fromNumber(HPtr n) {
     return HPtr::fromBits(Export::encode(result));
 }
 
+// Phase C per-instance variants. Route through the same StringOps backend
+// used by the from_int / from_float intrinsic trampolines so output
+// formatting is identical.
+HPtr Elm_Kernel_String_fromNumber_Int(int64_t n) {
+    HPointer result = Elm::StringOps::fromInt(n);
+    return HPtr::fromBits(Export::encode(result));
+}
+
+HPtr Elm_Kernel_String_fromNumber_Float(double n) {
+    HPointer result = Elm::StringOps::fromFloat(n);
+    return HPtr::fromBits(Export::encode(result));
+}
+
 // Unboxed-arg trampolines used by the eco.string.from_int/from_float
 // intrinsic lowering. Routed through the same StringOps backend as
 // String::fromNumber so output formatting is identical.

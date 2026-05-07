@@ -176,7 +176,8 @@ Two distinct downstream consumers benefit:
     per-instance kernel ABI rollout): the concrete MonoType lets
     `deriveKernelInstanceAbi` pattern-match on `[MInt, MInt]` /
     `[MFloat, MFloat]` / `[MChar, MChar]` and select the `_Int` / `_Float` /
-    `_Char` C++ symbol variants.
+    `_Char` C++ symbol variants. Phase C extends this to the rest of the
+    AllBoxed kernels with primitive-capable parameters.
 
 For polymorphic call sites (e.g. `compare "a" "b"` reaching `Utils.compare`
 with `[MString, MString]`), the kernel ABI falls back to the all-boxed
@@ -186,8 +187,27 @@ with `[MString, MString]`), the kernel ABI falls back to the all-boxed
 concreteTypeAwareKernels : EverySet (List String) ( String, String )
 concreteTypeAwareKernels =
     EverySet.fromList comparePair
-        [ ( "List", "cons" )
+        [ -- Element-aware wrapper specialization
+          ( "List", "cons" )
+
+        -- Phase B
         , ( "Utils", "compare" )
+
+        -- Phase C: Utils equality and ordering (comparable / a)
+        , ( "Utils", "equal" )
+        , ( "Utils", "notEqual" )
+        , ( "Utils", "lt" )
+        , ( "Utils", "le" )
+        , ( "Utils", "gt" )
+        , ( "Utils", "ge" )
+
+        -- Phase C: JSON value boxing (element axis)
+        , ( "Json", "wrap" )
+
+        -- Phase C: JsArray element-axis kernels
+        , ( "JsArray", "singleton" )
+        , ( "JsArray", "push" )
+        , ( "JsArray", "unsafeSet" )
         ]
 
 
@@ -530,56 +550,62 @@ kernelBackendAbiPolicy : String -> String -> KernelBackendAbiPolicy
 kernelBackendAbiPolicy home name =
     case ( home, name ) of
         --
-        -- AllBoxed: C++ ABI is uniformly uint64_t for all params and return.
-        -- Audited against elm-kernel-cpp/src/KernelExports.h.
+        -- Phase C: kernels that remain on the all-boxed C++ ABI because
+        -- they have no primitive-capable parameters (the audit's
+        -- "Stays AllBoxed" set, plus the polymorphic-fallback kernels).
         --
-        -- List: cons, fromArray, toArray, map2..map5, sortBy, sortWith
-        ( "List", _ ) ->
+        -- List: kernels with no direct primitive parameter (only Lists,
+        -- closures, JsArrays) keep the boxed ABI. List.cons migrates in
+        -- Phase C and falls through to ElmDerived.
+        ( "List", "fromArray" ) ->
             AllBoxed
 
-        -- Utils: equal, notEqual, lt, le, gt, ge, append.
-        -- Phase B (per-instance kernel ABI rollout): Utils.compare is now
-        -- governed by deriveKernelInstanceAbi (which selects _Int / _Float /
-        -- _Char monomorphic variants for primitive comparables, falling back
-        -- to the boxed root for String/List/Tuple). The other Utils kernels
-        -- still use the all-boxed C++ ABI; they migrate in Phase C.
-        ( "Utils", "equal" ) ->
+        ( "List", "toArray" ) ->
             AllBoxed
 
-        ( "Utils", "notEqual" ) ->
+        ( "List", "map2" ) ->
             AllBoxed
 
-        ( "Utils", "lt" ) ->
+        ( "List", "map3" ) ->
             AllBoxed
 
-        ( "Utils", "le" ) ->
+        ( "List", "map4" ) ->
             AllBoxed
 
-        ( "Utils", "gt" ) ->
+        ( "List", "map5" ) ->
             AllBoxed
 
-        ( "Utils", "ge" ) ->
+        ( "List", "sortBy" ) ->
             AllBoxed
 
+        ( "List", "sortWith" ) ->
+            AllBoxed
+
+        -- Utils.append: appendable resolves to String or List _, never a primitive.
         ( "Utils", "append" ) ->
             AllBoxed
 
-        -- String.fromNumber: number-polymorphic, C++ takes boxed uint64_t
-        ( "String", "fromNumber" ) ->
+        -- JsArray: kernels with no direct primitive parameter (closures
+        -- only, or zero-arg) stay AllBoxed. The Int-axis and element-axis
+        -- kernels migrate in Phase C and fall through to ElmDerived.
+        ( "JsArray", "empty" ) ->
             AllBoxed
 
-        -- JsArray: C++ ABI now uniformly uint64_t for all params and return.
-        -- Integer arguments (index, length, etc.) are boxed Elm Int HPointers
-        -- and unboxed inside the C++ implementations.
-        ( "JsArray", _ ) ->
+        ( "JsArray", "length" ) ->
             AllBoxed
 
-        -- Json.wrap: polymorphic (a -> Value), C++ inspects heap tag at runtime.
-        ( "Json", "wrap" ) ->
+        ( "JsArray", "map" ) ->
+            AllBoxed
+
+        ( "JsArray", "foldl" ) ->
+            AllBoxed
+
+        ( "JsArray", "foldr" ) ->
             AllBoxed
 
         -- Basics.add/sub/mul/pow: number-boxed polymorphic kernels.
-        -- C++ inspects the HPointer tag to dispatch Int vs Float at runtime.
+        -- Concrete uses are intrinsic-lowered; the kernel symbol is reached
+        -- only by genuinely polymorphic uses where boxing is correct.
         ( "Basics", "add" ) ->
             AllBoxed
 
@@ -592,6 +618,13 @@ kernelBackendAbiPolicy home name =
         ( "Basics", "pow" ) ->
             AllBoxed
 
+        --
+        -- ElmDerived: ABI is derived from the call-site's monomorphized
+        -- function type via monoTypeToAbi. Used for typed C++ kernels and,
+        -- after Phase C, for migrated AllBoxed kernels that now have
+        -- per-instance primitive variants. Their boxed-root case still
+        -- works because non-primitive Mono types lower to !eco.value.
+        --
         _ ->
             ElmDerived
 
@@ -726,6 +759,159 @@ kernelInstanceSymbol key =
 
         ( "Utils", "compare", [ Mono.MChar, Mono.MChar ] ) ->
             suffixed "_Char"
+
+        --
+        -- Phase C (Utils.equal/notEqual/lt/le/gt/ge): equality and ordering
+        -- on primitive values. Result type is `Bool` (boxed at ABI).
+        --
+        ( "Utils", "equal", [ Mono.MInt, Mono.MInt ] ) ->
+            suffixed "_Int"
+
+        ( "Utils", "equal", [ Mono.MFloat, Mono.MFloat ] ) ->
+            suffixed "_Float"
+
+        ( "Utils", "equal", [ Mono.MChar, Mono.MChar ] ) ->
+            suffixed "_Char"
+
+        ( "Utils", "notEqual", [ Mono.MInt, Mono.MInt ] ) ->
+            suffixed "_Int"
+
+        ( "Utils", "notEqual", [ Mono.MFloat, Mono.MFloat ] ) ->
+            suffixed "_Float"
+
+        ( "Utils", "notEqual", [ Mono.MChar, Mono.MChar ] ) ->
+            suffixed "_Char"
+
+        ( "Utils", "lt", [ Mono.MInt, Mono.MInt ] ) ->
+            suffixed "_Int"
+
+        ( "Utils", "lt", [ Mono.MFloat, Mono.MFloat ] ) ->
+            suffixed "_Float"
+
+        ( "Utils", "lt", [ Mono.MChar, Mono.MChar ] ) ->
+            suffixed "_Char"
+
+        ( "Utils", "le", [ Mono.MInt, Mono.MInt ] ) ->
+            suffixed "_Int"
+
+        ( "Utils", "le", [ Mono.MFloat, Mono.MFloat ] ) ->
+            suffixed "_Float"
+
+        ( "Utils", "le", [ Mono.MChar, Mono.MChar ] ) ->
+            suffixed "_Char"
+
+        ( "Utils", "gt", [ Mono.MInt, Mono.MInt ] ) ->
+            suffixed "_Int"
+
+        ( "Utils", "gt", [ Mono.MFloat, Mono.MFloat ] ) ->
+            suffixed "_Float"
+
+        ( "Utils", "gt", [ Mono.MChar, Mono.MChar ] ) ->
+            suffixed "_Char"
+
+        ( "Utils", "ge", [ Mono.MInt, Mono.MInt ] ) ->
+            suffixed "_Int"
+
+        ( "Utils", "ge", [ Mono.MFloat, Mono.MFloat ] ) ->
+            suffixed "_Float"
+
+        ( "Utils", "ge", [ Mono.MChar, Mono.MChar ] ) ->
+            suffixed "_Char"
+
+        --
+        -- Phase C (String.fromNumber): number → String specialised by Int / Float.
+        --
+        ( "String", "fromNumber", [ Mono.MInt ] ) ->
+            suffixed "_Int"
+
+        ( "String", "fromNumber", [ Mono.MFloat ] ) ->
+            suffixed "_Float"
+
+        --
+        -- Phase C (List.cons): primitive head element drives a typed C++
+        -- variant; non-primitive heads keep the boxed root.
+        --
+        ( "List", "cons", [ Mono.MInt, _ ] ) ->
+            suffixed "_Int"
+
+        ( "List", "cons", [ Mono.MFloat, _ ] ) ->
+            suffixed "_Float"
+
+        ( "List", "cons", [ Mono.MChar, _ ] ) ->
+            suffixed "_Char"
+
+        --
+        -- Phase C (Json.wrap): element axis. Polymorphic uses (String, Bool,
+        -- Object) keep the boxed root.
+        --
+        ( "Json", "wrap", [ Mono.MInt ] ) ->
+            suffixed "_Int"
+
+        ( "Json", "wrap", [ Mono.MFloat ] ) ->
+            suffixed "_Float"
+
+        ( "Json", "wrap", [ Mono.MChar ] ) ->
+            suffixed "_Char"
+
+        --
+        -- Phase C (JsArray element-axis kernels): singleton, push, unsafeSet.
+        -- The element type drives suffix selection. JsArray.unsafeSet's
+        -- index parameter (Int) is always typed via ElmDerived; the suffix
+        -- only encodes the element axis.
+        --
+        ( "JsArray", "singleton", [ Mono.MInt ] ) ->
+            suffixed "_Int"
+
+        ( "JsArray", "singleton", [ Mono.MFloat ] ) ->
+            suffixed "_Float"
+
+        ( "JsArray", "singleton", [ Mono.MChar ] ) ->
+            suffixed "_Char"
+
+        ( "JsArray", "push", [ Mono.MInt, _ ] ) ->
+            suffixed "_Int"
+
+        ( "JsArray", "push", [ Mono.MFloat, _ ] ) ->
+            suffixed "_Float"
+
+        ( "JsArray", "push", [ Mono.MChar, _ ] ) ->
+            suffixed "_Char"
+
+        ( "JsArray", "unsafeSet", [ Mono.MInt, Mono.MInt, _ ] ) ->
+            suffixed "_Int"
+
+        ( "JsArray", "unsafeSet", [ Mono.MInt, Mono.MFloat, _ ] ) ->
+            suffixed "_Float"
+
+        ( "JsArray", "unsafeSet", [ Mono.MInt, Mono.MChar, _ ] ) ->
+            suffixed "_Char"
+
+        --
+        -- Phase C (JsArray Int-axis kernels): unsafeGet, slice, appendN,
+        -- initialize, initializeFromList, indexedMap. Each has at least one
+        -- `Int` parameter that becomes typed `int64_t` at the C boundary.
+        -- The suffix is `_Int` because the discriminator is the Int axis.
+        -- These kernels' signatures always have concrete `Int` parameters,
+        -- so the suffix always fires; the boxed root is unreachable for
+        -- these names.
+        --
+        ( "JsArray", "unsafeGet", [ Mono.MInt, _ ] ) ->
+            suffixed "_Int"
+
+        ( "JsArray", "slice", [ Mono.MInt, Mono.MInt, _ ] ) ->
+            suffixed "_Int"
+
+        ( "JsArray", "appendN", [ Mono.MInt, _, _ ] ) ->
+            suffixed "_Int"
+
+        ( "JsArray", "initialize", [ Mono.MInt, Mono.MInt, _ ] ) ->
+            suffixed "_Int"
+
+        ( "JsArray", "initializeFromList", [ Mono.MInt, _ ] ) ->
+            suffixed "_Int"
+
+        ( "JsArray", "indexedMap", [ _, Mono.MInt, _ ] ) ->
+            suffixed "_Int"
 
         _ ->
             rootSymbol

@@ -89,8 +89,8 @@ suite =
                         }
                         abi
             ]
-        , describe "deriveKernelInstanceAbi keeps unmigrated AllBoxed kernels boxed"
-            [ test "Utils.equal on Int args stays !eco.value at the ABI" <|
+        , describe "deriveKernelInstanceAbi for Phase C migrated kernels"
+            [ test "Utils.equal on Int args selects _Int variant with i64 ABI" <|
                 \_ ->
                     let
                         abi =
@@ -103,12 +103,30 @@ suite =
                                 }
                     in
                     Expect.equal
+                        { symbolName = "Elm_Kernel_Utils_equal_Int"
+                        , abiArgTypes = [ ecoInt, ecoInt ]
+                        , abiResultType = ecoValue
+                        }
+                        abi
+            , test "Utils.equal on String args falls back to boxed root" <|
+                \_ ->
+                    let
+                        abi =
+                            KernelAbi.deriveKernelInstanceAbi
+                                { prefix = "Elm"
+                                , home = "Utils"
+                                , name = "equal"
+                                , argTypes = [ Mono.MString, Mono.MString ]
+                                , resultType = boolType
+                                }
+                    in
+                    Expect.equal
                         { symbolName = "Elm_Kernel_Utils_equal"
                         , abiArgTypes = [ ecoValue, ecoValue ]
                         , abiResultType = ecoValue
                         }
                         abi
-            , test "JsArray.appendN on Int args stays !eco.value at the ABI" <|
+            , test "JsArray.appendN selects _Int variant with typed Int index" <|
                 \_ ->
                     let
                         abi =
@@ -121,8 +139,134 @@ suite =
                                 }
                     in
                     Expect.equal
-                        { symbolName = "Elm_Kernel_JsArray_appendN"
-                        , abiArgTypes = [ ecoValue, ecoValue, ecoValue ]
+                        { symbolName = "Elm_Kernel_JsArray_appendN_Int"
+                        , abiArgTypes = [ ecoInt, ecoValue, ecoValue ]
+                        , abiResultType = ecoValue
+                        }
+                        abi
+            , test "Utils.append on String args stays AllBoxed (not migrated)" <|
+                \_ ->
+                    let
+                        abi =
+                            KernelAbi.deriveKernelInstanceAbi
+                                { prefix = "Elm"
+                                , home = "Utils"
+                                , name = "append"
+                                , argTypes = [ Mono.MString, Mono.MString ]
+                                , resultType = Mono.MString
+                                }
+                    in
+                    Expect.equal
+                        { symbolName = "Elm_Kernel_Utils_append"
+                        , abiArgTypes = [ ecoValue, ecoValue ]
+                        , abiResultType = ecoValue
+                        }
+                        abi
+            , test "List.cons selects _Int variant on primitive head" <|
+                \_ ->
+                    let
+                        abi =
+                            KernelAbi.deriveKernelInstanceAbi
+                                { prefix = "Elm"
+                                , home = "List"
+                                , name = "cons"
+                                , argTypes = [ Mono.MInt, Mono.MList Mono.MInt ]
+                                , resultType = Mono.MList Mono.MInt
+                                }
+                    in
+                    Expect.equal
+                        { symbolName = "Elm_Kernel_List_cons_Int"
+                        , abiArgTypes = [ ecoInt, ecoValue ]
+                        , abiResultType = ecoValue
+                        }
+                        abi
+            , test "List.cons on String head falls back to boxed root" <|
+                \_ ->
+                    let
+                        abi =
+                            KernelAbi.deriveKernelInstanceAbi
+                                { prefix = "Elm"
+                                , home = "List"
+                                , name = "cons"
+                                , argTypes = [ Mono.MString, Mono.MList Mono.MString ]
+                                , resultType = Mono.MList Mono.MString
+                                }
+                    in
+                    Expect.equal
+                        { symbolName = "Elm_Kernel_List_cons"
+                        , abiArgTypes = [ ecoValue, ecoValue ]
+                        , abiResultType = ecoValue
+                        }
+                        abi
+            , test "String.fromNumber selects _Int variant on Int" <|
+                \_ ->
+                    let
+                        abi =
+                            KernelAbi.deriveKernelInstanceAbi
+                                { prefix = "Elm"
+                                , home = "String"
+                                , name = "fromNumber"
+                                , argTypes = [ Mono.MInt ]
+                                , resultType = Mono.MString
+                                }
+                    in
+                    Expect.equal
+                        { symbolName = "Elm_Kernel_String_fromNumber_Int"
+                        , abiArgTypes = [ ecoInt ]
+                        , abiResultType = ecoValue
+                        }
+                        abi
+            , test "Json.wrap on Int selects _Int variant" <|
+                \_ ->
+                    let
+                        abi =
+                            KernelAbi.deriveKernelInstanceAbi
+                                { prefix = "Elm"
+                                , home = "Json"
+                                , name = "wrap"
+                                , argTypes = [ Mono.MInt ]
+                                , resultType = Mono.MUnit
+                                }
+                    in
+                    Expect.equal
+                        { symbolName = "Elm_Kernel_Json_wrap_Int"
+                        , abiArgTypes = [ ecoInt ]
+                        , abiResultType = ecoValue
+                        }
+                        abi
+            , test "JsArray.unsafeSet selects _Float variant for Float element" <|
+                \_ ->
+                    let
+                        abi =
+                            KernelAbi.deriveKernelInstanceAbi
+                                { prefix = "Elm"
+                                , home = "JsArray"
+                                , name = "unsafeSet"
+                                , argTypes = [ Mono.MInt, Mono.MFloat, Mono.MUnit ]
+                                , resultType = Mono.MUnit
+                                }
+                    in
+                    Expect.equal
+                        { symbolName = "Elm_Kernel_JsArray_unsafeSet_Float"
+                        , abiArgTypes = [ ecoInt, ecoFloat, ecoValue ]
+                        , abiResultType = ecoValue
+                        }
+                        abi
+            , test "JsArray.unsafeSet on String element keeps typed Int index but boxed element" <|
+                \_ ->
+                    let
+                        abi =
+                            KernelAbi.deriveKernelInstanceAbi
+                                { prefix = "Elm"
+                                , home = "JsArray"
+                                , name = "unsafeSet"
+                                , argTypes = [ Mono.MInt, Mono.MString, Mono.MUnit ]
+                                , resultType = Mono.MUnit
+                                }
+                    in
+                    Expect.equal
+                        { symbolName = "Elm_Kernel_JsArray_unsafeSet"
+                        , abiArgTypes = [ ecoInt, ecoValue, ecoValue ]
                         , abiResultType = ecoValue
                         }
                         abi

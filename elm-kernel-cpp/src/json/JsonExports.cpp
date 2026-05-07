@@ -1639,6 +1639,50 @@ HPtr Elm_Kernel_Json_wrap(HPtr value) {
     return value;
 }
 
+// Phase C per-instance variants. Each takes a typed primitive directly and
+// builds the corresponding ENC_INT / ENC_FLOAT / ENC_INT (Char as code point)
+// encoder Custom without first going through a heap-resident ElmInt /
+// ElmFloat wrapper.
+HPtr Elm_Kernel_Json_wrap_Int(int64_t value) {
+    auto& allocator = Allocator::instance();
+    size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
+    Custom* enc = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
+    enc->header.size = 1;
+    enc->ctor = ENC_INT;
+    enc->unboxed = 1;  // kind=Int at slot 0
+    enc->values[0].i = value;
+    return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
+}
+
+HPtr Elm_Kernel_Json_wrap_Float(double value) {
+    auto& allocator = Allocator::instance();
+    size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
+    Custom* enc = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
+    enc->header.size = 1;
+    enc->ctor = ENC_FLOAT;
+    enc->unboxed = 2;  // kind=Float at slot 0
+    enc->values[0].f = value;
+    return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
+}
+
+HPtr Elm_Kernel_Json_wrap_Char(uint16_t value) {
+    // Char is a Unicode code point. JSON has no native char type; encode as
+    // an integer code point (matches what `Json.Encode.int (Char.toCode c)`
+    // would produce). This branch is rare in practice — Json.Encode has no
+    // public Char encoder — but is reachable via polymorphic uses.
+    auto& allocator = Allocator::instance();
+    size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
+    Custom* enc = static_cast<Custom*>(
+        eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
+    enc->header.size = 1;
+    enc->ctor = ENC_INT;
+    enc->unboxed = 1;
+    enc->values[0].i = static_cast<int64_t>(value);
+    return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
+}
+
 HPtr Elm_Kernel_Json_encodeNull() {
     size_t size = sizeof(Custom);
     size = (size + 7) & ~7;

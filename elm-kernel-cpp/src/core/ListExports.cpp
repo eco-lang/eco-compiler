@@ -170,6 +170,27 @@ HPtr Elm_Kernel_List_cons(HPtr head, HPtr tail) {
     return HPtr::fromBits(Export::encode(result));
 }
 
+// Phase C per-instance variants. Each takes a typed primitive head and
+// stores it unboxed in the Cons cell. The 2-bit head_kind in the Cons
+// header (1=Int, 2=Float, 3=Char) marks the slot for GC scanning.
+HPtr Elm_Kernel_List_cons_Int(int64_t head, HPtr tail) {
+    HPointer result = alloc::cons(alloc::unboxedInt(head), Export::decode(tail.toBits()),
+                                  /*head_kind=*/static_cast<uint8_t>(1));
+    return HPtr::fromBits(Export::encode(result));
+}
+
+HPtr Elm_Kernel_List_cons_Float(double head, HPtr tail) {
+    HPointer result = alloc::cons(alloc::unboxedFloat(head), Export::decode(tail.toBits()),
+                                  /*head_kind=*/static_cast<uint8_t>(2));
+    return HPtr::fromBits(Export::encode(result));
+}
+
+HPtr Elm_Kernel_List_cons_Char(uint16_t head, HPtr tail) {
+    HPointer result = alloc::cons(alloc::unboxedChar(head), Export::decode(tail.toBits()),
+                                  /*head_kind=*/static_cast<uint8_t>(3));
+    return HPtr::fromBits(Export::encode(result));
+}
+
 HPtr Elm_Kernel_List_fromArray(HPtr array) {
     uint64_t array_bits = array.toBits();
     // Check for embedded constants first (e.g., Nil).

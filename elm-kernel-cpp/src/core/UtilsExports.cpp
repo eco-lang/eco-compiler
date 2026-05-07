@@ -62,6 +62,35 @@ HPtr Elm_Kernel_Utils_ge(HPtr a, HPtr b) {
     return HPtr::fromBits(Export::encodeBoxedBool(Utils::ge(Export::toPtr(a.toBits()), Export::toPtr(b.toBits()))));
 }
 
+// Phase C per-instance variants for equality and ordering on primitives.
+// Each takes the corresponding primitive ABI type directly and returns the
+// boxed Bool (HPtr to the True / False singleton). C operators give the
+// correct semantics: IEEE 754 comparison for Float (NaN-aware), unsigned
+// comparison for Char (Unicode code point).
+HPtr Elm_Kernel_Utils_equal_Int   (int64_t  a, int64_t  b) { return HPtr::fromBits(Export::encodeBoxedBool(a == b)); }
+HPtr Elm_Kernel_Utils_equal_Float (double   a, double   b) { return HPtr::fromBits(Export::encodeBoxedBool(a == b)); }
+HPtr Elm_Kernel_Utils_equal_Char  (uint16_t a, uint16_t b) { return HPtr::fromBits(Export::encodeBoxedBool(a == b)); }
+
+HPtr Elm_Kernel_Utils_notEqual_Int  (int64_t  a, int64_t  b) { return HPtr::fromBits(Export::encodeBoxedBool(a != b)); }
+HPtr Elm_Kernel_Utils_notEqual_Float(double   a, double   b) { return HPtr::fromBits(Export::encodeBoxedBool(a != b)); }
+HPtr Elm_Kernel_Utils_notEqual_Char (uint16_t a, uint16_t b) { return HPtr::fromBits(Export::encodeBoxedBool(a != b)); }
+
+HPtr Elm_Kernel_Utils_lt_Int  (int64_t  a, int64_t  b) { return HPtr::fromBits(Export::encodeBoxedBool(a < b)); }
+HPtr Elm_Kernel_Utils_lt_Float(double   a, double   b) { return HPtr::fromBits(Export::encodeBoxedBool(a < b)); }
+HPtr Elm_Kernel_Utils_lt_Char (uint16_t a, uint16_t b) { return HPtr::fromBits(Export::encodeBoxedBool(a < b)); }
+
+HPtr Elm_Kernel_Utils_le_Int  (int64_t  a, int64_t  b) { return HPtr::fromBits(Export::encodeBoxedBool(a <= b)); }
+HPtr Elm_Kernel_Utils_le_Float(double   a, double   b) { return HPtr::fromBits(Export::encodeBoxedBool(a <= b)); }
+HPtr Elm_Kernel_Utils_le_Char (uint16_t a, uint16_t b) { return HPtr::fromBits(Export::encodeBoxedBool(a <= b)); }
+
+HPtr Elm_Kernel_Utils_gt_Int  (int64_t  a, int64_t  b) { return HPtr::fromBits(Export::encodeBoxedBool(a > b)); }
+HPtr Elm_Kernel_Utils_gt_Float(double   a, double   b) { return HPtr::fromBits(Export::encodeBoxedBool(a > b)); }
+HPtr Elm_Kernel_Utils_gt_Char (uint16_t a, uint16_t b) { return HPtr::fromBits(Export::encodeBoxedBool(a > b)); }
+
+HPtr Elm_Kernel_Utils_ge_Int  (int64_t  a, int64_t  b) { return HPtr::fromBits(Export::encodeBoxedBool(a >= b)); }
+HPtr Elm_Kernel_Utils_ge_Float(double   a, double   b) { return HPtr::fromBits(Export::encodeBoxedBool(a >= b)); }
+HPtr Elm_Kernel_Utils_ge_Char (uint16_t a, uint16_t b) { return HPtr::fromBits(Export::encodeBoxedBool(a >= b)); }
+
 HPtr Elm_Kernel_Utils_append(HPtr a, HPtr b) {
     uint64_t a_bits = a.toBits();
     uint64_t b_bits = b.toBits();

@@ -110,6 +110,9 @@ HPtr Elm_Kernel_String_indexes(HPtr needle, HPtr haystack);
 HPtr Elm_Kernel_String_toInt(HPtr str);
 HPtr Elm_Kernel_String_toFloat(HPtr str);
 HPtr Elm_Kernel_String_fromNumber(HPtr n);
+// Phase C per-instance variants: Int / Float specialisations.
+HPtr Elm_Kernel_String_fromNumber_Int  (int64_t n);
+HPtr Elm_Kernel_String_fromNumber_Float(double  n);
 // Unboxed-arg trampolines for eco.string.from_int / eco.string.from_float
 // intrinsics (route through StringOps::fromInt/fromFloat).
 HPtr elm_string_from_int(int64_t n);
@@ -127,6 +130,10 @@ HPtr Elm_Kernel_String_foldr(HPtr closure, HPtr acc, HPtr str);
 //===----------------------------------------------------------------------===//
 
 HPtr Elm_Kernel_List_cons(HPtr head, HPtr tail);
+// Phase C per-instance variants: typed primitive head; tail stays HPtr.
+HPtr Elm_Kernel_List_cons_Int  (int64_t  head, HPtr tail);
+HPtr Elm_Kernel_List_cons_Float(double   head, HPtr tail);
+HPtr Elm_Kernel_List_cons_Char (uint16_t head, HPtr tail);
 HPtr Elm_Kernel_List_fromArray(HPtr array);
 HPtr Elm_Kernel_List_toArray(HPtr list);
 // Higher-order List functions
@@ -154,6 +161,26 @@ HPtr Elm_Kernel_Utils_le(HPtr a, HPtr b);
 HPtr Elm_Kernel_Utils_gt(HPtr a, HPtr b);
 HPtr Elm_Kernel_Utils_ge(HPtr a, HPtr b);
 HPtr Elm_Kernel_Utils_append(HPtr a, HPtr b);
+// Phase C per-instance variants for equal/notEqual/lt/le/gt/ge. Result type
+// stays HPtr because Bool is boxed at ABI (REP_ABI_001).
+HPtr Elm_Kernel_Utils_equal_Int     (int64_t  a, int64_t  b);
+HPtr Elm_Kernel_Utils_equal_Float   (double   a, double   b);
+HPtr Elm_Kernel_Utils_equal_Char    (uint16_t a, uint16_t b);
+HPtr Elm_Kernel_Utils_notEqual_Int  (int64_t  a, int64_t  b);
+HPtr Elm_Kernel_Utils_notEqual_Float(double   a, double   b);
+HPtr Elm_Kernel_Utils_notEqual_Char (uint16_t a, uint16_t b);
+HPtr Elm_Kernel_Utils_lt_Int        (int64_t  a, int64_t  b);
+HPtr Elm_Kernel_Utils_lt_Float      (double   a, double   b);
+HPtr Elm_Kernel_Utils_lt_Char       (uint16_t a, uint16_t b);
+HPtr Elm_Kernel_Utils_le_Int        (int64_t  a, int64_t  b);
+HPtr Elm_Kernel_Utils_le_Float      (double   a, double   b);
+HPtr Elm_Kernel_Utils_le_Char       (uint16_t a, uint16_t b);
+HPtr Elm_Kernel_Utils_gt_Int        (int64_t  a, int64_t  b);
+HPtr Elm_Kernel_Utils_gt_Float      (double   a, double   b);
+HPtr Elm_Kernel_Utils_gt_Char       (uint16_t a, uint16_t b);
+HPtr Elm_Kernel_Utils_ge_Int        (int64_t  a, int64_t  b);
+HPtr Elm_Kernel_Utils_ge_Float      (double   a, double   b);
+HPtr Elm_Kernel_Utils_ge_Char       (uint16_t a, uint16_t b);
 
 // Pre-allocated Order singletons backing the eco.{int,float,char}.cmp_order
 // intrinsics. Each returns an encoded HPointer; the slots are registered as
@@ -183,6 +210,21 @@ HPtr Elm_Kernel_JsArray_unsafeSet(HPtr index, HPtr value, HPtr array);
 HPtr Elm_Kernel_JsArray_push(HPtr value, HPtr array);
 HPtr Elm_Kernel_JsArray_slice(HPtr start, HPtr end, HPtr array);
 HPtr Elm_Kernel_JsArray_appendN(HPtr n, HPtr dest, HPtr source);
+// Phase C per-instance variants. Element-axis kernels (singleton, push,
+// unsafeSet) specialise on the element MonoType. Int-axis kernels
+// (unsafeGet, slice, appendN) take typed int64_t for their Int parameters.
+HPtr Elm_Kernel_JsArray_singleton_Int  (int64_t  v);
+HPtr Elm_Kernel_JsArray_singleton_Float(double   v);
+HPtr Elm_Kernel_JsArray_singleton_Char (uint16_t v);
+HPtr Elm_Kernel_JsArray_unsafeGet_Int  (int64_t  index, HPtr array);
+HPtr Elm_Kernel_JsArray_unsafeSet_Int  (int64_t  index, int64_t  value, HPtr array);
+HPtr Elm_Kernel_JsArray_unsafeSet_Float(int64_t  index, double   value, HPtr array);
+HPtr Elm_Kernel_JsArray_unsafeSet_Char (int64_t  index, uint16_t value, HPtr array);
+HPtr Elm_Kernel_JsArray_push_Int       (int64_t  v, HPtr array);
+HPtr Elm_Kernel_JsArray_push_Float     (double   v, HPtr array);
+HPtr Elm_Kernel_JsArray_push_Char      (uint16_t v, HPtr array);
+HPtr Elm_Kernel_JsArray_slice_Int      (int64_t  start, int64_t end, HPtr array);
+HPtr Elm_Kernel_JsArray_appendN_Int    (int64_t  n, HPtr dest, HPtr source);
 // Unboxed-arg trampolines for eco.array.* intrinsics. Element kind for
 // singleton/push is selected by the caller (LLVM lowering picks the typed
 // helper based on the operand's MLIR type, mirroring eco.array.set).
@@ -200,8 +242,13 @@ HPtr elm_array_append_n(int64_t n, HPtr dest, HPtr source);
 // Higher-order JsArray functions
 HPtr Elm_Kernel_JsArray_initialize(HPtr size, HPtr offset, HPtr closure);
 HPtr Elm_Kernel_JsArray_initializeFromList(HPtr max, HPtr list);
+// Phase C: typed Int parameters.
+HPtr Elm_Kernel_JsArray_initialize_Int        (int64_t size, int64_t offset, HPtr closure);
+HPtr Elm_Kernel_JsArray_initializeFromList_Int(int64_t max, HPtr list);
 HPtr Elm_Kernel_JsArray_map(HPtr closure, HPtr array);
 HPtr Elm_Kernel_JsArray_indexedMap(HPtr closure, HPtr offset, HPtr array);
+// Phase C: typed Int offset.
+HPtr Elm_Kernel_JsArray_indexedMap_Int(HPtr closure, int64_t offset, HPtr array);
 HPtr Elm_Kernel_JsArray_foldl(HPtr closure, HPtr acc, HPtr array);
 HPtr Elm_Kernel_JsArray_foldr(HPtr closure, HPtr acc, HPtr array);
 
@@ -342,6 +389,10 @@ HPtr Elm_Kernel_Json_run(HPtr decoder, HPtr value);
 HPtr Elm_Kernel_Json_runOnString(HPtr decoder, HPtr jsonString);
 HPtr Elm_Kernel_Json_encode(int64_t indent, HPtr value);
 HPtr Elm_Kernel_Json_wrap(HPtr value);
+// Phase C: typed primitive variants for Json.wrap.
+HPtr Elm_Kernel_Json_wrap_Int  (int64_t  value);
+HPtr Elm_Kernel_Json_wrap_Float(double   value);
+HPtr Elm_Kernel_Json_wrap_Char (uint16_t value);
 HPtr Elm_Kernel_Json_encodeNull();
 HPtr Elm_Kernel_Json_emptyArray();
 HPtr Elm_Kernel_Json_emptyObject();
