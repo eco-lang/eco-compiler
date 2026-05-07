@@ -580,6 +580,319 @@ All five steps gated behind `-enable-unboxed-agg`.
 Closure ABI / `_capture_abi` / `_fast_evaluator` paths are **not**
 touched — closure envs are Phase 4.
 
+### Phase 3.1 — Completing Cross‑Function Unboxed Aggregates
+
+Resolved against the Q1–Q7 questions raised when the design was first
+imported (2026‑05‑07). This section reflects the *final* in‑scope
+plan; deferred work moved to **Phase 3.2** below.
+
+#### 0. Goals and non‑goals
+
+**Goals.** Finish the cross‑function (worker/wrapper) small‑aggregate
+work started in Phase 3:
+
+1. Cross‑procedural fixpoint eligibility for **DAGs of functions**
+   (chained `f → g → h`). SCCs of size > 1 are deferred to 3.2.
+2. Result‑side unboxing for **all‑primitive aggregate results only**
+   (Q2). Aggregate results containing `!eco.value` elements stay
+   boxed for now.
+3. Remove the all‑primitive‑elements restriction on aggregate
+   **parameters** by introducing a pre‑lowering Eco‑level rewrite pass
+   that flattens aggregate boundary types into multiple scalar
+   params (Q1). Eco→LLVM continues to see only scalar / pointer
+   types at the boundary.
+4. Extend logical‑type attributes to every Elm→MLIR function emitter
+   that may produce a cross‑spec candidate (Q5).
+5. Single‑ctor customs as `LCustom` / `AggKind::Custom` (Q3).
+   Multi‑ctor customs stay opaque (`LUnknown` / `"value"`).
+6. Cons cells encoded in logical‑type attributes for round‑trip
+   consistency, but treated as `AggKind::None` in cross‑spec (Q4) —
+   no actual cons specialisation in 3.1.
+7. Elm‑source positive + negative fixtures.
+8. Eco‑level (`mlir-llvm`) tests for worker / wrapper IR shape; the
+   post‑RS4GC `.ll` validation harness is deferred to 3.2.
+
+**Non‑goals.** No Elm semantics / ABI change. No edits to earlier
+phases. No closure‑env unboxing (Phase 4). No SCC handling (Phase
+3.2). No new GC behaviour. All new behaviour gated behind
+`-enable-unboxed-agg`.
+
+#### 1. Cross‑procedural fixpoint eligibility (DAG only)
+
+Extend `EcoUnboxedAggCrossSpec` from "local, parameter‑only" to a
+two‑phase analysis. Build per‑func info `FunctionAggInfo` with:
+param/result aggregate slots (`AggKind` + logical descriptor),
+intra‑function `paramNonEscaping[i]` / `resultNonEscaping[j]` flags,
+and a direct‑callee adjacency list (walk `func.call` / `eco.call` with
+`FlatSymbolRefAttr`).
+
+**Phase A (leaf pass).** A function is a leaf candidate if no
+aggregate slot ever flows into a callee. Mark each leaf as eligible
+iff its slot escape flags are all true.
+
+**Phase B (propagate upwards).** Iterate: a function becomes eligible
+when every aggregate flow at its call sites targets an already‑
+eligible callee, and its local escape checks pass. Continue to
+fixpoint.
+
+**SCC conservatism for v1 (Q7).** Compute SCCs as a side effect of
+the call‑graph build. Any function in an SCC of size > 1 (i.e. that
+participates in mutual recursion or a cycle) is marked **non‑eligible**
+and skipped. Single‑function SCCs with self‑edges (direct recursion)
+remain eligible — that's the case Phase 3 already handles.
+
+Eligible funcs are tagged `eco.unboxed_cross_eligible = true` and
+become workers + wrappers.
+
+#### 2. Result‑side unboxing — primitive‑element aggregates only (Q2)
+
+**Result eligibility filter.** A result slot is cross‑spec‑eligible
+iff its logical type is an aggregate **and every element type is
+primitive** (i64 / f64 / i16 / i1). Aggregate results containing
+`!eco.value` elements stay boxed in the worker signature; only
+parameter aggregates may carry boxed elements (Stage 3 flattening
+handles those).
+
+**Signature.** Worker creation rewrites each eligible aggregate
+result slot into the corresponding `!eco.tuple2<...>` /
+`!eco.tuple3<...>` / `!eco.record<...>` / `!eco.custom<...>`.
+
+**Worker body — return rewriting (Q6).** Cross‑spec performs an
+internal, targeted construct→make rewrite limited to operations that
+feed an eligible result return. For each `func.return` in the cloned
+body, walk each operand at an aggregate result position back to its
+producer:
+- If producer is an `eco.construct.tuple2/3/record/custom`, rewrite
+  to the matching `eco.make.*` (same operands, aggregate result type)
+  and update the return operand.
+- If producer is a param (already aggregate after parameter
+  rewriting) or `eco.from_heap`, retype the return operand directly.
+
+The rest of the worker body (constructs that don't feed a return) is
+untouched here; per‑func specialise (Phase 2) handles that as part of
+its normal intra‑function pass running after cross‑spec.
+
+**Wrapper body.** Mechanically: `eco.from_heap` each aggregate param,
+`func.call @f$unboxed`, `eco.to_heap` each aggregate result, return
+the boxed values.
+
+**Caller call‑site rewriting.** A caller that is itself eligible AND
+uses the result in aggregate‑friendly ways (projection / local
+pattern‑match, non‑escaping per its own intra‑function analysis) is
+rewritten to call `@f$unboxed` and keep the aggregate result.
+Otherwise it stays on the wrapper. Conservative for v1.
+
+#### 3. Pre‑lowering flattening pass (Q1)
+
+**New pass:** `EcoFlattenAggBoundary`, runs *after* `EcoUnboxedAggCrossSpec`
+and before any other lowering. Operates on `func.func` ops with
+aggregate‑typed parameters or results in their signature; the type
+converter never sees aggregate types at function boundary.
+
+**Per‑function rewrite.**
+- Each aggregate parameter is replaced by `N` scalar parameters in the
+  function's `function_type` and entry block.
+- At entry, an `eco.make.*` op repacks the scalars into the original
+  aggregate SSA value, replacing the original block argument.
+- Each aggregate return value is decomposed via `eco.project.*` ops at
+  every `func.return` and the return takes the flattened operand list.
+- The function's `function_type` is updated to the flattened shape.
+
+**Per‑call‑site rewrite.**
+- Every `func.call @worker(%agg, ...)` is rewritten so each aggregate
+  operand is decomposed via `eco.project.*` immediately before the
+  call; the call's operand list is the flattened sequence.
+- Every `func.call @worker` whose result was an aggregate is followed
+  by an `eco.make.*` to repack the now‑flattened return values into
+  the original aggregate SSA shape.
+
+After this pass, every aggregate type appears only inside function
+bodies (where SROA can scalarise it). Eco→LLVM type conversion stays
+1:1 (no special boundary handling needed).
+
+**Tests.** New `flatten_*.mlir` fixtures: round‑trip a worker through
+the pass and check the flattened signature + insertvalue/extractvalue
+chains in the body.
+
+#### 4. Logical‑type attribute coverage (Q5)
+
+Centralise logical‑type computation in
+`Compiler.Generate.MLIR.LogicalTypes` and apply at every `func.func`
+emission site:
+- `generateClosureFuncSingle` (Phase 3 already done)
+- `generateTailFunc` (Phase 3 already done)
+- `generateClosureFuncWithClones` — both `$cap` and `$clo`. The `$cap`
+  form encodes captures + params: each capture entry is its precise
+  logical descriptor (or `LUnknown` if unavailable), then the original
+  Elm params. `$clo` is treated as opaque (`LUnknown` everywhere).
+- `generateExtern`, kernel decls — emit `LUnknown` (or omit) since
+  there is no Elm‑source MonoType.
+- `generateCtor`, `generateEnum`, `generateManagerLeaf`,
+  `generateGenericCloneFunc` — emit logical descriptors for the
+  parameters and result the front‑end can compute; opaque otherwise.
+
+CGEN_065 is updated to make absent / `LUnknown` ⇒ non‑eligible
+explicit.
+
+#### 5. Customs and cons in logical types (Q3, Q4)
+
+Extend `LogicalTypes.elm`:
+- `LCustom Tag (List LogicalTypeDesc)` — emitted **only when** the
+  Custom is a single‑constructor type with field count ≤ N (e.g. 3).
+  Multi‑ctor customs are encoded as `LUnknown` so cross‑spec never
+  attempts them.
+- `LCons headType tailType` — included in the encoder so the
+  attribute roundtrips for documentation / future use.
+
+Extend C++ `AggKind`:
+- `AggKind::Custom` is a real cross‑spec target.
+- `AggKind::Cons` is parsed but **mapped to `AggKind::None`** in
+  cross‑spec (Q4 — skip cons specialisation in 3.1).
+
+Validation: any logical descriptor whose shape exceeds the
+configured size limit, or whose elements include unsupported types,
+demotes to `AggKind::None`.
+
+#### 6. Tests
+
+Codegen fixtures (gated behind `-enable-unboxed-agg`):
+- `cross_spec_chained_pipeline.mlir` — three‑function `f → g → h`
+  pipeline becoming eligible via the fixpoint.
+- `cross_spec_returns_tuple.mlir` — function returning a primitive
+  tuple, worker returns aggregate, wrapper boxes via `eco.to_heap`.
+- `cross_spec_returns_record.mlir` — same for an all‑primitive record.
+- `cross_spec_custom_pass.mlir` — single‑ctor custom unboxing.
+- `cross_spec_pointer_param.mlir` — parameter aggregate carrying
+  `!eco.value` elements: post‑flattening, the worker has individual
+  `ptr addrspace(1)` LLVM args.
+- `cross_spec_no_change_off.mlir` — flag off → no workers, no
+  `from_heap`/`to_heap` inserted.
+- `flatten_tuple2_pointer.mlir`, `flatten_tuple2_returns.mlir` —
+  round‑trip the flattening pass; assert IR shape.
+
+Elm‑source fixtures:
+- One positive: cross‑function param + result unboxing in real Elm.
+- One negative (`CrossSpecTupleEscapesTest.elm`): tuple captured /
+  stored such that conservatism kicks in. `// CHECK-NOT:
+  @*$unboxed`, `// CHECK: func.call @<name>(`.
+
+#### 7. Invariants
+
+- **CGEN_063**: unchanged.
+- **CGEN_064** (extend): worker `@f$unboxed` is callable only from
+  the matching wrapper `@f` or from other eligible callers; PAPs /
+  closures always reference the wrapper. (SCC clause deferred to
+  3.2.)
+- **CGEN_065** (extend): absent or `LUnknown` ⇒ non‑eligible.
+- **CGEN_066** (new): the `EcoFlattenAggBoundary` pass is the sole
+  introducer of multi‑arg / multi‑result `func.func` signatures
+  derived from aggregate boundary types; after this pass no
+  aggregate type appears at any function boundary.
+- **REP_AGG_001** (extend): aggregate types may appear at function
+  *boundary* in Eco IR after cross‑spec but before
+  `EcoFlattenAggBoundary`; after that pass they appear only inside
+  function bodies. RS4GC therefore never sees a struct‑typed gc
+  pointer at a call boundary.
+- All Phase 3.1 behaviour gated behind `-enable-unboxed-agg`.
+
+#### 8. Implementation staging (Q7)
+
+Five reviewable commits, each with E2E + stress run:
+
+1. **Logical‑type attribute coverage** — extend
+   `LogicalTypes.elm` (LCustom, LCons, LUnknown), wire into all
+   remaining function emitters; CGEN_065 updated. No behavioural
+   change yet.
+2. **Custom support in cross‑spec** — parse `LCustom`, accept
+   `AggKind::Custom`, fixtures for single‑ctor customs.
+3. **Pre‑lowering flattening pass** — `EcoFlattenAggBoundary` lands;
+   drop the all‑primitive‑params constraint in cross‑spec; new
+   flatten / pointer‑param fixtures.
+4. **Result‑side unboxing (primitives only)** — extend cross‑spec
+   with the per‑result eligibility filter, internal worker‑local
+   construct→make for return‑feeding ops, wrapper boxing.
+5. **Two‑phase fixpoint eligibility (DAG only)** — leaf pass +
+   propagate‑upwards; SCCs > 1 marked non‑eligible. Chained pipeline
+   fixture lands. Negative + positive Elm fixtures, final invariant
+   updates (CGEN_064/065/066, REP_AGG_001).
+
+Estimated total: ~1200–1700 LOC across compiler + runtime + tests.
+
+### Phase 3.2 — Cross‑Function Unboxed Aggregates: deferred work
+
+Sequel to Phase 3.1. None of these unblocks 3.1 — they extend it
+once 3.1 is stable. Each item below is independently landable.
+
+#### 1. SCC‑aware mutual recursion (Q7 deferral)
+
+Lift the "SCC > 1 ⇒ non‑eligible" rule from Phase 3.1.
+
+- After call‑graph build, compute SCCs (use `mlir::CallGraph` or a
+  local Tarjan).
+- For each SCC `S` of size > 1: gather all aggregate slots across
+  members; require every local escape check to pass AND every
+  aggregate flow at calls *between* members to target another
+  member's matching slot. Any blocked member ⇒ entire SCC ineligible.
+- If eligible: clone every `g ∈ S` to `@g$unboxed`; rewrite all
+  intra‑SCC calls to `@h$unboxed`; wrappers `g` only call `g$unboxed`.
+
+Fixture: `cross_spec_mutual_recursive.mlir` — 2‑member SCC over a
+tuple accumulator. Elm‑source: `CrossSpecMutualRecursiveTest.elm`.
+
+Update CGEN_064 to add the SCC clause.
+
+#### 2. LLVM‑level performance / shape validation harness
+
+Plumb a final‑LLVM‑IR emission mode (or extend the existing one) so
+selected `cross_spec_*` fixtures can FileCheck the post‑RS4GC `.ll`:
+- `CHECK: define {{.*}} @sum_pair_unboxed(i64 {{.*}}, i64 {{.*}})`
+- `CHECK-NOT: insertvalue` / `extractvalue` / `alloca { ... }` for
+  the worker's parameter shape after SROA + RS4GC.
+- For pointer‑containing tuples post‑flattening: `ptr addrspace(1)`
+  in the param list, no struct.
+
+Add the harness as a new emit option in `ecoc` (e.g. `-emit=llvm-ir`)
+or extend `mlir-llvm`. Fixture infrastructure (`%FileCheck`) reused.
+
+Optional: an allocation‑counter microbenchmark showing the delta
+between flag‑off and flag‑on for an eligible pipeline. Defer further
+if test infra doesn't expose allocation counters.
+
+#### 3. Aggregate results carrying `!eco.value` elements
+
+Phase 3.1 keeps results with boxed elements as `!eco.value`. Phase
+3.2 revisits this with one of:
+- **sret‑style ABI**: caller provides an alloca; callee writes
+  fields. Adds an alloca per call but RS4GC sees only individual
+  ptr‑typed slots.
+- **Multi‑return at the LLVM dialect level** (if/when supported
+  cleanly): `llvm.func ... -> (i64, ptr addrspace(1))`.
+- **Apply `EcoFlattenAggBoundary` to results** the same way it
+  handles params: at the call site, decompose the aggregate
+  return into multiple LLVM return values via the same packing
+  trick used for params. (Probably the cleanest reuse if the LLVM
+  dialect tolerates multi‑return at func op level.)
+
+Decision made when 3.1 benchmarks justify the additional complexity.
+
+#### 4. Cons cell specialisation
+
+Phase 3.1 encodes `LCons` in attributes but treats it as
+`AggKind::None`. Phase 3.2 either:
+- Implements cons cell specialisation if a real use case appears
+  (e.g. helper functions destructuring a single non‑empty list with
+  `head :: rest`), OR
+- Removes `LCons` from the encoder if it remains unused.
+
+#### 5. Relaxing other conservative guards
+
+Catch‑all bucket for tightening eligibility once the rest of 3.2 is
+stable:
+- Higher‑arity customs (>3 fields) if profiling shows they matter.
+- Records beyond the current size cap.
+- Tail‑recursive scaffolding patterns (`scf.while` with aggregate
+  loop carries) — currently demoted by the use check.
+
 ### Phase 4 — Closure environment escape analysis (separate later phase)
 
 Per Q9, this is a separate later effort after the tuple/record/custom/
