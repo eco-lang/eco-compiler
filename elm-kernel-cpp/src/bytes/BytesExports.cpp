@@ -390,14 +390,22 @@ HPtr Elm_Kernel_Bytes_encode(HPtr encoderVal) {
 }
 
 HPtr Elm_Kernel_Bytes_decode(HPtr decoder, HPtr bytes) {
-    uint64_t bytesBits = bytes.toBits();
     auto& allocator = Allocator::instance();
+
+    // Root decoder and bytes across eco_alloc_int below: the by-value HPtr
+    // params would otherwise be stale across the GC the alloc may trigger.
+    HPointer decoderHP = Export::decode(decoder.toBits());
+    HPointer bytesHP   = Export::decode(bytes.toBits());
+    Elm::StackRootGuard inputs(&decoderHP, &bytesHP);
 
     // Call the decoder closure with (bytes, offset=0).
     // The decoder is a function: (eco.value, i64) -> eco.value (Tuple2)
     // The offset (Int) must be boxed as HPointer for the wrapper.
-    uint64_t args[2] = { bytesBits, eco_alloc_int(0).toBits() };
-    uint64_t result = eco_closure_call_saturated(decoder, args, 2, /*layout=*/nullptr).toBits();
+    uint64_t boxedOffset = eco_alloc_int(0).toBits();
+    uint64_t args[2] = { Export::encode(bytesHP), boxedOffset };
+    uint64_t result = eco_closure_call_saturated(
+        HPtr::fromBits(Export::encode(decoderHP)),
+        args, 2, /*layout=*/nullptr).toBits();
 
     // Result is a Tuple2(new_offset: i64, decoded_value). Pattern B: resultHP
     // is re-resolved AFTER the allocate to copy field b into Just; root via

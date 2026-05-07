@@ -112,8 +112,12 @@ private:
 
     ThreadLocalHeap* thread_heap_;    // Owner ThreadLocalHeap (for multi-threaded mode).
 
+    // True only during minorGC execution. Always-on: consumed by the
+    // release-mode stale-arg check (`debugAssertValidNurseryPointer`)
+    // to decide whether the legal regions are {from-allocated} only or
+    // also include {to-allocated} (mid-GC).
+    bool in_minor_gc_ = false;
 #if ECO_GC_DEBUG
-    bool in_minor_gc_ = false;        // True only during minorGC execution.
     bool in_phase3_   = false;        // True only during phase 3 (promoted-object scan).
 #endif
 
@@ -140,12 +144,20 @@ private:
     // Unconditional (not debug-gated) — this is a safety net.
     void clearToSpaceFreeRegion();
 
-#if ECO_GC_DEBUG
-    // Debug helpers: validate that a nursery pointer is in an allocated region.
+    // Stale-pointer diagnostic aid: writes a poison byte over the allocated
+    // prefix of the just-evacuated from-space so that stale HPointers held
+    // by the mutator land on obviously-bogus data after the swap. See impl
+    // for the rationale and the chosen byte's properties.
+    void poisonOldFromSpaceUsedRegion();
+
+    // Stale-pointer tripwire (always-on; see Allocator::resolve and the
+    // per-arg validation in eco_apply_closure / eco_apply_segmentation_unknown
+    // / eco_closure_call_saturated). Reports + aborts when an HPointer
+    // resolves to a free region of the nursery (i.e. post-swap to-space-free,
+    // i.e. a stale pre-GC pointer that was never evacuated).
     bool isInFromSpaceAllocatedRegion(void* ptr) const;
     bool isInToSpaceAllocatedRegion(void* ptr) const;
     void debugAssertValidNurseryPointer(void* ptr) const;
-#endif
 
     // Returns true if the pointer is within this nursery's address ranges.
     // O(1) check using cached bounds (may include small gaps between blocks).

@@ -367,6 +367,15 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_resolve_hptr),
                 llvm::JITSymbolFlags::Exported);
 
+        // Stale-pointer barrier injected by EcoBoxedStoreVerify in front of
+        // direct heap stores from compiled Elm. Always registered so the JIT
+        // can resolve the symbol; the call is only emitted when the pass
+        // runs (ECO_LOWERING_VALIDATION=ON).
+        symbolMap[interner("eco_validate_nursery_hptr_bits")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_validate_nursery_hptr_bits),
+                llvm::JITSymbolFlags::Exported);
+
         // Constructor tag extraction (handles both heap objects and embedded constants).
         symbolMap[interner("eco_get_tag")] =
             llvm::orc::ExecutorSymbolDef(

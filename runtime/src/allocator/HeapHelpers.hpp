@@ -256,6 +256,34 @@ inline bool isEmbeddedConstant(HPointer ptr) {
     return ptr.constant != 0;
 }
 
+/**
+ * Per-write stale-pointer tripwire.
+ *
+ * Validates an HPointer-encoded value at the moment it's about to be written
+ * into a heap field. Routes through `Allocator::resolve`, which (always-on,
+ * not gated on ECO_GC_DEBUG) calls `debugAssertValidNurseryPointer` for any
+ * nursery target, aborting if the pointer resolves into a free (post-swap)
+ * region — i.e. the "stale by-value HPointer across an alloc" pattern.
+ *
+ * No-op for embedded constants and zero pointers (those don't decode to a
+ * heap object at all). Cheap when the heuristics filter out the no-op cases.
+ */
+inline void validateNurseryHPtr(HPointer hp) {
+    // Defer to the SEGV-safe Allocator helper: decodes to a physical
+    // address without dereferencing, only triggers the free-region
+    // tripwire when the target lies inside the nursery. Safe to call on
+    // arbitrary 64-bit values (e.g. unboxed Ints interpreted via .p).
+    Allocator::instance().validateInNurserySafe(hp);
+}
+
+/// Same as validateNurseryHPtr, taking a uint64_t-encoded HPointer (the form
+/// used by closure args, eco_store_field, etc.).
+inline void validateNurseryHPtrBits(uint64_t bits) {
+    HPointer hp;
+    std::memcpy(&hp, &bits, sizeof(hp));
+    validateNurseryHPtr(hp);
+}
+
 // ============================================================================
 // Primitive Allocation
 // ============================================================================
@@ -921,6 +949,11 @@ inline HPointer arrayFromPointers(const std::vector<HPointer>& elements) {
     for (size_t i = 0; i < rooted.size(); ++i) {
         arr->elements[i].p = rooted[i];
     }
+#ifdef ECO_LOWERING_VALIDATION
+    // All-boxed: validate every element write.
+    for (size_t i = 0; i < rooted.size(); ++i)
+        validateNurseryHPtr(arr->elements[i].p);
+#endif
     return Allocator::instance().wrap(arr);
 }
 
@@ -980,6 +1013,9 @@ inline bool arrayPush(void* arr, Unboxable value, bool is_boxed) {
         return false;  // At capacity
     }
 
+    // Per-write stale-pointer tripwire (boxed slots only).
+    if (is_boxed) validateNurseryHPtr(value.p);
+
     size_t idx = a->length;
     a->elements[idx] = value;
 
@@ -997,6 +1033,10 @@ inline bool arrayPush(void* arr, Unboxable value, bool is_boxed) {
 inline bool arrayPushKind(void* arr, Unboxable value, u8 kind) {
     ElmArray* a = static_cast<ElmArray*>(arr);
     if (a->length >= a->header.size) return false;
+
+    // Per-write stale-pointer tripwire (boxed slots only).
+    if ((kind & 0x3) == 0) validateNurseryHPtr(value.p);
+
     size_t idx = a->length;
     a->elements[idx] = value;
     if (idx == 0) {
@@ -1082,6 +1122,11 @@ inline bool closureCapture(void* closure, Unboxable value, ParamKind kind) {
     if (cl->n_values >= cl->max_values) {
         return false;
     }
+
+    // Per-write stale-pointer tripwire (boxed captures only). Catches the
+    // common bug of capturing an HPointer that has gone stale across a
+    // prior allocation in the caller.
+    if (kind == PK_Boxed) validateNurseryHPtr(value.p);
 
     size_t idx = cl->n_values;
     cl->values[idx] = value;

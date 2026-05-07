@@ -91,6 +91,13 @@ std::unique_ptr<mlir::Pass> createStringLiteralLoweringPass();
 // Combined pass that runs all eco-to-LLVM lowering.
 std::unique_ptr<mlir::Pass> createEcoToLLVMPass();
 
+// Inserts eco_validate_nursery_hptr_bits calls in front of LLVM StoreOps
+// tagged with `eco.boxed_slot` (currently only the direct heap store emitted
+// by eco.array.set lowering). Localises the *write* of a stale nursery
+// HPointer from compiled Elm — the path the runtime-helper write hooks
+// cannot see. Gated by ECO_LOWERING_VALIDATION (no-op otherwise).
+std::unique_ptr<mlir::Pass> createEcoBoxedStoreVerifyPass();
+
 // ========== BF (ByteFusion) Dialect Lowering ==========
 
 // Lowers BF dialect operations to LLVM dialect.

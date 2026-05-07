@@ -281,6 +281,8 @@ extern "C" HPtr eco_alloc_record(uint32_t field_count, uint64_t unboxed_bitmap) 
 }
 
 extern "C" void eco_store_record_field(HPtr record_hptr, uint32_t index, HPtr value) {
+    // Per-write stale-pointer tripwire on the boxed value being stored.
+    alloc::validateNurseryHPtrBits(value.toBits());
     void* record = hpointerToPtr(record_hptr.toBits());
     if (!record) return;
     Record* rec = static_cast<Record*>(record);
@@ -437,15 +439,30 @@ extern "C" HPtr eco_alloc_cons_fast(uint64_t head, HPtr tail, uint32_t head_kind
 
 extern "C" HPtr eco_alloc_cons_slow(uint64_t head, HPtr tail, uint32_t head_kind) {
     size_t size = sizeof(Cons);
+
+    // Root head/tail across allocateSlow. Caller's RS4GC statepoint covers
+    // these args at the call site, but our by-value parameter copies are
+    // local to this frame and the caller's stackmap doesn't see them, so
+    // a GC during allocateSlow would leave them pointing at the pre-swap
+    // location. Mask bit i set iff slot i is an HPointer.
+    uint64_t roots[2] = { head, tail.toBits() };
+    uint64_t mask = (head_kind != 0) ? 0x2 : 0x3;
+
+    size_t saved = eco_gc_stack_range_point();
+    eco_gc_push_stack_range(roots, 2, mask);
+
     void* obj = Allocator::instance().allocateSlow(size, Tag_Cons);
+
+    eco_gc_restore_stack_range_point(saved);
+
     if (!obj) return HPtr::fromBits(0);
 
     Cons* cons = static_cast<Cons*>(obj);
     cons->header.unboxed = static_cast<u8>(head_kind & 0x3);
-    cons->head.i = static_cast<i64>(head);
-    uint64_t tail_bits = tail.toBits();
+    // Read post-GC values back from roots[].
+    cons->head.i = static_cast<i64>(roots[0]);
     HPointer tail_hp;
-    memcpy(&tail_hp, &tail_bits, sizeof(tail_hp));
+    memcpy(&tail_hp, &roots[1], sizeof(tail_hp));
     cons->tail = tail_hp;
 
     return ptrToHPointer(obj);
@@ -470,13 +487,25 @@ extern "C" HPtr eco_alloc_tuple2_fast(uint64_t a, uint64_t b, uint32_t unboxed_m
 
 extern "C" HPtr eco_alloc_tuple2_slow(uint64_t a, uint64_t b, uint32_t unboxed_mask) {
     size_t size = sizeof(Tuple2);
+
+    // Root HPointer slots across allocateSlow (see eco_alloc_cons_slow above
+    // for the full rationale).
+    uint64_t roots[2] = { a, b };
+    uint64_t mask = pointerMaskFromKindBitmap(unboxed_mask, 2);
+
+    size_t saved = eco_gc_stack_range_point();
+    eco_gc_push_stack_range(roots, 2, mask);
+
     void* obj = Allocator::instance().allocateSlow(size, Tag_Tuple2);
+
+    eco_gc_restore_stack_range_point(saved);
+
     if (!obj) return HPtr::fromBits(0);
 
     Tuple2* tup = static_cast<Tuple2*>(obj);
     tup->header.unboxed = static_cast<u8>(unboxed_mask & 0xF);
-    tup->a.i = static_cast<i64>(a);
-    tup->b.i = static_cast<i64>(b);
+    tup->a.i = static_cast<i64>(roots[0]);
+    tup->b.i = static_cast<i64>(roots[1]);
 
     return ptrToHPointer(obj);
 }
@@ -501,14 +530,26 @@ extern "C" HPtr eco_alloc_tuple3_fast(uint64_t a, uint64_t b, uint64_t c, uint32
 
 extern "C" HPtr eco_alloc_tuple3_slow(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask) {
     size_t size = sizeof(Tuple3);
+
+    // Root HPointer slots across allocateSlow (see eco_alloc_cons_slow above
+    // for the full rationale).
+    uint64_t roots[3] = { a, b, c };
+    uint64_t mask = pointerMaskFromKindBitmap(unboxed_mask, 3);
+
+    size_t saved = eco_gc_stack_range_point();
+    eco_gc_push_stack_range(roots, 3, mask);
+
     void* obj = Allocator::instance().allocateSlow(size, Tag_Tuple3);
+
+    eco_gc_restore_stack_range_point(saved);
+
     if (!obj) return HPtr::fromBits(0);
 
     Tuple3* tup = static_cast<Tuple3*>(obj);
     tup->header.unboxed = static_cast<u8>(unboxed_mask & 0x3F);
-    tup->a.i = static_cast<i64>(a);
-    tup->b.i = static_cast<i64>(b);
-    tup->c.i = static_cast<i64>(c);
+    tup->a.i = static_cast<i64>(roots[0]);
+    tup->b.i = static_cast<i64>(roots[1]);
+    tup->c.i = static_cast<i64>(roots[2]);
 
     return ptrToHPointer(obj);
 }
@@ -863,21 +904,24 @@ extern "C" HPtr eco_init_string_at(void* obj, uint32_t length) {
 }
 
 //===----------------------------------------------------------------------===//
+// Stale-pointer validator (called from the EcoBoxedStoreVerify-inserted
+// barrier in front of compiled-Elm direct heap stores)
+//===----------------------------------------------------------------------===//
+
+extern "C" void eco_validate_nursery_hptr_bits(uint64_t bits) {
+    alloc::validateNurseryHPtrBits(bits);
+}
+
+//===----------------------------------------------------------------------===//
 // Field Store Functions
 //===----------------------------------------------------------------------===//
 
 extern "C" void eco_store_field(HPtr obj_hptr, uint32_t index, HPtr value) {
-#if ECO_GC_DEBUG
-    // Validate the value pointer early to catch stale writes at the moment
-    // they happen, producing a backtrace showing the compiled function.
-    // Skip null/zero and embedded constants — only validate real heap pointers.
-    {
-        HPointer hp;
-        memcpy(&hp, &value, sizeof(hp));
-        if (hp.constant == 0 && hp.ptr != 0)
-            hpointerToPtr(value.toBits());
-    }
-#endif
+    // Always-on per-write stale-pointer tripwire. Catches stale `value`
+    // writes at the moment they happen, producing a backtrace showing the
+    // compiled function. Skips null/zero and embedded constants. See
+    // HeapHelpers.hpp `validateNurseryHPtr` for the rationale.
+    alloc::validateNurseryHPtrBits(value.toBits());
     void* obj = hpointerToPtr(obj_hptr.toBits());
     if (!obj) return;
 
@@ -1149,8 +1193,10 @@ extern "C" HPtr eco_apply_closure(HPtr closure_hptr, uint64_t* args, uint32_t nu
     }
 
     HPtr result;
-#if ECO_GC_DEBUG
-    // Pre-call: validate args are not stale before any inner allocation
+    // Always-on stale-arg tripwire (entry of eco_apply_closure): every
+    // non-constant non-zero HPointer arg must resolve to an allocated
+    // region. Catches callers that hold an HPointer by-value across an
+    // earlier `eco_alloc_*` GC point.
     for (uint32_t dbg_i = 0; dbg_i < num_args; ++dbg_i) {
         uint64_t raw = args[dbg_i];
         HPointer hp;
@@ -1159,7 +1205,6 @@ extern "C" HPtr eco_apply_closure(HPtr closure_hptr, uint64_t* args, uint32_t nu
             hpointerToPtr(raw);
         }
     }
-#endif
     if (num_args == remaining) {
         // Exactly saturated: call evaluator with all args (INV_1).
         result = eco_closure_call_saturated(HPtr::fromBits(closure_bits), args, num_args, /*layout=*/nullptr);
@@ -1176,8 +1221,8 @@ extern "C" HPtr eco_apply_closure(HPtr closure_hptr, uint64_t* args, uint32_t nu
         result = eco_apply_closure(intermediate, args + remaining, num_args - remaining);
     }
 
-#if ECO_GC_DEBUG
-    // Validate args after inner call — catches stale args from stack range failure
+    // Post-call validation: catches the case where the inner call returned
+    // but somehow a stale arg slipped through (e.g. stack-range push failed).
     for (uint32_t dbg_i = 0; dbg_i < num_args; ++dbg_i) {
         uint64_t raw = args[dbg_i];
         HPointer hp;
@@ -1186,14 +1231,12 @@ extern "C" HPtr eco_apply_closure(HPtr closure_hptr, uint64_t* args, uint32_t nu
             hpointerToPtr(raw);
         }
     }
-    // Also validate closure_bits
     {
         HPointer hp;
         memcpy(&hp, &closure_bits, sizeof(hp));
         if (hp.constant == 0 && hp.ptr != 0)
             hpointerToPtr(closure_bits);
     }
-#endif
 
     eco_gc_restore_stack_range_point(saved_range);
     return result;
@@ -1252,10 +1295,9 @@ extern "C" HPtr eco_apply_segmentation_unknown(HPtr closure_hptr,
         if (num_args > 0) {
             eco_gc_push_stack_range(boxed_args, num_args, hptr_mask_all(num_args));
         }
-        // Pre-call validation: check if boxed_args already contains stale pointers
-        // BEFORE eco_apply_closure gets to root them. This catches the case where
-        // ECO-compiled code passes a stale pointer at the C++ call boundary.
-#if ECO_GC_DEBUG
+        // Always-on stale-arg tripwire: catches the case where ECO-compiled
+        // code (or a kernel C++ helper) passes a stale pointer at the C++
+        // call boundary, before eco_apply_closure roots them.
         for (uint32_t dbg_i = 0; dbg_i < num_args; ++dbg_i) {
             uint64_t raw = boxed_args[dbg_i];
             HPointer hp;
@@ -1264,7 +1306,6 @@ extern "C" HPtr eco_apply_segmentation_unknown(HPtr closure_hptr,
                 hpointerToPtr(raw); // triggers debugAssertValidNurseryPointer if stale
             }
         }
-#endif
         result = eco_apply_closure(HPtr::fromBits(closure_bits), boxed_args, num_args);
     }
 
@@ -1404,27 +1445,17 @@ extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args
     // Re-resolve closure after buildEvaluatorArgs: boxing allocs inside
     // may have triggered GC and moved the closure.
     closure = static_cast<Closure*>(hpointerToPtr(closure_bits));
-#if ECO_GC_DEBUG
-    // Validate combined_args before calling evaluator.
+    // Always-on stale-arg tripwire: validate combined_args before calling
+    // evaluator. Catches stale entries from buildEvaluatorArgs (e.g. closure
+    // re-resolved badly, or new_args arrived stale).
     for (uint32_t dbg_i = 0; dbg_i < max_values; ++dbg_i) {
         uint64_t raw = reinterpret_cast<uint64_t>(combined_args[dbg_i]);
         HPointer hp;
         memcpy(&hp, &raw, sizeof(hp));
         if (hp.constant == 0 && hp.ptr != 0) {
-            uint32_t bitmap_slot = Elm::fieldKind(closure->unboxed, dbg_i);
-            bool is_capture = dbg_i < closure->n_values;
-            fprintf(stderr,
-                "[DBG] eco_closure_call_saturated: checking arg[%u] "
-                "(is_capture=%d, n_values=%u, max_values=%u) "
-                "unboxed=0x%013llx bitmap_slot[%u]=%u raw=0x%016llx\n",
-                dbg_i, (int)is_capture,
-                (unsigned)closure->n_values, (unsigned)max_values,
-                (unsigned long long)closure->unboxed, dbg_i, bitmap_slot,
-                (unsigned long long)raw);
             hpointerToPtr(raw); // triggers debugAssertValidNurseryPointer
         }
     }
-#endif
     void* result = closure->evaluator(combined_args);
 
     eco_gc_restore_stack_range_point(saved_range);
@@ -2871,6 +2902,17 @@ extern "C" HPtr eco_clone_array(HPtr array_hptr) {
     for (uint32_t i = 0; i < len; i++) {
         dst->elements[i] = src->elements[i];
     }
+
+#ifdef ECO_LOWERING_VALIDATION
+    // Stale-pointer barrier — only when the array claims to be boxed.
+    // Unconditional validation false-positives on integer arrays whose
+    // values happen to bit-decode as in-nursery addresses (e.g. a BitSet
+    // chunk = 0x60082000), which is plenty common in compiler internals.
+    if ((dst->header.unboxed & 0x3) == 0) {
+        for (uint32_t i = 0; i < len; i++)
+            alloc::validateNurseryHPtr(dst->elements[i].p);
+    }
+#endif
 
     return HPtr::fromHPointer(resultHp);
 }

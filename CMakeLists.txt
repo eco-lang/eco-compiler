@@ -19,6 +19,18 @@ if(ECO_GC_DEBUG)
     add_compile_definitions(ECO_GC_DEBUG=1)
 endif()
 
+# Validation-only switch for verifier passes (e.g. EcoBoxedStoreVerify,
+# EcoPtrIntVerify, the GC liveness audit) AND extra runtime barriers in
+# kernel/allocator copy loops that don't go through the hooked
+# eco_store_field path. Independent of ECO_GC_DEBUG. Default OFF
+# regardless of build type — slow.
+option(ECO_LOWERING_VALIDATION
+       "Enable validation-only verifier passes and runtime copy-loop barriers (slow)"
+       OFF)
+if(ECO_LOWERING_VALIDATION)
+    add_compile_definitions(ECO_LOWERING_VALIDATION=1)
+endif()
+
 add_executable(ecor
         runtime/src/main.cpp
         runtime/src/allocator/RootSet.cpp

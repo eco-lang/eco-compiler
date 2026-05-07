@@ -224,6 +224,7 @@ set_source_files_properties(
     Passes/EcoToLLVMFunc.cpp
     Passes/EcoGCStrategy.cpp
     Passes/EcoPtrIntVerify.cpp
+    Passes/EcoBoxedStoreVerify.cpp
     Passes/BFToLLVM.cpp
     PROPERTIES OBJECT_DEPENDS "${ECO_TABLEGEN_OUTPUTS};${BF_TABLEGEN_OUTPUTS}"
 )
@@ -287,6 +288,8 @@ add_mlir_library(EcoPasses
     Passes/EcoGCStrategy.cpp
     # Post-RS4GC ptr<1>↔i64 boundary verifier (gated by ECO_LOWERING_VALIDATION)
     Passes/EcoPtrIntVerify.cpp
+    # Pre-store stale-HPointer barrier on direct boxed-slot stores (gated by ECO_LOWERING_VALIDATION)
+    Passes/EcoBoxedStoreVerify.cpp
     # BF (ByteFusion) dialect lowering
     Passes/BFToLLVM.cpp
 

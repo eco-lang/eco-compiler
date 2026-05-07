@@ -84,6 +84,15 @@ void buildEcoToLLVMPipeline(PassManager &pm) {
     // Stage 3: Eco -> LLVM Dialect.
     pm.addPass(eco::createBFToLLVMPass());
     pm.addPass(eco::createEcoToLLVMPass());
+#ifdef ECO_LOWERING_VALIDATION
+    // Insert stale-HPointer barriers in front of direct boxed-slot stores
+    // emitted by EcoToLLVM (currently only eco.array.set). Must run after
+    // EcoToLLVM (which attaches the eco.boxed_slot marker) and before any
+    // pass that might re-canonicalise or drop unknown attributes on
+    // LLVM::StoreOp; running it immediately after the lowering keeps the
+    // window minimal.
+    pm.addPass(eco::createEcoBoxedStoreVerifyPass());
+#endif
     pm.addPass(createSCFToControlFlowPass());
     pm.addPass(createConvertControlFlowToLLVMPass());
     pm.addPass(createArithToLLVMConversionPass());

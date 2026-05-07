@@ -260,6 +260,11 @@ HPtr Elm_Kernel_List_toArray(HPtr list) {
     elmArr->length = static_cast<u32>(rooted.size());
     elmArr->header.unboxed = 0;  // Elements are boxed
 
+#ifdef ECO_LOWERING_VALIDATION
+    for (size_t i = 0; i < rooted.size(); i++)
+        Elm::alloc::validateNurseryHPtr(elmArr->elements[i].p);
+#endif
+
     rs.restoreStackRangePoint(saved);
     return HPtr::fromBits(Export::encode(arr));
 }

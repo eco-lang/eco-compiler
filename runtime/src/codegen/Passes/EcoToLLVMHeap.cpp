@@ -1045,8 +1045,17 @@ struct ArraySetOpLowering : public OpConversionPattern<ArraySetOp> {
             return op.emitError("unsupported value type for eco.array.set");
         }
 
-        // Store into the element slot
-        rewriter.create<LLVM::StoreOp>(loc, raw, elemPtr);
+        // Store into the element slot. When the value is boxed (i.e. the
+        // original ECO type was eco.value, normalised to i64 via
+        // heapStoreValueToI64 above), tag the StoreOp with `eco.boxed_slot`
+        // so the EcoBoxedStoreVerify pass can insert a stale-HPointer
+        // barrier in front of the store. This is the only direct LLVM
+        // StoreOp that writes a boxed slot from compiled Elm — every other
+        // boxed-slot write goes through eco_store_field/_record_field,
+        // which already self-validate.
+        auto storeOp = rewriter.create<LLVM::StoreOp>(loc, raw, elemPtr);
+        if (isa<eco::ValueType>(origValueType))
+            storeOp->setAttr("eco.boxed_slot", rewriter.getUnitAttr());
 
         // Return new array as eco.value (i64 HPointer)
         rewriter.replaceOp(op, newArrayHPtr);

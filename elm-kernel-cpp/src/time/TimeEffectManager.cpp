@@ -367,32 +367,43 @@ static void* timeSubMapEvaluator(void* args[]) {
     // args[0] = mapper function
     // args[1] = original sub
 
-    uint64_t mapperEnc = reinterpret_cast<uint64_t>(args[0]);
-    uint64_t subEnc = reinterpret_cast<uint64_t>(args[1]);
+    auto& allocator = Allocator::instance();
 
-    HPointer mapper = decodeHP(mapperEnc);
-    HPointer origSub = decodeHP(subEnc);
+    // Root mapper and origSub across allocClosure / closureCapture / custom
+    // — those allocations would otherwise leave by-value HPointer locals
+    // pointing at the pre-swap location. origTagger (read out of origSub)
+    // is also rooted because it survives across allocClosure.
+    HPointer mapper = decodeHP(reinterpret_cast<uint64_t>(args[0]));
+    HPointer origSub = decodeHP(reinterpret_cast<uint64_t>(args[1]));
+    HPointer origTagger = listNil();  // placeholder; will be set below
+    Elm::StackRootGuard guards(&mapper, &origSub, &origTagger);
 
-    void* subPtr = Allocator::instance().resolve(origSub);
+    void* subPtr = allocator.resolve(origSub);
     if (!subPtr) {
-        return reinterpret_cast<void*>(subEnc);  // Return unchanged
+        return reinterpret_cast<void*>(encodeHP(origSub));  // Return unchanged
     }
 
     Custom* sub = static_cast<Custom*>(subPtr);
     if (sub->ctor != CTOR_TIME_EVERY) {
-        return reinterpret_cast<void*>(subEnc);  // Not our sub type
+        return reinterpret_cast<void*>(encodeHP(origSub));  // Not our sub type
     }
 
-    // Get original interval and tagger
+    // Get original interval and tagger. Snapshot before any further alloc.
     double interval = sub->values[0].f;
-    HPointer origTagger = sub->values[1].p;
+    origTagger = sub->values[1].p;
+    // From here on, `sub` and `subPtr` are stale-on-GC; do not re-use them.
 
     // Create composed tagger: mapper . origTagger
     // composedTagger = \time -> mapper (origTagger time)
     HPointer composedTagger = allocClosure(composedTaggerEvaluator, 3);
-    void* clPtr = Allocator::instance().resolve(composedTagger);
+    Elm::StackRootGuard ctRoot(&composedTagger);
+    void* clPtr = allocator.resolve(composedTagger);
     if (clPtr) {
         closureCapture(clPtr, boxed(mapper), true);
+        // closureCapture is called twice; re-resolve composedTagger between
+        // calls because closureCapture (allocator-aware) may move things on
+        // unboxed-capture allocs. Cheap to re-resolve.
+        clPtr = allocator.resolve(composedTagger);
         closureCapture(clPtr, boxed(origTagger), true);
     }
 

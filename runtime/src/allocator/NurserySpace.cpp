@@ -32,9 +32,9 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
-#if ECO_GC_DEBUG
+// Always-on: needed by debugAssertValidNurseryPointer's diagnostic
+// (release-mode stale-arg tripwire prints a backtrace).
 #include <execinfo.h>
-#endif
 
 #if ECO_GC_DEBUG
 // Track which heap object is currently being scanned during Cheney scan,
@@ -553,8 +553,9 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // bodies whose recorded color doesn't match at the end are freed.
     minor_color_ = !minor_color_;
 
-#if ECO_GC_DEBUG
+    // Always-on (used by stale-arg detection in `debugAssertValidNurseryPointer`).
     in_minor_gc_ = true;
+#if ECO_GC_DEBUG
     std::fprintf(stderr, "[gc] minorGC start from_is_low=%d\n", (int)from_is_low_);
 #endif
 
@@ -671,13 +672,32 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
 #if ECO_GC_DEBUG
     in_phase3_ = true;
 #endif
-    for (size_t i = 0; i < promoted_objects.size(); i++) {
-        scanObject(promoted_objects[i], oldgen, &promoted_objects);
+    // Drain alternately between to-space and the promoted-objects queue
+    // until both are empty. Scanning a promoted object can copy YOUNG
+    // children into to-space (when the child's age < promotion_age) —
+    // Elm's immutability invariant is supposed to forbid this (children of
+    // a promoted object should be at least as old as the parent), but
+    // kernel-side mutation paths can violate it. Without re-draining,
+    // those new to-space objects would never be scanned and their boxed
+    // slots would remain pointing at from-space, surfacing as stale refs
+    // at the next mutator read. Conversely, scanning a fresh to-space
+    // object can promote an aged child, growing the queue further; hence
+    // the alternation runs to mutual fixed point.
+    size_t promoted_idx = 0;
+    while (scanHasMore() || promoted_idx < promoted_objects.size()) {
+        while (scanHasMore()) {
+            void *obj = scan_ptr_;
+            scanObject(obj, oldgen, &promoted_objects);
+            scan_ptr_ += getObjectSize(obj);
+            advanceScanIfNeeded();
+        }
+        while (promoted_idx < promoted_objects.size()) {
+            scanObject(promoted_objects[promoted_idx++], oldgen, &promoted_objects);
+        }
     }
 #if ECO_GC_DEBUG
     in_phase3_ = false;
 #endif
-
 
     // Phase 4: Check occupancy and grow if needed.
     checkAndGrow();
@@ -686,9 +706,13 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // Called after checkAndGrow() so newly added blocks are also zeroed.
     clearToSpaceFreeRegion();
 
-#if ECO_GC_DEBUG
+#if defined(ECO_GC_DEBUG) || defined(ECO_LOWERING_VALIDATION)
     // Post-GC heap integrity check: walk all surviving objects in to-space
-    // and verify every boxed child pointer points outside from-space.
+    // and verify every boxed child pointer points outside from-space. A
+    // child still in from-space at this point (without a Tag_Forward
+    // header) means GC failed to forward it — diagnostic for stale-pointer
+    // corruption that would surface as a poisoned-region read at the next
+    // mutator phase.
     {
         std::vector<char*>& to = from_is_low_ ? high_blocks_ : low_blocks_;
         for (size_t blk = 0; blk <= current_to_idx_ && blk < to.size(); ++blk) {
@@ -771,6 +795,21 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                         ElmStringRope* r = static_cast<ElmStringRope*>(static_cast<void*>(scan));
                         checkChild(r->left, "rope-left", 0);
                         checkChild(r->right, "rope-right", 0);
+                        break;
+                    }
+                    case Tag_Array: {
+                        ElmArray* a = static_cast<ElmArray*>(static_cast<void*>(scan));
+                        // Only walk when the array claims boxed elements.
+                        // For an unboxed-tagged array we have no good way to
+                        // tell whether random-looking element bits are real
+                        // pointers (false positives), so we trust the kind
+                        // tag here and rely on the GC-time kind-mismatch
+                        // tripwire (case Tag_Array in evacuate) to flag
+                        // arrays whose tag is lying.
+                        if ((a->header.unboxed & 0x3) == 0) {
+                            for (u32 i = 0; i < a->length; i++)
+                                checkChild(a->elements[i].p, "array", static_cast<int>(i));
+                        }
                         break;
                     }
                     default: break;
@@ -892,9 +931,16 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
             }
         }
     }
-
-    in_minor_gc_ = false;
 #endif
+
+    // Always-on (paired with the assignment at the start of minorGC).
+    in_minor_gc_ = false;
+
+    // Stale-pointer diagnostic aid: poison the just-evacuated from-space's
+    // allocated bytes BEFORE the swap, so any stale mutator HPointer that
+    // still references those bytes lands on recognisable poison (or trips
+    // the detector). See poisonOldFromSpaceUsedRegion for details.
+    poisonOldFromSpaceUsedRegion();
 
     // Phase 5: Swap spaces by flipping which is from/to.
     from_is_low_ = !from_is_low_;
@@ -1396,6 +1442,37 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
         case Tag_Array: {
             ElmArray *arr = static_cast<ElmArray *>(obj);
             bool is_boxed = (arr->header.unboxed & 0x3) == 0;
+#ifdef ECO_LOWERING_VALIDATION
+            // Kind-mismatch tripwire: if the array claims unboxed but its
+            // element bit-patterns decode to in-from-space-allocated
+            // addresses (real live objects we're about to evacuate), the
+            // kind tag is lying — those elements are real boxed pointers
+            // that we're about to leave un-forwarded, which is exactly
+            // the bug pattern that produces stale-pointer reads after the
+            // GC swap. Trip immediately so the GC's caller-frame backtrace
+            // names the mutator path that mis-tagged this array.
+            if (!is_boxed) {
+                char* heap_base = Allocator::instance().getHeapBase();
+                for (u32 i = 0; i < arr->length; i++) {
+                    HPointer hp = arr->elements[i].p;
+                    if (hp.constant != 0 || hp.ptr == 0) continue;
+                    uintptr_t byte_offset =
+                        static_cast<uintptr_t>(hp.ptr) << 3;
+                    void* tgt = heap_base + byte_offset;
+                    if (isInFromSpaceAllocatedRegion(tgt)) {
+                        fprintf(stderr,
+                            "[gc-debug] ARRAY KIND-MISMATCH at arr=%p "
+                            "elements[%u]: header.unboxed=%u (claims "
+                            "unboxed) but element bits decode to a live "
+                            "from-space target %p — element will not be "
+                            "forwarded.\n",
+                            (void*)arr, i,
+                            (unsigned)arr->header.unboxed, tgt);
+                        std::abort();
+                    }
+                }
+            }
+#endif
             for (u32 i = 0; i < arr->length; i++) {
                 evacuateUnboxable(arr->elements[i], is_boxed, oldgen, promoted_objects);
             }
@@ -1643,11 +1720,42 @@ void NurserySpace::clearToSpaceFreeRegion() {
     }
 }
 
-// ============================================================================
-// Debug-only: stale nursery pointer detection
-// ============================================================================
+// Stale-pointer diagnostic aid: fill the just-evacuated from-space's
+// allocated region with a recognisable poison byte so that any stale
+// HPointer the mutator still holds either:
+//   (a) trips the per-resolve detector in `debugAssertValidNurseryPointer`
+//       (which classifies post-swap to-space as "free"), OR
+//   (b) on a path that bypasses Allocator::resolve, dereferences as an
+//       obviously-bogus header (tag = 29, > Tag_Forward) and trips the
+//       always-on `assert(hdr->tag <= Tag_Forward)` in evacuate.
+//
+// The 0xDD byte was picked so the resulting HPointer has constant=13
+// (out of range for valid embedded constants 0-7) which makes
+// NurserySpace::evacuate treat it as a constant and bail early — i.e.
+// the poison itself never trips the GC walker on its own, only the
+// stale references TO it produce useful diagnostics.
+//
+// Cost: O(bytes used by the previous mutator phase) per minor GC. Run
+// only on the from-space *allocated* prefix, not the entire nursery.
+void NurserySpace::poisonOldFromSpaceUsedRegion() {
+    constexpr uint8_t kPoisonByte = 0xDD;
+    std::vector<char*>& from_blocks = from_is_low_ ? low_blocks_ : high_blocks_;
+    if (from_blocks.empty()) return;
 
-#if ECO_GC_DEBUG
+    for (size_t i = 0; i <= current_from_idx_ && i < from_blocks.size(); ++i) {
+        char* block_start = from_blocks[i];
+        char* block_end   = block_start + block_size_;
+        char* end         = (i == current_from_idx_) ? alloc_ptr_ : block_end;
+        if (end > block_start) {
+            std::memset(block_start, kPoisonByte,
+                        static_cast<size_t>(end - block_start));
+        }
+    }
+}
+
+// ============================================================================
+// Stale nursery pointer detection (always-on)
+// ============================================================================
 
 bool NurserySpace::isInFromSpaceAllocatedRegion(void* ptr) const {
     char* p = static_cast<char*>(ptr);
@@ -1759,8 +1867,10 @@ void NurserySpace::debugAssertValidNurseryPointer(void* ptr) const {
         int n = backtrace(bt, 40);
         backtrace_symbols_fd(bt, n, fileno(stderr));
 
+#if ECO_GC_DEBUG
         // Scan parent tracking: if we crashed during scanObject, show
-        // which heap object was being scanned.
+        // which heap object was being scanned. Only available under
+        // ECO_GC_DEBUG (g_scan_parent is debug-only).
         if (g_scan_parent) {
             std::fprintf(stderr, "  SCAN PARENT: obj=%p tag=%d size=%u\n",
                          g_scan_parent, g_scan_tag, (unsigned)g_scan_size);
@@ -1769,10 +1879,9 @@ void NurserySpace::debugAssertValidNurseryPointer(void* ptr) const {
                 std::fprintf(stderr, "  parent[%d] = 0x%016lx\n", x, pw[x]);
             }
         }
+#endif
     }
     assert(ok && "HPointer into nursery free region (stale pointer into unallocated space)");
 }
-
-#endif // ECO_GC_DEBUG
 
 } // namespace Elm

@@ -160,6 +160,14 @@ public:
         return p >= heap_base && p < heap_base + heap_reserved;
     }
 
+    // Stale-pointer barrier safe for arbitrary 64-bit values (e.g. an
+    // unboxed Int reinterpreted as an HPointer). Never dereferences:
+    // decodes to a physical address via heap_base + (ptr<<3), bounds-
+    // checks against the nursery, and only then runs the always-on
+    // free-region tripwire. Returns silently for embedded constants,
+    // null pointers, and any address outside the nursery.
+    void validateInNurserySafe(HPointer hp);
+
     // Returns the current number of bytes allocated in thread-local old gen.
     size_t getOldGenAllocatedBytes() const;
 

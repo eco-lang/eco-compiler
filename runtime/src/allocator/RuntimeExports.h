@@ -501,6 +501,16 @@ int64_t eco_int_pow(int64_t base, int64_t exp);
 /// @return Raw pointer to the heap object, or nullptr
 void* eco_resolve_hptr(HPtr hptr);
 
+/// Stale-pointer barrier emitted by the EcoBoxedStoreVerify pass before
+/// each compiled-Elm direct heap store of a boxed value. Routes the bits
+/// through Elm::alloc::validateNurseryHPtrBits, which resolves the
+/// HPointer; resolves that land in the just-evacuated from-space trip
+/// the always-on debugAssertValidNurseryPointer with diagnostics
+/// pinpointing the offending compiled frame. No-op for null/embedded
+/// constants. Always exported so the JIT can resolve the symbol; the
+/// pass that inserts the call is gated by ECO_LOWERING_VALIDATION.
+void eco_validate_nursery_hptr_bits(uint64_t bits);
+
 /// Clone an ElmArray, returning a new array with the same contents.
 /// Used by eco.array.set lowering for functional array update.
 /// @param array_hptr HPointer to source ElmArray (as uint64_t)

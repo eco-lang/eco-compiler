@@ -86,110 +86,58 @@ static void* httpOnEffectsEvaluator(void* args[]) {
     // args[2] = subs (ignored - Http has no subscriptions)
     // args[3] = state
 
-    uint64_t routerEnc = reinterpret_cast<uint64_t>(args[0]);
-    uint64_t cmdsEnc = reinterpret_cast<uint64_t>(args[1]);
-
-    HPointer router = decodeHP(routerEnc);
-    HPointer cmds = decodeHP(cmdsEnc);
-
     auto& sched = Scheduler::instance();
+    auto& allocator = Allocator::instance();
 
-    // Process each command
-    // Each Http command is a record: { request : Request msg, toMsg : Result Error a -> msg }
-    // Or it might be the raw Task already wrapped in a Cmd structure
+    // `router` and the list cursor `current` must survive every alloc inside
+    // the loop body (allocClosure / closureCapture / taskAndThen / rawSpawn);
+    // by-value HPointer locals would otherwise become stale across the GC.
+    HPointer router = decodeHP(reinterpret_cast<uint64_t>(args[0]));
+    HPointer current = decodeHP(reinterpret_cast<uint64_t>(args[1]));
+    Elm::StackRootGuard outerRoots(&router, &current);
 
-    HPointer current = cmds;
     while (!isNil(current)) {
-        void* cellPtr = Allocator::instance().resolve(current);
+        void* cellPtr = allocator.resolve(current);
         if (!cellPtr) break;
 
         Cons* cell = static_cast<Cons*>(cellPtr);
+        // Snapshot head/tail BEFORE any subsequent alloc; cell becomes a stale
+        // raw pointer the moment the next allocation runs.
         HPointer cmdHP = cell->head.p;
+        HPointer nextCurrent = cell->tail;
+        Elm::StackRootGuard iterRoots(&cmdHP, &nextCurrent);
 
-        // The command structure depends on how Http.request builds it
-        // In Elm's Http module, commands wrap a Task and a tagger
-        // The command is: { task : Task Error a, toMsg : Result Error a -> msg }
-
-        void* cmdPtr = Allocator::instance().resolve(cmdHP);
+        void* cmdPtr = allocator.resolve(cmdHP);
         if (cmdPtr) {
-            // Check if this is a record with task and toMsg fields
-            // Fields in canonical order: task=0, toMsg=1 (alphabetically: task, toMsg)
-            // Actually the ordering depends on the exact field names used in Http.elm
-            // Let's assume the Cmd carries: { request, toMsg } or similar
-
-            // For the basic case, HTTP commands might just be the Task directly
-            // with the tagger pre-applied (the result already goes to the right msg type)
-
-            // Check the type - if it's a Task, spawn it directly
-            // If it's a Custom/Record, extract the task and spawn it
-
-            Record* cmd = static_cast<Record*>(cmdPtr);
-
-            // Try to handle it as having a task field
-            // For now, assume the command IS the task (simplest case)
-            // The actual structure depends on how Platform.Cmd.map wraps things
-
-            // Spawn the task
-            // When the task completes, its result needs to be sent to app via router
-
-            // Create a continuation that sends result to app
-            auto resultHandler = [](void* innerArgs[]) -> void* {
-                uint64_t routerEnc = reinterpret_cast<uint64_t>(innerArgs[0]);
-                uint64_t taggerEnc = reinterpret_cast<uint64_t>(innerArgs[1]);
-                uint64_t resultEnc = reinterpret_cast<uint64_t>(innerArgs[2]);
-
-                HPointer router = decodeHP(routerEnc);
-                HPointer result = decodeHP(resultEnc);
-
-                // Call tagger(result) to get the message
-                uint64_t msgEnc = eco_apply_closure(HPtr::fromBits(taggerEnc), &resultEnc, 1).toBits();
-                HPointer msg = decodeHP(msgEnc);
-
-                // Send to app
-                PlatformRuntime::instance().sendToApp(router, msg);
-
-                return reinterpret_cast<void*>(encodeHP(unit()));
-            };
-
-            // For now, if the cmd is a Record, try to extract task field
-            // This is a simplified approach - real implementation would need
-            // to match Elm's actual Cmd structure
-
-            // The Elm Http module typically wraps commands as:
-            // Platform.Cmd.map toMsg (Http.toTask request)
-            // Which means the tagger is already applied by Cmd.map
-
-            // In that case, we just need to spawn the task and send result to app
-            // Let's check if it looks like a task (has Task tag)
-
             Header* header = static_cast<Header*>(cmdPtr);
             if (header->tag == Tag_Task) {
-                // It's directly a Task - spawn it with callback to send result
-                Task* taskObj = static_cast<Task*>(cmdPtr);
-
-                // Create andThen to handle success
+                // It's directly a Task - spawn it with callback to send result.
+                // Create andThen to handle success.
                 HPointer successCl = allocClosure(httpSuccessHandler, 2);
-                void* clPtr = Allocator::instance().resolve(successCl);
+                Elm::StackRootGuard clRoot(&successCl);
+                void* clPtr = allocator.resolve(successCl);
                 if (clPtr) {
                     closureCapture(clPtr, boxed(router), true);
                 }
 
-                // Wrap task with andThen for success handling
+                // Wrap task with andThen for success handling.
                 HPointer wrappedTask = sched.taskAndThen(successCl, cmdHP);
 
-                // Spawn process for this command
+                // Spawn process for this command.
                 sched.rawSpawn(wrappedTask);
             }
-            // If it's not directly a Task, it might be a Cmd wrapper
-            // For now, skip non-Task commands
+            // If it's not directly a Task, it might be a Cmd wrapper.
+            // For now, skip non-Task commands.
         }
 
-        current = cell->tail;
+        current = nextCurrent;
     }
 
-    // Return Task.succeed(state) - state unchanged
+    // Return Task.succeed(state) - state unchanged. Read args[3] at the
+    // point of use so we pick up the current (post-loop GCs) value from the
+    // caller's rooted combined_args buffer.
     uint64_t stateEnc = reinterpret_cast<uint64_t>(args[3]);
-    HPointer task = Scheduler::instance().taskSucceed(decodeHP(stateEnc));
+    HPointer task = sched.taskSucceed(decodeHP(stateEnc));
     return reinterpret_cast<void*>(encodeHP(task));
 }
 
@@ -208,26 +156,30 @@ static void* httpCmdMapEvaluator(void* args[]) {
     // args[0] = mapper function
     // args[1] = original cmd
 
-    uint64_t mapperEnc = reinterpret_cast<uint64_t>(args[0]);
-    uint64_t cmdEnc = reinterpret_cast<uint64_t>(args[1]);
+    auto& allocator = Allocator::instance();
 
-    HPointer mapper = decodeHP(mapperEnc);
-    HPointer origCmd = decodeHP(cmdEnc);
+    // Root mapper and origCmd across allocClosure / closureCapture /
+    // taskAndThen — each is a GC point that would otherwise leave the
+    // by-value HPointer locals pointing at the pre-swap location.
+    HPointer mapper = decodeHP(reinterpret_cast<uint64_t>(args[0]));
+    HPointer origCmd = decodeHP(reinterpret_cast<uint64_t>(args[1]));
+    Elm::StackRootGuard guards(&mapper, &origCmd);
 
     // If the command is a Task, wrap it with map/andThen
-    void* cmdPtr = Allocator::instance().resolve(origCmd);
+    void* cmdPtr = allocator.resolve(origCmd);
     if (!cmdPtr) {
-        return reinterpret_cast<void*>(cmdEnc);
+        return reinterpret_cast<void*>(encodeHP(origCmd));
     }
 
     Header* header = static_cast<Header*>(cmdPtr);
     if (header->tag != Tag_Task) {
-        return reinterpret_cast<void*>(cmdEnc);
+        return reinterpret_cast<void*>(encodeHP(origCmd));
     }
 
     // Create andThen callback that applies mapper to result
     HPointer mapCl = allocClosure(httpMapHandler, 2);
-    void* clPtr = Allocator::instance().resolve(mapCl);
+    Elm::StackRootGuard mapClRoot(&mapCl);
+    void* clPtr = allocator.resolve(mapCl);
     if (clPtr) {
         closureCapture(clPtr, boxed(mapper), true);
     }
