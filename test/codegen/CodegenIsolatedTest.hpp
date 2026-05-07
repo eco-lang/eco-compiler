@@ -97,45 +97,69 @@ inline bool isExpectedFail(const std::string& content) {
 }
 
 /**
- * Extract CHECK patterns from test file content.
+ * Extracted CHECK directives from a test file.
+ *  - `must_match` patterns (from `// CHECK:`) must appear in output.
+ *  - `must_not_match` patterns (from `// CHECK-NOT:`) must NOT appear anywhere.
  */
-inline std::vector<std::string> extractCheckPatterns(const std::string& content) {
-    std::vector<std::string> patterns;
+struct CheckPatterns {
+    std::vector<std::string> must_match;
+    std::vector<std::string> must_not_match;
+};
+
+/**
+ * Trim leading/trailing whitespace from a pattern string.
+ */
+inline std::string trimPattern(std::string pattern) {
+    size_t start = pattern.find_first_not_of(" \t");
+    if (start != std::string::npos) pattern = pattern.substr(start);
+    size_t end = pattern.find_last_not_of(" \t\r\n");
+    if (end != std::string::npos) pattern = pattern.substr(0, end + 1);
+    return pattern;
+}
+
+/**
+ * Extract `// CHECK:` and `// CHECK-NOT:` patterns from test file content.
+ * Note: `CHECK-NOT` is checked first to avoid the `CHECK:` substring match
+ * also picking it up.
+ */
+inline CheckPatterns extractCheckPatterns(const std::string& content) {
+    CheckPatterns patterns;
     std::istringstream stream(content);
     std::string line;
 
     while (std::getline(stream, line)) {
-        // Look for // CHECK: patterns
+        // CHECK-NOT must be tested before CHECK because the CHECK substring
+        // appears inside CHECK-NOT.
+        size_t notPos = line.find("// CHECK-NOT:");
+        if (notPos != std::string::npos) {
+            std::string pattern = trimPattern(line.substr(notPos + 13));  // skip "// CHECK-NOT: "
+            if (!pattern.empty()) patterns.must_not_match.push_back(pattern);
+            continue;
+        }
         size_t pos = line.find("// CHECK:");
         if (pos != std::string::npos) {
-            std::string pattern = line.substr(pos + 10);  // Skip "// CHECK: "
-            // Trim leading whitespace
-            size_t start = pattern.find_first_not_of(" \t");
-            if (start != std::string::npos) {
-                pattern = pattern.substr(start);
-            }
-            // Trim trailing whitespace
-            size_t end = pattern.find_last_not_of(" \t\r\n");
-            if (end != std::string::npos) {
-                pattern = pattern.substr(0, end + 1);
-            }
-            if (!pattern.empty()) {
-                patterns.push_back(pattern);
-            }
+            std::string pattern = trimPattern(line.substr(pos + 10));  // skip "// CHECK: "
+            if (!pattern.empty()) patterns.must_match.push_back(pattern);
         }
     }
     return patterns;
 }
 
 /**
- * Verify that output contains all CHECK patterns.
- * Returns empty string on success, error message on failure.
+ * Verify that output contains all `must_match` patterns and none of the
+ * `must_not_match` patterns. Returns empty string on success, error message
+ * on failure.
  */
 inline std::string verifyPatterns(const std::string& output,
-                                   const std::vector<std::string>& patterns) {
-    for (const auto& pattern : patterns) {
+                                   const CheckPatterns& patterns) {
+    for (const auto& pattern : patterns.must_match) {
         if (output.find(pattern) == std::string::npos) {
             return "Missing pattern: " + pattern;
+        }
+    }
+    for (const auto& pattern : patterns.must_not_match) {
+        if (output.find(pattern) != std::string::npos) {
+            return "Forbidden pattern present: " + pattern;
         }
     }
     return "";  // Success

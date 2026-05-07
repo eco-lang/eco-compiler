@@ -1016,8 +1016,10 @@ def Eco_PapCreateOp : Eco_Op<"papCreate", [
 
     Each captured slot occupies 2 bits of `unboxed_bitmap`: `00` = boxed
     HPointer, `01` = Int, `10` = Float, `11` = Char. Slot i's kind lives
-    at bits [2i, 2i+1]. The 52-bit bitmap supports at most 26 typed
-    captures (captures beyond that are stored boxed).
+    at bits [2i, 2i+1]. The 50-bit bitmap supports at most 25 typed
+    captures (captures beyond that are stored boxed). The upper 2 bits of
+    the 52-bit packed field hold per-closure capability flags
+    (Closure::flags), not bitmap data.
     This is the source-of-truth; lowering trusts this value.
 
     For typed closure calling, closures with captures have:
@@ -1146,8 +1148,9 @@ def Eco_PapExtendOp : Eco_Op<"papExtend", [
 
     Each new-arg slot occupies 2 bits of `newargs_unboxed_bitmap`: `00` =
     boxed HPointer, `01` = Int, `10` = Float, `11` = Char. Slot i's kind
-    lives at bits [2i, 2i+1]. At most 26 typed new-args fit in the
-    resulting closure's 52-bit bitmap.
+    lives at bits [2i, 2i+1]. At most 25 typed new-args fit in the
+    resulting closure's 50-bit bitmap (the remaining 2 bits of the 52-bit
+    field hold per-closure capability flags; see Closure::flags).
     This is the source-of-truth; lowering trusts this value.
 
     For typed closure calling (typed mode only):

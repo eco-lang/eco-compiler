@@ -36,7 +36,8 @@
  *   - Record: record->unboxed bitmap (up to 32 typed fields in 64 bits)
  *   - Custom: custom->unboxed bitmap (up to 24 typed fields in 48 bits)
  *   - ElmArray: Header.unboxed (low 2 bits, uniform kind for all elements)
- *   - Closure: closure->unboxed bitmap (up to 26 typed captures in 52 bits)
+ *   - Closure: closure->unboxed bitmap (up to 25 typed captures in 50 bits;
+ *     the remaining 2 bits of the 52-bit field hold Closure::flags)
  *
  * Kind-to-EcoPrimKind mapping for unboxed slots:
  *   bitmap kind == 0  ⇒ slot is boxed HPointer; EcoPrimKind (from the type graph)

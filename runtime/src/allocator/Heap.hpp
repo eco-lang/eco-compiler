@@ -353,12 +353,22 @@ typedef void *(*EvalFunction)(void *[]);
 /// args to the result closure (which has its own n_values/max_values header).
 typedef struct {
     Header header;
-    u64 n_values : 6;      // Applied arity: args already captured for this stage (0-63).
-    u64 max_values : 6;    // Stage arity: total args this evaluator expects (0-63).
-    u64 unboxed : 52;      // Bitmap: bit N set means captured value N is unboxed (max 52 with unboxing).
+    u64 n_values  : 6;     // Applied arity: args already captured for this stage (0-63).
+    u64 max_values: 6;     // Stage arity: total args this evaluator expects (0-63).
+    u64 unboxed   : 50;    // 2-bit-per-slot kinds for captures 0..24 (50 = 25 slots).
+    u64 flags     : 2;     // Per-closure capability bits (see ClosureFlags).
     EvalFunction evaluator;
     Unboxable values[];
 } Closure;
+
+/// Per-closure capability bits stored in Closure::flags.
+/// Bit 0 — evaluator accepts typed newargs without re-boxing. When set,
+/// `eco_apply_closure_typed` must NOT route through eco_apply_closure
+/// (the legacy boxed-args dispatcher); it dispatches directly to the
+/// closure's typed wrapper, passing the raw `int64_t*` buffer.
+enum ClosureFlags : unsigned char {
+    CLOSURE_FLAG_TYPED_NEWARGS = 1u << 0,
+};
 
 /// Type tag for each evaluator parameter slot, used by buildEvaluatorArgs
 /// to re-box unboxed captured values with the correct heap allocator.
@@ -369,20 +379,15 @@ enum ParamKind : unsigned char {
     PK_Char   = 3,
 };
 
-/// Per-evaluator capability bits stored in EvalParamLayout::flags.
-/// Bit 0 — evaluator accepts typed newargs without re-boxing
-/// (currently always 0; reserved for a future fast path that lets
-/// eco_apply_closure_typed forward typed args directly).
-enum EvalLayoutFlags : unsigned char {
-    EVAL_LAYOUT_FLAG_ACCEPTS_TYPED_NEWARGS = 1u << 0,
-};
-
 /// Layout descriptor for evaluator parameters. Emitted as an LLVM global
-/// constant by the compiler when capture type info is available.
-/// Memory layout: { num_params: u8, flags: u8, kinds[num_params]: u8[] }
+/// constant by the compiler. Describes the kind of each parameter slot;
+/// `kinds[i] == ParamKind`. The capability bit "evaluator accepts typed
+/// newargs without re-boxing" lives on `Closure::flags`, not here — the
+/// caller cannot statically know what evaluator a dynamically-dispatched
+/// closure has, so the gate must be readable from the closure header.
+/// Memory layout: { num_params: u8, kinds[num_params]: u8[] }
 struct EvalParamLayout {
     unsigned char num_params;
-    unsigned char flags;
     unsigned char kinds[];  // flexible array member, length = num_params
 };
 

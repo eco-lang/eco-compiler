@@ -708,6 +708,221 @@ record:
 
 ---
 
+## 5.ter Phase D Part 3 — Typed-wrapper migration + tests
+
+Three deliverables, all small in scope but bringing the optimisation
+finally within reach:
+
+1. **Static-IR enforcement test** — guard the LLVM-IR-side contract that
+   neither `lowerGenericApply` nor `lowerSegmentationUnknown` introduces
+   `eco_alloc_*` boxing calls before the runtime apply.
+2. **32-arg cap assertion** — make the silent truncation in
+   `eco_apply_segmentation_unknown`'s bitmap derivation a hard assert.
+3. **Typed-wrapper migration** — generate a parallel typed-wrapper
+   variant alongside `__closure_wrapper_*`, advertise the capability via
+   a closure-header flag bit, and let `eco_apply_closure_typed` skip
+   re-boxing for closures that have it set. Add a runtime test that
+   verifies zero `eco_alloc_int` calls when the typed path fires.
+
+Phase D Part 3 *also* corrects a design misplacement from Part 2 — the
+`flags` byte was added to `EvalParamLayout` (a call-site property) but
+the capability is fundamentally a property of the *closure's evaluator*
+(read at runtime by dynamic dispatch). Part 3 moves it.
+
+### 5.ter.1 Static-IR enforcement test (CGEN_059 / CGEN_060)
+
+The codegen test harness in `/work/test/codegen/CodegenIsolatedTest.hpp`
+already supports `// CHECK:` directives via `extractCheckPatterns` /
+`verifyPatterns` and `ecoc --emit=llvm` for IR dumping. Two small
+extensions needed:
+
+- **Extend the harness** with a `// CHECK-NOT:` directive: a pattern
+  that must *not* appear anywhere in the dumped output. Implementation
+  is symmetric with `verifyPatterns` — one extra parse step in
+  `extractCheckPatterns`, one extra check in `verifyPatterns`.
+
+- **Add a fixture** `/work/test/codegen/papextend_no_realloc.mlir` that:
+  - Emits a `eco.papExtend` op without `remaining_arity` (generic apply)
+    *and* a second one with `_call_kind = segmentation_unknown` at
+    primitive-typed newargs.
+  - Has a `// RUN: %ecoc -emit=llvm %s | FileCheck %s`-style header.
+  - `// CHECK:` lines for `eco_apply_closure_typed` and
+    `eco_apply_segmentation_unknown` calls (ensures the test exercises
+    the lowering it claims to).
+  - `// CHECK-NOT:` lines for `eco_alloc_int`, `eco_alloc_float`,
+    `eco_alloc_char` — globally on the function. We use a whole-function
+    scan rather than a basic-block window because the `extractCheckPatterns`
+    harness is line-oriented and has no notion of CFG; this is acceptable
+    because the fixture is small and has no other allocations.
+
+The test fails if a future regression reintroduces LLVM-side boxing in
+either lowering.
+
+### 5.ter.2 32-arg cap assertion
+
+`eco_apply_segmentation_unknown` derives a 2-bit-per-slot bitmap from
+`args_layout->kinds` for the under-saturated branch. The bitmap is
+`uint64_t`, so it caps at 32 slots. Today the loop silently truncates
+above 32, which would lose the primitive-ness of slots 32+ for closures
+that have more than 32 args under-saturated.
+
+Add `assert(num_args <= 32)` immediately before the bitmap-derivation
+loop. The assert is correct because (a) Elm's max function arity is in
+practice well below 32, and (b) the under-saturated guard `num_args <
+remaining` already implies `num_args < max_values <= 63`, so a 33+ arg
+under-saturation is theoretically reachable for very-high-arity closures
+but is a real bug if it happens.
+
+If the assert ever fires in practice, the fix is to replace `uint64_t
+bitmap` with a heap- or stack-allocated `uint8_t[]` kind array — but
+that is out of scope until evidence shows it's needed.
+
+### 5.ter.3 Closure header: narrow `unboxed`, add `flags`
+
+The current `Closure` struct packs `n_values:6 + max_values:6 +
+unboxed:52` into 64 bits, fully consumed. To make room for capability
+flags without enlarging the closure header, narrow `unboxed:52` to
+`unboxed:50` and add `flags:2`. Trade-off: max captures with kind
+tracking drops from 26 to 25; verified that no existing closure uses
+that slot.
+
+```cpp
+typedef struct {
+    Header header;
+    u64 n_values  : 6;
+    u64 max_values: 6;
+    u64 unboxed   : 50;   // was 52 — caps captures at 25 instead of 26
+    u64 flags     : 2;    // NEW — see CapabilityFlags below
+    EvalFunction evaluator;
+    Unboxable values[];
+} Closure;
+
+enum ClosureFlags : unsigned char {
+    CLOSURE_FLAG_TYPED_NEWARGS = 1u << 0,
+};
+```
+
+Updates required:
+- `EcoOps.cpp` verifier: change `52-bit capacity` checks to `50-bit
+  capacity` for the `unboxed_bitmap` attribute on `papCreate`/`papExtend`.
+- `EcoToLLVMClosures.cpp` (PapCreate lowering): the packed write site
+  currently encodes `n_values | (max_values << 6) | (unboxed << 12)`
+  into a single i64. The packing remains unchanged (bit positions match
+  the struct), but the verifier now rejects bitmaps that would clobber
+  the new `flags:2` field at bits 62–63.
+- The runtime `eco_alloc_closure*` helpers do not need changes — they
+  initialise `unboxed = 0` (which now also zeroes `flags`).
+
+### 5.ter.4 Move the capability flag from layout to closure
+
+Phase D Part 2 added `EVAL_LAYOUT_FLAG_ACCEPTS_TYPED_NEWARGS` to
+`EvalParamLayout::flags`. That was a misplacement — the capability is a
+property of the *closure's evaluator* (discoverable at runtime by
+`eco_apply_closure_typed`), not a property of the call site's args
+layout. The caller cannot know what evaluator a dynamically-dispatched
+closure has; only the closure itself knows.
+
+Part 3 corrects this:
+- **Remove** `EvalParamLayout::flags` and the `flags` parameter on
+  `getOrCreateEvalLayout`. Revert the layout struct to
+  `{ num_params, kinds[] }`.
+- **Add** `CLOSURE_FLAG_TYPED_NEWARGS` to `Closure::flags` (per §5.ter.3).
+- **Read** `closure->flags & CLOSURE_FLAG_TYPED_NEWARGS` inside
+  `eco_apply_closure_typed`, not the layout flag.
+
+`EvalParamLayout` retains its purpose: per-call-site description of
+*which* slots are which primitive kind. The capability gate lives on
+the closure where it belongs.
+
+### 5.ter.5 Typed-wrapper variant
+
+Today `getOrCreateWrapper` generates `__closure_wrapper_<funcName>`
+with signature `ptr(ptr)` — takes a `void**` args array of HPointer-encoded
+slots, internally calls `eco_resolve_hptr` + offset-load to unbox each
+arg to its primitive type, then calls the target.
+
+Part 3 adds `getOrCreateTypedWrapper` generating
+`__closure_wrapper_typed_<funcName>` with the same signature `ptr(ptr)`
+but a different convention: each slot in the args array holds the *raw
+primitive value* per the target's parameter types (i64 → store as-is;
+f64 → bitcast to i64 stored; i16 → zext to i64 stored; eco.value →
+HPointer i64 as today). The wrapper then loads each slot at the
+correct width and calls the target without resolve+offset-load
+sequences.
+
+Compiler-side scope (this phase): **the typed wrapper is generated but
+no closure has its `CLOSURE_FLAG_TYPED_NEWARGS` set yet** — i.e.
+`papCreate` always stores the legacy wrapper. The runtime infrastructure
+exists and is exercised by a manual closure-construction test (§5.ter.7).
+The compiler-side decision of "which closures qualify for the typed
+wrapper" is deferred to a follow-up phase that needs to prove no
+boxed-args caller can reach the closure (e.g. proving the closure is
+not stored in any HPtr-typed location reachable from `eco_apply_closure`'s
+non-typed callers).
+
+### 5.ter.6 Runtime dispatch update
+
+`eco_apply_closure_typed` becomes:
+
+```cpp
+HPtr eco_apply_closure_typed(HPtr closure_hptr, int64_t* typed_args,
+                             uint32_t num_args,
+                             const EvalParamLayout* args_layout) {
+    if (num_args == 0) return eco_apply_closure(closure_hptr, nullptr, 0);
+
+    Closure* closure = static_cast<Closure*>(hpointerToPtr(closure_bits));
+    if (closure->flags & CLOSURE_FLAG_TYPED_NEWARGS) {
+        // Typed-newargs evaluator: forward the typed buffer directly.
+        // No re-boxing, no eco_alloc_* calls.
+        return reinterpret_cast<HPtr(*)(int64_t*)>(closure->evaluator)(typed_args);
+        // (Modulo the ptr-vs-i64 ABI shim, which is identical to today's path.)
+    }
+
+    // Legacy: re-box per args_layout->kinds, then forward to eco_apply_closure.
+    // ... (existing Phase D Part 1 code unchanged)
+}
+```
+
+The fast branch is `O(1)` modulo the closure resolution — no per-slot
+work, no allocs.
+
+### 5.ter.7 Runtime alloc-count test
+
+Add a test in `/work/test/allocator/EcoApplyClosureTypedTest.cpp` that:
+
+1. Defines a `mock_typed_evaluator` that takes raw `int64_t*` (cast from
+   `void**`) and reads each slot as a primitive at the expected kind —
+   the same convention `getOrCreateTypedWrapper` produces.
+2. Allocates a closure manually via `eco_alloc_closure` for the typed
+   evaluator.
+3. Sets `closure->flags |= CLOSURE_FLAG_TYPED_NEWARGS` directly.
+4. Snapshots the heap allocation counter, calls `eco_apply_closure_typed`
+   with primitive typed args, snapshots again, and asserts the counter
+   delta equals zero — i.e. no `eco_alloc_int/_float/_char` calls
+   happened on the apply path.
+5. As a sanity check, runs the *same* call without setting the flag and
+   verifies the counter delta is non-zero (re-boxing happened).
+
+This is the first end-to-end runtime evidence that the optimisation
+works, even though no compiler path emits flag-set closures yet.
+
+### 5.ter.8 Acceptance for Phase D Part 3
+
+- `// CHECK-NOT:` works in the codegen harness; new fixture passes; if
+  someone re-introduces `eco_alloc_int` near `eco_apply_closure_typed`
+  the fixture fails.
+- `eco_apply_segmentation_unknown` asserts on >32-arg under-saturation.
+- `Closure::unboxed` narrowed to 50 bits + `flags:2` field; `EcoOps`
+  verifier updated; existing closure tests still pass (verified no real
+  closure uses 26 captures).
+- `EvalParamLayout::flags` removed; capability moved to
+  `Closure::flags` with `CLOSURE_FLAG_TYPED_NEWARGS` defined.
+- `__closure_wrapper_typed_<funcName>` generator exists; new runtime
+  test demonstrates it works end-to-end (zero re-boxing alloc count).
+- All existing E2E and allocator tests green.
+
+---
+
 ## 6. Phase E — Retire `NumberBoxed` mode and clean up
 
 Per decision Q5, `Basics.add/sub/mul/pow` do **not** get primitive variants

@@ -1516,13 +1516,14 @@ Testing::TestCase testFieldGroupSurvivesMinorGC("FieldGroup survives minor GC", 
 
 // ============================================================================
 // 2-bit bitmap overflow policy (§0.3 of the 2-bit migration plan).
-// Closure.unboxed is 52 bits wide → 26 typed slots max. Captures beyond
-// slot 25 silently demote to kind 0 in the bitmap; the slot storage itself
-// still holds whatever the caller passed.
+// Closure.unboxed is 50 bits wide → 25 typed slots max (was 52/26 before
+// Phase D Part 3 narrowed the field to make room for Closure.flags:2).
+// Captures beyond slot 24 silently demote to kind 0 in the bitmap; the
+// slot storage itself still holds whatever the caller passed.
 // ============================================================================
 
-Testing::UnitTest testClosureCaptureBeyond26DemotedToBoxed(
-    "closureCapture beyond slot 25 demotes to boxed",
+Testing::UnitTest testClosureCaptureBeyond25DemotedToBoxed(
+    "closureCapture beyond slot 24 demotes to boxed",
     []() {
         initAllocator();
 
@@ -1536,10 +1537,10 @@ Testing::UnitTest testClosureCaptureBeyond26DemotedToBoxed(
 
         Closure* cp = static_cast<Closure*>(clObj);
         TEST_ASSERT(cp->n_values == capacity);
-        for (u32 i = 0; i < 26; ++i) {
+        for (u32 i = 0; i < 25; ++i) {
             TEST_ASSERT(fieldKind(cp->unboxed, i) == 1);
         }
-        for (u32 i = 26; i < capacity; ++i) {
+        for (u32 i = 25; i < capacity; ++i) {
             TEST_ASSERT(fieldKind(cp->unboxed, i) == 0);
         }
     });
@@ -1671,6 +1672,6 @@ void registerHeapHelpersTests(Testing::TestSuite& suite) {
     suite.add(testFieldGroupSurvivesMinorGC);
 
     // 2-bit bitmap overflow policy
-    suite.add(testClosureCaptureBeyond26DemotedToBoxed);
+    suite.add(testClosureCaptureBeyond25DemotedToBoxed);
     suite.add(testArrayUniformKindRoundtripsAllPrimitiveKinds);
 }

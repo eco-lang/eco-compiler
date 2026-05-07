@@ -30,22 +30,19 @@ using namespace Elm::TestHelpers;
 namespace {
 
 // Backing storage for a stack-built EvalParamLayout. Holds enough room for
-// up to MaxN slots; layout() returns a pointer of the right type so callers
-// can pass it as `const EvalParamLayout*`.
+// up to MaxN slots (1 byte for num_params + N bytes of kinds).
 template <unsigned MaxN>
 struct LayoutStorage {
-    alignas(EvalParamLayout) unsigned char buf[2 + MaxN] = {};
+    alignas(EvalParamLayout) unsigned char buf[1 + MaxN] = {};
 
     EvalParamLayout* layout() {
         return reinterpret_cast<EvalParamLayout*>(buf);
     }
 
-    static LayoutStorage build(unsigned char flags,
-                               std::initializer_list<unsigned char> kinds) {
+    static LayoutStorage build(std::initializer_list<unsigned char> kinds) {
         LayoutStorage s;
         EvalParamLayout* l = s.layout();
         l->num_params = static_cast<unsigned char>(kinds.size());
-        l->flags = flags;
         unsigned i = 0;
         for (unsigned char k : kinds) l->kinds[i++] = k;
         return s;
@@ -138,7 +135,6 @@ static void test_eco_apply_closure_typed_mixed_kinds() {
     typed_args[3] = static_cast<int64_t>(pre_boxed);
 
     auto layoutBuf = LayoutStorage<4>::build(
-        /*flags=*/0,
         {/*PK_Int*/1, /*PK_Float*/2, /*PK_Char*/3, /*PK_Boxed*/0});
 
     HPtr result = eco_apply_closure_typed(closure, typed_args, 4, layoutBuf.layout());
@@ -238,8 +234,7 @@ static void test_eco_apply_segmentation_unknown_saturated_typed() {
     double f = -2.25;
     std::memcpy(&typed_args[1], &f, sizeof(double));
 
-    auto layoutBuf = LayoutStorage<2>::build(/*flags=*/0,
-                                             {/*PK_Int*/1, /*PK_Float*/2});
+    auto layoutBuf = LayoutStorage<2>::build({/*PK_Int*/1, /*PK_Float*/2});
 
     HPtr result = eco_apply_segmentation_unknown(
         closure, typed_args, 2, layoutBuf.layout());
@@ -249,6 +244,140 @@ static void test_eco_apply_segmentation_unknown_saturated_typed() {
     TEST_ASSERT(g_record.int_vals[0] == 99);
     TEST_ASSERT(g_record.tags[1] == Tag_Float);
     TEST_ASSERT(g_record.float_vals[1] == -2.25);
+    TEST_ASSERT(Elm::Kernel::Export::decodeBoxedBool(result.toBits()) == true);
+}
+
+// ============================================================================
+// Phase D Part 3: typed-newargs fast path
+//
+// When a closure carries CLOSURE_FLAG_TYPED_NEWARGS, eco_apply_closure_typed
+// must dispatch to the closure's evaluator directly with the typed args
+// buffer — NO re-boxing of Int/Float/Char slots, hence zero
+// eco_alloc_int/_float/_char calls on the apply path.
+// ============================================================================
+
+namespace {
+
+// Records what each slot in the typed args array was, decoded according to
+// a known kind sequence. The test then asserts the decode matches the
+// caller's intent.
+struct TypedRecord {
+    bool called = false;
+    int64_t  int_val   = 0;
+    double   float_val = 0.0;
+    uint16_t char_val  = 0;
+};
+
+TypedRecord g_typed_record;
+
+void resetTypedRecord() {
+    g_typed_record = TypedRecord{};
+}
+
+// Typed evaluator: signature is the standard `void*(void*[])`, but the args
+// array slots hold raw primitives at known kinds (no HPtr unbox needed).
+// Kind sequence for this evaluator: {PK_Int, PK_Float, PK_Char}.
+void* mock_typed_evaluator(void* args[]) {
+    g_typed_record.called = true;
+    int64_t* slots = reinterpret_cast<int64_t*>(args);
+
+    g_typed_record.int_val = slots[0];
+    std::memcpy(&g_typed_record.float_val, &slots[1], sizeof(double));
+    g_typed_record.char_val = static_cast<uint16_t>(
+        static_cast<uint64_t>(slots[2]) & 0xFFFFu);
+
+    // Return a boxed True so callers can verify a clean round-trip.
+    return reinterpret_cast<void*>(Elm::Kernel::Export::encodeBoxedBool(true));
+}
+
+}  // namespace
+
+static void test_typed_newargs_skips_reboxing() {
+    initAllocator();
+    resetTypedRecord();
+
+    // Allocate a 3-arg closure for the typed evaluator.
+    HPtr closure_hptr = eco_alloc_closure(
+        reinterpret_cast<void*>(&mock_typed_evaluator), 3);
+    TEST_ASSERT(closure_hptr.toBits() != 0);
+
+    // Manually flip CLOSURE_FLAG_TYPED_NEWARGS on the closure header — no
+    // compiler path emits this yet (Phase D Part 3 only delivers runtime
+    // infrastructure; flag-setting in the compiler is a follow-up).
+    {
+        void* p = Allocator::instance().resolve(
+            HPointer{closure_hptr.toBits()});
+        TEST_ASSERT(p != nullptr);
+        Closure* closure = static_cast<Closure*>(p);
+        closure->flags = static_cast<unsigned char>(
+            closure->flags | CLOSURE_FLAG_TYPED_NEWARGS);
+    }
+
+    // Build typed args: Int 7, Float 1.25, Char 'X' (0x58).
+    int64_t typed_args[3];
+    typed_args[0] = 7;
+    double f = 1.25;
+    std::memcpy(&typed_args[1], &f, sizeof(double));
+    typed_args[2] = static_cast<int64_t>(0x58);
+
+    auto layoutBuf = LayoutStorage<3>::build(
+        {/*PK_Int*/1, /*PK_Float*/2, /*PK_Char*/3});
+
+    // Snapshot the allocator's object counter ACROSS the apply call only.
+    // Anything before this point (closure alloc, etc.) is excluded.
+    uint64_t before = Allocator::instance().getCombinedStats().objects_allocated;
+
+    HPtr result = eco_apply_closure_typed(
+        closure_hptr, typed_args, 3, layoutBuf.layout());
+
+    uint64_t after = Allocator::instance().getCombinedStats().objects_allocated;
+
+    // Evaluator received raw primitives intact.
+    TEST_ASSERT(g_typed_record.called);
+    TEST_ASSERT(g_typed_record.int_val == 7);
+    TEST_ASSERT(g_typed_record.float_val == 1.25);
+    TEST_ASSERT(g_typed_record.char_val == 0x58);
+
+    // The evaluator allocates ONE object (the boxed Bool result via
+    // encodeBoxedBool — but encodeBoxedBool is a constant HPointer, not a
+    // heap alloc; verify by counter delta == 0).
+    //
+    // Re-boxing of three primitive args would have added 3 to the counter
+    // (eco_alloc_int + eco_alloc_float + eco_alloc_char). The typed-newargs
+    // path must do none of that.
+    TEST_ASSERT(after - before == 0);
+
+    // Result round-trips.
+    TEST_ASSERT(Elm::Kernel::Export::decodeBoxedBool(result.toBits()) == true);
+}
+
+// Negative control: same closure config but WITHOUT the flag → re-boxing
+// happens, counter delta is non-zero. This proves the previous test isn't
+// trivially passing because no boxing would have occurred.
+static void test_legacy_path_still_reboxes() {
+    initAllocator();
+    resetRecord();
+
+    g_record.n_args = 3;
+    HPtr closure_hptr = eco_alloc_closure(
+        reinterpret_cast<void*>(&mock_recording_evaluator), 3);
+
+    int64_t typed_args[3];
+    typed_args[0] = 7;
+    double f = 1.25;
+    std::memcpy(&typed_args[1], &f, sizeof(double));
+    typed_args[2] = static_cast<int64_t>(0x58);
+
+    auto layoutBuf = LayoutStorage<3>::build(
+        {/*PK_Int*/1, /*PK_Float*/2, /*PK_Char*/3});
+
+    uint64_t before = Allocator::instance().getCombinedStats().objects_allocated;
+    HPtr result = eco_apply_closure_typed(
+        closure_hptr, typed_args, 3, layoutBuf.layout());
+    uint64_t after = Allocator::instance().getCombinedStats().objects_allocated;
+
+    // Three primitives → three eco_alloc_* calls on the legacy path.
+    TEST_ASSERT(after - before >= 3);
     TEST_ASSERT(Elm::Kernel::Export::decodeBoxedBool(result.toBits()) == true);
 }
 
@@ -266,6 +395,12 @@ void registerEcoApplyClosureTypedTests(Testing::TestSuite& suite) {
     suite.add(Testing::TestCase(
         "eco_apply_closure_typed zero args",
         test_eco_apply_closure_typed_zero_args));
+    suite.add(Testing::TestCase(
+        "typed-newargs flag skips reboxing (zero allocs)",
+        test_typed_newargs_skips_reboxing));
+    suite.add(Testing::TestCase(
+        "legacy path still reboxes primitive args",
+        test_legacy_path_still_reboxes));
     suite.add(Testing::TestCase(
         "eco_apply_segmentation_unknown saturated typed",
         test_eco_apply_segmentation_unknown_saturated_typed));

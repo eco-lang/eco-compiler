@@ -397,16 +397,16 @@ LogicalResult PapCreateOp::verify() {
   // Verify unboxed_bitmap constraints (2-bit-per-slot kinds).
   uint64_t bitmap = getUnboxedBitmap();
 
-  // Bitmap must fit in 52 bits (runtime Closure struct constraint).
-  if (bitmap >= (1ULL << 52)) {
-    return emitOpError("unboxed_bitmap exceeds 52-bit capacity");
+  // Bitmap must fit in 50 bits (runtime Closure struct: unboxed:50, flags:2).
+  if (bitmap >= (1ULL << 50)) {
+    return emitOpError("unboxed_bitmap exceeds 50-bit capacity");
   }
 
-  // At most 26 typed captures fit in 52 bits (2 bits each).
-  if (numCaptured > 26) {
+  // At most 25 typed captures fit in 50 bits (2 bits each).
+  if (numCaptured > 25) {
     return emitOpError("num_captured (")
            << numCaptured
-           << ") exceeds 26-slot limit under 2-bit kind encoding";
+           << ") exceeds 25-slot limit under 2-bit kind encoding";
   }
 
   // No bits should be set beyond num_captured's slot range (2 bits/slot).
@@ -480,16 +480,16 @@ LogicalResult PapExtendOp::verify() {
   // so the real newargs count is allNewargs.size() - rootCount.
   size_t realNewargsCount = allNewargs.size() - rootCount;
 
-  // Bitmap must fit in 52 bits (runtime Closure struct constraint).
-  if (bitmap >= (1ULL << 52)) {
-    return emitOpError("newargs_unboxed_bitmap exceeds 52-bit capacity");
+  // Bitmap must fit in 50 bits (runtime Closure struct: unboxed:50, flags:2).
+  if (bitmap >= (1ULL << 50)) {
+    return emitOpError("newargs_unboxed_bitmap exceeds 50-bit capacity");
   }
 
-  // At most 26 typed newargs fit in 52 bits (2 bits each).
-  if (realNewargsCount > 26) {
+  // At most 25 typed newargs fit in 50 bits (2 bits each).
+  if (realNewargsCount > 25) {
     return emitOpError("newargs count (")
            << realNewargsCount
-           << ") exceeds 26-slot limit under 2-bit kind encoding";
+           << ") exceeds 25-slot limit under 2-bit kind encoding";
   }
 
   // No bits should be set beyond newargs size's slot range.
@@ -641,13 +641,13 @@ LogicalResult PapCreateGroupOp::verify() {
     if (arity > 63)
       return emitOpError("sibling ") << i << " arity ("
              << arity << ") exceeds 6-bit max_values limit (63)";
-    if (cap > 26)
+    if (cap > 25)
       return emitOpError("sibling ") << i << " num_captured (" << cap
-             << ") exceeds 26-slot limit under 2-bit kind encoding";
+             << ") exceeds 25-slot limit under 2-bit kind encoding";
     uint64_t bitmap = cast<IntegerAttr>(unboxedBitmaps[i]).getInt();
-    if (bitmap >= (1ULL << 52))
+    if (bitmap >= (1ULL << 50))
       return emitOpError("sibling ") << i
-             << " unboxed_bitmap exceeds 52-bit capacity";
+             << " unboxed_bitmap exceeds 50-bit capacity";
     totalCaptures += cc;
   }
 

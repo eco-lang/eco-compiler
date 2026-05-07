@@ -1122,8 +1122,9 @@ inline HPointer allocClosure(EvalFunction evaluator, u32 max_values) {
  * @return True if successful, false if at capacity.
  */
 // `kind`: 2-bit slot kind. 0 = boxed HPointer, 1 = Int, 2 = Float, 3 = Char.
-// Only the first 26 typed slots fit in the 52-bit 2-bit-encoded bitfield;
-// later slots fall through as boxed with no primitive bit set.
+// Only the first 25 typed slots fit in the 50-bit 2-bit-encoded bitfield
+// (the upper 2 bits of the 52-bit field are now Closure::flags); later
+// slots fall through as boxed with no primitive bit set.
 inline bool closureCapture(void* closure, Unboxable value, ParamKind kind) {
     Closure* cl = static_cast<Closure*>(closure);
     if (cl->n_values >= cl->max_values) {
@@ -1138,7 +1139,7 @@ inline bool closureCapture(void* closure, Unboxable value, ParamKind kind) {
     size_t idx = cl->n_values;
     cl->values[idx] = value;
 
-    if (kind != PK_Boxed && idx < 26) {
+    if (kind != PK_Boxed && idx < 25) {
         cl->unboxed = bitmapSetKind(cl->unboxed, static_cast<unsigned>(idx),
                                     static_cast<u64>(kind));
     }

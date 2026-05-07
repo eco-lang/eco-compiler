@@ -1183,6 +1183,13 @@ extern "C" HPtr eco_apply_closure(HPtr closure_hptr, uint64_t* args, uint32_t nu
     uint32_t n_values = closure->n_values;
     uint32_t max_values = closure->max_values;
     assert(max_values <= 63 && "max_values exceeds 6-bit field cap");
+    // Defensive: this entry point passes args HPtr-encoded. A closure with
+    // CLOSURE_FLAG_TYPED_NEWARGS expects raw primitives and would
+    // mis-decode them. Phase D Part 3 only sets the flag in tests; the
+    // compiler is not yet allowed to mark a closure typed unless every
+    // reachable caller is known to use eco_apply_closure_typed.
+    assert((closure->flags & CLOSURE_FLAG_TYPED_NEWARGS) == 0 &&
+           "eco_apply_closure invoked on typed-newargs closure (must use eco_apply_closure_typed)");
     uint32_t remaining = max_values - n_values;
 
     // Root `closure_bits` and `args` for the duration of this call.
@@ -1249,21 +1256,18 @@ extern "C" HPtr eco_apply_closure(HPtr closure_hptr, uint64_t* args, uint32_t nu
 // Phase D: typed-args entry point for generic apply.
 //
 // Takes args as a typed `int64_t*` buffer alongside an `EvalParamLayout`
-// describing each slot's primitive kind. Re-boxes any non-PK_Boxed slot
-// into an HPointer (via eco_alloc_int / eco_alloc_float / eco_alloc_char),
-// then forwards to the existing all-boxed `eco_apply_closure` path.
+// describing each slot's primitive kind. Two paths:
 //
-// `args_layout->flags` carries per-evaluator capability bits. Phase D
-// Part 2 wires the flag through; the typed-newargs fast path
-// (`EVAL_LAYOUT_FLAG_ACCEPTS_TYPED_NEWARGS`) is reserved for a follow-up
-// migration of evaluator wrappers and currently falls through to the
-// re-boxing path.
+//  1. Closure has CLOSURE_FLAG_TYPED_NEWARGS set on its header
+//     (Phase D Part 3): the closure's evaluator is a typed wrapper that
+//     consumes the args buffer slots directly as raw primitives. Forward
+//     the typed args without re-boxing — zero `eco_alloc_*` calls.
 //
-// Behaviorally identical to the previous LLVM-side boxing inside
-// `lowerGenericApply`: the same eco_alloc_* calls happen, just one
-// indirection later. The benefit is centralisation — once evaluators
-// flip the capability bit, this function becomes the single dispatcher
-// that chooses between re-box-and-call vs. pass-typed-through.
+//  2. Otherwise (legacy default): re-box any non-PK_Boxed slot into an
+//     HPointer (via eco_alloc_int / eco_alloc_float / eco_alloc_char) and
+//     forward to the all-boxed `eco_apply_closure` path. Allocation count
+//     is unchanged versus pre-Phase-D — boxing has just moved from JIT'd
+//     IR into here.
 //
 // `args_layout` may be null, in which case all slots are treated as
 // PK_Boxed (legacy semantics). Phase D's lowerGenericApply always emits
@@ -1276,16 +1280,27 @@ extern "C" HPtr eco_apply_closure_typed(HPtr closure_hptr,
         return eco_apply_closure(closure_hptr, nullptr, 0);
     }
 
-    // TODO(phase-D-followup): when args_layout->flags has
-    // EVAL_LAYOUT_FLAG_ACCEPTS_TYPED_NEWARGS set, dispatch to a typed-newargs
-    // entry on the closure's evaluator instead of re-boxing here. Today every
-    // emitter sets flags=0 so this branch is unreachable; leaving the gate
-    // in place documents the contract.
-    if (args_layout != nullptr &&
-        (args_layout->flags & EVAL_LAYOUT_FLAG_ACCEPTS_TYPED_NEWARGS) != 0) {
-        // Fall through to the re-boxing path until the typed-newargs evaluator
-        // entry exists.
+    // Closure-side capability gate. The flag is on the closure header
+    // (not on the args layout) because the caller cannot statically know
+    // which evaluator a dynamically-dispatched closure has — only the
+    // closure itself can advertise its calling convention.
+    {
+        uint64_t closure_bits = closure_hptr.toBits();
+        void* closure_ptr = hpointerToPtr(closure_bits);
+        if (closure_ptr) {
+            Closure* closure = static_cast<Closure*>(closure_ptr);
+            if ((closure->flags & CLOSURE_FLAG_TYPED_NEWARGS) != 0) {
+                // The evaluator is a typed wrapper: each slot in the args
+                // array is a raw primitive at the kind declared in
+                // args_layout->kinds. The wrapper signature is the standard
+                // `void*(void*[])` — we cast the typed buffer directly.
+                EvalFunction eval = closure->evaluator;
+                void* result = eval(reinterpret_cast<void**>(typed_args));
+                return HPtr::fromBits(reinterpret_cast<uint64_t>(result));
+            }
+        }
     }
+
 
     // Stack-allocate the boxed-args buffer for typical arities; alloca otherwise.
     uint64_t stack_buf[16];
@@ -1401,11 +1416,17 @@ extern "C" HPtr eco_apply_segmentation_unknown(HPtr closure_hptr,
         // 2-bit-per-slot bitmap derived from the layout's kinds. This matches
         // the encoding `eco_pap_extend` expects (kind 0 = HPointer; non-zero =
         // primitive index into ParamKind).
+        //
+        // The bitmap is u64 with 2 bits per slot, so it holds at most 32 slots.
+        // Closures with >32 typed newargs under-saturated would silently lose
+        // primitive-ness for slots 32+ — fail loud instead. Lifting this cap
+        // requires switching from a packed bitmap to a heap- or stack-allocated
+        // kind array.
+        assert(num_args <= 32 &&
+               "eco_apply_segmentation_unknown: bitmap derivation caps at 32 args");
         uint64_t bitmap = 0;
         if (args_layout != nullptr) {
-            // Cap to 32 slots — bitmap is 2 bits per slot in a u64.
-            uint32_t lim = num_args < 32 ? num_args : 32u;
-            for (uint32_t i = 0; i < lim; ++i) {
+            for (uint32_t i = 0; i < num_args; ++i) {
                 bitmap |= (static_cast<uint64_t>(args_layout->kinds[i]) & 0x3ULL) << (2 * i);
             }
         }

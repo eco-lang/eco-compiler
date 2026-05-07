@@ -1048,35 +1048,27 @@ static uint8_t mlirTypeToParamKind(Type ty) {
 }
 
 /// Emit (or reuse) an LLVM global constant for an EvalParamLayout with the
-/// given kind sequence and flags byte. Layout is:
-///   { i8 num_params, i8 flags, [N x i8] kinds }
-/// matching `EvalParamLayout` in `Heap.hpp`. Deduplicates by encoding both
-/// `flags` and the kinds into the global's name.
+/// given kind sequence. Layout is `{ i8 num_params, [N x i8] kinds }`,
+/// matching `EvalParamLayout` in `Heap.hpp`. Deduplicates by encoding the
+/// kinds into the global's name.
 static Value getOrCreateEvalLayout(ConversionPatternRewriter &rewriter, Location loc,
-                                   ModuleOp module, ArrayRef<uint8_t> kinds,
-                                   uint8_t flags = 0) {
+                                   ModuleOp module, ArrayRef<uint8_t> kinds) {
     auto *ctx = rewriter.getContext();
     auto i8Ty = IntegerType::get(ctx, 8);
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
     uint32_t n = kinds.size();
 
-    // Build a deterministic name from the flags + kind bytes. `flags` must
-    // participate in the name so layouts that differ only in capability bits
-    // produce distinct globals.
-    std::string name = "__eco_eval_layout_f" + std::to_string(static_cast<unsigned>(flags)) + "_";
+    std::string name = "__eco_eval_layout_";
     for (uint8_t k : kinds) name += std::to_string(k) + "_";
     name += std::to_string(n);
 
-    // Check if the global already exists.
     if (module.lookupSymbol<LLVM::GlobalOp>(name)) {
         return rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, name);
     }
 
-    // Build the struct type: { i8 num_params, i8 flags, [N x i8] kinds }
     auto arrayTy = LLVM::LLVMArrayType::get(i8Ty, n);
-    auto structTy = LLVM::LLVMStructType::getLiteral(ctx, {i8Ty, i8Ty, arrayTy});
+    auto structTy = LLVM::LLVMStructType::getLiteral(ctx, {i8Ty, arrayTy});
 
-    // Insert global at module scope with initializer region.
     {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(module.getBody());
@@ -1091,9 +1083,6 @@ static Value getOrCreateEvalLayout(ConversionPatternRewriter &rewriter, Location
         auto numParamsConst = rewriter.create<LLVM::ConstantOp>(loc, i8Ty, static_cast<int64_t>(n));
         structVal = rewriter.create<LLVM::InsertValueOp>(loc, structTy, structVal, numParamsConst,
                                                           ArrayRef<int64_t>{0});
-        auto flagsConst = rewriter.create<LLVM::ConstantOp>(loc, i8Ty, static_cast<int64_t>(flags));
-        structVal = rewriter.create<LLVM::InsertValueOp>(loc, structTy, structVal, flagsConst,
-                                                          ArrayRef<int64_t>{1});
         Value arrayVal = rewriter.create<LLVM::UndefOp>(loc, arrayTy);
         for (uint32_t i = 0; i < n; ++i) {
             auto kindConst = rewriter.create<LLVM::ConstantOp>(loc, i8Ty, static_cast<int64_t>(kinds[i]));
@@ -1101,7 +1090,7 @@ static Value getOrCreateEvalLayout(ConversionPatternRewriter &rewriter, Location
                                                              ArrayRef<int64_t>{static_cast<int64_t>(i)});
         }
         structVal = rewriter.create<LLVM::InsertValueOp>(loc, structTy, structVal, arrayVal,
-                                                          ArrayRef<int64_t>{2});
+                                                          ArrayRef<int64_t>{1});
         rewriter.create<LLVM::ReturnOp>(loc, structVal);
     }
 

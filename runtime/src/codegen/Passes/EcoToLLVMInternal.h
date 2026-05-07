@@ -234,7 +234,7 @@ constexpr uint64_t ArrayLengthOffset = HeaderSize;          // 8
 constexpr uint64_t ArrayElementsOffset = HeaderSize + PtrSize; // 16 (length:4 + padding:4 = 8)
 
 // Closure layout: [Header:8][packed:8][evaluator:8][values:N*8]
-// packed = n_values:6 | max_values:6 | unboxed:52
+// packed = n_values:6 | max_values:6 | unboxed:50 | flags:2
 constexpr uint64_t ClosurePackedOffset = HeaderSize;
 constexpr uint64_t ClosureEvaluatorOffset = HeaderSize + PtrSize;
 constexpr uint64_t ClosureValuesOffset = HeaderSize + 2 * PtrSize;
