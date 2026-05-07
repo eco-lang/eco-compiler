@@ -306,6 +306,56 @@ suite =
                     in
                     Expect.equal "Eco_Kernel_MVar_put" abi.symbolName
             ]
+        , describe "deriveKernelInstanceAbi for Eco.Kernel.MVar.put"
+            [ test "Int value selects the _Int variant with i64 ABI on the value axis" <|
+                \_ ->
+                    let
+                        abi =
+                            KernelAbi.deriveKernelInstanceAbi (mvarPutKey [ Mono.MInt, Mono.MInt ])
+                    in
+                    Expect.equal
+                        { symbolName = "Eco_Kernel_MVar_put_Int"
+                        , abiArgTypes = [ ecoInt, ecoInt ]
+                        , abiResultType = ecoValue
+                        }
+                        abi
+            , test "Float value selects the _Float variant with f64 ABI on the value axis" <|
+                \_ ->
+                    let
+                        abi =
+                            KernelAbi.deriveKernelInstanceAbi (mvarPutKey [ Mono.MInt, Mono.MFloat ])
+                    in
+                    Expect.equal
+                        { symbolName = "Eco_Kernel_MVar_put_Float"
+                        , abiArgTypes = [ ecoInt, ecoFloat ]
+                        , abiResultType = ecoValue
+                        }
+                        abi
+            , test "Char value selects the _Char variant with i16 ABI on the value axis" <|
+                \_ ->
+                    let
+                        abi =
+                            KernelAbi.deriveKernelInstanceAbi (mvarPutKey [ Mono.MInt, Mono.MChar ])
+                    in
+                    Expect.equal
+                        { symbolName = "Eco_Kernel_MVar_put_Char"
+                        , abiArgTypes = [ ecoInt, ecoChar ]
+                        , abiResultType = ecoValue
+                        }
+                        abi
+            , test "String value falls back to the boxed root symbol" <|
+                \_ ->
+                    let
+                        abi =
+                            KernelAbi.deriveKernelInstanceAbi (mvarPutKey [ Mono.MInt, Mono.MString ])
+                    in
+                    Expect.equal
+                        { symbolName = "Eco_Kernel_MVar_put"
+                        , abiArgTypes = [ ecoInt, ecoValue ]
+                        , abiResultType = ecoValue
+                        }
+                        abi
+            ]
         ]
 
 
@@ -320,6 +370,16 @@ utilsCompareKey args =
     , name = "compare"
     , argTypes = args
     , resultType = orderType
+    }
+
+
+mvarPutKey : List Mono.MonoType -> KernelAbi.KernelInstanceKey
+mvarPutKey args =
+    { prefix = "Eco"
+    , home = "MVar"
+    , name = "put"
+    , argTypes = args
+    , resultType = Mono.MUnit
     }
 
 

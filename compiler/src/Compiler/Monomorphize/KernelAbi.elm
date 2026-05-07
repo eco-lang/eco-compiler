@@ -208,6 +208,12 @@ concreteTypeAwareKernels =
         , ( "JsArray", "singleton" )
         , ( "JsArray", "push" )
         , ( "JsArray", "unsafeSet" )
+
+        -- Eco-kernel: MVar.put specialises on the value-type axis. Without
+        -- this entry, deriveKernelAbiType under PreserveVars erases `a` to
+        -- CEcoValue, hiding the Int/Float/Char axis from the suffix selector
+        -- in kernelInstanceSymbol.
+        , ( "MVar", "put" )
         ]
 
 
@@ -912,6 +918,20 @@ kernelInstanceSymbol key =
 
         ( "JsArray", "indexedMap", [ _, Mono.MInt, _ ] ) ->
             suffixed "_Int"
+
+        --
+        -- Eco kernels (key.prefix = "Eco"). MVar.put specialises on the
+        -- value-type axis; the Int id parameter is always concrete and only
+        -- the second argument drives suffix selection.
+        --
+        ( "MVar", "put", [ Mono.MInt, Mono.MInt ] ) ->
+            suffixed "_Int"
+
+        ( "MVar", "put", [ Mono.MInt, Mono.MFloat ] ) ->
+            suffixed "_Float"
+
+        ( "MVar", "put", [ Mono.MInt, Mono.MChar ] ) ->
+            suffixed "_Char"
 
         _ ->
             rootSymbol
