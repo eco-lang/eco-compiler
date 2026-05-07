@@ -257,31 +257,37 @@ inline bool isEmbeddedConstant(HPointer ptr) {
 }
 
 /**
- * Per-write stale-pointer tripwire.
+ * Per-write stale-pointer tripwire (ECO_GC_DEBUG-gated).
  *
  * Validates an HPointer-encoded value at the moment it's about to be written
- * into a heap field. Routes through `Allocator::resolve`, which (always-on,
- * not gated on ECO_GC_DEBUG) calls `debugAssertValidNurseryPointer` for any
- * nursery target, aborting if the pointer resolves into a free (post-swap)
- * region — i.e. the "stale by-value HPointer across an alloc" pattern.
+ * into a heap field. Routes through `Allocator::validateInNurserySafe`,
+ * which calls `debugAssertValidNurseryPointer` for any nursery target,
+ * aborting if the pointer resolves into a free (post-swap) region — i.e.
+ * the "stale by-value HPointer across an alloc" pattern.
  *
- * No-op for embedded constants and zero pointers (those don't decode to a
- * heap object at all). Cheap when the heuristics filter out the no-op cases.
+ * Compiles to a no-op outside debug builds: the call sites are spread across
+ * every heap-write hot path (eco_store_field, closureCapture, arrayPush,
+ * etc.), so an always-on body materially slows the runtime. Re-enable the
+ * checks by configuring with -DECO_GC_DEBUG=ON.
  */
 inline void validateNurseryHPtr(HPointer hp) {
-    // Defer to the SEGV-safe Allocator helper: decodes to a physical
-    // address without dereferencing, only triggers the free-region
-    // tripwire when the target lies inside the nursery. Safe to call on
-    // arbitrary 64-bit values (e.g. unboxed Ints interpreted via .p).
+#if ECO_GC_DEBUG
     Allocator::instance().validateInNurserySafe(hp);
+#else
+    (void)hp;
+#endif
 }
 
 /// Same as validateNurseryHPtr, taking a uint64_t-encoded HPointer (the form
 /// used by closure args, eco_store_field, etc.).
 inline void validateNurseryHPtrBits(uint64_t bits) {
+#if ECO_GC_DEBUG
     HPointer hp;
     std::memcpy(&hp, &bits, sizeof(hp));
     validateNurseryHPtr(hp);
+#else
+    (void)bits;
+#endif
 }
 
 // ============================================================================
@@ -949,7 +955,7 @@ inline HPointer arrayFromPointers(const std::vector<HPointer>& elements) {
     for (size_t i = 0; i < rooted.size(); ++i) {
         arr->elements[i].p = rooted[i];
     }
-#ifdef ECO_LOWERING_VALIDATION
+#if ECO_GC_DEBUG
     // All-boxed: validate every element write.
     for (size_t i = 0; i < rooted.size(); ++i)
         validateNurseryHPtr(arr->elements[i].p);

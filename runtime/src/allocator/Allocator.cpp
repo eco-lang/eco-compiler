@@ -326,14 +326,18 @@ bool Allocator::isInNursery(void *ptr) {
 // Validates an HPointer without dereferencing (so it's SEGV-safe even when
 // fed unboxed Int bits that happen to decode to a wild address). Decodes
 // the address via base + (ptr<<3); if it lands inside the nursery, hands
-// off to debugAssertValidNurseryPointer (the always-on free-region check).
-// Otherwise no-op.
+// off to debugAssertValidNurseryPointer (the free-region check).
+// Compiles to a no-op outside debug builds — see HeapHelpers.hpp for why.
 void Allocator::validateInNurserySafe(HPointer hp) {
+#if ECO_GC_DEBUG
     if (hp.constant != 0 || hp.ptr == 0) return;
     void* obj = fromPointerRaw(hp);
     if (tl_heap_ && tl_heap_->isInNursery(obj)) {
         tl_heap_->debugAssertValidNurseryPointer(obj);
     }
+#else
+    (void)hp;
+#endif
 }
 
 // Returns true if the pointer is in the calling thread's old gen.
@@ -734,14 +738,17 @@ void* Allocator::resolve(HPointer ptr) {
     void* obj = fromPointerRaw(ptr);
     assert(obj && "Null pointer from valid HPointer");
 
-    // Always-on stale-pointer tripwire: if obj is in nursery, verify it
-    // points at an allocated region (not post-swap to-space-free).
+#if ECO_GC_DEBUG
+    // Stale-pointer tripwire: if obj is in nursery, verify it points at an
+    // allocated region (not post-swap to-space-free). Hot path — only run
+    // in debug builds.
     {
         ThreadLocalHeap* heap = getThreadHeap();
         if (heap != nullptr && heap->isInNursery(obj)) {
             heap->debugAssertValidNurseryPointer(obj);
         }
     }
+#endif
 
     // Validate pointer is within the reserved heap address space.
     assert(static_cast<char*>(obj) >= heap_base && "Pointer below heap base");

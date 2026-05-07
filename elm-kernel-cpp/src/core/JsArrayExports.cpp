@@ -165,7 +165,7 @@ HPtr Elm_Kernel_JsArray_unsafeSet(HPtr index_val, HPtr value, HPtr array) {
     }
     dst->header.unboxed = srcUnboxed ? 1 : 0;
 
-#ifdef ECO_LOWERING_VALIDATION
+#if ECO_GC_DEBUG
     if (!srcUnboxed) {
         for (uint32_t i = 0; i < len; i++)
             alloc::validateNurseryHPtr(dst->elements[i].p);
@@ -217,7 +217,7 @@ HPtr Elm_Kernel_JsArray_push(HPtr value, HPtr array) {
         dst->header.unboxed = 0;
     }
 
-#ifdef ECO_LOWERING_VALIDATION
+#if ECO_GC_DEBUG
     if (!srcUnboxed) {
         for (uint32_t i = 0; i <= len; i++)
             alloc::validateNurseryHPtr(dst->elements[i].p);
@@ -255,7 +255,7 @@ HPtr Elm_Kernel_JsArray_slice(HPtr start_val, HPtr end_val, HPtr array) {
     dst->length = static_cast<uint32_t>(newLen);
     dst->header.unboxed = src->header.unboxed;
 
-#ifdef ECO_LOWERING_VALIDATION
+#if ECO_GC_DEBUG
     if ((dst->header.unboxed & 0x3) == 0) {
         for (int64_t i = 0; i < newLen; i++)
             alloc::validateNurseryHPtr(dst->elements[i].p);
@@ -315,7 +315,7 @@ HPtr Elm_Kernel_JsArray_appendN(HPtr n_val, HPtr dest, HPtr source) {
     }
     resultArr->header.unboxed = resultKind;
 
-#ifdef ECO_LOWERING_VALIDATION
+#if ECO_GC_DEBUG
     if (resultKind == 0) {
         for (uint32_t i = 0; i < newLen; i++)
             alloc::validateNurseryHPtr(resultArr->elements[i].p);
@@ -570,7 +570,7 @@ static HPointer copyAndExtendForPush(HPtr array, uint32_t &outSrcLen,
     outSrcLen = len;
     outSrcKind = srcKind;
 
-#ifdef ECO_LOWERING_VALIDATION
+#if ECO_GC_DEBUG
     if (srcKind == 0) {
         for (uint32_t i = 0; i < len; i++)
             alloc::validateNurseryHPtr(dst->elements[i].p);
@@ -627,7 +627,7 @@ HPtr elm_array_push_box(HPtr value, HPtr array) {
     dst->header.unboxed = 0;
     dst->elements[len].p = valHP;
 
-#ifdef ECO_LOWERING_VALIDATION
+#if ECO_GC_DEBUG
     // Always boxed (kind=0). Validate the copied prefix and the new slot.
     for (uint32_t i = 0; i < len; i++)
         alloc::validateNurseryHPtr(dst->elements[i].p);
@@ -662,7 +662,7 @@ HPtr elm_array_slice(int64_t start, int64_t end, HPtr array) {
     dst->length = static_cast<uint32_t>(newLen);
     dst->header.unboxed = src->header.unboxed;
 
-#ifdef ECO_LOWERING_VALIDATION
+#if ECO_GC_DEBUG
     if ((dst->header.unboxed & 0x3) == 0) {
         for (int64_t i = 0; i < newLen; i++)
             alloc::validateNurseryHPtr(dst->elements[i].p);
@@ -715,7 +715,7 @@ HPtr elm_array_append_n(int64_t n_signed, HPtr dest, HPtr source) {
     }
     resultArr->header.unboxed = resultKind;
 
-#ifdef ECO_LOWERING_VALIDATION
+#if ECO_GC_DEBUG
     if (resultKind == 0) {
         for (uint32_t i = 0; i < newLen; i++)
             alloc::validateNurseryHPtr(resultArr->elements[i].p);

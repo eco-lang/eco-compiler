@@ -32,9 +32,10 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
-// Always-on: needed by debugAssertValidNurseryPointer's diagnostic
-// (release-mode stale-arg tripwire prints a backtrace).
+#if ECO_GC_DEBUG
+// Used by debugAssertValidNurseryPointer's diagnostic (prints a backtrace).
 #include <execinfo.h>
+#endif
 
 #if ECO_GC_DEBUG
 // Track which heap object is currently being scanned during Cheney scan,
@@ -553,9 +554,9 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // bodies whose recorded color doesn't match at the end are freed.
     minor_color_ = !minor_color_;
 
-    // Always-on (used by stale-arg detection in `debugAssertValidNurseryPointer`).
-    in_minor_gc_ = true;
 #if ECO_GC_DEBUG
+    // Used by stale-pointer detection in `debugAssertValidNurseryPointer`.
+    in_minor_gc_ = true;
     std::fprintf(stderr, "[gc] minorGC start from_is_low=%d\n", (int)from_is_low_);
 #endif
 
@@ -702,11 +703,15 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // Phase 4: Check occupancy and grow if needed.
     checkAndGrow();
 
-    // Safety net: zero free to-space region to prevent ghost headers.
-    // Called after checkAndGrow() so newly added blocks are also zeroed.
+#if ECO_GC_DEBUG
+    // Debug safety net: zero free to-space region to prevent ghost headers
+    // from surviving into the next GC cycle. Called after checkAndGrow() so
+    // newly added blocks are also zeroed. Hot path — debug-only; the
+    // mutator does not depend on free regions reading as zero.
     clearToSpaceFreeRegion();
+#endif
 
-#if defined(ECO_GC_DEBUG) || defined(ECO_LOWERING_VALIDATION)
+#if ECO_GC_DEBUG
     // Post-GC heap integrity check: walk all surviving objects in to-space
     // and verify every boxed child pointer points outside from-space. A
     // child still in from-space at this point (without a Tag_Forward
@@ -933,7 +938,8 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     }
 #endif
 
-    // Always-on (paired with the assignment at the start of minorGC).
+#if ECO_GC_DEBUG
+    // Paired with the assignment at the start of minorGC.
     in_minor_gc_ = false;
 
     // Stale-pointer diagnostic aid: poison the just-evacuated from-space's
@@ -941,6 +947,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // still references those bytes lands on recognisable poison (or trips
     // the detector). See poisonOldFromSpaceUsedRegion for details.
     poisonOldFromSpaceUsedRegion();
+#endif
 
     // Phase 5: Swap spaces by flipping which is from/to.
     from_is_low_ = !from_is_low_;
@@ -1442,7 +1449,7 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
         case Tag_Array: {
             ElmArray *arr = static_cast<ElmArray *>(obj);
             bool is_boxed = (arr->header.unboxed & 0x3) == 0;
-#ifdef ECO_LOWERING_VALIDATION
+#if ECO_GC_DEBUG
             // Kind-mismatch tripwire: if the array claims unboxed but its
             // element bit-patterns decode to in-from-space-allocated
             // addresses (real live objects we're about to evacuate), the
@@ -1720,6 +1727,7 @@ void NurserySpace::clearToSpaceFreeRegion() {
     }
 }
 
+#if ECO_GC_DEBUG
 // Stale-pointer diagnostic aid: fill the just-evacuated from-space's
 // allocated region with a recognisable poison byte so that any stale
 // HPointer the mutator still holds either:
@@ -1727,7 +1735,7 @@ void NurserySpace::clearToSpaceFreeRegion() {
 //       (which classifies post-swap to-space as "free"), OR
 //   (b) on a path that bypasses Allocator::resolve, dereferences as an
 //       obviously-bogus header (tag = 29, > Tag_Forward) and trips the
-//       always-on `assert(hdr->tag <= Tag_Forward)` in evacuate.
+//       `assert(hdr->tag <= Tag_Forward)` in evacuate.
 //
 // The 0xDD byte was picked so the resulting HPointer has constant=13
 // (out of range for valid embedded constants 0-7) which makes
@@ -1737,6 +1745,7 @@ void NurserySpace::clearToSpaceFreeRegion() {
 //
 // Cost: O(bytes used by the previous mutator phase) per minor GC. Run
 // only on the from-space *allocated* prefix, not the entire nursery.
+// Compiled in only under ECO_GC_DEBUG — see HeapHelpers.hpp for why.
 void NurserySpace::poisonOldFromSpaceUsedRegion() {
     constexpr uint8_t kPoisonByte = 0xDD;
     std::vector<char*>& from_blocks = from_is_low_ ? low_blocks_ : high_blocks_;
@@ -1754,7 +1763,7 @@ void NurserySpace::poisonOldFromSpaceUsedRegion() {
 }
 
 // ============================================================================
-// Stale nursery pointer detection (always-on)
+// Stale nursery pointer detection (debug-only)
 // ============================================================================
 
 bool NurserySpace::isInFromSpaceAllocatedRegion(void* ptr) const {
@@ -1883,5 +1892,6 @@ void NurserySpace::debugAssertValidNurseryPointer(void* ptr) const {
     }
     assert(ok && "HPointer into nursery free region (stale pointer into unallocated space)");
 }
+#endif // ECO_GC_DEBUG
 
 } // namespace Elm

@@ -166,11 +166,14 @@ public:
     /** Returns current bytes allocated in old gen. */
     size_t getOldGenAllocatedBytes() const { return old_gen_.getAllocatedBytes(); }
 
-    /** Always-on stale-pointer tripwire: aborts if `ptr` is in the nursery
-     *  but not in any allocated region (i.e. points at post-swap to-space-free). */
+#if ECO_GC_DEBUG
+    /** Stale-pointer tripwire: aborts if `ptr` is in the nursery but not in
+     *  any allocated region (i.e. points at post-swap to-space-free).
+     *  Compiled in only under ECO_GC_DEBUG. */
     void debugAssertValidNurseryPointer(void* ptr) {
         nursery_.debugAssertValidNurseryPointer(ptr);
     }
+#endif
 
 #if ENABLE_GC_STATS
     /** Returns GC statistics for this thread. */
