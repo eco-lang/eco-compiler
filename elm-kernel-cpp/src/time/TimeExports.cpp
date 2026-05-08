@@ -177,26 +177,26 @@ static void* timeNowBindingEvaluator(void* rawArgs[]) {
         now.time_since_epoch()
     ).count();
 
-    // Three allocations follow (allocInt, eco_apply_closure for the Posix
-    // ctor, taskSucceed). Root mtpHP / resumeHP across all three; root the
+    // Two allocations follow (eco_closure_call_saturated for the Posix
+    // ctor, taskSucceed). Root mtpHP / resumeHP across both; root the
     // intermediate Posix and Task as they appear.
     HPointer posixHP = Elm::alloc::listNil();
     HPointer succeededTask = Elm::alloc::listNil();
     {
         Elm::StackRootGuard guard(&mtpHP, &resumeHP, &posixHP, &succeededTask);
 
-        // millisToPosix is `Posix : Int -> Posix` and its closure ABI takes
-        // a boxed Int (HPointer to ElmInt), per the eco_apply_closure
-        // convention used elsewhere in the kernel. Allocate a heap ElmInt,
-        // root it across the apply (which itself may GC inside the ctor).
-        HPointer msHP = Elm::alloc::allocInt(ms);
-        {
-            Elm::StackRootGuard msGuard(&msHP);
-            uint64_t msArg = Export::encode(msHP);
-            uint64_t posixEnc = eco_apply_closure(
-                HPtr::fromBits(Export::encode(mtpHP)), &msArg, 1).toBits();
-            posixHP = Export::decode(posixEnc);
-        }
+        // millisToPosix : Int -> Posix. Pass `ms` as an unboxed i64 (PK_Int)
+        // via the layout-aware saturated-call entry; the runtime threads it
+        // straight to wrappers that accept unboxed Int, or boxes it once at
+        // the boundary for legacy wrappers — strictly less work than always
+        // boxing here.
+        static constexpr unsigned char kLayoutInt1[3] = { 1, 0, 1 };
+        const auto* layout =
+            reinterpret_cast<const Elm::EvalParamLayout*>(kLayoutInt1);
+        uint64_t msArg = static_cast<uint64_t>(ms);
+        uint64_t posixEnc = eco_closure_call_saturated(
+            HPtr::fromBits(Export::encode(mtpHP)), &msArg, 1, layout).toBits();
+        posixHP = Export::decode(posixEnc);
 
         succeededTask = Elm::Platform::Scheduler::instance().taskSucceed(posixHP);
         Elm::Platform::Scheduler::callClosure1(resumeHP, succeededTask);
