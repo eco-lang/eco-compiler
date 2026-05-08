@@ -299,39 +299,62 @@ Testing::TestCase testFreeListRoundTrip("Free list recycles memory after GC", []
     rc::check([]() {
         auto& alloc = initAllocator();
         auto& oldgen = getOldGen(alloc);
+        auto& rootset = alloc.getRootSet();
 
-        // Allocate objects in old gen (unrooted - will become garbage).
-        size_t num_objects = *rc::gen::inRange<size_t>(5, 20);
+        // Allocate objects in old gen, rooting every other one. The rooted
+        // cells keep the underlying page alive across major GC, so the
+        // unrooted cells become individual entries on the size-class free
+        // list (rather than the whole page being released back to the bag,
+        // which would defeat the address-reuse property we want to test).
+        size_t num_objects = *rc::gen::inRange<size_t>(64, 128);
         std::vector<void*> first_batch;
+        std::vector<HPointer> root_storage;
+        std::vector<bool> is_rooted;
 
         for (size_t i = 0; i < num_objects; i++) {
             void* obj = allocateIntInOldGen(oldgen, static_cast<i64>(i));
             if (!obj) RC_FAIL("Failed to allocate in old gen");
             first_batch.push_back(obj);
+            bool rooted = (i % 2 == 0);
+            is_rooted.push_back(rooted);
+            if (rooted) {
+                root_storage.push_back(AllocatorTestAccess::toPointer(obj));
+            }
+        }
+        for (auto& root : root_storage) {
+            rootset.addRoot(&root);
         }
 
-        // Run GC to free these objects (they're unrooted).
+        // Run GC: rooted cells survive in place, unrooted cells go on the
+        // free list of the corresponding size class.
         runMarkAndSweep(alloc);
 
-        // Allocate same number of objects again.
-        // They should come from free lists (same addresses or nearby).
+        // Allocate the unrooted slots back. They should come from the free
+        // list, landing at the same addresses as the freed cells.
+        size_t num_freed = num_objects - root_storage.size();
         std::vector<void*> second_batch;
-        for (size_t i = 0; i < num_objects; i++) {
+        for (size_t i = 0; i < num_freed; i++) {
             void* obj = allocateIntInOldGen(oldgen, static_cast<i64>(i + 100));
             if (!obj) RC_FAIL("Failed to allocate in old gen");
             second_batch.push_back(obj);
         }
 
-        // Check that at least some allocations reused freed memory.
-        // (Addresses from second batch should be in first batch.)
+        // At least one second-batch address should match a first-batch
+        // unrooted slot (i.e., a freed cell was recycled via the free list).
         size_t reused = 0;
         for (void* obj : second_batch) {
-            if (std::find(first_batch.begin(), first_batch.end(), obj) != first_batch.end()) {
-                reused++;
+            for (size_t i = 0; i < first_batch.size(); i++) {
+                if (!is_rooted[i] && first_batch[i] == obj) {
+                    reused++;
+                    break;
+                }
             }
         }
 
-        // Most allocations should be reused (allow some slack for bump allocation).
+        for (auto& root : root_storage) {
+            rootset.removeRoot(&root);
+        }
+
         RC_ASSERT(reused > 0);
     });
 });

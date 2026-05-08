@@ -1422,11 +1422,13 @@ Testing::TestCase testDynRecordSurvivesMinorGC("DynRecord with fieldgroup surviv
     rc::check([]() {
         auto& alloc = initAllocator();
 
-        // Allocate a FieldGroup with 2 field IDs
+        // Allocate a FieldGroup with 2 field IDs.
+        // header.size must equal count for getObjectSize to compute the right
+        // byte size (used by minor-GC evacuation to decide how much to copy).
         size_t fg_size = sizeof(FieldGroup) + 2 * sizeof(u32);
         fg_size = (fg_size + 7) & ~7;
         FieldGroup* fg = static_cast<FieldGroup*>(alloc.allocate(fg_size, Tag_FieldGroup));
-        fg->header.size = 0;
+        fg->header.size = 2;
         fg->count = 2;
         fg->fields[0] = 100;
         fg->fields[1] = 200;
@@ -1485,10 +1487,13 @@ Testing::TestCase testFieldGroupSurvivesMinorGC("FieldGroup survives minor GC", 
 
         u32 count = *rc::gen::inRange<u32>(1, 10);
 
+        // header.size must equal count: getObjectSize uses header.size to
+        // determine the FieldGroup's byte footprint, and minor-GC evacuation
+        // copies exactly that many bytes.
         size_t fg_size = sizeof(FieldGroup) + count * sizeof(u32);
         fg_size = (fg_size + 7) & ~7;
         FieldGroup* fg = static_cast<FieldGroup*>(alloc.allocate(fg_size, Tag_FieldGroup));
-        fg->header.size = 0;
+        fg->header.size = count;
         fg->count = count;
         std::vector<u32> fieldIds;
         for (u32 i = 0; i < count; ++i) {

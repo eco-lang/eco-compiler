@@ -376,7 +376,19 @@ static void test_slice_of_slice_collapses() {
         RC_ASSERT(alloc::getTag(slice2Obj) == Tag_StringSlice);
         ElmStringSlice* slc = static_cast<ElmStringSlice*>(slice2Obj);
         void* deepBase = alloc.resolve(slc->base);
-        RC_ASSERT(alloc::getTag(deepBase) == Tag_String);
+        // For large strings, slice.base points at the Tag_LargeStringHeader
+        // (not at its body) so that sweepNurseryLargeBodies keeps the body
+        // alive — see StringOps.cpp:230-240. The body itself is the Tag_String
+        // leaf. Either form is acceptable; what matters is that we land on a
+        // leaf in at most one indirection.
+        u32 deepTag = alloc::getTag(deepBase);
+        if (deepTag == Tag_LargeStringHeader) {
+            LargeStringHeader* lh = static_cast<LargeStringHeader*>(deepBase);
+            void* body = alloc.resolve(lh->body);
+            RC_ASSERT(alloc::getTag(body) == Tag_String);
+        } else {
+            RC_ASSERT(deepTag == Tag_String);
+        }
     });
 }
 

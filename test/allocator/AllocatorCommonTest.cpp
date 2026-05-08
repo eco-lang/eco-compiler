@@ -407,26 +407,27 @@ Testing::TestCase testGetObjectSizeByteBufferEdgeCases("getObjectSize handles By
 });
 
 // ============================================================================
-// ElmArray Tests (variable-size, arr->length determines size; capacity ignored)
+// ElmArray Tests (variable-size, capacity = header.size determines stride;
+// arr->length is incidental — see AllocatorCommon.hpp:248-257)
 // ============================================================================
 
-Testing::TestCase testGetObjectSizeArray("getObjectSize returns correct size for ElmArray with varying lengths", []() {
-    rc::check([](u32 length) {
+Testing::TestCase testGetObjectSizeArray("getObjectSize returns correct size for ElmArray based on capacity", []() {
+    rc::check([](u32 cap) {
         // Limit to reasonable size
-        length = length % 50;
+        cap = cap % 50;
 
         void* obj = getTestObject();
         Header* hdr = getHeader(obj);
         hdr->tag = Tag_Array;
-        // Capacity (header.size) is intentionally larger than length, to lock
-        // in the contract that getObjectSize uses arr->length, not capacity.
-        hdr->size = length + 7;
+        hdr->size = cap;
 
+        // Logical length is intentionally smaller than capacity, locking in the
+        // contract that getObjectSize uses capacity (sweep stride), not length.
         ElmArray* arr = static_cast<ElmArray*>(obj);
-        arr->length = length;
+        arr->length = cap / 2;
 
         size_t base_size = sizeof(ElmArray);  // Header + length + padding
-        size_t expected = (base_size + length * sizeof(Unboxable) + 7) & ~7;
+        size_t expected = (base_size + cap * sizeof(Unboxable) + 7) & ~7;
         RC_ASSERT(getObjectSize(obj) == expected);
     });
 });
@@ -438,31 +439,33 @@ Testing::TestCase testGetObjectSizeArrayEdgeCases("getObjectSize handles ElmArra
         hdr->tag = Tag_Array;
         ElmArray* arr = static_cast<ElmArray*>(obj);
 
-        // Zero-length array (capacity may still be > 0)
-        hdr->size = 4;  // capacity
+        // Zero-capacity array
+        hdr->size = 0;
         arr->length = 0;
         RC_ASSERT(getObjectSize(obj) == ((sizeof(ElmArray) + 7) & ~7));
-        RC_ASSERT(getObjectSize(obj) == 16);  // Header(8) + length+padding(8) = 16
+        RC_ASSERT(getObjectSize(obj) == 16);  // Just the aligned struct
 
-        // One element
-        arr->length = 1;
+        // Capacity = 1
+        hdr->size = 1;
         RC_ASSERT(getObjectSize(obj) == ((sizeof(ElmArray) + 1 * sizeof(Unboxable) + 7) & ~7));
         RC_ASSERT(getObjectSize(obj) == 24);  // 16 + 8 = 24
 
-        // Three elements
-        arr->length = 3;
+        // Capacity = 3
+        hdr->size = 3;
         RC_ASSERT(getObjectSize(obj) == ((sizeof(ElmArray) + 3 * sizeof(Unboxable) + 7) & ~7));
         RC_ASSERT(getObjectSize(obj) == 40);  // 16 + 24 = 40
 
-        // Length-vs-capacity contract: capacity is huge, length is small.
-        hdr->size = 1000;
-        arr->length = 2;
+        // Capacity-vs-length contract: capacity is small, length pretends to be huge.
+        // getObjectSize must ignore length and report based on capacity.
+        hdr->size = 2;
+        arr->length = 1000;
         RC_ASSERT(getObjectSize(obj) == ((sizeof(ElmArray) + 2 * sizeof(Unboxable) + 7) & ~7));
         RC_ASSERT(getObjectSize(obj) == 32);
 
-        // Large length (~256 KiB worth of Unboxable elements). Verifies the
+        // Large capacity (~256 KiB worth of Unboxable elements). Verifies the
         // arithmetic does not overflow and the result remains aligned.
-        arr->length = 32 * 1024;  // 32K elements * 8 bytes = 256 KiB payload
+        hdr->size = 32 * 1024;  // 32K elements * 8 bytes = 256 KiB payload
+        arr->length = 0;
         size_t expected_large = (sizeof(ElmArray) + (size_t)(32 * 1024) * sizeof(Unboxable) + 7) & ~7;
         RC_ASSERT(getObjectSize(obj) == expected_large);
         RC_ASSERT(getObjectSize(obj) % 8 == 0);
