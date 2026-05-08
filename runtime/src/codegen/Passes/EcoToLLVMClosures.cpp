@@ -224,28 +224,33 @@ static bool usesArgsArrayConvention(LLVM::LLVMFuncOp func) {
 ///     unchanged. Per-slot kind comes from `closure->unboxed[i]`; the
 ///     evaluator extracts each slot accordingly.
 ///
-/// `resultKind` (ParamKind: 0=Boxed, 1=Int, 2=Float, 3=Char) controls the
-/// wrapper's return ABI. Currently the wrapper always returns ptr (HPtr)
-/// regardless of `resultKind`: the optimization of returning primitive
-/// values natively is gated on every caller of `closure->evaluator`
-/// knowing the closure's K, which today's C++ effect-manager kernels
-/// don't (they invoke `eco_apply_closure` with the all-boxed legacy
-/// layout). The `resultKind` parameter is plumbed through for future
-/// enablement but has no effect on the emitted wrapper.
+/// `resultKind` (ParamKind: 0=Boxed, 1=Int, 2=Float, 3=Char) controls
+/// the wrapper's return ABI:
+///   - PK_Boxed → returns ptr (HPtr); primitive inner-call results are
+///     boxed via `eco_alloc_*` on the way out.
+///   - PK_Int   → returns i64 directly (no boxing).
+///   - PK_Float → returns f64 directly (no boxing).
+///   - PK_Char  → returns i16 directly (no boxing).
+///
+/// Phase D: K!=0 wrappers are now safe. Every closure-invocation entry
+/// point reads the closure's actual `result_kind` from its header (set
+/// by `eco_alloc_closure_k` to match the wrapper's compiled return ABI)
+/// and dispatches the function-pointer cast accordingly. C++ kernel
+/// callers that pre-Phase-C invoked `eco_apply_closure` with an
+/// all-boxed legacy layout still work: the layout's `result_kind` byte
+/// is now derived from the closure header inside the legacy entry, so
+/// the runtime helper picks the correct cast even when the caller is
+/// unaware of K.
 static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp module, StringRef funcName,
                                            int64_t arity, Location loc, const TypeConverter *typeConverter,
                                            const EcoRuntime &runtime,
                                            bool typedNewargs = false,
-                                           uint8_t /*resultKind*/ = 0) {
+                                           uint8_t resultKind = 0) {
     auto *ctx = rewriter.getContext();
     auto i64Ty = IntegerType::get(ctx, 64);
     auto f64Ty = Float64Type::get(ctx);
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
     auto i16Ty = IntegerType::get(ctx, 16);
-    // Force resultKind to 0 (PK_Boxed) until the C++-kernel callers of
-    // closure evaluators are migrated to K-aware dispatch. See file-level
-    // comment above.
-    uint8_t resultKind = 0;
 
     // Check if wrapper already exists (check first — fast path).
     // Cache key includes resultKind so K=0 and K=primitive wrappers for the
@@ -617,7 +622,6 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
         // Emit safepoint marker before allocation
         emitSafepointMarker(op, rewriter, runtime, liveRoots);
 
-        auto allocFunc = runtime.getOrCreateAllocClosure(rewriter);
         auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
 
         // Get wrapper function that adapts calling convention
@@ -646,15 +650,12 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
         // PK_Int/Float/Char → primitive return. Wrappers with primitive
         // return ABI are only safe to invoke via `eco_apply_closure_eval`,
         // which dispatches the cast based on the layout's `result_kind`.
-        uint8_t opResultKind = static_cast<uint8_t>(op.get_resultKind());
-        // Phase C: wrappers still ignore resultKind (forced to 0 inside
-        // getOrCreateWrapper), so the closure header's result_kind must
-        // also be 0 — otherwise dispatch paths would read K!=0 from the
-        // header and mis-cast the wrapper's actual HPtr return.
-        // Phase D will lift the wrapper override and pass `opResultKind`
-        // through to both the wrapper and the closure header.
-        uint8_t closureResultKind = 0;
-        (void)opResultKind;
+        // Phase D: pass the op's `_result_kind` through to both the
+        // wrapper (controls its real C-ABI return type) and the closure
+        // header (read by every dispatch path). Wrapper and header K
+        // must agree; the frontend computes both from the same Mono
+        // result type so they do.
+        uint8_t closureResultKind = static_cast<uint8_t>(op.get_resultKind());
         auto wrapperFunc = getOrCreateWrapper(rewriter, module, funcSymbol, arity, loc,
                                               getTypeConverter(), runtime,
                                               /*typedNewargs=*/true,
@@ -700,10 +701,10 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
         // GC barrier window that bit-by-bit writes would create. Match the
         // runtime layout *exactly*; any mismatch silently corrupts header
         // metadata.
-        // Phase C: closureResultKind is forced to 0 (matching the wrapper
-        // override in getOrCreateWrapper); Phase D will plumb the op's
-        // `_result_kind` through here too. The packed bit-pattern below
-        // overwrites whatever `eco_alloc_closure_k` initialised.
+        // Phase D: closureResultKind matches the wrapper's compiled
+        // return ABI (both sourced from the op's `_result_kind`). The
+        // packed bit-pattern below overwrites whatever
+        // `eco_alloc_closure_k` initialised at the same offset.
         uint64_t packedValue =
               (static_cast<uint64_t>(numCaptured) & 0x3F)
             | ((static_cast<uint64_t>(arity) & 0x3F) << 6)
@@ -807,20 +808,23 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
         SmallVector<Value> wrapperPtrs;
         wrapperPtrs.reserve(numSiblings);
         // Per-sibling _result_kinds attribute is optional; absent ≡ all
-        // siblings PK_Boxed (today's behaviour). Each entry must be a
-        // ParamKind in [0, 3].
-        //
-        // Phase C: wrappers still ignore K (getOrCreateWrapper override),
-        // so the per-sibling K passed here is forced to 0. Phase D will
-        // lift the override and plumb `_result_kinds[i]` through both
-        // the wrapper and the closure header.
+        // siblings PK_Boxed. Each entry must be a ParamKind in [0, 3].
+        // Phase D: the per-sibling K is passed both to the wrapper
+        // (controls its return ABI) and into the resultKinds[] array
+        // below (stored on each sibling's closure header).
         auto resultKindsAttr = op.get_resultKindsAttr();
-        (void)resultKindsAttr;
         for (unsigned i = 0; i < numSiblings; ++i) {
             StringRef funcSymbol =
                 cast<FlatSymbolRefAttr>(fastEvaluators[i]).getValue();
             int64_t arity = cast<IntegerAttr>(arities[i]).getInt();
             uint8_t siblingResultKind = 0;
+            if (resultKindsAttr) {
+                auto entries = resultKindsAttr.getValue();
+                if (i < entries.size()) {
+                    siblingResultKind = static_cast<uint8_t>(
+                        cast<IntegerAttr>(entries[i]).getInt());
+                }
+            }
             auto wrapperFunc = getOrCreateWrapper(
                 rewriter, module, funcSymbol, arity, loc,
                 getTypeConverter(), runtime,
@@ -899,10 +903,20 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
                 unboxedBitmapsArr, ValueRange{idxConst});
             rewriter.create<LLVM::StoreOp>(loc, bmConst, bmPtr);
 
-            // resultKinds[i] — sibling i's evaluator return kind. Phase C
-            // forces this to 0 to match the wrapper override; Phase D
-            // will lift it to read from `_result_kinds[i]`.
+            // resultKinds[i] — sibling i's evaluator return kind, stored
+            // on the closure header so dispatch paths (legacy
+            // eco_apply_closure, eco_apply_closure_eval, etc.) cast
+            // `closure->evaluator` to the correct primitive-return
+            // signature. Read from the same `_result_kinds` ArrayAttr
+            // that drove the wrapper-resolution loop above.
             uint8_t siblingResultKindForHeader = 0;
+            if (resultKindsAttr) {
+                auto entries = resultKindsAttr.getValue();
+                if (i < entries.size()) {
+                    siblingResultKindForHeader = static_cast<uint8_t>(
+                        cast<IntegerAttr>(entries[i]).getInt());
+                }
+            }
             auto rkConst = rewriter.create<LLVM::ConstantOp>(loc, i8Ty,
                 rewriter.getI8IntegerAttr(static_cast<int8_t>(siblingResultKindForHeader)));
             auto rkPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty,
@@ -1546,11 +1560,21 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
                          ? origNewArgTypes[j] : newArgs[j].getType();
             kinds.push_back(mlirTypeToParamKind(t));
         }
-        // Layout `result_kind` is forced to 0 (PK_Boxed) until wrappers
-        // start returning primitives natively. See `getOrCreateWrapper`.
+        // Phase D: layout's `result_kind` byte mirrors the closure
+        // evaluator's compiled return ABI (sourced from the call op's
+        // `_result_kind` attribute). The runtime helper reads K from the
+        // closure header authoritatively, but it debug-asserts the
+        // layout's K matches — populating it correctly here keeps that
+        // assertion happy and documents the call-site's expectation.
+        uint8_t inlineResultKind = 0;
+        if (safeOp) {
+            if (auto attr = safeOp->getAttrOfType<IntegerAttr>("_result_kind"))
+                inlineResultKind = static_cast<uint8_t>(attr.getInt());
+        }
         auto module = safeOp ? safeOp->getParentOfType<ModuleOp>() : ModuleOp{};
         if (module) {
-            layoutArg = getOrCreateEvalLayout(rewriter, loc, module, kinds, 0);
+            layoutArg = getOrCreateEvalLayout(rewriter, loc, module, kinds,
+                                              inlineResultKind);
         } else {
             layoutArg = rewriter.create<LLVM::ZeroOp>(loc, ptrTy).getResult();
         }
@@ -1730,12 +1754,12 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         }
 
         // === 5. Build (or reuse) the EvalParamLayout global ===
-        // Layout's `result_kind` is forced to 0 (PK_Boxed) until wrappers
-        // start returning primitives natively (see getOrCreateWrapper).
-        // The frontend's `_result_kind` attribute is plumbed but ignored
-        // here for correctness with the all-boxed C++-kernel call path.
+        // Phase D: layout's `result_kind` mirrors the closure evaluator's
+        // compiled return ABI (sourced from the op's `_result_kind`).
+        // The runtime helper reads K from the closure header
+        // authoritatively but debug-asserts agreement.
         auto module = op->getParentOfType<ModuleOp>();
-        uint8_t layoutResultKind = 0;
+        uint8_t layoutResultKind = static_cast<uint8_t>(op.get_resultKind());
         Value layoutPtr = getOrCreateEvalLayout(rewriter, loc, module, kinds,
                                                 layoutResultKind);
 
@@ -1853,10 +1877,10 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         }
 
         // Build (or reuse) an EvalParamLayout global describing the new args.
-        // Layout `result_kind` is forced to 0 (PK_Boxed) — see the matching
-        // comment in `lowerSegmentationUnknown` and `getOrCreateWrapper`.
+        // Phase D: layout's `result_kind` mirrors the closure evaluator's
+        // compiled return ABI (sourced from the op's `_result_kind`).
         auto module = op->getParentOfType<ModuleOp>();
-        uint8_t layoutResultKind = 0;
+        uint8_t layoutResultKind = static_cast<uint8_t>(op.get_resultKind());
         Value layoutPtr = getOrCreateEvalLayout(rewriter, loc, module, kinds,
                                                 layoutResultKind);
 

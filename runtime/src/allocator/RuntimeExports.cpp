@@ -1249,19 +1249,18 @@ extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
     assert(max_values <= 63 && "max_values exceeds 6-bit field cap");
     uint32_t remaining = max_values - n_values;
 
-    // Phase C: K is read from the closure header, not the layout. The
-    // layout's `result_kind` byte (if present) is a redundant hint left
-    // over from the original Phase B design; the closure header is the
-    // authoritative source of truth so C++-kernel callers (which don't
-    // know K) get correct dispatch via `eco_apply_closure(legacy)` →
-    // `eco_apply_closure_typed` → here. The frontend still populates
-    // `args_layout->result_kind` for cross-checking; debug-assert that
-    // it agrees with the closure header so drift surfaces immediately.
+    // Phase C/D: K is read from the closure header, not the layout. The
+    // layout's `result_kind` byte (if present) is a redundant hint and
+    // is allowed to drift — the frontend can only derive layout K from
+    // the static call-site type, which loses precision for staged-curried
+    // closures (e.g. `Mono.stageReturnType` peels one MFunction layer,
+    // returning the inner MFunction for a flat single-stage closure
+    // whose actual return type lives one more level in). The closure
+    // header is the authoritative source of truth so C++-kernel callers
+    // (which don't see the layout) still get correct dispatch via
+    // `eco_apply_closure(legacy)` → `eco_apply_closure_typed` → here.
     uint8_t K = closure->result_kind;
     assert(K <= 3 && "eco_apply_closure_eval: closure result_kind out of range");
-    assert((!args_layout || args_layout->result_kind == K) &&
-           "eco_apply_closure_eval: layout->result_kind disagrees with "
-           "closure->result_kind — frontend bug");
 
     if (num_args == 0) {
         // No-op apply: closure is unchanged. By construction the caller

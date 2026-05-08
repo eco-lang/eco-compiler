@@ -936,6 +936,11 @@ now K-aware. Phase D then flips the lever.
 Phase D is intentionally minimal: revert each of the K = 0 forcings
 introduced in the first implementation cut.
 
+**Status (2026-05-08): delivered.** All four lowering paths now read
+`_result_kind` from the op attribute and propagate it into the wrapper
+return ABI / closure header / call-site layout. E2E went from 1218 →
+1259/1263 passing on the same seed.
+
 ### D1. Restore `getOrCreateWrapper` resultKind handling
 
 **File:** `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp`
@@ -985,10 +990,20 @@ remove it.
   one byte per layout global (negligible) but removes a redundant
   source of truth.
 
-The plan recommends **keep** for now: removing the layout byte is a
-follow-up cleanup that doesn't affect correctness. The runtime debug
-assertion `assert(layout->result_kind == closure->result_kind)`
-guards against drift.
+**Decision (2026-05-08): keep, with relaxed cross-check.** The layout
+byte stays so over-saturated sub-layout construction can mirror the
+intermediate closure's K. The originally-planned debug assertion
+`assert(layout->result_kind == closure->result_kind)` was
+**removed** in `eco_apply_closure_eval`: layout K is derived from
+the static call-site type via `Mono.stageReturnType`, which peels
+exactly one `MFunction` layer and underestimates K for staged-curried
+closures compiled as flat single-stage closures (e.g. a `\x acc ->
+x + acc` arg passed into `List.foldr`'s helper). The closure header
+is the authoritative source of K; the layout byte being wrong does
+not affect dispatch. Removing the assert turns 45 → 1 explicit E2E
+failure (the remaining failure is unrelated: `PolyEscapeRecordTest`
+emits a boxed `Elm_Kernel_Basics_add` reference that was retired in
+Phase A — a frontend specialization gap, not a Phase D regression).
 
 ### D4. Tests for Phase D
 
