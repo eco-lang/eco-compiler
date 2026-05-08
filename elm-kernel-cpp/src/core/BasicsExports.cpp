@@ -210,6 +210,57 @@ HPtr Elm_Kernel_Basics_mul(HPtr a, HPtr b) {
     return eco_alloc_float(a_val * b_val);
 }
 
+// Phase E.2 per-instance variants. Direct uses are intrinsic-lowered;
+// these are reached only by indirect uses where (+) etc. is captured
+// into a PAP. Semantics must match the corresponding intrinsic
+// (eco.int.add / eco.float.add) and the polymorphic kernel's same-tag
+// branch above.
+
+int64_t Elm_Kernel_Basics_add_Int(int64_t a, int64_t b) {
+    return a + b;
+}
+
+double Elm_Kernel_Basics_add_Float(double a, double b) {
+    return a + b;
+}
+
+int64_t Elm_Kernel_Basics_sub_Int(int64_t a, int64_t b) {
+    return a - b;
+}
+
+double Elm_Kernel_Basics_sub_Float(double a, double b) {
+    return a - b;
+}
+
+int64_t Elm_Kernel_Basics_mul_Int(int64_t a, int64_t b) {
+    return a * b;
+}
+
+double Elm_Kernel_Basics_mul_Float(double a, double b) {
+    return a * b;
+}
+
+// Integer power matches the polymorphic kernel's same-tag branch:
+// negative exponent yields 0; non-negative uses repeated squaring.
+int64_t Elm_Kernel_Basics_pow_Int(int64_t base, int64_t exp) {
+    if (exp < 0) {
+        return 0;
+    }
+    int64_t result = 1;
+    int64_t b = base;
+    int64_t e = exp;
+    while (e > 0) {
+        if (e & 1) result *= b;
+        b *= b;
+        e >>= 1;
+    }
+    return result;
+}
+
+double Elm_Kernel_Basics_pow_Float(double base, double exp) {
+    return std::pow(base, exp);
+}
+
 double Elm_Kernel_Basics_e() {
     return Basics::e();
 }

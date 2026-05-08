@@ -37,6 +37,18 @@ HPtr Elm_Kernel_Basics_pow(HPtr base, HPtr exp);
 HPtr Elm_Kernel_Basics_add(HPtr a, HPtr b);
 HPtr Elm_Kernel_Basics_sub(HPtr a, HPtr b);
 HPtr Elm_Kernel_Basics_mul(HPtr a, HPtr b);
+// Phase E.2 per-instance variants: Int / Float specialisations of the
+// arithmetic operators. Direct uses are intrinsic-lowered before reaching
+// these symbols; indirect uses (e.g. `List.foldl (+) 0`) capture these
+// into PAPs to avoid boxing the args.
+int64_t Elm_Kernel_Basics_add_Int  (int64_t a, int64_t b);
+double  Elm_Kernel_Basics_add_Float(double  a, double  b);
+int64_t Elm_Kernel_Basics_sub_Int  (int64_t a, int64_t b);
+double  Elm_Kernel_Basics_sub_Float(double  a, double  b);
+int64_t Elm_Kernel_Basics_mul_Int  (int64_t a, int64_t b);
+double  Elm_Kernel_Basics_mul_Float(double  a, double  b);
+int64_t Elm_Kernel_Basics_pow_Int  (int64_t base, int64_t exp);
+double  Elm_Kernel_Basics_pow_Float(double  base, double  exp);
 double Elm_Kernel_Basics_e();
 double Elm_Kernel_Basics_pi();
 double Elm_Kernel_Basics_fdiv(double a, double b);

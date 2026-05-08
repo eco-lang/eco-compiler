@@ -84,13 +84,27 @@ The plan is split into six phases that can land as separate commits/PRs:
    convention in lockstep, then delete the runtime re-boxing branch and
    reduce `eco_apply_closure` to an all-boxed shim. First phase that
    actually reduces allocator traffic on real Elm code.
-6. **F. Retire `NumberBoxed` mode and clean up** — once all number-boxed
-   kernels have monomorphic variants and `Specialize.deriveKernelAbiType`
-   no longer needs the boxed fallback for `Basics.add/sub/mul/pow`,
-   remove `KernelAbiMode = NumberBoxed`, `canTypeToMonoType_numberBoxed`,
-   `concreteTypeAwareKernels`, `kernelBackendAbiPolicy` (if collapsible),
-   and `CLOSURE_FLAG_TYPED_NEWARGS` (if every layout-less / hand-built
-   closure can also be migrated or documented as a permanent exception).
+6. **E.2. `Basics.add/sub/mul/pow` per-instance variants** (added
+   2026-05-07; reverses Q5). Add `_Int`/`_Float` C variants and migrate
+   to suffix selection so that **indirect** uses (e.g. `List.foldl (+)
+   0 xs`) also benefit from the unboxed primitive ABI. Q5 was based on
+   the assumption "concrete uses are intrinsic-lowered" — true for
+   *direct* application, but indirect uses still go through the boxed
+   polymorphic kernel symbol via `papCreate`. After E.2 the polymorphic
+   symbol is unreachable; Phase F deletes it along with `NumberBoxed`
+   mode. See §6.5 for details.
+7. **F. Cleanup after per-instance kernel ABI rollout** (revised
+   2026-05-07 after Phase E audit; see §7 for details). Seven steps:
+   (1) move `String.fromNumber` from `numberBoxedKernels` to the
+   suffix-selecting set; (2) retire `CLOSURE_FLAG_TYPED_NEWARGS` (now
+   provably vestigial — set in two places, read nowhere); (3) collapse
+   `kernelBackendAbiPolicy` AllBoxed entries with no primitive-capable
+   parameters to `ElmDerived`; (4) rename `concreteTypeAwareKernels` →
+   `suffixSelectingKernels` to match its actual function; (5) delete
+   the four `Basics.add/sub/mul/pow` `kernelBackendAbiPolicy` arms; (6)
+   remove `NumberBoxed` mode and friends; (7) decide on (and likely
+   delete) the polymorphic `Elm_Kernel_Basics_{add,sub,mul,pow}` C
+   symbols. Steps 5–7 are unlocked by Phase E.2.
 
 The `lowerSegmentationUnknown` typed-args path already uses primitives for the
 under-saturated case (the `typedArgsArray` populated at line 1419), so phase D
@@ -1377,60 +1391,415 @@ phase decides whether to migrate them. Phase F retires the flag.
 
 ---
 
-## 7. Phase F — Retire `NumberBoxed` mode and clean up
+## 6.5 Phase E.2 — `Basics.{add,sub,mul,pow}` per-instance variants
 
-Per decision Q5, `Basics.add/sub/mul/pow` do **not** get primitive variants
-in this plan — concrete uses are already handled by intrinsics and the
-boxed kernel symbol only ever sees genuinely polymorphic call sites.
+**Added 2026-05-07.** This phase reverses decision Q5 ("no primitive
+variants for `Basics.add/sub/mul/pow`") after the Phase E audit
+revealed that the original Q5 reasoning was incomplete.
 
-The only remaining use of `NumberBoxed` in `deriveKernelAbiType` is then
-`String.fromNumber` (and any other entries left in `numberBoxedKernels`),
-which Phase C migrates to `_Int` / `_Float` per-instance variants. Once
-those land:
+### Why Q5 needs reversing
 
-1. Remove the `NumberBoxed` arm from
-   `Compiler.Monomorphize.Specialize.deriveKernelAbiType`.
-2. Remove `KernelAbiMode = NumberBoxed`.
-3. Remove `canTypeToMonoType_numberBoxed` and `numberBoxedKernels`.
-4. **For `Basics.add/sub/mul/pow`** — leave the all-boxed kernel symbol in
-   place as the polymorphic fallback path (or, optionally, delete the C++
-   implementations entirely if a corpus scan shows no tests reach them).
-   Either way, their entry in `kernelBackendAbiPolicy` simply stays
-   `AllBoxed` — that's now the *correct* behaviour for the few remaining
-   genuinely polymorphic uses.
-5. Once *all* migrated kernels have been flipped to `ElmDerived` and only
-   the deliberately-boxed entries remain (e.g. `Debug`, the
-   `Basics.add/sub/mul/pow` polymorphic root, `Json.wrap`),
-   `kernelBackendAbiPolicy` can be inlined into `deriveKernelInstanceAbi`
-   as a small constant table or removed entirely. Keep it if it still
-   carries useful signal; delete it if not.
-6. **Retire `CLOSURE_FLAG_TYPED_NEWARGS`** — once every closure
-   construction site sets the flag. After Phase E the flag is `1` for
-   every closure built via `papCreate`/`papCreateGroup` with a valid
-   layout, but layout-less closures and those built by hand (runtime
-   helpers, test fixtures, hand-written kernels calling
-   `eco_alloc_closure*` directly) still have flag `0` and reach the
-   runtime via the all-boxed shim. Phase F has two options:
-   - **Option A — migrate the holdouts.** Enumerate every direct
-     `eco_alloc_closure*` caller, switch each to set the flag and use
-     a typed wrapper (or, for layout-less closures, generate a
-     synthetic all-boxed-typed-ish wrapper). Once universal, drop the
-     bit from `Closure::flags`, widen `unboxed` back to 52 bits, and
-     restore the 26-capture limit.
-   - **Option B — keep the bit.** If holdouts are few and stable
-     (e.g. a handful of test fixtures), document them as permanent
-     legacy users of the all-boxed shim and keep the discriminator
-     bit. The 25-capture limit stays.
-   Pick A if the migration effort is small relative to the saved bit;
-   B otherwise. The decision should be made after the grep enumerating
-   non-`papCreate*` closure constructors that §6.1 of Phase E flagged
-   as out of scope.
-7. Drop `concreteTypeAwareKernels` once `List.cons` and `JsArray` index
-   ops have been migrated and verified (decision Q4).
-8. Update `KERN_006` to drop the `kernelBackendAbiPolicy` reference if the
-   table is removed.
+The Q5 decision rested on the claim:
 
-Phase F is mostly deletion; it can land as several smaller PRs.
+> Concrete uses are already intrinsic-lowered; the kernel symbol only
+> handles polymorphic fallbacks where boxing is correct.
+
+This is true for **direct** application (`1 + 2`): MLIR codegen sees
+concrete `[MInt, MInt]` operands and emits `eco.int.add` rather than
+calling the kernel. No `Elm_Kernel_Basics_add` invocation occurs.
+
+It is **false** for **indirect** application:
+
+```elm
+List.foldl (+) 0 xs
+```
+
+Here `(+)` becomes a `MonoVarKernel` that is captured into a PAP via
+`papCreate`. The PAP needs an addressable function pointer. Today there
+is only one `Elm_Kernel_Basics_add(HPtr, HPtr) -> HPtr` symbol — the
+polymorphic boxed one — because:
+
+- `kernelBackendAbiPolicy` returns `AllBoxed` for `Basics.add` (and
+  `sub`/`mul`/`pow`).
+- There are no `_Int`/`_Float` suffix branches in `kernelInstanceSymbol`.
+
+So the closure wraps the boxed polymorphic kernel; args are boxed at
+apply time even though the call-site type is concretely `Int -> Int -> Int`.
+
+The fix is to add primitive variants and route concrete indirect uses
+to them. Once landed, the polymorphic symbol becomes unreachable.
+
+### Why this is implementation, not cleanup
+
+Phase F deletes vestigial code paths. Phase E.2 adds new C symbols and
+new suffix-selection rules — it changes the wire format for indirect
+arithmetic uses from boxed to unboxed. That's an ABI change, not
+cleanup. It belongs in the implementation phases.
+
+### Step-by-step
+
+**1. Add C variants in `elm-kernel-cpp/src/core/BasicsExports.cpp`**
+
+Eight new symbols total:
+
+```cpp
+EXPORT int64_t Elm_Kernel_Basics_add_Int(int64_t a, int64_t b);
+EXPORT double  Elm_Kernel_Basics_add_Float(double a, double b);
+EXPORT int64_t Elm_Kernel_Basics_sub_Int(int64_t a, int64_t b);
+EXPORT double  Elm_Kernel_Basics_sub_Float(double a, double b);
+EXPORT int64_t Elm_Kernel_Basics_mul_Int(int64_t a, int64_t b);
+EXPORT double  Elm_Kernel_Basics_mul_Float(double a, double b);
+EXPORT int64_t Elm_Kernel_Basics_pow_Int(int64_t a, int64_t b);
+EXPORT double  Elm_Kernel_Basics_pow_Float(double a, double b);
+```
+
+Implementation: each variant performs the unboxed arithmetic directly
+(matching the intrinsic semantics — `i64` two's-complement wrap for Int
+add/sub/mul; `pow` uses `std::pow` for Float and an integer-`pow` loop
+for Int matching what the existing polymorphic kernel does).
+
+Declarations in `elm-kernel-cpp/src/core/KernelExports.h` (or wherever
+the per-instance variant declarations are organised — mirror the
+existing `_Int` / `_Float` Phase C declarations).
+
+**2. Add suffix branches in `kernelInstanceSymbol`** (`KernelAbi.elm`)
+
+```elm
+( "Basics", "add", [ Mono.MInt, Mono.MInt ] ) ->
+    suffixed "_Int"
+
+( "Basics", "add", [ Mono.MFloat, Mono.MFloat ] ) ->
+    suffixed "_Float"
+
+-- ... similar for sub, mul, pow
+```
+
+Eight new arms total. The argument shape for each is `[N, N]` (binary
+operator).
+
+**3. Move `Basics.{add,sub,mul,pow}` from `numberBoxedKernels` →
+`concreteTypeAwareKernels`** (the set being renamed to
+`suffixSelectingKernels` in Phase F step 4).
+
+Without this move, `deriveKernelAbiType` enters the `NumberBoxed` arm,
+which (with `forceCNumberToInt` now identity per "Fix 9") still produces
+the fully-monomorphic type — but the path is muddled. Move now to make
+the implementation match the design.
+
+After this move `numberBoxedKernels` is empty and `NumberBoxed` mode
+is unreachable for any kernel. (Removal of the mode itself is Phase F
+step 6.)
+
+**4. Delete the `Basics.{add,sub,mul,pow}` `kernelBackendAbiPolicy` arms.**
+
+Originally listed as Phase F step 5; moved to Phase E.2 because the
+suffix selector and the policy table must agree on the wire format.
+With `kernelInstanceSymbol` selecting `Elm_Kernel_Basics_add_Int` but
+`kernelBackendAbiPolicy` still returning `AllBoxed`, the call site
+emits `(HPtr, HPtr) -> HPtr` ABI against a C symbol declared
+`(int64_t, int64_t) -> int64_t` — an immediate ABI mismatch.
+
+Delete the four explicit arms:
+
+```elm
+( "Basics", "add" ) -> AllBoxed   -- DELETE
+( "Basics", "sub" ) -> AllBoxed   -- DELETE
+( "Basics", "mul" ) -> AllBoxed   -- DELETE
+( "Basics", "pow" ) -> AllBoxed   -- DELETE
+```
+
+Fall through to `ElmDerived`. With concrete `[MInt, MInt]` argTypes,
+`monoTypeToAbi` produces `[ecoInt, ecoInt] -> ecoInt`, matching the
+new C symbol's signature.
+
+### What does NOT change in Phase E.2
+
+- The polymorphic `Elm_Kernel_Basics_add(HPtr, HPtr)` C symbol still
+  exists and still works. After Phase E.2 it is unreachable in
+  practice; Phase F step 7 decides whether to delete it.
+- `NumberBoxed` mode and `numberBoxedKernels` (now empty) are still
+  defined. They become dead code; Phase F step 6 removes them.
+
+### Tests
+
+- `KernelAbiTest`: add cases for `Basics.add_Int`, `add_Float`, `sub_*`,
+  `mul_*`, `pow_*`. Mirror the existing `String.fromNumber_Int/Float`
+  tests.
+- E2E: existing arithmetic-heavy tests should continue to pass; new
+  variants are exercised by indirect uses (`List.foldl (+) 0`, etc.).
+  No new fixtures needed — corpus coverage is high.
+- Stress: no expected change.
+
+Risk: low. Direct uses are unchanged (intrinsic-lowered as before).
+Indirect uses gain a faster code path; the boxed kernel remains as
+backup until Phase F.
+
+---
+
+## 7. Phase F — Cleanup after per-instance kernel ABI rollout
+
+The Phase E audit (`plans/phase-f-readiness-report.md`, 2026-05-07)
+revised the original Phase F plan. The four bullets below replace the
+earlier sketch; they reflect what the code actually requires now that
+Phases B–E have landed.
+
+The ordering is by risk: each step is independently verifiable and
+revertible, and later steps assume earlier ones have stuck.
+
+### Decisions that did NOT survive the audit
+
+The following items from earlier drafts of Phase F are dropped:
+
+- **"Drop `NumberBoxed` mode entirely."** The mode is doing two distinct
+  jobs: (a) deferred `PendingKernel` resolution for kernels passed as
+  arguments, and (b) the boxed-fallback erasure for genuinely
+  number-polymorphic call sites (e.g. `List.foldl (+) 0`). After moving
+  `String.fromNumber` out (step 1 below), `NumberBoxed` narrows to
+  `Basics.add/sub/mul/pow` only, where both behaviours are still needed.
+  Renaming the mode to `BoxedNumericFallback` is optional polish.
+- **"Drop `concreteTypeAwareKernels` once migrations land."** The
+  retirement story in earlier Q4 doesn't match the code: removing the
+  set causes `canTypeToMonoType_preserveVars` to erase primitive type
+  variables to `CEcoValue` *before* `kernelInstanceSymbol` sees them,
+  which silently breaks suffix selection on type-variable axes
+  (`List.cons`, `MVar.put`, `Utils.compare`, `JsArray.singleton`/`push`/
+  `unsafeSet`, `Json.wrap`). The set IS the registration mechanism.
+  Step 4 below renames it; deletion would require flipping the default
+  in `deriveKernelAbiType` to "preserve when monomorphic" and is left
+  for a separate cleanup if ever desired.
+- **"Inline / remove `kernelBackendAbiPolicy` entirely."** After step 3
+  the table shrinks to four entries (`Basics.add/sub/mul/pow`). At
+  that size keeping it as a small lookup is fine; full removal would
+  require inlining the AllBoxed override into `deriveKernelInstanceAbi`
+  and is not worth the churn.
+
+### Step 1 — Move `String.fromNumber` to `suffixSelectingKernels`
+
+`String.fromNumber` already has both halves of the per-instance ABI:
+
+- C symbols `Elm_Kernel_String_fromNumber_Int(int64_t)` and
+  `Elm_Kernel_String_fromNumber_Float(double)` exist in
+  `elm-kernel-cpp/src/core/StringExports.cpp`.
+- Suffix branches `("String","fromNumber",[MInt|MFloat])` exist in
+  `KernelAbi.elm:kernelInstanceSymbol`.
+
+It is, however, still in `numberBoxedKernels` rather than the
+suffix-selecting set. Move it:
+
+1. Remove `( "String", "fromNumber" )` from `numberBoxedKernels`.
+2. Add `( "String", "fromNumber" )` to `suffixSelectingKernels` (the
+   set being renamed in step 4).
+3. Verify `KernelAbiTest` still green; existing test cases for
+   `String.fromNumber Int` / `Float` cover the suffix-selection path.
+4. Verify E2E + stress no regressions.
+
+After this step, `numberBoxedKernels` contains only the four
+`Basics.add/sub/mul/pow` polymorphic-fallback kernels — which is the
+correct steady-state shape and makes `NumberBoxed` mode's narrowed
+purpose obvious.
+
+### Step 2 — Retire `CLOSURE_FLAG_TYPED_NEWARGS`
+
+The Phase E audit confirmed the flag bit is **completely vestigial**:
+
+- Defined in `runtime/src/allocator/Heap.hpp:372` plus the
+  `ClosureFlagTypedNewargsMask` packed-word constant.
+- Set in exactly two places:
+  - `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp:606` (`papCreate`
+    lowering OR's it into the packed word).
+  - `runtime/src/allocator/RuntimeExports.cpp:738`
+    (`eco_alloc_closure_group_packed`).
+- **Read for runtime branching: zero places.** Dispatch in
+  `eco_closure_call_saturated` and `eco_apply_closure_typed` is driven
+  from `closure->unboxed[i]` (the 2-bit PrimitiveKind bitmap), not
+  from any flag.
+
+The four binding-evaluator bugs fixed during the Phase E audit
+(`MVar.read/take/put_*` decoding `rawArgs[0]` as HPointer when the
+captured `mvarId` was PK_Int; `Process.sleep` doing the same for a
+PK_Float `millis`) are exactly the audit Option A would have caught.
+With those four fixed, the full set of capture-primitive
+`eco_alloc_closure*` callers is correctly written. There are no other
+holdouts: every other direct `eco_alloc_closure*` caller in the runtime
+and kernel sources captures via `boxed(...)` only.
+
+Take Option A. Mechanical steps:
+
+1. Delete `CLOSURE_FLAG_TYPED_NEWARGS` from the `ClosureFlag` enum in
+   `Heap.hpp`.
+2. Delete `ClosureFlagTypedNewargsMask` and the self-consistency
+   `static_assert` it carries.
+3. Delete the `flagMask` write at `EcoToLLVMClosures.cpp:606` (the
+   `OR` term in `packedValue`).
+4. Delete `closure->flags = CLOSURE_FLAG_TYPED_NEWARGS;` at
+   `RuntimeExports.cpp:738`.
+5. Widen `Closure::unboxed` from 50 → 52 bits (and the per-closure
+   capture limit from 25 → 26) by reclaiming the two flag bits.
+6. Either delete `Closure::flags` outright or repurpose it for a
+   future flag. Recommended: delete; it can be re-added as a single
+   bit later if needed.
+
+Verification: re-run E2E + stress. If both still pass at the post-fix
+counts (1263/1263 E2E, 99/99 stress), the bit was provably dead.
+
+Risk: low. The bit is consulted for no decision; removal cannot change
+runtime behaviour. The 50→52 widening is a strict capacity gain that
+restores the documented per-closure capture limit.
+
+### Step 3 — Collapse `kernelBackendAbiPolicy` AllBoxed entries
+
+Several entries in `kernelBackendAbiPolicy` are `AllBoxed` even though
+their parameters are uniformly `!eco.value` (closures, lists, JsArrays,
+Strings) — for these, `AllBoxed` and `ElmDerived` produce identical
+wire formats because `monoTypeToAbi` of every parameter resolves to
+`!eco.value` regardless. The explicit override is redundant and can be
+removed by falling through to `ElmDerived`.
+
+Move the following to `ElmDerived` (i.e. delete their explicit arms):
+
+- `List.fromArray`, `List.toArray`
+- `List.map2`, `List.map3`, `List.map4`, `List.map5`
+- `List.sortBy`, `List.sortWith`
+- `Utils.append`
+- `JsArray.empty`, `JsArray.length`, `JsArray.map`, `JsArray.foldl`,
+  `JsArray.foldr`
+
+Keep as `AllBoxed`:
+
+- `Basics.add`, `Basics.sub`, `Basics.mul`, `Basics.pow` —
+  the polymorphic-fallback path. Concrete `[MInt,MInt]` /
+  `[MFloat,MFloat]` cases are intrinsic-lowered before the kernel
+  symbol is reached; the kernel symbol only handles genuinely
+  polymorphic uses where boxing is correct.
+
+Per `alwaysPolymorphicModules`, `Debug.*` is handled separately and
+does not appear in `kernelBackendAbiPolicy`.
+
+After this step `kernelBackendAbiPolicy` is a four-entry table for
+`Basics.{add,sub,mul,pow}`. Update or remove `KERN_006`'s reference to
+the table only if the residual four entries no longer carry useful
+signal; otherwise leave the invariant in place.
+
+Risk: zero semantic change for the migrated entries (wire format is
+bit-identical). Verify with E2E + stress that there is no regression
+from the policy-table simplification.
+
+Optional follow-on: corpus-scan `Basics.add/sub/mul/pow` for genuinely
+polymorphic call sites. If empty, the C++ implementations can be
+deleted; if non-empty (likely — `List.foldl (+) 0` is a common idiom
+that erases the operand type), keep them. This is a binary-size
+optimization; not on the critical path.
+
+### Step 4 — Rename `concreteTypeAwareKernels` → `suffixSelectingKernels`
+
+The set's actual function is **registering kernels for suffix
+selection**: it tells `deriveKernelAbiType` to preserve the concrete
+monomorphic type so that `kernelInstanceSymbol` can pattern-match on
+primitive `MonoType`s and pick the `_Int` / `_Float` / `_Char` C symbol
+variant. The original name, "concrete type aware kernels", described
+how the table works; the new name describes what it's for.
+
+Mechanical:
+
+1. Rename the binding `concreteTypeAwareKernels` → `suffixSelectingKernels`
+   in `compiler/src/Compiler/Monomorphize/KernelAbi.elm`.
+2. Update the doc comment to reflect the new name and emphasise that
+   membership is the registration mechanism for suffix-selecting
+   kernels — the table is **load-bearing** and not a transitional
+   shim.
+3. Update all references:
+   - `Compiler.Monomorphize.Specialize.deriveKernelAbiType` (the
+     `EverySet.member ... concreteTypeAwareKernels` check in the
+     `PreserveVars` arm).
+   - `compiler/tests/Compiler/Monomorphize/KernelAbiTest.elm` (any
+     direct references in test names / docs).
+   - Comments and doc strings throughout.
+4. Verify frontend tests + E2E pass.
+
+Risk: zero functional change; pure rename + doc update.
+
+After step 4, the suffix-selecting set is complete and named
+correctly. `numberBoxedKernels` is empty (Phase E.2 emptied it by
+moving `Basics.{add,sub,mul,pow}` to the suffix-selecting set).
+
+### Step 5 — (removed — moved to Phase E.2)
+
+The flip from `AllBoxed` → `ElmDerived` for the four `Basics`
+arithmetic kernels was originally listed here as cleanup, but it is
+load-bearing for Phase E.2 (without it, the suffix selector and the
+policy table disagree on the wire format and the call site emits
+`(HPtr, HPtr) -> HPtr` ABI against a `(int64_t, int64_t) -> int64_t` C
+symbol). It is now done as part of Phase E.2.
+
+### Step 6 — Remove `NumberBoxed` mode
+
+After Phase E.2 and step 1 above, `numberBoxedKernels` is empty. The
+`NumberBoxed` arm in `deriveKernelAbiMode` is unreachable (the
+`EverySet.member ... numberBoxedKernels` check always returns False),
+and the `NumberBoxed` arms in `processCallArg` and `deriveKernelAbiType`
+are dead.
+
+Delete:
+
+1. `KernelAbiMode = NumberBoxed` constructor (`KernelAbi.elm:92`).
+2. `numberBoxedKernels` definition (`KernelAbi.elm:153`).
+3. `canTypeToMonoType_numberBoxed` definition (`KernelAbi.elm:396`).
+4. The `NumberBoxed` branch in `deriveKernelAbiMode`
+   (`KernelAbi.elm:131-133`).
+5. The `NumberBoxed` arm in `Specialize.processCallArg`
+   (`Specialize.elm:3249-3258`) — `VarKernel` falls through to the
+   eager `specializeExpr` path used by `PreserveVars`.
+6. The `NumberBoxed` arm in `Specialize.deriveKernelAbiType`
+   (`Specialize.elm:4501-4514`).
+7. The `PendingKernel` constructor in `processCallArg`'s deferred
+   args is also unused after this — remove it from the
+   `PendingArg` enumeration too.
+
+Verify: frontend tests + E2E + stress.
+
+Risk: low. The dead-code analysis is mechanical: `numberBoxedKernels`
+is empty, so every `NumberBoxed` case is statically unreachable.
+
+### Step 7 — Decide on the polymorphic `Elm_Kernel_Basics_*` C symbols
+
+After step 5, the polymorphic boxed C symbols
+(`Elm_Kernel_Basics_add(HPtr, HPtr) -> HPtr` etc.) are unreachable
+from generated MLIR. Two options:
+
+**Option A — leave them as dead C symbols.** Lowest-risk: the
+declarations and definitions remain in `BasicsExports.cpp` but are
+never linked. The linker likely strips them. Binary size cost is
+small; correctness is unaffected.
+
+**Option B — delete them.** Remove the four `EXPORT HPtr
+Elm_Kernel_Basics_{add,sub,mul,pow}(HPtr, HPtr)` definitions and
+their `KernelExports.h` declarations. Slightly cleaner; small risk
+that some out-of-tree caller relied on them (unlikely — kernel
+symbols are only reached via generated MLIR).
+
+Recommended: **Option B.** The polymorphic boxed kernel was always a
+fallback for the (now non-existent) genuinely number-polymorphic
+indirect use case. Delete it to make the codebase reflect the new
+invariant: `Basics.add` is always concrete at the C boundary.
+
+Risk: low. The removal is purely subtractive; if any code path
+secretly reaches it, the linker error is loud and immediate.
+
+### Phase F summary
+
+| Step | Action | Risk | Dependencies |
+| ---- | ------ | ---- | ------------ |
+| 1 | Move `String.fromNumber` to suffix-selecting set | Low | — |
+| 2 | Retire `CLOSURE_FLAG_TYPED_NEWARGS` | Low | — |
+| 3 | Collapse AllBoxed entries with no primitive-capable params | Zero | — |
+| 4 | Rename `concreteTypeAwareKernels` → `suffixSelectingKernels` | Zero | Steps 1, 5 (so the new name lands with full membership) |
+| 5 | (Moved to Phase E.2) | — | — |
+| 6 | Remove `NumberBoxed` mode | Low | Phase E.2, step 1 |
+| 7 | Delete polymorphic `Elm_Kernel_Basics_*` C symbols | Low | Phase E.2 |
+
+Steps 1–4 are independent of E.2 and can land first. Steps 6–7 unlock
+once Phase E.2 has been verified in production. Each step can land as
+a separate PR.
 
 ---
 
@@ -1490,10 +1859,10 @@ The eight original open questions have been resolved:
 | # | Question | Decision |
 | --- | --- | --- |
 | 1 | Where does `deriveKernelInstanceAbi` live? | Both data types and function in `KernelAbi.elm`. `Context` is a pure consumer. |
-| 2 | Keep `KernelBackendAbiPolicy` during rollout? | Keep. Use as a coarse "always boxed" guardrail; flip entries kernel-by-kernel; collapse or remove in Phase F. |
+| 2 | Keep `KernelBackendAbiPolicy` during rollout? | Keep. Use as a coarse "always boxed" guardrail; flip entries kernel-by-kernel. Phase F collapses entries with no primitive-capable params to `ElmDerived`; the residual table (the four `Basics` arithmetic kernels) is the steady-state shape. |
 | 3 | `_Char` parameter ABI? | Standard `uint16_t`, **not** `uint64_t c_raw`. EcoToLLVM handles any `zext`/`trunc` for generic apply. |
-| 4 | `concreteTypeAwareKernels` wrappers? | Keep during rollout; retire in Phase F once `List`/`JsArray` per-instance ABIs are stable. |
-| 5 | Primitive variants for `Basics.add/sub/mul/pow`? | **No.** Concrete uses are already intrinsic-lowered; the kernel symbol only handles polymorphic fallbacks where boxing is correct. |
+| 4 | `concreteTypeAwareKernels` wrappers? | **Permanent.** The set is the registration mechanism for suffix-selecting kernels — without it, `canTypeToMonoType_preserveVars` erases primitive type variables before `kernelInstanceSymbol` sees them. Phase F renames it to `suffixSelectingKernels` to match its actual function (revised 2026-05-07 from earlier "retire in Phase F" plan after Phase E audit). |
+| 5 | Primitive variants for `Basics.add/sub/mul/pow`? | **Yes** (revised 2026-05-07; original answer "No" was reversed by Phase E.2). Direct uses are intrinsic-lowered, but indirect uses — `(+)` passed as a closure to e.g. `List.foldl` — go through `papCreate` and need an addressable per-instance C symbol. Phase E.2 adds `_Int`/`_Float` variants; Phase F deletes the polymorphic root. |
 | 6 | Per-evaluator "accepts typed newargs" capability bit? | **Yes.** Add to `EvalParamLayout`, default `0`. `eco_apply_closure_typed` re-boxes for evaluators that don't accept primitives. Flip on per-evaluator as they migrate. |
 | 7 | MONO_002 holds at `generateVarKernel`? | Yes per the invariant. Add a defensive assertion in `KernelInstanceKey` construction. |
 | 8 | `_Bool` kernel variants? | **No.** Bool stays `!eco.value` at ABI; a `_Bool` symbol with `(HPtr, HPtr)` adds nothing. Bool fast paths belong in `Intrinsics.elm`, not in kernel symbol space. |

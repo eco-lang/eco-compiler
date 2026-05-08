@@ -196,7 +196,7 @@ abiModeTests =
                         testDeriveAbiMode ( "List", "cons" ) canType
                 in
                 Expect.equal result KernelAbi.PreserveVars
-        , Test.test "Number-boxed kernel in whitelist returns NumberBoxed" <|
+        , Test.test "Basics.add (suffix-selecting) returns PreserveVars" <|
             \_ ->
                 let
                     canType =
@@ -205,7 +205,7 @@ abiModeTests =
                     result =
                         testDeriveAbiMode ( "Basics", "add" ) canType
                 in
-                Expect.equal result KernelAbi.NumberBoxed
+                Expect.equal result KernelAbi.PreserveVars
         , Test.test "Debug kernel returns PreserveVars" <|
             \_ ->
                 let
@@ -509,7 +509,7 @@ basicsModuleTests =
                         testDeriveAbiMode ( "Basics", "isNaN" ) canType
                 in
                 Expect.equal mode KernelAbi.UseSubstitution
-        , Test.test "add: number -> number -> number (number-boxed)" <|
+        , Test.test "add: number -> number -> number (suffix-selecting)" <|
             \_ ->
                 let
                     canType =
@@ -518,8 +518,8 @@ basicsModuleTests =
                     mode =
                         testDeriveAbiMode ( "Basics", "add" ) canType
                 in
-                Expect.equal mode KernelAbi.NumberBoxed
-        , Test.test "mul: number -> number -> number (number-boxed)" <|
+                Expect.equal mode KernelAbi.PreserveVars
+        , Test.test "mul: number -> number -> number (suffix-selecting)" <|
             \_ ->
                 let
                     canType =
@@ -528,8 +528,8 @@ basicsModuleTests =
                     mode =
                         testDeriveAbiMode ( "Basics", "mul" ) canType
                 in
-                Expect.equal mode KernelAbi.NumberBoxed
-        , Test.test "pow: number -> number -> number (number-boxed)" <|
+                Expect.equal mode KernelAbi.PreserveVars
+        , Test.test "pow: number -> number -> number (suffix-selecting)" <|
             \_ ->
                 let
                     canType =
@@ -538,7 +538,7 @@ basicsModuleTests =
                     mode =
                         testDeriveAbiMode ( "Basics", "pow" ) canType
                 in
-                Expect.equal mode KernelAbi.NumberBoxed
+                Expect.equal mode KernelAbi.PreserveVars
         ]
 
 

@@ -271,6 +271,104 @@ suite =
                         }
                         abi
             ]
+        , describe "deriveKernelInstanceAbi for Phase E.2 Basics arithmetic"
+            [ test "Basics.add on Int selects _Int variant with i64 ABI" <|
+                \_ ->
+                    let
+                        abi =
+                            KernelAbi.deriveKernelInstanceAbi (basicsBinopKey "add" Mono.MInt)
+                    in
+                    Expect.equal
+                        { symbolName = "Elm_Kernel_Basics_add_Int"
+                        , abiArgTypes = [ ecoInt, ecoInt ]
+                        , abiResultType = ecoInt
+                        }
+                        abi
+            , test "Basics.add on Float selects _Float variant with f64 ABI" <|
+                \_ ->
+                    let
+                        abi =
+                            KernelAbi.deriveKernelInstanceAbi (basicsBinopKey "add" Mono.MFloat)
+                    in
+                    Expect.equal
+                        { symbolName = "Elm_Kernel_Basics_add_Float"
+                        , abiArgTypes = [ ecoFloat, ecoFloat ]
+                        , abiResultType = ecoFloat
+                        }
+                        abi
+            , test "Basics.sub on Int selects _Int variant with i64 ABI" <|
+                \_ ->
+                    let
+                        abi =
+                            KernelAbi.deriveKernelInstanceAbi (basicsBinopKey "sub" Mono.MInt)
+                    in
+                    Expect.equal
+                        { symbolName = "Elm_Kernel_Basics_sub_Int"
+                        , abiArgTypes = [ ecoInt, ecoInt ]
+                        , abiResultType = ecoInt
+                        }
+                        abi
+            , test "Basics.sub on Float selects _Float variant with f64 ABI" <|
+                \_ ->
+                    let
+                        abi =
+                            KernelAbi.deriveKernelInstanceAbi (basicsBinopKey "sub" Mono.MFloat)
+                    in
+                    Expect.equal
+                        { symbolName = "Elm_Kernel_Basics_sub_Float"
+                        , abiArgTypes = [ ecoFloat, ecoFloat ]
+                        , abiResultType = ecoFloat
+                        }
+                        abi
+            , test "Basics.mul on Int selects _Int variant with i64 ABI" <|
+                \_ ->
+                    let
+                        abi =
+                            KernelAbi.deriveKernelInstanceAbi (basicsBinopKey "mul" Mono.MInt)
+                    in
+                    Expect.equal
+                        { symbolName = "Elm_Kernel_Basics_mul_Int"
+                        , abiArgTypes = [ ecoInt, ecoInt ]
+                        , abiResultType = ecoInt
+                        }
+                        abi
+            , test "Basics.mul on Float selects _Float variant with f64 ABI" <|
+                \_ ->
+                    let
+                        abi =
+                            KernelAbi.deriveKernelInstanceAbi (basicsBinopKey "mul" Mono.MFloat)
+                    in
+                    Expect.equal
+                        { symbolName = "Elm_Kernel_Basics_mul_Float"
+                        , abiArgTypes = [ ecoFloat, ecoFloat ]
+                        , abiResultType = ecoFloat
+                        }
+                        abi
+            , test "Basics.pow on Int selects _Int variant with i64 ABI" <|
+                \_ ->
+                    let
+                        abi =
+                            KernelAbi.deriveKernelInstanceAbi (basicsBinopKey "pow" Mono.MInt)
+                    in
+                    Expect.equal
+                        { symbolName = "Elm_Kernel_Basics_pow_Int"
+                        , abiArgTypes = [ ecoInt, ecoInt ]
+                        , abiResultType = ecoInt
+                        }
+                        abi
+            , test "Basics.pow on Float selects _Float variant with f64 ABI" <|
+                \_ ->
+                    let
+                        abi =
+                            KernelAbi.deriveKernelInstanceAbi (basicsBinopKey "pow" Mono.MFloat)
+                    in
+                    Expect.equal
+                        { symbolName = "Elm_Kernel_Basics_pow_Float"
+                        , abiArgTypes = [ ecoFloat, ecoFloat ]
+                        , abiResultType = ecoFloat
+                        }
+                        abi
+            ]
         , describe "deriveKernelInstanceAbi for ElmDerived monomorphic kernels"
             [ test "Basics.modBy keeps i64 ABI on its concrete signature" <|
                 \_ ->
@@ -380,6 +478,16 @@ mvarPutKey args =
     , name = "put"
     , argTypes = args
     , resultType = Mono.MUnit
+    }
+
+
+basicsBinopKey : String -> Mono.MonoType -> KernelAbi.KernelInstanceKey
+basicsBinopKey opName operandType =
+    { prefix = "Elm"
+    , home = "Basics"
+    , name = opName
+    , argTypes = [ operandType, operandType ]
+    , resultType = operandType
     }
 
 

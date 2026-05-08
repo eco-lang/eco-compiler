@@ -152,13 +152,10 @@ handles the fast unboxed Int/Float cases; this ABI is the fallback.
 -}
 numberBoxedKernels : EverySet (List String) ( String, String )
 numberBoxedKernels =
-    EverySet.fromList comparePair
-        [ ( "Basics", "add" )
-        , ( "Basics", "sub" )
-        , ( "Basics", "mul" )
-        , ( "Basics", "pow" )
-        , ( "String", "fromNumber" )
-        ]
+    -- Empty after Phase E.2: the four `Basics` arithmetic kernels moved
+    -- to `concreteTypeAwareKernels` once their `_Int`/`_Float` per-instance
+    -- variants landed. Phase F removes the `NumberBoxed` mode entirely.
+    EverySet.empty
 
 
 {-| Kernels whose call-site `MonoType` should retain its *concrete*
@@ -214,6 +211,16 @@ concreteTypeAwareKernels =
         -- CEcoValue, hiding the Int/Float/Char axis from the suffix selector
         -- in kernelInstanceSymbol.
         , ( "MVar", "put" )
+
+        -- Phase E.2: Basics.add/sub/mul/pow get per-instance _Int/_Float
+        -- variants. Indirect uses (e.g. `List.foldl (+) 0 xs`) need this
+        -- entry so PreserveVars keeps the concrete numeric type and the
+        -- suffix selector can pick the unboxed C symbol. Direct uses are
+        -- intrinsic-lowered upstream and never reach the kernel symbol.
+        , ( "Basics", "add" )
+        , ( "Basics", "sub" )
+        , ( "Basics", "mul" )
+        , ( "Basics", "pow" )
         ]
 
 
@@ -609,21 +616,13 @@ kernelBackendAbiPolicy home name =
         ( "JsArray", "foldr" ) ->
             AllBoxed
 
-        -- Basics.add/sub/mul/pow: number-boxed polymorphic kernels.
-        -- Concrete uses are intrinsic-lowered; the kernel symbol is reached
-        -- only by genuinely polymorphic uses where boxing is correct.
-        ( "Basics", "add" ) ->
-            AllBoxed
-
-        ( "Basics", "sub" ) ->
-            AllBoxed
-
-        ( "Basics", "mul" ) ->
-            AllBoxed
-
-        ( "Basics", "pow" ) ->
-            AllBoxed
-
+        --
+        -- Phase E.2: Basics.add/sub/mul/pow now have per-instance _Int/_Float
+        -- C variants. Falling through to ElmDerived means the suffix-
+        -- selected symbol (e.g. Elm_Kernel_Basics_add_Int) is called with
+        -- primitive ABI types matching the C declaration. The polymorphic
+        -- root symbol is unreachable for concrete calls and Phase F deletes
+        -- it.
         --
         -- ElmDerived: ABI is derived from the call-site's monomorphized
         -- function type via monoTypeToAbi. Used for typed C++ kernels and,
@@ -831,6 +830,37 @@ kernelInstanceSymbol key =
             suffixed "_Int"
 
         ( "String", "fromNumber", [ Mono.MFloat ] ) ->
+            suffixed "_Float"
+
+        --
+        -- Phase E.2 (Basics.add/sub/mul/pow): per-instance Int / Float
+        -- variants for the arithmetic operators. Direct uses are
+        -- intrinsic-lowered before reaching here; these arms are reached
+        -- by indirect uses (e.g. `(+)` captured into a PAP by
+        -- `List.foldl`) so the unboxed primitive ABI is used end-to-end.
+        --
+        ( "Basics", "add", [ Mono.MInt, Mono.MInt ] ) ->
+            suffixed "_Int"
+
+        ( "Basics", "add", [ Mono.MFloat, Mono.MFloat ] ) ->
+            suffixed "_Float"
+
+        ( "Basics", "sub", [ Mono.MInt, Mono.MInt ] ) ->
+            suffixed "_Int"
+
+        ( "Basics", "sub", [ Mono.MFloat, Mono.MFloat ] ) ->
+            suffixed "_Float"
+
+        ( "Basics", "mul", [ Mono.MInt, Mono.MInt ] ) ->
+            suffixed "_Int"
+
+        ( "Basics", "mul", [ Mono.MFloat, Mono.MFloat ] ) ->
+            suffixed "_Float"
+
+        ( "Basics", "pow", [ Mono.MInt, Mono.MInt ] ) ->
+            suffixed "_Int"
+
+        ( "Basics", "pow", [ Mono.MFloat, Mono.MFloat ] ) ->
             suffixed "_Float"
 
         --
