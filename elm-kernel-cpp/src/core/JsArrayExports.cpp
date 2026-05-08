@@ -35,17 +35,19 @@ static int64_t unboxInt(HPtr val) {
 // Closure-calling helpers (INV_2: delegate to runtime via eco_closure_call_saturated)
 //===----------------------------------------------------------------------===//
 
-// Call a closure with one argument (index for initialize).
-// index is boxed via eco_alloc_int so the wrapper can unbox it.
-//
-// Takes a pointer to the caller's already-rooted closure slot so that the
-// post-GC closure address is read after eco_alloc_int (which is a GC point)
-// without paying a per-call StackRootGuard. The caller MUST keep `*cl_slot`
-// rooted across this call (e.g. via its own StackRootGuard).
-static uint64_t callUnaryInitClosure(HPointer* cl_slot, int64_t index) {
-    uint64_t args[1] = { eco_alloc_int(index).toBits() };
-    return eco_closure_call_saturated(
-        HPtr::fromBits(Export::encode(*cl_slot)), args, 1, /*layout=*/nullptr).toBits();
+// Layout descriptors for the closure invocations below: each declares the
+// per-arg ParamKind so the runtime can pass unboxed Int arguments straight
+// through to wrappers that accept them, instead of forcing an `eco_alloc_int`
+// per call here. Layout bytes match `EvalParamLayout`:
+//   { num_params, result_kind (irrelevant for saturated calls), kinds... }
+static constexpr unsigned char kLayoutInt1[3]      = { 1, 0, 1 };       // (Int)
+static constexpr unsigned char kLayoutIntBoxed[4]  = { 2, 0, 1, 0 };    // (Int, a)
+
+// Call a closure with one Int argument (index for initialize).
+static uint64_t callUnaryInitClosure(HPtr closure_hptr, int64_t index) {
+    const auto* layout = reinterpret_cast<const Elm::EvalParamLayout*>(kLayoutInt1);
+    uint64_t args[1] = { static_cast<uint64_t>(index) };
+    return eco_closure_call_saturated(closure_hptr, args, 1, layout).toBits();
 }
 
 // Call a closure with one argument (element for map).
@@ -86,10 +88,11 @@ static void pushUnboxedResult(void* arrObj, uint64_t result) {
 }
 
 // Call a closure with two arguments (index, element for indexedMap).
-// index is boxed, element is HPointer-encoded.
+// Index is passed as unboxed i64; element is HPointer-encoded.
 static uint64_t callBinaryIndexMapClosure(HPtr closure_hptr, int64_t index, uint64_t elem) {
-    uint64_t args[2] = { eco_alloc_int(index).toBits(), elem };
-    return eco_closure_call_saturated(closure_hptr, args, 2, /*layout=*/nullptr).toBits();
+    const auto* layout = reinterpret_cast<const Elm::EvalParamLayout*>(kLayoutIntBoxed);
+    uint64_t args[2] = { static_cast<uint64_t>(index), elem };
+    return eco_closure_call_saturated(closure_hptr, args, 2, layout).toBits();
 }
 
 // Call a closure with two arguments (element, acc for foldl/foldr).
@@ -350,7 +353,8 @@ HPtr Elm_Kernel_JsArray_initialize(HPtr size_val, HPtr offset_val, HPtr closure)
     auto& allocator = Allocator::instance();
 
     for (int64_t i = 0; i < size; i++) {
-        uint64_t value = callUnaryInitClosure(&closureHP, offset + i);
+        HPtr cl = HPtr::fromBits(Export::encode(closureHP));
+        uint64_t value = callUnaryInitClosure(cl, offset + i);
         void* arrObj = allocator.resolve(arr);
         pushUnboxedResult(arrObj, value);
     }

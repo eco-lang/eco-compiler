@@ -1762,6 +1762,20 @@ extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args
                 reinterpret_cast<uint64_t*>(combined_args), max_values, mask);
         }
     }
+    // Also root the caller's new_args buffer's HPointer slots: when the
+    // layout declares a primitive but the wrapper expects a boxed value,
+    // spliceArgsForSaturatedCall allocates inside its Primitive→Boxed
+    // branch, and the GC could otherwise move HPointer values held in
+    // `new_args[i+1..]` between iterations of the splice loop.
+    if (num_newargs > 0 && layout) {
+        uint64_t hptrMask = 0;
+        for (uint32_t i = 0; i < num_newargs && i < 64; ++i) {
+            if (layout->kinds[i] == 0) hptrMask |= (uint64_t{1} << i);
+        }
+        if (hptrMask != 0) {
+            eco_gc_push_stack_range(new_args, num_newargs, hptrMask);
+        }
+    }
 
     uint32_t out_max_values = 0;
     uint64_t out_bitmap = 0;

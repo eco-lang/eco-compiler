@@ -107,10 +107,9 @@ int64_t Elm_Kernel_Parser_isSubChar(HPtr closure, int64_t offset, HPtr str) {
         return -1;
     }
 
-    // Load the char(s) at offset before any potentially-GC'ing call. We build
-    // an ElmChar holding the code point; only the low 16 bits survive the
-    // boxing, matching eco_alloc_char's u16 truncation — this mirrors the JS
-    // kernel's behaviour for BMP code points.
+    // Load the char(s) at offset. Only the low 16 bits of the code point
+    // survive the call (matching the JS kernel's BMP-only behaviour and the
+    // u16 ABI of PK_Char); supplementary code points still advance offset by 2.
     u16 c0 = s->chars[offset];
     i64 advance = 1;
     u32 codePoint = c0;
@@ -122,14 +121,15 @@ int64_t Elm_Kernel_Parser_isSubChar(HPtr closure, int64_t offset, HPtr str) {
         }
     }
 
-    // Box the char and invoke the predicate closure. closure is held in a
-    // stack-rooted HPointer across eco_alloc_char so that a GC triggered by
-    // the alloc does not leave this frame's by-value HPtr pointing at the
-    // pre-swap location.
-    HPointer closureHP = Export::decode(closure.toBits());
-    Elm::StackRootGuard closureRoot(&closureHP);
-    uint64_t args[1] = { eco_alloc_char(codePoint).toBits() };
-    HPtr result = eco_apply_closure(HPtr::fromBits(Export::encode(closureHP)), args, 1);
+    // Invoke the predicate closure with the Char passed as an unboxed u16
+    // (PK_Char). The runtime's saturated-call helper either threads it
+    // straight to a wrapper that accepts unboxed Char, or boxes it once
+    // at the boundary for legacy wrappers — strictly less work than a
+    // per-character `eco_alloc_char` here.
+    static constexpr unsigned char kLayoutChar1[3] = { 1, 0, 3 };
+    const auto* layout = reinterpret_cast<const Elm::EvalParamLayout*>(kLayoutChar1);
+    uint64_t args[1] = { static_cast<uint64_t>(codePoint & 0xFFFFu) };
+    HPtr result = eco_closure_call_saturated(closure, args, 1, layout);
     if (!Export::decodeBoxedBool(result.toBits())) {
         return -1;
     }

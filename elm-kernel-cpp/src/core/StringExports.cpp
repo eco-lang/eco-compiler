@@ -172,48 +172,42 @@ HPtr elm_string_from_double(double f) {
 // Closure-calling helpers (INV_2: delegate to runtime via eco_closure_call_saturated)
 //===----------------------------------------------------------------------===//
 
-// Call a closure with a single Char argument and get Char result.
-// Char arg is boxed via eco_alloc_char. Result is unboxed from ElmChar.
-//
-// closure_hptr is held as a rooted HPointer across eco_alloc_char: that
-// allocation can trigger a minor GC, and a stack-local HPtr/uint64_t copy
-// would survive the swap unevacuated and become a stale to-space pointer.
-// Same idea applies to callCharToBoolClosure and callFoldClosure below.
+// Layout descriptors for the closure invocations below. Each declares the
+// per-arg ParamKind so the runtime can hand unboxed primitives straight to
+// wrappers that accept them. Layout bytes match `EvalParamLayout`:
+//   { num_params, result_kind (irrelevant for saturated calls), kinds... }
+static constexpr unsigned char kLayoutChar1[3]      = { 1, 0, 3 };       // (Char)
+static constexpr unsigned char kLayoutCharBoxed[4]  = { 2, 0, 3, 0 };    // (Char, a)
+
+// Call a closure with a single Char argument and Char result.
+// Both argument and result travel as unboxed `uint16_t`: `eco_apply_closure_eval`
+// reads the closure's intrinsic `result_kind` and either delivers the i16 directly
+// (modern Char-returning wrapper) or unboxes a returned ElmChar exactly once on
+// our behalf — strictly less work than the previous boxed round-trip.
 static uint16_t callCharToCharClosure(HPtr closure_hptr, uint16_t c) {
-    HPointer cl = Export::decode(closure_hptr.toBits());
-    Elm::StackRootGuard guard(&cl);
-    uint64_t boxed_char = eco_alloc_char(static_cast<uint32_t>(c)).toBits();
-    uint64_t args[1] = { boxed_char };
-    HPtr result_hptr = eco_closure_call_saturated(
-        HPtr::fromBits(Export::encode(cl)), args, 1, /*layout=*/nullptr);
-    // Unbox: resolve HPointer, read Char value
-    void* charObj = reinterpret_cast<void*>(eco_resolve_hptr(result_hptr));
-    ElmChar* ec = static_cast<ElmChar*>(charObj);
-    return ec->value;
+    const auto* layout = reinterpret_cast<const Elm::EvalParamLayout*>(kLayoutChar1);
+    int64_t args[1] = { static_cast<int64_t>(c) };
+    uint16_t result = 0;
+    eco_apply_closure_eval(closure_hptr, args, 1, layout, &result, /*desired_kind=*/3);
+    return result;
 }
 
-// Call a closure with a single Char argument and get Bool result.
-// Bool is !eco.value (True/False embedded constants), not a primitive.
+// Call a closure with a single Char argument and Bool result.
+// Bool is an embedded HPointer constant (Const_True / Const_False) so the result
+// stays in PK_Boxed form; only the Char argument is passed unboxed.
 static bool callCharToBoolClosure(HPtr closure_hptr, uint16_t c) {
-    HPointer cl = Export::decode(closure_hptr.toBits());
-    Elm::StackRootGuard guard(&cl);
-    uint64_t boxed_char = eco_alloc_char(static_cast<uint32_t>(c)).toBits();
-    uint64_t args[1] = { boxed_char };
-    HPtr result_hptr = eco_closure_call_saturated(
-        HPtr::fromBits(Export::encode(cl)), args, 1, /*layout=*/nullptr);
+    const auto* layout = reinterpret_cast<const Elm::EvalParamLayout*>(kLayoutChar1);
+    uint64_t args[1] = { static_cast<uint64_t>(c) };
+    HPtr result_hptr = eco_closure_call_saturated(closure_hptr, args, 1, layout);
     return Export::decodeBoxedBool(result_hptr.toBits());
 }
 
-// Call a fold closure: (Char, acc) -> acc
-// Char is boxed via eco_alloc_char, acc flows through as HPointer-encoded.
+// Call a fold closure: `(Char, acc) -> acc`. Char goes through unboxed; the
+// accumulator stays HPointer-encoded.
 static uint64_t callFoldClosure(HPtr closure_hptr, uint16_t c, uint64_t acc) {
-    HPointer cl = Export::decode(closure_hptr.toBits());
-    HPointer ac = Export::decode(acc);
-    Elm::StackRootGuard guard(&cl, &ac);
-    uint64_t boxed_char = eco_alloc_char(static_cast<uint32_t>(c)).toBits();
-    uint64_t args[2] = { boxed_char, Export::encode(ac) };
-    return eco_closure_call_saturated(
-        HPtr::fromBits(Export::encode(cl)), args, 2, /*layout=*/nullptr).toBits();
+    const auto* layout = reinterpret_cast<const Elm::EvalParamLayout*>(kLayoutCharBoxed);
+    uint64_t args[2] = { static_cast<uint64_t>(c), acc };
+    return eco_closure_call_saturated(closure_hptr, args, 2, layout).toBits();
 }
 
 // Snapshot a String (any form) into a stable std::vector<u16>. The snapshot

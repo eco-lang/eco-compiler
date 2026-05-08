@@ -18,7 +18,6 @@ extern "C" uint32_t elm_bytebuffer_len(uint64_t bb);
 // Declare the closure call function from RuntimeExports
 namespace Elm { struct EvalParamLayout; }
 extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args, uint32_t num_newargs, const Elm::EvalParamLayout* layout);
-extern "C" HPtr eco_alloc_int(int64_t value);
 extern "C" size_t eco_gc_stack_range_point();
 extern "C" void   eco_gc_push_stack_range(uint64_t* base, size_t count, uint64_t hpointer_mask);
 extern "C" void   eco_gc_restore_stack_range_point(size_t saved);
@@ -392,20 +391,17 @@ HPtr Elm_Kernel_Bytes_encode(HPtr encoderVal) {
 HPtr Elm_Kernel_Bytes_decode(HPtr decoder, HPtr bytes) {
     auto& allocator = Allocator::instance();
 
-    // Root decoder and bytes across eco_alloc_int below: the by-value HPtr
-    // params would otherwise be stale across the GC the alloc may trigger.
-    HPointer decoderHP = Export::decode(decoder.toBits());
-    HPointer bytesHP   = Export::decode(bytes.toBits());
-    Elm::StackRootGuard inputs(&decoderHP, &bytesHP);
-
-    // Call the decoder closure with (bytes, offset=0).
-    // The decoder is a function: (eco.value, i64) -> eco.value (Tuple2)
-    // The offset (Int) must be boxed as HPointer for the wrapper.
-    uint64_t boxedOffset = eco_alloc_int(0).toBits();
-    uint64_t args[2] = { Export::encode(bytesHP), boxedOffset };
-    uint64_t result = eco_closure_call_saturated(
-        HPtr::fromBits(Export::encode(decoderHP)),
-        args, 2, /*layout=*/nullptr).toBits();
+    // Call the decoder closure with (bytes, offset=0). The decoder is a
+    // function `(Bytes, Int) -> Maybe a`. Pass the offset as an unboxed
+    // i64 (PK_Int) instead of allocating an ElmInt: the runtime's
+    // splice helper either passes it straight through to the wrapper
+    // (when the wrapper accepts unboxed Int) or boxes it once at the
+    // boundary (legacy wrappers) — same work as before, but skips the
+    // allocation entirely on the modern path.
+    static constexpr unsigned char kLayoutBoxedInt[4] = { 2, 0, 0, 1 };
+    const auto* layout = reinterpret_cast<const Elm::EvalParamLayout*>(kLayoutBoxedInt);
+    uint64_t args[2] = { bytes.toBits(), 0 };
+    uint64_t result = eco_closure_call_saturated(decoder, args, 2, layout).toBits();
 
     // Result is a Tuple2(new_offset: i64, decoded_value). Pattern B: resultHP
     // is re-resolved AFTER the allocate to copy field b into Just; root via
