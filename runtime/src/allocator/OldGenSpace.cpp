@@ -2217,6 +2217,24 @@ inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
     // link it onto free_lists[cls] + (Tier-M only) onto block's per-block
     // thread.
     auto placeAndLink = [&](char* addr, size_t cellSize, size_t cls) {
+#if ECO_HEAP_VALIDATE
+        // Class 4 — free-list class invariant: every cell on free_lists[cls]
+        // must satisfy header.size == classToSize(cls). Catches the
+        // LOT=8K-class bug pattern where a span gets sliced onto the wrong
+        // size class and corrupts subsequent allocations.
+        {
+            size_t expected = OldGenSpaceTestAccess::classToSize(cls);
+            if (cls < NUM_SIZE_CLASSES && cellSize != expected) {
+                std::fprintf(stderr,
+                    "[heap-validate] pushSpanOnFreeLists class invariant: "
+                    "cls=%zu expected_cellSize=%zu actual_cellSize=%zu "
+                    "addr=%p block=%p\n",
+                    cls, expected, cellSize, (void*)addr, (void*)block);
+                std::fflush(stderr);
+                std::abort();
+            }
+        }
+#endif
         FreeCell* cell = reinterpret_cast<FreeCell*>(addr);
         std::memset(&cell->header, 0, sizeof(Header));
         cell->header.tag = Tag_Free;
@@ -3146,6 +3164,24 @@ void OldGenSpace::releaseBlockToAllocator(size_t block_index) {
                 ++it;
             }
         }
+#if ECO_HEAP_VALIDATE
+        // Class 4 — large_body_index_ ↔ block invariant: after cleanup, no
+        // entry should still resolve to a body inside the block being
+        // released. Past LOT=8K bug surfaced from leftover entries here.
+        for (const auto& kv : large_body_index_) {
+            char* body_base = static_cast<char*>(const_cast<void*>(kv.first));
+            if (body_base >= blk_start && body_base < blk_end) {
+                std::fprintf(stderr,
+                    "[heap-validate] large_body_index_ post-cleanup "
+                    "violation: body_base=%p still maps into released "
+                    "block [%p,%p) (idx=%zu)\n",
+                    (void*)body_base, (void*)blk_start, (void*)blk_end,
+                    block_index);
+                std::fflush(stderr);
+                std::abort();
+            }
+        }
+#endif
     }
 
     // Clear the page-index slots this block owned BEFORE the swap-remove,

@@ -24,6 +24,17 @@
 #define ECO_GC_DEBUG 0
 #endif
 
+// Heap-validator switch. Independent of ECO_GC_DEBUG. Gates the always-on
+// stale-HPointer detection (write/read/arg-side hooks, free-region
+// poisoning), the per-container bitmap-mismatch tripwires, the post-GC
+// heap-integrity walker, the from-space pre-evacuation walk, the
+// forward-chain depth assert, and the old-gen / BBoP invariant audits.
+// Off by default — these are hot-path checks. Turn on via CMake
+// (-DECO_HEAP_VALIDATE=ON) for diagnostic runs (heap-profile, stress).
+#ifndef ECO_HEAP_VALIDATE
+#define ECO_HEAP_VALIDATE 0
+#endif
+
 namespace Elm {
 
 class Allocator;

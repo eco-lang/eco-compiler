@@ -37,9 +37,15 @@ static int64_t unboxInt(HPtr val) {
 
 // Call a closure with one argument (index for initialize).
 // index is boxed via eco_alloc_int so the wrapper can unbox it.
-static uint64_t callUnaryInitClosure(HPtr closure_hptr, int64_t index) {
+//
+// Takes a pointer to the caller's already-rooted closure slot so that the
+// post-GC closure address is read after eco_alloc_int (which is a GC point)
+// without paying a per-call StackRootGuard. The caller MUST keep `*cl_slot`
+// rooted across this call (e.g. via its own StackRootGuard).
+static uint64_t callUnaryInitClosure(HPointer* cl_slot, int64_t index) {
     uint64_t args[1] = { eco_alloc_int(index).toBits() };
-    return eco_closure_call_saturated(closure_hptr, args, 1, /*layout=*/nullptr).toBits();
+    return eco_closure_call_saturated(
+        HPtr::fromBits(Export::encode(*cl_slot)), args, 1, /*layout=*/nullptr).toBits();
 }
 
 // Call a closure with one argument (element for map).
@@ -165,7 +171,7 @@ HPtr Elm_Kernel_JsArray_unsafeSet(HPtr index_val, HPtr value, HPtr array) {
     }
     dst->header.unboxed = srcUnboxed ? 1 : 0;
 
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     if (!srcUnboxed) {
         for (uint32_t i = 0; i < len; i++)
             alloc::validateNurseryHPtr(dst->elements[i].p);
@@ -217,7 +223,7 @@ HPtr Elm_Kernel_JsArray_push(HPtr value, HPtr array) {
         dst->header.unboxed = 0;
     }
 
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     if (!srcUnboxed) {
         for (uint32_t i = 0; i <= len; i++)
             alloc::validateNurseryHPtr(dst->elements[i].p);
@@ -255,7 +261,7 @@ HPtr Elm_Kernel_JsArray_slice(HPtr start_val, HPtr end_val, HPtr array) {
     dst->length = static_cast<uint32_t>(newLen);
     dst->header.unboxed = src->header.unboxed;
 
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     if ((dst->header.unboxed & 0x3) == 0) {
         for (int64_t i = 0; i < newLen; i++)
             alloc::validateNurseryHPtr(dst->elements[i].p);
@@ -315,7 +321,7 @@ HPtr Elm_Kernel_JsArray_appendN(HPtr n_val, HPtr dest, HPtr source) {
     }
     resultArr->header.unboxed = resultKind;
 
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     if (resultKind == 0) {
         for (uint32_t i = 0; i < newLen; i++)
             alloc::validateNurseryHPtr(resultArr->elements[i].p);
@@ -333,17 +339,20 @@ HPtr Elm_Kernel_JsArray_initialize(HPtr size_val, HPtr offset_val, HPtr closure)
     int64_t size = unboxInt(size_val);
     int64_t offset = unboxInt(offset_val);
 
-    HPointer arr = alloc::allocArray(static_cast<size_t>(size));
+    // Root `closureHP` BEFORE `allocArray` — that allocation is a GC
+    // point, and the by-value `closure` parameter is unrooted on the
+    // caller's stack, so the closure HPointer becomes stale across
+    // allocArray. Decoding into a stack-rooted local before the alloc,
+    // and re-encoding inside the loop, picks up the post-GC location.
     HPointer closureHP = Export::decode(closure.toBits());
+    HPointer arr = alloc::listNil();  // placeholder until alloc below
+    StackRootGuard loopRoots(&arr, &closureHP);
+
+    arr = alloc::allocArray(static_cast<size_t>(size));
     auto& allocator = Allocator::instance();
 
-    // Root `arr` AND the closure across every iteration: a minor GC inside
-    // the closure call would otherwise leave the kernel's `closure` HPtr
-    // pointing at the closure's old nursery cell.
-    StackRootGuard loopRoots(&arr, &closureHP);
     for (int64_t i = 0; i < size; i++) {
-        HPtr cl = HPtr::fromBits(Export::encode(closureHP));
-        uint64_t value = callUnaryInitClosure(cl, offset + i);
+        uint64_t value = callUnaryInitClosure(&closureHP, offset + i);
         void* arrObj = allocator.resolve(arr);
         pushUnboxedResult(arrObj, value);
     }
@@ -570,7 +579,7 @@ static HPointer copyAndExtendForPush(HPtr array, uint32_t &outSrcLen,
     outSrcLen = len;
     outSrcKind = srcKind;
 
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     if (srcKind == 0) {
         for (uint32_t i = 0; i < len; i++)
             alloc::validateNurseryHPtr(dst->elements[i].p);
@@ -627,7 +636,7 @@ HPtr elm_array_push_box(HPtr value, HPtr array) {
     dst->header.unboxed = 0;
     dst->elements[len].p = valHP;
 
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     // Always boxed (kind=0). Validate the copied prefix and the new slot.
     for (uint32_t i = 0; i < len; i++)
         alloc::validateNurseryHPtr(dst->elements[i].p);
@@ -662,7 +671,7 @@ HPtr elm_array_slice(int64_t start, int64_t end, HPtr array) {
     dst->length = static_cast<uint32_t>(newLen);
     dst->header.unboxed = src->header.unboxed;
 
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     if ((dst->header.unboxed & 0x3) == 0) {
         for (int64_t i = 0; i < newLen; i++)
             alloc::validateNurseryHPtr(dst->elements[i].p);
@@ -715,7 +724,7 @@ HPtr elm_array_append_n(int64_t n_signed, HPtr dest, HPtr source) {
     }
     resultArr->header.unboxed = resultKind;
 
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     if (resultKind == 0) {
         for (uint32_t i = 0; i < newLen; i++)
             alloc::validateNurseryHPtr(resultArr->elements[i].p);

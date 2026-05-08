@@ -328,14 +328,38 @@ static HPointer jsonToHeap(const json& j) {
 
     if (j.is_array()) {
         // Convert each element to heap, collecting HPointers.
-        std::vector<HPointer> elements;
-        elements.reserve(j.size());
-        for (const auto& elem : j) {
-            elements.push_back(jsonToHeap(elem));
+        //
+        // Each recursive `jsonToHeap` call is a GC point. We must keep
+        // every previously-collected HPointer rooted so a GC inside the
+        // loop body relocates them in-place. The previous push_back
+        // pattern left already-pushed slots stale across subsequent
+        // recursions and broke down on arrays of nontrivial size — the
+        // STALE-hptr validator caught this in JsonRoundtrip*.elm.
+        //
+        // Approach: pre-fill a vector of size j.size() with Nil, then
+        // register stack-root ranges over its contiguous buffer (chunked
+        // into 64-slot pieces because StackRootRange's hpointer_mask is
+        // a uint64_t bitfield indexed by `1ULL << i`, UB for i>=64).
+        // The vector's data() pointer is stable since we don't grow.
+        size_t n = j.size();
+        std::vector<HPointer> elements(n, listNil());
+        auto& rs = Allocator::instance().getRootSet();
+        size_t saved = rs.stackRangePoint();
+        for (size_t base = 0; base < n; base += 64) {
+            size_t chunk = std::min<size_t>(64, n - base);
+            uint64_t mask = (chunk == 64) ? ~uint64_t{0}
+                                           : ((uint64_t{1} << chunk) - 1);
+            rs.pushStackRootRange(elements.data() + base, chunk, mask);
         }
 
-        // Build ElmArray from collected HPointers.
+        size_t i = 0;
+        for (const auto& elem : j) {
+            elements[i++] = jsonToHeap(elem);
+        }
+
+        // Build ElmArray from collected (and still-rooted) HPointers.
         HPointer arr = arrayFromPointers(elements);
+        rs.restoreStackRangePoint(saved);
         return makeJsonArray(arr);
     }
 
@@ -348,8 +372,15 @@ static HPointer jsonToHeap(const json& j) {
         }
 
         HPointer kvList = listNil();
+        HPointer keyStr = listNil();  // placeholder; assigned per-iteration
+        // `kvList` accumulates across iterations and must survive every
+        // alloc-capable call (allocElmString / jsonToHeap / tuple2 / cons).
+        // `keyStr` is hoisted into a single rooted slot held outside the loop
+        // so each iteration just rewrites the slot rather than push/pop a
+        // fresh StackRootGuard.
+        Elm::StackRootGuard objRoots(&kvList, &keyStr);
         for (auto it = keys.rbegin(); it != keys.rend(); ++it) {
-            HPointer keyStr = allocElmString(*it);
+            keyStr = allocElmString(*it);
             HPointer val = jsonToHeap(j[*it]);
 
             HPointer tup = tuple2(boxed(keyStr), boxed(val), 0);
@@ -954,27 +985,40 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
                 }
             }
 
-            // Build the result list in reverse. Pin `result`, `valDecHP`, and
-            // the `tuples` buffer across each `runDecoder` (which may GC) and
-            // each `cons` / `tuple2` (which allocate).
+            // Build the result list in reverse. Pin `result`, `valDecHP`,
+            // `keyStr`, and the `tuples` buffer across each `runDecoder`
+            // (which may GC) and each `cons` / `tuple2` (which allocate).
             HPointer result = listNil();
+            // `keyStr` is hoisted into the base roots so it's rooted once
+            // and reassigned per iteration, instead of paying for a
+            // per-iter pushStackRootRange/restore.
+            HPointer keyStr = listNil();
 
             auto& rs = allocator.getRootSet();
             size_t kvSaved = rs.stackRangePoint();
-            rs.pushStackRootRange(&result,    1, 1);
-            rs.pushStackRootRange(&valDecHP,  1, 1);
-            if (!tuples.empty()) {
-                rs.pushStackRootRange(tuples.data(), tuples.size(),
-                                      /*hpointer_mask=*/~uint64_t(0));
-            }
+
+            // StackRootRange::hpointer_mask is a uint64_t indexed by
+            // `1ULL << i` — UB for `i >= 64`, so a single range with
+            // mask=~0 only covers slots 0-63. Dicts with > 64 entries
+            // need chunked ranges; otherwise tuples[64..] go stale across
+            // recursive runDecoder calls.
+            auto pushBaseRoots = [&]() {
+                rs.pushStackRootRange(&result,    1, 1);
+                rs.pushStackRootRange(&valDecHP,  1, 1);
+                rs.pushStackRootRange(&keyStr,    1, 1);
+                for (size_t base = 0; base < tuples.size(); base += 64) {
+                    size_t chunk = std::min<size_t>(64, tuples.size() - base);
+                    uint64_t mask = (chunk == 64) ? ~uint64_t{0}
+                                                   : ((uint64_t{1} << chunk) - 1);
+                    rs.pushStackRootRange(tuples.data() + base, chunk, mask);
+                }
+            };
+            pushBaseRoots();
 
             for (auto it = tuples.rbegin(); it != tuples.rend(); ++it) {
                 Tuple2* srcTup = static_cast<Tuple2*>(allocator.resolve(*it));
                 uint64_t valEnc = Export::encode(srcTup->b.p);
-                HPointer keyStr = srcTup->a.p;
-
-                // Root keyStr across the recursive decode + tuple2 + cons.
-                rs.pushStackRootRange(&keyStr, 1, 1);
+                keyStr = srcTup->a.p;
 
                 uint64_t valResult = runDecoder(valDecHP, valEnc);
                 if (!isOk(valResult)) {
@@ -1000,24 +1044,14 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
                 HPointer resTup = tuple2(boxed(keyStr), valSlot, tupleBitmap);
                 if (valKind == 0) {
                     rs.restoreStackRangePoint(kvSaved);
-                    rs.pushStackRootRange(&result,   1, 1);
-                    rs.pushStackRootRange(&valDecHP, 1, 1);
-                    if (!tuples.empty()) {
-                        rs.pushStackRootRange(tuples.data(), tuples.size(),
-                                              /*hpointer_mask=*/~uint64_t(0));
-                    }
+                    pushBaseRoots();
                 }
 
                 rs.pushStackRootRange(&resTup, 1, 1);
                 result = cons(boxed(resTup), result, true);
                 // Pop the `resTup` and `keyStr` roots now that result owns them.
                 rs.restoreStackRangePoint(kvSaved);
-                rs.pushStackRootRange(&result,    1, 1);
-                rs.pushStackRootRange(&valDecHP,  1, 1);
-                if (!tuples.empty()) {
-                    rs.pushStackRootRange(tuples.data(), tuples.size(),
-                                          /*hpointer_mask=*/~uint64_t(0));
-                }
+                pushBaseRoots();
             }
             rs.restoreStackRangePoint(kvSaved);
             return makeOk(result);
@@ -1090,7 +1124,14 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
 
             uint64_t result1;
             {
-                StackRootGuard guard(&callbackHP);
+                // Root dec1HP too: the recursive runDecoder doesn't update
+                // *our* by-value `dec1HP`, but if its return path passes
+                // back via makeOk that's a fresh HPointer; the trouble was
+                // an unrooted `callbackHP` was the only declared root —
+                // any nursery dec/callback objects allocated mid-decode
+                // could otherwise leave a separate stale local. Mirrors
+                // DEC_MAP2..DEC_MAP4 patterns.
+                StackRootGuard guard(&dec1HP, &callbackHP);
                 result1 = runDecoder(dec1HP, jvalEnc);
             }
             if (!isOk(result1)) return result1;

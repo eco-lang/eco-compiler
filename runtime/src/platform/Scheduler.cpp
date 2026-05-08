@@ -201,7 +201,8 @@ HPointer Scheduler::procWithRoot(HPointer srcHP, HPointer newRoot) {
     u16 id = static_cast<u16>(src->id);
     HPointer oldStack = src->stack;
     HPointer oldMailbox = src->mailbox;
-    // allocProcess roots its HPointer args across the allocation; safe.
+    // Root the by-value locals across allocProcess (see procWithStack).
+    Elm::StackRootGuard guard(&newRoot, &oldStack, &oldMailbox);
     HPointer newHP = allocProcess(id, newRoot, oldStack, oldMailbox);
     Scheduler::instance().registerLatestProcess(newHP);
     return newHP;
@@ -214,6 +215,11 @@ HPointer Scheduler::procWithStack(HPointer srcHP, HPointer newStack) {
     u16 id = static_cast<u16>(src->id);
     HPointer oldRoot = src->root;
     HPointer oldMailbox = src->mailbox;
+    // Root the by-value locals across allocProcess: the Process object
+    // pointed to by srcHP is reachable via the scheduler scanner, but
+    // these are independent HPointer locals to its fields and to the
+    // caller-supplied newStack. allocProcess is a GC point.
+    Elm::StackRootGuard guard(&oldRoot, &newStack, &oldMailbox);
     HPointer newHP = allocProcess(id, oldRoot, newStack, oldMailbox);
     Scheduler::instance().registerLatestProcess(newHP);
     return newHP;
@@ -308,9 +314,15 @@ Scheduler::MailboxPopResult Scheduler::mailboxPopFront(HPointer procHP) {
 // ============================================================================
 
 HPointer Scheduler::pushStack(HPointer procHP, u64 expectedTag, HPointer callback) {
-    // stackFrame() allocates and may trigger GC; procHP is already rooted by
-    // the caller (via runQueue/external scanner or stack-range guard), so its
-    // target survives and procHP itself is updated in place by GC.
+    // stackFrame() and procWithStack() both allocate and may trigger GC.
+    // Even though `procHP`'s *target* (the Process object) is reachable
+    // via the external scanner / runQueue, the by-value local copy of
+    // `procHP` is NOT — it lives in this frame and the GC has no way to
+    // find it. After the alloc, the local would still hold the
+    // pre-evacuation address. Same for `callback`, which is held by-value
+    // across stackFrame's GC point.
+    Elm::StackRootGuard guard(&procHP, &callback);
+
     void* procPtr = resolveHP(procHP);
     if (!procPtr) return procHP;
     HPointer oldStack = static_cast<Process*>(procPtr)->stack;

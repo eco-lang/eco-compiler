@@ -1193,7 +1193,7 @@ extern "C" HPtr eco_apply_closure(HPtr closure_hptr, uint64_t* args, uint32_t nu
     }
 
     HPtr result;
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     // Stale-arg tripwire (entry of eco_apply_closure): every non-constant
     // non-zero HPointer arg must resolve to an allocated region. Catches
     // callers that hold an HPointer by-value across an earlier `eco_alloc_*`
@@ -1223,7 +1223,7 @@ extern "C" HPtr eco_apply_closure(HPtr closure_hptr, uint64_t* args, uint32_t nu
         result = eco_apply_closure(intermediate, args + remaining, num_args - remaining);
     }
 
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     // Post-call validation: catches the case where the inner call returned
     // but somehow a stale arg slipped through (e.g. stack-range push failed).
     for (uint32_t dbg_i = 0; dbg_i < num_args; ++dbg_i) {
@@ -1299,7 +1299,7 @@ extern "C" HPtr eco_apply_segmentation_unknown(HPtr closure_hptr,
         if (num_args > 0) {
             eco_gc_push_stack_range(boxed_args, num_args, hptr_mask_all(num_args));
         }
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
         // Stale-arg tripwire: catches the case where ECO-compiled code (or
         // a kernel C++ helper) passes a stale pointer at the C++ call
         // boundary, before eco_apply_closure roots them. Hot path —
@@ -1452,7 +1452,7 @@ extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args
     // Re-resolve closure after buildEvaluatorArgs: boxing allocs inside
     // may have triggered GC and moved the closure.
     closure = static_cast<Closure*>(hpointerToPtr(closure_bits));
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     // Stale-arg tripwire: validate combined_args before calling evaluator.
     // Catches stale entries from buildEvaluatorArgs (e.g. closure re-resolved
     // badly, or new_args arrived stale). Hot path — debug-only.
@@ -2912,7 +2912,7 @@ extern "C" HPtr eco_clone_array(HPtr array_hptr) {
         dst->elements[i] = src->elements[i];
     }
 
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     // Stale-pointer barrier — only when the array claims to be boxed.
     // Unconditional validation false-positives on integer arrays whose
     // values happen to bit-decode as in-nursery addresses (e.g. a BitSet

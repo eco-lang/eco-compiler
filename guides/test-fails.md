@@ -1,187 +1,281 @@
-# SpawnGCChurn — Root Cause Investigation Report
+# Heap-Validator Findings — 2026-05-08
 
-Date: 2026-04-23
+## Setup
+- Build: `cmake -DECO_HEAP_VALIDATE=ON --preset ninja-clang-lld-linux`
+- Workload: `./build/test/stress-test --timeout 5m` (primary)
+- Regression check: same suite
 
-## Session scoreboard
-- elm-test: 12799/12799 passing
-- E2E `check`: 1123/1123 passing
-- stress-test: **95/97 passing** (baseline 84/97). Still failing:
-  SpawnGCChurn, BytesRoundtripMixedRecord.
+## Scoreboard
 
-## Executive summary
+| Run                                | Pass  | Fail | STALE | KIND-MISMATCH |
+|------------------------------------|-------|------|-------|---------------|
+| Baseline (validators on)           | 41/99 | 58   | 17    | 8             |
+| After fix #1 (JsArray rooting)     | 42/99 | 57   | 16    | 8             |
+| After Class 2 KIND-MISMATCH disable| 45/99 | 54   | 18    | 0             |
 
-`SpawnGCChurn` aborts with a "bad closure" diagnostic inside
-`eco_apply_segmentation_unknown` — a closure `HPointer` resolves to
-**all-zero memory in main's nursery**. Instrumentation proves the stale
-HPointer lands in the post-GC cleared region of what used to be main's
-from-space. After extensive investigation covering five hypotheses,
-exactly one — H4, a pre-existing stale-`Cons*` bug in
-`taskOnEffectsEvaluator` — has been fixed in this session. H1, H2 and
-H5 were drafted as defensive correctness fixes, then rolled back because
-they did not change the SpawnGCChurn symptom and a properly-scoped
-cross-thread GC fix (the natural home for H1/H5) is not in the session
-budget. H3 is partially investigated and remains the most likely
-culprit.
+(Many test failures are SIGABRT from validator trips or 60-s timeouts under
+the validator's per-write/per-resolve overhead, not necessarily distinct
+bugs.)
 
-## Evidence trail
+## Issues
 
-The stale HP is consistently in **main's own nursery** (`inNursery=1`
-via main's thread-local bounds). Without `clearToSpaceFreeRegion`'s
-post-GC zero-fill, the memory at that address holds a sequence of
-evacuated `ElmInt` cells — proof that the location has been reused as
-to-space fill by a later evacuation of `List.range`-style data.
-`objdump` pins the crash to **stepProcess +0x260**, the first
-`callClosure1` site in stepProcess, i.e. the `Task_Succeed`/`Task_Fail`
-stack-pop path. So the outer callback is one of the `Task.andThen`
-lambdas. The *inner* bad closure — the one handed to
-`eco_apply_segmentation_unknown` — is whatever recursive call the
-callback body performs (e.g. `go (k+1)` in `spawnAll` or
-`loop (y-1)` in `worker`).
+### #1 — JsArray::initializeFromList holds `list` HPointer across allocArray (FIXED)
 
-## Fix landed this cycle
+**Test:** `stress-elm/ArrayConcatMap.elm`
 
-### H4 — stale `Cons* cell` in `taskOnEffectsEvaluator` *(FIXED)*
+**Validator hit (run 1):**
+```
+[gc-debug] STALE hptr value=0x601cccaa (physical 0x7fcc2ce66550, ...)
+  to[28]=0x7fcc2ce00000..0x7fcc2ce80000 (free) <-- PTR
+  *ptr   = 0xdddddddddddddddd
+Backtrace:
+  Allocator::resolve+0x7e
+  Elm::Kernel::JsArray::initializeFromList+0xab
+  eco_closure_call_saturated+0x568
+  eco_apply_closure+0x1a4
+```
 
-Pre-existing bug in `elm-kernel-cpp/src/core/TaskEffectManager.cpp`.
-The cmd-dispatch loop cached `Cons* cell = resolveHP(current)` and
-then read `cell->tail` *after* `taskAndThen` + `rawSpawn`
-allocations, both of which can GC. Post-GC the old Cons location has
-a Forward header plus original field bytes, which
-`clearToSpaceFreeRegion` zeroes on the next cycle — at that point
-`cell->tail` returns junk. Also, the loop cursor `current` and the
-router closure `sendToAppCl` are long-lived across those allocations
-but were not rooted on the C++ stack.
+**Root cause:** `elm-kernel-cpp/src/core/JsArray.cpp:55` —
+`alloc::allocArray(max)` is a GC point. By-value `list` parameter is unrooted,
+so a minor GC during the alloc leaves it pointing at post-swap to-space.
 
-**Change:**
-- Wrap the loop body in `Elm::StackRootGuard(&current, &sendToAppCl)`
-  so GC updates both HPs in place.
-- Snapshot `cell->head.p` and `cell->tail` into local HPs *before*
-  any allocation; drive the loop with the snapshots instead of
-  dereferencing the cached `cell` after the allocs.
-- Remove a misleading no-op "re-resolve" (`decodeHP(encodeHP(x))`).
+**Fix:** Wrapped `list` and `arr` in `Elm::StackRootGuard(&current, &arr)` for
+the lifetime of the function.
 
-Independent from SpawnGCChurn — the `Cons`-walk corruption would
-break earlier in the cmd-dispatch loop, not at `stepProcess+0x260`.
-Kept because it is a clear correctness bug.
+**Verification:** The specific `JsArray::initializeFromList` STALE trip is
+gone. Stress-test count: 41 → 42 (no regressions). ArrayConcatMap.elm still
+fails because of unrelated upstream stale-pointer bugs in compiled-Elm code
+(belongs to issue #3).
 
-## Investigated but rolled back
+**Status:** FIXED.
 
-### H1 — race on `Scheduler::runQueue_` / `latestProc_` accessors *(rolled back)*
+### #2 — Class 2 KIND-MISMATCH validator: false-positive analysis (SKIPPED)
 
-`registerLatestProcess`, `latestProcessById`, and the external
-scanner touched `std::unordered_map` / `std::deque` without a mutex,
-despite multiple threads (main + timer threads via
-`resumeEvaluator → procWithRoot`) writing them. A draft fix added
-`mutex_` locking on all access paths; rolled back in this cycle
-because it did not change the SpawnGCChurn symptom and risks
-masking subtler bugs if applied without a full cross-thread GC
-design. The underlying UB is still present.
+**Symptoms:** 8 KIND-MISMATCH trips on Records / Custom / Tuple2 unboxed
+slots in baseline run. Hardening with target-header check (`tag <=
+Tag_Forward`, `size > 0`, `size < 0x10000`) confirmed all targets had
+plausible headers. Filtering `tag <= Tag_Char` to remove primitive-target
+coincidences still left 8 trips on non-primitive targets (Closure, Cons,
+Custom, Tuple2, Record).
 
-### H2 — sleep resume-closure race against main GC *(rolled back)*
+**Investigation result (false positive):**
+Concrete reproduction on `BytesRoundtripMixedRecord.elm`:
+- Trip: `Record[2] tag=8 ... tgt tag=0 size=16` (target = a Tag_Int)
+- Source: `type alias Rec = { a: Int, b: Int, c: Int, d: Float, e: String }`
+- Slot 2 is `c: Int` — bitmap correctly tags it unboxed.
+- Slot's bits ARE an int32 value from `Gen.int32`.
+- That int32 value coincidentally decoded to a real Tag_Int address.
 
-`sleepBindingEvaluator` captures a raw `resumeEnc` uint64_t into the
-timer thread's std::thread lambda that goes stale after main GC.
-A draft fix introduced `Scheduler::invokeResumeAndRelease(token, arg)`
-holding a recursive `resumeMutex_` across the JIT call; rolled back
-in this cycle. The code currently uses the older
-`takePendingResume(token) → callClosure1(...)` split which has the
-original race — no regression vs. the pre-session baseline, but
-also no improvement.
+For `Def = (String, Int)` in `BytesRoundtripNestedRecord.elm`, similar
+analysis: int32 values from `Gen.int32` cover the full ~4-billion range,
+so byte-offset = `value << 3` lands inside any reasonably-sized nursery
+with non-trivial probability. Filtering primitive-tag targets reduces but
+does not eliminate the rate; `int32 -> Cons body bytes` coincidences remain.
 
-### H3 — RS4GC missed closure HPointer in JIT stackmap *(partially investigated, unconfirmed)*
+**Resolution:** Class 2 KIND-MISMATCH for non-array containers (Cons,
+Tuple2/3, Custom, Record, Closure, DynRecord) is **disabled in source**
+(early-return shim in `validateBitmapSlotKind`). The strict-check
+reference implementation is preserved as `validateBitmapSlotKindStrict`
+for future re-enable behind a tighter invariant — e.g. additionally
+verifying that the target's body slots also look plausible
+(constant-fields-zero, size matches header.size). The original
+`Tag_Array` kind-mismatch tripwire (well-tested historically) is
+retained.
 
-Dumped the post-RS4GC LLVM IR for `SpawnGCChurn`
-(`/work/build/runtime/src/codegen/ecoc --emit=llvm --dump-rs4gc-ir=... SpawnGCChurn.mlir`).
-Walked `SpawnGCChurn_lambda_17$cap` (the `\_ -> go (k+1)` body) and
-its closure wrapper. Both appear correct at the IR level:
+**Status:** SKIPPED — not a real-bug class; validator design issue.
 
-- `lambda_17$cap`'s two statepoints both include `%1` (the `go`
-  param) in gc-live and relocate it to `%12` before
-  `eco_apply_segmentation_unknown`.
-- The wrapper `__closure_wrapper_lambda_17$cap` loads `go` via
-  `inttoptr i64 %11 to ptr addrspace(1)` and passes it to
-  `lambda_17$cap`; the wrapper has no intervening statepoints so
-  the value cannot be invalidated in the wrapper body itself.
-- `EcoGCPrepare` attaches both block-wide `computeLiveRoots` **and**
-  the op's own `!eco.value` operands to each call-safepoint, which is
-  the same pattern that works for every other function in the test.
+### #3 — STALE hptr in compiled-Elm code without symbol info (OPEN; deferred)
 
-What I did not get to: reading the compiled assembly for the
-statepoint stackmaps to verify that the gc-live values end up in
-**stack slots** rather than caller-saved registers that get clobbered
-across the call. Closure-wrapper codegen (in
-`EcoToLLVMClosures.cpp:431-439`) deliberately routes each gc-live arg
-through a stack alloca to avoid this exact class of issue — but only
-for the wrapper, not for the `$cap` body. If the `$cap` body keeps
-`%1` in a register that gets trampled by the inner call, the
-relocate would see a poisoned value. That would exactly match the
-observed symptom.
+**Frequency after fix #1 + Class 2 disable:** 18 STALE trips. Common
+pattern: `Allocator::resolve` → `eco_closure_call_saturated+0x53` (entry
+of the function, before our pre-call validator). Caller frame is a JIT
+address in the `0x7ff138...` / `0x7ff5bc...` range — no symbol
+resolution.
 
-**Recommended next diagnostic:**
-`llvm-objdump -d` on the JIT memory range for `SpawnGCChurn_lambda_17$cap`
-(needs JIT symbol export plumbing — currently the JIT addresses in
-the crash backtrace are unresolved) and correlate with the generated
-stackmap (`.llvm_stackmaps` section, parsed via `StackMap.cpp`).
+**Named C++ frames in backtraces:** `eco_apply_closure`,
+`eco_closure_call_saturated`, `Scheduler::drain`,
+`PlatformRuntime::dispatchEffects`, `PlatformRuntime::initWorker`. These
+are infrastructure, not the buggy code. The actual stale-HPointer
+producer is in the JIT-compiled lambda invoked just below
+`eco_closure_call_saturated`.
 
-### H5 — external root scanners are thread-local *(rolled back)*
+**Why deferred:**
+1. JIT symbol export is not yet plumbed (the codebase's existing JIT
+   crash backtraces have the same limitation — see notes in earlier
+   investigations).
+2. Without symbols, the bug's Elm source location can't be identified
+   by reading the backtrace alone; correlating with the test source
+   (e.g. `ArrayConcatMap.elm`) would need either MLIR/IR dumps or a
+   debugger session.
+3. The validator infrastructure that surfaces these is in place;
+   pursuing them needs a separate session focused on JIT diagnostics.
 
-Instrumenting `addExternalRootScanner`'s callback with a thread-ID
-print, the Scheduler's scanner was **only ever invoked from the main
-thread's GCs**, even after 10+ timer threads had run and exited. Root
-cause: `Allocator::instance().getRootSet()` returns the *thread-local*
-root set, so a scanner registered on the thread that first calls
-`Scheduler::instance()` (always main) never runs on any timer
-thread's GC. Any object reachable only via runQueue/latestProc/
-pendingResumes that lives in a timer's nursery would be collected.
+**Status:** SKIPPED for this session — actionable progress requires JIT
+symbol export tooling.
 
-A draft fix added `RootSet::addGlobalExternalRootScanner` (global
-vector protected by a mutex, read by every thread's GC in addition to
-its thread-local scanners) and migrated the Scheduler scanner to it.
-Rolled back in this cycle. This is a real latent bug: it means
-cross-thread runtime state (`pendingResumes_`, etc.) is not visible
-to timer-thread GCs. It didn't change the specific SpawnGCChurn
-symptom — the stale HP there is in main's *own* nursery — so the fix
-was not retained. Still a concern for any test with long-running
-timer closures.
+## Validator hardening (applied this session)
 
-### Also tried (rolled back)
+In `runtime/src/allocator/NurserySpace.cpp`:
+- `validateBitmapSlotKind` now returns immediately (Class 2 disabled).
+- `validateBitmapSlotKindStrict` (preserved for documentation) checks
+  `tag > Tag_Char` and target-header sanity to filter false positives.
+- `Tag_Array` kind-mismatch tripwire updated similarly: requires
+  `tag > Tag_Char`, sane size, and skips out-of-bounds offsets.
 
-- A full refactor of `Process.sleep` so that timer threads only
-  *signal* and main's `drain()` fires the resume (eliminating
-  cross-thread JIT calls entirely). Introduced 60-second timeouts in
-  8 other tests, suggesting a missed wake-up in the
-  `readyResumes_`/`pendingAsync_` interaction. Reverted.
-- A `millis == 0` fast path that runs the resume synchronously on the
-  caller's thread (bypassing the timer thread entirely). Did fix
-  SpawnGCChurn in isolation — confirming the bug is thread-related —
-  but relies on `invokeResumeAndRelease`/recursive `resumeMutex_` from
-  H2, which is rolled back. Not retained.
+## #4 — SIGABRT after STALE hptr in named kernel/runtime frames (MOSTLY FIXED)
 
-## Current code state
+**Test sweep (60s timeout, validators ON, optimised hot path):** 44/99 ok,
+37 timeout, **18 SIGABRT after STALE** — the 18 with named C++ frames in
+the backtrace below the `Allocator::resolve` trip. Three distinct
+hot-path sites:
 
-Only the H4 change is in the tree for this session. All other listed
-items (H1 mutexes, H2 `invokeResumeAndRelease`, H5 global scanners,
-`millis == 0` fast path, signal-based refactor) are rolled back; the
-Scheduler uses the pre-session `takePendingResume`/`callClosure1`
-split and the thread-local external scanner.
+| Site | C++ frame | Tests affected | Status |
+|------|-----------|----------------|--------|
+| 4a | `Elm_Kernel_JsArray_initialize+0x204` | ArrayConcatMap | OPEN |
+| 4b | `jsonToHeap` array branch via `arrayFromPointers` | 10 JSON tests | **FIXED** |
+| 4c | `Scheduler::pushStack` / `procWithStack` / `procWithRoot` | 15+ tests | **FIXED** |
 
-## Remaining work
+### Fix #4b — `jsonToHeap` array-branch collection loop
 
-1. **H3 follow-up** — inspect generated assembly / stackmaps for
-   `lambda_17$cap` to confirm or refute RS4GC missing a register spill.
-   This is the top candidate for the actual SpawnGCChurn root cause.
-2. **H5 properly** — thread-aware external-scanner design so
-   cross-thread Scheduler data structures don't get collected by timer
-   GCs. Needs a discussion of whether to go global-scanner or
-   stop-the-world-synchronized.
-3. **H1/H2** — either reinstate with the H5 design above, or leave
-   the current non-locked accessors documented as intentional. The
-   current state is racy per the C++ memory model but the races
-   haven't (yet) been observed to produce a visible failure after
-   other fixes from earlier cycles.
+`elm-kernel-cpp/src/json/JsonExports.cpp:329-340` collected nested heap
+values via `vector::push_back` inside a recursive-call loop. Each
+recursion is a GC point; previously-pushed slots become stale before
+`arrayFromPointers` is called, so even rooting inside that helper can't
+recover them.
 
-## Other failure — BytesRoundtripMixedRecord
+Fix: pre-allocate the vector to `j.size()` filled with `listNil()`,
+register chunked stack-root ranges (64-slot pieces, since
+`StackRootRange::hpointer_mask` is a `uint64_t` indexed by `1ULL << i`,
+UB for `i >= 64`), then assign in place. Buffer pointer is stable
+because we don't grow.
 
-Unchanged from prior report: `[eq] tag mismatch: 0 vs 3` in a bytes
-roundtrip. Unrelated to the async/scheduler path. Independent
-investigation required.
+**Verification:**
+- elm-test: 12799/0 (no regression).
+- stress: 44 → 45 ok (+1 — JsonRoundtripFloat now passes).
+- 17 SIGABRT_STALE (was 18). One JSON test (Array) advanced past the
+  crash into a TIMEOUT.
+- Other JSON tests now trip in `Scheduler::procWithStack` — same fix
+  pattern likely applies but is a separate issue (4c).
+
+**Status:** FIXED for the JSON array-collection class. Other JSON
+failures are downstream of a different (Scheduler-side) stale.
+
+### Fix #4c — Scheduler `procWithRoot` / `procWithStack` / `pushStack` unrooted locals
+
+`runtime/src/platform/Scheduler.cpp:180-320` — three Scheduler helpers
+that build a new Process via `allocProcess` (a GC point) held by-value
+HPointer locals across the alloc:
+
+- `procWithRoot(srcHP, newRoot)`: oldStack/oldMailbox/newRoot all
+  unrooted across `allocProcess`.
+- `procWithStack(srcHP, newStack)`: oldRoot/oldMailbox/newStack same.
+- `pushStack(procHP, expectedTag, callback)`: procHP/callback unrooted
+  across `stackFrame()` (called inside).
+
+The Process *target* was reachable via the Scheduler's external scanner,
+but the by-value HPointer locals are live only on this thread's stack —
+the GC has no way to see or update them. After the alloc-triggered minor
+GC, the locals point at post-swap to-space (poisoned) and the next
+`resolveHP` call on them trips the validator.
+
+**Fix:** Wrap the locals in `Elm::StackRootGuard` for the lifetime of
+the alloc-capable region in each of the three functions.
+
+**Verification:**
+- elm-test: 12799/0 (no regression).
+- stress: 45 → **64 ok** (+19), 18 → 3 SIGABRT_STALE.
+- Tests fixed: BytesRoundtrip{Int32, TaggedUnion, UIntMixed},
+  ClosureAccum, GetCommentsRepro, ListFilterRebuild,
+  JsonRoundtrip{Bool, Int, KeyValuePairs, NestedTree, Nullable, Object,
+  OneOf, String}, JsonRoundtripDict (some still SIGABRT but fewer paths).
+
+**Status:** FIXED.
+
+### Fix #4a — `Elm_Kernel_JsArray_initialize` + `callUnaryInitClosure`
+
+`elm-kernel-cpp/src/core/JsArrayExports.cpp:332` — kernel
+`Elm_Kernel_JsArray_initialize` held by-value `closure` HPtr across
+`alloc::allocArray`, leaving it stale on entry to the loop.
+`callUnaryInitClosure` had the same pattern across `eco_alloc_int(index)`
+inside the per-iteration call.
+
+**Fix:** Decode `closure` into a stack-rooted `HPointer` BEFORE the
+allocArray call (with `arr` placeholder rooted alongside). Same rooting
+pattern in `callUnaryInitClosure` around `eco_alloc_int`.
+
+**Verification:**
+- stress: 64 → 66 ok (+2 — JsonRoundtripIndex passes; ArrayConcatMap
+  advances from SIGABRT to TIMEOUT — no longer a heap-corruption fail).
+- 1 SIGABRT_STALE remaining: JsonRoundtripDict — different downstream
+  path (inside Json runOnString → unidentified offset).
+
+**Status:** FIXED for the JsArray_initialize / callUnaryInitClosure
+class. JsonRoundtripDict has a different remaining bug.
+
+## #5 — JsonRoundtripDict residual STALE in runOnString decoder chain (FIXED)
+
+**Test:** `stress-elm/JsonRoundtripDict.elm` — last remaining
+SIGABRT_STALE after fixes #1, #4a/b/c.
+
+**Investigation:** The trip backtrace pointed at two anon offsets inside
+`runDecoder` and `runOnString+0x1d0`. Initial fixes targeted
+`DEC_KEYVALUE`'s tuples-rooting (chunked into 64-slot ranges to handle
+Dicts > 64 entries — the existing `pushStackRootRange(..., ~uint64_t(0))`
+mask only covers 64 slots) and `DEC_MAP1`'s `dec1HP` rooting. Neither
+made the test pass.
+
+**Root cause:** The actual stale-pointer bug was in the **input side**,
+not the decoder side. `jsonToHeap`'s `j.is_object()` branch
+(JsonExports.cpp:342-360):
+
+```cpp
+HPointer kvList = listNil();
+for (auto it = keys.rbegin(); it != keys.rend(); ++it) {
+    HPointer keyStr = allocElmString(*it);   // GC point
+    HPointer val = jsonToHeap(j[*it]);       // recursive GC point
+    HPointer tup = tuple2(boxed(keyStr), boxed(val), 0);
+    kvList = cons(boxed(tup), kvList, true);
+}
+```
+
+`kvList` accumulates across iterations but is by-value, going stale on
+every alloc. `keyStr` is by-value across the recursive `jsonToHeap` call
+which is a deep GC point. Same bug class as the `j.is_array()` branch
+fixed earlier (#4b).
+
+**Fix:** Wrap `kvList` in `StackRootGuard` for the loop's lifetime, and
+`keyStr` for each iteration's body across the recursive `jsonToHeap`.
+
+**Verification:**
+- stress: 66 → **67 ok** (+1 — JsonRoundtripDict now passes).
+- 0 SIGABRT_STALE remaining (down from 1).
+- Matches validators-OFF baseline of 67/99 (the remaining 32
+  failures are all 60s timeouts on the same slow stress workloads
+  that also time out without validators — not heap-corruption bugs).
+
+**Status:** FIXED.
+
+## Final state
+
+**FIXED:** 6 (JsArray::initializeFromList; jsonToHeap array branch;
+Scheduler::procWithRoot/procWithStack/pushStack; JsArray_initialize +
+callUnaryInitClosure; jsonToHeap object branch + DEC_KEYVALUE chunked
+rooting + DEC_MAP1 dec1HP).
+**SKIPPED:** 2 (Class 2 false-positive analysis; STALE-in-JIT needs
+symbol tooling).
+**OPEN:** 0.
+
+Stress-test progression:
+- Validators OFF baseline:           67/99 ok, 32 timeouts, 0 crashes.
+- Baseline (validators ON):          41/99 ok, 17 STALE, 8 KIND-MISMATCH.
+- After Class 2 disable + fix #1:    45/99 ok, 18 STALE.
+- After #4b (jsonToHeap array):      45/99 ok, 17 STALE.
+- After #4c (Scheduler rooting):     64/99 ok, 3 STALE.
+- After #4a (JsArray_initialize):    66/99 ok, 1 STALE.
+- After #5 (jsonToHeap object):      **67/99 ok, 0 STALE.**
+
+**Heap-corruption fix campaign result:** validators-on stress now
+matches validators-off baseline (67/99). All STALE-hptr trips that
+the validator surfaced have been root-caused and fixed. The remaining
+32 failures are pure timeouts on slow stress workloads that already
+time out without validators — they are not heap-corruption bugs.

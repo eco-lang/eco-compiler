@@ -29,15 +29,16 @@
 #include "NurserySpace.hpp"
 #include "Allocator.hpp"
 #include "ThreadLocalHeap.hpp"
+#include <algorithm>
 #include <cassert>
 #include <cstdio>
 #include <cstring>
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
 // Used by debugAssertValidNurseryPointer's diagnostic (prints a backtrace).
 #include <execinfo.h>
 #endif
 
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
 // Track which heap object is currently being scanned during Cheney scan,
 // so stale-pointer diagnostics can identify the parent object.
 thread_local void* g_scan_parent = nullptr;
@@ -554,10 +555,19 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // bodies whose recorded color doesn't match at the end are freed.
     minor_color_ = !minor_color_;
 
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     // Used by stale-pointer detection in `debugAssertValidNurseryPointer`.
     in_minor_gc_ = true;
+#endif
+#if ECO_GC_DEBUG
     std::fprintf(stderr, "[gc] minorGC start from_is_low=%d\n", (int)from_is_low_);
+#endif
+
+#if ECO_HEAP_VALIDATE
+    // Class 3: walk every header in from-space's allocated prefix and
+    // assert tag/size sanity before evacuation begins. Catches mutator-side
+    // header corruption that would otherwise propagate via memcpy.
+    preEvacuationFromSpaceWalk();
 #endif
 
 #if ENABLE_GC_STATS
@@ -670,7 +680,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // at least as old as the parent and therefore also qualify for promotion.
     // in_phase3_ arms the assertion in evacuate() that catches any violation.
     // Use index-based loop since vector may grow during iteration.
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     in_phase3_ = true;
 #endif
     // Drain alternately between to-space and the promoted-objects queue
@@ -696,7 +706,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
             scanObject(promoted_objects[promoted_idx++], oldgen, &promoted_objects);
         }
     }
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     in_phase3_ = false;
 #endif
 
@@ -710,7 +720,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // after checkAndGrow() so newly added blocks are also zeroed.
     clearToSpaceFreeRegion();
 
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     // Post-GC heap integrity check: walk all surviving objects in to-space
     // and verify every boxed child pointer points outside from-space. A
     // child still in from-space at this point (without a Tag_Forward
@@ -937,7 +947,11 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     }
 #endif
 
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
+    // Class 3: verify block_end_of_objects_ tracking matches a fresh
+    // linear walk before the swap.
+    verifyToSpaceBlockEndOfObjects();
+
     // Paired with the assignment at the start of minorGC.
     in_minor_gc_ = false;
 
@@ -1027,7 +1041,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     if (!obj)
         return;
 
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     if (contains(obj)) {
         debugAssertValidNurseryPointer(obj);
     }
@@ -1044,7 +1058,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     Header *hdr = getHeader(obj);
 
     // Assert tag is valid.
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     if (hdr->tag > Tag_Forward) {
         uint64_t raw_hptr;
         memcpy(&raw_hptr, &ptr, sizeof(raw_hptr));
@@ -1080,7 +1094,27 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         // Follow forward pointer and update ptr.
         Forward *fwd = static_cast<Forward *>(obj);
         uintptr_t byte_offset = static_cast<uintptr_t>(fwd->header.forward_ptr) << 3;
-        ptr = Allocator::toPointerRaw(heap_base + byte_offset);
+        char* tgt = heap_base + byte_offset;
+#if ECO_HEAP_VALIDATE
+        // Class 3: forward-chain depth must be exactly 1. The target of a
+        // Tag_Forward must itself be a real (not Tag_Forward) object —
+        // otherwise we have a chain that indicates double evacuation or
+        // corrupted forwarding.
+        {
+            assert(tgt >= heap_base &&
+                   tgt < heap_base + allocator_->getHeapReserved() &&
+                   "forward target outside heap");
+            Header* tgthdr = getHeader(tgt);
+            if (tgthdr->tag == Tag_Forward) {
+                std::fprintf(stderr,
+                    "[gc-debug] FORWARD CHAIN DEPTH > 1: obj=%p -> %p (tag=%u)\n",
+                    obj, (void*)tgt, (unsigned)tgthdr->tag);
+                std::fflush(stderr);
+                std::abort();
+            }
+        }
+#endif
+        ptr = Allocator::toPointerRaw(tgt);
         return;
     }
 
@@ -1129,7 +1163,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
 
     // Copy to to_space if not promoted.
     if (!new_obj) {
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
         // Elm's immutability invariant: every child of a promoted object must be
         // at least as old as the parent, so it must also qualify for promotion.
         // If we reach here during phase 3 it means the invariant is violated.
@@ -1215,7 +1249,7 @@ void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vecto
     if (!obj)
         return;
 
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     if (contains(obj)) {
         debugAssertValidNurseryPointer(obj);
     }
@@ -1312,12 +1346,90 @@ void NurserySpace::evacuateValueSlot(uint64_t &encoded, OldGenSpace &oldgen,
  *
  * All other types use standard BFS evacuation.
  */
+#if ECO_HEAP_VALIDATE
+// Class 2 bitmap-mismatch tripwire. Called per slot during scanObject for
+// every bitmap-bearing container (Cons, Tuple2/3, Custom, Record, Closure,
+// DynRecord). When the bitmap claims a slot is unboxed, the slot's bits
+// must NOT decode to a live in-from-space-allocated address — that would
+// mean the kind tag is lying and the GC will leave a real boxed pointer
+// un-forwarded. Trip immediately with a backtrace naming the parent
+// container so the mutator path that mis-tagged it can be identified.
+//
+// **Currently disabled.** Audit found a fundamental false-positive class:
+// for any slot legitimately holding an Int (e.g. record field `c : Int`),
+// random int32 values often have low-40-bit patterns that decode to
+// addresses inside the live nursery. Filtering by target-header tag
+// (must be > Tag_Char) reduces but does not eliminate the rate. Keeping
+// the helper in source for future re-enable behind a stricter check
+// (e.g. requiring the target object to also have plausible body bytes).
+static inline void validateBitmapSlotKind(NurserySpace* /*self*/,
+                                          char* /*heap_base*/,
+                                          uintptr_t /*heap_reserved*/,
+                                          Unboxable /*slot*/,
+                                          bool /*is_boxed*/,
+                                          void* /*parent*/,
+                                          uint32_t /*parent_tag*/,
+                                          const char* /*container*/,
+                                          uint32_t /*idx*/) {
+    return;  // disabled — see comment above
+}
+
+// Reference implementation, kept for documentation. Not invoked.
+[[maybe_unused]] static inline void validateBitmapSlotKindStrict(
+    NurserySpace* self,
+    char* heap_base,
+    uintptr_t heap_reserved,
+    Unboxable slot,
+    bool is_boxed,
+    void* parent,
+    uint32_t parent_tag,
+    const char* container,
+    uint32_t idx) {
+    if (is_boxed) return;
+    HPointer hp = slot.p;
+    if (hp.constant != 0 || hp.ptr == 0) return;
+    uintptr_t byte_offset = static_cast<uintptr_t>(hp.ptr) << 3;
+    if (byte_offset >= heap_reserved) return;
+    void* tgt = heap_base + byte_offset;
+    if (!self->isInFromSpaceAllocatedRegion(tgt)) return;
+
+    // Target-header sanity check: real HPointers point at an object whose
+    // header has a plausible tag and non-zero size. We exclude Tag_Int /
+    // Tag_Float / Tag_Char because primitive boxes are dense in the
+    // nursery and an unboxed Int slot can easily land coincidentally on a
+    // Tag_Int header — a confirmed false-positive case
+    // (BytesRoundtripMixedRecord.elm Record[2] = `c: Int`). The remaining
+    // tags (Cons, Tuple, Custom, Record, DynRecord, FieldGroup, Closure,
+    // Process, Task, ByteBuffer, Array, StringRope/Slice, etc.) have
+    // distinctive layouts that are much less likely to be hit by random
+    // Int bit patterns, so a trip there is strong evidence of a real
+    // wrong-bitmap bug.
+    Header* tgt_hdr = static_cast<Header*>(tgt);
+    if (tgt_hdr->tag <= Tag_Char) return;          // primitive coincidence
+    if (tgt_hdr->tag > Tag_Forward) return;
+    if (tgt_hdr->size == 0) return;
+    if (tgt_hdr->size > 0x10000) return;
+
+    std::fprintf(stderr,
+        "[gc-debug] %s KIND-MISMATCH at parent=%p tag=%u %s[%u]: "
+        "slot tagged unboxed but bits decode to a live from-space "
+        "target %p (tgt tag=%u size=%u) — element will not be "
+        "forwarded.\n",
+        container, parent, parent_tag, container, idx, tgt,
+        (unsigned)tgt_hdr->tag, (unsigned)tgt_hdr->size);
+    std::fflush(stderr);
+    std::abort();
+}
+#endif
+
 void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*> *promoted_objects) {
     Header *hdr = getHeader(obj);
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     g_scan_parent = obj;
     g_scan_tag = hdr->tag;
     g_scan_size = hdr->size;
+    char* hbase = Allocator::instance().getHeapBase();
+    uintptr_t hres = Allocator::instance().getHeapReserved();
 #endif
     // Process children based on tag.
     switch (hdr->tag) {
@@ -1326,28 +1438,50 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
 
         case Tag_Tuple2: {
             Tuple2 *t = static_cast<Tuple2 *>(obj);
-            evacuateUnboxable(t->a, Elm::tupleFieldKind(hdr->unboxed, 0) == 0, oldgen, promoted_objects);
-            evacuateUnboxable(t->b, Elm::tupleFieldKind(hdr->unboxed, 1) == 0, oldgen, promoted_objects);
+            bool ka = Elm::tupleFieldKind(hdr->unboxed, 0) == 0;
+            bool kb = Elm::tupleFieldKind(hdr->unboxed, 1) == 0;
+#if ECO_HEAP_VALIDATE
+            validateBitmapSlotKind(this, hbase, hres, t->a, ka, obj, hdr->tag, "Tuple2", 0);
+            validateBitmapSlotKind(this, hbase, hres, t->b, kb, obj, hdr->tag, "Tuple2", 1);
+#endif
+            evacuateUnboxable(t->a, ka, oldgen, promoted_objects);
+            evacuateUnboxable(t->b, kb, oldgen, promoted_objects);
             break;
         }
         case Tag_Tuple3: {
             Tuple3 *t = static_cast<Tuple3 *>(obj);
-            evacuateUnboxable(t->a, Elm::tupleFieldKind(hdr->unboxed, 0) == 0, oldgen, promoted_objects);
-            evacuateUnboxable(t->b, Elm::tupleFieldKind(hdr->unboxed, 1) == 0, oldgen, promoted_objects);
-            evacuateUnboxable(t->c, Elm::tupleFieldKind(hdr->unboxed, 2) == 0, oldgen, promoted_objects);
+            bool ka = Elm::tupleFieldKind(hdr->unboxed, 0) == 0;
+            bool kb = Elm::tupleFieldKind(hdr->unboxed, 1) == 0;
+            bool kc = Elm::tupleFieldKind(hdr->unboxed, 2) == 0;
+#if ECO_HEAP_VALIDATE
+            validateBitmapSlotKind(this, hbase, hres, t->a, ka, obj, hdr->tag, "Tuple3", 0);
+            validateBitmapSlotKind(this, hbase, hres, t->b, kb, obj, hdr->tag, "Tuple3", 1);
+            validateBitmapSlotKind(this, hbase, hres, t->c, kc, obj, hdr->tag, "Tuple3", 2);
+#endif
+            evacuateUnboxable(t->a, ka, oldgen, promoted_objects);
+            evacuateUnboxable(t->b, kb, oldgen, promoted_objects);
+            evacuateUnboxable(t->c, kc, oldgen, promoted_objects);
             break;
         }
         case Tag_Custom: {
             Custom *c = static_cast<Custom *>(obj);
             for (u32 i = 0; i < hdr->size && i < 24; i++) {
-                evacuateUnboxable(c->values[i], Elm::fieldKind(c->unboxed, i) == 0, oldgen, promoted_objects);
+                bool kib = Elm::fieldKind(c->unboxed, i) == 0;
+#if ECO_HEAP_VALIDATE
+                validateBitmapSlotKind(this, hbase, hres, c->values[i], kib, obj, hdr->tag, "Custom", i);
+#endif
+                evacuateUnboxable(c->values[i], kib, oldgen, promoted_objects);
             }
             break;
         }
         case Tag_Record: {
             Record *r = static_cast<Record *>(obj);
             for (u32 i = 0; i < hdr->size && i < 32; i++) {
-                evacuateUnboxable(r->values[i], Elm::fieldKind(r->unboxed, i) == 0, oldgen, promoted_objects);
+                bool kib = Elm::fieldKind(r->unboxed, i) == 0;
+#if ECO_HEAP_VALIDATE
+                validateBitmapSlotKind(this, hbase, hres, r->values[i], kib, obj, hdr->tag, "Record", i);
+#endif
+                evacuateUnboxable(r->values[i], kib, oldgen, promoted_objects);
             }
             break;
         }
@@ -1363,6 +1497,9 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
             Closure *cl = static_cast<Closure *>(obj);
             for (u32 i = 0; i < hdr->size; i++) {
                 bool is_boxed = Elm::fieldKind(cl->unboxed, i) == 0;
+#if ECO_HEAP_VALIDATE
+                validateBitmapSlotKind(this, hbase, hres, cl->values[i], is_boxed, obj, hdr->tag, "Closure", i);
+#endif
 #if ECO_GC_DEBUG
                 if (!is_boxed) {
                     // Warn if a "unboxed" slot has a value that looks like a nursery HPointer
@@ -1389,6 +1526,10 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
 
         case Tag_Cons: {
             Cons *c = static_cast<Cons *>(obj);
+            bool head_boxed = Elm::tupleFieldKind(hdr->unboxed, 0) == 0;
+#if ECO_HEAP_VALIDATE
+            validateBitmapSlotKind(this, hbase, hres, c->head, head_boxed, obj, hdr->tag, "Cons", 0);
+#endif
 
             if (config_->use_hybrid_dfs) {
                 // Two-pass list copying for optimal locality:
@@ -1396,7 +1537,7 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
                 // Pass 2: Copy heads (only if needed)
 
                 // First evacuate this cell's head
-                evacuateUnboxable(c->head, Elm::tupleFieldKind(hdr->unboxed, 0) == 0, oldgen, promoted_objects);
+                evacuateUnboxable(c->head, head_boxed, oldgen, promoted_objects);
 
                 // Then copy the tail spine if it's in from-space
                 if (c->tail.constant == 0) {
@@ -1416,7 +1557,7 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
                 // If tail is Nil constant, nothing to do
             } else {
                 // Standard BFS: evacuate head and tail normally
-                evacuateUnboxable(c->head, Elm::tupleFieldKind(hdr->unboxed, 0) == 0, oldgen, promoted_objects);
+                evacuateUnboxable(c->head, head_boxed, oldgen, promoted_objects);
                 evacuate(c->tail, oldgen, promoted_objects);
             }
             break;
@@ -1448,7 +1589,7 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
         case Tag_Array: {
             ElmArray *arr = static_cast<ElmArray *>(obj);
             bool is_boxed = (arr->header.unboxed & 0x3) == 0;
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
             // Kind-mismatch tripwire: if the array claims unboxed but its
             // element bit-patterns decode to in-from-space-allocated
             // addresses (real live objects we're about to evacuate), the
@@ -1458,24 +1599,31 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
             // GC swap. Trip immediately so the GC's caller-frame backtrace
             // names the mutator path that mis-tagged this array.
             if (!is_boxed) {
-                char* heap_base = Allocator::instance().getHeapBase();
+                char* hbase = Allocator::instance().getHeapBase();
+                uintptr_t hres = Allocator::instance().getHeapReserved();
                 for (u32 i = 0; i < arr->length; i++) {
                     HPointer hp = arr->elements[i].p;
                     if (hp.constant != 0 || hp.ptr == 0) continue;
                     uintptr_t byte_offset =
                         static_cast<uintptr_t>(hp.ptr) << 3;
-                    void* tgt = heap_base + byte_offset;
-                    if (isInFromSpaceAllocatedRegion(tgt)) {
-                        fprintf(stderr,
-                            "[gc-debug] ARRAY KIND-MISMATCH at arr=%p "
-                            "elements[%u]: header.unboxed=%u (claims "
-                            "unboxed) but element bits decode to a live "
-                            "from-space target %p — element will not be "
-                            "forwarded.\n",
-                            (void*)arr, i,
-                            (unsigned)arr->header.unboxed, tgt);
-                        std::abort();
-                    }
+                    if (byte_offset >= hres) continue;
+                    void* tgt = hbase + byte_offset;
+                    if (!isInFromSpaceAllocatedRegion(tgt)) continue;
+                    // Target-header sanity check (see validateBitmapSlotKind).
+                    Header* tgt_hdr = static_cast<Header*>(tgt);
+                    if (tgt_hdr->tag <= Tag_Char) continue;
+                    if (tgt_hdr->tag > Tag_Forward) continue;
+                    if (tgt_hdr->size == 0 || tgt_hdr->size > 0x10000) continue;
+                    fprintf(stderr,
+                        "[gc-debug] ARRAY KIND-MISMATCH at arr=%p "
+                        "elements[%u]: header.unboxed=%u (claims "
+                        "unboxed) but element bits decode to a live "
+                        "from-space target %p (tgt tag=%u size=%u) — "
+                        "element will not be forwarded.\n",
+                        (void*)arr, i,
+                        (unsigned)arr->header.unboxed, tgt,
+                        (unsigned)tgt_hdr->tag, (unsigned)tgt_hdr->size);
+                    std::abort();
                 }
             }
 #endif
@@ -1726,7 +1874,7 @@ void NurserySpace::clearToSpaceFreeRegion() {
     }
 }
 
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
 // Stale-pointer diagnostic aid: fill the just-evacuated from-space's
 // allocated region with a recognisable poison byte so that any stale
 // HPointer the mutator still holds either:
@@ -1744,7 +1892,7 @@ void NurserySpace::clearToSpaceFreeRegion() {
 //
 // Cost: O(bytes used by the previous mutator phase) per minor GC. Run
 // only on the from-space *allocated* prefix, not the entire nursery.
-// Compiled in only under ECO_GC_DEBUG — see HeapHelpers.hpp for why.
+// Compiled in only under ECO_HEAP_VALIDATE — see HeapHelpers.hpp for why.
 void NurserySpace::poisonOldFromSpaceUsedRegion() {
     constexpr uint8_t kPoisonByte = 0xDD;
     std::vector<char*>& from_blocks = from_is_low_ ? low_blocks_ : high_blocks_;
@@ -1762,59 +1910,152 @@ void NurserySpace::poisonOldFromSpaceUsedRegion() {
 }
 
 // ============================================================================
-// Stale nursery pointer detection (debug-only)
+// Class 3 — From-space pre-evacuation walk
 // ============================================================================
+//
+// Walks every header in from-space's allocated prefix at the start of
+// minorGC. For each cell, asserts:
+//   - tag <= Tag_Forward
+//   - obj + getObjectSize(obj) does not overshoot the block-allocated end
+// Catches mutator-side header corruption that would otherwise propagate
+// into to-space via memcpy in evacuate.
+
+void NurserySpace::preEvacuationFromSpaceWalk() {
+    // Restricted to the current from-space block only: prior ("completed")
+    // blocks may have tail gaps left by the allocator's slow-path
+    // transition (alloc_ptr_ < alloc_end_ when an allocation overshoots
+    // alloc_end_). There's no block_end_of_objects_-style tracking for
+    // from-space, so we can't safely linear-walk those tails. The current
+    // block ends at alloc_ptr_, so it's safe to walk.
+    std::vector<char*>& from_blocks = from_is_low_ ? low_blocks_ : high_blocks_;
+    if (from_blocks.empty() || current_from_idx_ >= from_blocks.size()) return;
+
+    char* block_start = from_blocks[current_from_idx_];
+    char* end = alloc_ptr_;
+    char* scan = block_start;
+    while (scan < end) {
+        Header* h = getHeader(scan);
+        if (h->tag > Tag_Forward) {
+            std::fprintf(stderr,
+                "[heap-validate] from-space pre-walk: invalid tag %u at "
+                "obj=%p current_block in [%p,%p), header_raw=0x%016lx\n",
+                (unsigned)h->tag, (void*)scan,
+                (void*)block_start, (void*)end,
+                (unsigned long)*(uint64_t*)scan);
+            std::fflush(stderr);
+            std::abort();
+        }
+        size_t sz = getObjectSize(scan);
+        if (sz == 0 || scan + sz > end) {
+            std::fprintf(stderr,
+                "[heap-validate] from-space pre-walk: bogus object size "
+                "%zu at obj=%p tag=%u current_block in [%p,%p)\n",
+                sz, (void*)scan, (unsigned)h->tag,
+                (void*)block_start, (void*)end);
+            std::fflush(stderr);
+            std::abort();
+        }
+        scan += sz;
+    }
+}
+
+// ============================================================================
+// Class 3 — Block-end-of-objects post-condition audit
+// ============================================================================
+//
+// After evacuation, the Cheney scanner relies on `block_end_of_objects_[i]`
+// to know where to stop scanning each "completed" to-space block. Run a
+// fresh linear walk and assert the recorded value matches.
+
+void NurserySpace::verifyToSpaceBlockEndOfObjects() {
+    std::vector<char*>& to_blocks = from_is_low_ ? high_blocks_ : low_blocks_;
+    if (to_blocks.empty()) return;
+
+    for (size_t i = 0; i < current_to_idx_ && i < to_blocks.size(); ++i) {
+        char* block_start = to_blocks[i];
+        char* recorded    = block_end_of_objects_[i];
+        char* scan = block_start;
+        char* last_end = block_start;
+        while (scan < recorded) {
+            Header* h = getHeader(scan);
+            if (h->tag > Tag_Forward) {
+                std::fprintf(stderr,
+                    "[heap-validate] to-space block[%zu] post-walk: invalid "
+                    "tag %u at obj=%p\n",
+                    i, (unsigned)h->tag, (void*)scan);
+                std::fflush(stderr);
+                std::abort();
+            }
+            size_t sz = getObjectSize(scan);
+            if (sz == 0) std::abort();
+            last_end = scan + sz;
+            scan = last_end;
+        }
+        if (last_end != recorded) {
+            std::fprintf(stderr,
+                "[heap-validate] to-space block[%zu] end-of-objects "
+                "mismatch: recorded=%p actual=%p\n",
+                i, (void*)recorded, (void*)last_end);
+            std::fflush(stderr);
+            std::abort();
+        }
+    }
+}
+
+// ============================================================================
+// Stale nursery pointer detection (validator-only)
+// ============================================================================
+
+// Common O(log N) lookup over a sorted block list. Returns the index of the
+// block containing `p`, or SIZE_MAX if `p` falls outside every block (i.e.
+// in an inter-block gap or beyond the highest block). `from_blocks_` and
+// `high_blocks_` are kept sorted by initialize()'s std::sort.
+static inline size_t findBlockContaining(const std::vector<char*>& blocks,
+                                          char* p, size_t block_size) {
+    if (blocks.empty()) return SIZE_MAX;
+    // upper_bound returns first block_start > p.
+    auto it = std::upper_bound(blocks.begin(), blocks.end(), p);
+    if (it == blocks.begin()) return SIZE_MAX;
+    --it;
+    size_t i = static_cast<size_t>(it - blocks.begin());
+    char* block_start = blocks[i];
+    if (p >= block_start + block_size) return SIZE_MAX;  // inter-block gap
+    return i;
+}
 
 bool NurserySpace::isInFromSpaceAllocatedRegion(void* ptr) const {
     char* p = static_cast<char*>(ptr);
-
     const std::vector<char*>& from_blocks = from_is_low_ ? low_blocks_ : high_blocks_;
-    if (from_blocks.empty()) return false;
 
-    for (size_t i = 0; i < from_blocks.size(); ++i) {
-        char* block_start = from_blocks[i];
-        char* block_end   = block_start + block_size_;
-
-        if (p < block_start || p >= block_end)
-            continue;
-
-        if (i < current_from_idx_)
-            return true;  // Fully filled earlier block.
-
-        if (i > current_from_idx_)
-            return false; // Block beyond the current allocation block.
-
-        // Current block: only [block_start, alloc_ptr_) is allocated.
-        return p < alloc_ptr_;
+    // Hot-path fast check: most mutator pointers point at recently
+    // allocated objects in the *current* from-space block. Cache-friendly
+    // — single comparison resolves the common case before any scan.
+    if (current_from_idx_ < from_blocks.size()) {
+        char* cur_start = from_blocks[current_from_idx_];
+        if (p >= cur_start && p < alloc_ptr_) return true;
     }
 
-    return false;
+    size_t i = findBlockContaining(from_blocks, p, block_size_);
+    if (i == SIZE_MAX) return false;
+    if (i < current_from_idx_) return true;     // Fully filled earlier block.
+    if (i > current_from_idx_) return false;    // Block past current alloc.
+    return p < alloc_ptr_;                      // Current block: bump bound.
 }
 
 bool NurserySpace::isInToSpaceAllocatedRegion(void* ptr) const {
     char* p = static_cast<char*>(ptr);
-
     const std::vector<char*>& to_blocks = from_is_low_ ? high_blocks_ : low_blocks_;
-    if (to_blocks.empty()) return false;
 
-    for (size_t i = 0; i < to_blocks.size(); ++i) {
-        char* block_start = to_blocks[i];
-        char* block_end   = block_start + block_size_;
-
-        if (p < block_start || p >= block_end)
-            continue;
-
-        if (i < current_to_idx_)
-            return true;  // Fully filled earlier block.
-
-        if (i > current_to_idx_)
-            return false; // Block beyond the current copy block.
-
-        // Current block: only [block_start, copy_ptr_) is used.
-        return p < copy_ptr_;
+    if (current_to_idx_ < to_blocks.size()) {
+        char* cur_start = to_blocks[current_to_idx_];
+        if (p >= cur_start && p < copy_ptr_) return true;
     }
 
-    return false;
+    size_t i = findBlockContaining(to_blocks, p, block_size_);
+    if (i == SIZE_MAX) return false;
+    if (i < current_to_idx_) return true;
+    if (i > current_to_idx_) return false;
+    return p < copy_ptr_;
 }
 
 void NurserySpace::debugAssertValidNurseryPointer(void* ptr) const {
@@ -1875,10 +2116,8 @@ void NurserySpace::debugAssertValidNurseryPointer(void* ptr) const {
         int n = backtrace(bt, 40);
         backtrace_symbols_fd(bt, n, fileno(stderr));
 
-#if ECO_GC_DEBUG
         // Scan parent tracking: if we crashed during scanObject, show
-        // which heap object was being scanned. Only available under
-        // ECO_GC_DEBUG (g_scan_parent is debug-only).
+        // which heap object was being scanned.
         if (g_scan_parent) {
             std::fprintf(stderr, "  SCAN PARENT: obj=%p tag=%d size=%u\n",
                          g_scan_parent, g_scan_tag, (unsigned)g_scan_size);
@@ -1887,10 +2126,9 @@ void NurserySpace::debugAssertValidNurseryPointer(void* ptr) const {
                 std::fprintf(stderr, "  parent[%d] = 0x%016lx\n", x, pw[x]);
             }
         }
-#endif
     }
     assert(ok && "HPointer into nursery free region (stale pointer into unallocated space)");
 }
-#endif // ECO_GC_DEBUG
+#endif // ECO_HEAP_VALIDATE
 
 } // namespace Elm

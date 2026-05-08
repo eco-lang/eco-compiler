@@ -31,6 +31,20 @@ if(ECO_LOWERING_VALIDATION)
     add_compile_definitions(ECO_LOWERING_VALIDATION=1)
 endif()
 
+# Heap-validator switch. Independent of ECO_GC_DEBUG and
+# ECO_LOWERING_VALIDATION. Enables the always-on stale-HPointer detection
+# (write/read/arg-side hooks, free-region poisoning), the per-container
+# bitmap-mismatch tripwires, the post-GC heap-integrity walker, the
+# from-space pre-evacuation walk, the forward-chain-depth assert, and the
+# old-gen / BBoP invariant audits. Off by default — these are hot-path
+# checks. Turn on for diagnostic runs (heap-profile, stress).
+option(ECO_HEAP_VALIDATE
+       "Enable heap corruption detectors at every read/write/GC-walk site (slow)"
+       OFF)
+if(ECO_HEAP_VALIDATE)
+    add_compile_definitions(ECO_HEAP_VALIDATE=1)
+endif()
+
 add_executable(ecor
         runtime/src/main.cpp
         runtime/src/allocator/RootSet.cpp

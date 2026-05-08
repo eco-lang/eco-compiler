@@ -55,11 +55,18 @@ HPointer initialize(u32 size, u32 offset, InitFunc func) {
 HPointer initializeFromList(u32 max, HPointer list) {
     auto& allocator = Allocator::instance();
 
-    HPointer arr = alloc::allocArray(max);
+    // `list` and the freshly-allocated `arr` must both be rooted across
+    // every alloc-capable call (allocArray, the final tuple2). A by-value
+    // HPointer parameter is unrooted; a minor GC during allocArray would
+    // leave `list` pointing at post-swap to-space (caught by the
+    // validator's STALE hptr trip in the resolve hot path).
+    HPointer current = list;
+    HPointer arr = alloc::listNil();  // placeholder; assigned below
+    Elm::StackRootGuard roots(&current, &arr);
+
+    arr = alloc::allocArray(max);
 
     u32 count = 0;
-    HPointer current = list;
-
     while (count < max && !alloc::isNil(current)) {
         void* cell = allocator.resolve(current);
         if (!cell) break;

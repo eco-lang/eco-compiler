@@ -55,6 +55,7 @@
 #include "Heap.hpp"
 #include "RootSet.hpp"
 #include "RuntimeExports.h"
+#include <algorithm>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -257,7 +258,7 @@ inline bool isEmbeddedConstant(HPointer ptr) {
 }
 
 /**
- * Per-write stale-pointer tripwire (ECO_GC_DEBUG-gated).
+ * Per-write stale-pointer tripwire (ECO_HEAP_VALIDATE-gated).
  *
  * Validates an HPointer-encoded value at the moment it's about to be written
  * into a heap field. Routes through `Allocator::validateInNurserySafe`,
@@ -265,13 +266,13 @@ inline bool isEmbeddedConstant(HPointer ptr) {
  * aborting if the pointer resolves into a free (post-swap) region — i.e.
  * the "stale by-value HPointer across an alloc" pattern.
  *
- * Compiles to a no-op outside debug builds: the call sites are spread across
- * every heap-write hot path (eco_store_field, closureCapture, arrayPush,
- * etc.), so an always-on body materially slows the runtime. Re-enable the
- * checks by configuring with -DECO_GC_DEBUG=ON.
+ * Compiles to a no-op outside validator builds: the call sites are spread
+ * across every heap-write hot path (eco_store_field, closureCapture,
+ * arrayPush, etc.), so an always-on body materially slows the runtime.
+ * Enable via -DECO_HEAP_VALIDATE=ON for heap-profile / stress runs.
  */
 inline void validateNurseryHPtr(HPointer hp) {
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     Allocator::instance().validateInNurserySafe(hp);
 #else
     (void)hp;
@@ -281,7 +282,7 @@ inline void validateNurseryHPtr(HPointer hp) {
 /// Same as validateNurseryHPtr, taking a uint64_t-encoded HPointer (the form
 /// used by closure args, eco_store_field, etc.).
 inline void validateNurseryHPtrBits(uint64_t bits) {
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     HPointer hp;
     std::memcpy(&hp, &bits, sizeof(hp));
     validateNurseryHPtr(hp);
@@ -955,7 +956,7 @@ inline HPointer arrayFromPointers(const std::vector<HPointer>& elements) {
     for (size_t i = 0; i < rooted.size(); ++i) {
         arr->elements[i].p = rooted[i];
     }
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     // All-boxed: validate every element write.
     for (size_t i = 0; i < rooted.size(); ++i)
         validateNurseryHPtr(arr->elements[i].p);
@@ -1143,6 +1144,27 @@ inline bool closureCapture(void* closure, Unboxable value, ParamKind kind) {
     }
 
     cl->n_values++;
+
+#if ECO_HEAP_VALIDATE
+    // Class 2 — closure capture bitmap consistency: the just-set bit at
+    // position `idx` must match `kind`. Catches mis-encoded bitmaps at
+    // the construction site.
+    if (idx < 26) {
+        u64 stored = (cl->unboxed >> (idx * 2)) & 0x3ULL;
+        u64 expected = (kind == PK_Boxed) ? 0ULL : static_cast<u64>(kind);
+        if (stored != expected) {
+            std::fprintf(stderr,
+                "[heap-validate] closureCapture bitmap mismatch: closure=%p "
+                "idx=%zu expected_kind=%llu stored_kind=%llu unboxed=0x%llx\n",
+                closure, idx,
+                (unsigned long long)expected, (unsigned long long)stored,
+                (unsigned long long)cl->unboxed);
+            std::fflush(stderr);
+            std::abort();
+        }
+    }
+#endif
+
     return true;
 }
 

@@ -45,6 +45,14 @@ public:
     GCStats& getStats() { return stats; }
 #endif
 
+#if ECO_HEAP_VALIDATE
+    // Public when ECO_HEAP_VALIDATE is on so validator helpers in the .cpp
+    // (e.g. validateBitmapSlotKind, the kind-mismatch tripwire) can call
+    // these from free-function context. Behaviour is unchanged otherwise.
+    bool isInFromSpaceAllocatedRegion(void* ptr) const;
+    bool isInToSpaceAllocatedRegion(void* ptr) const;
+#endif
+
 private:
     const HeapConfig* config_;      // Heap configuration parameters.
     Allocator* allocator_;          // Back-reference for requesting new blocks.
@@ -112,7 +120,7 @@ private:
 
     ThreadLocalHeap* thread_heap_;    // Owner ThreadLocalHeap (for multi-threaded mode).
 
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     // True only during minorGC execution. Consumed by the stale-pointer
     // detector (`debugAssertValidNurseryPointer`) to decide whether the
     // legal regions are {from-allocated} only or also include
@@ -144,20 +152,33 @@ private:
     // Unconditional (not debug-gated) — this is a safety net.
     void clearToSpaceFreeRegion();
 
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     // Stale-pointer diagnostic aid: writes a poison byte over the allocated
     // prefix of the just-evacuated from-space so that stale HPointers held
     // by the mutator land on obviously-bogus data after the swap. See impl
     // for the rationale and the chosen byte's properties.
     void poisonOldFromSpaceUsedRegion();
 
-    // Stale-pointer tripwire (debug-only; see Allocator::resolve and the
+    // From-space pre-evacuation walk (Class 3). Walks every header in the
+    // allocated prefix of from-space at the start of minorGC and asserts
+    // tag <= Tag_Forward and size sane. Catches mutator-side header
+    // corruption before it propagates into to-space via memcpy.
+    void preEvacuationFromSpaceWalk();
+
+    // block_end_of_objects_ post-condition (Class 3). At end of minorGC,
+    // walk every "completed" to-space block and verify the recorded
+    // end-of-objects matches a fresh linear scan. Detects tail-gap
+    // tracking bugs that would otherwise only manifest as ghost-header
+    // reads in the next cycle.
+    void verifyToSpaceBlockEndOfObjects();
+
+    // Stale-pointer tripwire (validator-only; see Allocator::resolve and the
     // per-arg validation in eco_apply_closure / eco_apply_segmentation_unknown
     // / eco_closure_call_saturated). Reports + aborts when an HPointer
     // resolves to a free region of the nursery (i.e. post-swap to-space-free,
     // i.e. a stale pre-GC pointer that was never evacuated).
-    bool isInFromSpaceAllocatedRegion(void* ptr) const;
-    bool isInToSpaceAllocatedRegion(void* ptr) const;
+    // (isInFromSpaceAllocatedRegion / isInToSpaceAllocatedRegion declared
+    // public above for free-helper access in the .cpp.)
     void debugAssertValidNurseryPointer(void* ptr) const;
 #endif
 

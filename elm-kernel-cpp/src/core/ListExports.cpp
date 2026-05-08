@@ -260,7 +260,7 @@ HPtr Elm_Kernel_List_toArray(HPtr list) {
     elmArr->length = static_cast<u32>(rooted.size());
     elmArr->header.unboxed = 0;  // Elements are boxed
 
-#if ECO_GC_DEBUG
+#if ECO_HEAP_VALIDATE
     for (size_t i = 0; i < rooted.size(); i++)
         Elm::alloc::validateNurseryHPtr(elmArr->elements[i].p);
 #endif
