@@ -1059,11 +1059,6 @@ extern "C" void eco_store_field_f64(HPtr obj_hptr, uint32_t index, double value)
 
 namespace {
 
-// Build (1<<count)-1, safely handling count==64 (avoids UB).
-inline uint64_t hptr_mask_all(size_t count) {
-    return (count >= 64) ? ~uint64_t{0} : ((uint64_t{1} << count) - 1);
-}
-
 // Phase E shim support: a static cache of all-`PK_Boxed` `EvalParamLayout`s
 // indexed by num_params (0..63 — the closure header's max_values cap).
 // `eco_apply_closure` uses these to forward HPointer-encoded args (legacy

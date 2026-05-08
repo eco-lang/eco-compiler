@@ -309,13 +309,12 @@ def ensure_binaries_fresh(skip: bool) -> dict:
     """Bring all build artefacts up to date in dependency order:
 
       1. Rebuild eco-boot-native if any runtime C++ source is newer.
-      2. Relink eco-compiler if eco-boot-native or runtime sources moved.
-      3. Rebuild eco-compiler.mlir (Stage 5) if any compiler/src .elm
-         source is newer than it.
-      4. If Stage 5 ran, relink eco-compiler against the fresh .mlir.
-
-    Steps 1-2 (the C++ side) always run before step 3 so that, if a Stage 5
-    rebuild is also needed, it happens against an up-to-date toolchain."""
+      2. Rebuild eco-compiler.mlir (Stage 5) if any compiler/src .elm
+         source is newer than it. Done before relink so a stale .mlir
+         (e.g. one referencing kernel symbols that the runtime has since
+         retired) can't make the relink fail.
+      3. Relink eco-compiler if eco-boot-native, runtime sources, or the
+         .mlir have moved."""
     outcome = {"checked": True, "rebuilt_eco_boot_native": False,
                "relinked_eco_compiler": False,
                "rebuilt_compiler_mlir": False, "skipped": False}
@@ -336,13 +335,6 @@ def ensure_binaries_fresh(skip: bool) -> dict:
         outcome["rebuilt_eco_boot_native"] = True
         boot_mtime = ECO_BOOT_NATIVE.stat().st_mtime
 
-    compiler_mtime = ECO_COMPILER.stat().st_mtime if ECO_COMPILER.exists() else 0.0
-    if (not ECO_COMPILER.exists()
-            or compiler_mtime < boot_mtime
-            or compiler_mtime < src_mtime):
-        _relink_eco_compiler()
-        outcome["relinked_eco_compiler"] = True
-
     elm_mtime = _newest_mtime_under(COMPILER_SRC, (".elm",))
     mlir_mtime = (ECO_COMPILER_MLIR.stat().st_mtime
                   if ECO_COMPILER_MLIR.exists() else 0.0)
@@ -350,11 +342,14 @@ def ensure_binaries_fresh(skip: bool) -> dict:
         _rebuild_compiler_mlir()
         outcome["rebuilt_compiler_mlir"] = True
         mlir_mtime = ECO_COMPILER_MLIR.stat().st_mtime
-        compiler_mtime = (ECO_COMPILER.stat().st_mtime
-                          if ECO_COMPILER.exists() else 0.0)
-        if not ECO_COMPILER.exists() or compiler_mtime < mlir_mtime:
-            _relink_eco_compiler()
-            outcome["relinked_eco_compiler"] = True
+
+    compiler_mtime = ECO_COMPILER.stat().st_mtime if ECO_COMPILER.exists() else 0.0
+    if (not ECO_COMPILER.exists()
+            or compiler_mtime < boot_mtime
+            or compiler_mtime < src_mtime
+            or compiler_mtime < mlir_mtime):
+        _relink_eco_compiler()
+        outcome["relinked_eco_compiler"] = True
     return outcome
 
 
