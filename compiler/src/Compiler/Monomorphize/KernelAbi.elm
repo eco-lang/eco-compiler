@@ -1,7 +1,7 @@
 module Compiler.Monomorphize.KernelAbi exposing
     ( KernelAbiMode(..), deriveKernelAbiMode
-    , canTypeToMonoType_preserveVars, canTypeToMonoType_numberBoxed
-    , concreteTypeAwareKernels, comparePair
+    , canTypeToMonoType_preserveVars
+    , suffixSelectingKernels, comparePair
     , freeVarIds
     , KernelBackendAbiPolicy(..), kernelBackendAbiPolicy
     , KernelInstanceKey, KernelInstanceAbi
@@ -14,16 +14,13 @@ This module implements the algorithm that determines the MonoType used for
 kernel function ABIs. The key insight is that polymorphic kernels must use
 a consistent ABI (all `eco.value`) regardless of call-site type instantiation.
 
-Three cases:
+Two cases:
 
 1.  **Monomorphic kernels** (e.g., `Basics.modBy : Int -> Int -> Int`):
     ABI matches the concrete types. Use call-site substitution.
 
 2.  **Polymorphic kernels** (e.g., `List.cons : a -> List a -> List a`):
     Type variables become `MVar _ CEcoValue`, always boxed.
-
-3.  **Number-boxed kernels** (e.g., `Basics.add : number -> number -> number`):
-    `CNumber` variables treated as `CEcoValue` for ABI purposes.
 
 
 # ABI Mode Selection
@@ -33,12 +30,12 @@ Three cases:
 
 # Type Converters
 
-@docs canTypeToMonoType_preserveVars, canTypeToMonoType_numberBoxed
+@docs canTypeToMonoType_preserveVars
 
 
-# Concrete-Type-Aware Kernels
+# Suffix-Selecting Kernels
 
-@docs concreteTypeAwareKernels, comparePair
+@docs suffixSelectingKernels, comparePair
 
 
 # Free Variable Extraction (for AssignMVarIds, operates on Can.Type Name)
@@ -67,7 +64,7 @@ import Compiler.AST.TypeIds exposing (MVarId)
 import Compiler.Data.Id as Id
 import Compiler.Data.Name exposing (Name)
 import Compiler.Generate.MLIR.Types as MlirTypes
-import Compiler.Monomorphize.State as State exposing (MVarEnv)
+import Compiler.Monomorphize.State exposing (MVarEnv)
 import Data.Set as EverySet exposing (EverySet)
 import Dict
 import Mlir.Mlir exposing (MlirType)
@@ -86,13 +83,11 @@ import Utils.Crash exposing (crash)
 
   - `UseSubstitution`: Monomorphic kernel - apply call-site substitution normally
   - `PreserveVars`: Polymorphic kernel - preserve all type vars as `CEcoValue`
-  - `NumberBoxed`: Number-boxed kernel - treat `CNumber` vars as `CEcoValue`
 
 -}
 type KernelAbiMode
     = UseSubstitution
     | PreserveVars
-    | NumberBoxed
 
 
 {-| Determine which ABI mode to use for a kernel function.
@@ -107,7 +102,7 @@ Returns the appropriate `KernelAbiMode`.
 
 -}
 deriveKernelAbiMode : ( String, String ) -> Can.Type MVarId -> MVarEnv -> KernelAbiMode
-deriveKernelAbiMode ( home, name ) canFuncType mvarEnv =
+deriveKernelAbiMode ( home, _ ) canFuncType _ =
     -- Debug kernels are always polymorphic
     if EverySet.member List.singleton home alwaysPolymorphicModules then
         PreserveVars
@@ -116,21 +111,10 @@ deriveKernelAbiMode ( home, name ) canFuncType mvarEnv =
         let
             varIds =
                 freeVarIds canFuncType []
-
-            hasNumberVars =
-                List.any
-                    (\mvarId ->
-                        State.isNumberVar mvarId mvarEnv
-                    )
-                    varIds
         in
         if List.isEmpty varIds then
             -- Case A: Monomorphic kernel - use substitution
             UseSubstitution
-
-        else if hasNumberVars && EverySet.member comparePair ( home, name ) numberBoxedKernels then
-            -- Case C: Number-boxed kernel
-            NumberBoxed
 
         else
             -- Case B: Polymorphic kernel
@@ -143,46 +127,39 @@ deriveKernelAbiMode ( home, name ) canFuncType mvarEnv =
 -- ============================================================================
 
 
-{-| Kernels whose C ABI must box numeric type variables as eco.value.
+{-| Kernels registered for **suffix selection** under per-instance kernel
+ABIs. Membership is the registration mechanism: when a kernel is in this
+set AND its call-site type is fully monomorphic,
+`deriveKernelAbiType` keeps the concrete MonoType (rather than erasing
+to `CEcoValue`-typed type variables via `canTypeToMonoType_preserveVars`).
+The concrete type then flows into `kernelInstanceSymbol`, which pattern-
+matches on `[MInt, MInt]` / `[MFloat, MFloat]` / `[MChar, MChar]` (etc.)
+and picks the `_Int` / `_Float` / `_Char` C symbol variant.
 
-These are number-polymorphic kernels that go through the boxed C ABI
-rather than intrinsic unboxed operations. The intrinsic path in MLIR.elm
-handles the fast unboxed Int/Float cases; this ABI is the fallback.
-
--}
-numberBoxedKernels : EverySet (List String) ( String, String )
-numberBoxedKernels =
-    -- Empty after Phase E.2: the four `Basics` arithmetic kernels moved
-    -- to `concreteTypeAwareKernels` once their `_Int`/`_Float` per-instance
-    -- variants landed. Phase F removes the `NumberBoxed` mode entirely.
-    EverySet.empty
-
-
-{-| Kernels whose call-site `MonoType` should retain its *concrete*
-monomorphic shape when fully resolved, rather than being erased to
-`CEcoValue`-typed type variables by `canTypeToMonoType_preserveVars`.
+This set is **load-bearing**, not a transitional shim. Without
+`canTypeToMonoType_preserveVars` erases primitive type variables to
+`CEcoValue` before the suffix selector sees them, and lookups like
+`("List","cons",[MInt,_])` no longer match.
 
 Two distinct downstream consumers benefit:
 
   - **Element-aware container kernels** (e.g. `List.cons`): the concrete
     MonoType drives Elm-level wrapper generation — different
-    `List_cons_$_N` closures per element type — even though the underlying
-    C++ kernel ABI is still all-boxed.
+    `List_cons_$_N` closures per element type.
 
-  - **Primitive-specialized kernels** (e.g. `Utils.compare`, Phase B of the
-    per-instance kernel ABI rollout): the concrete MonoType lets
-    `deriveKernelInstanceAbi` pattern-match on `[MInt, MInt]` /
-    `[MFloat, MFloat]` / `[MChar, MChar]` and select the `_Int` / `_Float` /
-    `_Char` C++ symbol variants. Phase C extends this to the rest of the
-    AllBoxed kernels with primitive-capable parameters.
+  - **Primitive-specialized kernels** (e.g. `Utils.compare`,
+    `Basics.add`): the concrete MonoType lets `kernelInstanceSymbol`
+    select the per-instance C symbol variant.
 
-For polymorphic call sites (e.g. `compare "a" "b"` reaching `Utils.compare`
-with `[MString, MString]`), the kernel ABI falls back to the all-boxed
-`KernelBackendAbiPolicy.AllBoxed` path via the policy table.
+For polymorphic call sites (e.g. `compare "a" "b"` reaching
+`Utils.compare` with `[MString, MString]`), the suffix selector falls
+through to the boxed root symbol.
+
+(Phase F renamed this from `concreteTypeAwareKernels`.)
 
 -}
-concreteTypeAwareKernels : EverySet (List String) ( String, String )
-concreteTypeAwareKernels =
+suffixSelectingKernels : EverySet (List String) ( String, String )
+suffixSelectingKernels =
     EverySet.fromList comparePair
         [ -- Element-aware wrapper specialization
           ( "List", "cons" )
@@ -221,6 +198,13 @@ concreteTypeAwareKernels =
         , ( "Basics", "sub" )
         , ( "Basics", "mul" )
         , ( "Basics", "pow" )
+
+        -- Phase F step 1: String.fromNumber moved here from
+        -- numberBoxedKernels. _Int / _Float per-instance variants exist
+        -- in StringExports.cpp and the kernelInstanceSymbol selector
+        -- picks them when the argument type is concrete; the boxed root
+        -- handles any genuinely polymorphic uses.
+        , ( "String", "fromNumber" )
         ]
 
 
@@ -394,74 +378,6 @@ canTypeToMonoType_preserveVars env canType =
             canTypeToMonoType_preserveVars env inner
 
 
-{-| Convert canonical type to MonoType, treating CNumber vars as CEcoValue.
-
-Used for number-boxed kernels (add, sub, mul, pow) where the C ABI is boxed
-but the result type should still resolve to MInt or MFloat.
-
--}
-canTypeToMonoType_numberBoxed : MVarEnv -> Can.Type MVarId -> ( Mono.MonoType, MVarEnv )
-canTypeToMonoType_numberBoxed env canType =
-    case canType of
-        Can.TVar mvarId ->
-            -- Treat ALL vars as CEcoValue for ABI purposes
-            ( Mono.MVar mvarId Mono.CEcoValue, env )
-
-        Can.TLambda from to ->
-            let
-                ( fromMono, env1 ) =
-                    canTypeToMonoType_numberBoxed env from
-
-                ( toMono, env2 ) =
-                    canTypeToMonoType_numberBoxed env1 to
-            in
-            ( Mono.MFunction [ fromMono ] toMono, env2 )
-
-        Can.TType canonical name args ->
-            convertTType canTypeToMonoType_numberBoxed env canonical name args
-
-        Can.TRecord fields _ ->
-            let
-                ( monoFields, env1 ) =
-                    Dict.foldl
-                        (\k (Can.FieldType _ t) ( acc, e ) ->
-                            let
-                                ( monoT, e1 ) =
-                                    canTypeToMonoType_numberBoxed e t
-                            in
-                            ( Dict.insert k monoT acc, e1 )
-                        )
-                        ( Dict.empty, env )
-                        fields
-            in
-            ( Mono.MRecord monoFields, env1 )
-
-        Can.TTuple a b rest ->
-            let
-                ( revMonoTypes, env1 ) =
-                    List.foldl
-                        (\t ( acc, e ) ->
-                            let
-                                ( monoT, e1 ) =
-                                    canTypeToMonoType_numberBoxed e t
-                            in
-                            ( monoT :: acc, e1 )
-                        )
-                        ( [], env )
-                        (a :: b :: rest)
-            in
-            ( Mono.MTuple (List.reverse revMonoTypes), env1 )
-
-        Can.TUnit ->
-            ( Mono.MUnit, env )
-
-        Can.TAlias _ _ _ (Can.Filled inner) ->
-            canTypeToMonoType_numberBoxed env inner
-
-        Can.TAlias _ _ _ (Can.Holey inner) ->
-            canTypeToMonoType_numberBoxed env inner
-
-
 {-| Helper for converting TType nodes with shared logic.
 -}
 convertTType : (MVarEnv -> Can.Type MVarId -> ( Mono.MonoType, MVarEnv )) -> MVarEnv -> IO.Canonical -> Name -> List (Can.Type MVarId) -> ( Mono.MonoType, MVarEnv )
@@ -560,78 +476,17 @@ When in doubt, use ElmDerived (safe default — preserves current behavior).
 
 -}
 kernelBackendAbiPolicy : String -> String -> KernelBackendAbiPolicy
-kernelBackendAbiPolicy home name =
-    case ( home, name ) of
-        --
-        -- Phase C: kernels that remain on the all-boxed C++ ABI because
-        -- they have no primitive-capable parameters (the audit's
-        -- "Stays AllBoxed" set, plus the polymorphic-fallback kernels).
-        --
-        -- List: kernels with no direct primitive parameter (only Lists,
-        -- closures, JsArrays) keep the boxed ABI. List.cons migrates in
-        -- Phase C and falls through to ElmDerived.
-        ( "List", "fromArray" ) ->
-            AllBoxed
-
-        ( "List", "toArray" ) ->
-            AllBoxed
-
-        ( "List", "map2" ) ->
-            AllBoxed
-
-        ( "List", "map3" ) ->
-            AllBoxed
-
-        ( "List", "map4" ) ->
-            AllBoxed
-
-        ( "List", "map5" ) ->
-            AllBoxed
-
-        ( "List", "sortBy" ) ->
-            AllBoxed
-
-        ( "List", "sortWith" ) ->
-            AllBoxed
-
-        -- Utils.append: appendable resolves to String or List _, never a primitive.
-        ( "Utils", "append" ) ->
-            AllBoxed
-
-        -- JsArray: kernels with no direct primitive parameter (closures
-        -- only, or zero-arg) stay AllBoxed. The Int-axis and element-axis
-        -- kernels migrate in Phase C and fall through to ElmDerived.
-        ( "JsArray", "empty" ) ->
-            AllBoxed
-
-        ( "JsArray", "length" ) ->
-            AllBoxed
-
-        ( "JsArray", "map" ) ->
-            AllBoxed
-
-        ( "JsArray", "foldl" ) ->
-            AllBoxed
-
-        ( "JsArray", "foldr" ) ->
-            AllBoxed
-
-        --
-        -- Phase E.2: Basics.add/sub/mul/pow now have per-instance _Int/_Float
-        -- C variants. Falling through to ElmDerived means the suffix-
-        -- selected symbol (e.g. Elm_Kernel_Basics_add_Int) is called with
-        -- primitive ABI types matching the C declaration. The polymorphic
-        -- root symbol is unreachable for concrete calls and Phase F deletes
-        -- it.
-        --
-        -- ElmDerived: ABI is derived from the call-site's monomorphized
-        -- function type via monoTypeToAbi. Used for typed C++ kernels and,
-        -- after Phase C, for migrated AllBoxed kernels that now have
-        -- per-instance primitive variants. Their boxed-root case still
-        -- works because non-primitive Mono types lower to !eco.value.
-        --
-        _ ->
-            ElmDerived
+kernelBackendAbiPolicy _ _ =
+    -- Phase F step 3 + step 5: every kernel now derives its ABI from the
+    -- call-site monomorphized type via `monoTypeToAbi`. Kernels with no
+    -- primitive-capable parameters (List.fromArray/toArray/map2-5/
+    -- sortBy/sortWith, Utils.append, JsArray.empty/length/map/foldl/
+    -- foldr) produce identical wire format under either policy, so the
+    -- explicit `AllBoxed` arms were redundant. The `Basics.add/sub/mul/
+    -- pow` arms moved to ElmDerived in Phase E.2 to match the new
+    -- per-instance C symbols. Debug.* is handled separately via
+    -- `alwaysPolymorphicModules`.
+    ElmDerived
 
 
 

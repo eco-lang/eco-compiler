@@ -221,8 +221,8 @@ static bool usesArgsArrayConvention(LLVM::LLVMFuncOp func) {
 ///     the HPointer and loading the boxed value at offset 8.
 ///   - typedNewargs=true (Phase E): primitive slots carry the raw value
 ///     directly (i64 / f64 bits / i16 zero-extended); HPointer slots are
-///     unchanged. The caller is responsible for arranging that, see the
-///     `CLOSURE_FLAG_TYPED_NEWARGS` capability bit on the closure.
+///     unchanged. Per-slot kind comes from `closure->unboxed[i]`; the
+///     evaluator extracts each slot accordingly.
 ///
 /// The result side is identical between the two conventions: primitive
 /// results are boxed via `eco_alloc_*` and returned as a `ptr` HPointer.
@@ -251,9 +251,9 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
     // The args-array convention assumes boxed HPointer slots — i.e. it is
     // already a hand-written legacy wrapper. There is no typed signature
     // to derive a typed wrapper from, so we reuse it as-is regardless of
-    // the typedNewargs flag. The caller is responsible for NOT setting
-    // CLOSURE_FLAG_TYPED_NEWARGS on closures whose evaluator resolves to
-    // an args-array-convention function (see wrapperIsTypedNewargs below).
+    // the typedNewargs flag. The caller is responsible for tagging slots
+    // as PK_Boxed in `closure->unboxed[i]` for closures whose evaluator
+    // resolves to an args-array-convention function.
     if (auto existingFunc = runtime.lookupSymbol<LLVM::LLVMFuncOp>(funcName)) {
         if (usesArgsArrayConvention(existingFunc)) {
             return existingFunc;
@@ -569,13 +569,13 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
             // No fast clone - use the function attribute directly (zero-capture or legacy)
             funcSymbol = op.getFunction();
         }
-        // Phase E: every papCreate closure uses the typed-newargs wrapper
-        // and advertises CLOSURE_FLAG_TYPED_NEWARGS. The wrapper reads each
-        // slot directly per the target's parameter type — no HPointer→
-        // primitive resolve. Caller paths that build the args buffer (JIT
-        // and the migrated kernel-cpp callers) must use REP_ABI_001's
-        // typed convention: raw primitives for Int/Float/Char, HPointers
-        // for everything else.
+        // Phase E: every papCreate closure uses the typed-newargs wrapper.
+        // The wrapper reads each slot directly per the target's parameter
+        // type — no HPointer→primitive resolve. Caller paths that build
+        // the args buffer (JIT and the migrated kernel-cpp callers) must
+        // use REP_ABI_001's typed convention: raw primitives for Int/
+        // Float/Char, HPointers for everything else. Per-slot kind comes
+        // from `closure->unboxed[i]`.
         auto wrapperFunc = getOrCreateWrapper(rewriter, module, funcSymbol, arity, loc,
                                               getTypeConverter(), runtime,
                                               /*typedNewargs=*/true);
@@ -603,10 +603,12 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
                     : op.getUnboxedBitmap();
         auto f64Ty = Float64Type::get(ctx);
 
-        uint64_t flagMask = isTyped ? Elm::ClosureFlagTypedNewargsMask : 0;
+        // Phase F: CLOSURE_FLAG_TYPED_NEWARGS retired. Dispatch reads
+        // `closure->unboxed[i]` directly; the flag was set in two places
+        // and read in zero. The reclaimed two bits expanded `unboxed`
+        // back to the documented 26-slot capacity.
         uint64_t packedValue =
-            static_cast<uint64_t>(numCaptured) | (static_cast<uint64_t>(arity) << 6) | (unboxedBitmap << 12)
-            | flagMask;
+            static_cast<uint64_t>(numCaptured) | (static_cast<uint64_t>(arity) << 6) | (unboxedBitmap << 12);
 
         auto packedConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(packedValue));
 
@@ -1162,8 +1164,8 @@ static uint64_t deriveAllParamKindsBitmap(const EcoRuntime &runtime,
 /// a real typed wrapper, or short-circuit to an existing args-array-style
 /// function. The latter happens for hand-written test fixtures whose
 /// target already has signature `(ptr) -> {ptr,i64}`; those carry the
-/// legacy boxed convention and must not be flagged with
-/// CLOSURE_FLAG_TYPED_NEWARGS.
+/// legacy boxed convention and must record their slots as PK_Boxed in
+/// `closure->unboxed[i]`.
 static bool wrapperWillBeTypedNewargs(const EcoRuntime &runtime,
                                        StringRef funcSymbol) {
     if (auto existingFunc = runtime.lookupSymbol<LLVM::LLVMFuncOp>(funcSymbol)) {

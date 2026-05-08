@@ -33,14 +33,13 @@ double Elm_Kernel_Basics_sqrt(double x);
 double Elm_Kernel_Basics_log(double x);
 // Polymorphic operations take HPointer (tagged Int or Float) and return boxed result.
 // These examine the tag at runtime to determine whether to perform Int or Float arithmetic.
-HPtr Elm_Kernel_Basics_pow(HPtr base, HPtr exp);
-HPtr Elm_Kernel_Basics_add(HPtr a, HPtr b);
-HPtr Elm_Kernel_Basics_sub(HPtr a, HPtr b);
-HPtr Elm_Kernel_Basics_mul(HPtr a, HPtr b);
-// Phase E.2 per-instance variants: Int / Float specialisations of the
-// arithmetic operators. Direct uses are intrinsic-lowered before reaching
-// these symbols; indirect uses (e.g. `List.foldl (+) 0`) capture these
-// into PAPs to avoid boxing the args.
+// Phase E.2 / Phase F: per-instance Int / Float variants for the
+// arithmetic operators. The polymorphic boxed-symbol fallbacks were
+// retired in Phase F step 7 — every concrete use takes a suffix branch
+// in `kernelInstanceSymbol` and lands here. Direct uses are
+// intrinsic-lowered upstream and never reach these symbols; indirect
+// uses (e.g. `List.foldl (+) 0`) capture them into PAPs to avoid
+// boxing the args.
 int64_t Elm_Kernel_Basics_add_Int  (int64_t a, int64_t b);
 double  Elm_Kernel_Basics_add_Float(double  a, double  b);
 int64_t Elm_Kernel_Basics_sub_Int  (int64_t a, int64_t b);

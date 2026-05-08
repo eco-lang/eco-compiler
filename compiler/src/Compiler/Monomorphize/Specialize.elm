@@ -59,7 +59,6 @@ back to the boxed ABI.
 type ProcessedArg
     = ResolvedArg Mono.MonoExpr
     | PendingAccessor A.Region Name (Can.Type MVarId)
-    | PendingKernel A.Region String String String (Can.Type MVarId)
     | PendingGlobal (TOpt.Expr MVarId) Substitution (Can.Type MVarId)
     | PendingCall (TOpt.Expr MVarId) Substitution (Can.Type MVarId)
     | LocalFunArg Name (Can.Type MVarId)
@@ -3241,31 +3240,15 @@ processCallArg subst arg ( accArgs, accTypes, st ) =
             , st
             )
 
-        TOpt.VarKernel region kernelPrefix home name kernelMeta ->
+        TOpt.VarKernel _ _ _ _ _ ->
             let
-                kernelCanType =
-                    kernelMeta.tipe
+                ( monoExpr, st1 ) =
+                    specializeExpr arg subst st
             in
-            case KernelAbi.deriveKernelAbiMode ( home, name ) kernelCanType st.ctx.mvarEnv of
-                KernelAbi.NumberBoxed ->
-                    let
-                        monoType =
-                            Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst st.ctx.mvarEnv subst kernelCanType))
-                    in
-                    ( PendingKernel region kernelPrefix home name kernelCanType :: accArgs
-                    , monoType :: accTypes
-                    , st
-                    )
-
-                _ ->
-                    let
-                        ( monoExpr, st1 ) =
-                            specializeExpr arg subst st
-                    in
-                    ( ResolvedArg monoExpr :: accArgs
-                    , Mono.typeOf monoExpr :: accTypes
-                    , st1
-                    )
+            ( ResolvedArg monoExpr :: accArgs
+            , Mono.typeOf monoExpr :: accTypes
+            , st1
+            )
 
         TOpt.VarLocal name localMeta ->
             let
@@ -3488,17 +3471,6 @@ resolveProcessedArg processedArg maybeParamType subst state =
                             savedSubst
             in
             specializeExpr savedExpr refinedSubst state
-
-        PendingKernel region kernelPrefix home name canType ->
-            -- Number-boxed kernel argument. Now that we have the call-site substitution,
-            -- we can properly specialize it. If the type is fully monomorphic (e.g., Int -> Int -> Int),
-            -- we'll get a specialized numeric type that enables intrinsics like eco.int.add.
-            -- Otherwise, we fall back to the boxed ABI.
-            let
-                kernelMonoType =
-                    deriveKernelAbiType state.ctx.mvarEnv ( home, name ) canType subst
-            in
-            ( Mono.MonoVarKernel region kernelPrefix home name kernelMonoType, state )
 
         LocalFunArg name canType ->
             -- Let-bound function passed as argument. Use the callee's parameter type
@@ -4469,50 +4441,30 @@ This is _call-site aware_:
 
   - For monomorphic uses (no remaining MVar in the instantiated function type),
     we prefer the fully specialized MonoType obtained by applying the call-site
-    substitution. This enables specializing number-polymorphic kernels like
-    Basics.add to Int/Float and using intrinsics (eco.int.add / eco.float.add).
+    substitution.
 
   - For genuinely polymorphic uses, we fall back to the KernelAbiMode-driven
     behavior:
 
         - UseSubstitution  -> applySubst
-        - PreserveVars     -> all CEcoValue (boxed) vars
-        - NumberBoxed      -> treat CNumber vars as CEcoValue (boxed)
+        - PreserveVars     -> all CEcoValue (boxed) vars (or concrete type
+          when the kernel is in `suffixSelectingKernels` and the call site
+          is fully monomorphic)
 
 -}
 deriveKernelAbiType : MVarEnv -> ( String, String ) -> Can.Type MVarId -> Substitution -> Mono.MonoType
 deriveKernelAbiType mvarEnv kernelId canFuncType callSubst =
     let
         -- Monomorphic function type at this use-site, after substitution.
-        monoAfterSubstRaw : Mono.MonoType
-        monoAfterSubstRaw =
-            Tuple.first (TypeSubst.applySubst mvarEnv callSubst canFuncType)
-
-        -- Backend policy: eagerly resolve any remaining CNumber vars to Int.
-        -- This does NOT affect MFloat - only unresolved numeric vars.
         monoAfterSubst : Mono.MonoType
         monoAfterSubst =
-            Mono.forceCNumberToInt monoAfterSubstRaw
+            Tuple.first (TypeSubst.applySubst mvarEnv callSubst canFuncType)
 
         mode : KernelAbi.KernelAbiMode
         mode =
             KernelAbi.deriveKernelAbiMode kernelId canFuncType mvarEnv
     in
     case mode of
-        KernelAbi.NumberBoxed ->
-            -- Special case: number-polymorphic kernels like Basics.add/sub/mul/pow.
-            --
-            -- If this PARTICULAR use-site has been fully specialized (e.g. Int or
-            -- Float everywhere), prefer the fully-monomorphic type. This lets
-            -- MLIR see concrete MInt/MFloat arguments for intrinsics and avoids
-            -- going through the boxed C ABI (@Elm_Kernel_Basics_add).
-            if isFullyMonomorphicType monoAfterSubst then
-                monoAfterSubst
-
-            else
-                -- Still genuinely number-polymorphic here: fall back to boxed ABI.
-                Tuple.first (KernelAbi.canTypeToMonoType_numberBoxed mvarEnv canFuncType)
-
         KernelAbi.UseSubstitution ->
             -- Monomorphic kernel type from the outset (no type variables).
             monoAfterSubst
@@ -4525,7 +4477,7 @@ deriveKernelAbiType mvarEnv kernelId canFuncType callSubst =
             -- determined separately by kernelBackendAbiPolicy in MLIR codegen,
             -- which may override this type with all-boxed !eco.value arguments.
             if
-                EverySet.member KernelAbi.comparePair kernelId KernelAbi.concreteTypeAwareKernels
+                EverySet.member KernelAbi.comparePair kernelId KernelAbi.suffixSelectingKernels
                     && isFullyMonomorphicType monoAfterSubst
             then
                 -- e.g. List.cons : Int -> List Int -> List Int at this site

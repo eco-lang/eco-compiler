@@ -473,8 +473,8 @@ bytesCases expectFn =
 
 -- ============================================================================
 -- KERNEL ABI TYPE PATTERNS
--- Exercises canTypeToMonoType_preserveVars and canTypeToMonoType_numberBoxed
--- with different type shapes: record, tuple, unit, char, custom types
+-- Exercises canTypeToMonoType_preserveVars with different type shapes:
+-- record, tuple, unit, char, custom types
 -- ============================================================================
 
 

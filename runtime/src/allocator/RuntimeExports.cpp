@@ -772,11 +772,6 @@ extern "C" void eco_alloc_closure_group_slow(
         closure->n_values = nc;
         closure->max_values = arity;
         closure->unboxed = unboxedBitmaps[i];
-        // Phase E: every papCreateGroup closure follows REP_ABI_001's typed
-        // calling convention. The flag bitfield slot is not zeroed by the
-        // bitfield writes above (which only touch n_values/max_values/
-        // unboxed) so we set it explicitly here.
-        closure->flags = CLOSURE_FLAG_TYPED_NEWARGS;
         closure->evaluator = reinterpret_cast<EvalFunction>(
             const_cast<void*>(evaluators[i]));
 

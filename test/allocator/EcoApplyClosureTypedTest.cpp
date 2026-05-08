@@ -250,10 +250,11 @@ static void test_eco_apply_segmentation_unknown_saturated_typed() {
 // ============================================================================
 // Phase D Part 3: typed-newargs fast path
 //
-// When a closure carries CLOSURE_FLAG_TYPED_NEWARGS, eco_apply_closure_typed
-// must dispatch to the closure's evaluator directly with the typed args
-// buffer — NO re-boxing of Int/Float/Char slots, hence zero
-// eco_alloc_int/_float/_char calls on the apply path.
+// `eco_apply_closure_typed` dispatches to the closure's evaluator directly
+// with the typed args buffer — NO re-boxing of Int/Float/Char slots, hence
+// zero eco_alloc_int/_float/_char calls on the apply path. Per-slot kind
+// is read from `closure->unboxed[i]` (Phase F retired the dedicated flag
+// bit; the bitmap is the single source of truth).
 // ============================================================================
 
 namespace {
@@ -301,17 +302,14 @@ static void test_typed_newargs_skips_reboxing() {
         reinterpret_cast<void*>(&mock_typed_evaluator), 3);
     TEST_ASSERT(closure_hptr.toBits() != 0);
 
-    // Phase E semantics: the closure header advertises both the typed flag
-    // AND the full-params kinds bitmap that the wrapper expects. Together
-    // they tell the runtime "the layout the caller will pass matches what
-    // the wrapper reads — no per-slot conversion."
+    // Phase F semantics: the closure header records per-slot kinds in
+    // `unboxed` (2 bits per slot). The runtime dispatches directly per
+    // these kinds — no flag bit needed.
     {
         void* p = Allocator::instance().resolve(
             HPointer{closure_hptr.toBits()});
         TEST_ASSERT(p != nullptr);
         Closure* closure = static_cast<Closure*>(p);
-        closure->flags = static_cast<unsigned char>(
-            closure->flags | CLOSURE_FLAG_TYPED_NEWARGS);
         // kinds: slot0=PK_Int(0b01), slot1=PK_Float(0b10), slot2=PK_Char(0b11)
         // packed 2-bit-per-slot bitmap = 0b11_10_01 = 0x39.
         closure->unboxed = 0x39;

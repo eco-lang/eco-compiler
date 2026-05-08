@@ -114,35 +114,6 @@ preserveVarsWithEnv canType =
     ( result, env )
 
 
-{-| Helper to call canTypeToMonoType\_numberBoxed, converting from Can.Type Name.
--}
-numberBoxed : Can.Type Name -> Mono.MonoType
-numberBoxed canType =
-    let
-        ( converted, env ) =
-            convertForTest canType
-
-        ( result, _ ) =
-            KernelAbi.canTypeToMonoType_numberBoxed env converted
-    in
-    result
-
-
-{-| Like numberBoxed but also returns the MVarEnv so tests can inspect the
-constraint side table.
--}
-numberBoxedWithEnv : Can.Type Name -> ( Mono.MonoType, State.MVarEnv )
-numberBoxedWithEnv canType =
-    let
-        ( converted, env ) =
-            convertForTest canType
-
-        ( result, _ ) =
-            KernelAbi.canTypeToMonoType_numberBoxed env converted
-    in
-    ( result, env )
-
-
 {-| Helper to derive kernel ABI mode, converting from Can.Type Name.
 -}
 testDeriveAbiMode : ( String, String ) -> Can.Type Name -> KernelAbi.KernelAbiMode
@@ -160,7 +131,6 @@ suite =
         [ abiModeTests
         , monomorphicKernelTests
         , polymorphicKernelTests
-        , numberBoxedKernelTests
         , debugKernelTests
         , kernelExportsAbiTests
         , kernelAbiPreservationTests
@@ -316,78 +286,6 @@ polymorphicKernelTests =
 
                     result =
                         preserveVars canType
-                in
-                Expect.equal result
-                    (Mono.MFunction [ Mono.MInt ] Mono.MInt)
-        ]
-
-
-
--- ============================================================================
--- NUMBER-BOXED KERNEL TESTS
--- ============================================================================
-
-
-numberBoxedKernelTests : Test
-numberBoxedKernelTests =
-    Test.describe "Number-boxed kernels"
-        [ Test.test "Basics.add : number -> number -> number (in whitelist)" <|
-            \_ ->
-                let
-                    canType =
-                        tFunc [ varType "number", varType "number" ] (varType "number")
-
-                    ( result, env ) =
-                        numberBoxedWithEnv canType
-                in
-                Expect.all
-                    [ \_ ->
-                        Expect.equal result
-                            (Mono.MFunction
-                                [ testMVarN 0 Mono.CEcoValue ]
-                                (Mono.MFunction
-                                    [ testMVarN 0 Mono.CEcoValue ]
-                                    (testMVarN 0 Mono.CEcoValue)
-                                )
-                            )
-                    , \_ ->
-                        -- Side table must record the original CNumber constraint
-                        Expect.equal (isNumberVar 0 env) True
-                    ]
-                    ()
-        , Test.test "Basics.sub : number -> number -> number (in whitelist)" <|
-            \_ ->
-                let
-                    canType =
-                        tFunc [ varType "number", varType "number" ] (varType "number")
-
-                    ( result, env ) =
-                        numberBoxedWithEnv canType
-                in
-                Expect.all
-                    [ \_ ->
-                        Expect.equal result
-                            (Mono.MFunction
-                                [ testMVarN 0 Mono.CEcoValue ]
-                                (Mono.MFunction
-                                    [ testMVarN 0 Mono.CEcoValue ]
-                                    (testMVarN 0 Mono.CEcoValue)
-                                )
-                            )
-                    , \_ ->
-                        -- Side table must record the original CNumber constraint
-                        Expect.equal (isNumberVar 0 env) True
-                    ]
-                    ()
-        , Test.test "numberBoxed converts concrete Int to MInt" <|
-            \_ ->
-                let
-                    -- Concrete types should still be converted
-                    canType =
-                        tFunc [ intType ] intType
-
-                    result =
-                        numberBoxed canType
                 in
                 Expect.equal result
                     (Mono.MFunction [ Mono.MInt ] Mono.MInt)
