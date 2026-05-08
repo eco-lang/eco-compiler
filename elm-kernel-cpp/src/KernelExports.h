@@ -32,14 +32,10 @@ double Elm_Kernel_Basics_tan(double x);
 double Elm_Kernel_Basics_sqrt(double x);
 double Elm_Kernel_Basics_log(double x);
 // Polymorphic operations take HPointer (tagged Int or Float) and return boxed result.
-// These examine the tag at runtime to determine whether to perform Int or Float arithmetic.
 // Phase E.2 / Phase F: per-instance Int / Float variants for the
-// arithmetic operators. The polymorphic boxed-symbol fallbacks were
-// retired in Phase F step 7 — every concrete use takes a suffix branch
-// in `kernelInstanceSymbol` and lands here. Direct uses are
-// intrinsic-lowered upstream and never reach these symbols; indirect
-// uses (e.g. `List.foldl (+) 0`) capture them into PAPs to avoid
-// boxing the args.
+// arithmetic operators. Direct uses are intrinsic-lowered upstream and
+// never reach these symbols; indirect uses (e.g. `List.foldl (+) 0`)
+// capture them into PAPs to avoid boxing the args.
 int64_t Elm_Kernel_Basics_add_Int  (int64_t a, int64_t b);
 double  Elm_Kernel_Basics_add_Float(double  a, double  b);
 int64_t Elm_Kernel_Basics_sub_Int  (int64_t a, int64_t b);
@@ -48,6 +44,20 @@ int64_t Elm_Kernel_Basics_mul_Int  (int64_t a, int64_t b);
 double  Elm_Kernel_Basics_mul_Float(double  a, double  b);
 int64_t Elm_Kernel_Basics_pow_Int  (int64_t base, int64_t exp);
 double  Elm_Kernel_Basics_pow_Float(double  base, double  exp);
+
+// Polymorphic boxed-symbol fallbacks. Reached when `kernelInstanceSymbol`
+// can't statically resolve a numeric op to `_Int` / `_Float` — typically
+// when the call site's MonoType arguments are still `MVar n`
+// (polymorphic helper threading number-typed values through a generic
+// abstraction). Each wrapper inspects the heap tag of its first
+// argument and dispatches to the matching typed variant. Cost is
+// runtime tag-dispatch + box+unbox of the result, paid only on these
+// indirect/polymorphic paths; the direct typed paths above are
+// untouched.
+HPtr Elm_Kernel_Basics_add(HPtr a, HPtr b);
+HPtr Elm_Kernel_Basics_sub(HPtr a, HPtr b);
+HPtr Elm_Kernel_Basics_mul(HPtr a, HPtr b);
+HPtr Elm_Kernel_Basics_pow(HPtr a, HPtr b);
 double Elm_Kernel_Basics_e();
 double Elm_Kernel_Basics_pi();
 double Elm_Kernel_Basics_fdiv(double a, double b);

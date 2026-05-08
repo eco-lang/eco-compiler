@@ -48,11 +48,77 @@ double Elm_Kernel_Basics_log(double x) {
 
 // Phase E.2 / Phase F: per-instance Int / Float variants. Direct uses
 // are intrinsic-lowered; these are reached only by indirect uses where
-// (+) etc. is captured into a PAP. The polymorphic boxed kernels
-// (Elm_Kernel_Basics_add(HPtr, HPtr) etc.) were retired in Phase F
-// step 7 — `kernelInstanceSymbol` always selects `_Int` or `_Float`
-// for concrete numeric calls. Semantics match `eco.int.*` /
-// `eco.float.*` intrinsics.
+// (+) etc. is captured into a PAP.
+//
+// `kernelInstanceSymbol` selects `_Int` or `_Float` whenever both
+// argument MonoTypes are concretely `MInt` / `MFloat`. When the call
+// site is polymorphic (e.g. the eco-compiler source has a helper
+// `addAll : List number -> number` whose Basics.add reference reaches
+// monomorphisation with `MVar n` arg types), `kernelInstanceSymbol`
+// falls through to the boxed root symbol `Elm_Kernel_Basics_<op>` and
+// the frontend emits a boxed user wrapper that calls it. The boxed
+// roots (defined immediately below) close that gap — they inspect
+// the runtime tag of the heap-boxed args and dispatch to the matching
+// `_Int` / `_Float` typed variant.
+
+namespace {
+
+// Read the heap tag of an HPtr argument. Embedded constants don't
+// reach these wrappers — Int/Float are always heap-boxed when reaching
+// a polymorphic Basics call site (they have heap representations
+// `ElmInt` / `ElmFloat`, never embedded HPtr constants).
+inline Elm::Tag tagOfBoxed(HPtr p) {
+    void* obj = Elm::Kernel::Export::toPtr(p.toBits());
+    return Elm::alloc::getTag(obj);
+}
+
+inline int64_t intOfBoxed(HPtr p) {
+    void* obj = Elm::Kernel::Export::toPtr(p.toBits());
+    return static_cast<Elm::ElmInt*>(obj)->value;
+}
+
+inline double floatOfBoxed(HPtr p) {
+    void* obj = Elm::Kernel::Export::toPtr(p.toBits());
+    return static_cast<Elm::ElmFloat*>(obj)->value;
+}
+
+inline HPtr boxInt(int64_t v) {
+    return HPtr::fromBits(Elm::Kernel::Export::encode(Elm::alloc::allocInt(v)));
+}
+
+inline HPtr boxFloat(double v) {
+    return HPtr::fromBits(Elm::Kernel::Export::encode(Elm::alloc::allocFloat(v)));
+}
+
+} // anonymous namespace
+
+HPtr Elm_Kernel_Basics_add(HPtr a, HPtr b) {
+    if (tagOfBoxed(a) == Elm::Tag_Int) {
+        return boxInt(Elm_Kernel_Basics_add_Int(intOfBoxed(a), intOfBoxed(b)));
+    }
+    return boxFloat(Elm_Kernel_Basics_add_Float(floatOfBoxed(a), floatOfBoxed(b)));
+}
+
+HPtr Elm_Kernel_Basics_sub(HPtr a, HPtr b) {
+    if (tagOfBoxed(a) == Elm::Tag_Int) {
+        return boxInt(Elm_Kernel_Basics_sub_Int(intOfBoxed(a), intOfBoxed(b)));
+    }
+    return boxFloat(Elm_Kernel_Basics_sub_Float(floatOfBoxed(a), floatOfBoxed(b)));
+}
+
+HPtr Elm_Kernel_Basics_mul(HPtr a, HPtr b) {
+    if (tagOfBoxed(a) == Elm::Tag_Int) {
+        return boxInt(Elm_Kernel_Basics_mul_Int(intOfBoxed(a), intOfBoxed(b)));
+    }
+    return boxFloat(Elm_Kernel_Basics_mul_Float(floatOfBoxed(a), floatOfBoxed(b)));
+}
+
+HPtr Elm_Kernel_Basics_pow(HPtr a, HPtr b) {
+    if (tagOfBoxed(a) == Elm::Tag_Int) {
+        return boxInt(Elm_Kernel_Basics_pow_Int(intOfBoxed(a), intOfBoxed(b)));
+    }
+    return boxFloat(Elm_Kernel_Basics_pow_Float(floatOfBoxed(a), floatOfBoxed(b)));
+}
 
 int64_t Elm_Kernel_Basics_add_Int(int64_t a, int64_t b) {
     return a + b;

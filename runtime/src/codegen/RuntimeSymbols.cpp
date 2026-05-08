@@ -482,15 +482,22 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         KERNEL_SYM(Elm_Kernel_Basics_e)
         KERNEL_SYM(Elm_Kernel_Basics_pi)
         // Phase E.2 / Phase F: per-instance Int / Float variants for the
-        // arithmetic operators replaced the polymorphic boxed kernels.
+        // arithmetic operators are the fast paths; the boxed
+        // polymorphic fallbacks below are reached only when
+        // `kernelInstanceSymbol` can't resolve a numeric op (e.g. an
+        // `MVar n`-typed arg slot in a polymorphic helper).
         KERNEL_SYM(Elm_Kernel_Basics_add_Int)
         KERNEL_SYM(Elm_Kernel_Basics_add_Float)
+        KERNEL_SYM(Elm_Kernel_Basics_add)
         KERNEL_SYM(Elm_Kernel_Basics_sub_Int)
         KERNEL_SYM(Elm_Kernel_Basics_sub_Float)
+        KERNEL_SYM(Elm_Kernel_Basics_sub)
         KERNEL_SYM(Elm_Kernel_Basics_mul_Int)
         KERNEL_SYM(Elm_Kernel_Basics_mul_Float)
+        KERNEL_SYM(Elm_Kernel_Basics_mul)
         KERNEL_SYM(Elm_Kernel_Basics_pow_Int)
         KERNEL_SYM(Elm_Kernel_Basics_pow_Float)
+        KERNEL_SYM(Elm_Kernel_Basics_pow)
         KERNEL_SYM(Elm_Kernel_Basics_fdiv)
         KERNEL_SYM(Elm_Kernel_Basics_idiv)
         KERNEL_SYM(Elm_Kernel_Basics_modBy)
