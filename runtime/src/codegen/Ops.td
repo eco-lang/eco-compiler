@@ -1049,7 +1049,8 @@ def Eco_PapCreateOp : Eco_Op<"papCreate", [
     I64Attr:$num_captured,
     DefaultValuedAttr<I64Attr, "0">:$unboxed_bitmap,
     OptionalAttr<FlatSymbolRefAttr>:$_fast_evaluator,
-    OptionalAttr<AnyAttr>:$_closure_kind
+    OptionalAttr<AnyAttr>:$_closure_kind,
+    DefaultValuedAttr<I8Attr, "0">:$_result_kind
   );
   let results = (outs Eco_Value:$result);
 
@@ -1112,7 +1113,8 @@ def Eco_PapCreateGroupOp : Eco_Op<"papCreateGroup", [
     I64ArrayAttr:$num_captured,
     I64ArrayAttr:$unboxed_bitmaps,
     I64ArrayAttr:$capture_counts,
-    I64ArrayAttr:$cross_edges
+    I64ArrayAttr:$cross_edges,
+    OptionalAttr<I64ArrayAttr>:$_result_kinds
   );
   let results = (outs Variadic<Eco_Value>:$closures);
 
@@ -1182,7 +1184,8 @@ def Eco_PapExtendOp : Eco_Op<"papExtend", [
     DefaultValuedAttr<I64Attr, "0">:$newargs_unboxed_bitmap,
     OptionalAttr<AnyAttr>:$_closure_kind,
     OptionalAttr<StrAttr>:$_dispatch_mode,
-    OptionalAttr<FlatSymbolRefAttr>:$_fast_evaluator
+    OptionalAttr<FlatSymbolRefAttr>:$_fast_evaluator,
+    DefaultValuedAttr<I8Attr, "0">:$_result_kind
   );
   let results = (outs Eco_AnyValue:$result);
 

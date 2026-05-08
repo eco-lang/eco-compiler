@@ -177,6 +177,9 @@ typeToKey ty =
         I1 ->
             "i1"
 
+        I8 ->
+            "i8"
+
         I16 ->
             "i16"
 
@@ -487,6 +490,9 @@ typeToEntry ty =
     case ty of
         I1 ->
             EIntegerType 1
+
+        I8 ->
+            EIntegerType 8
 
         I16 ->
             EIntegerType 16
@@ -1012,6 +1018,9 @@ typeWidth ty =
     case ty of
         I1 ->
             1
+
+        I8 ->
+            8
 
         I16 ->
             16

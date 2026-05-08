@@ -258,6 +258,11 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_apply_closure_typed),
                 llvm::JITSymbolFlags::Exported);
+        // Typed-result entry point: caller-supplied result_slot + desired_kind.
+        symbolMap[interner("eco_apply_closure_eval")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_apply_closure_eval),
+                llvm::JITSymbolFlags::Exported);
         symbolMap[interner("eco_pap_extend")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_pap_extend),

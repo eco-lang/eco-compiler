@@ -300,6 +300,42 @@ HPtr eco_apply_closure_typed(HPtr closure, int64_t* typed_args,
                              uint32_t num_args,
                              const Elm::EvalParamLayout* args_layout);
 
+/// Generic apply with a fully typed result.
+///
+/// Reads the closure's intrinsic result kind from `args_layout->result_kind`
+/// (set by the frontend at the call site to match the closure evaluator's
+/// real C ABI). The closure header is unchanged from `eco_apply_closure_typed`;
+/// the result kind lives in the layout.
+///
+/// `desired_kind` is the kind the caller wants the result delivered as
+/// (typically derived from the call op's MLIR result type via
+/// `mlirTypeToParamKind`). The helper either passes the evaluator's result
+/// straight through (when `desired_kind == result_kind`), or boxes/unboxes
+/// across the kind boundary to satisfy the caller.
+///
+/// `result_slot` must point to storage of the matching desired_kind:
+///   - PK_Boxed → `HPtr*`
+///   - PK_Int   → `int64_t*`
+///   - PK_Float → `double*`
+///   - PK_Char  → `uint16_t*`
+///
+/// Saturation is dispatched the same way `eco_apply_closure_typed` does
+/// (reads the closure header). Under-saturated calls produce a closure
+/// HPtr; the helper asserts `desired_kind == PK_Boxed` in that case (a
+/// well-typed primitive-result call is by construction saturated).
+///
+/// @param closure HPtr to the Closure object
+/// @param typed_args Typed args buffer (slot kinds per `args_layout->kinds`)
+/// @param num_args Number of new arguments
+/// @param args_layout Per-slot kind descriptor + closure result kind
+/// @param result_slot Pointer to storage receiving the result
+/// @param desired_kind Caller's desired result kind (ParamKind)
+void eco_apply_closure_eval(HPtr closure, int64_t* typed_args,
+                            uint32_t num_args,
+                            const Elm::EvalParamLayout* args_layout,
+                            void* result_slot,
+                            uint8_t desired_kind);
+
 /// Extends a PAP with more arguments (partial application).
 /// Creates a new closure with the combined captured values.
 /// @param closure HPointer (as uint64_t) to the Closure object

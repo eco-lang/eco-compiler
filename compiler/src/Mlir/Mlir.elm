@@ -83,6 +83,7 @@ A hard-coded set of common types is provided here.
 -}
 type MlirType
     = I1
+    | I8
     | I16
     | I32
     | I64

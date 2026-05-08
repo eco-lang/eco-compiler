@@ -373,14 +373,20 @@ enum ParamKind : unsigned char {
 
 /// Layout descriptor for evaluator parameters. Emitted as an LLVM global
 /// constant by the compiler. Describes the kind of each parameter slot;
-/// `kinds[i] == ParamKind`. The capability bit "evaluator accepts typed
-/// newargs without re-boxing" lives on `Closure::flags`, not here — the
-/// caller cannot statically know what evaluator a dynamically-dispatched
-/// closure has, so the gate must be readable from the closure header.
-/// Memory layout: { num_params: u8, kinds[num_params]: u8[] }
+/// `kinds[i] == ParamKind`. `result_kind` carries the closure evaluator's
+/// real C-ABI return kind (per REP_ABI_001): `eco_apply_closure_eval`
+/// reinterprets the evaluator function pointer based on this byte rather
+/// than always treating it as `HPtr (*)(...)`.
+///
+/// The capability bit "evaluator accepts typed newargs without re-boxing"
+/// lives on `Closure::flags`, not here — the caller cannot statically know
+/// what evaluator a dynamically-dispatched closure has, so the gate must
+/// be readable from the closure header.
+/// Memory layout: { num_params: u8, result_kind: u8, kinds[num_params]: u8[] }
 struct EvalParamLayout {
     unsigned char num_params;
-    unsigned char kinds[];  // flexible array member, length = num_params
+    unsigned char result_kind;  // ParamKind: closure evaluator's return kind
+    unsigned char kinds[];      // flexible array member, length = num_params
 };
 
 typedef struct {

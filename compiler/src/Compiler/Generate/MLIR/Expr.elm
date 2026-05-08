@@ -604,13 +604,27 @@ generateVarGlobal ctx specId monoType =
                 -- Function-typed global with arity > 0: create a closure (papCreate) with no captures
                 -- With typed closure ABI, we use the actual function name directly (no wrapper needed)
                 let
+                    -- _result_kind = the function's saturated return kind so the
+                    -- wrapper's return ABI matches what the function actually returns.
+                    globalResultKind =
+                        Types.mlirTypeToKind (Types.monoTypeToAbi sig.returnType)
+
+                    globalResultKindAttr =
+                        if globalResultKind == 0 then
+                            Dict.empty
+
+                        else
+                            Dict.singleton "_result_kind" (IntAttr (Just I8) globalResultKind)
+
                     attrs =
-                        Dict.fromList
-                            [ ( "function", SymbolRefAttr funcName )
-                            , ( "arity", IntAttr Nothing arity )
-                            , ( "num_captured", IntAttr Nothing 0 )
-                            , ( "unboxed_bitmap", IntAttr Nothing 0 ) -- No captures, so bitmap is 0
-                            ]
+                        Dict.union globalResultKindAttr
+                            (Dict.fromList
+                                [ ( "function", SymbolRefAttr funcName )
+                                , ( "arity", IntAttr Nothing arity )
+                                , ( "num_captured", IntAttr Nothing 0 )
+                                , ( "unboxed_bitmap", IntAttr Nothing 0 ) -- No captures, so bitmap is 0
+                                ]
+                            )
 
                     ( ctx2, papOp ) =
                         Ops.mlirOp ctx1 "eco.papCreate"
@@ -825,12 +839,24 @@ instanceClosureResult ctx var kernelPrefix home name monoType arity =
         ( instanceAbi, ctxWithKernel ) =
             Ctx.registerKernelInstance instanceKey ctx
 
+        kernelResultKind =
+            Types.mlirTypeToKind (Types.monoTypeToAbi returnType)
+
+        kernelResultKindAttr =
+            if kernelResultKind == 0 then
+                Dict.empty
+
+            else
+                Dict.singleton "_result_kind" (IntAttr (Just I8) kernelResultKind)
+
         attrs =
-            Dict.fromList
-                [ ( "function", SymbolRefAttr instanceAbi.symbolName )
-                , ( "arity", IntAttr Nothing arity )
-                , ( "num_captured", IntAttr Nothing 0 )
-                ]
+            Dict.union kernelResultKindAttr
+                (Dict.fromList
+                    [ ( "function", SymbolRefAttr instanceAbi.symbolName )
+                    , ( "arity", IntAttr Nothing arity )
+                    , ( "num_captured", IntAttr Nothing 0 )
+                    ]
+                )
 
         ( ctx2, papOp ) =
             Ops.mlirOp ctxWithKernel "eco.papCreate"
@@ -1098,16 +1124,34 @@ generateClosure ctx closureInfo body monoType =
                     Nothing ->
                         Dict.empty
 
+            -- _result_kind matches the closure evaluator's real C-ABI return
+            -- kind (ParamKind: 0=Boxed, 1=Int, 2=Float, 3=Char). Derived
+            -- from the lambda body's Mono type via Types.monoTypeToAbi +
+            -- mlirTypeToKind. For multi-stage closures the body returns a
+            -- function (boxed), so this naturally collapses to PK_Boxed.
+            -- Omitted when 0 to keep diffs minimal in the dialect.
+            bodyResultKind =
+                Types.mlirTypeToKind (Types.monoTypeToAbi (Mono.typeOf body))
+
+            resultKindAttr =
+                if bodyResultKind == 0 then
+                    Dict.empty
+
+                else
+                    Dict.singleton "_result_kind" (IntAttr (Just I8) bodyResultKind)
+
             papAttrs =
-                Dict.union closureKindAttr
-                    (Dict.union fastEvaluatorAttr
-                        (Dict.union operandTypesAttr
-                            (Dict.fromList
-                                [ ( "function", SymbolRefAttr functionName )
-                                , ( "arity", IntAttr Nothing arity )
-                                , ( "num_captured", IntAttr Nothing numCaptured )
-                                , ( "unboxed_bitmap", IntAttr Nothing unboxedBitmap )
-                                ]
+                Dict.union resultKindAttr
+                    (Dict.union closureKindAttr
+                        (Dict.union fastEvaluatorAttr
+                            (Dict.union operandTypesAttr
+                                (Dict.fromList
+                                    [ ( "function", SymbolRefAttr functionName )
+                                    , ( "arity", IntAttr Nothing arity )
+                                    , ( "num_captured", IntAttr Nothing numCaptured )
+                                    , ( "unboxed_bitmap", IntAttr Nothing unboxedBitmap )
+                                    ]
+                                )
                             )
                         )
                     )
@@ -1397,13 +1441,32 @@ generateGenericApply ctx func args _ _ =
         resultMlirType =
             Types.ecoValue
 
+        -- _result_kind matches the closure evaluator's real C-ABI return
+        -- kind. The closure's first-stage evaluator returns whatever
+        -- `Mono.stageReturnType (Mono.typeOf func)` gives — for a
+        -- multi-stage closure (e.g. `String -> Int -> Int` with
+        -- staging [1,1]) this is another function, hence boxed (K=0).
+        -- For a single-stage closure, this is the actual result type.
+        genericApplyResultKind =
+            Types.mlirTypeToKind
+                (Types.monoTypeToAbi (Mono.stageReturnType (Mono.typeOf func)))
+
+        genericApplyResultKindAttr =
+            if genericApplyResultKind == 0 then
+                []
+
+            else
+                [ ( "_result_kind", IntAttr (Just I8) genericApplyResultKind ) ]
+
         -- Build eco.papExtend WITHOUT remaining_arity (generic mode)
         papExtendAttrs =
             Dict.fromList
-                [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
-                , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
-                , ( "_call_kind", StringAttr "generic_apply" )
-                ]
+                ([ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
+                 , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
+                 , ( "_call_kind", StringAttr "generic_apply" )
+                 ]
+                    ++ genericApplyResultKindAttr
+                )
 
         ( ctxSp1, spOp1 ) =
             emitSafepoint ctx3
@@ -1489,16 +1552,39 @@ generateUnknownSegmentationCall ctx func args _ _ =
             Ctx.freshVar ctx2
 
         -- Result type is always !eco.value for segmentation_unknown
+        -- (saturation is unknown at compile time, so the immediate result
+        -- might be either a closure HPtr or a saturated value — we keep it
+        -- boxed to avoid type-divergent branches in the IR).
         resultMlirType =
             Types.ecoValue
+
+        -- _result_kind matches the closure evaluator's real C-ABI return
+        -- kind, derived from the closure's first-stage return type via
+        -- `Mono.stageReturnType`. This is what `closure->evaluator`
+        -- actually returns, not the call's eventual saturated result —
+        -- a multi-stage closure called via segmentation_unknown returns
+        -- an intermediate closure (boxed) regardless of the eventual
+        -- saturated type.
+        unknownSegResultKind =
+            Types.mlirTypeToKind
+                (Types.monoTypeToAbi (Mono.stageReturnType (Mono.typeOf func)))
+
+        unknownSegResultKindAttr =
+            if unknownSegResultKind == 0 then
+                []
+
+            else
+                [ ( "_result_kind", IntAttr (Just I8) unknownSegResultKind ) ]
 
         -- Build eco.papExtend WITHOUT remaining_arity, with _call_kind = "segmentation_unknown"
         papExtendAttrs =
             Dict.fromList
-                [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
-                , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
-                , ( "_call_kind", StringAttr "segmentation_unknown" )
-                ]
+                ([ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
+                 , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
+                 , ( "_call_kind", StringAttr "segmentation_unknown" )
+                 ]
+                    ++ unknownSegResultKindAttr
+                )
 
         ( ctxSp2, spOp2 ) =
             emitSafepoint ctx3
@@ -1640,11 +1726,33 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
                         else
                             funcMlirType
 
+                    -- _result_kind matches the closure evaluator's real C-ABI
+                    -- return kind at THIS stage. For non-last stages the
+                    -- evaluator returns the next-stage closure (boxed); only
+                    -- the LAST stage's evaluator returns the saturated value.
+                    -- Setting K=saturatedResultKind on intermediate stages
+                    -- would mis-cast a boxed closure HPtr as a primitive at
+                    -- runtime.
+                    saturatedResultKind =
+                        if isSaturatedCall then
+                            Types.mlirTypeToKind saturatedReturnType
+
+                        else
+                            0
+
+                    resultKindAttrs =
+                        if saturatedResultKind == 0 then
+                            []
+
+                        else
+                            [ ( "_result_kind", IntAttr (Just I8) saturatedResultKind ) ]
+
                     baseAttrs =
                         [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
                         , ( "remaining_arity", IntAttr Nothing remainingArity )
                         , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
                         ]
+                            ++ resultKindAttrs
 
                     callKindAttrs =
                         case callKindAttr of
@@ -1771,15 +1879,27 @@ generateFlattenedPartialApplication ctx func args resultType =
         remainingArity =
             totalArity
 
-        papExtendAttrs =
-            Dict.fromList
-                [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
-                , ( "remaining_arity", IntAttr Nothing remainingArity )
-                , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
-                ]
-
         resultMlirType =
             Types.monoTypeToAbi resultType
+
+        flatPapResultKind =
+            Types.mlirTypeToKind resultMlirType
+
+        flatPapResultKindAttr =
+            if flatPapResultKind == 0 then
+                []
+
+            else
+                [ ( "_result_kind", IntAttr (Just I8) flatPapResultKind ) ]
+
+        papExtendAttrs =
+            Dict.fromList
+                ([ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
+                 , ( "remaining_arity", IntAttr Nothing remainingArity )
+                 , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
+                 ]
+                    ++ flatPapResultKindAttr
+                )
 
         ( ctxSp4, spOp4 ) =
             emitSafepoint ctx2

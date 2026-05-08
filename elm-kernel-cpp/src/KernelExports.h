@@ -215,7 +215,12 @@ void Eco_Kernel_Order_register_gc_roots();
 // and are unboxed inside the implementation.
 HPtr Elm_Kernel_JsArray_empty();
 HPtr Elm_Kernel_JsArray_singleton(HPtr value);
-HPtr Elm_Kernel_JsArray_length(HPtr array);
+// Returns the array's length as a primitive `int64_t`, matching the
+// Elm signature `JsArray a -> Int` and REP_ABI_001 (Int → i64 at ABI).
+// Previously returned a boxed `HPtr`; the boxed-return form was a latent
+// semantic mismatch that survived because HPtr and i64 are the same
+// LLVM-level width.
+int64_t Elm_Kernel_JsArray_length(HPtr array);
 HPtr Elm_Kernel_JsArray_unsafeGet(HPtr index, HPtr array);
 HPtr Elm_Kernel_JsArray_unsafeSet(HPtr index, HPtr value, HPtr array);
 HPtr Elm_Kernel_JsArray_push(HPtr value, HPtr array);

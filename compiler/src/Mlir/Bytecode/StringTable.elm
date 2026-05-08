@@ -174,6 +174,9 @@ collectType ty st =
         I1 ->
             st
 
+        I8 ->
+            st
+
         I16 ->
             st
 

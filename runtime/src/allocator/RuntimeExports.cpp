@@ -1065,22 +1065,25 @@ namespace {
 // caller convention) through `eco_apply_closure_typed`, the canonical entry.
 //
 // Memory layout matches `EvalParamLayout` byte-for-byte: the first byte is
-// `num_params`, followed by `num_params` zero kind bytes (PK_Boxed). The
-// runtime never reads beyond `num_params`, so the trailing zero bytes are
-// inert padding.
+// `num_params`, the second is `result_kind` (PK_Boxed for these legacy
+// boxed-args layouts), followed by `num_params` zero kind bytes (PK_Boxed).
+// The runtime never reads beyond `num_params`, so the trailing zero bytes
+// are inert padding.
 constexpr unsigned kMaxClosureArity = 63;
 
-// 64 contiguous layouts × (1 + 63) bytes each. Index N's first byte is N;
-// all kind bytes are zero (PK_Boxed). Built at compile time.
+// 64 contiguous layouts × (2 + 63) bytes each. Index N's first byte is N;
+// second byte is 0 (PK_Boxed result); all kind bytes are zero (PK_Boxed).
+// Built at compile time.
 constexpr auto buildAllBoxedLayouts() {
     struct LayoutBytes {
         unsigned char num_params;
+        unsigned char result_kind;
         unsigned char kinds[kMaxClosureArity];
     };
     LayoutBytes arr[kMaxClosureArity + 1] = {};
     for (unsigned n = 0; n <= kMaxClosureArity; ++n) {
         arr[n].num_params = static_cast<unsigned char>(n);
-        // kinds[] are already zero from value-initialisation.
+        // result_kind and kinds[] are zero from value-initialisation.
     }
     struct Holder {
         LayoutBytes data[kMaxClosureArity + 1];
@@ -1118,7 +1121,64 @@ extern "C" HPtr eco_apply_closure(HPtr closure_hptr, uint64_t* args, uint32_t nu
                                    num_args, layout);
 }
 
-// Phase E: canonical generic-apply entry point.
+namespace {
+
+// Forward declarations for helpers defined further down. `eco_apply_closure_eval`
+// needs to call `invokeSaturatedTyped`, which itself uses
+// `spliceArgsForSaturatedCall`; both are also reused by
+// `eco_closure_call_saturated`.
+inline Closure* spliceArgsForSaturatedCall(uint64_t& closure_bits_inout,
+                                            uint64_t* new_args,
+                                            uint32_t num_newargs,
+                                            const EvalParamLayout* layout,
+                                            void** combined_args,
+                                            uint32_t& max_values_out,
+                                            uint64_t& bitmap_out);
+
+void invokeSaturatedTyped(uint64_t closure_bits,
+                          int64_t* typed_args,
+                          uint32_t num_args,
+                          const EvalParamLayout* args_layout,
+                          uint8_t K,
+                          uint8_t desired_kind,
+                          void* result_slot);
+
+// Extract a primitive payload from an HPointer-encoded boxed value (an
+// ElmInt / ElmFloat / ElmChar) and store it into `result_slot` per
+// `desired_kind`. Used by the boxed-evaluator path of
+// `eco_apply_closure_eval` when the caller wants a typed primitive.
+void deliverPrimitiveFromBoxed(HPtr boxed, uint8_t desired_kind, void* result_slot) {
+    void* obj = hpointerToPtr(boxed.toBits());
+    assert(obj && "deliverPrimitiveFromBoxed: cannot un-box null/embedded HPointer");
+    const char* base = static_cast<const char*>(obj) + sizeof(Header);
+    switch (desired_kind) {
+        case 1: { // PK_Int
+            int64_t v;
+            memcpy(&v, base, sizeof(v));
+            *static_cast<int64_t*>(result_slot) = v;
+            break;
+        }
+        case 2: { // PK_Float
+            double f;
+            memcpy(&f, base, sizeof(f));
+            *static_cast<double*>(result_slot) = f;
+            break;
+        }
+        case 3: { // PK_Char
+            uint16_t c;
+            memcpy(&c, base, sizeof(c));
+            *static_cast<uint16_t*>(result_slot) = c;
+            break;
+        }
+        default:
+            assert(false && "deliverPrimitiveFromBoxed: unreachable desired_kind");
+            __builtin_unreachable();
+    }
+}
+
+} // anonymous namespace
+
+// Phase E: canonical generic-apply entry point with typed result delivery.
 //
 // Args interpretation is fully typed per REP_ABI_001:
 //   - layout->kinds[i] == 0 (PK_Boxed)  → typed_args[i] is an HPointer.
@@ -1127,19 +1187,43 @@ extern "C" HPtr eco_apply_closure(HPtr closure_hptr, uint64_t* args, uint32_t nu
 //   - layout->kinds[i] == 3 (PK_Char)   → typed_args[i] is i16 zext in i64.
 // `args_layout` may be null only when num_args == 0.
 //
-// Saturation cases are handled directly here:
-//   - num_args == 0       → no-op apply, return closure unchanged.
-//   - num_args <  remaining → eco_pap_extend (kinds bitmap derived from layout).
-//   - num_args == remaining → eco_closure_call_saturated.
+// `args_layout->result_kind` (`K`) is the closure evaluator's real C-ABI
+// return kind. The saturated branch reinterprets `closure->evaluator`
+// based on `K`. `desired_kind` is what the caller wants delivered into
+// `result_slot`; the helper boxes/unboxes across the K↔desired_kind
+// boundary as needed.
+//
+// Saturation cases:
+//   - num_args == 0        → no-op apply, return closure unchanged
+//                            (`desired_kind` must be PK_Boxed).
+//   - num_args <  remaining → eco_pap_extend (always returns a closure HPtr;
+//                              `desired_kind` must be PK_Boxed).
+//   - num_args == remaining → call evaluator (per K), then deliver result.
 //   - num_args >  remaining → saturate this stage, recurse with trailing args
-//                              and a sub-layout.
-extern "C" HPtr eco_apply_closure_typed(HPtr closure_hptr,
-                                        int64_t* typed_args,
-                                        uint32_t num_args,
-                                        const EvalParamLayout* args_layout) {
+//                              and a PK_Boxed sub-layout.
+extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
+                                       int64_t* typed_args,
+                                       uint32_t num_args,
+                                       const EvalParamLayout* args_layout,
+                                       void* result_slot,
+                                       uint8_t desired_kind) {
+    uint8_t K = args_layout ? args_layout->result_kind : 0;
+    assert(K <= 3 && "eco_apply_closure_eval: result_kind out of range");
+    assert(desired_kind <= 3 && "eco_apply_closure_eval: desired_kind out of range");
+
     uint64_t closure_bits = closure_hptr.toBits();
     void* closure_ptr = hpointerToPtr(closure_bits);
-    if (!closure_ptr) return HPtr::fromBits(0);
+    if (!closure_ptr) {
+        // Null/embedded closure: deliver zero in the desired slot so the
+        // caller doesn't read uninitialised storage.
+        switch (desired_kind) {
+            case 0: *static_cast<HPtr*>(result_slot) = HPtr::fromBits(0); break;
+            case 1: *static_cast<int64_t*>(result_slot) = 0; break;
+            case 2: *static_cast<double*>(result_slot) = 0.0; break;
+            case 3: *static_cast<uint16_t*>(result_slot) = 0; break;
+        }
+        return;
+    }
 
     Closure* closure = static_cast<Closure*>(closure_ptr);
     uint32_t n_values = closure->n_values;
@@ -1148,9 +1232,13 @@ extern "C" HPtr eco_apply_closure_typed(HPtr closure_hptr,
     uint32_t remaining = max_values - n_values;
 
     if (num_args == 0) {
-        // No-op apply: closure is unchanged. Mirrors the legacy entry's
-        // behaviour for empty arg lists.
-        return closure_hptr;
+        // No-op apply: closure is unchanged. By construction the caller
+        // wants a boxed result here (a no-op apply on a closure is itself
+        // a closure HPtr).
+        assert(desired_kind == 0 &&
+               "eco_apply_closure_eval: no-op apply requires PK_Boxed desired_kind");
+        *static_cast<HPtr*>(result_slot) = closure_hptr;
+        return;
     }
 
     // Root `closure_bits` and the typed args buffer's HPointer slots
@@ -1186,54 +1274,81 @@ extern "C" HPtr eco_apply_closure_typed(HPtr closure_hptr,
     }
 #endif
 
-    HPtr result;
     if (num_args < remaining) {
-        // Under-saturated: extend with newargs. The bitmap describes the
-        // newargs' slot kinds; eco_pap_extend merges it into the closure's
-        // existing per-slot bitmap.
-        //
-        // The bitmap is u64 with 2 bits per slot, so it caps at 32 args
-        // (closures with >32 newargs in a single under-saturation aren't
-        // expected — fail loud rather than silently lose primitive-ness).
+        // Under-saturated: extend with newargs. Always produces a closure
+        // HPtr regardless of `K`, so the caller must want PK_Boxed.
+        assert(desired_kind == 0 &&
+               "eco_apply_closure_eval: under-saturated apply requires PK_Boxed "
+               "desired_kind (well-typed IR cannot have a primitive result on "
+               "an under-saturated apply)");
         assert(num_args <= 32 &&
-               "eco_apply_closure_typed: under-saturated bitmap derivation caps at 32 args");
+               "eco_apply_closure_eval: under-saturated bitmap derivation caps at 32 args");
         uint64_t bitmap = 0;
         if (args_layout != nullptr) {
             for (uint32_t i = 0; i < num_args; ++i) {
                 bitmap |= (static_cast<uint64_t>(args_layout->kinds[i]) & 0x3ULL) << (2 * i);
             }
         }
-        result = eco_pap_extend(HPtr::fromBits(closure_bits),
-                                reinterpret_cast<uint64_t*>(typed_args),
-                                num_args, bitmap);
-    } else if (num_args == remaining) {
-        // Exactly saturated.
-        result = eco_closure_call_saturated(HPtr::fromBits(closure_bits),
-                                            reinterpret_cast<uint64_t*>(typed_args),
-                                            num_args, args_layout);
-    } else {
-        // Over-saturated: saturate this stage, then apply the remainder
-        // to the result closure (which has its own n_values/max_values
-        // header). The remainder uses a sub-layout sliced from the
-        // caller's layout starting at offset `remaining`.
-        HPtr intermediate = eco_closure_call_saturated(
-            HPtr::fromBits(closure_bits),
-            reinterpret_cast<uint64_t*>(typed_args),
-            remaining, args_layout);
-
-        uint32_t trailing = num_args - remaining;
-        unsigned char sub_buf[1 + 64] = {};
-        EvalParamLayout* sub = reinterpret_cast<EvalParamLayout*>(sub_buf);
-        sub->num_params = static_cast<unsigned char>(trailing);
-        if (args_layout != nullptr) {
-            memcpy(sub->kinds, args_layout->kinds + remaining, trailing);
-        }
-        // else: kinds[] zero-initialised by the {} above (all PK_Boxed).
-        result = eco_apply_closure_typed(intermediate, typed_args + remaining,
-                                         trailing, sub);
+        HPtr extended = eco_pap_extend(HPtr::fromBits(closure_bits),
+                                       reinterpret_cast<uint64_t*>(typed_args),
+                                       num_args, bitmap);
+        *static_cast<HPtr*>(result_slot) = extended;
+        eco_gc_restore_stack_range_point(saved_range);
+        return;
     }
 
+    if (num_args == remaining) {
+        // Exactly saturated. Dispatch on the evaluator's real C ABI (`K`).
+        // `invokeSaturatedTyped` casts `closure->evaluator` to the matching
+        // primitive-return signature and converts the result to
+        // `desired_kind` (boxing if the caller wants a boxed result).
+        invokeSaturatedTyped(closure_bits, typed_args, num_args, args_layout,
+                             K, desired_kind, result_slot);
+        eco_gc_restore_stack_range_point(saved_range);
+        return;
+    }
+
+    // Over-saturated: saturate this stage (always boxed result intermediate,
+    // since under-saturation produces a closure HPtr), then apply the
+    // remainder to the result closure with a PK_Boxed sub-layout. If the
+    // caller wants a primitive result, we recurse asking for that primitive
+    // on the final saturated apply.
+    HPtr intermediate = eco_closure_call_saturated(
+        HPtr::fromBits(closure_bits),
+        reinterpret_cast<uint64_t*>(typed_args),
+        remaining, args_layout);
+
+    uint32_t trailing = num_args - remaining;
+    unsigned char sub_buf[2 + 64] = {};
+    EvalParamLayout* sub = reinterpret_cast<EvalParamLayout*>(sub_buf);
+    sub->num_params = static_cast<unsigned char>(trailing);
+    // The sub-layout's `result_kind` describes the *intermediate* closure
+    // (the result of saturating this stage) and is unknown at this point —
+    // we only know the caller's `desired_kind` for the final value. For
+    // safety default to PK_Boxed; a future enhancement can read the
+    // intermediate closure's evaluator kind.
+    sub->result_kind = 0;
+    if (args_layout != nullptr) {
+        memcpy(sub->kinds, args_layout->kinds + remaining, trailing);
+    }
+    eco_apply_closure_eval(intermediate, typed_args + remaining,
+                           trailing, sub, result_slot, desired_kind);
+
     eco_gc_restore_stack_range_point(saved_range);
+}
+
+// Phase E: legacy boxed-result entry point, now a thin shim around
+// `eco_apply_closure_eval` with `desired_kind = PK_Boxed`. Every existing
+// caller that wants an HPtr result reaches the canonical helper through
+// here. For primitive-result closures the inner helper allocates the
+// matching ElmInt/ElmFloat/ElmChar to satisfy the boxed return.
+extern "C" HPtr eco_apply_closure_typed(HPtr closure_hptr,
+                                        int64_t* typed_args,
+                                        uint32_t num_args,
+                                        const EvalParamLayout* args_layout) {
+    HPtr result = HPtr::fromBits(0);
+    eco_apply_closure_eval(closure_hptr, typed_args, num_args, args_layout,
+                           &result, /*desired_kind=*/0);
     return result;
 }
 
@@ -1415,59 +1530,37 @@ extern "C" HPtr eco_pap_extend(HPtr closure_hptr, uint64_t* args, uint32_t num_n
     return ptrToHPointer(obj);
 }
 
-extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args, uint32_t num_newargs, const EvalParamLayout* layout) {
-    uint64_t closure_bits = closure_hptr.toBits();
-    void* closure_ptr = hpointerToPtr(closure_bits);
-    if (!closure_ptr) return HPtr::fromBits(0);
+namespace {
 
-    Closure* closure = static_cast<Closure*>(closure_ptr);
+// Splice captures + newargs into a single typed buffer matching the
+// closure's wrapper convention. Used by both `eco_closure_call_saturated`
+// (boxed-result path) and `eco_apply_closure_eval`'s K!=0 saturated path
+// (primitive-result path).
+//
+// On entry `closure_bits_inout` and the buffer must already be GC-rooted
+// by the caller. Returns the (possibly re-resolved) `Closure*` after any
+// boxing allocations, since `eco_alloc_*` calls inside this helper may
+// trigger GC.
+//
+// `closure_bits_inout` is updated to reflect the (re-)resolved closure
+// pointer, and the *output* `bitmap` mirrors `closure->unboxed` after
+// any GC-induced re-resolves.
+inline Closure* spliceArgsForSaturatedCall(uint64_t& closure_bits_inout,
+                                            uint64_t* new_args,
+                                            uint32_t num_newargs,
+                                            const EvalParamLayout* layout,
+                                            void** combined_args,
+                                            uint32_t& max_values_out,
+                                            uint64_t& bitmap_out) {
+    Closure* closure = static_cast<Closure*>(hpointerToPtr(closure_bits_inout));
+    assert(closure && "spliceArgsForSaturatedCall: null closure");
     uint32_t max_values = closure->max_values;
     uint32_t n_values = closure->n_values;
-
     assert(n_values + num_newargs == max_values
-           && "eco_closure_call_saturated: argument count mismatch");
+           && "spliceArgsForSaturatedCall: argument count mismatch");
     assert(max_values <= 63 && "max_values exceeds 6-bit field cap");
 
-    // Phase E: typed calling convention (REP_ABI_001). Captures already
-    // live in `closure->values[i].i` in their typed form per
-    // `closure->unboxed[slot]` (raw primitive bits or HPointer). The
-    // typed wrapper interprets each slot per its own function signature,
-    // so the runtime's job is to splice captures + newargs into one
-    // contiguous buffer in that same typed form.
-    //
-    // For newargs the caller's `layout->kinds[i]` describes how each
-    // slot is encoded in `new_args[i]`. The wrapper expects the slot in
-    // the kind given by `closure->unboxed[n_values+i]` (the all-params
-    // bitmap published by papCreate). When they disagree we convert:
-    //
-    //   - layout=PK_Boxed but closure expects primitive: un-box (resolve
-    //     HPointer + load value at offset 8).
-    //   - layout=primitive but closure expects PK_Boxed: box via
-    //     eco_alloc_*.
-    //
-    // The PK_Boxed→primitive case is the common one — the MLIR papExtend
-    // op takes `!eco.value` operands and the JIT-side lowerings advertise
-    // every newarg slot as PK_Boxed; conversions here recover the typed
-    // representation the wrapper requires.
-    void* stack_args[16];
-    void** combined_args = (max_values <= 16) ? stack_args :
-                           static_cast<void**>(alloca(max_values * sizeof(void*)));
-
-    memset(combined_args, 0, max_values * sizeof(void*));
-
-    // Open a stack root range over closure_bits and the combined buffer.
-    // The boxed-slot mask comes from `closure->unboxed` (the full-params
-    // bitmap), so primitive slots are correctly skipped by GC.
-    size_t saved_range = eco_gc_stack_range_point();
-    eco_gc_push_stack_range(&closure_bits, 1, 1);
     uint64_t bitmap = closure->unboxed;
-    if (max_values > 0) {
-        uint64_t mask = pointerMaskFromKindBitmap(bitmap, max_values);
-        if (mask != 0) {
-            eco_gc_push_stack_range(
-                reinterpret_cast<uint64_t*>(combined_args), max_values, mask);
-        }
-    }
 
     // Captures: stored raw per closure->unboxed; copy directly.
     for (uint32_t i = 0; i < n_values; ++i) {
@@ -1487,7 +1580,7 @@ extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args
             // Boxed → primitive: un-box. The HPointer points at an
             // ElmInt/ElmFloat/ElmChar with the value at offset 8.
             void* hp_ptr = hpointerToPtr(raw);
-            assert(hp_ptr && "eco_closure_call_saturated: cannot un-box null/embedded HPointer");
+            assert(hp_ptr && "spliceArgsForSaturatedCall: cannot un-box null/embedded HPointer");
             const char* base = reinterpret_cast<const char*>(hp_ptr) + sizeof(Header);
             switch (closureKind) {
                 case 1: { // PK_Int
@@ -1534,7 +1627,7 @@ extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args
                     __builtin_unreachable();
             }
             // Re-resolve closure: eco_alloc_* may have GC'd.
-            closure = static_cast<Closure*>(hpointerToPtr(closure_bits));
+            closure = static_cast<Closure*>(hpointerToPtr(closure_bits_inout));
         } else {
             // Both kinds primitive but distinct (e.g. Int vs Float). This
             // is a representation mismatch the compiler should have ruled
@@ -1544,11 +1637,12 @@ extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args
     }
 
 #if ECO_HEAP_VALIDATE
-    // Stale-arg tripwire: validate combined_args before calling evaluator.
+    // Stale-arg tripwire: validate combined_args before the helper returns.
     // Catches stale entries arising from caller bugs or missed re-resolves
     // across the boxing/un-boxing GC points above. Primitive slots carry
     // raw bits, not HPointers, so they are skipped via `bitmap`
-    // (closure->unboxed).
+    // (closure->unboxed). Centralised here so both `eco_closure_call_saturated`
+    // (K==0) and `invokeSaturatedTyped` (K!=0) get the check.
     for (uint32_t dbg_i = 0; dbg_i < max_values; ++dbg_i) {
         uint64_t closureKind = (bitmap >> (2 * dbg_i)) & 0x3ULL;
         if (closureKind != 0) continue;
@@ -1561,11 +1655,200 @@ extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args
     }
 #endif
 
+    max_values_out = max_values;
+    bitmap_out = bitmap;
+    return closure;
+}
+
+} // anonymous namespace
+
+extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args, uint32_t num_newargs, const EvalParamLayout* layout) {
+    uint64_t closure_bits = closure_hptr.toBits();
+    void* closure_ptr = hpointerToPtr(closure_bits);
+    if (!closure_ptr) return HPtr::fromBits(0);
+
+    // Dispatch on the closure evaluator's real C-ABI return kind. The
+    // layout's `result_kind` byte tracks what the wrapper actually
+    // returns; for K!=0 (primitive-return wrappers introduced by the
+    // unboxed-primitive-return-values plan) `closure->evaluator` is cast
+    // to a primitive-return signature inside `invokeSaturatedTyped`, and
+    // the primitive is boxed on the way out so this entry's HPtr return
+    // contract is preserved.
+    uint8_t K = layout ? layout->result_kind : 0;
+    if (K != 0) {
+        size_t saved_range = eco_gc_stack_range_point();
+        eco_gc_push_stack_range(&closure_bits, 1, 1);
+        // Root the typed-args buffer's HPointer slots so GC inside the
+        // evaluator can update them in place.
+        if (num_newargs > 0 && layout) {
+            uint64_t hptrMask = 0;
+            for (uint32_t i = 0; i < num_newargs && i < 64; ++i) {
+                if (layout->kinds[i] == 0) hptrMask |= (uint64_t{1} << i);
+            }
+            if (hptrMask != 0) {
+                eco_gc_push_stack_range(new_args, num_newargs, hptrMask);
+            }
+        }
+        HPtr result = HPtr::fromBits(0);
+        invokeSaturatedTyped(closure_bits,
+                             reinterpret_cast<int64_t*>(new_args),
+                             num_newargs, layout, K,
+                             /*desired_kind=*/0, &result);
+        eco_gc_restore_stack_range_point(saved_range);
+        return result;
+    }
+
+    Closure* closure = static_cast<Closure*>(closure_ptr);
+    uint32_t max_values = closure->max_values;
+
+    // Phase E: typed calling convention (REP_ABI_001). Splice captures +
+    // newargs into a single buffer matching the closure's wrapper
+    // convention via the shared helper.
+    void* stack_args[16];
+    void** combined_args = (max_values <= 16) ? stack_args :
+                           static_cast<void**>(alloca(max_values * sizeof(void*)));
+
+    memset(combined_args, 0, max_values * sizeof(void*));
+
+    // Open a stack root range over closure_bits and the combined buffer.
+    // The boxed-slot mask comes from `closure->unboxed` (the full-params
+    // bitmap), so primitive slots are correctly skipped by GC.
+    size_t saved_range = eco_gc_stack_range_point();
+    eco_gc_push_stack_range(&closure_bits, 1, 1);
+    uint64_t bitmap = closure->unboxed;
+    if (max_values > 0) {
+        uint64_t mask = pointerMaskFromKindBitmap(bitmap, max_values);
+        if (mask != 0) {
+            eco_gc_push_stack_range(
+                reinterpret_cast<uint64_t*>(combined_args), max_values, mask);
+        }
+    }
+
+    uint32_t out_max_values = 0;
+    uint64_t out_bitmap = 0;
+    closure = spliceArgsForSaturatedCall(closure_bits, new_args, num_newargs,
+                                         layout, combined_args,
+                                         out_max_values, out_bitmap);
+
     void* result = closure->evaluator(combined_args);
 
     eco_gc_restore_stack_range_point(saved_range);
     return HPtr::fromBits(reinterpret_cast<uint64_t>(result));
 }
+
+namespace {
+
+// Saturated dispatch for `eco_apply_closure_eval`. Builds the combined
+// captures+newargs buffer and invokes `closure->evaluator` with the C-ABI
+// signature matched to `K`. Stores the result into `result_slot`,
+// converting between the evaluator's actual return ABI (`K`) and the
+// caller's `desired_kind` as needed (boxing or extracting primitives).
+//
+// `closure_bits` must be GC-rooted by the caller across this call.
+// `typed_args` holds newargs in the format described by `args_layout`.
+void invokeSaturatedTyped(uint64_t closure_bits,
+                          int64_t* typed_args,
+                          uint32_t num_args,
+                          const EvalParamLayout* args_layout,
+                          uint8_t K,
+                          uint8_t desired_kind,
+                          void* result_slot) {
+    Closure* closure = static_cast<Closure*>(hpointerToPtr(closure_bits));
+    assert(closure && "invokeSaturatedTyped: null closure");
+    uint32_t max_values = closure->max_values;
+
+    // Splice captures + newargs into combined_args. Re-uses the shared
+    // helper used by the boxed-result path.
+    void* stack_args[16];
+    void** combined_args = (max_values <= 16) ? stack_args :
+                           static_cast<void**>(alloca(max_values * sizeof(void*)));
+    memset(combined_args, 0, max_values * sizeof(void*));
+
+    // Root the combined buffer's boxed slots. closure_bits is already
+    // rooted by the eval caller.
+    size_t saved_range = eco_gc_stack_range_point();
+    uint64_t bitmap = closure->unboxed;
+    if (max_values > 0) {
+        uint64_t mask = pointerMaskFromKindBitmap(bitmap, max_values);
+        if (mask != 0) {
+            eco_gc_push_stack_range(
+                reinterpret_cast<uint64_t*>(combined_args), max_values, mask);
+        }
+    }
+
+    uint32_t out_max_values = 0;
+    uint64_t out_bitmap = 0;
+    closure = spliceArgsForSaturatedCall(closure_bits,
+                                         reinterpret_cast<uint64_t*>(typed_args),
+                                         num_args,
+                                         args_layout, combined_args,
+                                         out_max_values, out_bitmap);
+
+    // Cast the evaluator function pointer to its real C ABI (per K) and
+    // invoke. The wrapper was generated with this exact return ABI by
+    // `getOrCreateWrapper(.., resultKind=K)` in the JIT pass.
+    void* eval = reinterpret_cast<void*>(closure->evaluator);
+    switch (K) {
+        case 0: {  // PK_Boxed (HPtr)
+            using FnT = void* (*)(void**);
+            void* r = reinterpret_cast<FnT>(eval)(combined_args);
+            HPtr boxed = HPtr::fromBits(reinterpret_cast<uint64_t>(r));
+            if (desired_kind == 0) {
+                *static_cast<HPtr*>(result_slot) = boxed;
+            } else {
+                deliverPrimitiveFromBoxed(boxed, desired_kind, result_slot);
+            }
+            break;
+        }
+        case 1: {  // PK_Int (i64)
+            using FnT = int64_t (*)(void**);
+            int64_t r = reinterpret_cast<FnT>(eval)(combined_args);
+            if (desired_kind == 1) {
+                *static_cast<int64_t*>(result_slot) = r;
+            } else if (desired_kind == 0) {
+                // Caller wants a boxed result: allocate ElmInt.
+                *static_cast<HPtr*>(result_slot) = eco_alloc_int(r);
+            } else {
+                assert(false && "PK_Int evaluator with non-Int/Boxed desired_kind");
+                __builtin_unreachable();
+            }
+            break;
+        }
+        case 2: {  // PK_Float (f64)
+            using FnT = double (*)(void**);
+            double r = reinterpret_cast<FnT>(eval)(combined_args);
+            if (desired_kind == 2) {
+                *static_cast<double*>(result_slot) = r;
+            } else if (desired_kind == 0) {
+                *static_cast<HPtr*>(result_slot) = eco_alloc_float(r);
+            } else {
+                assert(false && "PK_Float evaluator with non-Float/Boxed desired_kind");
+                __builtin_unreachable();
+            }
+            break;
+        }
+        case 3: {  // PK_Char (i16)
+            using FnT = uint16_t (*)(void**);
+            uint16_t r = reinterpret_cast<FnT>(eval)(combined_args);
+            if (desired_kind == 3) {
+                *static_cast<uint16_t*>(result_slot) = r;
+            } else if (desired_kind == 0) {
+                *static_cast<HPtr*>(result_slot) = eco_alloc_char(static_cast<uint32_t>(r));
+            } else {
+                assert(false && "PK_Char evaluator with non-Char/Boxed desired_kind");
+                __builtin_unreachable();
+            }
+            break;
+        }
+        default:
+            assert(false && "invokeSaturatedTyped: unreachable result_kind K");
+            __builtin_unreachable();
+    }
+
+    eco_gc_restore_stack_range_point(saved_range);
+}
+
+} // anonymous namespace
 
 //===----------------------------------------------------------------------===//
 // Runtime Utilities

@@ -201,6 +201,9 @@ typeToString t =
         I1 ->
             "i1"
 
+        I8 ->
+            "i8"
+
         I16 ->
             "i16"
 

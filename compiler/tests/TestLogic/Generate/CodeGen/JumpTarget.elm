@@ -260,6 +260,9 @@ typeToString t =
         Mlir.Mlir.I1 ->
             "i1"
 
+        Mlir.Mlir.I8 ->
+            "i8"
+
         Mlir.Mlir.I16 ->
             "i16"
 

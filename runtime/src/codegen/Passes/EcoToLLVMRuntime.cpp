@@ -437,6 +437,17 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateApplyClosureTyped(OpBuilder &builder) co
     return getOrCreateFunc(builder, "eco_apply_closure_typed", funcTy);
 }
 
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateApplyClosureEval(OpBuilder &builder) const {
+    // eco_apply_closure_eval(closure_hptr: hptr, typed_args: ptr, num_args: i32,
+    //                        args_layout: ptr, result_slot: ptr, desired_kind: i8) -> void
+    auto *ctx = builder.getContext();
+    auto i8Ty = IntegerType::get(ctx, 8);
+    auto voidTy = LLVM::LLVMVoidType::get(ctx);
+    auto funcTy = LLVM::LLVMFunctionType::get(voidTy,
+        {HPTR_TY, PTR_TY, I32_TY, PTR_TY, PTR_TY, i8Ty});
+    return getOrCreateFunc(builder, "eco_apply_closure_eval", funcTy);
+}
+
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateApplySegmentationUnknown(OpBuilder &builder) const {
     // eco_apply_segmentation_unknown(closure: hptr, typed_args: ptr, num_args: i32,
     //                                args_layout: ptr) -> hptr

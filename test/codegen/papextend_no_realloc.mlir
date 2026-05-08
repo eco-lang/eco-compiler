@@ -2,7 +2,7 @@
 //
 // Phase D static-IR enforcement (CGEN_059 / CGEN_060):
 // lowerGenericApply must not introduce eco_alloc_int/_float/_char calls
-// to box primitive newargs before eco_apply_closure_typed. The runtime
+// to box primitive newargs before eco_apply_closure_eval. The runtime
 // helper centralises any required re-boxing; the JIT'd IR must stay clean.
 
 module {
@@ -27,7 +27,7 @@ module {
 
     // Generic apply (no remaining_arity attr) with a primitive (i64) newarg.
     // The lowering must produce a typed args buffer + EvalParamLayout +
-    // call @eco_apply_closure_typed, with no eco_alloc_* call before it.
+    // call @eco_apply_closure_eval, with no eco_alloc_* call before it.
     %result = "eco.papExtend"(%pap0, %i) {
       newargs_unboxed_bitmap = 1 : i64
     } : (!eco.value, i64) -> !eco.value
@@ -38,7 +38,7 @@ module {
 }
 
 // Lowering ran — typed-apply runtime helper must appear in the IR.
-// CHECK: eco_apply_closure_typed
+// CHECK: eco_apply_closure_eval
 
 // Forbidden: any reference to the primitive-boxing helpers. They should
 // neither be called nor declared in this module — lowerGenericApply

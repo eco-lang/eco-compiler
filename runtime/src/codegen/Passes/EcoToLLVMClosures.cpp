@@ -212,8 +212,8 @@ static bool usesArgsArrayConvention(LLVM::LLVMFuncOp func) {
 /// 3. Calls the typed target function
 /// 4. Bitcasts the result back to i64/ptr for the runtime
 /// Build (or fetch from cache) an evaluator wrapper of signature
-/// `ptr (*)(ptr)` that adapts the runtime's `void *(void *[])` ABI to the
-/// target function's typed signature.
+/// `<RetT> (*)(ptr)` that adapts the runtime's args-array calling
+/// convention to the target function's typed signature.
 ///
 /// Two arg-side conventions are supported:
 ///   - typedNewargs=false (legacy): every slot in the args array is an
@@ -224,23 +224,44 @@ static bool usesArgsArrayConvention(LLVM::LLVMFuncOp func) {
 ///     unchanged. Per-slot kind comes from `closure->unboxed[i]`; the
 ///     evaluator extracts each slot accordingly.
 ///
-/// The result side is identical between the two conventions: primitive
-/// results are boxed via `eco_alloc_*` and returned as a `ptr` HPointer.
+/// `resultKind` (ParamKind: 0=Boxed, 1=Int, 2=Float, 3=Char) controls the
+/// wrapper's return ABI. Currently the wrapper always returns ptr (HPtr)
+/// regardless of `resultKind`: the optimization of returning primitive
+/// values natively is gated on every caller of `closure->evaluator`
+/// knowing the closure's K, which today's C++ effect-manager kernels
+/// don't (they invoke `eco_apply_closure` with the all-boxed legacy
+/// layout). The `resultKind` parameter is plumbed through for future
+/// enablement but has no effect on the emitted wrapper.
 static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp module, StringRef funcName,
                                            int64_t arity, Location loc, const TypeConverter *typeConverter,
                                            const EcoRuntime &runtime,
-                                           bool typedNewargs = false) {
+                                           bool typedNewargs = false,
+                                           uint8_t /*resultKind*/ = 0) {
     auto *ctx = rewriter.getContext();
     auto i64Ty = IntegerType::get(ctx, 64);
     auto f64Ty = Float64Type::get(ctx);
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+    auto i16Ty = IntegerType::get(ctx, 16);
+    // Force resultKind to 0 (PK_Boxed) until the C++-kernel callers of
+    // closure evaluators are migrated to K-aware dispatch. See file-level
+    // comment above.
+    uint8_t resultKind = 0;
 
-    // Check if wrapper already exists (check first — fast path)
+    // Check if wrapper already exists (check first — fast path).
+    // Cache key includes resultKind so K=0 and K=primitive wrappers for the
+    // same target are distinct symbols.
     llvm::SmallString<64> wrapperName;
+    const char *kindSuffix = "";
+    switch (resultKind) {
+        case 1: kindSuffix = "_ri"; break;  // PK_Int
+        case 2: kindSuffix = "_rf"; break;  // PK_Float
+        case 3: kindSuffix = "_rc"; break;  // PK_Char
+        default: kindSuffix = ""; break;     // PK_Boxed (no suffix to keep symbol stability)
+    }
     if (typedNewargs) {
-        ("__closure_wrapper_typed_" + funcName).toVector(wrapperName);
+        ("__closure_wrapper_typed_" + funcName + kindSuffix).toVector(wrapperName);
     } else {
-        ("__closure_wrapper_" + funcName).toVector(wrapperName);
+        ("__closure_wrapper_" + funcName + kindSuffix).toVector(wrapperName);
     }
 
     if (auto existingWrapper = runtime.lookupSymbol<LLVM::LLVMFuncOp>(StringRef(wrapperName))) {
@@ -335,8 +356,17 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
         runtime.cacheSymbol(externFunc);
     }
 
-    // Create wrapper function type: ptr (*)(ptr)
-    auto wrapperType = LLVM::LLVMFunctionType::get(ptrTy, {ptrTy}, false);
+    // Create wrapper function type. Return type matches `resultKind` so
+    // primitive-result closures expose their natural C ABI to the runtime
+    // dispatcher.
+    Type wrapperReturnType;
+    switch (resultKind) {
+        case 1: wrapperReturnType = i64Ty; break;
+        case 2: wrapperReturnType = f64Ty; break;
+        case 3: wrapperReturnType = i16Ty; break;
+        default: wrapperReturnType = ptrTy; break;
+    }
+    auto wrapperType = LLVM::LLVMFunctionType::get(wrapperReturnType, {ptrTy}, false);
 
     // Insert wrapper at module level
     OpBuilder::InsertionGuard guard(rewriter);
@@ -470,14 +500,48 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
     auto funcSymbolRef = FlatSymbolRefAttr::get(ctx, funcName);
     auto call = rewriter.create<LLVM::CallOp>(loc, targetFuncType, funcSymbolRef, callArgs);
 
-    // Convert result to ptr for the runtime.
-    // Convention: the wrapper returns HPointer-encoded values as ptr.
-    // For primitive results (Int, Float, Char), we box via eco_alloc_*.
-    // For !eco.value results, the inner function already returns i64 HPointer.
+    // Convert result to the wrapper's declared return type.
+    //
+    // For PK_Boxed (resultKind=0, the legacy path): the wrapper returns
+    // a `ptr` HPointer. Primitive inner-call results are boxed via
+    // `eco_alloc_*`; !eco.value results are passed through.
+    //
+    // For PK_Int/Float/Char (resultKind!=0, the typed-result path): the
+    // wrapper returns the primitive directly without boxing. The inner
+    // function's result type must already match (the frontend ensures
+    // this by emitting `_result_kind` = mlirTypeToParamKind(MonoResult)).
     Value resultValue = call.getResult();
     Value resultPtr;
 
-    if (origResultType && isa<eco::ValueType>(origResultType)) {
+    if (resultKind != 0) {
+        // Primitive-return path: pass the inner result through unmodified
+        // (after any width adjustment between target and wrapper return ABI).
+        if (resultKind == 1) {
+            // PK_Int → i64. Inner already returns i64 for Int-typed results.
+            assert(targetResultType == i64Ty &&
+                   "PK_Int wrapper requires i64 target return type");
+            resultPtr = resultValue;
+        } else if (resultKind == 2) {
+            // PK_Float → f64. Inner returns f64 for Float-typed results.
+            assert(targetResultType == f64Ty &&
+                   "PK_Float wrapper requires f64 target return type");
+            resultPtr = resultValue;
+        } else if (resultKind == 3) {
+            // PK_Char → i16. Inner returns i16 (or smaller); narrow if needed.
+            if (auto intTy = dyn_cast<IntegerType>(targetResultType)) {
+                if (intTy.getWidth() == 16) {
+                    resultPtr = resultValue;
+                } else if (intTy.getWidth() < 16) {
+                    resultPtr = rewriter.create<LLVM::ZExtOp>(loc, i16Ty, resultValue);
+                } else {
+                    resultPtr = rewriter.create<LLVM::TruncOp>(loc, i16Ty, resultValue);
+                }
+            } else {
+                assert(false && "PK_Char wrapper requires integer target return type");
+                __builtin_unreachable();
+            }
+        }
+    } else if (origResultType && isa<eco::ValueType>(origResultType)) {
         // !eco.value result: inner function returns ptr<1> → convert to ptr AS0
         resultPtr = wrapperReturnValueToPtr0(rewriter, loc, resultValue, ptrTy);
     } else if (origResultType && origResultType.isInteger(64)) {
@@ -576,9 +640,17 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
         // use REP_ABI_001's typed convention: raw primitives for Int/
         // Float/Char, HPointers for everything else. Per-slot kind comes
         // from `closure->unboxed[i]`.
+        //
+        // `_result_kind` (set by the frontend from the Mono result type)
+        // selects the wrapper's return ABI: PK_Boxed → ptr (status quo);
+        // PK_Int/Float/Char → primitive return. Wrappers with primitive
+        // return ABI are only safe to invoke via `eco_apply_closure_eval`,
+        // which dispatches the cast based on the layout's `result_kind`.
+        uint8_t resultKind = static_cast<uint8_t>(op.get_resultKind());
         auto wrapperFunc = getOrCreateWrapper(rewriter, module, funcSymbol, arity, loc,
                                               getTypeConverter(), runtime,
-                                              /*typedNewargs=*/true);
+                                              /*typedNewargs=*/true,
+                                              resultKind);
         Value funcPtr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, wrapperFunc.getSymName());
 
         // Allocate closure with max_values = arity, n_values = 0
@@ -706,14 +778,27 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
         auto module = op->getParentOfType<ModuleOp>();
         SmallVector<Value> wrapperPtrs;
         wrapperPtrs.reserve(numSiblings);
+        // Per-sibling _result_kinds attribute is optional; absent ≡ all
+        // siblings PK_Boxed (today's behaviour). Each entry must be a
+        // ParamKind in [0, 3].
+        auto resultKindsAttr = op.get_resultKindsAttr();
         for (unsigned i = 0; i < numSiblings; ++i) {
             StringRef funcSymbol =
                 cast<FlatSymbolRefAttr>(fastEvaluators[i]).getValue();
             int64_t arity = cast<IntegerAttr>(arities[i]).getInt();
+            uint8_t siblingResultKind = 0;
+            if (resultKindsAttr) {
+                auto entries = resultKindsAttr.getValue();
+                if (i < entries.size()) {
+                    siblingResultKind = static_cast<uint8_t>(
+                        cast<IntegerAttr>(entries[i]).getInt());
+                }
+            }
             auto wrapperFunc = getOrCreateWrapper(
                 rewriter, module, funcSymbol, arity, loc,
                 getTypeConverter(), runtime,
-                /*typedNewargs=*/true);
+                /*typedNewargs=*/true,
+                siblingResultKind);
             Value funcPtr = rewriter.create<LLVM::AddressOfOp>(
                 loc, ptrTy, wrapperFunc.getSymName());
             wrapperPtrs.push_back(funcPtr);
@@ -1175,17 +1260,25 @@ static bool wrapperWillBeTypedNewargs(const EcoRuntime &runtime,
 }
 
 /// Emit (or reuse) an LLVM global constant for an EvalParamLayout with the
-/// given kind sequence. Layout is `{ i8 num_params, [N x i8] kinds }`,
+/// given kind sequence. Layout is `{ i8 num_params, i8 result_kind, [N x i8] kinds }`,
 /// matching `EvalParamLayout` in `Heap.hpp`. Deduplicates by encoding the
-/// kinds into the global's name.
+/// kinds and result kind into the global's name.
+///
+/// `resultKind` is the closure evaluator's real C-ABI return kind
+/// (ParamKind: 0=Boxed, 1=Int, 2=Float, 3=Char). Existing callers that
+/// don't yet plumb a Mono result type pass 0 (PK_Boxed), preserving
+/// today's "wrappers always return HPtr" behaviour.
 static Value getOrCreateEvalLayout(ConversionPatternRewriter &rewriter, Location loc,
-                                   ModuleOp module, ArrayRef<uint8_t> kinds) {
+                                   ModuleOp module, ArrayRef<uint8_t> kinds,
+                                   uint8_t resultKind = 0) {
     auto *ctx = rewriter.getContext();
     auto i8Ty = IntegerType::get(ctx, 8);
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
     uint32_t n = kinds.size();
 
-    std::string name = "__eco_eval_layout_";
+    std::string name = "__eco_eval_layout_r";
+    name += std::to_string(resultKind);
+    name += "_";
     for (uint8_t k : kinds) name += std::to_string(k) + "_";
     name += std::to_string(n);
 
@@ -1194,7 +1287,7 @@ static Value getOrCreateEvalLayout(ConversionPatternRewriter &rewriter, Location
     }
 
     auto arrayTy = LLVM::LLVMArrayType::get(i8Ty, n);
-    auto structTy = LLVM::LLVMStructType::getLiteral(ctx, {i8Ty, arrayTy});
+    auto structTy = LLVM::LLVMStructType::getLiteral(ctx, {i8Ty, i8Ty, arrayTy});
 
     {
         OpBuilder::InsertionGuard guard(rewriter);
@@ -1210,6 +1303,9 @@ static Value getOrCreateEvalLayout(ConversionPatternRewriter &rewriter, Location
         auto numParamsConst = rewriter.create<LLVM::ConstantOp>(loc, i8Ty, static_cast<int64_t>(n));
         structVal = rewriter.create<LLVM::InsertValueOp>(loc, structTy, structVal, numParamsConst,
                                                           ArrayRef<int64_t>{0});
+        auto resultKindConst = rewriter.create<LLVM::ConstantOp>(loc, i8Ty, static_cast<int64_t>(resultKind));
+        structVal = rewriter.create<LLVM::InsertValueOp>(loc, structTy, structVal, resultKindConst,
+                                                          ArrayRef<int64_t>{1});
         Value arrayVal = rewriter.create<LLVM::UndefOp>(loc, arrayTy);
         for (uint32_t i = 0; i < n; ++i) {
             auto kindConst = rewriter.create<LLVM::ConstantOp>(loc, i8Ty, static_cast<int64_t>(kinds[i]));
@@ -1217,11 +1313,90 @@ static Value getOrCreateEvalLayout(ConversionPatternRewriter &rewriter, Location
                                                              ArrayRef<int64_t>{static_cast<int64_t>(i)});
         }
         structVal = rewriter.create<LLVM::InsertValueOp>(loc, structTy, structVal, arrayVal,
-                                                          ArrayRef<int64_t>{1});
+                                                          ArrayRef<int64_t>{2});
         rewriter.create<LLVM::ReturnOp>(loc, structVal);
     }
 
     return rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, name);
+}
+
+//===----------------------------------------------------------------------===//
+// emitClosureEvalCall — typed-result generic apply
+//===----------------------------------------------------------------------===//
+
+/// Emit an LLVM call to `eco_apply_closure_eval` with a typed result slot.
+/// Used by `lowerGenericApply` and `lowerSegmentationUnknown` to honour
+/// primitive results from closures whose evaluator returns a primitive
+/// (per the layout's `result_kind`).
+///
+/// The helper:
+///   1. Allocates a result slot of `resultLLVMType` at the function entry
+///      block (so the alloca outlives any GC safepoints).
+///   2. Calls `eco_apply_closure_eval(closureHPtr, typed_args, num_args,
+///      layout, &result_slot, desired_kind)`.
+///   3. Loads the result slot at `resultLLVMType` and returns the loaded value.
+///
+/// `desiredKind` (ParamKind: 0=Boxed, 1=Int, 2=Float, 3=Char) selects the
+/// caller's desired result kind. The layout's `result_kind` encodes the
+/// closure evaluator's actual return kind; the runtime helper bridges the
+/// two by boxing or extracting as needed.
+static Value emitClosureEvalCall(ConversionPatternRewriter &rewriter,
+                                 Location loc,
+                                 const EcoRuntime &runtime,
+                                 Operation *safeOp,
+                                 Value closureHPtr,
+                                 Value typedArgsArray,
+                                 Value numArgsI32,
+                                 Value layoutPtr,
+                                 Type resultLLVMType,
+                                 uint8_t desiredKind) {
+    auto *ctx = rewriter.getContext();
+    auto i64Ty = IntegerType::get(ctx, 64);
+    auto i8Ty = IntegerType::get(ctx, 8);
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+    // Allocate the result slot at the function entry block so its lifetime
+    // covers any subsequent safepoints (GC moves can update slot contents
+    // for boxed results, but the slot itself must remain valid).
+    Value resultSlot;
+    {
+        OpBuilder::InsertionGuard guard(rewriter);
+        auto parentFunc = safeOp ? safeOp->getParentOfType<LLVM::LLVMFuncOp>() : nullptr;
+        if (parentFunc) rewriter.setInsertionPointToStart(&parentFunc.getBody().front());
+        auto oneConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 1);
+        resultSlot = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, resultLLVMType, oneConst);
+    }
+
+    // Zero-init the slot so a partially-completed apply (e.g. one that
+    // throws) leaves a defined value.
+    {
+        Value zero;
+        if (resultLLVMType == i64Ty || resultLLVMType.isInteger(64)) {
+            zero = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 0);
+        } else if (resultLLVMType.isF64()) {
+            auto zeroI = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 0);
+            zero = rewriter.create<LLVM::BitcastOp>(loc, resultLLVMType, zeroI);
+        } else if (auto intTy = dyn_cast<IntegerType>(resultLLVMType)) {
+            zero = rewriter.create<LLVM::ConstantOp>(loc, intTy, 0);
+        } else if (isa<LLVM::LLVMPointerType>(resultLLVMType)) {
+            // Pointer-typed slot (e.g. ptr addrspace(1) for !eco.value):
+            // store null via inttoptr.
+            auto zeroI = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 0);
+            zero = rewriter.create<LLVM::IntToPtrOp>(loc, resultLLVMType, ValueRange{zeroI});
+        }
+        if (zero) rewriter.create<LLVM::StoreOp>(loc, zero, resultSlot);
+    }
+
+    auto desiredKindConst = rewriter.create<LLVM::ConstantOp>(loc, i8Ty,
+        static_cast<int64_t>(desiredKind));
+
+    auto evalFunc = runtime.getOrCreateApplyClosureEval(rewriter);
+    rewriter.create<LLVM::CallOp>(loc, evalFunc,
+        ValueRange{closureHPtr, typedArgsArray, numArgsI32, layoutPtr,
+                   resultSlot, desiredKindConst});
+
+    Value result = rewriter.create<LLVM::LoadOp>(loc, resultLLVMType, resultSlot);
+    return result;
 }
 
 //===----------------------------------------------------------------------===//
@@ -1331,9 +1506,11 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
                          ? origNewArgTypes[j] : newArgs[j].getType();
             kinds.push_back(mlirTypeToParamKind(t));
         }
+        // Layout `result_kind` is forced to 0 (PK_Boxed) until wrappers
+        // start returning primitives natively. See `getOrCreateWrapper`.
         auto module = safeOp ? safeOp->getParentOfType<ModuleOp>() : ModuleOp{};
         if (module) {
-            layoutArg = getOrCreateEvalLayout(rewriter, loc, module, kinds);
+            layoutArg = getOrCreateEvalLayout(rewriter, loc, module, kinds, 0);
         } else {
             layoutArg = rewriter.create<LLVM::ZeroOp>(loc, ptrTy).getResult();
         }
@@ -1513,22 +1690,36 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         }
 
         // === 5. Build (or reuse) the EvalParamLayout global ===
+        // Layout's `result_kind` is forced to 0 (PK_Boxed) until wrappers
+        // start returning primitives natively (see getOrCreateWrapper).
+        // The frontend's `_result_kind` attribute is plumbed but ignored
+        // here for correctness with the all-boxed C++-kernel call path.
         auto module = op->getParentOfType<ModuleOp>();
-        Value layoutPtr = getOrCreateEvalLayout(rewriter, loc, module, kinds);
+        uint8_t layoutResultKind = 0;
+        Value layoutPtr = getOrCreateEvalLayout(rewriter, loc, module, kinds,
+                                                layoutResultKind);
 
-        // === 6. Call runtime dispatcher ===
-        auto helperFunc = runtime.getOrCreateApplySegmentationUnknown(rewriter);
+        // === 6. Call runtime dispatcher via the typed-result eval helper ===
+        // `eco_apply_closure_eval` reads the closure header for saturation
+        // dispatch (matching what `eco_apply_segmentation_unknown` did)
+        // and additionally delivers a typed result per `desired_kind`.
+        Type origResultType = op.getResult().getType();
+        Type loweredResultType = getTypeConverter()->convertType(origResultType);
+        uint8_t desiredKind = mlirTypeToParamKind(loweredResultType);
+
         auto numNewArgsI32 = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(numNewArgs));
         emitSafepointMarker(op, rewriter, runtime, liveRoots);
-        auto call = rewriter.create<LLVM::CallOp>(
-            loc, helperFunc, ValueRange{closureI64, typedArgsArray, numNewArgsI32, layoutPtr});
+        Value result = emitClosureEvalCall(rewriter, loc, runtime, op,
+                                           closureI64, typedArgsArray,
+                                           numNewArgsI32, layoutPtr,
+                                           loweredResultType, desiredKind);
 
         // === 7. Restore GC root range ===
         if (numNewArgs > 0) {
             emitRestoreArgsRootRange(rewriter, loc, runtime, typedSavedDepth);
         }
 
-        rewriter.replaceOp(op, call.getResult());
+        rewriter.replaceOp(op, result);
         return success();
     }
 
@@ -1622,22 +1813,35 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         }
 
         // Build (or reuse) an EvalParamLayout global describing the new args.
+        // Layout `result_kind` is forced to 0 (PK_Boxed) — see the matching
+        // comment in `lowerSegmentationUnknown` and `getOrCreateWrapper`.
         auto module = op->getParentOfType<ModuleOp>();
-        Value layoutPtr = getOrCreateEvalLayout(rewriter, loc, module, kinds);
+        uint8_t layoutResultKind = 0;
+        Value layoutPtr = getOrCreateEvalLayout(rewriter, loc, module, kinds,
+                                                layoutResultKind);
 
-        // Call eco_apply_closure_typed(closure, typed_args, num_args, args_layout).
-        auto applyFunc = runtime.getOrCreateApplyClosureTyped(rewriter);
+        // Compute desired_kind from the op's MLIR result type and route
+        // through `eco_apply_closure_eval`, which delivers a typed result.
+        // For boxed result types the helper allocates an Elm{Int,Float,Char}
+        // when the closure evaluator returned a primitive (or passes the
+        // HPtr through unchanged when it returned boxed).
+        Type origResultType = op.getResult().getType();
+        Type loweredResultType = getTypeConverter()->convertType(origResultType);
+        uint8_t desiredKind = mlirTypeToParamKind(loweredResultType);
+
         emitSafepointMarker(op, rewriter, runtime, liveRoots);
         auto numNewArgsConst = rewriter.create<LLVM::ConstantOp>(
             loc, i32Ty, static_cast<int32_t>(numNewArgs));
-        auto call = rewriter.create<LLVM::CallOp>(
-            loc, applyFunc, ValueRange{closureI64, typedArgsArray, numNewArgsConst, layoutPtr});
+        Value result = emitClosureEvalCall(rewriter, loc, runtime, op,
+                                           closureI64, typedArgsArray,
+                                           numNewArgsConst, layoutPtr,
+                                           loweredResultType, desiredKind);
 
         if (numNewArgs > 0) {
             emitRestoreArgsRootRange(rewriter, loc, runtime, savedDepth);
         }
 
-        rewriter.replaceOp(op, call.getResult());
+        rewriter.replaceOp(op, result);
         return success();
     }
 

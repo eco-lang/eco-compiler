@@ -115,12 +115,10 @@ HPtr Elm_Kernel_JsArray_singleton(HPtr value) {
     return HPtr::fromBits(Export::encode(arr));
 }
 
-HPtr Elm_Kernel_JsArray_length(HPtr array) {
+int64_t Elm_Kernel_JsArray_length(HPtr array) {
     uint64_t array_bits = array.toBits();
     void* ptr = Export::toPtr(array_bits);
-    int64_t len = static_cast<int64_t>(alloc::arrayLength(ptr));
-    // Return boxed Int (HPtr to ElmInt)
-    return eco_alloc_int(len);
+    return static_cast<int64_t>(alloc::arrayLength(ptr));
 }
 
 HPtr Elm_Kernel_JsArray_unsafeGet(HPtr index_val, HPtr array) {

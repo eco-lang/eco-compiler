@@ -384,6 +384,7 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateClosureCallSaturated(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateApplyClosure(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateApplyClosureTyped(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateApplyClosureEval(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateApplySegmentationUnknown(mlir::OpBuilder &builder) const;
 
     // Utility functions
