@@ -161,6 +161,13 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocClosure(OpBuilder &builder) const {
     return getOrCreateFunc(builder, "eco_alloc_closure", funcTy);
 }
 
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocClosureK(OpBuilder &builder) const {
+    // eco_alloc_closure_k(func_ptr: ptr, num_captures: i32, result_kind: i8) -> hptr
+    auto i8Ty = IntegerType::get(builder.getContext(), 8);
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {PTR_TY, I32_TY, i8Ty});
+    return getOrCreateFunc(builder, "eco_alloc_closure_k", funcTy);
+}
+
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocate(OpBuilder &builder) const {
     // eco_allocate(size: i64, tag: i32) -> hptr
     auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY, I32_TY});
@@ -279,13 +286,13 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocClosureGroupSlow(OpBuilder &builder
     // eco_alloc_closure_group_slow(
     //   numSiblings: i64,
     //   evaluators: ptr, arities: ptr, numCaptured: ptr,
-    //   unboxedBitmaps: ptr, captureOffsets: ptr, captures: ptr,
-    //   crossEdges: ptr, numCrossEdges: i64,
+    //   unboxedBitmaps: ptr, resultKinds: ptr, captureOffsets: ptr,
+    //   captures: ptr, crossEdges: ptr, numCrossEdges: i64,
     //   outClosures: ptr
     // ) -> void
     auto funcTy = LLVM::LLVMFunctionType::get(
         LLVM::LLVMVoidType::get(builder.getContext()),
-        {I64_TY, PTR_TY, PTR_TY, PTR_TY, PTR_TY, PTR_TY, PTR_TY, PTR_TY, I64_TY, PTR_TY});
+        {I64_TY, PTR_TY, PTR_TY, PTR_TY, PTR_TY, PTR_TY, PTR_TY, PTR_TY, PTR_TY, I64_TY, PTR_TY});
     return getOrCreateFunc(builder, "eco_alloc_closure_group_slow", funcTy);
 }
 

@@ -590,9 +590,10 @@ HPtr Elm_Kernel_Http_toTask(HPtr request) {
         return reinterpret_cast<void*>(encodeHP(unit()));
     };
 
-    // Allocate the closure (+ converts captureless lambda to function pointer)
+    // Allocate the closure (+ converts captureless lambda to function pointer).
+    // bindingEval returns a boxed Task HPtr → K = PK_Boxed.
     EvalFunction bindingFn = +bindingEval;
-    HPointer bindingCallback = allocClosure(bindingFn, 2);
+    HPointer bindingCallback = allocClosureK(bindingFn, 2, Elm::PK_Boxed);
     void* clPtr = Allocator::instance().resolve(bindingCallback);
     if (clPtr) {
         // Capture the integer ID (plain integer, not a pointer)
@@ -644,8 +645,9 @@ HPtr Elm_Kernel_Http_mapExpect(HPtr closure, HPtr expectVal) {
     // Root across allocClosure (which may trigger GC)
     Elm::StackRootGuard guard(&originalHandler, &mapper);
 
-    // Create a new handler that composes: closure . originalHandler
-    HPointer composed = allocClosure(composeExpectEvaluator, 3);
+    // Create a new handler that composes: closure . originalHandler.
+    // composeExpectEvaluator returns a boxed Result HPtr → K = PK_Boxed.
+    HPointer composed = allocClosureK(composeExpectEvaluator, 3, Elm::PK_Boxed);
     void* clPtr = Allocator::instance().resolve(composed);
     if (clPtr) {
         closureCapture(clPtr, boxed(mapper), true);

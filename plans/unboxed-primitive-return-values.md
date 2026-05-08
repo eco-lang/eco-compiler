@@ -608,3 +608,476 @@ rationale for future reference.
 8. **Bool result kind** — Bool stays always boxed; no `PK_Bool`. Bool
    results are `!eco.value` everywhere, matching REP_ABI_001 /
    REP_HEAP_002. See B8.
+
+---
+
+## Phase C — C++ kernel callers honour the typed-result ABI
+
+### Why this phase exists
+
+Phases A + B cover MLIR-emitted call sites end-to-end, but a large
+population of closure invocations live on the **C++ side**: Elm-core
+kernels (`List`, `JsArray`, `String`, `Bytes`), effect managers (`Http`,
+`Time`, `Json`, `Regex`, `Parser`), and the platform runtime
+(`Scheduler`, `PlatformRuntime`). They all reach the closure's
+`evaluator` field through one of two legacy entries:
+
+- `eco_apply_closure(closure, uint64_t* args, n)` — boxed-args legacy
+  shim. Forwards to `eco_apply_closure_typed` with an all-`PK_Boxed`
+  layout pulled from the static `kAllBoxedLayoutsHolder` cache. The
+  layout's `result_kind` byte is **always 0** in that cache.
+- `eco_closure_call_saturated(closure, uint64_t* args, n, layout)` —
+  saturated path used directly by core `*_arity_N` shims. The kernels
+  in `core/ListExports.cpp`, `JsArrayExports.cpp`, `StringExports.cpp`,
+  and `BytesExports.cpp` pass `layout=nullptr`, which the helper treats
+  as all-`PK_Boxed` with `result_kind = 0`.
+
+Both entries route into `eco_apply_closure_eval`, which dispatches the
+saturated branch by reinterpreting `closure->evaluator` per
+`layout->result_kind`. **If the wrapper actually returns `i64` / `f64`
+/ `i16` (because the closure has primitive K) but the kernel's layout
+claims `result_kind = 0`, the runtime mis-casts the return word.** On
+x86-64 a `void*` and an `int64_t` happen to share the same return
+register, so the bits flow through, but they are interpreted as an
+HPointer encoding (heap address bits 0..39 + tag) rather than the
+intended primitive value. A test like `List.foldl (\\x acc -> x + acc)
+0 [1..5]` then computes `0` instead of `15`, because `eco_alloc_int`'s
+HPtr encoding is read back as if it were the integer.
+
+The C++-kernel callers are precisely the population that needs to honour
+the new ABI. Phase C migrates them; Phase D removes the K=0 gate
+introduced in the first implementation cut.
+
+### C0. Audit — every C++ → Elm closure-invocation site
+
+Source-of-truth listing. Update this list before implementation if any
+new sites have appeared.
+
+#### `eco_apply_closure(...)` callers (boxed-args legacy)
+
+| Path | Line | Closure called | Closure return type |
+|------|-----:|----------------|---------------------|
+| `elm-kernel-cpp/src/parser/ParserExports.cpp` | 132 | user parser body callback | parser-result record (boxed) |
+| `elm-kernel-cpp/src/regex/RegexExports.cpp` | 354 | `Regex.replace` user transformer | `String` (boxed) |
+| `elm-kernel-cpp/src/http/HttpEffectManager.cpp` | 74, 145 | `Cmd` mapper, subscription tagger | `msg` (boxed) |
+| `elm-kernel-cpp/src/http/HttpExports.cpp` | 258, 346, 373, 468, 487 | resume continuations, `expect` handlers, mappers | `Task` / `msg` (boxed) |
+| `elm-kernel-cpp/src/time/TimeExports.cpp` | 196 | posix → user-domain conversion | user `posix` value (boxed) |
+| `elm-kernel-cpp/src/time/TimeEffectManager.cpp` | 186, 352, 359 | subscription mapper / tagger | `msg` (boxed) |
+| `elm-kernel-cpp/src/json/JsonExports.cpp` | 1056, 1103, 1134, 1194, 1691 | `Decoder.map` / `Decoder.andThen` body, `Encode.encode` callback | decoder result / encoded value (boxed) |
+| `runtime/src/platform/Scheduler.cpp` | 159, 169, 182 | `callClosure1/2/4` for scheduler-internal callbacks | `Task` (boxed) |
+| `runtime/src/platform/PlatformRuntime.cpp` | 156 | `main` function thunk | `Cmd` / `Program` (boxed) |
+
+Today every closure on this list returns a boxed type (`Task`, `Cmd`,
+`msg`, `String`, decoder result, etc.), so naively migrating to
+`eco_apply_closure_eval` with `desired_kind = PK_Boxed` and
+`layout->result_kind = 0` is correct *for these specific call sites*.
+The migration's value here is **uniformity** and **future-proofing**:
+once the wrapper return ABI is allowed to be primitive (Phase D), an
+audit of "which callers might one day target a primitive-result
+closure?" must be a no-op because every site already routes through
+`eco_apply_closure_eval` with a layout whose `result_kind` was read
+from the closure header.
+
+#### `eco_closure_call_saturated(...)` callers (saturated path)
+
+| Path | Line | Closure called | Closure return type |
+|------|-----:|----------------|---------------------|
+| `elm-kernel-cpp/src/core/ListExports.cpp` | 26, 31, 36, 42, 48 | user fn passed to `List.foldl/foldr/map/indexedMap/...` (arity 1..5) | **arbitrary** (`b` in `foldl : (a -> b -> b) -> b -> List a -> b`) |
+| `elm-kernel-cpp/src/core/JsArrayExports.cpp` | 42, 49, 86, 93 | `JsArray.foldl/foldr/map/indexedMap` callback | **arbitrary** |
+| `elm-kernel-cpp/src/core/StringExports.cpp` | 187, 202, 215 | `String.foldl/foldr/map` callback | **arbitrary** for `foldl/foldr`; `Char` for `map` (primitive) |
+| `elm-kernel-cpp/src/bytes/BytesExports.cpp` | 400 | `Decode.succeed`/`Decode.map` decoder body | decoder result (boxed) |
+
+These are the **risky** ones. `List.foldl`, `JsArray.foldl`, etc. are
+polymorphic in their accumulator type. A user invocation like
+`List.foldl (\\x acc -> x + acc) 0 [1..5]` produces a closure whose
+wrapper return is `i64`. After Phase D the kernel's
+`eco_closure_call_saturated(... , layout=nullptr)` mis-casts that
+return — reproducing exactly the bug the gate currently hides.
+
+`String.map` is interesting: its callback returns `Char` (`i16`), so
+*every* call site is K = `PK_Char`. The kernel must propagate this
+into the layout it builds.
+
+#### Direct C++-implemented evaluators (closure body is C++ code)
+
+Not closure *invocations*, but C++ functions that are stored *as* a
+closure's `evaluator` pointer. They implement the wrapper protocol
+(`void *(void *[])`) themselves. Their return ABI must agree with the
+closure header's `result_kind`.
+
+| Path | Line | Function | Return type |
+|------|-----:|----------|-------------|
+| `elm-kernel-cpp/src/core/ProcessExports.cpp` | 56 | `sleepBindingEvaluator` | `Task ()` (boxed) |
+| `elm-kernel-cpp/src/time/TimeExports.cpp` | 231 | `timeNowBindingEvaluator` | `Task posix` (boxed) |
+| `elm-kernel-cpp/src/http/HttpExports.cpp` | 594 | `bindingEval` | `Task` (boxed) |
+| `eco-kernel-cpp/src/eco/MVar.cpp` | 242, 264, 286 | `readBindingEvaluator`, `takeBindingEvaluator`, `putBindingEvaluator` | `Task` (boxed) |
+
+All of these return boxed `Task` HPointers. They stay K = `PK_Boxed`
+forever. Phase C registers them with the new closure-K convention by
+calling `eco_alloc_closure` (or its successor) with `PK_Boxed`
+explicitly, so the closure header's `result_kind` byte is set
+correctly.
+
+### C1. Decide where K lives so kernels can read it
+
+To make the C++ kernels K-aware without duplicating per-arity / per-K
+trampolines, we need a way for the kernel to **discover the closure's
+K at invocation time**. There are three viable options:
+
+1. **Closure header carries K (chosen).** Steal 2 bits from the
+   existing `unboxed:52` field, leaving 50 bits = 25 typed slots
+   (down from 26). Re-pack the header as
+   `n_values:6 | max_values:6 | result_kind:2 | unboxed:50`. The
+   total bit-packed payload stays at 64 bits; `Closure` does not
+   grow, GC tracing offsets are unchanged.
+2. Per-instance kernel variants — `Elm_Kernel_List_foldl_acc_Int`,
+   `_acc_Float`, `_acc_Char`, `_acc_Boxed`. Cleanest typing but
+   exponential blowup against arity × accumulator-kind matrices.
+3. Side table mapping closure HPtr → K. GC-fragile and requires
+   per-allocation bookkeeping.
+
+The plan adopts option (1). This **revises** the original Phase B
+"Closure does not grow" decision: the field count and struct size are
+unchanged, but two bits of `unboxed` are reassigned. The frontend's
+2-bit-per-slot capacity drops from 26 to 25 captures; this is well
+inside today's typical capture counts (the `Compiler/Generate/MLIR/
+Functions.elm` tests assert ≤ 16 captures everywhere).
+
+### C2. Update `Closure` struct + allocator
+
+**File:** `runtime/src/allocator/Heap.hpp`
+
+Change the bit-packed payload:
+
+```cpp
+typedef struct {
+    Header header;
+    u64 n_values   : 6;     // 0-63
+    u64 max_values : 6;     // 0-63
+    u64 result_kind: 2;     // ParamKind: 0=Boxed, 1=Int, 2=Float, 3=Char
+    u64 unboxed    : 50;    // 25 typed slots × 2 bits each
+    EvalFunction evaluator;
+    Unboxable values[];
+} Closure;
+```
+
+**File:** `runtime/src/allocator/RuntimeExports.{h,cpp}`
+
+`eco_alloc_closure(void* func_ptr, uint32_t num_captures)` gains an
+overload (or a new entry) that also takes `uint8_t result_kind`:
+
+```cpp
+HPtr eco_alloc_closure_k(void* func_ptr, uint32_t num_captures,
+                         uint8_t result_kind);
+```
+
+The legacy `eco_alloc_closure` forwards with `result_kind = 0` so
+existing C++ kernel sites (Process, Time, MVar, Http binding evaluators)
+that all return boxed Tasks keep working byte-for-byte.
+
+**File:** `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp`
+
+`PapCreateOpLowering` and `PapCreateGroupOpLowering` switch from
+`eco_alloc_closure(funcPtr, arity)` to `eco_alloc_closure_k(funcPtr,
+arity, op._result_kind)`. The op attribute is already populated by
+Phase B4.
+
+**File:** `runtime/src/allocator/RuntimeExports.cpp`
+
+`eco_pap_extend` already copies the metadata from `old_closure` into
+`new_closure`. Add `new_closure->result_kind = old_closure->result_kind`
+to that copy block. Same for `eco_alloc_closure_group_slow`.
+
+**Bitmap derivation.** `unboxed` is now 50 bits = 25 slots. Audit:
+
+- `compiler/src/Compiler/Generate/MLIR/Functions.elm` — capture count
+  cap; bump tests if any approach 25.
+- `runtime/src/allocator/RuntimeExports.cpp` — re-validate the
+  `pointerMaskFromKindBitmap` helper against 50-bit input. The mask
+  derivation is independent of bitmap width so should be unaffected.
+- `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp` —
+  `deriveAllParamKindsBitmap` uses `arity * 2` shifts; cap the loop
+  at 25 instead of 26.
+
+### C3. Migrate `eco_closure_call_saturated`
+
+**File:** `runtime/src/allocator/RuntimeExports.cpp`
+
+The `K = layout ? layout->result_kind : 0` hack added in the first
+implementation cut becomes:
+
+```cpp
+uint8_t K = closure->result_kind;
+```
+
+The function reads K **from the closure header**, not the layout. The
+caller no longer needs to construct a typed-result layout — the legacy
+`layout=nullptr` path is sufficient because the result-kind information
+now lives on the closure itself.
+
+Once K comes from the closure, every C++ kernel that calls
+`eco_closure_call_saturated(..., /*layout=*/nullptr)` automatically
+dispatches the right cast on the wrapper. This eliminates the
+mis-cast risk for **all** of the Section C0 saturated-path callers
+without touching their source.
+
+### C4. Migrate `eco_apply_closure` (legacy boxed-args entry)
+
+**File:** `runtime/src/allocator/RuntimeExports.cpp`
+
+The legacy `eco_apply_closure` shim builds an all-`PK_Boxed` layout
+from `kAllBoxedLayoutsHolder` and forwards to
+`eco_apply_closure_typed`. Today the cache's `result_kind` byte is
+always 0; flip this to **read K from the closure** before forwarding:
+
+```cpp
+extern "C" HPtr eco_apply_closure(HPtr closure_hptr, uint64_t* args,
+                                  uint32_t num_args) {
+    void* closure_ptr = hpointerToPtr(closure_hptr.toBits());
+    uint8_t K = closure_ptr ? static_cast<Closure*>(closure_ptr)->result_kind : 0;
+    const EvalParamLayout* layout =
+        (num_args == 0) ? nullptr : getAllBoxedLayoutForK(num_args, K);
+    return eco_apply_closure_typed(closure_hptr,
+                                   reinterpret_cast<int64_t*>(args),
+                                   num_args, layout);
+}
+```
+
+`getAllBoxedLayoutForK` indexes a 4-row × 64-column compile-time table
+of layouts. Each row sets `result_kind` to the row's K; each column
+has the matching `num_params`. All kinds bytes are zero (boxed args).
+
+After this change, every C++ caller of `eco_apply_closure` — Parser,
+Regex, Http, Time, Json, Scheduler, PlatformRuntime — automatically
+dispatches the correct wrapper cast based on the closure's actual K.
+None of those source files need editing.
+
+### C5. Migrate `eco_apply_segmentation_unknown`
+
+**File:** `runtime/src/allocator/RuntimeExports.cpp`
+
+`eco_apply_segmentation_unknown` already takes a typed `EvalParamLayout*`
+from the caller. The frontend (B7) passes K = 0 today. Once K is
+available on the closure header we can stop relying on the caller and
+read it directly:
+
+```cpp
+uint8_t K = closure->result_kind;
+// override args_layout->result_kind with K when forwarding
+```
+
+Effect: the saturated-branch forwarding to `eco_apply_closure_typed`
+inside this helper now sees the right K regardless of what the call
+site emitted.
+
+### C6. Update direct C++-evaluator allocation sites
+
+For each of the C++-implemented evaluators in C0's third table:
+
+- `elm-kernel-cpp/src/core/ProcessExports.cpp:56` (`sleepBindingEvaluator`)
+- `elm-kernel-cpp/src/time/TimeExports.cpp:231` (`timeNowBindingEvaluator`)
+- `elm-kernel-cpp/src/http/HttpExports.cpp:594` (`bindingEval`)
+- `eco-kernel-cpp/src/eco/MVar.cpp:242, 264, 286` (`{read,take,put}BindingEvaluator`)
+
+Replace `eco_alloc_closure(reinterpret_cast<EvalFunction>(eval), arity)`
+with `eco_alloc_closure_k(reinterpret_cast<EvalFunction>(eval), arity,
+PK_Boxed)`. All of these return `Task` HPointers and keep K = 0.
+
+This step is bookkeeping; without it the legacy path in C2's allocator
+forwarder still gives the right K=0, so behaviour is preserved. But
+making the intent explicit at the call site avoids future drift if
+one of these C++ evaluators is ever changed to return a primitive.
+
+### C7. Tests for Phase C
+
+- **Allocation regression test** (`runtime/test/allocator/EcoApplyClosureEvalTest.cpp`,
+  shared with B9): construct a closure with `result_kind = PK_Int`
+  and a fast-path evaluator that returns `int64_t`. Invoke via the
+  legacy `eco_apply_closure(c, args, n)` entry; assert the helper
+  returns the boxed value (allocates exactly one `ElmInt`) AND that
+  the boxed value's payload reads back as the original int.
+- **`eco_closure_call_saturated` typed test**: same closure, invoke via
+  `eco_closure_call_saturated(c, args, n, /*layout=*/nullptr)`;
+  assert the returned HPtr is a freshly allocated `ElmInt` with the
+  right payload.
+- **End-to-end Elm tests**: `List.foldl (\\x acc -> x + acc) 0 [1..5]
+  == 15`, `List.map (\\x -> x * 2) [1,2,3] == [2,4,6]`, `String.map
+  Char.toUpper "abc" == "ABC"`. These exist already and will fail
+  loudly if Phase C/D is wrong.
+- **Capture-count regression**: `compiler/tests/TestLogic/Generate/CodeGen/`
+  add a fixture with 25 captures (the new ceiling) and one with 26
+  captures (now must overflow into boxed slot kinds). The latter is
+  expected to either fail compilation with a clear error or fall
+  back to PK_Boxed for the overflow slots — pick one and document.
+
+### C8. Staging within Phase C
+
+C2 + C3 + C4 + C5 must land together. The closure header `result_kind`
+field is read by all four entry points, and any one of them reading
+`closure->result_kind` while the field is uninitialised is undefined
+behaviour. The struct change (C2) must initialise the field on every
+`eco_alloc_closure*` path before any reader (C3/C4/C5) runs. Order:
+
+1. C2 first — change the struct, change the allocator. All allocation
+   paths now initialise `result_kind = 0` (default).
+2. C3, C4, C5 in any order — readers come online. With every closure
+   carrying `result_kind = 0` they all behave identically to today.
+3. C6 — explicit-K allocation sites updated. Still a NOP because they
+   pass K = 0 anyway.
+
+At the end of Phase C the system is **functionally identical** to
+today (every closure has K = 0), but every closure-invocation path is
+now K-aware. Phase D then flips the lever.
+
+---
+
+## Phase D — Turn on the optimization
+
+Phase D is intentionally minimal: revert each of the K = 0 forcings
+introduced in the first implementation cut.
+
+### D1. Restore `getOrCreateWrapper` resultKind handling
+
+**File:** `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp`
+
+Delete the `uint8_t resultKind = 0;` override at the top of the
+function. The wrapper now returns `i64` / `f64` / `i16` / `ptr` per
+the caller's `resultKind` argument (set from the op's `_result_kind`
+attribute in B3 / B4).
+
+Restore the wrapper-result handling that was added in B3 (the
+`if (resultKind != 0) { /* primitive return */ } else { /* legacy
+boxing path */ }` switch is already in place; it was simply
+unreachable because `resultKind` was forced to 0).
+
+### D2. Restore layout `result_kind` propagation in MLIR-emitted call sites
+
+**File:** `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp`
+
+In `lowerSegmentationUnknown`, `lowerGenericApply`, and the
+`emitInlineClosureCall` helper, replace the `uint8_t layoutResultKind
+= 0;` overrides with reads of the op's `_result_kind` attribute
+(which Phase B4 already populates):
+
+```cpp
+uint8_t layoutResultKind = static_cast<uint8_t>(op.get_resultKind());
+```
+
+In `emitInlineClosureCall`, restore the read of
+`safeOp->getAttrOfType<IntegerAttr>("_result_kind")` that was deleted
+during the gating.
+
+### D3. Stop populating layout `result_kind` from the op attribute (optional cleanup)
+
+After Phase C, `args_layout->result_kind` is **redundant** with
+`closure->result_kind`. The runtime helper now reads K from the closure
+header, so the layout's byte is not consulted on the saturated path
+(though the under-saturated and over-saturated paths still trust it
+for sub-layout construction).
+
+**Decision point:** keep the layout byte for future flexibility, or
+remove it.
+
+- **Keep**: matches the Phase B design exactly; layout K is a hint
+  for sub-layout chains in over-saturated apply. No code change.
+- **Remove**: shrink `EvalParamLayout` back to `{ num_params, kinds[] }`,
+  rewrite the global emitter, simplify the runtime helper. Saves
+  one byte per layout global (negligible) but removes a redundant
+  source of truth.
+
+The plan recommends **keep** for now: removing the layout byte is a
+follow-up cleanup that doesn't affect correctness. The runtime debug
+assertion `assert(layout->result_kind == closure->result_kind)`
+guards against drift.
+
+### D4. Tests for Phase D
+
+The existing tests from B9 + C7 are sufficient. Run:
+
+- E2E suite (`cmake --build build --target full`).
+- Stress suite.
+- IR shape tests assert `eco_alloc_int` / `_float` / `_char` does
+  **not** appear inside the wrapper bodies for primitive-result
+  closures.
+- Allocation-count tests confirm the boxing site has moved off the
+  hot path.
+
+Pre-Phase-D baseline (gate engaged): a fold over `[1..N]` allocates
+one `ElmInt` per iteration inside the wrapper. Post-Phase-D: zero
+allocations on the wrapper path; the only allocation is the
+caller-side `eco.box` if the result flows into an `!eco.value`
+context. IR-level `CHECK-NOT` patterns capture this exactly.
+
+### D5. Undo the K = 0 documentation in `project_unboxed_primitive_returns.md`
+
+Update the memory file's "What is gated off" section to "what's
+delivered". The gating is gone.
+
+---
+
+## Revised summary of files touched (Phases C + D)
+
+### Runtime / allocator
+
+- `runtime/src/allocator/Heap.hpp` — `Closure` bit-packing changed:
+  add `result_kind:2`, shrink `unboxed` to `:50` (25 typed slots).
+  `EvalParamLayout`'s `result_kind` byte stays.
+- `runtime/src/allocator/RuntimeExports.{h,cpp}` — add
+  `eco_alloc_closure_k`; `eco_alloc_closure` legacy keeps K=0.
+  `eco_pap_extend` + `eco_alloc_closure_group_slow` propagate
+  `result_kind` from source to result. `eco_apply_closure`,
+  `eco_closure_call_saturated`, `eco_apply_segmentation_unknown`
+  read K from the closure header.
+- `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp` —
+  `PapCreateOpLowering` / `PapCreateGroupOpLowering` call
+  `eco_alloc_closure_k` with op's `_result_kind`. Remove the
+  `resultKind = 0;` overrides in `getOrCreateWrapper` and the
+  lowerings.
+
+### C++ kernels (explicit-K allocation sites)
+
+- `elm-kernel-cpp/src/core/ProcessExports.cpp` — `eco_alloc_closure_k(.., PK_Boxed)`.
+- `elm-kernel-cpp/src/time/TimeExports.cpp` — same.
+- `elm-kernel-cpp/src/http/HttpExports.cpp` — same.
+- `eco-kernel-cpp/src/eco/MVar.cpp` — same for all three binding evaluators.
+
+### Compiler
+
+- `compiler/src/Compiler/Generate/MLIR/Functions.elm` — capture-count
+  cap audit (drop ceiling from 26 to 25 if any test approaches it).
+- No other Elm-side changes; B4's `_result_kind` plumbing already
+  populates the attribute.
+
+### Tests
+
+- `runtime/test/allocator/EcoApplyClosureEvalTest.cpp` — extended
+  with the C7 cases.
+- `compiler/tests/TestLogic/Generate/CodeGen/CaptureCountLimit.elm`
+  (new) — assert 25-capture closures compile and 26-capture trigger
+  the documented overflow path.
+
+---
+
+## Resolutions for Phases C + D
+
+C+D revise two earlier decisions:
+
+A. **"Closure does not grow"** (Resolutions §2). The struct size still
+   does not grow (the bit-packed field is unchanged at 64 bits), but
+   we re-allocate two bits inside it. The maximum typed-capture count
+   drops from 26 to 25.
+
+B. **K lives in the layout** (Resolutions §2, B5). Layout-K becomes a
+   redundant hint; the **closure header's `result_kind` is the
+   authoritative source of truth** for every dispatch path. The
+   layout byte is kept to ease over-saturated sub-layout chaining
+   and as a debug-asserting cross-check, but the runtime no longer
+   *requires* the caller to populate it correctly.
+
+These revisions are necessary because the alternative — every
+closure-invocation site (including ~30 C++ kernel call sites)
+reading the closure's K from elsewhere — does not have a workable
+implementation. Storing K on the closure is the smallest change that
+preserves the plan's headline guarantee: **primitive return values
+flow as primitives end-to-end, with no boxing overhead on the apply
+path.**

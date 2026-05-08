@@ -238,8 +238,10 @@ uint64_t read(uint64_t id) {
     if (it->second.value.has_value()) {
         return taskSucceed(it->second.value.value());
     }
-    HPointer cb = allocClosure(
-        reinterpret_cast<Elm::EvalFunction>(readBindingEvaluator), 2);
+    // readBindingEvaluator returns a boxed Task HPtr → K = PK_Boxed.
+    HPointer cb = allocClosureK(
+        reinterpret_cast<Elm::EvalFunction>(readBindingEvaluator), 2,
+        Elm::PK_Boxed);
     if (void* clPtr = Elm::Allocator::instance().resolve(cb)) {
         closureCapture(clPtr, unboxedInt(mvarId), Elm::PK_Int);
     }
@@ -260,8 +262,10 @@ uint64_t take(uint64_t id) {
         }
         return taskSucceed(v);
     }
-    HPointer cb = allocClosure(
-        reinterpret_cast<Elm::EvalFunction>(takeBindingEvaluator), 2);
+    // takeBindingEvaluator returns a boxed Task HPtr → K = PK_Boxed.
+    HPointer cb = allocClosureK(
+        reinterpret_cast<Elm::EvalFunction>(takeBindingEvaluator), 2,
+        Elm::PK_Boxed);
     if (void* clPtr = Elm::Allocator::instance().resolve(cb)) {
         closureCapture(clPtr, unboxedInt(mvarId), Elm::PK_Int);
     }
@@ -282,8 +286,10 @@ uint64_t put(uint64_t id, uint64_t value) {
         return taskSucceedUnit();
     }
     Elm::StackRootGuard guard(&valueHP);
-    HPointer cb = allocClosure(
-        reinterpret_cast<Elm::EvalFunction>(putBindingEvaluator), 3);
+    // putBindingEvaluator returns a boxed Task HPtr → K = PK_Boxed.
+    HPointer cb = allocClosureK(
+        reinterpret_cast<Elm::EvalFunction>(putBindingEvaluator), 3,
+        Elm::PK_Boxed);
     if (void* clPtr = Elm::Allocator::instance().resolve(cb)) {
         closureCapture(clPtr, unboxedInt(mvarId), Elm::PK_Int);
         closureCapture(clPtr, boxed(valueHP), true);

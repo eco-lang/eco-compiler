@@ -646,16 +646,31 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
         // PK_Int/Float/Char → primitive return. Wrappers with primitive
         // return ABI are only safe to invoke via `eco_apply_closure_eval`,
         // which dispatches the cast based on the layout's `result_kind`.
-        uint8_t resultKind = static_cast<uint8_t>(op.get_resultKind());
+        uint8_t opResultKind = static_cast<uint8_t>(op.get_resultKind());
+        // Phase C: wrappers still ignore resultKind (forced to 0 inside
+        // getOrCreateWrapper), so the closure header's result_kind must
+        // also be 0 — otherwise dispatch paths would read K!=0 from the
+        // header and mis-cast the wrapper's actual HPtr return.
+        // Phase D will lift the wrapper override and pass `opResultKind`
+        // through to both the wrapper and the closure header.
+        uint8_t closureResultKind = 0;
+        (void)opResultKind;
         auto wrapperFunc = getOrCreateWrapper(rewriter, module, funcSymbol, arity, loc,
                                               getTypeConverter(), runtime,
                                               /*typedNewargs=*/true,
-                                              resultKind);
+                                              closureResultKind);
         Value funcPtr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, wrapperFunc.getSymName());
 
-        // Allocate closure with max_values = arity, n_values = 0
+        // Allocate closure with max_values = arity, n_values = 0,
+        // result_kind matching the wrapper's return ABI. The runtime stores
+        // result_kind on the closure header so every dispatch path can cast
+        // `closure->evaluator` correctly.
+        auto allocFuncK = runtime.getOrCreateAllocClosureK(rewriter);
         auto arityConst = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(arity));
-        auto allocCall = rewriter.create<LLVM::CallOp>(loc, allocFunc, ValueRange{funcPtr, arityConst});
+        auto resultKindConst = rewriter.create<LLVM::ConstantOp>(loc, i8Ty,
+            rewriter.getI8IntegerAttr(static_cast<int8_t>(closureResultKind)));
+        auto allocCall = rewriter.create<LLVM::CallOp>(loc, allocFuncK,
+            ValueRange{funcPtr, arityConst, resultKindConst});
         Value closureHPtr = allocCall.getResult();
 
         // Convert HPointer to raw pointer for memory operations
@@ -675,12 +690,25 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
                     : op.getUnboxedBitmap();
         auto f64Ty = Float64Type::get(ctx);
 
-        // Phase F: CLOSURE_FLAG_TYPED_NEWARGS retired. Dispatch reads
-        // `closure->unboxed[i]` directly; the flag was set in two places
-        // and read in zero. The reclaimed two bits expanded `unboxed`
-        // back to the documented 26-slot capacity.
+        // Phase C bit-pack layout (matching runtime/src/allocator/Heap.hpp):
+        //   bits  0..5   n_values     (6 bits)
+        //   bits  6..11  max_values   (6 bits)
+        //   bits 12..13  result_kind  (2 bits, ParamKind)
+        //   bits 14..63  unboxed      (50 bits, 25 typed-capture slots)
+        //
+        // Storing the packed field at offset 8 in one i64 write avoids the
+        // GC barrier window that bit-by-bit writes would create. Match the
+        // runtime layout *exactly*; any mismatch silently corrupts header
+        // metadata.
+        // Phase C: closureResultKind is forced to 0 (matching the wrapper
+        // override in getOrCreateWrapper); Phase D will plumb the op's
+        // `_result_kind` through here too. The packed bit-pattern below
+        // overwrites whatever `eco_alloc_closure_k` initialised.
         uint64_t packedValue =
-            static_cast<uint64_t>(numCaptured) | (static_cast<uint64_t>(arity) << 6) | (unboxedBitmap << 12);
+              (static_cast<uint64_t>(numCaptured) & 0x3F)
+            | ((static_cast<uint64_t>(arity) & 0x3F) << 6)
+            | ((static_cast<uint64_t>(closureResultKind) & 0x3) << 12)
+            | ((unboxedBitmap & ((1ULL << 50) - 1)) << 14);
 
         auto packedConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(packedValue));
 
@@ -781,19 +809,18 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
         // Per-sibling _result_kinds attribute is optional; absent ≡ all
         // siblings PK_Boxed (today's behaviour). Each entry must be a
         // ParamKind in [0, 3].
+        //
+        // Phase C: wrappers still ignore K (getOrCreateWrapper override),
+        // so the per-sibling K passed here is forced to 0. Phase D will
+        // lift the override and plumb `_result_kinds[i]` through both
+        // the wrapper and the closure header.
         auto resultKindsAttr = op.get_resultKindsAttr();
+        (void)resultKindsAttr;
         for (unsigned i = 0; i < numSiblings; ++i) {
             StringRef funcSymbol =
                 cast<FlatSymbolRefAttr>(fastEvaluators[i]).getValue();
             int64_t arity = cast<IntegerAttr>(arities[i]).getInt();
             uint8_t siblingResultKind = 0;
-            if (resultKindsAttr) {
-                auto entries = resultKindsAttr.getValue();
-                if (i < entries.size()) {
-                    siblingResultKind = static_cast<uint8_t>(
-                        cast<IntegerAttr>(entries[i]).getInt());
-                }
-            }
             auto wrapperFunc = getOrCreateWrapper(
                 rewriter, module, funcSymbol, arity, loc,
                 getTypeConverter(), runtime,
@@ -818,6 +845,8 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
             loc, ptrTy, i32Ty, numSiblingsConst);
         Value unboxedBitmapsArr = rewriter.create<LLVM::AllocaOp>(
             loc, ptrTy, i64Ty, numSiblingsConst);
+        Value resultKindsArr = rewriter.create<LLVM::AllocaOp>(
+            loc, ptrTy, i8Ty, numSiblingsConst);
         Value captureOffsetsArr = rewriter.create<LLVM::AllocaOp>(
             loc, ptrTy, i32Ty, numSiblingsPlus1Const);
         Value outClosuresArr = rewriter.create<LLVM::AllocaOp>(
@@ -869,6 +898,16 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
             auto bmPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty,
                 unboxedBitmapsArr, ValueRange{idxConst});
             rewriter.create<LLVM::StoreOp>(loc, bmConst, bmPtr);
+
+            // resultKinds[i] — sibling i's evaluator return kind. Phase C
+            // forces this to 0 to match the wrapper override; Phase D
+            // will lift it to read from `_result_kinds[i]`.
+            uint8_t siblingResultKindForHeader = 0;
+            auto rkConst = rewriter.create<LLVM::ConstantOp>(loc, i8Ty,
+                rewriter.getI8IntegerAttr(static_cast<int8_t>(siblingResultKindForHeader)));
+            auto rkPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty,
+                resultKindsArr, ValueRange{idxConst});
+            rewriter.create<LLVM::StoreOp>(loc, rkConst, rkPtr);
 
             // captureOffsets[i] = runningOffset
             auto offConst = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
@@ -995,6 +1034,7 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
             aritiesArr,
             numCapturedArrAlloca,
             unboxedBitmapsArr,
+            resultKindsArr,
             captureOffsetsArr,
             capturesArr,
             crossEdgesArr,

@@ -336,7 +336,9 @@ extern "C" HPtr eco_alloc_string_literal(const uint16_t* chars, uint32_t length)
     return ptrToHPointer(obj);
 }
 
-extern "C" HPtr eco_alloc_closure(void* func_ptr, uint32_t num_captures) {
+extern "C" HPtr eco_alloc_closure_k(void* func_ptr, uint32_t num_captures,
+                                    uint8_t result_kind) {
+    assert(result_kind <= 3 && "eco_alloc_closure_k: result_kind out of range");
     // Size: Header + metadata (8 bytes) + evaluator ptr + captures
     size_t size = sizeof(Header) + 8 + sizeof(EvalFunction) + num_captures * sizeof(Unboxable);
 
@@ -348,9 +350,14 @@ extern "C" HPtr eco_alloc_closure(void* func_ptr, uint32_t num_captures) {
     Closure* closure = static_cast<Closure*>(obj);
     closure->n_values = 0;
     closure->max_values = num_captures;
+    closure->result_kind = result_kind;
     closure->unboxed = 0;
     closure->evaluator = reinterpret_cast<EvalFunction>(func_ptr);
     return ptrToHPointer(obj);
+}
+
+extern "C" HPtr eco_alloc_closure(void* func_ptr, uint32_t num_captures) {
+    return eco_alloc_closure_k(func_ptr, num_captures, /*result_kind=*/0);
 }
 
 extern "C" HPtr eco_alloc_int(int64_t value) {
@@ -619,6 +626,7 @@ extern "C" HPtr eco_alloc_closure_fast(void* func_ptr, uint32_t num_captures) {
     Closure* closure = static_cast<Closure*>(obj);
     closure->n_values = 0;
     closure->max_values = num_captures;
+    closure->result_kind = 0;
     closure->unboxed = 0;
     closure->evaluator = reinterpret_cast<EvalFunction>(func_ptr);
 
@@ -633,6 +641,7 @@ extern "C" HPtr eco_alloc_closure_slow(void* func_ptr, uint32_t num_captures) {
     Closure* closure = static_cast<Closure*>(obj);
     closure->n_values = 0;
     closure->max_values = num_captures;
+    closure->result_kind = 0;
     closure->unboxed = 0;
     closure->evaluator = reinterpret_cast<EvalFunction>(func_ptr);
 
@@ -725,6 +734,7 @@ extern "C" void eco_alloc_closure_group_slow(
     const uint32_t* arities,
     const uint32_t* numCaptured,
     const uint64_t* unboxedBitmaps,
+    const uint8_t* resultKinds,
     const uint32_t* captureOffsets,
     const uint64_t* captures,
     const uint64_t* crossEdges,
@@ -771,6 +781,10 @@ extern "C" void eco_alloc_closure_group_slow(
         Closure* closure = static_cast<Closure*>(obj);
         closure->n_values = nc;
         closure->max_values = arity;
+        // result_kind matches the wrapper's real C-ABI return type so the
+        // closure-invocation paths can cast `evaluator` correctly without
+        // per-call-site plumbing.
+        closure->result_kind = resultKinds[i] & 0x3;
         closure->unboxed = unboxedBitmaps[i];
         closure->evaluator = reinterpret_cast<EvalFunction>(
             const_cast<void*>(evaluators[i]));
@@ -1059,63 +1073,69 @@ extern "C" void eco_store_field_f64(HPtr obj_hptr, uint32_t index, double value)
 
 namespace {
 
-// Phase E shim support: a static cache of all-`PK_Boxed` `EvalParamLayout`s
-// indexed by num_params (0..63 — the closure header's max_values cap).
-// `eco_apply_closure` uses these to forward HPointer-encoded args (legacy
-// caller convention) through `eco_apply_closure_typed`, the canonical entry.
+// Phase C shim support: a 4×64 static table of all-`PK_Boxed`-args
+// `EvalParamLayout`s indexed by `(result_kind, num_params)`. The legacy
+// `eco_apply_closure` entry — called by C++ effect-manager kernels and
+// the platform runtime with HPointer-encoded args — looks up the right
+// row from the closure header's `result_kind` field, so it forwards
+// through `eco_apply_closure_typed` with a layout whose `result_kind`
+// matches the closure's wrapper return ABI. Without this, primitive-
+// return wrappers would be mis-cast as `void *(void *[])` on the
+// dispatch path.
 //
-// Memory layout matches `EvalParamLayout` byte-for-byte: the first byte is
-// `num_params`, the second is `result_kind` (PK_Boxed for these legacy
-// boxed-args layouts), followed by `num_params` zero kind bytes (PK_Boxed).
-// The runtime never reads beyond `num_params`, so the trailing zero bytes
-// are inert padding.
+// Each layout's bytes match `EvalParamLayout` exactly:
+//   byte 0       : num_params
+//   byte 1       : result_kind (the row's K)
+//   bytes 2..N+1 : kinds[N] (all PK_Boxed)
 constexpr unsigned kMaxClosureArity = 63;
+constexpr unsigned kNumResultKinds = 4;  // PK_Boxed, PK_Int, PK_Float, PK_Char
 
-// 64 contiguous layouts × (2 + 63) bytes each. Index N's first byte is N;
-// second byte is 0 (PK_Boxed result); all kind bytes are zero (PK_Boxed).
-// Built at compile time.
 constexpr auto buildAllBoxedLayouts() {
     struct LayoutBytes {
         unsigned char num_params;
         unsigned char result_kind;
         unsigned char kinds[kMaxClosureArity];
     };
-    LayoutBytes arr[kMaxClosureArity + 1] = {};
-    for (unsigned n = 0; n <= kMaxClosureArity; ++n) {
-        arr[n].num_params = static_cast<unsigned char>(n);
-        // result_kind and kinds[] are zero from value-initialisation.
-    }
     struct Holder {
-        LayoutBytes data[kMaxClosureArity + 1];
+        LayoutBytes data[kNumResultKinds][kMaxClosureArity + 1];
     };
     Holder h{};
-    for (unsigned n = 0; n <= kMaxClosureArity; ++n) {
-        h.data[n] = arr[n];
+    for (unsigned k = 0; k < kNumResultKinds; ++k) {
+        for (unsigned n = 0; n <= kMaxClosureArity; ++n) {
+            h.data[k][n].num_params = static_cast<unsigned char>(n);
+            h.data[k][n].result_kind = static_cast<unsigned char>(k);
+            // kinds[] are PK_Boxed (0) from value-initialisation.
+        }
     }
     return h;
 }
 constexpr auto kAllBoxedLayoutsHolder = buildAllBoxedLayouts();
 
-inline const EvalParamLayout* getAllBoxedLayout(unsigned n) {
+// Pick the layout whose `result_kind` byte matches `K`. The legacy entry
+// `eco_apply_closure` reads K off the closure header so primitive-return
+// wrappers are dispatched correctly even for callers that don't carry K.
+inline const EvalParamLayout* getAllBoxedLayout(unsigned n, uint8_t K) {
     if (n > kMaxClosureArity) n = kMaxClosureArity;
-    return reinterpret_cast<const EvalParamLayout*>(&kAllBoxedLayoutsHolder.data[n]);
+    if (K >= kNumResultKinds) K = 0;
+    return reinterpret_cast<const EvalParamLayout*>(&kAllBoxedLayoutsHolder.data[K][n]);
 }
 
 } // anonymous namespace
 
-// Phase E: legacy boxed-args entry point reduced to a thin shim. C++
-// callers that still construct a `uint64_t* args` of HPointer-encoded
-// values (e.g. effect-manager workers, Scheduler::callClosureN) reach
-// eco_apply_closure_typed through here with an all-`PK_Boxed` layout.
-//
-// CONTRACT: every slot in `args` must be HPointer-encoded — i.e. the
-// closure's wrapper must expect `!eco.value` at slot i for every i.
-// Calling this shim against a typed-flag closure whose wrapper expects
-// a raw primitive at slot i is a CALLER bug (per REP_ABI_001). Use
-// `eco_apply_closure_typed` with the correct layout in that case.
+// Phase C: legacy boxed-args entry point. C++ callers that construct a
+// `uint64_t* args` of HPointer-encoded values (effect-manager workers,
+// `Scheduler::callClosureN`, `PlatformRuntime`) reach
+// `eco_apply_closure_typed` through here. The layout's `result_kind`
+// byte is filled from `closure->result_kind` so primitive-return
+// wrappers route via the correct `invokeSaturatedTyped` cast. Boxed-args
+// callers that target a primitive-result closure get a freshly boxed
+// `ElmInt`/`ElmFloat`/`ElmChar` back — semantics-preserving for legacy
+// callers that always expected an `HPtr`.
 extern "C" HPtr eco_apply_closure(HPtr closure_hptr, uint64_t* args, uint32_t num_args) {
+    void* closure_ptr = hpointerToPtr(closure_hptr.toBits());
+    uint8_t K = closure_ptr ? static_cast<Closure*>(closure_ptr)->result_kind : 0;
     const EvalParamLayout* layout =
-        (num_args == 0) ? nullptr : getAllBoxedLayout(num_args);
+        (num_args == 0) ? nullptr : getAllBoxedLayout(num_args, K);
     return eco_apply_closure_typed(closure_hptr,
                                    reinterpret_cast<int64_t*>(args),
                                    num_args, layout);
@@ -1207,8 +1227,6 @@ extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
                                        const EvalParamLayout* args_layout,
                                        void* result_slot,
                                        uint8_t desired_kind) {
-    uint8_t K = args_layout ? args_layout->result_kind : 0;
-    assert(K <= 3 && "eco_apply_closure_eval: result_kind out of range");
     assert(desired_kind <= 3 && "eco_apply_closure_eval: desired_kind out of range");
 
     uint64_t closure_bits = closure_hptr.toBits();
@@ -1230,6 +1248,20 @@ extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
     uint32_t max_values = closure->max_values;
     assert(max_values <= 63 && "max_values exceeds 6-bit field cap");
     uint32_t remaining = max_values - n_values;
+
+    // Phase C: K is read from the closure header, not the layout. The
+    // layout's `result_kind` byte (if present) is a redundant hint left
+    // over from the original Phase B design; the closure header is the
+    // authoritative source of truth so C++-kernel callers (which don't
+    // know K) get correct dispatch via `eco_apply_closure(legacy)` →
+    // `eco_apply_closure_typed` → here. The frontend still populates
+    // `args_layout->result_kind` for cross-checking; debug-assert that
+    // it agrees with the closure header so drift surfaces immediately.
+    uint8_t K = closure->result_kind;
+    assert(K <= 3 && "eco_apply_closure_eval: closure result_kind out of range");
+    assert((!args_layout || args_layout->result_kind == K) &&
+           "eco_apply_closure_eval: layout->result_kind disagrees with "
+           "closure->result_kind — frontend bug");
 
     if (num_args == 0) {
         // No-op apply: closure is unchanged. By construction the caller
@@ -1322,12 +1354,15 @@ extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
     unsigned char sub_buf[2 + 64] = {};
     EvalParamLayout* sub = reinterpret_cast<EvalParamLayout*>(sub_buf);
     sub->num_params = static_cast<unsigned char>(trailing);
-    // The sub-layout's `result_kind` describes the *intermediate* closure
-    // (the result of saturating this stage) and is unknown at this point —
-    // we only know the caller's `desired_kind` for the final value. For
-    // safety default to PK_Boxed; a future enhancement can read the
-    // intermediate closure's evaluator kind.
-    sub->result_kind = 0;
+    // Phase C: the recursive call reads K from `intermediate->result_kind`,
+    // not from the sub-layout. Mirror it on the layout so the
+    // layout-vs-closure cross-check assertion holds.
+    {
+        void* inter_ptr = hpointerToPtr(intermediate.toBits());
+        sub->result_kind = inter_ptr
+            ? static_cast<Closure*>(inter_ptr)->result_kind
+            : 0;
+    }
     if (args_layout != nullptr) {
         memcpy(sub->kinds, args_layout->kinds + remaining, trailing);
     }
@@ -1450,6 +1485,7 @@ extern "C" HPtr eco_pap_extend(HPtr closure_hptr, uint64_t* args, uint32_t num_n
     uint32_t old_n_values = old_closure->n_values;
     uint32_t max_values = old_closure->max_values;
     uint64_t old_unboxed = old_closure->unboxed;
+    uint8_t old_result_kind = old_closure->result_kind;
 
     // Calculate new n_values.
     uint32_t new_n_values = old_n_values + num_newargs;
@@ -1500,9 +1536,12 @@ extern "C" HPtr eco_pap_extend(HPtr closure_hptr, uint64_t* args, uint32_t num_n
 
     Closure* new_closure = static_cast<Closure*>(obj);
 
-    // Copy metadata from old closure.
+    // Copy metadata from old closure. `result_kind` propagates because the
+    // extended closure shares the same evaluator and therefore the same
+    // C-ABI return type.
     new_closure->n_values = new_n_values;
     new_closure->max_values = max_values;
+    new_closure->result_kind = old_result_kind;
     new_closure->evaluator = old_closure->evaluator;
 
     // Merge 2-bit-per-slot unboxed bitmaps: old kinds + new kinds shifted by
@@ -1667,14 +1706,15 @@ extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args
     void* closure_ptr = hpointerToPtr(closure_bits);
     if (!closure_ptr) return HPtr::fromBits(0);
 
-    // Dispatch on the closure evaluator's real C-ABI return kind. The
-    // layout's `result_kind` byte tracks what the wrapper actually
-    // returns; for K!=0 (primitive-return wrappers introduced by the
-    // unboxed-primitive-return-values plan) `closure->evaluator` is cast
-    // to a primitive-return signature inside `invokeSaturatedTyped`, and
-    // the primitive is boxed on the way out so this entry's HPtr return
-    // contract is preserved.
-    uint8_t K = layout ? layout->result_kind : 0;
+    // Phase C: dispatch on the closure evaluator's real C-ABI return
+    // kind, read from `closure->result_kind` (set by papCreate /
+    // eco_alloc_closure_k from the wrapper's compiled return ABI).
+    // Reading from the closure header — rather than from the optional
+    // `layout` argument — lets C++ kernel callers (List, JsArray,
+    // String, Bytes) keep passing `layout=nullptr` and still dispatch
+    // primitive-return wrappers correctly.
+    Closure* hdr_closure = static_cast<Closure*>(closure_ptr);
+    uint8_t K = hdr_closure->result_kind;
     if (K != 0) {
         size_t saved_range = eco_gc_stack_range_point();
         eco_gc_push_stack_range(&closure_bits, 1, 1);

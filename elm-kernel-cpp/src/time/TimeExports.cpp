@@ -227,9 +227,11 @@ HPtr Elm_Kernel_Time_now(HPtr millisToPosix) {
     HPointer task = Elm::alloc::listNil();
     {
         Elm::StackRootGuard guard(&mtpHP, &bindingCB, &task);
-        bindingCB = Elm::alloc::allocClosure(
+        // timeNowBindingEvaluator returns a boxed Task HPtr → K = PK_Boxed.
+        bindingCB = Elm::alloc::allocClosureK(
             reinterpret_cast<EvalFunction>(timeNowBindingEvaluator),
-            /*max_values=*/2);
+            /*max_values=*/2,
+            Elm::PK_Boxed);
         void* clPtr = Allocator::instance().resolve(bindingCB);
         if (clPtr) {
             Elm::alloc::closureCapture(clPtr, Elm::alloc::boxed(mtpHP), true);

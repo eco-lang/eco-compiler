@@ -52,8 +52,10 @@ extern "C" {
 HPtr Elm_Kernel_Process_sleep(double time) {
     // Create a binding callback closure that captures the time as an unboxed
     // Float; the runtime re-boxes it before invoking sleepBindingEvaluator.
-    HPointer bindingCB = Elm::alloc::allocClosure(
-        reinterpret_cast<EvalFunction>(sleepBindingEvaluator), 2);
+    // sleepBindingEvaluator returns a boxed Task HPtr, hence K = PK_Boxed.
+    HPointer bindingCB = Elm::alloc::allocClosureK(
+        reinterpret_cast<EvalFunction>(sleepBindingEvaluator), 2,
+        Elm::PK_Boxed);
     void* cbPtr = Allocator::instance().resolve(bindingCB);
     if (cbPtr) {
         Elm::alloc::closureCapture(cbPtr, Elm::alloc::unboxedFloat(time),

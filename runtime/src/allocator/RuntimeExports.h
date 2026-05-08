@@ -140,11 +140,27 @@ HPtr eco_alloc_string(uint32_t length);
 /// @return HPointer (as uint64_t) to the allocated ElmString object
 HPtr eco_alloc_string_literal(const uint16_t* chars, uint32_t length);
 
-/// Allocates a closure object.
+/// Allocates a closure object with PK_Boxed result kind (legacy entry).
+/// Forwards to `eco_alloc_closure_k(func_ptr, num_captures, PK_Boxed)` so
+/// existing callers (which all return boxed Tasks/HPointers) keep working
+/// byte-for-byte.
 /// @param func_ptr Pointer to the evaluator function
 /// @param num_captures Number of captured values
 /// @return HPointer (as uint64_t) to the allocated Closure object
 HPtr eco_alloc_closure(void* func_ptr, uint32_t num_captures);
+
+/// Allocates a closure object with an explicit result kind.
+/// `result_kind` records the C-ABI return type of `func_ptr` (ParamKind:
+/// 0 = PK_Boxed / HPtr, 1 = PK_Int, 2 = PK_Float, 3 = PK_Char). Stored on
+/// the closure header so every closure-invocation entry point (legacy and
+/// typed) can cast `closure->evaluator` correctly without per-call-site
+/// plumbing.
+/// @param func_ptr Pointer to the evaluator function
+/// @param num_captures Number of captured values
+/// @param result_kind ParamKind value matching `func_ptr`'s return ABI
+/// @return HPointer (as uint64_t) to the allocated Closure object
+HPtr eco_alloc_closure_k(void* func_ptr, uint32_t num_captures,
+                         uint8_t result_kind);
 
 /// Allocates a boxed Int.
 /// @param value The integer value
@@ -210,12 +226,16 @@ HPtr eco_alloc_closure_slow(void* func_ptr, uint32_t num_captures);
 /// using `crossEdges` flat triples [producer, consumer, slot] of length
 /// `3 * numCrossEdges`. The resulting HPointers are stored in
 /// `outClosures[0..numSiblings)` in sibling order.
+/// `resultKinds[i]` is the ParamKind value (0..3) recording the C-ABI
+/// return type of `evaluators[i]`. Stored on each sibling's closure
+/// header so dispatch paths can cast `closure->evaluator` correctly.
 void eco_alloc_closure_group_slow(
     uint64_t numSiblings,
     const void* const* evaluators,
     const uint32_t* arities,
     const uint32_t* numCaptured,
     const uint64_t* unboxedBitmaps,
+    const uint8_t* resultKinds,
     const uint32_t* captureOffsets,
     const uint64_t* captures,
     const uint64_t* crossEdges,

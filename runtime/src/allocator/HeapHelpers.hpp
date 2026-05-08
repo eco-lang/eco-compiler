@@ -1097,7 +1097,16 @@ inline u32 arrayElementKind(void* arr) {
  * @param max_values  Maximum number of captured values.
  * @return HPointer to the allocated Closure.
  */
-inline HPointer allocClosure(EvalFunction evaluator, u32 max_values) {
+/**
+ * Allocates a Closure (function value) with an explicit `result_kind`.
+ *
+ * `result_kind` records the C-ABI return type of `evaluator` (ParamKind:
+ * 0 = PK_Boxed / HPtr, 1 = PK_Int, 2 = PK_Float, 3 = PK_Char). Stored
+ * on the closure header so every closure-invocation entry point can
+ * cast `closure->evaluator` correctly without per-call-site plumbing.
+ */
+inline HPointer allocClosureK(EvalFunction evaluator, u32 max_values,
+                               u8 result_kind) {
     size_t total_size = sizeof(Closure) + max_values * sizeof(Unboxable);
     total_size = (total_size + 7) & ~7;
 
@@ -1108,9 +1117,14 @@ inline HPointer allocClosure(EvalFunction evaluator, u32 max_values) {
     cl->header.size = max_values;
     cl->n_values = 0;
     cl->max_values = max_values;
+    cl->result_kind = result_kind & 0x3;
     cl->unboxed = 0;
     cl->evaluator = evaluator;
     return Allocator::instance().wrap(cl);
+}
+
+inline HPointer allocClosure(EvalFunction evaluator, u32 max_values) {
+    return allocClosureK(evaluator, max_values, /*result_kind=*/0);
 }
 
 /**

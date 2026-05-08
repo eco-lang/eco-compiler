@@ -355,9 +355,20 @@ typedef void *(*EvalFunction)(void *[]);
 /// args to the result closure (which has its own n_values/max_values header).
 typedef struct {
     Header header;
-    u64 n_values  : 6;     // Applied arity: args already captured for this stage (0-63).
-    u64 max_values: 6;     // Stage arity: total args this evaluator expects (0-63).
-    u64 unboxed   : 52;    // 2-bit-per-slot kinds for captures 0..25 (52 = 26 slots).
+    u64 n_values   : 6;    // Applied arity: args already captured for this stage (0-63).
+    u64 max_values : 6;    // Stage arity: total args this evaluator expects (0-63).
+    u64 result_kind: 2;    // ParamKind: real C-ABI return kind of `evaluator`
+                           //   0 = PK_Boxed (HPtr return, status quo)
+                           //   1 = PK_Int   (int64_t return)
+                           //   2 = PK_Float (double return)
+                           //   3 = PK_Char  (uint16_t return)
+                           // Read by every closure-invocation entry point so
+                           // C++ kernel callers (List_arity_N, JsArray_*, etc.)
+                           // can dispatch the function-pointer cast without
+                           // needing per-call-site K plumbing.
+    u64 unboxed    : 50;   // 2-bit-per-slot kinds for captures 0..24 (50 = 25 slots).
+                           // Reduced from 26 to 25 to make room for result_kind;
+                           // existing tests cap captures well below 25.
     EvalFunction evaluator;
     Unboxable values[];
 } Closure;
