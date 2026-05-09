@@ -8,7 +8,12 @@
 //   4. Object file emission via TargetMachine
 //   5. Linking via clang++ driver with runtime/kernel static libraries
 //
-// Usage: eco-boot <input.elm|input.mlir> [options]
+// A .o input short-circuits the pipeline straight to step 5, so an unchanged
+// .mlir can be re-linked against freshly-rebuilt runtime/kernel libraries
+// without re-running the heavy MLIR/LLVM lowering. Used by the C++-only
+// edit-test loop in heap-profile.py.
+//
+// Usage: eco-boot <input.elm|input.mlir|input.o> [options]
 //
 //===----------------------------------------------------------------------===//
 
@@ -95,7 +100,7 @@ namespace cl = llvm::cl;
 
 static cl::opt<std::string> inputFilename(
     cl::Positional,
-    cl::desc("<input .elm or .mlir file>"),
+    cl::desc("<input .elm, .mlir, or .o file>"),
     cl::Required);
 
 static cl::opt<std::string> outputFilename(
@@ -173,6 +178,10 @@ static bool isElmFile(llvm::StringRef path) {
 
 static bool isMlirFile(llvm::StringRef path) {
     return path.ends_with(".mlir");
+}
+
+static bool isObjectFile(llvm::StringRef path) {
+    return path.ends_with(".o");
 }
 
 /// Walk up from `startPath` looking for a directory containing elm.json.
@@ -547,6 +556,30 @@ int main(int argc, char **argv) {
     // we print the aggregated table just before main() returns.
     eco::LoweringStats stats;
 
+    // Fast path: when the input is an already-emitted object file, skip the
+    // MLIR parse / lowering / LLVM-IR / RS4GC / object-emission pipeline and
+    // go straight to the link step. This is the C++-only edit-test loop:
+    // .mlir hasn't changed, only the runtime/kernel libraries have, so the
+    // cached .o still reflects the current Elm-side compiler and only
+    // re-linking is required.
+    if (isObjectFile(inputFilename)) {
+        if (emitAction != EmitExe) {
+            llvm::errs()
+                << "Error: when input is an object file, --emit must be 'exe' "
+                << "(default); the MLIR/LLVM pipeline does not run for .o "
+                << "input.\n";
+            return 1;
+        }
+        int rc;
+        {
+            eco::LoweringStats::Scope scope(stats, "Link (clang++ driver)");
+            rc = linkExecutable(inputFilename, output);
+        }
+        if (printStats)
+            stats.print(llvm::errs());
+        return rc;
+    }
+
     // Step 1: Get MLIR input (either directly or via frontend compilation)
     std::string mlirFile;
     std::string tempMlirFile;
@@ -586,7 +619,8 @@ int main(int argc, char **argv) {
             }
         }
     } else {
-        llvm::errs() << "Error: Input file must be .elm or .mlir\n";
+        llvm::errs()
+            << "Error: Input file must be .elm, .mlir, or .o (re-link only)\n";
         return 1;
     }
 

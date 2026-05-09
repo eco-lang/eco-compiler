@@ -44,6 +44,10 @@ REPO_ROOT = Path(__file__).resolve().parent
 ECO_COMPILER = REPO_ROOT / "compiler/build-kernel/bin/eco-compiler"
 ECO_BOOT_NATIVE = REPO_ROOT / "build/runtime/src/codegen/eco-boot-native"
 ECO_COMPILER_MLIR = REPO_ROOT / "compiler/build-kernel/bin/eco-compiler.mlir"
+# Cached object file from `eco-boot-native --emit=obj eco-compiler.mlir`.
+# Lets the C++-only edit-test loop skip the heavy MLIR/LLVM lowering and only
+# re-run the link step against freshly rebuilt runtime/kernel libraries.
+ECO_COMPILER_OBJ = REPO_ROOT / "compiler/build-kernel/bin/eco-compiler.o"
 BUILD_KERNEL = REPO_ROOT / "compiler/build-kernel"
 ECO_BOOT_2_RUNNER = BUILD_KERNEL / "bin/eco-boot-2-runner.js"
 ECO_KERNEL_CPP = REPO_ROOT / "eco-kernel-cpp"
@@ -266,26 +270,90 @@ def _newest_mtime_under(root: Path, suffixes: tuple[str, ...]) -> float:
     return newest
 
 
-def _relink_eco_compiler() -> None:
-    """Re-lower eco-compiler.mlir to the eco-compiler ELF via eco-boot-native."""
+def _emit_eco_compiler_obj() -> None:
+    """Lower eco-compiler.mlir to a cached object file (Stage 6 minus the
+    link). The MLIR pipeline + LLVM IR + RS4GC + object emission run here;
+    the link step is deferred to `_link_eco_compiler_obj`. Splitting the two
+    lets a C++-only edit re-run only the cheap second half."""
     if not ECO_COMPILER_MLIR.exists():
-        sys.exit(f"ERROR: {ECO_COMPILER_MLIR} not found; cannot relink "
-                 "eco-compiler. Run Stage 5 first.")
-    print(f"[heap-profile] re-lowering {ECO_COMPILER_MLIR.name} via "
-          "eco-boot-native...", flush=True)
+        sys.exit(f"ERROR: {ECO_COMPILER_MLIR} not found; cannot emit object "
+                 "file. Run Stage 5 first.")
+    print(f"[heap-profile] emitting {ECO_COMPILER_OBJ.name} from "
+          f"{ECO_COMPILER_MLIR.name} (eco-boot-native --emit=obj)...",
+          flush=True)
     subprocess.run(
-        [str(ECO_BOOT_NATIVE), str(ECO_COMPILER_MLIR),
+        [str(ECO_BOOT_NATIVE), "--emit=obj",
+         str(ECO_COMPILER_MLIR), "-o", str(ECO_COMPILER_OBJ)],
+        cwd=REPO_ROOT, check=True)
+
+
+def _link_eco_compiler_obj() -> None:
+    """Link the cached eco-compiler.o + freshly-rebuilt runtime/kernel
+    static libraries into the eco-compiler ELF. Stage 6's link step in
+    isolation. eco-boot-native recognises a .o input and skips the MLIR/LLVM
+    pipeline, going straight to its `linkExecutable` driver."""
+    if not ECO_COMPILER_OBJ.exists():
+        sys.exit(f"ERROR: {ECO_COMPILER_OBJ} not found; cannot relink "
+                 "eco-compiler. Run --emit=obj first.")
+    print(f"[heap-profile] linking {ECO_COMPILER.name} from "
+          f"{ECO_COMPILER_OBJ.name} (eco-boot-native link-only)...",
+          flush=True)
+    subprocess.run(
+        [str(ECO_BOOT_NATIVE), str(ECO_COMPILER_OBJ),
          "-o", str(ECO_COMPILER)],
         cwd=REPO_ROOT, check=True)
 
 
-def _rebuild_compiler_mlir() -> None:
-    """Run Stage 5: eco-boot-2-runner.js compiles the Elm sources to MLIR.
-    Stale .ecot caches are removed first — JS-output stages do not invalidate
-    them, and leftovers from a previous MLIR build crash monomorphization."""
-    if not ECO_BOOT_2_RUNNER.exists():
-        sys.exit(f"ERROR: {ECO_BOOT_2_RUNNER} not found; cannot rebuild "
-                 f"{ECO_COMPILER_MLIR.name}. Run Stages 1-4 first.")
+# Bootstrap stages 2+ self-compile through Node and need a 12 GB heap.
+# bootstrap.md prescribes this exact value.
+_BOOTSTRAP_NODE_OPTIONS = "--max-old-space-size=12000"
+
+
+def _bootstrap_env() -> dict:
+    """Environment for Node-driven bootstrap stages. Inherits the parent's env
+    and overrides NODE_OPTIONS — the user's existing setting is replaced (not
+    merged with) so a too-small `--max-old-space-size` value upstream cannot
+    silently OOM the self-compile."""
+    return os.environ | {"NODE_OPTIONS": _BOOTSTRAP_NODE_OPTIONS}
+
+
+def _full_bootstrap_to_stage6() -> None:
+    """Wipe `compiler/build-kernel/bin/` and walk bootstrap.md Stages 1-6,
+    ending with a freshly linked `eco-compiler` ELF.
+
+    Stages 2-5 read intermediate artefacts (`eco-boot.js`, `eco-boot-2.js`,
+    `eco-boot-2-runner.js`) from `build-kernel/bin/`; if Elm sources have
+    moved on, those artefacts compile against stale code, so we wipe the
+    folder and regenerate everything from Stage 1. The Elm dependency cache
+    in `build-kernel/eco-stuff/` is preserved — only typed-object (.ecot)
+    files are scrubbed before Stage 5, since JS-output stages don't
+    invalidate them and leftovers crash monomorphization."""
+    bin_dir = BUILD_KERNEL / "bin"
+    print(f"[heap-profile] Elm sources newer than {ECO_COMPILER_MLIR.name} — "
+          f"clearing {bin_dir} and running bootstrap Stages 1-6...",
+          flush=True)
+    if bin_dir.exists():
+        shutil.rmtree(bin_dir)
+    bin_dir.mkdir(parents=True, exist_ok=True)
+
+    compiler_dir = REPO_ROOT / "compiler"
+    env = _bootstrap_env()
+
+    print("[heap-profile] Stage 1: stock Elm → build-xhr/bin/guida.js",
+          flush=True)
+    subprocess.run(["./scripts/build.sh", "bin"],
+                   cwd=compiler_dir, env=env, check=True)
+
+    print("[heap-profile] Stage 2: guida.js → build-kernel/bin/eco-boot.js",
+          flush=True)
+    subprocess.run(["./scripts/build-self.sh", "bin"],
+                   cwd=compiler_dir, env=env, check=True)
+
+    print("[heap-profile] Stages 3+4: fixed-point verification "
+          "(eco-boot-2.js, eco-boot-3.js)", flush=True)
+    subprocess.run(["./scripts/build-verify.sh"],
+                   cwd=compiler_dir, env=env, check=True)
+
     eco_stuff = BUILD_KERNEL / "eco-stuff"
     if eco_stuff.exists():
         for ecot in eco_stuff.rglob("*.ecot"):
@@ -293,8 +361,12 @@ def _rebuild_compiler_mlir() -> None:
                 ecot.unlink()
             except FileNotFoundError:
                 continue
-    print(f"[heap-profile] Elm sources newer than {ECO_COMPILER_MLIR.name} — "
-          "rebuilding via eco-boot-2-runner...", flush=True)
+
+    print(f"[heap-profile] Stage 5: eco-boot-2 → {ECO_COMPILER_MLIR.name}",
+          flush=True)
+    if not ECO_BOOT_2_RUNNER.exists():
+        sys.exit(f"ERROR: {ECO_BOOT_2_RUNNER} not found after Stages 3+4; "
+                 "build-verify.sh did not produce the runner.")
     subprocess.run(
         ["node", "--stack-size=65536", str(ECO_BOOT_2_RUNNER), "make",
          "--optimize",
@@ -302,22 +374,36 @@ def _rebuild_compiler_mlir() -> None:
          "--local-package", f"eco/kernel={ECO_KERNEL_CPP}",
          f"--output=bin/{ECO_COMPILER_MLIR.name}",
          str(ELM_ENTRY)],
-        cwd=BUILD_KERNEL, check=True)
+        cwd=BUILD_KERNEL, env=env, check=True)
+
+    print("[heap-profile] Stage 6: eco-boot-native lowers .mlir to "
+          f"{ECO_COMPILER_OBJ.name}, then links to eco-compiler ELF",
+          flush=True)
+    _emit_eco_compiler_obj()
+    _link_eco_compiler_obj()
 
 
 def ensure_binaries_fresh(skip: bool) -> dict:
     """Bring all build artefacts up to date in dependency order:
 
       1. Rebuild eco-boot-native if any runtime C++ source is newer.
-      2. Rebuild eco-compiler.mlir (Stage 5) if any compiler/src .elm
-         source is newer than it. Done before relink so a stale .mlir
-         (e.g. one referencing kernel symbols that the runtime has since
-         retired) can't make the relink fail.
-      3. Relink eco-compiler if eco-boot-native, runtime sources, or the
-         .mlir have moved."""
+      2. If any compiler/src .elm source is newer than eco-compiler.mlir,
+         wipe `compiler/build-kernel/bin/` and run the full bootstrap
+         (Stages 1-6 from guides/bootstrap.md). Stage 6 emits a fresh
+         eco-compiler.o cache and links the eco-compiler ELF, so steps 3
+         and 4 are skipped.
+      3. Refresh the cached eco-compiler.o (Stage 6 minus link) if it's
+         missing or older than eco-compiler.mlir.
+      4. Re-link eco-compiler if it's missing or older than the .o cache,
+         eco-boot-native, or any runtime C++ source. This is the fast
+         path for C++-only edits: the heavy MLIR/LLVM lowering is reused
+         from the cached .o, and only the clang++ link step runs."""
     outcome = {"checked": True, "rebuilt_eco_boot_native": False,
                "relinked_eco_compiler": False,
-               "rebuilt_compiler_mlir": False, "skipped": False}
+               "rebuilt_compiler_mlir": False,
+               "rebuilt_compiler_obj": False,
+               "ran_full_bootstrap": False,
+               "skipped": False}
     if skip:
         outcome["checked"] = False
         outcome["skipped"] = True
@@ -339,16 +425,29 @@ def ensure_binaries_fresh(skip: bool) -> dict:
     mlir_mtime = (ECO_COMPILER_MLIR.stat().st_mtime
                   if ECO_COMPILER_MLIR.exists() else 0.0)
     if not ECO_COMPILER_MLIR.exists() or mlir_mtime < elm_mtime:
-        _rebuild_compiler_mlir()
+        _full_bootstrap_to_stage6()
+        outcome["ran_full_bootstrap"] = True
         outcome["rebuilt_compiler_mlir"] = True
-        mlir_mtime = ECO_COMPILER_MLIR.stat().st_mtime
+        outcome["rebuilt_compiler_obj"] = True
+        outcome["relinked_eco_compiler"] = True
+        return outcome
+
+    obj_mtime = (ECO_COMPILER_OBJ.stat().st_mtime
+                 if ECO_COMPILER_OBJ.exists() else 0.0)
+    if not ECO_COMPILER_OBJ.exists() or obj_mtime < mlir_mtime:
+        # First run on a checkout that predates the .o cache, or the .mlir
+        # was regenerated outside of this script. Either way, we need a
+        # fresh object file before we can link.
+        _emit_eco_compiler_obj()
+        outcome["rebuilt_compiler_obj"] = True
+        obj_mtime = ECO_COMPILER_OBJ.stat().st_mtime
 
     compiler_mtime = ECO_COMPILER.stat().st_mtime if ECO_COMPILER.exists() else 0.0
     if (not ECO_COMPILER.exists()
             or compiler_mtime < boot_mtime
             or compiler_mtime < src_mtime
-            or compiler_mtime < mlir_mtime):
-        _relink_eco_compiler()
+            or compiler_mtime < obj_mtime):
+        _link_eco_compiler_obj()
         outcome["relinked_eco_compiler"] = True
     return outcome
 
