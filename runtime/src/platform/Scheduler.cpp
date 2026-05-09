@@ -562,6 +562,23 @@ void Scheduler::processReadyAsync() {
 
 namespace {
 
+// One-arg `EvalParamLayout`s used by the typed Task-dispatch path. Each
+// row describes a closure callback whose first stage takes a single
+// primitive arg of kind k (0=Boxed unused here, 1=Int, 2=Float, 3=Char)
+// and returns a boxed Task. Stored as a memory-compatible struct so we
+// can pass `&one_arg_layouts[k]` through `EvalParamLayout*`.
+struct OneArgLayoutHolder {
+    unsigned char num_params;
+    unsigned char result_kind;
+    unsigned char kinds[1];
+};
+static const OneArgLayoutHolder one_arg_layouts[4] = {
+    {1, 0, {0}},  // PK_Boxed (unused — boxed-value dispatch keeps callClosure1)
+    {1, 0, {1}},  // PK_Int
+    {1, 0, {2}},  // PK_Float
+    {1, 0, {3}},  // PK_Char
+};
+
 struct EncodedStackRootGuard {
     size_t saved_;
     EncodedStackRootGuard(uint64_t* slot) {
@@ -634,31 +651,50 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
                 if (!proc) break;
                 task = resolveRoot(proc);
                 if (!task) break;
-                // Closure ABI takes a boxed HPointer arg; re-box if Task.value
-                // was carried unboxed. The saving is upstream — no boxed
-                // primitive lived across the andThen chain or any GCs in
-                // between — we only pay the alloc here, at dispatch.
-                HPointer taskValue;
                 u8 valKind = static_cast<u8>(task->header.unboxed & 0x3);
+                HPointer newTask;
                 if (valKind == 0) {
-                    taskValue = task->value.p;
+                    // Boxed Task.value: HPointer flows through the legacy
+                    // closure-call entry unchanged.
+                    HPointer taskValue = task->value.p;
+                    newTask = callClosure1(popRes.callback, taskValue);
                 } else {
+                    // Primitive Task.value (Int / Float / Char). Hand the
+                    // raw bits to `eco_apply_closure_eval` along with a
+                    // 1-arg layout describing the kind. When the callback's
+                    // first stage was monomorphised to accept the primitive
+                    // natively (closure->unboxed[0] == valKind), the
+                    // splice's primitive-passthrough path delivers it
+                    // straight to the wrapper with no allocation. When the
+                    // callback expects a boxed arg, the runtime's splice
+                    // boxes once at the same boundary the old code did —
+                    // no regression. result_kind=0 because the callback
+                    // returns a Task (HPtr).
                     Unboxable v = task->value;
+                    int64_t typed_arg;
                     switch (valKind) {
                         case 1:
-                            taskValue = eco_alloc_int(v.i).toHPointer();
+                            typed_arg = v.i;
                             break;
-                        case 2:
-                            taskValue = eco_alloc_float(v.f).toHPointer();
+                        case 2: {
+                            double d = v.f;
+                            std::memcpy(&typed_arg, &d, sizeof(int64_t));
                             break;
+                        }
                         default:
-                            taskValue = eco_alloc_char(static_cast<uint32_t>(v.c)).toHPointer();
+                            typed_arg = static_cast<int64_t>(v.c);
                             break;
                     }
+                    HPtr resultBits = HPtr::fromBits(0);
+                    HPtr callbackHPtr =
+                        HPtr::fromBits(encodeHP(popRes.callback));
+                    eco_apply_closure_eval(
+                        callbackHPtr, &typed_arg, /*num_args=*/1,
+                        reinterpret_cast<const EvalParamLayout*>(
+                            &one_arg_layouts[valKind]),
+                        &resultBits, /*desired_kind=*/0);
+                    newTask = decodeHP(resultBits.toBits());
                 }
-                HPointer callback = popRes.callback;
-
-                HPointer newTask = callClosure1(callback, taskValue);
                 setRoot(newTask);
                 continue;
             } else {
