@@ -1700,6 +1700,53 @@ inline Closure* spliceArgsForSaturatedCall(uint64_t& closure_bits_inout,
 
 } // anonymous namespace
 
+// Typed-result sibling of `eco_closure_call_saturated`. Caller asserts the
+// closure is saturated by `num_newargs` (n_values + num_newargs ==
+// max_values); the helper writes the result into `result_slot` cast to the
+// type implied by `desired_kind`. When the closure evaluator's K matches
+// `desired_kind`, no boxing/unboxing happens — the primitive flows directly
+// from the wrapper into the result slot. When K and desired_kind disagree,
+// `invokeSaturatedTyped` boxes or extracts as needed.
+//
+// This entry point exists so JIT-emitted call sites whose SSA result type
+// is primitive (i64/f64/i16) can avoid `eco_closure_call_saturated`'s
+// hardcoded `desired_kind=0` boxing on the K!=0 path.
+extern "C" void eco_closure_call_saturated_eval(
+    HPtr closure_hptr, uint64_t* new_args, uint32_t num_newargs,
+    const EvalParamLayout* layout, void* result_slot, uint8_t desired_kind) {
+    uint64_t closure_bits = closure_hptr.toBits();
+    void* closure_ptr = hpointerToPtr(closure_bits);
+    if (!closure_ptr) {
+        // Zero-init the result slot for a defined value on null-closure.
+        // (Same shape as `eco_apply_closure_eval`'s null guard.)
+        switch (desired_kind) {
+            case 0: *static_cast<HPtr*>(result_slot) = HPtr::fromBits(0); break;
+            case 1: *static_cast<int64_t*>(result_slot) = 0; break;
+            case 2: *static_cast<double*>(result_slot) = 0.0; break;
+            case 3: *static_cast<uint16_t*>(result_slot) = 0; break;
+        }
+        return;
+    }
+    Closure* closure = static_cast<Closure*>(closure_ptr);
+    uint8_t K = closure->result_kind;
+
+    size_t saved_range = eco_gc_stack_range_point();
+    eco_gc_push_stack_range(&closure_bits, 1, 1);
+    if (num_newargs > 0 && layout) {
+        uint64_t hptrMask = 0;
+        for (uint32_t i = 0; i < num_newargs && i < 64; ++i) {
+            if (layout->kinds[i] == 0) hptrMask |= (uint64_t{1} << i);
+        }
+        if (hptrMask != 0) {
+            eco_gc_push_stack_range(new_args, num_newargs, hptrMask);
+        }
+    }
+    invokeSaturatedTyped(closure_bits,
+                         reinterpret_cast<int64_t*>(new_args),
+                         num_newargs, layout, K, desired_kind, result_slot);
+    eco_gc_restore_stack_range_point(saved_range);
+}
+
 extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args, uint32_t num_newargs, const EvalParamLayout* layout) {
     uint64_t closure_bits = closure_hptr.toBits();
     void* closure_ptr = hpointerToPtr(closure_bits);

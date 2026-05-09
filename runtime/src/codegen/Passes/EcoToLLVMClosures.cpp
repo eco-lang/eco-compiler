@@ -1564,14 +1564,11 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
         rewriter.create<LLVM::StoreOp>(loc, arg, argDstPtr);
     }
 
-    // === Call eco_closure_call_saturated(closure_hptr, new_args, num_newargs, layout) ===
-    //
-    // The runtime needs the per-slot ParamKind for new_args to decide
-    // whether to un-box (caller passed PK_Boxed; closure expects a
-    // primitive) or box (rare opposite). Stop dropping the layout: build
-    // one from origNewArgTypes (or fall back to the SSA types when those
-    // aren't available).
-    auto closureCallFunc = runtime.getOrCreateClosureCallSaturated(rewriter);
+    // === Build the per-slot ParamKind layout for new_args ===
+    // The runtime needs this to know the kind of each typed arg slot so it
+    // can un-box (caller passed PK_Boxed; closure expects a primitive) or
+    // box (rare opposite) at the splice. Build from origNewArgTypes (or
+    // fall back to the SSA types when those aren't available).
     auto numNewArgsI32 = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int64_t>(numNewArgs));
 
     Value layoutArg;
@@ -1607,67 +1604,99 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
         layoutArg = rewriter.create<LLVM::ZeroOp>(loc, ptrTy).getResult();
     }
 
+    // === Pick the typed-result entry point when the call's result type is
+    // primitive (i64/f64/i16). The boxed-result eco_closure_call_saturated
+    // hardcodes desired_kind=0 in its K!=0 path → it boxes every Int/Float/
+    // Char return with eco_alloc_int/float/char and the JIT immediately
+    // unboxes via resolve+load. Routing through eco_closure_call_saturated_
+    // eval lets the wrapper write the primitive straight into the result
+    // slot (no allocation, no resolve, no load-at-offset-8). ===
+    auto i16Ty = IntegerType::get(ctx, 16);
+    uint8_t desiredKind = 0;
+    Type slotTy = ptrTy;
+    if (origResultType) {
+        if (origResultType.isInteger(64))      { desiredKind = 1; slotTy = i64Ty; }
+        else if (origResultType.isF64())        { desiredKind = 2; slotTy = f64Ty; }
+        else if (auto it = dyn_cast<IntegerType>(origResultType);
+                 it && it.getWidth() < 64)       { desiredKind = 3; slotTy = i16Ty; }
+        // !eco.value or other → desiredKind stays 0.
+    } else {
+        // No origResultType: fall back to the converted resultType. Treat
+        // raw i64 as Int (matches the legacy heuristic a few lines below
+        // that boxed an HPtr-returning Int via resolve+load).
+        if (resultType.isInteger(64))           { desiredKind = 1; slotTy = i64Ty; }
+        else if (resultType.isF64())             { desiredKind = 2; slotTy = f64Ty; }
+        else if (auto it = dyn_cast<IntegerType>(resultType);
+                 it && it.getWidth() < 64)        { desiredKind = 3; slotTy = i16Ty; }
+    }
+
+    if (desiredKind != 0) {
+        // Allocate a primitive-typed result slot at function entry so its
+        // lifetime spans any safepoint.
+        Value resultSlot;
+        {
+            OpBuilder::InsertionGuard guard(rewriter);
+            auto parentFunc = safeOp ? safeOp->getParentOfType<LLVM::LLVMFuncOp>() : nullptr;
+            if (parentFunc) rewriter.setInsertionPointToStart(&parentFunc.getBody().front());
+            auto oneConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 1);
+            resultSlot = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, slotTy, oneConst);
+        }
+        // Zero-init so a partially-completed apply leaves a defined value.
+        Value zero;
+        if (desiredKind == 1) {
+            zero = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 0);
+        } else if (desiredKind == 2) {
+            auto zeroI = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 0);
+            zero = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, zeroI);
+        } else {
+            zero = rewriter.create<LLVM::ConstantOp>(loc, i16Ty, 0);
+        }
+        rewriter.create<LLVM::StoreOp>(loc, zero, resultSlot);
+
+        auto desiredKindConst = rewriter.create<LLVM::ConstantOp>(loc, i8Ty,
+            static_cast<int64_t>(desiredKind));
+        auto evalFunc = runtime.getOrCreateClosureCallSaturatedEval(rewriter);
+        if (safeOp)
+            emitSafepointMarker(safeOp, rewriter, runtime, liveRoots);
+        rewriter.create<LLVM::CallOp>(loc, evalFunc,
+            ValueRange{closureI64, newArgsArray, numNewArgsI32, layoutArg,
+                       resultSlot, desiredKindConst});
+
+        emitRestoreArgsRootRange(rewriter, loc, runtime, savedRange);
+
+        Value result = rewriter.create<LLVM::LoadOp>(loc, slotTy, resultSlot);
+        // Adapt to caller's expected resultType if it differs in width
+        // (e.g. resultType is the converted Char/i32 form). The slotTy ==
+        // resultType case is the common one.
+        if (slotTy != resultType) {
+            if (auto ity = dyn_cast<IntegerType>(resultType);
+                ity && ity.getWidth() < 16 && desiredKind == 3) {
+                result = rewriter.create<LLVM::TruncOp>(loc, resultType, result);
+            }
+        }
+        return result;
+    }
+
+    // === Boxed-result path: closure → HPtr → caller ===
+    auto closureCallFunc = runtime.getOrCreateClosureCallSaturated(rewriter);
     if (safeOp)
         emitSafepointMarker(safeOp, rewriter, runtime, liveRoots);
     auto runtimeCall = rewriter.create<LLVM::CallOp>(
         loc, closureCallFunc, ValueRange{closureI64, newArgsArray, numNewArgsI32, layoutArg});
     Value resultI64 = runtimeCall.getResult();
 
-    // Restore GC root range stack.
     emitRestoreArgsRootRange(rewriter, loc, runtime, savedRange);
 
-    // === Convert result from HPointer i64 to caller's expected type ===
-    // The runtime returns HPointer-encoded i64. Use origResultType to unbox:
-    //   - !eco.value → pass through HPointer
-    //   - Int (i64)  → resolve HPointer → load value at offset 8
-    //   - Float (f64) → resolve → load i64 → bitcast to f64
-    //   - Char (i16)  → resolve → load i64 → trunc
-    //   - No orig type → fallback
-    auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-
-    // resultI64 is now ptr<1> (HPTR_TY) from the runtime call.
-    Value result;
+    // For the boxed path, origResultType is !eco.value (or unknown +
+    // resultType is a pointer): pass the HPointer through.
     if (origResultType && isa<eco::ValueType>(origResultType)) {
-        // !eco.value → ptr<1> pass through
-        result = resultI64;
-    } else if (origResultType && origResultType.isInteger(64)) {
-        // Int → unbox: resolve HPointer → load i64 value at offset 8
-        auto resolveResult = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{resultI64});
-        auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
-        auto valPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty,
-                                                    resolveResult.getResult(), ValueRange{off8});
-        result = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valPtr);
-    } else if (origResultType && origResultType.isF64()) {
-        auto resolveResult = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{resultI64});
-        auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
-        auto valPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty,
-                                                    resolveResult.getResult(), ValueRange{off8});
-        Value loadedI64 = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valPtr);
-        result = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, loadedI64);
-    } else if (origResultType && isa<IntegerType>(origResultType) &&
-               cast<IntegerType>(origResultType).getWidth() < 64) {
-        auto resolveResult = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{resultI64});
-        auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
-        auto valPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty,
-                                                    resolveResult.getResult(), ValueRange{off8});
-        Value loadedI64 = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valPtr);
-        result = rewriter.create<LLVM::TruncOp>(loc, resultType, loadedI64);
-    } else if (!origResultType && resultType == f64Ty) {
-        auto resolveResult = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{resultI64});
-        auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
-        auto valPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty,
-                                                    resolveResult.getResult(), ValueRange{off8});
-        Value loadedI64 = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valPtr);
-        result = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, loadedI64);
-    } else if (isHPtrLLVMType(resultType)) {
-        // ptr<1> result — pass through
-        result = resultI64;
-    } else {
-        // Default: pass through
-        result = resultI64;
+        return resultI64;
     }
-
-    return result;
+    if (isHPtrLLVMType(resultType)) {
+        return resultI64;
+    }
+    // Default: pass through.
+    return resultI64;
 }
 
 /// Implementation of emitUnknownClosureCall.

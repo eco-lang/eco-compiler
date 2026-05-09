@@ -373,6 +373,17 @@ HPtr eco_pap_extend(HPtr closure, uint64_t* args, uint32_t num_newargs, uint64_t
 /// @return Result of the function call (as i64)
 HPtr eco_closure_call_saturated(HPtr closure, uint64_t* new_args, uint32_t num_newargs, const Elm::EvalParamLayout* layout);
 
+/// Typed-result sibling of `eco_closure_call_saturated`. Writes the result
+/// into `result_slot` cast to the type implied by `desired_kind`
+/// (0=HPtr, 1=int64_t, 2=double, 3=uint16_t). When the closure evaluator's
+/// real return kind matches `desired_kind`, no boxing happens — the
+/// primitive flows directly from the wrapper into the slot. Used by the JIT
+/// at saturated call sites whose SSA result type is primitive.
+void eco_closure_call_saturated_eval(
+    HPtr closure, uint64_t* new_args, uint32_t num_newargs,
+    const Elm::EvalParamLayout* layout, void* result_slot,
+    uint8_t desired_kind);
+
 /// Applies arguments to a closure with known ABI but unknown staging.
 /// Reads the closure header to determine saturation at runtime, then routes:
 ///   - under-saturated → eco_pap_extend (typed args + bitmap derived from layout)

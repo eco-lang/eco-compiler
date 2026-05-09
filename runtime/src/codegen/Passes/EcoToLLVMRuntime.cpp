@@ -432,6 +432,17 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateClosureCallSaturated(OpBuilder &builder)
     return getOrCreateFunc(builder, "eco_closure_call_saturated", funcTy);
 }
 
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateClosureCallSaturatedEval(OpBuilder &builder) const {
+    // eco_closure_call_saturated_eval(closure: hptr, new_args: ptr, num_newargs: i32,
+    //                                  layout: ptr, result_slot: ptr, desired_kind: i8) -> void
+    auto *ctx = builder.getContext();
+    auto i8Ty = IntegerType::get(ctx, 8);
+    auto voidTy = LLVM::LLVMVoidType::get(ctx);
+    auto funcTy = LLVM::LLVMFunctionType::get(voidTy,
+        {HPTR_TY, PTR_TY, I32_TY, PTR_TY, PTR_TY, i8Ty});
+    return getOrCreateFunc(builder, "eco_closure_call_saturated_eval", funcTy);
+}
+
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateApplyClosure(OpBuilder &builder) const {
     // eco_apply_closure(closure_hptr: hptr, args: ptr, num_args: i32) -> hptr
     auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY, PTR_TY, I32_TY});
