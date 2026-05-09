@@ -112,6 +112,13 @@ public:
         return config_.large_object_threshold;
     }
 
+    // Returns the calling thread's ThreadLocalHeap (or nullptr if the
+    // thread isn't initialized). Public form of the internal accessor; used
+    // by the GC_STATS_TLH_RECORD_ALLOC helper to find the current thread's
+    // GCStats from a free function context. Inline because it's just a
+    // thread-local read.
+    ThreadLocalHeap* getCurrentThreadHeap() const noexcept { return tl_heap_; }
+
     // ========== Garbage Collection ==========
 
     // Triggers a minor GC on the thread-local nursery.

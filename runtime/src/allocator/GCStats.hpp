@@ -17,6 +17,8 @@
 #include <chrono>
 #include <cstdint>
 
+#include "Heap.hpp"  // for Tag (per-kind allocation histogram).
+
 // ============================================================================
 // GC Statistics Configuration
 // ============================================================================
@@ -116,6 +118,27 @@ public:
     // bucket[1] - this counter at print time.
     uint64_t nursery_alloc_size_16_24_count = 0;
     uint64_t oldgen_alloc_size_16_24_count  = 0;
+
+    // ========== Per-Kind Mutator Allocation Histogram ==========
+    //
+    // Counts ThreadLocalHeap-level mutator allocations grouped by Tag,
+    // populated from initHeaderForTag (the single chokepoint that runs on
+    // every successful mutator allocation with both size and tag in scope).
+    //
+    // Excludes:
+    //   - GC promotion paths (NurserySpace::evacuate memcpys the source
+    //     header instead of calling initHeaderForTag).
+    //   - Region carve-outs from allocateRegionSlow (caller installs
+    //     per-sub-object headers afterward; no single kind to attribute).
+    //   - Large body allocations from allocateLargeBody (payload buffers,
+    //     not logical objects).
+    //
+    // Indexed by Tag enum value; the array is sized for the full enum so
+    // an out-of-range cast (defensive) cannot overflow.
+    static constexpr int NUM_ALLOC_TAGS = static_cast<int>(Tag_Forward) + 1;
+
+    uint64_t tlh_alloc_count_by_tag[NUM_ALLOC_TAGS] = {0};
+    uint64_t tlh_alloc_bytes_by_tag[NUM_ALLOC_TAGS] = {0};
 
     // ========== Old-Gen Page Residency Histogram ==========
     //
@@ -405,6 +428,13 @@ public:
     // so this method does NOT touch the histogram (avoids double-counting).
     void recordOldGenDirectAllocation(size_t bytes);
 
+    // Records a typed mutator allocation through the ThreadLocalHeap path,
+    // bumping the per-tag count and byte totals. Driven from
+    // initHeaderForTag, the single chokepoint that sees every successful
+    // mutator allocation with its tag. Out-of-range tags (defensive) are
+    // dropped silently.
+    void recordTLHAllocation(size_t bytes, Tag tag);
+
     // Records completion of a minor GC cycle with timing and reclaimed bytes.
     void recordMinorGCEnd(uint64_t elapsed_ns, size_t freed);
 
@@ -477,6 +507,22 @@ private:
 };
 
 // ============================================================================
+// Per-Thread Stats Lookup Helper
+// ============================================================================
+//
+// The TLH per-kind histogram is recorded from `initHeaderForTag`, a free
+// function that doesn't have a `GCStats&` in scope. Rather than thread one
+// through (and force every call site to pay for it), we route through this
+// helper. Definition lives in GCStats.cpp where Allocator.hpp can be
+// included without creating a header cycle (Allocator.hpp transitively
+// pulls in GCStats.hpp via NurserySpace/OldGenSpace).
+//
+// Declared unconditionally so the symbol exists either way; the helper is
+// only ever called from the stats-on branch of GC_STATS_TLH_RECORD_ALLOC,
+// so when ENABLE_GC_STATS=0 it is unused and compiles away.
+void recordTLHAllocOnCurrentThread(size_t bytes, Tag tag) noexcept;
+
+// ============================================================================
 // Zero-Overhead Macros
 // ============================================================================
 
@@ -491,6 +537,13 @@ private:
 
     #define GC_STATS_OLDGEN_DIRECT_RECORD_ALLOC(stats, bytes) \
         do { (stats).recordOldGenDirectAllocation(bytes); } while(0)
+
+    // Per-kind ThreadLocalHeap allocation hook. Called from initHeaderForTag,
+    // which has both size and tag in scope but no GCStats reference; the
+    // helper does the thread-local lookup. Disabled-build expands to nothing
+    // so allocateFast keeps its `(size_t)` signature with no extra arg.
+    #define GC_STATS_TLH_RECORD_ALLOC(bytes, tag) \
+        do { ::Elm::recordTLHAllocOnCurrentThread((bytes), (tag)); } while(0)
 
     #define GC_STATS_MINOR_RECORD_GC_END(stats, elapsed_ns, freed) \
         do { (stats).recordMinorGCEnd(elapsed_ns, freed); } while(0)
@@ -537,6 +590,7 @@ private:
     #define GC_STATS_MINOR_RECORD_ALLOC(stats, bytes) do {} while(0)
     #define GC_STATS_OLDGEN_RECORD_ALLOC(stats, bytes) do {} while(0)
     #define GC_STATS_OLDGEN_DIRECT_RECORD_ALLOC(stats, bytes) do {} while(0)
+    #define GC_STATS_TLH_RECORD_ALLOC(bytes, tag) do {} while(0)
     #define GC_STATS_MINOR_RECORD_GC_END(stats, elapsed_ns, freed) do {} while(0)
     #define GC_STATS_MINOR_INC_SURVIVORS(stats) do {} while(0)
     #define GC_STATS_MINOR_INC_PROMOTED(stats) do {} while(0)

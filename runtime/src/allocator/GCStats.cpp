@@ -11,7 +11,9 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include "Allocator.hpp"
 #include "GCStats.hpp"
+#include "ThreadLocalHeap.hpp"
 
 namespace Elm {
 
@@ -43,6 +45,37 @@ static std::string formatBytes(size_t bytes) {
         oss << std::setprecision(0) << (bytes / (1024.0 * 1024.0)) << " MiB";
     }
     return oss.str();
+}
+
+// Maps a Tag enum value to a short human-readable name for the per-kind
+// allocation histogram. Unknown values fall back to "Tag_<n>" so a new tag
+// added without updating this table still prints something sensible.
+static const char* tagName(int t) {
+    switch (t) {
+        case Tag_Int:               return "Int";
+        case Tag_Float:             return "Float";
+        case Tag_Char:              return "Char";
+        case Tag_String:            return "String";
+        case Tag_Tuple2:            return "Tuple2";
+        case Tag_Tuple3:            return "Tuple3";
+        case Tag_Cons:              return "Cons";
+        case Tag_Custom:            return "Custom";
+        case Tag_Record:            return "Record";
+        case Tag_DynRecord:         return "DynRecord";
+        case Tag_FieldGroup:        return "FieldGroup";
+        case Tag_Closure:           return "Closure";
+        case Tag_Process:           return "Process";
+        case Tag_Task:              return "Task";
+        case Tag_ByteBuffer:        return "ByteBuffer";
+        case Tag_Array:             return "Array";
+        case Tag_StringRope:        return "StringRope";
+        case Tag_StringSlice:       return "StringSlice";
+        case Tag_LargeStringHeader: return "LargeStringHeader";
+        case Tag_LargeByteHeader:   return "LargeByteHeader";
+        case Tag_Free:              return "Free";
+        case Tag_Forward:           return "Forward";
+        default:                    return "<unknown>";
+    }
 }
 
 // Helper to format nanoseconds with appropriate units.
@@ -345,6 +378,24 @@ void GCStats::recordOldGenAllocation(size_t bytes) {
     size_t bucket = allocSizeBucketIndex(bytes, OLDGEN_ALLOC_BUCKETS);
     oldgen_alloc_size_histogram[bucket]++;
     if (bytes >= 16 && bytes < 24) oldgen_alloc_size_16_24_count++;
+}
+
+// Records a typed mutator allocation through the ThreadLocalHeap path.
+// Called from initHeaderForTag, exactly once per successful mutator alloc.
+void GCStats::recordTLHAllocation(size_t bytes, Tag tag) {
+    int idx = static_cast<int>(tag);
+    if (idx < 0 || idx >= NUM_ALLOC_TAGS) return;
+    tlh_alloc_count_by_tag[idx]++;
+    tlh_alloc_bytes_by_tag[idx] += bytes;
+}
+
+// Helper: routes a per-tag mutator allocation event from a free function
+// (initHeaderForTag) to the calling thread's GCStats. Exposed via the
+// GC_STATS_TLH_RECORD_ALLOC macro; in stats-disabled builds the macro
+// expands to nothing and this body is dead code.
+void recordTLHAllocOnCurrentThread(size_t bytes, Tag tag) noexcept {
+    ThreadLocalHeap* tlh = Allocator::instance().getCurrentThreadHeap();
+    if (tlh) tlh->getStats().recordTLHAllocation(bytes, tag);
 }
 
 // Mutator-direct old-gen allocation: counted toward the cross-generation
@@ -651,6 +702,12 @@ void GCStats::combine(const GCStats& other) {
     }
     nursery_alloc_size_16_24_count += other.nursery_alloc_size_16_24_count;
     oldgen_alloc_size_16_24_count  += other.oldgen_alloc_size_16_24_count;
+
+    // Combine per-kind ThreadLocalHeap allocation counters.
+    for (int i = 0; i < NUM_ALLOC_TAGS; i++) {
+        tlh_alloc_count_by_tag[i] += other.tlh_alloc_count_by_tag[i];
+        tlh_alloc_bytes_by_tag[i] += other.tlh_alloc_bytes_by_tag[i];
+    }
 
     // Combine page residency histogram.
     for (int i = 0; i < RESIDENCY_BUCKETS; i++) {
@@ -1109,6 +1166,57 @@ void GCStats::print() const {
                         nursery_alloc_size_histogram,
                         NURSERY_ALLOC_BUCKETS,
                         nursery_alloc_size_16_24_count);
+
+    // ========== Per-Kind Mutator Allocation Histogram ==========
+    //
+    // Sourced from initHeaderForTag (every successful mutator allocation
+    // through the typed ThreadLocalHeap path). Sorted by count descending
+    // so the dominant kinds float to the top. We also report total bytes
+    // and average size per kind, which is more useful than count alone for
+    // variable-width tags (Custom, Record, Closure, String, Array).
+    {
+        struct Row { int tag; uint64_t count; uint64_t bytes; };
+        Row rows[NUM_ALLOC_TAGS];
+        int n_rows = 0;
+        uint64_t total_count = 0;
+        uint64_t total_bytes = 0;
+        uint64_t max_count = 0;
+        for (int i = 0; i < NUM_ALLOC_TAGS; i++) {
+            uint64_t c = tlh_alloc_count_by_tag[i];
+            if (c == 0) continue;
+            rows[n_rows++] = {i, c, tlh_alloc_bytes_by_tag[i]};
+            total_count += c;
+            total_bytes += tlh_alloc_bytes_by_tag[i];
+            max_count = std::max(max_count, c);
+        }
+        if (total_count > 0) {
+            std::sort(rows, rows + n_rows, [](const Row& a, const Row& b) {
+                return a.count > b.count;
+            });
+
+            std::cout << "\nMutator Allocations by Object Kind:" << std::endl;
+            const int BAR_WIDTH = 40;
+            for (int r = 0; r < n_rows; r++) {
+                const Row& row = rows[r];
+                double avg = static_cast<double>(row.bytes)
+                             / static_cast<double>(row.count);
+                double pct = (row.count * 100.0) / total_count;
+                int bar_len = max_count > 0
+                    ? static_cast<int>((row.count * BAR_WIDTH) / max_count)
+                    : 0;
+
+                std::cout << "  " << std::setw(18) << std::left
+                          << tagName(row.tag) << std::right << ": ";
+                for (int j = 0; j < bar_len; j++) std::cout << "█";
+                std::cout << " " << row.count << " ("
+                          << std::fixed << std::setprecision(1) << pct << "%, "
+                          << formatBytes(row.bytes) << " total, "
+                          << std::setprecision(1) << avg << " B avg)"
+                          << std::endl;
+            }
+        }
+    }
+
     printAllocHistogram("Old-Gen Allocation Size Histogram",
                         oldgen_alloc_size_histogram,
                         OLDGEN_ALLOC_BUCKETS,
@@ -1239,6 +1347,11 @@ void GCStats::reset() {
     }
     nursery_alloc_size_16_24_count = 0;
     oldgen_alloc_size_16_24_count  = 0;
+
+    for (int i = 0; i < NUM_ALLOC_TAGS; i++) {
+        tlh_alloc_count_by_tag[i] = 0;
+        tlh_alloc_bytes_by_tag[i] = 0;
+    }
 
     // Reset page residency histogram.
     for (int i = 0; i < RESIDENCY_BUCKETS; i++) {

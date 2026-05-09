@@ -111,6 +111,10 @@ void initHeaderForTag(Header* hdr, Tag tag, size_t size) {
             hdr->size = static_cast<u32>(size);
             break;
     }
+
+    // Per-kind mutator allocation accounting. No-op when ENABLE_GC_STATS=0;
+    // does a thread-local lookup + two array bumps when stats are on.
+    GC_STATS_TLH_RECORD_ALLOC(size, tag);
 }
 
 ThreadLocalHeap::ThreadLocalHeap(Allocator* parent,
