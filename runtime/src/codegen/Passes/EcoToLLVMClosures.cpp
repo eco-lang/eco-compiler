@@ -1281,19 +1281,44 @@ static uint8_t mlirTypeToParamKind(Type ty) {
 /// interpret slot N's kind without a separate layout descriptor.
 ///
 /// Slot i's kind comes from the i-th parameter of the target function via
-/// mlirTypeToParamKind. Returns 0 if `funcSymbol` has no entry in
-/// origFuncTypes (rare; the wrapper builder reports a fatal error in that
-/// case for kernels).
+/// mlirTypeToParamKind. The lookup chain mirrors getOrCreateWrapper's so
+/// the bitmap and the wrapper see the same parameter signature: any
+/// divergence makes the wrapper unbox raw primitives from slots whose
+/// closure->unboxed bitmap says PK_Boxed, and spliceArgsForSaturatedCall
+/// then mis-routes args. If no source resolves the symbol we abort hard
+/// rather than silently default to all-PK_Boxed.
 static uint64_t deriveAllParamKindsBitmap(const EcoRuntime &runtime,
                                           StringRef funcSymbol, int64_t arity) {
-    auto it = runtime.origFuncTypes.find(funcSymbol);
-    if (it == runtime.origFuncTypes.end()) return 0;
-    auto fnType = it->second;
+    SmallVector<Type, 8> paramTypes;
+    if (auto it = runtime.origFuncTypes.find(funcSymbol);
+        it != runtime.origFuncTypes.end()) {
+        for (Type t : it->second.getInputs())
+            paramTypes.push_back(t);
+    } else if (auto funcFunc =
+                   runtime.lookupSymbol<func::FuncOp>(funcSymbol)) {
+        for (Type t : funcFunc.getFunctionType().getInputs())
+            paramTypes.push_back(t);
+    } else if (auto llvmFunc =
+                   runtime.lookupSymbol<LLVM::LLVMFuncOp>(funcSymbol)) {
+        auto fnType = llvmFunc.getFunctionType();
+        // Post-conversion LLVM types still answer mlirTypeToParamKind
+        // correctly: ptr addrspace(1) → PK_Boxed, i64 → PK_Int, f64 →
+        // PK_Float, i16 → PK_Char.
+        for (unsigned i = 0; i < fnType.getNumParams(); ++i)
+            paramTypes.push_back(fnType.getParamType(i));
+    } else {
+        llvm::report_fatal_error(
+            "deriveAllParamKindsBitmap: no signature available for '" +
+            funcSymbol +
+            "'; closure bitmap would silently default to PK_Boxed and "
+            "diverge from the wrapper's typed-newargs decoding");
+    }
+
     uint64_t bitmap = 0;
     int64_t lim = arity;
-    if (lim > (int64_t)fnType.getNumInputs()) lim = (int64_t)fnType.getNumInputs();
+    if (lim > (int64_t)paramTypes.size()) lim = (int64_t)paramTypes.size();
     for (int64_t i = 0; i < lim; ++i) {
-        uint64_t kind = mlirTypeToParamKind(fnType.getInput(i)) & 0x3ULL;
+        uint64_t kind = mlirTypeToParamKind(paramTypes[i]) & 0x3ULL;
         bitmap |= kind << (2 * i);
     }
     return bitmap;
