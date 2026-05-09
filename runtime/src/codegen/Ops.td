@@ -1143,10 +1143,13 @@ def Eco_PapExtendOp : Eco_Op<"papExtend", [
     EcoToLLVM loads the header, computes remaining = max_values - n_values,
     and branches at runtime:
     - Under-saturated: returns new PAP (!eco.value)
-    - Exactly saturated: calls evaluator, returns result (!eco.value)
-    - Over-saturated: saturates, then chains to result closure (!eco.value)
-    Result type must be !eco.value. CGEN_052/CGEN_056 do not apply.
-    Typed closure calling attributes are ignored.
+    - Exactly saturated: calls evaluator, returns result
+    - Over-saturated: saturates, then chains to result closure
+    Result type may be !eco.value, or a primitive (i64/f64/i16) when Mono
+    types the call as a primitive return — in that case the JIT lowers
+    with the matching `desired_kind` and the runtime writes the primitive
+    straight into the result slot. CGEN_052/CGEN_056 do not apply. Typed
+    closure calling attributes are ignored.
 
     Each new-arg slot occupies 2 bits of `newargs_unboxed_bitmap`: `00` =
     boxed HPointer, `01` = Int, `10` = Float, `11` = Char. Slot i's kind

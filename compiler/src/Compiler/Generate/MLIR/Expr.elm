@@ -1402,7 +1402,7 @@ callKindToAttrString callKind =
 
 
 generateGenericApply : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
-generateGenericApply ctx func args _ _ =
+generateGenericApply ctx func args resultType _ =
     let
         funcResult : ExprResult
         funcResult =
@@ -1437,19 +1437,29 @@ generateGenericApply ctx func args _ _ =
         ( resVar, ctx3 ) =
             Ctx.freshVar ctx2
 
-        -- Result type is always !eco.value for generic apply
-        resultMlirType =
-            Types.ecoValue
-
         -- _result_kind matches the closure evaluator's real C-ABI return
-        -- kind. The closure's first-stage evaluator returns whatever
-        -- `Mono.stageReturnType (Mono.typeOf func)` gives — for a
-        -- multi-stage closure (e.g. `String -> Int -> Int` with
-        -- staging [1,1]) this is another function, hence boxed (K=0).
-        -- For a single-stage closure, this is the actual result type.
+        -- kind. Derived from the call's Mono result type — Mono types the
+        -- call as the saturated outcome (primitive when the call applies
+        -- enough args to land on a primitive return, function type for
+        -- under-saturation). When primitive, propagate the kind both as
+        -- the op's SSA result type AND as the `_result_kind` attribute so
+        -- `lowerGenericApply` can pass the matching `desired_kind` to
+        -- `eco_apply_closure_eval` and skip the wrapper-side return box
+        -- in `invokeSaturatedTyped`.
+        callResultMlirType =
+            Types.monoTypeToAbi resultType
+
         genericApplyResultKind =
-            Types.mlirTypeToKind
-                (Types.monoTypeToAbi (Mono.stageReturnType (Mono.typeOf func)))
+            Types.mlirTypeToKind callResultMlirType
+
+        -- SSA result type: primitive when _result_kind is non-zero,
+        -- !eco.value otherwise (function-type result, boxed Custom, etc.).
+        resultMlirType =
+            if genericApplyResultKind == 0 then
+                Types.ecoValue
+
+            else
+                callResultMlirType
 
         genericApplyResultKindAttr =
             if genericApplyResultKind == 0 then
@@ -1498,7 +1508,7 @@ Result type is always !eco.value since saturation is unknown at compile time.
 
 -}
 generateUnknownSegmentationCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
-generateUnknownSegmentationCall ctx func args _ _ =
+generateUnknownSegmentationCall ctx func args resultType _ =
     let
         funcResult : ExprResult
         funcResult =
@@ -1551,23 +1561,29 @@ generateUnknownSegmentationCall ctx func args _ _ =
         ( resVar, ctx3 ) =
             Ctx.freshVar ctx2
 
-        -- Result type is always !eco.value for segmentation_unknown
-        -- (saturation is unknown at compile time, so the immediate result
-        -- might be either a closure HPtr or a saturated value — we keep it
-        -- boxed to avoid type-divergent branches in the IR).
-        resultMlirType =
-            Types.ecoValue
-
         -- _result_kind matches the closure evaluator's real C-ABI return
-        -- kind, derived from the closure's first-stage return type via
-        -- `Mono.stageReturnType`. This is what `closure->evaluator`
-        -- actually returns, not the call's eventual saturated result —
-        -- a multi-stage closure called via segmentation_unknown returns
-        -- an intermediate closure (boxed) regardless of the eventual
-        -- saturated type.
+        -- kind. Derived from the call's Mono result type — Mono types
+        -- the call as the saturated outcome (primitive when the call
+        -- applies enough args to land on a primitive return; function
+        -- type for under-saturation). When primitive, propagate the
+        -- kind both as the op's SSA result type AND as `_result_kind`
+        -- so `lowerSegmentationUnknown` passes the matching
+        -- `desired_kind` to `eco_apply_closure_eval`, skipping the
+        -- wrapper-side return box in `invokeSaturatedTyped`.
+        callResultMlirType =
+            Types.monoTypeToAbi resultType
+
         unknownSegResultKind =
-            Types.mlirTypeToKind
-                (Types.monoTypeToAbi (Mono.stageReturnType (Mono.typeOf func)))
+            Types.mlirTypeToKind callResultMlirType
+
+        -- SSA result type: primitive when _result_kind is non-zero,
+        -- !eco.value otherwise (function-type result, boxed Custom, etc.).
+        resultMlirType =
+            if unknownSegResultKind == 0 then
+                Types.ecoValue
+
+            else
+                callResultMlirType
 
         unknownSegResultKindAttr =
             if unknownSegResultKind == 0 then

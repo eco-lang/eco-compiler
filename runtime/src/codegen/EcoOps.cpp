@@ -551,13 +551,26 @@ LogicalResult PapExtendOp::verify() {
   // In generic mode, saturation is determined at runtime from the closure header.
   // We only enforce local invariants (bitmap, REP_CLOSURE_001) — no definition-chain
   // walk, no arity consistency, no evaluator parameter type checks.
-  // Result type must be !eco.value (since saturation outcome is unknown at compile time).
+  //
+  // Result type may be `!eco.value` (the conservative case, used when the
+  // call could be under-saturated and produce a closure HPtr) OR a primitive
+  // (i64 / f64 / i16) when Mono types the call as a primitive — i.e. the
+  // call applies enough args to land on a primitive return at runtime. In
+  // that case the JIT lowers `lowerGenericApply` with a matching
+  // `desired_kind` and `eco_apply_closure_eval` writes the primitive
+  // straight into the result slot. Well-typed IR cannot reach the
+  // under-saturated branch with a primitive result type — the runtime
+  // additionally asserts this in debug builds.
   auto remainingArityAttr = getRemainingArityAttr();
   if (!remainingArityAttr) {
-    // Generic mode: verify result is !eco.value
-    if (!isa<eco::ValueType>(getResult().getType())) {
-      return emitOpError("generic-mode papExtend (no remaining_arity) must have "
-                         "!eco.value result type, got ") << getResult().getType();
+    Type resultType = getResult().getType();
+    bool isBoxed = isa<eco::ValueType>(resultType);
+    bool isPrimitive = resultType.isInteger(64) || resultType.isF64()
+                       || resultType.isInteger(16);
+    if (!isBoxed && !isPrimitive) {
+      return emitOpError("generic-mode papExtend (no remaining_arity) must "
+                         "have !eco.value or primitive (i64/f64/i16) result "
+                         "type, got ") << resultType;
     }
     return success();
   }
