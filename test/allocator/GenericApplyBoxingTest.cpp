@@ -1,10 +1,14 @@
 /**
- * Tests for generic apply boxing behavior with AllBoxed evaluator wrappers.
+ * Tests for generic apply behavior with PAPs whose captures are stored
+ * unboxed.
  *
- * Simulates the scenario where (==) is passed as a higher-order argument
- * (e.g. List.filter ((==) 5) list). The PAP captures an unboxed i64 and
- * the evaluator expects all-boxed (!eco.value) arguments. The generic apply
- * path must box captured unboxed values before calling the evaluator.
+ * Simulates `((==) 5)` where 5 is captured unboxed in a 2-arg PAP. Under
+ * the post-Phase-D ABI, `closure->unboxed` is the wrapper's contract for
+ * BOTH captures and new args: a 2-bit kind per slot. Captures stored at
+ * kind=Int reach the evaluator as raw `int64_t`; new args are converted
+ * by the runtime to match the slot's declared kind. There is no implicit
+ * auto-boxing of captures — the mock evaluators below honour the same
+ * asymmetric encoding the compiler-generated wrappers do.
  */
 
 #include "GenericApplyBoxingTest.hpp"
@@ -32,11 +36,11 @@ static void* hptrToRaw(uint64_t hptr) {
 }
 
 // ============================================================================
-// Mock evaluator: simulates Basics_eq_$_4's evaluator wrapper ($clo clone).
-//
-// The real compiler-generated wrapper receives void*[] where all values are
-// HPointer-encoded (boxed). It calls Elm_Kernel_Utils_equal on them.
-// This mock does the same, plus validation.
+// Mock evaluator: matches the asymmetric (Int unboxed, Int boxed) signature a
+// compiler-generated wrapper for `((==) 5)` produces when slot 0 is captured
+// unboxed and slot 1 arrives via the boxed-args generic-apply path. The
+// runtime passes args[0] as raw i64 (per `closure->unboxed[0] = Int`) and
+// args[1] as a boxed HPointer (per `closure->unboxed[1] = Boxed`).
 // ============================================================================
 
 static bool g_evaluator_called = false;
@@ -46,27 +50,19 @@ static bool g_equality_result = false;
 static void* mock_eq_evaluator(void* args[]) {
     g_evaluator_called = true;
 
-    // args[0] and args[1] should be boxed HPointer values (not raw i64).
-    uint64_t a = reinterpret_cast<uint64_t>(args[0]);
+    // Slot 0: raw int64_t (unboxed capture). Slot 1: HPointer to ElmInt.
+    int64_t a = reinterpret_cast<int64_t>(args[0]);
     uint64_t b = reinterpret_cast<uint64_t>(args[1]);
 
-    // Verify both are valid heap pointers to ElmInt objects.
-    void* a_ptr = hptrToRaw(a);
     void* b_ptr = hptrToRaw(b);
-
-    g_args_were_valid_hptrs = (a_ptr != nullptr && b_ptr != nullptr);
+    g_args_were_valid_hptrs = (b_ptr != nullptr);
 
     if (g_args_were_valid_hptrs) {
-        ElmInt* a_int = static_cast<ElmInt*>(a_ptr);
         ElmInt* b_int = static_cast<ElmInt*>(b_ptr);
-
-        g_args_were_valid_hptrs =
-            (a_int->header.tag == Tag_Int && b_int->header.tag == Tag_Int);
-
-        g_equality_result = (a_int->value == b_int->value);
+        g_args_were_valid_hptrs = (b_int->header.tag == Tag_Int);
+        g_equality_result = (a == b_int->value);
     }
 
-    // Return boxed Bool, same as real Elm_Kernel_Utils_equal.
     return reinterpret_cast<void*>(
         Elm::Kernel::Export::encodeBoxedBool(g_equality_result));
 }
@@ -154,13 +150,24 @@ static void test_generic_apply_boxes_captured_unboxed_int_not_equal() {
 }
 
 // ============================================================================
-// Test: Use real Elm_Kernel_Utils_equal via a wrapper evaluator
+// Test: Use real Elm_Kernel_Utils_equal via a wrapper evaluator.
 //
-// This is closer to what the compiler actually generates: the evaluator
-// calls Elm_Kernel_Utils_equal on its boxed args.
+// `real_eq_evaluator_asymmetric` matches the asymmetric (Int unboxed, Int
+// boxed) signature used by the papExtend tests above — the wrapper boxes
+// its raw-int slot before delegating to the boxed-args runtime kernel.
+// `real_eq_evaluator_all_boxed` matches the symmetric all-boxed bitmap
+// (closure->unboxed = 0) used by the direct-call test below.
 // ============================================================================
 
-static void* real_eq_evaluator(void* args[]) {
+static void* real_eq_evaluator_asymmetric(void* args[]) {
+    int64_t a_raw = reinterpret_cast<int64_t>(args[0]);
+    uint64_t b = reinterpret_cast<uint64_t>(args[1]);
+    HPtr a_boxed = eco_alloc_int(a_raw);
+    HPtr result = Elm_Kernel_Utils_equal(a_boxed, HPtr::fromBits(b));
+    return reinterpret_cast<void*>(result.toBits());
+}
+
+static void* real_eq_evaluator_all_boxed(void* args[]) {
     uint64_t a = reinterpret_cast<uint64_t>(args[0]);
     uint64_t b = reinterpret_cast<uint64_t>(args[1]);
     HPtr result = Elm_Kernel_Utils_equal(HPtr::fromBits(a), HPtr::fromBits(b));
@@ -172,7 +179,7 @@ static void test_generic_apply_with_real_kernel_equal() {
 
     // Create (==) closure, capture unboxed 42, then apply boxed 42.
     HPtr eq_closure = eco_alloc_closure(
-        reinterpret_cast<void*>(&real_eq_evaluator), 2);
+        reinterpret_cast<void*>(&real_eq_evaluator_asymmetric), 2);
 
     uint64_t raw_42 = static_cast<uint64_t>(42);
     uint64_t bitmap = 1;
@@ -202,7 +209,7 @@ static void test_generic_apply_both_args_boxed_at_callsite() {
     initAllocator();
 
     HPtr eq_closure = eco_alloc_closure(
-        reinterpret_cast<void*>(&real_eq_evaluator), 2);
+        reinterpret_cast<void*>(&real_eq_evaluator_all_boxed), 2);
 
     // Both args boxed by caller (as lowerGenericApply does).
     uint64_t boxed_10 = eco_alloc_int(10).toBits();

@@ -247,7 +247,11 @@ public:
             testFunc_();
             return true;
         } catch (const std::exception& e) {
-            // RapidCheck throws on failure - error already printed
+            // Surface the failure message — RapidCheck prints its own
+            // counterexample, but plain TEST_ASSERT/TEST_FAIL exceptions
+            // would otherwise vanish.
+            std::cerr << Color::red() << "  FAIL: " << name_ << ": " << e.what()
+                      << Color::reset() << std::endl;
             return false;
         } catch (...) {
             std::cerr << Color::bold() << Color::red() << "Unknown exception in test: "

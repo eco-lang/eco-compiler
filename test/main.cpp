@@ -225,6 +225,16 @@ void printTestSummary(const Testing::TestSuiteResult& result, uint64_t seed) {
     std::cout << "Tests failed: " << Testing::Color::red() << result.tests_failed
               << Testing::Color::reset() << std::endl;
 
+    // List failing tests by name to make the summary actionable on its own —
+    // otherwise the failure count alone forces grepping the verbose log.
+    if (!result.failed_tests.empty()) {
+        std::cout << std::endl;
+        std::cout << Testing::Color::red() << "Failed tests:" << Testing::Color::reset() << std::endl;
+        for (const auto& failed : result.failed_tests) {
+            std::cout << "  - " << failed.name << std::endl;
+        }
+    }
+
     // Print seed for reproduction (before result line).
     if (result.tests_failed > 0) {
         std::cout << std::endl;

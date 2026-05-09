@@ -29,11 +29,15 @@ using namespace Elm::TestHelpers;
 
 namespace {
 
-// Backing storage for a stack-built EvalParamLayout. Holds enough room for
-// up to MaxN slots (1 byte for num_params + N bytes of kinds).
+// Backing storage for a stack-built EvalParamLayout. The struct has two
+// header bytes (num_params + result_kind) BEFORE the flexible kinds[] array,
+// so we need `2 + MaxN` bytes — not `1 + MaxN`. The earlier off-by-one let
+// the final kinds[] write spill past the buffer; the runtime then read an
+// uninitialized byte for that slot's kind and silently treated it as
+// PK_Boxed, leaking raw primitive bits straight through to the evaluator.
 template <unsigned MaxN>
 struct LayoutStorage {
-    alignas(EvalParamLayout) unsigned char buf[1 + MaxN] = {};
+    alignas(EvalParamLayout) unsigned char buf[2 + MaxN] = {};
 
     EvalParamLayout* layout() {
         return reinterpret_cast<EvalParamLayout*>(buf);
