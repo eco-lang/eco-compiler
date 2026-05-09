@@ -336,6 +336,7 @@ void GCStats::recordAllocation(size_t bytes) {
 
     size_t bucket = allocSizeBucketIndex(bytes, NURSERY_ALLOC_BUCKETS);
     nursery_alloc_size_histogram[bucket]++;
+    if (bytes >= 16 && bytes < 24) nursery_alloc_size_16_24_count++;
 }
 
 // Records a single old-generation allocation of the given size in the
@@ -343,6 +344,7 @@ void GCStats::recordAllocation(size_t bytes) {
 void GCStats::recordOldGenAllocation(size_t bytes) {
     size_t bucket = allocSizeBucketIndex(bytes, OLDGEN_ALLOC_BUCKETS);
     oldgen_alloc_size_histogram[bucket]++;
+    if (bytes >= 16 && bytes < 24) oldgen_alloc_size_16_24_count++;
 }
 
 // Mutator-direct old-gen allocation: counted toward the cross-generation
@@ -647,6 +649,8 @@ void GCStats::combine(const GCStats& other) {
     for (int i = 0; i < OLDGEN_ALLOC_BUCKETS; i++) {
         oldgen_alloc_size_histogram[i] += other.oldgen_alloc_size_histogram[i];
     }
+    nursery_alloc_size_16_24_count += other.nursery_alloc_size_16_24_count;
+    oldgen_alloc_size_16_24_count  += other.oldgen_alloc_size_16_24_count;
 
     // Combine page residency histogram.
     for (int i = 0; i < RESIDENCY_BUCKETS; i++) {
@@ -1034,52 +1038,81 @@ void GCStats::print() const {
     }
 
     // ========== Allocation Size Histograms ==========
+    //
+    // Bucket 1 ([16,32)) is split for display into [16,24) and [24,32) using
+    // the parallel `*_16_24_count` sub-counter, which separates boxed
+    // primitives (Int/Float/Char @ 24 B incl. header) from small constructors
+    // (Tuple2, Cons, small custom types @ 24-32 B). All other buckets are
+    // emitted unchanged on power-of-two boundaries.
     auto printAllocHistogram = [](const char* title,
                                   const uint64_t* hist,
-                                  int num_buckets) {
+                                  int num_buckets,
+                                  uint64_t fine_16_24_count) {
+        // Clamp the sub-counter against the parent bucket so the upper half
+        // can never go negative if instances were merged out of lock-step.
+        uint64_t lower_16_24 = std::min<uint64_t>(fine_16_24_count, hist[1]);
+        uint64_t upper_24_32 = hist[1] - lower_16_24;
+
         uint64_t total = 0;
         uint64_t max_count = 0;
         for (int i = 0; i < num_buckets; i++) {
             total += hist[i];
-            max_count = std::max(max_count, hist[i]);
+            if (i == 1) {
+                // The split halves drive bar scaling, not the parent bucket.
+                max_count = std::max({max_count, lower_16_24, upper_24_32});
+            } else {
+                max_count = std::max(max_count, hist[i]);
+            }
         }
         if (total == 0) return;
 
         std::cout << "\n" << title << ":" << std::endl;
         const int BAR_WIDTH = 40;
 
-        for (int i = 0; i < num_buckets; i++) {
-            if (hist[i] == 0) continue;
+        auto printRow = [&](size_t lo, size_t hi, uint64_t count, bool overflow) {
+            if (count == 0) return;
+            if (!overflow) {
+                std::cout << "  " << std::setw(8) << formatBytes(lo)
+                          << " - " << std::setw(8) << formatBytes(hi) << ": ";
+            } else {
+                std::cout << "  >= " << std::setw(8) << formatBytes(lo)
+                          << "        : ";
+            }
+            int bar_len = max_count > 0
+                ? static_cast<int>((count * BAR_WIDTH) / max_count)
+                : 0;
+            for (int j = 0; j < bar_len; j++) std::cout << "█";
+            double percentage = (count * 100.0) / total;
+            std::cout << " " << count << " (" << std::fixed
+                      << std::setprecision(1) << percentage << "%)" << std::endl;
+        };
 
+        for (int i = 0; i < num_buckets; i++) {
             // Bucket k covers [BASE << k, BASE << (k+1)); the last bucket
             // is the overflow bucket for sizes at or above BASE << (n-1).
+            if (i == 1) {
+                printRow(16, 24, lower_16_24, /*overflow=*/false);
+                printRow(24, 32, upper_24_32, /*overflow=*/false);
+                continue;
+            }
             size_t range_start = ALLOC_HISTOGRAM_BASE << i;
             if (i < num_buckets - 1) {
                 size_t range_end = ALLOC_HISTOGRAM_BASE << (i + 1);
-                std::cout << "  " << std::setw(8) << formatBytes(range_start)
-                          << " - " << std::setw(8) << formatBytes(range_end) << ": ";
+                printRow(range_start, range_end, hist[i], /*overflow=*/false);
             } else {
-                std::cout << "  >= " << std::setw(8) << formatBytes(range_start)
-                          << "        : ";
+                printRow(range_start, 0, hist[i], /*overflow=*/true);
             }
-
-            int bar_len = max_count > 0
-                ? static_cast<int>((hist[i] * BAR_WIDTH) / max_count)
-                : 0;
-            for (int j = 0; j < bar_len; j++) std::cout << "█";
-
-            double percentage = (hist[i] * 100.0) / total;
-            std::cout << " " << hist[i] << " (" << std::fixed
-                      << std::setprecision(1) << percentage << "%)" << std::endl;
         }
     };
 
     printAllocHistogram("Nursery Allocation Size Histogram",
                         nursery_alloc_size_histogram,
-                        NURSERY_ALLOC_BUCKETS);
+                        NURSERY_ALLOC_BUCKETS,
+                        nursery_alloc_size_16_24_count);
     printAllocHistogram("Old-Gen Allocation Size Histogram",
                         oldgen_alloc_size_histogram,
-                        OLDGEN_ALLOC_BUCKETS);
+                        OLDGEN_ALLOC_BUCKETS,
+                        oldgen_alloc_size_16_24_count);
 
     // ========== Old-Gen Page Residency Histogram ==========
     //
@@ -1204,6 +1237,8 @@ void GCStats::reset() {
     for (int i = 0; i < OLDGEN_ALLOC_BUCKETS; i++) {
         oldgen_alloc_size_histogram[i] = 0;
     }
+    nursery_alloc_size_16_24_count = 0;
+    oldgen_alloc_size_16_24_count  = 0;
 
     // Reset page residency histogram.
     for (int i = 0; i < RESIDENCY_BUCKETS; i++) {

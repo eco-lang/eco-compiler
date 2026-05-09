@@ -97,12 +97,25 @@ public:
     // Old-gen histogram covers 8 B up to 1 MiB:
     //   buckets 0..16 => [8,16) [16,32) ... [524288,1048576)
     //   bucket 17     => >= 1 MiB.
+    //
+    // The [16,32) bucket (index 1) is the only one we split for display: a
+    // parallel `_16_24_count` tallies allocations in [16,24) so the printer
+    // can show [16,24) and [24,32) on separate rows. This pulls apart boxed
+    // primitives (Int/Float/Char @ ~24B) from small constructors (Tuple2,
+    // Cons, small custom types @ ~32B). The full bucket value remains the
+    // sum [16,32); the sub-counter is a strict subset of bucket[1].
     static constexpr int NURSERY_ALLOC_BUCKETS = 11;
     static constexpr int OLDGEN_ALLOC_BUCKETS  = 18;
     static constexpr size_t ALLOC_HISTOGRAM_BASE = 8;  // bucket 0 starts here.
 
     uint64_t nursery_alloc_size_histogram[NURSERY_ALLOC_BUCKETS] = {0};
     uint64_t oldgen_alloc_size_histogram[OLDGEN_ALLOC_BUCKETS]   = {0};
+
+    // Sub-counters for the [16,24) lower half of bucket 1 (whose full range
+    // is [16,32)). Always <= bucket[1]; the upper half [24,32) is derived as
+    // bucket[1] - this counter at print time.
+    uint64_t nursery_alloc_size_16_24_count = 0;
+    uint64_t oldgen_alloc_size_16_24_count  = 0;
 
     // ========== Old-Gen Page Residency Histogram ==========
     //
