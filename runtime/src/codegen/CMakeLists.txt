@@ -50,8 +50,15 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 # Add LLVM definitions
 add_definitions(${LLVM_DEFINITIONS})
 
-# Set the output directory for generated TableGen files
-set(MLIR_TABLEGEN_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/include/eco)
+# Set the output directory for generated TableGen files. The relative
+# subdirectory is what `mlir_tablegen()` accepts — it always prepends
+# `${CMAKE_CURRENT_BINARY_DIR}` to its argument, so passing an absolute
+# path produces a malformed `<binary_dir>/<absolute_path>` output target
+# in the ninja graph (consumers ask for `<binary_dir>/include/eco/...`,
+# can't find a rule, and `make full` fails after `clean`). The absolute
+# variant below is used elsewhere (OBJECT_DEPENDS, ADDITIONAL_HEADER_DIRS).
+set(MLIR_TABLEGEN_OUTPUT_SUBDIR include/eco)
+set(MLIR_TABLEGEN_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/${MLIR_TABLEGEN_OUTPUT_SUBDIR})
 file(MAKE_DIRECTORY ${MLIR_TABLEGEN_OUTPUT_DIR})
 
 # Include the directory containing our .td files
@@ -64,34 +71,34 @@ set(MLIR_TABLEGEN_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 set(LLVM_TARGET_DEFINITIONS Ops.td)
 
 # Generate Op class declarations (header file)
-mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_DIR}/EcoOps.h.inc -gen-op-decls)
+mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_SUBDIR}/EcoOps.h.inc -gen-op-decls)
 
 # Generate Op class definitions (implementation file)
-mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_DIR}/EcoOps.cpp.inc -gen-op-defs)
+mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_SUBDIR}/EcoOps.cpp.inc -gen-op-defs)
 
 # Generate OpInterface declarations (header file)
-mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_DIR}/EcoOpInterfaces.h.inc -gen-op-interface-decls)
+mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_SUBDIR}/EcoOpInterfaces.h.inc -gen-op-interface-decls)
 
 # Generate OpInterface definitions (implementation file)
-mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_DIR}/EcoOpInterfaces.cpp.inc -gen-op-interface-defs)
+mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_SUBDIR}/EcoOpInterfaces.cpp.inc -gen-op-interface-defs)
 
 # Generate dialect declarations
-mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_DIR}/EcoDialect.h.inc -gen-dialect-decls)
+mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_SUBDIR}/EcoDialect.h.inc -gen-dialect-decls)
 
 # Generate dialect definitions
-mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_DIR}/EcoDialect.cpp.inc -gen-dialect-defs)
+mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_SUBDIR}/EcoDialect.cpp.inc -gen-dialect-defs)
 
 # Generate type declarations
-mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_DIR}/EcoTypes.h.inc -gen-typedef-decls)
+mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_SUBDIR}/EcoTypes.h.inc -gen-typedef-decls)
 
 # Generate type definitions
-mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_DIR}/EcoTypes.cpp.inc -gen-typedef-defs)
+mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_SUBDIR}/EcoTypes.cpp.inc -gen-typedef-defs)
 
 # Generate enum attribute declarations
-mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_DIR}/EcoEnums.h.inc -gen-enum-decls)
+mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_SUBDIR}/EcoEnums.h.inc -gen-enum-decls)
 
 # Generate enum attribute definitions
-mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_DIR}/EcoEnums.cpp.inc -gen-enum-defs)
+mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_SUBDIR}/EcoEnums.cpp.inc -gen-enum-defs)
 
 # Create a target that depends on all generated files
 add_public_tablegen_target(EcoOpsIncGen)
@@ -151,35 +158,39 @@ target_compile_options(obj.EcoDialect PRIVATE -Wno-ambiguous-reversed-operator)
 # Generate BF (ByteFusion) dialect from BFOps.td
 #------------------------------------------------------------------------------
 
-# Set output directory for bf dialect generated files
-set(BF_TABLEGEN_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/include/bf)
+# Set output directory for bf dialect generated files. The relative
+# subdir is what we pass to `mlir_tablegen()` (which prepends
+# `${CMAKE_CURRENT_BINARY_DIR}`); the absolute variant is used by
+# OBJECT_DEPENDS / ADDITIONAL_HEADER_DIRS callers below.
+set(BF_TABLEGEN_OUTPUT_SUBDIR include/bf)
+set(BF_TABLEGEN_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/${BF_TABLEGEN_OUTPUT_SUBDIR})
 file(MAKE_DIRECTORY ${BF_TABLEGEN_OUTPUT_DIR})
 
 set(LLVM_TARGET_DEFINITIONS BF/BFOps.td)
 
 # Generate BF Op class declarations (header file)
-mlir_tablegen(${BF_TABLEGEN_OUTPUT_DIR}/BFOps.h.inc -gen-op-decls)
+mlir_tablegen(${BF_TABLEGEN_OUTPUT_SUBDIR}/BFOps.h.inc -gen-op-decls)
 
 # Generate BF Op class definitions (implementation file)
-mlir_tablegen(${BF_TABLEGEN_OUTPUT_DIR}/BFOps.cpp.inc -gen-op-defs)
+mlir_tablegen(${BF_TABLEGEN_OUTPUT_SUBDIR}/BFOps.cpp.inc -gen-op-defs)
 
 # Generate BF dialect declarations
-mlir_tablegen(${BF_TABLEGEN_OUTPUT_DIR}/BFDialect.h.inc -gen-dialect-decls)
+mlir_tablegen(${BF_TABLEGEN_OUTPUT_SUBDIR}/BFDialect.h.inc -gen-dialect-decls)
 
 # Generate BF dialect definitions
-mlir_tablegen(${BF_TABLEGEN_OUTPUT_DIR}/BFDialect.cpp.inc -gen-dialect-defs)
+mlir_tablegen(${BF_TABLEGEN_OUTPUT_SUBDIR}/BFDialect.cpp.inc -gen-dialect-defs)
 
 # Generate BF type declarations
-mlir_tablegen(${BF_TABLEGEN_OUTPUT_DIR}/BFTypes.h.inc -gen-typedef-decls)
+mlir_tablegen(${BF_TABLEGEN_OUTPUT_SUBDIR}/BFTypes.h.inc -gen-typedef-decls)
 
 # Generate BF type definitions
-mlir_tablegen(${BF_TABLEGEN_OUTPUT_DIR}/BFTypes.cpp.inc -gen-typedef-defs)
+mlir_tablegen(${BF_TABLEGEN_OUTPUT_SUBDIR}/BFTypes.cpp.inc -gen-typedef-defs)
 
 # Generate BF enum attribute declarations
-mlir_tablegen(${BF_TABLEGEN_OUTPUT_DIR}/BFEnums.h.inc -gen-enum-decls)
+mlir_tablegen(${BF_TABLEGEN_OUTPUT_SUBDIR}/BFEnums.h.inc -gen-enum-decls)
 
 # Generate BF enum attribute definitions
-mlir_tablegen(${BF_TABLEGEN_OUTPUT_DIR}/BFEnums.cpp.inc -gen-enum-defs)
+mlir_tablegen(${BF_TABLEGEN_OUTPUT_SUBDIR}/BFEnums.cpp.inc -gen-enum-defs)
 
 # Create a target that depends on all generated BF files
 add_public_tablegen_target(BFOpsIncGen)

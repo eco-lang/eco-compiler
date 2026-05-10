@@ -1116,21 +1116,20 @@ ecoPapCreateGroup ctx siblings crossEdges resultVars =
         unboxedBitmaps =
             siblings |> List.map .unboxedBitmap |> i64Array
 
-        -- Per-sibling result kinds (REP_ABI_001). Emitted as a parallel
-        -- I8ArrayAttr so the runtime can drop primitive-return siblings
-        -- through the typed dispatch path. Omitted when every sibling is
-        -- PK_Boxed to keep MLIR diffs minimal.
-        resultKinds =
-            siblings
-                |> List.map (\s -> IntAttr (Just I8) s.resultKind)
-                |> ArrayAttr Nothing
-
+        -- Per-sibling result kinds (REP_ABI_001). The op spec declares
+        -- `_result_kinds` as `OptionalAttr<I64ArrayAttr>`, so emit values
+        -- through `i64Array` (TableGen's verifier rejects I8-typed entries).
+        -- The runtime stores the byte on each sibling's closure header, so
+        -- only the low 8 bits matter — but we send full i64 to satisfy the
+        -- verifier. Omitted when every sibling is PK_Boxed to keep MLIR
+        -- diffs minimal.
         anyPrimitiveResult =
             List.any (\s -> s.resultKind /= 0) siblings
 
         resultKindsAttrs =
             if anyPrimitiveResult then
-                Dict.singleton "_result_kinds" resultKinds
+                Dict.singleton "_result_kinds"
+                    (siblings |> List.map .resultKind |> i64Array)
 
             else
                 Dict.empty
