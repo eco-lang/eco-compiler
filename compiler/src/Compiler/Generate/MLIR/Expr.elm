@@ -4314,15 +4314,32 @@ generateLetSingle ctx def body =
                     else
                         Dict.empty
 
+                -- _result_kind: tail-rec body's saturated return ABI
+                -- (REP_ABI_001 — primitive returns MUST be unboxed). Drives
+                -- both the wrapper's compiled return type and the closure
+                -- header's `result_kind`. Omitted when 0 to keep MLIR diffs
+                -- minimal.
+                tailResultKind =
+                    Types.mlirTypeToKind (Types.monoTypeToAbi (Mono.typeOf tailBody))
+
+                tailResultKindAttr =
+                    if tailResultKind == 0 then
+                        Dict.empty
+
+                    else
+                        Dict.singleton "_result_kind" (IntAttr (Just I8) tailResultKind)
+
                 papAttrs =
-                    Dict.union fastEvaluatorAttr
-                        (Dict.union operandTypesAttr
-                            (Dict.fromList
-                                [ ( "function", SymbolRefAttr functionName )
-                                , ( "arity", IntAttr Nothing arity )
-                                , ( "num_captured", IntAttr Nothing numCaptured )
-                                , ( "unboxed_bitmap", IntAttr Nothing unboxedBitmap )
-                                ]
+                    Dict.union tailResultKindAttr
+                        (Dict.union fastEvaluatorAttr
+                            (Dict.union operandTypesAttr
+                                (Dict.fromList
+                                    [ ( "function", SymbolRefAttr functionName )
+                                    , ( "arity", IntAttr Nothing arity )
+                                    , ( "num_captured", IntAttr Nothing numCaptured )
+                                    , ( "unboxed_bitmap", IntAttr Nothing unboxedBitmap )
+                                    ]
+                                )
                             )
                         )
 
@@ -4517,12 +4534,22 @@ generateLetGroup ctx members body =
                 baseFuncName =
                     lambdaIdToString closureInfo.lambdaId
 
+                -- Sibling's saturated return ABI kind (REP_ABI_001).
+                -- Derived from the lambda body's MonoType — primitive when
+                -- the body evaluates to Int/Float/Char, boxed otherwise
+                -- (including multi-stage closures whose body is itself a
+                -- function value).
+                siblingResultKind =
+                    Types.mlirTypeToKind
+                        (Types.monoTypeToAbi (Mono.typeOf member.lambdaBody))
+
                 siblingMeta =
                     { functionName = baseFuncName ++ "$clo"
                     , fastEvaluator = baseFuncName ++ "$cap"
                     , arity = numCaptured + List.length closureInfo.params
                     , numCaptured = numCaptured
                     , unboxedBitmap = unboxedBitmap
+                    , resultKind = siblingResultKind
                     , captureVars = captureVarNames
                     , captureTypes = captureTypes
                     }

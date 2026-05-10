@@ -16,7 +16,7 @@ import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.TailRec as TailRec
 import Compiler.Generate.MLIR.Types as Types
 import Dict
-import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirRegion, MlirType)
+import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirRegion, MlirType(..))
 import Set
 
 
@@ -234,15 +234,32 @@ generateLambdaFunc ctx lambda =
                                 else
                                     Dict.empty
 
+                            -- _result_kind: the lambda's saturated return ABI
+                            -- (REP_ABI_001 — primitives MUST be unboxed). Drives the
+                            -- wrapper's compiled return type and the closure header's
+                            -- `result_kind` so dispatch paths cast the evaluator
+                            -- correctly. Omitted when 0 to keep MLIR diffs minimal.
+                            selfResultKind =
+                                Types.mlirTypeToKind (Types.monoTypeToAbi lambda.returnType)
+
+                            selfResultKindAttr =
+                                if selfResultKind == 0 then
+                                    Dict.empty
+
+                                else
+                                    Dict.singleton "_result_kind" (IntAttr (Just I8) selfResultKind)
+
                             selfPapAttrs =
-                                Dict.union selfFastEvaluatorAttr
-                                    (Dict.union selfOperandTypesAttr
-                                        (Dict.fromList
-                                            [ ( "function", SymbolRefAttr selfFunctionName )
-                                            , ( "arity", IntAttr Nothing selfArity )
-                                            , ( "num_captured", IntAttr Nothing selfNumCaptured )
-                                            , ( "unboxed_bitmap", IntAttr Nothing selfUnboxedBitmap )
-                                            ]
+                                Dict.union selfResultKindAttr
+                                    (Dict.union selfFastEvaluatorAttr
+                                        (Dict.union selfOperandTypesAttr
+                                            (Dict.fromList
+                                                [ ( "function", SymbolRefAttr selfFunctionName )
+                                                , ( "arity", IntAttr Nothing selfArity )
+                                                , ( "num_captured", IntAttr Nothing selfNumCaptured )
+                                                , ( "unboxed_bitmap", IntAttr Nothing selfUnboxedBitmap )
+                                                ]
+                                            )
                                         )
                                     )
 

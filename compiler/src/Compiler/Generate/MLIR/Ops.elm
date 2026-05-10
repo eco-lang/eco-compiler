@@ -1051,6 +1051,17 @@ scfCondition ctx condVar args =
 
 
 {-| Describes one sibling in a `eco.papCreateGroup` op.
+
+`resultKind` is the saturated return ABI kind (REP_ABI_001):
+
+  - 0 = Boxed (HPtr) — default; emitted when the lambda's body evaluates
+    to a non-primitive type, including multi-stage closures whose body
+    returns another closure.
+  - 1 = Int (i64), 2 = Float (f64), 3 = Char (i16) — primitive returns.
+
+The runtime stores this on each sibling's closure header so dispatch
+paths cast `closure->evaluator` correctly.
+
 -}
 type alias GroupSibling =
     { functionName : String
@@ -1058,6 +1069,7 @@ type alias GroupSibling =
     , arity : Int
     , numCaptured : Int
     , unboxedBitmap : Int
+    , resultKind : Int
     , captureVars : List String
     , captureTypes : List MlirType
     }
@@ -1104,6 +1116,25 @@ ecoPapCreateGroup ctx siblings crossEdges resultVars =
         unboxedBitmaps =
             siblings |> List.map .unboxedBitmap |> i64Array
 
+        -- Per-sibling result kinds (REP_ABI_001). Emitted as a parallel
+        -- I8ArrayAttr so the runtime can drop primitive-return siblings
+        -- through the typed dispatch path. Omitted when every sibling is
+        -- PK_Boxed to keep MLIR diffs minimal.
+        resultKinds =
+            siblings
+                |> List.map (\s -> IntAttr (Just I8) s.resultKind)
+                |> ArrayAttr Nothing
+
+        anyPrimitiveResult =
+            List.any (\s -> s.resultKind /= 0) siblings
+
+        resultKindsAttrs =
+            if anyPrimitiveResult then
+                Dict.singleton "_result_kinds" resultKinds
+
+            else
+                Dict.empty
+
         captureCounts =
             siblings |> List.map (.captureVars >> List.length) |> i64Array
 
@@ -1127,16 +1158,18 @@ ecoPapCreateGroup ctx siblings crossEdges resultVars =
                     (ArrayAttr Nothing (List.map TypeAttr operandTypes))
 
         attrs =
-            Dict.union operandTypesAttr
-                (Dict.fromList
-                    [ ( "functions", functions )
-                    , ( "fast_evaluators", fastEvaluators )
-                    , ( "arities", arities )
-                    , ( "num_captured", numCaptured )
-                    , ( "unboxed_bitmaps", unboxedBitmaps )
-                    , ( "capture_counts", captureCounts )
-                    , ( "cross_edges", flatCrossEdges )
-                    ]
+            Dict.union resultKindsAttrs
+                (Dict.union operandTypesAttr
+                    (Dict.fromList
+                        [ ( "functions", functions )
+                        , ( "fast_evaluators", fastEvaluators )
+                        , ( "arities", arities )
+                        , ( "num_captured", numCaptured )
+                        , ( "unboxed_bitmaps", unboxedBitmaps )
+                        , ( "capture_counts", captureCounts )
+                        , ( "cross_edges", flatCrossEdges )
+                        ]
+                    )
                 )
 
         results =
