@@ -39,11 +39,52 @@ static int64_t unboxInt(HPtr val) {
 // per-arg ParamKind so the runtime can pass unboxed Int arguments straight
 // through to wrappers that accept them, instead of forcing an `eco_alloc_int`
 // per call here. Layout bytes match `EvalParamLayout`:
-//   { num_params, result_kind (irrelevant for saturated calls), kinds... }
+//   { num_params, result_kind, kinds... }
+//
+// The result_kind byte is patched per-call from `closure->result_kind` so
+// we can route through `eco_closure_call_saturated_eval` and skip the
+// dispatch-side box on PK_Int/Float/Char-returning mappers (REP_ABI_001).
 static constexpr unsigned char kLayoutInt1[3]      = { 1, 0, 1 };       // (Int)
 static constexpr unsigned char kLayoutIntBoxed[4]  = { 2, 0, 1, 0 };    // (Int, a)
 
-// Call a closure with one Int argument (index for initialize).
+// Read the closure's `result_kind` field once. Used by the typed-result
+// helpers below to set both the EvalParamLayout's result_kind byte and the
+// `desired_kind` argument to `eco_closure_call_saturated_eval`.
+static uint8_t readClosureResultKind(HPointer closureHP) {
+    auto* cl = static_cast<Elm::Closure*>(
+        Elm::Allocator::instance().resolve(closureHP));
+    return static_cast<uint8_t>(cl->result_kind);
+}
+
+// Per-iteration scratch slot receiving the closure's typed primitive
+// return (or boxed HPtr). Caller passes its address as `result_slot`.
+union ResultSlot {
+    int64_t  i;
+    double   f;
+    uint16_t c;
+    Elm::HPtr p;
+    uint64_t bits;
+};
+
+// Call a closure with one Int argument and a primitive-aware result.
+// `closureHP` must already be rooted by the caller. Returns the
+// closure's `result_kind` so the caller can interpret `slot` correctly:
+// 0 → slot.p (HPtr), 1 → slot.i, 2 → slot.f, 3 → slot.c.
+static uint8_t callUnaryInitClosureTyped(HPointer closureHP,
+                                          int64_t index,
+                                          ResultSlot* slot) {
+    uint8_t resultKind = readClosureResultKind(closureHP);
+    unsigned char layoutBuf[3] = { 1, resultKind, 1 };
+    const auto* layout =
+        reinterpret_cast<const Elm::EvalParamLayout*>(layoutBuf);
+    uint64_t args[1] = { static_cast<uint64_t>(index) };
+    Elm::HPtr cl = Elm::HPtr::fromBits(Elm::Kernel::Export::encode(closureHP));
+    eco_closure_call_saturated_eval(cl, args, 1, layout, slot, resultKind);
+    return resultKind;
+}
+
+// Call a closure with one Int argument (index for initialize). Boxed-result
+// path used by callers that haven't migrated to the typed entry above.
 static uint64_t callUnaryInitClosure(HPtr closure_hptr, int64_t index) {
     const auto* layout = reinterpret_cast<const Elm::EvalParamLayout*>(kLayoutInt1);
     uint64_t args[1] = { static_cast<uint64_t>(index) };
@@ -87,6 +128,32 @@ static void pushUnboxedResult(void* arrObj, uint64_t result) {
     alloc::arrayPush(arrObj, u, true);  // boxed
 }
 
+// Push the typed primitive (or HPtr) result of a closure call onto an
+// array, tagging the array's slot kind so subsequent reads decode the
+// element correctly without re-resolving via header tag.
+static void pushTypedResult(void* arrObj, const ResultSlot& slot,
+                            uint8_t result_kind) {
+    Unboxable u;
+    switch (result_kind) {
+        case 0:
+            u.p = Elm::Kernel::Export::decode(slot.p.toBits());
+            alloc::arrayPush(arrObj, u, /*boxed=*/true);
+            return;
+        case 1:
+            u.i = slot.i;
+            alloc::arrayPushKind(arrObj, u, 1);
+            return;
+        case 2:
+            u.f = slot.f;
+            alloc::arrayPushKind(arrObj, u, 2);
+            return;
+        default:
+            u.c = slot.c;
+            alloc::arrayPushKind(arrObj, u, 3);
+            return;
+    }
+}
+
 // Call a closure with two arguments (index, element for indexedMap).
 // Index is passed as unboxed i64; element is HPointer-encoded.
 static uint64_t callBinaryIndexMapClosure(HPtr closure_hptr, int64_t index, uint64_t elem) {
@@ -95,11 +162,50 @@ static uint64_t callBinaryIndexMapClosure(HPtr closure_hptr, int64_t index, uint
     return eco_closure_call_saturated(closure_hptr, args, 2, layout).toBits();
 }
 
+// Typed-result variant of `callBinaryIndexMapClosure`: routes through
+// `eco_closure_call_saturated_eval` so primitive returns avoid the
+// dispatch-side box. `closureHP` must be rooted by the caller.
+static uint8_t callBinaryIndexMapClosureTyped(HPointer closureHP,
+                                              int64_t index, uint64_t elem,
+                                              ResultSlot* slot) {
+    uint8_t resultKind = readClosureResultKind(closureHP);
+    unsigned char layoutBuf[4] = { 2, resultKind, 1, 0 };
+    const auto* layout =
+        reinterpret_cast<const Elm::EvalParamLayout*>(layoutBuf);
+    uint64_t args[2] = { static_cast<uint64_t>(index), elem };
+    Elm::HPtr cl = Elm::HPtr::fromBits(Elm::Kernel::Export::encode(closureHP));
+    eco_closure_call_saturated_eval(cl, args, 2, layout, slot, resultKind);
+    return resultKind;
+}
+
 // Call a closure with two arguments (element, acc for foldl/foldr).
 // Both are HPointer-encoded (!eco.value).
 static uint64_t callBinaryFoldClosure(HPtr closure_hptr, uint64_t elem, uint64_t acc) {
     uint64_t args[2] = { elem, acc };
     return eco_closure_call_saturated(closure_hptr, args, 2, /*layout=*/nullptr).toBits();
+}
+
+// Typed-result variant of `callBinaryFoldClosure`: the kernel passes
+// `acc` in its current convention (HPtr or raw primitive bits as
+// indicated by `accKind`), and the closure's `result_kind` selects the
+// receive ABI for `slot`. This lets foldl/foldr carry a primitive
+// accumulator across iterations without a per-step box→unbox cycle.
+//
+// `closureHP` must be rooted by the caller; `slot` is filled with the
+// closure's typed return whose interpretation matches the function's
+// returned `result_kind`.
+static uint8_t callBinaryFoldClosureTyped(HPointer closureHP,
+                                          uint64_t elem,
+                                          uint64_t acc, uint8_t accKind,
+                                          ResultSlot* slot) {
+    uint8_t resultKind = readClosureResultKind(closureHP);
+    unsigned char layoutBuf[4] = { 2, resultKind, /*elem*/0, accKind };
+    const auto* layout =
+        reinterpret_cast<const Elm::EvalParamLayout*>(layoutBuf);
+    uint64_t args[2] = { elem, acc };
+    Elm::HPtr cl = Elm::HPtr::fromBits(Elm::Kernel::Export::encode(closureHP));
+    eco_closure_call_saturated_eval(cl, args, 2, layout, slot, resultKind);
+    return resultKind;
 }
 
 } // anonymous namespace
@@ -352,11 +458,13 @@ HPtr Elm_Kernel_JsArray_initialize(HPtr size_val, HPtr offset_val, HPtr closure)
     arr = alloc::allocArray(static_cast<size_t>(size));
     auto& allocator = Allocator::instance();
 
+    ResultSlot slot{};
     for (int64_t i = 0; i < size; i++) {
-        HPtr cl = HPtr::fromBits(Export::encode(closureHP));
-        uint64_t value = callUnaryInitClosure(cl, offset + i);
+        // Typed-result entry: skip the dispatch-side box on PK_Int/Float/
+        // Char-returning mappers (see _Int sibling for rationale).
+        uint8_t rk = callUnaryInitClosureTyped(closureHP, offset + i, &slot);
         void* arrObj = allocator.resolve(arr);
-        pushUnboxedResult(arrObj, value);
+        pushTypedResult(arrObj, slot, rk);
     }
     return HPtr::fromBits(Export::encode(arr));
 }
@@ -390,6 +498,7 @@ HPtr Elm_Kernel_JsArray_map(HPtr closure, HPtr array) {
     // closure may move between calls; without rooting it here, the next call
     // would see a stale HPointer pointing at a Tag_Forward (or freed) cell.
     StackRootGuard loopRoots(&srcHP, &arr, &closureHP);
+    ResultSlot slot{};
     for (uint32_t i = 0; i < len; i++) {
         ElmArray* src = static_cast<ElmArray*>(allocator.resolve(srcHP));
         uint64_t elem;
@@ -398,11 +507,19 @@ HPtr Elm_Kernel_JsArray_map(HPtr closure, HPtr array) {
         } else {
             elem = Export::encode(src->elements[i].p);
         }
-        HPtr cl = HPtr::fromBits(Export::encode(closureHP));
-        uint64_t result = callUnaryMapClosure(cl, elem);
+        // Typed-result entry: deliver the (possibly boxed) element to the
+        // closure and write its primitive return straight into `slot`.
+        uint8_t resultKind = readClosureResultKind(closureHP);
+        unsigned char layoutBuf[3] = { 1, resultKind, 0 };
+        const auto* layout =
+            reinterpret_cast<const Elm::EvalParamLayout*>(layoutBuf);
+        uint64_t args[1] = { elem };
+        Elm::HPtr cl =
+            Elm::HPtr::fromBits(Elm::Kernel::Export::encode(closureHP));
+        eco_closure_call_saturated_eval(cl, args, 1, layout, &slot, resultKind);
 
         void* arrObj = allocator.resolve(arr);
-        pushUnboxedResult(arrObj, result);
+        pushTypedResult(arrObj, slot, resultKind);
     }
     return HPtr::fromBits(Export::encode(arr));
 }
@@ -429,6 +546,7 @@ HPtr Elm_Kernel_JsArray_indexedMap(HPtr closure, HPtr offset_val, HPtr array) {
     }
 
     StackRootGuard loopRoots(&srcHP, &arr, &closureHP);
+    ResultSlot slot{};
     for (uint32_t i = 0; i < len; i++) {
         ElmArray* src = static_cast<ElmArray*>(allocator.resolve(srcHP));
         uint64_t elem;
@@ -437,16 +555,30 @@ HPtr Elm_Kernel_JsArray_indexedMap(HPtr closure, HPtr offset_val, HPtr array) {
         } else {
             elem = Export::encode(src->elements[i].p);
         }
-        HPtr cl = HPtr::fromBits(Export::encode(closureHP));
-        uint64_t result = callBinaryIndexMapClosure(cl, offset + i, elem);
-
+        // Typed-result entry: skip the dispatch-side box.
+        uint8_t rk = callBinaryIndexMapClosureTyped(closureHP, offset + i,
+                                                    elem, &slot);
         void* arrObj = allocator.resolve(arr);
-        pushUnboxedResult(arrObj, result);
+        pushTypedResult(arrObj, slot, rk);
     }
     return HPtr::fromBits(Export::encode(arr));
 }
 
-HPtr Elm_Kernel_JsArray_foldl(HPtr closure, HPtr acc, HPtr array) {
+// Shared driver for foldl/foldr. `forward=true` walks 0..len-1 (foldl);
+// false walks len-1..0 (foldr).
+//
+// Carries `acc` across iterations in its closure-natural representation:
+// the first iteration receives `acc` as an HPtr (caller-provided boxed
+// value). Each closure call writes the new acc into a typed slot
+// (`accKind == closure->result_kind`); subsequent iterations pass that
+// slot's bits directly with a layout-kind hint, so primitive accumulators
+// (Int/Float/Char foldl over Int/Float/Char arrays) avoid both the
+// dispatch-side box AND the splice-side unbox per step.
+//
+// Element delivery is left at the original "always boxed HPtr" convention:
+// promoting unboxed cons heads to primitive args would mostly help the
+// kernel-helper splice case which is already at zero in our trace.
+static HPtr foldImpl(HPtr closure, HPtr acc, HPtr array, bool forward) {
     auto& allocator = Allocator::instance();
     HPointer srcHP = Export::decode(array.toBits());
     HPointer accHP = Export::decode(acc.toBits());
@@ -460,39 +592,20 @@ HPtr Elm_Kernel_JsArray_foldl(HPtr closure, HPtr acc, HPtr array) {
         srcKind = src0->header.unboxed & 0x3;
     }
 
+    // accBits + accKind track the current accumulator's representation.
+    // Starts boxed (HPtr from the caller); after the first call the
+    // closure's `result_kind` may flip it to a primitive kind, in which
+    // case `accHP` becomes irrelevant for subsequent iterations and the
+    // raw primitive bits live in `accBits` instead.
+    uint64_t accBits = Export::encode(accHP);
+    uint8_t  accKind = 0;
+    ResultSlot slot{};
     StackRootGuard loopRoots(&srcHP, &accHP, &closureHP);
-    for (uint32_t i = 0; i < len; i++) {
-        ElmArray* src = static_cast<ElmArray*>(allocator.resolve(srcHP));
-        uint64_t elem;
-        if (srcKind != 0) {
-            elem = Export::encode(alloc::boxElement(src->elements[i], srcKind));
-        } else {
-            elem = Export::encode(src->elements[i].p);
-        }
-        HPtr cl = HPtr::fromBits(Export::encode(closureHP));
-        uint64_t newAcc = callBinaryFoldClosure(cl, elem, Export::encode(accHP));
-        accHP = Export::decode(newAcc);
-    }
-    return HPtr::fromBits(Export::encode(accHP));
-}
+    auto& rs = allocator.getRootSet();
+    size_t accRoot = rs.stackRangePoint();
 
-HPtr Elm_Kernel_JsArray_foldr(HPtr closure, HPtr acc, HPtr array) {
-    auto& allocator = Allocator::instance();
-    HPointer srcHP = Export::decode(array.toBits());
-    HPointer accHP = Export::decode(acc.toBits());
-    HPointer closureHP = Export::decode(closure.toBits());
-
-    uint32_t len;
-    uint32_t srcKind;
-    {
-        ElmArray* src0 = static_cast<ElmArray*>(allocator.resolve(srcHP));
-        len = src0->length;
-        srcKind = src0->header.unboxed & 0x3;
-    }
-
-    StackRootGuard loopRoots(&srcHP, &accHP, &closureHP);
-    for (uint32_t i = len; i > 0; i--) {
-        uint32_t idx = i - 1;
+    for (uint32_t step = 0; step < len; ++step) {
+        uint32_t idx = forward ? step : (len - 1 - step);
         ElmArray* src = static_cast<ElmArray*>(allocator.resolve(srcHP));
         uint64_t elem;
         if (srcKind != 0) {
@@ -500,11 +613,52 @@ HPtr Elm_Kernel_JsArray_foldr(HPtr closure, HPtr acc, HPtr array) {
         } else {
             elem = Export::encode(src->elements[idx].p);
         }
-        HPtr cl = HPtr::fromBits(Export::encode(closureHP));
-        uint64_t newAcc = callBinaryFoldClosure(cl, elem, Export::encode(accHP));
-        accHP = Export::decode(newAcc);
+        // Refresh accBits for the boxed-acc case: a GC inside boxElement
+        // (above) may have moved the underlying ElmInt etc., and accHP
+        // (rooted via `loopRoots`) holds the up-to-date HPointer.
+        if (accKind == 0) accBits = Export::encode(accHP);
+
+        uint8_t resultKind = callBinaryFoldClosureTyped(
+            closureHP, elem, accBits, accKind, &slot);
+
+        // Adopt the closure's natural result representation as the next
+        // iteration's acc. For boxed results, also re-pin accHP via the
+        // dedicated root range so the next iteration's allocations see
+        // the post-GC location.
+        rs.restoreStackRangePoint(accRoot);
+        accKind = resultKind;
+        switch (resultKind) {
+            case 0:
+                accHP = Export::decode(slot.p.toBits());
+                accBits = Export::encode(accHP);
+                break;
+            case 1: accBits = static_cast<uint64_t>(slot.i); break;
+            case 2: std::memcpy(&accBits, &slot.f, sizeof(uint64_t)); break;
+            default: accBits = static_cast<uint64_t>(slot.c); break;
+        }
     }
-    return HPtr::fromBits(Export::encode(accHP));
+
+    // Hand the final accumulator back as HPtr. Box once if it ended up
+    // primitive; the caller sees the legacy `HPtr` return type.
+    if (accKind == 0) {
+        return HPtr::fromBits(accBits);
+    }
+    Unboxable u;
+    switch (accKind) {
+        case 1: u.i = static_cast<int64_t>(accBits); break;
+        case 2: std::memcpy(&u.f, &accBits, sizeof(double)); break;
+        default: u.c = static_cast<u16>(accBits); break;
+    }
+    HPointer boxed = alloc::boxElement(u, accKind);
+    return HPtr::fromBits(Export::encode(boxed));
+}
+
+HPtr Elm_Kernel_JsArray_foldl(HPtr closure, HPtr acc, HPtr array) {
+    return foldImpl(closure, acc, array, /*forward=*/true);
+}
+
+HPtr Elm_Kernel_JsArray_foldr(HPtr closure, HPtr acc, HPtr array) {
+    return foldImpl(closure, acc, array, /*forward=*/false);
 }
 
 //===----------------------------------------------------------------------===//
@@ -798,11 +952,17 @@ HPtr Elm_Kernel_JsArray_initialize_Int(int64_t size, int64_t offset, HPtr closur
     auto& allocator = Allocator::instance();
 
     StackRootGuard loopRoots(&arr, &closureHP);
+    ResultSlot slot{};
     for (int64_t i = 0; i < size; i++) {
-        HPtr cl = HPtr::fromBits(Export::encode(closureHP));
-        uint64_t value = callUnaryInitClosure(cl, offset + i);
+        // Typed-result entry: when the user mapper returns an Int/Float/
+        // Char the wrapper writes the primitive directly into `slot`,
+        // so this path no longer pays an `eco_alloc_int` per call.
+        // `pushTypedResult` then stores the primitive unboxed in the
+        // result array, mirroring what the boxed path produced via
+        // `pushUnboxedResult` but without the box→unbox round-trip.
+        uint8_t rk = callUnaryInitClosureTyped(closureHP, offset + i, &slot);
         void* arrObj = allocator.resolve(arr);
-        pushUnboxedResult(arrObj, value);
+        pushTypedResult(arrObj, slot, rk);
     }
     return HPtr::fromBits(Export::encode(arr));
 }
@@ -835,6 +995,7 @@ HPtr Elm_Kernel_JsArray_indexedMap_Int(HPtr closure, int64_t offset, HPtr array)
     }
 
     StackRootGuard loopRoots(&srcHP, &arr, &closureHP);
+    ResultSlot slot{};
     for (uint32_t i = 0; i < len; i++) {
         ElmArray* src = static_cast<ElmArray*>(allocator.resolve(srcHP));
         uint64_t elem;
@@ -843,11 +1004,14 @@ HPtr Elm_Kernel_JsArray_indexedMap_Int(HPtr closure, int64_t offset, HPtr array)
         } else {
             elem = Export::encode(src->elements[i].p);
         }
-        HPtr cl = HPtr::fromBits(Export::encode(closureHP));
-        uint64_t result = callBinaryIndexMapClosure(cl, offset + i, elem);
+        // Typed-result entry: skip the dispatch-side box on PK_Int/Float/
+        // Char-returning mappers. `pushTypedResult` stores the primitive
+        // unboxed in the result array directly.
+        uint8_t rk = callBinaryIndexMapClosureTyped(closureHP, offset + i,
+                                                    elem, &slot);
 
         void* arrObj = allocator.resolve(arr);
-        pushUnboxedResult(arrObj, result);
+        pushTypedResult(arrObj, slot, rk);
     }
     return HPtr::fromBits(Export::encode(arr));
 }
