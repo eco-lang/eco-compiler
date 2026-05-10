@@ -1128,8 +1128,13 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     size_t size = getObjectSize(obj);
     void *new_obj = nullptr;
 
-    // Promote to old gen if age >= config_->promotion_age.
-    if (hdr->age >= config_->promotion_age) {
+    // Promote to old gen iff age has reached promotion_age AND neither pin
+    // nor builder forbids it. `builder == 1` keeps in-construction objects
+    // (e.g. JsArray result arrays under indexedMap/initialize) pinned to
+    // the nursery so kernel slot writes never produce old-gen→young edges
+    // (HEAP_BUILDER_001/002). `pin` is orthogonal: pin forbids relocation,
+    // builder forbids promotion.
+    if (hdr->age >= config_->promotion_age && !hdr->pin && !hdr->builder) {
         // Direct allocation to old gen (simplified - no TLAB buffering).
         new_obj = oldgen.allocate(size);
         assert(new_obj && "Failed to allocate in old gen during promotion");
@@ -1170,9 +1175,9 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         if (in_phase3_) {
             std::fprintf(stderr,
                 "[gc-debug] INVARIANT VIOLATION: phase 3 child not old enough to promote!\n"
-                "  child obj=%p tag=%u age=%u promotion_age=%u\n",
+                "  child obj=%p tag=%u age=%u builder=%u promotion_age=%u\n",
                 obj, (unsigned)hdr->tag, (unsigned)hdr->age,
-                (unsigned)config_->promotion_age);
+                (unsigned)hdr->builder, (unsigned)config_->promotion_age);
             uint64_t raw_hptr;
             memcpy(&raw_hptr, &ptr, sizeof(raw_hptr));
             std::fprintf(stderr, "  child hptr raw=0x%016lx\n", (unsigned long)raw_hptr);
@@ -1191,6 +1196,10 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
             void *bt[40];
             int n = backtrace(bt, 40);
             backtrace_symbols_fd(bt, n, fileno(stderr));
+            // A builder bit reaching this point means a kernel published a
+            // builder object into a parent that was already old enough to
+            // promote — HEAP_BUILDER_003 was violated.
+            assert(!hdr->builder && "Elm invariant: builder object reached as child of promoted parent (HEAP_BUILDER_003)");
             assert(false && "Elm invariant: child of promoted object has age < promotion_age");
         }
 #endif
@@ -1202,9 +1211,19 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         std::memcpy(new_obj, obj, size);
 
         Header *new_hdr = getHeader(new_obj);
-        new_hdr->age++;
+        // HEAP_BUILDER_002: while builder == 1, age must remain 0. Skip the
+        // increment so the invariant holds across minor cycles. Once the
+        // kernel calls clear_builder, the cell ages from 0 like a fresh
+        // allocation.
+        if (!new_hdr->builder) {
+            new_hdr->age++;
+        }
         // Defensive (see promotion path above).
         new_hdr->color = static_cast<u32>(Color::White);
+#if ECO_HEAP_VALIDATE
+        assert(!(new_hdr->builder && new_hdr->age != 0) &&
+               "HEAP_BUILDER_002: builder objects must have age == 0");
+#endif
 
         GC_STATS_MINOR_INC_SURVIVORS(stats);
     }
@@ -1282,8 +1301,8 @@ void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vecto
     size_t size = getObjectSize(obj);
     void *new_obj = nullptr;
 
-    // Promote to old gen if age >= promotion_age.
-    if (hdr->age >= config_->promotion_age) {
+    // Promote to old gen iff aged AND not pinned/builder (HEAP_BUILDER_001).
+    if (hdr->age >= config_->promotion_age && !hdr->pin && !hdr->builder) {
         new_obj = oldgen.allocate(size);
         assert(new_obj && "Failed to allocate in old gen during promotion");
 
@@ -1307,7 +1326,10 @@ void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vecto
         std::memcpy(new_obj, obj, size);
 
         Header *new_hdr = getHeader(new_obj);
-        new_hdr->age++;
+        // HEAP_BUILDER_002: don't age builders.
+        if (!new_hdr->builder) {
+            new_hdr->age++;
+        }
 
         GC_STATS_MINOR_INC_SURVIVORS(stats);
     }
@@ -1756,7 +1778,9 @@ void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
         size_t size = sizeof(Cons);
         void* new_obj = nullptr;
 
-        if (hdr->age >= config_->promotion_age) {
+        // HEAP_BUILDER_001/002: defensively respect pin/builder on Cons,
+        // even though no current kernel marks Cons cells as builders.
+        if (hdr->age >= config_->promotion_age && !hdr->pin && !hdr->builder) {
             // Promote to old gen
             new_obj = oldgen.allocate(size);
             assert(new_obj && "Failed to allocate in old gen during list spine copy");
@@ -1776,7 +1800,9 @@ void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
             std::memcpy(new_obj, obj, size);
 
             Header* new_hdr = getHeader(new_obj);
-            new_hdr->age++;
+            if (!new_hdr->builder) {
+                new_hdr->age++;
+            }
             GC_STATS_MINOR_INC_SURVIVORS(stats);
         }
 

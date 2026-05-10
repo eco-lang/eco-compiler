@@ -114,6 +114,25 @@ typedef enum {
 //   - The 8-byte heap-base sentinel installed by `installHeapBaseSentinel`
 //     is EXEMPT from the `age & 1` convention: it carries `age = 0` and is
 //     identified by address (`isHeapBasePage`), not by the age bit.
+//
+// `builder` semantics:
+//   - When `builder == 1`, the object is a "builder" currently being mutated
+//     by runtime code (e.g. ElmArray under incremental construction). The bit
+//     pins the object to the nursery while construction runs, so children
+//     written into it during the loop cannot become old-gen→young pointers.
+//   - Builder objects:
+//       * Must live in the nursery; it is a GC invariant (HEAP_BUILDER_001)
+//         that no builder object ever appears in old gen.
+//       * Are fully traced as roots/children during minor GC, but are never
+//         promoted and never aged while `builder == 1`. The invariant
+//         `builder ⇒ age == 0` (HEAP_BUILDER_002) holds at every GC-visible
+//         point and is asserted under ECO_HEAP_VALIDATE.
+//       * Are expected to be short-lived. Runtime kernels must clear the
+//         flag (HEAP_BUILDER_003) once construction is complete, before the
+//         object becomes reachable to user Elm code.
+//   - `builder` and `pin` are orthogonal: `pin` forbids relocation, `builder`
+//     forbids promotion. The canonical promotion predicate is
+//       `!pin && !builder && age >= promotion_age`.
 typedef struct {
     u32 tag : TAG_BITS;
     u32 color : 2; // White, Grey, or Black for tri-color mark-and-sweep.
@@ -121,7 +140,9 @@ typedef struct {
     u32 age : 2; // Nursery promotion counter; doubles as on-free-list
                  // sentinel for Tag_Free cells (see above).
     u32 unboxed : 6; // 2 bits per slot; used by Cons/Tuple2/Tuple3/ElmArray.
-    u32 refcount : 16; // Reference count (unused currently).
+    u32 refcount : 15; // Reference count (unused currently).
+    u32 builder : 1; // Builder flag: object is under construction; pinned
+                     // to nursery (no aging, no promotion) while set.
     u32 size; // Object size in type-specific units.
 } Header;
 static_assert(sizeof(Header) == 8, "Header must be 64 bits");

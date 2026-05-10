@@ -1835,6 +1835,14 @@ bool OldGenSpace::markOneObject(void* obj, uint32_t block_index) {
     // call back into pushMarkRoot for child references; those will set
     // their own bits and push themselves on the mark stack.
     if (!contains(obj)) return false;
+#if ECO_HEAP_VALIDATE
+    // HEAP_BUILDER_001: builder objects are forbidden in old gen. If we
+    // observe one here, a kernel either failed to clear the bit before
+    // publishing the object, or the GC promoted a builder despite the
+    // !builder gate in NurserySpace::evacuate.
+    assert(!hdr->builder &&
+           "HEAP_BUILDER_001: builder object in old gen");
+#endif
     // Use the cached block_index when valid; fall back to blockIndexFor
     // only when the cache is empty (cold callers / nursery sentinel).
     size_t blk_idx;

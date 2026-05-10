@@ -423,16 +423,23 @@ HPtr Elm_Kernel_JsArray_initialize(HPtr size_val, HPtr offset_val, HPtr closure)
     int64_t size = unboxInt(size_val);
     int64_t offset = unboxInt(offset_val);
 
-    // Root `closureHP` BEFORE `allocArray` — that allocation is a GC
+    // Root `closureHP` BEFORE `allocArrayBuilder` — that allocation is a GC
     // point, and the by-value `closure` parameter is unrooted on the
     // caller's stack, so the closure HPointer becomes stale across
-    // allocArray. Decoding into a stack-rooted local before the alloc,
-    // and re-encoding inside the loop, picks up the post-GC location.
+    // allocArrayBuilder. Decoding into a stack-rooted local before the
+    // alloc, and re-encoding inside the loop, picks up the post-GC
+    // location.
     HPointer closureHP = Export::decode(closure.toBits());
     HPointer arr = alloc::listNil();  // placeholder until alloc below
     StackRootGuard loopRoots(&arr, &closureHP);
 
-    arr = alloc::allocArray(static_cast<size_t>(size));
+    // allocArrayBuilder + BuilderGuard pin the result array to nursery for
+    // the duration of the loop (HEAP_BUILDER_001/003). Without this, a
+    // minor GC fired by a user closure could promote a half-built array
+    // and the next slot write would plant a nursery HPointer into an
+    // old-gen parent.
+    arr = alloc::allocArrayBuilder(static_cast<size_t>(size));
+    alloc::BuilderGuard builderGuard(&arr);
     auto& allocator = Allocator::instance();
 
     ResultSlot slot{};
@@ -443,6 +450,7 @@ HPtr Elm_Kernel_JsArray_initialize(HPtr size_val, HPtr offset_val, HPtr closure)
         void* arrObj = allocator.resolve(arr);
         pushTypedResult(arrObj, slot, rk);
     }
+    builderGuard.clear();
     return HPtr::fromBits(Export::encode(arr));
 }
 
@@ -468,13 +476,16 @@ HPtr Elm_Kernel_JsArray_map(HPtr closure, HPtr array) {
     HPointer arr;
     {
         StackRootGuard guard(&srcHP, &closureHP);
-        arr = alloc::allocArray(len);
+        // Pin the result array to nursery while the loop mutates it
+        // across closure calls (HEAP_BUILDER_001/003).
+        arr = alloc::allocArrayBuilder(len);
     }
 
     // Root source, destination, and closure across every iteration. The
     // closure may move between calls; without rooting it here, the next call
     // would see a stale HPointer pointing at a Tag_Forward (or freed) cell.
     StackRootGuard loopRoots(&srcHP, &arr, &closureHP);
+    alloc::BuilderGuard builderGuard(&arr);
     ResultSlot slot{};
     for (uint32_t i = 0; i < len; i++) {
         ElmArray* src = static_cast<ElmArray*>(allocator.resolve(srcHP));
@@ -501,6 +512,7 @@ HPtr Elm_Kernel_JsArray_map(HPtr closure, HPtr array) {
         void* arrObj = allocator.resolve(arr);
         pushTypedResult(arrObj, slot, resultKind);
     }
+    builderGuard.clear();
     return HPtr::fromBits(Export::encode(arr));
 }
 
@@ -522,10 +534,12 @@ HPtr Elm_Kernel_JsArray_indexedMap(HPtr closure, HPtr offset_val, HPtr array) {
     HPointer arr;
     {
         StackRootGuard guard(&srcHP, &closureHP);
-        arr = alloc::allocArray(len);
+        // Pin the result array to nursery (HEAP_BUILDER_001/003).
+        arr = alloc::allocArrayBuilder(len);
     }
 
     StackRootGuard loopRoots(&srcHP, &arr, &closureHP);
+    alloc::BuilderGuard builderGuard(&arr);
     ResultSlot slot{};
     for (uint32_t i = 0; i < len; i++) {
         ElmArray* src = static_cast<ElmArray*>(allocator.resolve(srcHP));
@@ -541,6 +555,7 @@ HPtr Elm_Kernel_JsArray_indexedMap(HPtr closure, HPtr offset_val, HPtr array) {
         void* arrObj = allocator.resolve(arr);
         pushTypedResult(arrObj, slot, rk);
     }
+    builderGuard.clear();
     return HPtr::fromBits(Export::encode(arr));
 }
 
@@ -927,11 +942,13 @@ HPtr Elm_Kernel_JsArray_unsafeSet_Char(int64_t idx, uint16_t value, HPtr array) 
 
 // initialize: same loop as the boxed root with typed Int parameters.
 HPtr Elm_Kernel_JsArray_initialize_Int(int64_t size, int64_t offset, HPtr closure) {
-    HPointer arr = alloc::allocArray(static_cast<size_t>(size));
+    // Pin the result array to nursery (HEAP_BUILDER_001/003).
+    HPointer arr = alloc::allocArrayBuilder(static_cast<size_t>(size));
     HPointer closureHP = Export::decode(closure.toBits());
     auto& allocator = Allocator::instance();
 
     StackRootGuard loopRoots(&arr, &closureHP);
+    alloc::BuilderGuard builderGuard(&arr);
     ResultSlot slot{};
     for (int64_t i = 0; i < size; i++) {
         // Typed-result entry: when the user mapper returns an Int/Float/
@@ -944,6 +961,7 @@ HPtr Elm_Kernel_JsArray_initialize_Int(int64_t size, int64_t offset, HPtr closur
         void* arrObj = allocator.resolve(arr);
         pushTypedResult(arrObj, slot, rk);
     }
+    builderGuard.clear();
     return HPtr::fromBits(Export::encode(arr));
 }
 
@@ -971,10 +989,15 @@ HPtr Elm_Kernel_JsArray_indexedMap_Int(HPtr closure, int64_t offset, HPtr array)
     HPointer arr;
     {
         StackRootGuard guard(&srcHP, &closureHP);
-        arr = alloc::allocArray(len);
+        // Pin the result array to nursery (HEAP_BUILDER_001/003) — without
+        // this, a minor GC inside callBinaryIndexMapClosureTyped could
+        // promote the half-built array and the next slot write would plant
+        // a nursery HPointer in an old-gen parent.
+        arr = alloc::allocArrayBuilder(len);
     }
 
     StackRootGuard loopRoots(&srcHP, &arr, &closureHP);
+    alloc::BuilderGuard builderGuard(&arr);
     ResultSlot slot{};
     for (uint32_t i = 0; i < len; i++) {
         ElmArray* src = static_cast<ElmArray*>(allocator.resolve(srcHP));
@@ -993,6 +1016,7 @@ HPtr Elm_Kernel_JsArray_indexedMap_Int(HPtr closure, int64_t offset, HPtr array)
         void* arrObj = allocator.resolve(arr);
         pushTypedResult(arrObj, slot, rk);
     }
+    builderGuard.clear();
     return HPtr::fromBits(Export::encode(arr));
 }
 

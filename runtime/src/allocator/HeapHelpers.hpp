@@ -929,6 +929,98 @@ inline HPointer allocArray(size_t capacity) {
     return Allocator::instance().wrap(arr);
 }
 
+// ============================================================================
+// Builder Bit Helpers (HEAP_BUILDER_001..003)
+// ============================================================================
+//
+// Builder objects are pinned to the nursery while a runtime kernel is mutating
+// them in place across closure calls. The bit gates promotion in
+// NurserySpace::evacuate so a half-built container can never become an old-gen
+// parent of nursery-resident children.
+
+/**
+ * Sets `builder = 1` and resets `age = 0` to maintain HEAP_BUILDER_002. Both
+ * writes are required: the invariant `builder ⇒ age == 0` is checked in
+ * minor-GC evacuation under ECO_HEAP_VALIDATE.
+ */
+inline void mark_as_builder(Header* h) {
+    h->builder = 1;
+    h->age = 0;
+}
+
+/**
+ * Clears the builder bit. After this returns, the cell ages from 0 like a
+ * fresh allocation and may promote on a subsequent minor GC. Under
+ * ECO_HEAP_VALIDATE, asserts the cell is still in the nursery — clearing
+ * builder on an old-gen object would mean HEAP_BUILDER_001 was already
+ * violated, but the assert documents the intent.
+ */
+inline void clear_builder(Header* h) {
+#if ECO_HEAP_VALIDATE
+    assert(Allocator::instance().isInNursery(h) &&
+           "HEAP_BUILDER_001: clear_builder on non-nursery object");
+#endif
+    h->builder = 0;
+}
+
+/**
+ * RAII guard that marks an object as a builder on construction and clears
+ * the bit on scope exit. Use this for the duration of a kernel's mutation
+ * window so every exit path (return, exception, early break) clears the
+ * bit before the result becomes reachable to user Elm code (HEAP_BUILDER_003).
+ *
+ * Holds an `HPointer*` (not a raw object pointer) so it can re-resolve the
+ * cell on destruction — the underlying object may have been relocated by a
+ * minor GC during the guarded scope.
+ */
+class BuilderGuard {
+public:
+    explicit BuilderGuard(HPointer* hp) : hp_(hp), active_(true) {
+        void* obj = Allocator::instance().resolve(*hp_);
+        assert(obj && "BuilderGuard: object must resolve at construction");
+        mark_as_builder(static_cast<Header*>(obj));
+    }
+
+    BuilderGuard(const BuilderGuard&) = delete;
+    BuilderGuard& operator=(const BuilderGuard&) = delete;
+
+    /// Manually clear the builder bit before the guard goes out of scope.
+    /// Useful when a kernel publishes the result on the last iteration and
+    /// wants to drop builder semantics before the function returns.
+    void clear() {
+        if (!active_) return;
+        active_ = false;
+        void* obj = Allocator::instance().resolve(*hp_);
+        if (obj) {
+            clear_builder(static_cast<Header*>(obj));
+        }
+    }
+
+    ~BuilderGuard() { clear(); }
+
+private:
+    HPointer* hp_;
+    bool active_;
+};
+
+/**
+ * Allocates a mutable Array with specified capacity AND sets the builder
+ * bit so the GC will not promote the array while it is being mutated in
+ * place. Caller must clear the bit (via BuilderGuard or clear_builder)
+ * before the array becomes reachable to user code (HEAP_BUILDER_003).
+ *
+ * Use this for the "alloc + mutate across closure calls" pattern. One-shot
+ * allocators that fill the array atomically before any GC point can stay
+ * on `allocArray`.
+ */
+inline HPointer allocArrayBuilder(size_t capacity) {
+    HPointer hp = allocArray(capacity);
+    void* obj = Allocator::instance().resolve(hp);
+    assert(obj && "allocArrayBuilder: array allocation resolved to null");
+    mark_as_builder(static_cast<Header*>(obj));
+    return hp;
+}
+
 /**
  * Allocates an Array and initializes it with boxed pointers.
  *

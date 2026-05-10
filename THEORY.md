@@ -206,6 +206,19 @@ and 64 bits respectively, all 2-bit-per-slot). See
 
 When `evacuate()` sees an object that has reached promotion age, it allocates in the old gen instead of to-space. Promoted objects are added to a buffer and scanned to update their child pointers, since they may reference other nursery objects that haven't been evacuated yet.
 
+### Builder bit: pinning in-construction objects to nursery
+
+Some runtime kernels (notably `JsArray.indexedMap`/`map`/`initialize` and similar) allocate a result container up front and then write into it across multiple calls into user closures. Because each closure call is a GC safepoint, a minor GC may fire mid-loop and promote the half-built container to old gen. Subsequent slot writes would then plant nursery HPointers into an old-gen parent — exactly the kind of old-gen→young edge the no-remembered-set design forbids.
+
+To handle this, the header carries a 1-bit `builder` flag (carved from the unused `refcount` field). While `builder == 1` the object:
+
+- is **fully traced** during minor GC like any other live object,
+- is **never promoted** (the canonical promotion predicate is `!pin && !builder && age >= promotion_age`),
+- is **never aged** (the invariant `builder ⇒ age == 0` holds at every GC-visible point),
+- is **forbidden from old gen** (HEAP_BUILDER_001).
+
+Kernels opt in via `allocArrayBuilder` (and the `BuilderGuard` RAII helper), which set the bit at allocation time and clear it on scope exit before the result becomes reachable to user Elm code. `pin` and `builder` are orthogonal axes: `pin` forbids relocation, `builder` forbids promotion.
+
 ## Execution Model: Thread-Local Stop-the-World
 
 There is no separate collector thread. Each mutator thread runs its own GC on its own heap:
