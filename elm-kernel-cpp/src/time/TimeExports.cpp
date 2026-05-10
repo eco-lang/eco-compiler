@@ -186,15 +186,15 @@ static void* timeNowBindingEvaluator(void* rawArgs[]) {
         Elm::StackRootGuard guard(&mtpHP, &resumeHP, &posixHP, &succeededTask);
 
         // millisToPosix : Int -> Posix. Pass `ms` as an unboxed i64 (PK_Int)
-        // via the layout-aware saturated-call entry; the runtime threads it
+        // via the PAP-aware typed-args entry; the runtime threads it
         // straight to wrappers that accept unboxed Int, or boxes it once at
         // the boundary for legacy wrappers — strictly less work than always
-        // boxing here.
+        // boxing here, and tolerates curried/partially-applied user code.
         static constexpr unsigned char kLayoutInt1[3] = { 1, 0, 1 };
         const auto* layout =
             reinterpret_cast<const Elm::EvalParamLayout*>(kLayoutInt1);
-        uint64_t msArg = static_cast<uint64_t>(ms);
-        uint64_t posixEnc = eco_closure_call_saturated(
+        int64_t msArg = ms;
+        uint64_t posixEnc = eco_apply_closure_typed(
             HPtr::fromBits(Export::encode(mtpHP)), &msArg, 1, layout).toBits();
         posixHP = Export::decode(posixEnc);
 

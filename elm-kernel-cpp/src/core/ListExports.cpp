@@ -18,17 +18,24 @@ using namespace Elm::Kernel;
 namespace {
 
 //===----------------------------------------------------------------------===//
-// Closure-calling helpers (INV_2: delegate to runtime via eco_closure_call_saturated)
+// Closure-calling helpers.
+//
+// Higher-order kernels can't statically tell whether the user closure has
+// been monomorphised flat or as a multi-stage curry — both shapes are
+// valid. So we route through `eco_apply_closure`, which reads the
+// closure header at runtime and dispatches under-saturated /
+// saturated / over-saturated correctly. Strict-arity entries are an
+// unsafe API for user-facing kernels (see closure-callback audit).
 //===----------------------------------------------------------------------===//
 
 inline uint64_t callUnaryClosure(HPtr closure_hptr, uint64_t arg) {
     uint64_t args[1] = { arg };
-    return eco_closure_call_saturated(closure_hptr, args, 1, /*layout=*/nullptr).toBits();
+    return eco_apply_closure(closure_hptr, args, 1).toBits();
 }
 
 inline uint64_t callBinaryClosure(HPtr closure_hptr, uint64_t arg1, uint64_t arg2) {
     uint64_t args[2] = { arg1, arg2 };
-    return eco_closure_call_saturated(closure_hptr, args, 2, /*layout=*/nullptr).toBits();
+    return eco_apply_closure(closure_hptr, args, 2).toBits();
 }
 
 //===----------------------------------------------------------------------===//
@@ -144,9 +151,11 @@ inline ConsBits readCons(HPointer listHP) {
 // The helpers below let the kernel deliver each cons head in its natural
 // representation (raw bits for unboxed primitives, HPointer for boxed
 // values), build a small `EvalParamLayout` describing that delivery, and
-// route through `eco_closure_call_saturated_eval` so the wrapper writes
-// the result directly into a typed slot. When the slot kind matches the
-// closure's expected kind the splice path skips boxing/unboxing entirely.
+// route through `eco_apply_closure_eval` so the wrapper writes the result
+// directly into a typed slot. The eval entry is PAP-aware, so a curried
+// or partially-applied user mapper is handled correctly. When the slot
+// kind matches the closure's expected kind, the splice path skips
+// boxing/unboxing entirely.
 //===----------------------------------------------------------------------===//
 
 // Closure metadata snapshot. Read once per iteration *after* every
@@ -479,9 +488,14 @@ HPointer kernelListMapN(int n_args, HPointer* lists, HPointer& closureHP) {
         HPtr cl = HPtr::fromBits(Export::encode(closureHP));
         const auto* layout =
             reinterpret_cast<const Elm::EvalParamLayout*>(layoutBuf);
-        eco_closure_call_saturated_eval(cl, typedArgs,
-                                        static_cast<uint32_t>(n_args),
-                                        layout, &resultSlot, resultKind);
+        // Use the PAP-aware typed-result entry so partially-applied or
+        // multi-stage user mappers (e.g. a closure with `n_values` captures
+        // and `max_values - n_values < n_args` remaining at this stage) are
+        // chained correctly across stages instead of asserting in
+        // `spliceArgsForSaturatedCall`.
+        eco_apply_closure_eval(cl, reinterpret_cast<int64_t*>(typedArgs),
+                               static_cast<uint32_t>(n_args),
+                               layout, &resultSlot, resultKind);
         appendClosureResult(results, &resultSlot, resultKind);
 
         for (int i = 0; i < n_args; ++i) lists[i] = cb[i].tail;

@@ -122,14 +122,14 @@ int64_t Elm_Kernel_Parser_isSubChar(HPtr closure, int64_t offset, HPtr str) {
     }
 
     // Invoke the predicate closure with the Char passed as an unboxed u16
-    // (PK_Char). The runtime's saturated-call helper either threads it
-    // straight to a wrapper that accepts unboxed Char, or boxes it once
-    // at the boundary for legacy wrappers — strictly less work than a
-    // per-character `eco_alloc_char` here.
+    // (PK_Char). Use `eco_apply_closure_typed` (PAP-aware) so a curried
+    // or partially-applied predicate is handled correctly — the strict-
+    // arity entries assume the closure is exactly saturated by these
+    // newargs, which isn't a contract user code is bound by.
     static constexpr unsigned char kLayoutChar1[3] = { 1, 0, 3 };
     const auto* layout = reinterpret_cast<const Elm::EvalParamLayout*>(kLayoutChar1);
-    uint64_t args[1] = { static_cast<uint64_t>(codePoint & 0xFFFFu) };
-    HPtr result = eco_closure_call_saturated(closure, args, 1, layout);
+    int64_t args[1] = { static_cast<int64_t>(codePoint & 0xFFFFu) };
+    HPtr result = eco_apply_closure_typed(closure, args, 1, layout);
     if (!Export::decodeBoxedBool(result.toBits())) {
         return -1;
     }

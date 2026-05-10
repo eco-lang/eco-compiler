@@ -32,7 +32,14 @@ static int64_t unboxInt(HPtr val) {
 }
 
 //===----------------------------------------------------------------------===//
-// Closure-calling helpers (INV_2: delegate to runtime via eco_closure_call_saturated)
+// Closure-calling helpers.
+//
+// Higher-order kernels can't statically tell whether the user closure has
+// been monomorphised flat or as a multi-stage curry — both shapes are
+// valid. So we route through `eco_apply_closure{,_eval}`, which read the
+// closure header at runtime and dispatch under-saturated / saturated /
+// over-saturated correctly. Strict-arity entries are an unsafe API for
+// user-facing kernels (see closure-callback audit).
 //===----------------------------------------------------------------------===//
 
 // Layout descriptors for the closure invocations below: each declares the
@@ -42,14 +49,14 @@ static int64_t unboxInt(HPtr val) {
 //   { num_params, result_kind, kinds... }
 //
 // The result_kind byte is patched per-call from `closure->result_kind` so
-// we can route through `eco_closure_call_saturated_eval` and skip the
-// dispatch-side box on PK_Int/Float/Char-returning mappers (REP_ABI_001).
+// we can route through `eco_apply_closure_eval` and skip the dispatch-side
+// box on PK_Int/Float/Char-returning mappers (REP_ABI_001).
 static constexpr unsigned char kLayoutInt1[3]      = { 1, 0, 1 };       // (Int)
 static constexpr unsigned char kLayoutIntBoxed[4]  = { 2, 0, 1, 0 };    // (Int, a)
 
 // Read the closure's `result_kind` field once. Used by the typed-result
 // helpers below to set both the EvalParamLayout's result_kind byte and the
-// `desired_kind` argument to `eco_closure_call_saturated_eval`.
+// `desired_kind` argument to `eco_apply_closure_eval`.
 static uint8_t readClosureResultKind(HPointer closureHP) {
     auto* cl = static_cast<Elm::Closure*>(
         Elm::Allocator::instance().resolve(closureHP));
@@ -79,23 +86,8 @@ static uint8_t callUnaryInitClosureTyped(HPointer closureHP,
         reinterpret_cast<const Elm::EvalParamLayout*>(layoutBuf);
     uint64_t args[1] = { static_cast<uint64_t>(index) };
     Elm::HPtr cl = Elm::HPtr::fromBits(Elm::Kernel::Export::encode(closureHP));
-    eco_closure_call_saturated_eval(cl, args, 1, layout, slot, resultKind);
+    eco_apply_closure_eval(cl, reinterpret_cast<int64_t*>(args), 1, layout, slot, resultKind);
     return resultKind;
-}
-
-// Call a closure with one Int argument (index for initialize). Boxed-result
-// path used by callers that haven't migrated to the typed entry above.
-static uint64_t callUnaryInitClosure(HPtr closure_hptr, int64_t index) {
-    const auto* layout = reinterpret_cast<const Elm::EvalParamLayout*>(kLayoutInt1);
-    uint64_t args[1] = { static_cast<uint64_t>(index) };
-    return eco_closure_call_saturated(closure_hptr, args, 1, layout).toBits();
-}
-
-// Call a closure with one argument (element for map).
-// Element is already HPointer-encoded (!eco.value).
-static uint64_t callUnaryMapClosure(HPtr closure_hptr, uint64_t elem) {
-    uint64_t args[1] = { elem };
-    return eco_closure_call_saturated(closure_hptr, args, 1, /*layout=*/nullptr).toBits();
 }
 
 // Push the closure's return value into `arrObj`, unboxing primitive wrappers
@@ -154,16 +146,8 @@ static void pushTypedResult(void* arrObj, const ResultSlot& slot,
     }
 }
 
-// Call a closure with two arguments (index, element for indexedMap).
-// Index is passed as unboxed i64; element is HPointer-encoded.
-static uint64_t callBinaryIndexMapClosure(HPtr closure_hptr, int64_t index, uint64_t elem) {
-    const auto* layout = reinterpret_cast<const Elm::EvalParamLayout*>(kLayoutIntBoxed);
-    uint64_t args[2] = { static_cast<uint64_t>(index), elem };
-    return eco_closure_call_saturated(closure_hptr, args, 2, layout).toBits();
-}
-
-// Typed-result variant of `callBinaryIndexMapClosure`: routes through
-// `eco_closure_call_saturated_eval` so primitive returns avoid the
+// Typed-result variant for indexedMap: routes through
+// `eco_apply_closure_eval` (PAP-aware) so primitive returns avoid the
 // dispatch-side box. `closureHP` must be rooted by the caller.
 static uint8_t callBinaryIndexMapClosureTyped(HPointer closureHP,
                                               int64_t index, uint64_t elem,
@@ -174,18 +158,11 @@ static uint8_t callBinaryIndexMapClosureTyped(HPointer closureHP,
         reinterpret_cast<const Elm::EvalParamLayout*>(layoutBuf);
     uint64_t args[2] = { static_cast<uint64_t>(index), elem };
     Elm::HPtr cl = Elm::HPtr::fromBits(Elm::Kernel::Export::encode(closureHP));
-    eco_closure_call_saturated_eval(cl, args, 2, layout, slot, resultKind);
+    eco_apply_closure_eval(cl, reinterpret_cast<int64_t*>(args), 2, layout, slot, resultKind);
     return resultKind;
 }
 
-// Call a closure with two arguments (element, acc for foldl/foldr).
-// Both are HPointer-encoded (!eco.value).
-static uint64_t callBinaryFoldClosure(HPtr closure_hptr, uint64_t elem, uint64_t acc) {
-    uint64_t args[2] = { elem, acc };
-    return eco_closure_call_saturated(closure_hptr, args, 2, /*layout=*/nullptr).toBits();
-}
-
-// Typed-result variant of `callBinaryFoldClosure`: the kernel passes
+// Typed-result fold helper: the kernel passes
 // `acc` in its current convention (HPtr or raw primitive bits as
 // indicated by `accKind`), and the closure's `result_kind` selects the
 // receive ABI for `slot`. This lets foldl/foldr carry a primitive
@@ -204,7 +181,7 @@ static uint8_t callBinaryFoldClosureTyped(HPointer closureHP,
         reinterpret_cast<const Elm::EvalParamLayout*>(layoutBuf);
     uint64_t args[2] = { elem, acc };
     Elm::HPtr cl = Elm::HPtr::fromBits(Elm::Kernel::Export::encode(closureHP));
-    eco_closure_call_saturated_eval(cl, args, 2, layout, slot, resultKind);
+    eco_apply_closure_eval(cl, reinterpret_cast<int64_t*>(args), 2, layout, slot, resultKind);
     return resultKind;
 }
 
@@ -509,6 +486,8 @@ HPtr Elm_Kernel_JsArray_map(HPtr closure, HPtr array) {
         }
         // Typed-result entry: deliver the (possibly boxed) element to the
         // closure and write its primitive return straight into `slot`.
+        // Use `eco_apply_closure_eval` (PAP-aware) so curried/partially-
+        // applied user mappers don't trip the strict-arity assertion.
         uint8_t resultKind = readClosureResultKind(closureHP);
         unsigned char layoutBuf[3] = { 1, resultKind, 0 };
         const auto* layout =
@@ -516,7 +495,8 @@ HPtr Elm_Kernel_JsArray_map(HPtr closure, HPtr array) {
         uint64_t args[1] = { elem };
         Elm::HPtr cl =
             Elm::HPtr::fromBits(Elm::Kernel::Export::encode(closureHP));
-        eco_closure_call_saturated_eval(cl, args, 1, layout, &slot, resultKind);
+        eco_apply_closure_eval(cl, reinterpret_cast<int64_t*>(args),
+                               1, layout, &slot, resultKind);
 
         void* arrObj = allocator.resolve(arr);
         pushTypedResult(arrObj, slot, resultKind);

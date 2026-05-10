@@ -169,13 +169,20 @@ HPtr elm_string_from_double(double f) {
 //===----------------------------------------------------------------------===//
 
 //===----------------------------------------------------------------------===//
-// Closure-calling helpers (INV_2: delegate to runtime via eco_closure_call_saturated)
+// Closure-calling helpers.
+//
+// Higher-order kernels can't statically tell whether the user closure has
+// been monomorphised flat or as a multi-stage curry — both shapes are
+// valid. So we route through `eco_apply_closure{,_eval}`, which read the
+// closure header at runtime and dispatch under-saturated / saturated /
+// over-saturated correctly. Strict-arity entries are an unsafe API for
+// user-facing kernels (see closure-callback audit).
 //===----------------------------------------------------------------------===//
 
 // Layout descriptors for the closure invocations below. Each declares the
 // per-arg ParamKind so the runtime can hand unboxed primitives straight to
 // wrappers that accept them. Layout bytes match `EvalParamLayout`:
-//   { num_params, result_kind (irrelevant for saturated calls), kinds... }
+//   { num_params, result_kind, kinds... }
 static constexpr unsigned char kLayoutChar1[3]      = { 1, 0, 3 };       // (Char)
 static constexpr unsigned char kLayoutCharBoxed[4]  = { 2, 0, 3, 0 };    // (Char, a)
 
@@ -197,8 +204,8 @@ static uint16_t callCharToCharClosure(HPtr closure_hptr, uint16_t c) {
 // stays in PK_Boxed form; only the Char argument is passed unboxed.
 static bool callCharToBoolClosure(HPtr closure_hptr, uint16_t c) {
     const auto* layout = reinterpret_cast<const Elm::EvalParamLayout*>(kLayoutChar1);
-    uint64_t args[1] = { static_cast<uint64_t>(c) };
-    HPtr result_hptr = eco_closure_call_saturated(closure_hptr, args, 1, layout);
+    int64_t args[1] = { static_cast<int64_t>(c) };
+    HPtr result_hptr = eco_apply_closure_typed(closure_hptr, args, 1, layout);
     return Export::decodeBoxedBool(result_hptr.toBits());
 }
 
@@ -206,8 +213,8 @@ static bool callCharToBoolClosure(HPtr closure_hptr, uint16_t c) {
 // accumulator stays HPointer-encoded.
 static uint64_t callFoldClosure(HPtr closure_hptr, uint16_t c, uint64_t acc) {
     const auto* layout = reinterpret_cast<const Elm::EvalParamLayout*>(kLayoutCharBoxed);
-    uint64_t args[2] = { static_cast<uint64_t>(c), acc };
-    return eco_closure_call_saturated(closure_hptr, args, 2, layout).toBits();
+    int64_t args[2] = { static_cast<int64_t>(c), static_cast<int64_t>(acc) };
+    return eco_apply_closure_typed(closure_hptr, args, 2, layout).toBits();
 }
 
 // Snapshot a String (any form) into a stable std::vector<u16>. The snapshot

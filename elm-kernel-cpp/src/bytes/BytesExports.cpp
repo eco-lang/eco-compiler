@@ -17,7 +17,9 @@ extern "C" uint32_t elm_bytebuffer_len(uint64_t bb);
 
 // Declare the closure call function from RuntimeExports
 namespace Elm { struct EvalParamLayout; }
-extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args, uint32_t num_newargs, const Elm::EvalParamLayout* layout);
+extern "C" HPtr eco_apply_closure_typed(HPtr closure_hptr, int64_t* typed_args,
+                                        uint32_t num_args,
+                                        const Elm::EvalParamLayout* args_layout);
 extern "C" size_t eco_gc_stack_range_point();
 extern "C" void   eco_gc_push_stack_range(uint64_t* base, size_t count, uint64_t hpointer_mask);
 extern "C" void   eco_gc_restore_stack_range_point(size_t saved);
@@ -393,15 +395,15 @@ HPtr Elm_Kernel_Bytes_decode(HPtr decoder, HPtr bytes) {
 
     // Call the decoder closure with (bytes, offset=0). The decoder is a
     // function `(Bytes, Int) -> Maybe a`. Pass the offset as an unboxed
-    // i64 (PK_Int) instead of allocating an ElmInt: the runtime's
-    // splice helper either passes it straight through to the wrapper
-    // (when the wrapper accepts unboxed Int) or boxes it once at the
-    // boundary (legacy wrappers) — same work as before, but skips the
-    // allocation entirely on the modern path.
+    // i64 (PK_Int) instead of allocating an ElmInt. Use the PAP-aware
+    // `eco_apply_closure_typed` — Bytes.Decode produces decoders by
+    // composing combinators, so the runtime closure may be a multi-stage
+    // wrapper rather than a flat 2-arg function, and the strict-arity
+    // entry would assert on those.
     static constexpr unsigned char kLayoutBoxedInt[4] = { 2, 0, 0, 1 };
     const auto* layout = reinterpret_cast<const Elm::EvalParamLayout*>(kLayoutBoxedInt);
-    uint64_t args[2] = { bytes.toBits(), 0 };
-    uint64_t result = eco_closure_call_saturated(decoder, args, 2, layout).toBits();
+    int64_t args[2] = { static_cast<int64_t>(bytes.toBits()), 0 };
+    uint64_t result = eco_apply_closure_typed(decoder, args, 2, layout).toBits();
 
     // Result is a Tuple2(new_offset: i64, decoded_value). Pattern B: resultHP
     // is re-resolved AFTER the allocate to copy field b into Just; root via
