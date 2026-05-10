@@ -2,17 +2,17 @@
 #define ECO_JSARRAY_HPP
 
 /**
- * Elm Kernel JsArray Module - Runtime Heap Integration
+ * Elm Kernel JsArray Module — Runtime Heap Integration
  *
- * This module provides array operations that work with the GC-managed heap.
- * Arrays are represented as HPointer to ElmArray objects on the heap.
- *
- * ElmArray is a mutable/growable array used internally by Elm's Array type.
- * Elm's Array uses a relaxed radix balanced tree (RRB tree) structure,
- * and JsArray provides the leaf node operations.
- *
- * IMPORTANT: Most operations create NEW arrays (immutable semantics)
- * rather than mutating in place, except for arrayPush on arrays with capacity.
+ * The full JsArray surface (length / push / unsafeGet / unsafeSet / map /
+ * indexedMap / fold / slice / appendN / ...) is implemented directly in
+ * `JsArrayExports.cpp` as C-linkage `Elm_Kernel_JsArray_*` entries. The
+ * native-function-pointer variants previously declared in this header
+ * (which paired `alloc::allocArray` with a per-iteration `func` call) had
+ * no callers and would have hit the HEAP_BUILDER_001..003 bug pattern; they
+ * were deleted 2026-05-10. Only `initializeFromList` survives — it has no
+ * closure call inside the loop and is invoked from `Elm_Kernel_JsArray_
+ * initializeFromList{,_Int}`.
  */
 
 #include "allocator/Heap.hpp"
@@ -20,133 +20,12 @@
 
 namespace Elm::Kernel::JsArray {
 
-// ============================================================================
-// Construction
-// ============================================================================
-
 /**
- * Creates an empty array with default capacity.
- */
-HPointer empty();
-
-/**
- * Creates a single-element array.
- */
-HPointer singleton(HPointer value);
-
-// ============================================================================
-// Length
-// ============================================================================
-
-/**
- * Returns the number of elements in the array.
- */
-u32 length(void* array);
-
-// ============================================================================
-// Initialization
-// ============================================================================
-
-/**
- * Initializer function type: takes index, returns value.
- */
-using InitFunc = HPointer (*)(u32);
-
-/**
- * Creates an array of given size, initializing each element with func(offset + i).
- */
-HPointer initialize(u32 size, u32 offset, InitFunc func);
-
-/**
- * Creates an array from up to max elements of a list.
- * Returns Tuple2(array, remaining_list).
+ * Creates an array from up to `max` elements of a list.
+ * Returns Tuple2(array, remaining_list). No user-closure calls inside the
+ * walk, so no builder-bit treatment is needed.
  */
 HPointer initializeFromList(u32 max, HPointer list);
-
-// ============================================================================
-// Element Access
-// ============================================================================
-
-/**
- * Gets the element at index (no bounds check).
- * Returns the unboxable value - caller must check isUnboxed to interpret.
- */
-Unboxable unsafeGet(u32 index, void* array);
-
-/**
- * Sets the element at index, returning a new array (immutable).
- */
-HPointer unsafeSet(u32 index, HPointer value, void* array);
-
-// ============================================================================
-// Modification
-// ============================================================================
-
-/**
- * Appends a value to the array, returning a new array.
- * If the array has spare capacity, may reuse storage.
- */
-HPointer push(HPointer value, void* array);
-
-// ============================================================================
-// Folding
-// ============================================================================
-
-/**
- * Fold function type: (element, accumulator) -> new_accumulator
- */
-using FoldFunc = HPointer (*)(void*, void*);
-
-/**
- * Folds left over the array: foldl f acc [a,b,c] = f(c, f(b, f(a, acc)))
- */
-HPointer foldl(FoldFunc func, HPointer acc, void* array);
-
-/**
- * Folds right over the array: foldr f acc [a,b,c] = f(a, f(b, f(c, acc)))
- */
-HPointer foldr(FoldFunc func, HPointer acc, void* array);
-
-// ============================================================================
-// Mapping
-// ============================================================================
-
-/**
- * Map function type: element -> new_element
- */
-using MapFunc = HPointer (*)(void*);
-
-/**
- * Maps a function over each element, producing a new array.
- */
-HPointer map(MapFunc func, void* array);
-
-/**
- * Indexed map function type: (index, element) -> new_element
- */
-using IndexedMapFunc = HPointer (*)(u32, void*);
-
-/**
- * Maps a function over each element with its index.
- * Index is offset + actual_index.
- */
-HPointer indexedMap(IndexedMapFunc func, u32 offset, void* array);
-
-// ============================================================================
-// Slicing
-// ============================================================================
-
-/**
- * Extracts a slice from start (inclusive) to end (exclusive).
- * Negative indices count from end.
- */
-HPointer slice(i64 start, i64 end, void* array);
-
-/**
- * Appends up to n elements from source to dest, returning new array.
- * Copies min(n - dest.length, source.length) elements from source.
- */
-HPointer appendN(u32 n, void* dest, void* source);
 
 } // namespace Elm::Kernel::JsArray
 
