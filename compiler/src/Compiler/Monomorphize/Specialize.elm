@@ -175,6 +175,63 @@ applySubstFV state subst canType =
     TypeSubst.applySubstWithFreeVars state.ctx.mvarEnv state.ctx.currentFreeVars subst canType
 
 
+{-| Returns `True` if `to` is strictly more concrete than `from`.
+
+Mirrors the row-polymorphic narrowing scenarios that can arise from
+`applySubst` dropping unresolved row-extension MVars:
+
+  - `from = MVar _`, `to` = anything non-MVar → True
+  - `from = MRecord narrow`, `to = MRecord wider` (strict superset) → True
+  - Function/tuple shapes propagate componentwise.
+
+Used both at the let-binding (compare `defMonoType0` vs rhs's expr type)
+and at `MonoRecordAccess` (compare canonical access type vs the field
+type from the record's mono shape).
+
+-}
+isMoreConcrete : Mono.MonoType -> Mono.MonoType -> Bool
+isMoreConcrete from to =
+    case ( from, to ) of
+        ( Mono.MVar _ _, Mono.MVar _ _ ) ->
+            False
+
+        ( Mono.MVar _ _, _ ) ->
+            True
+
+        _ ->
+            recordWidened from to
+
+
+recordWidened : Mono.MonoType -> Mono.MonoType -> Bool
+recordWidened from to =
+    case ( from, to ) of
+        ( Mono.MRecord fromFields, Mono.MRecord toFields ) ->
+            let
+                fromKeys =
+                    Dict.keys fromFields
+
+                toKeys =
+                    Dict.keys toFields
+            in
+            List.length toKeys
+                > List.length fromKeys
+                && List.all (\k -> Dict.member k toFields) fromKeys
+
+        ( Mono.MFunction fromArgs fromRet, Mono.MFunction toArgs toRet ) ->
+            (List.length fromArgs == List.length toArgs)
+                && (List.any identity (List.map2 recordWidened fromArgs toArgs)
+                        || recordWidened fromRet toRet
+                   )
+
+        ( Mono.MTuple fromElems, Mono.MTuple toElems ) ->
+            List.length fromElems
+                == List.length toElems
+                && List.any identity (List.map2 recordWidened fromElems toElems)
+
+        _ ->
+            False
+
+
 {-| Enqueue a specialization onto the worklist, deduplicating via the scheduled BitSet.
 -}
 enqueueSpec :
@@ -2306,18 +2363,24 @@ specializeExpr expr subst state =
                                     defMonoType0 =
                                         Mono.forceCNumberToInt (applySubstFV state subst defCanType)
 
+                                    exprMonoType =
+                                        monoDefExprType monoDef
+
+                                    -- Prefer rhs's mono type when applySubst silently narrowed
+                                    -- a row-polymorphic record. See `recordWidened` doc.
+                                    useExprType =
+                                        Mono.containsAnyMVar defMonoType0
+                                            || recordWidened defMonoType0 exprMonoType
+
                                     defMonoType =
-                                        if Mono.containsAnyMVar defMonoType0 then
-                                            monoDefExprType monoDef
+                                        if useExprType then
+                                            exprMonoType
 
                                         else
                                             defMonoType0
 
-                                    -- Enrich substitution with bindings discovered from
-                                    -- the concrete def type, so the body sees them.
-                                    -- This mirrors the non-function let branch below.
                                     enrichedSubst =
-                                        if Mono.containsAnyMVar defMonoType0 then
+                                        if useExprType then
                                             Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv defCanType defMonoType subst)
 
                                         else
@@ -2333,10 +2396,8 @@ specializeExpr expr subst state =
                                                 { c1 | varEnv = State.insertVar defName defMonoType c1.varEnv }
                                         }
 
-                                    -- Re-specialize body with enriched substitution
-                                    -- so downstream expressions see the concrete def type.
                                     ( monoBody2, state2 ) =
-                                        if Mono.containsAnyMVar defMonoType0 then
+                                        if useExprType then
                                             specializeExpr body enrichedSubst stateWithVar
 
                                         else
@@ -2429,15 +2490,22 @@ specializeExpr expr subst state =
                                 defMonoType0 =
                                     Mono.forceCNumberToInt (applySubstFV state subst defCanType)
 
+                                exprMonoType =
+                                    monoDefExprType monoDef
+
+                                useExprType =
+                                    Mono.containsAnyMVar defMonoType0
+                                        || recordWidened defMonoType0 exprMonoType
+
                                 defMonoType =
-                                    if Mono.containsAnyMVar defMonoType0 then
-                                        monoDefExprType monoDef
+                                    if useExprType then
+                                        exprMonoType
 
                                     else
                                         defMonoType0
 
                                 enrichedSubst =
-                                    if Mono.containsAnyMVar defMonoType0 then
+                                    if useExprType then
                                         Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv defCanType defMonoType subst)
 
                                     else
@@ -2454,7 +2522,7 @@ specializeExpr expr subst state =
                                     }
 
                                 ( monoBody2, state2 ) =
-                                    if Mono.containsAnyMVar defMonoType0 then
+                                    if useExprType then
                                         specializeExpr body enrichedSubst stateWithVar
 
                                     else
@@ -2525,15 +2593,22 @@ specializeExpr expr subst state =
                                         defMonoType0 =
                                             Mono.forceCNumberToInt (applySubstFV state subst defCanType)
 
+                                        exprMonoType =
+                                            monoDefExprType monoDef
+
+                                        useExprType =
+                                            Mono.containsAnyMVar defMonoType0
+                                                || recordWidened defMonoType0 exprMonoType
+
                                         defMonoType =
-                                            if Mono.containsAnyMVar defMonoType0 then
-                                                monoDefExprType monoDef
+                                            if useExprType then
+                                                exprMonoType
 
                                             else
                                                 defMonoType0
 
                                         enrichedSubst =
-                                            if Mono.containsAnyMVar defMonoType0 then
+                                            if useExprType then
                                                 Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv defCanType defMonoType subst)
 
                                             else
@@ -2550,7 +2625,7 @@ specializeExpr expr subst state =
                                             }
 
                                         ( monoBody2, state2 ) =
-                                            if Mono.containsAnyMVar defMonoType0 then
+                                            if useExprType then
                                                 specializeExpr body enrichedSubst stateWithVar
 
                                             else
@@ -2663,17 +2738,30 @@ specializeExpr expr subst state =
                                 Mono.forceCNumberToInt (applySubstFV state subst defCanType)
 
                             -- If defCanType has unresolved TVars, infer from the specialized expr.
+                            -- Also fall back to the expr's mono type when applySubst silently
+                            -- narrowed a row-polymorphic record: a row-extension MVar that is
+                            -- not in `subst` is dropped wholesale (TypeSubst.applySubst:684),
+                            -- yielding an `MRecord` with only the explicit fields and no MVar
+                            -- residue — so `containsAnyMVar` is False, but the type is still
+                            -- a narrow view. The rhs's specialized type carries the full
+                            -- concrete record shape, so prefer it whenever it adds fields.
+                            -- (See `nested_record_narrowing_report.md`.)
+                            exprMonoType =
+                                monoDefExprType monoDef
+
+                            useExprType =
+                                Mono.containsAnyMVar defMonoType0
+                                    || recordWidened defMonoType0 exprMonoType
+
                             defMonoType =
-                                if Mono.containsAnyMVar defMonoType0 then
-                                    monoDefExprType monoDef
+                                if useExprType then
+                                    exprMonoType
 
                                 else
                                     defMonoType0
 
-                            -- Also enrich the substitution with any bindings discovered
-                            -- from the concrete def type, so the body sees them.
                             enrichedSubst =
-                                if Mono.containsAnyMVar defMonoType0 then
+                                if useExprType then
                                     Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv defCanType defMonoType subst)
 
                                 else
@@ -2940,8 +3028,35 @@ specializeExpr expr subst state =
                     let
                         ( monoRecord, stateAfter ) =
                             specializeExpr record subst state
+
+                        -- If the specialized record's mono type carries a more concrete
+                        -- type for this field than what applySubst produced from the
+                        -- field's canonical type, prefer it. This handles nested
+                        -- row-polymorphic records where the field's canonical type
+                        -- references a row-extension MVar that is not in `subst` —
+                        -- in that case applySubst yields a narrow MRecord (or an
+                        -- MVar/MCustom-with-MVar-args) even though the actual heap
+                        -- value carries the full record. The record's own mono type
+                        -- has the authoritative concrete field type. (Companion fix
+                        -- to `recordWidened`-based let-binding fix in this module.)
+                        refinedMonoType =
+                            case Mono.typeOf monoRecord of
+                                Mono.MRecord fields ->
+                                    case Dict.get fieldName fields of
+                                        Just fieldMono ->
+                                            if isMoreConcrete monoType fieldMono then
+                                                fieldMono
+
+                                            else
+                                                monoType
+
+                                        Nothing ->
+                                            monoType
+
+                                _ ->
+                                    monoType
                     in
-                    ( Mono.MonoRecordAccess monoRecord fieldName monoType, stateAfter )
+                    ( Mono.MonoRecordAccess monoRecord fieldName refinedMonoType, stateAfter )
 
         TOpt.Update _ record updates meta ->
             let
