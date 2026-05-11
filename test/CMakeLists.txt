@@ -75,3 +75,49 @@ target_link_libraries(stress-test
     -Wl,--no-whole-archive
 )
 set_target_properties(stress-test PROPERTIES ENABLE_EXPORTS ON)
+
+# mlir-equivalence — compares Stage 2 (eco-boot.js) vs Stage 6 (eco-compiler
+# native ELF) MLIR output across all Elm E2E test sources. Opt-in: requires
+# the bootstrap chain through Stage 6 to be built first. `run-mlir-equivalence`
+# DEPENDS on the relevant bootstrap outputs so a clean+run sequence rebuilds
+# them automatically; the binary itself still preflights at startup and aborts
+# with a diagnostic if anything is missing.
+#
+# Usage:
+#     cmake --build build --target mlir-equivalence     # builds the binary
+#     cmake --build build --target run-mlir-equivalence # builds + runs the suite
+#     TEST_FILTER=Record cmake --build build --target run-mlir-equivalence
+add_executable(mlir-equivalence
+        mlir_equivalence_main.cpp
+)
+target_compile_features(mlir-equivalence PRIVATE cxx_std_20)
+target_compile_options(mlir-equivalence PRIVATE -fexceptions)
+target_compile_definitions(mlir-equivalence PRIVATE
+        REPO_ROOT="${CMAKE_SOURCE_DIR}"
+)
+
+# `cmake --build build --target clean` should drop the per-run output tree
+# (binary .mlir files and per-test --builddir scratch) alongside the regular
+# object files. The directory is created on demand by the runner.
+set_property(DIRECTORY APPEND PROPERTY
+        ADDITIONAL_CLEAN_FILES "${CMAKE_BINARY_DIR}/test/mlir-equivalence-out"
+)
+
+# The three bootstrap outputs the runner needs at runtime. Listed as file
+# dependencies (not target names) because `compiler/` is added after `test/`
+# in the top-level CMakeLists, so the eco-boot / eco-compiler target names
+# aren't yet visible here — file-level dependencies are resolved later, once
+# both add_subdirectory calls have been processed.
+set(MLIR_EQUIV_BOOTSTRAP_DEPS
+        "${CMAKE_SOURCE_DIR}/compiler/build-kernel/bin/eco-boot.js"
+        "${CMAKE_SOURCE_DIR}/compiler/build-kernel/bin/eco-boot-runner.js"
+        "${CMAKE_SOURCE_DIR}/compiler/build-kernel/bin/eco-compiler"
+)
+
+add_custom_target(run-mlir-equivalence
+        COMMAND sh -c "$<TARGET_FILE:mlir-equivalence> $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
+        DEPENDS mlir-equivalence ${MLIR_EQUIV_BOOTSTRAP_DEPS}
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        USES_TERMINAL
+        COMMENT "Running Stage 2 vs Stage 6 MLIR equivalence tests"
+)
