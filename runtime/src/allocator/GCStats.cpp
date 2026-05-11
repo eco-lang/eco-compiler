@@ -1179,14 +1179,12 @@ void GCStats::print() const {
         Row rows[NUM_ALLOC_TAGS];
         int n_rows = 0;
         uint64_t total_count = 0;
-        uint64_t total_bytes = 0;
         uint64_t max_count = 0;
         for (int i = 0; i < NUM_ALLOC_TAGS; i++) {
             uint64_t c = tlh_alloc_count_by_tag[i];
             if (c == 0) continue;
             rows[n_rows++] = {i, c, tlh_alloc_bytes_by_tag[i]};
             total_count += c;
-            total_bytes += tlh_alloc_bytes_by_tag[i];
             max_count = std::max(max_count, c);
         }
         if (total_count > 0) {
