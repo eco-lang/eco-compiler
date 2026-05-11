@@ -175,7 +175,8 @@ set(ECO_COMPILER_MLIR "${BUILD_KERNEL_DIR}/bin/eco-compiler.mlir")
 
 add_custom_command(
     OUTPUT ${ECO_COMPILER_MLIR}
-    COMMAND sh -c "find '${BUILD_KERNEL_DIR}/eco-stuff' -name '*.ecot' -delete 2>/dev/null || true"
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${BUILD_KERNEL_DIR}/eco-stuff
+    COMMAND find ${BUILD_KERNEL_DIR}/eco-stuff -name *.ecot -delete
     COMMAND ${NODE_EXECUTABLE} --stack-size=65536 bin/eco-boot-2-runner.js make
         --optimize
         --kernel-package eco/compiler
