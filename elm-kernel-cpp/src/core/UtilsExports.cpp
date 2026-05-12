@@ -38,12 +38,29 @@ HPtr Elm_Kernel_Utils_compare_Char(uint16_t a, uint16_t b) {
     return HPtr::fromBits(enc);
 }
 
+// Structural equality on embedded constants (True/False/Nil/Unit/etc.) must be
+// resolved by HPointer constant-field, not by passing them through toPtr().
+// toPtr() collapses every embedded constant to nullptr, so without this guard
+// Utils::eqHelp would short-circuit via `if (a == b) return true;` and report
+// any two distinct constants as equal — in particular True == False == true,
+// which silently corrupts every Bool-pattern match in the compiler.
+static bool equalRespectingConstants(uint64_t aBits, uint64_t bBits) {
+    HPointer ha = Export::decode(aBits);
+    HPointer hb = Export::decode(bBits);
+    bool aEmbedded = (ha.constant >= 1 && ha.constant <= 7);
+    bool bEmbedded = (hb.constant >= 1 && hb.constant <= 7);
+    if (aEmbedded || bEmbedded) {
+        return aEmbedded && bEmbedded && (ha.constant == hb.constant);
+    }
+    return Utils::equal(Export::toPtr(aBits), Export::toPtr(bBits));
+}
+
 HPtr Elm_Kernel_Utils_equal(HPtr a, HPtr b) {
-    return HPtr::fromBits(Export::encodeBoxedBool(Utils::equal(Export::toPtr(a.toBits()), Export::toPtr(b.toBits()))));
+    return HPtr::fromBits(Export::encodeBoxedBool(equalRespectingConstants(a.toBits(), b.toBits())));
 }
 
 HPtr Elm_Kernel_Utils_notEqual(HPtr a, HPtr b) {
-    return HPtr::fromBits(Export::encodeBoxedBool(Utils::notEqual(Export::toPtr(a.toBits()), Export::toPtr(b.toBits()))));
+    return HPtr::fromBits(Export::encodeBoxedBool(!equalRespectingConstants(a.toBits(), b.toBits())));
 }
 
 HPtr Elm_Kernel_Utils_lt(HPtr a, HPtr b) {
