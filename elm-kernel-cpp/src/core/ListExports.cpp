@@ -605,10 +605,17 @@ HPtr Elm_Kernel_List_sortBy(HPtr closure, HPtr list) {
     std::vector<size_t> indices(elements.size());
     std::iota(indices.begin(), indices.end(), 0);
     std::stable_sort(indices.begin(), indices.end(), [&](size_t a, size_t b) {
-        // Resolve raw pointers strictly for the call to Utils::compare; do
-        // not retain them across the call.
-        void* keyA = allocator.resolve(keys[a]);
-        void* keyB = allocator.resolve(keys[b]);
+        // Keys come from a user closure and may be embedded constants
+        // (Const_EmptyString or Const_Nil — the only comparable embedded
+        // constants in Elm). Allocator::resolve asserts on constants, so
+        // pass nullptr for those: Utils::cmp's top-of-function early returns
+        // (`if (!a) return -1; if (!b) return 1;`) produce the correct
+        // top-level ordering, and the EmptyString-vs-heap canonicalisation
+        // inside compareUnboxableSlot handles nested const-vs-heap cases.
+        void* keyA = alloc::isConstant(keys[a]) ? nullptr
+                                                : allocator.resolve(keys[a]);
+        void* keyB = alloc::isConstant(keys[b]) ? nullptr
+                                                : allocator.resolve(keys[b]);
         HPointer orderHP = Utils::compare(keyA, keyB);
         Custom* order = static_cast<Custom*>(allocator.resolve(orderHP));
         return order->ctor == 0;  // LT

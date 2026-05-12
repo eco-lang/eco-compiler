@@ -172,17 +172,17 @@ static int compareUnboxableSlot(Allocator& allocator,
             void* ao; void* bo; bool eq;
             if (resolveAndCompare(allocator, a.p, b.p, &ao, &bo, &eq) == 0) {
                 if (eq) return 0;
-                // One or both are embedded constants. The raw constant-bit
-                // ordering only agrees with Elm semantics when both share the
-                // same constant family. Special-case Const_EmptyString vs a
-                // heap ElmString so `compare ("", "z") ("a", "")` yields LT.
                 bool aConst = alloc::isConstant(a.p);
                 bool bConst = alloc::isConstant(b.p);
+
+                // Canonicalise Const_EmptyString against a heap-resident
+                // String of size 0 (any of the four forms recognised by
+                // alloc::isString: leaf / slice / rope / large header).
+                // header.size is the logical UTF-16 length on all of them.
                 constexpr unsigned EmptyStringTag = Const_EmptyString + 1;
                 if (aConst && a.p.constant == EmptyStringTag && !bConst) {
                     void* bo2 = allocator.resolve(b.p);
                     if (bo2 && alloc::isString(bo2)) {
-                        // header.size = logical UTF-16 length for any string form.
                         return static_cast<Header*>(bo2)->size == 0 ? 0 : -1;
                     }
                 }
@@ -192,7 +192,26 @@ static int compareUnboxableSlot(Allocator& allocator,
                         return static_cast<Header*>(ao2)->size == 0 ? 0 : 1;
                     }
                 }
-                return a.p.constant < b.p.constant ? -1 : 1;
+
+                // Elm's two comparable embedded constants — Const_EmptyString
+                // ("") and Const_Nil ([]) — represent the minimum value of
+                // their type. Per Elm semantics, "" < any non-empty String
+                // and [] < any non-empty List, so a const-vs-heap comparison
+                // is LT (constant side) or GT (heap side). The EmptyString
+                // canonicalisation above handles the edge case where the
+                // heap value is itself an empty string.
+                if (aConst && !bConst) return -1;
+                if (!aConst && bConst) return 1;
+
+                // Both sides are constants AND resolveAndCompare reported
+                // eq=false (different constant families). Unreachable in
+                // well-typed Elm — any comparable-typed value pair shares
+                // one constant family, and no other comparable embedded
+                // constants are planned (REP_COMPARE_CONST_001).
+                assert(false &&
+                       "compareUnboxableSlot: cross-family constant comparison "
+                       "is unreachable in well-typed Elm");
+                __builtin_unreachable();
             }
             return cmpFn(ao, bo);
         }

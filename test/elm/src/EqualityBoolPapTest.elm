@@ -6,10 +6,10 @@ land on a kernel symbol. Today that symbol is the unsuffixed
 `Elm_Kernel_Utils_equal` (no `_Bool` variant), exposing the bug.
 -}
 
--- CHECK: isTrueList: [True,False,True,False]
--- CHECK: isFalseList: [False,True,False,True]
--- CHECK: filterTrue: [True,True]
--- CHECK: filterFalse: [False,False]
+-- CHECK: isTrueList: [True, False, True, False]
+-- CHECK: isFalseList: [False, True, False, True]
+-- CHECK: filterTrue: [True, True]
+-- CHECK: filterFalse: [False, False]
 -- CHECK: anyTrue: True
 -- CHECK: anyFalse: True
 
