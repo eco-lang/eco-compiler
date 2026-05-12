@@ -47,3 +47,15 @@ var _Console_readAll = __Scheduler_binding(function(callback) {
     });
     process.stdin.resume();
 });
+
+// Eco.Console.log : String -> a -> a
+// Pure side-effect: writes `tag` (with newline) to stderr and returns `value`
+// unchanged. Mirrors Debug.log's pattern but is allowed under --optimize.
+var _Console_log = F2(function(tag, value) {
+    try {
+        process.stderr.write(tag + '\n');
+    } catch (e) {
+        // Best-effort: never crash from a trace point.
+    }
+    return value;
+});

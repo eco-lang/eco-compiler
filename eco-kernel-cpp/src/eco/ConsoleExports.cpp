@@ -17,3 +17,7 @@ HPtr Eco_Kernel_Console_readLine() {
 HPtr Eco_Kernel_Console_readAll() {
     return HPtr::fromBits(Console::readAll());
 }
+
+HPtr Eco_Kernel_Console_log(HPtr tag, HPtr value) {
+    return HPtr::fromBits(Console::log(tag.toBits(), value.toBits()));
+}

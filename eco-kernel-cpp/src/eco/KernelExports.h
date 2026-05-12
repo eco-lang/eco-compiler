@@ -114,6 +114,10 @@ HPtr Eco_Kernel_Console_readLine();
 // Read all of stdin as string. Returns String (boxed).
 HPtr Eco_Kernel_Console_readAll();
 
+// log(tag, value): write tag to stderr, return value unchanged.
+// `String -> a -> a` from Elm's perspective. Allowed under --optimize.
+HPtr Eco_Kernel_Console_log(HPtr tag, HPtr value);
+
 //===----------------------------------------------------------------------===//
 // Env Module - environment variables and CLI args
 //===----------------------------------------------------------------------===//

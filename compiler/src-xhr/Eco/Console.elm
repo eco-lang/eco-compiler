@@ -1,6 +1,7 @@
 module Eco.Console exposing
     ( Handle(..), stdout, stderr
     , write, readLine, readAll
+    , log
     )
 
 {-| Console IO operations via XHR: write to handles, read from stdin.
@@ -18,6 +19,11 @@ Eco.Kernel.Console directly.
 # Operations
 
 @docs write, readLine, readAll
+
+
+# Debugging
+
+@docs log
 
 -}
 
@@ -70,3 +76,12 @@ readLine =
 readAll : Task Never String
 readAll =
     Eco.XHR.stringTask "Console.readAll" Encode.null
+
+
+{-| Debug-style trace function. XHR variant is a pure no-op (identity);
+the kernel variants (JS and C++) write `tag` to stderr and return `value`.
+Allowed under `--optimize` because it is not a `Debug.*` function.
+-}
+log : String -> a -> a
+log _ value =
+    value

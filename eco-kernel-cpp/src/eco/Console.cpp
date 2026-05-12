@@ -40,4 +40,14 @@ uint64_t readAll() {
     return taskSucceedString(content);
 }
 
+uint64_t log(uint64_t tag, uint64_t value) {
+    std::string msg = toString(tag);
+    msg += '\n';
+    // Direct stderr write — bypasses iostream sync so traces appear in
+    // FIFO order with other ::write-based output in the process.
+    (void)::write(STDERR_FILENO, msg.data(), msg.size());
+    // Identity on `value`: return the same HPointer bits we were handed.
+    return value;
+}
+
 } // namespace Eco::Kernel::Console
