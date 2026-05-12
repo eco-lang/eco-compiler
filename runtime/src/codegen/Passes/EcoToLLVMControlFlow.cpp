@@ -631,7 +631,14 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             auto offset8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::CustomCtorOffset);
             auto ctorPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
                                                         ValueRange{offset8});
-            auto ctorFromHeap = rewriter.create<LLVM::LoadOp>(loc, i32Ty, ctorPtr);
+            // Custom layout packs `u16 ctor : 16` with `u64 unboxed : 48` into one
+            // 8-byte word at offset 8 (Heap.hpp). Loading i32 here would mix the
+            // lower 16 bits of the unboxed bitmap into the discriminator, sending
+            // ctors whose object happens to have any unboxed slot to the default
+            // arm. Load just the 16-bit ctor and zero-extend.
+            auto i16Ty = IntegerType::get(ctx, 16);
+            auto ctorI16 = rewriter.create<LLVM::LoadOp>(loc, i16Ty, ctorPtr);
+            auto ctorFromHeap = rewriter.create<LLVM::ZExtOp>(loc, i32Ty, ctorI16);
             rewriter.create<cf::BranchOp>(loc, tagMergeBlock, ValueRange{ctorFromHeap});
 
             rewriter.setInsertionPointToStart(tagMergeBlock);
