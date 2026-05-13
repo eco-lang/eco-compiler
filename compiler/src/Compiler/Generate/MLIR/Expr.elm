@@ -4495,6 +4495,15 @@ generateLetGroup ctx members body =
                 nonSiblingCount =
                     List.length capVarsBoxed
 
+                -- Force consumerIdx through an additional in-scope arithmetic
+                -- use before the inner lambda captures it. Without this extra
+                -- read, the Stage 6 native compiler's closure-capture codegen
+                -- mishandles the Int slot for `consumerIdx`, leaving garbage
+                -- (~1.6e9 HPointer-pattern bits) in the cross_edges array.
+                -- See mlir-equivalence-report.md (Pattern C) for the analysis.
+                consumerIdxLocal =
+                    consumerIdx + 0
+
                 crossEdgesForSibling =
                     List.indexedMap
                         (\j ( _, captureExpr, _ ) ->
@@ -4504,7 +4513,7 @@ generateLetGroup ctx members body =
                                         Just producerIdx ->
                                             Just
                                                 ( producerIdx
-                                                , consumerIdx
+                                                , consumerIdxLocal
                                                 , nonSiblingCount + j
                                                 )
 
@@ -4539,9 +4548,11 @@ generateLetGroup ctx members body =
                 -- the body evaluates to Int/Float/Char, boxed otherwise
                 -- (including multi-stage closures whose body is itself a
                 -- function value).
+                bodyAbi =
+                    Types.monoTypeToAbi (Mono.typeOf member.lambdaBody)
+
                 siblingResultKind =
-                    Types.mlirTypeToKind
-                        (Types.monoTypeToAbi (Mono.typeOf member.lambdaBody))
+                    Types.mlirTypeToKind bodyAbi
 
                 siblingMeta =
                     { functionName = baseFuncName ++ "$clo"
