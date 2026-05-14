@@ -98,7 +98,7 @@ The native ELF compiler from Stage 6 compiles itself to MLIR, then `eco-boot-nat
 
 ```bash
 cd /work/compiler/build-kernel
-../build-kernel/bin/eco-compiler make \
+bin/eco-compiler make \
     --optimize \
     --kernel-package eco/compiler \
     --local-package eco/kernel=/work/eco-kernel-cpp \
