@@ -92,12 +92,12 @@ fs.writeFileSync(path, code, 'utf8');
 console.log('Instrumentation injected into ' + path);
 ```
 
-A ready-to-use copy of this script lives at `compiler/build-kernel/inject-mem.js`.
+A ready-to-use copy of this script lives at `build/compiler/build-kernel/inject-mem.js`.
 
 Usage:
 
 ```bash
-cd compiler/build-kernel
+cd build/compiler/build-kernel
 node inject-mem.js bin/eco-boot-2.js
 ```
 
@@ -116,7 +116,7 @@ between forced GCs still report useful data but may include uncollected garbage.
 
 ```bash
 export NODE_OPTIONS="--max-old-space-size=12000"
-cd compiler/build-kernel
+cd build/compiler/build-kernel
 
 # Cold run (no caches — profiles compilation + codegen)
 find eco-stuff -name '*.ecot' -delete

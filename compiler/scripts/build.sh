@@ -6,7 +6,11 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 COMPILER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-BUILD_XHR_DIR="$COMPILER_DIR/build-xhr"
+PROJECT_ROOT="$(cd "$COMPILER_DIR/.." && pwd)"
+# Shadow root for the Stage 1 XHR application is materialized by CMake under
+# ${CMAKE_BINARY_DIR}/compiler/build-xhr/; override via env if you point at a
+# non-default build tree (e.g. debug/ or build-profile/).
+BUILD_XHR_DIR="${BUILD_XHR_DIR:-$PROJECT_ROOT/build/compiler/build-xhr}"
 ELM="$COMPILER_DIR/node_modules/.bin/elm"
 
 case $1 in

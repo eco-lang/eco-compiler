@@ -8,12 +8,12 @@ get as close to the default Node.js stack size (`--stack-size=984`) as possible.
 - Complete bootstrap Stages 1–4 per @bootstrap.md so that `eco-boot-2-runner.js` is available.
 - Clean `.ecot` caches before starting:
   ```bash
-  find /work/compiler/build-kernel/eco-stuff -name '*.ecot' -delete
+  find /work/build/compiler/build-kernel/eco-stuff -name '*.ecot' -delete
   ```
 - Do a warm-up Stage 5 run at `--stack-size=65536` with a 5-minute timeout (no profiling)
   to populate `.ecot` caches:
   ```bash
-  cd /work/compiler/build-kernel
+  cd /work/build/compiler/build-kernel
   timeout 300 node --max-old-space-size=15000 --stack-size=65536 \
       bin/eco-boot-2-runner.js make \
       --optimize --kernel-package eco/compiler \
@@ -51,7 +51,7 @@ Set `NEXT_LIMIT = CURRENT_LIMIT / 2`. Run Stage 5 under the profiler with the
 reduced stack:
 
 ```bash
-cd /work/compiler/build-kernel
+cd /work/build/compiler/build-kernel
 timeout 300 node --max-old-space-size=15000 --stack-size=$NEXT_LIMIT --prof \
     bin/eco-boot-2-runner.js make \
     --optimize --kernel-package eco/compiler \
@@ -104,7 +104,7 @@ Investigate the code at the overflow site and apply a fix. Consider these strate
 Run elm-test and E2E tests to check correctness:
 
 ```bash
-cd /work/compiler && npx elm-test-rs --project build-xhr --fuzz 1
+cd /work/compiler && npx elm-test-rs --project ../build/compiler/build-xhr --fuzz 1
 cmake --build /work/build --target full
 ```
 

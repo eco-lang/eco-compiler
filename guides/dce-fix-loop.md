@@ -14,7 +14,7 @@ reports. Restrict efforts to these module trees:
 1. Run elm-test and E2E tests to establish a baseline:
 
    ```bash
-   cd /work/compiler && npx elm-test-rs --project build-xhr --fuzz 1 2>&1 \
+   cd /work/compiler && npx elm-test-rs --project ../build/compiler/build-xhr --fuzz 1 2>&1 \
        | tee /tmp/elm-test-baseline.txt
    cmake --build /work/build --target full 2>&1 \
        | tee /tmp/e2e-baseline.txt
@@ -101,7 +101,7 @@ Note every file you touched — you will need this for revert.
 ### Step 5 — Run BOTH test suites
 
 ```bash
-cd /work/compiler && npx elm-test-rs --project build-xhr --fuzz 1 2>&1 \
+cd /work/compiler && npx elm-test-rs --project ../build/compiler/build-xhr --fuzz 1 2>&1 \
     | tee /tmp/elm-test-output.txt
 cmake --build /work/build --target full 2>&1 \
     | tee /tmp/e2e-output.txt

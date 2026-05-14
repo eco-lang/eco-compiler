@@ -97,50 +97,21 @@ add_subdirectory(eco-kernel-cpp)
 # Guida compiler (Elm compiler written in Elm)
 add_subdirectory(compiler)
 
-# Clean target support - mark eco-stuff directories for cleaning
-# Note: ADDITIONAL_CLEAN_FILES is the modern name (CMake 3.15+), ADDITIONAL_MAKE_CLEAN_FILES
-# is the legacy name. Both are set for maximum compatibility.
-set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_CLEAN_FILES
-    "${CMAKE_SOURCE_DIR}/test/elm/eco-stuff"
-    "${CMAKE_SOURCE_DIR}/test/elm-bytes/eco-stuff"
-    "${CMAKE_SOURCE_DIR}/test/eco-kernel/eco-stuff"
-    "${CMAKE_SOURCE_DIR}/test/elm-core/eco-stuff"
-    "${CMAKE_SOURCE_DIR}/test/elm-http/eco-stuff"
-    "${CMAKE_SOURCE_DIR}/test/elm-json/eco-stuff"
-    "${CMAKE_SOURCE_DIR}/test/elm-regex/eco-stuff"
-    "${CMAKE_SOURCE_DIR}/test/elm-time/eco-stuff"
-    "${CMAKE_SOURCE_DIR}/test/elm-url/eco-stuff"
-    "${CMAKE_SOURCE_DIR}/compiler/examples/eco-stuff"
-)
-set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_MAKE_CLEAN_FILES
-    "${CMAKE_SOURCE_DIR}/test/elm/eco-stuff"
-    "${CMAKE_SOURCE_DIR}/test/elm-bytes/eco-stuff"
-    "${CMAKE_SOURCE_DIR}/test/eco-kernel/eco-stuff"
-    "${CMAKE_SOURCE_DIR}/test/elm-core/eco-stuff"
-    "${CMAKE_SOURCE_DIR}/test/elm-http/eco-stuff"
-    "${CMAKE_SOURCE_DIR}/test/elm-json/eco-stuff"
-    "${CMAKE_SOURCE_DIR}/test/elm-regex/eco-stuff"
-    "${CMAKE_SOURCE_DIR}/test/elm-time/eco-stuff"
-    "${CMAKE_SOURCE_DIR}/test/elm-url/eco-stuff"
-    "${CMAKE_SOURCE_DIR}/compiler/examples/eco-stuff"
-)
+# All Elm-tooling caches (eco-stuff/, elm-stuff/, bin/) now live under
+# ${CMAKE_BINARY_DIR}/compiler/build-{xhr,kernel}/ and
+# ${CMAKE_BINARY_DIR}/test/<pkg>/, shadowed in via the configure-time scaffolding
+# in compiler/CMakeLists.txt and test/CMakeLists.txt. `rm -rf build/` resets
+# everything; `ninja clean` removes ninja-tracked outputs but leaves the
+# compiler's runtime caches alone — that's fine, the bootstrap chain and the
+# Stage 5 stale-.ecot sweep handle staleness themselves.
 
-# Convenience targets for common workflows
+# Convenience targets for common workflows.
+
 # Usage: cmake --build build --target rebuild
 add_custom_target(rebuild
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm/eco-stuff"
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-bytes/eco-stuff"
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/eco-kernel/eco-stuff"
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-core/eco-stuff"
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-http/eco-stuff"
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-json/eco-stuff"
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-regex/eco-stuff"
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-time/eco-stuff"
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-url/eco-stuff"
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/compiler/examples/eco-stuff"
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target clean
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
-    COMMENT "Clean eco-stuff, rebuild all targets"
+    COMMENT "Clean, rebuild all targets"
     USES_TERMINAL
 )
 
@@ -165,7 +136,6 @@ add_custom_target(run-tests
 # Usage with filter: TEST_FILTER=reverse cmake --build build --target stress
 # Runs the separate stress-test binary (longer/larger Elm programs).
 add_custom_target(stress
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/stress-elm/eco-stuff"
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target stress-test
     COMMAND sh -c "${CMAKE_BINARY_DIR}/test/stress-test $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
     COMMENT "Build and run Elm stress tests"
@@ -175,19 +145,9 @@ add_custom_target(stress
 # Usage: cmake --build build --target full
 # Usage with filter: TEST_FILTER=elm cmake --build build --target full
 add_custom_target(full
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm/eco-stuff"
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-bytes/eco-stuff"
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/eco-kernel/eco-stuff"
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-core/eco-stuff"
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-http/eco-stuff"
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-json/eco-stuff"
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-regex/eco-stuff"
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-time/eco-stuff"
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-url/eco-stuff"
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/compiler/examples/eco-stuff"
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target clean
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
     COMMAND sh -c "${CMAKE_BINARY_DIR}/test/test $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
-    COMMENT "Clean eco-stuff, rebuild, and run tests"
+    COMMENT "Clean, rebuild, and run tests"
     USES_TERMINAL
 )

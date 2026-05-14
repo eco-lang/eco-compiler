@@ -43,6 +43,14 @@ namespace fs = std::filesystem;
 #define REPO_ROOT "/work"
 #endif
 
+// BUILD_DIR locates the per-package shadow directories materialized by
+// test/CMakeLists.txt (elm.json + src symlink under ${CMAKE_BINARY_DIR}/test/<pkg>/).
+// Test discovery walks <BUILD_DIR>/test/<pkg>/src for *.elm sources; per-test
+// --builddir scratch and any eco-stuff/elm-stuff caches then land alongside.
+#ifndef BUILD_DIR
+#define BUILD_DIR "/work/build"
+#endif
+
 namespace {
 
 // ANSI colors (only if stdout is a tty).
@@ -176,17 +184,17 @@ ProcResult spawn_capture(const std::vector<std::string>& argv,
 
 const std::vector<std::string>& test_package_dirs() {
     static const std::vector<std::string> dirs = {
-        REPO_ROOT "/test/elm",
-        REPO_ROOT "/test/elm-core",
-        REPO_ROOT "/test/elm-bytes",
-        REPO_ROOT "/test/elm-http",
-        REPO_ROOT "/test/elm-json",
-        REPO_ROOT "/test/elm-parser",
-        REPO_ROOT "/test/elm-regex",
-        REPO_ROOT "/test/elm-time",
-        REPO_ROOT "/test/elm-url",
-        REPO_ROOT "/test/eco-kernel",
-        REPO_ROOT "/test/stress-elm",
+        BUILD_DIR "/test/elm",
+        BUILD_DIR "/test/elm-core",
+        BUILD_DIR "/test/elm-bytes",
+        BUILD_DIR "/test/elm-http",
+        BUILD_DIR "/test/elm-json",
+        BUILD_DIR "/test/elm-parser",
+        BUILD_DIR "/test/elm-regex",
+        BUILD_DIR "/test/elm-time",
+        BUILD_DIR "/test/elm-url",
+        BUILD_DIR "/test/eco-kernel",
+        BUILD_DIR "/test/stress-elm",
     };
     return dirs;
 }
@@ -224,9 +232,9 @@ std::vector<TestCase> discover_tests() {
 // Per-test driver.
 // ----------------------------------------------------------------------------
 
-const char* ECO_BOOT_JS     = REPO_ROOT "/compiler/build-kernel/bin/eco-boot.js";
-const char* ECO_BOOT_RUNNER = REPO_ROOT "/compiler/build-kernel/bin/eco-boot-runner.js";
-const char* ECO_COMPILER    = REPO_ROOT "/compiler/build-kernel/bin/eco-compiler";
+const char* ECO_BOOT_JS     = BUILD_DIR  "/compiler/build-kernel/bin/eco-boot.js";
+const char* ECO_BOOT_RUNNER = BUILD_DIR  "/compiler/build-kernel/bin/eco-boot-runner.js";
+const char* ECO_COMPILER    = BUILD_DIR  "/compiler/build-kernel/bin/eco-compiler";
 const char* ECO_KERNEL_DIR  = REPO_ROOT "/eco-kernel-cpp";
 
 bool preflight() {

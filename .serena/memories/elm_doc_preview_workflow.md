@@ -5,20 +5,21 @@ Run elm-doc-preview to find and fix documentation errors in the Elm codebase.
 
 ## Running elm-doc-preview
 
-### Important: Must run from build-xhr/
+### Important: Must run from the build-tree shadow
 elm-doc-preview needs both `elm.json` (application) and `elm-application.json` (package metadata)
-in the same directory. The `build-xhr/` directory has both.
+in the same directory. CMake materializes both under `build/compiler/build-xhr/`
+at configure time (run `cmake --preset ninja-clang-lld-linux` once first).
 
 ### Start Preview Server (Background)
 ```bash
-cd /work/compiler/build-xhr && npx elm-doc-preview -p 8000 --no-browser
+cd /work/build/compiler/build-xhr && npx elm-doc-preview -p 8000 --no-browser
 ```
 Access at: http://localhost:8000/packages/the-sett/eco-compiler/1.0.0/
 
 ### Check for Documentation Errors
 The most reliable way to see doc errors is to run with `--output`:
 ```bash
-cd /work/compiler/build-xhr && npx elm-doc-preview --output /tmp/docs-preview.json 2>&1
+cd /work/build/compiler/build-xhr && npx elm-doc-preview --output /tmp/docs-preview.json 2>&1
 ```
 
 ### How it works internally

@@ -1086,20 +1086,16 @@ private:
 // Factory Function
 // ============================================================================
 
+// BUILD_DIR is plumbed in via target_compile_definitions in test/CMakeLists.txt
+// and resolves to ${CMAKE_BINARY_DIR}. The per-package shadow under
+// ${BUILD_DIR}/test/<dirName>/ holds the elm.json the compiler walks up to
+// find, so eco-stuff/ and elm-stuff/ land inside the build tree.
+#ifndef BUILD_DIR
+#define BUILD_DIR "/work/build"
+#endif
+
 inline std::string findTestDir(const std::string& dirName) {
-    std::vector<std::string> candidates = {
-        "test/" + dirName,
-        "../test/" + dirName,
-        "../../test/" + dirName,
-    };
-
-    for (const auto& dir : candidates) {
-        if (std::filesystem::exists(dir) && std::filesystem::is_directory(dir)) {
-            return std::filesystem::absolute(dir).string();
-        }
-    }
-
-    return "/work/test/" + dirName;
+    return std::string(BUILD_DIR) + "/test/" + dirName;
 }
 
 inline std::unique_ptr<ElmE2EParallelTestSuite> buildTestSuite(

@@ -8,7 +8,8 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 COMPILER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-BUILD_KERNEL_DIR="$COMPILER_DIR/build-kernel"
+PROJECT_ROOT="$(cd "$COMPILER_DIR/.." && pwd)"
+BUILD_KERNEL_DIR="${BUILD_KERNEL_DIR:-$PROJECT_ROOT/build/compiler/build-kernel}"
 
 cd "$BUILD_KERNEL_DIR"
 

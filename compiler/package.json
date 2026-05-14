@@ -13,9 +13,8 @@
     "build:bin": "./scripts/build.sh bin",
     "buildself": "./scripts/build-self.sh bin",
     "watch": "onchange \"src/**/*.elm\" -- npm run build:bin",
-    "test": "elm-test-rs --project build-xhr --fuzz 10",
-    "elm-format": "elm-format . --yes",
-    "prepare": "npm run build"
+    "test": "elm-test-rs --project ../build/compiler/build-xhr --fuzz 10",
+    "elm-format": "elm-format . --yes"
   },
   "dependencies": {
     "adm-zip": "^0.5.16",

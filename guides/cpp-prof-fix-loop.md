@@ -2,7 +2,7 @@
 
 Profile and optimize the C++ runtime (GC, allocator, closure dispatch, kernel) by
 measuring the **native compiler self-compiling** — Stage 7 of @bootstrap.md. The
-target binary is `compiler/build-kernel/bin/eco-compiler` (built by Stage 6),
+target binary is `build/compiler/build-kernel/bin/eco-compiler` (built by Stage 6),
 running its own front-end + typed-opt pipeline against the compiler's own
 sources. This is the largest, most representative real workload we have.
 
@@ -18,10 +18,10 @@ sudo sysctl kernel.perf_event_paranoid=-1
 cmake --build build --target eco-boot-native
 
 # Verify the Stage-6 output (the binary we will profile) exists
-ls -l compiler/build-kernel/bin/eco-compiler
+ls -l build/compiler/build-kernel/bin/eco-compiler
 ```
 
-If `compiler/build-kernel/bin/eco-compiler` is missing or stale, rebuild it via
+If `build/compiler/build-kernel/bin/eco-compiler` is missing or stale, rebuild it via
 the Stage 5 → Stage 6 path described in @bootstrap.md.
 
 ## Take Baseline
@@ -36,7 +36,7 @@ Record baseline profile (100 s window — enough to capture the front-end +
 typed-opt phases of the self-compile):
 
 ```bash
-cd /work/compiler/build-kernel && perf record \
+cd /work/build/compiler/build-kernel && perf record \
     -F 499 \
     --call-graph dwarf,6144 \
     -m 256 \
@@ -110,8 +110,8 @@ cmake --build build --target eco-boot-native
 # If the change touches code linked into eco-compiler itself (kernel,
 # runtime libs), regenerate the Stage 6 binary so the next profile reflects it:
 ./build/runtime/src/codegen/eco-boot-native \
-    compiler/build-kernel/bin/eco-compiler.mlir \
-    -o compiler/build-kernel/bin/eco-compiler
+    build/compiler/build-kernel/bin/eco-compiler.mlir \
+    -o build/compiler/build-kernel/bin/eco-compiler
 
 # Run E2E tests to verify correctness
 cmake --build build --target full
@@ -122,7 +122,7 @@ Compare test results to previous run. If tests fail, fix or revert.
 ### 6. Profile again
 
 ```bash
-cd /work/compiler/build-kernel && perf record \
+cd /work/build/compiler/build-kernel && perf record \
     -F 499 \
     --call-graph dwarf,6144 \
     -m 256 \

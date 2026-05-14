@@ -24,7 +24,7 @@ cd /work/compiler
 ./scripts/build.sh bin
 ```
 
-Output: `compiler/build-xhr/bin/guida.js`
+Output: `build/compiler/build-xhr/bin/guida.js`
 
 ### Stage 2: `guida.js` self-compiles → `eco-boot.js`
 
@@ -37,7 +37,7 @@ cd /work/compiler
 
 This runs `guida.js` via the Node.js mock XHR server with `--kernel-package eco/compiler` and `--local-package eco/kernel=...`, producing a compiler that uses `Eco.Kernel.*` directly.
 
-Output: `compiler/build-kernel/bin/eco-boot.js`
+Output: `build/compiler/build-kernel/bin/eco-boot.js`
 
 ### Stages 3 & 4: Fixed-point verification
 
@@ -60,11 +60,11 @@ The fixed-point verified compiler compiles itself to MLIR, exercising the native
 
 ```bash
 # Clean stale local typed-object caches before Stage 5
-find /work/compiler/build-kernel/eco-stuff -name '*.ecot' -delete
+find /work/build/compiler/build-kernel/eco-stuff -name '*.ecot' -delete
 ```
 
 ```bash
-cd /work/compiler/build-kernel
+cd /work/build/compiler/build-kernel
 node --stack-size=65536 bin/eco-boot-2-runner.js make \
     --optimize \
     --kernel-package eco/compiler \
@@ -73,7 +73,7 @@ node --stack-size=65536 bin/eco-boot-2-runner.js make \
     /work/compiler/src/Terminal/Main.elm
 ```
 
-Output: `compiler/build-kernel/bin/eco-compiler.mlir`
+Output: `build/compiler/build-kernel/bin/eco-compiler.mlir`
 
 ### Stage 6: `eco-compiler.mlir` → native ELF executable
 
@@ -86,18 +86,18 @@ cmake --build build --target eco-boot-native
 
 # Compile the MLIR to a native executable
 ./build/runtime/src/codegen/eco-boot-native \
-    compiler/build-kernel/bin/eco-compiler.mlir \
-    -o compiler/build-kernel/bin/eco-compiler
+    build/compiler/build-kernel/bin/eco-compiler.mlir \
+    -o build/compiler/build-kernel/bin/eco-compiler
 ```
 
-Output: `compiler/build-kernel/bin/eco-compiler`
+Output: `build/compiler/build-kernel/bin/eco-compiler`
 
 ### Stage 7: Native compiler self-compiles → `eco-compiler-boot`
 
 The native ELF compiler from Stage 6 compiles itself to MLIR, then `eco-boot-native` lowers that MLIR to a fully bootstrapped native executable.
 
 ```bash
-cd /work/compiler/build-kernel
+cd /work/build/compiler/build-kernel
 bin/eco-compiler make \
     --optimize \
     --kernel-package eco/compiler \
@@ -107,18 +107,18 @@ bin/eco-compiler make \
 
 cd /work
 ./build/runtime/src/codegen/eco-boot-native \
-    compiler/build-kernel/bin/eco-compiler-boot.mlir \
-    -o compiler/build-kernel/bin/eco-compiler-boot
+    build/compiler/build-kernel/bin/eco-compiler-boot.mlir \
+    -o build/compiler/build-kernel/bin/eco-compiler-boot
 ```
 
-Output: `compiler/build-kernel/bin/eco-compiler-boot`
+Output: `build/compiler/build-kernel/bin/eco-compiler-boot`
 
 ### Stage 8: Native fixed-point verification
 
 A second self-compilation round verifies the bootstrapped compiler reproduces itself identically:
 
 ```bash
-cd /work/compiler/build-kernel
+cd /work/build/compiler/build-kernel
 bin/eco-compiler-boot make \
     --optimize \
     --kernel-package eco/compiler \
@@ -128,15 +128,15 @@ bin/eco-compiler-boot make \
 
 cd /work
 ./build/runtime/src/codegen/eco-boot-native \
-    compiler/build-kernel/bin/eco-compiler-boot-2.mlir \
-    -o compiler/build-kernel/bin/eco-compiler-boot-2
+    build/compiler/build-kernel/bin/eco-compiler-boot-2.mlir \
+    -o build/compiler/build-kernel/bin/eco-compiler-boot-2
 
 # Binary compare — must be identical (fixed point reached)
-cmp compiler/build-kernel/bin/eco-compiler-boot \
-    compiler/build-kernel/bin/eco-compiler-boot-2
+cmp build/compiler/build-kernel/bin/eco-compiler-boot \
+    build/compiler/build-kernel/bin/eco-compiler-boot-2
 ```
 
-Output: `compiler/build-kernel/bin/eco-compiler-boot-2` (identical to `eco-compiler-boot`)
+Output: `build/compiler/build-kernel/bin/eco-compiler-boot-2` (identical to `eco-compiler-boot`)
 
 ## All stages in sequence
 
@@ -149,8 +149,8 @@ cd /work/compiler
 ./scripts/build-self.sh bin     # Stage 2: guida.js --optimize → eco-boot.js
 ./scripts/build-verify.sh       # Stages 3+4: --optimize fixed-point check
 # Clean stale local typed-object caches before Stage 5
-find build-kernel/eco-stuff -name '*.ecot' -delete
-cd build-kernel
+find /work/build/compiler/build-kernel/eco-stuff -name '*.ecot' -delete
+cd /work/build/compiler/build-kernel
 node --stack-size=65536 bin/eco-boot-2-runner.js make \
     --optimize \
     --kernel-package eco/compiler \
@@ -160,9 +160,9 @@ node --stack-size=65536 bin/eco-boot-2-runner.js make \
 cd /work
 cmake --build build --target eco-boot-native
 ./build/runtime/src/codegen/eco-boot-native \
-    compiler/build-kernel/bin/eco-compiler.mlir \
-    -o compiler/build-kernel/bin/eco-compiler  # Stage 6: native ELF
-cd compiler/build-kernel
+    build/compiler/build-kernel/bin/eco-compiler.mlir \
+    -o build/compiler/build-kernel/bin/eco-compiler  # Stage 6: native ELF
+cd build/compiler/build-kernel
 bin/eco-compiler make \
     --optimize \
     --kernel-package eco/compiler \
@@ -171,9 +171,9 @@ bin/eco-compiler make \
     /work/compiler/src/Terminal/Main.elm       # Stage 7: native self-compile
 cd /work
 ./build/runtime/src/codegen/eco-boot-native \
-    compiler/build-kernel/bin/eco-compiler-boot.mlir \
-    -o compiler/build-kernel/bin/eco-compiler-boot
-cd compiler/build-kernel
+    build/compiler/build-kernel/bin/eco-compiler-boot.mlir \
+    -o build/compiler/build-kernel/bin/eco-compiler-boot
+cd build/compiler/build-kernel
 bin/eco-compiler-boot make \
     --optimize \
     --kernel-package eco/compiler \
@@ -182,8 +182,8 @@ bin/eco-compiler-boot make \
     /work/compiler/src/Terminal/Main.elm       # Stage 8: fixed-point verify
 cd /work
 ./build/runtime/src/codegen/eco-boot-native \
-    compiler/build-kernel/bin/eco-compiler-boot-2.mlir \
-    -o compiler/build-kernel/bin/eco-compiler-boot-2
-cmp compiler/build-kernel/bin/eco-compiler-boot \
-    compiler/build-kernel/bin/eco-compiler-boot-2   # Must match
+    build/compiler/build-kernel/bin/eco-compiler-boot-2.mlir \
+    -o build/compiler/build-kernel/bin/eco-compiler-boot-2
+cmp build/compiler/build-kernel/bin/eco-compiler-boot \
+    build/compiler/build-kernel/bin/eco-compiler-boot-2   # Must match
 ```

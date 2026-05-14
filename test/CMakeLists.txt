@@ -1,6 +1,38 @@
 include_directories(../runtime/src/allocator/)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
+# ============================================================================
+# Per-package build-tree shadows
+#
+# Each Elm test package has its own elm.json declaring dependencies and a
+# src/ directory holding the test sources. We materialize a shadow of each
+# package under ${CMAKE_BINARY_DIR}/test/<pkg>/ so that the compiler's
+# `findRoot` (which walks up from cwd looking for elm.json) anchors its
+# eco-stuff/ and elm-stuff/ caches inside the build tree instead of polluting
+# the source tree. elm.json is copied verbatim (each package's
+# source-directories is already ["src"]); src/ is a symlink back to source.
+# ============================================================================
+set(ELM_TEST_PACKAGES
+    elm
+    elm-bytes
+    eco-kernel
+    elm-core
+    elm-http
+    elm-json
+    elm-parser
+    elm-regex
+    elm-time
+    elm-url
+    stress-elm
+)
+foreach(pkg IN LISTS ELM_TEST_PACKAGES)
+    set(_shadow "${CMAKE_BINARY_DIR}/test/${pkg}")
+    file(MAKE_DIRECTORY ${_shadow})
+    file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/${pkg}/elm.json DESTINATION ${_shadow})
+    file(REMOVE ${_shadow}/src)
+    file(CREATE_LINK ${CMAKE_CURRENT_SOURCE_DIR}/${pkg}/src ${_shadow}/src SYMBOLIC)
+endforeach()
+
 # Find MLIR for codegen tests (EcoRunner depends on it)
 find_package(MLIR REQUIRED CONFIG)
 list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
@@ -43,6 +75,11 @@ add_executable(test
 
 target_compile_features(test PRIVATE cxx_std_20)
 target_compile_options(test PRIVATE -fexceptions)
+# BUILD_DIR locates the per-package shadow directories (test/<pkg>/elm.json +
+# src symlink) materialized at configure time above. ElmE2ETestBase::findTestDir
+# uses this to anchor the compiler's cwd, so eco-stuff/ and elm-stuff/ land
+# under ${CMAKE_BINARY_DIR}/test/<pkg>/ rather than in the source tree.
+target_compile_definitions(test PRIVATE BUILD_DIR="${CMAKE_BINARY_DIR}")
 # Use --whole-archive for EcoRunner so that Scheduler/PlatformRuntime symbols
 # are available when ElmKernel transitive dependencies are processed by the linker.
 #
@@ -66,6 +103,7 @@ add_executable(stress-test
 )
 target_compile_features(stress-test PRIVATE cxx_std_20)
 target_compile_options(stress-test PRIVATE -fexceptions)
+target_compile_definitions(stress-test PRIVATE BUILD_DIR="${CMAKE_BINARY_DIR}")
 # Mirror the kernel wiring on stress-test so stress-elm MVar cases work.
 target_link_libraries(stress-test
     -Wl,--whole-archive
@@ -94,6 +132,7 @@ target_compile_features(mlir-equivalence PRIVATE cxx_std_20)
 target_compile_options(mlir-equivalence PRIVATE -fexceptions)
 target_compile_definitions(mlir-equivalence PRIVATE
         REPO_ROOT="${CMAKE_SOURCE_DIR}"
+        BUILD_DIR="${CMAKE_BINARY_DIR}"
 )
 
 # `cmake --build build --target clean` should drop the per-run output tree
@@ -109,9 +148,9 @@ set_property(DIRECTORY APPEND PROPERTY
 # aren't yet visible here — file-level dependencies are resolved later, once
 # both add_subdirectory calls have been processed.
 set(MLIR_EQUIV_BOOTSTRAP_DEPS
-        "${CMAKE_SOURCE_DIR}/compiler/build-kernel/bin/eco-boot.js"
-        "${CMAKE_SOURCE_DIR}/compiler/build-kernel/bin/eco-boot-runner.js"
-        "${CMAKE_SOURCE_DIR}/compiler/build-kernel/bin/eco-compiler"
+        "${CMAKE_BINARY_DIR}/compiler/build-kernel/bin/eco-boot.js"
+        "${CMAKE_BINARY_DIR}/compiler/build-kernel/bin/eco-boot-runner.js"
+        "${CMAKE_BINARY_DIR}/compiler/build-kernel/bin/eco-compiler"
 )
 
 add_custom_target(run-mlir-equivalence

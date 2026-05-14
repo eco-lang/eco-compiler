@@ -10,7 +10,22 @@ message(STATUS "Found npm: ${NPM_EXECUTABLE}")
 
 # Paths
 set(COMPILER_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
-set(BUILD_XHR_DIR "${COMPILER_DIR}/build-xhr")
+
+# Build-tree shadow root for the Stage 1 XHR Elm application. We materialize
+# elm.json + src/src-xhr/tests symlinks here at configure time so stock Elm
+# and the bootstrap chain emit bin/, elm-stuff/, eco-stuff/ inside the CMake
+# binary directory rather than into the source tree.
+set(BUILD_XHR_DIR "${CMAKE_BINARY_DIR}/compiler/build-xhr")
+file(MAKE_DIRECTORY ${BUILD_XHR_DIR})
+file(COPY ${COMPILER_DIR}/cmake/bootstrap/build-xhr/elm.json
+    DESTINATION ${BUILD_XHR_DIR})
+file(COPY ${COMPILER_DIR}/elm-application.json
+    DESTINATION ${BUILD_XHR_DIR})
+file(REMOVE ${BUILD_XHR_DIR}/src ${BUILD_XHR_DIR}/src-xhr ${BUILD_XHR_DIR}/tests)
+file(CREATE_LINK ${COMPILER_DIR}/src     ${BUILD_XHR_DIR}/src     SYMBOLIC)
+file(CREATE_LINK ${COMPILER_DIR}/src-xhr ${BUILD_XHR_DIR}/src-xhr SYMBOLIC)
+file(CREATE_LINK ${COMPILER_DIR}/tests   ${BUILD_XHR_DIR}/tests   SYMBOLIC)
+
 set(COMPILER_OUTPUT "${BUILD_XHR_DIR}/bin/guida.js")
 set(ELM_ENTRY "${COMPILER_DIR}/src/Terminal/Main.elm")
 set(ELM_EXECUTABLE "${COMPILER_DIR}/node_modules/.bin/elm")
@@ -56,7 +71,21 @@ add_custom_command(
 add_custom_target(guida ALL DEPENDS ${COMPILER_OUTPUT})
 
 # Step 2: Self-compile with eco kernel JS
-set(BUILD_KERNEL_DIR "${COMPILER_DIR}/build-kernel")
+
+# Build-tree shadow for stages 2–8 (kernel JS + native bootstrap chain).
+set(BUILD_KERNEL_DIR "${CMAKE_BINARY_DIR}/compiler/build-kernel")
+file(MAKE_DIRECTORY ${BUILD_KERNEL_DIR})
+file(COPY
+    ${COMPILER_DIR}/cmake/bootstrap/build-kernel/elm.json
+    ${COMPILER_DIR}/cmake/bootstrap/build-kernel/heap-config.json
+    ${COMPILER_DIR}/cmake/bootstrap/build-kernel/inject-bytecode-monitor.js
+    ${COMPILER_DIR}/cmake/bootstrap/build-kernel/inject-mem.js
+    ${COMPILER_DIR}/cmake/bootstrap/build-kernel/run-eol2.js
+    DESTINATION ${BUILD_KERNEL_DIR})
+file(REMOVE ${BUILD_KERNEL_DIR}/src ${BUILD_KERNEL_DIR}/src-kernel)
+file(CREATE_LINK ${COMPILER_DIR}/src                   ${BUILD_KERNEL_DIR}/src        SYMBOLIC)
+file(CREATE_LINK ${CMAKE_SOURCE_DIR}/eco-kernel-cpp/src ${BUILD_KERNEL_DIR}/src-kernel SYMBOLIC)
+
 set(ECO_BOOT_OUTPUT        "${BUILD_KERNEL_DIR}/bin/eco-boot.js")
 set(ECO_BOOT_RUNNER_OUTPUT "${BUILD_KERNEL_DIR}/bin/eco-boot-runner.js")
 
@@ -84,7 +113,11 @@ file(WRITE ${ECO_BOOT_2_RUNNER_TEMPLATE}
 add_custom_command(
     OUTPUT ${ECO_BOOT_OUTPUT} ${ECO_BOOT_RUNNER_OUTPUT}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${BUILD_KERNEL_DIR}/bin
-    COMMAND ${NODE_EXECUTABLE} ${COMPILER_DIR}/bin/index.js make
+    # index.js loads guida.js via require(GUIDA_JS_PATH ?? default). Pass the
+    # absolute build-tree path so non-default CMake build dirs (e.g. debug/)
+    # resolve correctly.
+    COMMAND ${CMAKE_COMMAND} -E env "GUIDA_JS_PATH=${COMPILER_OUTPUT}"
+        ${NODE_EXECUTABLE} ${COMPILER_DIR}/bin/index.js make
         --optimize
         --kernel-package eco/compiler
         --local-package eco/kernel=${COMPILER_DIR}/../eco-kernel-cpp
@@ -280,15 +313,8 @@ add_custom_target(bootstrap
     DEPENDS ${ECO_BOOT_VERIFY_STAMP} ${BOOTSTRAP_STAMP}
 )
 
-# Clean target support — wipe the entire bin/ output directory and the
-# compiler-internal package caches so `cmake --build build --target clean`
-# really resets the bootstrap chain. Listing the directory itself (rather
-# than each generated file) catches the `replacements.js`-rewritten *.js
-# and the auto-generated *-runner.js files as well.
-set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_CLEAN_FILES
-    "${BUILD_KERNEL_DIR}/bin"
-    "${BUILD_KERNEL_DIR}/eco-stuff"
-    "${BUILD_XHR_DIR}/bin"
-    "${BUILD_XHR_DIR}/elm-stuff"
-    "${BUILD_KERNEL_DIR}/elm-stuff"
-)
+# Bootstrap outputs (${BUILD_XHR_DIR}/bin/, ${BUILD_KERNEL_DIR}/bin/,
+# elm-stuff/, eco-stuff/) now live entirely under ${CMAKE_BINARY_DIR}. The
+# add_custom_command OUTPUTs are ninja-tracked so `ninja clean` removes the
+# generated *.js / *.mlir / native executables. Runtime caches (eco-stuff,
+# elm-stuff) persist between builds; use `rm -rf build/` for a full reset.

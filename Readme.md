@@ -148,17 +148,8 @@ TEST_FILTER=elm cmake --build build --target check
 TEST_FILTER=String cmake --build build --target run-tests
 
 # Compiler frontend tests (Elm-side unit tests, run via elm-test-rs)
-cd compiler && npx elm-test-rs --project build-xhr --fuzz 1
+cd compiler && npx elm-test-rs --project ../build/compiler/build-xhr --fuzz 1
 ```
-
-#### Build targets
-
-| Target | Description |
-|--------|-------------|
-| `check` | Incremental build + run tests |
-| `run-tests` | Run tests only (no build) |
-| `rebuild` | Clean + rebuild (no tests) |
-| `full` | Clean + rebuild + run tests |
 
 #### Running the test binary directly
 
@@ -219,6 +210,127 @@ list/array length). `--timeout` is threaded through as `timeoutMs`, so
 a harness-based program can bail from its inner loop once the
 wall-clock budget is exhausted instead of relying on the backstop
 SIGKILL.
+
+### Build targets
+
+Every target below is invoked as `cmake --build build --target <name>`. For a live listing, run `cmake --build build --target help`.
+
+#### Convenience targets
+
+| Target | Purpose |
+|---|---|
+| `rebuild` | `ninja clean` + full rebuild |
+| `check` | Build everything + run E2E tests (set `TEST_FILTER=` to filter) |
+| `run-tests` | Run E2E tests without rebuilding |
+| `stress` | Build + run stress-elm suite |
+| `full` | `clean` + rebuild + run E2E tests |
+| `run-mlir-equivalence` | Build mlir-equivalence + run Stage 2 vs Stage 6 MLIR diff |
+
+#### Bootstrap chain
+
+| Target | Stage | Output |
+|---|---|---|
+| `guida` | 1 | `build/compiler/build-xhr/bin/guida.js` |
+| `eco-boot` | 2 | `build/compiler/build-kernel/bin/eco-boot.js` |
+| `eco-boot-2` | 3 | `build/compiler/build-kernel/bin/eco-boot-2.js` |
+| `eco-boot-3` | 4a | `build/compiler/build-kernel/bin/eco-boot-3.js` |
+| `eco-boot-verify` | 4b | JS fixed-point check stamp |
+| `eco-compiler-mlir` | 5 | `build/compiler/build-kernel/bin/eco-compiler.mlir` |
+| `eco-compiler` | 6 | Native ELF compiler |
+| `eco-compiler-boot` | 7 | Native self-compiled compiler |
+| `bootstrap` | aggregate | Full chain through Stage 8 fixed-point |
+
+#### Test executables
+
+| Target | Purpose |
+|---|---|
+| `test` | Main test binary (`build/test/test`) — unit + E2E + allocator |
+| `stress-test` | Stress-elm runner (`build/test/stress-test`) |
+| `mlir-equivalence` | MLIR-diff binary (`build/test/mlir-equivalence`) |
+
+#### Runtime executables
+
+| Target | Purpose |
+|---|---|
+| `ecor` | Allocator + RapidCheck test exe (`build/ecor`) |
+| `eco-boot-native` | Native MLIR-lowering tool used by Stages 6–8 |
+| `ecoc` | Standalone Eco compiler driver |
+| `ecogen` | Code-generation driver |
+
+#### Runtime libraries
+
+| Target | Purpose |
+|---|---|
+| `EcoRunner` | JIT runner library |
+| `EcoPasses` | MLIR passes |
+| `EcoDialect` | Eco MLIR dialect |
+| `BFDialect` | BF (bytecode / bitfusion) MLIR dialect |
+| `EcoEntryStatic` | Entry-point glue |
+| `EcoRuntimeStatic` | Runtime archive |
+
+#### Elm kernel libraries
+
+| Target | Purpose |
+|---|---|
+| `ElmKernel_Basics` | `Basics` kernel |
+| `ElmKernel_Bitwise` | `Bitwise` kernel |
+| `ElmKernel_Browser` | `Browser` kernel |
+| `ElmKernel_Bytes` | `Bytes` kernel |
+| `ElmKernel_Char` | `Char` kernel |
+| `ElmKernel_Debug` | `Debug` kernel |
+| `ElmKernel_EffectRegistry` | Effect manager registry |
+| `ElmKernel_File` | `File` kernel |
+| `ElmKernel_Http` | `Http` kernel |
+| `ElmKernel_JsArray` | `JsArray` kernel |
+| `ElmKernel_Json` | `Json` kernel |
+| `ElmKernel_List` | `List` kernel |
+| `ElmKernel_Parser` | `Parser` kernel |
+| `ElmKernel_Platform` | `Platform` kernel |
+| `ElmKernel_Process` | `Process` kernel |
+| `ElmKernel_Regex` | `Regex` kernel |
+| `ElmKernel_Scheduler` | `Scheduler` kernel |
+| `ElmKernel_String` | `String` kernel |
+| `ElmKernel_Time` | `Time` kernel |
+| `ElmKernel_Url` | `Url` kernel |
+| `ElmKernel_Utils` | `Utils` kernel |
+| `ElmKernel_VirtualDom` | `VirtualDom` kernel |
+
+#### Eco kernel libraries
+
+| Target | Purpose |
+|---|---|
+| `EcoKernel_Console` | `Eco.Console` IO |
+| `EcoKernel_Crash` | `Eco.Crash` (Stage 2+ replacement for `Debug.todo`) |
+| `EcoKernel_Env` | `Eco.Env` environment variables |
+| `EcoKernel_File` | `Eco.File` IO |
+| `EcoKernel_Http` | `Eco.Http` IO |
+| `EcoKernel_MVar` | `Eco.MVar` synchronization |
+| `EcoKernel_Process` | `Eco.Process` IO |
+| `EcoKernel_Runtime` | `Eco.Runtime` glue |
+
+#### Tablegen / generated headers
+
+| Target | Purpose |
+|---|---|
+| `EcoOpsIncGen` | Generate Eco dialect Op .inc files |
+| `BFOpsIncGen` | Generate BF dialect Op .inc files |
+| `mlir-headers` | Aggregate MLIR header gen |
+| `mlir-tablegen-targets` | Aggregate tablegen rule set |
+| `acc_gen` | LLVM OpenACC headers (transitive) |
+| `omp_gen` | LLVM OpenMP headers (transitive) |
+| `target_parser_gen` | LLVM TargetParser headers (transitive) |
+| `vt_gen` | LLVM VTune headers (transitive) |
+
+#### CMake built-ins
+
+| Target | Purpose |
+|---|---|
+| `clean` | Remove ninja-tracked outputs |
+| `help` | List all available targets |
+| `install` | Install built artifacts |
+| `edit_cache` | Open CMake cache for editing |
+| `rebuild_cache` | Reconfigure CMake cache |
+| `list_install_components` | List installable components |
 
 ## Docker development
 

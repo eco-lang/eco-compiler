@@ -27,6 +27,12 @@ server.post("eco-io", (request) => {
 
 server.install();
 
-const { Elm } = require("../build-xhr/bin/guida.js");
+// guida.js is the Stage 1 output now produced under ${CMAKE_BINARY_DIR}/compiler/build-xhr/bin/.
+// CMake passes the absolute path via GUIDA_JS_PATH when invoking index.js; the
+// default targets the `build/` preset for ad-hoc invocations from a shell.
+const path = require("path");
+const guidaPath = process.env.GUIDA_JS_PATH ||
+    path.join(__dirname, "../../build/compiler/build-xhr/bin/guida.js");
+const { Elm } = require(guidaPath);
 
 Elm.Terminal.Main.init();

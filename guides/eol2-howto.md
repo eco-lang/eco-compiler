@@ -12,7 +12,7 @@ without needing to invoke `elm make`.
 Apply to any compiled JS file by passing it as input:
 
 ```bash
-cd /work/compiler/build-kernel
+cd /work/build/compiler/build-kernel
 
 # Default optimizations
 npx elm-optimize-level-2 bin/eco-boot-2.js --output bin/eco-boot-2-o2.js

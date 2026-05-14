@@ -11,7 +11,7 @@
 
 Profile target is now the **native compiler self-compiling** (Stage 7 of @bootstrap.md):
 `bin/eco-compiler` running `make` on `compiler/src/Terminal/Main.elm` from
-`/work/compiler/build-kernel`. The MLIR-codegen profile (Stage 6 of bootstrap, the
+`/work/build/compiler/build-kernel`. The MLIR-codegen profile (Stage 6 of bootstrap, the
 former target) has been retired now that the eco-boot-native lowering pipeline is
 healthy. The new bottlenecks live in the **runtime / GC / closure-dispatch fast
 paths** in `runtime/src/`.
@@ -298,7 +298,7 @@ minor GC and only for objects that were evacuated).
 ### Profile: 2026-05-05, Stage 7 self-compile, ORIGINAL baseline, 100 s, 499 Hz, 37k samples
 
 Stage 7: `bin/eco-compiler make --optimize ... --output=bin/eco-compiler-boot.mlir
-/work/compiler/src/Terminal/Main.elm` from `/work/compiler/build-kernel`.
+/work/compiler/src/Terminal/Main.elm` from `/work/build/compiler/build-kernel`.
 
 DSO breakdown:
 

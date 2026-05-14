@@ -2,7 +2,7 @@
 
 ## SETUP (run once)
 
-1. Run elm-test: `cd compiler && npx elm-test-rs --project build-xhr --fuzz 1`
+1. Run elm-test: `cd compiler && npx elm-test-rs --project ../build/compiler/build-xhr --fuzz 1`
 2. Run E2E: `cmake --build build --target full`
 3. Record pass/fail counts as baseline.
 4. Seed @test-fails.md with every failing test: name, error message, full trace.

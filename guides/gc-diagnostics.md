@@ -379,11 +379,11 @@ cmake --build build
 #    Also dump the post-RS4GC IR for pipeline-side investigation.
 ./build/runtime/src/codegen/eco-boot-native \
     --dump-rs4gc-ir /tmp/rs4gc-compiler.ll \
-    compiler/build-kernel/bin/eco-compiler.mlir \
-    -o compiler/build-kernel/bin/eco-compiler
+    build/compiler/build-kernel/bin/eco-compiler.mlir \
+    -o build/compiler/build-kernel/bin/eco-compiler
 
 # 3. Run Stage 7 with stderr captured
-cd compiler/build-kernel
+cd build/compiler/build-kernel
 bin/eco-compiler make \
     --optimize \
     --kernel-package eco/compiler \
@@ -406,7 +406,7 @@ grep -A30 'define.*@FunctionName' /tmp/rs4gc-compiler.ll \
 ```
 
 **Note:** Steps 1-4 assume Stages 1-5 have already been run (MLIR exists at
-`compiler/build-kernel/bin/eco-compiler.mlir`). If not, run the bootstrap
+`build/compiler/build-kernel/bin/eco-compiler.mlir`). If not, run the bootstrap
 stages 1-5 first per `guides/bootstrap.md`.
 
 ---
@@ -456,7 +456,7 @@ With RS4GC, root tracking is automatic. The main failure modes are:
 # Dump post-RS4GC IR for a specific compilation
 ./build/runtime/src/codegen/eco-boot-native \
     --dump-rs4gc-ir /tmp/rs4gc.ll \
-    compiler/build-kernel/bin/eco-compiler.mlir \
+    build/compiler/build-kernel/bin/eco-compiler.mlir \
     -o /dev/null
 
 # Find statepoints for a specific function

@@ -30,7 +30,7 @@ Use `timeout` to cap the run — Stage 6 on the full compiler MLIR can take minu
 timeout 30 perf record -g --call-graph dwarf,16384 -F 997 \
     -o /tmp/perf.data \
     -- ./build/runtime/src/codegen/eco-boot-native \
-    compiler/build-kernel/bin/eco-compiler.mlir \
+    build/compiler/build-kernel/bin/eco-compiler.mlir \
     -o /dev/null
 ```
 
@@ -74,7 +74,7 @@ Call-graph reports on large perf.data files can take forever. Two strategies:
 ```bash
 timeout 5 perf record -g --call-graph dwarf -F 99 -o /tmp/perf-small.data \
     -- ./build/runtime/src/codegen/eco-boot-native \
-    compiler/build-kernel/bin/eco-compiler.mlir -o /dev/null
+    build/compiler/build-kernel/bin/eco-compiler.mlir -o /dev/null
 perf report -i /tmp/perf-small.data --stdio -g fractal,5,caller --percent-limit 3.0
 ```
 
@@ -98,7 +98,7 @@ If the MLIR → LLVM lowering finishes within N seconds and you want to profile 
 # Record the full run
 perf record -g --call-graph dwarf -F 997 -o /tmp/perf.data \
     -- ./build/runtime/src/codegen/eco-boot-native \
-    compiler/build-kernel/bin/eco-compiler.mlir -o /dev/null
+    build/compiler/build-kernel/bin/eco-compiler.mlir -o /dev/null
 
 # Then filter by time range in perf script output
 perf script -i /tmp/perf.data --header | head -5   # check time range
@@ -111,7 +111,7 @@ No data file needed — just summary stats:
 ```bash
 timeout 30 perf stat -d \
     ./build/runtime/src/codegen/eco-boot-native \
-    compiler/build-kernel/bin/eco-compiler.mlir -o /dev/null
+    build/compiler/build-kernel/bin/eco-compiler.mlir -o /dev/null
 ```
 
 This gives IPC (instructions per cycle), cache miss rates, branch mispredictions — useful for diagnosing whether a bottleneck is compute-bound or memory-bound.
@@ -128,7 +128,7 @@ cmake --build build --target eco-boot-native
 # Then record with fp-based stacks (much smaller perf.data):
 timeout 30 perf record -g --call-graph fp -F 997 -o /tmp/perf.data \
     -- ./build/runtime/src/codegen/eco-boot-native \
-    compiler/build-kernel/bin/eco-compiler.mlir -o /dev/null
+    build/compiler/build-kernel/bin/eco-compiler.mlir -o /dev/null
 ```
 
 ## Other Available Tools

@@ -10,12 +10,12 @@ Stage 7 exercises the entire native pipeline (front-end parsing/typing, monomorp
 
 - `which perf` — confirm `/usr/bin/perf` is installed.
 - `cat /proc/sys/kernel/perf_event_paranoid` — must be ≤ 2 for unprivileged DWARF call-graph sampling. If it is 3 or higher, prefix the command with `sudo` or temporarily relax with `sudo sysctl kernel.perf_event_paranoid=1`.
-- `ls /work/compiler/build-kernel/bin/eco-compiler` — confirm Stage 6 has produced the native compiler.
+- `ls /work/build/compiler/build-kernel/bin/eco-compiler` — confirm Stage 6 has produced the native compiler.
 - `free -h` — make sure ≥ 6 GB is available; the compiler peaks at 3–4 GB RSS and perf adds 150–300 MB.
 
 ## Recording command
 
-Run from `/work/compiler/build-kernel`:
+Run from `/work/build/compiler/build-kernel`:
 
 ```bash
 perf record \

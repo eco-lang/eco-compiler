@@ -7,7 +7,11 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 COMPILER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-BUILD_KERNEL_DIR="$COMPILER_DIR/build-kernel"
+PROJECT_ROOT="$(cd "$COMPILER_DIR/.." && pwd)"
+# Shadow root for Stages 2–8 is materialized by CMake under
+# ${CMAKE_BINARY_DIR}/compiler/build-kernel/; override via env to point at a
+# non-default build tree.
+BUILD_KERNEL_DIR="${BUILD_KERNEL_DIR:-$PROJECT_ROOT/build/compiler/build-kernel}"
 
 case $1 in
   "api")

@@ -20,7 +20,7 @@
 ## Typical profiling command
 ```bash
 export NODE_OPTIONS="--max-old-space-size=12000"
-cd /work/compiler/build-kernel
+cd /work/build/compiler/build-kernel
 timeout 300 node --stack-size=65536 --prof bin/eco-boot-2-runner.js make \
     --optimize \
     --kernel-package eco/compiler \

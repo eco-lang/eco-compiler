@@ -96,11 +96,12 @@ export PATH="$(pwd)/node_modules/.bin:$PATH"
 
 Or pass it inline with `env` as shown in the Quick Start.
 
-### Important: Use `tests/` Not `build-xhr/tests/`
+### Important: Use `tests/` Not `build/compiler/build-xhr/tests/`
 
-`build-xhr/tests` is a symlink to `../tests`. elm-coverage copies it verbatim,
-preserving the symlink, which breaks inside the instrumented directory. Always
-point `--tests` at the real `tests/` directory.
+`build/compiler/build-xhr/tests` is a symlink to `compiler/tests/` (set up by
+CMake at configure time). elm-coverage copies it verbatim, preserving the
+symlink, which breaks inside the instrumented directory. Always point
+`--tests` at the real `compiler/tests/` directory.
 
 ## Output
 
