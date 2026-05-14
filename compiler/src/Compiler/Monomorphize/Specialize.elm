@@ -3124,12 +3124,15 @@ specializeExpr expr subst state =
                 canType =
                     meta.tipe
 
-                monoType =
+                -- Refinement hint only — may contain MVar _ CEcoValue for any
+                -- field whose upstream constraint flow gapped. Used solely to
+                -- guide per-field substitution refinement; NOT used as the
+                -- record's final MonoType (see Fix A below).
+                refinementMonoType =
                     Mono.forceCNumberToInt (applySubstFV state subst canType)
 
-                -- Extract mono field types from the record MonoType for substitution refinement.
                 monoFieldTypes =
-                    case monoType of
+                    case refinementMonoType of
                         Mono.MRecord fieldMap ->
                             fieldMap
 
@@ -3157,6 +3160,20 @@ specializeExpr expr subst state =
                         )
                         ( [], state )
                         fields
+
+                -- Fix A: build the record's MonoType from the already-
+                -- specialised field expressions. Mirrors the tuple fix.
+                -- Also eliminates the unboxed-first / declaration-order
+                -- slot-index disagreement between the construction site
+                -- and the projection site that surfaces in RecordMulti
+                -- when the buggy `monoType` reaches `computeRecordLayout`.
+                monoType =
+                    Mono.MRecord
+                        (List.foldl
+                            (\( fn, e ) acc -> Dict.insert fn (Mono.typeOf e) acc)
+                            Dict.empty
+                            monoFields
+                        )
             in
             ( Mono.MonoRecordCreate monoFields monoType, stateAfter )
 
@@ -3165,12 +3182,12 @@ specializeExpr expr subst state =
                 canType =
                     meta.tipe
 
-                monoType =
+                -- Refinement hint only — see Fix A note on TOpt.Record above.
+                refinementMonoType =
                     Mono.forceCNumberToInt (applySubstFV state subst canType)
 
-                -- Extract mono field types for substitution refinement.
                 monoFieldTypes =
-                    case monoType of
+                    case refinementMonoType of
                         Mono.MRecord fieldMap ->
                             fieldMap
 
@@ -3200,6 +3217,16 @@ specializeExpr expr subst state =
                         )
                         ( [], state )
                         fields
+
+                -- Fix A: build the record's MonoType from the already-
+                -- specialised field expressions. Mirrors Record case above.
+                monoType =
+                    Mono.MRecord
+                        (List.foldl
+                            (\( fn, e ) acc -> Dict.insert fn (Mono.typeOf e) acc)
+                            Dict.empty
+                            monoFields
+                        )
             in
             ( Mono.MonoRecordCreate monoFields monoType, stateAfter )
 
@@ -3208,12 +3235,6 @@ specializeExpr expr subst state =
 
         TOpt.Tuple region a b rest meta ->
             let
-                canType =
-                    meta.tipe
-
-                monoType =
-                    Mono.forceCNumberToInt (applySubstFV state subst canType)
-
                 ( monoA, state1 ) =
                     specializeExpr a subst state
 
@@ -3225,6 +3246,17 @@ specializeExpr expr subst state =
 
                 allExprs =
                     monoA :: monoB :: monoRest
+
+                -- Fix A (wrong-unboxed-bitmap-upstream): build the tuple's
+                -- MonoType from the already-specialised element expressions
+                -- rather than from meta.tipe. This guarantees the container's
+                -- declared element types match the actual SSA slot types,
+                -- even when an upstream constraint-flow gap leaves a slot's
+                -- canonical TVar unbound (which would otherwise fall through
+                -- applySubst's Nothing/CEcoValue branch and produce a buggy
+                -- MVar _ CEcoValue in the MonoType).
+                monoType =
+                    Mono.MTuple (List.map Mono.typeOf allExprs)
             in
             ( Mono.MonoTupleCreate region allExprs monoType, state3 )
 
