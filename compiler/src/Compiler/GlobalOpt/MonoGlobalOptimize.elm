@@ -447,6 +447,7 @@ buildNestedCallsGO region calleeExpr params =
                             , closureKind = Nothing
                             , captureAbi = Nothing
                             , callKind = Mono.CallDirectKnownSegmentation
+                            , evaluatorReturnType = resultType
                             }
 
                         callExpr =
@@ -1859,6 +1860,65 @@ calleeHasPolymorphicReturn env funcExpr =
             False
 
 
+{-| Peel `n` MFunction layers to get the return type of the n-th stage's evaluator.
+
+For the saturating papExtend in a chained applyByStages, the relevant
+evaluator is the LAST stage in the chain (after consuming all
+`remainingStageArities`), not the first. So `n` is the number of stages
+applied, not 1.
+
+If the chain runs out of MFunction layers before `n` peels, returns the
+current type (defensive — should not happen for well-typed StageCurried
+calls).
+-}
+peelStages : Int -> Mono.MonoType -> Mono.MonoType
+peelStages n t =
+    if n <= 0 then
+        t
+
+    else
+        case t of
+            Mono.MFunction _ body ->
+                peelStages (n - 1) body
+
+            _ ->
+                t
+
+
+{-| Compute the saturating papExtend's evaluator return type.
+
+The saturating papExtend invokes the LAST stage's evaluator of whatever
+function chain we're applying — typically the underlying `func.func`'s
+return type.
+
+Heuristic: peel by `totalArgsConsumed` (initialRemaining + sum of
+remainingStageArities). When the callee is a partial-application
+expression whose `Mono.typeOf` reports the *original* function's full
+curried type rather than the partial-app's narrowed type (e.g. add of
+type `MFunction [Int] (MFunction [Int] Int)` seen at a 1-arg saturating
+call), `totalArgsConsumed` undercounts. As a fallback when the peeled
+result is still a function but `MonoCall.resultType` is not, we walk all
+the way to `decomposeFunctionType`'s final body — that matches the
+underlying func.func's primitive return.
+
+For functions that genuinely return a closure (`identity` applied to a
+function-typed arg), `MonoCall.resultType` *is* a function type, so we
+stop at the heuristic peel and avoid over-peeling past the wrapper's
+last stage.
+-}
+saturatingEvaluatorReturnType : Mono.MonoType -> Int -> Mono.MonoType -> Mono.MonoType
+saturatingEvaluatorReturnType resultType totalArgsConsumed funcType =
+    let
+        peeled =
+            peelStages totalArgsConsumed funcType
+    in
+    if Mono.isFunctionType peeled && not (Mono.isFunctionType resultType) then
+        Tuple.second (Mono.decomposeFunctionType peeled)
+
+    else
+        peeled
+
+
 {-| Compute CallInfo for a MonoCall based on callee and arguments.
 This is the core logic that moves staging decisions into GlobalOpt.
 -}
@@ -1869,7 +1929,7 @@ computeCallInfo :
     -> List Mono.MonoExpr
     -> Mono.MonoType
     -> Mono.CallInfo
-computeCallInfo graph env func args _ =
+computeCallInfo graph env func args resultType =
     let
         callModel =
             callModelForCallee graph env func
@@ -1878,6 +1938,9 @@ computeCallInfo graph env func args _ =
         Mono.FlattenedExternal ->
             -- No staged-curried logic needed; existing MLIR code treats
             -- extern partial vs saturated based on resultType alone.
+            -- evaluatorReturnType = resultType is safe here: kernel/extern
+            -- callees route through instanceAbi.abiResultType and CGEN_038
+            -- enforces alignment with the func.func signature already.
             { callModel = Mono.FlattenedExternal
             , stageArities = []
             , isSingleStageSaturated = False
@@ -1886,6 +1949,7 @@ computeCallInfo graph env func args _ =
             , closureKind = Nothing
             , captureAbi = Nothing
             , callKind = Mono.CallDirectFlat
+            , evaluatorReturnType = resultType
             }
 
         Mono.StageCurried ->
@@ -1988,6 +2052,22 @@ computeCallInfo graph env func args _ =
 
                             else
                                 Mono.CallSegmentationUnknown
+
+                -- CGEN_056: Mono return type of the evaluator the saturating
+                -- papExtend will invoke. The MonoType's curry structure and
+                -- the segmentation can diverge (e.g. a curried MonoType
+                -- `MFunction [Int] (MFunction [Int] Int)` may correspond to
+                -- a flat seg [2] closure), so peel by total args consumed —
+                -- one MFunction layer per arg — not by stage count.
+                -- `peelStages` falls back gracefully when funcType is flatter
+                -- than the seg suggests.
+                totalArgsConsumed : Int
+                totalArgsConsumed =
+                    initialRemaining + List.sum remainingStageArities
+
+                evaluatorReturnType : Mono.MonoType
+                evaluatorReturnType =
+                    saturatingEvaluatorReturnType resultType totalArgsConsumed funcType
             in
             { callModel = Mono.StageCurried
             , stageArities = stageAritiesFull
@@ -1997,4 +2077,5 @@ computeCallInfo graph env func args _ =
             , closureKind = Nothing
             , captureAbi = Nothing
             , callKind = callKind
+            , evaluatorReturnType = evaluatorReturnType
             }

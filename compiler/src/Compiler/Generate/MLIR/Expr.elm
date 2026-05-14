@@ -1643,8 +1643,13 @@ This implements the stage-curried closure model required by MONO\_016 and CGEN\_
 
 For partial applications, result type is `!eco.value` per CGEN\_034 (PAPs are boxed closures).
 For fully saturated calls, result type is `saturatedReturnType` (the actual ABI return type).
-CGEN\_056: `saturatedReturnType` must equal the callee's `func.func` result type, which is
-guaranteed because both are derived via `Types.monoTypeToAbi` from the same Mono return type.
+
+CGEN\_056: `saturatedReturnType` must equal the callee's `func.func` result type. The
+caller passes `Types.monoTypeToAbi callInfo.evaluatorReturnType`, derived from the
+evaluator's Mono body return type recorded in CallInfo by GlobalOpt. This is NOT
+the same as `Types.monoTypeToAbi resultType` (`MonoCall.resultType`), which differs
+on over-saturated calls where the evaluator body returns a closure but the caller
+expects a primitive.
 
 -}
 applyByStages :
@@ -1935,6 +1940,18 @@ generateFlattenedPartialApplication ctx func args resultType =
     }
 
 
+{-| MLIR ABI result type of the evaluator func.func at this call site.
+
+CGEN\_056 requires saturating typed papExtends to use the evaluator's func.func
+result type, not the caller's `MonoCall.resultType`. The two diverge for
+over-saturated calls (evaluator body returns a closure, caller expects a primitive).
+
+-}
+evaluatorAbiResultType : Mono.CallInfo -> MlirType
+evaluatorAbiResultType callInfo =
+    Types.monoTypeToAbi callInfo.evaluatorReturnType
+
+
 {-| Generate a partial application where the result is still a closure.
 This creates a closure via papExtend rather than attempting a direct call.
 Uses precomputed CallInfo from GlobalOpt.
@@ -1953,10 +1970,18 @@ generateClosureApplication ctx func args resultType callInfo =
                 funcResult =
                     generateExpr ctx func
 
-                -- CGEN_056: expectedType becomes the saturated papExtend result type,
-                -- which must equal the callee's func.func return type.
-                expectedType =
+                -- ABI type of the whole call expression (MonoCall.resultType).
+                -- Used only for the zero-arg "already evaluated" fast path,
+                -- which emits no papExtend.
+                callResultMlirType =
                     Types.monoTypeToAbi resultType
+
+                -- CGEN_056: ABI result type of the evaluator func.func we are
+                -- calling. Passed as saturatedReturnType to applyByStages so
+                -- the saturating papExtend's SSA result type matches the
+                -- callee's func.func declaration even on over-saturated calls.
+                evaluatorResultMlirType =
+                    evaluatorAbiResultType callInfo
             in
             -- If the function result is not a closure (e.g., a zero-arity thunk was
             -- already evaluated), and we're calling with no args, just return the value.
@@ -1966,11 +1991,11 @@ generateClosureApplication ctx func args resultType callInfo =
                 -- Already evaluated - just return the value, coercing if needed
                 let
                     ( coerceOps, finalVar, ctx1 ) =
-                        coerceResultToType funcResult.ctx funcResult.resultVar funcResult.resultType expectedType
+                        coerceResultToType funcResult.ctx funcResult.resultVar funcResult.resultType callResultMlirType
                 in
                 { ops = funcResult.ops ++ coerceOps
                 , resultVar = finalVar
-                , resultType = expectedType
+                , resultType = callResultMlirType
                 , ctx = ctx1
                 , isTerminated = False
                 }
@@ -2019,14 +2044,23 @@ generateClosureApplication ctx func args resultType callInfo =
 
                     -- Apply arguments by stages, emitting a chain of papExtend operations
                     -- (metadata-driven: uses initialRemaining and remainingStageArities from CallInfo)
-                    -- Pass expectedType as the saturated return type for when call becomes fully saturated
+                    -- CGEN_056: pass evaluatorResultMlirType (from CallInfo.evaluatorReturnType),
+                    -- not the over-saturated callResultMlirType.
                     papResult =
-                        applyByStages ctx1b funcResult.resultVar funcResult.resultType initialRemaining remainingStageArities expectedType (Just (callKindToAttrString callInfo.callKind)) boxedArgsWithTypes [] []
+                        applyByStages ctx1b funcResult.resultVar funcResult.resultType initialRemaining remainingStageArities evaluatorResultMlirType (Just (callKindToAttrString callInfo.callKind)) boxedArgsWithTypes [] []
+
+                    -- When the saturating papExtend's evaluator returns a
+                    -- different ABI type than the call's MonoCall.resultType
+                    -- (e.g. CEcoValue-erased polymorphic return → eco.value,
+                    -- but caller expects monomorphic i64), coerce so consumers
+                    -- receive callResultMlirType.
+                    ( coerceOps, finalVar, ctxFinal ) =
+                        coerceResultToType papResult.ctx papResult.resultVar papResult.resultType callResultMlirType
                 in
-                { ops = funcResult.ops ++ argOps ++ boxOps ++ papResult.ops
-                , resultVar = papResult.resultVar
-                , resultType = papResult.resultType
-                , ctx = papResult.ctx
+                { ops = funcResult.ops ++ argOps ++ boxOps ++ papResult.ops ++ coerceOps
+                , resultVar = finalVar
+                , resultType = callResultMlirType
+                , ctx = ctxFinal
                 , isTerminated = False
                 }
 
@@ -3193,8 +3227,13 @@ generateSaturatedCall ctx func args resultType callInfo =
                 ( funcVarName, funcVarType ) =
                     Ctx.lookupVar ctx name
 
-                expectedType =
+                -- ABI type of the whole call expression (MonoCall.resultType).
+                callResultMlirType =
                     Types.monoTypeToAbi resultType
+
+                -- CGEN_056: evaluator func.func result type for typed papExtend.
+                evaluatorResultMlirType =
+                    evaluatorAbiResultType callInfo
             in
             case callInfo.callModel of
                 Mono.FlattenedExternal ->
@@ -3211,11 +3250,11 @@ generateSaturatedCall ctx func args resultType callInfo =
                         -- Already evaluated - just return the value, coercing if needed
                         let
                             ( coerceOps, finalVar, ctx1 ) =
-                                coerceResultToType ctx funcVarName funcVarType expectedType
+                                coerceResultToType ctx funcVarName funcVarType callResultMlirType
                         in
                         { ops = coerceOps
                         , resultVar = finalVar
-                        , resultType = expectedType
+                        , resultType = callResultMlirType
                         , ctx = ctx1
                         , isTerminated = False
                         }
@@ -3243,14 +3282,18 @@ generateSaturatedCall ctx func args resultType callInfo =
 
                             -- Apply arguments by stages, emitting a chain of papExtend operations
                             -- (metadata-driven: uses initialRemaining and remainingStageArities from CallInfo)
-                            -- Pass expectedType as the saturated return type
+                            -- CGEN_056: pass evaluatorResultMlirType, not the over-saturated
+                            -- callResultMlirType.
                             papResult =
-                                applyByStages ctx1b funcVarName funcVarType initialRemaining remainingStageArities expectedType (Just (callKindToAttrString callInfo.callKind)) boxedArgsWithTypes [] []
+                                applyByStages ctx1b funcVarName funcVarType initialRemaining remainingStageArities evaluatorResultMlirType (Just (callKindToAttrString callInfo.callKind)) boxedArgsWithTypes [] []
+
+                            ( coerceOps, finalVar, ctxFinal ) =
+                                coerceResultToType papResult.ctx papResult.resultVar papResult.resultType callResultMlirType
                         in
-                        { ops = argOps ++ boxOps ++ papResult.ops
-                        , resultVar = papResult.resultVar
-                        , resultType = papResult.resultType
-                        , ctx = papResult.ctx
+                        { ops = argOps ++ boxOps ++ papResult.ops ++ coerceOps
+                        , resultVar = finalVar
+                        , resultType = callResultMlirType
+                        , ctx = ctxFinal
                         , isTerminated = False
                         }
 
@@ -3260,8 +3303,12 @@ generateSaturatedCall ctx func args resultType callInfo =
                 funcResult =
                     generateExpr ctx func
 
-                expectedType =
+                callResultMlirType =
                     Types.monoTypeToAbi resultType
+
+                -- CGEN_056: evaluator func.func result type for typed papExtend.
+                evaluatorResultMlirType =
+                    evaluatorAbiResultType callInfo
             in
             -- If the function result is not a closure (e.g., a zero-arity thunk was
             -- already evaluated), and we're calling with no args, just return the value.
@@ -3269,11 +3316,11 @@ generateSaturatedCall ctx func args resultType callInfo =
                 -- Already evaluated - just return the value, coercing if needed
                 let
                     ( coerceOps, finalVar, ctx1 ) =
-                        coerceResultToType funcResult.ctx funcResult.resultVar funcResult.resultType expectedType
+                        coerceResultToType funcResult.ctx funcResult.resultVar funcResult.resultType callResultMlirType
                 in
                 { ops = funcResult.ops ++ coerceOps
                 , resultVar = finalVar
-                , resultType = expectedType
+                , resultType = callResultMlirType
                 , ctx = ctx1
                 , isTerminated = False
                 }
@@ -3301,14 +3348,18 @@ generateSaturatedCall ctx func args resultType callInfo =
 
                     -- Apply arguments by stages, emitting a chain of papExtend operations
                     -- (metadata-driven: uses initialRemaining and remainingStageArities from CallInfo)
-                    -- Pass expectedType as the saturated return type
+                    -- CGEN_056: pass evaluatorResultMlirType, not the over-saturated
+                    -- callResultMlirType.
                     papResult =
-                        applyByStages ctx1b funcResult.resultVar funcResult.resultType initialRemaining remainingStageArities expectedType (Just (callKindToAttrString callInfo.callKind)) boxedArgsWithTypes [] []
+                        applyByStages ctx1b funcResult.resultVar funcResult.resultType initialRemaining remainingStageArities evaluatorResultMlirType (Just (callKindToAttrString callInfo.callKind)) boxedArgsWithTypes [] []
+
+                    ( coerceOps, finalVar, ctxFinal ) =
+                        coerceResultToType papResult.ctx papResult.resultVar papResult.resultType callResultMlirType
                 in
-                { ops = funcResult.ops ++ argOps ++ boxOps ++ papResult.ops
-                , resultVar = papResult.resultVar
-                , resultType = papResult.resultType
-                , ctx = papResult.ctx
+                { ops = funcResult.ops ++ argOps ++ boxOps ++ papResult.ops ++ coerceOps
+                , resultVar = finalVar
+                , resultType = callResultMlirType
+                , ctx = ctxFinal
                 , isTerminated = False
                 }
 

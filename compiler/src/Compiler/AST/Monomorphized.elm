@@ -1097,6 +1097,11 @@ type CallKind
     (used as sourceRemaining in applyByStages).
   - remainingStageArities: Stage arities for subsequent stages after saturating
     the current closure (used in applyByStages).
+  - evaluatorReturnType: Mono return type of the evaluator func.func invoked
+    at this call site (one MFunction peel from the callee's type). Used by
+    MLIR codegen to satisfy CGEN\_056: typed saturating papExtends must use
+    the evaluator's func.func result type, NOT the caller's
+    MonoCall.resultType, which differs from it on over-saturated calls.
 
 Extended for typed closure calling:
 
@@ -1113,6 +1118,7 @@ type alias CallInfo =
     , closureKind : MaybeClosureKind
     , captureAbi : Maybe CaptureABI
     , callKind : CallKind
+    , evaluatorReturnType : MonoType
     }
 
 
@@ -1129,6 +1135,7 @@ defaultCallInfo =
     , closureKind = Nothing
     , captureAbi = Nothing
     , callKind = CallGenericApply
+    , evaluatorReturnType = MUnit
     }
 
 

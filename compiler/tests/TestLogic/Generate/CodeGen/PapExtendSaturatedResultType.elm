@@ -222,9 +222,27 @@ processOp op map =
 
 {-| Check a single papExtend op: if it represents a saturated call, verify its
 result type matches the target function's return type.
+
+CGEN_056 only constrains TYPED-mode papExtends (those carrying a `remaining_arity`
+attribute). Generic-mode papExtends (`_call_kind = "generic_apply"` or
+`"segmentation_unknown"`) omit `remaining_arity` and their SSA result type is
+derived from `MonoCall.resultType` via `_result_kind`, not the callee's
+`func.func` result — they are explicitly out of scope for CGEN_056.
+
 -}
 checkSaturatedPapExtend : Dict String MlirType -> Dict String PapInfo -> MlirOp -> Maybe Violation
 checkSaturatedPapExtend funcReturnTypeMap papInfoMap op =
+    case getIntAttr "remaining_arity" op of
+        Nothing ->
+            -- Generic-mode papExtend; CGEN_056 does not apply.
+            Nothing
+
+        Just _ ->
+            checkTypedPapExtend funcReturnTypeMap papInfoMap op
+
+
+checkTypedPapExtend : Dict String MlirType -> Dict String PapInfo -> MlirOp -> Maybe Violation
+checkTypedPapExtend funcReturnTypeMap papInfoMap op =
     case List.head op.operands of
         Nothing ->
             Nothing
