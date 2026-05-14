@@ -142,6 +142,16 @@ The `schemeRoots` field (mapping definition names to root variable sets) is thre
 
 *(Apr 11, 2026)*: Surviving `MVar _ CEcoValue` in specialization keys (from scheme bindings where the type variable is not constrained by usage) are mapped to sentinel values. This ensures that fresh MVars from different scheme instantiations do not create different spec keys for otherwise identical specializations.
 
+### Tuple / Record Specialised-Element MonoType
+
+*(May 14, 2026)*: For `TOpt.Tuple`, `TOpt.Record`, and `TOpt.TrackedRecord`, the container `MonoType` is now built **from the already-specialised element expressions**, not from `meta.tipe`.
+
+The earlier code derived the container type by walking `meta.tipe` through `applySubst`. When an upstream constraint-flow gap left a slot's `TVar` unbound, `applySubst` fell through its `Nothing` / `CEcoValue` branch and the slot's `MonoType` came back as `CEcoValue`. Downstream, `MonoTuple` / `MonoRecord` layout computation then chose an `unboxed_bitmap` slot kind of *boxed* (`00`) for what was actually a typed primitive expression (e.g. an Int). The SSA value being constructed was `i64`, but the layout bitmap claimed the slot was a boxed HPointer — a one-way ticket to either a GC miss-trace (interpreting an Int as a pointer) or a heap field that downstream code projected with the wrong type.
+
+The fix is local: after element expressions are specialised (their `MonoType` is already correct), build the container `MonoType` from the elements' actual mono types instead of re-deriving from `meta.tipe`. This contains the upstream gap at the boundary where the correct information is available — without trying to fix root-cause unification.
+
+Reproducers: `TupleSlotBoxingMismatchTest.elm`, `TupleSlotBoxing{T2Slot0,T2Slot1,T3Slot0,T3Slot2}Test.elm`, `TupleSlotBoxing{Array,Closure,ListCons}Test.elm`, `TupleSlotBoxing{CustomSingle,CustomMulti,CustomMultiCtor}Test.elm`, `TupleSlotBoxing{RecordSingle,RecordMulti}Test.elm`.
+
 ## Algorithm: Worklist-Based Specialization
 
 The pass uses a worklist algorithm:

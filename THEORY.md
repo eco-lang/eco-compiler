@@ -206,7 +206,7 @@ and 64 bits respectively, all 2-bit-per-slot). See
 
 When `evacuate()` sees an object that has reached promotion age, it allocates in the old gen instead of to-space. Promoted objects are added to a buffer and scanned to update their child pointers, since they may reference other nursery objects that haven't been evacuated yet.
 
-### Builder bit: pinning in-construction objects to nursery
+### Builder bit: pinning in-construction objects to nursery *(May 10, 2026)*
 
 Some runtime kernels (notably `JsArray.indexedMap`/`map`/`initialize` and similar) allocate a result container up front and then write into it across multiple calls into user closures. Because each closure call is a GC safepoint, a minor GC may fire mid-loop and promote the half-built container to old gen. Subsequent slot writes would then plant nursery HPointers into an old-gen parent — exactly the kind of old-gen→young edge the no-remembered-set design forbids.
 
@@ -274,6 +274,14 @@ Because RS4GC identifies GC pointers purely by type (`ptr addrspace(1)`), the fr
 ### Large Object Allocation
 
 *(Apr 2026)* Objects larger than a nursery block are allocated in a dedicated pinned large-object space within the old generation. Large objects are never copied — they are pinned in place and managed by mark-sweep.
+
+### Large-Object Split-Header Representation (HEAP_026) *(May 1-2, 2026)*
+
+Strings and byte buffers above ~2 KiB use a **split-header** representation. A small header (`Tag_LargeStringHeader` / `Tag_LargeByteHeader`) lives in the nursery and points at a pinned old-gen body. The body is never copied; the header forwards through Cheney evacuation like any other small nursery object. This avoids two problems at once: (a) repeatedly memcpying multi-kilobyte payloads through every minor GC, and (b) requiring large objects to be allocated directly in the old gen and thus rooted via the major-GC path.
+
+39 audited call sites in the kernel C++ now route through `alloc::resolveByteBufferBody` / `resolveStringBody` so they see the underlying payload regardless of whether the header is split (large) or inline (small). Released large bodies may be reclaimed in any old-gen GC state, not just `Idle`.
+
+Captured as invariant **HEAP_026** in `design_docs/invariants.csv`.
 
 For Elm's typical use case (short-lived web applications with message-passing concurrency), thread-local heaps match the programming model naturally.
 
@@ -387,9 +395,13 @@ Several optimizations from PLAN.md §7 have been implemented:
 - ✓ **Segregated-fits + BBoP**: 32 small classes (8-256 B) plus medium classes (512 B..65536 B), backed by a Big Bag of Pages *(Apr 25, 2026)*
 - ✓ **Mark-driven live + lazy sweep**: live attribution at mark time, sweep paced on the allocation slow path *(Apr 26, 2026)*
 - ✓ **Per-block mark bitmap sidetable**: liveness no longer rides in object headers *(Apr 26, 2026)*
+- ✓ **Builder-bit nursery pinning**: in-construction kernel arrays survive mid-loop minor GCs without becoming old-gen→young edges *(May 10, 2026)*
+- ✓ **Large-object split-header**: > 2 KiB strings / byte buffers stay in pinned old-gen bodies; only the small header moves through Cheney (HEAP_026) *(May 2, 2026)*
 - ✓ **Thread-local heaps**: Eliminates cross-thread synchronization
 - ✓ **Incremental compaction**: Spreads defragmentation cost over time
 - ✓ **List locality optimization**: Contiguous spine copying for better cache behavior
+
+At the 0.1.0 milestone *(May 14, 2026)*, the runtime sustains the full Stage 7 bootstrap workload (~10⁹ allocations, many major GCs, sustained ~1 GB old gen) to a clean fixed point in the compiler's MLIR output. Stage 7 / Stage 8 MLIR outputs are byte-identical.
 
 Remaining opportunities:
 
@@ -523,6 +535,7 @@ Each specialization gets a unique `SpecId`. The pass also computes concrete layo
 - **Free-vars-aware substitution** *(Apr 2, 2026)*: `applySubstWithFreeVars` filters substitution to only MVarIds appearing in the canonical type being resolved (plus transitive closure), preventing cross-scheme contamination.
 - **PendingCall** *(Apr 5, 2026)*: When a nested Call has a still-polymorphic result type, specialization is deferred by wrapping it in `PendingCall`. The outer callee's expected parameter type is used to refine the substitution before specializing the inner call.
 - **Phantom type var normalization** *(Apr 11, 2026)*: Surviving `MVar _ CEcoValue` in specialization keys maps to sentinel values, ensuring fresh MVars from scheme bindings do not create different spec keys for identical specializations.
+- **Tuple / record specialised-element MonoType** *(May 14, 2026)*: `Compiler/Monomorphize/Specialize.elm` builds container `MonoType` for `TOpt.Tuple`, `TOpt.Record`, and `TOpt.TrackedRecord` from the **already-specialised element expressions**, not from `meta.tipe`. This guarantees the layout bitmap matches the SSA slot kinds even when an upstream constraint-flow gap leaves a slot's TVar unbound and `applySubst` falls through its `Nothing` / `CEcoValue` branch. Closes the tuple-slot boxing bug class (13 `TupleSlotBoxing*Test.elm` reproducers).
 
 **Important**: Monomorphization is staging-agnostic. It preserves curried type structure from Elm semantics (e.g., `MFunction [Int] (MFunction [Int] Int)`). All staging and calling-convention decisions are deferred to GlobalOpt.
 
@@ -666,18 +679,21 @@ This enables:
 Kernel functions are C++/runtime implementations called from Elm code. They're handled specially:
 
 1. **PostSolve** infers types from aliases and usage
-2. **Monomorphization** determines ABI mode (UseSubstitution, PreserveVars, NumberBoxed)
+2. **Monomorphization** determines ABI mode (UseSubstitution, PreserveVars) and the per-instance ABI key for concrete-type-aware kernels
 3. **MLIR Generation** checks for intrinsics first, then emits kernel calls with boxing/unboxing
 4. **Linking** connects to C++ implementations in the runtime
 
-**Intrinsics**: Many `Basics`, `Bitwise`, `Utils`, and `JsArray` operations are handled by [compiler intrinsics](design_docs/theory/intrinsics_theory.md) that emit direct MLIR operations, bypassing kernel calls entirely. This covers arithmetic (`add`, `sub`, `mul`, `div`), comparisons (`lt`, `le`, `gt`, `ge`), trigonometry (`sin`, `cos`, `tan`), bitwise operations (`and`, `or`, `xor`, `shiftLeftBy`), and typed array access (`JsArray.unsafeGet`, `JsArray.unsafeSet`, `JsArray.length`).
+**Intrinsics**: Many `Basics`, `Bitwise`, `Utils`, and `JsArray` operations are handled by [compiler intrinsics](design_docs/theory/intrinsics_theory.md) that emit direct MLIR operations, bypassing kernel calls entirely. This covers arithmetic (`add`, `sub`, `mul`, `div`), comparisons (`lt`, `le`, `gt`, `ge`), trigonometry (`sin`, `cos`, `tan`), bitwise operations (`and`, `or`, `xor`, `shiftLeftBy`), typed array access (`JsArray.unsafeGet`, `JsArray.unsafeSet`, `JsArray.length`), and *(May 6-9, 2026)* `eco.compare → eco.{int,float,char}.cmp_order`, Char relational ops + `toCode`/`fromCode`, `String.fromNumber@Int` / `@Float`, and `JsArray.empty` / `singleton` / `push` / `slice` / `appendN`.
 
 **ABI Modes** (for operations without intrinsics):
 - **UseSubstitution**: Monomorphic kernels use typed parameters directly
 - **PreserveVars**: Polymorphic kernels use boxed `eco.value` for all type variables
-- **NumberBoxed**: Number-polymorphic kernels (`fromNumber`) receive boxed numbers
 
-**Backend ABI Policy**: The compiler's `kernelBackendAbiPolicy` (audited against C++ `KernelExports.h`) determines whether each kernel uses `AllBoxed` (uniform `uint64_t` C++ ABI — List, Utils, JsArray, String.fromNumber, Json.wrap) or `ElmDerived` (typed C++ ABI — Basics, Bitwise, Char, etc.). The compiler is the **sole arbiter** of kernel ABI types (KERN_006); downstream passes (EcoToLLVM) simply reflect the declared types.
+**Per-Instance Kernel ABI** *(May 6-8, 2026)*: Each `Elm_Kernel_*` that was previously a single polymorphic boxed-arg function now has per-type `_Int` / `_Float` / `_Char` variants with typed C++ ABIs (`KernelInstanceKey` / `KernelInstanceAbi` / `deriveKernelInstanceAbi`). 41 monomorphic variants landed across `Utils` equality/ordering, `List.cons`, `String.fromNumber`, `Json.wrap`, `JsArray`. The old `NumberBoxed` mode was retired by Phase F — number-polymorphic kernels now pass through the typed per-instance path. Typed args also flow through generic apply (`eco_apply_closure_typed`), so closure wrappers never re-box primitive captures.
+
+**Unboxed Primitive Return ABI** *(May 8-10, 2026)*: Closures returning Int / Float / Char now return them unboxed end-to-end through the generic-apply path. A `result_kind` byte (2 bits stolen from `Closure.unboxed`, dropping capture cap 26 → 25) drives wrapper return-ABI selection (`eco_apply_closure_eval`, `eco_closure_call_saturated_eval`). Stage 7 boxed `ElmInt` allocations dropped ~99.95 % cumulatively. New ops attrs `_result_kind` / `_result_kinds` on `PapCreate{,Group}` / `PapExtend`.
+
+**Backend ABI Policy**: The compiler's `kernelBackendAbiPolicy` (audited against C++ `KernelExports.h`) determines whether each kernel uses `AllBoxed` (uniform `uint64_t` C++ ABI — for the polymorphic root variants of List, Utils, JsArray, Json.wrap) or `ElmDerived` (typed C++ ABI — Basics, Bitwise, Char, all per-instance variants). The compiler is the **sole arbiter** of kernel ABI types (KERN_006); downstream passes (EcoToLLVM) simply reflect the declared types.
 
 **See**: [Intrinsics Theory](design_docs/theory/intrinsics_theory.md), [Kernel ABI Theory](design_docs/theory/kernel_abi_theory.md)
 
@@ -745,8 +761,10 @@ All compiler invariants are documented in [`design_docs/invariants.csv`](design_
 | TOPT | TOPT_001-005 | Type carrying, decision trees, annotations preserved |
 | MONO | MONO_001-027 | MonoType completeness, layouts, specialization registry, arity consistency |
 | GOPT | GOPT_001-014 | Staging canonicalization, call information, closure arity |
-| CGEN | CGEN_001-057+ | Boxing rules, SSA consistency, operation attributes, kernel declarations, projection layout consistency |
+| CGEN | CGEN_001-060+ | Boxing rules, SSA consistency, operation attributes, kernel declarations, projection layout consistency; **CGEN_038** kernel decl-instance consistency, **CGEN_059** / **CGEN_060** typed-newargs lowering shape *(May 6-8, 2026)* |
 | REP_LLVM | REP_LLVM_001 | `!eco.value` → `ptr addrspace(1)` in LLVM dialect; conversions only at storage boundaries *(Apr 17, 2026)* |
+| REP_CONSTANT | REP_CONSTANT_001-003 | Embedded HPointer constants never heap-allocated; **REP_CONSTANT_003** treats them as type-minimum (not raw `nullptr`) in `compareUnboxableSlot` and equality kernels *(May 12, 2026)* |
+| HEAP | HEAP_001-026 | Heap layout, alignment, tracing rules; **HEAP_025** three-form `String` (leaf / slice / rope) *(Apr 27, 2026)*; **HEAP_026** large-object split-header *(May 1-2, 2026)*; **HEAP_BUILDER_001** builder bit forbids old-gen *(May 10, 2026)* |
 
 ### MLIR AST Inspection
 

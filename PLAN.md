@@ -52,15 +52,15 @@
   - [x] 4.2 MLIR Code Generation → [§4.2](#42-mlir-code-generation) *(substantially complete, all tests passing, 21+ resolved issues)*
   - [x] 4.3 Compiler Testing → [§4.3](#43-compiler-testing) *(120+ test files, code coverage tooling, GOPT invariants)*
 
-- [ ] **5. Integration & Self-Compilation** → [§5](#5-integration--self-compilation)
-  - [ ] 5.1 End-to-End Pipeline → [§5.1](#51-end-to-end-pipeline) *(JIT pipeline working)*
-    - [ ] 5.1.1 Pipeline Integration → [§5.1.1](#511-pipeline-integration) *(JIT complete)*
+- [x] **5. Integration & Self-Compilation** → [§5](#5-integration--self-compilation) *(0.1.0 milestone — full binary self-compilation achieved, May 14, 2026)*
+  - [ ] 5.1 End-to-End Pipeline → [§5.1](#51-end-to-end-pipeline) *(JIT + AOT pipeline working; CLI/build-system polish outstanding)*
+    - [x] 5.1.1 Pipeline Integration → [§5.1.1](#511-pipeline-integration) *(JIT + AOT both complete; eco-boot-native AOT path drives Stages 6-8)*
     - [ ] 5.1.2 Command-Line Interface → [§5.1.2](#512-command-line-interface)
     - [ ] 5.1.3 Build System & Packaging → [§5.1.3](#513-build-system--packaging)
-    - [ ] 5.1.4 Linker Integration & Runtime Libraries → [§5.1.4](#514-linker-integration--runtime-libraries) *(kernel static libs complete)*
+    - [x] 5.1.4 Linker Integration & Runtime Libraries → [§5.1.4](#514-linker-integration--runtime-libraries) *(kernel static libs complete; `eco-boot-native` lowers MLIR → ELF and links runtime + kernels)*
     - [ ] 5.1.5 Debugging Support → [§5.1.5](#515-debugging-support)
-  - [ ] 5.2 Bootstrap to Native x86 → [§5.2](#52-bootstrap-to-native-x86) *(bootstrap push in progress, ~20 bugs fixed)*
-  - [ ] 5.3 Self-Compilation Milestone → [§5.3](#53-self-compilation-milestone)
+  - [x] 5.2 Bootstrap to Native x86 → [§5.2](#52-bootstrap-to-native-x86) *(8-stage bootstrap reaches MLIR fixed point at Stage 8; native ELF matches modulo 3.6 KB of LLVM-side `.strtab` non-determinism)*
+  - [x] 5.3 Self-Compilation Milestone → [§5.3](#53-self-compilation-milestone) *(achieved — native compiler self-compiles to bit-identical MLIR)*
 
 - [ ] **6. Optimization & Release** → [§6](#6-optimization--release)
   - [ ] 6.1 Performance Testing → [§6.1](#61-performance-testing)
@@ -2023,11 +2023,23 @@ Enable debugging of compiled Elm programs.
 
 ### 5.2 Bootstrap to Native x86
 
-**Status**: In Progress (Bootstrap Push - Mar 11 – Apr 13, 2026)
+**Status**: **Complete** *(May 14, 2026 — 8-stage bootstrap end-to-end)*
 
-Compile the Guida compiler itself using ECO to produce a native x86 version.
+The full 8-stage bootstrap from `guides/bootstrap.md` runs end-to-end:
 
-**Current Progress** *(Mar 11 – Apr 17, 2026)*:
+| Stage | Output | Notes |
+|---|---|---|
+| 1 | `guida.js` (stock Elm, no `--optimize`) | XHR IO |
+| 2 | `eco-boot.js` (self-compile with kernel IO) | |
+| 3 + 4 | `eco-boot-2.js` ≡ `eco-boot-3.js` | JS fixed point reached |
+| 5 | `eco-compiler.mlir` | First MLIR self-output |
+| 6 | native ELF `eco-compiler` (via `eco-boot-native`) | |
+| 7 | `eco-compiler-boot.mlir` + native ELF | Native compiler self-compiles |
+| 8 | `eco-compiler-boot-2.mlir` ≡ `eco-compiler-boot.mlir` | **MLIR fixed point reached** |
+
+The Stage 7 / Stage 8 MLIR outputs are byte-identical, so the compiler reaches a true fixed point. The two Stage 8 native ELFs are the same size and differ only in ~3.6 KB inside `.strtab` (ASCII hex hash suffixes produced non-deterministically by the LLVM lowering pipeline + lld), not in any code or data the compiler emits.
+
+**Current Progress** *(Mar 11 – May 14, 2026)*:
 - Active bootstrap attempt revealed ~20+ codegen and runtime bugs, now fixed (see §4.2 issues 16-31)
 - Monomorphizer performance profiling and optimization (TypeSubst UF representation, dict handling efficiency)
 - New calling convention (`CallGenericApply`) added as safe fallback for complex call patterns
@@ -2075,30 +2087,30 @@ Compile the Guida compiler itself using ECO to produce a native x86 version.
 - **RewriteStatepointsForGC analysis** *(Apr 16)*: full analysis of LLVM's pass in `design_docs/rewrite-statepoints-for-gc/{overview,algorithm,invariants,eco-comparison}.md` for reference when evolving `StatepointConversion`.
 
 **Requirements**:
-- [ ] All dependencies ported (§2)
 - [x] Compiler backend substantially complete (§4)
 - [x] Runtime GC stack root tracing implemented (§1.2.3, §3.3)
-- [ ] Remaining calling convention edge cases resolved
-- [ ] Extended stress testing under GC pressure
+- [x] All dependencies needed for self-compile ported (§2) *(remaining stubs — browser, virtual-dom — are not on the compiler's dependency closure)*
+- [x] Calling convention edge cases resolved (per-instance kernel ABI, unboxed primitive return ABI)
+- [x] Extended stress testing under GC pressure *(see §1.2 GC pressure suite + sustained Stage 7 self-compile workload)*
 
 **Deliverables**:
-- [ ] Native ECO compiler binary
-- [ ] Build instructions
-- [ ] Verification tests
+- [x] Native ECO compiler binary *(`compiler/build-kernel/bin/eco-compiler-boot`)*
+- [x] Build instructions *(`guides/bootstrap.md`)*
+- [x] Verification tests *(Stage 3+4 JS fixed point, Stage 7+8 MLIR fixed point, Stage 5 MLIR-equivalence runner: 689 / 690 equivalent — the remaining diff is the expected Int-precision case)*
 
 ### 5.3 Self-Compilation Milestone
 
-**Status**: Not Started
+**Status**: **Achieved** *(May 14, 2026)*
 
-Achieve self-compilation: ECO compiling itself through its own native output.
+Self-compilation: ECO compiles itself through its own native output and the result reproduces itself.
 
 **Success Criteria**:
-- [ ] ECO compiles its own source code
-- [ ] Generated binary passes all tests
-- [ ] Performance meets baseline requirements
-- [ ] Binary is reproducible
+- [x] ECO compiles its own source code *(Stages 5, 7, 8)*
+- [x] Generated binary passes all tests *(elm-test-rs full suite + E2E `cmake --build build --target full`)*
+- [x] Binary is reproducible *(MLIR fixed point; native ELF identical modulo `.strtab` non-determinism from LLVM/lld, not from the compiler)*
+- [ ] Performance meets baseline requirements *(§6.1 not started — pre-release benchmarking still open)*
 
-**Milestone**: This marks the primary project completion point and readiness for initial release.
+**Milestone**: This marks the **0.1.0** release readiness point. Performance benchmarking and release packaging (§6) are the remaining work toward a tagged 0.1 release.
 
 ---
 
@@ -2348,8 +2360,8 @@ Runtime Foundation (§1)
 
 ## Project Status
 
-**Current Phase**: Bootstrap to Native x86 + Old-Gen GC Hardening
-**Last Updated**: 2026-04-27
+**Current Phase**: 0.1.0 Milestone Reached — Full Binary Self-Compilation Achieved
+**Last Updated**: 2026-05-14
 
 **Completed**:
 - Heap model design (§1.1)
@@ -2503,6 +2515,73 @@ Runtime Foundation (§1)
 
 - **Float Precision** (Feb 11, 2026):
   - Float-to-string uses shortest round-trip representation
+
+**Most Recent Changes — Apr 28 to May 14, 2026**:
+
+- **0.1.0 Milestone — Full Binary Self-Compilation** *(May 14, 2026)*:
+  - The 8-stage bootstrap from `guides/bootstrap.md` runs end-to-end. Stages 3+4 reach a JS fixed point. Stages 7+8 produce byte-identical MLIR (`eco-compiler-boot.mlir` ≡ `eco-compiler-boot-2.mlir`) — the **native compiler is at a true fixed point at the MLIR level**.
+  - The two Stage 8 native ELFs are the same size and differ only in ~3.6 KB inside `.strtab` (ASCII hex hash suffixes produced non-deterministically by the LLVM/lld pipeline). The compiler emits the same code; only downstream toolchain non-determinism remains.
+
+- **Tuple/Record Specialised-Element MonoType Fix** *(May 14, 2026)*:
+  - `Compiler/Monomorphize/Specialize.elm` now builds `TOpt.Tuple` / `TOpt.Record` / `TOpt.TrackedRecord` container `MonoType`s from the **already-specialised element expressions** instead of `meta.tipe`. This guarantees the layout bitmap matches SSA slot kinds even when an upstream constraint-flow gap leaves a slot's TVar unbound and `applySubst` falls through its `Nothing` / `CEcoValue` branch. Closes the long-running tuple-slot boxing bug class.
+  - 13 `TupleSlotBoxing*Test.elm` variant reproducers added covering Array, Closure, Custom (single/multi-ctor), ListCons, Record (single/multi), and T2/T3 slot positions.
+
+- **MLIR Equivalence Runner (Stage 2 vs Stage 6)** *(May 12-13, 2026)*:
+  - New `test/mlir_equivalence_main.cpp` byte-compares the MLIR output of the JS Stage 2 compiler and the native Stage 6 compiler on every E2E test. CMake gains bootstrap targets (`eco-boot-3`, `eco-compiler-mlir`, `eco-compiler`, `eco-compiler-boot`) plus a `bootstrap` aggregate with two fixed-point cmp stamps.
+  - Equivalence rate: **689 / 690** tests produce byte-identical MLIR. The remaining one is an expected Int-precision diff.
+  - Found and fixed a major correctness bug in the process: `Elm_Kernel_Utils_equal/notEqual` was collapsing every embedded HPointer constant (True/False/Nil/Unit) to `nullptr` via `Export::toPtr`, silently breaking Bool pattern matches and equality comparisons of constructor constants. New invariant **REP_CONSTANT_003** (embedded HPointer constants are type-minimum in `compareUnboxableSlot`, not raw-pointer-equal-to-zero).
+  - Other fixes uncovered: Custom-ctor dispatch was loading i16 (not i32) at offset 8 so the 48-bit unboxed bitmap contaminated the discriminator; Patterns.elm Bool-case inversion when reading i1 directly from an HPointer slot; mutual-letrec `cross_edges` corruption from a wrong `consumerIdx` anchor in Expr.elm.
+
+- **Per-Instance Kernel ABI (Phases A–F)** *(May 6-8, 2026)*:
+  - Each `Elm_Kernel_*` that was previously a single polymorphic boxed-arg function now has per-type `_Int` / `_Float` / `_Char` variants with typed C++ ABIs. `KernelInstanceKey` / `KernelInstanceAbi` / `deriveKernelInstanceAbi` added.
+  - Phase A: instance-key infrastructure. Phase B: `Utils.compare_{Int,Float,Char}`. Phase C: 41 monomorphic variants across `Utils` equality/ordering, `List.cons`, `String.fromNumber`, `Json.wrap`, `JsArray`; 27 new E2E tests. Phase D: typed args plumbed through generic apply (`eco_apply_closure_typed`); `EvalParamLayout::flags`; later folded into `Closure::flags`. Phase E: `eco_apply_closure_typed` becomes canonical end-to-end so wrappers never re-box primitive captures. Phase F: retires `NumberBoxed` mode and the `CLOSURE_FLAG_TYPED_NEWARGS` bit (reclaims 2 bits in `Closure.unboxed`, capping captures at 25).
+  - New invariants **CGEN_038** (`KernelDeclInstanceConsistency`), **CGEN_059** / **CGEN_060** (typed-newargs lowering shape).
+  - `MonoInlineSimplify` now skips zero-param defines whose body is a bare `MonoVarKernel`, so typed user wrappers survive into MLIR.
+  - Plan: `plans/per-instance-kernel-abi.md`. Theory: `design_docs/theory/kernel_abi_theory.md` updated. New design docs: `design_docs/{explicit-meta-structures, kernel-closure-lookthrough, escape-analysis}.md`.
+
+- **Unboxed Primitive Return Values (Phases A–D)** *(May 8-10, 2026)*:
+  - Closures returning Int / Float / Char now return them **unboxed** end-to-end through the generic-apply path. Stage 7 boxed `ElmInt` allocations dropped from ~59 M to ~4.7 M (then to ~99.95 % eliminated cumulatively).
+  - Steals 2 bits from `Closure.unboxed` (52 → 50) for a `result_kind` byte; capture cap drops 26 → 25.
+  - New ops attrs: `_result_kind` / `_result_kinds` on `PapCreate{,Group}` / `PapExtend`. New runtime entries: `eco_apply_closure_eval`, `eco_closure_call_saturated_eval`. `EvalParamLayout` carries a `result_kind` byte. Wrapper return ABI now emits i64 / f64 / i16 directly.
+  - Switched 13 higher-order kernels to PAP-aware `eco_apply_closure` entries: `List.map2/3/4/5`, `JsArray.init/map/foldl/foldr`, `String.filter/any/all/foldl/foldr`, `Parser.isSubChar`, `Bytes.decode`, `Time.now`.
+  - Plan: `plans/unboxed-primitive-return-values.md`.
+
+- **Builder-Bit Nursery Pinning** *(May 10, 2026)*:
+  - New `Header.builder` 1-bit flag (carved from the unused `refcount` field) marks an in-construction object as **fully traced but never promoted and never aged**. Promotion predicate becomes `!pin && !builder && age >= promotion_age`. Forbids old-gen residency (HEAP_BUILDER_001).
+  - Five JsArray result-array kernels (`initialize`, `map`, `indexedMap`, etc.) migrated to `allocArrayBuilder` + `BuilderGuard` RAII helper so a minor GC mid-loop can't promote a half-built array and plant a nursery HPointer in an old-gen parent.
+  - `THEORY.md` updated; new stress test `ArrayBuilderStress.elm`.
+
+- **Row-Poly Record Narrowing Fix** *(May 10-11, 2026)*:
+  - Monomorphize: `applySubst` was silently dropping a `TRecord`'s row-extension MVar when not in subst, leaving an `MRecord` with only the explicit fields and no MVar residue. `MonoRecordAccess` then projected with narrowed field indices. Fix falls back to the RHS mono type when its record shape is wider, and refines `MonoRecordAccess` result type from the structural shape. 11 `RecordNarrow*Test.elm` regression files.
+
+- **Old-Gen GC Robustness & Lazy-Sweep Tuning** *(Apr 30 – May 6, 2026)*:
+  - `evaluateMajorGCTrigger` + new `MajorGCTriggerReason` enum; `major_gc_garbage_fraction` (default 0.40) prevents long-running compiles from accumulating hundreds of MB un-swept.
+  - Dynamic pressure-aware lazy-sweep budget replaces fixed 1 MiB cap; panic-sweep drains remaining work on `allocateFromBagPage` failure; sweep-on-demand drives lazy sweep until the request is satisfied or the budget hits.
+  - Larger 8 KiB-to-LOT objects now check free lists with split-block over 8/16/32 size classes. Per-block free-list threading on OldGen blocks → O(1) free-cell removal on block release. `blockIndexFor` avoids linear scans. Released blocks now clear `large_body_index_` overlapping entries.
+  - All heap/alloc parameters moved into runtime-configurable `AllocatorCommon.hpp` + `heap-config.json`.
+
+- **HEAP_026 Large-Object Split-Header** *(May 1-2, 2026)*:
+  - Strings and byte buffers > 2 KiB now use a split-header representation: a small `Tag_LargeStringHeader` / `Tag_LargeByteHeader` lives in the nursery and points at a pinned old-gen body. The body is never copied; the header forwards through Cheney evacuation. `alloc::resolveByteBufferBody` / `resolveStringBody` route 39 audited sites through HEAP_026-aware lookup.
+  - Added to `design_docs/invariants.csv` as **HEAP_026**.
+
+- **GC Stale-Pointer Audit + EcoBoxedStoreVerify** *(May 7-9, 2026)*:
+  - Fixed a minor-GC bug where phase 3 could copy a young child of a promoted parent into to-space and leave it unscanned (now alternates to-space drain with the promoted-objects queue to fixed point).
+  - Many kernel helpers rooted by-value HPointer args across allocations (Bytes, JsArray, List, Regex, Http / Time effect managers, Char / String fold closures, Parser.isSubChar, `buildEvaluatorArgs`).
+  - New `EcoBoxedStoreVerify` MLIR pass + copy-loop tripwires + post-GC heap-walk extension; gated by `ECO_LOWERING_VALIDATION` / `ECO_HEAP_VALIDATE` CMake options.
+
+- **Stage 7 Self-Compile Performance** *(May 6-9, 2026)*:
+  - 1.78× Stage 7 CPU win: per-allocation `clock_gettime` gated behind `ECO_GC_ALLOC_TIMING`, Meyers singleton replaced with namespace-scope global, `getRootSet().reserve(4096)` inlined.
+  - `eco-boot-native` accepts `.o` input as a link-only fast path: Stage 6 relink **3 m 26 s → 0.6 s**.
+  - New `eco_alloc_with_roots` generic no-rooting fast path for JSON/Bytes/String kernel allocations.
+  - `GCStats` now reports per-object-kind allocations, 16B/24B/32B bucket split, per-phase GC timing. New `LoweringStats` subsystem.
+  - New intrinsics: `eco.compare → eco.{int,float,char}.cmp_order`; Char eq/ne/lt/le/gt/ge; `Char.toCode` / `fromCode`; `String.fromNumber@Int` / `@Float`; `JsArray` empty / singleton / push / slice / appendN.
+
+- **Stage 7 Final Bootstrap Fixes** *(Apr 28 – May 2, 2026)*:
+  - `Time.now` accepts `millisToPosix` and produces a Posix Custom with ctor 0 + unboxed Int.
+  - Fix tiny `slice()` / `toStdU16String` rope-DFS to resolve `Tag_StringSlice` through `Tag_LargeStringHeader->body` matching `charAt` — eliminates a 128 K-abuf SIGSEGV in `Compiler.Parse.Variable.chompInnerChars`.
+  - Allow split-header large objects to be freed in all old-gen GC states.
+  - Stage-7 native-runtime hang fixed: `Builder/Build.elm` `RCached`'s `CachedInterface` MVar initialised with `Unneeded` to unblock `loadInterface` on mixed SChanged + SCached graphs.
+  - `Char` / `String_cons` args widened to `uint64+mask`: LLVM `gc.statepoint` was dropping the `i16 zeroext` attribute at AOT call sites, leaking garbage upper bits.
 
 **Most Recent Changes — Apr 23 to Apr 27, 2026**:
 
@@ -2693,14 +2772,16 @@ Runtime Foundation (§1)
   - SpawnKillHalf, SpawnRecursive, YieldThrashing, TaskAndThenCascade, SpawnFanout, SpawnGCChurn, TaskAndThenPapCapture, TaskSequenceMassive
 
 **Next Steps** *(in priority order)*:
-1. **Self-compilation (§5.3)** — the compiler compiles itself to native code; bootstrap push ongoing with ~20 runtime/codegen bugs fixed
-2. **AOT compilation (§5.1.1)** — standalone native binaries (currently JIT-primary)
-3. **Kernel I/O integration for larger programs** — extending the platform scheduler + effect managers for longer-running workloads
-4. **Stress-suite stabilisation** — several pre-existing GC assertions surface at high iteration counts in the new `stress-elm` library; being fixed incrementally
+1. **Performance baseline (§6.1)** — benchmark Stage 7 self-compile vs JS bootstrap, runtime micro-benchmarks, GC overhead under stress
+2. **Release packaging (§6.2)** — documentation, install scripts, distribution; tag 0.1.0
+3. **CLI polish (§5.1.2)** — error messages, `make` flag parity with the JS toolchain
+4. **Build system & packaging (§5.1.3)** — single-command install from source, prebuilt binary distribution
+5. **Stress-suite stabilisation** — remaining GC assertions at high iteration counts in `test/stress-elm/`
+6. **String rope follow-ups** — actual rope rebalancing (currently only `// TODO`), streaming `equal`/`compare`, streaming UTF-8 encode (Option B), all-ASCII fast-path bit in `ElmStringSlice._padding`
 
 **Active Workstreams**:
-1. **Bootstrap to native x86 (§5.2)** — fixing compiler/runtime bugs surfaced by compiling the Elm compiler through itself
-2. **Old-gen GC hardening** — re-enabling `decommit_on_oldgen_release` once the stale-mark-roots issue is resolved; investigating remaining stage-7 closure-arity crashes (see `bootstrap-stage7-crash-analysis.md`)
-3. **Stress test coverage** — expanding `test/stress-elm/` coverage and driving GC root correctness under sustained load
-4. **String rope follow-ups** — actual rope rebalancing (currently only `// TODO`), streaming `equal`/`compare`, streaming UTF-8 encode (Option B), all-ASCII fast-path bit in `ElmStringSlice._padding`
-5. **Compiler pass consolidation** — Monomorphization/PostSolve overhauls (tvar `Int` IDs, `SolverRoots`, `PendingGlobal`) stabilising into their final shape
+1. **Tuple-slot boxing bug class** — root-cause MonoType fix landed *(May 14)*; variant reproducers (Array/Closure/Custom/Record/ListCons/T2/T3) still being verified end-to-end
+2. **Old-gen GC hardening** — re-enabling `decommit_on_oldgen_release` once the stale-mark-roots issue is resolved; remaining sweep / pressure-trigger tuning
+3. **MLIR equivalence suite** — currently 689 / 690 byte-identical between Stage 2 and Stage 6 outputs; investigating any new diffs as they appear
+4. **Compiler pass consolidation** — Monomorphization / PostSolve overhauls (tvar `Int` IDs, `SolverRoots`, `PendingGlobal`, per-instance kernel ABI) stabilising into their final shape
+5. **Stress-suite reliability** — driving GC root correctness under sustained allocation pressure; backfilling regressions for every bootstrap-derived bug

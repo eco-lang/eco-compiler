@@ -251,7 +251,7 @@ eco.papCreate @fn, arity=2, captured=[%int_val, %bool_val]
     { capture_unboxed = 1 }  // Only first capture unboxed
 ```
 
-## Embedded Constants (REP_CONSTANT_001, REP_CONSTANT_002)
+## Embedded Constants (REP_CONSTANT_001, REP_CONSTANT_002, REP_CONSTANT_003)
 
 Well-known constants are never heap-allocated:
 
@@ -271,6 +271,14 @@ These use nonzero `constant` bits in HPointer and are distinguished from heap po
 
 - `stripIntToPtr` returns `nullptr` for `inttoptr(ConstantInt)`, so constants can never enter GC root sets at statepoints.
 - `compareUnboxableSlot`, `Utils::eqHelp`/`Utils::cmp`, and kernel equality code consult `header.unboxed` / the 2-bit bitmap to decide whether a given slot holds an unboxed primitive vs. a HPointer, and to compare constants directly when the bits match.
+
+### REP_CONSTANT_003: Constants Are Type-Minimum, Not Raw Null *(May 12, 2026)*
+
+`Elm_Kernel_Utils_equal` / `notEqual` used to convert their HPointer args through `Export::toPtr`, which returns `nullptr` for any embedded-constant HPointer. Both `True` and `False` thus compared equal to "null", silently breaking every Bool pattern match and equality comparison of constructor constants.
+
+The fix: equality and ordering kernels treat embedded HPointer constants as **type-minimum** values — they participate in compare/equal directly by their `constant` bits, not by dereferencing through `toPtr`. `compareUnboxableSlot` was updated to give `Const_EmptyString` and `Const_Nil` their appropriate type-minimum positions in the ordering.
+
+This is captured as **REP_CONSTANT_003** in `design_docs/invariants.csv`. The bug was caught by the new MLIR-equivalence runner (`test/mlir_equivalence_main.cpp`) comparing Stage 2 (JS) vs Stage 6 (native) MLIR output and finding identical MLIR producing divergent runtime behaviour.
 
 ## Heap Object Layouts
 
@@ -359,11 +367,13 @@ struct Custom {
 ```cpp
 struct Closure {
     Header header;           // tag = Tag_Closure
-    uint64_t packed;         // n_values:6 | max_values:6 | unboxed:52
+    uint64_t packed;         // n_values:6 | max_values:6 | result_kind:2 | unboxed:50
     EvalFunction evaluator;  // Function pointer
     Unboxable values[];      // Captured values
 };
 ```
+
+*(May 8-10, 2026)*: The `packed` word's `unboxed` field was narrowed from 52 bits to 50 to make room for a 2-bit `result_kind` (00 = boxed, 01 = Int, 10 = Float, 11 = Char). This drops the capture cap 26 → 25 captures but lets closures returning primitive Int / Float / Char return them **unboxed** end-to-end through `eco_apply_closure_eval` / `eco_closure_call_saturated_eval`. See [Kernel ABI Theory §Per-Instance ABI](kernel_abi_theory.md#per-instance-abi-replaces-numberboxed-may-6-8-2026) and the corresponding ops attrs `_result_kind` / `_result_kinds` on `PapCreate{,Group}` / `PapExtend`.
 
 ### String (Three Forms) *(Apr 27, 2026)*
 
@@ -400,6 +410,8 @@ struct ALIGN(8) ElmStringRope {     // Tag_StringRope — concat tree node
 Layouts from monomorphization must match:
 - `eco.construct` attributes (`tag`, `size`, `unboxed_bitmap`)
 - C++ struct definitions in `Heap.hpp`
+
+*(May 14, 2026)*: A regression class where this invariant could be violated has been closed at its boundary. Container `MonoType`s for `TOpt.Tuple` / `TOpt.Record` / `TOpt.TrackedRecord` are now built from the already-specialised element expressions, not from `meta.tipe`, so the `unboxed_bitmap` cannot disagree with the SSA types of slot constructors even when an upstream constraint-flow gap leaves a slot's TVar unbound. See [Monomorphization Theory §Tuple/Record Specialised-Element MonoType](pass_monomorphization_theory.md#tuple--record-specialised-element-monotype) and the `TupleSlotBoxing*Test.elm` regression suite.
 
 ### Type Consistency (XPHASE_002)
 
@@ -529,6 +541,24 @@ This prevents excessively large objects from fragmenting the nursery's semi-spac
 Large-object allocation is supported in-block as well: the nursery/old-gen spaces track a per-block `block_end_of_objects_` vector recording the real end-of-objects offset within each block. The Cheney scan uses this cutoff so it does not walk past the last live object into uninitialized tail bytes when a block contains a large object that did not fill it.
 
 *(Apr 26, 2026)*: Released large blocks are kept in `free_large_blocks_`; `allocateLargeBlock` consults this list before asking the Allocator for a fresh page.
+
+### Split-Header Large Objects (HEAP_026) *(May 1-2, 2026)*
+
+Strings and byte buffers above ~2 KiB use a **split-header** representation:
+
+- A small fixed-size header — `Tag_LargeStringHeader` or `Tag_LargeByteHeader` — lives in the **nursery** like any other small object. The header carries a `HPointer body` pointing into the old gen.
+- The actual payload (UTF-16 code units or raw bytes) lives in a **pinned old-gen body**, allocated through `allocateLargeBlock` and reused from `free_large_blocks_` like any other large allocation.
+
+The header is small enough to flow through Cheney copying for free; the body is never moved. This dodges two problems at once:
+
+1. Repeatedly memcpying multi-kilobyte payloads through every minor GC.
+2. Forcing all large strings / buffers to be allocated directly in the old gen, which would require major-GC rooting of every callsite that briefly materialises a large value.
+
+39 audited kernel-C++ call sites now route through `alloc::resolveByteBufferBody` / `resolveStringBody`, which transparently follow the `body` pointer for split headers and fall through to the inline payload for `Tag_String` / `Tag_Bytes`. Released large bodies may be reclaimed in any old-gen GC state, not just `Idle`.
+
+The compiler's MLIR allocations remain leaf-only (`Tag_String`, `Tag_Bytes`); the split-header variants are produced exclusively by kernel `String.fromBytes` / `String.append` / `Bytes` builders that know their final size up front.
+
+See **HEAP_026** in `design_docs/invariants.csv`. Plan: `plans/large-object-split-header-bodies.md`.
 
 ## GC Root Safety for Heap Construction
 

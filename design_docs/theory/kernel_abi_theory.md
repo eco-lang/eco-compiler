@@ -36,8 +36,9 @@ The `KernelAbiMode` type determines how kernel function types are derived:
 type KernelAbiMode
     = UseSubstitution  -- Monomorphic: use call-site types
     | PreserveVars     -- Polymorphic: preserve type vars as CEcoValue
-    | NumberBoxed      -- Number-polymorphic: treat CNumber as CEcoValue
 ```
+
+*(May 8, 2026)*: The previous third arm — `NumberBoxed` (number-polymorphic, treating `CNumber` as `CEcoValue` at the boxed root) — was **retired** in Phase F of the per-instance kernel ABI rollout. Number-polymorphic kernels now expose typed per-instance variants (`Basics_add_Int` / `Basics_add_Float`, `String_fromNumber_Int` / `_Float`, etc.) selected at call-site via `deriveKernelInstanceAbi`. The polymorphic boxed root only remains for kernels that genuinely cannot be specialised at the call site.
 
 ### UseSubstitution (Monomorphic)
 
@@ -61,20 +62,25 @@ List.cons : a -> List a -> List a
 
 Type variables become `MVar _ CEcoValue`, indicating boxed `eco.value` parameters.
 
-### NumberBoxed (Number-Polymorphic)
+### Per-Instance ABI (Replaces NumberBoxed) *(May 6-8, 2026)*
 
-For kernels polymorphic over `number` (Int or Float):
+Number-polymorphic and other concrete-type-aware kernels are now specialised per call-site argument type via `KernelInstanceKey` / `KernelInstanceAbi`. Each `Elm_Kernel_*` that was previously a single polymorphic boxed-arg function gets per-type `_Int` / `_Float` / `_Char` variants with typed C++ ABIs:
 
 ```elm
-String.fromNumber : number -> String
--- ABI: (eco.value) -> eco.value (boxed number)
+-- Was: NumberBoxed
+--   Elm_Kernel_Basics_add : (eco.value, eco.value) -> eco.value
+-- Now: per-instance, selected by call-site arg types
+--   Elm_Kernel_Basics_add_Int   : (i64, i64) -> i64
+--   Elm_Kernel_Basics_add_Float : (f64, f64) -> f64
 ```
 
-The `CNumber` constraint is treated as `CEcoValue` for ABI purposes. The C++ kernel receives a boxed value and dispatches based on the runtime type tag.
+`deriveKernelInstanceAbi` pattern-matches on the concrete argument `MonoType`s and selects the typed C++ symbol variant. For polymorphic call sites (e.g. `compare "a" "b"` reaching `Utils.compare` with `[MString, MString]`), the kernel ABI falls back to the all-boxed root via `KernelBackendAbiPolicy`.
 
-**Number-boxed kernels**:
-- `Basics.add`, `sub`, `mul`, `pow`
-- `String.fromNumber`
+41 monomorphic variants landed across `Utils` equality/ordering, `List.cons`, `String.fromNumber`, `Json.wrap`, `JsArray`, plus `Basics_{add,sub,mul,pow}_{Int,Float}` C variants. Captured as invariant **CGEN_038** (`KernelDeclInstanceConsistency`).
+
+The associated `eco_apply_closure_typed` runtime entry plumbs typed args through generic apply (no re-boxing of primitive captures); when Phase F retired `NumberBoxed`, it also reclaimed the `CLOSURE_FLAG_TYPED_NEWARGS` bit (2 bits in `Closure.unboxed`, capture cap 26 → 25 — see [Heap Representation Theory §Closure](heap_representation_theory.md#closure)).
+
+Plan: `plans/per-instance-kernel-abi.md`.
 
 ## ABI Mode Selection
 
@@ -371,21 +377,14 @@ alwaysPolymorphicModules = [ "Debug" ]
 
 Debug kernels always use boxed ABI regardless of type variables.
 
-### Number-Boxed Kernels
+### Number-Polymorphic Kernels (Pre-May 2026 NumberBoxed)
 
 ```elm
-numberBoxedKernels =
-    [ ( "Basics", "add" )
-    , ( "Basics", "sub" )
-    , ( "Basics", "mul" )
-    , ( "Basics", "pow" )
-    , ( "String", "fromNumber" )
-    ]
+-- Historical NumberBoxed list (retired May 8, 2026):
+--   Basics.{add, sub, mul, pow}, String.fromNumber
 ```
 
-These receive boxed numbers and dispatch by runtime tag.
-
-**Note**: In practice, the `Basics` operations listed above (`add`, `sub`, `mul`, `pow`) are almost always handled by [intrinsics](intrinsics_theory.md) when argument types are concrete (`MInt` or `MFloat`). The NumberBoxed kernel path is only taken when types remain polymorphic after monomorphization—which is rare. The primary user of NumberBoxed is `String.fromNumber`, which has no intrinsic equivalent.
+Number-polymorphic kernels are now handled via the [per-instance ABI](#per-instance-abi-replaces-numberboxed-may-6-8-2026) — each operation has typed `_Int` / `_Float` variants selected at the call site. The `Basics.{add, sub, mul, pow}` operations are almost always handled by [intrinsics](intrinsics_theory.md) when argument types are concrete; the kernel path is taken only for the rare polymorphic-after-mono cases. `String.fromNumber` (no intrinsic equivalent) now exposes `String_fromNumber_Int` and `String_fromNumber_Float` directly.
 
 ### Concrete-Type-Aware Kernels
 
@@ -402,7 +401,7 @@ These kernels keep their concrete monomorphic type at the call site so downstrea
 
 - **KERN_001**: Monomorphic kernels have typed ABIs matching their signatures
 - **KERN_002**: Polymorphic kernels have all-boxed ABIs (`eco.value` params)
-- **KERN_003**: NumberBoxed kernels treat `CNumber` as boxed for ABI
+- **KERN_003**: *(retired May 8, 2026 — replaced by per-instance ABI)* Previously: NumberBoxed kernels treat `CNumber` as boxed for ABI. Now: number-polymorphic kernels select typed `_Int`/`_Float` variants via `deriveKernelInstanceAbi`.
 - **KERN_004**: Container specialization doesn't affect C++ kernel ABI
 - **KERN_005**: MLIR codegen inserts box/unbox at kernel call boundaries
 - **KERN_006**: The compiler is the sole source of truth for kernel ABI types. `kernelBackendAbiPolicy` + `monoTypeToAbi` determine the definitive MLIR types for all kernel parameters and return values. MLIR declarations carry these types; the LLVM lowering pass reflects them without repair. (See also CGEN_057.)
