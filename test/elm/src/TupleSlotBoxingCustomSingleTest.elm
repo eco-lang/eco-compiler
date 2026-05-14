@@ -1,8 +1,12 @@
-module TupleSlotBoxingMismatchTest exposing (main)
+module TupleSlotBoxingCustomSingleTest exposing (main)
 
--- CHECK: TupleSlotBoxing: "[0,1,1,1,1,2]"
+-- CHECK: TupleSlotBoxingCustomSingle: "[1,1]"
 
 import Html
+
+
+type Wrap
+    = Wrap Int
 
 
 buggy members =
@@ -13,7 +17,7 @@ buggy members =
                     List.indexedMap
                         (\j ( _, mark, _ ) ->
                             if mark then
-                                Just ( j, capturedIdx, j + 1 )
+                                Just (Wrap capturedIdx)
 
                             else
                                 Nothing
@@ -26,8 +30,14 @@ buggy members =
     List.foldl helper [] (List.indexedMap Tuple.pair members)
 
 
-flatten triples =
-    List.concatMap (\( p, c, s ) -> [ p, c, s ]) triples
+flatten ws =
+    List.map
+        (\w ->
+            case w of
+                Wrap n ->
+                    n
+        )
+        ws
 
 
 main =
@@ -36,13 +46,10 @@ main =
             buggy [ False, True ] |> flatten
 
         _ =
-            Debug.log "TupleSlotBoxing"
-                (stringOfIntList result)
+            Debug.log "TupleSlotBoxingCustomSingle" (stringOfIntList result)
     in
     Html.text "done"
 
 
 stringOfIntList xs =
-    "["
-        ++ (xs |> List.map String.fromInt |> String.join ",")
-        ++ "]"
+    "[" ++ (xs |> List.map String.fromInt |> String.join ",") ++ "]"

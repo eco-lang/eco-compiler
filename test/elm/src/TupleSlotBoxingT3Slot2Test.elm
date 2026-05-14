@@ -1,6 +1,6 @@
-module TupleSlotBoxingMismatchTest exposing (main)
+module TupleSlotBoxingT3Slot2Test exposing (main)
 
--- CHECK: TupleSlotBoxing: "[0,1,1,1,1,2]"
+-- CHECK: TupleSlotBoxingT3Slot2: "[0,1,1,1,2,1]"
 
 import Html
 
@@ -13,7 +13,7 @@ buggy members =
                     List.indexedMap
                         (\j ( _, mark, _ ) ->
                             if mark then
-                                Just ( j, capturedIdx, j + 1 )
+                                Just ( j, j + 1, capturedIdx )
 
                             else
                                 Nothing
@@ -27,7 +27,7 @@ buggy members =
 
 
 flatten triples =
-    List.concatMap (\( p, c, s ) -> [ p, c, s ]) triples
+    List.concatMap (\( p, s, c ) -> [ p, s, c ]) triples
 
 
 main =
@@ -36,13 +36,10 @@ main =
             buggy [ False, True ] |> flatten
 
         _ =
-            Debug.log "TupleSlotBoxing"
-                (stringOfIntList result)
+            Debug.log "TupleSlotBoxingT3Slot2" (stringOfIntList result)
     in
     Html.text "done"
 
 
 stringOfIntList xs =
-    "["
-        ++ (xs |> List.map String.fromInt |> String.join ",")
-        ++ "]"
+    "[" ++ (xs |> List.map String.fromInt |> String.join ",") ++ "]"

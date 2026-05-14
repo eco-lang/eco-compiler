@@ -1,8 +1,13 @@
-module TupleSlotBoxingMismatchTest exposing (main)
+module TupleSlotBoxingCustomMultiCtorTest exposing (main)
 
--- CHECK: TupleSlotBoxing: "[0,1,1,1,1,2]"
+-- CHECK: TupleSlotBoxingCustomMultiCtor: "[1,1]"
 
 import Html
+
+
+type T
+    = WithIdx Int
+    | Empty
 
 
 buggy members =
@@ -13,21 +18,29 @@ buggy members =
                     List.indexedMap
                         (\j ( _, mark, _ ) ->
                             if mark then
-                                Just ( j, capturedIdx, j + 1 )
+                                WithIdx capturedIdx
 
                             else
-                                Nothing
+                                Empty
                         )
                         [ ( "p", member, "s" ), ( "q", member, "t" ) ]
-                        |> List.filterMap identity
             in
             inner ++ acc
     in
     List.foldl helper [] (List.indexedMap Tuple.pair members)
 
 
-flatten triples =
-    List.concatMap (\( p, c, s ) -> [ p, c, s ]) triples
+flatten ts =
+    List.filterMap
+        (\t ->
+            case t of
+                WithIdx n ->
+                    Just n
+
+                Empty ->
+                    Nothing
+        )
+        ts
 
 
 main =
@@ -36,13 +49,10 @@ main =
             buggy [ False, True ] |> flatten
 
         _ =
-            Debug.log "TupleSlotBoxing"
-                (stringOfIntList result)
+            Debug.log "TupleSlotBoxingCustomMultiCtor" (stringOfIntList result)
     in
     Html.text "done"
 
 
 stringOfIntList xs =
-    "["
-        ++ (xs |> List.map String.fromInt |> String.join ",")
-        ++ "]"
+    "[" ++ (xs |> List.map String.fromInt |> String.join ",") ++ "]"

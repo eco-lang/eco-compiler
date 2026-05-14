@@ -1,6 +1,6 @@
-module TupleSlotBoxingMismatchTest exposing (main)
+module TupleSlotBoxingRecordMultiTest exposing (main)
 
--- CHECK: TupleSlotBoxing: "[0,1,1,1,1,2]"
+-- CHECK: TupleSlotBoxingRecordMulti: "[0,1,1,1,1,2]"
 
 import Html
 
@@ -13,7 +13,7 @@ buggy members =
                     List.indexedMap
                         (\j ( _, mark, _ ) ->
                             if mark then
-                                Just ( j, capturedIdx, j + 1 )
+                                Just { a = j, b = capturedIdx, c = j + 1 }
 
                             else
                                 Nothing
@@ -26,8 +26,8 @@ buggy members =
     List.foldl helper [] (List.indexedMap Tuple.pair members)
 
 
-flatten triples =
-    List.concatMap (\( p, c, s ) -> [ p, c, s ]) triples
+flatten recs =
+    List.concatMap (\r -> [ r.a, r.b, r.c ]) recs
 
 
 main =
@@ -36,13 +36,10 @@ main =
             buggy [ False, True ] |> flatten
 
         _ =
-            Debug.log "TupleSlotBoxing"
-                (stringOfIntList result)
+            Debug.log "TupleSlotBoxingRecordMulti" (stringOfIntList result)
     in
     Html.text "done"
 
 
 stringOfIntList xs =
-    "["
-        ++ (xs |> List.map String.fromInt |> String.join ",")
-        ++ "]"
+    "[" ++ (xs |> List.map String.fromInt |> String.join ",") ++ "]"
