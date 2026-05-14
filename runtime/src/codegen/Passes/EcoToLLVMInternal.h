@@ -395,6 +395,41 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateConsHeadI64(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateConsHeadF64(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateConsHeadI16(mlir::OpBuilder &builder) const;
+
+    // Tuple2 / Tuple3 unboxed-primitive field accessors.
+    // Each is a single resolve+load behind a gc-leaf call boundary — see the
+    // Pattern C fix in plans/projection-helpers-everywhere.md.
+    mlir::LLVM::LLVMFuncOp getOrCreateTuple2Get0I64(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateTuple2Get1I64(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateTuple2Get0F64(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateTuple2Get1F64(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateTuple2Get0I16(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateTuple2Get1I16(mlir::OpBuilder &builder) const;
+
+    mlir::LLVM::LLVMFuncOp getOrCreateTuple3Get0I64(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateTuple3Get1I64(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateTuple3Get2I64(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateTuple3Get0F64(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateTuple3Get1F64(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateTuple3Get2F64(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateTuple3Get0I16(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateTuple3Get1I16(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateTuple3Get2I16(mlir::OpBuilder &builder) const;
+
+    // Record / Custom unboxed-primitive field accessors: (HPtr, i32 field) -> prim
+    mlir::LLVM::LLVMFuncOp getOrCreateRecordGetI64(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateRecordGetF64(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateRecordGetI16(mlir::OpBuilder &builder) const;
+
+    mlir::LLVM::LLVMFuncOp getOrCreateCustomGetI64(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateCustomGetF64(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateCustomGetI16(mlir::OpBuilder &builder) const;
+
+    // Array unboxed-primitive element accessors: (HPtr, i64 index) -> prim
+    mlir::LLVM::LLVMFuncOp getOrCreateArrayGetI64(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateArrayGetF64(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateArrayGetI16(mlir::OpBuilder &builder) const;
+
     mlir::LLVM::LLVMFuncOp getOrCreateCrash(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateGcAddRoot(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateGcStackRangePoint(mlir::OpBuilder &builder) const;

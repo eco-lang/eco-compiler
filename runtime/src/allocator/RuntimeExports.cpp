@@ -3304,6 +3304,165 @@ extern "C" int16_t eco_cons_head_i16(HPtr cons) {
 }
 
 //===----------------------------------------------------------------------===//
+// Tuple / Record / Custom / Array unboxed-primitive field access.
+//
+// Pattern C fix: keeping resolve + slot read inside a single runtime call
+// prevents LLVM's RS4GC + later code motion from rematerialising heap
+// pointer arithmetic past a statepoint and reloading from a stale address.
+//
+// Unlike eco_cons_head_* these are single-path: tuple/record/custom slots
+// are stored in the kind matching the SSA type at construct time
+// (i64 → Unboxable.i, f64 → Unboxable.f, i16 → Unboxable.c), so no dual
+// boxed/unboxed dispatch is needed. Bool is always boxed at heap
+// boundaries, so an i1 result here is a frontend bug and the lowering
+// surfaces it via emitOpError rather than calling these helpers.
+//===----------------------------------------------------------------------===//
+
+extern "C" int64_t eco_tuple2_get0_i64(HPtr tup) {
+    void* obj = Allocator::instance().resolve(tup.toHPointer());
+    assert(obj != nullptr && "eco_tuple2_get0_i64: null resolve");
+    return static_cast<Tuple2*>(obj)->a.i;
+}
+
+extern "C" int64_t eco_tuple2_get1_i64(HPtr tup) {
+    void* obj = Allocator::instance().resolve(tup.toHPointer());
+    assert(obj != nullptr && "eco_tuple2_get1_i64: null resolve");
+    return static_cast<Tuple2*>(obj)->b.i;
+}
+
+extern "C" double eco_tuple2_get0_f64(HPtr tup) {
+    void* obj = Allocator::instance().resolve(tup.toHPointer());
+    assert(obj != nullptr && "eco_tuple2_get0_f64: null resolve");
+    return static_cast<Tuple2*>(obj)->a.f;
+}
+
+extern "C" double eco_tuple2_get1_f64(HPtr tup) {
+    void* obj = Allocator::instance().resolve(tup.toHPointer());
+    assert(obj != nullptr && "eco_tuple2_get1_f64: null resolve");
+    return static_cast<Tuple2*>(obj)->b.f;
+}
+
+extern "C" int16_t eco_tuple2_get0_i16(HPtr tup) {
+    void* obj = Allocator::instance().resolve(tup.toHPointer());
+    assert(obj != nullptr && "eco_tuple2_get0_i16: null resolve");
+    return static_cast<int16_t>(static_cast<Tuple2*>(obj)->a.c);
+}
+
+extern "C" int16_t eco_tuple2_get1_i16(HPtr tup) {
+    void* obj = Allocator::instance().resolve(tup.toHPointer());
+    assert(obj != nullptr && "eco_tuple2_get1_i16: null resolve");
+    return static_cast<int16_t>(static_cast<Tuple2*>(obj)->b.c);
+}
+
+extern "C" int64_t eco_tuple3_get0_i64(HPtr tup) {
+    void* obj = Allocator::instance().resolve(tup.toHPointer());
+    assert(obj != nullptr && "eco_tuple3_get0_i64: null resolve");
+    return static_cast<Tuple3*>(obj)->a.i;
+}
+
+extern "C" int64_t eco_tuple3_get1_i64(HPtr tup) {
+    void* obj = Allocator::instance().resolve(tup.toHPointer());
+    assert(obj != nullptr && "eco_tuple3_get1_i64: null resolve");
+    return static_cast<Tuple3*>(obj)->b.i;
+}
+
+extern "C" int64_t eco_tuple3_get2_i64(HPtr tup) {
+    void* obj = Allocator::instance().resolve(tup.toHPointer());
+    assert(obj != nullptr && "eco_tuple3_get2_i64: null resolve");
+    return static_cast<Tuple3*>(obj)->c.i;
+}
+
+extern "C" double eco_tuple3_get0_f64(HPtr tup) {
+    void* obj = Allocator::instance().resolve(tup.toHPointer());
+    assert(obj != nullptr && "eco_tuple3_get0_f64: null resolve");
+    return static_cast<Tuple3*>(obj)->a.f;
+}
+
+extern "C" double eco_tuple3_get1_f64(HPtr tup) {
+    void* obj = Allocator::instance().resolve(tup.toHPointer());
+    assert(obj != nullptr && "eco_tuple3_get1_f64: null resolve");
+    return static_cast<Tuple3*>(obj)->b.f;
+}
+
+extern "C" double eco_tuple3_get2_f64(HPtr tup) {
+    void* obj = Allocator::instance().resolve(tup.toHPointer());
+    assert(obj != nullptr && "eco_tuple3_get2_f64: null resolve");
+    return static_cast<Tuple3*>(obj)->c.f;
+}
+
+extern "C" int16_t eco_tuple3_get0_i16(HPtr tup) {
+    void* obj = Allocator::instance().resolve(tup.toHPointer());
+    assert(obj != nullptr && "eco_tuple3_get0_i16: null resolve");
+    return static_cast<int16_t>(static_cast<Tuple3*>(obj)->a.c);
+}
+
+extern "C" int16_t eco_tuple3_get1_i16(HPtr tup) {
+    void* obj = Allocator::instance().resolve(tup.toHPointer());
+    assert(obj != nullptr && "eco_tuple3_get1_i16: null resolve");
+    return static_cast<int16_t>(static_cast<Tuple3*>(obj)->b.c);
+}
+
+extern "C" int16_t eco_tuple3_get2_i16(HPtr tup) {
+    void* obj = Allocator::instance().resolve(tup.toHPointer());
+    assert(obj != nullptr && "eco_tuple3_get2_i16: null resolve");
+    return static_cast<int16_t>(static_cast<Tuple3*>(obj)->c.c);
+}
+
+extern "C" int64_t eco_record_get_i64(HPtr rec, uint32_t field_index) {
+    void* obj = Allocator::instance().resolve(rec.toHPointer());
+    assert(obj != nullptr && "eco_record_get_i64: null resolve");
+    return static_cast<Record*>(obj)->values[field_index].i;
+}
+
+extern "C" double eco_record_get_f64(HPtr rec, uint32_t field_index) {
+    void* obj = Allocator::instance().resolve(rec.toHPointer());
+    assert(obj != nullptr && "eco_record_get_f64: null resolve");
+    return static_cast<Record*>(obj)->values[field_index].f;
+}
+
+extern "C" int16_t eco_record_get_i16(HPtr rec, uint32_t field_index) {
+    void* obj = Allocator::instance().resolve(rec.toHPointer());
+    assert(obj != nullptr && "eco_record_get_i16: null resolve");
+    return static_cast<int16_t>(static_cast<Record*>(obj)->values[field_index].c);
+}
+
+extern "C" int64_t eco_custom_get_i64(HPtr val, uint32_t field_index) {
+    void* obj = Allocator::instance().resolve(val.toHPointer());
+    assert(obj != nullptr && "eco_custom_get_i64: null resolve");
+    return static_cast<Custom*>(obj)->values[field_index].i;
+}
+
+extern "C" double eco_custom_get_f64(HPtr val, uint32_t field_index) {
+    void* obj = Allocator::instance().resolve(val.toHPointer());
+    assert(obj != nullptr && "eco_custom_get_f64: null resolve");
+    return static_cast<Custom*>(obj)->values[field_index].f;
+}
+
+extern "C" int16_t eco_custom_get_i16(HPtr val, uint32_t field_index) {
+    void* obj = Allocator::instance().resolve(val.toHPointer());
+    assert(obj != nullptr && "eco_custom_get_i16: null resolve");
+    return static_cast<int16_t>(static_cast<Custom*>(obj)->values[field_index].c);
+}
+
+extern "C" int64_t eco_array_get_i64(HPtr arr, int64_t index) {
+    void* obj = Allocator::instance().resolve(arr.toHPointer());
+    assert(obj != nullptr && "eco_array_get_i64: null resolve");
+    return static_cast<ElmArray*>(obj)->elements[index].i;
+}
+
+extern "C" double eco_array_get_f64(HPtr arr, int64_t index) {
+    void* obj = Allocator::instance().resolve(arr.toHPointer());
+    assert(obj != nullptr && "eco_array_get_f64: null resolve");
+    return static_cast<ElmArray*>(obj)->elements[index].f;
+}
+
+extern "C" int16_t eco_array_get_i16(HPtr arr, int64_t index) {
+    void* obj = Allocator::instance().resolve(arr.toHPointer());
+    assert(obj != nullptr && "eco_array_get_i16: null resolve");
+    return static_cast<int16_t>(static_cast<ElmArray*>(obj)->elements[index].c);
+}
+
+//===----------------------------------------------------------------------===//
 // Arithmetic Helpers
 //===----------------------------------------------------------------------===//
 

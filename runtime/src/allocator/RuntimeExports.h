@@ -564,6 +564,59 @@ double eco_cons_head_f64(HPtr cons);
 int16_t eco_cons_head_i16(HPtr cons);
 
 //===----------------------------------------------------------------------===//
+// Tuple field access (gc-leaf, non-allocating).
+//
+// Reads the requested slot unconditionally as the requested primitive type.
+// Per the 2-bit unboxed kind bitmap, an `i64`-typed slot is always stored as
+// the unboxed `i` union member, etc. — no dual boxed/unboxed path needed
+// (unlike eco_cons_head_*).
+//
+// Pattern C fix: keeping resolve+load inside a runtime call (rather than
+// emitting the GEP+load in user IR between two safepoints) prevents
+// RS4GC + later code motion from rematerialising heap-pointer arithmetic
+// past a statepoint and reloading from a stale address.
+//===----------------------------------------------------------------------===//
+
+int64_t eco_tuple2_get0_i64(HPtr tup);
+int64_t eco_tuple2_get1_i64(HPtr tup);
+double  eco_tuple2_get0_f64(HPtr tup);
+double  eco_tuple2_get1_f64(HPtr tup);
+int16_t eco_tuple2_get0_i16(HPtr tup);
+int16_t eco_tuple2_get1_i16(HPtr tup);
+
+int64_t eco_tuple3_get0_i64(HPtr tup);
+int64_t eco_tuple3_get1_i64(HPtr tup);
+int64_t eco_tuple3_get2_i64(HPtr tup);
+double  eco_tuple3_get0_f64(HPtr tup);
+double  eco_tuple3_get1_f64(HPtr tup);
+double  eco_tuple3_get2_f64(HPtr tup);
+int16_t eco_tuple3_get0_i16(HPtr tup);
+int16_t eco_tuple3_get1_i16(HPtr tup);
+int16_t eco_tuple3_get2_i16(HPtr tup);
+
+//===----------------------------------------------------------------------===//
+// Record / Custom field access (gc-leaf, non-allocating).
+// Same Pattern-C rationale as the tuple helpers.
+//===----------------------------------------------------------------------===//
+
+int64_t eco_record_get_i64(HPtr rec, uint32_t field_index);
+double  eco_record_get_f64(HPtr rec, uint32_t field_index);
+int16_t eco_record_get_i16(HPtr rec, uint32_t field_index);
+
+int64_t eco_custom_get_i64(HPtr val, uint32_t field_index);
+double  eco_custom_get_f64(HPtr val, uint32_t field_index);
+int16_t eco_custom_get_i16(HPtr val, uint32_t field_index);
+
+//===----------------------------------------------------------------------===//
+// Array element access (gc-leaf, non-allocating).
+// Index is `int64_t` to mirror the `Eco_Int` SSA operand on `eco.array.get`.
+//===----------------------------------------------------------------------===//
+
+int64_t eco_array_get_i64(HPtr arr, int64_t index);
+double  eco_array_get_f64(HPtr arr, int64_t index);
+int16_t eco_array_get_i16(HPtr arr, int64_t index);
+
+//===----------------------------------------------------------------------===//
 // Arithmetic Helpers
 //===----------------------------------------------------------------------===//
 

@@ -509,6 +509,132 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateConsHeadI16(OpBuilder &builder) const {
     return getOrCreateFunc(builder, "eco_cons_head_i16", funcTy, /*gcLeaf=*/true);
 }
 
+// Tuple2 unboxed-primitive field accessors. See plans/projection-helpers-everywhere.md.
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple2Get0I64(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "eco_tuple2_get0_i64", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple2Get1I64(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "eco_tuple2_get1_i64", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple2Get0F64(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(F64_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "eco_tuple2_get0_f64", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple2Get1F64(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(F64_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "eco_tuple2_get1_f64", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple2Get0I16(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I16_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "eco_tuple2_get0_i16", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple2Get1I16(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I16_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "eco_tuple2_get1_i16", funcTy, /*gcLeaf=*/true);
+}
+
+// Tuple3 unboxed-primitive field accessors.
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple3Get0I64(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "eco_tuple3_get0_i64", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple3Get1I64(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "eco_tuple3_get1_i64", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple3Get2I64(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "eco_tuple3_get2_i64", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple3Get0F64(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(F64_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "eco_tuple3_get0_f64", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple3Get1F64(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(F64_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "eco_tuple3_get1_f64", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple3Get2F64(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(F64_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "eco_tuple3_get2_f64", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple3Get0I16(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I16_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "eco_tuple3_get0_i16", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple3Get1I16(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I16_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "eco_tuple3_get1_i16", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple3Get2I16(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I16_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "eco_tuple3_get2_i16", funcTy, /*gcLeaf=*/true);
+}
+
+// Record unboxed-primitive field accessors.
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateRecordGetI64(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {HPTR_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_record_get_i64", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateRecordGetF64(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(F64_TY, {HPTR_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_record_get_f64", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateRecordGetI16(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I16_TY, {HPTR_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_record_get_i16", funcTy, /*gcLeaf=*/true);
+}
+
+// Custom unboxed-primitive field accessors.
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateCustomGetI64(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {HPTR_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_custom_get_i64", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateCustomGetF64(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(F64_TY, {HPTR_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_custom_get_f64", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateCustomGetI16(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I16_TY, {HPTR_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_custom_get_i16", funcTy, /*gcLeaf=*/true);
+}
+
+// Array unboxed-primitive element accessors. Index is i64 to mirror the
+// Eco_Int SSA operand on eco.array.get.
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateArrayGetI64(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {HPTR_TY, I64_TY});
+    return getOrCreateFunc(builder, "eco_array_get_i64", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateArrayGetF64(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(F64_TY, {HPTR_TY, I64_TY});
+    return getOrCreateFunc(builder, "eco_array_get_f64", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateArrayGetI16(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I16_TY, {HPTR_TY, I64_TY});
+    return getOrCreateFunc(builder, "eco_array_get_i16", funcTy, /*gcLeaf=*/true);
+}
+
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateCrash(OpBuilder &builder) const {
     // eco_crash(message_val: hptr) -> void
     auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {HPTR_TY});
