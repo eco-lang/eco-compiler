@@ -168,6 +168,15 @@ static cl::opt<bool> printStats(
     cl::desc("Print lowering-pipeline timing breakdown to stderr at exit"),
     cl::init(true));
 
+static cl::opt<bool> enableUnboxedAgg(
+    "enable-unboxed-agg",
+    cl::desc("Enable Phase 1 escape analysis + Phase 2 specialise + "
+             "Phase 3 cross-function specialise + Phase 3.1 flatten + "
+             "Phase 3.2 SCC passes for value-level aggregates "
+             "(on by default after Phase 3.2 landed; pass "
+             "-enable-unboxed-agg=false to opt out)"),
+    cl::init(true));
+
 //===----------------------------------------------------------------------===//
 // Frontend Invocation
 //===----------------------------------------------------------------------===//
@@ -299,7 +308,9 @@ static int runPipeline(ModuleOp module, eco::LoweringStats &stats) {
     // (including ones registered by buildEcoToLLVMPipeline) is observed.
     pm.addInstrumentation(stats.makePassInstrumentation());
 
-    eco::buildEcoToLLVMPipeline(pm);
+    eco::EcoPipelineOptions pipeOpts;
+    pipeOpts.enableUnboxedAgg = enableUnboxedAgg;
+    eco::buildEcoToLLVMPipeline(pm, pipeOpts);
 
     if (failed(pm.run(module)))
         return 1;

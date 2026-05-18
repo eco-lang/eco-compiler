@@ -135,11 +135,12 @@ static cl::opt<bool> enableOpt(
 
 static cl::opt<bool> enableUnboxedAgg(
     "enable-unboxed-agg",
-    cl::desc("Enable Phase 1 escape analysis + unboxed-aggregate "
-             "specialise pass for non-escaping tuple constructs "
-             "(off by default; rewrites eco.construct.tuple2/3 -> "
-             "eco.make.tuple2/3 when uses are local)"),
-    cl::init(false));
+    cl::desc("Enable Phase 1 escape analysis + Phase 2 specialise + "
+             "Phase 3 cross-function specialise + Phase 3.1 flatten + "
+             "Phase 3.2 SCC passes for value-level aggregates "
+             "(on by default after Phase 3.2 landed; pass "
+             "-enable-unboxed-agg=false to opt out)"),
+    cl::init(true));
 
 static cl::opt<bool> verifyDiagnostics(
     "verify-diagnostics",

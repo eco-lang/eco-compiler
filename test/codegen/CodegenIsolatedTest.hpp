@@ -239,9 +239,14 @@ inline void runSubprocessTest(const std::string& testPath, const std::string& co
                                const std::string& emitMode) {
     std::string ecocPath = getEcocPath();
     std::string cmd = ecocPath + " \"" + testPath + "\" -emit=" + emitMode;
-    if (parseEnableUnboxedAgg(content)) {
-        cmd += " -enable-unboxed-agg";
-    }
+    // Always pass the flag explicitly so the fixture's intent (on vs off)
+    // is preserved regardless of the ecoc CLI default. The flag's CLI
+    // default flipped to ON when Phase 3.2 landed; fixtures without
+    // `-enable-unboxed-agg` on their RUN line want the OFF path
+    // explicitly (e.g. cross_spec_no_change_off.mlir).
+    cmd += parseEnableUnboxedAgg(content)
+               ? " -enable-unboxed-agg=true"
+               : " -enable-unboxed-agg=false";
 
     auto [exitCode, output] = executeCommand(cmd);
 
