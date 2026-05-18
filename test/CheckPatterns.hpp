@@ -16,9 +16,7 @@
 //     diagnostic on failure.
 //
 // Three sites use this header (CodegenIsolatedTest, BFCodegenTest,
-// ElmE2ETestBase). The dead CodegenTest.hpp still has its own
-// pre-CHECK-NOT copy of this logic and is not wired into main.cpp;
-// consolidate or delete in a separate cleanup PR.
+// ElmE2ETestBase).
 
 #pragma once
 
