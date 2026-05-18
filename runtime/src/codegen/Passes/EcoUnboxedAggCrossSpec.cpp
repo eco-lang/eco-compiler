@@ -387,7 +387,10 @@ static bool resultPositionHasAggregateProducer(
         const LogicalShape &expectedShape,
         ArrayRef<LogicalShape> ownParamShapes,
         const llvm::DenseMap<StringRef, Candidate> &candidates,
-        const llvm::DenseSet<StringRef> &eligibleNames) {
+        const llvm::DenseSet<StringRef> &eligibleNames,
+        const llvm::DenseSet<StringRef> *sccCallees = nullptr,
+        const llvm::DenseMap<StringRef, SmallVector<LogicalShape, 4>>
+            *sccTentResults = nullptr) {
     bool sawAnyReturn = false;
     bool ok = true;
 
@@ -399,6 +402,22 @@ static bool resultPositionHasAggregateProducer(
         if (resultIdx >= calleeResults.size()) return false;
         if (!calleeResults[resultIdx].isAggregate()) return false;
         return aggregateShapesMatch(calleeResults[resultIdx], expectedShape);
+    };
+
+    // Phase 3.2 #1: a call to a same-SCC member is accepted iff that
+    // member's tentative result at the same position matches the
+    // expected shape. Demotion in the callee's tentative slot
+    // propagates to here next iteration (the slot stops matching →
+    // the caller's slot also demotes).
+    auto matchSameSCCCallee = [&](StringRef name, unsigned resultIdx) {
+        if (!sccCallees || !sccCallees->contains(name)) return false;
+        if (!sccTentResults) return false;
+        auto it = sccTentResults->find(name);
+        if (it == sccTentResults->end()) return false;
+        if (resultIdx >= it->second.size()) return false;
+        const LogicalShape &calleeSlot = it->second[resultIdx];
+        return calleeSlot.isAggregate() &&
+               aggregateShapesMatch(calleeSlot, expectedShape);
     };
 
     func.walk([&](func::ReturnOp r) {
@@ -445,14 +464,18 @@ static bool resultPositionHasAggregateProducer(
         }
 
         // func.call / eco.call to an eligible callee whose matching
-        // result is also being promoted.
+        // result is also being promoted (or a same-SCC callee with a
+        // matching tentative result shape during Phase 3.2 #1's inner
+        // fixpoint).
         unsigned resultIdx = cast<OpResult>(v).getResultNumber();
         if (auto fc = dyn_cast<func::CallOp>(def)) {
             if (matchEligibleCallee(fc.getCallee(), resultIdx)) return;
+            if (matchSameSCCCallee(fc.getCallee(), resultIdx)) return;
         }
         if (auto ec = dyn_cast<eco::CallOp>(def)) {
             if (auto sym = ec.getCalleeAttr()) {
                 if (matchEligibleCallee(sym.getValue(), resultIdx)) return;
+                if (matchSameSCCCallee(sym.getValue(), resultIdx)) return;
             }
         }
         ok = false;
@@ -488,12 +511,35 @@ static bool isSelfRecursiveCall(Operation *user, StringRef selfName) {
 ///     aggregate, so promoting both sides keeps the return verifying).
 /// Anything else (safepoint, papCreate, scf.while, non-eligible
 /// callees, etc.) blocks specialisation.
+///
+/// Phase 3.2 #1 (SCC-aware mutual recursion) admits an additional
+/// case: a `func.call` / `eco.call` to a member of `sccCallees` is
+/// accepted iff that member's tentative param shape at the call's
+/// operand position matches `paramShape`. Demotion in any member
+/// propagates: once the callee's tentative slot falls to Boxed, the
+/// caller's matching slot loses its only justification for that use
+/// and demotes next iteration. The DAG-fixpoint case passes nullptr
+/// for the SCC parameters and gets the original 3.1 behaviour.
 static bool allUsesAreProjectionsOrCallsToEligible(
         BlockArgument arg,
         const LogicalShape &paramShape,
         StringRef selfName,
         const llvm::DenseSet<StringRef> &eligibleCallees,
-        ArrayRef<LogicalShape> ownResultShapes) {
+        ArrayRef<LogicalShape> ownResultShapes,
+        const llvm::DenseSet<StringRef> *sccCallees = nullptr,
+        const llvm::DenseMap<StringRef, SmallVector<LogicalShape, 4>>
+            *sccTentParams = nullptr) {
+    auto sameSCCMatch = [&](StringRef calleeName, unsigned operandPos) {
+        if (!sccCallees || !sccCallees->contains(calleeName)) return false;
+        if (!sccTentParams) return false;
+        auto it = sccTentParams->find(calleeName);
+        if (it == sccTentParams->end()) return false;
+        if (operandPos >= it->second.size()) return false;
+        const LogicalShape &calleeSlot = it->second[operandPos];
+        return calleeSlot.isAggregate() &&
+               aggregateShapesMatch(calleeSlot, paramShape);
+    };
+
     for (OpOperand &use : arg.getUses()) {
         Operation *user = use.getOwner();
         if (isa<eco::Tuple2ProjectOp,
@@ -508,10 +554,15 @@ static bool allUsesAreProjectionsOrCallsToEligible(
         if (isSelfRecursiveCall(user, selfName)) continue;
         if (auto fc = dyn_cast<func::CallOp>(user)) {
             if (eligibleCallees.contains(fc.getCallee())) continue;
+            if (sameSCCMatch(fc.getCallee(), use.getOperandNumber()))
+                continue;
         }
         if (auto ec = dyn_cast<eco::CallOp>(user)) {
             auto callee = ec.getCalleeAttr();
             if (callee && eligibleCallees.contains(callee.getValue()))
+                continue;
+            if (callee &&
+                sameSCCMatch(callee.getValue(), use.getOperandNumber()))
                 continue;
         }
         // Passthrough-as-return: accept iff the return-position's
@@ -1081,6 +1132,93 @@ struct EcoUnboxedAggCrossSpecPass
                 cand.eligible = true;
                 eligibleNames.insert(name);
                 changed = true;
+            }
+        }
+
+        // Step 3b (Phase 3.2 #1): SCC-aware mutual recursion pass.
+        // For each SCC of size > 1 that has at least one candidate,
+        // run an inner fixpoint over the SCC's candidate members
+        // admitting same-SCC calls with tentative-shape matching.
+        // Members commit independently once tentative shapes settle.
+        llvm::DenseMap<unsigned, llvm::SmallVector<StringRef, 4>> sccMembers;
+        for (auto &kv : sccOf) sccMembers[kv.second].push_back(kv.first);
+        for (auto &[idx, members] : sccMembers) {
+            if (members.size() < 2) continue;
+
+            // Keep only members that are themselves candidates — the
+            // rest have nothing to specialise and don't participate.
+            llvm::SmallVector<StringRef, 4> sccCandidates;
+            for (StringRef m : members)
+                if (candidates.count(m) && !candidates[m].eligible)
+                    sccCandidates.push_back(m);
+            if (sccCandidates.size() < 2) continue;
+            llvm::DenseSet<StringRef> sccSet(sccCandidates.begin(),
+                                              sccCandidates.end());
+
+            // Initialise per-member tentative shapes from originals.
+            llvm::DenseMap<StringRef, SmallVector<LogicalShape, 4>> tentParams;
+            llvm::DenseMap<StringRef, SmallVector<LogicalShape, 4>> tentResults;
+            for (StringRef m : sccCandidates) {
+                tentParams[m] = candidates[m].originalParamShapes;
+                tentResults[m] = candidates[m].originalResultShapes;
+            }
+
+            // Inner fixpoint — monotonically demote until stable.
+            bool sccChanged = true;
+            while (sccChanged) {
+                sccChanged = false;
+                for (StringRef m : sccCandidates) {
+                    Candidate &cand = candidates[m];
+                    Block &entry = cand.func.getBody().front();
+
+                    auto &mp = tentParams[m];
+                    auto &mr = tentResults[m];
+                    for (unsigned i = 0; i < mp.size(); ++i) {
+                        if (!mp[i].isAggregate()) continue;
+                        if (!allUsesAreProjectionsOrCallsToEligible(
+                                entry.getArgument(i), mp[i], m,
+                                eligibleNames, mr,
+                                &sccSet, &tentParams)) {
+                            mp[i].kind = LogicalShape::Boxed;
+                            mp[i].elementTys.clear();
+                            sccChanged = true;
+                        }
+                    }
+                    for (unsigned i = 0; i < mr.size(); ++i) {
+                        if (!mr[i].isAggregate()) continue;
+                        if (!resultPositionHasAggregateProducer(
+                                cand.func, i, mr[i], mp, candidates,
+                                eligibleNames, &sccSet, &tentResults)) {
+                            mr[i].kind = LogicalShape::Boxed;
+                            mr[i].elementTys.clear();
+                            sccChanged = true;
+                        }
+                    }
+                }
+            }
+
+            // Commit: each member with any surviving aggregate becomes
+            // eligible. Custom tags for promoted result positions are
+            // already on the tentative shapes (parsed from the attr).
+            for (StringRef m : sccCandidates) {
+                Candidate &cand = candidates[m];
+                const auto &mp = tentParams[m];
+                const auto &mr = tentResults[m];
+                bool anyAgg = false;
+                for (const auto &s : mp)
+                    if (s.isAggregate()) { anyAgg = true; break; }
+                for (const auto &s : mr)
+                    if (s.isAggregate()) { anyAgg = true; break; }
+                if (!anyAgg) continue;
+
+                cand.paramShapes.assign(mp.begin(), mp.end());
+                cand.resultShapes.assign(mr.begin(), mr.end());
+                cand.resultCustomTags.assign(mr.size(), 0);
+                for (unsigned i = 0; i < mr.size(); ++i)
+                    if (mr[i].kind == LogicalShape::Custom)
+                        cand.resultCustomTags[i] = mr[i].customTag;
+                cand.eligible = true;
+                eligibleNames.insert(m);
             }
         }
 

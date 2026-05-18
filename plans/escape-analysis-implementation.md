@@ -818,10 +818,20 @@ Five reviewable commits, each with E2E + stress run:
 
 Estimated total: ~1200–1700 LOC across compiler + runtime + tests.
 
-### Phase 3.2 — Cross‑Function Unboxed Aggregates: deferred work
+### Phase 3.2 — Cross‑Function Unboxed Aggregates: completing the pipeline
 
-Sequel to Phase 3.1. None of these unblocks 3.1 — they extend it
-once 3.1 is stable. Each item below is independently landable.
+Sequel to Phase 3.1 that closes the two most visible gaps left open
+when 3.1 landed: mutual recursion (currently disqualified at SCC > 1)
+and empirical validation that the post‑SROA LLVM IR actually shows
+no aggregate boundary structs. Neither item depends on the other;
+both extend Phase 3.1 without requiring profiling data the
+codebase doesn't yet produce.
+
+Three further potential extensions to the data‑aggregate path
+(`!eco.value`‑element results, cons‑cell specialisation, and
+miscellaneous guard relaxations) used to live under 3.2 but have
+been pushed to §8 below because each is gated on benchmark or
+profiling data that 3.1 / 3.2 don't yet provide.
 
 #### 1. SCC‑aware mutual recursion (Q7 deferral)
 
@@ -841,6 +851,220 @@ tuple accumulator. Elm‑source: `CrossSpecMutualRecursiveTest.elm`.
 
 Update CGEN_064 to add the SCC clause.
 
+##### Implementation notes
+
+The Phase 3.1 work already computes SCCs via Tarjan (`computeSCCs` in
+`EcoUnboxedAggCrossSpec.cpp`) and disqualifies anything in an SCC of
+size > 1. The §3.2 #1 work *removes* that disqualification and adds a
+second analysis pass that lets SCC members promote atomically. The
+existing single‑function machinery is mostly reusable — the changes
+below are additive, not a rewrite.
+
+**A. Algorithm structure — single fixpoint, "same‑SCC" admission rule.**
+
+The existing fixpoint loop (lines ~840–910 of `EcoUnboxedAggCrossSpec.cpp`)
+runs first over DAG candidates as today. Then a second pass iterates
+each SCC of size > 1 as a unit:
+
+1. Initialize a per‑member *tentative* `paramShapes` / `resultShapes`
+   from each member's original logical types.
+2. Inner fixpoint: each iteration, re‑derive every member's tentative
+   shapes using the use checks below. Iterate until shapes stabilise
+   (no further demotion across any member).
+3. After convergence, commit each member as eligible iff its tentative
+   shapes still show at least one promoted aggregate. Members with
+   nothing left to promote simply don't get workers (existing logic).
+
+This is *not* "atomic all‑or‑none": SCC members commit independently
+once the inner fixpoint settles. The atomicity comes implicitly from
+the propagation rule below — a demotion in one member forces matching
+demotions in every member calling that slot, so members either all
+keep their shapes mutually consistent or all collapse to Boxed
+together.
+
+**B. Slot‑matching semantics.**
+
+Reuse the existing `aggregateShapesMatch` helper. A call site
+`A → B(args)` at operand position k feeding from an aggregate slot
+`A.tentative[i]` is accepted iff
+`aggregateShapesMatch(A.tentative[i], B.tentative[k])`. Custom tags
+must match (already enforced by `aggregateShapesMatch`).
+
+Result‑side: an eligible‑call producer feeding `A`'s return at
+position j from `B`'s result position j is accepted iff
+`aggregateShapesMatch(A.tentative_result[j], B.tentative_result[j])`.
+
+Positional correspondence everywhere — `func.call`'s k‑th operand
+maps to `B`'s k‑th param; `eco.call`'s positional semantics are
+identical.
+
+**C. Use‑check extensions — accept same‑SCC callees with shape match.**
+
+`allUsesAreProjectionsOrCallsToEligible` (3.1) accepts: projection,
+self‑call, call‑to‑eligible, return‑as‑passthrough. The SCC pass
+adds one more accepted class: **call to a same‑SCC member at a
+position whose tentative shape matches our slot's tentative shape**.
+A small wrapper:
+
+```cpp
+static bool allUsesAreProjectionsOrCallsToEligibleOrSameSCC(
+    BlockArgument arg,
+    const LogicalShape &paramShape,
+    StringRef selfName,
+    const llvm::DenseSet<StringRef> &eligibleCallees,
+    ArrayRef<LogicalShape> ownResultShapes,
+    const llvm::DenseSet<StringRef> &sccMembers,
+    const llvm::DenseMap<StringRef, Candidate> &candidates,
+    const SmallVectorImpl<LogicalShape> *tentativeParamsByMember);
+```
+
+For a `func.call @G(...)` use at operand position k:
+* if `G == selfName` → accept;
+* if `G ∈ eligibleCallees` → accept;
+* if `G ∈ sccMembers` and `tentativeParamsByMember[G][k]` matches
+  `paramShape` (using `aggregateShapesMatch`) → accept;
+* otherwise → reject (demote `paramShape`).
+
+The result‑side check
+(`resultPositionHasAggregateProducer`) extends symmetrically: an
+`eco.call` / `func.call` to a same‑SCC member at result position j
+is accepted iff the member's tentative `resultShapes[j]` matches the
+caller's tentative `resultShapes[i]`.
+
+**D. Propagation through demotion (atomic collapse).**
+
+If member A demotes `tentative[i]` to Boxed in one iteration, any
+same‑SCC member B with `func.call @A(..., op_at_pos_i, ...)` loses
+the "same‑SCC callee at matching slot" justification for B's slot
+that flows into `op_at_pos_i`. The next inner‑fixpoint iteration
+notices the mismatch (B's tentative[from] no longer matches A's now‑
+Boxed `tentative[i]`) and demotes B's slot too. The loop iterates
+until all surviving slots are mutually consistent.
+
+This is identical in spirit to the 3.1 fixpoint's "demote until
+stable" pattern, just scoped to SCC members and using tentative
+(not yet committed) callee shapes.
+
+**E. CGEN_064 SCC‑clause wording.**
+
+Append to the existing CGEN_064 paragraph:
+
+> Phase 3.2 amendment: SCCs of size > 1 are no longer disqualified.
+> A second analysis pass after the DAG fixpoint runs an inner
+> per‑SCC fixpoint over each multi‑member SCC, admitting same‑SCC
+> calls as if the callee were eligible iff the callee's tentative
+> slot shape matches the caller's at that position (verified via
+> `aggregateShapesMatch`). Demotion in any member propagates
+> through to every other member referencing that slot, so surviving
+> shapes are mutually consistent by construction. Members commit
+> independently once tentative shapes stabilise; the existing
+> `CalleeRedirect` machinery rewrites intra‑SCC calls to the
+> appropriate `$unboxed` worker (or leaves them on the wrapper
+> for members with no promoted slots).
+
+**F. Fixture sketches.**
+
+`test/codegen/cross_spec_mutual_recursive.mlir` — 2‑member SCC over
+a tuple2 accumulator:
+
+```mlir
+// RUN: %ecoc %s -emit=mlir-llvm -enable-unboxed-agg 2>&1 | %FileCheck %s
+
+module {
+  func.func @ping(%t: !eco.value, %n: i64) -> i64
+      attributes {
+          eco.logical_param_types = ["tuple2:i:i", "i64"],
+          eco.logical_result_types = ["i64"]
+      } {
+    %zero = arith.constant 0 : i64
+    %is_zero = arith.cmpi eq, %n, %zero : i64
+    %a = eco.project.tuple2 %t[0] : !eco.value -> i64
+    %one = arith.constant 1 : i64
+    %nm1 = arith.subi %n, %one : i64
+    %r = "eco.call"(%t, %nm1) {callee = @pong}
+        : (!eco.value, i64) -> i64
+    %out = arith.select %is_zero, %a, %r : i64
+    return %out : i64
+  }
+  func.func @pong(%t: !eco.value, %n: i64) -> i64
+      attributes {
+          eco.logical_param_types = ["tuple2:i:i", "i64"],
+          eco.logical_result_types = ["i64"]
+      } {
+    %zero = arith.constant 0 : i64
+    %is_zero = arith.cmpi eq, %n, %zero : i64
+    %b = eco.project.tuple2 %t[1] : !eco.value -> i64
+    %one = arith.constant 1 : i64
+    %nm1 = arith.subi %n, %one : i64
+    %r = "eco.call"(%t, %nm1) {callee = @ping}
+        : (!eco.value, i64) -> i64
+    %out = arith.select %is_zero, %b, %r : i64
+    return %out : i64
+  }
+}
+
+// Both workers exist (atomic SCC promotion):
+// CHECK-DAG: llvm.func @ping$unboxed
+// CHECK-DAG: llvm.func @pong$unboxed
+// Intra‑SCC calls go to the worker variants:
+// CHECK-DAG: llvm.call @pong$unboxed
+// CHECK-DAG: llvm.call @ping$unboxed
+```
+
+This fixture is structurally identical to the 3.1 negative
+sentinel `cross_spec_mutual_recursive_skipped.mlir`; once 3.2 #1
+lands, that sentinel becomes redundant and can be deleted (or
+re‑purposed as a different negative case).
+
+`test/elm/src/CrossSpecMutualRecursiveTest.elm` — parity‑style
+mutual recursion in real Elm:
+
+```elm
+module CrossSpecMutualRecursiveTest exposing (main)
+
+-- CHECK: result: 6
+
+import Html exposing (text)
+
+evenPair : ( Int, Int ) -> Int -> Int
+evenPair pair n =
+    if n <= 0 then
+        case pair of
+            ( a, _ ) -> a
+    else
+        oddPair pair (n - 1)
+
+oddPair : ( Int, Int ) -> Int -> Int
+oddPair pair n =
+    if n <= 0 then
+        case pair of
+            ( _, b ) -> b
+    else
+        evenPair pair (n - 1)
+
+main =
+    let
+        result = evenPair ( 1, 6 ) 5
+        _ = Debug.log "result" result
+    in
+    text "done"
+```
+
+Compute: `evenPair (1,6) 5 → oddPair … 4 → evenPair … 3 → oddPair
+… 2 → evenPair … 1 → oddPair … 0 → b = 6`.
+
+**Effort and ordering.** The change is one new helper
+(`runSCCFixpoint`), one extension to each use check, and one new
+fixture pair. Estimated ~150 LOC C++ + ~50 LOC fixtures. Land as
+a single commit:
+
+1. Extend the use checks with the same‑SCC tentative‑shape branch.
+2. Add the SCC pass after the DAG fixpoint in `runOnOperation`.
+3. Drop the `sccDisqualified` block (or invert it — only
+   single‑function SCCs need no special handling now).
+4. Add fixtures; delete or rewrite the `…_skipped` sentinel.
+5. Amend CGEN_064 with the wording in (E).
+
 #### 2. LLVM‑level performance / shape validation harness
 
 Plumb a final‑LLVM‑IR emission mode (or extend the existing one) so
@@ -858,40 +1082,83 @@ Optional: an allocation‑counter microbenchmark showing the delta
 between flag‑off and flag‑on for an eligible pipeline. Defer further
 if test infra doesn't expose allocation counters.
 
-#### 3. Aggregate results carrying `!eco.value` elements
+##### Implementation notes
 
-Phase 3.1 keeps results with boxed elements as `!eco.value`. Phase
-3.2 revisits this with one of:
-- **sret‑style ABI**: caller provides an alloca; callee writes
-  fields. Adds an alloca per call but RS4GC sees only individual
-  ptr‑typed slots.
-- **Multi‑return at the LLVM dialect level** (if/when supported
-  cleanly): `llvm.func ... -> (i64, ptr addrspace(1))`.
-- **Apply `EcoFlattenAggBoundary` to results** the same way it
-  handles params: at the call site, decompose the aggregate
-  return into multiple LLVM return values via the same packing
-  trick used for params. (Probably the cleanest reuse if the LLVM
-  dialect tolerates multi‑return at func op level.)
+The plumbing is **already in place** — no new emit mode is needed.
+Codebase facts (verified before this section was written):
 
-Decision made when 3.1 benchmarks justify the additional complexity.
+- `-emit=llvm` exists today in `ecoc.cpp` (the `DumpLLVMIR` enumerator
+  and its CLI mapping); `dumpLLVMIR` in `ecoc.cpp:200` translates
+  MLIR → LLVM IR, then runs `eco::addEcoGCPipeline`, then dumps.
+- `eco::addEcoGCPipeline` in `Passes/EcoPtrIntVerify.cpp:412` runs
+  **mem2reg → SROAPass → FoldExtractValuePass → RewriteStatepointsForGC**
+  in that order. SROA is correctly scheduled BEFORE RS4GC (the Phase
+  2 prerequisite is satisfied).
+- The codegen test runner already dispatches `// RUN: %ecoc %s
+  -emit=llvm …` — see `parseEmitMode` in `CodegenIsolatedTest.hpp:89`
+  and `CodegenTest.hpp:56`.
 
-#### 4. Cons cell specialisation
+Net effect: the post‑`-emit=llvm` IR is already post‑SROA and
+post‑RS4GC. The "harness" is just a set of fixtures using that
+existing emit mode plus FileCheck.
 
-Phase 3.1 encodes `LCons` in attributes but treats it as
-`AggKind::None`. Phase 3.2 either:
-- Implements cons cell specialisation if a real use case appears
-  (e.g. helper functions destructuring a single non‑empty list with
-  `head :: rest`), OR
-- Removes `LCons` from the encoder if it remains unused.
+**Target fixtures (suggested).** Each is a `.mlir` input identical
+to an existing `cross_spec_*` fixture, paired with a `.ll`‑oriented
+CHECK template that asserts the post‑SROA scalarisation actually
+happened:
 
-#### 5. Relaxing other conservative guards
+* `cross_spec_tuple2_pass_llvm.mlir` — `// RUN: %ecoc %s -emit=llvm
+  -enable-unboxed-agg …`. Source is the existing
+  `cross_spec_tuple2_pass.mlir`'s function. CHECK lines:
+    - `CHECK: define {{.*}} @add_pair$unboxed(i64 {{.*}}, i64 {{.*}})`
+    - `CHECK-NOT: insertvalue` (in the worker)
+    - `CHECK-NOT: alloca` (in the worker)
+* `cross_spec_pointer_param_llvm.mlir` — pointer‑element tuple. CHECK:
+    - `CHECK: define {{.*}} @sum_int_with_extra$unboxed(i64 {{.*}}, ptr addrspace(1) {{.*}})`
+    - `CHECK-NOT: { i64, ptr addrspace(1) }` in the signature.
+* `cross_spec_returns_tuple_llvm.mlir` — multi‑return all‑primitive
+  result. CHECK: worker returns either `{ i64, i64 }` (LLVM packed
+  struct return) or two separate scalar returns depending on what
+  the LLVM lowering produces; assert no `alloca` in the worker for
+  the result.
 
-Catch‑all bucket for tightening eligibility once the rest of 3.2 is
-stable:
-- Higher‑arity customs (>3 fields) if profiling shows they matter.
-- Records beyond the current size cap.
-- Tail‑recursive scaffolding patterns (`scf.while` with aggregate
-  loop carries) — currently demoted by the use check.
+**Empirical step (the actual work).** The CHECK lines above are
+templates — the precise opcodes / register names / SROA‑residue
+patterns depend on what the LLVM mid‑end actually produces. The
+implementer must:
+
+1. Run `ecoc <input>.mlir -emit=llvm -enable-unboxed-agg` on each
+   target input and capture the IR.
+2. Verify by inspection that the worker function shows scalar
+   params/results, no leftover `insertvalue`/`extractvalue`/`alloca`
+   chains over the boundary struct, and (for pointer‑containing
+   tuples) `ptr addrspace(1)` in the param list rather than a
+   struct.
+3. Pin the relevant lines as CHECK / CHECK‑NOT directives. Pay
+   attention to LLVM IR's stable spelling vs. variable parts —
+   prefer `{{.*}}` for register numbers and SSA names.
+
+If step 2 reveals that the boundary structs are *not* eliminated
+(e.g. SROA leaves a residual `alloca`), that's a finding for the
+harness itself and may surface a real bug in the SROA‑before‑RS4GC
+ordering or in `FoldExtractValuePass`'s coverage. The harness's
+value is exactly catching this: 3.1 closed the "MLIR boundary is
+scalar" question by build inspection; the harness closes the
+"LLVM boundary is scalar after the standard opt pipeline" question
+empirically.
+
+**Allocation‑counter microbenchmark.** Plan defers if test infra
+doesn't expose counters. Two observable signals exist in the
+codebase: `ECO_GC_PHASE_PROFILE=1` (per‑cycle GC stderr line) and
+the `eco_alloc_*` runtime call counts. Neither is currently
+queryable from a test fixture, so this half stays out of scope
+for §3.2 #2 — revisit if the harness's `.ll` checks turn out to
+be insufficient.
+
+**Effort.** Fixture list and draft CHECK templates: ~30 min.
+Empirical capture + refining CHECK lines: ~1 hour (most of the
+work). Land as one commit with 3 fixtures + any CGEN_064 / CGEN_066
+note clarifying that the harness empirically validates them.
 
 ### Phase 4 — Closure environment escape analysis (separate later phase)
 
@@ -1100,3 +1367,77 @@ reviewers / future maintainers.
     `eco.construct.list`. The asymmetry is documented in the new ops'
     summaries: heap‑level list constructor vs value‑level cons cell
     constructor. No renames.
+
+## 8. Later follow‑ups (data‑gated)
+
+Potential extensions to the data‑aggregate unboxing path that are
+gated on benchmark or profiling data the 3.1 / 3.2 work doesn't yet
+produce. Each item requires its own design pass before it's plan‑
+ready — the sketches here are placeholders for future memos, not
+approved scope.
+
+Two prerequisites are common to all three:
+
+- A 3.1 / 3.2 benchmarking pass: allocation counter delta between
+  flag‑off and flag‑on for representative pipelines (made possible
+  by §3.2 #2's LLVM‑IR validation harness if the optional counter
+  half lands there).
+- A profile of real Elm code: which aggregate shapes actually show
+  up (Custom field‑count distribution, record sizes, frequency of
+  `head :: rest` destructure patterns).
+
+Without that data, picking the wrong ABI for results‑with‑pointers
+or implementing speculative cons‑cell specialisation risks throwaway
+work. Each item below stays here until the relevant data justifies
+elaboration.
+
+### 8.1 Aggregate results carrying `!eco.value` elements
+
+Phase 3.1 / 3.2 keep results with boxed elements as `!eco.value`
+(the all‑primitive result filter in `EcoUnboxedAggCrossSpec`).
+Revisiting this needs an ABI choice between three competing options:
+
+- **sret‑style ABI**: caller provides an alloca; callee writes
+  fields. Adds an alloca per call but RS4GC sees only individual
+  ptr‑typed slots.
+- **Multi‑return at the LLVM dialect level** (if/when supported
+  cleanly): `llvm.func ... -> (i64, ptr addrspace(1))`.
+- **Apply `EcoFlattenAggBoundary` to results** the same way it
+  handles params: at the call site, decompose the aggregate
+  return into multiple LLVM return values via the same packing
+  trick used for params. (Probably the cleanest reuse if the LLVM
+  dialect tolerates multi‑return at func op level.)
+
+Decision deferred to when benchmark data justifies the added
+complexity.
+
+### 8.2 Cons cell specialisation
+
+Phase 3.1 encodes `LCons` in attributes but cross‑spec maps it to
+`AggKind::None` (Q4). Resolution forks on profiling data:
+
+- **Implement** cons cell specialisation if real Elm code shows
+  enough single non‑empty `head :: rest` destructure patterns to
+  justify it. Design unspecified — would need to settle how the
+  recursive tail interacts with the value‑level `!eco.cons` type,
+  what ops admit `!eco.cons` operands, and how the projection
+  lowering handles the boxed tail.
+- **Remove** `LCons` from the encoder if it remains unused after
+  3.1 / 3.2 stabilise.
+
+### 8.3 Relaxing other conservative guards
+
+Catch‑all bucket for tightening eligibility once 3.2 is stable.
+Each sub‑item needs its own elaboration before implementation:
+
+- **Higher‑arity customs (> `customMaxFields`)**: the heap layout's
+  hard limit is 24 fields with typed slots (`Eco_CustomConstructOp`
+  description in `Ops.td`). Picking a new `customMaxFields` value
+  is a profiling decision.
+- **Records beyond the current size cap**: identify the cap, the
+  bottleneck it's defending against, and the data justifying a
+  raise.
+- **Tail‑recursive scaffolding patterns**: `scf.while` with
+  aggregate loop carries currently demoted by the use check.
+  Lifting this requires walking into the loop body's nested region
+  to check the aggregate's actual uses inside — not sketched yet.
