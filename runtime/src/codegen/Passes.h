@@ -74,6 +74,18 @@ std::unique_ptr<mlir::Pass> createEcoUnboxedAggSpecializePass();
 // pipeline when EcoPipelineOptions::enableUnboxedAgg is true.
 std::unique_ptr<mlir::Pass> createEcoUnboxedAggCrossSpecPass();
 
+// Phase 3.1: Pre-lowering boundary flattening. Rewrites worker funcs
+// whose signatures carry aggregate-typed params/results into scalar-
+// only function_types: each aggregate param becomes N scalar params
+// (with an `eco.make.*` op at entry to repack), each aggregate result
+// becomes N scalar results (with `eco.project.*` ops at every return
+// to decompose). Every call site of a flattened worker is rewritten
+// symmetrically. After this pass, no aggregate type appears at any
+// func.func boundary — RS4GC never sees struct-typed gc pointers at
+// call boundaries (REP_AGG_001 amendment). Lifts the all-primitive-
+// elements restriction from EcoUnboxedAggCrossSpec.
+std::unique_ptr<mlir::Pass> createEcoFlattenAggBoundaryPass();
+
 // ========== Stage 2: Eco -> Standard MLIR (func/cf/arith) ==========
 
 // Analyzes and classifies joinpoints for SCF lowering eligibility.

@@ -78,6 +78,13 @@ void buildEcoToEcoPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
         pm.addPass(eco::createEcoUnboxedAggCrossSpecPass());
         pm.addNestedPass<func::FuncOp>(eco::createEcoEscapeAnalysisPass());
         pm.addNestedPass<func::FuncOp>(eco::createEcoUnboxedAggSpecializePass());
+
+        // Phase 3.1 #3: flatten aggregate-typed boundaries so the LLVM
+        // dialect's func signatures stay scalar-only. After this pass
+        // no eco.tuple2/3/record/custom appears at any function
+        // boundary — RS4GC's FCA-unimplemented assertion is avoided
+        // structurally (REP_AGG_001 amendment).
+        pm.addPass(eco::createEcoFlattenAggBoundaryPass());
     }
 
     // Generate external declarations for undefined functions (kernel functions, etc.)

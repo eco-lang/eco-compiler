@@ -353,7 +353,11 @@ generateClosureFuncSingle ctx funcName closureInfo body monoType =
             List.map Tuple.second closureInfo.params
 
         funcOpWithLogical =
-            LogicalTypes.addLogicalTypesAttr argMonoTypes extractedReturnType funcOp
+            LogicalTypes.addLogicalTypesAttr
+                ctx2.typeRegistry.ctorShapes
+                argMonoTypes
+                extractedReturnType
+                funcOp
     in
     ( [ funcOpWithLogical ], ctx2 )
 
@@ -472,8 +476,25 @@ generateClosureFuncWithClones ctx funcName closureInfo body monoType =
                 in
                 Ops.mkRegion fastCloneArgs (exprResult.ops ++ coerceOps) returnOp
 
-        ( ctx1, fastCloneOp ) =
+        ( ctx1, fastCloneOpRaw ) =
             Ops.funcFunc exprResult.ctx fastCloneName fastCloneArgs returnType fastCloneRegion
+
+        -- $cap logical params = capture MonoTypes ++ param MonoTypes
+        -- (matches fastCloneArgs = captureTypes ++ paramPairs).
+        captureMonoTypes : List Mono.MonoType
+        captureMonoTypes =
+            List.map (\( _, expr, _ ) -> Mono.typeOf expr) closureInfo.captures
+
+        paramMonoTypes : List Mono.MonoType
+        paramMonoTypes =
+            List.map Tuple.second closureInfo.params
+
+        fastCloneOp =
+            LogicalTypes.addLogicalTypesAttr
+                ctx1.typeRegistry.ctorShapes
+                (captureMonoTypes ++ paramMonoTypes)
+                extractedReturnType
+                fastCloneOpRaw
 
         -- Generic clone: (Closure*, params...) -> R
         -- Body: load captures, call fast clone
@@ -485,8 +506,25 @@ generateClosureFuncWithClones ctx funcName closureInfo body monoType =
                 )
                 closureInfo.captures
 
-        ( genericCloneOp, ctx2 ) =
+        ( genericCloneOpRaw, ctx2 ) =
             generateGenericCloneFunc ctx1 genericCloneName fastCloneName captureSpecs paramPairs returnType
+
+        -- $clo logical params: first is the opaque closure pointer
+        -- (always !eco.value → "value"), then the Elm params.
+        cloLogicalParams : List Mono.MonoType
+        cloLogicalParams =
+            -- A throwaway MList placeholder won't do — we want "value".
+            -- Use MUnit (encoded as "value") for the closure slot since
+            -- the encoder treats every non-primitive non-aggregate as
+            -- "value".
+            Mono.MUnit :: paramMonoTypes
+
+        genericCloneOp =
+            LogicalTypes.addLogicalTypesAttr
+                ctx2.typeRegistry.ctorShapes
+                cloLogicalParams
+                extractedReturnType
+                genericCloneOpRaw
     in
     ( [ fastCloneOp, genericCloneOp ], ctx2 )
 
@@ -681,7 +719,11 @@ generateTailFunc ctx funcName params expr monoType =
             List.map Tuple.second params
 
         funcOpWithLogical =
-            LogicalTypes.addLogicalTypesAttr argMonoTypes actualReturnType funcOp
+            LogicalTypes.addLogicalTypesAttr
+                ctx2.typeRegistry.ctorShapes
+                argMonoTypes
+                actualReturnType
+                funcOp
     in
     ( funcOpWithLogical, ctx2 )
 
@@ -696,6 +738,19 @@ generateCtor ctx funcName ctorLayout monoType =
     let
         ( _, ctxWithType ) =
             Ctx.getOrCreateTypeIdForMonoType monoType ctx
+
+        -- Logical-type attrs for the ctor function. Result is the
+        -- Custom type (peeled from any MFunction wrapping); params
+        -- are the field MonoTypes.
+        ( ctorArgMonoTypes, ctorResultMonoType ) =
+            Mono.decomposeFunctionType monoType
+
+        attachLogical : MlirOp -> MlirOp
+        attachLogical =
+            LogicalTypes.addLogicalTypesAttr
+                ctxWithType.typeRegistry.ctorShapes
+                ctorArgMonoTypes
+                ctorResultMonoType
 
         arity : Int
         arity =
@@ -733,8 +788,11 @@ generateCtor ctx funcName ctorLayout monoType =
             region : MlirRegion
             region =
                 Ops.mkRegion [] [ valueOp ] returnOp
+
+            ( ctxOut, funcOp ) =
+                Ops.funcFunc ctx3 funcName [] Types.ecoValue region
         in
-        Ops.funcFunc ctx3 funcName [] Types.ecoValue region
+        ( ctxOut, attachLogical funcOp )
 
     else
         -- Constructor with arguments - use eco.construct.custom
@@ -781,8 +839,11 @@ generateCtor ctx funcName ctorLayout monoType =
             region : MlirRegion
             region =
                 Ops.mkRegion argPairs [ spOp, constructOp ] returnOp
+
+            ( ctxOut, funcOp ) =
+                Ops.funcFunc ctx3 funcName argPairs Types.ecoValue region
         in
-        Ops.funcFunc ctx3 funcName argPairs Types.ecoValue region
+        ( ctxOut, attachLogical funcOp )
 
 
 
@@ -821,8 +882,21 @@ generateEnum ctx funcName tag monoType maybeCtorName =
         region : MlirRegion
         region =
             Ops.mkRegion [] [ valueOp ] returnOp
+
+        ( _, enumResultMonoType ) =
+            Mono.decomposeFunctionType monoType
+
+        ( ctxOut, funcOp ) =
+            Ops.funcFunc ctx3 funcName [] Types.ecoValue region
+
+        funcOpWithLogical =
+            LogicalTypes.addLogicalTypesAttr
+                ctxOut.typeRegistry.ctorShapes
+                []
+                enumResultMonoType
+                funcOp
     in
-    Ops.funcFunc ctx3 funcName [] Types.ecoValue region
+    ( ctxOut, funcOpWithLogical )
 
 
 
@@ -886,11 +960,24 @@ generateExtern ctx funcName monoType =
                         )
                   )
                 ]
+
+        ( ctxOut, funcOp ) =
+            Ops.mlirOp ctx3 "func.func"
+                |> Ops.opBuilder.withRegions [ region ]
+                |> Ops.opBuilder.withAttrs attrs
+                |> Ops.opBuilder.build
+
+        -- Externs have no Elm-source body — emit "value"-shaped attrs
+        -- so cross-spec sees explicit LUnknown shapes (CGEN_065) and
+        -- skips specialization.
+        funcOpWithLogical =
+            LogicalTypes.addLogicalTypesAttr
+                ctxOut.typeRegistry.ctorShapes
+                argMonoTypes
+                resultMonoType
+                funcOp
     in
-    Ops.mlirOp ctx3 "func.func"
-        |> Ops.opBuilder.withRegions [ region ]
-        |> Ops.opBuilder.withAttrs attrs
-        |> Ops.opBuilder.build
+    ( ctxOut, funcOpWithLogical )
 
 
 {-| Generate a manager leaf function that calls Elm\_Kernel\_Platform\_leaf.
@@ -987,11 +1074,21 @@ generateManagerLeaf ctx funcName homeModuleName monoType =
                         )
                   )
                 ]
+
+        ( ctxOut, funcOp ) =
+            Ops.mlirOp ctx5 "func.func"
+                |> Ops.opBuilder.withRegions [ region ]
+                |> Ops.opBuilder.withAttrs attrs
+                |> Ops.opBuilder.build
+
+        funcOpWithLogical =
+            LogicalTypes.addLogicalTypesAttr
+                ctxOut.typeRegistry.ctorShapes
+                argMonoTypes
+                resultMonoType
+                funcOp
     in
-    Ops.mlirOp ctx5 "func.func"
-        |> Ops.opBuilder.withRegions [ region ]
-        |> Ops.opBuilder.withAttrs attrs
-        |> Ops.opBuilder.build
+    ( ctxOut, funcOpWithLogical )
 
 
 {-| Generate a stub value of the given type for extern function bodies.
@@ -1074,11 +1171,23 @@ generateKernelDecl ctx info =
                         )
                   )
                 ]
+
+        ( ctxOut, funcOp ) =
+            Ops.mlirOp ctx3 "func.func"
+                |> Ops.opBuilder.withRegions [ region ]
+                |> Ops.opBuilder.withAttrs attrs
+                |> Ops.opBuilder.build
+
+        -- Kernel decls carry no MonoType; fall back to ABI-only
+        -- encoding so the attrs are present but mark all aggregate
+        -- slots as opaque (CGEN_065 absent-or-LUnknown clause).
+        funcOpWithLogical =
+            LogicalTypes.addLogicalTypesAttrUnknown
+                argMlirTypes
+                resultMlirType
+                funcOp
     in
-    Ops.mlirOp ctx3 "func.func"
-        |> Ops.opBuilder.withRegions [ region ]
-        |> Ops.opBuilder.withAttrs attrs
-        |> Ops.opBuilder.build
+    ( ctxOut, funcOpWithLogical )
 
 
 {-| Generate a stub value for kernel declaration bodies, based on MLIR type.

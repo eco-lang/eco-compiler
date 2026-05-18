@@ -220,6 +220,7 @@ set_source_files_properties(
     Passes/EcoEscapeAnalysis.cpp
     Passes/EcoUnboxedAggSpecialize.cpp
     Passes/EcoUnboxedAggCrossSpec.cpp
+    Passes/EcoFlattenAggBoundary.cpp
     Passes/JoinpointNormalization.cpp
     Passes/EcoControlFlowToSCF.cpp
     Passes/UndefinedFunction.cpp
@@ -285,6 +286,7 @@ add_mlir_library(EcoPasses
     Passes/EcoEscapeAnalysis.cpp
     Passes/EcoUnboxedAggSpecialize.cpp
     Passes/EcoUnboxedAggCrossSpec.cpp
+    Passes/EcoFlattenAggBoundary.cpp
     Passes/JoinpointNormalization.cpp
     Passes/EcoControlFlowToSCF.cpp
     Passes/UndefinedFunction.cpp

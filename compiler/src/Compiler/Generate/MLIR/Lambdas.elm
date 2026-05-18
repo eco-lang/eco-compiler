@@ -9,9 +9,11 @@ with typed ABIs (parameters in their actual types, not all boxed).
 
 -}
 
+import Compiler.AST.Monomorphized as Mono
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Expr as Expr
 import Compiler.Generate.MLIR.Functions as Functions
+import Compiler.Generate.MLIR.LogicalTypes as LogicalTypes
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.TailRec as TailRec
 import Compiler.Generate.MLIR.Types as Types
@@ -319,8 +321,24 @@ generateLambdaFunc ctx lambda =
                 else
                     lambda.name
 
-            ( ctx2, fastCloneOp ) =
+            ( ctx2, fastCloneOpRaw ) =
                 Ops.funcFunc ctx1 funcName allArgPairs actualResultType funcBodyRegion
+
+            -- Logical-types for the fast clone: captures + params.
+            captureMonoTypes : List Mono.MonoType
+            captureMonoTypes =
+                List.map Tuple.second lambda.captures
+
+            paramMonoTypes : List Mono.MonoType
+            paramMonoTypes =
+                List.map Tuple.second lambda.params
+
+            fastCloneOp =
+                LogicalTypes.addLogicalTypesAttr
+                    ctx2.typeRegistry.ctorShapes
+                    (captureMonoTypes ++ paramMonoTypes)
+                    lambda.returnType
+                    fastCloneOpRaw
         in
         if hasCaptures then
             let
@@ -336,13 +354,22 @@ generateLambdaFunc ctx lambda =
                         )
                         lambda.captures
 
-                ( genericCloneOp, ctx3 ) =
+                ( genericCloneOpRaw, ctx3 ) =
                     Functions.generateGenericCloneFunc ctx2
                         (lambda.name ++ "$clo")
                         (lambda.name ++ "$cap")
                         captureSpecs
                         paramArgPairs
                         actualResultType
+
+                -- $clo: first arg is the closure (opaque "value"), then
+                -- the Elm params. MUnit encodes as "value".
+                genericCloneOp =
+                    LogicalTypes.addLogicalTypesAttr
+                        ctx3.typeRegistry.ctorShapes
+                        (Mono.MUnit :: paramMonoTypes)
+                        lambda.returnType
+                        genericCloneOpRaw
             in
             ( [ fastCloneOp, genericCloneOp ], ctx3 )
 
@@ -378,8 +405,23 @@ generateLambdaFunc ctx lambda =
                 else
                     lambda.name
 
-            ( ctx2, fastCloneOp ) =
+            ( ctx2, fastCloneOpRaw ) =
                 Ops.funcFunc exprResult.ctx funcName allArgPairs actualResultType region
+
+            captureMonoTypes : List Mono.MonoType
+            captureMonoTypes =
+                List.map Tuple.second lambda.captures
+
+            paramMonoTypes : List Mono.MonoType
+            paramMonoTypes =
+                List.map Tuple.second lambda.params
+
+            fastCloneOp =
+                LogicalTypes.addLogicalTypesAttr
+                    ctx2.typeRegistry.ctorShapes
+                    (captureMonoTypes ++ paramMonoTypes)
+                    lambda.returnType
+                    fastCloneOpRaw
         in
         if hasCaptures then
             let
@@ -395,13 +437,20 @@ generateLambdaFunc ctx lambda =
                         )
                         lambda.captures
 
-                ( genericCloneOp, ctx3 ) =
+                ( genericCloneOpRaw, ctx3 ) =
                     Functions.generateGenericCloneFunc ctx2
                         (lambda.name ++ "$clo")
                         (lambda.name ++ "$cap")
                         captureSpecs
                         paramArgPairs
                         actualResultType
+
+                genericCloneOp =
+                    LogicalTypes.addLogicalTypesAttr
+                        ctx3.typeRegistry.ctorShapes
+                        (Mono.MUnit :: paramMonoTypes)
+                        lambda.returnType
+                        genericCloneOpRaw
             in
             ( [ fastCloneOp, genericCloneOp ], ctx3 )
 
