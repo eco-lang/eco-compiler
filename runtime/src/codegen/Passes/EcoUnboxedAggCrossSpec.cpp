@@ -292,25 +292,170 @@ static int64_t computeUnboxedBitmap(ArrayRef<Type> elementTys) {
     return bitmap;
 }
 
-/// True iff every `func.return` in `func` has the operand at position
-/// `i` produced by an `eco.construct.tuple2/3/record/custom`. Phase 3.1 #4
-/// limits result-side promotion to this case so the worker body can
-/// rewrite construct→make without needing to materialise an aggregate
-/// out of thin air.
-static bool resultPositionFedByConstruct(func::FuncOp func, unsigned i) {
+/// Cross-spec candidate metadata. Lifted to namespace scope so the
+/// result-side eligibility check (which compares against other
+/// candidates' shapes) can be a free function rather than a member.
+struct Candidate {
+    func::FuncOp func;
+    /// Shapes as parsed from the attrs, before any per-iteration
+    /// demotion. Re-evaluated each fixpoint pass.
+    SmallVector<LogicalShape, 4> originalParamShapes;
+    SmallVector<LogicalShape, 4> originalResultShapes;
+    /// Final shapes once the candidate is committed as eligible.
+    /// Read only after `eligible` flips true.
+    SmallVector<LogicalShape, 4> paramShapes;
+    SmallVector<LogicalShape, 4> resultShapes;
+    SmallVector<int64_t, 4> resultCustomTags;
+    bool eligible = false;
+    std::string workerName;
+};
+
+/// True if two aggregate shapes describe the same kind and element
+/// types. Used to verify a producer's output shape matches the
+/// expected result shape during result-side eligibility checking.
+static bool aggregateShapesMatch(const LogicalShape &a,
+                                 const LogicalShape &b) {
+    if (a.kind != b.kind) return false;
+    if (a.elementTys.size() != b.elementTys.size()) return false;
+    for (unsigned i = 0; i < a.elementTys.size(); ++i)
+        if (a.elementTys[i] != b.elementTys[i]) return false;
+    // For Custom, the tag is structural — different tags = different
+    // logical types even when fields align.
+    if (a.kind == LogicalShape::Custom && a.customTag != b.customTag)
+        return false;
+    return true;
+}
+
+/// True iff the MLIR type `t` exactly matches the aggregate `shape`.
+/// Used for `eco.from_heap` producers, which carry their aggregate
+/// shape in the MLIR result type rather than via an attribute.
+static bool mlirTypeMatchesShape(const LogicalShape &shape, Type t) {
+    if (auto tup2 = dyn_cast<eco::Tuple2Type>(t)) {
+        if (shape.kind != LogicalShape::Tuple2) return false;
+        if (shape.elementTys.size() != 2) return false;
+        return tup2.getFirst() == shape.elementTys[0] &&
+               tup2.getSecond() == shape.elementTys[1];
+    }
+    if (auto tup3 = dyn_cast<eco::Tuple3Type>(t)) {
+        if (shape.kind != LogicalShape::Tuple3) return false;
+        if (shape.elementTys.size() != 3) return false;
+        return tup3.getFirst() == shape.elementTys[0] &&
+               tup3.getSecond() == shape.elementTys[1] &&
+               tup3.getThird() == shape.elementTys[2];
+    }
+    if (auto rec = dyn_cast<eco::RecordType>(t)) {
+        if (shape.kind != LogicalShape::Record) return false;
+        if (shape.elementTys.size() != rec.getFields().size()) return false;
+        for (unsigned i = 0; i < rec.getFields().size(); ++i)
+            if (rec.getFields()[i] != shape.elementTys[i]) return false;
+        return true;
+    }
+    if (auto cus = dyn_cast<eco::CustomType>(t)) {
+        if (shape.kind != LogicalShape::Custom) return false;
+        if (shape.elementTys.size() != cus.getFields().size()) return false;
+        for (unsigned i = 0; i < cus.getFields().size(); ++i)
+            if (cus.getFields()[i] != shape.elementTys[i]) return false;
+        return true;
+    }
+    return false;
+}
+
+/// True iff every `func.return` in `func` has an aggregate-typed
+/// producer at result position `resultPos` matching `expectedShape`.
+/// Phase 3.1 relaxes the old construct-only rule (which Commit 4 had
+/// in `resultPositionFedByConstruct`) so the call-result-passthrough,
+/// param-passthrough, and from_heap cases the plan called out also
+/// promote — every accepted producer kind either is or will be
+/// aggregate-typed after cross-spec rewriting at that position.
+///
+/// Accepted producers:
+///   - `eco.construct.{tuple2,tuple3,record,custom}` — rewritten to
+///     the matching `eco.make.*` by `cloneAsWorker`.
+///   - `BlockArgument` at param position p, where `ownParamShapes[p]`
+///     is also being promoted to a shape matching `expectedShape` —
+///     the entry-block arg gets retyped to the aggregate, so the
+///     return operand follows.
+///   - `eco.from_heap` whose MLIR result type already matches
+///     `expectedShape`.
+///   - `func.call` / `eco.call` to a name in `eligibleNames` whose
+///     result at the call's result-index has a promoted shape matching
+///     `expectedShape` — the call's symbol will be redirected to the
+///     callee's `$unboxed` worker, which returns aggregate-typed.
+static bool resultPositionHasAggregateProducer(
+        func::FuncOp func,
+        unsigned resultPos,
+        const LogicalShape &expectedShape,
+        ArrayRef<LogicalShape> ownParamShapes,
+        const llvm::DenseMap<StringRef, Candidate> &candidates,
+        const llvm::DenseSet<StringRef> &eligibleNames) {
     bool sawAnyReturn = false;
     bool ok = true;
+
+    auto matchEligibleCallee = [&](StringRef name, unsigned resultIdx) {
+        if (name.empty() || !eligibleNames.contains(name)) return false;
+        auto it = candidates.find(name);
+        if (it == candidates.end()) return false;
+        const auto &calleeResults = it->second.resultShapes;
+        if (resultIdx >= calleeResults.size()) return false;
+        if (!calleeResults[resultIdx].isAggregate()) return false;
+        return aggregateShapesMatch(calleeResults[resultIdx], expectedShape);
+    };
+
     func.walk([&](func::ReturnOp r) {
         sawAnyReturn = true;
-        if (i >= r.getNumOperands()) { ok = false; return; }
-        Value v = r.getOperand(i);
+        if (resultPos >= r.getNumOperands()) { ok = false; return; }
+        Value v = r.getOperand(resultPos);
+
+        // Block-arg passthrough: the entry-block arg at `paramIdx`
+        // becomes the aggregate type after `cloneAsWorker` retypes
+        // it, so the return operand type follows.
+        if (auto barg = dyn_cast<BlockArgument>(v)) {
+            unsigned paramIdx = barg.getArgNumber();
+            if (paramIdx >= ownParamShapes.size()) { ok = false; return; }
+            if (!aggregateShapesMatch(ownParamShapes[paramIdx], expectedShape))
+                ok = false;
+            return;
+        }
+
         Operation *def = v.getDefiningOp();
         if (!def) { ok = false; return; }
-        if (!isa<eco::Tuple2ConstructOp,
-                 eco::Tuple3ConstructOp,
-                 eco::RecordConstructOp,
-                 eco::CustomConstructOp>(def))
-            ok = false;
+
+        // construct.* — rewritten to make.* during cloneAsWorker.
+        if (isa<eco::Tuple2ConstructOp, eco::Tuple3ConstructOp,
+                eco::RecordConstructOp, eco::CustomConstructOp>(def)) {
+            // For Custom, ensure the construct's tag matches the
+            // expected shape (Elm typing guarantees this in practice,
+            // but verify defensively).
+            if (auto cus = dyn_cast<eco::CustomConstructOp>(def)) {
+                if (expectedShape.kind == LogicalShape::Custom &&
+                    static_cast<int64_t>(cus.getTag()) !=
+                        expectedShape.customTag) {
+                    ok = false;
+                }
+            }
+            return;
+        }
+
+        // eco.from_heap — already aggregate-typed; verify the shape.
+        if (auto fh = dyn_cast<eco::FromHeapOp>(def)) {
+            if (!mlirTypeMatchesShape(expectedShape,
+                                       fh.getResult().getType()))
+                ok = false;
+            return;
+        }
+
+        // func.call / eco.call to an eligible callee whose matching
+        // result is also being promoted.
+        unsigned resultIdx = cast<OpResult>(v).getResultNumber();
+        if (auto fc = dyn_cast<func::CallOp>(def)) {
+            if (matchEligibleCallee(fc.getCallee(), resultIdx)) return;
+        }
+        if (auto ec = dyn_cast<eco::CallOp>(def)) {
+            if (auto sym = ec.getCalleeAttr()) {
+                if (matchEligibleCallee(sym.getValue(), resultIdx)) return;
+            }
+        }
+        ok = false;
     });
     return sawAnyReturn && ok;
 }
@@ -335,13 +480,20 @@ static bool isSelfRecursiveCall(Operation *user, StringRef selfName) {
 ///   - a `func.call` / `eco.call` to a name in `eligibleCallees`
 ///     (Phase 3.1 #5: fixpoint propagation lets aggregate flows
 ///     thread through chains of cross-spec-eligible workers without
-///     a box/unbox round-trip).
-/// Anything else (safepoint, papCreate, scf.while, return, non-self
-/// non-eligible calls, etc.) blocks specialisation.
+///     a box/unbox round-trip), OR
+///   - a `func.return` whose operand position has a logical result
+///     shape matching the param's own aggregate shape (Phase 3.1
+///     extension: block-arg passthrough — the arg flows directly to
+///     the return and the function's result shape declares the same
+///     aggregate, so promoting both sides keeps the return verifying).
+/// Anything else (safepoint, papCreate, scf.while, non-eligible
+/// callees, etc.) blocks specialisation.
 static bool allUsesAreProjectionsOrCallsToEligible(
         BlockArgument arg,
+        const LogicalShape &paramShape,
         StringRef selfName,
-        const llvm::DenseSet<StringRef> &eligibleCallees) {
+        const llvm::DenseSet<StringRef> &eligibleCallees,
+        ArrayRef<LogicalShape> ownResultShapes) {
     for (OpOperand &use : arg.getUses()) {
         Operation *user = use.getOwner();
         if (isa<eco::Tuple2ProjectOp,
@@ -354,13 +506,24 @@ static bool allUsesAreProjectionsOrCallsToEligible(
             continue;
         }
         if (isSelfRecursiveCall(user, selfName)) continue;
-        // Otherwise, accept calls whose callee is known eligible.
         if (auto fc = dyn_cast<func::CallOp>(user)) {
             if (eligibleCallees.contains(fc.getCallee())) continue;
         }
         if (auto ec = dyn_cast<eco::CallOp>(user)) {
             auto callee = ec.getCalleeAttr();
             if (callee && eligibleCallees.contains(callee.getValue()))
+                continue;
+        }
+        // Passthrough-as-return: accept iff the return-position's
+        // logical result shape matches the param shape. The matching
+        // result-side check (block-arg producer) will independently
+        // accept this same return only if the param is promoted — the
+        // two checks converge consistently in the fixpoint.
+        if (auto ret = dyn_cast<func::ReturnOp>(user)) {
+            unsigned pos = use.getOperandNumber();
+            if (pos < ownResultShapes.size() &&
+                ownResultShapes[pos].isAggregate() &&
+                aggregateShapesMatch(ownResultShapes[pos], paramShape))
                 continue;
         }
         return false;
@@ -694,36 +857,91 @@ struct EcoUnboxedAggCrossSpecPass
                "replace the original body with a from_heap/to_heap wrapper";
     }
 
-    /// Reachable-from-self check for SCC > 1 disqualification.
-    /// Returns true iff there is a non-trivial cycle (length > 1)
-    /// through `funcName` in the call graph induced by `successors`.
-    /// Self-edges (length-1 cycles, i.e. direct recursion) are
-    /// allowed and DO NOT count — the existing self-redirect logic
-    /// handles them just fine.
-    static bool isInNonTrivialSCC(
-            StringRef funcName,
+    /// Classic Tarjan SCC over the call graph induced by `successors`.
+    /// Returns a mapping from each function name to its SCC index;
+    /// two functions share an index iff they're in the same SCC.
+    /// O(V+E) — replaces the earlier O(V·(V+E)) per-function DFS so
+    /// modules with many thousands of functions stay practical.
+    ///
+    /// Iterative implementation (no std::function recursion) so deeply
+    /// nested call graphs don't overflow the C stack.
+    static llvm::DenseMap<StringRef, unsigned> computeSCCs(
             const llvm::DenseMap<StringRef,
                                  llvm::SmallVector<StringRef, 4>> &successors) {
-        llvm::SmallPtrSet<StringRef::const_iterator, 8> visitedKeys;
-        llvm::SmallVector<StringRef, 8> stack;
-        // Seed the DFS with `funcName`'s non-self successors so a
-        // self-edge alone doesn't trigger the cycle.
-        auto it = successors.find(funcName);
-        if (it == successors.end()) return false;
-        for (StringRef succ : it->second) {
-            if (succ == funcName) continue;
-            stack.push_back(succ);
+        struct NodeState { int index = -1, lowlink = -1; bool onStack = false; };
+        llvm::DenseMap<StringRef, NodeState> state;
+        llvm::SmallVector<StringRef, 32> tarStack;
+        llvm::DenseMap<StringRef, unsigned> sccOf;
+        int counter = 0;
+        unsigned nextSCC = 0;
+
+        // Per-frame work item: which node we're processing and which
+        // successor edge we resume at after a recursive descent returns.
+        struct Frame { StringRef v; unsigned nextSuccIdx; };
+
+        // Snapshot every reachable node up-front so iteration order is
+        // independent of DenseMap implementation details.
+        llvm::SmallVector<StringRef, 32> nodes;
+        for (auto &kv : successors) nodes.push_back(kv.first);
+
+        for (StringRef root : nodes) {
+            if (state[root].index != -1) continue;
+
+            // Begin a fresh DFS rooted at `root`.
+            llvm::SmallVector<Frame, 32> workStack;
+            workStack.push_back({root, 0});
+            state[root].index = state[root].lowlink = counter++;
+            tarStack.push_back(root);
+            state[root].onStack = true;
+
+            while (!workStack.empty()) {
+                Frame &top = workStack.back();
+                auto it = successors.find(top.v);
+                const auto &succs = (it != successors.end())
+                                        ? it->second
+                                        : llvm::SmallVector<StringRef, 4>{};
+
+                bool descended = false;
+                while (top.nextSuccIdx < succs.size()) {
+                    StringRef w = succs[top.nextSuccIdx++];
+                    NodeState &ws = state[w];
+                    if (ws.index == -1) {
+                        // Recurse into w.
+                        ws.index = ws.lowlink = counter++;
+                        tarStack.push_back(w);
+                        ws.onStack = true;
+                        workStack.push_back({w, 0});
+                        descended = true;
+                        break;
+                    }
+                    if (ws.onStack) {
+                        state[top.v].lowlink =
+                            std::min(state[top.v].lowlink, ws.index);
+                    }
+                }
+                if (descended) continue;
+
+                // Done with v's successors. Propagate lowlink to caller
+                // (if any) and pop a fresh SCC if v is its root.
+                StringRef v = top.v;
+                NodeState &vs = state[v];
+                if (vs.lowlink == vs.index) {
+                    StringRef w;
+                    do {
+                        w = tarStack.pop_back_val();
+                        state[w].onStack = false;
+                        sccOf[w] = nextSCC;
+                    } while (w != v);
+                    ++nextSCC;
+                }
+                workStack.pop_back();
+                if (!workStack.empty()) {
+                    NodeState &caller = state[workStack.back().v];
+                    caller.lowlink = std::min(caller.lowlink, vs.lowlink);
+                }
+            }
         }
-        llvm::SmallDenseSet<StringRef, 16> visited;
-        while (!stack.empty()) {
-            StringRef cur = stack.pop_back_val();
-            if (cur == funcName) return true; // reached the start
-            if (!visited.insert(cur).second) continue;
-            auto succIt = successors.find(cur);
-            if (succIt == successors.end()) continue;
-            for (StringRef s : succIt->second) stack.push_back(s);
-        }
-        return false;
+        return sccOf;
     }
 
     void runOnOperation() override {
@@ -731,28 +949,10 @@ struct EcoUnboxedAggCrossSpecPass
         SymbolTable symTable(module);
         OpBuilder builder(module.getContext());
 
-        struct Candidate {
-            func::FuncOp func;
-            SmallVector<LogicalShape, 4> paramShapes;
-            SmallVector<LogicalShape, 4> resultShapes;
-            /// For each result position promoted to a Custom aggregate,
-            /// the constructor tag harvested from the feeding construct
-            /// op. Non-Custom positions and non-promoted positions get
-            /// a sentinel zero.
-            SmallVector<int64_t, 4> resultCustomTags;
-            /// True once the fixpoint analysis settled on this function
-            /// as cross-spec-eligible. Until then the per-param use
-            /// check may have rejected it because aggregate flows pointed
-            /// to candidates not yet known eligible.
-            bool eligible = false;
-            /// Allocated worker symbol (filled in during the apply phase).
-            std::string workerName;
-        };
-
         // Step 1: scan every func.func and collect candidate metadata.
-        // We do the result-side filter here (it doesn't depend on
-        // any callee analysis) but defer the per-param use check to
-        // the fixpoint loop.
+        // The result-side filter is deferred to the fixpoint loop so
+        // call-result-passthrough cases can become eligible as their
+        // callees do.
         llvm::DenseMap<StringRef, Candidate> candidates;
         llvm::DenseMap<StringRef, llvm::SmallVector<StringRef, 4>> successors;
         module.walk([&](func::FuncOp func) {
@@ -762,27 +962,14 @@ struct EcoUnboxedAggCrossSpecPass
             SmallVector<LogicalShape, 4> resultShapes;
             if (!readLogicalShapes(func, paramShapes, resultShapes)) return;
 
-            // Per-result eligibility filter (Phase 3.1 #4): only promote
-            // aggregate results when every element is primitive AND every
-            // return op's operand at this position is produced by an
-            // eco.construct.* op. Otherwise demote to Boxed.
-            SmallVector<int64_t, 4> resultCustomTags(resultShapes.size(), 0);
-            for (unsigned i = 0; i < resultShapes.size(); ++i) {
-                if (!resultShapes[i].isAggregate()) continue;
-                if (!isAllPrimitiveAggregate(resultShapes[i]) ||
-                    !resultPositionFedByConstruct(func, i)) {
-                    resultShapes[i].kind = LogicalShape::Boxed;
-                    resultShapes[i].elementTys.clear();
-                    continue;
-                }
-                if (resultShapes[i].kind == LogicalShape::Custom) {
-                    func.walk([&](func::ReturnOp r) {
-                        if (resultCustomTags[i] != 0 || i >= r.getNumOperands())
-                            return;
-                        if (auto cus = dyn_cast_or_null<eco::CustomConstructOp>(
-                                r.getOperand(i).getDefiningOp()))
-                            resultCustomTags[i] = cus.getTag();
-                    });
+            // Apply the all-primitive guard up-front: an aggregate
+            // result with !eco.value elements is permanently demoted
+            // (Phase 3.2 will revisit). This filter doesn't depend on
+            // callee eligibility, so it stays out of the fixpoint loop.
+            for (auto &s : resultShapes) {
+                if (s.isAggregate() && !isAllPrimitiveAggregate(s)) {
+                    s.kind = LogicalShape::Boxed;
+                    s.elementTys.clear();
                 }
             }
 
@@ -792,9 +979,11 @@ struct EcoUnboxedAggCrossSpecPass
 
             Candidate cand;
             cand.func = func;
-            cand.paramShapes = std::move(paramShapes);
-            cand.resultShapes = std::move(resultShapes);
-            cand.resultCustomTags = std::move(resultCustomTags);
+            cand.originalParamShapes = paramShapes;
+            cand.originalResultShapes = resultShapes;
+            // `paramShapes` / `resultShapes` are populated when the
+            // fixpoint commits the candidate as eligible.
+            cand.resultCustomTags.assign(resultShapes.size(), 0);
             candidates.try_emplace(func.getName(), std::move(cand));
 
             // Record outgoing direct-call edges for the SCC check.
@@ -815,17 +1004,22 @@ struct EcoUnboxedAggCrossSpecPass
 
         // Step 2: disqualify any candidate inside an SCC of size > 1.
         // Self-recursion is a single-function SCC with a self-edge and
-        // remains eligible (its handling is built into cloneAsWorker).
+        // remains eligible (handled inside cloneAsWorker).
+        llvm::DenseMap<StringRef, unsigned> sccOf = computeSCCs(successors);
+        llvm::DenseMap<unsigned, unsigned> sccSize;
+        for (auto &kv : sccOf) sccSize[kv.second]++;
         llvm::DenseSet<StringRef> sccDisqualified;
         for (auto &kv : candidates) {
-            if (isInNonTrivialSCC(kv.first, successors))
+            auto it = sccOf.find(kv.first);
+            if (it != sccOf.end() && sccSize[it->second] > 1)
                 sccDisqualified.insert(kv.first);
         }
 
-        // Step 3: fixpoint over per-param use checks. A candidate is
-        // eligible iff every aggregate param's uses are projections,
-        // self-recursive calls, or calls to a callee already in the
-        // eligible set. Iterate until no new function becomes eligible.
+        // Step 3: fixpoint over per-param AND per-result eligibility.
+        // Both sides may grow eligible as more callees enter the set
+        // (per-param: callee can be reached via an aggregate flow;
+        // per-result: callee's promoted aggregate result can be
+        // forwarded as our own return value).
         llvm::DenseSet<StringRef> eligibleNames;
         bool changed = true;
         while (changed) {
@@ -836,27 +1030,54 @@ struct EcoUnboxedAggCrossSpecPass
                 if (cand.eligible) continue;
                 if (sccDisqualified.contains(name)) continue;
 
-                // Run the per-param use check with the current
-                // eligible set as the allowed callees.
+                // Tentative param shapes: re-derive each iteration so
+                // we never read a stale demotion from a prior iteration.
+                SmallVector<LogicalShape, 4> tentativeParams =
+                    cand.originalParamShapes;
                 Block &entry = cand.func.getBody().front();
-                SmallVector<LogicalShape, 4> testShapes = cand.paramShapes;
                 bool anyAggregatePromoted = false;
-                for (unsigned i = 0; i < testShapes.size(); ++i) {
-                    if (!testShapes[i].isAggregate()) continue;
+                for (unsigned i = 0; i < tentativeParams.size(); ++i) {
+                    if (!tentativeParams[i].isAggregate()) continue;
                     if (allUsesAreProjectionsOrCallsToEligible(
-                            entry.getArgument(i), name, eligibleNames)) {
+                            entry.getArgument(i), tentativeParams[i], name,
+                            eligibleNames, cand.originalResultShapes)) {
                         anyAggregatePromoted = true;
                     } else {
-                        testShapes[i].kind = LogicalShape::Boxed;
-                        testShapes[i].elementTys.clear();
+                        tentativeParams[i].kind = LogicalShape::Boxed;
+                        tentativeParams[i].elementTys.clear();
                     }
                 }
-                bool anyResultPromoted = hasAggregateShape(cand.resultShapes);
-                if (!anyAggregatePromoted && !anyResultPromoted) {
-                    // Function has nothing to specialize — skip permanently.
-                    continue;
+
+                // Tentative result shapes: same re-derivation. The
+                // per-result producer check sees the tentative params
+                // (for block-arg passthrough) and the current eligible
+                // set (for call-result passthrough).
+                SmallVector<LogicalShape, 4> tentativeResults =
+                    cand.originalResultShapes;
+                SmallVector<int64_t, 4> tentativeCustomTags(
+                    tentativeResults.size(), 0);
+                bool anyResultPromoted = false;
+                for (unsigned i = 0; i < tentativeResults.size(); ++i) {
+                    if (!tentativeResults[i].isAggregate()) continue;
+                    if (!resultPositionHasAggregateProducer(
+                            cand.func, i, tentativeResults[i],
+                            tentativeParams, candidates, eligibleNames)) {
+                        tentativeResults[i].kind = LogicalShape::Boxed;
+                        tentativeResults[i].elementTys.clear();
+                        continue;
+                    }
+                    anyResultPromoted = true;
+                    if (tentativeResults[i].kind == LogicalShape::Custom) {
+                        // Tag is already on the shape (came from the
+                        // attr); record it for the wrapper's to_heap.
+                        tentativeCustomTags[i] = tentativeResults[i].customTag;
+                    }
                 }
-                cand.paramShapes = std::move(testShapes);
+
+                if (!anyAggregatePromoted && !anyResultPromoted) continue;
+                cand.paramShapes = std::move(tentativeParams);
+                cand.resultShapes = std::move(tentativeResults);
+                cand.resultCustomTags = std::move(tentativeCustomTags);
                 cand.eligible = true;
                 eligibleNames.insert(name);
                 changed = true;

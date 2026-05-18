@@ -1,5 +1,9 @@
 module Compiler.Generate.MLIR.LogicalTypes exposing
-    ( encodeLogicalType
+    ( LogicalTypeDesc(..)
+    , AggKind(..)
+    , monoTypeToLogical
+    , mlirTypeToLogical
+    , encodeLogicalType
     , addLogicalTypesAttr
     , addLogicalTypesAttrUnknown
     , customMaxFields
@@ -9,38 +13,37 @@ module Compiler.Generate.MLIR.LogicalTypes exposing
 StringAttr entries for the `eco.logical_param_types` /
 `eco.logical_result_types` attributes on `func.func` ops (CGEN_065).
 
-The encoding is a small DSL parsed by the C++ cross-spec pass
-(`EcoUnboxedAggCrossSpec`) to drive Phase 3 worker/wrapper
-specialization.
+The encoding pipeline is two-stage:
 
-Encoding (one StringAttr per param/result):
+    MonoType / MlirType  →  LogicalTypeDesc  →  wire-format String
+
+The intermediate `LogicalTypeDesc` ADT carries the structural facts
+the cross-spec pass needs (field count for records, ctor tag for
+customs, element kinds for aggregates) so the producer side can't
+accidentally emit a malformed encoding — every valid `LogicalTypeDesc`
+maps to a parseable wire string and vice versa.
+
+Aggregate element types are constrained to a single primitive-kind
+character (`i`/`f`/`c`/`v`) by the wire format itself; the `AggKind`
+type makes that constraint explicit on the producer side too.
+
+Wire format (one StringAttr per param/result):
 
   - `"i64"` / `"f64"` / `"i16"` / `"i1"` — primitive ABI types.
-  - `"value"` — `!eco.value` (boxed; not aggregate-eligible). This
-    also serves as the "unknown / opaque" entry that satisfies
-    CGEN_065's "absent or LUnknown ⇒ non-eligible" clause when an
-    explicit encoding can't be computed.
-  - `"tuple2:K0:K1"` — 2-tuple. K is single-char element kind:
-    `i` = i64, `f` = f64, `c` = i16, `v` = !eco.value.
+  - `"value"` — `!eco.value` (boxed; not aggregate-eligible). Also
+    serves as the "unknown / opaque" entry that satisfies CGEN_065's
+    "absent or LUnknown ⇒ non-eligible" clause.
+  - `"tuple2:K0:K1"` — 2-tuple. K is single-char element kind.
   - `"tuple3:K0:K1:K2"` — 3-tuple.
-  - `"record:N:K0:...:KN-1"` — record with N fields in layout order
-    (sorted unboxed-first then alphabetical, matching
-    `Types.computeRecordLayout`).
-  - `"custom:Tag:N:K0:...:KN-1"` — single-constructor custom ADT
-    with N ≤ `customMaxFields` fields. Emitted only when ctor count
-    is exactly 1; multi-ctor customs encode as `"value"` so cross-
-    spec leaves them boxed (Q3: case-flow conservatism).
-  - `"cons:Khead:Ktail"` — list cons cell. Tail is always boxed
-    (`v`) since `List a` is recursive; head's element kind comes
-    from the list element type. Kept for round-trip / future use
-    (Phase 3.1 maps this to `AggKind::None` per Q4).
+  - `"record:N:K0:...:KN-1"` — record with N fields in layout order.
+  - `"custom:Tag:N:K0:...:KN-1"` — single-constructor custom with N
+    ≤ `customMaxFields` fields. Multi-ctor and oversized customs
+    encode as `"value"` so cross-spec leaves them boxed.
+  - `"cons:Khead:Ktail"` — list cons cell (tail is always `v`).
 
-Absent attribute is interpreted by the C++ pass as "no logical type
-info", which conservatively disables cross-spec on that function.
-Per CGEN_065, both absent and all-`"value"` shapes are treated as
-non-eligible.
-
-@docs encodeLogicalType, addLogicalTypesAttr, addLogicalTypesAttrUnknown, customMaxFields
+@docs LogicalTypeDesc, AggKind, monoTypeToLogical, mlirTypeToLogical
+@docs encodeLogicalType, addLogicalTypesAttr, addLogicalTypesAttrUnknown
+@docs customMaxFields
 
 -}
 
@@ -51,120 +54,223 @@ import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirType(..))
 
 
 {-| Field-count limit above which a single-constructor custom is
-demoted to `"value"`. Mirrors the C++ side's `kCustomMaxFields`
-constant in `EcoUnboxedAggCrossSpec`.
+demoted to `LUnknown`. Mirrors the C++ side's parser tolerance.
 -}
 customMaxFields : Int
 customMaxFields =
     3
 
 
-{-| Encode a single logical MonoType as a string for the cross-spec DSL.
+{-| Structural description of one parameter or result's logical type.
 
-The `ctorShapes` argument is the per-type constructor table from
-`Ctx.Context.typeRegistry.ctorShapes` (`Dict (comparable monoType key)
-(List CtorShape)`), used to recognise single-constructor customs.
+Each variant maps 1:1 to a wire-format string but carries the
+structural facts in typed form so producers can't accidentally
+emit a malformed encoding (e.g. record field count disagreeing
+with the kind list).
+
+`LUnknown` is the explicit "logical type unavailable" entry —
+distinct from `LValue` (`!eco.value` is a real boxed Elm type)
+even though both serialise to `"value"` on the wire. The
+distinction matters for diagnostic output and possible future
+refinement; cross-spec treats them identically for now.
 
 -}
-encodeLogicalType : Dict String (List Mono.CtorShape) -> Mono.MonoType -> String
-encodeLogicalType ctorShapes ty =
+type LogicalTypeDesc
+    = LValue
+    | LI64
+    | LF64
+    | LI16
+    | LI1
+    | LTuple2 AggKind AggKind
+    | LTuple3 AggKind AggKind AggKind
+    | LRecord (List AggKind)
+    | LCustom { tag : Int, fields : List AggKind }
+    | LCons AggKind AggKind
+    | LUnknown
+
+
+{-| Aggregate element kind. Single-character on the wire
+(REP_HEAP_002): `i`/`f`/`c`/`v` for i64/f64/i16/!eco.value.
+-}
+type AggKind
+    = AKInt
+    | AKFloat
+    | AKChar
+    | AKValue
+
+
+{-| Compute the logical description of a MonoType, consulting the
+ctor registry to recognise single-constructor customs.
+-}
+monoTypeToLogical : Dict String (List Mono.CtorShape) -> Mono.MonoType -> LogicalTypeDesc
+monoTypeToLogical ctorShapes ty =
     case ty of
         Mono.MInt ->
-            "i64"
+            LI64
 
         Mono.MFloat ->
-            "f64"
+            LF64
 
         Mono.MChar ->
-            "i16"
+            LI16
 
         Mono.MTuple [ a, b ] ->
-            "tuple2:" ++ kindCharOf a ++ ":" ++ kindCharOf b
+            LTuple2 (kindOf a) (kindOf b)
 
         Mono.MTuple [ a, b, c ] ->
-            "tuple3:" ++ kindCharOf a ++ ":" ++ kindCharOf b ++ ":" ++ kindCharOf c
+            LTuple3 (kindOf a) (kindOf b) (kindOf c)
 
         Mono.MRecord fields ->
             let
                 layout =
                     Types.computeRecordLayout fields
-
-                fieldKinds =
-                    List.map (kindCharOf << .monoType) layout.fields
             in
-            "record:"
-                ++ String.fromInt layout.fieldCount
-                ++ ":"
-                ++ String.join ":" fieldKinds
+            LRecord (List.map (kindOf << .monoType) layout.fields)
 
         Mono.MList headType ->
-            -- Cons cell: head kind from element type, tail always boxed
-            -- (List is self-recursive).
-            "cons:" ++ kindCharOf headType ++ ":v"
+            -- Tail is recursive (List a), always boxed at the wire level.
+            LCons (kindOf headType) AKValue
 
         Mono.MCustom _ _ _ ->
-            encodeCustom ctorShapes ty
+            customDescFor ctorShapes ty
 
         _ ->
+            LValue
+
+
+{-| Try to build an `LCustom` for a single-constructor MCustom with
+≤ `customMaxFields` fields; fall back to `LValue` otherwise.
+-}
+customDescFor : Dict String (List Mono.CtorShape) -> Mono.MonoType -> LogicalTypeDesc
+customDescFor ctorShapes ty =
+    case Dict.get (Mono.toComparableMonoType ty) ctorShapes of
+        Just [ singleCtor ] ->
+            let
+                fieldCount =
+                    List.length singleCtor.fieldTypes
+            in
+            if fieldCount > 0 && fieldCount <= customMaxFields then
+                LCustom
+                    { tag = singleCtor.tag
+                    , fields = List.map kindOf singleCtor.fieldTypes
+                    }
+
+            else
+                LValue
+
+        _ ->
+            LValue
+
+
+{-| Project a MonoType down to its aggregate-element kind. Non-
+primitive types (including nested aggregates) collapse to `AKValue`,
+matching the wire format's single-character element encoding.
+-}
+kindOf : Mono.MonoType -> AggKind
+kindOf ty =
+    case ty of
+        Mono.MInt ->
+            AKInt
+
+        Mono.MFloat ->
+            AKFloat
+
+        Mono.MChar ->
+            AKChar
+
+        _ ->
+            AKValue
+
+
+{-| Derive a logical description from an MLIR ABI type alone (no
+MonoType context). Used by `func.func` emitters that don't carry
+MonoTypes — kernel decls in particular. Only the four primitive
+ABI types map directly; everything else is `LUnknown`.
+-}
+mlirTypeToLogical : MlirType -> LogicalTypeDesc
+mlirTypeToLogical mlirType =
+    case mlirType of
+        I64 ->
+            LI64
+
+        F64 ->
+            LF64
+
+        I16 ->
+            LI16
+
+        I1 ->
+            LI1
+
+        _ ->
+            LUnknown
+
+
+{-| Render a logical description as its wire-format string.
+
+Total over the `LogicalTypeDesc` constructor space; producers can
+never emit a malformed encoding by construction.
+-}
+encodeLogicalType : LogicalTypeDesc -> String
+encodeLogicalType desc =
+    case desc of
+        LValue ->
             "value"
 
+        LI64 ->
+            "i64"
 
-{-| Try to emit a `"custom:Tag:N:..."` encoding when `ty` is a
-single-constructor MCustom with ≤ `customMaxFields` fields.
-Otherwise fall back to `"value"`.
--}
-encodeCustom : Dict String (List Mono.CtorShape) -> Mono.MonoType -> String
-encodeCustom ctorShapes ty =
-    let
-        key =
-            Mono.toComparableMonoType ty
-    in
-    case Dict.get key ctorShapes of
-        Just shapes ->
-            case shapes of
-                [ singleCtor ] ->
-                    let
-                        fieldCount =
-                            List.length singleCtor.fieldTypes
-                    in
-                    if fieldCount > 0 && fieldCount <= customMaxFields then
-                        let
-                            kinds =
-                                List.map kindCharOf singleCtor.fieldTypes
-                        in
-                        "custom:"
-                            ++ String.fromInt singleCtor.tag
-                            ++ ":"
-                            ++ String.fromInt fieldCount
-                            ++ ":"
-                            ++ String.join ":" kinds
+        LF64 ->
+            "f64"
 
-                    else
-                        "value"
+        LI16 ->
+            "i16"
 
-                _ ->
-                    "value"
+        LI1 ->
+            "i1"
 
-        Nothing ->
+        LTuple2 a b ->
+            "tuple2:" ++ kindChar a ++ ":" ++ kindChar b
+
+        LTuple3 a b c ->
+            "tuple3:" ++ kindChar a ++ ":" ++ kindChar b ++ ":" ++ kindChar c
+
+        LRecord fields ->
+            "record:"
+                ++ String.fromInt (List.length fields)
+                ++ String.concat (List.map (\k -> ":" ++ kindChar k) fields)
+
+        LCustom { tag, fields } ->
+            "custom:"
+                ++ String.fromInt tag
+                ++ ":"
+                ++ String.fromInt (List.length fields)
+                ++ String.concat (List.map (\k -> ":" ++ kindChar k) fields)
+
+        LCons h t ->
+            "cons:" ++ kindChar h ++ ":" ++ kindChar t
+
+        LUnknown ->
+            -- LUnknown wire-encodes identically to LValue but stays
+            -- distinct in the ADT for diagnostic / future use.
             "value"
 
 
 {-| Single-character encoding of an aggregate element's primitive kind.
-Mirrors the runtime 2-bit-per-slot bitmap (REP_HEAP_002).
 -}
-kindCharOf : Mono.MonoType -> String
-kindCharOf ty =
-    case ty of
-        Mono.MInt ->
+kindChar : AggKind -> String
+kindChar k =
+    case k of
+        AKInt ->
             "i"
 
-        Mono.MFloat ->
+        AKFloat ->
             "f"
 
-        Mono.MChar ->
+        AKChar ->
             "c"
 
-        _ ->
+        AKValue ->
             "v"
 
 
@@ -172,55 +278,45 @@ kindCharOf ty =
 `eco.logical_result_types` to a `func.func` op based on its logical
 parameter / result MonoTypes. No-op for non-`func.func` ops.
 
-`ctorShapes` is `ctx.typeRegistry.ctorShapes` and is required for
-recognising single-constructor customs. Pass `Dict.empty` if you
-only need primitive / tuple / record encodings.
+`ctorShapes` comes from `ctx.typeRegistry.ctorShapes` and is needed
+for recognising single-constructor customs.
 
 -}
 addLogicalTypesAttr : Dict String (List Mono.CtorShape) -> List Mono.MonoType -> Mono.MonoType -> MlirOp -> MlirOp
 addLogicalTypesAttr ctorShapes argTypes resultType op =
-    if op.name == "func.func" then
-        let
-            argEntries =
-                List.map (StringAttr << encodeLogicalType ctorShapes) argTypes
-
-            resultEntries =
-                [ StringAttr (encodeLogicalType ctorShapes resultType) ]
-        in
-        { op
-            | attrs =
-                op.attrs
-                    |> Dict.insert "eco.logical_param_types"
-                        (ArrayAttr Nothing argEntries)
-                    |> Dict.insert "eco.logical_result_types"
-                        (ArrayAttr Nothing resultEntries)
-        }
-
-    else
+    addLogicalDescsAttr
+        (List.map (monoTypeToLogical ctorShapes) argTypes)
+        (monoTypeToLogical ctorShapes resultType)
         op
 
 
-{-| Attach `eco.logical_param_types` / `eco.logical_result_types` to
-a `func.func` op using only the MLIR ABI types — no MonoType
-context available. Each entry is derived from the MLIR type alone:
-primitive types become `"i64"`/`"f64"`/`"i16"`/`"i1"`, everything
-else (notably `!eco.value`) becomes `"value"`.
-
-Used by `func.func` emitters that don't carry Mono types (kernel
-decls, extern stubs); guarantees that CGEN_065's "absent or all-
-LUnknown ⇒ non-eligible" invariant holds explicitly rather than
-implicitly via attribute absence.
-
+{-| Attach `eco.logical_param_types` / `eco.logical_result_types`
+using only MLIR ABI types — no MonoType context. Aggregate slots
+all become `LUnknown` since the ABI type alone can't recover the
+aggregate's shape; cross-spec then conservatively skips the function
+(CGEN_065).
 -}
 addLogicalTypesAttrUnknown : List MlirType -> MlirType -> MlirOp -> MlirOp
 addLogicalTypesAttrUnknown argMlirTypes resultMlirType op =
+    addLogicalDescsAttr
+        (List.map mlirTypeToLogical argMlirTypes)
+        (mlirTypeToLogical resultMlirType)
+        op
+
+
+{-| Shared attribute-attachment core. Both `addLogicalTypesAttr` and
+`addLogicalTypesAttrUnknown` funnel through here after converting
+their inputs to `LogicalTypeDesc`s.
+-}
+addLogicalDescsAttr : List LogicalTypeDesc -> LogicalTypeDesc -> MlirOp -> MlirOp
+addLogicalDescsAttr argDescs resultDesc op =
     if op.name == "func.func" then
         let
             argEntries =
-                List.map (StringAttr << encodeMlirAbi) argMlirTypes
+                List.map (StringAttr << encodeLogicalType) argDescs
 
             resultEntries =
-                [ StringAttr (encodeMlirAbi resultMlirType) ]
+                [ StringAttr (encodeLogicalType resultDesc) ]
         in
         { op
             | attrs =
@@ -233,25 +329,3 @@ addLogicalTypesAttrUnknown argMlirTypes resultMlirType op =
 
     else
         op
-
-
-{-| MLIR ABI type → logical-type DSL string fallback. Only the four
-primitive types map directly; everything else is opaque (`"value"`).
--}
-encodeMlirAbi : MlirType -> String
-encodeMlirAbi mlirType =
-    case mlirType of
-        I64 ->
-            "i64"
-
-        F64 ->
-            "f64"
-
-        I16 ->
-            "i16"
-
-        I1 ->
-            "i1"
-
-        _ ->
-            "value"
