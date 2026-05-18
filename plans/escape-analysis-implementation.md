@@ -1160,6 +1160,422 @@ Empirical capture + refining CHECK lines: ~1 hour (most of the
 work). Land as one commit with 3 fixtures + any CGEN_064 / CGEN_066
 note clarifying that the harness empirically validates them.
 
+### Phase 3.3 — sret‑style ABI for aggregate results containing `!eco.value`
+
+Phase 3.1 / 3.2 keep aggregate results carrying any `!eco.value` element
+boxed (the `isAllPrimitiveAggregate` filter at
+`EcoUnboxedAggCrossSpec.cpp:1020`). The 3.3 work lifts that restriction
+by giving such results a dedicated **caller‑allocated outparam** (sret)
+calling convention in the worker. Single change of scope: results that
+contain a heap pointer become eligible; everything else (params,
+all‑primitive results, all other passes) is unchanged.
+
+#### 0. Goals and non‑goals
+
+- **Goal.** Promote aggregate results whose element list contains at
+  least one `!eco.value`, e.g. `( Int, List a )`, `{ value, rest }`,
+  `Maybe Int`'s `Just a` payload. These shapes are common in compiler
+  hot paths (parser → `( token, rest )`, monomorphization → record of
+  state, etc.) and represent the bulk of residual boxing the current
+  cross‑spec pipeline cannot eliminate.
+- **Secondary goal.** Widen the `customMaxFields = 3` gate in
+  `LogicalTypes.elm` to ~8. The runtime parser and flatten pass
+  already tolerate arbitrary N; only the Elm‑side gate is artificial.
+  Bundling this here multiplies the surface area sret unlocks
+  (most record‑heavy compiler code has 4–6 fields). See §9 below.
+- **Non‑goals.** Doesn't touch all‑primitive result aggregates (those
+  keep the existing direct‑return path — LLVM packs them into a
+  struct return that RS4GC handles fine because no field is GC‑managed).
+  Doesn't touch params (already flattened to scalar args). Doesn't
+  touch cons (§8.2), multi‑ctor customs, or any aggregate kind not
+  already eligible. No new dialect ops.
+
+#### 1. Why params worked but results need a different shape
+
+Recap (from the May 2026 analysis):
+
+- `EcoFlattenAggBoundary` rewrites aggregate params into N scalar
+  params. LLVM IR has multi‑arg natively, so a `(i64, !eco.value)`
+  param tuple becomes two separate LLVM args (`i64`, `ptr addrspace(1)`).
+  RS4GC tracks each pointer arg individually through statepoints.
+- The symmetric move for results — expanding into N `func.func`
+  results — looks fine at the MLIR level, but
+  `populateFuncToLLVMConversionPatterns` packs multi‑result `func.func`
+  into a `!llvm.struct<>` return on the `llvm.func` because LLVM IR
+  has no multi‑return. A struct return containing `ptr addrspace(1)`
+  is exactly the case RS4GC's FCA‑unimplemented assertion fires on.
+
+The asymmetry isn't about primitives vs pointers — it's about LLVM
+having multi‑arg but not multi‑return. sret sidesteps both: no
+struct value crosses the call boundary, and the alloca holds the
+fields as scattered ptr / scalar slots that RS4GC roots normally.
+
+#### 2. ABI shape
+
+For each result position whose `LogicalShape` is aggregate *and*
+contains at least one `!eco.value` element:
+
+- **Drop** the position from the worker's `func.func` result list.
+- **Prepend** a `!llvm.ptr` (addrspace 0; i.e. a host‑memory pointer
+  into the caller's frame) to the worker's input list. Convention:
+  sret outparams come first, in result‑position order, then the
+  original params.
+- The worker body, at every `func.return`, projects each field of
+  the would‑be aggregate result and stores it to the matching slot
+  in the sret outparam via per‑element GEP + store. The
+  `func.return` then carries only the surviving (non‑sret) result
+  operands.
+
+Workers may mix: an all‑primitive aggregate result stays as a direct
+return (existing path); a pointer‑containing aggregate result becomes
+sret. The two coexist on the same function. Scalars and `!eco.value`
+results (non‑aggregate) also stay direct.
+
+A worker with sole result going to sret has `func.return` with zero
+operands and a `void`‑equivalent `func.func` result list — exactly
+the void‑return form LLVM already produces for procedures.
+
+#### 3. Sret slot layout
+
+The slot is the LLVM struct matching the aggregate's element types,
+but it is only used as a typed alloca — no struct value ever passes
+through a call. Field stores are at indexed GEPs:
+
+```llvm
+%slot = alloca { i64, ptr addrspace(1) }
+call void @worker$unboxed(ptr %slot, i64 %arg, ...)
+%field0_ptr = getelementptr ..., ptr %slot, i32 0, i32 0
+%field0 = load i64, ptr %field0_ptr
+%field1_ptr = getelementptr ..., ptr %slot, i32 0, i32 1
+%field1 = load ptr addrspace(1), ptr %field1_ptr
+```
+
+For pointer fields, stored pointers are live‑on‑exit from the
+worker — the worker writes the field after its last statepoint
+(naturally enforced by storing right before `func.return`, which
+has no body after it). On the caller side, the loaded
+`ptr addrspace(1)` is a normal SSA value that RS4GC will track
+across any subsequent statepoint via standard relocation rules.
+The alloca itself is in addrspace 0 (host memory in the caller's
+frame), which is not GC‑managed.
+
+We do **not** advertise the LLVM `sret` parameter attribute — the
+attribute carries TBAA / no‑capture assumptions we don't need
+and that interact awkwardly with `gc-leaf-function` lowering.
+A plain `ptr` argument with the same calling pattern is sufficient
+and is what `eco_alloc_*` already uses for similar callee‑writes‑to‑
+caller‑slot patterns.
+
+#### 4. Implementation steps
+
+The change is mostly localised to `EcoUnboxedAggCrossSpec.cpp`. No
+changes to escape analysis, flatten, or LLVM lowering passes are
+required — sret slots are plain `!llvm.ptr` params and plain
+GEP/load/store inside function bodies, which everything downstream
+already handles.
+
+**A. Lift the all‑primitive guard, gated per result.**
+
+Replace the unconditional demotion at
+`EcoUnboxedAggCrossSpec.cpp:1020-1024` with a per‑result classification:
+
+- All‑primitive aggregate → **direct‑return** (existing path).
+- Aggregate with ≥1 `!eco.value` element → **sret** (new path).
+- Aggregate with otherwise‑ineligible shape (cons, etc.) → demote.
+
+Carry the per‑result ABI choice on `Candidate` as a new
+`SmallVector<ResultAbi, 4> resultAbis` where
+`ResultAbi ∈ {Direct, Sret, Boxed}`. The Boxed entries are the
+demoted ones; everything else is eligible.
+
+**B. Extend `buildWorkerType`.**
+
+Build the new signature as: sret pointers first (one per Sret
+result), then the existing inputs; outputs are the original
+results minus the Sret positions.
+
+```cpp
+SmallVector<Type, 8> inputs;
+for (auto &s : sretResults) inputs.push_back(llvmPtrTy);
+for (auto &s : paramShapes) inputs.push_back(s.asWorkerType(ctx));
+
+SmallVector<Type, 4> outputs;
+for (unsigned i = 0; i < originalResults.size(); ++i) {
+    switch (resultAbis[i]) {
+    case ResultAbi::Direct:
+        outputs.push_back(resultShapes[i].isAggregate()
+                          ? resultShapes[i].asWorkerType(ctx)
+                          : originalResults[i]);
+        break;
+    case ResultAbi::Sret:
+        /* dropped from outputs */
+        break;
+    case ResultAbi::Boxed:
+        outputs.push_back(originalResults[i]);
+        break;
+    }
+}
+```
+
+`CalleeRedirect` gains a parallel `sretPositions` vector so call‑site
+rewriting (cross‑worker calls and the wrapper's call) knows which
+inputs are sret slots and which are real params.
+
+**C. `cloneAsWorker` result‑side rewriting for Sret positions.**
+
+For each `func.return` in the worker body, for each result position
+flagged Sret:
+
+1. The operand is currently an aggregate SSA value (after Phase 3.1
+   #4's construct→make rewrite). Walk its element types.
+2. For each element index k, emit `eco.project.*` on the aggregate
+   (or, if the aggregate was just produced by an `eco.make.*`,
+   SROA will fold this — same shortcut as 3.1).
+3. Build a GEP+store pair into the leading sret input.
+4. Drop the operand from the return list.
+
+The leading sret block‑arg is added at worker entry alongside the
+existing parameter block‑args, with type `!llvm.ptr`.
+
+**D. `replaceBodyWithWrapper` allocates the slot.**
+
+For each Sret result position:
+
+1. At wrapper entry, `llvm.alloca` (or `memref.alloca` lowered the
+   same way) a struct matching the aggregate's element MLIR types.
+2. Prepend the slot pointer to the worker call's operand list.
+3. After the worker call, GEP + load each element from the slot,
+   feed them to `eco.make.<kind>` to rebuild the aggregate, then
+   feed that into `eco.to_heap` exactly as today (the `boxedTy`,
+   `unboxed_bitmap`, `tag`, `head_kind` attributes are computed
+   the same way as the existing Direct path).
+
+The wrapper's outer `func.return` still produces the original
+boxed `!eco.value` — the wrapper's ABI is preserved.
+
+**E. Inter‑worker call rewriting.**
+
+Inside `cloneAsWorker`'s redirect loop, when a redirected callee
+has Sret result positions:
+
+1. Allocate slots for each Sret result at the call site.
+2. Build the new operand list: sret slots first, then bridged
+   aggregate / scalar operands.
+3. After the call, load each Sret field, `eco.make.*` the
+   aggregate, and replace uses of the original call's result.
+
+Self‑recursion uses the same path via `selfRedirect`.
+
+**F. Use‑check extension.**
+
+`resultPositionHasAggregateProducer` (the result‑side use check)
+needs no behavioural change — it already accepts call‑result
+passthrough, block‑arg passthrough, `from_heap`, and matching
+`construct.*` ops. With Sret returns the *worker* sees the
+aggregate as the operand of `func.return`, which the new step C
+handles. The eligibility analysis is unchanged.
+
+**G. Cross‑SCC interaction.**
+
+Phase 3.2 #1's SCC fixpoint runs over tentative shapes and uses
+`aggregateShapesMatch` for slot compatibility. Sret vs Direct is a
+*lowering* decision derived from the shape's element types, not a
+shape distinction — both ABIs share the same `LogicalShape`. SCC
+admission therefore works without modification: an SCC member
+producing `(i64, !eco.value)` via Sret can flow into another
+member's matching slot regardless of how the receiver chose to
+lower the result, because the *aggregate value* the caller sees
+after load is identical to the aggregate value the Direct path
+would have returned.
+
+#### 5. RS4GC interaction (the actual safety argument)
+
+Worker side. Between the last statepoint inside the worker and the
+field stores there must be no further statepoint, or else the stored
+pointer could be moved by GC between store and return. This is
+enforced naturally: `func.return`'s terminator semantics leave no
+body after it, and the stores immediately precede the return.
+SROA collapses any intermediate `make.* / project.*` chain, so the
+lowered IR is `<compute> ; store ; store ; ret void`.
+
+Caller side. The alloca is in addrspace 0 and is not GC‑managed.
+The loaded `ptr addrspace(1)` becomes an SSA value live across any
+subsequent statepoint (typically the `eco.to_heap` in the wrapper);
+RS4GC handles that via standard SSA relocation. No struct‑typed
+value ever passes through a call.
+
+No new GC‑leaf functions, no new safepoint markers, no statepoint
+bundle changes.
+
+#### 6. EcoFlattenAggBoundary interaction
+
+None. The flatten pass walks the function signature looking for
+aggregate types (`Tuple2/3Type`, `RecordType`, `CustomType`). Sret
+adds `!llvm.ptr` params and drops aggregate result entries, so
+after 3.3 emits the worker its signature has *no* aggregate types
+left at the boundary — flatten sees nothing to do and is a no‑op
+on Sret workers, exactly as desired.
+
+Equivalently: the order of `cross-spec → flatten` still holds.
+Cross‑spec already emits aggregate types in worker boundaries; for
+Sret results, the aggregate vanishes from the result list and is
+replaced by a `ptr` param. Flatten then handles any remaining
+aggregate *params* the same way it does today.
+
+#### 7. Tests
+
+Codegen fixtures (gated behind `-enable-unboxed-agg`):
+
+- `cross_spec_sret_tuple2_pointer.mlir` — `tuple2<i64, !eco.value>`
+  return. Worker becomes `void @f$unboxed(ptr, i64, ...)`; wrapper
+  allocates the slot, loads two fields, rebuilds, calls `to_heap`.
+- `cross_spec_sret_record_mixed.mlir` — record with mixed primitive
+  and `!eco.value` fields.
+- `cross_spec_sret_chain.mlir` — `f → g`, both returning Sret
+  aggregates; intra‑worker `f$unboxed` calls `g$unboxed` directly
+  with an alloca'd slot, no wrapper round‑trip.
+- `cross_spec_sret_scc.mlir` — Phase 3.2 #1 SCC with a Sret result
+  on one of the members; verifies SCC admission works through the
+  Sret path.
+
+LLVM‑IR harness fixtures (per Phase 3.2 #2 conventions):
+
+- `cross_spec_sret_tuple2_pointer_llvm.mlir` — assert
+  `define void @f$unboxed(ptr {{.*}}, i64 {{.*}})`, two
+  `store` instructions, no `{ i64, ptr addrspace(1) }` struct
+  return anywhere.
+
+Elm‑source fixture:
+
+- `CrossSpecReturnPointerTupleTest.elm` — a function returning
+  `( Int, List Int )` used in a `Debug.log` to force end‑to‑end
+  evaluation. Positive `// CHECK: result: …` plus
+  `// CHECK: @<name>$unboxed`.
+
+#### 8. Invariants
+
+- **CGEN_064** (extend): worker signatures may carry leading
+  `!llvm.ptr` sret outparams, one per aggregate result whose
+  shape contains an `!eco.value` element. Sret outparams are
+  ordered before any original parameters. Wrappers allocate the
+  slot, pass it to the worker, and rebuild the aggregate from
+  the slot fields before re‑boxing via `eco.to_heap`.
+- **CGEN_066** (extend): `EcoFlattenAggBoundary` is the sole
+  introducer of multi‑arg / multi‑result `func.func` signatures
+  *for aggregate boundary types*; sret outparam introduction by
+  `EcoUnboxedAggCrossSpec` is the only other source of new
+  `func.func` parameters, and those parameters are `!llvm.ptr`,
+  not aggregate types.
+- **REP_AGG_001** (extend): aggregate types may appear at function
+  *boundary* in Eco IR after cross‑spec but before flatten /
+  sret rewriting; after both passes, aggregate types appear only
+  inside function bodies. Sret outparams use `!llvm.ptr`, never
+  an aggregate type.
+- New **CGEN_067**: a worker function with an sret outparam must
+  store every field of the would‑be aggregate result via
+  per‑element GEP + store immediately before its `func.return`,
+  with no intervening statepoint or GC‑may‑call op. Verified by
+  a small invariant‑test walk over `kUnboxedWorkerAttr` funcs.
+
+#### 9. Widening `customMaxFields` (additional scope)
+
+Orthogonal one‑line change bundled into this phase because it
+multiplies the surface area sret unlocks. `customMaxFields` at
+`compiler/src/Compiler/Generate/MLIR/LogicalTypes.elm:60` is
+currently **3**: a single‑constructor `MCustom` with 4+ fields
+gets `LValue` instead of `LCustom`, so it never enters cross‑spec
+at all. The same cap effectively bounds records too, since records
+flow through the same encoding path.
+
+Bumping the cap to **8** is one constant edit:
+
+```elm
+customMaxFields : Int
+customMaxFields =
+    8
+```
+
+**Impact.** Stage 7 is full of records (closure info, parse state,
+module metadata) and 4–6‑field customs are common. Plausibly the
+single highest‑leverage knob in the codebase — could roughly
+double the savings on workloads dominated by record‑heavy
+compiler code. With Phase 3.3 sret in place, the doubling
+applies to both param and result aggregates, including those
+carrying `!eco.value` elements.
+
+**Risk.** The C++ side already tolerates arbitrary N: the cross‑
+spec parser asserts only on `parts.size` mismatch (record:
+`parts.size() != 2 + n` at `EcoUnboxedAggCrossSpec.cpp:188`;
+custom: `parts.size() != 3 + n` at line 200), and `EcoFlattenAggBoundary`'s
+slot decomposition is O(N) over element arrays. The heap layout's
+hard limit is 24 fields (`Eco_CustomConstructOp` description in
+`Ops.td`), well above any reasonable Elm shape. Only the Elm
+gate is artificial.
+
+**Validation.** Before flipping the constant, instrument
+`monoTypeToLogical` (or just `grep` the post‑Stage 5 MLIR) for
+the distribution of field counts of single‑ctor customs and
+records in real Elm code (Stage 7 self‑compile gives a
+representative sample). If the histogram has a long tail past
+8, pick a cap matching the 95th percentile rather than 8.
+
+**Test impact.** Existing cross‑spec fixtures with ≤3‑field
+customs / records continue to pass unchanged. Add one new
+codegen fixture covering a 6‑field record and a 5‑field
+single‑ctor custom (`cross_spec_wide_record.mlir`,
+`cross_spec_wide_custom.mlir`) and one Elm‑source fixture
+exercising a real ≥4‑field record (`CrossSpecWideRecordTest.elm`).
+
+#### 10. Implementation staging
+
+Five reviewable commits:
+
+1. **`ResultAbi` classification + signature changes.** Add the
+   per‑result ABI vector to `Candidate`, replace the all‑primitive
+   guard, extend `buildWorkerType` and `CalleeRedirect` to carry
+   sret positions. No body rewriting yet — workers with would‑be
+   Sret results stay disqualified at the end of Step A so this
+   commit is a pure refactor with no behavioural change.
+2. **Worker body rewriting + wrapper slot allocation.** Implement
+   steps C and D. Land the first fixture
+   (`cross_spec_sret_tuple2_pointer.mlir`) and confirm the LLVM
+   harness sibling.
+3. **Inter‑worker calls + SCC interaction.** Implement step E,
+   wire through Phase 3.2 #1's SCC fixpoint, add the chain and
+   SCC fixtures. Re‑run stress and E2E.
+4. **Elm‑source fixture + invariant updates.** Add
+   `CrossSpecReturnPointerTupleTest.elm`, amend CGEN_064 /
+   CGEN_066 / REP_AGG_001, add new CGEN_067 and its invariant
+   test. Land any harness updates.
+5. **Widen `customMaxFields` from 3 to 8.** One‑line edit in
+   `LogicalTypes.elm`, plus the wide‑record / wide‑custom
+   codegen fixtures and the Elm‑source wide‑record fixture
+   from §9. Run heap‑profile ON vs OFF before and after to
+   confirm the alloc‑bucket histogram shifts as expected.
+   Lands last so the empirical impact can be attributed
+   cleanly — the sret work in commits 1–4 should produce a
+   measurable delta on its own first, then commit 5 doubles
+   it (or doesn't — that's the experiment).
+
+Estimated effort: ~400–550 LOC C++ + ~150 LOC fixtures over
+commits 1–4, plus ~10 LOC + ~80 LOC fixtures for commit 5.
+The Step 1 refactor is the largest mechanical change; Step 2
+is the trickiest because it touches every `func.return` in
+eligible workers; Steps 3, 4, and 5 are short.
+
+#### 11. Open questions
+
+- **Do we want the LLVM `sret` attribute?** Skipped above for
+  TBAA simplicity. Adding it later is a non‑breaking change: the
+  ABI is identical, and downstream consumers (clang, LLVM mid‑end)
+  only treat the attribute as an optimisation hint. Decide if /
+  when profiling shows the load/store pair isn't being optimised
+  away in the caller.
+- **Should pure all‑primitive results also move to sret for
+  uniformity?** No (decided here). The Direct path already works
+  cleanly for all‑primitive returns and removing it would force
+  a needless alloca + load on every call. Keep both paths.
+
 ### Phase 4 — Closure environment escape analysis (separate later phase)
 
 Per Q9, this is a separate later effort after the tuple/record/custom/
@@ -1391,25 +1807,18 @@ or implementing speculative cons‑cell specialisation risks throwaway
 work. Each item below stays here until the relevant data justifies
 elaboration.
 
-### 8.1 Aggregate results carrying `!eco.value` elements
+### 8.1 Aggregate results carrying `!eco.value` elements — promoted to Phase 3.3
 
-Phase 3.1 / 3.2 keep results with boxed elements as `!eco.value`
-(the all‑primitive result filter in `EcoUnboxedAggCrossSpec`).
-Revisiting this needs an ABI choice between three competing options:
+Originally a deferred ABI question with three competing options
+(sret, LLVM‑dialect multi‑return, flatten‑on‑results). The May 2026
+analysis showed that the multi‑return and flatten‑on‑results variants
+both reintroduce a `!llvm.struct<>` return containing `ptr addrspace(1)`,
+which hits RS4GC's FCA‑unimplemented assertion. Only the sret variant
+avoids the GC interaction.
 
-- **sret‑style ABI**: caller provides an alloca; callee writes
-  fields. Adds an alloca per call but RS4GC sees only individual
-  ptr‑typed slots.
-- **Multi‑return at the LLVM dialect level** (if/when supported
-  cleanly): `llvm.func ... -> (i64, ptr addrspace(1))`.
-- **Apply `EcoFlattenAggBoundary` to results** the same way it
-  handles params: at the call site, decompose the aggregate
-  return into multiple LLVM return values via the same packing
-  trick used for params. (Probably the cleanest reuse if the LLVM
-  dialect tolerates multi‑return at func op level.)
-
-Decision deferred to when benchmark data justifies the added
-complexity.
+The sret design is now spec'd as **Phase 3.3** above. See there for
+the worker ABI, slot layout, RS4GC argument, and implementation
+staging.
 
 ### 8.2 Cons cell specialisation
 

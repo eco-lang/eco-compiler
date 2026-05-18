@@ -47,6 +47,7 @@
 #include "../Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
@@ -117,6 +118,33 @@ struct LogicalShape {
         llvm_unreachable("unhandled LogicalShape::Kind");
     }
 };
+
+/// How the worker returns each result position:
+///   - Direct: the result stays on the LLVM return list. Used for
+///     scalars, `!eco.value` results, and aggregate results whose
+///     elements are all primitive (LLVM packs them into a struct
+///     return; RS4GC accepts it because no field is GC‑managed).
+///   - Sret: the result is dropped from the LLVM return list and a
+///     leading `!llvm.ptr` outparam carries it. Used for aggregate
+///     results containing at least one `!eco.value` element — the
+///     only path that avoids RS4GC's FCA‑unimplemented assertion
+///     on a struct return containing `ptr addrspace(1)`
+///     (REP_AGG_001 amendment, Phase 3.3).
+///   - Boxed: the result was demoted by the eligibility analysis
+///     and stays as `!eco.value` on both worker and wrapper sides
+///     (existing behaviour pre‑3.3).
+enum class ResultAbi { Direct, Sret, Boxed };
+
+/// Pick the ABI for a result whose `LogicalShape` was already
+/// promoted (`isAggregate()` is true on entry). Aggregates with any
+/// `!eco.value` element go Sret; otherwise Direct.
+static ResultAbi chooseResultAbi(const LogicalShape &shape) {
+    if (!shape.isAggregate()) return ResultAbi::Boxed;
+    for (Type t : shape.elementTys) {
+        if (isa<eco::ValueType>(t)) return ResultAbi::Sret;
+    }
+    return ResultAbi::Direct;
+}
 
 /// Convert a single-character element kind from the logical-types DSL
 /// (`i`/`f`/`c`/`v`) into its MLIR type.
@@ -258,23 +286,6 @@ static bool hasAggregateShape(ArrayRef<LogicalShape> shapes) {
     return false;
 }
 
-/// True if `t` is one of the unboxable primitive types (i64/f64/i16/i1).
-static bool isPrimitiveElement(Type t) {
-    return t.isInteger(64) || t.isF64() || t.isInteger(16) || t.isInteger(1);
-}
-
-/// True iff `shape` is an aggregate whose elements are all primitives.
-/// Phase 3.1 #4 only promotes result aggregates that pass this check —
-/// aggregate results carrying `!eco.value` elements stay boxed in 3.1
-/// (deferred to 3.2 along with the sret/multi-return ABI question).
-static bool isAllPrimitiveAggregate(const LogicalShape &shape) {
-    if (!shape.isAggregate()) return false;
-    for (Type t : shape.elementTys) {
-        if (!isPrimitiveElement(t)) return false;
-    }
-    return true;
-}
-
 /// Compute the 2-bit-per-slot `unboxed_bitmap` value (REP_HEAP_002)
 /// for the given element types, mirroring the encoding produced by the
 /// Elm-side codegen: 0=boxed, 1=Int(i64), 2=Float(f64), 3=Char(i16).
@@ -306,9 +317,37 @@ struct Candidate {
     SmallVector<LogicalShape, 4> paramShapes;
     SmallVector<LogicalShape, 4> resultShapes;
     SmallVector<int64_t, 4> resultCustomTags;
+    /// Phase 3.3: per-result ABI decision parallel to `resultShapes`.
+    /// `resultAbis[i] = Sret` ⇔ position i carries an `!eco.value`
+    /// element and the worker takes a leading `!llvm.ptr` outparam
+    /// in its place.
+    SmallVector<ResultAbi, 4> resultAbis;
     bool eligible = false;
     std::string workerName;
 };
+
+/// Mirror of EcoTypeConverter's element rules: aggregate elements use
+/// these LLVM-compatible types when stored to / loaded from an sret
+/// slot. `!eco.value` lowers to `!llvm.ptr<addrspace=1>` (REP_LLVM_001).
+static Type elementToLLVMTy(Type t, MLIRContext *ctx) {
+    if (isa<eco::ValueType>(t))
+        return LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
+    // Primitives (i64/f64/i16/i1) already live in built-in dialects
+    // that LLVM accepts directly.
+    return t;
+}
+
+/// LLVM struct type matching an aggregate's element types, suitable
+/// for use as the pointee of the sret slot. Every `!eco.value` element
+/// maps to `!llvm.ptr<addrspace=1>` via `elementToLLVMTy` so the
+/// struct contains only LLVM-compatible types.
+static LLVM::LLVMStructType sretSlotStructTy(MLIRContext *ctx,
+                                              ArrayRef<Type> elementTys) {
+    SmallVector<Type, 4> llvmTys;
+    llvmTys.reserve(elementTys.size());
+    for (Type t : elementTys) llvmTys.push_back(elementToLLVMTy(t, ctx));
+    return LLVM::LLVMStructType::getLiteral(ctx, llvmTys);
+}
 
 /// True if two aggregate shapes describe the same kind and element
 /// types. Used to verify a producer's output shape matches the
@@ -582,23 +621,42 @@ static bool allUsesAreProjectionsOrCallsToEligible(
     return true;
 }
 
-/// Build the worker function signature from the param + result shapes.
-/// Phase 3.1 #4: aggregate-shaped results that survive the result-side
-/// eligibility filter are rewritten to the matching aggregate MLIR type
-/// (e.g. `!eco.value` → `!eco.tuple2<i64, i64>`). Result shapes already
-/// demoted to Boxed by the caller stay at the original result type.
+/// Build the worker function signature from the param + result shapes
+/// and the per-result ABI decisions.
+///
+/// Layout:
+///   inputs  = [sret-ptr0, sret-ptr1, ..., paramShape[0], paramShape[1], ...]
+///   outputs = [orig-or-agg[i] for each i whose resultAbis[i] != Sret]
+///
+/// Phase 3.1 #4: aggregate-shaped results classified as Direct keep
+/// the matching aggregate MLIR type on the LLVM return list (LLVM
+/// packs multi-results into a struct — safe when no field is GC-
+/// managed). Phase 3.3: results classified as Sret are removed from
+/// outputs and replaced by a leading `!llvm.ptr` input, one per Sret
+/// position, in source order. Boxed positions keep the original
+/// (boxed) result type.
 static FunctionType buildWorkerType(MLIRContext *ctx,
                                     ArrayRef<LogicalShape> paramShapes,
                                     ArrayRef<LogicalShape> resultShapes,
+                                    ArrayRef<ResultAbi> resultAbis,
                                     ArrayRef<Type> originalResults) {
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
     SmallVector<Type, 8> inputs;
-    inputs.reserve(paramShapes.size());
+    inputs.reserve(paramShapes.size() + resultAbis.size());
+    for (unsigned i = 0; i < resultAbis.size(); ++i) {
+        if (resultAbis[i] == ResultAbi::Sret) inputs.push_back(ptrTy);
+    }
     for (const auto &s : paramShapes) inputs.push_back(s.asWorkerType(ctx));
 
     SmallVector<Type, 4> outputs;
     outputs.reserve(originalResults.size());
     for (unsigned i = 0; i < originalResults.size(); ++i) {
-        if (i < resultShapes.size() && resultShapes[i].isAggregate())
+        ResultAbi abi = i < resultAbis.size() ? resultAbis[i]
+                                              : ResultAbi::Boxed;
+        if (abi == ResultAbi::Sret) continue;
+        if (abi == ResultAbi::Direct &&
+            i < resultShapes.size() && resultShapes[i].isAggregate())
             outputs.push_back(resultShapes[i].asWorkerType(ctx));
         else
             outputs.push_back(originalResults[i]);
@@ -615,6 +673,87 @@ static std::string uniqueWorkerName(SymbolTable &symTable, StringRef baseName) {
         std::string c = (baseName + kUnboxedWorkerSuffix + "_" +
                          llvm::Twine(i)).str();
         if (!symTable.lookup(c)) return c;
+    }
+}
+
+/// Emit an `eco.project.*` op of the right kind for `aggTy`, then
+/// optionally bridge `!eco.value` field types into `!llvm.ptr` via an
+/// `unrealized_conversion_cast` so the field is storable to LLVM
+/// memory. Used by the Phase 3.3 sret worker body rewriter.
+static Value projectAndConvertField(OpBuilder &builder, Location loc,
+                                     Value agg, Type aggTy,
+                                     unsigned fieldIdx, Type elemTy) {
+    auto idxAttr = builder.getI64IntegerAttr(static_cast<int64_t>(fieldIdx));
+    Value projected;
+    if (isa<eco::Tuple2Type>(aggTy)) {
+        projected = builder.create<eco::Tuple2ProjectOp>(loc, elemTy, agg, idxAttr);
+    } else if (isa<eco::Tuple3Type>(aggTy)) {
+        projected = builder.create<eco::Tuple3ProjectOp>(loc, elemTy, agg, idxAttr);
+    } else if (isa<eco::RecordType>(aggTy)) {
+        projected = builder.create<eco::RecordProjectOp>(loc, elemTy, agg, idxAttr);
+    } else if (isa<eco::CustomType>(aggTy)) {
+        projected = builder.create<eco::CustomProjectOp>(loc, elemTy, agg, idxAttr);
+    } else {
+        llvm_unreachable("projectAndConvertField: unsupported aggregate type");
+    }
+    if (isa<eco::ValueType>(elemTy)) {
+        Type ptrTy = LLVM::LLVMPointerType::get(
+            builder.getContext(), /*addressSpace=*/1);
+        return builder.create<UnrealizedConversionCastOp>(loc, ptrTy, projected)
+            .getResult(0);
+    }
+    return projected;
+}
+
+/// Emit the per-field GEP+store sequence that writes `agg` into the
+/// caller-allocated sret slot pointed to by `slot`. `slotStructTy` is
+/// the LLVM struct type matching the aggregate's element layout (one
+/// field per aggregate element, with `!eco.value` mapped to
+/// `!llvm.ptr<addrspace=1>`). Inserts at the builder's current point.
+static void emitSretStore(OpBuilder &builder, Location loc, Value slot,
+                           LLVM::LLVMStructType slotStructTy, Value agg,
+                           ArrayRef<Type> ecoElementTys) {
+    auto *ctx = builder.getContext();
+    auto i32Ty = IntegerType::get(ctx, 32);
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+    Type aggTy = agg.getType();
+    for (unsigned k = 0; k < ecoElementTys.size(); ++k) {
+        Value field = projectAndConvertField(builder, loc, agg, aggTy, k,
+                                              ecoElementTys[k]);
+        SmallVector<LLVM::GEPArg, 2> indices{
+            LLVM::GEPArg(0), LLVM::GEPArg(static_cast<int32_t>(k))};
+        auto fieldPtr = builder.create<LLVM::GEPOp>(
+            loc, ptrTy, slotStructTy, slot, indices);
+        builder.create<LLVM::StoreOp>(loc, field, fieldPtr);
+        (void)i32Ty;
+    }
+}
+
+/// Emit the per-field GEP+load sequence that reads an aggregate back
+/// from a caller-allocated sret slot, producing one SSA value per
+/// element. `!llvm.ptr<addrspace=1>` fields are converted back to
+/// `!eco.value` via `unrealized_conversion_cast`. Returned values are
+/// in element order, ready to feed `eco.make.*`.
+static void emitSretLoad(OpBuilder &builder, Location loc, Value slot,
+                          LLVM::LLVMStructType slotStructTy,
+                          ArrayRef<Type> ecoElementTys,
+                          SmallVectorImpl<Value> &fields) {
+    auto *ctx = builder.getContext();
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+    fields.clear();
+    fields.reserve(ecoElementTys.size());
+    for (unsigned k = 0; k < ecoElementTys.size(); ++k) {
+        SmallVector<LLVM::GEPArg, 2> indices{
+            LLVM::GEPArg(0), LLVM::GEPArg(static_cast<int32_t>(k))};
+        auto fieldPtr = builder.create<LLVM::GEPOp>(
+            loc, ptrTy, slotStructTy, slot, indices);
+        Type loadTy = slotStructTy.getBody()[k];
+        Value loaded = builder.create<LLVM::LoadOp>(loc, loadTy, fieldPtr);
+        if (isa<eco::ValueType>(ecoElementTys[k])) {
+            loaded = builder.create<UnrealizedConversionCastOp>(
+                loc, ecoElementTys[k], loaded).getResult(0);
+        }
+        fields.push_back(loaded);
     }
 }
 
@@ -674,10 +813,23 @@ static Value rewriteConstructToMake(OpBuilder &builder, Operation *constructOp) 
 /// callee's per-param shapes drive operand bridging (`eco.from_heap`
 /// where the operand is still `!eco.value` but the callee's worker
 /// expects an aggregate).
+///
+/// Phase 3.3: `resultAbis[i]` tells the call-site rewriter which of
+/// the callee's results come back via Sret slots. Each Sret position
+/// in `sretElementTys` carries the slot's element types so the caller
+/// can allocate a matching `!llvm.struct<>` slot and load the fields
+/// after the call. `directResultTypes` is what the LLVM-level call
+/// op returns (the Sret slice has been removed).
 struct CalleeRedirect {
     StringRef workerName;
     SmallVector<LogicalShape, 4> paramShapes;
-    SmallVector<Type, 4> workerResultTypes;
+    SmallVector<LogicalShape, 4> resultShapes;
+    SmallVector<ResultAbi, 4> resultAbis;
+    SmallVector<SmallVector<Type, 4>, 4> sretElementTys;
+    /// Result types of the worker call op after Sret outparams are
+    /// removed — i.e. what `func::CallOp::getResults()` returns. One
+    /// entry per non-Sret result, in source order.
+    SmallVector<Type, 4> directResultTypes;
 };
 
 /// Clone `original` into a worker named `workerName` with the rewritten
@@ -700,6 +852,7 @@ static func::FuncOp cloneAsWorker(OpBuilder &builder, func::FuncOp original,
                                   StringRef workerName, FunctionType workerType,
                                   ArrayRef<LogicalShape> paramShapes,
                                   ArrayRef<LogicalShape> resultShapes,
+                                  ArrayRef<ResultAbi> resultAbis,
                                   const llvm::DenseMap<StringRef, CalleeRedirect>
                                       &redirects) {
     builder.setInsertionPointAfter(original);
@@ -716,9 +869,33 @@ static func::FuncOp cloneAsWorker(OpBuilder &builder, func::FuncOp original,
     original.getBody().cloneInto(&worker.getBody(), mapper);
 
     Block &entry = worker.getBody().front();
+    MLIRContext *ctx = original.getContext();
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+    // Phase 3.3: insert leading block args for sret slots, one per
+    // Sret-classified result. Each slot is `!llvm.ptr` (addrspace 0;
+    // host memory in the caller's frame). After insertion the original
+    // param block-args shift right by `numSrets`, so the retype loop
+    // below indexes them at `numSrets + i`.
+    SmallVector<unsigned, 4> sretResultIndices;
+    SmallVector<LLVM::LLVMStructType, 4> sretSlotTys;
+    for (unsigned i = 0; i < resultAbis.size(); ++i) {
+        if (resultAbis[i] != ResultAbi::Sret) continue;
+        sretResultIndices.push_back(i);
+        sretSlotTys.push_back(
+            sretSlotStructTy(ctx, resultShapes[i].elementTys));
+    }
+    unsigned numSrets = sretResultIndices.size();
+    SmallVector<BlockArgument, 4> sretSlotArgs;
+    sretSlotArgs.reserve(numSrets);
+    for (unsigned k = 0; k < numSrets; ++k) {
+        sretSlotArgs.push_back(
+            entry.insertArgument(k, ptrTy, worker.getLoc()));
+    }
+
     for (unsigned i = 0; i < paramShapes.size(); ++i) {
-        BlockArgument arg = entry.getArgument(i);
-        Type newTy = workerType.getInput(i);
+        BlockArgument arg = entry.getArgument(numSrets + i);
+        Type newTy = workerType.getInput(numSrets + i);
         if (arg.getType() != newTy) arg.setType(newTy);
     }
 
@@ -768,22 +945,108 @@ static func::FuncOp cloneAsWorker(OpBuilder &builder, func::FuncOp original,
     CalleeRedirect selfRedirect;
     selfRedirect.workerName = workerName;
     selfRedirect.paramShapes.assign(paramShapes.begin(), paramShapes.end());
+    selfRedirect.resultShapes.assign(resultShapes.begin(), resultShapes.end());
+    selfRedirect.resultAbis.assign(resultAbis.begin(), resultAbis.end());
+    for (unsigned i = 0; i < resultAbis.size(); ++i) {
+        if (resultAbis[i] == ResultAbi::Sret) {
+            SmallVector<Type, 4> els(resultShapes[i].elementTys.begin(),
+                                      resultShapes[i].elementTys.end());
+            selfRedirect.sretElementTys.push_back(std::move(els));
+        }
+    }
     for (Type t : workerType.getResults())
-        selfRedirect.workerResultTypes.push_back(t);
+        selfRedirect.directResultTypes.push_back(t);
 
+    auto i64Ty = IntegerType::get(ctx, 64);
     for (auto &[callOp, name] : redirectedCalls) {
         const CalleeRedirect &redirect = (name == origName)
                                              ? selfRedirect
                                              : redirects.lookup(name);
         OpBuilder b(callOp);
-        SmallVector<Value, 4> operands(callOp->getOperands().begin(),
-                                       callOp->getOperands().end());
-        bridgeOperands(callOp->getLoc(), b, redirect, operands);
-        auto fc = b.create<func::CallOp>(callOp->getLoc(),
-                                          redirect.workerName,
-                                          redirect.workerResultTypes,
-                                          operands);
-        callOp->replaceAllUsesWith(fc.getResults());
+        Location callLoc = callOp->getLoc();
+
+        // Phase 3.3: allocate sret slots for each Sret-classified
+        // result of the callee. Slots are stack-local to the calling
+        // worker. They come first in the new operand list to match the
+        // callee's worker signature.
+        SmallVector<Value, 4> sretSlotVals;
+        SmallVector<unsigned, 4> sretResultIdx;
+        unsigned sretCounter = 0;
+        for (unsigned i = 0; i < redirect.resultAbis.size(); ++i) {
+            if (redirect.resultAbis[i] != ResultAbi::Sret) continue;
+            auto slotStructTy =
+                sretSlotStructTy(ctx, redirect.resultShapes[i].elementTys);
+            auto one = b.create<LLVM::ConstantOp>(
+                callLoc, i64Ty, b.getI64IntegerAttr(1));
+            auto slot = b.create<LLVM::AllocaOp>(
+                callLoc, ptrTy, slotStructTy, one);
+            sretSlotVals.push_back(slot.getResult());
+            sretResultIdx.push_back(i);
+            (void)sretCounter;
+        }
+
+        SmallVector<Value, 4> operands;
+        operands.reserve(sretSlotVals.size() + callOp->getNumOperands());
+        for (Value s : sretSlotVals) operands.push_back(s);
+        for (Value o : callOp->getOperands()) operands.push_back(o);
+
+        bridgeOperands(callLoc, b, redirect, operands);
+        auto fc = b.create<func::CallOp>(
+            callLoc, redirect.workerName, redirect.directResultTypes,
+            operands);
+
+        // Replace each original result of `callOp` with either:
+        //   - the corresponding new-call direct result (Direct/Boxed), or
+        //   - a freshly-rebuilt aggregate loaded from the matching sret
+        //     slot (Sret).
+        SmallVector<Value, 4> replacements;
+        replacements.reserve(callOp->getNumResults());
+        unsigned directCursor = 0;
+        unsigned sretCursor = 0;
+        for (unsigned i = 0; i < callOp->getNumResults(); ++i) {
+            ResultAbi abi = i < redirect.resultAbis.size()
+                                ? redirect.resultAbis[i]
+                                : ResultAbi::Boxed;
+            if (abi != ResultAbi::Sret) {
+                replacements.push_back(fc.getResult(directCursor++));
+                continue;
+            }
+            const LogicalShape &rs = redirect.resultShapes[i];
+            SmallVector<Value, 4> loadedFields;
+            auto slotStructTy =
+                sretSlotStructTy(ctx, rs.elementTys);
+            emitSretLoad(b, callLoc, sretSlotVals[sretCursor],
+                         slotStructTy, rs.elementTys, loadedFields);
+            ++sretCursor;
+            Value rebuilt;
+            switch (rs.kind) {
+            case LogicalShape::Tuple2:
+                rebuilt = b.create<eco::Tuple2MakeOp>(
+                    callLoc, rs.asWorkerType(ctx),
+                    loadedFields[0], loadedFields[1]);
+                break;
+            case LogicalShape::Tuple3:
+                rebuilt = b.create<eco::Tuple3MakeOp>(
+                    callLoc, rs.asWorkerType(ctx),
+                    loadedFields[0], loadedFields[1], loadedFields[2]);
+                break;
+            case LogicalShape::Record:
+                rebuilt = b.create<eco::RecordMakeOp>(
+                    callLoc, rs.asWorkerType(ctx), loadedFields);
+                break;
+            case LogicalShape::Custom:
+                rebuilt = b.create<eco::CustomMakeOp>(
+                    callLoc, rs.asWorkerType(ctx), loadedFields,
+                    b.getI64IntegerAttr(rs.customTag),
+                    /*constructor=*/StringAttr());
+                break;
+            default:
+                llvm_unreachable("Sret on non-aggregate shape");
+            }
+            replacements.push_back(rebuilt);
+            (void)sretResultIdx;
+        }
+        callOp->replaceAllUsesWith(replacements);
         callOp->erase();
     }
 
@@ -798,6 +1061,9 @@ static func::FuncOp cloneAsWorker(OpBuilder &builder, func::FuncOp original,
         SmallVector<func::ReturnOp, 4> returns;
         worker.walk([&](func::ReturnOp r) { returns.push_back(r); });
         for (func::ReturnOp ret : returns) {
+            // First pass: lift construct → make for any aggregate
+            // operand. After this every aggregate result operand has
+            // its aggregate MLIR type.
             for (unsigned i = 0; i < resultShapes.size() &&
                                  i < ret.getNumOperands(); ++i) {
                 if (!resultShapes[i].isAggregate()) continue;
@@ -810,6 +1076,35 @@ static func::FuncOp cloneAsWorker(OpBuilder &builder, func::FuncOp original,
                 OpBuilder b(def);
                 rewriteConstructToMake(b, def);
             }
+
+            // Phase 3.3 second pass: for each Sret result position,
+            // store the aggregate into its slot via per-element GEP +
+            // store and drop the operand from the new return list. The
+            // stores happen immediately before the (rebuilt) return op
+            // — naturally enforcing CGEN_067 (no statepoint between
+            // store and return).
+            if (numSrets == 0) continue;
+            OpBuilder rb(ret);
+            unsigned sretCursor = 0;
+            SmallVector<Value, 4> newRetOperands;
+            newRetOperands.reserve(ret.getNumOperands());
+            for (unsigned i = 0; i < ret.getNumOperands(); ++i) {
+                bool isSret = sretCursor < sretResultIndices.size() &&
+                              sretResultIndices[sretCursor] == i;
+                if (!isSret) {
+                    newRetOperands.push_back(ret.getOperand(i));
+                    continue;
+                }
+                Value slot = sretSlotArgs[sretCursor];
+                LLVM::LLVMStructType slotStructTy = sretSlotTys[sretCursor];
+                ArrayRef<Type> ecoEls = resultShapes[i].elementTys;
+                emitSretStore(rb, ret.getLoc(), slot, slotStructTy,
+                              ret.getOperand(i), ecoEls);
+                ++sretCursor;
+            }
+            auto newRet = rb.create<func::ReturnOp>(ret.getLoc(), newRetOperands);
+            (void)newRet;
+            ret.erase();
         }
     }
 
@@ -828,10 +1123,18 @@ static func::FuncOp cloneAsWorker(OpBuilder &builder, func::FuncOp original,
 /// `customTagPerResult` carries the Custom constructor tag for each
 /// promoted Custom result position; entries for non-Custom positions
 /// (or non-promoted positions) are zero and ignored.
+///
+/// Phase 3.3: when a result position is Sret, the wrapper allocates an
+/// `!llvm.struct<>` slot via `llvm.alloca`, prepends the slot pointer
+/// to the worker's operand list, then reads the aggregate back from
+/// the slot after the call via per-element GEP+load and rebuilds it
+/// with `eco.make.*` before passing through the existing `eco.to_heap`
+/// boxing path. Direct and Boxed positions reuse the existing logic.
 static void replaceBodyWithWrapper(OpBuilder &builder, func::FuncOp original,
                                    func::FuncOp worker,
                                    ArrayRef<LogicalShape> paramShapes,
                                    ArrayRef<LogicalShape> resultShapes,
+                                   ArrayRef<ResultAbi> resultAbis,
                                    ArrayRef<int64_t> customTagPerResult) {
     Region &body = original.getBody();
     body.getBlocks().clear();
@@ -841,34 +1144,115 @@ static void replaceBodyWithWrapper(OpBuilder &builder, func::FuncOp original,
 
     builder.setInsertionPointToStart(entry);
 
+    MLIRContext *ctx = builder.getContext();
+    Location loc = original.getLoc();
+    auto i64Ty = IntegerType::get(ctx, 64);
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+    // Phase 3.3: allocate one sret slot per Sret-classified result.
+    // Slots come first in the worker's operand list, matching the
+    // worker signature emitted by buildWorkerType.
+    SmallVector<Value, 4> sretSlots;
+    SmallVector<unsigned, 4> sretResultIndices;
+    SmallVector<LLVM::LLVMStructType, 4> sretSlotTys;
+    for (unsigned i = 0; i < resultAbis.size(); ++i) {
+        if (resultAbis[i] != ResultAbi::Sret) continue;
+        sretResultIndices.push_back(i);
+        auto slotStructTy = sretSlotStructTy(ctx, resultShapes[i].elementTys);
+        sretSlotTys.push_back(slotStructTy);
+        auto one = builder.create<LLVM::ConstantOp>(
+            loc, i64Ty, builder.getI64IntegerAttr(1));
+        auto slot = builder.create<LLVM::AllocaOp>(
+            loc, ptrTy, slotStructTy, one);
+        sretSlots.push_back(slot.getResult());
+    }
+
     SmallVector<Value, 8> workerArgs;
-    workerArgs.reserve(entry->getNumArguments());
+    workerArgs.reserve(sretSlots.size() + entry->getNumArguments());
+    for (Value slot : sretSlots) workerArgs.push_back(slot);
+
     for (unsigned i = 0; i < entry->getNumArguments(); ++i) {
         Value boxed = entry->getArgument(i);
         if (!paramShapes[i].isAggregate()) {
             workerArgs.push_back(boxed);
             continue;
         }
-        Type aggTy = worker.getFunctionType().getInput(i);
-        auto unboxed = builder.create<eco::FromHeapOp>(
-            original.getLoc(), aggTy, boxed);
+        Type aggTy = worker.getFunctionType().getInput(
+            sretSlots.size() + i);
+        auto unboxed = builder.create<eco::FromHeapOp>(loc, aggTy, boxed);
         workerArgs.push_back(unboxed.getResult());
     }
 
-    auto callOp = builder.create<func::CallOp>(
-        original.getLoc(), worker, workerArgs);
+    auto callOp = builder.create<func::CallOp>(loc, worker, workerArgs);
 
-    // Box each aggregate-shaped worker result via `eco.to_heap`,
-    // populating the heap-layout attributes (tag for Custom, bitmap
-    // for record/custom). GC roots are left to EcoGCPrepare, which
-    // walks live_roots through the GCRootCarrier interface.
+    // Walk results in source order, pulling each value from either the
+    // call op's direct results or from its sret slot. Direct (and the
+    // pre-3.3 aggregate-by-value) path: take callOp.getResult(directCursor++).
+    // Sret path: load fields from the matching slot, rebuild aggregate
+    // via eco.make.* before re-boxing.
     SmallVector<Value, 4> returnValues;
-    returnValues.reserve(callOp.getNumResults());
-    for (unsigned i = 0; i < callOp.getNumResults(); ++i) {
-        Value v = callOp.getResult(i);
-        const LogicalShape &rs = i < resultShapes.size()
-                                     ? resultShapes[i]
-                                     : LogicalShape{};
+    returnValues.reserve(resultShapes.size());
+    unsigned directCursor = 0;
+    unsigned sretCursor = 0;
+    for (unsigned i = 0; i < resultShapes.size(); ++i) {
+        const LogicalShape &rs = resultShapes[i];
+        ResultAbi abi = i < resultAbis.size() ? resultAbis[i]
+                                              : ResultAbi::Boxed;
+
+        if (abi == ResultAbi::Sret) {
+            // Load fields from the slot, rebuild aggregate, then
+            // continue down the boxing path.
+            SmallVector<Value, 4> loadedFields;
+            emitSretLoad(builder, loc, sretSlots[sretCursor],
+                         sretSlotTys[sretCursor], rs.elementTys,
+                         loadedFields);
+            ++sretCursor;
+            Value rebuilt;
+            switch (rs.kind) {
+            case LogicalShape::Tuple2:
+                rebuilt = builder.create<eco::Tuple2MakeOp>(
+                    loc, rs.asWorkerType(ctx),
+                    loadedFields[0], loadedFields[1]);
+                break;
+            case LogicalShape::Tuple3:
+                rebuilt = builder.create<eco::Tuple3MakeOp>(
+                    loc, rs.asWorkerType(ctx),
+                    loadedFields[0], loadedFields[1], loadedFields[2]);
+                break;
+            case LogicalShape::Record:
+                rebuilt = builder.create<eco::RecordMakeOp>(
+                    loc, rs.asWorkerType(ctx), loadedFields);
+                break;
+            case LogicalShape::Custom: {
+                int64_t tag = i < customTagPerResult.size()
+                                  ? customTagPerResult[i] : 0;
+                rebuilt = builder.create<eco::CustomMakeOp>(
+                    loc, rs.asWorkerType(ctx), loadedFields,
+                    builder.getI64IntegerAttr(tag),
+                    /*constructor=*/StringAttr());
+                break;
+            }
+            default:
+                llvm_unreachable("Sret on non-aggregate shape");
+            }
+            Type boxedTy = original.getFunctionType().getResult(i);
+            int64_t bitmap = computeUnboxedBitmap(rs.elementTys);
+            int64_t customTag = (rs.kind == LogicalShape::Custom &&
+                                  i < customTagPerResult.size())
+                                     ? customTagPerResult[i] : 0;
+            auto toHeap = builder.create<eco::ToHeapOp>(
+                loc, boxedTy, rebuilt,
+                /*live_roots=*/ValueRange{},
+                /*unboxed_bitmap=*/builder.getI64IntegerAttr(bitmap),
+                /*tag=*/builder.getI64IntegerAttr(customTag),
+                /*head_kind=*/builder.getI64IntegerAttr(0),
+                /*head_unboxed=*/builder.getBoolAttr(false));
+            returnValues.push_back(toHeap.getResult());
+            continue;
+        }
+
+        // Direct or Boxed path: pull from the call op's results.
+        Value v = callOp.getResult(directCursor++);
         if (!rs.isAggregate()) {
             returnValues.push_back(v);
             continue;
@@ -881,7 +1265,7 @@ static void replaceBodyWithWrapper(OpBuilder &builder, func::FuncOp original,
                           ? customTagPerResult[i]
                           : 0;
         auto toHeap = builder.create<eco::ToHeapOp>(
-            original.getLoc(),
+            loc,
             boxedTy,
             v,
             /*live_roots=*/ValueRange{},
@@ -892,7 +1276,7 @@ static void replaceBodyWithWrapper(OpBuilder &builder, func::FuncOp original,
         returnValues.push_back(toHeap.getResult());
     }
 
-    builder.create<func::ReturnOp>(original.getLoc(), returnValues);
+    builder.create<func::ReturnOp>(loc, returnValues);
 }
 
 struct EcoUnboxedAggCrossSpecPass
@@ -1013,16 +1397,18 @@ struct EcoUnboxedAggCrossSpecPass
             SmallVector<LogicalShape, 4> resultShapes;
             if (!readLogicalShapes(func, paramShapes, resultShapes)) return;
 
-            // Apply the all-primitive guard up-front: an aggregate
-            // result with !eco.value elements is permanently demoted
-            // (Phase 3.2 will revisit). This filter doesn't depend on
-            // callee eligibility, so it stays out of the fixpoint loop.
-            for (auto &s : resultShapes) {
-                if (s.isAggregate() && !isAllPrimitiveAggregate(s)) {
-                    s.kind = LogicalShape::Boxed;
-                    s.elementTys.clear();
-                }
-            }
+            // Phase 3.3: classify each aggregate result by ABI. Sret
+            // is the path for aggregates with `!eco.value` elements
+            // (avoids the FCA-with-gc-pointer return RS4GC rejects).
+            // Direct keeps the existing LLVM multi-return path for
+            // all-primitive aggregates. Boxed is the demoted fallback.
+            //
+            // The actual ABI is recorded on `Candidate::resultAbis` at
+            // commit time so cloneAsWorker / replaceBodyWithWrapper can
+            // light up the matching worker shape (sret outparam, direct
+            // return, or boxed passthrough). No pre-emptive demotion
+            // is applied here — Sret shapes stay aggregate and reach
+            // the body rewriter.
 
             bool anyAggregateOnEitherSide =
                 hasAggregateShape(paramShapes) || hasAggregateShape(resultShapes);
@@ -1129,6 +1515,10 @@ struct EcoUnboxedAggCrossSpecPass
                 cand.paramShapes = std::move(tentativeParams);
                 cand.resultShapes = std::move(tentativeResults);
                 cand.resultCustomTags = std::move(tentativeCustomTags);
+                cand.resultAbis.clear();
+                cand.resultAbis.reserve(cand.resultShapes.size());
+                for (const auto &rs : cand.resultShapes)
+                    cand.resultAbis.push_back(chooseResultAbi(rs));
                 cand.eligible = true;
                 eligibleNames.insert(name);
                 changed = true;
@@ -1217,6 +1607,10 @@ struct EcoUnboxedAggCrossSpecPass
                 for (unsigned i = 0; i < mr.size(); ++i)
                     if (mr[i].kind == LogicalShape::Custom)
                         cand.resultCustomTags[i] = mr[i].customTag;
+                cand.resultAbis.clear();
+                cand.resultAbis.reserve(cand.resultShapes.size());
+                for (const auto &rs : cand.resultShapes)
+                    cand.resultAbis.push_back(chooseResultAbi(rs));
                 cand.eligible = true;
                 eligibleNames.insert(m);
             }
@@ -1232,11 +1626,21 @@ struct EcoUnboxedAggCrossSpecPass
             CalleeRedirect r;
             r.workerName = kv.second.workerName;
             r.paramShapes = kv.second.paramShapes;
+            r.resultShapes = kv.second.resultShapes;
+            r.resultAbis = kv.second.resultAbis;
+            for (unsigned i = 0; i < kv.second.resultAbis.size(); ++i) {
+                if (kv.second.resultAbis[i] == ResultAbi::Sret) {
+                    SmallVector<Type, 4> els(
+                        kv.second.resultShapes[i].elementTys.begin(),
+                        kv.second.resultShapes[i].elementTys.end());
+                    r.sretElementTys.push_back(std::move(els));
+                }
+            }
             FunctionType wt = buildWorkerType(
                 module.getContext(), kv.second.paramShapes,
-                kv.second.resultShapes,
+                kv.second.resultShapes, kv.second.resultAbis,
                 kv.second.func.getFunctionType().getResults());
-            for (Type t : wt.getResults()) r.workerResultTypes.push_back(t);
+            for (Type t : wt.getResults()) r.directResultTypes.push_back(t);
             redirects.try_emplace(kv.first, std::move(r));
         }
 
@@ -1248,13 +1652,16 @@ struct EcoUnboxedAggCrossSpecPass
             Candidate &cand = kv.second;
             FunctionType workerTy = buildWorkerType(
                 module.getContext(), cand.paramShapes, cand.resultShapes,
+                cand.resultAbis,
                 cand.func.getFunctionType().getResults());
             func::FuncOp worker = cloneAsWorker(
                 builder, cand.func, cand.workerName, workerTy,
-                cand.paramShapes, cand.resultShapes, redirects);
+                cand.paramShapes, cand.resultShapes, cand.resultAbis,
+                redirects);
             symTable.insert(worker);
             replaceBodyWithWrapper(builder, cand.func, worker,
                                    cand.paramShapes, cand.resultShapes,
+                                   cand.resultAbis,
                                    cand.resultCustomTags);
         }
     }

@@ -54,11 +54,17 @@ import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirType(..))
 
 
 {-| Field-count limit above which a single-constructor custom is
-demoted to `LUnknown`. Mirrors the C++ side's parser tolerance.
+demoted to `LUnknown`. The C++ side's parser tolerates any N
+(`EcoUnboxedAggCrossSpec.cpp:188/200`) and the heap layout's
+hard limit is 24 fields (`Eco_CustomConstructOp` description in
+`Ops.td`), so this gate is purely an Elm-side throttle. Bumped from
+3 → 8 in Phase 3.3 to cover the bulk of record/custom shapes that
+appear in real compiler code (closure info, parse state, module
+metadata, 4–6-field customs).
 -}
 customMaxFields : Int
 customMaxFields =
-    3
+    8
 
 
 {-| Structural description of one parameter or result's logical type.
