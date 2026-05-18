@@ -1,5 +1,6 @@
 #pragma once
 
+#include "CheckPatterns.hpp"
 #include "IsolatedTestRunner.hpp"
 #include "TestSuite.hpp"
 #include "../runtime/src/codegen/EcoRunner.hpp"
@@ -292,69 +293,19 @@ inline std::string extractExpectedOutput(const std::string& content) {
     return "";
 }
 
-/**
- * One CHECK directive parsed out of an Elm test file. Elm uses `--` as
- * the line-comment marker, so the directives are `-- CHECK:` (positive)
- * and `-- CHECK-NOT:` (negative).
- */
-struct CheckPattern {
-    std::string pattern;
-    bool negated;
-};
-
-inline std::string trimCheckPattern(std::string pattern) {
-    size_t start = pattern.find_first_not_of(" \t");
-    if (start != std::string::npos) {
-        pattern = pattern.substr(start);
-    }
-    size_t end = pattern.find_last_not_of(" \t\r\n");
-    if (end != std::string::npos) {
-        pattern = pattern.substr(0, end + 1);
-    }
-    return pattern;
-}
+// CHECK / CHECK-NOT machinery lives in /work/test/CheckPatterns.hpp.
+// Elm uses `--` as the line-comment marker, so directives are
+// `-- CHECK:` and `-- CHECK-NOT:` — the shared `extractCheckPatterns`
+// is parameterised on the prefix strings to handle this.
+using eco_test::CheckPattern;
+using eco_test::trimCheckPattern;
+using eco_test::patternMatches;
+using eco_test::verifyPatterns;
 
 inline std::vector<CheckPattern> extractCheckPatterns(const std::string& content) {
-    static constexpr const char kCheckNot[] = "-- CHECK-NOT:";
-    static constexpr const char kCheck[]    = "-- CHECK:";
-    static constexpr size_t kCheckNotLen = sizeof(kCheckNot) - 1;
-    static constexpr size_t kCheckLen    = sizeof(kCheck) - 1;
-
-    std::vector<CheckPattern> patterns;
-    std::istringstream stream(content);
-    std::string line;
-    while (std::getline(stream, line)) {
-        size_t notPos = line.find(kCheckNot);
-        if (notPos != std::string::npos) {
-            std::string pattern = trimCheckPattern(line.substr(notPos + kCheckNotLen));
-            if (!pattern.empty()) {
-                patterns.push_back({std::move(pattern), /*negated=*/true});
-            }
-            continue;
-        }
-        size_t pos = line.find(kCheck);
-        if (pos != std::string::npos) {
-            std::string pattern = trimCheckPattern(line.substr(pos + kCheckLen));
-            if (!pattern.empty()) {
-                patterns.push_back({std::move(pattern), /*negated=*/false});
-            }
-        }
-    }
-    return patterns;
-}
-
-inline std::string verifyPatterns(const std::string& output,
-                                   const std::vector<CheckPattern>& patterns) {
-    for (const auto& cp : patterns) {
-        bool found = (output.find(cp.pattern) != std::string::npos);
-        if (cp.negated && found) {
-            return "Unexpected pattern (CHECK-NOT): " + cp.pattern;
-        }
-        if (!cp.negated && !found) {
-            return "Missing pattern: " + cp.pattern;
-        }
-    }
-    return "";
+    return eco_test::extractCheckPatterns(content,
+                                           "-- CHECK:",
+                                           "-- CHECK-NOT:");
 }
 
 // ============================================================================
