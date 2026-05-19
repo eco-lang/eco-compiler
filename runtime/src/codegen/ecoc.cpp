@@ -210,20 +210,12 @@ static int dumpLLVMIR(ModuleOp module) {
         return 1;
     }
 
-    // Run RS4GC + optional post-RS4GC dump via shared backend helper.
-    // No frame-pointer attributes for pure IR dump.
-    {
-        eco::RS4GCOptions rs4gcOpts;
-        rs4gcOpts.postDumpPath = dumpRS4GCIR;
-        rs4gcOpts.addFramePointerAttr = false;
-        eco::runRS4GCAndMaybeFramePointers(*llvmModule, rs4gcOpts);
-    }
-
-    // Initialize LLVM targets for the host platform.
+    // Initialize LLVM targets and create TargetMachine BEFORE RS4GC so the
+    // module's DataLayout is set when the GC pipeline runs (Phase 3 of the
+    // pipeline-convergence plan).
     llvm::InitializeNativeTarget();
     llvm::InitializeNativeTargetAsmPrinter();
 
-    // Create target machine for the host.
     auto tmBuilderOrError = llvm::orc::JITTargetMachineBuilder::detectHost();
     if (!tmBuilderOrError) {
         llvm::errs() << "Could not create JITTargetMachineBuilder\n";
@@ -236,8 +228,24 @@ static int dumpLLVMIR(ModuleOp module) {
         return 1;
     }
 
-    ExecutionEngine::setupTargetTripleAndDataLayout(llvmModule.get(),
-                                                     tmOrError.get().get());
+    std::unique_ptr<llvm::TargetMachine> tm = std::move(tmOrError.get());
+    eco::EcoJIT::setupTargetTripleAndDataLayout(llvmModule.get(), tm.get());
+
+    // Run RS4GC via the shared backend driver. No frame-pointer attributes
+    // for pure IR dump.
+    {
+        eco::EcoBackendJob job;
+        job.kind = eco::BackendKind::DumpLLVMText;
+        job.tm = tm.get();
+        job.optLevel = enableOpt ? llvm::CodeGenOptLevel::Aggressive
+                                 : llvm::CodeGenOptLevel::None;
+        job.needsFramePointerAttr = false;
+        job.postRS4GCDumpPath = dumpRS4GCIR;
+        if (auto err = eco::runEcoBackend(*llvmModule, job)) {
+            llvm::errs() << "RS4GC failed: " << err << "\n";
+            return 1;
+        }
+    }
 
     // Optionally run LLVM optimization passes.
     if (enableOpt) {

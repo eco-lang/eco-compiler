@@ -695,22 +695,10 @@ int main(int argc, char **argv) {
         }
     }
 
-    // Run RS4GC + optional pre/post dumps + frame-pointer attributes via the
-    // shared backend helper.
-    {
-        eco::LoweringStats::Scope scope(stats, "LLVM RS4GC pipeline");
-        eco::RS4GCOptions rs4gcOpts;
-        rs4gcOpts.preDumpPath = dumpPreRS4GCIR;
-        rs4gcOpts.postDumpPath = dumpRS4GCIR;
-        rs4gcOpts.addFramePointerAttr = true;
-        eco::runRS4GCAndMaybeFramePointers(*llvmModule, rs4gcOpts);
-    }
-
-    // Clean up temp MLIR file now that we're done with it
-    if (!tempMlirFile.empty())
-        llvm::sys::fs::remove(tempMlirFile);
-
-    // Step 5: Create target machine and set data layout
+    // Step 5: Create TargetMachine and set DataLayout BEFORE RS4GC (Phase 3
+    // of the pipeline-convergence plan — matches the JIT path's ordering).
+    // createTargetMachine() is opt-level aware; that is load-bearing for
+    // AOT -O0..-O3 codegen and must stay in this tool's local helper.
     std::unique_ptr<llvm::TargetMachine> tm;
     {
         eco::LoweringStats::Scope scope(stats, "TargetMachine init");
@@ -718,6 +706,29 @@ int main(int argc, char **argv) {
         if (!tm)
             return 1;
     }
+
+    // Step 6: Run RS4GC + optional pre/post dumps + frame-pointer attributes
+    // via the shared backend driver.
+    {
+        eco::LoweringStats::Scope scope(stats, "LLVM RS4GC pipeline");
+        eco::EcoBackendJob job;
+        job.kind = eco::BackendKind::EmitObjectFile;
+        job.tm = tm.get();
+        job.optLevel = optLevel > 0
+            ? static_cast<llvm::CodeGenOptLevel>(std::min(optLevel.getValue(), 3u))
+            : llvm::CodeGenOptLevel::None;
+        job.needsFramePointerAttr = true;
+        job.preRS4GCDumpPath = dumpPreRS4GCIR;
+        job.postRS4GCDumpPath = dumpRS4GCIR;
+        if (auto err = eco::runEcoBackend(*llvmModule, job)) {
+            llvm::errs() << "Error: RS4GC failed: " << err << "\n";
+            return 1;
+        }
+    }
+
+    // Clean up temp MLIR file now that we're done with it
+    if (!tempMlirFile.empty())
+        llvm::sys::fs::remove(tempMlirFile);
 
     // Step 6: Optionally run LLVM optimization passes
     if (optLevel > 0) {
