@@ -274,18 +274,18 @@ static int runJIT(ModuleOp module) {
     registerLLVMDialectTranslation(*module->getContext());
 
     // Set up EcoJIT options with statepoint conversion + optional optimization.
+    // The transformer routes through runEcoBackend(JITInvokePacked) so JIT and
+    // AOT share one entry point for RS4GC + FP + opt.
     eco::EcoJITOptions options;
-    auto baseTransformer = enableOpt
-        ? makeOptimizingTransformer(3, 0, nullptr)
-        : makeOptimizingTransformer(0, 0, nullptr);
-    options.transformer = [baseTransformer](llvm::Module *m) -> llvm::Error {
-        eco::RS4GCOptions rs4gcOpts;
-        rs4gcOpts.addFramePointerAttr = true;
-        eco::runRS4GCAndMaybeFramePointers(*m, rs4gcOpts);
-
-        auto err = baseTransformer(m);
-        if (err) return err;
-        return llvm::Error::success();
+    bool enableOptCapture = enableOpt;
+    options.transformer = [enableOptCapture](llvm::Module *m) -> llvm::Error {
+        eco::EcoBackendJob job;
+        job.kind = eco::BackendKind::JITInvokePacked;
+        job.tm = nullptr;
+        job.optLevel = enableOptCapture ? llvm::CodeGenOptLevel::Aggressive
+                                        : llvm::CodeGenOptLevel::None;
+        job.needsFramePointerAttr = true;
+        return eco::runEcoBackend(*m, job);
     };
 
     // Create the EcoJIT execution engine (with stack map extraction).

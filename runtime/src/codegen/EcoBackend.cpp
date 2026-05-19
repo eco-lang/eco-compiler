@@ -119,9 +119,18 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job) {
         return Error::success();
     }
 
-    case BackendKind::JITInvokePacked:
-        // Reserved for Phase 4. No caller constructs this kind yet.
-        llvm_unreachable("BackendKind::JITInvokePacked is reserved for Phase 4");
+    case BackendKind::JITInvokePacked: {
+        // JIT path: always run makeOptimizingTransformer (level 0 is a no-op-ish
+        // pipeline; matches the pre-Phase-4 behaviour of ecoc::runJIT and
+        // EcoRunner::executeJIT). `tm` is typically nullptr — the JIT picks
+        // up the real TargetMachine through EcoJIT::create, and the lambda
+        // runs after DL is already on the module.
+        auto optPipeline = mlir::makeOptimizingTransformer(
+            static_cast<unsigned>(job.optLevel), /*sizeLevel=*/0, job.tm);
+        if (auto err = optPipeline(&m))
+            return err;
+        return Error::success();
+    }
     }
 
     llvm_unreachable("Unknown BackendKind");
