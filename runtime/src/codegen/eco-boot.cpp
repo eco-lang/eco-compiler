@@ -390,32 +390,6 @@ static std::unique_ptr<llvm::TargetMachine> createTargetMachine(
 // Object File Emission
 //===----------------------------------------------------------------------===//
 
-static int emitObjectFile(llvm::Module &llvmModule,
-                          llvm::TargetMachine &tm,
-                          const std::string &outputPath) {
-    std::error_code ec;
-    llvm::raw_fd_ostream dest(outputPath, ec, llvm::sys::fs::OF_None);
-    if (ec) {
-        llvm::errs() << "Error: Could not open output file '" << outputPath
-                     << "': " << ec.message() << "\n";
-        return 1;
-    }
-
-    llvm::legacy::PassManager emitPM;
-    if (tm.addPassesToEmitFile(emitPM, dest, nullptr,
-                                llvm::CodeGenFileType::ObjectFile)) {
-        llvm::errs() << "Error: Target machine can't emit object files\n";
-        return 1;
-    }
-    emitPM.run(llvmModule);
-    dest.flush();
-
-    if (verbose)
-        llvm::errs() << "[eco-boot] emitted object file: " << outputPath << "\n";
-
-    return 0;
-}
-
 //===----------------------------------------------------------------------===//
 // Linking via clang++ Driver
 //===----------------------------------------------------------------------===//
@@ -707,42 +681,35 @@ int main(int argc, char **argv) {
             return 1;
     }
 
-    // Step 6: Run RS4GC + optional pre/post dumps + frame-pointer attributes
-    // via the shared backend driver.
-    {
-        eco::LoweringStats::Scope scope(stats, "LLVM RS4GC pipeline");
-        eco::EcoBackendJob job;
-        job.kind = eco::BackendKind::EmitObjectFile;
-        job.tm = tm.get();
-        job.optLevel = optLevel > 0
-            ? static_cast<llvm::CodeGenOptLevel>(std::min(optLevel.getValue(), 3u))
-            : llvm::CodeGenOptLevel::None;
-        job.needsFramePointerAttr = true;
-        job.preRS4GCDumpPath = dumpPreRS4GCIR;
-        job.postRS4GCDumpPath = dumpRS4GCIR;
-        if (auto err = eco::runEcoBackend(*llvmModule, job)) {
-            llvm::errs() << "Error: RS4GC failed: " << err << "\n";
-            return 1;
-        }
-    }
-
-    // Clean up temp MLIR file now that we're done with it
+    // Clean up temp MLIR file now that we're done with it.
     if (!tempMlirFile.empty())
         llvm::sys::fs::remove(tempMlirFile);
 
-    // Step 6: Optionally run LLVM optimization passes
-    if (optLevel > 0) {
-        eco::LoweringStats::Scope scope(stats, "LLVM optimization (-O>0)");
-        auto optPipeline = makeOptimizingTransformer(
-            optLevel, /*sizeLevel=*/0, /*targetMachine=*/tm.get());
-        if (auto err = optPipeline(llvmModule.get())) {
-            llvm::errs() << "Error: LLVM optimization failed: " << err << "\n";
-            return 1;
-        }
-    }
-
-    // Handle LLVM IR output mode
+    // EmitLLVM is a text-dump path: RS4GC via runEcoBackend(DumpLLVMText), then
+    // tool-side opt + IR print. Object emission stays out of this branch.
     if (emitAction == EmitLLVM) {
+        {
+            eco::LoweringStats::Scope scope(stats, "LLVM RS4GC pipeline");
+            eco::EcoBackendJob job;
+            job.kind = eco::BackendKind::DumpLLVMText;
+            job.tm = tm.get();
+            job.needsFramePointerAttr = true;
+            job.preRS4GCDumpPath = dumpPreRS4GCIR;
+            job.postRS4GCDumpPath = dumpRS4GCIR;
+            if (auto err = eco::runEcoBackend(*llvmModule, job)) {
+                llvm::errs() << "Error: RS4GC failed: " << err << "\n";
+                return 1;
+            }
+        }
+        if (optLevel > 0) {
+            eco::LoweringStats::Scope scope(stats, "LLVM optimization (-O>0)");
+            auto optPipeline = makeOptimizingTransformer(
+                optLevel, /*sizeLevel=*/0, /*targetMachine=*/tm.get());
+            if (auto err = optPipeline(llvmModule.get())) {
+                llvm::errs() << "Error: LLVM optimization failed: " << err << "\n";
+                return 1;
+            }
+        }
         {
             eco::LoweringStats::Scope scope(stats, "Emit LLVM IR");
             if (output == "-") {
@@ -763,14 +730,14 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    // Step 7: Emit object file
+    // EmitObj / EmitExe: target an object file path; runEcoBackend drives the
+    // full RS4GC + opt + object-emit sequence. Exe linking stays in this tool
+    // because it depends on EcoBootConfig.h's deployment paths.
     std::string objFile;
     std::string tempObjFile;
-
     if (emitAction == EmitObj) {
         objFile = output;
     } else {
-        // Create temp object file for linking
         llvm::SmallString<256> tempPath;
         if (auto ec = llvm::sys::fs::createTemporaryFile(
                 "eco-boot", "o", tempPath)) {
@@ -783,13 +750,28 @@ int main(int argc, char **argv) {
     }
 
     {
-        eco::LoweringStats::Scope scope(stats, "Object file emission");
-        if (emitObjectFile(*llvmModule, *tm, objFile) != 0) {
+        eco::LoweringStats::Scope scope(stats,
+            "LLVM backend (RS4GC + opt + object emission)");
+        eco::EcoBackendJob job;
+        job.kind = eco::BackendKind::EmitObjectFile;
+        job.tm = tm.get();
+        job.optLevel = optLevel > 0
+            ? static_cast<llvm::CodeGenOptLevel>(std::min(optLevel.getValue(), 3u))
+            : llvm::CodeGenOptLevel::None;
+        job.needsFramePointerAttr = true;
+        job.preRS4GCDumpPath = dumpPreRS4GCIR;
+        job.postRS4GCDumpPath = dumpRS4GCIR;
+        job.objectFilePath = objFile;
+        if (auto err = eco::runEcoBackend(*llvmModule, job)) {
+            llvm::errs() << "Error: backend pipeline failed: " << err << "\n";
             if (!tempObjFile.empty())
                 llvm::sys::fs::remove(tempObjFile);
             return 1;
         }
     }
+
+    if (verbose)
+        llvm::errs() << "[eco-boot] emitted object file: " << objFile << "\n";
 
     if (emitAction == EmitObj) {
         if (printStats)

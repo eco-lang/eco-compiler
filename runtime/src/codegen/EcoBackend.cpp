@@ -4,12 +4,16 @@
 
 #include "Passes/EcoPtrIntVerify.h" // for addEcoGCPipeline
 
+#include "mlir/ExecutionEngine/OptUtils.h" // for makeOptimizingTransformer
+
 #include "llvm/IR/Function.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Target/TargetMachine.h"
 
 using namespace llvm;
 
@@ -28,6 +32,25 @@ void dumpIRTo(const Module &m, const std::string &path, const char *tag) {
         errs() << "[" << tag << "] Error: could not open " << path << ": "
                << ec.message() << "\n";
     }
+}
+
+Error emitObjectFile(Module &m, TargetMachine &tm, const std::string &path) {
+    std::error_code ec;
+    raw_fd_ostream dest(path, ec, sys::fs::OF_None);
+    if (ec)
+        return createStringError(ec,
+            "Could not open object file output '" + path + "': " +
+            ec.message());
+
+    legacy::PassManager emitPM;
+    if (tm.addPassesToEmitFile(emitPM, dest, nullptr,
+                                CodeGenFileType::ObjectFile))
+        return createStringError(std::errc::not_supported,
+            "Target machine can't emit object files");
+
+    emitPM.run(m);
+    dest.flush();
+    return Error::success();
 }
 
 } // namespace
@@ -75,10 +98,26 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job) {
 
     switch (job.kind) {
     case BackendKind::DumpLLVMText:
-    case BackendKind::EmitObjectFile:
-        // Phase 2 façade: RS4GC + FP only. Phase 3.3 expands EmitObjectFile to
-        // drive opt + object emission + exe link.
+        // RS4GC + FP only. Caller owns opt + IR printing so it can pick a
+        // TM-aware vs TM-agnostic optimisation pipeline for its use case.
         return Error::success();
+
+    case BackendKind::EmitObjectFile: {
+        if (job.optLevel != CodeGenOptLevel::None && job.tm) {
+            auto optPipeline = mlir::makeOptimizingTransformer(
+                static_cast<unsigned>(job.optLevel), /*sizeLevel=*/0, job.tm);
+            if (auto err = optPipeline(&m))
+                return err;
+        }
+        if (!job.objectFilePath.empty()) {
+            if (!job.tm)
+                return createStringError(std::errc::invalid_argument,
+                    "EmitObjectFile requires a TargetMachine");
+            if (auto err = emitObjectFile(m, *job.tm, job.objectFilePath))
+                return err;
+        }
+        return Error::success();
+    }
 
     case BackendKind::JITInvokePacked:
         // Reserved for Phase 4. No caller constructs this kind yet.

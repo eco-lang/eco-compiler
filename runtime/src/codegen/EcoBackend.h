@@ -79,6 +79,11 @@ struct EcoBackendJob {
     /// Optional pre/post RS4GC IR dumps.
     std::string preRS4GCDumpPath;
     std::string postRS4GCDumpPath;
+
+    /// Output path for object file emission. Required for `EmitObjectFile`
+    /// when actual emission is desired; if empty, `runEcoBackend` runs
+    /// RS4GC + opt but does not emit (used by intermediate-state callers).
+    std::string objectFilePath;
 };
 
 /// Run the Eco backend on an LLVM module according to `job`.
