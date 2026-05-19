@@ -136,14 +136,29 @@ struct LogicalShape {
 ///     (existing behaviour pre‑3.3).
 enum class ResultAbi { Direct, Sret, Boxed };
 
+/// Largest field count that the Direct ABI may emit. LLVM 21's
+/// SelectionDAG StatepointLowering walks past the lowered call expecting
+/// `CALLSEQ_END`, but for a struct-returning call it finds the chain of
+/// `CopyFromReg` nodes (one per struct field) and asserts at
+/// `StatepointLowering.cpp:354`. Empirically (Phase A sweep), N=1..3
+/// pass; N=4..8 all assert. Wider all-primitive aggregates route through
+/// Sret instead so no struct return crosses the statepoint boundary.
+static constexpr unsigned kMaxDirectFields = 3;
+
 /// Pick the ABI for a result whose `LogicalShape` was already
-/// promoted (`isAggregate()` is true on entry). Aggregates with any
-/// `!eco.value` element go Sret; otherwise Direct.
+/// promoted (`isAggregate()` is true on entry).
+///   - Aggregates with any `!eco.value` element → Sret (avoids RS4GC's
+///     FCA-unimplemented assertion on a struct return holding gc ptrs).
+///   - All-primitive aggregates wider than `kMaxDirectFields` → Sret
+///     (avoids SelectionDAG's wide-struct-return crash on the gc.statepoint
+///     call).
+///   - Otherwise → Direct (LLVM multi-return packing).
 static ResultAbi chooseResultAbi(const LogicalShape &shape) {
     if (!shape.isAggregate()) return ResultAbi::Boxed;
     for (Type t : shape.elementTys) {
         if (isa<eco::ValueType>(t)) return ResultAbi::Sret;
     }
+    if (shape.elementTys.size() > kMaxDirectFields) return ResultAbi::Sret;
     return ResultAbi::Direct;
 }
 
