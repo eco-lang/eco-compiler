@@ -225,9 +225,6 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             Value b = extractField(rewriter, loc, agg, 1, llvmElts[1]);
             a = widenFieldToI64Local(a, loc, rewriter);
             b = widenFieldToI64Local(b, loc, rewriter);
-            // Prefer op's unboxed_bitmap attr (set by an explicit user) over
-            // the type-derived bitmap; fall back to the latter when the attr
-            // is the default (0) and the element types imply something else.
             int64_t mask = op.getUnboxedBitmap();
             if (mask == 0) mask = kindBitmapFor(elts);
             auto unboxedVal = rewriter.create<LLVM::ConstantOp>(
@@ -387,8 +384,6 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             }
             // If neither attr nor type implies unboxed, leave kind=0 (boxed).
             if (kind == 0 && !isa<eco::ValueType>(cons.getHead())) {
-                // Element type is a primitive; derive kind from it even if
-                // head_unboxed defaulted to false.
                 Type ht = cons.getHead();
                 if (ht.isInteger(64)) kind = 1;
                 else if (ht.isF64())  kind = 2;

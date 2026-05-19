@@ -380,6 +380,21 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateStoreRecordFieldF64(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateSetUnboxed(mlir::OpBuilder &builder) const;
 
+    // Uninit allocators + field stores (forward ABI; companion runtime
+    // entries land here for future re-enable of the wrapper-fca-fix
+    // plan's alloc-then-store pattern. See plans/wrapper-fca-fix.md
+    // for the deferred lowering portions.).
+    mlir::LLVM::LLVMFuncOp getOrCreateAllocTuple2Uninit(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateAllocTuple3Uninit(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateAllocConsUninit(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateStoreTupleField(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateStoreTupleFieldI64(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateStoreTupleFieldF64(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateStoreConsHead(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateStoreConsHeadI64(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateStoreConsHeadF64(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateStoreConsTail(mlir::OpBuilder &builder) const;
+
     // Closure functions
     mlir::LLVM::LLVMFuncOp getOrCreatePapExtend(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateClosureCallSaturated(mlir::OpBuilder &builder) const;

@@ -466,6 +466,60 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateSetUnboxed(OpBuilder &builder) const {
 }
 
 //===----------------------------------------------------------------------===//
+// Uninit Allocators + Field Stores (forward ABI; not yet exercised).
+//===----------------------------------------------------------------------===//
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocTuple2Uninit(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I32_TY});
+    return getOrCreateFunc(builder, "eco_alloc_tuple2_uninit", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocTuple3Uninit(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I32_TY});
+    return getOrCreateFunc(builder, "eco_alloc_tuple3_uninit", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocConsUninit(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I32_TY});
+    return getOrCreateFunc(builder, "eco_alloc_cons_uninit", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateStoreTupleField(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {HPTR_TY, I32_TY, HPTR_TY});
+    return getOrCreateFunc(builder, "eco_store_tuple_field", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateStoreTupleFieldI64(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {HPTR_TY, I32_TY, I64_TY});
+    return getOrCreateFunc(builder, "eco_store_tuple_field_i64", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateStoreTupleFieldF64(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {HPTR_TY, I32_TY, F64_TY});
+    return getOrCreateFunc(builder, "eco_store_tuple_field_f64", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateStoreConsHead(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {HPTR_TY, HPTR_TY});
+    return getOrCreateFunc(builder, "eco_store_cons_head", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateStoreConsHeadI64(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {HPTR_TY, I64_TY});
+    return getOrCreateFunc(builder, "eco_store_cons_head_i64", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateStoreConsHeadF64(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {HPTR_TY, F64_TY});
+    return getOrCreateFunc(builder, "eco_store_cons_head_f64", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateStoreConsTail(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {HPTR_TY, HPTR_TY});
+    return getOrCreateFunc(builder, "eco_store_cons_tail", funcTy, /*gcLeaf=*/true);
+}
+
+//===----------------------------------------------------------------------===//
 // Closure Functions
 //===----------------------------------------------------------------------===//
 

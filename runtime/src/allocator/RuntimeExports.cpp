@@ -304,6 +304,97 @@ extern "C" void eco_store_record_field_f64(HPtr record_hptr, uint32_t index, dou
     rec->values[index].f = value;
 }
 
+//===----------------------------------------------------------------------===//
+// Uninit allocators + field stores for Tuple2 / Tuple3 / Cons (forward ABI;
+// not yet exercised by lowering — see plans/wrapper-fca-fix.md).
+//===----------------------------------------------------------------------===//
+
+extern "C" HPtr eco_alloc_tuple2_uninit(uint32_t unboxed_mask) {
+    void* obj = eco_alloc_with_roots(Tag_Tuple2, sizeof(Tuple2), nullptr, 0, 0);
+    if (!obj) return HPtr::fromBits(0);
+    Tuple2* tup = static_cast<Tuple2*>(obj);
+    tup->header.unboxed = static_cast<u8>(unboxed_mask & 0xF);
+    tup->a.i = 0;
+    tup->b.i = 0;
+    return ptrToHPointer(obj);
+}
+
+extern "C" HPtr eco_alloc_tuple3_uninit(uint32_t unboxed_mask) {
+    void* obj = eco_alloc_with_roots(Tag_Tuple3, sizeof(Tuple3), nullptr, 0, 0);
+    if (!obj) return HPtr::fromBits(0);
+    Tuple3* tup = static_cast<Tuple3*>(obj);
+    tup->header.unboxed = static_cast<u8>(unboxed_mask & 0x3F);
+    tup->a.i = 0;
+    tup->b.i = 0;
+    tup->c.i = 0;
+    return ptrToHPointer(obj);
+}
+
+extern "C" HPtr eco_alloc_cons_uninit(uint32_t head_kind) {
+    void* obj = eco_alloc_with_roots(Tag_Cons, sizeof(Cons), nullptr, 0, 0);
+    if (!obj) return HPtr::fromBits(0);
+    Cons* cons = static_cast<Cons*>(obj);
+    cons->header.unboxed = static_cast<u8>(head_kind & 0x3);
+    cons->head.i = 0;
+    HPointer null_hp;
+    memset(&null_hp, 0, sizeof(null_hp));
+    cons->tail = null_hp;
+    return ptrToHPointer(obj);
+}
+
+static inline Unboxable* tupleSlots(void* tuple) {
+    return reinterpret_cast<Unboxable*>(
+        reinterpret_cast<uint8_t*>(tuple) + sizeof(Header));
+}
+
+extern "C" void eco_store_tuple_field(HPtr tuple_hptr, uint32_t index, HPtr value) {
+    alloc::validateNurseryHPtrBits(value.toBits());
+    void* tuple = hpointerToPtr(tuple_hptr.toBits());
+    if (!tuple) return;
+    tupleSlots(tuple)[index].i = static_cast<i64>(value.toBits());
+}
+
+extern "C" void eco_store_tuple_field_i64(HPtr tuple_hptr, uint32_t index, int64_t value) {
+    void* tuple = hpointerToPtr(tuple_hptr.toBits());
+    if (!tuple) return;
+    tupleSlots(tuple)[index].i = value;
+}
+
+extern "C" void eco_store_tuple_field_f64(HPtr tuple_hptr, uint32_t index, double value) {
+    void* tuple = hpointerToPtr(tuple_hptr.toBits());
+    if (!tuple) return;
+    tupleSlots(tuple)[index].f = value;
+}
+
+extern "C" void eco_store_cons_head(HPtr cons_hptr, HPtr value) {
+    alloc::validateNurseryHPtrBits(value.toBits());
+    void* cons = hpointerToPtr(cons_hptr.toBits());
+    if (!cons) return;
+    static_cast<Cons*>(cons)->head.i = static_cast<i64>(value.toBits());
+}
+
+extern "C" void eco_store_cons_head_i64(HPtr cons_hptr, int64_t value) {
+    void* cons = hpointerToPtr(cons_hptr.toBits());
+    if (!cons) return;
+    static_cast<Cons*>(cons)->head.i = value;
+}
+
+extern "C" void eco_store_cons_head_f64(HPtr cons_hptr, double value) {
+    void* cons = hpointerToPtr(cons_hptr.toBits());
+    if (!cons) return;
+    static_cast<Cons*>(cons)->head.f = value;
+}
+
+extern "C" void eco_store_cons_tail(HPtr cons_hptr, HPtr value) {
+    alloc::validateNurseryHPtrBits(value.toBits());
+    void* cons = hpointerToPtr(cons_hptr.toBits());
+    if (!cons) return;
+    HPointer tail_hp;
+    uint64_t bits = value.toBits();
+    memcpy(&tail_hp, &bits, sizeof(tail_hp));
+    static_cast<Cons*>(cons)->tail = tail_hp;
+}
+
 extern "C" HPtr eco_alloc_string(uint32_t length) {
     // Size: Header + length * sizeof(u16), aligned to 8 bytes
     size_t size = sizeof(Header) + length * sizeof(u16);

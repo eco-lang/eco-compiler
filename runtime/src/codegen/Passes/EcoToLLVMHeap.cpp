@@ -314,7 +314,6 @@ struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
         } else if (headVal.getType().isF64()) {
             headVal = rewriter.create<LLVM::BitcastOp>(loc, i64Ty, headVal);
         }
-        // tailVal is already ptr<1> from the adaptor — pass directly
 
         Value result = emitAllocWithSafepoint(
             op, rewriter, runtime,
@@ -490,6 +489,12 @@ struct Tuple2ConstructOpLowering : public OpConversionPattern<Tuple2ConstructOp>
         auto *ctx = rewriter.getContext();
         auto i32Ty = IntegerType::get(ctx, 32);
 
+        // Legacy lowering: widen field values to i64 (ptrtoint for boxed
+        // values) and pass them as scalar args to the all-in-one alloc.
+        // The post-Phase-3.4 `_uninit + per-field-store` pattern is
+        // available for the wrapper (see ToHeapOpLowering); this construct
+        // path stays on the legacy ABI for now because the value-aggregate
+        // boxing path is the dominant escape route.
         auto aVal = widenFieldToI64(adaptor.getA(), loc, rewriter);
         auto bVal = widenFieldToI64(adaptor.getB(), loc, rewriter);
         int64_t unboxedMask = op.getUnboxedBitmap();

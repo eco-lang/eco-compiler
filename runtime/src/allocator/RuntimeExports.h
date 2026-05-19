@@ -128,6 +128,26 @@ void eco_store_record_field_i64(HPtr record, uint32_t index, int64_t value);
 /// @param value Float value to store
 void eco_store_record_field_f64(HPtr record, uint32_t index, double value);
 
+//===----------------------------------------------------------------------===//
+// Uninit Allocators + Field Stores (alloc-then-store pattern; future work)
+//
+// Forward-compatible runtime ABI introduced by the wrapper-fca-fix plan.
+// The companion lowering changes are NOT enabled in the current build — see
+// plans/wrapper-fca-fix.md for the deferred portions. The runtime entries
+// land here so subsequent re-enable lands without further ABI churn.
+//===----------------------------------------------------------------------===//
+
+HPtr eco_alloc_tuple2_uninit(uint32_t unboxed_mask);
+HPtr eco_alloc_tuple3_uninit(uint32_t unboxed_mask);
+HPtr eco_alloc_cons_uninit(uint32_t head_kind);
+void eco_store_tuple_field(HPtr tuple, uint32_t index, HPtr value);
+void eco_store_tuple_field_i64(HPtr tuple, uint32_t index, int64_t value);
+void eco_store_tuple_field_f64(HPtr tuple, uint32_t index, double value);
+void eco_store_cons_head(HPtr cons, HPtr value);
+void eco_store_cons_head_i64(HPtr cons, int64_t value);
+void eco_store_cons_head_f64(HPtr cons, double value);
+void eco_store_cons_tail(HPtr cons, HPtr value);
+
 /// Allocates a string with the specified length.
 /// @param length Number of UTF-16 code units
 /// @return HPointer (as uint64_t) to the allocated ElmString object

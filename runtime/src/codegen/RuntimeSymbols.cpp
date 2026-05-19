@@ -252,6 +252,49 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_store_record_field_f64),
                 llvm::JITSymbolFlags::Exported);
 
+        // Uninit allocators + field stores (forward ABI; not yet exercised
+        // by lowering — see plans/wrapper-fca-fix.md).
+        symbolMap[interner("eco_alloc_tuple2_uninit")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_tuple2_uninit),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_alloc_tuple3_uninit")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_tuple3_uninit),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_alloc_cons_uninit")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_cons_uninit),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_store_tuple_field")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_store_tuple_field),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_store_tuple_field_i64")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_store_tuple_field_i64),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_store_tuple_field_f64")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_store_tuple_field_f64),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_store_cons_head")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_store_cons_head),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_store_cons_head_i64")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_store_cons_head_i64),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_store_cons_head_f64")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_store_cons_head_f64),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_store_cons_tail")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_store_cons_tail),
+                llvm::JITSymbolFlags::Exported);
+
         // Closure operations.
         symbolMap[interner("eco_apply_closure")] =
             llvm::orc::ExecutorSymbolDef(
