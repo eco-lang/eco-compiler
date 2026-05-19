@@ -413,23 +413,39 @@ static void rewriteEntryBlock(func::FuncOp func, const FlatLayout &layout) {
     entry.eraseArguments(toErase);
 }
 
-/// For each `func.return` terminator in the function, decompose any
-/// aggregate operand into its scalar fields via `eco.project.*` so the
-/// flattened return type list lines up. Non-aggregate operands pass
-/// through unchanged.
+/// For each return terminator in the function, decompose any aggregate
+/// operand into its scalar fields via `eco.project.*` so the flattened
+/// return type list lines up. Non-aggregate operands pass through
+/// unchanged.
+///
+/// Both `func.return` (hand-written codegen + post-EcoToLLVMControlFlow
+/// IR) and `eco.return` (Elm-emitted bodies, still present at this
+/// stage since EcoToLLVMControlFlow's `eco.return` → `func.return`
+/// lowering runs later in EcoToLLVMPass) must be walked. Pre-fix the
+/// pass only walked `func.return`; for workers whose body terminated
+/// with `eco.return` and whose result was a Direct-ABI aggregate
+/// (cross-spec promotes the worker return type to e.g.
+/// `!eco.tuple2<i64,i64>`), the flatten step would change the
+/// function-type to `(... -> (i64, i64))` while leaving the
+/// `eco.return` with its single aggregate operand, producing the
+/// `'llvm.return' op mismatching result types` verifier complaint
+/// downstream in EcoToLLVMPass.
 static void rewriteReturns(func::FuncOp func, const FlatLayout &layout) {
-    SmallVector<func::ReturnOp, 4> returns;
-    func.walk([&](func::ReturnOp r) { returns.push_back(r); });
-    for (func::ReturnOp ret : returns) {
+    SmallVector<Operation *, 4> returns;
+    func.walk([&](Operation *op) {
+        if (isa<func::ReturnOp, eco::ReturnOp>(op))
+            returns.push_back(op);
+    });
+    for (Operation *ret : returns) {
         OpBuilder builder(ret);
         SmallVector<Value, 8> newOperands;
         newOperands.reserve(layout.newResults.size());
         for (unsigned i = 0; i < layout.resultSlots.size(); ++i) {
             const AggSlot &slot = layout.resultSlots[i];
-            Value v = ret.getOperand(i);
+            Value v = ret->getOperand(i);
             if (slot.isAggregate()) {
                 SmallVector<Value, 4> fields;
-                buildProjectFields(builder, ret.getLoc(), slot, v, fields);
+                buildProjectFields(builder, ret->getLoc(), slot, v, fields);
                 for (Value f : fields) newOperands.push_back(f);
             } else {
                 newOperands.push_back(v);

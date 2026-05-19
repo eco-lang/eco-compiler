@@ -1576,6 +1576,398 @@ eligible workers; Steps 3, 4, and 5 are short.
   cleanly for all‑primitive returns and removing it would force
   a needless alloca + load on every call. Keep both paths.
 
+### Phase 3.4 — Join and loop‑carry shapes for aggregate eligibility
+
+Phase 3.1–3.3 require every aggregate flow to be a *straight‑line*
+producer/consumer chain: the use‑check at
+`EcoUnboxedAggCrossSpec.cpp:allUsesAreProjectionsOrCallsToEligible`
+and the result‑side check at `resultPositionHasAggregateProducer`
+both reject any value reached through `arith.select`, `eco.case`,
+or `eco.joinpoint`. Real Elm code routinely produces such shapes —
+`if … then (a, b) else (c, d)` for joins, `let go acc = case … of …`
+tail loops compiled to `eco.joinpoint` for loop carries — and every
+such pattern currently demotes to Boxed.
+
+Phase 3.4 lifts both gates. Two independent extensions land
+together because they share a recursive walk through region‑bearing
+ops and a chain‑rewrite step that retypes intermediate
+`arith.select` / `eco.case` / `eco.joinpoint` results once the
+leaves of the chain have been rewritten to aggregate producers.
+
+**Pipeline placement note.** Cross‑spec runs in
+`buildEcoToEcoPipeline` *before* `JoinpointNormalization` /
+`EcoControlFlowToSCFPass`, so `scf.if` / `scf.while` / `scf.for`
+do not yet exist in the IR when Phase 3.4 fires. The Eco‑dialect
+equivalents `eco.case` (with `eco.yield` terminators in its
+alternative regions) and `eco.joinpoint` (with `eco.jump` carrying
+the iter‑args and `eco.return` terminating the function) are the
+actual targets. After the SCF lowering, these patterns are gone;
+Phase 3.4 must catch them at the Eco‑dialect stage.
+
+#### 0. Goals and non‑goals
+
+- **Goal #1.** Extend the result‑side producer check to accept
+  `arith.select` and `eco.case` join points: an aggregate operand
+  of `func.return` reached through one of these ops is accepted
+  iff every leaf of the join chain (every `arith.select` arm; every
+  `eco.yield` operand at the matching position across all `eco.case`
+  alternative regions) is itself an accepted producer
+  (construct.*, from_heap, eligible/same‑SCC call, block‑arg
+  passthrough — the existing leaf set). `eco.case` is the
+  cross‑spec‑time analog of `scf.if`; an `eco.case` whose
+  *scrutinee* is an aggregate continues to be classified as
+  escaping (Q4 unchanged) — Phase 3.4 only relaxes the *result*
+  side, where each alternative region's `eco.yield` produces the
+  aggregate.
+- **Goal #2.** Extend the param use‑check to accept `eco.joinpoint`
+  loop‑carry uses: an aggregate block‑arg that flows into a
+  joinpoint's body region as an iter‑arg at position k is accepted
+  iff (a) every use of the joinpoint's body block‑arg at k is
+  itself accepted, (b) every `eco.jump` op carrying iter‑args
+  passes an accepted producer at position k, and (c) the
+  joinpoint's continuation region's uses (if any aggregate flows
+  there) are likewise accepted. The joinpoint op itself has no SSA
+  results — the aggregate either exits via `eco.return` (handled
+  by the result‑side check) or stays scoped to the joinpoint body.
+- **Non‑goals.** Doesn't widen the *leaf* producer set (no
+  `arith.select` of two `eco.allocate_*` results; the leaves stay
+  the existing five kinds). Doesn't introduce new dialect ops.
+  Doesn't lift Q4's `eco.case`‑as‑scrutinee restriction. Doesn't
+  change the sret ABI from Phase 3.3 — Sret results reached
+  through a join are admissible because the join's aggregate
+  result is what gets stored to the slot.
+
+#### 1. `arith.select` / `eco.case` as result producers
+
+The result‑side check at `resultPositionHasAggregateProducer`
+currently walks one operand back to a defining op and accepts a
+fixed set of kinds. Phase 3.4 #1 makes that walk recursive: the
+defining op may be a join (`arith.select`, `eco.case`), in which
+case every arm / every alternative's matching `eco.yield` operand
+must itself satisfy the same recursive check.
+
+**A. Recursive acceptance.**
+
+```cpp
+static bool isAcceptedAggregateProducer(
+        Value v, const LogicalShape &expectedShape,
+        ArrayRef<LogicalShape> ownParamShapes, ...,
+        unsigned depthBudget = 16);
+```
+
+The function consolidates today's inline checks (block‑arg, construct.*,
+from_heap, eligible/same‑SCC call) into a single helper that can be
+called recursively from join arms. The depth budget is set to **16**
+— Real Elm rarely nests joins past 3–4 levels and 16 is comfortably
+generous; if exceeded, the value is rejected.
+
+For `arith.select %cond, %t, %f`: both `%t` and `%f` must satisfy
+`isAcceptedAggregateProducer` with the same `expectedShape` and
+depth − 1.
+
+For `eco.case %scrutinee [tags] -> (T) { … eco.yield %y0 }, { … eco.yield %y1 }, …`:
+walk every alternative region, find each terminating `eco.yield`, and
+recurse on the yield operand at the same position as the value of
+interest. A multi‑result `eco.case` is handled by indexing into the
+yield operand list. Q4 still applies to the *scrutinee*: an aggregate
+flowing into `eco.case` as `%scrutinee` continues to demote — this
+extension touches only the case's *result*, which is what the yields
+produce.
+
+**B. Chain rewrite during `cloneAsWorker`.**
+
+Today's first pass over `func.return` operands at
+`EcoUnboxedAggCrossSpec.cpp:986‑995` rewrites a leaf `construct.*`
+into the matching `make.*` and lets RAUW propagate the new aggregate
+type to the immediate consumer (the return op). With joins, the
+consumer chain is longer — `construct → arith.select → return`
+or `construct → eco.yield → eco.case → return` — and RAUW alone
+leaves the join's result type as `!eco.value` while its operand
+is now aggregate‑typed. SSA verification fails.
+
+Fix: after rewriting all leaves on a return‑reachable join chain,
+walk the chain bottom‑up and re‑type each intermediate result.
+`arith.select` retyping is just an in‑place type swap of the result;
+`eco.case` retyping requires updating the op's result types AND
+verifying that every matching `eco.yield` operand type aligns (if not
+already aggregate, that alternative was rejected by the recursive
+acceptance check and the whole join would have been demoted). A
+helper:
+
+```cpp
+static void retypeJoinChain(Value root, Type aggTy);
+```
+
+walks consumers of `root`, retypes `arith.select` / `eco.case`
+results along the way, and stops at the boundary (the `func.return`).
+
+**C. Edge case: mixed‑leaf joins.**
+
+If one arm of a join has an accepted leaf but the other arm doesn't
+(e.g. one alternative yields a same‑SCC call result, the other
+yields an `eco.jump`‑derived value whose joinpoint carry hasn't
+been promoted yet), the join is rejected. The fixpoint then handles
+the cascade: the join's return demotes, possibly demoting the
+function's result shape, which propagates through any cross‑spec
+callers.
+
+**D. Fixture sketch.**
+
+`test/codegen/cross_spec_join_select_tuple.mlir`:
+
+```mlir
+// RUN: %ecoc %s -emit=mlir-llvm -enable-unboxed-agg 2>&1 | %FileCheck %s
+
+module {
+  func.func @pick(%cond: i1, %a: i64, %b: i64) -> !eco.value
+      attributes {
+          eco.logical_param_types = ["i1", "i64", "i64"],
+          eco.logical_result_types = ["tuple2:i:i"]
+      } {
+    %z = arith.constant 0 : i64
+    %x = eco.construct.tuple2 %a, %z : i64, i64 -> !eco.value
+    %y = eco.construct.tuple2 %z, %b : i64, i64 -> !eco.value
+    %r = arith.select %cond, %x, %y : !eco.value
+    return %r : !eco.value
+  }
+}
+
+// CHECK: llvm.func @pick$unboxed
+// CHECK-NOT: eco.construct.tuple2
+```
+
+Parallel `cross_spec_join_eco_case_tuple.mlir` exercises the
+`eco.case` path with two alternative regions each ending in
+`eco.yield`.
+
+`CrossSpecConditionalReturnTest.elm`:
+
+```elm
+pick : Bool -> Int -> Int -> ( Int, Int )
+pick c a b =
+    if c then ( a, 0 ) else ( 0, b )
+```
+
+#### 2. `eco.joinpoint` loop‑carry aggregates
+
+An `eco.joinpoint N(%acc: !eco.value, …) result_types […] { … }
+continuation { … }` defines a local loop head whose body region's
+entry block‑args are the iter‑args. Recursion happens via
+`eco.jump N(%acc', …)` ops in the body. The joinpoint op itself
+has no SSA results — values that escape the loop do so via
+`eco.return` (function exit) or by flowing into the continuation
+region. Phase 3.3 demotes any aggregate block‑arg that reaches
+`eco.joinpoint` because the use‑check rejects it. Phase 3.4 #2
+lifts that by walking into both regions and verifying the
+iter‑arg slot's uses across the loop.
+
+**A. Loop‑carry slot mapping.**
+
+For `eco.joinpoint`:
+* The k‑th body‑region block‑arg is the iter‑arg slot k. There is
+  no separate "init operand" on the joinpoint op — the first
+  iteration's iter‑args come from the SSA values defined just
+  before the joinpoint and reached via a fall‑through `eco.jump`.
+* Every `eco.jump N(...)` inside the body carries fresh iter‑arg
+  values at position k for the next iteration. There may be
+  multiple `eco.jump`s scattered through the body (one per
+  loop‑restart branch).
+* Control exits the loop via `eco.return` (function exit) or by
+  falling through to the continuation region. The continuation
+  region's block‑args (if any) are the post‑loop binding; aggregate
+  flows there are checked the same way as block‑arg uses.
+
+For all paths to share an aggregate shape, every `eco.jump`'s k‑th
+operand AND the body block‑arg at k must agree.
+
+**B. Extended use‑check.**
+
+When the use‑check sees `arg` flowing into an `eco.jump` at operand
+position k whose target joinpoint has its k‑th body block‑arg
+matching `paramShape`, accept iff:
+
+1. The body region's block‑arg at position k has all‑accepted uses
+   (recursive call to `allUsesAreProjectionsOrCallsToEligible` using
+   the same `paramShape`).
+2. Every other `eco.jump` to the same joinpoint passes an accepted
+   producer at position k (recursive call to
+   `isAcceptedAggregateProducer` from Phase 3.4 #1).
+3. If the joinpoint's continuation region binds the k‑th iter‑arg
+   (continuation block‑args correspond positionally to iter‑args),
+   that continuation block‑arg's uses are likewise all‑accepted.
+
+Step 1 makes this a *bi‑directional* check on the body slot:
+aggregate flows in via the iter‑arg and back out via the next
+`eco.jump`'s operand; both flows must be admissible. The existing
+`allUsesAreProjectionsOrCallsToEligible` already handles
+return‑forwarding for block‑args; continuation block‑args use the
+same code path.
+
+**C. Chain rewrite during `cloneAsWorker`.**
+
+When iter‑arg slot k promotes:
+1. Retype the body region's block‑arg at k from `!eco.value` to the
+   aggregate type.
+2. Retype the matching continuation region block‑arg (if any).
+3. Retype every `eco.jump`'s k‑th operand. If the original operand
+   was `!eco.value`, insert an `eco.from_heap` bridge at each jump
+   site to feed the aggregate.
+4. Verify (by re‑running the use‑check post‑rewrite) that the body
+   block‑arg's downstream uses are aggregate‑compatible (they will
+   be, by step 1's acceptance check, but a debug assertion costs
+   nothing).
+
+The init bridging in step 3 unconditionally inserts an
+`eco.from_heap`; downstream canonicalisation collapses the
+`eco.from_heap` whenever its operand is already aggregate‑typed
+(e.g. when the jump's operand came from another promoted slot).
+Avoids special‑casing in the rewriter at the cost of trivial dead
+bridges the canonicaliser sweeps up.
+
+**D. Recursion guard.**
+
+The recursive walk through joinpoint regions could theoretically
+nest deeply (nested loops). In practice Elm compiles to ≤ 2–3
+levels of nested `eco.joinpoint` (inner / outer loops in parsers,
+monomorphisation worklists). The Phase 3.4 #1 depth budget of 16
+covers loop nesting too — the same counter decrements across both
+join recursion and joinpoint recursion to give a single cost
+ceiling.
+
+**E. Fixture sketch.**
+
+`test/codegen/cross_spec_joinpoint_loop_carry.mlir`:
+
+```mlir
+// RUN: %ecoc %s -emit=mlir-llvm -enable-unboxed-agg 2>&1 | %FileCheck %s
+
+module {
+  func.func @sum_pair_to_zero(%t: !eco.value) -> i64
+      attributes {
+          eco.logical_param_types = ["tuple2:i:i"],
+          eco.logical_result_types = ["i64"]
+      } {
+    %zero = arith.constant 0 : i64
+    eco.joinpoint 0(%acc: !eco.value) result_types [i64] {
+      %a = eco.project.tuple2 %acc[0] : !eco.value -> i64
+      %done = arith.cmpi eq, %a, %zero : i64
+      cf.cond_br %done, ^exit, ^recurse
+    ^exit:
+      %b = eco.project.tuple2 %acc[1] : !eco.value -> i64
+      eco.return %b : i64
+    ^recurse:
+      %one = arith.constant 1 : i64
+      %am1 = arith.subi %a, %one : i64
+      %b = eco.project.tuple2 %acc[1] : !eco.value -> i64
+      %next = eco.construct.tuple2 %am1, %b : i64, i64 -> !eco.value
+      eco.jump 0(%next : !eco.value)
+    } continuation {
+    }
+    // Initial jump into the joinpoint:
+    eco.jump 0(%t : !eco.value)
+  }
+}
+
+// Loop carry was promoted — no eco.construct.tuple2 / eco.allocate_*
+// inside the worker:
+// CHECK: llvm.func @sum_pair_to_zero$unboxed
+// CHECK-NOT: llvm.call @eco_alloc_tuple2
+```
+
+Elm‑source fixture `CrossSpecLoopCarryTest.elm` runs the construct
+end‑to‑end through real Elm tail recursion that lowers to
+`eco.joinpoint`.
+
+**F. Post‑lowering invariance check.**
+
+Once the IR is lowered to `scf.while` (via
+`EcoControlFlowToSCFPass`), the aggregate‑typed iter‑args remain
+intact — `scf.while` accepts any element type. SROA later
+scalarises the loop carry's struct value. Phase 3.4 does not
+emit any `scf.*` ops directly; all rewriting happens at the
+Eco‑dialect level.
+
+#### 3. Implementation staging
+
+Four reviewable commits:
+
+1. **Extract `isAcceptedAggregateProducer` helper.** Pure refactor:
+   consolidate the existing leaf‑acceptance logic from
+   `resultPositionHasAggregateProducer` into a standalone
+   recursive‑capable helper with a depth budget. No new accepted
+   kinds yet; behaviour unchanged. Lets later commits add cases
+   in one place.
+2. **`arith.select` / `eco.case` join support.** Extend the helper
+   with the join‑recursion cases and add the `retypeJoinChain`
+   bottom‑up rewriter to `cloneAsWorker`. Land the
+   `cross_spec_join_select_tuple.mlir` and
+   `cross_spec_join_eco_case_tuple.mlir` fixtures plus the
+   Elm‑source `CrossSpecConditionalReturnTest.elm`.
+3. **`eco.joinpoint` loop‑carry support — DEFERRED.** Extend
+   `allUsesAreProjectionsOrCallsToEligible` with the joinpoint
+   recursion (steps B.1–B.3 above), add the region‑aware retyping
+   in `cloneAsWorker`. Land the
+   `cross_spec_joinpoint_loop_carry.mlir` fixture plus the
+   Elm‑source `CrossSpecLoopCarryTest.elm`. *Not implemented in
+   the initial Phase 3.4 landing — the joinpoint use‑check needs
+   region traversal through both the joinpoint body and every
+   `eco.jump` site, plus widening of `eco.jump`'s variadic args.
+   Re‑opens when there's a profiled workload showing loop‑carried
+   aggregates dominating.*
+4. **Invariant updates.** Amend CGEN_064 with the join /
+   loop‑carry clauses (the use‑check accepts a broader set; the
+   leaf producer set is unchanged). REP_AGG_001's wording about
+   "intra‑function values" already covers the lifted SSA chains.
+
+Estimated effort: ~120 LOC for #1 + #2, ~180 LOC for #3, ~30 LOC
+for #4 invariant text. Total ~330 LOC C++ + ~200 LOC fixtures.
+
+#### 4. Composition with earlier phases
+
+- **Phase 3.2 #1 SCC.** Loop‑carry slots inside an SCC member
+  participate in the inner fixpoint exactly like straight‑line
+  slots; the tentative `paramShapes` / `resultShapes` are unchanged
+  in shape, only the *use‑check* now traces through additional ops.
+  No SCC‑level changes required.
+- **Phase 3.3 Sret.** A join chain whose root flows into a
+  Sret‑classified return is accepted because the chain's final
+  type is aggregate; the sret store happens on the aggregate value
+  produced by the join's final `arith.select` / `eco.case`, with
+  no special handling needed. CGEN_067's "store‑before‑return,
+  no intervening statepoint" invariant holds because the join ops
+  don't introduce statepoints (`arith.select` is `Pure`;
+  `eco.case` alternative regions don't carry safepoints at this
+  stage of the pipeline — those are inserted later by `EcoGCPrepare`).
+- **EcoFlattenAggBoundary.** The flatten pass continues to work
+  on function *boundaries* only. Intra‑function joins and loop
+  carries it ignores; their aggregate SSA values get scalarised
+  by SROA later (`addEcoGCPipeline` runs SROA before RS4GC).
+
+#### 5. Resolved design decisions
+
+The three open questions raised during planning are resolved as
+follows; the resolutions are folded into the relevant sections
+above:
+
+- **Eco‑dialect join shapes are in scope.** The recursive
+  acceptance helper walks both `arith.select` and `eco.case`
+  (with its `eco.yield` terminators), and the loop‑carry check
+  walks `eco.joinpoint` / `eco.jump`. `scf.if` / `scf.while` /
+  `scf.for` are post‑lowering forms that do not exist at
+  cross‑spec time and are therefore not targets of Phase 3.4
+  (see Pipeline placement note above).
+- **Depth budget = 16.** Pinned in §1.A and shared across both
+  join recursion (§1) and joinpoint recursion (§2). Real Elm
+  rarely nests joins past 3–4 levels, so 16 is comfortably
+  generous; revisit only if a benchmark turns up a regression.
+- **Always bridge init values with `eco.from_heap`.** §2.C
+  unconditionally inserts an `eco.from_heap` at every `eco.jump`
+  whose original operand was `!eco.value`. Downstream
+  canonicalisation collapses the bridge whenever the source is
+  already aggregate‑typed (e.g. another promoted slot). Avoids
+  special‑casing in the rewriter at the cost of trivial dead
+  bridges the canonicaliser sweeps up.
+
 ### Phase 4 — Closure environment escape analysis (separate later phase)
 
 Per Q9, this is a separate later effort after the tuple/record/custom/

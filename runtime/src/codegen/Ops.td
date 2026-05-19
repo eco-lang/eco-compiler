@@ -248,6 +248,15 @@ def Eco_Bool  : I<1>;    // Elm Bool (True/False)
 def Eco_AnyValue : AnyTypeOf<[Eco_Value, Eco_Int, Eco_Float, Eco_Char, Eco_Bool],
                               "eco value or primitive">;
 
+// Phase 3.4 #1: eco.case may carry an aggregate-typed result when
+// cross-spec promotes a join chain whose every alternative's eco.yield
+// produces an aggregate. Scrutinees stay `Eco_AnyValue` (Q4: aggregate
+// scrutinees are forbidden), only result-side widening applies.
+def Eco_AnyValueOrAggregate :
+    AnyTypeOf<[Eco_Value, Eco_Int, Eco_Float, Eco_Char, Eco_Bool,
+               Eco_Tuple2, Eco_Tuple3, Eco_Record, Eco_Custom, Eco_Cons],
+              "eco value, primitive, or value-level aggregate">;
+
 //===----------------------------------------------------------------------===//
 // Base Op Class
 //===----------------------------------------------------------------------===//
@@ -316,7 +325,9 @@ def Eco_CaseOp : Eco_Op<"case", [
     OptionalAttr<ArrayAttr>:$string_patterns   // For case_kind="str": N-1 string literals
   );
   let regions = (region VariadicRegion<SizedRegion<1>>:$alternatives);
-  let results = (outs Variadic<Eco_AnyValue>:$results);
+  // Phase 3.4 #1: results may be aggregate-typed when cross-spec
+  // promotes a join chain. Scrutinee stays Eco_AnyValue (Q4).
+  let results = (outs Variadic<Eco_AnyValueOrAggregate>:$results);
 
   let hasVerifier = 1;
   let hasCustomAssemblyFormat = 1;
@@ -345,7 +356,11 @@ def Eco_ReturnOp : Eco_Op<"return", [
     ```
   }];
 
-  let arguments = (ins Variadic<Eco_AnyValue>:$results);
+  // Phase 3.4 #1: eco.return operands widen to aggregate types so
+  // cross-spec workers (which run before EcoToLLVMControlFlow lowers
+  // eco.return → func.return) can terminate with aggregate-typed
+  // operands matching the worker's promoted result signature.
+  let arguments = (ins Variadic<Eco_AnyValueOrAggregate>:$results);
   let results = (outs);
 
   let builders = [
@@ -382,7 +397,10 @@ def Eco_YieldOp : Eco_Op<"yield", [
     ```
   }];
 
-  let arguments = (ins Variadic<Eco_AnyValue>:$values);
+  // Phase 3.4 #1: yield operands widen in lockstep with eco.case
+  // results. The YieldOp verifier still enforces yield-types ==
+  // parent-case-result-types, so the two stay structurally aligned.
+  let arguments = (ins Variadic<Eco_AnyValueOrAggregate>:$values);
   let results = (outs);
 
   let assemblyFormat = "($values^ `:` type($values))? attr-dict";

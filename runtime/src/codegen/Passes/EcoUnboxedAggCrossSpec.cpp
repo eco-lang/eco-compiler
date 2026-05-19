@@ -46,6 +46,7 @@
 #include "../EcoTypes.h"
 #include "../Passes.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
@@ -420,6 +421,124 @@ static bool mlirTypeMatchesShape(const LogicalShape &shape, Type t) {
 ///     result at the call's result-index has a promoted shape matching
 ///     `expectedShape` — the call's symbol will be redirected to the
 ///     callee's `$unboxed` worker, which returns aggregate-typed.
+/// Phase 3.4 #1 (commit 1): consolidated, recursion-capable producer
+/// acceptance check. Returns true iff `v` is an SSA value whose
+/// production matches `expectedShape` and which `cloneAsWorker` knows
+/// how to rewrite — either by retyping a make.*/from_heap leaf, by
+/// retyping a redirected call, or (commit 2+) by recursing through
+/// `arith.select` / `eco.case` join points.
+///
+/// `depthBudget` bounds the recursive descent through join points;
+/// 16 is enough for any realistic Elm pattern (joins rarely nest
+/// past 3-4 levels) and protects against pathological inputs.
+///
+/// Commit 1 of Phase 3.4 keeps the historical leaf set unchanged
+/// (block-arg, construct.*, from_heap, eligible/same-SCC call) so
+/// behaviour is identical to pre-3.4. Subsequent commits will add
+/// the join and loop-carry cases as additional branches here.
+static bool isAcceptedAggregateProducer(
+        Value v,
+        const LogicalShape &expectedShape,
+        ArrayRef<LogicalShape> ownParamShapes,
+        const llvm::DenseMap<StringRef, Candidate> &candidates,
+        const llvm::DenseSet<StringRef> &eligibleNames,
+        const llvm::DenseSet<StringRef> *sccCallees,
+        const llvm::DenseMap<StringRef, SmallVector<LogicalShape, 4>>
+            *sccTentResults,
+        unsigned depthBudget = 16) {
+    if (depthBudget == 0) return false;
+
+    // Block-arg passthrough: the entry-block arg at `paramIdx` becomes
+    // the aggregate type after `cloneAsWorker` retypes it.
+    if (auto barg = dyn_cast<BlockArgument>(v)) {
+        unsigned paramIdx = barg.getArgNumber();
+        if (paramIdx >= ownParamShapes.size()) return false;
+        return aggregateShapesMatch(ownParamShapes[paramIdx], expectedShape);
+    }
+
+    Operation *def = v.getDefiningOp();
+    if (!def) return false;
+
+    // construct.* — rewritten to make.* during cloneAsWorker.
+    if (isa<eco::Tuple2ConstructOp, eco::Tuple3ConstructOp,
+            eco::RecordConstructOp, eco::CustomConstructOp>(def)) {
+        // For Custom, ensure the construct's tag matches the expected
+        // shape (Elm typing guarantees this in practice, but verify
+        // defensively).
+        if (auto cus = dyn_cast<eco::CustomConstructOp>(def)) {
+            if (expectedShape.kind == LogicalShape::Custom &&
+                static_cast<int64_t>(cus.getTag()) !=
+                    expectedShape.customTag) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // eco.from_heap — already aggregate-typed; verify the shape.
+    if (auto fh = dyn_cast<eco::FromHeapOp>(def)) {
+        return mlirTypeMatchesShape(expectedShape,
+                                     fh.getResult().getType());
+    }
+
+    auto matchEligibleCallee = [&](StringRef name, unsigned resultIdx) {
+        if (name.empty() || !eligibleNames.contains(name)) return false;
+        auto it = candidates.find(name);
+        if (it == candidates.end()) return false;
+        const auto &calleeResults = it->second.resultShapes;
+        if (resultIdx >= calleeResults.size()) return false;
+        if (!calleeResults[resultIdx].isAggregate()) return false;
+        return aggregateShapesMatch(calleeResults[resultIdx], expectedShape);
+    };
+    // Phase 3.2 #1: same-SCC tentative-shape match.
+    auto matchSameSCCCallee = [&](StringRef name, unsigned resultIdx) {
+        if (!sccCallees || !sccCallees->contains(name)) return false;
+        if (!sccTentResults) return false;
+        auto it = sccTentResults->find(name);
+        if (it == sccTentResults->end()) return false;
+        if (resultIdx >= it->second.size()) return false;
+        const LogicalShape &calleeSlot = it->second[resultIdx];
+        return calleeSlot.isAggregate() &&
+               aggregateShapesMatch(calleeSlot, expectedShape);
+    };
+
+    unsigned resultIdx = cast<OpResult>(v).getResultNumber();
+    if (auto fc = dyn_cast<func::CallOp>(def)) {
+        if (matchEligibleCallee(fc.getCallee(), resultIdx)) return true;
+        if (matchSameSCCCallee(fc.getCallee(), resultIdx)) return true;
+    }
+    if (auto ec = dyn_cast<eco::CallOp>(def)) {
+        if (auto sym = ec.getCalleeAttr()) {
+            if (matchEligibleCallee(sym.getValue(), resultIdx)) return true;
+            if (matchSameSCCCallee(sym.getValue(), resultIdx)) return true;
+        }
+    }
+
+    // Phase 3.4 #1: join points. Recurse into both arms / every
+    // alternative's matching eco.yield operand; all leaves must
+    // themselves be accepted.
+    if (auto sel = dyn_cast<arith::SelectOp>(def)) {
+        return isAcceptedAggregateProducer(
+                   sel.getTrueValue(), expectedShape, ownParamShapes,
+                   candidates, eligibleNames, sccCallees, sccTentResults,
+                   depthBudget - 1) &&
+               isAcceptedAggregateProducer(
+                   sel.getFalseValue(), expectedShape, ownParamShapes,
+                   candidates, eligibleNames, sccCallees, sccTentResults,
+                   depthBudget - 1);
+    }
+    // Phase 3.4 #1 (eco.case branch): temporarily disabled — see plan
+    // §3.4 footnote. The retypeJoinTree rebuild interacts with Stage 7
+    // self-compile in a way that surfaces an OOB on a function shape
+    // not yet reproduced in a small fixture; keep the dialect widening
+    // (Ops.td) in place so subsequent re-enable lands without further
+    // dialect churn, but reject eco.case as a result producer for now.
+    if (isa<eco::CaseOp>(def)) {
+        return false;
+    }
+    return false;
+}
+
 static bool resultPositionHasAggregateProducer(
         func::FuncOp func,
         unsigned resultPos,
@@ -432,93 +551,35 @@ static bool resultPositionHasAggregateProducer(
             *sccTentResults = nullptr) {
     bool sawAnyReturn = false;
     bool ok = true;
-
-    auto matchEligibleCallee = [&](StringRef name, unsigned resultIdx) {
-        if (name.empty() || !eligibleNames.contains(name)) return false;
-        auto it = candidates.find(name);
-        if (it == candidates.end()) return false;
-        const auto &calleeResults = it->second.resultShapes;
-        if (resultIdx >= calleeResults.size()) return false;
-        if (!calleeResults[resultIdx].isAggregate()) return false;
-        return aggregateShapesMatch(calleeResults[resultIdx], expectedShape);
-    };
-
-    // Phase 3.2 #1: a call to a same-SCC member is accepted iff that
-    // member's tentative result at the same position matches the
-    // expected shape. Demotion in the callee's tentative slot
-    // propagates to here next iteration (the slot stops matching →
-    // the caller's slot also demotes).
-    auto matchSameSCCCallee = [&](StringRef name, unsigned resultIdx) {
-        if (!sccCallees || !sccCallees->contains(name)) return false;
-        if (!sccTentResults) return false;
-        auto it = sccTentResults->find(name);
-        if (it == sccTentResults->end()) return false;
-        if (resultIdx >= it->second.size()) return false;
-        const LogicalShape &calleeSlot = it->second[resultIdx];
-        return calleeSlot.isAggregate() &&
-               aggregateShapesMatch(calleeSlot, expectedShape);
-    };
-
-    func.walk([&](func::ReturnOp r) {
+    // Cross-spec runs before `eco.return` is lowered to `func.return`
+    // (EcoToLLVMControlFlow), so Elm-generated bodies terminate with
+    // `eco.return` rather than `func.return`. Walk both to handle the
+    // hand-written codegen fixtures (func.return) and the Elm path
+    // (eco.return).
+    auto checkOperand = [&](Operation *r, ValueRange operands) {
         sawAnyReturn = true;
-        if (resultPos >= r.getNumOperands()) { ok = false; return; }
-        Value v = r.getOperand(resultPos);
-
-        // Block-arg passthrough: the entry-block arg at `paramIdx`
-        // becomes the aggregate type after `cloneAsWorker` retypes
-        // it, so the return operand type follows.
-        if (auto barg = dyn_cast<BlockArgument>(v)) {
-            unsigned paramIdx = barg.getArgNumber();
-            if (paramIdx >= ownParamShapes.size()) { ok = false; return; }
-            if (!aggregateShapesMatch(ownParamShapes[paramIdx], expectedShape))
-                ok = false;
-            return;
+        if (resultPos >= operands.size()) { ok = false; return; }
+        Value v = operands[resultPos];
+        // Phase 3.4 #1: gate the eco.return walk on the result being
+        // an all-primitive aggregate. The sret path was already firing
+        // pre-3.4 only via func.return (hand-written fixtures); turning
+        // it on for Elm bodies surfaces an existing FCA / RS4GC issue
+        // with struct-of-`ptr addrspace(1)` values lingering in the
+        // wrapper. Until that's fixed, restrict eco.return result-side
+        // promotion to Direct-ABI candidates.
+        if (isa<eco::ReturnOp>(r)) {
+            bool allPrim = true;
+            for (Type t : expectedShape.elementTys)
+                if (isa<eco::ValueType>(t)) { allPrim = false; break; }
+            if (!allPrim) { ok = false; return; }
         }
-
-        Operation *def = v.getDefiningOp();
-        if (!def) { ok = false; return; }
-
-        // construct.* — rewritten to make.* during cloneAsWorker.
-        if (isa<eco::Tuple2ConstructOp, eco::Tuple3ConstructOp,
-                eco::RecordConstructOp, eco::CustomConstructOp>(def)) {
-            // For Custom, ensure the construct's tag matches the
-            // expected shape (Elm typing guarantees this in practice,
-            // but verify defensively).
-            if (auto cus = dyn_cast<eco::CustomConstructOp>(def)) {
-                if (expectedShape.kind == LogicalShape::Custom &&
-                    static_cast<int64_t>(cus.getTag()) !=
-                        expectedShape.customTag) {
-                    ok = false;
-                }
-            }
-            return;
-        }
-
-        // eco.from_heap — already aggregate-typed; verify the shape.
-        if (auto fh = dyn_cast<eco::FromHeapOp>(def)) {
-            if (!mlirTypeMatchesShape(expectedShape,
-                                       fh.getResult().getType()))
-                ok = false;
-            return;
-        }
-
-        // func.call / eco.call to an eligible callee whose matching
-        // result is also being promoted (or a same-SCC callee with a
-        // matching tentative result shape during Phase 3.2 #1's inner
-        // fixpoint).
-        unsigned resultIdx = cast<OpResult>(v).getResultNumber();
-        if (auto fc = dyn_cast<func::CallOp>(def)) {
-            if (matchEligibleCallee(fc.getCallee(), resultIdx)) return;
-            if (matchSameSCCCallee(fc.getCallee(), resultIdx)) return;
-        }
-        if (auto ec = dyn_cast<eco::CallOp>(def)) {
-            if (auto sym = ec.getCalleeAttr()) {
-                if (matchEligibleCallee(sym.getValue(), resultIdx)) return;
-                if (matchSameSCCCallee(sym.getValue(), resultIdx)) return;
-            }
-        }
-        ok = false;
-    });
+        if (!isAcceptedAggregateProducer(
+                v, expectedShape, ownParamShapes, candidates,
+                eligibleNames, sccCallees, sccTentResults))
+            ok = false;
+    };
+    func.walk([&](func::ReturnOp r) { checkOperand(r, r.getOperands()); });
+    func.walk([&](eco::ReturnOp r) { checkOperand(r, r.getOperands()); });
     return sawAnyReturn && ok;
 }
 
@@ -609,12 +670,30 @@ static bool allUsesAreProjectionsOrCallsToEligible(
         // result-side check (block-arg producer) will independently
         // accept this same return only if the param is promoted — the
         // two checks converge consistently in the fixpoint.
-        if (auto ret = dyn_cast<func::ReturnOp>(user)) {
+        //
+        // Symmetry with `resultPositionHasAggregateProducer`: for
+        // `eco.return` (Elm bodies), the result-side check applies an
+        // all-primitive gate that rejects aggregate shapes containing
+        // any `!eco.value` element (the FCA/RS4GC sret limitation).
+        // The param-side passthrough must apply the same gate — if it
+        // didn't, param-side could promote while result-side demoted,
+        // committing an asymmetric worker whose body returns an
+        // aggregate-typed block-arg into an `!eco.value` result slot.
+        if (isa<func::ReturnOp, eco::ReturnOp>(user)) {
             unsigned pos = use.getOperandNumber();
             if (pos < ownResultShapes.size() &&
                 ownResultShapes[pos].isAggregate() &&
-                aggregateShapesMatch(ownResultShapes[pos], paramShape))
+                aggregateShapesMatch(ownResultShapes[pos], paramShape)) {
+                if (isa<eco::ReturnOp>(user)) {
+                    bool allPrim = true;
+                    for (Type t : ownResultShapes[pos].elementTys)
+                        if (isa<eco::ValueType>(t)) {
+                            allPrim = false; break;
+                        }
+                    if (!allPrim) return false;
+                }
                 continue;
+            }
         }
         return false;
     }
@@ -755,6 +834,167 @@ static void emitSretLoad(OpBuilder &builder, Location loc, Value slot,
         }
         fields.push_back(loaded);
     }
+}
+
+/// Phase 3.4 #1: walk a return-reachable join chain top-down and
+/// retype intermediate `arith.select` / `eco.case` results in place
+/// while rewriting `construct.*` leaves to `make.*`. The chain has
+/// already been validated by `isAcceptedAggregateProducer`, so each
+/// path bottoms out at an accepted leaf (construct.* / from_heap /
+/// eligible-call result / block-arg). Returns the new SSA value at
+/// the chain root (which may be the original `v` if it was already
+/// aggregate-typed, or a fresh make.* / retyped select / retyped
+/// case result).
+///
+/// Forward declaration so `rewriteConstructToMake` (used inside) can
+/// be defined immediately below.
+static Value rewriteConstructToMake(OpBuilder &builder, Operation *constructOp);
+
+static Value retypeJoinTree(Value v, Type aggTy) {
+    // Already aggregate-typed: block-arg retyped by cloneAsWorker, or
+    // call result already aggregate, or from_heap — leave alone.
+    if (v.getType() == aggTy) return v;
+
+    Operation *def = v.getDefiningOp();
+    if (!def) return v;
+
+    // construct.* → make.*: produce a fresh aggregate-typed value via
+    // the existing rewriter, then return it.
+    if (isa<eco::Tuple2ConstructOp, eco::Tuple3ConstructOp,
+            eco::RecordConstructOp, eco::CustomConstructOp>(def)) {
+        OpBuilder b(def);
+        return rewriteConstructToMake(b, def);
+    }
+
+    // arith.select: retype both arms recursively, then update the
+    // select's operands and bump its result type in place.
+    if (auto sel = dyn_cast<arith::SelectOp>(def)) {
+        Value newT = retypeJoinTree(sel.getTrueValue(), aggTy);
+        Value newF = retypeJoinTree(sel.getFalseValue(), aggTy);
+        sel.getTrueValueMutable().assign(newT);
+        sel.getFalseValueMutable().assign(newF);
+        sel.getResult().setType(aggTy);
+        return sel.getResult();
+    }
+
+    // eco.case: scalarise the aggregate-typed result by hoisting the
+    // per-field projection out of every alternative. Each alternative
+    // ends up yielding N scalars (one per aggregate element) instead
+    // of one aggregate; we replace the case with a new one whose
+    // result list is the N scalar types and build a single
+    // `eco.make.*` after it to rebuild the aggregate.
+    //
+    // The SCF lowering (EcoControlFlowToSCFPass) maps eco.case →
+    // scf.if/scf.index_switch and the EcoToLLVM conversion driver
+    // can't keep aggregate Eco types consistent across the converted
+    // region boundary. Hoisting the decomposition out at this stage
+    // sidesteps that interaction — the case carries only LLVM-
+    // compatible scalar types from here onward.
+    if (auto caseOp = dyn_cast<eco::CaseOp>(def)) {
+        // Single-result aggregate-typed case only; multi-result mixed
+        // aggregate cases fall through (rare in practice).
+        if (caseOp->getNumResults() != 1) return v;
+        // Element types come from the aggregate destination type.
+        SmallVector<Type, 4> elementTys;
+        if (auto t2 = dyn_cast<eco::Tuple2Type>(aggTy)) {
+            elementTys.push_back(t2.getFirst());
+            elementTys.push_back(t2.getSecond());
+        } else if (auto t3 = dyn_cast<eco::Tuple3Type>(aggTy)) {
+            elementTys.push_back(t3.getFirst());
+            elementTys.push_back(t3.getSecond());
+            elementTys.push_back(t3.getThird());
+        } else if (auto rec = dyn_cast<eco::RecordType>(aggTy)) {
+            for (Type t : rec.getFields()) elementTys.push_back(t);
+        } else if (auto cus = dyn_cast<eco::CustomType>(aggTy)) {
+            for (Type t : cus.getFields()) elementTys.push_back(t);
+        } else {
+            return v;
+        }
+
+        // For each alternative: retype the yield operand to an
+        // aggregate, then decompose into N scalar projections and
+        // replace the yield.
+        for (Region &alt : caseOp.getAlternatives()) {
+            Block &block = alt.front();
+            auto yieldOp = cast<eco::YieldOp>(block.getTerminator());
+            Value yieldOperand = yieldOp.getValues()[0];
+            Value newAggValue = retypeJoinTree(yieldOperand, aggTy);
+            OpBuilder b(yieldOp);
+            SmallVector<Value, 4> fields;
+            for (unsigned k = 0; k < elementTys.size(); ++k) {
+                auto idxAttr = b.getI64IntegerAttr(static_cast<int64_t>(k));
+                Value f;
+                if (isa<eco::Tuple2Type>(aggTy))
+                    f = b.create<eco::Tuple2ProjectOp>(
+                        yieldOp.getLoc(), elementTys[k], newAggValue, idxAttr);
+                else if (isa<eco::Tuple3Type>(aggTy))
+                    f = b.create<eco::Tuple3ProjectOp>(
+                        yieldOp.getLoc(), elementTys[k], newAggValue, idxAttr);
+                else if (isa<eco::RecordType>(aggTy))
+                    f = b.create<eco::RecordProjectOp>(
+                        yieldOp.getLoc(), elementTys[k], newAggValue, idxAttr);
+                else if (isa<eco::CustomType>(aggTy))
+                    f = b.create<eco::CustomProjectOp>(
+                        yieldOp.getLoc(), elementTys[k], newAggValue, idxAttr);
+                else
+                    llvm_unreachable("aggTy unreachable");
+                fields.push_back(f);
+            }
+            b.create<eco::YieldOp>(yieldOp.getLoc(), fields);
+            yieldOp.erase();
+        }
+
+        // Build a new eco.case whose result list is the N scalars.
+        OpBuilder b(caseOp);
+        OperationState state(caseOp.getLoc(), eco::CaseOp::getOperationName());
+        state.addOperands({caseOp.getScrutinee()});
+        state.addTypes(elementTys);
+        state.addAttribute(caseOp.getTagsAttrName(), caseOp.getTagsAttr());
+        state.addAttribute(caseOp.getCaseKindAttrName(),
+                           caseOp.getCaseKindAttr());
+        if (caseOp.getStringPatternsAttr())
+            state.addAttribute(caseOp.getStringPatternsAttrName(),
+                               caseOp.getStringPatternsAttr());
+        for (Region &alt : caseOp.getAlternatives()) {
+            (void)alt;
+            state.addRegion();
+        }
+        Operation *newOp = b.create(state);
+        for (unsigned i = 0; i < caseOp.getAlternatives().size(); ++i)
+            newOp->getRegion(i).takeBody(caseOp.getAlternatives()[i]);
+
+        // Build the aggregate value outside the case by feeding the
+        // scalar results into the matching eco.make.* op.
+        OpBuilder afterCase(b.getInsertionBlock(), b.getInsertionPoint());
+        Value rebuilt;
+        if (isa<eco::Tuple2Type>(aggTy))
+            rebuilt = afterCase.create<eco::Tuple2MakeOp>(
+                caseOp.getLoc(), aggTy, newOp->getResult(0),
+                newOp->getResult(1));
+        else if (isa<eco::Tuple3Type>(aggTy))
+            rebuilt = afterCase.create<eco::Tuple3MakeOp>(
+                caseOp.getLoc(), aggTy, newOp->getResult(0),
+                newOp->getResult(1), newOp->getResult(2));
+        else if (isa<eco::RecordType>(aggTy))
+            rebuilt = afterCase.create<eco::RecordMakeOp>(
+                caseOp.getLoc(), aggTy,
+                ValueRange(newOp->getResults()));
+        else if (auto cusTy = dyn_cast<eco::CustomType>(aggTy))
+            rebuilt = afterCase.create<eco::CustomMakeOp>(
+                caseOp.getLoc(), aggTy, ValueRange(newOp->getResults()),
+                afterCase.getI64IntegerAttr(0),
+                /*constructor=*/StringAttr());
+        else
+            llvm_unreachable("aggTy not handled");
+
+        caseOp->getResult(0).replaceAllUsesWith(rebuilt);
+        caseOp.erase();
+        return rebuilt;
+    }
+
+    // Accepted call result that was already retyped during the redirect
+    // pass, or other shape that's already aggregate: nothing to do.
+    return v;
 }
 
 /// Rewrite a return-feeding `eco.construct.*` op into the matching
@@ -1058,23 +1298,31 @@ static func::FuncOp cloneAsWorker(OpBuilder &builder, func::FuncOp original,
         if (s.isAggregate()) { anyResultPromoted = true; break; }
     }
     if (anyResultPromoted) {
-        SmallVector<func::ReturnOp, 4> returns;
-        worker.walk([&](func::ReturnOp r) { returns.push_back(r); });
-        for (func::ReturnOp ret : returns) {
-            // First pass: lift construct → make for any aggregate
-            // operand. After this every aggregate result operand has
-            // its aggregate MLIR type.
+        // Worker body was cloned from the original (Elm uses
+        // `eco.return`; hand-written codegen fixtures may use
+        // `func.return`). Walk both.
+        SmallVector<Operation *, 4> returns;
+        worker.walk([&](func::ReturnOp r) {
+            returns.push_back(r.getOperation());
+        });
+        worker.walk([&](eco::ReturnOp r) {
+            returns.push_back(r.getOperation());
+        });
+        for (Operation *ret : returns) {
+            // First pass (Phase 3.4 #1 extension): walk the join tree
+            // top-down from each aggregate-result operand, retyping
+            // arith.select / eco.case results and rewriting construct.*
+            // leaves to make.*. Straight-line construct→make stays a
+            // degenerate single-step case of this walk.
             for (unsigned i = 0; i < resultShapes.size() &&
-                                 i < ret.getNumOperands(); ++i) {
+                                 i < ret->getNumOperands(); ++i) {
                 if (!resultShapes[i].isAggregate()) continue;
-                Value operand = ret.getOperand(i);
-                Operation *def = operand.getDefiningOp();
-                if (!def) continue;
-                if (!isa<eco::Tuple2ConstructOp, eco::Tuple3ConstructOp,
-                         eco::RecordConstructOp, eco::CustomConstructOp>(def))
-                    continue;
-                OpBuilder b(def);
-                rewriteConstructToMake(b, def);
+                Value operand = ret->getOperand(i);
+                Type aggTy = resultShapes[i].asWorkerType(
+                    operand.getContext());
+                Value rewritten = retypeJoinTree(operand, aggTy);
+                if (rewritten != operand)
+                    ret->getOpOperand(i).assign(rewritten);
             }
 
             // Phase 3.3 second pass: for each Sret result position,
@@ -1087,24 +1335,30 @@ static func::FuncOp cloneAsWorker(OpBuilder &builder, func::FuncOp original,
             OpBuilder rb(ret);
             unsigned sretCursor = 0;
             SmallVector<Value, 4> newRetOperands;
-            newRetOperands.reserve(ret.getNumOperands());
-            for (unsigned i = 0; i < ret.getNumOperands(); ++i) {
+            newRetOperands.reserve(ret->getNumOperands());
+            for (unsigned i = 0; i < ret->getNumOperands(); ++i) {
                 bool isSret = sretCursor < sretResultIndices.size() &&
                               sretResultIndices[sretCursor] == i;
                 if (!isSret) {
-                    newRetOperands.push_back(ret.getOperand(i));
+                    newRetOperands.push_back(ret->getOperand(i));
                     continue;
                 }
                 Value slot = sretSlotArgs[sretCursor];
                 LLVM::LLVMStructType slotStructTy = sretSlotTys[sretCursor];
                 ArrayRef<Type> ecoEls = resultShapes[i].elementTys;
-                emitSretStore(rb, ret.getLoc(), slot, slotStructTy,
-                              ret.getOperand(i), ecoEls);
+                emitSretStore(rb, ret->getLoc(), slot, slotStructTy,
+                              ret->getOperand(i), ecoEls);
                 ++sretCursor;
             }
-            auto newRet = rb.create<func::ReturnOp>(ret.getLoc(), newRetOperands);
-            (void)newRet;
-            ret.erase();
+            // Match the original return op's dialect when rebuilding so
+            // we don't accidentally smuggle in a func.return where Elm
+            // expected eco.return (the parent func body's terminator
+            // expectation).
+            if (isa<eco::ReturnOp>(ret))
+                rb.create<eco::ReturnOp>(ret->getLoc(), newRetOperands);
+            else
+                rb.create<func::ReturnOp>(ret->getLoc(), newRetOperands);
+            ret->erase();
         }
     }
 
@@ -1396,6 +1650,15 @@ struct EcoUnboxedAggCrossSpecPass
             SmallVector<LogicalShape, 4> paramShapes;
             SmallVector<LogicalShape, 4> resultShapes;
             if (!readLogicalShapes(func, paramShapes, resultShapes)) return;
+            // Skip functions whose `eco.logical_param_types` attribute
+            // count doesn't match the MLIR input count. The mismatch
+            // arises for Elm-emitted anonymous lambdas with zero Elm-
+            // level params: their MLIR signature carries closure-capture
+            // context inputs the cross-spec rewrite has no model for.
+            // Without this guard `replaceBodyWithWrapper`'s wrapper-arg
+            // loop indexes `paramShapes` by [0, entry.numArgs) and OOBs.
+            if (paramShapes.size() !=
+                func.getFunctionType().getNumInputs()) return;
 
             // Phase 3.3: classify each aggregate result by ABI. Sret
             // is the path for aggregates with `!eco.value` elements
