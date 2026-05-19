@@ -1303,6 +1303,32 @@ static func::FuncOp cloneAsWorker(OpBuilder &builder, func::FuncOp original,
         }
         callOp->replaceAllUsesWith(replacements);
         callOp->erase();
+
+        // Drop aggregate-typed replacements from any eco.safepoint operand
+        // list they now appear in. The safepoint op accepts only
+        // !eco.value (Variadic<Eco_Value>); the front-end emitted the
+        // original boxed call result as a GC root, and replaceAllUsesWith
+        // above silently rewired the use to the new aggregate-typed value.
+        // Aggregate SSA values are not heap pointers — LLVM's
+        // RewriteStatepointsForGC handles any ptr addrspace(1) fields they
+        // contain at the LLVM level, so the eco-level safepoint must not
+        // carry them.
+        for (Value rep : replacements) {
+            if (isa<eco::ValueType>(rep.getType())) continue;
+            SmallVector<eco::SafepointOp, 2> sps;
+            for (OpOperand &use : rep.getUses()) {
+                if (auto sp = dyn_cast<eco::SafepointOp>(use.getOwner()))
+                    sps.push_back(sp);
+            }
+            for (eco::SafepointOp sp : sps) {
+                SmallVector<Value, 8> kept;
+                for (Value v : sp.getLiveRoots())
+                    if (isa<eco::ValueType>(v.getType()))
+                        kept.push_back(v);
+                sp.getLiveRootsMutable().clear();
+                sp.getLiveRootsMutable().append(kept);
+            }
+        }
     }
 
     // Result-side rewriting: for each result position promoted to an
