@@ -67,13 +67,12 @@
 #include "EcoDialect.h"
 #include "EcoOps.h"
 #include "Passes.h"
+#include "EcoBackend.h"
 #include "EcoPipeline.h"
 #include "RuntimeSymbols.h"
 #include "EcoJIT.h"
 
-#include "llvm/Passes/PassBuilder.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
-#include "Passes/EcoPtrIntVerify.h"
 
 namespace eco { void linkEcoGCStrategy(); }
 static struct EcoGCStrategyLinker {
@@ -211,35 +210,13 @@ static int dumpLLVMIR(ModuleOp module) {
         return 1;
     }
 
-    // Run RS4GC: inserts gc.statepoint/gc.relocate for all
-    // GC-triggering calls in functions with gc "eco-gc".
+    // Run RS4GC + optional post-RS4GC dump via shared backend helper.
+    // No frame-pointer attributes for pure IR dump.
     {
-        llvm::LoopAnalysisManager LAM;
-        llvm::FunctionAnalysisManager FAM;
-        llvm::CGSCCAnalysisManager CGAM;
-        llvm::ModuleAnalysisManager MAM;
-        llvm::PassBuilder PB;
-        PB.registerModuleAnalyses(MAM);
-        PB.registerCGSCCAnalyses(CGAM);
-        PB.registerFunctionAnalyses(FAM);
-        PB.registerLoopAnalyses(LAM);
-        PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
-        llvm::ModulePassManager MPM;
-        eco::addEcoGCPipeline(MPM);
-        MPM.run(*llvmModule, MAM);
-    }
-
-    // Optionally dump LLVM IR after RS4GC for GC diagnostics.
-    if (!dumpRS4GCIR.empty()) {
-        std::error_code ec;
-        llvm::raw_fd_ostream out(dumpRS4GCIR, ec);
-        if (!ec) {
-            out << *llvmModule;
-            llvm::errs() << "[rs4gc] Dumped post-RS4GC IR to " << dumpRS4GCIR << "\n";
-        } else {
-            llvm::errs() << "[rs4gc] Error: could not open " << dumpRS4GCIR
-                         << ": " << ec.message() << "\n";
-        }
+        eco::RS4GCOptions rs4gcOpts;
+        rs4gcOpts.postDumpPath = dumpRS4GCIR;
+        rs4gcOpts.addFramePointerAttr = false;
+        eco::runRS4GCAndMaybeFramePointers(*llvmModule, rs4gcOpts);
     }
 
     // Initialize LLVM targets for the host platform.
@@ -294,28 +271,9 @@ static int runJIT(ModuleOp module) {
         ? makeOptimizingTransformer(3, 0, nullptr)
         : makeOptimizingTransformer(0, 0, nullptr);
     options.transformer = [baseTransformer](llvm::Module *m) -> llvm::Error {
-        // Run RS4GC: inserts gc.statepoint/gc.relocate for all
-        // GC-triggering calls in functions with gc "eco-gc".
-        llvm::LoopAnalysisManager LAM;
-        llvm::FunctionAnalysisManager FAM;
-        llvm::CGSCCAnalysisManager CGAM;
-        llvm::ModuleAnalysisManager MAM;
-        llvm::PassBuilder PB;
-        PB.registerModuleAnalyses(MAM);
-        PB.registerCGSCCAnalyses(CGAM);
-        PB.registerFunctionAnalyses(FAM);
-        PB.registerLoopAnalyses(LAM);
-        PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
-        llvm::ModulePassManager MPM;
-        eco::addEcoGCPipeline(MPM);
-        MPM.run(*m, MAM);
-
-        // Force frame pointers on all functions so that libunwind
-        // can walk through JIT'd frames for GC root discovery.
-        for (auto &F : *m) {
-            if (!F.isDeclaration())
-                F.addFnAttr("frame-pointer", "all");
-        }
+        eco::RS4GCOptions rs4gcOpts;
+        rs4gcOpts.addFramePointerAttr = true;
+        eco::runRS4GCAndMaybeFramePointers(*m, rs4gcOpts);
 
         auto err = baseTransformer(m);
         if (err) return err;

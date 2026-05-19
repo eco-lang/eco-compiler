@@ -386,6 +386,7 @@ target_compile_options(ecogen PRIVATE -Wno-ambiguous-reversed-operator)
 
 add_llvm_executable(ecoc
     ecoc.cpp
+    EcoBackend.cpp
     EcoPipeline.cpp
     RuntimeSymbols.cpp
     ../jit/EcoJIT.cpp
@@ -472,6 +473,7 @@ target_link_libraries(ecoc PRIVATE eco::llvm_libunwind)
 
 add_mlir_library(EcoRunner
     EcoRunner.cpp
+    EcoBackend.cpp
     EcoPipeline.cpp
     RuntimeSymbols.cpp
     ../jit/EcoJIT.cpp
@@ -686,6 +688,7 @@ file(GENERATE
 
 add_llvm_executable(eco-boot-native
     eco-boot.cpp
+    EcoBackend.cpp
     EcoPipeline.cpp
     LoweringStats.cpp
     PARTIAL_SOURCES_INTENDED

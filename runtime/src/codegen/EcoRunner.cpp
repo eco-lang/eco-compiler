@@ -47,13 +47,12 @@ extern "C" __attribute__((weak)) void Eco_Kernel_Order_register_gc_roots();
 
 #include "EcoDialect.h"
 #include "Passes.h"
+#include "EcoBackend.h"
 #include "EcoPipeline.h"
 #include "RuntimeSymbols.h"
 #include "EcoJIT.h"
 
-#include "llvm/Passes/PassBuilder.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
-#include "Passes/EcoPtrIntVerify.h"
 
 namespace eco { void linkEcoGCStrategy(); }
 static struct EcoGCStrategyLinker {
@@ -197,28 +196,9 @@ private:
             ? makeOptimizingTransformer(3, 0, nullptr)
             : makeOptimizingTransformer(0, 0, nullptr);
         jitOptions.transformer = [baseTransformer](llvm::Module *m) -> llvm::Error {
-            // Run RS4GC: inserts gc.statepoint/gc.relocate for all
-            // GC-triggering calls in functions with gc "eco-gc".
-            llvm::LoopAnalysisManager LAM;
-            llvm::FunctionAnalysisManager FAM;
-            llvm::CGSCCAnalysisManager CGAM;
-            llvm::ModuleAnalysisManager MAM;
-            llvm::PassBuilder PB;
-            PB.registerModuleAnalyses(MAM);
-            PB.registerCGSCCAnalyses(CGAM);
-            PB.registerFunctionAnalyses(FAM);
-            PB.registerLoopAnalyses(LAM);
-            PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
-            llvm::ModulePassManager MPM;
-            eco::addEcoGCPipeline(MPM);
-            MPM.run(*m, MAM);
-
-            // Force frame pointers on all functions so that libunwind
-            // can walk through JIT'd frames for GC root discovery.
-            for (auto &F : *m) {
-                if (!F.isDeclaration())
-                    F.addFnAttr("frame-pointer", "all");
-            }
+            eco::RS4GCOptions rs4gcOpts;
+            rs4gcOpts.addFramePointerAttr = true;
+            eco::runRS4GCAndMaybeFramePointers(*m, rs4gcOpts);
 
             auto err = baseTransformer(m);
             if (err) return err;

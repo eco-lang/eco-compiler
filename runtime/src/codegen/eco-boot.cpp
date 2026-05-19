@@ -75,12 +75,11 @@
 #include "EcoDialect.h"
 #include "EcoOps.h"
 #include "Passes.h"
+#include "EcoBackend.h"
 #include "EcoPipeline.h"
 #include "LoweringStats.h"
 
-#include "llvm/Passes/PassBuilder.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
-#include "Passes/EcoPtrIntVerify.h"
 
 namespace eco { void linkEcoGCStrategy(); }
 static struct EcoGCStrategyLinker {
@@ -696,46 +695,15 @@ int main(int argc, char **argv) {
         }
     }
 
-    // Optionally dump LLVM IR before RS4GC for comparison.
-    if (!dumpPreRS4GCIR.empty()) {
-        std::error_code ec;
-        llvm::raw_fd_ostream out(dumpPreRS4GCIR, ec);
-        if (!ec) {
-            out << *llvmModule;
-            llvm::errs() << "[pre-rs4gc] Dumped pre-RS4GC IR to " << dumpPreRS4GCIR << "\n";
-        }
-    }
-
-    // Run RS4GC: inserts gc.statepoint/gc.relocate for all
-    // GC-triggering calls in functions with gc "eco-gc".
+    // Run RS4GC + optional pre/post dumps + frame-pointer attributes via the
+    // shared backend helper.
     {
         eco::LoweringStats::Scope scope(stats, "LLVM RS4GC pipeline");
-        llvm::LoopAnalysisManager LAM;
-        llvm::FunctionAnalysisManager FAM;
-        llvm::CGSCCAnalysisManager CGAM;
-        llvm::ModuleAnalysisManager MAM;
-        llvm::PassBuilder PB;
-        PB.registerModuleAnalyses(MAM);
-        PB.registerCGSCCAnalyses(CGAM);
-        PB.registerFunctionAnalyses(FAM);
-        PB.registerLoopAnalyses(LAM);
-        PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
-        llvm::ModulePassManager MPM;
-        eco::addEcoGCPipeline(MPM);
-        MPM.run(*llvmModule, MAM);
-    }
-
-    // Optionally dump LLVM IR after RS4GC for GC diagnostics.
-    if (!dumpRS4GCIR.empty()) {
-        std::error_code ec;
-        llvm::raw_fd_ostream out(dumpRS4GCIR, ec);
-        if (!ec) {
-            out << *llvmModule;
-            llvm::errs() << "[rs4gc] Dumped post-RS4GC IR to " << dumpRS4GCIR << "\n";
-        } else {
-            llvm::errs() << "[rs4gc] Error: could not open " << dumpRS4GCIR
-                         << ": " << ec.message() << "\n";
-        }
+        eco::RS4GCOptions rs4gcOpts;
+        rs4gcOpts.preDumpPath = dumpPreRS4GCIR;
+        rs4gcOpts.postDumpPath = dumpRS4GCIR;
+        rs4gcOpts.addFramePointerAttr = true;
+        eco::runRS4GCAndMaybeFramePointers(*llvmModule, rs4gcOpts);
     }
 
     // Clean up temp MLIR file now that we're done with it
@@ -760,13 +728,6 @@ int main(int argc, char **argv) {
             llvm::errs() << "Error: LLVM optimization failed: " << err << "\n";
             return 1;
         }
-    }
-
-    // Force frame pointers on all functions so the GC's RBP-based stack
-    // walker can discover roots via __LLVM_StackMaps at collection time.
-    for (auto &F : *llvmModule) {
-        if (!F.isDeclaration())
-            F.addFnAttr("frame-pointer", "all");
     }
 
     // Handle LLVM IR output mode
