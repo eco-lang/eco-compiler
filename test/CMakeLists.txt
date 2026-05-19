@@ -33,6 +33,18 @@ foreach(pkg IN LISTS ELM_TEST_PACKAGES)
     file(CREATE_LINK ${CMAKE_CURRENT_SOURCE_DIR}/${pkg}/src ${_shadow}/src SYMBOLIC)
 endforeach()
 
+# Parallel shadow tree for the AOT E2E runner (test/aot-e2e/<pkg>/) so its
+# .mlir / ELF / run-capture outputs live alongside, but do not collide with,
+# the JIT E2E suite's outputs under test/<pkg>/. Each AOT shadow holds the
+# package's elm.json plus a src symlink to the canonical source tree.
+foreach(pkg IN LISTS ELM_TEST_PACKAGES)
+    set(_aot_shadow "${CMAKE_BINARY_DIR}/test/aot-e2e/${pkg}")
+    file(MAKE_DIRECTORY ${_aot_shadow})
+    file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/${pkg}/elm.json DESTINATION ${_aot_shadow})
+    file(REMOVE ${_aot_shadow}/src)
+    file(CREATE_LINK ${CMAKE_CURRENT_SOURCE_DIR}/${pkg}/src ${_aot_shadow}/src SYMBOLIC)
+endforeach()
+
 # Find MLIR for codegen tests (EcoRunner depends on it)
 find_package(MLIR REQUIRED CONFIG)
 list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
@@ -159,4 +171,49 @@ add_custom_target(run-mlir-equivalence
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
         USES_TERMINAL
         COMMENT "Running Stage 2 vs Stage 6 MLIR equivalence tests"
+)
+
+# aot-e2e — Phase 5 of the pipeline-convergence plan. Compiles each Elm E2E
+# test via Stage 3's eco-boot-2.js, lowers to native ELF via eco-boot-native,
+# runs the binary, and verifies stdout against `-- CHECK:` directives.
+#
+# Outputs land in ${CMAKE_BINARY_DIR}/test/aot-e2e/ so they do not collide
+# with the JIT E2E suite's outputs in ${CMAKE_BINARY_DIR}/test/<pkg>/.
+#
+# Usage:
+#     cmake --build build --target aot-e2e         # build the runner only
+#     cmake --build build --target run-aot-e2e    # build + run the suite
+#     TEST_FILTER=Add cmake --build build --target run-aot-e2e
+add_executable(aot-e2e-runner
+        aot_e2e_main.cpp
+)
+target_compile_features(aot-e2e-runner PRIVATE cxx_std_20)
+target_compile_options(aot-e2e-runner PRIVATE -fexceptions)
+target_compile_definitions(aot-e2e-runner PRIVATE
+        REPO_ROOT="${CMAKE_SOURCE_DIR}"
+        BUILD_DIR="${CMAKE_BINARY_DIR}"
+)
+
+set_property(DIRECTORY APPEND PROPERTY
+        ADDITIONAL_CLEAN_FILES "${CMAKE_BINARY_DIR}/test/aot-e2e"
+)
+
+# Bootstrap inputs the AOT runner needs at runtime. eco-boot-2.js is produced
+# by Stages 1+2+3 of guides/bootstrap.md; eco-boot-native is produced by the
+# runtime CMake build. Listed as file dependencies because `compiler/` is
+# added after `test/` in the top-level CMakeLists, so target names aren't
+# visible here yet — file-level dependencies are resolved after both
+# add_subdirectory calls have been processed.
+set(AOT_E2E_BOOTSTRAP_DEPS
+        "${CMAKE_BINARY_DIR}/compiler/build-kernel/bin/eco-boot-2.js"
+        "${CMAKE_BINARY_DIR}/compiler/build-kernel/bin/eco-boot-2-runner.js"
+        "${CMAKE_BINARY_DIR}/runtime/src/codegen/eco-boot-native"
+)
+
+add_custom_target(run-aot-e2e
+        COMMAND sh -c "$<TARGET_FILE:aot-e2e-runner> $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
+        DEPENDS aot-e2e-runner ${AOT_E2E_BOOTSTRAP_DEPS}
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        USES_TERMINAL
+        COMMENT "Running AOT E2E tests via eco-boot-2.js + eco-boot-native"
 )

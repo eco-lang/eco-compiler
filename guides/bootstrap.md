@@ -2,6 +2,8 @@
 
 The Eco compiler bootstraps through 8 stages. Stages 1–4 produce a fixed-point JS compiler; stage 5 uses it to emit MLIR for the native code path; stage 6 compiles that MLIR to a native ELF executable; stages 7–8 use the native compiler to self-compile and verify a native fixed point.
 
+Two E2E test gates fail-fast on backend regressions: **Gate A** after Stage 1 runs the JIT E2E suite; **Gate B** after Stages 3+4 runs the AOT E2E suite. Either gate's failure pins the regression to the stages preceding it, before further self-compile cycles burn.
+
 ## Prerequisites
 
 Node.js needs a 12 GB heap for self-compilation (stages 2+):
@@ -25,6 +27,14 @@ cd /work/compiler
 ```
 
 Output: `build/compiler/build-xhr/bin/guida.js`
+
+### Gate A: JIT E2E test suite
+
+With `guida.js` built, run the JIT E2E suite. This validates Stage 1's frontend plus the entire MLIR-codegen + runtime + JIT stack BEFORE we burn cycles on Stages 2–5's self-compiles. A failure here is localised to Stage 1 or the runtime, not a self-compile interaction.
+
+```bash
+cmake --build build --target full
+```
 
 ### Stage 2: `guida.js` self-compiles → `eco-boot.js`
 
@@ -51,6 +61,16 @@ cd /work/compiler
 - **Stage 3**: `eco-boot.js` compiles itself → `eco-boot-2.js`
 - **Stage 4**: `eco-boot-2.js` compiles itself → `eco-boot-3.js`
 - Diffs the two outputs — they must be identical (fixed point reached).
+
+### Gate B: AOT E2E test suite
+
+With `eco-boot-2.js` produced and verified, run the AOT E2E suite. It compiles each Elm E2E test via Stage 3's `eco-boot-2.js`, lowers to native ELF via `eco-boot-native`, runs the binary, and verifies stdout against `-- CHECK:` patterns. This is the earliest valid point for the AOT gate: failures here pin a regression to Stage 5's MLIR-codegen or to `eco-boot-native` itself, before Stages 5–8's self-compile cycles.
+
+```bash
+cmake --build build --target run-aot-e2e
+```
+
+Outputs land under `build/test/aot-e2e/<pkg>/` so they coexist with the JIT E2E outputs at `build/test/<pkg>/`.
 
 ### Stage 5: `eco-boot-2.js` → `eco-compiler.mlir`
 
@@ -146,8 +166,13 @@ Stage 1 builds **without** `--optimize` (the XHR `Eco.Crash` uses `Debug.todo`).
 export NODE_OPTIONS="--max-old-space-size=12000"
 cd /work/compiler
 ./scripts/build.sh bin          # Stage 1: stock Elm (no --optimize) → guida.js
+cd /work
+cmake --build build --target full  # Gate A: JIT E2E suite
+cd /work/compiler
 ./scripts/build-self.sh bin     # Stage 2: guida.js --optimize → eco-boot.js
 ./scripts/build-verify.sh       # Stages 3+4: --optimize fixed-point check
+cd /work
+cmake --build build --target run-aot-e2e  # Gate B: AOT E2E suite
 # Clean stale local typed-object caches before Stage 5
 find /work/build/compiler/build-kernel/eco-stuff -name '*.ecot' -delete
 cd /work/build/compiler/build-kernel

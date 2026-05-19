@@ -256,143 +256,201 @@ unifies the transformer body.
 **Validation:** Full E2E plus stress tests. JIT covers most regressions
 because every Elm E2E test runs through it.
 
-### Phase 5 — AOT canary in E2E (beachhead, not a full refactor)
+### Phase 5 — AOT E2E test runner (independent target, isolated outputs)
 
-For this unit of work, ship a small handful of canary E2E tests
-(start with one) that exercise the AOT path: write MLIR to a temp
-file, shell out to `eco-boot-native` with `--emit=exe`, run the
-produced binary, and compare stdout to existing `-- CHECK:` patterns.
-This is enough to catch most JIT/AOT drift in the converged backend
-without a structural change to the harness.
+Build out a new test runner that exercises the AOT path end-to-end on
+the same `*.elm` sources the JIT E2E suite uses today. The runner
+lives in its own binary with its own CMake target so the existing
+`cmake --build build --target full` JIT suite is not affected by AOT
+runtime cost or AOT-only failures. Phase 5 lands incrementally:
 
-The full `BackendMode`-style refactor (every Elm E2E test runs under
-both `BackendMode::JIT` and `BackendMode::AOT`) is the right long-term
-shape but is tracked as a separate follow-up plan — not bundled here.
+1. **Step A** — stand up the new runner + target with a small starter
+   set of tests (5–10 representative `.elm` sources covering basic
+   arithmetic, recursion, closures, simple list/string ops, and one
+   effect-driven program). Land + green.
+2. **Step B** — expand to the full set of `test/<pkg>/src/*Test.elm`
+   sources. Land + green. Any tests that surface JIT/AOT divergence
+   get filed as separate bugs; the runner is not the place to fix
+   them.
 
-### Phase 6 — Bake JIT + AOT E2E gates into bootstrap.md
+Phase 5 also updates `guides/bootstrap.md` to wire the new target
+into the bootstrap chain at the earliest valid point (see "Bootstrap
+gates" below) — including a parallel insertion of the existing JIT
+E2E suite as a Stage 1 gate, for the same early-failure rationale.
 
-The convergence story isn't complete until the bootstrap chain itself
-exercises both faces of the shared backend. Today
-`guides/bootstrap.md` walks Stages 1–8 with no test gating; the
-existing `cmake --build build --target full` E2E suite is invoked
-separately and only covers Stage 1's `guida.js` + EcoRunner JIT — it
-never touches Stages 2–8 or the AOT path.
+#### Shape
 
-This phase rewrites `guides/bootstrap.md` to insert two E2E gates:
+- **New binary:** `test/aot_e2e_main.cpp`, modelled on
+  `test/mlir_equivalence_main.cpp`. For each Elm test source it
+  drives:
+  1. Compile `.elm → .mlir` by shelling out to
+     `node --stack-size=65536 build/compiler/build-kernel/bin/eco-boot-2-runner.js make <test.elm> --output=<test.mlir>`
+     — the Stage 3 kernel-IO JS compiler (same compiler Stage 5
+     uses to produce `eco-compiler.mlir`).
+  2. Lower `.mlir → ELF` by shelling out to
+     `build/runtime/src/codegen/eco-boot-native <mlir> -o <exe>`.
+  3. Execute the ELF, capture stdout/stderr, compare against the
+     test source's `-- CHECK:` / `-- CHECK-NOT:` patterns via the
+     existing `test/CheckPatterns.hpp` machinery.
+- **New CMake target:** `aot-e2e` (the binary) and `run-aot-e2e`
+  (build + run + report), modelled on `mlir-equivalence` /
+  `run-mlir-equivalence`. `DEPENDS` on `eco-boot-native` AND on the
+  `eco-boot-2` target — which transitively pulls in Stages 1, 2, and
+  3 of the bootstrap chain so a clean checkout's
+  `cmake --build build --target run-aot-e2e` works end-to-end.
+  Supports `TEST_FILTER` from day one (mirroring the existing
+  pattern) so partial runs are easy.
+- **Concurrency:** capped via `AOT_E2E_JOBS=<N>` env, default 4,
+  matching `MLIR_EQUIV_JOBS`. Per-test AOT compile + run takes
+  ~seconds; parallelism keeps wall-clock reasonable.
+- **Frontend choice (Stage 3 eco-boot-2.js, not Stage 1 guida.js):**
+  the JIT E2E suite today uses Stage 1's `guida.js` (the XHR-based
+  variant). The AOT runner uses Stage 3's `eco-boot-2.js` — the
+  kernel-IO self-compiled JS compiler — for two reasons:
+  1. **Matches Stage 5's compiler choice.** Stage 5 produces
+     `eco-compiler.mlir` via `eco-boot-2.js`; using the same
+     compiler for AOT-test MLIR means any cross-mode MLIR diffs
+     reflect *only* the test source, not a compiler-stage mismatch.
+  2. **Exercises the kernel-IO path under test.** Stage 1's XHR
+     compiler is a bootstrap artefact; Stage 3 is the "production"
+     JS compiler with kernel IO. Running E2E tests through it
+     gives the kernel-IO path its own coverage.
 
-#### 6.1 JIT E2E gate after Stage 1
+  The cost: `run-aot-e2e` requires Stages 1+2+3 to be built first
+  (~minutes for a clean tree, sub-second when already built).
+  CMake target dependency handles that automatically; the user
+  doesn't need to run any extra commands.
 
-Right after `./scripts/build.sh bin` (the step that produces
-`build/compiler/build-xhr/bin/guida.js`), insert:
+  No `--kernel-package` / `--local-package` flags should be passed
+  for ordinary test sources — those are specific to compiling
+  Eco's own source against the kernel package. Confirm during
+  implementation by trying a representative test first.
+
+  A "Stage 6 frontend" variant (using the *native* `eco-compiler`)
+  is a clean future enhancement once the basic runner ships.
+
+#### Output isolation
+
+AOT outputs must not collide with the JIT suite's outputs. The JIT
+suite writes per-package state at `${CMAKE_BINARY_DIR}/test/<pkg>/`
+(elm.json + src symlink + eco-stuff/ + elm-stuff/), and MLIR lands at
+`${CMAKE_BINARY_DIR}/test/<pkg>/eco-stuff/mlir/<Test>.mlir`.
+
+The AOT runner gets a **parallel shadow tree** at
+`${CMAKE_BINARY_DIR}/test/aot-e2e/<pkg>/` with the same shape:
+- `elm.json` (copy of the source `test/<pkg>/elm.json`).
+- `src` (symlink to `test/<pkg>/src`, exactly like the JIT shadow).
+- Per-test outputs land at:
+  - MLIR: `${CMAKE_BINARY_DIR}/test/aot-e2e/<pkg>/eco-stuff/mlir/<Test>.mlir`
+  - ELF: `${CMAKE_BINARY_DIR}/test/aot-e2e/<pkg>/aot-bin/<Test>`
+  - Test stdout/stderr captures: `${CMAKE_BINARY_DIR}/test/aot-e2e/<pkg>/run-out/<Test>.{out,err}`
+
+`test/CMakeLists.txt` materialises this tree at configure time using
+the same `file(COPY …)` + `file(CREATE_LINK … SYMBOLIC)` pattern as
+the JIT shadow. Set
+`ADDITIONAL_CLEAN_FILES "${CMAKE_BINARY_DIR}/test/aot-e2e"` so
+`ninja clean` drops the whole AOT output tree.
+
+With this layout, the JIT and AOT MLIRs for the same test source
+co-exist at known paths and can be diffed directly — a future
+`mlir-equivalence`-style cross-mode check is a small follow-up.
+
+#### Bootstrap gates (updates to `guides/bootstrap.md`)
+
+Today `bootstrap.md` walks Stages 1–8 with no test gating. Phase 5
+inserts two gates at the earliest valid points in the chain so a
+regression in either backend face fails fast, before downstream
+stages burn cycles.
+
+**Gate A — JIT E2E after Stage 1.** Right after `./scripts/build.sh
+bin` produces `guida.js`, insert:
 
 ```bash
 cmake --build build --target full
 ```
 
-Rationale: this is the existing JIT E2E suite. It needs Stage 1's
-`guida.js` (which the default `GUIDA_JS_PATH` in
-`compiler/bin/index.js` resolves to) plus the EcoRunner library. It
-validates the Stage-1 frontend + the entire MLIR-codegen + runtime
-+ JIT stack BEFORE we burn cycles on Stages 2–5's self-compiles.
-Failures here are localised to Stage 1 or the runtime, not a
-self-compile interaction.
+The existing JIT E2E suite needs only Stage 1's `guida.js` plus the
+EcoRunner library. Failing here pins the regression to Stage 1's
+frontend or to the runtime/JIT path — well before Stages 2–5's
+self-compiles.
 
-No code changes required for 6.1 — it's a doc-only insertion that
-documents the existing test target as a bootstrap gate.
+No code changes for Gate A; it's a doc-only insertion that documents
+the existing target as a bootstrap gate.
 
-#### 6.2 AOT E2E gate after Stage 6
-
-Right after Stage 6 (eco-compiler ELF produced), insert a new
-target invocation:
+**Gate B — AOT E2E after Stages 3+4.** Right after
+`./scripts/build-verify.sh` (which produces and fixed-point-verifies
+`eco-boot-2.js`), insert:
 
 ```bash
 cmake --build build --target run-aot-e2e
 ```
 
-This new CMake target drives a new `aot-e2e` binary (or extends the
-existing `mlir-equivalence` pattern) that, for each Elm E2E test
-source under `test/<pkg>/src/*Test.elm`:
+The new AOT runner needs `eco-boot-2.js` (just produced) and
+`eco-boot-native` (CMake handles the dep). This is the **earliest
+valid point** for the AOT gate: gating later (after Stage 5 or
+Stage 6) wouldn't surface AOT regressions any earlier, and the
+original Phase-6-style "after Stage 6" gate was only delayed
+because that plan used Stage 6's native `eco-compiler` as the
+frontend. With `eco-boot-2.js` as the frontend, the gate moves up.
 
-1. Compiles `.elm → .mlir` using **`build/compiler/build-kernel/bin/eco-compiler`**
-   (Stage 6's native ELF), into an isolated per-test `--builddir`.
-2. Lowers `.mlir → ELF` using
-   **`build/runtime/src/codegen/eco-boot-native`** with `--emit=exe`.
-3. Runs the produced ELF, captures stdout, and verifies against the
-   test source's `-- CHECK:` / `-- CHECK-NOT:` patterns
-   (reusing `test/CheckPatterns.hpp`).
-
-Concurrency capped (e.g. `AOT_E2E_JOBS=4` env, mirroring
-`MLIR_EQUIV_JOBS`). Failures report the failing test name + the
-divergence (mismatched CHECK pattern, non-zero exit, timeout).
-
-**New code:**
-- `test/aot_e2e_main.cpp` — a binary modelled on
-  `test/mlir_equivalence_main.cpp` but running compiled ELFs and
-  comparing stdout to CHECK patterns instead of comparing
-  byte-equality of two MLIRs.
-- `test/CMakeLists.txt`: `add_executable(aot-e2e …)` +
-  `add_custom_target(run-aot-e2e …)` paralleling the
-  `mlir-equivalence` / `run-mlir-equivalence` pair, with
-  `DEPENDS` on `eco-compiler` + `eco-boot-native` so a missing
-  bootstrap stage produces a clear "Stage 6 not built" diagnostic.
-
-**Choice of compiler for step 1 — Stage 6 vs Stage 7:**
-Stage 6's `eco-compiler` is preferred. Earlier failure isolates
-faster: a regression caught at the post-Stage-6 gate implicates
-Stage 5's MLIR + `eco-boot-native`; the same regression caught
-after Stage 7 also implicates Stage 6→7's self-compile, widening
-the search. Stage 7 is also expensive (~15 min self-compile of
-the whole compiler today); we want Stage 6 to be the cheapest gate.
-
-**Optional 6.3 — Re-run AOT E2E after Stage 7:** once the
-`run-aot-e2e` target exists, re-invoking it after Stage 7 with
-`ECO_COMPILER=…/eco-compiler-boot` (env override) is cheap and
-provides a belt-and-braces check that Stage 7's MLIR-gen behaves
-the same as Stage 6's. Recommended but not load-bearing; can be a
-follow-up commit.
-
-#### Sequence in the rewritten `guides/bootstrap.md`
+#### Rewritten sequence in `guides/bootstrap.md`
 
 ```
-Stage 1   build.sh bin          → guida.js
-GATE 6.1  cmake … --target full → existing JIT E2E suite     [NEW]
-Stage 2   build-self.sh         → eco-boot.js
-Stages 3+4 build-verify.sh      → JS fixed-point check
-Stage 5   eco-boot-2.js make    → eco-compiler.mlir
-Stage 6   eco-boot-native …     → eco-compiler (native ELF)
-GATE 6.2  cmake … --target run-aot-e2e                       [NEW]
-Stage 7   eco-compiler make …   → eco-compiler-boot.mlir, .ELF
-[Optional GATE 6.3 re-run AOT E2E against eco-compiler-boot] [NEW]
-Stage 8   eco-compiler-boot make + cmp                        (fixed-point ELF)
+Stage 1   build.sh bin            → guida.js
+GATE A    cmake … --target full   → JIT E2E suite             [NEW]
+Stage 2   build-self.sh           → eco-boot.js
+Stages 3+4 build-verify.sh        → eco-boot-2.js, fixed point
+GATE B    cmake … --target run-aot-e2e → AOT E2E suite        [NEW]
+Stage 5   eco-boot-2.js make      → eco-compiler.mlir
+Stage 6   eco-boot-native …       → eco-compiler (native ELF)
+Stage 7   eco-compiler make …     → eco-compiler-boot.mlir,.ELF
+Stage 8   eco-compiler-boot make + cmp → native fixed point
 ```
 
 The "All stages in sequence" block at the bottom of `bootstrap.md`
 gets the two new `cmake` invocations inserted at the matching
-positions.
+positions. Document the cost briefly in each gate's prose: Gate A
+adds the existing JIT-suite wall clock; Gate B adds the AOT
+runner's wall clock (sized to its Step A/B scope).
 
 #### Risks / watch items
 
-- **Stage 6 doesn't exercise --kernel-package / --local-package
-  paths in the same way Stage 7 does.** When using Stage 6's
-  `eco-compiler` to compile test sources, the test packages live
-  under `build/test/<pkg>/` and don't carry the kernel-package
-  flags Stage 5/7 use. The `aot-e2e` binary needs to pass any
-  flags the existing JIT E2E suite passes today (see
-  `ElmE2ETestBase::compileElmToMlir` — `extraFlags`,
-  `--builddir`, text/bytecode flag).
-- **eco-boot-native's emit mode.** Need to confirm
-  `eco-boot-native …mlir -o exe` produces a runnable exe (not just
-  an object file) today, or whether `--emit=exe` is the right flag.
-  This matters for the 6.2 wire-up but is straightforward to
-  resolve by reading `eco-boot.cpp`'s `EmitAction` handling.
-- **Test isolation.** Each AOT compile produces a real ELF in an
-  isolated scratch dir; `ADDITIONAL_CLEAN_FILES` should drop those
-  on `ninja clean`, mirroring `mlir-equivalence-out`.
-- **CI time.** A full E2E suite running through `eco-boot-native`
-  + ELF execution per test is much slower than the JIT path. The
-  bootstrap chain is already long; budget for this and keep the
-  AOT E2E gate parallelised. Consider a `TEST_FILTER`-equivalent
-  for the AOT runner from day one.
+- **eco-boot-native CLI surface.** Confirm the exact flag for
+  emitting a runnable exe when the input is a `.mlir` file (the
+  existing path is `eco-boot-native <input.mlir> -o <output>` which
+  defaults to exe; verify against `eco-boot.cpp`'s `EmitAction`).
+- **Frontend caches.** `eco-boot-2.js` writes `.ecot` and
+  `elm-stuff/` caches under its cwd. Running the AOT shadow with
+  its own per-package cwd means those caches land in the AOT tree,
+  not the JIT tree — no cache invalidation cross-talk.
+- **JS-bootstrap prereq for `run-aot-e2e`.** The target depends on
+  the `eco-boot-2` CMake target, which runs Stages 1+2+3 of the JS
+  bootstrap on a clean tree (build-xhr `guida.js` → kernel-IO
+  `eco-boot.js` → fixed-point-verified `eco-boot-2.js`). First
+  invocation after `rm -rf build` takes minutes; subsequent
+  invocations are cache hits. CI runs that already do bootstrap
+  pay zero additional cost here.
+- **Stale `.ecot` caches between AOT runs.** The bootstrap doc
+  flags that Stage 5 needs `find … -name '*.ecot' -delete` before
+  running because Stages 2–4 don't invalidate MLIR-output caches.
+  The AOT shadow tree's `.ecot` caches will face the same issue if
+  the runner is re-invoked after the JS compiler changes. Mitigation:
+  either drop the AOT shadow's `eco-stuff/` on every `run-aot-e2e`
+  invocation, or document the manual sweep. Pick one during
+  implementation.
+- **CI time.** Per-test AOT compile is much slower than JIT (each
+  invocation is a fresh `eco-boot-native` process running the full
+  LLVM pipeline + linking). Keep `run-aot-e2e` opt-in and
+  parallelised; do not bundle into `target full`. Step A starts
+  small to keep total wall-clock manageable.
+- **Test sources with no main / pure typecheck tests.** Some Elm E2E
+  sources are typecheck-only (no `main`, can't be executed). The
+  runner must skip these the same way the existing JIT runner does
+  (see `ElmE2ETestBase`'s skip logic).
+- **Divergence triage.** When Step B turns on the full set, expect
+  some tests to fail AOT-only — those are bugs to file, not
+  blockers for Phase 5. The runner's job is to *report* divergence,
+  not to prove parity.
 
 ## Risks / what to watch
 
@@ -435,6 +493,13 @@ positions.
    use `JITTargetMachineBuilder::detectHost()` with Aggressive/None,
    which is a fine simplification. Revisit only if JIT tuning needs
    finer-grained codegen-opt control.
-5. **Phase 5 = single AOT canary** (or small handful), not a
-   `BackendMode` harness refactor. Full both-modes coverage is the
-   right long-term shape and is tracked as a separate follow-up plan.
+5. **Phase 5 = independent AOT E2E runner with its own target and
+   isolated output tree**, plus the bootstrap-doc updates folded
+   back in. Starts with a small set of tests (Step A) and expands to
+   the full E2E corpus (Step B). The bootstrap.md edits insert two
+   gates: JIT E2E after Stage 1 and AOT E2E after Stages 3+4 (the
+   earliest valid points; the AOT gate moves up from the original
+   "after Stage 6" because the runner uses `eco-boot-2.js` as the
+   frontend, not Stage 6's native compiler). The `BackendMode`-style
+   harness refactor (every test runs under both JIT and AOT in one
+   binary) remains a separate long-term option.
