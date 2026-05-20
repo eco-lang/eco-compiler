@@ -740,27 +740,53 @@ static std::string uniqueWorkerName(SymbolTable &symTable, StringRef baseName) {
     }
 }
 
+/// Read the actual element type at position `fieldIdx` of an Eco
+/// aggregate type. Phase 2: the actual aggregate may carry nested
+/// element types (e.g. `!eco.record<!eco.tuple2<i64,i64>, !eco.value>`),
+/// in which case the field type is itself an aggregate and the
+/// caller's flat `ecoElementTys` view is out of date.
+static Type actualElementTypeAt(Type aggTy, unsigned fieldIdx) {
+    if (auto t2 = dyn_cast<eco::Tuple2Type>(aggTy))
+        return fieldIdx == 0 ? t2.getFirst() : t2.getSecond();
+    if (auto t3 = dyn_cast<eco::Tuple3Type>(aggTy)) {
+        if (fieldIdx == 0) return t3.getFirst();
+        if (fieldIdx == 1) return t3.getSecond();
+        return t3.getThird();
+    }
+    if (auto rec = dyn_cast<eco::RecordType>(aggTy))
+        return rec.getFields()[fieldIdx];
+    if (auto cus = dyn_cast<eco::CustomType>(aggTy))
+        return cus.getFields()[fieldIdx];
+    llvm_unreachable("actualElementTypeAt: unsupported aggregate type");
+}
+
 /// Emit an `eco.project.*` op of the right kind for `aggTy`, then
 /// optionally bridge `!eco.value` field types into `!llvm.ptr` via an
 /// `unrealized_conversion_cast` so the field is storable to LLVM
 /// memory. Used by the Phase 3.3 sret worker body rewriter.
+///
+/// Phase 2: the project op's result type follows the actual aggregate
+/// element type, which may be nested. The optional `!eco.value`→`!llvm.ptr`
+/// bridge runs only on the truly-boxed case; nested aggregates flow
+/// through unchanged so the downstream store handles the LLVM struct.
 static Value projectAndConvertField(OpBuilder &builder, Location loc,
                                      Value agg, Type aggTy,
-                                     unsigned fieldIdx, Type elemTy) {
+                                     unsigned fieldIdx, Type /*elemTy*/) {
+    Type actualElemTy = actualElementTypeAt(aggTy, fieldIdx);
     auto idxAttr = builder.getI64IntegerAttr(static_cast<int64_t>(fieldIdx));
     Value projected;
     if (isa<eco::Tuple2Type>(aggTy)) {
-        projected = builder.create<eco::Tuple2ProjectOp>(loc, elemTy, agg, idxAttr);
+        projected = builder.create<eco::Tuple2ProjectOp>(loc, actualElemTy, agg, idxAttr);
     } else if (isa<eco::Tuple3Type>(aggTy)) {
-        projected = builder.create<eco::Tuple3ProjectOp>(loc, elemTy, agg, idxAttr);
+        projected = builder.create<eco::Tuple3ProjectOp>(loc, actualElemTy, agg, idxAttr);
     } else if (isa<eco::RecordType>(aggTy)) {
-        projected = builder.create<eco::RecordProjectOp>(loc, elemTy, agg, idxAttr);
+        projected = builder.create<eco::RecordProjectOp>(loc, actualElemTy, agg, idxAttr);
     } else if (isa<eco::CustomType>(aggTy)) {
-        projected = builder.create<eco::CustomProjectOp>(loc, elemTy, agg, idxAttr);
+        projected = builder.create<eco::CustomProjectOp>(loc, actualElemTy, agg, idxAttr);
     } else {
         llvm_unreachable("projectAndConvertField: unsupported aggregate type");
     }
-    if (isa<eco::ValueType>(elemTy)) {
+    if (isa<eco::ValueType>(actualElemTy)) {
         Type ptrTy = LLVM::LLVMPointerType::get(
             builder.getContext(), /*addressSpace=*/1);
         return builder.create<UnrealizedConversionCastOp>(loc, ptrTy, projected)
@@ -1001,18 +1027,18 @@ static Value rewriteConstructToMake(OpBuilder &builder, Operation *constructOp) 
     // SSA value (e.g. another promoted call's result). Propagating that
     // type verbatim into the new make.*'s result element list would
     // produce a *nested* aggregate type (e.g.
-    // !eco.record<!eco.tuple2<i64,i64>, !eco.value>). The make.* op's
-    // verifier accepts the nested type but RS4GC chokes on the nested
-    // FCA-containing-ptr<1> at safepoints, and the 1-level
-    // strip-aggregates pass doesn't recurse.
+    // !eco.record<!eco.tuple2<i64,i64>, !eco.value>) — and the rest of
+    // cross-spec (wrapper slot allocation, sretSlotStructTy, emitSretLoad
+    // / emitSretStore, eligibility analysis) all assume the worker's
+    // result aggregate is one level deep.
     //
     // The stopgap: box every aggregate-typed field via eco.to_heap
     // before recording its type. Element types stay flat and the make.*
     // result type is never nested. Cost: one extra heap alloc per
-    // chained-aggregate field; lifted by Phase 2 (recursive ABI
-    // promotion + recursive strip-aggregates per
-    // plans/widen-construct-make-call-aggregates.md §9).
-    // TODO(phase-2): remove the boxing once recursive ABI lands.
+    // chained-aggregate field; lifted by Phase 2 §9.1 + §9.2 (recursive
+    // cross-spec ABI promotion + matching slot/load/store recursion)
+    // per plans/widen-construct-make-call-aggregates.md.
+    // TODO(phase-2): remove this boxing once recursive ABI lands.
     auto isAggSSAType = [](Type t) {
         return isa<eco::Tuple2Type, eco::Tuple3Type, eco::RecordType,
                    eco::CustomType, eco::ConsType>(t);

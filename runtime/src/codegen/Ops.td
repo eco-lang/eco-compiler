@@ -665,7 +665,7 @@ def Eco_ListHeadOp : Eco_Op<"project.list_head", [Pure]> {
   }];
 
   let arguments = (ins Eco_ConsOrValue:$list);
-  let results = (outs Eco_AnyValue:$head);
+  let results = (outs Eco_AnyValueOrAggregate:$head);
 
   let assemblyFormat = "$list attr-dict `:` type($list) `->` type($head)";
 }
@@ -775,7 +775,7 @@ def Eco_Tuple2ProjectOp : Eco_Op<"project.tuple2", [Pure]> {
   }];
 
   let arguments = (ins Eco_Tuple2OrValue:$tuple, I64Attr:$field);
-  let results = (outs Eco_AnyValue:$result);
+  let results = (outs Eco_AnyValueOrAggregate:$result);
 
   let assemblyFormat = "$tuple `[` $field `]` attr-dict `:` type($tuple) `->` type($result)";
 }
@@ -795,7 +795,7 @@ def Eco_Tuple3ProjectOp : Eco_Op<"project.tuple3", [Pure]> {
   }];
 
   let arguments = (ins Eco_Tuple3OrValue:$tuple, I64Attr:$field);
-  let results = (outs Eco_AnyValue:$result);
+  let results = (outs Eco_AnyValueOrAggregate:$result);
 
   let assemblyFormat = "$tuple `[` $field `]` attr-dict `:` type($tuple) `->` type($result)";
 }
@@ -855,7 +855,7 @@ def Eco_RecordProjectOp : Eco_Op<"project.record", [Pure]> {
   }];
 
   let arguments = (ins Eco_RecordOrValue:$record, I64Attr:$field_index);
-  let results = (outs Eco_AnyValue:$result);
+  let results = (outs Eco_AnyValueOrAggregate:$result);
 
   let assemblyFormat = "$record `[` $field_index `]` attr-dict `:` type($record) `->` type($result)";
 }
@@ -932,7 +932,7 @@ def Eco_CustomProjectOp : Eco_Op<"project.custom", [Pure]> {
   }];
 
   let arguments = (ins Eco_CustomOrValue:$container, I64Attr:$field_index);
-  let results = (outs Eco_AnyValue:$result);
+  let results = (outs Eco_AnyValueOrAggregate:$result);
 
   let assemblyFormat = "$container `[` $field_index `]` attr-dict `:` type($container) `->` type($result)";
 }

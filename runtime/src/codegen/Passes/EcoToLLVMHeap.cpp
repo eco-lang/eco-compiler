@@ -1884,7 +1884,6 @@ void eco::detail::lowerAllocGroups(ModuleOp module, const EcoRuntime &runtime) {
 
 bool eco::detail::containsGCPointer(Type t) {
     // Leaf GC-pointer type — converts to ptr addrspace(1) post-conversion.
-    // (Lists are always !eco.value at the dialect level; no separate ListType.)
     if (isa<eco::ValueType>(t))
         return true;
     // Recurse into aggregate element types.
@@ -1908,7 +1907,6 @@ bool eco::detail::containsGCPointer(Type t) {
     if (auto cons = dyn_cast<eco::ConsType>(t))
         return containsGCPointer(cons.getHead()) ||
                containsGCPointer(cons.getTail());
-    // Primitives (i64, f64, i16, i1, i32) — no GC pointer.
     return false;
 }
 

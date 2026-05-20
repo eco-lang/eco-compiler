@@ -226,11 +226,39 @@ static Value buildMakeOp(OpBuilder &builder, Location loc,
 /// `eco.project.*` op per element. The projections become operands of
 /// the surrounding call/return op. SROA folds them with the producing
 /// make.* op when both sit in the same function.
+///
+/// Phase 2: use the aggregate value's actual element types rather than
+/// the AggSlot's logical-type-derived elementTys. The logical-types DSL
+/// is one level deep; under recursive cross-spec promotion the actual
+/// MLIR aggregate may have nested element types
+/// (e.g. !eco.record<!eco.tuple2<i64,i64>, !eco.value>). The project
+/// op's result type must match the actual element type, not the
+/// flat one declared in the attr.
 static void buildProjectFields(OpBuilder &builder, Location loc,
                                const AggSlot &slot, Value aggValue,
                                SmallVectorImpl<Value> &out) {
-    for (unsigned i = 0; i < slot.arity(); ++i) {
-        Type elemTy = slot.elementTys[i];
+    SmallVector<Type, 8> actualElemTys;
+    Type aggTy = aggValue.getType();
+    if (auto t2 = dyn_cast<eco::Tuple2Type>(aggTy)) {
+        actualElemTys.push_back(t2.getFirst());
+        actualElemTys.push_back(t2.getSecond());
+    } else if (auto t3 = dyn_cast<eco::Tuple3Type>(aggTy)) {
+        actualElemTys.push_back(t3.getFirst());
+        actualElemTys.push_back(t3.getSecond());
+        actualElemTys.push_back(t3.getThird());
+    } else if (auto rec = dyn_cast<eco::RecordType>(aggTy)) {
+        for (Type t : rec.getFields()) actualElemTys.push_back(t);
+    } else if (auto cus = dyn_cast<eco::CustomType>(aggTy)) {
+        for (Type t : cus.getFields()) actualElemTys.push_back(t);
+    } else {
+        llvm_unreachable("buildProjectFields called on non-aggregate value");
+    }
+
+    assert(actualElemTys.size() == slot.arity() &&
+           "AggSlot arity disagrees with aggregate value element count");
+
+    for (unsigned i = 0; i < actualElemTys.size(); ++i) {
+        Type elemTy = actualElemTys[i];
         auto idxAttr = builder.getI64IntegerAttr(static_cast<int64_t>(i));
         switch (slot.kind) {
         case AggSlot::Tuple2:
