@@ -1083,10 +1083,14 @@ def run_variant(*, name: str, change: str, heap_config: dict,
         out_text, "Nursery Allocation Size Histogram")
     oldgen_rows = parse_alloc_histogram(
         out_text, "Old-Gen Allocation Size Histogram")
+    string_rows = parse_alloc_histogram(
+        out_text, "String Allocation Size Histogram")
     write_tsv(variant_dir / "alloc_size_nursery.tsv",
               ["bucket", "count", "percent"], nursery_rows)
     write_tsv(variant_dir / "alloc_size_oldgen.tsv",
               ["bucket", "count", "percent"], oldgen_rows)
+    write_tsv(variant_dir / "alloc_size_strings.tsv",
+              ["bucket", "count", "percent"], string_rows)
 
     resid_cols = ["kind", "label", "pages", "page_bytes", "live_bytes",
                   "free_bytes", "garbage_bytes",
@@ -1162,6 +1166,7 @@ def write_report(group_dir: Path, *, mode: str, machine: str, ts: str,
         for fname in ("heap-config.json", "stdout.log", "stderr.log",
                       "summary.tsv", "gc_timing.tsv",
                       "alloc_size_nursery.tsv", "alloc_size_oldgen.tsv",
+                      "alloc_size_strings.tsv",
                       "residency_cumulative.tsv", "residency_latest.tsv",
                       "freelist_cumulative.tsv", "freelist_latest.tsv"):
             md.append(f"  - [`{fname}`]({rel}/{fname})")

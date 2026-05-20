@@ -398,6 +398,11 @@ inline HPointer allocString(const u16* chars, size_t length) {
     // Round up to 8-byte alignment
     total_size = (total_size + 7) & ~7;
 
+    // Per-thread histogram of fresh-leaf String sizes. Recorded once here
+    // (before the large/inline-leaf split) so each call contributes to
+    // exactly one bucket regardless of which storage path is taken.
+    GC_STATS_STRING_RECORD_ALLOC(total_size);
+
     // At/above the large-object threshold, route to the split path: small
     // Tag_LargeStringHeader in nursery + pinned Tag_String body in old gen.
     // See HEAP_026.

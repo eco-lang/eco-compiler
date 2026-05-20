@@ -119,6 +119,23 @@ public:
     uint64_t nursery_alloc_size_16_24_count = 0;
     uint64_t oldgen_alloc_size_16_24_count  = 0;
 
+    // ========== String Allocation Size Histogram ==========
+    //
+    // Same power-of-two bucket layout as oldgen_alloc_size_histogram (covers
+    // 8 B through 1 MiB+ in 18 buckets) so the same printer helper can render
+    // it. Populated only from HeapHelpers::allocString(const u16*, size_t) —
+    // i.e. every fresh-leaf String allocation, regardless of whether it ends
+    // up on the inline-leaf path or the split-header (large) path. The byte
+    // count recorded is the heap-object size (header + chars[], 8B-aligned)
+    // before any large-object dispatch, so the histogram is directly
+    // comparable to the size buckets in the nursery / oldgen histograms.
+    //
+    // Not split at bucket 1: the [16,24) vs [24,32) distinction is only
+    // useful for boxed primitives vs small constructors; for strings, both
+    // halves are just "tiny String".
+    static constexpr int STRING_ALLOC_BUCKETS = 18;
+    uint64_t string_alloc_size_histogram[STRING_ALLOC_BUCKETS] = {0};
+
     // ========== Per-Kind Mutator Allocation Histogram ==========
     //
     // Counts ThreadLocalHeap-level mutator allocations grouped by Tag,
@@ -435,6 +452,13 @@ public:
     // dropped silently.
     void recordTLHAllocation(size_t bytes, Tag tag);
 
+    // Records a single String allocation by heap-object byte size into the
+    // String size-distribution histogram. Called from the allocString
+    // helper before its large/inline-leaf dispatch, so each call lands in
+    // exactly one histogram bucket regardless of which storage path is
+    // taken.
+    void recordStringAllocation(size_t bytes);
+
     // Records completion of a minor GC cycle with timing and reclaimed bytes.
     void recordMinorGCEnd(uint64_t elapsed_ns, size_t freed);
 
@@ -522,6 +546,13 @@ private:
 // so when ENABLE_GC_STATS=0 it is unused and compiles away.
 void recordTLHAllocOnCurrentThread(size_t bytes, Tag tag) noexcept;
 
+// Per-thread routing helper for the String-allocation histogram. allocString
+// (in HeapHelpers.hpp) cannot reach a GCStats& directly without dragging in
+// Allocator.hpp, so this trampoline lives in GCStats.cpp where the lookup is
+// already available. Declared unconditionally; the body is only ever invoked
+// from the stats-on branch of GC_STATS_STRING_RECORD_ALLOC.
+void recordStringAllocOnCurrentThread(size_t bytes) noexcept;
+
 // ============================================================================
 // Zero-Overhead Macros
 // ============================================================================
@@ -544,6 +575,11 @@ void recordTLHAllocOnCurrentThread(size_t bytes, Tag tag) noexcept;
     // so allocateFast keeps its `(size_t)` signature with no extra arg.
     #define GC_STATS_TLH_RECORD_ALLOC(bytes, tag) \
         do { ::Elm::recordTLHAllocOnCurrentThread((bytes), (tag)); } while(0)
+
+    // Per-allocString hook: records the heap-object size of a fresh String
+    // leaf into the current thread's String size histogram.
+    #define GC_STATS_STRING_RECORD_ALLOC(bytes) \
+        do { ::Elm::recordStringAllocOnCurrentThread((bytes)); } while(0)
 
     #define GC_STATS_MINOR_RECORD_GC_END(stats, elapsed_ns, freed) \
         do { (stats).recordMinorGCEnd(elapsed_ns, freed); } while(0)
@@ -591,6 +627,7 @@ void recordTLHAllocOnCurrentThread(size_t bytes, Tag tag) noexcept;
     #define GC_STATS_OLDGEN_RECORD_ALLOC(stats, bytes) do {} while(0)
     #define GC_STATS_OLDGEN_DIRECT_RECORD_ALLOC(stats, bytes) do {} while(0)
     #define GC_STATS_TLH_RECORD_ALLOC(bytes, tag) do {} while(0)
+    #define GC_STATS_STRING_RECORD_ALLOC(bytes) do {} while(0)
     #define GC_STATS_MINOR_RECORD_GC_END(stats, elapsed_ns, freed) do {} while(0)
     #define GC_STATS_MINOR_INC_SURVIVORS(stats) do {} while(0)
     #define GC_STATS_MINOR_INC_PROMOTED(stats) do {} while(0)

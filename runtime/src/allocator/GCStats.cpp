@@ -380,6 +380,15 @@ void GCStats::recordOldGenAllocation(size_t bytes) {
     if (bytes >= 16 && bytes < 24) oldgen_alloc_size_16_24_count++;
 }
 
+// Records a single String allocation by heap-object byte size. Called from
+// HeapHelpers::allocString before its large/inline-leaf dispatch, so the
+// bucket reflects the object size that would actually be reserved on the
+// heap (header + chars[], 8B-aligned).
+void GCStats::recordStringAllocation(size_t bytes) {
+    size_t bucket = allocSizeBucketIndex(bytes, STRING_ALLOC_BUCKETS);
+    string_alloc_size_histogram[bucket]++;
+}
+
 // Records a typed mutator allocation through the ThreadLocalHeap path.
 // Called from initHeaderForTag, exactly once per successful mutator alloc.
 void GCStats::recordTLHAllocation(size_t bytes, Tag tag) {
@@ -396,6 +405,13 @@ void GCStats::recordTLHAllocation(size_t bytes, Tag tag) {
 void recordTLHAllocOnCurrentThread(size_t bytes, Tag tag) noexcept {
     ThreadLocalHeap* tlh = Allocator::instance().getCurrentThreadHeap();
     if (tlh) tlh->getStats().recordTLHAllocation(bytes, tag);
+}
+
+// String-histogram trampoline: same shape as the per-tag helper above, but
+// no Tag is in scope at the call site (allocString is the tag's chokepoint).
+void recordStringAllocOnCurrentThread(size_t bytes) noexcept {
+    ThreadLocalHeap* tlh = Allocator::instance().getCurrentThreadHeap();
+    if (tlh) tlh->getStats().recordStringAllocation(bytes);
 }
 
 // Mutator-direct old-gen allocation: counted toward the cross-generation
@@ -702,6 +718,10 @@ void GCStats::combine(const GCStats& other) {
     }
     nursery_alloc_size_16_24_count += other.nursery_alloc_size_16_24_count;
     oldgen_alloc_size_16_24_count  += other.oldgen_alloc_size_16_24_count;
+
+    for (int i = 0; i < STRING_ALLOC_BUCKETS; i++) {
+        string_alloc_size_histogram[i] += other.string_alloc_size_histogram[i];
+    }
 
     // Combine per-kind ThreadLocalHeap allocation counters.
     for (int i = 0; i < NUM_ALLOC_TAGS; i++) {
@@ -1104,9 +1124,11 @@ void GCStats::print() const {
     auto printAllocHistogram = [](const char* title,
                                   const uint64_t* hist,
                                   int num_buckets,
-                                  uint64_t fine_16_24_count) {
+                                  uint64_t fine_16_24_count,
+                                  bool split_bucket_1 = true) {
         // Clamp the sub-counter against the parent bucket so the upper half
         // can never go negative if instances were merged out of lock-step.
+        // When split_bucket_1 is false the sub-counter is ignored entirely.
         uint64_t lower_16_24 = std::min<uint64_t>(fine_16_24_count, hist[1]);
         uint64_t upper_24_32 = hist[1] - lower_16_24;
 
@@ -1114,7 +1136,7 @@ void GCStats::print() const {
         uint64_t max_count = 0;
         for (int i = 0; i < num_buckets; i++) {
             total += hist[i];
-            if (i == 1) {
+            if (i == 1 && split_bucket_1) {
                 // The split halves drive bar scaling, not the parent bucket.
                 max_count = std::max({max_count, lower_16_24, upper_24_32});
             } else {
@@ -1147,7 +1169,7 @@ void GCStats::print() const {
         for (int i = 0; i < num_buckets; i++) {
             // Bucket k covers [BASE << k, BASE << (k+1)); the last bucket
             // is the overflow bucket for sizes at or above BASE << (n-1).
-            if (i == 1) {
+            if (i == 1 && split_bucket_1) {
                 printRow(16, 24, lower_16_24, /*overflow=*/false);
                 printRow(24, 32, upper_24_32, /*overflow=*/false);
                 continue;
@@ -1219,6 +1241,16 @@ void GCStats::print() const {
                         oldgen_alloc_size_histogram,
                         OLDGEN_ALLOC_BUCKETS,
                         oldgen_alloc_size_16_24_count);
+
+    // String-specific histogram: counts every fresh-leaf allocation that
+    // flowed through HeapHelpers::allocString. Bucket 1 is NOT split — the
+    // boxed-primitive vs small-constructor distinction it captures for the
+    // nursery/oldgen views doesn't apply to Strings.
+    printAllocHistogram("String Allocation Size Histogram",
+                        string_alloc_size_histogram,
+                        STRING_ALLOC_BUCKETS,
+                        /*fine_16_24_count=*/0,
+                        /*split_bucket_1=*/false);
 
     // ========== Old-Gen Page Residency Histogram ==========
     //
@@ -1345,6 +1377,10 @@ void GCStats::reset() {
     }
     nursery_alloc_size_16_24_count = 0;
     oldgen_alloc_size_16_24_count  = 0;
+
+    for (int i = 0; i < STRING_ALLOC_BUCKETS; i++) {
+        string_alloc_size_histogram[i] = 0;
+    }
 
     for (int i = 0; i < NUM_ALLOC_TAGS; i++) {
         tlh_alloc_count_by_tag[i] = 0;
