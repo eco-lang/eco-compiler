@@ -30,6 +30,11 @@ using namespace eco::detail;
 
 namespace {
 
+// Forward declaration: defined further down in this file. Needed earlier by
+// ListConstructOpLowering for the narrow-int head-store path.
+static Value widenFieldToI64(Value val, Location loc,
+                             ConversionPatternRewriter &rewriter);
+
 //===----------------------------------------------------------------------===//
 // Allocation coalescing helpers (Phase 4 infrastructure)
 //===----------------------------------------------------------------------===//
@@ -297,30 +302,43 @@ struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
         auto loc = op.getLoc();
         auto *ctx = rewriter.getContext();
         auto i32Ty = IntegerType::get(ctx, 32);
-        auto i64Ty = IntegerType::get(ctx, 64);
 
-        Value headVal = adaptor.getHead();
-        Value tailVal = adaptor.getTail();
-        // Pass the 2-bit head kind (0=boxed, 1=Int, 2=Float, 3=Char) directly.
+        Value headLLVM = adaptor.getHead();
+        Value tailVal  = adaptor.getTail();
+        // 2-bit kind: 0=boxed, 1=Int(i64), 2=Float(f64), 3=Char(i16).
         uint32_t headKind = static_cast<uint32_t>(op.getHeadKind()) & 0x3;
-        auto headUnboxedVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, headKind);
+        auto headKindVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, headKind);
 
-        // eco_alloc_cons expects i64 for head, hptr for tail
-        headVal = heapStoreValueToI64(rewriter, loc, headVal);
-        if (auto intTy = dyn_cast<IntegerType>(headVal.getType())) {
-            if (intTy.getWidth() < 64) {
-                headVal = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, headVal);
-            }
-        } else if (headVal.getType().isF64()) {
-            headVal = rewriter.create<LLVM::BitcastOp>(loc, i64Ty, headVal);
-        }
-
-        Value result = emitAllocWithSafepoint(
+        // Alloc uninit with head_kind set up-front so a collection between
+        // alloc and the post-alloc head store finds null in the head slot
+        // (rather than uninitialised garbage) when the head is boxed.
+        Value consHPtr = emitAllocWithSafepoint(
             op, rewriter, runtime,
-            runtime.getOrCreateAllocCons(rewriter),
-            ValueRange{headVal, tailVal, headUnboxedVal},
+            runtime.getOrCreateAllocConsUninit(rewriter),
+            ValueRange{headKindVal},
             adaptor.getLiveRoots());
-        rewriter.replaceOp(op, result);
+
+        if (headKind == 0) {
+            // Boxed head: pass ptr addrspace(1) directly.
+            rewriter.create<LLVM::CallOp>(loc,
+                runtime.getOrCreateStoreConsHead(rewriter),
+                ValueRange{consHPtr, headLLVM});
+        } else if (headKind == 2) {
+            rewriter.create<LLVM::CallOp>(loc,
+                runtime.getOrCreateStoreConsHeadF64(rewriter),
+                ValueRange{consHPtr, headLLVM});
+        } else {
+            // kind == 1 (Int/i64) or 3 (Char/i16): widen narrow → i64.
+            Value widened = widenFieldToI64(headLLVM, loc, rewriter);
+            rewriter.create<LLVM::CallOp>(loc,
+                runtime.getOrCreateStoreConsHeadI64(rewriter),
+                ValueRange{consHPtr, widened});
+        }
+        // Tail is always a boxed HPointer (next cons cell or nil).
+        rewriter.create<LLVM::CallOp>(loc,
+            runtime.getOrCreateStoreConsTail(rewriter),
+            ValueRange{consHPtr, tailVal});
+        rewriter.replaceOp(op, consHPtr);
         return success();
     }
 };
@@ -489,24 +507,52 @@ struct Tuple2ConstructOpLowering : public OpConversionPattern<Tuple2ConstructOp>
         auto *ctx = rewriter.getContext();
         auto i32Ty = IntegerType::get(ctx, 32);
 
-        // Legacy lowering: widen field values to i64 (ptrtoint for boxed
-        // values) and pass them as scalar args to the all-in-one alloc.
-        // The post-Phase-3.4 `_uninit + per-field-store` pattern is
-        // available for the wrapper (see ToHeapOpLowering); this construct
-        // path stays on the legacy ABI for now because the value-aggregate
-        // boxing path is the dominant escape route.
-        auto aVal = widenFieldToI64(adaptor.getA(), loc, rewriter);
-        auto bVal = widenFieldToI64(adaptor.getB(), loc, rewriter);
+        // Alloc-uninit + per-field-store pattern. Boxed (`!eco.value`)
+        // operands stay ptr<1> across the alloc safepoint, so RS4GC
+        // relocates them like any other live GC pointer; the FCA of
+        // ptr<1>s that the old all-in-one ABI required (via ptrtoint) is
+        // avoided entirely.
+        Value aLLVM = adaptor.getA();
+        Value bLLVM = adaptor.getB();
+        Type aOrig = op.getA().getType();
+        Type bOrig = op.getB().getType();
+
         int64_t unboxedMask = op.getUnboxedBitmap();
         auto unboxedVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
             static_cast<int32_t>(unboxedMask));
 
-        Value result = emitAllocWithSafepoint(
+        Value tuple = emitAllocWithSafepoint(
             op, rewriter, runtime,
-            runtime.getOrCreateAllocTuple2(rewriter),
-            ValueRange{aVal, bVal, unboxedVal},
+            runtime.getOrCreateAllocTuple2Uninit(rewriter),
+            ValueRange{unboxedVal},
             adaptor.getLiveRoots());
-        rewriter.replaceOp(op, result);
+
+        auto storeFieldBoxed = runtime.getOrCreateStoreTupleField(rewriter);
+        auto storeFieldI64   = runtime.getOrCreateStoreTupleFieldI64(rewriter);
+        auto storeFieldF64   = runtime.getOrCreateStoreTupleFieldF64(rewriter);
+
+        auto storeOne = [&](unsigned idx, Value v, Type origTy) {
+            auto idxVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+                static_cast<int32_t>(idx));
+            if (origTy.isF64()) {
+                rewriter.create<LLVM::CallOp>(loc, storeFieldF64,
+                    ValueRange{tuple, idxVal, v});
+            } else if (origTy.isInteger(64)) {
+                rewriter.create<LLVM::CallOp>(loc, storeFieldI64,
+                    ValueRange{tuple, idxVal, v});
+            } else if (origTy.isInteger(1) || origTy.isInteger(16)) {
+                Value widened = widenFieldToI64(v, loc, rewriter);
+                rewriter.create<LLVM::CallOp>(loc, storeFieldI64,
+                    ValueRange{tuple, idxVal, widened});
+            } else {
+                // !eco.value → ptr addrspace(1): pass directly, no ptrtoint.
+                rewriter.create<LLVM::CallOp>(loc, storeFieldBoxed,
+                    ValueRange{tuple, idxVal, v});
+            }
+        };
+        storeOne(0, aLLVM, aOrig);
+        storeOne(1, bLLVM, bOrig);
+        rewriter.replaceOp(op, tuple);
         return success();
     }
 };
@@ -529,19 +575,49 @@ struct Tuple3ConstructOpLowering : public OpConversionPattern<Tuple3ConstructOp>
         auto *ctx = rewriter.getContext();
         auto i32Ty = IntegerType::get(ctx, 32);
 
-        auto aVal = widenFieldToI64(adaptor.getA(), loc, rewriter);
-        auto bVal = widenFieldToI64(adaptor.getB(), loc, rewriter);
-        auto cVal = widenFieldToI64(adaptor.getC(), loc, rewriter);
+        Value aLLVM = adaptor.getA();
+        Value bLLVM = adaptor.getB();
+        Value cLLVM = adaptor.getC();
+        Type aOrig = op.getA().getType();
+        Type bOrig = op.getB().getType();
+        Type cOrig = op.getC().getType();
+
         int64_t unboxedMask = op.getUnboxedBitmap();
         auto unboxedVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
             static_cast<int32_t>(unboxedMask));
 
-        Value result = emitAllocWithSafepoint(
+        Value tuple = emitAllocWithSafepoint(
             op, rewriter, runtime,
-            runtime.getOrCreateAllocTuple3(rewriter),
-            ValueRange{aVal, bVal, cVal, unboxedVal},
+            runtime.getOrCreateAllocTuple3Uninit(rewriter),
+            ValueRange{unboxedVal},
             adaptor.getLiveRoots());
-        rewriter.replaceOp(op, result);
+
+        auto storeFieldBoxed = runtime.getOrCreateStoreTupleField(rewriter);
+        auto storeFieldI64   = runtime.getOrCreateStoreTupleFieldI64(rewriter);
+        auto storeFieldF64   = runtime.getOrCreateStoreTupleFieldF64(rewriter);
+
+        auto storeOne = [&](unsigned idx, Value v, Type origTy) {
+            auto idxVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+                static_cast<int32_t>(idx));
+            if (origTy.isF64()) {
+                rewriter.create<LLVM::CallOp>(loc, storeFieldF64,
+                    ValueRange{tuple, idxVal, v});
+            } else if (origTy.isInteger(64)) {
+                rewriter.create<LLVM::CallOp>(loc, storeFieldI64,
+                    ValueRange{tuple, idxVal, v});
+            } else if (origTy.isInteger(1) || origTy.isInteger(16)) {
+                Value widened = widenFieldToI64(v, loc, rewriter);
+                rewriter.create<LLVM::CallOp>(loc, storeFieldI64,
+                    ValueRange{tuple, idxVal, widened});
+            } else {
+                rewriter.create<LLVM::CallOp>(loc, storeFieldBoxed,
+                    ValueRange{tuple, idxVal, v});
+            }
+        };
+        storeOne(0, aLLVM, aOrig);
+        storeOne(1, bLLVM, bOrig);
+        storeOne(2, cLLVM, cOrig);
+        rewriter.replaceOp(op, tuple);
         return success();
     }
 };

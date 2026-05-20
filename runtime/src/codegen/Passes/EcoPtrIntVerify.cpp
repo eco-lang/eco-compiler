@@ -24,6 +24,7 @@
 #include "EcoPtrIntVerify.h"
 #include "EcoToLLVMInternal.h"
 
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
@@ -367,6 +368,15 @@ struct FoldExtractValuePass : public PassInfoMixin<FoldExtractValuePass> {
     /// Falls through any insertvalue whose indices differ from the
     /// requested ones — those modify a different field and don't
     /// affect what the extract reads.
+    ///
+    /// A constant aggregate at the chain base resolves the lookup by
+    /// indexing into it directly: when the unmatched indices land on a
+    /// constant element, that element is the fold target. The IRBuilder
+    /// constant-folds `insertvalue undef, <constant>, k` into a constant
+    /// aggregate, so a chain like `insertvalue (insertvalue undef, %c, 0),
+    /// %v, 1` collapses to `insertvalue { %c, undef }, %v, 1` — and the
+    /// extractvalue at index 0 must be able to see through the constant
+    /// aggregate or the FCA survives into RS4GC.
     static Value *traceMatchingInsert(Value *agg,
                                       ArrayRef<unsigned> wantIndices) {
         while (auto *IV = dyn_cast<InsertValueInst>(agg)) {
@@ -376,6 +386,32 @@ struct FoldExtractValuePass : public PassInfoMixin<FoldExtractValuePass> {
         }
         if (isa<UndefValue>(agg) || isa<PoisonValue>(agg))
             return UndefValue::get(nullptr); // sentinel; replaced below
+        if (auto *CA = dyn_cast<Constant>(agg)) {
+            Constant *cur = CA;
+            for (unsigned idx : wantIndices) {
+                if (auto *agZero = dyn_cast<ConstantAggregateZero>(cur)) {
+                    cur = agZero->getElementValue(idx);
+                    continue;
+                }
+                if (auto *cs = dyn_cast<ConstantStruct>(cur)) {
+                    if (idx >= cs->getNumOperands()) return nullptr;
+                    cur = cs->getOperand(idx);
+                    continue;
+                }
+                if (auto *ca = dyn_cast<ConstantArray>(cur)) {
+                    if (idx >= ca->getNumOperands()) return nullptr;
+                    cur = ca->getOperand(idx);
+                    continue;
+                }
+                if (auto *cv = dyn_cast<ConstantVector>(cur)) {
+                    if (idx >= cv->getNumOperands()) return nullptr;
+                    cur = cv->getOperand(idx);
+                    continue;
+                }
+                return nullptr;
+            }
+            return cur;
+        }
         return nullptr;
     }
 

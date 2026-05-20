@@ -221,20 +221,53 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                 getTypeConverter()->convertType(elts[0]),
                 getTypeConverter()->convertType(elts[1])
             };
+            // Pre-extract in natural LLVM types (ptr addrspace(1) for boxed
+            // !eco.value, i64/f64/i16/i1 for primitives) — no widening yet.
+            // Boxed-field extracts give us live ptr<1> scalars that RS4GC
+            // will relocate across the alloc safepoint below.
             Value a = extractField(rewriter, loc, agg, 0, llvmElts[0]);
             Value b = extractField(rewriter, loc, agg, 1, llvmElts[1]);
-            a = widenFieldToI64Local(a, loc, rewriter);
-            b = widenFieldToI64Local(b, loc, rewriter);
+
             int64_t mask = op.getUnboxedBitmap();
             if (mask == 0) mask = kindBitmapFor(elts);
             auto unboxedVal = rewriter.create<LLVM::ConstantOp>(
                 loc, i32Ty, static_cast<int32_t>(mask));
-            Value result = emitAllocWithSafepoint(
+
+            // Alloc uninit with the bitmap set up-front so a collection
+            // firing between alloc and the post-alloc stores finds zero in
+            // any boxed-kind slot rather than uninitialised garbage.
+            Value tuple = emitAllocWithSafepoint(
                 op, rewriter, runtime,
-                runtime.getOrCreateAllocTuple2(rewriter),
-                ValueRange{a, b, unboxedVal},
+                runtime.getOrCreateAllocTuple2Uninit(rewriter),
+                ValueRange{unboxedVal},
                 liveRoots);
-            rewriter.replaceOp(op, result);
+
+            auto storeFieldBoxed = runtime.getOrCreateStoreTupleField(rewriter);
+            auto storeFieldI64   = runtime.getOrCreateStoreTupleFieldI64(rewriter);
+            auto storeFieldF64   = runtime.getOrCreateStoreTupleFieldF64(rewriter);
+
+            auto storeOne = [&](unsigned idx, Value v, Type origTy) {
+                auto idxVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+                    static_cast<int32_t>(idx));
+                if (origTy.isF64()) {
+                    rewriter.create<LLVM::CallOp>(loc, storeFieldF64,
+                        ValueRange{tuple, idxVal, v});
+                } else if (origTy.isInteger(64)) {
+                    rewriter.create<LLVM::CallOp>(loc, storeFieldI64,
+                        ValueRange{tuple, idxVal, v});
+                } else if (origTy.isInteger(1) || origTy.isInteger(16)) {
+                    Value widened = widenFieldToI64Local(v, loc, rewriter);
+                    rewriter.create<LLVM::CallOp>(loc, storeFieldI64,
+                        ValueRange{tuple, idxVal, widened});
+                } else {
+                    // !eco.value (ptr addrspace(1)): pass directly, no ptrtoint.
+                    rewriter.create<LLVM::CallOp>(loc, storeFieldBoxed,
+                        ValueRange{tuple, idxVal, v});
+                }
+            };
+            storeOne(0, a, elts[0]);
+            storeOne(1, b, elts[1]);
+            rewriter.replaceOp(op, tuple);
             return success();
         }
 
@@ -249,19 +282,44 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             Value a = extractField(rewriter, loc, agg, 0, llvmElts[0]);
             Value b = extractField(rewriter, loc, agg, 1, llvmElts[1]);
             Value c = extractField(rewriter, loc, agg, 2, llvmElts[2]);
-            a = widenFieldToI64Local(a, loc, rewriter);
-            b = widenFieldToI64Local(b, loc, rewriter);
-            c = widenFieldToI64Local(c, loc, rewriter);
+
             int64_t mask = op.getUnboxedBitmap();
             if (mask == 0) mask = kindBitmapFor(elts);
             auto unboxedVal = rewriter.create<LLVM::ConstantOp>(
                 loc, i32Ty, static_cast<int32_t>(mask));
-            Value result = emitAllocWithSafepoint(
+
+            Value tuple = emitAllocWithSafepoint(
                 op, rewriter, runtime,
-                runtime.getOrCreateAllocTuple3(rewriter),
-                ValueRange{a, b, c, unboxedVal},
+                runtime.getOrCreateAllocTuple3Uninit(rewriter),
+                ValueRange{unboxedVal},
                 liveRoots);
-            rewriter.replaceOp(op, result);
+
+            auto storeFieldBoxed = runtime.getOrCreateStoreTupleField(rewriter);
+            auto storeFieldI64   = runtime.getOrCreateStoreTupleFieldI64(rewriter);
+            auto storeFieldF64   = runtime.getOrCreateStoreTupleFieldF64(rewriter);
+
+            auto storeOne = [&](unsigned idx, Value v, Type origTy) {
+                auto idxVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+                    static_cast<int32_t>(idx));
+                if (origTy.isF64()) {
+                    rewriter.create<LLVM::CallOp>(loc, storeFieldF64,
+                        ValueRange{tuple, idxVal, v});
+                } else if (origTy.isInteger(64)) {
+                    rewriter.create<LLVM::CallOp>(loc, storeFieldI64,
+                        ValueRange{tuple, idxVal, v});
+                } else if (origTy.isInteger(1) || origTy.isInteger(16)) {
+                    Value widened = widenFieldToI64Local(v, loc, rewriter);
+                    rewriter.create<LLVM::CallOp>(loc, storeFieldI64,
+                        ValueRange{tuple, idxVal, widened});
+                } else {
+                    rewriter.create<LLVM::CallOp>(loc, storeFieldBoxed,
+                        ValueRange{tuple, idxVal, v});
+                }
+            };
+            storeOne(0, a, elts[0]);
+            storeOne(1, b, elts[1]);
+            storeOne(2, c, elts[2]);
+            rewriter.replaceOp(op, tuple);
             return success();
         }
 
@@ -271,6 +329,17 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             int64_t fieldCount = static_cast<int64_t>(fields.size());
             int64_t mask = op.getUnboxedBitmap();
             if (mask == 0) mask = kindBitmapFor(fields);
+
+            // Pre-extract every field as a scalar SSA value BEFORE the alloc
+            // safepoint. With every extract folded back through the
+            // matching insertvalue by FoldExtractValuePass, the FCA goes
+            // dead and is DCE'd — only scalars cross the safepoint.
+            SmallVector<Value, 8> extracted;
+            extracted.reserve(fieldCount);
+            for (int64_t i = 0; i < fieldCount; ++i) {
+                Type llvmElt = getTypeConverter()->convertType(fields[i]);
+                extracted.push_back(extractField(rewriter, loc, agg, i, llvmElt));
+            }
 
             auto fieldCountVal = rewriter.create<LLVM::ConstantOp>(
                 loc, i32Ty, static_cast<int32_t>(fieldCount));
@@ -288,9 +357,8 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             auto storeF64Func = runtime.getOrCreateStoreRecordFieldF64(rewriter);
 
             for (int64_t i = 0; i < fieldCount; ++i) {
-                Type llvmElt = getTypeConverter()->convertType(fields[i]);
-                Value fieldVal = extractField(rewriter, loc, agg, i, llvmElt);
                 Type origTy = fields[i];
+                Value fieldVal = extracted[i];
                 auto idx = rewriter.create<LLVM::ConstantOp>(
                     loc, i32Ty, static_cast<int32_t>(i));
                 if (origTy.isF64()) {
@@ -319,6 +387,15 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             int64_t mask = op.getUnboxedBitmap();
             if (mask == 0) mask = kindBitmapFor(fields);
 
+            // Pre-extract every field as a scalar SSA value BEFORE the alloc
+            // safepoint — same reasoning as the Record branch above.
+            SmallVector<Value, 8> extracted;
+            extracted.reserve(fieldCount);
+            for (int64_t i = 0; i < fieldCount; ++i) {
+                Type llvmElt = getTypeConverter()->convertType(fields[i]);
+                extracted.push_back(extractField(rewriter, loc, agg, i, llvmElt));
+            }
+
             auto tagVal = rewriter.create<LLVM::ConstantOp>(
                 loc, i32Ty, static_cast<int32_t>(op.getTag()));
             auto sizeVal = rewriter.create<LLVM::ConstantOp>(
@@ -337,9 +414,8 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             auto setUnboxed   = runtime.getOrCreateSetUnboxed(rewriter);
 
             for (int64_t i = 0; i < fieldCount; ++i) {
-                Type llvmElt = getTypeConverter()->convertType(fields[i]);
-                Value fieldVal = extractField(rewriter, loc, agg, i, llvmElt);
                 Type origTy = fields[i];
+                Value fieldVal = extracted[i];
                 auto idx = rewriter.create<LLVM::ConstantOp>(
                     loc, i32Ty, static_cast<int32_t>(i));
                 if (origTy.isF64()) {
@@ -371,10 +447,13 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
         if (auto cons = dyn_cast<eco::ConsType>(srcTy)) {
             Type llvmHead = getTypeConverter()->convertType(cons.getHead());
             Type llvmTail = getTypeConverter()->convertType(cons.getTail());
+            // Pre-extract in natural LLVM types. Head may be ptr<1>
+            // (boxed/!eco.value) or i64/f64/i16; tail is always ptr<1>.
             Value head = extractField(rewriter, loc, agg, 0, llvmHead);
             Value tail = extractField(rewriter, loc, agg, 1, llvmTail);
 
-            // Prefer op's head_kind attr over a type-derived kind.
+            // Resolve the 2-bit head kind: 0=boxed, 1=Int(i64), 2=Float(f64),
+            // 3=Char(i16). Prefer op's head_kind attr over a type-derived kind.
             uint32_t kind = static_cast<uint32_t>(op.getHeadKind()) & 0x3;
             if (kind == 0 && op.getHeadUnboxed()) {
                 Type ht = cons.getHead();
@@ -382,25 +461,44 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                 else if (ht.isF64())  kind = 2;
                 else if (ht.isInteger(16)) kind = 3;
             }
-            // If neither attr nor type implies unboxed, leave kind=0 (boxed).
             if (kind == 0 && !isa<eco::ValueType>(cons.getHead())) {
                 Type ht = cons.getHead();
                 if (ht.isInteger(64)) kind = 1;
                 else if (ht.isF64())  kind = 2;
                 else if (ht.isInteger(16)) kind = 3;
             }
-
-            // eco_alloc_cons expects head as i64; widen.
-            head = widenFieldToI64Local(head, loc, rewriter);
             auto kindVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
                 static_cast<int32_t>(kind));
 
-            Value result = emitAllocWithSafepoint(
+            // Alloc uninit with head_kind set up-front so a collection between
+            // alloc and post-alloc stores can scan the head slot correctly.
+            Value consHPtr = emitAllocWithSafepoint(
                 op, rewriter, runtime,
-                runtime.getOrCreateAllocCons(rewriter),
-                ValueRange{head, tail, kindVal},
+                runtime.getOrCreateAllocConsUninit(rewriter),
+                ValueRange{kindVal},
                 liveRoots);
-            rewriter.replaceOp(op, result);
+
+            // Store head via the helper matching its kind.
+            if (kind == 0) {
+                rewriter.create<LLVM::CallOp>(loc,
+                    runtime.getOrCreateStoreConsHead(rewriter),
+                    ValueRange{consHPtr, head});
+            } else if (kind == 2) {
+                rewriter.create<LLVM::CallOp>(loc,
+                    runtime.getOrCreateStoreConsHeadF64(rewriter),
+                    ValueRange{consHPtr, head});
+            } else {
+                // kind == 1 (Int/i64) or 3 (Char/i16). Widen narrow types.
+                Value widened = widenFieldToI64Local(head, loc, rewriter);
+                rewriter.create<LLVM::CallOp>(loc,
+                    runtime.getOrCreateStoreConsHeadI64(rewriter),
+                    ValueRange{consHPtr, widened});
+            }
+            // Tail is always boxed (next cons cell or nil HPointer).
+            rewriter.create<LLVM::CallOp>(loc,
+                runtime.getOrCreateStoreConsTail(rewriter),
+                ValueRange{consHPtr, tail});
+            rewriter.replaceOp(op, consHPtr);
             return success();
         }
 

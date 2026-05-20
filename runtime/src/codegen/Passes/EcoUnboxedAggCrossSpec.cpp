@@ -575,19 +575,6 @@ static bool resultPositionHasAggregateProducer(
         sawAnyReturn = true;
         if (resultPos >= operands.size()) { ok = false; return; }
         Value v = operands[resultPos];
-        // Phase 3.4 #1: gate the eco.return walk on the result being
-        // an all-primitive aggregate. The sret path was already firing
-        // pre-3.4 only via func.return (hand-written fixtures); turning
-        // it on for Elm bodies surfaces an existing FCA / RS4GC issue
-        // with struct-of-`ptr addrspace(1)` values lingering in the
-        // wrapper. Until that's fixed, restrict eco.return result-side
-        // promotion to Direct-ABI candidates.
-        if (isa<eco::ReturnOp>(r)) {
-            bool allPrim = true;
-            for (Type t : expectedShape.elementTys)
-                if (isa<eco::ValueType>(t)) { allPrim = false; break; }
-            if (!allPrim) { ok = false; return; }
-        }
         if (!isAcceptedAggregateProducer(
                 v, expectedShape, ownParamShapes, candidates,
                 eligibleNames, sccCallees, sccTentResults))
@@ -685,28 +672,11 @@ static bool allUsesAreProjectionsOrCallsToEligible(
         // result-side check (block-arg producer) will independently
         // accept this same return only if the param is promoted — the
         // two checks converge consistently in the fixpoint.
-        //
-        // Symmetry with `resultPositionHasAggregateProducer`: for
-        // `eco.return` (Elm bodies), the result-side check applies an
-        // all-primitive gate that rejects aggregate shapes containing
-        // any `!eco.value` element (the FCA/RS4GC sret limitation).
-        // The param-side passthrough must apply the same gate — if it
-        // didn't, param-side could promote while result-side demoted,
-        // committing an asymmetric worker whose body returns an
-        // aggregate-typed block-arg into an `!eco.value` result slot.
         if (isa<func::ReturnOp, eco::ReturnOp>(user)) {
             unsigned pos = use.getOperandNumber();
             if (pos < ownResultShapes.size() &&
                 ownResultShapes[pos].isAggregate() &&
                 aggregateShapesMatch(ownResultShapes[pos], paramShape)) {
-                if (isa<eco::ReturnOp>(user)) {
-                    bool allPrim = true;
-                    for (Type t : ownResultShapes[pos].elementTys)
-                        if (isa<eco::ValueType>(t)) {
-                            allPrim = false; break;
-                        }
-                    if (!allPrim) return false;
-                }
                 continue;
             }
         }
@@ -1422,17 +1392,14 @@ static func::FuncOp cloneAsWorker(OpBuilder &builder, func::FuncOp original,
 /// Phase 3.3: when a result position is Sret, the wrapper allocates an
 /// `!llvm.struct<>` slot via `llvm.alloca`, prepends the slot pointer
 /// to the worker's operand list, then reads the aggregate back from
-/// the slot after the call via per-element GEP+load. The loaded fields
-/// are rebuilt into an aggregate via `eco.make.*` and re-boxed via
-/// `eco.to_heap`; the Direct branch passes the worker's by-value
-/// aggregate return straight into `eco.to_heap`. (`plans/wrapper-fca-fix.md`
-/// Fix A would replace both `eco.make.* + eco.to_heap` pairs with
-/// `eco.construct.*` to avoid the register-form FCA that trips RS4GC
-/// on `!eco.value`-carrying aggregates; that chunk is currently
-/// deferred — see the plan's §8 status. As long as it stays deferred,
-/// the all-primitive gate in `resultPositionHasAggregateProducer` /
-/// `allUsesAreProjectionsOrCallsToEligible` is what prevents this
-/// wrapper from ever emitting an FCA over `ptr addrspace(1)`.)
+/// the slot after the call via per-element GEP+load. Both Sret and
+/// Direct branches re-box the result via a single `eco.construct.*`
+/// op: Sret feeds the loaded sret-slot fields directly as construct
+/// operands; Direct projects each field out of the worker's by-value
+/// aggregate return via `eco.project.*` and then constructs. No
+/// intermediate `eco.make.* + eco.to_heap` pair is built, so the
+/// wrapper never materialises a register-form FCA — Shape A in
+/// `plans/wrapper-fca-fix.md` §1.0 is unreachable from the wrapper.
 static void replaceBodyWithWrapper(OpBuilder &builder, func::FuncOp original,
                                    func::FuncOp worker,
                                    ArrayRef<LogicalShape> paramShapes,
@@ -1503,54 +1470,55 @@ static void replaceBodyWithWrapper(OpBuilder &builder, func::FuncOp original,
                                               : ResultAbi::Boxed;
 
         if (abi == ResultAbi::Sret) {
-            // Load fields from the slot, rebuild aggregate, then
-            // continue down the boxing path.
+            // Sret: load fields from the slot, then re-box via a single
+            // eco.construct.* op. No intermediate eco.make.* / eco.to_heap
+            // pair, so the wrapper never constructs a register-form FCA
+            // over the loaded ptr<1> field values (Shape A in
+            // plans/wrapper-fca-fix.md §1.0).
             SmallVector<Value, 4> loadedFields;
             emitSretLoad(builder, loc, sretSlots[sretCursor],
                          sretSlotTys[sretCursor], rs.elementTys,
                          loadedFields);
             ++sretCursor;
-            Value rebuilt;
+
+            Type boxedTy = original.getFunctionType().getResult(i);
+            int64_t bitmap = computeUnboxedBitmap(rs.elementTys);
+            Value boxed;
             switch (rs.kind) {
             case LogicalShape::Tuple2:
-                rebuilt = builder.create<eco::Tuple2MakeOp>(
-                    loc, rs.asWorkerType(ctx),
-                    loadedFields[0], loadedFields[1]);
+                boxed = builder.create<eco::Tuple2ConstructOp>(
+                    loc, boxedTy, loadedFields[0], loadedFields[1],
+                    /*live_roots=*/ValueRange{},
+                    static_cast<uint64_t>(bitmap));
                 break;
             case LogicalShape::Tuple3:
-                rebuilt = builder.create<eco::Tuple3MakeOp>(
-                    loc, rs.asWorkerType(ctx),
-                    loadedFields[0], loadedFields[1], loadedFields[2]);
+                boxed = builder.create<eco::Tuple3ConstructOp>(
+                    loc, boxedTy, loadedFields[0], loadedFields[1],
+                    loadedFields[2],
+                    /*live_roots=*/ValueRange{},
+                    static_cast<uint64_t>(bitmap));
                 break;
             case LogicalShape::Record:
-                rebuilt = builder.create<eco::RecordMakeOp>(
-                    loc, rs.asWorkerType(ctx), loadedFields);
+                boxed = builder.create<eco::RecordConstructOp>(
+                    loc, boxedTy, ValueRange(loadedFields),
+                    /*field_count=*/static_cast<uint64_t>(loadedFields.size()),
+                    static_cast<uint64_t>(bitmap));
                 break;
             case LogicalShape::Custom: {
                 int64_t tag = i < customTagPerResult.size()
                                   ? customTagPerResult[i] : 0;
-                rebuilt = builder.create<eco::CustomMakeOp>(
-                    loc, rs.asWorkerType(ctx), loadedFields,
-                    builder.getI64IntegerAttr(tag),
+                boxed = builder.create<eco::CustomConstructOp>(
+                    loc, boxedTy, ValueRange(loadedFields),
+                    static_cast<uint64_t>(tag),
+                    /*size=*/static_cast<uint64_t>(loadedFields.size()),
+                    static_cast<uint64_t>(bitmap),
                     /*constructor=*/StringAttr());
                 break;
             }
             default:
                 llvm_unreachable("Sret on non-aggregate shape");
             }
-            Type boxedTy = original.getFunctionType().getResult(i);
-            int64_t bitmap = computeUnboxedBitmap(rs.elementTys);
-            int64_t customTag = (rs.kind == LogicalShape::Custom &&
-                                  i < customTagPerResult.size())
-                                     ? customTagPerResult[i] : 0;
-            auto toHeap = builder.create<eco::ToHeapOp>(
-                loc, boxedTy, rebuilt,
-                /*live_roots=*/ValueRange{},
-                /*unboxed_bitmap=*/builder.getI64IntegerAttr(bitmap),
-                /*tag=*/builder.getI64IntegerAttr(customTag),
-                /*head_kind=*/builder.getI64IntegerAttr(0),
-                /*head_unboxed=*/builder.getBoolAttr(false));
-            returnValues.push_back(toHeap.getResult());
+            returnValues.push_back(boxed);
             continue;
         }
 
@@ -1561,22 +1529,77 @@ static void replaceBodyWithWrapper(OpBuilder &builder, func::FuncOp original,
             continue;
         }
 
+        // Direct aggregate: per-field project then re-box via a single
+        // eco.construct.* op. Symmetric with the Sret branch above; the
+        // extractvalue-of-aggregate chain produced by lowering is consumed
+        // by the eco.project.* ops before any safepoint, so
+        // FoldExtractValuePass collapses the FCA.
         Type boxedTy = original.getFunctionType().getResult(i);
         int64_t bitmap = computeUnboxedBitmap(rs.elementTys);
-        int64_t tag = (rs.kind == LogicalShape::Custom &&
-                       i < customTagPerResult.size())
-                          ? customTagPerResult[i]
-                          : 0;
-        auto toHeap = builder.create<eco::ToHeapOp>(
-            loc,
-            boxedTy,
-            v,
-            /*live_roots=*/ValueRange{},
-            /*unboxed_bitmap=*/builder.getI64IntegerAttr(bitmap),
-            /*tag=*/builder.getI64IntegerAttr(tag),
-            /*head_kind=*/builder.getI64IntegerAttr(0),
-            /*head_unboxed=*/builder.getBoolAttr(false));
-        returnValues.push_back(toHeap.getResult());
+
+        SmallVector<Value, 4> projected;
+        projected.reserve(rs.elementTys.size());
+        for (unsigned k = 0; k < rs.elementTys.size(); ++k) {
+            Type elemTy = rs.elementTys[k];
+            Value f;
+            switch (rs.kind) {
+            case LogicalShape::Tuple2:
+                f = builder.create<eco::Tuple2ProjectOp>(
+                    loc, elemTy, v, static_cast<uint64_t>(k));
+                break;
+            case LogicalShape::Tuple3:
+                f = builder.create<eco::Tuple3ProjectOp>(
+                    loc, elemTy, v, static_cast<uint64_t>(k));
+                break;
+            case LogicalShape::Record:
+                f = builder.create<eco::RecordProjectOp>(
+                    loc, elemTy, v, static_cast<uint64_t>(k));
+                break;
+            case LogicalShape::Custom:
+                f = builder.create<eco::CustomProjectOp>(
+                    loc, elemTy, v, static_cast<uint64_t>(k));
+                break;
+            default:
+                llvm_unreachable("Direct on non-aggregate shape");
+            }
+            projected.push_back(f);
+        }
+
+        Value boxed;
+        switch (rs.kind) {
+        case LogicalShape::Tuple2:
+            boxed = builder.create<eco::Tuple2ConstructOp>(
+                loc, boxedTy, projected[0], projected[1],
+                /*live_roots=*/ValueRange{},
+                static_cast<uint64_t>(bitmap));
+            break;
+        case LogicalShape::Tuple3:
+            boxed = builder.create<eco::Tuple3ConstructOp>(
+                loc, boxedTy, projected[0], projected[1], projected[2],
+                /*live_roots=*/ValueRange{},
+                static_cast<uint64_t>(bitmap));
+            break;
+        case LogicalShape::Record:
+            boxed = builder.create<eco::RecordConstructOp>(
+                loc, boxedTy, ValueRange(projected),
+                /*field_count=*/static_cast<uint64_t>(projected.size()),
+                static_cast<uint64_t>(bitmap));
+            break;
+        case LogicalShape::Custom: {
+            int64_t tag = i < customTagPerResult.size()
+                              ? customTagPerResult[i] : 0;
+            boxed = builder.create<eco::CustomConstructOp>(
+                loc, boxedTy, ValueRange(projected),
+                static_cast<uint64_t>(tag),
+                /*size=*/static_cast<uint64_t>(projected.size()),
+                static_cast<uint64_t>(bitmap),
+                /*constructor=*/StringAttr());
+            break;
+        }
+        default:
+            llvm_unreachable("Direct on non-aggregate shape");
+        }
+        returnValues.push_back(boxed);
     }
 
     builder.create<func::ReturnOp>(loc, returnValues);
