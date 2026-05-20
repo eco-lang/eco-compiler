@@ -101,6 +101,11 @@ void buildEcoToLLVMPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
 
     // Stage 2.5: GC preparation (root sets, allocation grouping, safepoint rewrite).
+    // Phase 1 of widen-construct-make-call-aggregates: box aggregate operands
+    // of construct.*, make.*, and eco.call BEFORE EcoGCPrepare so the new
+    // eco.to_heap allocations get GC roots and grouping computed alongside the
+    // existing allocs.
+    pm.addPass(eco::createEcoBoxAggregateOperandsPass());
     pm.addPass(eco::createEcoGCPreparePass());
 #ifdef ECO_LOWERING_VALIDATION
     pm.addNestedPass<func::FuncOp>(eco::createEcoGCLivenessAuditPass());

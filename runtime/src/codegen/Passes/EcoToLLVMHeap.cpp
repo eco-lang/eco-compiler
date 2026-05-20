@@ -1879,6 +1879,54 @@ void eco::detail::lowerAllocGroups(ModuleOp module, const EcoRuntime &runtime) {
 }
 
 //===----------------------------------------------------------------------===//
+// Aggregate operand boxing (Phase 1)
+//===----------------------------------------------------------------------===//
+
+bool eco::detail::containsGCPointer(Type t) {
+    // Leaf GC-pointer type — converts to ptr addrspace(1) post-conversion.
+    // (Lists are always !eco.value at the dialect level; no separate ListType.)
+    if (isa<eco::ValueType>(t))
+        return true;
+    // Recurse into aggregate element types.
+    if (auto tup2 = dyn_cast<eco::Tuple2Type>(t))
+        return containsGCPointer(tup2.getFirst()) ||
+               containsGCPointer(tup2.getSecond());
+    if (auto tup3 = dyn_cast<eco::Tuple3Type>(t))
+        return containsGCPointer(tup3.getFirst()) ||
+               containsGCPointer(tup3.getSecond()) ||
+               containsGCPointer(tup3.getThird());
+    if (auto rec = dyn_cast<eco::RecordType>(t)) {
+        for (Type f : rec.getFields())
+            if (containsGCPointer(f)) return true;
+        return false;
+    }
+    if (auto cus = dyn_cast<eco::CustomType>(t)) {
+        for (Type f : cus.getFields())
+            if (containsGCPointer(f)) return true;
+        return false;
+    }
+    if (auto cons = dyn_cast<eco::ConsType>(t))
+        return containsGCPointer(cons.getHead()) ||
+               containsGCPointer(cons.getTail());
+    // Primitives (i64, f64, i16, i1, i32) — no GC pointer.
+    return false;
+}
+
+/// True if `t` is one of the Eco data-aggregate dialect types.
+static bool isEcoAggregate(Type t) {
+    return isa<eco::Tuple2Type, eco::Tuple3Type, eco::RecordType,
+               eco::CustomType, eco::ConsType>(t);
+}
+
+Value eco::detail::materialiseAsBoxed(OpBuilder &b, Location loc, Value v,
+                                       ValueRange liveRoots) {
+    if (!isEcoAggregate(v.getType())) return v;
+    auto valueTy = eco::ValueType::get(b.getContext());
+    auto toHeap = b.create<eco::ToHeapOp>(loc, valueTy, v, liveRoots);
+    return toHeap.getResult();
+}
+
+//===----------------------------------------------------------------------===//
 // Pattern Population
 //===----------------------------------------------------------------------===//
 

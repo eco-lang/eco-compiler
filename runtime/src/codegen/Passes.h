@@ -101,6 +101,15 @@ std::unique_ptr<mlir::Pass> createControlFlowLoweringPass();
 
 // ========== Stage 2.5: GC Preparation (before LLVM lowering) ==========
 
+// Phase 1 of widen-construct-make-call-aggregates. Walks construct.*,
+// make.*, and eco.call ops and inserts `eco.to_heap` in front of every
+// operand whose type would land at a boxed sink (always for
+// construct.*/eco.call; only when the inner aggregate contains a GC
+// pointer for make.*). Must run before EcoGCPrepare so the new
+// allocations get GC roots computed and can be grouped with adjacent
+// allocs.
+std::unique_ptr<mlir::Pass> createEcoBoxAggregateOperandsPass();
+
 // Computes GC root sets for all GCRootCarrier ops (allocations, calls,
 // safepoints, PAP ops, construct ops) via SSA liveness analysis.
 // Groups adjacent allocations. Must run after all Eco->Eco transformations

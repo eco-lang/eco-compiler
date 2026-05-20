@@ -567,6 +567,23 @@ void populateEcoTypePatterns(
 /// Groups are erased; remaining singleton allocs are lowered by per-op patterns.
 void lowerAllocGroups(mlir::ModuleOp module, const EcoRuntime &runtime);
 
+//===----------------------------------------------------------------------===//
+// Aggregate operand boxing (Phase 1 of widen-construct-make-call-aggregates)
+//===----------------------------------------------------------------------===//
+
+/// Returns true if `t` is, or recursively contains, an Eco type that
+/// converts to `ptr addrspace(1)` (i.e. `!eco.value` or any aggregate
+/// that itself contains one). Used by `make.*` boxing decision: nest
+/// when false (no `ptr<1>` inside the nested FCA), box when true.
+bool containsGCPointer(mlir::Type t);
+
+/// If `v` is an Eco-aggregate-typed SSA value
+/// (tuple2/tuple3/record/custom/cons), emit `eco.to_heap` to box it into
+/// a fresh `!eco.value` and return that. Otherwise return `v` unchanged.
+/// `liveRoots` is forwarded to the inserted `eco.to_heap`.
+mlir::Value materialiseAsBoxed(mlir::OpBuilder &b, mlir::Location loc,
+                                mlir::Value v, mlir::ValueRange liveRoots);
+
 /// Populate patterns for heap operations (box, unbox, allocate, construct, project).
 void populateEcoHeapPatterns(
     EcoTypeConverter &typeConverter,

@@ -995,31 +995,68 @@ static Value rewriteConstructToMake(OpBuilder &builder, Operation *constructOp) 
     MLIRContext *ctx = constructOp->getContext();
     builder.setInsertionPoint(constructOp);
 
+    // Phase 1.5 stopgap for plans/cross-spec-bridgeoperands-regressions.md
+    // Issue 3. After the Phase 1 widening of construct.*'s operand-type
+    // constraints, a `construct.*` field may itself be an aggregate-typed
+    // SSA value (e.g. another promoted call's result). Propagating that
+    // type verbatim into the new make.*'s result element list would
+    // produce a *nested* aggregate type (e.g.
+    // !eco.record<!eco.tuple2<i64,i64>, !eco.value>). The make.* op's
+    // verifier accepts the nested type but RS4GC chokes on the nested
+    // FCA-containing-ptr<1> at safepoints, and the 1-level
+    // strip-aggregates pass doesn't recurse.
+    //
+    // The stopgap: box every aggregate-typed field via eco.to_heap
+    // before recording its type. Element types stay flat and the make.*
+    // result type is never nested. Cost: one extra heap alloc per
+    // chained-aggregate field; lifted by Phase 2 (recursive ABI
+    // promotion + recursive strip-aggregates per
+    // plans/widen-construct-make-call-aggregates.md §9).
+    // TODO(phase-2): remove the boxing once recursive ABI lands.
+    auto isAggSSAType = [](Type t) {
+        return isa<eco::Tuple2Type, eco::Tuple3Type, eco::RecordType,
+                   eco::CustomType, eco::ConsType>(t);
+    };
+    auto boxIfAggregate = [&](Value f) -> Value {
+        if (!isAggSSAType(f.getType())) return f;
+        auto valueTy = eco::ValueType::get(ctx);
+        auto toHeap = builder.create<eco::ToHeapOp>(
+            constructOp->getLoc(), valueTy, f, /*live_roots=*/ValueRange{});
+        return toHeap.getResult();
+    };
+
     Value rebuilt;
     if (auto t2 = dyn_cast<eco::Tuple2ConstructOp>(constructOp)) {
-        Type aggTy = eco::Tuple2Type::get(
-            ctx, t2.getA().getType(), t2.getB().getType());
-        rebuilt = builder.create<eco::Tuple2MakeOp>(
-            t2.getLoc(), aggTy, t2.getA(), t2.getB());
+        Value a = boxIfAggregate(t2.getA());
+        Value b = boxIfAggregate(t2.getB());
+        Type aggTy = eco::Tuple2Type::get(ctx, a.getType(), b.getType());
+        rebuilt = builder.create<eco::Tuple2MakeOp>(t2.getLoc(), aggTy, a, b);
     } else if (auto t3 = dyn_cast<eco::Tuple3ConstructOp>(constructOp)) {
+        Value a = boxIfAggregate(t3.getA());
+        Value b = boxIfAggregate(t3.getB());
+        Value c = boxIfAggregate(t3.getC());
         Type aggTy = eco::Tuple3Type::get(
-            ctx, t3.getA().getType(), t3.getB().getType(),
-            t3.getC().getType());
-        rebuilt = builder.create<eco::Tuple3MakeOp>(
-            t3.getLoc(), aggTy, t3.getA(), t3.getB(), t3.getC());
+            ctx, a.getType(), b.getType(), c.getType());
+        rebuilt = builder.create<eco::Tuple3MakeOp>(t3.getLoc(), aggTy, a, b, c);
     } else if (auto rec = dyn_cast<eco::RecordConstructOp>(constructOp)) {
-        auto fields = rec.getFields();
+        SmallVector<Value, 8> fields;
         SmallVector<Type, 8> elementTypes;
-        elementTypes.reserve(fields.size());
-        for (Value f : fields) elementTypes.push_back(f.getType());
+        for (Value f : rec.getFields()) {
+            Value boxed = boxIfAggregate(f);
+            fields.push_back(boxed);
+            elementTypes.push_back(boxed.getType());
+        }
         Type aggTy = eco::RecordType::get(ctx, elementTypes);
         rebuilt = builder.create<eco::RecordMakeOp>(
             rec.getLoc(), aggTy, fields);
     } else if (auto cus = dyn_cast<eco::CustomConstructOp>(constructOp)) {
-        auto fields = cus.getFields();
+        SmallVector<Value, 8> fields;
         SmallVector<Type, 8> elementTypes;
-        elementTypes.reserve(fields.size());
-        for (Value f : fields) elementTypes.push_back(f.getType());
+        for (Value f : cus.getFields()) {
+            Value boxed = boxIfAggregate(f);
+            fields.push_back(boxed);
+            elementTypes.push_back(boxed.getType());
+        }
         Type aggTy = eco::CustomType::get(ctx, elementTypes);
         rebuilt = builder.create<eco::CustomMakeOp>(
             cus.getLoc(), aggTy, fields,
@@ -1132,17 +1169,48 @@ static func::FuncOp cloneAsWorker(OpBuilder &builder, func::FuncOp original,
     // `eco.call`, because `eco.call`'s `Eco_AnyValue` operand constraint
     // rejects aggregate-typed values.
     StringRef origName = original.getName();
+    // `argOffset` is the number of leading sret-slot pointers in `operands`
+    // before the actual parameter values. paramShapes[0] aligns with
+    // operands[argOffset]; without the offset the loop would mis-index
+    // into the !llvm.ptr sret slots and try to from_heap them
+    // (plans/cross-spec-bridgeoperands-regressions.md Issue 1).
+    //
+    // Two bridging directions:
+    //   (1) callee param is aggregate, operand is `!eco.value` →
+    //       insert eco.from_heap to unbox the operand to the aggregate
+    //       shape the worker expects.
+    //   (2) callee param is `!eco.value`, operand is aggregate-typed
+    //       (the producer was promoted but the callee stayed boxed at
+    //       this position) → insert eco.to_heap to box the operand
+    //       back to `!eco.value` so the func.call's operand type
+    //       matches the callee's signature (Issue 2).
     auto bridgeOperands = [&](Location loc, OpBuilder &b,
                               const CalleeRedirect &redirect,
-                              SmallVectorImpl<Value> &operands) {
+                              SmallVectorImpl<Value> &operands,
+                              unsigned argOffset) {
+        auto isAggSSAType = [](Type t) {
+            return isa<eco::Tuple2Type, eco::Tuple3Type, eco::RecordType,
+                       eco::CustomType, eco::ConsType>(t);
+        };
         for (unsigned i = 0;
-             i < redirect.paramShapes.size() && i < operands.size(); ++i) {
-            if (!redirect.paramShapes[i].isAggregate()) continue;
-            Type wantedTy =
-                redirect.paramShapes[i].asWorkerType(operands[i].getContext());
-            if (operands[i].getType() == wantedTy) continue;
-            auto bridged = b.create<eco::FromHeapOp>(loc, wantedTy, operands[i]);
-            operands[i] = bridged.getResult();
+             i < redirect.paramShapes.size() &&
+             (argOffset + i) < operands.size();
+             ++i) {
+            unsigned slot = argOffset + i;
+            Type haveTy = operands[slot].getType();
+            if (redirect.paramShapes[i].isAggregate()) {
+                Type wantedTy = redirect.paramShapes[i].asWorkerType(
+                    operands[slot].getContext());
+                if (haveTy == wantedTy) continue;
+                auto bridged = b.create<eco::FromHeapOp>(
+                    loc, wantedTy, operands[slot]);
+                operands[slot] = bridged.getResult();
+            } else if (isAggSSAType(haveTy)) {
+                auto valueTy = eco::ValueType::get(operands[slot].getContext());
+                auto bridged = b.create<eco::ToHeapOp>(
+                    loc, valueTy, operands[slot], /*live_roots=*/ValueRange{});
+                operands[slot] = bridged.getResult();
+            }
         }
     };
 
@@ -1215,7 +1283,8 @@ static func::FuncOp cloneAsWorker(OpBuilder &builder, func::FuncOp original,
         for (Value s : sretSlotVals) operands.push_back(s);
         for (Value o : callOp->getOperands()) operands.push_back(o);
 
-        bridgeOperands(callLoc, b, redirect, operands);
+        bridgeOperands(callLoc, b, redirect, operands,
+                       /*argOffset=*/sretSlotVals.size());
         auto fc = b.create<func::CallOp>(
             callLoc, redirect.workerName, redirect.directResultTypes,
             operands);

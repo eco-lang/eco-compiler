@@ -225,6 +225,7 @@ set_source_files_properties(
     Passes/EcoControlFlowToSCF.cpp
     Passes/UndefinedFunction.cpp
     Passes/CheckEcoClosureCaptures.cpp
+    Passes/EcoBoxAggregateOperands.cpp
     Passes/EcoGCPrepare.cpp
     Passes/EcoGCLivenessAudit.cpp
     Passes/EcoToLLVM.cpp
@@ -291,6 +292,8 @@ add_mlir_library(EcoPasses
     Passes/EcoControlFlowToSCF.cpp
     Passes/UndefinedFunction.cpp
     Passes/CheckEcoClosureCaptures.cpp
+    # Phase 1 of widen-construct-make-call-aggregates: box aggregate operands
+    Passes/EcoBoxAggregateOperands.cpp
     # GC preparation pass (root sets, allocation grouping)
     Passes/EcoGCPrepare.cpp
     # GC liveness audit (debug-only verification)

@@ -637,7 +637,7 @@ def Eco_ListConstructOp : Eco_Op<"construct.list", [Pure,
   }];
 
   let arguments = (ins
-    Eco_AnyValue:$head,
+    Eco_AnyValueOrAggregate:$head,
     Eco_Value:$tail,
     Variadic<Eco_Value>:$live_roots,
     DefaultValuedAttr<BoolAttr, "false">:$head_unboxed,
@@ -717,8 +717,8 @@ def Eco_Tuple2ConstructOp : Eco_Op<"construct.tuple2", [Pure,
   }];
 
   let arguments = (ins
-    Eco_AnyValue:$a,
-    Eco_AnyValue:$b,
+    Eco_AnyValueOrAggregate:$a,
+    Eco_AnyValueOrAggregate:$b,
     Variadic<Eco_Value>:$live_roots,
     DefaultValuedAttr<I64Attr, "0">:$unboxed_bitmap
   );
@@ -746,9 +746,9 @@ def Eco_Tuple3ConstructOp : Eco_Op<"construct.tuple3", [Pure,
   }];
 
   let arguments = (ins
-    Eco_AnyValue:$a,
-    Eco_AnyValue:$b,
-    Eco_AnyValue:$c,
+    Eco_AnyValueOrAggregate:$a,
+    Eco_AnyValueOrAggregate:$b,
+    Eco_AnyValueOrAggregate:$c,
     Variadic<Eco_Value>:$live_roots,
     DefaultValuedAttr<I64Attr, "0">:$unboxed_bitmap
   );
@@ -829,7 +829,7 @@ def Eco_RecordConstructOp : Eco_Op<"construct.record", [Pure,
   }];
 
   let arguments = (ins
-    Variadic<Eco_AnyValue>:$fields,
+    Variadic<Eco_AnyValueOrAggregate>:$fields,
     I64Attr:$field_count,
     I64Attr:$unboxed_bitmap
   );
@@ -902,7 +902,7 @@ def Eco_CustomConstructOp : Eco_Op<"construct.custom", [Pure,
   }];
 
   let arguments = (ins
-    Variadic<Eco_AnyValue>:$fields,
+    Variadic<Eco_AnyValueOrAggregate>:$fields,
     I64Attr:$tag,
     I64Attr:$size,
     DefaultValuedAttr<I64Attr, "0">:$unboxed_bitmap,
@@ -1150,7 +1150,7 @@ def Eco_CallOp : Eco_Op<"call", [
   }];
 
   let arguments = (ins
-    Variadic<Eco_AnyValue>:$operands,
+    Variadic<Eco_AnyValueOrAggregate>:$operands,
     OptionalAttr<FlatSymbolRefAttr>:$callee,
     OptionalAttr<BoolAttr>:$musttail,
     OptionalAttr<I64Attr>:$remaining_arity  // For indirect calls
@@ -2892,7 +2892,7 @@ def Eco_Tuple2MakeOp : Eco_Op<"make.tuple2", [Pure]> {
     matching the operand SSA types.
   }];
 
-  let arguments = (ins Eco_AnyValue:$a, Eco_AnyValue:$b);
+  let arguments = (ins Eco_AnyValueOrAggregate:$a, Eco_AnyValueOrAggregate:$b);
   let results = (outs Eco_Tuple2:$result);
   // functional-type renders `(T0, T1) -> !eco.tuple2<T0, T1>` so the
   // dialect-qualified result type is preserved on round-trip.
@@ -2905,7 +2905,7 @@ def Eco_Tuple2MakeOp : Eco_Op<"make.tuple2", [Pure]> {
 def Eco_Tuple3MakeOp : Eco_Op<"make.tuple3", [Pure]> {
   let summary = "Create unboxed 3-tuple aggregate";
 
-  let arguments = (ins Eco_AnyValue:$a, Eco_AnyValue:$b, Eco_AnyValue:$c);
+  let arguments = (ins Eco_AnyValueOrAggregate:$a, Eco_AnyValueOrAggregate:$b, Eco_AnyValueOrAggregate:$c);
   let results = (outs Eco_Tuple3:$result);
   let assemblyFormat =
     "$a `,` $b `,` $c attr-dict `:` functional-type(operands, $result)";
@@ -2920,7 +2920,7 @@ def Eco_RecordMakeOp : Eco_Op<"make.record", [Pure]> {
     operand SSA types; the result type's parameter list must match.
   }];
 
-  let arguments = (ins Variadic<Eco_AnyValue>:$fields);
+  let arguments = (ins Variadic<Eco_AnyValueOrAggregate>:$fields);
   let results = (outs Eco_Record:$result);
   let assemblyFormat = "`(` $fields `)` attr-dict `:` functional-type($fields, $result)";
 
@@ -2936,7 +2936,7 @@ def Eco_CustomMakeOp : Eco_Op<"make.custom", [Pure]> {
   }];
 
   let arguments = (ins
-    Variadic<Eco_AnyValue>:$fields,
+    Variadic<Eco_AnyValueOrAggregate>:$fields,
     I64Attr:$tag,
     OptionalAttr<StrAttr>:$constructor
   );
@@ -2956,7 +2956,7 @@ def Eco_ConsMakeOp : Eco_Op<"make.cons", [Pure]> {
     vs value-level cons cell constructor.
   }];
 
-  let arguments = (ins Eco_AnyValue:$head, Eco_Value:$tail);
+  let arguments = (ins Eco_AnyValueOrAggregate:$head, Eco_Value:$tail);
   let results = (outs Eco_Cons:$result);
   let assemblyFormat =
     "$head `,` $tail attr-dict `:` functional-type(operands, $result)";
@@ -2973,7 +2973,7 @@ def Eco_ClosureEnvMakeOp : Eco_Op<"make.closure_env", [Pure]> {
     a function/arity into `!eco.value`.
   }];
 
-  let arguments = (ins Variadic<Eco_AnyValue>:$captures);
+  let arguments = (ins Variadic<Eco_AnyValueOrAggregate>:$captures);
   let results = (outs Eco_ClosureEnv:$result);
   let assemblyFormat = "`(` $captures `)` attr-dict `:` functional-type($captures, $result)";
 

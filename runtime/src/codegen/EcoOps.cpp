@@ -345,7 +345,12 @@ LogicalResult CustomConstructOp::verify() {
 
     switch (kind) {
       case 0:  // Boxed HPointer (!eco.value)
-        if (!isa<eco::ValueType>(fieldType) && !fieldType.isInteger(1)) {
+        // Aggregate-typed fields are accepted under kind=0: the Eco→LLVM
+        // construct lowering boxes them via eco.to_heap so the slot ends up
+        // holding a boxed HPointer like any other kind=0 field.
+        if (!isa<eco::ValueType, eco::Tuple2Type, eco::Tuple3Type,
+                 eco::RecordType, eco::CustomType, eco::ConsType>(fieldType) &&
+            !fieldType.isInteger(1)) {
           return emitOpError("field ") << i
                  << " has kind=boxed but non-boxed SSA type " << fieldType;
         }
