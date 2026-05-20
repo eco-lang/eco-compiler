@@ -419,6 +419,71 @@ inline HPointer allocString(const u16* chars, size_t length) {
 }
 
 /**
+ * Result of `allocStringBlank`. The fresh string has been allocated with
+ * uninitialized chars[]; the caller is responsible for writing all
+ * `length` code units BEFORE any subsequent allocation. After the next
+ * allocation in this thread, `chars` may dangle (small-path strings live in
+ * the nursery and can be moved by a minor GC); the GC-tracked `hp` remains
+ * valid throughout.
+ */
+struct BlankString {
+    HPointer hp;
+    u16* chars;
+    u32 length;
+};
+
+/**
+ * Allocates a fresh string of `length` code units with uninitialized
+ * chars[]. Returns the GC-tracked handle and a writable pointer.
+ *
+ * Routes length==0 to the embedded empty-string constant (chars == nullptr
+ * in that case; caller must check `length > 0` before writing).
+ *
+ * Pairs with `StringOps::forEachSegment` / `StringOps::copyInto` to let
+ * transformation ops (toUpper, reverse, etc.) write directly into the heap
+ * object instead of through a `std::vector<u16>` intermediate buffer.
+ *
+ * Safety contract: the writable pointer is valid only until the next
+ * allocation by this thread. Do not call any allocator function (including
+ * implicit allocation via alloc::* helpers) between getting `chars` and
+ * finishing the write. For payload sizes that route through the large-object
+ * split-header path, the body is pinned in old gen and `chars` remains
+ * stable across subsequent allocations — but callers should not depend on
+ * that without checking the tag.
+ */
+inline BlankString allocStringBlank(size_t length) {
+    if (length == 0) {
+        return BlankString{emptyString(), nullptr, 0};
+    }
+
+    auto& allocator = Allocator::instance();
+    size_t data_size = length * sizeof(u16);
+    size_t total_size = sizeof(ElmString) + data_size;
+    total_size = (total_size + 7) & ~7;
+
+    GC_STATS_STRING_RECORD_ALLOC(total_size);
+
+    if (total_size >= allocator.getLargeObjectThreshold()) {
+        // Large path: split-header + pinned body. allocLargeString accepts a
+        // nullptr `chars` argument and leaves the body uninitialized
+        // (the existing `if (chars && length > 0) memcpy(...)` guard); we then
+        // resolve through the header to expose the body's writable chars[].
+        HPointer hp = allocator.allocLargeString(nullptr, length);
+        void* header_obj = allocator.resolve(hp);
+        LargeStringHeader* lh = static_cast<LargeStringHeader*>(header_obj);
+        void* body = allocator.resolve(lh->body);
+        ElmString* leaf = static_cast<ElmString*>(body);
+        return BlankString{hp, leaf->chars, static_cast<u32>(length)};
+    }
+
+    ElmString* str = static_cast<ElmString*>(
+        eco_alloc_with_roots(Tag_String, total_size, nullptr, 0, 0));
+    str->header.size = static_cast<u32>(length);
+    HPointer hp = allocator.wrap(str);
+    return BlankString{hp, str->chars, static_cast<u32>(length)};
+}
+
+/**
  * Allocates an ElmString from a std::u16string.
  */
 inline HPointer allocString(const std::u16string& s) {

@@ -176,27 +176,22 @@ HPointer slice(void* str, i64 start, i64 end) {
     // short ranges and matches the prior behaviour.
     if (slice_len <= allocator.getConfig().string_tiny_slice_limit) {
         if (hdr->tag == Tag_String) {
+            // Direct allocString from the source pointer — no intermediate vector.
             ElmString* s = static_cast<ElmString*>(str);
-            std::vector<u16> data(s->chars + start, s->chars + start + slice_len);
-            return alloc::allocString(data.data(), slice_len);
+            return alloc::allocString(s->chars + start, slice_len);
         }
         if (hdr->tag == Tag_LargeStringHeader) {
-            // Resolve to the body and treat like a leaf for tiny-slice copy.
             LargeStringHeader* h = static_cast<LargeStringHeader*>(str);
             void* body = allocator.resolve(h->body);
             if (!body) return alloc::emptyString();
             ElmString* leaf = static_cast<ElmString*>(body);
-            std::vector<u16> data(leaf->chars + start, leaf->chars + start + slice_len);
-            return alloc::allocString(data.data(), slice_len);
+            return alloc::allocString(leaf->chars + start, slice_len);
         }
         if (hdr->tag == Tag_StringSlice) {
             ElmStringSlice* slc = static_cast<ElmStringSlice*>(str);
             u32 baseOffset = slc->offset;
             void* baseObj = allocator.resolve(slc->base);
             if (!baseObj) return alloc::emptyString();
-            // A slice's base may be a Tag_LargeStringHeader; the actual
-            // chars[] live in the body it points to (Heap.hpp:232-244).
-            // Match the resolution that charAt / toStdU16String use.
             if (static_cast<Header*>(baseObj)->tag == Tag_LargeStringHeader) {
                 LargeStringHeader* lh = static_cast<LargeStringHeader*>(baseObj);
                 baseObj = allocator.resolve(lh->body);
@@ -210,16 +205,35 @@ HPointer slice(void* str, i64 start, i64 end) {
                        static_cast<u64>(slice_len) <=
                    static_cast<u64>(leaf->header.size) &&
                    "slice range exceeds underlying leaf");
-            std::vector<u16> data(leaf->chars + baseOffset + start,
-                                  leaf->chars + baseOffset + start + slice_len);
-            return alloc::allocString(data.data(), slice_len);
+            return alloc::allocString(leaf->chars + baseOffset + start, slice_len);
         }
-        // Rope: walk via charAt to fill a small buffer, then flatten.
-        std::vector<u16> data(slice_len);
-        for (size_t i = 0; i < slice_len; ++i) {
-            data[i] = charAt(str, start + static_cast<i64>(i));
+        // Rope: walk leaf segments via forEachSegment, advancing past `start`
+        // logical positions and writing the next `slice_len` units into the
+        // result. Avoids per-char charAt tag dispatch.
+        HPointer srcHp = allocator.wrap(str);
+        alloc::BlankString out;
+        {
+            Elm::StackRootGuard guard(&srcHp);
+            out = alloc::allocStringBlank(slice_len);
         }
-        return alloc::allocString(data.data(), slice_len);
+        i64 remaining_skip = start;
+        u32 written = 0;
+        forEachSegment(allocator.resolve(srcHp), [&](const u16* p, u32 n) {
+            if (written >= slice_len) return;
+            u32 segOff = 0;
+            if (remaining_skip > 0) {
+                if (static_cast<i64>(n) <= remaining_skip) {
+                    remaining_skip -= n;
+                    return;
+                }
+                segOff = static_cast<u32>(remaining_skip);
+                remaining_skip = 0;
+            }
+            u32 take = std::min<u32>(n - segOff, slice_len - written);
+            std::memcpy(out.chars + written, p + segOff, take * sizeof(u16));
+            written += take;
+        });
+        return out.hp;
     }
 
     // Large slice over a leaf: build a Tag_StringSlice over the source.
@@ -386,7 +400,8 @@ HPointer concat(HPointer stringList) {
         std::memcpy(&stringList, &roots[0], sizeof(stringList));
         result->header.size = static_cast<u32>(total_len);
 
-        // Second pass: copy via tag-aware toStdU16String to handle slice/rope.
+        // Second pass: copy each element's segments straight into result->chars
+        // via the tag-aware visitor — no per-element std::u16string alloc.
         size_t offset = 0;
         current = stringList;
 
@@ -398,10 +413,10 @@ HPointer concat(HPointer stringList) {
             if (!alloc::isEmptyString(c->head.p)) {
                 void* strObj = allocator.resolve(c->head.p);
                 if (strObj) {
-                    auto buf = toStdU16String(strObj);
-                    std::memcpy(result->chars + offset, buf.data(),
-                                buf.size() * sizeof(u16));
-                    offset += buf.size();
+                    forEachSegment(strObj, [&](const u16* p, u32 n) {
+                        std::memcpy(result->chars + offset, p, n * sizeof(u16));
+                        offset += n;
+                    });
                 }
             }
             current = c->tail;
@@ -437,15 +452,6 @@ HPointer concat(HPointer stringList) {
 HPointer join(void* sep, HPointer stringList) {
     auto& allocator = Allocator::instance();
     size_t sep_len = sep ? static_cast<Header*>(sep)->size : 0;
-
-    // Snapshot the separator data before any allocation. After allocate(),
-    // `sep` (a void* into the heap) may be invalid; the snapshot is on the
-    // C stack and unaffected.
-    std::vector<u16> sepData;
-    if (sep && sep_len > 0) {
-        auto sepBuf = toStdU16String(sep);
-        sepData.assign(sepBuf.begin(), sepBuf.end());
-    }
 
     // Wrap separator as HPointer for the rope-building path; rooted via
     // stackRootRange below. The wrap() must happen before any GC.
@@ -502,19 +508,21 @@ HPointer join(void* sep, HPointer stringList) {
             Cons* c = static_cast<Cons*>(cell);
 
             if (!first && sep_len > 0) {
-                std::memcpy(result->chars + offset, sepData.data(),
-                            sep_len * sizeof(u16));
-                offset += sep_len;
+                void* sepObj = allocator.resolve(sepHp);
+                forEachSegment(sepObj, [&](const u16* p, u32 n) {
+                    std::memcpy(result->chars + offset, p, n * sizeof(u16));
+                    offset += n;
+                });
             }
             first = false;
 
             if (!alloc::isEmptyString(c->head.p)) {
                 void* strObj = allocator.resolve(c->head.p);
                 if (strObj) {
-                    auto buf = toStdU16String(strObj);
-                    std::memcpy(result->chars + offset, buf.data(),
-                                buf.size() * sizeof(u16));
-                    offset += buf.size();
+                    forEachSegment(strObj, [&](const u16* p, u32 n) {
+                        std::memcpy(result->chars + offset, p, n * sizeof(u16));
+                        offset += n;
+                    });
                 }
             }
             current = c->tail;
@@ -561,6 +569,8 @@ HPointer indexes(void* needle, void* haystack) {
 
     auto needleBuf = toStdU16String(needle);
     auto haystackBuf = toStdU16String(haystack);
+    const u16* nPtr = reinterpret_cast<const u16*>(needleBuf.data());
+    const u16* hPtr = reinterpret_cast<const u16*>(haystackBuf.data());
     size_t needle_len = needleBuf.size();
     size_t haystack_len = haystackBuf.size();
 
@@ -570,13 +580,33 @@ HPointer indexes(void* needle, void* haystack) {
             indices.push_back(static_cast<i64>(i));
         }
     } else if (needle_len <= haystack_len) {
-        for (size_t i = 0; i <= haystack_len - needle_len; ++i) {
-            bool match = true;
-            for (size_t j = 0; j < needle_len && match; ++j) {
-                if (haystackBuf[i + j] != needleBuf[j]) match = false;
+        // BMH for longer needles; naive otherwise.
+        if (needle_len >= 4) {
+            u32 skip[256];
+            for (u32 i = 0; i < 256; ++i) skip[i] = static_cast<u32>(needle_len);
+            for (size_t i = 0; i + 1 < needle_len; ++i) {
+                skip[nPtr[i] & 0xFF] = static_cast<u32>(needle_len - 1 - i);
             }
-            if (match) {
-                indices.push_back(static_cast<i64>(i));
+            size_t i = 0;
+            while (i + needle_len <= haystack_len) {
+                size_t j = needle_len;
+                while (j > 0 && hPtr[i + j - 1] == nPtr[j - 1]) --j;
+                if (j == 0) {
+                    indices.push_back(static_cast<i64>(i));
+                    ++i;  // contains() found-overlap semantics: advance by 1
+                } else {
+                    i += skip[hPtr[i + needle_len - 1] & 0xFF];
+                }
+            }
+        } else {
+            for (size_t i = 0; i <= haystack_len - needle_len; ++i) {
+                bool match = true;
+                for (size_t j = 0; j < needle_len && match; ++j) {
+                    if (hPtr[i + j] != nPtr[j]) match = false;
+                }
+                if (match) {
+                    indices.push_back(static_cast<i64>(i));
+                }
             }
         }
     }
@@ -600,21 +630,47 @@ HPointer split(void* sep, void* str) {
     }
 
     // Snapshot both strings before any allocation. toStdU16String handles
-    // both leaf and slice tags and produces a contiguous std::u16string.
+    // both leaf and slice tags and produces a contiguous std::u16string,
+    // which is already a contiguous read-only u16 buffer — no need to
+    // duplicate it into a std::vector.
     auto strU16 = toStdU16String(str);
     auto sepU16 = toStdU16String(sep);
-    std::vector<u16> strData(strU16.begin(), strU16.end());
-    std::vector<u16> sepData(sepU16.begin(), sepU16.end());
+    const u16* strData = reinterpret_cast<const u16*>(strU16.data());
+    const u16* sepData = reinterpret_cast<const u16*>(sepU16.data());
 
+    // Boyer-Moore-Horspool skip-table search for needles ≥ 4 chars.
+    // For shorter needles the skip-table build cost outweighs the savings,
+    // so we fall back to the naive byte-by-byte scan in those cases.
     std::vector<size_t> splitPositions;
-    for (size_t i = 0; i <= str_len - sep_len; ++i) {
-        bool match = true;
-        for (size_t j = 0; j < sep_len && match; ++j) {
-            if (strData[i + j] != sepData[j]) match = false;
+    if (sep_len >= 4) {
+        // Build skip table indexed by haystack char (mod 256 to bound size).
+        u32 skip[256];
+        for (u32 i = 0; i < 256; ++i) skip[i] = static_cast<u32>(sep_len);
+        for (size_t i = 0; i + 1 < sep_len; ++i) {
+            skip[sepData[i] & 0xFF] = static_cast<u32>(sep_len - 1 - i);
         }
-        if (match) {
-            splitPositions.push_back(i);
-            i += sep_len - 1;
+        size_t i = 0;
+        while (i + sep_len <= str_len) {
+            // Compare from the end.
+            size_t j = sep_len;
+            while (j > 0 && strData[i + j - 1] == sepData[j - 1]) --j;
+            if (j == 0) {
+                splitPositions.push_back(i);
+                i += sep_len;
+            } else {
+                i += skip[strData[i + sep_len - 1] & 0xFF];
+            }
+        }
+    } else {
+        for (size_t i = 0; i <= str_len - sep_len; ++i) {
+            bool match = true;
+            for (size_t j = 0; j < sep_len && match; ++j) {
+                if (strData[i + j] != sepData[j]) match = false;
+            }
+            if (match) {
+                splitPositions.push_back(i);
+                i += sep_len - 1;
+            }
         }
     }
 
@@ -626,11 +682,11 @@ HPointer split(void* sep, void* str) {
 
     size_t start = 0;
     for (size_t idx = 0; idx < splitPositions.size(); ++idx) {
-        parts[idx] = alloc::allocString(strData.data() + start,
+        parts[idx] = alloc::allocString(strData + start,
                                          splitPositions[idx] - start);
         start = splitPositions[idx] + sep_len;
     }
-    parts[splitPositions.size()] = alloc::allocString(strData.data() + start,
+    parts[splitPositions.size()] = alloc::allocString(strData + start,
                                                        str_len - start);
 
     rs.restoreStackRangePoint(saved);
@@ -643,11 +699,13 @@ HPointer toList(void* str) {
     size_t len = buf.size();
     if (len == 0) return alloc::listNil();
 
-    std::vector<u16> chars(buf.begin(), buf.end());
+    // `buf` is already a contiguous u16 buffer; no need to duplicate it
+    // into a separate std::vector<u16>.
+    const u16* chars = reinterpret_cast<const u16*>(buf.data());
     std::vector<HPointer> charPtrs(len, alloc::listNil());
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
-    for (auto& hp : charPtrs) rs.pushStackRootRange(&hp, 1, 1);
+    rs.pushStackRootRange(charPtrs.data(), charPtrs.size(), ~0ULL);
 
     for (size_t i = 0; i < len; ++i) {
         charPtrs[i] = fromChar(chars[i]);
@@ -664,7 +722,30 @@ HPointer uncons(void* str) {
 
     // Read the first char before any allocation. charAt does not allocate.
     u16 firstChar = charAt(str, 0);
-    HPointer rest = slice(str, 1, static_cast<i64>(hdr->size));
+    u32 restLen = hdr->size - 1;
+
+    // Bypass slice()'s tiny-path *flattening* copy: build a Tag_StringSlice
+    // directly when the source is a leaf, large-header, or another slice.
+    // This makes a long fold-with-uncons over a string O(n) total allocation
+    // instead of O(n²) (each tail slice would otherwise copy its full body).
+    HPointer rest;
+    if (restLen == 0) {
+        rest = alloc::emptyString();
+    } else {
+        auto& allocator = Allocator::instance();
+        if (hdr->tag == Tag_String || hdr->tag == Tag_LargeStringHeader) {
+            HPointer baseHp = allocator.wrap(str);
+            rest = makeSlice(baseHp, 1, restLen);
+        } else if (hdr->tag == Tag_StringSlice) {
+            ElmStringSlice* slc = static_cast<ElmStringSlice*>(str);
+            HPointer baseHp = slc->base;
+            u32 newOffset = slc->offset + 1;
+            rest = makeSlice(baseHp, newOffset, restLen);
+        } else {
+            // Rope: defer to slice() which handles rope-aware partitioning.
+            rest = slice(str, 1, static_cast<i64>(hdr->size));
+        }
+    }
 
     Unboxable charVal = alloc::unboxedChar(firstChar);
     Unboxable restVal = alloc::boxed(rest);
@@ -677,32 +758,57 @@ HPointer uncons(void* str) {
 
 HPointer map(CharToCharMapper mapFunc, void* str) {
     if (!str) return alloc::emptyString();
-    auto buf = toStdU16String(str);
-    size_t len = buf.size();
+    u32 len = rawLen(str);
     if (len == 0) return alloc::emptyString();
 
-    std::vector<u16> data(len);
-    for (size_t i = 0; i < len; ++i) {
-        data[i] = mapFunc(buf[i]);
+    auto& allocator = Allocator::instance();
+    HPointer srcHp = allocator.wrap(str);
+    alloc::BlankString out;
+    {
+        Elm::StackRootGuard guard(&srcHp);
+        out = alloc::allocStringBlank(len);
     }
-    return alloc::allocString(data.data(), len);
+    // Walk segments directly into the result, applying mapFunc per char.
+    u32 written = 0;
+    forEachSegment(allocator.resolve(srcHp), [&](const u16* p, u32 n) {
+        for (u32 i = 0; i < n; ++i) out.chars[written + i] = mapFunc(p[i]);
+        written += n;
+    });
+    return out.hp;
 }
 
 HPointer filter(CharPredicate pred, void* str) {
     if (!str) return alloc::emptyString();
-    auto buf = toStdU16String(str);
-    size_t len = buf.size();
+    u32 len = rawLen(str);
     if (len == 0) return alloc::emptyString();
 
-    std::vector<u16> data;
-    data.reserve(len);
-    for (auto c : buf) {
-        if (pred(c)) data.push_back(c);
+    // Two-pass: count survivors to allocate the right-sized result, then
+    // copy survivors into it. Avoids both std::vector and std::u16string.
+    auto& allocator = Allocator::instance();
+    HPointer srcHp = allocator.wrap(str);
+
+    u32 keptCount = 0;
+    forEachSegment(allocator.resolve(srcHp), [&](const u16* p, u32 n) {
+        for (u32 i = 0; i < n; ++i) if (pred(p[i])) ++keptCount;
+    });
+
+    if (keptCount == 0) return alloc::emptyString();
+    if (keptCount == len && isLeaf(allocator.resolve(srcHp))) {
+        return allocator.wrap(allocator.resolve(srcHp));
     }
 
-    if (data.empty()) return alloc::emptyString();
-    if (data.size() == len && isLeaf(str)) return Allocator::instance().wrap(str);
-    return alloc::allocString(data.data(), data.size());
+    alloc::BlankString out;
+    {
+        Elm::StackRootGuard guard(&srcHp);
+        out = alloc::allocStringBlank(keptCount);
+    }
+    u32 written = 0;
+    forEachSegment(allocator.resolve(srcHp), [&](const u16* p, u32 n) {
+        for (u32 i = 0; i < n; ++i) {
+            if (pred(p[i])) out.chars[written++] = p[i];
+        }
+    });
+    return out.hp;
 }
 
 Unboxable foldl(CharFolder fold, Unboxable acc, void* str) {
@@ -728,40 +834,56 @@ Unboxable foldr(CharFolder fold, Unboxable acc, void* str) {
 std::string toStdString(void* str) {
     if (!str) return {};
     auto buf = toStdU16String(str);
-    std::string result;
-    result.reserve(buf.size() * 3);  // Worst case for UTF-8
+    const u16* p = reinterpret_cast<const u16*>(buf.data());
+    const size_t n = buf.size();
 
-    for (size_t i = 0; i < buf.size(); ++i) {
-        u16 c = buf[i];
-
-        // Handle surrogate pairs
-        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < buf.size()) {
-            u16 c2 = buf[i + 1];
+    // First pass: count UTF-8 bytes. ASCII dominates most strings, so the
+    // worst-case 3x reservation almost always over-allocates by 3x; a
+    // single count pass replaces that with the exact size.
+    size_t out_bytes = 0;
+    for (size_t i = 0; i < n; ++i) {
+        u16 c = p[i];
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < n) {
+            u16 c2 = p[i + 1];
             if (c2 >= 0xDC00 && c2 <= 0xDFFF) {
-                // Valid surrogate pair
-                uint32_t codepoint = 0x10000 + ((c - 0xD800) << 10) + (c2 - 0xDC00);
-                result.push_back(static_cast<char>(0xF0 | ((codepoint >> 18) & 0x07)));
-                result.push_back(static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F)));
-                result.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F)));
-                result.push_back(static_cast<char>(0x80 | (codepoint & 0x3F)));
+                out_bytes += 4;
                 ++i;
                 continue;
             }
         }
-
-        // Regular BMP character
-        if (c < 0x80) {
-            result.push_back(static_cast<char>(c));
-        } else if (c < 0x800) {
-            result.push_back(static_cast<char>(0xC0 | ((c >> 6) & 0x1F)));
-            result.push_back(static_cast<char>(0x80 | (c & 0x3F)));
-        } else {
-            result.push_back(static_cast<char>(0xE0 | ((c >> 12) & 0x0F)));
-            result.push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
-            result.push_back(static_cast<char>(0x80 | (c & 0x3F)));
-        }
+        if (c < 0x80)       out_bytes += 1;
+        else if (c < 0x800) out_bytes += 2;
+        else                out_bytes += 3;
     }
 
+    std::string result(out_bytes, '\0');
+    char* out = result.data();
+    size_t w = 0;
+    for (size_t i = 0; i < n; ++i) {
+        u16 c = p[i];
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < n) {
+            u16 c2 = p[i + 1];
+            if (c2 >= 0xDC00 && c2 <= 0xDFFF) {
+                uint32_t codepoint = 0x10000 + ((c - 0xD800) << 10) + (c2 - 0xDC00);
+                out[w++] = static_cast<char>(0xF0 | ((codepoint >> 18) & 0x07));
+                out[w++] = static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F));
+                out[w++] = static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+                out[w++] = static_cast<char>(0x80 | (codepoint & 0x3F));
+                ++i;
+                continue;
+            }
+        }
+        if (c < 0x80) {
+            out[w++] = static_cast<char>(c);
+        } else if (c < 0x800) {
+            out[w++] = static_cast<char>(0xC0 | ((c >> 6) & 0x1F));
+            out[w++] = static_cast<char>(0x80 | (c & 0x3F));
+        } else {
+            out[w++] = static_cast<char>(0xE0 | ((c >> 12) & 0x0F));
+            out[w++] = static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+            out[w++] = static_cast<char>(0x80 | (c & 0x3F));
+        }
+    }
     return result;
 }
 

@@ -44,34 +44,47 @@ HPointer uncons(void* str) {
 }
 
 HPointer fromList(HPointer chars) {
-    // Convert list of Char values to a single string.
+    // Two-pass: count list length, allocate exact-size result, then walk
+    // again writing chars directly into the heap object. Eliminates the
+    // std::vector + allocString intermediate copy.
     auto& allocator = Allocator::instance();
 
-    // Collect all char values first (no allocation)
-    std::vector<u16> charData;
+    size_t count = 0;
     HPointer current = chars;
-
     while (!alloc::isNil(current)) {
         void* cell = allocator.resolve(current);
         if (!cell) break;
+        Cons* c = static_cast<Cons*>(cell);
+        ++count;
+        current = c->tail;
+    }
+    if (count == 0) return alloc::emptyString();
 
+    // Root the list across the allocation; the result chars[] are filled
+    // before any further alloc, so we don't need to re-root mid-loop.
+    alloc::BlankString out;
+    {
+        Elm::StackRootGuard guard(&chars);
+        out = alloc::allocStringBlank(count);
+    }
+    size_t idx = 0;
+    current = chars;
+    while (!alloc::isNil(current)) {
+        void* cell = allocator.resolve(current);
+        if (!cell) break;
         Cons* c = static_cast<Cons*>(cell);
         u16 charVal;
         if (Elm::tupleFieldKind(c->header.unboxed, 0) != 0) {
-            // Unboxed slot — for a char list this should be kind 3 (Char).
             charVal = c->head.c;
         } else {
             void* charObj = allocator.resolve(c->head.p);
             ElmChar* ec = static_cast<ElmChar*>(charObj);
             charVal = ec->value;
         }
-        charData.push_back(charVal);
+        out.chars[idx++] = charVal;
         current = c->tail;
     }
-
-    if (charData.empty()) return alloc::emptyString();
-
-    return alloc::allocString(charData.data(), charData.size());
+    return out.hp;
 }
 
 // ============================================================================
@@ -155,8 +168,9 @@ HPointer lines(void* str) {
         return alloc::cons(alloc::boxed(alloc::emptyString()), alloc::listNil(), true);
     }
 
-    // Snapshot already on the C stack; safe across allocations.
-    std::vector<u16> strData(snapshot.begin(), snapshot.end());
+    // The snapshot std::u16string is already a contiguous u16 buffer on the
+    // C stack; no need to duplicate into a separate std::vector.
+    const u16* strData = reinterpret_cast<const u16*>(snapshot.data());
 
     // Phase 1: find line boundaries (no allocation)
     struct LineRange { size_t start; size_t len; };
@@ -191,10 +205,10 @@ HPointer lines(void* str) {
     std::vector<HPointer> parts(ranges.size(), alloc::listNil());
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
-    for (auto& hp : parts) rs.pushStackRootRange(&hp, 1, 1);
+    rs.pushStackRootRange(parts.data(), parts.size(), ~0ULL);
 
     for (size_t i = 0; i < ranges.size(); ++i) {
-        parts[i] = alloc::allocString(strData.data() + ranges[i].start, ranges[i].len);
+        parts[i] = alloc::allocString(strData + ranges[i].start, ranges[i].len);
     }
 
     rs.restoreStackRangePoint(saved);
@@ -214,7 +228,7 @@ HPointer words(void* str) {
     auto snapshot = StringOps::toStdU16String(trimmedObj);
     size_t len = snapshot.size();
 
-    std::vector<u16> strData(snapshot.begin(), snapshot.end());
+    const u16* strData = reinterpret_cast<const u16*>(snapshot.data());
 
     // Phase 1: find word boundaries (no allocation)
     struct WordRange { size_t start; size_t len; };
@@ -246,10 +260,10 @@ HPointer words(void* str) {
     std::vector<HPointer> parts(ranges.size(), alloc::listNil());
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
-    for (auto& hp : parts) rs.pushStackRootRange(&hp, 1, 1);
+    rs.pushStackRootRange(parts.data(), parts.size(), ~0ULL);
 
     for (size_t i = 0; i < ranges.size(); ++i) {
-        parts[i] = alloc::allocString(strData.data() + ranges[i].start, ranges[i].len);
+        parts[i] = alloc::allocString(strData + ranges[i].start, ranges[i].len);
     }
 
     rs.restoreStackRangePoint(saved);
