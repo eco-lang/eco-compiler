@@ -74,7 +74,7 @@ BASELINE_HEAP = {
     "large_object_threshold":        "16K",
     # String / rope heuristics.
     "string_flatten_limit":          "32K",
-    "string_tiny_slice_limit":       "8K",
+    "string_tiny_slice_limit":       "128",
     "rope_max_height":               32,
     "rope_leaf_count_limit":         64,
     "rope_min_leaf_size":            128,

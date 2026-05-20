@@ -71,7 +71,7 @@ constexpr size_t LARGE_OBJECT_THRESHOLD = 16 * 1024;
 constexpr size_t STRING_FLATTEN_LIMIT = 32 * 1024;
 
 // slice() ranges <= this many UTF-16 code units flatten directly instead of allocating a Tag_StringSlice.
-constexpr size_t STRING_TINY_SLICE_LIMIT = STRING_FLATTEN_LIMIT / 4;
+constexpr size_t STRING_TINY_SLICE_LIMIT = 128;
 
 // Rope tree depth above which the rebalance heuristic flags the rope (rebalance itself is TODO).
 constexpr u32 ROPE_MAX_HEIGHT = 32;
