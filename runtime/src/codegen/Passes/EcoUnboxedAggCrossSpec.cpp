@@ -1422,13 +1422,17 @@ static func::FuncOp cloneAsWorker(OpBuilder &builder, func::FuncOp original,
 /// Phase 3.3: when a result position is Sret, the wrapper allocates an
 /// `!llvm.struct<>` slot via `llvm.alloca`, prepends the slot pointer
 /// to the worker's operand list, then reads the aggregate back from
-/// the slot after the call via per-element GEP+load. Phase 3.4 Fix A:
-/// the loaded scalar fields go directly into `eco.construct.*` for
-/// re-boxing — no intermediate `eco.make.* + eco.to_heap` pair, no
-/// register-form FCA in the wrapper. The Direct branch projects each
-/// field out of the worker's by-value aggregate return via
-/// `eco.project.*` and likewise re-boxes via `eco.construct.*`,
-/// keeping the Sret and Direct paths symmetric.
+/// the slot after the call via per-element GEP+load. The loaded fields
+/// are rebuilt into an aggregate via `eco.make.*` and re-boxed via
+/// `eco.to_heap`; the Direct branch passes the worker's by-value
+/// aggregate return straight into `eco.to_heap`. (`plans/wrapper-fca-fix.md`
+/// Fix A would replace both `eco.make.* + eco.to_heap` pairs with
+/// `eco.construct.*` to avoid the register-form FCA that trips RS4GC
+/// on `!eco.value`-carrying aggregates; that chunk is currently
+/// deferred — see the plan's §8 status. As long as it stays deferred,
+/// the all-primitive gate in `resultPositionHasAggregateProducer` /
+/// `allUsesAreProjectionsOrCallsToEligible` is what prevents this
+/// wrapper from ever emitting an FCA over `ptr addrspace(1)`.)
 static void replaceBodyWithWrapper(OpBuilder &builder, func::FuncOp original,
                                    func::FuncOp worker,
                                    ArrayRef<LogicalShape> paramShapes,
