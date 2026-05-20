@@ -1,7 +1,6 @@
 import { defineConfig, globalIgnores } from "eslint/config";
 import globals from "globals";
 import js from "@eslint/js";
-import pluginJest from "eslint-plugin-jest";
 
 
 export default defineConfig([
@@ -29,20 +28,5 @@ export default defineConfig([
         "caughtErrorsIgnorePattern": "^_"
       }]
     }
-  },
-  {
-    files: ["**/*.test.js"],
-    plugins: { jest: pluginJest },
-    languageOptions: {
-      globals: { ...globals.node, ...pluginJest.environments.globals.globals },
-    },
-    rules: {
-      "no-empty": ["error", { "allowEmptyCatch": true }],
-      "jest/no-disabled-tests": "warn",
-      "jest/no-focused-tests": "error",
-      "jest/no-identical-title": "error",
-      "jest/prefer-to-have-length": "warn",
-      "jest/valid-expect": "error",
-    },
   },
 ]);

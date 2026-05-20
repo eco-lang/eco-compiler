@@ -11,7 +11,9 @@ PROJECT_ROOT="$(cd "$COMPILER_DIR/.." && pwd)"
 # ${CMAKE_BINARY_DIR}/compiler/build-xhr/; override via env if you point at a
 # non-default build tree (e.g. debug/ or build-profile/).
 BUILD_XHR_DIR="${BUILD_XHR_DIR:-$PROJECT_ROOT/build/compiler/build-xhr}"
-ELM="$COMPILER_DIR/node_modules/.bin/elm"
+# The elm binary is fetched by CMake into ${CMAKE_BINARY_DIR}/toolchain/bin/.
+# Override ELM to point at a different toolchain root (e.g. debug/) if needed.
+ELM="${ELM:-$PROJECT_ROOT/build/toolchain/bin/elm}"
 
 case $1 in
   "api")

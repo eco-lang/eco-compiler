@@ -67,8 +67,14 @@ parts of the output, read the file — do NOT re-run the tests.
 Compiler front-end tests with elm-test-rs:
 
 ```bash
-cd compiler
-npx elm-test-rs --project ../build/compiler/build-xhr --fuzz 1
+cmake --build build --target elm-tests
+```
+
+The `elm-test-rs` binary is fetched by CMake into `build/toolchain/bin/`
+(see `compiler/cmake/toolchain.cmake`). For manual filtering:
+
+```bash
+build/toolchain/bin/elm-test-rs --project build/compiler/build-xhr --fuzz 1
 ```
 
 Full E2E tests including the backend and runtime:

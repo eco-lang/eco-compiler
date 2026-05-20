@@ -64,9 +64,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
  && locale-gen
 
-# Install Node.js for Guida compiler builds
+# Install Node.js for Guida compiler builds, and enable pnpm via corepack.
+# pnpm is the package manager used by compiler/package.json (see
+# compiler/.npmrc for the ignore-scripts hardening).
 RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - \
     && apt-get install -y nodejs \
+    && corepack enable pnpm \
     && rm -rf /var/lib/apt/lists/*
 
 # Installed LLVM/MLIR

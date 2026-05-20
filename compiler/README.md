@@ -68,57 +68,87 @@ This enables compilation to native executables for x86, ARM, WebAssembly, and ot
 
 ## Development
 
+The compiler is built and tested via the top-level CMake build. The
+sections below describe the compiler-frontend-only workflow; for the
+full system (runtime, codegen, kernel libs, E2E tests) see the
+[top-level Readme.md](../Readme.md).
+
 ### Prerequisites
 
-Install [Node Version Manager](https://github.com/nvm-sh/nvm), then:
+- Node.js (any LTS) with `corepack` (ships with Node ≥ 16.9)
+- CMake + Ninja + clang (per the top-level build)
+
+`pnpm` is enabled on demand by corepack — no global install needed.
+The Elm toolchain (`elm`, `elm-format`, `elm-test-rs`) is **not** a
+project dependency; CMake fetches the binaries directly from upstream
+with pinned SHAs into `build/toolchain/bin/` — see
+`compiler/cmake/toolchain.cmake`.
+
+Install the Node-side runtime libraries (`adm-zip`, `tmp`, `which`,
+etc., needed by `bin/index.js`):
 
 ```bash
-nvm use
-npm install
+cd compiler
+corepack enable pnpm
+pnpm install --frozen-lockfile
 ```
 
-### Building
+`compiler/.npmrc` disables npm/pnpm lifecycle scripts
+(`ignore-scripts=true`) — pnpm prints what it skipped, which is expected.
+The vendored `elm-coverage/` subtree opts back in via its own `.npmrc`
+because it depends on a binwrap install step.
+
+### Building the compiler
 
 ```bash
-npm run build
+cmake --build build --target guida        # Stage 1: stock elm → guida.js
+cmake --build build --target eco-boot     # Stage 2: guida.js self-compiles → eco-boot.js
+cmake --build build --target bootstrap    # Stages 3–8: native bootstrap chain
 ```
 
-### Linking for Development
-
-```bash
-npm link
-```
-
-You should now be able to run `guida --help`.
+Outputs land under `build/compiler/build-{xhr,kernel}/bin/`.
 
 ### Watch Mode
 
-Rebuild automatically when source files change:
+Rebuild the Stage 1 JS output whenever `src/**/*.elm` changes:
 
 ```bash
-npm run watch
+cd compiler && pnpm run watch
 ```
+
+This calls the CMake-fetched `elm` binary directly via the
+`onchange` dev dependency.
 
 ### Running Tests
 
+The Elm-side compiler frontend tests run via `elm-test-rs`:
+
 ```bash
-npm test              # Run all tests
-npm run test:jest     # Jest tests only
-npm run test:elm      # elm-test only
-npm run test:elm-review    # elm-review only
-npm run test:elm-format-validate  # Format validation
+cmake --build build --target elm-tests
 ```
+
+To filter or change fuzz count, invoke the binary directly:
+
+```bash
+PATH="$PWD/../build/toolchain/bin:$PATH" \
+    ../build/toolchain/bin/elm-test-rs \
+        --project ../build/compiler/build-xhr \
+        --fuzz 1
+```
+
+`elm-test-rs` discovers `elm` via `PATH`, so prepend the toolchain dir.
 
 ### Formatting
 
 ```bash
-npm run elm-format
+build/toolchain/bin/elm-format compiler/src --yes
 ```
 
 ### Clear Cache
 
 ```bash
-rm -rf ~/.guida guida-stuff; npm run build
+rm -rf ~/.guida build/compiler
+cmake --build build --target guida
 ```
 
 ## Examples

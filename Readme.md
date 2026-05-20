@@ -116,8 +116,19 @@ docker run --rm -v "$PWD":/work eco-build
 **Debian/Ubuntu host:**
 
 ```bash
-sudo apt install clang lld ninja-build cmake ccache
+sudo apt install clang lld ninja-build cmake ccache nodejs
+corepack enable pnpm    # corepack ships with Node.js >= 16.9
 ```
+
+The compiler frontend is written in Elm and built via a small Node.js
+runner. The package manager is **pnpm** (not npm) — `compiler/.npmrc` has
+`ignore-scripts=true`, which removes the install-time arbitrary-code-execution
+surface from binwrap-style packages.
+
+The Elm toolchain itself (`elm 0.19.1`, `elm-format`, `elm-test-rs`) is
+**not** pulled from npm. CMake fetches those binaries with SHA256-pinned
+URLs from upstream GitHub releases into `build/toolchain/bin/` — see
+`compiler/cmake/toolchain.cmake`. You do not need to `npm install` them.
 
 ### Configure and build
 
@@ -148,8 +159,21 @@ TEST_FILTER=elm cmake --build build --target check
 TEST_FILTER=String cmake --build build --target run-tests
 
 # Compiler frontend tests (Elm-side unit tests, run via elm-test-rs)
-cd compiler && npx elm-test-rs --project ../build/compiler/build-xhr --fuzz 1
+cmake --build build --target elm-tests
 ```
+
+The `elm-tests` target shells out to the CMake-fetched `elm-test-rs` binary
+against the build-tree shadow root. To run it manually with custom flags
+(e.g. higher fuzz, a specific test file):
+
+```bash
+PATH="$PWD/build/toolchain/bin:$PATH" \
+    build/toolchain/bin/elm-test-rs \
+        --project build/compiler/build-xhr \
+        --fuzz 1
+```
+
+`elm-test-rs` discovers the `elm` compiler via `PATH`, hence the prefix.
 
 #### Running the test binary directly
 
@@ -225,6 +249,7 @@ Every target below is invoked as `cmake --build build --target <name>`. For a li
 | `stress` | Build + run stress-elm suite |
 | `full` | `clean` + rebuild + run E2E tests |
 | `run-mlir-equivalence` | Build mlir-equivalence + run Stage 2 vs Stage 6 MLIR diff |
+| `elm-tests` | Run the Elm-side compiler frontend tests via `elm-test-rs` |
 
 #### Bootstrap chain
 

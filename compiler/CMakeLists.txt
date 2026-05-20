@@ -1,15 +1,25 @@
 # Guida Elm Compiler build configuration
 # This builds the guida compiler (an Elm compiler written in Elm)
 
-# Find Node.js
+# Linux x86_64 is the only platform with pinned toolchain binaries today.
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR NOT CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+    message(FATAL_ERROR
+        "compiler/cmake/toolchain.cmake currently pins Linux x86_64 binaries only. "
+        "System=${CMAKE_SYSTEM_NAME} Processor=${CMAKE_SYSTEM_PROCESSOR}.")
+endif()
+
+# Find Node.js and the package manager. The Elm toolchain itself (elm,
+# elm-format, elm-test-rs) is fetched by cmake/toolchain.cmake — see below.
 find_program(NODE_EXECUTABLE node REQUIRED)
-find_program(NPM_EXECUTABLE npm REQUIRED)
+find_program(PNPM_EXECUTABLE pnpm REQUIRED)
 
 message(STATUS "Found Node.js: ${NODE_EXECUTABLE}")
-message(STATUS "Found npm: ${NPM_EXECUTABLE}")
+message(STATUS "Found pnpm:    ${PNPM_EXECUTABLE}")
 
 # Paths
 set(COMPILER_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+
+include(${COMPILER_DIR}/cmake/toolchain.cmake)
 
 # Build-tree shadow root for the Stage 1 XHR Elm application. We materialize
 # elm.json + src/src-xhr/tests symlinks here at configure time so stock Elm
@@ -28,7 +38,7 @@ file(CREATE_LINK ${COMPILER_DIR}/tests   ${BUILD_XHR_DIR}/tests   SYMBOLIC)
 
 set(COMPILER_OUTPUT "${BUILD_XHR_DIR}/bin/guida.js")
 set(ELM_ENTRY "${COMPILER_DIR}/src/Terminal/Main.elm")
-set(ELM_EXECUTABLE "${COMPILER_DIR}/node_modules/.bin/elm")
+# ELM_EXECUTABLE is provided by cmake/toolchain.cmake above.
 
 # Collect all Elm source files for dependency tracking
 file(GLOB_RECURSE ELM_SOURCES
@@ -40,21 +50,23 @@ file(GLOB_RECURSE ELM_SOURCES
 set(COMPILER_CONFIG_FILES
     "${BUILD_XHR_DIR}/elm.json"
     "${COMPILER_DIR}/package.json"
-    "${COMPILER_DIR}/package-lock.json"
+    "${COMPILER_DIR}/pnpm-lock.yaml"
     "${COMPILER_DIR}/scripts/replacements.js"
 )
 
-# Ensure npm dependencies are installed
-# We use a stamp file to track this
-set(NPM_STAMP "${CMAKE_CURRENT_BINARY_DIR}/npm_install.stamp")
+# Install Node runtime libraries via pnpm. The Elm toolchain itself is no
+# longer in package.json; cmake/toolchain.cmake fetches those binaries with
+# pinned SHAs. `--frozen-lockfile` + `ignore-scripts=true` (in .npmrc) keep
+# this install hermetic.
+set(NPM_STAMP "${CMAKE_CURRENT_BINARY_DIR}/pnpm_install.stamp")
 
 add_custom_command(
     OUTPUT ${NPM_STAMP}
-    COMMAND ${NPM_EXECUTABLE} ci --prefer-offline
+    COMMAND ${PNPM_EXECUTABLE} install --frozen-lockfile --prefer-offline
     COMMAND ${CMAKE_COMMAND} -E touch ${NPM_STAMP}
-    DEPENDS "${COMPILER_DIR}/package.json" "${COMPILER_DIR}/package-lock.json"
+    DEPENDS "${COMPILER_DIR}/package.json" "${COMPILER_DIR}/pnpm-lock.yaml"
     WORKING_DIRECTORY ${COMPILER_DIR}
-    COMMENT "Installing npm dependencies for guida compiler"
+    COMMENT "Installing Node runtime libs via pnpm"
 )
 
 # Step 1: Build the compiler with stock Elm (XHR IO)
@@ -69,6 +81,21 @@ add_custom_command(
 
 # Create target for the compiler
 add_custom_target(guida ALL DEPENDS ${COMPILER_OUTPUT})
+
+# Convenience wrapper: run the elm-test-rs suite against the build-xhr shadow
+# root. Replaces `cd compiler && npx elm-test-rs --project build-xhr`.
+#
+# elm-test-rs invokes the elm compiler as a subprocess and discovers it via
+# PATH, so we prepend the CMake-fetched toolchain dir.
+add_custom_target(elm-tests
+    COMMAND ${CMAKE_COMMAND} -E env "PATH=${TOOLCHAIN_BIN}:$ENV{PATH}"
+        ${ELM_TEST_RS_EXECUTABLE} --project ${BUILD_XHR_DIR} --fuzz 1
+    DEPENDS guida
+    WORKING_DIRECTORY ${COMPILER_DIR}
+    COMMENT "Running elm-test-rs against build-xhr shadow root"
+    USES_TERMINAL
+    VERBATIM
+)
 
 # Step 2: Self-compile with eco kernel JS
 
