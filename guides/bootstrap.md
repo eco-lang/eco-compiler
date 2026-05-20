@@ -2,11 +2,19 @@
 
 The Eco compiler bootstraps through 8 stages. Stages 1–4 produce a fixed-point JS compiler; stage 5 uses it to emit MLIR for the native code path; stage 6 compiles that MLIR to a native ELF executable; stages 7–8 use the native compiler to self-compile and verify a native fixed point.
 
+Each stage has a dedicated CMake target. Building any later stage's target transitively builds all preceding stages, so a clean tree can run the whole chain with a single `cmake --build build --target bootstrap`.
+
 Two E2E test gates fail-fast on backend regressions: **Gate A** after Stage 1 runs the JIT E2E suite; **Gate B** after Stages 3+4 runs the AOT E2E suite. Either gate's failure pins the regression to the stages preceding it, before further self-compile cycles burn.
 
 ## Prerequisites
 
-Node.js needs a 12 GB heap for self-compilation (stages 2+):
+One-time CMake configure (only on a fresh checkout or after touching CMake itself):
+
+```bash
+cmake --preset ninja-clang-lld-linux
+```
+
+Node.js needs a 12 GB heap for self-compilation (Stages 2+):
 
 ```bash
 export NODE_OPTIONS="--max-old-space-size=12000"
@@ -22,8 +30,7 @@ This stage builds **without** `--optimize` because the XHR variant of `Eco.Crash
 variant of `Eco.Crash` (via `Eco.Kernel.Crash`) is used instead, enabling `--optimize`.
 
 ```bash
-cd /work/compiler
-./scripts/build.sh bin
+cmake --build build --target guida
 ```
 
 Output: `build/compiler/build-xhr/bin/guida.js`
@@ -38,14 +45,11 @@ cmake --build build --target full
 
 ### Stage 2: `guida.js` self-compiles → `eco-boot.js`
 
-The XHR-based compiler compiles itself with kernel IO enabled:
+The XHR-based compiler compiles itself with kernel IO enabled, producing a compiler that uses `Eco.Kernel.*` directly.
 
 ```bash
-cd /work/compiler
-./scripts/build-self.sh bin
+cmake --build build --target eco-boot
 ```
-
-This runs `guida.js` via the Node.js mock XHR server with `--kernel-package eco/compiler` and `--local-package eco/kernel=...`, producing a compiler that uses `Eco.Kernel.*` directly.
 
 Output: `build/compiler/build-kernel/bin/eco-boot.js`
 
@@ -53,14 +57,12 @@ Output: `build/compiler/build-kernel/bin/eco-boot.js`
 
 Two more self-compilation rounds verify the compiler reproduces itself identically:
 
-```bash
-cd /work/compiler
-./scripts/build-verify.sh
-```
-
 - **Stage 3**: `eco-boot.js` compiles itself → `eco-boot-2.js`
-- **Stage 4**: `eco-boot-2.js` compiles itself → `eco-boot-3.js`
-- Diffs the two outputs — they must be identical (fixed point reached).
+- **Stage 4**: `eco-boot-2.js` compiles itself → `eco-boot-3.js`, then diffs `eco-boot-2.js` against `eco-boot-3.js` — they must be identical (fixed point reached).
+
+```bash
+cmake --build build --target eco-boot-verify
+```
 
 ### Gate B: AOT E2E test suite
 
@@ -76,21 +78,10 @@ Outputs land under `build/test/aot-e2e/<pkg>/` so they coexist with the JIT E2E 
 
 The fixed-point verified compiler compiles itself to MLIR, exercising the native code generation path.
 
-**Important:** Stages 2–4 (JS output) do not write or invalidate `.ecot` typed-object caches. Stale `.ecot` files from a previous MLIR build will cause crashes during monomorphization (e.g. `Union not found: SCC`). Clean these caches before running Stage 5:
+The target's recipe wipes any stale `.ecot` typed-object caches under `build/compiler/build-kernel/eco-stuff/` before running — Stages 2–4 (JS output) don't write or invalidate those caches, so leftovers from a previous MLIR build would otherwise cause crashes during monomorphization (e.g. `Union not found: SCC`).
 
 ```bash
-# Clean stale local typed-object caches before Stage 5
-find /work/build/compiler/build-kernel/eco-stuff -name '*.ecot' -delete
-```
-
-```bash
-cd /work/build/compiler/build-kernel
-node --stack-size=65536 bin/eco-boot-2-runner.js make \
-    --optimize \
-    --kernel-package eco/compiler \
-    --local-package eco/kernel=/work/eco-kernel-cpp \
-    --output=bin/eco-compiler.mlir \
-    /work/compiler/src/Terminal/Main.elm
+cmake --build build --target eco-compiler-mlir
 ```
 
 Output: `build/compiler/build-kernel/bin/eco-compiler.mlir`
@@ -100,61 +91,32 @@ Output: `build/compiler/build-kernel/bin/eco-compiler.mlir`
 The `eco-boot-native` tool (built by CMake from `runtime/src/codegen/eco-boot.cpp`) lowers the MLIR through the full pipeline — Eco dialect → LLVM dialect → LLVM IR → object file — then links with the runtime and kernel static libraries to produce a standalone x86-64 Linux ELF executable.
 
 ```bash
-# Build eco-boot-native (and all runtime/kernel libraries it links against)
-cmake --preset ninja-clang-lld-linux
-cmake --build build --target eco-boot-native
-
-# Compile the MLIR to a native executable
-./build/runtime/src/codegen/eco-boot-native \
-    build/compiler/build-kernel/bin/eco-compiler.mlir \
-    -o build/compiler/build-kernel/bin/eco-compiler
+cmake --build build --target eco-compiler
 ```
+
+The `eco-compiler` target transitively builds the `eco-boot-native` tool plus all runtime and kernel libraries it links against.
 
 Output: `build/compiler/build-kernel/bin/eco-compiler`
 
 ### Stage 7: Native compiler self-compiles → `eco-compiler-boot`
 
-The native ELF compiler from Stage 6 compiles itself to MLIR, then `eco-boot-native` lowers that MLIR to a fully bootstrapped native executable.
+The native ELF compiler from Stage 6 compiles itself to MLIR, then `eco-boot-native` lowers that MLIR to a fully bootstrapped native executable. Both sub-steps are bundled into a single CMake target:
 
 ```bash
-cd /work/build/compiler/build-kernel
-bin/eco-compiler make \
-    --optimize \
-    --kernel-package eco/compiler \
-    --local-package eco/kernel=/work/eco-kernel-cpp \
-    --output=bin/eco-compiler-boot.mlir \
-    /work/compiler/src/Terminal/Main.elm
-
-cd /work
-./build/runtime/src/codegen/eco-boot-native \
-    build/compiler/build-kernel/bin/eco-compiler-boot.mlir \
-    -o build/compiler/build-kernel/bin/eco-compiler-boot
+cmake --build build --target eco-compiler-boot
 ```
 
 Output: `build/compiler/build-kernel/bin/eco-compiler-boot`
 
 ### Stage 8: Native fixed-point verification
 
-A second self-compilation round verifies the bootstrapped compiler reproduces itself identically:
+A second self-compilation round verifies the bootstrapped compiler reproduces itself identically: `eco-compiler-boot` compiles itself to MLIR, `eco-boot-native` lowers it, and the produced binary is compared byte-for-byte against `eco-compiler-boot`. The `bootstrap` aggregate target chains all three sub-steps plus the final `cmp`:
 
 ```bash
-cd /work/build/compiler/build-kernel
-bin/eco-compiler-boot make \
-    --optimize \
-    --kernel-package eco/compiler \
-    --local-package eco/kernel=/work/eco-kernel-cpp \
-    --output=bin/eco-compiler-boot-2.mlir \
-    /work/compiler/src/Terminal/Main.elm
-
-cd /work
-./build/runtime/src/codegen/eco-boot-native \
-    build/compiler/build-kernel/bin/eco-compiler-boot-2.mlir \
-    -o build/compiler/build-kernel/bin/eco-compiler-boot-2
-
-# Binary compare — must be identical (fixed point reached)
-cmp build/compiler/build-kernel/bin/eco-compiler-boot \
-    build/compiler/build-kernel/bin/eco-compiler-boot-2
+cmake --build build --target bootstrap
 ```
+
+The `bootstrap` target is also the one-shot entry point for the entire chain: on a clean tree it transitively runs every stage from 1 onward, ending with the Stage 4b JS fixed-point check and the Stage 8c native fixed-point check.
 
 Output: `build/compiler/build-kernel/bin/eco-compiler-boot-2` (identical to `eco-compiler-boot`)
 
@@ -164,51 +126,21 @@ Stage 1 builds **without** `--optimize` (the XHR `Eco.Crash` uses `Debug.todo`).
 
 ```bash
 export NODE_OPTIONS="--max-old-space-size=12000"
-cd /work/compiler
-./scripts/build.sh bin          # Stage 1: stock Elm (no --optimize) → guida.js
-cd /work
-cmake --build build --target full  # Gate A: JIT E2E suite
-cd /work/compiler
-./scripts/build-self.sh bin     # Stage 2: guida.js --optimize → eco-boot.js
-./scripts/build-verify.sh       # Stages 3+4: --optimize fixed-point check
-cd /work
-cmake --build build --target run-aot-e2e  # Gate B: AOT E2E suite
-# Clean stale local typed-object caches before Stage 5
-find /work/build/compiler/build-kernel/eco-stuff -name '*.ecot' -delete
-cd /work/build/compiler/build-kernel
-node --stack-size=65536 bin/eco-boot-2-runner.js make \
-    --optimize \
-    --kernel-package eco/compiler \
-    --local-package eco/kernel=/work/eco-kernel-cpp \
-    --output=bin/eco-compiler.mlir \
-    /work/compiler/src/Terminal/Main.elm  # Stage 5: MLIR output
-cd /work
-cmake --build build --target eco-boot-native
-./build/runtime/src/codegen/eco-boot-native \
-    build/compiler/build-kernel/bin/eco-compiler.mlir \
-    -o build/compiler/build-kernel/bin/eco-compiler  # Stage 6: native ELF
-cd build/compiler/build-kernel
-bin/eco-compiler make \
-    --optimize \
-    --kernel-package eco/compiler \
-    --local-package eco/kernel=/work/eco-kernel-cpp \
-    --output=bin/eco-compiler-boot.mlir \
-    /work/compiler/src/Terminal/Main.elm       # Stage 7: native self-compile
-cd /work
-./build/runtime/src/codegen/eco-boot-native \
-    build/compiler/build-kernel/bin/eco-compiler-boot.mlir \
-    -o build/compiler/build-kernel/bin/eco-compiler-boot
-cd build/compiler/build-kernel
-bin/eco-compiler-boot make \
-    --optimize \
-    --kernel-package eco/compiler \
-    --local-package eco/kernel=/work/eco-kernel-cpp \
-    --output=bin/eco-compiler-boot-2.mlir \
-    /work/compiler/src/Terminal/Main.elm       # Stage 8: fixed-point verify
-cd /work
-./build/runtime/src/codegen/eco-boot-native \
-    build/compiler/build-kernel/bin/eco-compiler-boot-2.mlir \
-    -o build/compiler/build-kernel/bin/eco-compiler-boot-2
-cmp build/compiler/build-kernel/bin/eco-compiler-boot \
-    build/compiler/build-kernel/bin/eco-compiler-boot-2   # Must match
+
+cmake --build build --target guida                # Stage 1
+cmake --build build --target full                 # Gate A: JIT E2E suite
+cmake --build build --target eco-boot             # Stage 2
+cmake --build build --target eco-boot-verify      # Stages 3+4 + JS fixed-point check
+cmake --build build --target run-aot-e2e          # Gate B: AOT E2E suite
+cmake --build build --target eco-compiler-mlir    # Stage 5
+cmake --build build --target eco-compiler         # Stage 6
+cmake --build build --target eco-compiler-boot    # Stage 7
+cmake --build build --target bootstrap            # Stage 8 + native fixed-point check
+```
+
+CMake handles dependencies between targets, so any of these targets can also be built in isolation from a clean tree — earlier stages will be built on demand. The minimal one-shot equivalent (skipping the two E2E gates) is just:
+
+```bash
+export NODE_OPTIONS="--max-old-space-size=12000"
+cmake --build build --target bootstrap
 ```

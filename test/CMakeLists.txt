@@ -194,9 +194,14 @@ target_compile_definitions(aot-e2e-runner PRIVATE
         BUILD_DIR="${CMAKE_BINARY_DIR}"
 )
 
-set_property(DIRECTORY APPEND PROPERTY
-        ADDITIONAL_CLEAN_FILES "${CMAKE_BINARY_DIR}/test/aot-e2e"
-)
+# NB: do NOT add ${CMAKE_BINARY_DIR}/test/aot-e2e to ADDITIONAL_CLEAN_FILES.
+# That tree's per-package elm.json + src/ symlinks are materialised at CMake
+# configure time (via file(COPY)/file(CREATE_LINK) above), so ninja clean
+# would wipe the scaffold and leave the shadow without an elm.json — the next
+# Elm compile then reports "NO elm.json FILE" and every AOT test fails. The
+# runner pre-cleans its own per-test caches at startup; outputs survive
+# `ninja clean` and are reset on demand. Use `rm -rf build/test/aot-e2e/` for
+# a manual full wipe.
 
 # Bootstrap inputs the AOT runner needs at runtime. eco-boot-2.js is produced
 # by Stages 1+2+3 of guides/bootstrap.md; eco-boot-native is produced by the
