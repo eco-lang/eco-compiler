@@ -431,9 +431,21 @@ static int linkExecutable(const std::string &objectFile,
     if (!runtimeLib.empty())
         args.push_back(runtimeLib);
 
-    // Elm kernel libraries
-    for (const auto &lib : elmKernelLibs)
+    // Elm kernel libraries. ElmKernel_Utils is wrapped in --whole-archive so
+    // its UtilsExports.o is always linked even when nothing in the user's
+    // program references the C-linkage exports there (Elm_Kernel_Utils_compare,
+    // _equal, etc.). That .o also defines Eco_Kernel_Order_register_gc_roots,
+    // which Eco_Kernel_register_all_gc_roots calls via a weak declaration to
+    // initialise the LT/EQ/GT Order singletons. Without whole-archive, programs
+    // that reach Utils::compare only via the kernel-internal C++ entry point
+    // (e.g. List.sortBy) leave the .o out of the link, the singletons stay
+    // zero, and every comparison miscompiles to LT.
+    for (const auto &lib : elmKernelLibs) {
+        bool isUtils = lib.find("libElmKernel_Utils.") != std::string::npos;
+        if (isUtils) args.push_back("-Wl,--whole-archive");
         args.push_back(lib);
+        if (isUtils) args.push_back("-Wl,--no-whole-archive");
+    }
 
     // Eco kernel libraries (IO: File, Console, Env, Process, MVar, Runtime, Http, Crash)
     for (const auto &lib : ecoKernelLibs)
