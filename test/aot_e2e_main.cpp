@@ -424,10 +424,18 @@ TestResult run_one(const TestCase& tc) {
 
 struct Args {
     std::string filter;
-    int jobs = 4;
+    int jobs = 0;  // 0 = not set; resolved to hardware_concurrency in parse_args
     bool help = false;
     bool list = false;
 };
+
+// Default parallelism: system cores when known, else 4. Mirrors
+// ElmE2ETestBase::getMaxParallelCompilations so both E2E suites scale
+// identically out of the box.
+int default_jobs() {
+    unsigned int cores = std::thread::hardware_concurrency();
+    return cores > 0 ? static_cast<int>(cores) : 4;
+}
 
 Args parse_args(int argc, char** argv) {
     Args a;
@@ -454,6 +462,7 @@ Args parse_args(int argc, char** argv) {
         int v = std::atoi(env);
         if (v > 0) a.jobs = v;
     }
+    if (a.jobs <= 0) a.jobs = default_jobs();
     if (a.jobs < 1) a.jobs = 1;
     if (a.jobs > 16) a.jobs = 16;
     return a;
@@ -468,7 +477,8 @@ void print_help(const char* prog) {
         << "stdout against `-- CHECK:` / `-- CHECK-NOT:` patterns.\n"
         << "\n"
         << "  --filter <pat>  Only run tests whose display name contains <pat>.\n"
-        << "  --jobs <N>      Concurrent tests (default 4). Override via AOT_E2E_JOBS.\n"
+        << "  --jobs <N>      Concurrent tests (default: number of system cores).\n"
+        << "                  Override via AOT_E2E_JOBS or this flag.\n"
         << "  --list          List discovered tests and exit.\n"
         << "  --help          Show this message.\n";
 }
