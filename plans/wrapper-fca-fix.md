@@ -1,22 +1,38 @@
 # Wrapper FCA Fix — Plan
 
-> **Implementation status (2026-05-19).** Chunk 2.1 (runtime ABI
+> **Implementation status (2026-05-20).** Chunk 2.1 (runtime ABI
 > additions + JIT symbol registration + MLIR runtime declarations) is
 > **landed and verified**: build is green and the full E2E suite has
 > the same pass/fail count as the pre-change baseline (1413 passing).
-> Chunks 1, 2.2, 2.3, 3, 4, 5, 6 are **deferred** — the initial attempt
-> introduced three new test failures
-> (`ProcessSpawnRecursiveTest`, `ProcessYieldThrashingTest`,
-> `TaskOnErrorCascadeTest`) with the `support for FCA unimplemented`
-> assertion firing inside the JIT pipeline (EcoRunner / EcoJIT). The
-> failure reproduces deterministically and only inside the JIT —
-> `ecoc -emit=llvm` runs `addEcoGCPipeline` on the same MLIR input
-> successfully. The difference is `packFunctionArguments` (run by
-> EcoJIT, not by ecoc); investigation pointer for the re-enable
-> attempt is the interaction between that wrapper-emission and
-> alloc-uninit + per-field-store call sequences on functions with
-> `gc "eco-gc"`. The Phase 3.4 all-primitive gate stays in place.
-> See §9 "Status" at the end for the precise state and next steps.
+> Chunks 1, 2.2, 2.3, 3, 4, 5, 6 are **deferred**.
+>
+> The original status banner attributed the deferred-chunk failures to
+> a JIT-only `packFunctionArguments` interaction. That diagnosis was
+> incorrect: a 2026-05-20 hand-rolled MLIR sweep (documented in
+> §1.0.1) shows the `support for FCA unimplemented` assertion is
+> **not JIT-specific** — it fires
+> identically in `ecoc --emit=jit`, `ecoc --emit=llvm`, and
+> `eco-boot-native --emit=llvm`. The minimum trigger is **any
+> `func.func` with more than one result where at least one is
+> `!eco.value`** (FuncToLLVM packs multi-results into a single LLVM
+> struct return; if the struct carries `ptr addrspace(1)` fields,
+> RS4GC's `computeLiveInValues` asserts on the function-exit
+> safepoint). `packFunctionArguments` is a red herring: the
+> three failing tests' lowered IR almost certainly carried a residual
+> FCA-of-GC-ptr value through some path the `-emit=llvm` driver
+> happened to fold and the JIT driver did not — but the underlying
+> RS4GC limitation is the same in both pipelines.
+>
+> Consequence for re-land: the diagnostic is much simpler than
+> previously thought. **Dump the post-EcoToLLVM MLIR (`ecoc
+> --emit=mlir-llvm`) and grep for any `!llvm.struct<(... ptr<1> ...)>`
+> typed SSA value — as a function signature element, call result,
+> `llvm.insertvalue`/`extractvalue` operand or result, or
+> `llvm.return` operand. Every such value is a guaranteed RS4GC
+> assertion at the next stage. If zero remain, RS4GC will accept the
+> module.** No JIT-vs-AOT bisection needed.
+>
+> See §8 "Status" at the end for the precise state and next steps.
 
 
 ## 0. Goal
@@ -57,6 +73,112 @@ Three complementary changes, all landed in a single pass:
   correctness on mixed-element Tuple2/Tuple3 shapes.
 
 ## 1. Background — what's actually broken
+
+### 1.0. The fundamental RS4GC limitation
+
+`RewriteStatepointsForGC.cpp:3212`'s `computeLiveInValues` asserts
+`!isUnhandledGCPointerType(V->getType(), GC)` with message
+`"support for FCA unimplemented"` whenever it has to track a
+first-class aggregate (LLVM `struct`/`array`) **whose element type
+includes a GC pointer (`ptr addrspace(1)`)** across a safepoint. The
+assertion fires regardless of how the FCA was produced
+(`insertvalue` chain, multi-result call return, function-exit
+return) and regardless of pipeline (`ecoc --emit=jit`,
+`ecoc --emit=llvm`, `eco-boot-native --emit=llvm` all reach RS4GC).
+Anything that gets folded away before RS4GC sees it is fine; anything
+that survives — even one extractvalue whose insertvalue source isn't
+directly reachable — asserts.
+
+Two independent IR shapes trigger this in the cross-spec pipeline:
+
+**Shape A — transient FCA around the alloc safepoint.** The wrapper
+or Record/Custom `eco.to_heap` lowering builds an `insertvalue` chain
+to package fields, then alloc-then-extract-from-FCA to store them in
+the new heap object. The FCA is live across the alloc safepoint. If
+`FoldExtractValuePass` can fold every extract back through its
+matching insert, the FCA becomes dead and is DCE'd; otherwise it
+survives and asserts. Subject of Fix B (Record/Custom reorder) and
+Fix C (Tuple2/Tuple3/Cons alloc-uninit + per-field stores).
+
+**Shape B — multi-result `func.func` with ≥1 `!eco.value` element.**
+FuncToLLVM packs multi-results into a single `!llvm.struct<(...)>`
+return type. If any field is `ptr addrspace(1)`, the function's
+`llvm.return` is an FCA-of-GC-ptr crossing the function-exit
+safepoint. No fold pass can remove this — the FCA IS the function's
+ABI interface. Cross-spec produces this shape whenever it routes an
+aggregate result through the Direct ABI and the aggregate contains
+`!eco.value` elements. Today the all-primitive gate at
+`EcoUnboxedAggCrossSpec.cpp:585-590` / `:697-712` prevents this from
+happening for Elm-generated `eco.return` bodies. Without addressing
+Shape B, lifting the gate (Chunk 4) re-triggers the assertion. The
+Sret ABI (Phase 3.3) inherently avoids Shape B because the
+worker's LLVM signature is `void @f$unboxed(ptr %sret, ...)` — no
+struct return at all. The sret slot's *pointee* type is an
+`!llvm.struct<>` whose layout may include `ptr addrspace(1)` element
+slots (it's the in-memory representation of the result aggregate),
+but the slot pointer is `ptrTy` in addrspace 0 (`LLVM::AllocaOp` at
+`replaceBodyWithWrapper:1468`), and the worker writes / wrapper
+reads fields via per-element GEP + store/load. No
+`!llvm.struct<(... ptr<1> ...)>` value ever sits in a register, so
+RS4GC tracks each `ptr<1>` field individually — exactly the case it
+handles natively.
+
+### 1.0.1. Minimal-trigger sweep (2026-05-20)
+
+A sweep of five hand-rolled MLIR fixtures pinned the trigger
+condition for Shape B precisely. Each is a tiny module containing
+one `func.func @worker` plus a `func.func @main` that calls it; only
+the worker's signature differs across fixtures. Run through
+`ecoc --emit=jit`:
+
+| # | worker signature | crash? |
+|---|---|---|
+| 01 | `(!eco.value, !eco.value) -> !eco.value`, body uses `eco.construct.tuple2 → return` (single result) | no |
+| 02 | `(!eco.value, !eco.value) -> (!eco.value, !eco.value)` (multi-result, both boxed) | **yes** |
+| 03 | `(!eco.value, !eco.value) -> !eco.value` (single-result) | no |
+| 04 | `(i64, i64) -> (i64, i64)` (multi-result, no GC ptrs) | no |
+| 05 | `(i64, !eco.value) -> (i64, !eco.value)` (multi-result, one boxed) | **yes** |
+
+The trigger condition is sharper than "FCA over GC pointers" alone:
+specifically, **a `func.func` whose result count is greater than one
+AND whose lowered LLVM struct-return type contains at least one
+`ptr addrspace(1)` element**. Single-result boxed (#03) is fine —
+the function returns `ptr<1>` directly with no struct involved.
+Multi-result of pure primitives (#04) is fine — the struct contains
+no GC pointers. The "multi-result" axis matters because that's what
+makes FuncToLLVM produce an `!llvm.struct<>` return type at all.
+
+#02 and #05 are exactly what cross-spec emits today when it routes
+an aggregate result through the Direct ABI and the aggregate carries
+`!eco.value` element(s) — which is precisely what the all-primitive
+gate (`EcoUnboxedAggCrossSpec.cpp:585-590` and `:697-712`) prevents
+from being emitted for `eco.return` bodies, and what Chunk 4 must
+NOT cause to be emitted when it lifts the gate. Re-route through
+Sret (Phase 3.3) instead; the Sret worker signature is `void
+@f$unboxed(ptr %sret, ...)`, single-result void, which can never
+trip Shape B.
+
+The lowered MLIR LLVM dialect for fixture #02 — the canonical Shape
+B repro:
+
+```mlir
+llvm.func @worker(%arg0: !llvm.ptr<1>, %arg1: !llvm.ptr<1>)
+    -> !llvm.struct<(ptr<1>, ptr<1>)>
+    attributes {garbageCollector = "eco-gc"} {
+  %0 = llvm.mlir.poison : !llvm.struct<(ptr<1>, ptr<1>)>
+  %1 = llvm.insertvalue %arg0, %0[0] : !llvm.struct<(ptr<1>, ptr<1>)>
+  %2 = llvm.insertvalue %arg1, %1[1] : !llvm.struct<(ptr<1>, ptr<1>)>
+  llvm.return %2 : !llvm.struct<(ptr<1>, ptr<1>)>
+}
+```
+
+`%2`'s type is the FCA-of-GC-ptr. `llvm.return %2` is the
+function-exit safepoint. RS4GC's `computeLiveInValues` walks back
+from this return looking for live `ptr<1>` values, finds `%2`, calls
+`isUnhandledGCPointerType` on its struct type, sees a GC pointer
+field, asserts.
+
+### 1.1. Pre-existing per-shape diagnosis
 
 Recap of the failure mode (full diagnosis in conversation log; summary
 here):
@@ -429,6 +551,50 @@ Field values cross the alloc safepoint as **`ptr addrspace(1)` scalars**,
 which RS4GC handles natively. No `ptrtoint` in the live path. The FCA
 is dead after `FoldExtractValuePass` and is removed by `RecursivelyDeleteTriviallyDeadInstructions`.
 
+#### Chunk 2.5 — Verification gate (mandatory before claiming Fix C done)
+
+The 2026-05-20 investigation showed that "build is green at
+`-emit=mlir-llvm`" is **not** sufficient evidence — the previous
+attempt produced IR that asserted in RS4GC despite looking fine at
+the MLIR LLVM-dialect stage. A re-attempt of Chunks 2.2 / 2.3 must
+include the following structural check before merging:
+
+```bash
+# For every per-test MLIR input that exercises the changed lowering:
+ecoc --emit=mlir-llvm <input>.mlir 2>&1 \
+    | grep -E '!llvm\.struct<\([^)]*ptr<1>[^)]*\)>'
+# Expected output: empty.
+```
+
+Any match indicates a survived FCA-of-GC-ptr. The expected hits to
+*positively eliminate* in the lowered output are:
+
+- `llvm.func @foo(...) -> !llvm.struct<(ptr<1>, ...)>` —
+  multi-result `func.func` returning ≥1 `!eco.value`. Either route
+  through Sret (Phase 3.3) or fall back to Boxed; never emit this
+  return type.
+- `%x = llvm.insertvalue ... : !llvm.struct<(... ptr<1> ...)>` —
+  transient FCA construction. Must be dead by the time RS4GC sees
+  it; if `FoldExtractValuePass` can't fold the consumers, redesign
+  the lowering to not construct the FCA in the first place
+  (Fix C's alloc-uninit + per-field stores is the template).
+- `%x = llvm.call @bar(...) : (...) -> !llvm.struct<(... ptr<1> ...)>`
+  — call result FCA. Same disposition as the return case.
+- `%x = llvm.extractvalue %y[k] : !llvm.struct<(... ptr<1> ...)>`
+  — survives whenever the matching insertvalue isn't directly
+  reachable from %y. Treat as a fold-blocker; trace the chain
+  (`select`, `phi`, `bitcast`, `unrealized_conversion_cast`) and
+  remove or restructure.
+
+This is the verification step that should have run during the
+previous Chunks 2.2 / 2.3 attempt. Including it as a numbered
+sub-chunk forces the re-implementer to run it. The §1.0.1 sweep
+shapes serve as the regression-sentinel set: shapes #02 and #05
+must NOT be emitted by cross-spec after the gate is lifted (Chunk
+4 routes them through Sret instead), and the wrapper's lowering
+for Record/Custom/Tuple bodies must produce zero
+`!llvm.struct<(... ptr<1> ...)>` SSA values in the final IR.
+
 ### Chunk 3 — Fix A: wrapper emits `eco.construct.*` directly (both Sret and Direct branches)
 
 **File:** `runtime/src/codegen/Passes/EcoUnboxedAggCrossSpec.cpp`
@@ -702,7 +868,7 @@ suspenders — only valuable once there's a repro that names a specific
 blocking op pattern. Don't speculate; revisit if a future shape trips
 the fold pass after this plan lands.
 
-## 8. Status (2026-05-19)
+## 8. Status (2026-05-20)
 
 ### Landed
 
@@ -724,7 +890,24 @@ the fold pass after this plan lands.
     `MVarReadDoesNotEmptyTest` is pre-existing and reproducible
     with all my changes reverted — it crashes inside LLVM
     `StatepointLowering` with the `CallEnd != CALLSEQ_END` assertion
-    independent of any work here).
+    independent of any work here; see `plans/wide-direct-abi-statepoint-fix.md`).
+
+- **Doc clean-up (2026-05-20).** `EcoUnboxedAggCrossSpec.cpp:1422-1436`
+  had a stale doc comment from the reverted Chunk 3 attempt that
+  described the wrapper as emitting `eco.construct.*` directly.
+  Replaced with an accurate description of the current
+  `eco.make.* + eco.to_heap` shape plus a forward pointer to Fix A as
+  the deferred change. No code-behavior impact.
+
+- **Diagnosis sweep (2026-05-20).** A hand-rolled MLIR sweep
+  (documented in §1.0.1) isolated the RS4GC FCA assertion to its
+  minimum trigger condition: a multi-result `func.func` whose
+  lowered `!llvm.struct<>` return contains at least one
+  `ptr addrspace(1)` field. The fixtures were not retained in tree;
+  the trigger condition and lowered IR sample in §1.0.1 are
+  sufficient to regenerate them on demand. Chunk 2.5's grep gate is
+  the runtime check that any future re-land of Chunks 2/3/4 must
+  pass.
 
 ### Deferred
 
@@ -733,63 +916,103 @@ the fold pass after this plan lands.
   passes `ecoc -emit=llvm` (which runs `addEcoGCPipeline` end-to-end)
   — but the suite-wide failures co-arrived with Chunks 2.2 / 2.3 / 3,
   so isolating Chunk 1's safety required more bisection than the
-  initial pass had time for. Re-enable should be straightforward once
-  the underlying JIT-vs-ecoc-divergence in Chunks 2.2 / 2.3 is
-  understood.
+  initial pass had time for. Re-enable should be straightforward
+  alongside the Chunk 2 work.
 - **Chunk 2.2 — `ToHeapOpLowering` Tuple2/Tuple3/Cons branches
   switched to alloc-uninit + per-field store.** Reverted. The
-  generated LLVM IR is well-formed and ecoc processes it through
-  RS4GC successfully; EcoJIT (which additionally runs
-  `packFunctionArguments` before `addEcoGCPipeline`) hits the
-  `support for FCA unimplemented` assertion deeper into RS4GC's
-  `computeLiveInValues`. The IR dumped at the `-emit=llvm` stage
-  shows no FCA-typed values, which suggests the FCA is introduced
-  somewhere after MLIR-to-LLVM translation in the JIT path. The
-  most likely culprit is `packFunctionArguments` (`EcoJIT.cpp:187-235`)
-  generating per-function `_mlir_*` wrappers whose interaction with
-  the new alloc-uninit + per-field-store call sequences confuses
-  RS4GC's liveness analysis. Pinning that down is a prerequisite for
-  re-landing the chunk.
+  original status banner attributed the failures to JIT-only
+  `packFunctionArguments` interaction; the 2026-05-20 reproducer
+  sweep refutes that — the FCA assertion is not JIT-specific (see
+  §1.0). The actual cause was almost certainly a transient
+  FCA-of-GC-ptr value (Shape A in §1.0) surviving
+  `FoldExtractValuePass` along some code path the previous attempt
+  didn't audit. Re-attempt with Chunk 2.5's grep gate run against
+  the lowered MLIR for every affected fixture to catch any
+  surviving FCA before claiming the chunk is green.
 - **Chunk 2.3 — `Tuple2/3/ConsConstructOp` lowering switched to
-  alloc-uninit + per-field store.** Reverted alongside Chunk 2.2 for
-  the same JIT-pipeline reason.
-- **Chunk 3 — Wrapper emits `eco.construct.*` directly.** Reverted.
-  Independent of the JIT-pipeline issue but kept disabled until the
-  wider rework lands because the wrapper-side reroute calls into
-  `eco.construct.tuple2` etc., which are themselves the targets of
-  Chunk 2.3.
+  alloc-uninit + per-field store.** Reverted alongside Chunk 2.2;
+  same disposition.
+- **Chunk 3 — Wrapper emits `eco.construct.*` directly (Fix A).**
+  Reverted. Independent of the lowering-side FCA issue but kept
+  disabled until the wider rework lands because the wrapper-side
+  reroute calls into `eco.construct.tuple2` etc., which are
+  themselves the targets of Chunk 2.3.
 - **Chunk 4 — Lift the all-primitive `eco.return` gate.** Reverted.
   With Chunks 1–3 disabled, the gate remains the only mechanism
-  preventing mixed-element aggregate returns from hitting sret +
-  wrapper rebox.
-- **Chunk 5 — New fixtures.** Not landed.
+  preventing mixed-element aggregate returns from materialising
+  Shape A (transient FCA around the wrapper's alloc) or Shape B
+  (multi-result function signature with `ptr<1>` fields). Cannot
+  re-enable until Chunks 1, 2.2, 2.3, 3 are clean against Chunk 2.5.
+- **Chunk 5 — New fixtures.** Not landed. The §1.0.1 sweep settled
+  the diagnostic question without needing fixtures in tree; Chunk
+  5's lit-style FileCheck fixtures from §4 of this plan are still
+  pending and would be added alongside the Chunks 1–4 re-land.
 - **Chunk 6 — Invariant text updates.** Not landed (CGEN_064 /
   CGEN_067 carve-outs remain in `design_docs/invariants.csv`).
 
 ### Next steps for re-enable
 
-1. **Reproduce the JIT-only `FCA unimplemented` assertion in
-   isolation.** Build a hand-written MLIR fixture that uses
-   `eco.construct.tuple2 %a, %b : !eco.value, !eco.value -> !eco.value`
-   and run it through EcoRunner (not just `ecoc -emit=llvm`).
-   Capture the post-`packFunctionArguments` IR (pre-RS4GC) to see
-   exactly which value RS4GC trips on.
-2. **Compare to the equivalent `eco_alloc_tuple2`-based IR** (the
-   current legacy path) — the same `_mlir_*` wrapper exists for both,
-   but only the alloc-uninit + per-field-store sequence fails. The
-   diff between the two should localise the responsible pattern
-   (likely a live-range interaction between the alloc safepoint's
-   `gc.result`, the subsequent `gc-leaf` store calls, and whatever
-   the wrapper emits around the function's outer call boundary).
-3. **Once isolated, decide the fix.** Options are: (a) adjust the
-   alloc-uninit + per-field-store emission to match what RS4GC
-   tolerates (e.g., emit a fresh basic block per store); (b) patch
-   `packFunctionArguments` to mark its wrappers with the same gc
-   attribute as the wrapped function; (c) move `packFunctionArguments`
-   to run *after* `addEcoGCPipeline` so RS4GC sees the original
-   function signatures.
-4. **Re-land Chunks 1 / 2.2 / 2.3 / 3 / 4 / 5 / 6** in the same
-   order as the original plan once the JIT-side failure is resolved.
+The previous "next steps" list focused on bisecting a JIT-only
+divergence that doesn't exist. The corrected re-land sequence is:
+
+1. **Re-apply Chunks 1 and 2.2/2.3 + 2.4 (Fix B and Fix C lowering
+   changes).** Don't change the runtime ABI — Chunk 2.1 is already
+   landed and correct. The work is purely in
+   `EcoToLLVMValueAgg.cpp` (Fix B reorder for Record/Custom) and
+   `EcoToLLVMHeap.cpp` + `EcoToLLVMValueAgg.cpp`
+   (Fix C alloc-uninit + per-field stores for Tuple2/Tuple3/Cons).
+
+2. **Run Chunk 2.5 (grep gate) against every codegen fixture in
+   `test/codegen/`.** The existing in-tree fixtures
+   (e.g. `specialize_tuple2_boxed.mlir`) must produce zero FCA-of-
+   GC-ptr matches after Fix B + Fix C lower the wrapper's transient
+   FCA correctly. Optionally regenerate the §1.0.1 sweep ad hoc to
+   confirm the trigger condition still holds (#02 and #05 must still
+   crash today, since they exercise Shape B, which only Chunk 4 + Sret
+   routing can resolve).
+
+3. **Run the full E2E suite.** Confirm all 1413 baseline tests stay
+   green and the three previously-failing tests
+   (`ProcessSpawnRecursiveTest`, `ProcessYieldThrashingTest`,
+   `TaskOnErrorCascadeTest`) now pass.
+
+4. **Re-apply Chunk 3 (Fix A, wrapper `eco.construct.*`).** This step
+   is what actually closes the loop on Shape A in the wrapper's
+   re-box. After this lands, every Sret-ABI wrapper for a
+   boxed-element aggregate result emits zero FCA-of-GC-ptr SSA
+   values.
+
+5. **Re-apply Chunk 4 (lift the all-primitive `eco.return` gate)
+   and re-run the grep gate against fixtures 02 and 05.** The
+   crucial assertion: with Sret ABI now reachable for boxed-element
+   results, the workers cross-spec emits should be `void
+   @foo$unboxed(ptr %sret, ...)` (Sret) — never multi-result
+   `(!eco.value, !eco.value)`. If any Shape B return type survives,
+   either `chooseResultAbi` is mis-routing or `buildWorkerType` is
+   leaving multi-result for a boxed aggregate; fix that before
+   merging.
+
+6. **Re-apply Chunks 5 and 6.** Fixtures + invariant text. Mechanical.
+
+### Why this plan separates Shape A and Shape B
+
+The previous attempt conflated them. Shape A is the wrapper's
+internal lowering FCA, fixable by reordering or by alloc-uninit +
+per-field stores — that's what Chunks 1–3 + Fix A/B/C do. Shape B
+is the worker's interface FCA (multi-result return with GC ptrs);
+the only fix is to not emit that signature at all, which is what
+the Sret ABI from Phase 3.3 inherently does. Lifting the gate
+(Chunk 4) requires both fixes to be in place:
+
+- Chunks 1–3 land → Shape A gone → wrapper compiles cleanly.
+- Chunk 4 lands → gate lifted → cross-spec routes boxed aggregates
+  through Sret → no Shape B emitted.
+
+If Chunks 1–3 are skipped, Chunk 4 might still produce Shape A in
+the wrapper's `eco.make.* + eco.to_heap` re-box → assertion. If
+Chunk 4 is landed with no Sret routing for boxed aggregates, the
+workers emit Shape B directly → assertion. Both halves are
+required.
 
 ### Pre-existing failure to be aware of
 
@@ -798,7 +1021,11 @@ from this plan reverted. The failure mode is the LLVM
 `StatepointLowering` assertion
 `CallEnd->getOpcode() == ISD::CALLSEQ_END && "expected!"`. Not in
 scope for this plan; flagged here so the next implementer doesn't
-chase it as a regression of this work.
+chase it as a regression of this work. See
+`plans/wide-direct-abi-statepoint-fix.md` for that bug's diagnosis
+and proposed fix; it's a separate SelectionDAG-layer issue affecting
+wide all-primitive Direct returns, not the FCA-of-GC-ptr issue this
+plan addresses.
 
 ## 9. Composition with earlier phases
 
