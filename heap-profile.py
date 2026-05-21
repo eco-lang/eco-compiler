@@ -1261,6 +1261,106 @@ def cmd_run(args, machine: str, results_root: Path) -> None:
     print(f"\nReport: {group_dir / 'report.md'}", flush=True)
 
 
+def _detect_variant(run_dir: Path, label: str | None) -> Path:
+    """Resolve `<run_dir>/variants/<label>` — pick the only variant if
+    none was given, error if ambiguous."""
+    vroot = run_dir / "variants"
+    if not vroot.is_dir():
+        raise SystemExit(f"missing {vroot} (not a run-group directory?)")
+    candidates = sorted(p for p in vroot.iterdir() if p.is_dir())
+    if not candidates:
+        raise SystemExit(f"no variants under {vroot}")
+    if label:
+        chosen = vroot / label
+        if not chosen.is_dir():
+            raise SystemExit(f"variant {label!r} not under {vroot}; "
+                             f"available: {[c.name for c in candidates]}")
+        return chosen
+    if len(candidates) > 1:
+        raise SystemExit(f"multiple variants in {vroot} — pass --variant-* "
+                         f"to disambiguate: {[c.name for c in candidates]}")
+    return candidates[0]
+
+
+def _read_alloc_tsv(path: Path) -> dict[str, int]:
+    """Read a `bucket\\tcount\\tpercent` TSV produced by the runtime
+    alloc-size histograms and return {bucket: count}. Skips the header
+    row. Treats missing files as empty."""
+    if not path.exists():
+        return {}
+    out: dict[str, int] = {}
+    with path.open() as f:
+        next(f, None)  # header
+        for line in f:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 2:
+                continue
+            try:
+                out[parts[0]] = int(parts[1])
+            except ValueError:
+                continue
+    return out
+
+
+def _bucket_bytes_estimate(bucket: str) -> int:
+    """Coarse byte midpoint estimate from a bucket label like
+    `'32 B -     64 B'`. Used to convert object-count deltas into a
+    bytes-allocated estimate for the ranking column. Returns 0 if the
+    label doesn't parse — the rank just falls to the bottom in that
+    case."""
+    import re
+    parts = re.findall(r"(\d+)\s*([KMG]?)i?B", bucket)
+    if len(parts) < 2:
+        return 0
+    def to_bytes(num: str, unit: str) -> int:
+        n = int(num)
+        return {"":1, "K":1024, "M":1024*1024, "G":1024*1024*1024}[unit] * n
+    a, b = to_bytes(*parts[0]), to_bytes(*parts[1])
+    return (a + b) // 2
+
+
+def cmd_diff(args) -> None:
+    """Compare per-size-class allocation tables between two run dirs.
+
+    Pulls `alloc_size_{nursery,oldgen,strings}.tsv` from each variant
+    directory and prints a per-bucket delta table (count and an
+    estimated bytes contribution). Helps localise which allocation
+    size classes account for an alloc-rate gap between two
+    configurations (e.g. -enable-unboxed-agg on vs off)."""
+    base_variant = _detect_variant(args.baseline, args.variant_baseline)
+    targ_variant = _detect_variant(args.target, args.variant_target)
+    print(f"baseline: {base_variant}")
+    print(f"target:   {targ_variant}")
+
+    for histogram in ("alloc_size_nursery.tsv",
+                      "alloc_size_oldgen.tsv",
+                      "alloc_size_strings.tsv"):
+        base = _read_alloc_tsv(base_variant / histogram)
+        targ = _read_alloc_tsv(targ_variant / histogram)
+        if not base and not targ:
+            continue
+        all_buckets = sorted(set(base) | set(targ),
+                             key=lambda k: -_bucket_bytes_estimate(k))
+        print(f"\n=== {histogram} (count delta target - baseline) ===")
+        print(f"  {'bucket':<22} {'baseline':>14} {'target':>14} "
+              f"{'delta':>14} {'~bytes delta':>16}")
+        total_count_delta = 0
+        total_bytes_delta = 0
+        for b in all_buckets:
+            bc = base.get(b, 0)
+            tc = targ.get(b, 0)
+            d = tc - bc
+            est_bytes = d * _bucket_bytes_estimate(b)
+            total_count_delta += d
+            total_bytes_delta += est_bytes
+            if d == 0:
+                continue
+            print(f"  {b:<22} {bc:>14d} {tc:>14d} {d:>+14d} {est_bytes:>+16d}")
+        print(f"  {'TOTAL':<22} {sum(base.values()):>14d} "
+              f"{sum(targ.values()):>14d} "
+              f"{total_count_delta:>+14d} {total_bytes_delta:>+16d}")
+
+
 def cmd_sweep(args, machine: str, results_root: Path) -> None:
     rebuild = ensure_binaries_fresh(args.skip_rebuild,
                                     enable_unboxed_agg=args.enable_unboxed_agg)
@@ -1381,6 +1481,17 @@ def build_parser() -> argparse.ArgumentParser:
                     help="reuse an existing run-group directory")
     ps.add_argument("--dry-run", action="store_true",
                     help="print resolved paths and exit")
+
+    pd = sub.add_parser("diff",
+        help="diff per-size-class allocation tables between two run dirs")
+    pd.add_argument("baseline", type=Path,
+        help="baseline run directory (e.g. ..._phase2-off)")
+    pd.add_argument("target", type=Path,
+        help="target run directory to compare against (e.g. ..._phase2-on)")
+    pd.add_argument("--variant-baseline", default=None,
+        help="variant label inside baseline (auto-detected if single)")
+    pd.add_argument("--variant-target", default=None,
+        help="variant label inside target (auto-detected if single)")
     return p
 
 
@@ -1392,7 +1503,13 @@ def main():
             print(f"  {n:<12}  {c}")
         return
     if args.cmd is None:
-        parser.error("a subcommand is required: run | sweep")
+        parser.error("a subcommand is required: run | sweep | diff")
+
+    # 'diff' is a pure post-processing command — no rebuild, no
+    # results-root, no dry-run paths to print.
+    if args.cmd == "diff":
+        cmd_diff(args)
+        return
 
     machine, results_root = resolve_paths(args)
 

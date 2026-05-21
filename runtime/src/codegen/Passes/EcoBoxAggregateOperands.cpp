@@ -27,11 +27,29 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 
+#include "llvm/ADT/Statistic.h"
+
+#define DEBUG_TYPE "eco-box-aggregate"
+
 using namespace mlir;
 using namespace eco;
 using namespace eco::detail;
 
 namespace {
+
+// One bump per aggregate operand boxed by each sink kind. The post-cross-spec
+// boxer runs unconditionally over construct.*/eco.call/func.call sinks, so
+// these counts are the dominant absolute contributor to to_heap insertion
+// (a single aggregate result fanning out into several construct fields
+// shows up here, not in cross-spec's own counters).
+ALWAYS_ENABLED_STATISTIC(PostboxConstruct,
+    "EcoBoxAggregateOperands: construct.* aggregate operand boxed → !eco.value");
+ALWAYS_ENABLED_STATISTIC(PostboxEcoCall,
+    "EcoBoxAggregateOperands: eco.call aggregate operand boxed → !eco.value");
+ALWAYS_ENABLED_STATISTIC(PostboxFuncCall,
+    "EcoBoxAggregateOperands: func.call aggregate operand boxed to match callee");
+ALWAYS_ENABLED_STATISTIC(PostboxMakeSkipped,
+    "EcoBoxAggregateOperands: make.* aggregate operand left nested (Phase 1 punt)");
 
 /// True if `t` is one of the Eco data-aggregate dialect types
 /// (tuple2/3, record, custom, cons).
@@ -42,17 +60,23 @@ bool isEcoAggregate(Type t) {
 
 /// Rewrite each operand of `op` whose type satisfies `shouldBox` to flow
 /// through a fresh `eco.to_heap`. The inserted op uses `liveRoots` as its
-/// live-roots metadata.
+/// live-roots metadata. `sourceTag` annotates the resulting to_heap op
+/// for offline attribution and bumps the matching Statistic counter.
 template <typename ShouldBoxFn>
 void boxOpOperands(Operation *op, ShouldBoxFn shouldBox,
-                   ValueRange liveRoots) {
+                   ValueRange liveRoots, llvm::Statistic &counter,
+                   StringRef sourceTag) {
     OpBuilder b(op);
     SmallVector<Value, 8> operands(op->operand_begin(), op->operand_end());
     for (auto [i, v] : llvm::enumerate(operands)) {
         if (!shouldBox(v.getType())) continue;
         Value boxed = materialiseAsBoxed(b, op->getLoc(), v, liveRoots);
-        if (boxed != v)
+        if (boxed != v) {
+            ++counter;
+            if (Operation *defOp = boxed.getDefiningOp())
+                defOp->setAttr("eco.rebox_source", b.getStringAttr(sourceTag));
             op->setOperand(static_cast<unsigned>(i), boxed);
+        }
     }
 }
 
@@ -105,9 +129,15 @@ struct EcoBoxAggregateOperandsPass
             ValueRange liveRoots;
             if (auto carrier = dyn_cast<eco::GCRootCarrier>(op))
                 liveRoots = carrier.getGCRoots();
+            // construct.* and eco.call share the same boxing rule but
+            // are different sinks; count them separately so we can tell
+            // which one dominates.
+            bool isCall = isa<eco::CallOp>(op);
             boxOpOperands(op,
                 [](Type t) { return isEcoAggregate(t); },
-                liveRoots);
+                liveRoots,
+                isCall ? PostboxEcoCall : PostboxConstruct,
+                isCall ? "postbox-eco-call" : "postbox-construct");
         }
 
         // func.call: cross-spec may rewrite an eco.call into a func.call
@@ -130,6 +160,10 @@ struct EcoBoxAggregateOperandsPass
                 if (!isa<eco::ValueType>(paramTys[i])) continue;
                 Value boxed = materialiseAsBoxed(b, fc.getLoc(), operand,
                                                   /*liveRoots=*/ValueRange{});
+                ++PostboxFuncCall;
+                if (Operation *defOp = boxed.getDefiningOp())
+                    defOp->setAttr("eco.rebox_source",
+                                   b.getStringAttr("postbox-func-call"));
                 fc.setOperand(static_cast<unsigned>(i), boxed);
             }
         }
@@ -150,6 +184,12 @@ struct EcoBoxAggregateOperandsPass
         // complains downstream, the case is rare enough to address as a
         // follow-up (see plan §9 Phase 2 for the full fix).
         for (Operation *op : makeOps) {
+            // Phase 1 deliberately punts make.* boxing — count the punts
+            // so we can see how often a nested aggregate sits at a make.*
+            // boundary (a potential future optimisation target).
+            for (Value operand : op->getOperands()) {
+                if (isEcoAggregate(operand.getType())) ++PostboxMakeSkipped;
+            }
             (void)op;
         }
     }

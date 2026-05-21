@@ -54,10 +54,123 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/Statistic.h"
+
+#define DEBUG_TYPE "eco-cross-spec"
 
 using namespace mlir;
 
 namespace {
+
+// §3.4 admission gate (`admitOrDemote`).
+ALWAYS_ENABLED_STATISTIC(GateAdmitted,
+    "cross-spec §3.4 gate: aggregate slot admitted (nesting OK or no nesting)");
+ALWAYS_ENABLED_STATISTIC(GateDemotedGCInner,
+    "cross-spec §3.4 gate: demoted, GC pointer inside nested element");
+
+// Result-side producer acceptance (`isAcceptedAggregateProducer`).
+ALWAYS_ENABLED_STATISTIC(ProdAccepted,
+    "cross-spec producer: accepted as aggregate producer");
+ALWAYS_ENABLED_STATISTIC(ProdRejBlockArgOutOfRange,
+    "cross-spec producer: block-arg index out of range");
+ALWAYS_ENABLED_STATISTIC(ProdRejBlockArgShapeMismatch,
+    "cross-spec producer: block-arg shape != expected");
+ALWAYS_ENABLED_STATISTIC(ProdRejConstructTagMismatch,
+    "cross-spec producer: construct.custom tag != expected custom tag");
+ALWAYS_ENABLED_STATISTIC(ProdRejFromHeapTypeMismatch,
+    "cross-spec producer: from_heap result type != expected shape");
+ALWAYS_ENABLED_STATISTIC(ProdRejCallNotEligibleOrSCC,
+    "cross-spec producer: call to ineligible callee (and no SCC tentative match)");
+ALWAYS_ENABLED_STATISTIC(ProdRejSelectArm,
+    "cross-spec producer: arith.select arm not an accepted producer");
+ALWAYS_ENABLED_STATISTIC(ProdRejEcoCaseDisabled,
+    "cross-spec producer: eco.case branch is temporarily disabled (Stage 7 OOB)");
+ALWAYS_ENABLED_STATISTIC(ProdRejDepthBudget,
+    "cross-spec producer: depth budget exhausted");
+ALWAYS_ENABLED_STATISTIC(ProdRejUnknownDefiningOp,
+    "cross-spec producer: defining op did not match any accepted producer kind");
+
+// Param-side use acceptance (`allUsesAreProjectionsOrCallsToEligible`).
+ALWAYS_ENABLED_STATISTIC(UseAccepted,
+    "cross-spec use: all uses of param/projection passed eligibility");
+ALWAYS_ENABLED_STATISTIC(UseRejProjectBadOperand,
+    "cross-spec use: project.*/list.head/tail not at operand 0");
+ALWAYS_ENABLED_STATISTIC(UseRejProjectNestedInnerRejected,
+    "cross-spec use: §3.3 recursion bailed — inner aggregate use not eligible");
+ALWAYS_ENABLED_STATISTIC(UseRejCallNotEligibleOrSCC,
+    "cross-spec use: call to ineligible callee at use site");
+ALWAYS_ENABLED_STATISTIC(UseRejReturnShapeMismatch,
+    "cross-spec use: return-position passthrough shape mismatch");
+ALWAYS_ENABLED_STATISTIC(UseRejUnknownOp,
+    "cross-spec use: opaque consumer (safepoint, papCreate, scf.while, etc.)");
+ALWAYS_ENABLED_STATISTIC(UseRejDepthBudget,
+    "cross-spec use: depth budget exhausted");
+
+// ABI classification (`chooseResultAbi`).
+ALWAYS_ENABLED_STATISTIC(AbiDirect,
+    "cross-spec ABI: Direct (LLVM multi-return packing)");
+ALWAYS_ENABLED_STATISTIC(AbiSretGC,
+    "cross-spec ABI: Sret because aggregate contains !eco.value");
+ALWAYS_ENABLED_STATISTIC(AbiSretWide,
+    "cross-spec ABI: Sret because all-primitive aggregate wider than kMaxDirectFields");
+ALWAYS_ENABLED_STATISTIC(AbiBoxed,
+    "cross-spec ABI: Boxed (slot stayed non-aggregate)");
+
+// Layer 1 reboxing sources — `rewriteConstructToMake.boxIfMismatched`.
+ALWAYS_ENABLED_STATISTIC(BoxMismatchNoExpectation,
+    "rewriteConstructToMake/boxIfMismatched: no expectedAggTy pinned");
+ALWAYS_ENABLED_STATISTIC(BoxMismatchTypesMatch,
+    "rewriteConstructToMake/boxIfMismatched: field type already matches");
+ALWAYS_ENABLED_STATISTIC(BoxMismatchAggToValue,
+    "rewriteConstructToMake/boxIfMismatched: agg→value to_heap inserted (§3.8 stopgap)");
+ALWAYS_ENABLED_STATISTIC(BoxMismatchOtherMismatch,
+    "rewriteConstructToMake/boxIfMismatched: other type mismatch (passthrough — unexpected)");
+
+// Layer 1 reboxing sources — `bridgeOperands` at redirected call sites.
+ALWAYS_ENABLED_STATISTIC(BridgeValueToAgg,
+    "bridgeOperands: from_heap inserted (value→aggregate at promoted callee)");
+ALWAYS_ENABLED_STATISTIC(BridgeAggToValue,
+    "bridgeOperands: to_heap inserted (aggregate→value at non-promoted callee slot)");
+ALWAYS_ENABLED_STATISTIC(BridgeNoop,
+    "bridgeOperands: operand type already matches callee");
+
+// Per-op-name sub-buckets for the two big "unknown op" rejection buckets.
+// Aggregated outside Statistic because Statistic counters need a literal
+// name at definition time; here we want a dynamic name per MLIR op kind.
+// Single-threaded (cross-spec is a ModuleOp pass, no parallelism), so a
+// plain DenseMap without locking is fine.
+static llvm::DenseMap<llvm::StringRef, uint64_t> &useRejUnknownOpByName() {
+    static llvm::DenseMap<llvm::StringRef, uint64_t> m;
+    return m;
+}
+static llvm::DenseMap<llvm::StringRef, uint64_t> &prodRejUnknownOpByName() {
+    static llvm::DenseMap<llvm::StringRef, uint64_t> m;
+    return m;
+}
+
+/// Print one of the per-op-name maps as a sorted table to errs(). Called
+/// at the end of the cross-spec pass. Empty map → no output (matches the
+/// LLVM stats convention of filtering zero-value entries).
+static void dumpRejOpNameMap(StringRef header,
+                             llvm::DenseMap<llvm::StringRef, uint64_t> &m) {
+    if (m.empty()) return;
+    llvm::SmallVector<std::pair<llvm::StringRef, uint64_t>, 32>
+        rows(m.begin(), m.end());
+    llvm::sort(rows, [](const auto &a, const auto &b) {
+        return a.second > b.second;
+    });
+    llvm::errs() << "\n=== " << header << " (top contributors) ===\n";
+    uint64_t total = 0;
+    for (auto &r : rows) total += r.second;
+    auto pad = [](uint64_t v) {
+        std::string s = std::to_string(v);
+        while (s.size() < 10) s = " " + s;
+        return s;
+    };
+    for (auto &r : rows)
+        llvm::errs() << pad(r.second) << "  " << r.first << "\n";
+    llvm::errs() << pad(total) << "  TOTAL\n";
+}
 
 constexpr llvm::StringLiteral kLogicalParamTypesAttr = "eco.logical_param_types";
 constexpr llvm::StringLiteral kLogicalResultTypesAttr = "eco.logical_result_types";
@@ -154,11 +267,15 @@ static constexpr unsigned kMaxDirectFields = 3;
 ///     call).
 ///   - Otherwise → Direct (LLVM multi-return packing).
 static ResultAbi chooseResultAbi(const LogicalShape &shape) {
-    if (!shape.isAggregate()) return ResultAbi::Boxed;
+    if (!shape.isAggregate()) { ++AbiBoxed; return ResultAbi::Boxed; }
     for (Type t : shape.elementTys) {
-        if (isa<eco::ValueType>(t)) return ResultAbi::Sret;
+        if (isa<eco::ValueType>(t)) { ++AbiSretGC; return ResultAbi::Sret; }
     }
-    if (shape.elementTys.size() > kMaxDirectFields) return ResultAbi::Sret;
+    if (shape.elementTys.size() > kMaxDirectFields) {
+        ++AbiSretWide;
+        return ResultAbi::Sret;
+    }
+    ++AbiDirect;
     return ResultAbi::Direct;
 }
 
@@ -728,12 +845,14 @@ static bool admitOrDemote(LogicalShape &shape) {
     if (!shape.isAggregate()) return true;
     for (Type t : shape.elementTys) {
         if (!elementAdmitsNesting(t)) {
+            ++GateDemotedGCInner;
             shape.kind = LogicalShape::Boxed;
             shape.elementTys.clear();
             shape.customTag = 0;
             return false;
         }
     }
+    ++GateAdmitted;
     return true;
 }
 
@@ -833,18 +952,26 @@ static bool isAcceptedAggregateProducer(
         const llvm::DenseMap<StringRef, SmallVector<LogicalShape, 4>>
             *sccTentResults,
         unsigned depthBudget = 16) {
-    if (depthBudget == 0) return false;
+    if (depthBudget == 0) { ++ProdRejDepthBudget; return false; }
 
     // Block-arg passthrough: the entry-block arg at `paramIdx` becomes
     // the aggregate type after `cloneAsWorker` retypes it.
     if (auto barg = dyn_cast<BlockArgument>(v)) {
         unsigned paramIdx = barg.getArgNumber();
-        if (paramIdx >= ownParamShapes.size()) return false;
-        return aggregateShapesMatch(ownParamShapes[paramIdx], expectedShape);
+        if (paramIdx >= ownParamShapes.size()) {
+            ++ProdRejBlockArgOutOfRange;
+            return false;
+        }
+        if (aggregateShapesMatch(ownParamShapes[paramIdx], expectedShape)) {
+            ++ProdAccepted;
+            return true;
+        }
+        ++ProdRejBlockArgShapeMismatch;
+        return false;
     }
 
     Operation *def = v.getDefiningOp();
-    if (!def) return false;
+    if (!def) { ++ProdRejUnknownDefiningOp; return false; }
 
     // construct.* — rewritten to make.* during cloneAsWorker.
     if (isa<eco::Tuple2ConstructOp, eco::Tuple3ConstructOp,
@@ -856,16 +983,22 @@ static bool isAcceptedAggregateProducer(
             if (expectedShape.kind == LogicalShape::Custom &&
                 static_cast<int64_t>(cus.getTag()) !=
                     expectedShape.customTag) {
+                ++ProdRejConstructTagMismatch;
                 return false;
             }
         }
+        ++ProdAccepted;
         return true;
     }
 
     // eco.from_heap — already aggregate-typed; verify the shape.
     if (auto fh = dyn_cast<eco::FromHeapOp>(def)) {
-        return mlirTypeMatchesShape(expectedShape,
-                                     fh.getResult().getType());
+        if (mlirTypeMatchesShape(expectedShape, fh.getResult().getType())) {
+            ++ProdAccepted;
+            return true;
+        }
+        ++ProdRejFromHeapTypeMismatch;
+        return false;
     }
 
     auto matchEligibleCallee = [&](StringRef name, unsigned resultIdx) {
@@ -891,21 +1024,33 @@ static bool isAcceptedAggregateProducer(
 
     unsigned resultIdx = cast<OpResult>(v).getResultNumber();
     if (auto fc = dyn_cast<func::CallOp>(def)) {
-        if (matchEligibleCallee(fc.getCallee(), resultIdx)) return true;
-        if (matchSameSCCCallee(fc.getCallee(), resultIdx)) return true;
+        if (matchEligibleCallee(fc.getCallee(), resultIdx)) {
+            ++ProdAccepted; return true;
+        }
+        if (matchSameSCCCallee(fc.getCallee(), resultIdx)) {
+            ++ProdAccepted; return true;
+        }
+        ++ProdRejCallNotEligibleOrSCC;
+        return false;
     }
     if (auto ec = dyn_cast<eco::CallOp>(def)) {
         if (auto sym = ec.getCalleeAttr()) {
-            if (matchEligibleCallee(sym.getValue(), resultIdx)) return true;
-            if (matchSameSCCCallee(sym.getValue(), resultIdx)) return true;
+            if (matchEligibleCallee(sym.getValue(), resultIdx)) {
+                ++ProdAccepted; return true;
+            }
+            if (matchSameSCCCallee(sym.getValue(), resultIdx)) {
+                ++ProdAccepted; return true;
+            }
         }
+        ++ProdRejCallNotEligibleOrSCC;
+        return false;
     }
 
     // Phase 3.4 #1: join points. Recurse into both arms / every
     // alternative's matching eco.yield operand; all leaves must
     // themselves be accepted.
     if (auto sel = dyn_cast<arith::SelectOp>(def)) {
-        return isAcceptedAggregateProducer(
+        bool ok = isAcceptedAggregateProducer(
                    sel.getTrueValue(), expectedShape, ownParamShapes,
                    candidates, eligibleNames, sccCallees, sccTentResults,
                    depthBudget - 1) &&
@@ -913,6 +1058,9 @@ static bool isAcceptedAggregateProducer(
                    sel.getFalseValue(), expectedShape, ownParamShapes,
                    candidates, eligibleNames, sccCallees, sccTentResults,
                    depthBudget - 1);
+        if (ok) ++ProdAccepted;
+        else ++ProdRejSelectArm;
+        return ok;
     }
     // Phase 3.4 #1 (eco.case branch): temporarily disabled — see plan
     // §3.4 footnote. The retypeJoinTree rebuild interacts with Stage 7
@@ -921,8 +1069,11 @@ static bool isAcceptedAggregateProducer(
     // (Ops.td) in place so subsequent re-enable lands without further
     // dialect churn, but reject eco.case as a result producer for now.
     if (isa<eco::CaseOp>(def)) {
+        ++ProdRejEcoCaseDisabled;
         return false;
     }
+    ++ProdRejUnknownDefiningOp;
+    ++prodRejUnknownOpByName()[def->getName().getStringRef()];
     return false;
 }
 
@@ -1014,7 +1165,7 @@ static bool allUsesAreProjectionsOrCallsToEligible(
         const llvm::DenseMap<StringRef, SmallVector<LogicalShape, 4>>
             *sccTentParams = nullptr,
         unsigned depthBudget = 16) {
-    if (depthBudget == 0) return false;
+    if (depthBudget == 0) { ++UseRejDepthBudget; return false; }
 
     auto sameSCCMatch = [&](StringRef calleeName, unsigned operandPos) {
         if (!sccCallees || !sccCallees->contains(calleeName)) return false;
@@ -1047,7 +1198,10 @@ static bool allUsesAreProjectionsOrCallsToEligible(
                 eco::Tuple3ProjectOp,
                 eco::RecordProjectOp,
                 eco::CustomProjectOp>(user)) {
-            if (use.getOperandNumber() != 0) return false;
+            if (use.getOperandNumber() != 0) {
+                ++UseRejProjectBadOperand;
+                return false;
+            }
             // Phase 2 §3.3: recurse into the projection's result when
             // the projected element is itself an aggregate — its uses
             // must also be eligible at the inner shape.
@@ -1061,6 +1215,7 @@ static bool allUsesAreProjectionsOrCallsToEligible(
                             user->getResult(0), innerShape, selfName,
                             eligibleCallees, ownResultShapes, sccCallees,
                             sccTentParams, depthBudget - 1)) {
+                        ++UseRejProjectNestedInnerRejected;
                         return false;
                     }
                 }
@@ -1068,7 +1223,10 @@ static bool allUsesAreProjectionsOrCallsToEligible(
             continue;
         }
         if (isa<eco::ListHeadOp, eco::ListTailOp>(user)) {
-            if (use.getOperandNumber() != 0) return false;
+            if (use.getOperandNumber() != 0) {
+                ++UseRejProjectBadOperand;
+                return false;
+            }
             continue;
         }
         if (isSelfRecursiveCall(user, selfName)) continue;
@@ -1076,6 +1234,8 @@ static bool allUsesAreProjectionsOrCallsToEligible(
             if (eligibleCallees.contains(fc.getCallee())) continue;
             if (sameSCCMatch(fc.getCallee(), use.getOperandNumber()))
                 continue;
+            ++UseRejCallNotEligibleOrSCC;
+            return false;
         }
         if (auto ec = dyn_cast<eco::CallOp>(user)) {
             auto callee = ec.getCalleeAttr();
@@ -1084,6 +1244,8 @@ static bool allUsesAreProjectionsOrCallsToEligible(
             if (callee &&
                 sameSCCMatch(callee.getValue(), use.getOperandNumber()))
                 continue;
+            ++UseRejCallNotEligibleOrSCC;
+            return false;
         }
         // Passthrough-as-return: accept iff the return-position's
         // logical result shape matches the param shape. The matching
@@ -1097,9 +1259,14 @@ static bool allUsesAreProjectionsOrCallsToEligible(
                 aggregateShapesMatch(ownResultShapes[pos], paramShape)) {
                 continue;
             }
+            ++UseRejReturnShapeMismatch;
+            return false;
         }
+        ++UseRejUnknownOp;
+        ++useRejUnknownOpByName()[user->getName().getStringRef()];
         return false;
     }
+    ++UseAccepted;
     return true;
 }
 
@@ -1515,14 +1682,21 @@ static Value rewriteConstructToMake(OpBuilder &builder, Operation *constructOp,
     };
     auto boxIfMismatched = [&](Value f, unsigned i) -> Value {
         Type wantTy = expectedElementAt(i);
-        if (!wantTy) return f;            // no expectation pinned
-        if (f.getType() == wantTy) return f;  // already matches
+        if (!wantTy) { ++BoxMismatchNoExpectation; return f; }
+        if (f.getType() == wantTy) {
+            ++BoxMismatchTypesMatch;
+            return f;
+        }
         if (isAggSSAType(f.getType()) && isa<eco::ValueType>(wantTy)) {
+            ++BoxMismatchAggToValue;
             auto toHeap = builder.create<eco::ToHeapOp>(
                 constructOp->getLoc(), wantTy, f,
                 /*live_roots=*/ValueRange{});
+            toHeap->setAttr("eco.rebox_source",
+                            builder.getStringAttr("boxIfMismatched"));
             return toHeap.getResult();
         }
+        ++BoxMismatchOtherMismatch;
         return f;
     };
 
@@ -1704,15 +1878,21 @@ static func::FuncOp cloneAsWorker(OpBuilder &builder, func::FuncOp original,
             if (redirect.paramShapes[i].isAggregate()) {
                 Type wantedTy = redirect.paramShapes[i].asWorkerType(
                     operands[slot].getContext());
-                if (haveTy == wantedTy) continue;
+                if (haveTy == wantedTy) { ++BridgeNoop; continue; }
+                ++BridgeValueToAgg;
                 auto bridged = b.create<eco::FromHeapOp>(
                     loc, wantedTy, operands[slot]);
                 operands[slot] = bridged.getResult();
             } else if (isAggSSAType(haveTy)) {
+                ++BridgeAggToValue;
                 auto valueTy = eco::ValueType::get(operands[slot].getContext());
                 auto bridged = b.create<eco::ToHeapOp>(
                     loc, valueTy, operands[slot], /*live_roots=*/ValueRange{});
+                bridged->setAttr("eco.rebox_source",
+                                 b.getStringAttr("bridgeOperands"));
                 operands[slot] = bridged.getResult();
+            } else {
+                ++BridgeNoop;
             }
         }
     };
@@ -2571,6 +2751,14 @@ struct EcoUnboxedAggCrossSpecPass
                                    cand.resultAbis,
                                    cand.resultCustomTags);
         }
+
+        // Sub-bucket dumps for the two big "unknown op" rejection
+        // counters — printed alongside (and immediately before, due to
+        // print ordering) the standard llvm::PrintStatistics block.
+        dumpRejOpNameMap("eco-cross-spec ProdRejUnknownDefiningOp by op name",
+                         prodRejUnknownOpByName());
+        dumpRejOpNameMap("eco-cross-spec UseRejUnknownOp by op name",
+                         useRejUnknownOpByName());
     }
 };
 

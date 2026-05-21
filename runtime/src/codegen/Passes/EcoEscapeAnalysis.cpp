@@ -46,6 +46,11 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 
+#include "llvm/ADT/Statistic.h"
+#include "llvm/ADT/DenseMap.h"
+
+#define DEBUG_TYPE "eco-escape-analysis"
+
 using namespace mlir;
 
 namespace {
@@ -53,6 +58,71 @@ namespace {
 constexpr llvm::StringLiteral kEscapeAttr     = "eco.escape";
 constexpr llvm::StringLiteral kNonEscapingTag = "non_escaping";
 constexpr llvm::StringLiteral kEscapesTag     = "escapes";
+
+// Total constructs the pass classifies, and the verdict split.
+ALWAYS_ENABLED_STATISTIC(ConstructAnalysed,
+    "eco.construct.* ops walked by escape analysis");
+ALWAYS_ENABLED_STATISTIC(ConstructNonEscaping,
+    "eco.construct.* tagged non_escaping (eligible for specialise)");
+ALWAYS_ENABLED_STATISTIC(ConstructEscapes,
+    "eco.construct.* tagged escapes");
+
+// Per-construct-kind split — tells us which families dominate the input
+// and which families escape most often.
+ALWAYS_ENABLED_STATISTIC(Tuple2Analysed,
+    "eco.construct.tuple2 analysed");
+ALWAYS_ENABLED_STATISTIC(Tuple2NonEscaping,
+    "eco.construct.tuple2 tagged non_escaping");
+ALWAYS_ENABLED_STATISTIC(Tuple3Analysed,
+    "eco.construct.tuple3 analysed");
+ALWAYS_ENABLED_STATISTIC(Tuple3NonEscaping,
+    "eco.construct.tuple3 tagged non_escaping");
+ALWAYS_ENABLED_STATISTIC(RecordAnalysed,
+    "eco.construct.record analysed");
+ALWAYS_ENABLED_STATISTIC(RecordNonEscaping,
+    "eco.construct.record tagged non_escaping");
+ALWAYS_ENABLED_STATISTIC(CustomAnalysed,
+    "eco.construct.custom analysed");
+ALWAYS_ENABLED_STATISTIC(CustomNonEscaping,
+    "eco.construct.custom tagged non_escaping");
+ALWAYS_ENABLED_STATISTIC(ListAnalysed,
+    "eco.construct.list analysed");
+ALWAYS_ENABLED_STATISTIC(ListNonEscaping,
+    "eco.construct.list tagged non_escaping");
+
+// Per-op-name DenseMap recording the FIRST escape-causing use op for
+// every escapes-tagged construct. Tells us which consumers are blocking
+// the largest share of escape-analysis wins.
+static llvm::DenseMap<llvm::StringRef, uint64_t> &escapeCauseByOpName() {
+    static llvm::DenseMap<llvm::StringRef, uint64_t> m;
+    return m;
+}
+
+} // namespace (close anonymous so the dump entry point is externally visible)
+
+void ecoDumpEscapeAnalysisStats() {
+    auto &m = escapeCauseByOpName();
+    if (m.empty()) return;
+    llvm::SmallVector<std::pair<llvm::StringRef, uint64_t>, 32>
+        rows(m.begin(), m.end());
+    llvm::sort(rows, [](const auto &a, const auto &b) {
+        return a.second > b.second;
+    });
+    auto pad = [](uint64_t v) {
+        std::string s = std::to_string(v);
+        while (s.size() < 10) s = " " + s;
+        return s;
+    };
+    uint64_t total = 0;
+    for (auto &r : rows) total += r.second;
+    llvm::errs()
+        << "\n=== eco-escape-analysis: first escape-causing op (by name) ===\n";
+    for (auto &r : rows)
+        llvm::errs() << pad(r.second) << "  " << r.first << "\n";
+    llvm::errs() << pad(total) << "  TOTAL\n";
+}
+
+namespace {
 
 /// True iff `use` is a known projection of the construct op's result
 /// in the receiver operand position. Each construct shape has its own
@@ -79,16 +149,37 @@ static bool isNonEscapingUse(OpOperand &use) {
 /// addEcoGCPipeline so any FCA is scalarised before RS4GC sees it.
 /// Boxed-element tuples are now first-class candidates.
 static bool classifyConstruct(Operation *op, OpBuilder &builder) {
+    ++ConstructAnalysed;
+    // Per-kind bookkeeping (analysed and non-escaping totals).
+    auto bumpKindAnalysed = [&]() {
+        if (isa<eco::Tuple2ConstructOp>(op)) ++Tuple2Analysed;
+        else if (isa<eco::Tuple3ConstructOp>(op)) ++Tuple3Analysed;
+        else if (isa<eco::RecordConstructOp>(op)) ++RecordAnalysed;
+        else if (isa<eco::CustomConstructOp>(op)) ++CustomAnalysed;
+        else if (isa<eco::ListConstructOp>(op)) ++ListAnalysed;
+    };
+    auto bumpKindNonEscaping = [&]() {
+        if (isa<eco::Tuple2ConstructOp>(op)) ++Tuple2NonEscaping;
+        else if (isa<eco::Tuple3ConstructOp>(op)) ++Tuple3NonEscaping;
+        else if (isa<eco::RecordConstructOp>(op)) ++RecordNonEscaping;
+        else if (isa<eco::CustomConstructOp>(op)) ++CustomNonEscaping;
+        else if (isa<eco::ListConstructOp>(op)) ++ListNonEscaping;
+    };
+    bumpKindAnalysed();
+
     bool nonEscaping = true;
     for (OpOperand &use : op->getResult(0).getUses()) {
         if (!isNonEscapingUse(use)) {
             nonEscaping = false;
+            ++escapeCauseByOpName()[use.getOwner()->getName().getStringRef()];
             break;
         }
     }
     op->setAttr(kEscapeAttr,
                 builder.getStringAttr(nonEscaping ? kNonEscapingTag
                                                   : kEscapesTag));
+    if (nonEscaping) { ++ConstructNonEscaping; bumpKindNonEscaping(); }
+    else ++ConstructEscapes;
     return nonEscaping;
 }
 

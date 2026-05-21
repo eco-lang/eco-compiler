@@ -33,12 +33,33 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 
+#include "llvm/ADT/Statistic.h"
+
+#define DEBUG_TYPE "eco-unboxed-agg-specialize"
+
 using namespace mlir;
 
 namespace {
 
 constexpr llvm::StringLiteral kEscapeAttr     = "eco.escape";
 constexpr llvm::StringLiteral kNonEscapingTag = "non_escaping";
+
+// One bump per construct → make rewrite, grouped by construct kind.
+// Cross-checks against EcoEscapeAnalysis's ConstructNonEscaping totals;
+// a divergence (e.g. fewer rewrites than non-escaping tags) would point
+// at attribute-survival bugs between the two passes.
+ALWAYS_ENABLED_STATISTIC(SpecialiseTotal,
+    "construct → make rewrites applied (total)");
+ALWAYS_ENABLED_STATISTIC(SpecialiseTuple2,
+    "construct.tuple2 → make.tuple2 rewrites");
+ALWAYS_ENABLED_STATISTIC(SpecialiseTuple3,
+    "construct.tuple3 → make.tuple3 rewrites");
+ALWAYS_ENABLED_STATISTIC(SpecialiseRecord,
+    "construct.record → make.record rewrites");
+ALWAYS_ENABLED_STATISTIC(SpecialiseCustom,
+    "construct.custom → make.custom rewrites");
+ALWAYS_ENABLED_STATISTIC(SpecialiseList,
+    "construct.list → make.cons rewrites");
 
 struct EcoUnboxedAggSpecializePass
     : public PassWrapper<EcoUnboxedAggSpecializePass,
@@ -76,7 +97,9 @@ struct EcoUnboxedAggSpecializePass
 
         for (Operation *op : toRewrite) {
             builder.setInsertionPoint(op);
+            ++SpecialiseTotal;
             if (auto t2 = dyn_cast<eco::Tuple2ConstructOp>(op)) {
+                ++SpecialiseTuple2;
                 Type aggTy = eco::Tuple2Type::get(
                     ctx, t2.getA().getType(), t2.getB().getType());
                 auto makeOp = builder.create<eco::Tuple2MakeOp>(
@@ -84,6 +107,7 @@ struct EcoUnboxedAggSpecializePass
                 t2.getResult().replaceAllUsesWith(makeOp.getResult());
                 t2.erase();
             } else if (auto t3 = dyn_cast<eco::Tuple3ConstructOp>(op)) {
+                ++SpecialiseTuple3;
                 Type aggTy = eco::Tuple3Type::get(
                     ctx, t3.getA().getType(), t3.getB().getType(),
                     t3.getC().getType());
@@ -93,6 +117,7 @@ struct EcoUnboxedAggSpecializePass
                 t3.getResult().replaceAllUsesWith(makeOp.getResult());
                 t3.erase();
             } else if (auto rec = dyn_cast<eco::RecordConstructOp>(op)) {
+                ++SpecialiseRecord;
                 auto fields = rec.getFields();
                 SmallVector<Type, 8> elementTypes;
                 elementTypes.reserve(fields.size());
@@ -103,6 +128,7 @@ struct EcoUnboxedAggSpecializePass
                 rec.getResult().replaceAllUsesWith(makeOp.getResult());
                 rec.erase();
             } else if (auto cus = dyn_cast<eco::CustomConstructOp>(op)) {
+                ++SpecialiseCustom;
                 auto fields = cus.getFields();
                 SmallVector<Type, 8> elementTypes;
                 elementTypes.reserve(fields.size());
@@ -115,6 +141,7 @@ struct EcoUnboxedAggSpecializePass
                 cus.getResult().replaceAllUsesWith(makeOp.getResult());
                 cus.erase();
             } else if (auto lst = dyn_cast<eco::ListConstructOp>(op)) {
+                ++SpecialiseList;
                 Type aggTy = eco::ConsType::get(
                     ctx, lst.getHead().getType(), lst.getTail().getType());
                 auto makeOp = builder.create<eco::ConsMakeOp>(

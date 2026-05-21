@@ -64,7 +64,13 @@
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Program.h"
+#include "llvm/ADT/Statistic.h"
 #include "llvm/Support/SourceMgr.h"
+
+// Per-op-name dump entry points exported by the instrumented MLIR passes.
+// Called just before llvm::PrintStatistics so all eco-side stats land in
+// one contiguous block at the end of the run.
+extern void ecoDumpEscapeAnalysisStats();
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
@@ -454,6 +460,12 @@ int main(int argc, char **argv) {
 
     std::string output = getOutputPath();
 
+    // Turn on llvm::Statistic collection so cross-spec / EcoBoxAggregateOperands
+    // counters reach our PrintStatistics call at exit. EnableStatistics also
+    // makes LLVM's at-exit dumper fire, but we drive printing explicitly via
+    // PrintStatistics(llvm::errs()) at each return path below.
+    llvm::EnableStatistics(/*DoPrintOnExit=*/false);
+
     // Lifetime spans the whole driver — phases below add to it via Scope, and
     // we print the aggregated table just before main() returns.
     eco::LoweringStats stats;
@@ -477,8 +489,11 @@ int main(int argc, char **argv) {
             eco::LoweringStats::Scope scope(stats, "Link (clang++ driver)");
             rc = linkExecutable(inputFilename, output);
         }
-        if (printStats)
+        if (printStats) {
             stats.print(llvm::errs());
+            ecoDumpEscapeAnalysisStats();
+            llvm::PrintStatistics(llvm::errs());
+        }
         return rc;
     }
 
@@ -497,8 +512,11 @@ int main(int argc, char **argv) {
                 eco::LoweringStats::Scope scope(stats, "frontend (Elm -> MLIR)");
                 rc = compileElmToMlir(inputFilename, mlirOutput);
             }
-            if (printStats)
+            if (printStats) {
                 stats.print(llvm::errs());
+                ecoDumpEscapeAnalysisStats();
+                llvm::PrintStatistics(llvm::errs());
+            }
             return rc;
         }
 
@@ -643,8 +661,11 @@ int main(int argc, char **argv) {
                 out << *llvmModule << "\n";
             }
         }
-        if (printStats)
+        if (printStats) {
             stats.print(llvm::errs());
+            ecoDumpEscapeAnalysisStats();
+            llvm::PrintStatistics(llvm::errs());
+        }
         return 0;
     }
 
@@ -692,8 +713,11 @@ int main(int argc, char **argv) {
         llvm::errs() << "[eco-boot] emitted object file: " << objFile << "\n";
 
     if (emitAction == EmitObj) {
-        if (printStats)
+        if (printStats) {
             stats.print(llvm::errs());
+            ecoDumpEscapeAnalysisStats();
+            llvm::PrintStatistics(llvm::errs());
+        }
         return 0;
     }
 
@@ -708,8 +732,11 @@ int main(int argc, char **argv) {
     if (!tempObjFile.empty())
         llvm::sys::fs::remove(tempObjFile);
 
-    if (printStats)
+    if (printStats) {
         stats.print(llvm::errs());
+        ecoDumpEscapeAnalysisStats();
+        llvm::PrintStatistics(llvm::errs());
+    }
 
     return rc;
 }
