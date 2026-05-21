@@ -2414,6 +2414,7 @@ type Generate
     = GenerateCannotLoadArtifacts
     | GenerateCannotOptimizeDebugValues ModuleName.Raw (List ModuleName.Raw)
     | GenerateMonomorphizationError String
+    | GenerateNativeDriverError String
 
 
 toGenerateReport : Generate -> Help.Report
@@ -2451,6 +2452,25 @@ toGenerateReport problem =
                 "An error occurred during monomorphization:"
                 [ D.fromChars errorMessage |> D.red |> D.indent 4
                 , "This is likely a compiler bug. Please report it with a minimal reproduction case." |> D.reflow
+                ]
+
+        GenerateNativeDriverError errorMessage ->
+            Help.report "NATIVE LOWERING ERROR"
+                Nothing
+                "Lowering MLIR to a native ELF binary failed:"
+                [ D.fromChars errorMessage |> D.red |> D.indent 4
+                , D.reflow <|
+                    "This usually means one of: the MLIR pass pipeline rejected the "
+                        ++ "front-end output, the RS4GC + object-emission stage failed, or "
+                        ++ "the linker step (ld) returned a nonzero exit code. Re-run with "
+                        ++ "an .mlir output target (--output=foo.mlir) to isolate whether "
+                        ++ "the front-end is at fault."
+                , D.toSimpleNote <|
+                    "Producing an ELF binary requires that this `eco` was linked with "
+                        ++ "EcoNativeDriverStatic. Other AOT-compiled binaries (e.g. "
+                        ++ "eco-compiler or programs built by `eco`) carry only the weak "
+                        ++ "stub of eco_native_lower_and_link, which surfaces here as an "
+                        ++ "rc=-1 \"native driver unavailable\" error."
                 ]
 
 

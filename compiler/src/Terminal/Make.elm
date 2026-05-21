@@ -406,15 +406,21 @@ handleElfOutput ctx target artifacts =
                 |> Task.andThen (\_ -> writeMlirTask)
                 |> Task.andThen
                     (\_ ->
-                        Task.io (Eco.NativeDriver.lowerAndLink tempMlirPath target)
+                        -- lowerAndLink is `Task String ()` so the kernel's
+                        -- nonzero-rc path surfaces as a typed Task error
+                        -- (e.g. "native driver unavailable" from the weak
+                        -- stub in eco-2) rather than a Basics.never crash.
+                        -- We deliberately do NOT delete the temp .mlir on
+                        -- failure — leaving it on disk lets a developer
+                        -- re-run `eco-boot-native <temp>.mlir -o foo` to
+                        -- reproduce the lowering failure.
+                        Eco.NativeDriver.lowerAndLink tempMlirPath target
+                            |> Task.mapError
+                                (Exit.MakeBadGenerate << Exit.GenerateNativeDriverError)
                     )
                 |> Task.andThen
                     (\_ ->
                         Task.io (Utils.dirRemoveFile tempMlirPath)
-                    )
-                |> Task.andThen
-                    (\_ ->
-                        Task.io (Reporting.reportGenerate ctx.style rootNames target)
                     )
                 |> Task.andThen
                     (\_ ->

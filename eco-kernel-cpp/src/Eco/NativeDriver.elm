@@ -28,10 +28,17 @@ import Task exposing (Task)
 
 Runs the full pipeline in-process: parse MLIR, run the Eco → LLVM pass
 pipeline, translate to LLVM IR, run RS4GC + opt + object emission, then
-link via `clang++` with the runtime and kernel static libraries baked
-into the binary.
+link via the system `ld` with the runtime and kernel static libraries
+baked into the binary.
+
+Fails with a `String` error message if any pipeline stage returns
+nonzero. The most common failure is the "native driver unavailable"
+case (rc=-1) — returned when this binary doesn't link
+EcoNativeDriverStatic and only the weak stub of
+`eco_native_lower_and_link` is present (e.g. eco-compiler, or any
+AOT-compiled user program produced by `eco`).
 -}
-lowerAndLink : String -> String -> Task Never ()
+lowerAndLink : String -> String -> Task String ()
 lowerAndLink mlirPath outputPath =
     Eco.Kernel.NativeDriver.lowerAndLink mlirPath outputPath
 
@@ -39,7 +46,10 @@ lowerAndLink mlirPath outputPath =
 {-| In-memory MLIR variant: lower MLIR text bytes directly to an ELF at
 `outputPath` without a temp `.mlir` file on disk. Used by Phase 2 of the
 single-binary plan.
+
+Same failure semantics as `lowerAndLink` — fails with a `String` error
+message on any pipeline-stage failure.
 -}
-lowerAndLinkBytes : Bytes -> String -> Task Never ()
+lowerAndLinkBytes : Bytes -> String -> Task String ()
 lowerAndLinkBytes bytes outputPath =
     Eco.Kernel.NativeDriver.lowerAndLinkBytes bytes outputPath

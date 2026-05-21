@@ -23,13 +23,17 @@ import Bytes exposing (Bytes)
 import Task exposing (Task)
 
 
-lowerAndLink : String -> String -> Task Never ()
+lowerAndLink : String -> String -> Task String ()
 lowerAndLink _ _ =
-    -- Should never be reached under the XHR bootstrap path.
-    Task.succeed ()
+    -- Should never be reached under the XHR bootstrap path. If it is, we
+    -- surface a typed Task failure rather than silently succeeding so a
+    -- regression (e.g. Terminal.Make.handleElfOutput firing under guida.js)
+    -- is immediately visible.
+    Task.fail
+        "Eco.NativeDriver.lowerAndLink: not available under the XHR bootstrap path"
 
 
-lowerAndLinkBytes : Bytes -> String -> Task Never ()
+lowerAndLinkBytes : Bytes -> String -> Task String ()
 lowerAndLinkBytes _ _ =
-    -- Should never be reached under the XHR bootstrap path.
-    Task.succeed ()
+    Task.fail
+        "Eco.NativeDriver.lowerAndLinkBytes: not available under the XHR bootstrap path"
