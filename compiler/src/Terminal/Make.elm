@@ -62,6 +62,7 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.Html as Html
+import Eco.NativeDriver
 import Maybe.Extra as Maybe
 import System.IO exposing (FilePath)
 import Task exposing (Task)
@@ -106,6 +107,7 @@ type Output
     = JS String
     | Html String
     | MLIR String
+    | ELF String
     | DevNull
 
 
@@ -217,6 +219,9 @@ shouldUseTypedOpt maybeOutput =
         Just (MLIR _) ->
             True
 
+        Just (ELF _) ->
+            True
+
         _ ->
             False
 
@@ -238,6 +243,9 @@ handleArtifacts ctx artifacts =
 
         Just (MLIR target) ->
             handleMlirOutput ctx target artifacts
+
+        Just (ELF target) ->
+            handleElfOutput ctx target artifacts
 
 
 handleDefaultOutput : BuildContext -> Build.Artifacts -> Task Exit.Make ()
@@ -324,6 +332,90 @@ handleMlirOutput ctx target artifacts =
             Task.io
                 (Utils.dirCreateDirectoryIfMissing True (Utils.fpTakeDirectory target))
                 |> Task.andThen (\_ -> writeTask |> Task.mapError Exit.MakeBadGenerate)
+                |> Task.andThen
+                    (\_ ->
+                        Task.io (Reporting.reportGenerate ctx.style rootNames target)
+                    )
+
+        name :: names ->
+            Task.throw (Exit.MakeNonMainFilesIntoJavaScript name names)
+
+
+{-| Compile the resolved artifacts to a native ELF executable. The
+front-end emits MLIR text to a temp file under `eco-stuff/build/`, then
+the kernel intrinsic `Eco.NativeDriver.lowerAndLink` invokes the
+linked-in MLIR → ELF pipeline in-process. The temp file is removed on
+success or failure.
+
+Phase 1 of the Stage 9 single-binary plan. Phases 2/3 swap the temp
+file for an in-memory byte buffer and the spawned `clang++` for embedded
+`lld`, respectively.
+-}
+handleElfOutput : BuildContext -> FilePath -> Build.Artifacts -> Task Exit.Make ()
+handleElfOutput ctx target artifacts =
+    case getNoMains artifacts of
+        [] ->
+            let
+                rootNames =
+                    Build.getRootNames artifacts
+
+                -- eco-stuff/<ver>[/<buildDir>]/build/eco-<base>.mlir
+                tempMlirDir : FilePath
+                tempMlirDir =
+                    Stuff.stuffWithBuildDir ctx.root ctx.maybeBuildDir
+                        ++ "/build"
+
+                tempMlirPath : FilePath
+                tempMlirPath =
+                    tempMlirDir ++ "/eco-" ++ Utils.fpTakeFileName target ++ ".mlir"
+
+                writeMlirTask : Task Exit.Make ()
+                writeMlirTask =
+                    if ctx.textMlir then
+                        Generate.writeMonoMlirStreaming
+                            ctx.withSourceMaps
+                            0
+                            ctx.root
+                            ctx.maybeBuildDir
+                            ctx.localPackage
+                            ctx.details
+                            artifacts
+                            tempMlirPath
+                            |> Task.mapError Exit.MakeBadGenerate
+
+                    else
+                        Generate.writeMonoMlirStreamingBytecode
+                            ctx.withSourceMaps
+                            0
+                            ctx.root
+                            ctx.maybeBuildDir
+                            ctx.localPackage
+                            ctx.details
+                            artifacts
+                            tempMlirPath
+                            |> Task.mapError Exit.MakeBadGenerate
+            in
+            Task.io
+                (Utils.dirCreateDirectoryIfMissing True
+                    (Utils.fpTakeDirectory target))
+                |> Task.andThen
+                    (\_ ->
+                        Task.io
+                            (Utils.dirCreateDirectoryIfMissing True tempMlirDir)
+                    )
+                |> Task.andThen (\_ -> writeMlirTask)
+                |> Task.andThen
+                    (\_ ->
+                        Task.io (Eco.NativeDriver.lowerAndLink tempMlirPath target)
+                    )
+                |> Task.andThen
+                    (\_ ->
+                        Task.io (Utils.dirRemoveFile tempMlirPath)
+                    )
+                |> Task.andThen
+                    (\_ ->
+                        Task.io (Reporting.reportGenerate ctx.style rootNames target)
+                    )
                 |> Task.andThen
                     (\_ ->
                         Task.io (Reporting.reportGenerate ctx.style rootNames target)
@@ -555,6 +647,11 @@ output =
 
 
 {-| Parse a string into an Output value based on file extension.
+
+Extension-less names (and any unrecognized extension) are treated as native
+ELF executable targets — the unified `eco` binary's drop-in-for-`elm-make`
+behaviour. The `.js` / `.html` / `.mlir` paths keep their existing
+front-end-only behaviour.
 -}
 parseOutput : String -> Maybe Output
 parseOutput name =
@@ -570,8 +667,11 @@ parseOutput name =
     else if hasExt ".mlir" name then
         Just (MLIR name)
 
-    else
+    else if String.isEmpty name then
         Nothing
+
+    else
+        Just (ELF name)
 
 
 {-| Parser definition for documentation file command-line arguments.

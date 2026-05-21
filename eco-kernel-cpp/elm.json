@@ -11,6 +11,7 @@
         "Eco.File",
         "Eco.Http",
         "Eco.MVar",
+        "Eco.NativeDriver",
         "Eco.Process",
         "Eco.Runtime"
     ],

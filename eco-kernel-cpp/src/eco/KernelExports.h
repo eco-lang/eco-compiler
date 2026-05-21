@@ -203,6 +203,22 @@ void Eco_Kernel_Runtime_register_gc_roots();
 void Eco_Kernel_register_all_gc_roots();
 
 //===----------------------------------------------------------------------===//
+// NativeDriver Module - in-process MLIR lowering + native linking
+//===----------------------------------------------------------------------===//
+
+// Lower MLIR file at `mlirPath` to ELF executable at `outputPath`. Returns
+// Task Never () (succeeds with Unit on success, fails with a String error
+// message otherwise). Only the unified `eco` binary has the strong
+// `eco_native_lower_and_link` symbol linked in; other binaries (which only
+// link the weak undefined reference) get a runtime "unavailable" error if
+// this is invoked.
+HPtr Eco_Kernel_NativeDriver_lowerAndLink(HPtr mlirPath, HPtr outputPath);
+
+// In-memory MLIR bytes variant. Phase 2 entry point that avoids the temp
+// `.mlir` file on disk. `bytes` is an Elm `Bytes` value.
+HPtr Eco_Kernel_NativeDriver_lowerAndLinkBytes(HPtr bytes, HPtr outputPath);
+
+//===----------------------------------------------------------------------===//
 // Http Module - HTTP requests and archive downloads
 //===----------------------------------------------------------------------===//
 

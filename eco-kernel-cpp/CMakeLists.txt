@@ -119,6 +119,25 @@ target_include_directories(EcoKernel_Crash PUBLIC
 )
 target_compile_features(EcoKernel_Crash PUBLIC cxx_std_20)
 
+# NativeDriver module (in-process MLIR -> ELF lowering bridge for `eco`)
+# Strong impl of eco_native_lower_and_link lives in EcoNativeDriverStatic
+# (runtime/src/codegen). This module declares it weak so binaries without
+# the driver library still link.
+add_library(EcoKernel_NativeDriver STATIC
+    src/eco/NativeDriver.cpp
+    src/eco/NativeDriverExports.cpp
+)
+target_include_directories(EcoKernel_NativeDriver PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${RUNTIME_INCLUDE_DIR}
+)
+# eco_native_lower_and_link declarations live here, but the strong
+# implementation is provided by EcoNativeDriverStatic in the codegen layer.
+target_include_directories(EcoKernel_NativeDriver PRIVATE
+    ${CMAKE_SOURCE_DIR}/runtime/src/codegen
+)
+target_compile_features(EcoKernel_NativeDriver PUBLIC cxx_std_20)
+
 # Http module (HTTP requests, archive downloads)
 add_library(EcoKernel_Http STATIC
     src/eco/Http.cpp
@@ -150,6 +169,7 @@ target_link_libraries(EcoKernel INTERFACE
     EcoKernel_Env
     EcoKernel_Process
     EcoKernel_MVar
+    EcoKernel_NativeDriver
     EcoKernel_Runtime
     EcoKernel_Http
     EcoKernel_Crash
@@ -158,7 +178,7 @@ target_link_libraries(EcoKernel INTERFACE
 # Keep asserts enabled even in release builds
 foreach(target
     EcoKernel_File EcoKernel_Console EcoKernel_Env
-    EcoKernel_Process EcoKernel_MVar EcoKernel_Runtime
+    EcoKernel_Process EcoKernel_MVar EcoKernel_NativeDriver EcoKernel_Runtime
     EcoKernel_Http EcoKernel_Crash
 )
     target_compile_options(${target} PRIVATE -UNDEBUG)

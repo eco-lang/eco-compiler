@@ -391,112 +391,18 @@ static std::unique_ptr<llvm::TargetMachine> createTargetMachine(
 //===----------------------------------------------------------------------===//
 
 //===----------------------------------------------------------------------===//
-// Linking via clang++ Driver
+// Linking — delegates to EcoNativeDriverStatic, which invokes the system
+// linker (ld.bfd) directly. The previous clang++ driver invocation is gone;
+// see EcoNativeDriver.cpp::linkExecutable for the full link line.
 //===----------------------------------------------------------------------===//
+
+#include "EcoNativeDriver.h"
 
 static int linkExecutable(const std::string &objectFile,
                           const std::string &outputPath) {
-    auto clangOrErr = llvm::sys::findProgramByName("clang++");
-    if (!clangOrErr) {
-        llvm::errs() << "Error: 'clang++' not found in PATH\n";
-        return 1;
-    }
-
-    // Collect all library paths from the generated config header.
-    // These are std::strings that must outlive the StringRef args vector.
-    std::string entryLib = eco::config::entryLib;
-    std::string runtimeLib = eco::config::runtimeLib;
-    auto elmKernelLibs = eco::config::elmKernelLibs();
-    auto ecoKernelLibs = eco::config::ecoKernelLibs();
-
-    llvm::SmallVector<llvm::StringRef> args;
-    args.push_back(*clangOrErr);
-    args.push_back("-o");
-    args.push_back(outputPath);
-    args.push_back(objectFile);
-
-    // Use -Wl,--start-group / --end-group to handle circular dependencies
-    // between static libraries (e.g., EffectRegistry references Time/Http
-    // effect managers, which in turn reference Scheduler/Platform).
-    // Project .a libraries are passed by path (already static archives).
-    // System libraries are linked dynamically to avoid pulling in all
-    // transitive static dependencies of libcurl (nghttp2, gssapi, etc.).
-    args.push_back("-Wl,--start-group");
-
-    // Entry point wrapper
-    if (!entryLib.empty())
-        args.push_back(entryLib);
-
-    // Eco runtime (GC, allocator, string/list ops, platform)
-    if (!runtimeLib.empty())
-        args.push_back(runtimeLib);
-
-    // Elm kernel libraries. ElmKernel_Utils is wrapped in --whole-archive so
-    // its UtilsExports.o is always linked even when nothing in the user's
-    // program references the C-linkage exports there (Elm_Kernel_Utils_compare,
-    // _equal, etc.). That .o also defines Eco_Kernel_Order_register_gc_roots,
-    // which Eco_Kernel_register_all_gc_roots calls via a weak declaration to
-    // initialise the LT/EQ/GT Order singletons. Without whole-archive, programs
-    // that reach Utils::compare only via the kernel-internal C++ entry point
-    // (e.g. List.sortBy) leave the .o out of the link, the singletons stay
-    // zero, and every comparison miscompiles to LT.
-    for (const auto &lib : elmKernelLibs) {
-        bool isUtils = lib.find("libElmKernel_Utils.") != std::string::npos;
-        if (isUtils) args.push_back("-Wl,--whole-archive");
-        args.push_back(lib);
-        if (isUtils) args.push_back("-Wl,--no-whole-archive");
-    }
-
-    // Eco kernel libraries (IO: File, Console, Env, Process, MVar, Runtime, Http, Crash)
-    for (const auto &lib : ecoKernelLibs)
-        args.push_back(lib);
-
-    args.push_back("-lpthread");
-    args.push_back("-lm");
-    args.push_back("-lstdc++");
-    args.push_back("-lcurl");
-    args.push_back("-lssl");
-    args.push_back("-lcrypto");
-    // Optional kernel system libs detected at CMake configure time — currently
-    // libzip when present (Http.cpp's archive-extraction path). Empty when the
-    // host had no libzip; Http.cpp falls back to stubs in that case.
-    auto kernelSysLibs = eco::config::kernelSystemLibs();
-    for (const auto &lib : kernelSysLibs)
-        args.push_back(lib);
-    args.push_back("-lzip");
-    // LLVM libunwind — passed by absolute path (NOT -lunwind) so the linker
-    // cannot silently pick up the system (nongnu) libunwind instead.
-    args.push_back(eco::config::unwindLib);
-    args.push_back("-Wl,--end-group");
-
-    // Embed an rpath entry so the produced AOT binary can locate the LLVM
-    // libunwind shared library at runtime without LD_LIBRARY_PATH.
-    std::string rpathArg = std::string("-Wl,-rpath,") + eco::config::unwindLibDir;
-    args.push_back(rpathArg);
-
-    if (verbose) {
-        llvm::errs() << "[eco-boot] link:";
-        for (auto &a : args)
-            llvm::errs() << " " << a;
-        llvm::errs() << "\n";
-    }
-
-    std::string errMsg;
-    int rc = llvm::sys::ExecuteAndWait(
-        *clangOrErr, args, /*env=*/std::nullopt,
-        /*redirects=*/{}, /*secondsToWait=*/0, /*memoryLimit=*/0, &errMsg);
-    if (rc != 0) {
-        llvm::errs() << "Error: Linking failed";
-        if (!errMsg.empty())
-            llvm::errs() << ": " << errMsg;
-        llvm::errs() << "\n";
-        return 1;
-    }
-
-    if (verbose)
-        llvm::errs() << "[eco-boot] linked executable: " << outputPath << "\n";
-
-    return 0;
+    eco::EcoNativeOptions opts;
+    opts.verbose = verbose;
+    return eco::linkExecutable(objectFile, outputPath, opts);
 }
 
 //===----------------------------------------------------------------------===//

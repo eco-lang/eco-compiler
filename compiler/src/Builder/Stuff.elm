@@ -7,6 +7,7 @@ module Builder.Stuff exposing
     , withRootLock, withRootLockBuildDir, withRegistryLock
     , detailsWithBuildDir, eciWithBuildDir, ecoWithBuildDir
     , ecotWithBuildDir, interfacesWithBuildDir, objectsWithBuildDir, typedObjectsWithBuildDir
+    , stuffWithBuildDir
     )
 
 {-| File path management and artifact location for the Eco compiler build system.
@@ -47,6 +48,7 @@ managing file locks.
 
 @docs detailsWithBuildDir, eciWithBuildDir, ecoWithBuildDir
 @docs ecotWithBuildDir, interfacesWithBuildDir, objectsWithBuildDir, typedObjectsWithBuildDir
+@docs stuffWithBuildDir
 
 -}
 

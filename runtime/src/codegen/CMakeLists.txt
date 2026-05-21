@@ -603,6 +603,7 @@ endif()
 
 add_library(EcoEntryStatic STATIC
     eco_entry.cpp
+    eco_native_stub.cpp
 )
 
 target_include_directories(EcoEntryStatic PRIVATE
@@ -613,6 +614,87 @@ target_compile_features(EcoEntryStatic PRIVATE cxx_std_20)
 target_compile_options(EcoEntryStatic PRIVATE -fexceptions -UNDEBUG)
 if(ECO_GC_DEBUG)
     target_compile_definitions(EcoEntryStatic PRIVATE ECO_GC_DEBUG=1)
+endif()
+
+#------------------------------------------------------------------------------
+# EcoNativeDriverStatic library — extracted MLIR -> ELF pipeline.
+#
+# Provides:
+#   - eco::compileMlirFileToExecutable / compileMlirBytesToExecutable
+#   - eco::linkExecutable
+#   - eco_native_lower_and_link / eco_native_lower_and_link_bytes (C ABI)
+#
+# Consumers:
+#   - eco-boot-native (CLI driver): links it for the EcoBackend/EcoPipeline
+#     helper functions its main() calls.
+#   - The unified `eco` binary (Stage 9): links it so the Eco-side
+#     Eco.NativeDriver.lowerAndLink kernel intrinsic can drive lowering and
+#     linking in-process via the C ABI.
+#
+# EcoBackend.cpp / EcoPipeline.cpp / LoweringStats.cpp live in this library
+# (not duplicated in the eco-boot-native executable target).
+#------------------------------------------------------------------------------
+
+add_library(EcoNativeDriverStatic STATIC
+    EcoNativeDriver.cpp
+    EcoBackend.cpp
+    EcoPipeline.cpp
+    LoweringStats.cpp
+)
+
+target_include_directories(EcoNativeDriverStatic PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_BINARY_DIR}/include
+)
+target_include_directories(EcoNativeDriverStatic PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+
+target_link_libraries(EcoNativeDriverStatic PUBLIC
+    EcoDialect
+    BFDialect
+    EcoPasses
+    MLIRIR
+    MLIRParser
+    MLIRPass
+    MLIRSupport
+    MLIRTransforms
+    MLIRFuncDialect
+    MLIRFuncAllExtensions
+    MLIRArithDialect
+    MLIRControlFlowDialect
+    MLIRSCFDialect
+    MLIRLLVMDialect
+    MLIRLLVMCommonConversion
+    MLIRFuncToLLVM
+    MLIRArithToLLVM
+    MLIRControlFlowToLLVM
+    MLIRSCFToControlFlow
+    MLIRReconcileUnrealizedCasts
+    MLIRTargetLLVMIRExport
+    MLIRBuiltinToLLVMIRTranslation
+    MLIRLLVMToLLVMIRTranslation
+    MLIRExecutionEngine
+    LLVMSupport
+    LLVMCore
+    LLVMTarget
+    LLVMX86CodeGen
+    LLVMX86AsmParser
+    LLVMX86Desc
+    LLVMX86Info
+    LLVMAsmPrinter
+    LLVMCodeGen
+    LLVMMC
+    LLVMObject
+    LLVMPasses
+)
+
+target_compile_features(EcoNativeDriverStatic PRIVATE cxx_std_20)
+target_compile_options(EcoNativeDriverStatic PRIVATE
+    -Wno-ambiguous-reversed-operator -fexceptions)
+if(ECO_LOWERING_VALIDATION)
+    target_compile_definitions(EcoNativeDriverStatic PRIVATE
+        ECO_LOWERING_VALIDATION=1)
 endif()
 
 #------------------------------------------------------------------------------
@@ -631,7 +713,72 @@ set(ECO_ELM_KERNEL_MODS
     File Http Parser Regex Time Url EffectRegistry
 )
 
-set(ECO_KERNEL_MODS File Console Env Process MVar Runtime Http Crash)
+set(ECO_KERNEL_MODS File Console Env Process MVar NativeDriver Runtime Http Crash)
+
+#------------------------------------------------------------------------------
+# Phase 3: linker + crt path discovery for direct ld invocation.
+#
+# We invoke the system linker (ld.bfd) directly instead of going through the
+# clang++ driver. This means we need to know exactly where crt1.o / crti.o /
+# crtn.o / libgcc.a / libstdc++ / the dynamic linker live — paths the driver
+# normally figures out for us. Discover them once at configure time via
+# `clang -print-file-name=…` and bake the results into EcoBootConfig.h. lld
+# can't be embedded as a library (the LLVM 21 install doesn't ship lld dev
+# files); we use ld.bfd because it's what `-fuse-ld=bfd` uses and it
+# successfully handles the absolute R_X86_64_64 relocations the Elm-compiled
+# object carries in .llvm_stackmaps (lld rejects those in PIE mode).
+#------------------------------------------------------------------------------
+
+# Use ld.bfd. Don't try to find ld.lld (LLVM 21 lld isn't shipped here, the
+# system lld-14 rejects our PIE stackmap relocations).
+find_program(ECO_SYSTEM_LD ld REQUIRED)
+message(STATUS "Eco AOT linker (direct, no clang++ driver): ${ECO_SYSTEM_LD}")
+
+# Discover crt object files + libgcc via clang. These are absolute paths into
+# the system gcc install (Debian: /usr/lib/gcc/x86_64-linux-gnu/12/) and
+# multilib dirs (/lib/x86_64-linux-gnu/). They're stable for a given host.
+function(_eco_query_clang_path OUT_VAR FLAG)
+    execute_process(
+        COMMAND ${CMAKE_C_COMPILER} -print-file-name=${FLAG}
+        OUTPUT_VARIABLE _path
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    # Normalize via realpath so the baked path doesn't depend on '../' segments.
+    get_filename_component(_path "${_path}" REALPATH)
+    set(${OUT_VAR} "${_path}" PARENT_SCOPE)
+endfunction()
+
+_eco_query_clang_path(ECO_CRT1_O  Scrt1.o)
+_eco_query_clang_path(ECO_CRTI_O  crti.o)
+_eco_query_clang_path(ECO_CRTN_O  crtn.o)
+_eco_query_clang_path(ECO_CRTBEGIN_O crtbeginS.o)
+_eco_query_clang_path(ECO_CRTEND_O   crtendS.o)
+_eco_query_clang_path(ECO_LIBGCC_A   libgcc.a)
+get_filename_component(ECO_GCC_LIBDIR "${ECO_LIBGCC_A}" DIRECTORY)
+
+# Dynamic linker (the program interpreter the PT_INTERP entry points to).
+# Hardcoded for x86_64 glibc — the path is part of the platform ABI.
+set(ECO_DYNAMIC_LINKER "/lib64/ld-linux-x86-64.so.2")
+
+# Library search dirs for unresolved -l flags. Mirrors `clang -print-search-dirs`.
+execute_process(
+    COMMAND ${CMAKE_C_COMPILER} -print-search-dirs
+    OUTPUT_VARIABLE _search_dirs_raw
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+string(REGEX MATCH "libraries: =([^\n]+)" _ "${_search_dirs_raw}")
+set(_libdirs_csv "${CMAKE_MATCH_1}")
+string(REPLACE ":" ";" ECO_LIBRARY_DIRS "${_libdirs_csv}")
+
+message(STATUS "Eco AOT crt files:")
+message(STATUS "  Scrt1.o:    ${ECO_CRT1_O}")
+message(STATUS "  crti.o:     ${ECO_CRTI_O}")
+message(STATUS "  crtn.o:     ${ECO_CRTN_O}")
+message(STATUS "  crtbeginS:  ${ECO_CRTBEGIN_O}")
+message(STATUS "  crtendS:    ${ECO_CRTEND_O}")
+message(STATUS "  libgcc.a:   ${ECO_LIBGCC_A}")
+message(STATUS "  gcc libdir: ${ECO_GCC_LIBDIR}")
 
 # Build the content string with generator expressions
 set(ECO_BOOT_CONFIG_CONTENT "// Auto-generated by CMake. Do not edit.\n")
@@ -681,6 +828,28 @@ if(ECO_KERNEL_LIBZIP_FOUND)
 endif()
 string(APPEND ECO_BOOT_CONFIG_CONTENT "    };\n}\n\n")
 
+#--- Phase 3: linker + crt paths for direct ld invocation -----------------
+string(APPEND ECO_BOOT_CONFIG_CONTENT "// --- Phase 3: direct-linker config ---\n")
+string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *systemLinker = \"${ECO_SYSTEM_LD}\";\n")
+string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *dynamicLinker = \"${ECO_DYNAMIC_LINKER}\";\n")
+string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *crt1Obj = \"${ECO_CRT1_O}\";\n")
+string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *crtiObj = \"${ECO_CRTI_O}\";\n")
+string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *crtnObj = \"${ECO_CRTN_O}\";\n")
+string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *crtbeginObj = \"${ECO_CRTBEGIN_O}\";\n")
+string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *crtendObj = \"${ECO_CRTEND_O}\";\n")
+string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libgccA = \"${ECO_LIBGCC_A}\";\n")
+string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *gccLibDir = \"${ECO_GCC_LIBDIR}\";\n\n")
+
+string(APPEND ECO_BOOT_CONFIG_CONTENT "inline std::vector<std::string> librarySearchDirs() {\n")
+string(APPEND ECO_BOOT_CONFIG_CONTENT "    return {\n")
+foreach(_d ${ECO_LIBRARY_DIRS})
+    if(_d STREQUAL "")
+        continue()
+    endif()
+    string(APPEND ECO_BOOT_CONFIG_CONTENT "        \"${_d}\",\n")
+endforeach()
+string(APPEND ECO_BOOT_CONFIG_CONTENT "    };\n}\n\n")
+
 string(APPEND ECO_BOOT_CONFIG_CONTENT "} // namespace config\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT "} // namespace eco\n")
 
@@ -691,9 +860,6 @@ file(GENERATE
 
 add_llvm_executable(eco-boot-native
     eco-boot.cpp
-    EcoBackend.cpp
-    EcoPipeline.cpp
-    LoweringStats.cpp
     PARTIAL_SOURCES_INTENDED
 )
 
@@ -703,43 +869,10 @@ target_include_directories(eco-boot-native PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}/include
 )
 
+# Pulls EcoBackend / EcoPipeline / LoweringStats + the full MLIR/LLVM
+# pipeline transitively.
 target_link_libraries(eco-boot-native PRIVATE
-    EcoDialect
-    BFDialect
-    EcoPasses
-    MLIRIR
-    MLIRParser
-    MLIRPass
-    MLIRSupport
-    MLIRTransforms
-    MLIRFuncDialect
-    MLIRFuncAllExtensions
-    MLIRArithDialect
-    MLIRControlFlowDialect
-    MLIRSCFDialect
-    MLIRLLVMDialect
-    MLIRLLVMCommonConversion
-    MLIRFuncToLLVM
-    MLIRArithToLLVM
-    MLIRControlFlowToLLVM
-    MLIRSCFToControlFlow
-    MLIRReconcileUnrealizedCasts
-    MLIRTargetLLVMIRExport
-    MLIRBuiltinToLLVMIRTranslation
-    MLIRLLVMToLLVMIRTranslation
-    MLIRExecutionEngine
-    LLVMSupport
-    LLVMCore
-    LLVMTarget
-    LLVMX86CodeGen
-    LLVMX86AsmParser
-    LLVMX86Desc
-    LLVMX86Info
-    LLVMAsmPrinter
-    LLVMCodeGen
-    LLVMMC
-    LLVMObject
-    LLVMPasses
+    EcoNativeDriverStatic
 )
 
 # eco-boot-native shells out to clang at runtime to link these archives into

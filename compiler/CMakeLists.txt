@@ -335,9 +335,145 @@ add_custom_command(
     COMMENT "Stage 8c: native fixed-point check (eco-compiler-boot == eco-compiler-boot-2)"
 )
 
-# Aggregate: run the full bootstrap chain with both fixed-point checks.
+# ============================================================================
+# Stage 9: unified `eco` single-file compiler
+#
+# Stage 9 fuses the front-end (Stage 6's eco-compiler) and the back-end
+# (eco-boot-native's lowering+linking pipeline) into one ELF binary. From the
+# user's perspective `eco` is a drop-in replacement for `elm make` that also
+# accepts extension-less / unknown `--output=` names, which trigger the
+# in-process MLIR -> ELF pipeline via the `Eco.NativeDriver.lowerAndLink`
+# kernel intrinsic backed by EcoNativeDriverStatic.
+#
+# Phase 1: build eco-compiler.mlir → eco-stage9.o (eco-boot-native --emit=obj)
+# → link with EcoEntryStatic + EcoRuntimeStatic + all kernels +
+# EcoNativeDriverStatic (under --whole-archive so the strong
+# eco_native_lower_and_link symbol is pulled in to satisfy the weak undef
+# from EcoKernel_NativeDriver).
+# ============================================================================
+
+# -- Stage 9a: lower eco-compiler.mlir to a relocatable object for `eco`.
+set(ECO_STAGE9_OBJ "${BUILD_KERNEL_DIR}/bin/eco-stage9.o")
+
+add_custom_command(
+    OUTPUT ${ECO_STAGE9_OBJ}
+    COMMAND $<TARGET_FILE:eco-boot-native>
+        ${ECO_COMPILER_MLIR}
+        --emit=obj
+        -o ${ECO_STAGE9_OBJ}
+    DEPENDS ${ECO_COMPILER_MLIR} eco-boot-native
+    COMMENT "Stage 9a: eco-compiler.mlir → eco-stage9.o"
+)
+
+# Mark as external so add_executable accepts it as a precompiled source.
+set_source_files_properties(${ECO_STAGE9_OBJ} PROPERTIES
+    GENERATED TRUE
+    EXTERNAL_OBJECT TRUE
+)
+
+# -- Stage 9b: link the unified `eco` ELF binary.
+#
+# Per-module ElmKernel / EcoKernel libs are listed explicitly because the
+# umbrella INTERFACE targets don't reliably pull static archives. The link
+# line is wrapped in --start-group / --end-group via raw `-Wl,*` strings
+# (CMake 3.20 lacks LINK_GROUP). ElmKernel_Utils is whole-archived so its
+# Order-singleton registrar (Eco_Kernel_Order_register_gc_roots) is always
+# linked — same reason eco-boot.cpp's linkExecutable does it. The
+# EcoNativeDriverStatic whole-archive is what makes the strong
+# eco_native_lower_and_link symbol present, so the kernel intrinsic's weak
+# undef resolves to a working implementation.
+add_executable(eco ${ECO_STAGE9_OBJ})
+
+set_target_properties(eco PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${BUILD_KERNEL_DIR}/bin"
+)
+
+# Use the system default linker (GNU ld) for `eco`. The preset configures
+# -fuse-ld=lld for the rest of the build, but lld rejects the
+# R_X86_64_64 relocations the Elm-compiled object carries in its
+# .llvm_stackmaps section (GC safepoint addresses tied to local function
+# symbols) — see eco-boot.cpp's clang++ link invocation, which produces a
+# working PIE eco-compiler binary by using the system ld. We mirror that
+# here so the produced `eco` binary has the same PIE layout the GC
+# stackmap parser in eco_entry.cpp expects.
+target_link_options(eco PRIVATE -fuse-ld=bfd)
+
+target_link_libraries(eco PRIVATE
+    "-Wl,--start-group"
+    EcoEntryStatic
+    EcoRuntimeStatic
+    "-Wl,--whole-archive"
+    ElmKernel_Utils
+    "-Wl,--no-whole-archive"
+    ElmKernel_Basics ElmKernel_Bitwise ElmKernel_Char ElmKernel_String
+    ElmKernel_List ElmKernel_JsArray ElmKernel_Debug ElmKernel_Scheduler
+    ElmKernel_Platform ElmKernel_Process ElmKernel_VirtualDom ElmKernel_Json
+    ElmKernel_Browser ElmKernel_Bytes ElmKernel_File ElmKernel_Http
+    ElmKernel_Parser ElmKernel_Regex ElmKernel_Time ElmKernel_Url
+    ElmKernel_EffectRegistry
+    EcoKernel_File EcoKernel_Console EcoKernel_Env EcoKernel_Process
+    EcoKernel_MVar EcoKernel_NativeDriver EcoKernel_Runtime EcoKernel_Http
+    EcoKernel_Crash
+    # EcoNativeDriverStatic inside the group so its strong
+    # eco_native_lower_and_link definition overrides the weak stub in
+    # EcoEntryStatic. No --whole-archive: the kernel module's strong
+    # external reference is what pulls EcoNativeDriver.cpp out of the
+    # archive, and nothing else in EcoNativeDriverStatic ships static
+    # initializers that should run unconditionally.
+    EcoNativeDriverStatic
+    "-Wl,--end-group"
+    pthread m stdc++ curl ssl crypto zip
+    eco::llvm_libunwind
+)
+
+set(ECO_STAGE9_OUTPUT "${BUILD_KERNEL_DIR}/bin/eco")
+add_custom_target(eco-bootstrap DEPENDS eco)
+
+# -- Stage 9c: native ELF fixed-point check (eco self-compiles to eco-2).
+#
+# Have `eco` compile its own front-end source to a second copy and bytewise
+# compare. This is the strongest available fixed-point check — the whole
+# binary (front-end + lowering pipeline + linker) is pinned as
+# self-consistent.
+#
+# Known issue inherited from Stage 8: the upstream native fixed-point
+# already has byte-equality problems we haven't fixed. Stage 9 surfaces the
+# same issues; the fix belongs at the Stage 8 layer, not papered over here.
+set(ECO_STAGE9_2_OUTPUT "${BUILD_KERNEL_DIR}/bin/eco-2")
+set(ECO_STAGE9_VERIFY_STAMP
+    "${CMAKE_CURRENT_BINARY_DIR}/eco-stage9-verify.stamp")
+
+add_custom_command(
+    OUTPUT ${ECO_STAGE9_2_OUTPUT}
+    COMMAND ${CMAKE_COMMAND} -E env "NODE_OPTIONS=--max-old-space-size=12000"
+        ${ECO_STAGE9_OUTPUT} make
+        --optimize
+        --kernel-package eco/compiler
+        --local-package eco/kernel=${COMPILER_DIR}/../eco-kernel-cpp
+        --output=bin/eco-2
+        ${ELM_ENTRY}
+    DEPENDS ${ECO_STAGE9_OUTPUT} ${ELM_SOURCES} ${KERNEL_SOURCES}
+    WORKING_DIRECTORY ${BUILD_KERNEL_DIR}
+    COMMENT "Stage 9b: eco → eco-2 (in-process MLIR -> ELF via NativeDriver)"
+)
+
+add_custom_command(
+    OUTPUT ${ECO_STAGE9_VERIFY_STAMP}
+    COMMAND ${CMAKE_COMMAND} -E compare_files
+        ${ECO_STAGE9_OUTPUT} ${ECO_STAGE9_2_OUTPUT}
+    COMMAND ${CMAKE_COMMAND} -E touch ${ECO_STAGE9_VERIFY_STAMP}
+    DEPENDS ${ECO_STAGE9_OUTPUT} ${ECO_STAGE9_2_OUTPUT}
+    COMMENT "Stage 9c: native ELF fixed-point check (eco == eco-2)"
+)
+
+add_custom_target(eco-verify DEPENDS ${ECO_STAGE9_VERIFY_STAMP})
+
+# Aggregate: run the full bootstrap chain with all three fixed-point checks
+# (Stage 4b JS, Stage 8c native intermediate, Stage 9c unified-eco).
 add_custom_target(bootstrap
-    DEPENDS ${ECO_BOOT_VERIFY_STAMP} ${BOOTSTRAP_STAMP}
+    DEPENDS ${ECO_BOOT_VERIFY_STAMP}
+        ${BOOTSTRAP_STAMP}
+        ${ECO_STAGE9_VERIFY_STAMP}
 )
 
 # Bootstrap outputs (${BUILD_XHR_DIR}/bin/, ${BUILD_KERNEL_DIR}/bin/,
