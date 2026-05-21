@@ -178,86 +178,346 @@ static Type kindCharToType(char c, MLIRContext *ctx) {
     }
 }
 
-/// Parse a logical-types DSL string (per CGEN_065) into a LogicalShape.
-/// Returns false on parse error; on failure, `out.kind = Boxed` so the
-/// caller can safely treat the result as non-aggregate.
-static bool parseLogicalShape(StringRef s, MLIRContext *ctx,
-                              LogicalShape &out) {
+/// Forward declaration — `parseElement` recurses into `parseShape` for
+/// bracketed sub-shapes; `parseShape` calls `parseElement` for every
+/// element slot.
+static bool parseShape(StringRef &cursor, MLIRContext *ctx,
+                      LogicalShape &out);
+
+/// Forward declaration — defined alongside the other Phase 2 helpers
+/// below. Called from `readLogicalShapes` to apply the §3.4 admission
+/// gate immediately on parse.
+static bool admitOrDemote(LogicalShape &shape);
+
+/// Consume `lit` at the start of `cursor`; on match, advance the cursor
+/// past it and return true.
+static bool consumeLiteral(StringRef &cursor, StringRef lit) {
+    if (!cursor.starts_with(lit)) return false;
+    cursor = cursor.substr(lit.size());
+    return true;
+}
+
+/// Consume the next decimal integer; on match, write to `out` and
+/// advance the cursor.
+static bool consumeUnsignedInt(StringRef &cursor, unsigned &out) {
+    size_t i = 0;
+    while (i < cursor.size() && cursor[i] >= '0' && cursor[i] <= '9') ++i;
+    if (i == 0) return false;
+    if (cursor.substr(0, i).getAsInteger(10, out)) return false;
+    cursor = cursor.substr(i);
+    return true;
+}
+
+static bool consumeSignedInt(StringRef &cursor, int64_t &out) {
+    size_t i = 0;
+    if (i < cursor.size() && cursor[i] == '-') ++i;
+    while (i < cursor.size() && cursor[i] >= '0' && cursor[i] <= '9') ++i;
+    if (i == 0 || (i == 1 && cursor[0] == '-')) return false;
+    if (cursor.substr(0, i).getAsInteger(10, out)) return false;
+    cursor = cursor.substr(i);
+    return true;
+}
+
+/// Parse a single element slot. An element is either a single K_char
+/// (one of `i`/`f`/`c`/`v`) or a bracketed nested shape `[shape]`. The
+/// resulting MLIR `Type` is the element's storage type at that slot.
+static bool parseElement(StringRef &cursor, MLIRContext *ctx,
+                        Type &outTy) {
+    if (cursor.empty()) return false;
+    if (cursor[0] == '[') {
+        // Bracketed nested shape — scan for the matching close bracket
+        // with balanced counting so `[record:2:[tuple2:i:i]:v]` parses.
+        unsigned depth = 1;
+        size_t i = 1;
+        while (i < cursor.size() && depth > 0) {
+            if (cursor[i] == '[') ++depth;
+            else if (cursor[i] == ']') {
+                if (--depth == 0) break;
+            }
+            ++i;
+        }
+        if (depth != 0) return false;
+        StringRef inner = cursor.substr(1, i - 1);
+        cursor = cursor.substr(i + 1);
+        LogicalShape sub;
+        StringRef innerCursor = inner;
+        if (!parseShape(innerCursor, ctx, sub)) return false;
+        // Inner cursor must be fully consumed; leftover means malformed.
+        if (!innerCursor.empty()) return false;
+        outTy = sub.asWorkerType(ctx);
+        return true;
+    }
+    // Single K_char element.
+    outTy = kindCharToType(cursor[0], ctx);
+    cursor = cursor.substr(1);
+    return true;
+}
+
+/// Recursive-descent parse of one shape, advancing the cursor past it.
+/// Leaf forms (`value`, `i64`, etc.) consume themselves; aggregate
+/// forms consume their tag, fixed-arity parameters, and per-element
+/// payload via `parseElement`.
+///
+/// Important ordering: when one keyword is a prefix of another (e.g.
+/// `i1` ⊂ `i16`), the longer one must be tried first.
+static bool parseShape(StringRef &cursor, MLIRContext *ctx,
+                      LogicalShape &out) {
     out = LogicalShape{};
-    if (s.empty() || s == "value") {
+
+    // Leaves. Longer keywords first to avoid `i1` shadowing `i16`.
+    if (consumeLiteral(cursor, "value")) {
         out.kind = LogicalShape::Boxed;
         return true;
     }
-    if (s == "i64") {
+    if (consumeLiteral(cursor, "i64")) {
         out.kind = LogicalShape::Primitive;
         out.primitiveTy = IntegerType::get(ctx, 64);
         return true;
     }
-    if (s == "f64") {
+    if (consumeLiteral(cursor, "f64")) {
         out.kind = LogicalShape::Primitive;
         out.primitiveTy = Float64Type::get(ctx);
         return true;
     }
-    if (s == "i16") {
+    if (consumeLiteral(cursor, "i16")) {
         out.kind = LogicalShape::Primitive;
         out.primitiveTy = IntegerType::get(ctx, 16);
         return true;
     }
-    if (s == "i1") {
+    if (consumeLiteral(cursor, "i1")) {
         out.kind = LogicalShape::Primitive;
         out.primitiveTy = IntegerType::get(ctx, 1);
         return true;
     }
-    // Aggregate forms: split on ':'.
-    SmallVector<StringRef, 8> parts;
-    s.split(parts, ':');
-    if (parts.empty()) return false;
-    StringRef tag = parts[0];
-    if (tag == "tuple2" && parts.size() == 3) {
+
+    // Aggregates.
+    if (consumeLiteral(cursor, "tuple2")) {
         out.kind = LogicalShape::Tuple2;
-        out.elementTys.push_back(kindCharToType(parts[1][0], ctx));
-        out.elementTys.push_back(kindCharToType(parts[2][0], ctx));
+        Type a, b;
+        if (!consumeLiteral(cursor, ":") || !parseElement(cursor, ctx, a))
+            return false;
+        if (!consumeLiteral(cursor, ":") || !parseElement(cursor, ctx, b))
+            return false;
+        out.elementTys.push_back(a);
+        out.elementTys.push_back(b);
         return true;
     }
-    if (tag == "tuple3" && parts.size() == 4) {
+    if (consumeLiteral(cursor, "tuple3")) {
         out.kind = LogicalShape::Tuple3;
-        out.elementTys.push_back(kindCharToType(parts[1][0], ctx));
-        out.elementTys.push_back(kindCharToType(parts[2][0], ctx));
-        out.elementTys.push_back(kindCharToType(parts[3][0], ctx));
+        Type a, b, c;
+        if (!consumeLiteral(cursor, ":") || !parseElement(cursor, ctx, a))
+            return false;
+        if (!consumeLiteral(cursor, ":") || !parseElement(cursor, ctx, b))
+            return false;
+        if (!consumeLiteral(cursor, ":") || !parseElement(cursor, ctx, c))
+            return false;
+        out.elementTys.push_back(a);
+        out.elementTys.push_back(b);
+        out.elementTys.push_back(c);
         return true;
     }
-    if (tag == "record" && parts.size() >= 2) {
-        unsigned n = 0;
-        if (parts[1].getAsInteger(10, n)) return false;
-        if (parts.size() != 2 + n) return false;
+    if (consumeLiteral(cursor, "record")) {
         out.kind = LogicalShape::Record;
-        for (unsigned i = 0; i < n; ++i)
-            out.elementTys.push_back(kindCharToType(parts[2 + i][0], ctx));
-        return true;
-    }
-    if (tag == "custom" && parts.size() >= 3) {
-        // Encoding: "custom:Tag:N:K0:...:KN-1"
-        int64_t customTag = 0;
         unsigned n = 0;
-        if (parts[1].getAsInteger(10, customTag)) return false;
-        if (parts[2].getAsInteger(10, n)) return false;
-        if (parts.size() != 3 + n) return false;
+        if (!consumeLiteral(cursor, ":") || !consumeUnsignedInt(cursor, n))
+            return false;
+        for (unsigned i = 0; i < n; ++i) {
+            Type e;
+            if (!consumeLiteral(cursor, ":") ||
+                !parseElement(cursor, ctx, e))
+                return false;
+            out.elementTys.push_back(e);
+        }
+        return true;
+    }
+    if (consumeLiteral(cursor, "custom")) {
         out.kind = LogicalShape::Custom;
-        out.customTag = customTag;
-        for (unsigned i = 0; i < n; ++i)
-            out.elementTys.push_back(kindCharToType(parts[3 + i][0], ctx));
+        int64_t tag = 0;
+        unsigned n = 0;
+        if (!consumeLiteral(cursor, ":") || !consumeSignedInt(cursor, tag))
+            return false;
+        if (!consumeLiteral(cursor, ":") || !consumeUnsignedInt(cursor, n))
+            return false;
+        out.customTag = tag;
+        for (unsigned i = 0; i < n; ++i) {
+            Type e;
+            if (!consumeLiteral(cursor, ":") ||
+                !parseElement(cursor, ctx, e))
+                return false;
+            out.elementTys.push_back(e);
+        }
         return true;
     }
-    if (tag == "cons" && parts.size() == 3) {
-        // Encoding: "cons:Khead:Ktail" — tail is currently always `v`
-        // (boxed) since List is recursive, but accept any char so future
-        // unboxed-spine extensions don't have to widen the parser.
+    if (consumeLiteral(cursor, "cons")) {
+        // "cons:Khead:Ktail" — tail is currently always `v` (boxed)
+        // since List is recursive, but accept any element form so
+        // future unboxed-spine extensions don't have to widen the
+        // parser.
         out.kind = LogicalShape::Cons;
-        out.elementTys.push_back(kindCharToType(parts[1][0], ctx));
-        out.elementTys.push_back(kindCharToType(parts[2][0], ctx));
+        Type head, tail;
+        if (!consumeLiteral(cursor, ":") || !parseElement(cursor, ctx, head))
+            return false;
+        if (!consumeLiteral(cursor, ":") || !parseElement(cursor, ctx, tail))
+            return false;
+        out.elementTys.push_back(head);
+        out.elementTys.push_back(tail);
         return true;
     }
+
     return false;
+}
+
+/// Parse a logical-types DSL string (per CGEN_065) into a LogicalShape.
+/// Returns false on parse error; on failure, `out.kind = Boxed` so the
+/// caller can safely treat the result as non-aggregate.
+///
+/// Grammar (Phase 2 of widen-construct-make-call-aggregates.md):
+///   shape     ::= leaf | aggregate
+///   leaf      ::= "value" | "i64" | "f64" | "i16" | "i1"
+///   aggregate ::= "tuple2:" elem ":" elem
+///               | "tuple3:" elem ":" elem ":" elem
+///               | "record:"  N           (":" elem){N}
+///               | "custom:" TAG ":" N    (":" elem){N}
+///               | "cons:" elem ":" elem
+///   elem      ::= K_char | "[" shape "]"
+///   K_char    ::= "i" | "f" | "c" | "v"
+///
+/// Brackets nest to arbitrary depth; backward-compatible with flat
+/// strings because the bracket production is purely additive.
+static bool parseLogicalShape(StringRef s, MLIRContext *ctx,
+                              LogicalShape &out) {
+    out = LogicalShape{};
+    if (s.empty()) {
+        out.kind = LogicalShape::Boxed;
+        return true;
+    }
+    StringRef cursor = s;
+    if (!parseShape(cursor, ctx, out)) {
+        out = LogicalShape{};
+        return false;
+    }
+    // Leftover characters mean the input was malformed; reject.
+    if (!cursor.empty()) {
+        out = LogicalShape{};
+        return false;
+    }
+    return true;
+}
+
+/// Build a `LogicalShape` from an MLIR `Type` (the inverse direction of
+/// `LogicalShape::asWorkerType`). Used by `stringifyShape` to recurse
+/// into nested elementTys and by future front-end inference paths that
+/// derive a shape directly from the function signature.
+///
+/// Tag info is *not* recoverable for `eco::CustomType` (the dialect
+/// type doesn't carry it — the tag lives on the op). The returned
+/// `LogicalShape` therefore has `customTag = 0` for Custom; callers
+/// that know the real tag must set it after the call.
+static LogicalShape shapeFromMLIRType(Type t) {
+    LogicalShape s;
+    if (auto tup2 = dyn_cast<eco::Tuple2Type>(t)) {
+        s.kind = LogicalShape::Tuple2;
+        s.elementTys.push_back(tup2.getFirst());
+        s.elementTys.push_back(tup2.getSecond());
+        return s;
+    }
+    if (auto tup3 = dyn_cast<eco::Tuple3Type>(t)) {
+        s.kind = LogicalShape::Tuple3;
+        s.elementTys.push_back(tup3.getFirst());
+        s.elementTys.push_back(tup3.getSecond());
+        s.elementTys.push_back(tup3.getThird());
+        return s;
+    }
+    if (auto rec = dyn_cast<eco::RecordType>(t)) {
+        s.kind = LogicalShape::Record;
+        for (Type f : rec.getFields()) s.elementTys.push_back(f);
+        return s;
+    }
+    if (auto cus = dyn_cast<eco::CustomType>(t)) {
+        s.kind = LogicalShape::Custom;
+        for (Type f : cus.getFields()) s.elementTys.push_back(f);
+        return s;
+    }
+    if (auto cons = dyn_cast<eco::ConsType>(t)) {
+        s.kind = LogicalShape::Cons;
+        s.elementTys.push_back(cons.getHead());
+        s.elementTys.push_back(cons.getTail());
+        return s;
+    }
+    if (isa<eco::ValueType>(t)) {
+        s.kind = LogicalShape::Boxed;
+        return s;
+    }
+    s.kind = LogicalShape::Primitive;
+    s.primitiveTy = t;
+    return s;
+}
+
+static std::string stringifyShape(const LogicalShape &shape);
+
+/// Stringify one element slot — K_char shorthand for leaves, bracketed
+/// nested DSL for aggregate elements.
+static std::string stringifyElement(Type t) {
+    if (isa<eco::Tuple2Type, eco::Tuple3Type, eco::RecordType,
+            eco::CustomType, eco::ConsType>(t)) {
+        std::string s = "[";
+        s += stringifyShape(shapeFromMLIRType(t));
+        s += "]";
+        return s;
+    }
+    // Leaves use K_char shorthand. Note: there's no K_char for `i1`
+    // because it never appears as an element kind in the DSL today;
+    // fall back to `v` to keep the parser happy (`i1` slots aren't
+    // representable in the per-element shorthand). Bracket form
+    // (`[i1]`) is the explicit escape if it ever becomes necessary.
+    if (t.isInteger(64)) return "i";
+    if (t.isF64()) return "f";
+    if (t.isInteger(16)) return "c";
+    return "v";
+}
+
+/// Stringify a `LogicalShape` back to its DSL form, matching the
+/// grammar `parseLogicalShape` accepts. Round-trips for every
+/// representable shape (modulo the customTag-on-nested-Custom caveat
+/// noted on `shapeFromMLIRType`).
+static std::string stringifyShape(const LogicalShape &shape) {
+    switch (shape.kind) {
+    case LogicalShape::Boxed:
+        return "value";
+    case LogicalShape::Primitive:
+        if (shape.primitiveTy.isInteger(64)) return "i64";
+        if (shape.primitiveTy.isF64()) return "f64";
+        if (shape.primitiveTy.isInteger(16)) return "i16";
+        if (shape.primitiveTy.isInteger(1)) return "i1";
+        return "value";
+    case LogicalShape::Tuple2:
+        return ("tuple2:" + stringifyElement(shape.elementTys[0]) + ":"
+                + stringifyElement(shape.elementTys[1]));
+    case LogicalShape::Tuple3:
+        return ("tuple3:" + stringifyElement(shape.elementTys[0]) + ":"
+                + stringifyElement(shape.elementTys[1]) + ":"
+                + stringifyElement(shape.elementTys[2]));
+    case LogicalShape::Record: {
+        std::string s = "record:";
+        s += std::to_string(shape.elementTys.size());
+        for (Type t : shape.elementTys)
+            s += ":" + stringifyElement(t);
+        return s;
+    }
+    case LogicalShape::Custom: {
+        std::string s = "custom:";
+        s += std::to_string(shape.customTag);
+        s += ":";
+        s += std::to_string(shape.elementTys.size());
+        for (Type t : shape.elementTys)
+            s += ":" + stringifyElement(t);
+        return s;
+    }
+    case LogicalShape::Cons:
+        return ("cons:" + stringifyElement(shape.elementTys[0]) + ":"
+                + stringifyElement(shape.elementTys[1]));
+    }
+    return "";
 }
 
 /// Read the `eco.logical_param_types` / `eco.logical_result_types`
@@ -277,6 +537,11 @@ static bool readLogicalShapes(func::FuncOp func,
         if (!sa) return false;
         LogicalShape shape;
         if (!parseLogicalShape(sa.getValue(), ctx, shape)) return false;
+        // Phase 2 §3.4 admission gate: a nested element carrying a
+        // `!eco.value` would create a nested FCA with `ptr<1>` strictly
+        // inside, which RS4GC can't handle. Demote to Boxed here so the
+        // analysis sees a safe shape from the start.
+        admitOrDemote(shape);
         paramShapes.push_back(shape);
     }
     resultShapes.clear();
@@ -285,6 +550,7 @@ static bool readLogicalShapes(func::FuncOp func,
         if (!sa) return false;
         LogicalShape shape;
         if (!parseLogicalShape(sa.getValue(), ctx, shape)) return false;
+        admitOrDemote(shape);
         resultShapes.push_back(shape);
     }
     return true;
@@ -345,9 +611,49 @@ struct Candidate {
 /// Mirror of EcoTypeConverter's element rules: aggregate elements use
 /// these LLVM-compatible types when stored to / loaded from an sret
 /// slot. `!eco.value` lowers to `!llvm.ptr<addrspace=1>` (REP_LLVM_001).
+///
+/// Phase 2 §3.5: aggregate element types lower recursively to a
+/// nested literal `!llvm.struct<>`. The §3.4 admission gate guarantees
+/// the inner aggregate is GC-pointer-free, so the result is always a
+/// primitive-only LLVM struct (no `ptr<1>` strictly inside) — RS4GC's
+/// nested-FCA limit is structurally avoided.
 static Type elementToLLVMTy(Type t, MLIRContext *ctx) {
     if (isa<eco::ValueType>(t))
         return LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
+    if (auto tup2 = dyn_cast<eco::Tuple2Type>(t)) {
+        SmallVector<Type, 2> body = {
+            elementToLLVMTy(tup2.getFirst(), ctx),
+            elementToLLVMTy(tup2.getSecond(), ctx),
+        };
+        return LLVM::LLVMStructType::getLiteral(ctx, body);
+    }
+    if (auto tup3 = dyn_cast<eco::Tuple3Type>(t)) {
+        SmallVector<Type, 3> body = {
+            elementToLLVMTy(tup3.getFirst(), ctx),
+            elementToLLVMTy(tup3.getSecond(), ctx),
+            elementToLLVMTy(tup3.getThird(), ctx),
+        };
+        return LLVM::LLVMStructType::getLiteral(ctx, body);
+    }
+    if (auto rec = dyn_cast<eco::RecordType>(t)) {
+        SmallVector<Type, 8> body;
+        body.reserve(rec.getFields().size());
+        for (Type f : rec.getFields()) body.push_back(elementToLLVMTy(f, ctx));
+        return LLVM::LLVMStructType::getLiteral(ctx, body);
+    }
+    if (auto cus = dyn_cast<eco::CustomType>(t)) {
+        SmallVector<Type, 8> body;
+        body.reserve(cus.getFields().size());
+        for (Type f : cus.getFields()) body.push_back(elementToLLVMTy(f, ctx));
+        return LLVM::LLVMStructType::getLiteral(ctx, body);
+    }
+    if (auto cons = dyn_cast<eco::ConsType>(t)) {
+        SmallVector<Type, 2> body = {
+            elementToLLVMTy(cons.getHead(), ctx),
+            elementToLLVMTy(cons.getTail(), ctx),
+        };
+        return LLVM::LLVMStructType::getLiteral(ctx, body);
+    }
     // Primitives (i64/f64/i16/i1) already live in built-in dialects
     // that LLVM accepts directly.
     return t;
@@ -363,6 +669,72 @@ static LLVM::LLVMStructType sretSlotStructTy(MLIRContext *ctx,
     llvmTys.reserve(elementTys.size());
     for (Type t : elementTys) llvmTys.push_back(elementToLLVMTy(t, ctx));
     return LLVM::LLVMStructType::getLiteral(ctx, llvmTys);
+}
+
+/// Recursive type predicate: true if `t` is, or recursively contains,
+/// an Eco type that converts to `ptr addrspace(1)` post-conversion
+/// (i.e. `!eco.value`, or any aggregate that itself contains one).
+/// Used by the admission gate at `elementAdmitsNesting`. Local to this
+/// pass so cross-spec doesn't take a dependency on EcoToLLVMHeap.cpp's
+/// identical helper.
+static bool xspecContainsGCPointer(Type t) {
+    if (isa<eco::ValueType>(t)) return true;
+    if (auto tup2 = dyn_cast<eco::Tuple2Type>(t))
+        return xspecContainsGCPointer(tup2.getFirst()) ||
+               xspecContainsGCPointer(tup2.getSecond());
+    if (auto tup3 = dyn_cast<eco::Tuple3Type>(t))
+        return xspecContainsGCPointer(tup3.getFirst()) ||
+               xspecContainsGCPointer(tup3.getSecond()) ||
+               xspecContainsGCPointer(tup3.getThird());
+    if (auto rec = dyn_cast<eco::RecordType>(t)) {
+        for (Type f : rec.getFields())
+            if (xspecContainsGCPointer(f)) return true;
+        return false;
+    }
+    if (auto cus = dyn_cast<eco::CustomType>(t)) {
+        for (Type f : cus.getFields())
+            if (xspecContainsGCPointer(f)) return true;
+        return false;
+    }
+    if (auto cons = dyn_cast<eco::ConsType>(t))
+        return xspecContainsGCPointer(cons.getHead()) ||
+               xspecContainsGCPointer(cons.getTail());
+    return false;
+}
+
+/// Phase 2 admission gate (§3.4 of plans/cross-spec-nested-shape-dsl.md):
+/// returns true iff `t` is safe to use as an aggregate element-slot
+/// type at a position that's about to be promoted.
+///
+/// The constraint: RS4GC's "support for FCA unimplemented" path fires
+/// when a nested FCA contains a `ptr addrspace(1)` strictly inside, so
+/// we refuse nesting when the inner aggregate contains any
+/// `!eco.value`. Top-level `!eco.value` elements remain fine (they're
+/// flat-w.r.t.-`ptr<1>`). Primitives + Boxed leaves are also always
+/// fine. The single structural guard that keeps §3.5 and §3.6's slot
+/// store/load paths cheap.
+static bool elementAdmitsNesting(Type t) {
+    if (!isa<eco::Tuple2Type, eco::Tuple3Type, eco::RecordType,
+             eco::CustomType, eco::ConsType>(t))
+        return true;
+    return !xspecContainsGCPointer(t);
+}
+
+/// Apply the §3.4 gate to every element of `shape`. If any aggregate
+/// element fails `elementAdmitsNesting`, demote the slot's shape to
+/// `Boxed` (clearing elementTys and customTag). Returns true if the
+/// shape survived unchanged, false if it was demoted.
+static bool admitOrDemote(LogicalShape &shape) {
+    if (!shape.isAggregate()) return true;
+    for (Type t : shape.elementTys) {
+        if (!elementAdmitsNesting(t)) {
+            shape.kind = LogicalShape::Boxed;
+            shape.elementTys.clear();
+            shape.customTag = 0;
+            return false;
+        }
+    }
+    return true;
 }
 
 /// True if two aggregate shapes describe the same kind and element
@@ -622,15 +994,28 @@ static bool isSelfRecursiveCall(Operation *user, StringRef selfName) {
 /// caller's matching slot loses its only justification for that use
 /// and demotes next iteration. The DAG-fixpoint case passes nullptr
 /// for the SCC parameters and gets the original 3.1 behaviour.
+///
+/// Phase 2 §3.3 third bullet: when the param shape is itself nested
+/// (e.g. `record:2:[tuple2:i:i]:v`), a projection at a nested field
+/// yields an inner-aggregate value that must in turn flow only through
+/// eligible uses. The function recurses on the projection's result
+/// with the inner LogicalShape so chained projections of a nested
+/// param stay eligible end-to-end; an inner-aggregate projection
+/// whose result escapes into an ineligible use blocks promotion of
+/// the outer param. The `depthBudget` parameter bounds recursion at
+/// the structural depth of the shape (in practice 1–2 levels).
 static bool allUsesAreProjectionsOrCallsToEligible(
-        BlockArgument arg,
+        Value v,
         const LogicalShape &paramShape,
         StringRef selfName,
         const llvm::DenseSet<StringRef> &eligibleCallees,
         ArrayRef<LogicalShape> ownResultShapes,
         const llvm::DenseSet<StringRef> *sccCallees = nullptr,
         const llvm::DenseMap<StringRef, SmallVector<LogicalShape, 4>>
-            *sccTentParams = nullptr) {
+            *sccTentParams = nullptr,
+        unsigned depthBudget = 16) {
+    if (depthBudget == 0) return false;
+
     auto sameSCCMatch = [&](StringRef calleeName, unsigned operandPos) {
         if (!sccCallees || !sccCallees->contains(calleeName)) return false;
         if (!sccTentParams) return false;
@@ -642,14 +1027,47 @@ static bool allUsesAreProjectionsOrCallsToEligible(
                aggregateShapesMatch(calleeSlot, paramShape);
     };
 
-    for (OpOperand &use : arg.getUses()) {
+    // Field index for an aggregate-projection op, or nullopt for non-
+    // projection users / list-head/-tail (which have no numeric index).
+    auto projectFieldIdx = [](Operation *op) -> std::optional<unsigned> {
+        if (auto p = dyn_cast<eco::Tuple2ProjectOp>(op))
+            return static_cast<unsigned>(p.getField());
+        if (auto p = dyn_cast<eco::Tuple3ProjectOp>(op))
+            return static_cast<unsigned>(p.getField());
+        if (auto p = dyn_cast<eco::RecordProjectOp>(op))
+            return static_cast<unsigned>(p.getFieldIndex());
+        if (auto p = dyn_cast<eco::CustomProjectOp>(op))
+            return static_cast<unsigned>(p.getFieldIndex());
+        return std::nullopt;
+    };
+
+    for (OpOperand &use : v.getUses()) {
         Operation *user = use.getOwner();
         if (isa<eco::Tuple2ProjectOp,
                 eco::Tuple3ProjectOp,
                 eco::RecordProjectOp,
-                eco::CustomProjectOp,
-                eco::ListHeadOp,
-                eco::ListTailOp>(user)) {
+                eco::CustomProjectOp>(user)) {
+            if (use.getOperandNumber() != 0) return false;
+            // Phase 2 §3.3: recurse into the projection's result when
+            // the projected element is itself an aggregate — its uses
+            // must also be eligible at the inner shape.
+            auto idx = projectFieldIdx(user);
+            if (idx && *idx < paramShape.elementTys.size()) {
+                Type elemTy = paramShape.elementTys[*idx];
+                if (isa<eco::Tuple2Type, eco::Tuple3Type, eco::RecordType,
+                        eco::CustomType, eco::ConsType>(elemTy)) {
+                    LogicalShape innerShape = shapeFromMLIRType(elemTy);
+                    if (!allUsesAreProjectionsOrCallsToEligible(
+                            user->getResult(0), innerShape, selfName,
+                            eligibleCallees, ownResultShapes, sccCallees,
+                            sccTentParams, depthBudget - 1)) {
+                        return false;
+                    }
+                }
+            }
+            continue;
+        }
+        if (isa<eco::ListHeadOp, eco::ListTailOp>(user)) {
             if (use.getOperandNumber() != 0) return false;
             continue;
         }
@@ -792,6 +1210,17 @@ static Value projectAndConvertField(OpBuilder &builder, Location loc,
         return builder.create<UnrealizedConversionCastOp>(loc, ptrTy, projected)
             .getResult(0);
     }
+    // Phase 2 §3.6: nested aggregate eco-type elements bridge into their
+    // converted LLVM struct via unrealized_conversion_cast, so the
+    // downstream llvm.store of the field into the sret slot operates on
+    // an LLVM-native struct value (the slot's element type is the same
+    // converted struct, per elementToLLVMTy's recursion in §3.5).
+    if (isa<eco::Tuple2Type, eco::Tuple3Type, eco::RecordType,
+            eco::CustomType, eco::ConsType>(actualElemTy)) {
+        Type llvmTy = elementToLLVMTy(actualElemTy, builder.getContext());
+        return builder.create<UnrealizedConversionCastOp>(loc, llvmTy, projected)
+            .getResult(0);
+    }
     return projected;
 }
 
@@ -842,6 +1271,15 @@ static void emitSretLoad(OpBuilder &builder, Location loc, Value slot,
         if (isa<eco::ValueType>(ecoElementTys[k])) {
             loaded = builder.create<UnrealizedConversionCastOp>(
                 loc, ecoElementTys[k], loaded).getResult(0);
+        } else if (isa<eco::Tuple2Type, eco::Tuple3Type, eco::RecordType,
+                       eco::CustomType, eco::ConsType>(ecoElementTys[k])) {
+            // Phase 2 §3.6: nested aggregate element — the slot field
+            // was loaded as an LLVM struct (matching elementToLLVMTy's
+            // recursion); bridge back to the eco-dialect aggregate type
+            // so downstream `eco.make.*` / `eco.construct.*` see a
+            // typed operand.
+            loaded = builder.create<UnrealizedConversionCastOp>(
+                loc, ecoElementTys[k], loaded).getResult(0);
         }
         fields.push_back(loaded);
     }
@@ -858,8 +1296,13 @@ static void emitSretLoad(OpBuilder &builder, Location loc, Value slot,
 /// case result).
 ///
 /// Forward declaration so `rewriteConstructToMake` (used inside) can
-/// be defined immediately below.
-static Value rewriteConstructToMake(OpBuilder &builder, Operation *constructOp);
+/// be defined immediately below. The optional `expectedAggTy` lets
+/// callers pin the result aggregate type — fields whose SSA type
+/// doesn't match the corresponding element of `expectedAggTy` get
+/// boxed via `eco.to_heap`. When null, the make.*'s result type is
+/// derived verbatim from the operand types (nested where applicable).
+static Value rewriteConstructToMake(OpBuilder &builder, Operation *constructOp,
+                                    Type expectedAggTy = Type());
 
 static Value retypeJoinTree(Value v, Type aggTy) {
     // Already aggregate-typed: block-arg retyped by cloneAsWorker, or
@@ -870,11 +1313,15 @@ static Value retypeJoinTree(Value v, Type aggTy) {
     if (!def) return v;
 
     // construct.* → make.*: produce a fresh aggregate-typed value via
-    // the existing rewriter, then return it.
+    // the existing rewriter, then return it. Pin to `aggTy` so the
+    // resulting make.*'s element list matches the function's declared
+    // result shape, boxing any aggregate field operand whose type
+    // doesn't fit (e.g. a chained-promoted call result feeding into a
+    // construct slot the DSL declared as `v`).
     if (isa<eco::Tuple2ConstructOp, eco::Tuple3ConstructOp,
             eco::RecordConstructOp, eco::CustomConstructOp>(def)) {
         OpBuilder b(def);
-        return rewriteConstructToMake(b, def);
+        return rewriteConstructToMake(b, def, aggTy);
     }
 
     // arith.select: retype both arms recursively, then update the
@@ -1017,60 +1464,89 @@ static Value retypeJoinTree(Value v, Type aggTy) {
 ///
 /// Returns the rewritten make op's result; the original construct op
 /// is erased.
-static Value rewriteConstructToMake(OpBuilder &builder, Operation *constructOp) {
+static Value rewriteConstructToMake(OpBuilder &builder, Operation *constructOp,
+                                    Type expectedAggTy) {
     MLIRContext *ctx = constructOp->getContext();
     builder.setInsertionPoint(constructOp);
 
-    // Phase 1.5 stopgap for plans/cross-spec-bridgeoperands-regressions.md
-    // Issue 3. After the Phase 1 widening of construct.*'s operand-type
-    // constraints, a `construct.*` field may itself be an aggregate-typed
-    // SSA value (e.g. another promoted call's result). Propagating that
-    // type verbatim into the new make.*'s result element list would
-    // produce a *nested* aggregate type (e.g.
-    // !eco.record<!eco.tuple2<i64,i64>, !eco.value>) — and the rest of
-    // cross-spec (wrapper slot allocation, sretSlotStructTy, emitSretLoad
-    // / emitSretStore, eligibility analysis) all assume the worker's
-    // result aggregate is one level deep.
+    // Phase 2 §3.8: when `expectedAggTy` is null (e.g. straight-line
+    // construct in a worker body whose own return shape pins the type
+    // upstream), aggregate field operands flow into make.*'s element
+    // list verbatim — producing a nested aggregate result type. The
+    // §3.4 gate guarantees no GC-pointer-inner nested FCAs reach
+    // RS4GC, so downstream paths (§3.5 recursive type conversion,
+    // §3.6 single-struct sret store/load) handle the nested shape
+    // safely.
     //
-    // The stopgap: box every aggregate-typed field via eco.to_heap
-    // before recording its type. Element types stay flat and the make.*
-    // result type is never nested. Cost: one extra heap alloc per
-    // chained-aggregate field; lifted by Phase 2 §9.1 + §9.2 (recursive
-    // cross-spec ABI promotion + matching slot/load/store recursion)
-    // per plans/widen-construct-make-call-aggregates.md.
-    // TODO(phase-2): remove this boxing once recursive ABI lands.
+    // When `expectedAggTy` is non-null and the producer chain has
+    // bottomed out at a flat declared shape (e.g. an upstream eligible
+    // callee promoted to `tuple2:i:i` feeds into a `construct.record`
+    // field declared `v`), the make.*'s result type must match the
+    // surrounding signature — the field is boxed via `eco.to_heap`
+    // so the resulting make.record element list stays consistent
+    // with the function's declared `record:2:v:v`. This is the
+    // narrowed survivor of the Phase 1.5 stopgap: it fires only on
+    // a real type mismatch (not blanket-box-every-aggregate as
+    // before), but it remains necessary until cross-spec's
+    // eligibility analysis grows the inverse capability — promoting
+    // an outer flat shape up to the matching nested form when a
+    // chained-aggregate producer would otherwise feed it. Until
+    // that lands the chained-aggregate-into-flat-declared case
+    // covered by `cross_spec_nested_make_record_from_construct.mlir`
+    // needs this fall-back. See plan §3.8 for the longer discussion.
+    auto expectedElementAt = [&](unsigned i) -> Type {
+        if (!expectedAggTy) return Type();
+        if (auto t2 = dyn_cast<eco::Tuple2Type>(expectedAggTy))
+            return i == 0 ? t2.getFirst() : t2.getSecond();
+        if (auto t3 = dyn_cast<eco::Tuple3Type>(expectedAggTy)) {
+            if (i == 0) return t3.getFirst();
+            if (i == 1) return t3.getSecond();
+            return t3.getThird();
+        }
+        if (auto rec = dyn_cast<eco::RecordType>(expectedAggTy))
+            return i < rec.getFields().size() ? rec.getFields()[i] : Type();
+        if (auto cus = dyn_cast<eco::CustomType>(expectedAggTy))
+            return i < cus.getFields().size() ? cus.getFields()[i] : Type();
+        return Type();
+    };
     auto isAggSSAType = [](Type t) {
         return isa<eco::Tuple2Type, eco::Tuple3Type, eco::RecordType,
                    eco::CustomType, eco::ConsType>(t);
     };
-    auto boxIfAggregate = [&](Value f) -> Value {
-        if (!isAggSSAType(f.getType())) return f;
-        auto valueTy = eco::ValueType::get(ctx);
-        auto toHeap = builder.create<eco::ToHeapOp>(
-            constructOp->getLoc(), valueTy, f, /*live_roots=*/ValueRange{});
-        return toHeap.getResult();
+    auto boxIfMismatched = [&](Value f, unsigned i) -> Value {
+        Type wantTy = expectedElementAt(i);
+        if (!wantTy) return f;            // no expectation pinned
+        if (f.getType() == wantTy) return f;  // already matches
+        if (isAggSSAType(f.getType()) && isa<eco::ValueType>(wantTy)) {
+            auto toHeap = builder.create<eco::ToHeapOp>(
+                constructOp->getLoc(), wantTy, f,
+                /*live_roots=*/ValueRange{});
+            return toHeap.getResult();
+        }
+        return f;
     };
 
     Value rebuilt;
     if (auto t2 = dyn_cast<eco::Tuple2ConstructOp>(constructOp)) {
-        Value a = boxIfAggregate(t2.getA());
-        Value b = boxIfAggregate(t2.getB());
+        Value a = boxIfMismatched(t2.getA(), 0);
+        Value b = boxIfMismatched(t2.getB(), 1);
         Type aggTy = eco::Tuple2Type::get(ctx, a.getType(), b.getType());
         rebuilt = builder.create<eco::Tuple2MakeOp>(t2.getLoc(), aggTy, a, b);
     } else if (auto t3 = dyn_cast<eco::Tuple3ConstructOp>(constructOp)) {
-        Value a = boxIfAggregate(t3.getA());
-        Value b = boxIfAggregate(t3.getB());
-        Value c = boxIfAggregate(t3.getC());
+        Value a = boxIfMismatched(t3.getA(), 0);
+        Value b = boxIfMismatched(t3.getB(), 1);
+        Value c = boxIfMismatched(t3.getC(), 2);
         Type aggTy = eco::Tuple3Type::get(
             ctx, a.getType(), b.getType(), c.getType());
         rebuilt = builder.create<eco::Tuple3MakeOp>(t3.getLoc(), aggTy, a, b, c);
     } else if (auto rec = dyn_cast<eco::RecordConstructOp>(constructOp)) {
         SmallVector<Value, 8> fields;
         SmallVector<Type, 8> elementTypes;
+        unsigned i = 0;
         for (Value f : rec.getFields()) {
-            Value boxed = boxIfAggregate(f);
-            fields.push_back(boxed);
-            elementTypes.push_back(boxed.getType());
+            Value adj = boxIfMismatched(f, i++);
+            fields.push_back(adj);
+            elementTypes.push_back(adj.getType());
         }
         Type aggTy = eco::RecordType::get(ctx, elementTypes);
         rebuilt = builder.create<eco::RecordMakeOp>(
@@ -1078,10 +1554,11 @@ static Value rewriteConstructToMake(OpBuilder &builder, Operation *constructOp) 
     } else if (auto cus = dyn_cast<eco::CustomConstructOp>(constructOp)) {
         SmallVector<Value, 8> fields;
         SmallVector<Type, 8> elementTypes;
+        unsigned i = 0;
         for (Value f : cus.getFields()) {
-            Value boxed = boxIfAggregate(f);
-            fields.push_back(boxed);
-            elementTypes.push_back(boxed.getType());
+            Value adj = boxIfMismatched(f, i++);
+            fields.push_back(adj);
+            elementTypes.push_back(adj.getType());
         }
         Type aggTy = eco::CustomType::get(ctx, elementTypes);
         rebuilt = builder.create<eco::CustomMakeOp>(
