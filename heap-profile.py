@@ -71,7 +71,7 @@ BASELINE_HEAP = {
     # Heap-wide.
     "max_heap_size":                 "24G",
     "alloc_buffer_size":             "512K",
-    "large_object_threshold":        "16K",
+    "large_object_threshold":        "8K",
     # String / rope heuristics.
     "string_flatten_limit":          "32K",
     "string_tiny_slice_limit":       "128",
@@ -79,9 +79,9 @@ BASELINE_HEAP = {
     "rope_leaf_count_limit":         64,
     "rope_min_leaf_size":            128,
     # Nursery.
-    "nursery_block_count":           64,
+    "nursery_block_count":           256,
     "nursery_max_block_count":       1024,
-    "nursery_gc_threshold":          0.9,
+    "nursery_gc_threshold":          0.95,
     "nursery_growth_threshold":      0.20,
     "promotion_age":                 2,
     "use_hybrid_dfs":                True,

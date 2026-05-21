@@ -63,7 +63,7 @@ constexpr size_t DEFAULT_MAX_HEAP_SIZE = 24ULL * 1024 * 1024 * 1024;
 constexpr size_t ALLOC_BUFFER_SIZE = 512 * 1024;
 
 // Allocations of this size or larger bypass the nursery and are pinned in old gen (also triggers split-header path for strings/byte buffers).
-constexpr size_t LARGE_OBJECT_THRESHOLD = 16 * 1024;
+constexpr size_t LARGE_OBJECT_THRESHOLD = 8 * 1024;
 
 // ---- String / rope heuristics ----
 
@@ -85,13 +85,13 @@ constexpr u32 ROPE_MIN_LEAF_SIZE = 128;
 // ---- Nursery ----
 
 // Initial nursery size in blocks (must be even; split into from/to semi-spaces).
-constexpr size_t NURSERY_BLOCK_COUNT = 64;
+constexpr size_t NURSERY_BLOCK_COUNT = 256;
 
 // Hard upper bound on adaptive nursery growth, in blocks (must be even).
 constexpr size_t NURSERY_MAX_BLOCKS = 1024;
 
 // Nursery occupancy fraction that triggers a minor GC.
-constexpr float NURSERY_GC_THRESHOLD = 0.9f;
+constexpr float NURSERY_GC_THRESHOLD = 0.95f;
 
 // Post-minor-GC to-space occupancy above which the nursery requests more blocks.
 constexpr float NURSERY_GROWTH_THRESHOLD = 0.20f;
