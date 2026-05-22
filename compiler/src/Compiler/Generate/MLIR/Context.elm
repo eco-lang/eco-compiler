@@ -460,30 +460,35 @@ resetDefinedSsaVars initialVars ctx =
     { ctx | definedSsaVars = Set.fromList initialVars }
 
 
-{-| Collect all in-scope variables with !eco.value type as a conservative GC
-root hint set. Returned by `emitSafepointHints` and threaded into the next
-GCRootCarrier op (alloc / construct / call / papExtend / papCreate) as that
-op's `live_roots` operands. Returns (ssaVar, mlirType) pairs for eco.value
-bindings in varMappings defined in the current function scope (tracked in
-definedSsaVars).
+{-| Phase 2 probe: return an empty front-end GC root hint set, letting
+EcoGCPrepare's MLIR `Liveness` analysis alone drive root attachment at
+each GCRootCarrier op. The conservative all-in-scope hint set landed in
+Phase 1 (full closure of `varMappings` filtered by `definedSsaVars`) is
+kept as documentation below for reference; flip back to it if the
+EcoGCLivenessAudit pass surfaces missing roots that liveness cannot
+recover on its own.
+
+    -- Conservative Phase 1 implementation (restore by inverting the body):
+    --     ctx.varMappings
+    --         |> Dict.values
+    --         |> List.filterMap
+    --             (\info ->
+    --                 if Set.member info.ssaVar ctx.definedSsaVars then
+    --                     case info.mlirType of
+    --                         NamedStruct "eco.value" ->
+    --                             Just ( info.ssaVar, info.mlirType )
+    --
+    --                         _ ->
+    --                             Nothing
+    --
+    --                 else
+    --                     Nothing
+    --             )
+
 -}
 liveEcoValueVars : Context -> List ( String, MlirType )
-liveEcoValueVars ctx =
-    ctx.varMappings
-        |> Dict.values
-        |> List.filterMap
-            (\info ->
-                if Set.member info.ssaVar ctx.definedSsaVars then
-                    case info.mlirType of
-                        NamedStruct "eco.value" ->
-                            Just ( info.ssaVar, info.mlirType )
-
-                        _ ->
-                            Nothing
-
-                else
-                    Nothing
-            )
+liveEcoValueVars _ =
+    []
 
 
 {-| Cache a let-bound expression for BytesFusion decoder resolution.
