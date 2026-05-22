@@ -446,12 +446,6 @@ int main(int argc, char **argv) {
 
     std::string output = getOutputPath();
 
-    // Turn on llvm::Statistic collection so any pass-emitted counters reach
-    // our PrintStatistics call at exit. EnableStatistics also makes LLVM's
-    // at-exit dumper fire, but we drive printing explicitly via
-    // PrintStatistics(llvm::errs()) at each return path below.
-    llvm::EnableStatistics(/*DoPrintOnExit=*/false);
-
     // Lifetime spans the whole driver — phases below add to it via Scope, and
     // we print the aggregated table just before main() returns.
     eco::LoweringStats stats;
@@ -477,7 +471,6 @@ int main(int argc, char **argv) {
         }
         if (printStats) {
             stats.print(llvm::errs());
-            llvm::PrintStatistics(llvm::errs());
         }
         return rc;
     }
@@ -499,7 +492,6 @@ int main(int argc, char **argv) {
             }
             if (printStats) {
                 stats.print(llvm::errs());
-                llvm::PrintStatistics(llvm::errs());
             }
             return rc;
         }
@@ -647,7 +639,6 @@ int main(int argc, char **argv) {
         }
         if (printStats) {
             stats.print(llvm::errs());
-            llvm::PrintStatistics(llvm::errs());
         }
         return 0;
     }
@@ -698,7 +689,6 @@ int main(int argc, char **argv) {
     if (emitAction == EmitObj) {
         if (printStats) {
             stats.print(llvm::errs());
-            llvm::PrintStatistics(llvm::errs());
         }
         return 0;
     }
@@ -716,7 +706,6 @@ int main(int argc, char **argv) {
 
     if (printStats) {
         stats.print(llvm::errs());
-        llvm::PrintStatistics(llvm::errs());
     }
 
     return rc;
