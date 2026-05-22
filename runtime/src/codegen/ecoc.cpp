@@ -132,15 +132,6 @@ static cl::opt<bool> enableOpt(
     cl::desc("Enable LLVM optimizations"),
     cl::init(false));
 
-static cl::opt<bool> enableUnboxedAgg(
-    "enable-unboxed-agg",
-    cl::desc("Enable Phase 1 escape analysis + Phase 2 specialise + "
-             "Phase 3 cross-function specialise + Phase 3.1 flatten + "
-             "Phase 3.2 SCC passes for value-level aggregates "
-             "(on by default after Phase 3.2 landed; pass "
-             "-enable-unboxed-agg=false to opt out)"),
-    cl::init(true));
-
 static cl::opt<bool> verifyDiagnostics(
     "verify-diagnostics",
     cl::desc("Check that emitted diagnostics match expected"),
@@ -183,7 +174,6 @@ static int runPipeline(ModuleOp module, bool lowerToLLVM) {
     if (lowerToLLVM) {
         // Use the shared pipeline from EcoPipeline.cpp
         eco::EcoPipelineOptions pipeOpts;
-        pipeOpts.enableUnboxedAgg = enableUnboxedAgg;
         eco::buildEcoToLLVMPipeline(pm, pipeOpts);
     }
 

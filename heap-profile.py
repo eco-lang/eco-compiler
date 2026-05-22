@@ -270,49 +270,21 @@ def _newest_mtime_under(root: Path, suffixes: tuple[str, ...]) -> float:
     return newest
 
 
-# Sidecar file recording which flag values produced the cached .o. Compared
-# against the live --enable-unboxed-agg / --no-enable-unboxed-agg setting to
-# decide whether the .o is stale even when its mtime is fresh relative to
-# the .mlir.
-ECO_COMPILER_OBJ_FLAGS = REPO_ROOT / "build/compiler/build-kernel/bin/eco-compiler.o.flags"
-
-
-def _read_obj_flags() -> dict:
-    if not ECO_COMPILER_OBJ_FLAGS.exists():
-        return {}
-    try:
-        return json.loads(ECO_COMPILER_OBJ_FLAGS.read_text())
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-
-def _write_obj_flags(flags: dict) -> None:
-    ECO_COMPILER_OBJ_FLAGS.write_text(json.dumps(flags))
-
-
-def _emit_eco_compiler_obj(enable_unboxed_agg: bool = True) -> None:
+def _emit_eco_compiler_obj() -> None:
     """Lower eco-compiler.mlir to a cached object file (Stage 6 minus the
     link). The MLIR pipeline + LLVM IR + RS4GC + object emission run here;
     the link step is deferred to `_link_eco_compiler_obj`. Splitting the two
-    lets a C++-only edit re-run only the cheap second half.
-
-    `enable_unboxed_agg` toggles the Phase 1/2/3 escape-analysis pipeline. The
-    chosen value is recorded in a sidecar file next to the .o so subsequent
-    runs detect flag flips and re-emit even when mtimes look fresh."""
+    lets a C++-only edit re-run only the cheap second half."""
     if not ECO_COMPILER_MLIR.exists():
         sys.exit(f"ERROR: {ECO_COMPILER_MLIR} not found; cannot emit object "
                  "file. Run Stage 5 first.")
-    flag_str = "true" if enable_unboxed_agg else "false"
     print(f"[heap-profile] emitting {ECO_COMPILER_OBJ.name} from "
-          f"{ECO_COMPILER_MLIR.name} (eco-boot-native --emit=obj, "
-          f"-enable-unboxed-agg={flag_str})...",
+          f"{ECO_COMPILER_MLIR.name} (eco-boot-native --emit=obj)...",
           flush=True)
     subprocess.run(
         [str(ECO_BOOT_NATIVE), "--emit=obj",
-         f"-enable-unboxed-agg={flag_str}",
          str(ECO_COMPILER_MLIR), "-o", str(ECO_COMPILER_OBJ)],
         cwd=REPO_ROOT, check=True)
-    _write_obj_flags({"enable_unboxed_agg": enable_unboxed_agg})
 
 
 def _link_eco_compiler_obj() -> None:
@@ -345,7 +317,7 @@ def _bootstrap_env() -> dict:
     return os.environ | {"NODE_OPTIONS": _BOOTSTRAP_NODE_OPTIONS}
 
 
-def _full_bootstrap_to_stage6(enable_unboxed_agg: bool = True) -> None:
+def _full_bootstrap_to_stage6() -> None:
     """Wipe `compiler/build-kernel/bin/` and walk bootstrap.md Stages 1-6,
     ending with a freshly linked `eco-compiler` ELF.
 
@@ -407,11 +379,11 @@ def _full_bootstrap_to_stage6(enable_unboxed_agg: bool = True) -> None:
     print("[heap-profile] Stage 6: eco-boot-native lowers .mlir to "
           f"{ECO_COMPILER_OBJ.name}, then links to eco-compiler ELF",
           flush=True)
-    _emit_eco_compiler_obj(enable_unboxed_agg=enable_unboxed_agg)
+    _emit_eco_compiler_obj()
     _link_eco_compiler_obj()
 
 
-def ensure_binaries_fresh(skip: bool, enable_unboxed_agg: bool = True) -> dict:
+def ensure_binaries_fresh(skip: bool) -> dict:
     """Bring all build artefacts up to date in dependency order:
 
       1. Rebuild eco-boot-native if any runtime C++ source is newer.
@@ -421,8 +393,7 @@ def ensure_binaries_fresh(skip: bool, enable_unboxed_agg: bool = True) -> dict:
          eco-compiler.o cache and links the eco-compiler ELF, so steps 3
          and 4 are skipped.
       3. Refresh the cached eco-compiler.o (Stage 6 minus link) if it's
-         missing, older than eco-compiler.mlir, or was built with a
-         different `enable_unboxed_agg` setting than the current request.
+         missing or older than eco-compiler.mlir.
       4. Re-link eco-compiler if it's missing or older than the .o cache,
          eco-boot-native, or any runtime C++ source. This is the fast
          path for C++-only edits: the heavy MLIR/LLVM lowering is reused
@@ -432,8 +403,7 @@ def ensure_binaries_fresh(skip: bool, enable_unboxed_agg: bool = True) -> dict:
                "rebuilt_compiler_mlir": False,
                "rebuilt_compiler_obj": False,
                "ran_full_bootstrap": False,
-               "skipped": False,
-               "enable_unboxed_agg": enable_unboxed_agg}
+               "skipped": False}
     if skip:
         outcome["checked"] = False
         outcome["skipped"] = True
@@ -455,7 +425,7 @@ def ensure_binaries_fresh(skip: bool, enable_unboxed_agg: bool = True) -> dict:
     mlir_mtime = (ECO_COMPILER_MLIR.stat().st_mtime
                   if ECO_COMPILER_MLIR.exists() else 0.0)
     if not ECO_COMPILER_MLIR.exists() or mlir_mtime < elm_mtime:
-        _full_bootstrap_to_stage6(enable_unboxed_agg=enable_unboxed_agg)
+        _full_bootstrap_to_stage6()
         outcome["ran_full_bootstrap"] = True
         outcome["rebuilt_compiler_mlir"] = True
         outcome["rebuilt_compiler_obj"] = True
@@ -464,21 +434,10 @@ def ensure_binaries_fresh(skip: bool, enable_unboxed_agg: bool = True) -> dict:
 
     obj_mtime = (ECO_COMPILER_OBJ.stat().st_mtime
                  if ECO_COMPILER_OBJ.exists() else 0.0)
-    cached_flags = _read_obj_flags()
-    flag_changed = cached_flags.get("enable_unboxed_agg") != enable_unboxed_agg
-    if (not ECO_COMPILER_OBJ.exists()
-            or obj_mtime < mlir_mtime
-            or flag_changed):
-        # First run on a checkout that predates the .o cache, the .mlir
-        # was regenerated outside of this script, or the caller flipped
-        # --enable-unboxed-agg between runs. Re-emit so the .o reflects
-        # the requested pipeline.
-        if flag_changed and ECO_COMPILER_OBJ.exists():
-            prev = cached_flags.get("enable_unboxed_agg")
-            print(f"[heap-profile] -enable-unboxed-agg changed "
-                  f"({prev} → {enable_unboxed_agg}); re-emitting "
-                  f"{ECO_COMPILER_OBJ.name}...", flush=True)
-        _emit_eco_compiler_obj(enable_unboxed_agg=enable_unboxed_agg)
+    if not ECO_COMPILER_OBJ.exists() or obj_mtime < mlir_mtime:
+        # First run on a checkout that predates the .o cache, or the
+        # .mlir was regenerated outside of this script.
+        _emit_eco_compiler_obj()
         outcome["rebuilt_compiler_obj"] = True
         obj_mtime = ECO_COMPILER_OBJ.stat().st_mtime
 
@@ -1220,8 +1179,7 @@ def previously_done_names(group_dir: Path) -> set[str]:
 
 
 def cmd_run(args, machine: str, results_root: Path) -> None:
-    rebuild = ensure_binaries_fresh(args.skip_rebuild,
-                                    enable_unboxed_agg=args.enable_unboxed_agg)
+    rebuild = ensure_binaries_fresh(args.skip_rebuild)
     cfg_path = Path(args.config or DEFAULT_HEAP_CONFIG)
     if not cfg_path.exists():
         sys.exit(f"ERROR: heap config {cfg_path} does not exist")
@@ -1326,7 +1284,7 @@ def cmd_diff(args) -> None:
     directory and prints a per-bucket delta table (count and an
     estimated bytes contribution). Helps localise which allocation
     size classes account for an alloc-rate gap between two
-    configurations (e.g. -enable-unboxed-agg on vs off)."""
+    configurations."""
     base_variant = _detect_variant(args.baseline, args.variant_baseline)
     targ_variant = _detect_variant(args.target, args.variant_target)
     print(f"baseline: {base_variant}")
@@ -1362,8 +1320,7 @@ def cmd_diff(args) -> None:
 
 
 def cmd_sweep(args, machine: str, results_root: Path) -> None:
-    rebuild = ensure_binaries_fresh(args.skip_rebuild,
-                                    enable_unboxed_agg=args.enable_unboxed_agg)
+    rebuild = ensure_binaries_fresh(args.skip_rebuild)
     selected = None
     if args.variants:
         selected = set(s.strip() for s in args.variants.split(",") if s.strip())
@@ -1444,16 +1401,6 @@ def build_parser() -> argparse.ArgumentParser:
                         "from the same cold cache.")
     p.add_argument("--list-variants", action="store_true",
                    help="print the sweep variants table and exit")
-    p.add_argument("--enable-unboxed-agg",
-                   dest="enable_unboxed_agg",
-                   action=argparse.BooleanOptionalAction,
-                   default=True,
-                   help="pass -enable-unboxed-agg=true/false to "
-                        "eco-boot-native --emit=obj. Defaults to ON to "
-                        "match the binary default; use --no-enable-unboxed-agg "
-                        "to profile a build with the Phase 1/2/3 escape-"
-                        "analysis pipeline disabled. Toggling the flag "
-                        "between runs triggers a re-emit of eco-compiler.o.")
 
     sub = p.add_subparsers(dest="cmd", required=False)
 

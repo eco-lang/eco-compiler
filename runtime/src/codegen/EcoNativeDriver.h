@@ -27,10 +27,6 @@ struct EcoNativeOptions {
     // Echo subcommand lines (link step) to stderr.
     bool verbose = false;
 
-    // Enable the Phase 1-3 unboxed aggregate specialisation passes.
-    // Matches -enable-unboxed-agg on eco-boot-native.
-    bool enableUnboxedAgg = true;
-
     // Diagnostic IR dumps. Empty = no dump.
     std::string preRS4GCDumpPath;
     std::string postRS4GCDumpPath;

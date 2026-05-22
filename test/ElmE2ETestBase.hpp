@@ -529,18 +529,7 @@ inline std::vector<CompileResult> compileAllElmTests(const std::string& testDir,
 // ============================================================================
 
 inline eco::EcoRunner& getRunner() {
-    // E2E and stress tests run with -enable-unboxed-agg ON globally.
-    // This validates the Phase 1 escape-analysis + specialise pass on
-    // the entire Elm test corpus (1242+ programs) — any bug that breaks
-    // user-visible behaviour for a non-escaping tuple in real Elm code
-    // shows up here. The codegen test runner keeps its per-fixture
-    // RUN-line opt-in so individual codegen fixtures can still target
-    // either side of the contract.
-    static thread_local eco::EcoRunner runner = [] {
-        eco::EcoRunner::Options opts;
-        opts.enableUnboxedAgg = false;
-        return eco::EcoRunner{opts};
-    }();
+    static thread_local eco::EcoRunner runner;
     return runner;
 }
 

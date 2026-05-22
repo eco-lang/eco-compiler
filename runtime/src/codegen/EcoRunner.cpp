@@ -173,11 +173,11 @@ private:
     }
 
     bool runPipeline(ModuleOp module, const Options& options) {
+        (void)options;
         PassManager pm(module->getName());
 
         // Use the shared pipeline from EcoPipeline.cpp
         eco::EcoPipelineOptions pipeOpts;
-        pipeOpts.enableUnboxedAgg = options.enableUnboxedAgg;
         eco::buildEcoToLLVMPipeline(pm, pipeOpts);
 
         return succeeded(pm.run(module));

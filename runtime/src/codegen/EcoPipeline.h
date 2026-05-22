@@ -30,20 +30,12 @@ void loadRequiredDialects(mlir::MLIRContext &context);
 
 /// Forward-compatible options struct. New flags are added here and
 /// default OFF so existing callers don't need to change.
-struct EcoPipelineOptions {
-    /// Phase 1 escape analysis + Phase 2 specialise + Phase 3
-    /// cross-function specialise + Phase 3.1 flatten + Phase 3.2 SCC
-    /// passes for value-level aggregates. ON by default after Phase 3.2
-    /// landed (2026-05); pass `-enable-unboxed-agg=false` to opt out.
-    bool enableUnboxedAgg = true;
-};
+struct EcoPipelineOptions {};
 
 /// Builds the Stage 1 pipeline: Eco -> Eco transformations.
 /// This includes:
 ///   - RC elimination (removes reference counting placeholders)
 ///   - Undefined function stub generation
-///   - (optional) escape analysis + unboxed aggregate specialisation
-///     when `opts.enableUnboxedAgg` is true.
 void buildEcoToEcoPipeline(mlir::PassManager &pm,
                            const EcoPipelineOptions &opts = {});
 

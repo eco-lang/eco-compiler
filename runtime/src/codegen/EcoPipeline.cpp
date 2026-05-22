@@ -62,31 +62,6 @@ void buildEcoToEcoPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     // PAP simplification: fuse closures, convert saturated PAPs to direct calls
     pm.addPass(eco::createEcoPAPSimplifyPass());
 
-    // Phase 1 escape analysis + unboxed-aggregate specialise. OFF by
-    // default; only added when -enable-unboxed-agg is set so existing
-    // pipelines retain identical IR. Both passes are per-function and
-    // run in lockstep: analysis tags Tuple2/3ConstructOp results that
-    // never escape, specialise rewrites them to eco.make.tuple2/3.
-    // Must run before EcoGCPrepare so the construct ops haven't yet
-    // accumulated GC root operands.
-    if (opts.enableUnboxedAgg) {
-        // Phase 3 cross-function specialisation runs FIRST: it looks at
-        // each func.func's logical-types attributes and clones eligible
-        // candidates as @f$unboxed workers, replacing the original body
-        // with a from_heap/to_heap wrapper. The per-func passes below
-        // then clean up both the worker body and the wrapper body.
-        pm.addPass(eco::createEcoUnboxedAggCrossSpecPass());
-        pm.addNestedPass<func::FuncOp>(eco::createEcoEscapeAnalysisPass());
-        pm.addNestedPass<func::FuncOp>(eco::createEcoUnboxedAggSpecializePass());
-
-        // Phase 3.1 #3: flatten aggregate-typed boundaries so the LLVM
-        // dialect's func signatures stay scalar-only. After this pass
-        // no eco.tuple2/3/record/custom appears at any function
-        // boundary — RS4GC's FCA-unimplemented assertion is avoided
-        // structurally (REP_AGG_001 amendment).
-        pm.addPass(eco::createEcoFlattenAggBoundaryPass());
-    }
-
     // Generate external declarations for undefined functions (kernel functions, etc.)
     pm.addPass(eco::createUndefinedFunctionPass());
 }
@@ -101,11 +76,6 @@ void buildEcoToLLVMPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
 
     // Stage 2.5: GC preparation (root sets, allocation grouping, safepoint rewrite).
-    // Phase 1 of widen-construct-make-call-aggregates: box aggregate operands
-    // of construct.*, make.*, and eco.call BEFORE EcoGCPrepare so the new
-    // eco.to_heap allocations get GC roots and grouping computed alongside the
-    // existing allocs.
-    pm.addPass(eco::createEcoBoxAggregateOperandsPass());
     pm.addPass(eco::createEcoGCPreparePass());
 #ifdef ECO_LOWERING_VALIDATION
     pm.addNestedPass<func::FuncOp>(eco::createEcoGCLivenessAuditPass());

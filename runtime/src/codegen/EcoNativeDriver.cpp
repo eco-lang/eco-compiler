@@ -79,8 +79,7 @@ OwningOpRef<ModuleOp> loadMLIRFromSourceMgr(MLIRContext &context,
     return module;
 }
 
-int runPipeline(ModuleOp module, bool enableUnboxedAgg,
-                eco::LoweringStats *stats) {
+int runPipeline(ModuleOp module, eco::LoweringStats *stats) {
     PassManager pm(module->getName());
 
     // Skip applyPassManagerCLOptions — the library is invoked outside any
@@ -93,7 +92,6 @@ int runPipeline(ModuleOp module, bool enableUnboxedAgg,
         pm.addInstrumentation(stats->makePassInstrumentation());
 
     eco::EcoPipelineOptions pipeOpts;
-    pipeOpts.enableUnboxedAgg = enableUnboxedAgg;
     eco::buildEcoToLLVMPipeline(pm, pipeOpts);
 
     if (failed(pm.run(module)))
@@ -171,7 +169,7 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
         if (opts.stats)
             scope = std::make_unique<eco::LoweringStats::Scope>(
                 *opts.stats, "MLIR lowering pipeline");
-        if (runPipeline(*module, opts.enableUnboxedAgg, opts.stats) != 0)
+        if (runPipeline(*module, opts.stats) != 0)
             return 1;
     }
 

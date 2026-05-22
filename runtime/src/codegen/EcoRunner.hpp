@@ -81,7 +81,6 @@ public:
     struct Options {
         bool enableOpt = false;        ///< Enable LLVM optimizations
         bool captureOutput = true;     ///< Capture eco.dbg output
-        bool enableUnboxedAgg = false; ///< Phase 1 escape analysis pass
 
         Options() = default;
     };

@@ -67,10 +67,6 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Support/SourceMgr.h"
 
-// Per-op-name dump entry points exported by the instrumented MLIR passes.
-// Called just before llvm::PrintStatistics so all eco-side stats land in
-// one contiguous block at the end of the run.
-extern void ecoDumpEscapeAnalysisStats();
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
@@ -171,15 +167,6 @@ static cl::opt<std::string> dumpPreRS4GCIR(
 static cl::opt<bool> printStats(
     "lowering-stats",
     cl::desc("Print lowering-pipeline timing breakdown to stderr at exit"),
-    cl::init(true));
-
-static cl::opt<bool> enableUnboxedAgg(
-    "enable-unboxed-agg",
-    cl::desc("Enable Phase 1 escape analysis + Phase 2 specialise + "
-             "Phase 3 cross-function specialise + Phase 3.1 flatten + "
-             "Phase 3.2 SCC passes for value-level aggregates "
-             "(on by default after Phase 3.2 landed; pass "
-             "-enable-unboxed-agg=false to opt out)"),
     cl::init(true));
 
 //===----------------------------------------------------------------------===//
@@ -314,7 +301,6 @@ static int runPipeline(ModuleOp module, eco::LoweringStats &stats) {
     pm.addInstrumentation(stats.makePassInstrumentation());
 
     eco::EcoPipelineOptions pipeOpts;
-    pipeOpts.enableUnboxedAgg = enableUnboxedAgg;
     eco::buildEcoToLLVMPipeline(pm, pipeOpts);
 
     if (failed(pm.run(module)))
@@ -460,9 +446,9 @@ int main(int argc, char **argv) {
 
     std::string output = getOutputPath();
 
-    // Turn on llvm::Statistic collection so cross-spec / EcoBoxAggregateOperands
-    // counters reach our PrintStatistics call at exit. EnableStatistics also
-    // makes LLVM's at-exit dumper fire, but we drive printing explicitly via
+    // Turn on llvm::Statistic collection so any pass-emitted counters reach
+    // our PrintStatistics call at exit. EnableStatistics also makes LLVM's
+    // at-exit dumper fire, but we drive printing explicitly via
     // PrintStatistics(llvm::errs()) at each return path below.
     llvm::EnableStatistics(/*DoPrintOnExit=*/false);
 
@@ -491,7 +477,6 @@ int main(int argc, char **argv) {
         }
         if (printStats) {
             stats.print(llvm::errs());
-            ecoDumpEscapeAnalysisStats();
             llvm::PrintStatistics(llvm::errs());
         }
         return rc;
@@ -514,7 +499,6 @@ int main(int argc, char **argv) {
             }
             if (printStats) {
                 stats.print(llvm::errs());
-                ecoDumpEscapeAnalysisStats();
                 llvm::PrintStatistics(llvm::errs());
             }
             return rc;
@@ -663,7 +647,6 @@ int main(int argc, char **argv) {
         }
         if (printStats) {
             stats.print(llvm::errs());
-            ecoDumpEscapeAnalysisStats();
             llvm::PrintStatistics(llvm::errs());
         }
         return 0;
@@ -715,7 +698,6 @@ int main(int argc, char **argv) {
     if (emitAction == EmitObj) {
         if (printStats) {
             stats.print(llvm::errs());
-            ecoDumpEscapeAnalysisStats();
             llvm::PrintStatistics(llvm::errs());
         }
         return 0;
@@ -734,7 +716,6 @@ int main(int argc, char **argv) {
 
     if (printStats) {
         stats.print(llvm::errs());
-        ecoDumpEscapeAnalysisStats();
         llvm::PrintStatistics(llvm::errs());
     }
 
