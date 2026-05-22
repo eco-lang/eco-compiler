@@ -264,7 +264,12 @@ add_custom_command(
         --local-package eco/kernel=${COMPILER_DIR}/../eco-kernel-cpp
         --output=bin/eco-compiler.mlir
         ${ELM_ENTRY}
+    # Ordering edge: Stage 5 must wait for Stage 4b's JS fixed-point diff so
+    # the bootstrap chain runs in the order documented in guides/bootstrap.md.
+    # Without this, Ninja is free to start Stage 5 the moment Stage 3's
+    # eco-boot-2.js exists, racing past the Stage 4 verification.
     DEPENDS ${ECO_BOOT_2_OUTPUT} ${ECO_BOOT_2_RUNNER_OUTPUT}
+        ${ECO_BOOT_VERIFY_STAMP}
         ${ELM_SOURCES} ${KERNEL_SOURCES}
     WORKING_DIRECTORY ${BUILD_KERNEL_DIR}
     COMMENT "Stage 5: eco-boot-2.js → eco-compiler.mlir"
@@ -382,7 +387,12 @@ add_custom_command(
         ${ECO_COMPILER_MLIR}
         --emit=obj
         -o ${ECO_STAGE9_OBJ}
-    DEPENDS ${ECO_COMPILER_MLIR} eco-boot-native
+    # Ordering edge: gate Stage 9 on Stage 7's native ELF. Stage 9's inputs
+    # (eco-compiler.mlir + eco-boot-native) are otherwise ready at the end of
+    # Stage 5, which lets Ninja race Stage 9 ahead of Stages 6–8. Hanging
+    # Stage 9 off the Stage 7 ELF forces the chain through Stages 6 and 7
+    # first; Stages 8 and 9 are then free to run in parallel after Stage 7.
+    DEPENDS ${ECO_COMPILER_MLIR} eco-boot-native ${ECO_COMPILER_BOOT_ELF}
     COMMENT "Stage 9a: eco-compiler.mlir → eco-stage9.o"
 )
 
