@@ -3,6 +3,7 @@ module Compiler.AST.Utils.Shader exposing
     , Type(..), Types(..)
     , sourceEncoder, sourceDecoder
     , typesEncoder, typesDecoder
+    , sourceEncoderS, sourceDecoderS, collectStringsFromSource
     )
 
 {-| Utilities for working with WebGL shader code in the Elm compiler.
@@ -31,9 +32,11 @@ shader source in generated JavaScript, along with serialization support.
 
 import Bytes.Decode
 import Bytes.Encode
+import Compiler.AST.StringTable as StringTable exposing (StringTable)
 import Compiler.Data.Name exposing (Name)
 import Data.Map exposing (Dict)
 import Regex
+import Set exposing (Set)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 
@@ -161,15 +164,36 @@ unescape =
 {-| Encode shader source to binary format.
 -}
 sourceEncoder : Source -> Bytes.Encode.Encoder
-sourceEncoder (Source src) =
-    BE.string src
+sourceEncoder =
+    sourceEncoderS StringTable.disabled
 
 
 {-| Decode shader source from binary format.
 -}
 sourceDecoder : Bytes.Decode.Decoder Source
 sourceDecoder =
-    Bytes.Decode.map Source BD.string
+    sourceDecoderS StringTable.disabled
+
+
+{-| String-interned variant of `sourceEncoder`.
+-}
+sourceEncoderS : StringTable -> Source -> Bytes.Encode.Encoder
+sourceEncoderS st (Source src) =
+    StringTable.string st src
+
+
+{-| String-interned variant of `sourceDecoder`.
+-}
+sourceDecoderS : StringTable -> Bytes.Decode.Decoder Source
+sourceDecoderS st =
+    Bytes.Decode.map Source (StringTable.stringDec st)
+
+
+{-| Add the shader source string to a collection set.
+-}
+collectStringsFromSource : Source -> Set String -> Set String
+collectStringsFromSource (Source src) acc =
+    Set.insert src acc
 
 
 {-| Encode shader type information to binary format.

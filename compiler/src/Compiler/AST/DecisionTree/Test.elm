@@ -1,6 +1,7 @@
 module Compiler.AST.DecisionTree.Test exposing
     ( Test(..), testToComparable
     , testEncoder, testDecoder
+    , testEncoderS, testDecoderS, collectStringsFromTest
     )
 
 {-| Runtime tests for pattern matching decision trees.
@@ -17,9 +18,11 @@ LocalOpt layers.
 import Bytes.Decode
 import Bytes.Encode
 import Compiler.AST.Canonical as Can
+import Compiler.AST.StringTable as StringTable exposing (StringTable)
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
+import Set exposing (Set)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
@@ -113,13 +116,27 @@ ctorOptsToString opts =
 {-| Encode a Test to bytes for serialization.
 -}
 testEncoder : Test -> Bytes.Encode.Encoder
-testEncoder test =
+testEncoder =
+    testEncoderS StringTable.disabled
+
+
+{-| Decode a Test from bytes.
+-}
+testDecoder : Bytes.Decode.Decoder Test
+testDecoder =
+    testDecoderS StringTable.disabled
+
+
+{-| String-interned variant of `testEncoder`.
+-}
+testEncoderS : StringTable -> Test -> Bytes.Encode.Encoder
+testEncoderS st test =
     case test of
         IsCtor home name index numAlts opts ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 0
-                , ModuleName.canonicalEncoder home
-                , BE.string name
+                , ModuleName.canonicalEncoderS st home
+                , StringTable.string st name
                 , Index.zeroBasedEncoder index
                 , BE.int numAlts
                 , Can.ctorOptsEncoder opts
@@ -143,13 +160,13 @@ testEncoder test =
         IsChr value ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 5
-                , BE.string value
+                , StringTable.string st value
                 ]
 
         IsStr value ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 6
-                , BE.string value
+                , StringTable.string st value
                 ]
 
         IsBool value ->
@@ -159,18 +176,18 @@ testEncoder test =
                 ]
 
 
-{-| Decode a Test from bytes.
+{-| String-interned variant of `testDecoder`.
 -}
-testDecoder : Bytes.Decode.Decoder Test
-testDecoder =
+testDecoderS : StringTable -> Bytes.Decode.Decoder Test
+testDecoderS st =
     Bytes.Decode.unsignedInt8
         |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
                         Bytes.Decode.map5 IsCtor
-                            ModuleName.canonicalDecoder
-                            BD.string
+                            (ModuleName.canonicalDecoderS st)
+                            (StringTable.stringDec st)
                             Index.zeroBasedDecoder
                             BD.int
                             Can.ctorOptsDecoder
@@ -188,10 +205,10 @@ testDecoder =
                         Bytes.Decode.map IsInt BD.int
 
                     5 ->
-                        Bytes.Decode.map IsChr BD.string
+                        Bytes.Decode.map IsChr (StringTable.stringDec st)
 
                     6 ->
-                        Bytes.Decode.map IsStr BD.string
+                        Bytes.Decode.map IsStr (StringTable.stringDec st)
 
                     7 ->
                         Bytes.Decode.map IsBool BD.bool
@@ -199,3 +216,35 @@ testDecoder =
                     _ ->
                         Bytes.Decode.fail
             )
+
+
+{-| Add string components of a Test to a collection set.
+-}
+collectStringsFromTest : Test -> Set String -> Set String
+collectStringsFromTest test acc =
+    case test of
+        IsCtor home name _ _ _ ->
+            acc
+                |> ModuleName.collectStringsFromCanonical home
+                |> Set.insert name
+
+        IsCons ->
+            acc
+
+        IsNil ->
+            acc
+
+        IsTuple ->
+            acc
+
+        IsInt _ ->
+            acc
+
+        IsChr value ->
+            Set.insert value acc
+
+        IsStr value ->
+            Set.insert value acc
+
+        IsBool _ ->
+            acc

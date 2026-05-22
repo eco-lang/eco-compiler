@@ -11,6 +11,12 @@ module Compiler.AST.Canonical exposing
     , unionEncoder, unionDecoder
     , ctorOptsEncoder, ctorOptsDecoder
     , fieldUpdateEncoder, fieldUpdateDecoder
+    , annotationEncoderS, annotationDecoderS
+    , typeEncoderS, typeDecoderS
+    , aliasEncoderS, aliasDecoderS
+    , unionEncoderS, unionDecoderS
+    , collectStringsFromAnnotation, collectStringsFromType
+    , collectStringsFromAlias, collectStringsFromUnion
     )
 
 {-| The Canonical AST represents Elm code after name resolution.
@@ -87,6 +93,7 @@ Cached data is marked with comments like `-- CACHE for exhaustiveness` or
 import Bytes.Decode
 import Bytes.Encode
 import Compiler.AST.Source as Src
+import Compiler.AST.StringTable as StringTable exposing (StringTable)
 import Compiler.AST.Utils.Binop as Binop
 import Compiler.AST.Utils.Shader as Shader
 import Compiler.Data.Index as Index
@@ -95,6 +102,7 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Data.Map
 import Dict exposing (Dict)
+import Set exposing (Set)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
@@ -494,83 +502,135 @@ type Manager
 {-| Encodes an Annotation to bytes for serialization.
 -}
 annotationEncoder : Annotation Name -> Bytes.Encode.Encoder
-annotationEncoder (Forall freeVars tipe) =
-    Bytes.Encode.sequence
-        [ freeVarsEncoder freeVars
-        , typeEncoder tipe
-        ]
+annotationEncoder =
+    annotationEncoderS StringTable.disabled
 
 
 {-| Decodes an Annotation from bytes.
 -}
 annotationDecoder : Bytes.Decode.Decoder (Annotation Name)
 annotationDecoder =
+    annotationDecoderS StringTable.disabled
+
+
+{-| String-interned variant of `annotationEncoder`.
+-}
+annotationEncoderS : StringTable -> Annotation Name -> Bytes.Encode.Encoder
+annotationEncoderS st (Forall freeVars tipe) =
+    Bytes.Encode.sequence
+        [ freeVarsEncoderS st freeVars
+        , typeEncoderS st tipe
+        ]
+
+
+{-| String-interned variant of `annotationDecoder`.
+-}
+annotationDecoderS : StringTable -> Bytes.Decode.Decoder (Annotation Name)
+annotationDecoderS st =
     Bytes.Decode.map2 Forall
-        freeVarsDecoder
-        typeDecoder
+        (freeVarsDecoderS st)
+        (typeDecoderS st)
+
+
+freeVarsEncoderS : StringTable -> FreeVars -> Bytes.Encode.Encoder
+freeVarsEncoderS st freeVars =
+    BE.list (StringTable.string st) (Dict.keys freeVars)
+
+
+freeVarsDecoderS : StringTable -> Bytes.Decode.Decoder FreeVars
+freeVarsDecoderS st =
+    BD.list (StringTable.stringDec st)
+        |> Bytes.Decode.map (List.map (\key -> ( key, () )) >> Dict.fromList)
 
 
 freeVarsEncoder : FreeVars -> Bytes.Encode.Encoder
-freeVarsEncoder freeVars =
-    BE.list BE.string (Dict.keys freeVars)
+freeVarsEncoder =
+    freeVarsEncoderS StringTable.disabled
 
 
 freeVarsDecoder : Bytes.Decode.Decoder FreeVars
 freeVarsDecoder =
-    BD.list BD.string
-        |> Bytes.Decode.map (List.map (\key -> ( key, () )) >> Dict.fromList)
+    freeVarsDecoderS StringTable.disabled
 
 
 {-| Encodes an Alias to bytes for serialization.
 -}
 aliasEncoder : Alias -> Bytes.Encode.Encoder
-aliasEncoder (Alias vars tipe) =
-    Bytes.Encode.sequence
-        [ BE.list BE.string vars
-        , typeEncoder tipe
-        ]
+aliasEncoder =
+    aliasEncoderS StringTable.disabled
 
 
 {-| Decodes an Alias from bytes.
 -}
 aliasDecoder : Bytes.Decode.Decoder Alias
 aliasDecoder =
+    aliasDecoderS StringTable.disabled
+
+
+{-| String-interned variant of `aliasEncoder`.
+-}
+aliasEncoderS : StringTable -> Alias -> Bytes.Encode.Encoder
+aliasEncoderS st (Alias vars tipe) =
+    Bytes.Encode.sequence
+        [ BE.list (StringTable.string st) vars
+        , typeEncoderS st tipe
+        ]
+
+
+{-| String-interned variant of `aliasDecoder`.
+-}
+aliasDecoderS : StringTable -> Bytes.Decode.Decoder Alias
+aliasDecoderS st =
     Bytes.Decode.map2 Alias
-        (BD.list BD.string)
-        typeDecoder
+        (BD.list (StringTable.stringDec st))
+        (typeDecoderS st)
 
 
 {-| Encodes a Type to bytes for serialization.
 -}
 typeEncoder : Type Name -> Bytes.Encode.Encoder
-typeEncoder type_ =
+typeEncoder =
+    typeEncoderS StringTable.disabled
+
+
+{-| Decodes a Type from bytes.
+-}
+typeDecoder : Bytes.Decode.Decoder (Type Name)
+typeDecoder =
+    typeDecoderS StringTable.disabled
+
+
+{-| String-interned variant of `typeEncoder`.
+-}
+typeEncoderS : StringTable -> Type Name -> Bytes.Encode.Encoder
+typeEncoderS st type_ =
     case type_ of
         TLambda a b ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 0
-                , typeEncoder a
-                , typeEncoder b
+                , typeEncoderS st a
+                , typeEncoderS st b
                 ]
 
         TVar name ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 1
-                , BE.string name
+                , StringTable.string st name
                 ]
 
         TType home name args ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 2
-                , ModuleName.canonicalEncoder home
-                , BE.string name
-                , BE.list typeEncoder args
+                , ModuleName.canonicalEncoderS st home
+                , StringTable.string st name
+                , BE.list (typeEncoderS st) args
                 ]
 
         TRecord fields ext ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 3
-                , BE.stdDict BE.string fieldTypeEncoder fields
-                , BE.maybe BE.string ext
+                , BE.stdDict (StringTable.string st) (fieldTypeEncoderS st) fields
+                , BE.maybe (StringTable.string st) ext
                 ]
 
         TUnit ->
@@ -579,111 +639,111 @@ typeEncoder type_ =
         TTuple a b cs ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 5
-                , typeEncoder a
-                , typeEncoder b
-                , BE.list typeEncoder cs
+                , typeEncoderS st a
+                , typeEncoderS st b
+                , BE.list (typeEncoderS st) cs
                 ]
 
         TAlias home name args tipe ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 6
-                , ModuleName.canonicalEncoder home
-                , BE.string name
-                , BE.list (BE.jsonPair BE.string typeEncoder) args
-                , aliasTypeEncoder tipe
+                , ModuleName.canonicalEncoderS st home
+                , StringTable.string st name
+                , BE.list (BE.jsonPair (StringTable.string st) (typeEncoderS st)) args
+                , aliasTypeEncoderS st tipe
                 ]
 
 
-{-| Decodes a Type from bytes.
+{-| String-interned variant of `typeDecoder`.
 -}
-typeDecoder : Bytes.Decode.Decoder (Type Name)
-typeDecoder =
+typeDecoderS : StringTable -> Bytes.Decode.Decoder (Type Name)
+typeDecoderS st =
     Bytes.Decode.unsignedInt8
         |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
                         Bytes.Decode.map2 TLambda
-                            typeDecoder
-                            typeDecoder
+                            (typeDecoderS st)
+                            (typeDecoderS st)
 
                     1 ->
-                        Bytes.Decode.map TVar BD.string
+                        Bytes.Decode.map TVar (StringTable.stringDec st)
 
                     2 ->
                         Bytes.Decode.map3 TType
-                            ModuleName.canonicalDecoder
-                            BD.string
-                            (BD.list typeDecoder)
+                            (ModuleName.canonicalDecoderS st)
+                            (StringTable.stringDec st)
+                            (BD.list (typeDecoderS st))
 
                     3 ->
                         Bytes.Decode.map2 TRecord
-                            (BD.stdDict BD.string fieldTypeDecoder)
-                            (BD.maybe BD.string)
+                            (BD.stdDict (StringTable.stringDec st) (fieldTypeDecoderS st))
+                            (BD.maybe (StringTable.stringDec st))
 
                     4 ->
                         Bytes.Decode.succeed TUnit
 
                     5 ->
                         Bytes.Decode.map3 TTuple
-                            typeDecoder
-                            typeDecoder
-                            (BD.list typeDecoder)
+                            (typeDecoderS st)
+                            (typeDecoderS st)
+                            (BD.list (typeDecoderS st))
 
                     6 ->
                         Bytes.Decode.map4 TAlias
-                            ModuleName.canonicalDecoder
-                            BD.string
-                            (BD.list (BD.jsonPair BD.string typeDecoder))
-                            aliasTypeDecoder
+                            (ModuleName.canonicalDecoderS st)
+                            (StringTable.stringDec st)
+                            (BD.list (BD.jsonPair (StringTable.stringDec st) (typeDecoderS st)))
+                            (aliasTypeDecoderS st)
 
                     _ ->
                         Bytes.Decode.fail
             )
 
 
-fieldTypeEncoder : FieldType Name -> Bytes.Encode.Encoder
-fieldTypeEncoder (FieldType index tipe) =
+fieldTypeEncoderS : StringTable -> FieldType Name -> Bytes.Encode.Encoder
+fieldTypeEncoderS st (FieldType index tipe) =
     Bytes.Encode.sequence
         [ BE.int index
-        , typeEncoder tipe
+        , typeEncoderS st tipe
         ]
 
 
-aliasTypeEncoder : AliasType Name -> Bytes.Encode.Encoder
-aliasTypeEncoder aliasType =
+aliasTypeEncoderS : StringTable -> AliasType Name -> Bytes.Encode.Encoder
+aliasTypeEncoderS st aliasType =
     case aliasType of
         Holey tipe ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 0
-                , typeEncoder tipe
+                , typeEncoderS st tipe
                 ]
 
         Filled tipe ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 1
-                , typeEncoder tipe
+                , typeEncoderS st tipe
                 ]
 
 
-fieldTypeDecoder : Bytes.Decode.Decoder (FieldType Name)
-fieldTypeDecoder =
+fieldTypeDecoderS : StringTable -> Bytes.Decode.Decoder (FieldType Name)
+fieldTypeDecoderS st =
     Bytes.Decode.map2 FieldType
         BD.int
-        typeDecoder
+        (typeDecoderS st)
 
 
-aliasTypeDecoder : Bytes.Decode.Decoder (AliasType Name)
-aliasTypeDecoder =
+aliasTypeDecoderS : StringTable -> Bytes.Decode.Decoder (AliasType Name)
+aliasTypeDecoderS st =
     Bytes.Decode.unsignedInt8
         |> Bytes.Decode.andThen
             (\idx ->
                 case idx of
                     0 ->
-                        Bytes.Decode.map Holey typeDecoder
+                        Bytes.Decode.map Holey (typeDecoderS st)
 
                     1 ->
-                        Bytes.Decode.map Filled typeDecoder
+                        Bytes.Decode.map Filled (typeDecoderS st)
 
                     _ ->
                         Bytes.Decode.fail
@@ -693,43 +753,57 @@ aliasTypeDecoder =
 {-| Encodes a Union to bytes for serialization.
 -}
 unionEncoder : Union -> Bytes.Encode.Encoder
-unionEncoder (Union u) =
-    Bytes.Encode.sequence
-        [ BE.list BE.string u.vars
-        , BE.list ctorEncoder u.alts
-        , BE.int u.numAlts
-        , ctorOptsEncoder u.opts
-        ]
+unionEncoder =
+    unionEncoderS StringTable.disabled
 
 
 {-| Decodes a Union from bytes.
 -}
 unionDecoder : Bytes.Decode.Decoder Union
 unionDecoder =
+    unionDecoderS StringTable.disabled
+
+
+{-| String-interned variant of `unionEncoder`.
+-}
+unionEncoderS : StringTable -> Union -> Bytes.Encode.Encoder
+unionEncoderS st (Union u) =
+    Bytes.Encode.sequence
+        [ BE.list (StringTable.string st) u.vars
+        , BE.list (ctorEncoderS st) u.alts
+        , BE.int u.numAlts
+        , ctorOptsEncoder u.opts
+        ]
+
+
+{-| String-interned variant of `unionDecoder`.
+-}
+unionDecoderS : StringTable -> Bytes.Decode.Decoder Union
+unionDecoderS st =
     Bytes.Decode.map4 (\vars_ alts_ numAlts_ opts_ -> Union { vars = vars_, alts = alts_, numAlts = numAlts_, opts = opts_ })
-        (BD.list BD.string)
-        (BD.list ctorDecoder)
+        (BD.list (StringTable.stringDec st))
+        (BD.list (ctorDecoderS st))
         BD.int
         ctorOptsDecoder
 
 
-ctorEncoder : Ctor -> Bytes.Encode.Encoder
-ctorEncoder (Ctor c) =
+ctorEncoderS : StringTable -> Ctor -> Bytes.Encode.Encoder
+ctorEncoderS st (Ctor c) =
     Bytes.Encode.sequence
-        [ BE.string c.name
+        [ StringTable.string st c.name
         , Index.zeroBasedEncoder c.index
         , BE.int c.numArgs
-        , BE.list typeEncoder c.args
+        , BE.list (typeEncoderS st) c.args
         ]
 
 
-ctorDecoder : Bytes.Decode.Decoder Ctor
-ctorDecoder =
+ctorDecoderS : StringTable -> Bytes.Decode.Decoder Ctor
+ctorDecoderS st =
     Bytes.Decode.map4 (\name_ index_ numArgs_ args_ -> Ctor { name = name_, index = index_, numArgs = numArgs_, args = args_ })
-        BD.string
+        (StringTable.stringDec st)
         Index.zeroBasedDecoder
         BD.int
-        (BD.list typeDecoder)
+        (BD.list (typeDecoderS st))
 
 
 {-| Encodes CtorOpts to bytes for serialization.
@@ -1431,3 +1505,122 @@ caseBranchDecoder =
     Bytes.Decode.map2 CaseBranch
         patternDecoder
         exprDecoder
+
+
+
+-- ====== STRING COLLECTORS (for string-table interning; see ECOT_002) ======
+
+
+{-| Add all strings emitted by `annotationEncoderS` to a collection set.
+-}
+collectStringsFromAnnotation : Annotation Name -> Set String -> Set String
+collectStringsFromAnnotation (Forall freeVars tipe) acc =
+    acc
+        |> (\a -> List.foldl Set.insert a (Dict.keys freeVars))
+        |> collectStringsFromType tipe
+
+
+{-| Add all strings emitted by `aliasEncoderS` to a collection set.
+-}
+collectStringsFromAlias : Alias -> Set String -> Set String
+collectStringsFromAlias (Alias vars tipe) acc =
+    acc
+        |> (\a -> List.foldl Set.insert a vars)
+        |> collectStringsFromType tipe
+
+
+{-| Add all strings emitted by `typeEncoderS` to a collection set.
+-}
+collectStringsFromType : Type Name -> Set String -> Set String
+collectStringsFromType type_ acc =
+    case type_ of
+        TLambda a b ->
+            acc
+                |> collectStringsFromType a
+                |> collectStringsFromType b
+
+        TVar name ->
+            Set.insert name acc
+
+        TType home name args ->
+            List.foldl collectStringsFromType
+                (acc
+                    |> ModuleName.collectStringsFromCanonical home
+                    |> Set.insert name
+                )
+                args
+
+        TRecord fields ext ->
+            let
+                withFields : Set String
+                withFields =
+                    Dict.foldl
+                        (\k (FieldType _ ft) a ->
+                            collectStringsFromType ft (Set.insert k a)
+                        )
+                        acc
+                        fields
+            in
+            case ext of
+                Just s ->
+                    Set.insert s withFields
+
+                Nothing ->
+                    withFields
+
+        TUnit ->
+            acc
+
+        TTuple a b cs ->
+            List.foldl collectStringsFromType
+                (acc
+                    |> collectStringsFromType a
+                    |> collectStringsFromType b
+                )
+                cs
+
+        TAlias home name args tipe ->
+            let
+                withHead : Set String
+                withHead =
+                    acc
+                        |> ModuleName.collectStringsFromCanonical home
+                        |> Set.insert name
+
+                withArgs : Set String
+                withArgs =
+                    List.foldl
+                        (\( argName, argType ) a ->
+                            a |> Set.insert argName |> collectStringsFromType argType
+                        )
+                        withHead
+                        args
+            in
+            collectStringsFromAliasType tipe withArgs
+
+
+collectStringsFromAliasType : AliasType Name -> Set String -> Set String
+collectStringsFromAliasType at acc =
+    case at of
+        Holey tipe ->
+            collectStringsFromType tipe acc
+
+        Filled tipe ->
+            collectStringsFromType tipe acc
+
+
+{-| Add all strings emitted by `unionEncoderS` to a collection set.
+-}
+collectStringsFromUnion : Union -> Set String -> Set String
+collectStringsFromUnion (Union u) acc =
+    let
+        withVars : Set String
+        withVars =
+            List.foldl Set.insert acc u.vars
+    in
+    List.foldl collectStringsFromCtor withVars u.alts
+
+
+collectStringsFromCtor : Ctor -> Set String -> Set String
+collectStringsFromCtor (Ctor c) acc =
+    List.foldl collectStringsFromType (Set.insert c.name acc) c.args

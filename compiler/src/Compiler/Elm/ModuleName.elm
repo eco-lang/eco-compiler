@@ -9,6 +9,8 @@ module Compiler.Elm.ModuleName exposing
     , bytes
     , webgl, texture, vector2, vector3, vector4, matrix4
     , canonicalEncoder, canonicalDecoder, rawEncoder, rawDecoder
+    , canonicalEncoderS, canonicalDecoderS, rawEncoderS, rawDecoderS
+    , collectStringsFromCanonical, collectStringsFromRaw
     )
 
 {-| Utilities for working with Elm module names in their raw and canonical forms.
@@ -71,12 +73,14 @@ names include both the package name and module name, fully qualifying the module
 
 import Bytes.Decode
 import Bytes.Encode
+import Compiler.AST.StringTable as StringTable exposing (StringTable)
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.Package as Pkg
 import Compiler.Json.Decode as D
 import Compiler.Json.Encode as E
 import Compiler.Parse.Primitives as P
 import Compiler.Parse.Variable as Var
+import Set exposing (Set)
 import System.TypeCheck.IO exposing (Canonical(..))
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
@@ -427,20 +431,15 @@ matrix4 =
 {-| Encode a canonical module name to binary format, including package name and module name.
 -}
 canonicalEncoder : Canonical -> Bytes.Encode.Encoder
-canonicalEncoder (Canonical pkgName name) =
-    Bytes.Encode.sequence
-        [ Pkg.nameEncoder pkgName
-        , BE.string name
-        ]
+canonicalEncoder =
+    canonicalEncoderS StringTable.disabled
 
 
 {-| Decode a canonical module name from binary format, including package name and module name.
 -}
 canonicalDecoder : Bytes.Decode.Decoder Canonical
 canonicalDecoder =
-    Bytes.Decode.map2 Canonical
-        Pkg.nameDecoder
-        BD.string
+    canonicalDecoderS StringTable.disabled
 
 
 {-| Encode a raw module name to binary format as a string.
@@ -455,3 +454,52 @@ rawEncoder =
 rawDecoder : Bytes.Decode.Decoder Raw
 rawDecoder =
     BD.string
+
+
+{-| String-interned variant of `canonicalEncoder`.
+-}
+canonicalEncoderS : StringTable -> Canonical -> Bytes.Encode.Encoder
+canonicalEncoderS st (Canonical pkgName name) =
+    Bytes.Encode.sequence
+        [ Pkg.nameEncoderS st pkgName
+        , StringTable.string st name
+        ]
+
+
+{-| String-interned variant of `canonicalDecoder`.
+-}
+canonicalDecoderS : StringTable -> Bytes.Decode.Decoder Canonical
+canonicalDecoderS st =
+    Bytes.Decode.map2 Canonical
+        (Pkg.nameDecoderS st)
+        (StringTable.stringDec st)
+
+
+{-| String-interned variant of `rawEncoder`.
+-}
+rawEncoderS : StringTable -> Raw -> Bytes.Encode.Encoder
+rawEncoderS =
+    StringTable.string
+
+
+{-| String-interned variant of `rawDecoder`.
+-}
+rawDecoderS : StringTable -> Bytes.Decode.Decoder Raw
+rawDecoderS =
+    StringTable.stringDec
+
+
+{-| Add the string components of a canonical module name to a collection set.
+-}
+collectStringsFromCanonical : Canonical -> Set String -> Set String
+collectStringsFromCanonical (Canonical pkgName name) acc =
+    acc
+        |> Pkg.collectStringsFromName pkgName
+        |> Set.insert name
+
+
+{-| Add a raw module name to a collection set.
+-}
+collectStringsFromRaw : Raw -> Set String -> Set String
+collectStringsFromRaw raw acc =
+    Set.insert raw acc

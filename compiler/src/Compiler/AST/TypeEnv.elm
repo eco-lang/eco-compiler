@@ -35,11 +35,13 @@ definitions when specializing polymorphic code.
 import Bytes.Decode
 import Bytes.Encode
 import Compiler.AST.Canonical as Can
+import Compiler.AST.StringTable as StringTable exposing (StringTable)
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.Interface as I
 import Compiler.Elm.ModuleName as ModuleName
 import Data.Map
 import Dict exposing (Dict)
+import Set exposing (Set)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
@@ -142,13 +144,27 @@ mergeGlobalTypeEnv env1 env2 =
 
 
 {-| Encode a module type environment.
+
+Per ECOT_001 in design_docs/invariants.csv, the `aliases` field is NOT
+serialized; it is reconstructed as `Dict.empty` on decode. Aliases are
+expanded during canonicalization / typed optimization, which run before
+.ecot is written, so no post-deserialization consumer reads them.
+
+Per ECOT_002, this encoder emits a per-call string-table preamble; every
+string field in the body is encoded as an index into the table.
+
 -}
 moduleTypeEnvEncoder : ModuleTypeEnv -> Bytes.Encode.Encoder
 moduleTypeEnvEncoder env =
+    let
+        st : StringTable
+        st =
+            StringTable.build (collectStringsFromModuleTypeEnv env Set.empty)
+    in
     Bytes.Encode.sequence
-        [ ModuleName.canonicalEncoder env.home
-        , BE.stdDict BE.string Can.unionEncoder env.unions
-        , BE.stdDict BE.string Can.aliasEncoder env.aliases
+        [ StringTable.tableEncoder st
+        , ModuleName.canonicalEncoderS st env.home
+        , BE.stdDict (StringTable.string st) (Can.unionEncoderS st) env.unions
         ]
 
 
@@ -156,21 +172,96 @@ moduleTypeEnvEncoder env =
 -}
 moduleTypeEnvDecoder : Bytes.Decode.Decoder ModuleTypeEnv
 moduleTypeEnvDecoder =
-    Bytes.Decode.map3 ModuleTypeEnv
-        ModuleName.canonicalDecoder
-        (BD.stdDict BD.string Can.unionDecoder)
-        (BD.stdDict BD.string Can.aliasDecoder)
+    StringTable.tableDecoder
+        |> Bytes.Decode.andThen
+            (\st ->
+                Bytes.Decode.map2
+                    (\home unions ->
+                        { home = home, unions = unions, aliases = Dict.empty }
+                    )
+                    (ModuleName.canonicalDecoderS st)
+                    (BD.stdDict (StringTable.stringDec st) (Can.unionDecoderS st))
+            )
 
 
 {-| Encode a global type environment.
 -}
 globalTypeEnvEncoder : GlobalTypeEnv -> Bytes.Encode.Encoder
 globalTypeEnvEncoder env =
-    BE.assocListDict ModuleName.compareCanonical ModuleName.canonicalEncoder moduleTypeEnvEncoder env
+    let
+        st : StringTable
+        st =
+            StringTable.build (collectStringsFromGlobalTypeEnv env Set.empty)
+    in
+    Bytes.Encode.sequence
+        [ StringTable.tableEncoder st
+        , BE.assocListDict ModuleName.compareCanonical
+            (ModuleName.canonicalEncoderS st)
+            (moduleTypeEnvBodyEncoderS st)
+            env
+        ]
 
 
 {-| Decode a global type environment.
 -}
 globalTypeEnvDecoder : Bytes.Decode.Decoder GlobalTypeEnv
 globalTypeEnvDecoder =
-    BD.assocListDict ModuleName.toComparableCanonical ModuleName.canonicalDecoder moduleTypeEnvDecoder
+    StringTable.tableDecoder
+        |> Bytes.Decode.andThen
+            (\st ->
+                BD.assocListDict ModuleName.toComparableCanonical
+                    (ModuleName.canonicalDecoderS st)
+                    (moduleTypeEnvBodyDecoderS st)
+            )
+
+
+moduleTypeEnvBodyEncoderS : StringTable -> ModuleTypeEnv -> Bytes.Encode.Encoder
+moduleTypeEnvBodyEncoderS st env =
+    Bytes.Encode.sequence
+        [ ModuleName.canonicalEncoderS st env.home
+        , BE.stdDict (StringTable.string st) (Can.unionEncoderS st) env.unions
+        ]
+
+
+moduleTypeEnvBodyDecoderS : StringTable -> Bytes.Decode.Decoder ModuleTypeEnv
+moduleTypeEnvBodyDecoderS st =
+    Bytes.Decode.map2
+        (\home unions ->
+            { home = home, unions = unions, aliases = Dict.empty }
+        )
+        (ModuleName.canonicalDecoderS st)
+        (BD.stdDict (StringTable.stringDec st) (Can.unionDecoderS st))
+
+
+
+-- ====== STRING COLLECTORS (ECOT_002) ======
+
+
+{-| Collect strings emitted by `moduleTypeEnvEncoder`'s body.
+-}
+collectStringsFromModuleTypeEnv : ModuleTypeEnv -> Set String -> Set String
+collectStringsFromModuleTypeEnv env acc =
+    acc
+        |> ModuleName.collectStringsFromCanonical env.home
+        |> (\a ->
+                Dict.foldl
+                    (\name union a2 ->
+                        a2 |> Set.insert name |> Can.collectStringsFromUnion union
+                    )
+                    a
+                    env.unions
+           )
+
+
+{-| Collect strings emitted by `globalTypeEnvEncoder`'s body.
+-}
+collectStringsFromGlobalTypeEnv : GlobalTypeEnv -> Set String -> Set String
+collectStringsFromGlobalTypeEnv env acc =
+    Data.Map.foldl ModuleName.compareCanonical
+        (\home modEnv a ->
+            a
+                |> ModuleName.collectStringsFromCanonical home
+                |> collectStringsFromModuleTypeEnv modEnv
+        )
+        acc
+        env

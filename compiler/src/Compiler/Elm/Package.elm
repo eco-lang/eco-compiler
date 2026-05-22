@@ -6,6 +6,7 @@ module Compiler.Elm.Package exposing
     , suggestions, nearbyNames
     , encode, decoder, keyDecoder
     , nameEncoder, nameDecoder, parser
+    , nameEncoderS, nameDecoderS, collectStringsFromName
     )
 
 {-| Utilities for working with Elm package names.
@@ -54,11 +55,13 @@ using Levenshtein distance.
 
 import Bytes.Decode
 import Bytes.Encode
+import Compiler.AST.StringTable as StringTable exposing (StringTable)
 import Compiler.Json.Decode as D
 import Compiler.Json.Encode as E
 import Compiler.Parse.Primitives as P exposing (Col, Row)
 import Dict exposing (Dict)
 import Levenshtein
+import Set exposing (Set)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 
@@ -467,15 +470,39 @@ chompName isGoodChar src pos end prevWasDash =
 {-| Binary encoder for package names. Encodes author and project as consecutive strings.
 -}
 nameEncoder : Name -> Bytes.Encode.Encoder
-nameEncoder ( author, project ) =
-    Bytes.Encode.sequence
-        [ BE.string author
-        , BE.string project
-        ]
+nameEncoder =
+    nameEncoderS StringTable.disabled
 
 
 {-| Binary decoder for package names. Decodes two consecutive strings as (author, project).
 -}
 nameDecoder : Bytes.Decode.Decoder Name
 nameDecoder =
-    Bytes.Decode.map2 Tuple.pair BD.string BD.string
+    nameDecoderS StringTable.disabled
+
+
+{-| String-interned variant of `nameEncoder`. With `StringTable.disabled`,
+behavior matches `nameEncoder` byte-for-byte.
+-}
+nameEncoderS : StringTable -> Name -> Bytes.Encode.Encoder
+nameEncoderS st ( author, project ) =
+    Bytes.Encode.sequence
+        [ StringTable.string st author
+        , StringTable.string st project
+        ]
+
+
+{-| String-interned variant of `nameDecoder`.
+-}
+nameDecoderS : StringTable -> Bytes.Decode.Decoder Name
+nameDecoderS st =
+    Bytes.Decode.map2 Tuple.pair (StringTable.stringDec st) (StringTable.stringDec st)
+
+
+{-| Add the two string components of a package name to a string-collection set.
+-}
+collectStringsFromName : Name -> Set String -> Set String
+collectStringsFromName ( author, project ) acc =
+    acc
+        |> Set.insert author
+        |> Set.insert project

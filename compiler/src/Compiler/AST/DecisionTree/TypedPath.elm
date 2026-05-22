@@ -1,6 +1,7 @@
 module Compiler.AST.DecisionTree.TypedPath exposing
     ( Path(..), ContainerHint(..)
     , pathEncoder, pathDecoder
+    , pathEncoderS, pathDecoderS, collectStringsFromPath
     )
 
 {-| Path type for typed decision trees with container hints.
@@ -15,8 +16,10 @@ This module defines the `Path` type used by typed decision trees, including
 
 import Bytes.Decode
 import Bytes.Encode
+import Compiler.AST.StringTable as StringTable exposing (StringTable)
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
+import Set exposing (Set)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 
@@ -47,8 +50,8 @@ type Path
 
 {-| Encode a ContainerHint to bytes for serialization.
 -}
-containerHintEncoder : ContainerHint -> Bytes.Encode.Encoder
-containerHintEncoder hint =
+containerHintEncoder : StringTable -> ContainerHint -> Bytes.Encode.Encoder
+containerHintEncoder st hint =
     case hint of
         HintList ->
             Bytes.Encode.unsignedInt8 0
@@ -62,7 +65,7 @@ containerHintEncoder hint =
         HintCustom ctorName ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 3
-                , BE.string ctorName
+                , StringTable.string st ctorName
                 ]
 
         HintUnknown ->
@@ -71,8 +74,8 @@ containerHintEncoder hint =
 
 {-| Decode a ContainerHint from bytes.
 -}
-containerHintDecoder : Bytes.Decode.Decoder ContainerHint
-containerHintDecoder =
+containerHintDecoder : StringTable -> Bytes.Decode.Decoder ContainerHint
+containerHintDecoder st =
     Bytes.Decode.unsignedInt8
         |> Bytes.Decode.andThen
             (\n ->
@@ -87,7 +90,7 @@ containerHintDecoder =
                         Bytes.Decode.succeed HintTuple3
 
                     3 ->
-                        Bytes.Decode.map HintCustom BD.string
+                        Bytes.Decode.map HintCustom (StringTable.stringDec st)
 
                     _ ->
                         Bytes.Decode.succeed HintUnknown
@@ -97,30 +100,44 @@ containerHintDecoder =
 {-| Encode a Path to bytes for serialization.
 -}
 pathEncoder : Path -> Bytes.Encode.Encoder
-pathEncoder path_ =
-    case path_ of
-        Index index hint subPath ->
-            Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 0
-                , Index.zeroBasedEncoder index
-                , containerHintEncoder hint
-                , pathEncoder subPath
-                ]
-
-        Unbox subPath ->
-            Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 1
-                , pathEncoder subPath
-                ]
-
-        Empty ->
-            Bytes.Encode.unsignedInt8 2
+pathEncoder =
+    pathEncoderS StringTable.disabled
 
 
 {-| Decode a Path from bytes.
 -}
 pathDecoder : Bytes.Decode.Decoder Path
 pathDecoder =
+    pathDecoderS StringTable.disabled
+
+
+{-| String-interned variant of `pathEncoder`.
+-}
+pathEncoderS : StringTable -> Path -> Bytes.Encode.Encoder
+pathEncoderS st path_ =
+    case path_ of
+        Index index hint subPath ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 0
+                , Index.zeroBasedEncoder index
+                , containerHintEncoder st hint
+                , pathEncoderS st subPath
+                ]
+
+        Unbox subPath ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 1
+                , pathEncoderS st subPath
+                ]
+
+        Empty ->
+            Bytes.Encode.unsignedInt8 2
+
+
+{-| String-interned variant of `pathDecoder`.
+-}
+pathDecoderS : StringTable -> Bytes.Decode.Decoder Path
+pathDecoderS st =
     Bytes.Decode.unsignedInt8
         |> Bytes.Decode.andThen
             (\idx ->
@@ -128,11 +145,11 @@ pathDecoder =
                     0 ->
                         Bytes.Decode.map3 Index
                             Index.zeroBasedDecoder
-                            containerHintDecoder
-                            pathDecoder
+                            (containerHintDecoder st)
+                            (pathDecoderS st)
 
                     1 ->
-                        Bytes.Decode.map Unbox pathDecoder
+                        Bytes.Decode.map Unbox (pathDecoderS st)
 
                     2 ->
                         Bytes.Decode.succeed Empty
@@ -140,3 +157,30 @@ pathDecoder =
                     _ ->
                         Bytes.Decode.fail
             )
+
+
+{-| Add string components of a Path to a collection set.
+-}
+collectStringsFromPath : Path -> Set String -> Set String
+collectStringsFromPath path_ acc =
+    case path_ of
+        Index _ hint subPath ->
+            acc
+                |> collectStringsFromHint hint
+                |> collectStringsFromPath subPath
+
+        Unbox subPath ->
+            collectStringsFromPath subPath acc
+
+        Empty ->
+            acc
+
+
+collectStringsFromHint : ContainerHint -> Set String -> Set String
+collectStringsFromHint hint acc =
+    case hint of
+        HintCustom ctorName ->
+            Set.insert ctorName acc
+
+        _ ->
+            acc
