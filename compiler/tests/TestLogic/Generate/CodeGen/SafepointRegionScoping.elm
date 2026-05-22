@@ -1,17 +1,22 @@
 module TestLogic.Generate.CodeGen.SafepointRegionScoping exposing (expectSafepointRegionScoping)
 
-{-| Test logic for safepoint region scoping invariant.
+{-| Test logic for GC-root-hint region scoping invariant.
 
-Every eco.safepoint operand must reference an SSA value that is defined in the
-CURRENT region or an ANCESTOR scope — never in a sibling region. Sibling
-regions of eco.case (and scf.while, scf.if, etc.) have independent scopes in
-MLIR; referencing a value from a sibling region is illegal and causes parse
-failures in eco-boot-native.
+Every front-end GC root operand on a GCRootCarrier op (eco.call,
+eco.papExtend, eco.papCreate, eco.construct.*) must reference an SSA value
+that is defined in the CURRENT region or an ANCESTOR scope — never in a
+sibling region. Sibling regions of eco.case (and scf.while, scf.if, etc.)
+have independent scopes in MLIR; referencing a value from a sibling region
+is illegal and causes parse failures in eco-boot-native.
+
+This invariant used to be enforced against `eco.safepoint` operands; with
+that op deleted, the same hazard now applies to the trailing GC root
+operands threaded onto each GCRootCarrier op by the Elm front-end.
 
 The bug pattern: TailRec.compileCaseFanOutStep threads the full accumulated
 context (including varMappings from previous sibling regions) into subsequent
-alternatives. Safepoint emission then picks up SSA names from the leaked
-varMappings, producing cross-sibling references.
+alternatives. The front-end's GC root hint set then picks up SSA names from
+the leaked varMappings, producing cross-sibling references on the carrier op.
 
 @docs expectSafepointRegionScoping
 
@@ -108,10 +113,17 @@ checkBlock funcName ancestorDefs block =
     bodyViolations ++ termV
 
 
-{-| Check a single op. For eco.safepoint, verify that every operand is in
-the visible-defs set. For ops with non-isolated regions (eco.case, scf.while,
-etc.), recurse into each region with the defs visible at THIS point — NOT
-the defs from a sibling region.
+{-| Check a single op. For every GCRootCarrier op (eco.call, eco.papExtend,
+eco.papCreate, eco.construct.{record,custom,list,tuple2,tuple3}), verify that
+every operand is in the visible-defs set. For ops with non-isolated regions
+(eco.case, scf.while, etc.), recurse into each region with the defs visible
+at THIS point — NOT the defs from a sibling region.
+
+Checking ALL operands (not just the appended GC root suffix) is correct: if
+the field/arg operands themselves reference cross-region SSA, that is the
+same dominance bug, and MLIR's verifier would reject the IR anyway. The
+appended root suffix is the new failure surface added by removing
+eco.safepoint, so it must be checked too.
 -}
 checkOp : String -> Set String -> MlirOp -> ( List Violation, Set String )
 checkOp funcName visibleDefs op =
@@ -120,9 +132,8 @@ checkOp funcName visibleDefs op =
         defsWithResults =
             List.foldl (\( name, _ ) acc -> Set.insert name acc) visibleDefs op.results
 
-        -- For eco.safepoint, check that every operand is visible.
-        safepointViolations =
-            if op.name == "eco.safepoint" then
+        carrierViolations =
+            if isCarrierOp op.name then
                 List.filterMap
                     (\operand ->
                         if Set.member operand visibleDefs then
@@ -133,7 +144,8 @@ checkOp funcName visibleDefs op =
                                 { opId = op.id
                                 , opName = op.name
                                 , message =
-                                    "eco.safepoint in "
+                                    op.name
+                                        ++ " in "
                                         ++ funcName
                                         ++ " references '"
                                         ++ operand
@@ -156,4 +168,21 @@ checkOp funcName visibleDefs op =
             else
                 List.concatMap (checkRegion funcName defsWithResults) op.regions
     in
-    ( safepointViolations ++ regionViolations, defsWithResults )
+    ( carrierViolations ++ regionViolations, defsWithResults )
+
+
+{-| Whether an op name is a GCRootCarrier (carries front-end GC root hints
+as operands).
+-}
+isCarrierOp : String -> Bool
+isCarrierOp name =
+    List.member name
+        [ "eco.call"
+        , "eco.papExtend"
+        , "eco.papCreate"
+        , "eco.construct.list"
+        , "eco.construct.tuple2"
+        , "eco.construct.tuple3"
+        , "eco.construct.record"
+        , "eco.construct.custom"
+        ]

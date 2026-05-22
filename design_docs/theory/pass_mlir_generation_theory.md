@@ -82,7 +82,6 @@ The ECO dialect defines operations for Elm runtime semantics:
 | `eco.global` | Declare global variable |
 | `eco.load_global` | Load global |
 | `eco.store_global` | Store global |
-| `eco.safepoint` | GC safepoint (variadic `!eco.value` live root operands) |
 | `eco.dbg` | Debug print |
 | `eco.crash` | Runtime error |
 | `eco.expect` | Assertion |

@@ -1,10 +1,13 @@
 module TestLogic.Generate.CodeGen.SafepointRegionScopingTest exposing (suite)
 
-{-| Test suite for safepoint region scoping invariant.
+{-| Test suite for GC-root-hint region scoping invariant.
 
-Verifies that eco.safepoint operands never reference SSA values from sibling
-regions of eco.case or other branching constructs. Cross-sibling references
-are a codegen bug that causes MLIR parse failures.
+Verifies that the front-end GC root operands threaded onto GCRootCarrier
+ops (eco.call, eco.papExtend, eco.papCreate, eco.construct.*) never
+reference SSA values from sibling regions of eco.case or other branching
+constructs. Cross-sibling references are a codegen bug that causes MLIR
+parse failures. This invariant used to apply to eco.safepoint operands;
+that op was removed and the hint now rides on the carrier ops themselves.
 
 -}
 

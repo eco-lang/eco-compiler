@@ -194,8 +194,11 @@ processOp op map =
                 case Dict.get sourcePapName map of
                     Just sourceInfo ->
                         let
+                            rootCount =
+                                Maybe.withDefault 0 (getIntAttr "eco.gc_roots_count" op)
+
                             numNewArgs =
-                                List.length op.operands - 1
+                                List.length op.operands - 1 - rootCount
 
                             newRemaining =
                                 remainingArity - numNewArgs
@@ -255,8 +258,11 @@ checkTypedPapExtend funcReturnTypeMap papInfoMap op =
 
                 Just sourceInfo ->
                     let
+                        rootCount =
+                            Maybe.withDefault 0 (getIntAttr "eco.gc_roots_count" op)
+
                         numNewArgs =
-                            List.length op.operands - 1
+                            List.length op.operands - 1 - rootCount
 
                         resultRemaining =
                             sourceInfo.remaining - numNewArgs

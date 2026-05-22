@@ -24,6 +24,7 @@ import TestLogic.Generate.CodeGen.Invariants
         , extractOperandTypes
         , findFuncOps
         , findOpsNamed
+        , getIntAttr
         , getStringAttr
         , getTypeAttr
         , violationsToExpectation
@@ -130,7 +131,16 @@ checkCallOp funcParamTypes op =
                         Nothing ->
                             Nothing
 
-                        Just actualOperandTypes ->
+                        Just allOperandTypes ->
+                            let
+                                -- Drop trailing GC root hints (per eco.gc_roots_count)
+                                -- before comparing against the callee's ABI parameter list.
+                                rootCount =
+                                    Maybe.withDefault 0 (getIntAttr "eco.gc_roots_count" op)
+
+                                actualOperandTypes =
+                                    List.take (List.length allOperandTypes - rootCount) allOperandTypes
+                            in
                             checkTypesMatch op calleeName expectedParamTypes actualOperandTypes
 
 

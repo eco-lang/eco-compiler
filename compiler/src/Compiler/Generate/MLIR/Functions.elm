@@ -53,18 +53,15 @@ generateMainEntry ctx mainInfo =
                 mainFuncName =
                     specIdToFuncName ctx.registry mainSpecId
 
-                ( ctxSp, spOp ) =
-                    Expr.emitSafepoint ctx1
-
                 ( ctx2, callOp ) =
-                    Ops.ecoCallNamed ctxSp callVar mainFuncName [] Types.ecoValue
+                    Ops.ecoCallNamed ctx1 (Expr.emitSafepointHints ctx1) callVar mainFuncName [] Types.ecoValue
 
                 ( ctx3, returnOp ) =
                     Ops.ecoReturn ctx2 callVar Types.ecoValue
 
                 region : MlirRegion
                 region =
-                    Ops.mkRegion [] [ spOp, callOp ] returnOp
+                    Ops.mkRegion [] [ callOp ] returnOp
 
                 ( _, mainOp ) =
                     Ops.funcFunc ctx3 "main" [] Types.ecoValue region
@@ -628,13 +625,10 @@ generateGenericCloneBodyFromSpecs ctx captureSpecs fastCloneName paramPairs retu
         ( resultVar, ctxAfterFresh ) =
             Ctx.freshVar ctxAfterProject
 
-        ( ctxSpClone, spOpClone ) =
-            Expr.emitSafepoint ctxAfterFresh
-
         ( ctxFinal, callOp ) =
-            Ops.ecoCallNamed ctxSpClone resultVar fastCloneName callArgs returnType
+            Ops.ecoCallNamed ctxAfterFresh (Expr.emitSafepointHints ctxAfterFresh) resultVar fastCloneName callArgs returnType
     in
-    ( List.reverse projectOps ++ [ spOpClone, callOp ], resultVar, ctxFinal )
+    ( List.reverse projectOps ++ [ callOp ], resultVar, ctxFinal )
 
 
 
@@ -779,8 +773,10 @@ generateCtor ctx funcName ctorLayout monoType =
                         Ops.ecoConstantFalse ctx1 resultVar
 
                     _ ->
-                        -- Not a well-known constant, use eco.construct.custom
-                        Ops.ecoConstructCustom ctx1 resultVar ctorLayout.tag 0 0 [] constructorName
+                        -- Not a well-known constant, use eco.construct.custom.
+                        -- Zero-arity constructor in a fresh function scope — no
+                        -- in-scope eco.value bindings to track as GC roots.
+                        Ops.ecoConstructCustom ctx1 [] resultVar ctorLayout.tag 0 0 [] constructorName
 
             ( ctx3, returnOp ) =
                 Ops.ecoReturn ctx2 resultVar Types.ecoValue
@@ -827,21 +823,18 @@ generateCtor ctx funcName ctorLayout monoType =
             ( resultVar, ctx1 ) =
                 Ctx.freshVar ctxFreshScope
 
-            ( ctx2, spOp ) =
-                Ops.ecoSafepoint ctx1 (Ctx.liveEcoValueVars ctx1)
-
-            ( ctx3, constructOp ) =
-                Ops.ecoConstructCustom ctx2 resultVar ctorLayout.tag arity ctorLayout.unboxedBitmap argPairs constructorName
+            ( ctx2, constructOp ) =
+                Ops.ecoConstructCustom ctx1 (Ctx.liveEcoValueVars ctx1) resultVar ctorLayout.tag arity ctorLayout.unboxedBitmap argPairs constructorName
 
             ( _, returnOp ) =
-                Ops.ecoReturn ctx3 resultVar Types.ecoValue
+                Ops.ecoReturn ctx2 resultVar Types.ecoValue
 
             region : MlirRegion
             region =
-                Ops.mkRegion argPairs [ spOp, constructOp ] returnOp
+                Ops.mkRegion argPairs [ constructOp ] returnOp
 
             ( ctxOut, funcOp ) =
-                Ops.funcFunc ctx3 funcName argPairs Types.ecoValue region
+                Ops.funcFunc ctx2 funcName argPairs Types.ecoValue region
         in
         ( ctxOut, attachLogical funcOp )
 
@@ -873,8 +866,10 @@ generateEnum ctx funcName tag monoType maybeCtorName =
                     Ops.ecoConstantNothing ctx1 resultVar
 
                 _ ->
-                    -- Not a well-known constant, use eco.construct.custom
-                    Ops.ecoConstructCustom ctx1 resultVar tag 0 0 [] maybeCtorName
+                    -- Not a well-known constant, use eco.construct.custom.
+                    -- Zero-arity constructor in a fresh function scope — no
+                    -- in-scope eco.value bindings to track as GC roots.
+                    Ops.ecoConstructCustom ctx1 [] resultVar tag 0 0 [] maybeCtorName
 
         ( ctx3, returnOp ) =
             Ops.ecoReturn ctx2 resultVar Types.ecoValue
@@ -1030,25 +1025,22 @@ generateManagerLeaf ctx funcName homeModuleName monoType =
             { ctx | nextVar = List.length argPairs, varMappings = argVarMappings }
                 |> Ctx.resetDefinedSsaVars argSsaVars
 
-        -- Create string constant for home module name (allocates, so safepoint first)
+        -- Create string constant for home module name. eco.string_literal is
+        -- not a GCRootCarrier (its allocation call is handled by RS4GC at LLVM
+        -- level), so no front-end hint is threaded here.
         ( homeVar, ctx1 ) =
             Ctx.freshVar ctxWithArgs
 
-        ( ctxSp, spOp ) =
-            Expr.emitSafepoint ctx1
-
         ( ctx2, homeOp ) =
-            Ops.ecoStringLiteral ctxSp homeVar homeModuleName
+            Ops.ecoStringLiteral ctx1 homeVar homeModuleName
 
-        -- Call Elm_Kernel_Platform_leaf(home, arg0) - safepoint before call too
+        -- Call Elm_Kernel_Platform_leaf(home, arg0) - thread the hint here.
         ( resultVar, ctx3 ) =
             Ctx.freshVar ctx2
 
-        ( ctxSp2, spOp2 ) =
-            Expr.emitSafepoint ctx3
-
         ( ctx4, callOp ) =
-            Ops.ecoCallNamed ctxSp2
+            Ops.ecoCallNamed ctx3
+                (Expr.emitSafepointHints ctx3)
                 resultVar
                 "Elm_Kernel_Platform_leaf"
                 [ ( homeVar, Types.ecoValue ), ( "%arg0", Types.ecoValue ) ]
@@ -1059,7 +1051,7 @@ generateManagerLeaf ctx funcName homeModuleName monoType =
 
         region : MlirRegion
         region =
-            Ops.mkRegion argPairs [ spOp, homeOp, spOp2, callOp ] returnOp
+            Ops.mkRegion argPairs [ homeOp, callOp ] returnOp
 
         attrs =
             Dict.fromList

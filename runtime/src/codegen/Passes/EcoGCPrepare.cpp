@@ -1,13 +1,12 @@
 //===- EcoGCPrepare.cpp - GC preparation pass -----------------------------===//
 //
 // This pass runs before EcoToLLVM lowering and performs:
-// 1. Groups adjacent allocation ops (stops at calls, terminators, safepoints).
+// 1. Groups adjacent allocation ops (stops at calls, terminators, PAP ops).
 // 2. Computes precise SSA liveness of !eco.value values at each GCRootCarrier
 //    op using MLIR's Liveness analysis (inter-block dataflow).
 // 3. Attaches live roots as explicit operands on the first op of each group.
 // 4. Marks subsequent ops in a group with eco.gc_group_member = true.
-// 5. Recomputes live !eco.value sets at each eco.safepoint and replaces operands.
-// 6. Computes and attaches live roots on call-like safepoints (eco.call,
+// 5. Computes and attaches live roots on call-like safepoints (eco.call,
 //    eco.papExtend, eco.papCreate) via the GCRootCarrier interface.
 //
 //===----------------------------------------------------------------------===//
@@ -107,11 +106,9 @@ static int64_t getFixedAllocSizeForGrouping(Operation *op) {
 static constexpr int64_t GroupLargeObjectThreshold = 32 * 1024; // 32 KiB
 
 /// Returns true if the operation is a barrier for allocation grouping.
-/// Barriers include calls, terminators, explicit safepoints, and PAP ops.
+/// Barriers include calls, terminators, and PAP ops.
 static bool isGroupBarrier(Operation *op) {
     if (op->hasTrait<OpTrait::IsTerminator>())
-        return true;
-    if (isa<eco::SafepointOp>(op))
         return true;
     if (isa<eco::PapCreateOp>(op) || isa<eco::PapExtendOp>(op))
         return true;
@@ -136,6 +133,8 @@ static bool isCallSafepoint(Operation *op) {
     if (isa<eco::PapExtendOp>(op))
         return true;
     if (isa<eco::PapCreateOp>(op))
+        return true;
+    if (isa<eco::PapCreateGroupOp>(op))
         return true;
     return false;
 }
@@ -192,6 +191,23 @@ private:
         SmallVector<Operation*, 4> currentGroup;
         int64_t runningSize = 0;
 
+        // Lambda: would `&op` consume the result of any op already in
+        // currentGroup? The alloc-group lowering initializes members in
+        // fast/slow blocks BEFORE the merge block where member results
+        // become available, so intra-group result dependencies violate
+        // dominance after CFG surgery. Close the group at such a boundary.
+        auto consumesGroupMemberResult = [&](Operation *op) {
+            if (currentGroup.empty()) return false;
+            llvm::SmallPtrSet<Operation*, 4> groupOps(
+                currentGroup.begin(), currentGroup.end());
+            for (Value v : op->getOperands()) {
+                Operation *defOp = v.getDefiningOp();
+                if (defOp && groupOps.contains(defOp))
+                    return true;
+            }
+            return false;
+        };
+
         for (auto &op : block) {
             if (isMayAllocOp(&op)) {
                 if (!hasFixedAllocSize(&op)) {
@@ -205,9 +221,12 @@ private:
                     continue;
                 }
                 int64_t opSize = getFixedAllocSizeForGrouping(&op);
+                bool wouldDependOnGroupMember = consumesGroupMemberResult(&op);
                 if (!currentGroup.empty() &&
-                    runningSize + opSize >= GroupLargeObjectThreshold) {
-                    // Adding this op would exceed threshold: close group first
+                    (runningSize + opSize >= GroupLargeObjectThreshold ||
+                     wouldDependOnGroupMember)) {
+                    // Either the size cap or an intra-group SSA dependency:
+                    // close the current group first.
                     groups.push_back(std::move(currentGroup));
                     currentGroup = {};
                     runningSize = 0;
@@ -286,41 +305,13 @@ private:
             }
         }
 
-        // Step 3: Recompute roots for explicit eco.safepoint ops.
-        // UNION with the front-end's original operands — do not shrink.
-        // MLIR's per-block Liveness is blind to cross-iteration uses of
-        // values captured into nested regions (e.g. scf.while body). If
-        // we replace operands with only the liveness-computed set, values
-        // like a `callback` function arg that is referenced once per
-        // iteration end up stripped. Worse: Step 4 then runs its own
-        // liveness query, which now sees a reduced use-def graph and
-        // misses those values as call-safepoint roots. The front-end's
-        // explicit operand list is authoritative for cross-region
-        // liveness; we only grow the set.
-        for (auto &op : block) {
-            auto safepointOp = dyn_cast<eco::SafepointOp>(&op);
-            if (!safepointOp) continue;
-
-            SmallVector<Value, 8> liveRoots = computeLiveRoots(liveness, safepointOp);
-
-            llvm::DenseSet<Value> already(liveRoots.begin(), liveRoots.end());
-            for (Value v : safepointOp.getLiveRoots()) {
-                if (isEcoValue(v) && !v.getDefiningOp<eco::ConstantOp>() &&
-                    already.insert(v).second)
-                    liveRoots.push_back(v);
-            }
-
-            LLVM_DEBUG({
-                llvm::dbgs() << "EcoGCPrepare: safepoint at "
-                             << safepointOp->getLoc()
-                             << " — " << liveRoots.size() << " roots: [";
-                for (auto v : liveRoots)
-                    llvm::dbgs() << " " << v;
-                llvm::dbgs() << " ]\n";
-            });
-
-            safepointOp.setGCRoots(liveRoots);
-        }
+        // Step 3 (formerly): the eco.safepoint op no longer exists. Front-end
+        // GC root hints now ride on the next GCRootCarrier op (eco.call /
+        // eco.papExtend / eco.papCreate / construct.*). The cross-region
+        // liveness concern handled by Step 3 — keeping values referenced inside
+        // a nested scf region visible to MLIR's per-block Liveness — is now
+        // covered by the union below at Step 4, which always merges each
+        // carrier's own front-end operand set with the liveness-computed set.
 
         // Step 4: Compute and attach roots on call-like safepoints.
         // Each call/papExtend/papCreate gets independent roots.

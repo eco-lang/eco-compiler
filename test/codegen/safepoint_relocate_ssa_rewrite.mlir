@@ -9,10 +9,8 @@
 
 module {
   func.func @test_two_roots(%a: !eco.value, %b: !eco.value) -> !eco.value {
-    // eco.safepoint is a no-op under RS4GC — roots are tracked
-    // automatically by ptr addrspace(1) type.
-    eco.safepoint %a, %b : !eco.value, !eco.value
-
+    // RS4GC tracks roots automatically via ptr addrspace(1) type;
+    // no MLIR-level safepoint marker is needed.
     %r = "eco.call"(%a) <{_operand_types = [!eco.value], callee = @foo}> : (!eco.value) -> !eco.value
 
     // Use %b after the call — RS4GC should relocate it

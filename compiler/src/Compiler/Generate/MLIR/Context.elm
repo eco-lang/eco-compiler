@@ -460,9 +460,12 @@ resetDefinedSsaVars initialVars ctx =
     { ctx | definedSsaVars = Set.fromList initialVars }
 
 
-{-| Collect all in-scope variables with !eco.value type for GC safepoint emission.
-Returns a list of (ssaVar, mlirType) pairs for eco.value bindings in varMappings
-that are defined in the current function scope (tracked in definedSsaVars).
+{-| Collect all in-scope variables with !eco.value type as a conservative GC
+root hint set. Returned by `emitSafepointHints` and threaded into the next
+GCRootCarrier op (alloc / construct / call / papExtend / papCreate) as that
+op's `live_roots` operands. Returns (ssaVar, mlirType) pairs for eco.value
+bindings in varMappings defined in the current function scope (tracked in
+definedSsaVars).
 -}
 liveEcoValueVars : Context -> List ( String, MlirType )
 liveEcoValueVars ctx =

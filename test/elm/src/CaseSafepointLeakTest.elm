@@ -1,13 +1,16 @@
 module CaseSafepointLeakTest exposing (main)
 
 {-| Test that case expressions with temporaries in alternatives don't leak
-SSA variables into safepoints at the parent scope. The pattern:
+SSA variables into the GC root hints attached to GCRootCarrier ops at the
+parent scope. The pattern:
 
     1. Case expression where alternatives create temporary !eco.value values
-    2. Heap allocation after the case (triggers eco.safepoint)
+    2. Heap allocation after the case (the carrier op picks up live-root hints)
 
-If the safepoint references SSA values from inside the case regions,
-the MLIR will fail to parse (cross-region SSA reference).
+If the carrier's appended GC root operands reference SSA values from inside
+the case regions, the MLIR will fail to parse (cross-region SSA reference).
+This test predates the removal of `eco.safepoint`; the hazard now lives on
+the carrier's `live_roots` segment instead of a standalone safepoint op.
 -}
 
 -- CHECK: extract1: ["b", "a"]

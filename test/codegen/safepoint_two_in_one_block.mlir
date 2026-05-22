@@ -9,11 +9,10 @@
 
 module {
   func.func @test_two_safepoints(%a: !eco.value) -> !eco.value {
-    // eco.safepoint ops are no-ops under RS4GC
-    eco.safepoint %a : !eco.value
+    // RS4GC wraps each call in its own gc.statepoint without any MLIR-level
+    // safepoint marker.
     %r1 = "eco.call"(%a) <{_operand_types = [!eco.value], callee = @foo}> : (!eco.value) -> !eco.value
 
-    eco.safepoint %a, %r1 : !eco.value, !eco.value
     %r2 = "eco.call"(%r1) <{_operand_types = [!eco.value], callee = @foo}> : (!eco.value) -> !eco.value
 
     "eco.return"(%r2) {_operand_types = [!eco.value]} : (!eco.value) -> ()

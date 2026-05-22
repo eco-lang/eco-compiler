@@ -112,12 +112,16 @@ buildPapArityMapForOps ops =
                         map
 
             else if op.name == "eco.papExtend" then
-                -- eco.papExtend: result remaining = remaining_arity - numNewArgs
+                -- eco.papExtend: result remaining = remaining_arity - numNewArgs.
+                -- Operands: source PAP (1) + new args (N) + GC root hints (eco.gc_roots_count).
                 case ( List.head op.results, getIntAttr "remaining_arity" op ) of
                     ( Just ( resultName, _ ), Just remainingArity ) ->
                         let
+                            rootCount =
+                                Maybe.withDefault 0 (getIntAttr "eco.gc_roots_count" op)
+
                             numNewArgs =
-                                List.length op.operands - 1
+                                List.length op.operands - 1 - rootCount
 
                             resultRemaining =
                                 remainingArity - numNewArgs
@@ -150,9 +154,13 @@ checkPapExtendOp papArityMap op =
         maybeSourcePap =
             List.head op.operands
 
-        -- New args are all operands after the first
+        rootCount =
+            Maybe.withDefault 0 (getIntAttr "eco.gc_roots_count" op)
+
+        -- New args are operands after the source PAP, excluding the trailing
+        -- GC root hints (counted by eco.gc_roots_count).
         numNewArgs =
-            List.length op.operands - 1
+            List.length op.operands - 1 - rootCount
     in
     case maybeRemainingArity of
         Nothing ->

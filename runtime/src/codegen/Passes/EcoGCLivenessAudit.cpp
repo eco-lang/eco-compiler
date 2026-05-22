@@ -60,6 +60,16 @@ struct EcoGCLivenessAuditPass
             if (op->hasAttr("eco.gc_group_member"))
                 return;
 
+            // Skip musttail calls — EcoGCPrepare's isCallSafepoint
+            // explicitly excludes them (they don't generate a statepoint;
+            // the caller's frame is unwound and the callee's statepoint
+            // covers the live set). Auditing them produces false positives
+            // for the call's own operands.
+            if (auto callOp = dyn_cast<eco::CallOp>(op)) {
+                auto musttail = callOp.getMusttail();
+                if (musttail && *musttail) return;
+            }
+
             // Skip ops inside nested regions (scf.while/scf.if bodies).
             // EcoGCPrepare's per-block Liveness is blind to cross-iteration
             // uses of values captured into nested regions, and it works

@@ -76,11 +76,14 @@ checkTuple2OperandCount op =
         operandCount =
             List.length op.operands
     in
-    if operandCount /= 2 then
+    -- Two fixed field operands; anything beyond that is the variadic
+    -- `live_roots` segment populated either by the front-end or by
+    -- EcoGCPrepare. Only flag the too-few case.
+    if operandCount < 2 then
         Just
             { opId = op.id
             , opName = op.name
-            , message = "eco.construct.tuple2 should have exactly 2 operands, got " ++ String.fromInt operandCount
+            , message = "eco.construct.tuple2 should have at least 2 operands, got " ++ String.fromInt operandCount
             }
 
     else
@@ -93,11 +96,12 @@ checkTuple3OperandCount op =
         operandCount =
             List.length op.operands
     in
-    if operandCount /= 3 then
+    -- Three fixed field operands; anything beyond is the `live_roots` segment.
+    if operandCount < 3 then
         Just
             { opId = op.id
             , opName = op.name
-            , message = "eco.construct.tuple3 should have exactly 3 operands, got " ++ String.fromInt operandCount
+            , message = "eco.construct.tuple3 should have at least 3 operands, got " ++ String.fromInt operandCount
             }
 
     else

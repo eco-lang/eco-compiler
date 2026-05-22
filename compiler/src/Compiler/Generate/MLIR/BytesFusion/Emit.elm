@@ -1441,9 +1441,12 @@ emitJustResult state =
                 ( justVar, ctx3 ) =
                     Context.freshVar ctx2
 
-                -- Use eco.construct.custom with constructor "Just", tag 0, size 1
+                -- Use eco.construct.custom with constructor "Just", tag 0, size 1.
+                -- No safepoint hint was emitted at this site previously; preserve
+                -- behavior. EcoGCPrepare's liveness query at the construct op
+                -- still picks up roots from the surrounding SSA scope.
                 ( ctx4, justOp ) =
-                    Ops.ecoConstructCustom ctx3 justVar 0 1 0 [ ( unitVar, Types.ecoValue ) ] (Just "Just")
+                    Ops.ecoConstructCustom ctx3 [] justVar 0 1 0 [ ( unitVar, Types.ecoValue ) ] (Just "Just")
             in
             ( [ unitOp, justOp ], justVar, ctx4 )
 
@@ -1471,7 +1474,7 @@ emitJustResultWithVar varName state =
                 Types.bitmapSetKind 0 0 (Types.mlirTypeToKind varType)
 
             ( ctx2, justOp ) =
-                Ops.ecoConstructCustom ctx1 justVar 0 1 bitmap [ ( varName, varType ) ] (Just "Just")
+                Ops.ecoConstructCustom ctx1 [] justVar 0 1 bitmap [ ( varName, varType ) ] (Just "Just")
         in
         ( [ justOp ], justVar, ctx2 )
 
@@ -1483,7 +1486,7 @@ emitJustResultWithVar varName state =
 
             -- Use eco.construct.custom with constructor "Just", tag 0, size 1, unboxed_bitmap = 0
             ( ctx2, justOp ) =
-                Ops.ecoConstructCustom ctx1 justVar 0 1 0 [ ( varName, Types.ecoValue ) ] (Just "Just")
+                Ops.ecoConstructCustom ctx1 [] justVar 0 1 0 [ ( varName, Types.ecoValue ) ] (Just "Just")
         in
         ( [ justOp ], justVar, ctx2 )
 

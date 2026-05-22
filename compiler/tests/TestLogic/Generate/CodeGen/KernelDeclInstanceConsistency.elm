@@ -147,8 +147,16 @@ checkCallOp kernelDeclSigs op =
 
                 Just sig ->
                     let
-                        operandTypes =
+                        allOperandTypes =
                             extractOperandTypes op |> Maybe.withDefault []
+
+                        -- Drop appended GC root hints; only the leading
+                        -- entries are ABI-relevant call operands.
+                        rootCount =
+                            Maybe.withDefault 0 (getIntAttr "eco.gc_roots_count" op)
+
+                        operandTypes =
+                            List.take (List.length allOperandTypes - rootCount) allOperandTypes
 
                         resultTypes =
                             extractResultTypes op
@@ -213,8 +221,16 @@ checkPapExtendOp kernelDeclSigs op =
 
                     Just sig ->
                         let
-                            operandTypes =
+                            allOperandTypes =
                                 extractOperandTypes op |> Maybe.withDefault []
+
+                            -- Drop appended GC root hints; only the leading
+                            -- entries are ABI-relevant (closure + new args).
+                            rootCount =
+                                Maybe.withDefault 0 (getIntAttr "eco.gc_roots_count" op)
+
+                            operandTypes =
+                                List.take (List.length allOperandTypes - rootCount) allOperandTypes
 
                             -- Partial check: operand types must be a valid
                             -- prefix of the decl's inputs. We use the

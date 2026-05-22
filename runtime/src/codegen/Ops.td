@@ -1533,36 +1533,6 @@ def Eco_AllocateClosureOp : Eco_Op<"allocate_closure", [
   let assemblyFormat = "(`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict `:` type($result)";
 }
 
-def Eco_SafepointOp : Eco_Op<"safepoint", [
-    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
-]> {
-  let summary = "GC safepoint";
-  let description = [{
-    GC safepoint operation. Marks a point where garbage collection can
-    safely occur.
-
-    The operands are eco.value roots that must be tracked across this
-    safepoint. They are initially populated by the front-end
-    (emitSafepoint in Expr.elm), then recomputed by EcoGCPrepare via
-    SSA liveness analysis.
-
-    During EcoToLLVM lowering, this becomes an llvm.experimental.gc.statepoint
-    with gc.relocate operations for each live pointer. Downstream SSA uses
-    of each operand are rewritten to use the relocated value via
-    replaceAllUsesExcept.
-
-    Example:
-    ```mlir
-    eco.safepoint %v0, %v1, %v2 : !eco.value, !eco.value, !eco.value
-    ```
-  }];
-
-  let arguments = (ins Variadic<Eco_Value>:$live_roots);
-  let results = (outs);
-
-  let assemblyFormat = "($live_roots^ `:` type($live_roots))? attr-dict";
-}
-
 //===----------------------------------------------------------------------===//
 // 6. Global State Operations
 //===----------------------------------------------------------------------===//

@@ -1,7 +1,9 @@
 //===- EcoToLLVMErrorDebug.cpp - Error and debug lowering patterns --------===//
 //
 // This file implements lowering patterns for ECO error handling and debug
-// operations: safepoint, dbg, crash, and expect.
+// operations: dbg, crash, and expect. GC statepoints are inserted later by
+// LLVM's RewriteStatepointsForGC pass at every call in functions tagged
+// with the `eco-gc` strategy; no MLIR-level safepoint marker is needed.
 //
 //===----------------------------------------------------------------------===//
 
@@ -17,34 +19,6 @@ using namespace eco;
 using namespace eco::detail;
 
 namespace {
-
-//===----------------------------------------------------------------------===//
-// eco.safepoint -> gc.statepoint + gc.relocate
-//
-// Lowers safepoint ops to LLVM statepoint intrinsics for GC root tracking.
-// Each live eco.value operand (i64 HPointer) is:
-//   1. Cast to ptr addrspace(1) (GC-managed pointer)
-//   2. Passed in a "gc-live" operand bundle on the statepoint call
-//   3. Relocated via gc.relocate
-//   4. Cast back to i64
-//   5. All downstream uses of the original value are replaced
-//===----------------------------------------------------------------------===//
-
-struct SafepointOpLowering : public OpConversionPattern<SafepointOp> {
-    const EcoRuntime &runtime;
-
-    SafepointOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                        const EcoRuntime &runtime)
-        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
-
-    LogicalResult
-    matchAndRewrite(SafepointOp op, OpAdaptor adaptor,
-                    ConversionPatternRewriter &rewriter) const override {
-        // RS4GC handles safepoint insertion automatically — just erase the op.
-        rewriter.eraseOp(op);
-        return success();
-    }
-};
 
 //===----------------------------------------------------------------------===//
 // eco.dbg -> call eco_dbg_print variants
@@ -243,7 +217,6 @@ void eco::detail::populateEcoErrorDebugPatterns(
     const EcoRuntime &runtime) {
 
     auto *ctx = patterns.getContext();
-    patterns.add<SafepointOpLowering>(typeConverter, ctx, runtime);
     patterns.add<DbgOpLowering>(typeConverter, ctx, runtime);
     patterns.add<CrashOpLowering>(typeConverter, ctx, runtime);
     patterns.add<ExpectOpLowering>(typeConverter, ctx, runtime);

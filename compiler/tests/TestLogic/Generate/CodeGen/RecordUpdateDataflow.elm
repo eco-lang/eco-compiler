@@ -23,6 +23,7 @@ import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
         , findFuncOps
+        , getIntAttr
         , getStringAttr
         , violationsToExpectation
         )
@@ -121,8 +122,14 @@ groupProjectionsBySource projections =
 checkConstructOp : String -> Dict String (Set String) -> MlirOp -> Maybe Violation
 checkConstructOp funcName projectionsBySource constructOp =
     let
+        -- Field operands are the first `field_count` entries; later entries
+        -- are appended GC root hints and must not be inspected as fields.
+        fieldCount =
+            Maybe.withDefault (List.length constructOp.operands)
+                (getIntAttr "field_count" constructOp)
+
         operands =
-            constructOp.operands
+            List.take fieldCount constructOp.operands
 
         operandSet =
             Set.fromList operands

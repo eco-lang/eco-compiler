@@ -4,7 +4,7 @@ Based on deep analysis of Ops.td, EcoToLLVM.cpp, and existing test coverage.
 
 ## Tests Implemented (All 25 completed)
 
-- [x] 1. safepoint_explicit.mlir - Test eco.safepoint operation explicitly
+- [x] 1. (removed) safepoint_explicit.mlir — eco.safepoint op was deleted; RS4GC is the sole statepoint mechanism
 - [x] 2. allocate_generic.mlir - Test eco.allocate (generic allocation) operation
 - [x] 3. float_negative_zero.mlir - Test -0.0 vs +0.0 behavior
 - [x] 4. float_subnormal.mlir - Test subnormal/denormal floating point numbers
@@ -37,7 +37,7 @@ All 97 codegen tests pass:
 - 25 new tests from this round
 
 Test categories covered:
-- Control flow (safepoint, joinpoint/jump with multiple args, case single branch)
+- Control flow (joinpoint/jump with multiple args, case single branch)
 - Allocation (generic allocate, scalar_bytes, large project indices)
 - Float edge cases (negative zero, subnormal, sqrt edge, div by zero, NaN min/max, pow edge)
 - Integer edge cases (div overflow, negate overflow, abs overflow, pow zero)

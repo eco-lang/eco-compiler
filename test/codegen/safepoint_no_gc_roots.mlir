@@ -1,6 +1,7 @@
 // RUN: %ecoc %s -emit=llvm 2>&1 | %FileCheck %s
 //
-// Test: Function with no eco.safepoint at all has no statepoint intrinsics.
+// Test: Function with no GC-triggering calls produces no statepoint
+// intrinsics (RS4GC inserts statepoints only at calls).
 //
 // CHECK: define i64 @no_safepoint
 // CHECK-NOT: @llvm.experimental.gc.statepoint

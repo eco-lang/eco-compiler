@@ -211,37 +211,26 @@ generateMonoTest ctx ( dtPath, test ) =
                 ( strVar, ctx2 ) =
                     Ctx.freshVar ctx1
 
-                ( safepointOps, ctx3, strOp ) =
+                -- eco.string_literal is not a GCRootCarrier; RS4GC handles the
+                -- underlying alloc call's statepoint at the LLVM level. No
+                -- front-end hint to thread here.
+                ( ctx3, strOp ) =
                     if s == "" then
-                        let
-                            ( ctxE, emptyOp ) =
-                                Ops.ecoConstantEmptyString ctx2 strVar
-                        in
-                        ( [], ctxE, emptyOp )
+                        Ops.ecoConstantEmptyString ctx2 strVar
 
                     else
-                        let
-                            ( ctxSp, spOp ) =
-                                Ops.ecoSafepoint ctx2 (Ctx.liveEcoValueVars ctx2)
-
-                            ( ctxStr, sOp ) =
-                                Ops.ecoStringLiteral ctxSp strVar s
-                        in
-                        ( [ spOp ], ctxStr, sOp )
+                        Ops.ecoStringLiteral ctx2 strVar s
 
                 ( eqVar, ctx4 ) =
                     Ctx.freshVar ctx3
 
-                ( ctxSpCmp, spOpCmp ) =
-                    Ops.ecoSafepoint ctx4 (Ctx.liveEcoValueVars ctx4)
-
                 ( ctx5, cmpOp ) =
-                    Ops.ecoCallNamed ctxSpCmp eqVar "Elm_Kernel_Utils_equal" [ ( valVar, Types.ecoValue ), ( strVar, Types.ecoValue ) ] Types.ecoValue
+                    Ops.ecoCallNamed ctx4 (Ctx.liveEcoValueVars ctx4) eqVar "Elm_Kernel_Utils_equal" [ ( valVar, Types.ecoValue ), ( strVar, Types.ecoValue ) ] Types.ecoValue
 
                 ( unboxOps, resVar, ctx6 ) =
                     Intrinsics.unboxToType ctx5 eqVar I1
             in
-            ( pathOps ++ safepointOps ++ [ strOp, spOpCmp, cmpOp ] ++ unboxOps, resVar, ctx6 )
+            ( pathOps ++ [ strOp, cmpOp ] ++ unboxOps, resVar, ctx6 )
 
         Test.IsCons ->
             let

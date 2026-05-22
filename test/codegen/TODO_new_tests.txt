@@ -23,7 +23,7 @@
 
 ## Control Flow Edge Cases
 11. joinpoint_multiple_jumps_same_target.mlir - Multiple branches to same joinpoint
-12. safepoint_in_loop_body.mlir - eco.safepoint inside a loop
+12. (removed) eco.safepoint no longer exists; RS4GC handles loop-body statepoint insertion
 13. case_three_level_nested.mlir - Three nested case ops
 
 ## Call Operation Edge Cases

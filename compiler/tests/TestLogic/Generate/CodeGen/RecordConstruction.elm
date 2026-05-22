@@ -77,14 +77,19 @@ checkRecordOp op =
                 }
 
         Just fieldCount ->
-            if fieldCount /= operandCount then
+            -- Operands beyond field_count are GC root hints appended by the
+            -- Elm front-end (post-safepoint-op-removal). The C++ GCRootCarrier
+            -- interface splits via field_count, so any tail is roots — that is
+            -- expected and not a violation. Only flag when there are *fewer*
+            -- operands than fields.
+            if operandCount < fieldCount then
                 Just
                     { opId = op.id
                     , opName = op.name
                     , message =
                         "eco.construct.record field_count ("
                             ++ String.fromInt fieldCount
-                            ++ ") doesn't match operand count ("
+                            ++ ") exceeds operand count ("
                             ++ String.fromInt operandCount
                             ++ ")"
                     }

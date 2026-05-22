@@ -5,7 +5,6 @@ module Compiler.Generate.MLIR.Ops exposing
     , ecoProjectListHead, ecoProjectListTail, ecoProjectTuple2, ecoProjectTuple3, ecoProjectRecord, ecoProjectCustom
     , ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoNullaryOp, ecoTernaryOp, ecoCase, ecoCaseString, ecoGetTag
     , ecoArrayGet, ecoArraySet, ecoArrayLength
-    , ecoSafepoint
     , arithConstantInt, arithConstantInt32, arithConstantFloat, arithConstantBool, arithConstantChar, arithCmpI
     , scfWhile, scfCondition
     , ecoCaseMany, ecoCaseStringMany, ecoYieldMany, scfYieldMany
@@ -46,11 +45,6 @@ in the eco dialect and standard dialects (arith, scf, func).
 # Eco Array Operations
 
 @docs ecoArrayGet, ecoArraySet, ecoArrayLength
-
-
-# Eco GC Operations
-
-@docs ecoSafepoint
 
 
 # Arith Operations
@@ -198,8 +192,8 @@ ecoConstantEmptyString ctx resultVar =
 
 {-| eco.construct.list - create a list cons cell
 -}
-ecoConstructList : Ctx.Context -> String -> ( String, MlirType ) -> ( String, MlirType ) -> Bool -> ( Ctx.Context, MlirOp )
-ecoConstructList ctx resultVar ( headVar, headType ) ( tailVar, tailType ) headUnboxed =
+ecoConstructList : Ctx.Context -> List ( String, MlirType ) -> String -> ( String, MlirType ) -> ( String, MlirType ) -> Bool -> ( Ctx.Context, MlirOp )
+ecoConstructList ctx gcRootHints resultVar ( headVar, headType ) ( tailVar, tailType ) headUnboxed =
     let
         -- `head_kind` encodes the 2-bit slot kind (0=boxed, 1=Int, 2=Float, 3=Char)
         -- derived from the head operand type. Lowering reads this to populate
@@ -211,15 +205,21 @@ ecoConstructList ctx resultVar ( headVar, headType ) ( tailVar, tailType ) headU
             else
                 0
 
+        ( rootNames, rootTypes ) =
+            List.unzip gcRootHints
+
         attrs =
             Dict.fromList
-                [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr headType, TypeAttr tailType ] )
+                [ ( "_operand_types"
+                  , ArrayAttr Nothing
+                        (TypeAttr headType :: TypeAttr tailType :: List.map TypeAttr rootTypes)
+                  )
                 , ( "head_unboxed", BoolAttr headUnboxed )
                 , ( "head_kind", IntAttr Nothing headKind )
                 ]
     in
     mlirOp ctx "eco.construct.list"
-        |> opBuilder.withOperands [ headVar, tailVar ]
+        |> opBuilder.withOperands (headVar :: tailVar :: rootNames)
         |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
         |> opBuilder.withAttrs attrs
         |> opBuilder.build
@@ -227,17 +227,23 @@ ecoConstructList ctx resultVar ( headVar, headType ) ( tailVar, tailType ) headU
 
 {-| eco.construct.tuple2 - create a 2-tuple
 -}
-ecoConstructTuple2 : Ctx.Context -> String -> ( String, MlirType ) -> ( String, MlirType ) -> Int -> ( Ctx.Context, MlirOp )
-ecoConstructTuple2 ctx resultVar ( aVar, aType ) ( bVar, bType ) unboxedBitmap =
+ecoConstructTuple2 : Ctx.Context -> List ( String, MlirType ) -> String -> ( String, MlirType ) -> ( String, MlirType ) -> Int -> ( Ctx.Context, MlirOp )
+ecoConstructTuple2 ctx gcRootHints resultVar ( aVar, aType ) ( bVar, bType ) unboxedBitmap =
     let
+        ( rootNames, rootTypes ) =
+            List.unzip gcRootHints
+
         attrs =
             Dict.fromList
-                [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr aType, TypeAttr bType ] )
+                [ ( "_operand_types"
+                  , ArrayAttr Nothing
+                        (TypeAttr aType :: TypeAttr bType :: List.map TypeAttr rootTypes)
+                  )
                 , ( "unboxed_bitmap", IntAttr Nothing unboxedBitmap )
                 ]
     in
     mlirOp ctx "eco.construct.tuple2"
-        |> opBuilder.withOperands [ aVar, bVar ]
+        |> opBuilder.withOperands (aVar :: bVar :: rootNames)
         |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
         |> opBuilder.withAttrs attrs
         |> opBuilder.build
@@ -245,17 +251,23 @@ ecoConstructTuple2 ctx resultVar ( aVar, aType ) ( bVar, bType ) unboxedBitmap =
 
 {-| eco.construct.tuple3 - create a 3-tuple
 -}
-ecoConstructTuple3 : Ctx.Context -> String -> ( String, MlirType ) -> ( String, MlirType ) -> ( String, MlirType ) -> Int -> ( Ctx.Context, MlirOp )
-ecoConstructTuple3 ctx resultVar ( aVar, aType ) ( bVar, bType ) ( cVar, cType ) unboxedBitmap =
+ecoConstructTuple3 : Ctx.Context -> List ( String, MlirType ) -> String -> ( String, MlirType ) -> ( String, MlirType ) -> ( String, MlirType ) -> Int -> ( Ctx.Context, MlirOp )
+ecoConstructTuple3 ctx gcRootHints resultVar ( aVar, aType ) ( bVar, bType ) ( cVar, cType ) unboxedBitmap =
     let
+        ( rootNames, rootTypes ) =
+            List.unzip gcRootHints
+
         attrs =
             Dict.fromList
-                [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr aType, TypeAttr bType, TypeAttr cType ] )
+                [ ( "_operand_types"
+                  , ArrayAttr Nothing
+                        (TypeAttr aType :: TypeAttr bType :: TypeAttr cType :: List.map TypeAttr rootTypes)
+                  )
                 , ( "unboxed_bitmap", IntAttr Nothing unboxedBitmap )
                 ]
     in
     mlirOp ctx "eco.construct.tuple3"
-        |> opBuilder.withOperands [ aVar, bVar, cVar ]
+        |> opBuilder.withOperands (aVar :: bVar :: cVar :: rootNames)
         |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
         |> opBuilder.withAttrs attrs
         |> opBuilder.build
@@ -263,19 +275,25 @@ ecoConstructTuple3 ctx resultVar ( aVar, aType ) ( bVar, bType ) ( cVar, cType )
 
 {-| eco.construct.record - create a record
 -}
-ecoConstructRecord : Ctx.Context -> String -> List ( String, MlirType ) -> Int -> Int -> ( Ctx.Context, MlirOp )
-ecoConstructRecord ctx resultVar fieldPairs fieldCount unboxedBitmap =
+ecoConstructRecord : Ctx.Context -> List ( String, MlirType ) -> String -> List ( String, MlirType ) -> Int -> Int -> ( Ctx.Context, MlirOp )
+ecoConstructRecord ctx gcRootHints resultVar fieldPairs fieldCount unboxedBitmap =
     let
-        operandNames =
-            List.map Tuple.first fieldPairs
+        ( rootNames, rootTypes ) =
+            List.unzip gcRootHints
+
+        allOperands =
+            List.map Tuple.first fieldPairs ++ rootNames
+
+        allTypes =
+            List.map Tuple.second fieldPairs ++ rootTypes
 
         operandTypesAttr =
-            if List.isEmpty fieldPairs then
+            if List.isEmpty allOperands then
                 Dict.empty
 
             else
                 Dict.singleton "_operand_types"
-                    (ArrayAttr Nothing (List.map (\( _, t ) -> TypeAttr t) fieldPairs))
+                    (ArrayAttr Nothing (List.map TypeAttr allTypes))
 
         attrs =
             Dict.union operandTypesAttr
@@ -286,7 +304,7 @@ ecoConstructRecord ctx resultVar fieldPairs fieldCount unboxedBitmap =
                 )
     in
     mlirOp ctx "eco.construct.record"
-        |> opBuilder.withOperands operandNames
+        |> opBuilder.withOperands allOperands
         |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
         |> opBuilder.withAttrs attrs
         |> opBuilder.build
@@ -294,19 +312,25 @@ ecoConstructRecord ctx resultVar fieldPairs fieldCount unboxedBitmap =
 
 {-| eco.construct.custom - create a custom ADT value
 -}
-ecoConstructCustom : Ctx.Context -> String -> Int -> Int -> Int -> List ( String, MlirType ) -> Maybe String -> ( Ctx.Context, MlirOp )
-ecoConstructCustom ctx resultVar tag size unboxedBitmap operands maybeCtorName =
+ecoConstructCustom : Ctx.Context -> List ( String, MlirType ) -> String -> Int -> Int -> Int -> List ( String, MlirType ) -> Maybe String -> ( Ctx.Context, MlirOp )
+ecoConstructCustom ctx gcRootHints resultVar tag size unboxedBitmap operands maybeCtorName =
     let
-        operandNames =
-            List.map Tuple.first operands
+        ( rootNames, rootTypes ) =
+            List.unzip gcRootHints
+
+        allOperands =
+            List.map Tuple.first operands ++ rootNames
+
+        allTypes =
+            List.map Tuple.second operands ++ rootTypes
 
         operandTypesAttr =
-            if List.isEmpty operands then
+            if List.isEmpty allOperands then
                 Dict.empty
 
             else
                 Dict.singleton "_operand_types"
-                    (ArrayAttr Nothing (List.map (\( _, t ) -> TypeAttr t) operands))
+                    (ArrayAttr Nothing (List.map TypeAttr allTypes))
 
         constructorAttr =
             case maybeCtorName of
@@ -328,7 +352,7 @@ ecoConstructCustom ctx resultVar tag size unboxedBitmap operands maybeCtorName =
                 )
     in
     mlirOp ctx "eco.construct.custom"
-        |> opBuilder.withOperands operandNames
+        |> opBuilder.withOperands allOperands
         |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
         |> opBuilder.withAttrs attrs
         |> opBuilder.build
@@ -446,10 +470,12 @@ ecoProjectCustom ctx resultVar fieldIndex resultType containerVar =
 
 {-| eco.call - call a function by name
 -}
-ecoCallNamed : Ctx.Context -> String -> String -> List ( String, MlirType ) -> MlirType -> ( Ctx.Context, MlirOp )
-ecoCallNamed ctx resultVar funcName operands returnType =
+ecoCallNamed : Ctx.Context -> List ( String, MlirType ) -> String -> String -> List ( String, MlirType ) -> MlirType -> ( Ctx.Context, MlirOp )
+ecoCallNamed ctx gcRootHints resultVar funcName operands returnType =
     let
-        -- Register kernel functions for declaration generation
+        -- Register kernel functions for declaration generation. ABI args are the
+        -- non-hint operands only; GC root hints are appended at the tail and are
+        -- not part of the callee signature.
         ctxWithKernel =
             if String.startsWith "Elm_Kernel_" funcName || String.startsWith "Eco_Kernel_" funcName then
                 Ctx.registerKernelCall ctx funcName (List.map Tuple.second operands) returnType
@@ -457,23 +483,41 @@ ecoCallNamed ctx resultVar funcName operands returnType =
             else
                 ctx
 
-        operandNames =
-            List.map Tuple.first operands
+        ( rootNames, rootTypes ) =
+            List.unzip gcRootHints
+
+        allOperands =
+            List.map Tuple.first operands ++ rootNames
+
+        allTypes =
+            List.map Tuple.second operands ++ rootTypes
 
         operandTypesAttr =
-            if List.isEmpty operands then
+            if List.isEmpty allOperands then
                 Dict.empty
 
             else
                 Dict.singleton "_operand_types"
-                    (ArrayAttr Nothing (List.map (\( _, t ) -> TypeAttr t) operands))
+                    (ArrayAttr Nothing (List.map TypeAttr allTypes))
+
+        -- `eco.gc_roots_count` tells the C++ GCRootCarrier interface how many
+        -- tail operands are appended roots (vs. real call args). Omit when zero
+        -- to keep call ops textually unchanged when there are no hints.
+        gcRootsCountAttr =
+            if List.isEmpty gcRootHints then
+                Dict.empty
+
+            else
+                Dict.singleton "eco.gc_roots_count" (IntAttr Nothing (List.length gcRootHints))
 
         attrs =
             Dict.union operandTypesAttr
-                (Dict.singleton "callee" (SymbolRefAttr funcName))
+                (Dict.union gcRootsCountAttr
+                    (Dict.singleton "callee" (SymbolRefAttr funcName))
+                )
     in
     mlirOp ctxWithKernel "eco.call"
-        |> opBuilder.withOperands operandNames
+        |> opBuilder.withOperands allOperands
         |> opBuilder.withResults [ ( resultVar, returnType ) ]
         |> opBuilder.withAttrs attrs
         |> opBuilder.build
@@ -527,34 +571,6 @@ ecoStringLiteral ctx resultVar value =
     mlirOp ctx "eco.string_literal"
         |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
         |> opBuilder.withAttrs (Dict.singleton "value" (StringAttr value))
-        |> opBuilder.build
-
-
-
--- ====== ECO GC OPERATIONS ======
-
-
-{-| eco.safepoint - GC safepoint with live eco.value roots as operands.
-Emitted before allocation ops so the GC can find all live heap pointers.
-Currently lowered to no-op; will become gc.statepoint + gc.relocate.
--}
-ecoSafepoint : Ctx.Context -> List ( String, MlirType ) -> ( Ctx.Context, MlirOp )
-ecoSafepoint ctx liveRoots =
-    let
-        operandNames =
-            List.map Tuple.first liveRoots
-
-        attrs =
-            if List.isEmpty liveRoots then
-                Dict.empty
-
-            else
-                Dict.singleton "_operand_types"
-                    (ArrayAttr Nothing (List.map (\( _, t ) -> TypeAttr t) liveRoots))
-    in
-    mlirOp ctx "eco.safepoint"
-        |> opBuilder.withOperands operandNames
-        |> opBuilder.withAttrs attrs
         |> opBuilder.build
 
 
@@ -1087,11 +1103,12 @@ the resulting closure HPointers to, in sibling order.
 -}
 ecoPapCreateGroup :
     Ctx.Context
+    -> List ( String, MlirType )
     -> List GroupSibling
     -> List ( Int, Int, Int )
     -> List String
     -> ( Ctx.Context, MlirOp )
-ecoPapCreateGroup ctx siblings crossEdges resultVars =
+ecoPapCreateGroup ctx gcRootHints siblings crossEdges resultVars =
     let
         functions =
             siblings |> List.map (.functionName >> SymbolRefAttr) |> ArrayAttr Nothing
@@ -1142,11 +1159,20 @@ ecoPapCreateGroup ctx siblings crossEdges resultVars =
                 |> List.concatMap (\( p, c, s ) -> [ p, c, s ])
                 |> i64Array
 
-        operandVars =
+        captureVars =
             List.concatMap .captureVars siblings
 
-        operandTypes =
+        captureTypes =
             List.concatMap .captureTypes siblings
+
+        ( rootNames, rootTypes ) =
+            List.unzip gcRootHints
+
+        operandVars =
+            captureVars ++ rootNames
+
+        operandTypes =
+            captureTypes ++ rootTypes
 
         operandTypesAttr =
             if List.isEmpty operandTypes then
@@ -1156,18 +1182,29 @@ ecoPapCreateGroup ctx siblings crossEdges resultVars =
                 Dict.singleton "_operand_types"
                     (ArrayAttr Nothing (List.map TypeAttr operandTypes))
 
+        -- Append-pattern GCRootCarrier (Pattern 3): eco.gc_roots_count tells
+        -- the C++ side how many trailing operands are roots vs captures.
+        gcRootsCountAttr =
+            if List.isEmpty gcRootHints then
+                Dict.empty
+
+            else
+                Dict.singleton "eco.gc_roots_count" (IntAttr Nothing (List.length gcRootHints))
+
         attrs =
             Dict.union resultKindsAttrs
                 (Dict.union operandTypesAttr
-                    (Dict.fromList
-                        [ ( "functions", functions )
-                        , ( "fast_evaluators", fastEvaluators )
-                        , ( "arities", arities )
-                        , ( "num_captured", numCaptured )
-                        , ( "unboxed_bitmaps", unboxedBitmaps )
-                        , ( "capture_counts", captureCounts )
-                        , ( "cross_edges", flatCrossEdges )
-                        ]
+                    (Dict.union gcRootsCountAttr
+                        (Dict.fromList
+                            [ ( "functions", functions )
+                            , ( "fast_evaluators", fastEvaluators )
+                            , ( "arities", arities )
+                            , ( "num_captured", numCaptured )
+                            , ( "unboxed_bitmaps", unboxedBitmaps )
+                            , ( "capture_counts", captureCounts )
+                            , ( "cross_edges", flatCrossEdges )
+                            ]
+                        )
                     )
                 )
 

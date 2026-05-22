@@ -865,11 +865,6 @@ void Tuple3ConstructOp::setGCRoots(ValueRange newRoots) {
     getLiveRootsMutable().clear(); getLiveRootsMutable().append(newRoots);
 }
 
-ValueRange SafepointOp::getGCRoots() { return getLiveRoots(); }
-void SafepointOp::setGCRoots(ValueRange newRoots) {
-    getLiveRootsMutable().clear(); getLiveRootsMutable().append(newRoots);
-}
-
 // --- Pattern 2: Ops with roots appended after fields ---
 
 ValueRange RecordConstructOp::getGCRoots() {

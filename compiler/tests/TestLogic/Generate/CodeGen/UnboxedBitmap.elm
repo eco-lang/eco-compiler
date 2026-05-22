@@ -292,12 +292,21 @@ checkPapExtendBitmap op =
 
         maybeOperandTypes =
             extractOperandTypes op
+
+        -- Trailing operands are GC root hints, not new args, so trim them
+        -- before applying the bitmap check.
+        rootCount =
+            Maybe.withDefault 0 (getIntAttr "eco.gc_roots_count" op)
     in
     case maybeOperandTypes of
         Nothing ->
             []
 
-        Just operandTypes ->
+        Just allOperandTypes ->
+            let
+                operandTypes =
+                    List.take (List.length allOperandTypes - rootCount) allOperandTypes
+            in
             -- Skip operand 0 (the PAP), check operands 1+ as new args
             case List.tail operandTypes of
                 Nothing ->
