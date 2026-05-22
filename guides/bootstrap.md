@@ -4,7 +4,7 @@ The Eco compiler bootstraps through 9 stages. Stages 1–4 produce a fixed-point
 
 Each stage has a dedicated CMake target. Building any later stage's target transitively builds all preceding stages, so a clean tree can run the whole chain with a single `cmake --build build --target bootstrap`.
 
-Two E2E test gates fail-fast on backend regressions: **Gate A** after Stage 1 runs the JIT E2E suite; **Gate B** after Stages 3+4 runs the AOT E2E suite. Either gate's failure pins the regression to the stages preceding it, before further self-compile cycles burn.
+Two E2E test gates fail-fast on backend regressions: **Gate A** after Stage 1 runs the JIT E2E suite through Stage 1's `guida.js` (driven by `compiler/bin/index.js` with the XHR mock + `eco-io-handler.js`); **Gate B** after Stages 3+4 runs the AOT E2E suite. Either gate's failure pins the regression to the stages preceding it, before further self-compile cycles burn.
 
 ## Prerequisites
 
@@ -37,7 +37,9 @@ Output: `build/compiler/build-xhr/bin/guida.js`
 
 ### Gate A: JIT E2E test suite
 
-With `guida.js` built, run the JIT E2E suite. This validates Stage 1's frontend plus the entire MLIR-codegen + runtime + JIT stack BEFORE we burn cycles on Stages 2–5's self-compiles. A failure here is localised to Stage 1 or the runtime, not a self-compile interaction.
+With `guida.js` built, run the JIT E2E suite. The JIT runner compiles each Elm test through Stage 1's `compiler/bin/index.js` — a Node wrapper that loads `guida.js` under `mock-xmlhttprequest` and routes IO through `eco-io-handler.js` — then JITs the resulting MLIR. This validates Stage 1's frontend plus the entire MLIR-codegen + runtime + JIT stack BEFORE we burn cycles on Stages 2–5's self-compiles. A failure here is localised to Stage 1 or the runtime, not a downstream self-compile interaction.
+
+The `full` target wraps clean + default-ALL rebuild (which includes Stage 1) + JIT E2E, so it is the one-shot equivalent of running Gate A from a dirty tree:
 
 ```bash
 cmake --build build --target full
@@ -167,7 +169,7 @@ Stage 1 builds **without** `--optimize` (the XHR `Eco.Crash` uses `Debug.todo`).
 export NODE_OPTIONS="--max-old-space-size=12000"
 
 cmake --build build --target guida                # Stage 1
-cmake --build build --target full                 # Gate A: JIT E2E suite
+cmake --build build --target full                 # Gate A: JIT E2E suite via guida.js (XHR)
 cmake --build build --target eco-boot             # Stage 2
 cmake --build build --target eco-boot-verify      # Stages 3+4 + JS fixed-point check
 cmake --build build --target run-aot-e2e          # Gate B: AOT E2E suite

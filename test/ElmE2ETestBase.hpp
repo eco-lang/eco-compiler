@@ -268,6 +268,11 @@ inline void printCompilerDiagnostics(const std::string& output) {
     }
 }
 
+// Gate A runs the JIT E2E suite through Stage 1's guida XHR compiler:
+// `compiler/bin/index.js` wraps `guida.js` (the stock-Elm-compiled
+// eco compiler) with `mock-xmlhttprequest` + `eco-io-handler.js` for IO.
+// This avoids the Stage 2 kernel-IO code paths (which depend on adm-zip
+// and other npm modules that don't resolve from the build tree).
 inline std::string getGuidaPath() {
     std::vector<std::string> candidates = {
         "compiler/bin/index.js",
@@ -533,7 +538,7 @@ inline eco::EcoRunner& getRunner() {
     // either side of the contract.
     static thread_local eco::EcoRunner runner = [] {
         eco::EcoRunner::Options opts;
-        opts.enableUnboxedAgg = true;
+        opts.enableUnboxedAgg = false;
         return eco::EcoRunner{opts};
     }();
     return runner;

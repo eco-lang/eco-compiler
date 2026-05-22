@@ -117,10 +117,16 @@ add_custom_target(rebuild
 
 # Usage: cmake --build build --target check
 # Usage with filter: TEST_FILTER=elm cmake --build build --target check
+#
+# Gate A in guides/bootstrap.md: build the default ALL graph (which
+# includes Stage 1 / guida) and run the JIT E2E suite. The JIT runner
+# compiles each Elm test through Stage 1's `compiler/bin/index.js`
+# (guida.js via the XHR mock + eco-io-handler), so only Stage 1 is
+# needed — no Stage 2+ build.
 add_custom_target(check
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
     COMMAND sh -c "${CMAKE_BINARY_DIR}/test/test $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
-    COMMENT "Build and run tests"
+    COMMENT "Gate A (incremental): build default ALL + Stage 1, run JIT E2E"
     USES_TERMINAL
 )
 
@@ -144,10 +150,16 @@ add_custom_target(stress
 
 # Usage: cmake --build build --target full
 # Usage with filter: TEST_FILTER=elm cmake --build build --target full
+#
+# Gate A in guides/bootstrap.md (from-clean): clean, rebuild the default
+# ALL graph (which includes Stage 1 / guida), then run the JIT E2E suite.
+# The JIT runner compiles each Elm test through Stage 1's
+# `compiler/bin/index.js` (guida.js via the XHR mock + eco-io-handler),
+# so only Stage 1 is needed — no Stage 2+ build.
 add_custom_target(full
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target clean
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
     COMMAND sh -c "${CMAKE_BINARY_DIR}/test/test $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
-    COMMENT "Clean, rebuild, and run tests"
+    COMMENT "Gate A: clean, rebuild default ALL + Stage 1, run JIT E2E"
     USES_TERMINAL
 )

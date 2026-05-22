@@ -188,7 +188,11 @@ var _File_modificationTime = function(path) {
         try {
             var fs = require('fs');
             var stat = fs.statSync(path);
-            callback(__Scheduler_succeed(stat.mtimeMs | 0));
+            // Math.floor preserves full 53-bit epoch millis (~1.78e12). The
+            // earlier `| 0` truncated to 32-bit signed int, which broke the
+            // registry.dat TTL check in Builder.Deps.Registry.update — every
+            // compile re-fetched /all-packages/since.
+            callback(__Scheduler_succeed(Math.floor(stat.mtimeMs)));
         } catch (e) {
             callback(__Scheduler_fail(e.message));
         }

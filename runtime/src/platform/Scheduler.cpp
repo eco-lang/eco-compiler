@@ -712,11 +712,15 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
         else if (ctor == Task_AndThen) {
             // Snapshot the callback and the inner task BEFORE any allocation,
             // since pushStack / procWith* may trigger GC and move `task`.
-            // innerTask must remain rooted across pushStack so the GC updates
-            // it to its post-evacuation location before setRoot reads it.
+            // Both locals must be rooted across pushStack: innerTask so the
+            // GC patches it before setRoot reads it, callback because the
+            // by-value parameter pushStack carries is only rooted *inside*
+            // pushStack's frame — if a different evacuation order leaves
+            // the caller's local out of sync, the encoded bits we pass on
+            // the next iteration are stale.
             HPointer callback = task->callback;
             HPointer innerTask = task->task;
-            Elm::StackRootGuard guard(&innerTask);
+            Elm::StackRootGuard guard(&innerTask, &callback);
 
             // Push the Task_Succeed continuation, then replace the root
             // with the inner task. Two steps, each producing a new Process.
@@ -728,7 +732,7 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
         else if (ctor == Task_OnError) {
             HPointer callback = task->callback;
             HPointer innerTask = task->task;
-            Elm::StackRootGuard guard(&innerTask);
+            Elm::StackRootGuard guard(&innerTask, &callback);
 
             HPointer afterPush = pushStack(currentProcHP(), Task_Fail, callback);
             procEncoded = encodeHP(afterPush);
@@ -787,6 +791,12 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
                 task = resolveRoot(proc);
                 if (!task) break;
                 HPointer recvCallback = task->callback;
+                // callClosure1 runs Elm code that may GC. recvCallback was
+                // just read from task->callback, popRes.msg from the mailbox
+                // pop — neither is otherwise rooted across the call. Mirrors
+                // the discipline in the timer-resume site at line 551 and
+                // the kernel-side JsArray closure-root fix (2026-05-02).
+                Elm::StackRootGuard guard(&recvCallback, &popRes.msg);
 
                 HPointer newTask = callClosure1(recvCallback, popRes.msg);
                 setRoot(newTask);

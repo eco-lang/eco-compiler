@@ -109,9 +109,17 @@ file(COPY
     ${COMPILER_DIR}/cmake/bootstrap/build-kernel/inject-mem.js
     ${COMPILER_DIR}/cmake/bootstrap/build-kernel/run-eol2.js
     DESTINATION ${BUILD_KERNEL_DIR})
-file(REMOVE ${BUILD_KERNEL_DIR}/src ${BUILD_KERNEL_DIR}/src-kernel)
+file(REMOVE ${BUILD_KERNEL_DIR}/src ${BUILD_KERNEL_DIR}/src-kernel ${BUILD_KERNEL_DIR}/node_modules)
 file(CREATE_LINK ${COMPILER_DIR}/src                   ${BUILD_KERNEL_DIR}/src        SYMBOLIC)
 file(CREATE_LINK ${CMAKE_SOURCE_DIR}/eco-kernel-cpp/src ${BUILD_KERNEL_DIR}/src-kernel SYMBOLIC)
+# Eco.Kernel.Http.js does `require('adm-zip')` when downloading package
+# archives. Without this symlink, node walks up from eco-boot.js's location
+# (.../build-kernel/bin/) and never reaches ${COMPILER_DIR}/node_modules,
+# so the require throws → compiler reports "unable to unzip the data" for
+# every package download. The link is created at configure time; it'll
+# dangle until `pnpm install` populates ${COMPILER_DIR}/node_modules, then
+# becomes live with no further action needed.
+file(CREATE_LINK ${COMPILER_DIR}/node_modules          ${BUILD_KERNEL_DIR}/node_modules SYMBOLIC)
 
 set(ECO_BOOT_OUTPUT        "${BUILD_KERNEL_DIR}/bin/eco-boot.js")
 set(ECO_BOOT_RUNNER_OUTPUT "${BUILD_KERNEL_DIR}/bin/eco-boot-runner.js")
@@ -120,6 +128,19 @@ set(ECO_BOOT_RUNNER_OUTPUT "${BUILD_KERNEL_DIR}/bin/eco-boot-runner.js")
 file(GLOB_RECURSE KERNEL_SOURCES
     "${COMPILER_DIR}/../eco-kernel-cpp/src/Eco/*.elm"
     "${COMPILER_DIR}/../eco-kernel-cpp/src/Eco/Kernel/*.js"
+)
+
+# The Elm compiler caches compiled package artifacts at <local-package>/artifacts.dat
+# and <local-package>/typed-artifacts.dat (see Builder.Stuff.typedPackageArtifacts).
+# When --local-package eco/kernel=<eco-kernel-cpp> is used, that root is the
+# checked-out source tree, so the caches land in-tree. They are gitignored, and
+# we need `cmake --build build --target clean` to wipe them — otherwise edits
+# to eco-kernel-cpp/src/Eco/Kernel/*.js are masked by the stale artifact cache
+# and never reach the bundled compiler. .gitignore: eco-kernel-cpp/.gitignore
+# already lists artifacts.dat / typed-artifacts.dat.
+set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_CLEAN_FILES
+    "${COMPILER_DIR}/../eco-kernel-cpp/artifacts.dat"
+    "${COMPILER_DIR}/../eco-kernel-cpp/typed-artifacts.dat"
 )
 
 # Pre-baked runner contents — written at configure time into the CMake build
@@ -382,7 +403,13 @@ set_source_files_properties(${ECO_STAGE9_OBJ} PROPERTIES
 # EcoNativeDriverStatic whole-archive is what makes the strong
 # eco_native_lower_and_link symbol present, so the kernel intrinsic's weak
 # undef resolves to a working implementation.
-add_executable(eco ${ECO_STAGE9_OBJ})
+# EXCLUDE_FROM_ALL: `eco` transitively depends on eco-stage9.o → eco-compiler.mlir
+# (Stage 5) → eco-boot-2.js (Stage 3) → eco-boot.js (Stage 2). Without
+# EXCLUDE_FROM_ALL, every `cmake --build build` (and therefore the `full`
+# Gate-A target) would run Stages 3, 5, and 9. We want default builds to
+# stop at Stage 2 (Gate A's prerequisite); Stage 9 only builds on explicit
+# request via `--target eco`, `--target eco-bootstrap`, or `--target bootstrap`.
+add_executable(eco EXCLUDE_FROM_ALL ${ECO_STAGE9_OBJ})
 
 set_target_properties(eco PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${BUILD_KERNEL_DIR}/bin"
