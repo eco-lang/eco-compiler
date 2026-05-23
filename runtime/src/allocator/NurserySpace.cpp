@@ -805,6 +805,11 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                         checkChild(slc->base, "slice-base", 0);
                         break;
                     }
+                    case Tag_ByteBufferSlice: {
+                        ElmByteBufferSlice* slc = static_cast<ElmByteBufferSlice*>(static_cast<void*>(scan));
+                        checkChild(slc->base, "byte-slice-base", 0);
+                        break;
+                    }
                     case Tag_StringRope: {
                         ElmStringRope* r = static_cast<ElmStringRope*>(static_cast<void*>(scan));
                         checkChild(r->left, "rope-left", 0);
@@ -931,6 +936,11 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                     case Tag_StringSlice: {
                         ElmStringSlice* slc = static_cast<ElmStringSlice*>(static_cast<void*>(scan));
                         checkOGChild(slc->base, scan, "slice-base", 0);
+                        break;
+                    }
+                    case Tag_ByteBufferSlice: {
+                        ElmByteBufferSlice* slc = static_cast<ElmByteBufferSlice*>(static_cast<void*>(scan));
+                        checkOGChild(slc->base, scan, "byte-slice-base", 0);
                         break;
                     }
                     case Tag_StringRope: {
@@ -1657,6 +1667,12 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
 
         case Tag_StringSlice: {
             ElmStringSlice *slc = static_cast<ElmStringSlice *>(obj);
+            evacuate(slc->base, oldgen, promoted_objects);
+            break;
+        }
+
+        case Tag_ByteBufferSlice: {
+            ElmByteBufferSlice *slc = static_cast<ElmByteBufferSlice *>(obj);
             evacuate(slc->base, oldgen, promoted_objects);
             break;
         }

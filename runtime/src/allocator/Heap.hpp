@@ -84,6 +84,7 @@ typedef enum {
     // Tag_Tensor - Tensors (future).
     Tag_StringRope,  // Concat tree node: HPointer left, HPointer right, height, leafCount.
     Tag_StringSlice, // Structural view: HPointer base + offset + length over a String leaf.
+    Tag_ByteBufferSlice, // Structural view: HPointer base + offset over a Tag_ByteBuffer / Tag_LargeByteHeader.
     // Split-header forms for large strings / byte buffers. The header (these
     // tags) lives in the nursery, while the body (Tag_String / Tag_ByteBuffer)
     // lives in old gen and is never copied. See HEAP_026 and
@@ -316,6 +317,22 @@ typedef struct elm_large_byte_header LargeByteHeader;
 static_assert(sizeof(LargeStringHeader) == 16, "LargeStringHeader must be 16 bytes");
 static_assert(sizeof(LargeByteHeader) == 16, "LargeByteHeader must be 16 bytes");
 
+// Structural view over a ByteBuffer: header.size = logical byte count;
+// `base` points to a Tag_ByteBuffer leaf or Tag_LargeByteHeader; `offset`
+// is the starting index. Slice-of-slice collapses at construction by
+// resolving through the inner slice's base + adjusted offset.
+// header.unboxed is always 0 (the only HPointer field is `base`).
+struct ALIGN(8) elm_bytebuffer_slice {
+    Header header;
+    HPointer base;
+    u32 offset;
+    u32 _padding;
+};
+typedef struct elm_bytebuffer_slice ElmByteBufferSlice;
+// Header (8) + HPointer (8) + u32 (4) + u32 (4) = 24 bytes. Same layout
+// as ElmStringSlice (24 bytes); we mirror its design without overlap.
+static_assert(sizeof(ElmByteBufferSlice) == 24, "ElmByteBufferSlice must be 24 bytes");
+
 typedef struct {
     Header header; // Header.unboxed indicates which fields are unboxed.
     Unboxable a;
@@ -544,6 +561,7 @@ typedef union HeapValue {
     ElmArray array;
     LargeStringHeader largeStringHeader;
     LargeByteHeader   largeByteHeader;
+    ElmByteBufferSlice byteBufferSlice;
 } HeapValue;
 
 } // namespace Elm

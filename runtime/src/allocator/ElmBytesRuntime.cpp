@@ -72,15 +72,13 @@ inline uint64_t ptrToU64(void* obj) {
 extern "C" {
 
 HPtr elm_alloc_bytebuffer(u32 byteCount) {
-    size_t total_size = sizeof(Elm::ByteBuffer) + byteCount;
-    total_size = (total_size + 7) & ~7;
-
-    // No HPointer args to root: byteCount is scalar; bytes are filled by
-    // caller after the allocation.
-    Elm::ByteBuffer* bb = static_cast<Elm::ByteBuffer*>(
-        eco_alloc_with_roots(Elm::Tag_ByteBuffer, total_size, nullptr, 0, 0));
-    bb->header.size = byteCount;
-    return Elm::HPtr::fromBits(ptrToU64(bb));
+    // Use the LOT-aware blank-buffer helper: payloads at/over the
+    // threshold route through the split-header path (pinned old-gen body),
+    // sub-LOT stays inline in nursery. Without this, the fast-path inline
+    // allocation skipped LOT routing and oversized buffers were evacuated
+    // by every minor GC until promoted.
+    Elm::alloc::BlankByteBuffer bb = Elm::alloc::allocByteBufferBlank(byteCount);
+    return Elm::HPtr::fromBits(hpointerToU64(bb.hp));
 }
 
 u32 elm_bytebuffer_len(HPtr bbVal) {
@@ -93,8 +91,22 @@ u32 elm_bytebuffer_len(HPtr bbVal) {
 u8* elm_bytebuffer_data(HPtr bbVal) {
     void* ptr = u64ToPtr(bbVal.toBits());
     if (!ptr) return nullptr;
-    Elm::ByteBuffer* bb = Elm::alloc::resolveByteBufferBody(ptr);
-    return bb->bytes;
+    // Slice form needs to advance past the slice's `offset`; byteBufferData
+    // handles flat / large-header / slice transparently.
+    return const_cast<u8*>(Elm::alloc::byteBufferData(ptr));
+}
+
+void elm_bytebuffer_with_data(HPtr bbVal, elm_bytebuffer_callback fn, void* ctx) {
+    if (!fn) return;
+    void* ptr = u64ToPtr(bbVal.toBits());
+    if (!ptr) {
+        fn(nullptr, 0, ctx);
+        return;
+    }
+    auto v = Elm::alloc::byteBufferView(ptr);
+    // Callback is documented not to allocate on the Elm heap, so the view's
+    // data pointer is stable for the duration of this call.
+    fn(v.data, static_cast<u32>(v.length), ctx);
 }
 
 // ============================================================================
@@ -199,75 +211,79 @@ u32 elm_utf8_copy(HPtr strVal, u8* dst) {
 
 HPtr elm_utf8_decode(const u8* src, u32 len) {
     if (len == 0) {
-        // Return empty string constant
         Elm::HPointer empty = Elm::alloc::emptyString();
         return Elm::HPtr::fromBits(hpointerToU64(empty));
     }
 
-    // Decode UTF-8 to UTF-16
-    std::u16string utf16;
-    utf16.reserve(len);  // Worst case
-
-    size_t i = 0;
-    while (i < len) {
+    // Pass 1: validate UTF-8 and count UTF-16 code units. `src` is a raw
+    // pointer from generated MLIR code; we treat it as non-moving for the
+    // duration of this call (the caller is responsible for the lifetime —
+    // BFOPS_032).
+    size_t units = 0;
+    for (u32 i = 0; i < len; ) {
         u8 c = src[i];
-        u32 codepoint;
-
         if ((c & 0x80) == 0) {
-            // 1-byte (ASCII)
-            codepoint = c;
-            i += 1;
+            ++units; i += 1;
         } else if ((c & 0xE0) == 0xC0) {
-            // 2-byte sequence
-            if (i + 1 >= len) return Elm::HPtr::fromBits(0);  // Invalid - incomplete sequence
+            if (i + 1 >= len) return Elm::HPtr::fromBits(0);
             u8 c2 = src[i + 1];
-            if ((c2 & 0xC0) != 0x80) return Elm::HPtr::fromBits(0);  // Invalid continuation byte
-            codepoint = ((c & 0x1F) << 6) | (c2 & 0x3F);
-            // Reject overlong encoding
-            if (codepoint < 0x80) return Elm::HPtr::fromBits(0);
-            i += 2;
+            if ((c2 & 0xC0) != 0x80) return Elm::HPtr::fromBits(0);
+            u32 cp = ((c & 0x1F) << 6) | (c2 & 0x3F);
+            if (cp < 0x80) return Elm::HPtr::fromBits(0);
+            ++units; i += 2;
         } else if ((c & 0xF0) == 0xE0) {
-            // 3-byte sequence
-            if (i + 2 >= len) return Elm::HPtr::fromBits(0);  // Invalid - incomplete sequence
-            u8 c2 = src[i + 1];
-            u8 c3 = src[i + 2];
-            if ((c2 & 0xC0) != 0x80 || (c3 & 0xC0) != 0x80) return Elm::HPtr::fromBits(0);
-            codepoint = ((c & 0x0F) << 12) | ((c2 & 0x3F) << 6) | (c3 & 0x3F);
-            // Reject overlong encoding and surrogates
-            if (codepoint < 0x800) return Elm::HPtr::fromBits(0);
-            if (codepoint >= 0xD800 && codepoint <= 0xDFFF) return Elm::HPtr::fromBits(0);
-            i += 3;
+            if (i + 2 >= len) return Elm::HPtr::fromBits(0);
+            u8 c2 = src[i + 1], c3 = src[i + 2];
+            if ((c2 & 0xC0) != 0x80 || (c3 & 0xC0) != 0x80)
+                return Elm::HPtr::fromBits(0);
+            u32 cp = ((c & 0x0F) << 12) | ((c2 & 0x3F) << 6) | (c3 & 0x3F);
+            if (cp < 0x800) return Elm::HPtr::fromBits(0);
+            if (cp >= 0xD800 && cp <= 0xDFFF) return Elm::HPtr::fromBits(0);
+            ++units; i += 3;
         } else if ((c & 0xF8) == 0xF0) {
-            // 4-byte sequence
-            if (i + 3 >= len) return Elm::HPtr::fromBits(0);  // Invalid - incomplete sequence
-            u8 c2 = src[i + 1];
-            u8 c3 = src[i + 2];
-            u8 c4 = src[i + 3];
+            if (i + 3 >= len) return Elm::HPtr::fromBits(0);
+            u8 c2 = src[i + 1], c3 = src[i + 2], c4 = src[i + 3];
             if ((c2 & 0xC0) != 0x80 || (c3 & 0xC0) != 0x80 || (c4 & 0xC0) != 0x80)
                 return Elm::HPtr::fromBits(0);
-            codepoint = ((c & 0x07) << 18) | ((c2 & 0x3F) << 12) |
-                        ((c3 & 0x3F) << 6) | (c4 & 0x3F);
-            // Reject overlong encoding and out-of-range
-            if (codepoint < 0x10000 || codepoint > 0x10FFFF) return Elm::HPtr::fromBits(0);
-            i += 4;
+            u32 cp = ((c & 0x07) << 18) | ((c2 & 0x3F) << 12) |
+                     ((c3 & 0x3F) << 6) | (c4 & 0x3F);
+            if (cp < 0x10000 || cp > 0x10FFFF) return Elm::HPtr::fromBits(0);
+            units += 2; i += 4;
         } else {
-            return Elm::HPtr::fromBits(0);  // Invalid UTF-8 lead byte
-        }
-
-        // Convert codepoint to UTF-16
-        if (codepoint <= 0xFFFF) {
-            utf16.push_back(static_cast<char16_t>(codepoint));
-        } else {
-            // Surrogate pair for codepoints > 0xFFFF
-            codepoint -= 0x10000;
-            utf16.push_back(static_cast<char16_t>(0xD800 | (codepoint >> 10)));
-            utf16.push_back(static_cast<char16_t>(0xDC00 | (codepoint & 0x3FF)));
+            return Elm::HPtr::fromBits(0);
         }
     }
 
-    // Allocate Elm::ElmString with UTF-16 content
-    Elm::HPointer result = Elm::alloc::allocString(utf16);
-    return Elm::HPtr::fromBits(hpointerToU64(result));
+    // Pass 2: allocate ElmString of exact size and decode directly into
+    // chars[]. `src` is a raw pointer — it lives in caller-supplied memory
+    // that is not Elm GC heap, so allocStringBlank cannot relocate it.
+    Elm::alloc::BlankString bs = Elm::alloc::allocStringBlank(units);
+    size_t dst = 0;
+    for (u32 i = 0; i < len; ) {
+        u8 c = src[i];
+        u32 cp;
+        if ((c & 0x80) == 0) {
+            cp = c; i += 1;
+        } else if ((c & 0xE0) == 0xC0) {
+            cp = ((c & 0x1F) << 6) | (src[i + 1] & 0x3F);
+            i += 2;
+        } else if ((c & 0xF0) == 0xE0) {
+            cp = ((c & 0x0F) << 12) | ((src[i + 1] & 0x3F) << 6) | (src[i + 2] & 0x3F);
+            i += 3;
+        } else {
+            cp = ((c & 0x07) << 18) | ((src[i + 1] & 0x3F) << 12) |
+                 ((src[i + 2] & 0x3F) << 6) | (src[i + 3] & 0x3F);
+            i += 4;
+        }
+        if (cp <= 0xFFFF) {
+            bs.chars[dst++] = static_cast<char16_t>(cp);
+        } else {
+            cp -= 0x10000;
+            bs.chars[dst++] = static_cast<char16_t>(0xD800 | (cp >> 10));
+            bs.chars[dst++] = static_cast<char16_t>(0xDC00 | (cp & 0x3FF));
+        }
+    }
+    return Elm::HPtr::fromBits(hpointerToU64(bs.hp));
 }
 
 // ============================================================================

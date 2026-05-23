@@ -2591,10 +2591,11 @@ static void print_value(uint64_t val, int depth) {
         }
 
         case Tag_ByteBuffer:
-        case Tag_LargeByteHeader: {
-            // Both forms carry the logical byte count in header.size; the
-            // split-header form's body lives elsewhere and we don't need it
-            // for the size-only debug rendering.
+        case Tag_LargeByteHeader:
+        case Tag_ByteBufferSlice: {
+            // All three forms carry the logical byte count in header.size;
+            // the slice/split-header forms reference their payload via an
+            // HPointer we don't need for the size-only debug rendering.
             output_format("<bytes:%u>", header->size);
             break;
         }

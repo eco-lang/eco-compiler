@@ -925,6 +925,55 @@ inline HPointer allocByteBuffer(const u8* data, size_t length) {
 }
 
 /**
+ * Result of `allocByteBufferBlank`. Mirrors BlankString: a freshly
+ * allocated ByteBuffer with uninitialized `bytes[]`. The caller must
+ * write all `length` bytes BEFORE the next allocation in this thread.
+ * Sub-LOT bytes pointer dangles after a minor GC; large-path bodies are
+ * pinned and remain stable.
+ */
+struct BlankByteBuffer {
+    HPointer hp;
+    u8* bytes;
+    u32 length;
+};
+
+/**
+ * Allocates a ByteBuffer of `length` bytes with uninitialized payload,
+ * returning the handle plus a writable pointer. Pairs with the same
+ * two-pass count→allocate→fill pattern used by allocStringBlank, allowing
+ * direct decoders/encoders to bypass an intermediate std::vector copy.
+ *
+ * Safety contract: do not allocate between getting `bytes` and finishing
+ * the write. For payloads routing through the large-object split path
+ * the body is pinned in old gen and `bytes` remains stable.
+ */
+inline BlankByteBuffer allocByteBufferBlank(size_t length) {
+    auto& allocator = Allocator::instance();
+
+    size_t total_size = sizeof(ByteBuffer) + length;
+    total_size = (total_size + 7) & ~7;
+
+    // Mirror allocByteBuffer's split: only payloads at/over the LOT take
+    // the split-header path. A zero-length buffer still has an 8-byte
+    // ByteBuffer header (sizeof(ByteBuffer) == sizeof(Header)) which lives
+    // happily in the nursery; routing it through allocLargeByteBuffer would
+    // create a body too small for the old-gen size-class machinery.
+    if (total_size >= allocator.getLargeObjectThreshold()) {
+        HPointer hp = allocator.allocLargeByteBuffer(nullptr, length);
+        void* header_obj = allocator.resolve(hp);
+        LargeByteHeader* lh = static_cast<LargeByteHeader*>(header_obj);
+        ByteBuffer* body = static_cast<ByteBuffer*>(allocator.resolve(lh->body));
+        return BlankByteBuffer{hp, body->bytes, static_cast<u32>(length)};
+    }
+
+    ByteBuffer* buf = static_cast<ByteBuffer*>(
+        eco_alloc_with_roots(Tag_ByteBuffer, total_size, nullptr, 0, 0));
+    buf->header.size = static_cast<u32>(length);
+    HPointer hp = allocator.wrap(buf);
+    return BlankByteBuffer{hp, buf->bytes, static_cast<u32>(length)};
+}
+
+/**
  * Allocates a zero-initialized ByteBuffer.
  *
  * @param length Number of bytes.
@@ -950,8 +999,9 @@ inline HPointer allocByteBufferZero(size_t length) {
 }
 
 /**
- * Returns the length of a ByteBuffer (or Tag_LargeByteHeader). header.size
- * carries the logical length for both forms.
+ * Returns the length of a ByteBuffer in any form (Tag_ByteBuffer,
+ * Tag_LargeByteHeader, Tag_ByteBufferSlice). header.size carries the
+ * logical length for all three.
  */
 inline size_t byteBufferLength(void* buf) {
     if (!buf) return 0;
@@ -961,10 +1011,27 @@ inline size_t byteBufferLength(void* buf) {
 
 /**
  * Returns a pointer to the byte data of a ByteBuffer, resolving through a
- * Tag_LargeByteHeader to its Tag_ByteBuffer body if needed.
+ * Tag_LargeByteHeader to its Tag_ByteBuffer body or through a
+ * Tag_ByteBufferSlice to base + offset.
  */
 inline const u8* byteBufferData(void* buf) {
     Header* hdr = static_cast<Header*>(buf);
+    if (hdr->tag == Tag_ByteBufferSlice) {
+        ElmByteBufferSlice* slc = static_cast<ElmByteBufferSlice*>(buf);
+        void* base = Allocator::instance().resolve(slc->base);
+        // Inline the LargeByteHeader follow here so this function stays
+        // independent of resolveByteBufferBody (which is defined further
+        // down the header to keep all string-side helpers together).
+        Header* basehdr = static_cast<Header*>(base);
+        if (basehdr->tag == Tag_LargeByteHeader) {
+            LargeByteHeader* h = static_cast<LargeByteHeader*>(base);
+            void* body = Allocator::instance().resolve(h->body);
+            ByteBuffer* b = static_cast<ByteBuffer*>(body);
+            return b->bytes + slc->offset;
+        }
+        ByteBuffer* b = static_cast<ByteBuffer*>(base);
+        return b->bytes + slc->offset;
+    }
     if (hdr->tag == Tag_LargeByteHeader) {
         LargeByteHeader* h = static_cast<LargeByteHeader*>(buf);
         void* body = Allocator::instance().resolve(h->body);
@@ -1518,7 +1585,103 @@ inline ByteBuffer* resolveByteBufferBody(void* obj) {
         void* body = Allocator::instance().resolve(h->body);
         return static_cast<ByteBuffer*>(body);
     }
+    // A Tag_ByteBufferSlice does NOT have a ByteBuffer-shaped body; the
+    // slice's data starts at base->bytes + offset and runs for slc->header.size
+    // bytes. Callers that may receive any byte-container form must instead
+    // use byteBufferView, which handles all three tags transparently. Trip
+    // here loudly so any missed migration surfaces immediately.
+    assert(hdr->tag != Tag_ByteBufferSlice &&
+           "resolveByteBufferBody called on a Tag_ByteBufferSlice; use byteBufferView instead");
     return static_cast<ByteBuffer*>(obj);
+}
+
+/**
+ * Read-only view of a ByteBuffer in any structural form:
+ *   - Tag_ByteBuffer        -> data = bb->bytes,            length = bb->header.size
+ *   - Tag_LargeByteHeader   -> data = body->bytes,          length = hdr->size
+ *   - Tag_ByteBufferSlice   -> data = base.data + slc->offset, length = slc->header.size
+ *
+ * The returned `data` pointer is valid only until the next allocation
+ * by this thread for sub-LOT byte buffers (which can be moved by a minor
+ * GC); split-header bodies are pinned in old gen and the pointer is stable.
+ * Callers in hot loops must avoid allocating between the view call and the
+ * final byte access.
+ */
+struct ByteBufferView {
+    const u8* data;
+    size_t length;
+};
+
+inline ByteBufferView byteBufferView(void* obj) {
+    if (!obj) return ByteBufferView{nullptr, 0};
+    Header* hdr = static_cast<Header*>(obj);
+    if (hdr->tag == Tag_ByteBufferSlice) {
+        ElmByteBufferSlice* slc = static_cast<ElmByteBufferSlice*>(obj);
+        void* base = Allocator::instance().resolve(slc->base);
+        // Construction collapses slice-of-slice and resolves through any
+        // Tag_LargeByteHeader, so `base` is always a flat Tag_ByteBuffer
+        // here. Re-derive via resolveByteBufferBody just in case a future
+        // path allowed slicing over a LargeByteHeader directly.
+        ByteBuffer* bb = resolveByteBufferBody(base);
+        return ByteBufferView{bb->bytes + slc->offset, slc->header.size};
+    }
+    ByteBuffer* bb = resolveByteBufferBody(obj);
+    return ByteBufferView{bb->bytes, bb->header.size};
+}
+
+/**
+ * Allocates a Tag_ByteBufferSlice over `base` for `length` bytes starting
+ * at `offset`. Slice-of-slice collapses: if `base` resolves to another
+ * Tag_ByteBufferSlice, the resulting slice points at the inner base with
+ * `offset + inner.offset`. If `base` is a Tag_LargeByteHeader the slice
+ * keeps that as its base — the view layer follows the indirection.
+ *
+ * Returns the embedded empty-byte-buffer constant for length==0 (via
+ * allocByteBuffer(nullptr, 0)).
+ *
+ * Threshold: for very small slices (under MAKE_BYTEBUFFER_SLICE_MIN_LEN)
+ * the slice header itself wastes more space than a direct copy, so we
+ * collapse to a flat ByteBuffer. Tuned to match Tag_StringSlice behaviour.
+ */
+static constexpr size_t MAKE_BYTEBUFFER_SLICE_MIN_LEN = 32;
+
+inline HPointer makeByteBufferSlice(HPointer base, u32 offset, u32 length) {
+    auto& allocator = Allocator::instance();
+    if (length == 0) return allocByteBuffer(nullptr, 0);
+
+    // Collapse slice-of-slice. Resolve base; if it's another slice,
+    // absorb its offset.
+    void* base_obj = allocator.resolve(base);
+    if (base_obj) {
+        Header* h = static_cast<Header*>(base_obj);
+        if (h->tag == Tag_ByteBufferSlice) {
+            ElmByteBufferSlice* inner = static_cast<ElmByteBufferSlice*>(base_obj);
+            base = inner->base;
+            offset += inner->offset;
+        }
+    }
+
+    // Tiny slices: flatten to a copy.
+    if (length < MAKE_BYTEBUFFER_SLICE_MIN_LEN) {
+        // Re-resolve base post-collapse — possible Tag_LargeByteHeader.
+        void* obj = allocator.resolve(base);
+        ByteBuffer* src = resolveByteBufferBody(obj);
+        return allocByteBuffer(src->bytes + offset, length);
+    }
+
+    size_t total_size = sizeof(ElmByteBufferSlice);
+    total_size = (total_size + 7) & ~7;
+
+    uint64_t roots[1];
+    std::memcpy(&roots[0], &base, sizeof(base));
+    ElmByteBufferSlice* slc = static_cast<ElmByteBufferSlice*>(
+        eco_alloc_with_roots(Tag_ByteBufferSlice, total_size, roots, 1, 0x1));
+    std::memcpy(&base, &roots[0], sizeof(base));
+    slc->header.size = length;
+    slc->base = base;
+    slc->offset = offset;
+    slc->_padding = 0;
+    return allocator.wrap(slc);
 }
 
 /**
@@ -1541,12 +1704,17 @@ inline ElmString* resolveStringBody(void* obj) {
 }
 
 /**
- * Returns true if the object is any byte buffer form (Tag_ByteBuffer or
- * Tag_LargeByteHeader).
+ * Returns true if the object is any byte buffer form (Tag_ByteBuffer,
+ * Tag_LargeByteHeader, or Tag_ByteBufferSlice).
  */
 inline bool isByteBuffer(void* obj) {
     Tag t = getTag(obj);
-    return t == Tag_ByteBuffer || t == Tag_LargeByteHeader;
+    return t == Tag_ByteBuffer || t == Tag_LargeByteHeader ||
+           t == Tag_ByteBufferSlice;
+}
+
+inline bool isByteBufferSlice(void* obj) {
+    return getTag(obj) == Tag_ByteBufferSlice;
 }
 
 /**

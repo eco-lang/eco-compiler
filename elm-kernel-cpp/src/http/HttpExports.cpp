@@ -428,8 +428,8 @@ bool extractRequest(uint64_t requestEnc, HttpContext& ctx, uint64_t& expectHandl
             HPointer bytesHP = body->values[0].p;
             void* bytesPtr = Allocator::instance().resolve(bytesHP);
             if (bytesPtr) {
-                ByteBuffer* buf = resolveByteBufferBody(bytesPtr);
-                ctx.requestBody = std::string(reinterpret_cast<char*>(buf->bytes), buf->header.size);
+                auto vbuf = alloc::byteBufferView(bytesPtr);
+                ctx.requestBody = std::string(reinterpret_cast<const char*>(vbuf.data), vbuf.length);
             }
         }
         // BODY_EMPTY and others leave requestBody empty

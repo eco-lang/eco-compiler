@@ -42,8 +42,26 @@ u32 elm_bytebuffer_len(HPtr bb);
  * Return pointer to first payload byte.
  * Takes eco.value (u64) representing a ByteBuffer.
  * Returns raw pointer (for cursor setup only - not an eco.value).
+ *
+ * SAFETY: The returned pointer does NOT survive GC. Callers that hold it
+ * across any allocation will read freed/moved memory. For GC-safe access,
+ * use elm_bytebuffer_with_data, which guarantees the buffer body is stable
+ * during the callback by virtue of being a non-allocating runtime call.
  */
 u8* elm_bytebuffer_data(HPtr bb);
+
+/**
+ * Callback variant of elm_bytebuffer_data. Invokes `fn(data, length, ctx)`
+ * with a pointer to the payload that is guaranteed stable for the duration
+ * of the call — the callback MUST NOT allocate on the Elm heap. Handles all
+ * ByteBuffer forms (flat, large-header, slice).
+ *
+ * Intended for new code paths that read a buffer's bytes inline; existing
+ * elm_bytebuffer_data callers remain on the raw-pointer form until each
+ * call site is audited for GC safety.
+ */
+typedef void (*elm_bytebuffer_callback)(const u8* data, u32 length, void* ctx);
+void elm_bytebuffer_with_data(HPtr bb, elm_bytebuffer_callback fn, void* ctx);
 
 // ============================================================================
 // String operations (heap values are u64)

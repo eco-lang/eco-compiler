@@ -235,9 +235,8 @@ HPointer read_f64(bool littleEndian, void* bytes, i64 offset) {
 }
 
 HPointer read_bytes(i64 length, void* bytes, i64 offset) {
-    ByteBuffer* b = alloc::resolveByteBufferBody(bytes);
-
-    if (offset < 0 || static_cast<size_t>(offset + length) > b->header.size) {
+    size_t buf_len = alloc::byteBufferLength(bytes);
+    if (offset < 0 || static_cast<size_t>(offset + length) > buf_len) {
         return decodeFailure();
     }
 
@@ -246,29 +245,71 @@ HPointer read_bytes(i64 length, void* bytes, i64 offset) {
 }
 
 HPointer read_string(i64 length, void* bytes, i64 offset) {
-    ByteBuffer* b = alloc::resolveByteBufferBody(bytes);
-
-    if (offset < 0 || static_cast<size_t>(offset + length) > b->header.size) {
-        return decodeFailure();
-    }
-
-    // Create a slice and decode as UTF-8
-    HPointer slice = BytesOps::slice(bytes, offset, offset + length);
+    // The legacy form allocated a slice ByteBuffer, then ran decodeUtf8
+    // which allocates a u16string + a fresh ElmString — three allocations,
+    // two memcpys, all just to land on a string. Decode directly into a
+    // fresh ElmString sized to the exact UTF-16 code-unit count instead.
     auto& allocator = Allocator::instance();
-    void* sliceObj = allocator.resolve(slice);
+    auto buf_view = alloc::byteBufferView(bytes);
 
-    HPointer stringResult = BytesOps::decodeUtf8(sliceObj);
-
-    if (isNothing(stringResult)) {
+    if (offset < 0 || static_cast<size_t>(offset + length) > buf_view.length) {
         return decodeFailure();
     }
 
-    // Extract string from Just
-    void* justObj = allocator.resolve(stringResult);
-    Custom* custom = static_cast<Custom*>(justObj);
-    HPointer str = custom->values[0].p;
+    if (length == 0) {
+        return readSuccessBoxed(alloc::emptyString(), offset);
+    }
 
-    return readSuccessBoxed(str, offset + length);
+    HPointer srcHP = allocator.wrap(bytes);
+    const u8* src = buf_view.data + offset;
+
+    // Pass 1: count UTF-16 code units. `src` lives in the source buffer;
+    // no allocation here, so the pointer is stable.
+    size_t units = 0;
+    for (i64 i = 0; i < length; ) {
+        u8 c = src[i];
+        if (c < 0x80) { ++units; i += 1; }
+        else if (c < 0xE0) { ++units; i += 2; }
+        else if (c < 0xF0) { ++units; i += 3; }
+        else { units += 2; i += 4; }
+    }
+
+    // Pass 2: allocate ElmString of exact size with srcHP rooted so we
+    // can re-derive a stable byte pointer for the decode walk.
+    alloc::BlankString bs;
+    {
+        StackRootRangeGuard guard(&srcHP, 1, 0x1);
+        bs = alloc::allocStringBlank(units);
+    }
+
+    auto src_view2 = alloc::byteBufferView(allocator.resolve(srcHP));
+    const u8* src2 = src_view2.data + offset;
+    size_t dst = 0;
+    for (i64 i = 0; i < length; ) {
+        u8 c = src2[i];
+        u32 cp;
+        if (c < 0x80) { cp = c; i += 1; }
+        else if (c < 0xE0) {
+            cp = ((c & 0x1F) << 6) | (src2[i + 1] & 0x3F);
+            i += 2;
+        } else if (c < 0xF0) {
+            cp = ((c & 0x0F) << 12) | ((src2[i + 1] & 0x3F) << 6) | (src2[i + 2] & 0x3F);
+            i += 3;
+        } else {
+            cp = ((c & 0x07) << 18) | ((src2[i + 1] & 0x3F) << 12) |
+                 ((src2[i + 2] & 0x3F) << 6) | (src2[i + 3] & 0x3F);
+            i += 4;
+        }
+        if (cp <= 0xFFFF) {
+            bs.chars[dst++] = static_cast<u16>(cp);
+        } else {
+            cp -= 0x10000;
+            bs.chars[dst++] = static_cast<u16>(0xD800 | (cp >> 10));
+            bs.chars[dst++] = static_cast<u16>(0xDC00 | (cp & 0x3FF));
+        }
+    }
+
+    return readSuccessBoxed(bs.hp, offset + length);
 }
 
 // ============================================================================
@@ -308,9 +349,10 @@ HPointer write_f64(bool littleEndian, f64 value) {
 }
 
 HPointer write_bytes(void* bytes) {
-    // Just return a copy (ByteBuffer is immutable)
-    ByteBuffer* b = alloc::resolveByteBufferBody(bytes);
-    return BytesOps::fromData(b->bytes, b->header.size);
+    // ByteBuffers are immutable; share by reference rather than copying.
+    // The legacy form did fromData(b->bytes, b->header.size) which
+    // round-tripped the entire payload through a fresh allocation.
+    return Allocator::instance().wrap(bytes);
 }
 
 HPointer write_string(void* str) {

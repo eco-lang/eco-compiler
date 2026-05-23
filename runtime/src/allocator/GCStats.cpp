@@ -70,6 +70,7 @@ static const char* tagName(int t) {
         case Tag_Array:             return "Array";
         case Tag_StringRope:        return "StringRope";
         case Tag_StringSlice:       return "StringSlice";
+        case Tag_ByteBufferSlice:   return "ByteBufferSlice";
         case Tag_LargeStringHeader: return "LargeStringHeader";
         case Tag_LargeByteHeader:   return "LargeByteHeader";
         case Tag_Free:              return "Free";

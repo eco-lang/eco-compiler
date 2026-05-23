@@ -427,15 +427,15 @@ static bool eqHelp(void* a, void* b, int depth) {
         return StringOps::equal(a, b);
     }
 
-    // ByteBuffers may appear as flat Tag_ByteBuffer or as a Tag_LargeByteHeader
-    // pointing at a pinned old-gen body; resolve both sides to their bodies and
-    // compare as raw bytes.
+    // ByteBuffers may appear as flat Tag_ByteBuffer, Tag_LargeByteHeader,
+    // or Tag_ByteBufferSlice; byteBufferView handles all three forms and
+    // returns the logical (data, length) view for comparison.
     if (alloc::isByteBuffer(a) && alloc::isByteBuffer(b)) {
-        ByteBuffer* ab = alloc::resolveByteBufferBody(a);
-        ByteBuffer* bb = alloc::resolveByteBufferBody(b);
-        if (!ab || !bb) return ab == bb;
-        if (ab->header.size != bb->header.size) return false;
-        return std::memcmp(ab->bytes, bb->bytes, ab->header.size) == 0;
+        auto va = alloc::byteBufferView(a);
+        auto vb = alloc::byteBufferView(b);
+        if (va.length != vb.length) return false;
+        if (va.length == 0) return true;
+        return std::memcmp(va.data, vb.data, va.length) == 0;
     }
 
     // Type mismatch
@@ -618,13 +618,14 @@ static bool eqHelp(void* a, void* b, int depth) {
         }
 
         case Tag_ByteBuffer: {
-            // The early ByteBuffer fast-path above already handles split forms;
-            // this case is only reached when both sides have tag Tag_ByteBuffer.
-            ByteBuffer* ab = alloc::resolveByteBufferBody(a);
-            ByteBuffer* bb = alloc::resolveByteBufferBody(b);
-
-            if (ab->header.size != bb->header.size) return false;
-            return std::memcmp(ab->bytes, bb->bytes, ab->header.size) == 0;
+            // The early ByteBuffer fast-path above already handles all
+            // byte-buffer forms; this case is only reached when both sides
+            // have tag Tag_ByteBuffer.
+            auto va = alloc::byteBufferView(a);
+            auto vb = alloc::byteBufferView(b);
+            if (va.length != vb.length) return false;
+            if (va.length == 0) return true;
+            return std::memcmp(va.data, vb.data, va.length) == 0;
         }
 
         case Tag_Closure:

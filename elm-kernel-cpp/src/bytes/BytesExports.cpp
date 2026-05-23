@@ -73,21 +73,15 @@ static uint64_t makeTuple2_ip(int64_t a, HPointer b) {
     return Export::encode(Allocator::instance().wrap(t));
 }
 
-// Resolve a ByteBuffer from an eco.value encoded uint64_t. Transparently
-// follows Tag_LargeByteHeader (HEAP_026) split headers to the underlying
-// Tag_ByteBuffer body in old gen, so callers downstream can keep accessing
-// bb->bytes[] and bb->header.size as if they had a flat ByteBuffer.
-static ByteBuffer* resolveByteBuffer(uint64_t bytes) {
+// Read-only view of a ByteBuffer in any structural form. byteBufferView
+// resolves through Tag_LargeByteHeader split headers and Tag_ByteBufferSlice
+// transparently, so callers downstream can index `data[offset]` regardless
+// of the source structure.
+static alloc::ByteBufferView resolveByteBufferView(uint64_t bytes) {
     auto& allocator = Allocator::instance();
     HPointer hp = Export::decode(bytes);
     void* obj = allocator.resolve(hp);
-    if (!obj) return nullptr;
-    Header* hdr = static_cast<Header*>(obj);
-    if (hdr->tag == Tag_LargeByteHeader) {
-        LargeByteHeader* lh = static_cast<LargeByteHeader*>(obj);
-        obj = allocator.resolve(lh->body);
-    }
-    return static_cast<ByteBuffer*>(obj);
+    return alloc::byteBufferView(obj);
 }
 
 // ============================================================================
@@ -108,14 +102,23 @@ enum EncoderTag : u16 {
     ENC_BYTES = 10,
 };
 
-// Endianness type: LE = ctor 0, BE = ctor 1
-static bool encoderIsBigEndian(HPointer endianness) {
+// Endianness type at the kernel boundary: LE = ctor 0, BE = ctor 1.
+// Used once per encoder-construction call. The constructed encoder
+// Custom stores the bool directly in slot 0 (unboxed Int), which lets
+// writeEncoder read the flag without a per-primitive resolve.
+static bool endiannessHPointerToBool(HPointer endianness) {
     auto& allocator = Allocator::instance();
     void* ptr = allocator.resolve(endianness);
     Custom* c = static_cast<Custom*>(ptr);
     return c->ctor == 1;
 }
 
+// O(1) per call: leaf primitives encode their width in the case label.
+// The Elm-side `Encoder` constructors already cache the total byte width
+// in values[0].i for ENC_SEQ (`Seq Int (List Encoder)`) and ENC_UTF8
+// (`Utf8 Int String`). ENC_BYTES (`Bytes Bytes`) has a single field —
+// the source ByteBuffer — so we look up its length via byteBufferLength
+// without resolving any further indirection.
 static size_t encoderSize(Custom* c) {
     switch (c->ctor) {
         case ENC_I8:   return 1;
@@ -129,10 +132,8 @@ static size_t encoderSize(Custom* c) {
         case ENC_SEQ:  return static_cast<size_t>(c->values[0].i);
         case ENC_UTF8: return static_cast<size_t>(c->values[0].i);
         case ENC_BYTES: {
-            auto& allocator = Allocator::instance();
-            void* bbPtr = allocator.resolve(c->values[0].p);
-            ByteBuffer* bb = alloc::resolveByteBufferBody(bbPtr);
-            return bb->header.size;
+            void* bbPtr = Allocator::instance().resolve(c->values[0].p);
+            return alloc::byteBufferLength(bbPtr);
         }
         default: return 0;
     }
@@ -141,101 +142,54 @@ static size_t encoderSize(Custom* c) {
 static void writeEncoder(Custom* encoder, u8* buf, size_t& offset) {
     auto& allocator = Allocator::instance();
 
+    // The Encoder Custom layout is determined by the Elm-side
+    // `Bytes.Encode` module's `type Encoder = I16 Endianness Int | …`:
+    // for the multi-byte primitives values[0] is the BOXED Endianness
+    // HPointer (slot 0 = 00 in the unboxed bitmap) and values[1] is the
+    // unboxed payload (slot 1 = 01 for Int or 10 for Float). We must
+    // resolve the Endianness Custom to know LE vs BE.
     switch (encoder->ctor) {
-        case ENC_I8: {
-            buf[offset++] = static_cast<u8>(encoder->values[0].i & 0xFF);
-            break;
-        }
-        case ENC_I16: {
-            bool be = encoderIsBigEndian(encoder->values[0].p);
-            int16_t val = static_cast<int16_t>(encoder->values[1].i);
-            if (be) {
-                buf[offset++] = static_cast<u8>((val >> 8) & 0xFF);
-                buf[offset++] = static_cast<u8>(val & 0xFF);
-            } else {
-                buf[offset++] = static_cast<u8>(val & 0xFF);
-                buf[offset++] = static_cast<u8>((val >> 8) & 0xFF);
-            }
-            break;
-        }
-        case ENC_I32: {
-            bool be = encoderIsBigEndian(encoder->values[0].p);
-            int32_t val = static_cast<int32_t>(encoder->values[1].i);
-            if (be) {
-                buf[offset++] = static_cast<u8>((val >> 24) & 0xFF);
-                buf[offset++] = static_cast<u8>((val >> 16) & 0xFF);
-                buf[offset++] = static_cast<u8>((val >> 8) & 0xFF);
-                buf[offset++] = static_cast<u8>(val & 0xFF);
-            } else {
-                buf[offset++] = static_cast<u8>(val & 0xFF);
-                buf[offset++] = static_cast<u8>((val >> 8) & 0xFF);
-                buf[offset++] = static_cast<u8>((val >> 16) & 0xFF);
-                buf[offset++] = static_cast<u8>((val >> 24) & 0xFF);
-            }
-            break;
-        }
+        case ENC_I8:
         case ENC_U8: {
             buf[offset++] = static_cast<u8>(encoder->values[0].i & 0xFF);
             break;
         }
+        case ENC_I16:
         case ENC_U16: {
-            bool be = encoderIsBigEndian(encoder->values[0].p);
+            bool be = endiannessHPointerToBool(encoder->values[0].p);
             uint16_t val = static_cast<uint16_t>(encoder->values[1].i);
-            if (be) {
-                buf[offset++] = static_cast<u8>((val >> 8) & 0xFF);
-                buf[offset++] = static_cast<u8>(val & 0xFF);
-            } else {
-                buf[offset++] = static_cast<u8>(val & 0xFF);
-                buf[offset++] = static_cast<u8>((val >> 8) & 0xFF);
-            }
+            if (be) val = __builtin_bswap16(val);
+            std::memcpy(buf + offset, &val, 2);
+            offset += 2;
             break;
         }
+        case ENC_I32:
         case ENC_U32: {
-            bool be = encoderIsBigEndian(encoder->values[0].p);
+            bool be = endiannessHPointerToBool(encoder->values[0].p);
             uint32_t val = static_cast<uint32_t>(encoder->values[1].i);
-            if (be) {
-                buf[offset++] = static_cast<u8>((val >> 24) & 0xFF);
-                buf[offset++] = static_cast<u8>((val >> 16) & 0xFF);
-                buf[offset++] = static_cast<u8>((val >> 8) & 0xFF);
-                buf[offset++] = static_cast<u8>(val & 0xFF);
-            } else {
-                buf[offset++] = static_cast<u8>(val & 0xFF);
-                buf[offset++] = static_cast<u8>((val >> 8) & 0xFF);
-                buf[offset++] = static_cast<u8>((val >> 16) & 0xFF);
-                buf[offset++] = static_cast<u8>((val >> 24) & 0xFF);
-            }
+            if (be) val = __builtin_bswap32(val);
+            std::memcpy(buf + offset, &val, 4);
+            offset += 4;
             break;
         }
         case ENC_F32: {
-            bool be = encoderIsBigEndian(encoder->values[0].p);
+            bool be = endiannessHPointerToBool(encoder->values[0].p);
             float val = static_cast<float>(encoder->values[1].f);
             uint32_t bits;
-            std::memcpy(&bits, &val, sizeof(bits));
-            if (be) {
-                buf[offset++] = static_cast<u8>((bits >> 24) & 0xFF);
-                buf[offset++] = static_cast<u8>((bits >> 16) & 0xFF);
-                buf[offset++] = static_cast<u8>((bits >> 8) & 0xFF);
-                buf[offset++] = static_cast<u8>(bits & 0xFF);
-            } else {
-                buf[offset++] = static_cast<u8>(bits & 0xFF);
-                buf[offset++] = static_cast<u8>((bits >> 8) & 0xFF);
-                buf[offset++] = static_cast<u8>((bits >> 16) & 0xFF);
-                buf[offset++] = static_cast<u8>((bits >> 24) & 0xFF);
-            }
+            std::memcpy(&bits, &val, 4);
+            if (be) bits = __builtin_bswap32(bits);
+            std::memcpy(buf + offset, &bits, 4);
+            offset += 4;
             break;
         }
         case ENC_F64: {
-            bool be = encoderIsBigEndian(encoder->values[0].p);
+            bool be = endiannessHPointerToBool(encoder->values[0].p);
             double val = encoder->values[1].f;
             uint64_t bits;
-            std::memcpy(&bits, &val, sizeof(bits));
-            if (be) {
-                for (int i = 7; i >= 0; i--)
-                    buf[offset++] = static_cast<u8>((bits >> (i * 8)) & 0xFF);
-            } else {
-                for (int i = 0; i < 8; i++)
-                    buf[offset++] = static_cast<u8>((bits >> (i * 8)) & 0xFF);
-            }
+            std::memcpy(&bits, &val, 8);
+            if (be) bits = __builtin_bswap64(bits);
+            std::memcpy(buf + offset, &bits, 8);
+            offset += 8;
             break;
         }
         case ENC_SEQ: {
@@ -258,12 +212,29 @@ static void writeEncoder(Custom* encoder, u8* buf, size_t& offset) {
                 break;
             }
             void* strPtr = allocator.resolve(encoder->values[1].p);
-            // Tag-aware snapshot: works for both flat leaves and slices.
-            auto snapshot = Elm::StringOps::toStdU16String(strPtr);
-            for (size_t i = 0; i < snapshot.size(); i++) {
-                u16 ch = snapshot[i];
-                if (ch >= 0xD800 && ch <= 0xDBFF && i + 1 < snapshot.size()) {
-                    u16 lo = snapshot[i + 1];
+
+            // Fast path for flat leaves and Tag_LargeStringHeader bodies:
+            // read chars[] directly without materialising a snapshot. The
+            // pointer is valid for the duration of this call because we
+            // don't allocate inside the loop. Slices and ropes still go
+            // through toStdU16String — full streaming-rope support is
+            // tracked as item 10's deferred follow-up.
+            const u16* chars = nullptr;
+            size_t nchars = 0;
+            std::u16string snapshot_storage;
+            if (Elm::StringOps::isLeaf(strPtr)) {
+                ElmString* s = alloc::resolveStringBody(strPtr);
+                chars = s->chars;
+                nchars = s->header.size;
+            } else {
+                snapshot_storage = Elm::StringOps::toStdU16String(strPtr);
+                chars = reinterpret_cast<const u16*>(snapshot_storage.data());
+                nchars = snapshot_storage.size();
+            }
+            for (size_t i = 0; i < nchars; i++) {
+                u16 ch = chars[i];
+                if (ch >= 0xD800 && ch <= 0xDBFF && i + 1 < nchars) {
+                    u16 lo = chars[i + 1];
                     if (lo >= 0xDC00 && lo <= 0xDFFF) {
                         uint32_t cp = 0x10000 + ((ch - 0xD800) << 10) + (lo - 0xDC00);
                         buf[offset++] = static_cast<u8>(0xF0 | ((cp >> 18) & 0x07));
@@ -289,9 +260,9 @@ static void writeEncoder(Custom* encoder, u8* buf, size_t& offset) {
         }
         case ENC_BYTES: {
             void* bbPtr = allocator.resolve(encoder->values[0].p);
-            ByteBuffer* bb = alloc::resolveByteBufferBody(bbPtr);
-            std::memcpy(buf + offset, bb->bytes, bb->header.size);
-            offset += bb->header.size;
+            auto vbb = alloc::byteBufferView(bbPtr);
+            std::memcpy(buf + offset, vbb.data, vbb.length);
+            offset += vbb.length;
             break;
         }
     }
@@ -335,16 +306,30 @@ int64_t Elm_Kernel_Bytes_getStringWidth(HPtr str) {
     void* ptr = Export::toPtr(strBits);
     if (!ptr) return 0;
 
-    auto chars = Elm::StringOps::toStdU16String(ptr);
-    size_t utf16_length = chars.size();
+    // Flat leaves (and Tag_LargeStringHeader bodies) read chars[] directly,
+    // skipping the std::u16string materialization. Slices/ropes still
+    // materialize once via toStdU16String. No allocation in the count
+    // loop below, so the raw pointer remains valid for the whole call.
+    const u16* chars_data = nullptr;
+    size_t utf16_length = 0;
+    std::u16string snapshot_storage;
+    if (Elm::StringOps::isLeaf(ptr)) {
+        ElmString* s = alloc::resolveStringBody(ptr);
+        chars_data = s->chars;
+        utf16_length = s->header.size;
+    } else {
+        snapshot_storage = Elm::StringOps::toStdU16String(ptr);
+        chars_data = reinterpret_cast<const u16*>(snapshot_storage.data());
+        utf16_length = snapshot_storage.size();
+    }
     if (utf16_length == 0) return 0;
 
     int64_t utf8_bytes = 0;
     for (size_t i = 0; i < utf16_length; i++) {
-        uint16_t codeUnit = chars[i];
+        uint16_t codeUnit = chars_data[i];
         if (codeUnit >= 0xD800 && codeUnit <= 0xDBFF) {
             if (i + 1 < utf16_length) {
-                uint16_t lo = chars[i + 1];
+                uint16_t lo = chars_data[i + 1];
                 if (lo >= 0xDC00 && lo <= 0xDFFF) {
                     utf8_bytes += 4;
                     i++;
@@ -371,23 +356,21 @@ HPtr Elm_Kernel_Bytes_encode(HPtr encoderVal) {
 
     // Compute size before any allocation: encoderSize doesn't allocate.
     size_t totalSize = encoderSize(static_cast<Custom*>(allocator.resolve(h)));
-    size_t allocSize = sizeof(ByteBuffer) + totalSize;
-    allocSize = (allocSize + 7) & ~7;
 
-    // Pattern B: h is re-resolved AFTER the allocate to walk the encoder
-    // tree. Helper roots only on slow path; we re-read h from roots[]
-    // afterwards.
-    uint64_t roots[1];
-    std::memcpy(&roots[0], &h, sizeof(h));
-    ByteBuffer* result = static_cast<ByteBuffer*>(
-        eco_alloc_with_roots(Tag_ByteBuffer, allocSize, roots, 1, 0x1));
-    std::memcpy(&h, &roots[0], sizeof(h));
-    result->header.size = static_cast<u32>(totalSize);
+    // LOT-aware allocation: oversize results land in pinned old-gen via
+    // the split-header path so we don't evacuate them on every minor GC.
+    // The encoder tree must remain reachable across the allocate; root
+    // `h` via the guard.
+    alloc::BlankByteBuffer dst;
+    {
+        StackRootRangeGuard guard(&h, 1, 0x1);
+        dst = alloc::allocByteBufferBlank(totalSize);
+    }
 
     Custom* encoder = static_cast<Custom*>(allocator.resolve(h));
     size_t offset = 0;
-    writeEncoder(encoder, result->bytes, offset);
-    return HPtr::fromBits(Export::encode(allocator.wrap(result)));
+    writeEncoder(encoder, dst.bytes, offset);
+    return HPtr::fromBits(Export::encode(dst.hp));
 }
 
 HPtr Elm_Kernel_Bytes_decode(HPtr decoder, HPtr bytes) {
@@ -439,141 +422,94 @@ HPtr Elm_Kernel_Bytes_decodeFailure() {
 
 // --- arity 2 read functions: (bytes, offset) ---
 
+// Read helpers below all share the same idiom: memcpy the on-wire bits
+// (any width) into a register, byteswap conditionally for big-endian on
+// LE hosts, and reinterpret. The compiler reliably lowers this to a
+// movbe / bswap pair (one or two instructions per primitive read), much
+// tighter than the manual byte-shift loops the original code emitted.
+
 HPtr Elm_Kernel_Bytes_read_i8(HPtr bytes, int64_t offset) {
-    ByteBuffer* bb = resolveByteBuffer(bytes.toBits());
-    int8_t val = static_cast<int8_t>(bb->bytes[offset]);
+    auto v = resolveByteBufferView(bytes.toBits());
+    int8_t val = static_cast<int8_t>(v.data[offset]);
     return HPtr::fromBits(makeTuple2_ii(offset + 1, static_cast<int64_t>(val)));
 }
 
 HPtr Elm_Kernel_Bytes_read_u8(HPtr bytes, int64_t offset) {
-    ByteBuffer* bb = resolveByteBuffer(bytes.toBits());
-    uint8_t val = bb->bytes[offset];
-    return HPtr::fromBits(makeTuple2_ii(offset + 1, static_cast<int64_t>(val)));
+    auto v = resolveByteBufferView(bytes.toBits());
+    return HPtr::fromBits(makeTuple2_ii(offset + 1, static_cast<int64_t>(v.data[offset])));
 }
 
 // --- arity 3 read functions: (isLE_or_length, bytes, offset) ---
 
 HPtr Elm_Kernel_Bytes_read_i16(HPtr isLE, HPtr bytes, int64_t offset) {
-    ByteBuffer* bb = resolveByteBuffer(bytes.toBits());
+    auto v = resolveByteBufferView(bytes.toBits());
     bool le = isLittleEndian(isLE.toBits());
-    int16_t val;
-    if (le) {
-        val = static_cast<int16_t>(bb->bytes[offset]) |
-              (static_cast<int16_t>(bb->bytes[offset + 1]) << 8);
-    } else {
-        val = (static_cast<int16_t>(bb->bytes[offset]) << 8) |
-              static_cast<int16_t>(bb->bytes[offset + 1]);
-    }
-    return HPtr::fromBits(makeTuple2_ii(offset + 2, static_cast<int64_t>(val)));
+    uint16_t raw;
+    std::memcpy(&raw, v.data + offset, 2);
+    if (!le) raw = __builtin_bswap16(raw);
+    return HPtr::fromBits(makeTuple2_ii(offset + 2,
+        static_cast<int64_t>(static_cast<int16_t>(raw))));
 }
 
 HPtr Elm_Kernel_Bytes_read_i32(HPtr isLE, HPtr bytes, int64_t offset) {
-    ByteBuffer* bb = resolveByteBuffer(bytes.toBits());
+    auto v = resolveByteBufferView(bytes.toBits());
     bool le = isLittleEndian(isLE.toBits());
     uint32_t raw;
-    if (le) {
-        raw = static_cast<uint32_t>(bb->bytes[offset]) |
-              (static_cast<uint32_t>(bb->bytes[offset + 1]) << 8) |
-              (static_cast<uint32_t>(bb->bytes[offset + 2]) << 16) |
-              (static_cast<uint32_t>(bb->bytes[offset + 3]) << 24);
-    } else {
-        raw = (static_cast<uint32_t>(bb->bytes[offset]) << 24) |
-              (static_cast<uint32_t>(bb->bytes[offset + 1]) << 16) |
-              (static_cast<uint32_t>(bb->bytes[offset + 2]) << 8) |
-              static_cast<uint32_t>(bb->bytes[offset + 3]);
-    }
-    int32_t val = static_cast<int32_t>(raw);
-    return HPtr::fromBits(makeTuple2_ii(offset + 4, static_cast<int64_t>(val)));
+    std::memcpy(&raw, v.data + offset, 4);
+    if (!le) raw = __builtin_bswap32(raw);
+    return HPtr::fromBits(makeTuple2_ii(offset + 4,
+        static_cast<int64_t>(static_cast<int32_t>(raw))));
 }
 
 HPtr Elm_Kernel_Bytes_read_u16(HPtr isLE, HPtr bytes, int64_t offset) {
-    ByteBuffer* bb = resolveByteBuffer(bytes.toBits());
+    auto v = resolveByteBufferView(bytes.toBits());
     bool le = isLittleEndian(isLE.toBits());
-    uint16_t val;
-    if (le) {
-        val = static_cast<uint16_t>(bb->bytes[offset]) |
-              (static_cast<uint16_t>(bb->bytes[offset + 1]) << 8);
-    } else {
-        val = (static_cast<uint16_t>(bb->bytes[offset]) << 8) |
-              static_cast<uint16_t>(bb->bytes[offset + 1]);
-    }
-    return HPtr::fromBits(makeTuple2_ii(offset + 2, static_cast<int64_t>(val)));
+    uint16_t raw;
+    std::memcpy(&raw, v.data + offset, 2);
+    if (!le) raw = __builtin_bswap16(raw);
+    return HPtr::fromBits(makeTuple2_ii(offset + 2, static_cast<int64_t>(raw)));
 }
 
 HPtr Elm_Kernel_Bytes_read_u32(HPtr isLE, HPtr bytes, int64_t offset) {
-    ByteBuffer* bb = resolveByteBuffer(bytes.toBits());
+    auto v = resolveByteBufferView(bytes.toBits());
     bool le = isLittleEndian(isLE.toBits());
-    uint32_t val;
-    if (le) {
-        val = static_cast<uint32_t>(bb->bytes[offset]) |
-              (static_cast<uint32_t>(bb->bytes[offset + 1]) << 8) |
-              (static_cast<uint32_t>(bb->bytes[offset + 2]) << 16) |
-              (static_cast<uint32_t>(bb->bytes[offset + 3]) << 24);
-    } else {
-        val = (static_cast<uint32_t>(bb->bytes[offset]) << 24) |
-              (static_cast<uint32_t>(bb->bytes[offset + 1]) << 16) |
-              (static_cast<uint32_t>(bb->bytes[offset + 2]) << 8) |
-              static_cast<uint32_t>(bb->bytes[offset + 3]);
-    }
-    return HPtr::fromBits(makeTuple2_ii(offset + 4, static_cast<int64_t>(val)));
+    uint32_t raw;
+    std::memcpy(&raw, v.data + offset, 4);
+    if (!le) raw = __builtin_bswap32(raw);
+    return HPtr::fromBits(makeTuple2_ii(offset + 4, static_cast<int64_t>(raw)));
 }
 
 HPtr Elm_Kernel_Bytes_read_f32(HPtr isLE, HPtr bytes, int64_t offset) {
-    ByteBuffer* bb = resolveByteBuffer(bytes.toBits());
+    auto v = resolveByteBufferView(bytes.toBits());
     bool le = isLittleEndian(isLE.toBits());
     uint32_t bits;
-    if (le) {
-        bits = static_cast<uint32_t>(bb->bytes[offset]) |
-               (static_cast<uint32_t>(bb->bytes[offset + 1]) << 8) |
-               (static_cast<uint32_t>(bb->bytes[offset + 2]) << 16) |
-               (static_cast<uint32_t>(bb->bytes[offset + 3]) << 24);
-    } else {
-        bits = (static_cast<uint32_t>(bb->bytes[offset]) << 24) |
-               (static_cast<uint32_t>(bb->bytes[offset + 1]) << 16) |
-               (static_cast<uint32_t>(bb->bytes[offset + 2]) << 8) |
-               static_cast<uint32_t>(bb->bytes[offset + 3]);
-    }
+    std::memcpy(&bits, v.data + offset, 4);
+    if (!le) bits = __builtin_bswap32(bits);
     float fval;
-    std::memcpy(&fval, &bits, sizeof(float));
+    std::memcpy(&fval, &bits, 4);
     return HPtr::fromBits(makeTuple2_if(offset + 4, static_cast<double>(fval)));
 }
 
 HPtr Elm_Kernel_Bytes_read_f64(HPtr isLE, HPtr bytes, int64_t offset) {
-    ByteBuffer* bb = resolveByteBuffer(bytes.toBits());
+    auto v = resolveByteBufferView(bytes.toBits());
     bool le = isLittleEndian(isLE.toBits());
-    uint64_t bits = 0;
-    if (le) {
-        for (int i = 0; i < 8; i++)
-            bits |= (static_cast<uint64_t>(bb->bytes[offset + i]) << (i * 8));
-    } else {
-        for (int i = 0; i < 8; i++)
-            bits |= (static_cast<uint64_t>(bb->bytes[offset + i]) << ((7 - i) * 8));
-    }
+    uint64_t bits;
+    std::memcpy(&bits, v.data + offset, 8);
+    if (!le) bits = __builtin_bswap64(bits);
     double dval;
-    std::memcpy(&dval, &bits, sizeof(double));
+    std::memcpy(&dval, &bits, 8);
     return HPtr::fromBits(makeTuple2_if(offset + 8, dval));
 }
 
 HPtr Elm_Kernel_Bytes_read_bytes(int64_t length, HPtr bytes, int64_t offset) {
-    auto& allocator = Allocator::instance();
+    // Produce a Tag_ByteBufferSlice view over the source: zero payload
+    // copy, just a 16-byte slice header. makeByteBufferSlice flattens to
+    // a flat ByteBuffer copy under MAKE_BYTEBUFFER_SLICE_MIN_LEN bytes
+    // so we don't pay the indirection cost on small ranges.
     HPointer srcHP = Export::decode(bytes.toBits());
-
-    size_t allocSize = sizeof(ByteBuffer) + length;
-    allocSize = (allocSize + 7) & ~7;
-
-    // Pattern B: srcHP re-resolved after the allocate to memcpy bytes into
-    // the new slice. Root via helper, re-read post-call.
-    uint64_t roots[1];
-    std::memcpy(&roots[0], &srcHP, sizeof(srcHP));
-    ByteBuffer* slice = static_cast<ByteBuffer*>(
-        eco_alloc_with_roots(Tag_ByteBuffer, allocSize, roots, 1, 0x1));
-    std::memcpy(&srcHP, &roots[0], sizeof(srcHP));
-    slice->header.size = static_cast<u32>(length);
-
-    ByteBuffer* src = alloc::resolveByteBufferBody(allocator.resolve(srcHP));
-    std::memcpy(slice->bytes, src->bytes + offset, length);
-
-    return HPtr::fromBits(makeTuple2_ip(offset + length, allocator.wrap(slice)));
+    HPointer sliceHP = alloc::makeByteBufferSlice(srcHP,
+        static_cast<u32>(offset), static_cast<u32>(length));
+    return HPtr::fromBits(makeTuple2_ip(offset + length, sliceHP));
 }
 
 HPtr Elm_Kernel_Bytes_read_string(int64_t length, HPtr bytes, int64_t offset) {
@@ -592,8 +528,8 @@ HPtr Elm_Kernel_Bytes_read_string(int64_t length, HPtr bytes, int64_t offset) {
     // the buffer before any allocation, so a raw pointer is safe there; the
     // post-allocation copy must re-resolve through the rooted handle.
     HPointer srcHP = Export::decode(bytes.toBits());
-    ByteBuffer* bb = alloc::resolveByteBufferBody(allocator.resolve(srcHP));
-    const u8* src = bb->bytes + offset;
+    auto src_view = alloc::byteBufferView(allocator.resolve(srcHP));
+    const u8* src = src_view.data + offset;
 
     // Count UTF-16 code units needed for the UTF-8 input.
     size_t utf16Count = 0;
@@ -627,8 +563,8 @@ HPtr Elm_Kernel_Bytes_read_string(int64_t length, HPtr bytes, int64_t offset) {
     std::memcpy(&srcHP, &roots[0], sizeof(srcHP));
     str->header.size = static_cast<u32>(utf16Count);
 
-    bb = alloc::resolveByteBufferBody(allocator.resolve(srcHP));
-    src = bb->bytes + offset;
+    src_view = alloc::byteBufferView(allocator.resolve(srcHP));
+    src = src_view.data + offset;
 
     // Convert UTF-8 to UTF-16
     size_t srcPos = 0, dstPos = 0;
@@ -686,13 +622,15 @@ static uint64_t makeEncoder1(u16 tag, int64_t value) {
 // Helper to create a 2-field encoder Custom (for i16, i32, u16, u32, f32, f64)
 // Field 0: endianness (boxed HPointer to LE/BE Custom)
 // Field 1: value (unboxed int or float)
+//
+// This layout MUST match the Elm-side `type Encoder = I16 Endianness Int | …`
+// constructors that production code uses — writeEncoder walks the result
+// the same way regardless of who constructed it.
 static uint64_t makeEncoder2_pi(u16 tag, uint64_t endianness, int64_t value) {
     HPointer endHP = Export::decode(endianness);
     size_t size = sizeof(Custom) + 2 * sizeof(Unboxable);
     size = (size + 7) & ~7;
 
-    // Pattern A: endHP is the only HPointer field. Pack endHP at slot 0,
-    // value (Int) at slot 1; mask covers slot 0 only.
     uint64_t roots[2];
     std::memcpy(&roots[0], &endHP, sizeof(endHP));
     roots[1] = static_cast<uint64_t>(value);
@@ -768,7 +706,9 @@ static uint64_t makeEncoderUtf8(HPtr str) {
     return Export::encode(Allocator::instance().wrap(enc));
 }
 
-// Helper to create BYTES encoder
+// Helper to create BYTES encoder. Layout must match the Elm-side
+// `Bytes Bytes` constructor (single boxed-HPointer field) so writeEncoder
+// can read either-source Customs identically.
 static uint64_t makeEncoderBytes(uint64_t bytes) {
     HPointer payload = Export::decode(bytes);
     size_t size = sizeof(Custom) + sizeof(Unboxable);
