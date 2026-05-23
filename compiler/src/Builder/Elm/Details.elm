@@ -334,7 +334,9 @@ loadPackageTypedArtifacts cache deps =
             )
 
 
-{-| Load typed objects from a single package.
+{-| Load typed objects from a single package. The on-disk file is a full
+`TypedArtifactCache` (fingerprints + interfaces + typed graph + type env); the
+codegen path only needs the graph and type env, so we project those out here.
 -}
 loadSinglePackageTypedArtifacts : Stuff.PackageCache -> Pkg.Name -> V.Version -> Task Never PackageTypedArtifacts
 loadSinglePackageTypedArtifacts cache pkg vsn =
@@ -342,9 +344,13 @@ loadSinglePackageTypedArtifacts cache pkg vsn =
         path : String
         path =
             Stuff.typedPackageArtifacts cache pkg vsn
+
+        project : TypedArtifactCache -> PackageTypedArtifacts
+        project (TypedArtifactCache _ _ typedGraph typeEnv) =
+            { typedGraph = typedGraph, typeEnv = typeEnv }
     in
-    File.readBinary packageTypedArtifactsDecoder path
-        |> Task.map (Maybe.withDefault { typedGraph = TOpt.emptyGlobalGraph, typeEnv = TypeEnv.emptyGlobalTypeEnv })
+    File.readBinary typedArtifactCacheDecoder path
+        |> Task.map (Maybe.map project >> Maybe.withDefault { typedGraph = TOpt.emptyGlobalGraph, typeEnv = TypeEnv.emptyGlobalTypeEnv })
 
 
 {-| Combine local and package typed artifacts.
@@ -891,8 +897,13 @@ handleCachedDep ctx =
 
 checkArtifactCache : VerifyDepContext -> Task Never Dep
 checkArtifactCache ctx =
-    File.readBinary artifactCacheDecoder (Stuff.package ctx.cache ctx.pkg ctx.vsn ++ "/artifacts.dat")
-        |> Task.andThen (handleArtifactCache ctx)
+    if ctx.needsTypedOpt then
+        File.readBinary typedArtifactCacheDecoder (Stuff.typedPackageArtifacts ctx.cache ctx.pkg ctx.vsn)
+            |> Task.andThen (handleTypedArtifactCache ctx)
+
+    else
+        File.readBinary artifactCacheDecoder (Stuff.package ctx.cache ctx.pkg ctx.vsn ++ "/artifacts.dat")
+            |> Task.andThen (handleArtifactCache ctx)
 
 
 handleArtifactCache : VerifyDepContext -> Maybe ArtifactCache -> Task Never Dep
@@ -903,31 +914,28 @@ handleArtifactCache ctx maybeCache =
 
         Just (ArtifactCache fingerprints artifacts) ->
             if EverySet.member toComparableFingerprint ctx.fingerprint fingerprints then
-                -- Check if we need typed artifacts but don't have them
-                if ctx.needsTypedOpt then
-                    checkTypedArtifactsExist ctx fingerprints artifacts
-
-                else
-                    Task.map (\_ -> Ok artifacts) (Reporting.report ctx.key Reporting.DBuilt)
+                Task.map (\_ -> Ok artifacts) (Reporting.report ctx.key Reporting.DBuilt)
 
             else
                 build ctx.key ctx.cache ctx.depsMVar ctx.pkg ctx.details ctx.fingerprint fingerprints ctx.needsTypedOpt ctx.showPackageErrors
 
 
-{-| Check if typed artifacts exist, rebuild if needed.
+{-| Handle a `typed-artifacts.dat` cache result. The untyped graph slot in the
+returned `Artifacts` is `Opt.empty` because the MLIR path never reads it (it
+loads typed objects separately via `loadTypedObjects`).
 -}
-checkTypedArtifactsExist : VerifyDepContext -> EverySet (List ( ( String, String ), ( Int, Int, Int ) )) Fingerprint -> Artifacts -> Task Never Dep
-checkTypedArtifactsExist ctx fingerprints artifacts =
-    File.exists (Stuff.typedPackageArtifacts ctx.cache ctx.pkg ctx.vsn)
-        |> Task.andThen
-            (\exists ->
-                if exists then
-                    Task.map (\_ -> Ok artifacts) (Reporting.report ctx.key Reporting.DBuilt)
+handleTypedArtifactCache : VerifyDepContext -> Maybe TypedArtifactCache -> Task Never Dep
+handleTypedArtifactCache ctx maybeCache =
+    case maybeCache of
+        Nothing ->
+            build ctx.key ctx.cache ctx.depsMVar ctx.pkg ctx.details ctx.fingerprint EverySet.empty ctx.needsTypedOpt ctx.showPackageErrors
 
-                else
-                    -- Rebuild with typed optimization
-                    build ctx.key ctx.cache ctx.depsMVar ctx.pkg ctx.details ctx.fingerprint fingerprints True ctx.showPackageErrors
-            )
+        Just (TypedArtifactCache fingerprints ifaces _ _) ->
+            if EverySet.member toComparableFingerprint ctx.fingerprint fingerprints then
+                Task.map (\_ -> Ok (Artifacts ifaces Opt.empty)) (Reporting.report ctx.key Reporting.DBuilt)
+
+            else
+                build ctx.key ctx.cache ctx.depsMVar ctx.pkg ctx.details ctx.fingerprint fingerprints ctx.needsTypedOpt ctx.showPackageErrors
 
 
 downloadAndBuildDep : VerifyDepContext -> Task Never Dep
@@ -960,6 +968,20 @@ handleDownloadResult ctx result =
 
 type ArtifactCache
     = ArtifactCache (EverySet (List ( ( String, String ), ( Int, Int, Int ) )) Fingerprint) Artifacts
+
+
+{-| On-disk format of `typed-artifacts.dat`. Mirrors `ArtifactCache` but stores
+the typed-optimized graph + type environment in place of the untyped
+`Opt.GlobalGraph`. Interfaces and fingerprints are duplicated here so the typed
+cache file is self-contained: a package built for the MLIR path writes only
+this file, and a package built for the JS path writes only `artifacts.dat`.
+-}
+type TypedArtifactCache
+    = TypedArtifactCache
+        (EverySet (List ( ( String, String ), ( Int, Int, Int ) )) Fingerprint)
+        (Dict ModuleName.Raw I.DependencyInterface)
+        (TOpt.GlobalGraph Name)
+        TypeEnv.GlobalTypeEnv
 
 
 type alias Fingerprint =
@@ -1174,57 +1196,65 @@ writePackageArtifacts ctx exposedDict docsStatus resultDict =
     in
     case errors of
         [] ->
-            -- All succeeded, write artifacts
+            -- All succeeded, write artifacts.
+            -- `needsTypedOpt` partitions the on-disk format: the MLIR path writes
+            -- only `typed-artifacts.dat`, the JS path writes only `artifacts.dat`.
+            -- The untyped graph is unused by the typed pipeline, so the
+            -- in-memory `Artifacts` returned to the caller uses `Opt.empty` —
+            -- `writeVerifiedArtifacts` merges these via `addObjects`, which is
+            -- a no-op for an empty graph.
             let
-                path : String
-                path =
-                    Stuff.package ctx.cache ctx.pkg ctx.vsn ++ "/artifacts.dat"
-
-                typedPath : String
-                typedPath =
-                    Stuff.typedPackageArtifacts ctx.cache ctx.pkg ctx.vsn
-
                 ifaces : Dict ModuleName.Raw I.DependencyInterface
                 ifaces =
                     gatherInterfaces exposedDict successes
 
-                objects : Opt.GlobalGraph
-                objects =
-                    gatherObjects successes
-
-                artifacts : Artifacts
-                artifacts =
-                    Artifacts ifaces objects
-
                 fingerprints : EverySet (List ( ( String, String ), ( Int, Int, Int ) )) Fingerprint
                 fingerprints =
                     EverySet.insert toComparableFingerprint ctx.fingerprint ctx.fingerprints
+
+                ( artifacts, writeCache ) =
+                    if ctx.needsTypedOpt then
+                        let
+                            typedGraph : TOpt.GlobalGraph Name
+                            typedGraph =
+                                gatherTypedObjects successes
+
+                            typeEnv : TypeEnv.GlobalTypeEnv
+                            typeEnv =
+                                gatherTypeEnvs successes
+
+                            typedPath : String
+                            typedPath =
+                                Stuff.typedPackageArtifacts ctx.cache ctx.pkg ctx.vsn
+                        in
+                        ( Artifacts ifaces Opt.empty
+                        , File.writeBinary typedArtifactCacheEncoder
+                            typedPath
+                            (TypedArtifactCache fingerprints ifaces typedGraph typeEnv)
+                        )
+
+                    else
+                        let
+                            objects : Opt.GlobalGraph
+                            objects =
+                                gatherObjects successes
+
+                            path : String
+                            path =
+                                Stuff.package ctx.cache ctx.pkg ctx.vsn ++ "/artifacts.dat"
+
+                            arts : Artifacts
+                            arts =
+                                Artifacts ifaces objects
+                        in
+                        ( arts
+                        , File.writeBinary artifactCacheEncoder
+                            path
+                            (ArtifactCache fingerprints arts)
+                        )
             in
             writeDocs ctx.cache ctx.pkg ctx.vsn docsStatus successes
-                |> Task.andThen (\_ -> File.writeBinary artifactCacheEncoder path (ArtifactCache fingerprints artifacts))
-                |> Task.andThen
-                    (\_ ->
-                        if ctx.needsTypedOpt then
-                            let
-                                typedGraph : TOpt.GlobalGraph Name
-                                typedGraph =
-                                    gatherTypedObjects successes
-
-                                typeEnv : TypeEnv.GlobalTypeEnv
-                                typeEnv =
-                                    gatherTypeEnvs successes
-
-                                pkgTyped : PackageTypedArtifacts
-                                pkgTyped =
-                                    { typedGraph = typedGraph
-                                    , typeEnv = typeEnv
-                                    }
-                            in
-                            File.writeBinary packageTypedArtifactsEncoder typedPath pkgTyped
-
-                        else
-                            Task.succeed ()
-                    )
+                |> Task.andThen (\_ -> writeCache)
                 |> Task.andThen (\_ -> Reporting.report ctx.key Reporting.DBuilt)
                 |> Task.map (\_ -> Ok artifacts)
 
@@ -2004,6 +2034,25 @@ artifactCacheDecoder =
     Bytes.Decode.map2 ArtifactCache
         (BD.everySet toComparableFingerprint fingerprintDecoder)
         artifactsDecoder
+
+
+typedArtifactCacheEncoder : TypedArtifactCache -> Bytes.Encode.Encoder
+typedArtifactCacheEncoder (TypedArtifactCache fingerprints ifaces typedGraph typeEnv) =
+    Bytes.Encode.sequence
+        [ BE.everySet (\_ _ -> EQ) fingerprintEncoder fingerprints
+        , BE.stdDict ModuleName.rawEncoder I.dependencyInterfaceEncoder ifaces
+        , TOpt.globalGraphEncoder typedGraph
+        , TypeEnv.globalTypeEnvEncoder typeEnv
+        ]
+
+
+typedArtifactCacheDecoder : Bytes.Decode.Decoder TypedArtifactCache
+typedArtifactCacheDecoder =
+    Bytes.Decode.map4 TypedArtifactCache
+        (BD.everySet toComparableFingerprint fingerprintDecoder)
+        (BD.stdDict ModuleName.rawDecoder I.dependencyInterfaceDecoder)
+        TOpt.globalGraphDecoder
+        TypeEnv.globalTypeEnvDecoder
 
 
 dictPkgNameMVarDepDecoder : Bytes.Decode.Decoder (Dict Pkg.Name (MVar Dep))

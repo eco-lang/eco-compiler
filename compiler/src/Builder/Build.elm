@@ -1563,9 +1563,23 @@ handleCompileResult key root pkg buildID docsNeed path time deps main lastChange
 
 writeObjectsAndFinalizeCompile : CompileResultContext -> Task Never BResult
 writeObjectsAndFinalizeCompile ctx =
-    File.writeBinary Opt.localGraphEncoder (Stuff.eco ctx.root ctx.name) ctx.objects
+    writeUntypedObjectsIfNeeded ctx
         |> Task.andThen (\_ -> writeTypedObjectsIfNeeded ctx)
         |> Task.andThen (\_ -> checkInterfaceAndFinalize ctx)
+
+
+writeUntypedObjectsIfNeeded : CompileResultContext -> Task Never ()
+writeUntypedObjectsIfNeeded ctx =
+    case ctx.typedObjects of
+        Just _ ->
+            -- MLIR/ELF target: the typed graph (.ecot) is the sole input to
+            -- monomorphization. The untyped Opt IR is never read on this
+            -- path (see stripUntypedGraph in Builder/Generate.elm), so skip
+            -- the .eco write to save I/O on bootstrap-scale builds.
+            Task.succeed ()
+
+        Nothing ->
+            File.writeBinary Opt.localGraphEncoder (Stuff.eco ctx.root ctx.name) ctx.objects
 
 
 writeTypedObjectsIfNeeded : CompileResultContext -> Task Never ()
