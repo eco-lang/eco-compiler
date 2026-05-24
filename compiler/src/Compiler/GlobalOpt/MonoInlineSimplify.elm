@@ -1,4 +1,4 @@
-module Compiler.GlobalOpt.MonoInlineSimplify exposing (Metrics, optimize)
+module Compiler.GlobalOpt.MonoInlineSimplify exposing (Metrics, buildBodyLookup, optimize)
 
 {-| Mono IR Inliner and Simplifier.
 
@@ -45,6 +45,57 @@ type alias Metrics =
     , betaReductions : Int
     , letEliminations : Int
     }
+
+
+{-| Public reifier-facing helper: build a `SpecId -> (params, body)`
+lookup table over the final, post-inline `MonoGraph.nodes` array,
+excluding recursive specs so the consumer (typically the bytes-fusion
+reifier doing beta-reduction at reify time) can't accidentally loop on
+self-referential helpers.
+
+Mirrors the eligibility checks the inliner itself uses
+(`isRecursive` + `getInlinableBody`), but consumes the
+post-optimisation graph so each entry reflects the function's body as
+it would actually execute (any nested helpers it called have already
+been inlined into its body).
+
+Used by `Compiler.Generate.MLIR.BytesFusion.Reify.reifyMapBody`'s
+`MonoVarGlobal` arm — closure conversion turns inline lambdas into
+global function references, so the reifier needs this lookup to apply
+a per-element encoder lambda to a synthetic iteration variable.
+-}
+buildBodyLookup : MonoGraph -> Dict SpecId ( List ( Name, Mono.MonoType ), MonoExpr )
+buildBodyLookup (MonoGraph { nodes, callEdges }) =
+    let
+        callGraph =
+            buildCallGraph nodes callEdges
+    in
+    Array.foldl
+        (\maybeNode ( accDict, specId ) ->
+            case maybeNode of
+                Nothing ->
+                    ( accDict, specId + 1 )
+
+                Just node ->
+                    let
+                        isRecursive =
+                            Dict.get specId callGraph.isRecursive
+                                |> Maybe.withDefault False
+                    in
+                    if isRecursive then
+                        ( accDict, specId + 1 )
+
+                    else
+                        case getInlinableBody node of
+                            Nothing ->
+                                ( accDict, specId + 1 )
+
+                            Just ( params, body ) ->
+                                ( Dict.insert specId ( params, body ) accDict, specId + 1 )
+        )
+        ( Dict.empty, 0 )
+        nodes
+        |> Tuple.first
 
 
 {-| Optimize a MonoGraph by inlining small functions and simplifying expressions.
@@ -144,11 +195,105 @@ type alias InlineWhitelist =
     List String
 
 
-{-| Default whitelist - empty for now, will be populated in the future.
+{-| Default whitelist of qualified names that always inline, bypassing the
+cost threshold. Two groups:
+
+  - elm/bytes public API primitives — thin wrappers around the I8/I16/U8/…
+    encoder constructors and the matching Bytes.Decode combinators. Inlining
+    them exposes the constructor / kernel-call shape to the bytes-fusion
+    reifier at the call site.
+
+  - Eco-internal encoder/decoder helpers (Utils.Bytes.{Encode,Decode}.*,
+    Mlir.Bytecode.VarInt.*, Mlir.Bytecode.Section.encodeSection). These are
+    above the default cost threshold but are pure compositions of elm/bytes
+    primitives. Inlining substitutes their body at the call site, where the
+    general fusion reifier patterns (literal-list + cons-of-List.map ELoop)
+    can match the substituted code.
+
+`Bytes.Encode.encode` and `Bytes.Decode.decode` are deliberately omitted:
+those are the fusion entry points the recognizer matches on; inlining them
+would replace them with the C++ kernel call and defeat fusion.
+
+`isRecursive` already gates inlining for recursive functions independently,
+so a recursive helper on this list still won't inline. The shell of a
+recursive helper inlines if its non-recursive cost remains under budget,
+but recursive bodies stay as function calls.
 -}
 defaultWhitelist : InlineWhitelist
 defaultWhitelist =
-    []
+    [ -- elm/bytes encoder primitives (constructor wrappers + small helpers)
+      "Bytes.Encode.signedInt8"
+    , "Bytes.Encode.signedInt16"
+    , "Bytes.Encode.signedInt32"
+    , "Bytes.Encode.unsignedInt8"
+    , "Bytes.Encode.unsignedInt16"
+    , "Bytes.Encode.unsignedInt32"
+    , "Bytes.Encode.float32"
+    , "Bytes.Encode.float64"
+    , "Bytes.Encode.bytes"
+    , "Bytes.Encode.string"
+    , "Bytes.Encode.sequence"
+    , "Bytes.Encode.getStringWidth"
+
+    -- elm/bytes decoder primitives + combinators
+    , "Bytes.Decode.signedInt8"
+    , "Bytes.Decode.signedInt16"
+    , "Bytes.Decode.signedInt32"
+    , "Bytes.Decode.unsignedInt8"
+    , "Bytes.Decode.unsignedInt16"
+    , "Bytes.Decode.unsignedInt32"
+    , "Bytes.Decode.float32"
+    , "Bytes.Decode.float64"
+    , "Bytes.Decode.bytes"
+    , "Bytes.Decode.string"
+    , "Bytes.Decode.succeed"
+    , "Bytes.Decode.fail"
+    , "Bytes.Decode.map"
+    , "Bytes.Decode.map2"
+    , "Bytes.Decode.map3"
+    , "Bytes.Decode.map4"
+    , "Bytes.Decode.map5"
+    , "Bytes.Decode.andThen"
+
+    -- Eco-internal encoder helpers. Inlining-only; the reifier never sees
+    -- these names (it only sees the elm/bytes primitives + List.map/cons
+    -- that they expand into).
+    , "Utils.Bytes.Encode.unit"
+    , "Utils.Bytes.Encode.bool"
+    , "Utils.Bytes.Encode.int"
+    , "Utils.Bytes.Encode.float"
+    , "Utils.Bytes.Encode.string"
+    , "Utils.Bytes.Encode.maybe"
+    , "Utils.Bytes.Encode.result"
+    , "Utils.Bytes.Encode.list"
+    , "Utils.Bytes.Encode.nonempty"
+    , "Utils.Bytes.Encode.stdDict"
+    , "Utils.Bytes.Encode.assocListDict"
+    , "Utils.Bytes.Encode.everySet"
+    , "Utils.Bytes.Encode.jsonPair"
+    , "Utils.Bytes.Encode.oneOrMore"
+
+    -- Eco-internal decoder helpers
+    , "Utils.Bytes.Decode.unit"
+    , "Utils.Bytes.Decode.bool"
+    , "Utils.Bytes.Decode.int"
+    , "Utils.Bytes.Decode.float"
+    , "Utils.Bytes.Decode.string"
+    , "Utils.Bytes.Decode.maybe"
+    , "Utils.Bytes.Decode.result"
+    , "Utils.Bytes.Decode.list"
+    , "Utils.Bytes.Decode.nonempty"
+    , "Utils.Bytes.Decode.stdDict"
+    , "Utils.Bytes.Decode.assocListDict"
+    , "Utils.Bytes.Decode.everySet"
+    , "Utils.Bytes.Decode.jsonPair"
+    , "Utils.Bytes.Decode.oneOrMore"
+
+    -- MLIR bytecode encoder helpers used in the compiler's own .mlir output
+    , "Mlir.Bytecode.VarInt.encodeVarInt"
+    , "Mlir.Bytecode.VarInt.encodeSignedVarInt"
+    , "Mlir.Bytecode.Section.encodeSection"
+    ]
 
 
 {-| Convert a Global to a qualified name string for whitelist lookup.
@@ -349,10 +494,16 @@ sumBy f list =
 
 
 {-| Maximum number of inlines per function to prevent explosion.
+
+Raised from 10 to 1000 on 2026-05-24 to let whitelisted elm/bytes /
+Utils.Bytes helpers inline across encoder-heavy callers. Top callers
+in the compiler self-MLIR had 30 to 107 bytes calls each; the original
+cap-10 budget left most of them un-inlined and un-fused. See
+plans/bytes-fusion-broader-recognition.md.
 -}
 maxInlinesPerFunction : Int
 maxInlinesPerFunction =
-    10
+    1000
 
 
 computeCost : MonoExpr -> Int

@@ -31,12 +31,19 @@ type Endianness
 
 
 {-| Expression for computing buffer width.
+
+`WListLengthMul countExpr constWidth` evaluates `countExpr` (which must
+produce an i64 — typically a `List.length` MonoExpr) and multiplies by the
+constant `constWidth`. Used to pre-size the buffer for an encoder loop
+whose body has a known constant per-iteration byte width.
+
 -}
 type WidthExpr
     = WConst Int
     | WAdd WidthExpr WidthExpr
     | WStringUtf8Width Mono.MonoExpr -- Runtime: elm_utf8_width
     | WBytesWidth Mono.MonoExpr -- Runtime: elm_bytebuffer_len
+    | WListLengthMul Mono.MonoExpr Int -- count expr (i64) * constant byte width
 
 
 {-| Loop IR operations for encoding.
@@ -51,6 +58,20 @@ type Op
     | WriteF64 String Endianness Mono.MonoExpr
     | WriteBytesCopy String Mono.MonoExpr -- cursorName, bytes expression
     | WriteUtf8 String Mono.MonoExpr -- cursorName, string expression
+      -- Loop op for length-prefixed dynamic encoder lists. The reifier
+      -- produces these from `cons :: List.map mapFn xs` shapes; the emit
+      -- lowers to an scf.while over the source list with loop-carried
+      -- cursor, running bodyOps once per element with itemVar bound to the
+      -- current cons head. itemByteWidth is the constant per-iteration
+      -- output byte width (sum of every body op's constant width) — the
+      -- pre-allocation accounts for this as `count * itemByteWidth`.
+    | WriteEachItem
+        { cursorName : String
+        , itemVar : String
+        , bodyOps : List Op
+        , iterExpr : Mono.MonoExpr
+        , itemByteWidth : Int
+        }
     | ReturnBuffer -- Return the allocated buffer
 
 

@@ -2372,6 +2372,134 @@ compileSkippedBindings ctx bindings =
             ( exprResult.ops ++ restOps, ctxFinal )
 
 
+{-| Encoder-side mirror of `tryDecodeFusionWithBindings`. Walks down the
+encoder argument's `MonoLet` chain, accumulating bindings, then attempts
+fusion on the non-`MonoLet` body. On success, compiles the accumulated
+bindings via `compileSkippedBindings` so each `mono_inline_N` SSA var
+lands in `varMappings` and the BF emit's `exprCompiler` can resolve any
+`MonoVarLocal` references inside `EncoderNodes`.
+
+Without this, the let-bindings would be compiled via `generateLet`'s
+`scopedCtx`, which restores `varMappings` to the outer scope's keys
+when the let-group finishes — leaving the BF emit with `lookupVar:
+unbound variable mono_inline_N` crashes downstream.
+
+Returns `Nothing` when the inner body doesn't reify as an encoder; the
+caller then falls through to the kernel-call fallback (which computes
+`argOps` and emits a `Elm_Kernel_Bytes_encode` call).
+-}
+tryEncoderFusionWithBindings :
+    Ctx.Context
+    -> List ( Name.Name, Mono.MonoExpr )
+    -> Mono.MonoExpr
+    -> Maybe ExprResult
+tryEncoderFusionWithBindings ctx accumulated encoderExpr =
+    case encoderExpr of
+        Mono.MonoLet (Mono.MonoDef innerName innerExpr) innerBody _ ->
+            tryEncoderFusionWithBindings ctx
+                (( innerName, innerExpr ) :: accumulated)
+                innerBody
+
+        _ ->
+            let
+                localCache : Dict.Dict String Mono.MonoExpr
+                localCache =
+                    List.foldl
+                        (\( n, e ) acc -> Dict.insert n e acc)
+                        ctx.decoderExprs
+                        accumulated
+            in
+            case BFReify.reifyEncoderWith ctx.inlineBodies ctx.registry localCache encoderExpr of
+                Just nodes ->
+                    let
+                        loopOps =
+                            BFReify.nodesToOps nodes
+
+                        exprCompiler : BFEmit.ExprCompiler
+                        exprCompiler monoExpr compilerCtx =
+                            let
+                                result =
+                                    generateExpr compilerCtx monoExpr
+                            in
+                            { ops = result.ops
+                            , resultVar = result.resultVar
+                            , resultType = result.resultType
+                            , ctx = result.ctx
+                            }
+
+                        ( bindingOps, ctxAfterBindings ) =
+                            compileSkippedBindings ctx (List.reverse accumulated)
+
+                        ( mlirOps, bufferVar, ctx2 ) =
+                            BFEmit.emitFusedEncoder exprCompiler ctxAfterBindings loopOps
+                    in
+                    Just
+                        { ops = bindingOps ++ mlirOps
+                        , resultVar = bufferVar
+                        , resultType = Types.ecoValue
+                        , ctx = ctx2
+                        , isTerminated = False
+                        }
+
+                Nothing ->
+                    Nothing
+
+
+{-| If `func args` is a saturated call to `Bytes.Encode.encode` (either
+the `MonoVarGlobal` spec form or the post-inline `MonoVarKernel "Bytes"
+"encode"` form), attempt encoder fusion with binding walking. Returns
+`Nothing` otherwise so the caller falls through to its regular
+saturated-call dispatch.
+
+This pre-empts the in-line fusion attempts in `generateSaturatedCall`'s
+two encoder paths (the `MonoVarGlobal` arm and the `MonoVarKernel
+"Bytes" "encode"` arm). Those in-line attempts only see the un-walked
+`encoderExpr` and cannot resolve `MonoVarLocal` references — when
+called on a let-hoisted encoder they either bail (and waste the chance
+to fuse) or succeed and crash at emit. The pre-check supersedes both.
+-}
+tryBytesEncodeFusion : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Maybe ExprResult
+tryBytesEncodeFusion ctx func args =
+    let
+        encoderArg : Maybe Mono.MonoExpr
+        encoderArg =
+            case func of
+                Mono.MonoVarGlobal _ specId _ ->
+                    case Registry.lookupSpecKey specId ctx.registry of
+                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
+                            if pkg == Pkg.bytes && moduleName == "Bytes.Encode" && name == "encode" then
+                                case args of
+                                    [ encoderExpr ] ->
+                                        Just encoderExpr
+
+                                    _ ->
+                                        Nothing
+
+                            else
+                                Nothing
+
+                        _ ->
+                            Nothing
+
+                Mono.MonoVarKernel _ _ "Bytes" "encode" _ ->
+                    case args of
+                        [ encoderExpr ] ->
+                            Just encoderExpr
+
+                        _ ->
+                            Nothing
+
+                _ ->
+                    Nothing
+    in
+    case encoderArg of
+        Just encoderExpr ->
+            tryEncoderFusionWithBindings ctx [] encoderExpr
+
+        Nothing ->
+            Nothing
+
+
 {-| Find a kernel Bytes.decode call and return the bytes argument.
 -}
 findKernelDecodeCall : Mono.MonoExpr -> Maybe Mono.MonoExpr
@@ -2397,6 +2525,16 @@ findKernelDecodeCall expr =
 -}
 generateSaturatedCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
 generateSaturatedCall ctx func args resultType callInfo =
+    case tryBytesEncodeFusion ctx func args of
+        Just fusedResult ->
+            fusedResult
+
+        Nothing ->
+            generateSaturatedCallNoFusion ctx func args resultType callInfo
+
+
+generateSaturatedCallNoFusion : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
+generateSaturatedCallNoFusion ctx func args resultType callInfo =
     case func of
         Mono.MonoVarGlobal _ specId funcType ->
             let
@@ -2468,7 +2606,7 @@ generateSaturatedCall ctx func args resultType callInfo =
             case maybeBytesEncodeArg of
                 Just encoderExpr ->
                     -- Attempt to fuse the encoder
-                    case BFReify.reifyEncoder ctx.registry ctx.decoderExprs encoderExpr of
+                    case BFReify.reifyEncoderWith ctx.inlineBodies ctx.registry ctx.decoderExprs encoderExpr of
                         Just nodes ->
                             -- Fusion successful - emit fused byte encoding ops
                             let
@@ -2511,9 +2649,16 @@ generateSaturatedCall ctx func args resultType callInfo =
                                 ( resVar, ctx2 ) =
                                     Ctx.freshVar ctx1b
 
+                                -- The kernel symbol exported by the C++ runtime is
+                                -- `Elm_Kernel_Bytes_encode` (mangled from
+                                -- `Elm.Kernel.Bytes.encode`). The earlier
+                                -- `_Bytes_Encode_encode` form was a latent typo
+                                -- in the bytes-fusion fall-back path that pre-Fix-1
+                                -- was never reached because `Bytes.Encode.encode`
+                                -- was always inlined before the fusion entry fired.
                                 kernelName : String
                                 kernelName =
-                                    "Elm_Kernel_Bytes_Encode_encode"
+                                    "Elm_Kernel_Bytes_encode"
 
                                 callResultType =
                                     Types.monoTypeToAbi sig.returnType
@@ -2577,15 +2722,40 @@ generateSaturatedCall ctx func args resultType callInfo =
                                     }
 
                                 Nothing ->
-                                    -- Fusion failed - fall back to kernel call
-                                    -- Force both arguments to eco.value since the kernel always takes boxed values
+                                    -- Fusion failed - fall back to kernel call.
+                                    --
+                                    -- Bytes.Decode.decode in elm/bytes is defined as
+                                    --     decode (Decoder f) bs = Elm.Kernel.Bytes.decode f bs
+                                    -- so the kernel receives the *inner closure*, not the
+                                    -- `Decoder` Custom wrapper. Substituting a direct kernel
+                                    -- call for the function call elides the `Decoder`
+                                    -- destructure, so we must re-introduce it here by
+                                    -- projecting field 0 of the decoder argument.
                                     let
                                         -- Box both arguments to eco.value regardless of their current types
                                         ( boxOps, argVarPairs, ctx1b ) =
                                             boxToMatchSignatureTyped ctx1 argsWithTypes [ Mono.MUnit, Mono.MUnit ]
 
-                                        ( resVar, ctx2 ) =
+                                        ( decoderVar, bytesVarPair ) =
+                                            case argVarPairs of
+                                                [ a, b ] ->
+                                                    ( a, b )
+
+                                                _ ->
+                                                    ( ( "invalid_decoder", Types.ecoValue ), ( "invalid_bytes", Types.ecoValue ) )
+
+                                        ( innerVar, ctx1c ) =
                                             Ctx.freshVar ctx1b
+
+                                        ( ctx1d, projectOp ) =
+                                            Ops.ecoProjectCustom ctx1c innerVar 0 Types.ecoValue (Tuple.first decoderVar)
+
+                                        kernelArgPairs : List ( String, MlirType )
+                                        kernelArgPairs =
+                                            [ ( innerVar, Types.ecoValue ), bytesVarPair ]
+
+                                        ( resVar, ctx2 ) =
+                                            Ctx.freshVar ctx1d
 
                                         kernelName : String
                                         kernelName =
@@ -2596,9 +2766,9 @@ generateSaturatedCall ctx func args resultType callInfo =
                                             Types.ecoValue
 
                                         ( ctx3, callOp ) =
-                                            Ops.ecoCallNamed ctx2 (emitSafepointHints ctx2) resVar kernelName argVarPairs callResultType
+                                            Ops.ecoCallNamed ctx2 (emitSafepointHints ctx2) resVar kernelName kernelArgPairs callResultType
                                     in
-                                    { ops = argOps ++ boxOps ++ [ callOp ]
+                                    { ops = argOps ++ boxOps ++ [ projectOp, callOp ]
                                     , resultVar = resVar
                                     , resultType = callResultType
                                     , ctx = ctx3
@@ -2946,7 +3116,7 @@ generateSaturatedCall ctx func args resultType callInfo =
                 ( "Bytes", "encode", [ _ ] ) ->
                     case args of
                         [ encoderExpr ] ->
-                            case BFReify.reifyEncoder ctx.registry ctx.decoderExprs encoderExpr of
+                            case BFReify.reifyEncoderWith ctx.inlineBodies ctx.registry ctx.decoderExprs encoderExpr of
                                 Just nodes ->
                                     -- Fusion successful - emit fused byte encoding ops
                                     let

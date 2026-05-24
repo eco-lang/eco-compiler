@@ -7,6 +7,7 @@
 
 #include "EcoToLLVMInternal.h"
 #include "../EcoTypes.h"
+#include "../BF/BFTypes.h"
 
 using namespace mlir;
 using namespace eco::detail;
@@ -80,6 +81,18 @@ EcoTypeConverter::EcoTypeConverter(MLIRContext *ctx)
         SmallVector<Type, 8> body;
         if (!convertElements(type.getCaptures(), body)) return Type();
         return LLVM::LLVMStructType::getLiteral(ctx, body);
+    });
+
+    // !bf.cursor lives at the scf.while boundary of fused encoder loops
+    // (e.g. `BE.sequence (length :: List.map fn xs)`). BFToLLVM lowers
+    // its own bf.* ops first, but doesn't walk into scf regions to
+    // rewrite the iter_arg types; the structural SCF type conversion
+    // populated below (line ~294) then needs this entry to legalise the
+    // remaining scf.while. Mirror BFTypeConverter's lowering: a pair of
+    // raw pointers (current, end).
+    addConversion([ctx](bf::CursorType) -> Type {
+        auto ptrType = LLVM::LLVMPointerType::get(ctx);
+        return LLVM::LLVMStructType::getLiteral(ctx, { ptrType, ptrType });
     });
 
     // Source materialization: create ptr<1> from !eco.value

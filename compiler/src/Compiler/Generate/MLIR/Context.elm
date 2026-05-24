@@ -1,6 +1,6 @@
 module Compiler.Generate.MLIR.Context exposing
     ( Context, FuncSignature, KernelDeclInfo, PendingLambda, TypeRegistry, VarInfo
-    , initContext
+    , initContext, withInlineBodies
     , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp, liveEcoValueVars, resetDefinedSsaVars
     , getOrCreateTypeIdForMonoType, registerKernelCall, registerKernelInstance
     , buildSignatures, kernelFuncSignatureFromType
@@ -156,6 +156,14 @@ type alias Context =
     , decoderExprs : Dict.Dict String Mono.MonoExpr -- Cache of let-bound decoder expressions for BytesFusion
     , externBoxedVars : Set.Set String -- Local vars that alias extern/kernel functions (evaluator has all !eco.value params)
     , definedSsaVars : Set.Set String -- SSA variables defined in the current function scope (for safepoint filtering)
+    , inlineBodies : Dict.Dict Int ( List ( Name.Name, Mono.MonoType ), Mono.MonoExpr )
+    -- ^ SpecId -> (params, body) of inlinable, non-recursive functions in
+    -- the final MonoGraph. Used by the bytes-fusion reifier's
+    -- `reifyMapBody` to beta-reduce per-element encoder functions
+    -- (closure-converted inline lambdas, `Utils.Bytes.Encode.string`,
+    -- etc.) against a synthetic iteration variable so their bodies can
+    -- be reified into `ELoop` body nodes. Built once at codegen entry
+    -- from `MonoInlineSimplify.buildBodyLookup`.
     }
 
 
@@ -185,6 +193,13 @@ type alias PendingLambda =
 
 
 {-| Initialize a code generation context.
+
+Callers that want the bytes-fusion reifier to fire on higher-order
+encoder patterns must install the `inlineBodies` table after creation
+via `withInlineBodies` (built from `MonoInlineSimplify.buildBodyLookup`).
+Without it, the reifier's `MonoVarGlobal` mapFn case in `reifyMapBody`
+falls back to `Nothing` and ELoop fusion is suppressed for closure-converted
+inline lambdas.
 -}
 initContext : Mode.Mode -> Mono.SpecializationRegistry -> Array (Maybe FuncSignature) -> Dict.Dict String (List Mono.CtorShape) -> Context
 initContext mode registry signatures initialCtorShapes =
@@ -205,7 +220,17 @@ initContext mode registry signatures initialCtorShapes =
     , decoderExprs = Dict.empty
     , externBoxedVars = Set.empty
     , definedSsaVars = Set.empty
+    , inlineBodies = Dict.empty
     }
+
+
+{-| Install a body-lookup table on a freshly-initialised Context.
+Typically called immediately after `initContext` with the result of
+`MonoInlineSimplify.buildBodyLookup`.
+-}
+withInlineBodies : Dict.Dict Int ( List ( Name.Name, Mono.MonoType ), Mono.MonoExpr ) -> Context -> Context
+withInlineBodies bodies ctx =
+    { ctx | inlineBodies = bodies }
 
 
 {-| Empty type registry for initialization.

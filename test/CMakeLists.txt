@@ -31,6 +31,15 @@ foreach(pkg IN LISTS ELM_TEST_PACKAGES)
     file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/${pkg}/elm.json DESTINATION ${_shadow})
     file(REMOVE ${_shadow}/src)
     file(CREATE_LINK ${CMAKE_CURRENT_SOURCE_DIR}/${pkg}/src ${_shadow}/src SYMBOLIC)
+    # `cmake --build build --target clean` wipes the per-package eco-stuff
+    # and elm-stuff caches (compiler-managed, regenerated on next run). The
+    # shadow's elm.json and src symlink are configure-time scaffold and must
+    # survive clean.
+    set_property(DIRECTORY APPEND PROPERTY
+            ADDITIONAL_CLEAN_FILES
+                "${_shadow}/eco-stuff"
+                "${_shadow}/elm-stuff"
+    )
 endforeach()
 
 # Parallel shadow tree for the AOT E2E runner (test/aot-e2e/<pkg>/) so its
@@ -43,6 +52,14 @@ foreach(pkg IN LISTS ELM_TEST_PACKAGES)
     file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/${pkg}/elm.json DESTINATION ${_aot_shadow})
     file(REMOVE ${_aot_shadow}/src)
     file(CREATE_LINK ${CMAKE_CURRENT_SOURCE_DIR}/${pkg}/src ${_aot_shadow}/src SYMBOLIC)
+    # Wipe the AOT shadow's per-package caches on clean. Only the inner
+    # cache dirs — the elm.json and src symlink are configure-time scaffold
+    # (see ADDITIONAL_CLEAN_FILES warning below for the whole-tree variant).
+    set_property(DIRECTORY APPEND PROPERTY
+            ADDITIONAL_CLEAN_FILES
+                "${_aot_shadow}/eco-stuff"
+                "${_aot_shadow}/elm-stuff"
+    )
 endforeach()
 
 # Find MLIR for codegen tests (EcoRunner depends on it)
@@ -194,14 +211,15 @@ target_compile_definitions(aot-e2e-runner PRIVATE
         BUILD_DIR="${CMAKE_BINARY_DIR}"
 )
 
-# NB: do NOT add ${CMAKE_BINARY_DIR}/test/aot-e2e to ADDITIONAL_CLEAN_FILES.
-# That tree's per-package elm.json + src/ symlinks are materialised at CMake
-# configure time (via file(COPY)/file(CREATE_LINK) above), so ninja clean
-# would wipe the scaffold and leave the shadow without an elm.json — the next
-# Elm compile then reports "NO elm.json FILE" and every AOT test fails. The
-# runner pre-cleans its own per-test caches at startup; outputs survive
-# `ninja clean` and are reset on demand. Use `rm -rf build/test/aot-e2e/` for
-# a manual full wipe.
+# NB: do NOT add ${CMAKE_BINARY_DIR}/test/aot-e2e (the whole tree) to
+# ADDITIONAL_CLEAN_FILES. That tree's per-package elm.json + src/ symlinks
+# are materialised at CMake configure time (via file(COPY)/file(CREATE_LINK)
+# above), so ninja clean would wipe the scaffold and leave the shadow
+# without an elm.json — the next Elm compile then reports "NO elm.json FILE"
+# and every AOT test fails. The per-package eco-stuff/ and elm-stuff/ cache
+# dirs ARE registered for clean (see the AOT shadow foreach above) — only
+# the configure-time scaffold is held back. Use `rm -rf build/test/aot-e2e/`
+# for a manual full wipe.
 
 # Bootstrap inputs the AOT runner needs at runtime. eco-boot-2.js is produced
 # by Stages 1+2+3 of guides/bootstrap.md; eco-boot-native is produced by the

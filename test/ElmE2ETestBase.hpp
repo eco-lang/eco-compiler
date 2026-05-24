@@ -313,6 +313,56 @@ inline std::vector<CheckPattern> extractCheckPatterns(const std::string& content
                                            "-- CHECK-NOT:");
 }
 
+// `-- CHECK-MLIR:` / `-- CHECK-MLIR-NOT:` directives assert patterns
+// against the textual MLIR produced by the compiler for the test's
+// `.elm` source. Used by the bytes-fusion smoke tests to prove that
+// specific `bf.*` / `scf.while` ops appear in the lowered MLIR — these
+// are otherwise invisible to a JIT-output `-- CHECK:` directive
+// because both the fused and the fall-back kernel path produce the
+// same observable program output.
+inline std::vector<CheckPattern> extractCheckMlirPatterns(const std::string& content) {
+    return eco_test::extractCheckPatterns(content,
+                                           "-- CHECK-MLIR:",
+                                           "-- CHECK-MLIR-NOT:");
+}
+
+// Locate the `ecoc` MLIR-text dumper. The CHECK-MLIR machinery uses
+// it to re-render the (bytecode) `.mlir` file as text so substring /
+// regex CHECK directives can match. Mirrors `getGuidaPath`'s search
+// strategy so the test binary works from any reasonable CWD inside
+// the build tree.
+inline std::string getEcocPath() {
+    std::vector<std::string> candidates = {
+        "runtime/src/codegen/ecoc",
+        "../runtime/src/codegen/ecoc",
+        "../../runtime/src/codegen/ecoc",
+    };
+
+    for (const auto& path : candidates) {
+        if (std::filesystem::exists(path)) {
+            return std::filesystem::absolute(path).string();
+        }
+    }
+
+    return "/work/build/runtime/src/codegen/ecoc";
+}
+
+// Read the compiled `.mlir` (bytecode or text) back as a single text
+// string for CHECK-MLIR matching. Bytecode is the default emit form,
+// so we always pipe through `ecoc --emit=mlir` — text input is
+// idempotent under that pass.
+inline std::string readMlirAsText(const std::string& mlirPath) {
+    std::string ecoc = getEcocPath();
+    std::string cmd = "\"" + ecoc + "\" --emit=mlir \"" + mlirPath + "\"";
+    auto [exitCode, output] = executeCommand(cmd);
+    if (exitCode != 0) {
+        throw std::runtime_error(
+            "ecoc --emit=mlir failed for " + mlirPath +
+            " (exit " + std::to_string(exitCode) + "): " + output.substr(0, 400));
+    }
+    return output;
+}
+
 // ============================================================================
 // Parameterized Two-Phase Compilation
 // ============================================================================
@@ -538,6 +588,7 @@ inline void runElmTestFromMlir(const std::string& mlirPath,
                                const std::optional<Elm::Platform::StressFlags>& flags = std::nullopt) {
     std::string elmContent = readFile(elmPath);
     auto checkPatterns = extractCheckPatterns(elmContent);
+    auto checkMlirPatterns = extractCheckMlirPatterns(elmContent);
     std::string expectedOutput = extractExpectedOutput(elmContent);
 
     if (checkPatterns.empty() && !expectedOutput.empty()) {
@@ -549,6 +600,20 @@ inline void runElmTestFromMlir(const std::string& mlirPath,
     if (!std::filesystem::exists(mlirPath)) {
         throw std::runtime_error("MLIR file not found: " + mlirPath +
                                  " (should have been compiled in Phase 1)");
+    }
+
+    // CHECK-MLIR runs before JIT execution so an MLIR-shape regression
+    // surfaces with a precise diagnostic instead of being lost behind
+    // a runtime crash or a wrong-output failure.
+    if (!checkMlirPatterns.empty()) {
+        std::string mlirText = readMlirAsText(mlirPath);
+        std::string error = verifyPatterns(mlirText, checkMlirPatterns);
+        if (!error.empty()) {
+            std::ostringstream msg;
+            msg << "MLIR-shape check failed: " << error << "\n";
+            msg << "MLIR file: " << mlirPath;
+            throw std::runtime_error(msg.str());
+        }
     }
 
     auto& runner = getRunner();

@@ -388,10 +388,18 @@ HPtr Elm_Kernel_Bytes_decode(HPtr decoder, HPtr bytes) {
     int64_t args[2] = { static_cast<int64_t>(bytes.toBits()), 0 };
     uint64_t result = eco_apply_closure_typed(decoder, args, 2, layout).toBits();
 
-    // Result is a Tuple2(new_offset: i64, decoded_value). Pattern B: resultHP
-    // is re-resolved AFTER the allocate to copy field b into Just; root via
-    // the helper's slow-path mechanism.
+    // Result is either Nothing (an embedded HPointer constant produced by a
+    // primitive read that overran the buffer) or a Tuple2(new_offset: i64,
+    // decoded_value). Embedded constants live in the `constant` bit-field
+    // of HPointer (non-zero means embedded), so a Nothing closure-result
+    // short-circuits straight back to the caller's Nothing.
     HPointer resultHP = Export::decode(result);
+    if (resultHP.constant != 0) {
+        return HPtr::fromBits(Export::encode(alloc::nothing()));
+    }
+
+    // Pattern B: resultHP is re-resolved AFTER the allocate to copy field b
+    // into Just; root via the helper's slow-path mechanism.
 
     // Construct Just(decoded_value) = Custom tag=0, 1 field.
     size_t justSize = sizeof(Custom) + sizeof(Unboxable);
@@ -427,15 +435,28 @@ HPtr Elm_Kernel_Bytes_decodeFailure() {
 // LE hosts, and reinterpret. The compiler reliably lowers this to a
 // movbe / bswap pair (one or two instructions per primitive read), much
 // tighter than the manual byte-shift loops the original code emitted.
+//
+// Each read returns Nothing (an embedded HPointer constant) when the
+// requested width would extend past the end of the buffer; the wrapper
+// `Elm_Kernel_Bytes_decode` detects that constant and propagates it as
+// the decoder's overall Nothing result. The bytes-fusion fast path
+// performs equivalent bounds checks via `bf.require`, so reads only
+// reach these helpers from the non-fused fall-back path.
+
+static inline HPtr decoderNothing() {
+    return HPtr::fromBits(Export::encode(alloc::nothing()));
+}
 
 HPtr Elm_Kernel_Bytes_read_i8(HPtr bytes, int64_t offset) {
     auto v = resolveByteBufferView(bytes.toBits());
+    if (offset < 0 || static_cast<size_t>(offset) + 1 > v.length) return decoderNothing();
     int8_t val = static_cast<int8_t>(v.data[offset]);
     return HPtr::fromBits(makeTuple2_ii(offset + 1, static_cast<int64_t>(val)));
 }
 
 HPtr Elm_Kernel_Bytes_read_u8(HPtr bytes, int64_t offset) {
     auto v = resolveByteBufferView(bytes.toBits());
+    if (offset < 0 || static_cast<size_t>(offset) + 1 > v.length) return decoderNothing();
     return HPtr::fromBits(makeTuple2_ii(offset + 1, static_cast<int64_t>(v.data[offset])));
 }
 
@@ -443,6 +464,7 @@ HPtr Elm_Kernel_Bytes_read_u8(HPtr bytes, int64_t offset) {
 
 HPtr Elm_Kernel_Bytes_read_i16(HPtr isLE, HPtr bytes, int64_t offset) {
     auto v = resolveByteBufferView(bytes.toBits());
+    if (offset < 0 || static_cast<size_t>(offset) + 2 > v.length) return decoderNothing();
     bool le = isLittleEndian(isLE.toBits());
     uint16_t raw;
     std::memcpy(&raw, v.data + offset, 2);
@@ -453,6 +475,7 @@ HPtr Elm_Kernel_Bytes_read_i16(HPtr isLE, HPtr bytes, int64_t offset) {
 
 HPtr Elm_Kernel_Bytes_read_i32(HPtr isLE, HPtr bytes, int64_t offset) {
     auto v = resolveByteBufferView(bytes.toBits());
+    if (offset < 0 || static_cast<size_t>(offset) + 4 > v.length) return decoderNothing();
     bool le = isLittleEndian(isLE.toBits());
     uint32_t raw;
     std::memcpy(&raw, v.data + offset, 4);
@@ -463,6 +486,7 @@ HPtr Elm_Kernel_Bytes_read_i32(HPtr isLE, HPtr bytes, int64_t offset) {
 
 HPtr Elm_Kernel_Bytes_read_u16(HPtr isLE, HPtr bytes, int64_t offset) {
     auto v = resolveByteBufferView(bytes.toBits());
+    if (offset < 0 || static_cast<size_t>(offset) + 2 > v.length) return decoderNothing();
     bool le = isLittleEndian(isLE.toBits());
     uint16_t raw;
     std::memcpy(&raw, v.data + offset, 2);
@@ -472,6 +496,7 @@ HPtr Elm_Kernel_Bytes_read_u16(HPtr isLE, HPtr bytes, int64_t offset) {
 
 HPtr Elm_Kernel_Bytes_read_u32(HPtr isLE, HPtr bytes, int64_t offset) {
     auto v = resolveByteBufferView(bytes.toBits());
+    if (offset < 0 || static_cast<size_t>(offset) + 4 > v.length) return decoderNothing();
     bool le = isLittleEndian(isLE.toBits());
     uint32_t raw;
     std::memcpy(&raw, v.data + offset, 4);
@@ -481,6 +506,7 @@ HPtr Elm_Kernel_Bytes_read_u32(HPtr isLE, HPtr bytes, int64_t offset) {
 
 HPtr Elm_Kernel_Bytes_read_f32(HPtr isLE, HPtr bytes, int64_t offset) {
     auto v = resolveByteBufferView(bytes.toBits());
+    if (offset < 0 || static_cast<size_t>(offset) + 4 > v.length) return decoderNothing();
     bool le = isLittleEndian(isLE.toBits());
     uint32_t bits;
     std::memcpy(&bits, v.data + offset, 4);
@@ -492,6 +518,7 @@ HPtr Elm_Kernel_Bytes_read_f32(HPtr isLE, HPtr bytes, int64_t offset) {
 
 HPtr Elm_Kernel_Bytes_read_f64(HPtr isLE, HPtr bytes, int64_t offset) {
     auto v = resolveByteBufferView(bytes.toBits());
+    if (offset < 0 || static_cast<size_t>(offset) + 8 > v.length) return decoderNothing();
     bool le = isLittleEndian(isLE.toBits());
     uint64_t bits;
     std::memcpy(&bits, v.data + offset, 8);
@@ -506,6 +533,8 @@ HPtr Elm_Kernel_Bytes_read_bytes(int64_t length, HPtr bytes, int64_t offset) {
     // copy, just a 16-byte slice header. makeByteBufferSlice flattens to
     // a flat ByteBuffer copy under MAKE_BYTEBUFFER_SLICE_MIN_LEN bytes
     // so we don't pay the indirection cost on small ranges.
+    auto v = resolveByteBufferView(bytes.toBits());
+    if (offset < 0 || length < 0 || static_cast<size_t>(offset) + static_cast<size_t>(length) > v.length) return decoderNothing();
     HPointer srcHP = Export::decode(bytes.toBits());
     HPointer sliceHP = alloc::makeByteBufferSlice(srcHP,
         static_cast<u32>(offset), static_cast<u32>(length));

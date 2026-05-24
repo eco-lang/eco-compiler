@@ -460,6 +460,26 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_cons_head_i16),
                 llvm::JITSymbolFlags::Exported);
 
+        // Typed Custom-field access — emitted by EcoToLLVMRuntime when
+        // lowering `eco.project.custom %v[N] : !eco.value -> {i64,f64,i16}`.
+        // Static link picks these up from libEcoRuntimeStatic, but the JIT
+        // linker needs explicit absolute-symbol entries. Missing these
+        // causes the orc-jit lookup to fail with "Symbols not found:
+        // eco_custom_get_i64" the moment a test exercises a typed-field
+        // custom projection (Just-of-Int, Tuple2 element, etc.).
+        symbolMap[interner("eco_custom_get_i64")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_custom_get_i64),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_custom_get_f64")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_custom_get_f64),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_custom_get_i16")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_custom_get_i16),
+                llvm::JITSymbolFlags::Exported);
+
         // =================================================================
         // ByteFusion Runtime Symbols (for fused Bytes.Encode/Decode)
         // =================================================================

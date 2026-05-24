@@ -18,6 +18,7 @@ import Compiler.Generate.MLIR.Functions as Functions
 import Compiler.Generate.MLIR.Lambdas as Lambdas
 import Compiler.Generate.MLIR.TypeTable as TypeTable
 import Compiler.Generate.Mode as Mode
+import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Dict
 import Eco.File
 import Mlir.Bytecode.StreamEncode as StreamEncode
@@ -64,6 +65,7 @@ generateMlirModule mode monoGraph0 =
         ctx : Ctx.Context
         ctx =
             Ctx.initContext mode registry signatures ctorShapes
+                |> Ctx.withInlineBodies (MonoInlineSimplify.buildBodyLookup monoGraph0)
 
         ( revOpChunks, ctxAfterNodes, _ ) =
             Array.foldl
@@ -148,6 +150,7 @@ streamMlirToWriter mode monoGraph0 writeChunk =
 
         ctx =
             Ctx.initContext mode registry signatures ctorShapes
+                |> Ctx.withInlineBodies (MonoInlineSimplify.buildBodyLookup monoGraph0)
 
         stderrLog msg =
             TaskExtra.io (SysIO.writeLn SysIO.stderr msg)
@@ -283,6 +286,7 @@ streamMlirBytecode mode monoGraph0 target =
 
         ctx =
             Ctx.initContext mode registry signatures ctorShapes
+                |> Ctx.withInlineBodies (MonoInlineSimplify.buildBodyLookup monoGraph0)
 
         nodesList =
             Array.toIndexedList nodes

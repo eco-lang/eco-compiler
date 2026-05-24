@@ -104,6 +104,9 @@ emitOp op state =
         WriteUtf8 _ stringExpr ->
             emitWriteUtf8 stringExpr state
 
+        WriteEachItem r ->
+            emitWriteEachItem r state
+
         ReturnBuffer ->
             -- Buffer is already stored in state.bufferVar
             state
@@ -241,6 +244,51 @@ emitWidthExpr compileExpr expr ctx =
             in
             ( bytesResult.ops ++ [ widthOp ], resultVar, ctx3 )
 
+        WListLengthMul countExpr constWidth ->
+            -- Compile countExpr (typically a List.length call, which
+            -- monomorphises to i64), truncate to i32, multiply by the
+            -- compile-time-known per-iteration body width.
+            let
+                countResult =
+                    compileExpr countExpr ctx
+
+                ( count32Var, ctx2 ) =
+                    Context.freshVar countResult.ctx
+
+                ( ctx3, trunciOp ) =
+                    Ops.mlirOp ctx2 "arith.trunci"
+                        |> Ops.opBuilder.withOperands [ countResult.resultVar ]
+                        |> Ops.opBuilder.withResults [ ( count32Var, I32 ) ]
+                        |> Ops.opBuilder.withAttrs
+                            (Dict.singleton "_operand_types"
+                                (ArrayAttr Nothing [ TypeAttr countResult.resultType ])
+                            )
+                        |> Ops.opBuilder.build
+
+                ( constVar, ctx4 ) =
+                    Context.freshVar ctx3
+
+                ( ctx5, constOp ) =
+                    Ops.mlirOp ctx4 "arith.constant"
+                        |> Ops.opBuilder.withResults [ ( constVar, I32 ) ]
+                        |> Ops.opBuilder.withAttrs (Dict.singleton "value" (IntAttr (Just I32) constWidth))
+                        |> Ops.opBuilder.build
+
+                ( mulVar, ctx6 ) =
+                    Context.freshVar ctx5
+
+                ( ctx7, mulOp ) =
+                    Ops.mlirOp ctx6 "arith.muli"
+                        |> Ops.opBuilder.withOperands [ count32Var, constVar ]
+                        |> Ops.opBuilder.withResults [ ( mulVar, I32 ) ]
+                        |> Ops.opBuilder.withAttrs
+                            (Dict.singleton "_operand_types"
+                                (ArrayAttr Nothing [ TypeAttr I32, TypeAttr I32 ])
+                            )
+                        |> Ops.opBuilder.build
+            in
+            ( countResult.ops ++ [ trunciOp, constOp, mulOp ], mulVar, ctx7 )
+
 
 {-| Convert endianness to MLIR enum attribute.
 The BF dialect uses I32EnumAttr for endianness: LE=0, BE=1.
@@ -256,6 +304,43 @@ endianToAttr endian =
             IntAttr (Just I32) 1
 
 
+{-| Coerce a value SSA to the primitive type a BF write op expects,
+inserting an `eco.unbox` when the source is `!eco.value`. The integer
+write ops (`bf.write.u8/u16/u32`) take `I64`; the float write ops
+(`bf.write.f32/f64`) take `F64`. Bytes and UTF-8 writes accept any
+type and skip this coercion entirely.
+
+The bytes-fusion ELoop body sees its per-iteration head bound to the
+list-head SSA at `!eco.value` (loop-carried values cross the
+`scf.while` boundary as a single uniform type). When the body
+references the head directly as the value of `bf.write.u8` etc., this
+unbox satisfies the op's operand-type constraint.
+
+-}
+ensureUnboxed : MlirType -> String -> MlirType -> Context -> ( String, List MlirOp, Context )
+ensureUnboxed targetType valueVar valueType ctx =
+    if Types.isEcoValueType valueType && not (Types.isEcoValueType targetType) then
+        let
+            ( unboxedVar, ctx1 ) =
+                Context.freshVar ctx
+
+            attrs =
+                Dict.singleton "_operand_types"
+                    (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
+
+            ( ctx2, unboxOp ) =
+                Ops.mlirOp ctx1 "eco.unbox"
+                    |> Ops.opBuilder.withOperands [ valueVar ]
+                    |> Ops.opBuilder.withResults [ ( unboxedVar, targetType ) ]
+                    |> Ops.opBuilder.withAttrs attrs
+                    |> Ops.opBuilder.build
+        in
+        ( unboxedVar, [ unboxOp ], ctx2 )
+
+    else
+        ( valueVar, [], ctx )
+
+
 {-| Emit bf.write.u8 operation.
 -}
 emitWriteU8 : Mono.MonoExpr -> EmitState -> EmitState
@@ -264,17 +349,19 @@ emitWriteU8 valueExpr state =
         exprResult =
             state.compileExpr valueExpr state.ctx
 
-        ( newCursor, ctx2 ) =
-            Context.freshVar exprResult.ctx
+        ( valueVar, unboxOps, ctxU ) =
+            ensureUnboxed I64 exprResult.resultVar exprResult.resultType exprResult.ctx
 
-        -- Add _operand_types for cursor and value (using actual expression result type)
+        ( newCursor, ctx2 ) =
+            Context.freshVar ctxU
+
         writeAttrs =
             Dict.singleton "_operand_types"
-                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr exprResult.resultType ])
+                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr I64 ])
 
         ( ctx3, writeOp ) =
             Ops.mlirOp ctx2 "bf.write.u8"
-                |> Ops.opBuilder.withOperands [ state.cursor, exprResult.resultVar ]
+                |> Ops.opBuilder.withOperands [ state.cursor, valueVar ]
                 |> Ops.opBuilder.withResults [ ( newCursor, bfCursorType ) ]
                 |> Ops.opBuilder.withAttrs writeAttrs
                 |> Ops.opBuilder.build
@@ -282,9 +369,7 @@ emitWriteU8 valueExpr state =
     { state
         | ctx = ctx3
         , cursor = newCursor
-
-        -- exprResult.ops is in forward order; reverse to match our reverse accumulation
-        , ops = writeOp :: (List.reverse exprResult.ops ++ state.ops)
+        , ops = writeOp :: List.reverse unboxOps ++ List.reverse exprResult.ops ++ state.ops
     }
 
 
@@ -296,19 +381,21 @@ emitWriteU16 endian valueExpr state =
         exprResult =
             state.compileExpr valueExpr state.ctx
 
-        ( newCursor, ctx2 ) =
-            Context.freshVar exprResult.ctx
+        ( valueVar, unboxOps, ctxU ) =
+            ensureUnboxed I64 exprResult.resultVar exprResult.resultType exprResult.ctx
 
-        -- Add _operand_types for cursor and value (using actual expression result type)
+        ( newCursor, ctx2 ) =
+            Context.freshVar ctxU
+
         writeAttrs =
             Dict.fromList
                 [ ( "endianness", endianToAttr endian )
-                , ( "_operand_types", ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr exprResult.resultType ] )
+                , ( "_operand_types", ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr I64 ] )
                 ]
 
         ( ctx3, writeOp ) =
             Ops.mlirOp ctx2 "bf.write.u16"
-                |> Ops.opBuilder.withOperands [ state.cursor, exprResult.resultVar ]
+                |> Ops.opBuilder.withOperands [ state.cursor, valueVar ]
                 |> Ops.opBuilder.withResults [ ( newCursor, bfCursorType ) ]
                 |> Ops.opBuilder.withAttrs writeAttrs
                 |> Ops.opBuilder.build
@@ -316,7 +403,7 @@ emitWriteU16 endian valueExpr state =
     { state
         | ctx = ctx3
         , cursor = newCursor
-        , ops = writeOp :: (List.reverse exprResult.ops ++ state.ops)
+        , ops = writeOp :: List.reverse unboxOps ++ List.reverse exprResult.ops ++ state.ops
     }
 
 
@@ -328,19 +415,21 @@ emitWriteU32 endian valueExpr state =
         exprResult =
             state.compileExpr valueExpr state.ctx
 
-        ( newCursor, ctx2 ) =
-            Context.freshVar exprResult.ctx
+        ( valueVar, unboxOps, ctxU ) =
+            ensureUnboxed I64 exprResult.resultVar exprResult.resultType exprResult.ctx
 
-        -- Add _operand_types for cursor and value (using actual expression result type)
+        ( newCursor, ctx2 ) =
+            Context.freshVar ctxU
+
         writeAttrs =
             Dict.fromList
                 [ ( "endianness", endianToAttr endian )
-                , ( "_operand_types", ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr exprResult.resultType ] )
+                , ( "_operand_types", ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr I64 ] )
                 ]
 
         ( ctx3, writeOp ) =
             Ops.mlirOp ctx2 "bf.write.u32"
-                |> Ops.opBuilder.withOperands [ state.cursor, exprResult.resultVar ]
+                |> Ops.opBuilder.withOperands [ state.cursor, valueVar ]
                 |> Ops.opBuilder.withResults [ ( newCursor, bfCursorType ) ]
                 |> Ops.opBuilder.withAttrs writeAttrs
                 |> Ops.opBuilder.build
@@ -348,7 +437,7 @@ emitWriteU32 endian valueExpr state =
     { state
         | ctx = ctx3
         , cursor = newCursor
-        , ops = writeOp :: (List.reverse exprResult.ops ++ state.ops)
+        , ops = writeOp :: List.reverse unboxOps ++ List.reverse exprResult.ops ++ state.ops
     }
 
 
@@ -360,19 +449,21 @@ emitWriteF32 endian valueExpr state =
         exprResult =
             state.compileExpr valueExpr state.ctx
 
-        ( newCursor, ctx2 ) =
-            Context.freshVar exprResult.ctx
+        ( valueVar, unboxOps, ctxU ) =
+            ensureUnboxed F64 exprResult.resultVar exprResult.resultType exprResult.ctx
 
-        -- Add _operand_types for cursor and value (using actual expression result type)
+        ( newCursor, ctx2 ) =
+            Context.freshVar ctxU
+
         writeAttrs =
             Dict.fromList
                 [ ( "endianness", endianToAttr endian )
-                , ( "_operand_types", ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr exprResult.resultType ] )
+                , ( "_operand_types", ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr F64 ] )
                 ]
 
         ( ctx3, writeOp ) =
             Ops.mlirOp ctx2 "bf.write.f32"
-                |> Ops.opBuilder.withOperands [ state.cursor, exprResult.resultVar ]
+                |> Ops.opBuilder.withOperands [ state.cursor, valueVar ]
                 |> Ops.opBuilder.withResults [ ( newCursor, bfCursorType ) ]
                 |> Ops.opBuilder.withAttrs writeAttrs
                 |> Ops.opBuilder.build
@@ -380,7 +471,7 @@ emitWriteF32 endian valueExpr state =
     { state
         | ctx = ctx3
         , cursor = newCursor
-        , ops = writeOp :: (List.reverse exprResult.ops ++ state.ops)
+        , ops = writeOp :: List.reverse unboxOps ++ List.reverse exprResult.ops ++ state.ops
     }
 
 
@@ -392,19 +483,21 @@ emitWriteF64 endian valueExpr state =
         exprResult =
             state.compileExpr valueExpr state.ctx
 
-        ( newCursor, ctx2 ) =
-            Context.freshVar exprResult.ctx
+        ( valueVar, unboxOps, ctxU ) =
+            ensureUnboxed F64 exprResult.resultVar exprResult.resultType exprResult.ctx
 
-        -- Add _operand_types for cursor and value (using actual expression result type)
+        ( newCursor, ctx2 ) =
+            Context.freshVar ctxU
+
         writeAttrs =
             Dict.fromList
                 [ ( "endianness", endianToAttr endian )
-                , ( "_operand_types", ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr exprResult.resultType ] )
+                , ( "_operand_types", ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr F64 ] )
                 ]
 
         ( ctx3, writeOp ) =
             Ops.mlirOp ctx2 "bf.write.f64"
-                |> Ops.opBuilder.withOperands [ state.cursor, exprResult.resultVar ]
+                |> Ops.opBuilder.withOperands [ state.cursor, valueVar ]
                 |> Ops.opBuilder.withResults [ ( newCursor, bfCursorType ) ]
                 |> Ops.opBuilder.withAttrs writeAttrs
                 |> Ops.opBuilder.build
@@ -412,7 +505,7 @@ emitWriteF64 endian valueExpr state =
     { state
         | ctx = ctx3
         , cursor = newCursor
-        , ops = writeOp :: (List.reverse exprResult.ops ++ state.ops)
+        , ops = writeOp :: List.reverse unboxOps ++ List.reverse exprResult.ops ++ state.ops
     }
 
 
@@ -473,6 +566,224 @@ emitWriteUtf8 strExpr state =
         | ctx = ctx3
         , cursor = newCursor
         , ops = writeOp :: (List.reverse exprResult.ops ++ state.ops)
+    }
+
+
+{-| Emit a length-prefixed encoder loop as an scf.while over the source
+list with loop-carried cursor + remaining list.
+
+Pseudo-MLIR:
+
+    %list_init = <compileExpr iterExpr>
+    %loop:2 = scf.while (%cur = state.cursor, %lst = %list_init)
+              : (!bf.cursor, !eco.value) -> (!bf.cursor, !eco.value) {
+      // before region: condition is "list is Cons"
+      %tag = eco.get_tag %lst
+      %is_nil = arith.cmpi eq, %tag, c0_i32
+      %is_cons = arith.xori %is_nil, true
+      scf.condition (%is_cons) %cur, %lst : !bf.cursor, !eco.value
+    } do {
+    ^bb0(%cur, %lst):
+      // after region
+      %head = eco.project.list_head %lst
+      %tail = eco.project.list_tail %lst
+      // body ops emit bf.write.* threaded through %cur, producing %new_cur
+      // with itemVar bound to %head
+      scf.yield %new_cur, %tail : !bf.cursor, !eco.value
+    }
+    // %loop#0 is the final cursor; %loop#1 is the empty-list residue.
+
+Mirrors the decoder loop's scf.while construction. Cursor threading
+inside the body uses Context.addVarMapping to bind the user-visible
+itemVar name to the per-iteration head SSA, so the body's MonoExpr
+references resolve correctly through the standard compileExpr callback.
+-}
+emitWriteEachItem :
+    { cursorName : String
+    , itemVar : String
+    , bodyOps : List Op
+    , iterExpr : Mono.MonoExpr
+    , itemByteWidth : Int
+    }
+    -> EmitState
+    -> EmitState
+emitWriteEachItem r state =
+    let
+        -- 1. Compile iterExpr to get the list SSA.
+        iterResult =
+            state.compileExpr r.iterExpr state.ctx
+
+        ctx0 =
+            iterResult.ctx
+
+        -- 2. Generate fresh names for loop result vars and block args.
+        ( whileCursorResult, ctx1 ) =
+            Context.freshVar ctx0
+
+        ( whileListResult, ctx2 ) =
+            Context.freshVar ctx1
+
+        ( beforeCursorArg, ctx3 ) =
+            Context.freshVar ctx2
+
+        ( beforeListArg, ctx4 ) =
+            Context.freshVar ctx3
+
+        -- 3. Build before region: tag check.
+        ( tagVar, ctx5 ) =
+            Context.freshVar ctx4
+
+        ( ctx6, tagOp ) =
+            Ops.mlirOp ctx5 "eco.get_tag"
+                |> Ops.opBuilder.withOperands [ beforeListArg ]
+                |> Ops.opBuilder.withResults [ ( tagVar, I32 ) ]
+                |> Ops.opBuilder.withAttrs
+                    (Dict.singleton "_operand_types"
+                        (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
+                    )
+                |> Ops.opBuilder.build
+
+        ( zeroI32Var, ctx7 ) =
+            Context.freshVar ctx6
+
+        ( ctx8, zeroI32Op ) =
+            Ops.mlirOp ctx7 "arith.constant"
+                |> Ops.opBuilder.withResults [ ( zeroI32Var, I32 ) ]
+                |> Ops.opBuilder.withAttrs (Dict.singleton "value" (IntAttr (Just I32) 0))
+                |> Ops.opBuilder.build
+
+        ( isNilVar, ctx9 ) =
+            Context.freshVar ctx8
+
+        -- arith.cmpi predicate=0 means eq
+        ( ctx10, cmpEqOp ) =
+            Ops.mlirOp ctx9 "arith.cmpi"
+                |> Ops.opBuilder.withOperands [ tagVar, zeroI32Var ]
+                |> Ops.opBuilder.withResults [ ( isNilVar, I1 ) ]
+                |> Ops.opBuilder.withAttrs
+                    (Dict.fromList
+                        [ ( "predicate", IntAttr Nothing 0 )
+                        , ( "_operand_types", ArrayAttr Nothing [ TypeAttr I32, TypeAttr I32 ] )
+                        ]
+                    )
+                |> Ops.opBuilder.build
+
+        ( trueVar, ctx11 ) =
+            Context.freshVar ctx10
+
+        ( ctx12, trueOp ) =
+            Ops.mlirOp ctx11 "arith.constant"
+                |> Ops.opBuilder.withResults [ ( trueVar, I1 ) ]
+                |> Ops.opBuilder.withAttrs (Dict.singleton "value" (IntAttr (Just I1) 1))
+                |> Ops.opBuilder.build
+
+        ( isConsVar, ctx13 ) =
+            Context.freshVar ctx12
+
+        ( ctx14, xoriOp ) =
+            Ops.mlirOp ctx13 "arith.xori"
+                |> Ops.opBuilder.withOperands [ isNilVar, trueVar ]
+                |> Ops.opBuilder.withResults [ ( isConsVar, I1 ) ]
+                |> Ops.opBuilder.withAttrs
+                    (Dict.singleton "_operand_types"
+                        (ArrayAttr Nothing [ TypeAttr I1, TypeAttr I1 ])
+                    )
+                |> Ops.opBuilder.build
+
+        ( ctx15, conditionOp ) =
+            Ops.scfCondition ctx14
+                isConsVar
+                [ ( beforeCursorArg, bfCursorType )
+                , ( beforeListArg, Types.ecoValue )
+                ]
+
+        beforeRegion =
+            Ops.mkRegion
+                [ ( beforeCursorArg, bfCursorType )
+                , ( beforeListArg, Types.ecoValue )
+                ]
+                [ tagOp, zeroI32Op, cmpEqOp, trueOp, xoriOp ]
+                conditionOp
+
+        -- 4. Build after region: project head, run body, project tail, yield.
+        ( afterCursorArg, ctx16 ) =
+            Context.freshVar ctx15
+
+        ( afterListArg, ctx17 ) =
+            Context.freshVar ctx16
+
+        ( headVar, ctx18 ) =
+            Context.freshVar ctx17
+
+        ( ctx19, headOp ) =
+            Ops.mlirOp ctx18 "eco.project.list_head"
+                |> Ops.opBuilder.withOperands [ afterListArg ]
+                |> Ops.opBuilder.withResults [ ( headVar, Types.ecoValue ) ]
+                |> Ops.opBuilder.withAttrs
+                    (Dict.singleton "_operand_types"
+                        (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
+                    )
+                |> Ops.opBuilder.build
+
+        ( tailVar, ctx20 ) =
+            Context.freshVar ctx19
+
+        ( ctx21, tailOp ) =
+            Ops.mlirOp ctx20 "eco.project.list_tail"
+                |> Ops.opBuilder.withOperands [ afterListArg ]
+                |> Ops.opBuilder.withResults [ ( tailVar, Types.ecoValue ) ]
+                |> Ops.opBuilder.withAttrs
+                    (Dict.singleton "_operand_types"
+                        (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
+                    )
+                |> Ops.opBuilder.build
+
+        -- Bind itemVar -> headVar so body MonoExpr lookups resolve.
+        ctxBody =
+            Context.addVarMapping r.itemVar headVar Types.ecoValue ctx21
+
+        -- Emit the body ops with afterCursorArg as the starting cursor,
+        -- fresh `ops` accumulator (these belong inside the region, not the
+        -- outer scope).
+        bodyInitState =
+            { state | ctx = ctxBody, cursor = afterCursorArg, ops = [] }
+
+        finalBodyState =
+            List.foldl emitOp bodyInitState r.bodyOps
+
+        newCursorVar =
+            finalBodyState.cursor
+
+        ( ctx23, yieldOp ) =
+            Ops.mlirOp finalBodyState.ctx "scf.yield"
+                |> Ops.opBuilder.withOperands [ newCursorVar, tailVar ]
+                |> Ops.opBuilder.withAttrs
+                    (Dict.singleton "_operand_types"
+                        (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr Types.ecoValue ])
+                    )
+                |> Ops.opBuilder.build
+
+        afterRegion =
+            Ops.mkRegion
+                [ ( afterCursorArg, bfCursorType )
+                , ( afterListArg, Types.ecoValue )
+                ]
+                ([ headOp, tailOp ] ++ List.reverse finalBodyState.ops)
+                yieldOp
+
+        -- 5. Build scf.while binding (whileCursorResult, whileListResult).
+        ( ctx24, whileOp ) =
+            Ops.scfWhile ctx23
+                [ ( whileCursorResult, state.cursor, bfCursorType )
+                , ( whileListResult, iterResult.resultVar, Types.ecoValue )
+                ]
+                beforeRegion
+                afterRegion
+    in
+    { state
+        | ctx = ctx24
+        , cursor = whileCursorResult
+        , ops = whileOp :: (List.reverse iterResult.ops ++ state.ops)
     }
 
 

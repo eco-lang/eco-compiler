@@ -1,6 +1,7 @@
 module Compiler.Generate.MLIR.BytesFusion.Reify exposing
     ( EncoderNode(..), DecoderNode(..)
-    , reifyEncoder, reifyDecoder
+    , BodyLookup
+    , reifyEncoder, reifyEncoderWith, reifyDecoder
     , nodesToOps, decoderNodeToOps
     , CountSource, LengthDecoder
     )
@@ -34,6 +35,7 @@ expression tree to identify Bytes.Encode/Decode combinator calls.
 -}
 
 import Compiler.AST.Monomorphized as Mono exposing (MonoExpr(..))
+import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.Package as Pkg
 import Compiler.Generate.MLIR.BytesFusion.LoopIR as IR exposing (Endianness(..), Op(..), WidthExpr(..))
 import Compiler.Monomorphize.Registry as Registry
@@ -41,7 +43,33 @@ import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 
 
+{-| `SpecId -> Maybe (params, body)` lookup over the post-inline
+MonoGraph, excluding recursive specs. Supplied by codegen at the
+fusion entry; consumed by `reifyMapBody`'s `MonoVarGlobal` arm to
+beta-reduce per-element encoder functions (closure-converted inline
+lambdas, `Utils.Bytes.Encode.string`, etc.) against a synthetic
+iteration variable.
+
+Empty `Dict.empty` is safe — `reifyMapBody` will just fall through to
+the `Nothing` arm and ELoop fusion is suppressed for that site.
+-}
+type alias BodyLookup =
+    Dict Int ( List ( Name, Mono.MonoType ), Mono.MonoExpr )
+
+
 {-| Normalized encoder node (after flattening sequences).
+
+`ELoop` is the length-prefixed dynamic-list encoder shape:
+
+    BE.sequence (BE.unsignedInt32 endian (List.length xs) :: List.map mapFn xs)
+
+The reifier produces an `ELoop` when it matches that shape with `mapFn`
+being a `MonoClosure` whose body reifies to a constant-width sequence of
+EncoderNodes. `itemVar` is the lambda's parameter name (bound to each
+cons head during the loop), `itemNodes` is the reified body, `iterExpr`
+is the source list (`xs`), `countExpr` is the `List.length xs` MonoExpr
+extracted from the header (reused for the buffer pre-allocation so we
+don't evaluate `List.length` twice).
 -}
 type EncoderNode
     = EU8 Mono.MonoExpr
@@ -51,6 +79,12 @@ type EncoderNode
     | EF64 Endianness Mono.MonoExpr
     | EBytes Mono.MonoExpr
     | EUtf8 Mono.MonoExpr
+    | ELoop
+        { itemVar : String
+        , itemNodes : List EncoderNode
+        , iterExpr : Mono.MonoExpr
+        , countExpr : Mono.MonoExpr
+        }
 
 
 {-| Normalized decoder node.
@@ -107,16 +141,42 @@ type CountSource
 
 {-| Try to reify a MonoExpr into a list of encoder nodes.
 Returns Nothing if the expression contains dynamic/opaque encoders.
+
+This entry point disables the `MonoVarGlobal` mapFn arm of
+`reifyMapBody` by passing `Dict.empty` as the body lookup. Use
+`reifyEncoderWith` and supply a real lookup (from
+`MonoInlineSimplify.buildBodyLookup`, threaded through codegen
+`Context.inlineBodies`) to fuse loops whose per-element function is a
+named global rather than an inline lambda.
+
 -}
 reifyEncoder : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe (List EncoderNode)
 reifyEncoder registry exprCache expr =
-    reifyEncoderHelp registry exprCache expr
+    reifyEncoderHelp Dict.empty registry exprCache expr
+
+
+{-| Like `reifyEncoder` but with the inliner's body-lookup table.
+
+Required for `reifyMapBody`'s `MonoVarGlobal` arm: closure conversion
+turns inline lambdas into top-level functions, and the typical Eco
+pattern (`Utils.Bytes.Encode.list Utils.Bytes.Encode.string xs`)
+already uses named helpers. Without this, ELoop fusion fires only on
+the pure-`MonoClosure` mapFn case, which is rare post-monomorphization.
+
+The table is the same one consumed by the inliner — non-recursive,
+`getInlinableBody`-eligible specs only. Other shapes fall through and
+the reifier falls back to the kernel call.
+
+-}
+reifyEncoderWith : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe (List EncoderNode)
+reifyEncoderWith bodyLookup registry exprCache expr =
+    reifyEncoderHelp bodyLookup registry exprCache expr
 
 
 {-| Internal helper that returns nested structure.
 -}
-reifyEncoderHelp : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe (List EncoderNode)
-reifyEncoderHelp registry exprCache expr =
+reifyEncoderHelp : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe (List EncoderNode)
+reifyEncoderHelp bodyLookup registry exprCache expr =
     case expr of
         -- Call to a Bytes.Encode function
         Mono.MonoCall _ func args _ _ ->
@@ -125,7 +185,7 @@ reifyEncoderHelp registry exprCache expr =
                     case Registry.lookupSpecKey specId registry of
                         Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
                             if pkg == Pkg.bytes && moduleName == "Bytes.Encode" then
-                                reifyBytesEncodeCall registry exprCache name args
+                                reifyBytesEncodeCall bodyLookup registry exprCache name args
 
                             else
                                 -- Not a Bytes.Encode function
@@ -136,7 +196,7 @@ reifyEncoderHelp registry exprCache expr =
 
                 Mono.MonoVarKernel _ _ "Bytes" name _ ->
                     -- Kernel function from Bytes module
-                    reifyBytesKernelCall registry exprCache name args
+                    reifyBytesKernelCall bodyLookup registry exprCache name args
 
                 -- Curried call: func is itself a call (e.g. from pipe operator expansion).
                 -- Flatten inner args with outer args and try again.
@@ -146,7 +206,7 @@ reifyEncoderHelp registry exprCache expr =
                             case Registry.lookupSpecKey innerSpecId registry of
                                 Just ( Mono.Global (IO.Canonical pkg2 moduleName2) name2, _, _ ) ->
                                     if pkg2 == Pkg.bytes && moduleName2 == "Bytes.Encode" then
-                                        reifyBytesEncodeCall registry exprCache name2 (innerArgs ++ args)
+                                        reifyBytesEncodeCall bodyLookup registry exprCache name2 (innerArgs ++ args)
 
                                     else
                                         Nothing
@@ -155,7 +215,7 @@ reifyEncoderHelp registry exprCache expr =
                                     Nothing
 
                         Mono.MonoVarKernel _ _ "Bytes" name2 _ ->
-                            reifyBytesKernelCall registry exprCache name2 (innerArgs ++ args)
+                            reifyBytesKernelCall bodyLookup registry exprCache name2 (innerArgs ++ args)
 
                         _ ->
                             Nothing
@@ -169,7 +229,7 @@ reifyEncoderHelp registry exprCache expr =
                                     case Registry.lookupSpecKey innerSpecId registry of
                                         Just ( Mono.Global (IO.Canonical pkg2 moduleName2) name2, _, _ ) ->
                                             if pkg2 == Pkg.bytes && moduleName2 == "Bytes.Encode" then
-                                                reifyBytesEncodeCall registry exprCache name2 (innerArgs ++ args)
+                                                reifyBytesEncodeCall bodyLookup registry exprCache name2 (innerArgs ++ args)
 
                                             else
                                                 Nothing
@@ -178,7 +238,7 @@ reifyEncoderHelp registry exprCache expr =
                                             Nothing
 
                                 Mono.MonoVarKernel _ _ "Bytes" name2 _ ->
-                                    reifyBytesKernelCall registry exprCache name2 (innerArgs ++ args)
+                                    reifyBytesKernelCall bodyLookup registry exprCache name2 (innerArgs ++ args)
 
                                 _ ->
                                     Nothing
@@ -194,7 +254,7 @@ reifyEncoderHelp registry exprCache expr =
         Mono.MonoLet def body _ ->
             case def of
                 Mono.MonoDef name defExpr ->
-                    reifyEncoderHelp registry (Dict.insert name defExpr exprCache) body
+                    reifyEncoderHelp bodyLookup registry (Dict.insert name defExpr exprCache) body
 
                 _ ->
                     Nothing
@@ -203,7 +263,7 @@ reifyEncoderHelp registry exprCache expr =
         Mono.MonoVarLocal name _ ->
             case Dict.get name exprCache of
                 Just cachedExpr ->
-                    reifyEncoderHelp registry exprCache cachedExpr
+                    reifyEncoderHelp bodyLookup registry exprCache cachedExpr
 
                 Nothing ->
                     Nothing
@@ -215,12 +275,12 @@ reifyEncoderHelp registry exprCache expr =
 
 {-| Reify a call to a Bytes.Encode.\* function.
 -}
-reifyBytesEncodeCall : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> String -> List Mono.MonoExpr -> Maybe (List EncoderNode)
-reifyBytesEncodeCall registry exprCache name args =
+reifyBytesEncodeCall : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> String -> List Mono.MonoExpr -> Maybe (List EncoderNode)
+reifyBytesEncodeCall bodyLookup registry exprCache name args =
     case ( name, args ) of
         ( "sequence", [ listExpr ] ) ->
             -- sequence : List Encoder -> Encoder
-            reifyEncoderList registry exprCache listExpr
+            reifyEncoderList bodyLookup registry exprCache listExpr
 
         ( "unsignedInt8", [ valueExpr ] ) ->
             Just [ EU8 valueExpr ]
@@ -307,7 +367,7 @@ reifyBytesEncodeCall registry exprCache name args =
 
         -- Constructor name after inlining: Seq(width, list)
         ( "Seq", [ _, listExpr ] ) ->
-            reifyEncoderList registry exprCache listExpr
+            reifyEncoderList bodyLookup registry exprCache listExpr
 
         _ ->
             -- Unknown Bytes.Encode function
@@ -316,8 +376,8 @@ reifyBytesEncodeCall registry exprCache name args =
 
 {-| Reify a kernel call (e.g., from Elm.Kernel.Bytes).
 -}
-reifyBytesKernelCall : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> String -> List Mono.MonoExpr -> Maybe (List EncoderNode)
-reifyBytesKernelCall _ _ name args =
+reifyBytesKernelCall : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> String -> List Mono.MonoExpr -> Maybe (List EncoderNode)
+reifyBytesKernelCall _ _ _ name args =
     -- Kernel functions like write_i8, write_u16, etc.
     case ( name, args ) of
         ( "write_u8", [ valueExpr ] ) ->
@@ -332,20 +392,354 @@ reifyBytesKernelCall _ _ name args =
 
 
 {-| Reify a list of encoders (from sequence argument).
+
+`MonoLet` and `MonoVarLocal` cases let the reifier walk past the
+synthetic `mono_inline_N` temp bindings that `MonoInlineSimplify`
+introduces when it inlines a helper that returns a literal encoder
+list. Without this, `BE.sequence (let mono_inline_42 = [a, b, c] in
+mono_inline_42)` (and the equivalent `BE.sequence mono_inline_42` with
+the let one frame up) silently bails to the kernel path and loses
+fusion. The `exprCache` is the same `Dict String MonoExpr` used by
+`reifyEncoderHelp`, so a `MonoVarLocal` that was bound by an outer
+`MonoLet` resolves transparently.
+
 -}
-reifyEncoderList : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe (List EncoderNode)
-reifyEncoderList registry exprCache listExpr =
+reifyEncoderList : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe (List EncoderNode)
+reifyEncoderList bodyLookup registry exprCache listExpr =
     case listExpr of
         Mono.MonoList _ items _ ->
             -- Literal list of encoders
             items
-                |> List.map (reifyEncoderHelp registry exprCache)
+                |> List.map (reifyEncoderHelp bodyLookup registry exprCache)
                 |> combineResults
                 |> Maybe.map List.concat
+
+        Mono.MonoCall _ funcExpr args _ _ ->
+            -- Try to recognise either elm/core's List.cons or a
+            -- length-prefixed `header :: List.map mapFn xs` shape.
+            case ( reifyListConsCall registry funcExpr args, args ) of
+                ( Just ( headerExpr, tailExpr ), _ ) ->
+                    reifyLengthPrefixedLoop bodyLookup registry exprCache headerExpr tailExpr
+
+                _ ->
+                    Nothing
+
+        -- Walk through let-hoisted scaffolding the monomorphizer inserts
+        -- around `BE.sequence`'s list argument. The binding is added to
+        -- exprCache so a later `MonoVarLocal` reference inside the body
+        -- resolves to the cons/list expression. Mirrors `reifyEncoderHelp`.
+        Mono.MonoLet (Mono.MonoDef name boundExpr) body _ ->
+            reifyEncoderList bodyLookup registry (Dict.insert name boundExpr exprCache) body
+
+        Mono.MonoVarLocal name _ ->
+            case Dict.get name exprCache of
+                Just cachedExpr ->
+                    reifyEncoderList bodyLookup registry exprCache cachedExpr
+
+                Nothing ->
+                    Nothing
 
         _ ->
             -- Dynamic list - can't statically analyze
             Nothing
+
+
+{-| If `funcExpr args` is a call to elm/core's `(::)` / `Elm.Kernel.List.cons`,
+return `Just (headerExpr, tailExpr)`. The cons kernel surface is two-arg:
+head + tail. Polymorphic kernels arrive at MonoCall in two possible forms:
+either as a `MonoVarKernel _ _ "List" "cons" _` direct reference or as a
+specialised `MonoVarGlobal _ specId _` that resolves through the registry
+to the elm/core `List.cons` global. We accept both.
+-}
+reifyListConsCall : Mono.SpecializationRegistry -> Mono.MonoExpr -> List Mono.MonoExpr -> Maybe ( Mono.MonoExpr, Mono.MonoExpr )
+reifyListConsCall registry funcExpr args =
+    case ( funcExpr, args ) of
+        ( Mono.MonoVarKernel _ _ "List" "cons" _, [ headerExpr, tailExpr ] ) ->
+            Just ( headerExpr, tailExpr )
+
+        ( Mono.MonoVarGlobal _ specId _, [ headerExpr, tailExpr ] ) ->
+            case Registry.lookupSpecKey specId registry of
+                Just ( Mono.Global (IO.Canonical pkg "List") "cons", _, _ ) ->
+                    if pkg == Pkg.core then
+                        Just ( headerExpr, tailExpr )
+
+                    else
+                        Nothing
+
+                _ ->
+                    Nothing
+
+        _ ->
+            Nothing
+
+
+{-| If `expr` is a call to elm/core's `List.map mapFn xs`, return
+`Just (mapFn, iterExpr)`.
+-}
+reifyListMapCall : Mono.SpecializationRegistry -> Mono.MonoExpr -> Maybe ( Mono.MonoExpr, Mono.MonoExpr )
+reifyListMapCall registry expr =
+    case expr of
+        Mono.MonoCall _ (Mono.MonoVarGlobal _ specId _) [ mapFn, iterExpr ] _ _ ->
+            case Registry.lookupSpecKey specId registry of
+                Just ( Mono.Global (IO.Canonical pkg "List") "map", _, _ ) ->
+                    if pkg == Pkg.core then
+                        Just ( mapFn, iterExpr )
+
+                    else
+                        Nothing
+
+                _ ->
+                    Nothing
+
+        _ ->
+            Nothing
+
+
+{-| If `expr` is a call to elm/core's `List.length xs`, return `Just xs`.
+-}
+reifyListLengthCall : Mono.SpecializationRegistry -> Mono.MonoExpr -> Maybe Mono.MonoExpr
+reifyListLengthCall registry expr =
+    case expr of
+        Mono.MonoCall _ (Mono.MonoVarGlobal _ specId _) [ iterExpr ] _ _ ->
+            case Registry.lookupSpecKey specId registry of
+                Just ( Mono.Global (IO.Canonical pkg "List") "length", _, _ ) ->
+                    if pkg == Pkg.core then
+                        Just iterExpr
+
+                    else
+                        Nothing
+
+                _ ->
+                    Nothing
+
+        _ ->
+            Nothing
+
+
+{-| Conservative syntactic equality on two iter-expr references — both
+must be the same `MonoVarLocal` name. This is enough for the typical
+`Utils.Bytes.Encode.list`-style helper body where the same `xs` is
+referenced from both the length and the map.
+-}
+sameIterExpr : Mono.MonoExpr -> Mono.MonoExpr -> Bool
+sameIterExpr a b =
+    case ( a, b ) of
+        ( Mono.MonoVarLocal n1 _, Mono.MonoVarLocal n2 _ ) ->
+            n1 == n2
+
+        _ ->
+            False
+
+
+{-| Detect the length-prefixed list-loop encoder shape:
+
+    BE.sequence (header :: List.map mapFn iterExpr)
+
+where `header` is `BE.unsignedInt32 endian (List.length iterExpr)` (or
+the post-inline constructor form `U32 endian (List.length iterExpr)`)
+and `mapFn` is a `MonoClosure` whose body reifies to a fixed-width run
+of EncoderNodes.
+
+Returns `Just [headerNode, ELoop ...]` on full match. Returns `Nothing`
+on any mismatch — the caller falls back to the kernel call.
+-}
+reifyLengthPrefixedLoop : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe (List EncoderNode)
+reifyLengthPrefixedLoop bodyLookup registry exprCache headerExpr tailExpr =
+    case reifyListMapCall registry tailExpr of
+        Nothing ->
+            Nothing
+
+        Just ( mapFn, iterExpr ) ->
+            case matchLengthPrefixHeader registry headerExpr iterExpr of
+                Nothing ->
+                    Nothing
+
+                Just ( headerNode, countExpr ) ->
+                    case reifyMapBody bodyLookup registry exprCache mapFn iterExpr countExpr of
+                        Nothing ->
+                            Nothing
+
+                        Just loopNode ->
+                            Just [ headerNode, loopNode ]
+
+
+{-| The header of a length-prefixed encoder list must be
+`BE.unsignedInt32 endian (List.length iterExpr)` — equivalently the
+post-inline `U32 endian (List.length iterExpr)` constructor form.
+Returns `Just (headerNode, lengthCallExpr)` where `headerNode` is the
+EncoderNode for the U32 write and `lengthCallExpr` is the original
+`List.length iterExpr` MonoExpr (reused as the loop count for the
+pre-allocation, sparing a second list walk).
+-}
+matchLengthPrefixHeader : Mono.SpecializationRegistry -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe ( EncoderNode, Mono.MonoExpr )
+matchLengthPrefixHeader registry headerExpr iterExpr =
+    case headerExpr of
+        Mono.MonoCall _ (Mono.MonoVarGlobal _ specId _) [ endianExpr, lengthCall ] _ _ ->
+            case Registry.lookupSpecKey specId registry of
+                Just ( Mono.Global (IO.Canonical pkg "Bytes.Encode") name, _, _ ) ->
+                    if pkg == Pkg.bytes && (name == "unsignedInt32" || name == "U32") then
+                        case ( reifyEndianness registry endianExpr, reifyListLengthCall registry lengthCall ) of
+                            ( Just endian, Just lengthIterExpr ) ->
+                                if sameIterExpr lengthIterExpr iterExpr then
+                                    Just ( EU32 endian lengthCall, lengthCall )
+
+                                else
+                                    Nothing
+
+                            _ ->
+                                Nothing
+
+                    else
+                        Nothing
+
+                _ ->
+                    Nothing
+
+        _ ->
+            Nothing
+
+
+{-| Apply `mapFn` to a fresh per-iteration item and reify the body.
+
+Two shapes are accepted:
+
+  - `MonoClosure` — the inline-lambda case. The lambda's parameter
+    name becomes the `itemVar`, and the body is reified directly (it
+    already references that name as `MonoVarLocal`, which the emit
+    module binds to the per-iteration SSA head).
+
+  - `MonoVarGlobal` — the named-helper case. Closure conversion turns
+    inline lambdas into top-level functions, and the typical Eco
+    pattern (`Utils.Bytes.Encode.list Utils.Bytes.Encode.string xs`)
+    references helpers by name from the start. We look the spec up in
+    the inliner's `bodyLookup` (which only contains non-recursive,
+    `getInlinableBody`-eligible specs) and reify the body using its
+    own parameter name as the `itemVar`. The emit module binds that
+    name to the per-iteration SSA head the same way it would for a
+    lambda parameter.
+
+Other shapes (function parameters at the map call site, MonoVarKernel,
+recursive globals not in `bodyLookup`, etc.) return `Nothing` to fall
+back to the kernel call.
+
+The reified body must have a constant total byte width: every node's
+output is a fixed-size primitive. Variable-width bodies (ELoop within
+ELoop, EUtf8 of a per-iteration string, EBytes of per-iteration bytes)
+are rejected because the pre-allocation would need a per-iteration
+size walk.
+
+-}
+reifyMapBody : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe EncoderNode
+reifyMapBody bodyLookup registry exprCache mapFn iterExpr countExpr =
+    case mapFn of
+        Mono.MonoClosure info body _ ->
+            case info.params of
+                [ ( paramName, _ ) ] ->
+                    buildLoopNode bodyLookup registry exprCache paramName body iterExpr countExpr
+
+                _ ->
+                    Nothing
+
+        Mono.MonoVarGlobal _ specId _ ->
+            case Dict.get specId bodyLookup of
+                Just ( [ ( paramName, _ ) ], body ) ->
+                    buildLoopNode bodyLookup registry exprCache paramName body iterExpr countExpr
+
+                _ ->
+                    -- Not an arity-1 inlinable spec (recursive, kernel,
+                    -- multi-arg, MonoCase body, etc.). Bail.
+                    Nothing
+
+        _ ->
+            Nothing
+
+
+{-| Shared body-reification step for both `reifyMapBody` arms.
+-}
+buildLoopNode : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> String -> Mono.MonoExpr -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe EncoderNode
+buildLoopNode bodyLookup registry exprCache paramName body iterExpr countExpr =
+    case reifyEncoderHelp bodyLookup registry exprCache body of
+        Just bodyNodes ->
+            if List.all hasConstantWidth bodyNodes then
+                Just
+                    (ELoop
+                        { itemVar = paramName
+                        , itemNodes = bodyNodes
+                        , iterExpr = iterExpr
+                        , countExpr = countExpr
+                        }
+                    )
+
+            else
+                Nothing
+
+        Nothing ->
+            Nothing
+
+
+{-| An EncoderNode has a constant compile-time byte width iff it is a
+primitive write (EU8/EU16/EU32/EF32/EF64) or a nested ELoop whose body
+also has constant width — but for the first-pass implementation we only
+allow primitives in loop bodies (so EBytes/EUtf8/ELoop inside ELoop
+return False).
+-}
+hasConstantWidth : EncoderNode -> Bool
+hasConstantWidth node =
+    case node of
+        EU8 _ ->
+            True
+
+        EU16 _ _ ->
+            True
+
+        EU32 _ _ ->
+            True
+
+        EF32 _ _ ->
+            True
+
+        EF64 _ _ ->
+            True
+
+        EBytes _ ->
+            False
+
+        EUtf8 _ ->
+            False
+
+        ELoop _ ->
+            False
+
+
+{-| Compute the constant byte width of a node that has one. Only valid
+to call on nodes for which `hasConstantWidth` returns True.
+-}
+constantNodeWidth : EncoderNode -> Int
+constantNodeWidth node =
+    case node of
+        EU8 _ ->
+            1
+
+        EU16 _ _ ->
+            2
+
+        EU32 _ _ ->
+            4
+
+        EF32 _ _ ->
+            4
+
+        EF64 _ _ ->
+            8
+
+        EBytes _ ->
+            0
+
+        EUtf8 _ ->
+            0
+
+        ELoop _ ->
+            0
 
 
 {-| Reify an endianness expression (BE or LE).
@@ -435,6 +829,20 @@ nodeToOp cursorName node =
         EUtf8 expr ->
             WriteUtf8 cursorName expr
 
+        ELoop r ->
+            WriteEachItem
+                { cursorName = cursorName
+                , itemVar = r.itemVar
+                , bodyOps = List.map (nodeToOp cursorName) r.itemNodes
+                , iterExpr = r.iterExpr
+                , itemByteWidth = sumConstWidths r.itemNodes
+                }
+
+
+sumConstWidths : List EncoderNode -> Int
+sumConstWidths nodes =
+    List.foldl (\n acc -> acc + constantNodeWidth n) 0 nodes
+
 
 {-| Compute the total width from encoder nodes.
 -}
@@ -467,6 +875,12 @@ addNodeWidth node acc =
 
         EUtf8 stringExpr ->
             WAdd acc (WStringUtf8Width stringExpr)
+
+        ELoop r ->
+            -- Pre-allocate count*constItemWidth bytes for the loop body.
+            -- countExpr was extracted from the header's List.length call so
+            -- it's evaluated once, not re-walked at emit time.
+            WAdd acc (WListLengthMul r.countExpr (sumConstWidths r.itemNodes))
 
 
 {-| Combine a list of Maybe values into Maybe of list.
