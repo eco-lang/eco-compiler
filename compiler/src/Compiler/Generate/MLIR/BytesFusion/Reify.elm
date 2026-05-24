@@ -85,6 +85,14 @@ type EncoderNode
         , iterExpr : Mono.MonoExpr
         , countExpr : Mono.MonoExpr
         }
+      -- Escape hatch: an encoder subtree the reifier doesn't recognise.
+      -- Lowers to bf.write.encoder (runtime call to the existing
+      -- writeEncoder walker against the current cursor). Width comes
+      -- from bf.encoder.width (runtime call to encoderSize). Allows
+      -- partial fusion of expressions that contain unfusable subtrees
+      -- (e.g. HO mapFn passes a function-typed parameter that Phase 5
+      -- can't statically resolve).
+    | EOpaque Mono.MonoExpr
 
 
 {-| Normalized decoder node.
@@ -152,7 +160,7 @@ named global rather than an inline lambda.
 -}
 reifyEncoder : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe (List EncoderNode)
 reifyEncoder registry exprCache expr =
-    reifyEncoderHelp Dict.empty registry exprCache expr
+    reifyEncoderWith Dict.empty registry exprCache expr
 
 
 {-| Like `reifyEncoder` but with the inliner's body-lookup table.
@@ -170,13 +178,52 @@ the reifier falls back to the kernel call.
 -}
 reifyEncoderWith : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe (List EncoderNode)
 reifyEncoderWith bodyLookup registry exprCache expr =
-    reifyEncoderHelp bodyLookup registry exprCache expr
+    case reifyEncoderHelp bodyLookup registry exprCache expr of
+        -- All-opaque short-circuit: the only reified node is the whole
+        -- encoder treated as one EOpaque. Wrapping a single kernel-call
+        -- in bf.alloc + bf.write.encoder + ReturnBuffer is strictly
+        -- more expensive than calling the kernel directly. Return
+        -- Nothing so the caller's existing kernel-call fallback fires.
+        Just [ EOpaque _ ] ->
+            Nothing
+
+        result ->
+            -- Per-call (fused, opaque) diagnostics: see
+            -- plans/bytes-fusion-escape-hatch.md step 6. To enable, drop
+            -- a `Debug.log "BFReify (fused, opaque)" (countNodes result)`
+            -- in here for a one-off bootstrap run, then strip before
+            -- merging (the `--optimize` bootstrap step rejects any
+            -- `Debug.*` reference in compiler-side Elm).
+            result
 
 
-{-| Internal helper that returns nested structure.
+{-| Internal helper that returns nested structure. Always returns Just
+(never Nothing) — unrecognised shapes are wrapped as `EOpaque expr` by
+the wrapper around `reifyEncoderHelpStrict`. The wrapper is what makes
+partial fusion possible: a subtree that fails reification becomes a
+single `EOpaque` leaf instead of poisoning the whole expression.
 -}
 reifyEncoderHelp : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe (List EncoderNode)
 reifyEncoderHelp bodyLookup registry exprCache expr =
+    case reifyEncoderHelpStrict bodyLookup registry exprCache expr of
+        Just result ->
+            Just result
+
+        Nothing ->
+            -- Escape hatch: subtree the reifier doesn't statically
+            -- recognise. The runtime walker (writeEncoder) handles it
+            -- via the bf.write.encoder lowering. The current cursor
+            -- threads through; the outer fused encoder still gets a
+            -- single bf.alloc + cursor.init + writes + ReturnBuffer
+            -- sequence.
+            Just [ EOpaque expr ]
+
+
+{-| Strict reification helper. Returns `Nothing` on unrecognised shapes
+so the wrapper `reifyEncoderHelp` can convert them to `EOpaque`.
+-}
+reifyEncoderHelpStrict : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe (List EncoderNode)
+reifyEncoderHelpStrict bodyLookup registry exprCache expr =
     case expr of
         -- Call to a Bytes.Encode function
         Mono.MonoCall _ func args _ _ ->
@@ -710,6 +757,12 @@ hasConstantWidth node =
         ELoop _ ->
             False
 
+        EOpaque _ ->
+            -- Width is runtime-computed via elm_encoder_size; not a
+            -- constant. Loop bodies that hold an opaque subtree can't
+            -- be ELoop-fused (would need per-iteration width walks).
+            False
+
 
 {-| Compute the constant byte width of a node that has one. Only valid
 to call on nodes for which `hasConstantWidth` returns True.
@@ -739,6 +792,9 @@ constantNodeWidth node =
             0
 
         ELoop _ ->
+            0
+
+        EOpaque _ ->
             0
 
 
@@ -838,6 +894,9 @@ nodeToOp cursorName node =
                 , itemByteWidth = sumConstWidths r.itemNodes
                 }
 
+        EOpaque expr ->
+            WriteOpaque cursorName expr
+
 
 sumConstWidths : List EncoderNode -> Int
 sumConstWidths nodes =
@@ -881,6 +940,12 @@ addNodeWidth node acc =
             -- countExpr was extracted from the header's List.length call so
             -- it's evaluated once, not re-walked at emit time.
             WAdd acc (WListLengthMul r.countExpr (sumConstWidths r.itemNodes))
+
+        EOpaque expr ->
+            -- Runtime walk via elm_encoder_size. Same tree gets walked
+            -- again by elm_encoder_write_into at write time — that's the
+            -- same two-pass cost the kernel pays today.
+            WAdd acc (WOpaqueWidth expr)
 
 
 {-| Combine a list of Maybe values into Maybe of list.

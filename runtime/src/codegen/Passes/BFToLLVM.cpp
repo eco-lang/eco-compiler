@@ -81,6 +81,8 @@ struct BFRuntimeFuncs {
     LLVM::LLVMFuncOp utf8Width;
     LLVM::LLVMFuncOp utf8Copy;
     LLVM::LLVMFuncOp utf8Decode;
+    LLVM::LLVMFuncOp encoderSize;
+    LLVM::LLVMFuncOp encoderWriteInto;
 };
 
 /// Ensure runtime functions are declared in the module, then cache them.
@@ -117,6 +119,10 @@ static BFRuntimeFuncs ensureRuntimeFunctions(ModuleOp module, OpBuilder &builder
     funcs.utf8Width = declareFunc("elm_utf8_width", i32, {hptr});
     funcs.utf8Copy = declareFunc("elm_utf8_copy", i32, {hptr, i8Ptr});
     funcs.utf8Decode = declareFunc("elm_utf8_decode", hptr, {i8Ptr, i32});
+
+    // Encoder-tree operations (bytes-fusion escape hatch)
+    funcs.encoderSize = declareFunc("elm_encoder_size", i32, {hptr});
+    funcs.encoderWriteInto = declareFunc("elm_encoder_write_into", i32, {hptr, i8Ptr});
 
     // Maybe operations
     declareFunc("elm_maybe_nothing", hptr, {});
@@ -507,6 +513,56 @@ struct BytesWidthOpLowering : public OpConversionPattern<bf::BytesWidthOp> {
         auto result = rewriter.create<LLVM::CallOp>(
             loc, rt.bytebufferLen, ValueRange{adaptor.getBuffer()});
         rewriter.replaceOp(op, result.getResult());
+        return success();
+    }
+};
+
+/// Lower bf.encoder.width to call @elm_encoder_size — the escape-hatch
+/// width walker used when the reifier couldn't statically compute an
+/// encoder subtree's byte width.
+struct EncoderWidthOpLowering : public OpConversionPattern<bf::EncoderWidthOp> {
+    const BFRuntimeFuncs &rt;
+    EncoderWidthOpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
+        : OpConversionPattern(tc, ctx), rt(rt) {}
+
+    LogicalResult
+    matchAndRewrite(EncoderWidthOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+
+        auto result = rewriter.create<LLVM::CallOp>(
+            loc, rt.encoderSize, ValueRange{adaptor.getEncoder()});
+        rewriter.replaceOp(op, result.getResult());
+        return success();
+    }
+};
+
+/// Lower bf.write.encoder to call @elm_encoder_write_into and cursor
+/// advance. Mirrors WriteUtf8OpLowering: call the runtime walker
+/// against the cursor's current pointer, then advance by bytes-written.
+struct WriteEncoderOpLowering : public OpConversionPattern<bf::WriteEncoderOp> {
+    const BFRuntimeFuncs &rt;
+    WriteEncoderOpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
+        : OpConversionPattern(tc, ctx), rt(rt) {}
+
+    LogicalResult
+    matchAndRewrite(WriteEncoderOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        Type cursorType = getTypeConverter()->convertType(op.getType());
+
+        Value ptr = extractPtr(rewriter, loc, adaptor.getCursor());
+
+        // Call elm_encoder_write_into(encoder, ptr) -> bytesWritten
+        auto writeCall = rewriter.create<LLVM::CallOp>(
+            loc, rt.encoderWriteInto, ValueRange{adaptor.getEncoder(), ptr});
+        Value bytesWritten = writeCall.getResult();
+
+        // Advance cursor by bytesWritten
+        Value newCursor = advanceCursor(rewriter, loc, adaptor.getCursor(),
+                                        bytesWritten, cursorType);
+
+        rewriter.replaceOp(op, newCursor);
         return success();
     }
 };
@@ -1053,6 +1109,8 @@ struct BFToLLVMPass : public PassWrapper<BFToLLVMPass, OperationPass<ModuleOp>> 
         patterns.add<WriteUtf8OpLowering>(typeConverter, ctx, rtFuncs);
         patterns.add<Utf8WidthOpLowering>(typeConverter, ctx, rtFuncs);
         patterns.add<BytesWidthOpLowering>(typeConverter, ctx, rtFuncs);
+        patterns.add<EncoderWidthOpLowering>(typeConverter, ctx, rtFuncs);
+        patterns.add<WriteEncoderOpLowering>(typeConverter, ctx, rtFuncs);
         patterns.add<ReadBytesOpLowering>(typeConverter, ctx, rtFuncs);
         patterns.add<ReadUtf8OpLowering>(typeConverter, ctx, rtFuncs);
 

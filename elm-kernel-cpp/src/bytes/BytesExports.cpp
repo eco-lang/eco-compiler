@@ -350,6 +350,33 @@ int64_t Elm_Kernel_Bytes_getStringWidth(HPtr str) {
     return utf8_bytes;
 }
 
+// Extern wrappers for the bytes-fusion "escape hatch" (bf.encoder.width
+// and bf.write.encoder MLIR ops). Both lower to direct C calls — no
+// allocation, no GC pressure. The encoder argument is an `eco.value`
+// (HPtr) that the wrapper resolves before delegating to the existing
+// encoderSize / writeEncoder walkers.
+//
+// Width is returned as u32 to match the rest of the BF dialect's
+// 32-bit-width convention (bf.bytes_width, bf.utf8_width). Encoders
+// that would produce >4 GiB output are not supported anywhere in the
+// pipeline; static_cast narrowing is safe in practice.
+
+extern "C" u32 elm_encoder_size(HPtr encoderVal) {
+    auto& allocator = Allocator::instance();
+    HPointer h = Export::decode(encoderVal.toBits());
+    Custom* enc = static_cast<Custom*>(allocator.resolve(h));
+    return static_cast<u32>(encoderSize(enc));
+}
+
+extern "C" u32 elm_encoder_write_into(HPtr encoderVal, u8* dst) {
+    auto& allocator = Allocator::instance();
+    HPointer h = Export::decode(encoderVal.toBits());
+    Custom* enc = static_cast<Custom*>(allocator.resolve(h));
+    size_t offset = 0;
+    writeEncoder(enc, dst, offset);
+    return static_cast<u32>(offset);
+}
+
 HPtr Elm_Kernel_Bytes_encode(HPtr encoderVal) {
     auto& allocator = Allocator::instance();
     HPointer h = Export::decode(encoderVal.toBits());

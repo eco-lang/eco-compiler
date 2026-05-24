@@ -44,6 +44,7 @@ type WidthExpr
     | WStringUtf8Width Mono.MonoExpr -- Runtime: elm_utf8_width
     | WBytesWidth Mono.MonoExpr -- Runtime: elm_bytebuffer_len
     | WListLengthMul Mono.MonoExpr Int -- count expr (i64) * constant byte width
+    | WOpaqueWidth Mono.MonoExpr -- Runtime: elm_encoder_size (unrecognised subtree)
 
 
 {-| Loop IR operations for encoding.
@@ -72,6 +73,11 @@ type Op
         , iterExpr : Mono.MonoExpr
         , itemByteWidth : Int
         }
+      -- Escape hatch: write an unrecognised encoder subtree by delegating
+      -- to the runtime walker. Lowers to bf.write.encoder, which calls
+      -- elm_encoder_write_into(encoder, cursor.ptr) and advances the
+      -- cursor by bytes-written. Width is pre-summed via WOpaqueWidth.
+    | WriteOpaque String Mono.MonoExpr -- cursorName, encoder-tree expr
     | ReturnBuffer -- Return the allocated buffer
 
 

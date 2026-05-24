@@ -94,6 +94,38 @@ u32 elm_utf8_copy(HPtr elmString, u8* dst);
 HPtr elm_utf8_decode(const u8* src, u32 len);
 
 // ============================================================================
+// Encoder-tree operations (bytes-fusion escape hatch)
+// ============================================================================
+
+/**
+ * Compute the total byte width of a Bytes.Encode.Encoder tree.
+ * Takes eco.value (u64) representing a runtime Encoder Custom.
+ *
+ * Used by the bf.encoder.width MLIR op to size the destination buffer
+ * when the compile-time reifier couldn't recognise an encoder subtree.
+ *
+ * GC-safe: no allocation. The tree is walked once via cached widths
+ * in Seq/Utf8 leaves and primitive sizes elsewhere.
+ */
+u32 elm_encoder_size(HPtr encoder);
+
+/**
+ * Write a Bytes.Encode.Encoder tree's bytes into dst.
+ * Takes eco.value (u64) representing a runtime Encoder Custom and a
+ * destination pointer. Returns the number of bytes written (matches
+ * elm_encoder_size for any encoder tree).
+ *
+ * Used by the bf.write.encoder MLIR op to delegate unfusable encoder
+ * subtrees to the existing runtime walker.
+ *
+ * SAFETY: dst must have at least elm_encoder_size(encoder) bytes.
+ * GC-safe: no Eco-heap allocation. The walker uses Allocator::resolve
+ * for HPointer traversal; the destination is a raw pointer into a
+ * caller-owned buffer that the walker never re-roots.
+ */
+u32 elm_encoder_write_into(HPtr encoder, u8* dst);
+
+// ============================================================================
 // Maybe operations (heap values are u64)
 // ============================================================================
 

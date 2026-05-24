@@ -107,6 +107,9 @@ emitOp op state =
         WriteEachItem r ->
             emitWriteEachItem r state
 
+        WriteOpaque _ encoderExpr ->
+            emitWriteOpaque encoderExpr state
+
         ReturnBuffer ->
             -- Buffer is already stored in state.bufferVar
             state
@@ -243,6 +246,28 @@ emitWidthExpr compileExpr expr ctx =
                         |> Ops.opBuilder.build
             in
             ( bytesResult.ops ++ [ widthOp ], resultVar, ctx3 )
+
+        WOpaqueWidth encoderExpr ->
+            -- Escape-hatch width: runtime call to elm_encoder_size via
+            -- bf.encoder.width on an opaque encoder subtree.
+            let
+                exprResult =
+                    compileExpr encoderExpr ctx
+
+                ( resultVar, ctx2 ) =
+                    Context.freshVar exprResult.ctx
+
+                widthAttrs =
+                    Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr exprResult.resultType ])
+
+                ( ctx3, widthOp ) =
+                    Ops.mlirOp ctx2 "bf.encoder.width"
+                        |> Ops.opBuilder.withOperands [ exprResult.resultVar ]
+                        |> Ops.opBuilder.withResults [ ( resultVar, I32 ) ]
+                        |> Ops.opBuilder.withAttrs widthAttrs
+                        |> Ops.opBuilder.build
+            in
+            ( exprResult.ops ++ [ widthOp ], resultVar, ctx3 )
 
         WListLengthMul countExpr constWidth ->
             -- Compile countExpr (typically a List.length call, which
@@ -527,6 +552,37 @@ emitWriteBytes bytesExpr state =
 
         ( ctx3, writeOp ) =
             Ops.mlirOp ctx2 "bf.write.bytes"
+                |> Ops.opBuilder.withOperands [ state.cursor, exprResult.resultVar ]
+                |> Ops.opBuilder.withResults [ ( newCursor, bfCursorType ) ]
+                |> Ops.opBuilder.withAttrs writeAttrs
+                |> Ops.opBuilder.build
+    in
+    { state
+        | ctx = ctx3
+        , cursor = newCursor
+        , ops = writeOp :: (List.reverse exprResult.ops ++ state.ops)
+    }
+
+
+{-| Emit bf.write.encoder operation — the escape hatch for encoder
+subtrees the reifier didn't recognise. Delegates to the runtime
+walker via elm_encoder_write_into; cursor advances by bytes-written.
+-}
+emitWriteOpaque : Mono.MonoExpr -> EmitState -> EmitState
+emitWriteOpaque encoderExpr state =
+    let
+        exprResult =
+            state.compileExpr encoderExpr state.ctx
+
+        ( newCursor, ctx2 ) =
+            Context.freshVar exprResult.ctx
+
+        writeAttrs =
+            Dict.singleton "_operand_types"
+                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr exprResult.resultType ])
+
+        ( ctx3, writeOp ) =
+            Ops.mlirOp ctx2 "bf.write.encoder"
                 |> Ops.opBuilder.withOperands [ state.cursor, exprResult.resultVar ]
                 |> Ops.opBuilder.withResults [ ( newCursor, bfCursorType ) ]
                 |> Ops.opBuilder.withAttrs writeAttrs

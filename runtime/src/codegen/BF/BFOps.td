@@ -276,6 +276,53 @@ def BF_BytesWidthOp : BF_Op<"bytes_width", [MemoryEffects<[MemRead]>]> {
   let assemblyFormat = "$buffer attr-dict `:` type($buffer) `->` type($width)";
 }
 
+def BF_EncoderWidthOp : BF_Op<"encoder.width", [MemoryEffects<[MemRead]>]> {
+  let summary = "Compute byte width of a Bytes.Encode.Encoder tree";
+  let description = [{
+    Returns the total number of bytes the encoder tree would write when
+    encoded. The argument is an eco.value (i64) representing a runtime
+    Encoder Custom (any of the I8/I16/I32/U8/U16/U32/F32/F64/Seq/Utf8/Bytes
+    constructors).
+
+    This is the escape-hatch counterpart to bf.bytes_width — used when
+    the compile-time reifier couldn't recognise an encoder subtree
+    (e.g. higher-order map functions with function-typed parameters)
+    and routes width computation back to the runtime walker.
+
+    Calls elm_encoder_size(encoder) internally, which walks the tree
+    once (sub-linear per-leaf because Seq/Utf8 widths are pre-cached
+    in the encoder Custom layout).
+  }];
+
+  let arguments = (ins AnyType:$encoder);
+  let results = (outs I32:$width);
+
+  let assemblyFormat = "$encoder attr-dict `:` type($encoder) `->` type($width)";
+}
+
+def BF_WriteEncoderOp : BF_Op<"write.encoder", [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Write a Bytes.Encode.Encoder tree via the runtime walker";
+  let description = [{
+    Escape hatch for encoder subtrees the bytes-fusion reifier did not
+    statically recognise. Delegates to the existing C++ writeEncoder
+    walker, which writes the encoder's bytes starting at the cursor's
+    current position. Returns a new cursor advanced by bytes-written.
+
+    The encoder argument is an eco.value (i64) representing a runtime
+    Encoder Custom. The runtime walker is GC-leaf (no Eco-heap
+    allocation), so the cursor's underlying ByteBuffer is not relocated
+    during the call.
+
+    This calls elm_encoder_write_into(encoder, cursor.ptr) internally,
+    which returns the number of bytes written.
+  }];
+
+  let arguments = (ins BF_Cursor:$cursor, AnyType:$encoder);
+  let results = (outs BF_Cursor:$result);
+
+  let assemblyFormat = "$cursor `,` $encoder attr-dict `:` `(` type($encoder) `)` `->` type($result)";
+}
+
 //===----------------------------------------------------------------------===//
 // Read Operations (Decoder) - Phase 2
 //===----------------------------------------------------------------------===//

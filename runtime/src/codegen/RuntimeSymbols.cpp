@@ -512,6 +512,16 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
                 llvm::orc::ExecutorAddr::fromPtr(&elm_utf8_decode),
                 llvm::JITSymbolFlags::Exported);
 
+        // Encoder-tree operations (bytes-fusion escape hatch)
+        symbolMap[interner("elm_encoder_size")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&elm_encoder_size),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("elm_encoder_write_into")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&elm_encoder_write_into),
+                llvm::JITSymbolFlags::Exported);
+
         // Maybe operations for decoder results
         symbolMap[interner("elm_maybe_nothing")] =
             llvm::orc::ExecutorSymbolDef(
