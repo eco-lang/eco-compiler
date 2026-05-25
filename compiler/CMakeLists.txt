@@ -12,9 +12,15 @@ endif()
 # elm-format, elm-test-rs) is fetched by cmake/toolchain.cmake — see below.
 find_program(NODE_EXECUTABLE node REQUIRED)
 find_program(PNPM_EXECUTABLE pnpm REQUIRED)
+find_program(PYTHON3_EXECUTABLE python3 REQUIRED)
+# GNU /usr/bin/time wraps Stages 5 and 7a so the front-end MLIR-emit timings
+# (wall, CPU, RSS, page faults, ctx switches) can be summarized in a table.
+find_program(GNU_TIME_EXECUTABLE NAMES time PATHS /usr/bin NO_DEFAULT_PATH REQUIRED)
 
 message(STATUS "Found Node.js: ${NODE_EXECUTABLE}")
 message(STATUS "Found pnpm:    ${PNPM_EXECUTABLE}")
+message(STATUS "Found python3: ${PYTHON3_EXECUTABLE}")
+message(STATUS "Found GNU time: ${GNU_TIME_EXECUTABLE}")
 
 # Paths
 set(COMPILER_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -252,18 +258,25 @@ add_custom_target(eco-boot-verify DEPENDS ${ECO_BOOT_VERIFY_STAMP})
 # monomorphization (e.g. `Union not found: SCC`). Stages 2–4 don't write or
 # invalidate .ecot files, so any pre-existing .ecot under build-kernel/eco-stuff
 # must be wiped before running this stage.
+#
+# Front-end MLIR emit is wrapped in /usr/bin/time -v so wall/CPU/RSS stats land
+# in STAGE5_TIME_LOG; print-mlir-timings.py summarizes them in a table at the
+# end of `mlir-timing-report` / `bootstrap`.
 set(ECO_COMPILER_MLIR "${BUILD_KERNEL_DIR}/bin/eco-compiler.mlir")
+set(STAGE5_TIME_LOG   "${BUILD_KERNEL_DIR}/timing-stage5.txt")
 
 add_custom_command(
     OUTPUT ${ECO_COMPILER_MLIR}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${BUILD_KERNEL_DIR}/eco-stuff
     COMMAND find ${BUILD_KERNEL_DIR}/eco-stuff -name *.ecot -delete
-    COMMAND ${NODE_EXECUTABLE} --stack-size=65536 bin/eco-boot-2-runner.js make
+    COMMAND ${GNU_TIME_EXECUTABLE} -v -o ${STAGE5_TIME_LOG}
+        ${NODE_EXECUTABLE} --stack-size=65536 bin/eco-boot-2-runner.js make
         --optimize
         --kernel-package eco/compiler
         --local-package eco/kernel=${COMPILER_DIR}/../eco-kernel-cpp
         --output=bin/eco-compiler.mlir
         ${ELM_ENTRY}
+    BYPRODUCTS ${STAGE5_TIME_LOG}
     # Ordering edge: Stage 5 must wait for Stage 4b's JS fixed-point diff so
     # the bootstrap chain runs in the order documented in guides/bootstrap.md.
     # Without this, Ninja is free to start Stage 5 the moment Stage 3's
@@ -272,7 +285,7 @@ add_custom_command(
         ${ECO_BOOT_VERIFY_STAMP}
         ${ELM_SOURCES} ${KERNEL_SOURCES}
     WORKING_DIRECTORY ${BUILD_KERNEL_DIR}
-    COMMENT "Stage 5: eco-boot-2.js → eco-compiler.mlir"
+    COMMENT "Stage 5: eco-boot-2.js → eco-compiler.mlir (timed)"
 )
 
 add_custom_target(eco-compiler-mlir DEPENDS ${ECO_COMPILER_MLIR})
@@ -293,19 +306,23 @@ add_custom_command(
 add_custom_target(eco-compiler DEPENDS ${ECO_COMPILER_ELF})
 
 # -- Stage 7a: eco-compiler self-compiles → eco-compiler-boot.mlir
+# Front-end MLIR emit wrapped in /usr/bin/time -v, paralleling Stage 5.
 set(ECO_COMPILER_BOOT_MLIR "${BUILD_KERNEL_DIR}/bin/eco-compiler-boot.mlir")
+set(STAGE7A_TIME_LOG       "${BUILD_KERNEL_DIR}/timing-stage7a.txt")
 
 add_custom_command(
     OUTPUT ${ECO_COMPILER_BOOT_MLIR}
-    COMMAND ${ECO_COMPILER_ELF} make
+    COMMAND ${GNU_TIME_EXECUTABLE} -v -o ${STAGE7A_TIME_LOG}
+        ${ECO_COMPILER_ELF} make
         --optimize
         --kernel-package eco/compiler
         --local-package eco/kernel=${COMPILER_DIR}/../eco-kernel-cpp
         --output=bin/eco-compiler-boot.mlir
         ${ELM_ENTRY}
+    BYPRODUCTS ${STAGE7A_TIME_LOG}
     DEPENDS ${ECO_COMPILER_ELF} ${ELM_SOURCES} ${KERNEL_SOURCES}
     WORKING_DIRECTORY ${BUILD_KERNEL_DIR}
-    COMMENT "Stage 7a: eco-compiler → eco-compiler-boot.mlir"
+    COMMENT "Stage 7a: eco-compiler → eco-compiler-boot.mlir (timed)"
 )
 
 # -- Stage 7b: eco-compiler-boot.mlir → eco-compiler-boot (native ELF)
@@ -505,12 +522,42 @@ add_custom_command(
 
 add_custom_target(eco-verify DEPENDS ${ECO_STAGE9_VERIFY_STAMP})
 
+# ============================================================================
+# MLIR front-end compile-timing report
+#
+# Stages 5 and 7a each leave a `/usr/bin/time -v` log behind (STAGE5_TIME_LOG,
+# STAGE7A_TIME_LOG). print-mlir-timings.py reads those logs plus the resulting
+# .mlir outputs and prints a side-by-side comparison table.
+# ============================================================================
+set(MLIR_TIMING_SCRIPT "${COMPILER_DIR}/cmake/print-mlir-timings.py")
+
+# Standalone target — prints whatever timing data is currently on disk. Safe
+# to invoke before either stage has run; missing data renders as '-'. Useful
+# after partial builds (e.g. `--target eco-compiler-mlir`) to see Stage 5 in
+# isolation.
+add_custom_target(mlir-timing-report
+    COMMAND ${PYTHON3_EXECUTABLE} ${MLIR_TIMING_SCRIPT}
+        ${STAGE5_TIME_LOG}
+        ${STAGE7A_TIME_LOG}
+        ${ECO_COMPILER_MLIR}
+        ${ECO_COMPILER_BOOT_MLIR}
+    COMMENT "MLIR front-end compile-timing report"
+    VERBATIM
+)
+
 # Aggregate: run the full bootstrap chain with all three fixed-point checks
-# (Stage 4b JS, Stage 8c native intermediate, Stage 9c unified-eco).
+# (Stage 4b JS, Stage 8c native intermediate, Stage 9c unified-eco), then
+# print the front-end MLIR-emit timing table as the final step.
 add_custom_target(bootstrap
+    COMMAND ${PYTHON3_EXECUTABLE} ${MLIR_TIMING_SCRIPT}
+        ${STAGE5_TIME_LOG}
+        ${STAGE7A_TIME_LOG}
+        ${ECO_COMPILER_MLIR}
+        ${ECO_COMPILER_BOOT_MLIR}
     DEPENDS ${ECO_BOOT_VERIFY_STAMP}
         ${BOOTSTRAP_STAMP}
         ${ECO_STAGE9_VERIFY_STAMP}
+    VERBATIM
 )
 
 # Bootstrap outputs (${BUILD_XHR_DIR}/bin/, ${BUILD_KERNEL_DIR}/bin/,
