@@ -1930,6 +1930,8 @@ type Make
     | MakeNonMainFilesIntoJavaScript ModuleName.Raw (List ModuleName.Raw)
     | MakeCannotBuild BuildProblem
     | MakeBadGenerate Generate
+    | MakeConfigNotFound FilePath
+    | MakeBadConfig FilePath (Decode.Error Never)
 
 
 {-| Converts a make error to a user-friendly report.
@@ -2169,6 +2171,18 @@ makeToReport make =
 
         MakeBadGenerate generateProblem ->
             toGenerateReport generateProblem
+
+        MakeConfigNotFound path ->
+            Help.report "MISSING CONFIG FILE"
+                Nothing
+                "You passed --config, but I cannot find a configuration file at:"
+                [ D.fromChars path |> D.red |> D.indent 4
+                , "Is the path correct? Is the file missing?" |> D.reflow
+                ]
+
+        MakeBadConfig path err ->
+            Json.ExplicitReason ("I ran into a problem with your " ++ path ++ " file.")
+                |> Json.toReport path (Json.FailureToReport (\_ _ _ _ -> never)) err
 
 
 

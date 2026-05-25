@@ -2409,7 +2409,14 @@ tryEncoderFusionWithBindings ctx accumulated encoderExpr =
                         ctx.decoderExprs
                         accumulated
             in
-            case BFReify.reifyEncoderWith ctx.inlineBodies ctx.registry localCache encoderExpr of
+            case
+                (if ctx.ecoConfig.bytesFusion.enabled then
+                    BFReify.reifyEncoderWith ctx.inlineBodies ctx.registry localCache encoderExpr
+
+                 else
+                    Nothing
+                )
+            of
                 Just nodes ->
                     let
                         loopOps =
@@ -2606,7 +2613,14 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
             case maybeBytesEncodeArg of
                 Just encoderExpr ->
                     -- Attempt to fuse the encoder
-                    case BFReify.reifyEncoderWith ctx.inlineBodies ctx.registry ctx.decoderExprs encoderExpr of
+                    case
+                        (if ctx.ecoConfig.bytesFusion.enabled then
+                            BFReify.reifyEncoderWith ctx.inlineBodies ctx.registry ctx.decoderExprs encoderExpr
+
+                         else
+                            Nothing
+                        )
+                    of
                         Just nodes ->
                             -- Fusion successful - emit fused byte encoding ops
                             let
@@ -3116,7 +3130,14 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                 ( "Bytes", "encode", [ _ ] ) ->
                     case args of
                         [ encoderExpr ] ->
-                            case BFReify.reifyEncoderWith ctx.inlineBodies ctx.registry ctx.decoderExprs encoderExpr of
+                            case
+                                (if ctx.ecoConfig.bytesFusion.enabled then
+                                    BFReify.reifyEncoderWith ctx.inlineBodies ctx.registry ctx.decoderExprs encoderExpr
+
+                                 else
+                                    Nothing
+                                )
+                            of
                                 Just nodes ->
                                     -- Fusion successful - emit fused byte encoding ops
                                     let

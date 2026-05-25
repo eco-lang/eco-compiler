@@ -69,6 +69,7 @@ import Bytes.Encode
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Source as Src
+import Compiler.Eco.Config as Config
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Compile as Compile
@@ -195,6 +196,7 @@ type alias DetailsData =
     , extras : Extras
     , deps : Dict Pkg.Name V.Version
     , hasTypedOpt : Bool
+    , configHash : String
     }
 
 
@@ -440,7 +442,7 @@ runVerifyInstall scope root cache manager connection registry outline time =
 
         env : Env
         env =
-            Env { key = key, scope = scope, root = root, maybeBuildDir = Nothing, cache = cache, manager = manager, connection = connection, registry = registry, needsTypedOpt = False, showPackageErrors = False }
+            Env { key = key, scope = scope, root = root, maybeBuildDir = Nothing, cache = cache, manager = manager, connection = connection, registry = registry, needsTypedOpt = False, showPackageErrors = False, configHash = Config.hash Config.default }
     in
     case outline of
         Outline.Pkg pkg ->
@@ -457,44 +459,73 @@ runVerifyInstall scope root cache manager connection registry outline time =
 {-| Load project details, verifying dependencies and building them if necessary.
 Checks if elm.json has changed and regenerates details if needed. Used by build commands.
 -}
-load : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> Task Never (Result Exit.Details Details)
-load style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal registryPolicy =
+load : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> Task Never (Result Exit.Details Details)
+load style scope root maybeBuildDir maybeConfigHash needsTypedOpt showPackageErrors maybeLocal registryPolicy =
     File.getTime (root ++ "/elm.json")
-        |> Task.andThen (loadWithTime style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal registryPolicy)
+        |> Task.andThen (loadWithTime style scope root maybeBuildDir maybeConfigHash needsTypedOpt showPackageErrors maybeLocal registryPolicy)
 
 
-loadWithTime : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> File.Time -> Task Never (Result Exit.Details Details)
-loadWithTime style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal registryPolicy newTime =
+loadWithTime : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> File.Time -> Task Never (Result Exit.Details Details)
+loadWithTime style scope root maybeBuildDir maybeConfigHash needsTypedOpt showPackageErrors maybeLocal registryPolicy newTime =
     File.readBinary detailsDecoder (Stuff.detailsWithBuildDir root maybeBuildDir)
-        |> Task.andThen (handleCachedDetails style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal registryPolicy newTime)
+        |> Task.andThen (handleCachedDetails style scope root maybeBuildDir maybeConfigHash needsTypedOpt showPackageErrors maybeLocal registryPolicy newTime)
 
 
-handleCachedDetails : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> File.Time -> Maybe Details -> Task Never (Result Exit.Details Details)
-handleCachedDetails style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal registryPolicy newTime maybeDetails =
+handleCachedDetails : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> File.Time -> Maybe Details -> Task Never (Result Exit.Details Details)
+handleCachedDetails style scope root maybeBuildDir maybeConfigHash needsTypedOpt showPackageErrors maybeLocal registryPolicy newTime maybeDetails =
+    let
+        -- The hash stored when a build is the canonical key for a config change.
+        -- `Nothing` callers (test/diff/bump/repl/api) don't read eco-config.json,
+        -- so they neither check it nor distinguish configs (they store the default).
+        resolvedConfigHash : String
+        resolvedConfigHash =
+            Maybe.withDefault (Config.hash Config.default) maybeConfigHash
+
+        regenerate : Task Never (Result Exit.Details Details)
+        regenerate =
+            generate style scope root maybeBuildDir resolvedConfigHash needsTypedOpt showPackageErrors maybeLocal registryPolicy newTime
+    in
     case maybeDetails of
         Nothing ->
-            generate style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal registryPolicy newTime
+            regenerate
 
         Just (Details detailsData) ->
             if detailsData.time /= newTime then
-                generate style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal registryPolicy newTime
+                regenerate
 
             else if needsTypedOpt && not detailsData.hasTypedOpt then
-                generate style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal registryPolicy newTime
+                regenerate
+
+            else if configChanged maybeConfigHash detailsData.configHash then
+                regenerate
 
             else
                 Task.succeed (Ok (Details { detailsData | buildID = detailsData.buildID + 1 }))
+
+
+{-| A config change forces a rebuild — but only when the caller supplied a hash
+to check against (`make`). Callers that pass `Nothing` ignore the config in the
+staleness decision so they don't thrash a `make`-written cache.
+-}
+configChanged : Maybe String -> String -> Bool
+configChanged maybeConfigHash storedConfigHash =
+    case maybeConfigHash of
+        Just h ->
+            h /= storedConfigHash
+
+        Nothing ->
+            False
 
 
 
 -- ====== GENERATE ======
 
 
-generate : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> File.Time -> Task Never (Result Exit.Details Details)
-generate style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal registryPolicy time =
+generate : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> File.Time -> Task Never (Result Exit.Details Details)
+generate style scope root maybeBuildDir configHash needsTypedOpt showPackageErrors maybeLocal registryPolicy time =
     Reporting.trackDetails style
         (\key ->
-            initEnv key scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal registryPolicy
+            initEnv key scope root maybeBuildDir configHash needsTypedOpt showPackageErrors maybeLocal registryPolicy
                 |> Task.andThen (verifyOutline time)
         )
 
@@ -529,6 +560,7 @@ type alias EnvData =
     , registry : Registry.Registry
     , needsTypedOpt : Bool
     , showPackageErrors : Bool
+    , configHash : String
     }
 
 
@@ -536,37 +568,37 @@ type Env
     = Env EnvData
 
 
-initEnv : Reporting.DKey -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
-initEnv key scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal registryPolicy =
+initEnv : Reporting.DKey -> BW.Scope -> FilePath -> Maybe String -> String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
+initEnv key scope root maybeBuildDir configHash needsTypedOpt showPackageErrors maybeLocal registryPolicy =
     fork resultRegistryProblemEnvEncoder (Solver.initEnv registryPolicy maybeLocal)
-        |> Task.andThen (initEnvWithMVar key scope root maybeBuildDir needsTypedOpt showPackageErrors)
+        |> Task.andThen (initEnvWithMVar key scope root maybeBuildDir configHash needsTypedOpt showPackageErrors)
 
 
-initEnvWithMVar : Reporting.DKey -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> MVar (Result Exit.RegistryProblem Solver.Env) -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
-initEnvWithMVar key scope root maybeBuildDir needsTypedOpt showPackageErrors mvar =
+initEnvWithMVar : Reporting.DKey -> BW.Scope -> FilePath -> Maybe String -> String -> Bool -> Bool -> MVar (Result Exit.RegistryProblem Solver.Env) -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
+initEnvWithMVar key scope root maybeBuildDir configHash needsTypedOpt showPackageErrors mvar =
     Outline.read root
-        |> Task.andThen (handleOutlineForEnv key scope root maybeBuildDir needsTypedOpt showPackageErrors mvar)
+        |> Task.andThen (handleOutlineForEnv key scope root maybeBuildDir configHash needsTypedOpt showPackageErrors mvar)
 
 
-handleOutlineForEnv : Reporting.DKey -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> MVar (Result Exit.RegistryProblem Solver.Env) -> Result Exit.Outline Outline.Outline -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
-handleOutlineForEnv key scope root maybeBuildDir needsTypedOpt showPackageErrors mvar eitherOutline =
+handleOutlineForEnv : Reporting.DKey -> BW.Scope -> FilePath -> Maybe String -> String -> Bool -> Bool -> MVar (Result Exit.RegistryProblem Solver.Env) -> Result Exit.Outline Outline.Outline -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
+handleOutlineForEnv key scope root maybeBuildDir configHash needsTypedOpt showPackageErrors mvar eitherOutline =
     case eitherOutline of
         Err problem ->
             Task.succeed (Err (Exit.DetailsBadOutline problem))
 
         Ok outline ->
             Utils.readMVar resultRegistryProblemEnvDecoder mvar
-                |> Task.map (combineEnvAndOutline key scope root maybeBuildDir needsTypedOpt showPackageErrors outline)
+                |> Task.map (combineEnvAndOutline key scope root maybeBuildDir configHash needsTypedOpt showPackageErrors outline)
 
 
-combineEnvAndOutline : Reporting.DKey -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Outline.Outline -> Result Exit.RegistryProblem Solver.Env -> Result Exit.Details ( Env, Outline.Outline )
-combineEnvAndOutline key scope root maybeBuildDir needsTypedOpt showPackageErrors outline maybeEnv =
+combineEnvAndOutline : Reporting.DKey -> BW.Scope -> FilePath -> Maybe String -> String -> Bool -> Bool -> Outline.Outline -> Result Exit.RegistryProblem Solver.Env -> Result Exit.Details ( Env, Outline.Outline )
+combineEnvAndOutline key scope root maybeBuildDir configHash needsTypedOpt showPackageErrors outline maybeEnv =
     case maybeEnv of
         Err problem ->
             Err (Exit.DetailsCannotGetRegistry problem)
 
         Ok (Solver.Env env) ->
-            Ok ( Env { key = key, scope = scope, root = root, maybeBuildDir = maybeBuildDir, cache = env.cache, manager = env.manager, connection = env.connection, registry = env.registry, needsTypedOpt = needsTypedOpt, showPackageErrors = showPackageErrors }, outline )
+            Ok ( Env { key = key, scope = scope, root = root, maybeBuildDir = maybeBuildDir, cache = env.cache, manager = env.manager, connection = env.connection, registry = env.registry, needsTypedOpt = needsTypedOpt, showPackageErrors = showPackageErrors, configHash = configHash }, outline )
 
 
 
@@ -714,7 +746,7 @@ verifyDependencies ((Env envData) as env) time outline solution directDeps =
         (Reporting.report envData.key (Reporting.DStart (Dict.size solution))
             |> Task.andThen (\_ -> Utils.newEmptyMVar)
             |> Task.andThen (verifyAllDeps env solution)
-            |> Task.andThen (finalizeDependencies envData.scope envData.root envData.maybeBuildDir envData.needsTypedOpt time outline directDeps depVersions)
+            |> Task.andThen (finalizeDependencies envData.scope envData.root envData.maybeBuildDir envData.configHash envData.needsTypedOpt time outline directDeps depVersions)
         )
 
 
@@ -733,8 +765,8 @@ verifyAllDeps ((Env envData) as env) solution mvar =
 
 {-| Finalize dependency verification: build artifacts or report errors.
 -}
-finalizeDependencies : BW.Scope -> FilePath -> Maybe String -> Bool -> File.Time -> ValidOutline -> Dict Pkg.Name a -> Dict Pkg.Name V.Version -> Dict Pkg.Name Dep -> Task Never (Result Exit.Details Details)
-finalizeDependencies scope root maybeBuildDir needsTypedOpt time outline directDeps depVersions deps =
+finalizeDependencies : BW.Scope -> FilePath -> Maybe String -> String -> Bool -> File.Time -> ValidOutline -> Dict Pkg.Name a -> Dict Pkg.Name V.Version -> Dict Pkg.Name Dep -> Task Never (Result Exit.Details Details)
+finalizeDependencies scope root maybeBuildDir configHash needsTypedOpt time outline directDeps depVersions deps =
     case Utils.dictSequenceResult deps of
         Err _ ->
             Stuff.getElmHome
@@ -747,7 +779,7 @@ finalizeDependencies scope root maybeBuildDir needsTypedOpt time outline directD
                     )
 
         Ok artifacts ->
-            writeVerifiedArtifacts scope root maybeBuildDir needsTypedOpt time outline directDeps artifacts depVersions
+            writeVerifiedArtifacts scope root maybeBuildDir configHash needsTypedOpt time outline directDeps artifacts depVersions
 
 
 {-| Write verified artifacts to disk.
@@ -756,6 +788,7 @@ writeVerifiedArtifacts :
     BW.Scope
     -> FilePath
     -> Maybe String
+    -> String
     -> Bool
     -> File.Time
     -> ValidOutline
@@ -763,7 +796,7 @@ writeVerifiedArtifacts :
     -> Dict Pkg.Name Artifacts
     -> Dict Pkg.Name V.Version
     -> Task Never (Result Exit.Details Details)
-writeVerifiedArtifacts scope root maybeBuildDir needsTypedOpt time outline directDeps artifacts depVersions =
+writeVerifiedArtifacts scope root maybeBuildDir configHash needsTypedOpt time outline directDeps artifacts depVersions =
     let
         objs : Opt.GlobalGraph
         objs =
@@ -788,6 +821,7 @@ writeVerifiedArtifacts scope root maybeBuildDir needsTypedOpt time outline direc
                 , extras = ArtifactsFresh ifaces objs
                 , deps = depVersions
                 , hasTypedOpt = needsTypedOpt
+                , configHash = configHash
                 }
     in
     BW.writeBinary Opt.globalGraphEncoder scope (Stuff.objectsWithBuildDir root maybeBuildDir) objs
@@ -1922,6 +1956,7 @@ detailsEncoder (Details detailsData) =
         , extrasEncoder detailsData.extras
         , BE.stdDict Pkg.nameEncoder V.versionEncoder detailsData.deps
         , BE.bool detailsData.hasTypedOpt
+        , BE.string detailsData.configHash
         ]
 
 
@@ -1949,18 +1984,23 @@ detailsDecoder =
                                                                                 |> Bytes.Decode.andThen
                                                                                     (\deps ->
                                                                                         BD.bool
-                                                                                            |> Bytes.Decode.map
+                                                                                            |> Bytes.Decode.andThen
                                                                                                 (\hasTypedOpt ->
-                                                                                                    Details
-                                                                                                        { time = time
-                                                                                                        , outline = outline
-                                                                                                        , buildID = buildID
-                                                                                                        , locals = locals
-                                                                                                        , foreigns = foreigns
-                                                                                                        , extras = extras
-                                                                                                        , deps = deps
-                                                                                                        , hasTypedOpt = hasTypedOpt
-                                                                                                        }
+                                                                                                    BD.string
+                                                                                                        |> Bytes.Decode.map
+                                                                                                            (\configHash ->
+                                                                                                                Details
+                                                                                                                    { time = time
+                                                                                                                    , outline = outline
+                                                                                                                    , buildID = buildID
+                                                                                                                    , locals = locals
+                                                                                                                    , foreigns = foreigns
+                                                                                                                    , extras = extras
+                                                                                                                    , deps = deps
+                                                                                                                    , hasTypedOpt = hasTypedOpt
+                                                                                                                    , configHash = configHash
+                                                                                                                    }
+                                                                                                            )
                                                                                                 )
                                                                                     )
                                                                         )

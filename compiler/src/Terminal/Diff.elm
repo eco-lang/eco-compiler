@@ -285,7 +285,7 @@ generateDocs (Env props) =
             Task.throw Exit.DiffNoOutline
 
         Just root ->
-            Task.eio Exit.DiffBadDetails (BW.withScope (\scope -> Details.load Reporting.silent scope root Nothing False False Nothing Registry.Normal))
+            Task.eio Exit.DiffBadDetails (BW.withScope (\scope -> Details.load Reporting.silent scope root Nothing Nothing False False Nothing Registry.Normal))
                 |> Task.andThen (buildDocsFromDetails root)
 
 

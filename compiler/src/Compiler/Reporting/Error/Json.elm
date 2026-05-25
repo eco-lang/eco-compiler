@@ -481,6 +481,13 @@ expectationToReport path source context (A.Region start end) expectation reason 
                     |> D.a (D.fromChars ".")
                 ]
 
+        TBool ->
+            toSnippet "EXPECTING BOOL"
+                [ D.fromChars "a"
+                , D.green (D.fromChars "BOOL")
+                    |> D.a (D.fromChars ".")
+                ]
+
         TObjectWith field ->
             toSnippet "MISSING FIELD"
                 [ D.fromChars "an"

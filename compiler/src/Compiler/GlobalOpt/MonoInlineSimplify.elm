@@ -22,6 +22,7 @@ import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono exposing (MonoExpr(..), MonoGraph(..), MonoNode(..), SpecId)
 import Compiler.Data.BitSet as BitSet
 import Compiler.Data.Name exposing (Name)
+import Compiler.Eco.Config as Config
 import Compiler.Graph as Graph
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.MonoTraverse as Traverse
@@ -100,8 +101,8 @@ buildBodyLookup (MonoGraph { nodes, callEdges }) =
 
 {-| Optimize a MonoGraph by inlining small functions and simplifying expressions.
 -}
-optimize : MonoGraph -> ( MonoGraph, Metrics )
-optimize graph =
+optimize : Config.InlineConfig -> MonoGraph -> ( MonoGraph, Metrics )
+optimize inlineConfig graph =
     let
         (MonoGraph { nodes, main, registry, ctorShapes, nextLambdaIndex, callEdges }) =
             graph
@@ -113,7 +114,7 @@ optimize graph =
             buildCallGraph nodes callEdges
 
         ctx =
-            initRewriteCtx nodes registry callGraph nextLambdaIndex
+            initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex
 
         -- Convert nodes to a list so the Array can be GC'd during the fold.
         -- List.foldl releases consumed cons cells, enabling incremental GC
@@ -481,29 +482,9 @@ buildCallGraph nodes edges =
 -- ============================================================================
 
 
-{-| Cost threshold for inlining (functions with cost <= this are inlined).
--}
-inlineThreshold : Int
-inlineThreshold =
-    10
-
-
 sumBy : (a -> Int) -> List a -> Int
 sumBy f list =
     List.foldl (\x acc -> acc + f x) 0 list
-
-
-{-| Maximum number of inlines per function to prevent explosion.
-
-Raised from 10 to 1000 on 2026-05-24 to let whitelisted elm/bytes /
-Utils.Bytes helpers inline across encoder-heavy callers. Top callers
-in the compiler self-MLIR had 30 to 107 bytes calls each; the original
-cap-10 budget left most of them un-inlined and un-fused. See
-plans/bytes-fusion-broader-recognition.md.
--}
-maxInlinesPerFunction : Int
-maxInlinesPerFunction =
-    1000
 
 
 computeCost : MonoExpr -> Int
@@ -584,6 +565,8 @@ type alias RewriteCtx =
     { inlineCandidates : Dict Int ( List ( Name, Mono.MonoType ), MonoExpr )
     , registry : Mono.SpecializationRegistry
     , whitelist : InlineWhitelist
+    , maxInlinesPerFunction : Int
+    , maxIterations : Int
     , inlineCountThisFunction : Int
     , varCounter : Int
     , lambdaCounter : Int
@@ -598,9 +581,16 @@ type alias InternalMetrics =
     }
 
 
-initRewriteCtx : Array (Maybe MonoNode) -> Mono.SpecializationRegistry -> CallGraph -> Int -> RewriteCtx
-initRewriteCtx nodes registry callGraph nextLambdaIndex =
+initRewriteCtx : Config.InlineConfig -> Array (Maybe MonoNode) -> Mono.SpecializationRegistry -> CallGraph -> Int -> RewriteCtx
+initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
     let
+        -- Effective whitelist: built-in defaults plus config additions, minus
+        -- the config blacklist (see Compiler.Eco.Config.InlineConfig).
+        effectiveWhitelist =
+            List.filter
+                (\name -> not (List.member name inlineConfig.blacklist))
+                (defaultWhitelist ++ inlineConfig.whitelist)
+
         candidates =
             Array.foldl
                 (\maybeNode ( accDict, specId ) ->
@@ -634,10 +624,10 @@ initRewriteCtx nodes registry callGraph nextLambdaIndex =
 
                                             whitelisted =
                                                 maybeGlobal
-                                                    |> Maybe.map (isWhitelisted defaultWhitelist)
+                                                    |> Maybe.map (isWhitelisted effectiveWhitelist)
                                                     |> Maybe.withDefault False
                                         in
-                                        if cost > inlineThreshold && not whitelisted then
+                                        if cost > inlineConfig.threshold && not whitelisted then
                                             ( accDict, specId + 1 )
 
                                         else
@@ -649,7 +639,9 @@ initRewriteCtx nodes registry callGraph nextLambdaIndex =
     in
     { inlineCandidates = candidates
     , registry = registry
-    , whitelist = defaultWhitelist
+    , whitelist = effectiveWhitelist
+    , maxInlinesPerFunction = inlineConfig.maxPerFunction
+    , maxIterations = inlineConfig.fixpointIterations
     , inlineCountThisFunction = 0
     , varCounter = 0
     , lambdaCounter = nextLambdaIndex
@@ -794,13 +786,6 @@ optimizeNode ctx _ node =
 -- ============================================================================
 
 
-{-| Maximum number of fixpoint iterations.
--}
-maxIterations : Int
-maxIterations =
-    4
-
-
 fixpoint : RewriteCtx -> MonoExpr -> ( MonoExpr, RewriteCtx )
 fixpoint ctx expr =
     iterate 0 expr ctx
@@ -808,7 +793,7 @@ fixpoint ctx expr =
 
 iterate : Int -> MonoExpr -> RewriteCtx -> ( MonoExpr, RewriteCtx )
 iterate n current ctx =
-    if n >= maxIterations then
+    if n >= ctx.maxIterations then
         ( current, ctx )
 
     else
@@ -1557,7 +1542,7 @@ getDefName def =
 tryInlineCall : RewriteCtx -> SpecId -> List MonoExpr -> Mono.MonoType -> ( Maybe MonoExpr, RewriteCtx )
 tryInlineCall ctx specId args resultType =
     -- Check budget
-    if ctx.inlineCountThisFunction >= maxInlinesPerFunction then
+    if ctx.inlineCountThisFunction >= ctx.maxInlinesPerFunction then
         ( Nothing, ctx )
 
     else

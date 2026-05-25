@@ -258,7 +258,7 @@ promptVersionChange ( suggestion, newDocs ) =
 
 generateDocs : FilePath -> Outline.PkgOutline -> Task Exit.Bump Docs.Documentation
 generateDocs root (Outline.PkgOutline pkgData) =
-    Task.eio Exit.BumpBadDetails (BW.withScope (\scope -> Details.load Reporting.silent scope root Nothing False False Nothing Registry.Normal))
+    Task.eio Exit.BumpBadDetails (BW.withScope (\scope -> Details.load Reporting.silent scope root Nothing Nothing False False Nothing Registry.Normal))
         |> Task.andThen (buildDocsFromExposed root pkgData.exposed)
 
 

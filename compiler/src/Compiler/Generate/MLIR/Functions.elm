@@ -351,6 +351,7 @@ generateClosureFuncSingle ctx funcName closureInfo body monoType =
 
         funcOpWithLogical =
             LogicalTypes.addLogicalTypesAttr
+                ctx2.ecoConfig.logicalTypes.customMaxFields
                 ctx2.typeRegistry.ctorShapes
                 argMonoTypes
                 extractedReturnType
@@ -488,6 +489,7 @@ generateClosureFuncWithClones ctx funcName closureInfo body monoType =
 
         fastCloneOp =
             LogicalTypes.addLogicalTypesAttr
+                ctx1.ecoConfig.logicalTypes.customMaxFields
                 ctx1.typeRegistry.ctorShapes
                 (captureMonoTypes ++ paramMonoTypes)
                 extractedReturnType
@@ -518,6 +520,7 @@ generateClosureFuncWithClones ctx funcName closureInfo body monoType =
 
         genericCloneOp =
             LogicalTypes.addLogicalTypesAttr
+                ctx2.ecoConfig.logicalTypes.customMaxFields
                 ctx2.typeRegistry.ctorShapes
                 cloLogicalParams
                 extractedReturnType
@@ -714,6 +717,7 @@ generateTailFunc ctx funcName params expr monoType =
 
         funcOpWithLogical =
             LogicalTypes.addLogicalTypesAttr
+                ctx2.ecoConfig.logicalTypes.customMaxFields
                 ctx2.typeRegistry.ctorShapes
                 argMonoTypes
                 actualReturnType
@@ -742,6 +746,7 @@ generateCtor ctx funcName ctorLayout monoType =
         attachLogical : MlirOp -> MlirOp
         attachLogical =
             LogicalTypes.addLogicalTypesAttr
+                ctxWithType.ecoConfig.logicalTypes.customMaxFields
                 ctxWithType.typeRegistry.ctorShapes
                 ctorArgMonoTypes
                 ctorResultMonoType
@@ -886,6 +891,7 @@ generateEnum ctx funcName tag monoType maybeCtorName =
 
         funcOpWithLogical =
             LogicalTypes.addLogicalTypesAttr
+                ctxOut.ecoConfig.logicalTypes.customMaxFields
                 ctxOut.typeRegistry.ctorShapes
                 []
                 enumResultMonoType
@@ -967,6 +973,7 @@ generateExtern ctx funcName monoType =
         -- skips specialization.
         funcOpWithLogical =
             LogicalTypes.addLogicalTypesAttr
+                ctxOut.ecoConfig.logicalTypes.customMaxFields
                 ctxOut.typeRegistry.ctorShapes
                 argMonoTypes
                 resultMonoType
@@ -1075,6 +1082,7 @@ generateManagerLeaf ctx funcName homeModuleName monoType =
 
         funcOpWithLogical =
             LogicalTypes.addLogicalTypesAttr
+                ctxOut.ecoConfig.logicalTypes.customMaxFields
                 ctxOut.typeRegistry.ctorShapes
                 argMonoTypes
                 resultMonoType

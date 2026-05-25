@@ -2,9 +2,9 @@ module Compiler.Json.Decode exposing
     ( Decoder
     , fromByteString
     , Error(..), Problem(..), DecodeExpectation(..), ParseError(..), StringProblem(..)
-    , string, customString, int
+    , string, customString, int, bool
     , list, nonEmptyList, pair
-    , field, pairs, KeyDecoder(..)
+    , field, optionalField, pairs, KeyDecoder(..)
     , stdDict
     , map, pure, apply, andThen, oneOf
     , failure, mapError
@@ -135,6 +135,7 @@ type DecodeExpectation
     | TArray
     | TString
     | TInt
+    | TBool
     | TObjectWith String
     | TArrayPair Int
 
@@ -237,6 +238,27 @@ int =
 
                 _ ->
                     Err (Expecting region TInt)
+
+
+
+-- ====== BOOL ======
+
+
+{-| Decode a JSON boolean value.
+-}
+bool : Decoder x Bool
+bool =
+    Decoder <|
+        \(A.At region ast) ->
+            case ast of
+                TRUE ->
+                    Ok True
+
+                FALSE ->
+                    Ok False
+
+                _ ->
+                    Err (Expecting region TBool)
 
 
 
@@ -407,6 +429,28 @@ field key (Decoder decodeA) =
 
                         Nothing ->
                             Err (Expecting region (TObjectWith key))
+
+                _ ->
+                    Err (Expecting region TObject)
+
+
+{-| Decode an object field, falling back to a default value when the field is
+absent. The object itself must still be present (a non-object is an error); a
+missing key yields the fallback. Used for merging a partial config over defaults.
+-}
+optionalField : String -> Decoder x a -> a -> Decoder x a
+optionalField key (Decoder decodeA) fallback =
+    Decoder <|
+        \(A.At region ast) ->
+            case ast of
+                Object kvs ->
+                    case findField key kvs of
+                        Just value ->
+                            Result.mapError (Field key)
+                                (decodeA value)
+
+                        Nothing ->
+                            Ok fallback
 
                 _ ->
                     Err (Expecting region TObject)

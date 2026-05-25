@@ -6,7 +6,6 @@ module Compiler.Generate.MLIR.LogicalTypes exposing
     , encodeLogicalType
     , addLogicalTypesAttr
     , addLogicalTypesAttrUnknown
-    , customMaxFields
     )
 
 {-| Encode a function's logical Elm parameter/result types as
@@ -43,7 +42,6 @@ Wire format (one StringAttr per param/result):
 
 @docs LogicalTypeDesc, AggKind, monoTypeToLogical, mlirTypeToLogical
 @docs encodeLogicalType, addLogicalTypesAttr, addLogicalTypesAttrUnknown
-@docs customMaxFields
 
 -}
 
@@ -51,20 +49,6 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.Generate.MLIR.Types as Types
 import Dict exposing (Dict)
 import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirType(..))
-
-
-{-| Field-count limit above which a single-constructor custom is
-demoted to `LUnknown`. The C++ side's parser tolerates any N
-(`EcoUnboxedAggCrossSpec.cpp:188/200`) and the heap layout's
-hard limit is 24 fields (`Eco_CustomConstructOp` description in
-`Ops.td`), so this gate is purely an Elm-side throttle. Bumped from
-3 → 8 in Phase 3.3 to cover the bulk of record/custom shapes that
-appear in real compiler code (closure info, parse state, module
-metadata, 4–6-field customs).
--}
-customMaxFields : Int
-customMaxFields =
-    8
 
 
 {-| Structural description of one parameter or result's logical type.
@@ -108,8 +92,8 @@ type AggKind
 {-| Compute the logical description of a MonoType, consulting the
 ctor registry to recognise single-constructor customs.
 -}
-monoTypeToLogical : Dict String (List Mono.CtorShape) -> Mono.MonoType -> LogicalTypeDesc
-monoTypeToLogical ctorShapes ty =
+monoTypeToLogical : Int -> Dict String (List Mono.CtorShape) -> Mono.MonoType -> LogicalTypeDesc
+monoTypeToLogical customMaxFields ctorShapes ty =
     case ty of
         Mono.MInt ->
             LI64
@@ -138,7 +122,7 @@ monoTypeToLogical ctorShapes ty =
             LCons (kindOf headType) AKValue
 
         Mono.MCustom _ _ _ ->
-            customDescFor ctorShapes ty
+            customDescFor customMaxFields ctorShapes ty
 
         _ ->
             LValue
@@ -147,8 +131,8 @@ monoTypeToLogical ctorShapes ty =
 {-| Try to build an `LCustom` for a single-constructor MCustom with
 ≤ `customMaxFields` fields; fall back to `LValue` otherwise.
 -}
-customDescFor : Dict String (List Mono.CtorShape) -> Mono.MonoType -> LogicalTypeDesc
-customDescFor ctorShapes ty =
+customDescFor : Int -> Dict String (List Mono.CtorShape) -> Mono.MonoType -> LogicalTypeDesc
+customDescFor customMaxFields ctorShapes ty =
     case Dict.get (Mono.toComparableMonoType ty) ctorShapes of
         Just [ singleCtor ] ->
             let
@@ -288,11 +272,11 @@ parameter / result MonoTypes. No-op for non-`func.func` ops.
 for recognising single-constructor customs.
 
 -}
-addLogicalTypesAttr : Dict String (List Mono.CtorShape) -> List Mono.MonoType -> Mono.MonoType -> MlirOp -> MlirOp
-addLogicalTypesAttr ctorShapes argTypes resultType op =
+addLogicalTypesAttr : Int -> Dict String (List Mono.CtorShape) -> List Mono.MonoType -> Mono.MonoType -> MlirOp -> MlirOp
+addLogicalTypesAttr customMaxFields ctorShapes argTypes resultType op =
     addLogicalDescsAttr
-        (List.map (monoTypeToLogical ctorShapes) argTypes)
-        (monoTypeToLogical ctorShapes resultType)
+        (List.map (monoTypeToLogical customMaxFields ctorShapes) argTypes)
+        (monoTypeToLogical customMaxFields ctorShapes resultType)
         op
 
 

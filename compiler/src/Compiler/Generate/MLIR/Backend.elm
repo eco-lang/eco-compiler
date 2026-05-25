@@ -12,6 +12,7 @@ in the types.
 
 import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono
+import Compiler.Eco.Config as Config
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Functions as Functions
@@ -136,11 +137,12 @@ generateProgram mode monoGraph =
 each top-level operation, and footer sequentially.
 -}
 streamMlirToWriter :
-    Mode.Mode
+    Config.EcoConfig
+    -> Mode.Mode
     -> Mono.MonoGraph
     -> (String -> Task Never ())
     -> Task Never ()
-streamMlirToWriter mode monoGraph0 writeChunk =
+streamMlirToWriter ecoConfig mode monoGraph0 writeChunk =
     let
         (Mono.MonoGraph { nodes, main, registry, ctorShapes }) =
             monoGraph0
@@ -151,6 +153,7 @@ streamMlirToWriter mode monoGraph0 writeChunk =
         ctx =
             Ctx.initContext mode registry signatures ctorShapes
                 |> Ctx.withInlineBodies (MonoInlineSimplify.buildBodyLookup monoGraph0)
+                |> Ctx.withEcoConfig ecoConfig
 
         stderrLog msg =
             TaskExtra.io (SysIO.writeLn SysIO.stderr msg)
@@ -272,11 +275,12 @@ each func's MlirOps before the next is generated. Peak memory is
 dominated by tables + the largest single func rather than all funcs.
 -}
 streamMlirBytecode :
-    Mode.Mode
+    Config.EcoConfig
+    -> Mode.Mode
     -> Mono.MonoGraph
     -> String
     -> Task Never ()
-streamMlirBytecode mode monoGraph0 target =
+streamMlirBytecode ecoConfig mode monoGraph0 target =
     let
         (Mono.MonoGraph { nodes, main, registry, ctorShapes }) =
             monoGraph0
@@ -287,6 +291,7 @@ streamMlirBytecode mode monoGraph0 target =
         ctx =
             Ctx.initContext mode registry signatures ctorShapes
                 |> Ctx.withInlineBodies (MonoInlineSimplify.buildBodyLookup monoGraph0)
+                |> Ctx.withEcoConfig ecoConfig
 
         nodesList =
             Array.toIndexedList nodes

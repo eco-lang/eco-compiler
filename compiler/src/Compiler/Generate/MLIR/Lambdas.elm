@@ -335,6 +335,7 @@ generateLambdaFunc ctx lambda =
 
             fastCloneOp =
                 LogicalTypes.addLogicalTypesAttr
+                    ctx2.ecoConfig.logicalTypes.customMaxFields
                     ctx2.typeRegistry.ctorShapes
                     (captureMonoTypes ++ paramMonoTypes)
                     lambda.returnType
@@ -366,6 +367,7 @@ generateLambdaFunc ctx lambda =
                 -- the Elm params. MUnit encodes as "value".
                 genericCloneOp =
                     LogicalTypes.addLogicalTypesAttr
+                        ctx3.ecoConfig.logicalTypes.customMaxFields
                         ctx3.typeRegistry.ctorShapes
                         (Mono.MUnit :: paramMonoTypes)
                         lambda.returnType
@@ -418,6 +420,7 @@ generateLambdaFunc ctx lambda =
 
             fastCloneOp =
                 LogicalTypes.addLogicalTypesAttr
+                    ctx2.ecoConfig.logicalTypes.customMaxFields
                     ctx2.typeRegistry.ctorShapes
                     (captureMonoTypes ++ paramMonoTypes)
                     lambda.returnType
@@ -447,6 +450,7 @@ generateLambdaFunc ctx lambda =
 
                 genericCloneOp =
                     LogicalTypes.addLogicalTypesAttr
+                        ctx3.ecoConfig.logicalTypes.customMaxFields
                         ctx3.typeRegistry.ctorShapes
                         (Mono.MUnit :: paramMonoTypes)
                         lambda.returnType

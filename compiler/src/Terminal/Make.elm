@@ -4,6 +4,7 @@ module Terminal.Make exposing
     , output, reportType, docsFile
     , parseOutput, parseReportType, parseDocsFile
     , buildDir, parseBuildDir
+    , configFlag, parseConfig
     , kernelPackage, parseKernelPackage
     , localPackage, parseLocalPackage
     )
@@ -38,6 +39,7 @@ source maps, and documentation generation.
 # Build Directory
 
 @docs buildDir, parseBuildDir
+@docs configFlag, parseConfig
 
 
 # Kernel and Local Packages
@@ -50,6 +52,7 @@ source maps, and documentation generation.
 import Builder.BackgroundWriter as BW
 import Builder.Build as Build
 import Builder.Deps.Registry as Registry
+import Builder.Eco.Config as EcoConfigLoader
 import Builder.Elm.Details as Details
 import Builder.File as File
 import Builder.Generate as Generate
@@ -58,6 +61,7 @@ import Builder.Reporting.Exit as Exit
 import Builder.Stuff as Stuff
 import Compiler.AST.Optimized as Opt
 import Compiler.Data.NonEmptyList as NE
+import Compiler.Eco.Config as Config
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Generate.CodeGen as CodeGen
@@ -92,6 +96,7 @@ type alias FlagsData =
     , localPackage : Maybe ( Pkg.Name, FilePath )
     , textMlir : Bool
     , refreshRegistry : Bool
+    , configPath : Maybe String
     }
 
 
@@ -163,6 +168,7 @@ type alias BuildContext =
     , details : Details.Details
     , localPackage : Maybe ( Pkg.Name, FilePath )
     , textMlir : Bool
+    , ecoConfig : Config.EcoConfig
     }
 
 
@@ -176,32 +182,36 @@ runHelp root paths style (Flags flagsData) =
             else
                 Registry.Normal
     in
-    BW.withScope (runHelpWithScope root paths style flagsData.debug flagsData.optimize flagsData.withSourceMaps flagsData.output flagsData.docs flagsData.showPackageErrors flagsData.buildDir flagsData.kernelPackage flagsData.localPackage flagsData.textMlir registryPolicy)
+    BW.withScope (runHelpWithScope root paths style flagsData.debug flagsData.optimize flagsData.withSourceMaps flagsData.output flagsData.docs flagsData.showPackageErrors flagsData.buildDir flagsData.kernelPackage flagsData.localPackage flagsData.textMlir flagsData.configPath registryPolicy)
 
 
-runHelpWithScope : FilePath -> List String -> Reporting.Style -> Bool -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Registry.RegistryPolicy -> BW.Scope -> Task Never (Result Exit.Make ())
-runHelpWithScope root paths style debug optimize withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir registryPolicy scope =
+runHelpWithScope : FilePath -> List String -> Reporting.Style -> Bool -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Maybe String -> Registry.RegistryPolicy -> BW.Scope -> Task Never (Result Exit.Make ())
+runHelpWithScope root paths style debug optimize withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir maybeConfigPath registryPolicy scope =
     Stuff.withRootLockBuildDir root
         maybeBuildDir
         (Task.run
             (getMode debug optimize
-                |> Task.andThen (loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir registryPolicy scope)
+                |> Task.andThen (loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir maybeConfigPath registryPolicy scope)
             )
         )
 
 
-loadDetailsAndBuild : FilePath -> List String -> Reporting.Style -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Registry.RegistryPolicy -> BW.Scope -> DesiredMode -> Task Exit.Make ()
-loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir registryPolicy scope desiredMode =
-    Task.eio Exit.MakeBadDetails (Details.load style scope root maybeBuildDir (shouldUseTypedOpt maybeOutput) showPackageErrors maybeLocalPackage registryPolicy)
-        |> Task.andThen (buildWithDetails root paths style withSourceMaps maybeOutput maybeDocs maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir desiredMode)
+loadDetailsAndBuild : FilePath -> List String -> Reporting.Style -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Maybe String -> Registry.RegistryPolicy -> BW.Scope -> DesiredMode -> Task Exit.Make ()
+loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir maybeConfigPath registryPolicy scope desiredMode =
+    EcoConfigLoader.load maybeConfigPath root
+        |> Task.andThen
+            (\ecoConfig ->
+                Task.eio Exit.MakeBadDetails (Details.load style scope root maybeBuildDir (Just (Config.hash ecoConfig)) (shouldUseTypedOpt maybeOutput) showPackageErrors maybeLocalPackage registryPolicy)
+                    |> Task.andThen (buildWithDetails root paths style withSourceMaps maybeOutput maybeDocs maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir ecoConfig desiredMode)
+            )
 
 
-buildWithDetails : FilePath -> List String -> Reporting.Style -> Bool -> Maybe Output -> Maybe FilePath -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> DesiredMode -> Details.Details -> Task Exit.Make ()
-buildWithDetails root paths style withSourceMaps maybeOutput maybeDocs maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir desiredMode details =
+buildWithDetails : FilePath -> List String -> Reporting.Style -> Bool -> Maybe Output -> Maybe FilePath -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Config.EcoConfig -> DesiredMode -> Details.Details -> Task Exit.Make ()
+buildWithDetails root paths style withSourceMaps maybeOutput maybeDocs maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir ecoConfig desiredMode details =
     let
         ctx : BuildContext
         ctx =
-            BuildContext root style withSourceMaps maybeOutput maybeDocs maybeBuildDir desiredMode details maybeLocalPackage textMlir
+            BuildContext root style withSourceMaps maybeOutput maybeDocs maybeBuildDir desiredMode details maybeLocalPackage textMlir ecoConfig
     in
     case paths of
         [] ->
@@ -309,6 +319,7 @@ handleMlirOutput ctx target artifacts =
                 writeTask =
                     if ctx.textMlir then
                         Generate.writeMonoMlirStreaming
+                            ctx.ecoConfig
                             ctx.withSourceMaps
                             0
                             ctx.root
@@ -320,6 +331,7 @@ handleMlirOutput ctx target artifacts =
 
                     else
                         Generate.writeMonoMlirStreamingBytecode
+                            ctx.ecoConfig
                             ctx.withSourceMaps
                             0
                             ctx.root
@@ -373,6 +385,7 @@ handleElfOutput ctx target artifacts =
                 writeMlirTask =
                     if ctx.textMlir then
                         Generate.writeMonoMlirStreaming
+                            ctx.ecoConfig
                             ctx.withSourceMaps
                             0
                             ctx.root
@@ -385,6 +398,7 @@ handleElfOutput ctx target artifacts =
 
                     else
                         Generate.writeMonoMlirStreamingBytecode
+                            ctx.ecoConfig
                             ctx.withSourceMaps
                             0
                             ctx.root
@@ -728,6 +742,30 @@ parseBuildDir dir =
 
     else
         Just dir
+
+
+{-| Parser definition for the --config flag (path to eco-config.json).
+-}
+configFlag : Parser
+configFlag =
+    Parser
+        { singular = "config file"
+        , plural = "config files"
+        , suggest = \_ -> Task.succeed []
+        , examples = \_ -> Task.succeed [ "eco-config.json", "configs/release.json" ]
+        }
+
+
+{-| Parse a --config value into a file path. Any non-empty string is accepted
+(paths may contain separators).
+-}
+parseConfig : String -> Maybe String
+parseConfig path =
+    if String.isEmpty path then
+        Nothing
+
+    else
+        Just path
 
 
 {-| Parser for kernel package names in "author/project" format.

@@ -54,6 +54,7 @@ import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.MLIR.Backend as MLIR
 import Compiler.Generate.Mode as Mode
 import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
+import Compiler.Eco.Config as Config
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.LocalOpt.Typed.Module as TypedOptimize
 import Compiler.Monomorphize.Monomorphize as Monomorphize
@@ -332,7 +333,7 @@ runToGlobalOpt srcModule =
         Ok { canonical, annotations, nodeTypes, kernelEnv, localGraph, globalGraph, globalTypeEnv, monoGraph } ->
             let
                 ( simplifiedGraph, _ ) =
-                    MonoInlineSimplify.optimize monoGraph
+                    MonoInlineSimplify.optimize Config.default.inline monoGraph
 
                 optimizedMonoGraph =
                     MonoGlobalOptimize.globalOptimize simplifiedGraph
@@ -749,7 +750,7 @@ expectCoverageRun srcModule =
                 Ok monoGraph ->
                     let
                         ( simplifiedGraph, _ ) =
-                            MonoInlineSimplify.optimize monoGraph
+                            MonoInlineSimplify.optimize Config.default.inline monoGraph
 
                         optimizedMonoGraph =
                             MonoGlobalOptimize.globalOptimize simplifiedGraph

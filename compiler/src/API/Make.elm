@@ -78,7 +78,7 @@ runHelp root path (Flags debug optimize withSourceMaps) =
                                     style =
                                         Reporting.json
                                 in
-                                Task.eio Exit.MakeBadDetails (Details.load style scope root Nothing False False Nothing Registry.Normal)
+                                Task.eio Exit.MakeBadDetails (Details.load style scope root Nothing Nothing False False Nothing Registry.Normal)
                                     |> Task.andThen
                                         (\details ->
                                             buildPaths style root details (NE.Nonempty path [])

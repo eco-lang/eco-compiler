@@ -1,6 +1,6 @@
 module Compiler.Generate.MLIR.Context exposing
     ( Context, FuncSignature, KernelDeclInfo, PendingLambda, TypeRegistry, VarInfo
-    , initContext, withInlineBodies
+    , initContext, withInlineBodies, withEcoConfig
     , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp, liveEcoValueVars, resetDefinedSsaVars
     , getOrCreateTypeIdForMonoType, registerKernelCall, registerKernelInstance
     , buildSignatures, kernelFuncSignatureFromType
@@ -57,6 +57,7 @@ state during MLIR code generation.
 import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
+import Compiler.Eco.Config as Config
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.Generate.Mode as Mode
 import Compiler.Monomorphize.KernelAbi as KernelAbi
@@ -164,6 +165,11 @@ type alias Context =
     -- etc.) against a synthetic iteration variable so their bodies can
     -- be reified into `ELoop` body nodes. Built once at codegen entry
     -- from `MonoInlineSimplify.buildBodyLookup`.
+    , ecoConfig : Config.EcoConfig
+    -- ^ Effective project config from eco-config.json. Gates the
+    -- bytes-fusion entry (`bytesFusion.enabled`) and tunes logical-type
+    -- codegen (`logicalTypes.customMaxFields`). Installed via
+    -- `withEcoConfig` at codegen entry; defaults reproduce prior behaviour.
     }
 
 
@@ -221,6 +227,7 @@ initContext mode registry signatures initialCtorShapes =
     , externBoxedVars = Set.empty
     , definedSsaVars = Set.empty
     , inlineBodies = Dict.empty
+    , ecoConfig = Config.default
     }
 
 
@@ -231,6 +238,14 @@ Typically called immediately after `initContext` with the result of
 withInlineBodies : Dict.Dict Int ( List ( Name.Name, Mono.MonoType ), Mono.MonoExpr ) -> Context -> Context
 withInlineBodies bodies ctx =
     { ctx | inlineBodies = bodies }
+
+
+{-| Install the effective eco-config on a freshly-initialised Context.
+Defaults to `Config.default` when not called.
+-}
+withEcoConfig : Config.EcoConfig -> Context -> Context
+withEcoConfig cfg ctx =
+    { ctx | ecoConfig = cfg }
 
 
 {-| Empty type registry for initialization.
