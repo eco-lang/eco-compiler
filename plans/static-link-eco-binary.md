@@ -217,18 +217,78 @@ glibc — same dependency profile as `cargo build --release`.
 
 ### Known follow-ups (not Stage A blockers)
 
-- **eco-compiler (Stage 6 / AOT-built binary) under ECO_STATIC.**
-  `eco-boot-native::linkExecutable` has its own link command line baked
-  into `EcoBootConfig.h`; under ECO_STATIC the kernel `.a` archives it
-  pulls in now include the vendored static libcurl/libzip, but the bare
-  `-lcurl -lssl -lcrypto -lzip` flags from `EcoBootConfig.h` would
-  still re-resolve to `.so` (or fail to resolve). AOT-output binaries
-  under ECO_STATIC are not yet in scope — Stage A only covers `eco`.
-  Likely needs a parallel set of EcoBootConfig.h paths.
 - **lld experiment for the full `eco` link.** Probe verifies lld works
   for the kernel/runtime/LLVM/MLIR dep tree. Whether lld 21 accepts
   `R_X86_64_64` in `eco-stage9.o`'s `.llvm_stackmaps` (PIE warning shows
   up with bfd too) is unanswered at this stage; `-fuse-ld=bfd` is kept.
+
+## Stage A.5 — AOT-output binaries also minimal-deps glibc
+
+Discovered empirically after Stage A landed: making `eco` itself static
+does **not** make the binaries `eco` produces static. The AOT link is
+performed by `eco-boot-native::linkExecutable` and its in-process twin in
+`EcoNativeDriverStatic` (`runtime/src/codegen/EcoNativeDriver.cpp:331-484`),
+using the link command baked into `EcoBootConfig.h` at CMake configure
+time. That command includes bare `-lcurl -lssl -lcrypto -lzip -lstdc++
+-lgcc_s ...` flags which resolve to `.so` at link time regardless of
+`-DECO_STATIC=ON`. Confirmed by self-build: `eco-self` (and the in-tree
+`eco-compiler`) have 9 direct `NEEDED` + ~30 transitive shared library
+deps.
+
+Stage A.5 extends the same "only glibc remains dynamic" promise to every
+binary `eco` produces. It bridges Stage A (eco itself is static) and
+Stage C (AOT-from-anywhere) — it does *not* try to make AOT outputs
+runnable without a host glibc; that's Stage C territory.
+
+### Steps
+
+1. **Add static-archive paths to `EcoBootConfig.h` generation**
+   (`runtime/src/codegen/CMakeLists.txt`, around the existing
+   `kernelSystemLibs()` / `librarySearchDirs()` block). When `ECO_STATIC`
+   is on, emit absolute paths to:
+   - `libstdcxxStaticA` — discovered via `clang -print-file-name=libstdc++.a`
+   - `libcurlStaticA` — `$<TARGET_FILE:libcurl_static>` (vendored)
+   - `libsslStaticA` / `libcryptoStaticA` — `${OPENSSL_SSL_LIBRARY}` /
+     `${OPENSSL_CRYPTO_LIBRARY}` (resolved to `.a` by top-level
+     `OPENSSL_USE_STATIC_LIBS`)
+   - `libzipStaticA` — `$<TARGET_FILE:zip>` (vendored)
+   - `ecoStatic` — boolean flag for runtime branching
+
+2. **Branch `linkExecutable` on `eco::config::ecoStatic`**
+   (`runtime/src/codegen/EcoNativeDriver.cpp:331-484`). When true:
+   - Replace `-lcurl -lssl -lcrypto` (lines 430-432) and `-lzip` (line 436)
+     with the absolute `.a` paths from `EcoBootConfig.h`.
+   - Replace `-lstdc++` (line 428) with `libstdcxxStaticA`.
+   - Drop `-lgcc_s` (lines 441, 443) — keep only `libgccA`.
+   - Drop the `-rpath` (lines 455-456) — `unwindLib` is already `libunwind.a`
+     under ECO_STATIC (Stage A change to `LLVMLibunwind.cmake`).
+   - Add `--allow-multiple-definition` to handle the same LLVM-libunwind
+     vs libgcc symbol overlap Stage A worked around.
+
+3. **Keep glibc dynamic.** `-lpthread -lm -lc`, `-pie`,
+   `-dynamic-linker`, the crt files, the multilib search dirs — all
+   unchanged. The deployment-host glibc requirement is identical to
+   Stage A's: any modern Linux with a recent enough libc.
+
+### Acceptance criteria
+
+- `ldd <output>` on any AOT-built binary (`eco-compiler`, `eco-self`,
+  or `eco make foo.elm --output=foo`) shows only:
+  `linux-vdso.so.1`, `libc.so.6`, `libm.so.6`, `ld-linux-x86-64.so.2`.
+  No libstdc++, no libgcc_s, no libcurl/ssl/crypto/zip/unwind, no
+  transitive curl deps (nghttp2, idn2, libldap, …).
+- `eco make compiler/src/Terminal/Main.elm --output=eco-self` produces
+  a working self-build under `ECO_STATIC=ON`. `eco-self --version`
+  returns 1.0.0.
+- The dynamic (default, non-ECO_STATIC) link path is unchanged —
+  `ldd eco-compiler` from a default build still shows the existing
+  dependency set.
+
+### Estimated effort
+
+½ day. The configure-time work is symmetric with Stage A's; the
+runtime branch in `linkExecutable` is ~30 lines of straightforward
+list-of-flags substitution.
 
 ### Estimated effort
 

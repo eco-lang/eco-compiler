@@ -837,6 +837,51 @@ foreach(_d ${ECO_LIBRARY_DIRS})
 endforeach()
 string(APPEND ECO_BOOT_CONFIG_CONTENT "    };\n}\n\n")
 
+#--- Stage A.5: static-archive paths for AOT-built binaries ----------------
+# When ECO_STATIC is on, EcoNativeDriver::linkExecutable swaps the bare
+# `-lcurl / -lssl / -lcrypto / -lzip / -lstdc++ / -lgcc_s` flags for the
+# absolute .a paths discovered here. glibc-family libs (-lpthread/-lm/-lc)
+# stay dynamic — Stage A.5 mirrors Stage A's "only glibc remains shared"
+# contract for AOT outputs. See plans/static-link-eco-binary.md.
+if(ECO_STATIC)
+    set(ECO_STATIC_BOOL "true")
+    _eco_query_clang_path(ECO_LIBSTDCXX_A libstdc++.a)
+    # libzip.a uses deflate/inflate/crc32 from zlib; libcurl.a uses zlib too
+    # (HTTP Content-Encoding: gzip). Under ECO_STATIC every find_library
+    # already prefers .a (CMAKE_FIND_LIBRARY_SUFFIXES at top level), so this
+    # resolves to /usr/lib/x86_64-linux-gnu/libz.a on Debian.
+    find_library(ECO_LIBZ_A z REQUIRED)
+    message(STATUS "Eco AOT static-archive paths (ECO_STATIC):")
+    message(STATUS "  libstdc++.a: ${ECO_LIBSTDCXX_A}")
+    message(STATUS "  libcurl.a:   <vendored: TARGET_FILE:libcurl_static>")
+    message(STATUS "  libzip.a:    <vendored: TARGET_FILE:zip>")
+    message(STATUS "  libssl.a:    ${OPENSSL_SSL_LIBRARY}")
+    message(STATUS "  libcrypto.a: ${OPENSSL_CRYPTO_LIBRARY}")
+    message(STATUS "  libz.a:      ${ECO_LIBZ_A}")
+else()
+    set(ECO_STATIC_BOOL "false")
+endif()
+string(APPEND ECO_BOOT_CONFIG_CONTENT "// --- Stage A.5: static-archive paths (ECO_STATIC) ---\n")
+string(APPEND ECO_BOOT_CONFIG_CONTENT "inline constexpr bool ecoStatic = ${ECO_STATIC_BOOL};\n")
+if(ECO_STATIC)
+    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libstdcxxStaticA = \"${ECO_LIBSTDCXX_A}\";\n")
+    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libcurlStaticA = \"$<TARGET_FILE:libcurl_static>\";\n")
+    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libsslStaticA = \"${OPENSSL_SSL_LIBRARY}\";\n")
+    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libcryptoStaticA = \"${OPENSSL_CRYPTO_LIBRARY}\";\n")
+    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libzipStaticA = \"$<TARGET_FILE:zip>\";\n")
+    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libzStaticA = \"${ECO_LIBZ_A}\";\n")
+else()
+    # Provide stubs so EcoNativeDriver.cpp can reference these unconditionally;
+    # they won't be used at runtime when ecoStatic is false.
+    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libstdcxxStaticA = \"\";\n")
+    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libcurlStaticA = \"\";\n")
+    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libsslStaticA = \"\";\n")
+    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libcryptoStaticA = \"\";\n")
+    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libzipStaticA = \"\";\n")
+    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libzStaticA = \"\";\n")
+endif()
+string(APPEND ECO_BOOT_CONFIG_CONTENT "\n")
+
 string(APPEND ECO_BOOT_CONFIG_CONTENT "} // namespace config\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT "} // namespace eco\n")
 

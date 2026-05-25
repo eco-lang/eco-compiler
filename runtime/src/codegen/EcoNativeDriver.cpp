@@ -422,38 +422,72 @@ int linkExecutable(const std::string &objectFile,
 
     args.push_back("--end-group");
 
-    // System shared libraries the kernel + runtime pull in.
+    // System shared libraries the kernel + runtime pull in. glibc-family
+    // (pthread/m/c) stays dynamic in both modes — Stage A.5 is "every other
+    // shared dep replaced with a static archive", not full static-static.
     args.push_back("-lpthread");
     args.push_back("-lm");
-    args.push_back("-lstdc++");
     args.push_back("-lc");
-    args.push_back("-lcurl");
-    args.push_back("-lssl");
-    args.push_back("-lcrypto");
 
-    for (const auto &lib : kernelSysLibs)
-        args.push_back(lib);
-    args.push_back("-lzip");
+    if (eco::config::ecoStatic) {
+        // Stage A.5: feed absolute paths to the static archives baked at
+        // configure time, in place of the bare -l flags the linker would
+        // otherwise resolve to .so. See plans/static-link-eco-binary.md.
+        // libz is required by both vendored libzip and libcurl (HTTP
+        // Content-Encoding: gzip), so it comes last to resolve forward refs.
+        args.push_back(eco::config::libstdcxxStaticA);
+        args.push_back(eco::config::libcurlStaticA);
+        args.push_back(eco::config::libsslStaticA);
+        args.push_back(eco::config::libcryptoStaticA);
+        args.push_back(eco::config::libzipStaticA);
+        args.push_back(eco::config::libzStaticA);
+        // kernelSysLibs() is empty under ECO_STATIC (the vendored libzip
+        // is wired in directly above), but skip it defensively.
+    } else {
+        args.push_back("-lstdc++");
+        args.push_back("-lcurl");
+        args.push_back("-lssl");
+        args.push_back("-lcrypto");
+        for (const auto &lib : kernelSysLibs)
+            args.push_back(lib);
+        args.push_back("-lzip");
+    }
 
-    // libgcc dance — driver normally emits `-lgcc_s libgcc.a -lgcc_s` to
-    // resolve the cyclic dependency between libgcc.a's unwinder hooks and
-    // libgcc_s.so's runtime support.
-    args.push_back("-lgcc_s");
-    args.push_back(eco::config::libgccA);
-    args.push_back("-lgcc_s");
+    // libgcc + unwinder.
+    if (eco::config::ecoStatic) {
+        // libgcc.a alone — no -lgcc_s. The cyclic-dep dance the driver
+        // normally does is only needed when libgcc_s.so is in play.
+        args.push_back(eco::config::libgccA);
+        // --allow-multiple-definition: LLVM libunwind.a and any
+        // libgcc_eh-derived `_Unwind_*` definitions that leak in through
+        // crt or libstdc++.a are silently collapsed (first definition
+        // wins; libunwind.a is listed first so it does). Same workaround
+        // Stage A used on the eco target itself.
+        args.push_back("--allow-multiple-definition");
+    } else {
+        // libgcc dance — driver normally emits `-lgcc_s libgcc.a -lgcc_s`
+        // to resolve the cyclic dependency between libgcc.a's unwinder
+        // hooks and libgcc_s.so's runtime support.
+        args.push_back("-lgcc_s");
+        args.push_back(eco::config::libgccA);
+        args.push_back("-lgcc_s");
+    }
 
-    // LLVM libunwind via absolute path (NOT -lunwind) so the link doesn't
-    // accidentally pick up the system (nongnu) libunwind.
+    // LLVM libunwind. Under ECO_STATIC, unwindLib is libunwind.a (the
+    // Stage-A change to LLVMLibunwind.cmake selects the .a). Otherwise
+    // it's libunwind.so loaded via the rpath added below.
     args.push_back(eco::config::unwindLib);
 
     // crt epilogue.
     args.push_back(eco::config::crtendObj);
     args.push_back(eco::config::crtnObj);
 
-    // rpath so the produced AOT binary finds libunwind at runtime without
-    // LD_LIBRARY_PATH.
-    args.push_back("-rpath");
-    args.push_back(eco::config::unwindLibDir);
+    if (!eco::config::ecoStatic) {
+        // rpath so the produced AOT binary finds libunwind.so at runtime
+        // without LD_LIBRARY_PATH. Not needed for the .a path.
+        args.push_back("-rpath");
+        args.push_back(eco::config::unwindLibDir);
+    }
 
     if (opts.verbose) {
         llvm::errs() << "[eco-native] link (direct ld):";
