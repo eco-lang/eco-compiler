@@ -7,10 +7,33 @@ project(eco-kernel LANGUAGES CXX)
 # Runtime include directory (for allocator headers)
 set(RUNTIME_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/src)
 
-# Find optional dependencies for Http module
-find_package(CURL QUIET)
+# Find optional dependencies for Http module.
+#
+# Under ECO_STATIC (Stage A in plans/static-link-eco-binary.md):
+#   - OpenSSL via OPENSSL_USE_STATIC_LIBS=TRUE → libssl.a / libcrypto.a
+#   - libcurl via pkg-config's STATIC_LIBRARIES (folds in Libs.private:
+#     nghttp2, idn2, psl, brotli, zstd, ldap, krb5, …)
+#   - libzip vendored via FetchContent (Debian ships only libzip.so)
+#
+# Under the default dynamic build the behavior is unchanged: find_package
+# picks .so files and we link against the system-shared libs.
+# OPENSSL_USE_STATIC_LIBS / ZLIB_USE_STATIC_LIBS / CMAKE_FIND_LIBRARY_SUFFIXES
+# are set at the top-level CMakeLists.txt when ECO_STATIC=ON — they must be
+# in effect before any sibling subdirectory's find_package call.
 find_package(OpenSSL QUIET)
 find_package(PkgConfig QUIET)
+
+# Under ECO_STATIC the vendored libcurl_static target is created by the
+# top-level CMakeLists.txt before any subdirectory is added (so both
+# elm-kernel-cpp and eco-kernel-cpp can link against it without an
+# ordering hazard). Here we only need to set CURL_FOUND and run the
+# dynamic find_package if we're not in static mode.
+if(ECO_STATIC)
+    set(CURL_FOUND TRUE)
+else()
+    find_package(CURL QUIET)
+endif()
+
 if(PkgConfig_FOUND)
     pkg_check_modules(LIBZIP QUIET libzip)
 endif()
@@ -23,7 +46,40 @@ else()
     message(STATUS "eco-kernel: libcurl or OpenSSL not found - Http module will use stubs")
 endif()
 
-if(LIBZIP_FOUND)
+# libzip resolution. The default path (LIBZIP_FOUND from pkg-config) wires
+# the system .so. Under ECO_STATIC we vendor libzip via FetchContent because
+# Debian's libzip-dev ships only the shared object — see Stage A, Step 4 in
+# plans/static-link-eco-binary.md.
+if(ECO_STATIC)
+    include(FetchContent)
+    # libzip 1.11.4 (Aug 2024) — stable, ships a CMake target named `zip`.
+    FetchContent_Declare(libzip_vendored
+        GIT_REPOSITORY https://github.com/nih-at/libzip.git
+        GIT_TAG v1.11.4
+        GIT_SHALLOW TRUE
+    )
+    # Constrain libzip's optional features to what EcoKernel_Http actually
+    # uses: ZIP reading only. Disabling these prevents libzip from pulling
+    # in bzip2 / lzma / zstd / openssl-for-zip-encryption as additional
+    # .so dependencies we'd then need static counterparts of.
+    set(BUILD_SHARED_LIBS    OFF CACHE BOOL "" FORCE)
+    set(LIBZIP_DO_INSTALL    OFF CACHE BOOL "" FORCE)
+    set(ENABLE_COMMONCRYPTO  OFF CACHE BOOL "" FORCE)
+    set(ENABLE_GNUTLS        OFF CACHE BOOL "" FORCE)
+    set(ENABLE_MBEDTLS       OFF CACHE BOOL "" FORCE)
+    set(ENABLE_OPENSSL       OFF CACHE BOOL "" FORCE)
+    set(ENABLE_WINDOWS_CRYPTO OFF CACHE BOOL "" FORCE)
+    set(ENABLE_BZIP2         OFF CACHE BOOL "" FORCE)
+    set(ENABLE_LZMA          OFF CACHE BOOL "" FORCE)
+    set(ENABLE_ZSTD          OFF CACHE BOOL "" FORCE)
+    set(BUILD_TOOLS          OFF CACHE BOOL "" FORCE)
+    set(BUILD_REGRESS        OFF CACHE BOOL "" FORCE)
+    set(BUILD_EXAMPLES       OFF CACHE BOOL "" FORCE)
+    set(BUILD_DOC            OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(libzip_vendored)
+    set(LIBZIP_FOUND TRUE)
+    message(STATUS "eco-kernel: libzip vendored via FetchContent (ECO_STATIC) - archive extraction available")
+elseif(LIBZIP_FOUND)
     message(STATUS "eco-kernel: libzip found - archive extraction available")
 else()
     message(STATUS "eco-kernel: libzip not found - archive extraction will use stubs")
@@ -35,7 +91,12 @@ endif()
 # static archive's PRIVATE link interface and aren't transitively pulled in).
 if(LIBZIP_FOUND AND NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     set(ECO_KERNEL_LIBZIP_FOUND TRUE PARENT_SCOPE)
-    set(ECO_KERNEL_LIBZIP_LIBRARIES "${LIBZIP_LIBRARIES}" PARENT_SCOPE)
+    if(ECO_STATIC)
+        # FetchContent target name is `zip` (libzip's CMakeLists exports it).
+        set(ECO_KERNEL_LIBZIP_LIBRARIES "zip" PARENT_SCOPE)
+    else()
+        set(ECO_KERNEL_LIBZIP_LIBRARIES "${LIBZIP_LIBRARIES}" PARENT_SCOPE)
+    endif()
 endif()
 
 #------------------------------------------------------------------------------
@@ -148,12 +209,26 @@ target_include_directories(EcoKernel_Http PUBLIC
     ${RUNTIME_INCLUDE_DIR}
 )
 if(HTTP_AVAILABLE)
-    target_link_libraries(EcoKernel_Http PRIVATE CURL::libcurl OpenSSL::SSL OpenSSL::Crypto)
+    if(ECO_STATIC)
+        # Vendored libcurl exports the `libcurl_static` CMake target (its
+        # ALIAS for the static archive). OpenSSL was already picked up via
+        # OPENSSL_USE_STATIC_LIBS before any subdir's find_package.
+        target_link_libraries(EcoKernel_Http PRIVATE
+            libcurl_static OpenSSL::SSL OpenSSL::Crypto)
+    else()
+        target_link_libraries(EcoKernel_Http PRIVATE
+            CURL::libcurl OpenSSL::SSL OpenSSL::Crypto)
+    endif()
     target_compile_definitions(EcoKernel_Http PRIVATE HTTP_CURL_AVAILABLE=1)
 endif()
 if(LIBZIP_FOUND)
-    target_link_libraries(EcoKernel_Http PRIVATE ${LIBZIP_LIBRARIES})
-    target_include_directories(EcoKernel_Http PRIVATE ${LIBZIP_INCLUDE_DIRS})
+    if(ECO_STATIC)
+        # Vendored libzip exports the `zip` CMake target.
+        target_link_libraries(EcoKernel_Http PRIVATE zip)
+    else()
+        target_link_libraries(EcoKernel_Http PRIVATE ${LIBZIP_LIBRARIES})
+        target_include_directories(EcoKernel_Http PRIVATE ${LIBZIP_INCLUDE_DIRS})
+    endif()
     target_compile_definitions(EcoKernel_Http PRIVATE LIBZIP_AVAILABLE=1)
 endif()
 target_compile_features(EcoKernel_Http PUBLIC cxx_std_20)

@@ -217,7 +217,17 @@ target_include_directories(ElmKernel_Http PUBLIC
     ${RUNTIME_INCLUDE_DIR}/platform
 )
 if(HTTP_AVAILABLE)
-    target_link_libraries(ElmKernel_Http PRIVATE CURL::libcurl OpenSSL::SSL OpenSSL::Crypto)
+    if(ECO_STATIC)
+        # eco-kernel-cpp vendors libcurl from source under ECO_STATIC (Debian
+        # ships libcurl.a but no .a counterparts for its transitive deps:
+        # nghttp2/idn2/psl/gssapi_krb5/brotli/zstd/etc). The vendored target
+        # is `libcurl_static`. Linking the system CURL::libcurl here would
+        # pull /usr/lib/x86_64-linux-gnu/libcurl.a back into the eco link
+        # line, dragging those unresolvable transitive deps with it.
+        target_link_libraries(ElmKernel_Http PRIVATE libcurl_static OpenSSL::SSL OpenSSL::Crypto)
+    else()
+        target_link_libraries(ElmKernel_Http PRIVATE CURL::libcurl OpenSSL::SSL OpenSSL::Crypto)
+    endif()
     target_compile_definitions(ElmKernel_Http PRIVATE HTTP_CURL_AVAILABLE=1)
 endif()
 target_compile_features(ElmKernel_Http PUBLIC cxx_std_20)

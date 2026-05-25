@@ -457,6 +457,24 @@ set_target_properties(eco PROPERTIES
 # stackmap parser in eco_entry.cpp expects.
 target_link_options(eco PRIVATE -fuse-ld=bfd)
 
+# Stage A static-link: pull libstdc++ and libgcc into the binary so the
+# only shared deps left are glibc + the dynamic linker. See
+# plans/static-link-eco-binary.md (Stage A, Step 5).
+#
+# `--allow-multiple-definition` resolves the _Unwind_* collision between
+# clang's auto-added libgcc_eh.a (from -static-libgcc) and the explicit
+# LLVM libunwind.a (eco::llvm_libunwind). Because libunwind.a is listed
+# earlier in the link line, its definitions win — libgcc_eh.a's are
+# silently dropped. The cleaner fix is -rtlib=compiler-rt, but compiler-rt
+# isn't installed alongside the LLVM 21 build on this host; revisit during
+# Stage B (Alpine ships libunwind+libcxx+compiler-rt all from one LLVM
+# tree).
+if(ECO_STATIC)
+    target_link_options(eco PRIVATE
+        -static-libstdc++ -static-libgcc
+        -Wl,--allow-multiple-definition)
+endif()
+
 target_link_libraries(eco PRIVATE
     "-Wl,--start-group"
     EcoEntryStatic
@@ -481,9 +499,67 @@ target_link_libraries(eco PRIVATE
     # initializers that should run unconditionally.
     EcoNativeDriverStatic
     "-Wl,--end-group"
-    pthread m stdc++ curl ssl crypto zip
+    pthread m
     eco::llvm_libunwind
 )
+
+# libstdc++ entry. With ECO_STATIC the driver's -static-libstdc++ inserts
+# libstdc++.a at the right place; a bare `-lstdc++` here would resolve to
+# the .so first and shadow the static one. Without ECO_STATIC, keep the
+# explicit `-lstdc++` because the driver-added entry comes too late in the
+# link order for some EcoEntryStatic / kernel symbol references.
+if(NOT ECO_STATIC)
+    target_link_libraries(eco PRIVATE stdc++)
+endif()
+
+# Under ECO_STATIC the curl/ssl/crypto/zip libraries reach the link line as
+# transitive PRIVATE dependencies of EcoKernel_Http (pkg-config's
+# Libs.private closure on Debian, or the FetchContent libzip target). The
+# bare `-lcurl -lssl -lcrypto -lzip` flags below are appended only for the
+# dynamic build; under ECO_STATIC they would re-resolve to the .so siblings
+# and defeat the static link.
+if(NOT ECO_STATIC)
+    target_link_libraries(eco PRIVATE curl ssl crypto zip)
+endif()
+
+# Static-link probe (Stage A verification). Same kernel + runtime dep tree
+# as `eco` but with a trivial main() instead of the MLIR-generated Stage-9
+# object. Lets us exercise the static link path (ldd / readelf) without
+# running the Elm bootstrap chain. EXCLUDE_FROM_ALL — default builds skip
+# it; built explicitly via `--target eco-static-link-probe`.
+if(ECO_STATIC)
+    add_executable(eco-static-link-probe EXCLUDE_FROM_ALL
+        ${CMAKE_CURRENT_BINARY_DIR}/static_link_probe.cpp
+    )
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/static_link_probe.cpp
+        "int main() { return 0; }\n")
+    set_target_properties(eco-static-link-probe PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${BUILD_KERNEL_DIR}/bin"
+    )
+    target_link_options(eco-static-link-probe PRIVATE
+        -fuse-ld=bfd -static-libstdc++ -static-libgcc
+        -Wl,--allow-multiple-definition)
+    target_link_libraries(eco-static-link-probe PRIVATE
+        "-Wl,--start-group"
+        EcoEntryStatic EcoRuntimeStatic
+        "-Wl,--whole-archive"
+        ElmKernel_Utils
+        "-Wl,--no-whole-archive"
+        ElmKernel_Basics ElmKernel_Bitwise ElmKernel_Char ElmKernel_String
+        ElmKernel_List ElmKernel_JsArray ElmKernel_Debug ElmKernel_Scheduler
+        ElmKernel_Platform ElmKernel_Process ElmKernel_VirtualDom ElmKernel_Json
+        ElmKernel_Browser ElmKernel_Bytes ElmKernel_File ElmKernel_Http
+        ElmKernel_Parser ElmKernel_Regex ElmKernel_Time ElmKernel_Url
+        ElmKernel_EffectRegistry
+        EcoKernel_File EcoKernel_Console EcoKernel_Env EcoKernel_Process
+        EcoKernel_MVar EcoKernel_NativeDriver EcoKernel_Runtime EcoKernel_Http
+        EcoKernel_Crash
+        EcoNativeDriverStatic
+        "-Wl,--end-group"
+        pthread m
+        eco::llvm_libunwind
+    )
+endif()
 
 set(ECO_STAGE9_OUTPUT "${BUILD_KERNEL_DIR}/bin/eco")
 add_custom_target(eco-bootstrap DEPENDS eco)

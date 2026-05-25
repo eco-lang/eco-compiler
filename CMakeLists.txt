@@ -56,6 +56,80 @@ if(ECO_HEAP_TRACE)
     add_compile_definitions(ECO_HEAP_TRACE=1)
 endif()
 
+# Static-link switch (Stage A in plans/static-link-eco-binary.md). When ON,
+# the eco binary is linked against static .a counterparts of curl/openssl/
+# libzip/libunwind, plus -static-libstdc++ -static-libgcc. The resulting
+# binary depends only on glibc and the dynamic linker. Default OFF — the
+# everyday dev build stays dynamically linked. Stages B (MUSL Docker) and
+# C (AOT-from-anywhere) build on this switch.
+option(ECO_STATIC
+       "Static-link curl/openssl/libzip/libunwind/libstdc++ into eco (glibc still shared)"
+       OFF)
+
+if(ECO_STATIC)
+    # MUST be set BEFORE any add_subdirectory() that calls find_package on
+    # these libs — otherwise the first subdir to call find_package(OpenSSL)
+    # / find_package(CURL) / find_package(ZLIB) caches the .so path and
+    # later subdirs silently inherit it. elm-kernel-cpp (line 92) is added
+    # before eco-kernel-cpp (line 95) and was triggering exactly that.
+    set(OPENSSL_USE_STATIC_LIBS TRUE)
+    set(ZLIB_USE_STATIC_LIBS TRUE)
+    # Prefer .a over .so for every find_library call. Scoped to the entire
+    # build tree — under ECO_STATIC there's no case where we'd want a .so
+    # fallback to silently win over an available .a.
+    set(CMAKE_FIND_LIBRARY_SUFFIXES ".a;${CMAKE_FIND_LIBRARY_SUFFIXES}")
+
+    # Vendor libcurl from source. Debian's libcurl.a was built with HTTP/2
+    # + IDN + Brotli + ZSTD + LDAP + GSSAPI + SSH2 + RTMP enabled, but
+    # Debian doesn't ship .a archives for any of those transitive deps —
+    # linking the system libcurl.a fails with `cannot find -lnghttp2 /
+    # -lidn2 / -lgssapi_krb5 / …`. Building a minimal libcurl (only the
+    # OpenSSL TLS backend; HTTPS only) sidesteps the problem entirely.
+    # Decision Q2 in plans/static-link-eco-binary.md.
+    #
+    # Vendored at the TOP level (not inside eco-kernel-cpp) so the
+    # `libcurl_static` target exists before elm-kernel-cpp is added — both
+    # subdirs link ElmKernel_Http / EcoKernel_Http against it.
+    include(FetchContent)
+    set(BUILD_CURL_EXE        OFF CACHE BOOL "" FORCE)
+    set(BUILD_SHARED_LIBS     OFF CACHE BOOL "" FORCE)
+    set(BUILD_STATIC_LIBS     ON  CACHE BOOL "" FORCE)
+    set(BUILD_TESTING         OFF CACHE BOOL "" FORCE)
+    set(BUILD_LIBCURL_DOCS    OFF CACHE BOOL "" FORCE)
+    set(BUILD_MISC_DOCS       OFF CACHE BOOL "" FORCE)
+    set(ENABLE_CURL_MANUAL    OFF CACHE BOOL "" FORCE)
+    set(CURL_USE_OPENSSL      ON  CACHE BOOL "" FORCE)
+    set(CURL_USE_LIBPSL       OFF CACHE BOOL "" FORCE)
+    set(CURL_USE_LIBSSH2      OFF CACHE BOOL "" FORCE)
+    set(CURL_USE_GSSAPI       OFF CACHE BOOL "" FORCE)
+    set(USE_NGHTTP2           OFF CACHE BOOL "" FORCE)
+    set(USE_LIBIDN2           OFF CACHE BOOL "" FORCE)
+    set(USE_LIBRTMP           OFF CACHE BOOL "" FORCE)
+    set(CURL_BROTLI           OFF CACHE BOOL "" FORCE)
+    set(CURL_ZSTD             OFF CACHE BOOL "" FORCE)
+    set(CURL_DISABLE_LDAP     ON  CACHE BOOL "" FORCE)
+    set(CURL_DISABLE_LDAPS    ON  CACHE BOOL "" FORCE)
+    # Disable protocols we don't use (compiler only fetches https://*).
+    set(CURL_DISABLE_DICT     ON CACHE BOOL "" FORCE)
+    set(CURL_DISABLE_FILE     ON CACHE BOOL "" FORCE)
+    set(CURL_DISABLE_FTP      ON CACHE BOOL "" FORCE)
+    set(CURL_DISABLE_GOPHER   ON CACHE BOOL "" FORCE)
+    set(CURL_DISABLE_IMAP     ON CACHE BOOL "" FORCE)
+    set(CURL_DISABLE_MQTT     ON CACHE BOOL "" FORCE)
+    set(CURL_DISABLE_POP3     ON CACHE BOOL "" FORCE)
+    set(CURL_DISABLE_RTSP     ON CACHE BOOL "" FORCE)
+    set(CURL_DISABLE_SMB      ON CACHE BOOL "" FORCE)
+    set(CURL_DISABLE_SMTP     ON CACHE BOOL "" FORCE)
+    set(CURL_DISABLE_TELNET   ON CACHE BOOL "" FORCE)
+    set(CURL_DISABLE_TFTP     ON CACHE BOOL "" FORCE)
+    FetchContent_Declare(libcurl_vendored
+        GIT_REPOSITORY https://github.com/curl/curl.git
+        GIT_TAG curl-8_11_0
+        GIT_SHALLOW TRUE
+    )
+    FetchContent_MakeAvailable(libcurl_vendored)
+endif()
+
 add_executable(ecor
         runtime/src/main.cpp
         runtime/src/allocator/RootSet.cpp

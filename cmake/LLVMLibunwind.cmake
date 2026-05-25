@@ -68,12 +68,26 @@ foreach(_prefix IN LISTS _llvm_libunwind_prefixes)
     list(APPEND _llvm_libunwind_lib_dirs "${_prefix}/lib")
 endforeach()
 
-find_library(LLVM_LIBUNWIND_LIBRARY
-    NAMES unwind
-    HINTS ${_llvm_libunwind_lib_dirs}
-    NO_DEFAULT_PATH
-    DOC "LLVM libunwind shared library (liunwind.so from LLVM_ENABLE_RUNTIMES)"
-)
+# Under ECO_STATIC we want the static archive (libunwind.a) and no rpath;
+# otherwise we want the shared library (libunwind.so) loaded via an embedded
+# -Wl,-rpath. Naming `libunwind.a` explicitly bypasses
+# CMAKE_FIND_LIBRARY_SUFFIXES, which would otherwise prefer `.so` even when
+# only `.a` is wanted.
+if(ECO_STATIC)
+    find_library(LLVM_LIBUNWIND_LIBRARY
+        NAMES libunwind.a
+        HINTS ${_llvm_libunwind_lib_dirs}
+        NO_DEFAULT_PATH
+        DOC "LLVM libunwind static archive (libunwind.a from LLVM_ENABLE_RUNTIMES)"
+    )
+else()
+    find_library(LLVM_LIBUNWIND_LIBRARY
+        NAMES unwind
+        HINTS ${_llvm_libunwind_lib_dirs}
+        NO_DEFAULT_PATH
+        DOC "LLVM libunwind shared library (libunwind.so from LLVM_ENABLE_RUNTIMES)"
+    )
+endif()
 
 set(_llvm_libunwind_inc_dirs "")
 foreach(_prefix IN LISTS _llvm_libunwind_prefixes)
@@ -114,8 +128,13 @@ add_library(eco::llvm_libunwind INTERFACE IMPORTED GLOBAL)
 set_target_properties(eco::llvm_libunwind PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${LLVM_LIBUNWIND_INCLUDE_DIR}"
     INTERFACE_LINK_LIBRARIES "${LLVM_LIBUNWIND_LIBRARY}"
-    INTERFACE_LINK_OPTIONS "LINKER:-rpath,${LLVM_LIBUNWIND_LIBRARY_DIR}"
 )
+if(NOT ECO_STATIC)
+    # Static archive needs no rpath; the .so does (no LD_LIBRARY_PATH munging).
+    set_target_properties(eco::llvm_libunwind PROPERTIES
+        INTERFACE_LINK_OPTIONS "LINKER:-rpath,${LLVM_LIBUNWIND_LIBRARY_DIR}"
+    )
+endif()
 
 message(STATUS "LLVM libunwind:")
 message(STATUS "  header:  ${LLVM_LIBUNWIND_INCLUDE_DIR}/libunwind.h")
