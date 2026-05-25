@@ -326,15 +326,20 @@ add_custom_command(
 )
 
 # -- Stage 7b: eco-compiler-boot.mlir → eco-compiler-boot (native ELF)
+# eco-boot-native invocation wrapped in /usr/bin/time -v so the lowering+link
+# stats line up next to the Stage 5 and 7a front-end stats in the report.
 set(ECO_COMPILER_BOOT_ELF "${BUILD_KERNEL_DIR}/bin/eco-compiler-boot")
+set(STAGE7B_TIME_LOG      "${BUILD_KERNEL_DIR}/timing-stage7b.txt")
 
 add_custom_command(
     OUTPUT ${ECO_COMPILER_BOOT_ELF}
-    COMMAND $<TARGET_FILE:eco-boot-native>
+    COMMAND ${GNU_TIME_EXECUTABLE} -v -o ${STAGE7B_TIME_LOG}
+        $<TARGET_FILE:eco-boot-native>
         ${ECO_COMPILER_BOOT_MLIR}
         -o ${ECO_COMPILER_BOOT_ELF}
+    BYPRODUCTS ${STAGE7B_TIME_LOG}
     DEPENDS ${ECO_COMPILER_BOOT_MLIR} eco-boot-native
-    COMMENT "Stage 7b: eco-compiler-boot.mlir → eco-compiler-boot (native ELF)"
+    COMMENT "Stage 7b: eco-compiler-boot.mlir → eco-compiler-boot (native ELF, timed)"
 )
 
 add_custom_target(eco-compiler-boot DEPENDS ${ECO_COMPILER_BOOT_ELF})
@@ -523,37 +528,37 @@ add_custom_command(
 add_custom_target(eco-verify DEPENDS ${ECO_STAGE9_VERIFY_STAMP})
 
 # ============================================================================
-# MLIR front-end compile-timing report
+# MLIR-pipeline compile-timing report
 #
-# Stages 5 and 7a each leave a `/usr/bin/time -v` log behind (STAGE5_TIME_LOG,
-# STAGE7A_TIME_LOG). print-mlir-timings.py reads those logs plus the resulting
-# .mlir outputs and prints a side-by-side comparison table.
+# Stages 5, 7a, and 7b each leave a `/usr/bin/time -v` log behind. The script
+# pairs each log with the stage's output file (the resulting .mlir text or
+# native ELF) and prints a side-by-side comparison table. The arg shape is
+#   <title> <label> <time-log> <output-file> [...]
+# so adding/removing columns is just an arg-list edit on the caller side.
 # ============================================================================
 set(MLIR_TIMING_SCRIPT "${COMPILER_DIR}/cmake/print-mlir-timings.py")
+set(MLIR_TIMING_ARGS
+    "MLIR pipeline compile timings"
+    "Stage 5 (JS → MLIR)"   ${STAGE5_TIME_LOG}  ${ECO_COMPILER_MLIR}
+    "Stage 7a (ELF → MLIR)" ${STAGE7A_TIME_LOG} ${ECO_COMPILER_BOOT_MLIR}
+    "Stage 7b (MLIR → ELF)" ${STAGE7B_TIME_LOG} ${ECO_COMPILER_BOOT_ELF}
+)
 
 # Standalone target — prints whatever timing data is currently on disk. Safe
-# to invoke before either stage has run; missing data renders as '-'. Useful
+# to invoke before any stage has run; missing data renders as '-'. Useful
 # after partial builds (e.g. `--target eco-compiler-mlir`) to see Stage 5 in
 # isolation.
 add_custom_target(mlir-timing-report
-    COMMAND ${PYTHON3_EXECUTABLE} ${MLIR_TIMING_SCRIPT}
-        ${STAGE5_TIME_LOG}
-        ${STAGE7A_TIME_LOG}
-        ${ECO_COMPILER_MLIR}
-        ${ECO_COMPILER_BOOT_MLIR}
-    COMMENT "MLIR front-end compile-timing report"
+    COMMAND ${PYTHON3_EXECUTABLE} ${MLIR_TIMING_SCRIPT} ${MLIR_TIMING_ARGS}
+    COMMENT "MLIR pipeline compile-timing report"
     VERBATIM
 )
 
 # Aggregate: run the full bootstrap chain with all three fixed-point checks
 # (Stage 4b JS, Stage 8c native intermediate, Stage 9c unified-eco), then
-# print the front-end MLIR-emit timing table as the final step.
+# print the MLIR-pipeline timing table as the final step.
 add_custom_target(bootstrap
-    COMMAND ${PYTHON3_EXECUTABLE} ${MLIR_TIMING_SCRIPT}
-        ${STAGE5_TIME_LOG}
-        ${STAGE7A_TIME_LOG}
-        ${ECO_COMPILER_MLIR}
-        ${ECO_COMPILER_BOOT_MLIR}
+    COMMAND ${PYTHON3_EXECUTABLE} ${MLIR_TIMING_SCRIPT} ${MLIR_TIMING_ARGS}
     DEPENDS ${ECO_BOOT_VERIFY_STAMP}
         ${BOOTSTRAP_STAMP}
         ${ECO_STAGE9_VERIFY_STAMP}

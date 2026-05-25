@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""Format a comparison table of GNU `/usr/bin/time -v` output for the two
-front-end MLIR-emit stages of the bootstrap chain.
-
-  Stage 5  — eco-boot-2.js (Node)         → eco-compiler.mlir
-  Stage 7a — eco-compiler (native ELF)    → eco-compiler-boot.mlir
+"""Format a side-by-side table of GNU `/usr/bin/time -v` output for one or
+more bootstrap pipeline stages.
 
 Usage:
-    print-mlir-timings.py LOG5 LOG7A MLIR5 MLIR7A
+    print-mlir-timings.py TITLE [LABEL TIME_LOG OUTPUT_FILE]...
 
-Missing log or output files render as '-' so the script is safe to invoke
-before either stage has run.
+Each `(LABEL, TIME_LOG, OUTPUT_FILE)` triplet becomes one table column. The
+script handles arbitrarily many stages. Missing logs / outputs render as '-'
+so the script is safe to invoke before any stage has run. Binary outputs
+(e.g. native ELF) report no line count; text outputs report bytes + lines.
 """
 
 import os
@@ -18,11 +17,10 @@ from pathlib import Path
 
 
 def parse_time_log(path):
-    """Parse a `/usr/bin/time -v` output file into a label -> value dict.
+    """Parse `/usr/bin/time -v` output into a label -> value dict.
 
     Labels can embed colons inside parens (e.g. `Elapsed (wall clock) time
-    (h:mm:ss or m:ss)`), so we split on the LAST ": " separator instead of
-    the first colon.
+    (h:mm:ss or m:ss)`), so split on the LAST ': ' separator.
     """
     out = {}
     if not Path(path).is_file():
@@ -57,112 +55,137 @@ def humanize_bytes(n):
     return f"{n} B"
 
 
+def is_binary(path, sniff_bytes=4096):
+    """Heuristic: file is binary if its first chunk contains any NUL byte."""
+    try:
+        with open(path, "rb") as f:
+            return b"\x00" in f.read(sniff_bytes)
+    except OSError:
+        return False
+
+
 def file_stats(path):
+    """Return (size_bytes, line_count). line_count is None for binary files."""
     if not Path(path).is_file():
         return None, None
     size = os.path.getsize(path)
+    if is_binary(path):
+        return size, None
     with open(path, "rb") as f:
         lines = sum(1 for _ in f)
     return size, lines
 
 
 def fmt_int(value):
+    if value is None:
+        return "-"
     try:
         return f"{int(value):,}"
     except (TypeError, ValueError):
         return value or "-"
 
 
-def throughput(time_log, file_size):
-    """KB of MLIR text emitted per wall-clock second."""
-    if file_size is None:
-        return "-"
-    elapsed = time_log.get("Elapsed (wall clock) time (h:mm:ss or m:ss)")
+def elapsed_to_seconds(elapsed):
     if not elapsed:
-        return "-"
-    # Format is either "h:mm:ss" or "m:ss[.ss]".
+        return None
     parts = elapsed.split(":")
     try:
         if len(parts) == 3:
-            secs = int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
-        elif len(parts) == 2:
-            secs = int(parts[0]) * 60 + float(parts[1])
-        else:
-            return "-"
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + float(parts[1])
     except ValueError:
+        return None
+    return None
+
+
+def throughput(time_log, size_bytes):
+    if size_bytes is None:
         return "-"
-    if secs <= 0:
+    secs = elapsed_to_seconds(
+        time_log.get("Elapsed (wall clock) time (h:mm:ss or m:ss)"))
+    if not secs:
         return "-"
-    return f"{file_size / 1024 / secs:.1f} KiB/s"
+    return f"{size_bytes / 1024 / secs:.1f} KiB/s"
 
 
 def main():
-    if len(sys.argv) != 5:
-        sys.exit("usage: print-mlir-timings.py LOG5 LOG7A MLIR5 MLIR7A")
-    log5_path, log7a_path, mlir5_path, mlir7a_path = sys.argv[1:5]
+    if len(sys.argv) < 5 or (len(sys.argv) - 2) % 3 != 0:
+        sys.exit(
+            "usage: print-mlir-timings.py TITLE [LABEL TIME_LOG OUTPUT_FILE]...")
+    title = sys.argv[1]
+    triplets = sys.argv[2:]
 
-    t5 = parse_time_log(log5_path)
-    t7a = parse_time_log(log7a_path)
-    size5, lines5 = file_stats(mlir5_path)
-    size7a, lines7a = file_stats(mlir7a_path)
+    stages = []
+    for i in range(0, len(triplets), 3):
+        label, log_path, out_path = triplets[i:i + 3]
+        time_log = parse_time_log(log_path)
+        size, lines = file_stats(out_path)
+        stages.append({
+            "label": label,
+            "time": time_log,
+            "size": size,
+            "lines": lines,
+        })
+
+    def t(stage, key):
+        return stage["time"].get(key, "-")
 
     rows = [
         ("Wall clock",
-         t5.get("Elapsed (wall clock) time (h:mm:ss or m:ss)", "-"),
-         t7a.get("Elapsed (wall clock) time (h:mm:ss or m:ss)", "-")),
+            lambda s: t(s, "Elapsed (wall clock) time (h:mm:ss or m:ss)")),
         ("User CPU (s)",
-         t5.get("User time (seconds)", "-"),
-         t7a.get("User time (seconds)", "-")),
+            lambda s: t(s, "User time (seconds)")),
         ("System CPU (s)",
-         t5.get("System time (seconds)", "-"),
-         t7a.get("System time (seconds)", "-")),
+            lambda s: t(s, "System time (seconds)")),
         ("CPU usage",
-         t5.get("Percent of CPU this job got", "-"),
-         t7a.get("Percent of CPU this job got", "-")),
+            lambda s: t(s, "Percent of CPU this job got")),
         ("Peak RSS",
-         humanize_kib(t5.get("Maximum resident set size (kbytes)")),
-         humanize_kib(t7a.get("Maximum resident set size (kbytes)"))),
+            lambda s: humanize_kib(s["time"].get(
+                "Maximum resident set size (kbytes)"))),
         ("Minor page faults",
-         fmt_int(t5.get("Minor (reclaiming a frame) page faults")),
-         fmt_int(t7a.get("Minor (reclaiming a frame) page faults"))),
+            lambda s: fmt_int(s["time"].get(
+                "Minor (reclaiming a frame) page faults"))),
         ("Major page faults",
-         fmt_int(t5.get("Major (requiring I/O) page faults")),
-         fmt_int(t7a.get("Major (requiring I/O) page faults"))),
+            lambda s: fmt_int(s["time"].get(
+                "Major (requiring I/O) page faults"))),
         ("Vol. ctx switches",
-         fmt_int(t5.get("Voluntary context switches")),
-         fmt_int(t7a.get("Voluntary context switches"))),
+            lambda s: fmt_int(s["time"].get("Voluntary context switches"))),
         ("Invol. ctx switches",
-         fmt_int(t5.get("Involuntary context switches")),
-         fmt_int(t7a.get("Involuntary context switches"))),
+            lambda s: fmt_int(s["time"].get("Involuntary context switches"))),
         ("FS outputs (blocks)",
-         fmt_int(t5.get("File system outputs")),
-         fmt_int(t7a.get("File system outputs"))),
-        ("MLIR output size",
-         humanize_bytes(size5),
-         humanize_bytes(size7a)),
-        ("MLIR output lines",
-         fmt_int(lines5),
-         fmt_int(lines7a)),
-        ("MLIR throughput",
-         throughput(t5, size5),
-         throughput(t7a, size7a)),
+            lambda s: fmt_int(s["time"].get("File system outputs"))),
+        ("Output size",
+            lambda s: humanize_bytes(s["size"])),
+        ("Output lines",
+            lambda s: fmt_int(s["lines"])),
+        ("Output throughput",
+            lambda s: throughput(s["time"], s["size"])),
     ]
 
-    col1, col2, col3 = "Metric", "Stage 5 (JS → MLIR)", "Stage 7a (ELF → MLIR)"
-    w1 = max(len(col1), max(len(r[0]) for r in rows))
-    w2 = max(len(col2), max(len(str(r[1])) for r in rows))
-    w3 = max(len(col3), max(len(str(r[2])) for r in rows))
-    total = w1 + w2 + w3 + 6
+    metric_col = "Metric"
+    label_w = max(len(metric_col), max(len(r[0]) for r in rows))
+    col_widths = []
+    for stage in stages:
+        widest = max(len(str(getter(stage))) for _, getter in rows)
+        col_widths.append(max(len(stage["label"]), widest))
+    total_w = label_w + sum(col_widths) + 2 * (len(stages) + 1)
+
+    def line(parts, sep="  "):
+        return "  " + sep.join(parts)
 
     print()
-    print("=" * total)
-    print("  MLIR front-end compile timings".ljust(total))
-    print("=" * total)
-    print(f"  {col1:<{w1}}  {col2:>{w2}}  {col3:>{w3}}")
-    print(f"  {'-' * w1}  {'-' * w2}  {'-' * w3}")
-    for label, a, b in rows:
-        print(f"  {label:<{w1}}  {str(a):>{w2}}  {str(b):>{w3}}")
-    print("=" * total)
+    print("=" * total_w)
+    print(("  " + title).ljust(total_w))
+    print("=" * total_w)
+    print(line([f"{metric_col:<{label_w}}"]
+               + [f"{s['label']:>{w}}" for s, w in zip(stages, col_widths)]))
+    print(line(["-" * label_w] + ["-" * w for w in col_widths]))
+    for label, getter in rows:
+        print(line([f"{label:<{label_w}}"]
+                   + [f"{str(getter(s)):>{w}}"
+                      for s, w in zip(stages, col_widths)]))
+    print("=" * total_w)
     print()
 
 
