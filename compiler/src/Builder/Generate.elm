@@ -41,6 +41,7 @@ produce JavaScript, MLIR, or other target code.
 -}
 
 import Builder.Build as Build
+import Builder.Eco.FEStats as FEStats
 import Builder.Elm.Details as Details
 import Builder.Elm.Outline as Outline
 import Builder.File as File
@@ -665,13 +666,14 @@ type alias MonoBuildResult =
 
 buildMonoGraph :
     Config.EcoConfig
+    -> FEStats.Handle
     -> FilePath
     -> Maybe String
     -> Maybe ( Pkg.Name, FilePath )
     -> Details.Details
     -> Build.Artifacts
     -> Task Exit.Generate MonoBuildResult
-buildMonoGraph ecoConfig root maybeBuildDir maybeLocal details (Build.Artifacts artifacts) =
+buildMonoGraph ecoConfig stats root maybeBuildDir maybeLocal details (Build.Artifacts artifacts) =
     let
         roots =
             artifacts.roots
@@ -684,7 +686,7 @@ buildMonoGraph ecoConfig root maybeBuildDir maybeLocal details (Build.Artifacts 
     in
     loadTypedObjects root maybeBuildDir maybeLocal details modules
         |> Task.andThen finalizeAndMergeTypedObjects
-        |> Task.andThen (buildMonoGraphFromMerged ecoConfig roots)
+        |> Task.andThen (buildMonoGraphFromMerged ecoConfig stats roots)
 
 
 {-| Remove the untyped Opt.LocalGraph from a Fresh module.
@@ -700,8 +702,8 @@ stripUntypedGraph modul =
             modul
 
 
-buildMonoGraphFromMerged : Config.EcoConfig -> NE.Nonempty Build.Root -> MergedTypedData -> Task Exit.Generate MonoBuildResult
-buildMonoGraphFromMerged ecoConfig roots (MergedTypedData mergedGraph mergedEnv) =
+buildMonoGraphFromMerged : Config.EcoConfig -> FEStats.Handle -> NE.Nonempty Build.Root -> MergedTypedData -> Task Exit.Generate MonoBuildResult
+buildMonoGraphFromMerged ecoConfig stats roots (MergedTypedData mergedGraph mergedEnv) =
     let
         typedGraph : TOpt.GlobalGraph Name
         typedGraph =
@@ -711,7 +713,7 @@ buildMonoGraphFromMerged ecoConfig roots (MergedTypedData mergedGraph mergedEnv)
         globalTypeEnv =
             List.foldl addRootTypeEnv mergedEnv (NE.toList roots)
     in
-    runMonoOptPipeline ecoConfig typedGraph globalTypeEnv
+    runMonoOptPipeline ecoConfig stats typedGraph globalTypeEnv
 
 
 {-| Run the monomorphization → inline+simplify → global optimization pipeline.
@@ -722,75 +724,55 @@ pinning data from earlier phases (e.g., TypedObjects, typedGraph, globalTypeEnv)
 through subsequent phases where they are no longer needed.
 
 -}
-runMonoOptPipeline : Config.EcoConfig -> TOpt.GlobalGraph Name -> TypeEnv.GlobalTypeEnv -> Task Exit.Generate MonoBuildResult
-runMonoOptPipeline ecoConfig typedGraph globalTypeEnv =
-    logStderr "Monomorphization started..."
-        |> Task.andThen
-            (\_ ->
-                Monomorphize.monomorphizeWithLog logStderr "main" globalTypeEnv typedGraph
-                    |> Task.andThen
-                        (\result ->
-                            case result of
-                                Err err ->
-                                    Task.throw (Exit.GenerateMonomorphizationError err)
+runMonoOptPipeline : Config.EcoConfig -> FEStats.Handle -> TOpt.GlobalGraph Name -> TypeEnv.GlobalTypeEnv -> Task Exit.Generate MonoBuildResult
+runMonoOptPipeline ecoConfig stats typedGraph globalTypeEnv =
+    FEStats.withPhase stats
+        FEStats.PhaseMono
+        (case Monomorphize.monomorphize "main" globalTypeEnv typedGraph of
+            Err err ->
+                Task.throw (Exit.GenerateMonomorphizationError err)
 
-                                Ok monoGraph0 ->
-                                    logStderr "Monomorphization done."
-                                        |> Task.map (\_ -> monoGraph0)
-                        )
-            )
+            Ok monoGraph0 ->
+                Task.succeed monoGraph0
+        )
         -- Hand off to a separate function so typedGraph and globalTypeEnv go out of scope
-        |> Task.andThen (runInlineSimplifyPhase ecoConfig)
+        |> Task.andThen (runInlineSimplifyPhase ecoConfig stats)
 
 
 {-| Inline+simplify phase in its own scope so monomorphization inputs are GC-eligible.
 -}
-runInlineSimplifyPhase : Config.EcoConfig -> Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
-runInlineSimplifyPhase ecoConfig monoGraph0 =
-    logStderr "Inline + simplify started..."
-        |> Task.andThen
-            (\_ ->
-                let
-                    ( simplifiedGraph, _ ) =
-                        MonoInlineSimplify.optimize ecoConfig.inline monoGraph0
-                in
-                logStderr "Inline + simplify done."
-                    |> Task.map (\_ -> simplifiedGraph)
-            )
+runInlineSimplifyPhase : Config.EcoConfig -> FEStats.Handle -> Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
+runInlineSimplifyPhase ecoConfig stats monoGraph0 =
+    FEStats.withPhase stats
+        FEStats.PhaseInlineSimplify
+        (let
+            ( simplifiedGraph, _ ) =
+                MonoInlineSimplify.optimize ecoConfig.inline monoGraph0
+         in
+         Task.succeed simplifiedGraph
+        )
         -- Hand off to a separate function so monoGraph0 goes out of scope
-        |> Task.andThen runGlobalOptPhase
+        |> Task.andThen (runGlobalOptPhase stats)
 
 
 {-| Global optimization phase in its own scope so inline+simplify inputs are GC-eligible.
 -}
-runGlobalOptPhase : Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
-runGlobalOptPhase simplifiedGraph =
-    logStderr "Global optimization started..."
-        |> Task.andThen
-            (\_ ->
-                MonoGlobalOptimize.globalOptimizeWithLog logStderr simplifiedGraph
-            )
-        |> Task.andThen
-            (\monoGraph ->
-                logStderr "Global optimization done."
-                    |> Task.map
-                        (\_ ->
-                            { monoGraph = monoGraph
-                            , mode = Mode.Dev Nothing
-                            }
-                        )
-            )
-
-
-logStderr : String -> Task x ()
-logStderr msg =
-    Task.io (IO.writeLn IO.stderr msg)
+runGlobalOptPhase : FEStats.Handle -> Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
+runGlobalOptPhase stats simplifiedGraph =
+    FEStats.withPhase stats
+        FEStats.PhaseGlobalOpt
+        (Task.succeed
+            { monoGraph = MonoGlobalOptimize.globalOptimize simplifiedGraph
+            , mode = Mode.Dev Nothing
+            }
+        )
 
 
 {-| Stream MLIR output directly to a file, avoiding holding the full text in memory.
 -}
 writeMonoMlirStreaming :
     Config.EcoConfig
+    -> FEStats.Handle
     -> Bool
     -> Int
     -> FilePath
@@ -800,15 +782,18 @@ writeMonoMlirStreaming :
     -> Build.Artifacts
     -> FilePath
     -> Task Exit.Generate ()
-writeMonoMlirStreaming ecoConfig _ _ root maybeBuildDir maybeLocal details artifacts target =
-    buildMonoGraph ecoConfig root maybeBuildDir maybeLocal details artifacts
+writeMonoMlirStreaming ecoConfig stats _ _ root maybeBuildDir maybeLocal details artifacts target =
+    buildMonoGraph ecoConfig stats root maybeBuildDir maybeLocal details artifacts
         |> Task.andThen
             (\{ monoGraph, mode } ->
-                File.withStreamingWriter target
-                    (\writeChunk ->
-                        MLIR.streamMlirToWriter ecoConfig mode monoGraph writeChunk
+                FEStats.withPhase stats
+                    FEStats.PhaseMlir
+                    (File.withStreamingWriter target
+                        (\writeChunk ->
+                            MLIR.streamMlirToWriter ecoConfig mode monoGraph writeChunk
+                        )
+                        |> Task.mapError never
                     )
-                    |> Task.mapError never
             )
 
 
@@ -817,6 +802,7 @@ Processes funcs one at a time to reduce peak memory usage.
 -}
 writeMonoMlirStreamingBytecode :
     Config.EcoConfig
+    -> FEStats.Handle
     -> Bool
     -> Int
     -> FilePath
@@ -826,12 +812,15 @@ writeMonoMlirStreamingBytecode :
     -> Build.Artifacts
     -> FilePath
     -> Task Exit.Generate ()
-writeMonoMlirStreamingBytecode ecoConfig _ _ root maybeBuildDir maybeLocal details artifacts target =
-    buildMonoGraph ecoConfig root maybeBuildDir maybeLocal details artifacts
+writeMonoMlirStreamingBytecode ecoConfig stats _ _ root maybeBuildDir maybeLocal details artifacts target =
+    buildMonoGraph ecoConfig stats root maybeBuildDir maybeLocal details artifacts
         |> Task.andThen
             (\{ monoGraph, mode } ->
-                MLIR.streamMlirBytecode ecoConfig mode monoGraph target
-                    |> Task.mapError never
+                FEStats.withPhase stats
+                    FEStats.PhaseMlir
+                    (MLIR.streamMlirBytecode ecoConfig mode monoGraph target
+                        |> Task.mapError never
+                    )
             )
 
 

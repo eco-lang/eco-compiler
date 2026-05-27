@@ -45,6 +45,17 @@ if(ECO_HEAP_VALIDATE)
     add_compile_definitions(ECO_HEAP_VALIDATE=1)
 endif()
 
+# Per-GC `[heap-trace] …` diagnostics. When OFF (default), the trace prints
+# and their gathering logic are compiled out so they cost nothing on the hot
+# path. When ON, the existing `ECO_HEAP_TRACE` env-var still gates emission at
+# runtime — set `ECO_HEAP_TRACE=1` to actually see output.
+option(ECO_HEAP_TRACE
+       "Compile in per-GC [heap-trace] diagnostics (still gated by ECO_HEAP_TRACE env var)"
+       OFF)
+if(ECO_HEAP_TRACE)
+    add_compile_definitions(ECO_HEAP_TRACE=1)
+endif()
+
 add_executable(ecor
         runtime/src/main.cpp
         runtime/src/allocator/RootSet.cpp

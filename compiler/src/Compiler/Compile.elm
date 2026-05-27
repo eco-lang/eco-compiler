@@ -157,12 +157,13 @@ compile pkg ifaces modul =
             )
 
 
-{-| Per-phase stderr log helper. One line per (phase, module) pair so a
-captured log shows the exact sequence the compiler is walking through.
+{-| Phase boundary used as a Task scheduling point. Returning a fresh
+`Task.succeed ()` between phases lets the runtime interleave GC and other
+work between canonicalize/type-check/nitpick/optimize even when the pipeline
+is otherwise single-threaded.
 -}
 phase : Name -> String -> Task Never ()
-phase modName name =
-    --IO.writeLn IO.stderr ("[phase] " ++ name ++ " " ++ modName)
+phase _ _ =
     Task.succeed ()
 
 

@@ -306,6 +306,10 @@ make =
                         Make.configFlag
                         "Path to an eco-config.json with tunable compiler settings (default: eco-config.json beside elm.json)."
                     )
+                |> Terminal.more
+                    (Terminal.onOff "stats"
+                        "Collect front-end timing stats (per-phase wall-clocks and per-module crawl/check/build histograms) and print a summary to stderr at the end."
+                    )
     in
     Terminal.Command
         { name = "make"
@@ -320,7 +324,7 @@ make =
                     chunks
                     [ Chomp.chompMultiple (Chomp.pure identity) Terminal.elmFile Terminal.parseElmFile
                     ]
-                    (Chomp.pure (\debug_ optimize_ withSourceMaps_ output_ report_ docs_ showPackageErrors_ buildDir_ kernelPackage_ localPackage_ textMlir_ refreshRegistry_ configPath_ -> Make.Flags { debug = debug_, optimize = optimize_, withSourceMaps = withSourceMaps_, output = output_, report = report_, docs = docs_, showPackageErrors = showPackageErrors_, buildDir = buildDir_, kernelPackage = kernelPackage_, localPackage = localPackage_, textMlir = textMlir_, refreshRegistry = refreshRegistry_, configPath = configPath_ })
+                    (Chomp.pure (\debug_ optimize_ withSourceMaps_ output_ report_ docs_ showPackageErrors_ buildDir_ kernelPackage_ localPackage_ textMlir_ refreshRegistry_ configPath_ stats_ -> Make.Flags { debug = debug_, optimize = optimize_, withSourceMaps = withSourceMaps_, output = output_, report = report_, docs = docs_, showPackageErrors = showPackageErrors_, buildDir = buildDir_, kernelPackage = kernelPackage_, localPackage = localPackage_, textMlir = textMlir_, refreshRegistry = refreshRegistry_, configPath = configPath_, stats = stats_ })
                         |> Chomp.apply (Chomp.chompOnOffFlag "debug")
                         |> Chomp.apply (Chomp.chompOnOffFlag "optimize")
                         |> Chomp.apply (Chomp.chompOnOffFlag "sourcemaps")
@@ -334,6 +338,7 @@ make =
                         |> Chomp.apply (Chomp.chompOnOffFlag "text-mlir")
                         |> Chomp.apply (Chomp.chompOnOffFlag "refresh-registry")
                         |> Chomp.apply (Chomp.chompNormalFlag "config" Make.configFlag Make.parseConfig)
+                        |> Chomp.apply (Chomp.chompOnOffFlag "stats")
                         |> Chomp.andThen
                             (\value ->
                                 Chomp.checkForUnknownFlags makeFlags

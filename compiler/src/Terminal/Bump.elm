@@ -18,6 +18,7 @@ import Builder.Build as Build
 import Builder.Deps.Bump as Bump
 import Builder.Deps.Diff as Diff
 import Builder.Deps.Registry as Registry
+import Builder.Eco.FEStats as FEStats
 import Builder.Elm.Details as Details
 import Builder.Elm.Outline as Outline
 import Builder.Http as Http
@@ -269,7 +270,7 @@ buildDocsFromExposed root exposed details =
             Task.throw Exit.BumpNoExposed
 
         e :: es ->
-            Build.fromExposed Docs.bytesDecoder Docs.bytesEncoder Reporting.silent root Nothing Nothing details Build.keepDocs (NE.Nonempty e es) |> Task.eio Exit.BumpBadBuild
+            Build.fromExposed Docs.bytesDecoder Docs.bytesEncoder Reporting.silent root Nothing Nothing details Build.keepDocs FEStats.disabled (NE.Nonempty e es) |> Task.eio Exit.BumpBadBuild
 
 
 

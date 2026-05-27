@@ -1,4 +1,4 @@
-module Compiler.Monomorphize.Monomorphize exposing (monomorphize, monomorphizeWithLog)
+module Compiler.Monomorphize.Monomorphize exposing (monomorphize)
 
 {-| This module transforms a TypedOptimized.GlobalGraph into a Monomorphized.MonoGraph
 by specializing all polymorphic functions to their concrete type instantiations.
@@ -16,7 +16,7 @@ The monomorphization algorithm works as follows:
 
 # Monomorphization
 
-@docs monomorphize, monomorphizeWithLog
+@docs monomorphize
 
 -}
 
@@ -40,7 +40,6 @@ import Data.Map as DMap
 import Dict
 import Set
 import System.TypeCheck.IO as IO
-import Task exposing (Task)
 import Utils.Crash
 
 
@@ -98,57 +97,6 @@ monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodes annotations mvarEn
     Ok prunedGraph
 
 
-{-| Like monomorphize, but logs each sub-pass via the provided logger.
--}
-monomorphizeWithLog : (String -> Task x ()) -> Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Task x (Result String Mono.MonoGraph)
-monomorphizeWithLog log entryPointName globalTypeEnv globalGraph =
-    let
-        -- Phase 0: Assign globally unique MVarIds to all type variables
-        ( TOpt.GlobalGraph nodesWithIds _ annotationsWithIds _, mvarState ) =
-            AssignMVarIds.assignIds globalGraph
-
-        mvarEnv =
-            State.initMVarEnv mvarState.nextId mvarState.numberVars
-    in
-    case findEntryPointId entryPointName nodesWithIds of
-        Nothing ->
-            Task.succeed (Err ("No " ++ entryPointName ++ " function found"))
-
-        Just ( mainGlobal, mainType ) ->
-            log "  Specialization (worklist)..."
-                |> Task.andThen
-                    (\_ ->
-                        runSpecializationTask log mainGlobal mainType globalTypeEnv nodesWithIds annotationsWithIds mvarEnv
-                    )
-                |> Task.andThen
-                    (\( finalState, mainSpecIdVal ) ->
-                        let
-                            -- Extract what we need and release toptNodes for GC
-                            finalAccum =
-                                finalState.accum
-
-                            finalGlobalTypeEnv =
-                                finalState.ctx.globalTypeEnv
-
-                            finalLambdaCounter =
-                                finalState.ctx.lambdaCounter
-                        in
-                        log "  Type patching + graph assembly..."
-                            |> Task.andThen
-                                (\_ ->
-                                    let
-                                        rawGraph =
-                                            assembleRawGraphFrom finalAccum finalLambdaCounter mainSpecIdVal
-                                    in
-                                    log "  Pruning unreachable specs..."
-                                        |> Task.map
-                                            (\_ ->
-                                                Ok (Prune.pruneUnreachableSpecs finalGlobalTypeEnv rawGraph)
-                                            )
-                                )
-                    )
-
-
 {-| Phase 1: Run the specialization worklist to completion (pure).
 -}
 runSpecialization : TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> State.MVarEnv -> ( MonoState, Mono.SpecId )
@@ -163,31 +111,7 @@ runSpecialization mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
     ( finalState, mainSpecIdVal )
 
 
-{-| Phase 1 (Task): Run the specialization worklist to completion via Task.andThen,
-allowing memory monitoring hooks to run between specializations. Logs every
-SPEC_LOG_INTERVAL processed specs via the provided logger so long worklists
-show progress in captured stderr.
--}
-runSpecializationTask : (String -> Task x ()) -> TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> State.MVarEnv -> Task x ( MonoState, Mono.SpecId )
-runSpecializationTask log mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
-    let
-        ( stateWithMain, mainSpecIdVal ) =
-            initSpecialization mainGlobal mainType globalTypeEnv nodes annotations mvarEnv
-    in
-    processWorklist log 0 stateWithMain
-        |> Task.map (\finalState -> ( finalState, mainSpecIdVal ))
-
-
-{-| Log a per-cycle progress line every this many specs processed. Tuned so
-captured logs see ~once-per-second updates on cold compilers without
-flooding fast monomorphization runs.
--}
-specLogInterval : Int
-specLogInterval =
-    10000
-
-
-{-| Shared initialization for both pure and Task-based specialization.
+{-| Shared initialization for the specialization worklist.
 -}
 initSpecialization : TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> State.MVarEnv -> ( MonoState, Mono.SpecId )
 initSpecialization mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
@@ -377,46 +301,6 @@ processWorklistPure state =
 
         (SpecializeGlobal specId) :: rest ->
             processWorklistPure (processOneWorkItem specId rest state)
-
-
-{-| Process all pending specializations until the worklist is empty.
-
-Each iteration flows through Task.andThen so that memory monitoring
-hooks can run between specializations.
-
--}
-processWorklist : (String -> Task x ()) -> Int -> MonoState -> Task x MonoState
-processWorklist log processed state =
-    case state.accum.worklist of
-        [] ->
-            Task.succeed state
-
-        (SpecializeGlobal specId) :: rest ->
-            let
-                nextProcessed : Int
-                nextProcessed =
-                    processed + 1
-
-                continue : MonoState -> Task x MonoState
-                continue st =
-                    processWorklist log nextProcessed st
-
-                nextState : MonoState
-                nextState =
-                    processOneWorkItem specId rest state
-            in
-            if modBy specLogInterval nextProcessed == 0 then
-                log
-                    ("    [mono] processed "
-                        ++ String.fromInt nextProcessed
-                        ++ " specs (worklist="
-                        ++ String.fromInt (List.length nextState.accum.worklist)
-                        ++ ")"
-                    )
-                    |> Task.andThen (\_ -> continue nextState)
-
-            else
-                continue nextState
 
 
 {-| Process a single work item from the worklist.

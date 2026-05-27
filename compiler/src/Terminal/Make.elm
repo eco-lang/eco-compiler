@@ -53,6 +53,7 @@ import Builder.BackgroundWriter as BW
 import Builder.Build as Build
 import Builder.Deps.Registry as Registry
 import Builder.Eco.Config as EcoConfigLoader
+import Builder.Eco.FEStats as FEStats
 import Builder.Elm.Details as Details
 import Builder.File as File
 import Builder.Generate as Generate
@@ -97,6 +98,7 @@ type alias FlagsData =
     , textMlir : Bool
     , refreshRegistry : Bool
     , configPath : Maybe String
+    , stats : Bool
     }
 
 
@@ -130,22 +132,28 @@ type ReportType
 -}
 run : List String -> Flags -> Task Never ()
 run paths ((Flags flagsData) as flags) =
-    getStyle flagsData.report
-        |> Task.andThen (runWithStyle paths flags)
+    FEStats.init flagsData.stats
+        |> Task.andThen
+            (\stats ->
+                getStyle flagsData.report
+                    |> Task.andThen (runWithStyle paths flags stats)
+                    |> Task.andThen (\_ -> FEStats.finalize stats)
+                    |> Task.andThen (\_ -> FEStats.prettyPrint stats)
+            )
 
 
-runWithStyle : List String -> Flags -> Reporting.Style -> Task Never ()
-runWithStyle paths flags style =
+runWithStyle : List String -> Flags -> FEStats.Handle -> Reporting.Style -> Task Never ()
+runWithStyle paths flags stats style =
     Stuff.findRoot
-        |> Task.andThen (runWithRoot paths flags style)
+        |> Task.andThen (runWithRoot paths flags stats style)
 
 
-runWithRoot : List String -> Flags -> Reporting.Style -> Maybe FilePath -> Task Never ()
-runWithRoot paths flags style maybeRoot =
+runWithRoot : List String -> Flags -> FEStats.Handle -> Reporting.Style -> Maybe FilePath -> Task Never ()
+runWithRoot paths flags stats style maybeRoot =
     Reporting.attemptWithStyle style Exit.makeToReport <|
         case maybeRoot of
             Just root ->
-                runHelp root paths style flags
+                runHelp root paths style stats flags
 
             Nothing ->
                 Task.succeed (Err Exit.MakeNoOutline)
@@ -169,11 +177,12 @@ type alias BuildContext =
     , localPackage : Maybe ( Pkg.Name, FilePath )
     , textMlir : Bool
     , ecoConfig : Config.EcoConfig
+    , stats : FEStats.Handle
     }
 
 
-runHelp : String -> List String -> Reporting.Style -> Flags -> Task Never (Result Exit.Make ())
-runHelp root paths style (Flags flagsData) =
+runHelp : String -> List String -> Reporting.Style -> FEStats.Handle -> Flags -> Task Never (Result Exit.Make ())
+runHelp root paths style stats (Flags flagsData) =
     let
         registryPolicy =
             if flagsData.refreshRegistry then
@@ -182,44 +191,45 @@ runHelp root paths style (Flags flagsData) =
             else
                 Registry.Normal
     in
-    BW.withScope (runHelpWithScope root paths style flagsData.debug flagsData.optimize flagsData.withSourceMaps flagsData.output flagsData.docs flagsData.showPackageErrors flagsData.buildDir flagsData.kernelPackage flagsData.localPackage flagsData.textMlir flagsData.configPath registryPolicy)
+    BW.withScope (runHelpWithScope root paths style stats flagsData.debug flagsData.optimize flagsData.withSourceMaps flagsData.output flagsData.docs flagsData.showPackageErrors flagsData.buildDir flagsData.kernelPackage flagsData.localPackage flagsData.textMlir flagsData.configPath registryPolicy)
 
 
-runHelpWithScope : FilePath -> List String -> Reporting.Style -> Bool -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Maybe String -> Registry.RegistryPolicy -> BW.Scope -> Task Never (Result Exit.Make ())
-runHelpWithScope root paths style debug optimize withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir maybeConfigPath registryPolicy scope =
+runHelpWithScope : FilePath -> List String -> Reporting.Style -> FEStats.Handle -> Bool -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Maybe String -> Registry.RegistryPolicy -> BW.Scope -> Task Never (Result Exit.Make ())
+runHelpWithScope root paths style stats debug optimize withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir maybeConfigPath registryPolicy scope =
     Stuff.withRootLockBuildDir root
         maybeBuildDir
         (Task.run
             (getMode debug optimize
-                |> Task.andThen (loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir maybeConfigPath registryPolicy scope)
+                |> Task.andThen (loadDetailsAndBuild root paths style stats withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir maybeConfigPath registryPolicy scope)
             )
         )
 
 
-loadDetailsAndBuild : FilePath -> List String -> Reporting.Style -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Maybe String -> Registry.RegistryPolicy -> BW.Scope -> DesiredMode -> Task Exit.Make ()
-loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir maybeConfigPath registryPolicy scope desiredMode =
+loadDetailsAndBuild : FilePath -> List String -> Reporting.Style -> FEStats.Handle -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Maybe String -> Registry.RegistryPolicy -> BW.Scope -> DesiredMode -> Task Exit.Make ()
+loadDetailsAndBuild root paths style stats withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir maybeConfigPath registryPolicy scope desiredMode =
     EcoConfigLoader.load maybeConfigPath root
         |> Task.andThen
             (\ecoConfig ->
-                Task.eio Exit.MakeBadDetails (Details.load style scope root maybeBuildDir (Just (Config.hash ecoConfig)) (shouldUseTypedOpt maybeOutput) showPackageErrors maybeLocalPackage registryPolicy)
-                    |> Task.andThen (buildWithDetails root paths style withSourceMaps maybeOutput maybeDocs maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir ecoConfig desiredMode)
+                FEStats.withPhase stats FEStats.PhaseDeps
+                    (Task.eio Exit.MakeBadDetails (Details.load style scope root maybeBuildDir (Just (Config.hash ecoConfig)) (shouldUseTypedOpt maybeOutput) showPackageErrors maybeLocalPackage registryPolicy))
+                    |> Task.andThen (buildWithDetails root paths style stats withSourceMaps maybeOutput maybeDocs maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir ecoConfig desiredMode)
             )
 
 
-buildWithDetails : FilePath -> List String -> Reporting.Style -> Bool -> Maybe Output -> Maybe FilePath -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Config.EcoConfig -> DesiredMode -> Details.Details -> Task Exit.Make ()
-buildWithDetails root paths style withSourceMaps maybeOutput maybeDocs maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir ecoConfig desiredMode details =
+buildWithDetails : FilePath -> List String -> Reporting.Style -> FEStats.Handle -> Bool -> Maybe Output -> Maybe FilePath -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Config.EcoConfig -> DesiredMode -> Details.Details -> Task Exit.Make ()
+buildWithDetails root paths style stats withSourceMaps maybeOutput maybeDocs maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir ecoConfig desiredMode details =
     let
         ctx : BuildContext
         ctx =
-            BuildContext root style withSourceMaps maybeOutput maybeDocs maybeBuildDir desiredMode details maybeLocalPackage textMlir ecoConfig
+            BuildContext root style withSourceMaps maybeOutput maybeDocs maybeBuildDir desiredMode details maybeLocalPackage textMlir ecoConfig stats
     in
     case paths of
         [] ->
             getExposed details
-                |> Task.andThen (buildExposed style root maybeBuildDir maybeKernelPackage details maybeDocs)
+                |> Task.andThen (buildExposed style root maybeBuildDir maybeKernelPackage details maybeDocs stats)
 
         p :: ps ->
-            buildPaths style root maybeBuildDir maybeKernelPackage details (shouldUseTypedOpt maybeOutput) (NE.Nonempty p ps)
+            FEStats.withPhase stats FEStats.PhaseLocal (buildPaths style root maybeBuildDir maybeKernelPackage details (shouldUseTypedOpt maybeOutput) stats (NE.Nonempty p ps))
                 |> Task.andThen (handleArtifacts ctx)
 
 
@@ -320,6 +330,7 @@ handleMlirOutput ctx target artifacts =
                     if ctx.textMlir then
                         Generate.writeMonoMlirStreaming
                             ctx.ecoConfig
+                            ctx.stats
                             ctx.withSourceMaps
                             0
                             ctx.root
@@ -332,6 +343,7 @@ handleMlirOutput ctx target artifacts =
                     else
                         Generate.writeMonoMlirStreamingBytecode
                             ctx.ecoConfig
+                            ctx.stats
                             ctx.withSourceMaps
                             0
                             ctx.root
@@ -386,6 +398,7 @@ handleElfOutput ctx target artifacts =
                     if ctx.textMlir then
                         Generate.writeMonoMlirStreaming
                             ctx.ecoConfig
+                            ctx.stats
                             ctx.withSourceMaps
                             0
                             ctx.root
@@ -399,6 +412,7 @@ handleElfOutput ctx target artifacts =
                     else
                         Generate.writeMonoMlirStreamingBytecode
                             ctx.ecoConfig
+                            ctx.stats
                             ctx.withSourceMaps
                             0
                             ctx.root
@@ -494,28 +508,31 @@ getExposed (Details.Details detailsData) =
 -- ====== BUILD PROJECTS ======
 
 
-buildExposed : Reporting.Style -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> Maybe FilePath -> NE.Nonempty ModuleName.Raw -> Task Exit.Make ()
-buildExposed style root maybeBuildDir maybeKernelPackage details maybeDocs exposed =
+buildExposed : Reporting.Style -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> Maybe FilePath -> FEStats.Handle -> NE.Nonempty ModuleName.Raw -> Task Exit.Make ()
+buildExposed style root maybeBuildDir maybeKernelPackage details maybeDocs stats exposed =
     let
         docsGoal : Build.DocsGoal ()
         docsGoal =
             Maybe.unwrap Build.ignoreDocs Build.writeDocs maybeDocs
     in
-    Task.eio Exit.MakeCannotBuild <|
-        Build.fromExposed BD.unit
-            BE.unit
-            style
-            root
-            maybeBuildDir
-            maybeKernelPackage
-            details
-            docsGoal
-            exposed
+    FEStats.withPhase stats FEStats.PhaseLocal <|
+        (Task.eio Exit.MakeCannotBuild <|
+            Build.fromExposed BD.unit
+                BE.unit
+                style
+                root
+                maybeBuildDir
+                maybeKernelPackage
+                details
+                docsGoal
+                stats
+                exposed
+        )
 
 
-buildPaths : Reporting.Style -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> Bool -> NE.Nonempty FilePath -> Task Exit.Make Build.Artifacts
-buildPaths style root maybeBuildDir maybeKernelPackage details needsTypedOpt paths =
-    Build.fromPaths style root maybeBuildDir maybeKernelPackage details needsTypedOpt paths |> Task.eio Exit.MakeCannotBuild
+buildPaths : Reporting.Style -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> Bool -> FEStats.Handle -> NE.Nonempty FilePath -> Task Exit.Make Build.Artifacts
+buildPaths style root maybeBuildDir maybeKernelPackage details needsTypedOpt stats paths =
+    Build.fromPaths style root maybeBuildDir maybeKernelPackage details needsTypedOpt stats paths |> Task.eio Exit.MakeCannotBuild
 
 
 

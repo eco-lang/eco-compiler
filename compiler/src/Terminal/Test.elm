@@ -29,6 +29,7 @@ compiles them with the required dependencies, and executes them using Node.js.
 
 import Builder.BackgroundWriter as BW
 import Builder.Build as Build
+import Builder.Eco.FEStats as FEStats
 import Builder.Deps.Registry as Registry
 import Builder.Deps.Solver as Solver
 import Builder.Elm.Details as Details
@@ -1254,7 +1255,7 @@ buildAndGenerate root path details =
 
 buildPaths : FilePath -> Details.Details -> NE.Nonempty FilePath -> Task Exit.Test Build.Artifacts
 buildPaths root details paths =
-    Build.fromPaths style root Nothing Nothing details False paths |> Task.eio Exit.TestCannotBuild
+    Build.fromPaths style root Nothing Nothing details False FEStats.disabled paths |> Task.eio Exit.TestCannotBuild
 
 
 

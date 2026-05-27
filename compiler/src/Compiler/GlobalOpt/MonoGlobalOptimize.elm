@@ -1,4 +1,4 @@
-module Compiler.GlobalOpt.MonoGlobalOptimize exposing (globalOptimize, globalOptimizeWithLog)
+module Compiler.GlobalOpt.MonoGlobalOptimize exposing (globalOptimize)
 
 {-| Global optimization pass that runs after monomorphization and inlining but before MLIR codegen.
 
@@ -18,7 +18,7 @@ GlobalOpt owns all staging/ABI decisions and canonicalizes the types to match pa
 Note: GOPT\_001 (closure params == stage arity) is verified by TestLogic.Generate.MonoFunctionArity,
 not at runtime. The compiler trusts that canonicalizeClosureStaging produces correct output.
 
-@docs globalOptimize, globalOptimizeWithLog
+@docs globalOptimize
 
 -}
 
@@ -33,7 +33,6 @@ import Compiler.Reporting.Annotation as A
 import Dict exposing (Dict)
 import Set exposing (Set)
 import System.TypeCheck.IO as IO
-import Task exposing (Task)
 
 
 
@@ -130,46 +129,6 @@ globalOptimize graph0a =
     in
     -- Phase 5: Annotate call staging metadata (with dynamic slots from solver)
     annotateCallStaging stagingSolution.dynamicSlots graph4
-
-
-{-| Like globalOptimize, but logs each sub-pass to stderr via the provided logger.
--}
-globalOptimizeWithLog : (String -> Task x ()) -> Mono.MonoGraph -> Task x Mono.MonoGraph
-globalOptimizeWithLog log graph0a =
-    log "  Phase 1: Wrap top-level callables..."
-        |> Task.andThen
-            (\_ ->
-                let
-                    graph1 =
-                        wrapTopLevelCallables graph0a
-                in
-                log "  Phase 2: Staging analysis + rewrite..."
-                    |> Task.andThen
-                        (\_ ->
-                            let
-                                ( stagingSolution, graph2 ) =
-                                    Staging.analyzeAndSolveStaging graph1
-                            in
-                            log "  Phase 3: Validate closure staging..."
-                                |> Task.andThen
-                                    (\_ ->
-                                        let
-                                            graph3 =
-                                                Staging.validateClosureStaging graph2
-                                        in
-                                        log "  Phase 4: ABI cloning..."
-                                            |> Task.andThen
-                                                (\_ ->
-                                                    let
-                                                        graph4 =
-                                                            AbiCloning.abiCloningPass graph3
-                                                    in
-                                                    log "  Phase 5: Annotate call staging..."
-                                                        |> Task.map (\_ -> annotateCallStaging stagingSolution.dynamicSlots graph4)
-                                                )
-                                    )
-                        )
-            )
 
 
 

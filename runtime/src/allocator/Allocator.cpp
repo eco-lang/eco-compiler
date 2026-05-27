@@ -41,6 +41,7 @@ constexpr size_t HEAP_TRACE_NURSERY_INTERVAL  = 16 * 1024 * 1024;  // 16 MB.
 }  // namespace
 
 bool Allocator::heapTraceEnabled() {
+#if ECO_HEAP_TRACE
     static const bool enabled = []{
         const char* e = std::getenv("ECO_HEAP_TRACE");
         if (e == nullptr || e[0] == '\0') return false;
@@ -48,9 +49,17 @@ bool Allocator::heapTraceEnabled() {
         return !(e[0] == '0' && e[1] == '\0');
     }();
     return enabled;
+#else
+    // Compile-time off: every `if (heapTraceEnabled())` guard becomes dead
+    // code and the trace block is eliminated by the optimiser. Build with
+    // `-DECO_HEAP_TRACE=ON` to re-enable.
+    return false;
+#endif
 }
 
-void Allocator::dumpHeapState(const char* label, size_t pending_size) const {
+void Allocator::dumpHeapState([[maybe_unused]] const char* label,
+                              [[maybe_unused]] size_t pending_size) const {
+#if ECO_HEAP_TRACE
     // Aggregate size of released-but-not-yet-reused old-gen blocks.
     size_t free_blocks_bytes = 0;
     for (const auto& fb : old_gen_free_blocks_) free_blocks_bytes += fb.second;
@@ -101,6 +110,7 @@ void Allocator::dumpHeapState(const char* label, size_t pending_size) const {
                      OldGenSpaceTestAccess::getUnassignedBlocks(og).size());
     }
     std::fputc('\n', stderr);
+#endif  // ECO_HEAP_TRACE
 }
 
 // Thread-local heap pointer for fast access.

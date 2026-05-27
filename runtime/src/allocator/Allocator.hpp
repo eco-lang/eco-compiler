@@ -189,13 +189,16 @@ public:
     size_t getOldGenMaxBytes() const { return nursery_offset; }
 
     // Diagnostics: dumps heap state (old-gen + nursery commit counters plus
-    // per-thread allocated_bytes and block counts) to stderr. Always emits;
-    // callers guard with heapTraceEnabled() when the dump is only useful
-    // during verbose tracing.
+    // per-thread allocated_bytes and block counts) to stderr. The body is a
+    // compile-time no-op unless the build was configured with the CMake option
+    // `-DECO_HEAP_TRACE=ON`; runtime emission is further gated by the
+    // `ECO_HEAP_TRACE` env var so default release builds carry no trace cost.
     void dumpHeapState(const char* label, size_t pending_size = 0) const;
 
-    // Returns true when the environment variable ECO_HEAP_TRACE is set to a
-    // non-zero / non-empty value. Queried once per process and cached.
+    // Returns true when traces are compiled in (CMake `ECO_HEAP_TRACE=ON`) and
+    // the `ECO_HEAP_TRACE` env var is set to a non-zero / non-empty value at
+    // process start. When the CMake option is OFF this is a compile-time
+    // `false` so every `if (heapTraceEnabled())`-guarded block is DCE'd.
     static bool heapTraceEnabled();
 
 #if ENABLE_GC_STATS

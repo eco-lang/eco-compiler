@@ -47,6 +47,7 @@ both application and package builds, including REPL sessions.
 -}
 
 import Basics.Extra exposing (flip)
+import Builder.Eco.FEStats as FEStats
 import Builder.Elm.Details as Details
 import Builder.Elm.Outline as Outline
 import Builder.File as File
@@ -105,6 +106,7 @@ type alias EnvData =
     , locals : Dict ModuleName.Raw Details.Local
     , foreigns : Dict ModuleName.Raw Details.Foreign
     , needsTypedOpt : Bool
+    , stats : FEStats.Handle
     }
 
 
@@ -112,8 +114,8 @@ type Env
     = Env EnvData
 
 
-makeEnv : Reporting.BKey -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> Bool -> Task Never Env
-makeEnv key root maybeBuildDir maybeKernelPackage (Details.Details detailsData) needsTypedOpt =
+makeEnv : Reporting.BKey -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> Bool -> FEStats.Handle -> Task Never Env
+makeEnv key root maybeBuildDir maybeKernelPackage (Details.Details detailsData) needsTypedOpt stats =
     case detailsData.outline of
         Details.ValidApp givenSrcDirs ->
             Utils.listTraverse (toAbsoluteSrcDir root) (NE.toList givenSrcDirs)
@@ -135,6 +137,7 @@ makeEnv key root maybeBuildDir maybeKernelPackage (Details.Details detailsData) 
                             , locals = detailsData.locals
                             , foreigns = detailsData.foreigns
                             , needsTypedOpt = needsTypedOpt
+                            , stats = stats
                             }
                     )
 
@@ -152,6 +155,7 @@ makeEnv key root maybeBuildDir maybeKernelPackage (Details.Details detailsData) 
                             , locals = detailsData.locals
                             , foreigns = detailsData.foreigns
                             , needsTypedOpt = needsTypedOpt
+                            , stats = stats
                             }
                     )
 
@@ -217,11 +221,11 @@ documentation goal (keep, write, or ignore). It performs parallel compilation wi
 incremental rebuilding based on modification times and interface changes.
 
 -}
-fromExposed : Bytes.Decode.Decoder docs -> (docs -> Bytes.Encode.Encoder) -> Reporting.Style -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> DocsGoal docs -> NE.Nonempty ModuleName.Raw -> Task Never (Result Exit.BuildProblem docs)
-fromExposed docsDecoder docsEncoder style root maybeBuildDir maybeKernelPackage details docsGoal ((NE.Nonempty e es) as exposed) =
+fromExposed : Bytes.Decode.Decoder docs -> (docs -> Bytes.Encode.Encoder) -> Reporting.Style -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> DocsGoal docs -> FEStats.Handle -> NE.Nonempty ModuleName.Raw -> Task Never (Result Exit.BuildProblem docs)
+fromExposed docsDecoder docsEncoder style root maybeBuildDir maybeKernelPackage details docsGoal stats ((NE.Nonempty e es) as exposed) =
     Reporting.trackBuild docsDecoder docsEncoder style <|
         \key ->
-            makeEnv key root maybeBuildDir maybeKernelPackage details False
+            makeEnv key root maybeBuildDir maybeKernelPackage details False stats
                 |> Task.andThen (crawlExposed root maybeBuildDir details docsGoal (e :: es))
                 |> Task.andThen (compileExposed root maybeBuildDir details docsGoal exposed)
 
@@ -296,19 +300,8 @@ compileAndFinalize root maybeBuildDir details foreigns statuses env =
 
 compileAllModules : Env -> Dependencies -> Dict ModuleName.Raw Status -> MVar ResultDict -> Task Never ( MVar ResultDict, Dict ModuleName.Raw (MVar BResult) )
 compileAllModules env foreigns statuses rmvar =
-    -- Phase boundary marker: crawl is done, dispatching N modules into
-    -- checkModule. Lets us see we left the crawl phase even when the
-    -- per-[check] lines lag behind.
-    IO.writeLn IO.stderr
-        ("[phase] crawl done; dispatching "
-            ++ String.fromInt (Dict.size statuses)
-            ++ " modules to checkModule"
-        )
-        |> Task.andThen
-            (\_ ->
-                dictForkWithKey bResultEncoder (checkModule env foreigns rmvar) statuses
-                    |> Task.map (\resultMVars -> ( rmvar, resultMVars ))
-            )
+    dictForkWithKey bResultEncoder (checkModule env foreigns rmvar) statuses
+        |> Task.map (\resultMVars -> ( rmvar, resultMVars ))
 
 
 collectResultsAndWriteDetails : FilePath -> Maybe String -> Details.Details -> ( MVar (Dict ModuleName.Raw (MVar BResult)), Dict ModuleName.Raw (MVar BResult) ) -> Task Never (Dict ModuleName.Raw BResult)
@@ -368,11 +361,11 @@ This entry point discovers modules from the given file paths, crawls their depen
 and performs parallel incremental compilation.
 
 -}
-fromPaths : Reporting.Style -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> Bool -> NE.Nonempty FilePath -> Task Never (Result Exit.BuildProblem Artifacts)
-fromPaths style root maybeBuildDir maybeKernelPackage details needsTypedOpt paths =
+fromPaths : Reporting.Style -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> Bool -> FEStats.Handle -> NE.Nonempty FilePath -> Task Never (Result Exit.BuildProblem Artifacts)
+fromPaths style root maybeBuildDir maybeKernelPackage details needsTypedOpt stats paths =
     Reporting.trackBuild artifactsDecoder artifactsEncoder style <|
         \key ->
-            makeEnv key root maybeBuildDir maybeKernelPackage details needsTypedOpt
+            makeEnv key root maybeBuildDir maybeKernelPackage details needsTypedOpt stats
                 |> Task.andThen (findAndBuildFromPaths root maybeBuildDir details paths)
 
 
@@ -576,14 +569,10 @@ crawlModule ((Env envData) as env) mvar ((DocsNeed needsDocs) as docsNeed) name 
         elmFileName =
             ModuleName.toFilePath name ++ ".elm"
     in
-    -- Per-module crawl trace: fires once per module reachable from main
-    -- during the dependency-resolution phase.
-    IO.writeLn IO.stderr ("[crawl] " ++ name)
-        |> Task.andThen
-            (\_ ->
-                findModulePaths envData.srcDirs elmFileName
-                    |> Task.andThen (crawlFoundPaths env mvar docsNeed name needsDocs envData.root envData.projectType envData.buildID envData.locals envData.foreigns)
-            )
+    FEStats.withModuleStage envData.stats FEStats.Crawl name <|
+        (findModulePaths envData.srcDirs elmFileName
+            |> Task.andThen (crawlFoundPaths env mvar docsNeed name needsDocs envData.root envData.projectType envData.buildID envData.locals envData.foreigns)
+        )
 
 
 findModulePaths : List AbsoluteSrcDir -> String -> Task Never (List FilePath)
@@ -774,58 +763,31 @@ type CachedInterface
 
 checkModule : Env -> Dependencies -> MVar ResultDict -> ModuleName.Raw -> Status -> Task Never BResult
 checkModule ((Env envData) as env) foreigns resultsMVar name status =
-    let
-        -- Per-status check trace: fires once per module dispatched from
-        -- compileAllModules. The branch tag tells us which path each
-        -- module took (cached, recompile-pending, foreign, kernel, etc.).
-        branchTag : String
-        branchTag =
-            case status of
-                SCached _ ->
-                    "cached"
+    FEStats.withModuleStage envData.stats FEStats.Check name <|
+        (case status of
+            SCached ((Details.Local localData) as local) ->
+                checkCachedModule env envData.root envData.projectType resultsMVar name localData.path localData.time localData.deps localData.hasMain localData.lastChange localData.lastCompile local
 
-                SChanged _ _ _ _ ->
-                    "changed"
+            SChanged ((Details.Local localData) as local) source ((Src.Module srcData) as modul) docsNeed ->
+                checkChangedModule env envData.root resultsMVar name localData.path localData.time localData.deps localData.lastCompile local source srcData.imports modul docsNeed
 
-                SBadImport _ ->
-                    "bad-import"
+            SBadImport importProblem ->
+                Task.succeed (RNotFound importProblem)
 
-                SBadSyntax _ _ _ _ ->
-                    "bad-syntax"
+            SBadSyntax path time source err ->
+                Error.BadSyntax err |> Error.Module name path time source |> RProblem |> Task.succeed
 
-                SForeign _ ->
-                    "foreign"
+            SForeign home ->
+                case Utils.find ModuleName.toComparableCanonical (TypeCheck.Canonical home name) foreigns of
+                    I.Public iface ->
+                        Task.succeed (RForeign iface)
 
-                SKernel ->
-                    "kernel"
-    in
-    IO.writeLn IO.stderr ("[check] " ++ name ++ " " ++ branchTag)
-        |> Task.andThen
-            (\_ ->
-                case status of
-                    SCached ((Details.Local localData) as local) ->
-                        checkCachedModule env envData.root envData.projectType resultsMVar name localData.path localData.time localData.deps localData.hasMain localData.lastChange localData.lastCompile local
+                    I.Private _ _ _ ->
+                        ("mistakenly seeing private interface for " ++ Pkg.toChars home ++ " " ++ name) |> crash
 
-                    SChanged ((Details.Local localData) as local) source ((Src.Module srcData) as modul) docsNeed ->
-                        checkChangedModule env envData.root resultsMVar name localData.path localData.time localData.deps localData.lastCompile local source srcData.imports modul docsNeed
-
-                    SBadImport importProblem ->
-                        Task.succeed (RNotFound importProblem)
-
-                    SBadSyntax path time source err ->
-                        Error.BadSyntax err |> Error.Module name path time source |> RProblem |> Task.succeed
-
-                    SForeign home ->
-                        case Utils.find ModuleName.toComparableCanonical (TypeCheck.Canonical home name) foreigns of
-                            I.Public iface ->
-                                Task.succeed (RForeign iface)
-
-                            I.Private _ _ _ ->
-                                ("mistakenly seeing private interface for " ++ Pkg.toChars home ++ " " ++ name) |> crash
-
-                    SKernel ->
-                        Task.succeed RKernel
-            )
+            SKernel ->
+                Task.succeed RKernel
+        )
 
 
 checkCachedModule :
@@ -1436,41 +1398,17 @@ compile (Env envData) docsNeed (Details.Local localData) source ifaces modul =
         pkg =
             projectTypeToPkg envData.projectType
 
-        -- Per-module progress log: one newline-terminated line per module
-        -- so captured stderr (where the in-place "\rCompiling (N)" counter
-        -- doesn't render usefully) shows which module is being worked on
-        -- and at what rate. Stays quiet when stderr is the terminal — the
-        -- existing in-place counter still runs in parallel.
         modName : Name
         modName =
             Src.getName modul
-
-        traceMsg : String
-        traceMsg =
-            "[build] compile "
-                ++ modName
-                ++ "  ("
-                ++ String.fromInt (String.length source)
-                ++ " B, "
-                ++ String.fromInt (List.length localData.deps)
-                ++ " deps"
-                ++ (if envData.needsTypedOpt then
-                        ", typed-opt"
-
-                    else
-                        ""
-                   )
-                ++ ")"
     in
-    IO.writeLn IO.stderr traceMsg
-        |> Task.andThen
-            (\_ ->
-                if envData.needsTypedOpt then
-                    compileWithTypedOpt envData.key envData.root pkg envData.buildID docsNeed localData.path localData.time localData.deps localData.hasMain localData.lastChange source ifaces modul
+    FEStats.withModuleStage envData.stats FEStats.Build modName <|
+        (if envData.needsTypedOpt then
+            compileWithTypedOpt envData.key envData.root pkg envData.buildID docsNeed localData.path localData.time localData.deps localData.hasMain localData.lastChange source ifaces modul
 
-                else
-                    compileWithoutTypedOpt envData.key envData.root pkg envData.buildID docsNeed localData.path localData.time localData.deps localData.hasMain localData.lastChange source ifaces modul
-            )
+         else
+            compileWithoutTypedOpt envData.key envData.root pkg envData.buildID docsNeed localData.path localData.time localData.deps localData.hasMain localData.lastChange source ifaces modul
+        )
 
 
 {-| Context for compilation results, carrying all the values needed for finalization.
@@ -2007,7 +1945,7 @@ artifacts suitable for interactive evaluation.
 -}
 fromRepl : FilePath -> Details.Details -> String -> Task Never (Result Exit.Repl ReplArtifacts)
 fromRepl root details source =
-    makeEnv Reporting.ignorer root Nothing Nothing details False
+    makeEnv Reporting.ignorer root Nothing Nothing details False FEStats.disabled
         |> Task.andThen
             (\((Env envData) as env) ->
                 case Parse.fromByteString envData.projectType source of

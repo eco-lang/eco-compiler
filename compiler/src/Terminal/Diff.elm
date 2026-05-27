@@ -26,6 +26,7 @@ import Builder.BackgroundWriter as BW
 import Builder.Build as Build
 import Builder.Deps.Diff as DD exposing (Changes(..), ModuleChanges(..), PackageChanges(..))
 import Builder.Deps.Registry as Registry
+import Builder.Eco.FEStats as FEStats
 import Builder.Elm.Details as Details exposing (Details(..))
 import Builder.Elm.Outline as Outline
 import Builder.Http as Http
@@ -306,7 +307,7 @@ buildDocsFromExposed root details exposed =
             Task.throw Exit.DiffNoExposed
 
         e :: es ->
-            Build.fromExposed Docs.bytesDecoder Docs.bytesEncoder Reporting.silent root Nothing Nothing details Build.keepDocs (NE.Nonempty e es) |> Task.eio Exit.DiffBadBuild
+            Build.fromExposed Docs.bytesDecoder Docs.bytesEncoder Reporting.silent root Nothing Nothing details Build.keepDocs FEStats.disabled (NE.Nonempty e es) |> Task.eio Exit.DiffBadBuild
 
 
 

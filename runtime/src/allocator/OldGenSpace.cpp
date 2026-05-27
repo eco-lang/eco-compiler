@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace Elm {
@@ -40,6 +41,34 @@ inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
 // O(N) scan inside each release call when shrink is freeing thousands of
 // blocks in one pass.
 thread_local int g_batch_release_depth = 0;
+
+#if ECO_HEAP_VALIDATE
+// Origin tracking for free-list pushes. `g_push_origin` is set by the
+// caller of pushSpanOnFreeLists right before each call; placeAndLink reads
+// it when recording into `g_first_push` (cell -> first-push-origin map).
+// On a duplicate push, placeAndLink looks the cell up and reports the
+// original pusher's site identifier, which pins which call site
+// originally placed the cell on the free list.
+//
+// Set of origin strings (each push site uses a unique literal):
+//   "lazySweep::flushRun" — coalesced runs from sweep
+//   "populateFromBlock::uniform-page"
+//   "populateFromBlock::heap-base-mixed"
+//   "populateMixed::remainder"
+//   "splitter::remainder"
+//   "freeLargeBodyCell"
+//   "unknown" (fallback if a caller forgets to set the thread-local)
+thread_local const char* g_push_origin = "unknown";
+thread_local std::unordered_map<void*, const char*> g_first_push_origin;
+
+struct PushOriginScope {
+    const char* prev;
+    explicit PushOriginScope(const char* name) : prev(g_push_origin) {
+        g_push_origin = name;
+    }
+    ~PushOriginScope() { g_push_origin = prev; }
+};
+#endif
 
 // ====================================================================
 // Tier-M per-block-thread helpers.
@@ -1044,8 +1073,23 @@ void* OldGenSpace::tryAllocateBySplittingLarger(size_t target_cls,
                     BlockInfo* blk =
                         (blk_idx < blocks_.size()) ? &blocks_[blk_idx]
                                                    : nullptr;
+                    // Use the on-free-list sentinel when sweep is in
+                    // progress and the containing block hasn't been swept
+                    // yet — otherwise the upcoming sweep slice would
+                    // coalesce over this still-linked remainder and emit a
+                    // duplicate push of the same byte range at the same
+                    // class, forming a cycle in free_lists_. Mirrors the
+                    // freeLargeBodyCell sentinel-during-sweep logic.
+                    const bool need_sentinel =
+                        (gc_phase_ == GCPhase::Sweeping) &&
+                        (blk_idx >= buffer_meta_.size() ||
+                         !buffer_meta_[blk_idx].fully_swept);
+#if ECO_HEAP_VALIDATE
+                    PushOriginScope _origin("splitter::remainder");
+#endif
                     pushSpanOnFreeLists(free_lists_, base + alloc_size,
-                                        remainder, blk, blk_idx);
+                                        remainder, blk, blk_idx,
+                                        need_sentinel);
                 }
 
                 void* result = static_cast<void*>(base);
@@ -1206,6 +1250,9 @@ void* OldGenSpace::allocateFromBagPage(size_t requested_size) {
     // so `pushSpanOnFreeLists` will use its any-class packing scheme.
     const size_t remainder = alloc_span - requested_size;
     if (remainder >= MIN_FREE_CELL_SIZE) {
+#if ECO_HEAP_VALIDATE
+        PushOriginScope _origin("populateMixed::remainder");
+#endif
         pushSpanOnFreeLists(free_lists_, alloc_base + requested_size,
                             remainder, &blocks_.back(),
                             blocks_.size() - 1);
@@ -1275,6 +1322,9 @@ bool OldGenSpace::populateFromBlock(size_t cls) {
         // packer. Whether free_lists_[cls] gains a cell depends on how the
         // span partitions across classes; the caller falls through to
         // splitting / bag-page paths if cls isn't satisfied.
+#if ECO_HEAP_VALIDATE
+        PushOriginScope _origin("populateFromBlock::heap-base-mixed");
+#endif
         pushSpanOnFreeLists(free_lists_,
                             page_start + HEAP_BASE_SENTINEL_SIZE,
                             page_size - HEAP_BASE_SENTINEL_SIZE,
@@ -1326,6 +1376,9 @@ bool OldGenSpace::populateFromBlock(size_t cls) {
     for (size_t i = num_cells; i > 0; --i) {
         char* cell_addr = page_start + (i - 1) * cell_bytes;
         FreeCell* cell = reinterpret_cast<FreeCell*>(cell_addr);
+#if ECO_HEAP_VALIDATE
+        g_first_push_origin[cell] = "populateFromBlock::uniform-page";
+#endif
         std::memset(&cell->header, 0, sizeof(Header));
         cell->header.tag = Tag_Free;
         cell->header.size = static_cast<u32>(cell_bytes);
@@ -2249,6 +2302,41 @@ inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
         }
 #endif
         FreeCell* cell = reinterpret_cast<FreeCell*>(addr);
+#if ECO_HEAP_VALIDATE
+        // Class 5 — push-duplicates invariant. Before linking `cell` onto
+        // free_lists[cls], scan the existing chain and ensure `cell` is not
+        // already on it. A duplicate push silently forms a cycle (the second
+        // assignment to `free_lists[cls] = cell` makes `cell` reachable from
+        // its own predecessor in the original chain). On abort, look up the
+        // first-push origin so we can pin which call site placed the cell.
+        {
+            size_t depth = 0;
+            for (FreeCell* c = free_lists[cls]; c != nullptr;
+                 c = c->next_in_class) {
+                if (c == cell) {
+                    const char* prior = "<not recorded>";
+                    auto it = g_first_push_origin.find(cell);
+                    if (it != g_first_push_origin.end()) prior = it->second;
+                    std::fprintf(stderr,
+                        "[heap-validate] pushSpanOnFreeLists duplicate push: "
+                        "cell %p already on free_lists[%zu] at depth %zu "
+                        "(cellSize=%zu, age_sentinel=%d, block=%p, "
+                        "block_index=%zu). First-push origin: %s. "
+                        "Second-push origin: %s. Aborting.\n",
+                        (void*)cell, cls, depth, cellSize,
+                        (int)age_sentinel,
+                        block ? (void*)block->start : nullptr,
+                        block_index, prior, g_push_origin);
+                    std::fflush(stderr);
+                    std::abort();
+                }
+                if (++depth > 1'000'000) break;
+            }
+            // Record the first-push origin for this cell so a future
+            // duplicate-push abort can report which call site placed it.
+            g_first_push_origin[cell] = g_push_origin;
+        }
+#endif
         std::memset(&cell->header, 0, sizeof(Header));
         cell->header.tag = Tag_Free;
         cell->header.size = static_cast<u32>(cellSize);
@@ -2331,6 +2419,9 @@ inline void pushCoalescedFreeCell(FreeCell** free_lists, char* span_start,
     // Coalesced runs from sweep are always non-sentinel: they go onto a free
     // list and stay there until allocation; the next major's sweep can safely
     // re-merge them with neighbours.
+#if ECO_HEAP_VALIDATE
+    PushOriginScope _origin("lazySweep::flushRun");
+#endif
     pushSpanOnFreeLists(free_lists, span_start, span_bytes, block, block_index,
                         /*age_sentinel=*/false);
 }
@@ -2396,8 +2487,29 @@ void OldGenSpace::transitionToSweeping() {
     sweep_buffer_index_ = 0;
     sweep_cursor_ = nullptr;
 
+#if ECO_HEAP_VALIDATE
+    // Reset the per-cycle origin map. transitionToSweeping is the cycle
+    // boundary: every push that follows is attributed via PushOriginScope.
+    g_first_push_origin.clear();
+#endif
+
     // Clear free lists - they'll be rebuilt during lazy sweep.
+    //
+    // Before clearing the heads, walk each list and downgrade any "on free
+    // list" sentinel (age = 0b01) to the coalescable default (age = 0). The
+    // sentinel marker says "do not coalesce — I'm still on a free list", but
+    // after the head wipe these cells are NOT on any list. Leaving the
+    // sentinel intact would make the upcoming lazy sweep treat each one as
+    // a hard run boundary (skip + flush prior run), leaking the cell's
+    // bytes until the next major-GC sees a different live/dead pattern.
+    // Resetting to age=0 lets sweep merge those bytes into a coalesced run
+    // as it walks. Sentinel cells originate from `freeLargeBodyCell` and
+    // `splitter::remainder` mid-sweep pushes.
     for (size_t i = 0; i < NUM_SIZE_CLASSES; i++) {
+        for (FreeCell* c = free_lists_[i]; c != nullptr;
+             c = c->next_in_class) {
+            if (c->header.age == 0b01) c->header.age = 0;
+        }
         free_lists_[i] = nullptr;
     }
     // Clear per-block free-cell threads. Sweep will rebuild them as it
@@ -3035,6 +3147,45 @@ void OldGenSpace::removeFreeCellsForBlock(size_t block_index) {
             curr = next;
         }
     }
+
+#if ECO_HEAP_VALIDATE
+    // Candidate (3) probe — leaked free cells across a block release.
+    // After the per-block thread + class-1 cleanups above, no cell on any
+    // free_lists_[cls] should fall within [blk.start, blk.end). If one does,
+    // the block release left it stranded on the class list; the page bytes
+    // will be reused (unassigned_blocks_ / populateFromBlock) while the
+    // stranded reference still appears in the chain — causing a later sweep
+    // to re-push at the same address (a duplicate push, then a cycle).
+    {
+        char* lo = blk.start;
+        char* hi = blk.end;
+        for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) {
+            size_t depth = 0;
+            for (FreeCell* c = free_lists_[cls]; c != nullptr;
+                 c = c->next_in_class) {
+                char* p = reinterpret_cast<char*>(c);
+                if (p >= lo && p < hi) {
+                    std::fprintf(stderr,
+                        "[heap-validate] removeFreeCellsForBlock LEAK: "
+                        "cell %p (header.size=%u, header.tag=%u, header.age=%u) "
+                        "survives on free_lists[%zu] at depth %zu after "
+                        "removing block %zu [%p, %p). class-1=%s, "
+                        "batch_release_depth=%d. The block's bytes will be "
+                        "reused while %p still points to it; a later "
+                        "lazySweep push at this address will form a cycle.\n",
+                        p, (unsigned)c->header.size, (unsigned)c->header.tag,
+                        (unsigned)c->header.age, cls, depth, block_index,
+                        (void*)lo, (void*)hi,
+                        (cls == 1 ? "yes" : "no"),
+                        (int)g_batch_release_depth, p);
+                    std::fflush(stderr);
+                    std::abort();
+                }
+                if (++depth > 1'000'000) break;
+            }
+        }
+    }
+#endif
 }
 
 void OldGenSpace::fixupIndicesAfterBlockMove(size_t old_idx, size_t new_idx) {
@@ -3394,6 +3545,39 @@ void OldGenSpace::gatherFreeListSnapshotInto(
     out.clear();
 
     for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) {
+        // Floyd's tortoise-and-hare. A cycle in free_lists_[cls]->next_in_class
+        // turns the loop below into an infinite walk that pegs CPU forever and
+        // never makes the user-visible compiler progress. Detect that here and
+        // abort with the entry cell so we can localize the double-push site
+        // (see warm-cache Stage 7a hang investigation). The check is O(N) on
+        // the same walk we'd do anyway, so the cost on healthy lists is one
+        // extra pointer-load per iteration.
+        {
+            FreeCell* slow = free_lists_[cls];
+            FreeCell* fast = free_lists_[cls];
+            while (fast != nullptr && fast->next_in_class != nullptr) {
+                slow = slow->next_in_class;
+                fast = fast->next_in_class->next_in_class;
+                if (slow == fast) {
+                    std::fprintf(stderr,
+                        "[heap-validate] free_lists_[%zu] CYCLE detected via "
+                        "Floyd's algorithm at cell %p (header.size=%u, "
+                        "header.tag=%u, header.age=%u). Head=%p, "
+                        "blockIndexFor(cell)=%zu, blocks_.size()=%zu. "
+                        "Aborting before the snapshot walk pegs CPU.\n",
+                        cls, (void*)slow,
+                        slow ? (unsigned)slow->header.size : 0u,
+                        slow ? (unsigned)slow->header.tag : 0u,
+                        slow ? (unsigned)slow->header.age : 0u,
+                        (void*)free_lists_[cls],
+                        slow ? blockIndexFor(slow) : (size_t)0,
+                        blocks_.size());
+                    std::fflush(stderr);
+                    std::abort();
+                }
+            }
+        }
+
         uint64_t cell_count = 0;
         uint64_t cell_bytes = 0;
         for (FreeCell* cell = free_lists_[cls]; cell != nullptr;
@@ -4347,6 +4531,9 @@ void OldGenSpace::freeLargeBodyCell(LargeBodyMeta& m) {
                                         !buffer_meta_[idx].fully_swept;
                         break;
                 }
+#if ECO_HEAP_VALIDATE
+                PushOriginScope _origin("freeLargeBodyCell");
+#endif
                 pushSpanOnFreeLists(free_lists_,
                                     static_cast<char*>(m.body_base),
                                     m.cell_size,

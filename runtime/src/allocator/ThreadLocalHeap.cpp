@@ -436,8 +436,11 @@ void ThreadLocalHeap::minorGC() {
 void ThreadLocalHeap::majorGC() {
     const bool profile_phases = gcPhaseProfileEnabled();
 
-    // Always dump sizes at major GC so the reproduction log makes it easy to
-    // see whether a major GC actually ran before the old-gen assert fired.
+    // Dump sizes at major GC so the reproduction log makes it easy to see
+    // whether a major GC actually ran before the old-gen assert fired. The
+    // dump is a compile-time no-op unless the build was configured with
+    // `-DECO_HEAP_TRACE=ON` (the trace must then still be enabled at runtime
+    // via the `ECO_HEAP_TRACE` env var).
     parent_->dumpHeapState("majorGC begin");
 
 #if ENABLE_GC_STATS

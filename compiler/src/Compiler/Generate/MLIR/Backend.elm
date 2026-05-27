@@ -27,10 +27,8 @@ import Mlir.Loc as Loc
 import Mlir.Mlir exposing (MlirModule, MlirOp)
 import Mlir.Pretty as Pretty
 import Set
-import System.IO as SysIO
 import Task exposing (Task)
 import Utils.Main as Utils
-import Utils.Task.Extra as TaskExtra
 
 
 
@@ -155,68 +153,48 @@ streamMlirToWriter ecoConfig mode monoGraph0 writeChunk =
                 |> Ctx.withInlineBodies (MonoInlineSimplify.buildBodyLookup monoGraph0)
                 |> Ctx.withEcoConfig ecoConfig
 
-        stderrLog msg =
-            TaskExtra.io (SysIO.writeLn SysIO.stderr msg)
-
         nodesList =
             Array.toIndexedList nodes
     in
     -- 1. Header
     writeChunk Pretty.ppModuleHeader
-        |> Task.andThen (\_ -> stderrLog "  Generate node functions (streaming)...")
         |> Task.andThen (\_ -> streamNodesList ctx nodesList writeChunk)
         |> Task.andThen
             (\ctxAfterNodes ->
                 -- 2. Lambdas
-                stderrLog "  Process lambda closures (streaming)..."
-                    |> Task.andThen
-                        (\_ ->
-                            let
-                                ( lambdaOps, finalCtx ) =
-                                    Lambdas.processLambdas ctxAfterNodes
-                            in
-                            writeOps lambdaOps writeChunk
-                                |> Task.andThen
-                                    (\_ ->
-                                        -- 3. Main + kernel decls + type table
-                                        stderrLog "  Generate main + kernel decls + type table (streaming)..."
-                                            |> Task.andThen
-                                                (\_ ->
-                                                    let
-                                                        mainOps =
-                                                            case main of
-                                                                Just mainInfo ->
-                                                                    Functions.generateMainEntry finalCtx mainInfo
+                let
+                    ( lambdaOps, finalCtx ) =
+                        Lambdas.processLambdas ctxAfterNodes
 
-                                                                Nothing ->
-                                                                    []
+                    -- 3. Main + kernel decls + type table
+                    mainOps =
+                        case main of
+                            Just mainInfo ->
+                                Functions.generateMainEntry finalCtx mainInfo
 
-                                                        ( kernelDeclOps, _ ) =
-                                                            Dict.foldl
-                                                                (\_ info ( accOps, accCtx ) ->
-                                                                    let
-                                                                        ( newCtx, declOp ) =
-                                                                            Functions.generateKernelDecl accCtx info
-                                                                    in
-                                                                    ( declOp :: accOps, newCtx )
-                                                                )
-                                                                ( [], finalCtx )
-                                                                finalCtx.kernelDecls
+                            Nothing ->
+                                []
 
-                                                        typeTableOp =
-                                                            TypeTable.generateTypeTable finalCtx
-                                                    in
-                                                    writeOps mainOps writeChunk
-                                                        |> Task.andThen (\_ -> writeOps (List.reverse kernelDeclOps) writeChunk)
-                                                        |> Task.andThen (\_ -> writeOps [ typeTableOp ] writeChunk)
-                                                )
-                                    )
-                        )
-                    |> Task.andThen
-                        (\_ ->
-                            -- 4. Footer
-                            writeChunk (Pretty.ppModuleFooter Loc.unknown)
-                        )
+                    ( kernelDeclOps, _ ) =
+                        Dict.foldl
+                            (\_ info ( accOps, accCtx ) ->
+                                let
+                                    ( newCtx, declOp ) =
+                                        Functions.generateKernelDecl accCtx info
+                                in
+                                ( declOp :: accOps, newCtx )
+                            )
+                            ( [], finalCtx )
+                            finalCtx.kernelDecls
+
+                    typeTableOp =
+                        TypeTable.generateTypeTable finalCtx
+                in
+                writeOps lambdaOps writeChunk
+                    |> Task.andThen (\_ -> writeOps mainOps writeChunk)
+                    |> Task.andThen (\_ -> writeOps (List.reverse kernelDeclOps) writeChunk)
+                    |> Task.andThen (\_ -> writeOps [ typeTableOp ] writeChunk)
+                    |> Task.andThen (\_ -> writeChunk (Pretty.ppModuleFooter Loc.unknown))
             )
 
 
