@@ -372,6 +372,81 @@ docker run --rm -v "$PWD":/work eco-build bash -c \
   "cmake --preset ninja-clang-lld-linux && cmake --build build --target check"
 ```
 
+## Static MUSL build (Stage B)
+
+Eco can be built as a single, fully-static `eco` compiler binary with **zero
+shared-library dependencies** (`ldd` reports "not a dynamic executable"), so it
+runs on any Linux distribution. The build runs inside Alpine Linux against
+musl + libc++, with LLVM 21.1.4 compiled from source. See
+`plans/static-link-eco-binary.md` for the full design, and
+`docker/static-build.Dockerfile` / `docker/static-dev.Dockerfile`.
+
+> **Status:** the static-link toolchain is complete — LLVM/MLIR and every C++
+> translation unit compile and link statically. Producing the final binary is
+> currently blocked by a musl-only bug in the Elm bootstrap (`Map.!`); see
+> `musl-bug.md`. The `static-dev` image below exists to debug exactly that.
+>
+> Linux x86_64 only. The base image is pinned (`alpine:3.21` by digest) and
+> `LLVM_VERSION` defaults to 21.1.4, so no build args are required.
+
+### Building the static binary (`docker/static-build.Dockerfile`)
+
+A three-stage build: compile LLVM+MLIR from source against musl, build a static
+`eco` against it, then ship just the binary `FROM scratch`.
+
+```bash
+# Build (first run compiles LLVM from source — ~30–60 min; cached afterwards).
+docker build -f docker/static-build.Dockerfile --target eco-static -t eco-static .
+
+# Extract the binary from the scratch image:
+id=$(docker create eco-static); docker cp "$id:/eco" ./eco; docker rm "$id"
+
+# Confirm it is fully static (expect 0):
+readelf -d ./eco | grep -c NEEDED
+```
+
+The `llvm-builder` stage is the expensive, cacheable layer; iterating on `eco`
+only re-runs the `eco-builder` stage.
+
+### Interactive dev image (`docker/static-dev.Dockerfile`)
+
+The same musl/libc++ toolchain as the build image, **plus** the dev tooling from
+the root `Dockerfile` (gdb, lldb, strace, ripgrep, …), Claude Code, and
+uv/serena — for stepping through and debugging the build interactively (e.g. the
+open bootstrap `Map.!`). It reuses the LLVM build rather than recompiling it, so
+build the `llvm-builder` image once first:
+
+```bash
+# 1. Build the MUSL LLVM toolchain image once (~30–60 min; shares cache with
+#    static-build.Dockerfile):
+docker build -f docker/static-build.Dockerfile --target llvm-builder -t eco-musl-llvm:local .
+
+# 2. Build the dev image (fast — just layers tools on top):
+docker build -f docker/static-dev.Dockerfile -t eco-static-dev:local .
+
+# 3. Run interactively with the repo mounted. The named volume shadows ./build
+#    so the container's musl build never collides with a host glibc build/:
+docker run -it --rm \
+    -v "$PWD":/work -v eco-musl-build:/work/build \
+    --cap-add=SYS_PTRACE \
+    eco-static-dev:local
+```
+
+Then, inside the container:
+
+```bash
+cmake --preset ninja-clang-lld-linux-musl
+cmake --build build --target eco        # reproduces the bootstrap Map.!
+claude                                  # launch Claude Code to debug it
+```
+
+- Runs as a uid-1000 `dev` user (matches the default host user) with passwordless
+  `sudo`, so files created in the mounted `/work` stay correctly owned. If your
+  host user isn't uid 1000, add `--user $(id -u):$(id -g)`.
+- `--cap-add=SYS_PTRACE` (or `--privileged`) is needed for gdb/strace/perf to
+  attach. `strace -e getdents64` on the failing `node` process is the quickest
+  way to probe the `readdir`-ordering hypothesis recorded in `musl-bug.md`.
+
 ## Acknowledgements
 
 The Eco compiler frontend is forked from [Guida](https://github.com/guida-lang/compiler), an Elm compiler port. Guida is itself a port of the original [Elm compiler](https://github.com/elm/compiler) by Evan Czaplicki.
