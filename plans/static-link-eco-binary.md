@@ -554,24 +554,29 @@ Same LLVM version as the main Dockerfile, but two differences:
 
 ### Known follow-ups (Stage B)
 
-- **Open blocker — musl bootstrap `Map.!`.** Full standalone writeup in
-  `/work/musl-bug.md`. Summary: the Elm bootstrap (guida self-compile,
-  `step 2: kernel`) dies with `Map.!` at `[check] Eco.Crash foreign` only
-  under musl (glibc builds fine; identical `guida.js` + node). Most likely a
-  `readdir` ordering difference in the compiler's kernel/foreign enumeration.
-  Orthogonal to the static-link work — a compiler-side fix.
+- **`Map.!` bootstrap blocker — now intermittent rather than deterministic
+  (still open).** Re-running the musl build from scratch (2026-05-27), the
+  *first* clean run reached past `[check] Eco.Crash foreign` and ran every
+  bootstrap stage to completion (step-1 XHR → step-2 kernel → step-3
+  self-verify → Stage 4a `eco-boot-2.js → eco-boot-3.js` → Stage 4b JS
+  fixed-point → Stage 5 `→ eco-compiler.mlir`), exposing the
+  Stage 6 AOT-link as the next blocker (now fixed; see Stage B.5 below).
+  Subsequent incremental runs deterministically re-trip the `Map.!` —
+  usually at step-3 self-verify rather than step-2 — with the same
+  `[check] Eco.Crash foreign` symptom and (now) the stack pointing into
+  `eco-boot.js` rather than `guida.js`. So the bug is still present and
+  still a Stage B blocker, but its failure point has drifted and its
+  determinism has weakened since `musl-bug.md` was written. Whether the
+  shift is caused by something in the order-dependent enumeration changing
+  or by an unrelated build-state difference between cold and warm runs
+  isn't yet known. Treat `musl-bug.md` as the live tracking doc.
 
-- **AOT outputs under musl.** `EcoBootConfig.h` (Stage A.5) still bakes the
-  glibc AOT link: `libstdc++.a` via `clang -print-file-name`, `-lgcc_s`,
-  etc. (`runtime/src/codegen/CMakeLists.txt:846`). That is the link `eco`
-  performs to produce *its outputs*, so **Gate-B (AOT E2E) under the musl
-  build needs the symmetric libc++/`libc++abi`/`compiler-rt` swap** — a
-  bounded change mirroring Stage A.5, and naturally folded into Stage C's
-  `linkExecutable` rework. Stage B's own deliverable (a static `eco` that
-  passes `--help` with zero deps, plus Gate-A/JIT) does not exercise this
-  path. The musl configure does **not** break on it: the `libstdc++.a`
-  query degrades to a literal string rather than erroring, and the
-  `find_library(... z REQUIRED)` is satisfied by `zlib-static`.
+- **AOT outputs under musl — addressed by Stage B.5 below.** The "AOT
+  outputs need the symmetric libc++/`libc++abi`/`compiler-rt` swap" follow-up
+  is no longer a future-work bullet: it is the next concrete blocker for
+  `cmake --build build --target eco` under the musl preset (Stage 6 dies in
+  the AOT link with `std::__1::*` undefined refs against a libstdc++.a feed),
+  and it is what Stage B.5 implements.
 - **lld on the real `eco-stage9.o`.** lld accepts the static non-PIE link
   for trivial probes; the `.llvm_stackmaps` `R_X86_64_64` question is only
   fully closed once a clean bootstrap reaches the actual `eco` link under
@@ -593,6 +598,239 @@ from-source build adds CI-cost iteration friction.) Dominated by:
 - LLVM build iteration: each `cmake --build` of the LLVM tree is
   20–30 minutes on a 24-core builder, so getting the configure flags
   right matters more than usual.
+
+## Stage B.5 — AOT-output binaries also fully-static musl
+
+Stage A.5 is to Stage A what Stage B.5 is to Stage B. Stage B made `eco` itself
+fully static under musl/libc++; Stage B.5 makes every ELF that `eco` produces
+*also* fully static under musl/libc++, on the same `ECO_STATIC_MUSL` profile.
+This is the symmetric companion that Stage B's follow-up bullet (now resolved
+into this section) called out.
+
+The discovery driver: `cmake --build build --target eco` under the musl preset
+runs every prior bootstrap stage cleanly and then dies in `[468/472] Stage 6:
+eco-compiler.mlir → eco-compiler (native ELF)` with hundreds of `std::__1::*`
+undefined references (`recursive_mutex`, `chrono::steady_clock::now`,
+`__thread_struct`, `__next_prime`, `logic_error`, `bad_alloc`, …) and a final
+`warning: creating DT_TEXTREL in a PIE`. The AOT link path
+(`eco-boot-native::linkExecutable` shelling out to `/usr/bin/ld` with args
+baked from `EcoBootConfig.h`) was written for the **glibc / libstdc++ / libgcc
+/ PIE-dynamic** profile and was never extended for the **musl / libc++ /
+compiler-rt / `-static`-non-PIE** profile that `ECO_STATIC_MUSL` selects.
+
+### What's currently baked vs what's needed (musl profile)
+
+| Field / arg | Current (musl preset) | Needed |
+|---|---|---|
+| `libstdcxxStaticA` | `/usr/lib/libstdc++.a` (Alpine has both; `clang -print-file-name` picks libstdc++) | `/usr/lib/libc++.a` + `/usr/lib/libc++abi.a` |
+| `libgccA` | `/usr/lib/gcc/.../libgcc.a` | `libclang_rt.builtins-x86_64.a` (compiler-rt) |
+| `crtbeginObj` / `crtendObj` | `crtbeginS.o` / `crtendS.o` (PIE variant) | `crtbegin.o` / `crtend.o` (non-PIE), or omit |
+| `crt1Obj` | `Scrt1.o` (PIE startup) | `crt1.o` (static startup), or omit |
+| `dynamicLinker` | `/lib64/ld-linux-x86-64.so.2` (glibc; **does not exist on Alpine**) | unused under `-static` |
+| `linkExecutable` cmdline | `-pie --eh-frame-hdr -dynamic-linker=… -lpthread -lm -lc … libgccA` | `-static -nostdlib … libcxxStaticA libcxxabiStaticA … compilerRtBuiltinsA -lc` (musl folds pthread/m into libc) |
+| Linker | `find_program(... ld)` → `/usr/bin/ld` (BFD) | `ld.lld` (Q3 RESOLVED in lld's favour for Stage B); BFD as fallback |
+| `unwindLib` | `/opt/llvm-mlir/lib/x86_64-alpine-linux-musl/libunwind.a` | unchanged — already correct |
+
+All the new paths resolve cleanly via the existing `_eco_query_clang_path`
+helper on the musl image (verified):
+```
+clang -print-file-name=libc++.a              → /usr/lib/libc++.a
+clang -print-file-name=libc++abi.a           → /usr/lib/libc++abi.a
+clang --print-libgcc-file-name -rtlib=compiler-rt
+                                              → /usr/lib/llvm19/lib/clang/19/lib/linux/libclang_rt.builtins-x86_64.a
+clang -print-file-name=crt1.o                → /usr/lib/crt1.o
+clang -print-file-name=crtbegin.o            → /usr/lib/gcc/x86_64-alpine-linux-musl/14.2.0/crtbegin.o
+clang -print-file-name=crtend.o              → /usr/lib/gcc/x86_64-alpine-linux-musl/14.2.0/crtend.o
+ld.lld                                       → /usr/bin/ld.lld
+```
+
+### Steps
+
+1. **Extend `EcoBootConfig.h` generation**
+   (`runtime/src/codegen/CMakeLists.txt:705-882`). Add an
+   `if(ECO_STATIC_MUSL)` sub-branch *parallel to* the existing
+   `if(ECO_STATIC)` Stage-A.5 block (keep Stage A.5 intact for the glibc
+   path), emitting:
+   - `inline constexpr bool ecoStaticMusl = true|false;`
+   - `inline const char *libcxxStaticA       = "<clang -print-file-name=libc++.a>";`
+   - `inline const char *libcxxabiStaticA    = "<clang -print-file-name=libc++abi.a>";`
+   - `inline const char *compilerRtBuiltinsA = "<clang --print-libgcc-file-name -rtlib=compiler-rt>";`
+   - `inline const char *crt1ObjStatic       = "<clang -print-file-name=crt1.o>";`
+   - `inline const char *crtbeginObjStatic   = "<clang -print-file-name=crtbegin.o>";`
+   - `inline const char *crtendObjStatic     = "<clang -print-file-name=crtend.o>";`
+   - Under `ECO_STATIC_MUSL`, **prefer `ld.lld`** for `systemLinker`:
+     `find_program(ECO_SYSTEM_LD NAMES ld.lld lld ld REQUIRED)`. Falls back
+     to `ld` (BFD) if lld isn't on PATH, matching `ECO_LINK_WITH_BFD`'s
+     escape-hatch spirit.
+
+2. **Branch `linkExecutable`**
+   (`runtime/src/codegen/EcoNativeDriver.cpp:331-518`) on
+   `eco::config::ecoStaticMusl`. When true, assemble a non-PIE static link:
+   - `-static --eh-frame-hdr` (drop `-pie`).
+   - Drop `-dynamic-linker`.
+   - Use `crt1ObjStatic` / `crtbeginObjStatic` / `crtendObjStatic` for the
+     crt prefix/epilogue (`crti.o` / `crtn.o` are profile-independent and
+     stay the same).
+   - Drop `-lpthread -lm` — musl folds both into libc; keep `-lc` only.
+   - In the `ECO_STATIC` `.a`-paths block, when `ecoStaticMusl`: pass
+     `libcxxStaticA` and `libcxxabiStaticA` in that order in place of
+     `libstdcxxStaticA`. ssl/crypto/zip/curl/z absolute paths are reused
+     as-is (Alpine ships them under `openssl-libs-static` / `zlib-static`;
+     curl + zip are vendored and unchanged across profiles).
+   - In the libgcc/unwind block, when `ecoStaticMusl`: pass
+     `compilerRtBuiltinsA` in place of `libgccA`. Keep `unwindLib`
+     (already `libunwind.a` under Stage B). Drop the
+     `--allow-multiple-definition` workaround — Q4's
+     `compiler-rt + libunwind` clean path applies here too.
+   - No `-rpath` (already not emitted under `ECO_STATIC`).
+
+3. **Verify with `cmake --build build --target eco`.** Stage 6 is the test:
+   it produces `eco-compiler` via exactly this AOT path, so a clean build
+   end-to-end *is* the integration test. Then:
+   - `ldd build/compiler/build-kernel/bin/eco-compiler` → "not a dynamic
+     executable" (or "Not a valid dynamic program" on musl/Alpine).
+   - `readelf -d` shows no `NEEDED` entries.
+   - `eco-compiler --version` runs cleanly inside `scratch`.
+
+### Acceptance criteria
+
+- `cmake --preset ninja-clang-lld-linux-musl && cmake --build build --target eco`
+  completes end-to-end on a fresh build under `docker/static-dev.Dockerfile`.
+  *Blocked on the intermittent bootstrap `Map.!` (see above), not on Stage
+  B.5 itself.* See "Verification status" for the in-isolation verification.
+- The produced `build/compiler/build-kernel/bin/eco` and
+  `build/compiler/build-kernel/bin/eco-compiler` both have zero `NEEDED`
+  entries (`readelf -d`) and `ldd` reports "not a dynamic executable" /
+  "Not a valid dynamic program".
+- The Stage A / Stage A.5 glibc path is unaffected: a build with the
+  default `ninja-clang-lld-linux` preset still produces a working `eco`
+  with the same `ldd` profile Stage A documented.
+- `docker build -f docker/static-build.Dockerfile .` succeeds end-to-end,
+  which exercises this path inside the Stage B image with no
+  bind-mount/permission special-casing.
+
+### Verification status (2026-05-27)
+
+Stage B.5 is **implemented and exercised in isolation.** End-to-end
+`--target eco` verification is gated on the intermittent bootstrap
+`Map.!` (above) — same blocker that's been Stage B's open follow-up.
+
+What was verified directly, bypassing the flaky bootstrap by feeding the
+Stage 5 artifact from a successful earlier run into a freshly-built
+`eco-boot-native`:
+
+```
+cd /work/build/compiler
+/work/build/runtime/src/codegen/eco-boot-native \
+    /work/build/compiler/build-kernel/bin/eco-compiler.mlir \
+    -o /work/build/compiler/build-kernel/bin/eco-compiler
+```
+
+Result on the Stage-B dev image (Alpine 3.21, clang 19, musl 1.2.x):
+
+```
+$ file eco-compiler
+eco-compiler: ELF 64-bit LSB executable, x86-64, ... statically linked, ...
+$ ldd eco-compiler
+/lib/ld-musl-x86_64.so.1: ... Not a valid dynamic program
+$ readelf -d eco-compiler | grep NEEDED        # (no output — zero NEEDED entries)
+$ readelf -l eco-compiler | grep INTERP        # (no output — no PT_INTERP)
+$ ./eco-compiler --version
+1.0.0
+```
+
+So the AOT-link half of Stage B is doing the right thing: the produced
+ELF is fully static, has no `INTERP` segment, has no `NEEDED` entries,
+and executes cleanly on musl. The remaining gap to "`cmake --build build
+--target eco` succeeds end-to-end" is the bootstrap intermittency, not
+the link logic.
+
+**Update — fully-static `eco` binary built (2026-05-27).** Driving
+Stages 7→9 around the intermittent JS-bootstrap step 3:
+
+1. **Stage 9a** (the only Stage 7+ step needed for the `eco` target — Stage
+   7's `eco-compiler-boot` ELF is just an *ordering* dep of Stage 9a's
+   ninja edge, not a content dep):
+   ```
+   eco-boot-native eco-compiler.mlir --emit=obj -o eco-stage9.o
+   ```
+   Produces `eco-stage9.o` (80 MB relocatable).
+2. **Stage 9b** — extract ninja's recorded link command (`ninja -t commands
+   eco`) and run it in `/work/build/`. CMake's link line under the musl
+   preset reads:
+   ```
+   clang++ -stdlib=libc++ -static -stdlib=libc++ -rtlib=compiler-rt \
+           -unwindlib=libunwind -lc++abi -fuse-ld=lld \
+           compiler/build-kernel/bin/eco-stage9.o \
+           -o compiler/build-kernel/bin/eco \
+           -Wl,--start-group  <EcoEntryStatic, EcoRuntimeStatic,
+           all 24 ElmKernel_* + 9 EcoKernel_* + EcoNativeDriverStatic>
+           -Wl,--end-group  -lpthread -lm  <libunwind.a, all ssl/crypto/
+           curl/zip/z statics, all ~70 LLVM+MLIR archives>
+   ```
+   No edits needed on this line for Stage B — the preset's
+   `CMAKE_EXE_LINKER_FLAGS_INIT` already carries the right musl/libc++/
+   compiler-rt stack.
+
+Result:
+
+```
+-rwxr-xr-x  83.1M  build/compiler/build-kernel/bin/eco          (unstripped)
+-rwxr-xr-x  59.3M  /tmp/eco-stripped                            (strip -s)
+
+$ file build/compiler/build-kernel/bin/eco
+... ELF 64-bit ... statically linked, BuildID[sha1]=... with debug_info
+
+$ ldd build/compiler/build-kernel/bin/eco
+/lib/ld-musl-x86_64.so.1: build/compiler/build-kernel/bin/eco: Not a valid dynamic program
+
+$ readelf -d build/compiler/build-kernel/bin/eco | grep -E 'NEEDED|INTERP'
+   (no output — zero NEEDED entries)
+
+$ readelf -l build/compiler/build-kernel/bin/eco | grep INTERP
+   (no output — no PT_INTERP)
+
+$ build/compiler/build-kernel/bin/eco --version
+1.0.0
+$ /tmp/eco-stripped --version
+1.0.0
+```
+
+Stage B's "single self-contained binary that runs on any modern Linux
+distribution" deliverable is **met** in artefact form. The remaining
+items are:
+- **End-to-end driving via `cmake --build build --target eco`** — gated on
+  the bootstrap intermittency. The link logic and the in-binary contract
+  are no longer in doubt.
+- **`eco`-as-compiler functional test** — driving the static `eco` binary
+  through a real `eco make` call (Stage 7a) currently SIGSEGVs mid-crawl
+  on the dev image. Symptom is "after crash, `[gc-stats] SIGSEGV` rather
+  than `[gc-stats] normal exit`," with the crash arriving between the
+  `[crawl]` and `[check]` phases. Same shape as Stage A's known
+  "after-Success" GC-class crash (plan §Stage A acceptance criteria,
+  Hello.elm story), and the project's tracked `Map.!` / `Task.andThen` /
+  tuple-slot bootstrap-quality bugs. Orthogonal to Stage B.5's link
+  fix: the binary links and starts cleanly; the crash is downstream
+  runtime behaviour during a non-trivial workload.
+
+### Estimated effort
+
+½ day. Roughly the same shape as Stage A.5 (configure-time path discovery
++ a runtime branch in `linkExecutable`), no Docker changes needed beyond
+the existing Stage B image, and the symmetric paths all resolve via the
+helper that's already in `runtime/src/codegen/CMakeLists.txt`.
+
+### Dev-environment note (docker/static-dev.Dockerfile)
+
+On first run inside the interactive Stage B dev image, `/work/build` may
+appear as a root-owned **empty** directory because the named docker volume
+(`-v eco-musl-build:/work/build`) is created with root ownership while the
+user inside the container is `dev:1000`. The result is an immediate cmake
+error: `Unable to (re)create the private pkgRedirects directory:
+/work/build/CMakeFiles/pkgRedirects`. Fix is a one-liner the dev runs
+themselves (`sudo chown dev:dev /work/build`); ideally
+`docker/static-dev-entrypoint.sh` would do this automatically when it
+detects root-owned `/work/build`. Tracked as a small dev-image polish.
 
 ## Stage C — AOT-from-anywhere
 

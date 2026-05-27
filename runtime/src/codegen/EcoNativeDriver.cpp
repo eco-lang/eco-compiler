@@ -365,18 +365,30 @@ int linkExecutable(const std::string &objectFile,
 
     llvm::SmallVector<llvm::StringRef> args;
     args.push_back(linkerPath);
-    args.push_back("-pie");
     args.push_back("--eh-frame-hdr");
 
-    args.push_back("-dynamic-linker");
-    args.push_back(eco::config::dynamicLinker);
+    // Stage B.5 musl-static vs Stage A.5 glibc-dynamic-PIE. Under
+    // ecoStaticMusl the binary is fully static (no PT_INTERP, no shared
+    // deps), so we drop `-pie` + `-dynamic-linker` and pass `-static`
+    // instead. The rest of the layout (start-group / archives / crt
+    // epilogue) is identical across profiles.
+    if (eco::config::ecoStaticMusl) {
+        args.push_back("-static");
+    } else {
+        args.push_back("-pie");
+        args.push_back("-dynamic-linker");
+        args.push_back(eco::config::dynamicLinker);
+    }
 
     args.push_back("-o");
     args.push_back(outputPath);
 
     // Library search dirs so -lc / -lm / -lstdc++ etc. resolve. We add the
     // multilib dirs from `clang -print-search-dirs` plus the gcc libdir
-    // (which holds crtbeginS.o, libgcc.a, libstdc++.so).
+    // (which holds crtbeginS.o, libgcc.a, libstdc++.so). Under
+    // ecoStaticMusl every dep is passed as an absolute .a path, so the
+    // search dirs only matter for `-lc` (musl libc), but emitting them is
+    // harmless and keeps the two profiles parallel.
     for (const auto &d : libSearchDirs) {
         if (d.empty())
             continue;
@@ -386,11 +398,20 @@ int linkExecutable(const std::string &objectFile,
     args.push_back("-L");
     args.push_back(eco::config::gccLibDir);
 
-    // crt prefix: Scrt1.o (PIE startup), crti.o (init array prologue),
-    // crtbeginS.o (frame-info ctor table for the shared/PIE variant).
-    args.push_back(eco::config::crt1Obj);
-    args.push_back(eco::config::crtiObj);
-    args.push_back(eco::config::crtbeginObj);
+    // crt prefix.
+    //   - glibc/Stage A.5: Scrt1.o (PIE startup) + crti.o + crtbeginS.o
+    //     (frame-info ctor table for the shared/PIE variant).
+    //   - musl/Stage B.5:  crt1.o  (static startup) + crti.o + crtbegin.o
+    //     (non-PIE frame-info ctor table).
+    if (eco::config::ecoStaticMusl) {
+        args.push_back(eco::config::crt1ObjStatic);
+        args.push_back(eco::config::crtiObj);
+        args.push_back(eco::config::crtbeginObjStatic);
+    } else {
+        args.push_back(eco::config::crt1Obj);
+        args.push_back(eco::config::crtiObj);
+        args.push_back(eco::config::crtbeginObj);
+    }
 
     // The user's compiled .o.
     args.push_back(objectFile);
@@ -422,20 +443,34 @@ int linkExecutable(const std::string &objectFile,
 
     args.push_back("--end-group");
 
-    // System shared libraries the kernel + runtime pull in. glibc-family
-    // (pthread/m/c) stays dynamic in both modes — Stage A.5 is "every other
-    // shared dep replaced with a static archive", not full static-static.
-    args.push_back("-lpthread");
-    args.push_back("-lm");
-    args.push_back("-lc");
+    // System libc. Stage A.5 (glibc) needs the pthread/m/c trio shared;
+    // Stage B.5 (musl) folds pthread and m into libc, so -lc on its own is
+    // sufficient. Under -static + -nodefaultlibs-style explicit listing,
+    // emitting empty libpthread/libm stubs from Alpine would be harmless
+    // but redundant — drop them for clarity.
+    if (eco::config::ecoStaticMusl) {
+        args.push_back("-lc");
+    } else {
+        args.push_back("-lpthread");
+        args.push_back("-lm");
+        args.push_back("-lc");
+    }
 
     if (eco::config::ecoStatic) {
-        // Stage A.5: feed absolute paths to the static archives baked at
-        // configure time, in place of the bare -l flags the linker would
+        // Stage A.5 / B.5: feed absolute paths to the static archives baked
+        // at configure time, in place of the bare -l flags the linker would
         // otherwise resolve to .so. See plans/static-link-eco-binary.md.
         // libz is required by both vendored libzip and libcurl (HTTP
         // Content-Encoding: gzip), so it comes last to resolve forward refs.
-        args.push_back(eco::config::libstdcxxStaticA);
+        if (eco::config::ecoStaticMusl) {
+            // Stage B.5: libc++ + libc++abi instead of libstdc++. Order
+            // matters: libc++ references symbols in libc++abi (the cxxabi
+            // half of the libc++ runtime), so libc++abi must come after.
+            args.push_back(eco::config::libcxxStaticA);
+            args.push_back(eco::config::libcxxabiStaticA);
+        } else {
+            args.push_back(eco::config::libstdcxxStaticA);
+        }
         args.push_back(eco::config::libcurlStaticA);
         args.push_back(eco::config::libsslStaticA);
         args.push_back(eco::config::libcryptoStaticA);
@@ -453,21 +488,21 @@ int linkExecutable(const std::string &objectFile,
         args.push_back("-lzip");
     }
 
-    // libgcc + unwinder.
-    if (eco::config::ecoStatic) {
-        // libgcc.a alone — no -lgcc_s. The cyclic-dep dance the driver
-        // normally does is only needed when libgcc_s.so is in play.
+    // Compiler builtins (`__udivti3`, integer-overflow soft-floats, etc.) +
+    // unwinder. Three profiles:
+    //   - Stage B.5 (musl/static): compiler-rt builtins.a. No libgcc, no
+    //     libgcc_s, no --allow-multiple-definition workaround — Q4 RESOLVED
+    //     in compiler-rt + libunwind's favour (clean, no symbol overlap).
+    //   - Stage A.5 (glibc/static): libgcc.a + --allow-multiple-definition
+    //     (the LLVM libunwind / libgcc_eh `_Unwind_*` overlap workaround).
+    //   - Default (glibc/dynamic): `-lgcc_s libgcc.a -lgcc_s` dance for the
+    //     cyclic libgcc.a / libgcc_s.so dependency.
+    if (eco::config::ecoStaticMusl) {
+        args.push_back(eco::config::compilerRtBuiltinsA);
+    } else if (eco::config::ecoStatic) {
         args.push_back(eco::config::libgccA);
-        // --allow-multiple-definition: LLVM libunwind.a and any
-        // libgcc_eh-derived `_Unwind_*` definitions that leak in through
-        // crt or libstdc++.a are silently collapsed (first definition
-        // wins; libunwind.a is listed first so it does). Same workaround
-        // Stage A used on the eco target itself.
         args.push_back("--allow-multiple-definition");
     } else {
-        // libgcc dance — driver normally emits `-lgcc_s libgcc.a -lgcc_s`
-        // to resolve the cyclic dependency between libgcc.a's unwinder
-        // hooks and libgcc_s.so's runtime support.
         args.push_back("-lgcc_s");
         args.push_back(eco::config::libgccA);
         args.push_back("-lgcc_s");
@@ -478,8 +513,12 @@ int linkExecutable(const std::string &objectFile,
     // it's libunwind.so loaded via the rpath added below.
     args.push_back(eco::config::unwindLib);
 
-    // crt epilogue.
-    args.push_back(eco::config::crtendObj);
+    // crt epilogue: crtend.o (musl non-PIE) vs crtendS.o (glibc PIE).
+    if (eco::config::ecoStaticMusl) {
+        args.push_back(eco::config::crtendObjStatic);
+    } else {
+        args.push_back(eco::config::crtendObj);
+    }
     args.push_back(eco::config::crtnObj);
 
     if (!eco::config::ecoStatic) {

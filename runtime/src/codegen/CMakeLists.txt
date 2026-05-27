@@ -716,9 +716,17 @@ set(ECO_KERNEL_MODS File Console Env Process MVar NativeDriver Runtime Http Cras
 # object carries in .llvm_stackmaps (lld rejects those in PIE mode).
 #------------------------------------------------------------------------------
 
-# Use ld.bfd. Don't try to find ld.lld (LLVM 21 lld isn't shipped here, the
-# system lld-14 rejects our PIE stackmap relocations).
-find_program(ECO_SYSTEM_LD ld REQUIRED)
+# Linker choice for the AOT path.
+#   - Glibc (Stage A.5): ld.bfd. lld-14 on Debian rejects our PIE stackmap
+#     relocations, and LLVM 21 lld isn't on the Debian image.
+#   - musl/Stage B.5: ld.lld. Q3 RESOLVED in lld's favour for Stage B (non-PIE
+#     static — lld accepts the stackmap relocs there). BFD is the documented
+#     fallback (binutils is in the Stage B image) if ld.lld is absent.
+if(ECO_STATIC_MUSL)
+    find_program(ECO_SYSTEM_LD NAMES ld.lld lld ld REQUIRED)
+else()
+    find_program(ECO_SYSTEM_LD ld REQUIRED)
+endif()
 message(STATUS "Eco AOT linker (direct, no clang++ driver): ${ECO_SYSTEM_LD}")
 
 # Discover crt object files + libgcc via clang. These are absolute paths into
@@ -744,8 +752,41 @@ _eco_query_clang_path(ECO_CRTEND_O   crtendS.o)
 _eco_query_clang_path(ECO_LIBGCC_A   libgcc.a)
 get_filename_component(ECO_GCC_LIBDIR "${ECO_LIBGCC_A}" DIRECTORY)
 
+# Stage B.5: non-PIE static crt prefix/epilogue + musl libc++/compiler-rt
+# stack. Only resolved under ECO_STATIC_MUSL; queries are cheap and produce
+# stable absolute paths so the EcoBootConfig.h generation below can bake them
+# unconditionally without branching.
+if(ECO_STATIC_MUSL)
+    _eco_query_clang_path(ECO_CRT1_O_STATIC     crt1.o)
+    _eco_query_clang_path(ECO_CRTBEGIN_O_STATIC crtbegin.o)
+    _eco_query_clang_path(ECO_CRTEND_O_STATIC   crtend.o)
+    _eco_query_clang_path(ECO_LIBCXX_A          libc++.a)
+    _eco_query_clang_path(ECO_LIBCXXABI_A       libc++abi.a)
+    # compiler-rt builtins archive. `--print-libgcc-file-name` returns
+    # whichever runtime `-rtlib` selects — under `-rtlib=compiler-rt` that's
+    # `libclang_rt.builtins-<arch>.a`. Use execute_process directly rather
+    # than _eco_query_clang_path (different clang flag, not -print-file-name).
+    execute_process(
+        COMMAND ${CMAKE_C_COMPILER} --print-libgcc-file-name -rtlib=compiler-rt
+        OUTPUT_VARIABLE ECO_COMPILER_RT_BUILTINS_A
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    get_filename_component(ECO_COMPILER_RT_BUILTINS_A
+        "${ECO_COMPILER_RT_BUILTINS_A}" REALPATH)
+    message(STATUS "Eco AOT (musl/static) paths:")
+    message(STATUS "  crt1.o:          ${ECO_CRT1_O_STATIC}")
+    message(STATUS "  crtbegin.o:      ${ECO_CRTBEGIN_O_STATIC}")
+    message(STATUS "  crtend.o:        ${ECO_CRTEND_O_STATIC}")
+    message(STATUS "  libc++.a:        ${ECO_LIBCXX_A}")
+    message(STATUS "  libc++abi.a:     ${ECO_LIBCXXABI_A}")
+    message(STATUS "  compiler-rt:     ${ECO_COMPILER_RT_BUILTINS_A}")
+endif()
+
 # Dynamic linker (the program interpreter the PT_INTERP entry points to).
-# Hardcoded for x86_64 glibc — the path is part of the platform ABI.
+# Hardcoded for x86_64 glibc — the path is part of the platform ABI. Unused
+# under ECO_STATIC_MUSL (the link is `-static`, no PT_INTERP), but kept as a
+# stable string so EcoBootConfig.h's layout is identical across profiles.
 set(ECO_DYNAMIC_LINKER "/lib64/ld-linux-x86-64.so.2")
 
 # Library search dirs for unresolved -l flags. Mirrors `clang -print-search-dirs`.
@@ -879,6 +920,37 @@ else()
     string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libcryptoStaticA = \"\";\n")
     string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libzipStaticA = \"\";\n")
     string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libzStaticA = \"\";\n")
+endif()
+string(APPEND ECO_BOOT_CONFIG_CONTENT "\n")
+
+#--- Stage B.5: musl/libc++/compiler-rt symmetric AOT paths ----------------
+# When ECO_STATIC_MUSL is on, the AOT link must use the same musl/libc++/
+# compiler-rt stack the eco binary itself was built against — libstdc++.a +
+# libgcc.a (the Stage A.5 defaults) would leave hundreds of std::__1::*
+# symbols unresolved. The new fields are emitted unconditionally so
+# EcoNativeDriver.cpp can reference them; they're stubs under the glibc
+# profile (ecoStaticMusl=false) and never read at runtime there.
+if(ECO_STATIC_MUSL)
+    set(ECO_STATIC_MUSL_BOOL "true")
+else()
+    set(ECO_STATIC_MUSL_BOOL "false")
+endif()
+string(APPEND ECO_BOOT_CONFIG_CONTENT "// --- Stage B.5: musl/libc++/compiler-rt paths (ECO_STATIC_MUSL) ---\n")
+string(APPEND ECO_BOOT_CONFIG_CONTENT "inline constexpr bool ecoStaticMusl = ${ECO_STATIC_MUSL_BOOL};\n")
+if(ECO_STATIC_MUSL)
+    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libcxxStaticA = \"${ECO_LIBCXX_A}\";\n")
+    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libcxxabiStaticA = \"${ECO_LIBCXXABI_A}\";\n")
+    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *compilerRtBuiltinsA = \"${ECO_COMPILER_RT_BUILTINS_A}\";\n")
+    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *crt1ObjStatic = \"${ECO_CRT1_O_STATIC}\";\n")
+    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *crtbeginObjStatic = \"${ECO_CRTBEGIN_O_STATIC}\";\n")
+    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *crtendObjStatic = \"${ECO_CRTEND_O_STATIC}\";\n")
+else()
+    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libcxxStaticA = \"\";\n")
+    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libcxxabiStaticA = \"\";\n")
+    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *compilerRtBuiltinsA = \"\";\n")
+    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *crt1ObjStatic = \"\";\n")
+    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *crtbeginObjStatic = \"\";\n")
+    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *crtendObjStatic = \"\";\n")
 endif()
 string(APPEND ECO_BOOT_CONFIG_CONTENT "\n")
 
