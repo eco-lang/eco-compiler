@@ -1,6 +1,14 @@
 # Build directories
 build/
 debug/
+build-profile/
+
+# Caches and profiling output — never needed in a build context, and large
+# (.ccache and heap-profiles alone were ~1 GB of the context before this).
+.ccache/
+.pnpm-store/
+heap-profiles/
+.serena/
 
 # Git directory and metadata
 .git/
@@ -11,6 +19,11 @@ debug/
 *.a
 *.so
 *.dylib
+
+# Elm compiler package-artifact caches (eco-kernel-cpp/{,typed-}artifacts.dat).
+# These are in-tree and gitignored; excluding them keeps a host build's stale
+# caches from leaking into the Docker build context via `COPY . .`.
+*.dat
 
 # IDE and editor files
 .vscode/

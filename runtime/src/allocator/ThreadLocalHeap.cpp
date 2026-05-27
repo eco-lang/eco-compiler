@@ -14,7 +14,16 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <execinfo.h>
+// musl (Stage B static build) ships no <execinfo.h>/backtrace; stub them as
+// no-ops so the debug paths compile. glibc keeps its real backtrace. See
+// plans/static-link-eco-binary.md.
+#if defined(__has_include) && __has_include(<execinfo.h>)
+#  include <execinfo.h>
+#else
+[[maybe_unused]] static inline int backtrace(void**, int) { return 0; }
+[[maybe_unused]] static inline char** backtrace_symbols(void* const*, int) { return nullptr; }
+[[maybe_unused]] static inline void backtrace_symbols_fd(void* const*, int, int) {}
+#endif
 #include <sys/resource.h>
 
 namespace {

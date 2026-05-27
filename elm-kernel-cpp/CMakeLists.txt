@@ -10,8 +10,18 @@ set(RUNTIME_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/src)
 # Vendor include directory (for nlohmann/json, SRELL)
 set(VENDOR_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor)
 
-# Find libcurl for HTTP module (optional - HTTP will use stubs if not found)
-find_package(CURL QUIET)
+# Find libcurl for HTTP module (optional - HTTP will use stubs if not found).
+# Under ECO_STATIC the vendored libcurl_static target is created by the
+# top-level CMakeLists.txt before this subdirectory is added, so we just mark
+# CURL as found (mirrors eco-kernel-cpp/CMakeLists.txt). A plain
+# find_package(CURL) would otherwise fail on a host that vendors curl rather
+# than installing curl-dev — e.g. the Alpine static-build image — leaving
+# HTTP_CURL_AVAILABLE undefined and breaking HttpExports.cpp.
+if(ECO_STATIC)
+    set(CURL_FOUND TRUE)
+else()
+    find_package(CURL QUIET)
+endif()
 find_package(OpenSSL QUIET)
 
 if(CURL_FOUND AND OPENSSL_FOUND)

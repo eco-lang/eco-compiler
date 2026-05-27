@@ -447,29 +447,35 @@ set_target_properties(eco PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${BUILD_KERNEL_DIR}/bin"
 )
 
-# Use the system default linker (GNU ld) for `eco`. The preset configures
-# -fuse-ld=lld for the rest of the build, but lld rejects the
+# Linker for `eco` (ECO_LINK_WITH_BFD, top-level CMakeLists.txt). The preset
+# configures -fuse-ld=lld for the rest of the build, but lld rejects the
 # R_X86_64_64 relocations the Elm-compiled object carries in its
 # .llvm_stackmaps section (GC safepoint addresses tied to local function
-# symbols) — see eco-boot.cpp's clang++ link invocation, which produces a
-# working PIE eco-compiler binary by using the system ld. We mirror that
-# here so the produced `eco` binary has the same PIE layout the GC
-# stackmap parser in eco_entry.cpp expects.
-target_link_options(eco PRIVATE -fuse-ld=bfd)
+# symbols) when producing a PIE — see eco-boot.cpp's clang++ link invocation,
+# which produces a working PIE eco-compiler binary by using the system ld. The
+# glibc builds mirror that here so the produced `eco` binary has the same PIE
+# layout the GC stackmap parser in eco_entry.cpp expects. The Stage B MUSL
+# build is non-PIE static, where lld accepts those relocs, so the musl preset
+# sets ECO_LINK_WITH_BFD=OFF and `eco` inherits the preset's -fuse-ld=lld.
+if(ECO_LINK_WITH_BFD)
+    target_link_options(eco PRIVATE -fuse-ld=bfd)
+endif()
 
-# Stage A static-link: pull libstdc++ and libgcc into the binary so the
-# only shared deps left are glibc + the dynamic linker. See
-# plans/static-link-eco-binary.md (Stage A, Step 5).
-#
-# `--allow-multiple-definition` resolves the _Unwind_* collision between
-# clang's auto-added libgcc_eh.a (from -static-libgcc) and the explicit
-# LLVM libunwind.a (eco::llvm_libunwind). Because libunwind.a is listed
-# earlier in the link line, its definitions win — libgcc_eh.a's are
-# silently dropped. The cleaner fix is -rtlib=compiler-rt, but compiler-rt
-# isn't installed alongside the LLVM 21 build on this host; revisit during
-# Stage B (Alpine ships libunwind+libcxx+compiler-rt all from one LLVM
-# tree).
-if(ECO_STATIC)
+# Static-link extras. See plans/static-link-eco-binary.md.
+if(ECO_STATIC AND ECO_STATIC_MUSL)
+    # Stage B (MUSL): the `-static` link, the libc++ runtime stack, and the
+    # compiler-rt builtins + LLVM libunwind all arrive via the preset's global
+    # EXE_LINKER_FLAGS (-static -stdlib=libc++ -rtlib=compiler-rt
+    # -unwindlib=libunwind -lc++abi). Because compiler-rt replaces libgcc, the
+    # _Unwind_* collision that forces --allow-multiple-definition on the glibc
+    # path never arises — nothing extra is needed on the target here.
+elseif(ECO_STATIC)
+    # Stage A (glibc): pull libstdc++ and libgcc into the binary so the only
+    # shared deps left are glibc + the dynamic linker (Stage A, Step 5).
+    # --allow-multiple-definition resolves the _Unwind_* collision between
+    # clang's auto-added libgcc_eh.a (from -static-libgcc) and the explicit
+    # LLVM libunwind.a (eco::llvm_libunwind) — libunwind.a is earlier in the
+    # link line, so its definitions win and libgcc_eh.a's are dropped.
     target_link_options(eco PRIVATE
         -static-libstdc++ -static-libgcc
         -Wl,--allow-multiple-definition)
@@ -536,9 +542,15 @@ if(ECO_STATIC)
     set_target_properties(eco-static-link-probe PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${BUILD_KERNEL_DIR}/bin"
     )
-    target_link_options(eco-static-link-probe PRIVATE
-        -fuse-ld=bfd -static-libstdc++ -static-libgcc
-        -Wl,--allow-multiple-definition)
+    # Mirror eco's linker/runtime selection (see the eco target above).
+    if(ECO_LINK_WITH_BFD)
+        target_link_options(eco-static-link-probe PRIVATE -fuse-ld=bfd)
+    endif()
+    if(NOT ECO_STATIC_MUSL)
+        target_link_options(eco-static-link-probe PRIVATE
+            -static-libstdc++ -static-libgcc
+            -Wl,--allow-multiple-definition)
+    endif()
     target_link_libraries(eco-static-link-probe PRIVATE
         "-Wl,--start-group"
         EcoEntryStatic EcoRuntimeStatic

@@ -19,7 +19,7 @@ RegexPtr never() {
     r->caseInsensitive = false;
     r->multiline = false;
     try {
-        r->pattern = std::basic_regex<char16_t>(u".^");
+        r->pattern = srell::u16regex(u".^");
     } catch (...) {
         // If pattern fails, leave default
     }
@@ -36,16 +36,16 @@ HPointer fromStringWith(void* pattern, bool caseInsensitive, bool multiline) {
         regex->multiline = multiline;
         regex->patternStr.assign(patternU16.begin(), patternU16.end());
 
-        auto flags = std::regex_constants::ECMAScript;
+        auto flags = srell::regex_constants::ECMAScript;
         if (caseInsensitive) {
-            flags |= std::regex_constants::icase;
+            flags |= srell::regex_constants::icase;
         }
         if (multiline) {
-            flags |= std::regex_constants::multiline;
+            flags |= srell::regex_constants::multiline;
         }
 
         std::basic_string<char16_t> patternBuf(patternU16.begin(), patternU16.end());
-        regex->pattern = std::basic_regex<char16_t>(patternBuf, flags);
+        regex->pattern = srell::u16regex(patternBuf.data(), patternBuf.size(), flags);
 
         // TODO: Need proper way to store RegexPtr in heap
         // For now return Nothing
@@ -63,7 +63,7 @@ bool contains(RegexPtr regex, void* str) {
     std::basic_string<char16_t> strU16(buf.begin(), buf.end());
 
     try {
-        return std::regex_search(strU16, regex->pattern);
+        return srell::regex_search(strU16.begin(), strU16.end(), regex->pattern);
     }
     catch (...) {
         return false;

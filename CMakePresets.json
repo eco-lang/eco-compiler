@@ -62,6 +62,24 @@
         "CMAKE_C_FLAGS": "-fno-omit-frame-pointer -mno-omit-leaf-frame-pointer",
         "CMAKE_CXX_FLAGS": "-fno-omit-frame-pointer -mno-omit-leaf-frame-pointer"
       }
+    },
+    {
+      "name": "ninja-clang-lld-linux-musl",
+      "displayName": "Ninja + Clang + libc++ + lld (Alpine MUSL static — Stage B)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_FLAGS_INIT": "-stdlib=libc++",
+        "CMAKE_EXE_LINKER_FLAGS_INIT": "-static -stdlib=libc++ -rtlib=compiler-rt -unwindlib=libunwind -lc++abi -fuse-ld=lld",
+        "CMAKE_PREFIX_PATH": "/opt/llvm-mlir",
+        "LLVM_INSTALL_PREFIX": "/opt/llvm-mlir",
+        "ECO_STATIC": "ON",
+        "ECO_STATIC_MUSL": "ON",
+        "ECO_LINK_WITH_BFD": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -78,6 +96,11 @@
     {
       "name": "profile",
       "configurePreset": "ninja-clang-lld-linux-profile",
+      "jobs": 0
+    },
+    {
+      "name": "musl",
+      "configurePreset": "ninja-clang-lld-linux-musl",
       "jobs": 0
     }
   ]

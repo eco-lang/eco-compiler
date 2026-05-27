@@ -338,6 +338,21 @@ Same LLVM version as the main Dockerfile, but two differences:
    The audit is small — `StackUnwind.cpp` is the only direct caller in the
    project — but must complete before the Dockerfile lands.
 
+   **DONE — clean, no changes needed.** The file uses only the libunwind
+   Level-1 (`UNW_LOCAL_ONLY`) API, all of which LLVM libunwind implements:
+   `unw_getcontext`, `unw_init_local`, `unw_step`, `unw_get_reg`, the
+   `UNW_REG_IP` / `UNW_X86_64_*` register constants, and the
+   `unw_context_t` / `unw_cursor_t` / `unw_word_t` types. There are **no**
+   nongnu-only extensions (`unw_backtrace`, `unw_create_addr_space`,
+   `unw_get_proc_info`/`_name`, `unw_resume`, `unw_is_signal_frame`,
+   `_UPT_*`). The `mapDwarfToUnwindReg` helper is the project's own identity
+   mapping, not a libunwind call. Decisive corroboration: the current
+   *default* (dynamic) build already links LLVM libunwind exclusively
+   (`cmake/LLVMLibunwind.cmake` refuses nongnu via the `__libunwind_config.h`
+   marker), so this translation unit already compiles and runs against the
+   exact implementation Stage B targets — the only Stage-B delta is static
+   vs shared, not an unwinder swap.
+
 4. **Two-stage Dockerfile** (new file `docker/static-build.Dockerfile`),
    mirroring the main Dockerfile's `builder` / `runtime` split:
 
@@ -423,7 +438,106 @@ Same LLVM version as the main Dockerfile, but two differences:
    product. The `llvm-builder` stage is cacheable across CI runs (LLVM
    source rarely changes); the `eco-builder` stage is the per-commit cost.
 
+### Implementation status & deviations (Stage B)
+
+**Landed in this pass:**
+- `ninja-clang-lld-linux-musl` configure preset + `musl` build preset
+  (`CMakePresets.json`).
+- Two new top-level CMake knobs (`CMakeLists.txt`): `ECO_STATIC_MUSL`
+  (selects the libc++/compiler-rt/`-static` profile, implies `ECO_STATIC`)
+  and `ECO_LINK_WITH_BFD` (default ON; the musl preset sets it OFF). The
+  `eco` and `eco-static-link-probe` link logic in `compiler/CMakeLists.txt`
+  now branches Stage A (glibc/libstdc++/bfd) vs Stage B (musl/libc++/lld).
+- `docker/static-build.Dockerfile` (3 stages: llvm-builder → eco-builder →
+  scratch), `.github/workflows/static-build.yml`, and `.dockerignore`
+  excludes for the cache/output dirs (`.ccache`, `heap-profiles`, …) that
+  were inflating the build context to ~1.5 GB.
+
+**What was verified in-session (cheaply, without the multi-hour build):**
+- The exact static link recipe links, runs (exceptions across threads ⇒
+  unwinder wired), and yields a **zero-dependency** binary
+  (`ldd` → "Not a valid dynamic program") on both `alpine:3.21` (clang 19)
+  and `alpine:edge` (clang 22):
+  `clang++ -static -stdlib=libc++ -rtlib=compiler-rt -unwindlib=libunwind -lc++abi -fuse-ld=lld`.
+- A redundant explicit `libunwind.a` (as `eco::llvm_libunwind` supplies) on
+  top of `-unwindlib=libunwind` does **not** cause duplicate-symbol errors.
+- Every apk package in both stages resolves on the pinned digest; the
+  Dockerfile parses and reaches package installation.
+
+**Deviations from the plan as originally written:**
+- **Q3 / lld vs bfd — RESOLVED in lld's favour for Stage B.** Under the
+  non-PIE `-static` link lld accepts the load — no `.llvm_stackmaps`
+  rejection in the trivial probes — so `ECO_LINK_WITH_BFD=OFF`. `binutils`
+  is still installed in the eco-builder as the documented fallback (and for
+  the AOT `/usr/bin/ld`); flip `ECO_LINK_WITH_BFD=ON` to use it. (The
+  `eco-stage9.o`-specific reloc question is only fully closed once a clean
+  bootstrap reaches the real `eco` link under lld — see follow-ups.)
+- **Alpine package names corrected.** The plan's `libcxx-dev` /
+  `libcxx-static` do not exist; the real names are `libc++` / `libc++-dev` /
+  `libc++-static`, and `libc++abi` is bundled into them (no separate
+  package). `libzip-static` also does not exist → libzip (and libcurl) stay
+  **vendored via FetchContent** under `ECO_STATIC` on Alpine too, needing
+  only `openssl-libs-static` + `zlib-static`.
+- **Q4 — the `--allow-multiple-definition` hack is dropped on Alpine.**
+  `compiler-rt` *is* packaged, so the clean
+  `-rtlib=compiler-rt -unwindlib=libunwind` path works (this is the
+  "revisit during Stage B" noted in Stage A's deviations). `-lc++abi` must
+  be passed explicitly or libc++ vtables stay undefined.
+- **Q5 — libc++ sourcing.** Rather than building `libcxx;libcxxabi` as LLVM
+  runtimes, the build uses Alpine's `libc++` package **consistently** for
+  both the LLVM-from-source build (`-stdlib=libc++`) and the eco build.
+  `LLVM_ENABLE_RUNTIMES` stays `"libunwind"` (matching the main Dockerfile),
+  so `libunwind.a` lands in `/opt/llvm-mlir` where `LLVMLibunwind.cmake`
+  finds it. This achieves Q5's actual goal — one libc++ everywhere, hence no
+  ABI skew — more simply, and matches what the plan's own sample Dockerfile
+  would really have done (it set no include/lib paths to redirect
+  `-stdlib=libc++` at a from-source libc++, so eco would have used Alpine's
+  libc++ regardless). The LLVM/MLIR *compiler* libraries are still built from
+  source at the pinned 21.1.4.
+- **Base image pinned to `alpine:3.21` by digest** (not `alpine:edge`), per
+  the risk register.
+
 ### Acceptance criteria
+
+> **Build bring-up (run end-to-end against the real Docker build + a
+> persistent Alpine iteration container):** The static-link engineering is
+> **complete and proven** through everything it controls — LLVM 21.1.4 + MLIR
+> build from source against musl/libc++, **all ~472 C++ targets compile under
+> libc++/musl, and `eco-boot-native` links statically.** Reaching that took
+> six fixes, all recorded above / below:
+>
+> | # | Failure | Category | Fix |
+> |---|---|---|---|
+> | 1 | `-lunwind` missing (llvm-builder) | Docker pkg | add `compiler-rt` + `llvm-libunwind(-static)`; align link flags |
+> | 2 | `rapidcheck` not found at configure | Docker pkg | build rapidcheck from source in eco-builder |
+> | 3 | `std::basic_regex<char16_t>` | libc++ | `Regex.cpp/.hpp` → vendored `srell::u16regex` |
+> | 4 | `<execinfo.h>`/`backtrace` (×5 files) | musl | `__has_include` guard + no-op stubs |
+> | 5 | `PAGE_SIZE` macro clash (×2 files) | musl | rename local const → `kPageSize` |
+> | 6 | `HttpContext` unknown type | CMake | `elm-kernel-cpp` sets `CURL_FOUND` under `ECO_STATIC` (mirrors eco-kernel-cpp) |
+>
+> Fixes 3–5 are glibc-neutral (guarded / semantically identical); a fresh
+> **glibc** build with all six applied compiles clean and produces a working
+> `eco` (216 MB), so none regress the default build.
+>
+> **Remaining blocker — `Map.!` in the Elm bootstrap, musl-runtime-specific
+> (NOT a static-link issue and NOT pre-existing):** Under the Alpine build the
+> bootstrap (`step 2: kernel`, the guida compiler self-compiling with
+> `--optimize`) dies with `Map.!: given key is not an element in the map` at
+> `[check] Eco.Crash foreign` (surfaced via `Eco.Crash.crash = Debug.todo`,
+> the compiler's internal-error reporter). Isolated decisively:
+> - the **glibc** build runs the identical step to completion → produces `eco`;
+> - the step-1 `guida.js` is **byte-identical** across glibc/Alpine (same
+>   sha256), the `node` version is identical (v22.22.2), and clearing the
+>   in-tree Elm artifact caches (`eco-kernel-cpp/*.dat`) does not change it.
+>
+> So the same compiler JS, run under the same node version, succeeds on a
+> glibc-linked node and fails on a musl-linked node — i.e. a **musl-vs-glibc
+> libc runtime-behavior difference** (most likely `readdir` entry ordering in
+> the compiler's kernel-module/foreign enumeration; musl and glibc return
+> directory entries in different orders, and order-dependent enumeration is a
+> classic musl portability break). This is a bootstrap-portability bug in the
+> Elm-written compiler, orthogonal to the static-link work and to libc++.
+> Tracked as the open Stage B blocker; see "Known follow-ups (Stage B)".
 
 - `docker build -f docker/static-build.Dockerfile .` succeeds end-to-end
   on a fresh build (no Docker layer cache).
@@ -437,6 +551,35 @@ Same LLVM version as the main Dockerfile, but two differences:
   Docker build — so we know the binary actually works, not just that it
   links. The Stage 9c MLIR fixed-point check passes; ELF fixed-point is
   not required (Decision Q12).
+
+### Known follow-ups (Stage B)
+
+- **Open blocker — musl bootstrap `Map.!`.** Full standalone writeup in
+  `/work/musl-bug.md`. Summary: the Elm bootstrap (guida self-compile,
+  `step 2: kernel`) dies with `Map.!` at `[check] Eco.Crash foreign` only
+  under musl (glibc builds fine; identical `guida.js` + node). Most likely a
+  `readdir` ordering difference in the compiler's kernel/foreign enumeration.
+  Orthogonal to the static-link work — a compiler-side fix.
+
+- **AOT outputs under musl.** `EcoBootConfig.h` (Stage A.5) still bakes the
+  glibc AOT link: `libstdc++.a` via `clang -print-file-name`, `-lgcc_s`,
+  etc. (`runtime/src/codegen/CMakeLists.txt:846`). That is the link `eco`
+  performs to produce *its outputs*, so **Gate-B (AOT E2E) under the musl
+  build needs the symmetric libc++/`libc++abi`/`compiler-rt` swap** — a
+  bounded change mirroring Stage A.5, and naturally folded into Stage C's
+  `linkExecutable` rework. Stage B's own deliverable (a static `eco` that
+  passes `--help` with zero deps, plus Gate-A/JIT) does not exercise this
+  path. The musl configure does **not** break on it: the `libstdc++.a`
+  query degrades to a literal string rather than erroring, and the
+  `find_library(... z REQUIRED)` is satisfied by `zlib-static`.
+- **lld on the real `eco-stage9.o`.** lld accepts the static non-PIE link
+  for trivial probes; the `.llvm_stackmaps` `R_X86_64_64` question is only
+  fully closed once a clean bootstrap reaches the actual `eco` link under
+  lld. Fallback is one cache-var flip (`ECO_LINK_WITH_BFD=ON`); binutils is
+  already in the image.
+- **Bootstrap health.** Full Gate-A/Gate-B green also depends on
+  pre-existing, static-link-independent bootstrap bugs (e.g. the
+  `Task.andThen` / tuple-slot issues tracked elsewhere).
 
 ### Estimated effort
 
@@ -654,14 +797,21 @@ into the Stage sections above; recorded here for traceability.
    inside Docker, no reuse from host. Every C++ archive is rebuilt
    against libc++ from one consistent LLVM 21.1.4 tree.
 5. **Q5 — LLVM libunwind sourcing:** rebuild LLVM 21.1.4 from source
-   inside the Alpine Docker image, with
-   `LLVM_ENABLE_RUNTIMES="libunwind;libcxx;libcxxabi"`. **Must match the
-   main Dockerfile's pinned LLVM version exactly** so the bootstrap
-   chain doesn't see a different LLVM ABI between dev and static builds.
-   No Alpine LLVM-package use.
+   inside the Alpine Docker image. **Must match the main Dockerfile's
+   pinned LLVM version exactly** so the bootstrap chain doesn't see a
+   different LLVM ABI between dev and static builds. No Alpine
+   LLVM-package use for the *compiler* libraries.
+   **Update (implementation):** `LLVM_ENABLE_RUNTIMES` stays `"libunwind"`
+   (not `"libunwind;libcxx;libcxxabi"`); libc++/libc++abi come from Alpine's
+   `libc++` package, used consistently for both the LLVM build and the eco
+   build. One libc++ everywhere = no ABI skew, which is Q5's real goal. See
+   "Implementation status & deviations (Stage B)".
 6. **Q6 — libunwind API audit:** required before Stage B can land. The
    audit covers `runtime/src/allocator/StackUnwind.cpp`; the project
    continues to use **LLVM** libunwind exclusively, nongnu is rejected.
+   **Update (implementation):** audit complete — clean, no changes needed
+   (only Level-1 libunwind API, and the default build already links LLVM
+   libunwind). See Stage B Step 3.
 7. **Q7 — PIE vs static-PIE vs non-PIE:** **non-PIE static** as the
    default. Simpler, avoids the `.llvm_stackmaps` reloc issue. Tradeoff
    (loss of binary-level ASLR; library-level ASLR irrelevant since all

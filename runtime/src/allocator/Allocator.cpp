@@ -21,7 +21,16 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
-#include <execinfo.h>
+// musl (Stage B static build) ships no <execinfo.h>/backtrace; stub them as
+// no-ops so the debug paths compile. glibc keeps its real backtrace. See
+// plans/static-link-eco-binary.md.
+#if defined(__has_include) && __has_include(<execinfo.h>)
+#  include <execinfo.h>
+#else
+[[maybe_unused]] static inline int backtrace(void**, int) { return 0; }
+[[maybe_unused]] static inline char** backtrace_symbols(void* const*, int) { return nullptr; }
+[[maybe_unused]] static inline void backtrace_symbols_fd(void* const*, int, int) {}
+#endif
 #include <sys/mman.h>
 
 namespace Elm {
@@ -500,10 +509,10 @@ char* Allocator::acquireOldGenBlock(size_t size) {
     // by OldGenSpace's release path; this is a regression guard). For
     // arbitrary large-block requests, the existing first-fit logic is
     // unchanged — large blocks legitimately use non-page-multiple extents.
-    constexpr size_t PAGE_SIZE = 4096;
+    constexpr size_t kPageSize = 4096;
     const bool page_request = (size == config_.alloc_buffer_size);
     if (page_request) {
-        assert(size % PAGE_SIZE == 0 &&
+        assert(size % kPageSize == 0 &&
                "acquireOldGenBlock: page request size must be page-multiple");
     }
 
@@ -514,7 +523,7 @@ char* Allocator::acquireOldGenBlock(size_t size) {
          it != old_gen_free_blocks_.end(); ++it) {
         if (page_request) {
             if (it->first == heap_base) continue;       // pinned heap-base
-            if (it->second % PAGE_SIZE != 0) continue;  // alignment guard
+            if (it->second % kPageSize != 0) continue;  // alignment guard
         }
         if (it->second >= size) {
             char* block = it->first;
@@ -568,7 +577,7 @@ char* Allocator::acquireOldGenBlock(size_t size) {
     old_gen_in_use_bytes_ += size;
 
     if (page_request) {
-        assert(old_gen_committed % PAGE_SIZE == 0 &&
+        assert(old_gen_committed % kPageSize == 0 &&
                "acquireOldGenBlock: committed misaligned after page bump");
     }
 

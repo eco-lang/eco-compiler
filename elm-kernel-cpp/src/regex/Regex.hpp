@@ -13,13 +13,17 @@
 #include <functional>
 #include <limits>
 #include <memory>
-#include <regex>
+// SRELL (vendored) rather than <regex>: std::basic_regex<char16_t> is only an
+// extension under libstdc++ — libc++'s <regex> provides no regex_traits for
+// char16_t — and SRELL is properly UTF-16/Unicode aware, which std::regex over
+// char16_t is not. See plans/static-link-eco-binary.md (Stage B).
+#include "srell.hpp"
 
 namespace Elm::Kernel::Regex {
 
-// Regex representation (wraps std::basic_regex)
+// Regex representation (wraps srell::u16regex == srell::basic_regex<char16_t>)
 struct Regex {
-    std::basic_regex<char16_t> pattern;
+    srell::u16regex pattern;
     std::vector<u16> patternStr;
     bool caseInsensitive = false;
     bool multiline = false;

@@ -35,7 +35,14 @@
 #include <cstring>
 #if ECO_HEAP_VALIDATE
 // Used by debugAssertValidNurseryPointer's diagnostic (prints a backtrace).
-#include <execinfo.h>
+// musl (Stage B static build) ships no <execinfo.h>; stub as no-ops there.
+#if defined(__has_include) && __has_include(<execinfo.h>)
+#  include <execinfo.h>
+#else
+[[maybe_unused]] static inline int backtrace(void**, int) { return 0; }
+[[maybe_unused]] static inline char** backtrace_symbols(void* const*, int) { return nullptr; }
+[[maybe_unused]] static inline void backtrace_symbols_fd(void* const*, int, int) {}
+#endif
 #endif
 
 #if ECO_HEAP_VALIDATE

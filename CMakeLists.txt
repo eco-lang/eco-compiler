@@ -66,6 +66,30 @@ option(ECO_STATIC
        "Static-link curl/openssl/libzip/libunwind/libstdc++ into eco (glibc still shared)"
        OFF)
 
+# Stage B (MUSL): the fully-static profile built inside the Alpine Docker
+# image (docker/static-build.Dockerfile). Selects the libc++ / libc++abi /
+# compiler-rt / LLVM-libunwind runtime stack and a `-static` (non-PIE) link,
+# instead of Stage A's glibc + libstdc++ + libgcc profile. Implies ECO_STATIC.
+# Set by the ninja-clang-lld-linux-musl preset. See
+# plans/static-link-eco-binary.md (Stage B).
+option(ECO_STATIC_MUSL
+       "Stage B: fully-static MUSL build with libc++/compiler-rt (implies ECO_STATIC)"
+       OFF)
+if(ECO_STATIC_MUSL)
+    set(ECO_STATIC ON CACHE BOOL "Static-link eco (forced on by ECO_STATIC_MUSL)" FORCE)
+endif()
+
+# Linker for the `eco` target. The Elm-compiled Stage-9 object carries
+# R_X86_64_64 relocations in its .llvm_stackmaps section that lld rejects when
+# producing a PIE, so the glibc builds force GNU ld (bfd). The Stage B MUSL
+# build is non-PIE static, where lld accepts those relocs (verified — see the
+# plan), so the musl preset flips this OFF. Kept as an explicit knob so a
+# future lld regression can fall back to bfd (binutils is present in the
+# Alpine image) without a code change.
+option(ECO_LINK_WITH_BFD
+       "Link the eco binary with GNU ld (bfd) instead of the preset's default linker"
+       ON)
+
 if(ECO_STATIC)
     # MUST be set BEFORE any add_subdirectory() that calls find_package on
     # these libs — otherwise the first subdir to call find_package(OpenSSL)
