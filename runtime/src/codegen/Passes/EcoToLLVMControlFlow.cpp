@@ -10,6 +10,9 @@
 #include "../EcoOps.h"
 #include "../EcoTypes.h"
 
+#include <atomic>
+#include <cstdint>
+
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -355,6 +358,11 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
 
         size_t numPatterns = stringPatternsAttr.size();
 
+        // One deterministic id per CaseOp lowering. Used to name the
+        // per-pattern LLVM globals; see usage below.
+        static std::atomic<uint64_t> caseCounter{0};
+        const uint64_t caseId = caseCounter.fetch_add(1, std::memory_order_relaxed);
+
         for (size_t i = 0; i < numPatterns; ++i) {
             auto patternAttr = cast<StringAttr>(stringPatternsAttr[i]);
             StringRef pattern = patternAttr.getValue();
@@ -375,9 +383,17 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                 std::vector<uint16_t> utf16 = utf8ToUtf16(pattern);
                 size_t length = utf16.size();
 
-                // Create unique global name
-                std::string globalName = "__eco_str_case_" + std::to_string(
-                    reinterpret_cast<uintptr_t>(op.getOperation())) + "_" + std::to_string(i);
+                // Create unique global name. Use the per-CaseOp `caseId`
+                // (hoisted out of this loop, one bump per CaseOp) rather
+                // than `op.getOperation()`'s runtime address — ASLR made
+                // the address vary across runs, which made
+                // `eco-boot-native`'s output non-deterministic and broke
+                // the Stage 8c native fixed-point check. The counter is
+                // process-static; the same MLIR input processed in the
+                // same pattern order assigns the same caseId, so two
+                // independent invocations produce byte-identical binaries.
+                std::string globalName = "__eco_str_case_" + std::to_string(caseId) +
+                                         "_" + std::to_string(i);
 
                 auto arrayTy = LLVM::LLVMArrayType::get(i16Ty, length);
 
