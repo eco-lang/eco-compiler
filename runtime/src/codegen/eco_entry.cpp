@@ -35,9 +35,20 @@ static void initStackMapFromSelf() {
     CallbackData cbd{nullptr, 0, 0};
 
     dl_iterate_phdr([](struct dl_phdr_info *info, size_t /*size*/, void *ctx) -> int {
-        // The main executable has an empty name.
-        if (info->dlpi_name && info->dlpi_name[0] != '\0')
-            return 0;
+        // The main executable's name: glibc reports "" (empty); musl-static
+        // reports "/proc/self/exe". Accept either as the main program.
+        // (For a fully-static binary there is only one object anyway.)
+        // NB: the old `dlpi_name[0] != '\0'` test was a glibc-ism — on musl
+        // it skipped the main executable, so .llvm_stackmaps was never found
+        // and the GC scanned zero stack roots (live stack-referenced objects
+        // were then reclaimed, corrupting the heap).
+        {
+            const char* nm = info->dlpi_name;
+            bool is_main = (nm == nullptr) || (nm[0] == '\0') ||
+                           (std::strcmp(nm, "/proc/self/exe") == 0);
+            if (!is_main)
+                return 0;
+        }
 
         // Walk the program headers to find PT_LOAD segments, then scan
         // the ELF section headers (accessible via /proc/self/exe) for
