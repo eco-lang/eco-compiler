@@ -43,6 +43,27 @@ bool HttpService::hasReadyResults() const {
     return !results_.empty();
 }
 
+void HttpService::pushProgress(Progress p) {
+    {
+        std::lock_guard<std::mutex> lk(progressMutex_);
+        progress_.push(p);
+    }
+    Scheduler::instance().notifyWorkAvailableFromAsync();
+}
+
+bool HttpService::tryPopProgress(Progress& out) {
+    std::lock_guard<std::mutex> lk(progressMutex_);
+    if (progress_.empty()) return false;
+    out = progress_.front();
+    progress_.pop();
+    return true;
+}
+
+bool HttpService::hasProgress() const {
+    std::lock_guard<std::mutex> lk(progressMutex_);
+    return !progress_.empty();
+}
+
 namespace {
 
 size_t writeCb(void* contents, size_t size, size_t nmemb, void* userp) {
@@ -54,6 +75,38 @@ size_t writeCb(void* contents, size_t size, size_t nmemb, void* userp) {
 struct HeaderAccum {
     std::vector<std::pair<std::string, std::string>> headers;
 };
+
+// Context handed to the libcurl XFERINFO callback. Lives on the worker
+// thread's stack for the duration of curl_easy_perform. Tracks the last-posted
+// byte counts so unchanged ticks are not re-posted (curl fires the callback on
+// a timer, often with identical values between actual transfers).
+struct ProgressCtx {
+    Elm::Platform::HttpService* service = nullptr;
+    std::uint64_t token = 0;
+    curl_off_t lastDl = -1;
+    curl_off_t lastUl = -1;
+    // pushProgress is private; ProgressCtx is befriended via a thin shim.
+    void post(bool isUpload, curl_off_t now, curl_off_t total);
+};
+
+int xferInfoCb(void* clientp, curl_off_t dltotal, curl_off_t dlnow,
+               curl_off_t ultotal, curl_off_t ulnow) {
+    auto* ctx = static_cast<ProgressCtx*>(clientp);
+    if (!ctx || !ctx->service) return 0;
+    // Upload progress (POST/PUT bodies): emit a Sending tick when ulnow moves.
+    if ((ultotal > 0 || ulnow > 0) && ulnow != ctx->lastUl) {
+        ctx->lastUl = ulnow;
+        ctx->post(/*isUpload=*/true, ulnow, ultotal);
+    }
+    // Download progress: emit a Receiving tick when dlnow moves. total==0 for
+    // chunked / unknown-length responses (drives the Receiving.size=Nothing
+    // branch on the main thread).
+    if ((dltotal > 0 || dlnow > 0) && dlnow != ctx->lastDl) {
+        ctx->lastDl = dlnow;
+        ctx->post(/*isUpload=*/false, dlnow, dltotal);
+    }
+    return 0;  // 0 = continue (drop-delivery cancel; no curl-level abort)
+}
 
 size_t headerCb(char* buffer, size_t size, size_t nitems, void* userdata) {
     size_t n = size * nitems;
@@ -78,11 +131,24 @@ size_t headerCb(char* buffer, size_t size, size_t nitems, void* userdata) {
     return n;
 }
 
+void ProgressCtx::post(bool isUpload, curl_off_t now, curl_off_t total) {
+    Elm::Platform::HttpService::Progress p;
+    p.token = token;
+    p.isUpload = isUpload;
+    p.now = static_cast<std::uint64_t>(now < 0 ? 0 : now);
+    p.total = static_cast<std::uint64_t>(total < 0 ? 0 : total);
+    service->pushProgress(p);
+}
+
 } // namespace
 
 HttpService::Result HttpService::perform(const Request& req) {
     Result result;
     result.token = req.token;
+
+    ProgressCtx progressCtx;
+    progressCtx.service = this;
+    progressCtx.token = req.token;
 
     CURL* curl = curl_easy_init();
     if (!curl) {
@@ -100,6 +166,14 @@ HttpService::Result HttpService::perform(const Request& req) {
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &headerAcc);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+
+    // Progress reporting (Http.track): the XFERINFO callback posts PODs to the
+    // progress queue on the worker thread; the main thread turns them into Elm
+    // Progress values. Always enabled — the main thread only routes ticks for
+    // tracked tokens, so untracked requests just discard them cheaply.
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, xferInfoCb);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &progressCtx);
     if (req.timeoutMs > 0) {
         curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, req.timeoutMs);
     }

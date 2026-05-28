@@ -57,6 +57,18 @@ public:
         std::string   body;
     };
 
+    // POD progress tick posted by the libcurl XFERINFO callback from a worker
+    // thread. `isUpload` selects Sending (true) vs Receiving (false). `now` is
+    // bytes transferred so far; `total` is the expected total (0 = unknown,
+    // e.g. chunked download). No heap, no HPointer — the main thread turns
+    // these into Elm `Progress` values in the async-source drain.
+    struct Progress {
+        std::uint64_t token = 0;
+        bool          isUpload = false;
+        std::uint64_t now = 0;
+        std::uint64_t total = 0;
+    };
+
     // Main-thread producer: enqueue a request for the worker pool.
     void submit(Request req);
 
@@ -67,12 +79,24 @@ public:
     bool tryPopResult(Result& out);
     bool hasReadyResults() const;
 
+    // Progress queue (mirrors the result queue). Progress ticks for a token
+    // can arrive before its final Result. Drained on the main thread in the
+    // same async-source drain that pops results.
+    bool tryPopProgress(Progress& out);
+    bool hasProgress() const;
+
+    // Worker-thread producer: push a progress tick (called from the libcurl
+    // XFERINFO callback). Notifies the scheduler so the main loop wakes.
+    void pushProgress(Progress p);
+
 private:
     HttpService();
     ~HttpService() = default;
 
     void workerLoop();
-    static Result perform(const Request& req);
+    // `perform` posts progress ticks to the service's progress queue via the
+    // instance pointer, so it is no longer static.
+    Result perform(const Request& req);
 
     std::mutex                 requestsMutex_;
     std::condition_variable    requestsCV_;
@@ -80,6 +104,9 @@ private:
 
     mutable std::mutex         resultsMutex_;
     std::queue<Result>         results_;
+
+    mutable std::mutex         progressMutex_;
+    std::queue<Progress>       progress_;
 };
 
 } // namespace Elm::Platform

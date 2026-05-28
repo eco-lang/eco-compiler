@@ -89,6 +89,13 @@ private:
 
     void dispatchEffects();  // reads activeBatch_ and writes effectsScratch_
 
+    // Self-message protocol for one manager (invoked by the scheduler's
+    // dedicated self-process step). Reads the manager's router + current
+    // state, runs onSelfMsg(router, msg, state), runs the returned
+    // Task Never State to completion, and writes the produced state back
+    // into managerStates_[home].state so the next message sees it (P1c).
+    void handleSelfMsg(const std::string& home, HPointer msg);
+
     // Manager registry
     std::unordered_map<std::string, ManagerInfo> managers_;
 

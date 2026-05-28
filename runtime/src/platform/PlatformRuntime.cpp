@@ -125,18 +125,37 @@ HPointer PlatformRuntime::setupEffects(HPointer sendToAppClosure) {
         // sendToAppClosure and selfProc must survive each subsequent
         // allocation (taskReceive, rawSpawn, custom) — any of those can
         // trigger a GC that moves the values stored in our local copies.
-        HPointer recvCallback = decodeHP(info.onSelfMsg);  // will be wrapped later
+        HPointer recvCallback = decodeHP(info.onSelfMsg);
         Elm::StackRootGuard cb_guard(&recvCallback, &sendToAppClosure);
         HPointer selfProc = sched.rawSpawn(
             sched.taskReceive(recvCallback));
         Elm::StackRootGuard self_guard(&selfProc);
 
-        // Create router: Custom with ctor=CTOR_Router, 2 boxed fields
-        // fields[0] = sendToApp closure, fields[1] = selfProcess
+        // The self-process id is stable across re-arms (Process is immutable;
+        // each step allocates a new value with the same id). sendToSelf and the
+        // dedicated self-process step both resolve the live version by this id.
+        u32 selfProcId =
+            static_cast<u32>(static_cast<Process*>(resolveHP(selfProc))->id);
+
+        // Create router: Custom with ctor=CTOR_Router.
+        // field[0] = sendToApp closure (boxed, kind 00)
+        // field[1] = self-process id  (unboxed Int, kind 01) — Q-I Option 2:
+        //   store the *id* not a Process snapshot, so sendToSelf can resolve the
+        //   live (immutable, advancing) self-process via latestProcessById and
+        //   never delivers to a stale snapshot. Router is kernel-internal: only
+        //   sendToApp (field 0) and sendToSelf (field 1) read it; Elm never
+        //   introspects it. Slot 1 kind 01 lives in bits [2,3] → mask 0b0100.
         std::vector<Unboxable> routerFields(2);
-        routerFields[0].p = sendToAppClosure;
-        routerFields[1].p = selfProc;
-        HPointer router = custom(CTOR_Router, routerFields, 0);
+        routerFields[0] = boxed(sendToAppClosure);
+        routerFields[1] = unboxedInt(static_cast<i64>(selfProcId));
+        HPointer router = custom(CTOR_Router, routerFields, 0x4);
+
+        // Register the self-process message handler (Q-H). When this process
+        // receives a mailbox message, the scheduler's dedicated step invokes
+        // this handler with the message, which runs onSelfMsg + threads state.
+        std::string homeCopy = home;
+        sched.registerSelfProcess(selfProcId,
+            [this, homeCopy](HPointer msg) { handleSelfMsg(homeCopy, msg); });
 
         // Run the init task to get initial manager state.
         //
@@ -431,17 +450,88 @@ void PlatformRuntime::sendToApp(HPointer router, HPointer msg) {
 }
 
 HPointer PlatformRuntime::sendToSelf(HPointer router, HPointer msg) {
-    // Extract selfProcess from router
+    // Extract the self-process id from router field 1 (unboxed Int, Q-I) and
+    // resolve the live (latest) Process version. The Router only holds the id
+    // because Process is immutable — a stored snapshot would go stale on the
+    // first step of the self-process.
     void* routerPtr = resolveHP(router);
     if (!routerPtr) return Scheduler::instance().taskSucceed(unit());
 
     Custom* routerObj = static_cast<Custom*>(routerPtr);
-    HPointer selfProcess = routerObj->values[1].p;
+    u32 selfProcId = static_cast<u32>(routerObj->values[1].i);
 
-    // Send message to the self process
-    Scheduler::instance().rawSend(selfProcess, msg);
+    auto& sched = Scheduler::instance();
+    HPointer selfProcess = sched.latestProcessById(selfProcId);
+    if (!alloc::isNil(selfProcess)) {
+        // rawSend allocates (mailbox cons); root msg across it.
+        Elm::StackRootGuard guard(&msg);
+        sched.rawSend(selfProcess, msg);
+    }
 
-    return Scheduler::instance().taskSucceed(unit());
+    return sched.taskSucceed(unit());
+}
+
+// ============================================================================
+// Self-message handling (effect-manager onSelfMsg loop)
+// ============================================================================
+
+void PlatformRuntime::handleSelfMsg(const std::string& home, HPointer msg) {
+    auto msIt = managerStates_.find(home);
+    if (msIt == managerStates_.end()) return;
+    auto miIt = managers_.find(home);
+    if (miIt == managers_.end()) return;
+
+    HPointer onSelfMsgFn = decodeHP(miIt->second.onSelfMsg);
+    if (alloc::isNil(onSelfMsgFn) || hpIsConstant(onSelfMsgFn)) return;
+
+    // Snapshot router / state / fn from the rooted maps before the call.
+    ManagerState& ms = msIt->second;
+    HPointer router = decodeHP(ms.router);
+    HPointer state  = decodeHP(ms.state);
+    HPointer fn     = onSelfMsgFn;
+
+    // onSelfMsg(router, selfMsg, state) -> Task Never State. Pin all four
+    // arguments across the closure call: callClosure3 encodes them internally,
+    // but the caller's locals must remain GC-visible during the closure body.
+    Elm::StackRootGuard call_guard({&msg, &router, &state, &fn});
+    HPointer newStateTask = Scheduler::callClosure3(fn, router, msg, state);
+
+    // Run the returned Task to get the new state (mirror dispatchEffects).
+    auto& sched = Scheduler::instance();
+    HPointer effectProc = sched.rawSpawn(newStateTask);
+    u32 procId =
+        static_cast<u32>(static_cast<Process*>(resolveHP(effectProc))->id);
+    sched.drain();
+
+    HPointer latestProc = sched.latestProcessById(procId);
+    void* procPtr = resolveHP(latestProc);
+    if (procPtr) {
+        Process* proc = static_cast<Process*>(procPtr);
+        void* rootPtr = resolveHP(proc->root);
+        if (rootPtr) {
+            Task* rootTask = static_cast<Task*>(rootPtr);
+            assert(rootTask->header.tag == Tag_Task
+                   && "effect-manager onSelfMsg process root must be a Task");
+            if (rootTask->ctor == Task_Succeed) {
+                assert((rootTask->header.unboxed & 0x3) == 0
+                       && "effect-manager state must be boxed");
+                HPointer newState = rootTask->value.p;
+                // Only write back if onSelfMsg actually changed the state.
+                // sendToApp inside onSelfMsg runs the app's update cycle
+                // synchronously, which can re-enter onEffects and update
+                // managerStates_[home].state already; writing back an unchanged
+                // onSelfMsg result (it returns the same `state` it received —
+                // the common case, e.g. Http only sends) would clobber that.
+                // `state` is rooted by call_guard, so its bits are GC-current.
+                if (encodeHP(newState) != encodeHP(state)) {
+                    auto writeIt = managerStates_.find(home);
+                    if (writeIt != managerStates_.end()) {
+                        writeIt->second.state = encodeHP(newState);
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ============================================================================

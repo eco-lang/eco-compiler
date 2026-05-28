@@ -53,6 +53,9 @@ public:
     static HPointer callClosure1(HPointer closurePtr, HPointer arg);
     // Calls a 2-arg Elm closure
     static HPointer callClosure2(HPointer closurePtr, HPointer arg1, HPointer arg2);
+    // Calls a 3-arg Elm closure (for onSelfMsg: router, selfMsg, state)
+    static HPointer callClosure3(HPointer closurePtr, HPointer arg1, HPointer arg2,
+                                 HPointer arg3);
     // Calls a 4-arg Elm closure (for onEffects: router, cmds, subs, state)
     static HPointer callClosure4(HPointer closurePtr, HPointer arg1, HPointer arg2,
                                  HPointer arg3, HPointer arg4);
@@ -96,6 +99,15 @@ public:
     // produce a new Process value. Exposed publicly (instead of `private`)
     // so the resume closure evaluator can also update it.
     void registerLatestProcess(HPointer proc);
+
+    // Mark a process id as an effect-manager self-process. When such a
+    // process receives a mailbox message, the step loop runs `handler(msg)`
+    // (which performs onSelfMsg(router,msg,state) + state write-back) instead
+    // of the generic 1-arg callback dispatch, then auto re-arms the
+    // Task_Receive loop so the process blocks for the next message (Q-H).
+    // Keyed by the stable logical process id (the Process *value* changes on
+    // every step since Process is immutable, but the id is stable).
+    void registerSelfProcess(u32 procId, std::function<void(HPointer msg)> handler);
 
 private:
     Scheduler();
@@ -148,6 +160,11 @@ private:
     std::unordered_map<u64, uint64_t> pendingResumes_;
     std::atomic<u64> nextResumeToken_{1};
     std::mutex resumeMutex_;
+    // Effect-manager self-processes: logical process id → message handler.
+    // The handler captures no HPointers (it reads manager state from
+    // PlatformRuntime by home), so this map needs no GC scanning. Populated
+    // once per manager during setupEffects.
+    std::unordered_map<u32, std::function<void(HPointer)>> selfMsgHandlers_;
     // External async completion sources (HTTP, etc). Drained on the main
     // thread in processReadyAsync; their `ready` predicates feed the wait
     // condition. Registered once at kernel init; never mutated concurrently

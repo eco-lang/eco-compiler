@@ -78,6 +78,11 @@ HPointer Scheduler::latestProcessById(u32 id) {
     return decodeHP(it->second);
 }
 
+void Scheduler::registerSelfProcess(u32 procId,
+                                    std::function<void(HPointer)> handler) {
+    selfMsgHandlers_[procId] = std::move(handler);
+}
+
 u64 Scheduler::registerPendingResume(HPointer resume) {
     u64 token = nextResumeToken_.fetch_add(1);
     std::lock_guard<std::mutex> lock(resumeMutex_);
@@ -172,6 +177,18 @@ HPointer Scheduler::callClosure2(HPointer closurePtr, HPointer arg1, HPointer ar
     HPtr closureHPtr = HPtr::fromBits(encodeHP(closurePtr));
 
     HPtr result = eco_apply_closure(closureHPtr, args, 2);
+    return decodeHP(result.toBits());
+}
+
+HPointer Scheduler::callClosure3(HPointer closurePtr, HPointer arg1, HPointer arg2,
+                                  HPointer arg3) {
+    uint64_t args[3];
+    args[0] = encodeHP(arg1);
+    args[1] = encodeHP(arg2);
+    args[2] = encodeHP(arg3);
+    HPtr closureHPtr = HPtr::fromBits(encodeHP(closurePtr));
+
+    HPtr result = eco_apply_closure(closureHPtr, args, 3);
     return decodeHP(result.toBits());
 }
 
@@ -805,6 +822,24 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
             if (popRes.hasMessage) {
                 proc = resolveProc();
                 if (!proc) break;
+
+                // Effect-manager self-process (Q-H): dedicated protocol that
+                // runs onSelfMsg(router,msg,state), threads the returned state
+                // back into the manager, and auto re-arms the Task_Receive
+                // loop. mailboxPopFront already produced a Process whose root
+                // is still Task_Receive, so after the handler runs we just
+                // `continue` to pop the next message or block. procEncoded is
+                // rooted, so any GC inside the handler is tracked here.
+                u32 procId = static_cast<u32>(proc->id);
+                auto selfIt = selfMsgHandlers_.find(procId);
+                if (selfIt != selfMsgHandlers_.end()) {
+                    HPointer selfMsg = popRes.msg;
+                    auto handler = selfIt->second;  // copy: handler re-enters drain
+                    Elm::StackRootGuard guard(&selfMsg);
+                    handler(selfMsg);
+                    continue;
+                }
+
                 task = resolveRoot(proc);
                 if (!task) break;
                 HPointer recvCallback = task->callback;

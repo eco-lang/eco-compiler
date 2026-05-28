@@ -70,6 +70,14 @@ static const unsigned char kDummyPackageZip[] = {
     0x84,0x00,0x00,0x00,0xa0,0x00,0x00,0x00,0x00,0x00,
 };
 
+// Extract a long-valued query parameter (e.g. "bytes=2048"), or `def` if absent.
+inline long queryLong(const std::string& query, const std::string& key, long def) {
+    std::string pat = key + "=";
+    size_t pos = query.find(pat);
+    if (pos == std::string::npos) return def;
+    return std::atol(query.c_str() + pos + pat.size());
+}
+
 inline std::string jsonEscape(const std::string& s) {
     std::string out;
     for (char c : s) {
@@ -234,6 +242,64 @@ inline void handleConnection(Conn conn) {
             if (pos != std::string::npos) ms = std::atol(query.c_str() + pos + 3);
             std::this_thread::sleep_for(std::chrono::milliseconds(ms));
             sendResponse(conn, 200, "OK", "text/plain", "slow");
+        } else if (route == "/drip") {
+            // Known-length streamed body: Content-Length set, then `bytes` bytes
+            // written over ~`ms` ms in small chunks with per-chunk sleeps, so
+            // curl reports incremental Receiving progress with size = Just bytes.
+            long bytes = queryLong(query, "bytes", 1024);
+            long ms = queryLong(query, "ms", 500);
+            if (bytes < 0) bytes = 0;
+            const long kChunks = 8;
+            std::ostringstream hdr;
+            hdr << "HTTP/1.1 200 OK\r\n"
+                << "Content-Type: application/octet-stream\r\n"
+                << "Content-Length: " << bytes << "\r\n"
+                << "Connection: close\r\n\r\n";
+            writeAll(conn, hdr.str());
+            long written = 0;
+            long perChunk = (bytes + kChunks - 1) / kChunks;
+            if (perChunk < 1) perChunk = 1;
+            while (written < bytes) {
+                long n = bytes - written;
+                if (n > perChunk) n = perChunk;
+                writeAll(conn, std::string(static_cast<size_t>(n), 'x'));
+                written += n;
+                if (written < bytes) {
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(ms / kChunks));
+                }
+            }
+        } else if (route == "/drip-chunked") {
+            // Unknown-length streamed body: Transfer-Encoding: chunked (no
+            // Content-Length), so curl reports Receiving progress with
+            // size = Nothing. `bytes` total payload spread over ~`ms` ms.
+            long bytes = queryLong(query, "bytes", 1024);
+            long ms = queryLong(query, "ms", 500);
+            if (bytes < 0) bytes = 0;
+            const long kChunks = 8;
+            std::ostringstream hdr;
+            hdr << "HTTP/1.1 200 OK\r\n"
+                << "Content-Type: application/octet-stream\r\n"
+                << "Transfer-Encoding: chunked\r\n"
+                << "Connection: close\r\n\r\n";
+            writeAll(conn, hdr.str());
+            long written = 0;
+            long perChunk = (bytes + kChunks - 1) / kChunks;
+            if (perChunk < 1) perChunk = 1;
+            while (written < bytes) {
+                long n = bytes - written;
+                if (n > perChunk) n = perChunk;
+                std::ostringstream c;
+                c << std::hex << n << std::dec << "\r\n"
+                  << std::string(static_cast<size_t>(n), 'x') << "\r\n";
+                writeAll(conn, c.str());
+                written += n;
+                if (written < bytes) {
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(ms / kChunks));
+                }
+            }
+            writeAll(conn, "0\r\n\r\n");  // terminating chunk
         } else if (route == "/redirect") {
             sendResponse(conn, 302, "Found", "text/plain", "", "Location: /anything\r\n");
         } else if (route == "/package.zip") {

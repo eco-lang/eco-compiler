@@ -30,10 +30,12 @@
 #include "allocator/RootSet.hpp"
 #include "platform/Scheduler.hpp"
 #include "platform/HttpService.hpp"
+#include "platform/PlatformRuntime.hpp"
 #include <curl/curl.h>
 #include <map>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -81,7 +83,33 @@ static constexpr int REQ_EXPECT  = 2;
 static constexpr int REQ_HEADERS = 3;
 static constexpr int REQ_METHOD  = 4;
 static constexpr int REQ_TIMEOUT = 5;
+static constexpr int REQ_TRACKER = 6;
 static constexpr int REQ_URL     = 7;
+
+// ---- Progress ctor tags (Elm-observed; declaration order) ------------------
+//   type Progress = Sending { sent : Int, size : Int }
+//                 | Receiving { received : Int, size : Maybe Int }
+static constexpr u16 PROGRESS_SENDING   = 0;
+static constexpr u16 PROGRESS_RECEIVING = 1;
+
+// ---- Per-request progress-tracking registry (main-thread only, P3b) --------
+// Maps an in-flight request token to the Http manager's router + the user's
+// tracker String, so a progress tick (which carries only a token) can be
+// routed via sendToSelf. Also indexes tracker -> token so Http.cancel (keyed
+// by tracker) can mark a request cancelled (drop-delivery, Q-L simpler option).
+//
+// All access is on the main scheduler thread (toTask binding step, the
+// async-source drain, and the GC scanner which runs stop-the-world on this
+// thread). g_trackedMutex is defensive and is NEVER held across an Allocator
+// call (which could trigger GC -> the scanner -> self-deadlock).
+struct TrackedReq {
+    uint64_t routerEnc = 0;   // boxed HPointer (Router Custom)
+    uint64_t trackerEnc = 0;  // boxed HPointer (tracker String)
+    bool     cancelled = false;
+};
+std::mutex g_trackedMutex;
+std::unordered_map<uint64_t, TrackedReq> g_httpTracked;     // token -> req
+std::unordered_map<std::string, uint64_t> g_trackerToken;   // tracker -> token
 
 std::string elmStringToUTF8(uint64_t strEnc) {
     HPointer hp = Export::decode(strEnc);
@@ -223,15 +251,145 @@ HPointer buildResponse(const HttpService::Result& r, HPointer body) {
     return custom(good ? RESP_GOOD_STATUS : RESP_BAD_STATUS, v, 0);
 }
 
+// ---- Tracking registry helpers (main thread) -------------------------------
+
+// Register a tracked request. trackerStr is computed here (no Allocator call)
+// and held only as a std::string key.
+void httpRegisterTracked(uint64_t token, HPointer router, HPointer tracker) {
+    std::string trackerStr = elmStringToUTF8(encodeHP(tracker));
+    std::lock_guard<std::mutex> lk(g_trackedMutex);
+    g_httpTracked[token] = TrackedReq{encodeHP(router), encodeHP(tracker), false};
+    g_trackerToken[trackerStr] = token;
+}
+
+// Clear a token's tracking on final result. Returns whether it was cancelled
+// (so the caller can drop delivery). Reads the stored tracker String (no alloc)
+// to remove the tracker -> token index entry if it still points at this token.
+bool httpClearTracked(uint64_t token) {
+    std::lock_guard<std::mutex> lk(g_trackedMutex);
+    auto it = g_httpTracked.find(token);
+    if (it == g_httpTracked.end()) return false;
+    bool cancelled = it->second.cancelled;
+    std::string trackerStr = elmStringToUTF8(it->second.trackerEnc);
+    auto ti = g_trackerToken.find(trackerStr);
+    if (ti != g_trackerToken.end() && ti->second == token) g_trackerToken.erase(ti);
+    g_httpTracked.erase(it);
+    return cancelled;
+}
+
+// GC scanner over the tracking registry (P3c). Runs stop-the-world on the main
+// thread; evacuates the router + tracker HPointers in place. Never allocates.
+void httpRegisterScannerOnce() {
+    static std::once_flag flag;
+    std::call_once(flag, []() {
+        Allocator::instance().getRootSet().addExternalRootScanner(
+            [](RootSet::EvacuateFn evac) {
+                std::lock_guard<std::mutex> lock(g_trackedMutex);
+                for (auto& [token, tr] : g_httpTracked) {
+                    evac(tr.routerEnc);
+                    evac(tr.trackerEnc);
+                }
+            });
+    });
+}
+
+// ---- Progress value construction (P5, main thread) -------------------------
+// upload   -> Sending  { sent : Int, size : Int }       ctor 0
+// download -> Receiving{ received : Int, size : Maybe Int } ctor 1
+HPointer buildProgress(bool isUpload, uint64_t now, uint64_t total) {
+    if (isUpload) {
+        // record { sent, size } — both unboxed Int; computeRecordLayout orders
+        // unboxed-first (alphabetical): [sent(slot0,Int), size(slot1,Int)].
+        // 2-bit mask: slot0=01, slot1=01 -> 0b0101.
+        std::vector<Unboxable> rf(2);
+        rf[0] = unboxedInt(static_cast<i64>(now));    // sent
+        rf[1] = unboxedInt(static_cast<i64>(total));  // size
+        HPointer rec = record(rf, 0x5);
+        Elm::StackRootGuard g(&rec);
+        std::vector<Unboxable> cf(1);
+        cf[0] = boxed(rec);
+        return custom(PROGRESS_SENDING, cf, 0);
+    }
+    // size : Maybe Int — Just total when known, else Nothing (chunked).
+    HPointer size = (total > 0)
+        ? justKind(unboxedInt(static_cast<i64>(total)), /*kind=Int*/1)
+        : nothing();
+    Elm::StackRootGuard sg(&size);
+    // record { received, size } — received unboxed Int, size boxed Maybe;
+    // unboxed-first order: [received(slot0,Int), size(slot1,boxed)].
+    // 2-bit mask: slot0=01, slot1=00 -> 0b0001.
+    std::vector<Unboxable> rf(2);
+    rf[0] = unboxedInt(static_cast<i64>(now));  // received
+    rf[1] = boxed(size);                         // size : Maybe Int
+    HPointer rec = record(rf, 0x1);
+    Elm::StackRootGuard rg(&rec);
+    std::vector<Unboxable> cf(1);
+    cf[0] = boxed(rec);
+    return custom(PROGRESS_RECEIVING, cf, 0);
+}
+
+// Drain progress ticks (P4a). For each, look up the token's (router, tracker),
+// build a Progress value, wrap it in the SelfMsg tuple (tracker, progress), and
+// route it to the Http manager self-process via sendToSelf -> onSelfMsg.
+void httpDrainProgress() {
+    HttpService::Progress ev;
+    while (HttpService::instance().tryPopProgress(ev)) {
+        uint64_t routerEnc = 0, trackerEnc = 0;
+        bool found = false, cancelled = false;
+        {
+            std::lock_guard<std::mutex> lk(g_trackedMutex);
+            auto it = g_httpTracked.find(ev.token);
+            if (it != g_httpTracked.end()) {
+                routerEnc = it->second.routerEnc;
+                trackerEnc = it->second.trackerEnc;
+                cancelled = it->second.cancelled;
+                found = true;
+            }
+        }
+        if (!found || cancelled) continue;  // untracked or cancelled: drop
+
+        // Root the decoded locals before any allocation: the scanner keeps the
+        // registry entries alive, but these stack copies need their own roots
+        // so GC updates them in place across buildProgress / tuple2.
+        HPointer router = decodeHP(routerEnc);
+        HPointer tracker = decodeHP(trackerEnc);
+        HPointer progress = listNil();
+        HPointer selfMsg = listNil();
+        Elm::StackRootGuard g({&router, &tracker, &progress, &selfMsg});
+        progress = buildProgress(ev.isUpload, ev.now, ev.total);
+        selfMsg = tuple2(boxed(tracker), boxed(progress), 0);  // (tracker, progress)
+        PlatformRuntime::instance().sendToSelf(router, selfMsg);
+
+        // Deliver this tick (step the manager self-process -> onSelfMsg ->
+        // sendToApp) before popping the next. sendToSelf only *enqueues* the
+        // self-process; because Process is immutable, enqueuing multiple ticks
+        // before stepping would leave several snapshots whose mailboxes overlap,
+        // and stepping each would re-deliver earlier ticks. Draining per tick
+        // keeps the mailbox at one message and delivers each exactly once
+        // (per-tick scheduler step, Q-G).
+        Scheduler::instance().drain();
+    }
+}
+
 // ---- Main-thread async-source drain ----------------------------------------
 // Pops completed worker results and, for each, resumes the matching binding on
 // the main thread: build Response -> apply expect.toBody/toValue -> apply
 // resultToTask -> resume(resultTask).
 void httpDrain() {
+    // Drain progress first (delivering each tick fully, see httpDrainProgress)
+    // so all progress reaches the app before the final result is delivered:
+    // result delivery (httpSuccessHandler) calls sendToApp synchronously, so
+    // progress must be flushed first to preserve the track API's "progress
+    // before final result" ordering (P2c).
+    httpDrainProgress();
+
     HttpService::Result r;
     while (HttpService::instance().tryPopResult(r)) {
+        // Clear tracking for this token (no-op for untracked). If it was
+        // cancelled via Http.cancel, drop the result without resuming.
+        bool cancelled = httpClearTracked(r.token);
         HPointer bundle = Scheduler::instance().takePendingResume(r.token);
-        if (alloc::isNil(bundle)) {
+        if (alloc::isNil(bundle) || cancelled) {
             // Cancelled or unknown token: drop the pending-async count.
             Scheduler::instance().decrementPendingAsync();
             continue;
@@ -299,9 +457,13 @@ void httpDrain() {
 void httpEnsureRegistered() {
     static std::once_flag flag;
     std::call_once(flag, []() {
+        httpRegisterScannerOnce();
         Scheduler::instance().registerAsyncSource(
             httpDrain,
-            []() { return HttpService::instance().hasReadyResults(); });
+            []() {
+                return HttpService::instance().hasReadyResults()
+                    || HttpService::instance().hasProgress();
+            });
     });
 }
 
@@ -312,6 +474,8 @@ struct ExtractedRequest {
     HPointer type;     // expect.__type: "" (String body) or "arraybuffer" (Bytes)
     HPointer toBody;
     HPointer toValue;
+    HPointer trackerHP = {};  // tracker String (valid only when tracked)
+    bool tracked = false;     // request.tracker == Just _
     bool ok = false;
 };
 
@@ -390,6 +554,14 @@ ExtractedRequest extractRequest(HPointer requestHP) {
         out.pod.timeoutMs = static_cast<long>(mt->values[0].f);
     }
 
+    // tracker : Maybe String (Just => Custom, field 0 is the tracker String;
+    // Nothing => embedded constant => resolveOrNull yields nullptr => untracked).
+    void* trPtr = resolveOrNull(req->values[REQ_TRACKER].p);
+    if (trPtr) {
+        out.trackerHP = static_cast<Custom*>(trPtr)->values[0].p;
+        out.tracked = true;
+    }
+
     // expect : Expect (Custom ctor 0) [type, toBody, toValue].
     void* expectPtr = resolveOrNull(req->values[REQ_EXPECT].p);
     if (!expectPtr) return out;
@@ -401,12 +573,14 @@ ExtractedRequest extractRequest(HPointer requestHP) {
     return out;
 }
 
-// Binding evaluator (main thread). Captures: args[0]=request, args[1]=resultToTask.
-// Scheduler appends the resume closure as args[2].
+// Binding evaluator (main thread). Captures: args[0]=request,
+// args[1]=resultToTask, args[2]=router. Scheduler appends the resume closure
+// as args[3].
 void* httpBindingEval(void* args[]) {
     HPointer request      = decodeHP(reinterpret_cast<uint64_t>(args[0]));
     HPointer resultToTask = decodeHP(reinterpret_cast<uint64_t>(args[1]));
-    HPointer resume       = decodeHP(reinterpret_cast<uint64_t>(args[2]));
+    HPointer router       = decodeHP(reinterpret_cast<uint64_t>(args[2]));
+    HPointer resume       = decodeHP(reinterpret_cast<uint64_t>(args[3]));
 
     ExtractedRequest ex = extractRequest(request);
     if (!ex.ok) {
@@ -419,7 +593,9 @@ void* httpBindingEval(void* args[]) {
     HPointer toBody = ex.toBody;
     HPointer toValue = ex.toValue;
     HPointer type = ex.type;
-    Elm::StackRootGuard g({&resume, &resultToTask, &toBody, &toValue, &type});
+    HPointer trackerHP = ex.trackerHP;
+    Elm::StackRootGuard g({&resume, &resultToTask, &toBody, &toValue, &type,
+                           &router, &trackerHP});
     std::vector<Unboxable> fields(5);
     fields[0].p = resume;
     fields[1].p = resultToTask;
@@ -431,10 +607,17 @@ void* httpBindingEval(void* args[]) {
     u64 token = Scheduler::instance().registerPendingResume(bundle);
     Scheduler::instance().incrementPendingAsync();
 
+    // Tracked request (tracker == Just _): register (router, tracker) so the
+    // worker's progress ticks route to the Http manager self-process (P3b).
+    if (ex.tracked) {
+        httpRegisterTracked(token, router, trackerHP);
+    }
+
     ex.pod.token = token;
     HttpService::instance().submit(std::move(ex.pod));
 
-    // Kill handle: Unit (cancellation is Phase-2 via HttpService::cancel).
+    // Kill handle: Unit. Http.cancel is implemented as drop-delivery in the
+    // tracking registry (Q-L simpler option), not via this kill handle.
     return reinterpret_cast<void*>(encodeHP(unit()));
 }
 
@@ -482,23 +665,37 @@ HPtr Elm_Kernel_Http_pair(HPtr a, HPtr b) {
 
 // toTask : router -> (a -> Task x b) -> Request -> Task x b
 HPtr Elm_Kernel_Http_toTask(HPtr router, HPtr resultToTask, HPtr request) {
-    (void)router;  // Phase-1: progress tracking (router/sendToSelf) is Phase-2.
     httpEnsureRegistered();
 
-    HPointer reqHP = Export::decode(request.toBits());
-    HPointer rttHP = Export::decode(resultToTask.toBits());
-    Elm::StackRootGuard g(&reqHP, &rttHP);
+    HPointer reqHP    = Export::decode(request.toBits());
+    HPointer rttHP    = Export::decode(resultToTask.toBits());
+    HPointer routerHP = Export::decode(router.toBits());
+    Elm::StackRootGuard g({&reqHP, &rttHP, &routerHP});
 
-    // Binding closure captures [request, resultToTask]; arity = 2 captures + 1
-    // scheduler-supplied resume arg.
-    HPointer bindingCallback = allocClosureK(httpBindingEval, 3, Elm::PK_Boxed);
+    // Binding closure captures [request, resultToTask, router]; arity = 3
+    // captures + 1 scheduler-supplied resume arg. The router is needed so the
+    // binding step can register progress tracking for a tracked request.
+    HPointer bindingCallback = allocClosureK(httpBindingEval, 4, Elm::PK_Boxed);
     void* clPtr = Allocator::instance().resolve(bindingCallback);
     if (clPtr) {
         closureCapture(clPtr, boxed(reqHP), true);
         closureCapture(clPtr, boxed(rttHP), true);
+        closureCapture(clPtr, boxed(routerHP), true);
     }
     HPointer task = Scheduler::instance().taskBinding(bindingCallback);
     return HPtr::fromBits(Export::encode(task));
+}
+
+// Mark a tracked request cancelled by its tracker string (drop-delivery). The
+// pending result, when it arrives, is dropped without resuming, and any further
+// progress ticks are ignored. Called by the Http effect manager's Cancel branch.
+void Eco_Http_cancelTracker(uint64_t trackerEnc) {
+    std::string trackerStr = elmStringToUTF8(trackerEnc);
+    std::lock_guard<std::mutex> lk(g_trackedMutex);
+    auto ti = g_trackerToken.find(trackerStr);
+    if (ti == g_trackerToken.end()) return;
+    auto it = g_httpTracked.find(ti->second);
+    if (it != g_httpTracked.end()) it->second.cancelled = true;
 }
 
 // expect : type -> toBody -> toValue -> Expect
