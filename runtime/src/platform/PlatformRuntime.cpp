@@ -152,8 +152,18 @@ HPointer PlatformRuntime::setupEffects(HPointer sendToAppClosure) {
         if (!alloc::isNil(initTask) && !hpIsConstant(initTask)) {
             void* initPtr = resolveHP(initTask);
             if (initPtr && static_cast<Header*>(initPtr)->tag == Tag_Closure) {
+                // The kernel registers `init` as a 0-arity thunk closure
+                // (allocClosure(...InitEvaluator, 0)) that *produces* the
+                // init Task when forced. eco_apply_closure(_, nullptr, 0)
+                // is a no-op (num_args==0 returns the closure unchanged,
+                // see RuntimeExports.cpp eco_apply_closure_eval), so it must
+                // NOT be used to force a thunk. eco_closure_call_saturated
+                // has no 0-arg short-circuit and dispatches straight to the
+                // evaluator, which is exactly the "force a saturated thunk"
+                // operation needed here.
                 HPtr closureHPtr = HPtr::fromBits(encodeHP(initTask));
-                HPtr result = eco_apply_closure(closureHPtr, nullptr, 0);
+                HPtr result = eco_closure_call_saturated(closureHPtr, nullptr,
+                                                         0, nullptr);
                 initTask = decodeHP(result.toBits());
             }
         }
@@ -175,6 +185,14 @@ HPointer PlatformRuntime::setupEffects(HPointer sendToAppClosure) {
                 void* rootPtr = resolveHP(proc->root);
                 if (rootPtr) {
                     Task* rootTask = static_cast<Task*>(rootPtr);
+                    // The spawned init process must have reduced to a Task.
+                    // If `proc->root` is anything else (e.g. an unforced
+                    // init thunk Closure), reading `value.p` below would
+                    // mis-decode a non-heap word (the closure's evaluator
+                    // code pointer) as the initial state. Guard the tag
+                    // before trusting the Task layout.
+                    assert(rootTask->header.tag == Tag_Task
+                           && "effect-manager init process root must be a Task");
                     if (rootTask->ctor == Task_Succeed) {
                         // Effect-manager init state is structural — never a
                         // primitive — so the value is always a boxed HPointer.
@@ -302,6 +320,8 @@ void PlatformRuntime::dispatchEffects() {
             void* rootPtr = resolveHP(proc->root);
             if (rootPtr) {
                 Task* rootTask = static_cast<Task*>(rootPtr);
+                assert(rootTask->header.tag == Tag_Task
+                       && "effect-manager onEffects process root must be a Task");
                 if (rootTask->ctor == Task_Succeed) {
                     assert((rootTask->header.unboxed & 0x3) == 0
                            && "effect-manager state must be boxed");
