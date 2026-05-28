@@ -110,9 +110,17 @@ static void* httpOnEffectsEvaluator(void* args[]) {
         void* cmdPtr = allocator.resolve(cmdHP);
         if (cmdPtr) {
             Header* header = static_cast<Header*>(cmdPtr);
-            if (header->tag == Tag_Task) {
-                // It's directly a Task - spawn it with callback to send result.
-                // Create andThen to handle success.
+            // Stock elm/http command: `MyCmd msg = Cancel String | Request {...}`
+            // (Cancel=ctor 0, Request=ctor 1). For a Request we call the stock
+            // kernel contract `toTask router (sendToApp router) req` to build the
+            // HTTP task, then spawn it. (Cancel is Phase-2.)
+            if (header->tag == Tag_Custom &&
+                static_cast<Custom*>(cmdPtr)->ctor == 1) {
+                HPointer req = static_cast<Custom*>(cmdPtr)->values[0].p;
+                Elm::StackRootGuard reqRoot(&req);
+
+                // sendToApp closure (resultToTask): httpSuccessHandler sends the
+                // produced msg to the app and returns Task.succeed(unit).
                 HPointer successCl = allocClosure(httpSuccessHandler, 2);
                 Elm::StackRootGuard clRoot(&successCl);
                 void* clPtr = allocator.resolve(successCl);
@@ -120,14 +128,24 @@ static void* httpOnEffectsEvaluator(void* args[]) {
                     closureCapture(clPtr, boxed(router), true);
                 }
 
-                // Wrap task with andThen for success handling.
+                HPtr task = Elm_Kernel_Http_toTask(
+                    HPtr::fromBits(encodeHP(router)),
+                    HPtr::fromBits(encodeHP(successCl)),
+                    HPtr::fromBits(encodeHP(req)));
+                HPointer taskHP = decodeHP(task.toBits());
+                Elm::StackRootGuard taskRoot(&taskHP);
+                sched.rawSpawn(taskHP);
+            } else if (header->tag == Tag_Task) {
+                // Fallback: a command that is already a Task — spawn directly.
+                HPointer successCl = allocClosure(httpSuccessHandler, 2);
+                Elm::StackRootGuard clRoot(&successCl);
+                void* clPtr = allocator.resolve(successCl);
+                if (clPtr) {
+                    closureCapture(clPtr, boxed(router), true);
+                }
                 HPointer wrappedTask = sched.taskAndThen(successCl, cmdHP);
-
-                // Spawn process for this command.
                 sched.rawSpawn(wrappedTask);
             }
-            // If it's not directly a Task, it might be a Cmd wrapper.
-            // For now, skip non-Task commands.
         }
 
         current = nextCurrent;

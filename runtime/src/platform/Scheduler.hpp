@@ -9,7 +9,10 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace Elm::Platform {
 
@@ -63,6 +66,14 @@ public:
     // completes. Safe to call from any thread.
     u64 registerPendingResume(HPointer resume);
     HPointer takePendingResume(u64 token);
+
+    // Register an external async completion source (e.g. the HTTP worker).
+    // `drain` is invoked on the main scheduler thread during processReadyAsync
+    // and must do all HPointer/GC work there; `ready` is a non-blocking
+    // predicate folded into the event loop's wait condition so a completion
+    // posted from a worker thread reliably wakes the loop. Both are stored for
+    // the lifetime of the process. Safe to call once at kernel init.
+    void registerAsyncSource(std::function<void()> drain, std::function<bool()> ready);
 
     // Process is logically immutable: every mutation is implemented by
     // allocating a new Process with replaced fields. `procWith*` are the
@@ -137,6 +148,11 @@ private:
     std::unordered_map<u64, uint64_t> pendingResumes_;
     std::atomic<u64> nextResumeToken_{1};
     std::mutex resumeMutex_;
+    // External async completion sources (HTTP, etc). Drained on the main
+    // thread in processReadyAsync; their `ready` predicates feed the wait
+    // condition. Registered once at kernel init; never mutated concurrently
+    // with the event loop after startup.
+    std::vector<std::pair<std::function<void()>, std::function<bool()>>> asyncSources_;
     bool working_ = false;
     std::mutex mutex_;
     std::condition_variable eventCV_;

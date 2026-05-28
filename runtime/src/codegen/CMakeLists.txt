@@ -396,6 +396,7 @@ add_llvm_executable(ecoc
     ../allocator/ElmBytesRuntime.cpp
     ../platform/Scheduler.cpp
     ../platform/TimerService.cpp
+    ../platform/HttpService.cpp
     ../platform/PlatformRuntime.cpp
     PARTIAL_SOURCES_INTENDED
 )
@@ -483,6 +484,7 @@ add_mlir_library(EcoRunner
     ../allocator/ElmBytesRuntime.cpp
     ../platform/Scheduler.cpp
     ../platform/TimerService.cpp
+    ../platform/HttpService.cpp
     ../platform/PlatformRuntime.cpp
     PARTIAL_SOURCES_INTENDED
 
@@ -565,6 +567,7 @@ add_library(EcoRuntimeStatic STATIC
     ../allocator/ElmBytesRuntime.cpp
     ../platform/Scheduler.cpp
     ../platform/TimerService.cpp
+    ../platform/HttpService.cpp
     ../platform/PlatformRuntime.cpp
 )
 

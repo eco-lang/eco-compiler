@@ -94,6 +94,11 @@ HPointer Scheduler::takePendingResume(u64 token) {
     return hp;
 }
 
+void Scheduler::registerAsyncSource(std::function<void()> drain,
+                                    std::function<bool()> ready) {
+    asyncSources_.emplace_back(std::move(drain), std::move(ready));
+}
+
 HPointer Scheduler::latestProcessByHPtr(HPointer originalHP) {
     void* ptr = resolveHP(originalHP);
     if (!ptr) return listNil();
@@ -512,9 +517,15 @@ void Scheduler::runEventLoop() {
         // processReadyAsync but before we took the lock — closes the
         // missed-wakeup window.
         eventCV_.wait(lock, [this] {
-            return !runQueue_.empty()
+            if (!runQueue_.empty()
                 || pendingAsync_.load() == 0
-                || TimerService::instance().hasReadyTokens();
+                || TimerService::instance().hasReadyTokens()) {
+                return true;
+            }
+            for (auto& src : asyncSources_) {
+                if (src.second()) return true;
+            }
+            return false;
         });
     }
 }
@@ -553,6 +564,12 @@ void Scheduler::processReadyAsync() {
             callClosure1(resumeClosure, succeedTask);
         }
         decrementPendingAsync();
+    }
+
+    // Drain external async sources (HTTP, etc). Each does its own HPointer/GC
+    // work on this (main) thread and is responsible for decrementPendingAsync.
+    for (auto& src : asyncSources_) {
+        src.first();
     }
 }
 

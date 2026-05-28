@@ -5,21 +5,11 @@
 #include <string>
 #include <vector>
 
-#ifdef HTTP_CURL_AVAILABLE
 #include <curl/curl.h>
-#endif
-
-#ifdef LIBZIP_AVAILABLE
 #include <zip.h>
-#endif
-
-#ifdef HTTP_CURL_AVAILABLE
 #include <openssl/sha.h>
-#endif
 
 namespace Eco::Kernel::Http {
-
-#ifdef HTTP_CURL_AVAILABLE
 
 static size_t writeCallback(void* contents, size_t size, size_t nmemb, void* userp) {
     size_t totalSize = size * nmemb;
@@ -147,7 +137,6 @@ uint64_t getArchive(uint64_t url) {
         shaHex = std::string(hex, SHA_DIGEST_LENGTH * 2);
     }
 
-#ifdef LIBZIP_AVAILABLE
     // Extract ZIP using libzip.
     zip_error_t zipError;
     zip_error_init(&zipError);
@@ -196,51 +185,40 @@ uint64_t getArchive(uint64_t url) {
     zip_close(archive);
     zip_error_fini(&zipError);
 
-    // Build records with rooting
+    // Build the result with rooting. Eco.Http.getArchive (Eco/Http.elm)
+    // destructures the kernel result as tuples: outer `( sha, entries )` and
+    // each entry `( relativePath, data )`. So build Tuple2 values (NOT records)
+    // with that exact field order.
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
-    std::vector<HPointer> fileRecords(entries.size(), listNil());
-    for (auto& hp : fileRecords) rs.pushStackRootRange(&hp, 1, 1);
+    std::vector<HPointer> fileTuples(entries.size(), listNil());
+    for (auto& hp : fileTuples) rs.pushStackRootRange(&hp, 1, 1);
 
     for (size_t i = 0; i < entries.size(); ++i) {
-        std::vector<Unboxable> fields(2);
-        fields[0].p = allocStringFromUTF8(entries[i].content);
+        HPointer rel = allocStringFromUTF8(entries[i].relativePath);
+        HPointer data = listNil();
         {
-            Elm::StackRootGuard guard(&fields[0].p);
-            fields[1].p = allocStringFromUTF8(entries[i].relativePath);
+            Elm::StackRootGuard guard(&rel);
+            data = allocStringFromUTF8(entries[i].content);
         }
-        fileRecords[i] = record(fields, 0b00);
+        Elm::StackRootGuard guard(&rel, &data);
+        // ( relativePath, data )
+        fileTuples[i] = tuple2(boxed(rel), boxed(data), 0);
     }
     rs.restoreStackRangePoint(saved);
 
-    HPointer archiveList = listFromPointers(fileRecords);
-    std::vector<Unboxable> outerFields(2);
-    outerFields[0].p = archiveList;
+    HPointer archiveList = listFromPointers(fileTuples);
+    HPointer sha = listNil();
     {
-        Elm::StackRootGuard guard(&outerFields[0].p);
-        outerFields[1].p = allocStringFromUTF8(shaHex);
+        Elm::StackRootGuard guard(&archiveList);
+        sha = allocStringFromUTF8(shaHex);
     }
-    HPointer outerRec = record(outerFields, 0b00);
-    Elm::StackRootGuard guard2(&outerRec);
-    HPointer okVal = ok(boxed(outerRec), true);
+    Elm::StackRootGuard guard2(&archiveList, &sha);
+    // ( sha, archive )
+    HPointer outerTuple = tuple2(boxed(sha), boxed(archiveList), 0);
+    Elm::StackRootGuard guard3(&outerTuple);
+    HPointer okVal = ok(boxed(outerTuple), true);
     return taskSucceed(okVal);
-#else
-    // No libzip available.
-    HPointer errStr = allocStringFromUTF8("Archive extraction not available (libzip not found)");
-    return taskSucceed(err(boxed(errStr), true));
-#endif
 }
-
-#else // !HTTP_CURL_AVAILABLE
-
-uint64_t fetch(uint64_t /*method*/, uint64_t /*url*/, uint64_t /*headers*/) {
-    return taskFailString("Http.fetch not available (libcurl not found)");
-}
-
-uint64_t getArchive(uint64_t /*url*/) {
-    return taskFailString("Http.getArchive not available (libcurl not found)");
-}
-
-#endif // HTTP_CURL_AVAILABLE
 
 } // namespace Eco::Kernel::Http

@@ -447,8 +447,8 @@ HPtr Elm_Kernel_Url_percentDecode(HPtr str);
 
 HPtr Elm_Kernel_Http_emptyBody();
 HPtr Elm_Kernel_Http_pair(HPtr key, HPtr value);
-HPtr Elm_Kernel_Http_toTask(HPtr request);
-HPtr Elm_Kernel_Http_expect(HPtr responseToResult);
+HPtr Elm_Kernel_Http_toTask(HPtr router, HPtr resultToTask, HPtr request);
+HPtr Elm_Kernel_Http_expect(HPtr type, HPtr toBody, HPtr toValue);
 HPtr Elm_Kernel_Http_mapExpect(HPtr closure, HPtr expectVal);
 HPtr Elm_Kernel_Http_bytesToBlob(HPtr bytes, HPtr mimeType);
 HPtr Elm_Kernel_Http_toDataView(HPtr bytes);

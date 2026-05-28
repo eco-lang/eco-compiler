@@ -120,6 +120,7 @@ target_link_libraries(test rapidcheck
         EcoRunner
         EcoKernel_MVar
         EcoKernel_Runtime
+        EcoKernel_Http
     -Wl,--no-whole-archive
 )
 # Export symbols so the JIT can find them via dlsym.

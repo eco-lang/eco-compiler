@@ -1,7 +1,22 @@
-//===- HttpExports.cpp - C-linkage exports for Http module -----------------===//
+//===- HttpExports.cpp - C-linkage exports for the elm/http kernel ---------===//
 //
-// Full implementation using libcurl with OpenSSL for HTTPS support.
-// Falls back to stubs if libcurl is not available.
+// Implements the stock `elm/http` 2.0.0 kernel contract (Elm.Kernel.Http.*) on
+// libcurl + OpenSSL. The SAME unmodified `Http.elm` runs on both the JS and
+// C++ kernels, so these exports must match the stock arities and value shapes:
+//
+//   toTask : router -> (a -> Task) -> Request -> Task        (arity 3)
+//   expect : type -> toBody -> toValue -> Expect             (arity 3)
+//   pair   : a -> b -> Body                                  (arity 2)
+//   emptyBody, bytesToBlob, toDataView, toFormData, mapExpect
+//
+// SINGLE-THREADED HEAP (HEAP_007/HEAP_011): only the main scheduler thread may
+// touch the Eco heap. The actual network IO runs on Elm::Platform::HttpService
+// worker threads, which exchange ONLY plain-data PODs + a uint64 token with the
+// main thread. All Response/Metadata/Task construction and closure application
+// happens on the main thread in the async-source drain registered with the
+// Scheduler. Per-request heap continuations are rooted via the Scheduler's
+// pendingResumes_ (already GC-scanned), so no worker thread ever holds an
+// HPointer.
 //
 //===----------------------------------------------------------------------===//
 
@@ -11,22 +26,16 @@
 #include "allocator/HeapHelpers.hpp"
 #include "allocator/RuntimeExports.h"
 #include "allocator/StringOps.hpp"
-#include "platform/Scheduler.hpp"
-#ifdef HTTP_CURL_AVAILABLE
-#include <curl/curl.h>
-#endif
 #include "allocator/Allocator.hpp"
 #include "allocator/RootSet.hpp"
-#include <memory>
-#include <string>
-#include <unordered_map>
-#include <unordered_set>
-#include <vector>
-#include <thread>
-#include <cstring>
+#include "platform/Scheduler.hpp"
+#include "platform/HttpService.hpp"
+#include <curl/curl.h>
+#include <map>
 #include <mutex>
-
-// eco_apply_closure is declared in RuntimeExports.h (included above)
+#include <string>
+#include <utility>
+#include <vector>
 
 using namespace Elm;
 using namespace Elm::Kernel;
@@ -35,685 +44,531 @@ using namespace Elm::Platform;
 
 namespace {
 
-// Body type constructors
+// ---- Internal value shapes (kernel-private; never matched by Elm) ----------
+// Body : Custom. ctor 0 = empty; ctor 1 = pair [contentType(String), content];
+// ctor 2 = form-data [parts list]; ctor 3 = blob [bytes, mime].
 static constexpr u16 BODY_EMPTY = 0;
-static constexpr u16 BODY_STRING = 1;
-static constexpr u16 BODY_BYTES = 2;
-static constexpr u16 BODY_BLOB = 3;
-static constexpr u16 BODY_FORM = 4;
-
-// Expect type ctor
+static constexpr u16 BODY_PAIR  = 1;
+static constexpr u16 BODY_FORM  = 2;
+static constexpr u16 BODY_BLOB  = 3;
+// Expect/Resolver : Custom ctor 0, fields [type(String), toBody, toValue].
 static constexpr u16 EXPECT_CTOR = 0;
+// Per-request continuation bundle stashed in pendingResumes_ while the request
+// is in flight: Custom ctor 0, fields [resume, resultToTask, toBody, toValue, type].
+static constexpr u16 BUNDLE_CTOR = 0;
 
-// Response type (from Http module)
-// Response body = { url : String, statusCode : Int, statusText : String, headers : Dict String String, body : body }
-// We'll represent Response as a record
+// ---- Response constructor tags (Elm-observed; declaration order) -----------
+//   type Response body = BadUrl_ String | Timeout_ | NetworkError_
+//                      | BadStatus_ Metadata body | GoodStatus_ Metadata body
+static constexpr u16 RESP_BAD_URL      = 0;
+static constexpr u16 RESP_TIMEOUT      = 1;
+static constexpr u16 RESP_NETWORK      = 2;
+static constexpr u16 RESP_BAD_STATUS   = 3;
+static constexpr u16 RESP_GOOD_STATUS  = 4;
 
-// Error type constructors
-static constexpr u16 ERR_BAD_URL = 0;
-static constexpr u16 ERR_TIMEOUT = 1;
-static constexpr u16 ERR_NETWORK_ERROR = 2;
-static constexpr u16 ERR_BAD_STATUS = 3;
-static constexpr u16 ERR_BAD_BODY = 4;
+// Dict ctor tags — reserved values the compiler assigns to elm/core Dict
+// (must match CTOR_DICT_* in elm-kernel-cpp/src/core/Utils.cpp).
+//   RBNode_elm_builtin NColor k v left right   (fields 0..4)
+//   RBEmpty_elm_builtin                         (no fields)
+static constexpr u16 CTOR_DICT_RBNODE  = 0xFFFF;
+static constexpr u16 CTOR_DICT_RBEMPTY = 0xFFFE;
 
-// Helper: Convert Elm UTF-16 string to std::string (UTF-8) for libcurl
-// Convert any String form (leaf or slice) to UTF-8, going through
-// StringOps::toStdString — the canonical interop path.
+// ---- Stock Request record field indices (alphabetical canonical order) -----
+//   { allowCookiesFromOtherDomains, body, expect, headers, method, timeout,
+//     tracker, url }
+static constexpr int REQ_BODY    = 1;
+static constexpr int REQ_EXPECT  = 2;
+static constexpr int REQ_HEADERS = 3;
+static constexpr int REQ_METHOD  = 4;
+static constexpr int REQ_TIMEOUT = 5;
+static constexpr int REQ_URL     = 7;
+
 std::string elmStringToUTF8(uint64_t strEnc) {
     HPointer hp = Export::decode(strEnc);
     if (hp.constant == Const_EmptyString + 1) return "";
-
     void* ptr = Export::toPtr(strEnc);
     if (!ptr) return "";
     return Elm::StringOps::toStdString(ptr);
 }
 
-// Helper: Create an Elm string from UTF-8
-HPointer utf8ToElmString(const std::string& utf8) {
-    return allocStringFromUTF8(utf8);
-}
-
-// Encode HPointer as uint64_t
 static inline uint64_t encodeHP(HPointer h) {
     union { HPointer hp; uint64_t val; } u;
     u.hp = h;
     return u.val;
 }
-
-// Decode uint64_t to HPointer
 static inline HPointer decodeHP(uint64_t val) {
     union { HPointer hp; uint64_t val; } u;
     u.val = val;
     return u.hp;
 }
 
-#ifdef HTTP_CURL_AVAILABLE
-// libcurl write callback
-static size_t writeCallback(void* contents, size_t size, size_t nmemb, void* userp) {
-    size_t realsize = size * nmemb;
-    std::string* mem = static_cast<std::string*>(userp);
-    mem->append(static_cast<char*>(contents), realsize);
-    return realsize;
+// Constant-safe resolve: embedded constants (Nil, Nothing, True/False, Unit,
+// EmptyString) have a non-zero constant field and must not be passed to
+// Allocator::resolve (which asserts). Returns nullptr for those.
+static inline void* resolveOrNull(HPointer hp) {
+    if (hp.constant != 0) return nullptr;
+    return Allocator::instance().resolve(hp);
 }
 
-// libcurl header callback
-struct HeaderData {
-    std::vector<std::pair<std::string, std::string>> headers;
-};
-
-static size_t headerCallback(char* buffer, size_t size, size_t nitems, void* userdata) {
-    size_t numbytes = size * nitems;
-    HeaderData* data = static_cast<HeaderData*>(userdata);
-
-    std::string line(buffer, numbytes);
-
-    // Skip status line and empty lines
-    if (line.find("HTTP/") == 0 || line == "\r\n" || line == "\n") {
-        return numbytes;
+// HTTP status code -> a short reason phrase (curl does not surface it).
+const char* reasonPhrase(long code) {
+    switch (code) {
+        case 200: return "OK";
+        case 201: return "Created";
+        case 204: return "No Content";
+        case 301: return "Moved Permanently";
+        case 302: return "Found";
+        case 400: return "Bad Request";
+        case 401: return "Unauthorized";
+        case 403: return "Forbidden";
+        case 404: return "Not Found";
+        case 500: return "Internal Server Error";
+        case 503: return "Service Unavailable";
+        default:  return "";
     }
-
-    // Parse "Header-Name: value\r\n"
-    size_t colonPos = line.find(':');
-    if (colonPos != std::string::npos) {
-        std::string name = line.substr(0, colonPos);
-        std::string value = line.substr(colonPos + 1);
-
-        // Trim whitespace
-        while (!value.empty() && (value[0] == ' ' || value[0] == '\t')) {
-            value.erase(0, 1);
-        }
-        while (!value.empty() && (value.back() == '\r' || value.back() == '\n')) {
-            value.pop_back();
-        }
-
-        // Convert header name to lowercase for consistent lookup
-        for (auto& c : name) {
-            c = static_cast<char>(std::tolower(c));
-        }
-
-        data->headers.push_back({name, value});
-    }
-
-    return numbytes;
 }
-#endif // HTTP_CURL_AVAILABLE
 
-// Create a Response record
-// Response body = { url : String, statusCode : Int, statusText : String, headers : Dict String String, body : body }
-// Fields in canonical order: body, headers, statusCode, statusText, url
-HPointer createResponse(const std::string& url, long statusCode, const std::string& statusText,
-                        const std::vector<std::pair<std::string, std::string>>& headers,
-                        HPointer body) {
+// Build an elm/core `Dict String String` from the response headers. The Dict
+// is only ever READ by user code (Dict.get/toList), which ignores node colour,
+// so we build a valid BST (left-empty, right-chain over keys sorted ascending)
+// without red-black balancing. std::map gives sorted, dedup (last-wins) keys.
+HPointer rbEmpty() {
+    std::vector<Unboxable> v;
+    return custom(CTOR_DICT_RBEMPTY, v, 0);
+}
+
+HPointer buildHeadersDict(const std::vector<std::pair<std::string, std::string>>& hdrs) {
+    std::map<std::string, std::string> sorted;
+    for (auto& kv : hdrs) sorted[kv.first] = kv.second;
+
+    HPointer tree = rbEmpty();
+    Elm::StackRootGuard treeRoot(&tree);
+    for (auto it = sorted.rbegin(); it != sorted.rend(); ++it) {
+        HPointer key = allocStringFromUTF8(it->first);
+        HPointer val = listNil();
+        {
+            Elm::StackRootGuard g(&key);
+            val = allocStringFromUTF8(it->second);
+        }
+        HPointer left = listNil();
+        {
+            Elm::StackRootGuard g({&key, &val});
+            left = rbEmpty();
+        }
+        // RBNode color k v left right; colour is read-only-irrelevant here so a
+        // Unit placeholder is fine (never pattern-matched without rebalancing).
+        Elm::StackRootGuard g({&key, &val, &left});
+        std::vector<Unboxable> fields(5);
+        fields[0].p = unit();
+        fields[1].p = key;
+        fields[2].p = val;
+        fields[3].p = left;
+        fields[4].p = tree;
+        tree = custom(CTOR_DICT_RBNODE, fields, 0);
+    }
+    return tree;
+}
+
+// Build the Metadata record { headers, statusCode, statusText, url }.
+HPointer buildMetadata(const HttpService::Result& r) {
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
-    rs.pushStackRootRange(&body, 1, 1);
 
-    // Build headers list with rooting
-    HPointer headersList = listNil();
-    rs.pushStackRootRange(&headersList, 1, 1);
-    for (auto it = headers.rbegin(); it != headers.rend(); ++it) {
-        HPointer key = utf8ToElmString(it->first);
-        rs.pushStackRootRange(&key, 1, 1);
-        HPointer val = utf8ToElmString(it->second);
-        HPointer pair = tuple2(boxed(key), boxed(val), 0);
-        headersList = cons(boxed(pair), headersList, true);
-    }
+    HPointer headers = buildHeadersDict(r.headers);
+    rs.pushStackRootRange(&headers, 1, 1);
+    HPointer statusText = allocStringFromUTF8(
+        r.statusText.empty() ? std::string(reasonPhrase(r.status)) : r.statusText);
+    rs.pushStackRootRange(&statusText, 1, 1);
+    HPointer url = allocStringFromUTF8(r.finalUrl);
 
-    HPointer urlStr = utf8ToElmString(url);
-    rs.pushStackRootRange(&urlStr, 1, 1);
-    HPointer statusTextStr = utf8ToElmString(statusText);
-
-    // Record fields in canonical order: body, headers, statusCode, statusText, url
-    std::vector<Unboxable> fields(5);
-    fields[0].p = body;
-    fields[1].p = headersList;
-    fields[2].i = static_cast<i64>(statusCode);
-    fields[3].p = statusTextStr;
-    fields[4].p = urlStr;
-
-    HPointer result = record(fields, 0b00100);
+    // computeRecordLayout (Types.elm) orders fields as unboxed-first (sorted),
+    // then boxed (sorted). Metadata { headers, statusCode:Int, statusText, url }
+    // => physical [ statusCode(0,Int), headers(1), statusText(2), url(3) ].
+    std::vector<Unboxable> fields(4);
+    fields[0].i = static_cast<i64>(r.status);  // statusCode (unboxed Int, slot 0)
+    fields[1].p = headers;
+    fields[2].p = statusText;
+    fields[3].p = url;
+    HPointer md = record(fields, (u64{1} << 0));  // slot0 kind=01 (Int)
     rs.restoreStackRangePoint(saved);
-    return result;
+    return md;
 }
 
-// Create an Error value
-HPointer createError(u16 errorCtor, HPointer payload = HPointer{}) {
-    if (payload.ptr == 0 && payload.constant == 0) {
-        // No payload error
-        std::vector<Unboxable> values;
-        return custom(errorCtor, values, 0);
-    } else {
-        std::vector<Unboxable> values(1);
-        values[0].p = payload;
-        return custom(errorCtor, values, 0);  // payload is boxed
+// Build a `Response body` Custom from the worker result and the materialised
+// `body` value. Runs on the main thread.
+HPointer buildResponse(const HttpService::Result& r, HPointer body) {
+    using EK = HttpService::ErrorKind;
+    if (r.error == EK::Timeout) {
+        std::vector<Unboxable> v;
+        return custom(RESP_TIMEOUT, v, 0);
+    }
+    if (r.error == EK::NetworkError) {
+        std::vector<Unboxable> v;
+        return custom(RESP_NETWORK, v, 0);
+    }
+    if (r.error == EK::BadUrl) {
+        HPointer url = allocStringFromUTF8(r.finalUrl);
+        std::vector<Unboxable> v(1);
+        v[0].p = url;
+        return custom(RESP_BAD_URL, v, 0);
+    }
+    // Ok: GoodStatus_ for 2xx else BadStatus_; both carry [metadata, body].
+    Elm::StackRootGuard bodyRoot(&body);
+    HPointer md = buildMetadata(r);
+    Elm::StackRootGuard mdRoot(&md);
+    std::vector<Unboxable> v(2);
+    v[0].p = md;
+    v[1].p = body;
+    bool good = (r.status >= 200 && r.status < 300);
+    return custom(good ? RESP_GOOD_STATUS : RESP_BAD_STATUS, v, 0);
+}
+
+// ---- Main-thread async-source drain ----------------------------------------
+// Pops completed worker results and, for each, resumes the matching binding on
+// the main thread: build Response -> apply expect.toBody/toValue -> apply
+// resultToTask -> resume(resultTask).
+void httpDrain() {
+    HttpService::Result r;
+    while (HttpService::instance().tryPopResult(r)) {
+        HPointer bundle = Scheduler::instance().takePendingResume(r.token);
+        if (alloc::isNil(bundle)) {
+            // Cancelled or unknown token: drop the pending-async count.
+            Scheduler::instance().decrementPendingAsync();
+            continue;
+        }
+        Elm::StackRootGuard bundleRoot(&bundle);
+
+        // Materialise the raw body per the expect type (bundle.values[4]):
+        // "" => an Elm String (UTF-8); "arraybuffer" => Elm Bytes (ByteBuffer).
+        // The expect.toBody closure (identity / toDataView) is applied below.
+        bool wantBytes;
+        {
+            void* bp = Allocator::instance().resolve(bundle);
+            HPointer typeHP = static_cast<Custom*>(bp)->values[4].p;
+            wantBytes = (elmStringToUTF8(encodeHP(typeHP)) == "arraybuffer");
+        }
+        HPointer rawBody;
+        if (wantBytes) {
+            rawBody = allocByteBuffer(
+                reinterpret_cast<const u8*>(r.body.data()), r.body.size());
+        } else {
+            rawBody = allocStringFromUTF8(r.body);
+        }
+        Elm::StackRootGuard rawRoot(&rawBody);
+
+        // toBody = bundle.values[2]
+        HPointer body;
+        {
+            void* bp = Allocator::instance().resolve(bundle);
+            HPointer toBody = static_cast<Custom*>(bp)->values[2].p;
+            body = Scheduler::instance().callClosure1(toBody, rawBody);
+        }
+        Elm::StackRootGuard bodyRoot(&body);
+
+        HPointer response = buildResponse(r, body);
+        Elm::StackRootGuard respRoot(&response);
+
+        // value = toValue(response); toValue = bundle.values[3]
+        HPointer value;
+        {
+            void* bp = Allocator::instance().resolve(bundle);
+            HPointer toValue = static_cast<Custom*>(bp)->values[3].p;
+            value = Scheduler::instance().callClosure1(toValue, response);
+        }
+        Elm::StackRootGuard valueRoot(&value);
+
+        // resultTask = resultToTask(value); resultToTask = bundle.values[1]
+        HPointer resultTask;
+        {
+            void* bp = Allocator::instance().resolve(bundle);
+            HPointer resultToTask = static_cast<Custom*>(bp)->values[1].p;
+            resultTask = Scheduler::instance().callClosure1(resultToTask, value);
+        }
+        Elm::StackRootGuard taskRoot(&resultTask);
+
+        // resume(resultTask); resume = bundle.values[0]
+        {
+            void* bp = Allocator::instance().resolve(bundle);
+            HPointer resume = static_cast<Custom*>(bp)->values[0].p;
+            Scheduler::instance().callClosure1(resume, resultTask);
+        }
+        Scheduler::instance().decrementPendingAsync();
     }
 }
 
-#ifdef HTTP_CURL_AVAILABLE
-// HTTP worker thread context
-struct HttpContext {
-    std::string url;
-    std::string method;
-    std::vector<std::pair<std::string, std::string>> requestHeaders;
-    std::string requestBody;
-    uint64_t resumeClosureEnc;  // Encoded closure to call on completion
-    uint64_t expectHandlerEnc;  // Encoded expect handler closure
-};
-
-// ============================================================================
-// In-flight HttpContext registry (cross-thread GC root tracking)
-// ============================================================================
-//
-// httpWorkerThread runs concurrently with main-thread GC. The closure handles
-// in HttpContext (resumeClosureEnc, expectHandlerEnc) must therefore be
-// visible to any major GC the main thread runs while the worker is in flight.
-// We register an ExternalRootScanner once that walks every live context and
-// evacuates both fields in place.
-static std::mutex g_httpCtxMutex;
-static std::unordered_set<HttpContext*> g_inFlightCtxs;
-
-static void httpRegisterScannerOnce() {
+void httpEnsureRegistered() {
     static std::once_flag flag;
     std::call_once(flag, []() {
-        Allocator::instance().getRootSet().addExternalRootScanner(
-            [](Elm::RootSet::EvacuateFn evac) {
-                std::lock_guard<std::mutex> lock(g_httpCtxMutex);
-                for (HttpContext* c : g_inFlightCtxs) {
-                    if (c->resumeClosureEnc) evac(c->resumeClosureEnc);
-                    if (c->expectHandlerEnc) evac(c->expectHandlerEnc);
-                }
-            });
+        Scheduler::instance().registerAsyncSource(
+            httpDrain,
+            []() { return HttpService::instance().hasReadyResults(); });
     });
 }
 
-static void httpRegisterCtx(HttpContext* c) {
-    std::lock_guard<std::mutex> lock(g_httpCtxMutex);
-    g_inFlightCtxs.insert(c);
-}
+// Read the stock Request record into a worker POD + extract the expect's
+// toBody/toValue closures. Runs on the main thread (binding step).
+struct ExtractedRequest {
+    HttpService::Request pod;
+    HPointer type;     // expect.__type: "" (String body) or "arraybuffer" (Bytes)
+    HPointer toBody;
+    HPointer toValue;
+    bool ok = false;
+};
 
-static void httpUnregisterCtx(HttpContext* c) {
-    std::lock_guard<std::mutex> lock(g_httpCtxMutex);
-    g_inFlightCtxs.erase(c);
-}
-
-// Perform HTTP request in thread and call resume closure. Takes ownership
-// of `ctxPtr` (allocated by the spawning code) and registers/unregisters it
-// with the GC scanner over the worker's lifetime.
-void httpWorkerThread(HttpContext* ctxPtr) {
-    std::unique_ptr<HttpContext> owned(ctxPtr);
-    HttpContext& ctx = *owned;
-    httpRegisterCtx(ctxPtr);
-    struct Unregister {
-        HttpContext* p;
-        ~Unregister() { httpUnregisterCtx(p); }
-    } unreg{ctxPtr};
-
-    CURL* curl = curl_easy_init();
-    if (!curl) {
-        // Create NetworkError and call resume with Task.fail
-        HPointer error = createError(ERR_NETWORK_ERROR);
-        HPointer failTask = Scheduler::instance().taskFail(error);
-
-        uint64_t resultEnc = encodeHP(failTask);
-        eco_apply_closure(HPtr::fromBits(ctx.resumeClosureEnc), &resultEnc, 1);
-        return;
-    }
-
-    std::string responseBody;
-    HeaderData headerData;
-
-    curl_easy_setopt(curl, CURLOPT_URL, ctx.url.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &responseBody);
-    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, headerCallback);
-    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &headerData);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
-
-    // Set method
-    if (ctx.method == "POST") {
-        curl_easy_setopt(curl, CURLOPT_POST, 1L);
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, ctx.requestBody.c_str());
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, ctx.requestBody.size());
-    } else if (ctx.method == "PUT") {
-        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PUT");
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, ctx.requestBody.c_str());
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, ctx.requestBody.size());
-    } else if (ctx.method == "DELETE") {
-        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
-    } else if (ctx.method == "PATCH") {
-        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PATCH");
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, ctx.requestBody.c_str());
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, ctx.requestBody.size());
-    }
-    // GET is the default
-
-    // Set request headers
-    struct curl_slist* headerList = nullptr;
-    for (const auto& h : ctx.requestHeaders) {
-        std::string header = h.first + ": " + h.second;
-        headerList = curl_slist_append(headerList, header.c_str());
-    }
-    if (headerList) {
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headerList);
-    }
-
-    // Perform the request
-    CURLcode res = curl_easy_perform(curl);
-
-    long httpCode = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
-
-    char* effectiveUrl = nullptr;
-    curl_easy_getinfo(curl, CURLINFO_EFFECTIVE_URL, &effectiveUrl);
-    std::string finalUrl = effectiveUrl ? effectiveUrl : ctx.url;
-
-    if (headerList) {
-        curl_slist_free_all(headerList);
-    }
-    curl_easy_cleanup(curl);
-
-    HPointer resultTask;
-
-    if (res != CURLE_OK) {
-        // Create appropriate error based on curl error
-        HPointer error;
-        if (res == CURLE_OPERATION_TIMEDOUT) {
-            error = createError(ERR_TIMEOUT);
-        } else if (res == CURLE_URL_MALFORMAT) {
-            HPointer urlStr = utf8ToElmString(ctx.url);
-            error = createError(ERR_BAD_URL, urlStr);
-        } else {
-            error = createError(ERR_NETWORK_ERROR);
-        }
-        resultTask = Scheduler::instance().taskFail(error);
-    } else {
-        // Create response with body as String
-        HPointer bodyStr = utf8ToElmString(responseBody);
-
-        // Get status text (simplified - curl doesn't give us this easily)
-        std::string statusText = "OK";
-        if (httpCode >= 400) {
-            statusText = "Error";
-        }
-
-        // bodyStr is rooted inside createResponse via its body parameter
-        HPointer response = createResponse(finalUrl, httpCode, statusText,
-                                           headerData.headers, bodyStr);
-
-        // Call the expect handler with the response to get Result Error a
-        uint64_t responseEnc = encodeHP(response);
-        uint64_t resultEnc = eco_apply_closure(HPtr::fromBits(ctx.expectHandlerEnc), &responseEnc, 1).toBits();
-
-        // The result is already a Result, so we need to convert it to Task
-        HPointer result = decodeHP(resultEnc);
-
-        // Check if result is Ok or Err
-        void* resultPtr = Allocator::instance().resolve(result);
-        if (resultPtr) {
-            Custom* custom = static_cast<Custom*>(resultPtr);
-            if (custom->ctor == 0) {
-                // Ok value -> Task.succeed
-                HPointer okValue = custom->values[0].p;
-                resultTask = Scheduler::instance().taskSucceed(okValue);
-            } else {
-                // Err value -> Task.fail
-                HPointer errValue = custom->values[0].p;
-                resultTask = Scheduler::instance().taskFail(errValue);
-            }
-        } else {
-            // Something went wrong, return NetworkError
-            HPointer error = createError(ERR_NETWORK_ERROR);
-            resultTask = Scheduler::instance().taskFail(error);
-        }
-    }
-
-    // Call the resume closure with the result task
-    uint64_t taskEnc = encodeHP(resultTask);
-    eco_apply_closure(HPtr::fromBits(ctx.resumeClosureEnc), &taskEnc, 1);
-}
-#endif // HTTP_CURL_AVAILABLE
-
-#ifdef HTTP_CURL_AVAILABLE
-// Extract request fields from Elm Request record
-// Request = { method : String, headers : List Header, url : String, body : Body,
-//             expect : Expect a, timeout : Maybe Float, tracker : Maybe String }
-// Fields in canonical order: body, expect, headers, method, timeout, tracker, url
-bool extractRequest(uint64_t requestEnc, HttpContext& ctx, uint64_t& expectHandler) {
-    void* ptr = Export::toPtr(requestEnc);
-    if (!ptr) return false;
-
+ExtractedRequest extractRequest(HPointer requestHP) {
+    ExtractedRequest out;
+    void* ptr = Allocator::instance().resolve(requestHP);
+    if (!ptr) return out;
     Record* req = static_cast<Record*>(ptr);
 
-    // Field indices in canonical order
-    // 0: body, 1: expect, 2: headers, 3: method, 4: timeout, 5: tracker, 6: url
+    out.pod.method = elmStringToUTF8(encodeHP(req->values[REQ_METHOD].p));
+    out.pod.url    = elmStringToUTF8(encodeHP(req->values[REQ_URL].p));
 
-    // Get method
-    HPointer methodHP = req->values[3].p;
-    ctx.method = elmStringToUTF8(encodeHP(methodHP));
-
-    // Get URL
-    HPointer urlHP = req->values[6].p;
-    ctx.url = elmStringToUTF8(encodeHP(urlHP));
-
-    // Get headers (List (String, String))
-    HPointer headersList = req->values[2].p;
+    // headers : List Header, Header = Header String String (Custom ctor 0).
+    HPointer headersList = req->values[REQ_HEADERS].p;
     while (!isNil(headersList)) {
-        void* cellPtr = Allocator::instance().resolve(headersList);
+        void* cellPtr = resolveOrNull(headersList);
         if (!cellPtr) break;
-
         Cons* cell = static_cast<Cons*>(cellPtr);
-        HPointer tupleHP = cell->head.p;
-
-        void* tuplePtr = Allocator::instance().resolve(tupleHP);
-        if (tuplePtr) {
-            Tuple2* tuple = static_cast<Tuple2*>(tuplePtr);
-            std::string key = elmStringToUTF8(encodeHP(tuple->a.p));
-            std::string val = elmStringToUTF8(encodeHP(tuple->b.p));
-            ctx.requestHeaders.push_back({key, val});
+        void* hPtr = resolveOrNull(cell->head.p);
+        if (hPtr) {
+            Custom* hdr = static_cast<Custom*>(hPtr);
+            std::string key = elmStringToUTF8(encodeHP(hdr->values[0].p));
+            std::string val = elmStringToUTF8(encodeHP(hdr->values[1].p));
+            out.pod.headers.push_back({key, val});
         }
-
         headersList = cell->tail;
     }
 
-    // Get body
-    HPointer bodyHP = req->values[0].p;
-    void* bodyPtr = Allocator::instance().resolve(bodyHP);
+    // body : Body (Custom). empty => no body; pair => [contentType, content].
+    void* bodyPtr = resolveOrNull(req->values[REQ_BODY].p);
     if (bodyPtr) {
         Custom* body = static_cast<Custom*>(bodyPtr);
-        if (body->ctor == BODY_STRING) {
-            ctx.requestBody = elmStringToUTF8(encodeHP(body->values[0].p));
-        } else if (body->ctor == BODY_BYTES) {
-            // Get bytes data
-            HPointer bytesHP = body->values[0].p;
-            void* bytesPtr = Allocator::instance().resolve(bytesHP);
-            if (bytesPtr) {
-                auto vbuf = alloc::byteBufferView(bytesPtr);
-                ctx.requestBody = std::string(reinterpret_cast<const char*>(vbuf.data), vbuf.length);
+        if (body->ctor == BODY_PAIR) {
+            out.pod.contentType = elmStringToUTF8(encodeHP(body->values[0].p));
+            // content is usually a String (stringBody/jsonBody). multipartBody
+            // wraps a BODY_FORM here; serialise it to multipart/form-data.
+            HPointer content = body->values[1].p;
+            void* cp = resolveOrNull(content);
+            bool isForm = cp && static_cast<Header*>(cp)->tag == Tag_Custom &&
+                          static_cast<Custom*>(cp)->ctor == BODY_FORM;
+            if (isForm) {
+                const std::string boundary = "EcoBoundary7MA4YWxkTrZu0gW";
+                HPointer partsList = static_cast<Custom*>(cp)->values[0].p;
+                std::string mp;
+                while (!isNil(partsList)) {
+                    void* cellPtr = resolveOrNull(partsList);
+                    if (!cellPtr) break;
+                    Cons* cell = static_cast<Cons*>(cellPtr);
+                    void* partPtr = resolveOrNull(cell->head.p);
+                    if (partPtr) {
+                        Custom* part = static_cast<Custom*>(partPtr);  // pair [key, value]
+                        std::string key = elmStringToUTF8(encodeHP(part->values[0].p));
+                        std::string val = elmStringToUTF8(encodeHP(part->values[1].p));
+                        mp += "--" + boundary + "\r\n";
+                        mp += "Content-Disposition: form-data; name=\"" + key + "\"\r\n\r\n";
+                        mp += val + "\r\n";
+                    }
+                    partsList = cell->tail;
+                }
+                mp += "--" + boundary + "--\r\n";
+                out.pod.body = mp;
+                out.pod.contentType = "multipart/form-data; boundary=" + boundary;
+            } else {
+                out.pod.body = elmStringToUTF8(encodeHP(content));
             }
         }
-        // BODY_EMPTY and others leave requestBody empty
     }
 
-    // Get expect handler
-    HPointer expectHP = req->values[1].p;
-    void* expectPtr = Allocator::instance().resolve(expectHP);
-    if (expectPtr) {
-        Custom* expect = static_cast<Custom*>(expectPtr);
-        expectHandler = encodeHP(expect->values[0].p);  // The handler closure
-    } else {
-        return false;
+    // timeout : Maybe Float (Just => ctor 1, field 0 is the Float ms). Nothing
+    // is an embedded constant (resolveOrNull => nullptr => no timeout).
+    void* toPtr = resolveOrNull(req->values[REQ_TIMEOUT].p);
+    if (toPtr) {
+        // Nothing is an embedded constant (filtered above), so a resolved value
+        // is `Just <Float ms>` — the Float is at field 0 (unboxed).
+        Custom* mt = static_cast<Custom*>(toPtr);
+        out.pod.timeoutMs = static_cast<long>(mt->values[0].f);
     }
 
-    return true;
+    // expect : Expect (Custom ctor 0) [type, toBody, toValue].
+    void* expectPtr = resolveOrNull(req->values[REQ_EXPECT].p);
+    if (!expectPtr) return out;
+    Custom* expect = static_cast<Custom*>(expectPtr);
+    out.type    = expect->values[0].p;
+    out.toBody  = expect->values[1].p;
+    out.toValue = expect->values[2].p;
+    out.ok = true;
+    return out;
 }
-#endif // HTTP_CURL_AVAILABLE
 
-// Static evaluator for composed expect handler (used by mapExpect)
-// args[0] = mapper closure
-// args[1] = original handler
-// args[2] = response argument
-static void* composeExpectEvaluator(void* args[]) {
-    uint64_t mapperEnc = reinterpret_cast<uint64_t>(args[0]);
-    uint64_t handlerEnc = reinterpret_cast<uint64_t>(args[1]);
+// Binding evaluator (main thread). Captures: args[0]=request, args[1]=resultToTask.
+// Scheduler appends the resume closure as args[2].
+void* httpBindingEval(void* args[]) {
+    HPointer request      = decodeHP(reinterpret_cast<uint64_t>(args[0]));
+    HPointer resultToTask = decodeHP(reinterpret_cast<uint64_t>(args[1]));
+    HPointer resume       = decodeHP(reinterpret_cast<uint64_t>(args[2]));
+
+    ExtractedRequest ex = extractRequest(request);
+    if (!ex.ok) {
+        // Malformed expect: resume immediately with NetworkError -> resultToTask.
+        return reinterpret_cast<void*>(encodeHP(unit()));
+    }
+
+    // Build the continuation bundle [resume, resultToTask, toBody, toValue, type]
+    // and register it; the Scheduler's pendingResumes_ scanner keeps it rooted.
+    HPointer toBody = ex.toBody;
+    HPointer toValue = ex.toValue;
+    HPointer type = ex.type;
+    Elm::StackRootGuard g({&resume, &resultToTask, &toBody, &toValue, &type});
+    std::vector<Unboxable> fields(5);
+    fields[0].p = resume;
+    fields[1].p = resultToTask;
+    fields[2].p = toBody;
+    fields[3].p = toValue;
+    fields[4].p = type;
+    HPointer bundle = custom(BUNDLE_CTOR, fields, 0);
+
+    u64 token = Scheduler::instance().registerPendingResume(bundle);
+    Scheduler::instance().incrementPendingAsync();
+
+    ex.pod.token = token;
+    HttpService::instance().submit(std::move(ex.pod));
+
+    // Kill handle: Unit (cancellation is Phase-2 via HttpService::cancel).
+    return reinterpret_cast<void*>(encodeHP(unit()));
+}
+
+// mapExpect composition: newToValue(response) = func(oldToValue(response)).
+// Captures: args[0]=func, args[1]=oldToValue, args[2]=response.
+void* mapExpectEvaluator(void* args[]) {
+    uint64_t funcEnc     = reinterpret_cast<uint64_t>(args[0]);
+    uint64_t oldEnc      = reinterpret_cast<uint64_t>(args[1]);
     uint64_t responseEnc = reinterpret_cast<uint64_t>(args[2]);
 
-    // Root the mapper across the first eco_apply_closure (handler call):
-    // the handler may GC, leaving `mapperEnc` stale by the time we use it
-    // for the second closure call below.
-    HPointer mapperHP = decodeHP(mapperEnc);
-    Elm::StackRootGuard mapperRoot(&mapperHP);
-
-    // First call handler with response
-    uint64_t resultEnc = eco_apply_closure(HPtr::fromBits(handlerEnc), &responseEnc, 1).toBits();
-
-    // result is Result Error a
-    // If Ok, map the value; if Err, return unchanged
-    HPointer result = decodeHP(resultEnc);
-    void* resultPtr = Allocator::instance().resolve(result);
-
-    if (resultPtr) {
-        Custom* resultCustom = static_cast<Custom*>(resultPtr);
-        if (resultCustom->ctor == 0) {
-            // Ok value - apply mapper. The Ok value lives in resultCustom,
-            // which is a freshly-resolved raw pointer; root the value HP
-            // explicitly so a GC inside the mapper cannot orphan it before
-            // we wrap it back into an Ok.
-            HPointer okValueHP = resultCustom->values[0].p;
-            Elm::StackRootGuard okRoot(&okValueHP);
-
-            HPtr mapperCl = HPtr::fromBits(encodeHP(mapperHP));
-            uint64_t okValueEnc = encodeHP(okValueHP);
-            uint64_t mappedEnc = eco_apply_closure(mapperCl, &okValueEnc, 1).toBits();
-
-            // Wrap in Ok
-            HPointer mappedValue = decodeHP(mappedEnc);
-            Elm::StackRootGuard mappedRoot(&mappedValue);
-            HPointer okResult = ok(boxed(mappedValue), true);
-            return reinterpret_cast<void*>(encodeHP(okResult));
-        }
-    }
-
-    // Return original result for Err
-    return reinterpret_cast<void*>(resultEnc);
+    HPointer func = decodeHP(funcEnc);
+    Elm::StackRootGuard funcRoot(&func);
+    uint64_t midEnc = eco_apply_closure(HPtr::fromBits(oldEnc), &responseEnc, 1).toBits();
+    uint64_t funcArg = midEnc;
+    HPtr res = eco_apply_closure(HPtr::fromBits(encodeHP(func)), &funcArg, 1);
+    return reinterpret_cast<void*>(res.toBits());
 }
 
 } // anonymous namespace
 
+// Kernel symbol names are NOT arbitrary: the compiler binds an Elm
+// `Elm.Kernel.Http.<fn>` reference to the external C symbol `Elm_Kernel_Http_<fn>`
+// by the dot->underscore convention in canonicalToMLIRName
+// (compiler/src/Compiler/Generate/MLIR/Names.elm:18). These exports must keep
+// that exact spelling, and each is registered for the JIT in
+// runtime/src/codegen/RuntimeSymbols.cpp.
 extern "C" {
 
+// emptyBody : Body
 HPtr Elm_Kernel_Http_emptyBody() {
-    // Return a Body Custom type representing empty body
-    std::vector<Unboxable> values;  // No values for empty body
-    HPointer body = custom(BODY_EMPTY, values, 0);
-    return HPtr::fromBits(Export::encode(body));
+    std::vector<Unboxable> v;
+    return HPtr::fromBits(Export::encode(custom(BODY_EMPTY, v, 0)));
 }
 
-HPtr Elm_Kernel_Http_pair(HPtr key, HPtr value) {
-    // Return a Header tuple (String, String)
-    uint64_t keyEnc = key.toBits();
-    uint64_t valueEnc = value.toBits();
-    HPointer keyHP = Export::decode(keyEnc);
-    HPointer valueHP = Export::decode(valueEnc);
-
-    HPointer header = tuple2(boxed(keyHP), boxed(valueHP), 0);  // Both boxed strings
-    return HPtr::fromBits(Export::encode(header));
+// pair : a -> b -> Body  (also stringBody/jsonBody/stringPart/filePart/bytesBody)
+HPtr Elm_Kernel_Http_pair(HPtr a, HPtr b) {
+    HPointer aHP = Export::decode(a.toBits());
+    HPointer bHP = Export::decode(b.toBits());
+    Elm::StackRootGuard g(&aHP, &bHP);
+    std::vector<Unboxable> v(2);
+    v[0].p = aHP;
+    v[1].p = bHP;
+    return HPtr::fromBits(Export::encode(custom(BODY_PAIR, v, 0)));
 }
 
-// Side table for HTTP binding capture data. Maps integer IDs to capture
-// objects so we never store raw C++ pointers on the Elm heap.
-struct BindingCaptureData {
-    HttpContext ctx;
-    uint64_t expectHandler;
-};
+// toTask : router -> (a -> Task x b) -> Request -> Task x b
+HPtr Elm_Kernel_Http_toTask(HPtr router, HPtr resultToTask, HPtr request) {
+    (void)router;  // Phase-1: progress tracking (router/sendToSelf) is Phase-2.
+    httpEnsureRegistered();
 
-static int64_t s_nextCaptureId = 1;
-static std::unordered_map<int64_t, BindingCaptureData*>& captureTable() {
-    static std::unordered_map<int64_t, BindingCaptureData*> table;
-    return table;
-}
+    HPointer reqHP = Export::decode(request.toBits());
+    HPointer rttHP = Export::decode(resultToTask.toBits());
+    Elm::StackRootGuard g(&reqHP, &rttHP);
 
-HPtr Elm_Kernel_Http_toTask(HPtr request) {
-    uint64_t requestEnc = request.toBits();
-#ifdef HTTP_CURL_AVAILABLE
-    // Create a Task that performs the HTTP request
-    // This creates a Binding task that spawns a thread
-
-    HttpContext ctx;
-    uint64_t expectHandler;
-
-    if (!extractRequest(requestEnc, ctx, expectHandler)) {
-        HPointer error = createError(ERR_BAD_URL, utf8ToElmString("Invalid request"));
-        HPointer failTask = Scheduler::instance().taskFail(error);
-        return HPtr::fromBits(Export::encode(failTask));
-    }
-
-    // Store request info in a side table, keyed by integer ID.
-    auto* capture = new BindingCaptureData{std::move(ctx), expectHandler};
-    int64_t captureId = s_nextCaptureId++;
-    captureTable()[captureId] = capture;
-
-    // Create binding callback closure
-    auto bindingEval = [](void* args[]) -> void* {
-        // args[0] = capture ID (integer, not a pointer)
-        // args[1] = resume closure (passed by scheduler)
-        int64_t id = static_cast<int64_t>(reinterpret_cast<uint64_t>(args[0]));
-        uint64_t resumeEnc = reinterpret_cast<uint64_t>(args[1]);
-
-        // Look up and remove from side table
-        auto& table = captureTable();
-        auto it = table.find(id);
-        if (it == table.end()) {
-            return reinterpret_cast<void*>(encodeHP(unit()));
-        }
-        auto* cap = it->second;
-        table.erase(it);
-
-        // Set resume closure in context and spawn thread. The worker thread
-        // takes ownership of the heap-allocated HttpContext (so its closure
-        // handles have a stable address visible to the GC's external
-        // scanner). httpRegisterScannerOnce installs that scanner the first
-        // time we get here.
-        httpRegisterScannerOnce();
-        auto* threadCtx = new HttpContext(std::move(cap->ctx));
-        threadCtx->resumeClosureEnc = resumeEnc;
-        threadCtx->expectHandlerEnc = cap->expectHandler;
-
-        // Spawn worker thread (worker takes ownership of threadCtx).
-        std::thread worker(httpWorkerThread, threadCtx);
-        worker.detach();
-
-        // Delete capture data; threadCtx remains alive with the worker.
-        delete cap;
-
-        // Return Unit as kill handle (no cleanup needed)
-        return reinterpret_cast<void*>(encodeHP(unit()));
-    };
-
-    // Allocate the closure (+ converts captureless lambda to function pointer).
-    // bindingEval returns a boxed Task HPtr → K = PK_Boxed.
-    EvalFunction bindingFn = +bindingEval;
-    HPointer bindingCallback = allocClosureK(bindingFn, 2, Elm::PK_Boxed);
+    // Binding closure captures [request, resultToTask]; arity = 2 captures + 1
+    // scheduler-supplied resume arg.
+    HPointer bindingCallback = allocClosureK(httpBindingEval, 3, Elm::PK_Boxed);
     void* clPtr = Allocator::instance().resolve(bindingCallback);
     if (clPtr) {
-        // Capture the integer ID (plain integer, not a pointer)
-        closureCapture(clPtr, Unboxable{.i = captureId}, false);
+        closureCapture(clPtr, boxed(reqHP), true);
+        closureCapture(clPtr, boxed(rttHP), true);
     }
-
-    // Create the binding task
     HPointer task = Scheduler::instance().taskBinding(bindingCallback);
     return HPtr::fromBits(Export::encode(task));
-#else
-    // HTTP not available - return NetworkError
-    (void)requestEnc;
-    HPointer error = createError(ERR_NETWORK_ERROR);
-    HPointer failTask = Scheduler::instance().taskFail(error);
-    return HPtr::fromBits(Export::encode(failTask));
-#endif
 }
 
-HPtr Elm_Kernel_Http_expect(HPtr responseToResult) {
-    // Create an Expect value that wraps the response-to-result function
-    // Expect = Custom { ctor: EXPECT_CTOR, values: [handler] }
-    uint64_t responseToResultEnc = responseToResult.toBits();
-
-    HPointer handler = Export::decode(responseToResultEnc);
-
-    std::vector<Unboxable> values(1);
-    values[0].p = handler;
-
-    HPointer expect = custom(EXPECT_CTOR, values, 0);  // handler is boxed
-    return HPtr::fromBits(Export::encode(expect));
+// expect : type -> toBody -> toValue -> Expect
+HPtr Elm_Kernel_Http_expect(HPtr type, HPtr toBody, HPtr toValue) {
+    HPointer typeHP    = Export::decode(type.toBits());
+    HPointer toBodyHP  = Export::decode(toBody.toBits());
+    HPointer toValueHP = Export::decode(toValue.toBits());
+    Elm::StackRootGuard g(&typeHP, &toBodyHP, &toValueHP);
+    std::vector<Unboxable> v(3);
+    v[0].p = typeHP;
+    v[1].p = toBodyHP;
+    v[2].p = toValueHP;
+    return HPtr::fromBits(Export::encode(custom(EXPECT_CTOR, v, 0)));
 }
 
+// mapExpect : (a -> b) -> Expect a -> Expect b
 HPtr Elm_Kernel_Http_mapExpect(HPtr closure, HPtr expectVal) {
-    // Map a function over an Expect
-    // Returns a new Expect that applies the mapper to the result
-    uint64_t closureEnc = closure.toBits();
-    uint64_t expectEnc = expectVal.toBits();
-
-    // Get the original handler
-    void* expectPtr = Export::toPtr(expectEnc);
-    if (!expectPtr) {
-        return expectVal;  // Return unchanged if invalid
-    }
-
+    void* expectPtr = Export::toPtr(expectVal.toBits());
+    if (!expectPtr) return expectVal;
     Custom* expect = static_cast<Custom*>(expectPtr);
-    HPointer originalHandler = expect->values[0].p;
-    HPointer mapper = Export::decode(closureEnc);
+    HPointer type    = expect->values[0].p;
+    HPointer toBody  = expect->values[1].p;
+    HPointer oldTV   = expect->values[2].p;
+    HPointer func    = Export::decode(closure.toBits());
 
-    // Root across allocClosure (which may trigger GC)
-    Elm::StackRootGuard guard(&originalHandler, &mapper);
-
-    // Create a new handler that composes: closure . originalHandler.
-    // composeExpectEvaluator returns a boxed Result HPtr → K = PK_Boxed.
-    HPointer composed = allocClosureK(composeExpectEvaluator, 3, Elm::PK_Boxed);
+    Elm::StackRootGuard g(&type, &toBody, &oldTV, &func);
+    HPointer composed = allocClosureK(mapExpectEvaluator, 3, Elm::PK_Boxed);
     void* clPtr = Allocator::instance().resolve(composed);
     if (clPtr) {
-        closureCapture(clPtr, boxed(mapper), true);
-        closureCapture(clPtr, boxed(originalHandler), true);
+        closureCapture(clPtr, boxed(func), true);
+        closureCapture(clPtr, boxed(oldTV), true);
     }
-
-    // Create new Expect with composed handler
-    std::vector<Unboxable> values(1);
-    values[0].p = composed;
-
-    HPointer newExpect = custom(EXPECT_CTOR, values, 0);
-    return HPtr::fromBits(Export::encode(newExpect));
+    Elm::StackRootGuard cg(&composed);
+    std::vector<Unboxable> v(3);
+    v[0].p = type;
+    v[1].p = toBody;
+    v[2].p = composed;
+    return HPtr::fromBits(Export::encode(custom(EXPECT_CTOR, v, 0)));
 }
 
+// bytesToBlob : String -> Bytes -> Body content  (Phase-2 multipart helper)
 HPtr Elm_Kernel_Http_bytesToBlob(HPtr bytes, HPtr mimeType) {
-    // Create a Body from Bytes with a mime type
-    // Body = Custom { ctor: BODY_BLOB, values: [bytes, mimeType] }
-
     HPointer bytesHP = Export::decode(bytes.toBits());
-    HPointer mimeTypeHP = Export::decode(mimeType.toBits());
-
-    std::vector<Unboxable> values(2);
-    values[0].p = bytesHP;
-    values[1].p = mimeTypeHP;
-
-    HPointer body = custom(BODY_BLOB, values, 0);  // both boxed
-    return HPtr::fromBits(Export::encode(body));
+    HPointer mimeHP  = Export::decode(mimeType.toBits());
+    Elm::StackRootGuard g(&bytesHP, &mimeHP);
+    std::vector<Unboxable> v(2);
+    v[0].p = bytesHP;
+    v[1].p = mimeHP;
+    return HPtr::fromBits(Export::encode(custom(BODY_BLOB, v, 0)));
 }
 
+// toDataView : Bytes -> body  (used as expect.toBody for the bytes path).
+// Eco `Bytes` is already a ByteBuffer, so this is identity.
 HPtr Elm_Kernel_Http_toDataView(HPtr bytes) {
-    // Create a Body from Bytes (raw bytes body)
-    // Body = Custom { ctor: BODY_BYTES, values: [bytes] }
-
-    HPointer bytesHP = Export::decode(bytes.toBits());
-
-    std::vector<Unboxable> values(1);
-    values[0].p = bytesHP;
-
-    HPointer body = custom(BODY_BYTES, values, 0);
-    return HPtr::fromBits(Export::encode(body));
+    return bytes;
 }
 
+// toFormData : List Part -> body  (Phase-2 multipart).
 HPtr Elm_Kernel_Http_toFormData(HPtr parts) {
-    // Create a multipart form Body from a list of parts
-    // Body = Custom { ctor: BODY_FORM, values: [parts] }
-
     HPointer partsHP = Export::decode(parts.toBits());
-
-    std::vector<Unboxable> values(1);
-    values[0].p = partsHP;
-
-    HPointer body = custom(BODY_FORM, values, 0);
-    return HPtr::fromBits(Export::encode(body));
+    Elm::StackRootGuard g(&partsHP);
+    std::vector<Unboxable> v(1);
+    v[0].p = partsHP;
+    return HPtr::fromBits(Export::encode(custom(BODY_FORM, v, 0)));
 }
 
-#ifdef HTTP_CURL_AVAILABLE
-// Global curl initialization (should be called once)
+// Global curl init/teardown.
 __attribute__((constructor))
-static void initCurl() {
-    curl_global_init(CURL_GLOBAL_DEFAULT);
-}
-
+static void initCurl() { curl_global_init(CURL_GLOBAL_DEFAULT); }
 __attribute__((destructor))
-static void cleanupCurl() {
-    curl_global_cleanup();
-}
-#endif // HTTP_CURL_AVAILABLE
+static void cleanupCurl() { curl_global_cleanup(); }
 
 } // extern "C"

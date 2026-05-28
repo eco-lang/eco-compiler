@@ -10,27 +10,17 @@ set(RUNTIME_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/src)
 # Vendor include directory (for nlohmann/json, SRELL)
 set(VENDOR_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor)
 
-# Find libcurl for HTTP module (optional - HTTP will use stubs if not found).
+# libcurl + OpenSSL are hard dependencies of the HTTP module.
 # Under ECO_STATIC the vendored libcurl_static target is created by the
 # top-level CMakeLists.txt before this subdirectory is added, so we just mark
-# CURL as found (mirrors eco-kernel-cpp/CMakeLists.txt). A plain
-# find_package(CURL) would otherwise fail on a host that vendors curl rather
-# than installing curl-dev — e.g. the Alpine static-build image — leaving
-# HTTP_CURL_AVAILABLE undefined and breaking HttpExports.cpp.
+# CURL as found (mirrors eco-kernel-cpp/CMakeLists.txt); otherwise require the
+# system package.
 if(ECO_STATIC)
     set(CURL_FOUND TRUE)
 else()
-    find_package(CURL QUIET)
+    find_package(CURL REQUIRED)
 endif()
-find_package(OpenSSL QUIET)
-
-if(CURL_FOUND AND OPENSSL_FOUND)
-    set(HTTP_AVAILABLE ON)
-    message(STATUS "libcurl and OpenSSL found - HTTP module will be fully functional")
-else()
-    set(HTTP_AVAILABLE OFF)
-    message(STATUS "libcurl or OpenSSL not found - HTTP module will use stubs")
-endif()
+find_package(OpenSSL REQUIRED)
 
 #------------------------------------------------------------------------------
 # Per-module static libraries
@@ -217,7 +207,6 @@ target_compile_features(ElmKernel_File PUBLIC cxx_std_20)
 
 # Http module
 add_library(ElmKernel_Http STATIC
-    src/http/Http.cpp
     src/http/HttpExports.cpp
     src/http/HttpEffectManager.cpp
 )
@@ -226,19 +215,16 @@ target_include_directories(ElmKernel_Http PUBLIC
     ${RUNTIME_INCLUDE_DIR}
     ${RUNTIME_INCLUDE_DIR}/platform
 )
-if(HTTP_AVAILABLE)
-    if(ECO_STATIC)
-        # eco-kernel-cpp vendors libcurl from source under ECO_STATIC (Debian
-        # ships libcurl.a but no .a counterparts for its transitive deps:
-        # nghttp2/idn2/psl/gssapi_krb5/brotli/zstd/etc). The vendored target
-        # is `libcurl_static`. Linking the system CURL::libcurl here would
-        # pull /usr/lib/x86_64-linux-gnu/libcurl.a back into the eco link
-        # line, dragging those unresolvable transitive deps with it.
-        target_link_libraries(ElmKernel_Http PRIVATE libcurl_static OpenSSL::SSL OpenSSL::Crypto)
-    else()
-        target_link_libraries(ElmKernel_Http PRIVATE CURL::libcurl OpenSSL::SSL OpenSSL::Crypto)
-    endif()
-    target_compile_definitions(ElmKernel_Http PRIVATE HTTP_CURL_AVAILABLE=1)
+if(ECO_STATIC)
+    # eco-kernel-cpp vendors libcurl from source under ECO_STATIC (Debian
+    # ships libcurl.a but no .a counterparts for its transitive deps:
+    # nghttp2/idn2/psl/gssapi_krb5/brotli/zstd/etc). The vendored target
+    # is `libcurl_static`. Linking the system CURL::libcurl here would
+    # pull /usr/lib/x86_64-linux-gnu/libcurl.a back into the eco link
+    # line, dragging those unresolvable transitive deps with it.
+    target_link_libraries(ElmKernel_Http PRIVATE libcurl_static OpenSSL::SSL OpenSSL::Crypto)
+else()
+    target_link_libraries(ElmKernel_Http PRIVATE CURL::libcurl OpenSSL::SSL OpenSSL::Crypto)
 endif()
 target_compile_features(ElmKernel_Http PUBLIC cxx_std_20)
 
