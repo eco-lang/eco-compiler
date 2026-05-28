@@ -118,7 +118,7 @@ A second self-compilation round verifies the bootstrapped compiler reproduces it
 cmake --build build --target bootstrap
 ```
 
-The `bootstrap` target is also the one-shot entry point for the entire chain: on a clean tree it transitively runs every stage from 1 onward, ending with the Stage 4b JS fixed-point check, the Stage 8c intermediate native fixed-point check, and the Stage 9c unified-binary fixed-point check.
+The `bootstrap` target is also the one-shot entry point for the entire chain: on a clean tree it transitively runs every stage from 1 onward, ending with the Stage 4b JS fixed-point check, the Stage 8c intermediate native fixed-point check, and the Stage 9b unified-binary self-compile.
 
 Output: `build/compiler/build-kernel/bin/eco-compiler-boot-2` (identical to `eco-compiler-boot`)
 
@@ -149,17 +149,17 @@ cmake --build build --target eco
 
 Output: `build/compiler/build-kernel/bin/eco`
 
-### Stage 9c: unified-binary fixed-point check
+### Stage 9b check: unified-binary self-compile
 
-`eco` self-compiles to a second copy and the two ELFs are compared bytewise. This is the strongest available fixed-point check — front-end, lowering pipeline, and linker are all pinned as self-consistent.
+`eco` self-compiles to a second binary, `eco-2`. A successful self-compile is the success criterion — there is deliberately **no** `eco == eco-2` byte-equality check.
 
 ```bash
 cmake --build build --target eco-verify
 ```
 
-Inherited issue: the Stage 8c native intermediate check has known byte-equality problems that have not yet been fixed; Stage 9c surfaces the same divergences. The fix belongs at the Stage 8 layer, not in the Stage 9 plumbing.
+The two binaries differ by construction and that is expected: only `eco` itself embeds the LLVM/MLIR lowering back-end (the strong `eco_native_lower_and_link` from `EcoNativeDriverStatic`). Programs `eco` produces — including `eco-2` — are ordinary AOT binaries whose kernel intrinsic resolves to the weak stub, with no back-end linked in. So `eco` (~226 MB, ~165k `llvm::`/`mlir::` symbols) is far larger than `eco-2` (~73 MB, none). The meaningful native fixed-point check is Stage 8c, which compares two *non-unified* compilers (`eco-compiler-boot == eco-compiler-boot-2`).
 
-Output: `build/compiler/build-kernel/bin/eco-2` (must be byte-identical to `eco`)
+Output: `build/compiler/build-kernel/bin/eco-2`
 
 ## All stages in sequence
 

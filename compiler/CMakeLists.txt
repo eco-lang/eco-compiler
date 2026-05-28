@@ -576,19 +576,20 @@ endif()
 set(ECO_STAGE9_OUTPUT "${BUILD_KERNEL_DIR}/bin/eco")
 add_custom_target(eco-bootstrap DEPENDS eco)
 
-# -- Stage 9c: native ELF fixed-point check (eco self-compiles to eco-2).
+# -- Stage 9b: eco self-compiles to a second binary (eco-2).
 #
-# Have `eco` compile its own front-end source to a second copy and bytewise
-# compare. This is the strongest available fixed-point check — the whole
-# binary (front-end + lowering pipeline + linker) is pinned as
-# self-consistent.
+# Have `eco` compile its own front-end source through its in-process
+# NativeDriver to a second binary. This proves the unified `eco` can
+# self-host: drive the front-end, lower the MLIR, and link an ELF.
 #
-# Known issue inherited from Stage 8: the upstream native fixed-point
-# already has byte-equality problems we haven't fixed. Stage 9 surfaces the
-# same issues; the fix belongs at the Stage 8 layer, not papered over here.
+# There is deliberately NO eco == eco-2 byte-equality check. Only `eco` itself
+# embeds the LLVM/MLIR lowering back-end (the strong eco_native_lower_and_link
+# from EcoNativeDriverStatic). Programs `eco` produces — including eco-2 — are
+# ordinary AOT binaries: the kernel intrinsic resolves to the weak stub and no
+# back-end is linked in. So eco (~226 MB, ~165k llvm::/mlir:: symbols) and
+# eco-2 (~73 MB, none) differ by construction. A successful Stage 9b
+# self-compile is the success criterion for the unified binary.
 set(ECO_STAGE9_2_OUTPUT "${BUILD_KERNEL_DIR}/bin/eco-2")
-set(ECO_STAGE9_VERIFY_STAMP
-    "${CMAKE_CURRENT_BINARY_DIR}/eco-stage9-verify.stamp")
 
 add_custom_command(
     OUTPUT ${ECO_STAGE9_2_OUTPUT}
@@ -604,16 +605,9 @@ add_custom_command(
     COMMENT "Stage 9b: eco → eco-2 (in-process MLIR -> ELF via NativeDriver)"
 )
 
-add_custom_command(
-    OUTPUT ${ECO_STAGE9_VERIFY_STAMP}
-    COMMAND ${CMAKE_COMMAND} -E compare_files
-        ${ECO_STAGE9_OUTPUT} ${ECO_STAGE9_2_OUTPUT}
-    COMMAND ${CMAKE_COMMAND} -E touch ${ECO_STAGE9_VERIFY_STAMP}
-    DEPENDS ${ECO_STAGE9_OUTPUT} ${ECO_STAGE9_2_OUTPUT}
-    COMMENT "Stage 9c: native ELF fixed-point check (eco == eco-2)"
-)
-
-add_custom_target(eco-verify DEPENDS ${ECO_STAGE9_VERIFY_STAMP})
+# `eco-verify` now just drives the Stage 9b self-compile (eco → eco-2); see the
+# note above for why there is no eco == eco-2 equality check.
+add_custom_target(eco-verify DEPENDS ${ECO_STAGE9_2_OUTPUT})
 
 # ============================================================================
 # MLIR-pipeline compile-timing report
@@ -642,14 +636,14 @@ add_custom_target(mlir-timing-report
     VERBATIM
 )
 
-# Aggregate: run the full bootstrap chain with all three fixed-point checks
-# (Stage 4b JS, Stage 8c native intermediate, Stage 9c unified-eco), then
-# print the MLIR-pipeline timing table as the final step.
+# Aggregate: run the full bootstrap chain with the two fixed-point checks
+# (Stage 4b JS, Stage 8c native intermediate) plus the Stage 9b unified-eco
+# self-compile, then print the MLIR-pipeline timing table as the final step.
 add_custom_target(bootstrap
     COMMAND ${PYTHON3_EXECUTABLE} ${MLIR_TIMING_SCRIPT} ${MLIR_TIMING_ARGS}
     DEPENDS ${ECO_BOOT_VERIFY_STAMP}
         ${BOOTSTRAP_STAMP}
-        ${ECO_STAGE9_VERIFY_STAMP}
+        ${ECO_STAGE9_2_OUTPUT}
     VERBATIM
 )
 
