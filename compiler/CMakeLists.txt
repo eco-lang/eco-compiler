@@ -409,12 +409,19 @@ add_custom_command(
         ${ECO_COMPILER_MLIR}
         --emit=obj
         -o ${ECO_STAGE9_OBJ}
-    # Ordering edge: gate Stage 9 on Stage 7's native ELF. Stage 9's inputs
-    # (eco-compiler.mlir + eco-boot-native) are otherwise ready at the end of
-    # Stage 5, which lets Ninja race Stage 9 ahead of Stages 6–8. Hanging
-    # Stage 9 off the Stage 7 ELF forces the chain through Stages 6 and 7
-    # first; Stages 8 and 9 are then free to run in parallel after Stage 7.
-    DEPENDS ${ECO_COMPILER_MLIR} eco-boot-native ${ECO_COMPILER_BOOT_ELF}
+    # Ordering edge: gate Stage 9 on the Stage 8c native fixed-point stamp so
+    # that building `eco` first runs the ENTIRE bootstrap chain — every gateway
+    # and self-compilation check the `bootstrap` target enforces. Stage 9's own
+    # inputs (eco-compiler.mlir + eco-boot-native) are ready at the end of
+    # Stage 5, which would otherwise let Ninja race Stage 9 ahead of Stages
+    # 6–8. ${BOOTSTRAP_STAMP} (Stage 8c) transitively requires Stage 7b's ELF
+    # (eco-compiler-boot) AND Stage 8b's ELF (eco-compiler-boot-2) AND the
+    # byte-equality diff between them, so depending on it forces the chain
+    # through Stages 6, 7, and 8 — and therefore through BOTH fixed-point
+    # checks: Stage 4b's JS check (pulled in transitively via Stage 5's
+    # eco-boot-verify.stamp dep) and Stage 8c's native check here — before
+    # eco-stage9.o is produced. This subsumes the previous Stage-7b-ELF gate.
+    DEPENDS ${ECO_COMPILER_MLIR} eco-boot-native ${BOOTSTRAP_STAMP}
     COMMENT "Stage 9a: eco-compiler.mlir → eco-stage9.o"
 )
 
@@ -435,12 +442,14 @@ set_source_files_properties(${ECO_STAGE9_OBJ} PROPERTIES
 # EcoNativeDriverStatic whole-archive is what makes the strong
 # eco_native_lower_and_link symbol present, so the kernel intrinsic's weak
 # undef resolves to a working implementation.
-# EXCLUDE_FROM_ALL: `eco` transitively depends on eco-stage9.o → eco-compiler.mlir
-# (Stage 5) → eco-boot-2.js (Stage 3) → eco-boot.js (Stage 2). Without
+# EXCLUDE_FROM_ALL: `eco` transitively depends on eco-stage9.o, which gates on
+# the Stage 8c native fixed-point stamp (see Stage 9a above), so its closure is
+# now the ENTIRE bootstrap chain — Stages 1–8 plus both fixed-point checks
+# (Stage 4b JS, Stage 8c native) — followed by Stage 9. Without
 # EXCLUDE_FROM_ALL, every `cmake --build build` (and therefore the `full`
-# Gate-A target) would run Stages 3, 5, and 9. We want default builds to
-# stop at Stage 2 (Gate A's prerequisite); Stage 9 only builds on explicit
-# request via `--target eco`, `--target eco-bootstrap`, or `--target bootstrap`.
+# Gate-A target) would run that whole chain. We want default builds to stop at
+# Stage 2 (Gate A's prerequisite); Stage 9 only builds on explicit request via
+# `--target eco`, `--target eco-bootstrap`, or `--target bootstrap`.
 add_executable(eco EXCLUDE_FROM_ALL ${ECO_STAGE9_OBJ})
 
 set_target_properties(eco PROPERTIES
