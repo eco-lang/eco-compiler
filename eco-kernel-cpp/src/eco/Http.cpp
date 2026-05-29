@@ -33,6 +33,13 @@ uint64_t fetch(uint64_t method, uint64_t url, uint64_t headers) {
     std::string responseBody;
     curl_easy_setopt(curl, CURLOPT_URL, urlStr.c_str());
     curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, methodStr.c_str());
+    // The registry's POST endpoints (/all-packages, /all-packages/since) reject
+    // a body-less POST with HTTP 411 Length Required. fetch carries no request
+    // body, so send an explicit zero-length body to emit Content-Length: 0.
+    if (methodStr == "POST") {
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, "");
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, 0L);
+    }
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &responseBody);
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "gzip, deflate");
@@ -63,17 +70,16 @@ uint64_t fetch(uint64_t method, uint64_t url, uint64_t headers) {
     curl_slist_free_all(curlHeaders);
     curl_easy_cleanup(curl);
 
+    // Eco.Http.fetch (Eco/Http.elm) destructures the Err payload as a Tuple2
+    // ( statusCode, statusText ) and adds `url` itself, so build a Tuple2 (NOT a
+    // record). Mask 0x1: slot 0 = unboxed Int, slot 1 = boxed String.
     if (res != CURLE_OK) {
-        std::vector<Unboxable> fields(3);
-        fields[0].i = 0;
-        fields[1].p = allocStringFromUTF8(std::string(curl_easy_strerror(res)));
-        {
-            Elm::StackRootGuard guard(&fields[1].p);
-            fields[2].p = allocStringFromUTF8(urlStr);
-        }
-        HPointer errRec = record(fields, 0b001);
-        Elm::StackRootGuard guard(&errRec);
-        HPointer errVal = err(boxed(errRec), true);
+        HPointer statusText = allocStringFromUTF8(std::string(curl_easy_strerror(res)));
+        Elm::StackRootGuard guard(&statusText);
+        // statusCode 0 signals a transport-level failure (no HTTP response).
+        HPointer errTuple = tuple2(unboxedInt(0), boxed(statusText), 0x1);
+        Elm::StackRootGuard tupleGuard(&errTuple);
+        HPointer errVal = err(boxed(errTuple), true);
         return taskSucceed(errVal);
     }
 
@@ -83,17 +89,12 @@ uint64_t fetch(uint64_t method, uint64_t url, uint64_t headers) {
         HPointer okVal = ok(boxed(body), true);
         return taskSucceed(okVal);
     } else {
-        std::string statusText = "HTTP " + std::to_string(statusCode);
-        std::vector<Unboxable> fields(3);
-        fields[0].i = static_cast<int64_t>(statusCode);
-        fields[1].p = allocStringFromUTF8(statusText);
-        {
-            Elm::StackRootGuard guard(&fields[1].p);
-            fields[2].p = allocStringFromUTF8(urlStr);
-        }
-        HPointer errRec = record(fields, 0b001);
-        Elm::StackRootGuard guard(&errRec);
-        HPointer errVal = err(boxed(errRec), true);
+        HPointer statusText = allocStringFromUTF8("HTTP " + std::to_string(statusCode));
+        Elm::StackRootGuard guard(&statusText);
+        HPointer errTuple = tuple2(unboxedInt(static_cast<int64_t>(statusCode)),
+                                   boxed(statusText), 0x1);
+        Elm::StackRootGuard tupleGuard(&errTuple);
+        HPointer errVal = err(boxed(errTuple), true);
         return taskSucceed(errVal);
     }
 }
