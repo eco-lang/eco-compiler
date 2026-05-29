@@ -156,7 +156,12 @@ uint64_t getArchive(uint64_t url) {
         return taskSucceed(err(boxed(errStr), true));
     }
 
-    // Collect file data first (no allocation yet)
+    // Collect file data first (no allocation yet). Match the JS kernel
+    // (Eco/Kernel/Http.js): return each entry's FULL name including the GitHub
+    // wrapper directory, and keep directory entries (with empty content).
+    // Builder/File.elm writePackage strips the wrapper prefix itself, using the
+    // first entry as the root — so stripping the leading component or dropping
+    // directory entries here would leave it nothing to extract.
     struct FileEntry { std::string content; std::string relativePath; };
     std::vector<FileEntry> entries;
     zip_int64_t numEntries = zip_get_num_entries(archive, 0);
@@ -164,23 +169,19 @@ uint64_t getArchive(uint64_t url) {
         const char* name = zip_get_name(archive, i, 0);
         if (!name) continue;
         std::string entryName(name);
-        if (!entryName.empty() && entryName.back() == '/') continue;
 
-        zip_stat_t st;
-        zip_stat_index(archive, i, 0, &st);
-        zip_file_t* f = zip_fopen_index(archive, i, 0);
-        if (!f) continue;
-
-        std::string content(st.size, '\0');
-        zip_fread(f, content.data(), st.size);
-        zip_fclose(f);
-
-        std::string relativePath = entryName;
-        auto slashPos = relativePath.find('/');
-        if (slashPos != std::string::npos) {
-            relativePath = relativePath.substr(slashPos + 1);
+        std::string content;
+        bool isDir = !entryName.empty() && entryName.back() == '/';
+        if (!isDir) {
+            zip_stat_t st;
+            zip_stat_index(archive, i, 0, &st);
+            zip_file_t* f = zip_fopen_index(archive, i, 0);
+            if (!f) continue;
+            content.resize(st.size);
+            zip_fread(f, content.data(), st.size);
+            zip_fclose(f);
         }
-        entries.push_back({std::move(content), std::move(relativePath)});
+        entries.push_back({std::move(content), std::move(entryName)});
     }
 
     zip_close(archive);
