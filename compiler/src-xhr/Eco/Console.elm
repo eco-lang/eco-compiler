@@ -27,6 +27,7 @@ Eco.Kernel.Console directly.
 
 -}
 
+import Eco.IO.Error as IOErr exposing (IOError)
 import Eco.XHR
 import Json.Encode as Encode
 import Task exposing (Task)
@@ -54,7 +55,7 @@ stderr =
 
 {-| Write a string to a console handle (stdout or stderr).
 -}
-write : Handle -> String -> Task Never ()
+write : Handle -> String -> Task IOError ()
 write (Handle h) content =
     Eco.XHR.unitTask "Console.write"
         (Encode.object
@@ -62,20 +63,23 @@ write (Handle h) content =
             , ( "content", Encode.string content )
             ]
         )
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Read one line from stdin.
 -}
-readLine : Task Never String
+readLine : Task IOError String
 readLine =
     Eco.XHR.stringTask "Console.readLine" Encode.null
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Read all of stdin as a string.
 -}
-readAll : Task Never String
+readAll : Task IOError String
 readAll =
     Eco.XHR.stringTask "Console.readAll" Encode.null
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Debug-style trace function. XHR variant is a pure no-op (identity);

@@ -10,6 +10,9 @@ module Eco.File exposing
 {-| File system operations: file I/O, handles, locks, and directories.
 
 All operations are atomic IO primitives backed by kernel implementations.
+Fallible operations fail with a typed `IOError`; the kernel reports failures as
+the neutral `( classificationTag, path, message )` tuple (see IO_ERR_002) which
+`Eco.IO.Error.ofKernelTuple` decodes.
 
 
 # File I/O by Path
@@ -39,6 +42,7 @@ All operations are atomic IO primitives backed by kernel implementations.
 -}
 
 import Bytes exposing (Bytes)
+import Eco.IO.Error as IOErr exposing (IOError)
 import Eco.Kernel.File
 import Task exposing (Task)
 import Time
@@ -65,30 +69,34 @@ type IOMode
 
 {-| Read a file as a UTF-8 string.
 -}
-readString : String -> Task Never String
+readString : String -> Task IOError String
 readString path =
     Eco.Kernel.File.readString path
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Write a UTF-8 string to a file.
 -}
-writeString : String -> String -> Task Never ()
+writeString : String -> String -> Task IOError ()
 writeString path content =
     Eco.Kernel.File.writeString path content
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Read a file as raw bytes.
 -}
-readBytes : String -> Task Never Bytes
+readBytes : String -> Task IOError Bytes
 readBytes path =
     Eco.Kernel.File.readBytes path
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Write raw bytes to a file.
 -}
-writeBytes : String -> Bytes -> Task Never ()
+writeBytes : String -> Bytes -> Task IOError ()
 writeBytes path bytes =
     Eco.Kernel.File.writeBytes path bytes
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 
@@ -97,31 +105,35 @@ writeBytes path bytes =
 
 {-| Open a file handle with the given mode.
 -}
-open : String -> IOMode -> Task Never Handle
+open : String -> IOMode -> Task IOError Handle
 open path mode =
     Eco.Kernel.File.open path mode
+        |> Task.mapError IOErr.ofKernelTuple
         |> Task.map Handle
 
 
 {-| Close a file handle.
 -}
-close : Handle -> Task Never ()
+close : Handle -> Task IOError ()
 close (Handle h) =
     Eco.Kernel.File.close h
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Write a string to a file handle.
 -}
-hWriteString : Handle -> String -> Task Never ()
+hWriteString : Handle -> String -> Task IOError ()
 hWriteString (Handle h) content =
     Eco.Kernel.File.hWriteString h content
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Get the size of a file in bytes via its handle.
 -}
-size : Handle -> Task Never Int
+size : Handle -> Task IOError Int
 size (Handle h) =
     Eco.Kernel.File.size h
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 
@@ -130,16 +142,18 @@ size (Handle h) =
 
 {-| Acquire a lock on a file. Blocks until the lock is acquired.
 -}
-lock : String -> Task Never ()
+lock : String -> Task IOError ()
 lock path =
     Eco.Kernel.File.lock path
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Release a lock on a file.
 -}
-unlock : String -> Task Never ()
+unlock : String -> Task IOError ()
 unlock path =
     Eco.Kernel.File.unlock path
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 
@@ -169,25 +183,28 @@ findExecutable name =
 
 {-| List the contents of a directory.
 -}
-list : String -> Task Never (List String)
+list : String -> Task IOError (List String)
 list path =
     Eco.Kernel.File.list path
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Get the modification time of a file.
 -}
-modificationTime : String -> Task Never Time.Posix
+modificationTime : String -> Task IOError Time.Posix
 modificationTime path =
     Eco.Kernel.File.modificationTime path
+        |> Task.mapError IOErr.ofKernelTuple
         |> Task.map Time.millisToPosix
 
 
 {-| Update the modification time of a file to the current time.
 Creates the file if it does not exist.
 -}
-touch : String -> Task Never ()
+touch : String -> Task IOError ()
 touch path =
     Eco.Kernel.File.touch path
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 
@@ -203,16 +220,18 @@ getCwd =
 
 {-| Set the current working directory.
 -}
-setCwd : String -> Task Never ()
+setCwd : String -> Task IOError ()
 setCwd path =
     Eco.Kernel.File.setCwd path
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Resolve symlinks and normalize a path.
 -}
-canonicalize : String -> Task Never String
+canonicalize : String -> Task IOError String
 canonicalize path =
     Eco.Kernel.File.canonicalize path
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Get the application-specific user data directory.
@@ -225,20 +244,23 @@ appDataDir name =
 {-| Create a directory. If the first argument is True, parent directories are
 created as needed.
 -}
-createDir : Bool -> String -> Task Never ()
+createDir : Bool -> String -> Task IOError ()
 createDir createParents path =
     Eco.Kernel.File.createDir createParents path
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Remove a file.
 -}
-removeFile : String -> Task Never ()
+removeFile : String -> Task IOError ()
 removeFile path =
     Eco.Kernel.File.removeFile path
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Remove a directory and all its contents recursively.
 -}
-removeDir : String -> Task Never ()
+removeDir : String -> Task IOError ()
 removeDir path =
     Eco.Kernel.File.removeDir path
+        |> Task.mapError IOErr.ofKernelTuple

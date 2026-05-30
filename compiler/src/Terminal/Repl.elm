@@ -750,7 +750,7 @@ interpret interpreter javascript =
 writeAndWaitForProcess : IO.Handle -> Process.ProcessHandle -> String -> Task Never Exit.ExitCode
 writeAndWaitForProcess stdin handle javascript =
     Utils.builderHPutBuilder stdin javascript
-        |> Task.andThen (\_ -> IO.close stdin)
+        |> Task.andThen (\_ -> IO.close stdin |> IO.crashOnError)
         |> Task.andThen (\_ -> Process.waitForProcess handle)
 
 

@@ -1,6 +1,6 @@
 module Utils.Task.Extra exposing
     ( run, throw
-    , io, mio, eio
+    , io, mio, eio, ioErr
     , apply, mapM
     )
 
@@ -59,6 +59,15 @@ Useful when an infallible IO operation needs to be used in a context expecting a
 io : Task Never a -> Task x a
 io work =
     Task.mapError never work
+
+
+{-| Maps a fallible IO task's error into a domain-specific error type.
+The complement of `io`: where `io` casts away an impossible error, `ioErr`
+threads a real IO error (e.g. `IOError`) into an `Exit.*` constructor.
+-}
+ioErr : (ioError -> x) -> Task ioError a -> Task x a
+ioErr toX work =
+    Task.mapError toX work
 
 
 {-| Converts an infallible task returning Maybe into a fallible task.

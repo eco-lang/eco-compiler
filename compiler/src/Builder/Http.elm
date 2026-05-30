@@ -24,6 +24,7 @@ import Bytes.Encode
 import Codec.Archive.Zip as Zip
 import Compiler.Elm.Version as V
 import Eco.Http
+import Eco.Http.Error as HttpErr exposing (HttpError)
 import Task exposing (Task)
 import Url.Builder
 import Utils.Bytes.Decode as BD
@@ -127,23 +128,52 @@ fetch method _ url headers onError onSuccess =
                     Ok body ->
                         onSuccess body
 
-                    Err { statusCode, statusText } ->
-                        Task.succeed
-                            (Err
-                                (onError
-                                    (BadHttp url
-                                        (Utils.StatusCodeException
-                                            (Utils.HttpResponse
-                                                { responseStatus = Utils.HttpStatus statusCode statusText
-                                                , responseHeaders = []
-                                                }
-                                            )
-                                            ""
-                                        )
-                                    )
-                                )
-                            )
+                    Err httpErr ->
+                        Task.succeed (Err (onError (fromHttpError url httpErr)))
             )
+
+
+{-| Map the kernel-level `Eco.Http.Error.HttpError` into this module's existing
+`Error` type (consumed by `Exit.RegistryProblem` / `Exit.Solver`). Transport
+errors (network/timeout/tls/body) are represented as a status-0 response, the
+convention this codebase already uses for "no HTTP response".
+-}
+fromHttpError : String -> HttpError -> Error
+fromHttpError url httpErr =
+    case httpErr of
+        HttpErr.BadUrl badUrl reason ->
+            BadUrl badUrl reason
+
+        HttpErr.BadStatus r ->
+            statusException url r.statusCode r.statusText
+
+        HttpErr.Network r ->
+            statusException url 0 r.detail
+
+        HttpErr.Timeout r ->
+            statusException url 0 r.detail
+
+        HttpErr.Tls r ->
+            statusException url 0 r.detail
+
+        HttpErr.BodyDecode r ->
+            statusException url 0 r.detail
+
+        HttpErr.OtherHttp r ->
+            statusException url 0 r.message
+
+
+statusException : String -> Int -> String -> Error
+statusException url statusCode statusText =
+    BadHttp url
+        (Utils.StatusCodeException
+            (Utils.HttpResponse
+                { responseStatus = Utils.HttpStatus statusCode statusText
+                , responseHeaders = []
+                }
+            )
+            ""
+        )
 
 
 addDefaultHeaders : List Header -> List Header

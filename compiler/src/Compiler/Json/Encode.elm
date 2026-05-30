@@ -192,8 +192,9 @@ writeUgly path value =
 {-| FIXME Builder.File.writeBuilder
 -}
 fileWriteBuilder : String -> String -> Task Never ()
-fileWriteBuilder =
-    IO.writeString
+fileWriteBuilder path content =
+    IO.writeString path content
+        |> IO.crashOnError
 
 
 

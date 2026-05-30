@@ -130,6 +130,7 @@ import Compiler.Json.Decode as Decode
 import Compiler.Json.Encode as Encode
 import Compiler.Parse.Primitives exposing (Col, Row)
 import Compiler.Reporting.Annotation as A
+import Eco.IO.Error as IOErr exposing (IOError)
 import Compiler.Reporting.Doc as D
 import Compiler.Reporting.Error as Error
 import Compiler.Reporting.Error.Import as Import
@@ -1932,6 +1933,7 @@ type Make
     | MakeBadGenerate Generate
     | MakeConfigNotFound FilePath
     | MakeBadConfig FilePath (Decode.Error Never)
+    | MakeFileIO IOError
 
 
 {-| Converts a make error to a user-friendly report.
@@ -2183,6 +2185,61 @@ makeToReport make =
         MakeBadConfig path err ->
             Json.ExplicitReason ("I ran into a problem with your " ++ path ++ " file.")
                 |> Json.toReport path (Json.FailureToReport (\_ _ _ _ -> never)) err
+
+        MakeFileIO ioError ->
+            ioErrorToReport "FILE ERROR" ioError
+
+
+
+-- ====== IO ERROR ======
+
+
+{-| Render a structured `IOError` (from the Eco kernel) into a `Help.Report`,
+giving each classification a tailored title and message. Shared by every
+`Exit.*` constructor that carries an `IOError`.
+-}
+ioErrorToReport : String -> IOError -> Help.Report
+ioErrorToReport title ioError =
+    case ioError of
+        IOErr.FileNotFound path ->
+            Help.report "FILE NOT FOUND"
+                (Just path)
+                "I was looking for this file but it does not exist:"
+                [ D.fromChars path |> D.red |> D.indent 4
+                , D.reflow "Was it moved or deleted? Check the path and try again."
+                ]
+
+        IOErr.PermissionDenied path ->
+            Help.report "PERMISSION DENIED"
+                (Just path)
+                "I do not have permission to access this file:"
+                [ D.fromChars path |> D.red |> D.indent 4
+                , D.reflow "Check the file permissions and try again."
+                ]
+
+        IOErr.IsADirectory path ->
+            Help.report title (Just path) ("I expected a file but found a directory: " ++ path) []
+
+        IOErr.NotADirectory path ->
+            Help.report title (Just path) ("I expected a directory but a path component is not one: " ++ path) []
+
+        IOErr.AlreadyExists path ->
+            Help.report title (Just path) ("This path already exists: " ++ path) []
+
+        IOErr.NoSpaceLeft _ ->
+            Help.report title Nothing "There is no space left on the device." []
+
+        IOErr.TooManyOpenFiles ->
+            Help.report title Nothing "There are too many open files." []
+
+        IOErr.BrokenPipe _ ->
+            Help.report title Nothing "The pipe was closed before I finished writing." []
+
+        IOErr.BadFileDescriptor ->
+            Help.report title Nothing "I tried to use an invalid file descriptor." []
+
+        IOErr.OtherIOError _ ->
+            Help.report title Nothing (IOErr.toString ioError) []
 
 
 

@@ -397,7 +397,7 @@ determineFileType isFile isDirectory =
 getYesOrNo : Task Never Bool
 getYesOrNo =
     IO.flush IO.stdout
-        |> Task.andThen (\_ -> IO.readLine)
+        |> Task.andThen (\_ -> IO.readLine |> IO.crashOnError)
         |> Task.andThen parseYesOrNo
 
 

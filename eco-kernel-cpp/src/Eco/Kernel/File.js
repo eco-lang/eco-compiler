@@ -1,9 +1,22 @@
 /*
 import Eco.Kernel.Scheduler exposing (succeed, fail, binding, asyncCallback)
 import Elm.Kernel.List exposing (fromArray)
-import Elm.Kernel.Utils exposing (Tuple0)
+import Elm.Kernel.Utils exposing (Tuple0, Tuple3)
 import Maybe exposing (Just, Nothing)
 */
+
+// Build the neutral IO error tuple ( classificationTag, path, message ) that
+// Eco.IO.Error.ofKernelTuple decodes (see IO_ERR_002). Keep the code->tag map in
+// sync with Eco.IO.Error.tagFromCode and the C++ kernel.
+function _File_ioErr(e) {
+    var codes = { ENOENT: 1, EACCES: 2, EPERM: 2, ENOTDIR: 3, EISDIR: 4,
+                  EEXIST: 5, ENOSPC: 6, EMFILE: 7, ENFILE: 7, EPIPE: 8, EBADF: 9 };
+    return __Utils_Tuple3(
+        (e && codes[e.code]) || 0,
+        (e && e.path) ? e.path : '',
+        (e && e.message) ? e.message : String(e)
+    );
+}
 
 var _File_readString = function(path) {
     return __Scheduler_binding(function(callback) {
@@ -12,7 +25,7 @@ var _File_readString = function(path) {
             var content = fs.readFileSync(path, 'utf8');
             callback(__Scheduler_succeed(content));
         } catch (e) {
-            callback(__Scheduler_fail(e.message));
+            callback(__Scheduler_fail(_File_ioErr(e)));
         }
     });
 };
@@ -24,7 +37,7 @@ var _File_writeString = F2(function(path, content) {
             fs.writeFileSync(path, content, 'utf8');
             callback(__Scheduler_succeed(__Utils_Tuple0));
         } catch (e) {
-            callback(__Scheduler_fail(e.message));
+            callback(__Scheduler_fail(_File_ioErr(e)));
         }
     });
 });
@@ -36,7 +49,7 @@ var _File_readBytes = function(path) {
             var buffer = fs.readFileSync(path);
             callback(__Scheduler_succeed(new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength)));
         } catch (e) {
-            callback(__Scheduler_fail(e.message));
+            callback(__Scheduler_fail(_File_ioErr(e)));
         }
     });
 };
@@ -49,7 +62,7 @@ var _File_writeBytes = F2(function(path, bytes) {
             fs.writeFileSync(path, buffer);
             callback(__Scheduler_succeed(__Utils_Tuple0));
         } catch (e) {
-            callback(__Scheduler_fail(e.message));
+            callback(__Scheduler_fail(_File_ioErr(e)));
         }
     });
 });
@@ -62,7 +75,7 @@ var _File_open = F2(function(path, mode) {
             var fd = fs.openSync(path, flags);
             callback(__Scheduler_succeed(fd));
         } catch (e) {
-            callback(__Scheduler_fail(e.message));
+            callback(__Scheduler_fail(_File_ioErr(e)));
         }
     });
 });
@@ -79,7 +92,7 @@ var _File_close = function(handle) {
             }
             callback(__Scheduler_succeed(__Utils_Tuple0));
         } catch (e) {
-            callback(__Scheduler_fail(e.message));
+            callback(__Scheduler_fail(_File_ioErr(e)));
         }
     });
 };
@@ -91,7 +104,7 @@ var _File_hWriteString = F2(function(handle, content) {
             fs.writeSync(handle, content, null, 'utf8');
             callback(__Scheduler_succeed(__Utils_Tuple0));
         } catch (e) {
-            callback(__Scheduler_fail(e.message));
+            callback(__Scheduler_fail(_File_ioErr(e)));
         }
     });
 });
@@ -103,7 +116,7 @@ var _File_size = function(handle) {
             var stat = fs.fstatSync(handle);
             callback(__Scheduler_succeed(stat.size));
         } catch (e) {
-            callback(__Scheduler_fail(e.message));
+            callback(__Scheduler_fail(_File_ioErr(e)));
         }
     });
 };
@@ -178,7 +191,7 @@ var _File_list = function(path) {
             var entries = fs.readdirSync(path);
             callback(__Scheduler_succeed(__List_fromArray(entries)));
         } catch (e) {
-            callback(__Scheduler_fail(e.message));
+            callback(__Scheduler_fail(_File_ioErr(e)));
         }
     });
 };
@@ -194,7 +207,7 @@ var _File_modificationTime = function(path) {
             // compile re-fetched /all-packages/since.
             callback(__Scheduler_succeed(Math.floor(stat.mtimeMs)));
         } catch (e) {
-            callback(__Scheduler_fail(e.message));
+            callback(__Scheduler_fail(_File_ioErr(e)));
         }
     });
 };
@@ -213,7 +226,7 @@ var _File_touch = function(path) {
             }
             callback(__Scheduler_succeed(__Utils_Tuple0));
         } catch (e) {
-            callback(__Scheduler_fail(e.message));
+            callback(__Scheduler_fail(_File_ioErr(e)));
         }
     });
 };
@@ -228,7 +241,7 @@ var _File_setCwd = function(path) {
             process.chdir(path);
             callback(__Scheduler_succeed(__Utils_Tuple0));
         } catch (e) {
-            callback(__Scheduler_fail(e.message));
+            callback(__Scheduler_fail(_File_ioErr(e)));
         }
     });
 };
@@ -270,7 +283,7 @@ var _File_createDir = F2(function(createParents, path) {
             fs.mkdirSync(path, { recursive: createParents });
             callback(__Scheduler_succeed(__Utils_Tuple0));
         } catch (e) {
-            callback(__Scheduler_fail(e.message));
+            callback(__Scheduler_fail(_File_ioErr(e)));
         }
     });
 });
@@ -282,7 +295,7 @@ var _File_removeFile = function(path) {
             fs.unlinkSync(path);
             callback(__Scheduler_succeed(__Utils_Tuple0));
         } catch (e) {
-            callback(__Scheduler_fail(e.message));
+            callback(__Scheduler_fail(_File_ioErr(e)));
         }
     });
 };
@@ -294,7 +307,7 @@ var _File_removeDir = function(path) {
             fs.rmSync(path, { recursive: true, force: true });
             callback(__Scheduler_succeed(__Utils_Tuple0));
         } catch (e) {
-            callback(__Scheduler_fail(e.message));
+            callback(__Scheduler_fail(_File_ioErr(e)));
         }
     });
 };

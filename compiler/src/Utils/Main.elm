@@ -165,6 +165,7 @@ import Dict exposing (Dict)
 import Eco.Console
 import Eco.Env
 import Eco.File
+import Eco.IO.Error as IOErr
 import Eco.MVar
 import Eco.Runtime
 import Maybe.Extra as Maybe
@@ -836,11 +837,13 @@ lockWithFileLock path mode ioFunc =
 lockFile : FilePath -> Task Never ()
 lockFile path =
     Eco.File.lock path
+        |> IO.crashOnError
 
 
 unlockFile : FilePath -> Task Never ()
 unlockFile path =
     Eco.File.unlock path
+        |> IO.crashOnError
 
 
 
@@ -866,6 +869,7 @@ dirFindExecutable filename =
 dirCreateDirectoryIfMissing : Bool -> FilePath -> Task Never ()
 dirCreateDirectoryIfMissing createParents filename =
     Eco.File.createDir createParents filename
+        |> IO.crashOnError
 
 
 {-| Get the current working directory.
@@ -887,6 +891,7 @@ dirGetAppUserDataDirectory filename =
 dirGetModificationTime : FilePath -> Task Never Time.Posix
 dirGetModificationTime filename =
     Eco.File.modificationTime filename
+        |> IO.crashOnError
 
 
 {-| Remove a file at the given path.
@@ -894,6 +899,7 @@ dirGetModificationTime filename =
 dirRemoveFile : FilePath -> Task Never ()
 dirRemoveFile path =
     Eco.File.removeFile path
+        |> IO.crashOnError
 
 
 {-| Check if a directory exists at the given path.
@@ -908,6 +914,7 @@ dirDoesDirectoryExist path =
 dirCanonicalizePath : FilePath -> Task Never FilePath
 dirCanonicalizePath path =
     Eco.File.canonicalize path
+        |> IO.crashOnError
 
 
 {-| Run an action with a temporarily changed current directory, restoring the original directory afterward.
@@ -918,8 +925,8 @@ dirWithCurrentDirectory dir action =
         |> Task.andThen
             (\currentDir ->
                 bracket_
-                    (Eco.File.setCwd dir)
-                    (Eco.File.setCwd currentDir)
+                    (Eco.File.setCwd dir |> IO.crashOnError)
+                    (Eco.File.setCwd currentDir |> IO.crashOnError)
                     action
             )
 
@@ -929,6 +936,7 @@ dirWithCurrentDirectory dir action =
 dirListDirectory : FilePath -> Task Never (List FilePath)
 dirListDirectory path =
     Eco.File.list path
+        |> IO.crashOnError
 
 
 
@@ -1213,6 +1221,9 @@ binaryDecodeFileOrFail decoder filename =
                     Nothing ->
                         Err ( 0, "binary decode failed" )
             )
+        -- An IO failure reading the artifact is surfaced as a decode-style
+        -- failure so the caller rebuilds rather than crashing (IO_ERR_001 (a)).
+        |> Task.onError (\err -> Task.succeed (Err ( 0, IOErr.toString err )))
 
 
 {-| Encode a value to binary and write it to a file.
@@ -1220,6 +1231,7 @@ binaryDecodeFileOrFail decoder filename =
 binaryEncodeFile : (a -> Bytes.Encode.Encoder) -> FilePath -> a -> Task Never ()
 binaryEncodeFile toEncoder path value =
     Eco.File.writeBytes path (Bytes.Encode.encode (toEncoder value))
+        |> IO.crashOnError
 
 
 
@@ -1253,6 +1265,7 @@ replGetInputLine prompt =
     Eco.Console.write Eco.Console.stdout prompt
         |> Task.andThen (\_ -> Eco.Console.readLine)
         |> Task.map Just
+        |> IO.crashOnError
 
 
 {-| Read a line of input with initial text on the left and right of the cursor.

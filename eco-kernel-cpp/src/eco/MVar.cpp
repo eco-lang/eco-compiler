@@ -234,7 +234,11 @@ int64_t newEmpty() {
 uint64_t read(uint64_t id) {
     int64_t mvarId = static_cast<int64_t>(id);
     auto it = s_mvars.find(mvarId);
-    assert(it != s_mvars.end() && "MVar not found");
+    if (it == s_mvars.end()) {
+        // Recoverable rather than a fatal abort (IO_ERR_002 / D6): surface a
+        // neutral IO error tuple so Eco.MVar.{read,take,put} fails with IOError.
+        return taskFailIO(0, "", "MVar not found: " + std::to_string(mvarId));
+    }
     if (it->second.value.has_value()) {
         return taskSucceed(it->second.value.value());
     }
@@ -252,7 +256,11 @@ uint64_t read(uint64_t id) {
 uint64_t take(uint64_t id) {
     int64_t mvarId = static_cast<int64_t>(id);
     auto it = s_mvars.find(mvarId);
-    assert(it != s_mvars.end() && "MVar not found");
+    if (it == s_mvars.end()) {
+        // Recoverable rather than a fatal abort (IO_ERR_002 / D6): surface a
+        // neutral IO error tuple so Eco.MVar.{read,take,put} fails with IOError.
+        return taskFailIO(0, "", "MVar not found: " + std::to_string(mvarId));
+    }
     if (it->second.value.has_value()) {
         HPointer v = it->second.value.value();
         it->second.value.reset();
@@ -276,7 +284,11 @@ uint64_t take(uint64_t id) {
 uint64_t put(uint64_t id, uint64_t value) {
     int64_t mvarId = static_cast<int64_t>(id);
     auto it = s_mvars.find(mvarId);
-    assert(it != s_mvars.end() && "MVar not found");
+    if (it == s_mvars.end()) {
+        // Recoverable rather than a fatal abort (IO_ERR_002 / D6): surface a
+        // neutral IO error tuple so Eco.MVar.{read,take,put} fails with IOError.
+        return taskFailIO(0, "", "MVar not found: " + std::to_string(mvarId));
+    }
     HPointer valueHP = Export::decode(value);
     if (!it->second.value.has_value()) {
         {

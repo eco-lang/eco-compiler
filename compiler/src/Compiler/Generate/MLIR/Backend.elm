@@ -22,6 +22,7 @@ import Compiler.Generate.Mode as Mode
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Dict
 import Eco.File
+import System.IO as IO
 import Mlir.Bytecode.StreamEncode as StreamEncode
 import Mlir.Loc as Loc
 import Mlir.Mlir exposing (MlirModule, MlirOp)
@@ -329,7 +330,7 @@ streamMlirBytecode ecoConfig mode monoGraph0 target =
                         StreamEncode.assembleModule finalTables Loc.unknown
                 in
                 Utils.dirCreateDirectoryIfMissing True (Utils.fpTakeDirectory target)
-                    |> Task.andThen (\_ -> Eco.File.writeBytes target bytecodeBytes)
+                    |> Task.andThen (\_ -> Eco.File.writeBytes target bytecodeBytes |> IO.crashOnError)
             )
 
 

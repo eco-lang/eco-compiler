@@ -25,6 +25,7 @@ Ref.: <https://hackage.haskell.org/package/process-1.6.25.0/docs/System-Process.
 -}
 
 import Eco.Process
+import Eco.Process.Error as ProcErr exposing (ProcessError)
 import System.Exit as Exit
 import System.IO as IO
 import Task exposing (Task)
@@ -101,7 +102,19 @@ withCreateProcess createProcess f =
                     Nothing
                     Nothing
                     (ProcessHandle (unwrapProcessHandle result.processHandle))
+                    |> Task.mapError never
             )
+        |> Task.onError handleSpawnFailure
+
+
+{-| A failed spawn is handled locally (IO_ERR_001 clause (a)): report it on
+stderr and surface the conventional "command not found / cannot execute" exit
+code (127) so callers continue to observe an `ExitCode`.
+-}
+handleSpawnFailure : ProcessError -> Task Never Exit.ExitCode
+handleSpawnFailure err =
+    IO.writeLn IO.stderr ("error: cannot run process: " ++ ProcErr.toString err)
+        |> Task.andThen (\_ -> Task.succeed (Exit.ExitFailure 127))
 
 
 {-| Wait for a process to complete and return its exit code.

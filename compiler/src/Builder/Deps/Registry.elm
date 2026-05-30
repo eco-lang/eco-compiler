@@ -53,6 +53,7 @@ import Compiler.Parse.Primitives as P
 import Dict exposing (Dict)
 import Eco.Console
 import Eco.File
+import System.IO as IO
 import Task exposing (Task)
 import Time
 import Utils.Bytes.Decode as BD
@@ -181,7 +182,7 @@ update manager cache policy ((Registry size packages) as oldRegistry) =
                 \news ->
                     case news of
                         [] ->
-                            Eco.File.touch registryPath
+                            (Eco.File.touch registryPath |> IO.crashOnError)
                                 |> Task.map (\_ -> oldRegistry)
 
                         _ :: _ ->
@@ -206,7 +207,7 @@ update manager cache policy ((Registry size packages) as oldRegistry) =
             doFetch
 
         Normal ->
-            Eco.File.modificationTime registryPath
+            (Eco.File.modificationTime registryPath |> IO.crashOnError)
                 |> Task.andThen
                     (\mtime ->
                         Time.now
@@ -339,7 +340,7 @@ post manager path decoder callback =
                                                         ms =
                                                             Time.posixToMillis after - Time.posixToMillis before
                                                     in
-                                                    Eco.Console.write Eco.Console.stdout
+                                                    IO.print
                                                         ("Registry: POST " ++ url ++ " completed in " ++ String.fromInt ms ++ "ms\n")
                                                         |> Task.map (\_ -> result)
                                                 )

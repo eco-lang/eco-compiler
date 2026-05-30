@@ -2,6 +2,7 @@
 
 #include "Process.hpp"
 #include "KernelHelpers.hpp"
+#include <cerrno>
 #include <cstdlib>
 #include <string>
 #include <unordered_map>
@@ -35,7 +36,8 @@ uint64_t spawn(uint64_t cmd, uint64_t args) {
 
     pid_t pid = fork();
     if (pid < 0) {
-        return taskFailString("fork failed");
+        int err = errno;
+        return taskFailErrno(err, cmdStr, "fork failed");
     }
     if (pid == 0) {
         // Child process.
@@ -57,7 +59,8 @@ uint64_t spawnProcess(uint64_t cmd, uint64_t args,
     bool pipeStdin = (stdinCfg == "pipe");
     if (pipeStdin) {
         if (pipe(stdinPipe) < 0) {
-            return taskFailString("pipe failed");
+            int err = errno;
+            return taskFailErrno(err, cmdStr, "pipe failed");
         }
     }
 
@@ -71,11 +74,12 @@ uint64_t spawnProcess(uint64_t cmd, uint64_t args,
 
     pid_t pid = fork();
     if (pid < 0) {
+        int err = errno;
         if (pipeStdin) {
             ::close(stdinPipe[0]);
             ::close(stdinPipe[1]);
         }
-        return taskFailString("fork failed");
+        return taskFailErrno(err, cmdStr, "fork failed");
     }
 
     if (pid == 0) {

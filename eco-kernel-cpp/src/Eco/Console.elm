@@ -25,6 +25,7 @@ All operations are atomic IO primitives backed by kernel implementations.
 
 -}
 
+import Eco.IO.Error as IOErr exposing (IOError)
 import Eco.Kernel.Console
 import Task exposing (Task)
 
@@ -51,23 +52,26 @@ stderr =
 
 {-| Write a string to a console handle (stdout or stderr).
 -}
-write : Handle -> String -> Task Never ()
+write : Handle -> String -> Task IOError ()
 write (Handle h) content =
     Eco.Kernel.Console.write h content
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Read one line from stdin.
 -}
-readLine : Task Never String
+readLine : Task IOError String
 readLine =
     Eco.Kernel.Console.readLine
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Read all of stdin as a string.
 -}
-readAll : Task Never String
+readAll : Task IOError String
 readAll =
     Eco.Kernel.Console.readAll
+        |> Task.mapError IOErr.ofKernelTuple
 
 
 {-| Debug-style trace function. Writes `tag` to stderr and returns `value`

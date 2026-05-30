@@ -24,6 +24,7 @@ import Task exposing (Task)
 dirname : Task Never String
 dirname =
     Eco.XHR.stringTask "Runtime.dirname" Encode.null
+        |> Eco.XHR.orCrash
 
 
 {-| Get a random Float between 0 (inclusive) and 1 (exclusive).
@@ -33,6 +34,7 @@ random =
     Eco.XHR.jsonTask "Runtime.random"
         Encode.null
         Decode.float
+        |> Eco.XHR.orCrash
 
 
 {-| Persist the REPL state to runtime storage.
@@ -40,6 +42,7 @@ random =
 saveState : Encode.Value -> Task Never ()
 saveState state =
     Eco.XHR.unitTask "Runtime.saveState" state
+        |> Eco.XHR.orCrash
 
 
 {-| Load the REPL state from runtime storage.
@@ -47,3 +50,4 @@ saveState state =
 loadState : Task Never Decode.Value
 loadState =
     Eco.XHR.jsonTask "Runtime.loadState" Encode.null Decode.value
+        |> Eco.XHR.orCrash

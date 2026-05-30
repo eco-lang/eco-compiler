@@ -14,6 +14,7 @@
 #include "allocator/Allocator.hpp"
 #include "allocator/StringOps.hpp"
 #include "platform/Scheduler.hpp"
+#include <cerrno>
 #include <string>
 #include <vector>
 
@@ -65,6 +66,43 @@ inline uint64_t taskFailString(const std::string& msg) {
     HPointer str = allocStringFromUTF8(msg);
     Elm::StackRootGuard guard(&str);
     return taskFail(str);
+}
+
+// Map an errno value to the stable IO error classification tag (see IO_ERR_002).
+// Keep in sync with Eco.IO.Error.decodeIOError / .tagFromCode and the JS kernels.
+inline int ioErrorTagFromErrno(int err) {
+    switch (err) {
+        case ENOENT: return 1;  // FileNotFound
+        case EACCES:            // PermissionDenied
+        case EPERM:  return 2;
+        case ENOTDIR: return 3; // NotADirectory
+        case EISDIR:  return 4; // IsADirectory
+        case EEXIST:  return 5; // AlreadyExists
+        case ENOSPC:  return 6; // NoSpaceLeft
+        case EMFILE:            // TooManyOpenFiles
+        case ENFILE: return 7;
+        case EPIPE:  return 8;  // BrokenPipe
+        case EBADF:  return 9;  // BadFileDescriptor
+        default:     return 0;  // OtherIOError
+    }
+}
+
+// Fail a Task with the neutral IO error tuple ( classificationTag, path, message )
+// consumed by Eco.IO.Error.ofKernelTuple (see IO_ERR_002). Tuple3 layout: slot 0 =
+// unboxed Int (tag), slots 1,2 = boxed String — mask 0x1.
+inline uint64_t taskFailIO(int tag, const std::string& path, const std::string& message) {
+    HPointer pathStr = allocStringFromUTF8(path);
+    Elm::StackRootGuard g1(&pathStr);
+    HPointer msgStr = allocStringFromUTF8(message);
+    Elm::StackRootGuard g2(&msgStr);
+    HPointer tup = tuple3(unboxedInt(tag), boxed(pathStr), boxed(msgStr), 0x1);
+    Elm::StackRootGuard g3(&tup);
+    return taskFail(tup);
+}
+
+// Convenience: classify a C errno and fail with the neutral IO error tuple.
+inline uint64_t taskFailErrno(int err, const std::string& path, const std::string& message) {
+    return taskFailIO(ioErrorTagFromErrno(err), path, message);
 }
 
 // Wrap a boxed Bool in Task.succeed.

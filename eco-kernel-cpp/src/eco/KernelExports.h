@@ -15,8 +15,42 @@
 #define ECO_KERNEL_EXPORTS_H
 
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <exception>
+#include <new>
 #include "../../../runtime/src/allocator/Heap.hpp"
 using Elm::HPtr;
+
+namespace Eco {
+namespace Kernel {
+
+// Report an unrecoverable native fault and abort. Recoverable IO faults are
+// returned as Task.fail tuples (see IO_ERR_002); this is only for unexpected
+// C++ exceptions that must not cross the extern "C" boundary (FORBID_IO_001).
+[[noreturn]] inline void reportFatal(const char* what) {
+    std::fflush(stdout);
+    std::fprintf(stderr, "\n[eco-runtime] FATAL: %s\n", what ? what : "(null)");
+    std::fflush(stderr);
+    std::abort();
+}
+
+} // namespace Kernel
+} // namespace Eco
+
+// Wrap an extern "C" kernel export body so unexpected C++ exceptions are turned
+// into a clean fatal abort with diagnostics instead of unwinding across the
+// C-linkage boundary (undefined behaviour). BODY must contain its own return.
+#define ECO_KERNEL_GUARD(BODY)                                                 \
+    try {                                                                      \
+        BODY                                                                   \
+    } catch (const std::bad_alloc&) {                                          \
+        ::Eco::Kernel::reportFatal("out of memory in kernel");                 \
+    } catch (const std::exception& ecoGuardEx) {                               \
+        ::Eco::Kernel::reportFatal(ecoGuardEx.what());                         \
+    } catch (...) {                                                            \
+        ::Eco::Kernel::reportFatal("unknown native exception in kernel");      \
+    }
 
 extern "C" {
 

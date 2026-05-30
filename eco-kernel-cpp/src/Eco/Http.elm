@@ -11,6 +11,7 @@ All operations are atomic IO primitives backed by kernel implementations.
 
 -}
 
+import Eco.Http.Error as HttpErr exposing (HttpError)
 import Eco.Kernel.Http
 import Task exposing (Task)
 
@@ -22,15 +23,10 @@ fetch :
     String
     -> String
     -> List ( String, String )
-    -> Task Never (Result { statusCode : Int, statusText : String, url : String } String)
+    -> Task Never (Result HttpError String)
 fetch method url headers =
     Eco.Kernel.Http.fetch method url headers
-        |> Task.map
-            (Result.mapError
-                (\( statusCode, statusText ) ->
-                    { statusCode = statusCode, statusText = statusText, url = url }
-                )
-            )
+        |> Task.map (Result.mapError (HttpErr.decode url))
 
 
 {-| Download and extract a ZIP archive from a URL.

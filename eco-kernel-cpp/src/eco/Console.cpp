@@ -2,6 +2,7 @@
 
 #include "Console.hpp"
 #include "KernelHelpers.hpp"
+#include <cerrno>
 #include <iostream>
 #include <string>
 #include <unistd.h>
@@ -11,12 +12,32 @@ namespace Eco::Kernel::Console {
 uint64_t write(uint64_t handle, uint64_t content) {
     std::string str = toString(content);
     int64_t h = static_cast<int64_t>(handle);
+    int fd;
     if (h == 1) {
-        ::write(STDOUT_FILENO, str.data(), str.size());
+        fd = STDOUT_FILENO;
     } else if (h == 2) {
-        ::write(STDERR_FILENO, str.data(), str.size());
+        fd = STDERR_FILENO;
+    } else {
+        // Stream handle support would go here (check global stream handle map).
+        return taskSucceedUnit();
     }
-    // Stream handle support would go here (check global stream handle map).
+    // Write the whole buffer, surfacing errors (e.g. EPIPE when a downstream
+    // reader closed the pipe). SIGPIPE is ignored at startup so the write
+    // returns EPIPE rather than terminating the process (see eco_entry.cpp).
+    const char* data = str.data();
+    size_t remaining = str.size();
+    while (remaining > 0) {
+        ssize_t n = ::write(fd, data, remaining);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            int err = errno;
+            return taskFailErrno(err, "", "console write failed");
+        }
+        data += n;
+        remaining -= static_cast<size_t>(n);
+    }
     return taskSucceedUnit();
 }
 

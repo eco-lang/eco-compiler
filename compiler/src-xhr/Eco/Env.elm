@@ -26,6 +26,7 @@ lookup name =
     Eco.XHR.jsonTask "Env.lookup"
         (Encode.object [ ( "name", Encode.string name ) ])
         (Decode.nullable Decode.string)
+        |> Eco.XHR.orCrash
 
 
 {-| Get the raw CLI arguments as a list of strings.
@@ -35,3 +36,4 @@ rawArgs =
     Eco.XHR.jsonTask "Env.rawArgs"
         Encode.null
         (Decode.list Decode.string)
+        |> Eco.XHR.orCrash

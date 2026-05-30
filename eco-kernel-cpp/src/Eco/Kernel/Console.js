@@ -1,7 +1,18 @@
 /*
 import Eco.Kernel.Scheduler exposing (succeed, fail, binding)
-import Elm.Kernel.Utils exposing (Tuple0)
+import Elm.Kernel.Utils exposing (Tuple0, Tuple3)
 */
+
+// Neutral IO error tuple ( classificationTag, path, message ) — see IO_ERR_002.
+function _Console_ioErr(e) {
+    var codes = { ENOENT: 1, EACCES: 2, EPERM: 2, ENOTDIR: 3, EISDIR: 4,
+                  EEXIST: 5, ENOSPC: 6, EMFILE: 7, ENFILE: 7, EPIPE: 8, EBADF: 9 };
+    return __Utils_Tuple3(
+        (e && codes[e.code]) || 0,
+        (e && e.path) ? e.path : '',
+        (e && e.message) ? e.message : String(e)
+    );
+}
 
 var _Console_write = F2(function(handle, content) {
     return __Scheduler_binding(function(callback) {
@@ -15,7 +26,7 @@ var _Console_write = F2(function(handle, content) {
             }
             callback(__Scheduler_succeed(__Utils_Tuple0));
         } catch (e) {
-            callback(__Scheduler_fail(e.message));
+            callback(__Scheduler_fail(_Console_ioErr(e)));
         }
     });
 });

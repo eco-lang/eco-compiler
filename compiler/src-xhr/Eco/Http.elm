@@ -6,6 +6,7 @@ module Eco.Http exposing (fetch, getArchive)
 
 -}
 
+import Eco.Http.Error as HttpErr exposing (HttpError)
 import Eco.XHR
 import Json.Decode as Decode
 import Json.Encode as Encode
@@ -13,9 +14,9 @@ import Task exposing (Task)
 
 
 {-| Perform an HTTP request server-side. Returns Ok body on 2xx,
-Err { statusCode, statusText, url } on non-2xx.
+Err (typed HttpError) on non-2xx or transport failure.
 -}
-fetch : String -> String -> List ( String, String ) -> Task Never (Result { statusCode : Int, statusText : String, url : String } String)
+fetch : String -> String -> List ( String, String ) -> Task Never (Result HttpError String)
 fetch method url headers =
     Eco.XHR.jsonTask "Http.fetch"
         (Encode.object
@@ -33,13 +34,14 @@ fetch method url headers =
         (Decode.oneOf
             [ Decode.map Ok (Decode.field "body" Decode.string)
             , Decode.map Err
-                (Decode.map3 (\sc st u -> { statusCode = sc, statusText = st, url = u })
+                (Decode.map2 (\sc st -> ( sc, st ))
                     (Decode.field "statusCode" Decode.int)
                     (Decode.field "statusText" (Decode.oneOf [ Decode.string, Decode.succeed "" ]))
-                    (Decode.field "url" Decode.string)
                 )
             ]
         )
+        |> Eco.XHR.orCrash
+        |> Task.map (Result.mapError (HttpErr.decode url))
 
 
 {-| Download a ZIP archive from a URL (follows redirects), compute its SHA1,
@@ -68,3 +70,4 @@ getArchive url =
             , Decode.map Err (Decode.field "error" Decode.string)
             ]
         )
+        |> Eco.XHR.orCrash

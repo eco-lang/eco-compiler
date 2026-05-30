@@ -142,8 +142,9 @@ readBinary decoder path =
 {-| Writes a UTF-8 encoded string to a file.
 -}
 writeUtf8 : FilePath -> String -> Task Never ()
-writeUtf8 =
-    IO.writeString
+writeUtf8 path content =
+    IO.writeString path content
+        |> IO.crashOnError
 
 
 
@@ -155,6 +156,7 @@ writeUtf8 =
 readUtf8 : FilePath -> Task Never String
 readUtf8 path =
     Eco.File.readString path
+        |> IO.crashOnError
 
 
 {-| Reads all input from stdin as a string.
@@ -162,6 +164,7 @@ readUtf8 path =
 readStdin : Task Never String
 readStdin =
     Eco.Console.readAll
+        |> IO.crashOnError
 
 
 
@@ -250,13 +253,13 @@ withStreamingWriter :
     -> ((String -> Task Never ()) -> Task Never a)
     -> Task Never a
 withStreamingWriter path callback =
-    Eco.File.open path Eco.File.WriteMode
+    (Eco.File.open path Eco.File.WriteMode |> IO.crashOnError)
         |> Task.andThen
             (\handle ->
-                callback (Eco.File.hWriteString handle)
+                callback (\chunk -> Eco.File.hWriteString handle chunk |> IO.crashOnError)
                     |> Task.andThen
                         (\result ->
-                            Eco.File.close handle
+                            (Eco.File.close handle |> IO.crashOnError)
                                 |> Task.map (\_ -> result)
                         )
             )

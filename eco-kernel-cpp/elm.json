@@ -10,9 +10,12 @@
         "Eco.Env",
         "Eco.File",
         "Eco.Http",
+        "Eco.Http.Error",
+        "Eco.IO.Error",
         "Eco.MVar",
         "Eco.NativeDriver",
         "Eco.Process",
+        "Eco.Process.Error",
         "Eco.Runtime"
     ],
     "elm-version": "0.19.0 <= v < 0.20.0",

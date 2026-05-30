@@ -2,6 +2,7 @@
 
 #include "File.hpp"
 #include "KernelHelpers.hpp"
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <dirent.h>
@@ -19,7 +20,8 @@ uint64_t readString(uint64_t path) {
     std::string pathStr = toString(path);
     std::ifstream file(pathStr);
     if (!file) {
-        return taskFailString("File not found: " + pathStr);
+        int err = errno;
+        return taskFailErrno(err, pathStr, "could not open file for reading");
     }
     std::ostringstream ss;
     ss << file.rdbuf();
@@ -31,7 +33,8 @@ uint64_t writeString(uint64_t path, uint64_t content) {
     std::string data = toString(content);
     std::ofstream file(pathStr);
     if (!file) {
-        return taskFailString("Cannot write file: " + pathStr);
+        int err = errno;
+        return taskFailErrno(err, pathStr, "could not open file for writing");
     }
     file << data;
     return taskSucceedUnit();
@@ -41,7 +44,8 @@ uint64_t readBytes(uint64_t path) {
     std::string pathStr = toString(path);
     std::ifstream file(pathStr, std::ios::binary | std::ios::ate);
     if (!file) {
-        return taskFailString("File not found: " + pathStr);
+        int err = errno;
+        return taskFailErrno(err, pathStr, "could not open file for reading");
     }
     auto size = file.tellg();
     file.seekg(0, std::ios::beg);
@@ -59,7 +63,8 @@ uint64_t writeBytes(uint64_t path, uint64_t bytes) {
     const uint8_t* data = Elm::alloc::byteBufferData(ptr);
     std::ofstream file(pathStr, std::ios::binary);
     if (!file) {
-        return taskFailString("Cannot write file: " + pathStr);
+        int err = errno;
+        return taskFailErrno(err, pathStr, "could not open file for writing");
     }
     file.write(reinterpret_cast<const char*>(data), len);
     return taskSucceedUnit();
@@ -79,7 +84,8 @@ uint64_t open(uint64_t path, uint64_t mode) {
     }
     int fd = ::open(pathStr.c_str(), flags, 0644);
     if (fd < 0) {
-        return taskFailString("Cannot open file: " + pathStr);
+        int err = errno;
+        return taskFailErrno(err, pathStr, "could not open file");
     }
     return taskSucceedInt(fd);
 }
@@ -95,7 +101,8 @@ uint64_t hWriteString(uint64_t handle, uint64_t content) {
     std::string data = toString(content);
     ssize_t written = ::write(static_cast<int>(fd), data.data(), data.size());
     if (written < 0) {
-        return taskFailString("Write to handle failed");
+        int err = errno;
+        return taskFailErrno(err, "", "write to handle failed");
     }
     return taskSucceedUnit();
 }
@@ -104,7 +111,8 @@ uint64_t size(uint64_t handle) {
     int64_t fd = static_cast<int64_t>(handle);
     struct stat st;
     if (fstat(static_cast<int>(fd), &st) != 0) {
-        return taskFailString("fstat failed");
+        int err = errno;
+        return taskFailErrno(err, "", "fstat failed");
     }
     return taskSucceedInt(static_cast<int64_t>(st.st_size));
 }
@@ -162,7 +170,8 @@ uint64_t list(uint64_t path) {
     std::vector<std::string> entries;
     DIR* dir = opendir(pathStr.c_str());
     if (!dir) {
-        return taskFailString("Cannot list directory: " + pathStr);
+        int err = errno;
+        return taskFailErrno(err, pathStr, "could not open directory");
     }
     struct dirent* entry;
     while ((entry = readdir(dir)) != nullptr) {
@@ -179,7 +188,8 @@ uint64_t modificationTime(uint64_t path) {
     std::string pathStr = toString(path);
     struct stat st;
     if (stat(pathStr.c_str(), &st) != 0) {
-        return taskFailString("stat failed: " + pathStr);
+        int err = errno;
+        return taskFailErrno(err, pathStr, "could not stat file");
     }
     // Convert to milliseconds since epoch.
     int64_t millis = static_cast<int64_t>(st.st_mtim.tv_sec) * 1000 +
@@ -192,13 +202,14 @@ uint64_t getCwd() {
     if (getcwd(buf, sizeof(buf))) {
         return taskSucceedString(std::string(buf));
     }
-    return taskFailString("Cannot get current working directory");
+    return taskFailErrno(errno, "", "could not get current working directory");
 }
 
 uint64_t setCwd(uint64_t path) {
     std::string pathStr = toString(path);
     if (chdir(pathStr.c_str()) != 0) {
-        return taskFailString("Cannot set working directory: " + pathStr);
+        int err = errno;
+        return taskFailErrno(err, pathStr, "could not set working directory");
     }
     return taskSucceedUnit();
 }
@@ -239,7 +250,7 @@ uint64_t createDir(uint64_t createParents, uint64_t path) {
         std::filesystem::create_directory(pathStr, ec);
     }
     if (ec) {
-        return taskFailString("Cannot create directory: " + pathStr + " (" + ec.message() + ")");
+        return taskFailErrno(ec.value(), pathStr, "could not create directory: " + ec.message());
     }
     return taskSucceedUnit();
 }
@@ -247,7 +258,8 @@ uint64_t createDir(uint64_t createParents, uint64_t path) {
 uint64_t removeFile(uint64_t path) {
     std::string pathStr = toString(path);
     if (unlink(pathStr.c_str()) != 0) {
-        return taskFailString("Cannot remove file: " + pathStr);
+        int err = errno;
+        return taskFailErrno(err, pathStr, "could not remove file");
     }
     return taskSucceedUnit();
 }
@@ -257,7 +269,7 @@ uint64_t removeDir(uint64_t path) {
     std::error_code ec;
     std::filesystem::remove_all(pathStr, ec);
     if (ec) {
-        return taskFailString("Cannot remove directory: " + pathStr + " (" + ec.message() + ")");
+        return taskFailErrno(ec.value(), pathStr, "could not remove directory: " + ec.message());
     }
     return taskSucceedUnit();
 }
@@ -271,7 +283,8 @@ uint64_t touch(uint64_t path) {
     }
     // Update access and modification times to now
     if (utimensat(AT_FDCWD, pathStr.c_str(), nullptr, 0) != 0) {
-        return taskFailString("Cannot touch file: " + pathStr);
+        int err = errno;
+        return taskFailErrno(err, pathStr, "could not touch file");
     }
     return taskSucceedUnit();
 }

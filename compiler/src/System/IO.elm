@@ -6,6 +6,7 @@ module System.IO exposing
     , LockSharedExclusive(..)
     , write
     , writeLn, print, printLn, readLine, close, flush, isTerminal
+    , crashOnError
     , MVar(..)
     , Stream, ChItem(..)
     , ReplState(..), initialReplState
@@ -87,7 +88,9 @@ Function names follow the `guida-io-ops.csv` naming conventions.
 import Dict exposing (Dict)
 import Eco.Console
 import Eco.File
+import Eco.IO.Error as IOErr exposing (IOError)
 import Task exposing (Task)
+import Utils.Crash exposing (crash)
 
 
 
@@ -164,14 +167,14 @@ stderr =
 
 {-| Close an open file handle.
 -}
-close : Handle -> Task Never ()
+close : Handle -> Task IOError ()
 close (Handle handle) =
     Eco.File.close (Eco.File.Handle handle)
 
 
 {-| Write a UTF-8 string to a file.
 -}
-writeString : FilePath -> String -> Task Never ()
+writeString : FilePath -> String -> Task IOError ()
 writeString path content =
     Eco.File.writeString path content
 
@@ -192,10 +195,16 @@ type LockSharedExclusive
 
 
 {-| Write a string to the specified handle without adding a newline.
+
+Console output is best-effort: a write error (e.g. EPIPE when the downstream
+reader closed the pipe, as in `eco ... | head`) is swallowed here rather than
+surfaced, matching the kernel's historical behaviour of ignoring the write
+return value. This is the IO_ERR_001 clause (a) "handle locally" case.
 -}
 write : Handle -> String -> Task Never ()
 write (Handle fd) content =
     Eco.Console.write (Eco.Console.Handle fd) content
+        |> Task.onError (\_ -> Task.succeed ())
 
 
 {-| Write a string to the specified handle followed by a newline.
@@ -221,7 +230,7 @@ printLn s =
 
 {-| Read a line of input from stdin.
 -}
-readLine : Task Never String
+readLine : Task IOError String
 readLine =
     Eco.Console.readLine
 
@@ -238,6 +247,17 @@ flush _ =
 isTerminal : Handle -> Task Never Bool
 isTerminal _ =
     Task.succeed True
+
+
+{-| Handle a fallible IO task locally by crashing with a diagnostic when it
+fails (IO_ERR_001 clause (a)). Used for build-internal artifact/cache IO where
+the surrounding code is `Task Never` and threading an `IOError` through the
+MVar-concurrent build pipeline would be unbounded; a failure here indicates a
+corrupt or unwritable build cache and is reported clearly rather than dropped.
+-}
+crashOnError : Task IOError a -> Task Never a
+crashOnError =
+    Task.onError (\err -> crash ("IO error: " ++ IOErr.toString err))
 
 
 

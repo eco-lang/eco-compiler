@@ -10,9 +10,9 @@ values (emitting warnings), and surface errors as `Exit.Make`.
 
 -}
 
-import Builder.File as File
 import Builder.Reporting.Exit as Exit
 import Compiler.Eco.Config as Config exposing (EcoConfig)
+import Eco.File
 import Compiler.Json.Decode as D
 import System.IO as IO exposing (FilePath)
 import Task exposing (Task)
@@ -52,7 +52,7 @@ load maybeExplicit root =
                             Task.succeed Config.default
 
                 else
-                    (File.readUtf8 path |> Task.mapError never)
+                    (Eco.File.readString path |> Task.mapError Exit.MakeFileIO)
                         |> Task.andThen
                             (\contents ->
                                 case D.fromByteString Config.decoder contents of

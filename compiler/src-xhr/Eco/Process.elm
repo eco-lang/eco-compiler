@@ -21,6 +21,7 @@ Eco.Kernel.Process directly.
 
 -}
 
+import Eco.Process.Error as ProcErr exposing (ProcessError)
 import Eco.XHR
 import Json.Decode as Decode
 import Json.Encode as Encode
@@ -55,11 +56,12 @@ exit code =
         (Encode.object
             [ ( "code", Encode.int (exitCodeToInt code) ) ]
         )
+        |> Eco.XHR.orCrash
 
 
 {-| Spawn an external process with inherited stdio. Returns a process handle.
 -}
-spawn : String -> List String -> Task Never ProcessHandle
+spawn : String -> List String -> Task ProcessError ProcessHandle
 spawn cmd args =
     Eco.XHR.jsonTask "Process.spawn"
         (Encode.object
@@ -68,6 +70,7 @@ spawn cmd args =
             ]
         )
         Decode.int
+        |> Task.mapError (ProcErr.ofKernelTuple cmd)
         |> Task.map ProcessHandle
 
 
@@ -82,7 +85,7 @@ spawnProcess :
     , stdout : StdStream
     , stderr : StdStream
     }
-    -> Task Never { stdinHandle : Maybe Int, processHandle : ProcessHandle }
+    -> Task ProcessError { stdinHandle : Maybe Int, processHandle : ProcessHandle }
 spawnProcess config =
     Eco.XHR.jsonTask "Process.spawnProcess"
         (Encode.object
@@ -102,6 +105,7 @@ spawnProcess config =
             (Decode.field "stdinHandle" (Decode.nullable Decode.int))
             (Decode.field "processHandle" Decode.int)
         )
+        |> Task.mapError (ProcErr.ofKernelTuple config.cmd)
 
 
 {-| Wait for a process to complete and return its exit code.
@@ -111,6 +115,7 @@ wait (ProcessHandle ph) =
     Eco.XHR.jsonTask "Process.wait"
         (Encode.object [ ( "handle", Encode.int ph ) ])
         Decode.int
+        |> Eco.XHR.orCrash
         |> Task.map intToExitCode
 
 

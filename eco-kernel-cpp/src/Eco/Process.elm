@@ -20,6 +20,7 @@ All operations are atomic IO primitives backed by kernel implementations.
 -}
 
 import Eco.Kernel.Process
+import Eco.Process.Error as ProcErr exposing (ProcessError)
 import Task exposing (Task)
 
 
@@ -52,9 +53,10 @@ exit code =
 
 {-| Spawn an external process with inherited stdio. Returns a process handle.
 -}
-spawn : String -> List String -> Task Never ProcessHandle
+spawn : String -> List String -> Task ProcessError ProcessHandle
 spawn cmd args =
     Eco.Kernel.Process.spawn cmd args
+        |> Task.mapError (ProcErr.ofKernelTuple cmd)
         |> Task.map ProcessHandle
 
 
@@ -69,7 +71,7 @@ spawnProcess :
     , stdout : StdStream
     , stderr : StdStream
     }
-    -> Task Never { stdinHandle : Maybe Int, processHandle : ProcessHandle }
+    -> Task ProcessError { stdinHandle : Maybe Int, processHandle : ProcessHandle }
 spawnProcess config =
     Eco.Kernel.Process.spawnProcess
         config.cmd
@@ -77,6 +79,7 @@ spawnProcess config =
         (stdStreamToString config.stdin)
         (stdStreamToString config.stdout)
         (stdStreamToString config.stderr)
+        |> Task.mapError (ProcErr.ofKernelTuple config.cmd)
         |> Task.map
             (\( stdinHandle, processHandle ) ->
                 { stdinHandle = stdinHandle

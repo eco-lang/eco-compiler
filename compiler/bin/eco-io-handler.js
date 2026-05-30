@@ -28,6 +28,16 @@ const child_process = require("node:child_process");
 const AdmZip = require("adm-zip");
 const which = require("which");
 
+// Build the JSON error body for an IO failure, forwarding the libuv `code` and
+// `path` so the XHR client can classify it (see IO_ERR_002).
+function ioErrorBody(e) {
+  return JSON.stringify({
+    error: e && e.message ? e.message : String(e),
+    code: e && e.code ? e.code : null,
+    path: e && e.path ? e.path : null,
+  });
+}
+
 // State for server-side resources
 const processes = {};
 let processCounter = 0;
@@ -155,7 +165,7 @@ function handleEcoIO(parsed, respond) {
         const content = fs.readFileSync(args.path, "utf8");
         respond(200, JSON.stringify({ value: content }));
       } catch (e) {
-        respond(500, JSON.stringify({ error: e.message }));
+        respond(500, ioErrorBody(e));
       }
       break;
     }
@@ -165,7 +175,7 @@ function handleEcoIO(parsed, respond) {
         fs.writeFileSync(args.path, args.content, "utf8");
         respond(200, "");
       } catch (e) {
-        respond(500, JSON.stringify({ error: e.message }));
+        respond(500, ioErrorBody(e));
       }
       break;
     }
@@ -175,7 +185,7 @@ function handleEcoIO(parsed, respond) {
         const buffer = fs.readFileSync(args.path);
         respond(200, toArrayBuffer(buffer));
       } catch (e) {
-        respond(500, JSON.stringify({ error: e.message }));
+        respond(500, ioErrorBody(e));
       }
       break;
     }
@@ -192,7 +202,7 @@ function handleEcoIO(parsed, respond) {
         const fd = fs.openSync(args.path, flags);
         respond(200, JSON.stringify({ value: fd }));
       } catch (e) {
-        respond(500, JSON.stringify({ error: e.message }));
+        respond(500, ioErrorBody(e));
       }
       break;
     }
@@ -207,7 +217,7 @@ function handleEcoIO(parsed, respond) {
           fs.closeSync(args.handle);
           respond(200, "");
         } catch (e) {
-          respond(500, JSON.stringify({ error: e.message }));
+          respond(500, ioErrorBody(e));
         }
       }
       break;
@@ -218,7 +228,7 @@ function handleEcoIO(parsed, respond) {
         fs.writeSync(args.handle, args.content, null, "utf8");
         respond(200, "");
       } catch (e) {
-        respond(500, JSON.stringify({ error: e.message }));
+        respond(500, ioErrorBody(e));
       }
       break;
     }
@@ -228,7 +238,7 @@ function handleEcoIO(parsed, respond) {
         const stat = fs.fstatSync(args.handle);
         respond(200, JSON.stringify({ value: stat.size }));
       } catch (e) {
-        respond(500, JSON.stringify({ error: e.message }));
+        respond(500, ioErrorBody(e));
       }
       break;
     }
@@ -276,7 +286,7 @@ function handleEcoIO(parsed, respond) {
         const entries = fs.readdirSync(args.path);
         respond(200, JSON.stringify({ value: entries }));
       } catch (e) {
-        respond(500, JSON.stringify({ error: e.message }));
+        respond(500, ioErrorBody(e));
       }
       break;
     }
@@ -286,7 +296,7 @@ function handleEcoIO(parsed, respond) {
         const stat = fs.statSync(args.path);
         respond(200, JSON.stringify({ value: Math.floor(stat.mtimeMs) }));
       } catch (e) {
-        respond(500, JSON.stringify({ error: e.message }));
+        respond(500, ioErrorBody(e));
       }
       break;
     }
@@ -303,7 +313,7 @@ function handleEcoIO(parsed, respond) {
         }
         respond(200, "");
       } catch (e) {
-        respond(500, JSON.stringify({ error: e.message }));
+        respond(500, ioErrorBody(e));
       }
       break;
     }
@@ -318,7 +328,7 @@ function handleEcoIO(parsed, respond) {
         process.chdir(args.path);
         respond(200, "");
       } catch (e) {
-        respond(500, JSON.stringify({ error: e.message }));
+        respond(500, ioErrorBody(e));
       }
       break;
     }
@@ -353,7 +363,7 @@ function handleEcoIO(parsed, respond) {
         fs.mkdirSync(args.path, { recursive: args.createParents });
         respond(200, "");
       } catch (e) {
-        respond(500, JSON.stringify({ error: e.message }));
+        respond(500, ioErrorBody(e));
       }
       break;
     }
@@ -363,7 +373,7 @@ function handleEcoIO(parsed, respond) {
         fs.unlinkSync(args.path);
         respond(200, "");
       } catch (e) {
-        respond(500, JSON.stringify({ error: e.message }));
+        respond(500, ioErrorBody(e));
       }
       break;
     }
@@ -373,7 +383,7 @@ function handleEcoIO(parsed, respond) {
         fs.rmSync(args.path, { recursive: true, force: true });
         respond(200, "");
       } catch (e) {
-        respond(500, JSON.stringify({ error: e.message }));
+        respond(500, ioErrorBody(e));
       }
       break;
     }
@@ -393,7 +403,7 @@ function handleEcoIO(parsed, respond) {
         processes[processCounter] = child;
         respond(200, JSON.stringify({ value: processCounter }));
       } catch (e) {
-        respond(500, JSON.stringify({ error: e.message }));
+        respond(500, ioErrorBody(e));
       }
       break;
     }
@@ -426,7 +436,7 @@ function handleEcoIO(parsed, respond) {
           value: { stdinHandle, processHandle: processCounter }
         }));
       } catch (e) {
-        respond(500, JSON.stringify({ error: e.message }));
+        respond(500, ioErrorBody(e));
       }
       break;
     }
@@ -643,7 +653,7 @@ function handleEcoIOBinary(op, request, respond) {
         fs.writeFileSync(filePath, buffer);
         respond(200, "");
       } catch (e) {
-        respond(500, JSON.stringify({ error: e.message }));
+        respond(500, ioErrorBody(e));
       }
       break;
     }

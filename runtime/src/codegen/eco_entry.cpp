@@ -244,6 +244,11 @@ static void signalPrintStats(int sig) {
 static void installStatsHandlers() {
     std::atexit(atexitPrintStats);
 
+    // Ignore SIGPIPE so a write to a closed pipe (e.g. `eco ... | head`) returns
+    // EPIPE to the kernel write path — surfaced as Eco.IO.Error.BrokenPipe and
+    // handled locally — instead of terminating the process (see IO_ERR_001).
+    std::signal(SIGPIPE, SIG_IGN);
+
     struct sigaction sa{};
     sa.sa_handler = signalPrintStats;
     sigemptyset(&sa.sa_mask);
@@ -251,7 +256,7 @@ static void installStatsHandlers() {
     sa.sa_flags = SA_NODEFER;
     int signals[] = {
         SIGABRT, SIGSEGV, SIGBUS, SIGFPE, SIGILL,
-        SIGINT, SIGTERM, SIGQUIT, SIGPIPE
+        SIGINT, SIGTERM, SIGQUIT
     };
     for (int s : signals) {
         sigaction(s, &sa, nullptr);

@@ -54,6 +54,7 @@ new =
     Eco.XHR.jsonTask "MVar.new"
         Encode.null
         Decode.int
+        |> Eco.XHR.orCrash
         |> Task.map MVar
 
 
@@ -65,6 +66,7 @@ read decoder (MVar id) =
     Eco.XHR.bytesTask "MVar.read"
         (Encode.object [ ( "id", Encode.int id ) ])
         decoder
+        |> Eco.XHR.orCrash
 
 
 {-| Take the value from an MVar, leaving it empty.
@@ -75,6 +77,7 @@ take decoder (MVar id) =
     Eco.XHR.bytesTask "MVar.take"
         (Encode.object [ ( "id", Encode.int id ) ])
         decoder
+        |> Eco.XHR.orCrash
 
 
 {-| Put a value into an MVar. Blocks if the MVar is already full.
@@ -85,6 +88,7 @@ put encoder (MVar id) value =
     Eco.XHR.sendBytesTask "MVar.put"
         [ Http.header "X-Eco-MVar-Id" (String.fromInt id) ]
         (Bytes.Encode.encode (encoder value))
+        |> Eco.XHR.orCrash
 
 
 {-| Destroy an MVar, removing it from the store entirely.
@@ -95,4 +99,5 @@ drop (MVar id) =
     Eco.XHR.jsonTask "MVar.drop"
         (Encode.object [ ( "id", Encode.int id ) ])
         (Decode.succeed ())
+        |> Eco.XHR.orCrash
         |> Task.map (\_ -> ())

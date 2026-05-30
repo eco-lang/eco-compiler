@@ -1,9 +1,21 @@
 /*
 import Eco.Kernel.Scheduler exposing (succeed, fail, binding)
 import Eco.Kernel.Utils exposing (Tuple2)
+import Elm.Kernel.Utils exposing (Tuple3)
 import Elm.Kernel.List exposing (toArray)
 import Maybe exposing (Just, Nothing)
 */
+
+// Neutral IO error tuple ( classificationTag, path, message ) — see IO_ERR_002.
+function _Process_ioErr(e) {
+    var codes = { ENOENT: 1, EACCES: 2, EPERM: 2, ENOTDIR: 3, EISDIR: 4,
+                  EEXIST: 5, ENOSPC: 6, EMFILE: 7, ENFILE: 7, EPIPE: 8, EBADF: 9 };
+    return __Utils_Tuple3(
+        (e && codes[e.code]) || 0,
+        (e && e.path) ? e.path : '',
+        (e && e.message) ? e.message : String(e)
+    );
+}
 
 var _Process_children = {};
 var _Process_streamHandles = {};
@@ -24,7 +36,7 @@ var _Process_spawn = F2(function(cmd, args) {
             _Process_children[child.pid] = child;
             callback(__Scheduler_succeed(child.pid));
         } catch (e) {
-            callback(__Scheduler_fail(e.message));
+            callback(__Scheduler_fail(_Process_ioErr(e)));
         }
     });
 });
@@ -48,7 +60,7 @@ var _Process_spawnProcess = F5(function(cmd, args, stdin, stdout, stderr) {
                 __Utils_Tuple2(stdinHandle, child.pid)
             ));
         } catch (e) {
-            callback(__Scheduler_fail(e.message));
+            callback(__Scheduler_fail(_Process_ioErr(e)));
         }
     });
 });
