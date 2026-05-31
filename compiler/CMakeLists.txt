@@ -659,5 +659,18 @@ add_custom_target(bootstrap
 # Bootstrap outputs (${BUILD_XHR_DIR}/bin/, ${BUILD_KERNEL_DIR}/bin/,
 # elm-stuff/, eco-stuff/) now live entirely under ${CMAKE_BINARY_DIR}. The
 # add_custom_command OUTPUTs are ninja-tracked so `ninja clean` removes the
-# generated *.js / *.mlir / native executables. Runtime caches (eco-stuff,
-# elm-stuff) persist between builds; use `rm -rf build/` for a full reset.
+# generated *.js / *.mlir / native executables.
+#
+# build-kernel/eco-stuff/ is ALSO registered for clean below. Without this,
+# `cmake --build build --target full` (which does ninja clean + rebuild)
+# wipes build-kernel/bin/ but leaves eco-stuff/ behind — the next Stage 2
+# build then mixes the freshly rebuilt guida.js against the prior run's
+# cached .eci/.eco/.ecot artifacts and crashes with "Map.! given key is not
+# an element in the map" via the XHR Eco.Crash.crash → Debug.todo path.
+# Cleaning eco-stuff/ along with bin/ keeps the bootstrap chain re-runnable
+# after `--target full` at the cost of re-doing a clean cache from scratch.
+# (build-xhr/elm-stuff/ is left alone — Stage 1 uses stock Elm, whose cache
+# format is far more stable.)
+set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_CLEAN_FILES
+    "${BUILD_KERNEL_DIR}/eco-stuff"
+)
