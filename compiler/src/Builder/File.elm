@@ -139,12 +139,33 @@ readBinary decoder path =
 -- ====== WRITE UTF-8 ======
 
 
-{-| Writes a UTF-8 encoded string to a file.
+{-| Writes a UTF-8 encoded string to a file, creating parent directories
+if needed. Mirrors `writeBinary`'s parent-dir creation so callers don't have
+to pre-create the destination directory (in particular `writePackage`, where
+the per-entry iteration order can put a file write ahead of its containing
+directory entry).
+
+For a path with no directory component (e.g. a bare "hello.js"),
+`fpDropFileName` returns the empty string; skip the mkdir in that case so
+the kernel doesn't see `mkdir("")` and reject it with EINVAL.
 -}
 writeUtf8 : FilePath -> String -> Task Never ()
 writeUtf8 path content =
-    IO.writeString path content
-        |> IO.crashOnError
+    let
+        dir : FilePath
+        dir =
+            Utils.fpDropFileName path
+
+        write : Task Never ()
+        write =
+            IO.writeString path content |> IO.crashOnError
+    in
+    if String.isEmpty dir then
+        write
+
+    else
+        Utils.dirCreateDirectoryIfMissing True dir
+            |> Task.andThen (\_ -> write)
 
 
 
