@@ -21,6 +21,7 @@
 //   - build/runtime/src/codegen/eco-boot-native
 
 #include "CheckPatterns.hpp"
+#include "TestHttpServer.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -96,6 +97,74 @@ bool preflight() {
                      "(or run guides/bootstrap.md Stages 1..4).\n";
     }
     return ok;
+}
+
+// ----------------------------------------------------------------------------
+// In-process HTTP server for elm-http + eco-kernel/HttpGetArchive tests.
+//
+// Mirrors the JIT runner's `ElmHttpTest::prepareServer` /
+// `EcoKernelTest::prepareServer`: start the singleton TestHttpServer in this
+// parent process and write a generated `TestServerConfig.elm` for each HTTP
+// test package, carrying the server's ephemeral baseUrl (and httpsBaseUrl for
+// elm-http). Forked test children inherit the parent's listening sockets and
+// reach the server at 127.0.0.1:<port>.
+//
+// Without this step, every HTTP test in Gate B would surface as
+// `err: "NetworkError"` from libcurl failing to connect.
+//
+// Called before the per-test pre-clean (which wipes the per-package
+// `eco-stuff/1.0.0/` artifact cache), so each test re-compiles against the
+// current port.
+// ----------------------------------------------------------------------------
+void prepare_http_server() {
+    auto& server = ElmHttpTestServer::TestHttpServer::instance();
+    int port      = server.port();
+    int httpsPort = server.httpsPort();
+
+    // Point libcurl in the forked test children at the server's throwaway CA
+    // so HTTPS requests verify the peer (HttpsGetTest). Set before any fork.
+    if (!server.certPath().empty()) {
+        setenv("CURL_CA_BUNDLE", server.certPath().c_str(), 1);
+    }
+
+    // elm-http imports `TestServerConfig.{baseUrl,httpsBaseUrl}`.
+    {
+        const std::string path =
+            std::string(REPO_ROOT) + "/test/elm-http/src/TestServerConfig.elm";
+        std::ofstream out(path, std::ios::trunc);
+        out << "module TestServerConfig exposing (baseUrl, httpsBaseUrl)\n\n\n"
+            << "baseUrl : String\n"
+            << "baseUrl =\n"
+            << "    \"http://127.0.0.1:" << port << "\"\n\n\n"
+            << "httpsBaseUrl : String\n"
+            << "httpsBaseUrl =\n"
+            << "    \"https://127.0.0.1:" << httpsPort << "\"\n";
+    }
+
+    // eco-kernel/HttpGetArchiveTest imports `TestServerConfig.baseUrl` only.
+    {
+        const std::string path =
+            std::string(REPO_ROOT) + "/test/eco-kernel/src/TestServerConfig.elm";
+        std::ofstream out(path, std::ios::trunc);
+        out << "module TestServerConfig exposing (baseUrl)\n\n\n"
+            << "baseUrl : String\n"
+            << "baseUrl =\n"
+            << "    \"http://127.0.0.1:" << port << "\"\n";
+    }
+
+    // Bump every test-source mtime so any per-test cache miss-detection that
+    // compares source mtime against cached artifact mtime fires. Belt-and-
+    // braces alongside the per-test eco-stuff wipe in main().
+    std::error_code ec;
+    auto now = std::filesystem::file_time_type::clock::now();
+    for (const char* pkg : {"elm-http", "eco-kernel"}) {
+        const std::string srcDir = std::string(REPO_ROOT) + "/test/" + pkg + "/src";
+        for (auto& e : fs::directory_iterator(srcDir, ec)) {
+            if (e.path().extension() == ".elm") {
+                fs::last_write_time(e.path(), now, ec);
+            }
+        }
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -509,6 +578,12 @@ int main(int argc, char** argv) {
         std::cerr << "no tests matched filter \"" << args.filter << "\"\n";
         return 1;
     }
+
+    // Start the in-process test HTTP server (singleton) and write the
+    // per-package TestServerConfig.elm files BEFORE the pre-clean wipes the
+    // shared artifact cache. The first compile of each HTTP test then picks
+    // up the live port. Mirrors what main.cpp does for the JIT suite.
+    prepare_http_server();
 
     // Pre-clean per-test builddirs from prior runs in each touched AOT shadow.
     // Without this, a stale `<pkg>/eco-stuff/aot_e2e_<stem>/` directory from a

@@ -4,6 +4,12 @@ module HttpGetArchiveTest exposing (main)
 in-process test server, extract it, and verify the entries. Checks that the
 kernel returns tuples in the correct shape — outer ( sha, archive ) and each
 entry ( relativePath, data ) — by reading the decoded record fields.
+
+Eco.Http.getArchive deliberately returns each entry's FULL name, including the
+GitHub-style wrapper directory (e.g. "pkg-1.0.0/elm.json") — matching the JS
+kernel and what Builder.File.writePackage expects (it strips the wrapper using
+the first entry's length). So the assertions match on path SUFFIXES rather
+than literal equality.
 -}
 
 -- CHECK: HttpGetArchiveTest: True
@@ -32,11 +38,12 @@ update msg model =
             let
                 hasElmJson =
                     List.any
-                        (\e -> e.relativePath == "elm.json" && String.contains "dummy" e.data)
+                        (\e -> String.endsWith "/elm.json" e.relativePath
+                                && String.contains "dummy" e.data)
                         archive
 
                 hasMain =
-                    List.any (\e -> e.relativePath == "src/Main.elm") archive
+                    List.any (\e -> String.endsWith "/src/Main.elm" e.relativePath) archive
 
                 ok =
                     hasElmJson && hasMain && String.length sha > 0

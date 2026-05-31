@@ -211,6 +211,11 @@ target_compile_definitions(aot-e2e-runner PRIVATE
         REPO_ROOT="${CMAKE_SOURCE_DIR}"
         BUILD_DIR="${CMAKE_BINARY_DIR}"
 )
+# TestHttpServer.hpp (included for the in-process elm-http + eco-kernel test
+# server, mirroring ElmHttpTest/EcoKernelTest in the JIT runner) needs libssl
+# + libcrypto for the throwaway self-signed TLS cert + SSL_accept loop.
+find_package(OpenSSL REQUIRED)
+target_link_libraries(aot-e2e-runner PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 
 # NB: do NOT add ${CMAKE_BINARY_DIR}/test/aot-e2e (the whole tree) to
 # ADDITIONAL_CLEAN_FILES. That tree's per-package elm.json + src/ symlinks
