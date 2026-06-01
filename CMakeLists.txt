@@ -90,6 +90,14 @@ option(ECO_LINK_WITH_BFD
        "Link the eco binary with GNU ld (bfd) instead of the preset's default linker"
        ON)
 
+# Kernel-side stderr tracing for HTTP requests/responses, zip extraction, and
+# file operations. Defined as ECO_KERNEL_DEBUG in the affected kernel libs
+# (Http, File, NativeDriver, HttpService runtime). See the ECO_KLOG macro in
+# eco-kernel-cpp/src/eco/KernelDebug.hpp.
+option(ECO_KERNEL_DEBUG
+       "Enable stderr tracing inside the HTTP / File / zip kernel paths"
+       ON)
+
 if(ECO_STATIC)
     # MUST be set BEFORE any add_subdirectory() that calls find_package on
     # these libs — otherwise the first subdir to call find_package(OpenSSL)

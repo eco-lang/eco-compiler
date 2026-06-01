@@ -265,6 +265,28 @@ Every target below is invoked as `cmake --build build --target <name>`. For a li
 | `eco-compiler-boot` | 7 | Native self-compiled compiler |
 | `bootstrap` | aggregate | Full chain through Stage 8 fixed-point |
 
+#### Dev iteration: `eco-quick`
+
+`eco-quick` is the fast-iteration sibling of the Stage 9 unified `eco` binary.
+The two share an identical link line (kernel libraries, runtime,
+`EcoNativeDriverStatic`, `-fuse-ld=bfd` — see `eco_apply_unified_link` in
+`compiler/CMakeLists.txt`), but `eco-quick`'s MLIR-lowering custom-command
+depends only on `eco-compiler.mlir` and `eco-boot-native`, deliberately
+dropping the gate on `${BOOTSTRAP_STAMP}` that the production `eco` target
+uses to enforce the full bootstrap chain.
+
+`eco-compiler.mlir` is a Stage-5 product of Elm sources only and is invariant
+under C++/kernel edits, so once a prior `--target bootstrap` has populated it,
+`--target eco-quick` rebuilds only the changed kernel/runtime libraries and
+relinks the unified binary — no Stage 6–8 self-compile cycles. Use
+`--target eco` for the production binary that enforces the full bootstrap;
+use `--target eco-quick` while iterating on code under `runtime/` or
+`*-kernel-cpp/`.
+
+| Target | Purpose | Output |
+|---|---|---|
+| `eco-quick` | Re-link the unified `eco` against current C++ libs; skips the bootstrap gate. Requires a prior successful `--target bootstrap`. | `build/compiler/build-kernel/bin/eco-quick` |
+
 #### Test executables
 
 | Target | Purpose |

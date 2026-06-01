@@ -590,6 +590,12 @@ if(ECO_GC_DEBUG)
     target_compile_definitions(EcoRuntimeStatic PRIVATE ECO_GC_DEBUG=1)
 endif()
 
+# ECO_KERNEL_DEBUG: enables curl-side request/response tracing in
+# platform/HttpService.cpp. Same ECO_KLOG macro as the kernel libs.
+if(ECO_KERNEL_DEBUG)
+    target_compile_definitions(EcoRuntimeStatic PRIVATE ECO_KERNEL_DEBUG)
+endif()
+
 #------------------------------------------------------------------------------
 # Build the EcoEntryStatic library (main() wrapper for AOT-compiled binaries)
 #------------------------------------------------------------------------------

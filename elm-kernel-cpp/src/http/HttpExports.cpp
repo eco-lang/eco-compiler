@@ -20,6 +20,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "../KernelDebug.hpp"
 #include "../KernelExports.h"
 #include "../ExportHelpers.hpp"
 #include "allocator/Heap.hpp"
@@ -257,6 +258,8 @@ HPointer buildResponse(const HttpService::Result& r, HPointer body) {
 // and held only as a std::string key.
 void httpRegisterTracked(uint64_t token, HPointer router, HPointer tracker) {
     std::string trackerStr = elmStringToUTF8(encodeHP(tracker));
+    ECO_KLOG("elm-http", "track-register token=%lu tracker=%s",
+             (unsigned long)token, trackerStr.c_str());
     std::lock_guard<std::mutex> lk(g_trackedMutex);
     g_httpTracked[token] = TrackedReq{encodeHP(router), encodeHP(tracker), false};
     g_trackerToken[trackerStr] = token;
@@ -271,6 +274,8 @@ bool httpClearTracked(uint64_t token) {
     if (it == g_httpTracked.end()) return false;
     bool cancelled = it->second.cancelled;
     std::string trackerStr = elmStringToUTF8(it->second.trackerEnc);
+    ECO_KLOG("elm-http", "track-clear token=%lu cancelled=%d",
+             (unsigned long)token, (int)cancelled);
     auto ti = g_trackerToken.find(trackerStr);
     if (ti != g_trackerToken.end() && ti->second == token) g_trackerToken.erase(ti);
     g_httpTracked.erase(it);
@@ -334,6 +339,10 @@ HPointer buildProgress(bool isUpload, uint64_t now, uint64_t total) {
 void httpDrainProgress() {
     HttpService::Progress ev;
     while (HttpService::instance().tryPopProgress(ev)) {
+        ECO_KLOG("elm-http",
+                 "progress token=%lu upload=%d now=%lu total=%lu",
+                 (unsigned long)ev.token, (int)ev.isUpload,
+                 (unsigned long)ev.now, (unsigned long)ev.total);
         uint64_t routerEnc = 0, trackerEnc = 0;
         bool found = false, cancelled = false;
         {
@@ -385,6 +394,9 @@ void httpDrain() {
 
     HttpService::Result r;
     while (HttpService::instance().tryPopResult(r)) {
+        ECO_KLOG("elm-http",
+                 "drain token=%lu err=%d status=%d body=%zuB",
+                 (unsigned long)r.token, (int)r.error, r.status, r.body.size());
         // Clear tracking for this token (no-op for untracked). If it was
         // cancelled via Http.cancel, drop the result without resuming.
         bool cancelled = httpClearTracked(r.token);
@@ -693,7 +705,13 @@ void Eco_Http_cancelTracker(uint64_t trackerEnc) {
     std::string trackerStr = elmStringToUTF8(trackerEnc);
     std::lock_guard<std::mutex> lk(g_trackedMutex);
     auto ti = g_trackerToken.find(trackerStr);
-    if (ti == g_trackerToken.end()) return;
+    if (ti == g_trackerToken.end()) {
+        ECO_KLOG("elm-http", "cancel tracker=%s unknown",
+                 trackerStr.c_str());
+        return;
+    }
+    ECO_KLOG("elm-http", "cancel tracker=%s token=%lu",
+             trackerStr.c_str(), (unsigned long)ti->second);
     auto it = g_httpTracked.find(ti->second);
     if (it != g_httpTracked.end()) it->second.cancelled = true;
 }

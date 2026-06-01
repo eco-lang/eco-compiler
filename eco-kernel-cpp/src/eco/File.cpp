@@ -20,6 +20,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "File.hpp"
+#include "KernelDebug.hpp"
 #include "KernelHelpers.hpp"
 #include "TaskBinding.hpp"
 #include <cerrno>
@@ -47,27 +48,38 @@ inline Tuple2* asTuple2(HPointer captured) {
 
 HPointer readStringBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
+    ECO_KLOG("file", "readString start path=%s", pathStr.c_str());
     std::ifstream file(pathStr);
     if (!file) {
         int err = errno;
+        ECO_KLOG("file", "readString fail path=%s errno=%d msg=%s",
+                 pathStr.c_str(), err, std::strerror(err));
         return failErrno(err, pathStr, "could not open file for reading");
     }
     std::ostringstream ss;
     ss << file.rdbuf();
-    return succeedString(ss.str());
+    std::string contents = ss.str();
+    ECO_KLOG("file", "readString done path=%s size=%zu",
+             pathStr.c_str(), contents.size());
+    return succeedString(std::move(contents));
 }
 
 HPointer readBytesBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
+    ECO_KLOG("file", "readBytes start path=%s", pathStr.c_str());
     std::ifstream file(pathStr, std::ios::binary | std::ios::ate);
     if (!file) {
         int err = errno;
+        ECO_KLOG("file", "readBytes fail path=%s errno=%d msg=%s",
+                 pathStr.c_str(), err, std::strerror(err));
         return failErrno(err, pathStr, "could not open file for reading");
     }
     auto size = file.tellg();
     file.seekg(0, std::ios::beg);
     std::vector<uint8_t> buffer(static_cast<size_t>(size));
     file.read(reinterpret_cast<char*>(buffer.data()), size);
+    ECO_KLOG("file", "readBytes done path=%s size=%zu",
+             pathStr.c_str(), buffer.size());
     HPointer bytes = Elm::alloc::allocByteBuffer(buffer.data(), buffer.size());
     return succeed(bytes);
 }
@@ -76,6 +88,8 @@ HPointer fileExistsBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
     struct stat st;
     bool exists = (stat(pathStr.c_str(), &st) == 0 && S_ISREG(st.st_mode));
+    ECO_KLOG("file", "fileExists path=%s result=%d",
+             pathStr.c_str(), (int)exists);
     return succeedBool(exists);
 }
 
@@ -83,13 +97,18 @@ HPointer dirExistsBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
     struct stat st;
     bool exists = (stat(pathStr.c_str(), &st) == 0 && S_ISDIR(st.st_mode));
+    ECO_KLOG("file", "dirExists path=%s result=%d",
+             pathStr.c_str(), (int)exists);
     return succeedBool(exists);
 }
 
 HPointer findExecutableBody(HPointer captured) {
     std::string nameStr = toString(Export::encode(captured));
+    ECO_KLOG("file", "findExecutable start name=%s", nameStr.c_str());
     const char* pathEnv = std::getenv("PATH");
     if (!pathEnv) {
+        ECO_KLOG("file", "findExecutable done name=%s result=none (no PATH)",
+                 nameStr.c_str());
         return succeed(Elm::alloc::nothing());
     }
     std::string pathStr(pathEnv);
@@ -102,20 +121,27 @@ HPointer findExecutableBody(HPointer captured) {
         std::string dir = pathStr.substr(pos, sep - pos);
         std::string fullPath = dir + "/" + nameStr;
         if (access(fullPath.c_str(), X_OK) == 0) {
+            ECO_KLOG("file", "findExecutable done name=%s result=%s",
+                     nameStr.c_str(), fullPath.c_str());
             HPointer str = Elm::alloc::allocStringFromUTF8(fullPath);
             return succeed(Elm::alloc::just(Elm::alloc::boxed(str), true));
         }
         pos = sep + 1;
     }
+    ECO_KLOG("file", "findExecutable done name=%s result=none",
+             nameStr.c_str());
     return succeed(Elm::alloc::nothing());
 }
 
 HPointer listBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
+    ECO_KLOG("file", "list start path=%s", pathStr.c_str());
     std::vector<std::string> entries;
     DIR* dir = opendir(pathStr.c_str());
     if (!dir) {
         int err = errno;
+        ECO_KLOG("file", "list fail path=%s errno=%d msg=%s",
+                 pathStr.c_str(), err, std::strerror(err));
         return failErrno(err, pathStr, "could not open directory");
     }
     struct dirent* entry;
@@ -126,53 +152,76 @@ HPointer listBody(HPointer captured) {
         }
     }
     closedir(dir);
+    ECO_KLOG("file", "list done path=%s entries=%zu",
+             pathStr.c_str(), entries.size());
     return succeedStringList(entries);
 }
 
 HPointer modificationTimeBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
+    ECO_KLOG("file", "modificationTime start path=%s", pathStr.c_str());
     struct stat st;
     if (stat(pathStr.c_str(), &st) != 0) {
         int err = errno;
+        ECO_KLOG("file", "modificationTime fail path=%s errno=%d msg=%s",
+                 pathStr.c_str(), err, std::strerror(err));
         return failErrno(err, pathStr, "could not stat file");
     }
     int64_t millis = static_cast<int64_t>(st.st_mtim.tv_sec) * 1000 +
                      static_cast<int64_t>(st.st_mtim.tv_nsec) / 1000000;
+    ECO_KLOG("file", "modificationTime done path=%s millis=%lld",
+             pathStr.c_str(), (long long)millis);
     return succeedInt(millis);
 }
 
 HPointer getCwdBody(HPointer /*captured*/) {
     char buf[4096];
     if (getcwd(buf, sizeof(buf))) {
+        ECO_KLOG("file", "getCwd done result=%s", buf);
         return succeedString(std::string(buf));
     }
-    return failErrno(errno, "", "could not get current working directory");
+    int err = errno;
+    ECO_KLOG("file", "getCwd fail errno=%d msg=%s",
+             err, std::strerror(err));
+    return failErrno(err, "", "could not get current working directory");
 }
 
 HPointer setCwdBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
+    ECO_KLOG("file", "setCwd start path=%s", pathStr.c_str());
     if (chdir(pathStr.c_str()) != 0) {
         int err = errno;
+        ECO_KLOG("file", "setCwd fail path=%s errno=%d msg=%s",
+                 pathStr.c_str(), err, std::strerror(err));
         return failErrno(err, pathStr, "could not set working directory");
     }
+    ECO_KLOG("file", "setCwd done path=%s", pathStr.c_str());
     return succeedUnit();
 }
 
 HPointer canonicalizeBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
+    ECO_KLOG("file", "canonicalize start path=%s", pathStr.c_str());
     char resolved[PATH_MAX];
     if (realpath(pathStr.c_str(), resolved)) {
+        ECO_KLOG("file", "canonicalize done path=%s result=%s",
+                 pathStr.c_str(), resolved);
         return succeedString(std::string(resolved));
     }
     // Fallback: resolve relative path without following symlinks.
     std::filesystem::path p = std::filesystem::absolute(pathStr);
-    return succeedString(p.lexically_normal().string());
+    std::string result = p.lexically_normal().string();
+    ECO_KLOG("file", "canonicalize fallback path=%s result=%s",
+             pathStr.c_str(), result.c_str());
+    return succeedString(result);
 }
 
 HPointer appDataDirBody(HPointer captured) {
     std::string nameStr = toString(Export::encode(captured));
     const char* home = std::getenv("HOME");
     if (!home) {
+        ECO_KLOG("file", "appDataDir fail name=%s reason=no-HOME",
+                 nameStr.c_str());
         return failString("HOME environment variable not set");
     }
     std::string dir;
@@ -181,38 +230,52 @@ HPointer appDataDirBody(HPointer captured) {
 #else
     dir = std::string(home) + "/." + nameStr;
 #endif
+    ECO_KLOG("file", "appDataDir name=%s result=%s",
+             nameStr.c_str(), dir.c_str());
     return succeedString(dir);
 }
 
 HPointer removeFileBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
+    ECO_KLOG("file", "removeFile start path=%s", pathStr.c_str());
     if (unlink(pathStr.c_str()) != 0) {
         int err = errno;
+        ECO_KLOG("file", "removeFile fail path=%s errno=%d msg=%s",
+                 pathStr.c_str(), err, std::strerror(err));
         return failErrno(err, pathStr, "could not remove file");
     }
+    ECO_KLOG("file", "removeFile done path=%s", pathStr.c_str());
     return succeedUnit();
 }
 
 HPointer removeDirBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
+    ECO_KLOG("file", "removeDir start path=%s", pathStr.c_str());
     std::error_code ec;
     std::filesystem::remove_all(pathStr, ec);
     if (ec) {
+        ECO_KLOG("file", "removeDir fail path=%s ec=%d msg=%s",
+                 pathStr.c_str(), ec.value(), ec.message().c_str());
         return failErrno(ec.value(), pathStr, "could not remove directory: " + ec.message());
     }
+    ECO_KLOG("file", "removeDir done path=%s", pathStr.c_str());
     return succeedUnit();
 }
 
 HPointer touchBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
+    ECO_KLOG("file", "touch start path=%s", pathStr.c_str());
     int fd = ::open(pathStr.c_str(), O_WRONLY | O_CREAT, 0644);
     if (fd >= 0) {
         ::close(fd);
     }
     if (utimensat(AT_FDCWD, pathStr.c_str(), nullptr, 0) != 0) {
         int err = errno;
+        ECO_KLOG("file", "touch fail path=%s errno=%d msg=%s",
+                 pathStr.c_str(), err, std::strerror(err));
         return failErrno(err, pathStr, "could not touch file");
     }
+    ECO_KLOG("file", "touch done path=%s", pathStr.c_str());
     return succeedUnit();
 }
 
@@ -226,6 +289,7 @@ HPointer unlockBody(HPointer /*captured*/) { return succeedUnit(); }
 HPointer closeBody(HPointer captured) {
     Tuple2* tup = asTuple2(captured);
     int64_t fd = tup->a.i;
+    ECO_KLOG("file", "close handle=%lld", (long long)fd);
     ::close(static_cast<int>(fd));
     return succeedUnit();
 }
@@ -236,8 +300,12 @@ HPointer sizeBody(HPointer captured) {
     struct stat st;
     if (fstat(static_cast<int>(fd), &st) != 0) {
         int err = errno;
+        ECO_KLOG("file", "size fail handle=%lld errno=%d msg=%s",
+                 (long long)fd, err, std::strerror(err));
         return failErrno(err, "", "fstat failed");
     }
+    ECO_KLOG("file", "size handle=%lld size=%lld",
+             (long long)fd, (long long)st.st_size);
     return succeedInt(static_cast<int64_t>(st.st_size));
 }
 
@@ -253,12 +321,18 @@ HPointer writeStringBody(HPointer captured) {
     }
     std::string pathStr = toString(Export::encode(pathHP));
     std::string data = toString(Export::encode(contentHP));
+    ECO_KLOG("file", "writeString start path=%s size=%zu",
+             pathStr.c_str(), data.size());
     std::ofstream file(pathStr);
     if (!file) {
         int err = errno;
+        ECO_KLOG("file", "writeString fail path=%s errno=%d msg=%s",
+                 pathStr.c_str(), err, std::strerror(err));
         return failErrno(err, pathStr, "could not open file for writing");
     }
     file << data;
+    ECO_KLOG("file", "writeString done path=%s wrote=%zu",
+             pathStr.c_str(), data.size());
     return succeedUnit();
 }
 
@@ -274,12 +348,18 @@ HPointer writeBytesBody(HPointer captured) {
     void* ptr = Elm::Allocator::instance().resolve(bytesHP);
     size_t len = Elm::alloc::byteBufferLength(ptr);
     const uint8_t* data = Elm::alloc::byteBufferData(ptr);
+    ECO_KLOG("file", "writeBytes start path=%s size=%zu",
+             pathStr.c_str(), len);
     std::ofstream file(pathStr, std::ios::binary);
     if (!file) {
         int err = errno;
+        ECO_KLOG("file", "writeBytes fail path=%s errno=%d msg=%s",
+                 pathStr.c_str(), err, std::strerror(err));
         return failErrno(err, pathStr, "could not open file for writing");
     }
     file.write(reinterpret_cast<const char*>(data), len);
+    ECO_KLOG("file", "writeBytes done path=%s wrote=%zu",
+             pathStr.c_str(), len);
     return succeedUnit();
 }
 
@@ -300,11 +380,17 @@ HPointer openBody(HPointer captured) {
         case 3: flags = O_RDWR | O_CREAT; break;
         default: flags = O_RDONLY; break;
     }
+    ECO_KLOG("file", "open start path=%s mode=%lld",
+             pathStr.c_str(), (long long)modeVal);
     int fd = ::open(pathStr.c_str(), flags, 0644);
     if (fd < 0) {
         int err = errno;
+        ECO_KLOG("file", "open fail path=%s errno=%d msg=%s",
+                 pathStr.c_str(), err, std::strerror(err));
         return failErrno(err, pathStr, "could not open file");
     }
+    ECO_KLOG("file", "open done path=%s handle=%d",
+             pathStr.c_str(), fd);
     return succeedInt(fd);
 }
 
@@ -317,11 +403,17 @@ HPointer hWriteStringBody(HPointer captured) {
         contentHP = tup->b.p;
     }
     std::string data = toString(Export::encode(contentHP));
+    ECO_KLOG("file", "hWriteString start handle=%lld size=%zu",
+             (long long)fd, data.size());
     ssize_t written = ::write(static_cast<int>(fd), data.data(), data.size());
     if (written < 0) {
         int err = errno;
+        ECO_KLOG("file", "hWriteString fail handle=%lld errno=%d msg=%s",
+                 (long long)fd, err, std::strerror(err));
         return failErrno(err, "", "write to handle failed");
     }
+    ECO_KLOG("file", "hWriteString done handle=%lld wrote=%zd",
+             (long long)fd, written);
     return succeedUnit();
 }
 
@@ -335,6 +427,8 @@ HPointer createDirBody(HPointer captured) {
     }
     std::string pathStr = toString(Export::encode(pathHP));
     bool parents = Export::decodeBoxedBool(Export::encode(createParentsHP));
+    ECO_KLOG("file", "createDir start path=%s parents=%d",
+             pathStr.c_str(), (int)parents);
     std::error_code ec;
     if (parents) {
         std::filesystem::create_directories(pathStr, ec);
@@ -342,8 +436,11 @@ HPointer createDirBody(HPointer captured) {
         std::filesystem::create_directory(pathStr, ec);
     }
     if (ec) {
+        ECO_KLOG("file", "createDir fail path=%s ec=%d msg=%s",
+                 pathStr.c_str(), ec.value(), ec.message().c_str());
         return failErrno(ec.value(), pathStr, "could not create directory: " + ec.message());
     }
+    ECO_KLOG("file", "createDir done path=%s", pathStr.c_str());
     return succeedUnit();
 }
 

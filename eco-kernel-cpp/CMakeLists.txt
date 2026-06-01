@@ -234,3 +234,10 @@ foreach(target
 )
     target_compile_options(${target} PRIVATE -UNDEBUG)
 endforeach()
+
+# ECO_KERNEL_DEBUG: stderr tracing in HTTP and File kernel paths. See
+# src/eco/KernelDebug.hpp for the ECO_KLOG macro.
+if(ECO_KERNEL_DEBUG)
+    target_compile_definitions(EcoKernel_Http PRIVATE ECO_KERNEL_DEBUG)
+    target_compile_definitions(EcoKernel_File PRIVATE ECO_KERNEL_DEBUG)
+endif()

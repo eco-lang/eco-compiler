@@ -18,6 +18,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Http.hpp"
+#include "KernelDebug.hpp"
 #include "KernelHelpers.hpp"
 #include "TaskBinding.hpp"
 #include "allocator/RootSet.hpp"
@@ -72,6 +73,8 @@ listOfTuplesToHeaders(uint64_t headersEnc) {
 // eager implementation's exact shape.
 HPointer buildFetchResponse(const HttpService::Result& r) {
     using EK = HttpService::ErrorKind;
+    ECO_KLOG("http", "fetch result token=%lu err=%d status=%d body=%zuB",
+             (unsigned long)r.token, (int)r.error, r.status, r.body.size());
     if (r.error != EK::Ok) {
         // Transport-level failures: surface a Tuple2 (0, curl-strerror-ish).
         // Mirrors the pre-Phase-5 path which mapped CURLE_* to a single
@@ -83,6 +86,7 @@ HPointer buildFetchResponse(const HttpService::Result& r) {
             case EK::NetworkError: msg = "Network error"; break;
             default: break;
         }
+        ECO_KLOG("http", "fetch error msg=%s", msg);
         HPointer statusText = allocStringFromUTF8(msg);
         Elm::StackRootGuard g(&statusText);
         HPointer errTuple = tuple2(unboxedInt(0), boxed(statusText), 0x1);
@@ -96,6 +100,8 @@ HPointer buildFetchResponse(const HttpService::Result& r) {
         return ok(boxed(body), true);
     }
 
+    ECO_KLOG("http", "fetch http-error status=%d statusText=%s",
+             r.status, r.statusText.c_str());
     HPointer statusText = allocStringFromUTF8(
         r.statusText.empty() ? std::string("HTTP " + std::to_string(r.status))
                               : r.statusText);
@@ -112,6 +118,8 @@ HPointer buildFetchResponse(const HttpService::Result& r) {
 //   Ok (sha, [(relativePath, content)]). Mirrors the pre-Phase-5 eager path
 //   in `Eco.Http.getArchive`.
 HPointer buildGetArchiveResponse(const HttpService::Result& r) {
+    ECO_KLOG("http", "getArchive result token=%lu err=%d status=%d body=%zuB",
+             (unsigned long)r.token, (int)r.error, r.status, r.body.size());
     if (r.error != HttpService::ErrorKind::Ok) {
         const char* msg = "Network error";
         switch (r.error) {
@@ -120,6 +128,7 @@ HPointer buildGetArchiveResponse(const HttpService::Result& r) {
             case HttpService::ErrorKind::NetworkError: msg = "Network error"; break;
             default: break;
         }
+        ECO_KLOG("http", "getArchive error msg=%s", msg);
         HPointer errStr = allocStringFromUTF8(msg);
         Elm::StackRootGuard g(&errStr);
         return err(boxed(errStr), true);
@@ -139,6 +148,7 @@ HPointer buildGetArchiveResponse(const HttpService::Result& r) {
         }
         shaHex = std::string(hex, SHA_DIGEST_LENGTH * 2);
     }
+    ECO_KLOG("http", "zip sha=%s size=%zuB", shaHex.c_str(), zipData.size());
 
     // libzip extract — same logic as the pre-Phase-5 eager `getArchive`.
     zip_error_t zipError;
@@ -146,6 +156,8 @@ HPointer buildGetArchiveResponse(const HttpService::Result& r) {
     zip_source_t* src = zip_source_buffer_create(
         zipData.data(), zipData.size(), 0, &zipError);
     if (!src) {
+        ECO_KLOG("http", "zip source-create-fail msg=%s",
+                 zip_error_strerror(&zipError));
         zip_error_fini(&zipError);
         HPointer errStr = allocStringFromUTF8("Failed to create zip source");
         Elm::StackRootGuard g(&errStr);
@@ -153,6 +165,10 @@ HPointer buildGetArchiveResponse(const HttpService::Result& r) {
     }
     zip_t* archive = zip_open_from_source(src, ZIP_RDONLY, &zipError);
     if (!archive) {
+        ECO_KLOG("http", "zip open-fail msg=%s zip_err=%d sys_err=%d",
+                 zip_error_strerror(&zipError),
+                 zip_error_code_zip(&zipError),
+                 zip_error_code_system(&zipError));
         zip_source_free(src);
         zip_error_fini(&zipError);
         HPointer errStr = allocStringFromUTF8("Failed to open zip archive");
@@ -163,19 +179,37 @@ HPointer buildGetArchiveResponse(const HttpService::Result& r) {
     struct FileEntry { std::string content; std::string relativePath; };
     std::vector<FileEntry> entries;
     zip_int64_t numEntries = zip_get_num_entries(archive, 0);
+    ECO_KLOG("http", "zip open entries=%lld", (long long)numEntries);
     for (zip_int64_t i = 0; i < numEntries; ++i) {
         const char* name = zip_get_name(archive, i, 0);
-        if (!name) continue;
+        if (!name) {
+            ECO_KLOG("http", "zip entry idx=%lld name=<null>",
+                     (long long)i);
+            continue;
+        }
         std::string entryName(name);
         std::string content;
         bool isDir = !entryName.empty() && entryName.back() == '/';
+        zip_stat_t st;
+        zip_stat_index(archive, i, 0, &st);
+        ECO_KLOG("http", "zip entry idx=%lld name=%s isDir=%d size=%lluB",
+                 (long long)i, entryName.c_str(), (int)isDir,
+                 (unsigned long long)st.size);
         if (!isDir) {
-            zip_stat_t st;
-            zip_stat_index(archive, i, 0, &st);
             zip_file_t* f = zip_fopen_index(archive, i, 0);
-            if (!f) continue;
+            if (!f) {
+                ECO_KLOG("http", "zip entry-open-fail name=%s msg=%s",
+                         entryName.c_str(),
+                         zip_strerror(archive));
+                continue;
+            }
             content.resize(st.size);
-            zip_fread(f, content.data(), st.size);
+            zip_int64_t got = zip_fread(f, content.data(), st.size);
+            if (got != (zip_int64_t)st.size) {
+                ECO_KLOG("http",
+                         "zip entry-short-read name=%s want=%zu got=%lld",
+                         entryName.c_str(), (size_t)st.size, (long long)got);
+            }
             zip_fclose(f);
         }
         entries.push_back({std::move(content), std::move(entryName)});
@@ -239,6 +273,10 @@ void ecoHttpDrain() {
         HPointer payload = listNil();
         {
             Elm::StackRootGuard payloadRoot(&payload);
+            ECO_KLOG("http", "drain kind=%s token=%lu",
+                     kind == KIND_FETCH ? "FETCH" :
+                     kind == KIND_GET_ARCHIVE ? "GET_ARCHIVE" : "?",
+                     (unsigned long)r.token);
             switch (kind) {
                 case KIND_FETCH:
                     payload = buildFetchResponse(r);
@@ -298,6 +336,8 @@ HPointer fetchBody(HPointer captured, HPointer resume) {
 
     ensureRegistered();
     uint64_t token = parkBundle(KIND_FETCH, resume);
+    ECO_KLOG("http", "fetch submit method=%s url=%s headers=%zu token=%lu",
+             method.c_str(), url.c_str(), hdrs.size(), (unsigned long)token);
 
     HttpService::Request req;
     req.token = token;
@@ -322,6 +362,8 @@ HPointer getArchiveBody(HPointer captured, HPointer resume) {
 
     ensureRegistered();
     uint64_t token = parkBundle(KIND_GET_ARCHIVE, resume);
+    ECO_KLOG("http", "getArchive submit url=%s token=%lu",
+             url.c_str(), (unsigned long)token);
 
     HttpService::Request req;
     req.token = token;

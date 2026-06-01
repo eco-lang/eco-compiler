@@ -450,119 +450,67 @@ set_source_files_properties(${ECO_STAGE9_OBJ} PROPERTIES
 # Gate-A target) would run that whole chain. We want default builds to stop at
 # Stage 2 (Gate A's prerequisite); Stage 9 only builds on explicit request via
 # `--target eco`, `--target eco-bootstrap`, or `--target bootstrap`.
-add_executable(eco EXCLUDE_FROM_ALL ${ECO_STAGE9_OBJ})
-
-set_target_properties(eco PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${BUILD_KERNEL_DIR}/bin"
-)
-
-# Linker for `eco` (ECO_LINK_WITH_BFD, top-level CMakeLists.txt). The preset
-# configures -fuse-ld=lld for the rest of the build, but lld rejects the
-# R_X86_64_64 relocations the Elm-compiled object carries in its
-# .llvm_stackmaps section (GC safepoint addresses tied to local function
-# symbols) when producing a PIE — see eco-boot.cpp's clang++ link invocation,
-# which produces a working PIE eco-compiler binary by using the system ld. The
-# glibc builds mirror that here so the produced `eco` binary has the same PIE
-# layout the GC stackmap parser in eco_entry.cpp expects. The Stage B MUSL
-# build is non-PIE static, where lld accepts those relocs, so the musl preset
-# sets ECO_LINK_WITH_BFD=OFF and `eco` inherits the preset's -fuse-ld=lld.
-if(ECO_LINK_WITH_BFD)
-    target_link_options(eco PRIVATE -fuse-ld=bfd)
-endif()
-
-# Static-link extras. See plans/static-link-eco-binary.md.
-if(ECO_STATIC AND ECO_STATIC_MUSL)
-    # Stage B (MUSL): the `-static` link, the libc++ runtime stack, and the
-    # compiler-rt builtins + LLVM libunwind all arrive via the preset's global
-    # EXE_LINKER_FLAGS (-static -stdlib=libc++ -rtlib=compiler-rt
-    # -unwindlib=libunwind -lc++abi). Because compiler-rt replaces libgcc, the
-    # _Unwind_* collision that forces --allow-multiple-definition on the glibc
-    # path never arises — nothing extra is needed on the target here.
-elseif(ECO_STATIC)
-    # Stage A (glibc): pull libstdc++ and libgcc into the binary so the only
-    # shared deps left are glibc + the dynamic linker (Stage A, Step 5).
-    # --allow-multiple-definition resolves the _Unwind_* collision between
-    # clang's auto-added libgcc_eh.a (from -static-libgcc) and the explicit
-    # LLVM libunwind.a (eco::llvm_libunwind) — libunwind.a is earlier in the
-    # link line, so its definitions win and libgcc_eh.a's are dropped.
-    target_link_options(eco PRIVATE
-        -static-libstdc++ -static-libgcc
-        -Wl,--allow-multiple-definition)
-endif()
-
-target_link_libraries(eco PRIVATE
-    "-Wl,--start-group"
-    EcoEntryStatic
-    EcoRuntimeStatic
-    "-Wl,--whole-archive"
-    ElmKernel_Utils
-    "-Wl,--no-whole-archive"
-    ElmKernel_Basics ElmKernel_Bitwise ElmKernel_Char ElmKernel_String
-    ElmKernel_List ElmKernel_JsArray ElmKernel_Debug ElmKernel_Scheduler
-    ElmKernel_Platform ElmKernel_Process ElmKernel_VirtualDom ElmKernel_Json
-    ElmKernel_Browser ElmKernel_Bytes ElmKernel_File ElmKernel_Http
-    ElmKernel_Parser ElmKernel_Regex ElmKernel_Time ElmKernel_Url
-    ElmKernel_EffectRegistry
-    EcoKernel_File EcoKernel_Console EcoKernel_Env EcoKernel_Process
-    EcoKernel_MVar EcoKernel_NativeDriver EcoKernel_Runtime EcoKernel_Http
-    EcoKernel_Crash
-    # EcoNativeDriverStatic inside the group so its strong
-    # eco_native_lower_and_link definition overrides the weak stub in
-    # EcoEntryStatic. No --whole-archive: the kernel module's strong
-    # external reference is what pulls EcoNativeDriver.cpp out of the
-    # archive, and nothing else in EcoNativeDriverStatic ships static
-    # initializers that should run unconditionally.
-    EcoNativeDriverStatic
-    "-Wl,--end-group"
-    pthread m
-    eco::llvm_libunwind
-)
-
-# libstdc++ entry. With ECO_STATIC the driver's -static-libstdc++ inserts
-# libstdc++.a at the right place; a bare `-lstdc++` here would resolve to
-# the .so first and shadow the static one. Without ECO_STATIC, keep the
-# explicit `-lstdc++` because the driver-added entry comes too late in the
-# link order for some EcoEntryStatic / kernel symbol references.
-if(NOT ECO_STATIC)
-    target_link_libraries(eco PRIVATE stdc++)
-endif()
-
-# Under ECO_STATIC the curl/ssl/crypto/zip libraries reach the link line as
-# transitive PRIVATE dependencies of EcoKernel_Http (pkg-config's
-# Libs.private closure on Debian, or the FetchContent libzip target). The
-# bare `-lcurl -lssl -lcrypto -lzip` flags below are appended only for the
-# dynamic build; under ECO_STATIC they would re-resolve to the .so siblings
-# and defeat the static link.
-if(NOT ECO_STATIC)
-    target_link_libraries(eco PRIVATE curl ssl crypto zip)
-endif()
-
-# Static-link probe (Stage A verification). Same kernel + runtime dep tree
-# as `eco` but with a trivial main() instead of the MLIR-generated Stage-9
-# object. Lets us exercise the static link path (ldd / readelf) without
-# running the Elm bootstrap chain. EXCLUDE_FROM_ALL — default builds skip
-# it; built explicitly via `--target eco-static-link-probe`.
-if(ECO_STATIC)
-    add_executable(eco-static-link-probe EXCLUDE_FROM_ALL
-        ${CMAKE_CURRENT_BINARY_DIR}/static_link_probe.cpp
-    )
-    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/static_link_probe.cpp
-        "int main() { return 0; }\n")
-    set_target_properties(eco-static-link-probe PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${BUILD_KERNEL_DIR}/bin"
-    )
-    # Mirror eco's linker/runtime selection (see the eco target above).
+# Shared link configuration for the unified `eco` binary and its siblings
+# (eco-quick for dev iteration; eco-static-link-probe under ECO_STATIC). All
+# three want byte-identical link lines; this function is the single source.
+#
+# Linker (ECO_LINK_WITH_BFD): the preset configures -fuse-ld=lld for the rest
+# of the build, but lld rejects the R_X86_64_64 relocations the Elm-compiled
+# object carries in its .llvm_stackmaps section (GC safepoint addresses tied
+# to local function symbols) when producing a PIE — see eco-boot.cpp's
+# clang++ link invocation, which produces a working PIE eco-compiler by using
+# the system ld. The glibc builds mirror that here so the produced binary has
+# the same PIE layout the GC stackmap parser in eco_entry.cpp expects. The
+# Stage B MUSL build is non-PIE static, where lld accepts those relocs, so
+# the musl preset sets ECO_LINK_WITH_BFD=OFF and the targets inherit
+# -fuse-ld=lld from the preset.
+#
+# Static-link extras (see plans/static-link-eco-binary.md):
+#   ECO_STATIC && ECO_STATIC_MUSL → Stage B: nothing here. The -static link,
+#     libc++ runtime, compiler-rt builtins, and LLVM libunwind all arrive via
+#     the preset's global EXE_LINKER_FLAGS, and compiler-rt replaces libgcc so
+#     no _Unwind_* collision arises.
+#   ECO_STATIC (glibc) → Stage A: pull libstdc++ and libgcc into the binary
+#     so the only shared deps left are glibc + the dynamic linker.
+#     --allow-multiple-definition resolves the _Unwind_* collision between
+#     clang's auto-added libgcc_eh.a (from -static-libgcc) and the explicit
+#     LLVM libunwind.a (eco::llvm_libunwind); libunwind.a is earlier in the
+#     link line, so its definitions win.
+#
+# Library list: per-module ElmKernel / EcoKernel libs are listed explicitly
+# because the umbrella INTERFACE targets don't reliably pull static archives.
+# --start-group / --end-group are raw `-Wl,*` strings (CMake 3.20 lacks
+# LINK_GROUP). ElmKernel_Utils is whole-archived so its Order-singleton
+# registrar (Eco_Kernel_Order_register_gc_roots) is always linked — same
+# reason eco-boot.cpp's linkExecutable does it. EcoNativeDriverStatic sits
+# inside the group with no --whole-archive: its strong
+# eco_native_lower_and_link definition overrides the weak stub in
+# EcoEntryStatic, and EcoKernel_NativeDriver's strong external reference is
+# what pulls EcoNativeDriver.cpp out of the archive. Nothing else in
+# EcoNativeDriverStatic ships static initializers that should run
+# unconditionally.
+#
+# stdc++ + curl/ssl/crypto/zip (dynamic build only): under ECO_STATIC,
+# libstdc++.a arrives via the driver's -static-libstdc++ at the right place,
+# and curl/ssl/crypto/zip reach the link as transitive PRIVATE deps of
+# EcoKernel_Http (pkg-config's Libs.private closure on Debian, or the
+# FetchContent libzip target). Adding bare `-lstdc++ -lcurl …` here under
+# ECO_STATIC would re-resolve to the .so siblings and defeat the static link.
+function(eco_apply_unified_link target)
     if(ECO_LINK_WITH_BFD)
-        target_link_options(eco-static-link-probe PRIVATE -fuse-ld=bfd)
+        target_link_options(${target} PRIVATE -fuse-ld=bfd)
     endif()
-    if(NOT ECO_STATIC_MUSL)
-        target_link_options(eco-static-link-probe PRIVATE
+
+    if(ECO_STATIC AND NOT ECO_STATIC_MUSL)
+        target_link_options(${target} PRIVATE
             -static-libstdc++ -static-libgcc
             -Wl,--allow-multiple-definition)
     endif()
-    target_link_libraries(eco-static-link-probe PRIVATE
+
+    target_link_libraries(${target} PRIVATE
         "-Wl,--start-group"
-        EcoEntryStatic EcoRuntimeStatic
+        EcoEntryStatic
+        EcoRuntimeStatic
         "-Wl,--whole-archive"
         ElmKernel_Utils
         "-Wl,--no-whole-archive"
@@ -580,6 +528,73 @@ if(ECO_STATIC)
         pthread m
         eco::llvm_libunwind
     )
+
+    if(NOT ECO_STATIC)
+        target_link_libraries(${target} PRIVATE stdc++ curl ssl crypto zip)
+    endif()
+endfunction()
+
+add_executable(eco EXCLUDE_FROM_ALL ${ECO_STAGE9_OBJ})
+set_target_properties(eco PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${BUILD_KERNEL_DIR}/bin"
+)
+eco_apply_unified_link(eco)
+
+# -- Stage 9a (quick) + eco-quick: dev-iteration sibling of `eco`.
+#
+# Same MLIR → .o lowering and same link line as `eco`, but the
+# eco-stage9-quick.o custom-command deliberately drops the BOOTSTRAP_STAMP
+# gate. eco-compiler.mlir is invariant under C++ edits (it's a Stage-5
+# product of Elm sources only), so once it exists from a prior successful
+# bootstrap we can re-link the unified binary against modified runtime /
+# kernel C++ without re-running Stages 6–8. Built explicitly via
+# `--target eco-quick`. Use `--target eco` for the production binary that
+# enforces the full bootstrap chain.
+set(ECO_STAGE9_QUICK_OBJ "${BUILD_KERNEL_DIR}/bin/eco-stage9-quick.o")
+
+add_custom_command(
+    OUTPUT ${ECO_STAGE9_QUICK_OBJ}
+    COMMAND $<TARGET_FILE:eco-boot-native>
+        ${ECO_COMPILER_MLIR}
+        --emit=obj
+        -o ${ECO_STAGE9_QUICK_OBJ}
+    # ECO_COMPILER_MLIR is deliberately NOT in DEPENDS — eco-quick is a
+    # dev-iteration target and any dep edge that makes ninja rebuild the
+    # MLIR would cascade through Stages 2–5 on every CMakeLists touch
+    # (auto-reconfigure bumps runner-script mtimes). The MLIR is still read
+    # as an input at command time; if it does not exist eco-boot-native
+    # surfaces a clear error. Users edit Elm sources by running
+    # `--target bootstrap` to refresh the MLIR, then iterate on C++ via
+    # `--target eco-quick`.
+    DEPENDS eco-boot-native
+    COMMENT "Stage 9a (quick): eco-compiler.mlir → eco-stage9-quick.o"
+)
+set_source_files_properties(${ECO_STAGE9_QUICK_OBJ} PROPERTIES
+    GENERATED TRUE
+    EXTERNAL_OBJECT TRUE
+)
+
+add_executable(eco-quick EXCLUDE_FROM_ALL ${ECO_STAGE9_QUICK_OBJ})
+set_target_properties(eco-quick PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${BUILD_KERNEL_DIR}/bin"
+)
+eco_apply_unified_link(eco-quick)
+
+# Static-link probe (Stage A verification). Same kernel + runtime dep tree
+# as `eco` but with a trivial main() instead of the MLIR-generated Stage-9
+# object. Lets us exercise the static link path (ldd / readelf) without
+# running the Elm bootstrap chain. EXCLUDE_FROM_ALL — default builds skip
+# it; built explicitly via `--target eco-static-link-probe`.
+if(ECO_STATIC)
+    add_executable(eco-static-link-probe EXCLUDE_FROM_ALL
+        ${CMAKE_CURRENT_BINARY_DIR}/static_link_probe.cpp
+    )
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/static_link_probe.cpp
+        "int main() { return 0; }\n")
+    set_target_properties(eco-static-link-probe PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${BUILD_KERNEL_DIR}/bin"
+    )
+    eco_apply_unified_link(eco-static-link-probe)
 endif()
 
 set(ECO_STAGE9_OUTPUT "${BUILD_KERNEL_DIR}/bin/eco")

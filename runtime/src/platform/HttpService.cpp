@@ -2,7 +2,16 @@
 #include "Scheduler.hpp"
 
 #include <curl/curl.h>
+#include <chrono>
+#include <cstdio>
 #include <cstdlib>
+
+#ifdef ECO_KERNEL_DEBUG
+#define ECO_KLOG(tag, fmt, ...) \
+    std::fprintf(stderr, "[eco-kernel:" tag "] " fmt "\n", ##__VA_ARGS__)
+#else
+#define ECO_KLOG(tag, fmt, ...) ((void)0)
+#endif
 
 namespace Elm::Platform {
 
@@ -159,12 +168,23 @@ HttpService::Result HttpService::perform(const Request& req) {
     Result result;
     result.token = req.token;
 
+    ECO_KLOG("http",
+        "curl request method=%s url=%s headers=%zu body=%zuB lane=%s token=%lu",
+        (req.method.empty() ? "GET" : req.method.c_str()),
+        req.url.c_str(), req.headers.size(), req.body.size(),
+        req.eco_lane ? "eco" : "elm",
+        (unsigned long)req.token);
+
     ProgressCtx progressCtx;
     progressCtx.service = this;
     progressCtx.token = req.token;
 
+    auto t0 = std::chrono::steady_clock::now();
+
     CURL* curl = curl_easy_init();
     if (!curl) {
+        ECO_KLOG("http", "curl init-fail token=%lu",
+                 (unsigned long)req.token);
         result.error = ErrorKind::NetworkError;
         return result;
     }
@@ -234,6 +254,16 @@ HttpService::Result HttpService::perform(const Request& req) {
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
     char* eff = nullptr;
     curl_easy_getinfo(curl, CURLINFO_EFFECTIVE_URL, &eff);
+
+    auto tookMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0).count();
+    const char* curlErrMsg = curl_easy_strerror(res);
+    ECO_KLOG("http",
+        "curl response status=%ld err=%d errMsg=%s body=%zuB took=%lldms "
+        "finalUrl=%s token=%lu",
+        status, (int)res, curlErrMsg, body.size(), (long long)tookMs,
+        (eff ? eff : req.url.c_str()),
+        (unsigned long)req.token);
 
     if (headerList) curl_slist_free_all(headerList);
 

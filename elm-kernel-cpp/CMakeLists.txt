@@ -326,3 +326,9 @@ foreach(target
 )
     target_compile_options(${target} PRIVATE -UNDEBUG)
 endforeach()
+
+# ECO_KERNEL_DEBUG: stderr tracing in the Elm HTTP effect manager. See
+# src/KernelDebug.hpp for the ECO_KLOG macro.
+if(ECO_KERNEL_DEBUG)
+    target_compile_definitions(ElmKernel_Http PRIVATE ECO_KERNEL_DEBUG)
+endif()
