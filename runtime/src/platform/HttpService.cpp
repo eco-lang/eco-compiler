@@ -43,6 +43,19 @@ bool HttpService::hasReadyResults() const {
     return !results_.empty();
 }
 
+bool HttpService::tryPopResultEcoLane(Result& out) {
+    std::lock_guard<std::mutex> lk(ecoResultsMutex_);
+    if (ecoResults_.empty()) return false;
+    out = std::move(ecoResults_.front());
+    ecoResults_.pop();
+    return true;
+}
+
+bool HttpService::hasReadyResultsEcoLane() const {
+    std::lock_guard<std::mutex> lk(ecoResultsMutex_);
+    return !ecoResults_.empty();
+}
+
 void HttpService::pushProgress(Progress p) {
     {
         std::lock_guard<std::mutex> lk(progressMutex_);
@@ -252,9 +265,13 @@ void HttpService::workerLoop() {
             requests_.pop();
         }
 
+        bool ecoLane = req.eco_lane;
         Result result = perform(req);
 
-        {
+        if (ecoLane) {
+            std::lock_guard<std::mutex> lk(ecoResultsMutex_);
+            ecoResults_.push(std::move(result));
+        } else {
             std::lock_guard<std::mutex> lk(resultsMutex_);
             results_.push(std::move(result));
         }

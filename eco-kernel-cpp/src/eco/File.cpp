@@ -1,7 +1,27 @@
 //===- File.cpp - File kernel module implementation -----------------------===//
+//
+// Per KERNEL_TASK_IO_001 / plans/defer-eager-kernel-tasks-via-binding.md
+// Phase 3: every Task-returning File kernel is wrapped in a Task_Binding so
+// the syscall fires when the scheduler steps the binding, not at the kernel
+// call site. The synchronous IO bodies live in anonymous-namespace helpers
+// keyed by name (`*Body`); the exported `Eco::Kernel::File::*` functions are
+// thin binding-creation wrappers.
+//
+// Capture packing convention (Q2 — no kind-inferred templates):
+//   * 1-arg HPointer kernel: captured = the HPointer directly.
+//   * 1-arg unboxed-Int kernel: captured = tuple2(unboxedInt(i), unit, 0x1).
+//     Slot 1 holds unit() as a no-op placeholder so we can keep using the
+//     existing tuple2 alloc helper.
+//   * 2-arg both-HPointer: captured = tuple2(boxed(a), boxed(b), 0).
+//   * 2-arg (HPointer, Int): captured = tuple2(boxed(a), unboxedInt(i), 0x4).
+//     mask bit pattern: 2 bits per slot, slot 1 unboxed Int = (01 << 2) = 0x4.
+//   * 2-arg (Int, HPointer): captured = tuple2(unboxedInt(i), boxed(b), 0x1).
+//
+//===----------------------------------------------------------------------===//
 
 #include "File.hpp"
 #include "KernelHelpers.hpp"
+#include "TaskBinding.hpp"
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
@@ -16,136 +36,61 @@
 
 namespace Eco::Kernel::File {
 
-uint64_t readString(uint64_t path) {
-    std::string pathStr = toString(path);
+namespace {
+
+// Tuple unpack helpers (Q2 — explicit HPointer-centric, no inference).
+inline Tuple2* asTuple2(HPointer captured) {
+    return static_cast<Tuple2*>(Elm::Allocator::instance().resolve(captured));
+}
+
+// --- 1-arg-HPointer bodies ----------------------------------------------------
+
+HPointer readStringBody(HPointer captured) {
+    std::string pathStr = toString(Export::encode(captured));
     std::ifstream file(pathStr);
     if (!file) {
         int err = errno;
-        return taskFailErrno(err, pathStr, "could not open file for reading");
+        return failErrno(err, pathStr, "could not open file for reading");
     }
     std::ostringstream ss;
     ss << file.rdbuf();
-    return taskSucceedString(ss.str());
+    return succeedString(ss.str());
 }
 
-uint64_t writeString(uint64_t path, uint64_t content) {
-    std::string pathStr = toString(path);
-    std::string data = toString(content);
-    std::ofstream file(pathStr);
-    if (!file) {
-        int err = errno;
-        return taskFailErrno(err, pathStr, "could not open file for writing");
-    }
-    file << data;
-    return taskSucceedUnit();
-}
-
-uint64_t readBytes(uint64_t path) {
-    std::string pathStr = toString(path);
+HPointer readBytesBody(HPointer captured) {
+    std::string pathStr = toString(Export::encode(captured));
     std::ifstream file(pathStr, std::ios::binary | std::ios::ate);
     if (!file) {
         int err = errno;
-        return taskFailErrno(err, pathStr, "could not open file for reading");
+        return failErrno(err, pathStr, "could not open file for reading");
     }
     auto size = file.tellg();
     file.seekg(0, std::ios::beg);
     std::vector<uint8_t> buffer(static_cast<size_t>(size));
     file.read(reinterpret_cast<char*>(buffer.data()), size);
     HPointer bytes = Elm::alloc::allocByteBuffer(buffer.data(), buffer.size());
-    return taskSucceed(bytes);
+    return succeed(bytes);
 }
 
-uint64_t writeBytes(uint64_t path, uint64_t bytes) {
-    std::string pathStr = toString(path);
-    HPointer h = Export::decode(bytes);
-    void* ptr = Elm::Allocator::instance().resolve(h);
-    size_t len = Elm::alloc::byteBufferLength(ptr);
-    const uint8_t* data = Elm::alloc::byteBufferData(ptr);
-    std::ofstream file(pathStr, std::ios::binary);
-    if (!file) {
-        int err = errno;
-        return taskFailErrno(err, pathStr, "could not open file for writing");
-    }
-    file.write(reinterpret_cast<const char*>(data), len);
-    return taskSucceedUnit();
-}
-
-uint64_t open(uint64_t path, uint64_t mode) {
-    std::string pathStr = toString(path);
-    // mode is an unboxed int passed directly as uint64_t
-    int64_t modeVal = static_cast<int64_t>(mode);
-    int flags;
-    switch (modeVal) {
-        case 0: flags = O_RDONLY; break;
-        case 1: flags = O_WRONLY | O_CREAT | O_TRUNC; break;
-        case 2: flags = O_WRONLY | O_CREAT | O_APPEND; break;
-        case 3: flags = O_RDWR | O_CREAT; break;
-        default: flags = O_RDONLY; break;
-    }
-    int fd = ::open(pathStr.c_str(), flags, 0644);
-    if (fd < 0) {
-        int err = errno;
-        return taskFailErrno(err, pathStr, "could not open file");
-    }
-    return taskSucceedInt(fd);
-}
-
-uint64_t close(uint64_t handle) {
-    int64_t fd = static_cast<int64_t>(handle);
-    ::close(static_cast<int>(fd));
-    return taskSucceedUnit();
-}
-
-uint64_t hWriteString(uint64_t handle, uint64_t content) {
-    int64_t fd = static_cast<int64_t>(handle);
-    std::string data = toString(content);
-    ssize_t written = ::write(static_cast<int>(fd), data.data(), data.size());
-    if (written < 0) {
-        int err = errno;
-        return taskFailErrno(err, "", "write to handle failed");
-    }
-    return taskSucceedUnit();
-}
-
-uint64_t size(uint64_t handle) {
-    int64_t fd = static_cast<int64_t>(handle);
-    struct stat st;
-    if (fstat(static_cast<int>(fd), &st) != 0) {
-        int err = errno;
-        return taskFailErrno(err, "", "fstat failed");
-    }
-    return taskSucceedInt(static_cast<int64_t>(st.st_size));
-}
-
-uint64_t lock(uint64_t /*path*/) {
-    // TODO: implement file locking
-    return taskSucceedUnit();
-}
-
-uint64_t unlock(uint64_t /*path*/) {
-    // TODO: implement file unlocking
-    return taskSucceedUnit();
-}
-
-uint64_t fileExists(uint64_t path) {
-    std::string pathStr = toString(path);
+HPointer fileExistsBody(HPointer captured) {
+    std::string pathStr = toString(Export::encode(captured));
     struct stat st;
     bool exists = (stat(pathStr.c_str(), &st) == 0 && S_ISREG(st.st_mode));
-    return taskSucceedBool(exists);
+    return succeedBool(exists);
 }
 
-uint64_t dirExists(uint64_t path) {
-    std::string pathStr = toString(path);
+HPointer dirExistsBody(HPointer captured) {
+    std::string pathStr = toString(Export::encode(captured));
     struct stat st;
     bool exists = (stat(pathStr.c_str(), &st) == 0 && S_ISDIR(st.st_mode));
-    return taskSucceedBool(exists);
+    return succeedBool(exists);
 }
 
-uint64_t findExecutable(uint64_t name) {
-    std::string nameStr = toString(name);
+HPointer findExecutableBody(HPointer captured) {
+    std::string nameStr = toString(Export::encode(captured));
     const char* pathEnv = std::getenv("PATH");
     if (!pathEnv) {
-        return taskSucceed(Elm::alloc::nothing());
+        return succeed(Elm::alloc::nothing());
     }
     std::string pathStr(pathEnv);
     size_t pos = 0;
@@ -158,20 +103,20 @@ uint64_t findExecutable(uint64_t name) {
         std::string fullPath = dir + "/" + nameStr;
         if (access(fullPath.c_str(), X_OK) == 0) {
             HPointer str = Elm::alloc::allocStringFromUTF8(fullPath);
-            return taskSucceed(Elm::alloc::just(Elm::alloc::boxed(str), true));
+            return succeed(Elm::alloc::just(Elm::alloc::boxed(str), true));
         }
         pos = sep + 1;
     }
-    return taskSucceed(Elm::alloc::nothing());
+    return succeed(Elm::alloc::nothing());
 }
 
-uint64_t list(uint64_t path) {
-    std::string pathStr = toString(path);
+HPointer listBody(HPointer captured) {
+    std::string pathStr = toString(Export::encode(captured));
     std::vector<std::string> entries;
     DIR* dir = opendir(pathStr.c_str());
     if (!dir) {
         int err = errno;
-        return taskFailErrno(err, pathStr, "could not open directory");
+        return failErrno(err, pathStr, "could not open directory");
     }
     struct dirent* entry;
     while ((entry = readdir(dir)) != nullptr) {
@@ -181,55 +126,54 @@ uint64_t list(uint64_t path) {
         }
     }
     closedir(dir);
-    return taskSucceedStringList(entries);
+    return succeedStringList(entries);
 }
 
-uint64_t modificationTime(uint64_t path) {
-    std::string pathStr = toString(path);
+HPointer modificationTimeBody(HPointer captured) {
+    std::string pathStr = toString(Export::encode(captured));
     struct stat st;
     if (stat(pathStr.c_str(), &st) != 0) {
         int err = errno;
-        return taskFailErrno(err, pathStr, "could not stat file");
+        return failErrno(err, pathStr, "could not stat file");
     }
-    // Convert to milliseconds since epoch.
     int64_t millis = static_cast<int64_t>(st.st_mtim.tv_sec) * 1000 +
                      static_cast<int64_t>(st.st_mtim.tv_nsec) / 1000000;
-    return taskSucceedInt(millis);
+    return succeedInt(millis);
 }
 
-uint64_t getCwd() {
+HPointer getCwdBody(HPointer /*captured*/) {
     char buf[4096];
     if (getcwd(buf, sizeof(buf))) {
-        return taskSucceedString(std::string(buf));
+        return succeedString(std::string(buf));
     }
-    return taskFailErrno(errno, "", "could not get current working directory");
+    return failErrno(errno, "", "could not get current working directory");
 }
 
-uint64_t setCwd(uint64_t path) {
-    std::string pathStr = toString(path);
+HPointer setCwdBody(HPointer captured) {
+    std::string pathStr = toString(Export::encode(captured));
     if (chdir(pathStr.c_str()) != 0) {
         int err = errno;
-        return taskFailErrno(err, pathStr, "could not set working directory");
+        return failErrno(err, pathStr, "could not set working directory");
     }
-    return taskSucceedUnit();
+    return succeedUnit();
 }
 
-uint64_t canonicalize(uint64_t path) {
-    std::string pathStr = toString(path);
+HPointer canonicalizeBody(HPointer captured) {
+    std::string pathStr = toString(Export::encode(captured));
     char resolved[PATH_MAX];
     if (realpath(pathStr.c_str(), resolved)) {
-        return taskSucceedString(std::string(resolved));
+        return succeedString(std::string(resolved));
     }
     // Fallback: resolve relative path without following symlinks.
     std::filesystem::path p = std::filesystem::absolute(pathStr);
-    return taskSucceedString(p.lexically_normal().string());
+    return succeedString(p.lexically_normal().string());
 }
 
-uint64_t appDataDir(uint64_t name) {
-    std::string nameStr = toString(name);
+HPointer appDataDirBody(HPointer captured) {
+    std::string nameStr = toString(Export::encode(captured));
     const char* home = std::getenv("HOME");
     if (!home) {
-        return taskFailString("HOME environment variable not set");
+        return failString("HOME environment variable not set");
     }
     std::string dir;
 #ifdef __APPLE__
@@ -237,12 +181,160 @@ uint64_t appDataDir(uint64_t name) {
 #else
     dir = std::string(home) + "/." + nameStr;
 #endif
-    return taskSucceedString(dir);
+    return succeedString(dir);
 }
 
-uint64_t createDir(uint64_t createParents, uint64_t path) {
-    std::string pathStr = toString(path);
-    bool parents = Export::decodeBoxedBool(createParents);
+HPointer removeFileBody(HPointer captured) {
+    std::string pathStr = toString(Export::encode(captured));
+    if (unlink(pathStr.c_str()) != 0) {
+        int err = errno;
+        return failErrno(err, pathStr, "could not remove file");
+    }
+    return succeedUnit();
+}
+
+HPointer removeDirBody(HPointer captured) {
+    std::string pathStr = toString(Export::encode(captured));
+    std::error_code ec;
+    std::filesystem::remove_all(pathStr, ec);
+    if (ec) {
+        return failErrno(ec.value(), pathStr, "could not remove directory: " + ec.message());
+    }
+    return succeedUnit();
+}
+
+HPointer touchBody(HPointer captured) {
+    std::string pathStr = toString(Export::encode(captured));
+    int fd = ::open(pathStr.c_str(), O_WRONLY | O_CREAT, 0644);
+    if (fd >= 0) {
+        ::close(fd);
+    }
+    if (utimensat(AT_FDCWD, pathStr.c_str(), nullptr, 0) != 0) {
+        int err = errno;
+        return failErrno(err, pathStr, "could not touch file");
+    }
+    return succeedUnit();
+}
+
+// Stubs — TODO real impls. Wrapped in bindings for KERNEL_TASK_IO_001
+// uniformity (so the deferred-binding surface is total).
+HPointer lockBody(HPointer /*captured*/) { return succeedUnit(); }
+HPointer unlockBody(HPointer /*captured*/) { return succeedUnit(); }
+
+// --- 1-arg-Int bodies ---------------------------------------------------------
+
+HPointer closeBody(HPointer captured) {
+    Tuple2* tup = asTuple2(captured);
+    int64_t fd = tup->a.i;
+    ::close(static_cast<int>(fd));
+    return succeedUnit();
+}
+
+HPointer sizeBody(HPointer captured) {
+    Tuple2* tup = asTuple2(captured);
+    int64_t fd = tup->a.i;
+    struct stat st;
+    if (fstat(static_cast<int>(fd), &st) != 0) {
+        int err = errno;
+        return failErrno(err, "", "fstat failed");
+    }
+    return succeedInt(static_cast<int64_t>(st.st_size));
+}
+
+// --- 2-arg bodies -------------------------------------------------------------
+
+HPointer writeStringBody(HPointer captured) {
+    HPointer pathHP;
+    HPointer contentHP;
+    {
+        Tuple2* tup = asTuple2(captured);
+        pathHP = tup->a.p;
+        contentHP = tup->b.p;
+    }
+    std::string pathStr = toString(Export::encode(pathHP));
+    std::string data = toString(Export::encode(contentHP));
+    std::ofstream file(pathStr);
+    if (!file) {
+        int err = errno;
+        return failErrno(err, pathStr, "could not open file for writing");
+    }
+    file << data;
+    return succeedUnit();
+}
+
+HPointer writeBytesBody(HPointer captured) {
+    HPointer pathHP;
+    HPointer bytesHP;
+    {
+        Tuple2* tup = asTuple2(captured);
+        pathHP = tup->a.p;
+        bytesHP = tup->b.p;
+    }
+    std::string pathStr = toString(Export::encode(pathHP));
+    void* ptr = Elm::Allocator::instance().resolve(bytesHP);
+    size_t len = Elm::alloc::byteBufferLength(ptr);
+    const uint8_t* data = Elm::alloc::byteBufferData(ptr);
+    std::ofstream file(pathStr, std::ios::binary);
+    if (!file) {
+        int err = errno;
+        return failErrno(err, pathStr, "could not open file for writing");
+    }
+    file.write(reinterpret_cast<const char*>(data), len);
+    return succeedUnit();
+}
+
+HPointer openBody(HPointer captured) {
+    HPointer pathHP;
+    int64_t modeVal;
+    {
+        Tuple2* tup = asTuple2(captured);
+        pathHP = tup->a.p;
+        modeVal = tup->b.i;
+    }
+    std::string pathStr = toString(Export::encode(pathHP));
+    int flags;
+    switch (modeVal) {
+        case 0: flags = O_RDONLY; break;
+        case 1: flags = O_WRONLY | O_CREAT | O_TRUNC; break;
+        case 2: flags = O_WRONLY | O_CREAT | O_APPEND; break;
+        case 3: flags = O_RDWR | O_CREAT; break;
+        default: flags = O_RDONLY; break;
+    }
+    int fd = ::open(pathStr.c_str(), flags, 0644);
+    if (fd < 0) {
+        int err = errno;
+        return failErrno(err, pathStr, "could not open file");
+    }
+    return succeedInt(fd);
+}
+
+HPointer hWriteStringBody(HPointer captured) {
+    int64_t fd;
+    HPointer contentHP;
+    {
+        Tuple2* tup = asTuple2(captured);
+        fd = tup->a.i;
+        contentHP = tup->b.p;
+    }
+    std::string data = toString(Export::encode(contentHP));
+    ssize_t written = ::write(static_cast<int>(fd), data.data(), data.size());
+    if (written < 0) {
+        int err = errno;
+        return failErrno(err, "", "write to handle failed");
+    }
+    return succeedUnit();
+}
+
+HPointer createDirBody(HPointer captured) {
+    HPointer createParentsHP;
+    HPointer pathHP;
+    {
+        Tuple2* tup = asTuple2(captured);
+        createParentsHP = tup->a.p;
+        pathHP = tup->b.p;
+    }
+    std::string pathStr = toString(Export::encode(pathHP));
+    bool parents = Export::decodeBoxedBool(Export::encode(createParentsHP));
     std::error_code ec;
     if (parents) {
         std::filesystem::create_directories(pathStr, ec);
@@ -250,43 +342,161 @@ uint64_t createDir(uint64_t createParents, uint64_t path) {
         std::filesystem::create_directory(pathStr, ec);
     }
     if (ec) {
-        return taskFailErrno(ec.value(), pathStr, "could not create directory: " + ec.message());
+        return failErrno(ec.value(), pathStr, "could not create directory: " + ec.message());
     }
-    return taskSucceedUnit();
+    return succeedUnit();
+}
+
+} // anonymous namespace
+
+// ============================================================================
+// Public API — thin binding-creation wrappers. The IO bodies live above.
+// ============================================================================
+
+uint64_t readString(uint64_t path) {
+    return Export::encode(
+        Eco::Kernel::makeBinding<readStringBody>(Export::decode(path)));
+}
+
+uint64_t writeString(uint64_t path, uint64_t content) {
+    HPointer pathHP = Export::decode(path);
+    HPointer contentHP = Export::decode(content);
+    Elm::StackRootGuard g(&pathHP, &contentHP);
+    HPointer payload = Elm::alloc::tuple2(
+        Elm::alloc::boxed(pathHP), Elm::alloc::boxed(contentHP), 0);
+    return Export::encode(Eco::Kernel::makeBinding<writeStringBody>(payload));
+}
+
+uint64_t readBytes(uint64_t path) {
+    return Export::encode(
+        Eco::Kernel::makeBinding<readBytesBody>(Export::decode(path)));
+}
+
+uint64_t writeBytes(uint64_t path, uint64_t bytes) {
+    HPointer pathHP = Export::decode(path);
+    HPointer bytesHP = Export::decode(bytes);
+    Elm::StackRootGuard g(&pathHP, &bytesHP);
+    HPointer payload = Elm::alloc::tuple2(
+        Elm::alloc::boxed(pathHP), Elm::alloc::boxed(bytesHP), 0);
+    return Export::encode(Eco::Kernel::makeBinding<writeBytesBody>(payload));
+}
+
+uint64_t open(uint64_t path, uint64_t mode) {
+    HPointer pathHP = Export::decode(path);
+    Elm::StackRootGuard g(&pathHP);
+    // mode is an unboxed Int passed via the HPtr ABI (the MLIR generator
+    // hands raw i64 bits even when the C++ signature is HPtr — matches the
+    // pre-existing eager behavior of `int64_t modeVal = static_cast<int64_t>(mode)`).
+    HPointer payload = Elm::alloc::tuple2(
+        Elm::alloc::boxed(pathHP),
+        Elm::alloc::unboxedInt(static_cast<int64_t>(mode)),
+        /*mask: slot 1 unboxed Int (kind 01 << 2)=*/0x4);
+    return Export::encode(Eco::Kernel::makeBinding<openBody>(payload));
+}
+
+uint64_t close(uint64_t handle) {
+    HPointer payload = Elm::alloc::tuple2(
+        Elm::alloc::unboxedInt(static_cast<int64_t>(handle)),
+        Elm::alloc::boxed(Elm::alloc::unit()),
+        0x1);
+    return Export::encode(Eco::Kernel::makeBinding<closeBody>(payload));
+}
+
+uint64_t hWriteString(uint64_t handle, uint64_t content) {
+    HPointer contentHP = Export::decode(content);
+    Elm::StackRootGuard g(&contentHP);
+    HPointer payload = Elm::alloc::tuple2(
+        Elm::alloc::unboxedInt(static_cast<int64_t>(handle)),
+        Elm::alloc::boxed(contentHP),
+        0x1);
+    return Export::encode(Eco::Kernel::makeBinding<hWriteStringBody>(payload));
+}
+
+uint64_t size(uint64_t handle) {
+    HPointer payload = Elm::alloc::tuple2(
+        Elm::alloc::unboxedInt(static_cast<int64_t>(handle)),
+        Elm::alloc::boxed(Elm::alloc::unit()),
+        0x1);
+    return Export::encode(Eco::Kernel::makeBinding<sizeBody>(payload));
+}
+
+uint64_t lock(uint64_t path) {
+    return Export::encode(
+        Eco::Kernel::makeBinding<lockBody>(Export::decode(path)));
+}
+
+uint64_t unlock(uint64_t path) {
+    return Export::encode(
+        Eco::Kernel::makeBinding<unlockBody>(Export::decode(path)));
+}
+
+uint64_t fileExists(uint64_t path) {
+    return Export::encode(
+        Eco::Kernel::makeBinding<fileExistsBody>(Export::decode(path)));
+}
+
+uint64_t dirExists(uint64_t path) {
+    return Export::encode(
+        Eco::Kernel::makeBinding<dirExistsBody>(Export::decode(path)));
+}
+
+uint64_t findExecutable(uint64_t name) {
+    return Export::encode(
+        Eco::Kernel::makeBinding<findExecutableBody>(Export::decode(name)));
+}
+
+uint64_t list(uint64_t path) {
+    return Export::encode(
+        Eco::Kernel::makeBinding<listBody>(Export::decode(path)));
+}
+
+uint64_t modificationTime(uint64_t path) {
+    return Export::encode(
+        Eco::Kernel::makeBinding<modificationTimeBody>(Export::decode(path)));
+}
+
+uint64_t getCwd() {
+    return Export::encode(
+        Eco::Kernel::makeBinding<getCwdBody>(Elm::alloc::unit()));
+}
+
+uint64_t setCwd(uint64_t path) {
+    return Export::encode(
+        Eco::Kernel::makeBinding<setCwdBody>(Export::decode(path)));
+}
+
+uint64_t canonicalize(uint64_t path) {
+    return Export::encode(
+        Eco::Kernel::makeBinding<canonicalizeBody>(Export::decode(path)));
+}
+
+uint64_t appDataDir(uint64_t name) {
+    return Export::encode(
+        Eco::Kernel::makeBinding<appDataDirBody>(Export::decode(name)));
+}
+
+uint64_t createDir(uint64_t createParents, uint64_t path) {
+    HPointer createParentsHP = Export::decode(createParents);
+    HPointer pathHP = Export::decode(path);
+    Elm::StackRootGuard g(&createParentsHP, &pathHP);
+    HPointer payload = Elm::alloc::tuple2(
+        Elm::alloc::boxed(createParentsHP), Elm::alloc::boxed(pathHP), 0);
+    return Export::encode(Eco::Kernel::makeBinding<createDirBody>(payload));
 }
 
 uint64_t removeFile(uint64_t path) {
-    std::string pathStr = toString(path);
-    if (unlink(pathStr.c_str()) != 0) {
-        int err = errno;
-        return taskFailErrno(err, pathStr, "could not remove file");
-    }
-    return taskSucceedUnit();
+    return Export::encode(
+        Eco::Kernel::makeBinding<removeFileBody>(Export::decode(path)));
 }
 
 uint64_t removeDir(uint64_t path) {
-    std::string pathStr = toString(path);
-    std::error_code ec;
-    std::filesystem::remove_all(pathStr, ec);
-    if (ec) {
-        return taskFailErrno(ec.value(), pathStr, "could not remove directory: " + ec.message());
-    }
-    return taskSucceedUnit();
+    return Export::encode(
+        Eco::Kernel::makeBinding<removeDirBody>(Export::decode(path)));
 }
 
 uint64_t touch(uint64_t path) {
-    std::string pathStr = toString(path);
-    // Create the file if it doesn't exist
-    int fd = ::open(pathStr.c_str(), O_WRONLY | O_CREAT, 0644);
-    if (fd >= 0) {
-        ::close(fd);
-    }
-    // Update access and modification times to now
-    if (utimensat(AT_FDCWD, pathStr.c_str(), nullptr, 0) != 0) {
-        int err = errno;
-        return taskFailErrno(err, pathStr, "could not touch file");
-    }
-    return taskSucceedUnit();
+    return Export::encode(
+        Eco::Kernel::makeBinding<touchBody>(Export::decode(path)));
 }
 
 } // namespace Eco::Kernel::File

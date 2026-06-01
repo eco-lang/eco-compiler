@@ -3,6 +3,7 @@
 #include "../KernelExports.h"
 #include "../ExportHelpers.hpp"
 #include "platform/Scheduler.hpp"
+#include "platform/TaskBinding.hpp"
 #include "platform/TimerService.hpp"
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
@@ -14,57 +15,40 @@ using namespace Elm::Kernel;
 using Export::encode;
 using Export::decode;
 
-// Sleep binding callback evaluator — runs on the main scheduler thread.
-// Captured: args[0] = sleep time (boxed Float encoded HPointer)
-// Argument: args[1] = resume closure (HPointer)
+// Phase-0 validation site for the generic Task_Binding helper
+// (`plans/defer-eager-kernel-tasks-via-binding.md`, Section "Phase 0 — 0.2").
 //
-// All this does is register the resume closure as a GC root, bump
-// pendingAsync_, and hand a (millis, token) pair to TimerService. The
-// expiration — including taskSucceed/callClosure1 — runs on main via
-// Scheduler::processReadyAsync; no cross-thread GC interaction.
-static void* sleepBindingEvaluator(void* rawArgs[]) {
-    // Captured: [0] = unboxed Float (PK_Float). Passed: [1] = resume closure.
-    //
-    // Per the Phase E typed-args convention (REP_ABI_001),
-    // `eco_closure_call_saturated` delivers a PK_Float capture as the raw
-    // IEEE-754 bits in rawArgs[0], NOT as an HPointer-to-ElmFloat. Recover
-    // the double by bit-casting from the uint64_t.
-    uint64_t timeBits  = reinterpret_cast<uint64_t>(rawArgs[0]);
-    uint64_t resumeEnc = reinterpret_cast<uint64_t>(rawArgs[1]);
+// Sleep is an ASYNC-PARK binding: the body registers `resume` with the
+// scheduler's pending-resume registry and hands a (millis, token) pair to
+// TimerService. The Task is delivered later via Scheduler::processReadyAsync.
+// The captured payload is a single boxed ElmFloat (per Q2 — no kind-inferred
+// raw-primitive captures); boxing is a microsecond-scale allocation and the
+// uniformity wins over the small per-call float-box overhead.
+static HPointer sleepBindingBody(HPointer captured, HPointer resume) {
+    void* ptr = Allocator::instance().resolve(captured);
+    double millis = static_cast<ElmFloat*>(ptr)->value;
 
-    double millis;
-    std::memcpy(&millis, &timeBits, sizeof(double));
-
-    HPointer resumeHP = Export::decode(resumeEnc);
     uint64_t resumeToken =
-        Elm::Platform::Scheduler::instance().registerPendingResume(resumeHP);
-
+        Elm::Platform::Scheduler::instance().registerPendingResume(resume);
     Elm::Platform::Scheduler::instance().incrementPendingAsync();
     Elm::Platform::TimerService::instance().schedule(millis, resumeToken);
 
-    // Kill handle: status-quo Unit placeholder. Cancellation is deferred
-    // (see plans/dumb-timer-threads.md Q3).
-    return reinterpret_cast<void*>(encode(Elm::alloc::unit()));
+    // Kill handle: status-quo Unit placeholder (cancellation deferred —
+    // plans/dumb-timer-threads.md Q3).
+    return Elm::alloc::unit();
 }
 
 extern "C" {
 
 HPtr Elm_Kernel_Process_sleep(double time) {
-    // Create a binding callback closure that captures the time as an unboxed
-    // Float; the runtime re-boxes it before invoking sleepBindingEvaluator.
-    // sleepBindingEvaluator returns a boxed Task HPtr, hence K = PK_Boxed.
-    HPointer bindingCB = Elm::alloc::allocClosureK(
-        reinterpret_cast<EvalFunction>(sleepBindingEvaluator), 2,
-        Elm::PK_Boxed);
-    void* cbPtr = Allocator::instance().resolve(bindingCB);
-    if (cbPtr) {
-        Elm::alloc::closureCapture(cbPtr, Elm::alloc::unboxedFloat(time),
-                                   Elm::PK_Float);
-    }
-
-    // Create a Binding task with this callback
-    HPointer task = Elm::Platform::Scheduler::instance().taskBinding(bindingCB);
-    return HPtr::fromBits(encode(task));
+    // Box the float once so the binding payload follows the standard
+    // HPointer-only capture shape used by makeBinding /
+    // makeAsyncBinding. The previous PK_Float capture worked fine but
+    // required the closureCapture/typed-args path to special-case the kind;
+    // the boxed shape is uniform with every other deferred kernel.
+    HPointer floatHP = Elm::alloc::allocFloat(time);
+    return HPtr::fromBits(encode(
+        Elm::Platform::makeAsyncBinding<sleepBindingBody>(floatHP)));
 }
 
 } // extern "C"

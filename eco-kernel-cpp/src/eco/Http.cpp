@@ -1,131 +1,133 @@
 //===- Http.cpp - Http kernel module implementation -----------------------===//
+//
+// Per KERNEL_TASK_IO_001 / plans/defer-eager-kernel-tasks-via-binding.md
+// Phase 5: `Eco.Http.fetch` and `Eco.Http.getArchive` are returned as
+// Task_Bindings. The blocking `curl_easy_perform` is now run on an
+// HttpService worker thread (Q10 — extend the existing service, don't fork
+// a parallel one); the main-thread drain pops the worker's result, runs the
+// libzip / SHA1 post-process step (still on the main thread), builds the
+// Eco-shape response, and resumes the parked binding.
+//
+// Bundle layout in the scheduler's pendingResumes_ registry:
+//
+//   Custom { ctor = KIND_FETCH | KIND_GET_ARCHIVE, values = [resume] }
+//
+// The single shared async-source drain (`ecoHttpDrain`) reads the bundle's
+// ctor to decide which response builder to use.
+//
+//===----------------------------------------------------------------------===//
 
 #include "Http.hpp"
 #include "KernelHelpers.hpp"
+#include "TaskBinding.hpp"
+#include "allocator/RootSet.hpp"
+#include "platform/HttpService.hpp"
+#include "platform/Scheduler.hpp"
+#include <mutex>
 #include <string>
 #include <vector>
 
-#include <curl/curl.h>
-#include <zip.h>
 #include <openssl/sha.h>
+#include <zip.h>
 
 namespace Eco::Kernel::Http {
 
-static size_t writeCallback(void* contents, size_t size, size_t nmemb, void* userp) {
-    size_t totalSize = size * nmemb;
-    auto* buffer = static_cast<std::string*>(userp);
-    buffer->append(static_cast<char*>(contents), totalSize);
-    return totalSize;
+using Elm::HPointer;
+using namespace Elm::alloc;
+using Elm::Platform::HttpService;
+
+namespace {
+
+// Bundle ctor tags for the pendingResume registry. Distinct values let the
+// shared drain dispatch by ctor without an extra side table. Picked high to
+// avoid collision with any compiler-generated tag.
+constexpr uint16_t KIND_FETCH       = 0xEC01;
+constexpr uint16_t KIND_GET_ARCHIVE = 0xEC02;
+
+// ----- Helpers shared between drain dispatch branches ---------------------
+
+// Walk an Elm `List (Tuple2 String String)` headers list into a POD
+// vector<{key, value}> on the main thread (binding step). Runs ONLY before
+// any allocation; the snapshotted strings are kept by-value.
+std::vector<std::pair<std::string, std::string>>
+listOfTuplesToHeaders(uint64_t headersEnc) {
+    std::vector<std::pair<std::string, std::string>> result;
+    HPointer current = Export::decode(headersEnc);
+    auto& allocator = Elm::Allocator::instance();
+    while (!isConstant(current) || current.constant != Elm::Const_Nil + 1) {
+        Cons* cell = static_cast<Cons*>(allocator.resolve(current));
+        Tuple2* tup = static_cast<Tuple2*>(allocator.resolve(cell->head.p));
+        std::string key = toString(Export::encode(tup->a.p));
+        std::string val = toString(Export::encode(tup->b.p));
+        result.push_back({std::move(key), std::move(val)});
+        current = cell->tail;
+    }
+    return result;
 }
 
-uint64_t fetch(uint64_t method, uint64_t url, uint64_t headers) {
-    using namespace Elm::alloc;
+// ----- KIND_FETCH response builder ----------------------------------------
 
-    std::string methodStr = toString(method);
-    std::string urlStr = toString(url);
-
-    CURL* curl = curl_easy_init();
-    if (!curl) {
-        HPointer errStr = allocStringFromUTF8("Failed to initialize curl");
-        return taskSucceed(err(boxed(errStr), true));
-    }
-
-    std::string responseBody;
-    curl_easy_setopt(curl, CURLOPT_URL, urlStr.c_str());
-    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, methodStr.c_str());
-    // The registry's POST endpoints (/all-packages, /all-packages/since) reject
-    // a body-less POST with HTTP 411 Length Required. fetch carries no request
-    // body, so send an explicit zero-length body to emit Content-Length: 0.
-    if (methodStr == "POST") {
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, "");
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, 0L);
-    }
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &responseBody);
-    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "gzip, deflate");
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-
-    // Set headers from Elm List (String, String).
-    struct curl_slist* curlHeaders = nullptr;
-    forEachListElement(headers, [&](Unboxable head, bool /*is_boxed*/) {
-        // Each element is a Tuple2 of (String, String).
-        void* tuplePtr = Elm::Allocator::instance().resolve(head.p);
-        Tuple2* tup = static_cast<Tuple2*>(tuplePtr);
-        void* keyPtr = Elm::Allocator::instance().resolve(tup->a.p);
-        void* valPtr = Elm::Allocator::instance().resolve(tup->b.p);
-        std::string key = Elm::StringOps::toStdString(keyPtr);
-        std::string val = Elm::StringOps::toStdString(valPtr);
-        std::string headerLine = key + ": " + val;
-        curlHeaders = curl_slist_append(curlHeaders, headerLine.c_str());
-    });
-    if (curlHeaders) {
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, curlHeaders);
-    }
-
-    CURLcode res = curl_easy_perform(curl);
-
-    long statusCode = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &statusCode);
-
-    curl_slist_free_all(curlHeaders);
-    curl_easy_cleanup(curl);
-
-    // Eco.Http.fetch (Eco/Http.elm) destructures the Err payload as a Tuple2
-    // ( statusCode, statusText ) and adds `url` itself, so build a Tuple2 (NOT a
-    // record). Mask 0x1: slot 0 = unboxed Int, slot 1 = boxed String.
-    if (res != CURLE_OK) {
-        HPointer statusText = allocStringFromUTF8(std::string(curl_easy_strerror(res)));
-        Elm::StackRootGuard guard(&statusText);
-        // statusCode 0 signals a transport-level failure (no HTTP response).
+// Eco.Http.fetch destructures the Err payload as a Tuple2 (statusCode,
+// statusText) and the Ok payload as a String body. Mirrors the pre-Phase-5
+// eager implementation's exact shape.
+HPointer buildFetchResponse(const HttpService::Result& r) {
+    using EK = HttpService::ErrorKind;
+    if (r.error != EK::Ok) {
+        // Transport-level failures: surface a Tuple2 (0, curl-strerror-ish).
+        // Mirrors the pre-Phase-5 path which mapped CURLE_* to a single
+        // "transport failure" with statusCode=0.
+        const char* msg = "Network error";
+        switch (r.error) {
+            case EK::Timeout:      msg = "Request timed out"; break;
+            case EK::BadUrl:       msg = "Bad URL"; break;
+            case EK::NetworkError: msg = "Network error"; break;
+            default: break;
+        }
+        HPointer statusText = allocStringFromUTF8(msg);
+        Elm::StackRootGuard g(&statusText);
         HPointer errTuple = tuple2(unboxedInt(0), boxed(statusText), 0x1);
-        Elm::StackRootGuard tupleGuard(&errTuple);
-        HPointer errVal = err(boxed(errTuple), true);
-        return taskSucceed(errVal);
+        Elm::StackRootGuard tg(&errTuple);
+        return err(boxed(errTuple), true);
     }
 
-    if (statusCode >= 200 && statusCode < 300) {
-        HPointer body = allocStringFromUTF8(responseBody);
-        Elm::StackRootGuard guard(&body);
-        HPointer okVal = ok(boxed(body), true);
-        return taskSucceed(okVal);
-    } else {
-        HPointer statusText = allocStringFromUTF8("HTTP " + std::to_string(statusCode));
-        Elm::StackRootGuard guard(&statusText);
-        HPointer errTuple = tuple2(unboxedInt(static_cast<int64_t>(statusCode)),
-                                   boxed(statusText), 0x1);
-        Elm::StackRootGuard tupleGuard(&errTuple);
-        HPointer errVal = err(boxed(errTuple), true);
-        return taskSucceed(errVal);
+    if (r.status >= 200 && r.status < 300) {
+        HPointer body = allocStringFromUTF8(r.body);
+        Elm::StackRootGuard g(&body);
+        return ok(boxed(body), true);
     }
+
+    HPointer statusText = allocStringFromUTF8(
+        r.statusText.empty() ? std::string("HTTP " + std::to_string(r.status))
+                              : r.statusText);
+    Elm::StackRootGuard g(&statusText);
+    HPointer errTuple = tuple2(unboxedInt(static_cast<int64_t>(r.status)),
+                                boxed(statusText), 0x1);
+    Elm::StackRootGuard tg(&errTuple);
+    return err(boxed(errTuple), true);
 }
 
-uint64_t getArchive(uint64_t url) {
-    using namespace Elm::alloc;
+// ----- KIND_GET_ARCHIVE response builder ----------------------------------
 
-    std::string urlStr = toString(url);
-
-    // Download the archive.
-    CURL* curl = curl_easy_init();
-    if (!curl) {
-        HPointer errStr = allocStringFromUTF8("Failed to initialize curl");
-        return taskSucceed(err(boxed(errStr), true));
+// Run libzip + SHA1 on the body bytes and build the Eco-level success value:
+//   Ok (sha, [(relativePath, content)]). Mirrors the pre-Phase-5 eager path
+//   in `Eco.Http.getArchive`.
+HPointer buildGetArchiveResponse(const HttpService::Result& r) {
+    if (r.error != HttpService::ErrorKind::Ok) {
+        const char* msg = "Network error";
+        switch (r.error) {
+            case HttpService::ErrorKind::Timeout:      msg = "Request timed out"; break;
+            case HttpService::ErrorKind::BadUrl:       msg = "Bad URL"; break;
+            case HttpService::ErrorKind::NetworkError: msg = "Network error"; break;
+            default: break;
+        }
+        HPointer errStr = allocStringFromUTF8(msg);
+        Elm::StackRootGuard g(&errStr);
+        return err(boxed(errStr), true);
     }
 
-    std::string zipData;
-    curl_easy_setopt(curl, CURLOPT_URL, urlStr.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &zipData);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    const std::string& zipData = r.body;
 
-    CURLcode res = curl_easy_perform(curl);
-    curl_easy_cleanup(curl);
-
-    if (res != CURLE_OK) {
-        HPointer errStr = allocStringFromUTF8(std::string(curl_easy_strerror(res)));
-        return taskSucceed(err(boxed(errStr), true));
-    }
-
-    // Compute SHA1 hash.
+    // SHA1.
     std::string shaHex;
     {
         unsigned char hash[SHA_DIGEST_LENGTH];
@@ -138,30 +140,26 @@ uint64_t getArchive(uint64_t url) {
         shaHex = std::string(hex, SHA_DIGEST_LENGTH * 2);
     }
 
-    // Extract ZIP using libzip.
+    // libzip extract — same logic as the pre-Phase-5 eager `getArchive`.
     zip_error_t zipError;
     zip_error_init(&zipError);
-    zip_source_t* src = zip_source_buffer_create(zipData.data(), zipData.size(), 0, &zipError);
+    zip_source_t* src = zip_source_buffer_create(
+        zipData.data(), zipData.size(), 0, &zipError);
     if (!src) {
         zip_error_fini(&zipError);
         HPointer errStr = allocStringFromUTF8("Failed to create zip source");
-        return taskSucceed(err(boxed(errStr), true));
+        Elm::StackRootGuard g(&errStr);
+        return err(boxed(errStr), true);
     }
-
     zip_t* archive = zip_open_from_source(src, ZIP_RDONLY, &zipError);
     if (!archive) {
         zip_source_free(src);
         zip_error_fini(&zipError);
         HPointer errStr = allocStringFromUTF8("Failed to open zip archive");
-        return taskSucceed(err(boxed(errStr), true));
+        Elm::StackRootGuard g(&errStr);
+        return err(boxed(errStr), true);
     }
 
-    // Collect file data first (no allocation yet). Match the JS kernel
-    // (Eco/Kernel/Http.js): return each entry's FULL name including the GitHub
-    // wrapper directory, and keep directory entries (with empty content).
-    // Builder/File.elm writePackage strips the wrapper prefix itself, using the
-    // first entry as the root — so stripping the leading component or dropping
-    // directory entries here would leave it nothing to extract.
     struct FileEntry { std::string content; std::string relativePath; };
     std::vector<FileEntry> entries;
     zip_int64_t numEntries = zip_get_num_entries(archive, 0);
@@ -169,7 +167,6 @@ uint64_t getArchive(uint64_t url) {
         const char* name = zip_get_name(archive, i, 0);
         if (!name) continue;
         std::string entryName(name);
-
         std::string content;
         bool isDir = !entryName.empty() && entryName.back() == '/';
         if (!isDir) {
@@ -183,15 +180,11 @@ uint64_t getArchive(uint64_t url) {
         }
         entries.push_back({std::move(content), std::move(entryName)});
     }
-
     zip_close(archive);
     zip_error_fini(&zipError);
 
-    // Build the result with rooting. Eco.Http.getArchive (Eco/Http.elm)
-    // destructures the kernel result as tuples: outer `( sha, entries )` and
-    // each entry `( relativePath, data )`. So build Tuple2 values (NOT records)
-    // with that exact field order.
-    auto& rs = Allocator::instance().getRootSet();
+    // Build Eco-shape result: Ok (sha, [(relativePath, data)]).
+    auto& rs = Elm::Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
     std::vector<HPointer> fileTuples(entries.size(), listNil());
     for (auto& hp : fileTuples) rs.pushStackRootRange(&hp, 1, 1);
@@ -204,7 +197,6 @@ uint64_t getArchive(uint64_t url) {
             data = allocStringFromUTF8(entries[i].content);
         }
         Elm::StackRootGuard guard(&rel, &data);
-        // ( relativePath, data )
         fileTuples[i] = tuple2(boxed(rel), boxed(data), 0);
     }
     rs.restoreStackRangePoint(saved);
@@ -212,15 +204,151 @@ uint64_t getArchive(uint64_t url) {
     HPointer archiveList = listFromPointers(fileTuples);
     HPointer sha = listNil();
     {
-        Elm::StackRootGuard guard(&archiveList);
+        Elm::StackRootGuard g(&archiveList);
         sha = allocStringFromUTF8(shaHex);
     }
-    Elm::StackRootGuard guard2(&archiveList, &sha);
-    // ( sha, archive )
+    Elm::StackRootGuard g2(&archiveList, &sha);
     HPointer outerTuple = tuple2(boxed(sha), boxed(archiveList), 0);
-    Elm::StackRootGuard guard3(&outerTuple);
-    HPointer okVal = ok(boxed(outerTuple), true);
-    return taskSucceed(okVal);
+    Elm::StackRootGuard g3(&outerTuple);
+    return ok(boxed(outerTuple), true);
+}
+
+// ----- Shared async-source drain ------------------------------------------
+
+void ecoHttpDrain() {
+    auto& sched = Elm::Platform::Scheduler::instance();
+    HttpService::Result r;
+    while (HttpService::instance().tryPopResultEcoLane(r)) {
+        HPointer bundle = sched.takePendingResume(r.token);
+        if (isNil(bundle)) {
+            sched.decrementPendingAsync();
+            continue;
+        }
+        Elm::StackRootGuard bundleRoot(&bundle);
+
+        uint16_t kind;
+        HPointer resume;
+        {
+            Custom* b = static_cast<Custom*>(
+                Elm::Allocator::instance().resolve(bundle));
+            kind = static_cast<uint16_t>(b->ctor);
+            resume = b->values[0].p;
+        }
+        Elm::StackRootGuard resumeRoot(&resume);
+
+        HPointer payload = listNil();
+        {
+            Elm::StackRootGuard payloadRoot(&payload);
+            switch (kind) {
+                case KIND_FETCH:
+                    payload = buildFetchResponse(r);
+                    break;
+                case KIND_GET_ARCHIVE:
+                    payload = buildGetArchiveResponse(r);
+                    break;
+                default:
+                    payload = unit();
+                    break;
+            }
+            HPointer task = sched.taskSucceed(payload);
+            Elm::StackRootGuard taskRoot(&task);
+            Elm::Platform::Scheduler::callClosure1(resume, task);
+        }
+        sched.decrementPendingAsync();
+    }
+}
+
+void ensureRegistered() {
+    static std::once_flag flag;
+    std::call_once(flag, [] {
+        Elm::Platform::Scheduler::instance().registerAsyncSource(
+            ecoHttpDrain,
+            [] { return HttpService::instance().hasReadyResultsEcoLane(); });
+    });
+}
+
+// Allocate a bundle Custom (ctor=kind, values=[resume]) and register it as
+// the pendingResume for `resume`'s token. Returns the token.
+uint64_t parkBundle(uint16_t kind, HPointer resume) {
+    Elm::StackRootGuard rg(&resume);
+    std::vector<Elm::Unboxable> fields(1);
+    fields[0] = boxed(resume);
+    HPointer bundle = custom(kind, fields, /*unboxed_mask=*/0);
+    auto& sched = Elm::Platform::Scheduler::instance();
+    uint64_t token = sched.registerPendingResume(bundle);
+    sched.incrementPendingAsync();
+    return token;
+}
+
+// ----- Async-park bindings -------------------------------------------------
+
+// Captured payload for fetch: tuple3(method, url, headers).
+HPointer fetchBody(HPointer captured, HPointer resume) {
+    HPointer methodHP, urlHP, headersHP;
+    {
+        Tuple3* tup = static_cast<Tuple3*>(
+            Elm::Allocator::instance().resolve(captured));
+        methodHP  = tup->a.p;
+        urlHP     = tup->b.p;
+        headersHP = tup->c.p;
+    }
+    std::string method = toString(Export::encode(methodHP));
+    std::string url    = toString(Export::encode(urlHP));
+    auto hdrs = listOfTuplesToHeaders(Export::encode(headersHP));
+
+    ensureRegistered();
+    uint64_t token = parkBundle(KIND_FETCH, resume);
+
+    HttpService::Request req;
+    req.token = token;
+    req.method = method;
+    req.url = url;
+    req.headers = std::move(hdrs);
+    // Pre-Phase-5 eager path always set Content-Length: 0 for body-less
+    // POSTs because the package registry rejects them with 411. Preserve.
+    if (method == "POST") {
+        req.body = "";  // forces COPYPOSTFIELDS path with size=0
+        req.contentType = "";
+    }
+    req.eco_lane = true;
+    HttpService::instance().submit(std::move(req));
+
+    return unit();  // kill handle
+}
+
+// Captured payload for getArchive: the URL HPointer.
+HPointer getArchiveBody(HPointer captured, HPointer resume) {
+    std::string url = toString(Export::encode(captured));
+
+    ensureRegistered();
+    uint64_t token = parkBundle(KIND_GET_ARCHIVE, resume);
+
+    HttpService::Request req;
+    req.token = token;
+    req.method = "GET";
+    req.url = url;
+    req.eco_lane = true;
+    HttpService::instance().submit(std::move(req));
+
+    return unit();  // kill handle
+}
+
+} // anonymous namespace
+
+uint64_t fetch(uint64_t method, uint64_t url, uint64_t headers) {
+    HPointer methodHP = Export::decode(method);
+    HPointer urlHP = Export::decode(url);
+    HPointer headersHP = Export::decode(headers);
+    Elm::StackRootGuard g(&methodHP, &urlHP, &headersHP);
+    HPointer payload = tuple3(
+        boxed(methodHP), boxed(urlHP), boxed(headersHP), /*unboxed_mask=*/0);
+    return Export::encode(
+        Elm::Platform::makeAsyncBinding<fetchBody>(payload));
+}
+
+uint64_t getArchive(uint64_t url) {
+    return Export::encode(
+        Elm::Platform::makeAsyncBinding<getArchiveBody>(Export::decode(url)));
 }
 
 } // namespace Eco::Kernel::Http

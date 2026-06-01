@@ -1,7 +1,21 @@
 //===- Console.cpp - Console kernel module implementation -----------------===//
+//
+// Per KERNEL_TASK_IO_001 / plans/defer-eager-kernel-tasks-via-binding.md
+// Phase 1: `write`, `readLine`, `readAll` are returned as Task_Bindings so
+// the actual stdin/stdout IO runs when the scheduler steps the binding (NOT
+// at the kernel call site). `log` is the explicit Q7/KERNEL_TASK_IO_001
+// exemption — it's an identity helper that returns its `value` arg, not a
+// Task, and stays eager.
+//
+// readLine/readAll bindings still block the scheduler thread on stdin inside
+// the evaluator (Q3); a future StdinService follow-up (mirror of
+// TimerService/HttpService) will move stdin reads to a worker thread.
+//
+//===----------------------------------------------------------------------===//
 
 #include "Console.hpp"
 #include "KernelHelpers.hpp"
+#include "TaskBinding.hpp"
 #include <cerrno>
 #include <iostream>
 #include <string>
@@ -9,17 +23,30 @@
 
 namespace Eco::Kernel::Console {
 
-uint64_t write(uint64_t handle, uint64_t content) {
-    std::string str = toString(content);
-    int64_t h = static_cast<int64_t>(handle);
+namespace {
+
+// Body for `write`. Captured payload is a Tuple2 with the handle as an
+// unboxed Int (slot 0) and the content as a boxed String (slot 1). The
+// scheduler thread runs this when the binding is stepped.
+HPointer writeBody(HPointer captured) {
+    int64_t handle;
+    HPointer contentHP;
+    {
+        Tuple2* tup = static_cast<Tuple2*>(
+            Elm::Allocator::instance().resolve(captured));
+        handle = tup->a.i;
+        contentHP = tup->b.p;
+    }
+    std::string str = toString(Export::encode(contentHP));
+
     int fd;
-    if (h == 1) {
+    if (handle == 1) {
         fd = STDOUT_FILENO;
-    } else if (h == 2) {
+    } else if (handle == 2) {
         fd = STDERR_FILENO;
     } else {
         // Stream handle support would go here (check global stream handle map).
-        return taskSucceedUnit();
+        return succeedUnit();
     }
     // Write the whole buffer, surfacing errors (e.g. EPIPE when a downstream
     // reader closed the pipe). SIGPIPE is ignored at startup so the write
@@ -33,23 +60,26 @@ uint64_t write(uint64_t handle, uint64_t content) {
                 continue;
             }
             int err = errno;
-            return taskFailErrno(err, "", "console write failed");
+            return failErrno(err, "", "console write failed");
         }
         data += n;
         remaining -= static_cast<size_t>(n);
     }
-    return taskSucceedUnit();
+    return succeedUnit();
 }
 
-uint64_t readLine() {
+// TODO(StdinService): blocking stdin read inside the binding evaluator. Move
+// to a worker thread in a follow-up plan (mirror TimerService / HttpService).
+HPointer readLineBody(HPointer /*captured*/) {
     std::string line;
     if (std::getline(std::cin, line)) {
-        return taskSucceedString(line);
+        return succeedString(line);
     }
-    return taskSucceedString("");
+    return succeedString("");
 }
 
-uint64_t readAll() {
+// TODO(StdinService): same — blocking stdin read inside the evaluator.
+HPointer readAllBody(HPointer /*captured*/) {
     std::string content;
     std::string line;
     while (std::getline(std::cin, line)) {
@@ -58,10 +88,35 @@ uint64_t readAll() {
         }
         content += line;
     }
-    return taskSucceedString(content);
+    return succeedString(content);
+}
+
+} // anonymous namespace
+
+uint64_t write(uint64_t handle, uint64_t content) {
+    HPointer contentHP = Export::decode(content);
+    Elm::StackRootGuard g(&contentHP);
+    HPointer payload = Elm::alloc::tuple2(
+        Elm::alloc::unboxedInt(static_cast<int64_t>(handle)),
+        Elm::alloc::boxed(contentHP),
+        /*unboxed_mask=*/0x1);
+    return Export::encode(Eco::Kernel::makeBinding<writeBody>(payload));
+}
+
+uint64_t readLine() {
+    return Export::encode(Eco::Kernel::makeBinding<readLineBody>(Elm::alloc::unit()));
+}
+
+uint64_t readAll() {
+    return Export::encode(Eco::Kernel::makeBinding<readAllBody>(Elm::alloc::unit()));
 }
 
 uint64_t log(uint64_t tag, uint64_t value) {
+    // EXEMPT from KERNEL_TASK_IO_001: `log` is an identity helper, not a
+    // Task producer. It eagerly writes its `tag` argument to stderr and
+    // returns `value` unchanged so it can be spliced into Elm expressions
+    // (`Console.log "x" x`). See plans/defer-eager-kernel-tasks-via-binding.md
+    // Q7 for the exemption rationale.
     std::string msg = toString(tag);
     msg += '\n';
     // Direct stderr write — bypasses iostream sync so traces appear in

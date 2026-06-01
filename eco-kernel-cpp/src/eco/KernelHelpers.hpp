@@ -3,6 +3,17 @@
 // String conversion, task wrapping, and Elm list traversal utilities used by
 // all Eco kernel module implementations.
 //
+// IMPORTANT (KERNEL_TASK_IO_001 / plans/defer-eager-kernel-tasks-via-binding.md):
+// The `taskSucceed*` / `taskFail*` helpers below should NOT be called from
+// the synchronous return position of a kernel function. They are intended
+// for use INSIDE a Task_Binding evaluator body. New IO-performing kernel
+// functions must defer via `Eco::Kernel::makeBinding<Body>(captured)` (see
+// TaskBinding.hpp) so the syscall fires when the scheduler steps the
+// binding. The helpers in this file then run from inside the body and
+// produce the Task the binding delivers. Direct eager use is reserved for
+// the explicit exemption list (Scheduler primitives, terminator non-returners
+// `exit` / `crash`, identity `log` helper, MVar fast paths).
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef ECO_KERNEL_HELPERS_H

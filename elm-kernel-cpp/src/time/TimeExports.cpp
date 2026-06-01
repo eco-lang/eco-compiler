@@ -10,6 +10,7 @@
 #include "allocator/HeapHelpers.hpp"
 #include "allocator/RuntimeExports.h"
 #include "platform/Scheduler.hpp"
+#include "platform/TaskBinding.hpp"
 #include <chrono>
 #include <ctime>
 #include <cstdlib>
@@ -206,6 +207,28 @@ static void* timeNowBindingEvaluator(void* rawArgs[]) {
     return reinterpret_cast<void*>(Export::encode(Elm::alloc::unit()));
 }
 
+// Phase-8 bodies (plans/defer-eager-kernel-tasks-via-binding.md): `Time.here`
+// and `Time.getZoneName` were the only stock-Elm exceptions to the deferred-
+// binding rule. Both wrap the existing helpers inside a Task_Binding so the
+// `localtime_r` + filesystem reads fire at scheduler-step time.
+static HPointer timeHereBody(HPointer /*captured*/) {
+    int offsetMinutes = getLocalTimezoneOffset();
+    HPointer zone = createZone(offsetMinutes);
+    return Scheduler::instance().taskSucceed(zone);
+}
+
+static HPointer timeGetZoneNameBody(HPointer /*captured*/) {
+    std::string name = getTimezoneName();
+    HPointer zoneName;
+    if (!name.empty()) {
+        zoneName = createZoneNameString(name);
+    } else {
+        int offsetMinutes = getLocalTimezoneOffset();
+        zoneName = createZoneNameOffset(offsetMinutes);
+    }
+    return Scheduler::instance().taskSucceed(zoneName);
+}
+
 } // anonymous namespace
 
 extern "C" {
@@ -242,31 +265,18 @@ HPtr Elm_Kernel_Time_now(HPtr millisToPosix) {
 }
 
 HPtr Elm_Kernel_Time_here() {
-    // Returns Task x Zone
-    // Zone is the local timezone
-
-    int offsetMinutes = getLocalTimezoneOffset();
-    HPointer zone = createZone(offsetMinutes);
-    HPointer task = Scheduler::instance().taskSucceed(zone);
+    // Returns Task x Zone. Per Phase 8 / KERNEL_TASK_IO_001: deferred via
+    // Task_Binding so the `localtime_r` call fires at scheduler-step time.
+    HPointer task = Elm::Platform::makeBinding<timeHereBody>(Elm::alloc::unit());
     return HPtr::fromBits(Export::encode(task));
 }
 
 HPtr Elm_Kernel_Time_getZoneName() {
-    // Returns Task x ZoneName
-    // ZoneName = Name String | Offset Int
-
-    std::string name = getTimezoneName();
-    HPointer zoneName;
-
-    if (!name.empty()) {
-        zoneName = createZoneNameString(name);
-    } else {
-        // Fallback to offset
-        int offsetMinutes = getLocalTimezoneOffset();
-        zoneName = createZoneNameOffset(offsetMinutes);
-    }
-
-    HPointer task = Scheduler::instance().taskSucceed(zoneName);
+    // Returns Task x ZoneName. Per Phase 8 / KERNEL_TASK_IO_001: deferred
+    // via Task_Binding so the TZ env / /etc/localtime / /etc/timezone reads
+    // fire at scheduler-step time, not at module init.
+    HPointer task =
+        Elm::Platform::makeBinding<timeGetZoneNameBody>(Elm::alloc::unit());
     return HPtr::fromBits(Export::encode(task));
 }
 

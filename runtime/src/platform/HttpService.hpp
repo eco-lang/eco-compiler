@@ -38,6 +38,12 @@ public:
         // disables verification (test-only; avoid in production).
         std::string   caInfo;
         bool          verifyPeer = true;
+        // Per KERNEL_TASK_IO_001 / Phase 5 (Q10): Eco.Http submissions route
+        // through a separate result queue so Eco's archive/SHA1 drain doesn't
+        // race with Elm.Http's Response/Metadata drain on a shared queue.
+        // Both lanes share the SAME worker pool and tracking, just split at
+        // completion.
+        bool          eco_lane = false;
     };
 
     enum class ErrorKind : int {
@@ -75,9 +81,12 @@ public:
     // Main-thread-only consumer API. tryPopResult returns true and moves the
     // next completed result into `out`, or false when the ready queue is
     // empty. hasReadyResults is a non-blocking predicate for the event loop's
-    // wait condition.
+    // wait condition. The default Elm-lane methods are unchanged; the
+    // *_eco_lane variants drain Eco.Http submissions (req.eco_lane=true).
     bool tryPopResult(Result& out);
     bool hasReadyResults() const;
+    bool tryPopResultEcoLane(Result& out);
+    bool hasReadyResultsEcoLane() const;
 
     // Progress queue (mirrors the result queue). Progress ticks for a token
     // can arrive before its final Result. Drained on the main thread in the
@@ -104,6 +113,9 @@ private:
 
     mutable std::mutex         resultsMutex_;
     std::queue<Result>         results_;
+
+    mutable std::mutex         ecoResultsMutex_;
+    std::queue<Result>         ecoResults_;
 
     mutable std::mutex         progressMutex_;
     std::queue<Progress>       progress_;

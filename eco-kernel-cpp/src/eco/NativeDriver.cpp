@@ -1,7 +1,17 @@
 //===- NativeDriver.cpp - Eco kernel module impl --------------------------===//
+//
+// Per KERNEL_TASK_IO_001 / plans/defer-eager-kernel-tasks-via-binding.md
+// Phase 6: `lowerAndLink` and `lowerAndLinkBytes` are returned as
+// Task_Bindings. The MLIR→LLVM→linker pipeline still runs on the scheduler
+// thread (LLVM / linker stacks aren't obviously thread-safe), but now at
+// scheduler-step time rather than kernel-call time, matching the
+// KERNEL_TASK_IO_001 invariant.
+//
+//===----------------------------------------------------------------------===//
 
 #include "NativeDriver.hpp"
 #include "KernelHelpers.hpp"
+#include "TaskBinding.hpp"
 
 #include "../../../runtime/src/allocator/Allocator.hpp"
 #include "../../../runtime/src/allocator/Heap.hpp"
@@ -23,33 +33,71 @@ int eco_native_lower_and_link_bytes(const char *bytes, size_t len,
                                      const char *outputPath);
 }
 
-uint64_t lowerAndLink(uint64_t mlirPath, uint64_t outputPath) {
-    std::string mp = toString(mlirPath);
-    std::string op = toString(outputPath);
+namespace {
+
+HPointer lowerAndLinkBody(HPointer captured) {
+    HPointer mlirPathHP;
+    HPointer outputPathHP;
+    {
+        Tuple2* tup = static_cast<Tuple2*>(
+            Elm::Allocator::instance().resolve(captured));
+        mlirPathHP = tup->a.p;
+        outputPathHP = tup->b.p;
+    }
+    std::string mp = toString(Export::encode(mlirPathHP));
+    std::string op = toString(Export::encode(outputPathHP));
     int rc = eco_native_lower_and_link(mp.c_str(), op.c_str());
     if (rc != 0) {
-        return taskFailString(
+        return failString(
             "Eco.NativeDriver.lowerAndLink: lowering/linking failed "
             "(rc=" + std::to_string(rc) + ")");
     }
-    return taskSucceedUnit();
+    return succeedUnit();
 }
 
-uint64_t lowerAndLinkBytes(uint64_t bytes, uint64_t outputPath) {
-    HPointer h = Export::decode(bytes);
-    void *ptr = Elm::Allocator::instance().resolve(h);
+HPointer lowerAndLinkBytesBody(HPointer captured) {
+    HPointer bytesHP;
+    HPointer outputPathHP;
+    {
+        Tuple2* tup = static_cast<Tuple2*>(
+            Elm::Allocator::instance().resolve(captured));
+        bytesHP = tup->a.p;
+        outputPathHP = tup->b.p;
+    }
+    void* ptr = Elm::Allocator::instance().resolve(bytesHP);
     size_t len = Elm::alloc::byteBufferLength(ptr);
-    const uint8_t *data = Elm::alloc::byteBufferData(ptr);
-    std::string op = toString(outputPath);
+    const uint8_t* data = Elm::alloc::byteBufferData(ptr);
+    std::string op = toString(Export::encode(outputPathHP));
 
     int rc = eco_native_lower_and_link_bytes(
         reinterpret_cast<const char *>(data), len, op.c_str());
     if (rc != 0) {
-        return taskFailString(
+        return failString(
             "Eco.NativeDriver.lowerAndLinkBytes: lowering/linking failed "
             "(rc=" + std::to_string(rc) + ")");
     }
-    return taskSucceedUnit();
+    return succeedUnit();
+}
+
+} // anonymous namespace
+
+uint64_t lowerAndLink(uint64_t mlirPath, uint64_t outputPath) {
+    HPointer mlirPathHP = Export::decode(mlirPath);
+    HPointer outputPathHP = Export::decode(outputPath);
+    Elm::StackRootGuard g(&mlirPathHP, &outputPathHP);
+    HPointer payload = Elm::alloc::tuple2(
+        Elm::alloc::boxed(mlirPathHP), Elm::alloc::boxed(outputPathHP), 0);
+    return Export::encode(Eco::Kernel::makeBinding<lowerAndLinkBody>(payload));
+}
+
+uint64_t lowerAndLinkBytes(uint64_t bytes, uint64_t outputPath) {
+    HPointer bytesHP = Export::decode(bytes);
+    HPointer outputPathHP = Export::decode(outputPath);
+    Elm::StackRootGuard g(&bytesHP, &outputPathHP);
+    HPointer payload = Elm::alloc::tuple2(
+        Elm::alloc::boxed(bytesHP), Elm::alloc::boxed(outputPathHP), 0);
+    return Export::encode(
+        Eco::Kernel::makeBinding<lowerAndLinkBytesBody>(payload));
 }
 
 } // namespace Eco::Kernel::NativeDriver
