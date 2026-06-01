@@ -199,6 +199,14 @@ HttpService::Result HttpService::perform(const Request& req) {
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &headerAcc);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    // Enable transparent compression. Passing "" advertises every encoding
+    // libcurl was built with (gzip, deflate, br on most builds) and auto-
+    // decompresses the response body before WRITEFUNCTION sees it. Without
+    // this, a caller-supplied `Accept-Encoding: gzip` header travels but
+    // libcurl returns the raw compressed bytes — the package registry
+    // gzips elm.json responses unconditionally, so the JSON parser then
+    // sees binary gunk ("corrupted information from …/elm.json").
+    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
 
     // Progress reporting (Http.track): the XFERINFO callback posts PODs to the
     // progress queue on the worker thread; the main thread turns them into Elm
