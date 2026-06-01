@@ -812,7 +812,20 @@ fpTakeDirectory filename =
             String.join "/" (List.reverse other)
 
         _ :: other ->
-            String.join "/" (List.reverse other)
+            -- A bare filename like "hello.js" has no slash, so `other` is
+            -- empty here and `String.join` would produce "". Match Haskell's
+            -- System.FilePath.takeDirectory and return "." instead —
+            -- otherwise callers that mkdir the result (e.g. Terminal.Make
+            -- when `--output=` has no directory component) blow up with
+            -- EINVAL on createDir(""). Done as an `if` rather than a
+            -- separate `_ :: []` pattern arm because the latter triggers a
+            -- bug in the current self-hosted Eco compiler that leaves Stage
+            -- 3 unable to compile its own source.
+            if List.isEmpty other then
+                "."
+
+            else
+                String.join "/" (List.reverse other)
 
 
 
@@ -868,8 +881,17 @@ dirFindExecutable filename =
 -}
 dirCreateDirectoryIfMissing : Bool -> FilePath -> Task Never ()
 dirCreateDirectoryIfMissing createParents filename =
-    Eco.File.createDir createParents filename
-        |> IO.crashOnError
+    -- Empty path is a no-op. Some callers compute the directory from a
+    -- bare filename and get back ""; rather than chase every such site
+    -- (see fpTakeDirectory / fpDropFileName), short-circuit here. The
+    -- POSIX mkdir / std::filesystem::create_directories layer below would
+    -- otherwise return EINVAL.
+    if String.length filename == 0 then
+        Task.succeed ()
+
+    else
+        Eco.File.createDir createParents filename
+            |> IO.crashOnError
 
 
 {-| Get the current working directory.
