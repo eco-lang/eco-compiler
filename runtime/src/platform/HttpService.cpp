@@ -234,6 +234,17 @@ HttpService::Result HttpService::perform(const Request& req) {
     if (!req.body.empty()) {
         curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(req.body.size()));
         curl_easy_setopt(curl, CURLOPT_COPYPOSTFIELDS, req.body.data());
+    } else if (req.method == "POST" || req.method == "PUT" || req.method == "PATCH") {
+        // Empty-body POST/PUT/PATCH must still carry Content-Length: 0.
+        // CURLOPT_CUSTOMREQUEST alone leaves libcurl in GET-shape (no
+        // request body, no Content-Length); the elm.org package registry
+        // rejects those with 411. POSTFIELDSIZE=0 tells libcurl the body
+        // length is exactly 0; COPYPOSTFIELDS must be set to engage the
+        // request-body machinery, but the buffer is never read because the
+        // size is 0. The size MUST be set first or libcurl strlens the
+        // data string.
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, 0L);
+        curl_easy_setopt(curl, CURLOPT_COPYPOSTFIELDS, "");
     }
 
     struct curl_slist* headerList = nullptr;
