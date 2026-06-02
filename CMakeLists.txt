@@ -214,6 +214,127 @@ add_subdirectory(eco-kernel-cpp)
 # Guida compiler (Elm compiler written in Elm)
 add_subdirectory(compiler)
 
+#-------------------------------------------------------------------------------
+# Stage C: install rules for the distribution bundle
+#
+# Placed at the top level (rather than each subdirectory) because every
+# target referenced here lives in a different subdir, and CMake processes
+# install() calls in subdir order. Putting the rules here, after every
+# `add_subdirectory(...)`, lets us reference all targets in one place.
+#
+# Bundle scope is musl-only (Stage B output ABI); the legacy non-MUSL
+# build doesn't ship an installable tree. See plans/stage-c-bundle-runtime.md.
+#
+# Layout produced:
+#   <prefix>/bin/eco
+#   <prefix>/lib/eco-runtime/ld.lld
+#   <prefix>/lib/eco-runtime/{libc,libc++,libc++abi,libunwind,libclang_rt.builtins-*}.a
+#   <prefix>/lib/eco-runtime/{libcurl,libssl,libcrypto,libzip,libz}.a
+#   <prefix>/lib/eco-runtime/crt/{crt1,crti,crtn,clang_rt.crtbegin-*,clang_rt.crtend-*}.o
+#   <prefix>/lib/eco-runtime/project/lib{ElmKernel_*,EcoKernel_*,Eco*Static}.a
+#-------------------------------------------------------------------------------
+option(ECO_BUNDLE_STRIP
+       "Strip debug info from bundled project archives so AOT-built binaries \
+are smaller. Turn OFF to keep debug symbols available in produced executables."
+       ON)
+
+if(ECO_STATIC_MUSL)
+    # All bundle install rules are tagged with COMPONENT Bundle so that CPack
+    # can package this component alone — skipping the auto-generated install
+    # rules from add_mlir_library() (libEcoDialect.a etc. under lib/) and from
+    # FetchContent (libcurl headers, CURL CMake config, libcurl.pc, etc.).
+    # Without this, those land in the bundle and bloat it from ~50 MB to ~98 MB.
+
+    # System static archives + LLVM libunwind. Variables come from
+    # runtime/src/codegen/CMakeLists.txt's Stage B.5 query block.
+    install(FILES
+        ${ECO_LIBC_A} ${ECO_LIBCXX_A} ${ECO_LIBCXXABI_A}
+        ${LLVM_LIBUNWIND_LIBRARY} ${ECO_COMPILER_RT_BUILTINS_A}
+        ${OPENSSL_SSL_LIBRARY} ${OPENSSL_CRYPTO_LIBRARY} ${ECO_LIBZ_A}
+        DESTINATION lib/eco-runtime
+        COMPONENT Bundle)
+
+    # crt objects.
+    install(FILES
+        ${ECO_CRT1_O_STATIC} ${ECO_CRTI_O} ${ECO_CRTN_O}
+        ${ECO_CRTBEGIN_O_STATIC} ${ECO_CRTEND_O_STATIC}
+        DESTINATION lib/eco-runtime/crt
+        COMPONENT Bundle)
+
+    # Bundled static linker, built statically by the Stage 1 LLVM image.
+    install(PROGRAMS ${ECO_BUNDLED_LD_LLD}
+            DESTINATION lib/eco-runtime
+            COMPONENT Bundle)
+
+    # Project static archives. Collect them all then install in one call.
+    set(_eco_project_targets
+        EcoEntryStatic EcoRuntimeStatic EcoNativeDriverStatic)
+    foreach(mod ${ECO_ELM_KERNEL_MODS})
+        list(APPEND _eco_project_targets ElmKernel_${mod})
+    endforeach()
+    foreach(mod ${ECO_KERNEL_MODS})
+        list(APPEND _eco_project_targets EcoKernel_${mod})
+    endforeach()
+    install(TARGETS ${_eco_project_targets}
+            ARCHIVE DESTINATION lib/eco-runtime/project
+            COMPONENT Bundle)
+
+    # Vendored statics from FetchContent. libcurl_static is created in
+    # the top-level FetchContent block at the start of this file; zip
+    # comes from eco-kernel-cpp's libzip vendoring.
+    install(TARGETS libcurl_static zip
+            ARCHIVE DESTINATION lib/eco-runtime
+            COMPONENT Bundle)
+
+    # Strip every .a in the bundle. The bundled static ld.lld is built
+    # without zlib support (LLVM_ENABLE_ZLIB=OFF inherited from the LLVM
+    # base image), so it can't decompress debug sections in Alpine's musl
+    # libc.a etc. Stripping debug info from every bundled archive removes
+    # the compressed sections entirely. CPACK_STRIP_FILES only handles
+    # executables and .so's, not static archives.
+    if(ECO_BUNDLE_STRIP)
+        install(CODE "
+            file(GLOB_RECURSE _archives \"\${CMAKE_INSTALL_PREFIX}/lib/eco-runtime/*.a\")
+            foreach(_a \${_archives})
+                execute_process(COMMAND ${CMAKE_STRIP} --strip-debug \${_a})
+            endforeach()
+        " COMPONENT Bundle)
+    endif()
+endif()
+
+#-------------------------------------------------------------------------------
+# Stage C: distribution bundles via CPack
+#
+# Produces `eco-0.1.0-x86_64-linux-musl.{tar.gz,zip}` via `cmake --build
+# <build> --target package`. The TGZ and ZIP generators package the install
+# tree defined by the `install()` rules in compiler/ and runtime/src/codegen/.
+# Bundle scope is musl-only (Stage B output ABI); see plans/stage-c-bundle-runtime.md.
+#-------------------------------------------------------------------------------
+if(ECO_STATIC_MUSL)
+    set(CPACK_PACKAGE_NAME "eco")
+    set(CPACK_PACKAGE_VERSION "0.1.0")
+    set(CPACK_PACKAGE_FILE_NAME "eco-0.1.0-x86_64-linux-musl")
+    set(CPACK_GENERATOR "TGZ;ZIP")
+    set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+        "Eco — Elm compiler with static AOT runtime (Stage B / MUSL)")
+    set(CPACK_PACKAGE_VENDOR "thesett")
+    # Strips the eco binary and bundled ld.lld at package time. Static
+    # archives are stripped separately via install(CODE …) in
+    # runtime/src/codegen/CMakeLists.txt, gated on ECO_BUNDLE_STRIP.
+    set(CPACK_STRIP_FILES ON)
+    set(CPACK_PACKAGE_DESCRIPTION_FILE
+        "${CMAKE_SOURCE_DIR}/plans/stage-c-bundle-runtime.md")
+    # Restrict the package to the explicit Bundle component so add_mlir_library
+    # and FetchContent's auto-installed install rules (libEcoDialect.a, curl
+    # headers, cmake config, libcurl.pc, etc.) do not pollute the archive.
+    set(CPACK_COMPONENTS_ALL Bundle)
+    set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
+    # Archive component installs default to <component-name>/-prefixed file
+    # names (eco-0.1.0-…-Bundle.tar.gz). Override so we get the bare name.
+    set(CPACK_ARCHIVE_BUNDLE_FILE_NAME "${CPACK_PACKAGE_FILE_NAME}")
+    include(CPack)
+endif()
+
 # All Elm-tooling caches (eco-stuff/, elm-stuff/, bin/) now live under
 # ${CMAKE_BINARY_DIR}/compiler/build-{xhr,kernel}/ and
 # ${CMAKE_BINARY_DIR}/test/<pkg>/, shadowed in via the configure-time scaffolding

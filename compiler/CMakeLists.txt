@@ -482,13 +482,14 @@ set_source_files_properties(${ECO_STAGE9_OBJ} PROPERTIES
 # --start-group / --end-group are raw `-Wl,*` strings (CMake 3.20 lacks
 # LINK_GROUP). ElmKernel_Utils is whole-archived so its Order-singleton
 # registrar (Eco_Kernel_Order_register_gc_roots) is always linked — same
-# reason eco-boot.cpp's linkExecutable does it. EcoNativeDriverStatic sits
-# inside the group with no --whole-archive: its strong
-# eco_native_lower_and_link definition overrides the weak stub in
-# EcoEntryStatic, and EcoKernel_NativeDriver's strong external reference is
-# what pulls EcoNativeDriver.cpp out of the archive. Nothing else in
-# EcoNativeDriverStatic ships static initializers that should run
-# unconditionally.
+# reason eco-boot.cpp's linkExecutable does it. EcoNativeDriverStatic is
+# wrapped in --whole-archive so its strong eco_native_lower_and_link
+# definition reliably overrides the weak stub in EcoEntryStatic regardless
+# of the linker's archive policy — lld picks the first archive that
+# satisfies an undef, which is the weak stub, and never pulls in the strong
+# member otherwise. The handful of extra objects (EcoBackend, EcoPipeline,
+# LoweringStats) is the price; none of them ship problematic static
+# initializers.
 #
 # stdc++ + curl/ssl/crypto/zip (dynamic build only): under ECO_STATIC,
 # libstdc++.a arrives via the driver's -static-libstdc++ at the right place,
@@ -523,7 +524,15 @@ function(eco_apply_unified_link target)
         EcoKernel_File EcoKernel_Console EcoKernel_Env EcoKernel_Process
         EcoKernel_MVar EcoKernel_NativeDriver EcoKernel_Runtime EcoKernel_Http
         EcoKernel_Crash
+        # --whole-archive forces every object in EcoNativeDriverStatic into
+        # the link so the strong eco_native_lower_and_link overrides the weak
+        # stub in EcoEntryStatic. Required for lld (ECO_STATIC_MUSL preset),
+        # whose archive-resolution policy keeps the first-found weak symbol
+        # and never pulls the strong member; bfd happens to prefer strong
+        # over weak from later archives in the group, but that's not portable.
+        "-Wl,--whole-archive"
         EcoNativeDriverStatic
+        "-Wl,--no-whole-archive"
         "-Wl,--end-group"
         pthread m
         eco::llvm_libunwind
@@ -539,6 +548,15 @@ set_target_properties(eco PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${BUILD_KERNEL_DIR}/bin"
 )
 eco_apply_unified_link(eco)
+
+# Stage C: install the eco binary alongside the lib/eco-runtime/ tree
+# rooted in runtime/src/codegen/CMakeLists.txt. Bundle scope is MUSL-only.
+# COMPONENT Bundle isolates this install rule from MLIR/FetchContent's
+# auto-generated install rules — see the matching comment in the top-level
+# CMakeLists.txt.
+if(ECO_STATIC_MUSL)
+    install(TARGETS eco RUNTIME DESTINATION bin COMPONENT Bundle)
+endif()
 
 # -- Stage 9a (quick) + eco-quick: dev-iteration sibling of `eco`.
 #

@@ -459,6 +459,16 @@ target_link_libraries(ecoc PRIVATE Threads::Threads)
 # located via cmake/LLVMLibunwind.cmake from the top-level CMakeLists.
 target_link_libraries(ecoc PRIVATE eco::llvm_libunwind)
 
+# HttpService.cpp (compiled directly into ecoc) needs <curl/curl.h>. Under
+# ECO_STATIC the system /usr/include/curl is absent and curl is vendored via
+# FetchContent, so the include dir must flow from the libcurl_static target.
+if(ECO_STATIC)
+    target_link_libraries(ecoc PRIVATE libcurl_static)
+else()
+    find_package(CURL REQUIRED)
+    target_link_libraries(ecoc PRIVATE CURL::libcurl)
+endif()
+
 #------------------------------------------------------------------------------
 # Build the EcoRunner library (for in-process test execution)
 #------------------------------------------------------------------------------
@@ -548,6 +558,14 @@ target_link_libraries(obj.EcoRunner PRIVATE Threads::Threads)
 # get LLVM libunwind's include dir, library, and rpath flag.
 target_link_libraries(EcoRunner PUBLIC eco::llvm_libunwind)
 
+# HttpService.cpp (compiled into obj.EcoRunner) needs <curl/curl.h>. Same
+# reasoning as ecoc above — vendored curl under ECO_STATIC.
+if(ECO_STATIC)
+    target_link_libraries(obj.EcoRunner PRIVATE libcurl_static)
+else()
+    target_link_libraries(obj.EcoRunner PRIVATE CURL::libcurl)
+endif()
+
 #------------------------------------------------------------------------------
 # Build the EcoRuntimeStatic library (for linking into AOT-compiled binaries)
 #------------------------------------------------------------------------------
@@ -585,6 +603,16 @@ target_compile_options(EcoRuntimeStatic PRIVATE -fexceptions -UNDEBUG)
 # PUBLIC so AOT consumers inherit LLVM libunwind's include dir, library, and
 # rpath flag. See cmake/LLVMLibunwind.cmake.
 target_link_libraries(EcoRuntimeStatic PUBLIC eco::llvm_libunwind)
+
+# HttpService.cpp includes <curl/curl.h>. Under ECO_STATIC curl is vendored
+# via FetchContent (no system /usr/include/curl), so the include dir must
+# come from the libcurl_static target; otherwise CURL::libcurl provides it.
+if(ECO_STATIC)
+    target_link_libraries(EcoRuntimeStatic PRIVATE libcurl_static)
+else()
+    find_package(CURL REQUIRED)
+    target_link_libraries(EcoRuntimeStatic PRIVATE CURL::libcurl)
+endif()
 
 if(ECO_GC_DEBUG)
     target_compile_definitions(EcoRuntimeStatic PRIVATE ECO_GC_DEBUG=1)
@@ -639,6 +667,7 @@ add_library(EcoNativeDriverStatic STATIC
     EcoBackend.cpp
     EcoPipeline.cpp
     LoweringStats.cpp
+    EcoBootConfig.cpp
 )
 
 target_include_directories(EcoNativeDriverStatic PUBLIC
@@ -706,13 +735,20 @@ endif()
 
 set(ECO_BOOT_CONFIG_HEADER "${CMAKE_CURRENT_BINARY_DIR}/include/eco/EcoBootConfig.h")
 
+# CACHE INTERNAL so the top-level CMakeLists.txt's Stage C bundle install
+# rules can iterate the same lists (CMake otherwise scopes these to this
+# subdirectory only — see commit history for why this matters for bundle
+# completeness).
 set(ECO_ELM_KERNEL_MODS
     Basics Bitwise Char String List Utils JsArray Debug
     Scheduler Platform Process VirtualDom Json Browser Bytes
     File Http Parser Regex Time Url EffectRegistry
+    CACHE INTERNAL "Elm kernel module names — drives static lib targets and bundle install"
 )
 
-set(ECO_KERNEL_MODS File Console Env Process MVar NativeDriver Runtime Http Crash)
+set(ECO_KERNEL_MODS File Console Env Process MVar NativeDriver Runtime Http Crash
+    CACHE INTERNAL "Eco kernel module names — drives static lib targets and bundle install"
+)
 
 #------------------------------------------------------------------------------
 # Phase 3: linker + crt path discovery for direct ld invocation.
@@ -753,7 +789,11 @@ function(_eco_query_clang_path OUT_VAR FLAG)
     )
     # Normalize via realpath so the baked path doesn't depend on '../' segments.
     get_filename_component(_path "${_path}" REALPATH)
+    # Set in caller's scope (used immediately for messages/checks) AND in the
+    # cache so the top-level CMakeLists.txt's Stage C bundle install rules can
+    # reference the same paths.
     set(${OUT_VAR} "${_path}" PARENT_SCOPE)
+    set(${OUT_VAR} "${_path}" CACHE INTERNAL "Resolved by _eco_query_clang_path(${FLAG})")
 endfunction()
 
 _eco_query_clang_path(ECO_CRT1_O  Scrt1.o)
@@ -770,8 +810,12 @@ get_filename_component(ECO_GCC_LIBDIR "${ECO_LIBGCC_A}" DIRECTORY)
 # unconditionally without branching.
 if(ECO_STATIC_MUSL)
     _eco_query_clang_path(ECO_CRT1_O_STATIC     crt1.o)
-    _eco_query_clang_path(ECO_CRTBEGIN_O_STATIC crtbegin.o)
-    _eco_query_clang_path(ECO_CRTEND_O_STATIC   crtend.o)
+    # Stage C bundle: use compiler-rt's crtbegin/crtend (clang_rt.crtbegin-<arch>.o)
+    # rather than gcc's. Keeps the runtime stack consistent — libc++ + compiler-rt
+    # builtins + LLVM libunwind — so the bundle only carries compiler-rt artifacts.
+    _eco_query_clang_path(ECO_CRTBEGIN_O_STATIC clang_rt.crtbegin-x86_64.o)
+    _eco_query_clang_path(ECO_CRTEND_O_STATIC   clang_rt.crtend-x86_64.o)
+    _eco_query_clang_path(ECO_LIBC_A            libc.a)
     _eco_query_clang_path(ECO_LIBCXX_A          libc++.a)
     _eco_query_clang_path(ECO_LIBCXXABI_A       libc++abi.a)
     # compiler-rt builtins archive. `--print-libgcc-file-name` returns
@@ -786,13 +830,72 @@ if(ECO_STATIC_MUSL)
     )
     get_filename_component(ECO_COMPILER_RT_BUILTINS_A
         "${ECO_COMPILER_RT_BUILTINS_A}" REALPATH)
+    # Mirror _eco_query_clang_path's CACHE INTERNAL handling so the top-level
+    # bundle install rules see this path.
+    set(ECO_COMPILER_RT_BUILTINS_A "${ECO_COMPILER_RT_BUILTINS_A}"
+        CACHE INTERNAL "compiler-rt builtins archive (clang --print-libgcc-file-name)")
     message(STATUS "Eco AOT (musl/static) paths:")
-    message(STATUS "  crt1.o:          ${ECO_CRT1_O_STATIC}")
-    message(STATUS "  crtbegin.o:      ${ECO_CRTBEGIN_O_STATIC}")
-    message(STATUS "  crtend.o:        ${ECO_CRTEND_O_STATIC}")
-    message(STATUS "  libc++.a:        ${ECO_LIBCXX_A}")
-    message(STATUS "  libc++abi.a:     ${ECO_LIBCXXABI_A}")
-    message(STATUS "  compiler-rt:     ${ECO_COMPILER_RT_BUILTINS_A}")
+    message(STATUS "  crt1.o:                  ${ECO_CRT1_O_STATIC}")
+    message(STATUS "  clang_rt.crtbegin.o:     ${ECO_CRTBEGIN_O_STATIC}")
+    message(STATUS "  clang_rt.crtend.o:       ${ECO_CRTEND_O_STATIC}")
+    message(STATUS "  libc.a:                  ${ECO_LIBC_A}")
+    message(STATUS "  libc++.a:                ${ECO_LIBCXX_A}")
+    message(STATUS "  libc++abi.a:             ${ECO_LIBCXXABI_A}")
+    message(STATUS "  libclang_rt.builtins.a:  ${ECO_COMPILER_RT_BUILTINS_A}")
+    # Fail fast if any of the queries returned the input filename unchanged
+    # (clang -print-file-name's "not found" behavior). Each path must resolve
+    # to an absolute file present on the build host.
+    foreach(_p
+        ECO_CRT1_O_STATIC ECO_CRTBEGIN_O_STATIC ECO_CRTEND_O_STATIC
+        ECO_LIBC_A ECO_LIBCXX_A ECO_LIBCXXABI_A ECO_COMPILER_RT_BUILTINS_A)
+        if(NOT IS_ABSOLUTE "${${_p}}")
+            message(FATAL_ERROR
+                "Eco Stage B: ${_p} did not resolve to an absolute path: '${${_p}}'")
+        endif()
+    endforeach()
+
+    # Two ld.lld variables for two distinct use cases:
+    #
+    #  ECO_BUILD_LD_LLD — used at *build time* by eco-boot-native to link
+    #    the eco binary itself (and the AOT-built bootstrap stages). Must
+    #    be able to read Alpine's debug-compressed musl libc.a, which means
+    #    it needs LLVM_ENABLE_ZLIB=ON. The system /usr/bin/ld.lld (from
+    #    apk's lld package) qualifies.
+    #
+    #  ECO_BUNDLED_LD_LLD — copied into the distribution bundle and used
+    #    at *user-binary build time* by the installed eco. Must be fully
+    #    static so it runs on any Linux host. Built standalone from the
+    #    Stage 1 LLVM image into /opt/llvm-mlir/bin/ld.lld. Doesn't need
+    #    zlib because the install rule strips debug info from every
+    #    bundled archive so nothing in the link is compressed.
+    #
+    # `bundledLinker.buildPath` in EcoBootConfig.h points at ECO_BUILD_LD_LLD
+    # so that eco-boot-native at build time picks the zlib-capable system
+    # lld; the install tree later puts ECO_BUNDLED_LD_LLD in
+    # lib/eco-runtime/, which the runtime resolver prefers when present.
+    # Build-time lld — must be the zlib-capable apk one (handles Alpine's
+    # debug-compressed musl libc.a). The standard PATH search picks
+    # /usr/bin/ld.lld (apk's lld package).
+    find_program(ECO_BUILD_LD_LLD ld.lld REQUIRED)
+    # Bundled static lld lives outside PATH at /opt/llvm-mlir/libexec/eco-bundle/
+    # so clang's `-fuse-ld=lld` in the host build never accidentally picks it.
+    # Built standalone from the LLVM 21.1.4 source tree with -static and
+    # LLVM_ENABLE_ZLIB=OFF (inherited from /opt/llvm-mlir's LLVM build).
+    find_program(ECO_BUNDLED_LD_LLD ld.lld
+        PATHS /opt/llvm-mlir/libexec/eco-bundle
+        NO_DEFAULT_PATH)
+    if(NOT ECO_BUNDLED_LD_LLD)
+        # No statically-built lld available. Fall back to the build lld so
+        # the bundle still exists, but warn it won't be host-portable.
+        set(ECO_BUNDLED_LD_LLD "${ECO_BUILD_LD_LLD}")
+        message(WARNING
+            "Stage C: /opt/llvm-mlir/libexec/eco-bundle/ld.lld not found — "
+            "bundling ${ECO_BUILD_LD_LLD} instead. The resulting bundle "
+            "will not be host-portable. Build the static lld via "
+            "LLVM_ENABLE_PROJECTS=mlir;lld in the Stage 1 LLVM image.")
+    endif()
+    message(STATUS "  ld.lld (build-time):     ${ECO_BUILD_LD_LLD}")
+    message(STATUS "  ld.lld (bundled):        ${ECO_BUNDLED_LD_LLD}")
 endif()
 
 # Dynamic linker (the program interpreter the PT_INTERP entry points to).
@@ -820,56 +923,83 @@ message(STATUS "  crtendS:    ${ECO_CRTEND_O}")
 message(STATUS "  libgcc.a:   ${ECO_LIBGCC_A}")
 message(STATUS "  gcc libdir: ${ECO_GCC_LIBDIR}")
 
-# Build the content string with generator expressions
+# Build the content string with generator expressions.
+#
+# The header carries two parallel pieces of information per runtime file:
+#
+#   1. A `buildPath` — the absolute path resolved at CMake configure time on
+#      the build host. Used by `eco-boot-native` *during the build* to AOT-
+#      compile stage9.mlir (since the bundle install tree doesn't exist yet),
+#      and as a fallback for any consumer that runs outside the bundle.
+#
+#   2. A `basename` + `subdir` — the layout the installed bundle uses
+#      (`lib/eco-runtime/<subdir>/<basename>`). The runtime resolver in
+#      EcoBootConfig.cpp prefers this when ECO_RUNTIME_DIR is set or when
+#      the auto-resolved `<exe>/../lib/eco-runtime/` exists.
+#
+# This dual representation means the same generated header serves both the
+# build-time eco-boot-native (which has no bundle) and the installed eco
+# (which uses the bundle). No #ifdef, no two-pass codegen.
 set(ECO_BOOT_CONFIG_CONTENT "// Auto-generated by CMake. Do not edit.\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT "#pragma once\n\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT "#include <vector>\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT "#include <string>\n\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT "namespace eco {\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT "namespace config {\n\n")
-string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *entryLib = \"$<TARGET_FILE:EcoEntryStatic>\";\n")
-string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *runtimeLib = \"$<TARGET_FILE:EcoRuntimeStatic>\";\n")
-# LLVM libunwind — passed as a full library path (not -lunwind) so AOT links
-# do NOT accidentally pick up the system (nongnu) libunwind.
-string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *unwindLib = \"${LLVM_LIBUNWIND_LIBRARY}\";\n")
-string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *unwindLibDir = \"${LLVM_LIBUNWIND_LIBRARY_DIR}\";\n\n")
-string(APPEND ECO_BOOT_CONFIG_CONTENT "inline std::vector<std::string> elmKernelLibs() {\n")
+
+string(APPEND ECO_BOOT_CONFIG_CONTENT
+    "// Bundle layout descriptor for a single runtime file. resolveFile()\n"
+    "// returns ECO_RUNTIME_DIR/<subdir>/<basename> if that env-var is set,\n"
+    "// else <exe>/../lib/eco-runtime/<subdir>/<basename> when that path\n"
+    "// exists, else falls back to buildPath. Linux-only.\n"
+    "struct RuntimeFile {\n"
+    "    const char *basename;\n"
+    "    const char *subdir;    // \"\", \"crt\", or \"project\"\n"
+    "    const char *buildPath;\n"
+    "};\n\n"
+    "std::string runtimeDir();\n"
+    "std::string resolveFile(const RuntimeFile &f);\n\n")
+
+# --- Project static archives ---------------------------------------------
+# Generator expressions resolve to the actual build-tree paths
+# (libElmKernel_Basics.a etc.). Basenames are derived at codegen time so
+# the bundle layout knows them without re-querying CMake at runtime.
+string(APPEND ECO_BOOT_CONFIG_CONTENT
+    "inline RuntimeFile entryLib   {\"libEcoEntryStatic.a\",   \"project\", \"$<TARGET_FILE:EcoEntryStatic>\"};\n"
+    "inline RuntimeFile runtimeLib {\"libEcoRuntimeStatic.a\", \"project\", \"$<TARGET_FILE:EcoRuntimeStatic>\"};\n\n")
+
+string(APPEND ECO_BOOT_CONFIG_CONTENT "inline std::vector<RuntimeFile> elmKernelLibs() {\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT "    return {\n")
 foreach(mod ${ECO_ELM_KERNEL_MODS})
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "        \"$<TARGET_FILE:ElmKernel_${mod}>\",\n")
+    string(APPEND ECO_BOOT_CONFIG_CONTENT
+        "        {\"libElmKernel_${mod}.a\", \"project\", \"$<TARGET_FILE:ElmKernel_${mod}>\"},\n")
 endforeach()
 string(APPEND ECO_BOOT_CONFIG_CONTENT "    };\n}\n\n")
-string(APPEND ECO_BOOT_CONFIG_CONTENT "inline std::vector<std::string> ecoKernelLibs() {\n")
+
+string(APPEND ECO_BOOT_CONFIG_CONTENT "inline std::vector<RuntimeFile> ecoKernelLibs() {\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT "    return {\n")
 foreach(mod ${ECO_KERNEL_MODS})
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "        \"$<TARGET_FILE:EcoKernel_${mod}>\",\n")
+    string(APPEND ECO_BOOT_CONFIG_CONTENT
+        "        {\"libEcoKernel_${mod}.a\", \"project\", \"$<TARGET_FILE:EcoKernel_${mod}>\"},\n")
 endforeach()
 string(APPEND ECO_BOOT_CONFIG_CONTENT "    };\n}\n\n")
 
-# System libraries pulled in by static kernel archives. The static archives
-# only carry their own object code; their PRIVATE link interface (libcurl,
-# libssl, libcrypto, libzip) doesn't propagate, so the AOT linker driven by
-# eco-boot-native must repeat them on its own command line. We list the
-# always-present ones (curl/ssl/crypto/pthread/m/stdc++) directly in
-# eco-boot.cpp; libzip is conditional on host availability and travels
-# through this generated config.
-string(APPEND ECO_BOOT_CONFIG_CONTENT "inline std::vector<std::string> kernelSystemLibs() {\n")
-string(APPEND ECO_BOOT_CONFIG_CONTENT "    return {\n")
-if(ECO_KERNEL_LIBZIP_FOUND)
-    foreach(libzip_entry IN LISTS ECO_KERNEL_LIBZIP_LIBRARIES)
-        # pkg-config returns bare lib names ("zip"); turn each into "-l<name>"
-        # for the linker-args list. Absolute paths are passed as-is.
-        if(IS_ABSOLUTE "${libzip_entry}")
-            string(APPEND ECO_BOOT_CONFIG_CONTENT "        \"${libzip_entry}\",\n")
-        else()
-            string(APPEND ECO_BOOT_CONFIG_CONTENT "        \"-l${libzip_entry}\",\n")
-        endif()
-    endforeach()
-endif()
-string(APPEND ECO_BOOT_CONFIG_CONTENT "    };\n}\n\n")
+# --- LLVM libunwind ------------------------------------------------------
+# Passed as an absolute path (not -lunwind) so AOT links never pick up the
+# system (nongnu) libunwind. See cmake/LLVMLibunwind.cmake.
+get_filename_component(_unwind_base "${LLVM_LIBUNWIND_LIBRARY}" NAME)
+string(APPEND ECO_BOOT_CONFIG_CONTENT
+    "inline RuntimeFile unwindLib {\"${_unwind_base}\", \"\", \"${LLVM_LIBUNWIND_LIBRARY}\"};\n")
+# unwindLibDir: still needed by the non-static glibc-PIE link to set
+# -rpath so libunwind.so resolves at AOT-binary runtime. Unused under
+# ECO_STATIC* (the .a path doesn't need rpath).
+string(APPEND ECO_BOOT_CONFIG_CONTENT
+    "inline const char *unwindLibDir = \"${LLVM_LIBUNWIND_LIBRARY_DIR}\";\n\n")
 
 #--- Phase 3: linker + crt paths for direct ld invocation -----------------
-string(APPEND ECO_BOOT_CONFIG_CONTENT "// --- Phase 3: direct-linker config ---\n")
+# The non-MUSL (glibc/Stage A) profile still uses the legacy absolute-path
+# constants. Stage C bundling only applies under ECO_STATIC_MUSL.
+string(APPEND ECO_BOOT_CONFIG_CONTENT "// --- Phase 3: direct-linker config (non-MUSL) ---\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *systemLinker = \"${ECO_SYSTEM_LD}\";\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *dynamicLinker = \"${ECO_DYNAMIC_LINKER}\";\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *crt1Obj = \"${ECO_CRT1_O}\";\n")
@@ -880,6 +1010,10 @@ string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *crtendObj = \"${ECO_CR
 string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libgccA = \"${ECO_LIBGCC_A}\";\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *gccLibDir = \"${ECO_GCC_LIBDIR}\";\n\n")
 
+# librarySearchDirs / kernelSystemLibs — needed by the non-MUSL link
+# (glibc-PIE) where -lc/-lm/-lstdc++ and -lzip resolve via the linker's
+# search path. Unused under ECO_STATIC_MUSL (every dep is absolute), but
+# kept so the legacy code path in EcoNativeDriver.cpp still compiles.
 string(APPEND ECO_BOOT_CONFIG_CONTENT "inline std::vector<std::string> librarySearchDirs() {\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT "    return {\n")
 foreach(_d ${ECO_LIBRARY_DIRS})
@@ -890,19 +1024,25 @@ foreach(_d ${ECO_LIBRARY_DIRS})
 endforeach()
 string(APPEND ECO_BOOT_CONFIG_CONTENT "    };\n}\n\n")
 
+string(APPEND ECO_BOOT_CONFIG_CONTENT "inline std::vector<std::string> kernelSystemLibs() {\n")
+string(APPEND ECO_BOOT_CONFIG_CONTENT "    return {\n")
+if(ECO_KERNEL_LIBZIP_FOUND)
+    foreach(libzip_entry IN LISTS ECO_KERNEL_LIBZIP_LIBRARIES)
+        if(IS_ABSOLUTE "${libzip_entry}")
+            string(APPEND ECO_BOOT_CONFIG_CONTENT "        \"${libzip_entry}\",\n")
+        else()
+            string(APPEND ECO_BOOT_CONFIG_CONTENT "        \"-l${libzip_entry}\",\n")
+        endif()
+    endforeach()
+endif()
+string(APPEND ECO_BOOT_CONFIG_CONTENT "    };\n}\n\n")
+
 #--- Stage A.5: static-archive paths for AOT-built binaries ----------------
-# When ECO_STATIC is on, EcoNativeDriver::linkExecutable swaps the bare
-# `-lcurl / -lssl / -lcrypto / -lzip / -lstdc++ / -lgcc_s` flags for the
-# absolute .a paths discovered here. glibc-family libs (-lpthread/-lm/-lc)
-# stay dynamic — Stage A.5 mirrors Stage A's "only glibc remains shared"
-# contract for AOT outputs. See plans/static-link-eco-binary.md.
+# Vendored libcurl/libssl/libcrypto/libzip/libz under ECO_STATIC — emitted
+# as RuntimeFile so the Stage C bundle can carry them too.
 if(ECO_STATIC)
     set(ECO_STATIC_BOOL "true")
     _eco_query_clang_path(ECO_LIBSTDCXX_A libstdc++.a)
-    # libzip.a uses deflate/inflate/crc32 from zlib; libcurl.a uses zlib too
-    # (HTTP Content-Encoding: gzip). Under ECO_STATIC every find_library
-    # already prefers .a (CMAKE_FIND_LIBRARY_SUFFIXES at top level), so this
-    # resolves to /usr/lib/x86_64-linux-gnu/libz.a on Debian.
     find_library(ECO_LIBZ_A z REQUIRED)
     message(STATUS "Eco AOT static-archive paths (ECO_STATIC):")
     message(STATUS "  libstdc++.a: ${ECO_LIBSTDCXX_A}")
@@ -917,31 +1057,39 @@ endif()
 string(APPEND ECO_BOOT_CONFIG_CONTENT "// --- Stage A.5: static-archive paths (ECO_STATIC) ---\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT "inline constexpr bool ecoStatic = ${ECO_STATIC_BOOL};\n")
 if(ECO_STATIC)
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libstdcxxStaticA = \"${ECO_LIBSTDCXX_A}\";\n")
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libcurlStaticA = \"$<TARGET_FILE:libcurl_static>\";\n")
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libsslStaticA = \"${OPENSSL_SSL_LIBRARY}\";\n")
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libcryptoStaticA = \"${OPENSSL_CRYPTO_LIBRARY}\";\n")
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libzipStaticA = \"$<TARGET_FILE:zip>\";\n")
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libzStaticA = \"${ECO_LIBZ_A}\";\n")
+    # ECO_LIBSTDCXX_A / OPENSSL_*_LIBRARY are absolute file paths; vendored
+    # targets ($<TARGET_FILE:...>) resolve at generation time. Compute the
+    # basenames for the bundle layout from the absolute paths so the install
+    # tree mirrors what eco-boot-native sees at build time.
+    get_filename_component(_libstdcxx_name "${ECO_LIBSTDCXX_A}" NAME)
+    get_filename_component(_libssl_name "${OPENSSL_SSL_LIBRARY}" NAME)
+    get_filename_component(_libcrypto_name "${OPENSSL_CRYPTO_LIBRARY}" NAME)
+    get_filename_component(_libz_name "${ECO_LIBZ_A}" NAME)
+    string(APPEND ECO_BOOT_CONFIG_CONTENT
+        "inline RuntimeFile libstdcxxStaticA  {\"${_libstdcxx_name}\", \"\", \"${ECO_LIBSTDCXX_A}\"};\n"
+        "inline RuntimeFile libcurlStaticA    {\"libcurl.a\",          \"\", \"$<TARGET_FILE:libcurl_static>\"};\n"
+        "inline RuntimeFile libsslStaticA     {\"${_libssl_name}\",    \"\", \"${OPENSSL_SSL_LIBRARY}\"};\n"
+        "inline RuntimeFile libcryptoStaticA  {\"${_libcrypto_name}\", \"\", \"${OPENSSL_CRYPTO_LIBRARY}\"};\n"
+        "inline RuntimeFile libzipStaticA     {\"libzip.a\",           \"\", \"$<TARGET_FILE:zip>\"};\n"
+        "inline RuntimeFile libzStaticA       {\"${_libz_name}\",      \"\", \"${ECO_LIBZ_A}\"};\n")
 else()
-    # Provide stubs so EcoNativeDriver.cpp can reference these unconditionally;
-    # they won't be used at runtime when ecoStatic is false.
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libstdcxxStaticA = \"\";\n")
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libcurlStaticA = \"\";\n")
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libsslStaticA = \"\";\n")
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libcryptoStaticA = \"\";\n")
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libzipStaticA = \"\";\n")
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libzStaticA = \"\";\n")
+    # Stubs for the non-static glibc-PIE build path. Never read at runtime
+    # when ecoStatic is false; emitted so EcoNativeDriver.cpp compiles.
+    string(APPEND ECO_BOOT_CONFIG_CONTENT
+        "inline RuntimeFile libstdcxxStaticA  {\"\", \"\", \"\"};\n"
+        "inline RuntimeFile libcurlStaticA    {\"\", \"\", \"\"};\n"
+        "inline RuntimeFile libsslStaticA     {\"\", \"\", \"\"};\n"
+        "inline RuntimeFile libcryptoStaticA  {\"\", \"\", \"\"};\n"
+        "inline RuntimeFile libzipStaticA     {\"\", \"\", \"\"};\n"
+        "inline RuntimeFile libzStaticA       {\"\", \"\", \"\"};\n")
 endif()
 string(APPEND ECO_BOOT_CONFIG_CONTENT "\n")
 
 #--- Stage B.5: musl/libc++/compiler-rt symmetric AOT paths ----------------
-# When ECO_STATIC_MUSL is on, the AOT link must use the same musl/libc++/
-# compiler-rt stack the eco binary itself was built against — libstdc++.a +
-# libgcc.a (the Stage A.5 defaults) would leave hundreds of std::__1::*
-# symbols unresolved. The new fields are emitted unconditionally so
-# EcoNativeDriver.cpp can reference them; they're stubs under the glibc
-# profile (ecoStaticMusl=false) and never read at runtime there.
+# Under ECO_STATIC_MUSL the AOT link uses the same musl/libc++/compiler-rt
+# stack as the eco binary itself. Each path is a RuntimeFile carrying its
+# build-time absolute path (for eco-boot-native during the build) and the
+# bundle layout basename + subdir (for the installed eco binary).
 if(ECO_STATIC_MUSL)
     set(ECO_STATIC_MUSL_BOOL "true")
 else()
@@ -950,19 +1098,39 @@ endif()
 string(APPEND ECO_BOOT_CONFIG_CONTENT "// --- Stage B.5: musl/libc++/compiler-rt paths (ECO_STATIC_MUSL) ---\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT "inline constexpr bool ecoStaticMusl = ${ECO_STATIC_MUSL_BOOL};\n")
 if(ECO_STATIC_MUSL)
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libcxxStaticA = \"${ECO_LIBCXX_A}\";\n")
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libcxxabiStaticA = \"${ECO_LIBCXXABI_A}\";\n")
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *compilerRtBuiltinsA = \"${ECO_COMPILER_RT_BUILTINS_A}\";\n")
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *crt1ObjStatic = \"${ECO_CRT1_O_STATIC}\";\n")
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *crtbeginObjStatic = \"${ECO_CRTBEGIN_O_STATIC}\";\n")
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *crtendObjStatic = \"${ECO_CRTEND_O_STATIC}\";\n")
+    # Compute basenames once for the install tree.
+    get_filename_component(_libcxx_name "${ECO_LIBCXX_A}" NAME)
+    get_filename_component(_libcxxabi_name "${ECO_LIBCXXABI_A}" NAME)
+    get_filename_component(_compilerrt_name "${ECO_COMPILER_RT_BUILTINS_A}" NAME)
+    get_filename_component(_libc_name "${ECO_LIBC_A}" NAME)
+    get_filename_component(_crt1_name "${ECO_CRT1_O_STATIC}" NAME)
+    get_filename_component(_crtbegin_name "${ECO_CRTBEGIN_O_STATIC}" NAME)
+    get_filename_component(_crtend_name "${ECO_CRTEND_O_STATIC}" NAME)
+    get_filename_component(_crti_name "${ECO_CRTI_O}" NAME)
+    get_filename_component(_crtn_name "${ECO_CRTN_O}" NAME)
+    string(APPEND ECO_BOOT_CONFIG_CONTENT
+        "inline RuntimeFile libcStaticA         {\"${_libc_name}\",       \"\",    \"${ECO_LIBC_A}\"};\n"
+        "inline RuntimeFile libcxxStaticA       {\"${_libcxx_name}\",     \"\",    \"${ECO_LIBCXX_A}\"};\n"
+        "inline RuntimeFile libcxxabiStaticA    {\"${_libcxxabi_name}\",  \"\",    \"${ECO_LIBCXXABI_A}\"};\n"
+        "inline RuntimeFile compilerRtBuiltinsA {\"${_compilerrt_name}\", \"\",    \"${ECO_COMPILER_RT_BUILTINS_A}\"};\n"
+        "inline RuntimeFile crt1ObjStatic       {\"${_crt1_name}\",       \"crt\", \"${ECO_CRT1_O_STATIC}\"};\n"
+        "inline RuntimeFile crtiObjStatic       {\"${_crti_name}\",       \"crt\", \"${ECO_CRTI_O}\"};\n"
+        "inline RuntimeFile crtnObjStatic       {\"${_crtn_name}\",       \"crt\", \"${ECO_CRTN_O}\"};\n"
+        "inline RuntimeFile crtbeginObjStatic   {\"${_crtbegin_name}\",   \"crt\", \"${ECO_CRTBEGIN_O_STATIC}\"};\n"
+        "inline RuntimeFile crtendObjStatic     {\"${_crtend_name}\",     \"crt\", \"${ECO_CRTEND_O_STATIC}\"};\n"
+        "inline RuntimeFile bundledLinker       {\"ld.lld\",              \"\",    \"${ECO_BUILD_LD_LLD}\"};\n")
 else()
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libcxxStaticA = \"\";\n")
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *libcxxabiStaticA = \"\";\n")
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *compilerRtBuiltinsA = \"\";\n")
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *crt1ObjStatic = \"\";\n")
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *crtbeginObjStatic = \"\";\n")
-    string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *crtendObjStatic = \"\";\n")
+    string(APPEND ECO_BOOT_CONFIG_CONTENT
+        "inline RuntimeFile libcStaticA         {\"\", \"\", \"\"};\n"
+        "inline RuntimeFile libcxxStaticA       {\"\", \"\", \"\"};\n"
+        "inline RuntimeFile libcxxabiStaticA    {\"\", \"\", \"\"};\n"
+        "inline RuntimeFile compilerRtBuiltinsA {\"\", \"\", \"\"};\n"
+        "inline RuntimeFile crt1ObjStatic       {\"\", \"\", \"\"};\n"
+        "inline RuntimeFile crtiObjStatic       {\"\", \"\", \"\"};\n"
+        "inline RuntimeFile crtnObjStatic       {\"\", \"\", \"\"};\n"
+        "inline RuntimeFile crtbeginObjStatic   {\"\", \"\", \"\"};\n"
+        "inline RuntimeFile crtendObjStatic     {\"\", \"\", \"\"};\n"
+        "inline RuntimeFile bundledLinker       {\"\", \"\", \"\"};\n")
 endif()
 string(APPEND ECO_BOOT_CONFIG_CONTENT "\n")
 

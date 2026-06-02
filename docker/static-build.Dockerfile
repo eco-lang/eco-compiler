@@ -73,7 +73,7 @@ RUN git clone --depth=1 --single-branch \
 # libc++ everywhere rather than two).
 WORKDIR /src/llvm-project
 RUN cmake -S llvm -B build -G Ninja \
-      -DLLVM_ENABLE_PROJECTS="mlir" \
+      -DLLVM_ENABLE_PROJECTS="mlir;lld" \
       -DLLVM_ENABLE_RUNTIMES="libunwind" \
       -DLLVM_TARGETS_TO_BUILD="X86" \
       -DLLVM_ENABLE_ASSERTIONS=ON \
@@ -87,10 +87,20 @@ RUN cmake -S llvm -B build -G Ninja \
       -DCMAKE_C_COMPILER=clang \
       -DCMAKE_CXX_COMPILER=clang++ \
       -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
-      -DCMAKE_EXE_LINKER_FLAGS="-stdlib=libc++ -rtlib=compiler-rt -unwindlib=libunwind -lc++abi -fuse-ld=lld" \
+      -DCMAKE_EXE_LINKER_FLAGS="-static -stdlib=libc++ -rtlib=compiler-rt -unwindlib=libunwind -lc++abi -fuse-ld=lld" \
       -DCMAKE_INSTALL_PREFIX=/opt/llvm-mlir \
  && cmake --build build \
- && cmake --install build
+ && cmake --install build \
+ && if readelf -d /opt/llvm-mlir/bin/ld.lld 2>/dev/null | grep -q NEEDED; then \
+        echo "FATAL: bundled ld.lld is not static — NEEDED entries present:" >&2; \
+        readelf -d /opt/llvm-mlir/bin/ld.lld >&2; \
+        exit 1; \
+    fi \
+ && echo "OK: /opt/llvm-mlir/bin/ld.lld is fully static" \
+ && mkdir -p /opt/llvm-mlir/libexec/eco-bundle \
+ && mv /opt/llvm-mlir/bin/ld.lld /opt/llvm-mlir/libexec/eco-bundle/ld.lld \
+ && echo "Moved static ld.lld out of /opt/llvm-mlir/bin/ so clang -fuse-ld=lld in" \
+ && echo "Stage 2 picks /usr/bin/ld.lld (zlib-capable) for the eco/bootstrap link."
 
 # ============================================================================
 # Stage 2: build the static eco against the MUSL LLVM
@@ -118,6 +128,7 @@ RUN apk add --no-cache \
       openssl-dev openssl-libs-static \
       zlib-dev zlib-static \
       binutils \
+      zip \
       nodejs npm \
  && npm install -g pnpm
 
@@ -162,9 +173,50 @@ RUN strip -s build/compiler/build-kernel/bin/eco \
  && echo "OK: eco is fully static (no NEEDED entries)" \
  && ls -lh build/compiler/build-kernel/bin/eco
 
+# Build the Stage C distribution bundles (.tar.gz + .zip). CPack stages
+# the eco binary + lib/eco-runtime/{crt,project,ld.lld,libc.a,…} tree
+# defined by the install() rules, then produces both archives.
+RUN cmake --build build --target package \
+ && ls -lh build/eco-0.1.0-x86_64-linux-musl.tar.gz \
+           build/eco-0.1.0-x86_64-linux-musl.zip
+
+# Smoke test the bundle in-container: extract into /tmp/eco-smoke, scaffold a
+# minimal project (elm.json + src/Hello.elm — eco refuses to build without
+# elm.json), build Hello.elm against the extracted tree, then verify the
+# produced binary is fully static and runs to completion.
+#
+# Hello.elm is `text "Hello!"` (browser-style Html); on a headless runtime
+# it exits non-zero, so the smoke test does not check ./hello's exit code —
+# only that it runs without crashing and yields a fully-static ELF.
+RUN mkdir -p /tmp/eco-smoke \
+ && tar -xzf build/eco-0.1.0-x86_64-linux-musl.tar.gz -C /tmp/eco-smoke \
+ && cp compiler/examples/elm.json      /tmp/eco-smoke/elm.json \
+ && mkdir -p /tmp/eco-smoke/src \
+ && cp compiler/examples/src/Hello.elm /tmp/eco-smoke/src/Hello.elm \
+ && cd /tmp/eco-smoke \
+ && ./bin/eco make src/Hello.elm --output=hello \
+ && test -x ./hello \
+ && hello_rc=0; ./hello >/dev/null 2>&1 || hello_rc=$? \
+ && if [ "$hello_rc" -eq 139 ] || [ "$hello_rc" -eq 134 ]; then \
+        echo "FATAL: hello crashed (rc=$hello_rc — SIGSEGV/SIGABRT)" >&2; exit 1; \
+    fi \
+ && if readelf -d ./hello 2>/dev/null | grep -q NEEDED; then \
+        echo "FATAL: hello produced by bundled eco is not static" >&2; \
+        exit 1; \
+    fi \
+ && echo "OK: bundle smoke test passed — eco produced a static hello binary (rc=$hello_rc)"
+
 # ============================================================================
-# Stage 3: ship just the binary
+# Stage 3: ship just the binary (back-compat, slim image)
 # ============================================================================
 FROM scratch AS eco-static
 COPY --from=eco-builder /eco/build/compiler/build-kernel/bin/eco /eco
 ENTRYPOINT ["/eco"]
+
+# ============================================================================
+# Stage 4: ship the distribution bundles (.tar.gz + .zip).
+# `docker build --target eco-bundle -o ./dist .` drops both archives in ./dist.
+# ============================================================================
+FROM scratch AS eco-bundle
+COPY --from=eco-builder /eco/build/eco-0.1.0-x86_64-linux-musl.tar.gz /
+COPY --from=eco-builder /eco/build/eco-0.1.0-x86_64-linux-musl.zip    /

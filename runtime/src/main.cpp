@@ -41,6 +41,7 @@
 #include <random>
 #include <stdexcept>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 #include "Allocator.hpp"
