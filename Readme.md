@@ -109,8 +109,14 @@ The initial release establishing the foundation of the Eco compiler toolchain.
 **Docker (recommended):**
 
 ```bash
-docker build -t eco-build .
-docker run --rm -v "$PWD":/work eco-build
+# One-off: build the LLVM/MLIR base image (slow, ~30-60 min).
+# Only needs to be re-run when LLVM_VERSION changes in
+# docker/llvm-debian.Dockerfile.
+docker build -f docker/llvm-debian.Dockerfile -t eco-llvm-debian:21.1.4 .
+
+# Build the dev image (fast — pulls /opt/llvm-mlir from the image above).
+docker build -f docker/eco-dev.Dockerfile -t eco-dev .
+docker run --rm -v "$PWD":/work eco-dev
 ```
 
 **Debian/Ubuntu host:**
@@ -400,16 +406,27 @@ use `--target eco-quick` while iterating on code under `runtime/` or
 
 ## Docker development
 
+The dev image is split in two so LLVM/MLIR (the expensive part) only rebuilds
+when you bump `LLVM_VERSION`:
+
+- `docker/llvm-debian.Dockerfile` — builds LLVM + MLIR from source and installs
+  it under `/opt/llvm-mlir`. Slow (~30-60 min), produces `eco-llvm-debian:<ver>`.
+- `docker/eco-dev.Dockerfile` — pulls `/opt/llvm-mlir` from the LLVM image and
+  layers on the toolchain, debugger, Node/pnpm, Claude CLI, etc.
+
 ```bash
-# Build image
-docker build -t eco-build .
+# One-off (or whenever LLVM_VERSION changes):
+docker build -f docker/llvm-debian.Dockerfile -t eco-llvm-debian:21.1.4 .
+
+# Build the dev image
+docker build -f docker/eco-dev.Dockerfile -t eco-dev .
 
 # Interactive session with persistent home directory
 docker volume create eco-dev-home
-docker run -it --rm -v "$PWD":/work -v eco-dev-home:/home/dev eco-build bash
+docker run -it --rm -v "$PWD":/work -v eco-dev-home:/home/dev eco-dev bash
 
 # One-shot build + test
-docker run --rm -v "$PWD":/work eco-build bash -c \
+docker run --rm -v "$PWD":/work eco-dev bash -c \
   "cmake --preset build && cmake --build build --target check"
 ```
 
@@ -432,11 +449,15 @@ musl + libc++, with LLVM 21.1.4 compiled from source. See
 
 ### Building the static binary (`docker/static-build.Dockerfile`)
 
-A three-stage build: compile LLVM+MLIR from source against musl, build a static
-`eco` against it, then ship just the binary `FROM scratch`.
+A three-stage build: a pre-built LLVM+MLIR image, then `eco` linked statically
+against it, then `FROM scratch` shipping just the binary.
 
 ```bash
-# Build (first run compiles LLVM from source — ~30–60 min; cached afterwards).
+# 1. One-off: build the MUSL LLVM/MLIR base image (~30–60 min; only re-run
+#    when LLVM_VERSION changes in docker/llvm-alpine.Dockerfile):
+docker build -f docker/llvm-alpine.Dockerfile -t eco-llvm-alpine:21.1.4 .
+
+# 2. Build the static eco (fast — pulls /opt/llvm-mlir from the image above):
 docker build -f docker/static-build.Dockerfile --target eco-static -t eco-static .
 
 # Extract the binary from the scratch image:
@@ -446,21 +467,20 @@ id=$(docker create eco-static); docker cp "$id:/eco" ./eco; docker rm "$id"
 readelf -d ./eco | grep -c NEEDED
 ```
 
-The `llvm-builder` stage is the expensive, cacheable layer; iterating on `eco`
-only re-runs the `eco-builder` stage.
+The `eco-llvm-alpine:21.1.4` image is the expensive, cacheable layer; iterating
+on `eco` only re-runs the `eco-builder` stage. It is also shared with the
+interactive dev image below.
 
 ### Interactive dev image (`docker/static-dev.Dockerfile`)
 
 The same musl/libc++ toolchain as the build image, **plus** the dev tooling from
-the root `Dockerfile` (gdb, lldb, strace, ripgrep, …), Claude Code, and
-uv/serena — for stepping through and debugging the build interactively (e.g. the
-open bootstrap `Map.!`). It reuses the LLVM build rather than recompiling it, so
-build the `llvm-builder` image once first:
+`docker/eco-dev.Dockerfile` (gdb, lldb, strace, ripgrep, …), Claude Code, and
+uv/serena — for stepping through and debugging the build interactively (e.g.
+the open bootstrap `Map.!`). It consumes the same LLVM base as the static build:
 
 ```bash
-# 1. Build the MUSL LLVM toolchain image once (~30–60 min; shares cache with
-#    static-build.Dockerfile):
-docker build -f docker/static-build.Dockerfile --target llvm-builder -t eco-musl-llvm:local .
+# 1. Build the MUSL LLVM/MLIR base image (skip if step 1 above already done):
+docker build -f docker/llvm-alpine.Dockerfile -t eco-llvm-alpine:21.1.4 .
 
 # 2. Build the dev image (fast — just layers tools on top):
 docker build -f docker/static-dev.Dockerfile -t eco-static-dev:local .

@@ -44,14 +44,13 @@ chmod 440 "/etc/sudoers.d/${user_name}"
 mkdir -p "${home_dir}" /work
 chown -R "${uid}:${gid}" "${home_dir}" /work || true
 
-# 5) Helpful env defaults
+# 5) HOME is dynamic per resolved user, so set it here.
+# CMAKE_PREFIX_PATH, LD_LIBRARY_PATH, PATH, CC, CXX are set canonically by the
+# Dockerfile's ENV block and inherited as-is — no need to re-export.
 export HOME="${home_dir}"
-export CMAKE_PREFIX_PATH="/opt/llvm-mlir:${CMAKE_PREFIX_PATH:-}"
-export LD_LIBRARY_PATH="/opt/llvm-mlir/lib:${LD_LIBRARY_PATH:-}"
-export PATH="/opt/llvm-mlir/bin:${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
-export CC="${CC:-clang}"
-export CXX="${CXX:-clang++}"
-export PATH=$HOME/.local/bin:$PATH
+# Per-user uv/pip --user installs land in $HOME/.local/bin; $HOME isn't known
+# at image build time so this prepend can't be expressed as an ENV.
+export PATH="${HOME}/.local/bin:${PATH}"
 
 # 6) Configure serena as MCP server for claude (if not already configured)
 claude_settings="${home_dir}/.claude/settings.json"

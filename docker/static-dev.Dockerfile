@@ -13,13 +13,12 @@
 # hypothesis).
 #
 # Reuses the expensive LLVM build instead of recompiling it: COPYs
-# /opt/llvm-mlir from a pre-built llvm-builder image rather than duplicating
-# static-build.Dockerfile's ~40-line LLVM stage (and without dragging in that
-# image's ~10 GB source/build tree).
+# /opt/llvm-mlir from the pre-built eco-llvm-alpine image (produced by
+# docker/llvm-alpine.Dockerfile, shared with docker/static-build.Dockerfile).
 #
-# ---- Build (LLVM image built once, then shared via cache) ------------------
-#   docker build -f docker/static-build.Dockerfile --target llvm-builder \
-#       -t eco-musl-llvm:local .                # ~30-60 min the first time
+# ---- Build (LLVM image built once, then shared) ----------------------------
+#   docker build -f docker/llvm-alpine.Dockerfile \
+#       -t eco-llvm-alpine:21.1.4 .             # ~30-60 min the first time
 #   docker build -f docker/static-dev.Dockerfile -t eco-static-dev:local .
 #
 # ---- Run interactively -----------------------------------------------------
@@ -41,9 +40,9 @@
 # ============================================================================
 
 ARG ALPINE_DIGEST=sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
-# Image holding the MUSL /opt/llvm-mlir (static-build.Dockerfile's llvm-builder
-# target). Override with --build-arg LLVM_IMAGE=... if tagged differently.
-ARG LLVM_IMAGE=eco-musl-llvm:local
+# Image holding the MUSL /opt/llvm-mlir (produced by docker/llvm-alpine.Dockerfile).
+# Override with --build-arg LLVM_IMAGE=... if tagged differently.
+ARG LLVM_IMAGE=eco-llvm-alpine:21.1.4
 
 # Stage alias for the pre-built LLVM image; only /opt/llvm-mlir is copied below.
 FROM ${LLVM_IMAGE} AS llvm
@@ -67,8 +66,11 @@ RUN apk add --no-cache \
  && npm install -g pnpm
 
 # --- Dev / debug tools (root Dockerfile parity, translated to apk) ----------
+# `shadow` provides useradd/groupadd (used by the entrypoint to materialise a
+# host-matching user); `su-exec` is the Alpine analogue of gosu, used to drop
+# privileges before exec.
 RUN apk add --no-cache \
-      bash bash-completion sudo shadow \
+      bash bash-completion sudo shadow su-exec \
       gdb lldb strace ltrace bpftrace perf \
       ripgrep fd vim tmux less jq file wget curl \
       util-linux py3-pip
@@ -96,18 +98,14 @@ COPY install_claude.sh /tmp/install_claude.sh
 RUN bash /tmp/install_claude.sh || echo "WARN: claude install failed; run /tmp/install_claude.sh inside the container" ; \
     rm -f /tmp/install_claude.sh
 
-# The MUSL LLVM+MLIR install, reused from the llvm-builder image (install tree
-# only — not that image's ~10 GB llvm-project source/build tree).
+# The MUSL LLVM+MLIR install, reused from docker/llvm-alpine.Dockerfile.
 COPY --from=llvm /opt/llvm-mlir /opt/llvm-mlir
 
 # --- Non-root dev user ------------------------------------------------------
-# uid/gid 1000 matches the host `dev` user, so files created in the
-# bind-mounted /work stay correctly owned without any runtime UID remapping.
-# (If your host uid differs, run with `--user $(id -u):$(id -g)`.)
-RUN addgroup -g 1000 dev \
- && adduser -D -u 1000 -G dev -s /bin/bash dev \
- && echo "dev ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/dev \
- && chmod 440 /etc/sudoers.d/dev
+# Created at runtime by docker/static-dev-entrypoint.sh, matching the uid/gid
+# that owns the bind-mounted /work (or HOST_UID/HOST_GID if set). This avoids
+# the "host uid ≠ 1000 → permission friction" failure mode of a baked-in user.
+# Mirrors the pattern in docker/eco-dev-entrypoint.sh.
 
 ENV CMAKE_PREFIX_PATH=/opt/llvm-mlir \
     LD_LIBRARY_PATH=/opt/llvm-mlir/lib \
@@ -120,7 +118,6 @@ COPY docker/static-dev-entrypoint.sh /usr/local/bin/static-dev-entrypoint.sh
 RUN chmod +x /usr/local/bin/static-dev-entrypoint.sh
 
 EXPOSE 24282
-USER dev
 WORKDIR /work
 ENTRYPOINT ["/usr/local/bin/static-dev-entrypoint.sh"]
 CMD ["bash"]
