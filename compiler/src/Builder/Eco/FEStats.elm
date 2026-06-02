@@ -20,8 +20,8 @@ thread safety. Phase-level updates run single-threaded.
 
 @docs Handle
 @docs PhaseName, ModuleStage
-@docs init, finalize
-@docs withPhase
+@docs init, finalize, disabled
+@docs withPhase, withModuleStage
 @docs recordModule
 @docs prettyPrint
 

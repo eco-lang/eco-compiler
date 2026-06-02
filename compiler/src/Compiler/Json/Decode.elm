@@ -35,7 +35,7 @@ OneOrMore types, along with detailed error reporting for parse and decode failur
 
 # Primitive Decoders
 
-@docs string, customString, int
+@docs string, customString, int, bool
 
 
 # Collection Decoders
@@ -45,7 +45,7 @@ OneOrMore types, along with detailed error reporting for parse and decode failur
 
 # Object Decoders
 
-@docs field, pairs, KeyDecoder
+@docs field, optionalField, pairs, KeyDecoder
 
 
 # Compiler Type Decoders

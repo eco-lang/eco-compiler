@@ -69,6 +69,16 @@ Cached data is marked with comments like `-- CACHE for exhaustiveness` or
 @docs ctorOptsEncoder, ctorOptsDecoder
 @docs fieldUpdateEncoder, fieldUpdateDecoder
 
+
+# String-Interned Serialization
+
+@docs annotationEncoderS, annotationDecoderS
+@docs typeEncoderS, typeDecoderS
+@docs aliasEncoderS, aliasDecoderS
+@docs unionEncoderS, unionDecoderS
+@docs collectStringsFromAnnotation, collectStringsFromType
+@docs collectStringsFromAlias, collectStringsFromUnion
+
 -}
 
 {- Internal note: Creating a canonical AST means finding the home module for all variables.

@@ -14,7 +14,7 @@ Key optimizations:
   - Dead code elimination
   - Case simplifications
 
-@docs Metrics, optimize
+@docs Metrics, optimize, buildBodyLookup
 
 -}
 

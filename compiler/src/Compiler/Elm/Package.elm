@@ -51,6 +51,11 @@ using Levenshtein distance.
 
 @docs nameEncoder, nameDecoder, parser
 
+
+# String-Interned Binary Encoding/Decoding
+
+@docs nameEncoderS, nameDecoderS, collectStringsFromName
+
 -}
 
 import Bytes.Decode

@@ -20,7 +20,7 @@ state during MLIR code generation.
 
 # Context Management
 
-@docs initContext
+@docs initContext, withInlineBodies, withEcoConfig
 
 
 # Variable Management

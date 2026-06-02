@@ -15,7 +15,7 @@ and task composition.
 
 # IO Task Conversions
 
-@docs io, mio, eio
+@docs io, mio, eio, ioErr
 
 
 # Task Combinators

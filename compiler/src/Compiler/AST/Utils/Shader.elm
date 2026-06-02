@@ -28,6 +28,11 @@ shader source in generated JavaScript, along with serialization support.
 @docs sourceEncoder, sourceDecoder
 @docs typesEncoder, typesDecoder
 
+
+# String-Interned Binary Serialization
+
+@docs sourceEncoderS, sourceDecoderS, collectStringsFromSource
+
 -}
 
 import Bytes.Decode

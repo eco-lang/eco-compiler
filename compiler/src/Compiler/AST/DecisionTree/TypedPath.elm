@@ -11,6 +11,7 @@ This module defines the `Path` type used by typed decision trees, including
 
 @docs Path, ContainerHint
 @docs pathEncoder, pathDecoder
+@docs pathEncoderS, pathDecoderS, collectStringsFromPath
 
 -}
 

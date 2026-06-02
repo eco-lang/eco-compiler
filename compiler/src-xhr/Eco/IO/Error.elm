@@ -18,6 +18,7 @@ covers all backends.
 
 @docs IOError, RawIOError
 @docs fromKernel, decodeIOError, ofKernelTuple
+@docs tagFromCode
 @docs toString
 
 -}

@@ -69,6 +69,12 @@ names include both the package name and module name, fully qualifying the module
 
 @docs canonicalEncoder, canonicalDecoder, rawEncoder, rawDecoder
 
+
+# String-Interned Binary Encoding/Decoding
+
+@docs canonicalEncoderS, canonicalDecoderS, rawEncoderS, rawDecoderS
+@docs collectStringsFromCanonical, collectStringsFromRaw
+
 -}
 
 import Bytes.Decode

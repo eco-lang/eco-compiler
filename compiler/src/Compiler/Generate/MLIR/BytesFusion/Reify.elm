@@ -15,12 +15,12 @@ expression tree to identify Bytes.Encode/Decode combinator calls.
 
 # Types
 
-@docs EncoderNode, DecoderNode
+@docs EncoderNode, DecoderNode, BodyLookup
 
 
 # Reification
 
-@docs reifyEncoder, reifyDecoder
+@docs reifyEncoder, reifyEncoderWith, reifyDecoder
 
 
 # Loop IR Conversion

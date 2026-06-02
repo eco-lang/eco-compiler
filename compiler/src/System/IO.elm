@@ -57,6 +57,7 @@ Function names follow the `guida-io-ops.csv` naming conventions.
 
 @docs write
 @docs writeLn, print, printLn, readLine, close, flush, isTerminal
+@docs crashOnError
 
 
 # Environment and process

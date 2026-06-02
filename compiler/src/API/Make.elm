@@ -16,6 +16,7 @@ and optional source map generation.
 import Builder.BackgroundWriter as BW
 import Builder.Build as Build
 import Builder.Deps.Registry as Registry
+import Builder.Eco.FEStats as FEStats
 import Builder.Elm.Details as Details
 import Builder.Generate as Generate
 import Builder.Reporting as Reporting
@@ -128,7 +129,7 @@ getMode debug optimize =
 
 buildPaths : Reporting.Style -> FilePath -> Details.Details -> NE.Nonempty FilePath -> Task Exit.Make Build.Artifacts
 buildPaths style root details paths =
-    Build.fromPaths style root Nothing Nothing details False paths |> Task.eio Exit.MakeCannotBuild
+    Build.fromPaths style root Nothing Nothing details False FEStats.disabled paths |> Task.eio Exit.MakeCannotBuild
 
 
 

@@ -12,6 +12,7 @@ LocalOpt layers.
 
 @docs Test, testToComparable
 @docs testEncoder, testDecoder
+@docs testEncoderS, testDecoderS, collectStringsFromTest
 
 -}
 

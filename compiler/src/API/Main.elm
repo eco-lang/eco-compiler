@@ -155,7 +155,10 @@ getArgs =
 -}
 exitWithResponse : Encode.Value -> Task Never ()
 exitWithResponse value =
+    -- `write` is fallible (Task IOError ()); swallow any IO error here so the
+    -- exit still fires — this is the response-already-printed path.
     Eco.Console.write Eco.Console.stdout (Encode.encode 0 value)
+        |> Task.onError (\_ -> Task.succeed ())
         |> Task.andThen (\_ -> Eco.Process.exit Eco.Process.ExitSuccess)
 
 

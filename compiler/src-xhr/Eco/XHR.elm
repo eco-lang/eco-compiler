@@ -15,6 +15,7 @@ a bug in the bootstrap harness rather than a user IO error) still crash.
 
 @docs stringTask, jsonTask, bytesTask, unitTask
 @docs sendBytesTask, rawBytesRecvTask
+@docs orCrash
 
 -}
 
