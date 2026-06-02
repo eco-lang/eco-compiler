@@ -104,6 +104,37 @@ The initial release establishing the foundation of the Eco compiler toolchain.
 
 ## Building
 
+### Docker images at a glance
+
+The Docker setup is four images. Two LLVM/MLIR base images (slow, rebuilt only
+when `LLVM_VERSION` changes) and three consumer images that `COPY /opt/llvm-mlir`
+from a base:
+
+```
+eco-llvm-debian:21.1.4 ──► eco-dev                  (glibc dev shell)
+eco-llvm-alpine:21.1.4 ─┬► eco-static               (static `eco` binary)
+                        └► eco-static-dev:local     (musl dev shell)
+```
+
+To build everything from scratch, from `/work`:
+
+```bash
+# 1. LLVM/MLIR base images (~30–60 min each, independent — can run in parallel).
+docker build -f docker/llvm-debian.Dockerfile -t eco-llvm-debian:21.1.4 .
+docker build -f docker/llvm-alpine.Dockerfile -t eco-llvm-alpine:21.1.4 .
+
+# 2. Glibc dev image.
+docker build -f docker/eco-dev.Dockerfile -t eco-dev .
+
+# 3. Static `eco` binary (FROM scratch).
+docker build -f docker/static-build.Dockerfile --target eco-static -t eco-static .
+
+# 4. Musl interactive dev image.
+docker build -f docker/static-dev.Dockerfile -t eco-static-dev:local .
+```
+
+Steps 2/3/4 each only need their corresponding base from step 1.
+
 ### Prerequisites
 
 **Docker (recommended):**
