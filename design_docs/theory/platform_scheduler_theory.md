@@ -110,7 +110,7 @@ The run queue is a `std::deque<RootedProc>` of encoded `HPointer` values, each p
 
 3. **Task_OnError**: Push a stack frame with `expectedTag = Task_Fail` and the callback. Set root to the inner task. Continue.
 
-4. **Task_Binding**: Create a "resume" closure that captures the process pointer. Call the binding callback with this closure. The callback is expected to arrange for the resume closure to be called later (e.g., after a timer or I/O completes). The process suspends (returns from stepProcess).
+4. **Task_Binding**: Create a "resume" closure that captures the process pointer. Call the binding callback with this closure. The callback is expected to arrange for the resume closure to be called later (e.g., after a timer or I/O completes). The process suspends (returns from stepProcess). The May 31 kernel-deferral discipline (below) constrains *what* binding callbacks may do.
 
 5. **Task_Receive**: Pop a message from the mailbox. If a message is available, call the receive callback with it and continue. If the mailbox is empty, the process blocks (returns).
 
@@ -125,6 +125,34 @@ The scheduler provides static helpers for calling Elm closures from C++:
 - **`callClosure4(closure, a1, a2, a3, a4)`**: Calls a 4-argument closure (used for `onEffects`).
 
 Arguments are encoded as `uint64_t` before calling `eco_apply_closure`, which handles PAP/saturated dispatch correctly.
+
+### Kernel Task Deferral Discipline *(May 31, 2026)*
+
+`Task_Binding` is the seam through which **every** C++ kernel symbol that returns an Elm `Task` is required to perform its IO — not at kernel-call time. The rule is captured in `KERNEL_TASK_IO_001` / `KERNEL_TASK_IO_002` (`design_docs/invariants.csv`) and explained in full in [Kernel Task Deferral Theory](kernel-task-deferral.md). The scheduler is the consumer of the pattern, so the relevant behaviour is restated here.
+
+**The constraint.** A function like `Eco_Kernel_File_writeString(path, content)` does **not** open and write the file when called. It instead allocates a `Task_Binding` whose callback body performs the syscall when the scheduler steps the binding. The kernel call returns immediately with a Task HPointer; the IO happens later, inside `stepProcess` step 4.
+
+**Why this matters for the scheduler.**
+
+1. **Interleaving.** Without deferral, two `Task`s built from `File.readString` and `Http.fetch` run their syscalls sequentially at construction. The scheduler never observes two outstanding bindings simultaneously, so there is nothing to interleave with timer fires, HTTP completions, or other parked resumes. With deferral, both bindings exist in `Task_Binding` form when the scheduler starts draining, and the run-queue / pending-resume machinery can serve whichever resumes first.
+2. **Time-varying reads.** `Time.now`, `Runtime.random`, and (more subtly) `Env.rawArgs` must read their value when the binding fires, not at module-init. Eager IO would freeze the result to whenever the Task expression was first evaluated.
+3. **Blocking kernels don't stall the scheduler.** `Http.fetch` / `Process.wait` use the async-park shape: the callback body registers the parked resume in `Scheduler::pendingResumes_`, submits the syscall to a worker pool (`WaitService`, the libcurl worker, etc.), and returns a `unit()` kill handle. The scheduler thread proceeds to the next process. When the worker completes, it calls back into the scheduler to invoke the parked resume.
+
+**Two callback shapes.** Shared trampolines in `runtime/src/platform/TaskBinding.hpp` factor out closure allocation, capture rooting, and the trampoline boilerplate:
+
+- **`makeBinding<Body>(payload)`** — *synchronous-in-binding*. The body runs the syscall and returns a `Task_Succeed` / `Task_Fail` HPointer directly. The scheduler invokes the body inline at step 4. Used for `File.writeString`, `File.readString`, and most non-blocking IO.
+- **`makeAsyncBinding<Body>(payload)`** — *async-park*. The body receives the parked resume HPointer as its last argument, registers it via `Scheduler::registerPendingResume(resume)`, calls `incrementPendingAsync()`, and submits the syscall to a worker. Used for `Http.fetch`, `Process.wait`, and `Time.every` (via TimerService).
+
+**Rooting discipline (KERNEL_TASK_IO_002).** The trampolines (`bindingTrampoline` / `asyncBindingTrampoline` in `TaskBinding.hpp`) root the captured payload HPointer and the resume closure HPointer via `StackRootGuard` **before** invoking the user body or any allocation. The body's returned Task HPointer is itself rooted across `Scheduler::callClosure1` because the resume closure may evaluate Elm code that GCs. Hand-rolled evaluators (the pre-Phase-0 sleep, MVar, Time.now, and the Http toTask path) follow the same pattern manually.
+
+**Exemptions** (listed verbatim in `KERNEL_TASK_IO_001`):
+
+- **Pure Task constructors** — `Elm_Kernel_Scheduler_succeed`/`fail`/`andThen`/`onError`/`spawn`/`kill`/`taskReceive`. The caller supplies the value; no IO.
+- **Terminator non-returners** — `Eco_Kernel_Process_exit`, `Eco_Kernel_Crash_crash`. They never return; wrapping them in a Task would be misleading.
+- **Identity / logging non-Task helpers** — `Eco_Kernel_Console_log`. Not a Task producer; it returns its `value` argument unchanged.
+- **MVar partial-eager fast paths** — `MVar::read/take/put` short-circuit synchronously when the slot state already allows immediate resolution. No syscall; in-process state only.
+
+**Structured IO errors.** A second piece of the May 31 work plumbs kernel IO errors as structured Elm values (errno + path + operation context) through the binding callback, into the Task tree, and out through the final `Exit` boundary — replacing the previous string-stringified error returns. The error-handling audit covered the full Eco kernel API.
 
 ## Effect Bag Tree
 
@@ -353,4 +381,5 @@ Processes in the run queue are stored as encoded `HPointer` values (`RootedProc.
 - [Heap Representation Theory](heap_representation_theory.md) — Custom struct layout, HPointer encoding
 - [EcoToLLVM Theory](pass_eco_to_llvm_theory.md) — How kernel calls are lowered
 - [Kernel ABI Theory](kernel_abi_theory.md) — AllBoxed ABI used by Platform/Scheduler exports
+- [Kernel Task Deferral Theory](kernel-task-deferral.md) — `Task_Binding` discipline: every kernel returning `Task` defers IO into the binding callback
 - [JSON Heap Representation Theory](json_heap_representation_theory.md) — JSON decoding for flags

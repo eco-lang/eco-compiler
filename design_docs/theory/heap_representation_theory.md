@@ -491,6 +491,8 @@ Common issues and how to identify them:
 
 The old generation is a **segregated-fits allocator backed by a Big Bag of Pages (BBoP)**. The initial `initial_old_gen_size` (16 MiB by default) is committed up front and sliced into pages of `alloc_buffer_size` (128 KiB by default) sitting in `unassigned_blocks_` until first use. See `runtime/src/allocator/OldGenSpace.{hpp,cpp}` for the implementation and [THEORY.md](../../THEORY.md) for the full design.
 
+The defaults shown here (`initial_old_gen_size`, `alloc_buffer_size`, `large_object_threshold`, `string_tiny_slice_limit`, etc.) live on `HeapConfig` in `AllocatorCommon.hpp` and are **runtime-tunable**: a `heap-config.json` file at startup (parsed by `HeapConfigJson.cpp`) overrides any subset, and the compiler-side `eco-config.json` *(May 21, 2026)* threads further tunables through the same loader. The defaults were retuned after a parameter sweep against the Stage 7 self-compile workload.
+
 ### Size Classes
 
 | Range | Class scheme | Notes |

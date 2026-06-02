@@ -53,11 +53,11 @@
   - [x] 4.3 Compiler Testing → [§4.3](#43-compiler-testing) *(120+ test files, code coverage tooling, GOPT invariants)*
 
 - [x] **5. Integration & Self-Compilation** → [§5](#5-integration--self-compilation) *(0.1.0 milestone — full binary self-compilation achieved, May 14, 2026)*
-  - [ ] 5.1 End-to-End Pipeline → [§5.1](#51-end-to-end-pipeline) *(JIT + AOT pipeline working; CLI/build-system polish outstanding)*
-    - [x] 5.1.1 Pipeline Integration → [§5.1.1](#511-pipeline-integration) *(JIT + AOT both complete; eco-boot-native AOT path drives Stages 6-8)*
+  - [ ] 5.1 End-to-End Pipeline → [§5.1](#51-end-to-end-pipeline) *(unified `eco` single-binary compiler ships JIT + AOT through a shared backend; portable static-musl distribution bundle landed; CLI polish outstanding)*
+    - [x] 5.1.1 Pipeline Integration → [§5.1.1](#511-pipeline-integration) *(Stage 9 unified `eco` binary — Phases 1–5; JIT and AOT both go through `runEcoBackend` / `EcoBackend`)*
     - [ ] 5.1.2 Command-Line Interface → [§5.1.2](#512-command-line-interface)
-    - [ ] 5.1.3 Build System & Packaging → [§5.1.3](#513-build-system--packaging)
-    - [x] 5.1.4 Linker Integration & Runtime Libraries → [§5.1.4](#514-linker-integration--runtime-libraries) *(kernel static libs complete; `eco-boot-native` lowers MLIR → ELF and links runtime + kernels)*
+    - [x] 5.1.3 Build System & Packaging → [§5.1.3](#513-build-system--packaging) *(Stages A/A.5/B/B.5/C: portable static-musl `eco` distribution bundle)*
+    - [x] 5.1.4 Linker Integration & Runtime Libraries → [§5.1.4](#514-linker-integration--runtime-libraries) *(unified `eco` lowers MLIR → ELF and links runtime + kernels; AOT `.o` link-only fast path supported)*
     - [ ] 5.1.5 Debugging Support → [§5.1.5](#515-debugging-support)
   - [x] 5.2 Bootstrap to Native x86 → [§5.2](#52-bootstrap-to-native-x86) *(8-stage bootstrap reaches MLIR fixed point at Stage 8; native ELF matches modulo 3.6 KB of LLVM-side `.strtab` non-determinism)*
   - [x] 5.3 Self-Compilation Milestone → [§5.3](#53-self-compilation-milestone) *(achieved — native compiler self-compiles to bit-identical MLIR)*
@@ -864,7 +864,7 @@ Additional kernel packages identified during the audit that also need C++ implem
 | Package | Functions | File | Status |
 |---------|-----------|------|--------|
 | `elm/browser` | 22 | `BrowserExports.cpp` | Stubs |
-| `elm/http` | 8 | `HttpExports.cpp` | **Complete** (Feb 20) - libcurl/openssl |
+| `elm/http` | 8 | `HttpExports.cpp` | **Complete** (Feb 20, 2026; rebuilt May 31, 2026) - libcurl, deferred-Task IO, progress streaming |
 | `elm/file` | 13 | `FileExports.cpp` | Stubs |
 | `elm/url` | 2 | `UrlExports.cpp` | **Complete** |
 | `elm/virtual-dom` | 25 | `VirtualDomExports.cpp` | Stubs |
@@ -879,6 +879,13 @@ Additional kernel packages identified during the audit that also need C++ implem
 - Http effect manager registered (`elm-kernel-cpp/src/http/HttpEffectManager.cpp`)
 - Regex kernel uses srell.hpp (vendored header-only regex library)
 - Debugger kernel complete with `Debugger.cpp/hpp` implementation
+
+**Http Rebuild** *(May 31, 2026)*:
+- `elm/http` + `Eco.Http` reimplemented as a real libcurl kernel running on the single-threaded heap, with a full E2E test suite.
+- `Http.track` progress streaming implemented (elm/http) — periodic progress events delivered to the Elm side via the effect manager.
+- Native package downloads fixed: send `Content-Length: 0` on empty-body POST/PUT/PATCH (the registry was returning 411); fetch errors propagate as structured `Http.Error`s.
+- Accept all libcurl-supported encodings so gzip downloads from the package server work.
+- All HTTP test failures in Gate A + B fixed; ties into the deferred-Task pattern (§2.4) so blocking `curl_easy_perform` no longer stalls the scheduler at kernel-call time.
 
 **Tasks**:
 - [x] Create stub implementations for all 92 functions
@@ -902,7 +909,7 @@ Additional kernel packages identified during the audit that also need C++ implem
 
 ### 2.4 I/O Kernel Package C++ Implementation
 
-**Status**: In Progress (First Pass Complete - Feb 26, 2026)
+**Status**: In Progress (deferred-Task migration complete; structured IO errors plumbed end-to-end)
 
 Implement the I/O kernel packages defined in §2.1 in C++ for linking with the native runtime.
 
@@ -913,6 +920,10 @@ Implement the I/O kernel packages defined in §2.1 in C++ for linking with the n
 - Built as static libraries: `EcoKernel_File`, `EcoKernel_Console`, `EcoKernel_Env`, `EcoKernel_Process`, `EcoKernel_MVar`, `EcoKernel_Runtime`
 - Combined convenience library: `EcoKernel` (INTERFACE target)
 - Uses ECO runtime heap model for Elm value interop
+
+**Deferred kernel Task IO via `Task_Binding`** *(May 31, 2026)*: Every C++ symbol that returns an Elm `Task` now performs its IO inside a `Task_Binding` callback rather than at kernel-call time. The scheduler steps bindings and can therefore interleave outstanding IO; blocking syscalls (e.g. `curl_easy_perform`, `waitpid`) park onto an async worker pool and resume the parked closure. Shared helpers live in `runtime/src/platform/TaskBinding.hpp` (sync `makeBinding` and async `makeAsyncBinding`) with Eco-side `succeed*` / `fail*` HPointer wrappers in `eco-kernel-cpp/src/eco/TaskBinding.hpp`. New invariants **KERNEL_TASK_IO_001** and **KERNEL_TASK_IO_002** record the pattern and its rooting discipline. See [Kernel Task Deferral Theory](design_docs/theory/kernel-task-deferral.md) and `plans/defer-eager-kernel-tasks-via-binding.md`.
+
+**Structured IO errors end-to-end** *(May 31, 2026)*: Kernel IO errors are now plumbed as structured Elm error values (with errno, path, and operation context) from the C++ kernels through the scheduler to the final `Exit` boundary, replacing string-stringified error returns. Error handling audited across the Eco kernel API.
 
 **Module Status**:
 | Module | Source Files | Status |
@@ -1009,9 +1020,8 @@ Define custom operations representing Elm semantics.
 | **Control Flow** | `case`, `return`, `joinpoint`, `jump`, `crash`, `expect`, `dbg` | ✅ Lowered + Tested |
 | **ADT** | `construct`, `project` | ✅ Lowered + Tested |
 | **Strings** | `string_literal` | ✅ Lowered + Tested |
-| **Calls/Closures** | `call`, `papCreate`, `papExtend` | ✅ Lowered + Tested |
+| **Calls/Closures** | `call`, `papCreate`, `papExtend` | ✅ Lowered + Tested (GC root operands carried directly) |
 | **Allocation** | `allocate`, `allocate_ctor`, `allocate_string`, `allocate_closure` | ✅ Lowered + Tested |
-| **GC** | `safepoint` | ✅ Lowered + Tested |
 | **Globals** | `global`, `load_global`, `store_global` | ✅ Lowered + Tested |
 | **Boxing** | `box`, `unbox`, `constant` | ✅ Lowered + Tested |
 | **Int Arithmetic** | `int.add`, `int.sub`, `int.mul`, `int.div`, `int.modby`, `int.remainderby`, `int.negate`, `int.abs`, `int.pow` | ✅ Lowered + Tested |
@@ -1069,21 +1079,22 @@ Define operations for garbage collection integration.
 
 **Current Implementation**:
 - Allocation ops: `eco.allocate`, `eco.allocate_ctor`, `eco.allocate_string`, `eco.allocate_closure` - all lowered to runtime calls, now carry explicit GC root operands *(Apr 2026)*
-- GC safepoint: `eco.safepoint` - fully implemented with LLVM statepoint conversion *(Mar-Apr 2026)*
+- **`eco.safepoint` op retired** *(May 19, 2026)*: With the RS4GC migration, GC safepoints are inserted by LLVM at every non-leaf call in a `gc "eco-gc"` function — no front-end marker op is needed. The `eco.safepoint` op was removed and its GC root hints are threaded directly onto the existing `GCRootCarrier` ops (`eco.call`, `eco.papExtend`, and the allocation ops). EcoGCPrepare no longer emits liveness hints — RS4GC recomputes liveness from `ptr addrspace(1)` types.
 - GC root operands on `eco.call` and `eco.papExtend` *(Apr 2026)*
 - EcoGCPrepare pass: Detects allocating ops and attaches live GC roots as explicit operands *(Apr 2026)*
-- Fast/slow allocation paths: Fast bump-pointer, slow path via GC safepoint *(Apr 2026)*
+- Fast/slow allocation paths: Fast bump-pointer, slow path wrapped in `gc.statepoint` by RS4GC *(Apr 2026)*
 - Global root registration: `eco.global` lowering generates `__eco_init_globals` constructor that calls `eco_gc_add_root` for each global
 - Reference counting placeholders: `eco.incref`, `eco.decref`, etc. - defined but not lowered (for future Perceus)
 
 **Tasks**:
 - [x] Allocation operations (nursery via runtime allocator)
-- [x] GC safepoint operations (fully implemented with statepoint conversion)
+- [x] GC safepoint operations (delegated to RS4GC at non-leaf calls)
 - [x] Root registration operations (global root auto-registration)
 - [x] Explicit GC root operands on allocation ops *(Apr 2026)*
 - [x] GC root operands on call/papExtend ops *(Apr 2026)*
 - [x] EcoGCPrepare pass for automatic root attachment *(Apr 2026)*
 - [x] Fast/slow allocation path splitting *(Apr 2026)*
+- [x] Retire `eco.safepoint` op; thread GC hints onto carrier ops directly *(May 19, 2026)*
 - [ ] Write barrier operations (not needed - Elm's immutability guarantees no old→young pointers)
 - [x] Reference counting operations (Perceus-style reuse) - placeholder definitions
 
@@ -1164,7 +1175,7 @@ Implement a lowering pipeline that transforms eco dialect to LLVM IR.
 - [x] Closure conversion (papCreate/papExtend → runtime calls)
 - [x] Direct closure calls with typed ABI (Feb 12, 2026)
 - [x] Heap allocation insertion (construct → allocate + stores)
-- [x] GC safepoint insertion (eco.safepoint → placeholder for stack maps)
+- [x] GC safepoint insertion (RS4GC inserts `gc.statepoint` at every non-leaf call; `eco.safepoint` op retired May 19, 2026)
 - [x] Bytes fusion (BF dialect for fused byte operations)
 - [x] TCO closure bug fixed (Dec 29, 2025) - closures correctly handled in tail-recursive functions
 - [x] Tail call optimization - tail recursion with loop state implemented (Feb 2-3, 2026)
@@ -1236,7 +1247,7 @@ Integration between LLVM and the garbage collector for precise stack scanning. T
 **Requirements**:
 - [x] LLVM stack map generation via statepoints *(Mar 26)*
 - [x] Runtime stack root registration *(Mar 26)*
-- [x] Safepoint insertion in generated code (eco.safepoint → LLVM statepoint) *(Mar 26)*
+- [x] Safepoint insertion in generated code — initially via `eco.safepoint`, then RS4GC at every non-leaf call *(Apr 18-22)*; `eco.safepoint` op retired *(May 19)*
 - [x] EcoGCPrepare automatic root attachment *(Apr 12)*
 - [x] Fast/slow allocation paths *(Apr 12)*
 - [x] GC roots on call/papExtend operations *(Apr 13)*
@@ -1245,6 +1256,7 @@ Integration between LLVM and the garbage collector for precise stack scanning. T
 - [x] Allocation group single safepoint *(Apr 16)*
 - [x] External GC roots for kernel global state *(Apr 15)*
 - [x] eco.value → ptr addrspace(1) *(Apr 17)*
+- [x] Carrier-op-only GC hints; liveness from RS4GC alone *(May 19)*
 - [ ] Thread-safe root set management (multi-thread stress testing)
 
 **Deliverables**:
@@ -1896,28 +1908,41 @@ ECO Runtime (execution)
 
 #### 5.1.1 Pipeline Integration
 
-**Status**: In Progress (JIT Pipeline Complete)
+**Status**: Complete (Stage 9 — Unified `eco` Single-Binary Compiler)
 
 Connect all compiler stages into a working pipeline.
 
 **Current Implementation**:
-- Compilation through Guida frontend → MLIR backend → JIT execution is working
-- Script to run the compiler chain (`scripts/compile-elm.sh`)
+- A single `eco` binary embeds the Elm frontend, MLIR backend, RS4GC + LLVM lowering, lld linker, and runtime libraries — JIT and AOT both flow through `runEcoBackend` / `EcoBackend`.
 - ecoc driver supports multiple emit modes: `-emit=jit`, `-emit=llvm`, `-emit=mlir-llvm`, `-emit=mlir`
 - Kernel modules linked as static libraries
+- `eco-boot-native` AOT path drives Stages 6–8 of bootstrap; `eco` target depends on bootstrap Stage 8.
+
+**Stage 9 — Unified `eco` Backend** *(May 19 – Jun 1, 2026)*: JIT and AOT lowering pipelines were unified behind a shared backend so the two code paths can never diverge again. Phases:
+
+- **Phases 1 & 2** *(May 19)*: Centralize RS4GC + frame-pointer logic in `EcoBackend`. Previously each driver wired the GC-strategy and `frame-pointer=all` independently.
+- **Phase 3** *(May 19)*: Move TargetMachine + DataLayout setup before RS4GC.
+- **Phase 3.3** *(May 19)*: Move `opt` + object emission into `runEcoBackend`.
+- **Phase 4** *(May 19)*: Route JIT transformers through `runEcoBackend` — the JIT and AOT now share the same lowering callback, just with different sinks (in-process EE vs `.o` file).
+- **Phase 5** *(May 19)*: Add AOT E2E test runner + bootstrap gates; default AOT-test parallelism = system core count; ninja clean no longer wipes the AOT E2E shadow tree.
+- Stage 9 follow-ups: Force-link `ElmKernel_Utils` in `eco-boot-native`; fix Task-Never type-soundness hole on `Eco.NativeDriver.lowerAndLink`; removed the Stage 9c "binary eco == eco2" self-build check (subsumed by Stage 7/8 MLIR fixed point).
+- Plan: `plans/stage9-eco-single-binary.md`. Reports: `design_docs/converge-pipelines.md`, `design_docs/lld-in-eco.md`.
 
 **Tasks**:
 - [x] Wire up Guida frontend to MLIR backend
 - [x] Connect MLIR lowering passes (EcoToLLVM)
 - [x] Integrate LLVM code generation (via MLIR ExecutionEngine)
 - [x] JIT execution of compiled Elm programs
-- [ ] AOT compilation producing standalone native binaries
-- [ ] Produce working native binaries from Elm source (without JIT)
+- [x] AOT compilation producing standalone native binaries *(eco-boot-native, then unified `eco`)*
+- [x] Produce working native binaries from Elm source (without JIT)
+- [x] Unify JIT and AOT through `runEcoBackend` / `EcoBackend` *(May 19, 2026)*
+- [x] AOT E2E test runner + bootstrap gates *(Phase 5, May 19, 2026)*
 
 **Deliverables**:
 - [x] End-to-end JIT compilation working
 - [x] Pipeline orchestration code (`ecoc.cpp`, compile scripts)
-- [ ] AOT native binary generation
+- [x] AOT native binary generation
+- [x] Unified `eco` single-binary compiler
 
 #### 5.1.2 Command-Line Interface
 
@@ -1938,16 +1963,27 @@ Design and implement user-facing CLI for the `eco` compiler.
 
 #### 5.1.3 Build System & Packaging
 
-**Status**: In Progress
+**Status**: Substantially Complete (Portable Static-MUSL Distribution Bundle Landed)
 
 Create robust build system and distribution packages.
 
-**Current Implementation** *(Feb 26-27, 2026)*:
+**Current Implementation** *(Feb 26-27, 2026; static-link pipeline May 24 – Jun 2, 2026)*:
 - `eco-kernel-cpp/CMakeLists.txt` integrated into top-level CMake build
 - Three-stage bootstrap build configurations:
   - `compiler/elm-bootstrap.json` - Stock Elm compiler → `eco-boot.js` (uses XHR IO)
   - `compiler/elm-kernel.json` - Eco compiler → `eco-node.js` (uses kernel IO)
 - Bootstrap entry point: `compiler/bin/eco-boot-runner.js`
+- Compiler frontend migrated from npm to pnpm; Elm toolchain (`elm-test-rs`, `elm`) fetched into `build/toolchain/bin/` via CMake *(May 22, 2026)*.
+
+**Static-link pipeline — Stages A → C** *(May 24 – Jun 2, 2026)*: a stack of build modes that progressively eliminate dynamic-library dependencies, culminating in a fully portable distribution:
+
+- **Stage A** *(May 24)*: `-DECO_STATIC=ON` produces an `eco` binary that depends only on glibc + ld-linux (no system libstdc++/libc++ pulled in dynamically).
+- **Stage A.5** *(May 25)*: AOT-built binaries also minimal-deps glibc under `-DECO_STATIC=ON`. `EcoBootConfig.h` now emits absolute `.a` paths for the runtime / kernel archives so AOT links see the same archives as the in-tree build.
+- **Stage B** *(May 27)*: Static (musl + libc++) `eco` build — toolchain + portability fixes for a fully-static binary independent of the host glibc.
+- **Stage B.5** *(May 28)*: AOT-link path for the fully-static MUSL `eco` binary — the AOT-generated executables also link against the musl/libc++ toolchain.
+- **Stage C** *(Jun 2)*: Portable static `eco` distribution bundle — ship `eco` + its archives + a minimal kernel-source tree so an end user can compile Elm without a system toolchain.
+- Runtime fix: GC heap corruption under static musl — `initStackMapFromSelf` now accepts musl's `dlpi_name="/proc/self/exe"` (musl reports an empty soname for the main executable, where glibc reports the basename).
+- Build infrastructure: static MUSL build uses a separate `build-static/` folder (gitignored) so it does not collide with the dev build; section added to bootstrap guide on creating the static binary; build-flags status report (`design_docs/lld-in-eco.md` covers embedding `lld` into the unified binary).
 
 **Tasks**:
 - [ ] Evaluate whether CMake is the right tool (needs to invoke Elm compiler and tools outside normal C/C++ toolchain)
@@ -1955,8 +1991,9 @@ Create robust build system and distribution packages.
 - [x] Create Dockerfile encapsulating all build dependencies *(Dockerfile based on Debian Bookworm)*
 - [x] Integrate eco-kernel-cpp into CMake build *(Feb 26, 2026)*
 - [x] Create bootstrap and kernel build configurations *(Feb 27, 2026)*
-- [ ] Add CMake targets for `eco-boot`, `eco-node`, `eco-native`
-- [ ] Build on Arch Linux with statically linked libc (musl) for cross-platform Linux distribution
+- [x] CMake targets for `eco`, bootstrap stages, AOT-link, static-build pipeline
+- [x] Build with statically linked libc (musl) for cross-platform Linux distribution *(Stage B, May 27, 2026)*
+- [x] Portable static-musl distribution bundle *(Stage C, Jun 2, 2026)*
 - [ ] Create Debian package (.deb)
 - [ ] Create npm package for Node.js distribution
 - [ ] Document build process and dependencies
@@ -1965,8 +2002,9 @@ Create robust build system and distribution packages.
 - [x] Dockerfile for reproducible builds *(Dockerfile, .dockerignore)*
 - [x] eco-kernel-cpp CMake integration
 - [x] Bootstrap build configurations (`elm-bootstrap.json`, `elm-kernel.json`)
-- [ ] CMake targets for three-stage bootstrap pipeline
-- [ ] Static Linux binary (musl-linked)
+- [x] CMake targets for bootstrap pipeline + AOT E2E shadow tree
+- [x] Static Linux binary (musl-linked, Stage B)
+- [x] Portable static-musl distribution bundle (Stage C)
 - [ ] Debian package
 - [ ] npm package
 - [ ] Build system documentation
@@ -1991,6 +2029,8 @@ Link generated code with ECO runtime and Elm base libraries.
 - [x] Create linkable libraries (.a) for kernel operations implemented in C++
 - [x] Integrate elm-kernel-cpp modules into CMake build as static libs
 - [x] Integrate eco-kernel-cpp modules into CMake build as static libs *(Feb 26, 2026)*
+- [x] Unified `eco` binary embeds lld and drives MLIR → ELF + runtime/kernel linking end-to-end *(May 19, 2026)*
+- [x] AOT `.o` link-only fast path on `eco-boot-native` (Stage 6 relink 3 m 26 s → 0.6 s) *(May 8, 2026)*
 - [ ] Extract elm/core and other ported Elm base libraries into standalone packages
 - [ ] Design library discovery and linking as part of eco compilation flow
 - [ ] Handle native library dependencies
@@ -2038,6 +2078,10 @@ The full 8-stage bootstrap from `guides/bootstrap.md` runs end-to-end:
 | 8 | `eco-compiler-boot-2.mlir` ≡ `eco-compiler-boot.mlir` | **MLIR fixed point reached** |
 
 The Stage 7 / Stage 8 MLIR outputs are byte-identical, so the compiler reaches a true fixed point. The two Stage 8 native ELFs are the same size and differ only in ~3.6 KB inside `.strtab` (ASCII hex hash suffixes produced non-deterministically by the LLVM lowering pipeline + lld), not in any code or data the compiler emits.
+
+**Stage 8 determinism** *(May 23, 2026)*: `__eco_str_case_<N>_<i>` symbols are now numbered by a counter rather than by pointer identity, so the symbol names are stable across runs and bootstrap stages.
+
+**Bootstrap ordering & lean test rebuild** *(May 22-23, 2026)*: bootstrap stages are forced to run in their documented order; the `full` target and E2E tests now only need Stage 1 of bootstrap to be present (previously they would consume stale `.mlir` from later stages). The Stage 9c "binary eco == eco2 self-build" check was removed — the Stage 7 / Stage 8 MLIR fixed point already subsumes it.
 
 **Current Progress** *(Mar 11 – May 14, 2026)*:
 - Active bootstrap attempt revealed ~20+ codegen and runtime bugs, now fixed (see §4.2 issues 16-31)
@@ -2360,8 +2404,8 @@ Runtime Foundation (§1)
 
 ## Project Status
 
-**Current Phase**: 0.1.0 Milestone Reached — Full Binary Self-Compilation Achieved
-**Last Updated**: 2026-05-14
+**Current Phase**: 0.1.0 Milestone Reached — Unified `eco` Single-Binary Compiler + Portable Static Distribution Bundle
+**Last Updated**: 2026-06-02
 
 **Completed**:
 - Heap model design (§1.1)
@@ -2515,6 +2559,72 @@ Runtime Foundation (§1)
 
 - **Float Precision** (Feb 11, 2026):
   - Float-to-string uses shortest round-trip representation
+
+**Most Recent Changes — May 19 to Jun 2, 2026**:
+
+- **Stage 9 — Unified `eco` Single-Binary Compiler (Phases 1–5)** *(May 19, 2026)*:
+  - JIT and AOT lowering pipelines unified behind `runEcoBackend` / `EcoBackend`. Phases 1 & 2 centralize RS4GC + frame-pointer logic; Phase 3 moves TargetMachine + DataLayout setup before RS4GC; Phase 3.3 moves `opt` + object emission into the shared backend; Phase 4 routes JIT transformers through it; Phase 5 adds an AOT E2E test runner + bootstrap gates (parallelism = system core count; ninja clean preserves the AOT shadow tree).
+  - Made `eco` target depend on bootstrap Stage 8. Force-link `ElmKernel_Utils` in `eco-boot-native`. Fix Task-Never type-soundness hole on `Eco.NativeDriver.lowerAndLink`. Removed the Stage 9c "binary eco == eco2 self-build" check (subsumed by Stage 7/8 MLIR fixed point).
+  - Plan: `plans/stage9-eco-single-binary.md`. Reports: `design_docs/converge-pipelines.md`, `design_docs/lld-in-eco.md`.
+
+- **Static Distribution Pipeline (Stages A → C)** *(May 24 – Jun 2, 2026)*:
+  - **Stage A**: `-DECO_STATIC=ON` produces a minimal-glibc-deps `eco` binary. **Stage A.5**: AOT-built binaries also minimal-deps glibc; `EcoBootConfig.h` emits absolute `.a` paths so AOT links see the same archives as the in-tree build.
+  - **Stage B**: static (musl + libc++) `eco` build — toolchain + portability fixes. **Stage B.5**: AOT-link path for the fully-static MUSL `eco` binary. **Stage C**: portable static `eco` distribution bundle (Jun 2 — the most recent commit).
+  - Runtime fix: `initStackMapFromSelf` now accepts musl's `dlpi_name="/proc/self/exe"` (musl reports an empty soname for the main executable). Without this, the GC stack-map probe missed the main binary under static musl and the bootstrap-stage-7 workload corrupted the heap.
+  - Static-MUSL build uses a separate `build-static/` folder (gitignored). Build-flags status report added; section in the bootstrap guide on creating the static binary.
+
+- **Defer Eager Kernel Task IO via `Task_Binding`** *(May 31, 2026)*:
+  - Every C++ symbol returning an Elm `Task` in `eco-kernel-cpp/` and `elm-kernel-cpp/` now performs its IO inside a `Task_Binding` callback rather than at kernel-call time. The scheduler can interleave outstanding bindings; blocking syscalls (`curl_easy_perform`, `waitpid`) park onto an async worker pool and resume the parked closure.
+  - Shared helpers in `runtime/src/platform/TaskBinding.hpp` (`makeBinding`, `makeAsyncBinding`); Eco-side `succeed*` / `fail*` HPointer wrappers in `eco-kernel-cpp/src/eco/TaskBinding.hpp`.
+  - Structured IO errors plumbed end-to-end: kernels return rich error values (errno + path + operation context) which flow through the scheduler to the final `Exit`.
+  - Effect-manager setup task built by invoking a saturated closure with a Task-return-type assertion (prevents a class of silent type-soundness holes).
+  - New invariants **KERNEL_TASK_IO_001** and **KERNEL_TASK_IO_002**. Plan: `plans/defer-eager-kernel-tasks-via-binding.md`. Theory: [Kernel Task Deferral](design_docs/theory/kernel-task-deferral.md). Error-handling audit on the Eco kernel API.
+
+- **HTTP Kernel Rebuild** *(May 31, 2026)*:
+  - elm/http + `Eco.Http` reimplemented as a real libcurl kernel on the single-threaded heap, with a full E2E test suite (HTTP test failures in Gate A + B fixed).
+  - `Http.track` progress streaming (periodic progress events via the effect manager).
+  - Native package downloads fixed: send `Content-Length: 0` on empty-body POST/PUT/PATCH (registry returned 411); accept all libcurl-supported encodings so gzip downloads from the package server work; fetch errors propagate as structured `Http.Error`s.
+  - Package unzip: create missing directories on demand; safe handling of empty-string path; present zip paths in full including the unzip prefix (parity with the JS kernel).
+
+- **`eco.safepoint` Op Retired** *(May 19, 2026)*:
+  - With the Apr 22 RS4GC migration, every non-leaf call inside a `gc "eco-gc"` function is wrapped in a `gc.statepoint` by LLVM. The front-end `eco.safepoint` marker op was therefore redundant; it was removed, and its GC root hints are threaded directly onto the existing `GCRootCarrier` ops (`eco.call`, `eco.papExtend`, allocation ops).
+  - `EcoGCPrepare` no longer emits liveness hints — RS4GC recomputes liveness from `ptr addrspace(1)` types alone.
+  - `EcoUnboxedAggCrossSpec` updated to strip aggregate-typed values from the (now-removed) safepoint op shape during transition; the cleanup also dropped the experimental `-enable-unboxed-agg` pass pipeline.
+
+- **Bytes-Fusion Phase 4+5** *(May 23, 2026)*:
+  - Landed phases 4 and 5 of the bytes-fusion roadmap and raised the per-function inliner cap so fused encoder/decoder pipelines can be inlined into their callers. Added an escape hatch for partial fusion when the Elm AST doesn't fully reify to the BF dialect.
+  - `elm/bytes` runtime: zero-copy slices, single-copy memcpys, large-object-table (LOT)-aware allocations.
+  - Plans: `plans/bytes-fusion-broader-recognition.md`, `plans/bytes-fusion-escape-hatch.md`.
+
+- **Escape-Analysis Groundwork (Phase 1 + Phase 2 scaffolding)** *(May 19-21, 2026)*:
+  - **Phase 1**: widened `construct.*` / `make.*` / `eco.call` ops to accept aggregate operands so cross-spec aggregate values can flow through them.
+  - **Phase 2 scaffolding** (§9.1): `project.*` ops made nested-aggregate-ready; cross-spec finished the nested-shape DSL use side and fixtures.
+  - **Wrapper FCA fix**: eliminated register-form FCA-of-GC-pointer values from wrapper functions — investigation showed RS4GC does not handle heap pointers inside an LLVM `FirstClassAggregate`. Updated plan reflects the outcome.
+  - Removed the old `-enable-unboxed-agg` pass pipeline (predecessor experiment retired).
+  - Design docs: `design_docs/escape-analysis.md`, `design_docs/escape-analysis-status.md`; plan for moving forward.
+
+- **Compiler Front-End Perf & Telemetry** *(May 20-23, 2026)*:
+  - Front-end timing stats added; warm-cache GC cycle fix in `eco-boot-native` so repeated compiles inside one process don't accumulate from-space ghost data.
+  - `eco-config.json` for tunable compiler settings (heap parameters, inliner caps, fusion thresholds). Plan: `plans/eco-config-tunable-parameters.md`.
+  - Shrunk `.ecot` files via String interning into a per-file string table; dropped redundant unconsumed fields.
+  - Wrap Stage 5 / 7a / 7b `.mlir` emits in `/usr/bin/time -v` + new `mlir-timing-report` target (hooked into bootstrap).
+  - Skip writing `.eco` / `artifacts.dat` files when emitting MLIR only (and the JS path is symmetric).
+  - Adjusted default heap parameters after a sweep over the optimal combinations for the Stage 7 self-compile.
+
+- **Runtime String Perf** *(May 20-22, 2026)*:
+  - `runtime/string`: cut allocations + memcpys in string ops.
+  - Lowered `string_tiny_slice_limit` from 8 K to 128 — most slices are short, so the previous cap was forcing unnecessary leaf copies.
+  - Added a per-thread String-allocation size histogram to `GCStats`, populated from `HeapHelpers::allocString` via a `recordStringAllocOnCurrentThread` hook.
+
+- **Build System Polish** *(May 22 – Jun 2, 2026)*:
+  - Compiler frontend migrated from **npm → pnpm**; Elm toolchain (`elm-test-rs`, `elm`) fetched into `build/toolchain/bin/` via CMake.
+  - `compiler/CMakeLists.txt`: add `build-kernel/eco-stuff/` to the kernel build's cache search so the per-builddir caches are seen.
+  - Set default AOT-test parallelism to system core count; stop `ninja clean` from wiping the AOT E2E shadow tree.
+
+- **Cleanup** *(May 19 – Jun 2, 2026)*:
+  - Removed the unboxed-aggregate pass pipeline + `-enable-unboxed-agg` flag (predecessor experiment).
+  - Removed printing of LLVM stats.
+  - Tidied old design files; updated stale comment; note about unhandled errors.
 
 **Most Recent Changes — Apr 28 to May 14, 2026**:
 
@@ -2773,15 +2883,17 @@ Runtime Foundation (§1)
 
 **Next Steps** *(in priority order)*:
 1. **Performance baseline (§6.1)** — benchmark Stage 7 self-compile vs JS bootstrap, runtime micro-benchmarks, GC overhead under stress
-2. **Release packaging (§6.2)** — documentation, install scripts, distribution; tag 0.1.0
+2. **Release packaging (§6.2)** — documentation, install scripts, .deb / npm packaging on top of the Stage C static bundle; tag 0.1.0
 3. **CLI polish (§5.1.2)** — error messages, `make` flag parity with the JS toolchain
-4. **Build system & packaging (§5.1.3)** — single-command install from source, prebuilt binary distribution
+4. **Escape analysis** — finish Phase 2 nested-aggregate readiness and start lifting heap allocation off escape-free constructions
 5. **Stress-suite stabilisation** — remaining GC assertions at high iteration counts in `test/stress-elm/`
 6. **String rope follow-ups** — actual rope rebalancing (currently only `// TODO`), streaming `equal`/`compare`, streaming UTF-8 encode (Option B), all-ASCII fast-path bit in `ElmStringSlice._padding`
 
 **Active Workstreams**:
-1. **Tuple-slot boxing bug class** — root-cause MonoType fix landed *(May 14)*; variant reproducers (Array/Closure/Custom/Record/ListCons/T2/T3) still being verified end-to-end
-2. **Old-gen GC hardening** — re-enabling `decommit_on_oldgen_release` once the stale-mark-roots issue is resolved; remaining sweep / pressure-trigger tuning
-3. **MLIR equivalence suite** — currently 689 / 690 byte-identical between Stage 2 and Stage 6 outputs; investigating any new diffs as they appear
-4. **Compiler pass consolidation** — Monomorphization / PostSolve overhauls (tvar `Int` IDs, `SolverRoots`, `PendingGlobal`, per-instance kernel ABI) stabilising into their final shape
+1. **Escape analysis** — Phase 1 (widened ops) landed; Phase 2 nested-aggregate scaffolding in progress; wrapper FCA-of-GC-pointer fix made the path RS4GC-safe
+2. **Tuple-slot boxing bug class** — root-cause MonoType fix landed *(May 14)*; variant reproducers (Array/Closure/Custom/Record/ListCons/T2/T3) still being verified end-to-end
+3. **Old-gen GC hardening** — re-enabling `decommit_on_oldgen_release` once the stale-mark-roots issue is resolved; remaining sweep / pressure-trigger tuning
+4. **MLIR equivalence suite** — currently 689 / 690 byte-identical between Stage 2 and Stage 6 outputs; investigating any new diffs as they appear
+5. **Bytes-fusion follow-ups** — Phase 4+5 landed; partial-fusion escape hatch is in place but recognition coverage can still be broadened
+6. **Compiler pass consolidation** — Monomorphization / PostSolve overhauls (tvar `Int` IDs, `SolverRoots`, `PendingGlobal`, per-instance kernel ABI) stabilising into their final shape
 5. **Stress-suite reliability** — driving GC root correctness under sustained allocation pressure; backfilling regressions for every bootstrap-derived bug

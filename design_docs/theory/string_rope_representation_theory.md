@@ -98,12 +98,23 @@ Neither function allocates on the Elm heap, so callers don't need to root inputs
 ```cpp
 namespace detail {
     constexpr size_t FLATTEN_LIMIT     = 32 * 1024;        // ~64 KiB UTF-16
-    constexpr size_t TINY_SLICE_LIMIT  = FLATTEN_LIMIT / 4;
     // Rope rebalance heuristics — only consulted when ropes exist.
     constexpr u32 MAX_HEIGHT       = 32;
     constexpr u32 LEAFCOUNT_LIMIT  = 64;
     constexpr u32 MIN_LEAF_SIZE    = 128;
 }
+
+// Tiny-slice cutoff is a runtime-tunable HeapConfig field, not a compile-time
+// constant. Default 128 UTF-16 code units (was 8 KiB before May 22, 2026 —
+// most slices in practice are short, and a 8 KiB cap was forcing avoidable
+// leaf copies).
+//
+//   AllocatorCommon.hpp:  STRING_TINY_SLICE_LIMIT = 128
+//                         HeapConfig::string_tiny_slice_limit (instance field)
+//   StringOps.cpp:        slice_len <= allocator.getConfig()
+//                                              .string_tiny_slice_limit
+//   heap-config.json:     "string_tiny_slice_limit": <bytes>
+//   eco-config.json:      flows through into HeapConfig at startup
 
 enum class FlattenReason {
     Structural,    // ad-hoc concat / slice cleanup
@@ -129,7 +140,7 @@ enum class FlattenReason {
 | Input shape | Result shape |
 |---|---|
 | Whole-string range | original `HPointer` (no copy) |
-| `len ≤ TINY_SLICE_LIMIT` | flat leaf (avoids slice metadata for short ranges) |
+| `len ≤ string_tiny_slice_limit` *(runtime tunable, default 128 UTF-16 code units)* | flat leaf (avoids slice metadata for short ranges) |
 | Large range over a leaf | new `Tag_StringSlice` over the source |
 | Large range over a slice | new slice with `offset = parent.offset + start` (slice-of-slice collapses) |
 | Range over a rope, fully in left/right child | recurse into that child |

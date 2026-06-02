@@ -598,7 +598,13 @@ Converts MonoGraph to MLIR using the ECO dialect.
 - `Emit.elm`: Emits fused BF dialect ops from reified nodes
 - `BFOps.td`: Defines the BF MLIR dialect (alloc, cursor, read/write ops)
 
+*(May 23, 2026)* **Phase 4 + 5** of the bytes-fusion roadmap landed alongside a raised per-function inliner cap so fused encoder/decoder pipelines can be inlined into their callers. A **partial-fusion escape hatch** falls back to the kernel path when the Elm AST does not fully reify to BF — previously any unrecognised shape failed the whole call. The runtime side of `elm/bytes` was reworked for zero-copy slices, single-copy memcpys, and large-object-table (LOT)-aware allocations. Plans: `plans/bytes-fusion-broader-recognition.md`, `plans/bytes-fusion-escape-hatch.md`.
+
 **Streaming bytecode emission** *(Apr 18-20, 2026)*: MLIR is emitted directly as MLIR binary bytecode in a streaming fashion rather than materialising a textual string. The bytecode encoder splits its attribute table into separate location and string buckets so location attrs don't inflate the string table. The streaming emitter dramatically reduces peak compiler memory for large programs; bootstrap-scale inputs are now tractable. Text-mode MLIR (`--text-mlir`) is retained for debugging.
+
+**`.ecot` size reduction** *(May 21, 2026)*: Cached typed-optimized artefacts (`.ecot`) shrank substantially through String interning into a per-file string table, plus dropping redundant fields that no downstream consumer read. Plan: `plans/complete-unified-id-space.md`. `.eco` and `artifacts.dat` files are now only written when the build is emitting JavaScript; the MLIR path skips them, and vice versa.
+
+**Front-end timing + telemetry** *(May 20-23, 2026)*: Front-end stages now record timing stats; a warm-cache GC cycle fix prevents `eco-boot-native` from accumulating from-space ghost data across repeated compiles. Stage 5 / 7a / 7b `.mlir` emits are wrapped in `/usr/bin/time -v` and aggregated by a `mlir-timing-report` target. Runtime tunables (heap parameters, inliner caps, fusion thresholds) are loaded from `eco-config.json` — plan: `plans/eco-config-tunable-parameters.md`. Default heap parameters were retuned after a sweep over the optimal combinations for the Stage 7 self-compile.
 
 **Mutually-recursive closure SCC allocation** *(Apr 24, 2026)*: `eco.papCreateGroup` atomically allocates an entire SCC of mutually recursive let-bound closures in one contiguous region. The Elm frontend detects contiguous closure-only SCCs of size ≥ 2 in let-chains and emits one group op instead of per-binding `papCreate`s with forward-referenced placeholders. Cross-sibling captures are written after all HPointers are known; same-generation, so no write barrier. Self-recursion and non-SCC bindings stay on the existing `fixSelfCaptures` path. This fixes a "operand #0 does not dominate this use" failure observed in mutually-recursive parsers.
 
@@ -630,7 +636,7 @@ Final lowering from ECO dialect to LLVM dialect. As of Feb 2026, the pass underw
 - `_capture_abi` attribute drives type-aware `buildEvaluatorArgs` so captured Int/Float/Char are boxed with correct primitive tags (`eco_alloc_int`/`_float`/`_char`), enabling correct `Debug.log` output on primitives
 - `widenFieldToI64` handles Bool `ptr<1>` constants via `PtrToIntOp` (pointer ZExt would crash); ADT case bit manipulation lifts `ptr<1>` scrutinee to `i64` via `valueToI64` before `LShr`/`And`
 - Kernel calls reflect compiler-declared types without repair
-- Safepoint lowering: `eco.safepoint` is erased at LLVM lowering time; the MLIR op is retained only as a front-end marker. RS4GC inserts statepoints directly at every non-leaf call (the real GC-triggering boundary), so no intermediate marker call is needed.
+- GC safepoints: the `eco.safepoint` op was retired *(May 19, 2026)*. RS4GC wraps every non-leaf call inside a `gc "eco-gc"` function in a `gc.statepoint` directly; GC root hints that previously rode on the marker op are now carried by the existing `GCRootCarrier` ops (`eco.call`, `eco.papExtend`, allocation ops). `EcoGCPrepare` no longer emits liveness hints — RS4GC recomputes liveness from `ptr addrspace(1)` types alone.
 - All non-external functions carry `gc "eco-gc"` attribute; runtime helpers that cannot trigger GC are annotated `gc-leaf-function` so RS4GC skips them
 
 **PAP Wrapper Elimination (Typed Closure Calling)**: The compiler generates direct function calls even when partial application and closures are involved:
@@ -649,7 +655,21 @@ At execution time, the Platform and Scheduler subsystem implements Elm's effect 
 
 **GC safety** *(Apr 2026)*: `pushStack` and `mailboxPushBack` now take `HPointer` (not raw `Process*`) and re-resolve the process pointer after allocation calls that may trigger GC. The currently running Process is registered as a stack root while off the run queue. External GC root scanning is supported in `RootSet`. `StackRootGuard` RAII helper roots captured HPointers across allocations in kernel helpers. *(Apr 24, 2026)* Per-batch `FxBatch` and per-manager scratch lifted out of unrooted C++ locals into `PlatformRuntime::activeBatch_` / `effectsScratch_` member fields, scanned by an external root scanner while `dispatchActive_` is set; `dispatchEffects` builds Elm lists via `alloc::listFromPointers` rather than a manual `cons()` accumulator loop. *(Apr 24, 2026)* `eco-kernel-cpp/src/eco/MVar.cpp` reimplemented for thread-safe blocking semantics.
 
-**See**: [Platform & Scheduler Theory](design_docs/theory/platform_scheduler_theory.md)
+**Deferred kernel Task IO via `Task_Binding`** *(May 31, 2026)*: A core invariant of the Eco kernel surface is that **every C++ symbol returning an Elm `Task` must perform its IO inside a `Task_Binding` callback, not at kernel-call time** (invariants **KERNEL_TASK_IO_001** / **KERNEL_TASK_IO_002**). Pre-May-2026, most kernel functions ran their syscalls eagerly at kernel-call time — e.g. `File.writeString` opened and wrote the file when the kernel function was invoked. That had three consequences: (a) the scheduler never observed two outstanding bindings, so it could not interleave them; (b) time-varying reads (`Time.now`, `Runtime.random`) silently froze to module-init time; (c) blocking kernels (`curl_easy_perform`, `waitpid`) stalled the scheduler thread.
+
+A `Task_Binding` HPointer wraps a callback closure. When the scheduler steps the binding it invokes the closure with the parked resume HPointer; the closure either delivers a Task synchronously (`sync` shape — `makeBinding`) or registers the resume into `Scheduler::pendingResumes_` and hands the syscall to a worker pool (`async-park` shape — `makeAsyncBinding`). Shared trampoline helpers in `runtime/src/platform/TaskBinding.hpp` factor out the closure-allocation, capture-rooting (via `StackRootGuard` for both the captured payload and the resume closure), and trampoline boilerplate. Eco-side `succeed*` / `fail*` HPointer wrappers live in `eco-kernel-cpp/src/eco/TaskBinding.hpp`.
+
+Listed exemptions: pure Task constructors (`succeed`/`fail`/`andThen`/`onError`/`spawn`/`kill`/`taskReceive`), terminator non-returners (`Process.exit`, `Crash.crash`), identity helpers (`Console.log`), and `MVar::read/take/put`'s partial-eager fast paths when the slot state already permits immediate resolution. See [Kernel Task Deferral Theory](design_docs/theory/kernel-task-deferral.md).
+
+**See**: [Platform & Scheduler Theory](design_docs/theory/platform_scheduler_theory.md), [Kernel Task Deferral Theory](design_docs/theory/kernel-task-deferral.md)
+
+### Unified `eco` Backend
+
+*(May 19, 2026)* The compiler ships as a single `eco` binary that embeds the Elm frontend, MLIR backend, RS4GC + LLVM lowering pipeline, lld linker, and runtime libraries. JIT and AOT paths share `runEcoBackend` / `EcoBackend`: the JIT in-process ExecutionEngine and the AOT object emitter differ only in their final sink — every prior stage (TargetMachine + DataLayout setup, RS4GC, opt, code-emission) is run by the same code. This was previously two parallel pipelines that had to be kept in sync by hand; the May-19 unification eliminates that maintenance burden and the class of bugs where JIT- and AOT-built binaries diverged.
+
+The same binary supports a portable distribution mode: `-DECO_STATIC=ON` produces a fully-static musl + libc++ build (Stage B), and the Stage C distribution bundle ships `eco` together with its runtime/kernel archives so an end user can compile Elm without a system toolchain. Under static musl, `initStackMapFromSelf` accepts `dlpi_name="/proc/self/exe"` (musl reports an empty soname for the main executable, where glibc reports a basename); without this fix the GC stack-map probe missed the main binary and the bootstrap-stage-7 workload corrupted the heap.
+
+See PLAN.md §5.1.1 and §5.1.3 for Phase 1–5 (unified pipeline) and Stage A → C (static distribution) details.
 
 ## Type Information Flow
 
@@ -738,6 +758,7 @@ Each pass and subsystem has comprehensive documentation in [`design_docs/theory/
 | [mlir_verification_theory.md](design_docs/theory/mlir_verification_theory.md) | MLIR verifiers and invariant checking |
 | [mlir_bytecode_theory.md](design_docs/theory/mlir_bytecode_theory.md) | MLIR bytecode format, streaming encoder |
 | [platform_scheduler_theory.md](design_docs/theory/platform_scheduler_theory.md) | Platform effect dispatch, task scheduling, process model |
+| [kernel-task-deferral.md](design_docs/theory/kernel-task-deferral.md) | `Task_Binding` discipline: every kernel returning a `Task` must do its IO when the scheduler steps the binding, not at kernel-call time |
 
 ### Experimental
 
@@ -765,6 +786,7 @@ All compiler invariants are documented in [`design_docs/invariants.csv`](design_
 | REP_LLVM | REP_LLVM_001 | `!eco.value` → `ptr addrspace(1)` in LLVM dialect; conversions only at storage boundaries *(Apr 17, 2026)* |
 | REP_CONSTANT | REP_CONSTANT_001-003 | Embedded HPointer constants never heap-allocated; **REP_CONSTANT_003** treats them as type-minimum (not raw `nullptr`) in `compareUnboxableSlot` and equality kernels *(May 12, 2026)* |
 | HEAP | HEAP_001-026 | Heap layout, alignment, tracing rules; **HEAP_025** three-form `String` (leaf / slice / rope) *(Apr 27, 2026)*; **HEAP_026** large-object split-header *(May 1-2, 2026)*; **HEAP_BUILDER_001** builder bit forbids old-gen *(May 10, 2026)* |
+| KERNEL_TASK_IO | KERNEL_TASK_IO_001-002 | Every C++ kernel returning a `Task` must perform IO inside a `Task_Binding` callback; trampolines root captured payload and resume HPointers via `StackRootGuard` before invoking user code *(May 31, 2026)* |
 
 ### MLIR AST Inspection
 

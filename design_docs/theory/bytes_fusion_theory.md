@@ -126,6 +126,8 @@ type EncoderNode
     | EF64 Endianness MonoExpr  -- float64
     | EBytes MonoExpr           -- bytes
     | EUtf8 MonoExpr            -- string (UTF-8)
+    | EOpaque MonoExpr          -- unrecognised subtree — partial-fusion escape hatch
+                                -- (May 23, 2026; see "Phase 4+5" below)
 ```
 
 ```elm
@@ -209,7 +211,46 @@ generateExpr expr =
 
 ### Fallback Path
 
-When fusion cannot be applied (complex patterns, unsupported combinators), the regular kernel implementation is used. This ensures correctness—fusion is an optimization, not a requirement.
+When fusion cannot be applied (complex patterns, unsupported combinators), the regular kernel implementation is used. This ensures correctness — fusion is an optimization, not a requirement. The partial-fusion escape hatch (next section) reduces how often this whole-expression fallback fires.
+
+## Phase 4+5: Broader Recognition and Partial-Fusion Escape Hatch *(May 23, 2026)*
+
+The original Phase 1+2 reifier was binary: any encoder subtree it didn't recognise poisoned the whole `Bytes.encode` call back to the kernel walker. Two May-23 changes lift this:
+
+### Phase 4+5 — Broader recognition via inliner cooperation
+
+Bytes fusion is invoked from MLIR generation on the post-inlining IR, so the encoder shape the reifier sees depends on what the global inliner has unfolded. Two complementary `Compiler.GlobalOpt.MonoInlineSimplify` changes give the reifier the encoder structure it can actually pattern-match on:
+
+1. **Broaden `defaultWhitelist`** with the public `elm/bytes` API constructors (`Bytes.Encode.signedInt8`/`signedInt16`/`signedInt32`, `unsignedInt8`/`16`/`32`, `float32`/`64`, `bytes`, `string`, `sequence`) plus the Eco-internal encoder/decoder helpers commonly seen in compiler-style code (e.g. `Utils.Bytes.Encode.list`). Whitelist entries bypass the inliner cost gate.
+2. **Raise the per-function inliner cap** from 10 to **1000** (`Compiler/Eco/Config.elm`'s `maxPerFunction`, threaded through to `MonoInlineSimplify.maxInlinesPerFunction`). Encoder-heavy serialisers (e.g. `Compiler.AST.Optimized.exprEncoder`) routinely inline 50–100 helpers; the old 10-per-function cap throttled them long before the reifier saw a fusable shape.
+
+The reifier's pattern set itself stays strictly general — it only matches upstream `elm/bytes` API symbols and the idiomatic `List.map` / `(::)` / `List.length` shapes. Eco-internal helpers are reached only via inlining, never by name. Plan: `plans/bytes-fusion-broader-recognition.md`.
+
+### Partial-fusion escape hatch — `EOpaque` + `bf.write.encoder`
+
+After the cap-1000 change, the post-inlining `eco-compiler.mlir` had ~21 `Bytes.encode` sites — but only 3 fused, because at least one HO subtree in each remaining encoder (typically `Utils.Bytes.Encode.list someEncoderFn xs` where `someEncoderFn` is a function parameter) still didn't reify. The binary failure mode meant the other ~56 primitive writes in those encoders never reached `bf.write_*`.
+
+The escape hatch lifts the reifier from "all-or-nothing" to **"fuse what you can, delegate the rest"**:
+
+- **`EncoderNode = ... | EOpaque MonoExpr`** — the four `reifyEncoderHelp` arms that previously returned `Nothing` now wrap the unrecognised expression as `EOpaque` (carve-outs: a single bare `Bytes.encode` call still goes through the existing kernel path; the wrapper detects the trivial-EOpaque-only case).
+- **`LoopIR.Op = ... | WriteOpaque String MonoExpr`** and **`WidthExpr = ... | WOpaqueWidth MonoExpr`** — mirrors the existing `WriteUtf8` / `WStringUtf8Width` arms.
+- **Two new BF ops**:
+  - `bf.encoder.width` *(operand: Encoder HPtr; result: i32)* — calls `elm_encoder_size` to get the byte count this opaque subtree will need.
+  - `bf.write.encoder` *(operands: `!bf.cursor`, Encoder HPtr; result: `!bf.cursor`)* — calls `elm_encoder_write_into(encoder, dst)` which reuses the existing `writeEncoder` walker against the BF cursor's destination buffer at the current offset, then advances the cursor by the returned `bytesWritten`.
+- **Runtime symbols** `elm_encoder_size` and `elm_encoder_write_into` (in `elm-kernel-cpp/src/bytes/BytesExports.cpp`) — both `gc-leaf-function` (no Elm allocs). They share the underlying `writeEncoder(encoder, dst, offset&)` walker with the legacy kernel path.
+
+The outer expression still produces a single `bf.alloc → cursor.init → writes → ReturnBuffer` sequence; opaque subtrees lower to `bf.write.encoder` calls that walk against the same buffer. The 56-ish primitive writes that previously poisoned-out now fuse, and only the irreducible HO subtree pays the kernel-walker cost.
+
+Plan: `plans/bytes-fusion-escape-hatch.md`.
+
+### Runtime side: zero-copy / single-copy / LOT-aware
+
+The runtime `elm/bytes` kernel got companion changes so the fused output is cheap to produce:
+
+- **LOT-aware top-level allocation**: `Elm_Kernel_Bytes_encode` calls `alloc::allocByteBufferBlank(totalSize)`, which routes large results through the Large-Object-Table (split-header **HEAP_026**) path. Oversize byte buffers land directly in a pinned old-gen body so they aren't evacuated on every minor GC; only the small header forwards through Cheney.
+- **Zero-copy slices**: `Bytes.slice` no longer materialises a fresh leaf for sub-ranges; it builds a slice view over the existing buffer where the access pattern allows.
+- **Single-copy memcpys**: the `bf.write_bytes` / `bf.write_utf8` lowerings copy directly into the destination cursor, rather than allocating an intermediate buffer.
+- Stack roots are taken across `allocByteBufferBlank` (via `StackRootRangeGuard`) so the encoder tree HPointer survives the allocation that might trigger GC.
 
 ## Supported Patterns
 
@@ -228,6 +269,7 @@ When fusion cannot be applied (complex patterns, unsupported combinators), the r
 | `bytes` | `EBytes` | dynamic |
 | `string` | `EUtf8` | dynamic |
 | `sequence` | flattened list | sum |
+| anything else | `EOpaque` *(May 23, 2026)* | from `bf.encoder.width` at runtime |
 
 ### Decoders
 
@@ -288,18 +330,22 @@ The BF dialect is lowered to LLVM in `BFToLLVM.cpp`:
 ## Performance Benefits
 
 1. **No interpreter overhead**: Direct cursor operations instead of closure interpretation
-2. **Static width computation**: Buffer allocation is exact, no reallocation
+2. **Static width computation**: Buffer allocation is exact, no reallocation (`bf.encoder.width` handles the opaque tail dynamically)
 3. **Inlined operations**: Byte writes become simple stores
 4. **Bounds check hoisting**: Single check for known-size decoders
 5. **Better LLVM optimization**: Fused ops expose more optimization opportunities
+6. **Partial fusion** *(May 23, 2026)*: a single unrecognised HO subtree no longer poisons the whole call back to the kernel walker — only that subtree pays the kernel cost
+7. **LOT-aware top-level allocation** *(May 23, 2026)*: oversize `Bytes.encode` results land in a pinned old-gen body via the HEAP_026 split-header path, avoiding minor-GC evacuation
 
 ## Relationship to Other Passes
 
-- **Requires**: MonoGraph with resolved kernel calls
+- **Requires**: MonoGraph with resolved kernel calls; broadened inliner whitelist + cap-1000 per-function inlines for encoder helpers to unfold into reifiable shapes
 - **Enables**: Efficient byte encoding/decoding without kernel interpreter
-- **Falls back to**: C++ kernel implementation (`BytesExports.cpp`) when fusion fails
+- **Falls back to**: C++ kernel implementation (`BytesExports.cpp`) when fusion fails entirely — and to `bf.write.encoder` for individual unrecognised subtrees inside an otherwise-fused expression
 
 ## See Also
 
 - [MLIR Generation Theory](pass_mlir_generation_theory.md) — Integration point for fusion
 - [EcoToLLVM Theory](pass_eco_to_llvm_theory.md) — BF dialect lowering to LLVM
+- `plans/bytes-fusion-broader-recognition.md` — inliner whitelist + cap raise (Phase 4+5)
+- `plans/bytes-fusion-escape-hatch.md` — `EOpaque` + `bf.write.encoder` design
