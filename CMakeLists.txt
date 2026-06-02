@@ -286,6 +286,37 @@ if(ECO_STATIC_MUSL)
             ARCHIVE DESTINATION lib/eco-runtime
             COMPONENT Bundle)
 
+    # eco/kernel Elm package — the source the bundled `eco` resolves when
+    # user code does `import Eco.Console`/`Eco.File`/etc. via the
+    # `--local-package eco/kernel=<path>` flag. FILES_MATCHING with positive
+    # patterns is sufficient to drop the in-tree C++ siblings under src/eco/
+    # (lowercase) and any stale elm-stuff/ cache — neither matches *.elm /
+    # *.js / *.dat / elm.json / docs.json.
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/eco-kernel-cpp/
+            DESTINATION share/eco/kernel/eco-kernel-cpp
+            COMPONENT Bundle
+            FILES_MATCHING
+                PATTERN "elm.json"
+                PATTERN "*.elm"
+                PATTERN "*.js"
+                PATTERN "artifacts.dat"
+                PATTERN "typed-artifacts.dat"
+                PATTERN "docs.json"
+                REGEX "/elm-stuff(/|$)" EXCLUDE
+                REGEX "/src/eco(/|$)" EXCLUDE)
+
+    # Starter examples — Elm sources only. The in-tree examples/ IS the hello
+    # project (elm.json + src/Hello.elm at its root), so install its contents
+    # into share/eco/examples/hello/ to give us room for sibling examples
+    # later. The prebuilt examples/hello ELF doesn't match the *.elm /
+    # elm.json filter and drops out.
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/examples/
+            DESTINATION share/eco/examples/hello
+            COMPONENT Bundle
+            FILES_MATCHING
+                PATTERN "elm.json"
+                PATTERN "*.elm")
+
     # Strip every .a in the bundle. The bundled static ld.lld is built
     # without zlib support (LLVM_ENABLE_ZLIB=OFF inherited from the LLVM
     # base image), so it can't decompress debug sections in Alpine's musl
@@ -314,7 +345,9 @@ if(ECO_STATIC_MUSL)
     set(CPACK_PACKAGE_NAME "eco")
     set(CPACK_PACKAGE_VERSION "0.1.0")
     set(CPACK_PACKAGE_FILE_NAME "eco-0.1.0-x86_64-linux-musl")
-    set(CPACK_GENERATOR "TGZ;ZIP")
+    # DEB joins TGZ;ZIP for v0.1.0 (plans/release-bundle-v0.1.0.md). The
+    # per-generator install prefix is set in cmake/CPackProjectConfig.cmake.
+    set(CPACK_GENERATOR "TGZ;ZIP;DEB")
     set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
         "Eco — Elm compiler with static AOT runtime (Stage B / MUSL)")
     set(CPACK_PACKAGE_VENDOR "thesett")
@@ -329,9 +362,31 @@ if(ECO_STATIC_MUSL)
     # headers, cmake config, libcurl.pc, etc.) do not pollute the archive.
     set(CPACK_COMPONENTS_ALL Bundle)
     set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
+    set(CPACK_DEB_COMPONENT_INSTALL ON)
     # Archive component installs default to <component-name>/-prefixed file
     # names (eco-0.1.0-…-Bundle.tar.gz). Override so we get the bare name.
     set(CPACK_ARCHIVE_BUNDLE_FILE_NAME "${CPACK_PACKAGE_FILE_NAME}")
+
+    # Debian package metadata. Static binary → empty Depends. /usr/local
+    # prefix is set per-generator in cmake/CPackProjectConfig.cmake.
+    set(CPACK_DEBIAN_PACKAGE_NAME         "eco")
+    set(CPACK_DEBIAN_PACKAGE_VERSION      "${CPACK_PACKAGE_VERSION}")
+    set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")
+    set(CPACK_DEBIAN_PACKAGE_MAINTAINER
+        "thesett <anthropic@thesett.com>")
+    set(CPACK_DEBIAN_PACKAGE_SECTION      "devel")
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS      "")
+    set(CPACK_DEBIAN_PACKAGE_DESCRIPTION
+        "Eco - Elm compiler with static AOT runtime (experimental Stage B MUSL build)")
+    # Bundle component → single .deb (no -bundle suffix in the filename).
+    set(CPACK_DEBIAN_BUNDLE_FILE_NAME     "eco_0.1.0_amd64.deb")
+    set(CPACK_DEBIAN_BUNDLE_PACKAGE_NAME  "eco")
+
+    # Per-generator overrides (DEB → /usr/local prefix + Debian-style file
+    # name). Loaded by CPack once per generator with ${CPACK_GENERATOR} set.
+    set(CPACK_PROJECT_CONFIG_FILE
+        "${CMAKE_SOURCE_DIR}/cmake/CPackProjectConfig.cmake")
+
     include(CPack)
 endif()
 
