@@ -1,7 +1,7 @@
 # Heap-Validator Findings — 2026-05-08
 
 ## Setup
-- Build: `cmake -DECO_HEAP_VALIDATE=ON --preset ninja-clang-lld-linux`
+- Build: `cmake -DECO_HEAP_VALIDATE=ON --preset build`
 - Workload: `./build/test/stress-test --timeout 5m` (primary)
 - Regression check: same suite
 

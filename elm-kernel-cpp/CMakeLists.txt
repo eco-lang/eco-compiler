@@ -315,17 +315,19 @@ target_link_libraries(ElmKernel INTERFACE
     ElmKernel_EffectRegistry
 )
 
-# Keep asserts enabled even in release builds
-foreach(target
-    ElmKernel_Basics ElmKernel_Bitwise ElmKernel_Char ElmKernel_String
-    ElmKernel_List ElmKernel_Utils ElmKernel_JsArray ElmKernel_Debug
-    ElmKernel_Scheduler ElmKernel_Platform ElmKernel_Process
-    ElmKernel_VirtualDom ElmKernel_Json ElmKernel_Browser ElmKernel_Bytes
-    ElmKernel_File ElmKernel_Http ElmKernel_Parser ElmKernel_Regex
-    ElmKernel_Time ElmKernel_Url ElmKernel_EffectRegistry
-)
-    target_compile_options(${target} PRIVATE -UNDEBUG)
-endforeach()
+# Asserts on iff ECO_ASSERTS_ON (default ON for non-Release).
+if(ECO_ASSERTS_ON)
+    foreach(target
+        ElmKernel_Basics ElmKernel_Bitwise ElmKernel_Char ElmKernel_String
+        ElmKernel_List ElmKernel_Utils ElmKernel_JsArray ElmKernel_Debug
+        ElmKernel_Scheduler ElmKernel_Platform ElmKernel_Process
+        ElmKernel_VirtualDom ElmKernel_Json ElmKernel_Browser ElmKernel_Bytes
+        ElmKernel_File ElmKernel_Http ElmKernel_Parser ElmKernel_Regex
+        ElmKernel_Time ElmKernel_Url ElmKernel_EffectRegistry
+    )
+        target_compile_options(${target} PRIVATE -UNDEBUG)
+    endforeach()
+endif()
 
 # ECO_KERNEL_DEBUG: stderr tracing in the Elm HTTP effect manager. See
 # src/KernelDebug.hpp for the ECO_KLOG macro.

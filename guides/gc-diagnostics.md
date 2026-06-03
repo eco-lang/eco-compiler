@@ -23,13 +23,13 @@ trace root sets through the MLIR compilation pipeline.
 
 ```bash
 # Runtime diagnostics only (recommended for Stage 7 investigation)
-cmake --preset ninja-clang-lld-linux -DECO_GC_DEBUG=ON
+cmake --preset build -DECO_GC_DEBUG=ON
 
 # Compile-time diagnostics only (produces enormous output)
-cmake --preset ninja-clang-lld-linux -DECO_GC_DEBUG_COMP=ON
+cmake --preset build -DECO_GC_DEBUG_COMP=ON
 
 # Both
-cmake --preset ninja-clang-lld-linux -DECO_GC_DEBUG=ON -DECO_GC_DEBUG_COMP=ON
+cmake --preset build -DECO_GC_DEBUG=ON -DECO_GC_DEBUG_COMP=ON
 ```
 
 **Warning:** `ECO_GC_DEBUG_COMP` produces enormous output — one log line per
@@ -372,7 +372,7 @@ with the debug-enabled `eco-boot-native`, and run Stage 7 with stderr captured.
 ```bash
 # 1. Configure and build with runtime GC debug ON (compile-time OFF to avoid noise)
 cd /work
-cmake --preset ninja-clang-lld-linux -DECO_GC_DEBUG=ON -DECO_GC_DEBUG_COMP=OFF
+cmake --preset build -DECO_GC_DEBUG=ON -DECO_GC_DEBUG_COMP=OFF
 cmake --build build
 
 # 2. Rebuild eco-compiler with debug runtime (Stage 6)

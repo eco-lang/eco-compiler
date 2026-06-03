@@ -22,7 +22,7 @@ import Basics.Extra exposing (uncurry)
 import Bytes.Decode
 import Bytes.Encode
 import Codec.Archive.Zip as Zip
-import Compiler.Elm.Version as V
+import Compiler.Elm.Version_Build as Version_Build
 import Eco.Http
 import Eco.Http.Error as HttpErr exposing (HttpError)
 import Task exposing (Task)
@@ -183,7 +183,7 @@ addDefaultHeaders headers =
 
 userAgent : String
 userAgent =
-    "elm/" ++ V.toChars V.compiler
+    "elm/" ++ Version_Build.userFacing
 
 
 

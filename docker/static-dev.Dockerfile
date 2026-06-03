@@ -3,7 +3,7 @@
 # Stage B — INTERACTIVE dev environment for the static MUSL/libc++ eco build.
 #
 # Same Alpine/musl toolchain as docker/static-build.Dockerfile's `eco-builder`
-# (so `cmake --preset ninja-clang-lld-linux-musl && cmake --build build
+# (so `cmake --preset release && cmake --build build-static
 # --target eco` behaves identically here), PLUS the dev tools from the root
 # Dockerfile (gdb / lldb / strace / ltrace / bpftrace / perf / ripgrep / …),
 # Claude Code, and uv + serena. Meant to be run INTERACTIVELY with the repo
@@ -23,17 +23,18 @@
 #   docker build -f docker/static-dev.Dockerfile -t eco-static-dev:local .
 #
 # ---- Run interactively -----------------------------------------------------
-# The named volume shadows ./build inside the container, so the container's
-# musl build tree never collides with a host glibc build/ in the bind mount:
+# The named volume shadows ./build-static inside the container, so the
+# container's musl build tree never collides with a host glibc build/ in
+# the bind mount:
 #
 #   docker run -it --rm \
-#       -v "$PWD:/work" -v eco-musl-build:/work/build \
+#       -v "$PWD:/work" -v eco-musl-build:/work/build-static \
 #       eco-static-dev:local
 #
 # Then, inside the container:
-#   cmake --preset ninja-clang-lld-linux-musl
-#   cmake --build build --target eco        # currently fails at bootstrap Map.!
-#   claude                                  # launch Claude Code to debug it
+#   cmake --preset release
+#   cmake --build build-static --target eco
+#   claude                                  # launch Claude Code if useful
 #
 # (For backtrace/perf/bpftrace to work you may need `--privileged` or
 #  `--cap-add=SYS_PTRACE`.)

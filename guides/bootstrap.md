@@ -11,7 +11,7 @@ Two E2E test gates fail-fast on backend regressions: **Gate A** after Stage 1 ru
 One-time CMake configure (only on a fresh checkout or after touching CMake itself):
 
 ```bash
-cmake --preset ninja-clang-lld-linux
+cmake --preset build
 ```
 
 Node.js needs a 12 GB heap for self-compilation (Stages 2+):

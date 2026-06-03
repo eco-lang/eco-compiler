@@ -3,8 +3,24 @@
   "cmakeMinimumRequired": { "major": 3, "minor": 20 },
   "configurePresets": [
     {
-      "name": "ninja-clang-lld-linux",
-      "displayName": "Ninja + Clang + lld (Linux/macOS LLVM)",
+      "name": "dev",
+      "displayName": "Dev (Debug build, full assertions + stats + kernel tracing)",
+      "description": "Inner-dev-loop preset. -O0 -g, ECO_GC_DEBUG, ECO_KERNEL_DEBUG, GC stats all ON. Slow runtime; fastest iteration on diagnostics.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/debug",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_EXE_LINKER_FLAGS_INIT": "-fuse-ld=lld",
+        "CMAKE_SHARED_LINKER_FLAGS_INIT": "-fuse-ld=lld",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "ECO_KERNEL_DEBUG": "ON"
+      }
+    },
+    {
+      "name": "build",
+      "displayName": "Build (RelWithDebInfo — the bootstrap target's home)",
+      "description": "Default everyday build. -O2 -g -UNDEBUG, asserts ON, GC stats ON, ECO_KERNEL_DEBUG OFF. Hosts the bootstrap chain and the eco-quick fast-iteration target.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
@@ -18,54 +34,9 @@
       }
     },
     {
-      "name": "ninja-clang-lld-linux-debug",
-      "displayName": "Ninja + Clang + lld (Linux/macOS LLVM)",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/debug",
-      "cacheVariables": {
-        "CMAKE_C_COMPILER": "clang",
-        "CMAKE_CXX_COMPILER": "clang++",
-        "CMAKE_EXE_LINKER_FLAGS_INIT": "-fuse-ld=lld",
-        "CMAKE_SHARED_LINKER_FLAGS_INIT": "-fuse-ld=lld",
-        "CMAKE_BUILD_TYPE": "Debug"
-      }
-    },
-    {
-      "name": "ninja-clang-lld-linux-ccache",
-      "displayName": "Ninja + Clang + lld + ccache (Linux)",
-      "inherits": "ninja-clang-lld-linux",
-      "cacheVariables": {
-        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
-        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache"
-      }
-    },
-    {
-      "name": "ninja-clang-lld-linux-debug-ccache",
-      "displayName": "Ninja + Clang + lld + ccache (Linux Debug)",
-      "inherits": "ninja-clang-lld-linux-debug",
-      "cacheVariables": {
-        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
-        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache"
-      }
-    },
-    {
-      "name": "ninja-clang-lld-linux-profile",
-      "displayName": "Ninja + Clang + lld (Linux, Profile)",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build-profile",
-      "cacheVariables": {
-        "CMAKE_C_COMPILER": "clang",
-        "CMAKE_CXX_COMPILER": "clang++",
-        "CMAKE_EXE_LINKER_FLAGS_INIT": "-fuse-ld=lld",
-        "CMAKE_SHARED_LINKER_FLAGS_INIT": "-fuse-ld=lld",
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "CMAKE_C_FLAGS": "-fno-omit-frame-pointer -mno-omit-leaf-frame-pointer",
-        "CMAKE_CXX_FLAGS": "-fno-omit-frame-pointer -mno-omit-leaf-frame-pointer"
-      }
-    },
-    {
-      "name": "ninja-clang-lld-linux-musl",
-      "displayName": "Ninja + Clang + libc++ + lld (Alpine MUSL static — Stage B)",
+      "name": "release",
+      "displayName": "Release (static musl — shippable binary)",
+      "description": "Stage B static musl build. -O2 -DNDEBUG, no debug syms, no asserts, GC stats OFF, kernel-debug OFF, --strip-all on the final link.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-static",
       "cacheVariables": {
@@ -74,8 +45,8 @@
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_CXX_FLAGS_INIT": "-stdlib=libc++",
         "CMAKE_EXE_LINKER_FLAGS_INIT": "-static -stdlib=libc++ -rtlib=compiler-rt -unwindlib=libunwind -lc++abi -fuse-ld=lld",
-        "CMAKE_C_FLAGS_RELEASE": "-O2 -g -UNDEBUG",
-        "CMAKE_CXX_FLAGS_RELEASE": "-O2 -g -UNDEBUG",
+        "CMAKE_C_FLAGS_RELEASE": "-O2 -DNDEBUG",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O2 -DNDEBUG",
         "CMAKE_PREFIX_PATH": "/opt/llvm-mlir",
         "LLVM_INSTALL_PREFIX": "/opt/llvm-mlir",
         "ECO_STATIC": "ON",
@@ -86,23 +57,18 @@
   ],
   "buildPresets": [
     {
+      "name": "dev",
+      "configurePreset": "dev",
+      "jobs": 0
+    },
+    {
       "name": "build",
-      "configurePreset": "ninja-clang-lld-linux",
+      "configurePreset": "build",
       "jobs": 0
     },
     {
-      "name": "debug",
-      "configurePreset": "ninja-clang-lld-linux-debug",
-      "jobs": 0
-    },
-    {
-      "name": "profile",
-      "configurePreset": "ninja-clang-lld-linux-profile",
-      "jobs": 0
-    },
-    {
-      "name": "musl",
-      "configurePreset": "ninja-clang-lld-linux-musl",
+      "name": "release",
+      "configurePreset": "release",
       "jobs": 0
     }
   ]

@@ -13,7 +13,7 @@ a unified interface for users interacting with the compiler through the terminal
 
 -}
 
-import Compiler.Elm.Version as V
+import Compiler.Elm.Version_Build as Version_Build
 import Compiler.Reporting.Doc as D
 import System.Exit as Exit
 import System.IO as IO
@@ -70,7 +70,7 @@ intro =
             , D.fromChars "trying"
             , D.fromChars "out"
             , D.green (D.fromChars "Eco")
-            , D.green (D.fromChars (V.toChars V.compiler))
+            , D.green (D.fromChars Version_Build.userFacing)
                 |> D.a (D.fromChars ".")
             , D.fromChars "I hope you like it!"
             ]

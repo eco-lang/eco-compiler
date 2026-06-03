@@ -122,7 +122,7 @@ If you build eco-boot-native with `-fno-omit-frame-pointer`, you can use much ch
 
 ```bash
 # In CMakeLists.txt or via cmake:
-cmake --preset ninja-clang-lld-linux -DCMAKE_CXX_FLAGS="-fno-omit-frame-pointer"
+cmake --preset build -DCMAKE_CXX_FLAGS="-fno-omit-frame-pointer"
 cmake --build build --target eco-boot-native
 
 # Then record with fp-based stacks (much smaller perf.data):

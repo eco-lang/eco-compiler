@@ -27,6 +27,47 @@ set(COMPILER_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 
 include(${COMPILER_DIR}/cmake/toolchain.cmake)
 
+# ----------------------------------------------------------------------------
+# Version_Build.elm — build-time-injected user-facing version string.
+#
+# The baseline (e.g. "0.1.0") lives in /work/version.txt — the single source
+# of truth for the marketing version. For dev builds we append a
+# `-dev-<git-describe>` suffix so overnight CI artefacts identify their
+# commit; for tagged releases the release engineer passes
+# `-DECO_VERSION_OVERRIDE=0.1.0` (or whatever the tag value is) and the
+# baseline is shipped verbatim.
+#
+# The generated file lands directly in compiler/src/Compiler/Elm/ so every
+# stage's Elm compile sees it via the same source tree as the rest of the
+# compiler. It is .gitignored — never check it in.
+# ----------------------------------------------------------------------------
+file(READ "${CMAKE_SOURCE_DIR}/version.txt" ECO_VERSION_BASE)
+string(STRIP "${ECO_VERSION_BASE}" ECO_VERSION_BASE)
+
+if(ECO_VERSION_OVERRIDE)
+    set(ECO_VERSION_USER_FACING "${ECO_VERSION_OVERRIDE}")
+    message(STATUS "Eco version (override): ${ECO_VERSION_USER_FACING}")
+else()
+    execute_process(COMMAND git -C "${CMAKE_SOURCE_DIR}"
+                    describe --tags --dirty --always
+                    OUTPUT_VARIABLE ECO_GIT_DESCRIBE
+                    OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET)
+    if(ECO_GIT_DESCRIBE)
+        set(ECO_VERSION_USER_FACING "${ECO_VERSION_BASE}-dev-${ECO_GIT_DESCRIBE}")
+    else()
+        # Source tarball with no git history — ship the bare baseline so
+        # the welcome banner still has a sensible value.
+        set(ECO_VERSION_USER_FACING "${ECO_VERSION_BASE}")
+    endif()
+    message(STATUS "Eco version: ${ECO_VERSION_USER_FACING}")
+endif()
+
+configure_file(
+    "${COMPILER_DIR}/cmake/Version_Build.elm.in"
+    "${COMPILER_DIR}/src/Compiler/Elm/Version_Build.elm"
+    @ONLY)
+
 # Build-tree shadow root for the Stage 1 XHR Elm application. We materialize
 # elm.json + src/src-xhr/tests symlinks here at configure time so stock Elm
 # and the bootstrap chain emit bin/, elm-stuff/, eco-stuff/ inside the CMake
@@ -540,6 +581,13 @@ function(eco_apply_unified_link target)
 
     if(NOT ECO_STATIC)
         target_link_libraries(${target} PRIVATE stdc++ curl ssl crypto zip)
+    endif()
+
+    # Strip symbols from the release binary. The dev presets keep debug
+    # info to support post-mortem investigation, but a shipped `eco` and
+    # AOT outputs built under it should be as small as practical.
+    if(CMAKE_BUILD_TYPE STREQUAL "Release")
+        target_link_options(${target} PRIVATE LINKER:--strip-all)
     endif()
 endfunction()
 

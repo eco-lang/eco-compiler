@@ -56,6 +56,49 @@ if(ECO_HEAP_TRACE)
     add_compile_definitions(ECO_HEAP_TRACE=1)
 endif()
 
+# GC allocation/timing counters + the exit-time `=== GC Statistics ===`
+# banner. Default ON for any non-Release build (so the dev `build/` and
+# `debug/` presets keep the stats path live), OFF under Release so user-
+# facing AOT binaries built from the static musl preset don't drag the
+# counter overhead or clutter stderr at exit.
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    option(ECO_GC_STATS "Enable GC allocation/timing counters and the exit-time stats banner" OFF)
+else()
+    option(ECO_GC_STATS "Enable GC allocation/timing counters and the exit-time stats banner" ON)
+endif()
+if(ECO_GC_STATS)
+    add_compile_definitions(ENABLE_GC_STATS=1)
+else()
+    add_compile_definitions(ENABLE_GC_STATS=0)
+endif()
+
+# Force `assert(...)` to compile through, even in release builds. The runtime
+# allocator and the kernel libraries have hundreds of asserts on the hot
+# path that catch real bugs during bootstrap self-compile. Default ON for
+# any non-Release build; OFF for Release so shipped binaries don't pay the
+# runtime cost. The actual `-UNDEBUG` flag is applied via target_compile_options
+# in the individual runtime/kernel CMakeLists when this is ON.
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    option(ECO_ASSERTS_ON "Force `assert(...)` to remain enabled (re-applies -UNDEBUG)" OFF)
+else()
+    option(ECO_ASSERTS_ON "Force `assert(...)` to remain enabled (re-applies -UNDEBUG)" ON)
+endif()
+
+# Convenience knobs surfaced as options instead of preset variants. The
+# old `ninja-clang-lld-linux-ccache` / `-profile` presets are gone — set
+# these when configuring whichever main preset you want.
+option(ECO_USE_CCACHE "Wrap C/C++ compiles with ccache" OFF)
+if(ECO_USE_CCACHE)
+    find_program(CCACHE_EXECUTABLE ccache REQUIRED)
+    set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_EXECUTABLE}" CACHE STRING "" FORCE)
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_EXECUTABLE}" CACHE STRING "" FORCE)
+endif()
+
+option(ECO_FRAME_POINTERS "Compile with frame pointers preserved (for perf / flamegraph)" OFF)
+if(ECO_FRAME_POINTERS)
+    add_compile_options(-fno-omit-frame-pointer -mno-omit-leaf-frame-pointer)
+endif()
+
 # Static-link switch (Stage A in plans/static-link-eco-binary.md). When ON,
 # the eco binary is linked against static .a counterparts of curl/openssl/
 # libzip/libunwind, plus -static-libstdc++ -static-libgcc. The resulting
@@ -93,10 +136,12 @@ option(ECO_LINK_WITH_BFD
 # Kernel-side stderr tracing for HTTP requests/responses, zip extraction, and
 # file operations. Defined as ECO_KERNEL_DEBUG in the affected kernel libs
 # (Http, File, NativeDriver, HttpService runtime). See the ECO_KLOG macro in
-# eco-kernel-cpp/src/eco/KernelDebug.hpp.
+# eco-kernel-cpp/src/eco/KernelDebug.hpp. Default OFF — the `dev` preset
+# flips it back ON for diagnostic builds; the `build` and `release` presets
+# inherit OFF so user-visible binaries stay quiet on stderr.
 option(ECO_KERNEL_DEBUG
        "Enable stderr tracing inside the HTTP / File / zip kernel paths"
-       ON)
+       OFF)
 
 if(ECO_STATIC)
     # MUST be set BEFORE any add_subdirectory() that calls find_package on
@@ -179,8 +224,10 @@ add_executable(ecor
 target_include_directories(ecor PRIVATE runtime/src/allocator)
 target_compile_features(ecor PRIVATE cxx_std_20)
 
-# Keep asserts enabled even in release builds for debugging
-target_compile_options(ecor PRIVATE -UNDEBUG)
+# Asserts on iff ECO_ASSERTS_ON (default ON for non-Release builds).
+if(ECO_ASSERTS_ON)
+    target_compile_options(ecor PRIVATE -UNDEBUG)
+endif()
 
 # Include debug symbols for stack traces (works with release optimization)
 target_compile_options(ecor PRIVATE -g)

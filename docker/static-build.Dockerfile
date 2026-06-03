@@ -9,7 +9,7 @@
 #   1. llvm-builder  — build LLVM 21.1.4 + MLIR from source, against MUSL,
 #                      compiled with -stdlib=libc++.
 #   2. eco-builder   — build the static `eco` against that LLVM, using the
-#                      ninja-clang-lld-linux-musl preset.
+#                      release preset.
 #   3. eco-static    — FROM scratch; ships just the binary.
 #
 # Build:   docker build -f docker/static-build.Dockerfile -t eco-static .
@@ -159,26 +159,26 @@ COPY . .
 
 # Configure + build only the eco binary. The musl preset sets ECO_STATIC,
 # ECO_STATIC_MUSL, ECO_LINK_WITH_BFD=OFF and the -static libc++ link flags.
-RUN cmake --preset ninja-clang-lld-linux-musl
-RUN cmake --build build --target eco
+RUN cmake --preset release
+RUN cmake --build build-static --target eco
 
 # Strip, then HARD-FAIL the build if the binary still has any dynamic NEEDED
 # entries — the whole point of Stage B is a zero-deps executable.
-RUN strip -s build/compiler/build-kernel/bin/eco \
- && if readelf -d build/compiler/build-kernel/bin/eco 2>/dev/null | grep -q NEEDED; then \
+RUN strip -s build-static/compiler/build-kernel/bin/eco \
+ && if readelf -d build-static/compiler/build-kernel/bin/eco 2>/dev/null | grep -q NEEDED; then \
         echo "FATAL: eco has dynamic NEEDED entries — not fully static:" >&2; \
-        readelf -d build/compiler/build-kernel/bin/eco >&2; \
+        readelf -d build-static/compiler/build-kernel/bin/eco >&2; \
         exit 1; \
     fi \
  && echo "OK: eco is fully static (no NEEDED entries)" \
- && ls -lh build/compiler/build-kernel/bin/eco
+ && ls -lh build-static/compiler/build-kernel/bin/eco
 
 # Build the Stage C distribution bundles (.tar.gz + .zip). CPack stages
 # the eco binary + lib/eco-runtime/{crt,project,ld.lld,libc.a,…} tree
 # defined by the install() rules, then produces both archives.
-RUN cmake --build build --target package \
- && ls -lh build/eco-0.1.0-x86_64-linux-musl.tar.gz \
-           build/eco-0.1.0-x86_64-linux-musl.zip
+RUN cmake --build build-static --target package \
+ && ls -lh build-static/eco-0.1.0-x86_64-linux-musl.tar.gz \
+           build-static/eco-0.1.0-x86_64-linux-musl.zip
 
 # Smoke test the bundle in-container: extract into /tmp/eco-smoke, scaffold a
 # minimal project (elm.json + src/Hello.elm — eco refuses to build without
@@ -189,7 +189,7 @@ RUN cmake --build build --target package \
 # it exits non-zero, so the smoke test does not check ./hello's exit code —
 # only that it runs without crashing and yields a fully-static ELF.
 RUN mkdir -p /tmp/eco-smoke \
- && tar -xzf build/eco-0.1.0-x86_64-linux-musl.tar.gz -C /tmp/eco-smoke \
+ && tar -xzf build-static/eco-0.1.0-x86_64-linux-musl.tar.gz -C /tmp/eco-smoke \
  && cp compiler/examples/elm.json      /tmp/eco-smoke/elm.json \
  && mkdir -p /tmp/eco-smoke/src \
  && cp compiler/examples/src/Hello.elm /tmp/eco-smoke/src/Hello.elm \

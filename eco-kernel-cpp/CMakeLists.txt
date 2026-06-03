@@ -226,14 +226,16 @@ target_link_libraries(EcoKernel INTERFACE
     EcoKernel_Crash
 )
 
-# Keep asserts enabled even in release builds
-foreach(target
-    EcoKernel_File EcoKernel_Console EcoKernel_Env
-    EcoKernel_Process EcoKernel_MVar EcoKernel_NativeDriver EcoKernel_Runtime
-    EcoKernel_Http EcoKernel_Crash
-)
-    target_compile_options(${target} PRIVATE -UNDEBUG)
-endforeach()
+# Asserts on iff ECO_ASSERTS_ON (default ON for non-Release).
+if(ECO_ASSERTS_ON)
+    foreach(target
+        EcoKernel_File EcoKernel_Console EcoKernel_Env
+        EcoKernel_Process EcoKernel_MVar EcoKernel_NativeDriver EcoKernel_Runtime
+        EcoKernel_Http EcoKernel_Crash
+    )
+        target_compile_options(${target} PRIVATE -UNDEBUG)
+    endforeach()
+endif()
 
 # ECO_KERNEL_DEBUG: stderr tracing in HTTP and File kernel paths. See
 # src/eco/KernelDebug.hpp for the ECO_KLOG macro.

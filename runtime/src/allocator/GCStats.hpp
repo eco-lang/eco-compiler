@@ -24,7 +24,13 @@
 // ============================================================================
 
 // Global toggle: set to 1 to enable stats, 0 to disable (zero overhead).
-#define ENABLE_GC_STATS 1
+// Controlled by the top-level CMake option ECO_GC_STATS (default ON for
+// non-Release builds, OFF for Release). If neither the CMake build nor a
+// hand-defined ENABLE_GC_STATS is present, default to OFF — safer for any
+// out-of-tree consumer that doesn't drive the flag explicitly.
+#ifndef ENABLE_GC_STATS
+#define ENABLE_GC_STATS 0
+#endif
 
 namespace Elm {
 

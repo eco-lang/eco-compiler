@@ -49,6 +49,7 @@ import Compiler.Elm.Licenses as Licenses
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
+import Compiler.Elm.Version_Build as Version_Build
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Parse.Declaration as PD
 import Compiler.Parse.Expression as PE
@@ -128,7 +129,7 @@ printWelcomeMessage =
     let
         vsn : String
         vsn =
-            V.toChars V.compiler
+            Version_Build.userFacing
 
         title : D.Doc
         title =

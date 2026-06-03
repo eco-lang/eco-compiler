@@ -27,7 +27,7 @@ routing to command implementations.
 
 -}
 
-import Compiler.Elm.Version as V
+import Compiler.Elm.Version_Build as Version_Build
 import Compiler.Reporting.Doc as D
 import List.Extra as List
 import System.Exit as Exit
@@ -61,7 +61,7 @@ app intro outro commands =
                         Error.exitWithOverview intro outro commands
 
                     [ "--version" ] ->
-                        IO.writeLn IO.stdout (V.toChars V.compiler)
+                        IO.writeLn IO.stdout Version_Build.userFacing
                             |> Task.andThen (\_ -> Exit.exitSuccess)
 
                     command :: chunks ->

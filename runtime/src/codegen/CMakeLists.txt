@@ -598,7 +598,10 @@ target_include_directories(EcoRuntimeStatic PRIVATE
 )
 
 target_compile_features(EcoRuntimeStatic PRIVATE cxx_std_20)
-target_compile_options(EcoRuntimeStatic PRIVATE -fexceptions -UNDEBUG)
+target_compile_options(EcoRuntimeStatic PRIVATE -fexceptions)
+if(ECO_ASSERTS_ON)
+    target_compile_options(EcoRuntimeStatic PRIVATE -UNDEBUG)
+endif()
 
 # PUBLIC so AOT consumers inherit LLVM libunwind's include dir, library, and
 # rpath flag. See cmake/LLVMLibunwind.cmake.
@@ -638,7 +641,10 @@ target_include_directories(EcoEntryStatic PRIVATE
 )
 
 target_compile_features(EcoEntryStatic PRIVATE cxx_std_20)
-target_compile_options(EcoEntryStatic PRIVATE -fexceptions -UNDEBUG)
+target_compile_options(EcoEntryStatic PRIVATE -fexceptions)
+if(ECO_ASSERTS_ON)
+    target_compile_options(EcoEntryStatic PRIVATE -UNDEBUG)
+endif()
 if(ECO_GC_DEBUG)
     target_compile_definitions(EcoEntryStatic PRIVATE ECO_GC_DEBUG=1)
 endif()

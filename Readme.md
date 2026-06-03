@@ -132,15 +132,31 @@ URLs from upstream GitHub releases into `build/toolchain/bin/` — see
 
 ### Configure and build
 
+Three presets cover the day-to-day workflow:
+
 ```bash
-# Release
-cmake --preset ninja-clang-lld-linux
+# Everyday build — RelWithDebInfo into build/. Bootstrap target's home.
+# Asserts on, GC stats on, kernel-debug stderr off.
+cmake --preset build
 cmake --build build
 
-# Debug
-cmake --preset ninja-clang-lld-linux-debug
-cmake --build build
+# Debug — Debug into debug/. Full assertions, GC stats, kernel-debug stderr.
+# Slow; reserve for diagnostic sessions.
+cmake --preset dev
+cmake --build debug
+
+# Release — static musl into build-static/. -O2 -DNDEBUG, no asserts,
+# stats off, kernel-debug off, --strip-all on the link. The shippable
+# binary.
+cmake --preset release
+cmake --build build-static
 ```
+
+Two convenience options can be flipped on either preset rather than via a
+separate preset:
+
+- `-DECO_USE_CCACHE=ON` — wrap C/C++ compiles with ccache.
+- `-DECO_FRAME_POINTERS=ON` — preserve frame pointers (perf / flamegraph).
 
 ### Running the functional test suite
 
@@ -263,7 +279,10 @@ Every target below is invoked as `cmake --build build --target <name>`. For a li
 | `eco-compiler-mlir` | 5 | `build/compiler/build-kernel/bin/eco-compiler.mlir` |
 | `eco-compiler` | 6 | Native ELF compiler |
 | `eco-compiler-boot` | 7 | Native self-compiled compiler |
-| `bootstrap` | aggregate | Full chain through Stage 8 fixed-point |
+| `eco` | 9 | Unified single-binary compiler — `build/compiler/build-kernel/bin/eco` |
+| `eco-bootstrap` | 9 | Alias of `eco`; gates on the entire bootstrap chain |
+| `eco-2` / `eco-verify` | 9b | `eco` self-compile sanity-check |
+| `bootstrap` | aggregate | Full chain through Stages 8 fixed-point + 9b |
 
 #### Dev iteration: `eco-quick`
 
@@ -391,7 +410,7 @@ docker run -it --rm -v "$PWD":/work -v eco-dev-home:/home/dev eco-build bash
 
 # One-shot build + test
 docker run --rm -v "$PWD":/work eco-build bash -c \
-  "cmake --preset ninja-clang-lld-linux && cmake --build build --target check"
+  "cmake --preset build && cmake --build build --target check"
 ```
 
 ## Static MUSL build (Stage B)
@@ -446,10 +465,11 @@ docker build -f docker/static-build.Dockerfile --target llvm-builder -t eco-musl
 # 2. Build the dev image (fast — just layers tools on top):
 docker build -f docker/static-dev.Dockerfile -t eco-static-dev:local .
 
-# 3. Run interactively with the repo mounted. The named volume shadows ./build
-#    so the container's musl build never collides with a host glibc build/:
+# 3. Run interactively with the repo mounted. The named volume shadows
+#    ./build-static so the container's musl build never collides with the
+#    host glibc build/:
 docker run -it --rm \
-    -v "$PWD":/work -v eco-musl-build:/work/build \
+    -v "$PWD":/work -v eco-musl-build:/work/build-static \
     --cap-add=SYS_PTRACE \
     eco-static-dev:local
 ```
@@ -457,9 +477,9 @@ docker run -it --rm \
 Then, inside the container:
 
 ```bash
-cmake --preset ninja-clang-lld-linux-musl
-cmake --build build --target eco        # reproduces the bootstrap Map.!
-claude                                  # launch Claude Code to debug it
+cmake --preset release
+cmake --build build-static --target eco
+claude                                  # launch Claude Code if you need it
 ```
 
 - Runs as a uid-1000 `dev` user (matches the default host user) with passwordless

@@ -152,20 +152,19 @@ maxVersion =
     Version 2147483647 0 0
 
 
-{-| The version of this compiler implementation. Currently returns 1.0.0.
+{-| The compiler's **artifact-format** version.
+
+Drives the `eco-stuff/<ver>/` cache directory layout, the local-package
+`*.dat` cache filenames, and other places that need a stable on-disk key
+across the dev/release split. **Bump only when the on-disk layout
+changes**; the marketing/welcome-banner version is `Version_Build.userFacing`
+(generated from `version.txt` + git describe at CMake configure time).
+
+Initial release: `0.1.0`.
 -}
 compiler : Version
 compiler =
-    --   case map fromIntegral (Version.versionBranch Paths_elm.version) of
-    --     major : minor : patch : _ ->
-    --       Version major minor patch
-    --     [major, minor] ->
-    --       Version major minor 0
-    --     [major] ->
-    --       Version major 0 0
-    --     [] ->
-    --       error "could not detect version of elm-compiler you are using"
-    Version 1 0 0
+    Version 0 1 0
 
 
 {-| The version of the Elm compiler this implementation targets: 0.19.1.

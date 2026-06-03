@@ -126,6 +126,7 @@ import Compiler.Elm.Constraint as C
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
+import Compiler.Elm.Version_Build as Version_Build
 import Compiler.Json.Decode as Decode
 import Compiler.Json.Encode as Encode
 import Compiler.Parse.Primitives exposing (Col, Row)
@@ -1576,7 +1577,7 @@ toDetailsReport details =
                     , D.fromChars "are"
                     , D.fromChars "using"
                     , D.fromChars "Elm"
-                    , D.red (D.fromVersion V.compiler)
+                    , D.red (D.fromChars Version_Build.userFacing)
                     , D.fromChars "right"
                     , D.fromChars "now."
                     ]
@@ -1595,7 +1596,7 @@ toDetailsReport details =
                     , D.fromChars "you"
                     , D.fromChars "are"
                     , D.fromChars "using"
-                    , D.red (D.fromVersion V.compiler)
+                    , D.red (D.fromChars Version_Build.userFacing)
                     , D.fromChars "right"
                     , D.fromChars "now."
                     ]
