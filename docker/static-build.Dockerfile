@@ -71,16 +71,20 @@ RUN apk add --no-cache \
  && npm install -g pnpm
 
 # RapidCheck: the top-level CMakeLists.txt does find_package(rapidcheck
-# REQUIRED) for the `ecor` allocator-test binary. We only build `--target
-# eco` (which does not depend on ecor or the test/ tree), but CMake evaluates
-# that find_package at configure time regardless, so it must resolve. Install
-# it from source exactly as the main Dockerfile does — this stage is
-# throwaway, so it does not bloat the final scratch artifact.
+# REQUIRED) for the `ecor` allocator-test binary, and `cmake --build … --target
+# package` builds `all` (including `test`, which links librapidcheck.a). Build
+# rapidcheck with -stdlib=libc++ so its objects share the libc++ ABI used by
+# the rest of the Stage B link — Alpine's clang otherwise picks up libstdc++
+# headers via the gcc install from `build-base`, producing GCC-only ABI symbols
+# (std::__cxx11::basic_string<...>, std::_Rb_tree_*, std::__exception_ptr::*)
+# that don't resolve against libc++. This stage is throwaway, so the larger
+# rapidcheck.a doesn't bloat the final scratch artifact.
 RUN git clone --depth=1 https://github.com/emil-e/rapidcheck.git /tmp/rapidcheck \
  && cmake -S /tmp/rapidcheck -B /tmp/rapidcheck/build -G Ninja \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_C_COMPILER=clang \
       -DCMAKE_CXX_COMPILER=clang++ \
+      -DCMAKE_CXX_FLAGS=-stdlib=libc++ \
  && cmake --build /tmp/rapidcheck/build \
  && cmake --install /tmp/rapidcheck/build \
  && rm -rf /tmp/rapidcheck

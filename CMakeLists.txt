@@ -207,7 +207,7 @@ if(ECO_STATIC)
     FetchContent_MakeAvailable(libcurl_vendored)
 endif()
 
-add_executable(ecor
+add_executable(ecor EXCLUDE_FROM_ALL
         runtime/src/main.cpp
         runtime/src/allocator/RootSet.cpp
         runtime/src/allocator/HeapConfigJson.cpp
@@ -247,7 +247,14 @@ target_link_libraries(ecor PRIVATE eco::llvm_libunwind)
 # Export symbols for stack traces (enables function names in backtrace)
 target_link_options(ecor PRIVATE -rdynamic)
 
-add_subdirectory(test)
+# EXCLUDE_FROM_ALL: test binaries (test, stress-test, mlir-equivalence,
+# aot-e2e-runner) are dev-time tools, not distribution artifacts. Build them on
+# demand via the convenience targets (`check`, `full`, `stress`,
+# `run-mlir-equivalence`, `run-aot-e2e`) — which depend on them explicitly and
+# work as advertised — or via `cmake --build build --target <bin>` directly.
+# Keeps them out of the default `all` target so `cmake --build … --target
+# package` (Stage C bundle) doesn't drag them through the link step.
+add_subdirectory(test EXCLUDE_FROM_ALL)
 
 # MLIR-based code generation
 add_subdirectory(runtime/src/codegen)

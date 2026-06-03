@@ -76,13 +76,16 @@ RUN apk add --no-cache \
       ripgrep fd vim tmux less jq file wget curl \
       util-linux py3-pip
 
-# RapidCheck: find_package(rapidcheck REQUIRED) is evaluated at configure time
-# (for the `ecor` test target). Same source install as the root Dockerfile /
-# static-build.Dockerfile's eco-builder.
+# RapidCheck: required at configure time (for `ecor`) and at link time when
+# building the `test` target. Built with -stdlib=libc++ to match the rest of
+# the Stage B build's libc++ ABI — without this, Alpine's clang picks up
+# libstdc++ headers from gcc (installed via build-base) and emits GCC-only
+# symbols that don't resolve against libc++. Mirrors static-build.Dockerfile.
 RUN git clone --depth=1 https://github.com/emil-e/rapidcheck.git /tmp/rapidcheck \
  && cmake -S /tmp/rapidcheck -B /tmp/rapidcheck/build -G Ninja \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+      -DCMAKE_CXX_FLAGS=-stdlib=libc++ \
  && cmake --build /tmp/rapidcheck/build \
  && cmake --install /tmp/rapidcheck/build \
  && rm -rf /tmp/rapidcheck
