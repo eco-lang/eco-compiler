@@ -893,7 +893,15 @@ if(ECO_STATIC_MUSL)
     if(NOT ECO_BUNDLED_LD_LLD)
         # No statically-built lld available. Fall back to the build lld so
         # the bundle still exists, but warn it won't be host-portable.
-        set(ECO_BUNDLED_LD_LLD "${ECO_BUILD_LD_LLD}")
+        #
+        # Override the CACHE entry (not just a local variable): find_program
+        # above wrote ECO_BUNDLED_LD_LLD-NOTFOUND into the cache, and the
+        # install(PROGRAMS ${ECO_BUNDLED_LD_LLD}) rule that bundles the linker
+        # lives in the top-level CMakeLists.txt — a different directory scope.
+        # A plain set() here would only shadow the cache in this subdirectory,
+        # leaving the top-level install to see the stale -NOTFOUND value.
+        set(ECO_BUNDLED_LD_LLD "${ECO_BUILD_LD_LLD}" CACHE FILEPATH
+            "Static lld copied into the distribution bundle" FORCE)
         message(WARNING
             "Stage C: /opt/llvm-mlir/libexec/eco-bundle/ld.lld not found — "
             "bundling ${ECO_BUILD_LD_LLD} instead. The resulting bundle "

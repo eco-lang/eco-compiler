@@ -404,15 +404,30 @@ void GCStats::recordTLHAllocation(size_t bytes, Tag tag) {
 // GC_STATS_TLH_RECORD_ALLOC macro; in stats-disabled builds the macro
 // expands to nothing and this body is dead code.
 void recordTLHAllocOnCurrentThread(size_t bytes, Tag tag) noexcept {
+#if ENABLE_GC_STATS
     ThreadLocalHeap* tlh = Allocator::instance().getCurrentThreadHeap();
     if (tlh) tlh->getStats().recordTLHAllocation(bytes, tag);
+#else
+    // Stats disabled: ThreadLocalHeap has no getStats()/stats_, so the body
+    // compiles away. The symbol is still emitted to satisfy the unconditional
+    // declaration in GCStats.hpp, but nothing references it (the macro is a
+    // no-op in this configuration).
+    (void)bytes;
+    (void)tag;
+#endif
 }
 
 // String-histogram trampoline: same shape as the per-tag helper above, but
 // no Tag is in scope at the call site (allocString is the tag's chokepoint).
 void recordStringAllocOnCurrentThread(size_t bytes) noexcept {
+#if ENABLE_GC_STATS
     ThreadLocalHeap* tlh = Allocator::instance().getCurrentThreadHeap();
     if (tlh) tlh->getStats().recordStringAllocation(bytes);
+#else
+    // See recordTLHAllocOnCurrentThread above: body is dead in stats-disabled
+    // builds where getStats() does not exist.
+    (void)bytes;
+#endif
 }
 
 // Mutator-direct old-gen allocation: counted toward the cross-generation

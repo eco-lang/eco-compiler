@@ -576,6 +576,15 @@ void ThreadLocalHeap::majorGC() {
         const int64_t  unaccounted_ns =
             static_cast<int64_t>(total_ns) - static_cast<int64_t>(accounted_ns);
 
+        // Phase profiling (gcPhaseProfileEnabled) is independent of
+        // ENABLE_GC_STATS, but the major-GC sequence counter lives in stats_,
+        // which only exists in stats-enabled builds. Fall back to 0 otherwise.
+#if ENABLE_GC_STATS
+        const unsigned long long major_gc_seq = (unsigned long long)stats_.major_gc_count;
+#else
+        const unsigned long long major_gc_seq = 0;
+#endif
+
         std::fprintf(stderr,
             "[gc-profile] major #%llu total=%.3fms"
             " root_scan=%.3fms (long=%zu jit=%zu)"
@@ -587,7 +596,7 @@ void ThreadLocalHeap::majorGC() {
             " finish_block=%.3fms"
             " unaccounted=%.3fms"
             " minor_pf=%ld major_pf=%ld vol_csw=%ld invol_csw=%ld\n",
-            (unsigned long long)stats_.major_gc_count,
+            major_gc_seq,
             total_ns / 1.0e6,
             root_scan_ns / 1.0e6,
             roots.size(),
