@@ -402,8 +402,6 @@ if(ECO_STATIC_MUSL)
     # archives are stripped separately via install(CODE …) in
     # runtime/src/codegen/CMakeLists.txt, gated on ECO_BUNDLE_STRIP.
     set(CPACK_STRIP_FILES ON)
-    set(CPACK_PACKAGE_DESCRIPTION_FILE
-        "${CMAKE_SOURCE_DIR}/plans/stage-c-bundle-runtime.md")
     # Restrict the package to the explicit Bundle component so add_mlir_library
     # and FetchContent's auto-installed install rules (libEcoDialect.a, curl
     # headers, cmake config, libcurl.pc, etc.) do not pollute the archive.
