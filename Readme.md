@@ -148,7 +148,7 @@ docker run -it --rm -v "$PWD":/work -v eco-dev-home:/home/dev eco-dev bash
 
 # One-shot build + test.
 docker run --rm -v "$PWD":/work eco-dev bash -c \
-  "cmake --preset ninja-clang-lld-linux && cmake --build build --target check"
+  "cmake --preset build && cmake --build build --target check"
 ```
 
 The entrypoint detects the host uid/gid from the bind-mounted `/work` (or
