@@ -16,3 +16,4 @@ __pycache__/
 heap-profile.local.json
 heap-profiles/
 .pnpm-store/
+dist/

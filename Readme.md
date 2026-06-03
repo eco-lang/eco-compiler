@@ -130,7 +130,9 @@ docker build -f docker/llvm-alpine.Dockerfile -t eco-llvm-alpine:21.1.4 .
 # 2. Glibc dev image.
 docker build -f docker/eco-dev.Dockerfile -t eco-dev .
 
-# 3. Static `eco` binary (FROM scratch). See "Static MUSL build" below.
+# 3. Static `eco` binary (FROM scratch). See "Static MUSL build" below. The same
+#    Dockerfile's `--target eco-bundle -o ./dist` also exports the release
+#    archives (.tar.gz/.zip/.deb) — see "Building the release bundles" below.
 docker build -f docker/static-build.Dockerfile --target eco-static -t eco-static .
 
 # 4. Musl interactive dev image.
@@ -454,8 +456,9 @@ for the full design, and `docker/static-build.Dockerfile` /
 
 ### Building the static binary (`docker/static-build.Dockerfile`)
 
-A three-stage build: a pre-built LLVM+MLIR image, then `eco` linked statically
-against it, then `FROM scratch` shipping just the binary.
+The Dockerfile has four stages: a pre-built LLVM+MLIR image, then `eco` linked
+statically against it, then two `FROM scratch` shipping stages — `eco-static`
+(just the binary) and `eco-bundle` (the distribution archives).
 
 ```bash
 # 1. One-off: build the MUSL LLVM/MLIR base image (~30–60 min; only re-run
@@ -475,6 +478,30 @@ readelf -d ./eco | grep -c NEEDED
 The `eco-llvm-alpine:21.1.4` image is the expensive, cacheable layer; iterating
 on `eco` only re-runs the `eco-builder` stage. It is also shared with the
 interactive dev image below.
+
+### Building the release bundles (`--target eco-bundle`)
+
+The `eco-bundle` stage runs CPack to produce the distribution archives — a
+self-contained `eco` plus the `lib/eco-runtime/` tree (crt objects, static
+archives, bundled linker) it needs for ahead-of-time linking. Building with
+`-o ./dist` exports all three archives to the host (the directory is created if
+it doesn't exist; needs BuildKit, which is the default in Docker 23+):
+
+```bash
+docker build -f docker/static-build.Dockerfile --target eco-bundle -o ./dist .
+```
+
+This drops three files into `./dist/`:
+
+| File | Format |
+|------|--------|
+| `eco-0.1.0-x86_64-linux-musl.tar.gz` | gzip tarball |
+| `eco-0.1.0-x86_64-linux-musl.zip`    | zip archive |
+| `eco_0.1.0_amd64.deb`                | Debian package |
+
+The package set and filenames are defined by the CPack configuration in the
+top-level `CMakeLists.txt` (`CPACK_GENERATOR`, `CPACK_PACKAGE_FILE_NAME`,
+`CPACK_DEBIAN_BUNDLE_FILE_NAME`).
 
 ### Interactive dev image (`docker/static-dev.Dockerfile`)
 

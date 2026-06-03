@@ -122,7 +122,8 @@ RUN strip -s build-static/compiler/build-kernel/bin/eco \
 # defined by the install() rules, then produces both archives.
 RUN cmake --build build-static --target package \
  && ls -lh build-static/eco-0.1.0-x86_64-linux-musl.tar.gz \
-           build-static/eco-0.1.0-x86_64-linux-musl.zip
+           build-static/eco-0.1.0-x86_64-linux-musl.zip \
+           build-static/eco_0.1.0_amd64.deb
 
 # Smoke test the bundle in-container: extract into /tmp/eco-smoke, scaffold a
 # minimal project (elm.json + src/Hello.elm — eco refuses to build without
@@ -158,9 +159,12 @@ COPY --from=eco-builder /eco/build-static/compiler/build-kernel/bin/eco /eco
 ENTRYPOINT ["/eco"]
 
 # ============================================================================
-# Stage 4: ship the distribution bundles (.tar.gz + .zip).
-# `docker build --target eco-bundle -o ./dist .` drops both archives in ./dist.
+# Stage 4: ship the distribution bundles (.tar.gz + .zip + .deb).
+# `docker build --target eco-bundle -o ./dist .` drops all three archives in
+# ./dist. The names are pinned by CPACK_PACKAGE_FILE_NAME (archives) and
+# CPACK_DEBIAN_BUNDLE_FILE_NAME (the .deb) in the top-level CMakeLists.txt.
 # ============================================================================
 FROM scratch AS eco-bundle
 COPY --from=eco-builder /eco/build-static/eco-0.1.0-x86_64-linux-musl.tar.gz /
 COPY --from=eco-builder /eco/build-static/eco-0.1.0-x86_64-linux-musl.zip    /
+COPY --from=eco-builder /eco/build-static/eco_0.1.0_amd64.deb                /
