@@ -144,7 +144,7 @@ Steps 2/3/4 each only need their corresponding base from step 1.
 ```bash
 # Interactive session with persistent home directory.
 docker volume create eco-dev-home
-docker run -it --rm -v "$PWD":/work -v eco-dev-home:/home/dev eco-dev bash
+docker run -it -e "TERM=xterm-256color" --rm -v "$PWD":/work -v eco-dev-home:/home/dev eco-dev bash
 
 # One-shot build + test.
 docker run --rm -v "$PWD":/work eco-dev bash -c \
