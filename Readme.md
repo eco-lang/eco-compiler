@@ -104,7 +104,11 @@ The initial release establishing the foundation of the Eco compiler toolchain.
 
 ## Building
 
-### Docker images at a glance
+The recommended path is the Docker dev image, which bundles LLVM/MLIR, the C++
+toolchain, Node/pnpm, and the Elm test runner. To build directly on a Linux
+host, see [Building on a Linux host](#building-on-a-linux-host) below.
+
+### Docker images
 
 The Docker setup is four images. Two LLVM/MLIR base images (slow, rebuilt only
 when `LLVM_VERSION` changes) and three consumer images that `COPY /opt/llvm-mlir`
@@ -126,7 +130,7 @@ docker build -f docker/llvm-alpine.Dockerfile -t eco-llvm-alpine:21.1.4 .
 # 2. Glibc dev image.
 docker build -f docker/eco-dev.Dockerfile -t eco-dev .
 
-# 3. Static `eco` binary (FROM scratch).
+# 3. Static `eco` binary (FROM scratch). See "Static MUSL build" below.
 docker build -f docker/static-build.Dockerfile --target eco-static -t eco-static .
 
 # 4. Musl interactive dev image.
@@ -135,22 +139,24 @@ docker build -f docker/static-dev.Dockerfile -t eco-static-dev:local .
 
 Steps 2/3/4 each only need their corresponding base from step 1.
 
-### Prerequisites
-
-**Docker (recommended):**
+### Running the dev image
 
 ```bash
-# One-off: build the LLVM/MLIR base image (slow, ~30-60 min).
-# Only needs to be re-run when LLVM_VERSION changes in
-# docker/llvm-debian.Dockerfile.
-docker build -f docker/llvm-debian.Dockerfile -t eco-llvm-debian:21.1.4 .
+# Interactive session with persistent home directory.
+docker volume create eco-dev-home
+docker run -it --rm -v "$PWD":/work -v eco-dev-home:/home/dev eco-dev bash
 
-# Build the dev image (fast — pulls /opt/llvm-mlir from the image above).
-docker build -f docker/eco-dev.Dockerfile -t eco-dev .
-docker run --rm -v "$PWD":/work eco-dev
+# One-shot build + test.
+docker run --rm -v "$PWD":/work eco-dev bash -c \
+  "cmake --preset ninja-clang-lld-linux && cmake --build build --target check"
 ```
 
-**Debian/Ubuntu host:**
+The entrypoint detects the host uid/gid from the bind-mounted `/work` (or
+`HOST_UID`/`HOST_GID`) and creates a matching user inside the container, so
+files in `/work` stay correctly owned. The resolved user is granted
+passwordless `sudo`.
+
+### Building on a Linux host
 
 ```bash
 sudo apt install clang lld ninja-build cmake ccache nodejs
@@ -435,48 +441,16 @@ use `--target eco-quick` while iterating on code under `runtime/` or
 | `rebuild_cache` | Reconfigure CMake cache |
 | `list_install_components` | List installable components |
 
-## Docker development
-
-The dev image is split in two so LLVM/MLIR (the expensive part) only rebuilds
-when you bump `LLVM_VERSION`:
-
-- `docker/llvm-debian.Dockerfile` — builds LLVM + MLIR from source and installs
-  it under `/opt/llvm-mlir`. Slow (~30-60 min), produces `eco-llvm-debian:<ver>`.
-- `docker/eco-dev.Dockerfile` — pulls `/opt/llvm-mlir` from the LLVM image and
-  layers on the toolchain, debugger, Node/pnpm, Claude CLI, etc.
-
-```bash
-# One-off (or whenever LLVM_VERSION changes):
-docker build -f docker/llvm-debian.Dockerfile -t eco-llvm-debian:21.1.4 .
-
-# Build the dev image
-docker build -f docker/eco-dev.Dockerfile -t eco-dev .
-
-# Interactive session with persistent home directory
-docker volume create eco-dev-home
-docker run -it --rm -v "$PWD":/work -v eco-dev-home:/home/dev eco-dev bash
-
-# One-shot build + test
-docker run --rm -v "$PWD":/work eco-dev bash -c \
-  "cmake --preset build && cmake --build build --target check"
-```
-
 ## Static MUSL build (Stage B)
 
 Eco can be built as a single, fully-static `eco` compiler binary with **zero
 shared-library dependencies** (`ldd` reports "not a dynamic executable"), so it
 runs on any Linux distribution. The build runs inside Alpine Linux against
-musl + libc++, with LLVM 21.1.4 compiled from source. See
-`plans/static-link-eco-binary.md` for the full design, and
-`docker/static-build.Dockerfile` / `docker/static-dev.Dockerfile`.
-
-> **Status:** the static-link toolchain is complete — LLVM/MLIR and every C++
-> translation unit compile and link statically. Producing the final binary is
-> currently blocked by a musl-only bug in the Elm bootstrap (`Map.!`); see
-> `musl-bug.md`. The `static-dev` image below exists to debug exactly that.
->
-> Linux x86_64 only. The base image is pinned (`alpine:3.21` by digest) and
-> `LLVM_VERSION` defaults to 21.1.4, so no build args are required.
+musl + libc++ with LLVM 21.1.4 compiled from source. Linux x86_64 only; the
+base image is pinned (`alpine:3.21` by digest) and `LLVM_VERSION` defaults to
+21.1.4, so no build args are required. See `plans/static-link-eco-binary.md`
+for the full design, and `docker/static-build.Dockerfile` /
+`docker/static-dev.Dockerfile`.
 
 ### Building the static binary (`docker/static-build.Dockerfile`)
 
@@ -506,8 +480,7 @@ interactive dev image below.
 
 The same musl/libc++ toolchain as the build image, **plus** the dev tooling from
 `docker/eco-dev.Dockerfile` (gdb, lldb, strace, ripgrep, …), Claude Code, and
-uv/serena — for stepping through and debugging the build interactively (e.g.
-the open bootstrap `Map.!`). It consumes the same LLVM base as the static build:
+uv/serena. Consumes the same LLVM base as the static build:
 
 ```bash
 # 1. Build the MUSL LLVM/MLIR base image (skip if step 1 above already done):
@@ -516,11 +489,10 @@ docker build -f docker/llvm-alpine.Dockerfile -t eco-llvm-alpine:21.1.4 .
 # 2. Build the dev image (fast — just layers tools on top):
 docker build -f docker/static-dev.Dockerfile -t eco-static-dev:local .
 
-# 3. Run interactively with the repo mounted. The named volume shadows
-#    ./build-static so the container's musl build never collides with the
-#    host glibc build/:
+# 3. Run interactively with the repo mounted. The musl preset writes into
+#    build-static/, so it naturally doesn't collide with a host glibc build/.
 docker run -it --rm \
-    -v "$PWD":/work -v eco-musl-build:/work/build-static \
+    -v "$PWD":/work \
     --cap-add=SYS_PTRACE \
     eco-static-dev:local
 ```
@@ -530,15 +502,14 @@ Then, inside the container:
 ```bash
 cmake --preset release
 cmake --build build-static --target eco
-claude                                  # launch Claude Code if you need it
 ```
 
-- Runs as a uid-1000 `dev` user (matches the default host user) with passwordless
-  `sudo`, so files created in the mounted `/work` stay correctly owned. If your
-  host user isn't uid 1000, add `--user $(id -u):$(id -g)`.
+- The entrypoint detects the host uid/gid from the bind-mounted `/work` (or
+  `HOST_UID`/`HOST_GID`) and creates a matching user inside the container, so
+  files in `/work` stay correctly owned. The resolved user is granted
+  passwordless `sudo`.
 - `--cap-add=SYS_PTRACE` (or `--privileged`) is needed for gdb/strace/perf to
-  attach. `strace -e getdents64` on the failing `node` process is the quickest
-  way to probe the `readdir`-ordering hypothesis recorded in `musl-bug.md`.
+  attach.
 
 ## Acknowledgements
 

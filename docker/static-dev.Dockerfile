@@ -22,9 +22,10 @@
 #   docker build -f docker/static-dev.Dockerfile -t eco-static-dev:local .
 #
 # ---- Run interactively -----------------------------------------------------
-# The named volume shadows ./build-static inside the container, so the
-# container's musl build tree never collides with a host glibc build/ in
-# the bind mount:
+# The musl preset writes into `build-static/` (see CMakePresets.json) rather
+# than `build/`, so it naturally doesn't collide with a host glibc `build/`
+# in the bind mount. Optional named volume below isolates the musl build
+# tree from host I/O entirely:
 #
 #   docker run -it --rm \
 #       -v "$PWD:/work" -v eco-musl-build:/work/build-static \

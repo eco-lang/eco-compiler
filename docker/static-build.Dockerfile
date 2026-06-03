@@ -97,6 +97,8 @@ COPY . .
 
 # Configure + build only the eco binary. The musl preset sets ECO_STATIC,
 # ECO_STATIC_MUSL, ECO_LINK_WITH_BFD=OFF and the -static libc++ link flags.
+# binaryDir is `build-static/` (see CMakePresets.json) so the in-container
+# musl build doesn't collide with a host glibc `build/` in the bind mount.
 RUN cmake --preset release
 RUN cmake --build build-static --target eco
 
@@ -148,7 +150,7 @@ RUN mkdir -p /tmp/eco-smoke \
 # Stage 3: ship just the binary (back-compat, slim image)
 # ============================================================================
 FROM scratch AS eco-static
-COPY --from=eco-builder /eco/build/compiler/build-kernel/bin/eco /eco
+COPY --from=eco-builder /eco/build-static/compiler/build-kernel/bin/eco /eco
 ENTRYPOINT ["/eco"]
 
 # ============================================================================
@@ -156,5 +158,5 @@ ENTRYPOINT ["/eco"]
 # `docker build --target eco-bundle -o ./dist .` drops both archives in ./dist.
 # ============================================================================
 FROM scratch AS eco-bundle
-COPY --from=eco-builder /eco/build/eco-0.1.0-x86_64-linux-musl.tar.gz /
-COPY --from=eco-builder /eco/build/eco-0.1.0-x86_64-linux-musl.zip    /
+COPY --from=eco-builder /eco/build-static/eco-0.1.0-x86_64-linux-musl.tar.gz /
+COPY --from=eco-builder /eco/build-static/eco-0.1.0-x86_64-linux-musl.zip    /
