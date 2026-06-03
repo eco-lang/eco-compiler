@@ -17,6 +17,7 @@ if(CPACK_GENERATOR STREQUAL "DEB")
 
     # Debian filename convention: <name>_<version>_<arch>.deb (underscores,
     # not dashes). Overrides the default CPACK_PACKAGE_FILE_NAME used by
-    # TGZ/ZIP.
-    set(CPACK_PACKAGE_FILE_NAME "eco_0.1.0_amd64")
+    # TGZ/ZIP. CPACK_PACKAGE_VERSION is injected by CPack from the top-level
+    # CMakeLists.txt (derived from version.txt / -DECO_VERSION_OVERRIDE).
+    set(CPACK_PACKAGE_FILE_NAME "eco_${CPACK_PACKAGE_VERSION}_amd64")
 endif()

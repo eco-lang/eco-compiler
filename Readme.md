@@ -491,7 +491,8 @@ it doesn't exist; needs BuildKit, which is the default in Docker 23+):
 docker build -f docker/static-build.Dockerfile --target eco-bundle -o ./dist .
 ```
 
-This drops three files into `./dist/`:
+This drops three files into `./dist/` (the `0.1.0` baseline comes from
+`version.txt`):
 
 | File | Format |
 |------|--------|
@@ -499,9 +500,22 @@ This drops three files into `./dist/`:
 | `eco-0.1.0-x86_64-linux-musl.zip`    | zip archive |
 | `eco_0.1.0_amd64.deb`                | Debian package |
 
+#### Overriding the version
+
+`version.txt` is the baseline version. To stamp a release with a different
+version, pass `--build-arg ECO_VERSION=<v>` — it sets both the bundle archive
+names **and** the binary's `eco --version` string (via the CMake
+`ECO_VERSION_OVERRIDE` knob):
+
+```bash
+docker build -f docker/static-build.Dockerfile --target eco-bundle \
+    --build-arg ECO_VERSION=1.2.3 -o ./dist .
+# → dist/eco-1.2.3-x86_64-linux-musl.{tar.gz,zip}, dist/eco_1.2.3_amd64.deb
+```
+
 The package set and filenames are defined by the CPack configuration in the
 top-level `CMakeLists.txt` (`CPACK_GENERATOR`, `CPACK_PACKAGE_FILE_NAME`,
-`CPACK_DEBIAN_BUNDLE_FILE_NAME`).
+`CPACK_DEBIAN_BUNDLE_FILE_NAME`), all derived from the resolved version.
 
 ### Interactive dev image (`docker/static-dev.Dockerfile`)
 

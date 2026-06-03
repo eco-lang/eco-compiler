@@ -396,9 +396,22 @@ endif()
 # Bundle scope is musl-only (Stage B output ABI); see plans/stage-c-bundle-runtime.md.
 #-------------------------------------------------------------------------------
 if(ECO_STATIC_MUSL)
+    # Package version: the same source of truth as the binary's user-facing
+    # version (see compiler/CMakeLists.txt). version.txt holds the baseline;
+    # a tagged release passes -DECO_VERSION_OVERRIDE=<v> to stamp both the
+    # bundle names and `eco --version` with one knob. Unlike the binary's
+    # version we never append the -dev-<git-describe> suffix here — package
+    # filenames must be a clean semver.
+    file(READ "${CMAKE_SOURCE_DIR}/version.txt" ECO_PACKAGE_VERSION)
+    string(STRIP "${ECO_PACKAGE_VERSION}" ECO_PACKAGE_VERSION)
+    if(ECO_VERSION_OVERRIDE)
+        set(ECO_PACKAGE_VERSION "${ECO_VERSION_OVERRIDE}")
+    endif()
+    message(STATUS "Eco bundle version: ${ECO_PACKAGE_VERSION}")
+
     set(CPACK_PACKAGE_NAME "eco")
-    set(CPACK_PACKAGE_VERSION "0.1.0")
-    set(CPACK_PACKAGE_FILE_NAME "eco-0.1.0-x86_64-linux-musl")
+    set(CPACK_PACKAGE_VERSION "${ECO_PACKAGE_VERSION}")
+    set(CPACK_PACKAGE_FILE_NAME "eco-${ECO_PACKAGE_VERSION}-x86_64-linux-musl")
     # DEB joins TGZ;ZIP for v0.1.0 (plans/release-bundle-v0.1.0.md). The
     # per-generator install prefix is set in cmake/CPackProjectConfig.cmake.
     set(CPACK_GENERATOR "TGZ;ZIP;DEB")
@@ -431,7 +444,7 @@ if(ECO_STATIC_MUSL)
     set(CPACK_DEBIAN_PACKAGE_DESCRIPTION
         "Eco - Elm compiler with static AOT runtime (experimental Stage B MUSL build)")
     # Bundle component → single .deb (no -bundle suffix in the filename).
-    set(CPACK_DEBIAN_BUNDLE_FILE_NAME     "eco_0.1.0_amd64.deb")
+    set(CPACK_DEBIAN_BUNDLE_FILE_NAME     "eco_${ECO_PACKAGE_VERSION}_amd64.deb")
     set(CPACK_DEBIAN_BUNDLE_PACKAGE_NAME  "eco")
 
     # Per-generator overrides (DEB → /usr/local prefix + Debian-style file

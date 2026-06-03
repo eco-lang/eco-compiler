@@ -99,11 +99,22 @@ ENV NODE_OPTIONS=--max-old-space-size=12000
 WORKDIR /eco
 COPY . .
 
+# Optional release version. When set (e.g. --build-arg ECO_VERSION=1.2.3) it
+# stamps BOTH the bundle archive names and `eco --version` via the CMake
+# ECO_VERSION_OVERRIDE knob. When empty, the build falls back to the baseline
+# in version.txt (currently 0.1.0) — .git is excluded from the context, so the
+# usual -dev-<git-describe> suffix cannot apply here.
+ARG ECO_VERSION=
+
 # Configure + build only the eco binary. The musl preset sets ECO_STATIC,
 # ECO_STATIC_MUSL, ECO_LINK_WITH_BFD=OFF and the -static libc++ link flags.
 # binaryDir is `build-static/` (see CMakePresets.json) so the in-container
 # musl build doesn't collide with a host glibc `build/` in the bind mount.
-RUN cmake --preset release
+RUN if [ -n "$ECO_VERSION" ]; then \
+        cmake --preset release -DECO_VERSION_OVERRIDE="$ECO_VERSION"; \
+    else \
+        cmake --preset release; \
+    fi
 RUN cmake --build build-static --target eco
 
 # Strip, then HARD-FAIL the build if the binary still has any dynamic NEEDED
@@ -121,9 +132,9 @@ RUN strip -s build-static/compiler/build-kernel/bin/eco \
 # the eco binary + lib/eco-runtime/{crt,project,ld.lld,libc.a,…} tree
 # defined by the install() rules, then produces both archives.
 RUN cmake --build build-static --target package \
- && ls -lh build-static/eco-0.1.0-x86_64-linux-musl.tar.gz \
-           build-static/eco-0.1.0-x86_64-linux-musl.zip \
-           build-static/eco_0.1.0_amd64.deb
+ && ls -lh build-static/eco-*-x86_64-linux-musl.tar.gz \
+           build-static/eco-*-x86_64-linux-musl.zip \
+           build-static/eco_*_amd64.deb
 
 # Smoke test the bundle in-container: extract into /tmp/eco-smoke, scaffold a
 # minimal project (elm.json + src/Hello.elm — eco refuses to build without
@@ -134,7 +145,7 @@ RUN cmake --build build-static --target package \
 # it exits non-zero, so the smoke test does not check ./hello's exit code —
 # only that it runs without crashing and yields a fully-static ELF.
 RUN mkdir -p /tmp/eco-smoke \
- && tar -xzf build-static/eco-0.1.0-x86_64-linux-musl.tar.gz -C /tmp/eco-smoke \
+ && tar -xzf build-static/eco-*-x86_64-linux-musl.tar.gz -C /tmp/eco-smoke \
  && cp compiler/examples/elm.json      /tmp/eco-smoke/elm.json \
  && mkdir -p /tmp/eco-smoke/src \
  && cp compiler/examples/src/Hello.elm /tmp/eco-smoke/src/Hello.elm \
@@ -161,10 +172,11 @@ ENTRYPOINT ["/eco"]
 # ============================================================================
 # Stage 4: ship the distribution bundles (.tar.gz + .zip + .deb).
 # `docker build --target eco-bundle -o ./dist .` drops all three archives in
-# ./dist. The names are pinned by CPACK_PACKAGE_FILE_NAME (archives) and
-# CPACK_DEBIAN_BUNDLE_FILE_NAME (the .deb) in the top-level CMakeLists.txt.
+# ./dist. Wildcards keep this stage version-agnostic: the actual names are
+# derived from version.txt / --build-arg ECO_VERSION by CPack (see the
+# top-level CMakeLists.txt), so they carry whatever version was built.
 # ============================================================================
 FROM scratch AS eco-bundle
-COPY --from=eco-builder /eco/build-static/eco-0.1.0-x86_64-linux-musl.tar.gz /
-COPY --from=eco-builder /eco/build-static/eco-0.1.0-x86_64-linux-musl.zip    /
-COPY --from=eco-builder /eco/build-static/eco_0.1.0_amd64.deb                /
+COPY --from=eco-builder /eco/build-static/eco-*-x86_64-linux-musl.tar.gz /
+COPY --from=eco-builder /eco/build-static/eco-*-x86_64-linux-musl.zip    /
+COPY --from=eco-builder /eco/build-static/eco_*_amd64.deb                /
