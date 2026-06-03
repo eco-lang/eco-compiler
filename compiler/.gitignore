@@ -21,8 +21,3 @@ examples/index.html
 .coverage/
 eco-stuff/
 eco-example-projects/
-
-# CMake-generated build-time version stamp.
-# See compiler/cmake/Version_Build.elm.in and the configure step in
-# compiler/CMakeLists.txt for the generation logic.
-src/Compiler/Elm/Version_Build.elm
