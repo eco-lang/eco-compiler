@@ -57,12 +57,6 @@ inline void* u64ToPtr(uint64_t val) {
     return Elm::Allocator::instance().resolve(hp);
 }
 
-// Convert raw pointer to eco.value (uint64_t)
-inline uint64_t ptrToU64(void* obj) {
-    Elm::HPointer hp = Elm::Allocator::instance().wrap(obj);
-    return hpointerToU64(hp);
-}
-
 } // anonymous namespace
 
 // ============================================================================

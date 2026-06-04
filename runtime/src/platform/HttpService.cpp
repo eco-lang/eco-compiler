@@ -274,9 +274,9 @@ HttpService::Result HttpService::perform(const Request& req) {
     char* eff = nullptr;
     curl_easy_getinfo(curl, CURLINFO_EFFECTIVE_URL, &eff);
 
-    auto tookMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+    [[maybe_unused]] auto tookMs = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - t0).count();
-    const char* curlErrMsg = curl_easy_strerror(res);
+    [[maybe_unused]] const char* curlErrMsg = curl_easy_strerror(res);
     ECO_KLOG("http",
         "curl response status=%ld err=%d errMsg=%s body=%zuB took=%lldms "
         "finalUrl=%s token=%lu",

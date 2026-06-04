@@ -483,6 +483,7 @@ add_custom_target(rebuild
 # needed — no Stage 2+ build.
 add_custom_target(check
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test
     COMMAND sh -c "${CMAKE_BINARY_DIR}/test/test $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
     COMMENT "Gate A (incremental): build default ALL + Stage 1, run JIT E2E"
     USES_TERMINAL
@@ -517,6 +518,7 @@ add_custom_target(stress
 add_custom_target(full
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target clean
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test
     COMMAND sh -c "${CMAKE_BINARY_DIR}/test/test $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
     COMMENT "Gate A: clean, rebuild default ALL + Stage 1, run JIT E2E"
     USES_TERMINAL
