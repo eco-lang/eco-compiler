@@ -47,8 +47,15 @@ include_directories(${CMAKE_CURRENT_BINARY_DIR}/include)
 # Include directory for source headers (EcoDialect.h, EcoOps.h)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
-# Add LLVM definitions
-add_definitions(${LLVM_DEFINITIONS})
+# Add LLVM definitions. HandleLLVMOptions (included above) rewrites
+# LLVM_DEFINITIONS into a single space-joined string built from the
+# top-level directory's COMPILE_DEFINITIONS — which folds in this project's
+# own add_compile_definitions (ECO_GC_DEBUG, ENABLE_GC_STATS, ...). Passing
+# that unsplit makes add_definitions() treat the whole string as ONE -D flag
+# (e.g. -DECO_GC_DEBUG="1 -DENABLE_GC_STATS=1"), redefining the macro to a
+# value the preprocessor can't evaluate in #if. Split it back into flags.
+separate_arguments(_llvm_defs NATIVE_COMMAND "${LLVM_DEFINITIONS}")
+add_definitions(${_llvm_defs})
 
 # Set the output directory for generated TableGen files. The relative
 # subdirectory is what `mlir_tablegen()` accepts — it always prepends

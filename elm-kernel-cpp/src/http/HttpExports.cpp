@@ -395,7 +395,7 @@ void httpDrain() {
     HttpService::Result r;
     while (HttpService::instance().tryPopResult(r)) {
         ECO_KLOG("elm-http",
-                 "drain token=%lu err=%d status=%d body=%zuB",
+                 "drain token=%lu err=%d status=%ld body=%zuB",
                  (unsigned long)r.token, (int)r.error, r.status, r.body.size());
         // Clear tracking for this token (no-op for untracked). If it was
         // cancelled via Http.cancel, drop the result without resuming.

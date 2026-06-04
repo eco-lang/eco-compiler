@@ -73,7 +73,7 @@ listOfTuplesToHeaders(uint64_t headersEnc) {
 // eager implementation's exact shape.
 HPointer buildFetchResponse(const HttpService::Result& r) {
     using EK = HttpService::ErrorKind;
-    ECO_KLOG("http", "fetch result token=%lu err=%d status=%d body=%zuB",
+    ECO_KLOG("http", "fetch result token=%lu err=%d status=%ld body=%zuB",
              (unsigned long)r.token, (int)r.error, r.status, r.body.size());
     if (r.error != EK::Ok) {
         // Transport-level failures: surface a Tuple2 (0, curl-strerror-ish).
@@ -100,7 +100,7 @@ HPointer buildFetchResponse(const HttpService::Result& r) {
         return ok(boxed(body), true);
     }
 
-    ECO_KLOG("http", "fetch http-error status=%d statusText=%s",
+    ECO_KLOG("http", "fetch http-error status=%ld statusText=%s",
              r.status, r.statusText.c_str());
     HPointer statusText = allocStringFromUTF8(
         r.statusText.empty() ? std::string("HTTP " + std::to_string(r.status))
@@ -118,7 +118,7 @@ HPointer buildFetchResponse(const HttpService::Result& r) {
 //   Ok (sha, [(relativePath, content)]). Mirrors the pre-Phase-5 eager path
 //   in `Eco.Http.getArchive`.
 HPointer buildGetArchiveResponse(const HttpService::Result& r) {
-    ECO_KLOG("http", "getArchive result token=%lu err=%d status=%d body=%zuB",
+    ECO_KLOG("http", "getArchive result token=%lu err=%d status=%ld body=%zuB",
              (unsigned long)r.token, (int)r.error, r.status, r.body.size());
     if (r.error != HttpService::ErrorKind::Ok) {
         const char* msg = "Network error";
