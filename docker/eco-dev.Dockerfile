@@ -63,7 +63,7 @@ RUN git clone --depth=1 https://github.com/emil-e/rapidcheck.git /tmp/rapidcheck
     && rm -rf /tmp/rapidcheck
 
 # Install Claude CLI
-COPY ./install_claude.sh .
+COPY docker/install_claude.sh .
 RUN ./install_claude.sh && rm ./install_claude.sh
 
 # Install uv (Python package manager from Astral) system-wide

@@ -98,7 +98,7 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 # linux-x64-musl build (see its platform-detection block). Non-fatal so a
 # transient download/`claude install` hiccup doesn't sink the whole image —
 # it can be re-run by hand inside the container.
-COPY install_claude.sh /tmp/install_claude.sh
+COPY docker/install_claude.sh /tmp/install_claude.sh
 RUN bash /tmp/install_claude.sh || echo "WARN: claude install failed; run /tmp/install_claude.sh inside the container" ; \
     rm -f /tmp/install_claude.sh
 
