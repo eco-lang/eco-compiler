@@ -17,5 +17,5 @@ heap-profile.local.json
 heap-profiles/
 .pnpm-store/
 dist/
-.claude/
-.serena/
+.claude
+.serena
