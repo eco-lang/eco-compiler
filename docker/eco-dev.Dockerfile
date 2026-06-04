@@ -66,10 +66,6 @@ RUN git clone --depth=1 https://github.com/emil-e/rapidcheck.git /tmp/rapidcheck
 COPY ./install_claude.sh .
 RUN ./install_claude.sh && rm ./install_claude.sh
 
-# Install crag for knowledge base queries.
-COPY ./crag_0.1.0_amd64.deb .
-RUN dpkg --install ./crag_0.1.0_amd64.deb && rm ./crag_0.1.0_amd64.deb
-
 # Install uv (Python package manager from Astral) system-wide
 ENV UV_INSTALL_DIR="/usr/local/bin"
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
