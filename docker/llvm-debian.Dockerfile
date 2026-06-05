@@ -36,6 +36,8 @@ RUN cmake -S llvm -B build -G Ninja \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_C_COMPILER=clang \
       -DCMAKE_CXX_COMPILER=clang++ \
+      -DCMAKE_C_FLAGS="-march=x86-64-v3 -mtune=generic" \
+      -DCMAKE_CXX_FLAGS="-march=x86-64-v3 -mtune=generic" \
       -DLLVM_USE_LINKER=lld \
       -DCMAKE_INSTALL_PREFIX=/opt/llvm-mlir \
  && cmake --build build \
