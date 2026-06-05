@@ -20,7 +20,6 @@ import System.IO as IO
 import Task exposing (Task)
 import Terminal.Bump as Bump
 import Terminal.Diff as Diff
-import Terminal.Format as Format
 import Terminal.Init as Init
 import Terminal.Install as Install
 import Terminal.Make as Make
@@ -47,15 +46,14 @@ app : Task Never ()
 app =
     Terminal.app intro
         outro
-        [ repl
-        , init
-        , make
-        , install
-        , uninstall
-        , bump
-        , diff
-        , format
-        , test
+        [ Terminal.disabled repl
+        , Terminal.enabled init
+        , Terminal.enabled make
+        , Terminal.enabled install
+        , Terminal.enabled uninstall
+        , Terminal.enabled bump
+        , Terminal.enabled diff
+        , Terminal.disabled test
         ]
 
 
@@ -633,76 +631,6 @@ diff =
                     )
                     |> Tuple.second
                     |> Result.map (\( args, flags ) -> Diff.run args flags)
-        }
-
-
-
--- ====== FORMAT ======
-
-
-format : Terminal.Command
-format =
-    let
-        details : String
-        details =
-            "The `format` command formats Elm code in place."
-
-        example : D.Doc
-        example =
-            stack
-                [ reflow "For example:"
-                , D.green (D.fromChars "eco format src/Main.elm") |> D.indent 4
-                , reflow "This tries to format an Elm file named src/Main.elm, formatting it in place."
-                ]
-
-        formatArgs : Terminal.Args
-        formatArgs =
-            Terminal.zeroOrMore Terminal.filePath
-
-        formatFlags : Terminal.Flags
-        formatFlags =
-            Terminal.flags
-                |> Terminal.more (Terminal.flag "output" output "Write output to FILE instead of overwriting the given source file.")
-                |> Terminal.more (Terminal.onOff "yes" "Reply 'yes' to all automated prompts.")
-                |> Terminal.more (Terminal.onOff "validate" "Check if files are formatted without changing them.")
-                |> Terminal.more (Terminal.onOff "stdin" "Read from stdin, output to stdout.")
-    in
-    Terminal.Command
-        { name = "format"
-        , summary = Terminal.Uncommon
-        , details = details
-        , example = example
-        , args = formatArgs
-        , flags = formatFlags
-        , run =
-            \chunks ->
-                Chomp.chomp Nothing
-                    chunks
-                    [ Chomp.chompMultiple (Chomp.pure identity) Terminal.filePath Terminal.parseFilePath
-                    ]
-                    (Chomp.pure Format.makeFlags
-                        |> Chomp.apply (Chomp.chompNormalFlag "output" output Just)
-                        |> Chomp.apply (Chomp.chompOnOffFlag "yes")
-                        |> Chomp.apply (Chomp.chompOnOffFlag "validate")
-                        |> Chomp.apply (Chomp.chompOnOffFlag "stdin")
-                        |> Chomp.andThen
-                            (\value ->
-                                Chomp.checkForUnknownFlags formatFlags
-                                    |> Chomp.map (\_ -> value)
-                            )
-                    )
-                    |> Tuple.second
-                    |> Result.map (\( args, flags ) -> Format.run args flags)
-        }
-
-
-output : Terminal.Parser
-output =
-    Terminal.Parser
-        { singular = "output"
-        , plural = "outputs"
-        , suggest = \_ -> Task.succeed []
-        , examples = \_ -> Task.succeed []
         }
 
 

@@ -1,5 +1,6 @@
 module Terminal.Terminal exposing
     ( app
+    , enabled, disabled
     , flags, noFlags, more, flag, onOff
     , noArgs, zeroOrMore, oneOf, require0, require1, require2, require3
     )
@@ -14,6 +15,11 @@ routing to command implementations.
 # Application
 
 @docs app
+
+
+# Command registration
+
+@docs enabled, disabled
 
 
 # Flags
@@ -48,8 +54,13 @@ Takes an intro message, outro message, and list of available commands.
 Parses command-line arguments and routes to the appropriate command handler.
 
 -}
-app : D.Doc -> D.Doc -> List Command -> Task Never ()
-app intro outro commands =
+app : D.Doc -> D.Doc -> List (Maybe Command) -> Task Never ()
+app intro outro registrations =
+    let
+        commands : List Command
+        commands =
+            List.filterMap identity registrations
+    in
     Utils.envGetArgs
         |> Task.andThen
             (\argStrings ->
@@ -81,6 +92,32 @@ app intro outro commands =
                                         Err err ->
                                             Error.exitWithError err
             )
+
+
+
+-- ====== COMMAND REGISTRATION ======
+
+
+{-| Register a command as active in the CLI.
+
+The command can be invoked and appears in `--help` and the overview.
+
+-}
+enabled : Command -> Maybe Command
+enabled command =
+    Just command
+
+
+{-| Register a command as disabled.
+
+The command's implementation is retained and remains statically referenced (so it is
+not reported as dead code), but it is hidden from the CLI: it cannot be invoked and does
+not appear in `--help` or the overview. Switch back to `enabled` to restore it.
+
+-}
+disabled : Command -> Maybe Command
+disabled _ =
+    Nothing
 
 
 
