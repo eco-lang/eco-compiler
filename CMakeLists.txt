@@ -371,17 +371,32 @@ if(ECO_STATIC_MUSL)
                 PATTERN "elm.json"
                 PATTERN "*.elm")
 
-    # Strip every .a in the bundle. The bundled static ld.lld is built
-    # without zlib support (LLVM_ENABLE_ZLIB=OFF inherited from the LLVM
-    # base image), so it can't decompress debug sections in Alpine's musl
-    # libc.a etc. Stripping debug info from every bundled archive removes
-    # the compressed sections entirely. CPACK_STRIP_FILES only handles
-    # executables and .so's, not static archives.
+    # Strip debug info from every bundled archive AND crt object. The bundled
+    # static ld.lld is built without zlib support (LLVM_ENABLE_ZLIB=OFF inherited
+    # from the LLVM base image), so it cannot decompress the ELFCOMPRESS_ZLIB
+    # .debug_* sections in Alpine's musl libc.a / crt objects / openssl statics;
+    # stripping removes those sections entirely. CPACK_STRIP_FILES only handles
+    # executables and .so's, not static archives or .o files.
+    #
+    # Two correctness details — both previously let compressed sections reach the
+    # bundle, surfacing only once a real (zlib-less) static ld.lld shipped:
+    #   - Glob *.o as well as *.a: the crt objects (crt1/crti/crtn,
+    #     clang_rt.crtbegin/end) are .o and were never covered.
+    #   - Prefix with $ENV{DESTDIR}: under CPack the staged tree lives at
+    #     $ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}; globbing the bare prefix matched
+    #     nothing during packaging, so the .a shipped unstripped.
     if(ECO_BUNDLE_STRIP)
         install(CODE "
-            file(GLOB_RECURSE _archives \"\${CMAKE_INSTALL_PREFIX}/lib/eco-runtime/*.a\")
-            foreach(_a \${_archives})
-                execute_process(COMMAND ${CMAKE_STRIP} --strip-debug \${_a})
+            set(_eco_rt \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/lib/eco-runtime\")
+            file(GLOB_RECURSE _bundle_objs \"\${_eco_rt}/*.a\" \"\${_eco_rt}/*.o\")
+            foreach(_o \${_bundle_objs})
+                execute_process(
+                    COMMAND ${CMAKE_STRIP} --strip-debug \${_o}
+                    RESULT_VARIABLE _eco_strip_rc)
+                if(NOT _eco_strip_rc EQUAL 0)
+                    message(FATAL_ERROR
+                        \"Stage C: strip --strip-debug failed on \${_o} (rc=\${_eco_strip_rc})\")
+                endif()
             endforeach()
         " COMPONENT Bundle)
     endif()
