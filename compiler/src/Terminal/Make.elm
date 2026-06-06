@@ -191,7 +191,56 @@ runHelp root paths style stats (Flags flagsData) =
             else
                 Registry.Normal
     in
-    BW.withScope (runHelpWithScope root paths style stats flagsData.debug flagsData.optimize flagsData.withSourceMaps flagsData.output flagsData.docs flagsData.showPackageErrors flagsData.buildDir flagsData.kernelPackage flagsData.localPackage flagsData.textMlir flagsData.configPath registryPolicy)
+    resolveLocalPackage flagsData.localPackage
+        |> Task.andThen
+            (\maybeLocalPackage ->
+                BW.withScope (runHelpWithScope root paths style stats flagsData.debug flagsData.optimize flagsData.withSourceMaps flagsData.output flagsData.docs flagsData.showPackageErrors flagsData.buildDir flagsData.kernelPackage maybeLocalPackage flagsData.textMlir flagsData.configPath registryPolicy)
+            )
+
+
+{-| The package name of the bundled kernel package, "eco/kernel".
+-}
+ecoKernelName : Pkg.Name
+ecoKernelName =
+    ( "eco", "kernel" )
+
+
+{-| Resolve the local package mapping, falling back to the bundled kernel
+package when no `--local-package` flag was given.
+
+An explicit `--local-package` flag always wins. Otherwise we look for the
+kernel package next to the executable at
+`dirname(exe)/../share/eco/kernel/eco-kernel-cpp`, matching the install layout
+(binary in `<prefix>/bin`, kernel in `<prefix>/share/eco/kernel/eco-kernel-cpp`).
+If that directory does not exist we leave the mapping unset so the normal
+package cache lookup applies.
+-}
+resolveLocalPackage : Maybe ( Pkg.Name, FilePath ) -> Task Never (Maybe ( Pkg.Name, FilePath ))
+resolveLocalPackage maybeLocalPackage =
+    case maybeLocalPackage of
+        Just _ ->
+            Task.succeed maybeLocalPackage
+
+        Nothing ->
+            Utils.nodeGetDirname
+                |> Task.andThen
+                    (\binDir ->
+                        let
+                            kernelDir : FilePath
+                            kernelDir =
+                                Utils.fpCombine binDir "../share/eco/kernel/eco-kernel-cpp"
+                        in
+                        Utils.dirDoesDirectoryExist kernelDir
+                            |> Task.andThen
+                                (\exists ->
+                                    if exists then
+                                        Utils.dirCanonicalizePath kernelDir
+                                            |> Task.map (\canonical -> Just ( ecoKernelName, canonical ))
+
+                                    else
+                                        Task.succeed Nothing
+                                )
+                    )
 
 
 runHelpWithScope : FilePath -> List String -> Reporting.Style -> FEStats.Handle -> Bool -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Maybe String -> Registry.RegistryPolicy -> BW.Scope -> Task Never (Result Exit.Make ())
