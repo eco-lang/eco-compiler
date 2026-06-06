@@ -892,28 +892,65 @@ if(ECO_STATIC_MUSL)
     find_program(ECO_BUILD_LD_LLD ld.lld REQUIRED)
     # Bundled static lld lives outside PATH at /opt/llvm-mlir/libexec/eco-bundle/
     # so clang's `-fuse-ld=lld` in the host build never accidentally picks it.
-    # Built standalone from the LLVM 21.1.4 source tree with -static and
-    # LLVM_ENABLE_ZLIB=OFF (inherited from /opt/llvm-mlir's LLVM build).
+    # Built with -static (and LLVM_ENABLE_ZLIB=OFF) as part of the Stage 1 LLVM
+    # build; docker/llvm-alpine.Dockerfile resolves the bin/ld.lld symlink, copies
+    # the real static binary here, and hard-fails if it is not fully static.
     find_program(ECO_BUNDLED_LD_LLD ld.lld
         PATHS /opt/llvm-mlir/libexec/eco-bundle
         NO_DEFAULT_PATH)
+
+    # Bundling the build-time lld (the dynamic apk /usr/bin/ld.lld) into the
+    # "static" distribution is a portability trap: that linker is musl-dynamic
+    # and NEEDs liblld*/libLLVM/libstdc++/musl libc, so the installed eco could
+    # only link user binaries on the exact build host. Refuse to ship it; a dev
+    # who wants a throwaway local bundle opts in explicitly.
+    option(ECO_ALLOW_NONPORTABLE_LD
+        "Bundle a non-static ld.lld when no static one exists (NON-portable bundle; dev/local only)"
+        OFF)
+
     if(NOT ECO_BUNDLED_LD_LLD)
-        # No statically-built lld available. Fall back to the build lld so
-        # the bundle still exists, but warn it won't be host-portable.
-        #
-        # Override the CACHE entry (not just a local variable): find_program
-        # above wrote ECO_BUNDLED_LD_LLD-NOTFOUND into the cache, and the
-        # install(PROGRAMS ${ECO_BUNDLED_LD_LLD}) rule that bundles the linker
-        # lives in the top-level CMakeLists.txt — a different directory scope.
-        # A plain set() here would only shadow the cache in this subdirectory,
-        # leaving the top-level install to see the stale -NOTFOUND value.
-        set(ECO_BUNDLED_LD_LLD "${ECO_BUILD_LD_LLD}" CACHE FILEPATH
-            "Static lld copied into the distribution bundle" FORCE)
-        message(WARNING
-            "Stage C: /opt/llvm-mlir/libexec/eco-bundle/ld.lld not found — "
-            "bundling ${ECO_BUILD_LD_LLD} instead. The resulting bundle "
-            "will not be host-portable. Build the static lld via "
-            "LLVM_ENABLE_PROJECTS=mlir;lld in the Stage 1 LLVM image.")
+        if(ECO_ALLOW_NONPORTABLE_LD)
+            # Override the CACHE entry (not just a local variable): find_program
+            # above wrote ECO_BUNDLED_LD_LLD-NOTFOUND into the cache, and the
+            # install(PROGRAMS ${ECO_BUNDLED_LD_LLD}) rule that bundles the
+            # linker lives in the top-level CMakeLists.txt — a different
+            # directory scope. A plain set() here would only shadow the cache in
+            # this subdirectory, leaving the install to see the stale value.
+            set(ECO_BUNDLED_LD_LLD "${ECO_BUILD_LD_LLD}" CACHE FILEPATH
+                "lld copied into the distribution bundle" FORCE)
+            message(WARNING
+                "Stage C: /opt/llvm-mlir/libexec/eco-bundle/ld.lld not found — "
+                "ECO_ALLOW_NONPORTABLE_LD=ON, so bundling ${ECO_BUILD_LD_LLD}. "
+                "The resulting bundle is NOT host-portable.")
+        else()
+            message(FATAL_ERROR
+                "Stage C: /opt/llvm-mlir/libexec/eco-bundle/ld.lld not found. The "
+                "distribution bundle requires a fully-static ld.lld so the "
+                "installed eco can link user binaries on any host. Build it in the "
+                "Stage 1 LLVM image (docker/llvm-alpine.Dockerfile builds lld with "
+                "-static and copies it to libexec/eco-bundle/), or set "
+                "-DECO_ALLOW_NONPORTABLE_LD=ON for a throwaway, non-portable local "
+                "bundle.")
+        endif()
+    endif()
+
+    # Whatever we are about to bundle MUST be fully static, or the installed eco
+    # cannot link user binaries on other hosts. Catch a dynamic linker (e.g. the
+    # apk lld, which has NEEDED entries) even when one was found at the bundle
+    # path — guards against a stale/wrong file slipping through.
+    if(CMAKE_READELF AND ECO_BUNDLED_LD_LLD)
+        execute_process(
+            COMMAND "${CMAKE_READELF}" -d "${ECO_BUNDLED_LD_LLD}"
+            OUTPUT_VARIABLE _eco_bundled_lld_dynsec
+            ERROR_QUIET)
+        if(_eco_bundled_lld_dynsec MATCHES "NEEDED" AND NOT ECO_ALLOW_NONPORTABLE_LD)
+            message(FATAL_ERROR
+                "Stage C: the ld.lld to be bundled (${ECO_BUNDLED_LD_LLD}) is "
+                "dynamically linked (NEEDED entries present) and will not run on "
+                "hosts lacking its libc/loader. Provide a fully-static ld.lld "
+                "(see docker/llvm-alpine.Dockerfile) or set "
+                "-DECO_ALLOW_NONPORTABLE_LD=ON to override.")
+        endif()
     endif()
     message(STATUS "  ld.lld (build-time):     ${ECO_BUILD_LD_LLD}")
     message(STATUS "  ld.lld (bundled):        ${ECO_BUNDLED_LD_LLD}")

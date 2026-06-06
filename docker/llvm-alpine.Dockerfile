@@ -81,13 +81,15 @@ RUN cmake -S llvm -B build -G Ninja \
       -DCMAKE_INSTALL_PREFIX=/opt/llvm-mlir \
  && cmake --build build \
  && cmake --install build \
- && if readelf -d /opt/llvm-mlir/bin/ld.lld 2>/dev/null | grep -q NEEDED; then \
-        echo "FATAL: bundled ld.lld is not static — NEEDED entries present:" >&2; \
-        readelf -d /opt/llvm-mlir/bin/ld.lld >&2; \
+ && mkdir -p /opt/llvm-mlir/libexec/eco-bundle \
+ && cp -L /opt/llvm-mlir/bin/ld.lld /opt/llvm-mlir/libexec/eco-bundle/ld.lld \
+ && if readelf -d /opt/llvm-mlir/libexec/eco-bundle/ld.lld 2>/dev/null | grep -q NEEDED \
+       || readelf -l /opt/llvm-mlir/libexec/eco-bundle/ld.lld 2>/dev/null | grep -q 'program interpreter'; then \
+        echo "FATAL: bundled ld.lld is not fully static (NEEDED or interpreter present):" >&2; \
+        readelf -dl /opt/llvm-mlir/libexec/eco-bundle/ld.lld >&2; \
         exit 1; \
     fi \
- && echo "OK: /opt/llvm-mlir/bin/ld.lld is fully static" \
- && mkdir -p /opt/llvm-mlir/libexec/eco-bundle \
- && mv /opt/llvm-mlir/bin/ld.lld /opt/llvm-mlir/libexec/eco-bundle/ld.lld \
- && echo "Moved static ld.lld out of /opt/llvm-mlir/bin/ so clang -fuse-ld=lld in" \
- && echo "downstream consumers picks /usr/bin/ld.lld (zlib-capable) for the eco/bootstrap link."
+ && echo "OK: /opt/llvm-mlir/libexec/eco-bundle/ld.lld is fully static (no NEEDED, no interpreter)" \
+ && rm -f /opt/llvm-mlir/bin/ld.lld \
+ && echo "Bundled the resolved static lld and dropped the bin/ld.lld symlink so a downstream" \
+ && echo "clang -fuse-ld=lld picks the zlib-capable system /usr/bin/ld.lld for the eco link."
