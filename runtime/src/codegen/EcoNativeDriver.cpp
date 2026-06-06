@@ -123,41 +123,8 @@ translateToLLVMIR(ModuleOp module, llvm::LLVMContext &llvmContext) {
     return llvmModule;
 }
 
-std::unique_ptr<llvm::TargetMachine>
-createTargetMachine(llvm::Module &module, unsigned optLevel) {
-    auto triple = llvm::sys::getDefaultTargetTriple();
-    module.setTargetTriple(llvm::Triple(triple));
-
-    std::string error;
-    const auto *target = llvm::TargetRegistry::lookupTarget(triple, error);
-    if (!target) {
-        llvm::errs() << "Error: Could not find target: " << error << "\n";
-        return nullptr;
-    }
-
-    auto cpu = llvm::sys::getHostCPUName();
-    llvm::SubtargetFeatures features;
-    auto hostFeatures = llvm::sys::getHostCPUFeatures();
-    for (auto &f : hostFeatures)
-        features.AddFeature(f.first(), f.second);
-
-    llvm::TargetOptions targetOpts;
-
-    auto codeGenOpt =
-        static_cast<llvm::CodeGenOptLevel>(std::min(optLevel, 3u));
-
-    auto *tm = target->createTargetMachine(
-        llvm::Triple(triple), cpu, features.getString(), targetOpts,
-        llvm::Reloc::PIC_, llvm::CodeModel::Small, codeGenOpt);
-
-    if (!tm) {
-        llvm::errs() << "Error: Could not create TargetMachine\n";
-        return nullptr;
-    }
-
-    module.setDataLayout(tm->createDataLayout());
-    return std::unique_ptr<llvm::TargetMachine>(tm);
-}
+// The target CPU/feature pin and TargetMachine factory live in EcoBackend.h
+// (createEcoTargetMachine / kEcoTargetCPU), shared with eco-boot.cpp.
 
 int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
                            const std::string &outputPath,
@@ -194,7 +161,7 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
         if (opts.stats)
             scope = std::make_unique<eco::LoweringStats::Scope>(
                 *opts.stats, "TargetMachine init");
-        tm = createTargetMachine(*llvmModule, opts.optLevel);
+        tm = eco::createEcoTargetMachine(*llvmModule, opts.optLevel);
         if (!tm)
             return 1;
     }

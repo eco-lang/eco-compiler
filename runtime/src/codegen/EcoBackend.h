@@ -12,6 +12,7 @@
 #ifndef ECO_BACKEND_H
 #define ECO_BACKEND_H
 
+#include <memory>
 #include <string>
 
 #include "llvm/Support/CodeGen.h"
@@ -23,6 +24,40 @@ class TargetMachine;
 } // namespace llvm
 
 namespace eco {
+
+//===----------------------------------------------------------------------===//
+// Target machine configuration
+//
+// Single source of truth for the CPU / feature level eco's AOT native backend
+// targets. Consumed by eco-boot.cpp and EcoNativeDriver.cpp (and any future
+// AOT path) so the setting lives in exactly one place.
+//===----------------------------------------------------------------------===//
+
+/// Microarchitecture level for every native binary eco emits — its own
+/// bootstrapped self (compiler/CMakeLists.txt stages 6–9) and user `eco make`
+/// output alike.
+///
+/// Pinned to x86-64-v3 (SSE4.2 + AVX2 + BMI2 + FMA; NO AVX-512) for portable,
+/// reproducible output. This is deliberately NOT host detection: deriving the
+/// target from llvm::sys::getHostCPUName()/getHostCPUFeatures() baked the build
+/// host's ISA — including AVX-512 — into every emitted binary, so binaries
+/// bootstrapped on an AVX-512 machine SIGILL'd on plain x86-64-v3 CPUs. Keep in
+/// lockstep with the clang `-march=x86-64-v3` flag in CMakePresets.json and
+/// docker/llvm-alpine.Dockerfile.
+inline constexpr const char *kEcoTargetCPU = "x86-64-v3";
+
+/// Extra subtarget features appended to kEcoTargetCPU. Empty by design: the v3
+/// level already implies the desired feature set and we add nothing
+/// host-specific.
+inline constexpr const char *kEcoTargetFeatures = "";
+
+/// Create the LLVM TargetMachine used for AOT object emission, pinned to
+/// kEcoTargetCPU / kEcoTargetFeatures. Sets `module`'s target triple and data
+/// layout. `optLevel` is clamped to [0,3] and maps to the CodeGen opt level
+/// (load-bearing for -O0..-O3 AOT codegen). Returns nullptr after printing a
+/// diagnostic to llvm::errs() on failure.
+std::unique_ptr<llvm::TargetMachine>
+createEcoTargetMachine(llvm::Module &module, unsigned optLevel);
 
 /// Options for running RS4GC and (optionally) forcing frame pointers.
 struct RS4GCOptions {

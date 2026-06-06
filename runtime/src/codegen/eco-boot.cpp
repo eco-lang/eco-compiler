@@ -335,48 +335,10 @@ static std::unique_ptr<llvm::Module> translateToLLVMIR(
 
 //===----------------------------------------------------------------------===//
 // Target Machine Creation
+//
+// The target CPU/feature pin and TargetMachine factory live in EcoBackend.h
+// (createEcoTargetMachine / kEcoTargetCPU), shared with EcoNativeDriver.cpp.
 //===----------------------------------------------------------------------===//
-
-static std::unique_ptr<llvm::TargetMachine> createTargetMachine(
-    llvm::Module &module) {
-    auto triple = llvm::sys::getDefaultTargetTriple();
-    module.setTargetTriple(llvm::Triple(triple));
-
-    std::string error;
-    const auto *target = llvm::TargetRegistry::lookupTarget(triple, error);
-    if (!target) {
-        llvm::errs() << "Error: Could not find target: " << error << "\n";
-        return nullptr;
-    }
-
-    auto cpu = llvm::sys::getHostCPUName();
-    llvm::SubtargetFeatures features;
-    auto hostFeatures = llvm::sys::getHostCPUFeatures();
-    for (auto &f : hostFeatures)
-        features.AddFeature(f.first(), f.second);
-
-    llvm::TargetOptions targetOpts;
-
-    auto codeGenOpt = static_cast<llvm::CodeGenOptLevel>(
-        std::min(optLevel.getValue(), 3u));
-
-    auto *tm = target->createTargetMachine(
-        llvm::Triple(triple),
-        cpu,
-        features.getString(),
-        targetOpts,
-        llvm::Reloc::PIC_,
-        llvm::CodeModel::Small,
-        codeGenOpt);
-
-    if (!tm) {
-        llvm::errs() << "Error: Could not create TargetMachine\n";
-        return nullptr;
-    }
-
-    module.setDataLayout(tm->createDataLayout());
-    return std::unique_ptr<llvm::TargetMachine>(tm);
-}
 
 //===----------------------------------------------------------------------===//
 // Object File Emission
@@ -583,12 +545,12 @@ int main(int argc, char **argv) {
 
     // Step 5: Create TargetMachine and set DataLayout BEFORE RS4GC (Phase 3
     // of the pipeline-convergence plan — matches the JIT path's ordering).
-    // createTargetMachine() is opt-level aware; that is load-bearing for
-    // AOT -O0..-O3 codegen and must stay in this tool's local helper.
+    // createEcoTargetMachine() is opt-level aware; that is load-bearing for
+    // AOT -O0..-O3 codegen.
     std::unique_ptr<llvm::TargetMachine> tm;
     {
         eco::LoweringStats::Scope scope(stats, "TargetMachine init");
-        tm = createTargetMachine(*llvmModule);
+        tm = eco::createEcoTargetMachine(*llvmModule, optLevel.getValue());
         if (!tm)
             return 1;
     }

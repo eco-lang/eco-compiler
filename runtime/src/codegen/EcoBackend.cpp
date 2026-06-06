@@ -6,14 +6,20 @@
 
 #include "mlir/ExecutionEngine/OptUtils.h" // for makeOptimizingTransformer
 
+#include <algorithm>
+
 #include "llvm/IR/Function.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
+#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/Target/TargetOptions.h"
+#include "llvm/TargetParser/Host.h"   // getDefaultTargetTriple
+#include "llvm/TargetParser/Triple.h"
 
 using namespace llvm;
 
@@ -54,6 +60,36 @@ Error emitObjectFile(Module &m, TargetMachine &tm, const std::string &path) {
 }
 
 } // namespace
+
+std::unique_ptr<TargetMachine> createEcoTargetMachine(Module &module,
+                                                      unsigned optLevel) {
+    auto triple = sys::getDefaultTargetTriple();
+    module.setTargetTriple(Triple(triple));
+
+    std::string error;
+    const Target *target = TargetRegistry::lookupTarget(triple, error);
+    if (!target) {
+        errs() << "Error: Could not find target: " << error << "\n";
+        return nullptr;
+    }
+
+    TargetOptions targetOpts;
+    auto codeGenOpt = static_cast<CodeGenOptLevel>(std::min(optLevel, 3u));
+
+    // Pin CPU/features (kEcoTargetCPU) — no host detection. Host detection
+    // baked the build machine's AVX-512 into emitted binaries, which then
+    // SIGILL'd on x86-64-v3 CPUs.
+    TargetMachine *tm = target->createTargetMachine(
+        Triple(triple), kEcoTargetCPU, kEcoTargetFeatures, targetOpts,
+        Reloc::PIC_, CodeModel::Small, codeGenOpt);
+    if (!tm) {
+        errs() << "Error: Could not create TargetMachine\n";
+        return nullptr;
+    }
+
+    module.setDataLayout(tm->createDataLayout());
+    return std::unique_ptr<TargetMachine>(tm);
+}
 
 void runRS4GCAndMaybeFramePointers(Module &m, const RS4GCOptions &opts) {
     if (!opts.preDumpPath.empty())
