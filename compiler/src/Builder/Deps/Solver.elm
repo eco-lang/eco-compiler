@@ -604,6 +604,19 @@ getConstraints pkg vsn =
 
                 Nothing ->
                     let
+                        -- A local package is not seeded into the cache until
+                        -- verifyDep runs (later), so read its elm.json straight
+                        -- from the read-only source path during constraint
+                        -- solving. Everything post-seed uses the cache path.
+                        home : String
+                        home =
+                            case Stuff.localPackageSource st.cache pkg of
+                                Just source ->
+                                    source
+
+                                Nothing ->
+                                    Stuff.package st.cache pkg vsn
+
                         ctx : ConstraintLoadContext
                         ctx =
                             { state = state
@@ -614,8 +627,8 @@ getConstraints pkg vsn =
                             , key = key
                             , pkg = pkg
                             , vsn = vsn
-                            , home = Stuff.package st.cache pkg vsn
-                            , path = Stuff.package st.cache pkg vsn ++ "/elm.json"
+                            , home = home
+                            , path = home ++ "/elm.json"
                             }
                     in
                     File.exists ctx.path

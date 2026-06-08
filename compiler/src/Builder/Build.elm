@@ -826,19 +826,23 @@ handleCachedDepsStatus :
 handleCachedDepsStatus ((Env envData) as env) root projectType name path time deps hasMain lastChange _ depsStatus =
     case depsStatus of
         DepsSame same cached ->
-            -- Check if typed optimization is needed but .ecot doesn't exist
-            if envData.needsTypedOpt then
-                File.exists (Stuff.ecot root name)
-                    |> Task.andThen (handleCachedWithTypedOptCheck env root projectType name path time deps hasMain lastChange same cached)
+            -- A cached module is only reusable if the artifact for THIS backend
+            -- is present on disk: .ecot for the typed/native path, .eco for the
+            -- untyped/JS path. The upstream source-mtime check cannot tell the
+            -- two forms apart, so a module compiled for the other backend looks
+            -- "cached" but is missing the artifact this build needs (e.g. a
+            -- native build skips writing .eco, then a JS build cannot load it).
+            let
+                artifactPath : FilePath
+                artifactPath =
+                    if envData.needsTypedOpt then
+                        Stuff.ecot root name
 
-            else
-                -- The MVar wraps a CachedInterface and starts as `Unneeded`
-                -- (interface bytes not yet read from disk). loadInterface
-                -- takes-then-puts this slot, so it MUST be filled here —
-                -- leaving it empty deadlocks any later changed module that
-                -- tries to load this dep's interface.
-                Utils.newMVar cachedInterfaceEncoder Unneeded
-                    |> Task.map (\mvar -> RCached hasMain lastChange mvar)
+                    else
+                        Stuff.eco root name
+            in
+            File.exists artifactPath
+                |> Task.andThen (handleCachedWithArtifactCheck env root projectType name path time deps hasMain lastChange same cached)
 
         DepsChange ifaces ->
             -- Dependencies changed, need to read source and recompile
@@ -853,7 +857,7 @@ handleCachedDepsStatus ((Env envData) as env) root projectType name path time de
             Task.succeed RBlocked
 
 
-handleCachedWithTypedOptCheck :
+handleCachedWithArtifactCheck :
     Env
     -> FilePath
     -> Parse.ProjectType
@@ -867,17 +871,18 @@ handleCachedWithTypedOptCheck :
     -> List CDep
     -> Bool
     -> Task Never BResult
-handleCachedWithTypedOptCheck env root projectType name path time deps hasMain lastChange same cached ecotExists =
-    if ecotExists then
-        -- .ecot exists, can use cached.
-        -- See sibling note in handleCachedDepsStatus: the CachedInterface
-        -- slot must be initialised to `Unneeded` rather than left empty,
-        -- otherwise loadInterface's takeMVar will park indefinitely.
+handleCachedWithArtifactCheck env root projectType name path time deps hasMain lastChange same cached artifactExists =
+    if artifactExists then
+        -- This backend's artifact exists, can use cached. The CachedInterface
+        -- MVar starts as `Unneeded` (interface bytes not yet read from disk).
+        -- loadInterface takes-then-puts this slot, so it MUST be filled here —
+        -- leaving it empty deadlocks any later changed module that tries to
+        -- load this dep's interface.
         Utils.newMVar cachedInterfaceEncoder Unneeded
             |> Task.map (\mvar -> RCached hasMain lastChange mvar)
 
     else
-        -- .ecot doesn't exist, need to recompile with typed optimization
+        -- Artifact missing (e.g. compiled for the other backend); recompile.
         loadInterfaces root same cached
             |> Task.andThen (recompileIfInterfacesLoaded env root projectType name path time deps)
 

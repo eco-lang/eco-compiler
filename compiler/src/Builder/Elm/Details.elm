@@ -493,7 +493,13 @@ handleCachedDetails style scope root maybeBuildDir maybeConfigHash needsTypedOpt
             if detailsData.time /= newTime then
                 regenerate
 
-            else if needsTypedOpt && not detailsData.hasTypedOpt then
+            else if needsTypedOpt /= detailsData.hasTypedOpt then
+                -- The cached details (and the global object graph in o.dat/to.dat)
+                -- are form-specific: a typed build populates the typed graph and
+                -- leaves the untyped one empty, and vice versa. Regenerate whenever
+                -- the requested form differs from the cached one, in EITHER
+                -- direction, so a JS build after a native build (or the reverse)
+                -- does not reuse an empty graph and crash in code generation.
                 regenerate
 
             else if configChanged maybeConfigHash detailsData.configHash then
@@ -917,10 +923,36 @@ handleDepExistence ctx exists =
         handleCachedDep ctx
 
     else if Stuff.isLocalPackage ctx.cache ctx.pkg then
-        Task.succeed (Err (Just (Exit.BD_LocalPackageNotFound ctx.pkg)))
+        seedLocalPackage ctx
 
     else
         downloadAndBuildDep ctx
+
+
+{-| Seed a locally linked package into the cache on first build. The
+`--local-package` path is treated as a read-only source: copy its `src/` and
+`elm.json` into the writable cache directory, then build it there like any other
+cached dependency (so `artifacts.dat`/`typed-artifacts.dat` land in `~/.eco`, not
+the possibly read-only seed). A missing seed source means the local package is
+genuinely misconfigured.
+-}
+seedLocalPackage : VerifyDepContext -> Task Never Dep
+seedLocalPackage ctx =
+    case Stuff.localPackageSource ctx.cache ctx.pkg of
+        Just source ->
+            Utils.dirDoesDirectoryExist (source ++ "/src")
+                |> Task.andThen
+                    (\sourceExists ->
+                        if sourceExists then
+                            File.copyPackageSource source (Stuff.package ctx.cache ctx.pkg ctx.vsn)
+                                |> Task.andThen (\_ -> handleCachedDep ctx)
+
+                        else
+                            Task.succeed (Err (Just (Exit.BD_LocalPackageNotFound ctx.pkg)))
+                    )
+
+        Nothing ->
+            Task.succeed (Err (Just (Exit.BD_LocalPackageNotFound ctx.pkg)))
 
 
 handleCachedDep : VerifyDepContext -> Task Never Dep

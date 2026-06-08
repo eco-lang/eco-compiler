@@ -1,6 +1,6 @@
 module Builder.Stuff exposing
     ( findRoot, getElmHome
-    , PackageCache, getPackageCache, getReplCache, package, isLocalPackage, registry
+    , PackageCache, getPackageCache, getReplCache, package, isLocalPackage, localPackageSource, registry
     , typedPackageArtifacts, packageCacheEncoder, packageCacheDecoder
     , eci, eco, ecot
     , testDir
@@ -25,7 +25,7 @@ managing file locks.
 
 # Package Cache
 
-@docs PackageCache, getPackageCache, getReplCache, package, isLocalPackage, registry
+@docs PackageCache, getPackageCache, getReplCache, package, isLocalPackage, localPackageSource, registry
 @docs typedPackageArtifacts, packageCacheEncoder, packageCacheDecoder
 
 
@@ -285,19 +285,15 @@ registry (PackageCache dir _) =
 
 
 {-| Returns the directory path for a specific package version in the cache.
+
+A locally linked package resolves to the same cache path as a downloaded one: its
+source is copied from the seed path (see `localPackageSource`) into this cache
+directory on first build, and all reads and writes then use the cache so artifacts
+land in the writable `~/.eco` tree rather than the (possibly read-only) seed.
 -}
 package : PackageCache -> Pkg.Name -> V.Version -> String
-package (PackageCache dir maybeLocal) name version =
-    case maybeLocal of
-        Just ( localPkg, localPath ) ->
-            if localPkg == name then
-                localPath
-
-            else
-                Utils.fpCombine dir (Utils.fpCombine (Pkg.toString name) (V.toChars version))
-
-        Nothing ->
-            Utils.fpCombine dir (Utils.fpCombine (Pkg.toString name) (V.toChars version))
+package (PackageCache dir _) name version =
+    Utils.fpCombine dir (Utils.fpCombine (Pkg.toString name) (V.toChars version))
 
 
 {-| Check whether a package name matches the locally linked package, if any.
@@ -310,6 +306,25 @@ isLocalPackage (PackageCache _ maybeLocal) name =
 
         Nothing ->
             False
+
+
+{-| Returns the read-only seed path for a locally linked package, if `name`
+matches the configured local package. The package source is copied from here into
+the cache on first build; thereafter `package` (the cache path) is used for all
+reads and writes.
+-}
+localPackageSource : PackageCache -> Pkg.Name -> Maybe FilePath
+localPackageSource (PackageCache _ maybeLocal) name =
+    case maybeLocal of
+        Just ( localPkg, localPath ) ->
+            if localPkg == name then
+                Just localPath
+
+            else
+                Nothing
+
+        Nothing ->
+            Nothing
 
 
 {-| Returns the path to typed artifacts cache for a specific package version.

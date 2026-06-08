@@ -2,7 +2,7 @@ module Builder.File exposing
     ( Time(..), getTime, zeroTime, timeEncoder, timeDecoder
     , readBinary, writeBinary
     , readUtf8, writeUtf8, readStdin
-    , writePackage
+    , writePackage, copyPackageSource
     , exists, remove
     , withStreamingWriter
     )
@@ -31,7 +31,7 @@ tracking, and package extraction.
 
 # Package Management
 
-@docs writePackage
+@docs writePackage, copyPackageSource
 
 
 # File System Queries
@@ -230,6 +230,57 @@ writeEntry destination root entry =
 
     else
         Task.succeed ()
+
+
+
+-- ====== COPY PACKAGE SOURCE ======
+
+
+{-| Copies a package's source from a read-only seed directory into a writable
+cache directory. Mirrors the `writePackage` whitelist (`src/`, `elm.json`,
+`LICENSE`, `README.md`); pre-built `.dat` artifacts and `docs.json` are
+deliberately not copied so the package is rebuilt in the cache. Used to seed a
+`--local-package` whose source path may be read-only (e.g. an installed kernel).
+-}
+copyPackageSource : FilePath -> FilePath -> Task Never ()
+copyPackageSource source destination =
+    Utils.mapM_
+        (\name ->
+            copyPath (Utils.fpCombine source name) (Utils.fpCombine destination name)
+        )
+        [ "elm.json", "LICENSE", "README.md", "src" ]
+
+
+{-| Recursively copies a file or directory tree. Paths that do not exist are
+skipped, so optional top-level entries (e.g. `LICENSE`) may be absent.
+-}
+copyPath : FilePath -> FilePath -> Task Never ()
+copyPath source destination =
+    Utils.dirDoesDirectoryExist source
+        |> Task.andThen
+            (\isDir ->
+                if isDir then
+                    Utils.dirCreateDirectoryIfMissing True destination
+                        |> Task.andThen (\_ -> Utils.dirListDirectory source)
+                        |> Task.andThen
+                            (Utils.mapM_
+                                (\name ->
+                                    copyPath (Utils.fpCombine source name) (Utils.fpCombine destination name)
+                                )
+                            )
+
+                else
+                    Utils.dirDoesFileExist source
+                        |> Task.andThen
+                            (\isFile ->
+                                if isFile then
+                                    readUtf8 source
+                                        |> Task.andThen (writeUtf8 destination)
+
+                                else
+                                    Task.succeed ()
+                            )
+            )
 
 
 
