@@ -1,11 +1,3 @@
----
-title: "Getting Started"
-description: "Getting Started with the 0.1.0 alpha release"
-section: "Introduction"
-sectionOrder: 1
-order: 1
----
-
 # Installation
 
 On Debian based systems you can install the .deb release.
