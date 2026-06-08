@@ -1,28 +1,45 @@
-# Eco
+See [docs/getting-started.md](docs/getting-started.md).
+# eco
 
-A native compiler and runtime for the [Elm](https://elm-lang.org/) programming
-language. Eco compiles Elm to native x86 binaries via MLIR and LLVM. The
-compiler itself is written in Elm.
+eco is a native compiler and runtime for the [Elm](https://elm-lang.org/) 
+programming language. Eco compiles Elm to native x86 binaries via MLIR and 
+LLVM. The compiler front-end is itself written in Elm. There is a C++ backend 
+for the MLIR and LLVM portion.
 
 ## Status
+
+The overall status of the 0.1.0 release is alpha, reflecting the immaturity of 
+the code at this time. There will be bugs (please find some!), possible ever 
+severe ones. The bundled kernel IO code is an internal compile API exposed for
+convenience; experiment with it but don't get too comfortable and don't rely
+on it. A more complete set of IO APIs will follow and replace this API.
 
 The full pipeline works today: Elm source compiles through a typed AST,
 whole-program monomorphisation and optimisation, a custom MLIR dialect, and
 LLVM down to native x86 binaries (AOT) or JIT execution, backed by a
 generational garbage collector and effect-manager runtime. Linux x86_64 only.
 
-Pre-0.1.0. The remaining milestone is bootstrapping — the compiler compiling
-itself to native code — which is in progress.
+The compiler is capable of building itself, which is a complex 160K LOC 
+program, which goes along way towards proving the implementation is real-world
+capable.
 
 ## Documentation
 
+- [Getting Starged](docs/getting-started.md) - Getting started with the release bundle.
 - [Building](docs/building.md) — Docker images, distribution bundles, the dev
   environment, CMake presets, and building on a Linux host.
 - [Testing](docs/testing.md) — the elm-test, end-to-end, and stress suites.
 - [Bootstrap](docs/bootstrap.md) — the 9-stage self-compilation pipeline.
 - [Build targets](docs/build-targets.md) — reference for every CMake target.
 
-## Quick Start
+## Getting Started
+
+Dowload a Release from [eco-compiler Github repo](https://github.com/eco-lang/eco-compiler), 
+then follow the getting started instructions.
+
+See [docs/getting-started.md](docs/getting-started.md).
+
+## Development Environment
 
 The recommended path is the Docker dev image, which bundles LLVM/MLIR, the C++
 toolchain, and the Elm tooling. Build the base and dev images (one-off,
@@ -47,11 +64,7 @@ eco make src/Hello.elm --output=hello   # → native ELF executable
 ./hello                                  # → Hello World!
 ```
 
-See [docs/building.md](docs/building.md) for a Linux-host build,
-[docs/bootstrap.md](docs/bootstrap.md) for producing the native `eco`, and
-[docs/testing.md](docs/testing.md) for the test suites.
-
-## Acknowledgements
+## Acknowledgements and Lineage
 
 The Eco compiler frontend is forked from
 [Guida](https://github.com/guida-lang/compiler), an Elm compiler port. Guida is
