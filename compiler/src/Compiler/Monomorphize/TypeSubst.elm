@@ -451,6 +451,30 @@ unifyMonoMono env m1 m2 subst =
                 ( subst, env )
                 (List.map2 Tuple.pair args1 args2)
 
+        ( Mono.MRecord fields1, Mono.MRecord fields2 ) ->
+            -- Recurse into matching fields. Without this, re-binding a scheme var
+            -- whose old and new monos are records (e.g. a `map`/fold combinator's
+            -- element var bound to `{n:Float}` from the function and then re-unified
+            -- against `{n: CNumber}` from the container) would drop the field-level
+            -- propagation, leaving the container element defaulted to Int.
+            Dict.foldl
+                (\fieldName ft2 ( s, e ) ->
+                    case Dict.get fieldName fields1 of
+                        Just ft1 ->
+                            unifyMonoMono e ft1 ft2 s
+
+                        Nothing ->
+                            ( s, e )
+                )
+                ( subst, env )
+                fields2
+
+        ( Mono.MTuple ts1, Mono.MTuple ts2 ) ->
+            List.foldl
+                (\( t1, t2 ) ( s, e ) -> unifyMonoMono e t1 t2 s)
+                ( subst, env )
+                (List.map2 Tuple.pair ts1 ts2)
+
         _ ->
             ( subst, env )
 
