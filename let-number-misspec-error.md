@@ -168,6 +168,127 @@ requested type — so `n` gets a `Float` instance there.
 
 The conflict is **intra-call-site** (one bad `*` produces both registrations).
 
+### 4.4 Worked walkthrough — how types specialize through each case
+
+The crux is one asymmetry in how references are monomorphized: **a bound local is
+resolved via its `varEnv` entry (the binding's already-decided type); a top-level
+global is resolved via its per-use `meta.tipe`.** The examples below trace the types
+node by node.
+
+#### A. The minimal crash
+
+```elm
+compute =
+    let
+        n = 30        -- (1) binding, inferred type: number
+    in
+    1.4 * n           -- (2) use:  Basics.mul 1.4 n
+```
+
+Type inference (front end): `n`'s binding is let-generalized to `∀. number`. At the
+use, `(*) : numberₐ → numberₐ → numberₐ` is applied to `1.4 : Float`, so
+`numberₐ = Float` and the expression is `Float`.
+
+Monomorphization of the binding `n` — eager `Let` path (`Specialize.elm` ~2731):
+
+```elm
+defMonoType0 = Mono.forceCNumberToInt (applySubstFV state subst defCanType)
+--             defCanType = number, subst does not resolve it → forceCNumberToInt number = MInt
+-- varEnv := { n : MInt }     (inserted BEFORE the body is specialized)
+```
+
+`forceCNumberToInt` turns any still-unresolved `number` into `MInt`. Nothing has told
+this binding that a *consumer* wants `Float`, so it defaults to `Int` and is pinned in
+`varEnv`.
+
+Monomorphization of the operand reference `n` — `TOpt.VarLocal` (`Specialize.elm:1673`):
+
+```elm
+case State.lookupVar name state.ctx.varEnv of
+    Just envType -> ( Mono.MonoVarLocal name envType, state )   -- envType = MInt
+```
+
+⚠️ **This is the heart of it.** A *bound* local is resolved by reading `varEnv` — the
+binding's already-decided type (`MInt`). The use-site `meta.tipe` (`Float`) is **never
+consulted**, so the operand is `MInt`.
+
+The operator `(*)` (`Basics.mul`, a global/kernel ref, ~1707) derives its instance from
+*its own* use: `1.4 : Float` and a `Float` result ⟹ `Float → Float → Float`. Operator
+and operand now disagree:
+
+| node | MonoType |
+|---|---|
+| `(*)` instance | `Float → Float → Float` |
+| operand `1.4` | `MFloat` |
+| operand `n` | `MInt`  ← should be `MFloat` |
+
+Codegen (`Expr.elm`): `argTypes = [MFloat, MInt]` misses the `[MFloat,MFloat]`
+intrinsic → kernel path → `registerKernelInstance` records `mul_Float` as `(f64,f64)`,
+then `ecoCallNamed → registerKernelCall` re-registers it as `(f64,i64)` → crash.
+
+#### B. Same shape at top level — works (the contrast)
+
+```elm
+n = 30            -- top-level def, scheme: ∀. number
+compute = 1.4 * n
+```
+
+Identical inference. The only change is that the reference to `n` is now a
+`VarGlobal`, not a bound local (`Specialize.elm:1707`):
+
+```elm
+monoType0 = Mono.forceCNumberToInt (applySubstFV state subst meta.tipe)
+--          meta.tipe here is THIS use's resolved type = Float → monoType = MFloat
+... enqueueSpec monoGlobal monoType ...   -- a fresh specialization of `n` AT Float
+```
+
+✅ A global reference reads the **use-site `meta.tipe`** (which inference resolved to
+`Float`) and enqueues a per-use specialization. `n` is emitted as `3.0e+01 : f64`, both
+operands are `MFloat`, the multiply matches the `eco.float.mul` intrinsic, and no kernel
+symbol is touched. The `varEnv`-lookup (locals) vs `meta.tipe` (globals) split is the
+entire difference.
+
+#### C. Inline literal — works
+
+```elm
+compute = 1.4 * 30   -- 30 is an IntLiteral node, not a let binding
+```
+
+No binding, no `varEnv` entry. The literal `30`'s own node is what `(*)` unifies, so its
+`meta.tipe` is `Float`; `forceCNumberToInt(Float) = MFloat`. Both operands `MFloat` →
+intrinsic. The bug needs a *binding* whose type is decided independently of the use.
+
+#### D. Boxed — silently miscompiles instead of crashing
+
+```elm
+compute =
+    let
+        p = (30, 99)      -- binding, inferred: ( number, number )
+    in
+    Tuple.first p * 1.5   -- forces the FIRST component to Float
+```
+
+Binding `p` (eager `Let` path): `defMonoType = forceCNumberToInt ((number, number)) =
+MTuple [MInt, MInt]`, inserted into `varEnv`. The "first component must be `Float`" fact
+(from the consumer) is again absent at the binding, so both slots default to `Int`. The
+tuple's slots are `i64`, stored boxed as `eco.value` payloads.
+
+`Tuple.first p` reads slot 0 — an `i64` bit-pattern, boxed — and `* 1.5` unboxes that
+payload **as an `f64`**. No typed-kernel signature is involved (the value travelled
+through a boxed projection), so nothing crashes; the `i64` bits of `30` are reinterpreted
+as a denormal `f64 ≈ 0`. Output: `0` instead of `45`. Same root cause as A; the box hides
+the conflict from the verifier and turns a crash into a wrong answer.
+
+#### Why this defeats the `valueMulti` pull
+
+`valueMulti` defers the binding and *pulls* the type from use sites, but the pull still
+happens at the **reference** — and (Example A) a local reference's only resolved type is
+its `varEnv` entry, which the deferred path pre-seeds with the same defaulted `MInt`
+(`prelimDefMonoType = forceCNumberToInt …`, `Specialize.elm:2602`). The `Float` never
+lives on the operand; it lives on the **`(*)` operator's** instance type. Pulling from
+the operand cannot recover it. See §7.1 for the full attempt and §7.2 for the
+operator-back-propagation direction that can.
+
 ---
 
 ## 5. Manifestations (all the same root cause)
