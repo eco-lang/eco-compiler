@@ -1489,8 +1489,29 @@ unifyCallSiteDirectWithExpected env schemeArgTypes schemeResultType argMonoTypes
                         schemeResidual =
                             buildCurriedCanType (List.drop (List.length argMonoTypes) schemeArgTypes) schemeResultType
 
-                        ( expectedResidualMono, envR ) =
+                        ( callResultMono, envR ) =
                             applySubst env0 substAfterArgs0 callResultCanType
+
+                        -- Over-application: when the call supplies MORE args than
+                        -- the scheme's own arity, the surplus args are applied to
+                        -- the scheme's RESULT, not the scheme itself. The scheme
+                        -- result is therefore a function consuming those surplus
+                        -- args and yielding the call's result. Re-wrap the expected
+                        -- result mono with one arrow per surplus arg so the scheme
+                        -- result variable unifies with the intermediate function
+                        -- type (e.g. `Tuple.first fns 1` ⇒ `a := Int -> Int`), not
+                        -- the final over-applied result (`Int`). Without this, the
+                        -- residual `a` was unified directly with `Int`, collapsing
+                        -- the projected-element type to an unboxed primitive and
+                        -- emitting an invalid `eco.papExtend` (operand #0 i64).
+                        surplusArgMonos =
+                            List.drop (List.length schemeArgTypes) argMonoTypes
+
+                        expectedResidualMono =
+                            List.foldr
+                                (\argMono acc -> Mono.MFunction [ argMono ] acc)
+                                callResultMono
+                                surplusArgMonos
                     in
                     unifyHelp envR schemeResidual expectedResidualMono substAfterArgs0
 
