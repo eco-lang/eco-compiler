@@ -208,18 +208,67 @@ diagnostic is produced.
 
 ---
 
-## 7. Suggested fix direction
+## 7. Fix direction
 
-Route non-function `let` bindings whose type carries an unresolved `CNumber`
-through the existing demand-driven `valueMulti` machinery (e.g. relax
-`shouldUseValueMulti` to also fire on unresolved number vars) so use-site numeric
-types drive specialization *before* `forceCNumberToInt` defaults them. The
-`valueMulti` path already records plain `VarLocal` references as instances
-(`getValueMultiVar`), so the plumbing exists.
+### 7.1 Demand-driven `valueMulti` — TRIED, INSUFFICIENT
+
+The first attempt routed non-function `let` bindings carrying an unresolved
+`CNumber` through the existing demand-driven `valueMulti` machinery:
+
+1. `shouldUseValueMulti` relaxed to also fire on an unresolved number var
+   (`hasNumberTVar`), so `let n = 30` takes the deferred path; and
+2. (necessary addition the original idea missed) the `VarLocal` /
+   `TrackedVarLocal` cases extended to record a `valueMulti` instance — without
+   this, only `localMulti`/function lets and record-access/destructor positions
+   record instances, never a plain value reference.
+
+The compiler bootstrapped cleanly with this change (stages 1–9, self-consistent),
+**but it does not fix the bug** — the E2E tests still fail identically. A trace of
+`let n = 30 in 1.4 * n` shows why:
+
+```
+[VM-dispatch] n defCanType=MInt useValueMulti=True   -- n IS routed to valueMulti
+(no [VM-rec] lines)                                  -- but its use records no instance
+```
+
+`valueMulti` is entered, but the body's reference to `n` records **no** use-site
+instance, so the entry ends with empty instances and falls back to the same eager
+`forceCNumberToInt` → `Int`.
+
+The reason is fundamental to this approach: **the operand reference's own type is
+still `number` (→ `Int`), not `Float`.** In `1.4 * n` the `Float` constraint lives
+in the **`(*)` operator's** monomorphized type, not in `n`'s reference
+(`meta.tipe`). `valueMulti` captures use-site types from record-access, destructor,
+and function-application positions, but a bare numeric value sitting as an
+arithmetic *operand* never exposes a resolved `Float` at its own reference site
+(`processCallArg` routes the operand through `specializeExpr`, whose `VarLocal`
+case sees only `number`; the stray `_v0 : MInt` operand binding in the trace
+confirms it). This is exactly why **top-level** globals work — `VarGlobal`'s
+`meta.tipe` *is* resolved per use — and `let`-operands do not.
+
+### 7.2 Operator back-propagation — the actual fix direction
+
+The numeric type for a `let`-bound `number` must come from the **operator/consumer**
+that constrains it, not from the operand reference. Concretely: when an operand of a
+primitive-numeric kernel/intrinsic (`Basics.mul`/`add`/`sub`/`fdiv`/`pow`/`sqrt`/…)
+is a reference to a `number`-typed `let` binding, propagate the operator instance's
+resolved numeric type (`Float`/`Int`) back onto that binding's specialization
+*before* `forceCNumberToInt` runs. Practically this means unifying the binding's
+`CNumber` var with the operator's argument monotype at the call site (e.g. thread it
+into the binding's `subst` / record it as the `valueMulti` instance type) so the
+binding is specialized to `Float`. The same back-propagation must reach numeric
+operands carried through boxed aggregates (tuple/record/list/`Maybe`) to close the
+silent-miscompile cases, where the Float-using consumer is reached only after a
+projection.
+
+This is strictly larger than relaxing a gate: it requires the operand's
+specialization to be informed by its consumer's type, which the current
+forward-only `forceCNumberToInt` defaulting and the use-site-pull `valueMulti`
+machinery both lack for the operand position.
 
 The codegen punt at `Expr.elm:1228` ("use actual type for now") and the dual
-registration via `ecoCallNamed` (`Ops.elm:481`) are secondary; the primary fix is
-in the monomorphizer.
+registration via `ecoCallNamed` (`Ops.elm:481`) remain secondary; the primary fix
+is in the monomorphizer.
 
 ---
 
