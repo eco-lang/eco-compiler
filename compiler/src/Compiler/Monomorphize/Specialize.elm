@@ -476,6 +476,33 @@ isNumericFixableShape mt =
             False
 
 
+{-| Is this MonoType a bare unboxed numeric scalar (Int or Float)? Used to widen
+the number-specialization gate beyond `isNumericDataRhs`: a scalar `number` whose
+RHS is a `case`/`if`/generic-function call (`case deltaMode of …`,
+`Tuple.first ( 30, "x" )`) is otherwise excluded, so it defaults to Int and
+miscompiles when used at Float.
+
+This widening is **additionally gated on a real Float demand**
+(`demandedNumericUseType`): a scalar `number` can still flow into a *boxed*
+context (an embedded `Maybe`/custom field), and routing such a binding through
+the number specialization reintroduces the boxed-custom SIGSEGV class
+(`EmbeddedNothingInCustomTypeTest`, `UnboxWrapperNothingTest`). Requiring a
+concrete Float use restricts the widening to exactly the Int-vs-Float-default
+case it is meant to fix and leaves boxed-only scalars on the eager path.
+-}
+isScalarNumberShape : Mono.MonoType -> Bool
+isScalarNumberShape mt =
+    case mt of
+        Mono.MInt ->
+            True
+
+        Mono.MFloat ->
+            True
+
+        _ ->
+            False
+
+
 {-| Result type of a (possibly curried) canonical function type. -}
 canResultType : Can.Type id -> Can.Type id
 canResultType t =
@@ -3348,7 +3375,7 @@ specializeExpr expr subst state =
                                 -- Stack underflow: should not happen.
                                 Utils.Crash.crash "Specialize: valueMulti stack underflow in Let"
 
-                    else if hasUnresolvedNumberVar state.ctx.mvarEnv defCanType && isNumericFixableShape (Mono.forceCNumberToInt (applySubstFV state subst defCanType)) && isNumericDataRhs (getDefRhs def) state then
+                    else if hasUnresolvedNumberVar state.ctx.mvarEnv defCanType && isNumericFixableShape (Mono.forceCNumberToInt (applySubstFV state subst defCanType)) && (isNumericDataRhs (getDefRhs def) state || (isScalarNumberShape (Mono.forceCNumberToInt (applySubstFV state subst defCanType)) && demandedNumericUseType defName body state subst /= Nothing)) then
                         -- Number-carrying non-function let. The eager path defaults the
                         -- binding to Int, which mis-types it when a use demands Float.
                         -- We cannot simply DEFER the whole binding (as the value-multi

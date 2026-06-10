@@ -191,7 +191,29 @@ ensureMVarIdForRoot root name ctx =
     in
     case Dict.get rootIdx ctx.state.rootEnv of
         Just mvarId ->
-            ( mvarId, ctx )
+            -- A solver root is one unification variable shared across all of its
+            -- type-variable names, so its numeric constraint must be the JOIN of
+            -- those names' constraints, with CNumber dominating CEcoValue: if ANY
+            -- name for the root is `number`-typed, the root is a number. The id was
+            -- allocated (below) from whichever name claimed the root FIRST; when a
+            -- later `number`-named occurrence reuses a root first claimed by a
+            -- non-`number` name, upgrade it to CNumber here. Without this the
+            -- `number` constraint was silently dropped — the value defaulted to Int
+            -- and miscompiled where it was later used at Float (e.g. an i64 operand
+            -- to `mul_Float`). See fix-number-constraint-lost-solver-root-reuse.md.
+            if Name.isNumberType name && not (Set.member (Id.toComparable mvarId) ctx.state.numberVars) then
+                let
+                    st =
+                        ctx.state
+                in
+                ( mvarId
+                , { ctx
+                    | state = { st | numberVars = Set.insert (Id.toComparable mvarId) st.numberVars }
+                  }
+                )
+
+            else
+                ( mvarId, ctx )
 
         Nothing ->
             let
