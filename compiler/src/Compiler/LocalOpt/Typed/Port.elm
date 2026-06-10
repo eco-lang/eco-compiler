@@ -243,9 +243,15 @@ encodeTuple a b cs =
             in
             TOpt.Destruct (TOpt.Destructor arg (TOpt.Index index hint (TOpt.Root Name.dollar)) { tipe = argType, tvar = Nothing }) body { tipe = TOpt.typeOf body, tvar = Nothing }
 
-        letCs_ : Name -> Can.Type Name -> Int -> TOpt.Expr Name -> TOpt.Expr Name
+        letCs_ : Name -> Can.Type Name -> Index.ZeroBased -> TOpt.Expr Name -> TOpt.Expr Name
         letCs_ arg argType index body =
-            TOpt.Destruct (TOpt.Destructor arg (TOpt.ArrayIndex index (TOpt.Field "cs" (TOpt.Root Name.dollar))) { tipe = argType, tvar = Nothing }) body { tipe = TOpt.typeOf body, tvar = Nothing }
+            -- The typed/MLIR backend represents tuples as positional MTuple values,
+            -- so tuple elements beyond the second (Elm only has Tuple3) are projected
+            -- with a positional tuple Index, NOT a record `Field "cs"` access (that is
+            -- the erased JS-runtime layout and is invalid here — it makes specializePath
+            -- see an MTuple where it expects an MRecord). cs is non-empty only for a
+            -- Tuple3, so the container hint is always HintTuple3.
+            TOpt.Destruct (TOpt.Destructor arg (TOpt.Index index TOpt.HintTuple3 (TOpt.Root Name.dollar)) { tipe = argType, tvar = Nothing }) body { tipe = TOpt.typeOf body, tvar = Nothing }
 
         encodeArg : Name -> Can.Type Name -> Names.Tracker (TOpt.Expr Name)
         encodeArg arg argType =
@@ -291,7 +297,7 @@ encodeTuple a b cs =
                                                                         (let_ "b"
                                                                             b
                                                                             Index.second
-                                                                            (List.foldr (\( i, index, argType ) -> letCs_ (IndexName.fromIndex index) argType i)
+                                                                            (List.foldr (\( _, index, argType ) -> letCs_ (IndexName.fromIndex index) argType index)
                                                                                 (TOpt.Call A.zero list [ identity, TOpt.List A.zero args { tipe = listValueType, tvar = Nothing } ] { tipe = valueType, tvar = Nothing })
                                                                                 indexedCs
                                                                             )
