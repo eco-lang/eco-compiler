@@ -45,6 +45,13 @@ public:
     void incrementPendingAsync();
     void decrementPendingAsync();
 
+    // Cooperative shutdown for embedded hosts (eco_app_stop): sets a stop
+    // flag and wakes the event loop, which exits after finishing the
+    // current drain. Safe to call from any thread. Sticky for the process
+    // lifetime (one app per process).
+    void requestStop();
+    bool stopRequested() const { return stopRequested_.load(); }
+
     // Called by helper threads (e.g. TimerService worker) to wake the main
     // event loop when new async work is ready. Must not allocate or touch GC.
     void notifyWorkAvailableFromAsync();
@@ -175,6 +182,7 @@ private:
     std::condition_variable eventCV_;
     std::atomic<int> pendingAsync_{0};
     std::atomic<u32> nextProcId_{0};
+    std::atomic<bool> stopRequested_{false};
 };
 
 } // namespace Elm::Platform

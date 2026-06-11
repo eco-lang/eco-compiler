@@ -18,6 +18,7 @@
 //===----------------------------------------------------------------------===//
 
 #include <cassert>
+#include <cstring>
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
@@ -352,11 +353,23 @@ static std::unique_ptr<llvm::Module> translateToLLVMIR(
 
 #include "EcoNativeDriver.h"
 
+static bool outputIsSharedLib(const std::string &outputPath) {
+    auto endsWith = [&](const char *suffix) {
+        size_t n = std::strlen(suffix);
+        return outputPath.size() >= n &&
+               outputPath.compare(outputPath.size() - n, n, suffix) == 0;
+    };
+    return endsWith(".so") || endsWith(".node");
+}
+
 static int linkExecutable(const std::string &objectFile,
                           const std::string &outputPath) {
     eco::EcoNativeOptions opts;
     opts.verbose = verbose;
-    return eco::linkExecutable(objectFile, outputPath, opts);
+    // .so/.node output targets link as shared libraries with the
+    // host-embedding entry (see plans/native-ports-and-embedding.md).
+    return eco::linkExecutable(objectFile, outputPath, opts,
+                               outputIsSharedLib(outputPath));
 }
 
 //===----------------------------------------------------------------------===//
@@ -610,7 +623,12 @@ int main(int argc, char **argv) {
     // because it depends on EcoBootConfig.h's deployment paths.
     std::string objFile;
     std::string tempObjFile;
-    if (emitAction == EmitObj) {
+    // `-o foo.o` with the default --emit=exe is object-only output too.
+    bool emitObjOnly =
+        (emitAction == EmitObj) ||
+        (output.size() >= 2 &&
+         output.compare(output.size() - 2, 2, ".o") == 0);
+    if (emitObjOnly) {
         objFile = output;
     } else {
         llvm::SmallString<256> tempPath;
@@ -648,7 +666,7 @@ int main(int argc, char **argv) {
     if (verbose)
         llvm::errs() << "[eco-boot] emitted object file: " << objFile << "\n";
 
-    if (emitAction == EmitObj) {
+    if (emitObjOnly) {
         if (printStats) {
             stats.print(llvm::errs());
         }

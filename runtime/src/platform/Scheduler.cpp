@@ -38,8 +38,12 @@ static inline void* resolveHP(HPointer h) {
 // ============================================================================
 
 Scheduler& Scheduler::instance() {
-    static Scheduler sched;
-    return sched;
+    // Intentionally leaked: the eco thread may still be running when the
+    // process exits (embedded hosts calling process.exit/exit()), and a
+    // static destructor freeing scheduler state under a live thread is a
+    // use-after-free. Same pattern as TimerService/HttpService.
+    static Scheduler* sched = new Scheduler();
+    return *sched;
 }
 
 Scheduler::Scheduler() {
@@ -521,6 +525,11 @@ void Scheduler::drain() {
 void Scheduler::runEventLoop() {
     while (true) {
         drain();               // run all queued work on main thread
+
+        // Cooperative shutdown (eco_app_stop): exit after finishing the
+        // current drain so no in-flight process step is abandoned.
+        if (stopRequested_.load()) break;
+
         processReadyAsync();   // resolve any fired timers; may enqueue procs
 
         // If processReadyAsync produced new work, drain it before sleeping;
@@ -529,12 +538,14 @@ void Scheduler::runEventLoop() {
         if (!runQueue_.empty()) continue;
 
         std::unique_lock<std::mutex> lock(mutex_);
+        if (stopRequested_.load()) break;
         if (runQueue_.empty() && pendingAsync_.load() == 0) break;
         // Also wake if the timer worker pushed a token after our last
         // processReadyAsync but before we took the lock — closes the
         // missed-wakeup window.
         eventCV_.wait(lock, [this] {
-            if (!runQueue_.empty()
+            if (stopRequested_.load()
+                || !runQueue_.empty()
                 || pendingAsync_.load() == 0
                 || TimerService::instance().hasReadyTokens()) {
                 return true;
@@ -554,6 +565,14 @@ void Scheduler::incrementPendingAsync() {
 void Scheduler::decrementPendingAsync() {
     pendingAsync_.fetch_sub(1);
     eventCV_.notify_one();
+}
+
+void Scheduler::requestStop() {
+    stopRequested_.store(true);
+    // Take the mutex briefly so a loop thread between its predicate check
+    // and wait() cannot miss the notify.
+    { std::lock_guard<std::mutex> lk(mutex_); }
+    eventCV_.notify_all();
 }
 
 void Scheduler::notifyWorkAvailableFromAsync() {

@@ -78,6 +78,11 @@ static void* taskOnEffectsEvaluator(void* args[]) {
     HPointer router = decodeHP(routerEnc);
     HPointer cmds = decodeHP(cmdsEnc);
 
+    // Root router + cmds BEFORE allocClosure: the allocation may GC, and
+    // closureCapture would otherwise bake pre-GC router bits into the
+    // sendToApp closure (and the loop below would seed from stale cmds).
+    Elm::StackRootGuard argGuard(&router, &cmds);
+
     // Create a sendToApp closure that captures the router
     // Arity = 2: 1 capture (router) + 1 arg (value)
     HPointer sendToAppCl = allocClosure(taskSendToAppEvaluator, 2);
@@ -143,16 +148,35 @@ static void* taskOnSelfMsgEvaluator(void* args[]) {
     return reinterpret_cast<void*>(encodeHP(task));
 }
 
+// Helper: continuation for taskCmdMapEvaluator.
+// args[0] = mapper (captured), args[1] = task result value.
+// Returns Task.succeed(mapper(value)) — i.e. the `\v -> succeed (f v)`
+// body of `Task.map f task = andThen (\v -> succeed (f v)) task`.
+static void* taskMapContinuationEvaluator(void* args[]) {
+    uint64_t mapperEnc = reinterpret_cast<uint64_t>(args[0]);
+    uint64_t valueEnc = reinterpret_cast<uint64_t>(args[1]);
+
+    uint64_t mappedEnc =
+        eco_apply_closure(HPtr::fromBits(mapperEnc), &valueEnc, 1).toBits();
+
+    HPointer task = Scheduler::instance().taskSucceed(decodeHP(mappedEnc));
+    return reinterpret_cast<void*>(encodeHP(task));
+}
+
 // cmdMap : (a -> b) -> MyCmd a -> MyCmd b
-// Maps over the tagger in a Perform command
+// Maps over the result of a Perform command's task.
 static void* taskCmdMapEvaluator(void* args[]) {
     // args[0] = mapper function (a -> b)
     // args[1] = original cmd (Perform(task))
 
-    uint64_t mapperEnc = reinterpret_cast<uint64_t>(args[0]);
     uint64_t cmdEnc = reinterpret_cast<uint64_t>(args[1]);
 
+    // Root mapper/origCmd/innerTask across the allocations below
+    // (allocClosure / closureCapture / taskAndThen / custom).
+    HPointer mapper = decodeHP(reinterpret_cast<uint64_t>(args[0]));
     HPointer origCmd = decodeHP(cmdEnc);
+    HPointer innerTask = listNil();
+    Elm::StackRootGuard guard(&mapper, &origCmd, &innerTask);
 
     void* cmdPtr = Allocator::instance().resolve(origCmd);
     if (!cmdPtr) {
@@ -160,14 +184,22 @@ static void* taskCmdMapEvaluator(void* args[]) {
     }
 
     Custom* cmd = static_cast<Custom*>(cmdPtr);
-    HPointer innerTask = cmd->values[0].p;
+    innerTask = cmd->values[0].p;
+    // `cmd`/`cmdPtr` are stale-on-GC from here; do not re-use them.
 
-    // Map the task: Task.map mapper innerTask
-    // This is taskAndThen(\val -> taskSucceed(mapper(val)), innerTask)
-    HPointer mappedTask = Scheduler::instance().taskAndThen(
-        decodeHP(mapperEnc), innerTask);
+    // continuation = \v -> Task.succeed (mapper v)
+    HPointer continuation = allocClosure(taskMapContinuationEvaluator, 2);
+    Elm::StackRootGuard contGuard(&continuation);
+    if (void* clPtr = Allocator::instance().resolve(continuation)) {
+        closureCapture(clPtr, boxed(mapper), true);
+    }
 
-    // Create new Perform with mapped task
+    // Task.map mapper innerTask = andThen continuation innerTask
+    HPointer mappedTask =
+        Scheduler::instance().taskAndThen(continuation, innerTask);
+    Elm::StackRootGuard taskGuard(&mappedTask);
+
+    // Create new Perform with the mapped task
     std::vector<Unboxable> values(1);
     values[0].p = mappedTask;
     HPointer newCmd = custom(0, values, 0);  // tag 0 = Perform

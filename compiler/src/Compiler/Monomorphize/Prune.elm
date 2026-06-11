@@ -45,7 +45,14 @@ reachableFromMain (Mono.MonoGraph record) =
                 |> Tuple.second
 
         Just (Mono.StaticMain mainSpecId) ->
-            markReachable record.callEdges [ mainSpecId ] (BitSet.fromSize size)
+            let
+                -- Incoming-port decoder specs are referenced only by the
+                -- generated @__eco_register_ports preamble (emitted after
+                -- pruning), so they must be explicit roots (PORT_003).
+                portRoots =
+                    List.filterMap .decoderSpecId record.ports
+            in
+            markReachable record.callEdges (mainSpecId :: portRoots) (BitSet.fromSize size)
 
 
 {-| DFS over callEdges using an explicit stack. Returns BitSet of all reachable specIds.
@@ -155,4 +162,5 @@ pruneUnreachableSpecs globalTypeEnv (Mono.MonoGraph record) =
         -- Stale bits for pruned specIds are harmless — no node exists to reference them.
         , specHasEffects = record.specHasEffects
         , specValueUsed = record.specValueUsed
+        , ports = record.ports
         }

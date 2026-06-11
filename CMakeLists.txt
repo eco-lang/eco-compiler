@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
 project(EcoRuntime LANGUAGES C CXX)
 
+# All project archives are built position-independent so eco can link them
+# into shared-library outputs (.so/.node host embedding) as well as PIE
+# executables. See plans/native-ports-and-embedding.md (Phase 3).
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(LLVMLibunwind)
 

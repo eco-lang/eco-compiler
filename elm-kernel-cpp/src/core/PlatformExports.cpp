@@ -4,8 +4,11 @@
 #include "../ExportHelpers.hpp"
 #include "platform/Scheduler.hpp"
 #include "platform/PlatformRuntime.hpp"
+#include "platform/PortRuntime.hpp"
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
+#include "allocator/StringOps.hpp"
+#include <string>
 #include <vector>
 
 using namespace Elm;
@@ -73,6 +76,36 @@ HPtr Elm_Kernel_Platform_leaf(HPtr home, HPtr value) {
     fields[1].p = valueHP;
     HPointer bag = alloc::custom(alloc::Fx_Leaf, fields, 0);
     return HPtr::fromBits(encode(bag));
+}
+
+// Port registration (called from the generated @__eco_register_ports
+// preamble before Platform.worker runs). The name is the bare port name;
+// PortRuntime enforces global uniqueness (PORT_001).
+
+HPtr Elm_Kernel_Platform_registerIncomingPort(HPtr name, HPtr decoder) {
+    HPointer nameHP = decode(name.toBits());
+    HPointer decoderHP = decode(decoder.toBits());
+    // Extract the name BEFORE handing decoderHP over: toStdString does not
+    // allocate, but keep the order conservative anyway.
+    void* namePtr = (nameHP.constant != 0)
+                        ? nullptr
+                        : Allocator::instance().resolve(nameHP);
+    std::string portName =
+        namePtr ? Elm::StringOps::toStdString(namePtr) : std::string();
+    Elm::Platform::PortRuntime::instance().registerIncoming(portName,
+                                                            decoderHP);
+    return HPtr::fromBits(encode(alloc::unit()));
+}
+
+HPtr Elm_Kernel_Platform_registerOutgoingPort(HPtr name) {
+    HPointer nameHP = decode(name.toBits());
+    void* namePtr = (nameHP.constant != 0)
+                        ? nullptr
+                        : Allocator::instance().resolve(nameHP);
+    std::string portName =
+        namePtr ? Elm::StringOps::toStdString(namePtr) : std::string();
+    Elm::Platform::PortRuntime::instance().registerOutgoing(portName);
+    return HPtr::fromBits(encode(alloc::unit()));
 }
 
 } // extern "C"

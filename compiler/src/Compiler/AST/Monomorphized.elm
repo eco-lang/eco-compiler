@@ -3,12 +3,13 @@ module Compiler.AST.Monomorphized exposing
     , LambdaId(..)
     , Global(..), SpecKey(..), SpecId, SpecializationRegistry
     , MonoGraph(..), MainInfo(..), MonoNode(..), CtorShape, nodeType
+    , PortRegistration
     , MonoExpr(..), ClosureInfo, MonoDef(..), MonoDestructor(..), MonoPath(..)
     , MonoDtPath(..), dtPathType
     , Decider(..), MonoChoice(..)
     , ContainerKind(..)
     , typeOf
-    , toComparableSpecKey, toComparableMonoType
+    , toComparableSpecKey, toComparableMonoType, toComparableGlobal
     , getMonoPathType
     , monoTypeToDebugString
     , forceCNumberToInt
@@ -73,6 +74,7 @@ This module defines the data structures for the monomorphized program
 # Program Graph
 
 @docs MonoGraph, MainInfo, MonoNode, CtorShape, nodeType
+@docs PortRegistration
 
 
 # Expressions
@@ -102,7 +104,7 @@ This module defines the data structures for the monomorphized program
 
 # Comparison and Ordering
 
-@docs toComparableSpecKey, toComparableMonoType
+@docs toComparableSpecKey, toComparableMonoType, toComparableGlobal
 
 
 # Path Utilities
@@ -440,7 +442,26 @@ type MonoGraph
         , callEdges : Array (Maybe (List Int)) -- Collected during monomorphization. Reuse in downstream passes instead of re-traversing MonoExpr trees.
         , specHasEffects : BitSet -- SpecIds whose node body references Debug.* kernels
         , specValueUsed : BitSet -- SpecIds whose value is referenced via MonoVarGlobal
+        , ports : List PortRegistration -- Ports reached during monomorphization; drives @__eco_register_ports emission (PORT_003)
         }
+
+
+{-| One port registration collected during monomorphization.
+
+`name` is the bare port name — the effect-manager registry key, globally
+unique per program (PORT_001, JS `_Platform_checkPortName` parity). For
+incoming ports `decoderSpecId` points at the synthetic `MonoDefine`
+specialization holding the payload `Decoder` value; Prune keeps it
+reachable and the MLIR backend's `@__eco_register_ports` preamble calls
+its thunk to register the decoder with the runtime.
+
+-}
+type alias PortRegistration =
+    { name : String
+    , key : String -- comparable Global; dedup key (same port, many instantiations)
+    , incoming : Bool
+    , decoderSpecId : Maybe SpecId
+    }
 
 
 {-| Information about the main entry point.

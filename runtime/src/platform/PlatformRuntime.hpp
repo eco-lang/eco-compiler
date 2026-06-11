@@ -43,6 +43,13 @@ public:
 
     void registerManager(const std::string& home, const ManagerInfo& info);
 
+    // True if an effect manager is registered under `home`. Used by
+    // PortRuntime to reject port names that collide with real effect
+    // managers (JS _Platform_checkPortName parity, PORT_001).
+    bool hasManager(const std::string& home) const {
+        return managers_.find(home) != managers_.end();
+    }
+
     // Effect setup (called once from Platform.worker)
     HPointer setupEffects(HPointer sendToAppClosure);
 
@@ -53,8 +60,27 @@ public:
     void sendToApp(HPointer router, HPointer msg);
     HPointer sendToSelf(HPointer router, HPointer msg);
 
+    // Deliver a message into the app's update cycle via the stored
+    // sendToApp closure. Used by incoming ports (PortRuntime) and the
+    // applyTaggers closure evaluator. Must run on the eco thread.
+    void deliverToApp(HPointer msg);
+
+    // Apply an innermost-first tagger chain to a value. Public so the
+    // gatherEffects applyTaggers closure evaluator can reach it.
+    HPointer applyTaggers(HPointer taggers, HPointer value);
+
     // Platform.worker initialization
     HPointer initWorker(HPointer impl);
+
+    // Embedding ready handshake (eco_app_start): invoked by initWorker
+    // after the initial effects have dispatched, immediately before the
+    // event loop starts blocking. Plain function pointer + user data so
+    // no GC interaction is possible.
+    using ReadyHook = void (*)(void* user);
+    void setReadyHook(ReadyHook hook, void* user) {
+        readyHook_ = hook;
+        readyHookUser_ = user;
+    }
 
     // Optional stress-test flags: if set, initWorker builds a StressFlags
     // record and passes it as the `flags` arg. Clear to fall back to Unit.
@@ -84,8 +110,6 @@ private:
     void gatherEffects(bool isCmd, HPointer bag,
                        std::unordered_map<std::string, PerManagerEffects>& effects,
                        HPointer taggers);
-
-    HPointer applyTaggers(HPointer taggers, HPointer value);
 
     void dispatchEffects();  // reads activeBatch_ and writes effectsScratch_
 
@@ -134,6 +158,10 @@ private:
     // initWorker call. When absent, initWorker passes Unit.
     StressFlags pendingFlags_{};
     bool hasPendingFlags_ = false;
+
+    // Embedding ready handshake (see setReadyHook).
+    ReadyHook readyHook_ = nullptr;
+    void* readyHookUser_ = nullptr;
 };
 
 } // namespace Elm::Platform

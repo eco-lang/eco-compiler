@@ -140,6 +140,7 @@ type alias SpecAccum =
     , scheduled : BitSet
     , registry : Mono.SpecializationRegistry
     , schemeCache : SchemeInfoCache -- Cached type scheme metadata per global
+    , ports : List Mono.PortRegistration -- Ports reached during specialization (PORT_003)
     }
 
 
@@ -330,6 +331,7 @@ initState currentModule toptNodes annotations globalTypeEnv mvarEnv =
         , scheduled = BitSet.empty
         , registry = Registry.emptyRegistry
         , schemeCache = DataMap.empty
+        , ports = []
         }
     , ctx =
         { currentModule = currentModule

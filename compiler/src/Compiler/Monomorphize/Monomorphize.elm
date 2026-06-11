@@ -240,6 +240,7 @@ assembleRawGraphFrom finalAccum lambdaCounter mainSpecIdVal =
         , callEdges = callEdgesArray
         , specHasEffects = specHasEffects
         , specValueUsed = valueUsedWithMain
+        , ports = finalAccum.ports
         }
 
 

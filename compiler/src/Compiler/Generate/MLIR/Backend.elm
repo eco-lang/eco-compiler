@@ -55,7 +55,7 @@ backend =
 generateMlirModule : Mode.Mode -> Mono.MonoGraph -> MlirModule
 generateMlirModule mode monoGraph0 =
     let
-        (Mono.MonoGraph { nodes, main, registry, ctorShapes }) =
+        (Mono.MonoGraph { nodes, main, registry, ctorShapes, ports }) =
             monoGraph0
 
         signatures : Array (Maybe Ctx.FuncSignature)
@@ -91,14 +91,13 @@ generateMlirModule mode monoGraph0 =
             Lambdas.processLambdas ctxAfterNodes
 
         -- ctorShapes are already complete from MonoGraph - no fill step needed
-        mainOps : List MlirOp
-        mainOps =
+        ( mainOps, ctxAfterMain ) =
             case main of
                 Just mainInfo ->
-                    Functions.generateMainEntry finalCtx mainInfo
+                    Functions.generateMainEntry finalCtx ports mainInfo
 
                 Nothing ->
-                    []
+                    ( [], finalCtx )
 
         -- Generate kernel function declarations from tracked calls
         ( kernelDeclOps, _ ) =
@@ -110,8 +109,8 @@ generateMlirModule mode monoGraph0 =
                     in
                     ( declOp :: accOps, newCtx )
                 )
-                ( [], finalCtx )
-                finalCtx.kernelDecls
+                ( [], ctxAfterMain )
+                ctxAfterMain.kernelDecls
 
         -- Generate the type table op for debug printing
         typeTableOp : MlirOp
@@ -143,7 +142,7 @@ streamMlirToWriter :
     -> Task Never ()
 streamMlirToWriter ecoConfig mode monoGraph0 writeChunk =
     let
-        (Mono.MonoGraph { nodes, main, registry, ctorShapes }) =
+        (Mono.MonoGraph { nodes, main, registry, ctorShapes, ports }) =
             monoGraph0
 
         signatures =
@@ -168,13 +167,13 @@ streamMlirToWriter ecoConfig mode monoGraph0 writeChunk =
                         Lambdas.processLambdas ctxAfterNodes
 
                     -- 3. Main + kernel decls + type table
-                    mainOps =
+                    ( mainOps, ctxAfterMain ) =
                         case main of
                             Just mainInfo ->
-                                Functions.generateMainEntry finalCtx mainInfo
+                                Functions.generateMainEntry finalCtx ports mainInfo
 
                             Nothing ->
-                                []
+                                ( [], finalCtx )
 
                     ( kernelDeclOps, _ ) =
                         Dict.foldl
@@ -185,8 +184,8 @@ streamMlirToWriter ecoConfig mode monoGraph0 writeChunk =
                                 in
                                 ( declOp :: accOps, newCtx )
                             )
-                            ( [], finalCtx )
-                            finalCtx.kernelDecls
+                            ( [], ctxAfterMain )
+                            ctxAfterMain.kernelDecls
 
                     typeTableOp =
                         TypeTable.generateTypeTable finalCtx
@@ -261,7 +260,7 @@ streamMlirBytecode :
     -> Task Never ()
 streamMlirBytecode ecoConfig mode monoGraph0 target =
     let
-        (Mono.MonoGraph { nodes, main, registry, ctorShapes }) =
+        (Mono.MonoGraph { nodes, main, registry, ctorShapes, ports }) =
             monoGraph0
 
         signatures =
@@ -291,13 +290,13 @@ streamMlirBytecode ecoConfig mode monoGraph0 target =
                         StreamEncode.collectAndEncodeOps lambdaOps tablesAfterNodes
 
                     -- Main entry
-                    mainOps =
+                    ( mainOps, ctxAfterMain ) =
                         case main of
                             Just mainInfo ->
-                                Functions.generateMainEntry finalCtx mainInfo
+                                Functions.generateMainEntry finalCtx ports mainInfo
 
                             Nothing ->
-                                []
+                                ( [], finalCtx )
 
                     tablesAfterMain =
                         StreamEncode.collectAndEncodeOps mainOps tablesAfterLambdas
@@ -312,8 +311,8 @@ streamMlirBytecode ecoConfig mode monoGraph0 target =
                                 in
                                 ( declOp :: accOps, newCtx )
                             )
-                            ( [], finalCtx )
-                            finalCtx.kernelDecls
+                            ( [], ctxAfterMain )
+                            ctxAfterMain.kernelDecls
 
                     tablesAfterKernels =
                         StreamEncode.collectAndEncodeOps (List.reverse kernelDeclOps) tablesAfterMain

@@ -406,6 +406,7 @@ add_llvm_executable(ecoc
     ../platform/WaitService.cpp
     ../platform/HttpService.cpp
     ../platform/PlatformRuntime.cpp
+    ../platform/PortRuntime.cpp
     PARTIAL_SOURCES_INTENDED
 )
 
@@ -505,6 +506,7 @@ add_mlir_library(EcoRunner
     ../platform/WaitService.cpp
     ../platform/HttpService.cpp
     ../platform/PlatformRuntime.cpp
+    ../platform/PortRuntime.cpp
     PARTIAL_SOURCES_INTENDED
 
     ADDITIONAL_HEADER_DIRS
@@ -597,6 +599,7 @@ add_library(EcoRuntimeStatic STATIC
     ../platform/WaitService.cpp
     ../platform/HttpService.cpp
     ../platform/PlatformRuntime.cpp
+    ../platform/PortRuntime.cpp
 )
 
 target_include_directories(EcoRuntimeStatic PRIVATE
@@ -646,6 +649,53 @@ add_library(EcoEntryStatic STATIC
 target_include_directories(EcoEntryStatic PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
+
+#------------------------------------------------------------------------------
+# EcoEmbedStatic: host-embedding entry (eco_app_start/stop/join) for library
+# outputs (.so/.o). Replaces EcoEntryStatic's main() when the program is
+# linked into a host application. See runtime/src/embed/eco_embed.h.
+#------------------------------------------------------------------------------
+
+add_library(EcoEmbedStatic STATIC
+    ../embed/eco_embed.cpp
+    eco_native_stub.cpp
+)
+
+target_include_directories(EcoEmbedStatic PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+
+target_compile_features(EcoEmbedStatic PRIVATE cxx_std_20)
+target_compile_options(EcoEmbedStatic PRIVATE -fexceptions)
+if(ECO_ASSERTS_ON)
+    target_compile_options(EcoEmbedStatic PRIVATE -UNDEBUG)
+endif()
+if(ECO_GC_DEBUG)
+    target_compile_definitions(EcoEmbedStatic PRIVATE ECO_GC_DEBUG=1)
+endif()
+
+#------------------------------------------------------------------------------
+# EcoNodeGlue: N-API addon glue for `.node` output targets. Wraps the embed
+# API in the JS-target-compatible `Elm.<Module>.init({flags})` shape so Node
+# hosts written against compiled-to-JS Elm run unaltered against native code.
+#------------------------------------------------------------------------------
+
+find_path(ECO_NODE_API_INCLUDE_DIR node_api.h
+    PATHS /usr/include/node /usr/local/include/node)
+
+if(ECO_NODE_API_INCLUDE_DIR)
+    add_library(EcoNodeGlue STATIC
+        ../embed/eco_node_addon.cpp
+    )
+    target_include_directories(EcoNodeGlue PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/..
+        ${ECO_NODE_API_INCLUDE_DIR}
+    )
+    target_compile_features(EcoNodeGlue PRIVATE cxx_std_20)
+    target_compile_options(EcoNodeGlue PRIVATE -fexceptions)
+else()
+    message(STATUS "node_api.h not found — .node output targets disabled")
+endif()
 
 target_compile_features(EcoEntryStatic PRIVATE cxx_std_20)
 target_compile_options(EcoEntryStatic PRIVATE -fexceptions)
@@ -1018,12 +1068,22 @@ string(APPEND ECO_BOOT_CONFIG_CONTENT
     "std::string runtimeDir();\n"
     "std::string resolveFile(const RuntimeFile &f);\n\n")
 
+# Path baked into nodeGlueLib (empty when node headers are unavailable —
+# resolveFile() then fails with a clear message if a .node link is attempted).
+if(TARGET EcoNodeGlue)
+    set(ECO_NODE_GLUE_PATH "$<TARGET_FILE:EcoNodeGlue>")
+else()
+    set(ECO_NODE_GLUE_PATH "")
+endif()
+
 # --- Project static archives ---------------------------------------------
 # Generator expressions resolve to the actual build-tree paths
 # (libElmKernel_Basics.a etc.). Basenames are derived at codegen time so
 # the bundle layout knows them without re-querying CMake at runtime.
 string(APPEND ECO_BOOT_CONFIG_CONTENT
     "inline RuntimeFile entryLib   {\"libEcoEntryStatic.a\",   \"project\", \"$<TARGET_FILE:EcoEntryStatic>\"};\n"
+    "inline RuntimeFile embedLib   {\"libEcoEmbedStatic.a\",   \"project\", \"$<TARGET_FILE:EcoEmbedStatic>\"};\n"
+    "inline RuntimeFile nodeGlueLib {\"libEcoNodeGlue.a\",    \"project\", \"${ECO_NODE_GLUE_PATH}\"};\n"
     "inline RuntimeFile runtimeLib {\"libEcoRuntimeStatic.a\", \"project\", \"$<TARGET_FILE:EcoRuntimeStatic>\"};\n\n")
 
 string(APPEND ECO_BOOT_CONFIG_CONTENT "inline std::vector<RuntimeFile> elmKernelLibs() {\n")
@@ -1225,7 +1285,10 @@ target_link_libraries(eco-boot-native PRIVATE
 # INTERFACE target is a no-op (no build action attached), so we must list each
 # concrete static lib explicitly. Reuse ECO_ELM_KERNEL_MODS / ECO_KERNEL_MODS
 # defined above so this list can't drift from the generated EcoBootConfig.h.
-set(ECO_BOOT_NATIVE_RUNTIME_DEPS EcoEntryStatic EcoRuntimeStatic)
+set(ECO_BOOT_NATIVE_RUNTIME_DEPS EcoEntryStatic EcoEmbedStatic EcoRuntimeStatic)
+if(TARGET EcoNodeGlue)
+    list(APPEND ECO_BOOT_NATIVE_RUNTIME_DEPS EcoNodeGlue)
+endif()
 foreach(mod ${ECO_ELM_KERNEL_MODS})
     list(APPEND ECO_BOOT_NATIVE_RUNTIME_DEPS ElmKernel_${mod})
 endforeach()

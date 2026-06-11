@@ -1818,32 +1818,220 @@ specializeNode ctorName node requestedMonoType state =
             specializeCycle names valueDefs funcDefs requestedMonoType state
 
         TOpt.PortIncoming expr _ meta ->
-            let
-                canType =
-                    meta.tipe
+            case requestedMonoType of
+                Mono.MFunction _ _ ->
+                    -- The port itself, used as `(payload -> msg) -> Sub msg`:
+                    -- lower to the Fx_Leaf wrapper closure and enqueue the
+                    -- payload Decoder as a separate specialization.
+                    specializePortNode True expr meta.tipe requestedMonoType state
 
-                subst =
-                    Tuple.first (TypeSubst.unify state.ctx.mvarEnv canType requestedMonoType)
+                _ ->
+                    -- Decoder-value specialization (enqueued by the wrapper
+                    -- case via enqueueSpec at the Decoder type): compile the
+                    -- payload Decoder as a plain value node. The generated
+                    -- @__eco_register_ports preamble calls its thunk and
+                    -- hands the decoder to the runtime port registry.
+                    let
+                        decoderCanType =
+                            TOpt.typeOf expr
 
-                ( monoExpr, state1 ) =
-                    specializeExpr expr subst state
-            in
-            -- GlobalOpt will wrap bare expressions in closures via ensureCallableForNode
-            ( Mono.MonoPortIncoming monoExpr requestedMonoType, state1 )
+                        subst =
+                            Tuple.first (TypeSubst.unify state.ctx.mvarEnv decoderCanType requestedMonoType)
+
+                        ( monoExpr, state1 ) =
+                            specializeExpr expr subst state
+                    in
+                    ( Mono.MonoDefine monoExpr requestedMonoType, state1 )
 
         TOpt.PortOutgoing expr _ meta ->
-            let
-                canType =
-                    meta.tipe
+            specializePortNode False expr meta.tipe requestedMonoType state
 
-                subst =
-                    Tuple.first (TypeSubst.unify state.ctx.mvarEnv canType requestedMonoType)
 
-                ( monoExpr, state1 ) =
-                    specializeExpr expr subst state
-            in
-            -- GlobalOpt will wrap bare expressions in closures via ensureCallableForNode
-            ( Mono.MonoPortOutgoing monoExpr requestedMonoType, state1 )
+{-| Lower a port node to its Fx\_Leaf wrapper closure (PORT\_002).
+
+Incoming `port bar : (payload -> msg) -> Sub msg` becomes
+
+    \tagger -> Elm_Kernel_Platform_leaf "bar" tagger
+
+and the payload decoder is enqueued as a separate specialization of the
+same Global at its (non-function) `Decoder payload` type — the worklist
+driver routes that request back through the PortIncoming arm, which
+compiles it as a plain `MonoDefine` value node. Prune keeps the decoder
+spec alive via `MonoGraph.ports` and the MLIR backend registers it with
+the runtime at startup (PORT\_003).
+
+Outgoing `port foo : payload -> Cmd msg` becomes
+
+    \p -> Elm_Kernel_Platform_leaf "foo" (encoder p)
+
+The encoder runs eagerly at the call site, so an outgoing Fx\_Leaf value
+is always an already-encoded Json value by the time the port's effect
+manager sees it.
+
+Both wrappers are proper zero-capture `MonoClosure`s, so every downstream
+GlobalOpt invariant (arity tracking, staging canonicalization, GOPT\_001)
+holds without port-specific handling.
+
+-}
+specializePortNode :
+    Bool
+    -> TOpt.Expr MVarId
+    -> Can.Type MVarId
+    -> Mono.MonoType
+    -> MonoState
+    -> ( Mono.MonoNode, MonoState )
+specializePortNode incoming expr canType requestedMonoType state =
+    let
+        ( portGlobal, portName ) =
+            case state.ctx.currentGlobal of
+                Just ((Mono.Global _ name) as g) ->
+                    ( g, Name.toElmString name )
+
+                _ ->
+                    Utils.Crash.crash "specializePortNode: currentGlobal must be a Global"
+
+        subst =
+            Tuple.first (TypeSubst.unify state.ctx.mvarEnv canType requestedMonoType)
+
+        ( paramType, resultType ) =
+            case requestedMonoType of
+                Mono.MFunction [ p ] r ->
+                    ( p, r )
+
+                _ ->
+                    Utils.Crash.crash
+                        ("specializePortNode: port '"
+                            ++ portName
+                            ++ "' must have a single-parameter function type"
+                        )
+
+        region =
+            A.zero
+
+        ctx =
+            state.ctx
+
+        lambdaId =
+            Mono.AnonymousLambda ctx.currentModule ctx.lambdaCounter
+
+        stateWithLambda =
+            { state | ctx = { ctx | lambdaCounter = ctx.lambdaCounter + 1 } }
+
+        paramName =
+            "_eco_port_arg"
+
+        paramVar =
+            Mono.MonoVarLocal paramName paramType
+
+        nameLit =
+            Mono.MonoLiteral (Mono.LStr portName) Mono.MString
+
+        leafKernel valueType =
+            Mono.MonoVarKernel region
+                "Elm"
+                "Platform"
+                "leaf"
+                (Mono.MFunction [ Mono.MString, valueType ] resultType)
+
+        closureInfo =
+            { lambdaId = lambdaId
+            , captures = []
+            , params = [ ( paramName, paramType ) ]
+            , closureKind = Nothing
+            , captureAbi = Nothing
+            }
+    in
+    if incoming then
+        let
+            body =
+                Mono.MonoCall region
+                    (leafKernel paramType)
+                    [ nameLit, paramVar ]
+                    resultType
+                    Mono.defaultCallInfo
+
+            wrapper =
+                Mono.MonoClosure closureInfo body requestedMonoType
+
+            decoderMonoType =
+                Mono.forceCNumberToInt
+                    (Tuple.first
+                        (TypeSubst.applySubst stateWithLambda.ctx.mvarEnv subst (TOpt.typeOf expr))
+                    )
+
+            ( decoderSpecId, state1 ) =
+                enqueueSpec portGlobal decoderMonoType Nothing stateWithLambda
+
+            state2 =
+                recordPortRegistration
+                    { name = portName
+                    , key = Mono.toComparableGlobal portGlobal
+                    , incoming = True
+                    , decoderSpecId = Just decoderSpecId
+                    }
+                    state1
+        in
+        ( Mono.MonoPortIncoming wrapper requestedMonoType, state2 )
+
+    else
+        let
+            ( encoderMono, state1 ) =
+                specializeExpr expr subst stateWithLambda
+
+            encodedType =
+                case Mono.typeOf encoderMono of
+                    Mono.MFunction _ r ->
+                        r
+
+                    t ->
+                        t
+
+            encodedExpr =
+                Mono.MonoCall region
+                    encoderMono
+                    [ paramVar ]
+                    encodedType
+                    Mono.defaultCallInfo
+
+            body =
+                Mono.MonoCall region
+                    (leafKernel encodedType)
+                    [ nameLit, encodedExpr ]
+                    resultType
+                    Mono.defaultCallInfo
+
+            wrapper =
+                Mono.MonoClosure closureInfo body requestedMonoType
+
+            state2 =
+                recordPortRegistration
+                    { name = portName
+                    , key = Mono.toComparableGlobal portGlobal
+                    , incoming = False
+                    , decoderSpecId = Nothing
+                    }
+                    state1
+        in
+        ( Mono.MonoPortOutgoing wrapper requestedMonoType, state2 )
+
+
+{-| Record a port registration once per port Global (multiple monomorphic
+instantiations of the same port share one registration). Two DIFFERENT
+ports with the same bare name are both kept — the runtime's registration
+preamble then crashes at startup with a duplicate-name message
+(PORT_001, JS \_Platform\_checkPortName parity).
+-}
+recordPortRegistration : Mono.PortRegistration -> MonoState -> MonoState
+recordPortRegistration reg state =
+    let
+        accum =
+            state.accum
+    in
+    if List.any (\p -> p.key == reg.key) accum.ports then
+        state
+
+    else
+        { state | accum = { accum | ports = reg :: accum.ports } }
 
 
 {-| Specialize a mutually recursive cycle, handling both value and function definitions.

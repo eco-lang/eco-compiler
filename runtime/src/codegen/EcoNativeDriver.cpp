@@ -10,6 +10,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "EcoNativeDriver.h"
+#include <cstring>
 #include "EcoNativeAPI.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -126,6 +127,17 @@ translateToLLVMIR(ModuleOp module, llvm::LLVMContext &llvmContext) {
 // The target CPU/feature pin and TargetMachine factory live in EcoBackend.h
 // (createEcoTargetMachine / kEcoTargetCPU), shared with eco-boot.cpp.
 
+// Output mode selected from the target path's extension:
+//   *.o          → emit the relocatable object only (no link)
+//   *.so, *.node → link a shared library (embed entry, no main())
+//   otherwise    → link a PIE executable (standalone entry)
+// See plans/native-ports-and-embedding.md (Phase 3/4).
+bool pathEndsWith(const std::string &path, const char *suffix) {
+    size_t n = std::strlen(suffix);
+    return path.size() >= n &&
+           path.compare(path.size() - n, n, suffix) == 0;
+}
+
 int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
                            const std::string &outputPath,
                            const eco::EcoNativeOptions &opts) {
@@ -166,15 +178,25 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
             return 1;
     }
 
-    // Emit to a temp object file, then link.
-    llvm::SmallString<256> tempObjPath;
-    if (auto ec = llvm::sys::fs::createTemporaryFile("eco-driver", "o",
-                                                     tempObjPath)) {
-        llvm::errs() << "Error: Could not create temp object file: "
-                     << ec.message() << "\n";
-        return 1;
+    const bool emitObjOnly = pathEndsWith(outputPath, ".o");
+    const bool sharedLib = pathEndsWith(outputPath, ".so") ||
+                           pathEndsWith(outputPath, ".node");
+
+    // Emit to a temp object file, then link — except for object-only
+    // output, where the backend writes the object straight to the target.
+    std::string objFile;
+    if (emitObjOnly) {
+        objFile = outputPath;
+    } else {
+        llvm::SmallString<256> tempObjPath;
+        if (auto ec = llvm::sys::fs::createTemporaryFile("eco-driver", "o",
+                                                         tempObjPath)) {
+            llvm::errs() << "Error: Could not create temp object file: "
+                         << ec.message() << "\n";
+            return 1;
+        }
+        objFile = std::string(tempObjPath);
     }
-    std::string objFile(tempObjPath);
 
     {
         std::unique_ptr<eco::LoweringStats::Scope> scope;
@@ -201,13 +223,16 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
         }
     }
 
+    if (emitObjOnly)
+        return 0;
+
     int rc;
     {
         std::unique_ptr<eco::LoweringStats::Scope> scope;
         if (opts.stats)
             scope = std::make_unique<eco::LoweringStats::Scope>(
                 *opts.stats, "Link (system ld)");
-        rc = eco::linkExecutable(objFile, outputPath, opts);
+        rc = eco::linkExecutable(objFile, outputPath, opts, sharedLib);
     }
 
     llvm::sys::fs::remove(objFile);
@@ -300,7 +325,8 @@ int compileMlirBytesToExecutable(const char *mlirBytes, size_t mlirLen,
 
 int linkExecutable(const std::string &objectFile,
                    const std::string &outputPath,
-                   const EcoNativeOptions &opts) {
+                   const EcoNativeOptions &opts,
+                   bool sharedLib) {
     // Phase 3: invoke the system linker (ld.bfd) directly rather than the
     // clang++ driver. Eliminates the clang++ runtime dependency; the linker
     // path + crt files + libgcc + dynamic linker were all discovered at
@@ -360,12 +386,23 @@ int linkExecutable(const std::string &objectFile,
         args.push_back("--no-dependent-libraries");
     }
 
+    // Shared-library output (.so/.node, host embedding) is only supported
+    // in the dynamic-glibc profile: a fully-static musl shared object is
+    // a contradiction in terms.
+    if (sharedLib && eco::config::ecoStaticMusl) {
+        llvm::errs() << "Error: shared-library output is not supported in "
+                        "the static-musl profile\n";
+        return 1;
+    }
+
     // Stage B.5 musl-static vs Stage A.5 glibc-dynamic-PIE. Under
     // ecoStaticMusl the binary is fully static (no PT_INTERP, no shared
     // deps), so we drop `-pie` + `-dynamic-linker` and pass `-static`
     // instead. The rest of the layout (start-group / archives / crt
     // epilogue) is identical across profiles.
-    if (eco::config::ecoStaticMusl) {
+    if (sharedLib) {
+        args.push_back("-shared");
+    } else if (eco::config::ecoStaticMusl) {
         args.push_back("-static");
     } else {
         args.push_back("-pie");
@@ -396,12 +433,15 @@ int linkExecutable(const std::string &objectFile,
     //     (frame-info ctor table for the shared/PIE variant).
     //   - musl/Stage B.5:  crt1.o  (static startup) + crti.o +
     //     clang_rt.crtbegin-x86_64.o (compiler-rt non-PIE init markers).
+    //   - shared lib: no startup object (no _start), but crti/crtbeginS
+    //     still provide the init/fini scaffolding.
     if (eco::config::ecoStaticMusl) {
         args.push_back(push(resolveFile(eco::config::crt1ObjStatic)));
         args.push_back(push(resolveFile(eco::config::crtiObjStatic)));
         args.push_back(push(resolveFile(eco::config::crtbeginObjStatic)));
     } else {
-        args.push_back(eco::config::crt1Obj);
+        if (!sharedLib)
+            args.push_back(eco::config::crt1Obj);
         args.push_back(eco::config::crtiObj);
         args.push_back(eco::config::crtbeginObj);
     }
@@ -414,7 +454,23 @@ int linkExecutable(const std::string &objectFile,
     // Scheduler / Platform helpers resolve.
     args.push_back("--start-group");
 
-    args.push_back(push(resolveFile(eco::config::entryLib)));
+    // Executables get the standalone main() (eco_entry); library outputs
+    // get the host-embedding entry (eco_app_start/stop/join) instead.
+    // --whole-archive on the embed lib: hosts resolve eco_app_* at load
+    // time and nothing inside the .so otherwise references them.
+    if (sharedLib) {
+        args.push_back("--whole-archive");
+        args.push_back(push(resolveFile(eco::config::embedLib)));
+        // .node targets additionally get the N-API glue (whole-archive so
+        // napi_register_module_v1 — referenced only by Node's dlopen — is
+        // retained and exported).
+        if (pathEndsWith(outputPath, ".node")) {
+            args.push_back(push(resolveFile(eco::config::nodeGlueLib)));
+        }
+        args.push_back("--no-whole-archive");
+    } else {
+        args.push_back(push(resolveFile(eco::config::entryLib)));
+    }
     args.push_back(push(resolveFile(eco::config::runtimeLib)));
 
     // ElmKernel_Utils wrapped in --whole-archive so UtilsExports.o always
@@ -531,6 +587,21 @@ int linkExecutable(const std::string &objectFile,
     if (opts.verbose)
         llvm::errs() << "[eco-native] linked executable: " << outputPath
                      << "\n";
+
+    // For .node addons, emit a sibling CommonJS shim (<base>.js) so hosts
+    // written against the JS target's `require("./build/elm.js")` resolve
+    // to the native addon unaltered (name the output elm.node to match).
+    if (pathEndsWith(outputPath, ".node")) {
+        llvm::SmallString<256> shimPath(outputPath.c_str());
+        llvm::sys::path::replace_extension(shimPath, ".js");
+        std::string base = std::string(llvm::sys::path::filename(outputPath));
+        std::error_code ec;
+        llvm::raw_fd_ostream shim(shimPath, ec);
+        if (!ec) {
+            shim << "// Generated by eco: loads the native Elm addon.\n"
+                 << "module.exports = require('./" << base << "');\n";
+        }
+    }
 
     return 0;
 }

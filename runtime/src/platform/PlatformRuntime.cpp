@@ -41,12 +41,50 @@ static std::string elmStringToStd(void* ptr) {
 }
 
 // ============================================================================
+// applyTaggers-as-closure support (PORT_005 / JS _Platform_toEffect parity)
+// ============================================================================
+//
+// gatherEffects hands the accumulated Fx_Map tagger chain to the owning
+// manager's cmdMap/subMap as a callable closure, mirroring the JS kernel:
+//
+//     effect = A2(map, applyTaggers, value)
+//
+// The map function decides how the tagger chain applies to the leaf value
+// (Time/Task rebuild their payload customs with a composed tagger; outgoing
+// ports drop it; incoming ports compose it over the subscription tagger).
+
+// 2-slot closure: args[0] = captured taggers list, args[1] = value.
+static void* applyTaggersEvaluator(void* args[]) {
+    HPointer taggers = decodeHP(reinterpret_cast<uint64_t>(args[0]));
+    HPointer value = decodeHP(reinterpret_cast<uint64_t>(args[1]));
+    HPointer result =
+        PlatformRuntime::instance().applyTaggers(taggers, value);
+    return reinterpret_cast<void*>(encodeHP(result));
+}
+
+// Build a 1-arg closure that applies `taggers` innermost-first to its
+// argument. Callers must not pass an empty chain (gatherEffects routes
+// leaf values with no taggers straight through, both as a fast path and
+// to keep unmapped effects byte-identical to the pre-ports behaviour).
+// The result is a fresh allocation; callers must root it before any
+// further allocation.
+static HPointer makeApplyTaggersClosure(HPointer taggers) {
+    Elm::StackRootGuard guard(&taggers);
+    HPointer cl = allocClosure(applyTaggersEvaluator, 2);
+    if (void* clPtr = Allocator::instance().resolve(cl)) {
+        closureCapture(clPtr, boxed(taggers), true);
+    }
+    return cl;
+}
+
+// ============================================================================
 // Singleton
 // ============================================================================
 
 PlatformRuntime& PlatformRuntime::instance() {
-    static PlatformRuntime runtime;
-    return runtime;
+    // Intentionally leaked — see Scheduler::instance().
+    static PlatformRuntime* runtime = new PlatformRuntime();
+    return *runtime;
 }
 
 PlatformRuntime::PlatformRuntime() {
@@ -375,39 +413,90 @@ void PlatformRuntime::gatherEffects(
         if (!homePtr) return;
         std::string home = elmStringToStd(homePtr);
 
-        // Apply taggers to value (taggers list is innermost-first)
-        HPointer taggedValue = applyTaggers(taggers, value);
-
-        // Add to the appropriate effects list (cmd or sub)
+        // If manager not registered, silently drop the effect.
         auto it = effects.find(home);
-        if (it != effects.end()) {
-            if (isCmd) {
-                it->second.cmdHPs.push_back(encodeHP(taggedValue));
+        if (it == effects.end()) return;
+
+        HPointer effect;
+        if (alloc::isNil(taggers)) {
+            // No Fx_Map wrappers: the value passes through unchanged.
+            // (`map(applyTaggers, value)` with an empty chain is identity
+            // for every well-formed manager; skipping the call keeps
+            // unmapped effects on the exact pre-ports path.)
+            effect = value;
+        } else {
+            // JS parity (_Platform_toEffect): hand the tagger chain to the
+            // manager's cmdMap/subMap as a callable and let the map decide
+            // how it applies to the leaf value (PORT_005). Managers without
+            // a map function (registered as Nil) get the legacy direct
+            // application.
+            HPointer mapFn = listNil();
+            {
+                auto miIt = managers_.find(home);
+                if (miIt != managers_.end()) {
+                    mapFn = decodeHP(isCmd ? miIt->second.cmdMap
+                                           : miIt->second.subMap);
+                }
+            }
+
+            if (alloc::isNil(mapFn) || hpIsConstant(mapFn)) {
+                // Legacy fallback: apply taggers directly to the leaf value.
+                effect = applyTaggers(taggers, value);
             } else {
-                it->second.subHPs.push_back(encodeHP(taggedValue));
+                // Root value + mapFn + the taggers chain across the closure
+                // allocation and the map call (both may GC). `custom` is
+                // stale past this point; all leaf fields were snapshot above.
+                HPointer taggersLocal = taggers;
+                Elm::StackRootGuard guard({ &mapFn, &value, &taggersLocal });
+                HPointer applyFn = makeApplyTaggersClosure(taggersLocal);
+                Elm::StackRootGuard applyGuard(&applyFn);
+                effect = Scheduler::callClosure2(mapFn, applyFn, value);
             }
         }
-        // If manager not registered, silently drop the effect
+
+        // Add to the appropriate effects list (cmd or sub). The iterator
+        // stays valid across the map call: closures may GC but never
+        // mutate the effects map, and encoded entries are evacuated by
+        // the external root scanner while dispatchActive_ is set.
+        if (isCmd) {
+            it->second.cmdHPs.push_back(encodeHP(effect));
+        } else {
+            it->second.subHPs.push_back(encodeHP(effect));
+        }
     }
     else if (ctor == Fx_Node) {
-        // Node: values[0] = list of bags
-        HPointer bagList = custom->values[0].p;
-        HPointer current = bagList;
+        // Node: values[0] = list of bags. The recursive gather can allocate
+        // (Fx_Map cons, applyTaggers closures, manager map evaluators) and
+        // therefore GC: snapshot the tail BEFORE recursing and keep the
+        // loop cursor + taggers chain rooted so iteration 2+ reads
+        // GC-current values (`cell` is stale after any allocation).
+        HPointer current = custom->values[0].p;
+        HPointer taggersLocal = taggers;
+        Elm::StackRootGuard loopGuard(&current, &taggersLocal);
         while (!alloc::isNil(current)) {
             void* cellPtr = resolveHP(current);
             if (!cellPtr) break;
             Cons* cell = static_cast<Cons*>(cellPtr);
             HPointer innerBag = cell->head.p;
-            gatherEffects(isCmd, innerBag, effects, taggers);
-            current = cell->tail;
+            HPointer next = cell->tail;
+            {
+                Elm::StackRootGuard itemGuard(&next);
+                gatherEffects(isCmd, innerBag, effects, taggersLocal);
+            }
+            current = next;
         }
     }
     else if (ctor == Fx_Map) {
-        // Map: values[0] = tagger function, values[1] = inner bag
+        // Map: values[0] = tagger function, values[1] = inner bag.
+        // Root innerBag across the cons allocation (it would otherwise go
+        // stale before the recursive call), and newTaggers across the
+        // recursion is the callee's responsibility via its parameter...
+        // which is a C++ local — so root it here too for the duration.
         HPointer tagger = custom->values[0].p;
         HPointer innerBag = custom->values[1].p;
-        // Prepend tagger to taggers list
+        Elm::StackRootGuard guard(&tagger, &innerBag);
         HPointer newTaggers = cons(boxed(tagger), taggers, true);
+        Elm::StackRootGuard taggersGuard(&newTaggers);
         gatherEffects(isCmd, innerBag, effects, newTaggers);
     }
 }
@@ -446,6 +535,12 @@ void PlatformRuntime::sendToApp(HPointer router, HPointer msg) {
     HPointer sendToAppFn = routerObj->values[0].p;
 
     // Call sendToApp(msg)
+    Scheduler::callClosure1(sendToAppFn, msg);
+}
+
+void PlatformRuntime::deliverToApp(HPointer msg) {
+    if (sendToAppClosure_ == 0) return;
+    HPointer sendToAppFn = decodeHP(sendToAppClosure_);
     Scheduler::callClosure1(sendToAppFn, msg);
 }
 
@@ -696,6 +791,12 @@ HPointer PlatformRuntime::initWorker(HPointer impl) {
         HPointer currentModel = decodeHP(modelStorage_);
         HPointer subs0 = Scheduler::callClosure1(subscriptionsFn, currentModel);
         enqueueEffects(cmd0, subs0);
+    }
+
+    // Embedding ready handshake: the program is initialized and its init
+    // effects have fully dispatched; signal the host before blocking.
+    if (readyHook_) {
+        readyHook_(readyHookUser_);
     }
 
     // Phase 7: Run the event loop (blocks until program is idle)

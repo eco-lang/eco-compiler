@@ -296,6 +296,8 @@ void Elm_Kernel_Platform_sendToApp(HPtr router, HPtr msg);
 HPtr Elm_Kernel_Platform_sendToSelf(HPtr router, HPtr msg);
 HPtr Elm_Kernel_Platform_worker(HPtr impl);
 HPtr Elm_Kernel_Platform_leaf(HPtr home, HPtr value);
+HPtr Elm_Kernel_Platform_registerIncomingPort(HPtr name, HPtr decoder);
+HPtr Elm_Kernel_Platform_registerOutgoingPort(HPtr name);
 
 //===----------------------------------------------------------------------===//
 // Process Module (elm/core)

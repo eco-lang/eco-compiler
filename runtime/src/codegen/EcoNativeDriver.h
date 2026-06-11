@@ -59,9 +59,12 @@ int compileMlirBytesToExecutable(const char *mlirBytes, size_t mlirLen,
 
 // Link an already-emitted object file into an ELF executable. Exposed so the
 // eco-boot-native `--emit=obj` + re-link fast path can reuse the link step.
+// sharedLib: link a shared library (-shared, embed entry, no main())
+// instead of a PIE executable. Used for .so/.node output targets.
 int linkExecutable(const std::string &objectFile,
                    const std::string &outputPath,
-                   const EcoNativeOptions &opts);
+                   const EcoNativeOptions &opts,
+                   bool sharedLib = false);
 
 } // namespace eco
 

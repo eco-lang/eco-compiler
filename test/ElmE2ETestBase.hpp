@@ -7,6 +7,7 @@
 #include "../runtime/src/allocator/GCStats.hpp"
 #include "../runtime/src/allocator/Allocator.hpp"
 #include "../runtime/src/platform/PlatformRuntime.hpp"
+#include "../runtime/src/platform/PortRuntime.hpp"
 
 #include <algorithm>
 #include <array>
@@ -583,6 +584,23 @@ inline eco::EcoRunner& getRunner() {
     return runner;
 }
 
+// Generic port-bounce for E2E port tests: payloads sent through the
+// outgoing `echoOut` port are fed straight back into the incoming
+// `echoIn` port (eco_port_send queues; the scheduler drains on the eco
+// thread). Subscribing to a port that a given test never declares is
+// harmless — the subscription sits on a placeholder registry entry.
+inline void portEchoBounce(const char* json, void* /*user*/) {
+    eco_port_send("echoIn", json);
+}
+
+inline void installPortEchoBounce() {
+    static bool installed = false;
+    if (!installed) {
+        installed = true;
+        eco_port_subscribe("echoOut", portEchoBounce, nullptr);
+    }
+}
+
 inline void runElmTestFromMlir(const std::string& mlirPath,
                                const std::string& elmPath,
                                const std::optional<Elm::Platform::StressFlags>& flags = std::nullopt) {
@@ -627,6 +645,9 @@ inline void runElmTestFromMlir(const std::string& mlirPath,
     } else {
         platform.clearPendingFlags();
     }
+
+    // Wire the generic echo bounce for port E2E tests (echoOut -> echoIn).
+    installPortEchoBounce();
 
     auto result = runner.runFile(mlirPath);
 

@@ -37,17 +37,37 @@ import Set
 
 {-| Generate the main entry point function.
 -}
-generateMainEntry : Ctx.Context -> Mono.MainInfo -> List MlirOp
-generateMainEntry ctx mainInfo =
+generateMainEntry : Ctx.Context -> List Mono.PortRegistration -> Mono.MainInfo -> ( List MlirOp, Ctx.Context )
+generateMainEntry ctx ports mainInfo =
     case mainInfo of
         Mono.StaticMain mainSpecId ->
             let
+                ( portFnOps, ctxPorts ) =
+                    generateRegisterPorts ctx ports
+
                 -- main has no block args, so reset scope completely
                 ctxMain =
-                    { ctx | nextVar = 0, varMappings = Dict.empty, definedSsaVars = Set.empty }
+                    { ctxPorts | nextVar = 0, varMappings = Dict.empty, definedSsaVars = Set.empty }
+
+                -- Register ports before the program runs (PORT_003): the
+                -- @__eco_register_ports call precedes the Main_main call,
+                -- which is what eventually enters Platform.worker.
+                ( preambleOps, ctx0 ) =
+                    if List.isEmpty portFnOps then
+                        ( [], ctxMain )
+
+                    else
+                        let
+                            ( regVar, ctxA ) =
+                                Ctx.freshVar ctxMain
+
+                            ( ctxB, regCallOp ) =
+                                Ops.ecoCallNamed ctxA (Expr.emitSafepointHints ctxA) regVar "__eco_register_ports" [] Types.ecoValue
+                        in
+                        ( [ regCallOp ], ctxB )
 
                 ( callVar, ctx1 ) =
-                    Ctx.freshVar ctxMain
+                    Ctx.freshVar ctx0
 
                 mainFuncName : String
                 mainFuncName =
@@ -61,12 +81,145 @@ generateMainEntry ctx mainInfo =
 
                 region : MlirRegion
                 region =
-                    Ops.mkRegion [] [ callOp ] returnOp
+                    Ops.mkRegion [] (preambleOps ++ [ callOp ]) returnOp
 
-                ( _, mainOp ) =
+                ( ctx4, mainOp ) =
                     Ops.funcFunc ctx3 "main" [] Types.ecoValue region
             in
-            [ mainOp ]
+            -- Return the threaded context: generateRegisterPorts records
+            -- the registration kernels in ctx.kernelDecls, and the backend
+            -- emits kernel stubs from the context AFTER main generation.
+            ( portFnOps ++ [ mainOp ], ctx4 )
+
+
+{-| Generate the synthetic `@__eco_register_ports` function (PORT\_003).
+
+For every port reached during monomorphization it emits a runtime
+registration call before `Platform.worker` runs:
+
+  - incoming: `Elm_Kernel_Platform_registerIncomingPort(name, decoder)`
+    where `decoder` is produced by calling the port's Decoder-value thunk
+    (the separate specialization recorded in `PortRegistration.decoderSpecId`)
+  - outgoing: `Elm_Kernel_Platform_registerOutgoingPort(name)`
+
+Returns `( [], ctx )` for programs without ports so no preamble is
+emitted at all.
+
+-}
+generateRegisterPorts : Ctx.Context -> List Mono.PortRegistration -> ( List MlirOp, Ctx.Context )
+generateRegisterPorts ctx0 ports =
+    if List.isEmpty ports then
+        ( [], ctx0 )
+
+    else
+        let
+            -- Fresh SSA scope for the synthetic function.
+            ctxClean =
+                { ctx0 | nextVar = 0, varMappings = Dict.empty, definedSsaVars = Set.empty }
+
+            hasIncoming =
+                List.any .incoming ports
+
+            hasOutgoing =
+                List.any (\p -> not p.incoming) ports
+
+            -- Track the registration kernels so the backend emits their
+            -- is_kernel stubs (resolved to the C++ exports at link time).
+            ctxKernels =
+                ctxClean
+                    |> (\c ->
+                            if hasIncoming then
+                                Ctx.registerKernelCall c
+                                    "Elm_Kernel_Platform_registerIncomingPort"
+                                    [ Types.ecoValue, Types.ecoValue ]
+                                    Types.ecoValue
+
+                            else
+                                c
+                       )
+                    |> (\c ->
+                            if hasOutgoing then
+                                Ctx.registerKernelCall c
+                                    "Elm_Kernel_Platform_registerOutgoingPort"
+                                    [ Types.ecoValue ]
+                                    Types.ecoValue
+
+                            else
+                                c
+                       )
+
+            ( revOps, ctxAfterPorts ) =
+                List.foldl
+                    (\port_ ( accOps, c ) ->
+                        let
+                            ( nameVar, c1 ) =
+                                Ctx.freshVar c
+
+                            ( c2, nameOp ) =
+                                Ops.ecoStringLiteral c1 nameVar port_.name
+                        in
+                        case ( port_.incoming, port_.decoderSpecId ) of
+                            ( True, Just decoderSpecId ) ->
+                                let
+                                    ( decoderVar, c3 ) =
+                                        Ctx.freshVar c2
+
+                                    ( c4, decoderCallOp ) =
+                                        Ops.ecoCallNamed c3
+                                            (Expr.emitSafepointHints c3)
+                                            decoderVar
+                                            (specIdToFuncName c3.registry decoderSpecId)
+                                            []
+                                            Types.ecoValue
+
+                                    ( resultVar, c5 ) =
+                                        Ctx.freshVar c4
+
+                                    ( c6, registerOp ) =
+                                        Ops.ecoCallNamed c5
+                                            (Expr.emitSafepointHints c5)
+                                            resultVar
+                                            "Elm_Kernel_Platform_registerIncomingPort"
+                                            [ ( nameVar, Types.ecoValue ), ( decoderVar, Types.ecoValue ) ]
+                                            Types.ecoValue
+                                in
+                                ( registerOp :: decoderCallOp :: nameOp :: accOps, c6 )
+
+                            _ ->
+                                let
+                                    ( resultVar, c3 ) =
+                                        Ctx.freshVar c2
+
+                                    ( c4, registerOp ) =
+                                        Ops.ecoCallNamed c3
+                                            (Expr.emitSafepointHints c3)
+                                            resultVar
+                                            "Elm_Kernel_Platform_registerOutgoingPort"
+                                            [ ( nameVar, Types.ecoValue ) ]
+                                            Types.ecoValue
+                                in
+                                ( registerOp :: nameOp :: accOps, c4 )
+                    )
+                    ( [], ctxKernels )
+                    ports
+
+            ( unitVar, ctxU ) =
+                Ctx.freshVar ctxAfterPorts
+
+            ( ctxU2, unitOp ) =
+                Ops.ecoConstantUnit ctxU unitVar
+
+            ( ctxU3, returnOp ) =
+                Ops.ecoReturn ctxU2 unitVar Types.ecoValue
+
+            region : MlirRegion
+            region =
+                Ops.mkRegion [] (List.reverse revOps ++ [ unitOp ]) returnOp
+
+            ( ctxF, funcOp ) =
+                Ops.funcFunc ctxU3 "__eco_register_ports" [] Types.ecoValue region
+        in
+        ( [ funcOp ], ctxF )
 
 
 

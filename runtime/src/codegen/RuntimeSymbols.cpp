@@ -801,6 +801,8 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         KERNEL_SYM(Elm_Kernel_Platform_sendToSelf)
         KERNEL_SYM(Elm_Kernel_Platform_worker)
         KERNEL_SYM(Elm_Kernel_Platform_leaf)
+        KERNEL_SYM(Elm_Kernel_Platform_registerIncomingPort)
+        KERNEL_SYM(Elm_Kernel_Platform_registerOutgoingPort)
 
         // Process module
         KERNEL_SYM(Elm_Kernel_Process_sleep)
