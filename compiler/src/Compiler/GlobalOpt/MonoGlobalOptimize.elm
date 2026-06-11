@@ -1547,14 +1547,38 @@ sourceArityForExpr graph env expr =
                     Nothing
 
         Mono.MonoLet def body _ ->
-            let
-                ( _, env1 ) =
-                    annotateDefCalls graph env def
-            in
-            sourceArityForExpr graph env1 body
+            sourceArityForExpr graph (extendSourceArityEnv graph env def) body
 
         _ ->
             Nothing
+
+
+{-| Extend the CallEnv's varSourceArity for a let definition, without
+re-annotating the definition.
+
+`sourceArityForExpr` only ever reads `varSourceArity` from the CallEnv, so
+this mirrors exactly the varSourceArity updates of `annotateDefCalls` (insert
+on Just, keep any existing entry on Nothing) and skips the rest.
+
+Calling `annotateDefCalls` here instead would re-run `annotateExprCalls` on
+the bound expression, making the mutual recursion exponential in the depth of
+lets nested in bound position (which `MonoInlineSimplify.wrapInLets` produces
+for long pipelines).
+
+-}
+extendSourceArityEnv : Mono.MonoGraph -> CallEnv -> Mono.MonoDef -> CallEnv
+extendSourceArityEnv graph env def =
+    case def of
+        Mono.MonoDef name bound ->
+            case sourceArityForExpr graph env bound of
+                Just arity ->
+                    { env | varSourceArity = Dict.insert name arity env.varSourceArity }
+
+                Nothing ->
+                    env
+
+        Mono.MonoTailDef name params _ ->
+            { env | varSourceArity = Dict.insert name (List.length params) env.varSourceArity }
 
 
 {-| Get source arity for a callee, with fallback for unknown callees.

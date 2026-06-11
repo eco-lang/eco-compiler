@@ -1195,16 +1195,16 @@ betaReduce ctx region info closureBody args resultType =
             ( bindings, ctx1 ) =
                 createBindings ctx params args
 
-            substituted =
-                substituteAll bindings closureBody
+            ( substituted, ctx2 ) =
+                freshenLetBoundNames ctx1 (substituteAll bindings closureBody)
 
             newMetrics =
-                { inlineCount = ctx1.metrics.inlineCount
-                , betaReductions = ctx1.metrics.betaReductions + 1
-                , letEliminations = ctx1.metrics.letEliminations
+                { inlineCount = ctx2.metrics.inlineCount
+                , betaReductions = ctx2.metrics.betaReductions + 1
+                , letEliminations = ctx2.metrics.letEliminations
                 }
         in
-        ( wrapInLets bindings substituted resultType, { ctx1 | metrics = newMetrics } )
+        ( wrapInLets bindings substituted resultType, { ctx2 | metrics = newMetrics } )
 
     else if numArgs < numParams then
         -- Partial application: bind available params, return closure with remaining
@@ -1215,8 +1215,8 @@ betaReduce ctx region info closureBody args resultType =
             ( bindings, ctx1 ) =
                 createBindings ctx usedParams args
 
-            substituted =
-                substituteAll bindings closureBody
+            ( substituted, ctx2 ) =
+                freshenLetBoundNames ctx1 (substituteAll bindings closureBody)
 
             newClosureType =
                 Mono.MFunction (List.map Tuple.second remainingParams) resultType
@@ -1231,13 +1231,13 @@ betaReduce ctx region info closureBody args resultType =
                 { info | params = remainingParams, captures = newCaptures }
 
             newMetrics =
-                { inlineCount = ctx1.metrics.inlineCount
-                , betaReductions = ctx1.metrics.betaReductions + 1
-                , letEliminations = ctx1.metrics.letEliminations
+                { inlineCount = ctx2.metrics.inlineCount
+                , betaReductions = ctx2.metrics.betaReductions + 1
+                , letEliminations = ctx2.metrics.letEliminations
                 }
         in
         ( wrapInLets bindings (MonoClosure newInfo substituted newClosureType) newClosureType
-        , { ctx1 | metrics = newMetrics }
+        , { ctx2 | metrics = newMetrics }
         )
 
     else
@@ -1249,20 +1249,20 @@ betaReduce ctx region info closureBody args resultType =
             ( bindings, ctx1 ) =
                 createBindings ctx params usedArgs
 
-            substituted =
-                substituteAll bindings closureBody
+            ( substituted, ctx2 ) =
+                freshenLetBoundNames ctx1 (substituteAll bindings closureBody)
 
             newMetrics =
-                { inlineCount = ctx1.metrics.inlineCount
-                , betaReductions = ctx1.metrics.betaReductions + 1
-                , letEliminations = ctx1.metrics.letEliminations
+                { inlineCount = ctx2.metrics.inlineCount
+                , betaReductions = ctx2.metrics.betaReductions + 1
+                , letEliminations = ctx2.metrics.letEliminations
                 }
 
             innerExpr =
                 wrapInLets bindings substituted resultType
         in
         ( MonoCall region innerExpr extraArgs resultType Mono.defaultCallInfo
-        , { ctx1 | metrics = newMetrics }
+        , { ctx2 | metrics = newMetrics }
         )
 
 
@@ -1537,6 +1537,553 @@ getDefName def =
             name
 
 
+setDefName : Name -> Mono.MonoDef -> Mono.MonoDef
+setDefName newName def =
+    case def of
+        Mono.MonoDef _ bound ->
+            Mono.MonoDef newName bound
+
+        Mono.MonoTailDef _ params bound ->
+            Mono.MonoTailDef newName params bound
+
+
+
+-- ============================================================================
+-- ====== ALPHA-RENAMING OF INSTANTIATED BODIES ======
+-- ============================================================================
+
+
+{-| Alpha-rename every let-bound name in an instantiated (inlined) body to a
+fresh name.
+
+`substituteAll` freshens the parameter bindings of an inlined call, but the
+body's internal let-bound names are copied verbatim. Inlining the same
+function twice into one consumer therefore produces duplicate let names on
+one chain, which breaks MLIR codegen: `generateLetSingle` keys SSA
+placeholders by name (`addPlaceholderMappings` reuses a same-named sibling
+placeholder and `forceResultVar` then renames two defining ops to the same
+SSA id — "redefinition of SSA value" / "operand does not dominate this use").
+
+So every instantiation must also freshen the let-bound names (MonoDef and
+MonoTailDef, including a tail def's MonoTailCall self-references) of the
+body it copies.
+
+Inner lets of a binding are freshened before the binding's own rename, so
+by the time a name is renamed no duplicate of it remains in scope and the
+rename cannot capture an inner shadowing binding.
+
+-}
+freshenLetBoundNames : RewriteCtx -> MonoExpr -> ( MonoExpr, RewriteCtx )
+freshenLetBoundNames ctx expr =
+    case expr of
+        MonoLet _ _ _ ->
+            -- A let CHAIN is renamed as a group: sibling defs can reference
+            -- each other in BOTH directions (mutually recursive closures, the
+            -- reason codegen's currentLetSiblings exists), so each rename must
+            -- apply across every def's bound expression and the final body,
+            -- not just the lexical body of its own binding.
+            freshenLetChain ctx expr
+
+        MonoVarLocal _ _ ->
+            ( expr, ctx )
+
+        MonoLiteral _ _ ->
+            ( expr, ctx )
+
+        MonoVarGlobal _ _ _ ->
+            ( expr, ctx )
+
+        MonoVarKernel _ _ _ _ _ ->
+            ( expr, ctx )
+
+        MonoUnit ->
+            ( expr, ctx )
+
+        MonoAccessorValue _ _ _ ->
+            ( expr, ctx )
+
+        MonoList region items itemType ->
+            let
+                ( items1, ctx1 ) =
+                    freshenLetBoundNamesList ctx items
+            in
+            ( MonoList region items1 itemType, ctx1 )
+
+        MonoClosure info body closureType ->
+            let
+                ( capturesRev, ctx1 ) =
+                    List.foldl
+                        (\( n, e, isUnboxed ) ( acc, c ) ->
+                            let
+                                ( e1, c1 ) =
+                                    freshenLetBoundNames c e
+                            in
+                            ( ( n, e1, isUnboxed ) :: acc, c1 )
+                        )
+                        ( [], ctx )
+                        info.captures
+
+                ( body1, ctx2 ) =
+                    freshenLetBoundNames ctx1 body
+            in
+            ( MonoClosure { info | captures = List.reverse capturesRev } body1 closureType, ctx2 )
+
+        MonoCall region func args resultType callInfo ->
+            let
+                ( func1, ctx1 ) =
+                    freshenLetBoundNames ctx func
+
+                ( args1, ctx2 ) =
+                    freshenLetBoundNamesList ctx1 args
+            in
+            ( MonoCall region func1 args1 resultType callInfo, ctx2 )
+
+        MonoTailCall name args resultType ->
+            let
+                ( argsRev, ctx1 ) =
+                    List.foldl
+                        (\( n, e ) ( acc, c ) ->
+                            let
+                                ( e1, c1 ) =
+                                    freshenLetBoundNames c e
+                            in
+                            ( ( n, e1 ) :: acc, c1 )
+                        )
+                        ( [], ctx )
+                        args
+            in
+            ( MonoTailCall name (List.reverse argsRev) resultType, ctx1 )
+
+        MonoIf branches final resultType ->
+            let
+                ( branchesRev, ctx1 ) =
+                    List.foldl
+                        (\( c, t ) ( acc, cx ) ->
+                            let
+                                ( c1, cx1 ) =
+                                    freshenLetBoundNames cx c
+
+                                ( t1, cx2 ) =
+                                    freshenLetBoundNames cx1 t
+                            in
+                            ( ( c1, t1 ) :: acc, cx2 )
+                        )
+                        ( [], ctx )
+                        branches
+
+                ( final1, ctx2 ) =
+                    freshenLetBoundNames ctx1 final
+            in
+            ( MonoIf (List.reverse branchesRev) final1 resultType, ctx2 )
+
+        MonoDestruct destructor inner resultType ->
+            let
+                ( inner1, ctx1 ) =
+                    freshenLetBoundNames ctx inner
+            in
+            ( MonoDestruct destructor inner1 resultType, ctx1 )
+
+        MonoCase unused rootName decider jumps resultType ->
+            let
+                ( decider1, ctx1 ) =
+                    freshenLetBoundNamesInDecider ctx decider
+
+                ( jumpsRev, ctx2 ) =
+                    List.foldl
+                        (\( idx, e ) ( acc, c ) ->
+                            let
+                                ( e1, c1 ) =
+                                    freshenLetBoundNames c e
+                            in
+                            ( ( idx, e1 ) :: acc, c1 )
+                        )
+                        ( [], ctx1 )
+                        jumps
+            in
+            ( MonoCase unused rootName decider1 (List.reverse jumpsRev) resultType, ctx2 )
+
+        MonoRecordCreate fields recordType ->
+            let
+                ( fieldsRev, ctx1 ) =
+                    List.foldl
+                        (\( n, e ) ( acc, c ) ->
+                            let
+                                ( e1, c1 ) =
+                                    freshenLetBoundNames c e
+                            in
+                            ( ( n, e1 ) :: acc, c1 )
+                        )
+                        ( [], ctx )
+                        fields
+            in
+            ( MonoRecordCreate (List.reverse fieldsRev) recordType, ctx1 )
+
+        MonoRecordAccess inner fieldName resultType ->
+            let
+                ( inner1, ctx1 ) =
+                    freshenLetBoundNames ctx inner
+            in
+            ( MonoRecordAccess inner1 fieldName resultType, ctx1 )
+
+        MonoRecordUpdate inner updates recordType ->
+            let
+                ( inner1, ctx1 ) =
+                    freshenLetBoundNames ctx inner
+
+                ( updatesRev, ctx2 ) =
+                    List.foldl
+                        (\( n, e ) ( acc, c ) ->
+                            let
+                                ( e1, c1 ) =
+                                    freshenLetBoundNames c e
+                            in
+                            ( ( n, e1 ) :: acc, c1 )
+                        )
+                        ( [], ctx1 )
+                        updates
+            in
+            ( MonoRecordUpdate inner1 (List.reverse updatesRev) recordType, ctx2 )
+
+        MonoTupleCreate region items tupleType ->
+            let
+                ( items1, ctx1 ) =
+                    freshenLetBoundNamesList ctx items
+            in
+            ( MonoTupleCreate region items1 tupleType, ctx1 )
+
+
+{-| Freshen one let chain as a group.
+
+1.  Split the spine into its defs and the final (non-let) body.
+2.  Freshen recursively INSIDE each def's bound expression and the final
+    body. After this no binder anywhere below carries one of the spine's
+    old names, so the renames in step 4 are total and capture-free.
+3.  Allocate a fresh name per spine def and rename the def itself.
+4.  Apply every (old -> fresh) rename across the whole rebuilt chain, so
+    backward and forward sibling references both follow their binding.
+
+-}
+freshenLetChain : RewriteCtx -> MonoExpr -> ( MonoExpr, RewriteCtx )
+freshenLetChain ctx chainExpr =
+    let
+        splitSpine : MonoExpr -> List ( Mono.MonoDef, Mono.MonoType ) -> ( List ( Mono.MonoDef, Mono.MonoType ), MonoExpr )
+        splitSpine e acc =
+            case e of
+                MonoLet d b t ->
+                    splitSpine b (( d, t ) :: acc)
+
+                _ ->
+                    ( List.reverse acc, e )
+
+        ( spineRev, finalBody0 ) =
+            splitSpine chainExpr []
+
+        -- Step 2: freshen inside each def's bound expr, and the final body
+        ( spineFreshenedRev, ctx1 ) =
+            List.foldl
+                (\( d, t ) ( acc, c ) ->
+                    let
+                        ( d1, c1 ) =
+                            freshenInDef c d
+                    in
+                    ( ( d1, t ) :: acc, c1 )
+                )
+                ( [], ctx )
+                spineRev
+
+        spineFreshened =
+            List.reverse spineFreshenedRev
+
+        ( finalBody1, ctx2 ) =
+            freshenLetBoundNames ctx1 finalBody0
+
+        -- Step 3: fresh name per def
+        ( renamesRev, spineRenamedRev, ctx3 ) =
+            List.foldl
+                (\( d, t ) ( rens, defs, c ) ->
+                    let
+                        ( newName, c1 ) =
+                            freshVar c
+                    in
+                    ( ( getDefName d, newName ) :: rens
+                    , ( setDefName newName d, t ) :: defs
+                    , c1
+                    )
+                )
+                ( [], [], ctx2 )
+                spineFreshened
+
+        rebuilt =
+            List.foldl
+                (\( d, t ) acc -> MonoLet d acc t)
+                finalBody1
+                spineRenamedRev
+
+        -- Step 4: apply all renames over the whole chain
+        renamed =
+            List.foldl
+                (\( old, new ) e -> renameLocal old new e)
+                rebuilt
+                renamesRev
+    in
+    ( renamed, ctx3 )
+
+
+freshenLetBoundNamesList : RewriteCtx -> List MonoExpr -> ( List MonoExpr, RewriteCtx )
+freshenLetBoundNamesList ctx exprs =
+    let
+        ( revExprs, ctx1 ) =
+            List.foldl
+                (\e ( acc, c ) ->
+                    let
+                        ( e1, c1 ) =
+                            freshenLetBoundNames c e
+                    in
+                    ( e1 :: acc, c1 )
+                )
+                ( [], ctx )
+                exprs
+    in
+    ( List.reverse revExprs, ctx1 )
+
+
+{-| Freshen the lets inside a definition's bound expression (not the
+definition's own name — the caller renames that).
+-}
+freshenInDef : RewriteCtx -> Mono.MonoDef -> ( Mono.MonoDef, RewriteCtx )
+freshenInDef ctx def =
+    case def of
+        Mono.MonoDef name bound ->
+            let
+                ( bound1, ctx1 ) =
+                    freshenLetBoundNames ctx bound
+            in
+            ( Mono.MonoDef name bound1, ctx1 )
+
+        Mono.MonoTailDef name params bound ->
+            let
+                ( bound1, ctx1 ) =
+                    freshenLetBoundNames ctx bound
+            in
+            ( Mono.MonoTailDef name params bound1, ctx1 )
+
+
+freshenLetBoundNamesInDecider : RewriteCtx -> Mono.Decider Mono.MonoChoice -> ( Mono.Decider Mono.MonoChoice, RewriteCtx )
+freshenLetBoundNamesInDecider ctx decider =
+    case decider of
+        Mono.Leaf (Mono.Inline expr) ->
+            let
+                ( expr1, ctx1 ) =
+                    freshenLetBoundNames ctx expr
+            in
+            ( Mono.Leaf (Mono.Inline expr1), ctx1 )
+
+        Mono.Leaf (Mono.Jump _) ->
+            ( decider, ctx )
+
+        Mono.Chain testChain success failure ->
+            let
+                ( success1, ctx1 ) =
+                    freshenLetBoundNamesInDecider ctx success
+
+                ( failure1, ctx2 ) =
+                    freshenLetBoundNamesInDecider ctx1 failure
+            in
+            ( Mono.Chain testChain success1 failure1, ctx2 )
+
+        Mono.FanOut path edges fallback ->
+            let
+                ( edgesRev, ctx1 ) =
+                    List.foldl
+                        (\( test, d ) ( acc, c ) ->
+                            let
+                                ( d1, c1 ) =
+                                    freshenLetBoundNamesInDecider c d
+                            in
+                            ( ( test, d1 ) :: acc, c1 )
+                        )
+                        ( [], ctx )
+                        edges
+
+                ( fallback1, ctx2 ) =
+                    freshenLetBoundNamesInDecider ctx1 fallback
+            in
+            ( Mono.FanOut path (List.reverse edgesRev) fallback1, ctx2 )
+
+
+{-| Rename all references to a let-bound name, preserving each occurrence's
+own type (unlike `substitute`, which rewrites the occurrence type to the
+binding's type — wrong for tail defs, whose occurrences carry function
+types).
+
+Also renames MonoTailCall callee names, which `substitute` never needs to
+touch (parameters are not tail-callable) but a tail def's rename must.
+
+-}
+renameLocal : Name -> Name -> MonoExpr -> MonoExpr
+renameLocal oldName newName expr =
+    case expr of
+        MonoVarLocal name varType ->
+            if name == oldName then
+                MonoVarLocal newName varType
+
+            else
+                expr
+
+        MonoLiteral _ _ ->
+            expr
+
+        MonoVarGlobal _ _ _ ->
+            expr
+
+        MonoVarKernel _ _ _ _ _ ->
+            expr
+
+        MonoUnit ->
+            expr
+
+        MonoAccessorValue _ _ _ ->
+            expr
+
+        MonoList region items itemType ->
+            MonoList region (List.map (renameLocal oldName newName) items) itemType
+
+        MonoClosure info body closureType ->
+            if List.any (\( n, _ ) -> n == oldName) info.params then
+                expr
+
+            else
+                let
+                    newCaptures =
+                        List.map
+                            (\( n, e, isUnboxed ) ->
+                                ( if n == oldName then
+                                    newName
+
+                                  else
+                                    n
+                                , renameLocal oldName newName e
+                                , isUnboxed
+                                )
+                            )
+                            info.captures
+                in
+                MonoClosure { info | captures = newCaptures } (renameLocal oldName newName body) closureType
+
+        MonoCall region func args resultType callInfo ->
+            MonoCall region
+                (renameLocal oldName newName func)
+                (List.map (renameLocal oldName newName) args)
+                resultType
+                callInfo
+
+        MonoTailCall name args resultType ->
+            MonoTailCall
+                (if name == oldName then
+                    newName
+
+                 else
+                    name
+                )
+                (List.map (\( n, e ) -> ( n, renameLocal oldName newName e )) args)
+                resultType
+
+        MonoIf branches final resultType ->
+            MonoIf
+                (List.map (\( c, t ) -> ( renameLocal oldName newName c, renameLocal oldName newName t )) branches)
+                (renameLocal oldName newName final)
+                resultType
+
+        MonoLet def body resultType ->
+            if getDefName def == oldName then
+                -- Name is shadowed, only rename in the def's bound expression
+                MonoLet (renameLocalInDef oldName newName def) body resultType
+
+            else
+                MonoLet (renameLocalInDef oldName newName def) (renameLocal oldName newName body) resultType
+
+        MonoDestruct (Mono.MonoDestructor destructName path destructType) inner resultType ->
+            let
+                newPath =
+                    substitutePath oldName newName path
+
+                newInner =
+                    if destructName == oldName then
+                        inner
+
+                    else
+                        renameLocal oldName newName inner
+            in
+            MonoDestruct (Mono.MonoDestructor destructName newPath destructType) newInner resultType
+
+        MonoCase unused rootName decider branches resultType ->
+            MonoCase unused
+                (if rootName == oldName then
+                    newName
+
+                 else
+                    rootName
+                )
+                (renameLocalInDecider oldName newName decider)
+                (List.map (\( idx, e ) -> ( idx, renameLocal oldName newName e )) branches)
+                resultType
+
+        MonoRecordCreate fields recordType ->
+            MonoRecordCreate (List.map (\( n, e ) -> ( n, renameLocal oldName newName e )) fields) recordType
+
+        MonoRecordAccess inner fieldName resultType ->
+            MonoRecordAccess (renameLocal oldName newName inner) fieldName resultType
+
+        MonoRecordUpdate inner updates recordType ->
+            MonoRecordUpdate
+                (renameLocal oldName newName inner)
+                (List.map (\( n, e ) -> ( n, renameLocal oldName newName e )) updates)
+                recordType
+
+        MonoTupleCreate region items tupleType ->
+            MonoTupleCreate region (List.map (renameLocal oldName newName) items) tupleType
+
+
+renameLocalInDef : Name -> Name -> Mono.MonoDef -> Mono.MonoDef
+renameLocalInDef oldName newName def =
+    case def of
+        Mono.MonoDef name bound ->
+            Mono.MonoDef name (renameLocal oldName newName bound)
+
+        Mono.MonoTailDef name params bound ->
+            if List.any (\( n, _ ) -> n == oldName) params then
+                def
+
+            else
+                Mono.MonoTailDef name params (renameLocal oldName newName bound)
+
+
+renameLocalInDecider : Name -> Name -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice
+renameLocalInDecider oldName newName decider =
+    case decider of
+        Mono.Leaf (Mono.Inline expr) ->
+            Mono.Leaf (Mono.Inline (renameLocal oldName newName expr))
+
+        Mono.Leaf (Mono.Jump _) ->
+            decider
+
+        Mono.Chain testChain success failure ->
+            Mono.Chain
+                (List.map
+                    (\( dtPath, test ) ->
+                        ( substituteDtPath oldName newName dtPath, test )
+                    )
+                    testChain
+                )
+                (renameLocalInDecider oldName newName success)
+                (renameLocalInDecider oldName newName failure)
+
+        Mono.FanOut path edges fallback ->
+            Mono.FanOut (substituteDtPath oldName newName path)
+                (List.map (\( test, d ) -> ( test, renameLocalInDecider oldName newName d )) edges)
+                (renameLocalInDecider oldName newName fallback)
+
+
 
 -- ============================================================================
 -- ====== DIRECT CALL INLINING ======
@@ -1632,12 +2179,12 @@ tryInlineCall ctx specId args resultType =
                         ( bindings, ctx2 ) =
                             createBindingsForInline ctx1 usedParams args
 
-                        substituted =
-                            substituteAllForInline bindings remappedBody
+                        ( substituted, ctx2a ) =
+                            freshenLetBoundNames ctx2 (substituteAllForInline bindings remappedBody)
 
                         -- Create a new closure with the remaining parameters
                         ( newLambdaId, ctx3 ) =
-                            freshLambdaIdForSpec ctx2 specId
+                            freshLambdaIdForSpec ctx2a specId
 
                         newClosureType =
                             Mono.MFunction (List.map Tuple.second remainingParams) resultType
@@ -1685,8 +2232,8 @@ tryInlineCall ctx specId args resultType =
                         ( bindings, ctx2 ) =
                             createBindingsForInline ctx1 params usedArgs
 
-                        substituted =
-                            substituteAllForInline bindings remappedBody
+                        ( substituted, ctx3 ) =
+                            freshenLetBoundNames ctx2 (substituteAllForInline bindings remappedBody)
 
                         innerExpr =
                             wrapInLetsForInline bindings substituted resultType
@@ -1695,15 +2242,15 @@ tryInlineCall ctx specId args resultType =
                             MonoCall A.zero innerExpr extraArgs resultType Mono.defaultCallInfo
 
                         newMetrics =
-                            { inlineCount = ctx2.metrics.inlineCount + 1
-                            , betaReductions = ctx2.metrics.betaReductions
-                            , letEliminations = ctx2.metrics.letEliminations
+                            { inlineCount = ctx3.metrics.inlineCount + 1
+                            , betaReductions = ctx3.metrics.betaReductions
+                            , letEliminations = ctx3.metrics.letEliminations
                             }
                     in
                     ( Just inlined
-                    , { ctx2
+                    , { ctx3
                         | metrics = newMetrics
-                        , inlineCountThisFunction = ctx2.inlineCountThisFunction + 1
+                        , inlineCountThisFunction = ctx3.inlineCountThisFunction + 1
                       }
                     )
 
@@ -1717,22 +2264,22 @@ tryInlineCall ctx specId args resultType =
                         ( bindings, ctx2 ) =
                             createBindingsForInline ctx1 params args
 
-                        substituted =
-                            substituteAllForInline bindings remappedBody
+                        ( substituted, ctx3 ) =
+                            freshenLetBoundNames ctx2 (substituteAllForInline bindings remappedBody)
 
                         inlined =
                             wrapInLetsForInline bindings substituted resultType
 
                         newMetrics =
-                            { inlineCount = ctx2.metrics.inlineCount + 1
-                            , betaReductions = ctx2.metrics.betaReductions
-                            , letEliminations = ctx2.metrics.letEliminations
+                            { inlineCount = ctx3.metrics.inlineCount + 1
+                            , betaReductions = ctx3.metrics.betaReductions
+                            , letEliminations = ctx3.metrics.letEliminations
                             }
                     in
                     ( Just inlined
-                    , { ctx2
+                    , { ctx3
                         | metrics = newMetrics
-                        , inlineCountThisFunction = ctx2.inlineCountThisFunction + 1
+                        , inlineCountThisFunction = ctx3.inlineCountThisFunction + 1
                       }
                     )
 

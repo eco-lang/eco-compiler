@@ -370,7 +370,21 @@ hexDigit c =
         Nothing
 
 
-{-| Get the UTF-8 byte length of a string.
+{-| Get the UTF-8 byte length of a string, as `Bytes.Encode.string` will
+produce it.
+
+This must agree byte-for-byte with the data emitted by `BE.string`, or the
+string-section size varints diverge from the string data and MLIR's bytecode
+reader rejects the whole file ("unexpected trailing data between the offsets
+for strings and their data").
+
+Surrogate halves (0xD800-0xDFFF) count as 2 bytes each: the native kernel's
+`String.foldl` yields astral characters as two UTF-16 code units (native Char
+is i16, REP\_ABI\_001), while `BE.string` encodes the recombined code point as
+one 4-byte UTF-8 sequence — 2 + 2 keeps the total right. Under the JS
+compiler build, `String.foldl` yields the combined code point (>= 0x10000)
+directly, which takes the 4-byte branch.
+
 -}
 stringByteLength : String -> Int
 stringByteLength s =
@@ -384,6 +398,9 @@ stringByteLength s =
                 acc + 1
 
             else if code < 0x0800 then
+                acc + 2
+
+            else if code >= 0xD800 && code <= 0xDFFF then
                 acc + 2
 
             else if code < 0x00010000 then

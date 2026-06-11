@@ -4346,6 +4346,21 @@ generateLetSingle ctx def body =
                         -- value. Renaming would break SSA references, so just alias.
                         ( fixedResult, fixedResult.resultVar )
 
+                    else if Set.member placeholderVar fixedResult.ctx.definedSsaVars then
+                        -- The placeholder was already force-defined by an earlier
+                        -- same-named let on this chain. Forcing again would emit a
+                        -- second definition of the same SSA id (invalid MLIR:
+                        -- "redefinition of SSA value"). Fail loudly: an upstream
+                        -- pass duplicated a let-bound name without alpha-renaming
+                        -- (see MonoInlineSimplify.freshenLetBoundNames).
+                        crash
+                            ("generateLetSingle: SSA placeholder "
+                                ++ placeholderVar
+                                ++ " for let-bound name '"
+                                ++ name
+                                ++ "' is already defined - duplicate let name reached codegen"
+                            )
+
                     else
                         ( forceResultVar placeholderVar fixedResult, placeholderVar )
 
