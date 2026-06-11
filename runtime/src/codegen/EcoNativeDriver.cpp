@@ -373,10 +373,51 @@ int linkExecutable(const std::string &objectFile,
     // share one code path.
     using eco::config::resolveFile;
 
-    // Stage C: under ECO_STATIC_MUSL we ship a bundled static ld.lld in
-    // lib/eco-runtime/. Stage A / non-static profiles use the host linker
+    // Stage D: output link profile. The profile used to be implied by the
+    // compile-time bundle flavor (ecoStaticMusl); it is now selected per
+    // output kind so the musl bundle can produce BOTH fully-static
+    // executables (Stage B.5) and glibc-ABI shared libraries (Stage D)
+    // from one binary. See plans/stage-d-hybrid-link-profiles.md.
+    enum class LinkProfile {
+        MuslStaticExe,     // Stage B.5: -static, musl/libc++/compiler-rt
+        HostExe,           // legacy dev/A.5: -pie against host glibc paths
+        HostShared,        // legacy dev .so/.node via the host linker
+        GlibcBundleShared, // Stage D: -shared against the bundled glibc/ tree
+    };
+    LinkProfile profile;
+    if (sharedLib) {
+        if (eco::config::ecoStaticMusl) {
+            // A fully-static musl shared object remains a contradiction in
+            // terms (no dynamic section, two libcs in one process); what
+            // changed in Stage D is that the bundle can now carry a second
+            // set of glibc link inputs for exactly this case.
+            if (!eco::config::hasGlibcOutputProfile()) {
+                llvm::errs()
+                    << "Error: this eco bundle lacks the glibc output "
+                       "profile (lib/eco-runtime/glibc/), which .so/.node "
+                       "outputs require: shared libraries cannot be "
+                       "fully-static musl objects\n";
+                return 1;
+            }
+            profile = LinkProfile::GlibcBundleShared;
+        } else {
+            profile = LinkProfile::HostShared;
+        }
+    } else {
+        profile = eco::config::ecoStaticMusl ? LinkProfile::MuslStaticExe
+                                             : LinkProfile::HostExe;
+    }
+    // Bundle profiles take every input from lib/eco-runtime/; host
+    // profiles use the configure-time-discovered host toolchain paths.
+    const bool bundleProfile = profile == LinkProfile::MuslStaticExe ||
+                               profile == LinkProfile::GlibcBundleShared;
+    const bool hostProfile = !bundleProfile;
+
+    // Stage C: bundle profiles use the bundled static ld.lld from
+    // lib/eco-runtime/ (a linker is target-ABI-agnostic, so it serves the
+    // Stage D glibc -shared links too). Host profiles use the host linker
     // discovered at CMake configure time.
-    std::string linkerPath = eco::config::ecoStaticMusl
+    std::string linkerPath = bundleProfile
         ? resolveFile(eco::config::bundledLinker)
         : std::string(eco::config::systemLinker);
 
@@ -393,33 +434,36 @@ int linkExecutable(const std::string &objectFile,
     args.push_back(linkerPath);
     args.push_back("--eh-frame-hdr");
 
-    // Alpine's libc++.a / libc++abi.a embed `#pragma comment(lib)` hints
-    // for -lrt and -lpthread. On musl those resolve to empty .a stubs in
-    // /usr/lib/, but with our explicit-absolute-paths link line we don't
-    // emit any -L flag for /usr/lib, so lld can't find them. The stubs
-    // are empty anyway (musl folds rt/pthread/dl/m into libc), so skip
-    // dependent-library resolution entirely under Stage B.
-    if (eco::config::ecoStaticMusl) {
+    // Clang-built libc++.a / libc++abi.a embed `#pragma comment(lib)`
+    // hints for -lrt and -lpthread (.deplibs sections). With our
+    // explicit-absolute-paths link line we emit no -L dirs, so lld can't
+    // resolve them — and doesn't need to (musl folds rt/pthread into
+    // libc; the Stage D shared profile leaves libc symbols undefined by
+    // design). Both bundle profiles skip dependent-library resolution.
+    if (bundleProfile) {
         args.push_back("--no-dependent-libraries");
     }
 
-    // Shared-library output (.so/.node, host embedding) is only supported
-    // in the dynamic-glibc profile: a fully-static musl shared object is
-    // a contradiction in terms.
-    if (sharedLib && eco::config::ecoStaticMusl) {
-        llvm::errs() << "Error: shared-library output is not supported in "
-                        "the static-musl profile\n";
-        return 1;
-    }
-
-    // Stage B.5 musl-static vs Stage A.5 glibc-dynamic-PIE. Under
-    // ecoStaticMusl the binary is fully static (no PT_INTERP, no shared
-    // deps), so we drop `-pie` + `-dynamic-linker` and pass `-static`
-    // instead. The rest of the layout (start-group / archives / crt
-    // epilogue) is identical across profiles.
+    // Stage B.5 musl-static vs Stage A.5 glibc-dynamic-PIE vs -shared.
+    // Under MuslStaticExe the binary is fully static (no PT_INTERP, no
+    // shared deps), so we drop `-pie` + `-dynamic-linker` and pass
+    // `-static` instead.
     if (sharedLib) {
         args.push_back("-shared");
-    } else if (eco::config::ecoStaticMusl) {
+        // Stage D: the emitted objects carry R_X86_64_64 relocations in
+        // the allocatable .llvm_stackmaps section, which lld refuses in
+        // position-independent output unless told otherwise (the host
+        // shared profile never hits this — ld.bfd emits the same thing
+        // with a DT_TEXTREL warning). The embed runtime REQUIRES those
+        // relocations applied in memory (eco_embed.cpp parses the loaded
+        // section with loadBase=0), so DT_TEXTREL is the correct
+        // behavior, not a workaround. Follow-up to remove it tracked in
+        // plans/stage-d-hybrid-link-profiles.md.
+        if (profile == LinkProfile::GlibcBundleShared) {
+            args.push_back("-z");
+            args.push_back("notext");
+        }
+    } else if (profile == LinkProfile::MuslStaticExe) {
         args.push_back("-static");
     } else {
         args.push_back("-pie");
@@ -430,10 +474,10 @@ int linkExecutable(const std::string &objectFile,
     args.push_back("-o");
     args.push_back(outputPath);
 
-    // Search dirs are only needed for the non-MUSL glibc-PIE link, where
-    // -lc / -lm / -lstdc++ resolve dynamically. Stage B.5 (MUSL) passes
-    // every dep as an absolute path under runtimeDir() — no -L needed.
-    if (!eco::config::ecoStaticMusl) {
+    // Search dirs are only needed for the host profiles, where -lc /
+    // -lm / -lstdc++ resolve dynamically. Bundle profiles pass every dep
+    // as an absolute path under runtimeDir() — no -L needed.
+    if (hostProfile) {
         auto libSearchDirs = eco::config::librarySearchDirs();
         for (const auto &d : libSearchDirs) {
             if (d.empty())
@@ -451,11 +495,16 @@ int linkExecutable(const std::string &objectFile,
     //   - musl/Stage B.5:  crt1.o  (static startup) + crti.o +
     //     clang_rt.crtbegin-x86_64.o (compiler-rt non-PIE init markers).
     //   - shared lib: no startup object (no _start), but crti/crtbeginS
-    //     still provide the init/fini scaffolding.
-    if (eco::config::ecoStaticMusl) {
+    //     still provide the init/fini scaffolding. Stage D takes them
+    //     from the bundle's glibc/crt tree (harvested from the Debian
+    //     builder), not from the host.
+    if (profile == LinkProfile::MuslStaticExe) {
         args.push_back(push(resolveFile(eco::config::crt1ObjStatic)));
         args.push_back(push(resolveFile(eco::config::crtiObjStatic)));
         args.push_back(push(resolveFile(eco::config::crtbeginObjStatic)));
+    } else if (profile == LinkProfile::GlibcBundleShared) {
+        args.push_back(push(resolveFile(eco::config::glibcCrtiObj)));
+        args.push_back(push(resolveFile(eco::config::glibcCrtbeginObj)));
     } else {
         if (!sharedLib)
             args.push_back(eco::config::crt1Obj);
@@ -465,6 +514,22 @@ int linkExecutable(const std::string &objectFile,
 
     // The user's compiled .o.
     args.push_back(objectFile);
+
+    // Project archive set: the Stage D shared profile links the
+    // glibc-compiled copies from glibc/project/; everything else uses
+    // the original (musl or build-tree) set. Same basenames, same
+    // structure — only the subdir differs.
+    const bool glibcTree = profile == LinkProfile::GlibcBundleShared;
+    const eco::config::RuntimeFile &embedLibFile =
+        glibcTree ? eco::config::glibcEmbedLib : eco::config::embedLib;
+    const eco::config::RuntimeFile &nodeGlueFile =
+        glibcTree ? eco::config::glibcNodeGlueLib : eco::config::nodeGlueLib;
+    const eco::config::RuntimeFile &runtimeLibFile =
+        glibcTree ? eco::config::glibcRuntimeLib : eco::config::runtimeLib;
+    const auto elmKernelFiles = glibcTree ? eco::config::glibcElmKernelLibs()
+                                          : eco::config::elmKernelLibs();
+    const auto ecoKernelFiles = glibcTree ? eco::config::glibcEcoKernelLibs()
+                                          : eco::config::ecoKernelLibs();
 
     // Project static archives, wrapped in --start-group so cyclic deps
     // between EffectRegistry / Time / Http effect managers and the
@@ -477,23 +542,23 @@ int linkExecutable(const std::string &objectFile,
     // time and nothing inside the .so otherwise references them.
     if (sharedLib) {
         args.push_back("--whole-archive");
-        args.push_back(push(resolveFile(eco::config::embedLib)));
+        args.push_back(push(resolveFile(embedLibFile)));
         // .node targets additionally get the N-API glue (whole-archive so
         // napi_register_module_v1 — referenced only by Node's dlopen — is
         // retained and exported).
         if (pathEndsWith(outputPath, ".node")) {
-            args.push_back(push(resolveFile(eco::config::nodeGlueLib)));
+            args.push_back(push(resolveFile(nodeGlueFile)));
         }
         args.push_back("--no-whole-archive");
     } else {
         args.push_back(push(resolveFile(eco::config::entryLib)));
     }
-    args.push_back(push(resolveFile(eco::config::runtimeLib)));
+    args.push_back(push(resolveFile(runtimeLibFile)));
 
     // ElmKernel_Utils wrapped in --whole-archive so UtilsExports.o always
     // links even when no Elm code references its C-linkage exports —
     // the Order LT/EQ/GT singletons live there.
-    for (const auto &lib : eco::config::elmKernelLibs()) {
+    for (const auto &lib : elmKernelFiles) {
         bool isUtils = std::string_view(lib.basename) == "libElmKernel_Utils.a";
         if (isUtils)
             args.push_back("--whole-archive");
@@ -502,22 +567,38 @@ int linkExecutable(const std::string &objectFile,
             args.push_back("--no-whole-archive");
     }
 
-    for (const auto &lib : eco::config::ecoKernelLibs())
+    for (const auto &lib : ecoKernelFiles)
         args.push_back(push(resolveFile(lib)));
 
     args.push_back("--end-group");
 
     // libc — under MUSL/static we ship libc.a in the bundle as an
-    // absolute path. Under glibc/dynamic we let the linker resolve via -l.
-    if (eco::config::ecoStaticMusl) {
+    // absolute path. Under the host profiles we let the linker resolve
+    // via -l. Stage D passes NO libc inputs at all: libc/libm/pthread
+    // symbols stay undefined (allowed for -shared) and bind at load time
+    // from the glibc already in the host process — the same mechanism
+    // the napi_* symbols use. C hosts linking a produced .so must add
+    // -lm themselves (documented in design_docs/distribution.md).
+    if (profile == LinkProfile::MuslStaticExe) {
         args.push_back(push(resolveFile(eco::config::libcStaticA)));
-    } else {
+    } else if (hostProfile) {
         args.push_back("-lpthread");
         args.push_back("-lm");
         args.push_back("-lc");
     }
 
-    if (eco::config::ecoStatic) {
+    if (profile == LinkProfile::GlibcBundleShared) {
+        // Stage D: glibc-targeting static PIC archives from glibc/.
+        // libc++abi after libc++ (cxxabi half); z last for forward refs
+        // from vendored libzip and libcurl.
+        args.push_back(push(resolveFile(eco::config::glibcLibcxxA)));
+        args.push_back(push(resolveFile(eco::config::glibcLibcxxabiA)));
+        args.push_back(push(resolveFile(eco::config::glibcCurlA)));
+        args.push_back(push(resolveFile(eco::config::glibcSslA)));
+        args.push_back(push(resolveFile(eco::config::glibcCryptoA)));
+        args.push_back(push(resolveFile(eco::config::glibcZipA)));
+        args.push_back(push(resolveFile(eco::config::glibcZA)));
+    } else if (eco::config::ecoStatic) {
         // libz is required by both vendored libzip and libcurl (HTTP
         // Content-Encoding: gzip), so it comes last to resolve forward refs.
         if (eco::config::ecoStaticMusl) {
@@ -544,14 +625,18 @@ int linkExecutable(const std::string &objectFile,
         args.push_back("-lzip");
     }
 
-    // Compiler builtins + unwinder. Three profiles:
+    // Compiler builtins + unwinder. Four profiles:
     //   - Stage B.5 (musl/static): compiler-rt builtins.a, clean overlap
     //     with libunwind (no --allow-multiple-definition).
+    //   - Stage D (glibc bundle shared): glibc-built compiler-rt builtins
+    //     from glibc/, same clean stack.
     //   - Stage A.5 (glibc/static): libgcc.a + --allow-multiple-definition
     //     (the LLVM libunwind / libgcc_eh `_Unwind_*` overlap workaround).
     //   - Default (glibc/dynamic): `-lgcc_s libgcc.a -lgcc_s` dance for the
     //     cyclic libgcc.a / libgcc_s.so dependency.
-    if (eco::config::ecoStaticMusl) {
+    if (profile == LinkProfile::GlibcBundleShared) {
+        args.push_back(push(resolveFile(eco::config::glibcBuiltinsA)));
+    } else if (profile == LinkProfile::MuslStaticExe) {
         args.push_back(push(resolveFile(eco::config::compilerRtBuiltinsA)));
     } else if (eco::config::ecoStatic) {
         args.push_back(eco::config::libgccA);
@@ -562,12 +647,51 @@ int linkExecutable(const std::string &objectFile,
         args.push_back("-lgcc_s");
     }
 
-    args.push_back(push(resolveFile(eco::config::unwindLib)));
+    args.push_back(push(resolveFile(
+        glibcTree ? eco::config::glibcUnwindA : eco::config::unwindLib)));
 
-    // crt epilogue: clang_rt.crtend (musl non-PIE) vs crtendS.o (glibc PIE).
-    if (eco::config::ecoStaticMusl) {
+    if (profile == LinkProfile::GlibcBundleShared) {
+        // Hide every statically linked archive EXCEPT the two
+        // whole-archived entry libs. Scoped, NOT `ALL`: lld applies
+        // --exclude-libs to whole-archived members too, so ALL would
+        // demote napi_register_module_v1 and eco_app_* (embed/glue) to
+        // local and break the addon (verified). Hiding does two jobs:
+        //   1. Non-preemptibility: stops Node's libstdc++/libgcc_s from
+        //      interposing our static libc++abi/libunwind (operator
+        //      new/delete, __cxa_*, _Unwind_*, plain-std:: typeinfos),
+        //      and makes compiler-internal direct-PC32 assumptions hold
+        //      (clang's __builtin_cpu_supports emits R_X86_64_PC32 to
+        //      __cpu_model expecting a link-local definition — kernel
+        //      archives like ElmKernel_Regex carry exactly that).
+        //   2. Export hygiene: kernel/runtime/dep symbols stay out of
+        //      .dynsym. The user program's own symbols (in the .o, not
+        //      an archive) remain exported — trimming them is the D6
+        //      follow-up.
+        std::string excludeLibs =
+            "--exclude-libs=libc++.a,libc++abi.a,libunwind.a,"
+            "libclang_rt.builtins-x86_64.a,libcurl.a,libssl.a,"
+            "libcrypto.a,libzip.a,libz.a";
+        excludeLibs += ",";
+        excludeLibs += runtimeLibFile.basename;
+        for (const auto &lib : elmKernelFiles) {
+            excludeLibs += ",";
+            excludeLibs += lib.basename;
+        }
+        for (const auto &lib : ecoKernelFiles) {
+            excludeLibs += ",";
+            excludeLibs += lib.basename;
+        }
+        args.push_back(push(std::move(excludeLibs)));
+    }
+
+    // crt epilogue: clang_rt.crtend (musl non-PIE) vs crtendS.o (glibc
+    // PIE/shared; Stage D takes it from the bundled glibc/crt tree).
+    if (profile == LinkProfile::MuslStaticExe) {
         args.push_back(push(resolveFile(eco::config::crtendObjStatic)));
         args.push_back(push(resolveFile(eco::config::crtnObjStatic)));
+    } else if (profile == LinkProfile::GlibcBundleShared) {
+        args.push_back(push(resolveFile(eco::config::glibcCrtendObj)));
+        args.push_back(push(resolveFile(eco::config::glibcCrtnObj)));
     } else {
         args.push_back(eco::config::crtendObj);
         args.push_back(eco::config::crtnObj);
@@ -575,7 +699,9 @@ int linkExecutable(const std::string &objectFile,
 
     if (!eco::config::ecoStatic) {
         // rpath so the produced AOT binary finds libunwind.so at runtime
-        // without LD_LIBRARY_PATH. Not needed for the .a path.
+        // without LD_LIBRARY_PATH. Not needed for the .a path. Host
+        // profiles only: ecoStatic is constexpr-true in the musl bundle,
+        // and Stage D links libunwind.a — no rpath either way.
         args.push_back("-rpath");
         args.push_back(eco::config::unwindLibDir);
     }
@@ -608,6 +734,12 @@ int linkExecutable(const std::string &objectFile,
     // For .node addons, emit a sibling CommonJS shim (<base>.js) so hosts
     // written against the JS target's `require("./build/elm.js")` resolve
     // to the native addon unaltered (name the output elm.node to match).
+    //
+    // The shim also turns the raw loader error a glibc-ABI addon produces
+    // under musl-libc Node (e.g. Alpine) into a clear message:
+    // process.report's header.glibcVersionRuntime is absent exactly on
+    // musl builds of Node, a stable documented discriminator. See
+    // plans/stage-d-hybrid-link-profiles.md step 6.
     if (pathEndsWith(outputPath, ".node")) {
         llvm::SmallString<256> shimPath(outputPath.c_str());
         llvm::sys::path::replace_extension(shimPath, ".js");
@@ -616,7 +748,19 @@ int linkExecutable(const std::string &objectFile,
         llvm::raw_fd_ostream shim(shimPath, ec);
         if (!ec) {
             shim << "// Generated by eco: loads the native Elm addon.\n"
-                 << "module.exports = require('./" << base << "');\n";
+                 << "try {\n"
+                 << "    module.exports = require('./" << base << "');\n"
+                 << "} catch (e) {\n"
+                 << "    var report = process.report && process.report.getReport\n"
+                 << "        ? process.report.getReport() : undefined;\n"
+                 << "    if (!(report && report.header && "
+                    "report.header.glibcVersionRuntime)) {\n"
+                 << "        throw new Error(\"eco .node addons are "
+                    "glibc-ABI; musl-libc Node (e.g. Alpine) is not "
+                    "supported\", { cause: e });\n"
+                 << "    }\n"
+                 << "    throw e;\n"
+                 << "}\n";
         }
     }
 

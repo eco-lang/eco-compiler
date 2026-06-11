@@ -31,20 +31,36 @@ Both archives carry the same tree.
 eco-0.1.0-x86_64-linux-musl/
 ├─ bin/
 │  └─ eco                                      (the static eco binary)
-└─ lib/eco-runtime/
-   ├─ ld.lld                                   (static, bundled)
-   ├─ crt/
-   │  ├─ crt1.o, crti.o, crtn.o                (musl)
-   │  ├─ clang_rt.crtbegin-x86_64.o            (compiler-rt)
-   │  └─ clang_rt.crtend-x86_64.o              (compiler-rt)
-   ├─ libc.a, libc++.a, libc++abi.a, libunwind.a, libclang_rt.builtins-x86_64.a
-   ├─ libcurl.a, libssl.a, libcrypto.a, libzip.a, libz.a
-   └─ project/
-      ├─ libEcoEntryStatic.a
-      ├─ libEcoRuntimeStatic.a
-      ├─ libEcoNativeDriverStatic.a
-      ├─ libElmKernel_*.a                       (24 archives)
-      └─ libEcoKernel_*.a                       ( 9 archives)
+├─ lib/eco-runtime/
+│  ├─ ld.lld                                   (static, bundled — also drives the glibc -shared links)
+│  ├─ crt/
+│  │  ├─ crt1.o, crti.o, crtn.o                (musl)
+│  │  ├─ clang_rt.crtbegin-x86_64.o            (compiler-rt)
+│  │  └─ clang_rt.crtend-x86_64.o              (compiler-rt)
+│  ├─ libc.a, libc++.a, libc++abi.a, libunwind.a, libclang_rt.builtins-x86_64.a
+│  ├─ libcurl.a, libssl.a, libcrypto.a, libzip.a, libz.a
+│  ├─ project/
+│  │  ├─ libEcoEntryStatic.a
+│  │  ├─ libEcoRuntimeStatic.a
+│  │  ├─ libEcoNativeDriverStatic.a
+│  │  ├─ libElmKernel_*.a                      (22 archives)
+│  │  └─ libEcoKernel_*.a                      ( 9 archives)
+│  └─ glibc/                                   (second link-input set, glibc ABI, all PIC — Stage D)
+│     ├─ crt/
+│     │  ├─ crti.o, crtn.o                     (glibc, harvested from the Debian builder)
+│     │  └─ crtbeginS.o, crtendS.o             (gcc, shared/PIC variants)
+│     ├─ libc++.a, libc++abi.a, libunwind.a
+│     ├─ libclang_rt.builtins-x86_64.a
+│     ├─ libcurl.a, libssl.a, libcrypto.a, libzip.a, libz.a
+│     └─ project/
+│        ├─ libEcoEmbedStatic.a                (host-embedding entry: eco_app_start/stop/join)
+│        ├─ libEcoNodeGlue.a                   (N-API glue: napi_register_module_v1)
+│        ├─ libEcoRuntimeStatic.a
+│        ├─ libElmKernel_*.a                   (22)
+│        └─ libEcoKernel_*.a                   ( 9)
+└─ share/eco/
+   ├─ kernel/eco-kernel-cpp/                   (the eco/kernel Elm package sources)
+   └─ examples/hello/                          (starter example: elm.json + src/Hello.elm)
 ```
 
 `bin/` and `lib/eco-runtime/` must remain siblings. The runtime resolver
@@ -88,13 +104,49 @@ for debugging missing-file problems.
 
 ## ABI of the produced binaries
 
-`eco` produces **musl-static** ELF executables. The user code, every
+Two output profiles ship in one bundle (see
+[`plans/stage-d-hybrid-link-profiles.md`](../plans/stage-d-hybrid-link-profiles.md)):
+
+**Executables are musl fully-static**, unchanged. The user code, every
 project archive, the bundled libc/libc++/libunwind/compiler-rt — all
 musl. The produced binaries have no `NEEDED` entries and require no
-shared libraries at runtime, the same way `eco` itself does.
+shared libraries at runtime, the same way `eco` itself does. This is
+intentional: a binary produced on a Debian host runs on Alpine, and
+vice versa.
 
-This is intentional: it means binaries produced on a Debian build host
-run on Alpine, and vice versa. It is **not** glibc-compatible at the ABI
-level — you cannot, for example, `dlopen()` a glibc-built `.so` from
-a binary `eco` produced. If you need glibc-ABI outputs, that's Stage A
-of the static-link plan; not in this distribution.
+**`.so` and `.node` outputs are glibc-ABI**, linked from the bundled
+`lib/eco-runtime/glibc/` tree. A shared object lives inside a host
+process and cannot be a fully-static musl artifact, so these outputs
+target the libc the host is already running:
+
+- A produced `.node` loads into stock glibc Node ≥ 16; a produced `.so`
+  into any glibc C/C++ host.
+- Self-contained: curl/ssl/zip/z, libc++, libunwind and compiler-rt are
+  statically linked in and hidden — the artifact has **no `NEEDED`
+  entries** and no RUNPATH. libc/libm symbols are left undefined at
+  link time and bind at load time from the glibc already in the host
+  process.
+- C hosts linking against a produced `.so` must add `-lm`: the artifact
+  carries undefined libm symbols and has no `NEEDED` entry to pull libm
+  in itself. (Node hosts need nothing extra — node already loads libm.)
+- The minimum glibc version is computed when the bundle is built and
+  recorded in `lib/eco-runtime/glibc/GLIBC_FLOOR`.
+- musl-hosted Node (Alpine) is **not supported** for `.node` outputs.
+  The generated `.js` shim detects musl Node and reports this clearly
+  instead of leaking a raw loader error.
+
+## Output kinds
+
+What `eco make --output=X` produces from the installed bundle:
+
+| `--output` ending | Artifact | Link profile |
+|---|---|---|
+| *(omitted)* | `index.html` (one main) / `elm.js` (several) | n/a — JS codegen |
+| `/dev/null` | nothing (typecheck only) | n/a |
+| `.js` | JavaScript file | n/a — JS codegen |
+| `.html` | self-contained HTML page | n/a — JS codegen |
+| `.mlir` | MLIR module dump (bytecode; text with `--text-mlir`) | n/a — no native link |
+| `.o` | relocatable object (always PIC) | profile-neutral, no link |
+| `.so` | shared library (C embedding API, `eco_app_*`) | dynamic-glibc |
+| `.node` | Node.js addon + sibling `.js` shim | dynamic-glibc |
+| *(anything else)* | ELF executable | musl fully-static |

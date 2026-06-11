@@ -252,8 +252,9 @@ make =
                 |> Terminal.more
                     (Terminal.flag "output"
                         Make.output
-                        ("Specify the name of the resulting JS file. For example --output=assets/eco.js "
-                            ++ "to generate the JS at assets/eco.js or --output=/dev/null to generate no output at all!"
+                        ("Specify the output file. The ending picks the format: .js (JavaScript), .html (HTML page), "
+                            ++ ".mlir (MLIR dump), .o (object file), .so (shared library), .node (Node.js addon + .js shim), "
+                            ++ "any other name (native executable), or /dev/null (typecheck only)."
                         )
                     )
                 |> Terminal.more

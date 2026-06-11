@@ -93,6 +93,15 @@ set(_llvm_libunwind_inc_dirs "")
 foreach(_prefix IN LISTS _llvm_libunwind_prefixes)
     list(APPEND _llvm_libunwind_inc_dirs "${_prefix}/include")
 endforeach()
+# Debian/Ubuntu apt packaging (libunwind-XX-dev, the LLVM unwinder) nests
+# the headers at /usr/include/libunwind/{libunwind.h,__libunwind_config.h}
+# while the archive sits under /usr/lib/llvm-XX/lib. Appended AFTER the
+# explicit prefixes so a source-built LLVM still wins; the nongnu
+# libunwind-dev package puts a bare /usr/include/libunwind.h instead, which
+# this dir doesn't match and the __libunwind_config.h marker check below
+# would reject anyway. Used by Stage D's glibc-runtime stage
+# (-DLLVM_INSTALL_PREFIX=/usr/lib/llvm-14 finds only the archive).
+list(APPEND _llvm_libunwind_inc_dirs "/usr/include/libunwind")
 
 find_path(LLVM_LIBUNWIND_INCLUDE_DIR
     NAMES libunwind.h

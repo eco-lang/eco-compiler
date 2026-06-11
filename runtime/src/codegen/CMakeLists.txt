@@ -9,9 +9,6 @@
 # The generated files will be placed in the build directory under:
 #   ${CMAKE_CURRENT_BINARY_DIR}/include/eco/
 
-# Find MLIR package (this also finds LLVM)
-find_package(MLIR REQUIRED CONFIG)
-
 # Note: elm-kernel-cpp is included from the top-level CMakeLists.txt
 # The ElmKernel target is available for linking.
 
@@ -23,6 +20,20 @@ else()
 endif()
 
 option(ECO_LOWERING_VALIDATION "Enable validation-only lowering passes (GC liveness audit, post-RS4GC ptr<1>↔i64 boundary verifier; slow, independent of ECO_GC_DEBUG)" OFF)
+
+# Stage D archive-only mode (ECO_GLIBC_OUTPUT_RUNTIME): everything MLIR
+# is gated off — find_package(MLIR), TableGen, the dialect/pass/driver
+# targets and eco-boot-native. What remains is the toolchain-independent
+# half this file also owns: the EcoEntry/Embed/NodeGlue/RuntimeStatic
+# targets, the kernel module lists, linker/crt discovery and the
+# EcoBootConfig.h generation. This is what lets the glibc-runtime Docker
+# stage run on a plain debian image with apt packages instead of the
+# multi-hour eco-llvm-debian source image.
+# See plans/stage-d-hybrid-link-profiles.md (step 2).
+if(NOT ECO_GLIBC_OUTPUT_RUNTIME)
+
+# Find MLIR package (this also finds LLVM)
+find_package(MLIR REQUIRED CONFIG)
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
@@ -41,11 +52,24 @@ include(HandleLLVMOptions)
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${MLIR_INCLUDE_DIRS})
 
+else()
+    # Replicate the semantically relevant compile flags HandleLLVMOptions
+    # would have injected for this directory's surviving targets
+    # (EcoRuntimeStatic & friends), so the staged glibc archives match the
+    # full build's codegen. Verified against the full build's compile
+    # commands; EH is per-target opt-in (-fexceptions) in both modes.
+    add_compile_options(
+        -ffunction-sections -fdata-sections
+        -fno-semantic-interposition -fvisibility-inlines-hidden)
+endif()
+
 # Include directory for generated headers
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/include)
 
 # Include directory for source headers (EcoDialect.h, EcoOps.h)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+
+if(NOT ECO_GLIBC_OUTPUT_RUNTIME)
 
 # Add LLVM definitions. HandleLLVMOptions (included above) rewrites
 # LLVM_DEFINITIONS into a single space-joined string built from the
@@ -575,6 +599,8 @@ else()
     target_link_libraries(obj.EcoRunner PRIVATE CURL::libcurl)
 endif()
 
+endif() # NOT ECO_GLIBC_OUTPUT_RUNTIME — MLIR dialects/passes/tools half
+
 #------------------------------------------------------------------------------
 # Build the EcoRuntimeStatic library (for linking into AOT-compiled binaries)
 #------------------------------------------------------------------------------
@@ -680,8 +706,15 @@ endif()
 # hosts written against compiled-to-JS Elm run unaltered against native code.
 #------------------------------------------------------------------------------
 
+# Node-API headers: prefer the vendored copy (runtime/third_party/
+# node-api-headers — ABI-stable N-API, MIT; see its README) so EcoNodeGlue
+# and `.node` output support build on EVERY host, including the Alpine
+# release image, which ships no node headers (this used to silently
+# disable .node outputs there — Stage D fix). System paths remain as
+# fallback and ECO_NODE_API_INCLUDE_DIR stays overridable via the cache.
 find_path(ECO_NODE_API_INCLUDE_DIR node_api.h
-    PATHS /usr/include/node /usr/local/include/node)
+    PATHS ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/node-api-headers
+          /usr/include/node /usr/local/include/node)
 
 if(ECO_NODE_API_INCLUDE_DIR)
     add_library(EcoNodeGlue STATIC
@@ -705,6 +738,8 @@ endif()
 if(ECO_GC_DEBUG)
     target_compile_definitions(EcoEntryStatic PRIVATE ECO_GC_DEBUG=1)
 endif()
+
+if(NOT ECO_GLIBC_OUTPUT_RUNTIME) # MLIR half: the AOT driver library
 
 #------------------------------------------------------------------------------
 # EcoNativeDriverStatic library — extracted MLIR -> ELF pipeline.
@@ -787,6 +822,8 @@ if(ECO_LOWERING_VALIDATION)
     target_compile_definitions(EcoNativeDriverStatic PRIVATE
         ECO_LOWERING_VALIDATION=1)
 endif()
+
+endif() # NOT ECO_GLIBC_OUTPUT_RUNTIME — AOT driver library
 
 #------------------------------------------------------------------------------
 # Build the eco-boot executable (AOT native compiler)
@@ -1066,7 +1103,11 @@ string(APPEND ECO_BOOT_CONFIG_CONTENT
     "    const char *buildPath;\n"
     "};\n\n"
     "std::string runtimeDir();\n"
-    "std::string resolveFile(const RuntimeFile &f);\n\n")
+    "std::string resolveFile(const RuntimeFile &f);\n\n"
+    "// Stage D capability probe: true when the runtime tree carries the\n"
+    "// glibc output-profile inputs (lib/eco-runtime/glibc/), which the\n"
+    "// .so/.node link profile requires under ECO_STATIC_MUSL bundles.\n"
+    "bool hasGlibcOutputProfile();\n\n")
 
 # Path baked into nodeGlueLib (empty when node headers are unavailable —
 # resolveFile() then fails with a clear message if a .node link is attempted).
@@ -1252,6 +1293,50 @@ else()
 endif()
 string(APPEND ECO_BOOT_CONFIG_CONTENT "\n")
 
+#--- Stage D: glibc output-profile inputs (bundle-only) ---------------------
+# Consumed by the GlibcBundleShared link profile in EcoNativeDriver.cpp when
+# the installed bundle carries lib/eco-runtime/glibc/. buildPath is empty in
+# EVERY build flavor: the Alpine configure cannot see the Debian-built
+# archives, the dev build never takes this profile, and resolveFile()'s
+# bundle resolution ($ECO_RUNTIME_DIR / exe-relative) is the only mechanism
+# that can supply these files. Emitted unconditionally — basenames and
+# subdirs are static — so the driver compiles in all configurations.
+# See plans/stage-d-hybrid-link-profiles.md (steps 4-5).
+string(APPEND ECO_BOOT_CONFIG_CONTENT "// --- Stage D: glibc output-profile inputs (bundle-only) ---\n")
+string(APPEND ECO_BOOT_CONFIG_CONTENT
+    "inline RuntimeFile glibcCrtiObj     {\"crti.o\",      \"glibc/crt\", \"\"};\n"
+    "inline RuntimeFile glibcCrtnObj     {\"crtn.o\",      \"glibc/crt\", \"\"};\n"
+    "inline RuntimeFile glibcCrtbeginObj {\"crtbeginS.o\", \"glibc/crt\", \"\"};\n"
+    "inline RuntimeFile glibcCrtendObj   {\"crtendS.o\",   \"glibc/crt\", \"\"};\n"
+    "inline RuntimeFile glibcLibcxxA     {\"libc++.a\",    \"glibc\", \"\"};\n"
+    "inline RuntimeFile glibcLibcxxabiA  {\"libc++abi.a\", \"glibc\", \"\"};\n"
+    "inline RuntimeFile glibcUnwindA     {\"libunwind.a\", \"glibc\", \"\"};\n"
+    "inline RuntimeFile glibcBuiltinsA   {\"libclang_rt.builtins-x86_64.a\", \"glibc\", \"\"};\n"
+    "inline RuntimeFile glibcCurlA       {\"libcurl.a\",   \"glibc\", \"\"};\n"
+    "inline RuntimeFile glibcSslA        {\"libssl.a\",    \"glibc\", \"\"};\n"
+    "inline RuntimeFile glibcCryptoA     {\"libcrypto.a\", \"glibc\", \"\"};\n"
+    "inline RuntimeFile glibcZipA        {\"libzip.a\",    \"glibc\", \"\"};\n"
+    "inline RuntimeFile glibcZA          {\"libz.a\",      \"glibc\", \"\"};\n"
+    "inline RuntimeFile glibcEmbedLib    {\"libEcoEmbedStatic.a\",   \"glibc/project\", \"\"};\n"
+    "inline RuntimeFile glibcNodeGlueLib {\"libEcoNodeGlue.a\",      \"glibc/project\", \"\"};\n"
+    "inline RuntimeFile glibcRuntimeLib  {\"libEcoRuntimeStatic.a\", \"glibc/project\", \"\"};\n\n")
+
+string(APPEND ECO_BOOT_CONFIG_CONTENT "inline std::vector<RuntimeFile> glibcElmKernelLibs() {\n")
+string(APPEND ECO_BOOT_CONFIG_CONTENT "    return {\n")
+foreach(mod ${ECO_ELM_KERNEL_MODS})
+    string(APPEND ECO_BOOT_CONFIG_CONTENT
+        "        {\"libElmKernel_${mod}.a\", \"glibc/project\", \"\"},\n")
+endforeach()
+string(APPEND ECO_BOOT_CONFIG_CONTENT "    };\n}\n\n")
+
+string(APPEND ECO_BOOT_CONFIG_CONTENT "inline std::vector<RuntimeFile> glibcEcoKernelLibs() {\n")
+string(APPEND ECO_BOOT_CONFIG_CONTENT "    return {\n")
+foreach(mod ${ECO_KERNEL_MODS})
+    string(APPEND ECO_BOOT_CONFIG_CONTENT
+        "        {\"libEcoKernel_${mod}.a\", \"glibc/project\", \"\"},\n")
+endforeach()
+string(APPEND ECO_BOOT_CONFIG_CONTENT "    };\n}\n\n")
+
 string(APPEND ECO_BOOT_CONFIG_CONTENT "} // namespace config\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT "} // namespace eco\n")
 
@@ -1259,6 +1344,8 @@ file(GENERATE
     OUTPUT "${ECO_BOOT_CONFIG_HEADER}"
     CONTENT "${ECO_BOOT_CONFIG_CONTENT}"
 )
+
+if(NOT ECO_GLIBC_OUTPUT_RUNTIME) # MLIR half: the eco-boot-native CLI
 
 add_llvm_executable(eco-boot-native
     eco-boot.cpp
@@ -1302,6 +1389,8 @@ target_compile_options(eco-boot-native PRIVATE -Wno-ambiguous-reversed-operator 
 if(ECO_LOWERING_VALIDATION)
     target_compile_definitions(eco-boot-native PRIVATE ECO_LOWERING_VALIDATION=1)
 endif()
+
+endif() # NOT ECO_GLIBC_OUTPUT_RUNTIME — eco-boot-native CLI
 
 #------------------------------------------------------------------------------
 # Usage instructions

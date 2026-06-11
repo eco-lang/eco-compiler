@@ -93,5 +93,22 @@ std::string resolveFile(const RuntimeFile &f) {
     return f.buildPath ? std::string(f.buildPath) : std::string{};
 }
 
+// hasGlibcOutputProfile(): capability probe for the Stage D glibc
+// output-profile inputs (lib/eco-runtime/glibc/). Unlike resolveFile(),
+// which trusts $ECO_RUNTIME_DIR unconditionally, this stats the
+// directory even under the env override — it answers "can this
+// installation link .so/.node outputs at all", and the honest answer to
+// that is on the filesystem. The env branch is what lets an interactive
+// static-dev container exercise Stage D against an extracted
+// glibc-runtime tree. See plans/stage-d-hybrid-link-profiles.md.
+bool hasGlibcOutputProfile() {
+    if (const char *env = std::getenv("ECO_RUNTIME_DIR"))
+        return exists(std::string(env) + "/glibc");
+    std::string bin = exeDir();
+    if (bin.empty())
+        return false;
+    return exists(bin + "/../lib/eco-runtime/glibc");
+}
+
 } // namespace config
 } // namespace eco

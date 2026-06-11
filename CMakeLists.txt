@@ -127,6 +127,26 @@ if(ECO_STATIC_MUSL)
     set(ECO_STATIC ON CACHE BOOL "Static-link eco (forced on by ECO_STATIC_MUSL)" FORCE)
 endif()
 
+# Stage D: archive-only configure mode for the glibc OUTPUT runtime — the
+# second set of link inputs the musl bundle ships under
+# lib/eco-runtime/glibc/ so the static `eco` can produce glibc-ABI
+# .so/.node outputs. Run on a glibc host (docker/static-build.Dockerfile's
+# `glibc-runtime` stage, FROM eco-llvm-debian); gates off compiler/, test/
+# and ecor below (the Debian LLVM image carries no node/pnpm/rapidcheck).
+# Requires ECO_STATIC=ON for the vendored curl/zip archive targets.
+# See plans/stage-d-hybrid-link-profiles.md (step 2).
+option(ECO_GLIBC_OUTPUT_RUNTIME
+       "Stage D: build only the glibc-ABI output-runtime archive set (no compiler, no tests)"
+       OFF)
+if(ECO_GLIBC_OUTPUT_RUNTIME AND ECO_STATIC_MUSL)
+    message(FATAL_ERROR "ECO_GLIBC_OUTPUT_RUNTIME is a glibc-host build mode; "
+        "it cannot be combined with ECO_STATIC_MUSL")
+endif()
+if(ECO_GLIBC_OUTPUT_RUNTIME AND NOT ECO_STATIC)
+    message(FATAL_ERROR "ECO_GLIBC_OUTPUT_RUNTIME requires ECO_STATIC=ON "
+        "(the vendored libcurl/libzip archive targets only exist under it)")
+endif()
+
 # Linker for the `eco` target. The Elm-compiled Stage-9 object carries
 # R_X86_64_64 relocations in its .llvm_stackmaps section that lld rejects when
 # producing a PIE, so the glibc builds force GNU ld (bfd). The Stage B MUSL
@@ -210,7 +230,37 @@ if(ECO_STATIC)
         GIT_SHALLOW TRUE
     )
     FetchContent_MakeAvailable(libcurl_vendored)
+
+    # Stage D: vendor zlib too — but ONLY for the glibc-output-runtime
+    # archive build. Debian's libz.a is not PIC (a -shared trial link fails
+    # with `relocation R_X86_64_PC32 cannot be used against symbol
+    # 'z_errmsg'`), and zlib members land in every produced .so/.node
+    # (vendored curl uses gzip Content-Encoding; libzip requires z). The
+    # Alpine/musl path keeps using apk's zlib-static — its outputs are
+    # non-PIE static executables where PIC never matters. Tag pinned to
+    # bookworm's zlib (1.2.13) so the archive matches the headers curl/zip
+    # compile against. PIC comes from the global
+    # CMAKE_POSITION_INDEPENDENT_CODE ON (line 7).
+    # See plans/stage-d-hybrid-link-profiles.md (step 2).
+    if(ECO_GLIBC_OUTPUT_RUNTIME)
+        FetchContent_Declare(zlib_vendored
+            GIT_REPOSITORY https://github.com/madler/zlib.git
+            GIT_TAG v1.2.13
+            GIT_SHALLOW TRUE
+        )
+        FetchContent_MakeAvailable(zlib_vendored)
+        if(NOT TARGET zlibstatic)
+            message(FATAL_ERROR "Stage D: vendored zlib did not produce the 'zlibstatic' target")
+        endif()
+    endif()
 endif()
+
+# Stage D archive-only mode: ecor (needs rapidcheck), the test tree and the
+# compiler (hard-requires node + pnpm at configure time,
+# compiler/CMakeLists.txt) are all gated off — the Debian glibc-runtime
+# builder image provides none of those, and the mode only exists to build
+# the archive set staged by eco-glibc-runtime-tree below.
+if(NOT ECO_GLIBC_OUTPUT_RUNTIME)
 
 add_executable(ecor EXCLUDE_FROM_ALL
         runtime/src/main.cpp
@@ -261,6 +311,8 @@ target_link_options(ecor PRIVATE -rdynamic)
 # package` (Stage C bundle) doesn't drag them through the link step.
 add_subdirectory(test EXCLUDE_FROM_ALL)
 
+endif() # NOT ECO_GLIBC_OUTPUT_RUNTIME (ecor + test)
+
 # MLIR-based code generation
 add_subdirectory(runtime/src/codegen)
 
@@ -270,8 +322,12 @@ add_subdirectory(elm-kernel-cpp)
 # Eco kernel C++ implementation (IO operations)
 add_subdirectory(eco-kernel-cpp)
 
-# Guida compiler (Elm compiler written in Elm)
-add_subdirectory(compiler)
+# Guida compiler (Elm compiler written in Elm). Gated off in the Stage D
+# archive-only mode: compiler/CMakeLists.txt hard-REQUIREs node + pnpm at
+# configure time, neither of which the glibc-runtime builder image has.
+if(NOT ECO_GLIBC_OUTPUT_RUNTIME)
+    add_subdirectory(compiler)
+endif()
 
 #-------------------------------------------------------------------------------
 # Stage C: install rules for the distribution bundle
@@ -376,6 +432,28 @@ if(ECO_STATIC_MUSL)
                 PATTERN "elm.json"
                 PATTERN "*.elm")
 
+    # Stage D: merge the Debian-built glibc output-runtime tree into the
+    # bundle. ECO_GLIBC_RUNTIME_TREE points at the tree staged by the
+    # eco-glibc-runtime-tree target of a glibc-host configure (COPY
+    # --from=glibc-runtime in docker/static-build.Dockerfile). The bundle
+    # stays buildable without it — eco then refuses .so/.node outputs with
+    # the capability error in EcoNativeDriver.cpp. Declared BEFORE the
+    # ECO_BUNDLE_STRIP rule below so its GLOB_RECURSE (which already spans
+    # lib/eco-runtime recursively) covers the glibc/ subtree at strip time.
+    # See plans/stage-d-hybrid-link-profiles.md (step 3).
+    if(ECO_GLIBC_RUNTIME_TREE)
+        if(NOT EXISTS "${ECO_GLIBC_RUNTIME_TREE}")
+            message(FATAL_ERROR
+                "ECO_GLIBC_RUNTIME_TREE does not exist: ${ECO_GLIBC_RUNTIME_TREE}")
+        endif()
+        install(DIRECTORY ${ECO_GLIBC_RUNTIME_TREE}/
+                DESTINATION lib/eco-runtime/glibc
+                COMPONENT Bundle)
+        message(STATUS "Eco bundle: Stage D glibc output runtime from ${ECO_GLIBC_RUNTIME_TREE}")
+    else()
+        message(STATUS "Eco bundle: no ECO_GLIBC_RUNTIME_TREE — .so/.node outputs disabled in this bundle")
+    endif()
+
     # Strip debug info from every bundled archive AND crt object. The bundled
     # static ld.lld is built without zlib support (LLVM_ENABLE_ZLIB=OFF inherited
     # from the LLVM base image), so it cannot decompress the ELFCOMPRESS_ZLIB
@@ -405,6 +483,125 @@ if(ECO_STATIC_MUSL)
             endforeach()
         " COMPONENT Bundle)
     endif()
+endif()
+
+#-------------------------------------------------------------------------------
+# Stage D (Debian side): stage the glibc output-runtime tree.
+#
+# Archive-only mode (see the ECO_GLIBC_OUTPUT_RUNTIME option above): builds
+# the glibc-ABI, PIC archive set that the musl bundle ships under
+# lib/eco-runtime/glibc/, plus the glibc/gcc CRT objects, then runs a PIC
+# audit + glibc-floor computation (cmake/GlibcRuntimeAudit.cmake). Consumed
+# by the Alpine bundle configure via -DECO_GLIBC_RUNTIME_TREE=<out>.
+# See plans/stage-d-hybrid-link-profiles.md (step 2).
+#-------------------------------------------------------------------------------
+if(ECO_GLIBC_OUTPUT_RUNTIME)
+    set(ECO_GLIBC_RUNTIME_TREE_OUT "${CMAKE_BINARY_DIR}/glibc-runtime-tree"
+        CACHE PATH "Staging dir for the Stage D glibc output-runtime tree")
+
+    # LLVM runtime statics (libc++/libc++abi/libunwind/compiler-rt
+    # builtins), glibc-targeting. Sourced from the HOST toolchain's
+    # packages — on the glibc-runtime Docker stage that's Debian apt
+    # (libc++-dev, libc++abi-dev, libclang-rt-dev, libunwind-XX-dev) —
+    # mirroring exactly how the musl side takes them from Alpine apk.
+    # Discovery reuses the musl block's mechanisms: clang
+    # -print-file-name for libc++/libc++abi, --print-libgcc-file-name
+    # for the builtins, and cmake/LLVMLibunwind.cmake's result for
+    # libunwind (point LLVM_INSTALL_PREFIX at e.g. /usr/lib/llvm-14 for
+    # apt layouts — its lib/ + include/ match the expected shape).
+    # PIC-ness of the distro archives is NOT assumed: the staging
+    # audit's trial links are the gate.
+    # ECO_GLIBC_LLVM_RUNTIMES_DIR overrides discovery entirely with a
+    # dir holding the four canonical basenames (testing / exotic hosts).
+    set(ECO_GLIBC_LLVM_RUNTIMES_DIR ""
+        CACHE PATH "Override dir holding glibc-PIC libc++.a/libc++abi.a/libunwind.a/libclang_rt.builtins-x86_64.a (empty = discover from host toolchain)")
+    if(ECO_GLIBC_LLVM_RUNTIMES_DIR)
+        set(ECO_GLIBC_LIBCXX_A    "${ECO_GLIBC_LLVM_RUNTIMES_DIR}/libc++.a")
+        set(ECO_GLIBC_LIBCXXABI_A "${ECO_GLIBC_LLVM_RUNTIMES_DIR}/libc++abi.a")
+        set(ECO_GLIBC_UNWIND_A    "${ECO_GLIBC_LLVM_RUNTIMES_DIR}/libunwind.a")
+        set(ECO_GLIBC_BUILTINS_A  "${ECO_GLIBC_LLVM_RUNTIMES_DIR}/libclang_rt.builtins-x86_64.a")
+    else()
+        _eco_query_clang_path(ECO_GLIBC_LIBCXX_A    libc++.a)
+        _eco_query_clang_path(ECO_GLIBC_LIBCXXABI_A libc++abi.a)
+        execute_process(
+            COMMAND ${CMAKE_C_COMPILER} --print-libgcc-file-name -rtlib=compiler-rt
+            OUTPUT_VARIABLE ECO_GLIBC_BUILTINS_A
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+        get_filename_component(ECO_GLIBC_BUILTINS_A "${ECO_GLIBC_BUILTINS_A}" REALPATH)
+        # LLVMLibunwind.cmake already found the static archive (ECO_STATIC
+        # is ON in this mode) — reusing it guarantees the staged libunwind
+        # matches the headers EcoRuntimeStatic compiled against.
+        set(ECO_GLIBC_UNWIND_A "${LLVM_LIBUNWIND_LIBRARY}")
+    endif()
+    foreach(_v ECO_GLIBC_LIBCXX_A ECO_GLIBC_LIBCXXABI_A ECO_GLIBC_UNWIND_A ECO_GLIBC_BUILTINS_A)
+        if(NOT IS_ABSOLUTE "${${_v}}" OR NOT EXISTS "${${_v}}")
+            message(FATAL_ERROR "Stage D: ${_v} did not resolve to an existing file: "
+                "'${${_v}}'. Install the LLVM runtime dev packages "
+                "(Debian: libc++-dev libc++abi-dev libclang-rt-dev libunwind-<N>-dev, "
+                "with -DLLVM_INSTALL_PREFIX=/usr/lib/llvm-<N>) or set "
+                "ECO_GLIBC_LLVM_RUNTIMES_DIR.")
+        endif()
+    endforeach()
+    message(STATUS "Stage D glibc runtime statics:")
+    message(STATUS "  libc++.a:    ${ECO_GLIBC_LIBCXX_A}")
+    message(STATUS "  libc++abi.a: ${ECO_GLIBC_LIBCXXABI_A}")
+    message(STATUS "  libunwind.a: ${ECO_GLIBC_UNWIND_A}")
+    message(STATUS "  builtins.a:  ${ECO_GLIBC_BUILTINS_A}")
+
+    if(NOT TARGET EcoNodeGlue)
+        message(FATAL_ERROR "Stage D: EcoNodeGlue target missing — the vendored "
+            "node-api headers (runtime/third_party/node-api-headers) should make it "
+            "unconditional; check the find_path in runtime/src/codegen/CMakeLists.txt")
+    endif()
+
+    # Project archives staged under project/ keep their target basenames
+    # (they match the glibc* RuntimeFile declarations in EcoBootConfig.h);
+    # dep archives are copied to canonical names; CRT objects come from the
+    # clang queries in runtime/src/codegen/CMakeLists.txt, which on this
+    # glibc host resolve to the real glibc/gcc files. Deliberately NOT
+    # staged: EcoEntryStatic (no glibc consumer until dynamic executables)
+    # and EcoNativeDriverStatic (never on the AOT link line; would drag the
+    # whole MLIR object graph into this stage).
+    set(_glibc_project_files
+        $<TARGET_FILE:EcoRuntimeStatic>
+        $<TARGET_FILE:EcoEmbedStatic>
+        $<TARGET_FILE:EcoNodeGlue>)
+    set(_glibc_tree_deps EcoRuntimeStatic EcoEmbedStatic EcoNodeGlue
+        libcurl_static zip zlibstatic)
+    foreach(mod ${ECO_ELM_KERNEL_MODS})
+        list(APPEND _glibc_project_files $<TARGET_FILE:ElmKernel_${mod}>)
+        list(APPEND _glibc_tree_deps ElmKernel_${mod})
+    endforeach()
+    foreach(mod ${ECO_KERNEL_MODS})
+        list(APPEND _glibc_project_files $<TARGET_FILE:EcoKernel_${mod}>)
+        list(APPEND _glibc_tree_deps EcoKernel_${mod})
+    endforeach()
+
+    set(_tree "${ECO_GLIBC_RUNTIME_TREE_OUT}")
+    add_custom_target(eco-glibc-runtime-tree
+        COMMAND ${CMAKE_COMMAND} -E rm -rf "${_tree}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${_tree}/crt" "${_tree}/project"
+        COMMAND ${CMAKE_COMMAND} -E copy ${_glibc_project_files} "${_tree}/project"
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:libcurl_static> "${_tree}/libcurl.a"
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:zip>            "${_tree}/libzip.a"
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:zlibstatic>     "${_tree}/libz.a"
+        COMMAND ${CMAKE_COMMAND} -E copy "${OPENSSL_SSL_LIBRARY}"      "${_tree}/libssl.a"
+        COMMAND ${CMAKE_COMMAND} -E copy "${OPENSSL_CRYPTO_LIBRARY}"   "${_tree}/libcrypto.a"
+        COMMAND ${CMAKE_COMMAND} -E copy "${ECO_GLIBC_LIBCXX_A}"    "${_tree}/libc++.a"
+        COMMAND ${CMAKE_COMMAND} -E copy "${ECO_GLIBC_LIBCXXABI_A}" "${_tree}/libc++abi.a"
+        COMMAND ${CMAKE_COMMAND} -E copy "${ECO_GLIBC_UNWIND_A}"    "${_tree}/libunwind.a"
+        COMMAND ${CMAKE_COMMAND} -E copy "${ECO_GLIBC_BUILTINS_A}"  "${_tree}/libclang_rt.builtins-x86_64.a"
+        COMMAND ${CMAKE_COMMAND} -E copy "${ECO_CRTI_O}"     "${_tree}/crt/crti.o"
+        COMMAND ${CMAKE_COMMAND} -E copy "${ECO_CRTN_O}"     "${_tree}/crt/crtn.o"
+        COMMAND ${CMAKE_COMMAND} -E copy "${ECO_CRTBEGIN_O}" "${_tree}/crt/crtbeginS.o"
+        COMMAND ${CMAKE_COMMAND} -E copy "${ECO_CRTEND_O}"   "${_tree}/crt/crtendS.o"
+        COMMAND ${CMAKE_COMMAND}
+            -DTREE=${_tree}
+            -P ${CMAKE_SOURCE_DIR}/cmake/GlibcRuntimeAudit.cmake
+        DEPENDS ${_glibc_tree_deps}
+        COMMENT "Stage D: staging + auditing the glibc output-runtime tree at ${_tree}"
+        VERBATIM)
 endif()
 
 #-------------------------------------------------------------------------------
