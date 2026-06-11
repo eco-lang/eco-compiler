@@ -803,6 +803,7 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         KERNEL_SYM(Elm_Kernel_Platform_leaf)
         KERNEL_SYM(Elm_Kernel_Platform_registerIncomingPort)
         KERNEL_SYM(Elm_Kernel_Platform_registerOutgoingPort)
+        KERNEL_SYM(Elm_Kernel_Platform_registerFlagsDecoder)
 
         // Process module
         KERNEL_SYM(Elm_Kernel_Process_sleep)

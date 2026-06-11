@@ -41,16 +41,17 @@ typedef void (*eco_port_callback)(const char* json_utf8, void* user);
  * (for Platform.worker programs: ports registered and init effects fully
  * dispatched; for plain programs: main has returned).
  *
- * argv must outlive the app (it backs Eco.Kernel.Env). flags_json must be
- * NULL until flags decoding lands (Phase 5); non-NULL returns
- * ECO_APP_ERR_FLAGS_UNSUPPORTED.
+ * argv must outlive the app (it backs Eco.Kernel.Env). flags_json is the
+ * program's flags as a UTF-8 JSON document (NULL when the program takes no
+ * flags); it is decoded by the program's compiler-generated flags decoder,
+ * and a mismatch crashes the app with a clear message at startup.
  *
  * Returns 0 on success. One app per process; a second call returns
  * ECO_APP_ERR_ALREADY_STARTED. */
 int eco_app_start(int argc, char** argv, const char* flags_json);
 
 #define ECO_APP_ERR_ALREADY_STARTED 1
-#define ECO_APP_ERR_FLAGS_UNSUPPORTED 2
+#define ECO_APP_ERR_FLAGS_UNSUPPORTED 2 /* reserved (flags now supported) */
 #define ECO_APP_ERR_THREAD 3
 
 /* Request a cooperative shutdown: the event loop exits after finishing

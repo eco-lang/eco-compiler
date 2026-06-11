@@ -11,20 +11,6 @@
 
 namespace Elm::Platform {
 
-/// Stress-test flags passed to Platform.worker as the `flags` argument.
-///
-/// Consumed by stress-elm programs that opt in by declaring
-/// `main : Program StressFlags Model Msg` via StressHarness. When unset
-/// (default), initWorker passes Unit so existing tests are unaffected.
-struct StressFlags {
-    int64_t numLoops;
-    int64_t maxSize;
-    int64_t timeoutMs;
-    int64_t seed;
-    int64_t startMs;
-    bool    verbose;
-};
-
 class PlatformRuntime {
 public:
     static PlatformRuntime& instance();
@@ -82,13 +68,22 @@ public:
         readyHookUser_ = user;
     }
 
-    // Optional stress-test flags: if set, initWorker builds a StressFlags
-    // record and passes it as the `flags` arg. Clear to fall back to Unit.
-    void setPendingFlags(const StressFlags& flags) {
-        pendingFlags_ = flags;
-        hasPendingFlags_ = true;
+    // Flags (Phase 5, plans/native-ports-and-embedding.md): the program's
+    // flags decoder is compiled from the root main's `Program flags model
+    // msg` type and registered at startup by the generated preamble via
+    // Elm_Kernel_Platform_registerFlagsDecoder. Hosts supply flags as
+    // arbitrary JSON (eco_app_start / the test harness) BEFORE the program
+    // starts; initWorker decodes them uniformly — it has no knowledge of
+    // any particular flags shape.
+    void setFlagsDecoder(HPointer decoder);
+    void setPendingFlagsJson(const std::string& json) {
+        pendingFlagsJson_ = json;
+        hasPendingFlagsJson_ = true;
     }
-    void clearPendingFlags() { hasPendingFlags_ = false; }
+    void clearPendingFlagsJson() {
+        pendingFlagsJson_.clear();
+        hasPendingFlagsJson_ = false;
+    }
 
     // Model storage access (for workerSendToAppEvaluator)
     uint64_t getModelStorage() const { return modelStorage_; }
@@ -154,10 +149,15 @@ private:
     // sendToApp closure for the current program
     uint64_t sendToAppClosure_ = 0;
 
-    // Optional pending flags built into the `flags` arg for the next
-    // initWorker call. When absent, initWorker passes Unit.
-    StressFlags pendingFlags_{};
-    bool hasPendingFlags_ = false;
+    // Flags (Phase 5): decode `json` with the registered flags decoder,
+    // crashing with a clear message on failure (JS Debug.crash 2 parity).
+    HPointer decodeFlags(const std::string& json);
+
+    // The program's flags decoder (encoded HPointer, scanned by the
+    // external GC root scanner) and the host-supplied flags JSON.
+    uint64_t flagsDecoder_ = 0;
+    std::string pendingFlagsJson_;
+    bool hasPendingFlagsJson_ = false;
 
     // Embedding ready handshake (see setReadyHook).
     ReadyHook readyHook_ = nullptr;

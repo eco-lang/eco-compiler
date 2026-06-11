@@ -104,7 +104,7 @@ buildBodyLookup (MonoGraph { nodes, callEdges }) =
 optimize : Config.InlineConfig -> MonoGraph -> ( MonoGraph, Metrics )
 optimize inlineConfig graph =
     let
-        (MonoGraph { nodes, main, registry, ctorShapes, nextLambdaIndex, callEdges, ports }) =
+        (MonoGraph { nodes, main, registry, ctorShapes, nextLambdaIndex, callEdges, ports, flagsDecoder }) =
             graph
 
         closuresBefore =
@@ -124,7 +124,7 @@ optimize inlineConfig graph =
     in
     -- Call a separate function so `nodes` (Array) goes out of scope
     -- and becomes GC-eligible. Only `nodesList` is passed forward.
-    optimizeNodes nodesList ctx closuresBefore main registry ctorShapes ports
+    optimizeNodes nodesList ctx closuresBefore main registry ctorShapes ports flagsDecoder
 
 
 optimizeNodes :
@@ -135,8 +135,9 @@ optimizeNodes :
     -> Mono.SpecializationRegistry
     -> Dict String (List Mono.CtorShape)
     -> List Mono.PortRegistration
+    -> Maybe Mono.SpecId
     -> ( MonoGraph, Metrics )
-optimizeNodes nodesList ctx closuresBefore main registry ctorShapes ports =
+optimizeNodes nodesList ctx closuresBefore main registry ctorShapes ports flagsDecoder =
     let
         ( optimizedNodesList, finalCtx, _ ) =
             List.foldl
@@ -179,6 +180,7 @@ optimizeNodes nodesList ctx closuresBefore main registry ctorShapes ports =
         , specHasEffects = BitSet.empty
         , specValueUsed = BitSet.empty
         , ports = ports
+        , flagsDecoder = flagsDecoder
         }
     , metrics
     )

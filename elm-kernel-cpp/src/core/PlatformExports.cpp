@@ -97,6 +97,16 @@ HPtr Elm_Kernel_Platform_registerIncomingPort(HPtr name, HPtr decoder) {
     return HPtr::fromBits(encode(alloc::unit()));
 }
 
+// Flags decoder registration (Phase 5): called from the generated
+// @__eco_register_ports preamble before Platform.worker runs. The decoder
+// is compiled from the root main's `Program flags model msg` type;
+// initWorker runs it against the host-supplied flags JSON.
+HPtr Elm_Kernel_Platform_registerFlagsDecoder(HPtr decoder) {
+    HPointer decoderHP = decode(decoder.toBits());
+    Elm::Platform::PlatformRuntime::instance().setFlagsDecoder(decoderHP);
+    return HPtr::fromBits(encode(alloc::unit()));
+}
+
 HPtr Elm_Kernel_Platform_registerOutgoingPort(HPtr name) {
     HPointer nameHP = decode(name.toBits());
     void* namePtr = (nameHP.constant != 0)

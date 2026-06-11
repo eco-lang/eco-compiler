@@ -37,13 +37,13 @@ import Set
 
 {-| Generate the main entry point function.
 -}
-generateMainEntry : Ctx.Context -> List Mono.PortRegistration -> Mono.MainInfo -> ( List MlirOp, Ctx.Context )
-generateMainEntry ctx ports mainInfo =
+generateMainEntry : Ctx.Context -> List Mono.PortRegistration -> Maybe Mono.SpecId -> Mono.MainInfo -> ( List MlirOp, Ctx.Context )
+generateMainEntry ctx ports flagsDecoder mainInfo =
     case mainInfo of
         Mono.StaticMain mainSpecId ->
             let
                 ( portFnOps, ctxPorts ) =
-                    generateRegisterPorts ctx ports
+                    generateRegisterPorts ctx ports flagsDecoder
 
                 -- main has no block args, so reset scope completely
                 ctxMain =
@@ -106,9 +106,9 @@ Returns `( [], ctx )` for programs without ports so no preamble is
 emitted at all.
 
 -}
-generateRegisterPorts : Ctx.Context -> List Mono.PortRegistration -> ( List MlirOp, Ctx.Context )
-generateRegisterPorts ctx0 ports =
-    if List.isEmpty ports then
+generateRegisterPorts : Ctx.Context -> List Mono.PortRegistration -> Maybe Mono.SpecId -> ( List MlirOp, Ctx.Context )
+generateRegisterPorts ctx0 ports flagsDecoder =
+    if List.isEmpty ports && flagsDecoder == Nothing then
         ( [], ctx0 )
 
     else
@@ -147,6 +147,50 @@ generateRegisterPorts ctx0 ports =
                             else
                                 c
                        )
+                    |> (\c ->
+                            if flagsDecoder /= Nothing then
+                                Ctx.registerKernelCall c
+                                    "Elm_Kernel_Platform_registerFlagsDecoder"
+                                    [ Types.ecoValue ]
+                                    Types.ecoValue
+
+                            else
+                                c
+                       )
+
+            -- Flags decoder registration (Phase 5): call the decoder's
+            -- value thunk, then hand the decoder to the runtime. Emitted
+            -- before the port registrations.
+            ( flagsRevOps, ctxAfterFlags ) =
+                case flagsDecoder of
+                    Nothing ->
+                        ( [], ctxKernels )
+
+                    Just decoderSpecId ->
+                        let
+                            ( decoderVar, c1 ) =
+                                Ctx.freshVar ctxKernels
+
+                            ( c2, decoderCallOp ) =
+                                Ops.ecoCallNamed c1
+                                    (Expr.emitSafepointHints c1)
+                                    decoderVar
+                                    (specIdToFuncName c1.registry decoderSpecId)
+                                    []
+                                    Types.ecoValue
+
+                            ( resultVar, c3 ) =
+                                Ctx.freshVar c2
+
+                            ( c4, registerOp ) =
+                                Ops.ecoCallNamed c3
+                                    (Expr.emitSafepointHints c3)
+                                    resultVar
+                                    "Elm_Kernel_Platform_registerFlagsDecoder"
+                                    [ ( decoderVar, Types.ecoValue ) ]
+                                    Types.ecoValue
+                        in
+                        ( [ registerOp, decoderCallOp ], c4 )
 
             ( revOps, ctxAfterPorts ) =
                 List.foldl
@@ -200,7 +244,7 @@ generateRegisterPorts ctx0 ports =
                                 in
                                 ( registerOp :: nameOp :: accOps, c4 )
                     )
-                    ( [], ctxKernels )
+                    ( [], ctxAfterFlags )
                     ports
 
             ( unitVar, ctxU ) =
@@ -214,7 +258,7 @@ generateRegisterPorts ctx0 ports =
 
             region : MlirRegion
             region =
-                Ops.mkRegion [] (List.reverse revOps ++ [ unitOp ]) returnOp
+                Ops.mkRegion [] (List.reverse (revOps ++ flagsRevOps) ++ [ unitOp ]) returnOp
 
             ( ctxF, funcOp ) =
                 Ops.funcFunc ctxU3 "__eco_register_ports" [] Types.ecoValue region

@@ -298,7 +298,13 @@ napi_value elmInit(napi_env env, napi_callback_info info) {
         return nullptr;
     }
 
-    // opts.flags must be absent/null/undefined until Phase 5 lands.
+    // opts.flags: serialize with JSON.stringify (exact JS payload
+    // semantics) and hand the string to the embed API; the program's
+    // compiler-generated flags decoder runs it on the eco thread.
+    // Absent/undefined flags decode as `null`, matching the JS kernel
+    // running the flags decoder on `undefined`.
+    std::string flagsJson;
+    bool hasFlags = false;
     if (argc >= 1) {
         napi_valuetype optsType;
         NAPI_CALL(env, napi_typeof(env, argv[0], &optsType));
@@ -308,17 +314,39 @@ napi_value elmInit(napi_env env, napi_callback_info info) {
                 napi_ok) {
                 napi_valuetype flagsType;
                 NAPI_CALL(env, napi_typeof(env, flags, &flagsType));
-                if (flagsType != napi_undefined && flagsType != napi_null) {
-                    napi_throw_error(
-                        env, nullptr,
-                        "eco: flags are not supported yet; pass null");
-                    return nullptr;
+                if (flagsType != napi_undefined) {
+                    napi_value global, jsonObj, stringifyFn, jsonStr;
+                    NAPI_CALL(env, napi_get_global(env, &global));
+                    NAPI_CALL(env, napi_get_named_property(env, global,
+                                                           "JSON", &jsonObj));
+                    NAPI_CALL(env,
+                              napi_get_named_property(env, jsonObj,
+                                                      "stringify",
+                                                      &stringifyFn));
+                    napi_value stringifyArgs[1] = {flags};
+                    NAPI_CALL(env, napi_call_function(env, jsonObj,
+                                                      stringifyFn, 1,
+                                                      stringifyArgs,
+                                                      &jsonStr));
+                    napi_valuetype strType;
+                    NAPI_CALL(env, napi_typeof(env, jsonStr, &strType));
+                    if (strType == napi_string) {
+                        size_t len = 0;
+                        NAPI_CALL(env, napi_get_value_string_utf8(
+                                           env, jsonStr, nullptr, 0, &len));
+                        flagsJson.resize(len);
+                        NAPI_CALL(env, napi_get_value_string_utf8(
+                                           env, jsonStr, flagsJson.data(),
+                                           len + 1, &len));
+                        hasFlags = true;
+                    }
                 }
             }
         }
     }
 
-    if (eco_app_start(0, nullptr, nullptr) != 0) {
+    if (eco_app_start(0, nullptr, hasFlags ? flagsJson.c_str() : nullptr) !=
+        0) {
         napi_throw_error(env, nullptr, "eco: app failed to start");
         return nullptr;
     }

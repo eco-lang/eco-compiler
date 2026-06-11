@@ -51,8 +51,18 @@ reachableFromMain (Mono.MonoGraph record) =
                 -- pruning), so they must be explicit roots (PORT_003).
                 portRoots =
                     List.filterMap .decoderSpecId record.ports
+
+                -- The flags decoder is likewise referenced only by the
+                -- generated preamble (Phase 5).
+                flagsRoots =
+                    case record.flagsDecoder of
+                        Just specId ->
+                            [ specId ]
+
+                        Nothing ->
+                            []
             in
-            markReachable record.callEdges (mainSpecId :: portRoots) (BitSet.fromSize size)
+            markReachable record.callEdges (mainSpecId :: portRoots ++ flagsRoots) (BitSet.fromSize size)
 
 
 {-| DFS over callEdges using an explicit stack. Returns BitSet of all reachable specIds.
@@ -163,4 +173,5 @@ pruneUnreachableSpecs globalTypeEnv (Mono.MonoGraph record) =
         , specHasEffects = record.specHasEffects
         , specValueUsed = record.specValueUsed
         , ports = record.ports
+        , flagsDecoder = record.flagsDecoder
         }

@@ -177,6 +177,12 @@ struct EmbedState {
 
     int argc = 0;
     char** argv = nullptr;
+
+    // Host-supplied flags JSON, applied ON THE ECO THREAD (PlatformRuntime
+    // must not be constructed from a host thread: its constructor registers
+    // a GC root scanner with the constructing thread's RootSet).
+    std::string flagsJson;
+    bool hasFlags = false;
 };
 
 EmbedState& state() {
@@ -230,6 +236,20 @@ void* ecoEmbedThread(void* /*arg*/) {
     Eco::Kernel::Env::init(s.argc, s.argv);
     eco_register_all_effect_managers();
 
+    // First touches of PlatformRuntime and Scheduler happen HERE, on the
+    // eco thread, so their constructors register their GC root scanners
+    // with this thread's RootSet (the thread that actually collects).
+    auto& platform = Elm::Platform::PlatformRuntime::instance();
+    platform.setReadyHook(readyHookTrampoline, nullptr);
+    if (s.hasFlags) {
+        platform.setPendingFlagsJson(s.flagsJson);
+    }
+
+    // Hold the event loop open for the app lifetime (released by
+    // eco_app_stop). Taken before eco_main so the loop can never observe
+    // zero refs and exit between init and the host's first send.
+    Elm::Platform::Scheduler::instance().incrementPendingAsync();
+
     int64_t result = eco_main();
 
     Elm::Allocator::instance().cleanupThread();
@@ -252,10 +272,6 @@ extern "C" {
 int eco_app_start(int argc, char** argv, const char* flags_json) {
     auto& s = state();
 
-    if (flags_json != nullptr) {
-        // Flags decoding is Phase 5 (plans/native-ports-and-embedding.md).
-        return ECO_APP_ERR_FLAGS_UNSUPPORTED;
-    }
     bool expected = false;
     if (!s.started.compare_exchange_strong(expected, true)) {
         return ECO_APP_ERR_ALREADY_STARTED;
@@ -264,14 +280,16 @@ int eco_app_start(int argc, char** argv, const char* flags_json) {
     s.argc = argc;
     s.argv = argv;
 
-    // Hold the event loop open for the app lifetime (released by
-    // eco_app_stop). Taken BEFORE the thread starts so the loop can never
-    // observe zero refs and exit between init and the host's first send.
-    Elm::Platform::Scheduler::instance().incrementPendingAsync();
-
-    // Ready handshake source for Platform.worker programs.
-    Elm::Platform::PlatformRuntime::instance().setReadyHook(
-        readyHookTrampoline, nullptr);
+    // Stash the host's flags JSON; ecoEmbedThread applies it (and the
+    // ready hook, and the event-loop hold) ON the eco thread. Touching
+    // PlatformRuntime/Scheduler here would construct them on the host
+    // thread, registering their GC root scanners with the WRONG thread's
+    // RootSet — eco-thread collections would then never evacuate manager
+    // closures, the flags decoder, or the run queue.
+    if (flags_json != nullptr) {
+        s.flagsJson = flags_json;
+        s.hasFlags = true;
+    }
 
     pthread_attr_t attr;
     pthread_attr_init(&attr);
@@ -294,14 +312,20 @@ int eco_app_start(int argc, char** argv, const char* flags_json) {
 
 void eco_app_stop(void) {
     auto& s = state();
+    if (!s.started.load()) {
+        // Never started: nothing to stop — and touching the Scheduler
+        // here would construct it on the host thread, registering its GC
+        // scanner with the wrong thread's RootSet.
+        return;
+    }
     bool expected = false;
     if (!s.stopped.compare_exchange_strong(expected, true)) {
         return;  // idempotent
     }
     auto& sched = Elm::Platform::Scheduler::instance();
     sched.requestStop();
-    // Release the lifetime ref taken in eco_app_start (also wakes the
-    // loop's wait predicate via the decrement's notify).
+    // Release the lifetime ref taken on the eco thread at startup (also
+    // wakes the loop's wait predicate via the decrement's notify).
     sched.decrementPendingAsync();
 }
 

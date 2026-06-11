@@ -33,6 +33,33 @@
 
 namespace ElmE2EBase {
 
+// Test-harness flags for stress-elm programs (`Program StressFlags ...`).
+// Serialized to JSON and decoded by the program's compiler-generated flags
+// decoder — PlatformRuntime has no knowledge of this shape (Phase 5,
+// plans/native-ports-and-embedding.md).
+struct StressFlags {
+    int64_t numLoops = 0;
+    int64_t maxSize = 0;
+    int64_t timeoutMs = 0;
+    int64_t seed = 0;
+    int64_t startMs = 0;
+    bool    verbose = false;
+
+    std::string toJson() const {
+        char buf[256];
+        std::snprintf(buf, sizeof(buf),
+                      "{\"maxSize\":%lld,\"numLoops\":%lld,\"seed\":%lld,"
+                      "\"startMs\":%lld,\"timeoutMs\":%lld,\"verbose\":%s}",
+                      static_cast<long long>(maxSize),
+                      static_cast<long long>(numLoops),
+                      static_cast<long long>(seed),
+                      static_cast<long long>(startMs),
+                      static_cast<long long>(timeoutMs),
+                      verbose ? "true" : "false");
+        return std::string(buf);
+    }
+};
+
 // ============================================================================
 // Parallel Compilation Constants
 // ============================================================================
@@ -601,9 +628,33 @@ inline void installPortEchoBounce() {
     }
 }
 
+// Extract a `-- FLAGS: {...}` directive from a test's Elm source: the JSON
+// passed to the program's flags decoder for this run.
+inline std::string extractFlagsDirective(const std::string& elmContent) {
+    // The marker must start a line so prose mentioning the directive
+    // (e.g. in a module doc comment) is not picked up.
+    const std::string marker = "-- FLAGS:";
+    size_t pos = 0;
+    while (true) {
+        pos = elmContent.find(marker, pos);
+        if (pos == std::string::npos) return std::string();
+        if (pos == 0 || elmContent[pos - 1] == '\n') break;
+        pos += marker.size();
+    }
+    size_t start = pos + marker.size();
+    size_t end = elmContent.find('\n', start);
+    if (end == std::string::npos) end = elmContent.size();
+    std::string json = elmContent.substr(start, end - start);
+    // trim
+    size_t b = json.find_first_not_of(" \t\r");
+    size_t e = json.find_last_not_of(" \t\r");
+    if (b == std::string::npos) return std::string();
+    return json.substr(b, e - b + 1);
+}
+
 inline void runElmTestFromMlir(const std::string& mlirPath,
                                const std::string& elmPath,
-                               const std::optional<Elm::Platform::StressFlags>& flags = std::nullopt) {
+                               const std::optional<ElmE2EBase::StressFlags>& flags = std::nullopt) {
     std::string elmContent = readFile(elmPath);
     auto checkPatterns = extractCheckPatterns(elmContent);
     auto checkMlirPatterns = extractCheckMlirPatterns(elmContent);
@@ -637,13 +688,18 @@ inline void runElmTestFromMlir(const std::string& mlirPath,
     auto& runner = getRunner();
     runner.reset();
 
-    // Platform.worker reads the pending flags (if any) to build its
-    // `flags` argument. Absent → Unit (default for non-stress tests).
+    // Flags reach the program as arbitrary JSON decoded by its
+    // compiler-generated flags decoder (Phase 5). Sources, in priority
+    // order: a `-- FLAGS: {...}` directive in the test source, then the
+    // suite-level stress flags, else none.
     auto& platform = Elm::Platform::PlatformRuntime::instance();
-    if (flags.has_value()) {
-        platform.setPendingFlags(*flags);
+    std::string flagsDirective = extractFlagsDirective(elmContent);
+    if (!flagsDirective.empty()) {
+        platform.setPendingFlagsJson(flagsDirective);
+    } else if (flags.has_value()) {
+        platform.setPendingFlagsJson(flags->toJson());
     } else {
-        platform.clearPendingFlags();
+        platform.clearPendingFlagsJson();
     }
 
     // Wire the generic echo bounce for port E2E tests (echoOut -> echoIn).
@@ -680,7 +736,7 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
     const std::vector<std::string>& mlirPaths,
     const std::vector<std::string>& elmPaths,
     const std::vector<std::string>& testNames,
-    const std::optional<Elm::Platform::StressFlags>& flags = std::nullopt)
+    const std::optional<ElmE2EBase::StressFlags>& flags = std::nullopt)
 {
     using namespace IsolatedTestRunner;
 
@@ -1032,7 +1088,7 @@ public:
                              const std::string& suiteName,
                              const std::string& testPrefix,
                              const std::string& extraCompileFlags = "",
-                             std::optional<Elm::Platform::StressFlags> stressFlags = std::nullopt)
+                             std::optional<ElmE2EBase::StressFlags> stressFlags = std::nullopt)
         : name_(suiteName), testDir_(testDir), testPrefix_(testPrefix),
           extraCompileFlags_(extraCompileFlags),
           stressFlags_(stressFlags) {
@@ -1148,7 +1204,7 @@ private:
     std::string testDir_;
     std::string testPrefix_;
     std::string extraCompileFlags_;
-    std::optional<Elm::Platform::StressFlags> stressFlags_;
+    std::optional<ElmE2EBase::StressFlags> stressFlags_;
     std::vector<std::unique_ptr<ElmE2ETestEntry>> testEntries_;
 
     mutable size_t lastPassCount_ = 0;
@@ -1177,7 +1233,7 @@ inline std::unique_ptr<ElmE2EParallelTestSuite> buildTestSuite(
     const std::string& suiteName,
     const std::string& testPrefix,
     const std::string& extraCompileFlags = "",
-    std::optional<Elm::Platform::StressFlags> stressFlags = std::nullopt) {
+    std::optional<ElmE2EBase::StressFlags> stressFlags = std::nullopt) {
     std::string testDir = findTestDir(dirName);
 
     if (!std::filesystem::exists(testDir) || !std::filesystem::is_directory(testDir)) {

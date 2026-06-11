@@ -5,10 +5,17 @@
 #include "allocator/RuntimeExports.h"
 #include "allocator/StringOps.hpp"
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
 #include <cassert>
 
 using namespace Elm;
 using namespace Elm::alloc;
+
+// Json kernel entry point (elm-kernel-cpp). Declared locally to keep the
+// runtime -> kernel dependency at the linker level only (same pattern as
+// PortRuntime.cpp).
+extern "C" HPtr Elm_Kernel_Json_runOnString(HPtr decoder, HPtr jsonString);
 
 namespace Elm::Platform {
 
@@ -96,6 +103,10 @@ PlatformRuntime::PlatformRuntime() {
             // sendToApp closure
             if (sendToAppClosure_ != 0)
                 evacuate(sendToAppClosure_);
+
+            // Flags decoder (registered by the startup preamble)
+            if (flagsDecoder_ != 0)
+                evacuate(flagsDecoder_);
 
             // Model storage (also registered as JIT root, but double-evacuating is safe)
             if (modelStorage_ != 0)
@@ -694,31 +705,71 @@ static void* workerSendToAppEvaluator(void* rawArgs[]) {
     return reinterpret_cast<void*>(encodeHP(Elm::alloc::unit()));
 }
 
-// Builds an Elm Record for `StressFlags` matching the shape:
-//   { maxSize : Int, numLoops : Int, seed : Int,
-//     startMs : Int, timeoutMs : Int, verbose : Bool }
-// Fields are in alphabetical (canonical) order. The first five are unboxed
-// Ints (slot kind 1); verbose is a boxed HPointer to True/False.
-static HPointer buildStressFlagsRecord(const StressFlags& f) {
-    std::vector<Unboxable> vals(6);
-    vals[0] = unboxedInt(f.maxSize);    // maxSize
-    vals[1] = unboxedInt(f.numLoops);   // numLoops
-    vals[2] = unboxedInt(f.seed);       // seed
-    vals[3] = unboxedInt(f.startMs);    // startMs
-    vals[4] = unboxedInt(f.timeoutMs);  // timeoutMs
-    vals[5] = boxed(f.verbose ? elmTrue() : elmFalse());  // verbose
-    // 2-bit mask per slot: slots 0..4 = kind 1 (Int), slot 5 = kind 0 (boxed).
-    // Slot i occupies bits (2i .. 2i+1). 0x155 = 0b0101_0101_0101.
-    uint64_t mask = 0x155;
-    return record(vals, mask);
+void PlatformRuntime::setFlagsDecoder(HPointer decoder) {
+    flagsDecoder_ = encodeHP(decoder);
+}
+
+// Decode the host-supplied flags JSON with the program's registered flags
+// decoder. Mirrors PortRuntime::drainPendingSends' decode discipline: every
+// HPointer local is rooted across the parse/decode allocations, and a
+// decode failure is a hard crash naming the problem (the native analogue
+// of JS Debug.crash 2, "Problem with the flags given to your Elm program").
+HPointer PlatformRuntime::decodeFlags(const std::string& json) {
+    HPointer decoder = decodeHP(flagsDecoder_);
+    HPointer flags = listNil();
+    Elm::StackRootGuard guard(&decoder, &flags);
+
+    HPointer jsonStr = allocStringFromUTF8(json);
+    Elm::StackRootGuard strGuard(&jsonStr);
+    HPtr result = Elm_Kernel_Json_runOnString(
+        HPtr::fromBits(encodeHP(decoder)),
+        HPtr::fromBits(encodeHP(jsonStr)));
+    HPointer resultHP = decodeHP(result.toBits());
+
+    // Result customs from the Json kernel: ctor 0 = Ok, 1 = Err.
+    void* ptr = resolveHP(resultHP);
+    if (!ptr || static_cast<Custom*>(ptr)->ctor != 0) {
+        std::fprintf(stderr,
+                     "eco: problem with the flags given to this program: "
+                     "%s\n",
+                     json.c_str());
+        std::fflush(stderr);
+        std::abort();
+    }
+    flags = static_cast<Custom*>(ptr)->values[0].p;
+    return flags;
 }
 
 HPointer PlatformRuntime::initWorker(HPointer impl) {
-    // Phase 1: Decode flags. If a StressFlags struct is pending from the
-    // test harness, build a flag record; otherwise pass Unit (default).
-    HPointer flags = hasPendingFlags_
-        ? buildStressFlagsRecord(pendingFlags_)
-        : unit();
+    // Phase 1: Decode flags through the program's registered flags decoder
+    // (compiled from the root main's `Program flags model msg` type and
+    // registered by the generated @__eco_register_ports preamble). The
+    // host-supplied JSON comes from setPendingFlagsJson (eco_app_start /
+    // the test harness); absent flags decode as `null`, matching the JS
+    // kernel running the flags decoder on `undefined`. This path has no
+    // special cases: every flags source — embedding hosts, the Node glue,
+    // the stress harness — is arbitrary JSON through the same decoder.
+    HPointer flags = unit();
+    // Root `impl` across the decode: decodeFlags allocates (the JSON heap
+    // string, the parse tree, every decoder intermediate), and a GC during
+    // any of that would move the impl record out from under this frame's
+    // by-value copy (the caller's statepoint relocation does not update
+    // callee copies). The guard rewrites `impl` in place on GC.
+    Elm::StackRootGuard implGuard(&impl);
+    if (flagsDecoder_ != 0) {
+        flags = decodeFlags(hasPendingFlagsJson_ ? pendingFlagsJson_
+                                                 : std::string("null"));
+    } else if (hasPendingFlagsJson_ && pendingFlagsJson_ != "null") {
+        // The host passed real flags but the program registered no decoder
+        // (an artifact compiled before flags support). Fail loudly rather
+        // than silently handing init a Unit. Bare `null` is tolerated —
+        // `flags: null` is the universal host idiom for flagless programs.
+        std::fprintf(stderr,
+                     "eco: flags were provided but this program has no "
+                     "flags decoder (recompile it with a current eco)\n");
+        std::fflush(stderr);
+        std::abort();
+    }
 
     // Phase 2: Call init
     // Root `impl` (and `flags`) across callClosure1: the closure body may

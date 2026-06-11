@@ -1,6 +1,30 @@
 # Native Ports + Host Embedding (C and Node.js) Implementation Plan
 
-## Status: IMPLEMENTED (2026-06-10) — Phases 0–4 landed; Phase 5 (flags) pending
+## Status: IMPLEMENTED (2026-06-11) — all phases landed (0–5)
+
+Phase 5 (flags) implementation notes:
+
+- The flags decoder is synthesized in `Monomorphize.insertFlagsDecoderNode`
+  (pre-AssignMVarIds) from the entry's dealiased `Program flags model msg`
+  annotation using the same `Port.toFlagsDecoder` the JS pipeline uses,
+  inserted as a synthetic `Define` under `Global home "main$flagsDecoder"`,
+  enqueued alongside main, carried in `MonoGraph.flagsDecoder`, rooted by
+  Prune, and registered at startup from the generated preamble via the new
+  kernel `Elm_Kernel_Platform_registerFlagsDecoder`.
+  `Elm_Kernel_Platform_worker` keeps its one-argument signature (Q12).
+- `initWorker` decodes uniformly: host JSON (or `null` when absent) through
+  the registered decoder; decode failure crashes with a clear message.
+  Bare `null` with no registered decoder (a pre-flags artifact driven by a
+  `flags: null` host) is tolerated as Unit; real flags against such an
+  artifact crash with a "recompile" message.
+- StressFlags is fully retired from PlatformRuntime: the struct lives in
+  the test harness (ElmE2EBase::StressFlags + toJson()), and stress
+  programs decode the harness JSON through their compiler-generated
+  decoders. A `-- FLAGS: {...}` line-start directive in a test's Elm
+  source feeds per-test flags JSON (see test/elm/src/FlagsRecordTest.elm).
+- Validation: 1478/1478 JIT E2E (incl. new FlagsRecordTest), 100/100
+  stress over the JSON path, C and Node flags round-trips, wrong-shape
+  crash message, kafka worker unchanged-host run.
 
 Implementation deltas vs the original design:
 
@@ -370,6 +394,17 @@ gains a `flags_json` parameter (Node glue passes
 `Json_runOnString`, crashing on failure (JS parity, `Debug.crash 2`).
 Until Phase 5, programs must declare `Program () model msg` and hosts must
 pass `flags: null`/omit flags — enforced with a clear error.
+
+**Constraint: `Elm_Kernel_Platform_worker` MUST keep its one-argument
+signature.** `Platform.worker` is called from elm/core Elm code, so its
+kernel arity is outside our control — extending it would fork the kernel
+interface for every existing program. The flags decoder instead reaches
+the runtime through the same startup-registration mechanism ports use:
+the generated `@__eco_register_ports` preamble (or a sibling call emitted
+alongside it) passes the compiled decoder to a new kernel,
+`Elm_Kernel_Platform_registerFlagsDecoder(decoder)`, and `initWorker`
+looks it up when building the `flags` argument. This is purely additive —
+no elm/core-facing signature changes anywhere.
 
 ---
 
@@ -760,12 +795,32 @@ the native binary.
 
 ### Phase 5 — Flags (optional, separable)
 
-- Compile `Port.toFlagsDecoder` output as `@__eco_flags_decoder()`;
-  extend `Elm_Kernel_Platform_worker`/`initWorker` to decode a host-supplied
-  JSON string; `eco_app_start` flags_json plumbed; Node glue stringifies
-  `opts.flags`. Crash on decode failure (JS `Debug.crash 2` parity).
+- Compile `Port.toFlagsDecoder` output as a flags-decoder thunk and
+  register it at startup from the generated preamble via a new kernel,
+  `Elm_Kernel_Platform_registerFlagsDecoder(decoder)` — the same
+  mechanism ports use. Do **NOT** extend `Elm_Kernel_Platform_worker`
+  with an extra argument: it is called from elm/core Elm code, so its
+  arity is outside our control (see Q12).
+- Register a flags decoder for EVERY worker program (JS parity:
+  `_Platform_initialize` always runs the flags decoder; the `()`-program
+  decoder simply accepts null/undefined). `initWorker` then becomes
+  uniform — `flags = runDecoder(registeredDecoder, hostJsonOrNull)`,
+  crash on decode failure (JS `Debug.crash 2` parity) — with no branches
+  and no test hooks.
+- `eco_app_start` flags_json plumbed through to a single generic
+  `PlatformRuntime::setPendingFlagsJson(std::string)` stash; Node glue
+  stringifies `opts.flags` on the JS thread.
+- **Retire the StressFlags special case.** `PlatformRuntime` must end up
+  with no knowledge of stress tests: delete the `StressFlags` struct,
+  `setPendingFlags`/`clearPendingFlags`, and `buildStressFlagsRecord`
+  (whose hand-mirrored record layout is a silent-corruption trap if
+  layout rules change). The test harness and stress binary instead format
+  their config as JSON and stash it via `setPendingFlagsJson`, flowing
+  through the same compiler-generated decoder as all host flags — which
+  also exercises the flags-decoding path in CI on every stress run.
 - Tests: flags record round-trip from both C and Node hosts; wrong-shape
-  flags crash message.
+  flags crash message; full stress suite (`--target stress`) over the
+  JSON path.
 
 ---
 

@@ -443,6 +443,7 @@ type MonoGraph
         , specHasEffects : BitSet -- SpecIds whose node body references Debug.* kernels
         , specValueUsed : BitSet -- SpecIds whose value is referenced via MonoVarGlobal
         , ports : List PortRegistration -- Ports reached during monomorphization; drives @__eco_register_ports emission (PORT_003)
+        , flagsDecoder : Maybe SpecId -- The root program's flags decoder (Phase 5); registered at startup like port decoders
         }
 
 

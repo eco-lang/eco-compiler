@@ -176,7 +176,7 @@ int main(int argc, char* argv[]) {
     // Translate CLI config into the StressFlags record passed to
     // Platform.worker-based stress programs. startMs is refreshed per-run
     // inside ElmE2EParallelTestSuite.
-    Elm::Platform::StressFlags stressFlags{};
+    ElmE2EBase::StressFlags stressFlags{};
     stressFlags.numLoops  = config.num_test_loops;
     stressFlags.maxSize   = config.max_size;
     stressFlags.timeoutMs = config.timeout.has_value()

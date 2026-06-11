@@ -55,7 +55,7 @@ backend =
 generateMlirModule : Mode.Mode -> Mono.MonoGraph -> MlirModule
 generateMlirModule mode monoGraph0 =
     let
-        (Mono.MonoGraph { nodes, main, registry, ctorShapes, ports }) =
+        (Mono.MonoGraph { nodes, main, registry, ctorShapes, ports, flagsDecoder }) =
             monoGraph0
 
         signatures : Array (Maybe Ctx.FuncSignature)
@@ -94,7 +94,7 @@ generateMlirModule mode monoGraph0 =
         ( mainOps, ctxAfterMain ) =
             case main of
                 Just mainInfo ->
-                    Functions.generateMainEntry finalCtx ports mainInfo
+                    Functions.generateMainEntry finalCtx ports flagsDecoder mainInfo
 
                 Nothing ->
                     ( [], finalCtx )
@@ -142,7 +142,7 @@ streamMlirToWriter :
     -> Task Never ()
 streamMlirToWriter ecoConfig mode monoGraph0 writeChunk =
     let
-        (Mono.MonoGraph { nodes, main, registry, ctorShapes, ports }) =
+        (Mono.MonoGraph { nodes, main, registry, ctorShapes, ports, flagsDecoder }) =
             monoGraph0
 
         signatures =
@@ -170,7 +170,7 @@ streamMlirToWriter ecoConfig mode monoGraph0 writeChunk =
                     ( mainOps, ctxAfterMain ) =
                         case main of
                             Just mainInfo ->
-                                Functions.generateMainEntry finalCtx ports mainInfo
+                                Functions.generateMainEntry finalCtx ports flagsDecoder mainInfo
 
                             Nothing ->
                                 ( [], finalCtx )
@@ -260,7 +260,7 @@ streamMlirBytecode :
     -> Task Never ()
 streamMlirBytecode ecoConfig mode monoGraph0 target =
     let
-        (Mono.MonoGraph { nodes, main, registry, ctorShapes, ports }) =
+        (Mono.MonoGraph { nodes, main, registry, ctorShapes, ports, flagsDecoder }) =
             monoGraph0
 
         signatures =
@@ -293,7 +293,7 @@ streamMlirBytecode ecoConfig mode monoGraph0 target =
                     ( mainOps, ctxAfterMain ) =
                         case main of
                             Just mainInfo ->
-                                Functions.generateMainEntry finalCtx ports mainInfo
+                                Functions.generateMainEntry finalCtx ports flagsDecoder mainInfo
 
                             Nothing ->
                                 ( [], finalCtx )

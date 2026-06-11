@@ -27,7 +27,11 @@ import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.BitSet as BitSet
-import Compiler.Data.Name exposing (Name)
+import Compiler.AST.Utils.Type as Type
+import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Elm.ModuleName as ModuleName
+import Compiler.LocalOpt.Typed.Names as Names
+import Compiler.LocalOpt.Typed.Port as Port
 import Compiler.Monomorphize.AssignMVarIds as AssignMVarIds
 import Compiler.Monomorphize.MonoTraverse as Traverse
 import Compiler.Monomorphize.Prune as Prune
@@ -65,9 +69,18 @@ This is useful for testing when the entry point is not named "main".
 monomorphize : Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
 monomorphize entryPointName globalTypeEnv globalGraph =
     let
+        -- Phase 5 (flags): if the entry has type `Program flags model msg`,
+        -- synthesize its flags decoder as an extra top-level node BEFORE
+        -- MVarId assignment so it is rewritten along with everything else.
+        -- The decoder spec is registered at startup by the generated
+        -- preamble via Elm_Kernel_Platform_registerFlagsDecoder; initWorker
+        -- runs it against the host-supplied flags JSON.
+        ( graphWithFlags, maybeFlagsGlobal ) =
+            insertFlagsDecoderNode entryPointName globalGraph
+
         -- Phase 0: Assign globally unique MVarIds to all type variables
         ( TOpt.GlobalGraph nodesWithIds _ annotationsWithIds _, mvarState ) =
-            AssignMVarIds.assignIds globalGraph
+            AssignMVarIds.assignIds graphWithFlags
 
         mvarEnv =
             State.initMVarEnv mvarState.nextId mvarState.numberVars
@@ -77,24 +90,168 @@ monomorphize entryPointName globalTypeEnv globalGraph =
             Err ("No " ++ entryPointName ++ " function found")
 
         Just ( mainGlobal, mainType ) ->
-            monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodesWithIds annotationsWithIds mvarEnv
+            monomorphizeFromEntryWith maybeFlagsGlobal mainGlobal mainType globalTypeEnv nodesWithIds annotationsWithIds mvarEnv
+
+
+{-| The synthetic Global holding the root program's flags decoder. The `$`
+is sanitized by the MLIR backend (Names.sanitizeName) and cannot collide
+with a user-written Elm identifier.
+-}
+flagsDecoderName : Name
+flagsDecoderName =
+    "main$flagsDecoder"
+
+
+{-| Synthesize the flags-decoder node for the entry point (Phase 5).
+
+Walks the pre-MVarId graph for the entry's `Define`/`TrackedDefine` node;
+when its (dealiased) annotation is `Program flags model msg`, builds the
+payload decoder with the same `Port.toFlagsDecoder` the JS pipeline uses
+and inserts it as a plain `Define` node under `flagsDecoderName` in the
+entry's home module. Non-Program entries (test value mains) get none.
+
+-}
+insertFlagsDecoderNode : Name -> TOpt.GlobalGraph Name -> ( TOpt.GlobalGraph Name, Maybe TOpt.Global )
+insertFlagsDecoderNode entryPointName ((TOpt.GlobalGraph nodes fields annots roots) as graph) =
+    let
+        entryMeta : Maybe ( IO.Canonical, Can.Type Name )
+        entryMeta =
+            DMap.foldl TOpt.compareGlobal
+                (\global node acc ->
+                    case acc of
+                        Just _ ->
+                            acc
+
+                        Nothing ->
+                            case ( global, node ) of
+                                ( TOpt.Global home name, TOpt.Define _ _ meta ) ->
+                                    if name == entryPointName then
+                                        Just ( home, meta.tipe )
+
+                                    else
+                                        Nothing
+
+                                ( TOpt.Global home name, TOpt.TrackedDefine _ _ _ meta ) ->
+                                    if name == entryPointName then
+                                        Just ( home, meta.tipe )
+
+                                    else
+                                        Nothing
+
+                                _ ->
+                                    Nothing
+                )
+                Nothing
+                nodes
+    in
+    case entryMeta of
+        Nothing ->
+            ( graph, Nothing )
+
+        Just ( home, tipe ) ->
+            case Type.deepDealias tipe of
+                Can.TType hm nm [ flagsType, _, _ ] ->
+                    if hm == ModuleName.platform && nm == Name.program then
+                        let
+                            ( deps, _, decoderExpr ) =
+                                Names.run (Port.toFlagsDecoder flagsType)
+
+                            decoderCanType : Can.Type Name
+                            decoderCanType =
+                                Can.TType ModuleName.jsonDecode "Decoder" [ flagsType ]
+
+                            flagsGlobal : TOpt.Global
+                            flagsGlobal =
+                                TOpt.Global home flagsDecoderName
+
+                            node : TOpt.Node Name
+                            node =
+                                TOpt.Define decoderExpr deps { tipe = decoderCanType, tvar = Nothing }
+                        in
+                        ( TOpt.GlobalGraph (DMap.insert TOpt.toComparableGlobal flagsGlobal node nodes) fields annots roots
+                        , Just flagsGlobal
+                        )
+
+                    else
+                        ( graph, Nothing )
+
+                _ ->
+                    ( graph, Nothing )
 
 
 {-| Perform monomorphization from a given entry point.
 -}
 monomorphizeFromEntry : TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> State.MVarEnv -> Result String Mono.MonoGraph
 monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
+    monomorphizeFromEntryWith Nothing mainGlobal mainType globalTypeEnv nodes annotations mvarEnv
+
+
+monomorphizeFromEntryWith : Maybe TOpt.Global -> TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> State.MVarEnv -> Result String Mono.MonoGraph
+monomorphizeFromEntryWith maybeFlagsGlobal mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
     let
-        ( finalState, mainSpecIdVal ) =
-            runSpecialization mainGlobal mainType globalTypeEnv nodes annotations mvarEnv
+        ( stateWithMain, mainSpecIdVal ) =
+            initSpecialization mainGlobal mainType globalTypeEnv nodes annotations mvarEnv
+
+        -- Phase 5: enqueue the flags-decoder spec alongside main. Its
+        -- MonoType comes from the synthetic node's own (concrete)
+        -- annotation; the worklist driver specializes it like any global.
+        ( stateInit, flagsDecoderSpecId ) =
+            case maybeFlagsGlobal of
+                Nothing ->
+                    ( stateWithMain, Nothing )
+
+                Just flagsGlobal ->
+                    case findNodeAnnotationType flagsGlobal nodes of
+                        Nothing ->
+                            ( stateWithMain, Nothing )
+
+                        Just decoderTipe ->
+                            let
+                                decoderMonoType =
+                                    canTypeToMonoType Dict.empty decoderTipe
+
+                                accum =
+                                    stateWithMain.accum
+
+                                ( specId, registry2 ) =
+                                    Registry.getOrCreateSpecId (toptGlobalToMono flagsGlobal) decoderMonoType Nothing accum.registry
+                            in
+                            ( { stateWithMain
+                                | accum =
+                                    { accum
+                                        | registry = registry2
+                                        , worklist = SpecializeGlobal specId :: accum.worklist
+                                        , scheduled = BitSet.insertGrowing specId accum.scheduled
+                                    }
+                              }
+                            , Just specId
+                            )
+
+        finalState =
+            processWorklistPure stateInit
 
         rawGraph =
-            assembleRawGraph finalState mainSpecIdVal
+            assembleRawGraphFrom finalState.accum finalState.ctx.lambdaCounter mainSpecIdVal flagsDecoderSpecId
 
         prunedGraph =
             Prune.pruneUnreachableSpecs finalState.ctx.globalTypeEnv rawGraph
     in
     Ok prunedGraph
+
+
+{-| Look up a node's annotation type (Define/TrackedDefine meta.tipe).
+-}
+findNodeAnnotationType : TOpt.Global -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> Maybe (Can.Type TypeIds.MVarId)
+findNodeAnnotationType global nodes =
+    case DMap.get TOpt.toComparableGlobal global nodes of
+        Just (TOpt.Define _ _ meta) ->
+            Just meta.tipe
+
+        Just (TOpt.TrackedDefine _ _ _ meta) ->
+            Just meta.tipe
+
+        _ ->
+            Nothing
 
 
 {-| Phase 1: Run the specialization worklist to completion (pure).
@@ -155,13 +312,8 @@ initSpecialization mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
 Performs MVar erasure, registry patching, and graph construction.
 
 -}
-assembleRawGraph : MonoState -> Mono.SpecId -> Mono.MonoGraph
-assembleRawGraph finalState mainSpecIdVal =
-    assembleRawGraphFrom finalState.accum finalState.ctx.lambdaCounter mainSpecIdVal
-
-
-assembleRawGraphFrom : State.SpecAccum -> Int -> Mono.SpecId -> Mono.MonoGraph
-assembleRawGraphFrom finalAccum lambdaCounter mainSpecIdVal =
+assembleRawGraphFrom : State.SpecAccum -> Int -> Mono.SpecId -> Maybe Mono.SpecId -> Mono.MonoGraph
+assembleRawGraphFrom finalAccum lambdaCounter mainSpecIdVal flagsDecoderSpecId =
     let
         mainInfo : Maybe Mono.MainInfo
         mainInfo =
@@ -241,6 +393,7 @@ assembleRawGraphFrom finalAccum lambdaCounter mainSpecIdVal =
         , specHasEffects = specHasEffects
         , specValueUsed = valueUsedWithMain
         , ports = finalAccum.ports
+        , flagsDecoder = flagsDecoderSpecId
         }
 
 
