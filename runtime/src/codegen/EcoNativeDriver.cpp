@@ -36,6 +36,8 @@
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
 
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Module.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/FileSystem.h"
@@ -165,6 +167,21 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
         llvmModule = translateToLLVMIR(*module, llvmContext);
         if (!llvmModule)
             return 1;
+    }
+
+    // Bake the root module name into the program as `__eco_root_module`.
+    // The N-API addon declares it as a weak extern and uses it to name the
+    // `Elm.<RootModule>` export; without it the addon falls back to "Main".
+    if (!opts.rootModule.empty()) {
+        auto *init = llvm::ConstantDataArray::getString(
+            llvmContext, opts.rootModule, /*AddNull=*/true);
+        auto *strGV = new llvm::GlobalVariable(
+            *llvmModule, init->getType(), /*isConstant=*/true,
+            llvm::GlobalValue::PrivateLinkage, init, "__eco_root_module_str");
+        new llvm::GlobalVariable(
+            *llvmModule, llvm::PointerType::get(llvmContext, 0),
+            /*isConstant=*/true, llvm::GlobalValue::ExternalLinkage, strGV,
+            "__eco_root_module");
     }
 
     std::unique_ptr<llvm::TargetMachine> tm;
@@ -613,8 +630,11 @@ int linkExecutable(const std::string &objectFile,
 //===----------------------------------------------------------------------===//
 
 extern "C" int eco_native_lower_and_link(const char *mlirPath,
-                                          const char *outputPath) {
+                                          const char *outputPath,
+                                          const char *rootModule) {
     eco::EcoNativeOptions opts;
+    if (rootModule != nullptr)
+        opts.rootModule = rootModule;
     return eco::compileMlirFileToExecutable(mlirPath, outputPath, opts);
 }
 

@@ -31,6 +31,12 @@ struct EcoNativeOptions {
     std::string preRS4GCDumpPath;
     std::string postRS4GCDumpPath;
 
+    // Root module name baked into the program as the `__eco_root_module`
+    // symbol. The N-API addon (eco_node_addon.cpp) reads it to name the
+    // `Elm.<RootModule>` export so host JS uses the same module path as the
+    // JS target. Empty = omit the symbol; the addon falls back to "Main".
+    std::string rootModule;
+
     // Optional timing collector. The library appends scopes here; callers print.
     LoweringStats *stats = nullptr;
 };

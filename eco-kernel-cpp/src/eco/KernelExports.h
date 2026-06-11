@@ -242,11 +242,14 @@ void Eco_Kernel_register_all_gc_roots();
 
 // Lower MLIR file at `mlirPath` to ELF executable at `outputPath`. Returns
 // Task Never () (succeeds with Unit on success, fails with a String error
-// message otherwise). Only the unified `eco` binary has the strong
+// message otherwise). `rootModule` is the program's root module name, baked
+// into the output as `__eco_root_module` so the N-API addon exposes
+// `Elm.<RootModule>`. Only the unified `eco` binary has the strong
 // `eco_native_lower_and_link` symbol linked in; other binaries (which only
 // link the weak undefined reference) get a runtime "unavailable" error if
 // this is invoked.
-HPtr Eco_Kernel_NativeDriver_lowerAndLink(HPtr mlirPath, HPtr outputPath);
+HPtr Eco_Kernel_NativeDriver_lowerAndLink(HPtr mlirPath, HPtr outputPath,
+                                          HPtr rootModule);
 
 // In-memory MLIR bytes variant. Phase 2 entry point that avoids the temp
 // `.mlir` file on disk. `bytes` is an Elm `Bytes` value.

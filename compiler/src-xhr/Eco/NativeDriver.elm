@@ -24,15 +24,16 @@ import Task exposing (Task)
 
 
 {-| Lower an `.mlir` file at the first path and link the result into the ELF
-binary at the second path.
+binary at the second path. The third argument is the program's root module
+name (baked into `.node` outputs as `__eco_root_module`; unused here).
 
 Only meaningful in the unified `eco` binary; the XHR-bootstrap variant always
 returns a `Task.fail` so that any accidental invocation (e.g. via
 `Terminal.Make.handleElfOutput` under `guida.js`) surfaces immediately.
 
 -}
-lowerAndLink : String -> String -> Task String ()
-lowerAndLink _ _ =
+lowerAndLink : String -> String -> String -> Task String ()
+lowerAndLink _ _ _ =
     -- Should never be reached under the XHR bootstrap path. If it is, we
     -- surface a typed Task failure rather than silently succeeding so a
     -- regression (e.g. Terminal.Make.handleElfOutput firing under guida.js)

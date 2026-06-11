@@ -26,6 +26,11 @@ import Task exposing (Task)
 
 {-| Lower the MLIR text at `mlirPath` to an ELF executable at `outputPath`.
 
+`rootModule` is the program's root module name (e.g. "Top"). It is baked
+into the output as the `__eco_root_module` symbol so the N-API addon
+exposes the app at `Elm.<RootModule>` — the same path host JS uses with
+the JS target. Pass "" to omit the symbol (the addon falls back to "Main").
+
 Runs the full pipeline in-process: parse MLIR, run the Eco → LLVM pass
 pipeline, translate to LLVM IR, run RS4GC + opt + object emission, then
 link via the system `ld` with the runtime and kernel static libraries
@@ -38,9 +43,9 @@ EcoNativeDriverStatic and only the weak stub of
 `eco_native_lower_and_link` is present (e.g. eco-compiler, or any
 AOT-compiled user program produced by `eco`).
 -}
-lowerAndLink : String -> String -> Task String ()
-lowerAndLink mlirPath outputPath =
-    Eco.Kernel.NativeDriver.lowerAndLink mlirPath outputPath
+lowerAndLink : String -> String -> String -> Task String ()
+lowerAndLink mlirPath outputPath rootModule =
+    Eco.Kernel.NativeDriver.lowerAndLink mlirPath outputPath rootModule
 
 
 {-| In-memory MLIR variant: lower MLIR text bytes directly to an ELF at

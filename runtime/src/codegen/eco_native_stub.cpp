@@ -19,7 +19,8 @@
 extern "C" {
 
 __attribute__((weak)) int eco_native_lower_and_link(const char * /*mlirPath*/,
-                                                     const char * /*outputPath*/) {
+                                                     const char * /*outputPath*/,
+                                                     const char * /*rootModule*/) {
     return -1;
 }
 

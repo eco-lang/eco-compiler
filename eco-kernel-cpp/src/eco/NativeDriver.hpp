@@ -21,9 +21,12 @@
 namespace Eco::Kernel::NativeDriver {
 
 // Compile MLIR text from `mlirPath` to an ELF executable at `outputPath`.
+// `rootModule` is the program's root module name, baked into the binary as
+// `__eco_root_module` for the N-API addon's Elm.<RootModule> export.
 // Returns a Task: succeeds with Unit on success, fails with a String error
 // message otherwise.
-uint64_t lowerAndLink(uint64_t mlirPath, uint64_t outputPath);
+uint64_t lowerAndLink(uint64_t mlirPath, uint64_t outputPath,
+                      uint64_t rootModule);
 
 // In-memory variant — Phase 2 entry. `bytes` is an Elm Bytes value carrying
 // the full MLIR text; `outputPath` is the ELF path.

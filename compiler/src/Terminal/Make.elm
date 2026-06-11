@@ -432,6 +432,12 @@ handleElfOutput ctx target artifacts =
                 rootNames =
                     Build.getRootNames artifacts
 
+                -- Root module name baked into .node outputs as
+                -- __eco_root_module so the N-API addon exposes
+                -- Elm.<RootModule> (instead of the "Main" fallback).
+                (NE.Nonempty rootModuleName _) =
+                    rootNames
+
                 -- eco-stuff/<ver>[/<buildDir>]/build/eco-<base>.mlir
                 tempMlirDir : FilePath
                 tempMlirDir =
@@ -491,7 +497,7 @@ handleElfOutput ctx target artifacts =
                         -- failure — leaving it on disk lets a developer
                         -- re-run `eco-boot-native <temp>.mlir -o foo` to
                         -- reproduce the lowering failure.
-                        Eco.NativeDriver.lowerAndLink tempMlirPath target
+                        Eco.NativeDriver.lowerAndLink tempMlirPath target rootModuleName
                             |> Task.mapError
                                 (Exit.MakeBadGenerate << Exit.GenerateNativeDriverError)
                     )

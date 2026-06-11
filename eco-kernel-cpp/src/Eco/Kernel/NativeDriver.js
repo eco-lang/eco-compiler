@@ -10,7 +10,7 @@ import Elm.Kernel.Utils exposing (Tuple0)
 // compiles into eco-boot.js / eco-boot-2.js. Calling them is a programming
 // error and surfaces as a Task failure.
 
-var _NativeDriver_lowerAndLink = F2(function (mlirPath, outputPath) {
+var _NativeDriver_lowerAndLink = F3(function (mlirPath, outputPath, rootModule) {
     return __Scheduler_binding(function (callback) {
         callback(__Scheduler_fail(
             'Eco.NativeDriver.lowerAndLink is not available in the JS bootstrap'));

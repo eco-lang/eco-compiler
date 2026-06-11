@@ -24,7 +24,11 @@ extern "C" {
 
 // MLIR file path -> ELF executable path. Returns 0 on success, nonzero on
 // failure (errors printed to stderr via the LLVM diagnostics machinery).
-int eco_native_lower_and_link(const char *mlirPath, const char *outputPath);
+// rootModule (nullable/empty allowed) is baked into the program as the
+// __eco_root_module symbol so the N-API addon names the Elm.<RootModule>
+// export after the program's actual root module instead of "Main".
+int eco_native_lower_and_link(const char *mlirPath, const char *outputPath,
+                              const char *rootModule);
 
 // In-memory MLIR text -> ELF executable. Phase 2 entry point.
 int eco_native_lower_and_link_bytes(const char *mlirBytes, size_t mlirLen,

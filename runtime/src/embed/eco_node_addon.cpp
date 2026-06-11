@@ -49,8 +49,9 @@ namespace {
 
 #define NAPI_CALL(env, call) NAPI_CALL_RET(env, call, nullptr)
 
-// Root module name baked into the program object by the compiler (future);
-// weak so current programs fall back to "Main".
+// Root module name baked into the program object by the compiler (see
+// EcoNativeDriver.cpp, opts.rootModule); weak so programs built before the
+// symbol existed fall back to "Main".
 extern "C" __attribute__((weak)) const char* __eco_root_module;
 
 const char* rootModuleName() {

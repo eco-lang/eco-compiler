@@ -28,7 +28,8 @@ namespace Eco::Kernel::NativeDriver {
 // the weak stubs and lowering happens in-process; otherwise the stubs
 // return -1 and we surface a Task failure.
 extern "C" {
-int eco_native_lower_and_link(const char *mlirPath, const char *outputPath);
+int eco_native_lower_and_link(const char *mlirPath, const char *outputPath,
+                              const char *rootModule);
 int eco_native_lower_and_link_bytes(const char *bytes, size_t len,
                                      const char *outputPath);
 }
@@ -38,15 +39,18 @@ namespace {
 HPointer lowerAndLinkBody(HPointer captured) {
     HPointer mlirPathHP;
     HPointer outputPathHP;
+    HPointer rootModuleHP;
     {
-        Tuple2* tup = static_cast<Tuple2*>(
+        Tuple3* tup = static_cast<Tuple3*>(
             Elm::Allocator::instance().resolve(captured));
         mlirPathHP = tup->a.p;
         outputPathHP = tup->b.p;
+        rootModuleHP = tup->c.p;
     }
     std::string mp = toString(Export::encode(mlirPathHP));
     std::string op = toString(Export::encode(outputPathHP));
-    int rc = eco_native_lower_and_link(mp.c_str(), op.c_str());
+    std::string rm = toString(Export::encode(rootModuleHP));
+    int rc = eco_native_lower_and_link(mp.c_str(), op.c_str(), rm.c_str());
     if (rc != 0) {
         return failString(
             "Eco.NativeDriver.lowerAndLink: lowering/linking failed "
@@ -81,12 +85,15 @@ HPointer lowerAndLinkBytesBody(HPointer captured) {
 
 } // anonymous namespace
 
-uint64_t lowerAndLink(uint64_t mlirPath, uint64_t outputPath) {
+uint64_t lowerAndLink(uint64_t mlirPath, uint64_t outputPath,
+                      uint64_t rootModule) {
     HPointer mlirPathHP = Export::decode(mlirPath);
     HPointer outputPathHP = Export::decode(outputPath);
-    Elm::StackRootGuard g(&mlirPathHP, &outputPathHP);
-    HPointer payload = Elm::alloc::tuple2(
-        Elm::alloc::boxed(mlirPathHP), Elm::alloc::boxed(outputPathHP), 0);
+    HPointer rootModuleHP = Export::decode(rootModule);
+    Elm::StackRootGuard g(&mlirPathHP, &outputPathHP, &rootModuleHP);
+    HPointer payload = Elm::alloc::tuple3(
+        Elm::alloc::boxed(mlirPathHP), Elm::alloc::boxed(outputPathHP),
+        Elm::alloc::boxed(rootModuleHP), 0);
     return Export::encode(Eco::Kernel::makeBinding<lowerAndLinkBody>(payload));
 }
 
