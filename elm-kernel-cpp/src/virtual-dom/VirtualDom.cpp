@@ -370,8 +370,9 @@ HPointer noJavaScriptOrHtmlJson(HPointer value) {
     void* resolved = Allocator::instance().resolve(value);
     if (!resolved) return value;
 
-    Header* hdr = static_cast<Header*>(resolved);
-    if (hdr->tag != Tag_String) {
+    // Any string form counts: slices, ropes, and large-block strings must be
+    // sanitized too, or a concatenated "javascript:" URI slips through.
+    if (!alloc::isString(resolved)) {
         // Non-string JSON values are safe
         return value;
     }

@@ -1345,7 +1345,8 @@ static json elmToJson(uint64_t valueEnc) {
         return json(f->value);
     }
 
-    if (header->tag == Tag_String) {
+    // Any string form: flat leaf, slice, rope, or large-block header.
+    if (isString(ptr)) {
         return json(elmStringToStd(valueEnc));
     }
 
@@ -1620,7 +1621,11 @@ HPtr Elm_Kernel_Json_wrap(HPtr value) {
         return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
     }
 
-    if (header->tag == Tag_String) {
+    // Any string form: flat leaf, slice, rope, or large-block header.
+    // Checking Tag_String alone misroutes ropes/slices/large strings (built
+    // by String.repeat / concatenation above the leaf size classes) into the
+    // "already an encoder" fallthrough, which elmToJson then renders as null.
+    if (isString(ptr)) {
         // Pattern A: h is the only HPointer field.
         size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
         uint64_t roots[1];
