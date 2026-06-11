@@ -56,6 +56,29 @@ public:
     // event loop when new async work is ready. Must not allocate or touch GC.
     void notifyWorkAvailableFromAsync();
 
+    // Activity hook: notifies an embedder (e.g. the N-API addon) when the
+    // worker transitions between "has real work in flight" and "idle,
+    // waiting for external input", so a host event loop (Node) can keep
+    // itself alive exactly while the Elm program is busy — matching the JS
+    // target, where pending Elm work pins the loop but an idle worker does
+    // not. Fired on the scheduler (eco) thread, only on a state change. The
+    // hook must be quick, non-blocking, and must not re-enter the scheduler.
+    // "Real work" = a non-empty run queue OR pendingAsync_ above the
+    // liveness baseline (see setLivenessBaseline). Null by default (the
+    // standalone executable runtime registers none).
+    using ActivityHook = void (*)(bool busy, void* user);
+    void setActivityHook(ActivityHook hook, void* user) {
+        activityHook_ = hook;
+        activityUser_ = user;
+    }
+
+    // Number of pendingAsync_ holds that do NOT represent real in-flight
+    // work and so must be ignored when deciding host liveness. The embed
+    // layer takes exactly one lifetime hold to keep a worker's loop alive
+    // while idle (see eco_embed.cpp); it sets the baseline to 1 so that
+    // hold does not read as "busy". Default 0 (standalone runtime).
+    void setLivenessBaseline(int n) { livenessBaseline_ = n; }
+
     // Closure calling helper: calls a 1-arg Elm closure, returns result
     static HPointer callClosure1(HPointer closurePtr, HPointer arg);
     // Calls a 2-arg Elm closure
@@ -181,6 +204,14 @@ private:
     std::mutex mutex_;
     std::condition_variable eventCV_;
     std::atomic<int> pendingAsync_{0};
+    // Host-liveness activity hook (see setActivityHook). activityHook_ may be
+    // read/written across threads but is only set once before the loop runs;
+    // lastActivityBusy_ is touched only on the eco thread in runEventLoop.
+    ActivityHook activityHook_ = nullptr;
+    void* activityUser_ = nullptr;
+    int livenessBaseline_ = 0;
+    bool lastActivityBusy_ = true;  // assume busy until the loop first idles
+    void fireActivity(bool busy);
     std::atomic<u32> nextProcId_{0};
     std::atomic<bool> stopRequested_{false};
 };

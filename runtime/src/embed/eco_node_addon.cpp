@@ -15,9 +15,13 @@
 //   incoming: JSON.stringify on the JS thread -> eco_port_send (queued,
 //             decoded and delivered on the eco thread)
 //
-// Liveness matches the JS target: threadsafe functions are unref'd so port
-// subscriptions alone do not keep the Node event loop alive (hosts use
-// their own timers/stdin, exactly as with compiled-to-JS Elm).
+// Liveness matches the JS target: an idle worker does not pin the Node loop
+// (output port TSFNs are unref'd), but pending Elm work does — a dedicated
+// keepalive TSFN is ref'd exactly while the eco scheduler is busy and
+// unref'd when it goes idle, driven by eco_set_idle_hook. So a batch host
+// like `node run.js` runs to completion and exits on its own, while a host
+// that only reacts to its own timers/stdin still controls process lifetime,
+// exactly as with compiled-to-JS Elm. See the liveness block below.
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,12 +30,35 @@
 
 #include "eco_embed.h"
 
+#include <atomic>
 #include <mutex>
 #include <new>
 #include <string>
 #include <vector>
 
 namespace {
+
+// ---------------------------------------------------------------------------
+// Event-loop liveness (JS parity).
+//
+// Output port TSFNs are unref'd so an idle subscription never pins the Node
+// loop (see portSubscribe). On its own that means async port output can
+// arrive after Node has already drained and exited — the work happens on the
+// eco thread, and nothing ref'd is holding the loop. The JS target does not
+// have this problem: there, port input is processed synchronously on the
+// main thread, so pending Elm work keeps the loop alive via the normal
+// microtask/timer machinery.
+//
+// To match that, a single dedicated "keepalive" TSFN is ref'd exactly while
+// the eco scheduler has real work in flight and unref'd when it goes idle
+// (waiting for external input). The eco thread reports busy/idle transitions
+// via eco_set_idle_hook → ecoActivity (below); the actual ref/unref runs on
+// the main thread in keepaliveTrampoline, which reads the latest busy state
+// so it is robust to message ordering. portSend also refs pre-emptively (on
+// the main thread) so the idle→busy edge cannot race Node into exiting before
+// the eco thread observes the new input.
+napi_threadsafe_function g_keepalive = nullptr;
+std::atomic<bool> g_ecoBusy{true};
 
 #define NAPI_CALL_RET(env, call, ret)                                       \
     do {                                                                     \
@@ -114,6 +141,31 @@ void nodeSink(const char* json, void* user) {
                                       napi_tsfn_blocking) != napi_ok) {
         delete payload;
     }
+}
+
+// Main-thread trampoline for the keepalive TSFN: ref iff the eco thread is
+// currently busy, else unref. Reads g_ecoBusy at run time (not enqueue time)
+// so interleaved busy/idle signals self-correct to the latest state. env is
+// null while the TSFN is being torn down at shutdown — skip then.
+void keepaliveTrampoline(napi_env env, napi_value /*jsCb*/, void* /*ctx*/,
+                         void* /*data*/) {
+    if (env == nullptr || g_keepalive == nullptr) return;
+    if (g_ecoBusy.load())
+        napi_ref_threadsafe_function(env, g_keepalive);
+    else
+        napi_unref_threadsafe_function(env, g_keepalive);
+}
+
+// eco_set_idle_hook callback: runs on the ECO thread when the worker
+// transitions busy/idle. Records the state and wakes the main thread to
+// apply the ref/unref. Non-blocking enqueue (the TSFN is created with an
+// unbounded queue), so this is safe to call while the scheduler holds its
+// mutex.
+void ecoActivity(int busy, void* /*user*/) {
+    g_ecoBusy.store(busy != 0);
+    if (g_keepalive != nullptr)
+        napi_call_threadsafe_function(g_keepalive, nullptr,
+                                      napi_tsfn_nonblocking);
 }
 
 // ---------------------------------------------------------------------------
@@ -232,7 +284,14 @@ napi_value portSend(napi_env env, napi_callback_info info) {
     if (eco_port_send(portName->c_str(), json.c_str()) != 0) {
         std::string msg = "eco: unknown incoming port '" + *portName + "'";
         napi_throw_error(env, nullptr, msg.c_str());
+        return nullptr;
     }
+    // Pre-emptively hold the loop open: this send is about to make the eco
+    // thread busy, and the ref must land on the main thread before this call
+    // returns so Node cannot drain and exit before the eco thread observes
+    // the input. The eco thread's idle transition unrefs again when done.
+    if (g_keepalive != nullptr)
+        napi_ref_threadsafe_function(env, g_keepalive);
     return nullptr;
 }
 
@@ -346,6 +405,23 @@ napi_value elmInit(napi_env env, napi_callback_info info) {
         }
     }
 
+    // Keepalive TSFN: created (referenced by default) and wired to the eco
+    // scheduler's idle/busy transitions BEFORE start, so the loop is held
+    // open from the first instant and released only when the program is
+    // genuinely idle. See the liveness comment at the top of this file.
+    {
+        napi_value keepaliveName;
+        NAPI_CALL(env, napi_create_string_utf8(env, "eco_keepalive",
+                                               NAPI_AUTO_LENGTH,
+                                               &keepaliveName));
+        NAPI_CALL(env, napi_create_threadsafe_function(
+                           env, nullptr, nullptr, keepaliveName,
+                           /*max_queue=*/0, /*initial_thread_count=*/1,
+                           nullptr, nullptr, nullptr, keepaliveTrampoline,
+                           &g_keepalive));
+        eco_set_idle_hook(ecoActivity, nullptr);
+    }
+
     if (eco_app_start(0, nullptr, hasFlags ? flagsJson.c_str() : nullptr) !=
         0) {
         napi_throw_error(env, nullptr, "eco: app failed to start");
@@ -379,6 +455,12 @@ void ecoEnvCleanup(void* /*arg*/) {
     if (g_inited) {
         eco_app_stop();
         eco_app_join();
+    }
+    // The eco thread has now exited (join returned), so no further
+    // ecoActivity calls can race this release.
+    if (g_keepalive != nullptr) {
+        napi_release_threadsafe_function(g_keepalive, napi_tsfn_release);
+        g_keepalive = nullptr;
     }
 }
 

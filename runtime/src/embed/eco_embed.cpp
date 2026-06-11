@@ -183,11 +183,25 @@ struct EmbedState {
     // a GC root scanner with the constructing thread's RootSet).
     std::string flagsJson;
     bool hasFlags = false;
+
+    // Host idle/busy hook (see eco_set_idle_hook). Stashed on the host
+    // thread before start; applied to the Scheduler ON THE ECO THREAD.
+    void (*idleHook)(int busy, void* user) = nullptr;
+    void* idleHookUser = nullptr;
 };
 
 EmbedState& state() {
     static EmbedState s;
     return s;
+}
+
+// Scheduler ActivityHook → host idle hook. Runs on the eco thread; forwards
+// the busy/idle transition to the host callback registered via
+// eco_set_idle_hook (the N-API addon refs/unrefs a keepalive there).
+void schedActivityTrampoline(bool busy, void* /*user*/) {
+    auto& s = state();
+    if (s.idleHook)
+        s.idleHook(busy ? 1 : 0, s.idleHookUser);
 }
 
 void postReady() {
@@ -248,7 +262,15 @@ void* ecoEmbedThread(void* /*arg*/) {
     // Hold the event loop open for the app lifetime (released by
     // eco_app_stop). Taken before eco_main so the loop can never observe
     // zero refs and exit between init and the host's first send.
-    Elm::Platform::Scheduler::instance().incrementPendingAsync();
+    auto& sched = Elm::Platform::Scheduler::instance();
+    sched.incrementPendingAsync();
+    // That single lifetime hold is not "real work": tell the scheduler to
+    // discount it when reporting host liveness, and wire the idle/busy
+    // transitions through to the host hook (if any) so a Node loop stays
+    // alive exactly while the program is busy.
+    sched.setLivenessBaseline(1);
+    if (s.idleHook)
+        sched.setActivityHook(schedActivityTrampoline, nullptr);
 
     int64_t result = eco_main();
 
@@ -339,6 +361,16 @@ int eco_app_join(void) {
     pthread_join(s.thread, nullptr);
     s.threadValid.store(false);
     return s.exitCode.load();
+}
+
+void eco_set_idle_hook(void (*cb)(int busy, void* user), void* user) {
+    // Stash on the host thread; ecoEmbedThread applies it to the Scheduler
+    // on the eco thread (constructing/touching the Scheduler here would
+    // register its GC scanner with the wrong thread's RootSet). Call before
+    // eco_app_start, like eco_port_subscribe.
+    auto& s = state();
+    s.idleHook = cb;
+    s.idleHookUser = user;
 }
 
 }  // extern "C"

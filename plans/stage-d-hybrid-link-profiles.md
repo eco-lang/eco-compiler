@@ -851,9 +851,25 @@ the Alpine bundle merge + package, both smoke stages, and a real
 `.node` echo-bounce under Node from the *installed bundle*. (A dev-eco
 `.node` echo round-trip was verified live: elm-aws-codegen built with
 `--output=src/elm.node` processed all 30 AWS specs through its ports
-under Node 22 — with the documented caveat that the host must hold the
-event loop, since the addon's TSFNs are deliberately unref'd for JS
-parity.)
+under Node 22 and wrote all stubs, exiting cleanly — `node src/index.js`
+runs unchanged from the JS target, see the event-loop-liveness fix
+below.)
+
+**Event-loop liveness fix (same day):** a native `.node` did not keep
+Node alive while the eco thread had work pending — the output port TSFNs
+are unref'd ("JS parity": an idle subscription shouldn't pin the loop),
+so `node src/index.js` drained and exited before the eco thread posted
+its async port output, writing no stubs. The JS target doesn't have this
+because it processes ports synchronously on the main thread. Fix
+(runtime, not Stage D specific): a `Scheduler` activity hook
+(`setActivityHook` / `setLivenessBaseline`, discounting the one embed
+lifetime hold) reports busy↔idle transitions; the embed layer forwards
+them via a new `eco_set_idle_hook` C ABI; the addon refs a dedicated
+keepalive TSFN while busy and unrefs when idle. Result: a batch host runs
+to completion and exits on its own (verified: bare `node src/index.js`
+processes all 30 specs, writes 20 stubs, exit 0), while a timer/stdin
+host still controls lifetime — exact JS parity. Full E2E suite green
+(1480/1480) confirms no scheduler regression.
 
 **Two bugs found by the real bundle, fixed (same day):** building the
 actual `.deb` and running an elm-aws-codegen `.node` under Node surfaced

@@ -63,6 +63,15 @@ void eco_app_stop(void);
  * Returns -1 if the app was never started. */
 int eco_app_join(void);
 
+/* Register a callback fired when the program transitions between having
+ * real work in flight (busy=1) and being idle, waiting for external input
+ * (busy=0). Lets a host event loop (e.g. Node) keep itself alive exactly
+ * while the program is busy, matching the JS target where pending Elm work
+ * pins the loop but an idle worker does not. Fired ON THE ECO THREAD, only
+ * on a state change: be quick, non-blocking, and do not touch Elm state.
+ * Call before eco_app_start. Passing NULL disables it. */
+void eco_set_idle_hook(void (*cb)(int busy, void* user), void* user);
+
 /* ---- Ports ------------------------------------------------------------ */
 
 /* Queue a JSON payload for an incoming port and wake the event loop.

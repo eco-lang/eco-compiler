@@ -540,6 +540,13 @@ void Scheduler::runEventLoop() {
         std::unique_lock<std::mutex> lock(mutex_);
         if (stopRequested_.load()) break;
         if (runQueue_.empty() && pendingAsync_.load() == 0) break;
+        // About to block: the worker has real work in flight only if the run
+        // queue is non-empty or pendingAsync_ exceeds the embedder's lifetime
+        // baseline (a pending timer/HTTP/task). Otherwise we are idle, waiting
+        // for external input — release the host loop. (runQueue_ is empty here,
+        // but check both for clarity.)
+        fireActivity(!runQueue_.empty() ||
+                     pendingAsync_.load() > livenessBaseline_);
         // Also wake if the timer worker pushed a token after our last
         // processReadyAsync but before we took the lock — closes the
         // missed-wakeup window.
@@ -555,7 +562,20 @@ void Scheduler::runEventLoop() {
             }
             return false;
         });
+        // Woke with work (or a stop): mark busy so the host loop stays alive
+        // across the upcoming drain. fireActivity is a no-op if unchanged.
+        fireActivity(true);
     }
+    // Loop exiting (stop / quiescence): let the host loop go.
+    fireActivity(false);
+}
+
+void Scheduler::fireActivity(bool busy) {
+    if (busy == lastActivityBusy_)
+        return;
+    lastActivityBusy_ = busy;
+    if (activityHook_)
+        activityHook_(busy, activityUser_);
 }
 
 void Scheduler::incrementPendingAsync() {
