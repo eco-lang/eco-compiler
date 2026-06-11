@@ -146,6 +146,17 @@ if(ECO_GLIBC_OUTPUT_RUNTIME AND NOT ECO_STATIC)
     message(FATAL_ERROR "ECO_GLIBC_OUTPUT_RUNTIME requires ECO_STATIC=ON "
         "(the vendored libcurl/libzip archive targets only exist under it)")
 endif()
+if(ECO_GLIBC_OUTPUT_RUNTIME)
+    # Compile the staged archives against libc++ so they match the libc++.a /
+    # libc++abi.a the Stage D recipe links — symmetric with the musl side,
+    # whose `release` preset sets -stdlib=libc++ globally. The `build` preset
+    # this mode runs under does NOT, so on Debian clang the kernels would
+    # otherwise compile against GCC libstdc++ (std::__cxx11) and the produced
+    # .so/.node would fail to dlopen on the libc++ (std::__1) symbols it links
+    # against. CXX-only so the handful of C kernel files don't warn. libc++
+    # headers come from the apt libc++-N-dev the glibc-runtime stage installs.
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-stdlib=libc++>)
+endif()
 
 # Linker for the `eco` target. The Elm-compiled Stage-9 object carries
 # R_X86_64_64 relocations in its .llvm_stackmaps section that lld rejects when
@@ -534,7 +545,20 @@ if(ECO_GLIBC_OUTPUT_RUNTIME)
         # matches the headers EcoRuntimeStatic compiled against.
         set(ECO_GLIBC_UNWIND_A "${LLVM_LIBUNWIND_LIBRARY}")
     endif()
-    foreach(_v ECO_GLIBC_LIBCXX_A ECO_GLIBC_LIBCXXABI_A ECO_GLIBC_UNWIND_A ECO_GLIBC_BUILTINS_A)
+    # glibc's static link glue. `atexit`, `at_quick_exit`, `pthread_atfork`,
+    # `__stack_chk_fail_local` and the old `__libc_csu_*` are NOT dynamically
+    # exported by libc.so.6 — they live only in libc_nonshared.a, the static
+    # half of glibc's `-lc` (which is the GNU ld script
+    #   GROUP ( libc.so.6 libc_nonshared.a ) ).
+    # The Stage D recipe links no libc (symbols bind from the host at load),
+    # so without this archive a produced .so/.node references `atexit`
+    # (eco_embed.cpp registers an atexit teardown hook) with nothing to
+    # resolve it → "undefined symbol: atexit" at dlopen, on EVERY glibc host.
+    # Its members call __cxa_atexit (dynamic, exported by libc.so.6) +
+    # __dso_handle (from crtbeginS.o), so shipping it adds NO NEEDED entry.
+    _eco_query_clang_path(ECO_GLIBC_LIBC_NONSHARED_A libc_nonshared.a)
+    foreach(_v ECO_GLIBC_LIBCXX_A ECO_GLIBC_LIBCXXABI_A ECO_GLIBC_UNWIND_A
+               ECO_GLIBC_BUILTINS_A ECO_GLIBC_LIBC_NONSHARED_A)
         if(NOT IS_ABSOLUTE "${${_v}}" OR NOT EXISTS "${${_v}}")
             message(FATAL_ERROR "Stage D: ${_v} did not resolve to an existing file: "
                 "'${${_v}}'. Install the LLVM runtime dev packages "
@@ -548,6 +572,7 @@ if(ECO_GLIBC_OUTPUT_RUNTIME)
     message(STATUS "  libc++abi.a: ${ECO_GLIBC_LIBCXXABI_A}")
     message(STATUS "  libunwind.a: ${ECO_GLIBC_UNWIND_A}")
     message(STATUS "  builtins.a:  ${ECO_GLIBC_BUILTINS_A}")
+    message(STATUS "  libc_nonshared.a: ${ECO_GLIBC_LIBC_NONSHARED_A}")
 
     if(NOT TARGET EcoNodeGlue)
         message(FATAL_ERROR "Stage D: EcoNodeGlue target missing — the vendored "
@@ -592,6 +617,7 @@ if(ECO_GLIBC_OUTPUT_RUNTIME)
         COMMAND ${CMAKE_COMMAND} -E copy "${ECO_GLIBC_LIBCXXABI_A}" "${_tree}/libc++abi.a"
         COMMAND ${CMAKE_COMMAND} -E copy "${ECO_GLIBC_UNWIND_A}"    "${_tree}/libunwind.a"
         COMMAND ${CMAKE_COMMAND} -E copy "${ECO_GLIBC_BUILTINS_A}"  "${_tree}/libclang_rt.builtins-x86_64.a"
+        COMMAND ${CMAKE_COMMAND} -E copy "${ECO_GLIBC_LIBC_NONSHARED_A}" "${_tree}/libc_nonshared.a"
         COMMAND ${CMAKE_COMMAND} -E copy "${ECO_CRTI_O}"     "${_tree}/crt/crti.o"
         COMMAND ${CMAKE_COMMAND} -E copy "${ECO_CRTN_O}"     "${_tree}/crt/crtn.o"
         COMMAND ${CMAKE_COMMAND} -E copy "${ECO_CRTBEGIN_O}" "${_tree}/crt/crtbeginS.o"

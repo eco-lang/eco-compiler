@@ -1312,6 +1312,7 @@ string(APPEND ECO_BOOT_CONFIG_CONTENT
     "inline RuntimeFile glibcLibcxxabiA  {\"libc++abi.a\", \"glibc\", \"\"};\n"
     "inline RuntimeFile glibcUnwindA     {\"libunwind.a\", \"glibc\", \"\"};\n"
     "inline RuntimeFile glibcBuiltinsA   {\"libclang_rt.builtins-x86_64.a\", \"glibc\", \"\"};\n"
+    "inline RuntimeFile glibcLibcNonsharedA {\"libc_nonshared.a\", \"glibc\", \"\"};\n"
     "inline RuntimeFile glibcCurlA       {\"libcurl.a\",   \"glibc\", \"\"};\n"
     "inline RuntimeFile glibcSslA        {\"libssl.a\",    \"glibc\", \"\"};\n"
     "inline RuntimeFile glibcCryptoA     {\"libcrypto.a\", \"glibc\", \"\"};\n"

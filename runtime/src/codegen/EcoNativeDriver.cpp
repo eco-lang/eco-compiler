@@ -651,6 +651,22 @@ int linkExecutable(const std::string &objectFile,
         glibcTree ? eco::config::glibcUnwindA : eco::config::unwindLib)));
 
     if (profile == LinkProfile::GlibcBundleShared) {
+        // glibc's static link glue (atexit, at_quick_exit, pthread_atfork,
+        // __stack_chk_fail_local, …). These are NOT dynamic exports of
+        // libc.so.6 — they live only in libc_nonshared.a, the static half
+        // of glibc's `-lc` GROUP linker script. Since this profile links
+        // no libc (other libc symbols bind from the host at load), without
+        // this archive a produced .so/.node references `atexit`
+        // (eco_embed's teardown hook) with nothing to resolve it and fails
+        // dlopen with "undefined symbol: atexit" on every glibc host. Its
+        // members reference __cxa_atexit (a real dynamic export) and
+        // __dso_handle (from crtbeginS.o), so it adds no NEEDED entry.
+        // Placed after the archives that reference it so the linker pulls
+        // the needed members.
+        args.push_back(push(resolveFile(eco::config::glibcLibcNonsharedA)));
+    }
+
+    if (profile == LinkProfile::GlibcBundleShared) {
         // Hide every statically linked archive EXCEPT the two
         // whole-archived entry libs. Scoped, NOT `ALL`: lld applies
         // --exclude-libs to whole-archived members too, so ALL would
@@ -669,8 +685,8 @@ int linkExecutable(const std::string &objectFile,
         //      follow-up.
         std::string excludeLibs =
             "--exclude-libs=libc++.a,libc++abi.a,libunwind.a,"
-            "libclang_rt.builtins-x86_64.a,libcurl.a,libssl.a,"
-            "libcrypto.a,libzip.a,libz.a";
+            "libclang_rt.builtins-x86_64.a,libc_nonshared.a,libcurl.a,"
+            "libssl.a,libcrypto.a,libzip.a,libz.a";
         excludeLibs += ",";
         excludeLibs += runtimeLibFile.basename;
         for (const auto &lib : elmKernelFiles) {

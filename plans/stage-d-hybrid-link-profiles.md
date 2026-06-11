@@ -489,6 +489,7 @@ glibc/libc++.a glibc/libc++abi.a
 glibc/libcurl.a glibc/libssl.a glibc/libcrypto.a glibc/libzip.a glibc/libz.a
 glibc/libclang_rt.builtins-x86_64.a
 glibc/libunwind.a
+glibc/libc_nonshared.a   (atexit/at_quick_exit/pthread_atfork/__stack_chk_fail_local — NOT in libc.so.6)
 --exclude-libs <every archive on this line EXCEPT libEcoEmbedStatic.a / libEcoNodeGlue.a>
 glibc/crt/crtendS.o  glibc/crt/crtn.o
 ```
@@ -853,6 +854,32 @@ the Alpine bundle merge + package, both smoke stages, and a real
 under Node 22 — with the documented caveat that the host must hold the
 event loop, since the addon's TSFNs are deliberately unref'd for JS
 parity.)
+
+**Two bugs found by the real bundle, fixed (same day):** building the
+actual `.deb` and running an elm-aws-codegen `.node` under Node surfaced
+two faults the hand-simulation missed because it linked but never
+`dlopen`'d the artifact into a process. (1) **`undefined symbol:
+atexit`** at load — the recipe links no libc, but `atexit` (and
+`at_quick_exit`, `pthread_atfork`, `__stack_chk_fail_local`, old
+`__libc_csu_*`) is NOT a dynamic export of `libc.so.6`; it lives only in
+`libc_nonshared.a`, the static half of glibc's `-lc` GROUP script.
+eco_embed registers an `atexit` teardown hook, so every produced
+`.so`/`.node` referenced it with nothing to bind. Fix: ship
+`libc_nonshared.a` in the glibc tree and link it (its members call
+`__cxa_atexit` + `__dso_handle`, so no NEEDED entry is added). (2)
+**libstdc++/libc++ mismatch** — the `glibc-runtime` stage configures
+with the `build` preset, which (unlike `release`) doesn't set
+`-stdlib=libc++`, so on Debian clang the archives compiled against GCC
+libstdc++ (`std::__cxx11`) while the recipe links libc++ (`std::__1`);
+the next undefined symbol after `atexit` would have been a libstdc++
+ostringstream VTT. Fix: `add_compile_options(-stdlib=libc++)` under
+`ECO_GLIBC_OUTPUT_RUNTIME`, matching the musl side. Both verified
+end-to-end in-container: the corrected recipe, linked against a
+freshly-rebuilt tree, now `require()`s clean under real Node
+(`exports: ["Elm"]`) and resolves every symbol under RTLD_NOW once
+libc/libm/napi are present. The docker `glibc-smoke` stage's
+build-and-run-a-.node step is exactly what catches this class; the
+in-container check now also `dlopen`s, not just links.
 
 **Decoupling addendum (same day):** the original implementation made
 `eco-llvm-debian` a release prerequisite (runtimes built in that
