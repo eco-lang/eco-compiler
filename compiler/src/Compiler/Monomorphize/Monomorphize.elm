@@ -26,8 +26,8 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.BitSet as BitSet
 import Compiler.AST.Utils.Type as Type
+import Compiler.Data.BitSet as BitSet
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.LocalOpt.Typed.Names as Names

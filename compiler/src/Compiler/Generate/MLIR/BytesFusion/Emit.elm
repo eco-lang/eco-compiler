@@ -566,7 +566,7 @@ emitWriteBytes bytesExpr state =
 
 {-| Emit bf.write.encoder operation — the escape hatch for encoder
 subtrees the reifier didn't recognise. Delegates to the runtime
-walker via elm_encoder_write_into; cursor advances by bytes-written.
+walker via elm\_encoder\_write\_into; cursor advances by bytes-written.
 -}
 emitWriteOpaque : Mono.MonoExpr -> EmitState -> EmitState
 emitWriteOpaque encoderExpr state =
@@ -653,6 +653,7 @@ Mirrors the decoder loop's scf.while construction. Cursor threading
 inside the body uses Context.addVarMapping to bind the user-visible
 itemVar name to the per-iteration head SSA, so the body's MonoExpr
 references resolve correctly through the standard compileExpr callback.
+
 -}
 emitWriteEachItem :
     { cursorName : String

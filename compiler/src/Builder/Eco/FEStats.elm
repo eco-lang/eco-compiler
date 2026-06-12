@@ -1,11 +1,10 @@
 module Builder.Eco.FEStats exposing
     ( Handle
     , PhaseName(..), ModuleStage(..)
-    , init, finalize
-    , withPhase
+    , init, finalize, disabled
+    , withPhase, withModuleStage
     , recordModule
     , prettyPrint
-    , disabled, withModuleStage
     )
 
 {-| Front-end timing stats: phase wall-clocks, per-module crawl/check/build
@@ -499,7 +498,7 @@ renderBucketLine maxCount idx count =
                 ""
 
             else
-                String.repeat (max 1 ((count * barWidthMax) // maxCount)) "\u{2588}"
+                String.repeat (max 1 ((count * barWidthMax) // maxCount)) "█"
     in
     "  "
         ++ padLeft 20 (formatBucketRange idx)

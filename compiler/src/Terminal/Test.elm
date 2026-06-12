@@ -29,9 +29,9 @@ compiles them with the required dependencies, and executes them using Node.js.
 
 import Builder.BackgroundWriter as BW
 import Builder.Build as Build
-import Builder.Eco.FEStats as FEStats
 import Builder.Deps.Registry as Registry
 import Builder.Deps.Solver as Solver
+import Builder.Eco.FEStats as FEStats
 import Builder.Elm.Details as Details
 import Builder.Elm.Outline as Outline
 import Builder.File as File

@@ -22,12 +22,12 @@ import Compiler.Generate.Mode as Mode
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Dict
 import Eco.File
-import System.IO as IO
 import Mlir.Bytecode.StreamEncode as StreamEncode
 import Mlir.Loc as Loc
 import Mlir.Mlir exposing (MlirModule, MlirOp)
 import Mlir.Pretty as Pretty
 import Set
+import System.IO as IO
 import Task exposing (Task)
 import Utils.Main as Utils
 

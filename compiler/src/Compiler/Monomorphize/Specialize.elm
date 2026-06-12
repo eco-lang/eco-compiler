@@ -483,12 +483,13 @@ RHS is a `case`/`if`/generic-function call (`case deltaMode of …`,
 miscompiles when used at Float.
 
 This widening is **additionally gated on a real Float demand**
-(`demandedNumericUseType`): a scalar `number` can still flow into a *boxed*
+(`demandedNumericUseType`): a scalar `number` can still flow into a _boxed_
 context (an embedded `Maybe`/custom field), and routing such a binding through
 the number specialization reintroduces the boxed-custom SIGSEGV class
 (`EmbeddedNothingInCustomTypeTest`, `UnboxWrapperNothingTest`). Requiring a
 concrete Float use restricts the widening to exactly the Int-vs-Float-default
 case it is meant to fix and leaves boxed-only scalars on the eager path.
+
 -}
 isScalarNumberShape : Mono.MonoType -> Bool
 isScalarNumberShape mt =
@@ -503,7 +504,8 @@ isScalarNumberShape mt =
             False
 
 
-{-| Result type of a (possibly curried) canonical function type. -}
+{-| Result type of a (possibly curried) canonical function type.
+-}
 canResultType : Can.Type id -> Can.Type id
 canResultType t =
     case t of
@@ -518,7 +520,7 @@ canResultType t =
 
 
 {-| Is a global-function call safe to fire as numeric-data RHS? Safe iff the
-function's *scheme* result is a constructed or numeric shape — a concrete type, a
+function's _scheme_ result is a constructed or numeric shape — a concrete type, a
 container, or a number-constrained var (`Basics.add : number -> number -> number`
 → `number`; `Array.fromList : List a -> Array a` → `Array a`) — and NOT a bare
 unconstrained type var, which signals a pass-through of a possibly-boxed value
@@ -739,6 +741,7 @@ concrete numeric type without depending on use-site/binding MVarId sharing.
 Returns the instance's fresh name, its concrete MonoType, and the updated state;
 `Nothing` if `name` is not a value-multi target (defensive — callers gate on
 `isNumberMultiTarget`).
+
 -}
 recordNumberInstanceAgainstShape : Name -> Mono.MonoType -> Substitution -> MonoState -> Maybe ( Name, Mono.MonoType, MonoState )
 recordNumberInstanceAgainstShape name resolvedShape subst state =
@@ -950,7 +953,7 @@ collectChoiceNumericDemands name decider state subst =
 {-| The consumer-demanded numeric type of a destructor-bound `number` variable:
 the first use whose resolved type carries an `MFloat`, or `Nothing` if no use
 demands a Float (Int default preserved). The number twin of the closure case's
-`refineValueMultiForDestructorCall` — a *use* drives the refinement, not a *call*
+`refineValueMultiForDestructorCall` — a _use_ drives the refinement, not a _call_
 of the bound value.
 -}
 demandedNumericUseType : Name -> TOpt.Expr MVarId -> MonoState -> Substitution -> Maybe Mono.MonoType
@@ -2019,7 +2022,7 @@ specializePortNode incoming expr canType requestedMonoType state =
 instantiations of the same port share one registration). Two DIFFERENT
 ports with the same bare name are both kept — the runtime's registration
 preamble then crashes at startup with a duplicate-name message
-(PORT_001, JS \_Platform\_checkPortName parity).
+(PORT\_001, JS \_Platform\_checkPortName parity).
 -}
 recordPortRegistration : Mono.PortRegistration -> MonoState -> MonoState
 recordPortRegistration reg state =

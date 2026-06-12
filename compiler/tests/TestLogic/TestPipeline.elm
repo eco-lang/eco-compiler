@@ -47,6 +47,7 @@ import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
+import Compiler.Eco.Config as Config
 import Compiler.Elm.Interface as I
 import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.ModuleName as ModuleName
@@ -54,7 +55,6 @@ import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.MLIR.Backend as MLIR
 import Compiler.Generate.Mode as Mode
 import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
-import Compiler.Eco.Config as Config
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.LocalOpt.Typed.Module as TypedOptimize
 import Compiler.Monomorphize.Monomorphize as Monomorphize

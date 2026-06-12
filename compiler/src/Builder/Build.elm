@@ -764,7 +764,7 @@ type CachedInterface
 checkModule : Env -> Dependencies -> MVar ResultDict -> ModuleName.Raw -> Status -> Task Never BResult
 checkModule ((Env envData) as env) foreigns resultsMVar name status =
     FEStats.withModuleStage envData.stats FEStats.Check name <|
-        (case status of
+        case status of
             SCached ((Details.Local localData) as local) ->
                 checkCachedModule env envData.root envData.projectType resultsMVar name localData.path localData.time localData.deps localData.hasMain localData.lastChange localData.lastCompile local
 
@@ -787,7 +787,6 @@ checkModule ((Env envData) as env) foreigns resultsMVar name status =
 
             SKernel ->
                 Task.succeed RKernel
-        )
 
 
 checkCachedModule :
@@ -1408,12 +1407,11 @@ compile (Env envData) docsNeed (Details.Local localData) source ifaces modul =
             Src.getName modul
     in
     FEStats.withModuleStage envData.stats FEStats.Build modName <|
-        (if envData.needsTypedOpt then
+        if envData.needsTypedOpt then
             compileWithTypedOpt envData.key envData.root pkg envData.buildID docsNeed localData.path localData.time localData.deps localData.hasMain localData.lastChange source ifaces modul
 
-         else
+        else
             compileWithoutTypedOpt envData.key envData.root pkg envData.buildID docsNeed localData.path localData.time localData.deps localData.hasMain localData.lastChange source ifaces modul
-        )
 
 
 {-| Context for compilation results, carrying all the values needed for finalization.

@@ -1,4 +1,4 @@
-module Compiler.Generate.MLIR.Intrinsics exposing (CompareKind(..), Intrinsic(..), kernelIntrinsic, intrinsicResultMlirType, unboxArgsForIntrinsic, unboxToType, generateIntrinsicOp)
+module Compiler.Generate.MLIR.Intrinsics exposing (Intrinsic(..), CompareKind(..), kernelIntrinsic, intrinsicResultMlirType, unboxArgsForIntrinsic, unboxToType, generateIntrinsicOp)
 
 {-| Intrinsic operations for the MLIR backend.
 

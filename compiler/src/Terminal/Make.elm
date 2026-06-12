@@ -214,6 +214,7 @@ kernel package next to the executable at
 (binary in `<prefix>/bin`, kernel in `<prefix>/share/eco/kernel/eco-kernel-cpp`).
 If that directory does not exist we leave the mapping unset so the normal
 package cache lookup applies.
+
 -}
 resolveLocalPackage : Maybe ( Pkg.Name, FilePath ) -> Task Never (Maybe ( Pkg.Name, FilePath ))
 resolveLocalPackage maybeLocalPackage =
@@ -259,7 +260,8 @@ loadDetailsAndBuild root paths style stats withSourceMaps maybeOutput maybeDocs 
     EcoConfigLoader.load maybeConfigPath root
         |> Task.andThen
             (\ecoConfig ->
-                FEStats.withPhase stats FEStats.PhaseDeps
+                FEStats.withPhase stats
+                    FEStats.PhaseDeps
                     (Task.eio Exit.MakeBadDetails (Details.load style scope root maybeBuildDir (Just (Config.hash ecoConfig)) (shouldUseTypedOpt maybeOutput) showPackageErrors maybeLocalPackage registryPolicy))
                     |> Task.andThen (buildWithDetails root paths style stats withSourceMaps maybeOutput maybeDocs maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir ecoConfig desiredMode)
             )
@@ -423,6 +425,7 @@ success or failure.
 Phase 1 of the Stage 9 single-binary plan. Phases 2/3 swap the temp
 file for an in-memory byte buffer and the spawned `clang++` for embedded
 `lld`, respectively.
+
 -}
 handleElfOutput : BuildContext -> FilePath -> Build.Artifacts -> Task Exit.Make ()
 handleElfOutput ctx target artifacts =
@@ -480,7 +483,8 @@ handleElfOutput ctx target artifacts =
             in
             Task.io
                 (Utils.dirCreateDirectoryIfMissing True
-                    (Utils.fpTakeDirectory target))
+                    (Utils.fpTakeDirectory target)
+                )
                 |> Task.andThen
                     (\_ ->
                         Task.io
@@ -744,6 +748,7 @@ Extension-less names (and any unrecognized extension) are treated as native
 ELF executable targets — the unified `eco` binary's drop-in-for-`elm-make`
 behaviour. The `.js` / `.html` / `.mlir` paths keep their existing
 front-end-only behaviour.
+
 -}
 parseOutput : String -> Maybe Output
 parseOutput name =

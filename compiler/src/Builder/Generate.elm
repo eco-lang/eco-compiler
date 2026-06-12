@@ -56,6 +56,7 @@ import Compiler.AST.TypedModuleArtifact as TMod
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as N exposing (Name)
 import Compiler.Data.NonEmptyList as NE
+import Compiler.Eco.Config as Config
 import Compiler.Elm.Compiler.Type.Extract as Extract
 import Compiler.Elm.Interface as I
 import Compiler.Elm.ModuleName as ModuleName
@@ -65,7 +66,6 @@ import Compiler.Generate.CodeGen.JavaScript as JavaScript
 import Compiler.Generate.MLIR.Backend as MLIR
 import Compiler.Generate.Mode as Mode
 import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
-import Compiler.Eco.Config as Config
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.Monomorphize.Monomorphize as Monomorphize
 import Compiler.Nitpick.Debug as Nitpick

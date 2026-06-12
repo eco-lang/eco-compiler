@@ -9,7 +9,8 @@ This combines the typed optimization IR (LocalGraph) with the module's
 type environment, allowing the monomorphization phase to access both
 the optimized code and the type definitions it needs.
 
-## Wire-format skip list (ECOT_001)
+
+## Wire-format skip list (ECOT\_001)
 
 The following fields are present in the in-memory `LocalGraph` /
 `ModuleTypeEnv` types but are NOT serialized to `.ecot`. They are
@@ -17,12 +18,12 @@ reconstructed as inert defaults on decode because no consumer
 downstream of deserialization reads them. Do not add a reader without
 first re-adding the corresponding wire slot.
 
-  - `LocalGraph.main`              → `Nothing` on decode
-  - `LocalGraph.fields`            → `Dict.empty` on decode
-  - `ModuleTypeEnv.aliases`        → `Dict.empty` on decode
+  - `LocalGraph.main` → `Nothing` on decode
+  - `LocalGraph.fields` → `Dict.empty` on decode
+  - `ModuleTypeEnv.aliases` → `Dict.empty` on decode
   - Per-`Node` deps sets on Define, TrackedDefine, Cycle, Kernel,
     PortIncoming, PortOutgoing → `EverySet.empty` on decode
-  - `Manager`'s `EffectsType`      → `Cmd` placeholder on decode
+  - `Manager`'s `EffectsType` → `Cmd` placeholder on decode
   - `Kernel`'s `chunks` and `deps` → `[]` and `EverySet.empty` on decode
   - `Expr.VarDebug`'s `home` and `unhandledValueName`
     → `IO.Canonical Pkg.core Name.debug` and `Nothing` on decode

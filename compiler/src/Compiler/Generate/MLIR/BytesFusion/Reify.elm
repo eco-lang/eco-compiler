@@ -1,6 +1,5 @@
 module Compiler.Generate.MLIR.BytesFusion.Reify exposing
-    ( EncoderNode(..), DecoderNode(..)
-    , BodyLookup
+    ( EncoderNode(..), DecoderNode(..), BodyLookup
     , reifyEncoder, reifyEncoderWith, reifyDecoder
     , nodesToOps, decoderNodeToOps
     , CountSource, LengthDecoder
@@ -52,6 +51,7 @@ iteration variable.
 
 Empty `Dict.empty` is safe — `reifyMapBody` will just fall through to
 the `Nothing` arm and ELoop fusion is suppressed for that site.
+
 -}
 type alias BodyLookup =
     Dict Int ( List ( Name, Mono.MonoType ), Mono.MonoExpr )
@@ -70,6 +70,7 @@ cons head during the loop), `itemNodes` is the reified body, `iterExpr`
 is the source list (`xs`), `countExpr` is the `List.length xs` MonoExpr
 extracted from the header (reused for the buffer pre-allocation so we
 don't evaluate `List.length` twice).
+
 -}
 type EncoderNode
     = EU8 Mono.MonoExpr
@@ -589,6 +590,7 @@ of EncoderNodes.
 
 Returns `Just [headerNode, ELoop ...]` on full match. Returns `Nothing`
 on any mismatch — the caller falls back to the kernel call.
+
 -}
 reifyLengthPrefixedLoop : BodyLookup -> Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe (List EncoderNode)
 reifyLengthPrefixedLoop bodyLookup registry exprCache headerExpr tailExpr =

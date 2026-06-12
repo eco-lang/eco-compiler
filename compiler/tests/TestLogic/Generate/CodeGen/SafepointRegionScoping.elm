@@ -3,7 +3,7 @@ module TestLogic.Generate.CodeGen.SafepointRegionScoping exposing (expectSafepoi
 {-| Test logic for GC-root-hint region scoping invariant.
 
 Every front-end GC root operand on a GCRootCarrier op (eco.call,
-eco.papExtend, eco.papCreate, eco.construct.*) must reference an SSA value
+eco.papExtend, eco.papCreate, eco.construct.\*) must reference an SSA value
 that is defined in the CURRENT region or an ANCESTOR scope — never in a
 sibling region. Sibling regions of eco.case (and scf.while, scf.if, etc.)
 have independent scopes in MLIR; referencing a value from a sibling region
@@ -124,6 +124,7 @@ the field/arg operands themselves reference cross-region SSA, that is the
 same dominance bug, and MLIR's verifier would reject the IR anyway. The
 appended root suffix is the new failure surface added by removing
 eco.safepoint, so it must be checked too.
+
 -}
 checkOp : String -> Set String -> MlirOp -> ( List Violation, Set String )
 checkOp funcName visibleDefs op =

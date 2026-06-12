@@ -22,14 +22,14 @@ interning and legacy callers.
 
 Width selection:
 
-  - count ≤ 256          → width = 1 (u8)
-  - count ≤ 65,536       → width = 2 (u16, big-endian)
-  - otherwise            → width = 4 (u32, big-endian)
+  - count ≤ 256 → width = 1 (u8)
+  - count ≤ 65,536 → width = 2 (u16, big-endian)
+  - otherwise → width = 4 (u32, big-endian)
 
 Determinism: the table is sorted alphabetically before index assignment,
 required by the bootstrap byte-equality fixed-point checks.
 
-See ECOT_002 in design_docs/invariants.csv.
+See ECOT\_002 in design\_docs/invariants.csv.
 
 
 # Types

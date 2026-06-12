@@ -1,16 +1,11 @@
 module Compiler.Generate.MLIR.LogicalTypes exposing
-    ( LogicalTypeDesc(..)
-    , AggKind(..)
-    , monoTypeToLogical
-    , mlirTypeToLogical
-    , encodeLogicalType
-    , addLogicalTypesAttr
-    , addLogicalTypesAttrUnknown
+    ( LogicalTypeDesc(..), AggKind(..), monoTypeToLogical, mlirTypeToLogical
+    , encodeLogicalType, addLogicalTypesAttr, addLogicalTypesAttrUnknown
     )
 
 {-| Encode a function's logical Elm parameter/result types as
 StringAttr entries for the `eco.logical_param_types` /
-`eco.logical_result_types` attributes on `func.func` ops (CGEN_065).
+`eco.logical_result_types` attributes on `func.func` ops (CGEN\_065).
 
 The encoding pipeline is two-stage:
 
@@ -30,7 +25,7 @@ Wire format (one StringAttr per param/result):
 
   - `"i64"` / `"f64"` / `"i16"` / `"i1"` — primitive ABI types.
   - `"value"` — `!eco.value` (boxed; not aggregate-eligible). Also
-    serves as the "unknown / opaque" entry that satisfies CGEN_065's
+    serves as the "unknown / opaque" entry that satisfies CGEN\_065's
     "absent or LUnknown ⇒ non-eligible" clause.
   - `"tuple2:K0:K1"` — 2-tuple. K is single-char element kind.
   - `"tuple3:K0:K1:K2"` — 3-tuple.
@@ -80,7 +75,7 @@ type LogicalTypeDesc
 
 
 {-| Aggregate element kind. Single-character on the wire
-(REP_HEAP_002): `i`/`f`/`c`/`v` for i64/f64/i16/!eco.value.
+(REP\_HEAP\_002): `i`/`f`/`c`/`v` for i64/f64/i16/!eco.value.
 -}
 type AggKind
     = AKInt
@@ -200,6 +195,7 @@ mlirTypeToLogical mlirType =
 
 Total over the `LogicalTypeDesc` constructor space; producers can
 never emit a malformed encoding by construction.
+
 -}
 encodeLogicalType : LogicalTypeDesc -> String
 encodeLogicalType desc =
@@ -284,7 +280,7 @@ addLogicalTypesAttr customMaxFields ctorShapes argTypes resultType op =
 using only MLIR ABI types — no MonoType context. Aggregate slots
 all become `LUnknown` since the ABI type alone can't recover the
 aggregate's shape; cross-spec then conservatively skips the function
-(CGEN_065).
+(CGEN\_065).
 -}
 addLogicalTypesAttrUnknown : List MlirType -> MlirType -> MlirOp -> MlirOp
 addLogicalTypesAttrUnknown argMlirTypes resultMlirType op =

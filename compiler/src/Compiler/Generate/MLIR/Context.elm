@@ -1,10 +1,12 @@
 module Compiler.Generate.MLIR.Context exposing
-    ( Context, FuncSignature, KernelDeclInfo, PendingLambda, TypeRegistry, VarInfo
+    ( Context, FuncSignature, PendingLambda, TypeRegistry, VarInfo
     , initContext, withInlineBodies, withEcoConfig
     , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp, liveEcoValueVars, resetDefinedSsaVars
-    , getOrCreateTypeIdForMonoType, registerKernelCall, registerKernelInstance
+    , getOrCreateTypeIdForMonoType, registerKernelCall
     , buildSignatures, kernelFuncSignatureFromType
     , isTypeVar, hasKernelImplementation
+    , KernelDeclInfo
+    , registerKernelInstance
     )
 
 {-| MLIR code generation context.
@@ -99,6 +101,7 @@ kernelFuncSignatureFromType funcType =
     }
 
 
+
 -- The KernelBackendAbiPolicy type and the kernelBackendAbiPolicy lookup table
 -- now live in Compiler.Monomorphize.KernelAbi as part of the per-instance
 -- kernel ABI rollout (see plans/per-instance-kernel-abi.md, Phase A).
@@ -158,6 +161,7 @@ type alias Context =
     , externBoxedVars : Set.Set String -- Local vars that alias extern/kernel functions (evaluator has all !eco.value params)
     , definedSsaVars : Set.Set String -- SSA variables defined in the current function scope (for safepoint filtering)
     , inlineBodies : Dict.Dict Int ( List ( Name.Name, Mono.MonoType ), Mono.MonoExpr )
+
     -- ^ SpecId -> (params, body) of inlinable, non-recursive functions in
     -- the final MonoGraph. Used by the bytes-fusion reifier's
     -- `reifyMapBody` to beta-reduce per-element encoder functions
@@ -166,6 +170,7 @@ type alias Context =
     -- be reified into `ELoop` body nodes. Built once at codegen entry
     -- from `MonoInlineSimplify.buildBodyLookup`.
     , ecoConfig : Config.EcoConfig
+
     -- ^ Effective project config from eco-config.json. Gates the
     -- bytes-fusion entry (`bytesFusion.enabled`) and tunes logical-type
     -- codegen (`logicalTypes.customMaxFields`). Installed via
@@ -206,6 +211,7 @@ via `withInlineBodies` (built from `MonoInlineSimplify.buildBodyLookup`).
 Without it, the reifier's `MonoVarGlobal` mapFn case in `reifyMapBody`
 falls back to `Nothing` and ELoop fusion is suppressed for closure-converted
 inline lambdas.
+
 -}
 initContext : Mode.Mode -> Mono.SpecializationRegistry -> Array (Maybe FuncSignature) -> Dict.Dict String (List Mono.CtorShape) -> Context
 initContext mode registry signatures initialCtorShapes =
@@ -525,6 +531,8 @@ recover on its own.
     --                     Nothing
     --             )
 
+
+
 -}
 liveEcoValueVars : Context -> List ( String, MlirType )
 liveEcoValueVars _ =
@@ -560,7 +568,7 @@ type alias KernelDeclInfo =
 
 The canonical signature for a kernel is taken directly from the call site.
 Subsequent calls to the same kernel name must use exactly the same argument
-and result MLIR types, or we crash with a mismatch error (CGEN_038).
+and result MLIR types, or we crash with a mismatch error (CGEN\_038).
 
 This shim keeps the legacy MLIR-types-only entry point working for callers
 that have not yet been ported to `registerKernelInstance`. It populates the
@@ -580,7 +588,7 @@ registerKernelCall ctx name callSiteArgTypes callSiteReturnType =
 caller to use when emitting boxing/unboxing and the `eco.call` operands.
 
 Crashes if a previous call registered a different ABI for the same symbol
-(CGEN_038).
+(CGEN\_038).
 
 -}
 registerKernelInstance : KernelAbi.KernelInstanceKey -> Context -> ( KernelAbi.KernelInstanceAbi, Context )
@@ -601,7 +609,7 @@ registerKernelInstance key ctx =
 
 
 {-| Insert (or verify) a `KernelDeclInfo` for the given symbol. Crashes on
-ABI mismatch with an existing entry (CGEN_038).
+ABI mismatch with an existing entry (CGEN\_038).
 -}
 insertKernelDecl : Context -> KernelDeclInfo -> Context
 insertKernelDecl ctx info =

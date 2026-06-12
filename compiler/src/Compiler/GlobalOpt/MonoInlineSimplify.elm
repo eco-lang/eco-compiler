@@ -1,4 +1,4 @@
-module Compiler.GlobalOpt.MonoInlineSimplify exposing (Metrics, buildBodyLookup, optimize)
+module Compiler.GlobalOpt.MonoInlineSimplify exposing (Metrics, optimize, buildBodyLookup)
 
 {-| Mono IR Inliner and Simplifier.
 
@@ -64,6 +64,7 @@ Used by `Compiler.Generate.MLIR.BytesFusion.Reify.reifyMapBody`'s
 `MonoVarGlobal` arm — closure conversion turns inline lambdas into
 global function references, so the reifier needs this lookup to apply
 a per-element encoder lambda to a synthetic iteration variable.
+
 -}
 buildBodyLookup : MonoGraph -> Dict SpecId ( List ( Name, Mono.MonoType ), MonoExpr )
 buildBodyLookup (MonoGraph { nodes, callEdges }) =
@@ -208,8 +209,8 @@ cost threshold. Two groups:
     them exposes the constructor / kernel-call shape to the bytes-fusion
     reifier at the call site.
 
-  - Eco-internal encoder/decoder helpers (Utils.Bytes.{Encode,Decode}.*,
-    Mlir.Bytecode.VarInt.*, Mlir.Bytecode.Section.encodeSection). These are
+  - Eco-internal encoder/decoder helpers (Utils.Bytes.{Encode,Decode}._,
+    Mlir.Bytecode.VarInt._, Mlir.Bytecode.Section.encodeSection). These are
     above the default cost threshold but are pure compositions of elm/bytes
     primitives. Inlining substitutes their body at the call site, where the
     general fusion reifier patterns (literal-list + cons-of-List.map ELoop)
@@ -223,6 +224,7 @@ would replace them with the C++ kernel call and defeat fusion.
 so a recursive helper on this list still won't inline. The shell of a
 recursive helper inlines if its non-recursive cost remains under budget,
 but recursive bodies stay as function calls.
+
 -}
 defaultWhitelist : InlineWhitelist
 defaultWhitelist =

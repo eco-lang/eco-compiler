@@ -181,13 +181,11 @@ matchOrderBranches branches =
 {-| Build the rewritten expression for `case compare a b of LT -> e1 ; EQ -> e2 ; GT -> e3`.
 The result is
 
-```
-let _vN = a in
-let _vM = b in
-if Basics.lt _vN _vM then e1
-else if Basics.eq _vN _vM then e2
-else e3
-```
+    let _vN = a in
+    let _vM = b in
+    if Basics.lt _vN _vM then e1
+    else if Basics.eq _vN _vM then e2
+    else e3
 
 Binding `a` and `b` to fresh names prevents double-evaluation under the two
 synthesized comparisons. After monomorphization, `Basics.lt`/`Basics.eq`

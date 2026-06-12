@@ -107,7 +107,7 @@ withCreateProcess createProcess f =
         |> Task.onError handleSpawnFailure
 
 
-{-| A failed spawn is handled locally (IO_ERR_001 clause (a)): report it on
+{-| A failed spawn is handled locally (IO\_ERR\_001 clause (a)): report it on
 stderr and surface the conventional "command not found / cannot execute" exit
 code (127) so callers continue to observe an `ExitCode`.
 -}

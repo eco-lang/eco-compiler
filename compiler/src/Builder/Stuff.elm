@@ -290,6 +290,7 @@ A locally linked package resolves to the same cache path as a downloaded one: it
 source is copied from the seed path (see `localPackageSource`) into this cache
 directory on first build, and all reads and writes then use the cache so artifacts
 land in the writable `~/.eco` tree rather than the (possibly read-only) seed.
+
 -}
 package : PackageCache -> Pkg.Name -> V.Version -> String
 package (PackageCache dir _) name version =

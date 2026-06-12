@@ -131,13 +131,13 @@ import Compiler.Json.Decode as Decode
 import Compiler.Json.Encode as Encode
 import Compiler.Parse.Primitives exposing (Col, Row)
 import Compiler.Reporting.Annotation as A
-import Eco.IO.Error as IOErr exposing (IOError)
 import Compiler.Reporting.Doc as D
 import Compiler.Reporting.Error as Error
 import Compiler.Reporting.Error.Import as Import
 import Compiler.Reporting.Error.Json as Json
 import Compiler.Reporting.Render.Code as Code
 import Dict exposing (Dict)
+import Eco.IO.Error as IOErr exposing (IOError)
 import System.IO exposing (FilePath)
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD

@@ -822,7 +822,7 @@ kernelInstanceSymbol key =
             rootSymbol
 
 
-{-| Self-check (REP_ABI_001 / KERN_006): an `MInt`/`MFloat`/`MChar` parameter
+{-| Self-check (REP\_ABI\_001 / KERN\_006): an `MInt`/`MFloat`/`MChar` parameter
 or result must be paired with the corresponding primitive MLIR type, and a
 non-primitive Mono type must not be paired with a primitive MLIR type. Crashes
 if the invariant is violated; otherwise returns the abi unchanged.
@@ -900,7 +900,7 @@ ensurePrimitiveAbi key abi =
             crash ("ensurePrimitiveAbi: " ++ String.join "; " errors)
 
 
-{-| MONO_002 spot-check: any reachable kernel call site must have its numeric
+{-| MONO\_002 spot-check: any reachable kernel call site must have its numeric
 type variables resolved to concrete `MInt`/`MFloat` before MLIR codegen. An
 `MVar _ CNumber` in a `KernelInstanceKey` is a compiler bug.
 -}

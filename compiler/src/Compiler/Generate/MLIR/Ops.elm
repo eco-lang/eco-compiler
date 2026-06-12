@@ -1068,7 +1068,7 @@ scfCondition ctx condVar args =
 
 {-| Describes one sibling in a `eco.papCreateGroup` op.
 
-`resultKind` is the saturated return ABI kind (REP_ABI_001):
+`resultKind` is the saturated return ABI kind (REP\_ABI\_001):
 
   - 0 = Boxed (HPtr) — default; emitted when the lambda's body evaluates
     to a non-primitive type, including multi-stage closures whose body

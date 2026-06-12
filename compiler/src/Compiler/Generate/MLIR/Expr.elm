@@ -2387,6 +2387,7 @@ unbound variable mono_inline_N` crashes downstream.
 Returns `Nothing` when the inner body doesn't reify as an encoder; the
 caller then falls through to the kernel-call fallback (which computes
 `argOps` and emits a `Elm_Kernel_Bytes_encode` call).
+
 -}
 tryEncoderFusionWithBindings :
     Ctx.Context
@@ -2410,12 +2411,11 @@ tryEncoderFusionWithBindings ctx accumulated encoderExpr =
                         accumulated
             in
             case
-                (if ctx.ecoConfig.bytesFusion.enabled then
+                if ctx.ecoConfig.bytesFusion.enabled then
                     BFReify.reifyEncoderWith ctx.inlineBodies ctx.registry localCache encoderExpr
 
-                 else
+                else
                     Nothing
-                )
             of
                 Just nodes ->
                     let
@@ -2464,6 +2464,7 @@ two encoder paths (the `MonoVarGlobal` arm and the `MonoVarKernel
 `encoderExpr` and cannot resolve `MonoVarLocal` references — when
 called on a let-hoisted encoder they either bail (and waste the chance
 to fuse) or succeed and crash at emit. The pre-check supersedes both.
+
 -}
 tryBytesEncodeFusion : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Maybe ExprResult
 tryBytesEncodeFusion ctx func args =
@@ -2614,12 +2615,11 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                 Just encoderExpr ->
                     -- Attempt to fuse the encoder
                     case
-                        (if ctx.ecoConfig.bytesFusion.enabled then
+                        if ctx.ecoConfig.bytesFusion.enabled then
                             BFReify.reifyEncoderWith ctx.inlineBodies ctx.registry ctx.decoderExprs encoderExpr
 
-                         else
+                        else
                             Nothing
-                        )
                     of
                         Just nodes ->
                             -- Fusion successful - emit fused byte encoding ops
@@ -3131,12 +3131,11 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                     case args of
                         [ encoderExpr ] ->
                             case
-                                (if ctx.ecoConfig.bytesFusion.enabled then
+                                if ctx.ecoConfig.bytesFusion.enabled then
                                     BFReify.reifyEncoderWith ctx.inlineBodies ctx.registry ctx.decoderExprs encoderExpr
 
-                                 else
+                                else
                                     Nothing
-                                )
                             of
                                 Just nodes ->
                                     -- Fusion successful - emit fused byte encoding ops

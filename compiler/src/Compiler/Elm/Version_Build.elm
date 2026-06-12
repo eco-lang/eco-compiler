@@ -23,6 +23,7 @@ marketing version.
 This is the value reported by `eco --version`. For a dev build it is the
 baseline from `version.txt` combined with `git describe`; for a tagged
 release it is the value passed via `-DECO_VERSION_OVERRIDE=...`.
+
 -}
 userFacing : String
 userFacing =

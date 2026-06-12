@@ -161,6 +161,7 @@ changes**; the marketing/welcome-banner version is `Version_Build.userFacing`
 (generated from `version.txt` + git describe at CMake configure time).
 
 Initial release: `0.1.0`.
+
 -}
 compiler : Version
 compiler =

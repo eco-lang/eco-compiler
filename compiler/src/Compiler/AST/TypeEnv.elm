@@ -145,12 +145,12 @@ mergeGlobalTypeEnv env1 env2 =
 
 {-| Encode a module type environment.
 
-Per ECOT_001 in design_docs/invariants.csv, the `aliases` field is NOT
+Per ECOT\_001 in design\_docs/invariants.csv, the `aliases` field is NOT
 serialized; it is reconstructed as `Dict.empty` on decode. Aliases are
 expanded during canonicalization / typed optimization, which run before
 .ecot is written, so no post-deserialization consumer reads them.
 
-Per ECOT_002, this encoder emits a per-call string-table preamble; every
+Per ECOT\_002, this encoder emits a per-call string-table preamble; every
 string field in the body is encoded as an index into the table.
 
 -}

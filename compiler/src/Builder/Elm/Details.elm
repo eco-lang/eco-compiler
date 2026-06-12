@@ -69,13 +69,13 @@ import Bytes.Encode
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Source as Src
-import Compiler.Eco.Config as Config
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Compile as Compile
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
+import Compiler.Eco.Config as Config
 import Compiler.Elm.Constraint as Con
 import Compiler.Elm.Docs as Docs
 import Compiler.Elm.Interface as I
@@ -1043,11 +1043,7 @@ cache file is self-contained: a package built for the MLIR path writes only
 this file, and a package built for the JS path writes only `artifacts.dat`.
 -}
 type TypedArtifactCache
-    = TypedArtifactCache
-        (EverySet (List ( ( String, String ), ( Int, Int, Int ) )) Fingerprint)
-        (Dict ModuleName.Raw I.DependencyInterface)
-        (TOpt.GlobalGraph Name)
-        TypeEnv.GlobalTypeEnv
+    = TypedArtifactCache (EverySet (List ( ( String, String ), ( Int, Int, Int ) )) Fingerprint) (Dict ModuleName.Raw I.DependencyInterface) (TOpt.GlobalGraph Name) TypeEnv.GlobalTypeEnv
 
 
 type alias Fingerprint =

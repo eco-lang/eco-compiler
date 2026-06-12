@@ -479,35 +479,37 @@ generateMonoPathHelper ctx path targetType revAcc =
                                             ( [ projectOp ], primitiveVar, ctx4 )
 
                                     else
-                                        -- Field is stored boxed (as eco.value). Project as
-                                        -- eco.value and add an eco.unbox if the caller wants
-                                        -- I1 (Bool scrutinee): the storage is an HPointer to
-                                        -- True/False constants (3<<40 vs 4<<40), so loading
-                                        -- the field directly as i1 reads only the low bit
-                                        -- of the HPointer, which is 0 for both True and
-                                        -- False — silently inverting Bool pattern tests.
-                                        -- Other targetTypes pass through unchanged because
-                                        -- the caller has set them to match the field's
-                                        -- storage. Mirrors Tuple2/Tuple3 handling.
-                                        if targetType == I1 then
-                                            let
-                                                ( valVar, ctxV ) =
-                                                    Ctx.freshVar ctx2
+                                    -- Field is stored boxed (as eco.value). Project as
+                                    -- eco.value and add an eco.unbox if the caller wants
+                                    -- I1 (Bool scrutinee): the storage is an HPointer to
+                                    -- True/False constants (3<<40 vs 4<<40), so loading
+                                    -- the field directly as i1 reads only the low bit
+                                    -- of the HPointer, which is 0 for both True and
+                                    -- False — silently inverting Bool pattern tests.
+                                    -- Other targetTypes pass through unchanged because
+                                    -- the caller has set them to match the field's
+                                    -- storage. Mirrors Tuple2/Tuple3 handling.
+                                    if
+                                        targetType == I1
+                                    then
+                                        let
+                                            ( valVar, ctxV ) =
+                                                Ctx.freshVar ctx2
 
-                                                ( ctxP, projectOp ) =
-                                                    Ops.ecoProjectCustom ctxV valVar index Types.ecoValue subVar
+                                            ( ctxP, projectOp ) =
+                                                Ops.ecoProjectCustom ctxV valVar index Types.ecoValue subVar
 
-                                                ( unboxOps, unboxedVar, ctxU ) =
-                                                    Intrinsics.unboxToType ctxP valVar I1
-                                            in
-                                            ( projectOp :: unboxOps, unboxedVar, ctxU )
+                                            ( unboxOps, unboxedVar, ctxU ) =
+                                                Intrinsics.unboxToType ctxP valVar I1
+                                        in
+                                        ( projectOp :: unboxOps, unboxedVar, ctxU )
 
-                                        else
-                                            let
-                                                ( ctx_, op ) =
-                                                    Ops.ecoProjectCustom ctx2 resultVar index targetType subVar
-                                            in
-                                            ( [ op ], resultVar, ctx_ )
+                                    else
+                                        let
+                                            ( ctx_, op ) =
+                                                Ops.ecoProjectCustom ctx2 resultVar index targetType subVar
+                                        in
+                                        ( [ op ], resultVar, ctx_ )
 
                                 Nothing ->
                                     -- Field is stored boxed (as eco.value) or no layout found.
@@ -542,30 +544,32 @@ generateMonoPathHelper ctx path targetType revAcc =
                                             ( [ projectOp ], primitiveVar, ctx4 )
 
                                     else
-                                        -- Field is non-primitive (eco.value), project as eco.value.
-                                        -- Same Bool/I1 unbox insertion as the field-info branch
-                                        -- above: an I1 target with a boxed source must go through
-                                        -- eco.unbox so the True/False HPointer constants are
-                                        -- compared via runtime semantics (REP_CONSTANT_003).
-                                        if targetType == I1 then
-                                            let
-                                                ( valVar, ctxV ) =
-                                                    Ctx.freshVar ctx2
+                                    -- Field is non-primitive (eco.value), project as eco.value.
+                                    -- Same Bool/I1 unbox insertion as the field-info branch
+                                    -- above: an I1 target with a boxed source must go through
+                                    -- eco.unbox so the True/False HPointer constants are
+                                    -- compared via runtime semantics (REP_CONSTANT_003).
+                                    if
+                                        targetType == I1
+                                    then
+                                        let
+                                            ( valVar, ctxV ) =
+                                                Ctx.freshVar ctx2
 
-                                                ( ctxP, projectOp ) =
-                                                    Ops.ecoProjectCustom ctxV valVar index Types.ecoValue subVar
+                                            ( ctxP, projectOp ) =
+                                                Ops.ecoProjectCustom ctxV valVar index Types.ecoValue subVar
 
-                                                ( unboxOps, unboxedVar, ctxU ) =
-                                                    Intrinsics.unboxToType ctxP valVar I1
-                                            in
-                                            ( projectOp :: unboxOps, unboxedVar, ctxU )
+                                            ( unboxOps, unboxedVar, ctxU ) =
+                                                Intrinsics.unboxToType ctxP valVar I1
+                                        in
+                                        ( projectOp :: unboxOps, unboxedVar, ctxU )
 
-                                        else
-                                            let
-                                                ( ctx_, op ) =
-                                                    Ops.ecoProjectCustom ctx2 resultVar index targetType subVar
-                                            in
-                                            ( [ op ], resultVar, ctx_ )
+                                    else
+                                        let
+                                            ( ctx_, op ) =
+                                                Ops.ecoProjectCustom ctx2 resultVar index targetType subVar
+                                        in
+                                        ( [ op ], resultVar, ctx_ )
             in
             ( List.foldl (::) revAcc1 projectOps
             , projectVar

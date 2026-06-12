@@ -12,8 +12,8 @@ values (emitting warnings), and surface errors as `Exit.Make`.
 
 import Builder.Reporting.Exit as Exit
 import Compiler.Eco.Config as Config exposing (EcoConfig)
-import Eco.File
 import Compiler.Json.Decode as D
+import Eco.File
 import System.IO as IO exposing (FilePath)
 import Task exposing (Task)
 import Utils.Main as Utils

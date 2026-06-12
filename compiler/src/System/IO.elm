@@ -200,7 +200,8 @@ type LockSharedExclusive
 Console output is best-effort: a write error (e.g. EPIPE when the downstream
 reader closed the pipe, as in `eco ... | head`) is swallowed here rather than
 surfaced, matching the kernel's historical behaviour of ignoring the write
-return value. This is the IO_ERR_001 clause (a) "handle locally" case.
+return value. This is the IO\_ERR\_001 clause (a) "handle locally" case.
+
 -}
 write : Handle -> String -> Task Never ()
 write (Handle fd) content =
@@ -251,7 +252,7 @@ isTerminal _ =
 
 
 {-| Handle a fallible IO task locally by crashing with a diagnostic when it
-fails (IO_ERR_001 clause (a)). Used for build-internal artifact/cache IO where
+fails (IO\_ERR\_001 clause (a)). Used for build-internal artifact/cache IO where
 the surrounding code is `Task Never` and threading an `IOError` through the
 MVar-concurrent build pipeline would be unbounded; a failure here indicates a
 corrupt or unwritable build cache and is reported clearly rather than dropped.

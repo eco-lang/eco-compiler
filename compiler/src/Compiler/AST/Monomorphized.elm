@@ -450,7 +450,7 @@ type MonoGraph
 {-| One port registration collected during monomorphization.
 
 `name` is the bare port name — the effect-manager registry key, globally
-unique per program (PORT_001, JS `_Platform_checkPortName` parity). For
+unique per program (PORT\_001, JS `_Platform_checkPortName` parity). For
 incoming ports `decoderSpecId` points at the synthetic `MonoDefine`
 specialization holding the payload `Decoder` value; Prune keeps it
 reachable and the MLIR backend's `@__eco_register_ports` preamble calls

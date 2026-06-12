@@ -148,6 +148,7 @@ directory entry).
 For a path with no directory component (e.g. a bare "hello.js"),
 `fpDropFileName` returns the empty string; skip the mkdir in that case so
 the kernel doesn't see `mkdir("")` and reject it with EINVAL.
+
 -}
 writeUtf8 : FilePath -> String -> Task Never ()
 writeUtf8 path content =

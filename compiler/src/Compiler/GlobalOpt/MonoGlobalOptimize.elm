@@ -1853,6 +1853,7 @@ applied, not 1.
 If the chain runs out of MFunction layers before `n` peels, returns the
 current type (defensive — should not happen for well-typed StageCurried
 calls).
+
 -}
 peelStages : Int -> Mono.MonoType -> Mono.MonoType
 peelStages n t =
@@ -1876,7 +1877,7 @@ return type.
 
 Heuristic: peel by `totalArgsConsumed` (initialRemaining + sum of
 remainingStageArities). When the callee is a partial-application
-expression whose `Mono.typeOf` reports the *original* function's full
+expression whose `Mono.typeOf` reports the _original_ function's full
 curried type rather than the partial-app's narrowed type (e.g. add of
 type `MFunction [Int] (MFunction [Int] Int)` seen at a 1-arg saturating
 call), `totalArgsConsumed` undercounts. As a fallback when the peeled
@@ -1885,9 +1886,10 @@ the way to `decomposeFunctionType`'s final body — that matches the
 underlying func.func's primitive return.
 
 For functions that genuinely return a closure (`identity` applied to a
-function-typed arg), `MonoCall.resultType` *is* a function type, so we
+function-typed arg), `MonoCall.resultType` _is_ a function type, so we
 stop at the heuristic peel and avoid over-peeling past the wrapper's
 last stage.
+
 -}
 saturatingEvaluatorReturnType : Mono.MonoType -> Int -> Mono.MonoType -> Mono.MonoType
 saturatingEvaluatorReturnType resultType totalArgsConsumed funcType =

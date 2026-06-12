@@ -458,10 +458,10 @@ emptyGlobalGraph =
 
 {-| Encode a global graph to binary format.
 
-The `fields` slot is omitted from the wire format (see ECOT_001 in
-design_docs/invariants.csv); it is reconstructed as `Dict.empty` on decode.
+The `fields` slot is omitted from the wire format (see ECOT\_001 in
+design\_docs/invariants.csv); it is reconstructed as `Dict.empty` on decode.
 
-This encoder emits a per-call string-table preamble (ECOT_002): every string
+This encoder emits a per-call string-table preamble (ECOT\_002): every string
 field in the body is encoded as an index into the table. The table dominates
 the body for any non-trivial graph, so the strict subset of strings actually
 emitted determines the savings.
@@ -501,11 +501,11 @@ globalGraphDecoder =
 
 {-| Encode a local graph to binary format.
 
-The `main` and `fields` slots are omitted from the wire format (see ECOT_001
-in design_docs/invariants.csv); they are reconstructed as `Nothing` and
+The `main` and `fields` slots are omitted from the wire format (see ECOT\_001
+in design\_docs/invariants.csv); they are reconstructed as `Nothing` and
 `Dict.empty` on decode.
 
-This encoder emits a per-call string-table preamble (ECOT_002).
+This encoder emits a per-call string-table preamble (ECOT\_002).
 
 -}
 localGraphEncoder : LocalGraph Name -> Bytes.Encode.Encoder
@@ -571,7 +571,7 @@ metaDecoderS st =
     Bytes.Decode.map (\t -> { tipe = t, tvar = Nothing }) (Can.typeDecoderS st)
 
 
-{-| Encode a Node. Per ECOT_001 in design_docs/invariants.csv, the per-Node
+{-| Encode a Node. Per ECOT\_001 in design\_docs/invariants.csv, the per-Node
 deps sets (Define, TrackedDefine, Cycle, Kernel, PortIncoming, PortOutgoing),
 Manager's EffectsType byte, and Kernel's chunks list are NOT serialized; they
 are reconstructed as `EverySet.empty` / `Cmd` / `[]` on decode.
@@ -1481,6 +1481,7 @@ pathDecoderS st =
                     _ ->
                         Bytes.Decode.fail
             )
+
 
 
 -- ====== SCHEME ROOTS ENCODERS/DECODERS ======
