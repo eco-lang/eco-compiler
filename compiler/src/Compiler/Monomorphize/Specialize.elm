@@ -3823,18 +3823,25 @@ specializeExpr expr subst state =
                 maybeValueMultiRefinement =
                     case getValueMultiRootFromPath destructorPath state of
                         Just ( rootName, rootCanType ) ->
-                          if not (Mono.containsAnyMVar (applySubstFV state subst rootCanType)) then
+                          let
+                            -- The Float a use of this destructor's bound variable
+                            -- demands, if any. `demandedNumericUseType` only returns a
+                            -- Float-bearing demand (it filters on `monoTypeContainsFloat`),
+                            -- so `Just _` here means a concrete Float is required at this
+                            -- slot and the eager Int default would miscompile it.
+                            floatDemand =
+                                if isNumberMultiTarget rootName state then
+                                    demandedNumericUseType dname body state subst
+
+                                else
+                                    Nothing
+                          in
+                          if not (Mono.containsAnyMVar (applySubstFV state subst rootCanType)) && floatDemand == Nothing then
                             -- The root is already fully concrete (no remaining type
-                            -- variables): there is nothing for the destructor to
-                            -- narrow, and the existing value instance keyed by the
-                            -- resolved type already matches. Fall through to the
-                            -- non-refining path (`Nothing`).
-                            --
-                            -- Note we test the *un-forced* resolution: an unresolved
-                            -- `number` var surfaces as `MVar _ CNumber` here, which is
-                            -- NOT concrete, so the refinement below (which carries the
-                            -- `demandedNumericUseType` Float-propagation logic) still
-                            -- runs for number-multi roots.
+                            -- variables) AND no use demands a Float: there is nothing for
+                            -- the destructor to narrow, and the existing value instance
+                            -- keyed by the resolved type already matches. Fall through to
+                            -- the non-refining path (`Nothing`).
                             --
                             -- Running buildPartialContainer/unifyExtend on an
                             -- already-concrete root is not merely redundant but
@@ -3848,7 +3855,14 @@ specializeExpr expr subst state =
                             -- to all-boxed and a spurious second instance (`_v0$v1`)
                             -- would be created, desyncing the projection layout from
                             -- the scrutinee's actual unboxed layout (CGEN_040
-                            -- operand-type violation).
+                            -- operand-type violation). Those `(v, v, v)` shapes are
+                            -- all-Int (no Float demand), so the `floatDemand == Nothing`
+                            -- conjunct keeps them on this protected path.
+                            --
+                            -- A `number`-multi root, by contrast, can be "concrete" only
+                            -- because its `number` var was eagerly defaulted to `Int`; if
+                            -- a use demands `Float`, that concrete-Int resolution is WRONG
+                            -- and must be re-opened by the refinement below.
                             Nothing
 
                           else
@@ -3861,17 +3875,16 @@ specializeExpr expr subst state =
                                 -- let-generalized, so its resolved Float lives on its
                                 -- USE nodes (two hops from the destructured root), not
                                 -- on the destructor's own type (which defaults to Int).
-                                -- When the root is a number-multi target, scan the body
-                                -- for the variable's resolved use type and project the
-                                -- demanded Float onto this slot, so the destructor and
-                                -- the root instance both materialise at Float.
+                                -- When the root is a number-multi target, project the
+                                -- discovered Float demand onto this slot, so the
+                                -- destructor and the root instance both materialise at
+                                -- Float. We key off the recovered demand directly (not
+                                -- `hasUnresolvedNumberVar destructorMeta.tipe`): for a
+                                -- `case`-pattern destructor the slot's own `number` var is
+                                -- already defaulted to Int, so that predicate is False
+                                -- even though a Float is genuinely demanded.
                                 destrMonoType0 =
-                                    if isNumberMultiTarget rootName state && hasUnresolvedNumberVar state.ctx.mvarEnv destructorMeta.tipe then
-                                        Maybe.withDefault eagerLeaf
-                                            (demandedNumericUseType dname body state subst)
-
-                                    else
-                                        eagerLeaf
+                                    Maybe.withDefault eagerLeaf floatDemand
                             in
                             case buildPartialContainer rootCanType destructorPath destrMonoType0 state of
                                 Just ( partialContainerMono, stateP ) ->
