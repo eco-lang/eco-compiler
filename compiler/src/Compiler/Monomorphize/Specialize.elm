@@ -3820,6 +3820,35 @@ specializeExpr expr subst state =
                 maybeValueMultiRefinement =
                     case getValueMultiRootFromPath destructorPath state of
                         Just ( rootName, rootCanType ) ->
+                          if not (Mono.containsAnyMVar (applySubstFV state subst rootCanType)) then
+                            -- The root is already fully concrete (no remaining type
+                            -- variables): there is nothing for the destructor to
+                            -- narrow, and the existing value instance keyed by the
+                            -- resolved type already matches. Fall through to the
+                            -- non-refining path (`Nothing`).
+                            --
+                            -- Note we test the *un-forced* resolution: an unresolved
+                            -- `number` var surfaces as `MVar _ CNumber` here, which is
+                            -- NOT concrete, so the refinement below (which carries the
+                            -- `demandedNumericUseType` Float-propagation logic) still
+                            -- runs for number-multi roots.
+                            --
+                            -- Running buildPartialContainer/unifyExtend on an
+                            -- already-concrete root is not merely redundant but
+                            -- actively wrong when the same canonical type variable
+                            -- appears in multiple container slots (e.g. a tuple whose
+                            -- elements share one solver var, `(v, v, v)`): the partial
+                            -- container fills the non-leaf slots with fresh distinct
+                            -- CEcoValue fillers, and unifying that against the repeated
+                            -- var rebinds it once per slot, aliasing it to the last
+                            -- (unbound) filler. The root instance would then collapse
+                            -- to all-boxed and a spurious second instance (`_v0$v1`)
+                            -- would be created, desyncing the projection layout from
+                            -- the scrutinee's actual unboxed layout (CGEN_040
+                            -- operand-type violation).
+                            Nothing
+
+                          else
                             let
                                 eagerLeaf =
                                     Mono.forceCNumberToInt
