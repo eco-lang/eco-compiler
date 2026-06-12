@@ -1531,8 +1531,9 @@ void* OldGenSpace::allocateLargeBlock(size_t size) {
     // 3) Acquire a fresh block from the Allocator.
     // mmap requires page-aligned offsets, and acquireOldGenBlock advances a
     // bump cursor by the requested size. Round up to the OS page boundary so
-    // the next acquire stays aligned.
-    constexpr size_t kPageSize = 4096;
+    // the next acquire stays aligned. OS_PAGE_SIZE is 16 KiB on Apple Silicon
+    // (Darwin's hard requirement) and 4 KiB elsewhere — see AllocatorCommon.hpp.
+    constexpr size_t kPageSize = OS_PAGE_SIZE;
     size_t block_size = (size + kPageSize - 1) & ~(kPageSize - 1);
 
     char* block_base = allocator_->acquireOldGenBlock(block_size);

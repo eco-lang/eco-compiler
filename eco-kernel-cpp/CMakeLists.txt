@@ -68,7 +68,13 @@ if(ECO_STATIC)
     message(STATUS "eco-kernel: libzip vendored via FetchContent (ECO_STATIC) - archive extraction available")
 else()
     find_package(PkgConfig REQUIRED)
-    pkg_check_modules(LIBZIP REQUIRED libzip)
+    # IMPORTED_TARGET so PkgConfig::LIBZIP carries the library search path
+    # (-L) alongside -lzip. Bare ${LIBZIP_LIBRARIES} is just the name "zip";
+    # that resolves on Linux only because system libzip sits in the default
+    # linker path, but Homebrew installs to /opt/homebrew/opt/libzip/lib which
+    # the linker does not search, so the link fails with "library 'zip' not
+    # found" on macOS.
+    pkg_check_modules(LIBZIP REQUIRED IMPORTED_TARGET libzip)
     message(STATUS "eco-kernel: libzip found - archive extraction available")
 endif()
 
@@ -204,8 +210,7 @@ if(ECO_STATIC)
         libcurl_static OpenSSL::SSL OpenSSL::Crypto zip)
 else()
     target_link_libraries(EcoKernel_Http PRIVATE
-        CURL::libcurl OpenSSL::SSL OpenSSL::Crypto ${LIBZIP_LIBRARIES})
-    target_include_directories(EcoKernel_Http PRIVATE ${LIBZIP_INCLUDE_DIRS})
+        CURL::libcurl OpenSSL::SSL OpenSSL::Crypto PkgConfig::LIBZIP)
 endif()
 target_compile_features(EcoKernel_Http PUBLIC cxx_std_20)
 

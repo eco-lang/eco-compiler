@@ -83,7 +83,15 @@ static struct EcoGCStrategyLinker {
 #include "../allocator/Allocator.hpp"
 #include "KernelExports.h"
 
-extern "C" __attribute__((weak)) void Eco_Kernel_register_all_gc_roots();
+// EcoKernel_Runtime is intentionally NOT linked into this JIT tool, so this
+// aggregator is absent here. ELF resolves an undefined weak reference to null;
+// ld64 (macOS) rejects an undefined weak reference outright. Provide a weak
+// no-op fallback definition instead — it is overridden by the real kernel
+// symbol wherever EcoKernel_Runtime *is* linked. Safe here precisely because
+// no strong definition exists in this link to be shadowed.
+extern "C" __attribute__((weak)) void Eco_Kernel_register_all_gc_roots() {}
+// Order roots live in ElmKernel, which *is* linked here, so a plain weak
+// reference resolves normally on both platforms.
 extern "C" __attribute__((weak)) void Eco_Kernel_Order_register_gc_roots();
 
 using namespace mlir;

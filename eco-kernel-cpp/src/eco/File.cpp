@@ -167,8 +167,13 @@ HPointer modificationTimeBody(HPointer captured) {
                  pathStr.c_str(), err, std::strerror(err));
         return failErrno(err, pathStr, "could not stat file");
     }
-    int64_t millis = static_cast<int64_t>(st.st_mtim.tv_sec) * 1000 +
-                     static_cast<int64_t>(st.st_mtim.tv_nsec) / 1000000;
+#ifdef __APPLE__
+    const struct timespec &mtim = st.st_mtimespec;
+#else
+    const struct timespec &mtim = st.st_mtim;
+#endif
+    int64_t millis = static_cast<int64_t>(mtim.tv_sec) * 1000 +
+                     static_cast<int64_t>(mtim.tv_nsec) / 1000000;
     ECO_KLOG("file", "modificationTime done path=%s millis=%lld",
              pathStr.c_str(), (long long)millis);
     return succeedInt(millis);

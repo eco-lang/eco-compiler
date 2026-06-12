@@ -14,6 +14,7 @@
 #include "TaskBinding.hpp"
 #include "allocator/Allocator.hpp"
 #include "allocator/RootSet.hpp"
+#include "../../../runtime/src/platform/PlatformPaths.hpp"
 #include <random>
 #include <string>
 #include <unistd.h>
@@ -27,18 +28,11 @@ static bool s_hasState = false;
 namespace {
 
 HPointer dirnameBody(HPointer /*captured*/) {
-    char buf[PATH_MAX];
-    ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-    if (len < 0) {
+    std::string dir = eco::platform::currentExecutableDir();
+    if (dir.empty()) {
         return failString("Cannot determine executable path");
     }
-    buf[len] = '\0';
-    std::string path(buf);
-    auto pos = path.rfind('/');
-    if (pos != std::string::npos) {
-        path = path.substr(0, pos);
-    }
-    return succeedString(path);
+    return succeedString(dir);
 }
 
 HPointer randomBody(HPointer /*captured*/) {

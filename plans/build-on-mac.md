@@ -365,9 +365,35 @@ Implemented on `ci/mac-build-experiment` (workflow
   `NODE_OPTIONS` applies only to Stage 9-2 and is stale (bootstrap now
   fits ~4 GB per the maintainer).
 
-### E-M3 — Runtime + JIT E2E (`--target full`)
-After the M2 seams land. ccache via actions/cache; the 3-vCPU runner is
-slow — `timeout-minutes: 350` for the first uncached run.
+### E-M3 — Runtime + JIT E2E — in progress (seams implemented, CI iterating)
+M2 seams implemented on `ci/mac-build-experiment` (2026-06-12):
+- `runtime/src/platform/PlatformPaths.hpp` (new, header-only):
+  `currentExecutablePath()/currentExecutableDir()` —
+  `_NSGetExecutablePath`+realpath on Darwin, readlink(/proc/self/exe) on
+  Linux. All five former readlink sites rewired (`main.cpp`,
+  `EcoBootConfig.cpp`, `eco-kernel-cpp/Runtime.cpp`; `eco_entry`/`eco_embed`
+  via the stackmap helper below).
+- `runtime/src/platform/StackMapSection.hpp` (new, header-only):
+  `findStackMapSection(addr)` — unifies the two near-identical ELF
+  phdr/section walks from `eco_entry.cpp` and `eco_embed.cpp`; Darwin impl
+  is dladdr + `getsectiondata` (the E-M1-proven approach).
+- `RUSAGE_THREAD` profiling counters guarded (`#if defined(RUSAGE_THREAD)`,
+  read 0 on Darwin); `MAP_NORESERVE` fallback-defined to 0 in
+  `Allocator.cpp`; addr2line crash symbolization degrades gracefully (no
+  code change needed beyond the exe-path helper).
+- `LLVMLibunwind.cmake`: Darwin short-circuit to an empty interface target
+  (system libunwind IS LLVM libunwind). `test/CMakeLists.txt`:
+  `--whole-archive` → per-archive `-force_load` on APPLE.
+  `-rdynamic` → `ENABLE_EXPORTS` property on APPLE.
+- `mac-build` preset (full configure, `CMAKE_PREFIX_PATH` →
+  `/opt/homebrew/opt/llvm@21`, AppleClang, ld64) +
+  `.github/workflows/mac-runtime.yml` (deps incl. rapidcheck
+  brew-or-source, ccache via actions/cache, `-k 20` error batching,
+  runs `build/test/test`).
+- **Linux non-disruption verified**: fresh configure + build of
+  `EcoEntryStatic EcoEmbedStatic EcoKernel_Runtime ecor` passes with all
+  edits.
+Remaining: iterate CI compile errors to green, then the full E2E suite.
 
 ### E-M4 — AOT: `eco make` → Mach-O, run, GC-stress
 After M4. Verifies ld64 + `__llvm_stackmaps` at AOT link (confidence

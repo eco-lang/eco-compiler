@@ -52,6 +52,29 @@ include(HandleLLVMOptions)
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${MLIR_INCLUDE_DIRS})
 
+# --- macOS: single-copy LLVM/MLIR linkage -----------------------------------
+# Homebrew's llvm@21 ships BOTH the static component archives (libLLVMCore.a,
+# libMLIRIR.a, ...) AND the aggregate shared libs (libLLVM.dylib,
+# libMLIR.dylib). Brew's static MLIR archives are themselves built against
+# libLLVM.dylib, so linking the static component targets drags the dylib in
+# transitively — every binary then carries TWO copies of LLVM/MLIR global
+# state (TypeID registries, attribute uniquer). Under macOS's two-level
+# namespace these copies don't merge, so an IntegerAttr/StringAttr built by one
+# copy fails isa<> in the other: inherent-attribute verifiers all fail
+# ("failed to satisfy constraint") and type checks segfault.
+#
+# Fix: on Apple, collapse every MLIR/LLVM component-target reference to the
+# aggregate dylibs, which are complete supersets — exactly one copy per binary.
+# As a bonus this gives the AOT driver every backend target (incl. AArch64)
+# instead of the hardcoded X86 component list. Linux keeps its static-only
+# pinned tree (one copy already), so the component lists below are unchanged
+# there. ECO_MLIR_LIBS / ECO_LLVM_LIBS expand to the aggregate targets on
+# Apple and are empty elsewhere (the explicit component lists are kept).
+if(APPLE)
+    set(ECO_MLIR_LIBS MLIR)
+    set(ECO_LLVM_LIBS LLVM)
+endif()
+
 else()
     # Replicate the semantically relevant compile flags HandleLLVMOptions
     # would have injected for this directory's surviving targets
@@ -160,6 +183,15 @@ set_source_files_properties(
 # Create a library target for the dialect
 #------------------------------------------------------------------------------
 
+# MLIR component libs for EcoDialect (aggregate dylib on Apple — see the
+# single-copy rationale above; static components elsewhere).
+if(APPLE)
+    set(ECO_ECODIALECT_MLIR_LIBS ${ECO_MLIR_LIBS})
+else()
+    set(ECO_ECODIALECT_MLIR_LIBS
+        MLIRIR MLIRSupport MLIRControlFlowInterfaces MLIRSideEffectInterfaces)
+endif()
+
 add_mlir_dialect_library(EcoDialect
     EcoDialect.cpp
     EcoOps.cpp
@@ -174,10 +206,7 @@ add_mlir_dialect_library(EcoDialect
     EcoOpsIncGen
 
     LINK_LIBS PUBLIC
-    MLIRIR
-    MLIRSupport
-    MLIRControlFlowInterfaces
-    MLIRSideEffectInterfaces
+    ${ECO_ECODIALECT_MLIR_LIBS}
 )
 
 # LLVM/MLIR headers require C++17 features
@@ -276,6 +305,12 @@ set_source_files_properties(
 # Create BF dialect library
 #------------------------------------------------------------------------------
 
+if(APPLE)
+    set(ECO_BFDIALECT_MLIR_LIBS ${ECO_MLIR_LIBS})
+else()
+    set(ECO_BFDIALECT_MLIR_LIBS MLIRIR MLIRSupport MLIRSideEffectInterfaces)
+endif()
+
 add_mlir_dialect_library(BFDialect
     BF/BFDialect.cpp
     BF/BFOps.cpp
@@ -290,9 +325,7 @@ add_mlir_dialect_library(BFDialect
     BFOpsIncGen
 
     LINK_LIBS PUBLIC
-    MLIRIR
-    MLIRSupport
-    MLIRSideEffectInterfaces
+    ${ECO_BFDIALECT_MLIR_LIBS}
 )
 
 # Include directory for BF source headers
@@ -304,6 +337,16 @@ target_compile_options(obj.BFDialect PRIVATE -Wno-ambiguous-reversed-operator)
 #------------------------------------------------------------------------------
 # Create a library for Eco passes
 #------------------------------------------------------------------------------
+
+if(APPLE)
+    set(ECO_ECOPASSES_MLIR_LIBS ${ECO_MLIR_LIBS})
+else()
+    set(ECO_ECOPASSES_MLIR_LIBS
+        MLIRIR MLIRAnalysis MLIRSupport MLIRPass MLIRTransforms MLIRFuncDialect
+        MLIRArithDialect MLIRControlFlowDialect MLIRSCFDialect MLIRLLVMDialect
+        MLIRLLVMCommonConversion MLIRFuncToLLVM MLIRArithToLLVM
+        MLIRControlFlowToLLVM MLIRSCFToControlFlow MLIRReconcileUnrealizedCasts)
+endif()
 
 add_mlir_library(EcoPasses
     Passes/RCElimination.cpp
@@ -351,22 +394,7 @@ add_mlir_library(EcoPasses
     LINK_LIBS PUBLIC
     EcoDialect
     BFDialect
-    MLIRIR
-    MLIRAnalysis
-    MLIRSupport
-    MLIRPass
-    MLIRTransforms
-    MLIRFuncDialect
-    MLIRArithDialect
-    MLIRControlFlowDialect
-    MLIRSCFDialect
-    MLIRLLVMDialect
-    MLIRLLVMCommonConversion
-    MLIRFuncToLLVM
-    MLIRArithToLLVM
-    MLIRControlFlowToLLVM
-    MLIRSCFToControlFlow
-    MLIRReconcileUnrealizedCasts
+    ${ECO_ECOPASSES_MLIR_LIBS}
 )
 
 target_compile_features(obj.EcoPasses PRIVATE cxx_std_17)
@@ -389,13 +417,15 @@ target_include_directories(ecogen PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}/include
 )
 
+if(APPLE)
+    set(ECO_ECOGEN_MLIR_LLVM_LIBS ${ECO_MLIR_LIBS} ${ECO_LLVM_LIBS})
+else()
+    set(ECO_ECOGEN_MLIR_LLVM_LIBS MLIRIR MLIRParser MLIRSupport MLIRFuncDialect LLVMSupport)
+endif()
+
 target_link_libraries(ecogen PRIVATE
     EcoDialect
-    MLIRIR
-    MLIRParser
-    MLIRSupport
-    MLIRFuncDialect
-    LLVMSupport
+    ${ECO_ECOGEN_MLIR_LLVM_LIBS}
 )
 
 target_compile_features(ecogen PRIVATE cxx_std_17)
@@ -442,36 +472,51 @@ target_include_directories(ecoc PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../elm-kernel-cpp/src
 )
 
+# Full MLIR/LLVM JIT lib set, shared verbatim by ecoc and EcoRunner. Aggregate
+# dylibs on Apple (single-copy — see rationale above); static components else.
+#
+# Brew's aggregate libMLIR.dylib OMITS the JIT MLIRExecutionEngine; that piece
+# is attached separately as a raw archive file via $<TARGET_FILE:...> after
+# each add_*_library / target_link_libraries call below. It is NOT placed in
+# ECO_JIT_MLIR_LLVM_LIBS because that variable feeds add_mlir_library(EcoRunner
+# ... LINK_LIBS ...), which internally calls add_dependencies() — and
+# add_dependencies does not evaluate generator expressions, so a
+# $<TARGET_FILE:...> entry would be taken as a literal (non-existent) target
+# name and fail configure. The bare archive supplies just the missing symbols;
+# its IR/Support refs resolve to the dylib already on the link line, preserving
+# the single-copy TypeID invariant (avoiding the two-copy split the MLIR
+# CMake target would cause via its INTERFACE_LINK_LIBRARIES).
+if(APPLE)
+    set(ECO_JIT_MLIR_LLVM_LIBS ${ECO_MLIR_LIBS} ${ECO_LLVM_LIBS})
+else()
+    set(ECO_JIT_MLIR_LLVM_LIBS
+        MLIRIR MLIRParser MLIRPass MLIRSupport MLIRTransforms MLIRFuncDialect
+        MLIRFuncAllExtensions MLIRArithDialect MLIRControlFlowDialect
+        MLIRSCFDialect MLIRLLVMDialect MLIRLLVMCommonConversion MLIRFuncToLLVM
+        MLIRArithToLLVM MLIRControlFlowToLLVM MLIRSCFToControlFlow
+        MLIRReconcileUnrealizedCasts MLIRExecutionEngine MLIRTargetLLVMIRExport
+        MLIRBuiltinToLLVMIRTranslation MLIRLLVMToLLVMIRTranslation
+        LLVMSupport LLVMCore LLVMOrcJIT)
+endif()
+
 target_link_libraries(ecoc PRIVATE
     EcoDialect
     BFDialect
     EcoPasses
     ElmKernel
-    MLIRIR
-    MLIRParser
-    MLIRPass
-    MLIRSupport
-    MLIRTransforms
-    MLIRFuncDialect
-    MLIRFuncAllExtensions
-    MLIRArithDialect
-    MLIRControlFlowDialect
-    MLIRSCFDialect
-    MLIRLLVMDialect
-    MLIRLLVMCommonConversion
-    MLIRFuncToLLVM
-    MLIRArithToLLVM
-    MLIRControlFlowToLLVM
-    MLIRSCFToControlFlow
-    MLIRReconcileUnrealizedCasts
-    MLIRExecutionEngine
-    MLIRTargetLLVMIRExport
-    MLIRBuiltinToLLVMIRTranslation
-    MLIRLLVMToLLVMIRTranslation
-    LLVMSupport
-    LLVMCore
-    LLVMOrcJIT
+    ${ECO_JIT_MLIR_LLVM_LIBS}
 )
+
+# Apple-only: pull in the MLIRExecutionEngine archive file directly (not the
+# CMake target — see the comment on ECO_JIT_MLIR_LLVM_LIBS above). The bare
+# archive supplies the symbols brew's libMLIR.dylib omits; its IR/Support refs
+# resolve to the dylib already on the link line, preserving the single-copy
+# TypeID invariant. target_link_libraries evaluates $<TARGET_FILE:...>
+# correctly; the dependency on the imported target is implicit (imported
+# targets are not built so no add_dependencies is needed).
+if(APPLE)
+    target_link_libraries(ecoc PRIVATE $<TARGET_FILE:MLIRExecutionEngine>)
+endif()
 
 target_compile_features(ecoc PRIVATE cxx_std_20)
 target_compile_options(ecoc PRIVATE -Wno-ambiguous-reversed-operator)
@@ -546,30 +591,7 @@ add_mlir_library(EcoRunner
     BFDialect
     EcoPasses
     ElmKernel
-    MLIRIR
-    MLIRParser
-    MLIRPass
-    MLIRSupport
-    MLIRTransforms
-    MLIRFuncDialect
-    MLIRFuncAllExtensions
-    MLIRArithDialect
-    MLIRControlFlowDialect
-    MLIRSCFDialect
-    MLIRLLVMDialect
-    MLIRLLVMCommonConversion
-    MLIRFuncToLLVM
-    MLIRArithToLLVM
-    MLIRControlFlowToLLVM
-    MLIRSCFToControlFlow
-    MLIRReconcileUnrealizedCasts
-    MLIRExecutionEngine
-    MLIRTargetLLVMIRExport
-    MLIRBuiltinToLLVMIRTranslation
-    MLIRLLVMToLLVMIRTranslation
-    LLVMSupport
-    LLVMCore
-    LLVMOrcJIT
+    ${ECO_JIT_MLIR_LLVM_LIBS}
 )
 
 target_include_directories(obj.EcoRunner PRIVATE
@@ -590,6 +612,15 @@ target_link_libraries(obj.EcoRunner PRIVATE Threads::Threads)
 # PUBLIC so that test/stress-test, which link against EcoRunner, transitively
 # get LLVM libunwind's include dir, library, and rpath flag.
 target_link_libraries(EcoRunner PUBLIC eco::llvm_libunwind)
+
+# Apple-only: MLIRExecutionEngine archive file (see ECO_JIT_MLIR_LLVM_LIBS
+# comment above for why this can't go through add_mlir_library's LINK_LIBS).
+# PUBLIC so it propagates to the static libEcoRunner.a's transitive consumers
+# (test/stress-test), which is the whole point — those binaries are the ones
+# that were missing mlir::ExecutionEngine::registerSymbols.
+if(APPLE)
+    target_link_libraries(EcoRunner PUBLIC $<TARGET_FILE:MLIRExecutionEngine>)
+endif()
 
 # HttpService.cpp (compiled into obj.EcoRunner) needs <curl/curl.h>. Same
 # reasoning as ecoc above — vendored curl under ECO_STATIC.
@@ -776,43 +807,31 @@ target_include_directories(EcoNativeDriverStatic PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
 
+# AOT driver MLIR/LLVM libs. On Apple the aggregate libLLVM.dylib carries every
+# backend target (incl. the host AArch64) — the static branch keeps the
+# historical X86 component list for the Linux/glibc cross path. Single-copy on
+# Apple (see rationale above).
+if(APPLE)
+    set(ECO_AOT_MLIR_LLVM_LIBS ${ECO_MLIR_LIBS} ${ECO_LLVM_LIBS})
+else()
+    set(ECO_AOT_MLIR_LLVM_LIBS
+        MLIRIR MLIRParser MLIRPass MLIRSupport MLIRTransforms MLIRFuncDialect
+        MLIRFuncAllExtensions MLIRArithDialect MLIRControlFlowDialect
+        MLIRSCFDialect MLIRLLVMDialect MLIRLLVMCommonConversion MLIRFuncToLLVM
+        MLIRArithToLLVM MLIRControlFlowToLLVM MLIRSCFToControlFlow
+        MLIRReconcileUnrealizedCasts MLIRTargetLLVMIRExport
+        MLIRBuiltinToLLVMIRTranslation MLIRLLVMToLLVMIRTranslation
+        MLIRExecutionEngine
+        LLVMSupport LLVMCore LLVMTarget LLVMX86CodeGen LLVMX86AsmParser
+        LLVMX86Desc LLVMX86Info LLVMAsmPrinter LLVMCodeGen LLVMMC LLVMObject
+        LLVMPasses)
+endif()
+
 target_link_libraries(EcoNativeDriverStatic PUBLIC
     EcoDialect
     BFDialect
     EcoPasses
-    MLIRIR
-    MLIRParser
-    MLIRPass
-    MLIRSupport
-    MLIRTransforms
-    MLIRFuncDialect
-    MLIRFuncAllExtensions
-    MLIRArithDialect
-    MLIRControlFlowDialect
-    MLIRSCFDialect
-    MLIRLLVMDialect
-    MLIRLLVMCommonConversion
-    MLIRFuncToLLVM
-    MLIRArithToLLVM
-    MLIRControlFlowToLLVM
-    MLIRSCFToControlFlow
-    MLIRReconcileUnrealizedCasts
-    MLIRTargetLLVMIRExport
-    MLIRBuiltinToLLVMIRTranslation
-    MLIRLLVMToLLVMIRTranslation
-    MLIRExecutionEngine
-    LLVMSupport
-    LLVMCore
-    LLVMTarget
-    LLVMX86CodeGen
-    LLVMX86AsmParser
-    LLVMX86Desc
-    LLVMX86Info
-    LLVMAsmPrinter
-    LLVMCodeGen
-    LLVMMC
-    LLVMObject
-    LLVMPasses
+    ${ECO_AOT_MLIR_LLVM_LIBS}
 )
 
 target_compile_features(EcoNativeDriverStatic PRIVATE cxx_std_20)

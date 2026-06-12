@@ -460,15 +460,19 @@ void ThreadLocalHeap::majorGC() {
     // the rusage calls and clock reads still happen but their cost is
     // negligible compared to the GC pause itself).
     auto t_enter = std::chrono::high_resolution_clock::now();
-    struct rusage ru_enter;
     long pf_enter_minor = 0, pf_enter_major = 0;
     long ctx_enter_vol = 0, ctx_enter_invol = 0;
+#if defined(RUSAGE_THREAD)
+    // RUSAGE_THREAD is Linux-only; on Darwin the per-thread fault/context-
+    // switch counters simply read as 0 in the phase profile.
+    struct rusage ru_enter;
     if (profile_phases && getrusage(RUSAGE_THREAD, &ru_enter) == 0) {
         pf_enter_minor = ru_enter.ru_minflt;
         pf_enter_major = ru_enter.ru_majflt;
         ctx_enter_vol  = ru_enter.ru_nvcsw;
         ctx_enter_invol = ru_enter.ru_nivcsw;
     }
+#endif
 
     collectStackRootsFromStackMap();
 
@@ -551,15 +555,20 @@ void ThreadLocalHeap::majorGC() {
 #endif
 
     if (profile_phases) {
-        struct rusage ru_done;
         long pf_minor_delta = 0, pf_major_delta = 0;
         long ctx_vol_delta = 0, ctx_invol_delta = 0;
+#if defined(RUSAGE_THREAD)
+        struct rusage ru_done;
         if (getrusage(RUSAGE_THREAD, &ru_done) == 0) {
             pf_minor_delta = ru_done.ru_minflt - pf_enter_minor;
             pf_major_delta = ru_done.ru_majflt - pf_enter_major;
             ctx_vol_delta  = ru_done.ru_nvcsw - ctx_enter_vol;
             ctx_invol_delta = ru_done.ru_nivcsw - ctx_enter_invol;
         }
+#else
+        (void)pf_enter_minor; (void)pf_enter_major;
+        (void)ctx_enter_vol;  (void)ctx_enter_invol;
+#endif
 
         const uint64_t total_ns      = nsBetween(t_enter, t_done);
         const uint64_t root_scan_ns  = nsBetween(t_enter, t_after_root_collect);

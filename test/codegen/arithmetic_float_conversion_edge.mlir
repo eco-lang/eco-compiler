@@ -30,26 +30,28 @@ module {
     %pos_inf = eco.float.div %f1, %f0 : f64
     %neg_inf = eco.float.div %neg1f, %f0 : f64
 
-    // round(+Inf) - undefined behavior, just test it doesn't crash
-    // The result is implementation-defined
+    // round(+Inf) - undefined behavior, just test it doesn't crash. The
+    // f64-to-i64 conversion on out-of-range / NaN inputs is platform-defined
+    // (x86 cvttsd2si returns INT64_MIN; arm64 fcvtzs saturates to ±INT64_MAX,
+    // NaN→0). Match the eco.dbg line prefix without pinning the integer.
     %round_inf = eco.float.round %pos_inf : f64 -> i64
     eco.dbg %round_inf : i64
-    // CHECK: -9223372036854775808
+    // CHECK: [eco.dbg]
 
-    // floor(+Inf)
+    // floor(+Inf) — platform-defined for the same reason; just verify dbg ran.
     %floor_inf = eco.float.floor %pos_inf : f64 -> i64
     eco.dbg %floor_inf : i64
-    // CHECK: -9223372036854775808
+    // CHECK: [eco.dbg]
 
-    // ceiling(-Inf)
+    // ceiling(-Inf) — platform-defined.
     %ceil_neg_inf = eco.float.ceiling %neg_inf : f64 -> i64
     eco.dbg %ceil_neg_inf : i64
-    // CHECK: -9223372036854775808
+    // CHECK: [eco.dbg]
 
-    // truncate(NaN)
+    // truncate(NaN) — platform-defined.
     %trunc_nan = eco.float.truncate %nan : f64 -> i64
     eco.dbg %trunc_nan : i64
-    // CHECK: -9223372036854775808
+    // CHECK: [eco.dbg]
 
     // round(0.5) = 1 (round half to even or away from zero)
     %f0_5 = arith.constant 0.5 : f64

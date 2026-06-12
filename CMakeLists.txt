@@ -322,7 +322,13 @@ target_link_libraries(ecor PRIVATE Threads::Threads)
 target_link_libraries(ecor PRIVATE eco::llvm_libunwind)
 
 # Export symbols for stack traces (enables function names in backtrace)
-target_link_options(ecor PRIVATE -rdynamic)
+if(APPLE)
+    # ENABLE_EXPORTS is CMake's portable spelling of -rdynamic (ld64 takes
+    # -export_dynamic; the property picks the right flag per platform).
+    set_target_properties(ecor PROPERTIES ENABLE_EXPORTS ON)
+else()
+    target_link_options(ecor PRIVATE -rdynamic)
+endif()
 
 # EXCLUDE_FROM_ALL: test binaries (test, stress-test, mlir-equivalence,
 # aot-e2e-runner) are dev-time tools, not distribution artifacts. Build them on

@@ -111,21 +111,45 @@ target_compile_options(test PRIVATE -fexceptions)
 # src symlink) materialized at configure time above. ElmE2ETestBase::findTestDir
 # uses this to anchor the compiler's cwd, so eco-stuff/ and elm-stuff/ land
 # under ${CMAKE_BINARY_DIR}/test/<pkg>/ rather than in the source tree.
-target_compile_definitions(test PRIVATE BUILD_DIR="${CMAKE_BINARY_DIR}")
+#
+# REPO_ROOT locates the in-tree eco/elm kernel packages (eco-kernel-cpp/,
+# elm-kernel-cpp/) so EcoKernelTest / StressElmTest can pass them via
+# --local-package eco/kernel=... — replaces an older hardcoded /work path
+# (the Docker image's source root) that fails outside the container.
+target_compile_definitions(test PRIVATE
+    BUILD_DIR="${CMAKE_BINARY_DIR}"
+    REPO_ROOT="${CMAKE_SOURCE_DIR}"
+)
 # Use --whole-archive for EcoRunner so that Scheduler/PlatformRuntime symbols
 # are available when ElmKernel transitive dependencies are processed by the linker.
 #
 # Also whole-archive EcoKernel_MVar + EcoKernel_Runtime so the JIT's
 # DynamicLibrarySearchGenerator can dlsym the `Eco_Kernel_MVar_*` kernel
 # symbols (test/eco-kernel E2E suite drives the MVar kernel directly).
-target_link_libraries(test rapidcheck
-    -Wl,--whole-archive
+if(APPLE)
+    # ld64 has no --whole-archive; -force_load takes one archive path per
+    # flag. The plain target names afterwards keep the CMake dependency
+    # edges (build ordering + transitive link interface).
+    target_link_libraries(test rapidcheck
+        -Wl,-force_load,$<TARGET_FILE:EcoRunner>
+        -Wl,-force_load,$<TARGET_FILE:EcoKernel_MVar>
+        -Wl,-force_load,$<TARGET_FILE:EcoKernel_Runtime>
+        -Wl,-force_load,$<TARGET_FILE:EcoKernel_Http>
         EcoRunner
         EcoKernel_MVar
         EcoKernel_Runtime
         EcoKernel_Http
-    -Wl,--no-whole-archive
-)
+    )
+else()
+    target_link_libraries(test rapidcheck
+        -Wl,--whole-archive
+            EcoRunner
+            EcoKernel_MVar
+            EcoKernel_Runtime
+            EcoKernel_Http
+        -Wl,--no-whole-archive
+    )
+endif()
 # Export symbols so the JIT can find them via dlsym.
 set_target_properties(test PROPERTIES ENABLE_EXPORTS ON)
 
@@ -136,15 +160,29 @@ add_executable(stress-test
 )
 target_compile_features(stress-test PRIVATE cxx_std_20)
 target_compile_options(stress-test PRIVATE -fexceptions)
-target_compile_definitions(stress-test PRIVATE BUILD_DIR="${CMAKE_BINARY_DIR}")
+target_compile_definitions(stress-test PRIVATE
+    BUILD_DIR="${CMAKE_BINARY_DIR}"
+    REPO_ROOT="${CMAKE_SOURCE_DIR}"
+)
 # Mirror the kernel wiring on stress-test so stress-elm MVar cases work.
-target_link_libraries(stress-test
-    -Wl,--whole-archive
+if(APPLE)
+    target_link_libraries(stress-test
+        -Wl,-force_load,$<TARGET_FILE:EcoRunner>
+        -Wl,-force_load,$<TARGET_FILE:EcoKernel_MVar>
+        -Wl,-force_load,$<TARGET_FILE:EcoKernel_Runtime>
         EcoRunner
         EcoKernel_MVar
         EcoKernel_Runtime
-    -Wl,--no-whole-archive
-)
+    )
+else()
+    target_link_libraries(stress-test
+        -Wl,--whole-archive
+            EcoRunner
+            EcoKernel_MVar
+            EcoKernel_Runtime
+        -Wl,--no-whole-archive
+    )
+endif()
 set_target_properties(stress-test PROPERTIES ENABLE_EXPORTS ON)
 
 # mlir-equivalence — compares Stage 2 (eco-boot.js) vs Stage 6 (eco-compiler
@@ -219,6 +257,13 @@ target_compile_definitions(aot-e2e-runner PRIVATE
 # + libcrypto for the throwaway self-signed TLS cert + SSL_accept loop.
 find_package(OpenSSL REQUIRED)
 target_link_libraries(aot-e2e-runner PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+# The JIT `test` binary includes the same TestHttpServer.hpp (via
+# EcoKernelTest.hpp). It links EcoKernel_Http, but that archive's OpenSSL
+# dependency is PRIVATE so its include path does not propagate — fine on Linux
+# where openssl headers sit in the default search path, but brew's openssl@3 is
+# keg-only on macOS. Link the imported targets so OpenSSL's INTERFACE include
+# dir reaches test/main.cpp on both platforms.
+target_link_libraries(test OpenSSL::SSL OpenSSL::Crypto)
 
 # NB: do NOT add ${CMAKE_BINARY_DIR}/test/aot-e2e (the whole tree) to
 # ADDITIONAL_CLEAN_FILES. That tree's per-package elm.json + src/ symlinks

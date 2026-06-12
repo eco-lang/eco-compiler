@@ -3,16 +3,15 @@
 // dual representation (basename + subdir + buildPath fallback) and
 // plans/stage-c-bundle-runtime.md for the bundle layout.
 //
-// Linux-only: uses /proc/self/exe. Stage B is Linux x86_64 by design
-// (see plans/static-link-eco-binary.md scope), so this is intentional.
+// Executable-path discovery goes through platform/PlatformPaths.hpp
+// (readlink(/proc/self/exe) on Linux, _NSGetExecutablePath on Darwin).
 
 #include "eco/EcoBootConfig.h"
+#include "../platform/PlatformPaths.hpp"
 
-#include <climits>
 #include <cstdlib>
 #include <string>
 #include <sys/stat.h>
-#include <unistd.h>
 
 namespace eco {
 namespace config {
@@ -25,19 +24,12 @@ bool exists(const std::string &path) {
     return ::stat(path.c_str(), &st) == 0;
 }
 
-// dirname of the running executable, via /proc/self/exe. Returns an empty
-// string on readlink failure (no exe path, no error reporting — the
-// resolver will then fall back to buildPath, which is the right behavior
-// when running in a stripped-down environment).
+// dirname of the running executable. Returns an empty string on failure
+// (no exe path, no error reporting — the resolver will then fall back to
+// buildPath, which is the right behavior when running in a stripped-down
+// environment).
 std::string exeDir() {
-    char buf[PATH_MAX];
-    ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-    if (n <= 0)
-        return {};
-    buf[n] = '\0';
-    std::string exe(buf);
-    auto pos = exe.find_last_of('/');
-    return (pos == std::string::npos) ? std::string(".") : exe.substr(0, pos);
+    return eco::platform::currentExecutableDir();
 }
 
 } // namespace

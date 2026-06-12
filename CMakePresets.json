@@ -34,6 +34,20 @@
       }
     },
     {
+      "name": "mac-build",
+      "displayName": "Mac build (RelWithDebInfo, brew llvm@21, full runtime)",
+      "description": "Full configure on macOS: runtime, kernels, tests, compiler. LLVM/MLIR from the brew llvm@21 keg; AppleClang + ld64 (no lld). See plans/build-on-mac.md M3.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_FLAGS_RELWITHDEBINFO": "-O2 -g -UNDEBUG",
+        "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O2 -g -UNDEBUG",
+        "CMAKE_PREFIX_PATH": "/opt/homebrew/opt/llvm@21"
+      }
+    },
+    {
       "name": "mac-frontend",
       "displayName": "Mac front-end only (bootstrap stages 1-5, no native backend)",
       "description": "Configures only compiler/ via ECO_FRONTEND_ONLY. Pure Node/Elm bootstrap through Stage 5 (eco-compiler.mlir); no LLVM/MLIR, runtime, kernels or tests. See plans/build-on-mac.md.",
@@ -76,6 +90,11 @@
     {
       "name": "build",
       "configurePreset": "build",
+      "jobs": 0
+    },
+    {
+      "name": "mac-build",
+      "configurePreset": "mac-build",
       "jobs": 0
     },
     {

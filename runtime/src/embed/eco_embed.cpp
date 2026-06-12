@@ -36,8 +36,7 @@
 #include <pthread.h>
 #include <vector>
 
-#include <elf.h>
-#include <link.h>
+#include "../platform/StackMapSection.hpp"
 
 // 64 MB, matching eco_entry.cpp (recursive decoders exhaust 8 MB).
 static constexpr size_t ECO_EMBED_STACK_SIZE = 64ULL * 1024 * 1024;
@@ -60,92 +59,18 @@ void init(int argc, char** argv);
 
 namespace {
 
-// Locate and parse the .llvm_stackmaps section of the loaded module that
+// Locate and parse the LLVM stackmaps section of the loaded module that
 // contains `addr` (the compiled Elm code: an executable OR a dlopen'd /
-// linked shared object). Adapted from eco_entry.cpp's initStackMapFromSelf,
-// which only handles the main executable.
+// linked shared object). Section discovery is the platform seam in
+// platform/StackMapSection.hpp (ELF phdr walk / Mach-O dladdr +
+// getsectiondata).
 void initStackMapForModuleContaining(void* addr) {
-    struct CallbackData {
-        uintptr_t target;
-        const uint8_t* data;
-        size_t size;
-    };
-    CallbackData cbd{reinterpret_cast<uintptr_t>(addr), nullptr, 0};
+    auto sec = eco::platform::findStackMapSection(addr);
 
-    dl_iterate_phdr(
-        [](struct dl_phdr_info* info, size_t /*size*/, void* ctx) -> int {
-            auto* out = static_cast<CallbackData*>(ctx);
-
-            // Does any PT_LOAD segment of this module contain the target?
-            bool contains = false;
-            for (int i = 0; i < info->dlpi_phnum; ++i) {
-                const auto& ph = info->dlpi_phdr[i];
-                if (ph.p_type != PT_LOAD) continue;
-                uintptr_t start = info->dlpi_addr + ph.p_vaddr;
-                uintptr_t end = start + ph.p_memsz;
-                if (out->target >= start && out->target < end) {
-                    contains = true;
-                    break;
-                }
-            }
-            if (!contains) return 0;
-
-            // Read the module's section headers from its file on disk.
-            // The main executable reports an empty name (glibc) — fall
-            // back to /proc/self/exe for it.
-            const char* path = info->dlpi_name;
-            if (path == nullptr || path[0] == '\0') {
-                path = "/proc/self/exe";
-            }
-
-            FILE* f = fopen(path, "rb");
-            if (!f) return 0;
-
-            Elf64_Ehdr ehdr;
-            if (fread(&ehdr, sizeof(ehdr), 1, f) != 1) {
-                fclose(f);
-                return 0;
-            }
-
-            Elf64_Shdr shstrtab_hdr;
-            if (fseek(f, ehdr.e_shoff + ehdr.e_shstrndx * ehdr.e_shentsize,
-                      SEEK_SET) != 0 ||
-                fread(&shstrtab_hdr, sizeof(shstrtab_hdr), 1, f) != 1) {
-                fclose(f);
-                return 0;
-            }
-            std::vector<char> shstrtab(shstrtab_hdr.sh_size);
-            if (fseek(f, shstrtab_hdr.sh_offset, SEEK_SET) != 0 ||
-                fread(shstrtab.data(), shstrtab_hdr.sh_size, 1, f) != 1) {
-                fclose(f);
-                return 0;
-            }
-
-            for (uint16_t i = 0; i < ehdr.e_shnum; i++) {
-                Elf64_Shdr shdr;
-                if (fseek(f, ehdr.e_shoff + i * ehdr.e_shentsize, SEEK_SET) !=
-                        0 ||
-                    fread(&shdr, sizeof(shdr), 1, f) != 1)
-                    continue;
-                if (shdr.sh_name >= shstrtab_hdr.sh_size) continue;
-                const char* name = shstrtab.data() + shdr.sh_name;
-                if (strcmp(name, ".llvm_stackmaps") == 0) {
-                    out->data = reinterpret_cast<const uint8_t*>(
-                        info->dlpi_addr + shdr.sh_addr);
-                    out->size = shdr.sh_size;
-                    fclose(f);
-                    return 1;  // stop iteration
-                }
-            }
-            fclose(f);
-            return 0;
-        },
-        &cbd);
-
-    if (cbd.data && cbd.size > 0) {
+    if (sec.data && sec.size > 0) {
         // Section relocations were applied by the loader; addresses are
         // absolute. loadBase=0.
-        (void)Elm::globalStackMap().parse(cbd.data, cbd.size, /*loadBase=*/0);
+        (void)Elm::globalStackMap().parse(sec.data, sec.size, /*loadBase=*/0);
     } else {
         std::fprintf(stderr,
                      "eco embed: warning: .llvm_stackmaps not found for the "

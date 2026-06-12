@@ -56,6 +56,20 @@ enum class Color : u32 {
 
 // ---- Heap-wide ----
 
+// OS page size for mmap(MAP_FIXED) alignment of old-gen large-block extents.
+// mmap rejects MAP_FIXED requests whose address or length is not a page
+// multiple, so the allocator's bump pointer must advance in multiples of the
+// OS's page size — not a smaller "logical page". Darwin on Apple Silicon uses
+// 16 KiB pages (`sysctl hw.pagesize`); Linux on x86-64/aarch64 and Darwin on
+// x86-64 use 4 KiB. We can't make this dynamic without unwinding a lot of
+// constexpr math, so pin it at compile time per platform and assert at
+// allocator init that getpagesize() matches.
+#if defined(__APPLE__) && defined(__aarch64__)
+constexpr size_t OS_PAGE_SIZE = 16384;
+#else
+constexpr size_t OS_PAGE_SIZE = 4096;
+#endif
+
 // Reserved virtual address space for the heap (24 GiB; ~12 GiB old gen + ~12 GiB nursery).
 constexpr size_t DEFAULT_MAX_HEAP_SIZE = 24ULL * 1024 * 1024 * 1024;
 
@@ -483,10 +497,16 @@ struct HeapConfig {
 
         // ========== 4. AllocBuffer Constraints ==========
 
-        constexpr size_t MIN_BUFFER_SIZE = 4096;  // 4KB minimum.
+        // Lower bound is the OS page size: mmap(MAP_FIXED) operates in
+        // page-sized units, so a sub-page BBoP would either fail to map
+        // exactly the requested extent or leave the bump pointer mis-aligned
+        // for the next acquire. 4 KiB on Linux / Darwin x86-64; 16 KiB on
+        // Darwin arm64 (Apple Silicon).
+        constexpr size_t MIN_BUFFER_SIZE = OS_PAGE_SIZE;
         if (alloc_buffer_size < MIN_BUFFER_SIZE) {
             throw std::invalid_argument(
-                "alloc_buffer_size must be >= 4KB");
+                "alloc_buffer_size must be >= the OS page size "
+                "(4 KiB on x86-64, 16 KiB on Apple Silicon)");
         }
 
         if (alloc_buffer_size > old_gen_space) {

@@ -20,6 +20,17 @@ if(TARGET eco::llvm_libunwind)
     return()
 endif()
 
+# macOS: the system unwinder IS LLVM libunwind (libSystem re-exports it; the
+# implementation originated at Apple) and <libunwind.h> ships in the CLT SDK.
+# There is nothing to locate or link — expose an empty interface target so
+# consumers' target_link_libraries(eco::llvm_libunwind) lines work unchanged.
+if(APPLE)
+    add_library(eco_llvm_libunwind_system INTERFACE)
+    add_library(eco::llvm_libunwind ALIAS eco_llvm_libunwind_system)
+    message(STATUS "LLVMLibunwind: Darwin — using the system libunwind (it is LLVM libunwind)")
+    return()
+endif()
+
 set(_llvm_libunwind_prefixes "")
 if(DEFINED LLVM_INSTALL_PREFIX AND LLVM_INSTALL_PREFIX)
     list(APPEND _llvm_libunwind_prefixes "${LLVM_INSTALL_PREFIX}")

@@ -1,0 +1,90 @@
+# E-M3 from plans/build-on-mac.md: full runtime + kernels + JIT E2E tests on
+# macOS arm64. Configures everything (no ECO_FRONTEND_ONLY) against the brew
+# llvm@21 keg (21.1.8 + MLIR), builds the `test` binary, and runs the JIT
+# E2E suite. First runs are expected to surface compile errors — ninja runs
+# with -k 20 so each round reports a batch, and ccache makes rounds cheap.
+name: mac-runtime
+
+on:
+  push:
+    branches: ['ci/**']
+    paths:
+      - 'runtime/**'
+      - 'elm-kernel-cpp/**'
+      - 'eco-kernel-cpp/**'
+      - 'test/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - '.github/workflows/mac-runtime.yml'
+  workflow_dispatch:
+
+jobs:
+  runtime:
+    runs-on: macos-15
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          brew install llvm@21 pnpm gnu-time libzip pkgconf ccache
+          # rapidcheck: prefer the brew formula; fall back to a source build
+          # (mirrors docker/eco-dev.Dockerfile's recipe).
+          brew install rapidcheck || {
+            git clone --depth=1 https://github.com/emil-e/rapidcheck.git /tmp/rapidcheck
+            cmake -S /tmp/rapidcheck -B /tmp/rapidcheck/build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+            cmake --build /tmp/rapidcheck/build
+            sudo cmake --install /tmp/rapidcheck/build
+          }
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: mac-runtime-ccache-${{ github.sha }}
+          restore-keys: mac-runtime-ccache-
+
+      - name: Configure (full, brew llvm@21)
+        run: |
+          cmake --preset mac-build \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build everything (-k 20 to batch errors)
+        run: cmake --build build -- -k 20
+
+      - name: Build test binary
+        run: cmake --build build --target test -- -k 20
+
+      - name: Run JIT E2E tests
+        run: |
+          # macos GH Actions default shell is `/bin/bash -e {0}` (no pipefail),
+          # so a naive `test | tee` loses the test binary's exit code (it sees
+          # tee's 0). Capture PIPESTATUS explicitly so the step fails iff the
+          # test binary fails.
+          set +e
+          ./build/test/test 2>&1 | tee /tmp/test_output.txt
+          rc=${PIPESTATUS[0]}
+          tail -30 /tmp/test_output.txt
+          exit $rc
+
+      - name: ccache stats
+        if: always()
+        run: ccache -s | head -15
+
+      - name: Collect logs
+        if: always()
+        run: |
+          mkdir -p /tmp/em3-logs
+          cp /tmp/test_output.txt /tmp/em3-logs/ 2>/dev/null || true
+          ls -la /tmp/em3-logs/ || true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-runtime-logs
+          path: /tmp/em3-logs/
+          if-no-files-found: warn

@@ -33,6 +33,12 @@
 #endif
 #include <sys/mman.h>
 
+// Darwin has no MAP_NORESERVE — its VM never reserves swap for PROT_NONE
+// mappings, so the flag's effect is the default behavior there.
+#ifndef MAP_NORESERVE
+#define MAP_NORESERVE 0
+#endif
+
 namespace Elm {
 
 // Global heap base for pointer conversion (used by fromPointerRaw/toPointerRaw).
@@ -506,14 +512,16 @@ char* Allocator::acquireOldGenBlock(size_t size) {
 
     // BBoP page-sized requests must always land on a page-aligned, page-sized
     // extent and must never base at heap_base (the heap-base block is pinned
-    // by OldGenSpace's release path; this is a regression guard). For
-    // arbitrary large-block requests, the existing first-fit logic is
-    // unchanged — large blocks legitimately use non-page-multiple extents.
-    constexpr size_t kPageSize = 4096;
+    // by OldGenSpace's release path; this is a regression guard). Large-block
+    // requests already arrive page-aligned (allocateLargeBlock rounds up to
+    // OS_PAGE_SIZE before calling here) — that contract is what keeps the
+    // bump pointer aligned across calls, which Darwin arm64 requires for
+    // mmap(MAP_FIXED) to succeed at all.
+    constexpr size_t kPageSize = OS_PAGE_SIZE;
     const bool page_request = (size == config_.alloc_buffer_size);
     if (page_request) {
         assert(size % kPageSize == 0 &&
-               "acquireOldGenBlock: page request size must be page-multiple");
+               "acquireOldGenBlock: page request size must be OS-page-multiple");
     }
 
     // First-fit reuse from previously-released old-gen blocks. Splitting an

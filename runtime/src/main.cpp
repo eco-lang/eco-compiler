@@ -46,6 +46,7 @@
 
 #include "Allocator.hpp"
 #include "GCStats.hpp"
+#include "platform/PlatformPaths.hpp"
 #include "Heap.hpp"
 #include "OldGenSpace.hpp"
 
@@ -138,14 +139,12 @@ static void fatalSignalHandler(int sig) {
     fprintf(stderr, "Signal: %d (%s)\n", sig, sig_name);
     fprintf(stderr, "Stack trace:\n");
 
-    // Get the executable path for addr2line.
+    // Get the executable path for addr2line. (On platforms without
+    // addr2line — e.g. macOS — the popen below fails silently and each
+    // frame falls back to the raw backtrace_symbols string.)
     char exe_path[1024];
-    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-    if (len != -1) {
-        exe_path[len] = '\0';
-    } else {
-        exe_path[0] = '\0';
-    }
+    std::string exe_s = eco::platform::currentExecutablePath();
+    snprintf(exe_path, sizeof(exe_path), "%s", exe_s.c_str());
 
     for (size_t i = 0; i < frames; i++) {
         const char* symbol = symbols ? symbols[i] : "???";

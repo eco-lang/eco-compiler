@@ -364,6 +364,9 @@ inline std::string getEcocPath() {
         "runtime/src/codegen/ecoc",
         "../runtime/src/codegen/ecoc",
         "../../runtime/src/codegen/ecoc",
+#ifdef BUILD_DIR
+        std::string(BUILD_DIR) + "/runtime/src/codegen/ecoc",
+#endif
     };
 
     for (const auto& path : candidates) {
@@ -372,7 +375,14 @@ inline std::string getEcocPath() {
         }
     }
 
-    return "/work/build/runtime/src/codegen/ecoc";
+    // Last-resort fallback: BUILD_DIR is a compile-time constant pointing at
+    // CMAKE_BINARY_DIR. If the binary somehow got moved we still return a
+    // best-effort absolute path so the error message is informative.
+#ifdef BUILD_DIR
+    return std::string(BUILD_DIR) + "/runtime/src/codegen/ecoc";
+#else
+    return "runtime/src/codegen/ecoc";
+#endif
 }
 
 // Read the compiled `.mlir` (bytecode or text) back as a single text
