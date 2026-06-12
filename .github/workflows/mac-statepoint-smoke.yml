@@ -11,6 +11,9 @@ name: mac-statepoint-smoke
 on:
   push:
     branches: ['ci/**']
+    paths:
+      - 'experiments/mac-statepoint-smoke/**'
+      - '.github/workflows/mac-statepoint-smoke.yml'
   workflow_dispatch:
 
 jobs:

@@ -248,22 +248,34 @@ Well-understood, low risk: toolchain URLs, bootstrap (pure Node), mmap heap,
 pthreads/signals/process/file kernel code, libunwind (it's the system one),
 executable-path/dlsym substitutions, dynamic AOT linking via CLT.
 
-Remaining risks (all narrowed to specifics, none architectural):
-1. **AArch64 stackmap consumption details**: x19 base-pointer-relative
-   indirect entries in `StackMap.cpp`; `gc-transition` flag unsupported
-   upstream (verify Eco never emits it); `-dead_strip` vs
-   `__LLVM_STACKMAPS`. All checkable in the first GC-heavy E2E run.
-2. **Mach-O `__llvm_stackmaps` handling by ld64** at AOT link (the Linux
-   build hit linker-specific stackmap relocation trouble once; no upstream
-   bug reports found for ld64, which is weak-positive evidence).
-3. LLVM 21.1.4 source build on the mac is slow but proven (same recipe as
-   the Alpine builder); brew 22.x is the quick-start fallback with
-   API-churn risk.
+~~Risk 1 (AArch64 stackmap details) and risk 2 (ld64 stackmaps
+handling)~~ — **RESOLVED by experiment E-M1** (run 2026-06-12 on
+`macos-15` arm64, all six checks PASS in a 45-second job; see the E-M1
+results below). Confirmed: end-to-end statepoint root recovery works on
+arm64 macOS; x19 base-pointer entries appear exactly as predicted (the
+`StackMap.cpp` consumer must handle DWARF reg 19); dyld rebases the
+recorded function addresses (no slide adjustment needed — the Linux
+ELF-PIE stackmap relocation problem has no runtime Mach-O analogue); ld64
+links and ad-hoc-signs (`linker-signed`) automatically. One actionable
+finding: **`-dead_strip` removes `__LLVM_STACKMAPS`** — the AOT link
+driver must not pass it (or must add a keep-alive). The `gc-transition`
+flag question was separately closed by grep: Eco's codegen emits no
+invokes, landingpads, or gc-transition bundles.
 
-What would close the remaining gap is hardware time, not research: one
-Apple Silicon machine (or a GitHub Actions `macos-14`/`macos-15` arm64
-runner) running M1→M3. The first `--target full` run answers risks 1–2
-directly.
+Remaining risks:
+1. LLVM 21.1.4 source build on the mac is slow but proven (same recipe as
+   the Alpine builder); brew `llvm@21` 21.1.8 is the verified quick path
+   (E-M1 used it: 26-second bottle install).
+
+(The earlier "12 GB node heap vs 7 GB runner" concern is withdrawn: the
+`NODE_OPTIONS=--max-old-space-size=12000` in `compiler/CMakeLists.txt`
+applies only to the Stage 9-2 self-compile — stages 1–5 run with the
+default heap — and per the maintainer the 12 GB figure is stale; the
+bootstrap fits in ~4 GB since the front-end memory fixes. Lowering the
+Linux setting is a separate cleanup once the actual peak is measured.)
+
+With E-M1 green, overall confidence rises to **~90%**; what's left is
+integration work (M2 seams, link driver), not platform unknowns.
 
 ## GitHub-runner experiments (no Apple hardware required)
 
@@ -286,8 +298,24 @@ default branch to be registered (it can then run against any branch ref);
 merge a thin dispatch-triggered version to master once an experiment is
 worth keeping for re-runs.
 
-### E-M1 — Statepoint/stackmap smoke on arm64 (no eco code) ★ run first
-~15 runner-minutes; answers confidence risks 1 and 2 directly.
+### E-M1 — Statepoint/stackmap smoke on arm64 (no eco code) — ✅ DONE, ALL PASS
+**Run 2026-06-12** (`experiments/mac-statepoint-smoke/`, branch
+`ci/mac-build-experiment`, job time ~45 s). Results:
+- Root recovered at the safepoint in both variants: plain frame =
+  `Indirect [sp+8]`; dynamic-alloca frame = `Indirect [x19+24]` —
+  **x19 base-pointer entries confirmed**, `StackMap.cpp` must handle
+  DWARF reg 19.
+- Function addresses matched **raw** — dyld rebases the section; no
+  slide adjustment needed.
+- **`-dead_strip` removes `__LLVM_STACKMAPS`** — link driver must avoid
+  it or keep the section alive.
+- ld64 output is automatically **ad-hoc linker-signed** — arm64 signing
+  needs no action.
+- `brew install llvm@21` (21.1.8 + MLIR) poured in 26 s. Caveat noted:
+  brew warns llvm@21 conflicts-on-link with the preinstalled llvm@18 —
+  irrelevant since we use absolute keg paths, never `brew link`.
+
+Original spec (for reference):
 - `brew install llvm@21` (bottle).
 - A ~50-line `.ll` safepoint-rewritten via
   `opt -passes=rewrite-statepoints-for-gc`, then
@@ -301,15 +329,41 @@ worth keeping for re-runs.
   (d) `codesign -dv` — ad-hoc signature present?
 - Pass criterion: roots identified at the safepoint in all variants.
 
-### E-M2 — eco configure + bootstrap stages 1–5
-Needs the toolchain-URL patch (M1.1) on a `ci/**` branch.
-`brew install llvm@21 pnpm`; configure with the `mac-build` preset; run
-the guida.js bootstrap. **Watch**: the bootstrap's
-`NODE_OPTIONS=--max-old-space-size=12000` vs the runner's 7 GB RAM —
-macOS swaps, so expect slow-pass or OOM; if OOM, measure actual peak heap
-on Linux and lower the limit. Upload stage outputs + timings as
-artifacts. This run also validates the `llvm@21` keg layout against eco's
-CMake.
+### E-M2 — eco configure + bootstrap stages 1–5 — ✅ DONE, ALL GREEN
+**Run 2026-06-12** on `macos-15` arm64: full chain in **under 4 minutes**
+(configure 4.4 s; stages 1–4b ~95 s incl. the JS fixed-point check
+passing; stage 5 ~2 min → `eco-compiler.mlir`, 12 MB, 239 modules). The
+mac arm64 elm/elm-format/elm-test-rs prebuilts fetched + SHA-verified;
+gtime found; AppleClang 17 configured the (empty) C/C++ side.
+One fix was needed: stage 5 OOM'd at node's **RAM-scaled default heap**
+(~2 GB on the 7 GB runner vs ~4 GB on big dev machines) — now pinned
+explicitly with `--max-old-space-size=4096` in `compiler/CMakeLists.txt`,
+confirming the bootstrap fits in 4 GB. The front-end is fully proven on
+macOS; everything remaining is the native backend/runtime port (M2–M4).
+
+Implementation notes (as built):
+Implemented on `ci/mac-build-experiment` (workflow
+`.github/workflows/mac-bootstrap.yml`) as a **front-end-only** experiment
+— no LLVM needed at all, because stages 1–5 are pure Node/Elm:
+- `compiler/cmake/toolchain.cmake`: per-platform URL/SHA table (Linux
+  x86_64 + mac arm64 + mac x86_64; mac SHAs computed from upstream
+  2026-06-12).
+- `compiler/CMakeLists.txt`: platform gate admits Darwin; GNU time →
+  `gtime` (brew gnu-time) on Darwin; stages 6–9 gated behind
+  `NOT ECO_FRONTEND_ONLY` (their `$<TARGET_FILE:eco-boot-native>`
+  genexes are configure errors without the backend).
+- Top-level `CMakeLists.txt`: new `ECO_FRONTEND_ONLY` option skipping
+  LLVMLibunwind, runtime, kernels, and tests; `mac-frontend` preset
+  (Darwin-conditioned) in CMakePresets.json.
+- Workflow: brew pnpm + gnu-time → `cmake --preset mac-frontend` →
+  `--target eco-boot-verify` (stages 1–4b incl. JS fixed point) →
+  `--target eco-compiler-mlir` (stage 5) → timing logs as artifacts.
+- **Linux non-disruption verified locally**: fresh-dir configures of both
+  `ECO_FRONTEND_ONLY=ON` (frontend targets present, backend absent) and
+  the default path (all stage-6–9 targets present) pass on Linux.
+- Node heap: not a concern — stages 1–5 use the default heap; the 12 GB
+  `NODE_OPTIONS` applies only to Stage 9-2 and is stale (bootstrap now
+  fits ~4 GB per the maintainer).
 
 ### E-M3 — Runtime + JIT E2E (`--target full`)
 After the M2 seams land. ccache via actions/cache; the 3-vCPU runner is

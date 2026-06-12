@@ -1,0 +1,76 @@
+# E-M2 from plans/build-on-mac.md: eco front-end configure + bootstrap
+# stages 1–5 on macOS arm64, using the per-platform toolchain table in
+# compiler/cmake/toolchain.cmake and the ECO_FRONTEND_ONLY configure mode
+# (no LLVM/MLIR, runtime, kernels or tests involved).
+#
+# Stage 1: stock elm (mac arm64 prebuilt) compiles the compiler → guida.js
+# Stages 2–4b: JS self-compilation chain + JS fixed-point check
+# Stage 5: eco-boot-2.js emits eco-compiler.mlir (GNU-time wrapped)
+name: mac-bootstrap
+
+on:
+  push:
+    branches: ['ci/**']
+    paths:
+      - 'compiler/**'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - '.github/workflows/mac-bootstrap.yml'
+  workflow_dispatch:
+
+jobs:
+  bootstrap:
+    runs-on: macos-15
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm and GNU time
+        run: brew install pnpm gnu-time
+
+      - name: Tool versions
+        run: |
+          node --version
+          pnpm --version
+          cmake --version | head -1
+          ninja --version
+          sysctl hw.memsize hw.ncpu
+
+      - name: Configure (front-end only)
+        run: cmake --preset mac-frontend
+
+      - name: Stages 1-4b (guida.js -> JS fixed point)
+        run: cmake --build build --target eco-boot-verify
+
+      - name: Stage 5 (eco-boot-2.js -> eco-compiler.mlir)
+        run: cmake --build build --target eco-compiler-mlir
+
+      - name: Report outputs and timings
+        if: always()
+        run: |
+          echo "=== bootstrap outputs ==="
+          ls -la build/compiler/build-xhr/bin/ 2>/dev/null || true
+          ls -la build/compiler/build-kernel/bin/ 2>/dev/null || true
+          echo "=== stage timing logs ==="
+          for f in build/compiler/build-kernel/timing-*.txt; do
+            [ -f "$f" ] && { echo "--- $f ---"; cat "$f"; }
+          done
+          echo "=== eco-compiler.mlir size ==="
+          du -h build/compiler/build-kernel/bin/*.mlir 2>/dev/null || true
+
+      - name: Collect logs for artifact
+        if: always()
+        run: |
+          mkdir -p /tmp/em2-logs
+          cp build/compiler/build-kernel/timing-*.txt /tmp/em2-logs/ 2>/dev/null || true
+          find build/compiler -maxdepth 2 -name '*.stamp' -type f \
+            -exec cp {} /tmp/em2-logs/ \; 2>/dev/null || true
+          ls -la /tmp/em2-logs/
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-bootstrap-logs
+          path: /tmp/em2-logs/
+          if-no-files-found: warn

@@ -34,6 +34,18 @@
       }
     },
     {
+      "name": "mac-frontend",
+      "displayName": "Mac front-end only (bootstrap stages 1-5, no native backend)",
+      "description": "Configures only compiler/ via ECO_FRONTEND_ONLY. Pure Node/Elm bootstrap through Stage 5 (eco-compiler.mlir); no LLVM/MLIR, runtime, kernels or tests. See plans/build-on-mac.md.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "ECO_FRONTEND_ONLY": "ON"
+      }
+    },
+    {
       "name": "release",
       "displayName": "Release (static musl — shippable binary)",
       "description": "Stage B static musl build. -O2 -DNDEBUG, no debug syms, no asserts, GC stats OFF, kernel-debug OFF, --strip-all on the final link.",
@@ -64,6 +76,11 @@
     {
       "name": "build",
       "configurePreset": "build",
+      "jobs": 0
+    },
+    {
+      "name": "mac-frontend",
+      "configurePreset": "mac-frontend",
       "jobs": 0
     },
     {

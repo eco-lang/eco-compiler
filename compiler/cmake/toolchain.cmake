@@ -9,7 +9,8 @@
 # from the build and let pnpm run with ignore-scripts=true (see
 # compiler/.npmrc).
 #
-# Linux x86_64 only — see compiler/CMakeLists.txt for the platform gate.
+# Platforms: Linux x86_64 and macOS (arm64 / x86_64) — see the per-platform
+# URL/SHA table below and the platform gate in compiler/CMakeLists.txt.
 
 set(TOOLCHAIN_DIR "${CMAKE_BINARY_DIR}/toolchain")
 set(TOOLCHAIN_BIN "${TOOLCHAIN_DIR}/bin")
@@ -74,9 +75,40 @@ function(eco_fetch _name _url _expected_sha _out)
         "raise -DECO_FETCH_RETRIES / -DECO_FETCH_TIMEOUT.")
 endfunction()
 
+# ---------------------------------------------------------------------------
+# Per-platform release assets. All three tools ship upstream prebuilts for
+# every platform below. SHA256s were computed from the upstream downloads on
+# 2026-06-12 (Linux SHAs unchanged from the original pinning).
+# ---------------------------------------------------------------------------
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+    set(ELM_URL "https://github.com/elm/compiler/releases/download/0.19.1/binary-for-linux-64-bit.gz")
+    set(ELM_SHA "e44af52bb27f725a973478e589d990a6428e115fe1bb14f03833134d6c0f155c")
+    set(ELM_FORMAT_URL "https://github.com/avh4/elm-format/releases/download/0.8.7/elm-format-0.8.7-linux-x64.tgz")
+    set(ELM_FORMAT_SHA "44344c7b6f838dc5d9495dfe4253280a698c2251ee8cfa29b6d1a032b6efb13b")
+    set(ELM_TEST_RS_URL "https://github.com/mpizenberg/elm-test-rs/releases/download/v3.0.1/elm-test-rs_linux.tar.gz")
+    set(ELM_TEST_RS_SHA "3d99e394f2a90ddf5fcb579b7c9c822b62c2a71c5621cb9e2c5d5b37f8a9d5a7")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64")
+    set(ELM_URL "https://github.com/elm/compiler/releases/download/0.19.1/binary-for-mac-64-bit-ARM.gz")
+    set(ELM_SHA "552c8300b55dafdf52073b095e7bc6afc1b2ea2a600fbc7654bca8a241e38689")
+    set(ELM_FORMAT_URL "https://github.com/avh4/elm-format/releases/download/0.8.7/elm-format-0.8.7-mac-arm64.tgz")
+    set(ELM_FORMAT_SHA "d8f898be599fa767d3b6607256e273dd4f62ea7abc41369a068e903159787098")
+    set(ELM_TEST_RS_URL "https://github.com/mpizenberg/elm-test-rs/releases/download/v3.0.1/elm-test-rs_macos-arm.tar.gz")
+    set(ELM_TEST_RS_SHA "e2be5e6d2c1b9e18729a330b9b7db7a286c9f9f34376b634b910e52378219df5")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+    set(ELM_URL "https://github.com/elm/compiler/releases/download/0.19.1/binary-for-mac-64-bit.gz")
+    set(ELM_SHA "05289f0e3d4f30033487c05e689964c3bb17c0c48012510dbef1df43868545d1")
+    set(ELM_FORMAT_URL "https://github.com/avh4/elm-format/releases/download/0.8.7/elm-format-0.8.7-mac-x64.tgz")
+    set(ELM_FORMAT_SHA "064102cd471550beb43ff7eb3dd6ac7c2a1946cf038dbde389873384f62cbdc4")
+    set(ELM_TEST_RS_URL "https://github.com/mpizenberg/elm-test-rs/releases/download/v3.0.1/elm-test-rs_macos.tar.gz")
+    set(ELM_TEST_RS_SHA "614936b1f3b2d5488c4168399446821c9304c2c2c1f4701f23e65199e3a8e6ba")
+else()
+    message(FATAL_ERROR
+        "No pinned Elm toolchain binaries for "
+        "${CMAKE_SYSTEM_NAME}/${CMAKE_SYSTEM_PROCESSOR}. "
+        "Add a URL/SHA row to compiler/cmake/toolchain.cmake.")
+endif()
+
 # --- elm 0.19.1 -------------------------------------------------------------
-set(ELM_URL  "https://github.com/elm/compiler/releases/download/0.19.1/binary-for-linux-64-bit.gz")
-set(ELM_SHA  "e44af52bb27f725a973478e589d990a6428e115fe1bb14f03833134d6c0f155c")
 set(ELM_GZ   "${TOOLCHAIN_CACHE}/elm-0.19.1.gz")
 set(ELM_BIN  "${TOOLCHAIN_BIN}/elm")
 
@@ -92,8 +124,6 @@ if(NOT EXISTS "${ELM_BIN}")
 endif()
 
 # --- elm-format 0.8.7 -------------------------------------------------------
-set(ELM_FORMAT_URL "https://github.com/avh4/elm-format/releases/download/0.8.7/elm-format-0.8.7-linux-x64.tgz")
-set(ELM_FORMAT_SHA "44344c7b6f838dc5d9495dfe4253280a698c2251ee8cfa29b6d1a032b6efb13b")
 set(ELM_FORMAT_TGZ "${TOOLCHAIN_CACHE}/elm-format-0.8.7.tgz")
 set(ELM_FORMAT_BIN "${TOOLCHAIN_BIN}/elm-format")
 
@@ -109,8 +139,6 @@ if(NOT EXISTS "${ELM_FORMAT_BIN}")
 endif()
 
 # --- elm-test-rs 3.0.1 ------------------------------------------------------
-set(ELM_TEST_RS_URL "https://github.com/mpizenberg/elm-test-rs/releases/download/v3.0.1/elm-test-rs_linux.tar.gz")
-set(ELM_TEST_RS_SHA "3d99e394f2a90ddf5fcb579b7c9c822b62c2a71c5621cb9e2c5d5b37f8a9d5a7")
 set(ELM_TEST_RS_TGZ "${TOOLCHAIN_CACHE}/elm-test-rs-3.0.1.tgz")
 set(ELM_TEST_RS_BIN "${TOOLCHAIN_BIN}/elm-test-rs")
 

@@ -7,7 +7,18 @@ project(EcoRuntime LANGUAGES C CXX)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
-include(LLVMLibunwind)
+
+# Front-end-only configure: just the compiler/ subdirectory (bootstrap
+# stages 1–5, which are pure Node/Elm — no LLVM, MLIR, libunwind, kernels,
+# runtime, or tests). Used for porting work (plans/build-on-mac.md) and any
+# environment that wants the Elm front-end without the native toolchain.
+option(ECO_FRONTEND_ONLY
+       "Configure only the Elm front-end bootstrap (stages 1-5); skip the native backend, runtime, kernels and tests"
+       OFF)
+
+if(NOT ECO_FRONTEND_ONLY)
+    include(LLVMLibunwind)
+endif()
 
 # Runtime GC debug assertions: default ON for Debug builds, OFF for Release.
 # Declared at top level so EVERY target that includes the allocator headers
@@ -271,7 +282,7 @@ endif()
 # compiler/CMakeLists.txt) are all gated off — the Debian glibc-runtime
 # builder image provides none of those, and the mode only exists to build
 # the archive set staged by eco-glibc-runtime-tree below.
-if(NOT ECO_GLIBC_OUTPUT_RUNTIME)
+if(NOT ECO_GLIBC_OUTPUT_RUNTIME AND NOT ECO_FRONTEND_ONLY)
 
 add_executable(ecor EXCLUDE_FROM_ALL
         runtime/src/main.cpp
@@ -324,14 +335,16 @@ add_subdirectory(test EXCLUDE_FROM_ALL)
 
 endif() # NOT ECO_GLIBC_OUTPUT_RUNTIME (ecor + test)
 
-# MLIR-based code generation
-add_subdirectory(runtime/src/codegen)
+if(NOT ECO_FRONTEND_ONLY)
+    # MLIR-based code generation
+    add_subdirectory(runtime/src/codegen)
 
-# Elm kernel C++ implementation
-add_subdirectory(elm-kernel-cpp)
+    # Elm kernel C++ implementation
+    add_subdirectory(elm-kernel-cpp)
 
-# Eco kernel C++ implementation (IO operations)
-add_subdirectory(eco-kernel-cpp)
+    # Eco kernel C++ implementation (IO operations)
+    add_subdirectory(eco-kernel-cpp)
+endif()
 
 # Guida compiler (Elm compiler written in Elm). Gated off in the Stage D
 # archive-only mode: compiler/CMakeLists.txt hard-REQUIREs node + pnpm at

@@ -1,10 +1,17 @@
 # Guida Elm Compiler build configuration
 # This builds the guida compiler (an Elm compiler written in Elm)
 
-# Linux x86_64 is the only platform with pinned toolchain binaries today.
-if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR NOT CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+# Platforms with pinned toolchain binaries: Linux x86_64 and macOS
+# (arm64 / x86_64). The per-platform URL/SHA table lives in
+# cmake/toolchain.cmake.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+    # supported
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|x86_64)$")
+    # supported (front-end bootstrap; backend port in progress — see
+    # plans/build-on-mac.md)
+else()
     message(FATAL_ERROR
-        "compiler/cmake/toolchain.cmake currently pins Linux x86_64 binaries only. "
+        "No pinned Elm toolchain binaries for this platform. "
         "System=${CMAKE_SYSTEM_NAME} Processor=${CMAKE_SYSTEM_PROCESSOR}.")
 endif()
 
@@ -15,7 +22,13 @@ find_program(PNPM_EXECUTABLE pnpm REQUIRED)
 find_program(PYTHON3_EXECUTABLE python3 REQUIRED)
 # GNU /usr/bin/time wraps Stages 5 and 7a so the front-end MLIR-emit timings
 # (wall, CPU, RSS, page faults, ctx switches) can be summarized in a table.
-find_program(GNU_TIME_EXECUTABLE NAMES time PATHS /usr/bin NO_DEFAULT_PATH REQUIRED)
+# macOS /usr/bin/time is BSD time (no -v); require GNU time from
+# `brew install gnu-time`, which installs as `gtime`.
+if(APPLE)
+    find_program(GNU_TIME_EXECUTABLE NAMES gtime REQUIRED)
+else()
+    find_program(GNU_TIME_EXECUTABLE NAMES time PATHS /usr/bin NO_DEFAULT_PATH REQUIRED)
+endif()
 
 message(STATUS "Found Node.js: ${NODE_EXECUTABLE}")
 message(STATUS "Found pnpm:    ${PNPM_EXECUTABLE}")
@@ -310,8 +323,14 @@ add_custom_command(
     OUTPUT ${ECO_COMPILER_MLIR}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${BUILD_KERNEL_DIR}/eco-stuff
     COMMAND find ${BUILD_KERNEL_DIR}/eco-stuff -name *.ecot -delete
+    # --max-old-space-size=4096: pin the V8 heap explicitly. Node's default
+    # old-space limit scales with host RAM (~4 GB on big machines, ~2 GB on
+    # small ones), and Stage 5 needs a bit over 2 GB — it OOM'd on a 7 GB
+    # macOS CI runner where the default came out at 2 GB while passing on
+    # big-RAM dev machines that defaulted to 4 GB.
     COMMAND ${GNU_TIME_EXECUTABLE} -v -o ${STAGE5_TIME_LOG}
-        ${NODE_EXECUTABLE} --stack-size=65536 bin/eco-boot-2-runner.js make
+        ${NODE_EXECUTABLE} --stack-size=65536 --max-old-space-size=4096
+        bin/eco-boot-2-runner.js make
         --optimize
         --kernel-package eco/compiler
         --local-package eco/kernel=${COMPILER_DIR}/../eco-kernel-cpp
@@ -330,6 +349,15 @@ add_custom_command(
 )
 
 add_custom_target(eco-compiler-mlir DEPENDS ${ECO_COMPILER_MLIR})
+
+# ============================================================================
+# Stages 6–9 require the native backend (eco-boot-native from
+# runtime/src/codegen). Under ECO_FRONTEND_ONLY (front-end-only configure —
+# stages 1–5 are pure Node/Elm) the backend targets don't exist, and the
+# $<TARGET_FILE:eco-boot-native> generator expressions below would be
+# configure-time errors — so the whole back half is gated off.
+# ============================================================================
+if(NOT ECO_FRONTEND_ONLY)
 
 # -- Stage 6: eco-compiler.mlir → eco-compiler (native ELF)
 # eco-boot-native is defined in runtime/src/codegen/CMakeLists.txt.
@@ -736,6 +764,8 @@ add_custom_target(bootstrap
         ${ECO_STAGE9_2_OUTPUT}
     VERBATIM
 )
+
+endif() # NOT ECO_FRONTEND_ONLY (Stages 6-9)
 
 # Bootstrap outputs (${BUILD_XHR_DIR}/bin/, ${BUILD_KERNEL_DIR}/bin/,
 # elm-stuff/, eco-stuff/) now live entirely under ${CMAKE_BINARY_DIR}. The
