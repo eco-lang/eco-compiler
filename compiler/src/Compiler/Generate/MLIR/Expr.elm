@@ -61,7 +61,7 @@ import Compiler.Generate.MLIR.Patterns as Patterns
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Compiler.Monomorphize.Closure as Closure
-import Compiler.Monomorphize.KernelAbi as KernelAbi
+import Compiler.Generate.MLIR.KernelAbi as KernelAbi
 import Compiler.Monomorphize.Registry as Registry
 import Dict
 import Hex
@@ -3314,48 +3314,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                     KernelAbi.kernelBackendAbiPolicy home name
                             in
                             case policy of
-                                KernelAbi.AllBoxed ->
-                                    -- Underlying C++ ABI: all args and result are !eco.value,
-                                    -- regardless of the monomorphic Elm wrapper type.
-                                    -- Box any primitive SSA values to match the kernel ABI.
-                                    let
-                                        elmSig : Ctx.FuncSignature
-                                        elmSig =
-                                            Ctx.kernelFuncSignatureFromType funcType
-
-                                        numArgs : Int
-                                        numArgs =
-                                            List.length elmSig.paramTypes
-
-                                        -- Backend ABI: all MUnit => all !eco.value
-                                        backendParamTypes : List Mono.MonoType
-                                        backendParamTypes =
-                                            List.repeat numArgs Mono.MUnit
-
-                                        ( boxOps, argVarPairs, ctx1b ) =
-                                            boxToMatchSignatureTyped ctx1 argsWithTypes backendParamTypes
-
-                                        ( resVar, ctx2 ) =
-                                            Ctx.freshVar ctx1b
-
-                                        kernelName : String
-                                        kernelName =
-                                            kernelPrefix ++ "_Kernel_" ++ home ++ "_" ++ name
-
-                                        resultMlirType : MlirType
-                                        resultMlirType =
-                                            Types.ecoValue
-
-                                        ( ctx3, callOp ) =
-                                            Ops.ecoCallNamed ctx2 (emitSafepointHints ctx2) resVar kernelName argVarPairs resultMlirType
-                                    in
-                                    { ops = argOps ++ boxOps ++ [ callOp ]
-                                    , resultVar = resVar
-                                    , resultType = resultMlirType
-                                    , ctx = ctx3
-                                    , isTerminated = False
-                                    }
-
                                 KernelAbi.ElmDerived ->
                                     -- ABI derived from the Elm wrapper's funcType.
                                     -- Polymorphic kernels have MVar in their funcType, which

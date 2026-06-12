@@ -179,13 +179,6 @@ insertFlagsDecoderNode entryPointName ((TOpt.GlobalGraph nodes fields annots roo
                     ( graph, Nothing )
 
 
-{-| Perform monomorphization from a given entry point.
--}
-monomorphizeFromEntry : TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> State.MVarEnv -> Result String Mono.MonoGraph
-monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
-    monomorphizeFromEntryWith Nothing mainGlobal mainType globalTypeEnv nodes annotations mvarEnv
-
-
 monomorphizeFromEntryWith : Maybe TOpt.Global -> TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> State.MVarEnv -> Result String Mono.MonoGraph
 monomorphizeFromEntryWith maybeFlagsGlobal mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
     let
@@ -252,20 +245,6 @@ findNodeAnnotationType global nodes =
 
         _ ->
             Nothing
-
-
-{-| Phase 1: Run the specialization worklist to completion (pure).
--}
-runSpecialization : TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> State.MVarEnv -> ( MonoState, Mono.SpecId )
-runSpecialization mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
-    let
-        ( stateWithMain, mainSpecIdVal ) =
-            initSpecialization mainGlobal mainType globalTypeEnv nodes annotations mvarEnv
-
-        finalState =
-            processWorklistPure stateWithMain
-    in
-    ( finalState, mainSpecIdVal )
 
 
 {-| Shared initialization for the specialization worklist.

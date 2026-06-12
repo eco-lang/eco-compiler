@@ -13,10 +13,9 @@ module Compiler.AST.Canonical exposing
     , fieldUpdateEncoder, fieldUpdateDecoder
     , annotationEncoderS, annotationDecoderS
     , typeEncoderS, typeDecoderS
-    , aliasEncoderS, aliasDecoderS
     , unionEncoderS, unionDecoderS
     , collectStringsFromAnnotation, collectStringsFromType
-    , collectStringsFromAlias, collectStringsFromUnion
+    , collectStringsFromUnion
     )
 
 {-| The Canonical AST represents Elm code after name resolution.
@@ -74,10 +73,9 @@ Cached data is marked with comments like `-- CACHE for exhaustiveness` or
 
 @docs annotationEncoderS, annotationDecoderS
 @docs typeEncoderS, typeDecoderS
-@docs aliasEncoderS, aliasDecoderS
 @docs unionEncoderS, unionDecoderS
 @docs collectStringsFromAnnotation, collectStringsFromType
-@docs collectStringsFromAlias, collectStringsFromUnion
+@docs collectStringsFromUnion
 
 -}
 
@@ -1527,15 +1525,6 @@ collectStringsFromAnnotation : Annotation Name -> Set String -> Set String
 collectStringsFromAnnotation (Forall freeVars tipe) acc =
     acc
         |> (\a -> List.foldl Set.insert a (Dict.keys freeVars))
-        |> collectStringsFromType tipe
-
-
-{-| Add all strings emitted by `aliasEncoderS` to a collection set.
--}
-collectStringsFromAlias : Alias -> Set String -> Set String
-collectStringsFromAlias (Alias vars tipe) acc =
-    acc
-        |> (\a -> List.foldl Set.insert a vars)
         |> collectStringsFromType tipe
 
 

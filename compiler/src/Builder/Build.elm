@@ -83,7 +83,7 @@ import Compiler.Reporting.Render.Type.Localizer as L
 import Data.Map
 import Data.Set as EverySet
 import Dict exposing (Dict)
-import System.IO as IO exposing (FilePath, MVar(..))
+import System.IO exposing (FilePath, MVar(..))
 import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD

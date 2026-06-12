@@ -62,9 +62,9 @@ import Compiler.Data.Name as Name
 import Compiler.Eco.Config as Config
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.Generate.Mode as Mode
-import Compiler.Monomorphize.KernelAbi as KernelAbi
+import Compiler.Generate.MLIR.KernelAbi as KernelAbi
 import Dict
-import Mlir.Mlir exposing (MlirOp, MlirType(..))
+import Mlir.Mlir exposing (MlirOp, MlirType)
 import Set
 import Utils.Crash exposing (crash)
 

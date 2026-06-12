@@ -111,6 +111,7 @@
         "Compiler.Generate.MLIR.Expr",
         "Compiler.Generate.MLIR.Functions",
         "Compiler.Generate.MLIR.Intrinsics",
+        "Compiler.Generate.MLIR.KernelAbi",
         "Compiler.Generate.MLIR.Lambdas",
         "Compiler.Generate.MLIR.LogicalTypes",
         "Compiler.Generate.MLIR.Names",

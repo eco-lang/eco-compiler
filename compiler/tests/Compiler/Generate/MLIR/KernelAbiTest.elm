@@ -1,4 +1,4 @@
-module Compiler.Monomorphize.KernelAbiTest exposing (suite)
+module Compiler.Generate.MLIR.KernelAbiTest exposing (suite)
 
 {-| Unit tests for `deriveKernelInstanceAbi` and the per-instance kernel ABI
 machinery introduced in Phase B of the per-instance kernel ABI rollout.
@@ -16,7 +16,7 @@ through the intrinsic path.
 -}
 
 import Compiler.AST.Monomorphized as Mono
-import Compiler.Monomorphize.KernelAbi as KernelAbi
+import Compiler.Generate.MLIR.KernelAbi as KernelAbi
 import Expect
 import Mlir.Mlir as Mlir
 import System.TypeCheck.IO as IO

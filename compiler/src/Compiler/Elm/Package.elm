@@ -67,8 +67,6 @@ import Compiler.Parse.Primitives as P exposing (Col, Row)
 import Dict exposing (Dict)
 import Levenshtein
 import Set exposing (Set)
-import Utils.Bytes.Decode as BD
-import Utils.Bytes.Encode as BE
 
 
 

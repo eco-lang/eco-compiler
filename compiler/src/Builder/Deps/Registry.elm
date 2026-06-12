@@ -51,7 +51,6 @@ import Compiler.Elm.Version as V
 import Compiler.Json.Decode as D
 import Compiler.Parse.Primitives as P
 import Dict exposing (Dict)
-import Eco.Console
 import Eco.File
 import System.IO as IO
 import Task exposing (Task)

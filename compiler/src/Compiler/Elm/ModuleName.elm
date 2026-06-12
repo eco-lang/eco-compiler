@@ -9,8 +9,8 @@ module Compiler.Elm.ModuleName exposing
     , bytes
     , webgl, texture, vector2, vector3, vector4, matrix4
     , canonicalEncoder, canonicalDecoder, rawEncoder, rawDecoder
-    , canonicalEncoderS, canonicalDecoderS, rawEncoderS, rawDecoderS
-    , collectStringsFromCanonical, collectStringsFromRaw
+    , canonicalEncoderS, canonicalDecoderS
+    , collectStringsFromCanonical
     )
 
 {-| Utilities for working with Elm module names in their raw and canonical forms.
@@ -72,8 +72,8 @@ names include both the package name and module name, fully qualifying the module
 
 # String-Interned Binary Encoding/Decoding
 
-@docs canonicalEncoderS, canonicalDecoderS, rawEncoderS, rawDecoderS
-@docs collectStringsFromCanonical, collectStringsFromRaw
+@docs canonicalEncoderS, canonicalDecoderS
+@docs collectStringsFromCanonical
 
 -}
 
@@ -481,20 +481,6 @@ canonicalDecoderS st =
         (StringTable.stringDec st)
 
 
-{-| String-interned variant of `rawEncoder`.
--}
-rawEncoderS : StringTable -> Raw -> Bytes.Encode.Encoder
-rawEncoderS =
-    StringTable.string
-
-
-{-| String-interned variant of `rawDecoder`.
--}
-rawDecoderS : StringTable -> Bytes.Decode.Decoder Raw
-rawDecoderS =
-    StringTable.stringDec
-
-
 {-| Add the string components of a canonical module name to a collection set.
 -}
 collectStringsFromCanonical : Canonical -> Set String -> Set String
@@ -502,10 +488,3 @@ collectStringsFromCanonical (Canonical pkgName name) acc =
     acc
         |> Pkg.collectStringsFromName pkgName
         |> Set.insert name
-
-
-{-| Add a raw module name to a collection set.
--}
-collectStringsFromRaw : Raw -> Set String -> Set String
-collectStringsFromRaw raw acc =
-    Set.insert raw acc

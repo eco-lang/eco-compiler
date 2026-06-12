@@ -4308,7 +4308,7 @@ specializeExpr expr subst state =
         TOpt.Unit _ ->
             ( Mono.MonoUnit, state )
 
-        TOpt.Tuple region a b rest meta ->
+        TOpt.Tuple region a b rest _ ->
             let
                 ( monoA, state1 ) =
                     specializeExpr a subst state

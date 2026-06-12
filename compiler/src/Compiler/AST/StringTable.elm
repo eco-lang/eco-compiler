@@ -1,6 +1,6 @@
 module Compiler.AST.StringTable exposing
     ( StringTable
-    , disabled, build, isDisabled
+    , disabled, build
     , string, stringDec
     , tableEncoder, tableDecoder
     )
@@ -39,7 +39,7 @@ See ECOT\_002 in design\_docs/invariants.csv.
 
 # Builders
 
-@docs disabled, build, isDisabled
+@docs disabled, build
 
 
 # Field encoders
@@ -87,13 +87,6 @@ inline string encoding instead of interning.
 disabled : StringTable
 disabled =
     { strToIdx = Dict.empty, idxToStr = Array.empty, width = 0 }
-
-
-{-| Is this table the disabled sentinel?
--}
-isDisabled : StringTable -> Bool
-isDisabled t =
-    t.width == 0
 
 
 {-| Build a table from a set of unique strings. Sorted alphabetically;

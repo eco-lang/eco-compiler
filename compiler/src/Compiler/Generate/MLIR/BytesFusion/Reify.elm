@@ -1,6 +1,6 @@
 module Compiler.Generate.MLIR.BytesFusion.Reify exposing
     ( EncoderNode(..), DecoderNode(..), BodyLookup
-    , reifyEncoder, reifyEncoderWith, reifyDecoder
+    , reifyEncoderWith, reifyDecoder
     , nodesToOps, decoderNodeToOps
     , CountSource, LengthDecoder
     )
@@ -19,7 +19,7 @@ expression tree to identify Bytes.Encode/Decode combinator calls.
 
 # Reification
 
-@docs reifyEncoder, reifyEncoderWith, reifyDecoder
+@docs reifyEncoderWith, reifyDecoder
 
 
 # Loop IR Conversion
@@ -146,22 +146,6 @@ type LengthDecoder
 type CountSource
     = CountFromVar String -- Count from previously decoded variable
     | CountConst Int -- Fixed count (rare)
-
-
-{-| Try to reify a MonoExpr into a list of encoder nodes.
-Returns Nothing if the expression contains dynamic/opaque encoders.
-
-This entry point disables the `MonoVarGlobal` mapFn arm of
-`reifyMapBody` by passing `Dict.empty` as the body lookup. Use
-`reifyEncoderWith` and supply a real lookup (from
-`MonoInlineSimplify.buildBodyLookup`, threaded through codegen
-`Context.inlineBodies`) to fuse loops whose per-element function is a
-named global rather than an inline lambda.
-
--}
-reifyEncoder : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe (List EncoderNode)
-reifyEncoder registry exprCache expr =
-    reifyEncoderWith Dict.empty registry exprCache expr
 
 
 {-| Like `reifyEncoder` but with the inliner's body-lookup table.

@@ -1,7 +1,7 @@
 module Compiler.AST.DecisionTree.TypedPath exposing
     ( Path(..), ContainerHint(..)
-    , pathEncoder, pathDecoder
-    , pathEncoderS, pathDecoderS, collectStringsFromPath
+    , collectStringsFromPath
+    , pathDecoderS, pathEncoderS
     )
 
 {-| Path type for typed decision trees with container hints.
@@ -10,8 +10,8 @@ This module defines the `Path` type used by typed decision trees, including
 `ContainerHint` information for type-aware backends (MLIR/native).
 
 @docs Path, ContainerHint
-@docs pathEncoder, pathDecoder
-@docs pathEncoderS, pathDecoderS, collectStringsFromPath
+@docs collectStringsFromPath
+@docs pathDecoderS, pathEncoderS
 
 -}
 
@@ -21,8 +21,6 @@ import Compiler.AST.StringTable as StringTable exposing (StringTable)
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
 import Set exposing (Set)
-import Utils.Bytes.Decode as BD
-import Utils.Bytes.Encode as BE
 
 
 {-| Indicates what kind of container an Index navigates into.
@@ -96,20 +94,6 @@ containerHintDecoder st =
                     _ ->
                         Bytes.Decode.succeed HintUnknown
             )
-
-
-{-| Encode a Path to bytes for serialization.
--}
-pathEncoder : Path -> Bytes.Encode.Encoder
-pathEncoder =
-    pathEncoderS StringTable.disabled
-
-
-{-| Decode a Path from bytes.
--}
-pathDecoder : Bytes.Decode.Decoder Path
-pathDecoder =
-    pathDecoderS StringTable.disabled
 
 
 {-| String-interned variant of `pathEncoder`.

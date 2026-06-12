@@ -1,7 +1,7 @@
 module Builder.File exposing
     ( Time(..), getTime, zeroTime, timeEncoder, timeDecoder
     , readBinary, writeBinary
-    , readUtf8, writeUtf8, readStdin
+    , readUtf8, writeUtf8
     , writePackage, copyPackageSource
     , exists, remove
     , withStreamingWriter
@@ -26,7 +26,7 @@ tracking, and package extraction.
 
 # UTF-8 File Operations
 
-@docs readUtf8, writeUtf8, readStdin
+@docs readUtf8, writeUtf8
 
 
 # Package Management
@@ -48,7 +48,6 @@ tracking, and package extraction.
 import Bytes.Decode
 import Bytes.Encode
 import Codec.Archive.Zip as Zip
-import Eco.Console
 import Eco.File
 import System.IO as IO exposing (FilePath)
 import Task exposing (Task)
@@ -178,14 +177,6 @@ writeUtf8 path content =
 readUtf8 : FilePath -> Task Never String
 readUtf8 path =
     Eco.File.readString path
-        |> IO.crashOnError
-
-
-{-| Reads all input from stdin as a string.
--}
-readStdin : Task Never String
-readStdin =
-    Eco.Console.readAll
         |> IO.crashOnError
 
 

@@ -3,7 +3,6 @@ module Builder.Eco.FEStats exposing
     , PhaseName(..), ModuleStage(..)
     , init, finalize, disabled
     , withPhase, withModuleStage
-    , recordModule
     , prettyPrint
     )
 
@@ -21,7 +20,6 @@ thread safety. Phase-level updates run single-threaded.
 @docs PhaseName, ModuleStage
 @docs init, finalize, disabled
 @docs withPhase, withModuleStage
-@docs recordModule
 @docs prettyPrint
 
 -}
@@ -477,7 +475,7 @@ expandedStageBlock state stage =
                 slowestLines =
                     List.map renderSlowLine hist.topSlow
             in
-            ("" :: title :: String.repeat (String.length title) "-" :: [])
+            [ "", title, String.repeat (String.length title) "-" ]
                 ++ bucketLines
                 ++ ("" :: slowestHeader :: slowestLines)
 

@@ -2,17 +2,19 @@ module Eco.XHR exposing
     ( stringTask, jsonTask, bytesTask, unitTask
     , sendBytesTask, rawBytesRecvTask
     , orCrash
+    , Failure
     )
 
 {-| Shared HTTP plumbing for XHR-based IO operations.
 
 Each function sends a POST request to the Node.js eco-io handler endpoint and
 decodes the response. On failure the task fails with the neutral IO failure
-tuple `( classificationTag, path, message )` (see IO_ERR_002); the eco-io server
+tuple `( classificationTag, path, message )` (see IO\_ERR\_002); the eco-io server
 forwards the libuv `code` and `path` on its error responses, which we classify
 via `Eco.IO.Error.tagFromCode`. Genuine protocol/decoding faults (which indicate
 a bug in the bootstrap harness rather than a user IO error) still crash.
 
+@docs Failure
 @docs stringTask, jsonTask, bytesTask, unitTask
 @docs sendBytesTask, rawBytesRecvTask
 @docs orCrash

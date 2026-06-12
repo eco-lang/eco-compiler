@@ -11,16 +11,14 @@ all params and return as !eco.value.
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.Monomorphize.KernelAbi exposing (KernelBackendAbiPolicy(..), kernelBackendAbiPolicy)
-import Dict
+import Compiler.Generate.MLIR.KernelAbi exposing (KernelBackendAbiPolicy(..), kernelBackendAbiPolicy)
 import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirAttr(..), MlirModule, MlirOp, MlirType(..))
+import Mlir.Mlir exposing (MlirModule, MlirOp)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
         , getBoolAttr
         , getStringAttr
-        , isEcoValueType
         , violationsToExpectation
         )
 import TestLogic.TestPipeline exposing (runToMlir)
@@ -63,9 +61,6 @@ checkKernelFunc op =
 
                 Just ( home, name ) ->
                     case kernelBackendAbiPolicy home name of
-                        AllBoxed ->
-                            checkAllBoxedTypes symName op
-
                         ElmDerived ->
                             []
 
@@ -94,71 +89,4 @@ parseKernelName symName =
                 Just ( home, String.join "_" rest )
 
         [] ->
-            Nothing
-
-
-checkAllBoxedTypes : String -> MlirOp -> List Violation
-checkAllBoxedTypes symName op =
-    case getFunctionTypeAttr op of
-        Nothing ->
-            []
-
-        Just ( paramTypes, returnTypes ) ->
-            let
-                paramViolations =
-                    List.indexedMap
-                        (\i t ->
-                            if isEcoValueType t then
-                                Nothing
-
-                            else
-                                Just
-                                    { opId = op.id
-                                    , opName = "func.func"
-                                    , message =
-                                        "AllBoxed kernel '"
-                                            ++ symName
-                                            ++ "' has non-!eco.value param type at index "
-                                            ++ String.fromInt i
-                                            ++ ": "
-                                            ++ Debug.toString t
-                                    }
-                        )
-                        paramTypes
-
-                returnViolations =
-                    List.indexedMap
-                        (\i t ->
-                            if isEcoValueType t then
-                                Nothing
-
-                            else
-                                Just
-                                    { opId = op.id
-                                    , opName = "func.func"
-                                    , message =
-                                        "AllBoxed kernel '"
-                                            ++ symName
-                                            ++ "' has non-!eco.value return type at index "
-                                            ++ String.fromInt i
-                                            ++ ": "
-                                            ++ Debug.toString t
-                                    }
-                        )
-                        returnTypes
-            in
-            List.filterMap identity paramViolations
-                ++ List.filterMap identity returnViolations
-
-
-{-| Extract function type from func.func's function\_type attribute.
-The attribute is stored as TypeAttr (FunctionType { inputs, results }).
--}
-getFunctionTypeAttr : MlirOp -> Maybe ( List MlirType, List MlirType )
-getFunctionTypeAttr op =
-    case Dict.get "function_type" op.attrs of
-        Just (TypeAttr (FunctionType { inputs, results })) ->
-            Just ( inputs, results )
-
-        _ ->
             Nothing

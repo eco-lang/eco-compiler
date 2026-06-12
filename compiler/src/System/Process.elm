@@ -114,7 +114,7 @@ code (127) so callers continue to observe an `ExitCode`.
 handleSpawnFailure : ProcessError -> Task Never Exit.ExitCode
 handleSpawnFailure err =
     IO.writeLn IO.stderr ("error: cannot run process: " ++ ProcErr.toString err)
-        |> Task.andThen (\_ -> Task.succeed (Exit.ExitFailure 127))
+        |> Task.map (\_ -> Exit.ExitFailure 127)
 
 
 {-| Wait for a process to complete and return its exit code.

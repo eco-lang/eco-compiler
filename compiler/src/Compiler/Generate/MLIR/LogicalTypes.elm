@@ -1,6 +1,6 @@
 module Compiler.Generate.MLIR.LogicalTypes exposing
-    ( LogicalTypeDesc(..), AggKind(..), monoTypeToLogical, mlirTypeToLogical
-    , encodeLogicalType, addLogicalTypesAttr, addLogicalTypesAttrUnknown
+    ( LogicalTypeDesc(..), AggKind(..)
+    , addLogicalTypesAttr, addLogicalTypesAttrUnknown
     )
 
 {-| Encode a function's logical Elm parameter/result types as
@@ -35,8 +35,8 @@ Wire format (one StringAttr per param/result):
     encode as `"value"` so cross-spec leaves them boxed.
   - `"cons:Khead:Ktail"` — list cons cell (tail is always `v`).
 
-@docs LogicalTypeDesc, AggKind, monoTypeToLogical, mlirTypeToLogical
-@docs encodeLogicalType, addLogicalTypesAttr, addLogicalTypesAttrUnknown
+@docs LogicalTypeDesc, AggKind
+@docs addLogicalTypesAttr, addLogicalTypesAttrUnknown
 
 -}
 

@@ -53,7 +53,6 @@ import Compiler.Type.Solve as Type
 import Compiler.Type.SolverRoots as SolverRoots
 import Compiler.TypedCanonical.Build as TCanBuild
 import Dict
-import System.IO as IO
 import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)
 
