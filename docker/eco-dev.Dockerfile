@@ -1,10 +1,10 @@
 # ============================================================
 # LLVM/MLIR comes from a pre-built image produced by
 # docker/llvm-debian.Dockerfile. Build that once with:
-#   docker build -f docker/llvm-debian.Dockerfile -t eco-llvm-debian:21.1.4 .
+#   docker build -f docker/llvm-debian.Dockerfile -t eco-llvm-debian:21.1.8 .
 # Bump LLVM_IMAGE's tag in lockstep with the LLVM version there.
 # ============================================================
-ARG LLVM_IMAGE=eco-llvm-debian:21.1.4
+ARG LLVM_IMAGE=eco-llvm-debian:21.1.8
 FROM ${LLVM_IMAGE} AS llvm
 
 # ============================================================

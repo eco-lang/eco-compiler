@@ -2,17 +2,17 @@
 # Builder image for LLVM + MLIR (Debian variant)
 # ============================================================
 # Built once, then consumed by the main /work/Dockerfile via
-#   ARG LLVM_IMAGE=eco-llvm-debian:21.1.4
+#   ARG LLVM_IMAGE=eco-llvm-debian:21.1.8
 #   FROM ${LLVM_IMAGE} AS llvm
 #   COPY --from=llvm /opt/llvm-mlir /opt/llvm-mlir
 #
 # Build with:
-#   docker build -f docker/llvm-debian.Dockerfile -t eco-llvm-debian:21.1.4 .
+#   docker build -f docker/llvm-debian.Dockerfile -t eco-llvm-debian:21.1.8 .
 # Bump the tag whenever LLVM_VERSION changes.
 # ============================================================
 FROM debian:bookworm
 ARG DEBIAN_FRONTEND=noninteractive
-ARG LLVM_VERSION=21.1.4
+ARG LLVM_VERSION=21.1.8
 ARG CMAKE_BUILD_PARALLEL_LEVEL=24
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

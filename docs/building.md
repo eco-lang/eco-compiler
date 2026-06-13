@@ -12,8 +12,8 @@ rebuilt only when `LLVM_VERSION` changes) and consumer images that
 `COPY /opt/llvm-mlir` from a base.
 
 ```
-eco-llvm-debian:21.1.4 ──► eco-dev                  (glibc dev shell)
-eco-llvm-alpine:21.1.4 ─┬► eco-static               (static `eco` binary)
+eco-llvm-debian:21.1.8 ──► eco-dev                  (glibc dev shell)
+eco-llvm-alpine:21.1.8 ─┬► eco-static               (static `eco` binary)
                         └► eco-static-dev:local     (musl dev shell)
 ```
 
@@ -24,8 +24,8 @@ From `/work`:
 ```bash
 # 1a. LLVM/MLIR base images (~30–60 min each, independent — can run in
 #     parallel). Only re-run when LLVM_VERSION changes.
-docker build -f docker/llvm-debian.Dockerfile -t eco-llvm-debian:21.1.4 .
-docker build -f docker/llvm-alpine.Dockerfile -t eco-llvm-alpine:21.1.4 .
+docker build -f docker/llvm-debian.Dockerfile -t eco-llvm-debian:21.1.8 .
+docker build -f docker/llvm-alpine.Dockerfile -t eco-llvm-alpine:21.1.8 .
 
 # 1b. Glibc dev image (needs eco-llvm-debian).
 docker build -f docker/eco-dev.Dockerfile -t eco-dev .

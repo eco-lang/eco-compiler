@@ -10,8 +10,8 @@
 # Produces a single `eco` executable with ZERO shared-library dependencies
 # (verified below with `readelf -d`). Stages:
 #
-#   1. llvm          — FROM eco-llvm-alpine:21.1.4 (built once by
-#                      docker/llvm-alpine.Dockerfile). LLVM 21.1.4 + MLIR
+#   1. llvm          — FROM eco-llvm-alpine:21.1.8 (built once by
+#                      docker/llvm-alpine.Dockerfile). LLVM 21.1.8 + MLIR
 #                      from source, MUSL + libc++.
 #   2. glibc-runtime — FROM debian:bookworm, self-contained: apt toolchain +
 #                      LLVM runtime statics from apt (libc++-14-dev etc. —
@@ -35,7 +35,7 @@
 # PREREQUISITE IMAGE — one, as before Stage D (eco-llvm-debian remains
 # dev-environment-only). One-off, slow; rebuild only when LLVM_VERSION
 # changes:
-#   docker build -f docker/llvm-alpine.Dockerfile -t eco-llvm-alpine:21.1.4 .
+#   docker build -f docker/llvm-alpine.Dockerfile -t eco-llvm-alpine:21.1.8 .
 # Build + run all smoke gates (fast — pulls /opt/llvm-mlir from the images):
 #   docker build -f docker/static-build.Dockerfile .
 # Extract the bundles (cached if the smoke build above already ran):
@@ -61,7 +61,7 @@ ARG ALPINE_DIGEST=sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65
 # Produced by docker/llvm-alpine.Dockerfile. Override with --build-arg
 # LLVM_IMAGE=... if tagged differently.
 # ============================================================================
-ARG LLVM_IMAGE=eco-llvm-alpine:21.1.4
+ARG LLVM_IMAGE=eco-llvm-alpine:21.1.8
 
 # Base image for the Stage D glibc-runtime stage (used at the FROM below).
 # Declared HERE, in the global scope before the first FROM, because Docker

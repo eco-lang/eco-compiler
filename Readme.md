@@ -47,7 +47,7 @@ toolchain, and the Elm tooling. Build the base and dev images (one-off,
 
 ```bash
 # Build the LLVM/MLIR base and the dev image (see docs/building.md for detail).
-docker build -f docker/llvm-debian.Dockerfile -t eco-llvm-debian:21.1.4 .
+docker build -f docker/llvm-debian.Dockerfile -t eco-llvm-debian:21.1.8 .
 docker build -f docker/eco-dev.Dockerfile -t eco-dev .
 
 # Configure and run the full build + test suite inside the image.

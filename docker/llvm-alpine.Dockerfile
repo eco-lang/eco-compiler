@@ -9,7 +9,7 @@
 # LLVM_VERSION.
 #
 # Build with:
-#   docker build -f docker/llvm-alpine.Dockerfile -t eco-llvm-alpine:21.1.4 .
+#   docker build -f docker/llvm-alpine.Dockerfile -t eco-llvm-alpine:21.1.8 .
 #
 # Toolchain facts (verified against alpine:3.21 / clang 19.1.4):
 #   - libc++ is packaged as libc++ / libc++-dev / libc++-static (NOT the
@@ -31,7 +31,7 @@
 ARG ALPINE_DIGEST=sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
 
 FROM alpine@${ALPINE_DIGEST}
-ARG LLVM_VERSION=21.1.4
+ARG LLVM_VERSION=21.1.8
 ARG CMAKE_BUILD_PARALLEL_LEVEL=24
 
 # build-base provides make + musl-dev; libc++-dev / libc++-static are the
