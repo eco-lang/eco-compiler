@@ -516,6 +516,94 @@ if(ECO_STATIC_MUSL)
 endif()
 
 #-------------------------------------------------------------------------------
+# M4: Darwin distribution bundle.
+#
+# Reuses the Stage C lib/eco-runtime/project/*.a layout but only carries the
+# project archives, vendored libzip, and the brew openssl@3 statics — no crt,
+# no libc, no bundled linker (the user's Xcode Command Line Tools supply ld64
+# and the SDK). The eco runtime's resolveFile() walks <exe>/../lib/eco-runtime
+# the same way as on Linux, so eco-boot-native installed at <prefix>/bin/
+# finds the archives without configuration.
+#
+# Layout produced:
+#   <prefix>/bin/eco-boot-native             (AOT lowering + linking driver)
+#   <prefix>/bin/eco-compiler                (Stage 6 front-end, optional)
+#   <prefix>/lib/eco-runtime/project/lib*.a
+#   <prefix>/lib/eco-runtime/project/{libzip,libssl,libcrypto}.a
+#   <prefix>/share/eco/kernel/eco-kernel-cpp/
+#   <prefix>/share/eco/examples/hello/
+#
+# Notes vs Linux Stage C:
+#   - No crt subdir; ld64 needs no user-supplied startup objects.
+#   - No bundled linker; Xcode CLT's ld64 is the platform's contract.
+#   - No glibc/ output-runtime subtree; .so/.node outputs deferred (only
+#     the executable profile is supported in M4).
+#   - No bundle strip pass yet — bundle size is unverified; CPack TGZ first,
+#     stripping is a follow-up if size matters.
+#-------------------------------------------------------------------------------
+if(APPLE AND NOT ECO_GLIBC_OUTPUT_RUNTIME AND NOT ECO_FRONTEND_ONLY)
+    # Project archives — same shape as the Linux Stage C list.
+    set(_eco_project_targets
+        EcoEntryStatic EcoEmbedStatic EcoRuntimeStatic EcoNativeDriverStatic)
+    if(TARGET EcoNodeGlue)
+        list(APPEND _eco_project_targets EcoNodeGlue)
+    endif()
+    foreach(mod ${ECO_ELM_KERNEL_MODS})
+        list(APPEND _eco_project_targets ElmKernel_${mod})
+    endforeach()
+    foreach(mod ${ECO_KERNEL_MODS})
+        list(APPEND _eco_project_targets EcoKernel_${mod})
+    endforeach()
+    install(TARGETS ${_eco_project_targets}
+            ARCHIVE DESTINATION lib/eco-runtime/project
+            COMPONENT BundleDarwin)
+
+    # Vendored libzip (FetchContent target `zip`). Lands in project/ rather
+    # than the parent runtime dir so the same RuntimeFile basename + subdir
+    # ("libzip.a", "project") in EcoBootConfig.h resolves cleanly.
+    install(TARGETS zip
+            ARCHIVE DESTINATION lib/eco-runtime/project
+            COMPONENT BundleDarwin)
+
+    # Brew openssl@3 statics. Discovered by runtime/src/codegen/CMakeLists.txt
+    # under the if(APPLE) Phase-3 block; mirrored here so the bundle carries
+    # them at lib/eco-runtime/project/{libssl,libcrypto}.a.
+    if(ECO_DARWIN_LIBSSL_A AND ECO_DARWIN_LIBCRYPTO_A)
+        install(FILES ${ECO_DARWIN_LIBSSL_A} ${ECO_DARWIN_LIBCRYPTO_A}
+                DESTINATION lib/eco-runtime/project
+                COMPONENT BundleDarwin)
+    endif()
+
+    # bin/eco itself is installed by compiler/CMakeLists.txt (Stage 9) —
+    # the only user-facing binary. eco-boot-native (back-end only) and
+    # eco-compiler (front-end only) are absorbed into eco's fused image
+    # (EcoNativeDriverStatic + eco-stage9.o), so the bundle ships them
+    # only as part of the unified binary. Matches the Linux Stage C layout
+    # (which also installs just bin/eco).
+
+    # Kernel Elm sources — same patterns as Linux.
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/eco-kernel-cpp/
+            DESTINATION share/eco/kernel/eco-kernel-cpp
+            COMPONENT BundleDarwin
+            FILES_MATCHING
+                PATTERN "elm.json"
+                PATTERN "*.elm"
+                PATTERN "*.js"
+                PATTERN "artifacts.dat"
+                PATTERN "typed-artifacts.dat"
+                PATTERN "docs.json"
+                REGEX "/elm-stuff(/|$)" EXCLUDE
+                REGEX "/src/eco(/|$)" EXCLUDE)
+
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/examples/
+            DESTINATION share/eco/examples/hello
+            COMPONENT BundleDarwin
+            FILES_MATCHING
+                PATTERN "elm.json"
+                PATTERN "*.elm")
+endif()
+
+#-------------------------------------------------------------------------------
 # Stage D (Debian side): stage the glibc output-runtime tree.
 #
 # Archive-only mode (see the ECO_GLIBC_OUTPUT_RUNTIME option above): builds
@@ -713,6 +801,42 @@ if(ECO_STATIC_MUSL)
     # name). Loaded by CPack once per generator with ${CPACK_GENERATOR} set.
     set(CPACK_PROJECT_CONFIG_FILE
         "${CMAKE_SOURCE_DIR}/cmake/CPackProjectConfig.cmake")
+
+    include(CPack)
+elseif(APPLE AND NOT ECO_GLIBC_OUTPUT_RUNTIME AND NOT ECO_FRONTEND_ONLY)
+    # M4 Darwin CPack: TGZ only for v1. Notarized .pkg / Homebrew formula
+    # are tracked as follow-ups (out of scope per plans/build-on-mac.md).
+    # File-name carries the host arch so a future Intel bundle from
+    # macos-15-intel doesn't collide.
+    file(READ "${CMAKE_SOURCE_DIR}/version.txt" ECO_PACKAGE_VERSION)
+    string(STRIP "${ECO_PACKAGE_VERSION}" ECO_PACKAGE_VERSION)
+    if(ECO_VERSION_OVERRIDE)
+        set(ECO_PACKAGE_VERSION "${ECO_VERSION_OVERRIDE}")
+    endif()
+    if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+        set(_eco_pkg_arch "arm64")
+    else()
+        set(_eco_pkg_arch "x86_64")
+    endif()
+    message(STATUS "Eco bundle (Darwin) version: ${ECO_PACKAGE_VERSION} arch: ${_eco_pkg_arch}")
+
+    set(CPACK_PACKAGE_NAME "eco")
+    set(CPACK_PACKAGE_VERSION "${ECO_PACKAGE_VERSION}")
+    set(CPACK_PACKAGE_FILE_NAME
+        "eco-${ECO_PACKAGE_VERSION}-${_eco_pkg_arch}-darwin")
+    set(CPACK_GENERATOR "TGZ")
+    set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+        "Eco — Elm compiler with native AOT runtime (macOS, Mach-O)")
+    set(CPACK_PACKAGE_VENDOR "thesett")
+    # Strip the eco-boot-native binary; static archives are left alone for
+    # now (no Darwin-specific archive strip pass — symbol-table size is
+    # small relative to the LLVM-heavy eco-boot-native itself).
+    set(CPACK_STRIP_FILES ON)
+    # Restrict to the BundleDarwin component so add_mlir_library and
+    # FetchContent's auto-installed install rules don't pollute the tarball.
+    set(CPACK_COMPONENTS_ALL BundleDarwin)
+    set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
+    set(CPACK_ARCHIVE_BUNDLEDARWIN_FILE_NAME "${CPACK_PACKAGE_FILE_NAME}")
 
     include(CPack)
 endif()

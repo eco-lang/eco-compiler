@@ -442,15 +442,43 @@ add_custom_command(
 )
 
 # -- Stage 8c: native fixed-point check (eco-compiler-boot == eco-compiler-boot-2)
+#
+# On ELF (Linux): compare the linked binaries byte-for-byte. ld.bfd / lld
+# produce deterministic output for identical input, so binary equality is
+# the strongest form of the fixed-point invariant.
+#
+# On Mach-O (Darwin): compare the .mlir files instead. ld64 emits an
+# LC_UUID derived from the linked content's MD5 (deterministic for the
+# same content) AND a build-time timestamp in LC_BUILD_VERSION /
+# LC_VERSION_MIN_MACOSX (not deterministic without SOURCE_DATE_EPOCH).
+# Comparing eco-compiler-boot.mlir vs eco-compiler-boot-2.mlir asserts the
+# SAME invariant — Stage 6's binary and Stage 7b's binary produce
+# byte-equal MLIR when self-compiling — without depending on ld64
+# bit-for-bit determinism. The hashed-content path-determinism is the
+# property we actually care about for the bootstrap chain; binary
+# equality on ELF is an artifact of ELF linker determinism, not a
+# stronger semantic requirement.
 set(BOOTSTRAP_STAMP "${CMAKE_CURRENT_BINARY_DIR}/bootstrap.stamp")
 
-add_custom_command(
-    OUTPUT ${BOOTSTRAP_STAMP}
-    COMMAND ${CMAKE_COMMAND} -E compare_files ${ECO_COMPILER_BOOT_ELF} ${ECO_COMPILER_BOOT_2_ELF}
-    COMMAND ${CMAKE_COMMAND} -E touch ${BOOTSTRAP_STAMP}
-    DEPENDS ${ECO_COMPILER_BOOT_ELF} ${ECO_COMPILER_BOOT_2_ELF}
-    COMMENT "Stage 8c: native fixed-point check (eco-compiler-boot == eco-compiler-boot-2)"
-)
+if(APPLE)
+    add_custom_command(
+        OUTPUT ${BOOTSTRAP_STAMP}
+        COMMAND ${CMAKE_COMMAND} -E compare_files
+            ${ECO_COMPILER_BOOT_MLIR} ${ECO_COMPILER_BOOT_2_MLIR}
+        COMMAND ${CMAKE_COMMAND} -E touch ${BOOTSTRAP_STAMP}
+        DEPENDS ${ECO_COMPILER_BOOT_ELF} ${ECO_COMPILER_BOOT_2_ELF}
+                ${ECO_COMPILER_BOOT_MLIR} ${ECO_COMPILER_BOOT_2_MLIR}
+        COMMENT "Stage 8c: native fixed-point check (MLIR equality: eco-compiler-boot.mlir == eco-compiler-boot-2.mlir)"
+    )
+else()
+    add_custom_command(
+        OUTPUT ${BOOTSTRAP_STAMP}
+        COMMAND ${CMAKE_COMMAND} -E compare_files ${ECO_COMPILER_BOOT_ELF} ${ECO_COMPILER_BOOT_2_ELF}
+        COMMAND ${CMAKE_COMMAND} -E touch ${BOOTSTRAP_STAMP}
+        DEPENDS ${ECO_COMPILER_BOOT_ELF} ${ECO_COMPILER_BOOT_2_ELF}
+        COMMENT "Stage 8c: native fixed-point check (eco-compiler-boot == eco-compiler-boot-2)"
+    )
+endif()
 
 # ============================================================================
 # Stage 9: unified `eco` single-file compiler
@@ -567,6 +595,79 @@ set_source_files_properties(${ECO_STAGE9_OBJ} PROPERTIES
 # FetchContent libzip target). Adding bare `-lstdc++ -lcurl …` here under
 # ECO_STATIC would re-resolve to the .so siblings and defeat the static link.
 function(eco_apply_unified_link target)
+    if(APPLE)
+        # Darwin link line: ld64 via Apple Clang driver, no group syntax,
+        # -force_load instead of --whole-archive, no libgcc/libstdc++/
+        # libpthread/libm (libSystem+libc++ from SDK), no allow-multiple-
+        # definition (system libunwind has no _Unwind_* collision). Same
+        # archive list as the GNU branch below.
+        #
+        # ld64 is sensitive to archive ORDER for undefined-symbol resolution
+        # only on the first scan; circular deps inside the Eco kernel /
+        # runtime (EffectRegistry <-> Scheduler, etc.) are resolved by ld64's
+        # repeated scan policy without explicit grouping.
+        #
+        # IMPORTANT: `-Wl,-force_load,$<TARGET_FILE:X>` only injects the
+        # archive's file path. It does NOT carry through the target's
+        # INTERFACE_LINK_LIBRARIES (e.g. EcoNativeDriverStatic's PUBLIC dep
+        # on the brew libLLVM/libMLIR dylibs, which is where all backend
+        # targets — LLVMInitializeAArch64* etc. — live). The bare target
+        # names below the force_load lines exist so target_link_libraries
+        # walks the INTERFACE graph; ld64 dedupes the duplicate archive
+        # path automatically.
+        target_link_libraries(${target} PRIVATE
+            # Force-load directives: pulls every member regardless of
+            # whether a defined-symbol referrer exists.
+            #   - EcoEntryStatic: standalone main() in eco_entry.cpp.
+            #   - ElmKernel_Utils: Order LT/EQ/GT singleton registrar
+            #     (Eco_Kernel_Order_register_gc_roots).
+            #   - EcoNativeDriverStatic: its strong eco_native_lower_and_link
+            #     must override the weak undef in EcoEntryStatic; ld64's
+            #     archive-resolution would otherwise keep the weak stub.
+            "-Wl,-force_load,$<TARGET_FILE:EcoEntryStatic>"
+            "-Wl,-force_load,$<TARGET_FILE:ElmKernel_Utils>"
+            "-Wl,-force_load,$<TARGET_FILE:EcoNativeDriverStatic>"
+            # Same targets listed bare — propagates INTERFACE_LINK_LIBRARIES.
+            EcoEntryStatic
+            ElmKernel_Utils
+            EcoNativeDriverStatic
+            # Regular archives — pulled by undefined-symbol resolution AND
+            # bring their own INTERFACE deps through CMake.
+            EcoRuntimeStatic
+            ElmKernel_Basics ElmKernel_Bitwise ElmKernel_Char ElmKernel_String
+            ElmKernel_List ElmKernel_JsArray ElmKernel_Debug ElmKernel_Scheduler
+            ElmKernel_Platform ElmKernel_Process ElmKernel_VirtualDom ElmKernel_Json
+            ElmKernel_Browser ElmKernel_Bytes ElmKernel_File ElmKernel_Http
+            ElmKernel_Parser ElmKernel_Regex ElmKernel_Time ElmKernel_Url
+            ElmKernel_EffectRegistry
+            EcoKernel_File EcoKernel_Console EcoKernel_Env EcoKernel_Process
+            EcoKernel_MVar EcoKernel_NativeDriver EcoKernel_Runtime EcoKernel_Http
+            EcoKernel_Crash
+            # Vendored libzip (FetchContent target) + brew openssl@3 statics.
+            # Both not in the SDK; mirrored from the AOT link in
+            # runtime/src/codegen/EcoNativeDriver.cpp::linkExecutableDarwin.
+            "$<TARGET_FILE:zip>"
+            "${ECO_DARWIN_LIBSSL_A}"
+            "${ECO_DARWIN_LIBCRYPTO_A}"
+            # System libs from the SDK. libSystem is implicit; libc++ /
+            # libcurl / libz come in via short -l names.
+            c++ curl z
+            # System libunwind on Darwin (= LLVM libunwind upstream).
+            # cmake/LLVMLibunwind.cmake short-circuits to an empty interface
+            # target on APPLE, so this line is effectively a no-op but kept
+            # for symmetry with the GNU branch below.
+            eco::llvm_libunwind
+        )
+
+        # Strip symbols on Release builds. ld64's `-S` removes the symbol
+        # table from the executable (keeps the link-time __LINKEDIT debug
+        # section). On RelWithDebInfo we keep symbols for crash backtraces.
+        if(CMAKE_BUILD_TYPE STREQUAL "Release")
+            target_link_options(${target} PRIVATE LINKER:-S)
+        endif()
+        return()
+    endif()
+
     if(ECO_LINK_WITH_BFD)
         target_link_options(${target} PRIVATE -fuse-ld=bfd)
     endif()
@@ -632,6 +733,13 @@ eco_apply_unified_link(eco)
 # CMakeLists.txt.
 if(ECO_STATIC_MUSL)
     install(TARGETS eco RUNTIME DESTINATION bin COMPONENT Bundle)
+elseif(APPLE)
+    # M4 Darwin bundle: install Stage 9's unified eco binary under bin/eco
+    # next to the project archives at lib/eco-runtime/project/. Same shape
+    # as the Linux Stage C rule above, just gated on BundleDarwin so it
+    # joins the rest of the Darwin install rules in the top-level
+    # CMakeLists.txt (lib/eco-runtime/project/*.a, kernel sources, etc.).
+    install(TARGETS eco RUNTIME DESTINATION bin COMPONENT BundleDarwin)
 endif()
 
 # -- Stage 9a (quick) + eco-quick: dev-iteration sibling of `eco`.

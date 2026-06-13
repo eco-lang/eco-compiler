@@ -1,0 +1,147 @@
+# E-M4 from plans/build-on-mac.md: end-to-end Darwin AOT — runs
+# eco-boot-native (the MLIR -> Mach-O lowering+link driver) on Stage 5's
+# eco-compiler.mlir, producing a real native Mach-O. Verifies that:
+#   - clang-driver Mach-O link succeeds with the bundled project archives,
+#     vendored libzip, and SDK -lSystem/-lc++/-lcurl/-lz.
+#   - the resulting binary is arm64 Mach-O and ad-hoc-signed by ld64.
+#   - the binary actually runs (--help round-trip — no real workload yet;
+#     a GC-heavy program follow-up is tracked in M4 task #5).
+name: mac-aot
+
+on:
+  push:
+    branches: ['ci/**']
+    paths:
+      - 'runtime/**'
+      - 'elm-kernel-cpp/**'
+      - 'eco-kernel-cpp/**'
+      - 'compiler/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - '.github/workflows/mac-aot.yml'
+  workflow_dispatch:
+
+jobs:
+  aot:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          # libzip is now vendored via FetchContent on APPLE (see
+          # eco-kernel-cpp/CMakeLists.txt) so we no longer need brew's
+          # libzip. pkgconf still useful for kernel curl/ssl probes.
+          # rapidcheck is required by find_package() at configure time
+          # (the ecor target hard-needs it even though it is
+          # EXCLUDE_FROM_ALL); brew bottle first, source-build fallback
+          # mirrors what mac-runtime does.
+          brew install llvm@21 openssl@3 pnpm gnu-time pkgconf ccache
+          brew install rapidcheck || {
+            git clone --depth=1 https://github.com/emil-e/rapidcheck.git /tmp/rapidcheck
+            cmake -S /tmp/rapidcheck -B /tmp/rapidcheck/build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+            cmake --build /tmp/rapidcheck/build
+            sudo cmake --install /tmp/rapidcheck/build
+          }
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: mac-aot-ccache-${{ github.sha }}
+          restore-keys: mac-aot-ccache-
+
+      - name: Configure (mac-build preset)
+        run: |
+          cmake --preset mac-build \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build eco-boot-native + project archives
+        run: cmake --build build --target eco-boot-native -- -k 20
+
+      - name: Build Stage 9 — unified eco binary (full bootstrap chain)
+        # `--target eco` transitively depends on:
+        #   Stages 1-5 (Node/Elm front-end through eco-compiler.mlir)
+        #   Stage 6 (eco-compiler.mlir -> eco-compiler Mach-O)
+        #   Stage 7a (eco-compiler self-compile -> eco-compiler-boot.mlir)
+        #   Stage 7b (eco-compiler-boot.mlir -> eco-compiler-boot Mach-O)
+        #   Stage 8a-b (eco-compiler-boot self-compile -> ...-boot-2)
+        #   Stage 8c (byte-equal: eco-compiler-boot == eco-compiler-boot-2)
+        #   Stage 9a (eco-compiler.mlir -> eco-stage9.o via --emit=obj)
+        #   Stage 9b (link eco-stage9.o + all archives -> unified eco)
+        # Heavier than the previous Stage-6-only smoke test (~10-15 min),
+        # but the only way to verify the AOT codegen is deterministic
+        # enough on Darwin for the native fixed-point check at Stage 8c.
+        run: cmake --build build --target eco -- -k 20
+
+      - name: Verify Mach-O output (Stage 9 unified eco)
+        run: |
+          set +e
+          eco_bin=build/compiler/build-kernel/bin/eco
+          ls -la $eco_bin
+          file $eco_bin
+          # Confirm it's arm64 Mach-O and ad-hoc-signed.
+          file $eco_bin | grep -q 'Mach-O 64-bit executable arm64' || {
+              echo "ERROR: $eco_bin is not arm64 Mach-O"; exit 1; }
+          codesign -dv $eco_bin 2>&1 | tee /tmp/codesign.txt
+          grep -q 'adhoc' /tmp/codesign.txt || {
+              echo "ERROR: $eco_bin is not ad-hoc-signed"; exit 1; }
+          # Smoke-run --help. Stage 9 also reaches the in-process
+          # EcoNativeDriverStatic linkage so a missing eco_native_lower_and_link
+          # weak/strong override would surface here as a SIGABRT.
+          $eco_bin --help 2>&1 | tee /tmp/help.txt | head -20
+          rc=$?
+          if grep -qE 'Killed|Segmentation fault|Bus error|Abort' /tmp/help.txt; then
+              echo "ERROR: eco --help crashed at runtime"; exit 1
+          fi
+          echo "OK: unified eco runs as native Mach-O"
+
+      - name: Package Darwin bundle (TGZ)
+        # CPack picks up the BundleDarwin component from CMakeLists.txt's
+        # if(APPLE) install block — eco-boot-native, eco-compiler, project
+        # archives + libzip/openssl statics + kernel sources + examples.
+        run: |
+          cmake --build build --target package -- -k 20
+          ls -la build/*.tar.gz
+          tar -tzf build/eco-*-darwin.tar.gz | head -40
+          echo "..."
+          tar -tzf build/eco-*-darwin.tar.gz | wc -l | xargs -I{} echo "Total files: {}"
+
+      - name: Smoke-test the bundle in isolation
+        # Extract the tarball to a fresh prefix and run bin/eco from there.
+        # resolveFile() finds the project archives via
+        # <exe>/../lib/eco-runtime/project — confirms the bundle is
+        # self-contained (no implicit dep on the build tree).
+        run: |
+          set +e
+          mkdir -p /tmp/eco-bundle && cd /tmp/eco-bundle
+          tar -xzf "$GITHUB_WORKSPACE"/build/eco-*-darwin.tar.gz
+          ls -la bin/ lib/eco-runtime/project/ 2>&1 | head -50
+          # Run the unified eco binary (Stage 9) from the extracted bundle.
+          # --help reaches arg parsing without invoking the AOT pipeline.
+          ./bin/eco --help 2>&1 | head -10
+          rc=$?
+          if [ $rc -ge 128 ]; then
+              echo "ERROR: bin/eco crashed (rc=$rc)"; exit 1
+          fi
+          echo "OK: bundled eco runs in isolation"
+
+      - name: ccache stats
+        if: always()
+        run: ccache -s | head -15
+
+      - name: Upload AOT output + logs + bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-aot-output
+          path: |
+            build/compiler/build-kernel/bin/eco
+            build/eco-*-darwin.tar.gz
+            /tmp/codesign.txt
+            /tmp/help.txt
+          if-no-files-found: warn

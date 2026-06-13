@@ -37,14 +37,25 @@ namespace eco {
 /// bootstrapped self (compiler/CMakeLists.txt stages 6–9) and user `eco make`
 /// output alike.
 ///
-/// Pinned to x86-64-v3 (SSE4.2 + AVX2 + BMI2 + FMA; NO AVX-512) for portable,
-/// reproducible output. This is deliberately NOT host detection: deriving the
-/// target from llvm::sys::getHostCPUName()/getHostCPUFeatures() baked the build
-/// host's ISA — including AVX-512 — into every emitted binary, so binaries
-/// bootstrapped on an AVX-512 machine SIGILL'd on plain x86-64-v3 CPUs. Keep in
-/// lockstep with the clang `-march=x86-64-v3` flag in CMakePresets.json and
-/// docker/llvm-alpine.Dockerfile.
+/// Pinned per platform for portable, reproducible output:
+///   - x86-64 (Linux / Darwin): x86-64-v3 — SSE4.2 + AVX2 + BMI2 + FMA, no
+///     AVX-512. Deliberately NOT host detection: deriving the target from
+///     llvm::sys::getHostCPUName()/getHostCPUFeatures() baked the build host's
+///     ISA — including AVX-512 — into every emitted binary, so binaries
+///     bootstrapped on an AVX-512 machine SIGILL'd on plain x86-64-v3 CPUs.
+///     Keep in lockstep with the clang `-march=x86-64-v3` flag in
+///     CMakePresets.json and docker/llvm-alpine.Dockerfile.
+///   - aarch64 (Darwin arm64 / Apple Silicon): apple-m1 — the minimum CPU
+///     for the OS-supported Apple Silicon family. Passing x86-64-v3 through
+///     to LLVM on this target emits the "'x86-64-v3' is not a recognized
+///     processor for this target (ignoring processor)" warning and falls
+///     back to generic; pinning to apple-m1 avoids that and gets us the
+///     NEON+CRC+AES baseline of the M-series chips.
+#if defined(__aarch64__) || defined(__arm64__)
+inline constexpr const char *kEcoTargetCPU = "apple-m1";
+#else
 inline constexpr const char *kEcoTargetCPU = "x86-64-v3";
+#endif
 
 /// Extra subtarget features appended to kEcoTargetCPU. Empty by design: the v3
 /// level already implies the desired feature set and we add nothing

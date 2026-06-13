@@ -1078,13 +1078,114 @@ string(REGEX MATCH "libraries: =([^\n]+)" _ "${_search_dirs_raw}")
 set(_libdirs_csv "${CMAKE_MATCH_1}")
 string(REPLACE ":" ";" ECO_LIBRARY_DIRS "${_libdirs_csv}")
 
-message(STATUS "Eco AOT crt files:")
-message(STATUS "  Scrt1.o:    ${ECO_CRT1_O}")
-message(STATUS "  crti.o:     ${ECO_CRTI_O}")
-message(STATUS "  crtn.o:     ${ECO_CRTN_O}")
-message(STATUS "  crtbeginS:  ${ECO_CRTBEGIN_O}")
-message(STATUS "  crtendS:    ${ECO_CRTEND_O}")
-message(STATUS "  libgcc.a:   ${ECO_LIBGCC_A}")
+if(NOT APPLE)
+    message(STATUS "Eco AOT crt files:")
+    message(STATUS "  Scrt1.o:    ${ECO_CRT1_O}")
+    message(STATUS "  crti.o:     ${ECO_CRTI_O}")
+    message(STATUS "  crtn.o:     ${ECO_CRTN_O}")
+    message(STATUS "  crtbeginS:  ${ECO_CRTBEGIN_O}")
+    message(STATUS "  crtendS:    ${ECO_CRTEND_O}")
+    message(STATUS "  libgcc.a:   ${ECO_LIBGCC_A}")
+endif()
+
+#--- Phase 3 (Darwin): AOT link driver discovery ----------------------------
+# Darwin uses clang as the link driver (much simpler than direct ld64): the
+# crt prefix/epilogue is gone, libSystem/libc++/libcurl/libz come from the
+# SDK as .tbd stubs, and ld64 ad-hoc-signs arm64 outputs automatically. The
+# only project-time dep not in the SDK is libzip — bundled as a static .a.
+#
+# The Linux Phase 3 discovery above still ran on Darwin but produces
+# nonsense paths (clang's `-print-file-name=Scrt1.o` returns the filename
+# unchanged when the file doesn't exist). Those constants are emitted into
+# EcoBootConfig.h for layout-stability across platforms but the Darwin
+# code path in EcoNativeDriver.cpp never reads them.
+if(APPLE)
+    execute_process(
+        COMMAND xcrun -f clang
+        OUTPUT_VARIABLE ECO_DARWIN_CLANG
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE _xcrun_rc)
+    if(NOT _xcrun_rc EQUAL 0 OR ECO_DARWIN_CLANG STREQUAL "")
+        message(FATAL_ERROR
+            "Eco AOT (Darwin): `xcrun -f clang` failed. "
+            "Install Xcode Command Line Tools (xcode-select --install).")
+    endif()
+    execute_process(
+        COMMAND xcrun --show-sdk-path
+        OUTPUT_VARIABLE ECO_DARWIN_SDK_ROOT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE _xcrun_rc)
+    if(NOT _xcrun_rc EQUAL 0 OR ECO_DARWIN_SDK_ROOT STREQUAL "")
+        message(FATAL_ERROR "Eco AOT (Darwin): `xcrun --show-sdk-path` failed.")
+    endif()
+
+    # Target arch — match host. Cross-arch (lipo / universal binaries) is a
+    # follow-up; AOT users can already pick `eco make --target=…` if we ever
+    # plumb that, but for v1 the host arch is the only target.
+    if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+        set(ECO_DARWIN_ARCH "arm64")
+    elseif(CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x86_64")
+        set(ECO_DARWIN_ARCH "x86_64")
+    else()
+        message(FATAL_ERROR
+            "Eco AOT (Darwin): unsupported host arch ${CMAKE_HOST_SYSTEM_PROCESSOR}")
+    endif()
+
+    # libzip is not in the macOS SDK and brew's formula ships only a dylib.
+    # eco-kernel-cpp/CMakeLists.txt vendors libzip via FetchContent under
+    # APPLE (mirrors the ECO_STATIC path) and exposes the `zip` CMake
+    # target; we read its built archive path via $<TARGET_FILE:zip>.
+    # eco-kernel-cpp is add_subdirectory()'d AFTER runtime/src/codegen at
+    # the top level (see CMakeLists.txt), so the target doesn't exist yet
+    # at configure time of this subdir — the generator expression resolves
+    # later, at file(GENERATE) time, by which point all subdirs are done.
+    # If `zip` is missing at that point CMake errors with a clear message.
+    set(ECO_DARWIN_LIBZIP_A "$<TARGET_FILE:zip>")
+
+    # OpenSSL: brew's openssl@3 (keg-only at /opt/homebrew/opt/openssl@3/).
+    # Required for AOT link because (a) the vendored libzip's CMake
+    # configure picks up brew openssl as a build dep and compiles
+    # zip_crypto_openssl.c (auto-detect fallback even with ENABLE_OPENSSL=OFF),
+    # and (b) eco-kernel-cpp/src/eco/Http.cpp uses SHA1() directly via
+    # <openssl/sha.h>. plans/build-on-mac.md sketches replacing both with
+    # CommonCrypto as a follow-up; for v1 we link the brew static archives.
+    find_file(ECO_DARWIN_LIBSSL_A NAMES libssl.a
+        PATHS /opt/homebrew/opt/openssl@3/lib /usr/local/opt/openssl@3/lib
+        NO_DEFAULT_PATH)
+    find_file(ECO_DARWIN_LIBCRYPTO_A NAMES libcrypto.a
+        PATHS /opt/homebrew/opt/openssl@3/lib /usr/local/opt/openssl@3/lib
+        NO_DEFAULT_PATH)
+    if(NOT ECO_DARWIN_LIBSSL_A OR NOT ECO_DARWIN_LIBCRYPTO_A)
+        message(FATAL_ERROR
+            "Eco AOT (Darwin): static libssl.a/libcrypto.a not found in "
+            "brew's openssl@3 keg-only prefix. Run `brew install openssl@3`.")
+    endif()
+    # Re-publish to CACHE INTERNAL so compiler/CMakeLists.txt's Stage 9
+    # link (eco_apply_unified_link) and the top-level Stage 9 install rule
+    # see the same paths without re-running find_file from each subdir.
+    set(ECO_DARWIN_LIBSSL_A "${ECO_DARWIN_LIBSSL_A}"
+        CACHE INTERNAL "brew openssl@3 libssl.a (Darwin AOT link)")
+    set(ECO_DARWIN_LIBCRYPTO_A "${ECO_DARWIN_LIBCRYPTO_A}"
+        CACHE INTERNAL "brew openssl@3 libcrypto.a (Darwin AOT link)")
+
+    message(STATUS "Eco AOT (Darwin) paths:")
+    message(STATUS "  clang:       ${ECO_DARWIN_CLANG}")
+    message(STATUS "  SDK root:    ${ECO_DARWIN_SDK_ROOT}")
+    message(STATUS "  arch:        ${ECO_DARWIN_ARCH}")
+    message(STATUS "  libzip.a:    ${ECO_DARWIN_LIBZIP_A}")
+    message(STATUS "  libssl.a:    ${ECO_DARWIN_LIBSSL_A}")
+    message(STATUS "  libcrypto.a: ${ECO_DARWIN_LIBCRYPTO_A}")
+else()
+    # Stubbed empty on non-Darwin so the EcoBootConfig.h emission below is
+    # platform-uniform; EcoNativeDriver.cpp's non-Darwin code paths never
+    # read these.
+    set(ECO_DARWIN_CLANG "")
+    set(ECO_DARWIN_SDK_ROOT "")
+    set(ECO_DARWIN_ARCH "")
+    set(ECO_DARWIN_LIBZIP_A "")
+    set(ECO_DARWIN_LIBSSL_A "")
+    set(ECO_DARWIN_LIBCRYPTO_A "")
+endif()
 message(STATUS "  gcc libdir: ${ECO_GCC_LIBDIR}")
 
 # Build the content string with generator expressions.
@@ -1356,6 +1457,22 @@ foreach(mod ${ECO_KERNEL_MODS})
         "        {\"libEcoKernel_${mod}.a\", \"glibc/project\", \"\"},\n")
 endforeach()
 string(APPEND ECO_BOOT_CONFIG_CONTENT "    };\n}\n\n")
+
+#--- Phase 3 (Darwin): AOT link driver config ------------------------------
+# Consumed by linkExecutableDarwin() in EcoNativeDriver.cpp. Empty strings
+# on non-Darwin builds; the non-Darwin code paths never read them.
+#
+# darwinClang is configured-time absolute (xcrun -f clang) on Darwin; for
+# the installed bundle it falls back to xcrun (PATH-resolved by the OS)
+# since users may not have the same Xcode prefix as the build host.
+string(APPEND ECO_BOOT_CONFIG_CONTENT "// --- Phase 3 (Darwin): AOT link driver config ---\n")
+string(APPEND ECO_BOOT_CONFIG_CONTENT
+    "inline const char *darwinClang             = \"${ECO_DARWIN_CLANG}\";\n"
+    "inline const char *darwinSdkRoot           = \"${ECO_DARWIN_SDK_ROOT}\";\n"
+    "inline const char *darwinArch              = \"${ECO_DARWIN_ARCH}\";\n"
+    "inline RuntimeFile darwinLibzipA           {\"libzip.a\",    \"project\", \"${ECO_DARWIN_LIBZIP_A}\"};\n"
+    "inline RuntimeFile darwinLibsslA           {\"libssl.a\",    \"project\", \"${ECO_DARWIN_LIBSSL_A}\"};\n"
+    "inline RuntimeFile darwinLibcryptoA        {\"libcrypto.a\", \"project\", \"${ECO_DARWIN_LIBCRYPTO_A}\"};\n\n")
 
 string(APPEND ECO_BOOT_CONFIG_CONTENT "} // namespace config\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT "} // namespace eco\n")

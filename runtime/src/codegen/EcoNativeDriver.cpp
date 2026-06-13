@@ -340,10 +340,144 @@ int compileMlirBytesToExecutable(const char *mlirBytes, size_t mlirLen,
     return pipelineFromMlirModule(std::move(module), outputPath, opts);
 }
 
+#if defined(__APPLE__)
+// Darwin AOT link: invoke clang (xcrun-resolved at configure time) as the
+// link driver and let it figure out crt/SDK details. ld64 is much more
+// integrated than ld.bfd/lld for Mach-O — Apple ships no crt objects (the
+// dynamic loader does startup), and libSystem/libc++/libcurl/libz are
+// SDK .tbd stubs that the SDK path locates. ld64 also ad-hoc-signs arm64
+// outputs automatically, so no codesign step is needed.
+//
+// Stackmaps: ld64 keeps unreferenced sections by default and we never pass
+// -dead_strip — the __LLVM_STACKMAPS,__llvm_stackmaps section survives
+// (verified by experiments/mac-statepoint-smoke; see plans/build-on-mac.md
+// E-M1 results).
+static int linkExecutableDarwin(const std::string &objectFile,
+                                const std::string &outputPath,
+                                const EcoNativeOptions &opts,
+                                bool sharedLib) {
+    using eco::config::resolveFile;
+
+    if (sharedLib) {
+        // Mach-O .dylib / .node support is out of scope for M4; plumbing it
+        // is a follow-up that mirrors the Stage D LinkProfile::HostShared
+        // refactor (LinkProfile knob, embed entry, codesign of the dylib).
+        llvm::errs()
+            << "Error: Darwin shared-library output is not yet supported.\n";
+        return 1;
+    }
+
+    std::deque<std::string> resolvedStrings;
+    auto push = [&](std::string s) -> llvm::StringRef {
+        resolvedStrings.emplace_back(std::move(s));
+        return resolvedStrings.back();
+    };
+
+    llvm::SmallVector<llvm::StringRef> args;
+    args.push_back(eco::config::darwinClang);
+
+    // SDK + arch. -isysroot tells clang where to find libSystem/libc++/
+    // libcurl/libz .tbd stubs; -arch is set explicitly so the link is
+    // robust under Rosetta / cross-arch scenarios.
+    args.push_back("-isysroot");
+    args.push_back(eco::config::darwinSdkRoot);
+    args.push_back("-arch");
+    args.push_back(eco::config::darwinArch);
+
+    args.push_back("-o");
+    args.push_back(outputPath);
+    args.push_back(objectFile);
+
+    // ld64's symbol-extraction semantics are more aggressive than ld.bfd's:
+    // archive members get pulled only when an already-loaded object refers
+    // to one of their defined symbols. main() in eco_entry.cpp has no such
+    // referrer (the .o is the user's program), so -force_load is required.
+    // Similarly EcoKernel_Utils carries the Order LT/EQ/GT singletons that
+    // user code may reference indirectly through Basics.compare.
+    auto forceLoad = [&](const eco::config::RuntimeFile &f) {
+        args.push_back(
+            push(std::string("-Wl,-force_load,") + resolveFile(f)));
+    };
+
+    forceLoad(eco::config::entryLib);
+    args.push_back(push(resolveFile(eco::config::runtimeLib)));
+
+    for (const auto &lib : eco::config::elmKernelLibs()) {
+        bool isUtils =
+            std::string_view(lib.basename) == "libElmKernel_Utils.a";
+        if (isUtils) {
+            forceLoad(lib);
+        } else {
+            args.push_back(push(resolveFile(lib)));
+        }
+    }
+    for (const auto &lib : eco::config::ecoKernelLibs()) {
+        args.push_back(push(resolveFile(lib)));
+    }
+
+    // libzip + OpenSSL (libssl, libcrypto) — not in the macOS SDK. libzip
+    // is vendored statically via FetchContent (see eco-kernel-cpp/
+    // CMakeLists.txt). OpenSSL is brew's openssl@3 keg statics: required
+    // because (a) the vendored libzip's configure pulls in
+    // zip_crypto_openssl.c on a brew-equipped host even with
+    // ENABLE_OPENSSL=OFF (auto-detect fallback), and (b) Http.cpp's
+    // SHA1-hashing of downloaded zips uses <openssl/sha.h>. Both are
+    // tracked in plans/build-on-mac.md as "eliminate via CommonCrypto" —
+    // for v1 we link them.
+    //
+    // Order matters: libzip first (drags in EVP_* refs), then libssl,
+    // then libcrypto (the EVP_* symbols live in libcrypto).
+    args.push_back(push(resolveFile(eco::config::darwinLibzipA)));
+    args.push_back(push(resolveFile(eco::config::darwinLibsslA)));
+    args.push_back(push(resolveFile(eco::config::darwinLibcryptoA)));
+
+    // System libs from the SDK. Clang's driver always links libSystem
+    // (libc / pthread / libm / dlsym all live there); we just need to
+    // ask explicitly for the higher-level pieces.
+    args.push_back("-lc++");
+    args.push_back("-lcurl");
+    args.push_back("-lz");
+
+    if (opts.verbose) {
+        llvm::errs() << "[eco-native] link (Darwin, clang driver):";
+        for (auto &a : args)
+            llvm::errs() << " " << a;
+        llvm::errs() << "\n";
+    }
+
+    std::string errMsg;
+    int rc = llvm::sys::ExecuteAndWait(eco::config::darwinClang, args,
+                                       /*env=*/std::nullopt,
+                                       /*redirects=*/{},
+                                       /*secondsToWait=*/0,
+                                       /*memoryLimit=*/0, &errMsg);
+    if (rc != 0) {
+        llvm::errs() << "Error: Darwin link (clang driver) failed (rc=" << rc
+                     << ")";
+        if (!errMsg.empty())
+            llvm::errs() << ": " << errMsg;
+        llvm::errs() << "\n";
+        return 1;
+    }
+    if (opts.verbose)
+        llvm::errs() << "[eco-native] linked Mach-O executable: " << outputPath
+                     << "\n";
+    return 0;
+}
+#endif // __APPLE__
+
 int linkExecutable(const std::string &objectFile,
                    const std::string &outputPath,
                    const EcoNativeOptions &opts,
                    bool sharedLib) {
+#if defined(__APPLE__)
+    // Darwin profile: clang-driver Mach-O link (see linkExecutableDarwin
+    // above). The Linux body below is entirely glibc/musl/lld-specific and
+    // is dead code on Darwin — keep it gated behind the #else so the
+    // generated EcoBootConfig.h's stubbed Linux fields (libgccA = "", crt
+    // paths = "", systemLinker = "" on Apple) don't reach the link line.
+    return linkExecutableDarwin(objectFile, outputPath, opts, sharedLib);
+#else
     // Phase 3: invoke the system linker (ld.bfd) directly rather than the
     // clang++ driver. Eliminates the clang++ runtime dependency; the linker
     // path + crt files + libgcc + dynamic linker were all discovered at
@@ -781,6 +915,7 @@ int linkExecutable(const std::string &objectFile,
     }
 
     return 0;
+#endif // __APPLE__
 }
 
 } // namespace eco

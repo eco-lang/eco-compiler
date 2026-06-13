@@ -34,10 +34,14 @@ else()
 endif()
 
 # libzip resolution. The default path (LIBZIP_FOUND from pkg-config) wires
-# the system .so. Under ECO_STATIC we vendor libzip via FetchContent because
-# Debian's libzip-dev ships only the shared object — see Stage A, Step 4 in
-# plans/static-link-eco-binary.md.
-if(ECO_STATIC)
+# the system .so. We vendor libzip via FetchContent when:
+#   - ECO_STATIC: Debian's libzip-dev ships only the shared object — see
+#     Stage A, Step 4 in plans/static-link-eco-binary.md.
+#   - APPLE: brew's libzip formula ships only libzip.dylib (no static .a)
+#     and macOS has no SDK libzip — and AOT-built binaries must be free
+#     of a brew /opt/homebrew runtime dep. Vendoring gives a static
+#     libzip.a we can bundle under lib/eco-runtime/project/.
+if(ECO_STATIC OR APPLE)
     include(FetchContent)
     # libzip 1.11.4 (Aug 2024) — stable, ships a CMake target named `zip`.
     FetchContent_Declare(libzip_vendored
@@ -65,7 +69,11 @@ if(ECO_STATIC)
     set(BUILD_DOC            OFF CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(libzip_vendored)
     set(LIBZIP_FOUND TRUE)
-    message(STATUS "eco-kernel: libzip vendored via FetchContent (ECO_STATIC) - archive extraction available")
+    if(APPLE)
+        message(STATUS "eco-kernel: libzip vendored via FetchContent (APPLE) - archive extraction available")
+    else()
+        message(STATUS "eco-kernel: libzip vendored via FetchContent (ECO_STATIC) - archive extraction available")
+    endif()
 else()
     find_package(PkgConfig REQUIRED)
     # IMPORTED_TARGET so PkgConfig::LIBZIP carries the library search path
@@ -84,7 +92,7 @@ endif()
 # static archive's PRIVATE link interface and aren't transitively pulled in).
 if(LIBZIP_FOUND AND NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     set(ECO_KERNEL_LIBZIP_FOUND TRUE PARENT_SCOPE)
-    if(ECO_STATIC)
+    if(ECO_STATIC OR APPLE)
         # FetchContent target name is `zip` (libzip's CMakeLists exports it).
         set(ECO_KERNEL_LIBZIP_LIBRARIES "zip" PARENT_SCOPE)
     else()
@@ -208,6 +216,13 @@ if(ECO_STATIC)
     # find_package.
     target_link_libraries(EcoKernel_Http PRIVATE
         libcurl_static OpenSSL::SSL OpenSSL::Crypto zip)
+elseif(APPLE)
+    # Darwin: libcurl from the SDK (system .tbd stub, dynamic at runtime);
+    # libzip vendored via FetchContent so the `zip` target replaces what
+    # would otherwise be PkgConfig::LIBZIP — the brew formula ships only
+    # libzip.dylib and we want a static archive for the AOT bundle.
+    target_link_libraries(EcoKernel_Http PRIVATE
+        CURL::libcurl OpenSSL::SSL OpenSSL::Crypto zip)
 else()
     target_link_libraries(EcoKernel_Http PRIVATE
         CURL::libcurl OpenSSL::SSL OpenSSL::Crypto PkgConfig::LIBZIP)
