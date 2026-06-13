@@ -80,7 +80,7 @@ else()
     # would have injected for this directory's surviving targets
     # (EcoRuntimeStatic & friends), so the staged glibc archives match the
     # full build's codegen. Verified against the full build's compile
-    # commands; EH is per-target opt-in (-fexceptions) in both modes.
+    # commands; EH is per-target opt-in ($<IF:$<PLATFORM_ID:Windows>,/EHsc,-fexceptions>) in both modes.
     add_compile_options(
         -ffunction-sections -fdata-sections
         -fno-semantic-interposition -fvisibility-inlines-hidden)
@@ -445,6 +445,7 @@ add_llvm_executable(ecoc
     ../allocator/StackUnwind.cpp
     ../allocator/RuntimeExports.cpp
     ../allocator/Allocator.cpp
+    ${ECO_ALLOCATOR_PLATFORM_SRCS_RELATIVE}
     ../allocator/HeapConfigJson.cpp
     ../allocator/NurserySpace.cpp
     ../allocator/OldGenSpace.cpp
@@ -523,7 +524,7 @@ target_compile_options(ecoc PRIVATE -Wno-ambiguous-reversed-operator)
 
 # The runtime code uses exceptions, so we need to enable them
 # (LLVM/MLIR disables exceptions by default)
-target_compile_options(ecoc PRIVATE -fexceptions)
+target_compile_options(ecoc PRIVATE $<IF:$<PLATFORM_ID:Windows>,/EHsc,-fexceptions>)
 if(ECO_LOWERING_VALIDATION)
     target_compile_definitions(ecoc PRIVATE ECO_LOWERING_VALIDATION=1)
 endif()
@@ -537,9 +538,11 @@ target_link_libraries(ecoc PRIVATE Threads::Threads)
 target_link_libraries(ecoc PRIVATE eco::llvm_libunwind)
 
 # HttpService.cpp (compiled directly into ecoc) needs <curl/curl.h>. Under
-# ECO_STATIC the system /usr/include/curl is absent and curl is vendored via
-# FetchContent, so the include dir must flow from the libcurl_static target.
-if(ECO_STATIC)
+# ECO_STATIC OR WIN32 the system curl/curl.h is absent and curl is vendored
+# via FetchContent, so the include dir must flow from the libcurl_static
+# target. (On Windows the same vendoring is used with CURL_USE_SCHANNEL
+# instead of OpenSSL.)
+if(ECO_STATIC OR WIN32)
     target_link_libraries(ecoc PRIVATE libcurl_static)
 else()
     find_package(CURL REQUIRED)
@@ -560,6 +563,7 @@ add_mlir_library(EcoRunner
     ../allocator/StackUnwind.cpp
     ../allocator/RuntimeExports.cpp
     ../allocator/Allocator.cpp
+    ${ECO_ALLOCATOR_PLATFORM_SRCS_RELATIVE}
     ../allocator/HeapConfigJson.cpp
     ../allocator/NurserySpace.cpp
     ../allocator/OldGenSpace.cpp
@@ -601,7 +605,7 @@ target_include_directories(obj.EcoRunner PRIVATE
 )
 
 target_compile_features(obj.EcoRunner PRIVATE cxx_std_20)
-target_compile_options(obj.EcoRunner PRIVATE -Wno-ambiguous-reversed-operator -fexceptions)
+target_compile_options(obj.EcoRunner PRIVATE -Wno-ambiguous-reversed-operator $<IF:$<PLATFORM_ID:Windows>,/EHsc,-fexceptions>)
 if(ECO_GC_DEBUG)
     target_compile_definitions(obj.EcoRunner PRIVATE ECO_GC_DEBUG=1)
 endif()
@@ -639,6 +643,7 @@ endif() # NOT ECO_GLIBC_OUTPUT_RUNTIME — MLIR dialects/passes/tools half
 add_library(EcoRuntimeStatic STATIC
     ../allocator/RuntimeExports.cpp
     ../allocator/Allocator.cpp
+    ${ECO_ALLOCATOR_PLATFORM_SRCS_RELATIVE}
     ../allocator/HeapConfigJson.cpp
     ../allocator/NurserySpace.cpp
     ../allocator/OldGenSpace.cpp
@@ -665,7 +670,7 @@ target_include_directories(EcoRuntimeStatic PRIVATE
 )
 
 target_compile_features(EcoRuntimeStatic PRIVATE cxx_std_20)
-target_compile_options(EcoRuntimeStatic PRIVATE -fexceptions)
+target_compile_options(EcoRuntimeStatic PRIVATE $<IF:$<PLATFORM_ID:Windows>,/EHsc,-fexceptions>)
 if(ECO_ASSERTS_ON)
     target_compile_options(EcoRuntimeStatic PRIVATE -UNDEBUG)
 endif()
@@ -674,10 +679,11 @@ endif()
 # rpath flag. See cmake/LLVMLibunwind.cmake.
 target_link_libraries(EcoRuntimeStatic PUBLIC eco::llvm_libunwind)
 
-# HttpService.cpp includes <curl/curl.h>. Under ECO_STATIC curl is vendored
-# via FetchContent (no system /usr/include/curl), so the include dir must
-# come from the libcurl_static target; otherwise CURL::libcurl provides it.
-if(ECO_STATIC)
+# HttpService.cpp includes <curl/curl.h>. Under ECO_STATIC OR WIN32 curl is
+# vendored via FetchContent (no system /usr/include/curl), so the include
+# dir must come from the libcurl_static target; otherwise CURL::libcurl
+# provides it.
+if(ECO_STATIC OR WIN32)
     target_link_libraries(EcoRuntimeStatic PRIVATE libcurl_static)
 else()
     find_package(CURL REQUIRED)
@@ -723,7 +729,7 @@ target_include_directories(EcoEmbedStatic PRIVATE
 )
 
 target_compile_features(EcoEmbedStatic PRIVATE cxx_std_20)
-target_compile_options(EcoEmbedStatic PRIVATE -fexceptions)
+target_compile_options(EcoEmbedStatic PRIVATE $<IF:$<PLATFORM_ID:Windows>,/EHsc,-fexceptions>)
 if(ECO_ASSERTS_ON)
     target_compile_options(EcoEmbedStatic PRIVATE -UNDEBUG)
 endif()
@@ -756,13 +762,13 @@ if(ECO_NODE_API_INCLUDE_DIR)
         ${ECO_NODE_API_INCLUDE_DIR}
     )
     target_compile_features(EcoNodeGlue PRIVATE cxx_std_20)
-    target_compile_options(EcoNodeGlue PRIVATE -fexceptions)
+    target_compile_options(EcoNodeGlue PRIVATE $<IF:$<PLATFORM_ID:Windows>,/EHsc,-fexceptions>)
 else()
     message(STATUS "node_api.h not found — .node output targets disabled")
 endif()
 
 target_compile_features(EcoEntryStatic PRIVATE cxx_std_20)
-target_compile_options(EcoEntryStatic PRIVATE -fexceptions)
+target_compile_options(EcoEntryStatic PRIVATE $<IF:$<PLATFORM_ID:Windows>,/EHsc,-fexceptions>)
 if(ECO_ASSERTS_ON)
     target_compile_options(EcoEntryStatic PRIVATE -UNDEBUG)
 endif()
@@ -836,7 +842,7 @@ target_link_libraries(EcoNativeDriverStatic PUBLIC
 
 target_compile_features(EcoNativeDriverStatic PRIVATE cxx_std_20)
 target_compile_options(EcoNativeDriverStatic PRIVATE
-    -Wno-ambiguous-reversed-operator -fexceptions)
+    -Wno-ambiguous-reversed-operator $<IF:$<PLATFORM_ID:Windows>,/EHsc,-fexceptions>)
 if(ECO_LOWERING_VALIDATION)
     target_compile_definitions(EcoNativeDriverStatic PRIVATE
         ECO_LOWERING_VALIDATION=1)
@@ -889,12 +895,20 @@ set(ECO_KERNEL_MODS File Console Env Process MVar NativeDriver Runtime Http Cras
 #   - musl/Stage B.5: ld.lld. Q3 RESOLVED in lld's favour for Stage B (non-PIE
 #     static — lld accepts the stackmap relocs there). BFD is the documented
 #     fallback (binutils is in the Stage B image) if ld.lld is absent.
-if(ECO_STATIC_MUSL)
-    find_program(ECO_SYSTEM_LD NAMES ld.lld lld ld REQUIRED)
+#   - Windows: skipped. The AOT path on Win64 invokes clang-cl/lld-link via
+#     EcoNativeDriver::linkExecutableWindows (currently a v1 stub — see
+#     plans/build-on-windows.md W4 item 17); the crt/libgcc/ld discovery
+#     below is all glibc-specific and produces nonsense on Windows.
+if(NOT WIN32)
+    if(ECO_STATIC_MUSL)
+        find_program(ECO_SYSTEM_LD NAMES ld.lld lld ld REQUIRED)
+    else()
+        find_program(ECO_SYSTEM_LD ld REQUIRED)
+    endif()
+    message(STATUS "Eco AOT linker (direct, no clang++ driver): ${ECO_SYSTEM_LD}")
 else()
-    find_program(ECO_SYSTEM_LD ld REQUIRED)
+    set(ECO_SYSTEM_LD "lld-link.exe")  # placeholder; linkExecutableWindows stub
 endif()
-message(STATUS "Eco AOT linker (direct, no clang++ driver): ${ECO_SYSTEM_LD}")
 
 # Discover crt object files + libgcc via clang. These are absolute paths into
 # the system gcc install (Debian: /usr/lib/gcc/x86_64-linux-gnu/12/) and
@@ -915,13 +929,25 @@ function(_eco_query_clang_path OUT_VAR FLAG)
     set(${OUT_VAR} "${_path}" CACHE INTERNAL "Resolved by _eco_query_clang_path(${FLAG})")
 endfunction()
 
-_eco_query_clang_path(ECO_CRT1_O  Scrt1.o)
-_eco_query_clang_path(ECO_CRTI_O  crti.o)
-_eco_query_clang_path(ECO_CRTN_O  crtn.o)
-_eco_query_clang_path(ECO_CRTBEGIN_O crtbeginS.o)
-_eco_query_clang_path(ECO_CRTEND_O   crtendS.o)
-_eco_query_clang_path(ECO_LIBGCC_A   libgcc.a)
-get_filename_component(ECO_GCC_LIBDIR "${ECO_LIBGCC_A}" DIRECTORY)
+if(NOT WIN32)
+    _eco_query_clang_path(ECO_CRT1_O  Scrt1.o)
+    _eco_query_clang_path(ECO_CRTI_O  crti.o)
+    _eco_query_clang_path(ECO_CRTN_O  crtn.o)
+    _eco_query_clang_path(ECO_CRTBEGIN_O crtbeginS.o)
+    _eco_query_clang_path(ECO_CRTEND_O   crtendS.o)
+    _eco_query_clang_path(ECO_LIBGCC_A   libgcc.a)
+    get_filename_component(ECO_GCC_LIBDIR "${ECO_LIBGCC_A}" DIRECTORY)
+else()
+    # Windows: placeholder values for EcoBootConfig.h layout stability.
+    # linkExecutableWindows is a v1 stub and never reads them.
+    set(ECO_CRT1_O ""        CACHE INTERNAL "Windows placeholder")
+    set(ECO_CRTI_O ""        CACHE INTERNAL "Windows placeholder")
+    set(ECO_CRTN_O ""        CACHE INTERNAL "Windows placeholder")
+    set(ECO_CRTBEGIN_O ""    CACHE INTERNAL "Windows placeholder")
+    set(ECO_CRTEND_O ""      CACHE INTERNAL "Windows placeholder")
+    set(ECO_LIBGCC_A ""      CACHE INTERNAL "Windows placeholder")
+    set(ECO_GCC_LIBDIR ""    CACHE INTERNAL "Windows placeholder")
+endif()
 
 # Stage B.5: non-PIE static crt prefix/epilogue + musl libc++/compiler-rt
 # stack. Only resolved under ECO_STATIC_MUSL; queries are cheap and produce
@@ -1069,16 +1095,20 @@ endif()
 set(ECO_DYNAMIC_LINKER "/lib64/ld-linux-x86-64.so.2")
 
 # Library search dirs for unresolved -l flags. Mirrors `clang -print-search-dirs`.
-execute_process(
-    COMMAND ${CMAKE_C_COMPILER} -print-search-dirs
-    OUTPUT_VARIABLE _search_dirs_raw
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-string(REGEX MATCH "libraries: =([^\n]+)" _ "${_search_dirs_raw}")
-set(_libdirs_csv "${CMAKE_MATCH_1}")
-string(REPLACE ":" ";" ECO_LIBRARY_DIRS "${_libdirs_csv}")
+if(NOT WIN32)
+    execute_process(
+        COMMAND ${CMAKE_C_COMPILER} -print-search-dirs
+        OUTPUT_VARIABLE _search_dirs_raw
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    string(REGEX MATCH "libraries: =([^\n]+)" _ "${_search_dirs_raw}")
+    set(_libdirs_csv "${CMAKE_MATCH_1}")
+    string(REPLACE ":" ";" ECO_LIBRARY_DIRS "${_libdirs_csv}")
+else()
+    set(ECO_LIBRARY_DIRS "" CACHE INTERNAL "Windows placeholder — discovered at link time by lld-link")
+endif()
 
-if(NOT APPLE)
+if(NOT APPLE AND NOT WIN32)
     message(STATUS "Eco AOT crt files:")
     message(STATUS "  Scrt1.o:    ${ECO_CRT1_O}")
     message(STATUS "  crti.o:     ${ECO_CRTI_O}")
@@ -1474,6 +1504,25 @@ string(APPEND ECO_BOOT_CONFIG_CONTENT
     "inline RuntimeFile darwinLibsslA           {\"libssl.a\",    \"project\", \"${ECO_DARWIN_LIBSSL_A}\"};\n"
     "inline RuntimeFile darwinLibcryptoA        {\"libcrypto.a\", \"project\", \"${ECO_DARWIN_LIBCRYPTO_A}\"};\n\n")
 
+# --- W4 (Win64): AOT link driver config ---
+# The three vendored static libs the user-program link line consumes:
+# libcurl_static (with schannel TLS), zip (libzip), zlibstatic. Paths are
+# wrapped in generator expressions so they resolve to the actual built .lib
+# after the FetchContent targets land. The RuntimeFile basenames match how
+# the bundle (W4 #19) ships them.
+string(APPEND ECO_BOOT_CONFIG_CONTENT "// --- Phase 3 (Win64): AOT link driver config ---\n")
+if(WIN32)
+    string(APPEND ECO_BOOT_CONFIG_CONTENT
+        "inline RuntimeFile windowsLibcurlA  {\"libcurl_static.lib\", \"project\", \"$<TARGET_FILE:libcurl_static>\"};\n"
+        "inline RuntimeFile windowsLibzipA   {\"zip.lib\",            \"project\", \"$<TARGET_FILE:zip>\"};\n"
+        "inline RuntimeFile windowsZlibA     {\"zlibstatic.lib\",     \"project\", \"$<TARGET_FILE:zlibstatic>\"};\n\n")
+else()
+    string(APPEND ECO_BOOT_CONFIG_CONTENT
+        "inline RuntimeFile windowsLibcurlA  {\"\", \"\", \"\"};\n"
+        "inline RuntimeFile windowsLibzipA   {\"\", \"\", \"\"};\n"
+        "inline RuntimeFile windowsZlibA     {\"\", \"\", \"\"};\n\n")
+endif()
+
 string(APPEND ECO_BOOT_CONFIG_CONTENT "} // namespace config\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT "} // namespace eco\n")
 
@@ -1522,7 +1571,7 @@ endforeach()
 add_dependencies(eco-boot-native ${ECO_BOOT_NATIVE_RUNTIME_DEPS})
 
 target_compile_features(eco-boot-native PRIVATE cxx_std_20)
-target_compile_options(eco-boot-native PRIVATE -Wno-ambiguous-reversed-operator -fexceptions)
+target_compile_options(eco-boot-native PRIVATE -Wno-ambiguous-reversed-operator $<IF:$<PLATFORM_ID:Windows>,/EHsc,-fexceptions>)
 if(ECO_LOWERING_VALIDATION)
     target_compile_definitions(eco-boot-native PRIVATE ECO_LOWERING_VALIDATION=1)
 endif()

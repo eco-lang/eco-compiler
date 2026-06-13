@@ -10,8 +10,8 @@
 #include "../platform/PlatformPaths.hpp"
 
 #include <cstdlib>
+#include <filesystem>
 #include <string>
-#include <sys/stat.h>
 
 namespace eco {
 namespace config {
@@ -19,9 +19,10 @@ namespace config {
 namespace {
 
 // True iff path names an existing filesystem entry (file or directory).
+// std::filesystem::exists works portably (no POSIX <sys/stat.h> needed).
 bool exists(const std::string &path) {
-    struct stat st;
-    return ::stat(path.c_str(), &st) == 0;
+    std::error_code ec;
+    return std::filesystem::exists(path, ec);
 }
 
 // dirname of the running executable. Returns an empty string on failure

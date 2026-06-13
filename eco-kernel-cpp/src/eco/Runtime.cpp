@@ -17,7 +17,9 @@
 #include "../../../runtime/src/platform/PlatformPaths.hpp"
 #include <random>
 #include <string>
+#if !defined(_WIN32)
 #include <unistd.h>
+#endif
 #include <climits>
 
 namespace Eco::Kernel::Runtime {

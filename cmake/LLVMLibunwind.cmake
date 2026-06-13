@@ -31,6 +31,19 @@ if(APPLE)
     return()
 endif()
 
+# Windows: libunwind is not used. StackUnwind.cpp falls back to
+# RtlVirtualUnwind, the JIT registers frames via RtlAddFunctionTable, and
+# C++ exception handling routes through MSVC native SEH. See
+# plans/build-on-windows.md (libunwind line in Dependency mapping). Expose
+# an empty interface target so target_link_libraries(eco::llvm_libunwind)
+# calls remain platform-neutral.
+if(WIN32)
+    add_library(eco_llvm_libunwind_system INTERFACE)
+    add_library(eco::llvm_libunwind ALIAS eco_llvm_libunwind_system)
+    message(STATUS "LLVMLibunwind: Windows — libunwind not used (RtlVirtualUnwind + RtlAddFunctionTable)")
+    return()
+endif()
+
 set(_llvm_libunwind_prefixes "")
 if(DEFINED LLVM_INSTALL_PREFIX AND LLVM_INSTALL_PREFIX)
     list(APPEND _llvm_libunwind_prefixes "${LLVM_INSTALL_PREFIX}")

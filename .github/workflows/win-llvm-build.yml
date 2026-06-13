@@ -1,0 +1,86 @@
+# E-W3 from plans/build-on-windows.md: the LLVM 21.1.8 + MLIR source
+# build on Windows. The one-off enabler — wall-clock ~2-4 h on the 4-vCPU
+# windows-latest runner; result cached so E-W4/E-W5/W4 jobs restore it in
+# seconds.
+name: win-llvm-build
+
+on:
+  push:
+    branches: ['ci/**']
+    paths:
+      - 'experiments/win-llvm-build/**'
+      - '.github/workflows/win-llvm-build.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    # LLVM+MLIR Release build on 4 vCPUs is comfortably under the 6 h cap
+    # but slow enough to need its own slot; pin near the cap for safety.
+    timeout-minutes: 330
+    env:
+      LLVM_INSTALL_DIR: ${{ github.workspace }}\experiments\win-llvm-build\out\llvm-install
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC dev environment
+        # LLVM's BLAKE3 lib has SSE2/AVX2 ASM stubs assembled by ml64.exe
+        # which is not on the default PATH — this action sources vcvarsall
+        # x64 so ml64, link, cl, lib, mt, rc and the SDK includes/libs are
+        # all available. clang-cl still drives the actual C++ compile.
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Cache LLVM install tree
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: experiments/win-llvm-build/out/llvm-install
+          # Bump the trailing version when configure flags change so the
+          # cache is rebuilt rather than producing stale binaries.
+          key: llvm-mlir-21.1.8-x86_64-pc-windows-msvc-x86-release-mt-v1
+
+      - name: Cache LLVM source tarball + extracted tree
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            experiments/win-llvm-build/out/llvm-project-21.1.8.src
+            experiments/win-llvm-build/out/llvm-project-21.1.8.src.tar.xz
+          key: llvm-src-21.1.8-v1
+
+      - name: Configure sccache
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: mozilla-actions/sccache-action@v0.0.6
+
+      - name: Build LLVM + MLIR
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        env:
+          # Route clang-cl through sccache for the next time the cache key
+          # is bumped (configure-flag tweaks etc.) — see the cmake configure
+          # line in build.ps1.
+          SCCACHE_GHA_ENABLED: 'true'
+        run: experiments/win-llvm-build/build.ps1
+
+      - name: Report cached install metadata
+        if: steps.cache.outputs.cache-hit == 'true'
+        shell: pwsh
+        run: |
+          $sz = (Get-ChildItem $env:LLVM_INSTALL_DIR -Recurse |
+                 Measure-Object -Property Length -Sum).Sum / 1MB
+          Write-Host "restored LLVM install tree: $([math]::Round($sz,1)) MB at $env:LLVM_INSTALL_DIR"
+          & "$env:LLVM_INSTALL_DIR\bin\llc.exe" --version | Select-Object -First 4 | Write-Host
+          & "$env:LLVM_INSTALL_DIR\bin\mlir-opt.exe" --version | Select-Object -First 2 | Write-Host
+
+      - name: Upload smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-llvm-build-out
+          path: |
+            experiments/win-llvm-build/out/build/CMakeCache.txt
+            experiments/win-llvm-build/out/build/CMakeFiles/CMakeOutput.log
+            experiments/win-llvm-build/out/build/CMakeFiles/CMakeError.log
+          if-no-files-found: warn

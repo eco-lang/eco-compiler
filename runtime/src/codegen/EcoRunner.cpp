@@ -42,8 +42,17 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/MemoryBuffer.h"
 
+// On Windows clang-cl's __attribute__((weak)) on a function declaration
+// emits a COMDAT weak external; /WHOLEARCHIVE then surfaces duplicates
+// across every TU that has the decl. Plain externs + the /alternatename
+// fallback in eco_order_weak_stub_win32.cpp keep both symbols resolvable.
+#if defined(_WIN32)
+extern "C" void Eco_Kernel_register_all_gc_roots();
+extern "C" void Eco_Kernel_Order_register_gc_roots();
+#else
 extern "C" __attribute__((weak)) void Eco_Kernel_register_all_gc_roots();
 extern "C" __attribute__((weak)) void Eco_Kernel_Order_register_gc_roots();
+#endif
 
 #include "EcoDialect.h"
 #include "Passes.h"

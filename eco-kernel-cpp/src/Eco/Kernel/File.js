@@ -5,6 +5,14 @@ import Elm.Kernel.Utils exposing (Tuple0, Tuple3)
 import Maybe exposing (Just, Nothing)
 */
 
+// Normalize a filesystem path to forward slashes so the Elm side (whose
+// Utils.Main fp* helpers split/join on "/") never sees backslashes. No-op
+// on POSIX. See plans/build-on-windows.md item 10b.
+var _File_winNormalize = typeof process !== 'undefined' && process.platform === 'win32';
+function _File_normalize(p) {
+    return _File_winNormalize && typeof p === 'string' ? p.replace(/\\/g, '/') : p;
+}
+
 // Build the neutral IO error tuple ( classificationTag, path, message ) that
 // Eco.IO.Error.ofKernelTuple decodes (see IO_ERR_002). Keep the code->tag map in
 // sync with Eco.IO.Error.tagFromCode and the C++ kernel.
@@ -173,7 +181,7 @@ var _File_findExecutable = function(name) {
                 var fullPath = path.join(dirs[i], name + exts[j]);
                 try {
                     fs.accessSync(fullPath, fs.constants.X_OK);
-                    callback(__Scheduler_succeed(__Maybe_Just(fullPath)));
+                    callback(__Scheduler_succeed(__Maybe_Just(_File_normalize(fullPath))));
                     return;
                 } catch (e) {
                     // continue
@@ -232,7 +240,7 @@ var _File_touch = function(path) {
 };
 
 var _File_getCwd = __Scheduler_binding(function(callback) {
-    callback(__Scheduler_succeed(process.cwd()));
+    callback(__Scheduler_succeed(_File_normalize(process.cwd())));
 });
 
 var _File_setCwd = function(path) {
@@ -251,10 +259,10 @@ var _File_canonicalize = function(path) {
         try {
             var fs = require('fs');
             var resolved = fs.realpathSync(path);
-            callback(__Scheduler_succeed(resolved));
+            callback(__Scheduler_succeed(_File_normalize(resolved)));
         } catch (e) {
             var pathMod = require('path');
-            callback(__Scheduler_succeed(pathMod.resolve(path)));
+            callback(__Scheduler_succeed(_File_normalize(pathMod.resolve(path))));
         }
     });
 };
@@ -272,7 +280,7 @@ var _File_appDataDir = function(name) {
         } else {
             dir = path.join(home, '.' + name);
         }
-        callback(__Scheduler_succeed(dir));
+        callback(__Scheduler_succeed(_File_normalize(dir)));
     });
 };
 

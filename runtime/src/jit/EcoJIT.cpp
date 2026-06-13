@@ -36,11 +36,27 @@ using namespace llvm::orc;
 // by LLVM libunwind (libgcc-compatible). Nested extern "C" inside a class
 // would create class members; inside a namespace it would still be C linkage
 // but clutters the lookup path.
+#if !defined(_WIN32)
 extern "C" void __register_frame(void *);
 extern "C" void __deregister_frame(void *);
+#endif
 
 namespace {
 
+#if defined(_WIN32)
+// On Win64 the JIT'd code is COFF, not ELF, so there is no .eh_frame to
+// register — JIT'd functions are unwound via .pdata / .xdata sections and
+// LLVM's RTDyld COFF support registers those with RtlAddFunctionTable
+// internally (the same primitive verified by E-W2 / experiments/win-jit-smoke).
+// We retain the SectionMemoryManager subclass for symmetry with the POSIX
+// build, and override the EH-frame hooks to no-ops.
+class EcoSectionMemoryManager : public llvm::SectionMemoryManager {
+public:
+    void registerEHFrames(uint8_t* /*Addr*/, uint64_t /*LoadAddr*/,
+                          size_t /*Size*/) override {}
+    void deregisterEHFrames() override {}
+};
+#else
 // EcoSectionMemoryManager overrides EH-frame registration for JIT objects.
 // LLVM libunwind's __register_frame takes a single FDE pointer (see
 // /opt/llvm-mlir/include/unwind.h: "The FDE must use pc-rel addressing to
@@ -105,6 +121,7 @@ public:
         EHFrames.clear();
     }
 };
+#endif
 
 } // anonymous namespace
 

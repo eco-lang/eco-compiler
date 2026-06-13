@@ -1,4 +1,8 @@
 #include "Basics.hpp"
+// MSVC's <cmath>/<math.h> hides M_E / M_PI behind _USE_MATH_DEFINES — define
+// it BEFORE the first include of <cmath> to pull them in. POSIX libstdc++
+// exposes them unconditionally; the macro is a no-op there.
+#define _USE_MATH_DEFINES
 #include <cmath>
 #include <limits>
 #include <stdexcept>

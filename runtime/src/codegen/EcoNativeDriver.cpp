@@ -280,6 +280,11 @@ int compileMlirFileToExecutable(const std::string &mlirPath,
     eco::registerRequiredDialects(registry);
 
     MLIRContext context(registry);
+#if defined(_WIN32)
+    // Win64: avoid MLIRContext's default worker thread pool — its parked
+    // threads deadlock /MT CRT teardown at process exit. See eco-boot.cpp.
+    context.disableMultithreading();
+#endif
     eco::loadRequiredDialects(context);
     context.allowUnregisteredDialects();
 
@@ -316,6 +321,11 @@ int compileMlirBytesToExecutable(const char *mlirBytes, size_t mlirLen,
     eco::registerRequiredDialects(registry);
 
     MLIRContext context(registry);
+#if defined(_WIN32)
+    // Win64: avoid MLIRContext's default worker thread pool — its parked
+    // threads deadlock /MT CRT teardown at process exit. See eco-boot.cpp.
+    context.disableMultithreading();
+#endif
     eco::loadRequiredDialects(context);
     context.allowUnregisteredDialects();
 
@@ -466,11 +476,179 @@ static int linkExecutableDarwin(const std::string &objectFile,
 }
 #endif // __APPLE__
 
+#if defined(_WIN32)
+// Win64 AOT link profile (W4 in plans/build-on-windows.md). Shell out to
+// clang-cl so VS Build Tools + Windows SDK discovery happens via the
+// driver, then drive lld-link via /link with the Win64 library set:
+//   /MT static MSVC CRT, /INCREMENTAL:NO (required for our stackmap match
+//   per E-W1 finding), /SUBSYSTEM:CONSOLE, project .libs, vendored libzip
+//   + curl-with-schannel + zlib, plus the Windows SDK import libs
+//   kernel32/ws2_32/crypt32/bcrypt/secur32. No OpenSSL.
+static int linkExecutableWindows(const std::string& objectFile,
+                                 const std::string& outputPath,
+                                 const eco::EcoNativeOptions& opts,
+                                 bool sharedLib) {
+    using eco::config::resolveFile;
+
+    if (sharedLib) {
+        // .dll output is out of scope for v1 — same status as Darwin's
+        // .dylib path. Tracked alongside the N-API addon work.
+        llvm::errs()
+            << "Error: Windows shared-library output is not yet supported.\n";
+        return 1;
+    }
+
+    std::deque<std::string> resolvedStrings;
+    auto push = [&](std::string s) -> llvm::StringRef {
+        resolvedStrings.emplace_back(std::move(s));
+        return resolvedStrings.back();
+    };
+
+    // Locate clang-cl on PATH (set up by win-build / msvc-dev-cmd). The
+    // VS Build Tools clang-cl ships alongside cl.exe; LLVM 21's clang-cl
+    // (our 'win-llvm-build' install tree) also works. ExecuteAndWait
+    // requires an absolute path, which findProgramByName resolves for us.
+    llvm::ErrorOr<std::string> clangCl = llvm::sys::findProgramByName("clang-cl");
+    if (!clangCl) {
+        llvm::errs()
+            << "Error: clang-cl not found on PATH. The Windows AOT link "
+               "shells out to it for VS Build Tools + Windows SDK discovery; "
+               "install VS Build Tools 2022 or LLVM 20+ and ensure clang-cl "
+               "is in PATH.\n";
+        return 1;
+    }
+    llvm::SmallVector<llvm::StringRef> args;
+    args.push_back(*clangCl);
+    args.push_back("/nologo");
+    args.push_back("/MT");              // Static MSVC CRT — eco binaries
+                                        // self-contained (no vcredist req).
+    args.push_back("/EHsc");
+    args.push_back(push(std::string("/Fe:") + outputPath));
+    args.push_back(objectFile);
+
+    // /link separates clang-cl driver args (above) from linker args
+    // (below). Every arg after this point is forwarded to lld-link
+    // verbatim — including /WHOLEARCHIVE: which is a linker flag only.
+    args.push_back("/link");
+    args.push_back("/SUBSYSTEM:CONSOLE");
+    // /INCREMENTAL:NO is critical: with incremental linking, lld-link emits
+    // a 5-byte e9-jmp thunk table at the start of .text for address-taken
+    // functions, and the stackmap section's recorded fnAddresses then point
+    // at the thunk slot instead of the real function entry. The whole
+    // stackmap-driven GC root scan would mis-locate every frame.
+    // See plans/build-on-windows.md E-W1 findings.
+    args.push_back("/INCREMENTAL:NO");
+
+    // /WHOLEARCHIVE:<lib> is the MSVC-side equivalent of `-Wl,--whole-archive`
+    // / `-Wl,-force_load,...` — pulls every member regardless of whether an
+    // already-loaded object references one of its defined symbols. Same
+    // targets as the POSIX and Darwin profiles.
+    auto wholeArchive = [&](const eco::config::RuntimeFile &f) {
+        args.push_back(push(std::string("/WHOLEARCHIVE:") + resolveFile(f)));
+    };
+    wholeArchive(eco::config::entryLib);
+    args.push_back(push(resolveFile(eco::config::runtimeLib)));
+
+    for (const auto &lib : eco::config::elmKernelLibs()) {
+        bool isUtils =
+            std::string_view(lib.basename) == "libElmKernel_Utils.a";
+        if (isUtils) {
+            wholeArchive(lib);
+        } else {
+            args.push_back(push(resolveFile(lib)));
+        }
+    }
+    for (const auto &lib : eco::config::ecoKernelLibs()) {
+        args.push_back(push(resolveFile(lib)));
+    }
+
+    // Vendored statics — libcurl (with schannel TLS), libzip (archive
+    // extraction), zlib (curl + libzip dep). Their absolute paths are
+    // baked into EcoBootConfig.h's windows* RuntimeFile entries.
+    args.push_back(push(resolveFile(eco::config::windowsLibcurlA)));
+    args.push_back(push(resolveFile(eco::config::windowsLibzipA)));
+    args.push_back(push(resolveFile(eco::config::windowsZlibA)));
+
+    // Windows SDK import libs. kernel32 is implicit but listed for symmetry;
+    // ws2_32 / crypt32 / bcrypt / secur32 are pulled by curl's schannel TLS
+    // backend and our BCrypt SHA-1 wrapper (Http.cpp). user32 is needed by
+    // some MLIR/LLVM diagnostic paths under verbose modes.
+    args.push_back("kernel32.lib");
+    args.push_back("user32.lib");
+    args.push_back("ws2_32.lib");
+    args.push_back("crypt32.lib");
+    args.push_back("bcrypt.lib");
+    args.push_back("secur32.lib");
+    args.push_back("advapi32.lib");
+
+    if (opts.verbose) {
+        llvm::errs() << "[eco-native] link (Windows, clang-cl + lld-link):";
+        for (auto &a : args)
+            llvm::errs() << " " << a;
+        llvm::errs() << "\n";
+    }
+
+    std::string errMsg;
+    // Win64 inherited-handle hang fix. With default (empty) redirects, the
+    // clang-cl/lld-link child inherits this process's stdout/stderr — which,
+    // under the self-host bootstrap, are the build tool's (ninja's) pipe
+    // write-ends. A link descendant can keep an inherited copy of that pipe
+    // handle open past this process's own exit, so the build tool never sees
+    // pipe EOF and the stage hangs regardless of how we exit. Redirect the link
+    // child's stdin to null and stdout+stderr to a temp file: the link subtree
+    // then inherits the file handle, never the build pipe. The captured output
+    // is dumped afterwards so linker diagnostics still reach the log.
+    llvm::SmallString<256> linkLog;
+    bool haveLog =
+        !llvm::sys::fs::createTemporaryFile("eco-link", "log", linkLog);
+    if (opts.verbose) {
+        llvm::errs() << "[eco-native] link child stdio -> "
+                     << (haveLog ? linkLog.str()
+                                 : llvm::StringRef("(temp-file failed; inheriting pipe)"))
+                     << "\n";
+    }
+    std::optional<llvm::StringRef> redirects[3] = {
+        llvm::StringRef(""),  // stdin  <- /dev/null (linker reads no stdin)
+        haveLog ? std::optional<llvm::StringRef>(llvm::StringRef(linkLog))
+                : std::nullopt,  // stdout -> temp file (NOT the inherited pipe)
+        haveLog ? std::optional<llvm::StringRef>(llvm::StringRef(linkLog))
+                : std::nullopt,  // stderr -> same temp file
+    };
+    int rc = llvm::sys::ExecuteAndWait(*clangCl, args,
+                                       /*env=*/std::nullopt,
+                                       /*redirects=*/redirects,
+                                       /*secondsToWait=*/0,
+                                       /*memoryLimit=*/0, &errMsg);
+    if (haveLog) {
+        if (auto buf = llvm::MemoryBuffer::getFile(linkLog)) {
+            llvm::StringRef captured = (*buf)->getBuffer();
+            if (!captured.empty())
+                llvm::errs() << captured;
+        }
+        llvm::sys::fs::remove(linkLog);
+    }
+    if (rc != 0) {
+        llvm::errs() << "Error: Windows link (clang-cl/lld-link) failed (rc="
+                     << rc << ")";
+        if (!errMsg.empty())
+            llvm::errs() << ": " << errMsg;
+        llvm::errs() << "\n";
+        return 1;
+    }
+    if (opts.verbose)
+        llvm::errs() << "[eco-native] linked PE executable: " << outputPath
+                     << "\n";
+    return 0;
+}
+#endif
+
 int linkExecutable(const std::string &objectFile,
                    const std::string &outputPath,
                    const EcoNativeOptions &opts,
                    bool sharedLib) {
-#if defined(__APPLE__)
+#if defined(_WIN32)
+    return linkExecutableWindows(objectFile, outputPath, opts, sharedLib);
+#elif defined(__APPLE__)
     // Darwin profile: clang-driver Mach-O link (see linkExecutableDarwin
     // above). The Linux body below is entirely glibc/musl/lld-specific and
     // is dead code on Darwin — keep it gated behind the #else so the
@@ -915,7 +1093,7 @@ int linkExecutable(const std::string &objectFile,
     }
 
     return 0;
-#endif // __APPLE__
+#endif // _WIN32 / __APPLE__ / else
 }
 
 } // namespace eco

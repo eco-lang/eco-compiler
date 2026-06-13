@@ -18,7 +18,11 @@
 #include <cstddef>
 #include <cstdint>
 
-#if defined(__APPLE__)
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <cstring>
+#elif defined(__APPLE__)
 #include <dlfcn.h>
 #include <mach-o/dyld.h>
 #include <mach-o/getsect.h>
@@ -38,7 +42,49 @@ struct StackMapSection {
     size_t size = 0;
 };
 
-#if defined(__APPLE__)
+#if defined(_WIN32)
+
+// addr == nullptr → main executable (current module); otherwise the module
+// containing addr, found via GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS).
+// Section name on PE COFF is ".llvm_stackmaps" — verified by E-W1
+// (experiments/win-statepoint-smoke). The loader applies base relocations
+// to the section's content, so the recorded function addresses match what
+// stack walking will surface; callers parse with loadBase=0 like the
+// other platforms. See plans/build-on-windows.md item 13.
+inline StackMapSection findStackMapSection(const void* addr) {
+    HMODULE hmod = nullptr;
+    if (addr == nullptr) {
+        hmod = GetModuleHandleW(nullptr);
+    } else if (!GetModuleHandleExW(
+                   GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                   reinterpret_cast<LPCWSTR>(addr), &hmod) ||
+               hmod == nullptr) {
+        return {};
+    }
+    auto* base = reinterpret_cast<const uint8_t*>(hmod);
+    auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return {};
+    auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return {};
+
+    const auto* sec = IMAGE_FIRST_SECTION(nt);
+    for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++sec) {
+        // COFF short-form section names are 8 bytes, NUL-padded. The
+        // stackmap section's name is 15 chars, but PE truncates the field
+        // and the linker can store the full name in the string table via
+        // a "/NN" indirection. Match on the 8-byte prefix ".llvm_st"
+        // which is unique inside our binaries — verified by E-W1.
+        if (std::memcmp(sec->Name, ".llvm_st", 8) == 0) {
+            DWORD size = sec->Misc.VirtualSize ? sec->Misc.VirtualSize
+                                               : sec->SizeOfRawData;
+            return {base + sec->VirtualAddress, static_cast<size_t>(size)};
+        }
+    }
+    return {};
+}
+
+#elif defined(__APPLE__)
 
 // addr == nullptr → main executable; otherwise the image containing addr
 // (an executable OR a dlopen'd / linked shared object), found via dladdr.

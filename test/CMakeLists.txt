@@ -25,12 +25,12 @@ set(ELM_TEST_PACKAGES
     elm-url
     stress-elm
 )
+include(${CMAKE_SOURCE_DIR}/cmake/EcoCreateDirLink.cmake)
 foreach(pkg IN LISTS ELM_TEST_PACKAGES)
     set(_shadow "${CMAKE_BINARY_DIR}/test/${pkg}")
     file(MAKE_DIRECTORY ${_shadow})
     file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/${pkg}/elm.json DESTINATION ${_shadow})
-    file(REMOVE ${_shadow}/src)
-    file(CREATE_LINK ${CMAKE_CURRENT_SOURCE_DIR}/${pkg}/src ${_shadow}/src SYMBOLIC)
+    eco_create_dir_link(${CMAKE_CURRENT_SOURCE_DIR}/${pkg}/src ${_shadow}/src)
     # `cmake --build build --target clean` wipes the per-package eco-stuff
     # and elm-stuff caches (compiler-managed, regenerated on next run). The
     # shadow's elm.json and src symlink are configure-time scaffold and must
@@ -50,8 +50,7 @@ foreach(pkg IN LISTS ELM_TEST_PACKAGES)
     set(_aot_shadow "${CMAKE_BINARY_DIR}/test/aot-e2e/${pkg}")
     file(MAKE_DIRECTORY ${_aot_shadow})
     file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/${pkg}/elm.json DESTINATION ${_aot_shadow})
-    file(REMOVE ${_aot_shadow}/src)
-    file(CREATE_LINK ${CMAKE_CURRENT_SOURCE_DIR}/${pkg}/src ${_aot_shadow}/src SYMBOLIC)
+    eco_create_dir_link(${CMAKE_CURRENT_SOURCE_DIR}/${pkg}/src ${_aot_shadow}/src)
     # Wipe the AOT shadow's per-package caches on clean. Only the inner
     # cache dirs — the elm.json and src symlink are configure-time scaffold
     # (see ADDITIONAL_CLEAN_FILES warning below for the whole-tree variant).
@@ -106,7 +105,18 @@ add_executable(test
 )
 
 target_compile_features(test PRIVATE cxx_std_20)
-target_compile_options(test PRIVATE -fexceptions)
+target_compile_options(test PRIVATE $<IF:$<PLATFORM_ID:Windows>,/EHsc,-fexceptions>)
+# Windows: provide our minimal getopt_long shim before <getopt.h> resolves —
+# the MSVC CRT has no getopt and main.cpp's command-line parsing relies on
+# it. See test/win32/getopt.h. Also bake the weak-symbol /alternatename TU
+# directly into the binary so Eco_Kernel_Order_register_gc_roots resolves
+# without ElmKernel_Utils being linked (the JIT test binary deliberately
+# omits ElmKernel — see eco_order_weak_stub_win32.cpp for the full story).
+if(WIN32)
+    target_include_directories(test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/win32)
+    target_sources(test PRIVATE
+        ${CMAKE_SOURCE_DIR}/runtime/src/codegen/eco_order_weak_stub_win32.cpp)
+endif()
 # BUILD_DIR locates the per-package shadow directories (test/<pkg>/elm.json +
 # src symlink) materialized at configure time above. ElmE2ETestBase::findTestDir
 # uses this to anchor the compiler's cwd, so eco-stuff/ and elm-stuff/ land
@@ -140,6 +150,23 @@ if(APPLE)
         EcoKernel_Runtime
         EcoKernel_Http
     )
+elseif(WIN32)
+    # /WHOLEARCHIVE: needs the .lib filename — bare target names get
+    # passed to lld-link verbatim and fail. Use the TARGET_FILE generator
+    # expression so the full path (including the .lib extension) lands
+    # on the link line; same trick as the APPLE -force_load branch above.
+    target_link_libraries(test rapidcheck
+        EcoRunner
+        EcoKernel_MVar
+        EcoKernel_Runtime
+        EcoKernel_Http
+    )
+    target_link_options(test PRIVATE
+        /WHOLEARCHIVE:$<TARGET_FILE:EcoRunner>
+        /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_MVar>
+        /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Runtime>
+        /WHOLEARCHIVE:$<TARGET_FILE:EcoKernel_Http>
+    )
 else()
     target_link_libraries(test rapidcheck
         -Wl,--whole-archive
@@ -155,6 +182,9 @@ set_target_properties(test PROPERTIES ENABLE_EXPORTS ON)
 
 # Stress test runner — a separate binary so these can be built/run independently
 # of the main E2E suite. Reuses ElmE2ETestBase/TestSuite/IsolatedTestRunner.
+# On Windows the stress-elm/main.cpp hits the same Elm-E2E fork code paths the
+# main suite stubs out; deferred until a CreateProcessW port lands.
+if(NOT WIN32)
 add_executable(stress-test
         stress-elm/main.cpp
 )
@@ -184,6 +214,7 @@ else()
     )
 endif()
 set_target_properties(stress-test PROPERTIES ENABLE_EXPORTS ON)
+endif() # NOT WIN32 (stress-test)
 
 # mlir-equivalence — compares Stage 2 (eco-boot.js) vs Stage 6 (eco-compiler
 # native ELF) MLIR output across all Elm E2E test sources. Opt-in: requires
@@ -196,6 +227,12 @@ set_target_properties(stress-test PROPERTIES ENABLE_EXPORTS ON)
 #     cmake --build build --target mlir-equivalence     # builds the binary
 #     cmake --build build --target run-mlir-equivalence # builds + runs the suite
 #     TEST_FILTER=Record cmake --build build --target run-mlir-equivalence
+#
+# mlir-equivalence and aot-e2e are gated off on Windows: both use the same
+# fork-based test infrastructure as ElmE2ETestBase and the run-* targets
+# wrap their invocation in `sh -c`. Porting them lands with the
+# CreateProcessW pass that brings stress-elm back too.
+if(NOT WIN32)
 add_executable(mlir-equivalence
         mlir_equivalence_main.cpp
 )
@@ -262,8 +299,13 @@ target_link_libraries(aot-e2e-runner PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 # dependency is PRIVATE so its include path does not propagate — fine on Linux
 # where openssl headers sit in the default search path, but brew's openssl@3 is
 # keg-only on macOS. Link the imported targets so OpenSSL's INTERFACE include
-# dir reaches test/main.cpp on both platforms.
-target_link_libraries(test OpenSSL::SSL OpenSSL::Crypto)
+# dir reaches test/main.cpp on both platforms. On Windows there is no
+# OpenSSL — TestHttpServer.hpp is stubbed out behind `#if !defined(_WIN32)`
+# (see ElmHttpTest.hpp and EcoKernelTest.hpp) so the test binary does not
+# pull in any libcrypto symbols.
+if(NOT WIN32)
+    target_link_libraries(test OpenSSL::SSL OpenSSL::Crypto)
+endif()
 
 # NB: do NOT add ${CMAKE_BINARY_DIR}/test/aot-e2e (the whole tree) to
 # ADDITIONAL_CLEAN_FILES. That tree's per-package elm.json + src/ symlinks
@@ -294,3 +336,4 @@ add_custom_target(run-aot-e2e
         USES_TERMINAL
         COMMENT "Running AOT E2E tests via eco-boot-2.js + eco-boot-native"
 )
+endif() # NOT WIN32 (mlir-equivalence + aot-e2e-runner)

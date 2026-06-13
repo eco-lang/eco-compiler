@@ -1,14 +1,17 @@
 # Guida Elm Compiler build configuration
 # This builds the guida compiler (an Elm compiler written in Elm)
 
-# Platforms with pinned toolchain binaries: Linux x86_64 and macOS
-# (arm64 / x86_64). The per-platform URL/SHA table lives in
+# Platforms with pinned toolchain binaries: Linux x86_64, macOS
+# (arm64 / x86_64), Windows x86_64. The per-platform URL/SHA table lives in
 # cmake/toolchain.cmake.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
     # supported
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|x86_64)$")
     # supported (front-end bootstrap; backend port in progress — see
     # plans/build-on-mac.md)
+elseif(WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|x86_64)$")
+    # supported (front-end bootstrap; backend port in progress — see
+    # plans/build-on-windows.md)
 else()
     message(FATAL_ERROR
         "No pinned Elm toolchain binaries for this platform. "
@@ -23,17 +26,36 @@ find_program(PYTHON3_EXECUTABLE python3 REQUIRED)
 # GNU /usr/bin/time wraps Stages 5 and 7a so the front-end MLIR-emit timings
 # (wall, CPU, RSS, page faults, ctx switches) can be summarized in a table.
 # macOS /usr/bin/time is BSD time (no -v); require GNU time from
-# `brew install gnu-time`, which installs as `gtime`.
+# `brew install gnu-time`, which installs as `gtime`. On Windows the wrapper
+# is skipped entirely — the stages run unwrapped and the per-stage timing
+# log files are not produced (the bootstrap target chain doesn't depend on
+# them, only the human-readable summary in the workflow's post-step does).
 if(APPLE)
     find_program(GNU_TIME_EXECUTABLE NAMES gtime REQUIRED)
+elseif(WIN32)
+    set(GNU_TIME_EXECUTABLE "" CACHE INTERNAL
+        "GNU time unavailable on Windows; bootstrap stages run unwrapped.")
 else()
     find_program(GNU_TIME_EXECUTABLE NAMES time PATHS /usr/bin NO_DEFAULT_PATH REQUIRED)
+endif()
+
+# A pre-built argument list for the timing wrapper. Empty on Windows so a
+# COMMAND that prepends it is a plain unwrapped command. The -v/-o pair is
+# expanded literally on POSIX; the per-stage call sites set the log path.
+if(GNU_TIME_EXECUTABLE)
+    set(GNU_TIME_PREFIX_CMD ${GNU_TIME_EXECUTABLE})
+else()
+    set(GNU_TIME_PREFIX_CMD "")
 endif()
 
 message(STATUS "Found Node.js: ${NODE_EXECUTABLE}")
 message(STATUS "Found pnpm:    ${PNPM_EXECUTABLE}")
 message(STATUS "Found python3: ${PYTHON3_EXECUTABLE}")
-message(STATUS "Found GNU time: ${GNU_TIME_EXECUTABLE}")
+if(GNU_TIME_EXECUTABLE)
+    message(STATUS "Found GNU time: ${GNU_TIME_EXECUTABLE}")
+else()
+    message(STATUS "GNU time: skipped (Windows host — stages run unwrapped)")
+endif()
 
 # Paths
 set(COMPILER_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -91,10 +113,10 @@ file(COPY ${COMPILER_DIR}/cmake/bootstrap/build-xhr/elm.json
     DESTINATION ${BUILD_XHR_DIR})
 file(COPY ${COMPILER_DIR}/elm-application.json
     DESTINATION ${BUILD_XHR_DIR})
-file(REMOVE ${BUILD_XHR_DIR}/src ${BUILD_XHR_DIR}/src-xhr ${BUILD_XHR_DIR}/tests)
-file(CREATE_LINK ${COMPILER_DIR}/src     ${BUILD_XHR_DIR}/src     SYMBOLIC)
-file(CREATE_LINK ${COMPILER_DIR}/src-xhr ${BUILD_XHR_DIR}/src-xhr SYMBOLIC)
-file(CREATE_LINK ${COMPILER_DIR}/tests   ${BUILD_XHR_DIR}/tests   SYMBOLIC)
+include(${CMAKE_SOURCE_DIR}/cmake/EcoCreateDirLink.cmake)
+eco_create_dir_link(${COMPILER_DIR}/src     ${BUILD_XHR_DIR}/src)
+eco_create_dir_link(${COMPILER_DIR}/src-xhr ${BUILD_XHR_DIR}/src-xhr)
+eco_create_dir_link(${COMPILER_DIR}/tests   ${BUILD_XHR_DIR}/tests)
 
 set(COMPILER_OUTPUT "${BUILD_XHR_DIR}/bin/guida.js")
 set(ELM_ENTRY "${COMPILER_DIR}/src/Terminal/Main.elm")
@@ -147,8 +169,14 @@ add_custom_target(guida ALL DEPENDS ${COMPILER_OUTPUT})
 #
 # elm-test-rs invokes the elm compiler as a subprocess and discovers it via
 # PATH, so we prepend the CMake-fetched toolchain dir.
+# PATH separator is ':' on POSIX, ';' on Windows.
+if(WIN32)
+    set(_path_sep ";")
+else()
+    set(_path_sep ":")
+endif()
 add_custom_target(elm-tests
-    COMMAND ${CMAKE_COMMAND} -E env "PATH=${TOOLCHAIN_BIN}:$ENV{PATH}"
+    COMMAND ${CMAKE_COMMAND} -E env "PATH=${TOOLCHAIN_BIN}${_path_sep}$ENV{PATH}"
         ${ELM_TEST_RS_EXECUTABLE} --project ${BUILD_XHR_DIR} --fuzz 1
     DEPENDS guida
     WORKING_DIRECTORY ${COMPILER_DIR}
@@ -169,17 +197,44 @@ file(COPY
     ${COMPILER_DIR}/cmake/bootstrap/build-kernel/inject-mem.js
     ${COMPILER_DIR}/cmake/bootstrap/build-kernel/run-eol2.js
     DESTINATION ${BUILD_KERNEL_DIR})
-file(REMOVE ${BUILD_KERNEL_DIR}/src ${BUILD_KERNEL_DIR}/src-kernel ${BUILD_KERNEL_DIR}/node_modules)
-file(CREATE_LINK ${COMPILER_DIR}/src                   ${BUILD_KERNEL_DIR}/src        SYMBOLIC)
-file(CREATE_LINK ${CMAKE_SOURCE_DIR}/eco-kernel-cpp/src ${BUILD_KERNEL_DIR}/src-kernel SYMBOLIC)
+eco_create_dir_link(${COMPILER_DIR}/src                   ${BUILD_KERNEL_DIR}/src)
+eco_create_dir_link(${CMAKE_SOURCE_DIR}/eco-kernel-cpp/src ${BUILD_KERNEL_DIR}/src-kernel)
 # Eco.Kernel.Http.js does `require('adm-zip')` when downloading package
-# archives. Without this symlink, node walks up from eco-boot.js's location
+# archives. Without this link, node walks up from eco-boot.js's location
 # (.../build-kernel/bin/) and never reaches ${COMPILER_DIR}/node_modules,
 # so the require throws → compiler reports "unable to unzip the data" for
-# every package download. The link is created at configure time; it'll
-# dangle until `pnpm install` populates ${COMPILER_DIR}/node_modules, then
-# becomes live with no further action needed.
-file(CREATE_LINK ${COMPILER_DIR}/node_modules          ${BUILD_KERNEL_DIR}/node_modules SYMBOLIC)
+# every package download.
+#
+# POSIX: create the link eagerly at configure time. ${COMPILER_DIR}/node_modules
+# may not exist yet (pnpm installs it at build time) and that's fine — POSIX
+# symlinks may be dangling and become live once the target appears.
+#
+# Windows: NTFS junctions (the privilege-free alternative to symlinks)
+# require the target to exist at creation time, so the link is deferred to
+# a post-step of the pnpm-install custom command below; see ${NPM_STAMP}.
+if(NOT WIN32)
+    file(REMOVE ${BUILD_KERNEL_DIR}/node_modules)
+    file(CREATE_LINK ${COMPILER_DIR}/node_modules ${BUILD_KERNEL_DIR}/node_modules SYMBOLIC)
+endif()
+
+# Build-time link of ${COMPILER_DIR}/node_modules into the build-kernel
+# shadow. On POSIX this is a defensive idempotent re-link (the eager
+# configure-time symlink above already works); on Windows it is the only
+# place the junction is created — mklink /J refuses if the source dir
+# doesn't exist, and ${COMPILER_DIR}/node_modules only materializes after
+# pnpm install completes. Stamped so re-running is cheap.
+set(KERNEL_NODE_MODULES_STAMP "${BUILD_KERNEL_DIR}/node_modules.stamp")
+add_custom_command(
+    OUTPUT ${KERNEL_NODE_MODULES_STAMP}
+    COMMAND ${CMAKE_COMMAND}
+        "-DECO_TARGET=${COMPILER_DIR}/node_modules"
+        "-DECO_LINK=${BUILD_KERNEL_DIR}/node_modules"
+        "-DECO_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
+        -P "${CMAKE_SOURCE_DIR}/cmake/EcoLinkNodeModules.cmake"
+    COMMAND ${CMAKE_COMMAND} -E touch ${KERNEL_NODE_MODULES_STAMP}
+    DEPENDS ${NPM_STAMP}
+    COMMENT "Linking build-kernel/node_modules → compiler/node_modules"
+)
 
 set(ECO_BOOT_OUTPUT        "${BUILD_KERNEL_DIR}/bin/eco-boot.js")
 set(ECO_BOOT_RUNNER_OUTPUT "${BUILD_KERNEL_DIR}/bin/eco-boot-runner.js")
@@ -233,8 +288,12 @@ add_custom_command(
         ${ELM_ENTRY}
     COMMAND ${NODE_EXECUTABLE} ${COMPILER_DIR}/scripts/replacements.js ${ECO_BOOT_OUTPUT}
     COMMAND ${CMAKE_COMMAND} -E copy ${ECO_BOOT_RUNNER_TEMPLATE} ${ECO_BOOT_RUNNER_OUTPUT}
+    # KERNEL_NODE_MODULES_STAMP: the kernel-shadow node_modules link must
+    # exist before Stage 2 runs — Eco.Kernel.Http.js requires 'adm-zip' and
+    # node's resolver walks up from .../build-kernel/bin/ to find it.
     DEPENDS ${COMPILER_OUTPUT} ${ELM_SOURCES} ${KERNEL_SOURCES}
         ${ECO_BOOT_RUNNER_TEMPLATE} "${BUILD_KERNEL_DIR}/elm.json"
+        ${KERNEL_NODE_MODULES_STAMP}
     WORKING_DIRECTORY ${BUILD_KERNEL_DIR}
     COMMENT "Building eco-boot compiler (step 2: kernel)"
 )
@@ -319,16 +378,31 @@ add_custom_target(eco-boot-verify DEPENDS ${ECO_BOOT_VERIFY_STAMP})
 set(ECO_COMPILER_MLIR "${BUILD_KERNEL_DIR}/bin/eco-compiler.mlir")
 set(STAGE5_TIME_LOG   "${BUILD_KERNEL_DIR}/timing-stage5.txt")
 
+# Stage 5 prefix: GNU /usr/bin/time on POSIX, empty on Windows where the
+# wrapper is unavailable (see top-of-file GNU_TIME_EXECUTABLE block).
+if(GNU_TIME_EXECUTABLE)
+    set(_stage5_time_prefix ${GNU_TIME_EXECUTABLE} -v -o ${STAGE5_TIME_LOG})
+    set(_stage5_byproducts ${STAGE5_TIME_LOG})
+else()
+    set(_stage5_time_prefix "")
+    set(_stage5_byproducts "")
+endif()
+
 add_custom_command(
     OUTPUT ${ECO_COMPILER_MLIR}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${BUILD_KERNEL_DIR}/eco-stuff
-    COMMAND find ${BUILD_KERNEL_DIR}/eco-stuff -name *.ecot -delete
+    # Cross-platform replacement for `find ... -name *.ecot -delete`.
+    COMMAND ${CMAKE_COMMAND}
+        "-DECO_DIR=${BUILD_KERNEL_DIR}/eco-stuff"
+        "-DECO_PATTERN=*.ecot"
+        "-DECO_RECURSIVE=1"
+        -P ${CMAKE_SOURCE_DIR}/cmake/EcoDeletePattern.cmake
     # --max-old-space-size=4096: pin the V8 heap explicitly. Node's default
     # old-space limit scales with host RAM (~4 GB on big machines, ~2 GB on
     # small ones), and Stage 5 needs a bit over 2 GB — it OOM'd on a 7 GB
     # macOS CI runner where the default came out at 2 GB while passing on
     # big-RAM dev machines that defaulted to 4 GB.
-    COMMAND ${GNU_TIME_EXECUTABLE} -v -o ${STAGE5_TIME_LOG}
+    COMMAND ${_stage5_time_prefix}
         ${NODE_EXECUTABLE} --stack-size=65536 --max-old-space-size=4096
         bin/eco-boot-2-runner.js make
         --optimize
@@ -336,7 +410,7 @@ add_custom_command(
         --local-package eco/kernel=${COMPILER_DIR}/../eco-kernel-cpp
         --output=bin/eco-compiler.mlir
         ${ELM_ENTRY}
-    BYPRODUCTS ${STAGE5_TIME_LOG}
+    BYPRODUCTS ${_stage5_byproducts}
     # Ordering edge: Stage 5 must wait for Stage 4b's JS fixed-point diff so
     # the bootstrap chain runs in the order documented in guides/bootstrap.md.
     # Without this, Ninja is free to start Stage 5 the moment Stage 3's
@@ -379,16 +453,23 @@ add_custom_target(eco-compiler DEPENDS ${ECO_COMPILER_ELF})
 set(ECO_COMPILER_BOOT_MLIR "${BUILD_KERNEL_DIR}/bin/eco-compiler-boot.mlir")
 set(STAGE7A_TIME_LOG       "${BUILD_KERNEL_DIR}/timing-stage7a.txt")
 
+if(GNU_TIME_EXECUTABLE)
+    set(_stage7a_time_prefix ${GNU_TIME_EXECUTABLE} -v -o ${STAGE7A_TIME_LOG})
+    set(_stage7a_byproducts ${STAGE7A_TIME_LOG})
+else()
+    set(_stage7a_time_prefix "")
+    set(_stage7a_byproducts "")
+endif()
 add_custom_command(
     OUTPUT ${ECO_COMPILER_BOOT_MLIR}
-    COMMAND ${GNU_TIME_EXECUTABLE} -v -o ${STAGE7A_TIME_LOG}
+    COMMAND ${_stage7a_time_prefix}
         ${ECO_COMPILER_ELF} make
         --optimize
         --kernel-package eco/compiler
         --local-package eco/kernel=${COMPILER_DIR}/../eco-kernel-cpp
         --output=bin/eco-compiler-boot.mlir
         ${ELM_ENTRY}
-    BYPRODUCTS ${STAGE7A_TIME_LOG}
+    BYPRODUCTS ${_stage7a_byproducts}
     DEPENDS ${ECO_COMPILER_ELF} ${ELM_SOURCES} ${KERNEL_SOURCES}
     WORKING_DIRECTORY ${BUILD_KERNEL_DIR}
     COMMENT "Stage 7a: eco-compiler → eco-compiler-boot.mlir (timed)"
@@ -400,13 +481,20 @@ add_custom_command(
 set(ECO_COMPILER_BOOT_ELF "${BUILD_KERNEL_DIR}/bin/eco-compiler-boot")
 set(STAGE7B_TIME_LOG      "${BUILD_KERNEL_DIR}/timing-stage7b.txt")
 
+if(GNU_TIME_EXECUTABLE)
+    set(_stage7b_time_prefix ${GNU_TIME_EXECUTABLE} -v -o ${STAGE7B_TIME_LOG})
+    set(_stage7b_byproducts ${STAGE7B_TIME_LOG})
+else()
+    set(_stage7b_time_prefix "")
+    set(_stage7b_byproducts "")
+endif()
 add_custom_command(
     OUTPUT ${ECO_COMPILER_BOOT_ELF}
-    COMMAND ${GNU_TIME_EXECUTABLE} -v -o ${STAGE7B_TIME_LOG}
+    COMMAND ${_stage7b_time_prefix}
         $<TARGET_FILE:eco-boot-native>
         ${ECO_COMPILER_BOOT_MLIR}
         -o ${ECO_COMPILER_BOOT_ELF}
-    BYPRODUCTS ${STAGE7B_TIME_LOG}
+    BYPRODUCTS ${_stage7b_byproducts}
     DEPENDS ${ECO_COMPILER_BOOT_MLIR} eco-boot-native
     COMMENT "Stage 7b: eco-compiler-boot.mlir → eco-compiler-boot (native ELF, timed)"
 )
@@ -447,20 +535,22 @@ add_custom_command(
 # produce deterministic output for identical input, so binary equality is
 # the strongest form of the fixed-point invariant.
 #
-# On Mach-O (Darwin): compare the .mlir files instead. ld64 emits an
-# LC_UUID derived from the linked content's MD5 (deterministic for the
-# same content) AND a build-time timestamp in LC_BUILD_VERSION /
-# LC_VERSION_MIN_MACOSX (not deterministic without SOURCE_DATE_EPOCH).
+# On Mach-O (Darwin) AND PE (Windows): compare the .mlir files instead. ld64
+# emits an LC_UUID derived from the linked content's MD5 (deterministic for
+# the same content) AND a build-time timestamp in LC_BUILD_VERSION /
+# LC_VERSION_MIN_MACOSX (not deterministic without SOURCE_DATE_EPOCH); PE
+# carries the same hazard (COFF header TimeDateStamp and friends), so
+# lld-link output of identical input is not guaranteed bit-for-bit equal.
 # Comparing eco-compiler-boot.mlir vs eco-compiler-boot-2.mlir asserts the
 # SAME invariant — Stage 6's binary and Stage 7b's binary produce
-# byte-equal MLIR when self-compiling — without depending on ld64
+# byte-equal MLIR when self-compiling — without depending on linker
 # bit-for-bit determinism. The hashed-content path-determinism is the
 # property we actually care about for the bootstrap chain; binary
 # equality on ELF is an artifact of ELF linker determinism, not a
 # stronger semantic requirement.
 set(BOOTSTRAP_STAMP "${CMAKE_CURRENT_BINARY_DIR}/bootstrap.stamp")
 
-if(APPLE)
+if(APPLE OR WIN32)
     add_custom_command(
         OUTPUT ${BOOTSTRAP_STAMP}
         COMMAND ${CMAKE_COMMAND} -E compare_files
@@ -668,6 +758,50 @@ function(eco_apply_unified_link target)
         return()
     endif()
 
+    if(WIN32)
+        # Win64 unified link: lld-link (MSVC ABI) via the CMake link driver.
+        # /MT static CRT comes from CMAKE_MSVC_RUNTIME_LIBRARY (win-build
+        # preset). This mirrors linkExecutableWindows (the AOT link) in
+        # runtime/src/codegen/EcoNativeDriver.cpp — NOT the GNU branch below
+        # (no -Wl group syntax, no -fuse-ld, no pthread/m/stdc++/ssl/crypto).
+        #
+        # /WHOLEARCHIVE: is the MSVC equivalent of ld64 -force_load /
+        # GNU --whole-archive: pull every member so the strong
+        # eco_native_lower_and_link in EcoNativeDriverStatic overrides the weak
+        # stub in EcoEntryStatic, and ElmKernel_Utils' Order singleton
+        # registrar survives. /INCREMENTAL:NO is mandatory (E-W1): incremental
+        # linking inserts e9-jmp thunks at .text start that would make the GC
+        # stackmap fnAddresses miss the real entry points.
+        target_link_options(${target} PRIVATE
+            /INCREMENTAL:NO
+            "/WHOLEARCHIVE:$<TARGET_FILE:EcoEntryStatic>"
+            "/WHOLEARCHIVE:$<TARGET_FILE:ElmKernel_Utils>"
+            "/WHOLEARCHIVE:$<TARGET_FILE:EcoNativeDriverStatic>")
+        target_link_libraries(${target} PRIVATE
+            # Bare targets propagate INTERFACE_LINK_LIBRARIES; the
+            # /WHOLEARCHIVE: directives above carry the force-load semantics.
+            EcoEntryStatic
+            ElmKernel_Utils
+            EcoNativeDriverStatic
+            EcoRuntimeStatic
+            ElmKernel_Basics ElmKernel_Bitwise ElmKernel_Char ElmKernel_String
+            ElmKernel_List ElmKernel_JsArray ElmKernel_Debug ElmKernel_Scheduler
+            ElmKernel_Platform ElmKernel_Process ElmKernel_VirtualDom ElmKernel_Json
+            ElmKernel_Browser ElmKernel_Bytes ElmKernel_File ElmKernel_Http
+            ElmKernel_Parser ElmKernel_Regex ElmKernel_Time ElmKernel_Url
+            ElmKernel_EffectRegistry
+            EcoKernel_File EcoKernel_Console EcoKernel_Env EcoKernel_Process
+            EcoKernel_MVar EcoKernel_NativeDriver EcoKernel_Runtime EcoKernel_Http
+            EcoKernel_Crash
+            # Vendored statics: libcurl (schannel TLS), libzip, zlib. No
+            # OpenSSL on Windows (SHA via BCrypt). Same set as the AOT link.
+            libcurl_static zip zlibstatic
+            # Windows SDK import libs (kernel32 implicit; rest pulled by
+            # schannel TLS + BCrypt + sockets).
+            kernel32 user32 ws2_32 crypt32 bcrypt secur32 advapi32)
+        return()
+    endif()
+
     if(ECO_LINK_WITH_BFD)
         target_link_options(${target} PRIVATE -fuse-ld=bfd)
     endif()
@@ -740,6 +874,15 @@ elseif(APPLE)
     # joins the rest of the Darwin install rules in the top-level
     # CMakeLists.txt (lib/eco-runtime/project/*.a, kernel sources, etc.).
     install(TARGETS eco RUNTIME DESTINATION bin COMPONENT BundleDarwin)
+elseif(WIN32)
+    # W4 Windows bundle: install Stage 9's unified eco.exe under bin/eco.exe
+    # next to lib/eco-runtime/project/*.lib. Same shape as the Darwin rule
+    # above, just gated on BundleWindows so it joins the rest of the
+    # Windows install rules in the top-level CMakeLists.txt
+    # (lib/eco-runtime/project/*.lib, kernel sources, examples). The eco
+    # target is EXCLUDE_FROM_ALL so win-aot.yml must `cmake --build build
+    # --target eco` before invoking `--target package`.
+    install(TARGETS eco RUNTIME DESTINATION bin COMPONENT BundleWindows)
 endif()
 
 # -- Stage 9a (quick) + eco-quick: dev-iteration sibling of `eco`.

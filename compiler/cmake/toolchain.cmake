@@ -9,8 +9,9 @@
 # from the build and let pnpm run with ignore-scripts=true (see
 # compiler/.npmrc).
 #
-# Platforms: Linux x86_64 and macOS (arm64 / x86_64) — see the per-platform
-# URL/SHA table below and the platform gate in compiler/CMakeLists.txt.
+# Platforms: Linux x86_64, macOS (arm64 / x86_64), Windows x86_64 — see the
+# per-platform URL/SHA table below and the platform gate in
+# compiler/CMakeLists.txt.
 
 set(TOOLCHAIN_DIR "${CMAKE_BINARY_DIR}/toolchain")
 set(TOOLCHAIN_BIN "${TOOLCHAIN_DIR}/bin")
@@ -101,6 +102,17 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SYSTEM_PROCESSOR STREQUAL "
     set(ELM_FORMAT_SHA "064102cd471550beb43ff7eb3dd6ac7c2a1946cf038dbde389873384f62cbdc4")
     set(ELM_TEST_RS_URL "https://github.com/mpizenberg/elm-test-rs/releases/download/v3.0.1/elm-test-rs_macos.tar.gz")
     set(ELM_TEST_RS_SHA "614936b1f3b2d5488c4168399446821c9304c2c2c1f4701f23e65199e3a8e6ba")
+elseif(WIN32 AND (CMAKE_SYSTEM_PROCESSOR STREQUAL "AMD64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64"))
+    set(ELM_URL "https://github.com/elm/compiler/releases/download/0.19.1/binary-for-windows-64-bit.gz")
+    set(ELM_SHA "d1bf666298cbe3c5447b9ca0ea608552d750e5d232f9845c2af11907b654903b")
+    set(ELM_FORMAT_URL "https://github.com/avh4/elm-format/releases/download/0.8.7/elm-format-0.8.7-win-x64.zip")
+    set(ELM_FORMAT_SHA "24833297bc58f6e72708b0f95a03c73190aa22d5e789b89ba1c00796a58abf7f")
+    # Upstream packaging quirk: `elm-test-rs_windows.zip` is actually a
+    # gzipped tar — `file(1)` reports "gzip compressed data" — containing a
+    # single `elm-test-rs.exe`. The extraction path below uses tar regardless
+    # of suffix, so this Just Works.
+    set(ELM_TEST_RS_URL "https://github.com/mpizenberg/elm-test-rs/releases/download/v3.0.1/elm-test-rs_windows.zip")
+    set(ELM_TEST_RS_SHA "8d375c48eac4451d930e0d64678d7f9e018093d704d2f436052984809dfe9a0d")
 else()
     message(FATAL_ERROR
         "No pinned Elm toolchain binaries for "
@@ -108,49 +120,76 @@ else()
         "Add a URL/SHA row to compiler/cmake/toolchain.cmake.")
 endif()
 
+# Per-platform: binary suffix and a gunzip helper. On POSIX we shell out to
+# gunzip; on Windows there is no POSIX shell guaranteed (Git Bash may be
+# absent in a fresh VS Build Tools install), so we use PowerShell's
+# System.IO.Compression.GZipStream — a stdlib path with no extra deps.
+if(WIN32)
+    set(ECO_EXE_SUFFIX ".exe")
+    function(_eco_gunzip _src _dst)
+        execute_process(
+            COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command
+                "$in = [System.IO.File]::OpenRead('${_src}'); \
+                 $gz = New-Object System.IO.Compression.GZipStream($in, [System.IO.Compression.CompressionMode]::Decompress); \
+                 $out = [System.IO.File]::Create('${_dst}'); \
+                 $gz.CopyTo($out); $out.Close(); $gz.Close(); $in.Close()"
+            RESULT_VARIABLE _rc)
+        if(NOT _rc EQUAL 0)
+            message(FATAL_ERROR "PowerShell GZipStream decompress failed (rc=${_rc}): ${_src} → ${_dst}")
+        endif()
+    endfunction()
+else()
+    set(ECO_EXE_SUFFIX "")
+    function(_eco_gunzip _src _dst)
+        execute_process(
+            COMMAND sh -c "gunzip -c '${_src}' > '${_dst}'"
+            RESULT_VARIABLE _rc)
+        if(NOT _rc EQUAL 0)
+            message(FATAL_ERROR "gunzip failed (rc=${_rc}): ${_src} → ${_dst}")
+        endif()
+        execute_process(COMMAND chmod +x "${_dst}")
+    endfunction()
+endif()
+
 # --- elm 0.19.1 -------------------------------------------------------------
 set(ELM_GZ   "${TOOLCHAIN_CACHE}/elm-0.19.1.gz")
-set(ELM_BIN  "${TOOLCHAIN_BIN}/elm")
+set(ELM_BIN  "${TOOLCHAIN_BIN}/elm${ECO_EXE_SUFFIX}")
 
 if(NOT EXISTS "${ELM_BIN}")
     eco_fetch("elm 0.19.1" "${ELM_URL}" "${ELM_SHA}" "${ELM_GZ}")
-    execute_process(
-        COMMAND sh -c "gunzip -c '${ELM_GZ}' > '${ELM_BIN}'"
-        RESULT_VARIABLE _rc)
-    if(NOT _rc EQUAL 0)
-        message(FATAL_ERROR "Failed to gunzip elm binary (rc=${_rc})")
-    endif()
-    execute_process(COMMAND chmod +x "${ELM_BIN}")
+    _eco_gunzip("${ELM_GZ}" "${ELM_BIN}")
 endif()
 
 # --- elm-format 0.8.7 -------------------------------------------------------
-set(ELM_FORMAT_TGZ "${TOOLCHAIN_CACHE}/elm-format-0.8.7.tgz")
-set(ELM_FORMAT_BIN "${TOOLCHAIN_BIN}/elm-format")
+# Linux/macOS upstream is .tgz; Windows upstream is .zip. CMake's
+# file(ARCHIVE_EXTRACT) handles both, but `cmake -E tar xzf` does NOT handle
+# zip — use the archive helper and let it sniff the format.
+if(WIN32)
+    set(ELM_FORMAT_ARCHIVE "${TOOLCHAIN_CACHE}/elm-format-0.8.7.zip")
+else()
+    set(ELM_FORMAT_ARCHIVE "${TOOLCHAIN_CACHE}/elm-format-0.8.7.tgz")
+endif()
+set(ELM_FORMAT_BIN "${TOOLCHAIN_BIN}/elm-format${ECO_EXE_SUFFIX}")
 
 if(NOT EXISTS "${ELM_FORMAT_BIN}")
-    eco_fetch("elm-format 0.8.7" "${ELM_FORMAT_URL}" "${ELM_FORMAT_SHA}" "${ELM_FORMAT_TGZ}")
-    execute_process(
-        COMMAND ${CMAKE_COMMAND} -E tar xzf "${ELM_FORMAT_TGZ}"
-        WORKING_DIRECTORY "${TOOLCHAIN_BIN}"
-        RESULT_VARIABLE _rc)
-    if(NOT _rc EQUAL 0)
-        message(FATAL_ERROR "Failed to extract elm-format (rc=${_rc})")
-    endif()
+    eco_fetch("elm-format 0.8.7" "${ELM_FORMAT_URL}" "${ELM_FORMAT_SHA}" "${ELM_FORMAT_ARCHIVE}")
+    file(ARCHIVE_EXTRACT
+        INPUT       "${ELM_FORMAT_ARCHIVE}"
+        DESTINATION "${TOOLCHAIN_BIN}")
 endif()
 
 # --- elm-test-rs 3.0.1 ------------------------------------------------------
-set(ELM_TEST_RS_TGZ "${TOOLCHAIN_CACHE}/elm-test-rs-3.0.1.tgz")
-set(ELM_TEST_RS_BIN "${TOOLCHAIN_BIN}/elm-test-rs")
+# Linux/macOS upstream is .tar.gz; Windows upstream is also .tar.gz but
+# misnamed with a .zip suffix (see the URL/SHA block above). Always treat
+# as tar (file(ARCHIVE_EXTRACT) sniffs the format).
+set(ELM_TEST_RS_ARCHIVE "${TOOLCHAIN_CACHE}/elm-test-rs-3.0.1.tgz")
+set(ELM_TEST_RS_BIN "${TOOLCHAIN_BIN}/elm-test-rs${ECO_EXE_SUFFIX}")
 
 if(NOT EXISTS "${ELM_TEST_RS_BIN}")
-    eco_fetch("elm-test-rs 3.0.1" "${ELM_TEST_RS_URL}" "${ELM_TEST_RS_SHA}" "${ELM_TEST_RS_TGZ}")
-    execute_process(
-        COMMAND ${CMAKE_COMMAND} -E tar xzf "${ELM_TEST_RS_TGZ}"
-        WORKING_DIRECTORY "${TOOLCHAIN_BIN}"
-        RESULT_VARIABLE _rc)
-    if(NOT _rc EQUAL 0)
-        message(FATAL_ERROR "Failed to extract elm-test-rs (rc=${_rc})")
-    endif()
+    eco_fetch("elm-test-rs 3.0.1" "${ELM_TEST_RS_URL}" "${ELM_TEST_RS_SHA}" "${ELM_TEST_RS_ARCHIVE}")
+    file(ARCHIVE_EXTRACT
+        INPUT       "${ELM_TEST_RS_ARCHIVE}"
+        DESTINATION "${TOOLCHAIN_BIN}")
 endif()
 
 # Expose binaries as cache variables so they survive reconfigure and can be

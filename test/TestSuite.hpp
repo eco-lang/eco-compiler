@@ -6,7 +6,14 @@
 #include <memory>
 #include <optional>
 #include <string>
+#if !defined(_WIN32)
 #include <unistd.h>
+#else
+#include <io.h>      // _isatty
+#include <stdio.h>   // _fileno
+#define isatty       _isatty
+#define STDOUT_FILENO _fileno(stdout)
+#endif
 #include <cstdlib>
 #include <vector>
 

@@ -26,9 +26,12 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#if !defined(_WIN32)
 #include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 namespace Eco::Kernel::Process {
 
@@ -39,6 +42,13 @@ namespace {
 
 // Body for `spawn`. Captured payload is tuple2(cmd, args).
 HPointer spawnBody(HPointer captured) {
+#if defined(_WIN32)
+    // v1: process-spawning needs CreateProcessW + pipe plumbing per
+    // build-on-windows item 9 — TODO. Return a clear error so callers see
+    // it instead of silently hanging.
+    (void)captured;
+    return failErrno(ENOSYS, "", "Eco.Process.spawn not yet implemented on Windows");
+#else
     HPointer cmdHP;
     HPointer argsHP;
     {
@@ -67,11 +77,16 @@ HPointer spawnBody(HPointer captured) {
         ::_exit(127);
     }
     return succeedInt(static_cast<int64_t>(pid));
+#endif
 }
 
 // Body for `spawnProcess`. Captured payload is a Record of 5 boxed fields
 // in declaration order: [cmd, args, stdin_, stdout_, stderr_].
 HPointer spawnProcessBody(HPointer captured) {
+#if defined(_WIN32)
+    (void)captured;
+    return failErrno(ENOSYS, "", "Eco.Process.spawnProcess not yet implemented on Windows");
+#else
     HPointer cmdHP, argsHP, stdinHP, stdoutHP, stderrHP;
     {
         Record* rec = static_cast<Record*>(
@@ -144,6 +159,7 @@ HPointer spawnProcessBody(HPointer captured) {
 
     HPointer rec = record(fields, 0b01);
     return succeed(rec);
+#endif
 }
 
 // PHASE-4b WaitService drain. Pops (token, exitCode) pairs queued by the

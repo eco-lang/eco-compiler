@@ -161,11 +161,26 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job) {
         // EcoRunner::executeJIT). `tm` is typically nullptr — the JIT picks
         // up the real TargetMachine through EcoJIT::create, and the lambda
         // runs after DL is already on the module.
+        //
+        // Windows v1: mlir::makeOptimizingTransformer asserts
+        // "invalid optimization/size level X/0" after the FIRST successful
+        // JIT execution in the test runner — the speed level it receives is
+        // garbage on the second invocation despite `job.optLevel` being None.
+        // Symptom is consistent across runs; root cause looks like a static
+        // state issue inside MLIR's OptUtils on lld-link + /MT. The runner
+        // tests don't depend on JIT opt, so skip the transformer on Windows
+        // until the LLVM-side issue is isolated and either patched upstream
+        // or worked around here. RS4GC + frame pointers already ran in
+        // runRS4GCAndMaybeFramePointers() above, so correctness is unaffected.
+#if defined(_WIN32)
+        return Error::success();
+#else
         auto optPipeline = mlir::makeOptimizingTransformer(
             static_cast<unsigned>(job.optLevel), /*sizeLevel=*/0, job.tm);
         if (auto err = optPipeline(&m))
             return err;
         return Error::success();
+#endif
     }
     }
 

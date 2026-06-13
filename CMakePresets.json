@@ -8,6 +8,7 @@
       "description": "Inner-dev-loop preset. -O0 -g, ECO_GC_DEBUG, ECO_KERNEL_DEBUG, GC stats all ON. Slow runtime; fastest iteration on diagnostics.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/debug",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
       "cacheVariables": {
         "CMAKE_C_COMPILER": "clang",
         "CMAKE_CXX_COMPILER": "clang++",
@@ -23,6 +24,7 @@
       "description": "Default everyday build. -O2 -g -UNDEBUG, asserts ON, GC stats ON, ECO_KERNEL_DEBUG OFF. Hosts the bootstrap chain and the eco-quick fast-iteration target.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
       "cacheVariables": {
         "CMAKE_C_COMPILER": "clang",
         "CMAKE_CXX_COMPILER": "clang++",
@@ -57,6 +59,42 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "ECO_FRONTEND_ONLY": "ON"
+      }
+    },
+    {
+      "name": "win-frontend",
+      "displayName": "Windows front-end only (bootstrap stages 1-5, no native backend)",
+      "description": "Configures only compiler/ via ECO_FRONTEND_ONLY. Pure Node/Elm bootstrap through Stage 5 — exercises the toolchain.cmake Windows branch + the Elm-compiler /-separator path (build-on-windows item 10b). No LLVM/MLIR, runtime, kernels or tests. clang-cl pinned even for the front-end path so the auto-probe doesn't pick up a stray MinGW install.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang-cl",
+        "CMAKE_CXX_COMPILER": "clang-cl",
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "ECO_FRONTEND_ONLY": "ON"
+      }
+    },
+    {
+      "name": "win-build",
+      "displayName": "Windows build (clang-cl + lld-link, /MT static CRT, LLVM 21.1.8 via $LLVM_DIR)",
+      "description": "Full configure on Windows: runtime, kernels, tests, compiler. clang-cl targeting x86_64-pc-windows-msvc + lld-link; CMAKE_PREFIX_PATH expands $LLVM_DIR — set it to the prefix containing the LLVM 21.1.8 install produced by experiments/win-llvm-build before running this preset (no default; CMake's find_package(MLIR REQUIRED) will fail loudly with a list of expected file names if LLVM_DIR is unset). See plans/build-on-windows.md.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang-cl",
+        "CMAKE_CXX_COMPILER": "clang-cl",
+        "CMAKE_LINKER_TYPE": "LLD",
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded",
+        "CMAKE_CXX_FLAGS_INIT": "/EHsc",
+        "CMAKE_C_FLAGS_RELWITHDEBINFO": "/O2 /Zi /UNDEBUG",
+        "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "/O2 /Zi /UNDEBUG /EHsc",
+        "CMAKE_EXE_LINKER_FLAGS_INIT": "/INCREMENTAL:NO",
+        "CMAKE_SHARED_LINKER_FLAGS_INIT": "/INCREMENTAL:NO",
+        "CMAKE_PREFIX_PATH": "$env{LLVM_DIR}",
+        "ECO_LLVM_FUNCTION_SECTIONS": "ON"
       }
     },
     {
@@ -100,6 +138,16 @@
     {
       "name": "mac-frontend",
       "configurePreset": "mac-frontend",
+      "jobs": 0
+    },
+    {
+      "name": "win-build",
+      "configurePreset": "win-build",
+      "jobs": 0
+    },
+    {
+      "name": "win-frontend",
+      "configurePreset": "win-frontend",
       "jobs": 0
     },
     {

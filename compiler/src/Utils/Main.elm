@@ -218,7 +218,7 @@ as `setCurrentDirectory dir; readFile file`.
 -}
 fpCombine : FilePath -> FilePath -> FilePath
 fpCombine path1 path2 =
-    if String.startsWith "/" path2 || String.startsWith path1 path2 then
+    if not (fpIsRelative path2) || String.startsWith path1 path2 then
         path2
 
     else
@@ -757,11 +757,51 @@ fpPathSeparator =
     '/'
 
 
-{-| Check if a path is relative (does not start with a slash).
+{-| Check if a path is relative.
+
+A path is absolute if it begins with:
+  - A POSIX root slash: "/foo/bar".
+  - A Windows drive prefix followed by a separator: "C:/...", "c:\\...".
+  - A Windows UNC root: "\\\\server\\share\\..." or "//server/share/..."
+    (incoming paths are normalised to "/" by the kernel IO boundary, so
+    backslash forms are accepted defensively but should be rare).
+
+Anything else (including a bare drive letter "C:" with no slash) is
+treated as relative, matching the behaviour the rest of the toolchain
+expects.
+
 -}
 fpIsRelative : FilePath -> Bool
-fpIsRelative =
-    String.startsWith "/" >> not
+fpIsRelative path =
+    not (isAbsolutePath path)
+
+
+isAbsolutePath : String -> Bool
+isAbsolutePath path =
+    if String.startsWith "/" path then
+        True
+
+    else if String.startsWith "\\" path then
+        -- UNC root or backslash-rooted Windows absolute path.
+        True
+
+    else
+        case String.toList (String.left 3 path) of
+            -- Windows drive prefix: ASCII letter, colon, separator.
+            letter :: ':' :: sep :: _ ->
+                isAsciiLetter letter && (sep == '/' || sep == '\\')
+
+            _ ->
+                False
+
+
+isAsciiLetter : Char -> Bool
+isAsciiLetter c =
+    let
+        code =
+            Char.toCode c
+    in
+    (code >= 0x41 && code <= 0x5A) || (code >= 0x61 && code <= 0x7A)
 
 
 {-| Extract just the file name from a path (everything after the last slash).

@@ -20,6 +20,33 @@ if(NOT ECO_FRONTEND_ONLY)
     include(LLVMLibunwind)
 endif()
 
+# Platform-conditional source list for the small VM primitives the allocator
+# uses (reserve / commit / decommit / release). One translation unit is added
+# to every target that compiles Allocator.cpp. Header is platform-neutral.
+# See runtime/src/allocator/PlatformVirtualMemory.hpp. Stored as an
+# absolute path so it can be substituted into both the top-level executable
+# definitions and the runtime/src/codegen/CMakeLists.txt MLIR libraries
+# (which live in a different directory and need an absolute reference).
+if(WIN32)
+    # Windows headers define min/max as macros that wreck std::max/std::min
+    # at the use site. NOMINMAX disables them; we want it globally so any
+    # translation unit that transitively pulls windows.h is unaffected.
+    # WIN32_LEAN_AND_MEAN trims the windows.h footprint to skip COM, GDI,
+    # cryptography clients we don't use — pure size/speed.
+    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+    set(ECO_ALLOCATOR_PLATFORM_SRCS
+        ${CMAKE_SOURCE_DIR}/runtime/src/allocator/PlatformVirtualMemory_win32.cpp
+        CACHE INTERNAL "Platform-specific VM impl for the Allocator")
+else()
+    set(ECO_ALLOCATOR_PLATFORM_SRCS
+        ${CMAKE_SOURCE_DIR}/runtime/src/allocator/PlatformVirtualMemory_posix.cpp
+        CACHE INTERNAL "Platform-specific VM impl for the Allocator")
+endif()
+# Alias used by runtime/src/codegen/CMakeLists.txt (kept as a separate name
+# for clarity at the call sites).
+set(ECO_ALLOCATOR_PLATFORM_SRCS_RELATIVE ${ECO_ALLOCATOR_PLATFORM_SRCS}
+    CACHE INTERNAL "Alias — see ECO_ALLOCATOR_PLATFORM_SRCS")
+
 # Runtime GC debug assertions: default ON for Debug builds, OFF for Release.
 # Declared at top level so EVERY target that includes the allocator headers
 # (NurserySpace, ThreadLocalHeap, Allocator) sees the same value of
@@ -190,7 +217,7 @@ option(ECO_KERNEL_DEBUG
        "Enable stderr tracing inside the HTTP / File / zip kernel paths"
        OFF)
 
-if(ECO_STATIC)
+if(ECO_STATIC OR WIN32)
     # MUST be set BEFORE any add_subdirectory() that calls find_package on
     # these libs — otherwise the first subdir to call find_package(OpenSSL)
     # / find_package(CURL) / find_package(ZLIB) caches the .so path and
@@ -215,6 +242,53 @@ if(ECO_STATIC)
     # `libcurl_static` target exists before elm-kernel-cpp is added — both
     # subdirs link ElmKernel_Http / EcoKernel_Http against it.
     include(FetchContent)
+
+    # Vendor zlib FIRST so curl's find_package(ZLIB) and libzip's
+    # find_package(ZLIB) both pick up the FetchContent target. POSIX +
+    # ECO_STATIC already had zlib via the apk/Debian package; on Windows
+    # there is no system zlib.
+    if(WIN32)
+        # zlib 1.3.1 (Jan 2024) — first release whose
+        # cmake_minimum_required satisfies CMake 4.x's policy
+        # (1.2.13 hard-coded 2.4.4 which CMake 4.3 rejects).
+        #
+        # OVERRIDE_FIND_PACKAGE (CMake 3.24+) makes any later
+        # find_package(ZLIB) call resolve to the FetchContent target tree
+        # automatically — both libzip and libcurl call find_package(ZLIB)
+        # internally and would otherwise fail (no system zlib on Windows).
+        # The FetchContent package name MUST match the find_package name
+        # exactly ("ZLIB").
+        FetchContent_Declare(ZLIB
+            GIT_REPOSITORY https://github.com/madler/zlib.git
+            GIT_TAG v1.3.1
+            GIT_SHALLOW TRUE
+            OVERRIDE_FIND_PACKAGE
+        )
+        FetchContent_MakeAvailable(ZLIB)
+        if(NOT TARGET zlibstatic)
+            message(FATAL_ERROR "Windows: vendored zlib did not produce the 'zlibstatic' target")
+        endif()
+        # Some consumers spell it ZLIB::ZLIB — alias for forward compat.
+        if(NOT TARGET ZLIB::ZLIB)
+            add_library(ZLIB::ZLIB ALIAS zlibstatic)
+        endif()
+        target_include_directories(zlibstatic INTERFACE
+            "${zlib_SOURCE_DIR}"
+            "${zlib_BINARY_DIR}")
+        # Curl and libzip both later call `export(TARGETS … EXPORT CURLTargets)`
+        # — placing libcurl_static (which transitively depends on zlibstatic)
+        # into the CURLTargets / libzipTargets export sets, and CMake refuses
+        # because zlibstatic itself isn't in any export set. Adding it to an
+        # install(EXPORT) rule whose target name matches is the standard
+        # remediation — we don't actually need the install artefacts.
+        install(TARGETS zlibstatic
+            EXPORT zlibstaticTargets
+            ARCHIVE  DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+            LIBRARY  DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+            RUNTIME  DESTINATION "${CMAKE_INSTALL_BINDIR}"
+            INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+        export(TARGETS zlibstatic FILE "${CMAKE_BINARY_DIR}/zlibstaticTargets.cmake")
+    endif()
     set(BUILD_CURL_EXE        OFF CACHE BOOL "" FORCE)
     set(BUILD_SHARED_LIBS     OFF CACHE BOOL "" FORCE)
     set(BUILD_STATIC_LIBS     ON  CACHE BOOL "" FORCE)
@@ -222,7 +296,15 @@ if(ECO_STATIC)
     set(BUILD_LIBCURL_DOCS    OFF CACHE BOOL "" FORCE)
     set(BUILD_MISC_DOCS       OFF CACHE BOOL "" FORCE)
     set(ENABLE_CURL_MANUAL    OFF CACHE BOOL "" FORCE)
-    set(CURL_USE_OPENSSL      ON  CACHE BOOL "" FORCE)
+    if(WIN32)
+        # On Windows use schannel (the OS-native TLS stack) — the system
+        # certificate store works automatically and no OpenSSL build dep is
+        # needed. See plans/build-on-windows.md (Dependency stack).
+        set(CURL_USE_OPENSSL  OFF CACHE BOOL "" FORCE)
+        set(CURL_USE_SCHANNEL ON  CACHE BOOL "" FORCE)
+    else()
+        set(CURL_USE_OPENSSL  ON  CACHE BOOL "" FORCE)
+    endif()
     set(CURL_USE_LIBPSL       OFF CACHE BOOL "" FORCE)
     set(CURL_USE_LIBSSH2      OFF CACHE BOOL "" FORCE)
     set(CURL_USE_GSSAPI       OFF CACHE BOOL "" FORCE)
@@ -246,6 +328,15 @@ if(ECO_STATIC)
     set(CURL_DISABLE_SMTP     ON CACHE BOOL "" FORCE)
     set(CURL_DISABLE_TELNET   ON CACHE BOOL "" FORCE)
     set(CURL_DISABLE_TFTP     ON CACHE BOOL "" FORCE)
+    if(WIN32)
+        # Curl's install(EXPORT CURLTargets) tries to bake in transitive
+        # targets — including our vendored zlibstatic, which isn't part of
+        # any export set and triggers "requires target X that is not in
+        # any export set" during configure. CURL_DISABLE_INSTALL skips
+        # both the install + export rules; we link the static lib directly
+        # and don't ship libcurl's CMake config.
+        set(CURL_DISABLE_INSTALL  ON  CACHE BOOL "" FORCE)
+    endif()
     FetchContent_Declare(libcurl_vendored
         GIT_REPOSITORY https://github.com/curl/curl.git
         GIT_TAG curl-8_11_0
@@ -284,6 +375,11 @@ endif()
 # the archive set staged by eco-glibc-runtime-tree below.
 if(NOT ECO_GLIBC_OUTPUT_RUNTIME AND NOT ECO_FRONTEND_ONLY)
 
+# ecor is the POSIX-only allocator test runner — its main.cpp uses
+# getopt_long, popen("addr2line"), and other POSIX-isms that don't map cleanly
+# to Win64. The eco AOT binary's runtime is exercised by tests/ instead on
+# Windows; ecor remains the inner-loop GC debugging tool on Linux/macOS.
+if(NOT WIN32)
 add_executable(ecor EXCLUDE_FROM_ALL
         runtime/src/main.cpp
         runtime/src/allocator/RootSet.cpp
@@ -291,6 +387,7 @@ add_executable(ecor EXCLUDE_FROM_ALL
         runtime/src/allocator/OldGenSpace.cpp
         runtime/src/allocator/NurserySpace.cpp
         runtime/src/allocator/Allocator.cpp
+        ${ECO_ALLOCATOR_PLATFORM_SRCS}
         runtime/src/allocator/ThreadLocalHeap.cpp
         runtime/src/allocator/GCStats.cpp
         runtime/src/allocator/StackMap.cpp
@@ -309,8 +406,9 @@ endif()
 # Include debug symbols for stack traces (works with release optimization)
 target_compile_options(ecor PRIVATE -g)
 
-# Link RapidCheck
-find_package(rapidcheck REQUIRED)
+# Link RapidCheck (find_package is hoisted out of the ecor block below so
+# test/ can resolve it on Windows too — see the find_package call after
+# the `endif() # NOT WIN32 (ecor block)` marker.)
 target_link_libraries(ecor PRIVATE rapidcheck)
 
 # Add pthread for threading support
@@ -329,6 +427,13 @@ if(APPLE)
 else()
     target_link_options(ecor PRIVATE -rdynamic)
 endif()
+endif() # NOT WIN32 (ecor block)
+
+# RapidCheck is consumed by the test/ subdir's test binary as well, so
+# resolve the package here (outside the ecor block) so Windows test builds
+# also see it. find_package is idempotent; reach for it once per
+# configure for the imported target.
+find_package(rapidcheck REQUIRED)
 
 # EXCLUDE_FROM_ALL: test binaries (test, stress-test, mlir-equivalence,
 # aot-e2e-runner) are dev-time tools, not distribution artifacts. Build them on
@@ -337,6 +442,11 @@ endif()
 # work as advertised — or via `cmake --build build --target <bin>` directly.
 # Keeps them out of the default `all` target so `cmake --build … --target
 # package` (Stage C bundle) doesn't drag them through the link step.
+# On Windows the test/ subdir builds only the `test` binary (the GC + JIT
+# E2E suite). The `stress-test`, `mlir-equivalence`, and `aot-e2e-runner`
+# targets are gated off below inside test/CMakeLists.txt — they depend on
+# TestHttpServer (BSD-sockets + OpenSSL) and on the run-aot-e2e custom
+# command that shells out via `sh -c`. Porting those is W5 follow-up.
 add_subdirectory(test EXCLUDE_FROM_ALL)
 
 endif() # NOT ECO_GLIBC_OUTPUT_RUNTIME (ecor + test)
@@ -604,6 +714,69 @@ if(APPLE AND NOT ECO_GLIBC_OUTPUT_RUNTIME AND NOT ECO_FRONTEND_ONLY)
 endif()
 
 #-------------------------------------------------------------------------------
+# W4 Windows bundle (CPack ZIP). Mirrors the Darwin install set above with the
+# Win64 dep stack: no OpenSSL (TLS via schannel, SHA via BCrypt CNG), and the
+# vendored libcurl_static + zip + zlibstatic carry the rest of the static
+# closure. v1 ships eco-compiler.exe (Stage 6 AOT output); once the self-hosted
+# Stages 7-9 chain fits inside the GH Actions job ceiling the binary install
+# below swaps to bin/eco.exe (Stage 9), matching the Darwin shape exactly.
+#-------------------------------------------------------------------------------
+if(WIN32 AND NOT ECO_FRONTEND_ONLY)
+    # Project archives — same list as BundleDarwin. .lib instead of .a, but
+    # the CMake target names + DESTINATION layout match Darwin exactly so the
+    # AOT eco-boot-native picks them up at bundle-relative paths in either
+    # OS via the same RuntimeFile basename + subdir entry in EcoBootConfig.h.
+    set(_eco_project_targets_win
+        EcoEntryStatic EcoEmbedStatic EcoRuntimeStatic EcoNativeDriverStatic)
+    if(TARGET EcoNodeGlue)
+        list(APPEND _eco_project_targets_win EcoNodeGlue)
+    endif()
+    foreach(mod ${ECO_ELM_KERNEL_MODS})
+        list(APPEND _eco_project_targets_win ElmKernel_${mod})
+    endforeach()
+    foreach(mod ${ECO_KERNEL_MODS})
+        list(APPEND _eco_project_targets_win EcoKernel_${mod})
+    endforeach()
+    install(TARGETS ${_eco_project_targets_win}
+            ARCHIVE DESTINATION lib/eco-runtime/project
+            COMPONENT BundleWindows)
+
+    # Vendored statics — libcurl (schannel TLS), libzip (read-only zip
+    # extraction), zlib (curl + libzip dep). These land at the same
+    # lib/eco-runtime/project/ path the .lib archives use so the
+    # RuntimeFile resolver finds them next to the project archives.
+    install(TARGETS libcurl_static zip zlibstatic
+            ARCHIVE DESTINATION lib/eco-runtime/project
+            COMPONENT BundleWindows)
+
+    # Eco binary — the install rule for bin/eco.exe lives in
+    # compiler/CMakeLists.txt next to the add_executable(eco …) target
+    # itself (mirroring how BundleDarwin wires it there). Kept out of
+    # this top-level block for symmetry with the Darwin layout.
+
+    # Kernel Elm sources — same shape and filter as BundleDarwin.
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/eco-kernel-cpp/
+            DESTINATION share/eco/kernel/eco-kernel-cpp
+            COMPONENT BundleWindows
+            FILES_MATCHING
+                PATTERN "elm.json"
+                PATTERN "*.elm"
+                PATTERN "*.js"
+                PATTERN "artifacts.dat"
+                PATTERN "typed-artifacts.dat"
+                PATTERN "docs.json"
+                REGEX "/elm-stuff(/|$)" EXCLUDE
+                REGEX "/src/eco(/|$)" EXCLUDE)
+
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/examples/
+            DESTINATION share/eco/examples/hello
+            COMPONENT BundleWindows
+            FILES_MATCHING
+                PATTERN "elm.json"
+                PATTERN "*.elm")
+endif()
+
+#-------------------------------------------------------------------------------
 # Stage D (Debian side): stage the glibc output-runtime tree.
 #
 # Archive-only mode (see the ECO_GLIBC_OUTPUT_RUNTIME option above): builds
@@ -837,6 +1010,42 @@ elseif(APPLE AND NOT ECO_GLIBC_OUTPUT_RUNTIME AND NOT ECO_FRONTEND_ONLY)
     set(CPACK_COMPONENTS_ALL BundleDarwin)
     set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
     set(CPACK_ARCHIVE_BUNDLEDARWIN_FILE_NAME "${CPACK_PACKAGE_FILE_NAME}")
+
+    include(CPack)
+elseif(WIN32 AND NOT ECO_FRONTEND_ONLY)
+    # W4 Windows CPack: ZIP only for v1. MSI / Chocolatey / winget formula
+    # are tracked as follow-ups (out of scope per plans/build-on-windows.md).
+    # File-name carries the host arch — Win64 is the only target shape today
+    # (Win-on-ARM is a separate port behind plans/build-on-windows-arm.md if
+    # it ever lands).
+    file(READ "${CMAKE_SOURCE_DIR}/version.txt" ECO_PACKAGE_VERSION)
+    string(STRIP "${ECO_PACKAGE_VERSION}" ECO_PACKAGE_VERSION)
+    if(ECO_VERSION_OVERRIDE)
+        set(ECO_PACKAGE_VERSION "${ECO_VERSION_OVERRIDE}")
+    endif()
+    # Win64 only for now; matches the win-build preset's
+    # -DCMAKE_SYSTEM_PROCESSOR=AMD64 implicit default.
+    set(_eco_pkg_arch_win "x86_64")
+    message(STATUS "Eco bundle (Windows) version: ${ECO_PACKAGE_VERSION} arch: ${_eco_pkg_arch_win}")
+
+    set(CPACK_PACKAGE_NAME "eco")
+    set(CPACK_PACKAGE_VERSION "${ECO_PACKAGE_VERSION}")
+    set(CPACK_PACKAGE_FILE_NAME
+        "eco-${ECO_PACKAGE_VERSION}-${_eco_pkg_arch_win}-windows")
+    set(CPACK_GENERATOR "ZIP")
+    set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+        "Eco — Elm compiler with native AOT runtime (Windows, PE)")
+    set(CPACK_PACKAGE_VENDOR "thesett")
+    # CPACK_STRIP_FILES is OFF on Windows — lld-link doesn't carry a
+    # PE-stripping tool the way ld64/strip do for Mach-O, and the eco-compiler
+    # binary's size is dominated by the embedded LLVM/MLIR libraries
+    # (uncompressible by strip).
+    set(CPACK_STRIP_FILES OFF)
+    # Restrict to the BundleWindows component so add_mlir_library and
+    # FetchContent's auto-installed install rules don't pollute the ZIP.
+    set(CPACK_COMPONENTS_ALL BundleWindows)
+    set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
+    set(CPACK_ARCHIVE_BUNDLEWINDOWS_FILE_NAME "${CPACK_PACKAGE_FILE_NAME}")
 
     include(CPack)
 endif()

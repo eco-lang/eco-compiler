@@ -33,7 +33,9 @@
 [[maybe_unused]] static inline char** backtrace_symbols(void* const*, int) { return nullptr; }
 [[maybe_unused]] static inline void backtrace_symbols_fd(void* const*, int, int) {}
 #endif
+#if !defined(_WIN32)
 #include <getopt.h>
+#endif
 #include <iomanip>
 #include <iostream>
 #include <mutex>
@@ -41,7 +43,9 @@
 #include <random>
 #include <stdexcept>
 #include <thread>
+#if !defined(_WIN32)
 #include <unistd.h>
+#endif
 #include <vector>
 
 #include "Allocator.hpp"

@@ -19,15 +19,20 @@ set(RUNTIME_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/src)
 # picks .so files and we link against the system-shared libs.
 # OPENSSL_USE_STATIC_LIBS / ZLIB_USE_STATIC_LIBS / CMAKE_FIND_LIBRARY_SUFFIXES
 # are set at the top-level CMakeLists.txt when ECO_STATIC=ON — they must be
-# in effect before any sibling subdirectory's find_package call.
-find_package(OpenSSL REQUIRED)
+# in effect before any sibling subdirectory's find_package call. On Windows
+# OpenSSL is eliminated entirely (schannel + BCrypt replace it — see
+# plans/build-on-windows.md Dependency stack); the win-build path links
+# against the OS-provided crypt32/bcrypt/secur32 import libs.
+if(NOT WIN32)
+    find_package(OpenSSL REQUIRED)
+endif()
 
-# Under ECO_STATIC the vendored libcurl_static target is created by the
-# top-level CMakeLists.txt before any subdirectory is added (so both
-# elm-kernel-cpp and eco-kernel-cpp can link against it without an
+# Under ECO_STATIC OR WIN32 the vendored libcurl_static target is created
+# by the top-level CMakeLists.txt before any subdirectory is added (so
+# both elm-kernel-cpp and eco-kernel-cpp can link against it without an
 # ordering hazard). Here we only need to set CURL_FOUND and run the
-# dynamic find_package if we're not in static mode.
-if(ECO_STATIC)
+# dynamic find_package if we're not in static/Windows mode.
+if(ECO_STATIC OR WIN32)
     set(CURL_FOUND TRUE)
 else()
     find_package(CURL REQUIRED)
@@ -41,7 +46,7 @@ endif()
 #     and macOS has no SDK libzip — and AOT-built binaries must be free
 #     of a brew /opt/homebrew runtime dep. Vendoring gives a static
 #     libzip.a we can bundle under lib/eco-runtime/project/.
-if(ECO_STATIC OR APPLE)
+if(ECO_STATIC OR APPLE OR WIN32)
     include(FetchContent)
     # libzip 1.11.4 (Aug 2024) — stable, ships a CMake target named `zip`.
     FetchContent_Declare(libzip_vendored
@@ -71,6 +76,8 @@ if(ECO_STATIC OR APPLE)
     set(LIBZIP_FOUND TRUE)
     if(APPLE)
         message(STATUS "eco-kernel: libzip vendored via FetchContent (APPLE) - archive extraction available")
+    elseif(WIN32)
+        message(STATUS "eco-kernel: libzip vendored via FetchContent (WIN32) - archive extraction available")
     else()
         message(STATUS "eco-kernel: libzip vendored via FetchContent (ECO_STATIC) - archive extraction available")
     endif()
@@ -92,7 +99,7 @@ endif()
 # static archive's PRIVATE link interface and aren't transitively pulled in).
 if(LIBZIP_FOUND AND NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     set(ECO_KERNEL_LIBZIP_FOUND TRUE PARENT_SCOPE)
-    if(ECO_STATIC OR APPLE)
+    if(ECO_STATIC OR APPLE OR WIN32)
         # FetchContent target name is `zip` (libzip's CMakeLists exports it).
         set(ECO_KERNEL_LIBZIP_LIBRARIES "zip" PARENT_SCOPE)
     else()
@@ -209,7 +216,13 @@ target_include_directories(EcoKernel_Http PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${RUNTIME_INCLUDE_DIR}
 )
-if(ECO_STATIC)
+if(WIN32)
+    # Windows: vendored libcurl (schannel TLS) + vendored libzip. OpenSSL
+    # is eliminated — see plans/build-on-windows.md (Dependency stack).
+    # ws2_32 / crypt32 / bcrypt / secur32 are pulled in by curl's schannel
+    # backend through its CMakeLists, so we don't list them explicitly.
+    target_link_libraries(EcoKernel_Http PRIVATE libcurl_static zip)
+elseif(ECO_STATIC)
     # Vendored libcurl exports the `libcurl_static` CMake target (its ALIAS
     # for the static archive); vendored libzip exports the `zip` target.
     # OpenSSL was picked up via OPENSSL_USE_STATIC_LIBS before any subdir's

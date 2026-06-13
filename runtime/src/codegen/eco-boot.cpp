@@ -20,6 +20,11 @@
 #include <cassert>
 #include <cstring>
 
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -403,6 +408,26 @@ static std::string getOutputPath() {
 // Main
 //===----------------------------------------------------------------------===//
 
+// Win64 teardown hard-exit. eco-boot-native links all of LLVM/MLIR; returning
+// from main runs the /MT CRT exit() -> ExitProcess, whose DLL_PROCESS_DETACH +
+// static-destructor sweep intermittently stalls at process teardown. The
+// lowering, the linked output binary and the stats are all complete by this
+// point, so exit immediately as POSIX effectively does. TerminateProcess
+// (unlike ExitProcess) skips DLL detach entirely, so it cannot wedge on a
+// teardown lock. No-op on POSIX — the caller's `return` runs normally.
+static void ecoBootFinalExit(int rc) {
+#if defined(_WIN32)
+    llvm::outs().flush();
+    llvm::errs().flush();
+    ::TerminateProcess(::GetCurrentProcess(), static_cast<UINT>(rc));
+    // TerminateProcess is asynchronous; if it ever returns, do NOT fall through
+    // to the CRT teardown — spin until the OS process rundown reaps us.
+    for (;;) { ::Sleep(1000); }
+#else
+    (void)rc;
+#endif
+}
+
 int main(int argc, char **argv) {
     llvm::InitLLVM initLLVM(argc, argv);
 
@@ -500,6 +525,15 @@ int main(int argc, char **argv) {
     eco::registerRequiredDialects(registry);
 
     MLIRContext context(registry);
+#if defined(_WIN32)
+    // Win64: run MLIR lowering single-threaded. MLIRContext's default ctor
+    // spins up a per-context worker thread pool that parks for the context's
+    // lifetime; the hard-exit (ecoBootFinalExit) already handles teardown, but
+    // single-threading avoids leaving parked pool threads to be force-killed
+    // and keeps lowering deterministic. The dominant cost (LLVM backend object
+    // emission) is single-threaded regardless, so the wall-clock hit is small.
+    context.disableMultithreading();
+#endif
     eco::loadRequiredDialects(context);
     context.allowUnregisteredDialects();
 
@@ -670,6 +704,7 @@ int main(int argc, char **argv) {
         if (printStats) {
             stats.print(llvm::errs());
         }
+        ecoBootFinalExit(0);
         return 0;
     }
 
@@ -688,5 +723,6 @@ int main(int argc, char **argv) {
         stats.print(llvm::errs());
     }
 
+    ecoBootFinalExit(rc);
     return rc;
 }

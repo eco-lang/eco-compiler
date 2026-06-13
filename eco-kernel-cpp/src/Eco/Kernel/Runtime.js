@@ -4,7 +4,12 @@ import Elm.Kernel.Utils exposing (Tuple0)
 */
 
 var _Runtime_dirname = __Scheduler_binding(function(callback) {
-    callback(__Scheduler_succeed(__dirname));
+    // Normalize to forward slashes for the Elm fp* helpers — see
+    // plans/build-on-windows.md item 10b and _File_normalize in File.js.
+    var d = typeof process !== 'undefined' && process.platform === 'win32'
+        ? __dirname.replace(/\\/g, '/')
+        : __dirname;
+    callback(__Scheduler_succeed(d));
 });
 
 var _Runtime_random = __Scheduler_binding(function(callback) {

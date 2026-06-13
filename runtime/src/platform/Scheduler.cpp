@@ -584,6 +584,10 @@ void Scheduler::incrementPendingAsync() {
 
 void Scheduler::decrementPendingAsync() {
     pendingAsync_.fetch_sub(1);
+    // Acquire mutex_ around the notify (as notifyWorkAvailableFromAsync /
+    // requestStop do) to close the missed-wakeup window: a decrement landing
+    // between the event loop's predicate check and its wait() must not be lost.
+    { std::lock_guard<std::mutex> lk(mutex_); }
     eventCV_.notify_one();
 }
 

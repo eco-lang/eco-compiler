@@ -28,6 +28,18 @@ const child_process = require("node:child_process");
 const AdmZip = require("adm-zip");
 const which = require("which");
 
+// Normalize a filesystem path so the Elm side only ever sees forward slashes,
+// regardless of what the OS hands us. On Windows, fs.realpathSync /
+// process.cwd / __dirname / path.resolve / path.join all return backslash
+// paths; the Elm side splits and reassembles paths on "/" and recognises
+// backslashes only via the W2 item 10b absolute-path probe. Normalising at
+// this boundary is cheaper than teaching every Elm fp* helper both
+// separators (see plans/build-on-windows.md). No-op on POSIX.
+const winNormalize = process.platform === "win32";
+function normalizePath(p) {
+  return winNormalize && typeof p === "string" ? p.replace(/\\/g, "/") : p;
+}
+
 // Build the JSON error body for an IO failure, forwarding the libuv `code` and
 // `path` so the XHR client can classify it (see IO_ERR_002).
 function ioErrorBody(e) {
@@ -277,7 +289,7 @@ function handleEcoIO(parsed, respond) {
 
     case "File.findExecutable": {
       const found = which.sync(args.name, { nothrow: true }) ?? null;
-      respond(200, JSON.stringify({ value: found }));
+      respond(200, JSON.stringify({ value: found ? normalizePath(found) : null }));
       break;
     }
 
@@ -319,7 +331,7 @@ function handleEcoIO(parsed, respond) {
     }
 
     case "File.getCwd": {
-      respond(200, JSON.stringify({ value: process.cwd() }));
+      respond(200, JSON.stringify({ value: normalizePath(process.cwd()) }));
       break;
     }
 
@@ -336,10 +348,10 @@ function handleEcoIO(parsed, respond) {
     case "File.canonicalize": {
       try {
         const resolved = fs.realpathSync(args.path);
-        respond(200, JSON.stringify({ value: resolved }));
+        respond(200, JSON.stringify({ value: normalizePath(resolved) }));
       } catch (e) {
         // Fall back to path.resolve if realpath fails
-        respond(200, JSON.stringify({ value: path.resolve(args.path) }));
+        respond(200, JSON.stringify({ value: normalizePath(path.resolve(args.path)) }));
       }
       break;
     }
@@ -354,7 +366,7 @@ function handleEcoIO(parsed, respond) {
       } else {
         dir = path.join(home, "." + args.name);
       }
-      respond(200, JSON.stringify({ value: dir }));
+      respond(200, JSON.stringify({ value: normalizePath(dir) }));
       break;
     }
 
@@ -471,7 +483,7 @@ function handleEcoIO(parsed, respond) {
 
     // --- Runtime ---
     case "Runtime.dirname": {
-      respond(200, JSON.stringify({ value: __dirname }));
+      respond(200, JSON.stringify({ value: normalizePath(__dirname) }));
       break;
     }
 

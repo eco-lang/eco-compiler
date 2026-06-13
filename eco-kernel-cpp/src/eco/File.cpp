@@ -26,14 +26,47 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
-#include <dirent.h>
-#include <fcntl.h>
 #include <fstream>
 #include <filesystem>
 #include <sstream>
 #include <string>
+
+#if defined(_WIN32)
+#include <fcntl.h>     // _O_RDONLY etc. aliases
+#include <io.h>        // _open, _read, _write, _close, _fileno
+#include <sys/stat.h>
+#include <sys/utime.h> // _utime
+// Windows path-separator and find-executable helpers. The Windows PATH uses
+// ';' (POSIX uses ':'), and executable detection is extension-driven
+// (.exe/.cmd/.bat/.com) rather than a per-file +x bit.
+namespace {
+constexpr char kPathListSep = ';';
+// Thin name-aliasing wrappers so the file's existing call sites read the
+// same on both platforms. The underscore-prefixed forms are the
+// portability-stable spellings on Windows; the POSIX names are macro
+// aliases in some headers but not others.
+inline int _eco_open (const char* p, int flags, int mode) { return ::_open(p, flags | _O_BINARY, mode); }
+inline int _eco_close(int fd)                              { return ::_close(fd); }
+inline int _eco_write(int fd, const void* b, size_t n)     {
+    return ::_write(fd, b, n > 0x7fffffff ? 0x7fffffff : (unsigned int)n);
+}
+inline int _eco_read (int fd, void* b, size_t n)           {
+    return ::_read(fd, b, n > 0x7fffffff ? 0x7fffffff : (unsigned int)n);
+}
+}
+#else
+#include <dirent.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+namespace {
+constexpr char kPathListSep = ':';
+inline int     _eco_open (const char* p, int flags, int mode) { return ::open(p, flags, mode); }
+inline int     _eco_close(int fd)                              { return ::close(fd); }
+inline ssize_t _eco_write(int fd, const void* b, size_t n)     { return ::write(fd, b, n); }
+inline ssize_t _eco_read (int fd, void* b, size_t n)           { return ::read(fd, b, n); }
+}
+#endif
 
 namespace Eco::Kernel::File {
 
@@ -86,8 +119,8 @@ HPointer readBytesBody(HPointer captured) {
 
 HPointer fileExistsBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
-    struct stat st;
-    bool exists = (stat(pathStr.c_str(), &st) == 0 && S_ISREG(st.st_mode));
+    std::error_code ec;
+    bool exists = std::filesystem::is_regular_file(pathStr, ec);
     ECO_KLOG("file", "fileExists path=%s result=%d",
              pathStr.c_str(), (int)exists);
     return succeedBool(exists);
@@ -95,36 +128,71 @@ HPointer fileExistsBody(HPointer captured) {
 
 HPointer dirExistsBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
-    struct stat st;
-    bool exists = (stat(pathStr.c_str(), &st) == 0 && S_ISDIR(st.st_mode));
+    std::error_code ec;
+    bool exists = std::filesystem::is_directory(pathStr, ec);
     ECO_KLOG("file", "dirExists path=%s result=%d",
              pathStr.c_str(), (int)exists);
     return succeedBool(exists);
 }
 
+#if defined(_WIN32)
+// Windows: an executable is anything matching one of the PATHEXT extensions
+// (.exe / .cmd / .bat / .com being the universally-honoured defaults). We
+// also accept the bare name if it already includes a non-PATHEXT extension
+// — matching cmd.exe's own search behaviour and what the JS kernel's
+// findExecutable implementation does.
+static bool isExecutableCandidate(const std::filesystem::path& p) {
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(p, ec)) return false;
+    return true;
+}
+#else
+static bool isExecutableCandidate(const std::filesystem::path& p) {
+    return ::access(p.string().c_str(), X_OK) == 0;
+}
+#endif
+
 HPointer findExecutableBody(HPointer captured) {
     std::string nameStr = toString(Export::encode(captured));
     ECO_KLOG("file", "findExecutable start name=%s", nameStr.c_str());
     const char* pathEnv = std::getenv("PATH");
+#if defined(_WIN32)
+    if (!pathEnv) pathEnv = std::getenv("Path");
+#endif
     if (!pathEnv) {
         ECO_KLOG("file", "findExecutable done name=%s result=none (no PATH)",
                  nameStr.c_str());
         return succeed(Elm::alloc::nothing());
     }
+
+#if defined(_WIN32)
+    // Try the bare name (if it has an extension already) plus each PATHEXT
+    // candidate in turn. The exts list is the conservative default set —
+    // most users don't customise PATHEXT and the Eco kernel doesn't need
+    // .vbs / .ps1 invocation.
+    const char* exts[] = { "", ".exe", ".cmd", ".bat", ".com" };
+#else
+    const char* exts[] = { "" };
+#endif
+
     std::string pathStr(pathEnv);
     size_t pos = 0;
     while (pos < pathStr.size()) {
-        size_t sep = pathStr.find(':', pos);
-        if (sep == std::string::npos) {
-            sep = pathStr.size();
-        }
-        std::string dir = pathStr.substr(pos, sep - pos);
-        std::string fullPath = dir + "/" + nameStr;
-        if (access(fullPath.c_str(), X_OK) == 0) {
-            ECO_KLOG("file", "findExecutable done name=%s result=%s",
-                     nameStr.c_str(), fullPath.c_str());
-            HPointer str = Elm::alloc::allocStringFromUTF8(fullPath);
-            return succeed(Elm::alloc::just(Elm::alloc::boxed(str), true));
+        size_t sep = pathStr.find(kPathListSep, pos);
+        if (sep == std::string::npos) sep = pathStr.size();
+        std::filesystem::path dir = pathStr.substr(pos, sep - pos);
+        for (const char* ext : exts) {
+            std::filesystem::path full = dir / (nameStr + ext);
+            if (isExecutableCandidate(full)) {
+                // generic_string(): forward-slash form on all platforms. The
+                // Elm compiler's fp* path code splits on '/', so paths handed
+                // back to Elm must never carry Windows backslashes (item 10b).
+                std::string s = full.generic_string();
+                ECO_KLOG("file", "findExecutable done name=%s result=%s",
+                         nameStr.c_str(), s.c_str());
+                HPointer str = Elm::alloc::allocStringFromUTF8(s);
+                return succeed(Elm::alloc::just(Elm::alloc::boxed(str), true));
+            }
         }
         pos = sep + 1;
     }
@@ -137,21 +205,24 @@ HPointer listBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
     ECO_KLOG("file", "list start path=%s", pathStr.c_str());
     std::vector<std::string> entries;
-    DIR* dir = opendir(pathStr.c_str());
-    if (!dir) {
-        int err = errno;
+    std::error_code ec;
+    auto iter = std::filesystem::directory_iterator(pathStr, ec);
+    if (ec) {
+        // Translate the std::filesystem error_code's value to errno for the
+        // existing failErrno path. On POSIX they coincide; on Windows the
+        // generic_category() error from filesystem maps to the C errno space
+        // (e.g. ENOENT/EACCES) which failErrno's tag classifier accepts.
+        int err = ec.value();
         ECO_KLOG("file", "list fail path=%s errno=%d msg=%s",
                  pathStr.c_str(), err, std::strerror(err));
         return failErrno(err, pathStr, "could not open directory");
     }
-    struct dirent* entry;
-    while ((entry = readdir(dir)) != nullptr) {
-        std::string name = entry->d_name;
+    for (const auto& entry : iter) {
+        std::string name = entry.path().filename().string();
         if (name != "." && name != "..") {
             entries.push_back(name);
         }
     }
-    closedir(dir);
     ECO_KLOG("file", "list done path=%s entries=%zu",
              pathStr.c_str(), entries.size());
     return succeedStringList(entries);
@@ -167,25 +238,37 @@ HPointer modificationTimeBody(HPointer captured) {
                  pathStr.c_str(), err, std::strerror(err));
         return failErrno(err, pathStr, "could not stat file");
     }
-#ifdef __APPLE__
+#if defined(_WIN32)
+    // Win64's _stat exposes whole-second mtime via st_mtime; no nanosecond
+    // field. Multiply up to match the Linux/Darwin millisecond return.
+    int64_t millis = static_cast<int64_t>(st.st_mtime) * 1000;
+#elif defined(__APPLE__)
     const struct timespec &mtim = st.st_mtimespec;
-#else
-    const struct timespec &mtim = st.st_mtim;
-#endif
     int64_t millis = static_cast<int64_t>(mtim.tv_sec) * 1000 +
                      static_cast<int64_t>(mtim.tv_nsec) / 1000000;
+#else
+    const struct timespec &mtim = st.st_mtim;
+    int64_t millis = static_cast<int64_t>(mtim.tv_sec) * 1000 +
+                     static_cast<int64_t>(mtim.tv_nsec) / 1000000;
+#endif
     ECO_KLOG("file", "modificationTime done path=%s millis=%lld",
              pathStr.c_str(), (long long)millis);
     return succeedInt(millis);
 }
 
 HPointer getCwdBody(HPointer /*captured*/) {
-    char buf[4096];
-    if (getcwd(buf, sizeof(buf))) {
-        ECO_KLOG("file", "getCwd done result=%s", buf);
-        return succeedString(std::string(buf));
+    std::error_code ec;
+    auto cwd = std::filesystem::current_path(ec);
+    if (!ec) {
+        // Forward-slash form: the Elm fp* path code splits on '/' and would
+        // mishandle the native Windows backslashes from path::string()
+        // (item 10b). This getCwd result seeds many derived paths in the
+        // compiler, so a backslash here cascades into failed file lookups.
+        std::string s = cwd.generic_string();
+        ECO_KLOG("file", "getCwd done result=%s", s.c_str());
+        return succeedString(s);
     }
-    int err = errno;
+    int err = ec.value();
     ECO_KLOG("file", "getCwd fail errno=%d msg=%s",
              err, std::strerror(err));
     return failErrno(err, "", "could not get current working directory");
@@ -194,8 +277,10 @@ HPointer getCwdBody(HPointer /*captured*/) {
 HPointer setCwdBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
     ECO_KLOG("file", "setCwd start path=%s", pathStr.c_str());
-    if (chdir(pathStr.c_str()) != 0) {
-        int err = errno;
+    std::error_code ec;
+    std::filesystem::current_path(pathStr, ec);
+    if (ec) {
+        int err = ec.value();
         ECO_KLOG("file", "setCwd fail path=%s errno=%d msg=%s",
                  pathStr.c_str(), err, std::strerror(err));
         return failErrno(err, pathStr, "could not set working directory");
@@ -207,15 +292,17 @@ HPointer setCwdBody(HPointer captured) {
 HPointer canonicalizeBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
     ECO_KLOG("file", "canonicalize start path=%s", pathStr.c_str());
-    char resolved[PATH_MAX];
-    if (realpath(pathStr.c_str(), resolved)) {
+    std::error_code ec;
+    auto canonical = std::filesystem::canonical(pathStr, ec);
+    if (!ec) {
+        std::string s = canonical.generic_string();  // '/' form (item 10b)
         ECO_KLOG("file", "canonicalize done path=%s result=%s",
-                 pathStr.c_str(), resolved);
-        return succeedString(std::string(resolved));
+                 pathStr.c_str(), s.c_str());
+        return succeedString(s);
     }
     // Fallback: resolve relative path without following symlinks.
     std::filesystem::path p = std::filesystem::absolute(pathStr);
-    std::string result = p.lexically_normal().string();
+    std::string result = p.lexically_normal().generic_string();  // '/' form (item 10b)
     ECO_KLOG("file", "canonicalize fallback path=%s result=%s",
              pathStr.c_str(), result.c_str());
     return succeedString(result);
@@ -223,17 +310,33 @@ HPointer canonicalizeBody(HPointer captured) {
 
 HPointer appDataDirBody(HPointer captured) {
     std::string nameStr = toString(Export::encode(captured));
+    std::string dir;
+#if defined(_WIN32)
+    // Windows has no HOME; use APPDATA (roaming) then USERPROFILE, mirroring
+    // eco-io-handler.js (item 10). No leading dot — Windows app-data dirs are
+    // named plainly. Returned with forward slashes for the Elm fp* code.
+    const char* base = std::getenv("APPDATA");
+    if (!base || !*base) base = std::getenv("USERPROFILE");
+    if (!base || !*base) base = std::getenv("HOME");
+    if (!base || !*base) {
+        ECO_KLOG("file", "appDataDir fail name=%s reason=no-APPDATA/USERPROFILE",
+                 nameStr.c_str());
+        return failString("APPDATA/USERPROFILE environment variable not set");
+    }
+    dir = std::filesystem::path(std::string(base) + "/" + nameStr)
+              .generic_string();
+#else
     const char* home = std::getenv("HOME");
     if (!home) {
         ECO_KLOG("file", "appDataDir fail name=%s reason=no-HOME",
                  nameStr.c_str());
         return failString("HOME environment variable not set");
     }
-    std::string dir;
 #ifdef __APPLE__
     dir = std::string(home) + "/Library/Application Support/" + nameStr;
 #else
     dir = std::string(home) + "/." + nameStr;
+#endif
 #endif
     ECO_KLOG("file", "appDataDir name=%s result=%s",
              nameStr.c_str(), dir.c_str());
@@ -270,12 +373,19 @@ HPointer removeDirBody(HPointer captured) {
 HPointer touchBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
     ECO_KLOG("file", "touch start path=%s", pathStr.c_str());
-    int fd = ::open(pathStr.c_str(), O_WRONLY | O_CREAT, 0644);
+    int fd = _eco_open(pathStr.c_str(), O_WRONLY | O_CREAT, 0644);
     if (fd >= 0) {
-        ::close(fd);
+        _eco_close(fd);
     }
-    if (utimensat(AT_FDCWD, pathStr.c_str(), nullptr, 0) != 0) {
-        int err = errno;
+    // Set the file's last-write time to "now". std::filesystem's
+    // last_write_time uses file_time_type — we set it to the clock's now()
+    // value, which on every supported platform converts to the OS-native
+    // epoch (utimensat-equivalent on POSIX, SetFileTime on Win64).
+    std::error_code ec;
+    std::filesystem::last_write_time(
+        pathStr, std::filesystem::file_time_type::clock::now(), ec);
+    if (ec) {
+        int err = ec.value();
         ECO_KLOG("file", "touch fail path=%s errno=%d msg=%s",
                  pathStr.c_str(), err, std::strerror(err));
         return failErrno(err, pathStr, "could not touch file");
@@ -295,7 +405,7 @@ HPointer closeBody(HPointer captured) {
     Tuple2* tup = asTuple2(captured);
     int64_t fd = tup->a.i;
     ECO_KLOG("file", "close handle=%lld", (long long)fd);
-    ::close(static_cast<int>(fd));
+    _eco_close(static_cast<int>(fd));
     return succeedUnit();
 }
 
@@ -387,7 +497,7 @@ HPointer openBody(HPointer captured) {
     }
     ECO_KLOG("file", "open start path=%s mode=%lld",
              pathStr.c_str(), (long long)modeVal);
-    int fd = ::open(pathStr.c_str(), flags, 0644);
+    int fd = _eco_open(pathStr.c_str(), flags, 0644);
     if (fd < 0) {
         int err = errno;
         ECO_KLOG("file", "open fail path=%s errno=%d msg=%s",
@@ -410,7 +520,7 @@ HPointer hWriteStringBody(HPointer captured) {
     std::string data = toString(Export::encode(contentHP));
     ECO_KLOG("file", "hWriteString start handle=%lld size=%zu",
              (long long)fd, data.size());
-    ssize_t written = ::write(static_cast<int>(fd), data.data(), data.size());
+    auto written = _eco_write(static_cast<int>(fd), data.data(), data.size());
     if (written < 0) {
         int err = errno;
         ECO_KLOG("file", "hWriteString fail handle=%lld errno=%d msg=%s",

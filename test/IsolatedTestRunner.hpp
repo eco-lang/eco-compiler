@@ -6,16 +6,36 @@
 #include <chrono>
 #include <csignal>
 #include <cstring>
-#include <fcntl.h>
 #include <functional>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <unordered_map>
+#include <vector>
+
+#if defined(_WIN32)
+// Windows v1: no fork-per-test isolation. Tests run sequentially in-process
+// — a crash terminates the suite. The fork/pipe/mmap-based parallel runner
+// below is gated behind !_WIN32; the Windows code path (also below) is a
+// simple serial loop. A future port can layer CreateProcessW + named pipes
+// + CreateFileMapping on top of the same TestRunnerCallback contract.
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+// Define POSIX signal numbers Win32 doesn't have, so signalName() compiles.
+#ifndef SIGBUS
+#define SIGBUS  10
+#endif
+#ifndef SIGKILL
+#define SIGKILL 9
+#endif
+// Stub pid_t so the existing structures compile (unused on Windows).
+using pid_t = int;
+#else
+#include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <unordered_map>
-#include <vector>
+#endif
 
 namespace IsolatedTestRunner {
 
@@ -90,7 +110,11 @@ inline std::string signalName(int sig) {
 
 /**
  * Read all available data from a file descriptor (non-blocking).
+ * POSIX-only; the Windows test runner never spawns a child process so this
+ * helper is unreachable there. Stubbed out behind _WIN32 to keep TUs that
+ * include this header happy without dragging fcntl/read into MSVC.
  */
+#if !defined(_WIN32)
 inline std::string readAllFromFd(int fd) {
     std::string result;
     char buffer[4096];
@@ -118,6 +142,9 @@ inline std::string readAllFromFd(int fd) {
 
     return result;
 }
+#else
+inline std::string readAllFromFd(int /*fd*/) { return {}; }
+#endif
 
 /**
  * Print a test result atomically (name, output, and status together).
@@ -163,6 +190,7 @@ inline void printTestResult(const std::string& name,
  */
 inline std::vector<pid_t>* g_activeChildren = nullptr;
 inline volatile sig_atomic_t g_interrupted = 0;
+#if !defined(_WIN32)
 inline struct sigaction g_oldSigintAction;
 
 /**
@@ -179,6 +207,7 @@ inline void parallelSigintHandler(int sig) {
     }
     // Don't re-raise - let the main loop handle cleanup
 }
+#endif
 
 /**
  * Install our SIGINT handler, saving the old one.
@@ -186,21 +215,32 @@ inline void parallelSigintHandler(int sig) {
 inline void installSigintHandler(std::vector<pid_t>* activeChildren) {
     g_activeChildren = activeChildren;
     g_interrupted = 0;
+#if defined(_WIN32)
+    // No-op: Win32 v1 uses the default Ctrl+C handler. The serial runner
+    // terminates the process on a test crash anyway.
+    return;
+#else
 
     struct sigaction sa;
     sa.sa_handler = parallelSigintHandler;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
     sigaction(SIGINT, &sa, &g_oldSigintAction);
+#endif
 }
 
 /**
  * Restore the original SIGINT handler.
  */
 inline void restoreSigintHandler() {
+#if defined(_WIN32)
+    g_activeChildren = nullptr;
+    g_interrupted = 0;
+#else
     sigaction(SIGINT, &g_oldSigintAction, nullptr);
     g_activeChildren = nullptr;
     g_interrupted = 0;
+#endif
 }
 
 // ============================================================================
@@ -277,6 +317,46 @@ inline ParallelTestSummary runTestsParallel(
     TestRunnerCallback runTest,
     PostTestCallback postTest = nullptr)
 {
+#if defined(_WIN32)
+    // Windows v1: serial in-process fallback. No fork-per-test sandboxing —
+    // a SIGSEGV / std::terminate inside any test kills the suite. The
+    // contract for runTest is "throws std::exception on failure, returns
+    // normally on success", which translates straight to try/catch here.
+    ParallelTestSummary summary;
+    for (size_t i = 0; i < testPaths.size(); i++) {
+        std::string err;
+        bool passed = true;
+        try {
+            runTest(testPaths[i]);
+        } catch (const std::exception& e) {
+            err = e.what();
+            passed = false;
+        } catch (...) {
+            err = "non-std::exception thrown";
+            passed = false;
+        }
+        printTestResult(testNames[i], passed ? "" : err, passed, "");
+        if (passed) {
+            summary.passCount++;
+        } else {
+            summary.failCount++;
+            summary.failedTests.push_back(testNames[i]);
+        }
+        if (postTest) {
+            // postTest expects a SharedTestResult*; on Windows we make one
+            // on the stack with the result fields populated so the existing
+            // accumulation paths (GCStats etc.) get the success signal.
+            SharedTestResult shared{};
+            shared.completed = true;
+            shared.passed = passed;
+            if (!err.empty()) {
+                std::strncpy(shared.error, err.c_str(), sizeof(shared.error) - 1);
+            }
+            postTest(&shared);
+        }
+    }
+    return summary;
+#else
     const size_t numTests = testPaths.size();
     if (numTests == 0) {
         return {};
@@ -574,6 +654,7 @@ inline ParallelTestSummary runTestsParallel(
     }
 
     return summary;
+#endif  // !_WIN32
 }
 
 // ============================================================================

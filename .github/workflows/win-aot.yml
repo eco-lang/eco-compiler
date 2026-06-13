@@ -1,0 +1,201 @@
+# W4 verification (Windows AOT) from plans/build-on-windows.md: end-to-end
+# Win64 AOT — runs eco-boot-native on Stage 5's eco-compiler.mlir, producing
+# a real native PE executable. Verifies:
+#   - clang-cl + lld-link Windows AOT path succeeds with the bundled project
+#     archives, vendored libzip + zlib + curl-with-schannel, and SDK
+#     kernel32/ws2_32/crypt32/bcrypt/secur32 import libs (no OpenSSL).
+#   - the resulting binary is a PE32+ Windows executable.
+#   - the binary actually runs (--help round-trip).
+# This workflow depends on E-W3 (LLVM 21.1.8 + MLIR install tree) being cached.
+name: win-aot
+
+on:
+  push:
+    branches: ['ci/**']
+    paths:
+      - 'runtime/**'
+      - 'elm-kernel-cpp/**'
+      - 'eco-kernel-cpp/**'
+      - 'compiler/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - '.github/workflows/win-aot.yml'
+  workflow_dispatch:
+
+jobs:
+  aot:
+    runs-on: windows-latest
+    # 240 min: full bootstrap chain through Stage 9 — Stages 5 (Node) →
+    # 6 (eco-compiler.exe) → 7a (eco-compiler.exe self-compile to MLIR)
+    # → 7b (link eco-compiler-boot.exe) → 8a (self-compile again) → 8b
+    # (link eco-compiler-boot-2.exe) → 8c (MLIR byte-equal fixed-point) →
+    # 9a (lower eco-compiler.mlir to eco-stage9.o) → 9b (link the unified
+    # eco.exe). Each link is the /MT static-CRT chain with all project
+    # archives + libcurl_static + zip + zlibstatic.
+    # The workflow below splits this into separately-timed steps so the
+    # GitHub Actions UI shows per-stage durations — if we blow the
+    # ceiling, we'll know precisely which stage to optimize next.
+    timeout-minutes: 240
+    env:
+      LLVM_DIR: ${{ github.workspace }}\experiments\win-llvm-build\out\llvm-install
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC dev environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Restore LLVM 21.1.8 install tree (from win-llvm-build / E-W3)
+        uses: actions/cache@v4
+        with:
+          path: experiments/win-llvm-build/out/llvm-install
+          key: llvm-mlir-21.1.8-x86_64-pc-windows-msvc-x86-release-mt-v1
+          fail-on-cache-miss: true
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+        shell: pwsh
+
+      - name: Install rapidcheck (configure-time dep of ecor)
+        shell: pwsh
+        run: |
+          git clone --depth=1 https://github.com/emil-e/rapidcheck.git $env:RUNNER_TEMP\rapidcheck
+          cmake -S $env:RUNNER_TEMP\rapidcheck -B $env:RUNNER_TEMP\rapidcheck\build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+            -DCMAKE_INSTALL_PREFIX="$env:RUNNER_TEMP\rapidcheck-install"
+          cmake --build $env:RUNNER_TEMP\rapidcheck\build --target install
+          echo "rapidcheck_DIR=$env:RUNNER_TEMP\rapidcheck-install\share\rapidcheck\cmake" >> $env:GITHUB_ENV
+
+      - name: Configure (win-build preset)
+        shell: pwsh
+        run: cmake --preset win-build
+
+      - name: Build eco-boot-native + project archives
+        shell: pwsh
+        run: cmake --build build --target eco-boot-native -- -k 20
+
+      - name: Stage 6 — eco-compiler.exe (Win64 PE)
+        # eco-boot-native lowers Stage 5's eco-compiler.mlir to a real
+        # Win64 PE executable via clang-cl + lld-link with the full
+        # /MT static-CRT link line (project archives + libcurl_static +
+        # zip + zlibstatic + kernel32/ws2_32/crypt32/bcrypt/secur32). On
+        # the standard win-aot run this finishes in ~10-15 min.
+        shell: pwsh
+        run: cmake --build build --target eco-compiler -- -k 20
+
+      - name: Verify PE output (Stage 6 eco-compiler.exe)
+        shell: pwsh
+        run: |
+          $eco = "build\compiler\build-kernel\bin\eco-compiler.exe"
+          if (-not (Test-Path $eco)) { Write-Host "ERROR: $eco not built"; exit 1 }
+          Write-Host "=== file metadata ==="
+          Get-ChildItem $eco | Format-List
+          Write-Host "=== PE header sanity (llvm-readobj) ==="
+          & "$env:LLVM_DIR\bin\llvm-readobj.exe" --file-headers $eco | Select-String -Pattern 'Machine|Magic|Subsystem' | Write-Host
+          Write-Host "OK: Stage 6 AOT-produced eco-compiler.exe is a valid Win64 PE"
+
+      - name: Stage 7 — self-hosted compile + link
+        # Stage 7a runs eco-compiler.exe to recompile compiler/src/Main.elm
+        # into eco-compiler-boot.mlir (the self-bootstrap MLIR). Stage 7b
+        # lowers that MLIR back to a Win64 PE via eco-boot-native — same link
+        # line as Stage 6, so similar wall time on the link half.
+        shell: pwsh
+        run: cmake --build build --target eco-compiler-boot -- -k 20
+
+      - name: Stage 8 + 9a — fixed point + lower for the unified binary
+        # `--target eco` transitively depends on the BOOTSTRAP_STAMP
+        # (Stage 8c MLIR byte-equality check, which itself pulls in Stage 8a
+        # self-compile + Stage 8b link), plus Stage 9a (eco-compiler.mlir
+        # → eco-stage9.o via eco-boot-native --emit=obj), then Stage 9b
+        # (link the unified eco.exe). The Ninja invocation absorbs the
+        # whole tail of the chain — splitting Stage 8a/8b out separately
+        # would need a new add_custom_target() per intermediate file, and
+        # the chain is sequential anyway, so this single step captures
+        # the remaining wall time.
+        shell: pwsh
+        run: cmake --build build --target eco -- -k 20
+
+      - name: Verify PE output (Stage 9 unified eco.exe)
+        shell: pwsh
+        run: |
+          $eco = "build\compiler\build-kernel\bin\eco.exe"
+          if (-not (Test-Path $eco)) { Write-Host "ERROR: $eco not built"; exit 1 }
+          Write-Host "=== file metadata ==="
+          Get-ChildItem $eco | Format-List
+          Write-Host "=== PE header sanity (llvm-readobj) ==="
+          & "$env:LLVM_DIR\bin\llvm-readobj.exe" --file-headers $eco | Select-String -Pattern 'Machine|Magic|Subsystem' | Write-Host
+          Write-Host "OK: Stage 9 AOT-produced eco.exe is a valid Win64 PE"
+
+      - name: Package Windows bundle (ZIP)
+        # CPack picks up the BundleWindows component from CMakeLists.txt's
+        # elseif(WIN32 ...) install block — eco-compiler.exe, project archives
+        # (.lib), vendored libcurl_static + zip + zlibstatic, kernel sources,
+        # examples. v1 ships Stage 6 eco-compiler.exe; (b) will swap in Stage
+        # 9's unified eco.exe once the bootstrap chain fits in 240 min.
+        shell: pwsh
+        run: |
+          cmake --build build --target package -- -k 20
+          Get-ChildItem build\eco-*.zip | Format-List
+
+      - name: Smoke-test the bundle in isolation
+        # Extract the ZIP to a fresh prefix and probe bin/eco.exe (the
+        # unified Stage 9 binary). Confirms the bundle is self-contained
+        # — install rules placed every archive the in-process
+        # eco_native_lower_and_link path needs under lib/eco-runtime/project/.
+        # `eco.exe --help` reaches argument parsing without invoking the
+        # AOT pipeline, mirroring the mac-aot smoke check.
+        shell: pwsh
+        run: |
+          $bundle = Get-ChildItem build\eco-*.zip | Select-Object -First 1
+          $dest = "$env:RUNNER_TEMP\eco-bundle"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Expand-Archive -Path $bundle.FullName -DestinationPath $dest -Force
+          # CPack ZIP under CPACK_ARCHIVE_COMPONENT_INSTALL=ON drops bin/, lib/,
+          # share/ straight at the archive root (no enclosing eco-VERSION-…/
+          # folder, unlike the Darwin TGZ). Detect both layouts so this check
+          # keeps working if the CPack default changes.
+          if (Test-Path "$dest\bin") {
+              $root = $dest
+          } else {
+              $root = (Get-ChildItem $dest -Directory | Select-Object -First 1).FullName
+          }
+          Write-Host "=== bundle root: $root ==="
+          Write-Host "=== bin/ ==="
+          Get-ChildItem "$root\bin" | Format-Table Name, Length
+          Write-Host "=== lib/eco-runtime/project/ ==="
+          Get-ChildItem "$root\lib\eco-runtime\project" | Format-Table Name, Length
+          Write-Host "=== share/eco/kernel/ (first 20) ==="
+          Get-ChildItem "$root\share\eco\kernel" -Recurse | Select-Object -First 20 | Format-Table FullName
+          Write-Host "=== share/eco/examples/ ==="
+          Get-ChildItem "$root\share\eco\examples" -Recurse | Format-Table FullName
+          $ecoBin = "$root\bin\eco.exe"
+          if (-not (Test-Path $ecoBin)) {
+              Write-Host "ERROR: bundle missing bin/eco.exe"; exit 1
+          }
+          Write-Host "=== smoke run: eco --help ==="
+          $log = "$env:RUNNER_TEMP\help.txt"
+          $proc = Start-Process -FilePath $ecoBin -ArgumentList '--help' `
+            -NoNewWindow -Wait -PassThru `
+            -RedirectStandardOutput $log -RedirectStandardError "$log.err"
+          $rc = $proc.ExitCode
+          Get-Content $log, "$log.err" -ErrorAction SilentlyContinue | Select-Object -First 20 | Write-Host
+          if ($rc -lt 0 -or $rc -eq 0xC0000005 -or $rc -eq 0xC0000409) {
+              Write-Host "ERROR: bundled eco --help crashed with rc=$rc"; exit 1
+          }
+          Write-Host "OK: bundled eco.exe runs in isolation"
+
+      - name: Upload AOT output + bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-aot-output
+          path: |
+            build/compiler/build-kernel/bin/eco.exe
+            build/compiler/build-kernel/bin/eco-compiler.exe
+            build/eco-*.zip
+            ${{ runner.temp }}/help.txt
+            ${{ runner.temp }}/help.txt.err
+          if-no-files-found: warn

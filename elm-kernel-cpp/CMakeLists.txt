@@ -15,12 +15,16 @@ set(VENDOR_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor)
 # top-level CMakeLists.txt before this subdirectory is added, so we just mark
 # CURL as found (mirrors eco-kernel-cpp/CMakeLists.txt); otherwise require the
 # system package.
-if(ECO_STATIC)
+if(ECO_STATIC OR WIN32)
     set(CURL_FOUND TRUE)
 else()
     find_package(CURL REQUIRED)
 endif()
-find_package(OpenSSL REQUIRED)
+# OpenSSL is eliminated on Windows — see plans/build-on-windows.md
+# (Dependency stack); ElmKernel_Http uses schannel via the vendored curl.
+if(NOT WIN32)
+    find_package(OpenSSL REQUIRED)
+endif()
 
 #------------------------------------------------------------------------------
 # Per-module static libraries
@@ -215,7 +219,12 @@ target_include_directories(ElmKernel_Http PUBLIC
     ${RUNTIME_INCLUDE_DIR}
     ${RUNTIME_INCLUDE_DIR}/platform
 )
-if(ECO_STATIC)
+if(WIN32)
+    # Windows: vendored libcurl (schannel TLS). OpenSSL is eliminated —
+    # see plans/build-on-windows.md. ws2_32 / crypt32 / bcrypt / secur32
+    # are pulled in by curl's schannel backend through its CMakeLists.
+    target_link_libraries(ElmKernel_Http PRIVATE libcurl_static)
+elseif(ECO_STATIC)
     # eco-kernel-cpp vendors libcurl from source under ECO_STATIC (Debian
     # ships libcurl.a but no .a counterparts for its transitive deps:
     # nghttp2/idn2/psl/gssapi_krb5/brotli/zstd/etc). The vendored target

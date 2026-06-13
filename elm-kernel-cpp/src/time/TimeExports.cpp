@@ -146,6 +146,18 @@ std::string getTimezoneName() {
             return std::string(found + strlen(zoneinfo));
         }
     }
+#elif defined(_WIN32)
+    // Try TZ first — same convention as POSIX, set by the Eco runtime tests.
+    const char* tz = std::getenv("TZ");
+    if (tz && tz[0] != '\0') {
+        if (tz[0] == ':') return std::string(tz + 1);
+        return std::string(tz);
+    }
+    // GetDynamicTimeZoneInformation returns the Windows-named time zone
+    // (e.g. "Pacific Standard Time"). We do not translate that to an IANA
+    // name here — the caller will fall back to the offset-only path, which
+    // matches the empty-return branch on the POSIX side. A full ICU-based
+    // mapping is plan W2 item 11b's "minimal in v1" position.
 #endif
 
     // Fallback: return empty string to indicate we should use offset

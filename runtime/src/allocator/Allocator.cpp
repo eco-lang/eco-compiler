@@ -14,6 +14,7 @@
 #include "Allocator.hpp"
 #include "HeapConfigJson.hpp"
 #include "OldGenSpace.hpp"
+#include "PlatformVirtualMemory.hpp"
 #include "ThreadLocalHeap.hpp"
 #include <cassert>
 #include <chrono>
@@ -23,7 +24,9 @@
 #include <new>
 // musl (Stage B static build) ships no <execinfo.h>/backtrace; stub them as
 // no-ops so the debug paths compile. glibc keeps its real backtrace. See
-// plans/static-link-eco-binary.md.
+// plans/static-link-eco-binary.md. Windows ships no <execinfo.h> either —
+// the same stub path serves there. Crash backtraces on Win64 will route
+// through `RtlVirtualUnwind` once W2 item 11b lands.
 #if defined(__has_include) && __has_include(<execinfo.h>)
 #  include <execinfo.h>
 #else
@@ -31,12 +34,19 @@
 [[maybe_unused]] static inline char** backtrace_symbols(void* const*, int) { return nullptr; }
 [[maybe_unused]] static inline void backtrace_symbols_fd(void* const*, int, int) {}
 #endif
-#include <sys/mman.h>
 
-// Darwin has no MAP_NORESERVE — its VM never reserves swap for PROT_NONE
-// mappings, so the flag's effect is the default behavior there.
-#ifndef MAP_NORESERVE
-#define MAP_NORESERVE 0
+// madvise(MADV_WILLNEED / MADV_DONTNEED) lives in <sys/mman.h> on POSIX. On
+// Windows there is no equivalent advisory call — the working set is
+// managed by the OS — so we stub madvise to a no-op and define the macros
+// to harmless integers. Callers don't inspect the return value.
+#if !defined(_WIN32)
+#include <sys/mman.h>
+#else
+namespace {
+[[maybe_unused]] constexpr int MADV_WILLNEED = 0;
+[[maybe_unused]] constexpr int MADV_DONTNEED = 0;
+[[maybe_unused]] inline int madvise(void*, std::size_t, int) { return 0; }
+}
 #endif
 
 namespace Elm {
@@ -147,7 +157,7 @@ Allocator::~Allocator() {
     }
 
     if (heap_base) {
-        munmap(heap_base, heap_reserved);
+        Elm::platform::releaseReservation(heap_base, heap_reserved);
     }
 }
 
@@ -167,13 +177,13 @@ void Allocator::initialize(const HeapConfig& config) {
 
     heap_reserved = config_.max_heap_size;
 
-    // Reserve address space without committing physical memory.
-    // PROT_NONE means no access until we commit regions with mmap(MAP_FIXED).
-    heap_base = static_cast<char *>(mmap(nullptr, heap_reserved,
-                                         PROT_NONE,
-                                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0));
+    // Reserve address space without committing physical memory — see
+    // PlatformVirtualMemory.hpp for the POSIX (mmap PROT_NONE) and Win64
+    // (VirtualAlloc MEM_RESERVE PAGE_NOACCESS) implementations.
+    heap_base = static_cast<char *>(
+        Elm::platform::reserveAddressSpace(heap_reserved));
 
-    if (heap_base == MAP_FAILED) {
+    if (heap_base == nullptr) {
         throw std::bad_alloc();
     }
 
@@ -192,10 +202,9 @@ void Allocator::initialize(const HeapConfig& config) {
 
 // Commits physical memory for a nursery region.
 void Allocator::commitNursery(char *nursery_base, size_t size) {
-    void *result = mmap(nursery_base, size, PROT_READ | PROT_WRITE,
-                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    void *result = Elm::platform::commitAt(nursery_base, size);
 
-    if (result == MAP_FAILED) {
+    if (result == nullptr) {
         throw std::bad_alloc();
     }
 }
@@ -415,10 +424,9 @@ char* Allocator::acquireNurseryBlockLow(size_t size) {
 
     // Commit physical memory for this block.
     char* block_base = heap_base + nursery_offset + nursery_low_committed_;
-    void* result = mmap(block_base, size, PROT_READ | PROT_WRITE,
-                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    void* result = Elm::platform::commitAt(block_base, size);
 
-    if (result == MAP_FAILED) {
+    if (result == nullptr) {
         return nullptr;
     }
 
@@ -476,10 +484,9 @@ char* Allocator::acquireNurseryBlockHigh(size_t size) {
 
     // Commit physical memory for this block.
     char* block_base = heap_base + nursery_offset + high_region_start + nursery_high_committed_;
-    void* result = mmap(block_base, size, PROT_READ | PROT_WRITE,
-                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    void* result = Elm::platform::commitAt(block_base, size);
 
-    if (result == MAP_FAILED) {
+    if (result == nullptr) {
         return nullptr;
     }
 
@@ -570,12 +577,11 @@ char* Allocator::acquireOldGenBlock(size_t size) {
     char* block_base = heap_base + old_gen_committed;
 
     // Commit physical memory for this block.
-    void* result = mmap(block_base, size, PROT_READ | PROT_WRITE,
-                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    void* result = Elm::platform::commitAt(block_base, size);
 
-    if (result == MAP_FAILED) {
+    if (result == nullptr) {
         if (heapTraceEnabled()) {
-            dumpHeapState("acquireOldGenBlock MAP_FAILED", size);
+            dumpHeapState("acquireOldGenBlock commit failed", size);
         }
         return nullptr;
     }
@@ -702,12 +708,11 @@ char* Allocator::acquireOldGenRegion(size_t initial_size, size_t /*max_size*/) {
 
     char* region_base = heap_base + old_gen_committed;
 
-    void* result = mmap(region_base, initial_size, PROT_READ | PROT_WRITE,
-                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    void* result = Elm::platform::commitAt(region_base, initial_size);
 
-    if (result == MAP_FAILED) {
+    if (result == nullptr) {
         if (heapTraceEnabled()) {
-            dumpHeapState("acquireOldGenRegion MAP_FAILED", initial_size);
+            dumpHeapState("acquireOldGenRegion commit failed", initial_size);
         }
         return nullptr;
     }

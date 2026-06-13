@@ -1,6 +1,8 @@
 #pragma once
 #include "../ElmE2ETestBase.hpp"
+#if !defined(_WIN32)
 #include "../TestHttpServer.hpp"
+#endif
 
 #include <filesystem>
 #include <fstream>
@@ -16,6 +18,18 @@
 #endif
 
 namespace EcoKernelTest {
+
+#if defined(_WIN32)
+// Windows v1: skip — depends on TestHttpServer (POSIX sockets + OpenSSL).
+inline void prepareServer() {}
+inline std::unique_ptr<ElmE2EBase::ElmE2EParallelTestSuite> buildEcoKernelTestSuite() {
+    // Empty suite (see ElmHttpTest.hpp for the rationale). Builder type
+    // matches the POSIX path so test/main.cpp's suite.add() resolves.
+    return ElmE2EBase::buildTestSuite("eco-kernel", "Eco Kernel E2E (skipped on Windows)",
+                                       "win-skipped-eco-kernel/");
+}
+}  // namespace EcoKernelTest
+#else
 
 // Start the shared in-process server (a singleton, also used by elm-http) and
 // write a generated TestServerConfig.elm carrying its base URL so the Eco.Http
@@ -56,3 +70,4 @@ inline std::unique_ptr<ElmE2EBase::ElmE2EParallelTestSuite> buildEcoKernelTestSu
 }
 
 }  // namespace EcoKernelTest
+#endif  // !_WIN32

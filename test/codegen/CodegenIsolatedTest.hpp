@@ -33,9 +33,17 @@ inline std::pair<int, std::string> executeCommand(const std::string& cmd) {
     std::array<char, 4096> buffer;
     std::string result;
 
+#if defined(_WIN32)
+#  define _eco_popen  ::_popen
+#  define _eco_pclose ::_pclose
+#else
+#  define _eco_popen  ::popen
+#  define _eco_pclose ::pclose
+#endif
+
     // Use popen to run command and capture output
     std::string fullCmd = cmd + " 2>&1";
-    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(fullCmd.c_str(), "r"), pclose);
+    std::unique_ptr<FILE, decltype(&_eco_pclose)> pipe(_eco_popen(fullCmd.c_str(), "r"), _eco_pclose);
 
     if (!pipe) {
         throw std::runtime_error("popen() failed for command: " + cmd);
@@ -46,8 +54,16 @@ inline std::pair<int, std::string> executeCommand(const std::string& cmd) {
     }
 
     // Get exit status
-    int status = pclose(pipe.release());
+    int status = _eco_pclose(pipe.release());
+#undef _eco_popen
+#undef _eco_pclose
+#if defined(_WIN32)
+    // _pclose returns the child's raw exit code on Windows (or -1 on
+    // wait failure) — no WIFEXITED wrapper.
+    int exitCode = status;
+#else
     int exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+#endif
 
     return {exitCode, result};
 }

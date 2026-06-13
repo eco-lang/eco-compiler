@@ -32,8 +32,16 @@ inline std::pair<int, std::string> executeCommand(const std::string& cmd) {
     std::array<char, 4096> buffer;
     std::string result;
 
+#if defined(_WIN32)
+#  define _eco_popen  ::_popen
+#  define _eco_pclose ::_pclose
+#else
+#  define _eco_popen  ::popen
+#  define _eco_pclose ::pclose
+#endif
+
     std::string fullCmd = cmd + " 2>&1";
-    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(fullCmd.c_str(), "r"), pclose);
+    std::unique_ptr<FILE, decltype(&_eco_pclose)> pipe(_eco_popen(fullCmd.c_str(), "r"), _eco_pclose);
 
     if (!pipe) {
         throw std::runtime_error("popen() failed for command: " + cmd);
@@ -43,8 +51,14 @@ inline std::pair<int, std::string> executeCommand(const std::string& cmd) {
         result += buffer.data();
     }
 
-    int status = pclose(pipe.release());
+    int status = _eco_pclose(pipe.release());
+#if defined(_WIN32)
+    int exitCode = status;
+#else
     int exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+#endif
+#undef _eco_popen
+#undef _eco_pclose
 
     return {exitCode, result};
 }

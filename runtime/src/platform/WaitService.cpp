@@ -1,7 +1,9 @@
 #include "WaitService.hpp"
 #include "Scheduler.hpp"
 #include <cerrno>
+#if !defined(_WIN32)
 #include <sys/wait.h>
+#endif
 
 namespace Elm::Platform {
 
@@ -43,6 +45,24 @@ bool WaitService::hasReady() const {
     return !ready_.empty();
 }
 
+#if defined(_WIN32)
+// Windows v1: process-spawning is not yet implemented in Process.cpp, so
+// no children ever get submit()'d here in practice. We still keep the
+// worker thread alive so `pending_` is drained if a future Process.cpp
+// path does start submitting; the worker simply parks on the CV until
+// a Windows-native implementation (per-child RegisterWaitForSingleObject
+// or a thread-per-child join) is wired in. See plans/build-on-windows.md
+// items 7 & 9.
+void WaitService::workerLoop() {
+    while (true) {
+        std::unique_lock<std::mutex> lk(pendingMutex_);
+        pendingCV_.wait(lk, [this] { return !pending_.empty(); });
+        // Pop and drop — no reaping yet. The Elm-side Process.wait task
+        // will never complete; this matches the documented v1 limitation.
+        pending_.clear();
+    }
+}
+#else
 void WaitService::workerLoop() {
     while (true) {
         // Wait until at least one pending registration exists. Without
@@ -93,5 +113,6 @@ void WaitService::workerLoop() {
         }
     }
 }
+#endif // !_WIN32
 
 } // namespace Elm::Platform

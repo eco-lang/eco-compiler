@@ -28,7 +28,39 @@
 #include <string>
 #include <vector>
 
+#if defined(_WIN32)
+// Use Windows CNG (BCrypt) for SHA-1 — see plans/build-on-windows.md
+// (Dependency stack: OpenSSL eliminated on Windows). The shim below
+// matches OpenSSL's SHA1() one-shot signature so existing call sites
+// don't change.
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <bcrypt.h>
+#pragma comment(lib, "bcrypt.lib")
+namespace { constexpr int SHA_DIGEST_LENGTH = 20; }
+namespace {
+inline unsigned char* SHA1(const unsigned char* data, size_t len,
+                            unsigned char out[20]) {
+    BCRYPT_ALG_HANDLE h = nullptr;
+    if (BCryptOpenAlgorithmProvider(&h, BCRYPT_SHA1_ALGORITHM, nullptr, 0) != 0) {
+        // On failure, zero-fill the digest so the caller's hex-encoding
+        // path stays well-defined; the caller compares the digest by
+        // value, so an all-zero hash will simply mismatch the registry's
+        // recorded SHA and be reported as a corrupt archive.
+        for (int i = 0; i < 20; ++i) out[i] = 0;
+        return out;
+    }
+    BCryptHash(h, nullptr, 0,
+               const_cast<PUCHAR>(data),
+               static_cast<ULONG>(len > 0xffffffff ? 0xffffffff : len),
+               out, 20);
+    BCryptCloseAlgorithmProvider(h, 0);
+    return out;
+}
+}
+#else
 #include <openssl/sha.h>
+#endif
 #include <zip.h>
 
 namespace Eco::Kernel::Http {

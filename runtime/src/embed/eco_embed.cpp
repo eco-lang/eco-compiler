@@ -33,7 +33,17 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <process.h>   // _beginthreadex
+// On Win64 we keep a HANDLE for the embed thread and store its thread-id
+// separately for the self-equality test. WaitForSingleObject(INFINITE) is the
+// pthread_join equivalent; CloseHandle releases the kernel object once join
+// completes.
+#else
 #include <pthread.h>
+#endif
 #include <vector>
 
 #include "../platform/StackMapSection.hpp"
@@ -85,7 +95,12 @@ void initStackMapForModuleContaining(void* addr) {
 
 struct EmbedState {
     std::atomic<bool> started{false};
+#if defined(_WIN32)
+    HANDLE thread = nullptr;
+    DWORD threadId = 0;
+#else
     pthread_t thread{};
+#endif
     std::atomic<bool> threadValid{false};
     std::atomic<int> exitCode{0};
     std::atomic<bool> stopped{false};
@@ -154,8 +169,12 @@ void atexitStopEcoThread() {
     // joining ourselves would deadlock (musl) or fail with EDEADLK
     // (glibc); the thread is about to die with the process anyway.
     auto& s = state();
-    if (s.threadValid.load() && pthread_equal(pthread_self(), s.thread)) {
-        return;
+    if (s.threadValid.load()) {
+#if defined(_WIN32)
+        if (GetCurrentThreadId() == s.threadId) return;
+#else
+        if (pthread_equal(pthread_self(), s.thread)) return;
+#endif
     }
     eco_app_join();
 }
@@ -238,6 +257,25 @@ int eco_app_start(int argc, char** argv, const char* flags_json) {
         s.hasFlags = true;
     }
 
+#if defined(_WIN32)
+    struct WinAdapter {
+        static unsigned __stdcall run(void* a) {
+            ecoEmbedThread(a);
+            return 0;
+        }
+    };
+    // _beginthreadex's last arg is `unsigned*`; DWORD == unsigned long on
+    // Win64. They're the same width and value range; the reinterpret_cast
+    // is so the call type-checks under strict-aliasing/-Wconversion.
+    unsigned tmpId = 0;
+    uintptr_t h = ::_beginthreadex(nullptr, ECO_EMBED_STACK_SIZE,
+                                   &WinAdapter::run, nullptr, 0, &tmpId);
+    s.threadId = tmpId;
+    if (h == 0) {
+        return ECO_APP_ERR_THREAD;
+    }
+    s.thread = reinterpret_cast<HANDLE>(h);
+#else
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, ECO_EMBED_STACK_SIZE);
@@ -246,6 +284,7 @@ int eco_app_start(int argc, char** argv, const char* flags_json) {
     if (rc != 0) {
         return ECO_APP_ERR_THREAD;
     }
+#endif
     s.threadValid.store(true);
 
     // Block until the program is initialized (ready hook) or finished
@@ -283,7 +322,13 @@ int eco_app_join(void) {
         // Never started, or already joined: idempotent.
         return s.started.load() ? s.exitCode.load() : -1;
     }
+#if defined(_WIN32)
+    ::WaitForSingleObject(s.thread, INFINITE);
+    ::CloseHandle(s.thread);
+    s.thread = nullptr;
+#else
     pthread_join(s.thread, nullptr);
+#endif
     s.threadValid.store(false);
     return s.exitCode.load();
 }

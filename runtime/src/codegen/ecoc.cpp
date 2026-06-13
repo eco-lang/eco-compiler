@@ -91,8 +91,14 @@ static struct EcoGCStrategyLinker {
 // no strong definition exists in this link to be shadowed.
 extern "C" __attribute__((weak)) void Eco_Kernel_register_all_gc_roots() {}
 // Order roots live in ElmKernel, which *is* linked here, so a plain weak
-// reference resolves normally on both platforms.
+// reference resolves normally on both platforms. Windows: drop the weak
+// attribute (see RuntimeExports.cpp for the explanation) and rely on
+// /alternatename from eco_order_weak_stub_win32.cpp.
+#if defined(_WIN32)
+extern "C" void Eco_Kernel_Order_register_gc_roots();
+#else
 extern "C" __attribute__((weak)) void Eco_Kernel_Order_register_gc_roots();
+#endif
 
 using namespace mlir;
 

@@ -1,0 +1,46 @@
+# E-W1 from plans/build-on-windows.md: statepoint/stackmap smoke test on
+# Windows x86_64. No eco build involved — answers the plan's confidence
+# risk 1 (Win64 statepoint viability: COFF .llvm_stackmaps emission,
+# RtlVirtualUnwind-driven root recovery, /OPT:REF section survival),
+# in ~20 runner-minutes.
+#
+# Trigger: push to ci/** branches (the workflow file rides the branch —
+# nothing needs to be on master). workflow_dispatch becomes usable once a
+# copy of this file is merged to the default branch.
+name: win-statepoint-smoke
+
+on:
+  push:
+    branches: ['ci/**']
+    paths:
+      - 'experiments/win-statepoint-smoke/**'
+      - '.github/workflows/win-statepoint-smoke.yml'
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache LLVM 21.1.8 prebuilt
+        uses: actions/cache@v4
+        with:
+          path: experiments/win-statepoint-smoke/out/llvm
+          key: llvm-21.1.8-x86_64-pc-windows-msvc-v1
+
+      - name: Run statepoint smoke
+        shell: pwsh
+        run: experiments/win-statepoint-smoke/run.ps1
+
+      - name: Upload logs and artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-statepoint-smoke-out
+          # Exclude the cached LLVM install from the artifact (~2 GB).
+          path: |
+            experiments/win-statepoint-smoke/out/
+            !experiments/win-statepoint-smoke/out/llvm/
+            !experiments/win-statepoint-smoke/out/*.tar.xz
