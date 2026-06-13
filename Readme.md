@@ -16,8 +16,11 @@ on it. A more complete set of IO APIs will follow and replace this API.
 
 The full pipeline works today: Elm source compiles through a typed AST,
 whole-program monomorphisation and optimisation, a custom MLIR dialect, and
-LLVM down to native x86 binaries (AOT) or JIT execution, backed by a
-generational garbage collector and effect-manager runtime. Linux x86_64 only.
+LLVM down to native binaries (AOT) or JIT execution, backed by a
+generational garbage collector and effect-manager runtime. Linux x86_64 and
+macOS arm64 (Apple Silicon) are both supported — see
+[docs/building.md](docs/building.md) and
+[docs/building-macos.md](docs/building-macos.md).
 
 The compiler is capable of building itself, which is a complex 160K LOC 
 program, which goes along way towards proving the implementation is real-world
@@ -25,9 +28,11 @@ capable.
 
 ## Documentation
 
-- [Getting Starged](docs/getting-started.md) - Getting started with the release bundle.
+- [Getting Started](docs/getting-started.md) - Getting started with the release bundle.
 - [Building](docs/building.md) — Docker images, distribution bundles, the dev
   environment, CMake presets, and building on a Linux host.
+- [Building on macOS](docs/building-macos.md) — Apple Silicon native build:
+  Xcode CLT, brew deps, mac presets, AOT bundle.
 - [Testing](docs/testing.md) — the elm-test, end-to-end, and stress suites.
 - [Bootstrap](docs/bootstrap.md) — the 9-stage self-compilation pipeline.
 - [Build targets](docs/build-targets.md) — reference for every CMake target.

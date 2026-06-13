@@ -1,11 +1,14 @@
-# E-M2 from plans/build-on-mac.md: eco front-end configure + bootstrap
-# stages 1–5 on macOS arm64, using the per-platform toolchain table in
-# compiler/cmake/toolchain.cmake and the ECO_FRONTEND_ONLY configure mode
-# (no LLVM/MLIR, runtime, kernels or tests involved).
+# E-M2 + M5 from plans/build-on-mac.md: eco front-end configure +
+# bootstrap stages 1–5 on macOS arm64, using the per-platform toolchain
+# table in compiler/cmake/toolchain.cmake and the ECO_FRONTEND_ONLY
+# configure mode (no LLVM/MLIR, runtime, kernels or tests involved).
+# M5 adds the elm-test-rs suite over the same configure to prove the
+# compiler's own Elm tests pass on the mac toolchain.
 #
 # Stage 1: stock elm (mac arm64 prebuilt) compiles the compiler → guida.js
 # Stages 2–4b: JS self-compilation chain + JS fixed-point check
 # Stage 5: eco-boot-2.js emits eco-compiler.mlir (GNU-time wrapped)
+# elm-tests: elm-test-rs runs the compiler's tests/ suite
 name: mac-bootstrap
 
 on:
@@ -44,6 +47,32 @@ jobs:
 
       - name: Stage 5 (eco-boot-2.js -> eco-compiler.mlir)
         run: cmake --build build --target eco-compiler-mlir
+
+      - name: elm-tests (compiler's Elm test suite via mac elm-test-rs)
+        # M5 — the compiler's own Elm tests (compiler/tests/) driven by
+        # the M1-fetched mac arm64 elm-test-rs prebuilt. Same configure
+        # as the bootstrap steps above; only the target changes. Runs
+        # AFTER Stage 5 so a Stage 5 regression doesn't get masked by
+        # an earlier elm-tests failure.
+        #
+        # Exit code handling: elm-test-rs 3.0.1 exits 2 ("INCOMPLETE")
+        # whenever a `Test.skip` appears in the suite, even if zero
+        # tests actually failed. compiler/tests/ has one intentional
+        # Test.skip (NoCEcoValueInUserFunctionsTest.elm) so the build
+        # target's raw exit code is always 2 here. We accept that case
+        # iff the captured log proves no test actually failed.
+        run: |
+          set +e
+          cmake --build build --target elm-tests 2>&1 | tee /tmp/elm-tests.log
+          rc=${PIPESTATUS[0]}
+          if [ $rc -eq 0 ]; then
+              echo "OK: elm-tests passed (no skips)"; exit 0
+          fi
+          if [ $rc -eq 2 ] && grep -qE 'Failed: +0' /tmp/elm-tests.log; then
+              echo "OK: elm-tests passed (Test.skip incomplete, no failures)"
+              exit 0
+          fi
+          echo "ERROR: elm-tests failed (rc=$rc)"; exit $rc
 
       - name: Report outputs and timings
         if: always()
