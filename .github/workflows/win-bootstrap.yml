@@ -11,7 +11,7 @@ name: win-bootstrap
 
 on:
   push:
-    branches: ['ci/**']
+    branches: ['ci/**', 'master']
     paths:
       - 'compiler/**'
       - 'CMakeLists.txt'

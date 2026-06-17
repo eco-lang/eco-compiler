@@ -7,7 +7,7 @@ name: mac-runtime
 
 on:
   push:
-    branches: ['ci/**']
+    branches: ['ci/**', 'master']
     paths:
       - 'runtime/**'
       - 'elm-kernel-cpp/**'

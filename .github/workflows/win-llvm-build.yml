@@ -6,7 +6,7 @@ name: win-llvm-build
 
 on:
   push:
-    branches: ['ci/**']
+    branches: ['ci/**', 'master']
     paths:
       - 'experiments/win-llvm-build/**'
       - '.github/workflows/win-llvm-build.yml'

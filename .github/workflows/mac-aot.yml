@@ -10,7 +10,7 @@ name: mac-aot
 
 on:
   push:
-    branches: ['ci/**']
+    branches: ['ci/**', 'master']
     paths:
       - 'runtime/**'
       - 'elm-kernel-cpp/**'
