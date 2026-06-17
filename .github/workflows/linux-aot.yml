@@ -1,0 +1,110 @@
+# Linux AOT — static, fully-portable `eco` distribution packages.
+#
+# Drives docker/static-build.Dockerfile (MUSL + libc++ via the Alpine LLVM
+# base) to produce a single `eco` binary with ZERO shared-library deps plus
+# the release bundle set (.tar.gz / .zip / .deb). The slow Alpine LLVM base
+# image is restored from the Actions cache populated by linux-llvm-build
+# (with a local-build fallback if the cache is cold).
+#
+# Stages exercised (see docs/building.md):
+#   1. default `docker build` -> builds the static eco AND runs every smoke
+#      gate, ending in the glibc-smoke stage (.node/.so links under stock
+#      glibc + the ELF-contract assertions).
+#   2. --target eco-bundle -o ./dist -> CPack archives exported to ./dist.
+#   3. --target eco-static  -> extract the bare binary; assert readelf shows
+#      zero NEEDED entries (truly static).
+name: linux-aot
+
+on:
+  push:
+    branches: ['ci/**', 'master']
+    paths:
+      - 'compiler/**'
+      - 'runtime/**'
+      - 'elm-kernel-cpp/**'
+      - 'eco-kernel-cpp/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - 'version.txt'
+      - 'docker/static-build.Dockerfile'
+      - 'docker/llvm-alpine.Dockerfile'
+      - '.github/workflows/linux-aot.yml'
+  workflow_dispatch:
+
+env:
+  LLVM_VERSION: '21.1.8'
+  DOCKER_BUILDKIT: '1'
+
+jobs:
+  aot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          df -h /
+
+      - name: Cache LLVM alpine base image
+        id: llvm
+        uses: actions/cache@v4
+        with:
+          path: /tmp/eco-llvm-alpine.tar.gz
+          # Same key linux-llvm-build writes, so a warm cache is reused.
+          key: eco-llvm-alpine-${{ env.LLVM_VERSION }}-${{ hashFiles('docker/llvm-alpine.Dockerfile') }}
+
+      - name: Load or build LLVM alpine base image
+        # Self-sufficient fallback identical to linux-bootstrap's: build the
+        # base here on a cold cache; the cache action saves it on exit.
+        run: |
+          img="eco-llvm-alpine:${{ env.LLVM_VERSION }}"
+          if [ -f /tmp/eco-llvm-alpine.tar.gz ]; then
+            echo "Loading cached $img ..."
+            gunzip -c /tmp/eco-llvm-alpine.tar.gz | docker load
+          else
+            echo "Cache miss — building $img from source (slow) ..."
+            docker build -f docker/llvm-alpine.Dockerfile -t "$img" .
+            docker save "$img" | gzip > /tmp/eco-llvm-alpine.tar.gz
+          fi
+          docker image ls "$img"
+
+      - name: Build static eco + run all smoke gates
+        # Default target = glibc-smoke, the last stage, so this single build
+        # compiles the static binary and runs every smoke/ELF-contract gate.
+        run: docker build -f docker/static-build.Dockerfile -t eco-static-ci .
+
+      - name: Export distribution bundles to ./dist
+        # Re-uses the eco-builder layers cached by the build above (same
+        # BuildKit daemon), so this only runs CPack + the export exporter.
+        run: |
+          docker build -f docker/static-build.Dockerfile --target eco-bundle -o ./dist .
+          ls -la dist/
+
+      - name: Verify fully-static eco binary
+        run: |
+          docker build -f docker/static-build.Dockerfile --target eco-static -t eco-static-ci-bin .
+          id=$(docker create eco-static-ci-bin)
+          docker cp "$id:/eco" ./eco
+          docker rm "$id"
+          file ./eco
+          needed=$(readelf -d ./eco | grep -c NEEDED || true)
+          echo "NEEDED dynamic entries: $needed (expect 0)"
+          [ "$needed" -eq 0 ] || { echo "ERROR: eco is not fully static"; exit 1; }
+          ./eco --version || true
+          echo "OK: eco is a fully-static binary"
+
+      - name: Upload distribution bundles
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-aot-dist
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.deb
+            eco
+          if-no-files-found: warn
