@@ -1479,6 +1479,7 @@ toOutlineProblemReport path source _ region problem =
 -}
 type Details
     = DetailsNoSolution
+    | DetailsBundledKernelMissing
     | DetailsNoOfflineSolution
     | DetailsSolverProblem Solver
     | DetailsBadElmInPkg C.Constraint
@@ -1529,6 +1530,38 @@ toDetailsReport details =
                         |> D.a (D.fromChars ".")
                     ]
                 , "Please ask for help on the community forums if you try those paths and are still having problems!" |> D.reflow
+                ]
+
+        DetailsBundledKernelMissing ->
+            Help.report "BUNDLED KERNEL NOT FOUND"
+                (Just "elm.json")
+                "Your project depends on eco/kernel, which ships with eco rather than the package registry, and I could not locate it."
+                [ D.reflow "I look for the kernel package next to the eco executable, at <dir-of-eco>/../share/eco/kernel/eco-kernel-cpp. That path does not exist, so dependency solving cannot resolve eco/kernel."
+                , D.fillSep
+                    [ D.fromChars "To"
+                    , D.fromChars "fix"
+                    , D.fromChars "this,"
+                    , D.fromChars "either"
+                    , D.fromChars "install"
+                    , D.fromChars "eco"
+                    , D.fromChars "so"
+                    , D.fromChars "the"
+                    , D.fromChars "kernel"
+                    , D.fromChars "sits"
+                    , D.fromChars "at"
+                    , D.fromChars "<prefix>/share/eco/kernel/eco-kernel-cpp,"
+                    , D.fromChars "or"
+                    , D.fromChars "point"
+                    , D.fromChars "the"
+                    , D.fromChars "compiler"
+                    , D.fromChars "at"
+                    , D.fromChars "the"
+                    , D.fromChars "kernel"
+                    , D.fromChars "source"
+                    , D.fromChars "with"
+                    , D.green (D.fromChars "--local-package eco/kernel=<path>/eco-kernel-cpp")
+                        |> D.a (D.fromChars ".")
+                    ]
                 ]
 
         DetailsNoOfflineSolution ->

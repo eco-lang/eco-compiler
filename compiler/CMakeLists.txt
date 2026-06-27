@@ -199,6 +199,18 @@ file(COPY
     DESTINATION ${BUILD_KERNEL_DIR})
 eco_create_dir_link(${COMPILER_DIR}/src                   ${BUILD_KERNEL_DIR}/src)
 eco_create_dir_link(${CMAKE_SOURCE_DIR}/eco-kernel-cpp/src ${BUILD_KERNEL_DIR}/src-kernel)
+# Mirror the install layout in the build tree so the build-tree `eco` / `eco-quick`
+# binaries auto-resolve the bundled `eco/kernel` package exactly as an installed
+# binary does. Terminal.Make.resolveLocalPackage probes
+# dirname(exe)/../share/eco/kernel/eco-kernel-cpp; dirname(exe) for these binaries
+# is ${BUILD_KERNEL_DIR}/bin, so the kernel must appear at
+# ${BUILD_KERNEL_DIR}/share/eco/kernel/eco-kernel-cpp. Without this, a clean
+# `eco make` of an app depending on eco/kernel fails dependency solving (eco/kernel
+# is not in the registry), surfacing as INCOMPATIBLE DEPENDENCIES. The link target
+# is the kernel package root (elm.json + src/), matching the
+# install(DIRECTORY eco-kernel-cpp DESTINATION share/eco/kernel/eco-kernel-cpp) rules.
+file(MAKE_DIRECTORY ${BUILD_KERNEL_DIR}/share/eco/kernel)
+eco_create_dir_link(${CMAKE_SOURCE_DIR}/eco-kernel-cpp ${BUILD_KERNEL_DIR}/share/eco/kernel/eco-kernel-cpp)
 # Eco.Kernel.Http.js does `require('adm-zip')` when downloading package
 # archives. Without this link, node walks up from eco-boot.js's location
 # (.../build-kernel/bin/) and never reaches ${COMPILER_DIR}/node_modules,

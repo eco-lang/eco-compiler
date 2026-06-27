@@ -681,7 +681,16 @@ verifyConstraints (Env envData) constraints =
                         Task.succeed details
 
                     Solver.NoSolution ->
-                        Task.throw Exit.DetailsNoSolution
+                        if bundledKernelUnresolvable envData constraints then
+                            -- eco/kernel is a bundled package (not in the registry).
+                            -- When it is also not registered as a local package, the
+                            -- solver cannot resolve it and reports a generic no-solution.
+                            -- Surface a precise, actionable error instead of the
+                            -- misleading "INCOMPATIBLE DEPENDENCIES".
+                            Task.throw Exit.DetailsBundledKernelMissing
+
+                        else
+                            Task.throw Exit.DetailsNoSolution
 
                     Solver.NoOfflineSolution ->
                         Task.throw Exit.DetailsNoOfflineSolution
@@ -689,6 +698,26 @@ verifyConstraints (Env envData) constraints =
                     Solver.SolverErr exit ->
                         Task.throw (Exit.DetailsSolverProblem exit)
             )
+
+
+{-| Detect the specific failure where dependency solving has no solution purely
+because the bundled `eco/kernel` package could not be resolved: it is among the
+stated dependencies, it is not registered as a local package (so
+`resolveLocalPackage` did not find it next to the executable), and it is absent
+from the registry. In that case the user needs the kernel located (install layout
+or `--local-package`), not a version-conflict fix.
+-}
+bundledKernelUnresolvable : EnvData -> Dict Pkg.Name Con.Constraint -> Bool
+bundledKernelUnresolvable envData constraints =
+    Dict.member Pkg.ecoKernel constraints
+        && not (Stuff.isLocalPackage envData.cache Pkg.ecoKernel)
+        && (case Registry.getVersions Pkg.ecoKernel envData.registry of
+                Nothing ->
+                    True
+
+                Just _ ->
+                    False
+           )
 
 
 
