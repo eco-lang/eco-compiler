@@ -1082,16 +1082,38 @@ computeFallbackTag edgeTests =
             1
 
         _ ->
-            -- For custom types with multiple edges, find the first unused tag
-            let
-                usedTags =
-                    List.map testToTagInt edgeTests
+            -- Smallest non-negative tag not among the edges. Computed by sorting
+            -- the (few) edge tags and scanning for the first gap from 0, so the
+            -- cost is O(n log n) in the EDGE COUNT, never O(maxTag). The old
+            -- `List.range 0 (maxTag + 1)` allocated a list proportional to the
+            -- largest matched literal: for `int` cases `testToTagInt` returns the
+            -- literal value, so a case over large literals (e.g. PNG chunk-type
+            -- codes ~1.95e9 in justgook/elm-image's Image.Internal.PNG) tried to
+            -- build a multi-billion-element list and OOMed. This yields the same
+            -- value as the old code (smallest non-negative integer not used).
+            firstUnusedTag 0 (List.sort (List.map testToTagInt edgeTests))
 
-                maxTag =
-                    List.maximum usedTags |> Maybe.withDefault 0
-            in
-            -- Find first unused tag from 0 to maxTag+1
-            List.range 0 (maxTag + 1)
-                |> List.filter (\t -> not (List.member t usedTags))
-                |> List.head
-                |> Maybe.withDefault (maxTag + 1)
+
+{-| Smallest non-negative `Int` not present in the ascending-sorted `sortedTags`.
+
+Scans for the first gap starting at `candidate` (0 at the top level). Tags below
+the candidate (including negatives and duplicates) are skipped; when a tag equals
+the candidate the candidate advances; the first tag strictly greater than the
+candidate exposes the gap. Cost is O(n) over the sorted edge tags.
+
+-}
+firstUnusedTag : Int -> List Int -> Int
+firstUnusedTag candidate sortedTags =
+    case sortedTags of
+        [] ->
+            candidate
+
+        t :: rest ->
+            if t < candidate then
+                firstUnusedTag candidate rest
+
+            else if t == candidate then
+                firstUnusedTag (candidate + 1) rest
+
+            else
+                candidate
