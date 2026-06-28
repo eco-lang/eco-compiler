@@ -1,6 +1,7 @@
 module Builder.Stuff exposing
     ( findRoot, getElmHome
     , PackageCache, getPackageCache, getReplCache, package, isLocalPackage, localPackageSource, registry
+    , resolveBundledKernel
     , typedPackageArtifacts, packageCacheEncoder, packageCacheDecoder
     , eci, eco, ecot
     , testDir
@@ -26,6 +27,7 @@ managing file locks.
 # Package Cache
 
 @docs PackageCache, getPackageCache, getReplCache, package, isLocalPackage, localPackageSource, registry
+@docs resolveBundledKernel
 @docs typedPackageArtifacts, packageCacheEncoder, packageCacheDecoder
 
 
@@ -326,6 +328,47 @@ localPackageSource (PackageCache _ maybeLocal) name =
 
         Nothing ->
             Nothing
+
+
+{-| Resolve the local-package mapping, falling back to the bundled `eco/kernel`
+package when no explicit mapping was given.
+
+An explicit mapping (e.g. from a `--local-package` flag) always wins. Otherwise
+we look for the kernel package next to the executable at
+`dirname(exe)/../share/eco/kernel/eco-kernel-cpp`, matching the install layout
+(binary in `<prefix>/bin`, kernel in `<prefix>/share/eco/kernel/eco-kernel-cpp`).
+If that directory does not exist we leave the mapping unset so the normal package
+cache lookup applies.
+
+Shared by `make` and `init` so both resolve the bundled kernel identically.
+
+-}
+resolveBundledKernel : Maybe ( Pkg.Name, FilePath ) -> Task Never (Maybe ( Pkg.Name, FilePath ))
+resolveBundledKernel maybeLocalPackage =
+    case maybeLocalPackage of
+        Just _ ->
+            Task.succeed maybeLocalPackage
+
+        Nothing ->
+            Utils.nodeGetDirname
+                |> Task.andThen
+                    (\binDir ->
+                        let
+                            kernelDir : FilePath
+                            kernelDir =
+                                Utils.fpCombine binDir "../share/eco/kernel/eco-kernel-cpp"
+                        in
+                        Utils.dirDoesDirectoryExist kernelDir
+                            |> Task.andThen
+                                (\exists ->
+                                    if exists then
+                                        Utils.dirCanonicalizePath kernelDir
+                                            |> Task.map (\canonical -> Just ( Pkg.ecoKernel, canonical ))
+
+                                    else
+                                        Task.succeed Nothing
+                                )
+                    )
 
 
 {-| Returns the path to typed artifacts cache for a specific package version.

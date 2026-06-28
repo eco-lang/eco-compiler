@@ -2,35 +2,17 @@ module Hello exposing (main)
 
 import Eco.Console
 import Platform
+import Task
 
 
-type alias Model =
-    {}
-
-
-type alias Msg =
-    ()
-
-
-main : Program () Model Msg
+main : Program () () ()
 main =
     Platform.worker
-        { init = init
-        , update = update
-        , subscriptions = subscriptions
+        { init =
+            \_ ->
+                ( ()
+                , Task.attempt (always ()) (Eco.Console.write Eco.Console.stdout "Hello World!\n")
+                )
+        , update = \_ model -> ( model, Cmd.none )
+        , subscriptions = \_ -> Sub.none
         }
-
-
-init : () -> ( Model, Cmd Msg )
-init _ =
-    ( Eco.Console.log "Hello World!" {}, Cmd.none )
-
-
-update : Msg -> Model -> ( Model, Cmd Msg )
-update _ model =
-    ( model, Cmd.none )
-
-
-subscriptions : Model -> Sub Msg
-subscriptions _ =
-    Sub.none
