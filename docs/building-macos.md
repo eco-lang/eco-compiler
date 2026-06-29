@@ -167,16 +167,18 @@ incremental.
 
 ## CI workflows
 
-The macOS port is exercised by three GitHub Actions workflows under
-`.github/workflows/`:
+The macOS port is exercised by a single consolidated GitHub Actions
+workflow under `.github/workflows/`:
 
-| Workflow | What it checks |
+| Workflow | What it checks (cheap → expensive, fail-fast) |
 |---|---|
-| `mac-bootstrap` | Front-end configure (`mac-frontend`), Stages 1-5, the M5 elm-tests suite. |
-| `mac-runtime` | Full configure (`mac-build`), runtime + JIT E2E test binary (1493 tests). |
-| `mac-aot` | Full Stage 9 bootstrap (`--target eco`), Mach-O verification (`file` + `codesign -dv` + `--help`), CPack bundle, and a self-contained bundle smoke-test. |
+| `mac-aot` | Full configure (`mac-build`); front-end Stages 1-5; the elm-tests suite; runtime + JIT E2E test binary; the full Stage 9 bootstrap (`--target eco`); Mach-O verification (`file` + `codesign -dv` + `--help`); CPack bundle; and a self-contained bundle smoke-test. |
 
-All three run on the free `macos-15` (arm64, M-class) hosted runner.
+`mac-aot` runs on the free `macos-15` (arm64, M-class) hosted runner.
+It supersedes the former `mac-bootstrap` (front-end) and `mac-runtime`
+(JIT) workflows, which were folded in as gateway steps so a single run
+both tests and ships — and so a push installs LLVM via brew once, not
+three times.
 Private repos burn macOS minutes at 10×; the free tier covers public
 repos like this one without metering.
 

@@ -3,12 +3,15 @@
 Status: **supported** on Windows x86_64 (plans/build-on-windows.md). The
 full self-hosted chain builds end-to-end and produces the unified
 `eco.exe` (Stages 6 → 7 → 8 byte-equal `.mlir` fixed point → 9), packaged
-as `eco-<ver>-x86_64-windows.zip`. Each piece is gated in CI by
-[`win-bootstrap.yml`][win-bootstrap] (front-end Stages 1–5),
-[`win-runtime.yml`][win-runtime] (runtime + JIT) and
-[`win-aot.yml`][win-aot] (AOT + the unified bundle, smoke-tested with
-`eco.exe --help`). See [Known limitations](#known-limitations-v1) for the
-pieces still deferred behind explicit gates.
+as `eco-<ver>-x86_64-windows.zip`. The whole chain is gated in CI by the
+single [`win-aot.yml`][win-aot] workflow — front-end Stages 1–5, the
+elm-tests suite, runtime + JIT E2E, the Stage 6 → 9 AOT self-host chain,
+and the unified bundle smoke-tested with `eco.exe --help` — backed by
+[`win-llvm-build.yml`][win-llvm-build], the cached LLVM-MSVC base-image
+warmer. (`win-aot` supersedes the former `win-bootstrap` + `win-runtime`
+workflows, folded in as gateway steps.) See
+[Known limitations](#known-limitations-v1) for the pieces still deferred
+behind explicit gates.
 
 ## Prerequisites
 
@@ -140,7 +143,6 @@ when invoked:
   `popen("addr2line")`); the test/JIT/AOT suites cover the same GC paths
   on Windows.
 
-[win-bootstrap]: ../.github/workflows/win-bootstrap.yml
-[win-runtime]: ../.github/workflows/win-runtime.yml
 [win-aot]: ../.github/workflows/win-aot.yml
+[win-llvm-build]: ../.github/workflows/win-llvm-build.yml
 [presets]: ../CMakePresets.json

@@ -11,6 +11,11 @@ on:
       - 'experiments/win-llvm-build/**'
       - '.github/workflows/win-llvm-build.yml'
   workflow_dispatch:
+  schedule:
+    # Weekly safety touch so the LLVM-MSVC install-tree cache never evicts even
+    # if the daily win-aot build is paused. A cache hit is a cheap no-op; a
+    # cold cache rebuilds (and re-populates) the install tree.
+    - cron: '0 5 * * 2'
 
 jobs:
   build:

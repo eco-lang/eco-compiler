@@ -1,41 +1,46 @@
-# W4 verification (Windows AOT) from plans/build-on-windows.md: end-to-end
-# Win64 AOT — runs eco-boot-native on Stage 5's eco-compiler.mlir, producing
-# a real native PE executable. Verifies:
-#   - clang-cl + lld-link Windows AOT path succeeds with the bundled project
-#     archives, vendored libzip + zlib + curl-with-schannel, and SDK
-#     kernel32/ws2_32/crypt32/bcrypt/secur32 import libs (no OpenSSL).
-#   - the resulting binary is a PE32+ Windows executable.
-#   - the binary actually runs (--help round-trip).
-# This workflow depends on E-W3 (LLVM 21.1.8 + MLIR install tree) being cached.
+# Windows — single consolidated build: full bootstrap + every test gateway +
+# the shippable Win64 distribution bundle, in one job.
+#
+# Replaces the former three-workflow split (win-bootstrap / win-runtime /
+# win-aot). Windows has a single toolchain (the cached LLVM-MSVC install tree
+# from win-llvm-build), so test-vs-ship need not be split. win-llvm-build
+# stays as the LLVM base-image cache-warmer.
+#
+# Steps run cheap -> expensive (fail-fast):
+#   1. front-end stages 1-5      (pure Node)                  — was win-bootstrap
+#   2. elm-tests                 (compiler's own Elm suite)   — was win-bootstrap
+#   3. JIT E2E (build + run test.exe)                         — was win-runtime
+#   4. Stage 6-9 self-host chain (incl. 8c MLIR fixed point)  — was win-aot
+#   5. verify PE -> package ZIP -> smoke-test bundle          — was win-aot
+#
+# stress / AOT-E2E stay Windows-gated-off (NOT WIN32) as in the runtime suite.
 name: win-aot
 
 on:
   push:
     branches: ['ci/**', 'master']
     paths:
+      - 'compiler/**'
       - 'runtime/**'
       - 'elm-kernel-cpp/**'
       - 'eco-kernel-cpp/**'
-      - 'compiler/**'
+      - 'test/**'
       - 'cmake/**'
       - 'CMakeLists.txt'
       - 'CMakePresets.json'
+      - 'version.txt'
       - '.github/workflows/win-aot.yml'
   workflow_dispatch:
+  schedule:
+    # Daily build keeps the LLVM-MSVC install-tree cache accessed (a restore
+    # resets GitHub's 7-day eviction timer). Inert until merged to master.
+    - cron: '40 6 * * *'
 
 jobs:
   aot:
     runs-on: windows-latest
-    # 240 min: full bootstrap chain through Stage 9 — Stages 5 (Node) →
-    # 6 (eco-compiler.exe) → 7a (eco-compiler.exe self-compile to MLIR)
-    # → 7b (link eco-compiler-boot.exe) → 8a (self-compile again) → 8b
-    # (link eco-compiler-boot-2.exe) → 8c (MLIR byte-equal fixed-point) →
-    # 9a (lower eco-compiler.mlir to eco-stage9.o) → 9b (link the unified
-    # eco.exe). Each link is the /MT static-CRT chain with all project
-    # archives + libcurl_static + zip + zlibstatic.
-    # The workflow below splits this into separately-timed steps so the
-    # GitHub Actions UI shows per-stage durations — if we blow the
-    # ceiling, we'll know precisely which stage to optimize next.
+    # Actual wall-clock is ~60 min (Stage 6 ~9m + Stage 7 ~15m + Stage 8/9
+    # ~22m + the JIT gateway ~6m); 240 leaves ample headroom under the 6h cap.
     timeout-minutes: 240
     env:
       LLVM_DIR: ${{ github.workspace }}\experiments\win-llvm-build\out\llvm-install
@@ -43,11 +48,17 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Set up MSVC dev environment
+        # clang-cl is pinned in the win presets; it needs the MSVC headers/libs
+        # to satisfy CMake's compiler probe. ilammy/msvc-dev-cmd sources
+        # vcvarsall x64 (also provides ml64/link/lib for the AOT link line).
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
       - name: Restore LLVM 21.1.8 install tree (from win-llvm-build / E-W3)
+        # fail-on-cache-miss: the LLVM source build is the job of win-llvm-build
+        # (kept warm by the daily schedule). A cold cache fails fast and
+        # legibly — re-run win-llvm-build — rather than silently degrading.
         uses: actions/cache@v4
         with:
           path: experiments/win-llvm-build/out/llvm-install
@@ -69,20 +80,86 @@ jobs:
           cmake --build $env:RUNNER_TEMP\rapidcheck\build --target install
           echo "rapidcheck_DIR=$env:RUNNER_TEMP\rapidcheck-install\share\rapidcheck\cmake" >> $env:GITHUB_ENV
 
+      - name: Tool versions
+        shell: pwsh
+        run: |
+          node --version
+          pnpm --version
+          (cmake --version | Select-Object -First 1)
+          ninja --version
+          Write-Host "CPUs: $env:NUMBER_OF_PROCESSORS"
+          (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB
+
       - name: Configure (win-build preset)
         shell: pwsh
         run: cmake --preset win-build
 
+      # ---- Gateway 1: front-end (stages 1-5). Pure Node — fails fast. ----
+      - name: Stages 1-4b (guida.js -> JS fixed point)
+        shell: pwsh
+        run: cmake --build build --target eco-boot-verify
+
+      - name: Stage 5 (eco-boot-2.js -> eco-compiler.mlir)
+        shell: pwsh
+        run: cmake --build build --target eco-compiler-mlir
+
+      # ---- Gateway 2: the compiler's own Elm test suite. ----
+      - name: elm-tests (compiler's Elm suite via win elm-test-rs)
+        shell: pwsh
+        # elm-test-rs 3.0.1 exits 2 ("INCOMPLETE") for the one intentional
+        # Test.skip in compiler/tests/, even with zero actual failures. Accept
+        # iff the captured log proves nothing failed.
+        run: |
+          $log = "$env:RUNNER_TEMP\elm-tests.log"
+          $proc = Start-Process -FilePath cmake `
+              -ArgumentList @('--build','build','--target','elm-tests') `
+              -NoNewWindow -Wait -PassThru `
+              -RedirectStandardOutput $log -RedirectStandardError "$log.err"
+          $rc = $proc.ExitCode
+          Get-Content $log, "$log.err" -ErrorAction SilentlyContinue | Write-Host
+          if ($rc -eq 0) { Write-Host "OK: elm-tests passed (no skips)"; exit 0 }
+          if ($rc -eq 2 -and (Select-String -Path $log -Pattern 'Failed: +0' -Quiet)) {
+              Write-Host "OK: elm-tests passed (Test.skip incomplete, no failures)"
+              exit 0
+          }
+          Write-Host "ERROR: elm-tests failed (rc=$rc)"; exit $rc
+
+      # ---- Gateway 3: JIT E2E. Builds the runtime + kernels + test harness
+      #      and runs the (partially Win-stubbed) JIT suite. ----
+      - name: Build everything (-k 20 batches errors)
+        shell: pwsh
+        run: cmake --build build -- -k 20
+
+      - name: Build test binary
+        # test/ is wired on Windows: ElmE2EBase's fork-based runner has an
+        # in-process serial fallback (#if defined(_WIN32)), popen->_popen, and
+        # the elm-http + eco-kernel E2E suites are stubbed (TestHttpServer
+        # depends on OpenSSL + BSD sockets). stress / mlir-equivalence /
+        # aot-e2e-runner stay gated behind NOT WIN32.
+        shell: pwsh
+        run: cmake --build build --target test -- -k 20
+
+      - name: Run JIT E2E tests
+        shell: pwsh
+        run: |
+          $log = "$env:RUNNER_TEMP\test_output.txt"
+          $proc = Start-Process -FilePath build\test\test.exe `
+            -NoNewWindow -Wait -PassThru `
+            -RedirectStandardOutput $log -RedirectStandardError "$log.err"
+          $rc = $proc.ExitCode
+          Get-Content $log, "$log.err" -ErrorAction SilentlyContinue | Select-Object -Last 30 | Write-Host
+          exit $rc
+
+      # ---- Gateway 4: the full Stage 6-9 self-host chain. Split into
+      #      separately-timed steps so the Actions UI shows per-stage
+      #      durations. eco-boot-native + the runtime are already built above. ----
       - name: Build eco-boot-native + project archives
         shell: pwsh
         run: cmake --build build --target eco-boot-native -- -k 20
 
       - name: Stage 6 — eco-compiler.exe (Win64 PE)
-        # eco-boot-native lowers Stage 5's eco-compiler.mlir to a real
-        # Win64 PE executable via clang-cl + lld-link with the full
-        # /MT static-CRT link line (project archives + libcurl_static +
-        # zip + zlibstatic + kernel32/ws2_32/crypt32/bcrypt/secur32). On
-        # the standard win-aot run this finishes in ~10-15 min.
+        # eco-boot-native lowers Stage 5's eco-compiler.mlir to a real Win64 PE
+        # via clang-cl + lld-link with the full /MT static-CRT link line.
         shell: pwsh
         run: cmake --build build --target eco-compiler -- -k 20
 
@@ -99,22 +176,15 @@ jobs:
 
       - name: Stage 7 — self-hosted compile + link
         # Stage 7a runs eco-compiler.exe to recompile compiler/src/Main.elm
-        # into eco-compiler-boot.mlir (the self-bootstrap MLIR). Stage 7b
-        # lowers that MLIR back to a Win64 PE via eco-boot-native — same link
-        # line as Stage 6, so similar wall time on the link half.
+        # into eco-compiler-boot.mlir; Stage 7b lowers that back to a Win64 PE.
         shell: pwsh
         run: cmake --build build --target eco-compiler-boot -- -k 20
 
       - name: Stage 8 + 9a — fixed point + lower for the unified binary
-        # `--target eco` transitively depends on the BOOTSTRAP_STAMP
-        # (Stage 8c MLIR byte-equality check, which itself pulls in Stage 8a
-        # self-compile + Stage 8b link), plus Stage 9a (eco-compiler.mlir
-        # → eco-stage9.o via eco-boot-native --emit=obj), then Stage 9b
-        # (link the unified eco.exe). The Ninja invocation absorbs the
-        # whole tail of the chain — splitting Stage 8a/8b out separately
-        # would need a new add_custom_target() per intermediate file, and
-        # the chain is sequential anyway, so this single step captures
-        # the remaining wall time.
+        # `--target eco` transitively depends on the BOOTSTRAP_STAMP (Stage 8c
+        # MLIR byte-equality, pulling Stage 8a self-compile + 8b link), plus
+        # Stage 9a (eco-compiler.mlir -> eco-stage9.o) then Stage 9b (link the
+        # unified eco.exe).
         shell: pwsh
         run: cmake --build build --target eco -- -k 20
 
@@ -129,24 +199,20 @@ jobs:
           & "$env:LLVM_DIR\bin\llvm-readobj.exe" --file-headers $eco | Select-String -Pattern 'Machine|Magic|Subsystem' | Write-Host
           Write-Host "OK: Stage 9 AOT-produced eco.exe is a valid Win64 PE"
 
+      # ---- Ship: package + smoke-test the Windows bundle in isolation. ----
       - name: Package Windows bundle (ZIP)
         # CPack picks up the BundleWindows component from CMakeLists.txt's
-        # elseif(WIN32 ...) install block — eco-compiler.exe, project archives
-        # (.lib), vendored libcurl_static + zip + zlibstatic, kernel sources,
-        # examples. v1 ships Stage 6 eco-compiler.exe; (b) will swap in Stage
-        # 9's unified eco.exe once the bootstrap chain fits in 240 min.
+        # elseif(WIN32 ...) install block — eco.exe, eco-compiler.exe, project
+        # archives (.lib), vendored libcurl_static + zip + zlibstatic, kernel
+        # sources, examples.
         shell: pwsh
         run: |
           cmake --build build --target package -- -k 20
           Get-ChildItem build\eco-*.zip | Format-List
 
       - name: Smoke-test the bundle in isolation
-        # Extract the ZIP to a fresh prefix and probe bin/eco.exe (the
-        # unified Stage 9 binary). Confirms the bundle is self-contained
-        # — install rules placed every archive the in-process
-        # eco_native_lower_and_link path needs under lib/eco-runtime/project/.
-        # `eco.exe --help` reaches argument parsing without invoking the
-        # AOT pipeline, mirroring the mac-aot smoke check.
+        # Extract the ZIP to a fresh prefix and probe bin/eco.exe (the unified
+        # Stage 9 binary). Confirms the bundle is self-contained.
         shell: pwsh
         run: |
           $bundle = Get-ChildItem build\eco-*.zip | Select-Object -First 1
@@ -155,8 +221,7 @@ jobs:
           Expand-Archive -Path $bundle.FullName -DestinationPath $dest -Force
           # CPack ZIP under CPACK_ARCHIVE_COMPONENT_INSTALL=ON drops bin/, lib/,
           # share/ straight at the archive root (no enclosing eco-VERSION-…/
-          # folder, unlike the Darwin TGZ). Detect both layouts so this check
-          # keeps working if the CPack default changes.
+          # folder, unlike the Darwin TGZ). Detect both layouts.
           if (Test-Path "$dest\bin") {
               $root = $dest
           } else {
@@ -187,7 +252,7 @@ jobs:
           }
           Write-Host "OK: bundled eco.exe runs in isolation"
 
-      - name: Upload AOT output + bundle
+      - name: Upload AOT output + bundle + logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -198,4 +263,6 @@ jobs:
             build/eco-*.zip
             ${{ runner.temp }}/help.txt
             ${{ runner.temp }}/help.txt.err
+            ${{ runner.temp }}/test_output.txt
+            ${{ runner.temp }}/elm-tests.log
           if-no-files-found: warn

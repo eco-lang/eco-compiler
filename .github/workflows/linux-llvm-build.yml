@@ -28,6 +28,11 @@ on:
       - 'docker/llvm-alpine.Dockerfile'
       - '.github/workflows/linux-llvm-build.yml'
   workflow_dispatch:
+  schedule:
+    # Weekly safety touch so the debian + alpine base-image caches never evict
+    # even if the daily linux-aot build is paused. A cache hit is a cheap
+    # no-op; a cold cache rebuilds (and re-populates) the base images.
+    - cron: '0 5 * * 1'
 
 env:
   LLVM_VERSION: '21.1.8'

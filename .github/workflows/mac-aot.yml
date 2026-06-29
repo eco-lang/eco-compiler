@@ -1,43 +1,53 @@
-# E-M4 from plans/build-on-mac.md: end-to-end Darwin AOT — runs
-# eco-boot-native (the MLIR -> Mach-O lowering+link driver) on Stage 5's
-# eco-compiler.mlir, producing a real native Mach-O. Verifies that:
-#   - clang-driver Mach-O link succeeds with the bundled project archives,
-#     vendored libzip, and SDK -lSystem/-lc++/-lcurl/-lz.
-#   - the resulting binary is arm64 Mach-O and ad-hoc-signed by ld64.
-#   - the binary actually runs (--help round-trip — no real workload yet;
-#     a GC-heavy program follow-up is tracked in M4 task #5).
+# macOS — single consolidated build: full bootstrap + every test gateway +
+# the shippable Darwin distribution bundle, in one job.
+#
+# This replaces the former three-workflow split (mac-bootstrap / mac-runtime /
+# mac-aot). macOS has a single toolchain (brew llvm@21), so there is no
+# structural reason to split test-vs-ship; folding them removes two redundant
+# brew-llvm-installs + configures per push (macOS runners bill at 10x).
+#
+# Steps run cheap -> expensive (fail-fast), mirroring linux's gate order:
+#   1. front-end stages 1-5      (pure Node; no LLVM needed) — was mac-bootstrap
+#   2. elm-tests                 (compiler's own Elm suite)  — was mac-bootstrap
+#   3. JIT E2E (build + run test)                            — was mac-runtime
+#   4. Stage 6-9 self-host chain (incl. 8c MLIR fixed point) — was mac-aot
+#   5. verify Mach-O -> package Darwin bundle -> smoke-test  — was mac-aot
 name: mac-aot
 
 on:
   push:
     branches: ['ci/**', 'master']
     paths:
+      - 'compiler/**'
       - 'runtime/**'
       - 'elm-kernel-cpp/**'
       - 'eco-kernel-cpp/**'
-      - 'compiler/**'
+      - 'test/**'
       - 'cmake/**'
       - 'CMakeLists.txt'
       - 'CMakePresets.json'
+      - 'version.txt'
       - '.github/workflows/mac-aot.yml'
   workflow_dispatch:
+  schedule:
+    # Daily build keeps the workflow exercised. (schedule only fires from the
+    # default branch, so this is inert until merged to master.)
+    - cron: '0 6 * * *'
 
 jobs:
   aot:
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
-          # libzip is now vendored via FetchContent on APPLE (see
-          # eco-kernel-cpp/CMakeLists.txt) so we no longer need brew's
-          # libzip. pkgconf still useful for kernel curl/ssl probes.
-          # rapidcheck is required by find_package() at configure time
-          # (the ecor target hard-needs it even though it is
-          # EXCLUDE_FROM_ALL); brew bottle first, source-build fallback
-          # mirrors what mac-runtime does.
+          # libzip is vendored via FetchContent on APPLE (see
+          # eco-kernel-cpp/CMakeLists.txt) so brew's libzip is not needed.
+          # pkgconf is still useful for kernel curl/ssl probes. rapidcheck is
+          # a configure-time dep of the ecor target (find_package); brew bottle
+          # first, source-build fallback.
           brew install llvm@21 openssl@3 pnpm gnu-time pkgconf ccache
           brew install rapidcheck || {
             git clone --depth=1 https://github.com/emil-e/rapidcheck.git /tmp/rapidcheck
@@ -47,6 +57,14 @@ jobs:
             sudo cmake --install /tmp/rapidcheck/build
           }
 
+      - name: Tool versions
+        run: |
+          node --version
+          pnpm --version
+          cmake --version | head -1
+          ninja --version
+          sysctl hw.memsize hw.ncpu
+
       - name: Restore ccache
         uses: actions/cache@v4
         with:
@@ -54,28 +72,68 @@ jobs:
           key: mac-aot-ccache-${{ github.sha }}
           restore-keys: mac-aot-ccache-
 
-      - name: Configure (mac-build preset)
+      - name: Configure (mac-build preset, full)
         run: |
           cmake --preset mac-build \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
+      # ---- Gateway 1: front-end (stages 1-5). Pure Node — fails a front-end
+      #      regression fast, before any heavy C++/LLVM work. ----
+      - name: Stages 1-4b (guida.js -> JS fixed point)
+        run: cmake --build build --target eco-boot-verify
+
+      - name: Stage 5 (eco-boot-2.js -> eco-compiler.mlir)
+        run: cmake --build build --target eco-compiler-mlir
+
+      # ---- Gateway 2: the compiler's own Elm test suite. ----
+      - name: elm-tests (compiler's Elm suite via mac elm-test-rs)
+        # elm-test-rs 3.0.1 exits 2 ("INCOMPLETE") for the one intentional
+        # Test.skip in compiler/tests/ (NoCEcoValueInUserFunctionsTest.elm)
+        # even with zero real failures. Accept iff the log proves nothing
+        # actually failed.
+        run: |
+          set +e
+          cmake --build build --target elm-tests 2>&1 | tee /tmp/elm-tests.log
+          rc=${PIPESTATUS[0]}
+          if [ $rc -eq 0 ]; then
+              echo "OK: elm-tests passed (no skips)"; exit 0
+          fi
+          if [ $rc -eq 2 ] && grep -qE 'Failed: +0' /tmp/elm-tests.log; then
+              echo "OK: elm-tests passed (Test.skip incomplete, no failures)"
+              exit 0
+          fi
+          echo "ERROR: elm-tests failed (rc=$rc)"; exit $rc
+
+      # ---- Gateway 3: JIT E2E. Builds the runtime + kernels + test harness
+      #      and runs the JIT suite — catches runtime/codegen regressions
+      #      before the long self-host fixed-point chain. ----
+      - name: Build everything (-k 20 to batch errors)
+        run: cmake --build build -- -k 20
+
+      - name: Build test binary
+        run: cmake --build build --target test -- -k 20
+
+      - name: Run JIT E2E tests
+        run: |
+          # macos GH Actions default shell is `/bin/bash -e {0}` (no pipefail),
+          # so a naive `test | tee` loses the test binary's exit code (it sees
+          # tee's 0). Capture PIPESTATUS explicitly.
+          set +e
+          ./build/test/test 2>&1 | tee /tmp/test_output.txt
+          rc=${PIPESTATUS[0]}
+          tail -30 /tmp/test_output.txt
+          exit $rc
+
+      # ---- Gateway 4: the full Stage 6-9 self-host chain. `--target eco`
+      #      transitively pulls Stage 6 (eco-compiler Mach-O), 7a/7b
+      #      (self-compile + link), 8a-c (self-compile again + the 8c
+      #      MLIR byte-equal fixed-point), 9a/9b (lower + link unified eco).
+      #      Stages 1-5 and eco-boot-native are already built above. ----
       - name: Build eco-boot-native + project archives
         run: cmake --build build --target eco-boot-native -- -k 20
 
       - name: Build Stage 9 — unified eco binary (full bootstrap chain)
-        # `--target eco` transitively depends on:
-        #   Stages 1-5 (Node/Elm front-end through eco-compiler.mlir)
-        #   Stage 6 (eco-compiler.mlir -> eco-compiler Mach-O)
-        #   Stage 7a (eco-compiler self-compile -> eco-compiler-boot.mlir)
-        #   Stage 7b (eco-compiler-boot.mlir -> eco-compiler-boot Mach-O)
-        #   Stage 8a-b (eco-compiler-boot self-compile -> ...-boot-2)
-        #   Stage 8c (byte-equal: eco-compiler-boot == eco-compiler-boot-2)
-        #   Stage 9a (eco-compiler.mlir -> eco-stage9.o via --emit=obj)
-        #   Stage 9b (link eco-stage9.o + all archives -> unified eco)
-        # Heavier than the previous Stage-6-only smoke test (~10-15 min),
-        # but the only way to verify the AOT codegen is deterministic
-        # enough on Darwin for the native fixed-point check at Stage 8c.
         run: cmake --build build --target eco -- -k 20
 
       - name: Verify Mach-O output (Stage 9 unified eco)
@@ -94,12 +152,12 @@ jobs:
           # EcoNativeDriverStatic linkage so a missing eco_native_lower_and_link
           # weak/strong override would surface here as a SIGABRT.
           $eco_bin --help 2>&1 | tee /tmp/help.txt | head -20
-          rc=$?
           if grep -qE 'Killed|Segmentation fault|Bus error|Abort' /tmp/help.txt; then
               echo "ERROR: eco --help crashed at runtime"; exit 1
           fi
           echo "OK: unified eco runs as native Mach-O"
 
+      # ---- Ship: package + smoke-test the Darwin bundle in isolation. ----
       - name: Package Darwin bundle (TGZ)
         # CPack picks up the BundleDarwin component from CMakeLists.txt's
         # if(APPLE) install block — eco-boot-native, eco-compiler, project
@@ -121,8 +179,6 @@ jobs:
           mkdir -p /tmp/eco-bundle && cd /tmp/eco-bundle
           tar -xzf "$GITHUB_WORKSPACE"/build/eco-*-darwin.tar.gz
           ls -la bin/ lib/eco-runtime/project/ 2>&1 | head -50
-          # Run the unified eco binary (Stage 9) from the extracted bundle.
-          # --help reaches arg parsing without invoking the AOT pipeline.
           ./bin/eco --help 2>&1 | head -10
           rc=$?
           if [ $rc -ge 128 ]; then
@@ -134,6 +190,17 @@ jobs:
         if: always()
         run: ccache -s | head -15
 
+      - name: Report outputs and timings
+        if: always()
+        run: |
+          echo "=== bootstrap outputs ==="
+          ls -la build/compiler/build-xhr/bin/ 2>/dev/null || true
+          ls -la build/compiler/build-kernel/bin/ 2>/dev/null || true
+          echo "=== stage timing logs ==="
+          for f in build/compiler/build-kernel/timing-*.txt; do
+            [ -f "$f" ] && { echo "--- $f ---"; cat "$f"; }
+          done
+
       - name: Upload AOT output + logs + bundle
         if: always()
         uses: actions/upload-artifact@v4
@@ -142,6 +209,9 @@ jobs:
           path: |
             build/compiler/build-kernel/bin/eco
             build/eco-*-darwin.tar.gz
+            build/compiler/build-kernel/timing-*.txt
             /tmp/codesign.txt
             /tmp/help.txt
+            /tmp/test_output.txt
+            /tmp/elm-tests.log
           if-no-files-found: warn
