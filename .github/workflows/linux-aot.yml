@@ -21,7 +21,8 @@
 # glibc, where the dev toolchain lives and the self-host bootstrap is reliable
 # (the musl self-host has a known-flaky `Map.!` readdir-ordering bug — see
 # plans/static-link-eco-binary.md). The two slow LLVM base images are restored
-# from the Actions cache populated by linux-llvm-build.
+# from the Actions cache populated by linux-llvm-build-debian (glibc) and
+# linux-llvm-build-alpine (musl).
 name: linux-aot
 
 on:
@@ -69,29 +70,24 @@ jobs:
             /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
           df -h /
 
-      - name: Cache LLVM debian base image
-        id: llvm
+      - name: Restore LLVM debian base image (from linux-llvm-build-debian)
+        # fail-on-cache-miss: the debian base is warmed by linux-llvm-build-debian
+        # and consumed here, so linux-aot never drops into the slow ~1h inline
+        # LLVM rebuild. A cold cache fails fast and legibly — run
+        # linux-llvm-build-debian first, then re-run. (Same contract as the
+        # alpine base in the bundle job.)
         uses: actions/cache@v4
         with:
           path: /tmp/eco-llvm-debian.tar.gz
-          # Same key linux-llvm-build writes, so a warm cache is reused.
+          # Same key linux-llvm-build-debian writes, so a warm cache is reused.
           key: eco-llvm-debian-${{ env.LLVM_VERSION }}-${{ hashFiles('docker/llvm-debian.Dockerfile') }}
+          fail-on-cache-miss: true
 
-      - name: Load or build LLVM debian base image
-        # Self-sufficient fallback: if the cache is cold (e.g. linux-llvm-build
-        # has not run yet) build the base here and the cache action saves it on
-        # exit for the next run. The debian base build is slow but survives the
-        # hosted runner (unlike the alpine one — see the bundle job).
+      - name: Load LLVM debian base image
         run: |
           img="eco-llvm-debian:${{ env.LLVM_VERSION }}"
-          if [ -f /tmp/eco-llvm-debian.tar.gz ]; then
-            echo "Loading cached $img ..."
-            gunzip -c /tmp/eco-llvm-debian.tar.gz | docker load
-          else
-            echo "Cache miss — building $img from source (slow) ..."
-            docker build -f docker/llvm-debian.Dockerfile -t "$img" .
-            docker save "$img" | gzip > /tmp/eco-llvm-debian.tar.gz
-          fi
+          echo "Loading cached $img ..."
+          gunzip -c /tmp/eco-llvm-debian.tar.gz | docker load
           docker image ls "$img"
 
       - name: Build eco-dev image
@@ -224,12 +220,13 @@ jobs:
             /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
           df -h /
 
-      - name: Restore LLVM alpine base image (from linux-llvm-build)
+      - name: Restore LLVM alpine base image (from linux-llvm-build-alpine)
         # fail-on-cache-miss: the alpine LLVM-from-source rebuild OOMs the
         # hosted runner (it was the cause of the 3h+ "runner lost
         # communication" failures), so we DO NOT fall back to a local build.
-        # The cache is populated by linux-llvm-build and kept warm by the daily
-        # schedule; a cold cache fails fast and legibly — re-run linux-llvm-build.
+        # The cache is populated by linux-llvm-build-alpine and kept warm by the
+        # daily schedule; a cold cache fails fast and legibly — re-run
+        # linux-llvm-build-alpine.
         uses: actions/cache@v4
         with:
           path: /tmp/eco-llvm-alpine.tar.gz

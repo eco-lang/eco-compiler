@@ -1,0 +1,83 @@
+# Linux LLVM/MLIR base-image builder + cache warmer — DEBIAN (glibc) variant.
+#
+# The Linux CI path runs inside Docker. The debian LLVM/MLIR base image:
+#
+#   eco-llvm-debian:<ver>  -> consumed by docker/eco-dev.Dockerfile
+#                             (glibc dev shell; linux-aot `test` job)
+#
+# compiles LLVM+MLIR from source and is rebuilt only when LLVM_VERSION (or the
+# base Dockerfile) changes. This workflow builds it once and stores it as a
+# `docker save | gzip` tarball in the Actions cache, keyed on the base
+# Dockerfile hash. linux-aot's `test` job restores the tarball and
+# `docker load`s it in seconds instead of recompiling LLVM.
+#
+# linux-aot's `test` job restores this cache with `fail-on-cache-miss: true`
+# and does NOT fall back to a local build — so the cache MUST be populated here
+# first (run this workflow to green before linux-aot). The debian LLVM build
+# *can* survive the hosted runner, but we warm it here anyway so linux-aot
+# never pays the slow ~1h inline rebuild; a cold cache fails linux-aot fast and
+# legibly — re-run this workflow.
+#
+# Cache scope note: a cache produced on the default branch (master) is
+# readable from every branch, so warming it here on a master push makes the
+# image available to all subsequent consumer runs.
+name: linux-llvm-build-debian
+
+on:
+  push:
+    branches: ['ci/**', 'master']
+    paths:
+      - 'docker/llvm-debian.Dockerfile'
+      - '.github/workflows/linux-llvm-build-debian.yml'
+  workflow_dispatch:
+  schedule:
+    # Weekly safety touch so the debian base-image cache never evicts even if
+    # the daily linux-aot build is paused. A cache hit is a cheap no-op; a cold
+    # cache rebuilds (and re-populates) the base image.
+    - cron: '30 5 * * 1'
+
+env:
+  LLVM_VERSION: '21.1.8'
+
+jobs:
+  llvm:
+    runs-on: ubuntu-latest
+    # LLVM+MLIR Release build from source on a hosted runner is slow; pin
+    # well clear of the cap. A cache hit short-circuits to seconds.
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        # LLVM source builds are disk-hungry; reclaim the preinstalled SDKs
+        # the hosted image ships that we never use.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          sudo docker image prune -af || true
+          df -h /
+
+      - name: Cache LLVM debian base image
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/eco-llvm-debian.tar.gz
+          # Bump nothing by hand: the Dockerfile hash + version pin the key,
+          # so any change to the base recipe rebuilds rather than serving a
+          # stale image.
+          key: eco-llvm-debian-${{ env.LLVM_VERSION }}-${{ hashFiles('docker/llvm-debian.Dockerfile') }}
+
+      - name: Build LLVM + MLIR base image
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          img="eco-llvm-debian:${{ env.LLVM_VERSION }}"
+          echo "Building $img from docker/llvm-debian.Dockerfile (no cache hit) ..."
+          docker build -f docker/llvm-debian.Dockerfile -t "$img" .
+          docker save "$img" | gzip > /tmp/eco-llvm-debian.tar.gz
+          ls -lh /tmp/eco-llvm-debian.tar.gz
+
+      - name: Report restored image
+        if: steps.cache.outputs.cache-hit == 'true'
+        run: |
+          ls -lh /tmp/eco-llvm-debian.tar.gz
+          echo "eco-llvm-debian:${{ env.LLVM_VERSION }} already cached — rebuild skipped."

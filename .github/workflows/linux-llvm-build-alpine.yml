@@ -1,0 +1,82 @@
+# Linux LLVM/MLIR base-image builder + cache warmer — ALPINE (musl) variant.
+#
+# The Linux CI path runs inside Docker. The alpine LLVM/MLIR base image:
+#
+#   eco-llvm-alpine:<ver>  -> consumed by docker/static-build.Dockerfile
+#                             (static musl binary + bundles; linux-aot `bundle`)
+#
+# compiles LLVM+MLIR from source and is rebuilt only when LLVM_VERSION (or the
+# base Dockerfile) changes. This workflow builds it once and stores it as a
+# `docker save | gzip` tarball in the Actions cache, keyed on the base
+# Dockerfile hash. linux-aot's `bundle` job restores the tarball and
+# `docker load`s it in seconds instead of recompiling LLVM.
+#
+# Why a dedicated warmer (unlike the debian base): linux-aot's `bundle` job
+# restores this cache with `fail-on-cache-miss: true` and has NO local-build
+# fallback, because the alpine LLVM-from-source build OOMs the hosted runner
+# mid-link. So the cache MUST be populated here first; a cold cache fails the
+# bundle job fast and legibly — re-run this workflow.
+#
+# Cache scope note: a cache produced on the default branch (master) is
+# readable from every branch, so warming it here on a master push makes the
+# image available to all subsequent consumer runs.
+name: linux-llvm-build-alpine
+
+on:
+  push:
+    branches: ['ci/**', 'master']
+    paths:
+      - 'docker/llvm-alpine.Dockerfile'
+      - '.github/workflows/linux-llvm-build-alpine.yml'
+  workflow_dispatch:
+  schedule:
+    # Weekly safety touch so the alpine base-image cache never evicts even if
+    # the daily linux-aot build is paused. A cache hit is a cheap no-op; a cold
+    # cache rebuilds (and re-populates) the base image.
+    - cron: '0 5 * * 1'
+
+env:
+  LLVM_VERSION: '21.1.8'
+
+jobs:
+  llvm:
+    runs-on: ubuntu-latest
+    # LLVM+MLIR Release build from source on a hosted runner is slow; pin
+    # well clear of the cap. A cache hit short-circuits to seconds.
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        # LLVM source builds are disk-hungry; reclaim the preinstalled SDKs
+        # the hosted image ships that we never use.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          sudo docker image prune -af || true
+          df -h /
+
+      - name: Cache LLVM alpine base image
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/eco-llvm-alpine.tar.gz
+          # Bump nothing by hand: the Dockerfile hash + version pin the key,
+          # so any change to the base recipe rebuilds rather than serving a
+          # stale image.
+          key: eco-llvm-alpine-${{ env.LLVM_VERSION }}-${{ hashFiles('docker/llvm-alpine.Dockerfile') }}
+
+      - name: Build LLVM + MLIR base image
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          img="eco-llvm-alpine:${{ env.LLVM_VERSION }}"
+          echo "Building $img from docker/llvm-alpine.Dockerfile (no cache hit) ..."
+          docker build -f docker/llvm-alpine.Dockerfile -t "$img" .
+          docker save "$img" | gzip > /tmp/eco-llvm-alpine.tar.gz
+          ls -lh /tmp/eco-llvm-alpine.tar.gz
+
+      - name: Report restored image
+        if: steps.cache.outputs.cache-hit == 'true'
+        run: |
+          ls -lh /tmp/eco-llvm-alpine.tar.gz
+          echo "eco-llvm-alpine:${{ env.LLVM_VERSION }} already cached — rebuild skipped."

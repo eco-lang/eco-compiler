@@ -32,7 +32,6 @@ ARG ALPINE_DIGEST=sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65
 
 FROM alpine@${ALPINE_DIGEST}
 ARG LLVM_VERSION=21.1.8
-ARG CMAKE_BUILD_PARALLEL_LEVEL=24
 
 # build-base provides make + musl-dev; libc++-dev / libc++-static are the
 # bootstrap libc++ used to compile LLVM with -stdlib=libc++. compiler-rt +
@@ -68,6 +67,12 @@ RUN cmake -S llvm -B build -G Ninja \
       -DLLVM_ENABLE_ASSERTIONS=ON \
       -DLLVM_ENABLE_RTTI=ON \
       -DMLIR_ENABLE_CMAKE_PACKAGE=ON \
+      -DLLVM_INCLUDE_TESTS=OFF \
+      -DMLIR_INCLUDE_TESTS=OFF \
+      -DLLVM_INCLUDE_EXAMPLES=OFF \
+      -DLLVM_INCLUDE_BENCHMARKS=OFF \
+      -DLLVM_PARALLEL_LINK_JOBS=1 \
+      -DLLVM_PARALLEL_COMPILE_JOBS=4 \
       -DLLVM_ENABLE_ZLIB=OFF \
       -DLLVM_ENABLE_LIBXML2=OFF \
       -DLLVM_USE_LINKER=lld \
