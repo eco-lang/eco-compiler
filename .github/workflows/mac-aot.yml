@@ -215,3 +215,4 @@ jobs:
             /tmp/test_output.txt
             /tmp/elm-tests.log
           if-no-files-found: warn
+          retention-days: 7

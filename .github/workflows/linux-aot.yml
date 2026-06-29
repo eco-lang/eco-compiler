@@ -205,6 +205,7 @@ jobs:
             ci-logs/elm-tests.log
             ci-logs/aot-e2e.log
           if-no-files-found: warn
+          retention-days: 7
 
   # ===========================================================================
   # Distribution — fully-static musl binary + release bundles. Ships only if
@@ -278,3 +279,4 @@ jobs:
             dist/*.deb
             eco
           if-no-files-found: warn
+          retention-days: 7

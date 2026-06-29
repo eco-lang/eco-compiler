@@ -266,3 +266,4 @@ jobs:
             ${{ runner.temp }}/test_output.txt
             ${{ runner.temp }}/elm-tests.log
           if-no-files-found: warn
+          retention-days: 7

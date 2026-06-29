@@ -1,0 +1,133 @@
+# Publish the nightly pre-release.
+#
+# Decoupled from the per-platform builds: this does NOT trigger them and is NOT
+# atomic. It collects the LATEST SUCCESSFUL run of each `-aot` workflow, gathers
+# their distributable bundles, and refreshes a single rolling pre-release.
+#
+# The tag is derived from version.txt: v<version>-daily (e.g. v0.1.0-daily).
+# It is MOVED to the newest built commit on every run (delete-and-recreate) so
+# tags never accumulate. Assets are anonymously downloadable at
+#   https://github.com/eco-lang/eco-compiler/releases/download/v<ver>-daily/<asset>
+name: publish-nightly
+
+on:
+  schedule:
+    # After the 06:00-06:40 build crons clear. linux's serial test->bundle
+    # chain is the slowest; see plans/nightly-build-publishing.md (Risks).
+    - cron: '0 10 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  # Never let two nightly publishes race on the rolling tag.
+  group: publish-nightly
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve + download the latest green build per platform
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p stage dist
+          for wf in mac-aot.yml linux-aot.yml win-aot.yml; do
+            rid=$(gh run list --workflow "$wf" --branch master --status success \
+                    --limit 1 --json databaseId -q '.[0].databaseId')
+            if [ -z "$rid" ]; then
+              echo "::error::no green $wf build to publish"; exit 1
+            fi
+            echo "::group::$wf -> run $rid"
+            gh run download "$rid" --dir "stage/$wf"
+            gh run view "$rid" --json headSha,url,createdAt,displayTitle > "stage/$wf.meta.json"
+            cat "stage/$wf.meta.json"
+            echo "::endgroup::"
+          done
+
+      - name: Collect distributables + checksums
+        run: |
+          set -euo pipefail
+          # Extension filter drops the raw eco / eco.exe binaries and the log
+          # artifacts that share those upload bundles.
+          find stage -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.deb' \) \
+               -exec cp -n {} dist/ \;
+          ( cd dist && sha256sum * | tee SHA256SUMS )
+          echo "=== nightly asset set ==="
+          ls -la dist/
+
+      - name: Compute rolling tag + target commit
+        id: meta
+        run: |
+          set -euo pipefail
+          daily_tag="v$(tr -d '[:space:]' < version.txt)-daily"
+          # Target the newest of the three source-run commits — the most honest
+          # single commit when builds span days.
+          sha=$(jq -rs 'max_by(.createdAt).headSha' stage/*.meta.json)
+          echo "daily_tag=$daily_tag" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Rolling tag $daily_tag -> $sha"
+
+      - name: Build release notes
+        env:
+          DAILY_TAG: ${{ steps.meta.outputs.daily_tag }}
+          SHA: ${{ steps.meta.outputs.sha }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Rolling nightly pre-release — **moves on every build**, not a fixed point in time."
+            echo
+            echo "- Built: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            echo "- Target commit: \`$SHA\`"
+            echo
+            echo "### Source builds (this nightly is not atomic — platforms may differ by commit)"
+            echo
+            echo "| Platform | Commit | Run |"
+            echo "|---|---|---|"
+            for wf in mac-aot linux-aot win-aot; do
+              f="stage/$wf.yml.meta.json"
+              printf '| %s | `%s` | %s |\n' \
+                "$wf" \
+                "$(jq -r '.headSha[0:12]' "$f")" \
+                "$(jq -r '.url' "$f")"
+            done
+            echo
+            echo "### SHA256SUMS"
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+          } > notes.md
+          cat notes.md
+
+      - name: Move the rolling tag + refresh assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DAILY_TAG: ${{ steps.meta.outputs.daily_tag }}
+          SHA: ${{ steps.meta.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # Delete-and-recreate so the release and its tag always agree on the
+          # target commit, and the rolling tag is moved rather than duplicated.
+          gh release delete "$DAILY_TAG" --cleanup-tag --yes 2>/dev/null || true
+          gh release create "$DAILY_TAG" \
+            --target "$SHA" \
+            --prerelease \
+            --title "Nightly $DAILY_TAG ($(date -u '+%Y-%m-%d'))" \
+            --notes-file notes.md \
+            dist/*
+
+      - name: Prune stale -daily pre-releases (only after a version bump)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DAILY_TAG: ${{ steps.meta.outputs.daily_tag }}
+        run: |
+          set -euo pipefail
+          gh release list --json tagName,isPrerelease \
+            -q '.[] | select(.isPrerelease) | .tagName' \
+            | grep -E '^v.*-daily$' | grep -vx "$DAILY_TAG" \
+            | xargs -r -n1 -I{} gh release delete {} --cleanup-tag --yes || true

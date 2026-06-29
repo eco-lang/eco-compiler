@@ -1,0 +1,88 @@
+# Promote a built commit to a permanent, downloadable stable Release.
+#
+# Triggered by pushing a real version tag (v0.1.0). Uses the same decoupled
+# download as publish-nightly, but PINS the artifacts to the tagged commit and
+# fails if any platform lacks a green build for it — provenance matters for a
+# stable release. Published as a non-prerelease, so /releases/latest flips to it.
+#
+# The rolling nightly tag (v*-daily) is excluded so moving it never cuts a
+# stable release (GITHUB_TOKEN-created tags also do not cascade-trigger, but the
+# exclusion is explicit belt-and-suspenders).
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+      - '!v*-daily'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve + download the green build per platform for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p stage dist
+          for wf in mac-aot.yml linux-aot.yml win-aot.yml; do
+            rid=$(gh run list --workflow "$wf" --commit "$SHA" --status success \
+                    --limit 1 --json databaseId -q '.[0].databaseId')
+            if [ -z "$rid" ]; then
+              echo "::error::no green $wf build for $SHA — tag a commit CI has built green"
+              exit 1
+            fi
+            echo "::group::$wf -> run $rid"
+            gh run download "$rid" --dir "stage/$wf"
+            echo "::endgroup::"
+          done
+
+      - name: Collect distributables + checksums
+        run: |
+          set -euo pipefail
+          find stage -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.deb' \) \
+               -exec cp -n {} dist/ \;
+          ( cd dist && sha256sum * | tee SHA256SUMS )
+          echo "=== release asset set ==="
+          ls -la dist/
+
+      - name: Build release notes
+        env:
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Stable release \`$TAG\`."
+            echo
+            echo "- Commit: \`$SHA\`"
+            echo "- Built: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            echo
+            echo "### SHA256SUMS"
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+          } > notes.md
+          cat notes.md
+
+      - name: Publish stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Non-prerelease -> becomes /releases/latest. The tag already exists
+          # (the push that triggered this), so target it as-is.
+          gh release create "$TAG" \
+            --target "$SHA" \
+            --title "$TAG" \
+            --notes-file notes.md \
+            dist/*
