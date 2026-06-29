@@ -161,7 +161,7 @@ FROM alpine@${ALPINE_DIGEST} AS eco-builder
 # libcurl and libzip are intentionally absent — vendored via FetchContent.
 RUN apk add --no-cache \
       git build-base cmake samurai python3 \
-      clang lld \
+      clang lld ccache \
       musl-dev linux-headers \
       libc++ libc++-dev libc++-static compiler-rt \
       llvm-libunwind llvm-libunwind-static \
@@ -171,6 +171,13 @@ RUN apk add --no-cache \
       zip \
       nodejs npm \
  && npm install -g pnpm
+
+# ccache for the eco compile below. CCACHE_DIR is a BuildKit cache mount on the
+# `cmake --build` step, persisted across CI runs by the buildkit-cache-dance in
+# linux-aot.yml's bundle job; a cold mount just compiles from scratch (never a
+# build failure). MAXSIZE caps it well under the 10 GB repo cache budget.
+ENV CCACHE_DIR=/ccache
+ENV CCACHE_MAXSIZE=2G
 
 # RapidCheck: the top-level CMakeLists.txt does find_package(rapidcheck
 # REQUIRED) for the `ecor` allocator-test binary, and `cmake --build … --target
@@ -225,13 +232,21 @@ ARG ECO_VERSION=
 # error (asserted by the Alpine smoke below).
 RUN if [ -n "$ECO_VERSION" ]; then \
         cmake --preset release \
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
               -DECO_GLIBC_RUNTIME_TREE=/opt/eco-glibc-runtime \
               -DECO_VERSION_OVERRIDE="$ECO_VERSION"; \
     else \
         cmake --preset release \
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
               -DECO_GLIBC_RUNTIME_TREE=/opt/eco-glibc-runtime; \
     fi
-RUN cmake --build build-static --target eco
+# The cache mount is shared (read/write) across the bundle job's docker builds
+# and persisted between CI runs by the buildkit-cache-dance step; ccache stats
+# afterward make the hit rate visible in the build log.
+RUN --mount=type=cache,target=/ccache,sharing=locked \
+    cmake --build build-static --target eco && ccache --show-stats
 
 # Strip, then HARD-FAIL the build if the binary still has any dynamic NEEDED
 # entries — the whole point of Stage B is a zero-deps executable.

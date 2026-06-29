@@ -44,6 +44,11 @@ jobs:
     timeout-minutes: 240
     env:
       LLVM_DIR: ${{ github.workspace }}\experiments\win-llvm-build\out\llvm-install
+      # ccache reuses object files for unchanged TUs across runs (the eco build
+      # itself is otherwise uncached on Windows). Kept small via CCACHE_MAXSIZE
+      # so it stays well under the 10 GB repo cache budget.
+      CCACHE_DIR: ${{ github.workspace }}\.ccache
+      CCACHE_MAXSIZE: '1G'
     steps:
       - uses: actions/checkout@v4
 
@@ -90,9 +95,23 @@ jobs:
           Write-Host "CPUs: $env:NUMBER_OF_PROCESSORS"
           (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB
 
+      - name: Install ccache
+        shell: pwsh
+        run: choco install ccache --no-progress -y
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: win-aot-ccache-${{ github.sha }}
+          restore-keys: win-aot-ccache-
+
       - name: Configure (win-build preset)
         shell: pwsh
-        run: cmake --preset win-build
+        # ccache wraps clang-cl via the compiler launcher; populates .ccache for
+        # the next run. Released builds carry no /Zi debug info, so the MSVC-mode
+        # ccache /Z7 caveat does not apply.
+        run: cmake --preset win-build -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       # ---- Gateway 1: front-end (stages 1-5). Pure Node — fails fast. ----
       - name: Stages 1-4b (guida.js -> JS fixed point)

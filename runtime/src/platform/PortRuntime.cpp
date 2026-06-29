@@ -543,33 +543,55 @@ int PortRuntime::isIncoming(const char* name) {
 // ---------------------------------------------------------------------------
 // C ABI
 // ---------------------------------------------------------------------------
+//
+// These host-facing wrappers are defined here (so ecoc / EcoRunner / the test
+// harness, which compile this file directly, resolve them) AND as strong
+// definitions in embed/eco_embed.cpp. The duplication is deliberate: eco_port_*
+// otherwise live only in EcoRuntimeStatic, which the Stage-D shared link hides
+// from .dynsym via --exclude-libs, so a C host linking a produced .so/.node
+// cannot resolve them (eco_app_* avoid this by living in the whole-archived,
+// non-excluded EcoEmbedStatic). The embed-lib copies are the exported ones; we
+// mark THESE weak so the strong embed definitions win wherever both archives
+// are linked (the .so/.node link; eco-boot-native, which links both) with no
+// duplicate-symbol error, while a lone weak definition still serves the
+// compile-this-file-directly consumers. Not weak on Windows (no .so/.node
+// there, so the two never coexist, and COFF weak support is limited).
+#if defined(_WIN32)
+#  define ECO_PORT_ABI_WEAK
+#else
+#  define ECO_PORT_ABI_WEAK __attribute__((weak))
+#endif
 
 using Elm::Platform::PortRuntime;
 
 extern "C" {
 
-int eco_port_send(const char* port, const char* json_utf8) {
+ECO_PORT_ABI_WEAK int eco_port_send(const char* port, const char* json_utf8) {
     return PortRuntime::instance().sendIncoming(port, json_utf8) ? 0 : 1;
 }
 
-int eco_port_subscribe(const char* port, Elm::Platform::EcoPortCallback cb,
-                       void* user) {
+ECO_PORT_ABI_WEAK int eco_port_subscribe(const char* port,
+                                         Elm::Platform::EcoPortCallback cb,
+                                         void* user) {
     return PortRuntime::instance().subscribeOutgoing(port, cb, user) ? 0 : 1;
 }
 
-int eco_port_unsubscribe(const char* port, Elm::Platform::EcoPortCallback cb,
-                         void* user) {
+ECO_PORT_ABI_WEAK int eco_port_unsubscribe(const char* port,
+                                           Elm::Platform::EcoPortCallback cb,
+                                           void* user) {
     return PortRuntime::instance().unsubscribeOutgoing(port, cb, user) ? 0
                                                                        : 1;
 }
 
-int eco_port_count(void) { return PortRuntime::instance().portCount(); }
+ECO_PORT_ABI_WEAK int eco_port_count(void) {
+    return PortRuntime::instance().portCount();
+}
 
-const char* eco_port_name(int i) {
+ECO_PORT_ABI_WEAK const char* eco_port_name(int i) {
     return PortRuntime::instance().portName(i);
 }
 
-int eco_port_is_incoming(const char* port) {
+ECO_PORT_ABI_WEAK int eco_port_is_incoming(const char* port) {
     return PortRuntime::instance().isIncoming(port);
 }
 
