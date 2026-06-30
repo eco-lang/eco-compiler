@@ -978,6 +978,10 @@ int linkExecutable(const std::string &objectFile,
         args.push_back(push(resolveFile(eco::config::glibcLibcNonsharedA)));
     }
 
+    // Set when the Stage-D shared link writes a version script (below) to
+    // re-export the host C ABI; removed after the linker runs.
+    std::string versionScriptPath;
+
     if (profile == LinkProfile::GlibcBundleShared) {
         // Hide every statically linked archive EXCEPT the two
         // whole-archived entry libs. Scoped, NOT `ALL`: lld applies
@@ -1010,6 +1014,36 @@ int linkExecutable(const std::string &objectFile,
             excludeLibs += lib.basename;
         }
         args.push_back(push(std::move(excludeLibs)));
+
+        // --exclude-libs above demotes the runtime lib's symbols to local,
+        // which also hides the host port C ABI: eco_port_* live in
+        // EcoRuntimeStatic (runtimeLibFile), unlike eco_app_*/eco_set_idle_hook,
+        // which export because their embed lib is whole-archived and kept out
+        // of --exclude-libs. A C host linking the produced .so still needs the
+        // port symbols, so re-promote precisely the host ABI with a
+        // version-script `global:` list — it overrides --exclude-libs'
+        // localization, while every other archive symbol stays hidden and the
+        // user program's own .o exports keep their visibility (no `local: *`).
+        // --undefined-version so the .so link does not error on
+        // napi_register_module_v1, which is present only in the .node glue.
+        llvm::SmallString<256> vsPath;
+        int vsFd = -1;
+        if (!llvm::sys::fs::createTemporaryFile("eco-embed-exports", "map",
+                                                vsFd, vsPath)) {
+            llvm::raw_fd_ostream vs(vsFd, /*shouldClose=*/true);
+            vs << "{\n"
+                  "  global:\n"
+                  "    eco_app_start; eco_app_stop; eco_app_join;\n"
+                  "    eco_set_idle_hook;\n"
+                  "    eco_port_send; eco_port_subscribe; eco_port_unsubscribe;\n"
+                  "    eco_port_count; eco_port_name; eco_port_is_incoming;\n"
+                  "    napi_register_module_v1;\n"
+                  "};\n";
+            vs.flush();
+            versionScriptPath = std::string(vsPath.str());
+            args.push_back("--undefined-version");
+            args.push_back(push("--version-script=" + versionScriptPath));
+        }
     }
 
     // crt epilogue: clang_rt.crtend (musl non-PIE) vs crtendS.o (glibc
@@ -1047,6 +1081,8 @@ int linkExecutable(const std::string &objectFile,
                                        /*redirects=*/{},
                                        /*secondsToWait=*/0,
                                        /*memoryLimit=*/0, &errMsg);
+    if (!versionScriptPath.empty())
+        llvm::sys::fs::remove(versionScriptPath);
     if (rc != 0) {
         llvm::errs() << "Error: ld link failed (rc=" << rc << ")";
         if (!errMsg.empty())
