@@ -240,21 +240,48 @@ jobs:
           gunzip -c /tmp/eco-llvm-alpine.tar.gz | docker load
           docker image ls "$img"
 
+      # ccache for the in-Docker eco compile. The cache lives in a BuildKit
+      # cache mount (docker/static-build.Dockerfile), which is per-builder and
+      # would not survive between runners — so buildx + the cache-dance below
+      # sync it to a host dir that actions/cache persists. The first run is cold
+      # (no speedup); subsequent runs reuse object files for unchanged TUs.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Restore bundle ccache
+        id: bundle-ccache
+        uses: actions/cache@v4
+        with:
+          path: ccache-bundle
+          key: bundle-ccache-${{ github.sha }}
+          restore-keys: bundle-ccache-
+
+      - name: Sync ccache into the BuildKit cache mount
+        uses: reproducible-containers/buildkit-cache-dance@v3.1.2
+        with:
+          cache-map: |
+            { "ccache-bundle": "/ccache" }
+          skip-extraction: ${{ steps.bundle-ccache.outputs.cache-hit }}
+
       - name: Build static eco + run all smoke gates
         # Default target = glibc-smoke, the last stage, so this single build
         # compiles the static binary and runs every smoke/ELF-contract gate.
-        run: docker build -f docker/static-build.Dockerfile -t eco-static-ci .
+        # `buildx build` (not plain `docker build`) so it runs on the buildx
+        # builder whose /ccache mount the cache-dance syncs.
+        run: docker buildx build -f docker/static-build.Dockerfile -t eco-static-ci .
 
       - name: Export distribution bundles to ./dist
         # Re-uses the eco-builder layers cached by the build above (same
         # BuildKit daemon), so this only runs CPack + the export exporter.
         run: |
-          docker build -f docker/static-build.Dockerfile --target eco-bundle -o ./dist .
+          docker buildx build -f docker/static-build.Dockerfile --target eco-bundle -o ./dist .
           ls -la dist/
 
       - name: Verify fully-static eco binary
         run: |
-          docker build -f docker/static-build.Dockerfile --target eco-static -t eco-static-ci-bin .
+          # --load: the buildx container driver does not auto-load -t images
+          # into the docker daemon, but the docker create below needs it there.
+          docker buildx build -f docker/static-build.Dockerfile --target eco-static -t eco-static-ci-bin --load .
           id=$(docker create eco-static-ci-bin)
           docker cp "$id:/eco" ./eco
           docker rm "$id"
