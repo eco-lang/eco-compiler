@@ -211,6 +211,17 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 300
+    # Throwaway registry on localhost:5000. The cached alpine LLVM base image is
+    # `docker load`ed into the host daemon, but the cache-dance below forces a
+    # `docker-container` buildx driver, which CANNOT see the host daemon's image
+    # store — so `FROM ${LLVM_IMAGE}` would fall through to a Docker Hub pull and
+    # fail. We push the loaded image here and build against localhost:5000 with a
+    # host-networked builder so the base image resolves locally.
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
     steps:
       - uses: actions/checkout@v4
 
@@ -239,6 +250,10 @@ jobs:
           echo "Loading cached $img ..."
           gunzip -c /tmp/eco-llvm-alpine.tar.gz | docker load
           docker image ls "$img"
+          # Publish to the local registry so the docker-container buildx builder
+          # (which can't see the host daemon store) can resolve it as a base.
+          docker tag "$img" "localhost:5000/$img"
+          docker push "localhost:5000/$img"
 
       # ccache for the in-Docker eco compile. The cache lives in a BuildKit
       # cache mount (docker/static-build.Dockerfile), which is per-builder and
@@ -247,6 +262,10 @@ jobs:
       # (no speedup); subsequent runs reuse object files for unchanged TUs.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          # Host networking so the container-driver builder can reach the
+          # registry service published on localhost:5000.
+          driver-opts: network=host
 
       - name: Restore bundle ccache
         id: bundle-ccache
@@ -268,20 +287,27 @@ jobs:
         # compiles the static binary and runs every smoke/ELF-contract gate.
         # `buildx build` (not plain `docker build`) so it runs on the buildx
         # builder whose /ccache mount the cache-dance syncs.
-        run: docker buildx build -f docker/static-build.Dockerfile -t eco-static-ci .
+        run: |
+          docker buildx build -f docker/static-build.Dockerfile \
+            --build-arg LLVM_IMAGE=localhost:5000/eco-llvm-alpine:${{ env.LLVM_VERSION }} \
+            -t eco-static-ci .
 
       - name: Export distribution bundles to ./dist
         # Re-uses the eco-builder layers cached by the build above (same
         # BuildKit daemon), so this only runs CPack + the export exporter.
         run: |
-          docker buildx build -f docker/static-build.Dockerfile --target eco-bundle -o ./dist .
+          docker buildx build -f docker/static-build.Dockerfile --target eco-bundle \
+            --build-arg LLVM_IMAGE=localhost:5000/eco-llvm-alpine:${{ env.LLVM_VERSION }} \
+            -o ./dist .
           ls -la dist/
 
       - name: Verify fully-static eco binary
         run: |
           # --load: the buildx container driver does not auto-load -t images
           # into the docker daemon, but the docker create below needs it there.
-          docker buildx build -f docker/static-build.Dockerfile --target eco-static -t eco-static-ci-bin --load .
+          docker buildx build -f docker/static-build.Dockerfile --target eco-static \
+            --build-arg LLVM_IMAGE=localhost:5000/eco-llvm-alpine:${{ env.LLVM_VERSION }} \
+            -t eco-static-ci-bin --load .
           id=$(docker create eco-static-ci-bin)
           docker cp "$id:/eco" ./eco
           docker rm "$id"
