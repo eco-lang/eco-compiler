@@ -343,4 +343,56 @@ void eco_set_idle_hook(void (*cb)(int busy, void* user), void* user) {
     s.idleHookUser = user;
 }
 
+// ---- Ports -----------------------------------------------------------------
+//
+// Strong definitions of the host port C ABI. The same wrappers exist (weak) in
+// platform/PortRuntime.cpp, but those land in EcoRuntimeStatic, which the
+// Stage-D shared link hides from .dynsym via --exclude-libs — so a C host
+// linking a produced .so/.node could not resolve eco_port_*. Defining them here,
+// in the whole-archived and non-excluded EcoEmbedStatic (the same library that
+// makes eco_app_* exportable), keeps them in the shared object's dynamic symbol
+// table. These strong definitions override PortRuntime.cpp's weak ones wherever
+// both are linked. See runtime/src/platform/PortRuntime.cpp for the rationale.
+//
+// Non-Windows only: .so/.node outputs are unsupported on Windows/Darwin shared
+// links, so the export is moot there; and since the weak macro is a no-op on
+// Windows (COFF), omitting these copies avoids any chance of a duplicate-symbol
+// clash with PortRuntime.cpp's. PortRuntime.cpp still defines them for the
+// compile-this-file-directly consumers on every platform.
+#if !defined(_WIN32)
+
+int eco_port_send(const char* port, const char* json_utf8) {
+    return Elm::Platform::PortRuntime::instance().sendIncoming(port, json_utf8)
+               ? 0
+               : 1;
+}
+
+int eco_port_subscribe(const char* port, eco_port_callback cb, void* user) {
+    return Elm::Platform::PortRuntime::instance().subscribeOutgoing(port, cb,
+                                                                    user)
+               ? 0
+               : 1;
+}
+
+int eco_port_unsubscribe(const char* port, eco_port_callback cb, void* user) {
+    return Elm::Platform::PortRuntime::instance().unsubscribeOutgoing(port, cb,
+                                                                      user)
+               ? 0
+               : 1;
+}
+
+int eco_port_count(void) {
+    return Elm::Platform::PortRuntime::instance().portCount();
+}
+
+const char* eco_port_name(int i) {
+    return Elm::Platform::PortRuntime::instance().portName(i);
+}
+
+int eco_port_is_incoming(const char* port) {
+    return Elm::Platform::PortRuntime::instance().isIncoming(port);
+}
+
+#endif  // !defined(_WIN32)
+
 }  // extern "C"
