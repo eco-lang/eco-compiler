@@ -78,8 +78,10 @@ HPtr elm_alloc_bytebuffer(u32 byteCount) {
 u32 elm_bytebuffer_len(HPtr bbVal) {
     void* ptr = u64ToPtr(bbVal.toBits());
     if (!ptr) return 0;
-    Elm::ByteBuffer* bb = Elm::alloc::resolveByteBufferBody(ptr);
-    return bb->header.size;
+    // byteBufferLength handles all three forms (flat / large-header / slice);
+    // resolveByteBufferBody deliberately asserts on a Tag_ByteBufferSlice, so a
+    // slice argument (e.g. Bytes.width of a Bytes.Decode.bytes result) aborted.
+    return static_cast<u32>(Elm::alloc::byteBufferLength(ptr));
 }
 
 u8* elm_bytebuffer_data(HPtr bbVal) {

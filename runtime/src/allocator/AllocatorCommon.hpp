@@ -291,6 +291,13 @@ inline size_t getObjectSize(void *obj) {
             // byte count (not a byte count for this object).
             size = sizeof(LargeByteHeader);
             break;
+        case Tag_ByteBufferSlice:
+            // Fixed-size view: header.size is the logical byte count, not the
+            // struct footprint. Mirrors the Tag_StringSlice case above; without
+            // it a 24-byte slice was mis-sized as sizeof(Header)=8, corrupting
+            // GC evacuation/scan stride (HEAP_004).
+            size = sizeof(ElmByteBufferSlice);
+            break;
         default:
             size = sizeof(Header);
             break;

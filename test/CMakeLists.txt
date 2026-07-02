@@ -102,6 +102,8 @@ add_executable(test
         allocator/GenericApplyBoxingTest.cpp
         allocator/EcoApplyClosureTypedTest.cpp
         allocator/GCPressureTest.cpp
+        allocator/SliceRepresentationTest.cpp
+        kernel/KernelExportsTest.cpp
 )
 
 target_compile_features(test PRIVATE cxx_std_20)

@@ -32,6 +32,8 @@
 #include "allocator/GenericApplyBoxingTest.hpp"
 #include "allocator/EcoApplyClosureTypedTest.hpp"
 #include "allocator/GCPressureTest.hpp"
+#include "allocator/SliceRepresentationTest.hpp"
+#include "kernel/KernelExportsTest.hpp"
 #include "codegen/CodegenIsolatedTest.hpp"
 #include "bf-codegen/BFCodegenTest.hpp"
 #include "elm/ElmTest.hpp"
@@ -746,6 +748,22 @@ int main(int argc, char* argv[]) {
     Testing::TestSuite ecoApplyClosureTypedTests("EcoApplyClosureTyped");
     registerEcoApplyClosureTypedTests(ecoApplyClosureTypedTests);
 
+    // Byte-buffer / String non-flat representation coverage (clean tests).
+    Testing::TestSuite sliceReprTests("SliceRepresentation");
+    registerSliceRepresentationTests(sliceReprTests);
+
+    // Kernel extern-"C" ABI tests (encoder/decoder/string ABI).
+    Testing::TestSuite kernelExportsTests("KernelExports");
+    registerKernelExportsTests(kernelExportsTests);
+
+    // Crash-risk representation tests (byte-slice GC under F1; elm_bytebuffer_len
+    // / Bytes.width on a slice under F3). Fork-isolated so each abort is reported
+    // as a single failed test rather than killing the binary.
+    auto sliceCrashersTests =
+        std::make_unique<IsolatedTestRunner::IsolatedTestCaseSuite>("SliceCrashers");
+    registerSliceCrasherTests(*sliceCrashersTests);
+    registerKernelExportsCrasherTests(*sliceCrashersTests);
+
     // Sustained-pressure GC tests (multi-MB nursery + old gen, real eco_alloc_*).
     // Run each case in a forked child so a SEGV/abort in one test only fails
     // that test instead of taking down the whole binary.
@@ -833,6 +851,8 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(runtimeExportsTests));
     suite.add(std::move(genericApplyBoxingTests));
     suite.add(std::move(ecoApplyClosureTypedTests));
+    suite.add(std::move(sliceReprTests));
+    suite.add(std::move(kernelExportsTests));
     suite.add(std::move(gcPressureTests));
     suite.add(std::move(codegenTests));
     suite.add(std::move(bfCodegenTests));
@@ -846,6 +866,9 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(elmUrlTests));
     suite.add(std::move(elmHttpTests));
     suite.add(std::move(elmTimeTests));
+    // LAST: crash-risk representation tests (see comment above). Placed after
+    // all E2E suites so an in-process SIGABRT/SIGSEGV cannot truncate them.
+    suite.add(std::move(sliceCrashersTests));
 
     // Handle --list option.
     if (config.list_tests) {
