@@ -20,7 +20,7 @@ tracking which variables have been seen.
 -}
 
 import Compiler.Type.UnionFind as UF
-import Data.Map as Dict
+import Dict
 import System.TypeCheck.IO as IO exposing (IO)
 
 
@@ -78,7 +78,7 @@ occursHelp seen var foundCycle =
                                     IO.pure foundCycle
 
                                 IO.Record1 fields ext ->
-                                    IO.foldrM (occursHelp newSeen) foundCycle (Dict.values compare fields) |> IO.andThen (occursHelp newSeen ext)
+                                    IO.foldrM (occursHelp newSeen) foundCycle (Dict.values fields) |> IO.andThen (occursHelp newSeen ext)
 
                                 IO.Unit1 ->
                                     IO.pure foundCycle

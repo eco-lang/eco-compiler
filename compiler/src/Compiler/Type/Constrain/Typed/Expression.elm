@@ -445,32 +445,41 @@ matching the erased path, adding a CEqual to connect exprVar to the expected typ
 -}
 constrainGenericWithIdsProg : RigidTypeVar -> A.Region -> Can.ExprInfo -> E.Expected Type -> ProgS ExprIdState Constraint
 constrainGenericWithIdsProg rtv region info expected =
-    Prog.opMkFlexVarS
+    Prog.opGetS
         |> Prog.andThenS
-            (\exprVar ->
-                -- Use recordSyntheticExprVar to mark this as a remaining Group B synthetic placeholder (Str, Chr, Float, Unit, Shader)
-                Prog.opModifyS (NodeIds.recordSyntheticExprVar info.id exprVar)
-                    |> Prog.andThenS
-                        (\() ->
-                            let
-                                exprType : Type
-                                exprType =
-                                    VarN exprVar
-                            in
-                            -- Pass through the original expected type to preserve constraint behavior
-                            constrainNodeWithIdsProg rtv region info.node expected
-                                |> Prog.mapS
-                                    (\con ->
-                                        Type.exists [ exprVar ]
-                                            (CAnd
-                                                [ con
+            (\state ->
+                if state.recording then
+                    -- Typed pathway: allocate a synthetic placeholder var for this
+                    -- Group B node (Str, Chr, Float, Unit, Shader, Var*), record it,
+                    -- and tie it to the expected type so nodeTypes gets the resolved type.
+                    Prog.opMkFlexVarS
+                        |> Prog.andThenS
+                            (\exprVar ->
+                                Prog.opModifyS (NodeIds.recordSyntheticExprVar info.id exprVar)
+                                    |> Prog.andThenS
+                                        (\() ->
+                                            let
+                                                exprType : Type
+                                                exprType =
+                                                    VarN exprVar
+                                            in
+                                            constrainNodeWithIdsProg rtv region info.node expected
+                                                |> Prog.mapS
+                                                    (\con ->
+                                                        Type.exists [ exprVar ]
+                                                            (CAnd
+                                                                [ con
+                                                                , CEqual region E.List exprType expected
+                                                                ]
+                                                            )
+                                                    )
+                                        )
+                            )
 
-                                                -- Unify exprVar with the expected type so nodeTypes gets the resolved type
-                                                , CEqual region E.List exprType expected
-                                                ]
-                                            )
-                                    )
-                        )
+                else
+                    -- Erased pathway: no synthetic placeholder var; emit the node's
+                    -- constraint directly against the expected type.
+                    constrainNodeWithIdsProg rtv region info.node expected
             )
 
 

@@ -1,6 +1,6 @@
 module Compiler.Type.Constrain.Typed.NodeIds exposing
     ( NodeVarMap, NodeIdState
-    , emptyNodeIdState
+    , emptyNodeIdState, erasedNodeIdState
     , recordNodeVar, recordSyntheticExprVar
     , SchemeBinderVars, recordSchemeBinders
     )
@@ -71,17 +71,33 @@ type alias NodeIdState =
     { mapping : NodeVarMap
     , syntheticExprIds : EverySet Int Int
     , schemeBinderVars : Dict Name.Name (Dict Name.Name IO.Variable)
+    , recording : Bool
     }
 
 
-{-| Initial empty node ID state.
+{-| Initial node ID state with recording ENABLED (the Typed pathway).
 -}
 emptyNodeIdState : NodeIdState
 emptyNodeIdState =
     { mapping = Array.empty
     , syntheticExprIds = EverySet.empty
     , schemeBinderVars = Dict.empty
+    , recording = True
     }
+
+
+{-| Node ID state with recording DISABLED (the Erased pathway).
+
+The single generator runs with this state to produce the erased constraints:
+`recordNodeVar`/`recordSyntheticExprVar`/`recordSchemeBinders` all become no-ops
+(so no id→var table is built), and the Group B synthetic-placeholder wrapper is
+skipped in `Constrain.Typed.Expression`, so the constraints match the plain
+type-check pathway without paying for node tracking on the JS backend.
+
+-}
+erasedNodeIdState : NodeIdState
+erasedNodeIdState =
+    { emptyNodeIdState | recording = False }
 
 
 {-| Record a mapping from a node ID to its solver variable.
@@ -92,11 +108,12 @@ are skipped to avoid polluting the mapping.
 -}
 recordNodeVar : Int -> IO.Variable -> NodeIdState -> NodeIdState
 recordNodeVar id var state =
-    if id >= 0 then
+    if state.recording && id >= 0 then
         { state | mapping = arraySetGrowing id (Just var) state.mapping }
 
     else
-        -- Skip negative IDs (placeholders from makeExprPlaceholder, synthesized patterns)
+        -- Not recording (erased pathway), or a negative ID (placeholders from
+        -- makeExprPlaceholder / synthesized patterns): skip.
         state
 
 
@@ -110,14 +127,14 @@ expression IDs had placeholder variables that PostSolve should fill.
 -}
 recordSyntheticExprVar : Int -> IO.Variable -> NodeIdState -> NodeIdState
 recordSyntheticExprVar id var state =
-    if id >= 0 then
+    if state.recording && id >= 0 then
         { state
             | mapping = arraySetGrowing id (Just var) state.mapping
             , syntheticExprIds = EverySet.insert identity id state.syntheticExprIds
         }
 
     else
-        -- Skip negative IDs
+        -- Not recording (erased pathway) or a negative ID: skip.
         state
 
 
@@ -125,7 +142,11 @@ recordSyntheticExprVar id var state =
 -}
 recordSchemeBinders : Name.Name -> Dict.Dict Name.Name IO.Variable -> NodeIdState -> NodeIdState
 recordSchemeBinders defName binders state =
-    { state | schemeBinderVars = Dict.insert defName binders state.schemeBinderVars }
+    if state.recording then
+        { state | schemeBinderVars = Dict.insert defName binders state.schemeBinderVars }
+
+    else
+        state
 
 
 arraySetGrowing : Int -> Maybe a -> Array (Maybe a) -> Array (Maybe a)

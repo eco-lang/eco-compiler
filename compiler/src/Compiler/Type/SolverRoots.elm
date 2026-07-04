@@ -21,7 +21,6 @@ import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.Data.Name as Name
 import Compiler.Type.SolverSnapshot as SolverSnapshot exposing (SolverState)
-import Data.Map as DMap
 import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 
@@ -142,7 +141,7 @@ walkTypeForBinders state canType var acc =
                         accAfterFields =
                             Dict.foldl
                                 (\fieldName (Can.FieldType _ fieldType) a ->
-                                    case DMap.get identity fieldName fieldVars of
+                                    case Dict.get fieldName fieldVars of
                                         Just fieldVar ->
                                             walkTypeForBinders state fieldType fieldVar a
 

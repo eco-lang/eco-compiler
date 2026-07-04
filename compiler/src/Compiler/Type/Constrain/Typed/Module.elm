@@ -1,4 +1,4 @@
-module Compiler.Type.Constrain.Typed.Module exposing (constrainWithIds, constrainWithIdsDetailed)
+module Compiler.Type.Constrain.Typed.Module exposing (constrainWithIds, constrainWithIdsDetailed, constrainErased)
 
 {-| Generates type constraints for Elm modules during type checking (Typed pathway).
 
@@ -54,28 +54,47 @@ like POST\_001 and POST\_003.
 
 -}
 constrainWithIdsDetailed : Can.Module -> IO ( Constraint, NodeIds.NodeIdState )
-constrainWithIdsDetailed (Can.Module canData) =
+constrainWithIdsDetailed =
+    constrainWithIdsDetailedFrom Expr.emptyExprIdState
+
+
+{-| Erased (type-check-only) pathway.
+
+Runs the shared generator with node recording disabled
+(`NodeIds.erasedNodeIdState`), producing the same constraints as the standalone
+erased generator did — without building the id→var side table or the Group B
+synthetic placeholder vars — then discards the (empty) state.
+
+-}
+constrainErased : Can.Module -> IO Constraint
+constrainErased canonical =
+    constrainWithIdsDetailedFrom NodeIds.erasedNodeIdState canonical
+        |> IO.map Tuple.first
+
+
+constrainWithIdsDetailedFrom : NodeIds.NodeIdState -> Can.Module -> IO ( Constraint, NodeIds.NodeIdState )
+constrainWithIdsDetailedFrom initState (Can.Module canData) =
     case canData.effects of
         Can.NoEffects ->
-            constrainDeclsWithVars canData.decls CSaveTheEnvironment Expr.emptyExprIdState
+            constrainDeclsWithVars canData.decls CSaveTheEnvironment initState
 
         Can.Ports ports ->
-            Dict.foldr letPortWithVars (constrainDeclsWithVars canData.decls CSaveTheEnvironment Expr.emptyExprIdState) ports
+            Dict.foldr letPortWithVars (constrainDeclsWithVars canData.decls CSaveTheEnvironment initState) ports
 
         Can.Manager r0 r1 r2 manager ->
             case manager of
                 Can.Cmd cmdName ->
-                    constrainEffectsWithIds canData.name r0 r1 r2 manager Expr.emptyExprIdState
+                    constrainEffectsWithIds canData.name r0 r1 r2 manager initState
                         |> IO.andThen (\( con, state ) -> constrainDeclsWithVars canData.decls con state)
                         |> IO.andThen (\( con, state ) -> letCmdWithVars canData.name cmdName con state)
 
                 Can.Sub subName ->
-                    constrainEffectsWithIds canData.name r0 r1 r2 manager Expr.emptyExprIdState
+                    constrainEffectsWithIds canData.name r0 r1 r2 manager initState
                         |> IO.andThen (\( con, state ) -> constrainDeclsWithVars canData.decls con state)
                         |> IO.andThen (\( con, state ) -> letSubWithVars canData.name subName con state)
 
                 Can.Fx cmdName subName ->
-                    constrainEffectsWithIds canData.name r0 r1 r2 manager Expr.emptyExprIdState
+                    constrainEffectsWithIds canData.name r0 r1 r2 manager initState
                         |> IO.andThen (\( con, state ) -> constrainDeclsWithVars canData.decls con state)
                         |> IO.andThen (\( con, state ) -> letSubWithVars canData.name subName con state)
                         |> IO.andThen (\( con, state ) -> letCmdWithVars canData.name cmdName con state)

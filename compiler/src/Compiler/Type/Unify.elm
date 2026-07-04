@@ -19,9 +19,8 @@ import Compiler.Type.Error as Error
 import Compiler.Type.Occurs as Occurs
 import Compiler.Type.Type as Type
 import Compiler.Type.UnionFind as UF
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO exposing (IO)
-import Utils.Main as Utils
 
 
 
@@ -152,6 +151,84 @@ mismatch =
     Unify (\vars -> IO.pure (Err (UnifyErr vars ())))
 
 
+{-| Run each element through `f` in order, short-circuiting on the first
+mismatch. Threads the fresh-var accumulator through the whole traversal, so an
+element-wise unification can't accidentally drop a step (which is what the old
+hand-written `List.foldl` in the comparable-tuple case did).
+-}
+forEach_ : List a -> (a -> Unify ()) -> Unify ()
+forEach_ xs f =
+    List.foldl (\x acc -> acc |> andThen (\_ -> f x)) (pure ()) xs
+
+
+{-| Unify two lists pairwise, short-circuiting on the first mismatch; `mismatch`
+if the lengths differ.
+-}
+zipWithM_ : (a -> b -> Unify ()) -> List a -> List b -> Unify ()
+zipWithM_ f xs ys =
+    case ( xs, ys ) of
+        ( [], [] ) ->
+            pure ()
+
+        ( x :: xr, y :: yr ) ->
+            f x y |> andThen (\_ -> zipWithM_ f xr yr)
+
+        _ ->
+            mismatch
+
+
+{-| Run a unification, recovering a mismatch to `False` while keeping any fresh
+vars it allocated (never short-circuits). `True` on success. This is the single
+place the `Ok`/`Err` conversion lives for the run-all discipline below.
+-}
+try : Unify () -> Unify Bool
+try (Unify u) =
+    Unify
+        (\vars ->
+            u vars
+                |> IO.map
+                    (\result ->
+                        case result of
+                            Ok (UnifyOk vs ()) ->
+                                Ok (UnifyOk vs True)
+
+                            Err (UnifyErr vs ()) ->
+                                Ok (UnifyOk vs False)
+                    )
+        )
+
+
+{-| "Run-all-then-report": unify every pair (so all fresh vars are collected)
+even after a mismatch, then report a mismatch if any pair failed or the lengths
+differ. Preserves the discipline of the old `unifyArgs`/`unifyAliasArgs`, which
+kept unifying remaining args after a failure so `Solve` still sees every fresh
+var on the error path.
+-}
+zipAllWithM_ : (a -> b -> Unify ()) -> List a -> List b -> Unify ()
+zipAllWithM_ f xs ys =
+    case ( xs, ys ) of
+        ( [], [] ) ->
+            pure ()
+
+        ( x :: xr, y :: yr ) ->
+            try (f x y)
+                |> andThen
+                    (\ok ->
+                        zipAllWithM_ f xr yr
+                            |> andThen
+                                (\_ ->
+                                    if ok then
+                                        pure ()
+
+                                    else
+                                        mismatch
+                                )
+                    )
+
+        _ ->
+            mismatch
+
+
 
 -- ====== UNIFICATION HELPERS ======
 
@@ -250,16 +327,8 @@ subUnify var1 var2 =
 
 subUnifyTuple : List IO.Variable -> List IO.Variable -> Context -> IO.Content -> Unify ()
 subUnifyTuple cs zs context otherContent =
-    case ( cs, zs ) of
-        ( [], [] ) ->
-            merge context otherContent
-
-        ( c :: restCs, z :: restZs ) ->
-            subUnify c z
-                |> andThen (\_ -> subUnifyTuple restCs restZs context otherContent)
-
-        _ ->
-            mismatch
+    zipWithM_ subUnify cs zs
+        |> andThen (\_ -> merge context otherContent)
 
 
 actuallyUnify : Context -> Unify ()
@@ -538,7 +607,8 @@ unifyFlexSuperStructure context super flatType =
                     mismatch
 
                 IO.Comparable ->
-                    List.foldl (\var acc -> acc |> andThen (\_ -> unifyComparableRecursive var)) (comparableOccursCheck context) (a :: b :: cs)
+                    comparableOccursCheck context
+                        |> andThen (\_ -> forEach_ (a :: b :: cs) unifyComparableRecursive)
                         |> andThen (\_ -> merge context (IO.Structure flatType))
 
                 IO.CompAppend ->
@@ -606,21 +676,8 @@ unifyAlias ((Context props) as ctx) home name args realVar otherContent =
 
         IO.Alias otherHome otherName otherArgs otherRealVar ->
             if name == otherName && home == otherHome then
-                Unify
-                    (\vars ->
-                        unifyAliasArgs vars args otherArgs
-                            |> IO.andThen
-                                (\res ->
-                                    case res of
-                                        Ok (UnifyOk vars1 ()) ->
-                                            case merge ctx otherContent of
-                                                Unify k ->
-                                                    k vars1
-
-                                        Err err ->
-                                            IO.pure (Err err)
-                                )
-                    )
+                zipAllWithM_ subUnify (List.map Tuple.second args) (List.map Tuple.second otherArgs)
+                    |> andThen (\_ -> merge ctx otherContent)
 
             else
                 subUnify realVar otherRealVar
@@ -630,46 +687,6 @@ unifyAlias ((Context props) as ctx) home name args realVar otherContent =
 
         IO.Error ->
             merge ctx IO.Error
-
-
-unifyAliasArgs : List IO.Variable -> List ( Name.Name, IO.Variable ) -> List ( Name.Name, IO.Variable ) -> IO (Result UnifyErr (UnifyOk ()))
-unifyAliasArgs vars args1 args2 =
-    case args1 of
-        ( _, arg1 ) :: others1 ->
-            case args2 of
-                ( _, arg2 ) :: others2 ->
-                    case subUnify arg1 arg2 of
-                        Unify k ->
-                            k vars
-                                |> IO.andThen
-                                    (\res1 ->
-                                        case res1 of
-                                            Ok (UnifyOk vs ()) ->
-                                                unifyAliasArgs vs others1 others2
-
-                                            Err (UnifyErr vs ()) ->
-                                                unifyAliasArgs vs others1 others2
-                                                    |> IO.map
-                                                        (\res2 ->
-                                                            case res2 of
-                                                                Ok (UnifyOk vs_ ()) ->
-                                                                    Err (UnifyErr vs_ ())
-
-                                                                Err err ->
-                                                                    Err err
-                                                        )
-                                    )
-
-                _ ->
-                    IO.pure (Err (UnifyErr vars ()))
-
-        [] ->
-            case args2 of
-                [] ->
-                    IO.pure (Ok (UnifyOk vars ()))
-
-                _ ->
-                    IO.pure (Err (UnifyErr vars ()))
 
 
 
@@ -705,21 +722,8 @@ unifyStructure ((Context props) as ctx) flatType content otherContent =
             case ( flatType, otherFlatType ) of
                 ( IO.App1 home name args, IO.App1 otherHome otherName otherArgs ) ->
                     if home == otherHome && name == otherName then
-                        Unify
-                            (\vars ->
-                                unifyArgs vars args otherArgs
-                                    |> IO.andThen
-                                        (\unifiedArgs ->
-                                            case unifiedArgs of
-                                                Ok (UnifyOk vars1 ()) ->
-                                                    case merge ctx otherContent of
-                                                        Unify k ->
-                                                            k vars1
-
-                                                Err err ->
-                                                    IO.pure (Err err)
-                                        )
-                            )
+                        zipAllWithM_ subUnify args otherArgs
+                            |> andThen (\_ -> merge ctx otherContent)
 
                     else
                         mismatch
@@ -781,43 +785,6 @@ unifyStructure ((Context props) as ctx) flatType content otherContent =
 -- ====== UNIFY ARGS ======
 
 
-unifyArgs : List IO.Variable -> List IO.Variable -> List IO.Variable -> IO (Result UnifyErr (UnifyOk ()))
-unifyArgs vars args1 args2 =
-    case args1 of
-        arg1 :: others1 ->
-            case args2 of
-                arg2 :: others2 ->
-                    case subUnify arg1 arg2 of
-                        Unify k ->
-                            k vars
-                                |> IO.andThen
-                                    (\result ->
-                                        case result of
-                                            Ok (UnifyOk vs ()) ->
-                                                unifyArgs vs others1 others2
-
-                                            Err (UnifyErr vs ()) ->
-                                                unifyArgs vs others1 others2
-                                                    |> IO.map
-                                                        (Result.andThen
-                                                            (\(UnifyOk vs_ ()) ->
-                                                                Err (UnifyErr vs_ ())
-                                                            )
-                                                        )
-                                    )
-
-                _ ->
-                    IO.pure (Err (UnifyErr vars ()))
-
-        [] ->
-            case args2 of
-                [] ->
-                    IO.pure (Ok (UnifyOk vars ()))
-
-                _ ->
-                    IO.pure (Err (UnifyErr vars ()))
-
-
 
 -- ====== UNIFY RECORDS ======
 
@@ -825,15 +792,21 @@ unifyArgs vars args1 args2 =
 unifyRecord : Context -> RecordStructure -> RecordStructure -> Unify ()
 unifyRecord context (RecordStructure fields1 ext1) (RecordStructure fields2 ext2) =
     let
-        sharedFields : Dict String Name.Name ( IO.Variable, IO.Variable )
+        sharedFields : Dict Name.Name ( IO.Variable, IO.Variable )
         sharedFields =
-            Utils.mapIntersectionWith identity compare Tuple.pair fields1 fields2
+            Dict.merge
+                (\_ _ acc -> acc)
+                (\k a b acc -> Dict.insert k ( a, b ) acc)
+                (\_ _ acc -> acc)
+                fields1
+                fields2
+                Dict.empty
 
-        uniqueFields1 : Dict String Name.Name IO.Variable
+        uniqueFields1 : Dict Name.Name IO.Variable
         uniqueFields1 =
             Dict.diff fields1 fields2
 
-        uniqueFields2 : Dict String Name.Name IO.Variable
+        uniqueFields2 : Dict Name.Name IO.Variable
         uniqueFields2 =
             Dict.diff fields2 fields1
     in
@@ -860,7 +833,7 @@ unifyRecord context (RecordStructure fields1 ext1) (RecordStructure fields2 ext2
 
     else
         let
-            otherFields : Dict String Name.Name IO.Variable
+            otherFields : Dict Name.Name IO.Variable
             otherFields =
                 Dict.union uniqueFields1 uniqueFields2
         in
@@ -881,9 +854,9 @@ unifyRecord context (RecordStructure fields1 ext1) (RecordStructure fields2 ext2
                 )
 
 
-unifySharedFields : Context -> Dict String Name.Name ( IO.Variable, IO.Variable ) -> Dict String Name.Name IO.Variable -> IO.Variable -> Unify ()
+unifySharedFields : Context -> Dict Name.Name ( IO.Variable, IO.Variable ) -> Dict Name.Name IO.Variable -> IO.Variable -> Unify ()
 unifySharedFields context sharedFields otherFields ext =
-    traverseMaybe identity compare unifyField sharedFields
+    traverseMaybe unifyField sharedFields
         |> andThen
             (\matchingFields ->
                 if Dict.size sharedFields == Dict.size matchingFields then
@@ -894,16 +867,16 @@ unifySharedFields context sharedFields otherFields ext =
             )
 
 
-traverseMaybe : (a -> comparable) -> (a -> a -> Order) -> (a -> b -> Unify (Maybe c)) -> Dict comparable a b -> Unify (Dict comparable a c)
-traverseMaybe toComparable keyComparison func =
-    Dict.foldl keyComparison
+traverseMaybe : (comparable -> b -> Unify (Maybe c)) -> Dict comparable b -> Unify (Dict comparable c)
+traverseMaybe func =
+    Dict.foldl
         (\a b ->
             andThen
                 (\acc ->
                     map
                         (\maybeC ->
                             maybeC
-                                |> Maybe.map (\c -> Dict.insert toComparable a c acc)
+                                |> Maybe.map (\c -> Dict.insert a c acc)
                                 |> Maybe.withDefault acc
                         )
                         (func a b)
@@ -914,21 +887,15 @@ traverseMaybe toComparable keyComparison func =
 
 unifyField : Name.Name -> ( IO.Variable, IO.Variable ) -> Unify (Maybe IO.Variable)
 unifyField _ ( actual, expected ) =
-    Unify
-        (\vars ->
-            case subUnify actual expected of
-                Unify k ->
-                    k vars
-                        |> IO.map
-                            (\result ->
-                                case result of
-                                    Ok (UnifyOk vs ()) ->
-                                        Ok (UnifyOk vs (Just actual))
+    try (subUnify actual expected)
+        |> map
+            (\ok ->
+                if ok then
+                    Just actual
 
-                                    Err (UnifyErr vs ()) ->
-                                        Ok (UnifyOk vs Nothing)
-                            )
-        )
+                else
+                    Nothing
+            )
 
 
 
@@ -936,10 +903,10 @@ unifyField _ ( actual, expected ) =
 
 
 type RecordStructure
-    = RecordStructure (Dict String Name.Name IO.Variable) IO.Variable
+    = RecordStructure (Dict Name.Name IO.Variable) IO.Variable
 
 
-gatherFields : Dict String Name.Name IO.Variable -> IO.Variable -> IO RecordStructure
+gatherFields : Dict Name.Name IO.Variable -> IO.Variable -> IO RecordStructure
 gatherFields fields variable =
     UF.get variable
         |> IO.andThen

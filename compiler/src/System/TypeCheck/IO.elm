@@ -7,6 +7,7 @@ module System.TypeCheck.IO exposing
     , Descriptor(..), Content(..), SuperType(..), Mark(..), Variable, FlatType(..)
     , Canonical(..)
     , DescriptorProps, makeDescriptor
+    , NameState(..), NameStateData, emptyNameState, getNames, putNames, withFreshNames
     )
 
 {-| IO monad and state threading for type inference.
@@ -56,6 +57,7 @@ Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 
 import Array exposing (Array)
 import Data.Map as Dict exposing (Dict)
+import Dict as CoreDict
 
 
 {-| Execute an IO action and extract its result, discarding the final state.
@@ -70,6 +72,7 @@ unsafePerformIO ioA =
     , ioRefsPointInfo = Array.empty
     , ioRefsDescriptor = Array.empty
     , ioRefsMVector = Array.empty
+    , names = emptyNameState
     }
         |> ioA
         |> Tuple.second
@@ -135,7 +138,63 @@ type alias State =
     , ioRefsPointInfo : Array PointInfo
     , ioRefsDescriptor : Array Descriptor
     , ioRefsMVector : Array (Array (Maybe (List Variable)))
+    , names : NameState
     }
+
+
+{-| Fresh-name generation state, threaded through the type -> annotation/error
+conversion. Folded into `State` so the conversion runs in plain `IO`, removing
+the separate `StateT NameState` layer.
+-}
+type alias NameStateData =
+    { taken : CoreDict.Dict String ()
+    , normals : Int
+    , numbers : Int
+    , comparables : Int
+    , appendables : Int
+    , compAppends : Int
+    }
+
+
+type NameState
+    = NameState NameStateData
+
+
+{-| The seed name state (no names taken, all counters at zero).
+-}
+emptyNameState : NameState
+emptyNameState =
+    NameState { taken = CoreDict.empty, normals = 0, numbers = 0, comparables = 0, appendables = 0, compAppends = 0 }
+
+
+{-| Read the current fresh-name state.
+-}
+getNames : IO NameState
+getNames s =
+    ( s, s.names )
+
+
+{-| Replace the fresh-name state.
+-}
+putNames : NameState -> IO ()
+putNames names s =
+    ( { s | names = names }, () )
+
+
+{-| Run an action with a freshly-seeded name state, restoring the previous one
+afterward. Keeps naming passes isolated and re-entrancy safe (e.g. a
+`toErrorType` invoked mid-unification cannot corrupt an in-flight naming pass).
+-}
+withFreshNames : NameState -> IO a -> IO a
+withFreshNames seed action s =
+    let
+        saved =
+            s.names
+
+        ( s1, a ) =
+            action { s | names = seed }
+    in
+    ( { s1 | names = saved }, a )
 
 
 {-| Lift a pure value into the IO monad without modifying state.
@@ -484,7 +543,7 @@ type FlatType
     = App1 Canonical String (List Variable)
     | Fun1 Variable Variable
     | EmptyRecord1
-    | Record1 (Dict String String Variable) Variable
+    | Record1 (CoreDict.Dict String Variable) Variable
     | Unit1
     | Tuple1 Variable Variable (List Variable)
 

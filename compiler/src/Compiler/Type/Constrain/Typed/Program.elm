@@ -200,57 +200,47 @@ opIOS io =
 
 {-| Run a stateful constraint program to produce an IO (Constraint, state).
 
-Uses `IO.loop` to interpret the program with an explicit continuation stack,
-ensuring constant stack depth regardless of program complexity.
+Uses `IO.loop` as a tail-recursive driver, so the interpreter runs at constant
+stack depth regardless of program complexity. Sub-constraint recursion is
+deferred inside instruction continuations — one instruction per loop iteration.
 
 -}
 runS : s -> ProgS s Constraint -> IO ( Constraint, s )
 runS state0 prog0 =
-    IO.loop stepS ( prog0, state0, [] )
-
-
-{-| Frame type for the stateful continuation stack.
--}
-type alias FrameS s =
-    Constraint -> ProgS s Constraint
+    IO.loop stepS ( prog0, state0 )
 
 
 {-| One step of the stateful interpreter.
 -}
-stepS : ( ProgS s Constraint, s, List (FrameS s) ) -> IO (IO.Step ( ProgS s Constraint, s, List (FrameS s) ) ( Constraint, s ))
-stepS ( prog, state, stack ) =
+stepS : ( ProgS s Constraint, s ) -> IO (IO.Step ( ProgS s Constraint, s ) ( Constraint, s ))
+stepS ( prog, state ) =
     case prog of
         DoneS value ->
-            case stack of
-                [] ->
-                    IO.pure (IO.Done ( value, state ))
-
-                k :: rest ->
-                    IO.pure (IO.Loop ( k value, state, rest ))
+            IO.pure (IO.Done ( value, state ))
 
         StepS instr ->
-            stepInstrS instr state stack
+            stepInstrS instr state
 
 
 {-| Execute one stateful instruction and return the next loop state.
 -}
-stepInstrS : InstrS s Constraint -> s -> List (FrameS s) -> IO (IO.Step ( ProgS s Constraint, s, List (FrameS s) ) ( Constraint, s ))
-stepInstrS instr state stack =
+stepInstrS : InstrS s Constraint -> s -> IO (IO.Step ( ProgS s Constraint, s ) ( Constraint, s ))
+stepInstrS instr state =
     case instr of
         MkFlexVarS k ->
             Type.mkFlexVar
-                |> IO.map (\var -> IO.Loop ( k var, state, stack ))
+                |> IO.map (\var -> IO.Loop ( k var, state ))
 
         MkFlexNumberS k ->
             Type.mkFlexNumber
-                |> IO.map (\var -> IO.Loop ( k var, state, stack ))
+                |> IO.map (\var -> IO.Loop ( k var, state ))
 
         GetStateS k ->
-            IO.pure (IO.Loop ( k state, state, stack ))
+            IO.pure (IO.Loop ( k state, state ))
 
         ModifyStateS f cont ->
-            IO.pure (IO.Loop ( cont (), f state, stack ))
+            IO.pure (IO.Loop ( cont (), f state ))
 
         RunIOS io ->
             io
-                |> IO.map (\nextProg -> IO.Loop ( nextProg, state, stack ))
+                |> IO.map (\nextProg -> IO.Loop ( nextProg, state ))

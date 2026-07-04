@@ -72,11 +72,9 @@ import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Type as E
 import Compiler.Type.Error as ET
 import Compiler.Type.UnionFind as UF
-import Control.Monad.State.TypeCheck.Strict as State exposing (StateT, liftIO)
-import Data.Map
 import Dict exposing (Dict)
 import Maybe.Extra as Maybe
-import System.TypeCheck.IO as IO exposing (Content(..), Descriptor(..), FlatType(..), IO, Mark(..), SuperType(..), Variable)
+import System.TypeCheck.IO as IO exposing (Content(..), Descriptor(..), FlatType(..), IO, Mark(..), NameState(..), SuperType(..), Variable)
 import Utils.Crash exposing (crash)
 
 
@@ -429,11 +427,14 @@ toAnnotation variable =
     getVarNames variable Dict.empty
         |> IO.andThen
             (\userNames ->
-                State.runStateT (variableToCanType variable) (makeNameState userNames)
-                    |> IO.map
-                        (\( tipe, NameState nsData ) ->
-                            Can.Forall nsData.taken tipe
-                        )
+                IO.withFreshNames (makeNameState userNames)
+                    (variableToCanType variable
+                        |> IO.andThen
+                            (\tipe ->
+                                IO.getNames
+                                    |> IO.map (\(NameState nsData) -> Can.Forall nsData.taken tipe)
+                            )
+                    )
             )
 
 
@@ -460,48 +461,35 @@ toCanTypeBatch nodeVars =
         (Array.toList nodeVars)
         |> IO.andThen
             (\allUserNames ->
-                -- Second pass: convert all variables with a shared NameState
-                State.runStateT
-                    (arrayTraverseMaybeState variableToCanType nodeVars)
-                    (makeNameState allUserNames)
-                    |> IO.map Tuple.first
+                -- Second pass: convert all variables sharing one name state, so
+                -- names stay globally unique across the batch.
+                IO.withFreshNames (makeNameState allUserNames)
+                    (arrayTraverseMaybe variableToCanType nodeVars)
             )
 
 
-arrayTraverseMaybeState : (a -> StateT NameState b) -> Array (Maybe a) -> StateT NameState (Array (Maybe b))
-arrayTraverseMaybeState f arr =
-    -- Use IO.loop to avoid stack depth proportional to array length.
-    -- The old Array.foldl + State.andThen approach created N nested closures.
-    State.StateT
-        (\s0 ->
-            IO.loop
-                (arrayTraverseMaybeStateHelp f)
-                ( Array.toList arr, [], s0 )
-                |> IO.map (\( results, sFinal ) -> ( Array.fromList (List.reverse results), sFinal ))
-        )
+{-| Traverse an array of optional values in the IO monad (stack-safe via
+`IO.traverseList`), preserving `Nothing` holes.
+-}
+arrayTraverseMaybe : (a -> IO b) -> Array (Maybe a) -> IO (Array (Maybe b))
+arrayTraverseMaybe f arr =
+    Array.toList arr
+        |> IO.traverseList
+            (\maybeA ->
+                case maybeA of
+                    Nothing ->
+                        IO.pure Nothing
+
+                    Just a ->
+                        f a |> IO.map Just
+            )
+        |> IO.map Array.fromList
 
 
-arrayTraverseMaybeStateHelp :
-    (a -> StateT NameState b)
-    -> ( List (Maybe a), List (Maybe b), NameState )
-    -> IO (IO.Step ( List (Maybe a), List (Maybe b), NameState ) ( List (Maybe b), NameState ))
-arrayTraverseMaybeStateHelp f ( remaining, acc, s ) =
-    case remaining of
-        [] ->
-            IO.pure (IO.Done ( acc, s ))
-
-        Nothing :: rest ->
-            IO.pure (IO.Loop ( rest, Nothing :: acc, s ))
-
-        (Just val) :: rest ->
-            State.runStateT (f val) s
-                |> IO.map (\( result, s1 ) -> IO.Loop ( rest, Just result :: acc, s1 ))
-
-
-variableToCanType : Variable -> State.StateT NameState (Can.Type Name)
+variableToCanType : Variable -> IO (Can.Type Name)
 variableToCanType variable =
-    liftIO (UF.get variable)
-        |> State.andThen
+    UF.get variable
+        |> IO.andThen
             (\(Descriptor descProps) ->
                 case descProps.content of
                     Structure term ->
@@ -510,51 +498,47 @@ variableToCanType variable =
                     FlexVar maybeName ->
                         case maybeName of
                             Just name ->
-                                State.pure (Can.TVar name)
+                                IO.pure (Can.TVar name)
 
                             Nothing ->
                                 getFreshVarName
-                                    |> State.andThen
+                                    |> IO.andThen
                                         (\name ->
-                                            liftIO
-                                                (UF.modify variable
-                                                    (\(Descriptor props) ->
-                                                        IO.makeDescriptor (FlexVar (Just name)) props.rank props.mark props.copy
-                                                    )
+                                            UF.modify variable
+                                                (\(Descriptor props) ->
+                                                    IO.makeDescriptor (FlexVar (Just name)) props.rank props.mark props.copy
                                                 )
-                                                |> State.map (\_ -> Can.TVar name)
+                                                |> IO.map (\_ -> Can.TVar name)
                                         )
 
                     FlexSuper super maybeName ->
                         case maybeName of
                             Just name ->
-                                State.pure (Can.TVar name)
+                                IO.pure (Can.TVar name)
 
                             Nothing ->
                                 getFreshSuperName super
-                                    |> State.andThen
+                                    |> IO.andThen
                                         (\name ->
-                                            liftIO
-                                                (UF.modify variable
-                                                    (\(Descriptor props) ->
-                                                        IO.makeDescriptor (FlexSuper super (Just name)) props.rank props.mark props.copy
-                                                    )
+                                            UF.modify variable
+                                                (\(Descriptor props) ->
+                                                    IO.makeDescriptor (FlexSuper super (Just name)) props.rank props.mark props.copy
                                                 )
-                                                |> State.map (\_ -> Can.TVar name)
+                                                |> IO.map (\_ -> Can.TVar name)
                                         )
 
                     RigidVar name ->
-                        State.pure (Can.TVar name)
+                        IO.pure (Can.TVar name)
 
                     RigidSuper _ name ->
-                        State.pure (Can.TVar name)
+                        IO.pure (Can.TVar name)
 
                     Alias home name args realVariable ->
-                        State.traverseList (State.traverseTuple variableToCanType) args
-                            |> State.andThen
+                        IO.traverseList (IO.traverseTuple variableToCanType) args
+                            |> IO.andThen
                                 (\canArgs ->
                                     variableToCanType realVariable
-                                        |> State.map
+                                        |> IO.map
                                             (\canType ->
                                                 Can.TAlias home name canArgs (Can.Filled canType)
                                             )
@@ -565,29 +549,31 @@ variableToCanType variable =
             )
 
 
-termToCanType : FlatType -> StateT NameState (Can.Type Name)
+termToCanType : FlatType -> IO (Can.Type Name)
 termToCanType term =
     case term of
         App1 home name args ->
-            State.traverseList variableToCanType args
-                |> State.map (Can.TType home name)
+            IO.traverseList variableToCanType args
+                |> IO.map (Can.TType home name)
 
         Fun1 a b ->
-            State.pure Can.TLambda
-                |> State.apply (variableToCanType a)
-                |> State.apply (variableToCanType b)
+            IO.pure Can.TLambda
+                |> IO.apply (variableToCanType a)
+                |> IO.apply (variableToCanType b)
 
         EmptyRecord1 ->
-            State.pure (Can.TRecord Dict.empty Nothing)
+            IO.pure (Can.TRecord Dict.empty Nothing)
 
         Record1 fields extension ->
-            State.traverseMap compare identity fieldToCanType fields
-                |> State.map (Data.Map.toList compare >> Dict.fromList)
-                |> State.andThen
+            (Dict.toList fields
+                |> IO.traverseList (\( fieldName, fieldVar ) -> fieldToCanType fieldVar |> IO.map (Tuple.pair fieldName))
+                |> IO.map Dict.fromList
+            )
+                |> IO.andThen
                     (\canFields ->
                         variableToCanType extension
-                            |> State.map Type.iteratedDealias
-                            |> State.map
+                            |> IO.map Type.iteratedDealias
+                            |> IO.map
                                 (\canExt ->
                                     case canExt of
                                         Can.TRecord subFields subExt ->
@@ -602,19 +588,19 @@ termToCanType term =
                     )
 
         Unit1 ->
-            State.pure Can.TUnit
+            IO.pure Can.TUnit
 
         Tuple1 a b cs ->
-            State.pure Can.TTuple
-                |> State.apply (variableToCanType a)
-                |> State.apply (variableToCanType b)
-                |> State.apply (State.traverseList variableToCanType cs)
+            IO.pure Can.TTuple
+                |> IO.apply (variableToCanType a)
+                |> IO.apply (variableToCanType b)
+                |> IO.apply (IO.traverseList variableToCanType cs)
 
 
-fieldToCanType : Variable -> StateT NameState (Can.FieldType Name)
+fieldToCanType : Variable -> IO (Can.FieldType Name)
 fieldToCanType variable =
     variableToCanType variable
-        |> State.map (\tipe -> Can.FieldType 0 tipe)
+        |> IO.map (\tipe -> Can.FieldType 0 tipe)
 
 
 
@@ -633,33 +619,33 @@ toErrorType variable =
     getVarNames variable Dict.empty
         |> IO.andThen
             (\userNames ->
-                State.evalStateT (variableToErrorType variable) (makeNameState userNames)
+                IO.withFreshNames (makeNameState userNames) (variableToErrorType variable)
             )
 
 
-variableToErrorType : Variable -> StateT NameState ET.Type
+variableToErrorType : Variable -> IO ET.Type
 variableToErrorType variable =
-    liftIO (UF.get variable)
-        |> State.andThen
+    UF.get variable
+        |> IO.andThen
             (\(Descriptor descProps) ->
                 if descProps.mark == occursMark then
-                    State.pure ET.Infinite
+                    IO.pure ET.Infinite
 
                 else
-                    liftIO (UF.modify variable (\(Descriptor props) -> IO.makeDescriptor props.content props.rank occursMark props.copy))
-                        |> State.andThen
+                    UF.modify variable (\(Descriptor props) -> IO.makeDescriptor props.content props.rank occursMark props.copy)
+                        |> IO.andThen
                             (\_ ->
                                 contentToErrorType variable descProps.content
-                                    |> State.andThen
+                                    |> IO.andThen
                                         (\errType ->
-                                            liftIO (UF.modify variable (\(Descriptor props) -> IO.makeDescriptor props.content props.rank descProps.mark props.copy))
-                                                |> State.map (\_ -> errType)
+                                            UF.modify variable (\(Descriptor props) -> IO.makeDescriptor props.content props.rank descProps.mark props.copy)
+                                                |> IO.map (\_ -> errType)
                                         )
                             )
             )
 
 
-contentToErrorType : Variable -> Content -> StateT NameState ET.Type
+contentToErrorType : Variable -> Content -> IO ET.Type
 contentToErrorType variable content =
     case content of
         Structure term ->
@@ -668,58 +654,54 @@ contentToErrorType variable content =
         FlexVar maybeName ->
             case maybeName of
                 Just name ->
-                    State.pure (ET.FlexVar name)
+                    IO.pure (ET.FlexVar name)
 
                 Nothing ->
                     getFreshVarName
-                        |> State.andThen
+                        |> IO.andThen
                             (\name ->
-                                liftIO
-                                    (UF.modify variable
-                                        (\(Descriptor props) ->
-                                            IO.makeDescriptor (FlexVar (Just name)) props.rank props.mark props.copy
-                                        )
+                                UF.modify variable
+                                    (\(Descriptor props) ->
+                                        IO.makeDescriptor (FlexVar (Just name)) props.rank props.mark props.copy
                                     )
-                                    |> State.map (\_ -> ET.FlexVar name)
+                                    |> IO.map (\_ -> ET.FlexVar name)
                             )
 
         FlexSuper super maybeName ->
             case maybeName of
                 Just name ->
-                    State.pure (ET.FlexSuper (superToSuper super) name)
+                    IO.pure (ET.FlexSuper (superToSuper super) name)
 
                 Nothing ->
                     getFreshSuperName super
-                        |> State.andThen
+                        |> IO.andThen
                             (\name ->
-                                liftIO
-                                    (UF.modify variable
-                                        (\(Descriptor props) ->
-                                            IO.makeDescriptor (FlexSuper super (Just name)) props.rank props.mark props.copy
-                                        )
+                                UF.modify variable
+                                    (\(Descriptor props) ->
+                                        IO.makeDescriptor (FlexSuper super (Just name)) props.rank props.mark props.copy
                                     )
-                                    |> State.map (\_ -> ET.FlexSuper (superToSuper super) name)
+                                    |> IO.map (\_ -> ET.FlexSuper (superToSuper super) name)
                             )
 
         RigidVar name ->
-            State.pure (ET.RigidVar name)
+            IO.pure (ET.RigidVar name)
 
         RigidSuper super name ->
-            State.pure (ET.RigidSuper (superToSuper super) name)
+            IO.pure (ET.RigidSuper (superToSuper super) name)
 
         Alias home name args realVariable ->
-            State.traverseList (State.traverseTuple variableToErrorType) args
-                |> State.andThen
+            IO.traverseList (IO.traverseTuple variableToErrorType) args
+                |> IO.andThen
                     (\errArgs ->
                         variableToErrorType realVariable
-                            |> State.map
+                            |> IO.map
                                 (\errType ->
                                     ET.Alias home name errArgs errType
                                 )
                     )
 
         Error ->
-            State.pure ET.Error
+            IO.pure ET.Error
 
 
 superToSuper : SuperType -> ET.Super
@@ -738,19 +720,19 @@ superToSuper super =
             ET.CompAppend
 
 
-termToErrorType : FlatType -> StateT NameState ET.Type
+termToErrorType : FlatType -> IO ET.Type
 termToErrorType term =
     case term of
         App1 home name args ->
-            State.traverseList variableToErrorType args
-                |> State.map (ET.Type home name)
+            IO.traverseList variableToErrorType args
+                |> IO.map (ET.Type home name)
 
         Fun1 a b ->
             variableToErrorType a
-                |> State.andThen
+                |> IO.andThen
                     (\arg ->
                         variableToErrorType b
-                            |> State.map
+                            |> IO.map
                                 (\result ->
                                     case result of
                                         ET.Lambda arg1 arg2 others ->
@@ -762,16 +744,18 @@ termToErrorType term =
                     )
 
         EmptyRecord1 ->
-            State.pure (ET.Record Dict.empty ET.Closed)
+            IO.pure (ET.Record Dict.empty ET.Closed)
 
         Record1 fields extension ->
-            State.traverseMap compare identity variableToErrorType fields
-                |> State.map (\dmFields -> Dict.fromList (Data.Map.toList compare dmFields))
-                |> State.andThen
+            (Dict.toList fields
+                |> IO.traverseList (\( fieldName, fieldVar ) -> variableToErrorType fieldVar |> IO.map (Tuple.pair fieldName))
+                |> IO.map Dict.fromList
+            )
+                |> IO.andThen
                     (\errFields ->
                         variableToErrorType extension
-                            |> State.map ET.iteratedDealias
-                            |> State.map
+                            |> IO.map ET.iteratedDealias
+                            |> IO.map
                                 (\errExt ->
                                     case errExt of
                                         ET.Record subFields subExt ->
@@ -789,31 +773,20 @@ termToErrorType term =
                     )
 
         Unit1 ->
-            State.pure ET.Unit
+            IO.pure ET.Unit
 
         Tuple1 a b cs ->
-            State.pure ET.Tuple
-                |> State.apply (variableToErrorType a)
-                |> State.apply (variableToErrorType b)
-                |> State.apply (State.traverseList variableToErrorType cs)
+            IO.pure ET.Tuple
+                |> IO.apply (variableToErrorType a)
+                |> IO.apply (variableToErrorType b)
+                |> IO.apply (IO.traverseList variableToErrorType cs)
 
 
 
 -- ====== MANAGE FRESH VARIABLE NAMES ======
-
-
-type alias NameStateData =
-    { taken : Dict Name ()
-    , normals : Int
-    , numbers : Int
-    , comparables : Int
-    , appendables : Int
-    , compAppends : Int
-    }
-
-
-type NameState
-    = NameState NameStateData
+--
+-- `NameState` now lives in `System.TypeCheck.IO` (folded into the IO state), so
+-- the conversion functions above run in plain `IO` rather than `StateT`.
 
 
 makeNameState : Dict Name Variable -> NameState
@@ -825,24 +798,17 @@ makeNameState takenNames =
 -- ====== FRESH VAR NAMES ======
 
 
-getFreshVarName : StateT NameState Name
+getFreshVarName : IO Name
 getFreshVarName =
-    State.gets (\(NameState ns) -> ns.normals)
-        |> State.andThen
-            (\index ->
-                State.gets (\(NameState ns) -> ns.taken)
-                    |> State.andThen
-                        (\taken ->
-                            let
-                                ( name, newIndex, newTaken ) =
-                                    getFreshVarNameHelp index taken
-                            in
-                            State.modify
-                                (\(NameState ns) ->
-                                    NameState { ns | taken = newTaken, normals = newIndex }
-                                )
-                                |> State.map (\_ -> name)
-                        )
+    IO.getNames
+        |> IO.andThen
+            (\(NameState ns) ->
+                let
+                    ( name, newIndex, newTaken ) =
+                        getFreshVarNameHelp ns.normals ns.taken
+                in
+                IO.putNames (NameState { ns | taken = newTaken, normals = newIndex })
+                    |> IO.map (\_ -> name)
             )
 
 
@@ -864,7 +830,7 @@ getFreshVarNameHelp index taken =
 -- ====== FRESH SUPER NAMES ======
 
 
-getFreshSuperName : SuperType -> StateT NameState Name
+getFreshSuperName : SuperType -> IO Name
 getFreshSuperName super =
     case super of
         Number ->
@@ -896,24 +862,31 @@ getFreshSuperName super =
                 )
 
 
-getFreshSuper : Name -> (NameState -> Int) -> (Int -> NameState -> NameState) -> StateT NameState Name
+getFreshSuper : Name -> (NameState -> Int) -> (Int -> NameState -> NameState) -> IO Name
 getFreshSuper prefix getter setter =
-    State.gets getter
-        |> State.andThen
-            (\index ->
-                State.gets (\(NameState ns) -> ns.taken)
-                    |> State.andThen
-                        (\taken ->
-                            let
-                                ( name, newIndex, newTaken ) =
-                                    getFreshSuperHelp prefix index taken
-                            in
-                            State.modify
-                                (\(NameState ns) ->
-                                    setter newIndex (NameState { ns | taken = newTaken })
-                                )
-                                |> State.map (\_ -> name)
+    IO.getNames
+        |> IO.andThen
+            (\nameState ->
+                let
+                    index =
+                        getter nameState
+
+                    taken =
+                        case nameState of
+                            NameState ns ->
+                                ns.taken
+
+                    ( name, newIndex, newTaken ) =
+                        getFreshSuperHelp prefix index taken
+                in
+                IO.putNames
+                    (setter newIndex
+                        (case nameState of
+                            NameState ns ->
+                                NameState { ns | taken = newTaken }
                         )
+                    )
+                    |> IO.map (\_ -> name)
             )
 
 
@@ -988,7 +961,7 @@ getVarNames var takenNames =
                                                 IO.pure takenNames
 
                                             Record1 fields extension ->
-                                                Data.Map.values compare fields |> IO.foldrM getVarNames takenNames |> IO.andThen (getVarNames extension)
+                                                Dict.values fields |> IO.foldrM getVarNames takenNames |> IO.andThen (getVarNames extension)
 
                                             Unit1 ->
                                                 IO.pure takenNames

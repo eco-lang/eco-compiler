@@ -39,7 +39,6 @@ import Compiler.Type.Type as Type exposing (Constraint(..), Type, nextMark)
 import Compiler.Type.Unify as Unify
 import Compiler.Type.UnionFind as UF
 import Data.IORef exposing (IORef)
-import Data.Map
 import Data.Vector as Vector
 import Data.Vector.Mutable as MVector
 import Dict exposing (Dict)
@@ -727,7 +726,7 @@ adjustRankContent youngMark visitMark groupRank content =
                     go extension
                         |> IO.andThen
                             (\extRank ->
-                                IO.foldMDict compare (\rank field -> IO.map (max rank) (go field)) extRank fields
+                                IO.foldM (\rank field -> IO.map (max rank) (go field)) extRank (Dict.values fields)
                             )
 
                 IO.Unit1 ->
@@ -836,7 +835,7 @@ typeToVar rank pools _ tipe =
                         go ext
                             |> IO.andThen
                                 (\extVar ->
-                                    register rank pools (IO.Structure (IO.Record1 (Data.Map.fromList identity (Dict.toList fieldVars)) extVar))
+                                    register rank pools (IO.Structure (IO.Record1 fieldVars extVar))
                                 )
                     )
 
@@ -961,7 +960,7 @@ srcTypeToVar rank pools flexVars srcType =
                     )
 
         Can.TRecord fields maybeExt ->
-            IO.traverseMap identity compare (srcFieldTypeToVar rank pools flexVars) (Data.Map.fromList identity (Dict.toList fields))
+            traverseDictIO (srcFieldTypeToVar rank pools flexVars) fields
                 |> IO.andThen
                     (\fieldVars ->
                         (case maybeExt of
@@ -1171,7 +1170,7 @@ restoreContent content =
                     IO.pure ()
 
                 IO.Record1 fields ext ->
-                    IO.mapM_ restore (Data.Map.values compare fields)
+                    IO.mapM_ restore (Dict.values fields)
                         |> IO.andThen (\_ -> restore ext)
 
                 IO.Unit1 ->
@@ -1212,7 +1211,7 @@ traverseFlatType f flatType =
 
         IO.Record1 fields ext ->
             IO.pure IO.Record1
-                |> IO.apply (IO.traverseMap identity compare f fields)
+                |> IO.apply (traverseDictIO f fields)
                 |> IO.apply (f ext)
 
         IO.Unit1 ->
