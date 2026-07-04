@@ -538,7 +538,7 @@ unifyFlexSuperStructure context super flatType =
                     mismatch
 
                 IO.Comparable ->
-                    List.foldl (\var _ -> unifyComparableRecursive var) (comparableOccursCheck context) (a :: b :: cs)
+                    List.foldl (\var acc -> acc |> andThen (\_ -> unifyComparableRecursive var)) (comparableOccursCheck context) (a :: b :: cs)
                         |> andThen (\_ -> merge context (IO.Structure flatType))
 
                 IO.CompAppend ->
