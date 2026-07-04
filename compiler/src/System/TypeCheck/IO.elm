@@ -2,12 +2,13 @@ module System.TypeCheck.IO exposing
     ( unsafePerformIO
     , IO, State, pure, apply, map, andThen, foldrM, foldM, traverseMap, traverseMapWithKey, forM_, mapM_
     , foldMDict, mapM, traverseList, traverseTuple
+    , traverseArray, traverseArrayMaybe, foldMArray
     , Step(..), loop
     , Point(..), PointInfo(..)
-    , Descriptor(..), Content(..), SuperType(..), Mark(..), Variable, FlatType(..)
+    , Descriptor, Content(..), SuperType(..), Mark(..), Variable, FlatType(..)
     , Canonical(..)
-    , DescriptorProps, makeDescriptor
-    , NameState(..), NameStateData, emptyNameState, getNames, putNames, withFreshNames
+    , makeDescriptor
+    , NameState, emptyNameState, getNames, putNames, withFreshNames
     )
 
 {-| IO monad and state threading for type inference.
@@ -27,6 +28,7 @@ Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 
 @docs IO, State, pure, apply, map, andThen, foldrM, foldM, traverseMap, traverseMapWithKey, forM_, mapM_
 @docs foldMDict, mapM, traverseList, traverseTuple
+@docs traverseArray, traverseArrayMaybe, foldMArray
 
 
 # Loop
@@ -51,7 +53,7 @@ Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 
 # Descriptor Utilities
 
-@docs DescriptorProps, makeDescriptor
+@docs makeDescriptor
 
 -}
 
@@ -146,7 +148,7 @@ type alias State =
 conversion. Folded into `State` so the conversion runs in plain `IO`, removing
 the separate `StateT NameState` layer.
 -}
-type alias NameStateData =
+type alias NameState =
     { taken : CoreDict.Dict String ()
     , normals : Int
     , numbers : Int
@@ -156,15 +158,11 @@ type alias NameStateData =
     }
 
 
-type NameState
-    = NameState NameStateData
-
-
 {-| The seed name state (no names taken, all counters at zero).
 -}
 emptyNameState : NameState
 emptyNameState =
-    NameState { taken = CoreDict.empty, normals = 0, numbers = 0, comparables = 0, appendables = 0, compAppends = 0 }
+    { taken = CoreDict.empty, normals = 0, numbers = 0, comparables = 0, appendables = 0, compAppends = 0 }
 
 
 {-| Read the current fresh-name state.
@@ -402,6 +400,46 @@ mapM =
     traverseList
 
 
+{-| Traverse an array, applying an IO-producing function to each element.
+
+Collects results into a new array while threading state through each computation.
+Stack-safe via `traverseList`.
+
+-}
+traverseArray : (a -> IO b) -> Array a -> IO (Array b)
+traverseArray f arr =
+    Array.toList arr
+        |> traverseList f
+        |> map Array.fromList
+
+
+{-| Traverse an array of optional values, applying an IO-producing function to
+each `Just` while preserving `Nothing` holes.
+
+-}
+traverseArrayMaybe : (a -> IO b) -> Array (Maybe a) -> IO (Array (Maybe b))
+traverseArrayMaybe f =
+    traverseArray
+        (\maybeA ->
+            case maybeA of
+                Nothing ->
+                    pure Nothing
+
+                Just a ->
+                    map Just (f a)
+        )
+
+
+{-| Fold over an array from left to right with an IO-producing function.
+
+Similar to `foldM`, but over an `Array`. Stack-safe.
+
+-}
+foldMArray : (b -> a -> IO b) -> b -> Array a -> IO b
+foldMArray f b arr =
+    foldM f b (Array.toList arr)
+
+
 
 -- ====== POINT ======
 
@@ -437,12 +475,8 @@ Descriptors are stored in the `ioRefsDescriptor` array and referenced by Points.
 Each descriptor contains the actual type content, rank for generalization,
 marking for traversal algorithms, and an optional copy field for cloning.
 
--}
-type Descriptor
-    = Descriptor DescriptorProps
-
-
-{-| Properties of a type descriptor.
+Formerly a single-constructor wrapper; collapsed to a bare record alias so it is
+read/written directly on the hot union-find path with no box or wrap/unwrap.
 
   - `content`: The actual type information (flex var, rigid var, structure, etc.)
   - `rank`: Used for let-generalization and determining type variable scope
@@ -450,7 +484,7 @@ type Descriptor
   - `copy`: Optional reference to a copied variable during cloning operations
 
 -}
-type alias DescriptorProps =
+type alias Descriptor =
     { content : Content
     , rank : Int
     , mark : Mark
@@ -462,7 +496,7 @@ type alias DescriptorProps =
 -}
 makeDescriptor : Content -> Int -> Mark -> Maybe Variable -> Descriptor
 makeDescriptor content rank mark copy =
-    Descriptor { content = content, rank = rank, mark = mark, copy = copy }
+    { content = content, rank = rank, mark = mark, copy = copy }
 
 
 {-| The content of a type descriptor.

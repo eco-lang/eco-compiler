@@ -47,7 +47,7 @@ occursHelp seen var foundCycle =
     else
         UF.get var
             |> IO.andThen
-                (\(IO.Descriptor props) ->
+                (\props ->
                     case props.content of
                         IO.FlexVar _ ->
                             IO.pure foundCycle

@@ -28,7 +28,7 @@ import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Type as E exposing (Category(..), Context(..), Expected(..), MaybeName(..), PContext(..), PExpected(..), SubContext(..))
-import Compiler.Type.Constrain.Common as Common exposing (Args(..), Info(..), RigidTypeVar, State(..), TypedArgs(..), getAccessName, getName, makeArgs, toShaderRecord)
+import Compiler.Type.Constrain.Common as Common exposing (Args, Info(..), RigidTypeVar, State(..), TypedArgs(..), getAccessName, getName, makeArgs, toShaderRecord)
 import Compiler.Type.Constrain.Typed.NodeIds as NodeIds
 import Compiler.Type.Constrain.Typed.Pattern as Pattern
 import Compiler.Type.Constrain.Typed.Program as Prog exposing (ProgS)
@@ -69,7 +69,7 @@ constrainDefWithIds rtv def bodyCon state =
         Can.Def (A.At region name) args expr ->
             constrainArgsWithIds args state
                 |> IO.andThen
-                    (\( Args props, stateAfterArgs ) ->
+                    (\( props, stateAfterArgs ) ->
                         let
                             (State headers pvars revCons) =
                                 props.state
@@ -171,7 +171,7 @@ recDefsHelpWithIds rtv defs bodyCon rigidInfo flexInfo state =
                     -- Match original: thread accumulated flexVars through pattern state
                     argsHelpWithIds args (State Dict.empty flexVars []) state
                         |> IO.andThen
-                            (\( Args props, stateAfterArgs ) ->
+                            (\( props, stateAfterArgs ) ->
                                 let
                                     (State headers pvars revCons) =
                                         props.state
@@ -292,7 +292,7 @@ argsHelpWithIds args state nodeState =
                                     argsHelpWithIds otherArgs newState newNodeState
                                 )
                             |> IO.map
-                                (\( Args props, finalNodeState ) ->
+                                (\( props, finalNodeState ) ->
                                     ( makeArgs (argVar :: props.vars) (FunN argType props.tipe) props.result props.state
                                     , finalNodeState
                                     )
@@ -1528,7 +1528,7 @@ constrainLambdaWithIdsProg rtv region args body expected =
             (\state ->
                 Prog.opIOS (constrainArgsWithIds args state)
                     |> Prog.andThenS
-                        (\( Args props, newState ) ->
+                        (\( props, newState ) ->
                             let
                                 (State headers pvars revCons) =
                                     props.state
@@ -1978,7 +1978,7 @@ constrainDefWithIdsProg rtv def bodyCon =
                     (\state ->
                         Prog.opIOS (constrainArgsWithIds args state)
                             |> Prog.andThenS
-                                (\( Args props, newState ) ->
+                                (\( props, newState ) ->
                                     let
                                         (State headers pvars revCons) =
                                             props.state
@@ -2091,7 +2091,7 @@ recDefsHelpWithIdsProg rtv defs bodyCon rigidInfo flexInfo =
                             (\state ->
                                 Prog.opIOS (argsHelpWithIds args (State Dict.empty flexVars []) state)
                                     |> Prog.andThenS
-                                        (\( Args props, newState ) ->
+                                        (\( props, newState ) ->
                                             let
                                                 (State headers pvars revCons) =
                                                     props.state

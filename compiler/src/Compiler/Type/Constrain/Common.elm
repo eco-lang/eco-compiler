@@ -1,7 +1,7 @@
 module Compiler.Type.Constrain.Common exposing
     ( State(..), Header, emptyState, addToHeaders, getType
     , patternToCategory, patternNeedsConstraint, extractVarFromType
-    , Args(..), ArgsProps, makeArgs, TypedArgs(..)
+    , Args, makeArgs, TypedArgs(..)
     , RigidTypeVar, Info(..), emptyInfo
     , getName, getAccessName, toShaderRecord
     -- Pattern state
@@ -29,7 +29,7 @@ and Typed constraint generation pathways.
 
 # Args Types
 
-@docs Args, ArgsProps, makeArgs, TypedArgs
+@docs Args, makeArgs, TypedArgs
 
 
 # Definition Info
@@ -214,14 +214,8 @@ extractVarFromType tipe =
 -- ===== ARGS TYPES =====
 
 
-{-| Wrapper for argument constraint information, containing type variables,
-the overall function type, result type, and pattern state from argument patterns.
--}
-type Args
-    = Args ArgsProps
-
-
-{-| Properties for constrained function arguments including:
+{-| Argument constraint information, containing type variables, the overall
+function type, result type, and pattern state from argument patterns.
 
   - vars: Type variables introduced for arguments and result
   - tipe: The full function type (arg1 -> arg2 -> ... -> result)
@@ -229,7 +223,7 @@ type Args
   - state: Pattern matching state from argument patterns
 
 -}
-type alias ArgsProps =
+type alias Args =
     { vars : List IO.Variable
     , tipe : Type
     , result : Type
@@ -242,7 +236,7 @@ result type, and pattern state.
 -}
 makeArgs : List IO.Variable -> Type -> Type -> State -> Args
 makeArgs vars tipe result state =
-    Args { vars = vars, tipe = tipe, result = result, state = state }
+    { vars = vars, tipe = tipe, result = result, state = state }
 
 
 {-| Information about typed function arguments including the full function type,

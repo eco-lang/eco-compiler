@@ -42,7 +42,7 @@ import Data.IORef exposing (IORef)
 import Data.Vector as Vector
 import Data.Vector.Mutable as MVector
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO exposing (Content, Descriptor(..), IO, Mark, Variable)
+import System.TypeCheck.IO as IO exposing (Content, Descriptor, IO, Mark, Variable)
 import Utils.Crash exposing (crash)
 import Utils.Main as Utils
 
@@ -366,7 +366,7 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
                                     IO.forM_ vars
                                         (\var ->
                                             UF.modify var <|
-                                                \(Descriptor props) ->
+                                                \props ->
                                                     IO.makeDescriptor props.content nextRank props.mark props.copy
                                         )
                                         |> IO.andThen
@@ -443,7 +443,7 @@ isGeneric : Variable -> IO ()
 isGeneric var =
     UF.get var
         |> IO.andThen
-            (\(Descriptor props) ->
+            (\props ->
                 if props.rank == Type.noRank then
                     IO.pure ()
 
@@ -527,7 +527,7 @@ occurs state ( name, A.At region variable ) =
                             (\errorType ->
                                 UF.get variable
                                     |> IO.andThen
-                                        (\(Descriptor props) ->
+                                        (\props ->
                                             UF.set variable (IO.makeDescriptor IO.Error props.rank props.mark props.copy)
                                                 |> IO.map (\_ -> addError state (Error.InfiniteType region name errorType))
                                         )
@@ -579,7 +579,7 @@ generalize youngMark visitMark youngRank pools =
                                                                     else
                                                                         UF.get var
                                                                             |> IO.andThen
-                                                                                (\(Descriptor props) ->
+                                                                                (\props ->
                                                                                     MVector.modify pools ((::) var) props.rank
                                                                                 )
                                                                 )
@@ -604,7 +604,7 @@ generalize youngMark visitMark youngRank pools =
                                                                                     else
                                                                                         UF.get var
                                                                                             |> IO.andThen
-                                                                                                (\(Descriptor props) ->
+                                                                                                (\props ->
                                                                                                     if props.rank < youngRank then
                                                                                                         MVector.modify pools ((::) var) props.rank
 
@@ -632,7 +632,7 @@ poolToRankTable youngMark youngRank youngInhabitants =
                     (\var ->
                         UF.get var
                             |> IO.andThen
-                                (\(Descriptor props) ->
+                                (\props ->
                                     UF.set var (IO.makeDescriptor props.content props.rank youngMark props.copy)
                                         |> IO.andThen
                                             (\_ ->
@@ -656,7 +656,7 @@ adjustRank : Mark -> Mark -> Int -> Variable -> IO Int
 adjustRank youngMark visitMark groupRank var =
     UF.get var
         |> IO.andThen
-            (\(Descriptor props) ->
+            (\props ->
                 if props.mark == youngMark then
                     -- Set the variable as marked first because it may be cyclic.
                     UF.set var (IO.makeDescriptor props.content props.rank visitMark props.copy)
@@ -768,7 +768,7 @@ introduce rank pools variables =
                 IO.forM_ variables
                     (\var ->
                         UF.modify var <|
-                            \(Descriptor props) ->
+                            \props ->
                                 IO.makeDescriptor props.content rank props.mark props.copy
                     )
             )
@@ -1044,7 +1044,7 @@ makeCopyHelp : Int -> Pools -> Variable -> IO Variable
 makeCopyHelp maxRank pools variable =
     UF.get variable
         |> IO.andThen
-            (\(Descriptor props) ->
+            (\props ->
                 case props.copy of
                     Just copiedVar ->
                         IO.pure copiedVar
@@ -1129,7 +1129,7 @@ restore : Variable -> IO ()
 restore variable =
     UF.get variable
         |> IO.andThen
-            (\(Descriptor props) ->
+            (\props ->
                 case props.copy of
                     Nothing ->
                         IO.pure ()

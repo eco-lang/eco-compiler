@@ -216,7 +216,7 @@ walkTypeListForBinders state types vars acc =
 lookupContent : SolverState -> Int -> Maybe IO.Content
 lookupContent state rootIdx =
     case Array.get rootIdx state.descriptors of
-        Just (IO.Descriptor props) ->
+        Just props ->
             Just props.content
 
         Nothing ->

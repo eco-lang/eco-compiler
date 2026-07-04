@@ -233,11 +233,7 @@ zipAllWithM_ f xs ys =
 -- ====== UNIFICATION HELPERS ======
 
 
-type Context
-    = Context ContextProps
-
-
-type alias ContextProps =
+type alias Context =
     { var1 : IO.Variable
     , desc1 : IO.Descriptor
     , var2 : IO.Variable
@@ -249,11 +245,11 @@ type alias ContextProps =
 -}
 makeContext : IO.Variable -> IO.Descriptor -> IO.Variable -> IO.Descriptor -> Context
 makeContext var1 desc1 var2 desc2 =
-    Context { var1 = var1, desc1 = desc1, var2 = var2, desc2 = desc2 }
+    { var1 = var1, desc1 = desc1, var2 = var2, desc2 = desc2 }
 
 
 reorient : Context -> Context
-reorient (Context props) =
+reorient props =
     makeContext props.var2 props.desc2 props.var1 props.desc1
 
 
@@ -263,12 +259,12 @@ reorient (Context props) =
 
 
 merge : Context -> IO.Content -> Unify ()
-merge (Context props) content =
+merge props content =
     let
-        (IO.Descriptor desc1Props) =
+        desc1Props =
             props.desc1
 
-        (IO.Descriptor desc2Props) =
+        desc2Props =
             props.desc2
     in
     Unify
@@ -279,12 +275,12 @@ merge (Context props) content =
 
 
 fresh : Context -> IO.Content -> Unify IO.Variable
-fresh (Context props) content =
+fresh props content =
     let
-        (IO.Descriptor desc1Props) =
+        desc1Props =
             props.desc1
 
-        (IO.Descriptor desc2Props) =
+        desc2Props =
             props.desc2
     in
     IO.makeDescriptor content (min desc1Props.rank desc2Props.rank) Type.noMark Nothing |> UF.fresh |> register
@@ -332,13 +328,13 @@ subUnifyTuple cs zs context otherContent =
 
 
 actuallyUnify : Context -> Unify ()
-actuallyUnify ((Context props) as ctx) =
+actuallyUnify ctx =
     let
-        (IO.Descriptor desc1Props) =
-            props.desc1
+        desc1Props =
+            ctx.desc1
 
-        (IO.Descriptor desc2Props) =
-            props.desc2
+        desc2Props =
+            ctx.desc2
 
         firstContent =
             desc1Props.content
@@ -449,10 +445,10 @@ unifyRigid context maybeSuper content otherContent =
 
 
 unifyFlexSuper : Context -> IO.SuperType -> IO.Content -> IO.Content -> Unify ()
-unifyFlexSuper ((Context props) as ctx) super content otherContent =
+unifyFlexSuper ctx super content otherContent =
     let
         first =
-            props.var1
+            ctx.var1
     in
     case otherContent of
         IO.Structure flatType ->
@@ -624,7 +620,7 @@ unifyFlexSuperStructure context super flatType =
 
 
 comparableOccursCheck : Context -> Unify ()
-comparableOccursCheck (Context props) =
+comparableOccursCheck props =
     Unify
         (\vars ->
             Occurs.occurs props.var2
@@ -644,7 +640,7 @@ unifyComparableRecursive var =
     register
         (UF.get var
             |> IO.andThen
-                (\(IO.Descriptor descProps) ->
+                (\descProps ->
                     UF.fresh (IO.makeDescriptor (Type.unnamedFlexSuper IO.Comparable) descProps.rank Type.noMark Nothing)
                 )
         )
@@ -656,10 +652,10 @@ unifyComparableRecursive var =
 
 
 unifyAlias : Context -> IO.Canonical -> Name.Name -> List ( Name.Name, IO.Variable ) -> IO.Variable -> IO.Content -> Unify ()
-unifyAlias ((Context props) as ctx) home name args realVar otherContent =
+unifyAlias ctx home name args realVar otherContent =
     let
         second =
-            props.var2
+            ctx.var2
     in
     case otherContent of
         IO.FlexVar _ ->
@@ -694,13 +690,13 @@ unifyAlias ((Context props) as ctx) home name args realVar otherContent =
 
 
 unifyStructure : Context -> IO.FlatType -> IO.Content -> IO.Content -> Unify ()
-unifyStructure ((Context props) as ctx) flatType content otherContent =
+unifyStructure ctx flatType content otherContent =
     let
         first =
-            props.var1
+            ctx.var1
 
         second =
-            props.var2
+            ctx.var2
     in
     case otherContent of
         IO.FlexVar _ ->
@@ -910,7 +906,7 @@ gatherFields : Dict Name.Name IO.Variable -> IO.Variable -> IO RecordStructure
 gatherFields fields variable =
     UF.get variable
         |> IO.andThen
-            (\(IO.Descriptor descProps) ->
+            (\descProps ->
                 case descProps.content of
                     IO.Structure (IO.Record1 subFields subExt) ->
                         gatherFields (Dict.union fields subFields) subExt

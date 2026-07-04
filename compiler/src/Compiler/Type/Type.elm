@@ -74,7 +74,7 @@ import Compiler.Type.Error as ET
 import Compiler.Type.UnionFind as UF
 import Dict exposing (Dict)
 import Maybe.Extra as Maybe
-import System.TypeCheck.IO as IO exposing (Content(..), Descriptor(..), FlatType(..), IO, Mark(..), NameState(..), SuperType(..), Variable)
+import System.TypeCheck.IO as IO exposing (Content(..), Descriptor, FlatType(..), IO, Mark(..), NameState, SuperType(..), Variable)
 import Utils.Crash exposing (crash)
 
 
@@ -432,7 +432,7 @@ toAnnotation variable =
                         |> IO.andThen
                             (\tipe ->
                                 IO.getNames
-                                    |> IO.map (\(NameState nsData) -> Can.Forall nsData.taken tipe)
+                                    |> IO.map (\nsData -> Can.Forall nsData.taken tipe)
                             )
                     )
             )
@@ -448,7 +448,7 @@ independently both get named "a".
 toCanTypeBatch : Array (Maybe Variable) -> IO (Array (Maybe (Can.Type Name)))
 toCanTypeBatch nodeVars =
     -- First pass: collect all user-provided names across all variables
-    IO.foldM
+    IO.foldMArray
         (\names maybeVar ->
             case maybeVar of
                 Nothing ->
@@ -458,39 +458,21 @@ toCanTypeBatch nodeVars =
                     getVarNames var names
         )
         Dict.empty
-        (Array.toList nodeVars)
+        nodeVars
         |> IO.andThen
             (\allUserNames ->
                 -- Second pass: convert all variables sharing one name state, so
                 -- names stay globally unique across the batch.
                 IO.withFreshNames (makeNameState allUserNames)
-                    (arrayTraverseMaybe variableToCanType nodeVars)
+                    (IO.traverseArrayMaybe variableToCanType nodeVars)
             )
-
-
-{-| Traverse an array of optional values in the IO monad (stack-safe via
-`IO.traverseList`), preserving `Nothing` holes.
--}
-arrayTraverseMaybe : (a -> IO b) -> Array (Maybe a) -> IO (Array (Maybe b))
-arrayTraverseMaybe f arr =
-    Array.toList arr
-        |> IO.traverseList
-            (\maybeA ->
-                case maybeA of
-                    Nothing ->
-                        IO.pure Nothing
-
-                    Just a ->
-                        f a |> IO.map Just
-            )
-        |> IO.map Array.fromList
 
 
 variableToCanType : Variable -> IO (Can.Type Name)
 variableToCanType variable =
     UF.get variable
         |> IO.andThen
-            (\(Descriptor descProps) ->
+            (\descProps ->
                 case descProps.content of
                     Structure term ->
                         termToCanType term
@@ -505,7 +487,7 @@ variableToCanType variable =
                                     |> IO.andThen
                                         (\name ->
                                             UF.modify variable
-                                                (\(Descriptor props) ->
+                                                (\props ->
                                                     IO.makeDescriptor (FlexVar (Just name)) props.rank props.mark props.copy
                                                 )
                                                 |> IO.map (\_ -> Can.TVar name)
@@ -521,7 +503,7 @@ variableToCanType variable =
                                     |> IO.andThen
                                         (\name ->
                                             UF.modify variable
-                                                (\(Descriptor props) ->
+                                                (\props ->
                                                     IO.makeDescriptor (FlexSuper super (Just name)) props.rank props.mark props.copy
                                                 )
                                                 |> IO.map (\_ -> Can.TVar name)
@@ -627,18 +609,18 @@ variableToErrorType : Variable -> IO ET.Type
 variableToErrorType variable =
     UF.get variable
         |> IO.andThen
-            (\(Descriptor descProps) ->
+            (\descProps ->
                 if descProps.mark == occursMark then
                     IO.pure ET.Infinite
 
                 else
-                    UF.modify variable (\(Descriptor props) -> IO.makeDescriptor props.content props.rank occursMark props.copy)
+                    UF.modify variable (\props -> IO.makeDescriptor props.content props.rank occursMark props.copy)
                         |> IO.andThen
                             (\_ ->
                                 contentToErrorType variable descProps.content
                                     |> IO.andThen
                                         (\errType ->
-                                            UF.modify variable (\(Descriptor props) -> IO.makeDescriptor props.content props.rank descProps.mark props.copy)
+                                            UF.modify variable (\props -> IO.makeDescriptor props.content props.rank descProps.mark props.copy)
                                                 |> IO.map (\_ -> errType)
                                         )
                             )
@@ -661,7 +643,7 @@ contentToErrorType variable content =
                         |> IO.andThen
                             (\name ->
                                 UF.modify variable
-                                    (\(Descriptor props) ->
+                                    (\props ->
                                         IO.makeDescriptor (FlexVar (Just name)) props.rank props.mark props.copy
                                     )
                                     |> IO.map (\_ -> ET.FlexVar name)
@@ -677,7 +659,7 @@ contentToErrorType variable content =
                         |> IO.andThen
                             (\name ->
                                 UF.modify variable
-                                    (\(Descriptor props) ->
+                                    (\props ->
                                         IO.makeDescriptor (FlexSuper super (Just name)) props.rank props.mark props.copy
                                     )
                                     |> IO.map (\_ -> ET.FlexSuper (superToSuper super) name)
@@ -791,7 +773,7 @@ termToErrorType term =
 
 makeNameState : Dict Name Variable -> NameState
 makeNameState takenNames =
-    NameState { taken = Dict.map (\_ _ -> ()) takenNames, normals = 0, numbers = 0, comparables = 0, appendables = 0, compAppends = 0 }
+    { taken = Dict.map (\_ _ -> ()) takenNames, normals = 0, numbers = 0, comparables = 0, appendables = 0, compAppends = 0 }
 
 
 
@@ -802,12 +784,12 @@ getFreshVarName : IO Name
 getFreshVarName =
     IO.getNames
         |> IO.andThen
-            (\(NameState ns) ->
+            (\ns ->
                 let
                     ( name, newIndex, newTaken ) =
                         getFreshVarNameHelp ns.normals ns.taken
                 in
-                IO.putNames (NameState { ns | taken = newTaken, normals = newIndex })
+                IO.putNames ({ ns | taken = newTaken, normals = newIndex })
                     |> IO.map (\_ -> name)
             )
 
@@ -835,30 +817,30 @@ getFreshSuperName super =
     case super of
         Number ->
             getFreshSuper "number"
-                (\(NameState ns) -> ns.numbers)
-                (\index (NameState ns) ->
-                    NameState { ns | numbers = index }
+                (\ns -> ns.numbers)
+                (\index ns ->
+                    { ns | numbers = index }
                 )
 
         Comparable ->
             getFreshSuper "comparable"
-                (\(NameState ns) -> ns.comparables)
-                (\index (NameState ns) ->
-                    NameState { ns | comparables = index }
+                (\ns -> ns.comparables)
+                (\index ns ->
+                    { ns | comparables = index }
                 )
 
         Appendable ->
             getFreshSuper "appendable"
-                (\(NameState ns) -> ns.appendables)
-                (\index (NameState ns) ->
-                    NameState { ns | appendables = index }
+                (\ns -> ns.appendables)
+                (\index ns ->
+                    { ns | appendables = index }
                 )
 
         CompAppend ->
             getFreshSuper "compappend"
-                (\(NameState ns) -> ns.compAppends)
-                (\index (NameState ns) ->
-                    NameState { ns | compAppends = index }
+                (\ns -> ns.compAppends)
+                (\index ns ->
+                    { ns | compAppends = index }
                 )
 
 
@@ -872,20 +854,12 @@ getFreshSuper prefix getter setter =
                         getter nameState
 
                     taken =
-                        case nameState of
-                            NameState ns ->
-                                ns.taken
+                        nameState.taken
 
                     ( name, newIndex, newTaken ) =
                         getFreshSuperHelp prefix index taken
                 in
-                IO.putNames
-                    (setter newIndex
-                        (case nameState of
-                            NameState ns ->
-                                NameState { ns | taken = newTaken }
-                        )
-                    )
+                IO.putNames (setter newIndex { nameState | taken = newTaken })
                     |> IO.map (\_ -> name)
             )
 
@@ -912,7 +886,7 @@ getVarNames : Variable -> Dict Name Variable -> IO (Dict Name Variable)
 getVarNames var takenNames =
     UF.get var
         |> IO.andThen
-            (\(Descriptor descProps) ->
+            (\descProps ->
                 if descProps.mark == getVarNamesMark then
                     IO.pure takenNames
 
@@ -990,7 +964,7 @@ addName index givenName var makeContent takenNames =
 
              else
                 UF.modify var
-                    (\(Descriptor props) ->
+                    (\props ->
                         IO.makeDescriptor (makeContent indexedName) props.rank props.mark props.copy
                     )
             )
