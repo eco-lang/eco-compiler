@@ -14,6 +14,10 @@ During constraint generation, each node is assigned a fresh type variable.
 This module maintains the mapping from node IDs to those variables, enabling
 the solver to later produce a mapping from node IDs to their inferred types.
 
+The state itself lives in `IO.State` (see `System.TypeCheck.IO.NodeIdState`),
+so the recording operations are plain `IO ()` actions and the constraint
+generator needs no explicit state threading.
+
 
 # Types
 
@@ -22,7 +26,7 @@ the solver to later produce a mapping from node IDs to their inferred types.
 
 # State
 
-@docs emptyNodeIdState
+@docs emptyNodeIdState, erasedNodeIdState
 
 
 # Recording
@@ -38,15 +42,15 @@ the solver to later produce a mapping from node IDs to their inferred types.
 
 import Array exposing (Array)
 import Compiler.Data.Name as Name
-import Data.Set as EverySet exposing (EverySet)
-import Dict exposing (Dict)
-import System.TypeCheck.IO as IO
+import Data.Set as EverySet
+import Dict
+import System.TypeCheck.IO as IO exposing (IO)
 
 
 {-| Mapping from definition names to their forall binder → solver variable mappings.
 -}
 type alias SchemeBinderVars =
-    Dict Name.Name (Dict Name.Name IO.Variable)
+    Dict.Dict Name.Name (Dict.Dict Name.Name IO.Variable)
 
 
 {-| Mapping from node IDs to solver variables.
@@ -68,11 +72,7 @@ to distinguish between legitimate polymorphic TVars and unfilled placeholder hol
 
 -}
 type alias NodeIdState =
-    { mapping : NodeVarMap
-    , syntheticExprIds : EverySet Int Int
-    , schemeBinderVars : Dict Name.Name (Dict Name.Name IO.Variable)
-    , recording : Bool
-    }
+    IO.NodeIdState
 
 
 {-| Initial node ID state with recording ENABLED (the Typed pathway).
@@ -106,15 +106,18 @@ Negative IDs (used for placeholder nodes like synthesized patterns)
 are skipped to avoid polluting the mapping.
 
 -}
-recordNodeVar : Int -> IO.Variable -> NodeIdState -> NodeIdState
-recordNodeVar id var state =
-    if state.recording && id >= 0 then
-        { state | mapping = arraySetGrowing id (Just var) state.mapping }
+recordNodeVar : Int -> IO.Variable -> IO ()
+recordNodeVar id var =
+    IO.modifyNodeIds
+        (\state ->
+            if state.recording && id >= 0 then
+                { state | mapping = arraySetGrowing id (Just var) state.mapping }
 
-    else
-        -- Not recording (erased pathway), or a negative ID (placeholders from
-        -- makeExprPlaceholder / synthesized patterns): skip.
-        state
+            else
+                -- Not recording (erased pathway), or a negative ID (placeholders from
+                -- makeExprPlaceholder / synthesized patterns): skip.
+                state
+        )
 
 
 {-| Record a mapping from a synthetic Group B expression ID to its solver variable.
@@ -125,28 +128,34 @@ The ID is also added to `syntheticExprIds` so tests can identify which
 expression IDs had placeholder variables that PostSolve should fill.
 
 -}
-recordSyntheticExprVar : Int -> IO.Variable -> NodeIdState -> NodeIdState
-recordSyntheticExprVar id var state =
-    if state.recording && id >= 0 then
-        { state
-            | mapping = arraySetGrowing id (Just var) state.mapping
-            , syntheticExprIds = EverySet.insert identity id state.syntheticExprIds
-        }
+recordSyntheticExprVar : Int -> IO.Variable -> IO ()
+recordSyntheticExprVar id var =
+    IO.modifyNodeIds
+        (\state ->
+            if state.recording && id >= 0 then
+                { state
+                    | mapping = arraySetGrowing id (Just var) state.mapping
+                    , syntheticExprIds = EverySet.insert identity id state.syntheticExprIds
+                }
 
-    else
-        -- Not recording (erased pathway) or a negative ID: skip.
-        state
+            else
+                -- Not recording (erased pathway) or a negative ID: skip.
+                state
+        )
 
 
 {-| Record the forall binder → solver variable mapping for a definition.
 -}
-recordSchemeBinders : Name.Name -> Dict.Dict Name.Name IO.Variable -> NodeIdState -> NodeIdState
-recordSchemeBinders defName binders state =
-    if state.recording then
-        { state | schemeBinderVars = Dict.insert defName binders state.schemeBinderVars }
+recordSchemeBinders : Name.Name -> Dict.Dict Name.Name IO.Variable -> IO ()
+recordSchemeBinders defName binders =
+    IO.modifyNodeIds
+        (\state ->
+            if state.recording then
+                { state | schemeBinderVars = Dict.insert defName binders state.schemeBinderVars }
 
-    else
-        state
+            else
+                state
+        )
 
 
 arraySetGrowing : Int -> Maybe a -> Array (Maybe a) -> Array (Maybe a)

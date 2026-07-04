@@ -3,10 +3,32 @@ module Compiler.Type.Constrain.Typed.Pattern exposing (addWithIds)
 {-| Type constraint generation for pattern matching (Typed pathway).
 
 This module generates type constraints for patterns while also tracking node IDs
-to solver variables, enabling later retrieval of pattern types from the solver.
+to solver variables (via `NodeIds`, whose state lives in `IO.State`), enabling
+later retrieval of pattern types from the solver.
 
-Uses an internal PatternProg DSL for stack-safe constraint generation,
-preventing stack overflow on deeply nested patterns.
+The generator is written as ordinary recursive `IO` functions (Design B).
+Stack safety relies on the axis classification below: the only pattern axis
+whose nesting depth is unbounded in practice is walked with an explicit
+`IO.loop` spine; everything else recurses directly on the JS stack.
+
+
+## Pattern axis classification (the stack-safety argument)
+
+Linear-unbounded (spine loop required):
+
+  - `PCons` tail chains — `a :: b :: c :: ... :: t` nests `PCons` down the
+    tail one level per element, so machine-generated patterns can nest
+    arbitrarily deep. Walked by `addConsWithIds` (explicit `IO.loop` descent
+    over the tail spine, heads constrained on the fold-up).
+
+Bounded (direct recursion OK):
+
+  - `PCtor` / `PTuple` / `PList` / `PRecord` — children are width-bounded
+    argument/element/field lists; each child's own depth is again one of the
+    classified axes.
+  - `PAlias` — alias chains (`(p as a) as b`) require explicit parentheses
+    per level, so their depth is bounded by written source, not data size.
+  - `PAnything`, `PVar`, `PUnit`, `PInt`, `PStr`, `PChr`, `PBool` — leaves.
 
 
 # Constraint Generation with ID Tracking
@@ -17,7 +39,7 @@ preventing stack overflow on deeply nested patterns.
 
 import Compiler.AST.Canonical as Can
 import Compiler.Data.Index as Index
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Type as E
@@ -30,149 +52,22 @@ import System.TypeCheck.IO as IO exposing (IO)
 
 
 
--- ===== PatternProg DSL =====
---
--- Internal DSL for stack-safe pattern constraint generation with ID tracking.
-
-
-{-| Program representing pattern constraint generation steps.
--}
-type PatternProg a
-    = PDone a
-    | PMkFlexVar (IO.Variable -> PatternProg a)
-    | PFromSrcType (Dict Name.Name Type) (Can.Type Name) (Type -> PatternProg a)
-    | PAddPatternWithIds Can.Pattern (E.PExpected Type) State NodeIds.NodeIdState (( State, NodeIds.NodeIdState ) -> PatternProg a)
-    | PTraverseList (List Name.Name) (List ( Name.Name, IO.Variable ) -> PatternProg a)
-
-
-{-| Pure value in the DSL.
--}
-pPure : a -> PatternProg a
-pPure =
-    PDone
-
-
-{-| Map over a pattern program.
--}
-pMap : (a -> b) -> PatternProg a -> PatternProg b
-pMap f prog =
-    case prog of
-        PDone a ->
-            PDone (f a)
-
-        PMkFlexVar k ->
-            PMkFlexVar (k >> pMap f)
-
-        PFromSrcType dict srcType k ->
-            PFromSrcType dict srcType (k >> pMap f)
-
-        PAddPatternWithIds pat exp st ns k ->
-            PAddPatternWithIds pat exp st ns (k >> pMap f)
-
-        PTraverseList names k ->
-            PTraverseList names (k >> pMap f)
-
-
-{-| Sequence two pattern programs.
--}
-pAndThen : (a -> PatternProg b) -> PatternProg a -> PatternProg b
-pAndThen f prog =
-    case prog of
-        PDone a ->
-            f a
-
-        PMkFlexVar k ->
-            PMkFlexVar (k >> pAndThen f)
-
-        PFromSrcType dict srcType k ->
-            PFromSrcType dict srcType (k >> pAndThen f)
-
-        PAddPatternWithIds pat exp st ns k ->
-            PAddPatternWithIds pat exp st ns (k >> pAndThen f)
-
-        PTraverseList names k ->
-            PTraverseList names (k >> pAndThen f)
-
-
-{-| Create a fresh flex variable.
--}
-pMkFlexVar : PatternProg IO.Variable
-pMkFlexVar =
-    PMkFlexVar PDone
-
-
-{-| Instantiate a source type.
--}
-pFromSrcType : Dict Name.Name Type -> Can.Type Name -> PatternProg Type
-pFromSrcType dict srcType =
-    PFromSrcType dict srcType PDone
-
-
-{-| Recursively add a pattern with ID tracking.
--}
-pAddPatternWithIds : Can.Pattern -> E.PExpected Type -> State -> NodeIds.NodeIdState -> PatternProg ( State, NodeIds.NodeIdState )
-pAddPatternWithIds pat exp st ns =
-    PAddPatternWithIds pat exp st ns PDone
-
-
-{-| Traverse a list of names to create flex variables.
--}
-pTraverseList : List Name.Name -> PatternProg (List ( Name.Name, IO.Variable ))
-pTraverseList names =
-    PTraverseList names PDone
-
-
-{-| Run a pattern program to produce an IO (State, NodeIdState).
--}
-runPatternProgWithIds : PatternProg ( State, NodeIds.NodeIdState ) -> IO ( State, NodeIds.NodeIdState )
-runPatternProgWithIds prog =
-    IO.loop stepProgWithIds prog
-
-
-{-| Step function for the pattern program interpreter with ID tracking.
--}
-stepProgWithIds : PatternProg ( State, NodeIds.NodeIdState ) -> IO (IO.Step (PatternProg ( State, NodeIds.NodeIdState )) ( State, NodeIds.NodeIdState ))
-stepProgWithIds prog =
-    case prog of
-        PDone result ->
-            IO.pure (IO.Done result)
-
-        PMkFlexVar k ->
-            Type.mkFlexVar
-                |> IO.map (\var -> IO.Loop (k var))
-
-        PFromSrcType dict srcType k ->
-            Instantiate.fromSrcType dict srcType
-                |> IO.map (\tipe -> IO.Loop (k tipe))
-
-        PAddPatternWithIds pat exp st ns k ->
-            -- Recursive call - build new program and continue
-            IO.pure (IO.Loop (addWithIdsProg pat exp st ns |> pAndThen k))
-
-        PTraverseList names k ->
-            IO.traverseList (\name -> IO.map (Tuple.pair name) (Type.nameToFlex name)) names
-                |> IO.map (\pairs -> IO.Loop (k pairs))
-
-
-
 -- ===== PUBLIC API =====
 
 
 {-| Generate type constraints for a pattern, tracking node IDs.
 
-Like the erased `add` but also tracks pattern node IDs to solver variables in the
-NodeIdState, enabling later retrieval of pattern types from the solver.
+Like the erased `add` but also tracks pattern node IDs to solver variables
+(in `IO.State`), enabling later retrieval of pattern types from the solver.
 
 IMPORTANT: This function matches `add` in constraint generation behavior.
 For patterns that don't need constraints (PAnything, PVar, PAlias), we do NOT
 add extra CPattern constraints or flex variables to the state. We only record
 the pattern's type variable in NodeIds for later type retrieval.
 
-Uses the stack-safe PatternProg DSL internally.
-
 -}
-addWithIds : Can.Pattern -> E.PExpected Type -> State -> NodeIds.NodeIdState -> IO ( State, NodeIds.NodeIdState )
-addWithIds (A.At region patternInfo) expectation state nodeState0 =
+addWithIds : Can.Pattern -> E.PExpected Type -> State -> IO State
+addWithIds (A.At region patternInfo) expectation state =
     if patternNeedsConstraint patternInfo.node then
         -- CONSTRAINED path: create patVar, add CPattern constraint, add to state
         -- This matches the behavior of `add` for patterns like PUnit, PTuple, etc.
@@ -195,15 +90,11 @@ addWithIds (A.At region patternInfo) expectation state nodeState0 =
                         stateWithPatVar : State
                         stateWithPatVar =
                             State headers (patVar :: vars) (eqCon :: revCons)
-
-                        -- record ID → variable mapping
-                        nodeState1 : NodeIds.NodeIdState
-                        nodeState1 =
-                            NodeIds.recordNodeVar patternInfo.id patVar nodeState0
                     in
-                    -- Now generate all the usual pattern constraints using the DSL
-                    addHelpWithIdsProg region patternInfo.node expectation stateWithPatVar nodeState1
-                        |> runPatternProgWithIds
+                    -- record ID → variable mapping, then generate the pattern constraints
+                    NodeIds.recordNodeVar patternInfo.id patVar
+                        |> IO.andThen
+                            (\() -> addHelpWithIds region patternInfo.node expectation stateWithPatVar)
                 )
 
     else
@@ -220,13 +111,9 @@ addWithIds (A.At region patternInfo) expectation state nodeState0 =
         case extractVarFromType expectedType of
             Just existingVar ->
                 -- Record the existing variable from expectation
-                let
-                    nodeState1 : NodeIds.NodeIdState
-                    nodeState1 =
-                        NodeIds.recordNodeVar patternInfo.id existingVar nodeState0
-                in
-                addHelpWithIdsProg region patternInfo.node expectation state nodeState1
-                    |> runPatternProgWithIds
+                NodeIds.recordNodeVar patternInfo.id existingVar
+                    |> IO.andThen
+                        (\() -> addHelpWithIds region patternInfo.node expectation state)
 
             Nothing ->
                 -- Concrete type path: expectedType is a concrete type (e.g., AppN "Int")
@@ -252,122 +139,24 @@ addWithIds (A.At region patternInfo) expectation state nodeState0 =
                                 stateWithConstraint : State
                                 stateWithConstraint =
                                     State headers (patVar :: vars) (eqCon :: revCons)
-
-                                nodeState1 : NodeIds.NodeIdState
-                                nodeState1 =
-                                    NodeIds.recordNodeVar patternInfo.id patVar nodeState0
                             in
-                            addHelpWithIdsProg region patternInfo.node expectation stateWithConstraint nodeState1
-                                |> runPatternProgWithIds
+                            NodeIds.recordNodeVar patternInfo.id patVar
+                                |> IO.andThen
+                                    (\() -> addHelpWithIds region patternInfo.node expectation stateWithConstraint)
                         )
 
 
-
--- ===== DSL version of addWithIds =====
-
-
-{-| DSL version of addWithIds for recursive pattern processing.
-
-Like addWithIds, this conditionally adds constraints only for patterns that
-need them, matching the behavior of `add`/`addProg`.
-
--}
-addWithIdsProg : Can.Pattern -> E.PExpected Type -> State -> NodeIds.NodeIdState -> PatternProg ( State, NodeIds.NodeIdState )
-addWithIdsProg (A.At region patternInfo) expectation state nodeState0 =
-    if patternNeedsConstraint patternInfo.node then
-        -- CONSTRAINED path: create patVar, add CPattern constraint, add to state
-        pMkFlexVar
-            |> pAndThen
-                (\patVar ->
-                    let
-                        patType : Type
-                        patType =
-                            Type.VarN patVar
-
-                        eqCon : Type.Constraint
-                        eqCon =
-                            Type.CPattern region (patternToCategory patternInfo.node) patType expectation
-
-                        (State headers vars revCons) =
-                            state
-
-                        stateWithPatVar : State
-                        stateWithPatVar =
-                            State headers (patVar :: vars) (eqCon :: revCons)
-
-                        nodeState1 : NodeIds.NodeIdState
-                        nodeState1 =
-                            NodeIds.recordNodeVar patternInfo.id patVar nodeState0
-                    in
-                    addHelpWithIdsProg region patternInfo.node expectation stateWithPatVar nodeState1
-                )
-
-    else
-        -- UNCONSTRAINED path: just record in NodeIds, no extra constraint or var in state
-        let
-            expectedType : Type
-            expectedType =
-                getType expectation
-        in
-        case extractVarFromType expectedType of
-            Just existingVar ->
-                -- Record the existing variable from expectation
-                let
-                    nodeState1 : NodeIds.NodeIdState
-                    nodeState1 =
-                        NodeIds.recordNodeVar patternInfo.id existingVar nodeState0
-                in
-                addHelpWithIdsProg region patternInfo.node expectation state nodeState1
-
-            Nothing ->
-                -- Concrete type path: expectedType is a concrete type (e.g., AppN "Int")
-                -- rather than a VarN that we could directly record.
-                -- Create a fresh variable and constrain it to equal the expected type.
-                pMkFlexVar
-                    |> pAndThen
-                        (\patVar ->
-                            let
-                                patType : Type
-                                patType =
-                                    Type.VarN patVar
-
-                                -- Constrain patVar to equal the expected type
-                                eqCon : Type.Constraint
-                                eqCon =
-                                    Type.CPattern region (patternToCategory patternInfo.node) patType expectation
-
-                                -- Add the variable and constraint to state
-                                (State headers vars revCons) =
-                                    state
-
-                                stateWithConstraint : State
-                                stateWithConstraint =
-                                    State headers (patVar :: vars) (eqCon :: revCons)
-
-                                nodeState1 : NodeIds.NodeIdState
-                                nodeState1 =
-                                    NodeIds.recordNodeVar patternInfo.id patVar nodeState0
-                            in
-                            addHelpWithIdsProg region patternInfo.node expectation stateWithConstraint nodeState1
-                        )
-
-
-addHelpWithIdsProg : A.Region -> Can.Pattern_ -> E.PExpected Type -> State -> NodeIds.NodeIdState -> PatternProg ( State, NodeIds.NodeIdState )
-addHelpWithIdsProg region patternNode expectation state nodeState =
+addHelpWithIds : A.Region -> Can.Pattern_ -> E.PExpected Type -> State -> IO State
+addHelpWithIds region patternNode expectation state =
     case patternNode of
         Can.PAnything ->
-            pPure ( state, nodeState )
+            IO.pure state
 
         Can.PVar name ->
-            pPure ( Common.addToHeaders region name expectation state, nodeState )
+            IO.pure (Common.addToHeaders region name expectation state)
 
         Can.PAlias realPattern name ->
-            let
-                state1 : State
-                state1 =
-                    Common.addToHeaders region name expectation state
-            in
-            pAddPatternWithIds realPattern expectation state1 nodeState
+            addWithIds realPattern expectation (Common.addToHeaders region name expectation state)
 
         Can.PUnit ->
             let
@@ -378,21 +167,21 @@ addHelpWithIdsProg region patternNode expectation state nodeState =
                 unitCon =
                     Type.CPattern region E.PUnit Type.UnitN expectation
             in
-            pPure ( State headers vars (unitCon :: revCons), nodeState )
+            IO.pure (State headers vars (unitCon :: revCons))
 
         Can.PTuple a b cs ->
-            addTupleWithIdsProg region a b cs expectation state nodeState
+            addTupleWithIds region a b cs expectation state
 
         Can.PCtor { home, type_, union, name, args } ->
             let
                 (Can.Union unionData) =
                     union
             in
-            addCtorWithIdsProg region home type_ unionData.vars name args expectation state nodeState
+            addCtorWithIds region home type_ unionData.vars name args expectation state
 
         Can.PList patterns ->
-            pMkFlexVar
-                |> pAndThen
+            Type.mkFlexVar
+                |> IO.andThen
                     (\entryVar ->
                         let
                             entryType : Type
@@ -403,66 +192,32 @@ addHelpWithIdsProg region patternNode expectation state nodeState =
                             listType =
                                 Type.AppN ModuleName.list Name.list [ entryType ]
                         in
-                        addListEntriesWithIdsProg region entryType state nodeState Index.first patterns
-                            |> pMap
-                                (\( State headers vars revCons, ns ) ->
+                        addListEntriesWithIds region entryType Index.first patterns state
+                            |> IO.map
+                                (\(State headers vars revCons) ->
                                     let
                                         listCon : Type.Constraint
                                         listCon =
                                             Type.CPattern region E.PList listType expectation
                                     in
-                                    ( State headers (entryVar :: vars) (listCon :: revCons), ns )
+                                    State headers (entryVar :: vars) (listCon :: revCons)
                                 )
                     )
 
         Can.PCons headPattern tailPattern ->
-            pMkFlexVar
-                |> pAndThen
-                    (\entryVar ->
-                        let
-                            entryType : Type
-                            entryType =
-                                Type.VarN entryVar
-
-                            listType : Type
-                            listType =
-                                Type.AppN ModuleName.list Name.list [ entryType ]
-
-                            headExpectation : E.PExpected Type
-                            headExpectation =
-                                E.PNoExpectation entryType
-
-                            tailExpectation : E.PExpected Type
-                            tailExpectation =
-                                E.PFromContext region E.PTail listType
-                        in
-                        pAddPatternWithIds tailPattern tailExpectation state nodeState
-                            |> pAndThen
-                                (\( s1, ns1 ) ->
-                                    pAddPatternWithIds headPattern headExpectation s1 ns1
-                                )
-                            |> pMap
-                                (\( State headers vars revCons, ns ) ->
-                                    let
-                                        listCon : Type.Constraint
-                                        listCon =
-                                            Type.CPattern region E.PList listType expectation
-                                    in
-                                    ( State headers (entryVar :: vars) (listCon :: revCons), ns )
-                                )
-                    )
+            addConsWithIds region headPattern tailPattern expectation state
 
         Can.PRecord fields ->
-            pMkFlexVar
-                |> pAndThen
+            Type.mkFlexVar
+                |> IO.andThen
                     (\extVar ->
                         let
                             extType : Type
                             extType =
                                 Type.VarN extVar
                         in
-                        addRecordFieldsProg fields []
-                            |> pMap
+                        IO.traverseList (\field -> IO.map (Tuple.pair field) Type.mkFlexVar) fields
+                            |> IO.map
                                 (\fieldVars ->
                                     let
                                         fieldTypes : Dict Name.Name Type
@@ -480,12 +235,10 @@ addHelpWithIdsProg region patternNode expectation state nodeState =
                                         recordCon =
                                             Type.CPattern region E.PRecord recordType expectation
                                     in
-                                    ( State
+                                    State
                                         (Dict.union headers (Dict.map (\_ v -> A.At region v) fieldTypes))
                                         (List.map Tuple.second fieldVars ++ extVar :: vars)
                                         (recordCon :: revCons)
-                                    , nodeState
-                                    )
                                 )
                     )
 
@@ -498,7 +251,7 @@ addHelpWithIdsProg region patternNode expectation state nodeState =
                 intCon =
                     Type.CPattern region E.PInt Type.int expectation
             in
-            pPure ( State headers vars (intCon :: revCons), nodeState )
+            IO.pure (State headers vars (intCon :: revCons))
 
         Can.PStr _ _ ->
             let
@@ -509,7 +262,7 @@ addHelpWithIdsProg region patternNode expectation state nodeState =
                 strCon =
                     Type.CPattern region E.PStr Type.string expectation
             in
-            pPure ( State headers vars (strCon :: revCons), nodeState )
+            IO.pure (State headers vars (strCon :: revCons))
 
         Can.PChr _ ->
             let
@@ -520,7 +273,7 @@ addHelpWithIdsProg region patternNode expectation state nodeState =
                 chrCon =
                     Type.CPattern region E.PChr Type.char expectation
             in
-            pPure ( State headers vars (chrCon :: revCons), nodeState )
+            IO.pure (State headers vars (chrCon :: revCons))
 
         Can.PBool _ _ ->
             let
@@ -531,14 +284,140 @@ addHelpWithIdsProg region patternNode expectation state nodeState =
                 boolCon =
                     Type.CPattern region E.PBool Type.bool expectation
             in
-            pPure ( State headers vars (boolCon :: revCons), nodeState )
+            IO.pure (State headers vars (boolCon :: revCons))
 
 
-addListEntriesWithIdsProg : A.Region -> Type -> State -> NodeIds.NodeIdState -> Index.ZeroBased -> List Can.Pattern -> PatternProg ( State, NodeIds.NodeIdState )
-addListEntriesWithIdsProg region entryType state nodeState index patterns =
+
+-- ===== CONS SPINE LOOP =====
+
+
+{-| One deferred level of a `::`-chain: everything needed to constrain the
+head pattern and close the level once the deeper tail is done.
+-}
+type alias ConsFrame =
+    { entryVar : IO.Variable
+    , entryType : Type
+    , listType : Type
+    , region : A.Region
+    , headPattern : Can.Pattern
+    , expectation : E.PExpected Type
+    }
+
+
+{-| Walk a `PCons` tail chain iteratively (constant JS stack).
+
+Descend: at each cons level allocate the entry var, push a frame with the
+head pattern, and — when the tail is itself a cons — inline the constrained
+wrapper prefix (`patVar` + `CPattern` + record) that `addWithIds` would have
+applied to it, then continue down the tail. The first non-cons tail is
+constrained via the ordinary re-entrant `addWithIds`.
+
+Fold up: constrain each level's head pattern (innermost first) and extend the
+state with that level's entry var and list constraint — exactly the wrap the
+recursive arm performed.
+
+The IO operation order (var allocations, recordings) is identical to the
+recursive formulation's.
+
+-}
+addConsWithIds : A.Region -> Can.Pattern -> Can.Pattern -> E.PExpected Type -> State -> IO State
+addConsWithIds region headPattern tailPattern expectation state =
+    IO.loop consSpineStep ( ( region, headPattern, tailPattern ), expectation, ( state, [] ) )
+        |> IO.andThen
+            (\( finalState, frames ) -> IO.foldM applyConsFrame finalState frames)
+
+
+consSpineStep :
+    ( ( A.Region, Can.Pattern, Can.Pattern ), E.PExpected Type, ( State, List ConsFrame ) )
+    -> IO (IO.Step ( ( A.Region, Can.Pattern, Can.Pattern ), E.PExpected Type, ( State, List ConsFrame ) ) ( State, List ConsFrame ))
+consSpineStep ( ( region, headPattern, tailPattern ), expectation, ( state, frames ) ) =
+    Type.mkFlexVar
+        |> IO.andThen
+            (\entryVar ->
+                let
+                    entryType : Type
+                    entryType =
+                        Type.VarN entryVar
+
+                    listType : Type
+                    listType =
+                        Type.AppN ModuleName.list Name.list [ entryType ]
+
+                    tailExpectation : E.PExpected Type
+                    tailExpectation =
+                        E.PFromContext region E.PTail listType
+
+                    newFrames : List ConsFrame
+                    newFrames =
+                        { entryVar = entryVar
+                        , entryType = entryType
+                        , listType = listType
+                        , region = region
+                        , headPattern = headPattern
+                        , expectation = expectation
+                        }
+                            :: frames
+
+                    (A.At tailRegion tailInfo) =
+                        tailPattern
+                in
+                case tailInfo.node of
+                    Can.PCons nextHead nextTail ->
+                        -- The tail is another cons level: inline the constrained
+                        -- wrapper prefix addWithIds would apply (PCons always
+                        -- takes the constrained path), then keep descending.
+                        Type.mkFlexVar
+                            |> IO.andThen
+                                (\patVar ->
+                                    let
+                                        eqCon : Type.Constraint
+                                        eqCon =
+                                            Type.CPattern tailRegion (patternToCategory tailInfo.node) (Type.VarN patVar) tailExpectation
+
+                                        (State headers vars revCons) =
+                                            state
+
+                                        stateWithPatVar : State
+                                        stateWithPatVar =
+                                            State headers (patVar :: vars) (eqCon :: revCons)
+                                    in
+                                    NodeIds.recordNodeVar tailInfo.id patVar
+                                        |> IO.map
+                                            (\() ->
+                                                IO.Loop ( ( tailRegion, nextHead, nextTail ), tailExpectation, ( stateWithPatVar, newFrames ) )
+                                            )
+                                )
+
+                    _ ->
+                        -- Non-cons tail: the spine ends here; constrain it normally.
+                        addWithIds tailPattern tailExpectation state
+                            |> IO.map (\newState -> IO.Done ( newState, newFrames ))
+            )
+
+
+applyConsFrame : State -> ConsFrame -> IO State
+applyConsFrame state frame =
+    addWithIds frame.headPattern (E.PNoExpectation frame.entryType) state
+        |> IO.map
+            (\(State headers vars revCons) ->
+                let
+                    listCon : Type.Constraint
+                    listCon =
+                        Type.CPattern frame.region E.PList frame.listType frame.expectation
+                in
+                State headers (frame.entryVar :: vars) (listCon :: revCons)
+            )
+
+
+
+-- ===== BOUNDED HELPERS (direct recursion; width-bounded) =====
+
+
+addListEntriesWithIds : A.Region -> Type -> Index.ZeroBased -> List Can.Pattern -> State -> IO State
+addListEntriesWithIds region entryType index patterns state =
     case patterns of
         [] ->
-            pPure ( state, nodeState )
+            IO.pure state
 
         pattern :: rest ->
             let
@@ -546,20 +425,17 @@ addListEntriesWithIdsProg region entryType state nodeState index patterns =
                 expectation =
                     E.PFromContext region (E.PListEntry index) entryType
             in
-            pAddPatternWithIds pattern expectation state nodeState
-                |> pAndThen
-                    (\( newState, newNodeState ) ->
-                        addListEntriesWithIdsProg region entryType newState newNodeState (Index.next index) rest
-                    )
+            addWithIds pattern expectation state
+                |> IO.andThen (addListEntriesWithIds region entryType (Index.next index) rest)
 
 
-addTupleWithIdsProg : A.Region -> Can.Pattern -> Can.Pattern -> List Can.Pattern -> E.PExpected Type -> State -> NodeIds.NodeIdState -> PatternProg ( State, NodeIds.NodeIdState )
-addTupleWithIdsProg region a b cs expectation state nodeState0 =
-    pMkFlexVar
-        |> pAndThen
+addTupleWithIds : A.Region -> Can.Pattern -> Can.Pattern -> List Can.Pattern -> E.PExpected Type -> State -> IO State
+addTupleWithIds region a b cs expectation state =
+    Type.mkFlexVar
+        |> IO.andThen
             (\aVar ->
-                pMkFlexVar
-                    |> pAndThen
+                Type.mkFlexVar
+                    |> IO.andThen
                         (\bVar ->
                             let
                                 aType : Type
@@ -570,55 +446,49 @@ addTupleWithIdsProg region a b cs expectation state nodeState0 =
                                 bType =
                                     Type.VarN bVar
                             in
-                            simpleAddWithIdsProg a aType state nodeState0
-                                |> pAndThen
-                                    (\( s1, ns1 ) ->
-                                        simpleAddWithIdsProg b bType s1 ns1
-                                    )
-                                |> pAndThen
-                                    (\( updatedState, ns2 ) ->
-                                        addTupleRestWithIdsProg cs [] updatedState ns2
-                                            |> pMap
-                                                (\( cVars, State headers vars revCons, nsFinal ) ->
+                            simpleAddWithIds a aType state
+                                |> IO.andThen (\s1 -> simpleAddWithIds b bType s1)
+                                |> IO.andThen
+                                    (\s2 ->
+                                        addTupleRestWithIds cs [] s2
+                                            |> IO.map
+                                                (\( cVars, State headers vars revCons ) ->
                                                     let
                                                         tupleCon : Type.Constraint
                                                         tupleCon =
                                                             Type.CPattern region E.PTuple (Type.TupleN aType bType (List.map Type.VarN cVars)) expectation
                                                     in
-                                                    ( State headers (aVar :: bVar :: cVars ++ vars) (tupleCon :: revCons), nsFinal )
+                                                    State headers (aVar :: bVar :: cVars ++ vars) (tupleCon :: revCons)
                                                 )
                                     )
                         )
             )
 
 
-addTupleRestWithIdsProg : List Can.Pattern -> List IO.Variable -> State -> NodeIds.NodeIdState -> PatternProg ( List IO.Variable, State, NodeIds.NodeIdState )
-addTupleRestWithIdsProg cs accVars state nodeState =
+addTupleRestWithIds : List Can.Pattern -> List IO.Variable -> State -> IO ( List IO.Variable, State )
+addTupleRestWithIds cs accVars state =
     case cs of
         [] ->
-            pPure ( List.reverse accVars, state, nodeState )
+            IO.pure ( List.reverse accVars, state )
 
         c :: rest ->
-            pMkFlexVar
-                |> pAndThen
+            Type.mkFlexVar
+                |> IO.andThen
                     (\cVar ->
-                        simpleAddWithIdsProg c (Type.VarN cVar) state nodeState
-                            |> pAndThen
-                                (\( newState, newNodeState ) ->
-                                    addTupleRestWithIdsProg rest (cVar :: accVars) newState newNodeState
-                                )
+                        simpleAddWithIds c (Type.VarN cVar) state
+                            |> IO.andThen (addTupleRestWithIds rest (cVar :: accVars))
                     )
 
 
-simpleAddWithIdsProg : Can.Pattern -> Type -> State -> NodeIds.NodeIdState -> PatternProg ( State, NodeIds.NodeIdState )
-simpleAddWithIdsProg pattern patternType state nodeState =
-    pAddPatternWithIds pattern (E.PNoExpectation patternType) state nodeState
+simpleAddWithIds : Can.Pattern -> Type -> State -> IO State
+simpleAddWithIds pattern patternType state =
+    addWithIds pattern (E.PNoExpectation patternType) state
 
 
-addCtorWithIdsProg : A.Region -> IO.Canonical -> Name.Name -> List Name.Name -> Name.Name -> List Can.PatternCtorArg -> E.PExpected Type -> State -> NodeIds.NodeIdState -> PatternProg ( State, NodeIds.NodeIdState )
-addCtorWithIdsProg region home typeName typeVarNames ctorName args expectation state nodeState0 =
-    pTraverseList typeVarNames
-        |> pAndThen
+addCtorWithIds : A.Region -> IO.Canonical -> Name.Name -> List Name.Name -> Name.Name -> List Can.PatternCtorArg -> E.PExpected Type -> State -> IO State
+addCtorWithIds region home typeName typeVarNames ctorName args expectation state =
+    IO.traverseList (\name -> IO.map (Tuple.pair name) (Type.nameToFlex name)) typeVarNames
+        |> IO.andThen
             (\varPairs ->
                 let
                     typePairs : List ( Name.Name, Type )
@@ -629,9 +499,9 @@ addCtorWithIdsProg region home typeName typeVarNames ctorName args expectation s
                     freeVarDict =
                         Dict.fromList typePairs
                 in
-                addCtorArgsWithIdsProg region ctorName freeVarDict state nodeState0 args
-                    |> pMap
-                        (\( State headers vars revCons, nsFinal ) ->
+                addCtorArgsWithIds region ctorName freeVarDict args state
+                    |> IO.map
+                        (\(State headers vars revCons) ->
                             let
                                 ctorType : Type
                                 ctorType =
@@ -641,49 +511,28 @@ addCtorWithIdsProg region home typeName typeVarNames ctorName args expectation s
                                 ctorCon =
                                     Type.CPattern region (E.PCtor ctorName) ctorType expectation
                             in
-                            ( State headers
+                            State headers
                                 (List.map Tuple.second varPairs ++ vars)
                                 (ctorCon :: revCons)
-                            , nsFinal
-                            )
                         )
             )
 
 
-addCtorArgsWithIdsProg : A.Region -> Name.Name -> Dict Name.Name Type -> State -> NodeIds.NodeIdState -> List Can.PatternCtorArg -> PatternProg ( State, NodeIds.NodeIdState )
-addCtorArgsWithIdsProg region ctorName freeVarDict state nodeState args =
+addCtorArgsWithIds : A.Region -> Name.Name -> Dict Name.Name Type -> List Can.PatternCtorArg -> State -> IO State
+addCtorArgsWithIds region ctorName freeVarDict args state =
     case args of
         [] ->
-            pPure ( state, nodeState )
+            IO.pure state
 
         (Can.PatternCtorArg index srcType pattern) :: rest ->
-            pFromSrcType freeVarDict srcType
-                |> pAndThen
+            Instantiate.fromSrcType freeVarDict srcType
+                |> IO.andThen
                     (\tipe ->
                         let
                             expectation : E.PExpected Type
                             expectation =
                                 E.PFromContext region (E.PCtorArg ctorName index) tipe
                         in
-                        pAddPatternWithIds pattern expectation state nodeState
-                            |> pAndThen
-                                (\( newState, newNodeState ) ->
-                                    addCtorArgsWithIdsProg region ctorName freeVarDict newState newNodeState rest
-                                )
-                    )
-
-
-{-| Add record fields using tail-recursive accumulator pattern.
--}
-addRecordFieldsProg : List Name.Name -> List ( Name.Name, IO.Variable ) -> PatternProg (List ( Name.Name, IO.Variable ))
-addRecordFieldsProg fields acc =
-    case fields of
-        [] ->
-            pPure (List.reverse acc)
-
-        field :: rest ->
-            pMkFlexVar
-                |> pAndThen
-                    (\fieldVar ->
-                        addRecordFieldsProg rest (( field, fieldVar ) :: acc)
+                        addWithIds pattern expectation state
+                            |> IO.andThen (addCtorArgsWithIds region ctorName freeVarDict rest)
                     )

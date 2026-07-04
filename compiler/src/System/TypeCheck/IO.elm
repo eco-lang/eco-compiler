@@ -9,6 +9,7 @@ module System.TypeCheck.IO exposing
     , Canonical(..)
     , makeDescriptor
     , NameState, emptyNameState, getNames, putNames, withFreshNames
+    , NodeIdState, emptyNodeIds, getNodeIds, modifyNodeIds, withNodeIds
     )
 
 {-| IO monad and state threading for type inference.
@@ -55,10 +56,16 @@ Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 
 @docs makeDescriptor
 
+
+# Node ID Tracking
+
+@docs NodeIdState, emptyNodeIds, getNodeIds, modifyNodeIds, withNodeIds
+
 -}
 
 import Array exposing (Array)
 import Data.Map as Dict exposing (Dict)
+import Data.Set as EverySet exposing (EverySet)
 import Dict as CoreDict
 
 
@@ -75,6 +82,7 @@ unsafePerformIO ioA =
     , ioRefsDescriptor = Array.empty
     , ioRefsMVector = Array.empty
     , names = emptyNameState
+    , nodeIds = emptyNodeIds
     }
         |> ioA
         |> Tuple.second
@@ -141,6 +149,7 @@ type alias State =
     , ioRefsDescriptor : Array Descriptor
     , ioRefsMVector : Array (Array (Maybe (List Variable)))
     , names : NameState
+    , nodeIds : NodeIdState
     }
 
 
@@ -193,6 +202,65 @@ withFreshNames seed action s =
             action { s | names = seed }
     in
     ( { s1 | names = saved }, a )
+
+
+{-| Node ID → solver variable tracking state, threaded through constraint
+generation. Folded into `State` (like `NameState`) so the constraint
+generator runs in plain `IO` with no explicit state tuple threading.
+
+  - `mapping`: node id → solver variable (expressions and patterns)
+  - `syntheticExprIds`: ids recorded via the Group B synthetic-placeholder path
+  - `schemeBinderVars`: definition name → forall binder → solver variable
+  - `recording`: False on the erased pathway (all recording is a no-op)
+
+-}
+type alias NodeIdState =
+    { mapping : Array (Maybe Variable)
+    , syntheticExprIds : EverySet Int Int
+    , schemeBinderVars : CoreDict.Dict String (CoreDict.Dict String Variable)
+    , recording : Bool
+    }
+
+
+{-| The seed node-id state: empty, with recording DISABLED. Entry points that
+want recording seed an enabled state via `withNodeIds`.
+-}
+emptyNodeIds : NodeIdState
+emptyNodeIds =
+    { mapping = Array.empty
+    , syntheticExprIds = EverySet.empty
+    , schemeBinderVars = CoreDict.empty
+    , recording = False
+    }
+
+
+{-| Read the current node-id state.
+-}
+getNodeIds : IO NodeIdState
+getNodeIds s =
+    ( s, s.nodeIds )
+
+
+{-| Update the node-id state with a function.
+-}
+modifyNodeIds : (NodeIdState -> NodeIdState) -> IO ()
+modifyNodeIds f s =
+    ( { s | nodeIds = f s.nodeIds }, () )
+
+
+{-| Run an action with a freshly-seeded node-id state, restoring the previous
+one afterward and returning the final seeded state alongside the result.
+-}
+withNodeIds : NodeIdState -> IO a -> IO ( a, NodeIdState )
+withNodeIds seed action s =
+    let
+        saved =
+            s.nodeIds
+
+        ( s1, a ) =
+            action { s | nodeIds = seed }
+    in
+    ( { s1 | nodeIds = saved }, ( a, s1.nodeIds ) )
 
 
 {-| Lift a pure value into the IO monad without modifying state.
