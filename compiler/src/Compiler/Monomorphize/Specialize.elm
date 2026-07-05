@@ -3902,49 +3902,54 @@ specializeExpr expr subst state =
             let
                 (TOpt.Destructor dname destructorPath destructorMeta) =
                     destructor
-
-                eagerLeaf =
-                    applySubstFV state subst destructorMeta.tipe
-
-                -- Body-first divert (MONO_028) applies ONLY to a SCALAR-number
-                -- destructor slot projected from a number-multi root — the exact
-                -- case the deleted `demandedNumericUseType` look-ahead handled. A
-                -- tuple/record/nested slot (e.g. `rest` in `(g, rest) = …`, or the
-                -- outer `((c,d),(e,f))`) is not a scalar number: it stays on the
-                -- general path, which materialises it via `buildPartialContainer`
-                -- with the open leaf as before.
-                fieldIsScalarNumber =
-                    case eagerLeaf of
-                        Mono.MInt ->
-                            True
-
-                        Mono.MFloat ->
-                            True
-
-                        Mono.MVar _ Mono.CNumber ->
-                            True
-
-                        _ ->
-                            False
             in
             case getValueMultiRootFromPath destructorPath state of
                 Just ( rootName, rootCanType ) ->
-                    -- Only divert when buildPartialContainer can actually project onto
-                    -- this path. It returns Nothing for list-index (`ArrayIndex`) paths
-                    -- — e.g. `[head, …] = list` — which the general path handles by
-                    -- emitting the unrefined destructor. Diverting those would drop the
-                    -- destructor and leave the bound var unbound (`lookupVar: unbound`).
-                    let
-                        canRefinePath =
-                            case buildPartialContainer rootCanType destructorPath eagerLeaf state of
-                                Just _ ->
-                                    True
+                    -- Body-first divert (MONO_028) applies ONLY to a SCALAR-number
+                    -- destructor slot projected from a number-multi ROOT whose path
+                    -- buildPartialContainer can refine. Checks are ordered
+                    -- cheap→expensive and gated lazily: `isNumberMultiTarget` is a
+                    -- cheap stack scan; only inside it do we pay the O(type)
+                    -- `applySubstFV` (eagerLeaf), and only when the slot is a scalar
+                    -- number do we run the `buildPartialContainer` probe. The common
+                    -- (non-number-root) Destruct computes none of this. A
+                    -- tuple/record/nested slot is not a scalar number and stays on the
+                    -- general path; list-index (`ArrayIndex`) paths are rejected by the
+                    -- probe (Nothing) — diverting them would drop the destructor and
+                    -- leave the bound var unbound (`lookupVar: unbound`).
+                    if isNumberMultiTarget rootName state then
+                        let
+                            eagerLeaf =
+                                applySubstFV state subst destructorMeta.tipe
 
-                                Nothing ->
-                                    False
-                    in
-                    if isNumberMultiTarget rootName state && fieldIsScalarNumber && canRefinePath then
-                        specializeNumberDestruct dname destructorPath destructorMeta rootName rootCanType body subst state
+                            fieldIsScalarNumber =
+                                case eagerLeaf of
+                                    Mono.MInt ->
+                                        True
+
+                                    Mono.MFloat ->
+                                        True
+
+                                    Mono.MVar _ Mono.CNumber ->
+                                        True
+
+                                    _ ->
+                                        False
+                        in
+                        if
+                            fieldIsScalarNumber
+                                && (case buildPartialContainer rootCanType destructorPath eagerLeaf state of
+                                        Just _ ->
+                                            True
+
+                                        Nothing ->
+                                            False
+                                   )
+                        then
+                            specializeNumberDestruct dname destructorPath destructorMeta rootName rootCanType body subst state
+
+                        else
+                            specializeGeneralDestruct destructor body meta subst state
 
                     else
                         specializeGeneralDestruct destructor body meta subst state

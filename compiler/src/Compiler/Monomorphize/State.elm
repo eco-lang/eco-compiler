@@ -129,7 +129,15 @@ freshMVar constraint env =
 -}
 isNumberVar : MVarId -> MVarEnv -> Bool
 isNumberVar mvarId env =
-    Dict.get (Id.toComparable mvarId) env.superVars == Just IO.Number
+    -- Direct case-match avoids allocating the `Just IO.Number` box that
+    -- `== Just IO.Number` builds on every probe — this is the highest-frequency
+    -- side-table lookup in monomorphization (constraintOf / refreshConstraints).
+    case Dict.get (Id.toComparable mvarId) env.superVars of
+        Just IO.Number ->
+            True
+
+        _ ->
+            False
 
 
 {-| Record that an MVarId belongs to a Number-constrained equivalence class.

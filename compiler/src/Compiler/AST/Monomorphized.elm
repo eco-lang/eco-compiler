@@ -12,7 +12,7 @@ module Compiler.AST.Monomorphized exposing
     , toComparableSpecKey, toComparableMonoType, toComparableGlobal
     , getMonoPathType
     , monoTypeToDebugString
-    , resolveNumberType
+    , resolveNumberType, typeHasResidualNumber
     , Segmentation, segmentLengths, stageParamTypes, stageReturnType
     , chooseCanonicalSegmentation, buildSegmentedFunctionType
     , decomposeFunctionType, isFunctionType, countTotalArity
@@ -122,7 +122,7 @@ This module defines the data structures for the monomorphized program
 
 # Constraint Utilities
 
-@docs resolveNumberType
+@docs resolveNumberType, typeHasResidualNumber
 
 
 # Staging and Segmentation
@@ -263,6 +263,51 @@ them once, at the end, from `resolveResidualNumbers`.
 -}
 resolveNumberType : (MVarId -> Bool) -> MonoType -> MonoType
 resolveNumberType isNumber monoType =
+    -- Identity-preserving (perf): a residual number var is rare, so short-circuit
+    -- and return the input by reference when the type has none — no copy. Only
+    -- rebuild the subtrees that actually contain a residual.
+    if typeHasResidualNumber isNumber monoType then
+        resolveNumberTypeRebuild isNumber monoType
+
+    else
+        monoType
+
+
+{-| Does the type contain a residual number var — `MVar _ CNumber`, or an
+`MVar id CEcoValue` that `isNumber` reports as Join-R-tainted? Allocation-free.
+-}
+typeHasResidualNumber : (MVarId -> Bool) -> MonoType -> Bool
+typeHasResidualNumber isNumber monoType =
+    case monoType of
+        MVar mvarId constraint ->
+            case constraint of
+                CNumber ->
+                    True
+
+                CEcoValue ->
+                    isNumber mvarId
+
+        MList inner ->
+            typeHasResidualNumber isNumber inner
+
+        MTuple elems ->
+            List.any (typeHasResidualNumber isNumber) elems
+
+        MRecord fields ->
+            Dict.foldl (\_ t acc -> acc || typeHasResidualNumber isNumber t) False fields
+
+        MCustom _ _ args ->
+            List.any (typeHasResidualNumber isNumber) args
+
+        MFunction args result ->
+            List.any (typeHasResidualNumber isNumber) args || typeHasResidualNumber isNumber result
+
+        _ ->
+            False
+
+
+resolveNumberTypeRebuild : (MVarId -> Bool) -> MonoType -> MonoType
+resolveNumberTypeRebuild isNumber monoType =
     case monoType of
         MVar mvarId constraint ->
             case constraint of

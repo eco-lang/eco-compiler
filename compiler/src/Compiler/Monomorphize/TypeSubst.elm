@@ -69,27 +69,71 @@ carries the stale annotation. Applying this before building a specialization key
 (`Mono.toComparableMonoType`) reconciles the stamped annotation with the
 authoritative side table, so a tainted number var keys to the concrete Int
 specialization (D4) instead of the boxed-erased sentinel.
+
+Identity-preserving (perf, see plans/monomorphization-perf-analysis.md Q1): this
+runs on the hottest keying path (every `enqueueSpec`, every instance lookup). A
+stale stamp is RARE (only Join-R-tainted copies), so an allocation-free pre-scan
+(`hasStaleConstraint`) short-circuits the common case and returns the input by
+reference — no deep copy. Only when a genuine disagreement exists is the type
+rebuilt.
 -}
 refreshConstraints : MVarEnv -> Mono.MonoType -> Mono.MonoType
 refreshConstraints env monoType =
+    if hasStaleConstraint env monoType then
+        refreshConstraintsRebuild env monoType
+
+    else
+        monoType
+
+
+{-| Does any `MVar id stamped` in the type disagree with `constraintOf id env`?
+Zero-allocation short-circuiting walk (records use non-short-circuit foldl, cheap).
+-}
+hasStaleConstraint : MVarEnv -> Mono.MonoType -> Bool
+hasStaleConstraint env monoType =
+    case monoType of
+        Mono.MVar mvarId stamped ->
+            constraintOf mvarId env /= stamped
+
+        Mono.MList inner ->
+            hasStaleConstraint env inner
+
+        Mono.MTuple elems ->
+            List.any (hasStaleConstraint env) elems
+
+        Mono.MRecord fields ->
+            Dict.foldl (\_ t acc -> acc || hasStaleConstraint env t) False fields
+
+        Mono.MCustom _ _ args ->
+            List.any (hasStaleConstraint env) args
+
+        Mono.MFunction args result ->
+            List.any (hasStaleConstraint env) args || hasStaleConstraint env result
+
+        _ ->
+            False
+
+
+refreshConstraintsRebuild : MVarEnv -> Mono.MonoType -> Mono.MonoType
+refreshConstraintsRebuild env monoType =
     case monoType of
         Mono.MVar mvarId _ ->
             Mono.MVar mvarId (constraintOf mvarId env)
 
         Mono.MList inner ->
-            Mono.MList (refreshConstraints env inner)
+            Mono.MList (refreshConstraintsRebuild env inner)
 
         Mono.MTuple elems ->
-            Mono.MTuple (List.map (refreshConstraints env) elems)
+            Mono.MTuple (List.map (refreshConstraintsRebuild env) elems)
 
         Mono.MRecord fields ->
-            Mono.MRecord (Dict.map (\_ t -> refreshConstraints env t) fields)
+            Mono.MRecord (Dict.map (\_ t -> refreshConstraintsRebuild env t) fields)
 
         Mono.MCustom home name args ->
-            Mono.MCustom home name (List.map (refreshConstraints env) args)
+            Mono.MCustom home name (List.map (refreshConstraintsRebuild env) args)
 
         Mono.MFunction args result ->
-            Mono.MFunction (List.map (refreshConstraints env) args) (refreshConstraints env result)
+            Mono.MFunction (List.map (refreshConstraintsRebuild env) args) (refreshConstraintsRebuild env result)
 
         _ ->
             monoType

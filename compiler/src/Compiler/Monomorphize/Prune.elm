@@ -16,6 +16,8 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.Data.BitSet as BitSet exposing (BitSet)
 import Compiler.Monomorphize.Analysis as Analysis
+import Compiler.Monomorphize.MonoTraverse as Traverse
+import Compiler.Monomorphize.State as State
 import Dict exposing (Dict)
 
 
@@ -97,20 +99,47 @@ markReachable callEdges stack visited =
 specializations reachable from mainSpecId via callEdges.
 Also recomputes ctorShapes from the pruned nodes.
 -}
-pruneUnreachableSpecs : TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> Mono.MonoGraph
-pruneUnreachableSpecs globalTypeEnv (Mono.MonoGraph record) =
+pruneUnreachableSpecs : State.MVarEnv -> TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> Mono.MonoGraph
+pruneUnreachableSpecs mvarEnv globalTypeEnv (Mono.MonoGraph record) =
     let
         live : BitSet
         live =
             reachableFromMain (Mono.MonoGraph record)
 
-        -- 1. Filter nodes (leave Nothing gaps for dead entries)
+        -- Quiescence closing (MONO_028) FUSED into the prune rebuild (Q3, perf,
+        -- plans/monomorphization-perf-analysis.md): discharge residual number vars
+        -- (MVar CNumber → MInt) as live nodes are copied here, rather than in a
+        -- separate whole-graph pass afterward. Gated on an allocation-free pre-scan
+        -- so residual-free nodes/types are returned by reference. Because nodes1 is
+        -- closed BEFORE ctorShapes are recomputed from it, the ctorShapes Dict keys
+        -- (derived from the closed MCustom types) stay consistent with the closed
+        -- node types by construction — fixing the pre-close-key desync hazard.
+        isNum mvarId =
+            State.isNumberVar mvarId mvarEnv
+
+        closeType : Mono.MonoType -> Mono.MonoType
+        closeType =
+            Mono.resolveNumberType isNum
+
+        hasResidualType : Mono.MonoType -> Bool
+        hasResidualType =
+            Mono.typeHasResidualNumber isNum
+
+        closeNode : Mono.MonoNode -> Mono.MonoNode
+        closeNode node =
+            if Traverse.anyNodeType hasResidualType node then
+                Traverse.mapNodeTypes closeType node
+
+            else
+                node
+
+        -- 1. Filter nodes (leave Nothing gaps for dead entries) + close residuals
         nodes1 : Array (Maybe Mono.MonoNode)
         nodes1 =
             Array.indexedMap
                 (\specId entry ->
                     if BitSet.member specId live then
-                        entry
+                        Maybe.map closeNode entry
 
                     else
                         Nothing
@@ -134,13 +163,25 @@ pruneUnreachableSpecs globalTypeEnv (Mono.MonoGraph record) =
         oldReg =
             record.registry
 
-        -- Null out dead entries in reverseMapping
+        -- Null out dead entries in reverseMapping + close residual types
         reverseMapping1 : Array (Maybe ( Mono.Global, Mono.MonoType, Maybe Mono.LambdaId ))
         reverseMapping1 =
             Array.indexedMap
                 (\i entry ->
                     if BitSet.member i live then
-                        entry
+                        Maybe.map
+                            (\triple ->
+                                let
+                                    ( g, mt, ml ) =
+                                        triple
+                                in
+                                if hasResidualType mt then
+                                    ( g, closeType mt, ml )
+
+                                else
+                                    triple
+                            )
+                            entry
 
                     else
                         Nothing
@@ -156,10 +197,24 @@ pruneUnreachableSpecs globalTypeEnv (Mono.MonoGraph record) =
             , reverseMapping = reverseMapping1
             }
 
-        -- 4. Recompute ctorShapes from pruned nodes
+        -- 4. Recompute ctorShapes from the pruned+closed nodes. Since nodes1 is
+        -- already closed, the derived keys and fieldTypes are closed and consistent.
+        -- The gated pass over fieldTypes is defensive (a no-op when already closed).
         ctorShapes1 : Dict String (List Mono.CtorShape)
         ctorShapes1 =
-            Analysis.computeCtorShapesForGraph globalTypeEnv nodes1
+            Dict.map
+                (\_ shapes ->
+                    List.map
+                        (\shape ->
+                            if List.any hasResidualType shape.fieldTypes then
+                                { shape | fieldTypes = List.map closeType shape.fieldTypes }
+
+                            else
+                                shape
+                        )
+                        shapes
+                )
+                (Analysis.computeCtorShapesForGraph globalTypeEnv nodes1)
     in
     Mono.MonoGraph
         { nodes = nodes1

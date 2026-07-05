@@ -2,6 +2,7 @@ module Compiler.Monomorphize.MonoTraverse exposing
     ( traverseExpr
     , foldExpr
     , mapNodeTypes
+    , anyNodeType
     )
 
 {-| Generic AST traversal abstractions for MonoExpr.
@@ -27,7 +28,7 @@ function on each node after processing children.
 
 # Type Mapping
 
-@docs mapNodeTypes
+@docs mapNodeTypes, anyNodeType
 
 -}
 
@@ -691,3 +692,198 @@ mapChoiceTypes f choice =
 
         Mono.Jump i ->
             Mono.Jump i
+
+
+
+-- ============================================================================
+-- TYPE-POSITION PREDICATE (gate for the closing pass)
+-- ============================================================================
+
+
+{-| Does any MonoType embedded anywhere in the node satisfy `p`? Mirrors
+`mapNodeTypes` position-for-position (coverage MUST match, or the closing pass
+would skip a node that still carries a residual) but is a zero-allocation
+short-circuiting `||` fold instead of a rebuild. Used to gate `mapNodeTypes`:
+`if anyNodeType hasResidual n then mapNodeTypes close n else n`.
+-}
+anyNodeType : (MonoType -> Bool) -> MonoNode -> Bool
+anyNodeType p node =
+    case node of
+        Mono.MonoDefine expr t ->
+            p t || anyExprType p expr
+
+        Mono.MonoTailFunc params expr t ->
+            p t || List.any (\( _, pt ) -> p pt) params || anyExprType p expr
+
+        Mono.MonoCtor shape t ->
+            p t || List.any p shape.fieldTypes
+
+        Mono.MonoEnum _ t ->
+            p t
+
+        Mono.MonoExtern t ->
+            p t
+
+        Mono.MonoManagerLeaf _ t ->
+            p t
+
+        Mono.MonoPortIncoming expr t ->
+            p t || anyExprType p expr
+
+        Mono.MonoPortOutgoing expr t ->
+            p t || anyExprType p expr
+
+
+anyExprType : (MonoType -> Bool) -> MonoExpr -> Bool
+anyExprType p expr =
+    case expr of
+        Mono.MonoLiteral _ t ->
+            p t
+
+        Mono.MonoVarLocal _ t ->
+            p t
+
+        Mono.MonoVarGlobal _ _ t ->
+            p t
+
+        Mono.MonoVarKernel _ _ _ _ t ->
+            p t
+
+        Mono.MonoList _ elems t ->
+            p t || List.any (anyExprType p) elems
+
+        Mono.MonoClosure info body t ->
+            p t || anyClosureInfoType p info || anyExprType p body
+
+        Mono.MonoCall _ fn args t info ->
+            p t || anyExprType p fn || List.any (anyExprType p) args || anyCallInfoType p info
+
+        Mono.MonoTailCall _ args t ->
+            p t || List.any (\( _, e ) -> anyExprType p e) args
+
+        Mono.MonoIf branches elseExpr t ->
+            p t || List.any (\( c, e ) -> anyExprType p c || anyExprType p e) branches || anyExprType p elseExpr
+
+        Mono.MonoLet def body t ->
+            p t || anyDefType p def || anyExprType p body
+
+        Mono.MonoDestruct destructor body t ->
+            p t || anyDestructorType p destructor || anyExprType p body
+
+        Mono.MonoCase _ _ decider jumps t ->
+            p t || anyDeciderType p decider || List.any (\( _, e ) -> anyExprType p e) jumps
+
+        Mono.MonoRecordCreate fields t ->
+            p t || List.any (\( _, e ) -> anyExprType p e) fields
+
+        Mono.MonoRecordAccess e _ t ->
+            p t || anyExprType p e
+
+        Mono.MonoRecordUpdate e fields t ->
+            p t || anyExprType p e || List.any (\( _, fe ) -> anyExprType p fe) fields
+
+        Mono.MonoTupleCreate _ elems t ->
+            p t || List.any (anyExprType p) elems
+
+        Mono.MonoUnit ->
+            False
+
+        Mono.MonoAccessorValue _ _ t ->
+            p t
+
+
+anyClosureInfoType : (MonoType -> Bool) -> ClosureInfo -> Bool
+anyClosureInfoType p info =
+    List.any (\( _, e, _ ) -> anyExprType p e) info.captures
+        || List.any (\( _, t ) -> p t) info.params
+        || (case info.captureAbi of
+                Just abi ->
+                    anyCaptureAbiType p abi
+
+                Nothing ->
+                    False
+           )
+
+
+anyCallInfoType : (MonoType -> Bool) -> CallInfo -> Bool
+anyCallInfoType p info =
+    p info.evaluatorReturnType
+        || (case info.captureAbi of
+                Just abi ->
+                    anyCaptureAbiType p abi
+
+                Nothing ->
+                    False
+           )
+
+
+anyCaptureAbiType : (MonoType -> Bool) -> CaptureABI -> Bool
+anyCaptureAbiType p abi =
+    List.any p abi.captureTypes || List.any p abi.paramTypes || p abi.returnType
+
+
+anyDefType : (MonoType -> Bool) -> MonoDef -> Bool
+anyDefType p def =
+    case def of
+        Mono.MonoDef _ e ->
+            anyExprType p e
+
+        Mono.MonoTailDef _ params e ->
+            List.any (\( _, t ) -> p t) params || anyExprType p e
+
+
+anyDestructorType : (MonoType -> Bool) -> MonoDestructor -> Bool
+anyDestructorType p (Mono.MonoDestructor _ path t) =
+    p t || anyPathType p path
+
+
+anyPathType : (MonoType -> Bool) -> MonoPath -> Bool
+anyPathType p path =
+    case path of
+        Mono.MonoIndex _ _ t rest ->
+            p t || anyPathType p rest
+
+        Mono.MonoField _ t rest ->
+            p t || anyPathType p rest
+
+        Mono.MonoUnbox t rest ->
+            p t || anyPathType p rest
+
+        Mono.MonoRoot _ t ->
+            p t
+
+
+anyDtPathType : (MonoType -> Bool) -> MonoDtPath -> Bool
+anyDtPathType p path =
+    case path of
+        Mono.DtRoot _ t ->
+            p t
+
+        Mono.DtIndex _ _ t rest ->
+            p t || anyDtPathType p rest
+
+        Mono.DtUnbox t rest ->
+            p t || anyDtPathType p rest
+
+
+anyDeciderType : (MonoType -> Bool) -> Decider MonoChoice -> Bool
+anyDeciderType p decider =
+    case decider of
+        Mono.Leaf choice ->
+            anyChoiceType p choice
+
+        Mono.Chain tests ifDec elseDec ->
+            List.any (\( pth, _ ) -> anyDtPathType p pth) tests || anyDeciderType p ifDec || anyDeciderType p elseDec
+
+        Mono.FanOut pth edges fallback ->
+            anyDtPathType p pth || List.any (\( _, dec ) -> anyDeciderType p dec) edges || anyDeciderType p fallback
+
+
+anyChoiceType : (MonoType -> Bool) -> MonoChoice -> Bool
+anyChoiceType p choice =
+    case choice of
+        Mono.Inline e ->
+            anyExprType p e
+
+        Mono.Jump _ ->
+            False

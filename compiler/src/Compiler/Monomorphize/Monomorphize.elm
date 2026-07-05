@@ -226,62 +226,14 @@ monomorphizeFromEntryWith maybeFlagsGlobal mainGlobal mainType globalTypeEnv nod
         rawGraph =
             assembleRawGraphFrom finalState.accum finalState.ctx.lambdaCounter mainSpecIdVal flagsDecoderSpecId
 
+        -- Prune AND close residual number vars in one fused pass (Q3, perf): Prune
+        -- discharges `MVar _ CNumber` → MInt (consulting the FINAL superVars so
+        -- Join-R-tainted vars heal) as it copies live nodes and recomputes
+        -- ctorShapes, so no separate whole-graph closing pass is needed.
         prunedGraph =
-            Prune.pruneUnreachableSpecs finalState.ctx.globalTypeEnv rawGraph
-
-        -- Quiescence-before-defaulting closing pass: applySubst preserved
-        -- `MVar _ CNumber` residuals throughout specialization; discharge them
-        -- to MInt now that the whole reachable graph is built and no further
-        -- Float demand can arrive. Runs AFTER Prune because Prune recomputes
-        -- ctorShapes (via applySubst, which now preserves CNumber), so ctorShapes
-        -- must be closed here too. Consults the FINAL superVars so number vars
-        -- that Join-R tainted after their type was stamped still close to Int.
-        closedGraph =
-            resolveResidualNumbers finalState.ctx.mvarEnv prunedGraph
+            Prune.pruneUnreachableSpecs finalState.ctx.mvarEnv finalState.ctx.globalTypeEnv rawGraph
     in
-    Ok closedGraph
-
-
-{-| Discharge every residual number var in the graph to `MInt`, table-consulting
-the final `superVars` (via `State.isNumberVar`) so Join-R-tainted boxed vars are
-healed. Walks the three MonoType-carrying graph positions: `nodes`,
-`registry.reverseMapping`, and `ctorShapes` (recomputed by Prune, hence closed
-here). See `plans/number-quiescence-symmetric-join-experiment.md`.
--}
-resolveResidualNumbers : State.MVarEnv -> Mono.MonoGraph -> Mono.MonoGraph
-resolveResidualNumbers env (Mono.MonoGraph graph) =
-    let
-        close : Mono.MonoType -> Mono.MonoType
-        close =
-            Mono.resolveNumberType (\mvarId -> State.isNumberVar mvarId env)
-
-        newNodes : Array.Array (Maybe Mono.MonoNode)
-        newNodes =
-            Array.map (Maybe.map (Traverse.mapNodeTypes close)) graph.nodes
-
-        oldRegistry =
-            graph.registry
-
-        newReverseMapping =
-            Array.map
-                (Maybe.map (\( g, mt, ml ) -> ( g, close mt, ml )))
-                oldRegistry.reverseMapping
-
-        newCtorShapes =
-            Dict.map
-                (\_ shapes ->
-                    List.map
-                        (\shape -> { shape | fieldTypes = List.map close shape.fieldTypes })
-                        shapes
-                )
-                graph.ctorShapes
-    in
-    Mono.MonoGraph
-        { graph
-            | nodes = newNodes
-            , registry = { oldRegistry | reverseMapping = newReverseMapping }
-            , ctorShapes = newCtorShapes
-        }
+    Ok prunedGraph
 
 
 {-| Look up a node's annotation type (Define/TrackedDefine meta.tipe).
