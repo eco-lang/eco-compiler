@@ -584,7 +584,7 @@ computeCtorShapesForGraph globalTypeEnv nodes =
                         Just (Can.Union unionData) ->
                             let
                                 ( completeCtors, _ ) =
-                                    buildCompleteCtorShapes canonical (State.initMVarEnv TypeIds.firstMVarId Set.empty) unionData.vars monoArgs unionData.alts
+                                    buildCompleteCtorShapes canonical (State.initMVarEnv TypeIds.firstMVarId Dict.empty) unionData.vars monoArgs unionData.alts
                             in
                             Dict.insert key completeCtors acc
 

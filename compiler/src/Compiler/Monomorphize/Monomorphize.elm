@@ -79,11 +79,11 @@ monomorphize entryPointName globalTypeEnv globalGraph =
             insertFlagsDecoderNode entryPointName globalGraph
 
         -- Phase 0: Assign globally unique MVarIds to all type variables
-        ( TOpt.GlobalGraph nodesWithIds _ annotationsWithIds _, mvarState ) =
+        ( TOpt.GlobalGraph nodesWithIds _ annotationsWithIds _ _, mvarState ) =
             AssignMVarIds.assignIds graphWithFlags
 
         mvarEnv =
-            State.initMVarEnv mvarState.nextId mvarState.numberVars
+            State.initMVarEnv mvarState.nextId mvarState.superVars
     in
     case findEntryPointId entryPointName nodesWithIds of
         Nothing ->
@@ -112,7 +112,7 @@ entry's home module. Non-Program entries (test value mains) get none.
 
 -}
 insertFlagsDecoderNode : Name -> TOpt.GlobalGraph Name -> ( TOpt.GlobalGraph Name, Maybe TOpt.Global )
-insertFlagsDecoderNode entryPointName ((TOpt.GlobalGraph nodes fields annots roots) as graph) =
+insertFlagsDecoderNode entryPointName ((TOpt.GlobalGraph nodes fields annots roots varSupers) as graph) =
     let
         entryMeta : Maybe ( IO.Canonical, Can.Type Name )
         entryMeta =
@@ -168,7 +168,7 @@ insertFlagsDecoderNode entryPointName ((TOpt.GlobalGraph nodes fields annots roo
                             node =
                                 TOpt.Define decoderExpr deps { tipe = decoderCanType, tvar = Nothing }
                         in
-                        ( TOpt.GlobalGraph (DMap.insert TOpt.toComparableGlobal flagsGlobal node nodes) fields annots roots
+                        ( TOpt.GlobalGraph (DMap.insert TOpt.toComparableGlobal flagsGlobal node nodes) fields annots roots varSupers
                         , Just flagsGlobal
                         )
 
@@ -610,7 +610,7 @@ type alias Substitution =
 canTypeToMonoType : Substitution -> Can.Type TypeIds.MVarId -> Mono.MonoType
 canTypeToMonoType subst canType =
     -- Use a dummy MVarEnv for the entry point type conversion (no fresh allocations needed)
-    Tuple.first (TypeSubst.canTypeToMonoType (State.initMVarEnv TypeIds.firstMVarId Set.empty) subst canType)
+    Tuple.first (TypeSubst.canTypeToMonoType (State.initMVarEnv TypeIds.firstMVarId Dict.empty) subst canType)
 
 
 

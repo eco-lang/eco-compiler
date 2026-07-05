@@ -7,6 +7,7 @@ module Compiler.AST.TypedOptimized exposing
     , emptyGlobalGraph
     , compareGlobal, toComparableGlobal, toKernelGlobal
     , typeOf, metaOf, tvarOf
+    , computeVarSupers, varSupersOfType, superOfName
     , globalGraphEncoder, globalGraphDecoder, localGraphEncoder, localGraphDecoder
     )
 
@@ -62,6 +63,11 @@ The key difference from Optimized:
 @docs typeOf, metaOf, tvarOf
 
 
+# Super Constraints
+
+@docs computeVarSupers, varSupersOfType, superOfName
+
+
 # Serialization
 
 @docs globalGraphEncoder, globalGraphDecoder, localGraphEncoder, localGraphDecoder
@@ -113,7 +119,7 @@ type alias AnnotationsByGlobal id =
 Used in GlobalGraph to avoid cross-module name collisions.
 -}
 type alias SchemeRootsByGlobal =
-    Data.Map.Dict String Global (Dict Name IO.Variable)
+    Data.Map.Dict String Global (Dict Name IO.RootedVar)
 
 
 
@@ -382,7 +388,7 @@ type Choice id
 {-| A graph of all top-level definitions across multiple modules.
 -}
 type GlobalGraph id
-    = GlobalGraph (Data.Map.Dict String Global (Node id)) (Dict Name Int) (AnnotationsByGlobal id) SchemeRootsByGlobal
+    = GlobalGraph (Data.Map.Dict String Global (Node id)) (Dict Name Int) (AnnotationsByGlobal id) SchemeRootsByGlobal (Dict Name IO.SuperType)
 
 
 
@@ -396,7 +402,8 @@ type alias LocalGraphData id =
     , nodes : Data.Map.Dict String Global (Node id)
     , fields : Dict Name Int
     , annotations : Annotations id
-    , schemeRoots : Dict Name (Dict Name IO.Variable)
+    , schemeRoots : Dict Name (Dict Name IO.RootedVar)
+    , varSupers : Dict Name IO.SuperType
     }
 
 
@@ -449,7 +456,7 @@ type EffectsType
 -}
 emptyGlobalGraph : GlobalGraph id
 emptyGlobalGraph =
-    GlobalGraph Data.Map.empty Dict.empty Data.Map.empty Data.Map.empty
+    GlobalGraph Data.Map.empty Dict.empty Data.Map.empty Data.Map.empty Dict.empty
 
 
 
@@ -468,17 +475,19 @@ emitted determines the savings.
 
 -}
 globalGraphEncoder : GlobalGraph Name -> Bytes.Encode.Encoder
-globalGraphEncoder ((GlobalGraph nodes _ annotations allSchemeRoots) as graph) =
+globalGraphEncoder ((GlobalGraph nodes _ annotations allSchemeRoots varSupers) as graph) =
     let
         st : StringTable
         st =
             StringTable.build (collectStringsFromGlobalGraph graph Set.empty)
     in
     Bytes.Encode.sequence
-        [ StringTable.tableEncoder st
+        [ Bytes.Encode.unsignedInt8 typedGraphFormatVersion
+        , StringTable.tableEncoder st
         , BE.assocListDict compareGlobal (globalEncoderS st) (nodeEncoderS st) nodes
         , BE.assocListDict compareGlobal (globalEncoderS st) (Can.annotationEncoderS st) annotations
         , globalSchemeRootsEncoderS st allSchemeRoots
+        , varSupersEncoderS st varSupers
         ]
 
 
@@ -486,16 +495,21 @@ globalGraphEncoder ((GlobalGraph nodes _ annotations allSchemeRoots) as graph) =
 -}
 globalGraphDecoder : Bytes.Decode.Decoder (GlobalGraph Name)
 globalGraphDecoder =
-    StringTable.tableDecoder
+    formatVersionDecoder
         |> Bytes.Decode.andThen
-            (\st ->
-                Bytes.Decode.map3
-                    (\nodes annotations allSchemeRoots ->
-                        GlobalGraph nodes Dict.empty annotations allSchemeRoots
-                    )
-                    (BD.assocListDict toComparableGlobal (globalDecoderS st) (nodeDecoderS st))
-                    (BD.assocListDict toComparableGlobal (globalDecoderS st) (Can.annotationDecoderS st))
-                    (globalSchemeRootsDecoderS st)
+            (\() ->
+                StringTable.tableDecoder
+                    |> Bytes.Decode.andThen
+                        (\st ->
+                            Bytes.Decode.map4
+                                (\nodes annotations allSchemeRoots varSupers ->
+                                    GlobalGraph nodes Dict.empty annotations allSchemeRoots varSupers
+                                )
+                                (BD.assocListDict toComparableGlobal (globalDecoderS st) (nodeDecoderS st))
+                                (BD.assocListDict toComparableGlobal (globalDecoderS st) (Can.annotationDecoderS st))
+                                (globalSchemeRootsDecoderS st)
+                                (varSupersDecoderS st)
+                        )
             )
 
 
@@ -516,10 +530,12 @@ localGraphEncoder ((LocalGraph data) as graph) =
             StringTable.build (collectStringsFromLocalGraph graph Set.empty)
     in
     Bytes.Encode.sequence
-        [ StringTable.tableEncoder st
+        [ Bytes.Encode.unsignedInt8 typedGraphFormatVersion
+        , StringTable.tableEncoder st
         , BE.assocListDict compareGlobal (globalEncoderS st) (nodeEncoderS st) data.nodes
         , BE.stdDict (StringTable.string st) (Can.annotationEncoderS st) data.annotations
         , schemeRootsEncoderS st data.schemeRoots
+        , varSupersEncoderS st data.varSupers
         ]
 
 
@@ -527,22 +543,28 @@ localGraphEncoder ((LocalGraph data) as graph) =
 -}
 localGraphDecoder : Bytes.Decode.Decoder (LocalGraph Name)
 localGraphDecoder =
-    StringTable.tableDecoder
+    formatVersionDecoder
         |> Bytes.Decode.andThen
-            (\st ->
-                Bytes.Decode.map3
-                    (\nodes annotations schemeRoots ->
-                        LocalGraph
-                            { main = Nothing
-                            , nodes = nodes
-                            , fields = Dict.empty
-                            , annotations = annotations
-                            , schemeRoots = schemeRoots
-                            }
-                    )
-                    (BD.assocListDict toComparableGlobal (globalDecoderS st) (nodeDecoderS st))
-                    (BD.stdDict (StringTable.stringDec st) (Can.annotationDecoderS st))
-                    (schemeRootsDecoderS st)
+            (\() ->
+                StringTable.tableDecoder
+                    |> Bytes.Decode.andThen
+                        (\st ->
+                            Bytes.Decode.map4
+                                (\nodes annotations schemeRoots varSupers ->
+                                    LocalGraph
+                                        { main = Nothing
+                                        , nodes = nodes
+                                        , fields = Dict.empty
+                                        , annotations = annotations
+                                        , schemeRoots = schemeRoots
+                                        , varSupers = varSupers
+                                        }
+                                )
+                                (BD.assocListDict toComparableGlobal (globalDecoderS st) (nodeDecoderS st))
+                                (BD.stdDict (StringTable.stringDec st) (Can.annotationDecoderS st))
+                                (schemeRootsDecoderS st)
+                                (varSupersDecoderS st)
+                        )
             )
 
 
@@ -1484,6 +1506,36 @@ pathDecoderS st =
 
 
 
+-- ====== FORMAT VERSION ======
+
+
+{-| Wire-format version for the typed graph binary encoders (LocalGraph /
+GlobalGraph, hence `.ecot` and `typed-artifacts.dat`). Bump on any change to
+the persisted layout so stale artifacts fail decode deterministically rather
+than misparsing.
+-}
+typedGraphFormatVersion : Int
+typedGraphFormatVersion =
+    1
+
+
+{-| Read and check the leading format-version byte; fail the whole decode on
+mismatch (stale artifact).
+-}
+formatVersionDecoder : Bytes.Decode.Decoder ()
+formatVersionDecoder =
+    Bytes.Decode.unsignedInt8
+        |> Bytes.Decode.andThen
+            (\v ->
+                if v == typedGraphFormatVersion then
+                    Bytes.Decode.succeed ()
+
+                else
+                    Bytes.Decode.fail
+            )
+
+
+
 -- ====== SCHEME ROOTS ENCODERS/DECODERS ======
 
 
@@ -1497,24 +1549,103 @@ variableDecoder =
     Bytes.Decode.map IO.Pt (Bytes.Decode.signedInt32 Bytes.BE)
 
 
-schemeRootsForDefEncoderS : StringTable -> Dict Name IO.Variable -> Bytes.Encode.Encoder
+{-| Encode an optional super constraint as one byte (0 = none).
+-}
+maybeSuperToByte : Maybe IO.SuperType -> Int
+maybeSuperToByte ms =
+    case ms of
+        Nothing ->
+            0
+
+        Just IO.Number ->
+            1
+
+        Just IO.Comparable ->
+            2
+
+        Just IO.Appendable ->
+            3
+
+        Just IO.CompAppend ->
+            4
+
+
+byteToMaybeSuper : Int -> Maybe IO.SuperType
+byteToMaybeSuper b =
+    case b of
+        1 ->
+            Just IO.Number
+
+        2 ->
+            Just IO.Comparable
+
+        3 ->
+            Just IO.Appendable
+
+        4 ->
+            Just IO.CompAppend
+
+        _ ->
+            Nothing
+
+
+rootedVarEncoder : IO.RootedVar -> Bytes.Encode.Encoder
+rootedVarEncoder rv =
+    Bytes.Encode.sequence
+        [ variableEncoder rv.var
+        , Bytes.Encode.unsignedInt8 (maybeSuperToByte rv.super)
+        ]
+
+
+rootedVarDecoder : Bytes.Decode.Decoder IO.RootedVar
+rootedVarDecoder =
+    Bytes.Decode.map2 (\v b -> { var = v, super = byteToMaybeSuper b })
+        variableDecoder
+        Bytes.Decode.unsignedInt8
+
+
+schemeRootsForDefEncoderS : StringTable -> Dict Name IO.RootedVar -> Bytes.Encode.Encoder
 schemeRootsForDefEncoderS st roots =
-    BE.stdDict (StringTable.string st) variableEncoder roots
+    BE.stdDict (StringTable.string st) rootedVarEncoder roots
 
 
-schemeRootsForDefDecoderS : StringTable -> Bytes.Decode.Decoder (Dict Name IO.Variable)
+schemeRootsForDefDecoderS : StringTable -> Bytes.Decode.Decoder (Dict Name IO.RootedVar)
 schemeRootsForDefDecoderS st =
-    BD.stdDict (StringTable.stringDec st) variableDecoder
+    BD.stdDict (StringTable.stringDec st) rootedVarDecoder
 
 
-schemeRootsEncoderS : StringTable -> Dict Name (Dict Name IO.Variable) -> Bytes.Encode.Encoder
+schemeRootsEncoderS : StringTable -> Dict Name (Dict Name IO.RootedVar) -> Bytes.Encode.Encoder
 schemeRootsEncoderS st allRoots =
     BE.stdDict (StringTable.string st) (schemeRootsForDefEncoderS st) allRoots
 
 
-schemeRootsDecoderS : StringTable -> Bytes.Decode.Decoder (Dict Name (Dict Name IO.Variable))
+schemeRootsDecoderS : StringTable -> Bytes.Decode.Decoder (Dict Name (Dict Name IO.RootedVar))
 schemeRootsDecoderS st =
     BD.stdDict (StringTable.stringDec st) (schemeRootsForDefDecoderS st)
+
+
+
+-- ====== VAR SUPERS ENCODERS/DECODERS ======
+
+
+superValueEncoder : IO.SuperType -> Bytes.Encode.Encoder
+superValueEncoder s =
+    Bytes.Encode.unsignedInt8 (maybeSuperToByte (Just s))
+
+
+superValueDecoder : Bytes.Decode.Decoder IO.SuperType
+superValueDecoder =
+    Bytes.Decode.map (\b -> Maybe.withDefault IO.Number (byteToMaybeSuper b)) Bytes.Decode.unsignedInt8
+
+
+varSupersEncoderS : StringTable -> Dict Name IO.SuperType -> Bytes.Encode.Encoder
+varSupersEncoderS st vs =
+    BE.stdDict (StringTable.string st) superValueEncoder vs
+
+
+varSupersDecoderS : StringTable -> Bytes.Decode.Decoder (Dict Name IO.SuperType)
+varSupersDecoderS st =
+    BD.stdDict (StringTable.stringDec st) superValueDecoder
 
 
 globalSchemeRootsEncoderS : StringTable -> SchemeRootsByGlobal -> Bytes.Encode.Encoder
@@ -1539,16 +1670,18 @@ collectStringsFromLocalGraph (LocalGraph data) acc =
         |> (\a -> Data.Map.foldl compareGlobal collectStringsFromGlobalNodePair a data.nodes)
         |> (\a -> Dict.foldl collectStringsFromAnnotationPair a data.annotations)
         |> collectStringsFromSchemeRoots data.schemeRoots
+        |> (\a -> Dict.foldl (\k _ a2 -> Set.insert k a2) a data.varSupers)
 
 
 {-| Collect strings emitted by `globalGraphEncoder`'s body into a set.
 -}
 collectStringsFromGlobalGraph : GlobalGraph Name -> Set String -> Set String
-collectStringsFromGlobalGraph (GlobalGraph nodes _ annotations allSchemeRoots) acc =
+collectStringsFromGlobalGraph (GlobalGraph nodes _ annotations allSchemeRoots varSupers) acc =
     acc
         |> (\a -> Data.Map.foldl compareGlobal collectStringsFromGlobalNodePair a nodes)
         |> (\a -> Data.Map.foldl compareGlobal collectStringsFromGlobalAnnotationPair a annotations)
         |> collectStringsFromGlobalSchemeRoots allSchemeRoots
+        |> (\a -> Dict.foldl (\k _ a2 -> Set.insert k a2) a varSupers)
 
 
 collectStringsFromGlobalNodePair : Global -> Node Name -> Set String -> Set String
@@ -1572,7 +1705,7 @@ collectStringsFromGlobalAnnotationPair g ann acc =
         |> Can.collectStringsFromAnnotation ann
 
 
-collectStringsFromSchemeRoots : Dict Name (Dict Name IO.Variable) -> Set String -> Set String
+collectStringsFromSchemeRoots : Dict Name (Dict Name IO.RootedVar) -> Set String -> Set String
 collectStringsFromSchemeRoots roots acc =
     Dict.foldl
         (\k inner a ->
@@ -1590,6 +1723,65 @@ collectStringsFromGlobalSchemeRoots roots acc =
         )
         acc
         roots
+
+
+
+-- ====== VAR SUPERS COMPUTATION ======
+
+
+{-| The single name→super ingestion point for persisted typed graphs.
+
+Maps the surface-syntax type-variable naming convention (`number*`,
+`comparable*`, `appendable*`, `compappend*`) to a structured super constraint.
+This is the ONLY place the name convention is read into the persisted-graph
+channel; monomorphization consumes the resulting `varSupers` / `RootedVar.super`
+data, never the names themselves. Mirrors `Compiler.Type.Type.toSuper`.
+
+-}
+superOfName : Name -> Maybe IO.SuperType
+superOfName name =
+    if Name.isNumberType name then
+        Just IO.Number
+
+    else if Name.isComparableType name then
+        Just IO.Comparable
+
+    else if Name.isAppendableType name then
+        Just IO.Appendable
+
+    else if Name.isCompappendType name then
+        Just IO.CompAppend
+
+    else
+        Nothing
+
+
+insertSuperOfName : Name -> Dict Name IO.SuperType -> Dict Name IO.SuperType
+insertSuperOfName name acc =
+    case superOfName name of
+        Just s ->
+            Dict.insert name s acc
+
+        Nothing ->
+            acc
+
+
+{-| Compute the `varSupers` map for a finished local graph by sweeping every
+name it emits and keeping those that carry a super constraint. Complete by
+construction: it reuses the same collector the encoder uses, so every type
+variable in the graph is covered.
+-}
+computeVarSupers : LocalGraph Name -> Dict Name IO.SuperType
+computeVarSupers graph =
+    Set.foldl insertSuperOfName Dict.empty (collectStringsFromLocalGraph graph Set.empty)
+
+
+{-| Compute a `varSupers` map for a single standalone canonical type (used by
+`AssignMVarIds.assignIdsToType`, the test-only single-type entry point).
+-}
+varSupersOfType : Can.Type Name -> Dict Name IO.SuperType
+varSupersOfType tipe =
+    Set.foldl insertSuperOfName Dict.empty (Can.collectStringsFromType tipe Set.empty)
 
 
 collectStringsFromGlobal : Global -> Set String -> Set String

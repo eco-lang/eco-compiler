@@ -5,7 +5,7 @@ module System.TypeCheck.IO exposing
     , traverseArray, traverseArrayMaybe, foldMArray
     , Step(..), loop
     , Point(..), PointInfo(..)
-    , Descriptor, Content(..), SuperType(..), Mark(..), Variable, FlatType(..)
+    , Descriptor, Content(..), SuperType(..), Mark(..), Variable, RootedVar, FlatType(..)
     , Canonical(..)
     , makeDescriptor
     , NameState, emptyNameState, getNames, putNames, withFreshNames
@@ -44,7 +44,7 @@ Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 
 # Compiler.Type.Type
 
-@docs Descriptor, Content, SuperType, Mark, Variable, FlatType
+@docs Descriptor, Content, SuperType, Mark, Variable, RootedVar, FlatType
 
 
 # Compiler.Elm.ModuleName
@@ -629,6 +629,22 @@ the union-find structure and associated with Descriptors.
 -}
 type alias Variable =
     Point
+
+
+{-| A union-find root variable together with the super constraint recorded on
+its root descriptor at snapshot time.
+
+The `super` is solver truth about the ROOT — it is read from the root's
+`Content` (`FlexSuper`/`RigidSuper`) at normalization time, independent of
+whichever type-variable name happens to refer to that root. This is what lets
+downstream passes recover `number`/`comparable`/`appendable`/`compappend`
+without re-parsing variable names.
+
+-}
+type alias RootedVar =
+    { var : Variable
+    , super : Maybe SuperType
+    }
 
 
 {-| The flattened representation of concrete type structures.

@@ -51,6 +51,33 @@ type Constraint
 - `CEcoValue`: Used for kernel functions that work on any boxed value. Can remain unspecialized through to MLIR codegen where it becomes `eco.value`.
 - `CNumber`: Used for `number` typeclass (arithmetic operations). MUST be resolved to `MInt` or `MFloat` by specialization; any remaining `CNumber` at codegen is a compiler bug.
 
+#### Constraint provenance — exported from the solver, not from names (Jul 2026)
+
+`CNumber` (and the full `number`/`comparable`/`appendable`/`compappend` super
+lattice) is **exported from the type solver as data**, not re-derived from
+type-variable name prefixes. See invariants `TYPE_SUPER_001` /
+`FORBID_SUPER_NAME_001` and `plans/solver-roots-super-constraint-export.md`.
+
+Two channels carry the super out of the solver into monomorphization:
+
+- **`IO.RootedVar.super`** — each `SolverRoots` scheme-root entry pairs the
+  union-find root with the super read from the root's descriptor
+  (`FlexSuper`/`RigidSuper`, via `SolverRoots.superOfRoot`). Because the super
+  is solver truth about the *root*, two names sharing a unified root cannot
+  disagree — the earlier CNumber "join-upgrade" patch (and a latent unpatched
+  duplicate of it in `rewriteAnnotation`) is deleted.
+- **`varSupers : Dict Name SuperType`** — a per-graph map computed at
+  typed-artifact production (`TypedOptimized.computeVarSupers`) for type
+  variables that reach `AssignMVarIds` via the name-scoped fallback (internal
+  let-generalized vars, constructor scheme vars, kernel/PostSolve types).
+
+`AssignMVarIds` populates the side table `State.MVarEnv.superVars : Dict Int
+SuperType` from these two channels only; `constraintFromName`/`Name.isNumberType`
+are gone from the monomorphizer. The solver-root environment is keyed by
+`(moduleKey, rootIdx)` so per-module `Pt` indices cannot alias across modules.
+Both the `.ecot` and `typed-artifacts.dat` binary formats gained a
+`typedGraphFormatVersion` byte so stale artifacts fail decode deterministically.
+
 ### Monomorphizing Out Type Variables (Feb 2026)
 
 The monomorphizer aggressively resolves type variables to concrete types, ensuring that the monomorphized AST is fully concrete. The key mechanism is `forceCNumberToInt`, which defaults unresolved numeric type variables to `MInt`:

@@ -430,13 +430,13 @@ annotations directly from the mock interfaces.
 localGraphToGlobalGraph : TOpt.LocalGraph Name -> TOpt.GlobalGraph Name
 localGraphToGlobalGraph localGraph =
     let
-        (TOpt.GlobalGraph nodes fields annotations roots) =
+        (TOpt.GlobalGraph nodes fields annotations roots varSupers) =
             GA.addTypedLocalGraph localGraph TOpt.emptyGlobalGraph
 
         crossModuleAnnotations =
             interfaceAnnotations Basic.testIfaces
     in
-    TOpt.GlobalGraph nodes fields (Data.Map.union crossModuleAnnotations annotations) roots
+    TOpt.GlobalGraph nodes fields (Data.Map.union crossModuleAnnotations annotations) roots varSupers
 
 
 {-| Build AnnotationsByGlobal from test interfaces.

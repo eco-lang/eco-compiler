@@ -556,13 +556,13 @@ Test modules use various names like "testValue", etc.
 
 -}
 monomorphizeAny : TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
-monomorphizeAny globalTypeEnv (TOpt.GlobalGraph nodes _ _ schemeRoots) =
+monomorphizeAny globalTypeEnv (TOpt.GlobalGraph nodes _ _ schemeRoots varSupers) =
     case findAnyEntryPoint nodes of
         Nothing ->
             Err "No function found in graph"
 
         Just ( TOpt.Global _ name, _ ) ->
-            Monomorphize.monomorphize name globalTypeEnv (TOpt.GlobalGraph nodes Dict.empty Data.Map.empty schemeRoots)
+            Monomorphize.monomorphize name globalTypeEnv (TOpt.GlobalGraph nodes Dict.empty Data.Map.empty schemeRoots varSupers)
 
 
 {-| Find any entry point in the global graph (the first defined function).

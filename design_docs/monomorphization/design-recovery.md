@@ -375,6 +375,19 @@ deliberate shift to fail-fast.
 
 ## 9. Fossil catalog (and one live bug)
 
+> **Update (Jul 2026 — §9.1, §10.1 resolved).** The name-prefix constraint
+> channel described below has been removed. Super constraints
+> (number/comparable/appendable/compappend) are now exported from the solver as
+> data — `IO.RootedVar.super` on each scheme root plus a per-graph `varSupers`
+> map computed at artifact production — and `AssignMVarIds` derives the CNumber
+> side table from those channels only (`constraintFromName` deleted). Both
+> latent bugs are fixed structurally: the §9.1 unjoined-annotation bug (the
+> join is gone, since the super comes from the root descriptor) and a second
+> bug found during that work — cross-module solver-root aliasing (`rootEnv` is
+> now keyed by `(moduleKey, rootIdx)`). See invariants `TYPE_SUPER_001` /
+> `FORBID_SUPER_NAME_001` and `plans/solver-roots-super-constraint-export.md`.
+> The §9.1 text below is retained for historical context.
+
 ### 9.1 Latent live bug: unjoined constraint on annotation root reuse
 
 The CNumber join-upgrade patch ("number dominates" when a second name claims an

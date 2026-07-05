@@ -25,16 +25,51 @@ import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 
 
-{-| Per-def mapping from forall binder names to their rooted solver variables.
+{-| Per-def mapping from forall binder names to their rooted solver variables,
+each carrying the super constraint read from its root descriptor.
 -}
 type alias SchemeRootsForDef =
-    Dict Name.Name IO.Variable
+    Dict Name.Name IO.RootedVar
 
 
 {-| Mapping from definition names to their per-binder solver roots.
 -}
 type alias AllSchemeRoots =
     Dict Name.Name SchemeRootsForDef
+
+
+{-| Read the super constraint recorded on a solver variable's root descriptor.
+
+Returns the `SuperType` when the root is a (flex or rigid) super variable, and
+`Nothing` otherwise. This is solver truth about the ROOT — not a name lookup.
+
+-}
+superOfRoot : SolverState -> IO.Variable -> Maybe IO.SuperType
+superOfRoot state rootVar =
+    let
+        (IO.Pt rootIdx) =
+            rootVar
+    in
+    case lookupContent state rootIdx of
+        Just (IO.FlexSuper s _) ->
+            Just s
+
+        Just (IO.RigidSuper s _) ->
+            Just s
+
+        _ ->
+            Nothing
+
+
+{-| Resolve a variable to its root and pair it with the root's super.
+-}
+rootedVarOf : SolverState -> IO.Variable -> IO.RootedVar
+rootedVarOf state var =
+    let
+        rootVar =
+            SolverSnapshot.resolveVariable state var
+    in
+    { var = rootVar, super = superOfRoot state rootVar }
 
 
 {-| Resolve each node variable to its union-find root.
@@ -60,13 +95,14 @@ normalizeAnnotationVars state annotationVars =
     Dict.map (\_ var -> SolverSnapshot.resolveVariable state var) annotationVars
 
 
-{-| Normalize all binder variables in AllSchemeRoots to their union-find roots.
+{-| Normalize all binder variables (raw solver vars) to their union-find roots,
+attaching each root's super constraint.
 -}
-normalizeAllSchemeRoots : SolverState -> AllSchemeRoots -> AllSchemeRoots
+normalizeAllSchemeRoots : SolverState -> Dict Name.Name (Dict Name.Name IO.Variable) -> AllSchemeRoots
 normalizeAllSchemeRoots state allRoots =
     Dict.map
         (\_ schemeRoots ->
-            Dict.map (\_ var -> SolverSnapshot.resolveVariable state var) schemeRoots
+            Dict.map (\_ var -> rootedVarOf state var) schemeRoots
         )
         allRoots
 
@@ -113,8 +149,8 @@ walkTypeForBinders state canType var acc =
     in
     case canType of
         Can.TVar name ->
-            -- Leaf: record the binder name -> root variable mapping
-            Dict.insert name rootVar acc
+            -- Leaf: record the binder name -> rooted var (with super) mapping
+            Dict.insert name { var = rootVar, super = superOfRoot state rootVar } acc
 
         Can.TLambda argType resType ->
             case lookupFlatType state rootIdx of
@@ -153,7 +189,7 @@ walkTypeForBinders state canType var acc =
                     in
                     case maybeExt of
                         Just extName ->
-                            Dict.insert extName (SolverSnapshot.resolveVariable state extVar) accAfterFields
+                            Dict.insert extName (rootedVarOf state extVar) accAfterFields
 
                         Nothing ->
                             accAfterFields

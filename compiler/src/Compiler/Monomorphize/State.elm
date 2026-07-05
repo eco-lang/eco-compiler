@@ -81,21 +81,23 @@ type alias SchemeInfoCache =
 
 
 {-| Environment for tracking MVarIds during monomorphization.
-Uses a sequential allocator with a sparse set of CNumber-constrained vars.
+Uses a sequential allocator with a side table of super-constrained vars
+(number/comparable/appendable/compappend), exported from the solver by
+`AssignMVarIds` rather than derived from variable names.
 All MVarIds are globally unique sequential Ints from a single supplier.
 -}
 type alias MVarEnv =
     { nextId : MVarId
-    , numberVars : Set.Set Int -- MVarIds with CNumber constraint
+    , superVars : Dict Int IO.SuperType -- MVarIds with a super constraint
     }
 
 
 {-| Create an MVarEnv from an initial state (produced by AssignMVarIds).
 -}
-initMVarEnv : MVarId -> Set.Set Int -> MVarEnv
-initMVarEnv nextId numberVars =
+initMVarEnv : MVarId -> Dict Int IO.SuperType -> MVarEnv
+initMVarEnv nextId superVars =
     { nextId = nextId
-    , numberVars = numberVars
+    , superVars = superVars
     }
 
 
@@ -108,26 +110,26 @@ freshMVar constraint env =
         currentId =
             env.nextId
 
-        newNumberVars =
+        newSuperVars =
             case constraint of
                 Mono.CNumber ->
-                    Set.insert (Id.toComparable currentId) env.numberVars
+                    Dict.insert (Id.toComparable currentId) IO.Number env.superVars
 
                 Mono.CEcoValue ->
-                    env.numberVars
+                    env.superVars
     in
     ( currentId
     , { nextId = Id.succ currentId
-      , numberVars = newNumberVars
+      , superVars = newSuperVars
       }
     )
 
 
-{-| Check whether an MVarId has the CNumber constraint.
+{-| Check whether an MVarId has the CNumber (Number super) constraint.
 -}
 isNumberVar : MVarId -> MVarEnv -> Bool
 isNumberVar mvarId env =
-    Set.member (Id.toComparable mvarId) env.numberVars
+    Dict.get (Id.toComparable mvarId) env.superVars == Just IO.Number
 
 
 {-| Global accumulator fields that grow monotonically during monomorphization.

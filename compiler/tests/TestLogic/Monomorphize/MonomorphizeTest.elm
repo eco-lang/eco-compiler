@@ -38,7 +38,9 @@ import Compiler.Data.Name exposing (Name)
 import Compiler.Monomorphize.AssignMVarIds as AssignMVarIds
 import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.State as State
+import Dict
 import Expect
+import System.TypeCheck.IO as IO
 import Test exposing (Test)
 
 
@@ -75,7 +77,7 @@ convertForTest canType =
         ( converted, finalState ) =
             AssignMVarIds.assignIdsToType canType
     in
-    ( converted, State.initMVarEnv finalState.nextId finalState.numberVars )
+    ( converted, State.initMVarEnv finalState.nextId finalState.superVars )
 
 
 {-| Check if the nth MVarId has the CNumber constraint.
@@ -83,6 +85,15 @@ convertForTest canType =
 isNumberVar : Int -> State.MVarEnv -> Bool
 isNumberVar n env =
     State.isNumberVar (nthMVarId n) env
+
+
+{-| Read the full super constraint recorded for the nth MVarId. Proves that
+all super constraints (not just number) are exported from the solver into the
+side table, keyed by MVarId rather than derived from names.
+-}
+superOfNthVar : Int -> State.MVarEnv -> Maybe IO.SuperType
+superOfNthVar n env =
+    Dict.get (Id.toComparable (nthMVarId n)) env.superVars
 
 
 {-| Helper to call canTypeToMonoType\_preserveVars, converting from Can.Type Name.
@@ -134,6 +145,59 @@ suite =
         , debugKernelTests
         , kernelExportsAbiTests
         , kernelAbiPreservationTests
+        , superConstraintExportTests
+        ]
+
+
+{-| The full super lattice (number/comparable/appendable/compappend) is
+exported into the MVarId-keyed side table, and only `number` maps to the
+CNumber constraint mono consumes. Locks in the "pass all super constraints,
+not just number" contract (TYPE_SUPER_001) and confirms that plain type
+variables carry no super.
+-}
+superConstraintExportTests : Test
+superConstraintExportTests =
+    Test.describe "super constraint export (TYPE_SUPER_001)"
+        [ Test.test "number var records Number and is a CNumber var" <|
+            \_ ->
+                let
+                    ( _, env ) =
+                        convertForTest (varType "number")
+                in
+                Expect.equal ( superOfNthVar 0 env, isNumberVar 0 env )
+                    ( Just IO.Number, True )
+        , Test.test "comparable var records Comparable and is not a CNumber var" <|
+            \_ ->
+                let
+                    ( _, env ) =
+                        convertForTest (varType "comparable")
+                in
+                Expect.equal ( superOfNthVar 0 env, isNumberVar 0 env )
+                    ( Just IO.Comparable, False )
+        , Test.test "appendable var records Appendable and is not a CNumber var" <|
+            \_ ->
+                let
+                    ( _, env ) =
+                        convertForTest (varType "appendable")
+                in
+                Expect.equal ( superOfNthVar 0 env, isNumberVar 0 env )
+                    ( Just IO.Appendable, False )
+        , Test.test "compappend var records CompAppend and is not a CNumber var" <|
+            \_ ->
+                let
+                    ( _, env ) =
+                        convertForTest (varType "compappend")
+                in
+                Expect.equal ( superOfNthVar 0 env, isNumberVar 0 env )
+                    ( Just IO.CompAppend, False )
+        , Test.test "plain type variable carries no super constraint" <|
+            \_ ->
+                let
+                    ( _, env ) =
+                        convertForTest (varType "a")
+                in
+                Expect.equal ( superOfNthVar 0 env, isNumberVar 0 env )
+                    ( Nothing, False )
         ]
 
 

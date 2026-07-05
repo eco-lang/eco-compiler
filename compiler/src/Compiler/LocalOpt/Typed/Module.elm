@@ -97,12 +97,28 @@ optimizeTyped annotations exprTypes exprVars kernelEnv annotationVars allSchemeR
         , fields = Dict.empty
         , annotations = annotations
         , schemeRoots = allSchemeRoots
+        , varSupers = Dict.empty
         }
         |> addAliases tData.name annotations tData.aliases
         |> addUnions tData.name annotations tData.unions
         |> addEffects tData.name annotations tData.effects
         |> addDecls tData.name annotations exprTypes exprVars kernelEnv annotationVars tData.decls
         |> ReportingResult.map LambdaNorm.normalizeLocalGraph
+        |> ReportingResult.map withComputedVarSupers
+
+
+
+-- ====== Var Supers ======
+
+
+{-| Compute and attach the per-module `varSupers` map (type-variable name →
+super constraint) over the finished graph. This is the name→super ingestion
+boundary for the non-rooted type variables; monomorphization reads the data,
+not the names.
+-}
+withComputedVarSupers : TOpt.LocalGraph Name -> TOpt.LocalGraph Name
+withComputedVarSupers ((TOpt.LocalGraph data) as graph) =
+    TOpt.LocalGraph { data | varSupers = TOpt.computeVarSupers graph }
 
 
 
