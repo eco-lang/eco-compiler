@@ -1,6 +1,7 @@
 module Compiler.Monomorphize.MonoTraverse exposing
     ( traverseExpr
     , foldExpr
+    , mapNodeTypes
     )
 
 {-| Generic AST traversal abstractions for MonoExpr.
@@ -23,9 +24,14 @@ function on each node after processing children.
 
 @docs foldExpr
 
+
+# Type Mapping
+
+@docs mapNodeTypes
+
 -}
 
-import Compiler.AST.Monomorphized exposing (Decider(..), MonoChoice(..), MonoDef(..), MonoExpr(..))
+import Compiler.AST.Monomorphized as Mono exposing (CallInfo, CaptureABI, ClosureInfo, CtorShape, Decider(..), MonoChoice(..), MonoDef(..), MonoDestructor(..), MonoDtPath(..), MonoExpr(..), MonoNode(..), MonoPath(..), MonoType)
 
 
 
@@ -490,3 +496,198 @@ traverseList f ctx list =
                 list
     in
     ( List.reverse revAcc, finalCtx )
+
+
+-- ============================================================================
+-- TYPE MAPPING
+-- ============================================================================
+
+
+{-| Apply a `MonoType -> MonoType` function to EVERY MonoType embedded anywhere
+in a MonoNode. Total by construction over the AST (mirrors the shape of
+`Analysis.collectCustomTypesFrom*`): every constructor field that is, contains,
+or nests a MonoType is rewritten. Used by the quiescence closing pass to
+discharge residual number vars across the whole reachable graph.
+-}
+mapNodeTypes : (MonoType -> MonoType) -> MonoNode -> MonoNode
+mapNodeTypes f node =
+    case node of
+        Mono.MonoDefine expr t ->
+            Mono.MonoDefine (mapExprTypes f expr) (f t)
+
+        Mono.MonoTailFunc params expr t ->
+            Mono.MonoTailFunc (List.map (\( n, pt ) -> ( n, f pt )) params) (mapExprTypes f expr) (f t)
+
+        Mono.MonoCtor shape t ->
+            Mono.MonoCtor (mapCtorShapeTypes f shape) (f t)
+
+        Mono.MonoEnum i t ->
+            Mono.MonoEnum i (f t)
+
+        Mono.MonoExtern t ->
+            Mono.MonoExtern (f t)
+
+        Mono.MonoManagerLeaf s t ->
+            Mono.MonoManagerLeaf s (f t)
+
+        Mono.MonoPortIncoming expr t ->
+            Mono.MonoPortIncoming (mapExprTypes f expr) (f t)
+
+        Mono.MonoPortOutgoing expr t ->
+            Mono.MonoPortOutgoing (mapExprTypes f expr) (f t)
+
+
+mapCtorShapeTypes : (MonoType -> MonoType) -> CtorShape -> CtorShape
+mapCtorShapeTypes f shape =
+    { shape | fieldTypes = List.map f shape.fieldTypes }
+
+
+mapExprTypes : (MonoType -> MonoType) -> MonoExpr -> MonoExpr
+mapExprTypes f expr =
+    case expr of
+        Mono.MonoLiteral lit t ->
+            Mono.MonoLiteral lit (f t)
+
+        Mono.MonoVarLocal n t ->
+            Mono.MonoVarLocal n (f t)
+
+        Mono.MonoVarGlobal r s t ->
+            Mono.MonoVarGlobal r s (f t)
+
+        Mono.MonoVarKernel r a b c t ->
+            Mono.MonoVarKernel r a b c (f t)
+
+        Mono.MonoList r elems t ->
+            Mono.MonoList r (List.map (mapExprTypes f) elems) (f t)
+
+        Mono.MonoClosure info body t ->
+            Mono.MonoClosure (mapClosureInfoTypes f info) (mapExprTypes f body) (f t)
+
+        Mono.MonoCall r fn args t info ->
+            Mono.MonoCall r (mapExprTypes f fn) (List.map (mapExprTypes f) args) (f t) (mapCallInfoTypes f info)
+
+        Mono.MonoTailCall n args t ->
+            Mono.MonoTailCall n (List.map (\( nm, e ) -> ( nm, mapExprTypes f e )) args) (f t)
+
+        Mono.MonoIf branches elseExpr t ->
+            Mono.MonoIf (List.map (\( c, e ) -> ( mapExprTypes f c, mapExprTypes f e )) branches) (mapExprTypes f elseExpr) (f t)
+
+        Mono.MonoLet def body t ->
+            Mono.MonoLet (mapDefTypes f def) (mapExprTypes f body) (f t)
+
+        Mono.MonoDestruct destructor body t ->
+            Mono.MonoDestruct (mapDestructorTypes f destructor) (mapExprTypes f body) (f t)
+
+        Mono.MonoCase n1 n2 decider jumps t ->
+            Mono.MonoCase n1 n2 (mapDeciderTypes f decider) (List.map (\( i, e ) -> ( i, mapExprTypes f e )) jumps) (f t)
+
+        Mono.MonoRecordCreate fields t ->
+            Mono.MonoRecordCreate (List.map (\( n, e ) -> ( n, mapExprTypes f e )) fields) (f t)
+
+        Mono.MonoRecordAccess e n t ->
+            Mono.MonoRecordAccess (mapExprTypes f e) n (f t)
+
+        Mono.MonoRecordUpdate e fields t ->
+            Mono.MonoRecordUpdate (mapExprTypes f e) (List.map (\( n, fe ) -> ( n, mapExprTypes f fe )) fields) (f t)
+
+        Mono.MonoTupleCreate r elems t ->
+            Mono.MonoTupleCreate r (List.map (mapExprTypes f) elems) (f t)
+
+        Mono.MonoUnit ->
+            Mono.MonoUnit
+
+        Mono.MonoAccessorValue r n t ->
+            Mono.MonoAccessorValue r n (f t)
+
+
+mapClosureInfoTypes : (MonoType -> MonoType) -> ClosureInfo -> ClosureInfo
+mapClosureInfoTypes f info =
+    { info
+        | captures = List.map (\( n, e, b ) -> ( n, mapExprTypes f e, b )) info.captures
+        , params = List.map (\( n, t ) -> ( n, f t )) info.params
+        , captureAbi = Maybe.map (mapCaptureAbiTypes f) info.captureAbi
+    }
+
+
+mapCallInfoTypes : (MonoType -> MonoType) -> CallInfo -> CallInfo
+mapCallInfoTypes f info =
+    { info
+        | captureAbi = Maybe.map (mapCaptureAbiTypes f) info.captureAbi
+        , evaluatorReturnType = f info.evaluatorReturnType
+    }
+
+
+mapCaptureAbiTypes : (MonoType -> MonoType) -> CaptureABI -> CaptureABI
+mapCaptureAbiTypes f abi =
+    { abi
+        | captureTypes = List.map f abi.captureTypes
+        , paramTypes = List.map f abi.paramTypes
+        , returnType = f abi.returnType
+    }
+
+
+mapDefTypes : (MonoType -> MonoType) -> MonoDef -> MonoDef
+mapDefTypes f def =
+    case def of
+        Mono.MonoDef n e ->
+            Mono.MonoDef n (mapExprTypes f e)
+
+        Mono.MonoTailDef n params e ->
+            Mono.MonoTailDef n (List.map (\( nm, t ) -> ( nm, f t )) params) (mapExprTypes f e)
+
+
+mapDestructorTypes : (MonoType -> MonoType) -> MonoDestructor -> MonoDestructor
+mapDestructorTypes f (Mono.MonoDestructor n path t) =
+    Mono.MonoDestructor n (mapPathTypes f path) (f t)
+
+
+mapPathTypes : (MonoType -> MonoType) -> MonoPath -> MonoPath
+mapPathTypes f path =
+    case path of
+        Mono.MonoIndex i ck t rest ->
+            Mono.MonoIndex i ck (f t) (mapPathTypes f rest)
+
+        Mono.MonoField n t rest ->
+            Mono.MonoField n (f t) (mapPathTypes f rest)
+
+        Mono.MonoUnbox t rest ->
+            Mono.MonoUnbox (f t) (mapPathTypes f rest)
+
+        Mono.MonoRoot n t ->
+            Mono.MonoRoot n (f t)
+
+
+mapDtPathTypes : (MonoType -> MonoType) -> MonoDtPath -> MonoDtPath
+mapDtPathTypes f path =
+    case path of
+        Mono.DtRoot n t ->
+            Mono.DtRoot n (f t)
+
+        Mono.DtIndex i ck t rest ->
+            Mono.DtIndex i ck (f t) (mapDtPathTypes f rest)
+
+        Mono.DtUnbox t rest ->
+            Mono.DtUnbox (f t) (mapDtPathTypes f rest)
+
+
+mapDeciderTypes : (MonoType -> MonoType) -> Decider MonoChoice -> Decider MonoChoice
+mapDeciderTypes f decider =
+    case decider of
+        Mono.Leaf choice ->
+            Mono.Leaf (mapChoiceTypes f choice)
+
+        Mono.Chain tests ifDec elseDec ->
+            Mono.Chain (List.map (\( p, test ) -> ( mapDtPathTypes f p, test )) tests) (mapDeciderTypes f ifDec) (mapDeciderTypes f elseDec)
+
+        Mono.FanOut p edges fallback ->
+            Mono.FanOut (mapDtPathTypes f p) (List.map (\( test, dec ) -> ( test, mapDeciderTypes f dec )) edges) (mapDeciderTypes f fallback)
+
+
+mapChoiceTypes : (MonoType -> MonoType) -> MonoChoice -> MonoChoice
+mapChoiceTypes f choice =
+    case choice of
+        Mono.Inline e ->
+            Mono.Inline (mapExprTypes f e)
+
+        Mono.Jump i ->
+            Mono.Jump i

@@ -12,7 +12,7 @@ module Compiler.AST.Monomorphized exposing
     , toComparableSpecKey, toComparableMonoType, toComparableGlobal
     , getMonoPathType
     , monoTypeToDebugString
-    , forceCNumberToInt
+    , resolveNumberType
     , Segmentation, segmentLengths, stageParamTypes, stageReturnType
     , chooseCanonicalSegmentation, buildSegmentedFunctionType
     , decomposeFunctionType, isFunctionType, countTotalArity
@@ -122,7 +122,7 @@ This module defines the data structures for the monomorphized program
 
 # Constraint Utilities
 
-@docs forceCNumberToInt
+@docs resolveNumberType
 
 
 # Staging and Segmentation
@@ -250,26 +250,64 @@ type Constraint
 -- ============================================================================
 
 
-{-| Force all numeric-constrained type variables (MVar \_ CNumber)
-to concrete Int (MInt) inside a MonoType.
+{-| Closing operator for quiescence-before-defaulting: structurally resolve every
+residual number var in a MonoType to `MInt`.
 
-Backend policy: when we have an ambiguous `number` that has not
-been resolved to Float by constraints, we default it to Int.
-This is sound for ECO because Elm `number` is morally "Int or Float",
-and we only commit to Int where no Float-specific behaviour is required.
-
-IMPORTANT: This does NOT affect MFloat or Float-typed code. Only
-unresolved MVar \_ CNumber is converted. Float-specific operations
-(Basics./, trig functions, etc.) have canonical Float types and
-resolve to MFloat directly without going through CNumber.
-
+Table-consulting: a var closes to `MInt` if EITHER its stamped constraint is
+`CNumber` (an original number var) OR the `isNumber` predicate reports its id as
+number-tainted in the final `superVars` (a boxed var that Join-R merged into a
+number class after this copy was stamped — the stale `CEcoValue` stamp is
+healed). A genuine, never-tainted `CEcoValue` var is left untouched (boxed).
+`applySubst` no longer defaults number vars during the fixpoint; this discharges
+them once, at the end, from `resolveResidualNumbers`.
 -}
-forceCNumberToInt : MonoType -> MonoType
-forceCNumberToInt monoType =
-    -- Since Fix 9, resolveMonoVars (called inside applySubst) already forces
-    -- CNumber→MInt for all unresolved MVars. This function is kept as identity
-    -- to avoid churn at 57 call sites but no longer traverses the type.
-    monoType
+resolveNumberType : (MVarId -> Bool) -> MonoType -> MonoType
+resolveNumberType isNumber monoType =
+    case monoType of
+        MVar mvarId constraint ->
+            case constraint of
+                CNumber ->
+                    MInt
+
+                CEcoValue ->
+                    if isNumber mvarId then
+                        MInt
+
+                    else
+                        monoType
+
+        MList inner ->
+            MList (resolveNumberType isNumber inner)
+
+        MTuple elems ->
+            MTuple (List.map (resolveNumberType isNumber) elems)
+
+        MRecord fields ->
+            MRecord (Dict.map (\_ t -> resolveNumberType isNumber t) fields)
+
+        MCustom home name args ->
+            MCustom home name (List.map (resolveNumberType isNumber) args)
+
+        MFunction args result ->
+            MFunction (List.map (resolveNumberType isNumber) args) (resolveNumberType isNumber result)
+
+        MInt ->
+            monoType
+
+        MFloat ->
+            monoType
+
+        MBool ->
+            monoType
+
+        MChar ->
+            monoType
+
+        MString ->
+            monoType
+
+        MUnit ->
+            monoType
 
 
 {-| Extract the final result type from a (possibly curried) function type.
@@ -901,17 +939,18 @@ toComparableMonoTypeHelper work acc =
                                 ("ecovalue" :: "\u{0000}" :: "0" :: "V" :: acc)
 
                         CNumber ->
-                            -- Keep real ID. CNumber should be resolved by forceCNumberToInt before
-                            -- reaching SpecKey construction, but if it leaks, distinct IDs prevent
-                            -- incorrect merging of Int vs Float specializations.
-                            toComparableMonoTypeHelper
-                                rest
-                                (constraintToString constraint
-                                    :: "\u{0000}"
-                                    :: String.fromInt (Id.toComparable mvarId)
-                                    :: "V"
-                                    :: acc
-                                )
+                            -- Quiescence-before-defaulting (D4): an OPEN number var is
+                            -- a residual that closes to Int (Float always manifests as
+                            -- bound MFloat, never open CNumber, at a locally-quiescent
+                            -- key point). Key it IDENTICALLY to MInt ("I") so open-number
+                            -- and explicit-Int instantiations of a global merge to one
+                            -- specialization (they are the same after
+                            -- resolveResidualNumbers), while Float ("F") stays distinct
+                            -- and the boxed CEcoValue sentinel ("V") stays distinct from
+                            -- i64. The MVarId is dropped so fresh ids never split specs.
+                            -- Callers apply `refreshConstraints` before keying so a
+                            -- number-tainted (Join-R) var reaches this arm.
+                            toComparableMonoTypeHelper rest ("I" :: acc)
 
                 MList inner ->
                     toComparableMonoTypeHelper

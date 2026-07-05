@@ -3,7 +3,8 @@ module Compiler.Monomorphize.TypeSubst exposing
     , canTypeToMonoType, extractParamTypes
     , unify, unifyExtend, unifyArgsOnly, unifyCallSiteDirect, unifyCallSiteDirectWithExpected
     , buildSchemeInfo, refreshSchemeInfo
-    , applySubstWithFreeVars, applySubstKeepNumber
+    , applySubstWithFreeVars
+    , refreshConstraints
     )
 
 {-| Type substitution and unification for monomorphization.
@@ -35,7 +36,8 @@ by MVarId (as Int via Id.toComparable), not by Name.
 
 # Substitution with Free Variables
 
-@docs applySubstWithFreeVars, applySubstKeepNumber
+@docs applySubstWithFreeVars
+@docs refreshConstraints
 
 -}
 
@@ -58,6 +60,39 @@ constraintOf mvarId env =
 
     else
         Mono.CEcoValue
+
+
+{-| Re-stamp every `MVar id _` in a MonoType with its CURRENT class constraint
+from the shared side table (`constraintOf`). Join-R records a number taint in the
+table at merge time; a copy stamped `MVar id CEcoValue` before that merge still
+carries the stale annotation. Applying this before building a specialization key
+(`Mono.toComparableMonoType`) reconciles the stamped annotation with the
+authoritative side table, so a tainted number var keys to the concrete Int
+specialization (D4) instead of the boxed-erased sentinel.
+-}
+refreshConstraints : MVarEnv -> Mono.MonoType -> Mono.MonoType
+refreshConstraints env monoType =
+    case monoType of
+        Mono.MVar mvarId _ ->
+            Mono.MVar mvarId (constraintOf mvarId env)
+
+        Mono.MList inner ->
+            Mono.MList (refreshConstraints env inner)
+
+        Mono.MTuple elems ->
+            Mono.MTuple (List.map (refreshConstraints env) elems)
+
+        Mono.MRecord fields ->
+            Mono.MRecord (Dict.map (\_ t -> refreshConstraints env t) fields)
+
+        Mono.MCustom home name args ->
+            Mono.MCustom home name (List.map (refreshConstraints env) args)
+
+        Mono.MFunction args result ->
+            Mono.MFunction (List.map (refreshConstraints env) args) (refreshConstraints env result)
+
+        _ ->
+            monoType
 
 
 
@@ -296,7 +331,29 @@ unifyHelp env canType monoType subst =
                     insertBindingSafe env1 mvarId monoType substWithTransitives
 
                 Nothing ->
-                    insertBindingSafe env mvarId monoType subst
+                    case monoType of
+                        Mono.MVar otherId _ ->
+                            case ( constraintOf mvarId env, constraintOf otherId env ) of
+                                ( Mono.CNumber, Mono.CEcoValue ) ->
+                                    -- Symmetric join (J2), canonical-vs-mono form. A number
+                                    -- canonical tvar is unifying with a boxed (CEcoValue) mono
+                                    -- var — typically a number ARGUMENT being resolved against a
+                                    -- polymorphic/kernel-ABI parameter slot (e.g. Debug.log's `a`,
+                                    -- PreserveVars). Binding the number var TOWARD the boxed var
+                                    -- (the default) would erase its number-ness, so the arg would
+                                    -- be typed CEcoValue while its value stays an unboxed i64 —
+                                    -- an i64/ptr boundary mismatch. Instead: number dominates.
+                                    -- Bind the boxed var toward the number var (as an open CNumber
+                                    -- residual) and taint it, leaving the number var open so it
+                                    -- closes to Int; the boxed ABI slot (a separate, already-built
+                                    -- funcMonoType) still drives boxing at the call boundary.
+                                    insertBindingSafe (State.taintNumber otherId env) otherId (Mono.MVar mvarId Mono.CNumber) subst
+
+                                _ ->
+                                    insertBindingSafe env mvarId monoType subst
+
+                        _ ->
+                            insertBindingSafe env mvarId monoType subst
 
         -- Handle primitive types from elm/core that map to specialized MonoTypes
         ( Can.TType (IO.Canonical ( "elm", "core" ) "Basics") "Int" [], Mono.MInt ) ->
@@ -424,7 +481,25 @@ unifyMonoMono env m1 m2 subst =
                 ( subst, env )
 
             else
-                insertBinding env mvarId1 m2 subst
+                case ( constraintOf mvarId1 env, constraintOf mvarId2 env ) of
+                    ( Mono.CNumber, Mono.CEcoValue ) ->
+                        -- Symmetric constraint join. The class constraint is the join
+                        -- of members: CNumber dominates CEcoValue. Make the number var
+                        -- (mvarId1) the class representative — bind the boxed var toward
+                        -- it (Join-W, subst-carried, so routing survives however the env
+                        -- is threaded) — AND taint the boxed var Number in the shared
+                        -- side table (Join-R, so copies of its type stamped before this
+                        -- merge still close to Int and key to the concrete Int spec).
+                        -- The decision reads constraintOf (the authoritative side table),
+                        -- not the stamped annotations, and is outcome-symmetric with the
+                        -- mirror case below.
+                        insertBinding (State.taintNumber mvarId2 env) mvarId2 m1 subst
+
+                    ( Mono.CEcoValue, Mono.CNumber ) ->
+                        insertBinding (State.taintNumber mvarId1 env) mvarId1 m2 subst
+
+                    _ ->
+                        insertBinding env mvarId1 m2 subst
 
         ( Mono.MVar mvarId _, _ ) ->
             insertBinding env mvarId m2 subst
@@ -554,7 +629,11 @@ resolveMonoVarsHelp visiting subst monoType =
                     Nothing ->
                         case constraint of
                             Mono.CNumber ->
-                                ( True, Mono.MInt )
+                                -- Quiescence-before-defaulting: preserve the number
+                                -- var as a residual (no change). CNumber is discharged
+                                -- only by resolveResidualNumbers at the end of
+                                -- monomorphization.
+                                ( False, monoType )
 
                             Mono.CEcoValue ->
                                 ( False, monoType )
@@ -653,7 +732,11 @@ applySubst env subst canType =
                     in
                     case constraint of
                         Mono.CNumber ->
-                            ( Mono.MInt, env )
+                            -- Quiescence-before-defaulting: preserve the number var
+                            -- as a residual. CNumber->MInt is discharged only by the
+                            -- resolveResidualNumbers closing pass at the end of
+                            -- monomorphization.
+                            ( Mono.MVar mvarId constraint, env )
 
                         Mono.CEcoValue ->
                             ( Mono.MVar mvarId constraint, env )
@@ -939,188 +1022,6 @@ applySubstLambdaChain env subst argsAcc to =
                 )
                 ( resultMono, env1 )
                 argsAcc
-
-
-{-| Like `applySubst`, but preserves unresolved `CNumber` TVars as `Mono.MVar _ CNumber`
-instead of defaulting them to `MInt`.
-
-Used by `processCallArg` in `Specialize.elm` to compute a representative monoType
-for a polymorphic-number argument (e.g. `Basics.add : number -> number -> number`)
-without committing to `Int`. The preserved MVars flow through `unifyCallSiteDirect`
-so later args (e.g. `Array Float`) can transitively bind `number = Float`, then
-`resolveProcessedArg PendingGlobal` unifies with the callee's param type and
-specialises with the correct element type.
-
--}
-applySubstKeepNumber : MVarEnv -> Substitution -> Can.Type MVarId -> Mono.MonoType
-applySubstKeepNumber env subst canType =
-    case canType of
-        Can.TVar mvarId ->
-            let
-                key =
-                    Id.toComparable mvarId
-            in
-            case Dict.get key subst of
-                Just monoType ->
-                    resolveMonoVarsKeepNumber subst monoType
-
-                Nothing ->
-                    Mono.MVar mvarId (constraintOf mvarId env)
-
-        Can.TLambda from to ->
-            applySubstLambdaChainKeepNumber env subst [ from ] to
-
-        Can.TType canonical name args ->
-            let
-                monoArgs =
-                    List.map (applySubstKeepNumber env subst) args
-
-                isElmCore =
-                    case canonical of
-                        IO.Canonical ( "elm", "core" ) _ ->
-                            True
-
-                        _ ->
-                            False
-            in
-            if isElmCore then
-                case name of
-                    "Int" ->
-                        Mono.MInt
-
-                    "Float" ->
-                        Mono.MFloat
-
-                    "Bool" ->
-                        Mono.MBool
-
-                    "Char" ->
-                        Mono.MChar
-
-                    "String" ->
-                        Mono.MString
-
-                    "List" ->
-                        case monoArgs of
-                            [ inner ] ->
-                                Mono.MList inner
-
-                            _ ->
-                                Mono.MList Mono.MUnit
-
-                    _ ->
-                        Mono.MCustom canonical name monoArgs
-
-            else
-                Mono.MCustom canonical name monoArgs
-
-        Can.TRecord fields maybeExtension ->
-            let
-                baseFields =
-                    case maybeExtension of
-                        Just extMvarId ->
-                            case Dict.get (Id.toComparable extMvarId) subst of
-                                Just (Mono.MRecord baseFieldsDict) ->
-                                    baseFieldsDict
-
-                                _ ->
-                                    Dict.empty
-
-                        Nothing ->
-                            Dict.empty
-
-                monoFields =
-                    Dict.foldl
-                        (\k (Can.FieldType _ t) acc ->
-                            Dict.insert k (applySubstKeepNumber env subst t) acc
-                        )
-                        baseFields
-                        fields
-            in
-            Mono.MRecord monoFields
-
-        Can.TTuple a b rest ->
-            Mono.MTuple (List.map (applySubstKeepNumber env subst) (a :: b :: rest))
-
-        Can.TUnit ->
-            Mono.MUnit
-
-        Can.TAlias _ _ _ (Can.Filled inner) ->
-            applySubstKeepNumber env subst inner
-
-        Can.TAlias _ _ args (Can.Holey inner) ->
-            let
-                newSubst =
-                    List.foldl
-                        (\( paramId, t ) s ->
-                            Dict.insert (Id.toComparable paramId) (applySubstKeepNumber env subst t) s
-                        )
-                        subst
-                        args
-            in
-            applySubstKeepNumber env newSubst inner
-
-
-applySubstLambdaChainKeepNumber : MVarEnv -> Substitution -> List (Can.Type MVarId) -> Can.Type MVarId -> Mono.MonoType
-applySubstLambdaChainKeepNumber env subst argsAcc to =
-    case to of
-        Can.TLambda from innerTo ->
-            applySubstLambdaChainKeepNumber env subst (from :: argsAcc) innerTo
-
-        _ ->
-            List.foldl
-                (\argType acc ->
-                    Mono.MFunction [ applySubstKeepNumber env subst argType ] acc
-                )
-                (applySubstKeepNumber env subst to)
-                argsAcc
-
-
-{-| Like `resolveMonoVars` but preserves unresolved `CNumber` as `MVar _ CNumber`.
--}
-resolveMonoVarsKeepNumber : Substitution -> Mono.MonoType -> Mono.MonoType
-resolveMonoVarsKeepNumber subst monoType =
-    resolveMonoVarsKeepNumberHelp Set.empty subst monoType
-
-
-resolveMonoVarsKeepNumberHelp : Set Int -> Substitution -> Mono.MonoType -> Mono.MonoType
-resolveMonoVarsKeepNumberHelp visiting subst monoType =
-    case monoType of
-        Mono.MVar mvarId _ ->
-            let
-                key =
-                    Id.toComparable mvarId
-            in
-            if Set.member key visiting then
-                monoType
-
-            else
-                case Dict.get key subst of
-                    Just resolved ->
-                        resolveMonoVarsKeepNumberHelp (Set.insert key visiting) subst resolved
-
-                    Nothing ->
-                        monoType
-
-        Mono.MFunction args ret ->
-            Mono.MFunction
-                (List.map (resolveMonoVarsKeepNumberHelp visiting subst) args)
-                (resolveMonoVarsKeepNumberHelp visiting subst ret)
-
-        Mono.MList inner ->
-            Mono.MList (resolveMonoVarsKeepNumberHelp visiting subst inner)
-
-        Mono.MTuple elems ->
-            Mono.MTuple (List.map (resolveMonoVarsKeepNumberHelp visiting subst) elems)
-
-        Mono.MRecord fields ->
-            Mono.MRecord (Dict.map (\_ t -> resolveMonoVarsKeepNumberHelp visiting subst t) fields)
-
-        Mono.MCustom can name args ->
-            Mono.MCustom can name (List.map (resolveMonoVarsKeepNumberHelp visiting subst) args)
-
-        _ ->
-            monoType
 
 
 {-| Convert a canonical type to a monomorphic type using a substitution.

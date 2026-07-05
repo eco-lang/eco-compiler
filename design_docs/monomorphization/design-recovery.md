@@ -6,6 +6,22 @@
 (MONO_001–027), the Roc-derived docs in this directory, and the full git history
 (221 commits, 2025-12-05 → 2026-07-02, recovered via the public GitHub mirror).*
 
+> **Revised Jul 2026.** Recommendation §10.1 (constraint provenance) has been
+> implemented: the `number`/`comparable`/`appendable`/`compappend` supers are
+> now exported from the solver as **data** (`IO.RootedVar.super` on each scheme
+> root, plus a `varSupers` map computed at artifact production), and the pass no
+> longer derives constraints from type-variable name prefixes. This closed the
+> §9.1 latent bug and a second cross-module aliasing bug. Present-tense
+> descriptions below reflect that state; the historical narrative of the
+> name-prefix era is retained as context and marked where superseded. The other
+> half of the root cause — **eager defaulting inside `applySubst`** — has
+> ALSO now been fixed (Jul 2026): CNumber is preserved through the fixpoint and
+> discharged once by a post-Prune closing pass, guarded by a symmetric "number
+> dominates" join at unification (see §6 and invariant `MONO_028`). See invariants
+> `TYPE_SUPER_001` / `FORBID_SUPER_NAME_001` / `MONO_028`, and plans
+> `solver-roots-super-constraint-export.md` +
+> `number-quiescence-symmetric-join-experiment.md`.
+
 ---
 
 ## 1. Executive summary
@@ -30,21 +46,26 @@ Elm features make demand flow *backward* — the `number` class under
 let-generalization, and row-polymorphic records. Every major patch stratum is a
 partial retrofit of backward (consumer→producer) demand flow, reinvented per
 syntactic position instead of generalized. Section 5 names five such strata;
-section 6 traces the worst case (the `number` saga: five successive resolution
-models in seven months).
+section 6 traces the worst case (the `number` saga: six successive resolution
+models, the sixth of which — Jul 2026 — finally removed the lossy entry
+channel).
 
-The single deepest root cause is that **the `number` constraint enters the pass
-through a lossy side channel**: it is re-derived from type-variable *name
-prefixes* (`constraintFromName` in AssignMVarIds) rather than exported from the
-solver, and it is *defaulted to Int eagerly inside `applySubst`* — i.e. during
-the fixpoint iteration rather than at quiescence. Nearly every band-aid in the
-file exists to outrun that early default.
+The single deepest root cause had two halves. **One is now fixed.** The
+`number` constraint used to enter the pass through a lossy side channel — it was
+re-derived from type-variable *name prefixes* (`constraintFromName` in
+AssignMVarIds) rather than exported from the solver. As of Jul 2026 the supers
+are exported as data on the solver roots and via a `varSupers` map (§10.1), so
+that channel is gone. **The other half remains**: the constraint is still
+*defaulted to Int eagerly inside `applySubst`* — during fixpoint iteration
+rather than at quiescence — and nearly every band-aid in the file still exists
+to outrun that early default. Loss-free provenance removed the entry-side bug
+class; it did not remove the defaulting-driven accretion (§5's S2–S4, §6).
 
 The pass has been stable since 2026-06-12 (Specialize.elm frozen at 5,973
 lines), so this is a good moment to consolidate. Section 10 restates the ideal
-design the code is visibly converging toward; section 11 lists concrete
-simplifications, including one **latent live bug** found during this analysis
-(§9.1).
+design the code is visibly converging toward; §10.1 (now implemented) and
+§10.2–3 list the concrete simplifications. Two **latent bugs** found during this
+analysis (§9.1 and its cross-module sibling) are fixed.
 
 ---
 
@@ -128,10 +149,14 @@ mid-pass, forming a two-point obligation lattice:
 globally-unique sequential Int `MVarId`s assigned in a Phase-0 pre-pass
 (AssignMVarIds), **backed by solver union-find roots** — two source tvars
 unified during constraint solving map to the same MVarId via `rootEnv`, with a
-per-binding name-scoped fallback for un-rooted vars. Constraint membership
-lives in a side table (`MVarEnv.numberVars : Set Int`), per the explicit
-side-table doctrine in `Id.elm`. Global uniqueness is what licenses
-occurrence-based substitution filtering (`applySubstWithFreeVars` +
+per-binding name-scoped fallback for un-rooted vars. As of Jul 2026 `rootEnv` is
+keyed by `(moduleKey, rootIdx)` so per-module solver `Pt` indices cannot alias
+across modules. Constraint membership lives in a side table
+(`MVarEnv.superVars : Dict Int SuperType`), per the explicit side-table doctrine
+in `Id.elm`, and is **populated from data exported by the solver**, not from
+names: `IO.RootedVar.super` for solver-rooted binders and a `varSupers` map
+(`TypedOptimized.computeVarSupers`) for non-rooted names. Global uniqueness is
+what licenses occurrence-based substitution filtering (`applySubstWithFreeVars` +
 `closureOverSubst`) to prevent cross-scheme contamination.
 
 **Unification policy: best effort, silent failure.** `TypeSubst` contains no
@@ -244,15 +269,21 @@ The three mechanisms share the `ctx.valueMulti` stack as an untagged union,
 discriminated by re-running `isNumberMultiTarget` at every use site — priority
 encoded by repetition, not by data.
 
-**S4. Demand replay.** `collectNumericDemands`/`callArgDemands`/
-`demandedNumericUseType` (834–964): before committing a `number` binding, walk
-the **un-specialized** TOpt body for uses of the name as a call argument and
-*replay* each enclosing call's unification (`unifyArgsOnly` with keep-number
-arg types) to see whether any use demands Float. A shadow static analysis
-duplicating what `specializeExpr` will do anyway — a clever but plainly
-retrofitted answer to an ordering problem (binding emitted before uses are
-seen). Consumed by the number-multi gate and by the `Destruct` float-demand
-check.
+**S4. Demand replay.** *(RETIRED Jul 2026 — deleted; see below.)*
+`collectNumericDemands`/`callArgDemands`/`demandedNumericUseType`: before
+committing a `number` binding, walk the **un-specialized** TOpt body for uses of
+the name as a call argument and *replay* each enclosing call's unification
+(`unifyArgsOnly` with keep-number arg types) to see whether any use demands
+Float. A shadow static analysis duplicating what `specializeExpr` will do anyway
+— a clever but plainly retrofitted answer to an ordering problem (binding
+emitted before uses are seen). It had two consumers: the number-multi Let gate
+(removed by D7's uniform gate) and the `Destruct` float-demand look-ahead. The
+latter was the last one, removed by bringing the `Destruct` handler under
+quiescence — `specializeNumberDestruct` seeds the destructor-bound var as a
+number-multi target and specializes the **body first**, so its uses record
+instances via `resolveNumberMultiVarRef` (the state-threaded valueMulti channel)
+rather than being predicted by replay; the whole cluster is now deleted. The
+ordering problem is solved by *observing* the demand, not re-deriving it.
 
 **S5. Value-derived types ("trust the value, not the type").** For `Tuple`,
 `Record`, `TrackedRecord` (and weakly `List`), the container MonoType is built
@@ -276,7 +307,8 @@ than a shared arbitration principle.
 
 ## 6. The `number` saga
 
-The single feature that generated the most drift. Five successive models:
+The single feature that generated the most drift. Six successive models — the
+sixth closed the entry-side root cause:
 
 1. **Dec 2025** (`aa8bca9`): constraint zoo reduced to `CEcoValue + CNumber`.
 2. **Jan 2026** (`65a74fa`): let number types flow unresolved (replacing the
@@ -286,32 +318,61 @@ The single feature that generated the most drift. Five successive models:
    can specialize as Float (`applySubstKeepNumber` is born).
 5. **Jun 2026** (`d133eba` + follow-ups): demand-driven use-site
    specialization (PendingNumberValue, number-multi, demand replay).
+6. **Jul 2026** (`plans/solver-roots-super-constraint-export.md`): the super
+   is exported from the solver as data (`IO.RootedVar.super` + `varSupers`) and
+   the name-prefix channel is deleted — models 1–5 all lived downstream of that
+   lossy channel; this removes it.
 
-Two structural decisions make this feature chronically fragile:
+Two structural decisions made this feature chronically fragile. **Both are now
+fixed (Jul 2026)** — the first by the super-constraint export below, the second
+by quiescence-before-defaulting + the symmetric join (§6, invariant `MONO_028`).
 
-**The lossy entry channel.** The solver *knows* which variables are
-number-constrained, but that fact is not exported through `SolverRoots`.
-Instead AssignMVarIds re-derives it from the **name prefix**:
-`constraintFromName name = if Name.isNumberType name then CNumber else
-CEcoValue` (AssignMVarIds.elm:148–154), where `isNumberType = String.startsWith
-"number"`. Every downstream wart in the project's bug memory — solver-root
-reuse dropping the flag, the join-upgrade patch in `ensureMVarIdForRoot`
-(:192–216), the gate tower — is compensation for this channel. Any pipeline
-stage that invents or renames a tvar without the prefix silently drops the
-constraint.
+**The lossy entry channel *(fixed Jul 2026)*.** The solver *knows* which
+variables are number-constrained — the fact lives in the root descriptor
+(`FlexSuper`/`RigidSuper`). Until Jul 2026 that fact was not exported: instead
+AssignMVarIds re-derived it from the **name prefix**
+(`constraintFromName name = if Name.isNumberType name then CNumber else
+CEcoValue`, formerly AssignMVarIds.elm:148–154, `isNumberType =
+String.startsWith "number"`). Every entry-side wart in the project's bug memory
+— solver-root reuse dropping the flag, the join-upgrade patch in
+`ensureMVarIdForRoot`, its unpatched duplicate in `rewriteAnnotation` (§9.1) —
+was compensation for this channel, and any pipeline stage that invented or
+renamed a tvar without the prefix silently dropped the constraint. **Now**
+`SolverRoots.superOfRoot` reads the super straight off the root descriptor onto
+each `IO.RootedVar`, and non-rooted names get their super from a `varSupers`
+map computed once at typed-artifact production. Because a shared root carries
+one authoritative super, the join-upgrade patch (and its duplicate) are deleted
+rather than fixed, and `constraintFromName` is gone. `Name.isNumberType` now
+appears only at the surface-syntax ingestion boundary (`Type`/`Solve`,
+`TypedOptimized.superOfName`) and in package-API diffing — never in the
+monomorphizer (`FORBID_SUPER_NAME_001`).
 
-**Defaulting during iteration instead of at quiescence.** CNumber→MInt firing
-is now *inside* `applySubst` (TypeSubst:555–557, 654–656) — so **every
-`applySubst` call is a defaulting point**, and it fires long before all demands
-have been observed. In fixpoint terms: defaulting is a *closing operator* that
-is only sound at the fixpoint, but the code applies it at every step and then
-builds S2–S4 to detect and undo premature closures. The fossil that proves the
-migration: `forceCNumberToInt` — wrapped around essentially every `applySubst`
-result — is now the **identity function**, "kept as identity to avoid churn at
-57 call sites" (Monomorphized.elm:267–272). Its counter-operator
-`applySubstKeepNumber` (TypeSubst:955–1123) is a full structural clone of
-`applySubst`; correctness of the number system depends on picking the right
-one of the two at each of ~60 sites.
+**Defaulting during iteration instead of at quiescence *(resolved Jul 2026)*.**
+This was the second half of the root cause. It has now been fixed
+(`plans/number-quiescence-symmetric-join-experiment.md`, MONO_028): `applySubst`
+and `resolveMonoVars` **preserve** `MVar _ CNumber` as a residual through the
+whole fixpoint (TypeSubst:555–560, 654–659), and a single closing pass —
+`Monomorphize.resolveResidualNumbers` — discharges every residual to `MInt`
+exactly once, *after* Prune, walking the three MonoType-carrying graph positions
+(nodes via `MonoTraverse.mapNodeTypes`, `registry.reverseMapping`, `ctorShapes`)
+and consulting the final `MVarEnv.superVars`. The closing operator is now applied
+only at the fixpoint, as fixpoint theory requires.
+
+The subtlety that made this hard (and defeated a first, revert-only attempt): once
+numbers flow open into the fixpoint, a number can reach a **boxed (`CEcoValue`)
+parameter slot** — e.g. `Debug.log "x" (10 + 3)` — and the old unification would
+*erase* it (bind the number var toward the boxed var), typing an unboxed `i64`
+value as a boxed pointer → a codegen boundary crash. The fix is a **symmetric
+constraint join, "number dominates," in BOTH unification paths**: `unifyMonoMono`
+(mono-vs-mono, J1) and `unifyHelp`'s `Can.TVar` arm (canonical-vs-mono, J2 — the
+load-bearing one, since deferred number args meet boxed slots on that path). Each
+binds the `CEcoValue` var toward the number var and records the merge in the
+shared side table (`State.taintNumber`); the boxed ABI slot still drives
+immediate↔eco.value boxing (CGEN_001) at the call. No codegen change was needed.
+The S2–S4 band-aids (subst enrichment, the Pending variants, localMulti/valueMulti/
+number-multi, demand replay) are now redundant-in-principle and can be retired
+incrementally (parent plan's deletion phases); `forceCNumberToInt` remains the
+identity fossil pending that cleanup.
 
 ---
 
@@ -323,7 +384,7 @@ one of the two at each of ~60 sites.
 | `State.elm` (349) | accum/ctx split (monotone accumulator vs scoped context — a measured perf refactor); frame-stack `VarEnv`; `MVarEnv` allocator + side table | `localMulti`/`valueMulti` stacks with `derivedDestructorNames` — S3's state |
 | `Specialize.elm` (5,973) | ~2,000-line spine (§3) | ~2,000 lines of S1–S5 + gates; quadruplicated eager-let fallback; copy-paste `Tracked*` twins; cycle-path duplication |
 | `TypeSubst.elm` (1,778) | Canonical↔mono unification, path-compressed union-find inside the subst, occurrence-filtered application, scheme freshening, merged single-pass call-site unifier | `applySubstKeepNumber` clone; ignored `FreeVars` parameter (vestige of the pre-MVarId name-based design); silent-failure policy pushing all diagnosis downstream |
-| `AssignMVarIds.elm` (1,158) | Phase-0 rewrite Names→MVarIds; solver-root-backed identity (`rootEnv`), per-binding scheme separation | Name-prefix constraint channel; **duplicated root-claim logic, only one copy carrying the CNumber join patch** (§9.1) |
+| `AssignMVarIds.elm` (1,158) | Phase-0 rewrite Names→MVarIds; solver-root-backed identity (`rootEnv`, module-scoped); solver-exported supers via `RootedVar.super` + `varSupers` (single `ensureBinder` dispatch); per-binding scheme separation | *(Name-prefix constraint channel and the duplicated-join bug §9.1 removed Jul 2026.)* Remaining: eager `superVars` write mirrors the still-eager defaulting elsewhere |
 | `Closure.elm` (808) | Free-variable analysis → inline `MonoClosure` captures; no lifting | Capture-*type* recovery stack (scrape body for first typed occurrence → reverse-infer case-root types from decision-tree tests → `MUnit` fallback → crash) — all compensating for untyped `MonoCase` scrutinee roots in the IR |
 | `KernelAbi.elm` (426) | Two-mode (`UseSubstitution`/`PreserveVars`), two-layer (neutral/backend) model; kernels as leaves | `suffixSelectingKernels` — a phase-tagged, per-bug-annotated registry that must stay in sync with a giant backend symbol match ("This set is **load-bearing**, not a transitional shim") |
 | `ResolveAccessorValues.elm` (674) | (Is itself a patch.) Internally principled: abstract-interpretation lattice (`VI_Unknown/VI_Accessor/VI_Record`) + context-rooted typed closure fallback | Runs per-node inside the worklist loop; "leave as-is" escape contradicting its header guarantee; stale MONO_027 citation; "TIER 2+3" renumbering scar |
@@ -373,7 +434,7 @@ deliberate shift to fail-fast.
 
 ---
 
-## 9. Fossil catalog (and one live bug)
+## 9. Fossil catalog (and two bugs, since fixed)
 
 > **Update (Jul 2026 — §9.1, §10.1 resolved).** The name-prefix constraint
 > channel described below has been removed. Super constraints
@@ -388,16 +449,26 @@ deliberate shift to fail-fast.
 > `FORBID_SUPER_NAME_001` and `plans/solver-roots-super-constraint-export.md`.
 > The §9.1 text below is retained for historical context.
 
-### 9.1 Latent live bug: unjoined constraint on annotation root reuse
+### 9.1 Latent bug *(fixed Jul 2026)*: unjoined constraint on annotation root reuse
 
-The CNumber join-upgrade patch ("number dominates" when a second name claims an
-already-claimed solver root) exists in `ensureMVarIdForRoot`
-(AssignMVarIds.elm:192–216, with a comment citing
+*As found (name-prefix era):* the CNumber join-upgrade patch ("number
+dominates" when a second name claims an already-claimed solver root) existed in
+`ensureMVarIdForRoot` (with a comment citing
 `fix-number-constraint-lost-solver-root-reuse.md`) — but the **same root-claim
-logic is duplicated inline in `rewriteAnnotation` (:287–299) without the
-upgrade**. A `number`-named annotation binder whose root was already claimed by
-a non-number name in an earlier annotation still silently loses the constraint
-— exactly the bug class the patch was written for, alive in the unpatched copy.
+logic was duplicated inline in `rewriteAnnotation` without the upgrade**. A
+`number`-named annotation binder whose root was already claimed by a non-number
+name in an earlier annotation silently lost the constraint — exactly the bug
+class the patch was written for, alive in the unpatched copy.
+
+*Fix:* the join-upgrade is deleted entirely rather than duplicated. The super
+now comes from the root descriptor (`RootedVar.super`), which is the same for
+every name sharing that root, so there is nothing to "join" — and
+`rewriteAnnotation` now routes through the shared `ensureBinder` dispatch, so no
+inline duplicate survives. A second, related bug surfaced in the same code and
+was fixed alongside it: `rootEnv` was keyed by a raw per-module `Pt` index, so
+unrelated definitions in different modules could alias MVarIds (and a number
+binder in one module could stamp CNumber onto an unrelated module's generic
+var); the key is now `(moduleKey, rootIdx)`.
 
 ### 9.2 Vestiges and duplications
 
@@ -425,7 +496,7 @@ a non-number name in an earlier annotation still silently loses the constraint
   lookup + MonoExtern fallback duplicated with a "belt-and-braces" admission.
 - `hasCEcoTVar` is `not << all isNumberVar` under a misleading name;
   `isFullyMonomorphicType` ≈ `not << containsAnyMVar`.
-- `MVar`'s embedded `Constraint` duplicates the `numberVars` side table (path
+- `MVar`'s embedded `Constraint` duplicates the `superVars` side table (path
   compression must re-stamp it via `constraintOf`).
 - Stale doc references: ResolveAccessorValues header cites MONO_027 (now the
   arity invariant); "TIER 2+3" banner after tier 1 was deleted; KernelAbi
@@ -456,21 +527,27 @@ The statement the code is converging toward, made explicit:
 > (`CNumber`) — are discharged only at the boundary, never during iteration.**
 
 Measured against that statement, the accretion resolves into three principled
-gaps rather than dozens of patches:
+gaps rather than dozens of patches. The first is now **closed**; the other two
+remain open:
 
-1. **Constraint provenance.** `number`-ness should be a fact exported by the
-   solver through `SolverRoots` alongside root identity — not re-derived from
-   name prefixes and re-joined by patches. One channel, loss-free, kills the
-   whole recovery apparatus at the entry side (including bug §9.1).
+1. **Constraint provenance *(done — Jul 2026)*.** `number`-ness (and the full
+   super lattice) is now a fact exported by the solver alongside root identity —
+   `IO.RootedVar.super` read from the root descriptor by
+   `SolverRoots.superOfRoot`, plus a `varSupers` map for non-rooted names — not
+   re-derived from name prefixes and re-joined by patches. One channel,
+   loss-free: it killed the entry-side bug class outright (bug §9.1 and its
+   cross-module sibling) and removed `constraintFromName`. It did **not** by
+   itself remove the demand machinery below, because that machinery is driven by
+   gap 2 (eager defaulting), not by the provenance channel.
 
-2. **Defaulting placement.** CNumber→MInt is a closing operator; it belongs in
+2. **Defaulting placement *(open)*.** CNumber→MInt is a closing operator; it belongs in
    exactly one place — a final resolution step at fixpoint quiescence (or at
    minimum, at node-emission boundaries after all call-site/branch demand has
    been unified). With late defaulting, `applySubstKeepNumber` merges back
    into `applySubst`, the demand-replay analysis (S4) becomes unnecessary, and
    the number-multi gate tower (S3's third stack) loses its reason to exist.
 
-3. **One deferral concept, one local fixpoint.** The five `Pending` variants
+3. **One deferral concept, one local fixpoint *(open)*.** The five `Pending` variants
    are one mechanism (defer until consumer type known) and should share one
    representation and one resolution path. Likewise localMulti/valueMulti/
    number-multi are the global worklist re-implemented at let scope; the

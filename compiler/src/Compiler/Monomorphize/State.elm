@@ -4,7 +4,7 @@ module Compiler.Monomorphize.State exposing
     , LocalInstanceInfo, LocalMultiState
     , ValueInstanceInfo, ValueMultiState
     , VarEnv(..), emptyVarEnv, insertVar, lookupVar, popFrame, pushFrame, varEnvKeys
-    , MVarEnv, initMVarEnv, freshMVar, isNumberVar
+    , MVarEnv, initMVarEnv, freshMVar, isNumberVar, taintNumber
     )
 
 {-| State types and utilities for monomorphization.
@@ -40,7 +40,7 @@ the monomorphization process.
 
 # Monomorphization Variable Environment
 
-@docs MVarEnv, initMVarEnv, freshMVar, isNumberVar
+@docs MVarEnv, initMVarEnv, freshMVar, isNumberVar, taintNumber
 
 -}
 
@@ -130,6 +130,20 @@ freshMVar constraint env =
 isNumberVar : MVarId -> MVarEnv -> Bool
 isNumberVar mvarId env =
     Dict.get (Id.toComparable mvarId) env.superVars == Just IO.Number
+
+
+{-| Record that an MVarId belongs to a Number-constrained equivalence class.
+
+Join-R (symmetric constraint join): when a number var unifies with a boxed
+(CEcoValue) var, the boxed var's id is tainted Number here so that copies of its
+type stamped BEFORE the merge — which the per-work-item substitution can no
+longer heal — still resolve to Int at the closing pass, and so key-time
+`constraintOf` routes its demands to the concrete Int specialization. Mirrors
+`freshMVar`'s CNumber branch; the taint is monotonic (never removed).
+-}
+taintNumber : MVarId -> MVarEnv -> MVarEnv
+taintNumber mvarId env =
+    { env | superVars = Dict.insert (Id.toComparable mvarId) IO.Number env.superVars }
 
 
 {-| Global accumulator fields that grow monotonically during monomorphization.

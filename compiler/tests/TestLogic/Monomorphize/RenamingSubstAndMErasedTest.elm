@@ -408,7 +408,7 @@ collectCEcoValueVars monoType =
             []
 
         Mono.MVar mvarId Mono.CNumber ->
-            -- CNumber should have been resolved by forceCNumberToInt
+            -- CNumber should have been resolved by the closing pass (resolveResidualNumbers, MONO_028)
             [ String.fromInt (Id.toComparable mvarId) ]
 
         Mono.MList inner ->
