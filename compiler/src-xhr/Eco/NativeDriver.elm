@@ -1,7 +1,4 @@
-module Eco.NativeDriver exposing
-    ( lowerAndLink
-    , lowerAndLinkBytes
-    )
+module Eco.NativeDriver exposing (lowerAndLink, lowerAndLinkBytes)
 
 {-| XHR-bootstrap stub for `Eco.NativeDriver`.
 

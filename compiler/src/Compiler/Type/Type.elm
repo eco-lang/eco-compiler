@@ -789,7 +789,7 @@ getFreshVarName =
                     ( name, newIndex, newTaken ) =
                         getFreshVarNameHelp ns.normals ns.taken
                 in
-                IO.putNames ({ ns | taken = newTaken, normals = newIndex })
+                IO.putNames { ns | taken = newTaken, normals = newIndex }
                     |> IO.map (\_ -> name)
             )
 

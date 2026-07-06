@@ -152,7 +152,7 @@ suite =
 {-| The full super lattice (number/comparable/appendable/compappend) is
 exported into the MVarId-keyed side table, and only `number` maps to the
 CNumber constraint mono consumes. Locks in the "pass all super constraints,
-not just number" contract (TYPE_SUPER_001) and confirms that plain type
+not just number" contract (TYPE\_SUPER\_001) and confirms that plain type
 variables carry no super.
 -}
 superConstraintExportTests : Test

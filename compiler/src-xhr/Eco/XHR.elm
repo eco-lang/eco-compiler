@@ -1,8 +1,8 @@
 module Eco.XHR exposing
-    ( stringTask, jsonTask, bytesTask, unitTask
+    ( Failure
+    , stringTask, jsonTask, bytesTask, unitTask
     , sendBytesTask, rawBytesRecvTask
     , orCrash
-    , Failure
     )
 
 {-| Shared HTTP plumbing for XHR-based IO operations.

@@ -779,9 +779,6 @@ unifyStructure ctx flatType content otherContent =
 
 
 -- ====== UNIFY ARGS ======
-
-
-
 -- ====== UNIFY RECORDS ======
 
 

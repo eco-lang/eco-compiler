@@ -148,6 +148,7 @@ type stamped BEFORE the merge — which the per-work-item substitution can no
 longer heal — still resolve to Int at the closing pass, and so key-time
 `constraintOf` routes its demands to the concrete Int specialization. Mirrors
 `freshMVar`'s CNumber branch; the taint is monotonic (never removed).
+
 -}
 taintNumber : MVarId -> MVarEnv -> MVarEnv
 taintNumber mvarId env =

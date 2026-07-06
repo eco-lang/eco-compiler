@@ -55,13 +55,13 @@ import Compiler.Generate.MLIR.BytesFusion.Emit as BFEmit
 import Compiler.Generate.MLIR.BytesFusion.Reify as BFReify
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Intrinsics as Intrinsics
+import Compiler.Generate.MLIR.KernelAbi as KernelAbi
 import Compiler.Generate.MLIR.Names as Names
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Patterns as Patterns
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Compiler.Monomorphize.Closure as Closure
-import Compiler.Generate.MLIR.KernelAbi as KernelAbi
 import Compiler.Monomorphize.Registry as Registry
 import Dict
 import Hex

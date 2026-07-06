@@ -76,6 +76,7 @@ stale stamp is RARE (only Join-R-tainted copies), so an allocation-free pre-scan
 (`hasStaleConstraint`) short-circuits the common case and returns the input by
 reference — no deep copy. Only when a genuine disagreement exists is the type
 rebuilt.
+
 -}
 refreshConstraints : MVarEnv -> Mono.MonoType -> Mono.MonoType
 refreshConstraints env monoType =
@@ -877,7 +878,7 @@ applySubstPure env subst canType =
             applySubstPure env newSubst inner
 
 
-{-| Apply applySubstPure to a list of canonical types. Env-pure (MONO_028 J5): the
+{-| Apply applySubstPure to a list of canonical types. Env-pure (MONO\_028 J5): the
 MVarEnv is read-only here — applySubstPure never taints or allocates fresh vars — so
 there is no env to thread back.
 -}

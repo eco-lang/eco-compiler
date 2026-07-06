@@ -1,6 +1,4 @@
-module Compiler.Type.Constrain.Typed.Expression exposing
-    ( constrainDefWithIds, constrainRecursiveDefsWithIds
-    )
+module Compiler.Type.Constrain.Typed.Expression exposing (constrainDefWithIds, constrainRecursiveDefsWithIds)
 
 {-| Type constraint generation for expressions (Typed pathway).
 
