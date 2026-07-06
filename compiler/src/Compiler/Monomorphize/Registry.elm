@@ -47,11 +47,11 @@ emptyRegistry =
 Returns the SpecId and the (possibly updated) registry.
 
 -}
-getOrCreateSpecId : Global -> MonoType -> Maybe LambdaId -> SpecializationRegistry -> ( SpecId, SpecializationRegistry )
-getOrCreateSpecId global monoType maybeLambda registry =
+getOrCreateSpecId : Global -> MonoType -> SpecializationRegistry -> ( SpecId, SpecializationRegistry )
+getOrCreateSpecId global monoType registry =
     let
         key =
-            Mono.toComparableSpecKey (Mono.SpecKey global monoType maybeLambda)
+            Mono.toComparableSpecKey (Mono.SpecKey global monoType)
     in
     case Dict.get key registry.mapping of
         Just specId ->
@@ -65,7 +65,7 @@ getOrCreateSpecId global monoType maybeLambda registry =
             ( specId
             , { nextId = specId + 1
               , mapping = Dict.insert key specId registry.mapping
-              , reverseMapping = Array.push (Just ( global, monoType, maybeLambda )) registry.reverseMapping
+              , reverseMapping = Array.push (Just ( global, monoType )) registry.reverseMapping
               }
             )
 
@@ -82,10 +82,10 @@ updateRegistryType specId actualType registry =
         Nothing ->
             registry
 
-        Just ( global, _, maybeLambda ) ->
+        Just ( global, _ ) ->
             { registry
                 | reverseMapping =
-                    Array.set specId (Just ( global, actualType, maybeLambda )) registry.reverseMapping
+                    Array.set specId (Just ( global, actualType )) registry.reverseMapping
             }
 
 
@@ -94,6 +94,6 @@ updateRegistryType specId actualType registry =
 Returns the Global, MonoType, and optional LambdaId if found.
 
 -}
-lookupSpecKey : SpecId -> SpecializationRegistry -> Maybe ( Global, MonoType, Maybe LambdaId )
+lookupSpecKey : SpecId -> SpecializationRegistry -> Maybe ( Global, MonoType )
 lookupSpecKey specId registry =
     Array.get specId registry.reverseMapping |> Maybe.andThen identity

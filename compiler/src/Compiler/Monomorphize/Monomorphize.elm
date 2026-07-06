@@ -201,13 +201,13 @@ monomorphizeFromEntryWith maybeFlagsGlobal mainGlobal mainType globalTypeEnv nod
                         Just decoderTipe ->
                             let
                                 decoderMonoType =
-                                    canTypeToMonoType Dict.empty decoderTipe
+                                    entryPointMonoType Dict.empty decoderTipe
 
                                 accum =
                                     stateWithMain.accum
 
                                 ( specId, registry2 ) =
-                                    Registry.getOrCreateSpecId (toptGlobalToMono flagsGlobal) decoderMonoType Nothing accum.registry
+                                    Registry.getOrCreateSpecId (toptGlobalToMono flagsGlobal) decoderMonoType accum.registry
                             in
                             ( { stateWithMain
                                 | accum =
@@ -258,7 +258,7 @@ initSpecialization mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
     let
         mainMonoType : Mono.MonoType
         mainMonoType =
-            canTypeToMonoType Dict.empty mainType
+            entryPointMonoType Dict.empty mainType
 
         currentModule : IO.Canonical
         currentModule =
@@ -274,7 +274,7 @@ initSpecialization mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
             initialState.accum
 
         ( mainSpecIdVal, registryWithMain ) =
-            Registry.getOrCreateSpecId (toptGlobalToMono mainGlobal) mainMonoType Nothing initialAccum.registry
+            Registry.getOrCreateSpecId (toptGlobalToMono mainGlobal) mainMonoType initialAccum.registry
 
         stateWithMain : MonoState
         stateWithMain =
@@ -458,7 +458,7 @@ processOneWorkItem specId rest state =
                 -- Should not happen if registry/worklist invariants hold
                 { state | accum = { accum | worklist = rest } }
 
-            Just ( global, monoType, _ ) ->
+            Just ( global, monoType ) ->
                 let
                     ctx =
                         state.ctx
@@ -611,10 +611,10 @@ type alias Substitution =
     State.Substitution
 
 
-canTypeToMonoType : Substitution -> Can.Type TypeIds.MVarId -> Mono.MonoType
-canTypeToMonoType subst canType =
+entryPointMonoType : Substitution -> Can.Type TypeIds.MVarId -> Mono.MonoType
+entryPointMonoType subst canType =
     -- Use a dummy MVarEnv for the entry point type conversion (no fresh allocations needed)
-    TypeSubst.canTypeToMonoType (State.initMVarEnv TypeIds.firstMVarId Dict.empty) subst canType
+    TypeSubst.applySubstPure (State.initMVarEnv TypeIds.firstMVarId Dict.empty) subst canType
 
 
 

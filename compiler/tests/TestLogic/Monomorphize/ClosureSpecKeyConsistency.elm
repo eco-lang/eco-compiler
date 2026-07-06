@@ -68,7 +68,7 @@ checkClosureSpecKeyConsistency (Mono.MonoGraph data) =
                         -- Pruned slot (MONO_022), skip
                         acc
 
-                    Just ( global, keyMonoType, _ ) ->
+                    Just ( global, keyMonoType ) ->
                         case Array.get specId data.nodes |> Maybe.andThen identity of
                             Nothing ->
                                 -- No node (caught by MONO_017)

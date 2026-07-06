@@ -63,7 +63,7 @@ checkRegistryNodeTypeConsistency (Mono.MonoGraph data) =
                     Nothing ->
                         acc
 
-                    Just ( _, regMonoType, _ ) ->
+                    Just ( _, regMonoType ) ->
                         case Array.get specId data.nodes |> Maybe.andThen identity of
                             Nothing ->
                                 acc

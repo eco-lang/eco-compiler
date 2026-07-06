@@ -33,7 +33,6 @@ has been moved to GlobalOpt.MonoGlobalOptimize as part of the staging consolidat
 
 -}
 
-import Compiler.AST.DecisionTree.Test as DT
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
 import Compiler.Reporting.Annotation as A
@@ -637,24 +636,24 @@ collectCaseRootTypesHelper expr acc =
     case expr of
         Mono.MonoCase _ root decider jumps _ ->
             let
+                -- Prefer the REAL scrutinee type carried by the decider's `DtRoot`
+                -- paths (collectCaseRootTypesFromDecider). Only when the decider has
+                -- no typed root for `root` — a test-less Leaf-only decider — fall
+                -- back to MUnit (→ !eco.value at ABI). The previous order guessed the
+                -- type from the decider TESTS first (collapsing customs/Bool/List/
+                -- Tuple to MUnit) and the real DtRoot type, inserted with a
+                -- first-wins `if not member`, could never override that wrong guess.
+                accAfterDecider =
+                    collectCaseRootTypesFromDecider decider acc
+
                 accWithRoot =
-                    if Dict.member root acc then
-                        acc
+                    if Dict.member root accAfterDecider then
+                        accAfterDecider
 
                     else
-                        case inferRootTypeFromDecider decider of
-                            Just rootType ->
-                                Dict.insert root rootType acc
-
-                            Nothing ->
-                                -- Fallback: use MUnit which maps to !eco.value at ABI.
-                                -- This is correct for all union types (the common case for MonoCase).
-                                Dict.insert root Mono.MUnit acc
-
-                accAfterDecider =
-                    collectCaseRootTypesFromDecider decider accWithRoot
+                        Dict.insert root Mono.MUnit accAfterDecider
             in
-            List.foldl (\( _, e ) a -> collectCaseRootTypesHelper e a) accAfterDecider jumps
+            List.foldl (\( _, e ) a -> collectCaseRootTypesHelper e a) accWithRoot jumps
 
         Mono.MonoClosure _ _ _ ->
             -- Don't recurse into closure bodies — independent scope
@@ -758,51 +757,3 @@ collectDtPathCaseRootTypes dtPath acc =
 
         Mono.DtUnbox _ inner ->
             collectDtPathCaseRootTypes inner acc
-
-
-{-| Infer the root variable's MonoType from the first test in a Decider.
--}
-inferRootTypeFromDecider : Mono.Decider Mono.MonoChoice -> Maybe Mono.MonoType
-inferRootTypeFromDecider decider =
-    case decider of
-        Mono.Chain tests _ _ ->
-            case tests of
-                ( Mono.DtRoot _ _, test ) :: _ ->
-                    inferTypeFromTest test
-
-                _ ->
-                    Nothing
-
-        Mono.FanOut path edges _ ->
-            case path of
-                Mono.DtRoot _ _ ->
-                    case edges of
-                        ( test, _ ) :: _ ->
-                            inferTypeFromTest test
-
-                        [] ->
-                            Nothing
-
-                _ ->
-                    Nothing
-
-        Mono.Leaf _ ->
-            Nothing
-
-
-inferTypeFromTest : DT.Test -> Maybe Mono.MonoType
-inferTypeFromTest test =
-    case test of
-        DT.IsInt _ ->
-            Just Mono.MInt
-
-        DT.IsChr _ ->
-            Just Mono.MChar
-
-        DT.IsStr _ ->
-            Just Mono.MString
-
-        _ ->
-            -- Custom types, Bool, List, Tuple all map to !eco.value at ABI,
-            -- same as MUnit. The exact type params aren't needed for capture ABI.
-            Just Mono.MUnit

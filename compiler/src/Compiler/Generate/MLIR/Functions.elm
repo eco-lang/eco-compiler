@@ -287,7 +287,7 @@ generateNode ctx specId node =
         -- EcoToLLVM installs a shadow root frame for its parameters (TCO safety).
         isMainEntry =
             case Registry.lookupSpecKey specId ctx.registry of
-                Just ( Mono.Global _ name, _, _ ) ->
+                Just ( Mono.Global _ name, _ ) ->
                     name == "main"
 
                 _ ->
@@ -339,10 +339,10 @@ generateNodeInner ctx funcName specId node =
                 maybeCtorName : Maybe String
                 maybeCtorName =
                     case Registry.lookupSpecKey specId ctx.registry of
-                        Just ( Mono.Global _ ctorName, _, _ ) ->
+                        Just ( Mono.Global _ ctorName, _ ) ->
                             Just (Name.toElmString ctorName)
 
-                        Just ( Mono.Accessor _, _, _ ) ->
+                        Just ( Mono.Accessor _, _ ) ->
                             -- Accessors don't have constructor names
                             Nothing
 
@@ -378,10 +378,10 @@ generateNodeInner ctx funcName specId node =
 specIdToFuncName : Mono.SpecializationRegistry -> Mono.SpecId -> String
 specIdToFuncName registry specId =
     case Registry.lookupSpecKey specId registry of
-        Just ( Mono.Global home name, _, _ ) ->
+        Just ( Mono.Global home name, _ ) ->
             Names.canonicalToMLIRName home ++ "_" ++ Names.sanitizeName name ++ "_$_" ++ String.fromInt specId
 
-        Just ( Mono.Accessor fieldName, _, _ ) ->
+        Just ( Mono.Accessor fieldName, _ ) ->
             "accessor_" ++ Names.sanitizeName fieldName ++ "_$_" ++ String.fromInt specId
 
         Nothing ->

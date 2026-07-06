@@ -141,7 +141,7 @@ globalOptimize graph0a =
 specHome : Mono.SpecializationRegistry -> Int -> IO.Canonical
 specHome registry specId =
     case Array.get specId registry.reverseMapping |> Maybe.andThen identity of
-        Just ( global, _, _ ) ->
+        Just ( global, _ ) ->
             case global of
                 Mono.Global home _ ->
                     home

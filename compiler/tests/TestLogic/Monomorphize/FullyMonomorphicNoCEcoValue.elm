@@ -72,7 +72,7 @@ checkFullyMonomorphicNoCEcoValue (Mono.MonoGraph data) =
                         -- Pruned slot (MONO_022), skip
                         acc
 
-                    Just ( _, keyMonoType, _ ) ->
+                    Just ( _, keyMonoType ) ->
                         if not (isFullyMonomorphic keyMonoType) then
                             -- Key is not fully monomorphic, skip (invariant doesn't apply)
                             acc

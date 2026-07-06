@@ -19,6 +19,7 @@ import Compiler.Monomorphize.Analysis as Analysis
 import Compiler.Monomorphize.MonoTraverse as Traverse
 import Compiler.Monomorphize.State as State
 import Dict exposing (Dict)
+import Utils.Crash
 
 
 {-| Compute the BitSet of SpecIds reachable from the main specialization
@@ -128,7 +129,22 @@ pruneUnreachableSpecs mvarEnv globalTypeEnv (Mono.MonoGraph record) =
         closeNode : Mono.MonoNode -> Mono.MonoNode
         closeNode node =
             if Traverse.anyNodeType hasResidualType node then
-                Traverse.mapNodeTypes closeType node
+                let
+                    closed =
+                        Traverse.mapNodeTypes closeType node
+                in
+                -- 2.2a (MONO_002 enforcement): a residual number var must not
+                -- survive the close. This runs every compile, unconditionally —
+                -- a stronger, shape-independent replacement for the old syntactic
+                -- fail-fast (a stamped `MVar _ CNumber` crashing codegen only if
+                -- its shape happened to be exercised). Catches a closeType
+                -- resolution failure; the detection shares `anyNodeType` coverage
+                -- with the close itself, so it does not guard an anyNodeType gap.
+                if Traverse.anyNodeType hasResidualType closed then
+                    Utils.Crash.crash "MONO_002: residual number var survived the closing pass (Prune)"
+
+                else
+                    closed
 
             else
                 node
@@ -164,22 +180,22 @@ pruneUnreachableSpecs mvarEnv globalTypeEnv (Mono.MonoGraph record) =
             record.registry
 
         -- Null out dead entries in reverseMapping + close residual types
-        reverseMapping1 : Array (Maybe ( Mono.Global, Mono.MonoType, Maybe Mono.LambdaId ))
+        reverseMapping1 : Array (Maybe ( Mono.Global, Mono.MonoType ))
         reverseMapping1 =
             Array.indexedMap
                 (\i entry ->
                     if BitSet.member i live then
                         Maybe.map
-                            (\triple ->
+                            (\pair ->
                                 let
-                                    ( g, mt, ml ) =
-                                        triple
+                                    ( g, mt ) =
+                                        pair
                                 in
                                 if hasResidualType mt then
-                                    ( g, closeType mt, ml )
+                                    ( g, closeType mt )
 
                                 else
-                                    triple
+                                    pair
                             )
                             entry
 

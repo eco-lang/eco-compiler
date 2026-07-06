@@ -19,7 +19,7 @@ module Compiler.AST.Monomorphized exposing
     , CallModel(..), CallKind(..), CallInfo, defaultCallInfo
     , ClosureKindId(..), ClosureKind(..), MaybeClosureKind
     , CaptureABI
-    , containsAnyMVar, containsCEcoMVar, resultTypeOf
+    , containsAnyMVar, resultTypeOf
     -- Typed closure calling (ABI cloning)
     -- Call staging metadata
     -- Staging/Segmentation helpers
@@ -145,7 +145,7 @@ This module defines the data structures for the monomorphized program
 
 # Misc Helpers
 
-@docs containsAnyMVar, containsCEcoMVar, resultTypeOf
+@docs containsAnyMVar, resultTypeOf
 
 -}
 
@@ -406,46 +406,6 @@ containsAnyMVarList types =
             containsAnyMVar t || containsAnyMVarList rest
 
 
-{-| Check whether a MonoType contains any `MVar _ CEcoValue`.
--}
-containsCEcoMVar : MonoType -> Bool
-containsCEcoMVar monoType =
-    case monoType of
-        MVar _ CEcoValue ->
-            True
-
-        MVar _ _ ->
-            False
-
-        MList t ->
-            containsCEcoMVar t
-
-        MFunction args result ->
-            containsCEcoMVarList args || containsCEcoMVar result
-
-        MTuple elems ->
-            containsCEcoMVarList elems
-
-        MRecord fields ->
-            Dict.foldl (\_ t acc -> acc || containsCEcoMVar t) False fields
-
-        MCustom _ _ args ->
-            containsCEcoMVarList args
-
-        _ ->
-            False
-
-
-containsCEcoMVarList : List MonoType -> Bool
-containsCEcoMVarList types =
-    case types of
-        [] ->
-            False
-
-        t :: rest ->
-            containsCEcoMVar t || containsCEcoMVarList rest
-
-
 {-| Identifier for lambda functions in lambda sets, distinguishing named functions from closures.
 -}
 type LambdaId
@@ -469,7 +429,7 @@ type Global
 {-| Key identifying a unique specialization of a polymorphic function.
 -}
 type SpecKey
-    = SpecKey Global MonoType (Maybe LambdaId)
+    = SpecKey Global MonoType
 
 
 {-| Unique integer identifier for a function specialization.
@@ -483,7 +443,7 @@ type alias SpecId =
 type alias SpecializationRegistry =
     { nextId : Int
     , mapping : Dict String SpecId
-    , reverseMapping : Array (Maybe ( Global, MonoType, Maybe LambdaId ))
+    , reverseMapping : Array (Maybe ( Global, MonoType ))
     }
 
 
@@ -990,7 +950,7 @@ toComparableMonoTypeHelper work acc =
                             -- key point). Key it IDENTICALLY to MInt ("I") so open-number
                             -- and explicit-Int instantiations of a global merge to one
                             -- specialization (they are the same after
-                            -- resolveResidualNumbers), while Float ("F") stays distinct
+                            -- the residual-number close in Prune), while Float ("F") stays distinct
                             -- and the boxed CEcoValue sentinel ("V") stays distinct from
                             -- i64. The MVarId is dropped so fresh ids never split specs.
                             -- Callers apply `refreshConstraints` before keying so a
@@ -1051,18 +1011,6 @@ constraintToString constraint =
             "number"
 
 
-{-| Convert a lambda ID to a comparable key for use in dictionaries.
--}
-toComparableLambdaId : LambdaId -> String
-toComparableLambdaId lambdaId =
-    case lambdaId of
-        AnonymousLambda canonical uid ->
-            let
-                (IO.Canonical ( author, project ) modName) =
-                    canonical
-            in
-            String.concat [ author, "\u{0000}", project, "\u{0000}", modName, "\u{0000}", String.fromInt uid ]
-
 
 {-| Convert a specialization key to a single comparable String for use in dictionaries.
 
@@ -1071,18 +1019,11 @@ Parts are separated by \\u{0001}.
 
 -}
 toComparableSpecKey : SpecKey -> String
-toComparableSpecKey (SpecKey global monoType maybeLambda) =
+toComparableSpecKey (SpecKey global monoType) =
     String.concat
         [ toComparableGlobal global
         , "\u{0001}"
         , toComparableMonoType monoType
-        , "\u{0001}"
-        , case maybeLambda of
-            Nothing ->
-                "N"
-
-            Just lambdaId ->
-                String.concat [ "L", toComparableLambdaId lambdaId ]
         ]
 
 

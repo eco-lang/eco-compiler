@@ -1,9 +1,9 @@
 module Compiler.Monomorphize.TypeSubst exposing
     ( applySubstPure
-    , canTypeToMonoType, extractParamTypes
+    , extractParamTypes
     , unify, unifyExtend, unifyArgsOnly, unifyCallSiteDirect, unifyCallSiteDirectWithExpected
     , buildSchemeInfo, refreshSchemeInfo
-    , applySubstWithFreeVars
+    , applySubstFiltered
     , refreshConstraints
     )
 
@@ -21,7 +21,7 @@ by MVarId (as Int via Id.toComparable), not by Name.
 
 # Type Conversion
 
-@docs canTypeToMonoType, extractParamTypes
+@docs extractParamTypes
 
 
 # Unification
@@ -36,7 +36,7 @@ by MVarId (as Int via Id.toComparable), not by Name.
 
 # Substitution with Free Variables
 
-@docs applySubstWithFreeVars
+@docs applySubstFiltered
 @docs refreshConstraints
 
 -}
@@ -671,7 +671,7 @@ resolveMonoVarsHelp visiting subst monoType =
                             Mono.CNumber ->
                                 -- Quiescence-before-defaulting: preserve the number
                                 -- var as a residual (no change). CNumber is discharged
-                                -- only by resolveResidualNumbers at the end of
+                                -- only by the residual-number close (fused into Prune) at the end of
                                 -- monomorphization.
                                 ( False, monoType )
 
@@ -890,18 +890,16 @@ applySubstList env subst types =
 actually appear in the type. This prevents cross-scheme contamination
 when a substitution carries bindings from multiple schemes.
 
-The FreeVars parameter documents which annotation scheme this type belongs to
-but the actual filtering is by MVarIds present in canType (sufficient because
-MVarIds are globally unique post-AssignMVarIds).
+Filtering is by the MVarIds present in canType (sufficient because MVarIds are
+globally unique post-AssignMVarIds), so no scheme/FreeVars argument is needed.
 
 -}
-applySubstWithFreeVars :
+applySubstFiltered :
     MVarEnv
-    -> Can.FreeVars
     -> Substitution
     -> Can.Type MVarId
     -> Mono.MonoType
-applySubstWithFreeVars mvarEnv _ subst canType =
+applySubstFiltered mvarEnv subst canType =
     if Dict.size subst <= 8 then
         -- For small substitutions, filtering costs more than just applying
         -- the full subst directly (the overhead of building Set + Dict.filter
@@ -1031,14 +1029,6 @@ applySubstLambdaChain env subst argsAcc to =
                 )
                 (applySubstPure env subst to)
                 argsAcc
-
-
-{-| Convert a canonical type to a monomorphic type using a substitution.
-This is an alias for applySubstPure (env-pure).
--}
-canTypeToMonoType : MVarEnv -> Substitution -> Can.Type MVarId -> Mono.MonoType
-canTypeToMonoType =
-    applySubstPure
 
 
 

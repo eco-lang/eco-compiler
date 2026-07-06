@@ -221,7 +221,7 @@ checkCallSite ctx registry funcExpr args =
 lookupCalleeParamTypes : Mono.SpecializationRegistry -> Int -> Maybe (List Mono.MonoType)
 lookupCalleeParamTypes registry specId =
     case Array.get specId registry.reverseMapping of
-        Just (Just ( _, monoType, _ )) ->
+        Just (Just ( _, monoType )) ->
             case monoType of
                 Mono.MFunction paramTypes _ ->
                     Just paramTypes
@@ -318,7 +318,7 @@ checkSpecializationConsistency registry =
             Array.foldl
                 (\maybeEntry ( i, acc ) ->
                     case maybeEntry of
-                        Just ( global, monoType, _ ) ->
+                        Just ( global, monoType ) ->
                             case collectListElemTypes monoType of
                                 [] ->
                                     ( i + 1, acc )

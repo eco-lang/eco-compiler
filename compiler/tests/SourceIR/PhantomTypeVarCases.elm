@@ -191,7 +191,7 @@ assertNoPhantomDuplication () =
                     Array.foldl
                         (\maybeEntry count ->
                             case maybeEntry of
-                                Just ( Mono.Global _ name, _, _ ) ->
+                                Just ( Mono.Global _ name, _ ) ->
                                     if name == "RErr" then
                                         count + 1
 

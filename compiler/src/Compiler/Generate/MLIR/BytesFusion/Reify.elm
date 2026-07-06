@@ -215,7 +215,7 @@ reifyEncoderHelpStrict bodyLookup registry exprCache expr =
             case func of
                 Mono.MonoVarGlobal _ specId _ ->
                     case Registry.lookupSpecKey specId registry of
-                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
+                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _ ) ->
                             if pkg == Pkg.bytes && moduleName == "Bytes.Encode" then
                                 reifyBytesEncodeCall bodyLookup registry exprCache name args
 
@@ -236,7 +236,7 @@ reifyEncoderHelpStrict bodyLookup registry exprCache expr =
                     case innerFunc of
                         Mono.MonoVarGlobal _ innerSpecId _ ->
                             case Registry.lookupSpecKey innerSpecId registry of
-                                Just ( Mono.Global (IO.Canonical pkg2 moduleName2) name2, _, _ ) ->
+                                Just ( Mono.Global (IO.Canonical pkg2 moduleName2) name2, _ ) ->
                                     if pkg2 == Pkg.bytes && moduleName2 == "Bytes.Encode" then
                                         reifyBytesEncodeCall bodyLookup registry exprCache name2 (innerArgs ++ args)
 
@@ -259,7 +259,7 @@ reifyEncoderHelpStrict bodyLookup registry exprCache expr =
                             case innerFunc of
                                 Mono.MonoVarGlobal _ innerSpecId _ ->
                                     case Registry.lookupSpecKey innerSpecId registry of
-                                        Just ( Mono.Global (IO.Canonical pkg2 moduleName2) name2, _, _ ) ->
+                                        Just ( Mono.Global (IO.Canonical pkg2 moduleName2) name2, _ ) ->
                                             if pkg2 == Pkg.bytes && moduleName2 == "Bytes.Encode" then
                                                 reifyBytesEncodeCall bodyLookup registry exprCache name2 (innerArgs ++ args)
 
@@ -491,7 +491,7 @@ reifyListConsCall registry funcExpr args =
 
         ( Mono.MonoVarGlobal _ specId _, [ headerExpr, tailExpr ] ) ->
             case Registry.lookupSpecKey specId registry of
-                Just ( Mono.Global (IO.Canonical pkg "List") "cons", _, _ ) ->
+                Just ( Mono.Global (IO.Canonical pkg "List") "cons", _ ) ->
                     if pkg == Pkg.core then
                         Just ( headerExpr, tailExpr )
 
@@ -513,7 +513,7 @@ reifyListMapCall registry expr =
     case expr of
         Mono.MonoCall _ (Mono.MonoVarGlobal _ specId _) [ mapFn, iterExpr ] _ _ ->
             case Registry.lookupSpecKey specId registry of
-                Just ( Mono.Global (IO.Canonical pkg "List") "map", _, _ ) ->
+                Just ( Mono.Global (IO.Canonical pkg "List") "map", _ ) ->
                     if pkg == Pkg.core then
                         Just ( mapFn, iterExpr )
 
@@ -534,7 +534,7 @@ reifyListLengthCall registry expr =
     case expr of
         Mono.MonoCall _ (Mono.MonoVarGlobal _ specId _) [ iterExpr ] _ _ ->
             case Registry.lookupSpecKey specId registry of
-                Just ( Mono.Global (IO.Canonical pkg "List") "length", _, _ ) ->
+                Just ( Mono.Global (IO.Canonical pkg "List") "length", _ ) ->
                     if pkg == Pkg.core then
                         Just iterExpr
 
@@ -609,7 +609,7 @@ matchLengthPrefixHeader registry headerExpr iterExpr =
     case headerExpr of
         Mono.MonoCall _ (Mono.MonoVarGlobal _ specId _) [ endianExpr, lengthCall ] _ _ ->
             case Registry.lookupSpecKey specId registry of
-                Just ( Mono.Global (IO.Canonical pkg "Bytes.Encode") name, _, _ ) ->
+                Just ( Mono.Global (IO.Canonical pkg "Bytes.Encode") name, _ ) ->
                     if pkg == Pkg.bytes && (name == "unsignedInt32" || name == "U32") then
                         case ( reifyEndianness registry endianExpr, reifyListLengthCall registry lengthCall ) of
                             ( Just endian, Just lengthIterExpr ) ->
@@ -789,7 +789,7 @@ constantNodeWidth node =
 Based on MonoExpr structure:
 
   - `MonoVarGlobal Region SpecId MonoType` references global values including constructors
-  - `Registry.lookupSpecKey` returns `Maybe (Global, MonoType, Maybe LambdaId)` (a tuple!)
+  - `Registry.lookupSpecKey` returns `Maybe (Global, MonoType)` (a tuple!)
   - `Global = Global IO.Canonical Name | Accessor Name`
 
 Bytes.BE and Bytes.LE are nullary constructors of Bytes.Endianness.
@@ -801,7 +801,7 @@ reifyEndianness registry expr =
         -- Nullary constructors are represented as MonoVarGlobal
         Mono.MonoVarGlobal _ specId _ ->
             case Registry.lookupSpecKey specId registry of
-                Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
+                Just ( Mono.Global (IO.Canonical pkg moduleName) name, _ ) ->
                     if pkg == Pkg.bytes && moduleName == "Bytes" then
                         case name of
                             "LE" ->
@@ -969,7 +969,7 @@ reifyDecoder registry exprCache expr =
             case func of
                 Mono.MonoVarGlobal _ specId _ ->
                     case Registry.lookupSpecKey specId registry of
-                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
+                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _ ) ->
                             if pkg == Pkg.bytes && moduleName == "Bytes.Decode" then
                                 reifyBytesDecodeCall registry exprCache name args
 
@@ -988,7 +988,7 @@ reifyDecoder registry exprCache expr =
                     case innerFunc of
                         Mono.MonoVarGlobal _ innerSpecId _ ->
                             case Registry.lookupSpecKey innerSpecId registry of
-                                Just ( Mono.Global (IO.Canonical pkg2 moduleName2) name2, _, _ ) ->
+                                Just ( Mono.Global (IO.Canonical pkg2 moduleName2) name2, _ ) ->
                                     if pkg2 == Pkg.bytes && moduleName2 == "Bytes.Decode" then
                                         reifyBytesDecodeCall registry exprCache name2 (innerArgs ++ args)
 
@@ -1013,7 +1013,7 @@ reifyDecoder registry exprCache expr =
                             case innerFunc of
                                 Mono.MonoVarGlobal _ innerSpecId _ ->
                                     case Registry.lookupSpecKey innerSpecId registry of
-                                        Just ( Mono.Global (IO.Canonical pkg2 moduleName2) name2, _, _ ) ->
+                                        Just ( Mono.Global (IO.Canonical pkg2 moduleName2) name2, _ ) ->
                                             if pkg2 == Pkg.bytes && moduleName2 == "Bytes.Decode" then
                                                 reifyBytesDecodeCall registry exprCache name2 (innerArgs ++ args)
 
@@ -1038,7 +1038,7 @@ reifyDecoder registry exprCache expr =
         -- Zero-argument decoder values (e.g. unsignedInt8, signedInt8) are bare MonoVarGlobal
         Mono.MonoVarGlobal _ specId _ ->
             case Registry.lookupSpecKey specId registry of
-                Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
+                Just ( Mono.Global (IO.Canonical pkg moduleName) name, _ ) ->
                     if pkg == Pkg.bytes && moduleName == "Bytes.Decode" then
                         reifyBytesDecodeCall registry exprCache name []
 
@@ -1262,7 +1262,7 @@ matchLengthPrefixedPattern registry _ paramName bodyExpr =
             case func of
                 Mono.MonoVarGlobal _ specId _ ->
                     case Registry.lookupSpecKey specId registry of
-                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
+                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _ ) ->
                             if pkg == Pkg.bytes && moduleName == "Bytes.Decode" then
                                 -- Check if the argument is just the parameter variable
                                 if isParamRef paramName argExpr then
@@ -1430,7 +1430,7 @@ extractSentinelFromBody registry exprCache bodyExpr =
                 Mono.MonoVarGlobal _ specId _ ->
                     -- Check if this is Decode.andThen
                     case Registry.lookupSpecKey specId registry of
-                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
+                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _ ) ->
                             if pkg == Pkg.bytes && moduleName == "Bytes.Decode" && name == "andThen" then
                                 -- Found andThen, now extract sentinel and item decoder
                                 extractSentinelFromAndThenBody registry exprCache decoderExpr lambdaExpr
@@ -1639,7 +1639,7 @@ extractItemDecoderFromMapCall registry exprCache expr =
             case func of
                 Mono.MonoVarGlobal _ specId _ ->
                     case Registry.lookupSpecKey specId registry of
-                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
+                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _ ) ->
                             if pkg == Pkg.bytes && moduleName == "Bytes.Decode" && name == "map" then
                                 reifyDecoder registry exprCache itemDecoderExpr
 

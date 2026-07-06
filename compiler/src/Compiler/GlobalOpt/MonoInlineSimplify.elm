@@ -626,7 +626,7 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
                                             maybeGlobal =
                                                 Array.get specId registry.reverseMapping
                                                     |> Maybe.andThen identity
-                                                    |> Maybe.map (\( g, _, _ ) -> g)
+                                                    |> Maybe.map (\( g, _ ) -> g)
 
                                             whitelisted =
                                                 maybeGlobal
@@ -682,10 +682,10 @@ freshLambdaIdForSpec ctx specId =
     let
         home =
             case Array.get specId ctx.registry.reverseMapping |> Maybe.andThen identity of
-                Just ( Mono.Global h _, _, _ ) ->
+                Just ( Mono.Global h _, _ ) ->
                     h
 
-                Just ( Mono.Accessor _, _, _ ) ->
+                Just ( Mono.Accessor _, _ ) ->
                     -- Accessor doesn't have a home, use a placeholder
                     IO.Canonical ( "", "" ) ""
 

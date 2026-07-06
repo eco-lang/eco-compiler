@@ -279,10 +279,10 @@ hasSelfCapture placeholderVar ops =
 specIdToFuncName : Mono.SpecializationRegistry -> Mono.SpecId -> String
 specIdToFuncName registry specId =
     case Registry.lookupSpecKey specId registry of
-        Just ( Mono.Global home name, _, _ ) ->
+        Just ( Mono.Global home name, _ ) ->
             Names.canonicalToMLIRName home ++ "_" ++ Names.sanitizeName name ++ "_$_" ++ String.fromInt specId
 
-        Just ( Mono.Accessor fieldName, _, _ ) ->
+        Just ( Mono.Accessor fieldName, _ ) ->
             "accessor_" ++ Names.sanitizeName fieldName ++ "_$_" ++ String.fromInt specId
 
         Nothing ->
@@ -2474,7 +2474,7 @@ tryBytesEncodeFusion ctx func args =
             case func of
                 Mono.MonoVarGlobal _ specId _ ->
                     case Registry.lookupSpecKey specId ctx.registry of
-                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
+                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _ ) ->
                             if pkg == Pkg.bytes && moduleName == "Bytes.Encode" && name == "encode" then
                                 case args of
                                     [ encoderExpr ] ->
@@ -2558,14 +2558,14 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                 maybeCoreInfo : Maybe ( String, String )
                 maybeCoreInfo =
                     case Registry.lookupSpecKey specId ctx.registry of
-                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
+                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _ ) ->
                             if pkg == Pkg.core then
                                 Just ( moduleName, name )
 
                             else
                                 Nothing
 
-                        Just ( Mono.Accessor _, _, _ ) ->
+                        Just ( Mono.Accessor _, _ ) ->
                             -- Accessors are not core functions
                             Nothing
 
@@ -2576,7 +2576,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                 maybeBytesEncodeArg : Maybe Mono.MonoExpr
                 maybeBytesEncodeArg =
                     case Registry.lookupSpecKey specId ctx.registry of
-                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
+                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _ ) ->
                             if pkg == Pkg.bytes && moduleName == "Bytes.Encode" && name == "encode" then
                                 case args of
                                     [ encoderExpr ] ->
@@ -2595,7 +2595,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                 maybeBytesDecodeArgs : Maybe ( Mono.MonoExpr, Mono.MonoExpr )
                 maybeBytesDecodeArgs =
                     case Registry.lookupSpecKey specId ctx.registry of
-                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
+                        Just ( Mono.Global (IO.Canonical pkg moduleName) name, _ ) ->
                             if pkg == Pkg.bytes && moduleName == "Bytes.Decode" && name == "decode" then
                                 case args of
                                     [ decoderExpr, bytesExpr ] ->
