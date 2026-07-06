@@ -498,7 +498,13 @@ HPointer kernelListMapN(int n_args, HPointer* lists, HPointer& closureHP) {
                                layout, &resultSlot, resultKind);
         appendClosureResult(results, &resultSlot, resultKind);
 
-        for (int i = 0; i < n_args; ++i) lists[i] = cb[i].tail;
+        // Advance each cursor to its tail. `cb[i].tail` is a *pre*-closure-call
+        // snapshot; `eco_apply_closure_eval` above can trigger a minor GC that
+        // evacuates the tail Cons, leaving that snapshot pointing into freed
+        // from-space. `lists[i]` is in the root set (pushStackRootRange above)
+        // and was updated by any such GC, so re-derive the tail from the live
+        // cursor rather than the stale snapshot. (readCons does not allocate.)
+        for (int i = 0; i < n_args; ++i) lists[i] = readCons(lists[i]).tail;
     }
 
     rs.restoreStackRangePoint(outerSaved);
