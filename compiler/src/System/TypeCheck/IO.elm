@@ -57,6 +57,11 @@ Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 @docs makeDescriptor
 
 
+# Name State
+
+@docs NameState, emptyNameState, getNames, putNames, withFreshNames
+
+
 # Node ID Tracking
 
 @docs NodeIdState, emptyNodeIds, getNodeIds, modifyNodeIds, withNodeIds
