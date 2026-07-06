@@ -107,6 +107,23 @@ enum class BackendKind {
     JITInvokePacked,
 };
 
+/// Parallel-optimization tier for `EmitObjectFile` (executable output).
+/// See design_docs/backend-parallel-optimization.md and
+/// plans/parallel-llvm-opt-partitioning.md.
+enum class ParallelOpt {
+    /// Today's behaviour: whole-module `-O2` (serial), then codegen-only split.
+    None,
+    /// Dev/fast: cheap whole-module IPO prologue, then split, then a NO-INLINE
+    /// per-partition function-simplification pipeline in parallel. Fast compile,
+    /// lower-quality output (for iteration builds — never the shipped compiler).
+    Dev,
+    /// Release: cheap whole-module IPO prologue, then split, then FULL `-O2`
+    /// per partition in parallel (keeps intra-partition inlining). Parallel
+    /// compile, near-full quality. (Cross-partition inlining recovery — replica
+    /// sets — is a later refinement; see Phase 4.)
+    Cgu,
+};
+
 /// Backend job descriptor. Currently a thin façade over
 /// `runRS4GCAndMaybeFramePointers`; gains opt/emit/link fields in Phase 3.3
 /// and JIT-specific fields in Phase 4.
@@ -132,15 +149,27 @@ struct EcoBackendJob {
     /// RS4GC + opt but does not emit (used by intermediate-state callers).
     std::string objectFilePath;
 
-    /// Parallel object emission: when > 1, after RS4GC + opt the optimized
-    /// module is split into `numPartitions` parts (llvm::SplitModule) and each
-    /// part is emitted to `objectFilePaths[i]` on its own thread with its own
-    /// LLVMContext + TargetMachine. The linker later concatenates the parts'
-    /// .llvm_stackmaps sections; StackMap::parse handles the multi-blob result.
-    /// Requires a non-empty `objectFilePaths` of exactly `numPartitions` paths.
-    /// 1 (default) keeps the single-threaded emit to `objectFilePath`.
-    unsigned numPartitions = 1;
-    std::vector<std::string> objectFilePaths;
+    /// Parallel object emission policy request (executable output only):
+    ///   0 = auto (min(cores,16), gated at >= 4000 defined fns, ~1 part/2000),
+    ///   1 = off (single-threaded emit to `objectFilePath`),
+    ///   N = explicit partition count.
+    /// The actual count is decided inside `runEcoBackend` via
+    /// `choosePartitionCount`, which also mints any extra temp object files it
+    /// needs and reports the produced set back through `EcoBackendResult`. This
+    /// keeps the partition policy in the shared backend rather than each driver
+    /// (see design_docs/backend-parallel-optimization.md §8.1).
+    unsigned splitCodegen = 1;
+
+    /// True only for plain executable output (not `-c`/.o, not .so/.node). The
+    /// caller already computes this for `internalizeAndDCEForExecutable`.
+    /// Splitting is gated on this: shared libs / object-only output never split.
+    bool splitEligible = false;
+
+    /// Parallel-optimization tier. `None` (default) keeps whole-module `-O2`
+    /// then codegen-only split. `Dev`/`Cgu` move optimization into the
+    /// per-partition workers (see ParallelOpt). Only honoured for
+    /// `EmitObjectFile` with `optLevel != None` and `splitEligible`.
+    ParallelOpt parallelOpt = ParallelOpt::None;
 
     /// EXPERIMENTAL, off by default. Run RewriteStatepointsForGC AFTER the O2
     /// optimization pipeline instead of before it (upstream LLVM's intended
@@ -156,13 +185,27 @@ struct EcoBackendJob {
     bool rs4gcAfterOpt = false;
 };
 
+/// Result of an `EmitObjectFile` backend run: the object files that were
+/// produced (to be handed to `linkExecutable`) and, separately, the subset the
+/// backend itself created as temporaries (to be removed by the caller after
+/// linking). For single-object output `objectFiles == { job.objectFilePath }`
+/// and `ownedTempFiles` is empty (the caller owns that path's lifecycle).
+struct EcoBackendResult {
+    std::vector<std::string> objectFiles;
+    std::vector<std::string> ownedTempFiles;
+};
+
 /// Run the Eco backend on an LLVM module according to `job`.
 ///
-/// Phase 2 implementation is a thin wrapper over `runRS4GCAndMaybeFramePointers`.
-/// `DumpLLVMText` and `EmitObjectFile` return success after RS4GC + FP;
-/// emission and optimisation remain at the call site until Phase 3.3.
-/// `JITInvokePacked` is reserved for Phase 4 and is not yet exposed.
-llvm::Error runEcoBackend(llvm::Module &m, const EcoBackendJob &job);
+/// For `EmitObjectFile` this drives RS4GC + opt + (optionally partitioned)
+/// object emission. When `job.splitEligible` and the partition policy
+/// (`job.splitCodegen`) select N > 1 partitions, the module is split N ways
+/// (llvm::SplitModule) and each part emitted on its own thread; the backend
+/// uses `job.objectFilePath` as the first part and mints N-1 extra temp object
+/// files, reporting the full set through `result`. `result` may be null for
+/// callers that do not emit objects (`DumpLLVMText`, `JITInvokePacked`).
+llvm::Error runEcoBackend(llvm::Module &m, const EcoBackendJob &job,
+                          EcoBackendResult *result = nullptr);
 
 /// Internalize + GlobalDCE for EXECUTABLE output only. Marks every generated
 /// global internal EXCEPT the two symbols the C entry lib resolves by name

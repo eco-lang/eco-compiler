@@ -174,6 +174,21 @@ static cl::opt<unsigned> splitCodegen(
              "0 = auto (cores), 1 = off"),
     cl::init(0));
 
+static cl::opt<eco::ParallelOpt> parallelOpt(
+    "parallel-opt",
+    cl::desc("Parallelize the LLVM optimization stage across partitions "
+             "(executable output only)"),
+    cl::values(
+        clEnumValN(eco::ParallelOpt::None, "none",
+                   "whole-module -O2 then codegen-only split (default)"),
+        clEnumValN(eco::ParallelOpt::Dev, "dev",
+                   "cheap IPO prologue + no-inline per-partition pipeline "
+                   "(fastest compile, lower-quality output)"),
+        clEnumValN(eco::ParallelOpt::Cgu, "cgu",
+                   "cheap IPO prologue + full -O2 per partition (parallel opt, "
+                   "keeps intra-partition inlining)")),
+    cl::init(eco::ParallelOpt::None));
+
 static cl::opt<bool> rs4gcAfterOpt(
     "rs4gc-after-opt",
     cl::desc("EXPERIMENTAL: run RewriteStatepointsForGC after the O2 pipeline "
@@ -734,51 +749,11 @@ int main(int argc, char **argv) {
         eco::internalizeAndDCEForExecutable(*llvmModule);
     }
 
-    // Parallel codegen: split the optimized module into N partitions emitted
-    // concurrently (executable output only — internalize ran, so cross-
-    // partition locals externalize with a single definition). 0 = auto.
-    // Object emission dominates the AOT backend and is per-function work, so
-    // splitting it across cores is a near-linear win on large programs. Small
-    // modules are gated out — per-partition bitcode-serialize + thread + link
-    // overhead would dominate when emission is already sub-second.
-    unsigned numParts = 1;
-    if (isExecutable && splitCodegen != 1) {
-        unsigned numDefinedFns = 0;
-        for (auto &F : *llvmModule)
-            if (!F.isDeclaration())
-                ++numDefinedFns;
-        // Only split modules with enough functions to amortize the overhead.
-        constexpr unsigned kMinFnsToSplit = 4000;
-        if (numDefinedFns >= kMinFnsToSplit) {
-            unsigned cores = std::max(1u, std::thread::hardware_concurrency());
-            // Auto caps at 16: beyond that the serial split + per-partition
-            // bitcode-serialize overhead outweighs the extra emission
-            // parallelism (measured on the self-host module). An explicit
-            // --split-codegen=N is honoured as-is.
-            unsigned want =
-                splitCodegen == 0 ? std::min(cores, 16u) : splitCodegen.getValue();
-            // ~1 partition per 2000 functions, capped at the requested/core
-            // count and never fewer than 2 once we've decided to split.
-            unsigned bySize = std::max(2u, numDefinedFns / 2000u);
-            numParts = std::min(want, bySize);
-        }
-    }
-    std::vector<std::string> partObjFiles;
-    if (numParts > 1) {
-        for (unsigned i = 0; i < numParts; ++i) {
-            llvm::SmallString<256> p;
-            if (auto ec = llvm::sys::fs::createTemporaryFile("eco-boot-part",
-                                                             "o", p)) {
-                llvm::errs() << "Error: Could not create temp file: "
-                             << ec.message() << "\n";
-                for (auto &f : partObjFiles)
-                    llvm::sys::fs::remove(f);
-                return 1;
-            }
-            partObjFiles.emplace_back(p.str());
-        }
-    }
-
+    // Parallel codegen: the partition policy now lives in the shared backend
+    // (runEcoBackend / choosePartitionCount). We just declare eligibility +
+    // the requested split level; runEcoBackend decides N, mints any extra temp
+    // part files, and reports the produced set back via EcoBackendResult.
+    eco::EcoBackendResult backendResult;
     {
         eco::LoweringStats::Scope scope(stats,
             "LLVM backend (RS4GC + opt + object emission)");
@@ -792,17 +767,15 @@ int main(int argc, char **argv) {
         job.preRS4GCDumpPath = dumpPreRS4GCIR;
         job.postRS4GCDumpPath = dumpRS4GCIR;
         job.rs4gcAfterOpt = rs4gcAfterOpt;
-        if (numParts > 1) {
-            job.numPartitions = numParts;
-            job.objectFilePaths = partObjFiles;
-        } else {
-            job.objectFilePath = objFile;
-        }
-        if (auto err = eco::runEcoBackend(*llvmModule, job)) {
+        job.splitCodegen = splitCodegen;
+        job.splitEligible = isExecutable;
+        job.parallelOpt = parallelOpt;
+        job.objectFilePath = objFile;
+        if (auto err = eco::runEcoBackend(*llvmModule, job, &backendResult)) {
             llvm::errs() << "Error: backend pipeline failed: " << err << "\n";
             if (!tempObjFile.empty())
                 llvm::sys::fs::remove(tempObjFile);
-            for (auto &f : partObjFiles)
+            for (auto &f : backendResult.ownedTempFiles)
                 llvm::sys::fs::remove(f);
             return 1;
         }
@@ -810,8 +783,10 @@ int main(int argc, char **argv) {
 
     if (verbose)
         llvm::errs() << "[eco-boot] emitted object file(s): "
-                     << (numParts > 1 ? std::to_string(numParts) + " partitions"
-                                      : objFile)
+                     << (backendResult.objectFiles.size() > 1
+                             ? std::to_string(backendResult.objectFiles.size()) +
+                                   " partitions"
+                             : objFile)
                      << "\n";
 
     if (emitObjOnly) {
@@ -826,14 +801,13 @@ int main(int argc, char **argv) {
     int rc;
     {
         eco::LoweringStats::Scope scope(stats, "Link (clang++ driver)");
-        rc = numParts > 1 ? linkExecutable(partObjFiles, output)
-                          : linkExecutable(objFile, output);
+        rc = linkExecutable(backendResult.objectFiles, output);
     }
 
     // Clean up temp object file(s)
     if (!tempObjFile.empty())
         llvm::sys::fs::remove(tempObjFile);
-    for (auto &f : partObjFiles)
+    for (auto &f : backendResult.ownedTempFiles)
         llvm::sys::fs::remove(f);
 
     if (printStats) {

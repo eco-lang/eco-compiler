@@ -22,6 +22,13 @@
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/IPO/Internalize.h"
 #include "llvm/Transforms/IPO/GlobalDCE.h"
+#include "llvm/Transforms/IPO/SCCP.h"           // IPSCCPPass
+#include "llvm/Transforms/IPO/GlobalOpt.h"      // GlobalOptPass
+#include "llvm/Transforms/IPO/FunctionAttrs.h"  // Post/ReversePostOrderFunctionAttrsPass
+#include "llvm/Transforms/IPO/AlwaysInliner.h"  // AlwaysInlinerPass
+#include "llvm/Analysis/CGSCCPassManager.h"     // createModuleToPostOrderCGSCCPassAdaptor
+#include "llvm/Analysis/LoopAnalysisManager.h"
+#include "llvm/Passes/OptimizationLevel.h"
 #include "llvm/Transforms/Utils/SplitModule.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/Bitcode/BitcodeReader.h"
@@ -71,10 +78,99 @@ Error emitObjectFile(Module &m, TargetMachine &tm, const std::string &path) {
     return Error::success();
 }
 
+// Map the codegen opt level to a PassBuilder OptimizationLevel. The
+// simplification pipelines assert O0 is invalid, so anything <1 maps to O2
+// (parallel-opt is only reached when optLevel != None).
+OptimizationLevel toOptLevel(CodeGenOptLevel lvl) {
+    switch (lvl) {
+    case CodeGenOptLevel::Less:
+        return OptimizationLevel::O1;
+    case CodeGenOptLevel::Aggressive:
+        return OptimizationLevel::O3;
+    case CodeGenOptLevel::Default:
+    default:
+        return OptimizationLevel::O2;
+    }
+}
+
+// Cheap whole-module interprocedural passes worth keeping even when the CGSCC
+// inliner is disabled: IPSCCP (constant propagation across calls — especially
+// valuable on monomorphized specializations), GlobalOpt, function-attrs
+// inference, and GlobalDCE. These are O(module) and capture the cross-module
+// facts the parallel per-partition pipeline can then exploit locally. Runs
+// once, serially, before the split. GC-safe: strictly fewer transforms than
+// today's whole-module -O2, all after RS4GC (design doc §5/§6.3).
+void runCheapModuleIPO(Module &m) {
+    PassBuilder PB;
+    LoopAnalysisManager LAM;
+    FunctionAnalysisManager FAM;
+    CGSCCAnalysisManager CGAM;
+    ModuleAnalysisManager MAM;
+    PB.registerModuleAnalyses(MAM);
+    PB.registerCGSCCAnalyses(CGAM);
+    PB.registerFunctionAnalyses(FAM);
+    PB.registerLoopAnalyses(LAM);
+    PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+    ModulePassManager MPM;
+    MPM.addPass(IPSCCPPass());
+    MPM.addPass(GlobalOptPass());
+    MPM.addPass(
+        createModuleToPostOrderCGSCCPassAdaptor(PostOrderFunctionAttrsPass()));
+    MPM.addPass(ReversePostOrderFunctionAttrsPass());
+    MPM.addPass(GlobalDCEPass());
+    MPM.run(m, MAM);
+}
+
+// No-inline per-partition pipeline (Dev tier): honour explicit `alwaysinline`
+// attrs, then run the standard per-function simplification pipeline
+// (InstCombine / SROA / GVN / SimplifyCFG / LICM / vectorizers …) with NO CGSCC
+// inliner. That fused inliner+simplification is the bulk of an -O2 pipeline's
+// wall-clock; dropping the inliner makes the rest embarrassingly parallel.
+Error runNoInlineFunctionPipeline(Module &m, TargetMachine *tm,
+                                  CodeGenOptLevel optLevel) {
+    PassBuilder PB(tm);
+    LoopAnalysisManager LAM;
+    FunctionAnalysisManager FAM;
+    CGSCCAnalysisManager CGAM;
+    ModuleAnalysisManager MAM;
+    PB.registerModuleAnalyses(MAM);
+    PB.registerCGSCCAnalyses(CGAM);
+    PB.registerFunctionAnalyses(FAM);
+    PB.registerLoopAnalyses(LAM);
+    PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+    ModulePassManager MPM;
+    MPM.addPass(AlwaysInlinerPass());
+    MPM.addPass(createModuleToFunctionPassAdaptor(
+        PB.buildFunctionSimplificationPipeline(toOptLevel(optLevel),
+                                               ThinOrFullLTOPhase::None)));
+    MPM.run(m, MAM);
+    return Error::success();
+}
+
+// Optimize one partition module in place according to the parallel-opt tier.
+// Dev  = no-inline function pipeline (fast, lower quality).
+// Cgu  = full -O2 per partition (keeps intra-partition CGSCC inlining).
+Error optimizePartitionModule(Module &m, TargetMachine *tm, ParallelOpt mode,
+                              CodeGenOptLevel optLevel) {
+    if (mode == ParallelOpt::Cgu) {
+        auto opt = mlir::makeOptimizingTransformer(
+            static_cast<unsigned>(optLevel), /*sizeLevel=*/0, tm);
+        return opt(&m);
+    }
+    return runNoInlineFunctionPipeline(m, tm, optLevel);
+}
+
 // Split the (already RS4GC'd + optimized) module into N partitions and emit
 // each to its own object file on its own thread. Object emission (ISel /
 // MC / codegen) is the single largest phase of the AOT backend and is
 // per-function work, so splitting it across cores is a near-linear win.
+//
+// When `perPartitionMode != None`, each partition is additionally OPTIMIZED in
+// its worker thread (before emission) — this is how the opt stage itself is
+// parallelized (the whole-module -O2 is skipped upstream and replaced with a
+// cheap IPO prologue + this per-partition optimization).
 //
 // Correctness notes:
 //   - PreserveLocals=false: llvm::SplitModule EXTERNALIZES (single definition,
@@ -92,7 +188,8 @@ Error emitObjectFile(Module &m, TargetMachine &tm, const std::string &path) {
 //     blobs (multi-blob loop).
 Error emitObjectFilesSplit(Module &m, unsigned numPartitions,
                            const std::vector<std::string> &paths,
-                           CodeGenOptLevel optLevel) {
+                           CodeGenOptLevel optLevel,
+                           ParallelOpt perPartitionMode) {
     if (paths.size() != numPartitions)
         return createStringError(std::errc::invalid_argument,
             "emitObjectFilesSplit: paths count != numPartitions");
@@ -144,6 +241,18 @@ Error emitObjectFilesSplit(Module &m, unsigned numPartitions,
                 nextFail++;
                 return;
             }
+            // Parallel opt: optimize this partition on its own thread before
+            // emission (the whole-module -O2 was skipped upstream).
+            if (perPartitionMode != ParallelOpt::None) {
+                if (auto err = optimizePartitionModule(
+                        *mod, tm.get(), perPartitionMode, optLevel)) {
+                    errs[i] = "partition opt failed for partition " +
+                              std::to_string(i) + ": " +
+                              toString(std::move(err));
+                    nextFail++;
+                    return;
+                }
+            }
             if (auto err = emitObjectFile(*mod, *tm, paths[i])) {
                 errs[i] = "emitObjectFile failed for partition " +
                           std::to_string(i) + ": " + toString(std::move(err));
@@ -176,6 +285,33 @@ Error emitObjectFilesSplit(Module &m, unsigned numPartitions,
                 return createStringError(std::errc::io_error, "%s", e.c_str());
     }
     return Error::success();
+}
+
+// Decide how many object-emission partitions to use. This is the split policy
+// that used to live inline in eco-boot.cpp; hoisting it here means every driver
+// (eco-boot, the unified `eco` native driver, ecoc) gets the same partitioned
+// codegen for free. `request`: 0 = auto, 1 = off, N = explicit. `eligible` is
+// true only for plain executable output. See
+// design_docs/backend-parallel-optimization.md §8.1.
+unsigned choosePartitionCount(const Module &m, unsigned request, bool eligible) {
+    if (!eligible || request == 1)
+        return 1;
+    unsigned numDefinedFns = 0;
+    for (const Function &F : m)
+        if (!F.isDeclaration())
+            ++numDefinedFns;
+    // Only split modules with enough functions to amortize the per-partition
+    // bitcode-serialize + thread + link overhead.
+    constexpr unsigned kMinFnsToSplit = 4000;
+    if (numDefinedFns < kMinFnsToSplit)
+        return 1;
+    unsigned cores = std::max(1u, std::thread::hardware_concurrency());
+    // Auto caps at 16: beyond that the serial split + per-partition
+    // bitcode-serialize overhead outweighs the extra emission parallelism.
+    unsigned want = (request == 0) ? std::min(cores, 16u) : request;
+    // ~1 partition per 2000 functions, at least 2 once we've decided to split.
+    unsigned bySize = std::max(2u, numDefinedFns / 2000u);
+    return std::min(want, bySize);
 }
 
 } // namespace
@@ -274,7 +410,8 @@ void internalizeAndDCEForExecutable(Module &m) {
     MPM.run(m, MAM);
 }
 
-Error runEcoBackend(Module &m, const EcoBackendJob &job) {
+Error runEcoBackend(Module &m, const EcoBackendJob &job,
+                    EcoBackendResult *result) {
     RS4GCOptions rs4gcOpts;
     rs4gcOpts.preDumpPath = job.preRS4GCDumpPath;
     rs4gcOpts.postDumpPath = job.postRS4GCDumpPath;
@@ -284,8 +421,12 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job) {
     // upfront call is skipped and re-issued below, post-optimization. The
     // bundled SROA/FoldExtractValue cleanup + frame-pointer injection travel
     // with it automatically (they live inside runRS4GCAndMaybeFramePointers).
+    // Never combined with parallel-opt: the per-partition workers would then
+    // optimize statepoint-free IR with no per-partition RS4GC to follow — GC
+    // would break. Parallel-opt forces RS4GC-before (design doc §5).
     const bool deferRS4GC =
-        job.rs4gcAfterOpt && job.kind == BackendKind::EmitObjectFile;
+        job.rs4gcAfterOpt && job.kind == BackendKind::EmitObjectFile &&
+        job.parallelOpt == ParallelOpt::None;
     if (!deferRS4GC)
         runRS4GCAndMaybeFramePointers(m, rs4gcOpts);
 
@@ -296,7 +437,18 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job) {
         return Error::success();
 
     case BackendKind::EmitObjectFile: {
-        if (job.optLevel != CodeGenOptLevel::None && job.tm) {
+        // Parallel-opt is honoured only for optimized, split-eligible exe
+        // output; otherwise fall back to today's whole-module -O2.
+        const bool parallelOptEnabled =
+            job.parallelOpt != ParallelOpt::None &&
+            job.optLevel != CodeGenOptLevel::None && job.splitEligible;
+
+        if (parallelOptEnabled) {
+            // Replace the whole-module -O2 with a cheap whole-module IPO
+            // prologue; the heavy per-function work moves into the parallel
+            // per-partition workers below (design doc §6.2/§6.3).
+            runCheapModuleIPO(m);
+        } else if (job.optLevel != CodeGenOptLevel::None && job.tm) {
             auto optPipeline = mlir::makeOptimizingTransformer(
                 static_cast<unsigned>(job.optLevel), /*sizeLevel=*/0, job.tm);
             if (auto err = optPipeline(&m))
@@ -305,11 +457,61 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job) {
         // Deferred RS4GC runs here — after opt, before object emission.
         if (deferRS4GC)
             runRS4GCAndMaybeFramePointers(m, rs4gcOpts);
+
+        // Decide the partition count here (shared policy — see
+        // choosePartitionCount / design_docs/backend-parallel-optimization.md
+        // §8.1) rather than in each driver.
+        unsigned numParts =
+            choosePartitionCount(m, job.splitCodegen, job.splitEligible);
+        // When parallel-opt is enabled the per-partition workers optimize;
+        // otherwise they only emit (whole-module opt already ran above).
+        const ParallelOpt perPart =
+            parallelOptEnabled ? job.parallelOpt : ParallelOpt::None;
+
         // Parallel emission: split the optimized module and emit N objects
-        // across threads. See emitObjectFilesSplit.
-        if (job.numPartitions > 1 && !job.objectFilePaths.empty()) {
-            return emitObjectFilesSplit(m, job.numPartitions,
-                                        job.objectFilePaths, job.optLevel);
+        // across threads. The backend owns the extra temp part files; the
+        // driver links `result->objectFiles` and removes
+        // `result->ownedTempFiles`. See emitObjectFilesSplit.
+        if (numParts > 1) {
+            if (job.objectFilePath.empty())
+                return createStringError(std::errc::invalid_argument,
+                    "EmitObjectFile split requires a base objectFilePath");
+            std::vector<std::string> paths;
+            std::vector<std::string> owned;
+            paths.reserve(numParts);
+            // Reuse the caller's objectFilePath as partition 0; mint the rest.
+            paths.push_back(job.objectFilePath);
+            for (unsigned i = 1; i < numParts; ++i) {
+                SmallString<256> p;
+                if (auto ec = sys::fs::createTemporaryFile("eco-part", "o", p)) {
+                    for (auto &f : owned)
+                        sys::fs::remove(f);
+                    return createStringError(ec,
+                        "Could not create temp object file for partition");
+                }
+                paths.emplace_back(p.str());
+                owned.emplace_back(p.str());
+            }
+            if (auto err = emitObjectFilesSplit(m, numParts, paths,
+                                                job.optLevel, perPart)) {
+                for (auto &f : owned)
+                    sys::fs::remove(f);
+                return err;
+            }
+            if (result) {
+                result->objectFiles = std::move(paths);
+                result->ownedTempFiles = std::move(owned);
+            }
+            return Error::success();
+        }
+
+        // Single-object emission. If parallel-opt is enabled but the policy
+        // chose a single partition (small module / split off), run the
+        // per-partition pipeline here inline — the whole-module -O2 was skipped.
+        if (perPart != ParallelOpt::None) {
+            if (auto err =
+                    optimizePartitionModule(m, job.tm, perPart, job.optLevel))
+                return err;
         }
         if (!job.objectFilePath.empty()) {
             if (!job.tm)
@@ -318,6 +520,8 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job) {
             if (auto err = emitObjectFile(m, *job.tm, job.objectFilePath))
                 return err;
         }
+        if (result)
+            result->objectFiles = {job.objectFilePath};
         return Error::success();
     }
 

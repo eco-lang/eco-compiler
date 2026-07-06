@@ -386,6 +386,15 @@ ProcResult lower_to_elf(const std::string& mlir_in, const std::string& elf_out,
         mlir_in,
         "-o", elf_out,
     };
+    // Test hook: inject extra eco-boot-native flags (e.g.
+    // ECO_AOT_EXTRA_FLAGS="--parallel-opt=dev") to validate the AOT backend
+    // under different codegen configurations without touching the harness.
+    if (const char* extra = std::getenv("ECO_AOT_EXTRA_FLAGS")) {
+        std::istringstream iss(extra);
+        std::string tok;
+        while (iss >> tok)
+            argv.push_back(tok);
+    }
     return spawn_capture(argv, {}, cwd);
 }
 

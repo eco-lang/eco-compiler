@@ -237,6 +237,11 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
         objFile = std::string(tempObjPath);
     }
 
+    // Partition policy lives in the shared backend now (choosePartitionCount);
+    // the driver just declares eligibility + the requested split level. This
+    // brings the parallel object-emission win — previously eco-boot-only — to
+    // the unified `eco make` path and self-host stages 6-9.
+    eco::EcoBackendResult backendResult;
     {
         std::unique_ptr<eco::LoweringStats::Scope> scope;
         if (opts.stats)
@@ -255,7 +260,12 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
         job.preRS4GCDumpPath = opts.preRS4GCDumpPath;
         job.postRS4GCDumpPath = opts.postRS4GCDumpPath;
         job.objectFilePath = objFile;
-        if (auto err = eco::runEcoBackend(*llvmModule, job)) {
+        job.splitCodegen = opts.splitCodegen;
+        job.splitEligible = !emitObjOnly && !sharedLib;
+        job.parallelOpt = opts.parallelOpt == 1   ? eco::ParallelOpt::Dev
+                          : opts.parallelOpt == 2 ? eco::ParallelOpt::Cgu
+                                                  : eco::ParallelOpt::None;
+        if (auto err = eco::runEcoBackend(*llvmModule, job, &backendResult)) {
             llvm::errs() << "Error: backend pipeline failed: " << err << "\n";
             llvm::sys::fs::remove(objFile);
             return 1;
@@ -271,10 +281,13 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
         if (opts.stats)
             scope = std::make_unique<eco::LoweringStats::Scope>(
                 *opts.stats, "Link (system ld)");
-        rc = eco::linkExecutable(objFile, outputPath, opts, sharedLib);
+        rc = eco::linkExecutable(backendResult.objectFiles, outputPath, opts,
+                                 sharedLib);
     }
 
     llvm::sys::fs::remove(objFile);
+    for (auto &f : backendResult.ownedTempFiles)
+        llvm::sys::fs::remove(f);
     return rc;
 }
 

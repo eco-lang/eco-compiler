@@ -25,6 +25,19 @@ struct EcoNativeOptions {
     // LLVM optimization level (0-3). Matches the -O option on eco-boot-native.
     unsigned optLevel = 2;
 
+    // Parallel object-emission partition policy (executable output only):
+    // 0 = auto (min(cores,16), gated >= 4000 fns), 1 = off, N = explicit.
+    // Decided in the shared backend (choosePartitionCount). Auto by default so
+    // the unified `eco` path — which builds a default EcoNativeOptions in the C
+    // ABI entry points — gets the parallel-emission win without Elm changes.
+    unsigned splitCodegen = 0;
+
+    // Parallel-optimization tier (executable output only), mapped to
+    // eco::ParallelOpt in the driver: 0 = none (whole-module -O2 then
+    // codegen-only split — default), 1 = dev (no-inline per-partition), 2 = cgu
+    // (full -O2 per partition). Kept as unsigned so this header stays LLVM-free.
+    unsigned parallelOpt = 0;
+
     // Echo subcommand lines (link step) to stderr.
     bool verbose = false;
 
@@ -82,7 +95,7 @@ int linkExecutable(const std::string &objectFile,
                    bool sharedLib = false);
 
 // Multi-object variant: link N object files (one per parallel-codegen
-// partition — see EcoBackendJob::numPartitions) into one executable/shared lib.
+// partition — see EcoBackendJob::splitCodegen) into one executable/shared lib.
 int linkExecutable(const std::vector<std::string> &objectFiles,
                    const std::string &outputPath,
                    const EcoNativeOptions &opts,
