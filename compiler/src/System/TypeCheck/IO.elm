@@ -1,15 +1,15 @@
 module System.TypeCheck.IO exposing
     ( unsafePerformIO
-    , IO, State, pure, apply, map, andThen, foldrM, foldM, traverseMap, traverseMapWithKey, forM_, mapM_
-    , foldMDict, mapM, traverseList, traverseTuple
-    , traverseArray, traverseArrayMaybe, foldMArray
+    , IO, State, pure, apply, map, andThen, foldrM, foldM, traverseMapWithKey, forM_, mapM_
+    , mapM, traverseList, traverseTuple
+    , traverseArrayMaybe, foldMArray
     , Step(..), loop
     , Point(..), PointInfo(..)
     , Descriptor, Content(..), SuperType(..), Mark(..), Variable, RootedVar, FlatType(..)
     , Canonical(..)
     , makeDescriptor
-    , NameState, emptyNameState, getNames, putNames, withFreshNames
-    , NodeIdState, emptyNodeIds, getNodeIds, modifyNodeIds, withNodeIds
+    , NameState, getNames, putNames, withFreshNames
+    , NodeIdState, getNodeIds, modifyNodeIds, withNodeIds
     )
 
 {-| IO monad and state threading for type inference.
@@ -27,9 +27,9 @@ Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 
 # The IO monad
 
-@docs IO, State, pure, apply, map, andThen, foldrM, foldM, traverseMap, traverseMapWithKey, forM_, mapM_
-@docs foldMDict, mapM, traverseList, traverseTuple
-@docs traverseArray, traverseArrayMaybe, foldMArray
+@docs IO, State, pure, apply, map, andThen, foldrM, foldM, traverseMapWithKey, forM_, mapM_
+@docs mapM, traverseList, traverseTuple
+@docs traverseArrayMaybe, foldMArray
 
 
 # Loop
@@ -59,12 +59,12 @@ Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 
 # Name State
 
-@docs NameState, emptyNameState, getNames, putNames, withFreshNames
+@docs NameState, getNames, putNames, withFreshNames
 
 
 # Node ID Tracking
 
-@docs NodeIdState, emptyNodeIds, getNodeIds, modifyNodeIds, withNodeIds
+@docs NodeIdState, getNodeIds, modifyNodeIds, withNodeIds
 
 -}
 
@@ -352,16 +352,6 @@ foldMHelp callback ( list, result ) =
             map (\b -> Loop ( rest, b )) (callback result a)
 
 
-{-| Traverse a dictionary, applying an IO-producing function to each value.
-
-The function ignores the key and only operates on values.
-
--}
-traverseMap : (k -> comparable) -> (k -> k -> Order) -> (a -> IO b) -> Dict comparable k a -> IO (Dict comparable k b)
-traverseMap toComparable keyComparison f =
-    traverseMapWithKey toComparable keyComparison (\_ -> f)
-
-
 {-| Traverse a dictionary, applying an IO-producing function to each key-value pair.
 
 The function receives both the key and value, allowing key-dependent transformations.
@@ -410,26 +400,6 @@ Iterate over a list, executing IO actions for their side effects only.
 forM_ : List a -> (a -> IO b) -> IO ()
 forM_ list f =
     mapM_ f list
-
-
-{-| Fold over a dictionary from left to right with an IO-producing function.
-
-The combining function receives the accumulator and value, ignoring keys.
-
--}
-foldMDict : (k -> k -> Order) -> (b -> a -> IO b) -> b -> Dict c k a -> IO b
-foldMDict keyComparison f b dict =
-    loop (foldMDictHelp f) ( Dict.values keyComparison dict, b )
-
-
-foldMDictHelp : (b -> a -> IO b) -> ( List a, b ) -> IO (Step ( List a, b ) b)
-foldMDictHelp f ( remaining, acc ) =
-    case remaining of
-        [] ->
-            pure (Done acc)
-
-        a :: rest ->
-            map (\newAcc -> Loop ( rest, newAcc )) (f acc a)
 
 
 {-| Traverse a list, applying an IO-producing function to each element.
@@ -488,7 +458,6 @@ traverseArray f arr =
 
 {-| Traverse an array of optional values, applying an IO-producing function to
 each `Just` while preserving `Nothing` holes.
-
 -}
 traverseArrayMaybe : (a -> IO b) -> Array (Maybe a) -> IO (Array (Maybe b))
 traverseArrayMaybe f =

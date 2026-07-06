@@ -2,7 +2,7 @@ module Compiler.Elm.Package exposing
     ( Name, Author, Project
     , compareName, toString, toChars, toUrl, toJsonString
     , isKernel
-    , dummyName, kernel, ecoKernel, core, browser, virtualDom, html, json, bytes, random, time, webgl, linearAlgebra, test
+    , dummyName, kernel, ecoKernel, core, virtualDom, html, json, bytes, random, time, webgl, linearAlgebra
     , suggestions, nearbyNames
     , encode, decoder, keyDecoder
     , nameEncoder, nameDecoder, parser
@@ -34,7 +34,7 @@ using Levenshtein distance.
 
 # Common Packages
 
-@docs dummyName, kernel, ecoKernel, core, browser, virtualDom, html, json, bytes, random, time, webgl, linearAlgebra, test
+@docs dummyName, kernel, ecoKernel, core, virtualDom, html, json, bytes, random, time, webgl, linearAlgebra
 
 
 # Package Suggestions
@@ -256,13 +256,6 @@ webgl =
 linearAlgebra : Name
 linearAlgebra =
     toName elmExplorations "linear-algebra"
-
-
-{-| The "elm-explorations/test" package name.
--}
-test : Name
-test =
-    toName elmExplorations "test"
 
 
 elm : Author

@@ -2,7 +2,7 @@ module Compiler.Type.Constrain.Common exposing
     ( State(..), Header, emptyState, addToHeaders, getType
     , patternToCategory, patternNeedsConstraint, extractVarFromType
     , Args, makeArgs, TypedArgs(..)
-    , RigidTypeVar, Info(..), emptyInfo
+    , RigidTypeVar, Info(..)
     , getName, getAccessName, toShaderRecord
     -- Pattern state
     -- Def info
@@ -34,7 +34,7 @@ and Typed constraint generation pathways.
 
 # Definition Info
 
-@docs RigidTypeVar, Info, emptyInfo
+@docs RigidTypeVar, Info
 
 
 # Expression Helpers
@@ -268,13 +268,6 @@ and flexible (untyped) definitions.
 -}
 type Info
     = Info (List IO.Variable) (List Constraint) (Dict Name (A.Located Type))
-
-
-{-| Empty Info structure with no variables, constraints, or headers.
--}
-emptyInfo : Info
-emptyInfo =
-    Info [] [] Dict.empty
 
 
 

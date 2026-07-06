@@ -260,6 +260,7 @@ number class after this copy was stamped — the stale `CEcoValue` stamp is
 healed). A genuine, never-tainted `CEcoValue` var is left untouched (boxed).
 `applySubst` no longer defaults number vars during the fixpoint; this discharges
 them once, at the end, from `resolveResidualNumbers`.
+
 -}
 resolveNumberType : (MVarId -> Bool) -> MonoType -> MonoType
 resolveNumberType isNumber monoType =
@@ -934,7 +935,7 @@ toComparableMonoTypeHelper work acc =
                 MUnit ->
                     toComparableMonoTypeHelper rest ("U" :: acc)
 
-                MVar mvarId constraint ->
+                MVar _ constraint ->
                     case constraint of
                         CEcoValue ->
                             -- Layout-erased: ignore numeric ID (MONO_003). All CEcoValue MVars
@@ -997,19 +998,6 @@ toComparableMonoTypeHelper work acc =
                                 args
                     in
                     toComparableMonoTypeHelper newWork ("A(" :: acc)
-
-
-{-| Convert a constraint to a string for comparison purposes.
--}
-constraintToString : Constraint -> String
-constraintToString constraint =
-    case constraint of
-        CEcoValue ->
-            "ecovalue"
-
-        CNumber ->
-            "number"
-
 
 
 {-| Convert a specialization key to a single comparable String for use in dictionaries.

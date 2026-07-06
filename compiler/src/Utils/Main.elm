@@ -21,7 +21,6 @@ module Utils.Main exposing
     , replRunInputT, replWithInterrupt, replGetInputLine
     , replGetInputLineWithInitial, liftInputT, liftIOInputT
     , nodeGetDirname, nodeMathRandom
-    , mapIntersectionWith
     , mapFindMin
     , dictMapKeys, find, dictFind
     , mapTraverse
@@ -112,7 +111,6 @@ defined in System.IO.
 
 # Dictionary Utilities
 
-@docs mapIntersectionWith
 @docs mapFindMin
 @docs dictMapKeys, find, dictFind
 
@@ -313,20 +311,6 @@ mapFindMin dict =
 
         _ ->
             crash "Error: empty map has no minimal element"
-
-
-{-| Compute the intersection of two dictionaries, combining values from both using the provided function.
--}
-mapIntersectionWith : (k -> comparable) -> (k -> k -> Order) -> (a -> b -> c) -> Map.Dict comparable k a -> Map.Dict comparable k b -> Map.Dict comparable k c
-mapIntersectionWith toComparable keyComparison func =
-    mapIntersectionWithKey toComparable keyComparison (\_ -> func)
-
-
-{-| Compute the intersection of two dictionaries, combining values using a function that has access to the key.
--}
-mapIntersectionWithKey : (k -> comparable) -> (k -> k -> Order) -> (k -> a -> b -> c) -> Map.Dict comparable k a -> Map.Dict comparable k b -> Map.Dict comparable k c
-mapIntersectionWithKey toComparable keyComparison func dict1 dict2 =
-    Map.merge keyComparison (\_ _ -> identity) (\k v1 v2 -> Map.insert toComparable k (func k v1 v2)) (\_ _ -> identity) dict1 dict2 Map.empty
 
 
 {-| Fold a list from the left using a monadic function, accumulating results in the RResult monad.
@@ -760,6 +744,7 @@ fpPathSeparator =
 {-| Check if a path is relative.
 
 A path is absolute if it begins with:
+
   - A POSIX root slash: "/foo/bar".
   - A Windows drive prefix followed by a separator: "C:/...", "c:\\...".
   - A Windows UNC root: "\\\\server\\share\\..." or "//server/share/..."

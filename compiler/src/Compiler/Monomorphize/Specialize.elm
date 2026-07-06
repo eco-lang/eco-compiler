@@ -898,7 +898,7 @@ buildPartialContainer rootCanType path leafMonoType state =
 
 
 {-| Body-first specialization of a `Destruct` whose root is a number-multi target
-(quiescence-before-defaulting, MONO_028). REPLACES the eager
+(quiescence-before-defaulting, MONO\_028). REPLACES the eager
 `demandedNumericUseType` look-ahead (demand replay): instead of PREDICTING which
 uses of the destructor-bound variable demand `Float`, seed `dname` as a
 number-multi target and specialize the body FIRST, so its uses record one instance
@@ -1079,7 +1079,8 @@ specializeNumberDestruct dname destructorPath destructorMeta rootName rootCanTyp
     ( finalExpr, stateFinal )
 
 
-{-| Does `expr` contain a `MonoVarLocal name` reference anywhere? -}
+{-| Does `expr` contain a `MonoVarLocal name` reference anywhere?
+-}
 exprReferencesLocal : Name -> Mono.MonoExpr -> Bool
 exprReferencesLocal name expr =
     Traverse.foldExpr
@@ -1611,7 +1612,7 @@ specializeNode ctorName node requestedMonoType state =
                     TypeSubst.unify state.ctx.mvarEnv canType requestedMonoType
 
                 monoType =
-                    (TypeSubst.applySubstPure envU unifSubst canType)
+                    TypeSubst.applySubstPure envU unifSubst canType
 
                 enumHome =
                     case state.ctx.currentGlobal of
@@ -1802,7 +1803,6 @@ specializePortNode incoming expr canType requestedMonoType state =
 
             decoderMonoType =
                 TypeSubst.applySubstPure stateWithLambda.ctx.mvarEnv subst (TOpt.typeOf expr)
-                    
 
             ( decoderSpecId, state1 ) =
                 enqueueSpec portGlobal decoderMonoType stateWithLambda
@@ -1941,7 +1941,7 @@ specializeValueInCycle requestedCanonical requestedName requestedMonoType shared
             TOpt.typeOf expr
 
         monoTypeFromExpr =
-            (TypeSubst.applySubstPure accState.ctx.mvarEnv sharedSubst canType)
+            TypeSubst.applySubstPure accState.ctx.mvarEnv sharedSubst canType
 
         monoTypeForSpecId =
             if name == requestedName then
@@ -2113,7 +2113,7 @@ specializeFunc requestedCanonical requestedName requestedMonoType sharedSubst de
             getDefCanonicalType def
 
         monoTypeFromDef =
-            (TypeSubst.applySubstPure accState.ctx.mvarEnv sharedSubst canType)
+            TypeSubst.applySubstPure accState.ctx.mvarEnv sharedSubst canType
 
         -- For the requested function in this cycle, use the exact MonoType
         -- from the worklist (requestedMonoType) as the specialization key.
@@ -2210,7 +2210,7 @@ specializeFuncDefInCycle subst def state =
                 -- Context.extractNodeSignature expects this full function type and extracts
                 -- the actual return type from it.
                 monoFuncType =
-                    (TypeSubst.applySubstPure state.ctx.mvarEnv augmentedSubstRaw returnType)
+                    TypeSubst.applySubstPure state.ctx.mvarEnv augmentedSubstRaw returnType
             in
             ( Mono.MonoTailFunc monoArgs monoBody monoFuncType, state1 )
 
@@ -2222,8 +2222,6 @@ specializeFuncDefInCycle subst def state =
 
 {-| Specialize a typed optimized expression to a monomorphized expression by applying type substitutions.
 -}
-
-
 specializeGeneralDestruct : TOpt.Destructor MVarId -> TOpt.Expr MVarId -> TOpt.Meta MVarId -> Substitution -> MonoState -> ( Mono.MonoExpr, MonoState )
 specializeGeneralDestruct destructor body meta subst state =
     let
@@ -2239,116 +2237,116 @@ specializeGeneralDestruct destructor body meta subst state =
         maybeValueMultiRefinement =
             case getValueMultiRootFromPath destructorPath state of
                 Just ( rootName, rootCanType ) ->
-                  if not (Mono.containsAnyMVar (applySubstFV state subst rootCanType)) then
-                    -- The root is already fully concrete (no remaining type
-                    -- variables): there is nothing for the destructor to narrow, and
-                    -- the existing value instance keyed by the resolved type already
-                    -- matches. Fall through to the non-refining path (`Nothing`).
-                    --
-                    -- Running buildPartialContainer/unifyExtend on an
-                    -- already-concrete root is not merely redundant but
-                    -- actively wrong when the same canonical type variable
-                    -- appears in multiple container slots (e.g. a tuple whose
-                    -- elements share one solver var, `(v, v, v)`): the partial
-                    -- container fills the non-leaf slots with fresh distinct
-                    -- CEcoValue fillers, and unifying that against the repeated
-                    -- var rebinds it once per slot, aliasing it to the last
-                    -- (unbound) filler. The root instance would then collapse
-                    -- to all-boxed and a spurious second instance (`_v0$v1`)
-                    -- would be created, desyncing the projection layout from
-                    -- the scrutinee's actual unboxed layout (CGEN_040
-                    -- operand-type violation).
-                    --
-                    -- The number-multi-root-with-a-Float-demand case (formerly the
-                    -- `floatDemand /= Nothing` carve-out here) no longer reaches this
-                    -- path: it is diverted to `specializeNumberDestruct` (body-first,
-                    -- MONO_028), which discovers the Float demand from the body's uses
-                    -- instead of the deleted `demandedNumericUseType` look-ahead.
-                    Nothing
+                    if not (Mono.containsAnyMVar (applySubstFV state subst rootCanType)) then
+                        -- The root is already fully concrete (no remaining type
+                        -- variables): there is nothing for the destructor to narrow, and
+                        -- the existing value instance keyed by the resolved type already
+                        -- matches. Fall through to the non-refining path (`Nothing`).
+                        --
+                        -- Running buildPartialContainer/unifyExtend on an
+                        -- already-concrete root is not merely redundant but
+                        -- actively wrong when the same canonical type variable
+                        -- appears in multiple container slots (e.g. a tuple whose
+                        -- elements share one solver var, `(v, v, v)`): the partial
+                        -- container fills the non-leaf slots with fresh distinct
+                        -- CEcoValue fillers, and unifying that against the repeated
+                        -- var rebinds it once per slot, aliasing it to the last
+                        -- (unbound) filler. The root instance would then collapse
+                        -- to all-boxed and a spurious second instance (`_v0$v1`)
+                        -- would be created, desyncing the projection layout from
+                        -- the scrutinee's actual unboxed layout (CGEN_040
+                        -- operand-type violation).
+                        --
+                        -- The number-multi-root-with-a-Float-demand case (formerly the
+                        -- `floatDemand /= Nothing` carve-out here) no longer reaches this
+                        -- path: it is diverted to `specializeNumberDestruct` (body-first,
+                        -- MONO_028), which discovers the Float demand from the body's uses
+                        -- instead of the deleted `demandedNumericUseType` look-ahead.
+                        Nothing
 
-                  else
-                    let
-                        eagerLeaf =
-                            applySubstFV state subst destructorMeta.tipe
+                    else
+                        let
+                            eagerLeaf =
+                                applySubstFV state subst destructorMeta.tipe
 
-                        -- The slot's open (closes-to-Int) leaf. A number-multi root
-                        -- whose slot genuinely demands Float is handled by the
-                        -- body-first `specializeNumberDestruct` divert, so here the
-                        -- leaf is materialised as-is.
-                        destrMonoType0 =
-                            eagerLeaf
-                    in
-                    case buildPartialContainer rootCanType destructorPath destrMonoType0 state of
-                        Just ( partialContainerMono, stateP ) ->
-                            let
-                                ( refinedSubst, mvarEnv1 ) =
-                                    TypeSubst.unifyExtend stateP.ctx.mvarEnv
-                                        rootCanType
-                                        partialContainerMono
-                                        subst
+                            -- The slot's open (closes-to-Int) leaf. A number-multi root
+                            -- whose slot genuinely demands Float is handled by the
+                            -- body-first `specializeNumberDestruct` divert, so here the
+                            -- leaf is materialised as-is.
+                            destrMonoType0 =
+                                eagerLeaf
+                        in
+                        case buildPartialContainer rootCanType destructorPath destrMonoType0 state of
+                            Just ( partialContainerMono, stateP ) ->
+                                let
+                                    ( refinedSubst, mvarEnv1 ) =
+                                        TypeSubst.unifyExtend stateP.ctx.mvarEnv
+                                            rootCanType
+                                            partialContainerMono
+                                            subst
 
-                                stateR =
-                                    setMVarEnv mvarEnv1 stateP
+                                    stateR =
+                                        setMVarEnv mvarEnv1 stateP
 
-                                rootInstanceMonoType =
-                                    applySubstFV stateR refinedSubst rootCanType
+                                    rootInstanceMonoType =
+                                        applySubstFV stateR refinedSubst rootCanType
 
-                                ( freshRootName, stateI ) =
-                                    getOrCreateValueInstance rootName
-                                        rootInstanceMonoType
-                                        refinedSubst
-                                        stateR
+                                    ( freshRootName, stateI ) =
+                                        getOrCreateValueInstance rootName
+                                            rootInstanceMonoType
+                                            refinedSubst
+                                            stateR
 
-                                -- Record `dname` on the owning instance so later
-                                -- call sites of this destructor can refine `info.subst`
-                                -- via refineValueMultiForDestructorCall. Uses the same
-                                -- comparable-MonoType key as getOrCreateValueInstance.
-                                instanceKey =
-                                    Mono.toComparableMonoType rootInstanceMonoType
+                                    -- Record `dname` on the owning instance so later
+                                    -- call sites of this destructor can refine `info.subst`
+                                    -- via refineValueMultiForDestructorCall. Uses the same
+                                    -- comparable-MonoType key as getOrCreateValueInstance.
+                                    instanceKey =
+                                        Mono.toComparableMonoType rootInstanceMonoType
 
-                                taggedStack =
-                                    tagValueInstanceWithDestructor rootName
-                                        instanceKey
-                                        dname
-                                        stateI.ctx.valueMulti
+                                    taggedStack =
+                                        tagValueInstanceWithDestructor rootName
+                                            instanceKey
+                                            dname
+                                            stateI.ctx.valueMulti
 
-                                stateT =
-                                    { stateI
-                                        | ctx =
-                                            let
-                                                ct =
-                                                    stateI.ctx
-                                            in
-                                            { ct | valueMulti = taggedStack }
-                                    }
+                                    stateT =
+                                        { stateI
+                                            | ctx =
+                                                let
+                                                    ct =
+                                                        stateI.ctx
+                                                in
+                                                { ct | valueMulti = taggedStack }
+                                        }
 
-                                rewrittenDestructor =
-                                    TOpt.Destructor dname
-                                        (rewriteRootInPath rootName
-                                            freshRootName
-                                            destructorPath
-                                        )
-                                        destructorMeta
+                                    rewrittenDestructor =
+                                        TOpt.Destructor dname
+                                            (rewriteRootInPath rootName
+                                                freshRootName
+                                                destructorPath
+                                            )
+                                            destructorMeta
 
-                                stateWithRoot =
-                                    { stateT
-                                        | ctx =
-                                            let
-                                                c =
-                                                    stateT.ctx
-                                            in
-                                            { c
-                                                | varEnv =
-                                                    State.insertVar freshRootName
-                                                        rootInstanceMonoType
-                                                        c.varEnv
-                                            }
-                                    }
-                            in
-                            Just ( rewrittenDestructor, refinedSubst, stateWithRoot )
+                                    stateWithRoot =
+                                        { stateT
+                                            | ctx =
+                                                let
+                                                    c =
+                                                        stateT.ctx
+                                                in
+                                                { c
+                                                    | varEnv =
+                                                        State.insertVar freshRootName
+                                                            rootInstanceMonoType
+                                                            c.varEnv
+                                                }
+                                        }
+                                in
+                                Just ( rewrittenDestructor, refinedSubst, stateWithRoot )
 
-                        Nothing ->
-                            Nothing
+                            Nothing ->
+                                Nothing
 
                 Nothing ->
                     Nothing
@@ -2407,6 +2405,7 @@ enrich the subst if needed, and build the `MonoLet`.
 otherwise the body is specialized once under the (possibly enriched) subst and
 `stateWithVar`. The plain-let path (D) passes `probeBody = Nothing`, so it always specializes
 the body here — it had no earlier multi-stack probe.
+
 -}
 finishEagerLet :
     MonoState
@@ -2706,7 +2705,7 @@ specializeExpr expr subst state =
                             meta.tipe
 
                 monoType =
-                    (TypeSubst.applySubstPure state.ctx.mvarEnv subst schemeType)
+                    TypeSubst.applySubstPure state.ctx.mvarEnv subst schemeType
 
                 monoGlobal =
                     Mono.Global canonical name
@@ -2838,7 +2837,6 @@ specializeExpr expr subst state =
                             resultMonoType =
                                 callResultMonoType
                                     state2.ctx.mvarEnv
-                                    state2.ctx.currentFreeVars
                                     substForCall
                                     canType
 
@@ -2884,7 +2882,7 @@ specializeExpr expr subst state =
                                 resolveProcessedArgs processedArgs paramTypes callSubst state1e
 
                             resultMonoType =
-                                callResultMonoType state1e.ctx.mvarEnv state1e.ctx.currentFreeVars callSubst canType
+                                callResultMonoType state1e.ctx.mvarEnv callSubst canType
 
                             monoGlobal =
                                 toptGlobalToMono global
@@ -2937,7 +2935,7 @@ specializeExpr expr subst state =
 
                         resultMonoType =
                             if Mono.containsAnyMVar abiResultType then
-                                callResultMonoType state1e.ctx.mvarEnv state1e.ctx.currentFreeVars callSubst canType
+                                callResultMonoType state1e.ctx.mvarEnv callSubst canType
 
                             else
                                 abiResultType
@@ -2983,7 +2981,7 @@ specializeExpr expr subst state =
 
                         resultMonoType =
                             if Mono.containsAnyMVar abiResultType then
-                                callResultMonoType state1e.ctx.mvarEnv state1e.ctx.currentFreeVars callSubst canType
+                                callResultMonoType state1e.ctx.mvarEnv callSubst canType
 
                             else
                                 abiResultType
@@ -3072,7 +3070,7 @@ specializeExpr expr subst state =
                                     resolveProcessedArgs processedArgs paramTypes callSubst state1d
 
                                 resultMonoType =
-                                    callResultMonoType state2.ctx.mvarEnv state2.ctx.currentFreeVars callSubst canType
+                                    callResultMonoType state2.ctx.mvarEnv callSubst canType
 
                                 ( monoFunc, state3 ) =
                                     specializeExpr func callSubst state2
@@ -3105,7 +3103,7 @@ specializeExpr expr subst state =
                                             resolveProcessedArgs processedArgs paramTypes callSubst state1e
 
                                         resultMonoType =
-                                            callResultMonoType state1e.ctx.mvarEnv state1e.ctx.currentFreeVars callSubst canType
+                                            callResultMonoType state1e.ctx.mvarEnv callSubst canType
 
                                         ( freshName, state3 ) =
                                             getOrCreateLocalInstance name funcMonoType callSubst state2
@@ -3140,7 +3138,7 @@ specializeExpr expr subst state =
                                             resolveProcessedArgs processedArgs paramTypes callSubst state1e
 
                                         resultMonoType =
-                                            callResultMonoType state1e.ctx.mvarEnv state1e.ctx.currentFreeVars callSubst canType
+                                            callResultMonoType state1e.ctx.mvarEnv callSubst canType
 
                                         ( monoFunc, state3 ) =
                                             specializeExpr func callSubst state2
@@ -3511,6 +3509,9 @@ specializeExpr expr subst state =
                         -- body. Float-demanding uses record additional instances (extra
                         -- specialized copies of the RHS); Int/boxed uses resolve to the
                         -- eager instance via varEnv.
+                        -- rhsUsesLocalMulti bailout retired (J5 deletion loop proved it
+                        -- inert): the eager-seed number-multi path below handles all cases,
+                        -- including when the RHS itself drives localMulti specialization.
                         let
                             ( eagerDef, stateEager ) =
                                 specializeDef def subst state
@@ -3528,128 +3529,123 @@ specializeExpr expr subst state =
                                 else
                                     eagerMonoType0
 
+                            intKey =
+                                Mono.toComparableMonoType
+                                    (TypeSubst.refreshConstraints state.ctx.mvarEnv eagerMonoType)
+
+                            seededEntry =
+                                { defName = defName
+                                , defCanType = defCanType
+                                , def = def
+                                , instances =
+                                    Dict.singleton intKey
+                                        { freshName = defName
+                                        , monoType = eagerMonoType
+                                        , subst = subst
+                                        , derivedDestructorNames = Set.empty
+                                        }
+                                }
+
+                            stateForBody =
+                                { stateEager
+                                    | ctx =
+                                        let
+                                            cn =
+                                                stateEager.ctx
+                                        in
+                                        { cn
+                                            | valueMulti = seededEntry :: cn.valueMulti
+                                            , varEnv = State.insertVar defName eagerMonoType cn.varEnv
+                                        }
+                                }
+
+                            ( monoBody, stateAfterBody ) =
+                                specializeExpr body subst stateForBody
                         in
-                        -- rhsUsesLocalMulti bailout retired (J5 deletion loop proved it
-                        -- inert): the eager-seed number-multi path below handles all cases,
-                        -- including when the RHS itself drives localMulti specialization.
-                            let
-                                intKey =
-                                    Mono.toComparableMonoType
-                                        (TypeSubst.refreshConstraints state.ctx.mvarEnv eagerMonoType)
+                        case stateAfterBody.ctx.valueMulti of
+                            topEntry :: restOfStack ->
+                                let
+                                    -- All instances except the seeded eager (Int) one are
+                                    -- Float-demanding copies discovered in the body.
+                                    floatInstances =
+                                        Dict.values (Dict.remove intKey topEntry.instances)
 
-                                seededEntry =
-                                    { defName = defName
-                                    , defCanType = defCanType
-                                    , def = def
-                                    , instances =
-                                        Dict.singleton intKey
-                                            { freshName = defName
-                                            , monoType = eagerMonoType
-                                            , subst = subst
-                                            , derivedDestructorNames = Set.empty
-                                            }
-                                    }
+                                    stateRest =
+                                        { stateAfterBody
+                                            | ctx =
+                                                let
+                                                    cr =
+                                                        stateAfterBody.ctx
+                                                in
+                                                { cr | valueMulti = restOfStack }
+                                        }
 
-                                stateForBody =
-                                    { stateEager
-                                        | ctx =
-                                            let
-                                                cn =
-                                                    stateEager.ctx
-                                            in
-                                            { cn
-                                                | valueMulti = seededEntry :: cn.valueMulti
-                                                , varEnv = State.insertVar defName eagerMonoType cn.varEnv
-                                            }
-                                    }
+                                    ( floatDefs, stateWithDefs ) =
+                                        List.foldl
+                                            (\info ( defsAcc, stAcc ) ->
+                                                let
+                                                    -- Step A: re-derive the instance type from the
+                                                    -- (possibly refined) info.subst, mirroring the
+                                                    -- value-multi path (D6). Destructor- and use-site
+                                                    -- refinements threaded into info.subst then flow
+                                                    -- into emission, instead of the static
+                                                    -- info.monoType recorded at instance creation.
+                                                    instanceDefMonoType0 =
+                                                        applySubstFV stateAfterBody info.subst defCanType
 
-                                ( monoBody, stateAfterBody ) =
-                                    specializeExpr body subst stateForBody
-                            in
-                            case stateAfterBody.ctx.valueMulti of
-                                topEntry :: restOfStack ->
-                                    let
-                                        -- All instances except the seeded eager (Int) one are
-                                        -- Float-demanding copies discovered in the body.
-                                        floatInstances =
-                                            Dict.values (Dict.remove intKey topEntry.instances)
+                                                    -- J5: unify from the accumulator's env and thread it forward.
+                                                    ( mergedSubst, mergedEnv ) =
+                                                        TypeSubst.unifyExtend stAcc.ctx.mvarEnv defCanType instanceDefMonoType0 info.subst
 
-                                        stateRest =
-                                            { stateAfterBody
-                                                | ctx =
-                                                    let
-                                                        cr =
-                                                            stateAfterBody.ctx
-                                                    in
-                                                    { cr | valueMulti = restOfStack }
-                                            }
+                                                    ( md0, st1 ) =
+                                                        specializeDef def mergedSubst (setMVarEnv mergedEnv stAcc)
 
-                                        ( floatDefs, stateWithDefs ) =
-                                            List.foldl
-                                                (\info ( defsAcc, stAcc ) ->
-                                                    let
-                                                        -- Step A: re-derive the instance type from the
-                                                        -- (possibly refined) info.subst, mirroring the
-                                                        -- value-multi path (D6). Destructor- and use-site
-                                                        -- refinements threaded into info.subst then flow
-                                                        -- into emission, instead of the static
-                                                        -- info.monoType recorded at instance creation.
-                                                        instanceDefMonoType0 =
-                                                            applySubstFV stateAfterBody info.subst defCanType
+                                                    md =
+                                                        renameMonoDef info.freshName md0
+                                                in
+                                                ( md :: defsAcc, st1 )
+                                            )
+                                            ( [], stateRest )
+                                            floatInstances
 
-                                                        -- J5: unify from the accumulator's env and thread it forward.
-                                                        ( mergedSubst, mergedEnv ) =
-                                                            TypeSubst.unifyExtend stAcc.ctx.mvarEnv defCanType instanceDefMonoType0 info.subst
+                                    stateWithVars =
+                                        List.foldl
+                                            (\info st ->
+                                                let
+                                                    instanceDefMonoType0 =
+                                                        applySubstFV stateAfterBody info.subst defCanType
+                                                in
+                                                { st
+                                                    | ctx =
+                                                        let
+                                                            cv =
+                                                                st.ctx
+                                                        in
+                                                        { cv | varEnv = State.insertVar info.freshName instanceDefMonoType0 cv.varEnv }
+                                                }
+                                            )
+                                            stateWithDefs
+                                            floatInstances
 
-                                                        ( md0, st1 ) =
-                                                            specializeDef def mergedSubst (setMVarEnv mergedEnv stAcc)
+                                    bodyWithFloats =
+                                        List.foldl
+                                            (\d acc -> Mono.MonoLet d acc (Mono.typeOf acc))
+                                            monoBody
+                                            floatDefs
+                                in
+                                ( Mono.MonoLet eagerDef
+                                    bodyWithFloats
+                                    (if Mono.containsAnyMVar monoType0 then
+                                        Mono.typeOf bodyWithFloats
 
-                                                        md =
-                                                            renameMonoDef info.freshName md0
-                                                    in
-                                                    ( md :: defsAcc, st1 )
-                                                )
-                                                ( [], stateRest )
-                                                floatInstances
-
-                                        stateWithVars =
-                                            List.foldl
-                                                (\info st ->
-                                                    let
-                                                        instanceDefMonoType0 =
-                                                            applySubstFV stateAfterBody info.subst defCanType
-                                                    in
-                                                    { st
-                                                        | ctx =
-                                                            let
-                                                                cv =
-                                                                    st.ctx
-                                                            in
-                                                            { cv | varEnv = State.insertVar info.freshName instanceDefMonoType0 cv.varEnv }
-                                                    }
-                                                )
-                                                stateWithDefs
-                                                floatInstances
-
-                                        bodyWithFloats =
-                                            List.foldl
-                                                (\d acc -> Mono.MonoLet d acc (Mono.typeOf acc))
-                                                monoBody
-                                                floatDefs
-                                    in
-                                    ( Mono.MonoLet eagerDef
-                                        bodyWithFloats
-                                        (if Mono.containsAnyMVar monoType0 then
-                                            Mono.typeOf bodyWithFloats
-
-                                         else
-                                            monoType0
-                                        )
-                                    , stateWithVars
+                                     else
+                                        monoType0
                                     )
+                                , stateWithVars
+                                )
 
-                                [] ->
-                                    Utils.Crash.crash "Specialize: number-multi stack underflow in Let"
+                            [] ->
+                                Utils.Crash.crash "Specialize: number-multi stack underflow in Let"
 
                     else
                         -- Non-function let: original eager behavior
@@ -4134,7 +4130,7 @@ processCallArg subst arg ( accArgs, accTypes, st ) =
                     accessorMeta.tipe
 
                 monoType =
-                    (TypeSubst.applySubstPure st.ctx.mvarEnv subst accessorCanType)
+                    TypeSubst.applySubstPure st.ctx.mvarEnv subst accessorCanType
             in
             ( PendingAccessor region fieldName accessorCanType :: accArgs
             , monoType :: accTypes
@@ -4172,7 +4168,7 @@ processCallArg subst arg ( accArgs, accTypes, st ) =
                 -- concrete sibling arg / expected result; the Float instance is then
                 -- recorded against the callee's paramType in resolveProcessedArg.
                 ( PendingNumberValue name localCanType :: accArgs
-                , (TypeSubst.applySubstPure st.ctx.mvarEnv subst localCanType) :: accTypes
+                , TypeSubst.applySubstPure st.ctx.mvarEnv subst localCanType :: accTypes
                 , st
                 )
 
@@ -4236,7 +4232,7 @@ processCallArg subst arg ( accArgs, accTypes, st ) =
                         -- defaulting, MONO_028), so the former applySubstKeepNumber
                         -- fork is redundant.
                         monoType =
-                            (TypeSubst.applySubstPure st.ctx.mvarEnv subst canType)
+                            TypeSubst.applySubstPure st.ctx.mvarEnv subst canType
                     in
                     if Mono.containsAnyMVar monoType then
                         ( PendingExpr arg subst canType :: accArgs
@@ -4672,7 +4668,7 @@ specializeDestructor (TOpt.Destructor name path meta) subst mvarEnv varEnv globa
             specializePath mvarEnv path varEnv globalTypeEnv currentGlobal name
 
         monoType =
-            (TypeSubst.applySubstPure mvarEnv subst meta.tipe)
+            TypeSubst.applySubstPure mvarEnv subst meta.tipe
     in
     Mono.MonoDestructor name monoPath monoType
 
@@ -4883,7 +4879,7 @@ computeCustomFieldType mvarEnv globalTypeEnv ctorName index containerType =
                                         canArgTypeWithIds =
                                             Analysis.convertCanTypeNameToMVarId nameToId canArgType
                                     in
-                                    (TypeSubst.applySubstPure mvarEnv1 typeVarSubst canArgTypeWithIds)
+                                    TypeSubst.applySubstPure mvarEnv1 typeVarSubst canArgTypeWithIds
 
                                 [] ->
                                     Utils.Crash.crash ("Specialize.computeCustomFieldType: Constructor arg index " ++ String.fromInt index ++ " out of bounds for " ++ ctorName)
@@ -4950,7 +4946,7 @@ computeUnboxResultType mvarEnv globalTypeEnv containerType =
                                         canArgTypeWithIds =
                                             Analysis.convertCanTypeNameToMVarId nameToId canArgType
                                     in
-                                    (TypeSubst.applySubstPure mvarEnv1 typeVarSubst canArgTypeWithIds)
+                                    TypeSubst.applySubstPure mvarEnv1 typeVarSubst canArgTypeWithIds
 
                                 _ ->
                                     Utils.Crash.crash ("Specialize.computeUnboxResultType: Expected single-arg constructor but got " ++ String.fromInt (List.length ctorData.args) ++ " args for " ++ typeName)
@@ -5259,8 +5255,8 @@ not applied here — with globally unique MVarIds per scheme, the old
 caller-first heuristic is no longer needed and can produce wrong results.
 
 -}
-callResultMonoType : MVarEnv -> Can.FreeVars -> Substitution -> Can.Type MVarId -> Mono.MonoType
-callResultMonoType mvarEnv freeVars callSubst canType =
+callResultMonoType : MVarEnv -> Substitution -> Can.Type MVarId -> Mono.MonoType
+callResultMonoType mvarEnv callSubst canType =
     TypeSubst.applySubstFiltered mvarEnv callSubst canType
 
 
@@ -5273,7 +5269,7 @@ specializeArg mvarEnv subst ( locName, canType ) =
             A.toValue locName
 
         monoType =
-            (TypeSubst.applySubstPure mvarEnv subst canType)
+            TypeSubst.applySubstPure mvarEnv subst canType
     in
     ( name, monoType )
 
@@ -5406,7 +5402,7 @@ deriveKernelAbiType mvarEnv kernelId canFuncType callSubst =
         -- Monomorphic function type at this use-site, after substitution.
         monoAfterSubst : Mono.MonoType
         monoAfterSubst =
-            (TypeSubst.applySubstPure mvarEnv callSubst canFuncType)
+            TypeSubst.applySubstPure mvarEnv callSubst canFuncType
 
         mode : KernelAbi.KernelAbiMode
         mode =

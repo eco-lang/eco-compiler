@@ -4,7 +4,7 @@ module Data.Map exposing
     , isEmpty, member, get, size
     , keys, values, toList, fromList
     , map, foldl, foldr, filter
-    , union, diff, merge
+    , union, diff
     )
 
 {-| A dictionary implementation backed by association lists, supporting keys of any type with custom comparison functions.
@@ -43,7 +43,7 @@ All functions in this module are stack safe and won't crash from recursing over 
 
 # Combine
 
-@docs union, diff, merge
+@docs union, diff
 
 -}
 
@@ -188,42 +188,6 @@ union (D leftDict) (D rightDict) =
 diff : Dict comparable k a -> Dict comparable k b -> Dict comparable k a
 diff (D leftDict) (D rightDict) =
     D (Dict.diff leftDict rightDict)
-
-
-{-| The most general way of combining two dictionaries. You provide three
-accumulators for when a given key appears:
-
-1.  Only in the left dictionary.
-2.  In both dictionaries.
-3.  Only in the right dictionary.
-
-You then traverse all the keys in the following order, building up whatever
-you want:
-
-1.  All the keys that appear only in the right dictionary from least
-    recently inserted to most recently inserted.
-2.  All the keys in the left dictionary from least recently inserted to most
-    recently inserted (without regard to whether they appear only in the left
-    dictionary or in both dictionaries).
-
--}
-merge :
-    (k -> k -> Order)
-    -> (k -> a -> result -> result)
-    -> (k -> a -> b -> result -> result)
-    -> (k -> b -> result -> result)
-    -> Dict comparable k a
-    -> Dict comparable k b
-    -> result
-    -> result
-merge _ leftStep bothStep rightStep (D leftDict) (D rightDict) initialResult =
-    Dict.merge
-        (\_ ( k, a ) -> leftStep k a)
-        (\_ ( k, a ) ( _, b ) -> bothStep k a b)
-        (\_ ( k, b ) -> rightStep k b)
-        leftDict
-        rightDict
-        initialResult
 
 
 

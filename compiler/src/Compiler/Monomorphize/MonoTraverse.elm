@@ -1,8 +1,7 @@
 module Compiler.Monomorphize.MonoTraverse exposing
     ( traverseExpr
     , foldExpr
-    , mapNodeTypes
-    , anyNodeType
+    , mapNodeTypes, anyNodeType
     )
 
 {-| Generic AST traversal abstractions for MonoExpr.
@@ -32,7 +31,7 @@ function on each node after processing children.
 
 -}
 
-import Compiler.AST.Monomorphized as Mono exposing (CallInfo, CaptureABI, ClosureInfo, CtorShape, Decider(..), MonoChoice(..), MonoDef(..), MonoDestructor(..), MonoDtPath(..), MonoExpr(..), MonoNode(..), MonoPath(..), MonoType)
+import Compiler.AST.Monomorphized as Mono exposing (CallInfo, CaptureABI, ClosureInfo, CtorShape, Decider(..), MonoChoice(..), MonoDef(..), MonoDestructor, MonoDtPath, MonoExpr(..), MonoNode, MonoPath, MonoType)
 
 
 
@@ -497,6 +496,7 @@ traverseList f ctx list =
                 list
     in
     ( List.reverse revAcc, finalCtx )
+
 
 
 -- ============================================================================

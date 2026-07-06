@@ -42,7 +42,6 @@ import Compiler.Monomorphize.State as State exposing (WorkItem(..))
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Data.Map as DMap
 import Dict
-import Set
 import System.TypeCheck.IO as IO
 import Utils.Crash
 

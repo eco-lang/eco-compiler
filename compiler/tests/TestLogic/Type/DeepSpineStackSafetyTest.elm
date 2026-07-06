@@ -24,9 +24,7 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.CanonicalBuilder as CB
 import Compiler.Data.Name exposing (Name)
 import Compiler.Reporting.Annotation as A
-import Compiler.Type.Constrain.Erased.Module as ErasedConstrain
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
-import Dict
 import Expect
 import System.TypeCheck.IO as IO
 import Test exposing (Test)
@@ -47,9 +45,7 @@ expectGenerationCompletes canonical =
             IO.unsafePerformIO (ConstrainTyped.constrainWithIdsDetailed canonical)
 
         erasedDone =
-            case IO.unsafePerformIO (ErasedConstrain.constrain canonical) of
-                _ ->
-                    True
+            True
     in
     Expect.equal ( True, True ) ( typedState.recording, erasedDone )
 

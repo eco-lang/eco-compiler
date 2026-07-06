@@ -50,7 +50,6 @@ import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Data.Map
 import Data.Set as EverySet exposing (EverySet)
 import Dict
-import Set
 import System.TypeCheck.IO as IO
 import Utils.Crash
 

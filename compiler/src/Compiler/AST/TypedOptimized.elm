@@ -7,7 +7,7 @@ module Compiler.AST.TypedOptimized exposing
     , emptyGlobalGraph
     , compareGlobal, toComparableGlobal, toKernelGlobal
     , typeOf, metaOf, tvarOf
-    , computeVarSupers, varSupersOfType, superOfName
+    , computeVarSupers, varSupersOfType
     , globalGraphEncoder, globalGraphDecoder, localGraphEncoder, localGraphDecoder
     )
 
@@ -65,7 +65,7 @@ The key difference from Optimized:
 
 # Super Constraints
 
-@docs computeVarSupers, varSupersOfType, superOfName
+@docs computeVarSupers, varSupersOfType
 
 
 # Serialization
