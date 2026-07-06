@@ -1039,48 +1039,6 @@ wrapNodeCallables home node ctx =
 -- CALL STAGING ANNOTATION
 
 
-{-| F5 (plans/post-fixpoint-pass-fusion.md) changed-flag list map: recurse each element,
-and return the ORIGINAL list by reference when nothing changed, so call-free subtrees are
-not reallocated during annotation. Uses `List.foldr` so the mapped list keeps source order.
--}
-annChangedList : (a -> ( Bool, a )) -> List a -> ( Bool, List a )
-annChangedList f xs =
-    let
-        ( anyChanged, mapped ) =
-            List.foldr
-                (\item ( accCh, acc ) ->
-                    let
-                        ( ch, y ) =
-                            f item
-                    in
-                    ( accCh || ch, y :: acc )
-                )
-                ( False, [] )
-                xs
-    in
-    if anyChanged then
-        ( True, mapped )
-
-    else
-        ( False, xs )
-
-
-{-| F5 helper: recurse the second element of a pair, preserving the ORIGINAL pair (by
-reference) when it did not change — avoids reallocating the tuple wrapper.
--}
-annPairSnd : (b -> ( Bool, b )) -> ( a, b ) -> ( Bool, ( a, b ) )
-annPairSnd f (( a, b ) as pair) =
-    let
-        ( ch, b1 ) =
-            f b
-    in
-    if ch then
-        ( True, ( a, b1 ) )
-
-    else
-        ( False, pair )
-
-
 {-| Phase: Annotate all MonoCall nodes with precomputed staging metadata.
 After this phase, MLIR codegen can use CallInfo directly without
 recomputing call models or stage arities.
@@ -1106,12 +1064,7 @@ annotateNodeCalls : Mono.MonoGraph -> Int -> CallEnv -> Mono.MonoNode -> Mono.Mo
 annotateNodeCalls graph nodeId env node =
     case node of
         Mono.MonoDefine expr tipe ->
-            case annotateExprCalls graph env expr of
-                ( True, expr1 ) ->
-                    Mono.MonoDefine expr1 tipe
-
-                ( False, _ ) ->
-                    node
+            Mono.MonoDefine (annotateExprCalls graph env expr) tipe
 
         Mono.MonoTailFunc params body tipe ->
             let
@@ -1134,35 +1087,20 @@ annotateNodeCalls graph nodeId env node =
                 envWithParams =
                     { env | paramSlotKeys = paramSlotKeys }
             in
-            case annotateExprCalls graph envWithParams body of
-                ( True, body1 ) ->
-                    Mono.MonoTailFunc params body1 tipe
-
-                ( False, _ ) ->
-                    node
+            Mono.MonoTailFunc params (annotateExprCalls graph envWithParams body) tipe
 
         Mono.MonoPortIncoming expr tipe ->
-            case annotateExprCalls graph env expr of
-                ( True, expr1 ) ->
-                    Mono.MonoPortIncoming expr1 tipe
-
-                ( False, _ ) ->
-                    node
+            Mono.MonoPortIncoming (annotateExprCalls graph env expr) tipe
 
         Mono.MonoPortOutgoing expr tipe ->
-            case annotateExprCalls graph env expr of
-                ( True, expr1 ) ->
-                    Mono.MonoPortOutgoing expr1 tipe
-
-                ( False, _ ) ->
-                    node
+            Mono.MonoPortOutgoing (annotateExprCalls graph env expr) tipe
 
         -- Constructors, enums, externs contain no expressions
         _ ->
             node
 
 
-annotateExprCalls : Mono.MonoGraph -> CallEnv -> Mono.MonoExpr -> ( Bool, Mono.MonoExpr )
+annotateExprCalls : Mono.MonoGraph -> CallEnv -> Mono.MonoExpr -> Mono.MonoExpr
 annotateExprCalls graph env expr =
     let
         recurse =
@@ -1172,28 +1110,24 @@ annotateExprCalls graph env expr =
         -- Special case: MonoLet needs proper CallEnv scoping
         Mono.MonoLet def body tipe ->
             let
-                ( defCh, def1, env1 ) =
+                ( def1, env1 ) =
                     annotateDefCalls graph env def
 
-                ( bodyCh, body1 ) =
+                body1 =
                     annotateExprCalls graph env1 body
             in
-            if defCh || bodyCh then
-                ( True, Mono.MonoLet def1 body1 tipe )
-
-            else
-                ( False, expr )
+            Mono.MonoLet def1 body1 tipe
 
         -- MonoCall: annotate with call info after recursing on children.
         -- If the call already has a non-default CallInfo (e.g., pre-computed by
         -- buildNestedCallsGO for wrapper calls), keep it rather than re-deriving.
         Mono.MonoCall region func args resultType existingCallInfo ->
             let
-                ( funcCh, newFunc ) =
+                newFunc =
                     recurse func
 
-                ( argsCh, newArgs ) =
-                    annChangedList recurse args
+                newArgs =
+                    List.map recurse args
 
                 callInfo =
                     if not (List.isEmpty existingCallInfo.stageArities) then
@@ -1203,79 +1137,39 @@ annotateExprCalls graph env expr =
                     else
                         computeCallInfo graph env newFunc newArgs resultType
             in
-            if funcCh || argsCh || callInfo /= existingCallInfo then
-                ( True, Mono.MonoCall region newFunc newArgs resultType callInfo )
-
-            else
-                ( False, expr )
+            Mono.MonoCall region newFunc newArgs resultType callInfo
 
         -- MonoCase: recurse into decider and jumps
         Mono.MonoCase label scrutinee decider jumps resultType ->
             let
-                ( decCh, newDecider ) =
+                newDecider =
                     annotateDeciderCalls graph env decider
 
-                ( jumpsCh, newJumps ) =
-                    annChangedList (annPairSnd recurse) jumps
+                newJumps =
+                    List.map (\( i, e ) -> ( i, recurse e )) jumps
             in
-            if decCh || jumpsCh then
-                ( True, Mono.MonoCase label scrutinee newDecider newJumps resultType )
-
-            else
-                ( False, expr )
+            Mono.MonoCase label scrutinee newDecider newJumps resultType
 
         -- MonoIf: recurse into branches and final
         Mono.MonoIf branches final resultType ->
             let
-                ( branchesCh, newBranches ) =
-                    annChangedList
-                        (\(( c, t ) as pair) ->
-                            let
-                                ( cCh, c1 ) =
-                                    recurse c
+                newBranches =
+                    List.map (\( c, t ) -> ( recurse c, recurse t )) branches
 
-                                ( tCh, t1 ) =
-                                    recurse t
-                            in
-                            if cCh || tCh then
-                                ( True, ( c1, t1 ) )
-
-                            else
-                                ( False, pair )
-                        )
-                        branches
-
-                ( finalCh, newFinal ) =
+                newFinal =
                     recurse final
             in
-            if branchesCh || finalCh then
-                ( True, Mono.MonoIf newBranches newFinal resultType )
-
-            else
-                ( False, expr )
+            Mono.MonoIf newBranches newFinal resultType
 
         -- MonoClosure: recurse into captures and body.
         -- Populate varSourceArity for captured variables so that calls
         -- to captured closures inside the body use correct arity.
         Mono.MonoClosure info body closureType ->
             let
-                ( capturesCh, newCaptures ) =
-                    annChangedList
-                        (\(( n, e, t ) as cap) ->
-                            let
-                                ( ch, e1 ) =
-                                    annotateExprCalls graph env e
-                            in
-                            if ch then
-                                ( True, ( n, e1, t ) )
+                newCaptures =
+                    List.map (\( n, e, t ) -> ( n, annotateExprCalls graph env e, t )) info.captures
 
-                            else
-                                ( False, cap )
-                        )
-                        info.captures
-
-                -- Add capture arities to env for the body (uses the recursed
-                -- captures; values are identical whether or not they changed).
+                -- Add capture arities to env for the body
                 envWithCaptures =
                     List.foldl
                         (\( name, captureExpr, _ ) envAcc ->
@@ -1292,120 +1186,72 @@ annotateExprCalls graph env expr =
                         env
                         newCaptures
 
-                ( bodyCh, newBody ) =
+                newBody =
                     annotateExprCalls graph envWithCaptures body
             in
-            if capturesCh || bodyCh then
-                ( True, Mono.MonoClosure { info | captures = newCaptures } newBody closureType )
-
-            else
-                ( False, expr )
+            Mono.MonoClosure { info | captures = newCaptures } newBody closureType
 
         -- MonoTailCall: recurse into args
         Mono.MonoTailCall name args resultType ->
             let
-                ( argsCh, newArgs ) =
-                    annChangedList (annPairSnd recurse) args
+                newArgs =
+                    List.map (\( n, e ) -> ( n, recurse e )) args
             in
-            if argsCh then
-                ( True, Mono.MonoTailCall name newArgs resultType )
-
-            else
-                ( False, expr )
+            Mono.MonoTailCall name newArgs resultType
 
         -- MonoDestruct: recurse into inner
         Mono.MonoDestruct path inner resultType ->
-            let
-                ( ch, inner1 ) =
-                    recurse inner
-            in
-            if ch then
-                ( True, Mono.MonoDestruct path inner1 resultType )
-
-            else
-                ( False, expr )
+            Mono.MonoDestruct path (recurse inner) resultType
 
         -- MonoList: recurse into items
         Mono.MonoList region items resultType ->
-            let
-                ( ch, newItems ) =
-                    annChangedList recurse items
-            in
-            if ch then
-                ( True, Mono.MonoList region newItems resultType )
-
-            else
-                ( False, expr )
+            Mono.MonoList region (List.map recurse items) resultType
 
         -- MonoRecordCreate: recurse into fields
         Mono.MonoRecordCreate fields resultType ->
             let
-                ( ch, newFields ) =
-                    annChangedList (annPairSnd recurse) fields
+                newFields =
+                    List.map (\( n, e ) -> ( n, recurse e )) fields
             in
-            if ch then
-                ( True, Mono.MonoRecordCreate newFields resultType )
-
-            else
-                ( False, expr )
+            Mono.MonoRecordCreate newFields resultType
 
         -- MonoRecordAccess: recurse into inner
         Mono.MonoRecordAccess inner field resultType ->
-            let
-                ( ch, inner1 ) =
-                    recurse inner
-            in
-            if ch then
-                ( True, Mono.MonoRecordAccess inner1 field resultType )
-
-            else
-                ( False, expr )
+            Mono.MonoRecordAccess (recurse inner) field resultType
 
         -- MonoRecordUpdate: recurse into record and updates
         Mono.MonoRecordUpdate record updates resultType ->
             let
-                ( recCh, newRecord ) =
+                newRecord =
                     recurse record
 
-                ( updCh, newUpdates ) =
-                    annChangedList (annPairSnd recurse) updates
+                newUpdates =
+                    List.map (\( n, e ) -> ( n, recurse e )) updates
             in
-            if recCh || updCh then
-                ( True, Mono.MonoRecordUpdate newRecord newUpdates resultType )
-
-            else
-                ( False, expr )
+            Mono.MonoRecordUpdate newRecord newUpdates resultType
 
         -- MonoTupleCreate: recurse into elements
         Mono.MonoTupleCreate region elements resultType ->
-            let
-                ( ch, newElements ) =
-                    annChangedList recurse elements
-            in
-            if ch then
-                ( True, Mono.MonoTupleCreate region newElements resultType )
-
-            else
-                ( False, expr )
+            Mono.MonoTupleCreate region (List.map recurse elements) resultType
 
         -- Leaf expressions: no recursion needed
         Mono.MonoLiteral _ _ ->
-            ( False, expr )
+            expr
 
         Mono.MonoVarLocal _ _ ->
-            ( False, expr )
+            expr
 
         Mono.MonoVarGlobal _ _ _ ->
-            ( False, expr )
+            expr
 
         Mono.MonoVarKernel _ _ _ _ _ ->
-            ( False, expr )
+            expr
 
         Mono.MonoUnit ->
-            ( False, expr )
+            expr
 
         Mono.MonoAccessorValue _ _ _ ->
-            ( False, expr )
+            expr
 
 
 {-| Annotate calls in a definition and propagate call model to CallEnv.
@@ -1415,12 +1261,12 @@ annotateDefCalls :
     Mono.MonoGraph
     -> CallEnv
     -> Mono.MonoDef
-    -> ( Bool, Mono.MonoDef, CallEnv )
+    -> ( Mono.MonoDef, CallEnv )
 annotateDefCalls graph env def =
     case def of
         Mono.MonoDef name bound ->
             let
-                ( boundCh, bound1 ) =
+                bound1 =
                     annotateExprCalls graph env bound
 
                 maybeModel =
@@ -1478,14 +1324,7 @@ annotateDefCalls graph env def =
                     else
                         env3
             in
-            ( boundCh
-            , if boundCh then
-                Mono.MonoDef name bound1
-
-              else
-                def
-            , env4
-            )
+            ( Mono.MonoDef name bound1, env4 )
 
         Mono.MonoTailDef name params bound ->
             -- Tail defs are also referenced by MonoVarLocal for the initial
@@ -1501,79 +1340,34 @@ annotateDefCalls graph env def =
                             Dict.insert name tailArity env.varSourceArity
                     }
             in
-            let
-                ( boundCh, bound1 ) =
-                    annotateExprCalls graph env1 bound
-            in
-            ( boundCh
-            , if boundCh then
-                Mono.MonoTailDef name params bound1
-
-              else
-                def
-            , env1
-            )
+            ( Mono.MonoTailDef name params (annotateExprCalls graph env1 bound), env1 )
 
 
-annotateDeciderCalls : Mono.MonoGraph -> CallEnv -> Mono.Decider Mono.MonoChoice -> ( Bool, Mono.Decider Mono.MonoChoice )
+annotateDeciderCalls : Mono.MonoGraph -> CallEnv -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice
 annotateDeciderCalls graph env decider =
     case decider of
         Mono.Leaf choice ->
-            let
-                ( ch, choice1 ) =
-                    annotateChoiceCalls graph env choice
-            in
-            if ch then
-                ( True, Mono.Leaf choice1 )
-
-            else
-                ( False, decider )
+            Mono.Leaf (annotateChoiceCalls graph env choice)
 
         Mono.Chain edges success failure ->
-            let
-                ( sCh, success1 ) =
-                    annotateDeciderCalls graph env success
-
-                ( fCh, failure1 ) =
-                    annotateDeciderCalls graph env failure
-            in
-            if sCh || fCh then
-                ( True, Mono.Chain edges success1 failure1 )
-
-            else
-                ( False, decider )
+            Mono.Chain edges
+                (annotateDeciderCalls graph env success)
+                (annotateDeciderCalls graph env failure)
 
         Mono.FanOut path edges fallback ->
-            let
-                ( edgesCh, newEdges ) =
-                    annChangedList (annPairSnd (annotateDeciderCalls graph env)) edges
-
-                ( fbCh, fallback1 ) =
-                    annotateDeciderCalls graph env fallback
-            in
-            if edgesCh || fbCh then
-                ( True, Mono.FanOut path newEdges fallback1 )
-
-            else
-                ( False, decider )
+            Mono.FanOut path
+                (List.map (\( test, d ) -> ( test, annotateDeciderCalls graph env d )) edges)
+                (annotateDeciderCalls graph env fallback)
 
 
-annotateChoiceCalls : Mono.MonoGraph -> CallEnv -> Mono.MonoChoice -> ( Bool, Mono.MonoChoice )
+annotateChoiceCalls : Mono.MonoGraph -> CallEnv -> Mono.MonoChoice -> Mono.MonoChoice
 annotateChoiceCalls graph env choice =
     case choice of
         Mono.Inline expr ->
-            let
-                ( ch, expr1 ) =
-                    annotateExprCalls graph env expr
-            in
-            if ch then
-                ( True, Mono.Inline expr1 )
-
-            else
-                ( False, choice )
+            Mono.Inline (annotateExprCalls graph env expr)
 
         Mono.Jump i ->
-            ( False, choice )
+            Mono.Jump i
 
 
 {-| Determine call model for an expression.
