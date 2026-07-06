@@ -15,6 +15,7 @@
 #define ECO_NATIVE_DRIVER_H
 
 #include <string>
+#include <vector>
 
 namespace eco {
 
@@ -39,6 +40,14 @@ struct EcoNativeOptions {
 
     // Optional timing collector. The library appends scopes here; callers print.
     LoweringStats *stats = nullptr;
+
+    // Opt-in: add `--gc-sections` to the executable link (Linux only) to trim
+    // dead sections from the linked runtime/kernel archives. Requires the
+    // .llvm_stackmaps section to be explicitly KEEP'd (done automatically when
+    // this is set) — nothing relocates into it, so a plain --gc-sections would
+    // strip it and silently break GC root scanning. Binary-size win only (does
+    // not speed compilation); OFF by default until broadly validated.
+    bool gcSections = false;
 };
 
 // Initialize the native LLVM target + asm printer + asm parser. Idempotent
@@ -68,6 +77,13 @@ int compileMlirBytesToExecutable(const char *mlirBytes, size_t mlirLen,
 // sharedLib: link a shared library (-shared, embed entry, no main())
 // instead of a PIE executable. Used for .so/.node output targets.
 int linkExecutable(const std::string &objectFile,
+                   const std::string &outputPath,
+                   const EcoNativeOptions &opts,
+                   bool sharedLib = false);
+
+// Multi-object variant: link N object files (one per parallel-codegen
+// partition — see EcoBackendJob::numPartitions) into one executable/shared lib.
+int linkExecutable(const std::vector<std::string> &objectFiles,
                    const std::string &outputPath,
                    const EcoNativeOptions &opts,
                    bool sharedLib = false);

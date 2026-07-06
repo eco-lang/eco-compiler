@@ -1083,6 +1083,22 @@ struct BFToLLVMPass : public PassWrapper<BFToLLVMPass, OperationPass<ModuleOp>> 
         ModuleOp module = getOperation();
         MLIRContext *ctx = &getContext();
 
+        // Early-out: bf.* ops appear only in bytes encoder/decoder functions,
+        // a small fraction of any program. When the module has none, skip the
+        // runtime-function declarations (a SymbolTable build + 10 dead decls)
+        // and the whole-module conversion driver entirely.
+        Dialect *bfDialect = ctx->getLoadedDialect<bf::BFDialect>();
+        bool hasBfOps = false;
+        module.walk([&](Operation *op) {
+            if (op->getDialect() == bfDialect) {
+                hasBfOps = true;
+                return WalkResult::interrupt();
+            }
+            return WalkResult::advance();
+        });
+        if (!hasBfOps)
+            return;
+
         // Ensure runtime functions are declared and cache their references
         OpBuilder builder(ctx);
         BFRuntimeFuncs rtFuncs = ensureRuntimeFunctions(module, builder);

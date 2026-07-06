@@ -24,7 +24,11 @@ namespace {
 //===----------------------------------------------------------------------===//
 
 struct KernelFuncOpLowering : public OpConversionPattern<func::FuncOp> {
-    using OpConversionPattern::OpConversionPattern;
+    const EcoRuntime &runtime;
+
+    KernelFuncOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                         const EcoRuntime &runtime, PatternBenefit benefit)
+        : OpConversionPattern(typeConverter, ctx, benefit), runtime(runtime) {}
 
     LogicalResult
     matchAndRewrite(func::FuncOp funcOp, OpAdaptor adaptor,
@@ -35,8 +39,9 @@ struct KernelFuncOpLowering : public OpConversionPattern<func::FuncOp> {
 
         // If an LLVM func with this name already exists (e.g., created by
         // string case lowering's getOrCreateUtilsEqual), just erase the stub.
-        auto module = funcOp->getParentOfType<ModuleOp>();
-        if (module.lookupSymbol<LLVM::LLVMFuncOp>(funcOp.getName())) {
+        // Route through EcoRuntime's O(1) symbol cache instead of
+        // ModuleOp::lookupSymbol's O(N) module scan per kernel decl.
+        if (runtime.lookupSymbol<LLVM::LLVMFuncOp>(funcOp.getName())) {
             rewriter.eraseOp(funcOp);
             return success();
         }
@@ -80,6 +85,10 @@ struct KernelFuncOpLowering : public OpConversionPattern<func::FuncOp> {
 
         // Set external linkage so JIT can resolve the symbol
         llvmFunc.setLinkage(LLVM::Linkage::External);
+
+        // Register in the symbol cache so a later duplicate kernel decl with
+        // the same name is deduped via the O(1) lookup above.
+        runtime.cacheSymbol(llvmFunc);
 
         // Erase the original func.func
         rewriter.eraseOp(funcOp);
@@ -245,9 +254,10 @@ void eco::detail::emitShadowRootEpilogues(
 
 void eco::detail::populateEcoFuncPatterns(
     EcoTypeConverter &typeConverter,
-    RewritePatternSet &patterns) {
+    RewritePatternSet &patterns,
+    const EcoRuntime &runtime) {
 
     auto *ctx = patterns.getContext();
     // Add with higher benefit to ensure it runs before standard func-to-llvm patterns
-    patterns.add<KernelFuncOpLowering>(typeConverter, ctx, /*benefit=*/10);
+    patterns.add<KernelFuncOpLowering>(typeConverter, ctx, runtime, /*benefit=*/10);
 }

@@ -1348,20 +1348,29 @@ static bool wrapperWillBeTypedNewargs(const EcoRuntime &runtime,
 /// don't yet plumb a Mono result type pass 0 (PK_Boxed), preserving
 /// today's "wrappers always return HPtr" behaviour.
 static Value getOrCreateEvalLayout(ConversionPatternRewriter &rewriter, Location loc,
-                                   ModuleOp module, ArrayRef<uint8_t> kinds,
+                                   const EcoRuntime &runtime, ArrayRef<uint8_t> kinds,
                                    uint8_t resultKind = 0) {
     auto *ctx = rewriter.getContext();
+    ModuleOp module = runtime.module;
     auto i8Ty = IntegerType::get(ctx, 8);
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
     uint32_t n = kinds.size();
 
-    std::string name = "__eco_eval_layout_r";
-    name += std::to_string(resultKind);
-    name += "_";
-    for (uint8_t k : kinds) name += std::to_string(k) + "_";
-    name += std::to_string(n);
+    // Only ~dozens of distinct layouts exist, but this helper is called once
+    // per closure apply site (tens of thousands on a whole-program module).
+    // Route the existence check through EcoRuntime's O(1) symbol cache instead
+    // of ModuleOp::lookupSymbol's O(N) top-level scan (was ~3.7B comparisons
+    // on the self-host module).
+    llvm::SmallString<48> nameBuf;
+    {
+        llvm::raw_svector_ostream os(nameBuf);
+        os << "__eco_eval_layout_r" << unsigned(resultKind) << "_";
+        for (uint8_t k : kinds) os << unsigned(k) << "_";
+        os << n;
+    }
+    StringRef name = nameBuf;
 
-    if (module.lookupSymbol<LLVM::GlobalOp>(name)) {
+    if (runtime.lookupSymbol<LLVM::GlobalOp>(name)) {
         return rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, name);
     }
 
@@ -1374,6 +1383,7 @@ static Value getOrCreateEvalLayout(ConversionPatternRewriter &rewriter, Location
         auto globalOp = rewriter.create<LLVM::GlobalOp>(
             loc, structTy, /*isConstant=*/true, LLVM::Linkage::Private,
             name, Attribute{});
+        runtime.cacheSymbol(globalOp);
 
         Block *initBlock = rewriter.createBlock(&globalOp.getInitializerRegion());
         rewriter.setInsertionPointToStart(initBlock);
@@ -1595,7 +1605,7 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
         }
         auto module = safeOp ? safeOp->getParentOfType<ModuleOp>() : ModuleOp{};
         if (module) {
-            layoutArg = getOrCreateEvalLayout(rewriter, loc, module, kinds,
+            layoutArg = getOrCreateEvalLayout(rewriter, loc, runtime, kinds,
                                               inlineResultKind);
         } else {
             layoutArg = rewriter.create<LLVM::ZeroOp>(loc, ptrTy).getResult();
@@ -1812,9 +1822,8 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         // compiled return ABI (sourced from the op's `_result_kind`).
         // The runtime helper reads K from the closure header
         // authoritatively but debug-asserts agreement.
-        auto module = op->getParentOfType<ModuleOp>();
         uint8_t layoutResultKind = static_cast<uint8_t>(op.get_resultKind());
-        Value layoutPtr = getOrCreateEvalLayout(rewriter, loc, module, kinds,
+        Value layoutPtr = getOrCreateEvalLayout(rewriter, loc, runtime, kinds,
                                                 layoutResultKind);
 
         // === 6. Call runtime dispatcher via the typed-result eval helper ===
@@ -1933,9 +1942,8 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         // Build (or reuse) an EvalParamLayout global describing the new args.
         // Phase D: layout's `result_kind` mirrors the closure evaluator's
         // compiled return ABI (sourced from the op's `_result_kind`).
-        auto module = op->getParentOfType<ModuleOp>();
         uint8_t layoutResultKind = static_cast<uint8_t>(op.get_resultKind());
-        Value layoutPtr = getOrCreateEvalLayout(rewriter, loc, module, kinds,
+        Value layoutPtr = getOrCreateEvalLayout(rewriter, loc, runtime, kinds,
                                                 layoutResultKind);
 
         // Compute desired_kind from the op's MLIR result type and route
@@ -2042,8 +2050,7 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
                     // New args are all PK_Boxed in phase 1
                     for (int64_t i = 0; i < numNewArgs; ++i)
                         kinds.push_back(0); // PK_Boxed
-                    auto module = op->getParentOfType<ModuleOp>();
-                    layoutPtr = getOrCreateEvalLayout(rewriter, loc, module, kinds);
+                    layoutPtr = getOrCreateEvalLayout(rewriter, loc, runtime, kinds);
                 }
                 result = emitInlineClosureCall(rewriter, loc, runtime, closureI64, newargs, convertedResultTy,
                                                origNewArgTypes, origResultType, op, liveRoots, layoutPtr);

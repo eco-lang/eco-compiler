@@ -271,6 +271,12 @@ struct EcoRuntime {
     /// in getOrCreateWrapper (CGEN_057).
     llvm::StringMap<mlir::FunctionType> origFuncTypes;
 
+    /// Monotonic counter for naming string-literal globals (__eco_str_N).
+    /// Per-instance (not a function-local static) so names are deterministic
+    /// per module conversion and don't leak/grow across compilations sharing
+    /// one process (e.g. the JIT test runner).
+    mutable uint64_t stringLiteralCounter = 0;
+
     explicit EcoRuntime(mlir::ModuleOp m) : module(m), ctx(m.getContext()) {}
 
     /// Ensure the symbol cache is populated from the module.
@@ -628,7 +634,8 @@ void populateEcoErrorDebugPatterns(
 /// Populate patterns for kernel function lowering.
 void populateEcoFuncPatterns(
     EcoTypeConverter &typeConverter,
-    mlir::RewritePatternSet &patterns);
+    mlir::RewritePatternSet &patterns,
+    const EcoRuntime &runtime);
 
 /// Populate patterns for value-level aggregate ops (Phase 0 plumbing):
 /// - eco.make.tuple2/3, eco.make.record, eco.make.custom,

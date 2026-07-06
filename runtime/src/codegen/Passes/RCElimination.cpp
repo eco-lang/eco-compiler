@@ -10,6 +10,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 
 #include "../EcoDialect.h"
 #include "../EcoOps.h"
@@ -35,8 +36,13 @@ struct RCEliminationPass
         bool hasErrors = false;
 
         // Walk the module and check for reference counting operations.
-        // These should not appear in IR that targets tracing GC.
+        // These should not appear in IR that targets tracing GC. A single
+        // variadic isa<> fast-rejects the common (no RC op) case before the
+        // per-op message dispatch.
         module.walk([&](Operation *op) {
+            if (!isa<IncrefOp, DecrefOp, DecrefShallowOp, FreeOp, ResetOp,
+                     ResetRefOp>(op))
+                return;
             if (isa<IncrefOp>(op)) {
                 op->emitError("eco.incref is not supported in tracing GC mode");
                 hasErrors = true;

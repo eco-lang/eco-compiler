@@ -14,6 +14,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/Error.h"
@@ -130,6 +131,29 @@ struct EcoBackendJob {
     /// when actual emission is desired; if empty, `runEcoBackend` runs
     /// RS4GC + opt but does not emit (used by intermediate-state callers).
     std::string objectFilePath;
+
+    /// Parallel object emission: when > 1, after RS4GC + opt the optimized
+    /// module is split into `numPartitions` parts (llvm::SplitModule) and each
+    /// part is emitted to `objectFilePaths[i]` on its own thread with its own
+    /// LLVMContext + TargetMachine. The linker later concatenates the parts'
+    /// .llvm_stackmaps sections; StackMap::parse handles the multi-blob result.
+    /// Requires a non-empty `objectFilePaths` of exactly `numPartitions` paths.
+    /// 1 (default) keeps the single-threaded emit to `objectFilePath`.
+    unsigned numPartitions = 1;
+    std::vector<std::string> objectFilePaths;
+
+    /// EXPERIMENTAL, off by default. Run RewriteStatepointsForGC AFTER the O2
+    /// optimization pipeline instead of before it (upstream LLVM's intended
+    /// ordering: the optimizer operates on abstract `ptr addrspace(1)` before
+    /// statepoints exist). This lets O2 run faster (no statepoint plumbing to
+    /// grind through) and can improve code quality, but risks REP_LLVM_001(a):
+    /// opt may hoist a `ptrtoint ptr<1>->i64` (ADT tag extraction) across a
+    /// to-be-statepoint call, leaving a stale tag after a collection. The
+    /// release safety net (EcoPtrIntVerify) does not catch this, so this stays
+    /// opt-in until validated under ECO_LOWERING_VALIDATION + GC stress. Only
+    /// honoured for BackendKind::EmitObjectFile. The bundled SROA/FoldExtract
+    /// light-cleanup and frame-pointer injection move with RS4GC automatically.
+    bool rs4gcAfterOpt = false;
 };
 
 /// Run the Eco backend on an LLVM module according to `job`.
@@ -139,6 +163,20 @@ struct EcoBackendJob {
 /// emission and optimisation remain at the call site until Phase 3.3.
 /// `JITInvokePacked` is reserved for Phase 4 and is not yet exposed.
 llvm::Error runEcoBackend(llvm::Module &m, const EcoBackendJob &job);
+
+/// Internalize + GlobalDCE for EXECUTABLE output only. Marks every generated
+/// global internal EXCEPT the two symbols the C entry lib resolves by name
+/// (`eco_main`, `__eco_init_globals`), then runs GlobalDCE so unreachable
+/// generated functions/globals are dropped before RS4GC + opt + codegen see
+/// them. Internal linkage also lets the optimizer/codegen treat all Elm code
+/// as non-preemptible (better inlining, no PLT/GOT for internal calls).
+///
+/// MUST NOT be used for shared-library / .node output or for object-only
+/// (`-c`) output: those need `__eco_root_module` / `napi_register_module_v1`
+/// / `eco_app_*` to stay externally visible. Caller gates on
+/// `!sharedLib && !emitObjOnly`. Must run BEFORE RS4GC so statepoints and the
+/// stackmap only cover live functions.
+void internalizeAndDCEForExecutable(llvm::Module &m);
 
 } // namespace eco
 

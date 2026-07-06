@@ -83,9 +83,11 @@ struct StringLiteralOpLowering : public OpConversionPattern<StringLiteralOp> {
         // Create global array of UTF-16 characters
         auto arrayTy = LLVM::LLVMArrayType::get(i16Ty, length);
 
-        // Generate unique global name
-        static int stringCounter = 0;
-        std::string globalName = "__eco_str_" + std::to_string(stringCounter++);
+        // Generate unique global name. Counter lives on EcoRuntime (per-module
+        // conversion) rather than a function-local static, so names are
+        // deterministic and reentrant across compilations in one process.
+        std::string globalName =
+            "__eco_str_" + std::to_string(runtime.stringLiteralCounter++);
 
         // Create the global constant for the UTF-16 characters
         {

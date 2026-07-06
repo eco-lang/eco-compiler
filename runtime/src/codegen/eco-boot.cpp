@@ -19,6 +19,9 @@
 
 #include <cassert>
 #include <cstring>
+#include <algorithm>
+#include <thread>
+#include <vector>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -156,6 +159,26 @@ static cl::opt<std::string> workDir(
 static cl::opt<bool> verbose(
     "verbose",
     cl::desc("Print subcommands being executed"),
+    cl::init(false));
+
+static cl::opt<bool> gcSections(
+    "gc-sections",
+    cl::desc("Link with --gc-sections (+ .llvm_stackmaps KEEP) to strip dead "
+             "sections. Binary-size only; opt-in until broadly validated"),
+    cl::init(false));
+
+static cl::opt<unsigned> splitCodegen(
+    "split-codegen",
+    cl::desc("Parallel object emission: split the optimized module into N "
+             "partitions emitted concurrently (executable output only). "
+             "0 = auto (cores), 1 = off"),
+    cl::init(0));
+
+static cl::opt<bool> rs4gcAfterOpt(
+    "rs4gc-after-opt",
+    cl::desc("EXPERIMENTAL: run RewriteStatepointsForGC after the O2 pipeline "
+             "instead of before (faster opt, but risks REP_LLVM_001(a)). "
+             "Off by default; needs GC-stress validation before default use"),
     cl::init(false));
 
 static cl::opt<std::string> dumpRS4GCIR(
@@ -302,6 +325,15 @@ static int runPipeline(ModuleOp module, eco::LoweringStats &stats) {
     if (failed(applyPassManagerCLOptions(pm)))
         return 1;
 
+#ifndef ECO_LOWERING_VALIDATION
+    // Release builds: skip the after-each-pass full-module verifier. The
+    // parser already verified the input and the lowering passes are covered
+    // by the test suite; a full verify after each of ~13 top-level passes is
+    // O(module) each and pure overhead here. Validation builds keep it on to
+    // localise any pass that emits invalid IR.
+    pm.enableVerifier(false);
+#endif
+
     // Per-pass timing — installed before passes are added so every pass
     // (including ones registered by buildEcoToLLVMPipeline) is observed.
     pm.addInstrumentation(stats.makePassInstrumentation());
@@ -371,9 +403,19 @@ static int linkExecutable(const std::string &objectFile,
                           const std::string &outputPath) {
     eco::EcoNativeOptions opts;
     opts.verbose = verbose;
+    opts.gcSections = gcSections;
     // .so/.node output targets link as shared libraries with the
     // host-embedding entry (see plans/native-ports-and-embedding.md).
     return eco::linkExecutable(objectFile, outputPath, opts,
+                               outputIsSharedLib(outputPath));
+}
+
+static int linkExecutable(const std::vector<std::string> &objectFiles,
+                          const std::string &outputPath) {
+    eco::EcoNativeOptions opts;
+    opts.verbose = verbose;
+    opts.gcSections = gcSections;
+    return eco::linkExecutable(objectFiles, outputPath, opts,
                                outputIsSharedLib(outputPath));
 }
 
@@ -559,12 +601,16 @@ int main(int argc, char **argv) {
             return 1;
         }
 
+#ifdef ECO_LOWERING_VALIDATION
+        // Redundant in release: parseSourceFile already verifies the parsed
+        // module. Kept only in validation builds as a belt-and-braces check.
         if (failed(verify(*module))) {
             llvm::errs() << "Error: Module verification failed\n";
             if (!tempMlirFile.empty())
                 llvm::sys::fs::remove(tempMlirFile);
             return 1;
         }
+#endif
     }
 
     // Step 3: Run MLIR lowering pipeline (Eco -> LLVM dialect)
@@ -676,6 +722,63 @@ int main(int argc, char **argv) {
         objFile = tempObjFile;
     }
 
+    const bool isExecutable = !emitObjOnly && !outputIsSharedLib(output);
+
+    // Executable output only: internalize all generated symbols except the two
+    // the C entry lib resolves by name, then GlobalDCE the unreachable
+    // remainder — before RS4GC/opt/codegen. Skipped for object-only output
+    // (relinked later, must keep symbols visible) and shared libs (need
+    // __eco_root_module / napi exports).
+    if (isExecutable) {
+        eco::LoweringStats::Scope scope(stats, "Internalize + GlobalDCE");
+        eco::internalizeAndDCEForExecutable(*llvmModule);
+    }
+
+    // Parallel codegen: split the optimized module into N partitions emitted
+    // concurrently (executable output only — internalize ran, so cross-
+    // partition locals externalize with a single definition). 0 = auto.
+    // Object emission dominates the AOT backend and is per-function work, so
+    // splitting it across cores is a near-linear win on large programs. Small
+    // modules are gated out — per-partition bitcode-serialize + thread + link
+    // overhead would dominate when emission is already sub-second.
+    unsigned numParts = 1;
+    if (isExecutable && splitCodegen != 1) {
+        unsigned numDefinedFns = 0;
+        for (auto &F : *llvmModule)
+            if (!F.isDeclaration())
+                ++numDefinedFns;
+        // Only split modules with enough functions to amortize the overhead.
+        constexpr unsigned kMinFnsToSplit = 4000;
+        if (numDefinedFns >= kMinFnsToSplit) {
+            unsigned cores = std::max(1u, std::thread::hardware_concurrency());
+            // Auto caps at 16: beyond that the serial split + per-partition
+            // bitcode-serialize overhead outweighs the extra emission
+            // parallelism (measured on the self-host module). An explicit
+            // --split-codegen=N is honoured as-is.
+            unsigned want =
+                splitCodegen == 0 ? std::min(cores, 16u) : splitCodegen.getValue();
+            // ~1 partition per 2000 functions, capped at the requested/core
+            // count and never fewer than 2 once we've decided to split.
+            unsigned bySize = std::max(2u, numDefinedFns / 2000u);
+            numParts = std::min(want, bySize);
+        }
+    }
+    std::vector<std::string> partObjFiles;
+    if (numParts > 1) {
+        for (unsigned i = 0; i < numParts; ++i) {
+            llvm::SmallString<256> p;
+            if (auto ec = llvm::sys::fs::createTemporaryFile("eco-boot-part",
+                                                             "o", p)) {
+                llvm::errs() << "Error: Could not create temp file: "
+                             << ec.message() << "\n";
+                for (auto &f : partObjFiles)
+                    llvm::sys::fs::remove(f);
+                return 1;
+            }
+            partObjFiles.emplace_back(p.str());
+        }
+    }
+
     {
         eco::LoweringStats::Scope scope(stats,
             "LLVM backend (RS4GC + opt + object emission)");
@@ -688,17 +791,28 @@ int main(int argc, char **argv) {
         job.needsFramePointerAttr = true;
         job.preRS4GCDumpPath = dumpPreRS4GCIR;
         job.postRS4GCDumpPath = dumpRS4GCIR;
-        job.objectFilePath = objFile;
+        job.rs4gcAfterOpt = rs4gcAfterOpt;
+        if (numParts > 1) {
+            job.numPartitions = numParts;
+            job.objectFilePaths = partObjFiles;
+        } else {
+            job.objectFilePath = objFile;
+        }
         if (auto err = eco::runEcoBackend(*llvmModule, job)) {
             llvm::errs() << "Error: backend pipeline failed: " << err << "\n";
             if (!tempObjFile.empty())
                 llvm::sys::fs::remove(tempObjFile);
+            for (auto &f : partObjFiles)
+                llvm::sys::fs::remove(f);
             return 1;
         }
     }
 
     if (verbose)
-        llvm::errs() << "[eco-boot] emitted object file: " << objFile << "\n";
+        llvm::errs() << "[eco-boot] emitted object file(s): "
+                     << (numParts > 1 ? std::to_string(numParts) + " partitions"
+                                      : objFile)
+                     << "\n";
 
     if (emitObjOnly) {
         if (printStats) {
@@ -712,12 +826,15 @@ int main(int argc, char **argv) {
     int rc;
     {
         eco::LoweringStats::Scope scope(stats, "Link (clang++ driver)");
-        rc = linkExecutable(objFile, output);
+        rc = numParts > 1 ? linkExecutable(partObjFiles, output)
+                          : linkExecutable(objFile, output);
     }
 
-    // Clean up temp object file
+    // Clean up temp object file(s)
     if (!tempObjFile.empty())
         llvm::sys::fs::remove(tempObjFile);
+    for (auto &f : partObjFiles)
+        llvm::sys::fs::remove(f);
 
     if (printStats) {
         stats.print(llvm::errs());

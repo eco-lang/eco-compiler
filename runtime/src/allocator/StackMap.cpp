@@ -127,31 +127,50 @@ bool StackMap::parse(const uint8_t* data, size_t size, uint64_t loadBase) {
 
     BinaryReader reader(data, size);
 
-    // Header
-    uint8_t version = reader.readU8();
-    if (version != 3)
-        return false; // Only support v3
+    // A linked binary can carry MULTIPLE concatenated stackmap blobs: when the
+    // object is produced from several LLVM module partitions (parallel
+    // codegen), each partition emits its own .llvm_stackmaps section with its
+    // own v3 header, and the linker concatenates them into one section. Loop
+    // over every blob, accumulating functions/constants/records into the
+    // members. For a single-blob binary this runs exactly once and produces
+    // results identical to the previous single-parse implementation (records_
+    // is keyed by absolute return address, and partition function-address
+    // ranges are disjoint, so accumulation across blobs never collides).
+    bool parsedAny = false;
+    while (reader.hasRemaining(16)) {
+        // Blobs are 8-byte aligned within the section; absorb inter-blob
+        // padding the linker may insert.
+        reader.alignTo(8);
+        if (!reader.hasRemaining(16))
+            break;
 
-    reader.skip(1);  // reserved
-    reader.skip(2);  // reserved
+        // Header
+        uint8_t version = reader.readU8();
+        // Not a v3 header here => trailing zero padding at the end of the
+        // section (or an unsupported version); stop.
+        if (version != 3)
+            break;
 
-    uint32_t numFunctions = reader.readU32();
-    uint32_t numConstants = reader.readU32();
-    uint32_t numRecords = reader.readU32();
+        reader.skip(1);  // reserved
+        reader.skip(2);  // reserved
 
-    // Function entries
-    functions_.resize(numFunctions);
-    for (uint32_t i = 0; i < numFunctions; i++) {
-        functions_[i].address = reader.readU64() + loadBase;
-        functions_[i].stackSize = reader.readU64();
-        functions_[i].recordCount = reader.readU64();
-    }
+        uint32_t numFunctions = reader.readU32();
+        uint32_t numConstants = reader.readU32();
+        uint32_t numRecords = reader.readU32();
 
-    // Constants
-    constants_.resize(numConstants);
-    for (uint32_t i = 0; i < numConstants; i++) {
-        constants_[i] = reader.readU64();
-    }
+        // Per-blob function table — record→function association is blob-local.
+        std::vector<StackMapFunction> functions(numFunctions);
+        for (uint32_t i = 0; i < numFunctions; i++) {
+            functions[i].address = reader.readU64() + loadBase;
+            functions[i].stackSize = reader.readU64();
+            functions[i].recordCount = reader.readU64();
+        }
+
+        // Constants (per-blob; accumulated into the member below).
+        std::vector<uint64_t> constants(numConstants);
+        for (uint32_t i = 0; i < numConstants; i++) {
+            constants[i] = reader.readU64();
+        }
 
     // Records — associate each with its function to compute return addresses
     uint32_t funcIdx = 0;
@@ -160,7 +179,7 @@ bool StackMap::parse(const uint8_t* data, size_t size, uint64_t loadBase) {
     for (uint32_t i = 0; i < numRecords; i++) {
         // Advance to next function if needed
         while (funcIdx < numFunctions &&
-               recordsForFunc >= functions_[funcIdx].recordCount) {
+               recordsForFunc >= functions[funcIdx].recordCount) {
             recordsForFunc = 0;
             funcIdx++;
         }
@@ -205,7 +224,7 @@ bool StackMap::parse(const uint8_t* data, size_t size, uint64_t loadBase) {
         // Compute return address: function base + instruction offset
         uint64_t returnAddr = 0;
         if (funcIdx < numFunctions) {
-            returnAddr = functions_[funcIdx].address + record.instructionOffset;
+            returnAddr = functions[funcIdx].address + record.instructionOffset;
             records_[returnAddr] = std::move(record);
         }
 #if ECO_GC_DEBUG
@@ -213,7 +232,7 @@ bool StackMap::parse(const uint8_t* data, size_t size, uint64_t loadBase) {
         if (debugCount < 20 && funcIdx < numFunctions) {
             auto& stored = records_[returnAddr];
             fprintf(stderr, "[stackmap-parse] record %u: func=0x%lx instOff=%u -> key=0x%lx numLocs=%u\n",
-                    i, functions_[funcIdx].address, stored.instructionOffset,
+                    i, functions[funcIdx].address, stored.instructionOffset,
                     returnAddr, (unsigned)stored.locations.size());
             for (size_t j = 0; j < stored.locations.size() && j < 16; j++) {
                 const auto& loc = stored.locations[j];
@@ -231,6 +250,12 @@ bool StackMap::parse(const uint8_t* data, size_t size, uint64_t loadBase) {
 #endif
 
         recordsForFunc++;
+    }
+
+        // Accumulate this blob's function/constant tables.
+        functions_.insert(functions_.end(), functions.begin(), functions.end());
+        constants_.insert(constants_.end(), constants.begin(), constants.end());
+        parsedAny = true;
     }
 
 #if ECO_GC_DEBUG
@@ -261,7 +286,7 @@ bool StackMap::parse(const uint8_t* data, size_t size, uint64_t loadBase) {
     }
 #endif
 
-    return true;
+    return parsedAny;
 }
 
 const StackMapRecord* StackMap::findRecord(uint64_t returnAddress) const {

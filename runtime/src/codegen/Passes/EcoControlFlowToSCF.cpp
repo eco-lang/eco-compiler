@@ -1073,6 +1073,12 @@ struct EcoControlFlowToSCFPass
         return "Lower eligible Eco control flow ops to SCF dialect";
     }
 
+    // Kept as a module pass: the string-case pattern lazily declares
+    // Elm_Kernel_Utils_equal into the module symbol table (ensureEqualDeclared),
+    // which is unsafe under parallel per-function execution. A per-function
+    // rewrite was tried and measured NEUTRAL for the self-host workload (64k
+    // tiny functions — per-function scheduling overhead offsets the gain), so
+    // it was not worth the added complexity / symbol-collision risk.
     void runOnOperation() override {
         ModuleOp module = getOperation();
         auto *ctx = module.getContext();

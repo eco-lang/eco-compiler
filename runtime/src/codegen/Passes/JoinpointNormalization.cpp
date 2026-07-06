@@ -17,6 +17,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dominance.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 
 #include "../EcoDialect.h"
 #include "../EcoOps.h"

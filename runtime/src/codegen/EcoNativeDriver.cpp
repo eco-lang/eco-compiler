@@ -94,6 +94,12 @@ int runPipeline(ModuleOp module, eco::LoweringStats *stats) {
     // we tried it, and it's only relevant for pass-manager debug flags
     // anyway.
 
+#ifndef ECO_LOWERING_VALIDATION
+    // Release: skip the after-each-pass full-module verifier (O(module) per
+    // pass; the parser already verified the input). Validation builds keep it.
+    pm.enableVerifier(false);
+#endif
+
     if (stats)
         pm.addInstrumentation(stats->makePassInstrumentation());
 
@@ -143,10 +149,15 @@ bool pathEndsWith(const std::string &path, const char *suffix) {
 int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
                            const std::string &outputPath,
                            const eco::EcoNativeOptions &opts) {
+#ifdef ECO_LOWERING_VALIDATION
+    // Redundant in release: the module was already verified when parsed
+    // (compileMlirFileToExecutable / compileMlirBytesToExecutable). Kept in
+    // validation builds only.
     if (failed(verify(*module))) {
         llvm::errs() << "Error: Module verification failed\n";
         return 1;
     }
+#endif
 
     {
         std::unique_ptr<eco::LoweringStats::Scope> scope;
@@ -198,6 +209,17 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
     const bool emitObjOnly = pathEndsWith(outputPath, ".o");
     const bool sharedLib = pathEndsWith(outputPath, ".so") ||
                            pathEndsWith(outputPath, ".node");
+
+    // Executable output only: internalize + GlobalDCE before RS4GC/opt/codegen.
+    // See internalizeAndDCEForExecutable — skipped for .o (relinked later) and
+    // .so/.node (need __eco_root_module / napi exports).
+    if (!emitObjOnly && !sharedLib) {
+        std::unique_ptr<eco::LoweringStats::Scope> scope;
+        if (opts.stats)
+            scope = std::make_unique<eco::LoweringStats::Scope>(
+                *opts.stats, "Internalize + GlobalDCE");
+        eco::internalizeAndDCEForExecutable(*llvmModule);
+    }
 
     // Emit to a temp object file, then link — except for object-only
     // output, where the backend writes the object straight to the target.
@@ -362,7 +384,7 @@ int compileMlirBytesToExecutable(const char *mlirBytes, size_t mlirLen,
 // -dead_strip — the __LLVM_STACKMAPS,__llvm_stackmaps section survives
 // (verified by experiments/mac-statepoint-smoke; see plans/build-on-mac.md
 // E-M1 results).
-static int linkExecutableDarwin(const std::string &objectFile,
+static int linkExecutableDarwin(const std::vector<std::string> &objectFiles,
                                 const std::string &outputPath,
                                 const EcoNativeOptions &opts,
                                 bool sharedLib) {
@@ -396,7 +418,8 @@ static int linkExecutableDarwin(const std::string &objectFile,
 
     args.push_back("-o");
     args.push_back(outputPath);
-    args.push_back(objectFile);
+    for (const auto &o : objectFiles)
+        args.push_back(o);
 
     // ld64's symbol-extraction semantics are more aggressive than ld.bfd's:
     // archive members get pulled only when an already-loaded object refers
@@ -484,7 +507,7 @@ static int linkExecutableDarwin(const std::string &objectFile,
 //   per E-W1 finding), /SUBSYSTEM:CONSOLE, project .libs, vendored libzip
 //   + curl-with-schannel + zlib, plus the Windows SDK import libs
 //   kernel32/ws2_32/crypt32/bcrypt/secur32. No OpenSSL.
-static int linkExecutableWindows(const std::string& objectFile,
+static int linkExecutableWindows(const std::vector<std::string>& objectFiles,
                                  const std::string& outputPath,
                                  const eco::EcoNativeOptions& opts,
                                  bool sharedLib) {
@@ -524,7 +547,8 @@ static int linkExecutableWindows(const std::string& objectFile,
                                         // self-contained (no vcredist req).
     args.push_back("/EHsc");
     args.push_back(push(std::string("/Fe:") + outputPath));
-    args.push_back(objectFile);
+    for (const auto &o : objectFiles)
+        args.push_back(o);
 
     // /link separates clang-cl driver args (above) from linker args
     // (below). Every arg after this point is forwarded to lld-link
@@ -646,15 +670,23 @@ int linkExecutable(const std::string &objectFile,
                    const std::string &outputPath,
                    const EcoNativeOptions &opts,
                    bool sharedLib) {
+    return linkExecutable(std::vector<std::string>{objectFile}, outputPath,
+                          opts, sharedLib);
+}
+
+int linkExecutable(const std::vector<std::string> &objectFiles,
+                   const std::string &outputPath,
+                   const EcoNativeOptions &opts,
+                   bool sharedLib) {
 #if defined(_WIN32)
-    return linkExecutableWindows(objectFile, outputPath, opts, sharedLib);
+    return linkExecutableWindows(objectFiles, outputPath, opts, sharedLib);
 #elif defined(__APPLE__)
     // Darwin profile: clang-driver Mach-O link (see linkExecutableDarwin
     // above). The Linux body below is entirely glibc/musl/lld-specific and
     // is dead code on Darwin — keep it gated behind the #else so the
     // generated EcoBootConfig.h's stubbed Linux fields (libgccA = "", crt
     // paths = "", systemLinker = "" on Apple) don't reach the link line.
-    return linkExecutableDarwin(objectFile, outputPath, opts, sharedLib);
+    return linkExecutableDarwin(objectFiles, outputPath, opts, sharedLib);
 #else
     // Phase 3: invoke the system linker (ld.bfd) directly rather than the
     // clang++ driver. Eliminates the clang++ runtime dependency; the linker
@@ -746,6 +778,35 @@ int linkExecutable(const std::string &objectFile,
     args.push_back(linkerPath);
     args.push_back("--eh-frame-hdr");
 
+    // Opt-in dead-section stripping (binary size). --gc-sections would strip
+    // the allocatable .llvm_stackmaps section (nothing relocates into it; the
+    // runtime finds it by ELF section name), silently zeroing GC stack roots.
+    // Guard it with an augmenting linker-script fragment that KEEPs the
+    // section. Both ld.bfd and ld.lld honour `INSERT AFTER` (augment, not
+    // replace, the default script). Executable output only.
+    std::string gcSectionsScript;
+    if (opts.gcSections && !sharedLib) {
+        llvm::SmallString<256> scriptPath;
+        if (!llvm::sys::fs::createTemporaryFile("eco-keep-stackmaps", "ld",
+                                                scriptPath)) {
+            std::error_code ec;
+            llvm::raw_fd_ostream os(scriptPath, ec);
+            if (!ec) {
+                os << "SECTIONS { .llvm_stackmaps : { KEEP(*(.llvm_stackmaps)) } }"
+                      " INSERT AFTER .rodata;\n";
+                os.close();
+                gcSectionsScript = std::string(scriptPath);
+                args.push_back("--gc-sections");
+                args.push_back(push("-T"));
+                args.push_back(push(gcSectionsScript));
+            }
+        }
+        if (gcSectionsScript.empty())
+            llvm::errs() << "Warning: --gc-sections requested but the KEEP "
+                            "linker script could not be created; skipping "
+                            "(stackmap safety).\n";
+    }
+
     // Clang-built libc++.a / libc++abi.a embed `#pragma comment(lib)`
     // hints for -lrt and -lpthread (.deplibs sections). With our
     // explicit-absolute-paths link line we emit no -L dirs, so lld can't
@@ -824,8 +885,10 @@ int linkExecutable(const std::string &objectFile,
         args.push_back(eco::config::crtbeginObj);
     }
 
-    // The user's compiled .o.
-    args.push_back(objectFile);
+    // The user's compiled .o (one per codegen partition — see
+    // emitObjectFilesSplit; a single object in the non-split case).
+    for (const auto &o : objectFiles)
+        args.push_back(o);
 
     // Project archive set: the Stage D shared profile links the
     // glibc-compiled copies from glibc/project/; everything else uses
@@ -1047,6 +1110,8 @@ int linkExecutable(const std::string &objectFile,
                                        /*redirects=*/{},
                                        /*secondsToWait=*/0,
                                        /*memoryLimit=*/0, &errMsg);
+    if (!gcSectionsScript.empty())
+        llvm::sys::fs::remove(gcSectionsScript);
     if (rc != 0) {
         llvm::errs() << "Error: ld link failed (rc=" << rc << ")";
         if (!errMsg.empty())

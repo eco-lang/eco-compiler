@@ -18,9 +18,8 @@
 #include "../EcoOps.h"
 #include "../Passes.h"
 
-#include <set>
-#include <string>
-#include <vector>
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallVector.h"
 
 using namespace mlir;
 using namespace ::eco;
@@ -40,39 +39,40 @@ struct UndefinedFunctionPass
     void runOnOperation() override {
         ModuleOp module = getOperation();
 
-        // Step 1: Collect all defined/declared function names in the module.
-        std::set<std::string> definedFunctions;
-        module.walk([&](func::FuncOp funcOp) {
-            definedFunctions.insert(funcOp.getSymName().str());
-        });
+        // Step 1: Collect all defined/declared function names. func.func ops
+        // are direct children of the module body, so iterate the top level
+        // (O(top-level)) rather than a recursive walk over every op. Names are
+        // uniqued StringAttrs — a DenseSet gives identity (pointer) comparison
+        // with no per-name heap allocation (vs the old std::set<std::string>).
+        llvm::DenseSet<StringAttr> definedFunctions;
+        for (auto funcOp : module.getBody()->getOps<func::FuncOp>())
+            definedFunctions.insert(funcOp.getSymNameAttr());
 
         // Step 2: Find all eco.call ops referencing undefined functions.
         struct UndefinedCall {
-            std::string name;
+            StringAttr name;
             Location loc;
         };
-        std::vector<UndefinedCall> undefinedCalls;
-        std::set<std::string> reportedFunctions; // Avoid duplicate reports
+        llvm::SmallVector<UndefinedCall, 4> undefinedCalls;
+        llvm::DenseSet<StringAttr> reportedFunctions; // Avoid duplicate reports
 
         module.walk([&](CallOp callOp) {
             auto calleeAttr = callOp.getCalleeAttr();
             if (!calleeAttr)
                 return; // Indirect call, skip.
 
-            std::string calleeName = calleeAttr.getValue().str();
-            if (definedFunctions.find(calleeName) == definedFunctions.end()) {
+            StringAttr calleeName = calleeAttr.getAttr();
+            if (!definedFunctions.contains(calleeName)) {
                 // Only report each function once, but track all locations
-                if (reportedFunctions.find(calleeName) == reportedFunctions.end()) {
+                if (reportedFunctions.insert(calleeName).second)
                     undefinedCalls.push_back({calleeName, callOp.getLoc()});
-                    reportedFunctions.insert(calleeName);
-                }
             }
         });
 
         // Step 3: Fail if any undefined functions found.
         if (!undefinedCalls.empty()) {
             for (const auto &call : undefinedCalls) {
-                emitError(call.loc) << "undefined function: " << call.name
+                emitError(call.loc) << "undefined function: " << call.name.getValue()
                     << " (CGEN_011 violation: MLIR codegen must generate all "
                     << "function declarations before this pass)";
             }

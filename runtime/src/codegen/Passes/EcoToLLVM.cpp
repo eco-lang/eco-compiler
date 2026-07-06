@@ -273,7 +273,7 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         // See: CGEN_057 invariant (Kernel Declaration Completeness).
 
         // Add kernel function lowering first (higher priority)
-        populateEcoFuncPatterns(typeConverter, patterns);
+        populateEcoFuncPatterns(typeConverter, patterns, runtime);
 
         // Add func-to-llvm conversion patterns for non-kernel functions.
         // NOTE: MLIR's CallOpLowering does an O(N) symbol lookup per func.call
