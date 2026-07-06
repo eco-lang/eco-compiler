@@ -220,11 +220,16 @@ fold; ProducerInfo + GraphBuilder (back-to-back read-only walks) into one. NOT s
 Rewriter + annotateCallStaging (P5 reads other nodes' post-rewrite arities). Ceiling: ~3 fewer
 full-graph copies and ~6 fewer traversals.
 
-### 5.3 `applySubst` dead-env plumbing and friends (Tuple2 economy, 280M objects)
-`applySubst` provably never modifies its env (verified across all arms), yet allocates a
-`(MonoType, MVarEnv)` tuple per Can.Type node plus ~3 objects/element in `applySubstList`. An
-internal non-threading `applySubstPure` (exported tuple API as a shim) removes N dead tuples per
-conversion. Related: `findRootVar` allocates a 3-tuple even on the miss path (the most common
+### 5.3 `applySubst` dead-env plumbing and friends (Tuple2 economy, 280M objects) — DONE (2026-07-06)
+`applySubst` provably never modifies its env (verified across all arms), yet allocated a
+`(MonoType, MVarEnv)` tuple per Can.Type node plus ~3 objects/element in `applySubstList`.
+**Implemented:** `applySubst`/`applySubstList`/`applySubstLambdaChain`/`canTypeToMonoType` renamed
+and rewritten to return bare `MonoType` (`applySubstPure`), NOT a shim — the dead tuple alloc per
+Can.Type node is gone, and the pure return type now *proves* env-purity at every call site (no
+Join-R-gap ambiguity for the Architecture-C migration). Callers updated: the 14 `Tuple.first
+(applySubst…)` sites, the 2 tuple-destructure sites, `unifyCallSiteDirectWithExpected`'s
+env-collapse, Analysis, Monomorphize. Green: 12,868 + 1,547 + bootstrap.
+The remaining friends below are still open: Related: `findRootVar` allocates a 3-tuple even on the miss path (the most common
 probe — fresh scheme vars); `normalizeMonoType`/`normalizeAndOccursCheck` rebuild containers
 unconditionally (only their MRecord arms have changed-flags — an unfinished conversion; finish it);
 `unifyHelp`/`unifyMonoMono` zip via `List.map2 Tuple.pair` at 5 sites (2k objects per structural

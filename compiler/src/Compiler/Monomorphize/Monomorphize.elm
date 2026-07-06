@@ -614,7 +614,7 @@ type alias Substitution =
 canTypeToMonoType : Substitution -> Can.Type TypeIds.MVarId -> Mono.MonoType
 canTypeToMonoType subst canType =
     -- Use a dummy MVarEnv for the entry point type conversion (no fresh allocations needed)
-    Tuple.first (TypeSubst.canTypeToMonoType (State.initMVarEnv TypeIds.firstMVarId Dict.empty) subst canType)
+    TypeSubst.canTypeToMonoType (State.initMVarEnv TypeIds.firstMVarId Dict.empty) subst canType
 
 
 

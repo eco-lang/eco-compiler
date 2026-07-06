@@ -1,5 +1,5 @@
 module Compiler.Monomorphize.TypeSubst exposing
-    ( applySubst
+    ( applySubstPure
     , canTypeToMonoType, extractParamTypes
     , unify, unifyExtend, unifyArgsOnly, unifyCallSiteDirect, unifyCallSiteDirectWithExpected
     , buildSchemeInfo, refreshSchemeInfo
@@ -16,7 +16,7 @@ by MVarId (as Int via Id.toComparable), not by Name.
 
 # Substitution
 
-@docs applySubst
+@docs applySubstPure
 
 
 # Type Conversion
@@ -495,11 +495,7 @@ unifyHelp env canType monoType subst =
                 ( argSubst, env1 ) =
                     List.foldl
                         (\( _, t ) ( s, e ) ->
-                            let
-                                ( monoT, e1 ) =
-                                    applySubst e s t
-                            in
-                            unifyHelp e1 t monoT s
+                            unifyHelp e t (applySubstPure e s t) s
                         )
                         ( subst, env )
                         args
@@ -757,8 +753,8 @@ GlobalOpt will flatten these types to match closure param counts (GOPT\_016).
 The flattening happens there, not here, because Monomorphize is staging-agnostic.
 
 -}
-applySubst : MVarEnv -> Substitution -> Can.Type MVarId -> ( Mono.MonoType, MVarEnv )
-applySubst env subst canType =
+applySubstPure : MVarEnv -> Substitution -> Can.Type MVarId -> Mono.MonoType
+applySubstPure env subst canType =
     case canType of
         Can.TVar mvarId ->
             let
@@ -767,7 +763,7 @@ applySubst env subst canType =
             in
             case Dict.get key subst of
                 Just monoType ->
-                    ( resolveMonoVars subst monoType, env )
+                    resolveMonoVars subst monoType
 
                 Nothing ->
                     let
@@ -778,19 +774,19 @@ applySubst env subst canType =
                         Mono.CNumber ->
                             -- Quiescence-before-defaulting: preserve the number var
                             -- as a residual. CNumber->MInt is discharged only by the
-                            -- resolveResidualNumbers closing pass at the end of
-                            -- monomorphization.
-                            ( Mono.MVar mvarId constraint, env )
+                            -- residual-number closing (fused into Prune) at the end
+                            -- of monomorphization.
+                            Mono.MVar mvarId constraint
 
                         Mono.CEcoValue ->
-                            ( Mono.MVar mvarId constraint, env )
+                            Mono.MVar mvarId constraint
 
         Can.TLambda from to ->
             applySubstLambdaChain env subst [ from ] to
 
         Can.TType canonical name args ->
             let
-                ( monoArgs, env1 ) =
+                monoArgs =
                     applySubstList env subst args
 
                 isElmCore =
@@ -804,33 +800,33 @@ applySubst env subst canType =
             if isElmCore then
                 case name of
                     "Int" ->
-                        ( Mono.MInt, env1 )
+                        Mono.MInt
 
                     "Float" ->
-                        ( Mono.MFloat, env1 )
+                        Mono.MFloat
 
                     "Bool" ->
-                        ( Mono.MBool, env1 )
+                        Mono.MBool
 
                     "Char" ->
-                        ( Mono.MChar, env1 )
+                        Mono.MChar
 
                     "String" ->
-                        ( Mono.MString, env1 )
+                        Mono.MString
 
                     "List" ->
                         case monoArgs of
                             [ inner ] ->
-                                ( Mono.MList inner, env1 )
+                                Mono.MList inner
 
                             _ ->
-                                ( Mono.MList Mono.MUnit, env1 )
+                                Mono.MList Mono.MUnit
 
                     _ ->
-                        ( Mono.MCustom canonical name monoArgs, env1 )
+                        Mono.MCustom canonical name monoArgs
 
             else
-                ( Mono.MCustom canonical name monoArgs, env1 )
+                Mono.MCustom canonical name monoArgs
 
         Can.TRecord fields maybeExtension ->
             let
@@ -849,68 +845,45 @@ applySubst env subst canType =
                             Dict.empty
 
                 -- Convert explicit fields and merge into base using foldl
-                ( monoFields, env1 ) =
+                monoFields =
                     Dict.foldl
-                        (\k (Can.FieldType _ t) ( acc, e ) ->
-                            let
-                                ( monoT, e1 ) =
-                                    applySubst e subst t
-                            in
-                            ( Dict.insert k monoT acc, e1 )
+                        (\k (Can.FieldType _ t) acc ->
+                            Dict.insert k (applySubstPure env subst t) acc
                         )
-                        ( baseFields, env )
+                        baseFields
                         fields
             in
-            ( Mono.MRecord monoFields, env1 )
+            Mono.MRecord monoFields
 
         Can.TTuple a b rest ->
-            let
-                ( monoTypes, env1 ) =
-                    applySubstList env subst (a :: b :: rest)
-            in
-            ( Mono.MTuple monoTypes, env1 )
+            Mono.MTuple (applySubstList env subst (a :: b :: rest))
 
         Can.TUnit ->
-            ( Mono.MUnit, env )
+            Mono.MUnit
 
         Can.TAlias _ _ _ (Can.Filled inner) ->
-            applySubst env subst inner
+            applySubstPure env subst inner
 
         Can.TAlias _ _ args (Can.Holey inner) ->
             let
-                ( newSubst, env1 ) =
+                newSubst =
                     List.foldl
-                        (\( paramId, t ) ( s, e ) ->
-                            let
-                                ( monoT, e1 ) =
-                                    applySubst e subst t
-                            in
-                            ( Dict.insert (Id.toComparable paramId) monoT s, e1 )
+                        (\( paramId, t ) s ->
+                            Dict.insert (Id.toComparable paramId) (applySubstPure env subst t) s
                         )
-                        ( subst, env )
+                        subst
                         args
             in
-            applySubst env1 newSubst inner
+            applySubstPure env newSubst inner
 
 
-{-| Apply applySubst to a list of canonical types, threading MVarEnv.
+{-| Apply applySubstPure to a list of canonical types. Env-pure (MONO_028 J5): the
+MVarEnv is read-only here — applySubstPure never taints or allocates fresh vars — so
+there is no env to thread back.
 -}
-applySubstList : MVarEnv -> Substitution -> List (Can.Type MVarId) -> ( List Mono.MonoType, MVarEnv )
+applySubstList : MVarEnv -> Substitution -> List (Can.Type MVarId) -> List Mono.MonoType
 applySubstList env subst types =
-    let
-        ( revAcc, finalEnv ) =
-            List.foldl
-                (\t ( acc, e ) ->
-                    let
-                        ( monoT, e1 ) =
-                            applySubst e subst t
-                    in
-                    ( monoT :: acc, e1 )
-                )
-                ( [], env )
-                types
-    in
-    ( List.reverse revAcc, finalEnv )
+    List.map (applySubstPure env subst) types
 
 
 {-| Apply a substitution to a canonical type, but only for MVarIds that
@@ -933,7 +906,7 @@ applySubstWithFreeVars mvarEnv _ subst canType =
         -- For small substitutions, filtering costs more than just applying
         -- the full subst directly (the overhead of building Set + Dict.filter
         -- exceeds any savings from a slightly smaller dict).
-        Tuple.first (applySubst mvarEnv subst canType)
+        applySubstPure mvarEnv subst canType
 
     else
         let
@@ -955,7 +928,7 @@ applySubstWithFreeVars mvarEnv _ subst canType =
                     (\key _ -> Set.member key reachableKeys)
                     subst
         in
-        Tuple.first (applySubst mvarEnv filteredSubst canType)
+        applySubstPure mvarEnv filteredSubst canType
 
 
 {-| Compute the transitive closure of substitution keys reachable from
@@ -1045,35 +1018,27 @@ collectMVarIdsFromMonoHelp monoType (( acc, seen ) as pair) =
 
 {-| Collect a TLambda chain iteratively, then build the curried MFunction structure.
 -}
-applySubstLambdaChain : MVarEnv -> Substitution -> List (Can.Type MVarId) -> Can.Type MVarId -> ( Mono.MonoType, MVarEnv )
+applySubstLambdaChain : MVarEnv -> Substitution -> List (Can.Type MVarId) -> Can.Type MVarId -> Mono.MonoType
 applySubstLambdaChain env subst argsAcc to =
     case to of
         Can.TLambda from innerTo ->
             applySubstLambdaChain env subst (from :: argsAcc) innerTo
 
         _ ->
-            let
-                ( resultMono, env1 ) =
-                    applySubst env subst to
-            in
             List.foldl
-                (\argType ( acc, e ) ->
-                    let
-                        ( monoArg, e1 ) =
-                            applySubst e subst argType
-                    in
-                    ( Mono.MFunction [ monoArg ] acc, e1 )
+                (\argType acc ->
+                    Mono.MFunction [ applySubstPure env subst argType ] acc
                 )
-                ( resultMono, env1 )
+                (applySubstPure env subst to)
                 argsAcc
 
 
 {-| Convert a canonical type to a monomorphic type using a substitution.
-This is an alias for applySubst.
+This is an alias for applySubstPure (env-pure).
 -}
-canTypeToMonoType : MVarEnv -> Substitution -> Can.Type MVarId -> ( Mono.MonoType, MVarEnv )
+canTypeToMonoType : MVarEnv -> Substitution -> Can.Type MVarId -> Mono.MonoType
 canTypeToMonoType =
-    applySubst
+    applySubstPure
 
 
 
@@ -1458,8 +1423,8 @@ unifyCallSiteDirectWithExpected env schemeArgTypes schemeResultType argMonoTypes
                         schemeResidual =
                             buildCurriedCanType (List.drop (List.length argMonoTypes) schemeArgTypes) schemeResultType
 
-                        ( callResultMono, envR ) =
-                            applySubst env0 substAfterArgs0 callResultCanType
+                        callResultMono =
+                            applySubstPure env0 substAfterArgs0 callResultCanType
 
                         -- Over-application: when the call supplies MORE args than
                         -- the scheme's own arity, the surplus args are applied to
@@ -1482,7 +1447,7 @@ unifyCallSiteDirectWithExpected env schemeArgTypes schemeResultType argMonoTypes
                                 callResultMono
                                 surplusArgMonos
                     in
-                    unifyHelp envR schemeResidual expectedResidualMono substAfterArgs0
+                    unifyHelp env0 schemeResidual expectedResidualMono substAfterArgs0
 
                 Nothing ->
                     ( substAfterArgs0, env0 )
@@ -1494,52 +1459,31 @@ unifyCallSiteDirectWithExpected env schemeArgTypes schemeResultType argMonoTypes
         -- preparation time). Pulling from scheme-via-applySubst lets the cross-
         -- arg unification (e.g. a third arg giving the full record shape) flow
         -- back into the earlier positions instead of preserving the narrow type.
+        -- applySubstPure is env-pure (J5), so the arg/result resolution below reads
+        -- env1 (the last tainting step: unifyArgTypesZip + the residual unifyHelp)
+        -- without threading — there is no further env to carry.
         suppliedSchemeArgs =
             List.take (List.length argMonoTypes) schemeArgTypes
 
-        ( revResolvedSupplied, envS ) =
-            List.foldl
-                (\canArg ( accArgs, accEnv ) ->
-                    let
-                        ( monoArg, envN ) =
-                            applySubst accEnv substAfterArgs canArg
-                    in
-                    ( monoArg :: accArgs, envN )
-                )
-                ( [], env1 )
-                suppliedSchemeArgs
-
         resolvedSuppliedArgs =
-            List.reverse revResolvedSupplied
+            List.map (applySubstPure env1 substAfterArgs) suppliedSchemeArgs
 
         -- Resolve REMAINING scheme arg types through substitution
         remainingSchemeArgs =
             List.drop (List.length argMonoTypes) schemeArgTypes
 
-        ( revResolvedRemainingArgs, env2 ) =
-            List.foldl
-                (\canArg ( accArgs, accEnv ) ->
-                    let
-                        ( monoArg, envN ) =
-                            applySubst accEnv substAfterArgs canArg
-                    in
-                    ( monoArg :: accArgs, envN )
-                )
-                ( [], envS )
-                remainingSchemeArgs
-
         resolvedAllArgs =
-            resolvedSuppliedArgs ++ List.reverse revResolvedRemainingArgs
+            resolvedSuppliedArgs ++ List.map (applySubstPure env1 substAfterArgs) remainingSchemeArgs
 
         -- Apply substitution to result type
-        ( resultMono, env3 ) =
-            applySubst env2 substAfterArgs schemeResultType
+        resultMono =
+            applySubstPure env1 substAfterArgs schemeResultType
 
         -- Build the function mono type directly
         funcMonoType =
             buildCurriedFuncType schemeArgTypes resolvedAllArgs resultMono
     in
-    ( substAfterArgs, funcMonoType, env3 )
+    ( substAfterArgs, funcMonoType, env1 )
 
 
 {-| Zip scheme arg types with mono arg types and unify pairwise.

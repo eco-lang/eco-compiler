@@ -457,29 +457,16 @@ then applies the Int-keyed substitution.
 buildCtorShapeFromUnion : IO.Canonical -> MVarEnv -> Substitution -> Dict.Dict Name TypeIds.MVarId -> Can.Ctor -> ( Mono.CtorShape, MVarEnv )
 buildCtorShapeFromUnion home env subst nameToId (Can.Ctor ctorData) =
     let
-        ( revMonoFieldTypes, env1 ) =
-            List.foldl
-                (\t ( acc, e ) ->
-                    let
-                        tWithIds =
-                            convertCanTypeNameToMVarId nameToId t
-
-                        ( monoT, e1 ) =
-                            TypeSubst.applySubst e subst tWithIds
-                    in
-                    ( monoT :: acc, e1 )
-                )
-                ( [], env )
-                ctorData.args
-
         monoFieldTypes =
-            List.reverse revMonoFieldTypes
+            List.map
+                (\t -> TypeSubst.applySubstPure env subst (convertCanTypeNameToMVarId nameToId t))
+                ctorData.args
     in
     ( { name = ctorData.name
       , tag = CtorTag.effective home ctorData.name ctorData.index
       , fieldTypes = monoFieldTypes
       }
-    , env1
+    , env
     )
 
 
