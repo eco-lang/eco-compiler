@@ -1,4 +1,4 @@
-module Compiler.GlobalOpt.Staging.ProducerInfo exposing (computeProducerInfo)
+module Compiler.GlobalOpt.Staging.ProducerInfo exposing (computeProducerInfo, foldNode)
 
 {-| Computes natural staging information for all function producers.
 
@@ -11,7 +11,7 @@ This module traverses the MonoGraph to identify:
 
 # API
 
-@docs computeProducerInfo
+@docs computeProducerInfo, foldNode
 
 -}
 

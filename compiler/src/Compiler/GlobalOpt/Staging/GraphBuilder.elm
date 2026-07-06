@@ -1,4 +1,4 @@
-module Compiler.GlobalOpt.Staging.GraphBuilder exposing (buildStagingGraph)
+module Compiler.GlobalOpt.Staging.GraphBuilder exposing (buildStagingGraphFused)
 
 {-| Builds the staging graph by traversing the MonoGraph and creating
 union-find edges between producers and slots that must share staging.
@@ -13,13 +13,14 @@ This module handles:
 
 # API
 
-@docs buildStagingGraph
+@docs buildStagingGraphFused
 
 -}
 
 import Array
 import Compiler.AST.Monomorphized as Mono
-import Compiler.GlobalOpt.Staging.Types exposing (Node(..), ProducerId(..), ProducerInfo, SlotId(..), StagingGraph, emptyStagingGraph)
+import Compiler.GlobalOpt.Staging.ProducerInfo as ProducerInfo
+import Compiler.GlobalOpt.Staging.Types exposing (Node(..), ProducerId(..), ProducerInfo, SlotId(..), StagingGraph, emptyProducerInfo, emptyStagingGraph)
 import Compiler.GlobalOpt.Staging.UnionFind exposing (ensureNode, unionNodes)
 import Dict exposing (Dict)
 
@@ -48,68 +49,82 @@ freshExprId ctx =
 -- ============================================================================
 
 
-{-| Build the staging graph from a MonoGraph.
+{-| Per-node step of the staging-graph build. Top-level (was a local `let` in the old
+`buildStagingGraph`) so the F2-fused traversal can share it.
 -}
-buildStagingGraph : Mono.MonoGraph -> ProducerInfo -> StagingGraph
-buildStagingGraph (Mono.MonoGraph mono) _ =
+foldNodeStaging : Int -> Mono.MonoNode -> ( StagingGraph, BuildCtx ) -> ( StagingGraph, BuildCtx )
+foldNodeStaging nodeId node ( sg, ctx ) =
+    case node of
+        Mono.MonoDefine expr _ ->
+            buildStagingGraphExpr expr sg ctx
+
+        Mono.MonoTailFunc params body _ ->
+            let
+                pid =
+                    ProducerTailFunc nodeId
+
+                -- Ensure the producer node exists in the staging graph
+                ( _, sgWithProducer ) =
+                    ensureNode (NodeProducer pid) sg
+
+                -- Register function-typed params as slots
+                ( sg1, ctx1 ) =
+                    List.foldl
+                        (\( index, ( _, ty ) ) ( accSg, accCtx ) ->
+                            if Mono.isFunctionType ty then
+                                let
+                                    slot =
+                                        SlotParam nodeId index
+
+                                    nodeSlot =
+                                        NodeSlot slot
+
+                                    ( _, accSg1 ) =
+                                        ensureNode nodeSlot accSg
+                                in
+                                ( accSg1, accCtx )
+
+                            else
+                                ( accSg, accCtx )
+                        )
+                        ( sgWithProducer, ctx )
+                        (List.indexedMap Tuple.pair params)
+            in
+            buildStagingGraphExpr body sg1 ctx1
+
+        _ ->
+            ( sg, ctx )
+
+
+{-| Fused traversal (F2, plans/post-fixpoint-pass-fusion.md): compute the `ProducerInfo`
+AND build the `StagingGraph` in a SINGLE walk of `mono.nodes`, replacing the two former
+back-to-back full folds (`ProducerInfo.computeProducerInfo` + `buildStagingGraph`).
+
+Safe because GraphBuilder never reads `ProducerInfo` — it reconstructs producer identities
+directly from the AST — so the two folds are independent left-folds over the same array and
+merge with no visitation-order dependency. The `nodeId` counter and per-node steps are
+identical to the originals, so the resulting `ProducerInfo`/`StagingGraph` are byte-identical.
+-}
+buildStagingGraphFused : Mono.MonoGraph -> ( ProducerInfo, StagingGraph )
+buildStagingGraphFused (Mono.MonoGraph mono) =
     let
-        foldNode nodeId node ( sg, ctx ) =
-            case node of
-                Mono.MonoDefine expr _ ->
-                    buildStagingGraphExpr expr sg ctx
-
-                Mono.MonoTailFunc params body _ ->
-                    let
-                        pid =
-                            ProducerTailFunc nodeId
-
-                        -- Ensure the producer node exists in the staging graph
-                        ( _, sgWithProducer ) =
-                            ensureNode (NodeProducer pid) sg
-
-                        -- Register function-typed params as slots
-                        ( sg1, ctx1 ) =
-                            List.foldl
-                                (\( index, ( _, ty ) ) ( accSg, accCtx ) ->
-                                    if Mono.isFunctionType ty then
-                                        let
-                                            slot =
-                                                SlotParam nodeId index
-
-                                            nodeSlot =
-                                                NodeSlot slot
-
-                                            ( _, accSg1 ) =
-                                                ensureNode nodeSlot accSg
-                                        in
-                                        ( accSg1, accCtx )
-
-                                    else
-                                        ( accSg, accCtx )
-                                )
-                                ( sgWithProducer, ctx )
-                                (List.indexedMap Tuple.pair params)
-                    in
-                    buildStagingGraphExpr body sg1 ctx1
-
-                _ ->
-                    ( sg, ctx )
-
-        ( finalSg, _ ) =
+        ( _, finalPInfo, ( finalSg, _ ) ) =
             Array.foldl
-                (\maybeNode ( nodeId, acc ) ->
+                (\maybeNode ( nodeId, pinfo, sgCtx ) ->
                     case maybeNode of
                         Nothing ->
-                            ( nodeId + 1, acc )
+                            ( nodeId + 1, pinfo, sgCtx )
 
                         Just node ->
-                            ( nodeId + 1, foldNode nodeId node acc )
+                            ( nodeId + 1
+                            , ProducerInfo.foldNode nodeId node pinfo
+                            , foldNodeStaging nodeId node sgCtx
+                            )
                 )
-                ( 0, ( emptyStagingGraph, emptyBuildCtx ) )
+                ( 0, emptyProducerInfo, ( emptyStagingGraph, emptyBuildCtx ) )
                 mono.nodes
-                |> Tuple.second
     in
-    finalSg
+    ( finalPInfo, finalSg )
 
 
 

@@ -211,9 +211,7 @@ expectMetricsNonNegative srcModule =
                     MonoInlineSimplify.optimize Config.default.inline monoGraph
             in
             Expect.all
-                [ \_ -> Expect.atLeast 0 metrics.closureCountBefore
-                , \_ -> Expect.atLeast 0 metrics.closureCountAfter
-                , \_ -> Expect.atLeast 0 metrics.inlineCount
+                [ \_ -> Expect.atLeast 0 metrics.inlineCount
                 , \_ -> Expect.atLeast 0 metrics.betaReductions
                 , \_ -> Expect.atLeast 0 metrics.letEliminations
                 ]
@@ -231,9 +229,9 @@ expectClosureCountCollected srcModule =
                 ( _, metrics ) =
                     MonoInlineSimplify.optimize Config.default.inline monoGraph
             in
-            -- Module with lambda should have at least one closure before optimization
-            -- (may or may not after, depending on optimization)
-            Expect.atLeast 0 metrics.closureCountBefore
+            -- optimize returns well-formed metrics (closure counts were removed as dead
+            -- debug-only walks; inlineCount is the surviving non-negative metric)
+            Expect.atLeast 0 metrics.inlineCount
 
 
 

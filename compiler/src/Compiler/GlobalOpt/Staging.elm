@@ -29,7 +29,6 @@ This module coordinates:
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.GlobalOpt.Staging.GraphBuilder as GraphBuilder
-import Compiler.GlobalOpt.Staging.ProducerInfo as ProducerInfo
 import Compiler.GlobalOpt.Staging.Rewriter as Rewriter
 import Compiler.GlobalOpt.Staging.Solver as Solver
 import Compiler.GlobalOpt.Staging.Types as Types
@@ -64,13 +63,13 @@ analyzeAndSolveStaging :
     -> ( StagingSolution, Mono.MonoGraph )
 analyzeAndSolveStaging graph0 =
     let
-        -- 1. Compute natural staging for all producers
-        producerInfo =
-            ProducerInfo.computeProducerInfo graph0
+        -- 1+2. Fused (F2): compute ProducerInfo AND build the staging graph in one walk.
+        ( producerInfo, sg ) =
+            GraphBuilder.buildStagingGraphFused graph0
     in
     if Dict.isEmpty producerInfo.naturalSeg then
         -- No producers (no closures, no tail-funcs, no kernels with staging).
-        -- Skip graph building, solving, and rewriting entirely.
+        -- Skip solving and rewriting; the co-built `sg` is discarded (harmless — pure).
         ( { producerClass = Dict.empty
           , classSeg = Array.empty
           , slotClass = Dict.empty
@@ -81,10 +80,6 @@ analyzeAndSolveStaging graph0 =
 
     else
         let
-            -- 2. Build staging graph with union-find edges
-            sg =
-                GraphBuilder.buildStagingGraph graph0 producerInfo
-
             -- 3. Solve: build classes, choose canonical segmentations
             solution =
                 Solver.solveStagingGraph producerInfo sg

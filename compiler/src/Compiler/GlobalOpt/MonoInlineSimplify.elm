@@ -40,9 +40,7 @@ import System.TypeCheck.IO as IO
 {-| Metrics collected during optimization, available for debugging.
 -}
 type alias Metrics =
-    { closureCountBefore : Int
-    , closureCountAfter : Int
-    , inlineCount : Int
+    { inlineCount : Int
     , betaReductions : Int
     , letEliminations : Int
     }
@@ -108,9 +106,6 @@ optimize inlineConfig graph =
         (MonoGraph { nodes, main, registry, ctorShapes, nextLambdaIndex, callEdges, ports, flagsDecoder }) =
             graph
 
-        closuresBefore =
-            countClosuresInGraph nodes
-
         callGraph =
             buildCallGraph nodes callEdges
 
@@ -125,20 +120,19 @@ optimize inlineConfig graph =
     in
     -- Call a separate function so `nodes` (Array) goes out of scope
     -- and becomes GC-eligible. Only `nodesList` is passed forward.
-    optimizeNodes nodesList ctx closuresBefore main registry ctorShapes ports flagsDecoder
+    optimizeNodes nodesList ctx main registry ctorShapes ports flagsDecoder
 
 
 optimizeNodes :
     List (Maybe MonoNode)
     -> RewriteCtx
-    -> Int
     -> Maybe Mono.MainInfo
     -> Mono.SpecializationRegistry
     -> Dict String (List Mono.CtorShape)
     -> List Mono.PortRegistration
     -> Maybe Mono.SpecId
     -> ( MonoGraph, Metrics )
-optimizeNodes nodesList ctx closuresBefore main registry ctorShapes ports flagsDecoder =
+optimizeNodes nodesList ctx main registry ctorShapes ports flagsDecoder =
     let
         ( optimizedNodesList, finalCtx, _ ) =
             List.foldl
@@ -160,13 +154,8 @@ optimizeNodes nodesList ctx closuresBefore main registry ctorShapes ports flagsD
         optimizedNodes =
             Array.fromList (List.reverse optimizedNodesList)
 
-        closuresAfter =
-            countClosuresInGraph optimizedNodes
-
         metrics =
-            { closureCountBefore = closuresBefore
-            , closureCountAfter = closuresAfter
-            , inlineCount = finalCtx.metrics.inlineCount
+            { inlineCount = finalCtx.metrics.inlineCount
             , betaReductions = finalCtx.metrics.betaReductions
             , letEliminations = finalCtx.metrics.letEliminations
             }
@@ -3149,97 +3138,3 @@ inlineVarInDecider name replacement decider =
             Mono.FanOut (inlineVarInDtPath name replacement path)
                 (List.map (\( test, d ) -> ( test, inlineVarInDecider name replacement d )) edges)
                 (inlineVarInDecider name replacement fallback)
-
-
-
--- ============================================================================
--- ====== METRICS COLLECTION ======
--- ============================================================================
-
-
-countClosures : MonoExpr -> Int
-countClosures expr =
-    case expr of
-        MonoClosure _ body _ ->
-            1 + countClosures body
-
-        MonoCall _ func args _ _ ->
-            countClosures func + sumBy countClosures args
-
-        MonoLet def body _ ->
-            countClosuresInDef def + countClosures body
-
-        MonoIf branches final _ ->
-            sumBy (\( c, t ) -> countClosures c + countClosures t) branches
-                + countClosures final
-
-        MonoDestruct _ inner _ ->
-            countClosures inner
-
-        MonoCase _ _ _ branches _ ->
-            sumBy (\( _, e ) -> countClosures e) branches
-
-        MonoList _ items _ ->
-            sumBy countClosures items
-
-        MonoRecordCreate fields _ ->
-            sumBy (\( _, e ) -> countClosures e) fields
-
-        MonoRecordAccess inner _ _ ->
-            countClosures inner
-
-        MonoRecordUpdate inner updates _ ->
-            countClosures inner + sumBy (\( _, e ) -> countClosures e) updates
-
-        MonoTupleCreate _ items _ ->
-            sumBy countClosures items
-
-        MonoTailCall _ args _ ->
-            sumBy (\( _, e ) -> countClosures e) args
-
-        _ ->
-            0
-
-
-countClosuresInDef : Mono.MonoDef -> Int
-countClosuresInDef def =
-    case def of
-        Mono.MonoDef _ bound ->
-            countClosures bound
-
-        Mono.MonoTailDef _ _ bound ->
-            countClosures bound
-
-
-countClosuresInNode : MonoNode -> Int
-countClosuresInNode node =
-    case node of
-        MonoDefine expr _ ->
-            countClosures expr
-
-        MonoTailFunc _ expr _ ->
-            countClosures expr
-
-        MonoPortIncoming expr _ ->
-            countClosures expr
-
-        MonoPortOutgoing expr _ ->
-            countClosures expr
-
-        _ ->
-            0
-
-
-countClosuresInGraph : Array (Maybe MonoNode) -> Int
-countClosuresInGraph nodes =
-    Array.foldl
-        (\maybeNode acc ->
-            case maybeNode of
-                Just node ->
-                    acc + countClosuresInNode node
-
-                Nothing ->
-                    acc
-        )
-        0
-        nodes
