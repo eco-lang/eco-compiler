@@ -226,19 +226,19 @@ Testing::TestCase testSmallClassBudgetDebitsOnRelease(
 });
 
 // ----------------------------------------------------------------------------
-// 6. Heap-base detour: the heap-base page is a mixed block and is NOT
-//    credited to small_class_bytes_ even though it lives in the old gen.
+// 6. small_class_bytes_ accounting: only uniform small-class blocks are
+//    credited; mixed and non-small blocks contribute zero. (The heap-base
+//    page is now an ordinary page — the former heap-base sentinel/mixed-block
+//    detour was removed once HPointers became absolute addresses, D5.)
 // ----------------------------------------------------------------------------
 
 Testing::TestCase testSmallClassBudgetIgnoresHeapBasePage(
-    "Heap-base page is not credited to the small-class budget", []() {
+    "small_class_bytes only credits uniform small-class blocks", []() {
     auto& alloc = initAllocator(smallClassBudgetConfig(/*budget=*/256 * 1024));
     auto& og = threadOldGen(alloc);
 
-    // Drive at least one small-class allocation. With the budget open,
-    // populateFromBlock is called; one of the bag-page pulls may be the
-    // heap-base page, which is materialised as a mixed block (size_class
-    // == NUM_SIZE_CLASSES) and skipped by onUniformBlockDedicated.
+    // Drive several small-class allocations. With the budget open,
+    // populateFromBlock materialises uniform small-class pages.
     for (size_t i = 0; i < 64; ++i) {
         void* obj = allocateIntInOldGen(og, static_cast<i64>(i));
         TEST_ASSERT(obj != nullptr);

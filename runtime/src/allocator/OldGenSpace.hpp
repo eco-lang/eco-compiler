@@ -183,9 +183,6 @@ static constexpr size_t MIN_TIER_M_SIZE    = sizeof(FreeCellMid);
 //                      rewrite, or follow the free-list link.
 //   age & 0b01 == 0  → ordinary coalescable Tag_Free cell.
 //   age & 0b10       → reserved for future use; must remain 0.
-//
-// The heap-base sentinel (installHeapBaseSentinel) is EXEMPT — it stays at
-// age=0 and is identified by address, not by the age bit. See Heap.hpp.
 inline bool isFreeCellSentinel(const Header* hdr) {
     return (hdr->tag == Tag_Free) && ((hdr->age & 0b01u) != 0);
 }
@@ -195,11 +192,6 @@ inline void setFreeCellSentinel(Header* hdr) {
 inline void clearFreeCellSentinel(Header* hdr) {
     hdr->age = (hdr->age & ~0b11u);
 }
-
-// 8-byte Tag_Free sentinel parked at heap_base + 0 so HPointer{ptr=0} stays
-// unambiguously null. NOT a FreeCell (size < MIN_FREE_CELL_SIZE), never on
-// a free list, never returned to the mutator.
-static constexpr size_t HEAP_BASE_SENTINEL_SIZE = sizeof(Header);
 
 // ============================================================================
 // Block Info Structure
@@ -871,17 +863,6 @@ private:
     // true if a page was available and populated.
     bool populateFromBlock(size_t cls);
 
-    // True if `page_start` is the heap-base page (i.e. addr == g_heap_base /
-    // allocator_->getHeapBase()). The heap-base page must always be
-    // materialized as a mixed block with an 8-byte Tag_Free sentinel parked
-    // at offset 0, so allocations never observe HPointer{ptr=0}.
-    bool isHeapBasePage(char* page_start) const;
-
-    // Writes the 8-byte Tag_Free sentinel at `page_start` (== heap_base).
-    // Idempotent; safe to call any time the heap-base block is being
-    // (re-)materialized.
-    void installHeapBaseSentinel(char* page_start);
-
     // Initializes an object header in newly allocated memory. Sets color to
     // Black during marking/sweeping (so the object is not treated as garbage
     // mid-cycle), White otherwise. Tag/size are written by the caller.
@@ -1161,8 +1142,8 @@ private:
     // `reclaimAllDeadBlocksFromMeta` and `adjustCapacityAfterMajorGC` so
     // that the histogram reflects the true post-reclaim block set: the
     // `live_frac == 0` bucket is then the genuinely retained dead pages
-    // (held by the min-heap floor, the heap-base sentinel, `is_large`
-    // exclusion, or pinning), not blocks about to be released. Per-block
+    // (held by the min-heap floor, `is_large` exclusion, or pinning), not
+    // blocks about to be released. Per-block
     // free bytes are looked up in `free_by_start`, which the caller must
     // have populated via `gatherFreeListSnapshotInto` BEFORE
     // `transitionToSweeping`.

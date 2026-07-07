@@ -1,6 +1,6 @@
 # HPointer Representation Redesign
 
-## Status: IMPLEMENTED — full suite green (1555/1555), compiler bootstraps
+## Status: IMPLEMENTED — full suite green (1551/1551), compiler bootstraps
 
 Design resolved (D1-D11), impacted sites enumerated (§0-§8), empties-merge risk
 investigated and closed (assessment section), work sequenced into phases P0-P3
@@ -9,8 +9,9 @@ with per-phase gates, testing/validation protocol defined.
 ### Implementation outcome
 
 The representation flip is complete and validated: `cmake --build build --target
-full` passes **1555/1555** tests (the E2E suite requires and exercises a full
-compiler bootstrap from Elm source). New layout, absolute addressing, merged
+full` passes **1551/1551** tests (the E2E suite requires and exercises a full
+compiler bootstrap from Elm source; the count is 1555 minus the 4 heap-base-sentinel
+tests removed in P2.1). New layout, absolute addressing, merged
 empties, Bool-aligned-with-i1, `CONSTANT_TAG` dispatch, and the type-graph printer
 all landed.
 
@@ -36,14 +37,27 @@ Delivered:
   THEORY.md pointer section + Forward comment, and superseding notes on the three
   theory/*.md files.
 
-Deferred as safe follow-ups (NOT required by the goal; suite is green without
-them): **P2.1** wholesale deletion of the heap-base sentinel (now vestigial —
-under absolute addressing heap_base ≈ 1 TB ≠ 0, so it merely reserves 8 bytes at
-heap_base; deleting it is risky GC surgery across ~8 OldGenSpace sites best done as
-its own change), **P2.2** collapsing the `nil()/unit()/…`→`empty()` builder
-aliases, and **P2.3** JIT-root/HPointer evacuation-path unification. The
-representation-flip diagnostics (a couple of stale `<<40` comments) are the only
-cosmetic residue.
+- **P2.1** — the heap-base sentinel is now **deleted wholesale**. Removed the
+  `installHeapBaseSentinel`/`isHeapBasePage` functions and `HEAP_BASE_SENTINEL_SIZE`,
+  the `initObjectHeaderWithSize` defense assert, the page-materialization and
+  `populateFromBlock` heap-base special-cases (the heap-base page is now sliced
+  uniformly like any other), the sweep-buffer re-install branch, and the
+  `releaseBlockToAllocator` never-release branch; deleted
+  `OldGenHeapBaseSentinelTest.*` (4 cases) and its wiring. An object may now live
+  at `heap_base+0` — its HPointer word equals `heap_base`, a valid non-null
+  pointer, since address 0 is never mapped. Full suite green (1551/1551 after
+  dropping the 4 sentinel tests); invariants (HEAP_017/027) and comments updated.
+
+- **P2.2** — resolved as **keep the aliases** (not a wholesale collapse). The
+  builders (`listNil/unit/nothing/emptyString/emptyRecord`) and predicates
+  (`isNil/isEmptyString/isNothing/isUnit/isEmptyRec`) already delegate to the one
+  canonical implementation (`empty()` / `isEmptyBits`), so the single-source-of-
+  truth goal is met; the ~620 call sites keep their Elm-type intent (Nil vs
+  Nothing vs "" vs () vs {}) rather than flattening to `empty()`/`isEmpty()`. The
+  dead `MlirConst_*` enum was already removed in P1.3.
+
+Still deferred (optional, not required by the goal): **P2.3** JIT-root/HPointer
+evacuation-path unification.
 
 ## Goal
 

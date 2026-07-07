@@ -86,7 +86,6 @@ add_executable(test
         allocator/NurserySpaceTest.cpp
         allocator/OldGenSpaceTest.cpp
         allocator/OldGenCapacityTest.cpp
-        allocator/OldGenHeapBaseSentinelTest.cpp
         allocator/OldGenLazySweepTest.cpp
         allocator/OldGenSweepOnDemandTest.cpp
         allocator/OldGenSweepBudgetTest.cpp

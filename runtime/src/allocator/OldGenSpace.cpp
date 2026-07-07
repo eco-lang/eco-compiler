@@ -283,11 +283,9 @@ void OldGenSpace::initialize(Allocator* allocator, const HeapConfig* config) {
             for (size_t i = 0; i < num_pages; ++i) {
                 char* page_start = region_base + i * page_size;
                 char* page_end = page_start + page_size;
-                // Page 0 starts at heap_base+0. We keep the full extent here
-                // and install an 8-byte Tag_Free sentinel at heap_base when
-                // the page is later materialized — see installHeapBaseSentinel
-                // and the heap-base detours in populateFromBlock /
-                // allocateFromBagPage.
+                // Page 0 starts at heap_base; it is materialized like any other
+                // page (no special offset-0 handling — the heap-base sentinel
+                // was removed once HPointers became absolute addresses, D5).
                 unassigned_blocks_.emplace_back(page_start, page_end);
             }
 
@@ -371,13 +369,9 @@ void OldGenSpace::initObjectHeader(void* obj) {
 // the next finalize/reclaim/shrink. Mark-time `live_bytes` attribution only
 // covers cells discovered by `markOneObject`; mid-cycle cells bypass mark.
 void OldGenSpace::initObjectHeaderWithSize(void* obj, size_t cell_bytes) {
-    // Defense: never hand out heap_base+0. Its HPointer encoding is bits=0,
-    // which the runtime treats as null (eco_get_tag asserts). The bag is
-    // initialized in OldGenSpace::initialize so the first page skips offset 0,
-    // but assert here in case future code changes regress this invariant.
-    assert(reinterpret_cast<char*>(obj) != g_heap_base &&
-           "OldGenSpace handed out heap_base+0; HPointer encoding would be null");
-
+    // Note: an object at heap_base+0 is fine under absolute addressing — its
+    // HPointer word equals heap_base, a valid non-null pointer (the heap is
+    // reserved at a high base). The former heap-base sentinel is removed (D5).
     Header* hdr = reinterpret_cast<Header*>(obj);
     std::memset(hdr, 0, sizeof(Header));
     // Mid-cycle allocations must survive the current sweep cycle. With
@@ -401,28 +395,6 @@ void OldGenSpace::initObjectHeaderWithSize(void* obj, size_t cell_bytes) {
     } else {
         hdr->color = static_cast<u32>(Color::White);
     }
-}
-
-// ---------------------------------------------------------------------------
-// Heap-base sentinel helpers.
-// ---------------------------------------------------------------------------
-
-bool OldGenSpace::isHeapBasePage(char* page_start) const {
-    if (allocator_ == nullptr) return false;
-    return page_start == allocator_->getHeapBase();
-}
-
-void OldGenSpace::installHeapBaseSentinel(char* page_start) {
-    Header* hdr = reinterpret_cast<Header*>(page_start);
-    std::memset(hdr, 0, sizeof(Header));
-    hdr->tag = Tag_Free;
-    hdr->pin = 1;
-    hdr->size = static_cast<u32>(HEAP_BASE_SENTINEL_SIZE);
-    // color stays White; the sentinel is never marked.
-    // age stays 0: the heap-base sentinel is EXEMPT from the on-free-list
-    // sentinel convention (Heap.hpp). Sweep identifies it by address via
-    // isHeapBasePage, not by the age bit. Conflating the two would muddle
-    // "heap-base guard" with "already on free list".
 }
 
 // ---------------------------------------------------------------------------
@@ -1196,16 +1168,12 @@ void* OldGenSpace::allocateFromBagPage(size_t requested_size) {
     const size_t page_size = static_cast<size_t>(page_end - page_start);
     assert(requested_size <= page_size && "request larger than a single page");
 
-    // Heap-base detour: keep an 8-byte Tag_Free sentinel parked at offset 0
-    // and carve the request out of the post-sentinel span. The remainder is
-    // placed via the mixed-block any-class packer.
-    const bool heap_base = isHeapBasePage(page_start);
-    char* alloc_base = heap_base
-                           ? page_start + HEAP_BASE_SENTINEL_SIZE
-                           : page_start;
-    const size_t alloc_span = heap_base
-                                  ? page_size - HEAP_BASE_SENTINEL_SIZE
-                                  : page_size;
+    // The request is carved out of the whole page; the remainder is placed via
+    // the mixed-block any-class packer. (There is no longer a heap-base sentinel:
+    // under absolute addressing an object at heap_base is a valid non-null
+    // pointer, so offset 0 need not be reserved — see plan D5.)
+    char* alloc_base = page_start;
+    const size_t alloc_span = page_size;
     assert(requested_size <= alloc_span &&
            "allocateFromBagPage: request larger than usable page span");
 
@@ -1229,12 +1197,7 @@ void* OldGenSpace::allocateFromBagPage(size_t requested_size) {
     large_block_mark_.push_back(0);
     assignPageIndexForBlock(block_idx);
 
-    if (heap_base) {
-        installHeapBaseSentinel(page_start);
-    }
-
-    // Wrap the post-sentinel span as one Tag_Free cell, then split off the
-    // request. For non-heap-base pages this covers the entire page.
+    // Wrap the whole page as one Tag_Free cell, then split off the request.
     FreeCell* whole = reinterpret_cast<FreeCell*>(alloc_base);
     std::memset(&whole->header, 0, sizeof(Header));
     whole->header.tag = Tag_Free;
@@ -1293,44 +1256,6 @@ bool OldGenSpace::populateFromBlock(size_t cls) {
     char* page_start = extent.first;
     char* page_end = extent.second;
     const size_t page_size = static_cast<size_t>(page_end - page_start);
-
-    // Heap-base detour: never slice the heap-base page into uniform fixed
-    // cells. Sweep walks uniform blocks by classToSize(cls) starting at
-    // block.start; an 8-byte sentinel at offset 0 would desync that walk
-    // from the actual cell layout. Materialize as a mixed block instead and
-    // route the post-sentinel span through pushSpanOnFreeLists so each
-    // placed cell matches its class's cellSize.
-    if (isHeapBasePage(page_start)) {
-        BlockInfo bi;
-        bi.start = page_start;
-        bi.end = page_end;
-        bi.end_of_objects = page_end;
-        bi.size_class = NUM_SIZE_CLASSES;  // mixed
-        bi.is_large = false;
-        blocks_.push_back(bi);
-        const size_t block_idx = blocks_.size() - 1;
-        const bool mid_cycle =
-            marking_active || gc_phase_ != GCPhase::Idle;
-        buffer_meta_.push_back({block_idx, 0, 0, mid_cycle});
-        mark_bits_.emplace_back(bitmapBytesForBlock(blocks_.back()), 0);
-        large_block_mark_.push_back(0);
-        assignPageIndexForBlock(block_idx);
-
-        installHeapBaseSentinel(page_start);
-
-        // Push [heap_base + 8, page_end) onto free lists via the mixed-block
-        // packer. Whether free_lists_[cls] gains a cell depends on how the
-        // span partitions across classes; the caller falls through to
-        // splitting / bag-page paths if cls isn't satisfied.
-#if ECO_HEAP_VALIDATE
-        PushOriginScope _origin("populateFromBlock::heap-base-mixed");
-#endif
-        pushSpanOnFreeLists(free_lists_,
-                            page_start + HEAP_BASE_SENTINEL_SIZE,
-                            page_size - HEAP_BASE_SENTINEL_SIZE,
-                            &blocks_.back(), block_idx);
-        return true;
-    }
 
     const size_t num_cells = page_size / cell_bytes;
 
@@ -1474,10 +1399,6 @@ void* OldGenSpace::allocateFromEmptyRegularBlocks(size_t size) {
         const BufferMetadata& meta = buffer_meta_[i];
         if (!meta.fully_swept || meta.live_bytes != 0) continue;
         if (blocks_[i].is_large) continue;
-        // Heap-base block must keep its sentinel; flipping it to is_large
-        // would write a real object header at heap_base+0.
-        if (allocator_ != nullptr &&
-            blocks_[i].start == allocator_->getHeapBase()) continue;
         if (blocks_[i].totalBytes() < size) continue;
 
         // Drop any embedded free cells before flipping is_large; otherwise
@@ -2611,22 +2532,6 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
             // live_bytes is fully populated by markOneObject during mark,
             // so sweep no longer needs to accumulate it. finalizeMetaAfterMark
             // wrote the authoritative value into this slot.
-
-            // Heap-base block: re-install the sentinel and skip past it so
-            // the coalescing run never sees offset 0 as garbage. Without
-            // this, a sweep that finds no upstream live cell would push a
-            // FreeCell header at heap_base+0, making the next allocation
-            // hand out HPointer{ptr=0} (== null).
-            if (isHeapBasePage(blocks_[sweep_buffer_index_].start)) {
-                installHeapBaseSentinel(blocks_[sweep_buffer_index_].start);
-                sweep_cursor_ += HEAP_BASE_SENTINEL_SIZE;
-                if (sweep_buffer_index_ < buffer_meta_.size()) {
-                    // Attribute the sentinel's bytes so a sweep that finds
-                    // no other live cells doesn't see the page as all-dead.
-                    buffer_meta_[sweep_buffer_index_].live_bytes +=
-                        HEAP_BASE_SENTINEL_SIZE;
-                }
-            }
         }
 
         BlockInfo& block = blocks_[sweep_buffer_index_];
@@ -3245,15 +3150,10 @@ void OldGenSpace::fixupIndicesAfterBlockMove(size_t old_idx, size_t new_idx) {
 void OldGenSpace::releaseBlockToAllocator(size_t block_index) {
     if (block_index >= blocks_.size()) return;
 
-    // The heap-base block is permanently committed: an 8-byte Tag_Free
-    // sentinel at heap_base+0 keeps HPointer{ptr=0} unambiguously null.
-    // Releasing the page would put its address back into the Allocator's
-    // free-block pool; a later acquireOldGenBlock could hand it out fresh
-    // and the next allocation would land at heap_base+0.
-    if (allocator_ != nullptr &&
-        blocks_[block_index].start == allocator_->getHeapBase()) {
-        return;
-    }
+    // The heap-base block is released like any other block. (It was formerly
+    // pinned because offset 0 had to stay reserved for the heap-base sentinel;
+    // under absolute addressing heap_base is a valid non-null address, so there
+    // is nothing special about it — the sentinel was removed, D5.)
 
     // Debit the small-class budget BEFORE we touch blocks_; the helper
     // reads blocks_[block_index].size_class to decide whether to debit.
@@ -3262,9 +3162,8 @@ void OldGenSpace::releaseBlockToAllocator(size_t block_index) {
     BlockInfo blk = blocks_[block_index];
     const size_t total = blk.totalBytes();
 
-    // Non-large releases must always be exactly one BBoP page. If this ever
-    // fails, the heap-base sentinel discipline upstream has regressed
-    // (page extents in unassigned_blocks_ are full-page-sized).
+    // Non-large releases must always be exactly one BBoP page (page extents in
+    // unassigned_blocks_ are full-page-sized).
     assert((blk.is_large || total == config_->alloc_buffer_size) &&
            "releaseBlockToAllocator: non-large block must be one full page");
 

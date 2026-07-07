@@ -121,9 +121,6 @@ typedef enum {
 //       * `age & 0b10`       → reserved for future use; must remain 0 in
 //         `Tag_Free` cells. Legal `age` values for `Tag_Free` are exactly
 //         `0` (coalescable) and `1` (sentinel).
-//   - The 8-byte heap-base sentinel installed by `installHeapBaseSentinel`
-//     is EXEMPT from the `age & 1` convention: it carries `age = 0` and is
-//     identified by address (`isHeapBasePage`), not by the age bit.
 //
 // `builder` semantics:
 //   - When `builder == 1`, the object is a "builder" currently being mutated

@@ -398,8 +398,7 @@ public:
         return alloc.getThreadHeap();
     }
 
-    // Heap base address — used by sentinel-discipline tests to verify no
-    // allocation lands at heap_base + 0.
+    // Heap base address (start of the reserved region) — exposed for tests.
     static char* getHeapBase(Allocator& alloc) {
         return alloc.getHeapBase();
     }

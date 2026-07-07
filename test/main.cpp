@@ -19,7 +19,6 @@
 #include "allocator/AllocatorTest.hpp"
 #include "allocator/OldGenSpaceTest.hpp"
 #include "allocator/OldGenCapacityTest.hpp"
-#include "allocator/OldGenHeapBaseSentinelTest.hpp"
 #include "allocator/OldGenLazySweepTest.hpp"
 #include "allocator/OldGenSweepOnDemandTest.hpp"
 #include "allocator/OldGenSweepBudgetTest.hpp"
@@ -644,11 +643,6 @@ int main(int argc, char* argv[]) {
     oldGenTests.add(testSmallClassBudgetDisabledMatchesLegacy);
     oldGenTests.add(testSmallClassBudgetDebitsOnRelease);
     oldGenTests.add(testSmallClassBudgetIgnoresHeapBasePage);
-    // Heap-base sentinel discipline (plans/heap-base-sentinel-fix.md).
-    oldGenTests.add(testInitialUnassignedBlocksAreFullPages);
-    oldGenTests.add(testNoAllocationLandsAtHeapBase);
-    oldGenTests.add(testReleaseLeavesCommittedPageAligned);
-    oldGenTests.add(testHeapBaseBlockNotReleasedOnAllDeadReclaim);
 
     Testing::TestSuite allocatorTests("Allocator");
     allocatorTests.add(testPromotionToOldGen);
