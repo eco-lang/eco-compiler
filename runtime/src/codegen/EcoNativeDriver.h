@@ -45,6 +45,14 @@ struct EcoNativeOptions {
     // aliases/ifuncs (eco never emits them).
     bool lazySplit = true;
 
+    // Dev tier only (parallelOpt==1): override the per-partition object-
+    // emission CodeGen opt level. ~0u = follow optLevel; 0=None, 1=Less,
+    // 2=Default. Kept as unsigned so this header stays LLVM-free.
+    unsigned devEmitCodeGenLevel = ~0u;
+
+    // Dev tier only: run the no-inline per-partition pipeline at O1.
+    bool devOptO1 = false;
+
     // Echo subcommand lines (link step) to stderr.
     bool verbose = false;
 

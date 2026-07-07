@@ -173,6 +173,17 @@ struct EcoBackendJob {
     /// `EmitObjectFile` with `optLevel != None` and `splitEligible`.
     ParallelOpt parallelOpt = ParallelOpt::None;
 
+    /// Dev-tier only: override the CodeGen opt level used to CREATE each split
+    /// worker's TargetMachine (object emission). `~0u` = follow `optLevel`.
+    /// 0=None(FastISel/RegAllocFast), 1=Less, 2=Default. Only honoured on the
+    /// per-partition split workers under ParallelOpt::Dev; the single-object
+    /// inline path uses the driver-supplied `tm` and is unaffected.
+    unsigned devEmitCodeGenLevel = ~0u;
+
+    /// Dev-tier only: run the no-inline per-partition simplification pipeline
+    /// at OptimizationLevel::O1 instead of the `optLevel`-derived level.
+    bool devOptO1 = false;
+
     /// Optional timing collector for backend sub-phases (RS4GC, opt prologue,
     /// module split + bitcode serialization, parallel opt+emit region). Null =
     /// no recording. Thread-safe (LoweringStats::record is mutex-guarded), so

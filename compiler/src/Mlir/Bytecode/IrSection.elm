@@ -392,8 +392,14 @@ encodeOp dialectReg attrTypeTable valueEnv blockEnv op =
         locIdx =
             AttrType.locIndex op.loc attrTypeTable
 
+        -- Strip printer-only attrs (e.g. _operand_types) exactly as
+        -- AttrType.collectOp does, so the collected attr-table entry and this
+        -- lookup use the identical dict (else dictAttrIndex misses -> -1).
+        attrs =
+            AttrType.bytecodeAttrs op.attrs
+
         hasAttrs =
-            not (Dict.isEmpty op.attrs)
+            not (Dict.isEmpty attrs)
 
         hasResults =
             not (List.isEmpty op.results)
@@ -445,7 +451,7 @@ encodeOp dialectReg attrTypeTable valueEnv blockEnv op =
 
         attrEncoder =
             if hasAttrs then
-                [ encodeVarInt (AttrType.dictAttrIndex op.attrs attrTypeTable) ]
+                [ encodeVarInt (AttrType.dictAttrIndex attrs attrTypeTable) ]
 
             else
                 []

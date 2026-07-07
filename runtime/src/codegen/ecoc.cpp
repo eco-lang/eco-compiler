@@ -206,9 +206,17 @@ static int dumpLLVMIR(ModuleOp module) {
     registerBuiltinDialectTranslation(*module->getContext());
     registerLLVMDialectTranslation(*module->getContext());
 
-    // Convert MLIR module to LLVM IR.
+    // Convert MLIR module to LLVM IR. Release builds skip the whole-module
+    // LLVM verifier on the translation output (the MLIR pipeline already
+    // validated the input); validation builds keep it.
     llvm::LLVMContext llvmContext;
-    auto llvmModule = translateModuleToLLVMIR(module, llvmContext);
+#ifdef ECO_LOWERING_VALIDATION
+    constexpr bool kDisableLLVMVerify = false;
+#else
+    constexpr bool kDisableLLVMVerify = true;
+#endif
+    auto llvmModule = translateModuleToLLVMIR(
+        module, llvmContext, "LLVMDialectModule", kDisableLLVMVerify);
     if (!llvmModule) {
         llvm::errs() << "Failed to emit LLVM IR\n";
         return 1;

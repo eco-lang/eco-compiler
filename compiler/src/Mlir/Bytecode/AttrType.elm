@@ -1,5 +1,5 @@
 module Mlir.Bytecode.AttrType exposing
-    ( AttrTypeTable, collect, typeIndex, locIndex, dictAttrIndex
+    ( AttrTypeTable, collect, typeIndex, locIndex, dictAttrIndex, bytecodeAttrs
     , StreamAccum, encodeDataAndOffsets, finalizeStreamAccum, initStreamAccum, streamAccumEncodingView, streamCollectOp
     )
 
@@ -11,7 +11,7 @@ format fallback for unregistered dialect types (e.g. !eco.value).
 All encoding is deferred to the encode phase so that cross-references
 (type indices in FunctionType, attr indices in DictionaryAttr) are resolved.
 
-@docs AttrTypeTable, collect, typeIndex, locIndex, dictAttrIndex
+@docs AttrTypeTable, collect, typeIndex, locIndex, dictAttrIndex, bytecodeAttrs
 @docs StreamAccum, encodeDataAndOffsets, finalizeStreamAccum, initStreamAccum, streamAccumEncodingView, streamCollectOp
 
 -}
@@ -562,20 +562,38 @@ typeEntryToKey entry =
             ""
 
 
+{-| The attribute dict as actually encoded into bytecode. `_operand_types`
+is a printer-only aid (Mlir.Pretty renders generic-form operand types from
+it); neither the bytecode encoder nor the C++ backend reads it, so it is
+dropped here to shrink the artifact and speed encode + parse. MUST be applied
+identically in collectOp (below) and in IrSection.encodeOp, so the attr-table
+entry created during collection is the exact dict looked up during encoding
+(the table is keyed by dictToKey of the value). Exact-name removal only:
+`_fast_evaluator` is also underscore-prefixed but IS read by the backend
+(EcoOps.cpp) and must survive — never generalize this to a prefix filter.
+-}
+bytecodeAttrs : Dict String MlirAttr -> Dict String MlirAttr
+bytecodeAttrs attrs =
+    Dict.remove "_operand_types" attrs
+
+
 collectOp : MlirOp -> Accum -> Accum
 collectOp op acc =
     let
         acc1 =
             addLocEntry op.loc acc
 
+        attrs =
+            bytecodeAttrs op.attrs
+
         acc2 =
-            if Dict.isEmpty op.attrs then
+            if Dict.isEmpty attrs then
                 acc1
 
             else
                 acc1
-                    |> addDictAttrEntry op.attrs
-                    |> collectDictContents op.attrs
+                    |> addDictAttrEntry attrs
+                    |> collectDictContents attrs
 
         acc3 =
             List.foldl (\( _, t ) a -> addTypeEntry t a) acc2 op.results

@@ -277,6 +277,12 @@ struct EcoRuntime {
     /// one process (e.g. the JIT test runner).
     mutable uint64_t stringLiteralCounter = 0;
 
+    /// Cache of UTF-8 -> UTF-16 conversions for string-case pattern literals,
+    /// keyed by pattern content. Avoids re-running utf8ToUtf16 for repeated
+    /// identical patterns during string-case lowering. Pass-lifetime: fresh
+    /// per EcoRuntime instance (one is constructed per module conversion).
+    mutable llvm::StringMap<std::vector<uint16_t>> utf16PatternCache;
+
     explicit EcoRuntime(mlir::ModuleOp m) : module(m), ctx(m.getContext()) {}
 
     /// Ensure the symbol cache is populated from the module.

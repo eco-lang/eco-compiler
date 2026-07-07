@@ -189,6 +189,7 @@ private:
         // pushing a pile of small allocs into old-gen.
         SmallVector<SmallVector<Operation*, 4>> groups;
         SmallVector<Operation*, 4> currentGroup;
+        llvm::SmallPtrSet<Operation *, 8> currentGroupSet;
         int64_t runningSize = 0;
 
         // Lambda: would `&op` consume the result of any op already in
@@ -198,54 +199,52 @@ private:
         // dominance after CFG surgery. Close the group at such a boundary.
         auto consumesGroupMemberResult = [&](Operation *op) {
             if (currentGroup.empty()) return false;
-            llvm::SmallPtrSet<Operation*, 4> groupOps(
-                currentGroup.begin(), currentGroup.end());
             for (Value v : op->getOperands()) {
                 Operation *defOp = v.getDefiningOp();
-                if (defOp && groupOps.contains(defOp))
+                if (defOp && currentGroupSet.contains(defOp))
                     return true;
             }
             return false;
+        };
+
+        // Close the current group: move it into `groups` and reset the parallel
+        // bookkeeping (the mirror set + running size). Centralized so
+        // currentGroupSet can never drift out of sync with currentGroup.
+        auto flushGroup = [&]() {
+            if (currentGroup.empty()) return;
+            groups.push_back(std::move(currentGroup));
+            currentGroup.clear();
+            currentGroupSet.clear();
+            runningSize = 0;
         };
 
         for (auto &op : block) {
             if (isMayAllocOp(&op)) {
                 if (!hasFixedAllocSize(&op)) {
                     // Non-fixed-size op: close current group, add as singleton
-                    if (!currentGroup.empty()) {
-                        groups.push_back(std::move(currentGroup));
-                        currentGroup = {};
-                        runningSize = 0;
-                    }
+                    flushGroup();
                     groups.push_back(SmallVector<Operation*, 4>{&op});
                     continue;
                 }
                 int64_t opSize = getFixedAllocSizeForGrouping(&op);
                 bool wouldDependOnGroupMember = consumesGroupMemberResult(&op);
-                if (!currentGroup.empty() &&
-                    (runningSize + opSize >= GroupLargeObjectThreshold ||
-                     wouldDependOnGroupMember)) {
+                if (runningSize + opSize >= GroupLargeObjectThreshold ||
+                    wouldDependOnGroupMember) {
                     // Either the size cap or an intra-group SSA dependency:
                     // close the current group first.
-                    groups.push_back(std::move(currentGroup));
-                    currentGroup = {};
-                    runningSize = 0;
+                    flushGroup();
                 }
                 currentGroup.push_back(&op);
+                currentGroupSet.insert(&op);
                 runningSize += opSize;
             } else {
-                if (!currentGroup.empty()) {
-                    groups.push_back(std::move(currentGroup));
-                    currentGroup = {};
-                    runningSize = 0;
-                }
+                flushGroup();
                 if (isGroupBarrier(&op)) {
                     // Barrier - any pending group already flushed above
                 }
             }
         }
-        if (!currentGroup.empty())
-            groups.push_back(std::move(currentGroup));
+        flushGroup();
 
         // Step 2: For each alloc group, compute liveness and attach via interface.
         auto *ctx = block.getParentOp()->getContext();

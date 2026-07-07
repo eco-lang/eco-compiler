@@ -379,8 +379,14 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                 patternValue = rewriter.create<LLVM::IntToPtrOp>(loc, hptrTy, emptyI64);
             } else {
                 // Create global for non-empty string
-                // Convert UTF-8 to UTF-16
-                std::vector<uint16_t> utf16 = utf8ToUtf16(pattern);
+                // Convert UTF-8 to UTF-16, cached per pattern content so
+                // repeated identical literals don't re-run the conversion.
+                auto cacheIt = runtime.utf16PatternCache.find(pattern);
+                if (cacheIt == runtime.utf16PatternCache.end())
+                    cacheIt = runtime.utf16PatternCache
+                                  .try_emplace(pattern, utf8ToUtf16(pattern))
+                                  .first;
+                const std::vector<uint16_t> &utf16 = cacheIt->second;
                 size_t length = utf16.size();
 
                 // Create unique global name. Use the per-CaseOp `caseId`
@@ -392,8 +398,11 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                 // process-static; the same MLIR input processed in the
                 // same pattern order assigns the same caseId, so two
                 // independent invocations produce byte-identical binaries.
-                std::string globalName = "__eco_str_case_" + std::to_string(caseId) +
-                                         "_" + std::to_string(i);
+                llvm::SmallString<48> globalName;
+                {
+                    llvm::raw_svector_ostream os(globalName);
+                    os << "__eco_str_case_" << caseId << "_" << i;
+                }
 
                 auto arrayTy = LLVM::LLVMArrayType::get(i16Ty, length);
 

@@ -32,6 +32,11 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 
+#include "llvm/Support/raw_ostream.h"
+
+#include <chrono>
+#include <cstdlib>
+
 using namespace mlir;
 using namespace eco;
 using namespace eco::detail;
@@ -144,6 +149,23 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
     void runOnOperation() override {
         ModuleOp module = getOperation();
         auto *ctx = &getContext();
+
+        // Env-gated sub-phase timers (ECO_ECO2LLVM_STATS). Passes have no
+        // LoweringStats handle, so time the five serial stages of this pass
+        // with steady_clock and print to llvm::errs(). Each ecoStageReport()
+        // call measures wall time since the previous report (or since here)
+        // and then resets the clock. Zero overhead when the env var is unset.
+        const bool ecoStatsEnabled = ::getenv("ECO_ECO2LLVM_STATS") != nullptr;
+        auto ecoStageClock = std::chrono::steady_clock::now();
+        auto ecoStageReport = [&](const char *stageName) {
+            if (!ecoStatsEnabled) return;
+            auto now = std::chrono::steady_clock::now();
+            double ms = std::chrono::duration<double, std::milli>(
+                            now - ecoStageClock).count();
+            llvm::errs() << "[eco-to-llvm] " << stageName << ": " << ms
+                         << " ms\n";
+            ecoStageClock = now;
+        };
 
 
         // Set up type converter for eco.value -> i64
@@ -346,10 +368,13 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         populateEcoGlobalPatterns(typeConverter, patterns);
         populateEcoErrorDebugPatterns(typeConverter, patterns, runtime);
 
+        ecoStageReport("1. pattern population/setup");
+
         // Lower allocation groups (eco.gc_group_size > 1) into fast/slow/merge
         // CFG before the per-op conversion patterns run. Group member ops are
         // erased; remaining singleton alloc ops are lowered by patterns below.
         lowerAllocGroups(module, runtime);
+        ecoStageReport("2. lowerAllocGroups");
 
         // Apply the conversion patterns to the module
         // Use applyFullConversion to ensure all operations are legalized.
@@ -357,22 +382,22 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         // structural context that changes during conversion.
         if (failed(applyFullConversion(module, target, std::move(patterns))))
             signalPassFailure();
+        ecoStageReport("3. applyFullConversion");
 
-        // Set GC strategy on all non-external LLVM functions so that
-        // statepoint intrinsics are recognized by LLVM's GC infrastructure.
-        module.walk([](LLVM::LLVMFuncOp func) {
-            if (!func.isExternal() && !func.getGarbageCollector()) {
+        // Single post-conversion walk over all LLVM functions: (1) set the GC
+        // strategy so statepoint intrinsics are recognized, and (2) install
+        // shadow-root frames for functions marked eco.shadow_roots. Fused from
+        // two separate module.walk sweeps over the ~85k functions. The leading
+        // external early-return covers both concerns exactly as before (walk 1
+        // also gated on !isExternal; newly-created runtime decls are external
+        // and were skipped by walk 2's guard too).
+        module.walk([&](LLVM::LLVMFuncOp func) {
+            if (func.isExternal())
+                return;
+            if (!func.getGarbageCollector())
                 func.setGarbageCollector("eco-gc");
-            }
-        });
-
-        // Install shadow root frames for functions marked with eco.shadow_roots.
-        // This runs post-conversion so args are already ptr addrspace(1) and
-        // we emit pure LLVM dialect ops.
-        if (!shadowRootFuncs.empty()) {
-            module.walk([&](LLVM::LLVMFuncOp func) {
-                if (func.isExternal()) return;
-                if (!shadowRootFuncs.contains(func.getSymName())) return;
+            if (!shadowRootFuncs.empty() &&
+                shadowRootFuncs.contains(func.getSymName())) {
                 OpBuilder builder(func.getContext());
                 auto frame = installShadowRootPrologue(func, builder, runtime);
                 if (frame.basePtr) {
@@ -380,11 +405,14 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
                         rewriteUsesViaShadowSlot(frame, entry.first, builder);
                     emitShadowRootEpilogues(frame, func, builder, runtime);
                 }
-            });
-        }
+            }
+        });
+
+        ecoStageReport("4. GC-strategy + shadow-root walks");
 
         // Generate global root initialization function
         createGlobalRootInitFunction(module, runtime);
+        ecoStageReport("5. createGlobalRootInitFunction");
     }
 };
 

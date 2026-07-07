@@ -197,6 +197,20 @@ static cl::opt<bool> lazySplit(
              "reverts to SplitModule. Executable output only"),
     cl::init(true));
 
+static cl::opt<unsigned> devEmitCG(
+    "dev-emit-cg",
+    cl::desc("Dev tier only: override the per-partition object-emission CodeGen "
+             "opt level (0=None/FastISel, 1=Less, 2=Default). Default: follow "
+             "-O. Only affects --parallel-opt=dev split workers"),
+    cl::init(~0u));
+
+static cl::opt<bool> devOptO1(
+    "dev-opt-o1",
+    cl::desc("Dev tier only: run the no-inline per-partition simplification "
+             "pipeline at OptimizationLevel::O1 instead of the -O-derived "
+             "level. Off by default"),
+    cl::init(false));
+
 static cl::opt<bool> rs4gcAfterOpt(
     "rs4gc-after-opt",
     cl::desc("EXPERIMENTAL: run RewriteStatepointsForGC after the O2 pipeline "
@@ -379,7 +393,16 @@ static std::unique_ptr<llvm::Module> translateToLLVMIR(
     registerBuiltinDialectTranslation(*module->getContext());
     registerLLVMDialectTranslation(*module->getContext());
 
-    auto llvmModule = translateModuleToLLVMIR(module, llvmContext);
+    // Release: skip the whole-module LLVM verifier on the translation output
+    // (O(module) over ~85k functions; the MLIR pipeline already validated the
+    // input). Validation builds keep it. Mirrors pm.enableVerifier(false).
+#ifdef ECO_LOWERING_VALIDATION
+    constexpr bool kDisableLLVMVerify = false;
+#else
+    constexpr bool kDisableLLVMVerify = true;
+#endif
+    auto llvmModule = translateModuleToLLVMIR(
+        module, llvmContext, "LLVMDialectModule", kDisableLLVMVerify);
     if (!llvmModule) {
         llvm::errs() << "Error: Failed to translate MLIR to LLVM IR\n";
         return nullptr;
@@ -585,7 +608,20 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // Step 2: Parse MLIR
+    // Step 2: Parse MLIR.
+    //
+    // M6: the MLIRContext, the input MemoryBuffer (owned by `sourceMgr`) and
+    // the ModuleOp are confined to the nested block opened here. Translation
+    // produces an llvm::Module that depends only on `llvmContext`, and nothing
+    // past translation reads MLIR state, so ending this scope immediately after
+    // translateToLLVMIR frees the op graph, the context's uniquing storage and
+    // the ~12MB source buffer before the memory-bandwidth-bound backend/worker
+    // phase (lowers peak RSS). `llvmContext`/`llvmModule` are hoisted above the
+    // block so they outlive it (and the backend); llvmContext must precede
+    // llvmModule so the module is destroyed before its context at end of main.
+    llvm::LLVMContext llvmContext;
+    std::unique_ptr<llvm::Module> llvmModule;
+    {
     DialectRegistry registry;
     eco::registerRequiredDialects(registry);
 
@@ -647,8 +683,6 @@ int main(int argc, char **argv) {
     }
 
     // Step 4: Translate to LLVM IR
-    llvm::LLVMContext llvmContext;
-    std::unique_ptr<llvm::Module> llvmModule;
     {
         eco::LoweringStats::Scope scope(stats, "MLIR -> LLVM IR translation");
         llvmModule = translateToLLVMIR(*module, llvmContext);
@@ -658,6 +692,9 @@ int main(int argc, char **argv) {
             return 1;
         }
     }
+    } // end MLIR scope (M6): MLIRContext, sourceMgr (input buffer) and the
+      // ModuleOp are destroyed here — the earliest point after translation.
+      // Only llvmModule/llvmContext survive into TargetMachine init + backend.
 
     // Step 5: Create TargetMachine and set DataLayout BEFORE RS4GC (Phase 3
     // of the pipeline-convergence plan — matches the JIT path's ordering).
@@ -780,6 +817,8 @@ int main(int argc, char **argv) {
         job.parallelOpt = parallelOpt;
         job.stats = &stats;
         job.lazySplit = lazySplit;
+        job.devEmitCodeGenLevel = devEmitCG;
+        job.devOptO1 = devOptO1;
         job.objectFilePath = objFile;
         if (auto err = eco::runEcoBackend(*llvmModule, job, &backendResult)) {
             llvm::errs() << "Error: backend pipeline failed: " << err << "\n";

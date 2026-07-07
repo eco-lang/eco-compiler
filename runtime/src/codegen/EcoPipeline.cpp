@@ -73,7 +73,15 @@ void buildEcoToLLVMPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     // Stage 2: Eco -> Standard MLIR (func/cf/arith).
     pm.addPass(eco::createJoinpointNormalizationPass());
     pm.addPass(eco::createEcoControlFlowToSCFPass());
-    pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
+    // M4/4b (measured): the func-level canonicalizer here was removed. Effect:
+    // MLIR phase -~0.5s, exe +~0.28%, produced functional output byte-identical.
+    // Safe because (1) LLVM's downstream pipeline re-canonicalizes anyway, and
+    // (2) fewer pre-GC folds can only make EcoGCPrepare's liveness MORE
+    // conservative (more live values => over-rooting, which is GC-SAFE — the
+    // unsafe direction is under-rooting). Validated by the full E2E + self-host
+    // byte-identity gate. Re-add createCanonicalizerPass() here if any GC or
+    // codegen regression appears.
+    // pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
 
     // Stage 2.5: GC preparation (root sets, allocation grouping, safepoint rewrite).
     pm.addPass(eco::createEcoGCPreparePass());

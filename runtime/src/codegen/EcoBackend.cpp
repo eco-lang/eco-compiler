@@ -129,12 +129,22 @@ void runCheapModuleIPO(Module &m) {
     PB.registerLoopAnalyses(LAM);
     PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
 
+    // M4 (measured): the function-attrs pair — PostOrderFunctionAttrs (~0.90s)
+    // + ReversePostOrderFunctionAttrs (~0.008s) — was dropped from this serial
+    // prologue. Effect: cheap-IPO -~1.06s, wall -~1s, exe +~0.28%, produced
+    // functional output byte-identical. Cross-module function attrs are
+    // re-derived by the per-partition -O2 in --parallel-opt=cgu and by the
+    // whole-module -O2 in =none (cheap-IPO does not run there), so only
+    // throwaway --parallel-opt=dev binaries lose them — an acceptable dev-tier
+    // trade. Kept: IPSCCP (~2.0s — constant propagation on monomorphized code,
+    // the dominant and load-bearing pass), GlobalOpt (~0.87s — unused-global
+    // elimination / fn merging), and GlobalDCE (~0.20s — strips the dead code
+    // IPSCCP/GlobalOpt create, before the whole-module serialize every worker
+    // re-parses; the driver-side internalize+DCE is for a different, exe-only
+    // reachability pass, so this is not redundant on the split path).
     ModulePassManager MPM;
     MPM.addPass(IPSCCPPass());
     MPM.addPass(GlobalOptPass());
-    MPM.addPass(
-        createModuleToPostOrderCGSCCPassAdaptor(PostOrderFunctionAttrsPass()));
-    MPM.addPass(ReversePostOrderFunctionAttrsPass());
     MPM.addPass(GlobalDCEPass());
     MPM.run(m, MAM);
 }
@@ -145,7 +155,7 @@ void runCheapModuleIPO(Module &m) {
 // inliner. That fused inliner+simplification is the bulk of an -O2 pipeline's
 // wall-clock; dropping the inliner makes the rest embarrassingly parallel.
 Error runNoInlineFunctionPipeline(Module &m, TargetMachine *tm,
-                                  CodeGenOptLevel optLevel) {
+                                  CodeGenOptLevel optLevel, bool devOptO1) {
     PassBuilder PB(tm);
     LoopAnalysisManager LAM;
     FunctionAnalysisManager FAM;
@@ -160,8 +170,9 @@ Error runNoInlineFunctionPipeline(Module &m, TargetMachine *tm,
     ModulePassManager MPM;
     MPM.addPass(AlwaysInlinerPass());
     MPM.addPass(createModuleToFunctionPassAdaptor(
-        PB.buildFunctionSimplificationPipeline(toOptLevel(optLevel),
-                                               ThinOrFullLTOPhase::None)));
+        PB.buildFunctionSimplificationPipeline(
+            devOptO1 ? OptimizationLevel::O1 : toOptLevel(optLevel),
+            ThinOrFullLTOPhase::None)));
     MPM.run(m, MAM);
     return Error::success();
 }
@@ -170,13 +181,13 @@ Error runNoInlineFunctionPipeline(Module &m, TargetMachine *tm,
 // Dev  = no-inline function pipeline (fast, lower quality).
 // Cgu  = full -O2 per partition (keeps intra-partition CGSCC inlining).
 Error optimizePartitionModule(Module &m, TargetMachine *tm, ParallelOpt mode,
-                              CodeGenOptLevel optLevel) {
+                              CodeGenOptLevel optLevel, bool devOptO1) {
     if (mode == ParallelOpt::Cgu) {
         auto opt = mlir::makeOptimizingTransformer(
             static_cast<unsigned>(optLevel), /*sizeLevel=*/0, tm);
         return opt(&m);
     }
-    return runNoInlineFunctionPipeline(m, tm, optLevel);
+    return runNoInlineFunctionPipeline(m, tm, optLevel, devOptO1);
 }
 
 // Split the (already RS4GC'd + optimized) module into N partitions and emit
@@ -207,6 +218,7 @@ Error emitObjectFilesSplit(Module &m, unsigned numPartitions,
                            const std::vector<std::string> &paths,
                            CodeGenOptLevel optLevel,
                            ParallelOpt perPartitionMode,
+                           unsigned devEmitCG, bool devOptO1,
                            eco::LoweringStats *stats,
                            const RS4GCOptions *partitionRS4GC) {
     if (paths.size() != numPartitions)
@@ -224,7 +236,7 @@ Error emitObjectFilesSplit(Module &m, unsigned numPartitions,
     std::vector<std::thread> threads;
     threads.reserve(numPartitions);
 
-    auto worker = [&, optLevel, perPartitionMode](unsigned i) {
+    auto worker = [&, optLevel, perPartitionMode, devEmitCG, devOptO1](unsigned i) {
         LLVMContext ctx;
         auto buf = MemoryBuffer::getMemBuffer(
             StringRef(bitcodes[i].data(), bitcodes[i].size()),
@@ -237,8 +249,12 @@ Error emitObjectFilesSplit(Module &m, unsigned numPartitions,
             return;
         }
         std::unique_ptr<Module> mod = std::move(*modOr);
-        auto tm = createEcoTargetMachine(*mod,
-                                         static_cast<unsigned>(optLevel));
+        // Dev tier may emit at a cheaper CodeGen level than optLevel; this TM
+        // also feeds runNoInlineFunctionPipeline's PassBuilder TTI (acceptable).
+        unsigned emitLevel = static_cast<unsigned>(optLevel);
+        if (perPartitionMode == ParallelOpt::Dev && devEmitCG != ~0u)
+            emitLevel = devEmitCG;
+        auto tm = createEcoTargetMachine(*mod, emitLevel);
         if (!tm) {
             errs[i] = "createEcoTargetMachine failed for partition " +
                       std::to_string(i);
@@ -262,7 +278,7 @@ Error emitObjectFilesSplit(Module &m, unsigned numPartitions,
         if (perPartitionMode != ParallelOpt::None) {
             MaybeScope s(stats, "  partition opt (sum over workers)");
             if (auto err = optimizePartitionModule(
-                    *mod, tm.get(), perPartitionMode, optLevel)) {
+                    *mod, tm.get(), perPartitionMode, optLevel, devOptO1)) {
                 errs[i] = "partition opt failed for partition " +
                           std::to_string(i) + ": " +
                           toString(std::move(err));
@@ -382,6 +398,7 @@ Error emitObjectFilesSplitLazy(Module &m, unsigned numPartitions,
                                const std::vector<std::string> &paths,
                                CodeGenOptLevel optLevel,
                                ParallelOpt perPartitionMode,
+                               unsigned devEmitCG, bool devOptO1,
                                eco::LoweringStats *stats,
                                const RS4GCOptions *partitionRS4GC) {
     if (paths.size() != numPartitions)
@@ -408,7 +425,7 @@ Error emitObjectFilesSplitLazy(Module &m, unsigned numPartitions,
     threads.reserve(numPartitions);
 
     for (unsigned i = 0; i < numPartitions; ++i) {
-        threads.emplace_back([&, i, optLevel, perPartitionMode] {
+        threads.emplace_back([&, i, optLevel, perPartitionMode, devEmitCG, devOptO1] {
             LLVMContext ctx;
             auto buf = MemoryBuffer::getMemBuffer(
                 bcData, "eco-whole", /*RequiresNullTerminator=*/false);
@@ -471,8 +488,12 @@ Error emitObjectFilesSplitLazy(Module &m, unsigned numPartitions,
                 }
             }
 
-            auto tm = createEcoTargetMachine(*mod,
-                                             static_cast<unsigned>(optLevel));
+            // Dev tier may emit at a cheaper CodeGen level than optLevel; this
+            // TM also feeds the dev IR pipeline's PassBuilder TTI (acceptable).
+            unsigned emitLevel = static_cast<unsigned>(optLevel);
+            if (perPartitionMode == ParallelOpt::Dev && devEmitCG != ~0u)
+                emitLevel = devEmitCG;
+            auto tm = createEcoTargetMachine(*mod, emitLevel);
             if (!tm) {
                 errs[i] = "createEcoTargetMachine failed for partition " +
                           std::to_string(i);
@@ -486,7 +507,7 @@ Error emitObjectFilesSplitLazy(Module &m, unsigned numPartitions,
             if (perPartitionMode != ParallelOpt::None) {
                 MaybeScope s(stats, "  partition opt (sum over workers)");
                 if (auto err = optimizePartitionModule(
-                        *mod, tm.get(), perPartitionMode, optLevel)) {
+                        *mod, tm.get(), perPartitionMode, optLevel, devOptO1)) {
                     errs[i] = "partition opt failed for partition " +
                               std::to_string(i) + ": " +
                               toString(std::move(err));
@@ -753,7 +774,8 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
             auto splitFn =
                 canLazy ? emitObjectFilesSplitLazy : emitObjectFilesSplit;
             if (auto err = splitFn(
-                    m, numParts, paths, job.optLevel, perPart, job.stats,
+                    m, numParts, paths, job.optLevel, perPart,
+                    job.devEmitCodeGenLevel, job.devOptO1, job.stats,
                     rs4gcInWorkers ? &rs4gcOpts : nullptr)) {
                 for (auto &f : owned)
                     sys::fs::remove(f);
@@ -773,8 +795,8 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
         if (rs4gcInWorkers)
             runRS4GCAndMaybeFramePointers(m, rs4gcOpts);
         if (perPart != ParallelOpt::None) {
-            if (auto err =
-                    optimizePartitionModule(m, job.tm, perPart, job.optLevel))
+            if (auto err = optimizePartitionModule(
+                    m, job.tm, perPart, job.optLevel, job.devOptO1))
                 return err;
         }
         if (!job.objectFilePath.empty()) {

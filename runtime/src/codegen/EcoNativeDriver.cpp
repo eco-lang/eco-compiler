@@ -117,7 +117,16 @@ translateToLLVMIR(ModuleOp module, llvm::LLVMContext &llvmContext) {
     registerBuiltinDialectTranslation(*module->getContext());
     registerLLVMDialectTranslation(*module->getContext());
 
-    auto llvmModule = translateModuleToLLVMIR(module, llvmContext);
+    // Release: skip the whole-module LLVM verifier on the translation output
+    // (O(module) over ~85k functions; the MLIR pipeline already validated the
+    // input). Validation builds keep it. Mirrors pm.enableVerifier(false).
+#ifdef ECO_LOWERING_VALIDATION
+    constexpr bool kDisableLLVMVerify = false;
+#else
+    constexpr bool kDisableLLVMVerify = true;
+#endif
+    auto llvmModule = translateModuleToLLVMIR(
+        module, llvmContext, "LLVMDialectModule", kDisableLLVMVerify);
     if (!llvmModule) {
         llvm::errs() << "Error: Failed to translate MLIR to LLVM IR\n";
         return nullptr;
@@ -179,6 +188,16 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
         if (!llvmModule)
             return 1;
     }
+
+    // M6: the llvm::Module now depends only on `llvmContext`; nothing below
+    // reads MLIR (root-module bake, TargetMachine init, internalize+DCE,
+    // runEcoBackend, link all take llvm::Module only). Free the ModuleOp
+    // op-graph — the bulk of MLIR-side memory — before the backend/worker
+    // phase. The MLIRContext and the parsed source buffer are owned by the
+    // caller (compileMlirFile/BytesToExecutable) and outlive this call, so this
+    // reset is safe; freeing those two needs a caller restructure (out of scope
+    // for this surgical edit).
+    module = nullptr;
 
     // Bake the root module name into the program as `__eco_root_module`.
     // The N-API addon declares it as a weak extern and uses it to name the
@@ -267,6 +286,8 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
                                                   : eco::ParallelOpt::None;
         job.stats = opts.stats;
         job.lazySplit = opts.lazySplit;
+        job.devEmitCodeGenLevel = opts.devEmitCodeGenLevel;
+        job.devOptO1 = opts.devOptO1;
         if (auto err = eco::runEcoBackend(*llvmModule, job, &backendResult)) {
             llvm::errs() << "Error: backend pipeline failed: " << err << "\n";
             llvm::sys::fs::remove(objFile);
