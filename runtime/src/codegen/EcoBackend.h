@@ -152,7 +152,7 @@ struct EcoBackendJob {
     std::string objectFilePath;
 
     /// Parallel object emission policy request (executable output only):
-    ///   0 = auto (min(cores,16), gated at >= 4000 defined fns, ~1 part/2000),
+    ///   0 = auto (cores, gated at >= 4000 defined fns, ~1 part/2000),
     ///   1 = off (single-threaded emit to `objectFilePath`),
     ///   N = explicit partition count.
     /// The actual count is decided inside `runEcoBackend` via

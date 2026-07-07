@@ -537,9 +537,14 @@ unsigned choosePartitionCount(const Module &m, unsigned request, bool eligible) 
     if (numDefinedFns < kMinFnsToSplit)
         return 1;
     unsigned cores = std::max(1u, std::thread::hardware_concurrency());
-    // Auto caps at 16: beyond that the serial split + per-partition
-    // bitcode-serialize overhead outweighs the extra emission parallelism.
-    unsigned want = (request == 0) ? std::min(cores, 16u) : request;
+    // Auto uses all cores. The old min(cores,16) cap existed because
+    // llvm::SplitModule's serial split + N bitcode serializations grew with N
+    // and ate the emission gain past ~16. The lazy-split path (Phase 5)
+    // serializes the module ONCE (N-independent, ~1.3 s regardless of N), so
+    // partition-emit parallelism now scales cleanly to the core count: a 24-core
+    // self-host sweep showed backend time still dropping at N=24 (dev 12.4->10.1 s
+    // from N=16, no plateau). See backendstats-runs.txt (N-partition sweep).
+    unsigned want = (request == 0) ? cores : request;
     // ~1 partition per 2000 functions, at least 2 once we've decided to split.
     unsigned bySize = std::max(2u, numDefinedFns / 2000u);
     return std::min(want, bySize);

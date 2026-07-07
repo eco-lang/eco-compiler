@@ -26,7 +26,7 @@ struct EcoNativeOptions {
     unsigned optLevel = 2;
 
     // Parallel object-emission partition policy (executable output only):
-    // 0 = auto (min(cores,16), gated >= 4000 fns), 1 = off, N = explicit.
+    // 0 = auto (cores, gated >= 4000 fns), 1 = off, N = explicit.
     // Decided in the shared backend (choosePartitionCount). Auto by default so
     // the unified `eco` path — which builds a default EcoNativeOptions in the C
     // ABI entry points — gets the parallel-emission win without Elm changes.
