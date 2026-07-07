@@ -266,6 +266,7 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
                           : opts.parallelOpt == 2 ? eco::ParallelOpt::Cgu
                                                   : eco::ParallelOpt::None;
         job.stats = opts.stats;
+        job.lazySplit = opts.lazySplit;
         if (auto err = eco::runEcoBackend(*llvmModule, job, &backendResult)) {
             llvm::errs() << "Error: backend pipeline failed: " << err << "\n";
             llvm::sys::fs::remove(objFile);

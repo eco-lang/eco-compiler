@@ -189,6 +189,14 @@ static cl::opt<eco::ParallelOpt> parallelOpt(
                    "keeps intra-partition inlining)")),
     cl::init(eco::ParallelOpt::None));
 
+static cl::opt<bool> lazySplit(
+    "lazy-split",
+    cl::desc("Partitioned codegen: extract each partition lazily from one "
+             "shared bitcode (ThinLTO-importer pattern) instead of "
+             "llvm::SplitModule's N clones. On by default; --lazy-split=0 "
+             "reverts to SplitModule. Executable output only"),
+    cl::init(true));
+
 static cl::opt<bool> rs4gcAfterOpt(
     "rs4gc-after-opt",
     cl::desc("EXPERIMENTAL: run RewriteStatepointsForGC after the O2 pipeline "
@@ -771,6 +779,7 @@ int main(int argc, char **argv) {
         job.splitEligible = isExecutable;
         job.parallelOpt = parallelOpt;
         job.stats = &stats;
+        job.lazySplit = lazySplit;
         job.objectFilePath = objFile;
         if (auto err = eco::runEcoBackend(*llvmModule, job, &backendResult)) {
             llvm::errs() << "Error: backend pipeline failed: " << err << "\n";

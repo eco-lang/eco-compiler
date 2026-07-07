@@ -33,8 +33,14 @@
 #include "llvm/Transforms/Utils/SplitModule.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/Bitcode/BitcodeReader.h"
+#include "llvm/IR/GlobalAlias.h"
+#include "llvm/IR/GlobalIFunc.h"
+#include "llvm/IR/GlobalValue.h"
+#include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/Support/MemoryBuffer.h"
+
+#include <cstdint>
 
 #include <atomic>
 #include <mutex>
@@ -328,6 +334,190 @@ Error emitObjectFilesSplit(Module &m, unsigned numPartitions,
     return Error::success();
 }
 
+// Stable, reproducible partition assignment for a symbol name: FNV-1a % N.
+// Must be a pure function of the name so every worker computes the SAME owner
+// independently (exactly-once cover). Deliberately NOT llvm::hash_value, which
+// is per-process-seeded and would break reproducible builds.
+unsigned partitionOfName(StringRef name, unsigned n) {
+    uint64_t h = 1469598103934665603ULL; // FNV offset basis
+    for (unsigned char c : name)
+        h = (h ^ c) * 1099511628211ULL;  // FNV prime
+    return static_cast<unsigned>(h % n);
+}
+
+// Externalize every module-local symbol to a single ExternalLinkage +
+// HiddenVisibility definition — replicates llvm::SplitModule's
+// PreserveLocals=false behaviour so cross-partition references resolve at link
+// time when each partition keeps only its own definitions. (eco's module has
+// no aliases/comdats/ifuncs and no unnamed globals, so this is the whole job;
+// the defensive name/alias/ifunc handling mirrors SplitModule for safety.)
+void externalizeAllLocals(Module &m) {
+    auto ext = [](GlobalValue &GV) {
+        if (GV.hasLocalLinkage()) {
+            // setVisibility(Hidden) requires non-local linkage, so promote first.
+            GV.setLinkage(GlobalValue::ExternalLinkage);
+            GV.setVisibility(GlobalValue::HiddenVisibility);
+        }
+        if (!GV.hasName())
+            GV.setName("__eco_lazysplit"); // symbol table auto-uniquifies
+    };
+    for (Function &F : m.functions())
+        ext(F);
+    for (GlobalVariable &G : m.globals())
+        ext(G);
+    for (GlobalAlias &A : m.aliases())
+        ext(A);
+    for (GlobalIFunc &I : m.ifuncs())
+        ext(I);
+}
+
+// Lazy per-worker module extraction — the ThinLTO-importer pattern. Instead of
+// llvm::SplitModule (N x CloneModule + N bitcode writes, all serial on the
+// parent), externalize + serialize the WHOLE module once, then each worker
+// lazy-loads the shared read-only bitcode into its own LLVMContext and
+// materializes ONLY the ~1/N functions it owns (deleteBody() strips the rest to
+// declarations without deserializing their bodies). Functionally equivalent to
+// emitObjectFilesSplit; collapses the ~N-clone serial cost to one serialization.
+Error emitObjectFilesSplitLazy(Module &m, unsigned numPartitions,
+                               const std::vector<std::string> &paths,
+                               CodeGenOptLevel optLevel,
+                               ParallelOpt perPartitionMode,
+                               eco::LoweringStats *stats,
+                               const RS4GCOptions *partitionRS4GC) {
+    if (paths.size() != numPartitions)
+        return createStringError(std::errc::invalid_argument,
+            "emitObjectFilesSplitLazy: paths count != numPartitions");
+
+    // Externalize once, then serialize the whole module once (the only serial
+    // per-partition cost SplitModule paid — N clones + N writes — is gone).
+    SmallString<0> wholeBitcode;
+    {
+        MaybeScope s(stats, "  externalize + serialize once (serial)");
+        externalizeAllLocals(m);
+        raw_svector_ostream os(wholeBitcode);
+        WriteBitcodeToFile(m, os);
+    }
+    // Shared, read-only view of the bitcode; MUST outlive every worker (their
+    // lazy modules read function bodies out of it on materialize()). It does:
+    // wholeBitcode is joined-on below before this scope exits.
+    StringRef bcData(wholeBitcode.data(), wholeBitcode.size());
+
+    std::atomic<unsigned> nextFail{0};
+    std::vector<std::string> errs(numPartitions);
+    std::vector<std::thread> threads;
+    threads.reserve(numPartitions);
+
+    for (unsigned i = 0; i < numPartitions; ++i) {
+        threads.emplace_back([&, i, optLevel, perPartitionMode] {
+            LLVMContext ctx;
+            auto buf = MemoryBuffer::getMemBuffer(
+                bcData, "eco-whole", /*RequiresNullTerminator=*/false);
+            auto modOr = getLazyBitcodeModule(buf->getMemBufferRef(), ctx,
+                                              /*ShouldLazyLoadMetadata=*/false,
+                                              /*IsImporting=*/false);
+            if (!modOr) {
+                errs[i] = "getLazyBitcodeModule failed for partition " +
+                          std::to_string(i) + ": " +
+                          toString(modOr.takeError());
+                nextFail++;
+                return;
+            }
+            std::unique_ptr<Module> mod = std::move(*modOr);
+
+            // Extract this partition: materialize the functions we own, strip
+            // the rest to external declarations WITHOUT loading their bodies.
+            {
+                MaybeScope s(stats, "  lazy extract (sum over workers)");
+                for (Function &F : mod->functions()) {
+                    if (F.isDeclaration())
+                        continue; // already an extern (runtime) decl
+                    if (partitionOfName(F.getName(), numPartitions) == i) {
+                        if (F.isMaterializable())
+                            if (auto e = F.materialize()) {
+                                errs[i] = "materialize failed p" +
+                                          std::to_string(i) + ": " +
+                                          toString(std::move(e));
+                                nextFail++;
+                                return;
+                            }
+                    } else {
+                        // Strips to `external` decl; body was never read, so
+                        // this only clears the (empty) BB list + materializable
+                        // bit + sets external linkage.
+                        F.deleteBody();
+                        F.setComdat(nullptr);
+                    }
+                }
+                // Globals: initializers are eager in a lazy module, so each
+                // worker holds them all — strip the ones it doesn't own to a
+                // single external declaration (owner keeps the definition).
+                for (GlobalVariable &G : mod->globals()) {
+                    if (G.isDeclaration())
+                        continue;
+                    if (partitionOfName(G.getName(), numPartitions) != i) {
+                        G.setInitializer(nullptr);
+                        G.setLinkage(GlobalValue::ExternalLinkage);
+                        G.setComdat(nullptr);
+                    }
+                }
+                // Detach the materializer; nothing left to materialize (owned
+                // done, non-owned marked non-materializable by deleteBody), so
+                // this is cheap and readies the module for passes + codegen.
+                if (auto e = mod->materializeAll()) {
+                    errs[i] = "materializeAll failed p" + std::to_string(i) +
+                              ": " + toString(std::move(e));
+                    nextFail++;
+                    return;
+                }
+            }
+
+            auto tm = createEcoTargetMachine(*mod,
+                                             static_cast<unsigned>(optLevel));
+            if (!tm) {
+                errs[i] = "createEcoTargetMachine failed for partition " +
+                          std::to_string(i);
+                nextFail++;
+                return;
+            }
+            if (partitionRS4GC) {
+                MaybeScope s(stats, "  partition RS4GC (sum over workers)");
+                runRS4GCAndMaybeFramePointers(*mod, *partitionRS4GC);
+            }
+            if (perPartitionMode != ParallelOpt::None) {
+                MaybeScope s(stats, "  partition opt (sum over workers)");
+                if (auto err = optimizePartitionModule(
+                        *mod, tm.get(), perPartitionMode, optLevel)) {
+                    errs[i] = "partition opt failed for partition " +
+                              std::to_string(i) + ": " +
+                              toString(std::move(err));
+                    nextFail++;
+                    return;
+                }
+            }
+            MaybeScope s(stats, "  partition emit (sum over workers)");
+            if (auto err = emitObjectFile(*mod, *tm, paths[i])) {
+                errs[i] = "emitObjectFile failed for partition " +
+                          std::to_string(i) + ": " + toString(std::move(err));
+                nextFail++;
+                return;
+            }
+        });
+    }
+
+    {
+        MaybeScope s(stats, "  parallel opt+emit drain (post-serialize wait)");
+        for (auto &t : threads)
+            t.join();
+    }
+
+    if (nextFail.load() != 0) {
+        for (auto &e : errs)
+            if (!e.empty())
+                return createStringError(std::errc::io_error, "%s", e.c_str());
+    }
+    return Error::success();
+}
+
 // Decide how many object-emission partitions to use. This is the split policy
 // that used to live inline in eco-boot.cpp; hoisting it here means every driver
 // (eco-boot, the unified `eco` native driver, ecoc) gets the same partitioned
@@ -549,7 +739,15 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
                 paths.emplace_back(p.str());
                 owned.emplace_back(p.str());
             }
-            if (auto err = emitObjectFilesSplit(
+            // Lazy split's per-worker strip handles functions + globals only;
+            // aliases/ifuncs would be duplicated across partitions. eco's
+            // codegen never emits them, but fall back to SplitModule if any
+            // appear so the lazy path is always safe to enable.
+            const bool canLazy =
+                job.lazySplit && m.aliases().empty() && m.ifuncs().empty();
+            auto splitFn =
+                canLazy ? emitObjectFilesSplitLazy : emitObjectFilesSplit;
+            if (auto err = splitFn(
                     m, numParts, paths, job.optLevel, perPart, job.stats,
                     rs4gcInWorkers ? &rs4gcOpts : nullptr)) {
                 for (auto &f : owned)

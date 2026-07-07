@@ -38,6 +38,13 @@ struct EcoNativeOptions {
     // (full -O2 per partition). Kept as unsigned so this header stays LLVM-free.
     unsigned parallelOpt = 0;
 
+    // Lazy per-worker partition extraction (ThinLTO-importer pattern) instead
+    // of llvm::SplitModule. On by default — validated symbol/functional-
+    // identical to SplitModule with a much smaller serial split cost. The
+    // backend falls back to SplitModule automatically if the module has
+    // aliases/ifuncs (eco never emits them).
+    bool lazySplit = true;
+
     // Echo subcommand lines (link step) to stderr.
     bool verbose = false;
 

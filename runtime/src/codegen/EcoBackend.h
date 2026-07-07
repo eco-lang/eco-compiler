@@ -179,6 +179,15 @@ struct EcoBackendJob {
     /// per-partition workers may record too.
     LoweringStats *stats = nullptr;
 
+    /// Use the lazy per-worker module extraction instead of llvm::SplitModule:
+    /// externalize + serialize the whole module ONCE, then each worker
+    /// lazy-loads the shared bitcode and materializes only its ~1/N functions
+    /// (the ThinLTO-importer pattern). Collapses the serial N-clone + N-serialize
+    /// cost of SplitModule to a single serialization. Only affects the
+    /// partitioned `EmitObjectFile` path (numParts > 1); output is functionally
+    /// equivalent to the SplitModule path.
+    bool lazySplit = false;
+
     /// EXPERIMENTAL, off by default. Run RewriteStatepointsForGC AFTER the O2
     /// optimization pipeline instead of before it (upstream LLVM's intended
     /// ordering: the optimizer operates on abstract `ptr addrspace(1)` before
