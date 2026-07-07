@@ -742,7 +742,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
             while (scan < end) {
                 Header* h = getHeader(scan);
                 auto checkChild = [&](HPointer &hp, const char* desc, int idx) {
-                    if (hp.constant != 0 || hp.ptr == 0) return;
+                    if (hp.ptr_ind != 0 || hp.ptr == 0) return;
                     void* child = Allocator::fromPointerRaw(hp);
                     if (child && isInFromSpace(child)) {
                         Header* ch = getHeader(child);
@@ -855,7 +855,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
         };
 
         auto checkOGChild = [&](HPointer &hp, void* parent, const char* field, int idx) {
-            if (hp.constant != 0 || hp.ptr == 0) return;
+            if (hp.ptr_ind != 0 || hp.ptr == 0) return;
             void* child = Allocator::fromPointerRaw(hp);
             if (!child) return;
             if (!isInCurrentFromSpace(child)) return;
@@ -1049,7 +1049,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
  * to prevent redundant copying if multiple pointers reference it.
  */
 void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void*> *promoted_objects) {
-    if (ptr.constant != 0)
+    if (ptr.ptr_ind != 0)
         return;  // It's a constant.
     if (ptr.ptr == 0)
         return;  // Null/zero HPointer (e.g. unfilled closure capture slot).
@@ -1110,8 +1110,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     if (hdr->tag == Tag_Forward) {
         // Follow forward pointer and update ptr.
         Forward *fwd = static_cast<Forward *>(obj);
-        uintptr_t byte_offset = static_cast<uintptr_t>(fwd->header.forward_ptr) << 3;
-        char* tgt = heap_base + byte_offset;
+        char* tgt = decodeForwardPtr(fwd->header.forward_ptr, heap_base);
 #if ECO_HEAP_VALIDATE
         // Class 3: forward-chain depth must be exactly 1. The target of a
         // Tag_Forward must itself be a real (not Tag_Forward) object —
@@ -1249,8 +1248,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     // IMPORTANT: Set this BEFORE evacuating children to prevent infinite recursion.
     Forward *fwd = static_cast<Forward *>(obj);
     fwd->header.tag = Tag_Forward;
-    uintptr_t byte_offset = static_cast<char *>(new_obj) - heap_base;
-    fwd->header.forward_ptr = byte_offset >> 3;  // Store as offset in 8-byte units.
+    fwd->header.forward_ptr = encodeForwardPtr(new_obj, heap_base);
     fwd->header.unused = 0;
 
     ptr = Allocator::toPointerRaw(new_obj);
@@ -1272,12 +1270,9 @@ void NurserySpace::evacuateUnboxable(Unboxable &val, bool is_boxed, OldGenSpace 
  * and a value 1-7 in bits 40-43.
  */
 void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vector<void*> *promoted_objects) {
-    // Check for embedded constants: lower 40 bits = 0, bits 40-43 = 1-7.
-    uint64_t ptr_part = ptr & 0xFFFFFFFFFFULL;  // Lower 40 bits.
-    uint64_t const_part = (ptr >> 40) & 0xF;     // Bits 40-43.
-
-    if (ptr_part == 0 && const_part >= 1 && const_part <= 7) {
-        return;  // It's an embedded constant.
+    // Skip embedded constants (ptr_ind set); only real pointers are evacuated.
+    if (isConstantBits(ptr)) {
+        return;
     }
 
     // Treat as raw pointer.
@@ -1306,8 +1301,7 @@ void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vecto
     // Check for forwarding pointer.
     if (hdr->tag == Tag_Forward) {
         Forward *fwd = static_cast<Forward *>(obj);
-        uintptr_t byte_offset = static_cast<uintptr_t>(fwd->header.forward_ptr) << 3;
-        ptr = reinterpret_cast<uint64_t>(heap_base + byte_offset);
+        ptr = reinterpret_cast<uint64_t>(decodeForwardPtr(fwd->header.forward_ptr, heap_base));
         return;
     }
 
@@ -1354,8 +1348,7 @@ void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vecto
     // Leave forwarding pointer.
     Forward *fwd = static_cast<Forward *>(obj);
     fwd->header.tag = Tag_Forward;
-    uintptr_t byte_offset = static_cast<char *>(new_obj) - heap_base;
-    fwd->header.forward_ptr = byte_offset >> 3;
+    fwd->header.forward_ptr = encodeForwardPtr(new_obj, heap_base);
     fwd->header.unused = 0;
 
     // Update the root with the new raw pointer.
@@ -1366,7 +1359,7 @@ void NurserySpace::evacuateValueSlot(uint64_t &encoded, OldGenSpace &oldgen,
                                      std::vector<void*> *promoted_objects) {
     HPointer &hp = reinterpret_cast<HPointer&>(encoded);
     // Constants (constant != 0) are non-heap per HEAP_010/014.
-    if (hp.constant != 0) {
+    if (hp.ptr_ind != 0) {
         return;
     }
     evacuate(hp, oldgen, promoted_objects);
@@ -1426,10 +1419,9 @@ static inline void validateBitmapSlotKind(NurserySpace* /*self*/,
     uint32_t idx) {
     if (is_boxed) return;
     HPointer hp = slot.p;
-    if (hp.constant != 0 || hp.ptr == 0) return;
-    uintptr_t byte_offset = static_cast<uintptr_t>(hp.ptr) << 3;
-    if (byte_offset >= heap_reserved) return;
-    void* tgt = heap_base + byte_offset;
+    if (hp.ptr_ind != 0 || hp.ptr == 0) return;
+    char* tgt = static_cast<char*>(hpToAddr(hp));
+    if (tgt < heap_base || tgt >= heap_base + heap_reserved) return;
     if (!self->isInFromSpaceAllocatedRegion(tgt)) return;
 
     // Target-header sanity check: real HPointers point at an object whose
@@ -1544,7 +1536,7 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
                     // Warn if a "unboxed" slot has a value that looks like a nursery HPointer
                     uint64_t raw; memcpy(&raw, &cl->values[i], sizeof(raw));
                     HPointer hp; memcpy(&hp, &raw, sizeof(hp));
-                    if (hp.constant == 0 && hp.ptr != 0 && raw == 0x20039995ULL)
+                    if (hp.ptr_ind == 0 && hp.ptr != 0 && raw == 0x20039995ULL)
                         std::fprintf(stderr, "[gc-debug] closure scan: FOUND 0x20039995 in UNBOXED slot! closure=%p idx=%u kind=%llu unboxed=0x%llx\n",
                                      obj, i, (unsigned long long)Elm::fieldKind(cl->unboxed, i),
                                      (unsigned long long)cl->unboxed);
@@ -1579,7 +1571,7 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
                 evacuateUnboxable(c->head, head_boxed, oldgen, promoted_objects);
 
                 // Then copy the tail spine if it's in from-space
-                if (c->tail.constant == 0) {
+                if (c->tail.ptr_ind == 0) {
                     void* tail_obj = Allocator::fromPointerRaw(c->tail);
                     if (tail_obj && isInFromSpace(tail_obj)) {
                         bool needs_head_pass = false;
@@ -1642,11 +1634,9 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
                 uintptr_t hres = Allocator::instance().getHeapReserved();
                 for (u32 i = 0; i < arr->length; i++) {
                     HPointer hp = arr->elements[i].p;
-                    if (hp.constant != 0 || hp.ptr == 0) continue;
-                    uintptr_t byte_offset =
-                        static_cast<uintptr_t>(hp.ptr) << 3;
-                    if (byte_offset >= hres) continue;
-                    void* tgt = hbase + byte_offset;
+                    if (hp.ptr_ind != 0 || hp.ptr == 0) continue;
+                    char* tgt = static_cast<char*>(hpToAddr(hp));
+                    if (tgt < hbase || tgt >= hbase + hres) continue;
                     if (!isInFromSpaceAllocatedRegion(tgt)) continue;
                     // Target-header sanity check (see validateBitmapSlotKind).
                     Header* tgt_hdr = static_cast<Header*>(tgt);
@@ -1738,7 +1728,7 @@ void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
                                        bool &needs_head_pass) {
     needs_head_pass = false;
 
-    if (ptr.constant != 0) {
+    if (ptr.ptr_ind != 0) {
         return nullptr;  // Nil or other constant - nothing to copy
     }
 
@@ -1747,7 +1737,7 @@ void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
     HPointer current = ptr;
     char* heap_base = allocator_->getHeapBase();
 
-    while (current.constant == 0) {
+    while (current.ptr_ind == 0) {
         void* obj = Allocator::fromPointerRaw(current);
         if (!obj) break;
 
@@ -1756,8 +1746,7 @@ void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
         // Already forwarded? Update pointer and stop - rest of list already copied
         if (hdr->tag == Tag_Forward) {
             Forward* fwd = static_cast<Forward*>(obj);
-            uintptr_t byte_offset = static_cast<uintptr_t>(fwd->header.forward_ptr) << 3;
-            HPointer forwarded = Allocator::toPointerRaw(heap_base + byte_offset);
+            HPointer forwarded = Allocator::toPointerRaw(decodeForwardPtr(fwd->header.forward_ptr, heap_base));
 
             if (prev_copied) {
                 // Link previous copied cell to the forwarded location
@@ -1790,7 +1779,7 @@ void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
 
         // Check if head needs evacuation (boxed pointer, not a constant)
         bool head_is_boxed = Elm::tupleFieldKind(hdr->unboxed, 0) == 0;
-        if (head_is_boxed && cons->head.p.constant == 0) {
+        if (head_is_boxed && cons->head.p.ptr_ind == 0) {
             needs_head_pass = true;
         }
 
@@ -1832,7 +1821,7 @@ void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
         // Leave forwarding pointer at original location
         Forward* fwd = static_cast<Forward*>(obj);
         fwd->header.tag = Tag_Forward;
-        fwd->header.forward_ptr = (static_cast<char*>(new_obj) - heap_base) >> 3;
+        fwd->header.forward_ptr = encodeForwardPtr(new_obj, heap_base);
         fwd->header.unused = 0;
 
         // Link previous cell to this new cell
@@ -1850,7 +1839,7 @@ void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
     }
 
     // Handle Nil terminator or end of list - update last cell's tail
-    if (prev_copied && current.constant != 0) {
+    if (prev_copied && current.ptr_ind != 0) {
         Cons* prev_cons = static_cast<Cons*>(prev_copied);
         prev_cons->tail = current;  // Keep the Nil constant
     }
@@ -1888,7 +1877,7 @@ void NurserySpace::evacuateListHeads(void* first_cons, OldGenSpace &oldgen,
         }
 
         // Move to next cell in spine
-        if (cons->tail.constant != 0) {
+        if (cons->tail.ptr_ind != 0) {
             break;  // Reached Nil or other constant
         }
 

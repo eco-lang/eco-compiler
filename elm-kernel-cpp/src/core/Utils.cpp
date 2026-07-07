@@ -57,6 +57,9 @@ uint64_t getOrderGT() { return ORDER_GT_SINGLETON; }
 // `insertHelp`. Stock Elm JS achieves the same thing via a negative `$` tag.
 constexpr u16 CTOR_DICT_RBNODE = 0xFFFF;
 constexpr u16 CTOR_DICT_RBEMPTY = 0xFFFE;
+// 0xFFFD is reserved as CONSTANT_TAG (see runtime Heap.hpp / CtorTag.constantTag):
+// the merged-empty ctor tag returned by eco_get_tag for Nil/Nothing/etc. Not used
+// here, but reserved so no runtime-recognised type may reuse it.
 
 static bool isDictCtor(u16 ctor) {
     return ctor == CTOR_DICT_RBNODE || ctor == CTOR_DICT_RBEMPTY;
@@ -175,18 +178,18 @@ static int compareUnboxableSlot(Allocator& allocator,
                 bool aConst = alloc::isConstant(a.p);
                 bool bConst = alloc::isConstant(b.p);
 
-                // Canonicalise Const_EmptyString against a heap-resident
+                // Canonicalise the empty-string constant against a heap-resident
                 // String of size 0 (any of the four forms recognised by
                 // alloc::isString: leaf / slice / rope / large header).
                 // header.size is the logical UTF-16 length on all of them.
-                constexpr unsigned EmptyStringTag = Const_EmptyString + 1;
-                if (aConst && a.p.constant == EmptyStringTag && !bConst) {
+                // (In a String-typed comparison the merged empty constant is "".)
+                if (alloc::isEmptyString(a.p) && !bConst) {
                     void* bo2 = allocator.resolve(b.p);
                     if (bo2 && alloc::isString(bo2)) {
                         return static_cast<Header*>(bo2)->size == 0 ? 0 : -1;
                     }
                 }
-                if (bConst && b.p.constant == EmptyStringTag && !aConst) {
+                if (alloc::isEmptyString(b.p) && !aConst) {
                     void* ao2 = allocator.resolve(a.p);
                     if (ao2 && alloc::isString(ao2)) {
                         return static_cast<Header*>(ao2)->size == 0 ? 0 : 1;

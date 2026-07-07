@@ -216,12 +216,12 @@ static void fatalSignalHandler(int sig) {
 // Helper Functions
 // ============================================================================
 
-// Returns an HPointer representing the Nil constant (empty list).
+// Returns an HPointer representing the Nil constant (empty list): the merged
+// empty constant (ptr_ind set, empty bit set). See plan D3.
 static HPointer createNil() {
-    HPointer ptr;
-    ptr.ptr = 0;
-    ptr.constant = Const_Nil;
-    ptr.padding = 0;
+    HPointer ptr{};
+    ptr.ptr_ind = 1;
+    ptr.constant = Const_Empty;
     return ptr;
 }
 
@@ -273,7 +273,7 @@ static HPointer reverseList(Allocator& alloc, HPointer list) {
     size_t root_point = alloc.getRootSet().stackRangePoint();
     alloc.getRootSet().pushStackRootRange(&acc, 1, 1);
 
-    while (list.constant != Const_Nil) {
+    while (list.ptr_ind == 0) {  // continue while `list` is a heap pointer (not Nil)
         void* obj = alloc.resolve(list);
         if (!obj) {
             alloc.getRootSet().restoreStackRangePoint(root_point);

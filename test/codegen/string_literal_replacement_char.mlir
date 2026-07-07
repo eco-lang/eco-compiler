@@ -29,7 +29,7 @@ module {
     // Empty string
     %empty = eco.string_literal "" : !eco.value
     eco.dbg %empty : !eco.value
-    // CHECK: ""
+    // CHECK: <empty>
 
     // String with null in middle (if supported)
     %with_null = eco.string_literal "ab\00cd" : !eco.value

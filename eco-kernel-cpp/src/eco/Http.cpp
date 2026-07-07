@@ -87,7 +87,7 @@ listOfTuplesToHeaders(uint64_t headersEnc) {
     std::vector<std::pair<std::string, std::string>> result;
     HPointer current = Export::decode(headersEnc);
     auto& allocator = Elm::Allocator::instance();
-    while (!isConstant(current) || current.constant != Elm::Const_Nil + 1) {
+    while (!Elm::alloc::isNil(current)) {
         Cons* cell = static_cast<Cons*>(allocator.resolve(current));
         Tuple2* tup = static_cast<Tuple2*>(allocator.resolve(cell->head.p));
         std::string key = toString(Export::encode(tup->a.p));

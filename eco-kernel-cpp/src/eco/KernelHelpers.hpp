@@ -37,7 +37,7 @@ using namespace Elm::alloc;
 // Extract UTF-8 std::string from a uint64_t-encoded ElmString.
 inline std::string toString(uint64_t val) {
     HPointer h = Export::decode(val);
-    if (h.constant == Const_EmptyString + 1) {
+    if (Elm::alloc::isEmptyString(h)) {
         return "";
     }
     void* ptr = Allocator::instance().resolve(h);
@@ -176,7 +176,7 @@ template<typename F>
 inline void forEachListElement(uint64_t encodedList, F&& visitor) {
     HPointer current = Export::decode(encodedList);
     auto& allocator = Allocator::instance();
-    while (!isConstant(current) || current.constant != Const_Nil + 1) {
+    while (!isNil(current)) {
         Cons* cell = static_cast<Cons*>(allocator.resolve(current));
         bool head_is_boxed = (cell->header.unboxed == 0);
         visitor(cell->head, head_is_boxed);

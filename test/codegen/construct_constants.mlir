@@ -9,22 +9,22 @@
 //   - Only primitive types (i64, f64, i32) may have unboxed_bitmap bit = 1
 //
 // Invalid usage is rejected at compile time:
-//   %nil = eco.constant Nil : !eco.value
+//   %nil = eco.constant Empty : !eco.value
 //   %bad = eco.construct.custom(%nil) {unboxed_bitmap = 1} : (!eco.value) -> !eco.value
 //   ERROR: unboxed_bitmap bit 0 is set but field has boxed type '!eco.value'
 
 module {
   func.func @main() -> i64 {
-    %nil = eco.constant Nil : !eco.value
+    %nil = eco.constant Empty : !eco.value
     %true = eco.constant True : !eco.value
     %false = eco.constant False : !eco.value
-    %unit = eco.constant Unit : !eco.value
-    %nothing = eco.constant Nothing : !eco.value
+    %unit = eco.constant Empty : !eco.value
+    %nothing = eco.constant Empty : !eco.value
 
     // === Single constant field ===
     %c1 = eco.construct.custom(%nil) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     eco.dbg %c1 : !eco.value
-    // CHECK: Ctor1 []
+    // CHECK: Ctor1 <empty>
 
     %c2 = eco.construct.custom(%true) {tag = 2 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     eco.dbg %c2 : !eco.value
@@ -36,25 +36,25 @@ module {
 
     %c4 = eco.construct.custom(%unit) {tag = 4 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     eco.dbg %c4 : !eco.value
-    // CHECK: Ctor4 ()
+    // CHECK: Ctor4 <empty>
 
     %c5 = eco.construct.custom(%nothing) {tag = 5 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     eco.dbg %c5 : !eco.value
-    // CHECK: Ctor5 Nothing
+    // CHECK: Ctor5 <empty>
 
     // === Multiple constant fields ===
     %pair_consts = eco.construct.custom(%nil, %true) {tag = 10 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %pair_consts : !eco.value
-    // CHECK: Ctor10 [] True
+    // CHECK: Ctor10 <empty> True
 
     %triple_consts = eco.construct.custom(%true, %false, %nil) {tag = 11 : i64, size = 3 : i64} : (!eco.value, !eco.value, !eco.value) -> !eco.value
     eco.dbg %triple_consts : !eco.value
-    // CHECK: Ctor11 True False []
+    // CHECK: Ctor11 True False <empty>
 
     // === Project constants from structure ===
     %proj0 = eco.project.custom %pair_consts[0] : !eco.value -> !eco.value
     eco.dbg %proj0 : !eco.value
-    // CHECK: []
+    // CHECK: <empty>
 
     %proj1 = eco.project.custom %pair_consts[1] : !eco.value -> !eco.value
     eco.dbg %proj1 : !eco.value
@@ -68,7 +68,7 @@ module {
 
     %mixed1 = eco.construct.custom(%b42, %nil) {tag = 20 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %mixed1 : !eco.value
-    // CHECK: Ctor20 42 []
+    // CHECK: Ctor20 42 <empty>
 
     %mixed2 = eco.construct.custom(%true, %b99) {tag = 21 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %mixed2 : !eco.value
@@ -83,7 +83,7 @@ module {
     %i10 = arith.constant 10 : i64
     %mix_unboxed1 = eco.construct.custom(%i10, %nil) {tag = 30 : i64, size = 2 : i64, unboxed_bitmap = 1 : i64} : (i64, !eco.value) -> !eco.value
     eco.dbg %mix_unboxed1 : !eco.value
-    // CHECK: Ctor30 10 []
+    // CHECK: Ctor30 10 <empty>
 
     // unboxed_bitmap = 2 means field 1 is unboxed
     %i20 = arith.constant 20 : i64
@@ -110,7 +110,7 @@ module {
     // This is the most common case: Cons cell with Nil as tail
     %list1 = eco.construct.custom(%b42, %nil) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %list1 : !eco.value
-    // CHECK: Ctor0 42 []
+    // CHECK: Ctor0 42 <empty>
 
     %zero = arith.constant 0 : i64
     return %zero : i64

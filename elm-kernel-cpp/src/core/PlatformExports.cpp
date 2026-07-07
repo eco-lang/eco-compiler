@@ -87,7 +87,7 @@ HPtr Elm_Kernel_Platform_registerIncomingPort(HPtr name, HPtr decoder) {
     HPointer decoderHP = decode(decoder.toBits());
     // Extract the name BEFORE handing decoderHP over: toStdString does not
     // allocate, but keep the order conservative anyway.
-    void* namePtr = (nameHP.constant != 0)
+    void* namePtr = (nameHP.ptr_ind != 0)
                         ? nullptr
                         : Allocator::instance().resolve(nameHP);
     std::string portName =
@@ -109,7 +109,7 @@ HPtr Elm_Kernel_Platform_registerFlagsDecoder(HPtr decoder) {
 
 HPtr Elm_Kernel_Platform_registerOutgoingPort(HPtr name) {
     HPointer nameHP = decode(name.toBits());
-    void* namePtr = (nameHP.constant != 0)
+    void* namePtr = (nameHP.ptr_ind != 0)
                         ? nullptr
                         : Allocator::instance().resolve(nameHP);
     std::string portName =

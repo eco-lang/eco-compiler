@@ -38,7 +38,7 @@ module {
           eco.logical_result_types = ["record:2:[tuple2:i:i]:v"]
       } {
     %t   = call @make_inner_pair() : () -> !eco.value
-    %nil = eco.constant Nil : !eco.value
+    %nil = eco.constant Empty : !eco.value
     %r   = eco.construct.record(%t, %nil) {field_count = 2, unboxed_bitmap = 0}
          : (!eco.value, !eco.value) -> !eco.value
     return %r : !eco.value

@@ -1,4 +1,4 @@
-module Compiler.Data.CtorTag exposing (effective)
+module Compiler.Data.CtorTag exposing (constantTag, effective, isEmbeddedConstantCtor)
 
 {-| Runtime ctor-tag conventions shared between monomorphization (which sets
 `CtorShape.tag` used at construction time) and code generation (which emits the
@@ -42,6 +42,32 @@ dictRBNode =
 dictRBEmpty : Int
 dictRBEmpty =
     0xFFFE
+
+
+{-| Ctor tag emitted for embedded "empty" constant constructor branches
+(`Nil`, `Nothing`, and any other nullary constant that shares the merged empty
+bit pattern). Because those constants can no longer be told apart by value, the
+runtime returns this single reserved tag for all of them (`eco_get_tag` / the
+`eco.case` lowering), and the compiler tags the matching branch the same. Sits
+just below the `Dict` reservations. Must match `CONSTANT_TAG` in
+`runtime/src/allocator/Heap.hpp` and `value_enc::ConstantTag`. See plan D9.
+-}
+constantTag : Int
+constantTag =
+    0xFFFD
+
+
+{-| True for a constructor whose runtime representation is an embedded HPointer
+constant (Nothing / True / False). Mirrors the nullary-constant selection in
+`Compiler.Generate.MLIR.Functions.generateNullaryConstructor`. Such
+constructors dispatch by the merged constant tag (`constantTag`) rather than a
+per-declaration index, since their bit pattern is shared with the other empties.
+(True / False normally reach pattern matching via `Test.IsBool`, not
+`Test.IsCtor`; they are included here for completeness.)
+-}
+isEmbeddedConstantCtor : Name -> Bool
+isEmbeddedConstantCtor name =
+    name == "Nothing" || name == "True" || name == "False"
 
 
 

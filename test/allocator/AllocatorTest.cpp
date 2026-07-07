@@ -247,11 +247,10 @@ Testing::TestCase testObjectGraphSpanningPromotions("Linked list survives with n
         size_t list_length = *rc::sizedRange<size_t>(4, 10, 0.1);
         std::vector<i64> expected_values;
 
-        // Start with Nil.
-        HPointer tail;
-        tail.ptr = 0;
-        tail.constant = Const_Nil;
-        tail.padding = 0;
+        // Start with Nil (the merged empty constant).
+        HPointer tail{};
+        tail.ptr_ind = 1;
+        tail.constant = Const_Empty;
 
         HPointer list_head = tail;
 
@@ -296,7 +295,7 @@ Testing::TestCase testObjectGraphSpanningPromotions("Linked list survives with n
         HPointer current = list_head;
         size_t idx = expected_values.size();
 
-        while (current.constant == 0) {
+        while (current.ptr_ind == 0) {
             void* obj = readBarrier(current);
             if (!obj) break;
 

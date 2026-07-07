@@ -113,7 +113,7 @@ typedef struct {
     struct {
         u64 tag : 5;              // Tag_Forward
         u64 color : 2;            // (unused for forwards)
-        u64 forward_ptr : 40;     // Logical pointer to new location
+        u64 forward_ptr : 40;     // New location as an absolute address >> 3 (8-byte units; no heap_base — plan D8)
         u64 unused : 17;
     } header;
 } Forward;
@@ -141,25 +141,42 @@ Benefits:
 - Reduced TLB misses for list-heavy code
 - No cost for non-list data structures (they use standard BFS)
 
-## Logical Pointers: 40-bit Offsets
+## HPointers: Raw Absolute Addresses with Embedded Constants
 
-All heap pointers are logical offsets, not raw addresses:
+An `HPointer` is a 64-bit tagged word. For a heap pointer the word **is** the raw
+absolute address; there is no heap_base offset and no shift.
 
 ```cpp
 typedef struct {
-    u64 ptr : 40;       // Offset into heap (8-byte granularity)
-    u64 constant : 4;   // Embedded constant tag
-    u64 padding : 20;   // Available for future use
+    u64 constant : 2;   // 0=False, 1=True, 2=Empty (meaningful only when ptr_ind==1)
+    u64 ptr_ind  : 1;   // 0 = heap pointer, 1 = embedded constant / enum
+    u64 ptr      : 40;  // absolute 8-byte-aligned heap address (occupies bits [3,42])
+    u64 enum_idx : 10;  // reserved: bare constructor index for a future enum optimization
+    u64 padding  : 11;  // reserved (always 0)
 } HPointer;
 ```
 
-The 40-bit offset (with 8-byte alignment) addresses 8TB of heap space. Benefits:
+Because the `ptr` field starts at **bit 3** and heap objects are 8-byte aligned
+(their low 3 bits are 0, coinciding with a zero `constant`/`ptr_ind`), the low 43
+bits of the word — `constant ++ ptr_ind ++ ptr` — *are* the address. The heap is
+reserved below 2^43 (8 TB) so `enum_idx`/`padding` are 0 for any pointer. Decode
+is a reinterpret; encode stores the aligned address verbatim.
 
-1. **Embedded constants**: Nil, True, False, Unit, Nothing, EmptyString, and EmptyRec are represented by the constant field, not as heap objects. No allocation, no pointer chase.
-2. **Compression**: 8-byte pointers instead of native 64-bit addresses.
-3. **Relocation-friendly**: Offsets from a base are easier to adjust than raw addresses.
+Golden words: `null = 0x0`, `False = 0x4`, `True = 0x5`, `Empty = 0x6`; a heap
+pointer's word equals its address.
 
-The `fromPointerRaw` and `toPointerRaw` conversions are the only places that touch `heap_base`. All pointer manipulation goes through these.
+Key points:
+
+1. **`ptr_ind` discriminates** a pointer (0) from a constant (1). It cannot be
+   `constant != 0` because `False` has constant field 0.
+2. **Three embedded constants**: `False`, `True`, and the single merged `Empty`
+   which subsumes Unit, Nil, Nothing, "", and `{}` (the type checker guarantees a
+   merged empty is only produced/matched where its type is expected). Bool's low
+   bit equals the SSA/ABI `i1` value, so box = `(1<<2)|i1`, unbox = `word & 1`.
+3. **No `heap_base` in the hot path**: `fromPointerRaw`/`toPointerRaw`/`hpToAddr`
+   only reinterpret the word. Forwarding pointers (`Forward.forward_ptr`) still
+   store `addr >> 3` in 8-byte units (their field cannot sit at bit 3 — bits 0-4
+   hold the Tag_Forward tag) but drop the heap_base term.
 
 ## Unified Heap: One Address Space, Per-Thread Regions
 

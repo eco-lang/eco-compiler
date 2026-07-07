@@ -311,7 +311,7 @@ static void test_typed_newargs_skips_reboxing() {
     // these kinds — no flag bit needed.
     {
         void* p = Allocator::instance().resolve(
-            HPointer{closure_hptr.toBits()});
+            closure_hptr.toHPointer());
         TEST_ASSERT(p != nullptr);
         Closure* closure = static_cast<Closure*>(p);
         // kinds: slot0=PK_Int(0b01), slot1=PK_Float(0b10), slot2=PK_Char(0b11)

@@ -7,9 +7,9 @@
 module {
   func.func @main() -> i64 {
     // Maybe.Nothing - uses embedded constant
-    %nothing = eco.constant Nothing : !eco.value
+    %nothing = eco.constant Empty : !eco.value
     eco.dbg %nothing : !eco.value
-    // CHECK: Nothing
+    // CHECK: <empty>
 
     // Maybe.Just 42 - uses ctor=0 with 1 field
     %i42 = arith.constant 42 : i64
@@ -58,7 +58,7 @@ module {
 
     // Simulate a 3-constructor ADT: Red=0, Green=1, Blue=2
     // Each with Unit field to distinguish
-    %dummy = eco.constant Unit : !eco.value
+    %dummy = eco.constant Empty : !eco.value
     %red = eco.construct.custom(%dummy) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     %green = eco.construct.custom(%dummy) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     %blue = eco.construct.custom(%dummy) {tag = 2 : i64, size = 1 : i64} : (!eco.value) -> !eco.value

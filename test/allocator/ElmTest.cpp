@@ -12,10 +12,9 @@ namespace Elm {
 // ============================================================================
 
 HPointer elm_nil() {
-    HPointer ptr;
-    ptr.ptr = 0;
-    ptr.constant = Const_Nil;
-    ptr.padding = 0;
+    HPointer ptr{};
+    ptr.ptr_ind = 1;
+    ptr.constant = Const_Empty;
     return ptr;
 }
 
@@ -66,7 +65,7 @@ HPointer elm_reverse(HPointer list) {
     alloc.getRootSet().addRoot(&list_root);
     alloc.getRootSet().addRoot(&acc_root);
 
-    while (list_root.constant != Const_Nil) {
+    while (list_root.constant != Const_Empty) {
         // Read current cons cell from root (root is always up-to-date).
         void* obj = AllocatorTestAccess::fromPointer(list_root);
         if (!obj) break;
@@ -104,7 +103,7 @@ HPointer elm_reverse(HPointer list) {
 
 HPointer elm_foldl(HPointer (*func)(HPointer, HPointer), HPointer acc, HPointer list) {
     // Generic foldl - currently unused but kept for completeness.
-    while (list.constant != Const_Nil) {
+    while (list.constant != Const_Empty) {
         void* obj = AllocatorTestAccess::fromPointer(list);
         if (!obj) break;
 
@@ -138,7 +137,7 @@ HPointer elm_list_from_ints(const std::vector<i64>& values) {
 std::vector<i64> elm_list_to_ints(HPointer list) {
     std::vector<i64> result;
 
-    while (list.constant != Const_Nil) {
+    while (list.constant != Const_Empty) {
         // Use readBarrier to handle forwarding pointers after GC.
         void* obj = readBarrier(list);
         if (!obj) break;
@@ -169,7 +168,7 @@ std::vector<i64> elm_list_to_ints(HPointer list) {
 size_t elm_list_length(HPointer list) {
     size_t len = 0;
 
-    while (list.constant != Const_Nil) {
+    while (list.constant != Const_Empty) {
         // Use readBarrier to handle forwarding pointers after GC.
         void* obj = readBarrier(list);
         if (!obj) break;
@@ -192,7 +191,7 @@ using namespace Elm;
 
 Testing::UnitTest testElmNilConstant("Nil has correct constant field", []() {
     HPointer nil = elm_nil();
-    TEST_ASSERT(nil.constant == Const_Nil);
+    TEST_ASSERT(nil.constant == Const_Empty);
     TEST_ASSERT(elm_list_length(nil) == 0);
 });
 
@@ -203,7 +202,7 @@ Testing::UnitTest testElmConsAllocation("Cons cell is allocated correctly", []()
     i64 value = 42;
     HPointer list = elm_cons_int(value, elm_nil());
 
-    TEST_ASSERT(list.constant == 0);  // Not a constant.
+    TEST_ASSERT(list.ptr_ind == 0);  // Not a constant.
 
     void* obj = AllocatorTestAccess::fromPointer(list);
     if (!obj) TEST_FAIL("fromPointer returned null");
@@ -212,7 +211,7 @@ Testing::UnitTest testElmConsAllocation("Cons cell is allocated correctly", []()
     TEST_ASSERT(cons->header.tag == Tag_Cons);
     TEST_ASSERT(cons->header.unboxed & 1);  // Head is unboxed.
     TEST_ASSERT(cons->head.i == value);
-    TEST_ASSERT(cons->tail.constant == Const_Nil);
+    TEST_ASSERT(cons->tail.constant == Const_Empty);
 });
 
 Testing::TestCase testElmListFromInts("List from ints has correct structure", []() {
@@ -242,7 +241,7 @@ Testing::UnitTest testElmReverseEmpty("Reverse of nil is nil", []() {
     HPointer nil = elm_nil();
     HPointer reversed = elm_reverse(nil);
 
-    TEST_ASSERT(reversed.constant == Const_Nil);
+    TEST_ASSERT(reversed.constant == Const_Empty);
 });
 
 Testing::UnitTest testElmReverseSingle("Reverse of [x] is [x]", []() {

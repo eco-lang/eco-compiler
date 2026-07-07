@@ -337,22 +337,25 @@ private:
     // Raw pointer conversion without forwarding resolution.
     // Internal use only - friends can access for performance-critical GC operations.
     static inline void* fromPointerRaw(HPointer ptr) {
-        assert(ptr.constant == 0 && "Cannot convert HPointer with constant field set (embedded constant)");
-        char* heap_base = instance().heap_base;
-        uintptr_t byte_offset = static_cast<uintptr_t>(ptr.ptr) << 3;
-        return heap_base + byte_offset;
+        assert(ptr.ptr_ind == 0 && "Cannot convert an embedded constant HPointer to a pointer");
+        // The word IS the raw absolute address (no heap_base, no shift): the ptr
+        // field sits at bit 3, and constant/ptr_ind/enum_idx/padding are 0 for a
+        // pointer, so masking the low 43 bits yields the 8-byte-aligned address.
+        return hpToAddr(ptr);
     }
 
     // Converts a physical address to an HPointer without validation.
     // Internal use only - friends can access for performance-critical GC operations.
     static inline HPointer toPointerRaw(void* obj) {
-        HPointer ptr;
-        char* heap_base = instance().heap_base;
-        uintptr_t byte_offset = static_cast<char*>(obj) - heap_base;
-        ptr.ptr = byte_offset >> 3;
-        ptr.constant = 0;
-        ptr.padding = 0;
-        return ptr;
+        // A heap object is 8-byte aligned and lives below 2^43, so its address
+        // maps directly onto the word: the low 3 bits (0) become constant/ptr_ind
+        // (marking it a pointer), the address bits [3,43) become the ptr field,
+        // and enum_idx/padding are 0. Reinterpreting the address as the word is
+        // therefore the exact HPointer for it.
+        uintptr_t addr = reinterpret_cast<uintptr_t>(obj);
+        assert((addr & 0x7ULL) == 0 && "heap object must be 8-byte aligned");
+        assert(addr < (1ULL << (POINTER_BITS + 3)) && "heap address exceeds HPointer range");
+        return hpFromBits(static_cast<u64>(addr));
     }
 
     friend class NurserySpace;

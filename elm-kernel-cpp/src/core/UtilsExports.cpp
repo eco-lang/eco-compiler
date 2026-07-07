@@ -45,12 +45,14 @@ HPtr Elm_Kernel_Utils_compare_Char(uint16_t a, uint16_t b) {
 // any two distinct constants as equal — in particular True == False == true,
 // which silently corrupts every Bool-pattern match in the compiler.
 static bool equalRespectingConstants(uint64_t aBits, uint64_t bBits) {
-    HPointer ha = Export::decode(aBits);
-    HPointer hb = Export::decode(bBits);
-    bool aEmbedded = (ha.constant >= 1 && ha.constant <= 7);
-    bool bEmbedded = (hb.constant >= 1 && hb.constant <= 7);
-    if (aEmbedded || bEmbedded) {
-        return aEmbedded && bEmbedded && (ha.constant == hb.constant);
+    // Embedded constants are canonical words: two constants are equal iff their
+    // words are equal (True==True, Empty==Empty, …), and a constant is never
+    // equal to a heap pointer. Elm's type system forbids comparing values of
+    // different types, so a merged empty can only ever be compared against the
+    // same-type empty — a whole-word compare is correct under both the legacy
+    // and the merged representations (plan D6/P0.6).
+    if (isConstantBits(aBits) || isConstantBits(bBits)) {
+        return aBits == bBits;
     }
     return Utils::equal(Export::toPtr(aBits), Export::toPtr(bBits));
 }

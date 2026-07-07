@@ -18,59 +18,74 @@ using namespace Elm::alloc;
 // Embedded Constants Tests
 // ============================================================================
 
-Testing::UnitTest testNilConstant("Nil constant has correct field", []() {
+Testing::UnitTest testNilConstant("Nil is the merged empty constant (word 0x6)", []() {
     HPointer nil = listNil();
-    TEST_ASSERT(nil.constant == Const_Nil + 1);
+    TEST_ASSERT(Elm::hpBits(nil) == 0x6ULL);
     TEST_ASSERT(nil.ptr == 0);
     TEST_ASSERT(isNil(nil));
+    TEST_ASSERT(isEmpty(nil));
     TEST_ASSERT(isConstant(nil));
 });
 
-Testing::UnitTest testUnitConstant("Unit constant has correct field", []() {
+Testing::UnitTest testUnitConstant("Unit is the merged empty constant", []() {
     HPointer u = unit();
-    TEST_ASSERT(u.constant == Const_Unit + 1);
+    TEST_ASSERT(Elm::hpBits(u) == 0x6ULL);
     TEST_ASSERT(isConstant(u));
-    TEST_ASSERT(!isNil(u));
+    // Post-merge Unit, Nil, Nothing, "", {} are all the one empty constant.
+    TEST_ASSERT(isNil(u));
+    TEST_ASSERT(isEmpty(u));
 });
 
-Testing::UnitTest testBoolConstants("Bool constants are distinct", []() {
+Testing::UnitTest testBoolConstants("Bool constants are distinct (False 0x4, True 0x5)", []() {
     HPointer t = elmTrue();
     HPointer f = elmFalse();
-    TEST_ASSERT(t.constant == Const_True + 1);
-    TEST_ASSERT(f.constant == Const_False + 1);
-    TEST_ASSERT(t.constant != f.constant);
+    TEST_ASSERT(Elm::hpBits(t) == 0x5ULL);
+    TEST_ASSERT(Elm::hpBits(f) == 0x4ULL);
+    TEST_ASSERT(Elm::hpBits(t) != Elm::hpBits(f));
     TEST_ASSERT(isConstant(t));
     TEST_ASSERT(isConstant(f));
+    TEST_ASSERT(isBoolConst(t));
+    TEST_ASSERT(isBoolConst(f));
+    TEST_ASSERT(boolValue(t));
+    TEST_ASSERT(!boolValue(f));
+    // Bool is not the empty constant.
+    TEST_ASSERT(!isEmpty(t));
+    TEST_ASSERT(!isEmpty(f));
 });
 
-Testing::UnitTest testNothingConstant("Nothing constant has correct field", []() {
+Testing::UnitTest testNothingConstant("Nothing is the merged empty constant", []() {
     HPointer n = nothing();
-    TEST_ASSERT(n.constant == Const_Nothing + 1);
+    TEST_ASSERT(Elm::hpBits(n) == 0x6ULL);
     TEST_ASSERT(isConstant(n));
+    TEST_ASSERT(isEmpty(n));
 });
 
-Testing::UnitTest testEmptyStringConstant("Empty string constant has correct field", []() {
+Testing::UnitTest testEmptyStringConstant("Empty string is the merged empty constant", []() {
     HPointer e = emptyString();
-    TEST_ASSERT(e.constant == Const_EmptyString + 1);
+    TEST_ASSERT(Elm::hpBits(e) == 0x6ULL);
     TEST_ASSERT(isConstant(e));
+    TEST_ASSERT(isEmptyString(e));
 });
 
-Testing::UnitTest testEmptyRecordConstant("Empty record constant has correct field", []() {
+Testing::UnitTest testEmptyRecordConstant("Empty record is the merged empty constant", []() {
     HPointer r = emptyRecord();
-    TEST_ASSERT(r.constant == Const_EmptyRec + 1);
+    TEST_ASSERT(Elm::hpBits(r) == 0x6ULL);
     TEST_ASSERT(isConstant(r));
+    TEST_ASSERT(isEmpty(r));
 });
 
-Testing::UnitTest testAllConstantsDistinct("All constants are distinguishable", []() {
-    HPointer constants[] = {
-        listNil(), unit(), elmTrue(), elmFalse(),
-        nothing(), emptyString(), emptyRecord()
-    };
+Testing::UnitTest testAllConstantsDistinct("There are exactly three distinct constant words", []() {
+    // Post-merge: the five empties collapse to one word; only False/True/Empty
+    // are distinguishable (plan D3).
+    TEST_ASSERT(Elm::hpBits(elmFalse()) == 0x4ULL);
+    TEST_ASSERT(Elm::hpBits(elmTrue()) == 0x5ULL);
+    TEST_ASSERT(Elm::hpBits(empty()) == 0x6ULL);
 
-    for (size_t i = 0; i < 7; ++i) {
-        for (size_t j = i + 1; j < 7; ++j) {
-            TEST_ASSERT(constants[i].constant != constants[j].constant);
-        }
+    HPointer empties[] = {
+        listNil(), unit(), nothing(), emptyString(), emptyRecord()
+    };
+    for (const HPointer& e : empties) {
+        TEST_ASSERT(Elm::hpBits(e) == Elm::hpBits(empty()));
     }
 });
 
@@ -171,7 +186,8 @@ Testing::UnitTest testEmptyStringReturnsConstant("Empty string returns constant"
 
     HPointer ptr = allocString(u"");
     TEST_ASSERT(isConstant(ptr));
-    TEST_ASSERT(ptr.constant == Const_EmptyString + 1);
+    TEST_ASSERT(isEmptyString(ptr));
+    TEST_ASSERT(Elm::hpBits(ptr) == 0x6ULL);
 });
 
 Testing::TestCase testStringLengthPreserved("String length preserved", []() {

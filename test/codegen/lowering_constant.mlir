@@ -6,23 +6,23 @@
 module {
   // Use a function that returns the constant to prevent optimization
   func.func @get_nil() -> !eco.value {
-    // Nil constant should lower to (5 << 40) = 5497558138880
-    %nil = eco.constant Nil : !eco.value
-    // CHECK: 5497558138880
+    // Empty constant should lower to word 6
+    %nil = eco.constant Empty : !eco.value
+    // CHECK: llvm.mlir.constant(6 : i64)
     return %nil : !eco.value
   }
 
   func.func @get_true() -> !eco.value {
-    // True constant should lower to (3 << 40) = 3298534883328
+    // True constant should lower to word 5
     %true = eco.constant True : !eco.value
-    // CHECK: 3298534883328
+    // CHECK: llvm.mlir.constant(5 : i64)
     return %true : !eco.value
   }
 
   func.func @get_unit() -> !eco.value {
-    // Unit constant should lower to (1 << 40) = 1099511627776
-    %unit = eco.constant Unit : !eco.value
-    // CHECK: 1099511627776
+    // Empty constant should lower to word 6
+    %unit = eco.constant Empty : !eco.value
+    // CHECK: llvm.mlir.constant(6 : i64)
     return %unit : !eco.value
   }
 

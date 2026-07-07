@@ -126,10 +126,13 @@ generateMonoTest ctx ( dtPath, test ) =
             generateMonoDtPath ctx dtPath targetType
     in
     case test of
-        Test.IsCtor home ctorName index _ _ ->
+        Test.IsCtor _ _ _ _ _ ->
             let
+                -- Same tag the eco.case path uses (testToTagInt), so both the
+                -- if-chain and the fan-out dispatch agree with eco_get_tag —
+                -- including CONSTANT_TAG for embedded-constant constructors (D9).
                 expectedTag =
-                    CtorTag.effective home ctorName index
+                    testToTagInt test
 
                 ( tagVar, ctx2 ) =
                     Ctx.freshVar ctx1
@@ -244,7 +247,7 @@ generateMonoTest ctx ( dtPath, test ) =
                     Ctx.freshVar ctx3
 
                 ( ctx5, constOp ) =
-                    Ops.arithConstantInt32 ctx4 constVar 1
+                    Ops.arithConstantInt32 ctx4 constVar (testToTagInt test)
 
                 ( resVar, ctx6 ) =
                     Ctx.freshVar ctx5
@@ -266,7 +269,7 @@ generateMonoTest ctx ( dtPath, test ) =
                     Ctx.freshVar ctx3
 
                 ( ctx5, constOp ) =
-                    Ops.arithConstantInt32 ctx4 constVar 0
+                    Ops.arithConstantInt32 ctx4 constVar (testToTagInt test)
 
                 ( resVar, ctx6 ) =
                     Ctx.freshVar ctx5
@@ -921,13 +924,21 @@ testToTagInt : DT.Test -> Int
 testToTagInt test =
     case test of
         Test.IsCtor home ctorName index _ _ ->
-            CtorTag.effective home ctorName index
+            -- Embedded-constant constructors (Nothing) share the merged empty
+            -- bit pattern, so the runtime can only produce the reserved
+            -- CONSTANT_TAG for them, not a per-declaration index (see D9).
+            if CtorTag.isEmbeddedConstantCtor ctorName then
+                CtorTag.constantTag
+
+            else
+                CtorTag.effective home ctorName index
 
         Test.IsCons ->
             1
 
         Test.IsNil ->
-            0
+            -- Nil is an embedded empty constant; matches CONSTANT_TAG at runtime.
+            CtorTag.constantTag
 
         Test.IsBool True ->
             1

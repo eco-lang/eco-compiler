@@ -4,7 +4,7 @@
 
 module {
   func.func @main() -> i64 {
-    %nil = eco.constant Nil : !eco.value
+    %nil = eco.constant Empty : !eco.value
 
     // Build a list of "pairs": [(1, 2), (3, 4)]
     // First, create pair (1, 2)
@@ -25,7 +25,7 @@ module {
     %tail1 = eco.construct.custom(%pair2, %nil) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     %list_of_pairs = eco.construct.custom(%pair1, %tail1) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %list_of_pairs : !eco.value
-    // CHECK: Ctor0 (Ctor0 1 2) (Ctor0 (Ctor0 3 4) [])
+    // CHECK: Ctor0 (Ctor0 1 2) (Ctor0 (Ctor0 3 4) <empty>)
 
     // Project first pair and then its first element
     %first_pair = eco.project.custom %list_of_pairs[0] : !eco.value -> !eco.value
@@ -54,12 +54,12 @@ module {
     // Tuple of lists
     %tuple_of_lists = eco.construct.custom(%list_a, %list_b) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %tuple_of_lists : !eco.value
-    // CHECK: Ctor0 (Ctor0 10 (Ctor0 20 [])) (Ctor0 30 [])
+    // CHECK: Ctor0 (Ctor0 10 (Ctor0 20 <empty>)) (Ctor0 30 <empty>)
 
     // Project second list and its head
     %second_list = eco.project.custom %tuple_of_lists[1] : !eco.value -> !eco.value
     eco.dbg %second_list : !eco.value
-    // CHECK: Ctor0 30 []
+    // CHECK: Ctor0 30 <empty>
 
     %head_of_second = eco.project.custom %second_list[0] : !eco.value -> !eco.value
     eco.dbg %head_of_second : !eco.value

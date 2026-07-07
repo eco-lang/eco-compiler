@@ -224,16 +224,13 @@ def Eco_ClosureOrEnv  : AnyTypeOf<[Eco_Value, Eco_ClosureEnv],
 // Constant Attribute Definition
 //===----------------------------------------------------------------------===//
 
-// ConstantKind enum matching Heap.hpp Constant enum
-// Values 1-7 (0 means regular pointer, not a constant)
+// ConstantKind enum matching the Heap.hpp Constant enum (2-bit code): bit 0 is
+// the Bool value, bit 1 is the Empty flag. The five former empty constants
+// (Unit/EmptyRec/Nil/Nothing/EmptyString) are unified into Empty. See plan D3.
 def Eco_ConstantKind : I32EnumAttr<"ConstantKind", "Eco embedded constant kind", [
-  I32EnumAttrCase<"Unit", 1>,        // Const_Unit
-  I32EnumAttrCase<"EmptyRec", 2>,    // Const_EmptyRec
-  I32EnumAttrCase<"True", 3>,        // Const_True
-  I32EnumAttrCase<"False", 4>,       // Const_False
-  I32EnumAttrCase<"Nil", 5>,         // Const_Nil
-  I32EnumAttrCase<"Nothing", 6>,     // Const_Nothing
-  I32EnumAttrCase<"EmptyString", 7>  // Const_EmptyString
+  I32EnumAttrCase<"False", 0>,   // Const_False
+  I32EnumAttrCase<"True", 1>,    // Const_True
+  I32EnumAttrCase<"Empty", 2>    // Const_Empty (unified Unit/EmptyRec/Nil/Nothing/"")
 ]> {
   let cppNamespace = "::eco";
 }
@@ -1658,24 +1655,23 @@ def Eco_UnboxOp : Eco_Op<"unbox", [Pure]> {
 def Eco_ConstantOp : Eco_Op<"constant", [Pure]> {
   let summary = "Create embedded constant value";
   let description = [{
-    Creates an embedded constant value that is stored directly in the pointer
-    representation without heap allocation. These correspond to the Constant
-    enum in Heap.hpp: Unit, EmptyRec, True, False, Nil, Nothing, EmptyString.
+    Creates an embedded constant value stored directly in the HPointer word
+    without heap allocation. The kind is one of the Constant codes in Heap.hpp:
+    False, True, or Empty (the unified nullary/empty constant — Unit, EmptyRec,
+    Nil, Nothing, and the empty string all lower to Empty). See plan D3/D6.
 
-    The constant is encoded in bits 40-43 of the i64 representation, with
-    the pointer field (bits 0-39) set to 0.
+    Lowering sets ptr_ind (bit 2) and the 2-bit constant field (bits 0-1); the
+    ptr / enum_idx / padding fields are 0. So the words are:
+    - False → 0x4
+    - True  → 0x5
+    - Empty → 0x6
 
     Example:
     ```mlir
-    %nil = eco.constant Nil : !eco.value
-    %true = eco.constant True : !eco.value
-    %unit = eco.constant Unit : !eco.value
+    %false = eco.constant False : !eco.value
+    %true  = eco.constant True  : !eco.value
+    %empty = eco.constant Empty : !eco.value
     ```
-
-    Lowering produces an i64 with the constant field set appropriately:
-    - Nil → 5 << 40 = 5497558138880
-    - True → 3 << 40 = 3298534883328
-    - Unit → 1 << 40 = 1099511627776
   }];
 
   let arguments = (ins Eco_ConstantKind:$kind);

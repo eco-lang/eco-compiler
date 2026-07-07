@@ -36,8 +36,15 @@ inline HPointer decode(uint64_t val) {
 // Decode uint64_t to raw pointer (for accessing heap objects).
 inline void* toPtr(uint64_t val) {
     HPointer h = decode(val);
-    if (h.constant != 0) return nullptr;
-    assert(h.padding == 0 && "Export::toPtr: invalid eco.value (padding bits set)");
+    // Embedded constant (False 0x4 / True 0x5 / Empty 0x6): ptr_ind set with all
+    // higher fields zero. Resolves to no heap object.
+    if (h.ptr_ind != 0 && h.ptr == 0 && h.enum_idx == 0 && h.padding == 0) {
+        return nullptr;
+    }
+    // Otherwise a heap HPointer: its word IS the absolute address; resolve()
+    // follows forwarding. enum_idx/padding must be zero for a heap pointer.
+    assert(h.ptr_ind == 0 && h.enum_idx == 0 && h.padding == 0 &&
+           "Export::toPtr: not a heap pointer (ptr_ind/enum/padding bits set)");
     return Allocator::instance().resolve(h);
 }
 
@@ -52,10 +59,10 @@ inline uint64_t encodeBoxedBool(bool b) {
     return encode(b ? Elm::alloc::elmTrue() : Elm::alloc::elmFalse());
 }
 
-// Decode a boxed !eco.value boolean (HPointer constant) to raw bool.
+// Decode a boxed !eco.value boolean (HPointer constant) to raw bool. The i1
+// value is bit 0 of the word (False 0x4 / True 0x5).
 inline bool decodeBoxedBool(uint64_t val) {
-    HPointer h = decode(val);
-    return h.constant == (Elm::Const_True + 1);
+    return Elm::boolValueBits(val) != 0;
 }
 
 // Encode Unit as a boxed HPointer constant.

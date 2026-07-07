@@ -100,7 +100,7 @@ static HPointer allocElmString(const std::string& str) {
 // Routes through StringOps::toStdString — the canonical interop path.
 static std::string elmStringToStd(uint64_t strEnc) {
     HPointer h = Export::decode(strEnc);
-    if (h.constant == Const_EmptyString + 1) {
+    if (Elm::alloc::isEmptyString(h)) {
         return "";
     }
 
@@ -415,7 +415,7 @@ static json heapJsonToNlohmann(uint64_t jvalEnc) {
 
         case CTOR_JSON_BOOL: {
             HPointer boolVal = c->values[0].p;
-            return json(boolVal.constant == Const_True + 1);
+            return json(boolValue(boolVal));
         }
 
         case CTOR_JSON_INT:
@@ -566,7 +566,7 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
         return static_cast<Custom*>(allocator.resolve(decoderHP));
     };
     auto resolveJval = [&]() -> Custom* {
-        if (jvalHP.constant != 0) return nullptr;
+        if (jvalHP.ptr_ind != 0) return nullptr;
         void* p = allocator.resolve(jvalHP);
         if (!p) return nullptr;
         if (static_cast<Header*>(p)->tag != Tag_Custom) return nullptr;
@@ -1252,12 +1252,15 @@ static json elmToJson(uint64_t valueEnc) {
     auto& allocator = Allocator::instance();
     HPointer h = Export::decode(valueEnc);
 
-    // Check for embedded constants.
-    if (h.constant == Const_True + 1) return json(true);
-    if (h.constant == Const_False + 1) return json(false);
-    if (h.constant == Const_Nil + 1) return json::array();
-    if (h.constant == Const_EmptyString + 1) return json("");
-    if (h.constant != 0 && h.constant != Const_Unit + 1) return json(nullptr);
+    // Embedded constants do not normally reach the recursive encoder — every
+    // Json.Encode primitive is boxed into an ENC_* Custom node first (see
+    // Elm_Kernel_Json_wrap; empty array/object/null are ENC_* nodes too). Handle
+    // any that arrive defensively: a Bool constant -> its JSON bool; anything
+    // else -> null. This is merge-ready (no dependence on which empty). Plan P0.5.
+    if (isConstantBits(valueEnc)) {
+        if (isBoolConst(h)) return json(boolValue(h));
+        return json(nullptr);
+    }
 
     void* ptr = Export::toPtr(valueEnc);
     if (!ptr) return json(nullptr);
@@ -1273,7 +1276,7 @@ static json elmToJson(uint64_t valueEnc) {
 
             case ENC_BOOL: {
                 HPointer boolVal = c->values[0].p;
-                return json(boolVal.constant == Const_True + 1);
+                return json(boolValue(boolVal));
             }
 
             case ENC_INT:
@@ -1506,7 +1509,7 @@ HPtr Elm_Kernel_Json_map8(HPtr closure, HPtr d1, HPtr d2, HPtr d3, HPtr d4, HPtr
 HPtr Elm_Kernel_Json_run(HPtr decoder, HPtr value) {
     // Value is a heap-resident JSON value (CTOR_JSON_* Custom).
     HPointer decoderHP = Export::decode(decoder.toBits());
-    if (decoderHP.constant != 0 ||
+    if (decoderHP.ptr_ind != 0 ||
         !Allocator::instance().resolve(decoderHP)) {
         return HPtr::fromBits(makeErr("Invalid decoder"));
     }
@@ -1560,20 +1563,23 @@ HPtr Elm_Kernel_Json_wrap(HPtr value) {
     auto& allocator = Allocator::instance();
     HPointer h = Export::decode(valueEnc);
 
-    // Embedded constant booleans → ENC_BOOL
-    if (h.constant == Const_True + 1 || h.constant == Const_False + 1) {
+    // Embedded constant booleans → ENC_BOOL (store the Bool constant verbatim).
+    if (isBoolConst(h)) {
         size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
         Custom* enc = static_cast<Custom*>(
             eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0));
         enc->header.size = 1;
         enc->ctor = ENC_BOOL;
         enc->unboxed = 0;
-        enc->values[0].p = (h.constant == Const_True + 1) ? elmTrue() : elmFalse();
+        enc->values[0].p = h;
         return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
     }
 
-    // Embedded empty-string constant → ENC_STRING wrapping the Const_EmptyString pointer.
-    if (h.constant == Const_EmptyString + 1) {
+    // Embedded empty-string constant → ENC_STRING wrapping the constant. This is
+    // the only empty that reaches wrap in well-typed use (Json.Encode.string "").
+    // Post-merge isEmptyString matches the merged empty; the Bool check above
+    // has already peeled off True/False, so this only sees the empty string.
+    if (isEmptyString(h)) {
         // h is an embedded constant: stable across GC, no rooting needed.
         size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
         Custom* enc = static_cast<Custom*>(
@@ -1585,8 +1591,9 @@ HPtr Elm_Kernel_Json_wrap(HPtr value) {
         return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
     }
 
-    // Other embedded constants (Unit, Nil, Nothing) → ENC_NULL
-    if (h.constant != 0) {
+    // Any other embedded constant is not a valid Json.Encode primitive argument
+    // (defensive) → ENC_NULL.
+    if (isConstantBits(valueEnc)) {
         return Elm_Kernel_Json_encodeNull();
     }
 

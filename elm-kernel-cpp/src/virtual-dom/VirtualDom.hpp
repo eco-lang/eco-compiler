@@ -57,7 +57,7 @@ struct Fact {
     FactTag tag;
     std::vector<u16> name;
     std::vector<u16> stringValue;      // For Style, Attr, AttrNS
-    HPointer jsonValue{0, Const_Nil + 1, 0};  // For Prop
+    HPointer jsonValue{.constant = Const_Empty, .ptr_ind = 1};  // For Prop (default: empty constant)
     std::vector<u16> namespace_;       // For AttrNS
 
     // Event-specific fields

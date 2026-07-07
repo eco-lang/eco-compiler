@@ -7,7 +7,7 @@ module {
     // Empty string
     %empty = eco.string_literal "" : !eco.value
     eco.dbg %empty : !eco.value
-    // CHECK: ""
+    // CHECK: <empty>
 
     // Single ASCII character
     %single = eco.string_literal "a" : !eco.value

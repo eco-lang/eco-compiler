@@ -314,9 +314,7 @@ HPointer ThreadLocalHeap::allocLargeString(const u16* chars, size_t length) {
     // Body field is null until step 4. A GC that visits the header here
     // would see hp.ptr == 0 and skip the body slot via the markHPointer /
     // markLargeBodySeen null guards.
-    h->body.constant = 0;
-    h->body.ptr = 0;
-    h->body.padding = 0;
+    h->body = hpFromBits(0);  // null HPointer (all fields zero)
     HPointer header_hp = parent_->wrap(header_obj);
 
     // Step 3: allocate body in old gen. old_gen_.allocate does NOT trigger a
@@ -350,9 +348,7 @@ HPointer ThreadLocalHeap::allocLargeByteBuffer(const u8* data, size_t length) {
     assert(header_obj && "Failed to allocate large byte buffer header in nursery");
     LargeByteHeader* h = static_cast<LargeByteHeader*>(header_obj);
     h->header.size = static_cast<u32>(length);
-    h->body.constant = 0;
-    h->body.ptr = 0;
-    h->body.padding = 0;
+    h->body = hpFromBits(0);  // null HPointer (all fields zero)
     HPointer header_hp = parent_->wrap(header_obj);
 
     const size_t body_size =
@@ -706,10 +702,10 @@ void ThreadLocalHeap::collectStackRootsFromStackMap() {
             auto* slot = reinterpret_cast<HPointer*>(addr);
 
             HPointer potential = *slot;
-            // Embedded-constant HPointers (Unit/True/False/Nil/etc.) are not
-            // heap-allocated and do not need GC. Skip them before calling
-            // resolve(), which asserts constant == 0.
-            if (potential.constant != 0) {
+            // Embedded-constant HPointers (False/True/Empty) are not
+            // heap-allocated and do not need GC. Skip them (ptr_ind set) before
+            // calling resolve(), which asserts ptr_ind == 0.
+            if (potential.ptr_ind != 0) {
                 continue;
             }
             // Null HPointers are legitimately tracked by RS4GC (e.g.

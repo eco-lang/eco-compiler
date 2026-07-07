@@ -113,8 +113,8 @@ void verifyIntValues(const std::vector<HPointer>& roots,
 // Create an HPointer representing a constant (Nil, True, False, etc.)
 HPointer createConstant(Constant c);
 
-// Convenience for creating Nil
-inline HPointer createNil() { return createConstant(Const_Nil); }
+// Convenience for creating Nil (the unified empty constant)
+inline HPointer createNil() { return createConstant(Const_Empty); }
 
 // ============================================================================
 // 7. Run Mark-and-Sweep (Stats-Aware)

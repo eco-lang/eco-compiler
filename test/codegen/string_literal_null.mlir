@@ -22,7 +22,7 @@ module {
     // Empty string
     %s4 = eco.string_literal "" : !eco.value
     eco.dbg %s4 : !eco.value
-    // CHECK: ""
+    // CHECK: <empty>
 
     // Single character
     %s5 = eco.string_literal "x" : !eco.value

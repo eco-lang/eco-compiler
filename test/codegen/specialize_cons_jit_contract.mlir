@@ -9,7 +9,7 @@ module {
   func.func @main() -> i64 {
     %h = arith.constant 7 : i64
     %hv = eco.box %h : i64 -> !eco.value
-    %nil = eco.constant Nil : !eco.value
+    %nil = eco.constant Empty : !eco.value
     %c = eco.construct.list %hv, %nil : !eco.value, !eco.value -> !eco.value
     %head = eco.project.list_head %c : !eco.value -> !eco.value
     %i = eco.unbox %head : !eco.value -> i64

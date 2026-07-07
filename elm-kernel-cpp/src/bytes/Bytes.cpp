@@ -20,7 +20,7 @@ constexpr u16 ENDIANNESS_TYPE_ID = 2;
 
 // Helper to check if HPointer is Nothing
 static bool isNothing(HPointer ptr) {
-    return ptr.constant == Const_Nothing + 1;
+    return Elm::alloc::isNothing(ptr);
 }
 
 // Helper to check if system is little endian

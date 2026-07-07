@@ -168,10 +168,10 @@ inline void classListUnlinkTierM(FreeCell** free_lists, FreeCell* c, size_t cls,
 // Does not follow forwarding pointers (use Allocator::resolve() for that).
 void* readBarrier(HPointer& ptr) {
     // Check for embedded constants.
-    assert(ptr.constant == 0 && "Cannot read barrier on embedded constant");
+    assert(ptr.ptr_ind == 0 && "Cannot read barrier on embedded constant");
 
-    // Convert logical pointer to physical address and return.
-    return g_heap_base + (ptr.ptr << 3);
+    // The HPointer word IS the raw absolute address (no heap_base, no shift).
+    return hpToAddr(ptr);
 }
 
 // Sentinel value indicating no current block.
@@ -1655,9 +1655,7 @@ void OldGenSpace::startMark(const std::unordered_set<HPointer*> &roots,
     for (uint64_t *root: jit_roots) {
         uint64_t val = *root;
 
-        uint64_t ptr_part = val & 0xFFFFFFFFFFULL;
-        uint64_t const_part = (val >> 40) & 0xF;
-        if (ptr_part == 0 && const_part >= 1 && const_part <= 7) {
+        if (isConstantBits(val)) {
             continue;  // Skip embedded constants.
         }
 
@@ -1821,7 +1819,7 @@ void OldGenSpace::markChildren(void *obj) {
 }
 
 void OldGenSpace::markHPointer(HPointer &ptr) {
-    if (ptr.constant != 0)
+    if (ptr.ptr_ind != 0)
         return;
 
     void *obj = Allocator::fromPointerRaw(ptr);
@@ -3910,17 +3908,14 @@ void* OldGenSpace::allocateForEvacuation(size_t size) {
 void OldGenSpace::installForwardingPointer(void* old_location, void* new_location) {
     Forward* fwd = reinterpret_cast<Forward*>(old_location);
     fwd->header.tag = Tag_Forward;
-
-    char* new_ptr = static_cast<char*>(new_location);
-    u64 offset = (new_ptr - g_heap_base) >> 3;
-    fwd->header.forward_ptr = offset;
+    fwd->header.forward_ptr = encodeForwardPtr(new_location, g_heap_base);
 }
 
 void* OldGenSpace::getForwardingAddress(void* obj) const {
     Header* hdr = reinterpret_cast<Header*>(obj);
     if (hdr->tag == Tag_Forward) {
         Forward* fwd = reinterpret_cast<Forward*>(obj);
-        return g_heap_base + (fwd->header.forward_ptr << 3);
+        return decodeForwardPtr(fwd->header.forward_ptr, g_heap_base);
     }
     return nullptr;
 }
@@ -4094,7 +4089,7 @@ void OldGenSpace::fixPointersInObject(void* obj) {
 }
 
 void OldGenSpace::fixHPointer(HPointer& ptr) {
-    if (ptr.constant != 0) return;
+    if (ptr.ptr_ind != 0) return;
 
     void* obj = Allocator::fromPointerRaw(ptr);
     if (obj == nullptr) return;
@@ -4330,7 +4325,7 @@ OldGenSpace::LargeBodyId OldGenSpace::registerLargeBody(
 }
 
 void OldGenSpace::markLargeBodySeen(HPointer body_hp, bool minor_color) {
-    if (body_hp.constant != 0) return;
+    if (body_hp.ptr_ind != 0) return;
     void* body = Allocator::fromPointerRaw(body_hp);
     if (!body) return;
     auto it = large_body_index_.find(body);
@@ -4342,7 +4337,7 @@ void OldGenSpace::markLargeBodySeen(HPointer body_hp, bool minor_color) {
 }
 
 void OldGenSpace::promoteLargeHeader(HPointer body_hp) {
-    if (body_hp.constant != 0) return;
+    if (body_hp.ptr_ind != 0) return;
     void* body = Allocator::fromPointerRaw(body_hp);
     if (!body) return;
     auto it = large_body_index_.find(body);

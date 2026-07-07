@@ -43,7 +43,7 @@ module {
 
     // Create a list and project from it
     // Both fields are boxed (!eco.value), so unboxed_bitmap = 0
-    %nil = eco.constant Nil : !eco.value
+    %nil = eco.constant Empty : !eco.value
     %list = eco.construct.custom(%v1, %nil) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
     %head = eco.project.custom %list[0] : !eco.value -> !eco.value
     eco.dbg %head : !eco.value

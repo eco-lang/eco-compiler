@@ -266,7 +266,7 @@ HPtr Elm_Kernel_List_fromArray(HPtr array) {
     uint64_t array_bits = array.toBits();
     // Check for embedded constants first (e.g., Nil).
     HPointer hp = Export::decode(array_bits);
-    if (hp.constant != 0) {
+    if (hp.ptr_ind != 0) {
         // Already a constant (Nil, etc.) — pass through unchanged.
         return array;
     }
@@ -310,7 +310,7 @@ HPtr Elm_Kernel_List_toArray(HPtr list) {
     // kernel expects JS Arrays), but in C++ this conversion is unnecessary.
     // Pass through Cons lists and Nil unchanged.
     HPointer hp = Export::decode(list_bits);
-    if (hp.constant != 0) {
+    if (hp.ptr_ind != 0) {
         // Embedded constant (e.g., Nil) — pass through.
         return list;
     }

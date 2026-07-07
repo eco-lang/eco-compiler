@@ -49,7 +49,7 @@ static int64_t registerRegex(srell::regex* re) {
 // for SRELL. Routes through StringOps::toStdString.
 std::string elmStringToUTF8(uint64_t strEnc) {
     HPointer hp = Export::decode(strEnc);
-    if (hp.constant == Const_EmptyString + 1) return "";
+    if (Elm::alloc::isEmptyString(hp)) return "";
 
     void* ptr = Export::toPtr(strEnc);
     if (!ptr) return "";

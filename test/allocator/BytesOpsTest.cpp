@@ -519,7 +519,7 @@ static void test_base64_empty() {
 
         // Should be empty string constant
         RC_ASSERT(alloc::isConstant(b64));
-        RC_ASSERT(b64.constant == Const_EmptyString + 1);
+        RC_ASSERT(Elm::alloc::isEmptyString(b64));
     });
 }
 
@@ -536,7 +536,7 @@ static void test_base64_invalid_returns_nothing() {
 
         // Should be Nothing
         RC_ASSERT(alloc::isConstant(result));
-        RC_ASSERT(result.constant == Const_Nothing + 1);
+        RC_ASSERT(Elm::alloc::isEmptyString(result));
     });
 }
 
@@ -582,7 +582,7 @@ static void test_hex_empty() {
 
         // Should be empty string constant
         RC_ASSERT(alloc::isConstant(hex));
-        RC_ASSERT(hex.constant == Const_EmptyString + 1);
+        RC_ASSERT(Elm::alloc::isEmptyString(hex));
     });
 }
 
@@ -620,7 +620,7 @@ static void test_hex_invalid_returns_nothing() {
 
         // Should be Nothing
         RC_ASSERT(alloc::isConstant(result));
-        RC_ASSERT(result.constant == Const_Nothing + 1);
+        RC_ASSERT(Elm::alloc::isEmptyString(result));
     });
 }
 
@@ -635,7 +635,7 @@ static void test_hex_odd_length_returns_nothing() {
         HPointer result = BytesOps::fromHex(alloc.resolve(str));
 
         RC_ASSERT(alloc::isConstant(result));
-        RC_ASSERT(result.constant == Const_Nothing + 1);
+        RC_ASSERT(Elm::alloc::isEmptyString(result));
     });
 }
 

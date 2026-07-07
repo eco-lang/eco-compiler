@@ -8,7 +8,7 @@ module {
 
   func.func @main() -> i64 {
     // Build a nested structure: [[1, 2], [3, 4]]
-    %nil = eco.constant Nil : !eco.value
+    %nil = eco.constant Empty : !eco.value
 
     %c1 = arith.constant 1 : i64
     %c2 = arith.constant 2 : i64
@@ -41,17 +41,17 @@ module {
     // Load and verify structure
     %loaded = eco.load_global @nested_global
     eco.dbg %loaded : !eco.value
-    // CHECK: Ctor0 (Ctor0 1 (Ctor0 2 [])) (Ctor0 (Ctor0 3 (Ctor0 4 [])) [])
+    // CHECK: Ctor0 (Ctor0 1 (Ctor0 2 <empty>)) (Ctor0 (Ctor0 3 (Ctor0 4 <empty>)) <empty>)
 
     // Project into the structure to verify it's intact
     %first_list = eco.project.custom %loaded[0] : !eco.value -> !eco.value
     eco.dbg %first_list : !eco.value
-    // CHECK: Ctor0 1 (Ctor0 2 [])
+    // CHECK: Ctor0 1 (Ctor0 2 <empty>)
 
     %second_elem = eco.project.custom %loaded[1] : !eco.value -> !eco.value
     %second_list = eco.project.custom %second_elem[0] : !eco.value -> !eco.value
     eco.dbg %second_list : !eco.value
-    // CHECK: Ctor0 3 (Ctor0 4 [])
+    // CHECK: Ctor0 3 (Ctor0 4 <empty>)
 
     %zero = arith.constant 0 : i64
     return %zero : i64

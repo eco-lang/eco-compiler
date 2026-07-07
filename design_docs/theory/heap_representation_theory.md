@@ -1,5 +1,16 @@
 # Heap Representation Theory
 
+> **Note (HPointer representation redesign):** The HPointer layout and embedded
+> constants described in some sections below are superseded. HPointers now store a
+> raw absolute 8-byte-aligned address (no heap_base offset, no shift; the word is
+> the address), discriminated by a `ptr_ind` bit, and the embedded constants are
+> just three — `False` (0x4), `True` (0x5), and the merged `Empty` (0x6) which
+> subsumes Unit/Nil/Nothing/""/{}. Bool's low bit equals the SSA/ABI `i1` value.
+> See the "HPointers: Raw Absolute Addresses" section of `THEORY.md`, invariants
+> HEAP_008/010/017/028/029 and REP_CONSTANT_00x, and
+> `plans/hpointer-representation-redesign.md` (Design Decisions D1–D11) for the
+> authoritative description.
+
 ## Overview
 
 This document describes how Elm values are represented in memory, bridging compile-time type decisions with runtime heap layout. It covers the four representation models, unboxing optimization, and the invariants that ensure correctness across compilation phases.

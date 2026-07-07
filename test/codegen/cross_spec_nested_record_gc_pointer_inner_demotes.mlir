@@ -22,7 +22,7 @@ module {
           eco.logical_result_types = ["tuple2:i:v"]
       } {
     %a   = arith.constant 7 : i64
-    %nil = eco.constant Nil : !eco.value
+    %nil = eco.constant Empty : !eco.value
     %t   = eco.construct.tuple2 %a, %nil {unboxed_bitmap = 1}
          : i64, !eco.value -> !eco.value
     return %t : !eco.value
@@ -37,7 +37,7 @@ module {
           eco.logical_result_types = ["record:2:[tuple2:i:v]:v"]
       } {
     %t   = call @make_inner_with_value() : () -> !eco.value
-    %nil = eco.constant Nil : !eco.value
+    %nil = eco.constant Empty : !eco.value
     %r   = eco.construct.record(%t, %nil) {field_count = 2, unboxed_bitmap = 0}
          : (!eco.value, !eco.value) -> !eco.value
     return %r : !eco.value

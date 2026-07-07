@@ -169,30 +169,31 @@ inline mlir::Value wrapperLoadArgSlotToValue(mlir::OpBuilder &b, mlir::Location 
 
 namespace value_enc {
 
-/// Number of bits for heap offset in HPointer (40 bits = 1TB address space).
-constexpr unsigned HeapOffsetBits = 40;
+/// Bit position of ptr_ind, the pointer/non-pointer discriminator. Must match
+/// PTR_IND_BIT in Heap.hpp. The `ptr` field begins at PtrIndBit + 1 = bit 3.
+constexpr unsigned PtrIndBit = 2;
 
-/// Shift amount for constant field in HPointer.
-constexpr unsigned ConstFieldShift = HeapOffsetBits;
+/// Mask for the 2-bit constant field (bits 0-1).
+constexpr uint64_t ConstFieldMask = 0x3;
 
-/// Mask for constant field (4 bits).
-constexpr uint64_t ConstFieldMask = 0xF;
-
-/// Embedded constant kinds (matches HPointer::ConstantKind in Heap.hpp).
+/// Embedded constant kinds (must match the Constant enum in Heap.hpp): bit 0 is
+/// the Bool value, bit 1 is the Empty flag. See plan D3.
 enum ConstantKind : uint64_t {
-    Unit        = 1,
-    EmptyRec    = 2,
-    True        = 3,
-    False       = 4,
-    Nil         = 5,
-    Nothing     = 6,
-    EmptyString = 7
+    False = 0,
+    True  = 1,
+    Empty = 2,  // unifies Unit / EmptyRec / Nil / Nothing / ""
 };
 
-/// Encode a constant kind into HPointer format.
+/// Encode a constant kind into an HPointer word: set ptr_ind (bit 2) and the
+/// 2-bit constant field; ptr / enum_idx / padding are all zero. So False -> 0x4,
+/// True -> 0x5, Empty -> 0x6. Plan D6.
 inline int64_t encodeConstant(int kind) {
-    return static_cast<int64_t>(kind) << ConstFieldShift;
+    return (static_cast<int64_t>(1) << PtrIndBit) | static_cast<int64_t>(kind);
 }
+
+/// Reserved constructor tag emitted for embedded "empty" constant branches. Must
+/// match CONSTANT_TAG in Heap.hpp and Compiler.Data.CtorTag.constantTag. See D9.
+constexpr int64_t ConstantTag = 0xFFFD;
 
 } // namespace value_enc
 

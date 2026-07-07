@@ -54,7 +54,7 @@ inline HPointer decodeHP(uint64_t val) {
 }
 
 inline void* resolveHP(HPointer h) {
-    if (h.constant != 0) return nullptr;
+    if (h.ptr_ind != 0) return nullptr;
     return Allocator::instance().resolve(h);
 }
 

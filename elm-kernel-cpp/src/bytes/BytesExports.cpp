@@ -31,12 +31,14 @@ using namespace Elm::Kernel;
 // Helpers
 // ============================================================================
 
-// Embedded constant encoding: True = constant field 3, encoded as 3 << 40
-static constexpr uint64_t CONST_TRUE  = 3ULL << 40;
-static constexpr uint64_t CONST_FALSE = 4ULL << 40;
-
+// The endianness flag reaches these read helpers as a boxed Bool eco.value
+// (True == LE). Under the current HPointer representation True/False are the
+// embedded constant words 0x5/0x4 (bit 0 is the i1 value), so decode via
+// boolValueBits rather than comparing against a hard-coded word. The old
+// `3ULL << 40` / `4ULL << 40` encodings were stale from a prior HPointer
+// layout and made this always read big-endian.
 static bool isLittleEndian(uint64_t isLE) {
-    return isLE == CONST_TRUE;
+    return Elm::boolValueBits(isLE) != 0;
 }
 
 // Create a Tuple2 with both fields unboxed (i64/i64 or i64/f64).
@@ -300,7 +302,7 @@ HPtr Elm_Kernel_Bytes_getHostEndianness() {
 int64_t Elm_Kernel_Bytes_getStringWidth(HPtr str) {
     uint64_t strBits = str.toBits();
     HPointer h = Export::decode(strBits);
-    if (h.constant == Const_EmptyString + 1) {
+    if (Elm::alloc::isEmptyString(h)) {
         return 0;
     }
     void* ptr = Export::toPtr(strBits);
@@ -421,7 +423,7 @@ HPtr Elm_Kernel_Bytes_decode(HPtr decoder, HPtr bytes) {
     // of HPointer (non-zero means embedded), so a Nothing closure-result
     // short-circuits straight back to the caller's Nothing.
     HPointer resultHP = Export::decode(result);
-    if (resultHP.constant != 0) {
+    if (resultHP.ptr_ind != 0) {
         return HPtr::fromBits(Export::encode(alloc::nothing()));
     }
 

@@ -42,7 +42,7 @@ static inline HPointer decodeHP(uint64_t val) {
 // Convert an Elm String HPointer to UTF-8 std::string. Returns "" for the
 // embedded EmptyString constant (resolve would assert on it).
 static std::string trackerToStd(HPointer hp) {
-    if (hp.constant != 0) return "";
+    if (hp.ptr_ind != 0) return "";
     void* ptr = Allocator::instance().resolve(hp);
     if (!ptr) return "";
     return Elm::StringOps::toStdString(ptr);

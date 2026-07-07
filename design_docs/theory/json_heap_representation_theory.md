@@ -1,5 +1,13 @@
 # JSON Heap Representation Theory
 
+> **Note (HPointer representation redesign):** Where this doc says JSON booleans
+> store the `True`/`False` embedded HPointer constants, that remains true — Bool
+> is still a boxed `!eco.value` constant — but the constant's bit pattern changed
+> (`False = 0x4`, `True = 0x5`; the i1 value is bit 0, read via
+> `Elm::boolValueBits`). The empty string / null / empty array constants are
+> unaffected in their JSON encoding (built as heap `ENC_*` nodes). See `THEORY.md`
+> and `plans/hpointer-representation-redesign.md` (D3/D4) for details.
+
 ## Overview
 
 JSON values in the ECO runtime are represented as heap-resident `Custom` objects rather than foreign C++ pointers. This design ensures GC safety, simplifies lifetime management, and eliminates the need for foreign pointer tracking.

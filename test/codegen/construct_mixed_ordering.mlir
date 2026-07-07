@@ -5,7 +5,7 @@
 
 module {
   func.func @main() -> i64 {
-    %nil = eco.constant Nil : !eco.value
+    %nil = eco.constant Empty : !eco.value
 
     // Create boxed integers
     %i10 = arith.constant 10 : i64

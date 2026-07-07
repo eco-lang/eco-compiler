@@ -1126,20 +1126,22 @@ Testing::TestCase testAllLiveHeap("GC preserves all objects when all are rooted"
 
 namespace {
 
-constexpr u64 kConstUnit        = 1;
-constexpr u64 kConstEmptyRec    = 2;
-constexpr u64 kConstTrue        = 3;
-constexpr u64 kConstFalse       = 4;
-constexpr u64 kConstNil         = 5;
-constexpr u64 kConstNothing     = 6;
-constexpr u64 kConstEmptyString = 7;
+// New 2-bit constant codes (plan D3): False=0, True=1, Empty=2. The five former
+// empties (Unit/EmptyRec/Nil/Nothing/EmptyString) all collapse to Empty.
+constexpr u64 kConstFalse       = 0;
+constexpr u64 kConstTrue        = 1;
+constexpr u64 kConstEmpty       = 2;
+constexpr u64 kConstUnit        = kConstEmpty;
+constexpr u64 kConstEmptyRec    = kConstEmpty;
+constexpr u64 kConstNil         = kConstEmpty;
+constexpr u64 kConstNothing     = kConstEmpty;
+constexpr u64 kConstEmptyString = kConstEmpty;
 
-// Build an HPointer that encodes one of the seven embedded constants.
+// Build an HPointer that encodes one of the embedded constants (ptr_ind set).
 HPointer makeEmbeddedConstant(u64 constant_index) {
-    HPointer hp;
-    hp.ptr      = 0;
+    HPointer hp{};
+    hp.ptr_ind  = 1;
     hp.constant = constant_index;
-    hp.padding  = 0;
     return hp;
 }
 
@@ -1202,8 +1204,9 @@ Testing::TestCase testStartMarkAcceptsAllEmbeddedConstantTags(
         auto& rootset = alloc.getRootSet();
 
         std::vector<HPointer> const_roots;
-        for (u64 k : {kConstUnit, kConstEmptyRec, kConstTrue, kConstFalse,
-                      kConstNil, kConstNothing, kConstEmptyString}) {
+        const u64 kVals[] = {kConstUnit, kConstEmptyRec, kConstTrue, kConstFalse,
+                             kConstNil, kConstNothing, kConstEmptyString};
+        for (u64 k : kVals) {
             const_roots.push_back(makeEmbeddedConstant(k));
         }
         for (auto& r : const_roots) rootset.addRoot(&r);
@@ -1229,7 +1232,8 @@ Testing::TestCase testStartMarkAcceptsAllEmbeddedConstantTags(
 
         for (size_t i = 0; i < const_roots.size(); i++) {
             RC_ASSERT(const_roots[i].ptr == 0);
-            RC_ASSERT(const_roots[i].constant == (i + 1));
+            RC_ASSERT(const_roots[i].ptr_ind == 1);           // still an embedded constant
+            RC_ASSERT(const_roots[i].constant == kVals[i]);   // unchanged by mark/sweep
         }
 
         for (auto& r : const_roots) rootset.removeRoot(&r);

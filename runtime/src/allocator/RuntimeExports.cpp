@@ -47,7 +47,7 @@ inline void* hpointerToPtr(uint64_t val) {
     HPointer hp;
     memcpy(&hp, &val, sizeof(hp));
     // Embedded constants don't have heap objects - return nullptr.
-    if (hp.constant != 0) {
+    if (hp.ptr_ind != 0) {
         return nullptr;
     }
     return Allocator::instance().resolve(hp);
@@ -1063,9 +1063,7 @@ extern "C" void eco_store_field(HPtr obj_hptr, uint32_t index, HPtr value) {
             } else {
                 // Tail is HPointer, not Unboxable - store as raw bits
                 // Note: This may cause issues with 64-bit pointers in JIT mode
-                cons->tail.ptr = value_bits & 0xFFFFFFFFFF;
-                cons->tail.constant = (value_bits >> 40) & 0xF;
-                cons->tail.padding = 0;
+                cons->tail = hpFromBits(value_bits);
             }
             break;
         }
@@ -1390,7 +1388,7 @@ extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
         uint64_t raw = static_cast<uint64_t>(typed_args[dbg_i]);
         HPointer hp;
         memcpy(&hp, &raw, sizeof(hp));
-        if (hp.constant == 0 && hp.ptr != 0) {
+        if (hp.ptr_ind == 0 && hp.ptr != 0) {
             hpointerToPtr(raw);
         }
     }
@@ -1778,7 +1776,7 @@ inline Closure* spliceArgsForSaturatedCall(uint64_t& closure_bits_inout,
         uint64_t raw = reinterpret_cast<uint64_t>(combined_args[dbg_i]);
         HPointer hp;
         memcpy(&hp, &raw, sizeof(hp));
-        if (hp.constant == 0 && hp.ptr != 0) {
+        if (hp.ptr_ind == 0 && hp.ptr != 0) {
             hpointerToPtr(raw);
         }
     }
@@ -2153,7 +2151,9 @@ static void printPrimitive(uint64_t bits, Elm::EcoPrimKind kind) {
         print_char(static_cast<u16>(bits));
         break;
     case Elm::EcoPrimKind::Bool:
-        output_text(bits ? "True" : "False");
+        // Works for an unboxed i1 (0/1) and a boxed Bool word (False 0x4 / True
+        // 0x5): the i1 value is bit 0 in both.
+        output_text((bits & 1) ? "True" : "False");
         break;
     case Elm::EcoPrimKind::String:
         // String is NEVER unboxed - if we get here, it's a bug.
@@ -2161,76 +2161,37 @@ static void printPrimitive(uint64_t bits, Elm::EcoPrimKind kind) {
         assert(false && "String cannot be unboxed");
         output_text("<unboxed-string-bug>");
         break;
+    case Elm::EcoPrimKind::Unit:
+        // Unit is never unboxed (always the embedded empty constant), but handle
+        // it for switch-completeness.
+        output_text("()");
+        break;
     }
 }
 
 // MLIR ConstantKind enum (1-based, from Ops.td)
-// These values are stored directly in bits 40-43 of the pointer
-enum MlirConstantKind {
-    MlirConst_Unit = 1,
-    MlirConst_EmptyRec = 2,
-    MlirConst_True = 3,
-    MlirConst_False = 4,
-    MlirConst_Nil = 5,
-    MlirConst_Nothing = 6,
-    MlirConst_EmptyString = 7,
-};
-
-// Check if a value is an embedded constant and print it
-// Returns true if it was a constant, false otherwise
+// Type-erased fallback printer for the embedded constants. This path has NO type
+// information (unlike print_typed_value), and under the merged representation the
+// five empties share one bit pattern, so it can no longer name them individually
+// — it prints a generic "<empty>". Bool stays distinguishable via bit 0. The
+// real Debug.toString/log path is type-graph driven and names them correctly
+// (see print_typed_value); this is only reached without a type graph. Plan D3.
+// Returns true if `val` was a constant.
 static bool print_if_constant(uint64_t val) {
-    // For JIT execution, pointers are full 64-bit addresses.
-    // Constants are small values with only bits 40-43 set (values 1-7 shifted left by 40).
-    // A real pointer will have bits above 43 set (e.g., 0x7f...).
-    // So we check: if val > (7 << 40), it's definitely a pointer, not a constant.
-    // And if val > 0 and val <= (7 << 40), it's a constant.
-
-    // Constants are in range [1<<40, 7<<40] = [0x10000000000, 0x70000000000]
-    // Real heap pointers will be above 0x100000000000 (bit 44 set for typical 48-bit addresses)
-
-    // Simple check: constants have zero in the low 40 bits AND a small value in upper bits
-    uint64_t ptr_part = val & 0xFFFFFFFFFF;  // Lower 40 bits
-    uint64_t const_part = val >> 40;          // Upper 24 bits
-
-    // If there's a pointer component, it's not a pure constant
-    if (ptr_part != 0) {
-        return false;
+    if (!isConstantBits(val)) {
+        return false;  // Regular pointer.
     }
-
-    // Pure constant: ptr_part is 0, const_part is 1-7
-    if (const_part >= 1 && const_part <= 7) {
-        switch (const_part) {
-            case MlirConst_Unit:
-                output_text("()");
-                return true;
-            case MlirConst_EmptyRec:
-                output_text("{}");
-                return true;
-            case MlirConst_True:
-                output_text("True");
-                return true;
-            case MlirConst_False:
-                output_text("False");
-                return true;
-            case MlirConst_Nil:
-                output_text("[]");
-                return true;
-            case MlirConst_Nothing:
-                output_text("Nothing");
-                return true;
-            case MlirConst_EmptyString:
-                output_text("\"\"");
-                return true;
-        }
+    if (isEmptyBits(val)) {
+        output_text("<empty>");
+    } else {
+        output_text(boolValueBits(val) ? "True" : "False");
     }
-
-    return false;  // Regular pointer
+    return true;
 }
 
-// Check if a value is Nil constant
+// Check if a value is the Nil / merged empty constant (list terminator).
 static bool is_nil(uint64_t val) {
-    // Nil is encoded as MlirConst_Nil << 40 with zero in lower bits
-    return (val & 0xFFFFFFFFFF) == 0 && (val >> 40) == MlirConst_Nil;
+    return isEmptyBits(val);
 }
 
 // Check if a Custom object is a list cons cell.
@@ -2253,17 +2214,13 @@ static void print_list(uint64_t val, int depth) {
     const int MAX_LIST_ITEMS = 100;  // Prevent infinite loops
 
     while (count < MAX_LIST_ITEMS) {
-        // Check for Nil (end of list)
-        if (is_nil(current)) {
-            break;
-        }
-
-        // Check for other embedded constants (invalid in list tail)
-        uint64_t ptr_part = current & 0xFFFFFFFFFF;
-        uint64_t const_part = current >> 40;
-        if (ptr_part == 0 && const_part >= 1 && const_part <= 7) {
-            if (!first) output_text(", ");
-            output_text("<invalid_list_tail>");
+        // Any embedded constant terminates the list. The merged empty is Nil;
+        // a non-empty constant (a Bool) in a tail position is malformed.
+        if (isConstantBits(current)) {
+            if (!isEmptyBits(current)) {
+                if (!first) output_text(", ");
+                output_text("<invalid_list_tail>");
+            }
             break;
         }
 
@@ -2322,15 +2279,14 @@ static void print_list(uint64_t val, int depth) {
                 case 2: output_format("%g", (double)cons->head.f); break;
                 case 3: output_format("'%c'", (int)cons->head.c); break;
                 default: {
-                    uint64_t head_val = cons->head.p.ptr |
-                                       (static_cast<uint64_t>(cons->head.p.constant) << 40);
+                    uint64_t head_val = hpBits(cons->head.p);
                     print_value(head_val, depth + 1);
                     break;
                 }
             }
 
             // Move to tail
-            current = cons->tail.ptr | (static_cast<uint64_t>(cons->tail.constant) << 40);
+            current = hpBits(cons->tail);
         } else {
             if (!first) output_text(", ");
             output_format("<non_cons_tag_%d>", header->tag);
@@ -2450,12 +2406,8 @@ static void print_dynrecord(DynRecord* dynrec, int depth) {
         // We don't have field names, so use numeric indices
         output_format("f%u = ", i);
 
-        // DynRecord values are HPointer, not Unboxable
-        // For JIT mode, we need to read the full pointer differently
-        // Since HPointer is a bitfield struct, we can't easily store 64-bit pointers
-        // Fall back to the 44-bit encoding for now
-        uint64_t val = dynrec->values[i].ptr |
-                      (static_cast<uint64_t>(dynrec->values[i].constant) << 40);
+        // DynRecord values are HPointer, not Unboxable.
+        uint64_t val = hpBits(dynrec->values[i]);
         print_value(val, depth + 1);
     }
     output_text(" }");
@@ -2727,13 +2679,28 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
     const Elm::EcoTypeInfo* typeInfo = &g_type_graph->types[type_id];
 
     switch (typeInfo->kind) {
-    case Elm::EcoTypeKind::Primitive:
-        // INVARIANT: At the dbg boundary, primitives are ALWAYS boxed (!eco.value).
-        // The value is an HPointer to a heap object (ElmInt, ElmFloat, ElmChar,
-        // ElmString) or an embedded constant (True, False, EmptyString).
-        // Just use the generic value printer which dispatches on heap tag.
-        print_value(value, depth);
+    case Elm::EcoTypeKind::Primitive: {
+        // At the dbg boundary primitives are boxed (!eco.value): a heap object
+        // (ElmInt/Float/Char/String) or an embedded constant. The only primitive
+        // constants are Bool (True/False) and the empty String — name them from
+        // the known prim_kind so we do not depend on the constant's specific
+        // value (post-merge all empties share one bit pattern). See plan D3/D4.
+        if (isConstantBits(value)) {
+            Elm::EcoPrimKind pk = typeInfo->data.primitive.prim_kind;
+            if (pk == Elm::EcoPrimKind::Bool) {
+                output_text(boolValueBits(value) ? "True" : "False");
+            } else if (pk == Elm::EcoPrimKind::String) {
+                output_text("\"\"");
+            } else if (pk == Elm::EcoPrimKind::Unit) {
+                output_text("()");
+            } else {
+                print_value(value, depth);  // unexpected primitive constant
+            }
+        } else {
+            print_value(value, depth);  // heap ElmInt/Float/Char/String
+        }
         break;
+    }
 
     case Elm::EcoTypeKind::List: {
         // Get element type for typed recursive printing
@@ -2749,15 +2716,10 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
         const int MAX_LIST_ITEMS = 100;
 
         while (count < MAX_LIST_ITEMS) {
-            // Check for Nil (end of list)
-            if (is_nil(current)) {
-                break;
-            }
-
-            // Check for other embedded constants
-            uint64_t ptr_part = current & 0xFFFFFFFFFF;
-            uint64_t const_part = current >> 40;
-            if (ptr_part == 0 && const_part >= 1 && const_part <= 7) {
+            // Any embedded constant in a list tail is the end of the list. In a
+            // List-typed context the only constant that can appear is Nil, so we
+            // need not distinguish it from the other empties (plan D3).
+            if (isConstantBits(current)) {
                 break;
             }
 
@@ -2775,7 +2737,7 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
                 Cons* cons = static_cast<Cons*>(ptr);
                 head_val = static_cast<uint64_t>(cons->head.i);
                 head_unboxed = (tupleFieldKind(cons->header.unboxed, 0) != 0);
-                tail_val = cons->tail.ptr | (static_cast<uint64_t>(cons->tail.constant) << 40);
+                tail_val = hpBits(cons->tail);
             } else if (header->tag == Tag_Custom) {
                 Custom* custom = static_cast<Custom*>(ptr);
                 if (!is_list_cons(custom)) break;
@@ -2919,6 +2881,12 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
         uint32_t first_field = typeInfo->data.record.first_field;
         uint32_t field_count = typeInfo->data.record.field_count;
 
+        // An embedded constant of a Record type is the empty record {} (plan D3).
+        if (isConstantBits(value)) {
+            output_text("{}");
+            break;
+        }
+
         void* ptr = hpointerToPtr(value);
         if (!ptr) {
             output_text("<null>");
@@ -2978,8 +2946,20 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
         uint32_t first_ctor = typeInfo->data.custom.first_ctor;
         uint32_t ctor_count = typeInfo->data.custom.ctor_count;
 
-        // Check for embedded constants first
-        if (print_if_constant(value)) {
+        // An embedded constant of a Custom type is that type's nullary
+        // constructor (the ctor with no fields — e.g. Maybe's Nothing). Name it
+        // from the type graph rather than the constant's specific value, so it
+        // still works once all empties share one bit pattern (plan D3). Bool is
+        // a Primitive, not a Custom, so a Custom constant is never a Bool.
+        if (isConstantBits(value)) {
+            assert(g_type_graph->ctors && "Type graph has no ctors array");
+            for (uint32_t ci = 0; ci < ctor_count; ++ci) {
+                const Elm::EcoCtorInfo* nInfo = &g_type_graph->ctors[first_ctor + ci];
+                if (nInfo->field_count == 0) {
+                    output_text(g_type_graph->strings[nInfo->name_index]);
+                    break;
+                }
+            }
             break;
         }
 
@@ -3281,12 +3261,17 @@ extern "C" uint32_t eco_get_tag(HPtr val) {
     // recursion (see stage-7 Dict_foldl crash, 2026-04-24).
     assert(val.bits != 0 && "eco_get_tag: null HPointer");
     HPointer hp = val.toHPointer();
-    // Check if this is an embedded constant (constant field != 0).
-    if (hp.constant != 0) {
-        if (hp.constant == 6) {  // Nothing
-            return 1;
+    // Embedded constant? Derive the ctor tag without needing its type (see D9):
+    //   - any "empty" constant (Nil/Nothing/Unit/EmptyRec/EmptyString) -> the
+    //     reserved CONSTANT_TAG; the compiler tags the matching branch the same.
+    //   - a Bool constant -> its i1 value (0 = False, 1 = True), matching the
+    //     IsBool tag convention (Bool normally dispatches via the i1 path; this
+    //     is defense-in-depth).
+    if (isConstantBits(val.bits)) {
+        if (isEmptyBits(val.bits)) {
+            return CONSTANT_TAG;
         }
-        return 0;
+        return static_cast<uint32_t>(boolValueBits(val.bits));
     }
 
     // Heap object: resolve pointer and check header tag.
@@ -3606,7 +3591,7 @@ extern "C" void eco_array_set_fix_kind(HPtr array_hptr, uint32_t intended_kind) 
     HPointer hp;
     uint64_t bits = array_hptr.toBits();
     std::memcpy(&hp, &bits, sizeof(hp));
-    if (hp.constant != 0) return;
+    if (hp.ptr_ind != 0) return;
     void* ptr = Allocator::instance().resolve(hp);
     if (!ptr) return;
     ElmArray* arr = static_cast<ElmArray*>(ptr);

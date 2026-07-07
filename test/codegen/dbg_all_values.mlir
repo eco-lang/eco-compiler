@@ -6,9 +6,9 @@ module {
   func.func @main() -> i64 {
     // === Embedded Constants ===
 
-    %nil = eco.constant Nil : !eco.value
+    %nil = eco.constant Empty : !eco.value
     eco.dbg %nil : !eco.value
-    // CHECK: []
+    // CHECK: <empty>
 
     %true = eco.constant True : !eco.value
     eco.dbg %true : !eco.value
@@ -18,21 +18,21 @@ module {
     eco.dbg %false : !eco.value
     // CHECK: False
 
-    %unit = eco.constant Unit : !eco.value
+    %unit = eco.constant Empty : !eco.value
     eco.dbg %unit : !eco.value
-    // CHECK: ()
+    // CHECK: <empty>
 
-    %nothing = eco.constant Nothing : !eco.value
+    %nothing = eco.constant Empty : !eco.value
     eco.dbg %nothing : !eco.value
-    // CHECK: Nothing
+    // CHECK: <empty>
 
-    %empty = eco.constant EmptyString : !eco.value
+    %empty = eco.constant Empty : !eco.value
     eco.dbg %empty : !eco.value
-    // CHECK: ""
+    // CHECK: <empty>
 
-    %empty_rec = eco.constant EmptyRec : !eco.value
+    %empty_rec = eco.constant Empty : !eco.value
     eco.dbg %empty_rec : !eco.value
-    // CHECK: {}
+    // CHECK: <empty>
 
     // === Unboxed Integers (i64) ===
 
@@ -151,17 +151,17 @@ module {
 
     %str2 = eco.string_literal "" : !eco.value
     eco.dbg %str2 : !eco.value
-    // CHECK: ""
+    // CHECK: <empty>
 
     // === Lists (Cons cells) ===
     // Boxed values, so unboxed_bitmap = 0
     %l1 = eco.construct.custom(%b42, %nil) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %l1 : !eco.value
-    // CHECK: Ctor0 42 []
+    // CHECK: Ctor0 42 <empty>
 
     %l2 = eco.construct.custom(%b0, %l1) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 0 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %l2 : !eco.value
-    // CHECK: Ctor0 0 (Ctor0 42 [])
+    // CHECK: Ctor0 0 (Ctor0 42 <empty>)
 
     // === Custom Constructors ===
 

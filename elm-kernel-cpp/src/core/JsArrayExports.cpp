@@ -280,7 +280,7 @@ HPtr Elm_Kernel_JsArray_push(HPtr value, HPtr array) {
     // alloc means we don't have to re-resolve `value` afterwards.
     int64_t unboxedPrim = 0;
     if (srcUnboxed) {
-        void* valPtr = (valHP.constant == 0 && valHP.ptr != 0)
+        void* valPtr = (valHP.ptr_ind == 0 && valHP.ptr != 0)
                            ? allocator.resolve(valHP) : nullptr;
         if (valPtr) {
             unboxedPrim = *reinterpret_cast<int64_t*>(

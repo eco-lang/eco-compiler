@@ -34,12 +34,12 @@ module {
     // CHECK: 30
 
     // Create a list that references multiple globals
-    %nil = eco.constant Nil : !eco.value
+    %nil = eco.constant Empty : !eco.value
     %list1 = eco.construct.custom(%r3, %nil) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     %list2 = eco.construct.custom(%r2, %list1) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     %list3 = eco.construct.custom(%r1, %list2) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %list3 : !eco.value
-    // CHECK: Ctor0 10 (Ctor0 20 (Ctor0 30 []))
+    // CHECK: Ctor0 10 (Ctor0 20 (Ctor0 30 <empty>))
 
     // Store the list in g1 (creates cross-reference)
     eco.store_global %list3, @g1
@@ -47,7 +47,7 @@ module {
     // Load and verify list is intact
     %loaded_list = eco.load_global @g1
     eco.dbg %loaded_list : !eco.value
-    // CHECK: Ctor0 10 (Ctor0 20 (Ctor0 30 []))
+    // CHECK: Ctor0 10 (Ctor0 20 (Ctor0 30 <empty>))
 
     // Project elements from loaded list
     %head = eco.project.custom %loaded_list[0] : !eco.value -> !eco.value

@@ -186,10 +186,9 @@ void verifyIntValues(const std::vector<HPointer>& roots,
 // ============================================================================
 
 HPointer createConstant(Constant c) {
-    HPointer ptr;
-    ptr.ptr = 0;
+    HPointer ptr{};
+    ptr.ptr_ind = 1;
     ptr.constant = c;
-    ptr.padding = 0;
     return ptr;
 }
 
@@ -328,7 +327,7 @@ void verifyLinkedList(HPointer head, const std::vector<i64>& expected) {
     HPointer current = head;
     size_t idx = 0;
 
-    while (current.constant == 0) {
+    while (current.ptr_ind == 0) {
         void* obj = readBarrier(current);
         if (!obj) break;
 

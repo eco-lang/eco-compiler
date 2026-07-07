@@ -5,14 +5,14 @@
 module {
   func.func @main() -> i64 {
     // Test Nil constant (empty list)
-    %nil = eco.constant Nil : !eco.value
+    %nil = eco.constant Empty : !eco.value
     eco.dbg %nil : !eco.value
-    // CHECK: []
+    // CHECK: <empty>
 
     // Test Unit constant
-    %unit = eco.constant Unit : !eco.value
+    %unit = eco.constant Empty : !eco.value
     eco.dbg %unit : !eco.value
-    // CHECK: ()
+    // CHECK: <empty>
 
     // Test True constant
     %true = eco.constant True : !eco.value
@@ -25,19 +25,19 @@ module {
     // CHECK: False
 
     // Test Nothing constant (Maybe.Nothing)
-    %nothing = eco.constant Nothing : !eco.value
+    %nothing = eco.constant Empty : !eco.value
     eco.dbg %nothing : !eco.value
-    // CHECK: Nothing
+    // CHECK: <empty>
 
     // Test EmptyString constant
-    %empty_str = eco.constant EmptyString : !eco.value
+    %empty_str = eco.constant Empty : !eco.value
     eco.dbg %empty_str : !eco.value
-    // CHECK: ""
+    // CHECK: <empty>
 
     // Test EmptyRec constant
-    %empty_rec = eco.constant EmptyRec : !eco.value
+    %empty_rec = eco.constant Empty : !eco.value
     eco.dbg %empty_rec : !eco.value
-    // CHECK: {}
+    // CHECK: <empty>
 
     %zero = arith.constant 0 : i64
     return %zero : i64

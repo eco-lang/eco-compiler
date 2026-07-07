@@ -94,6 +94,8 @@ enum class EcoPrimKind : uint8_t {
     Char,
     Bool,
     String,
+    Unit,  // Elm `()`; always the embedded empty constant. Must match
+           // Compiler.Generate.MLIR.TypeTable.primKindToTag (PKUnit = 5).
 };
 
 // ============================================================================

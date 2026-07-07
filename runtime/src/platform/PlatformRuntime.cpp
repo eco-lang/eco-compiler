@@ -33,7 +33,7 @@ static inline HPointer decodeHP(uint64_t val) {
 }
 
 static inline bool hpIsConstant(HPointer h) {
-    return h.constant != 0;
+    return h.ptr_ind != 0;
 }
 
 static inline void* resolveHP(HPointer h) {

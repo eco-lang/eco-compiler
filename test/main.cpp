@@ -33,6 +33,8 @@
 #include "allocator/EcoApplyClosureTypedTest.hpp"
 #include "allocator/GCPressureTest.hpp"
 #include "allocator/SliceRepresentationTest.hpp"
+#include "allocator/AddressSpaceReservationTest.hpp"
+#include "allocator/HPointerLayoutTest.hpp"
 #include "kernel/KernelExportsTest.hpp"
 #include "codegen/CodegenIsolatedTest.hpp"
 #include "bf-codegen/BFCodegenTest.hpp"
@@ -752,6 +754,20 @@ int main(int argc, char* argv[]) {
     Testing::TestSuite sliceReprTests("SliceRepresentation");
     registerSliceRepresentationTests(sliceReprTests);
 
+    // Low-address heap reservation (HPointer raw-absolute-address invariant).
+    Testing::TestSuite addressReservationTests("AddressSpaceReservation");
+    addressReservationTests.add(testReserveBelowFitsUnderLimit);
+    addressReservationTests.add(testReserveBelowCommitRoundTrip);
+    addressReservationTests.add(testReserveBelowRejectsOversize);
+
+    // HPointer golden-word and round-trip layout tests.
+    Testing::TestSuite hpointerLayoutTests("HPointerLayout");
+    hpointerLayoutTests.add(testHPointerGoldenWords);
+    hpointerLayoutTests.add(testHPointerConstantPredicates);
+    hpointerLayoutTests.add(testHPointerPointerRoundTrip);
+    hpointerLayoutTests.add(testHPointerForwardPtrRoundTrip);
+    hpointerLayoutTests.add(testHPointerBitsRoundTrip);
+
     // Kernel extern-"C" ABI tests (encoder/decoder/string ABI).
     Testing::TestSuite kernelExportsTests("KernelExports");
     registerKernelExportsTests(kernelExportsTests);
@@ -852,6 +868,8 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(genericApplyBoxingTests));
     suite.add(std::move(ecoApplyClosureTypedTests));
     suite.add(std::move(sliceReprTests));
+    suite.add(std::move(addressReservationTests));
+    suite.add(std::move(hpointerLayoutTests));
     suite.add(std::move(kernelExportsTests));
     suite.add(std::move(gcPressureTests));
     suite.add(std::move(codegenTests));

@@ -9,6 +9,7 @@ Takes Loop IR operations and emits bf dialect MLIR ops.
 -}
 
 import Compiler.AST.Monomorphized as Mono
+import Compiler.Data.CtorTag as CtorTag
 import Compiler.Generate.MLIR.BytesFusion.LoopIR as IR exposing (DecoderOp(..), Endianness(..), Op(..), WidthExpr(..))
 import Compiler.Generate.MLIR.Context as Context exposing (Context)
 import Compiler.Generate.MLIR.Ops as Ops
@@ -700,13 +701,16 @@ emitWriteEachItem r state =
                     )
                 |> Ops.opBuilder.build
 
-        ( zeroI32Var, ctx7 ) =
+        -- Nil is an embedded empty constant; eco_get_tag returns CONSTANT_TAG
+        -- for it (see D9), so the "is this list Nil?" check compares against
+        -- CtorTag.constantTag, not 0.
+        ( nilTagVar, ctx7 ) =
             Context.freshVar ctx6
 
-        ( ctx8, zeroI32Op ) =
+        ( ctx8, nilTagOp ) =
             Ops.mlirOp ctx7 "arith.constant"
-                |> Ops.opBuilder.withResults [ ( zeroI32Var, I32 ) ]
-                |> Ops.opBuilder.withAttrs (Dict.singleton "value" (IntAttr (Just I32) 0))
+                |> Ops.opBuilder.withResults [ ( nilTagVar, I32 ) ]
+                |> Ops.opBuilder.withAttrs (Dict.singleton "value" (IntAttr (Just I32) CtorTag.constantTag))
                 |> Ops.opBuilder.build
 
         ( isNilVar, ctx9 ) =
@@ -715,7 +719,7 @@ emitWriteEachItem r state =
         -- arith.cmpi predicate=0 means eq
         ( ctx10, cmpEqOp ) =
             Ops.mlirOp ctx9 "arith.cmpi"
-                |> Ops.opBuilder.withOperands [ tagVar, zeroI32Var ]
+                |> Ops.opBuilder.withOperands [ tagVar, nilTagVar ]
                 |> Ops.opBuilder.withResults [ ( isNilVar, I1 ) ]
                 |> Ops.opBuilder.withAttrs
                     (Dict.fromList
@@ -759,7 +763,7 @@ emitWriteEachItem r state =
                 [ ( beforeCursorArg, bfCursorType )
                 , ( beforeListArg, Types.ecoValue )
                 ]
-                [ tagOp, zeroI32Op, cmpEqOp, trueOp, xoriOp ]
+                [ tagOp, nilTagOp, cmpEqOp, trueOp, xoriOp ]
                 conditionOp
 
         -- 4. Build after region: project head, run body, project tail, yield.
@@ -769,13 +773,31 @@ emitWriteEachItem r state =
         ( afterListArg, ctx17 ) =
             Context.freshVar ctx16
 
+        -- A WriteEachItem loop body only ever contains primitive number
+        -- writes (buildLoopNode restricts it to EU8/EU16/EU32/EF32/EF64), so
+        -- the per-iteration item is always an UNBOXED number: Int heads are
+        -- i64, Float heads are f64. Projecting the head as `!eco.value` and
+        -- then `eco.unbox`-ing it (resolve + load) is wrong for unboxed heads
+        -- — the raw scalar word gets reinterpreted as an HPointer, and under
+        -- the current representation an unboxed int like 7 has the ptr_ind bit
+        -- set, so eco_resolve_hptr rejects it as an embedded constant. Project
+        -- the head directly in its natural scalar type instead: the i64/f64
+        -- `eco.project.list_head` lowering (eco_cons_head_i64/f64) reads the
+        -- head correctly whether it is stored boxed or unboxed.
+        headType =
+            if List.all isFloatWrite r.bodyOps && not (List.isEmpty r.bodyOps) then
+                F64
+
+            else
+                I64
+
         ( headVar, ctx18 ) =
             Context.freshVar ctx17
 
         ( ctx19, headOp ) =
             Ops.mlirOp ctx18 "eco.project.list_head"
                 |> Ops.opBuilder.withOperands [ afterListArg ]
-                |> Ops.opBuilder.withResults [ ( headVar, Types.ecoValue ) ]
+                |> Ops.opBuilder.withResults [ ( headVar, headType ) ]
                 |> Ops.opBuilder.withAttrs
                     (Dict.singleton "_operand_types"
                         (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
@@ -795,9 +817,12 @@ emitWriteEachItem r state =
                     )
                 |> Ops.opBuilder.build
 
-        -- Bind itemVar -> headVar so body MonoExpr lookups resolve.
+        -- Bind itemVar -> headVar (in its natural scalar type) so body
+        -- MonoExpr lookups resolve. Because the head is already the unboxed
+        -- i64/f64, the write op's `ensureUnboxed` is a no-op (no stray
+        -- eco.unbox / eco_resolve_hptr on a raw scalar word).
         ctxBody =
-            Context.addVarMapping r.itemVar headVar Types.ecoValue ctx21
+            Context.addVarMapping r.itemVar headVar headType ctx21
 
         -- Emit the body ops with afterCursorArg as the starting cursor,
         -- fresh `ops` accumulator (these belong inside the region, not the
@@ -842,6 +867,23 @@ emitWriteEachItem r state =
         , cursor = whileCursorResult
         , ops = whileOp :: (List.reverse iterResult.ops ++ state.ops)
     }
+
+
+{-| True for the float primitive write ops. Used to decide whether a
+`WriteEachItem` loop's per-iteration item head is an unboxed f64 (all body
+writes are floats) or an unboxed i64 (the Int default). See `emitWriteEachItem`.
+-}
+isFloatWrite : Op -> Bool
+isFloatWrite op =
+    case op of
+        WriteF32 _ _ _ ->
+            True
+
+        WriteF64 _ _ _ ->
+            True
+
+        _ ->
+            False
 
 
 

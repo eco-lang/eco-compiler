@@ -10,7 +10,7 @@ module {
 
     // Create a simple structure to match on
     // Tag 0 = continue (jump back), Tag 1 = stop
-    %nil = eco.constant Nil : !eco.value
+    %nil = eco.constant Empty : !eco.value
     %continue_obj = eco.construct.custom(%nil) {tag = 0 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
     %stop_obj = eco.construct.custom(%nil) {tag = 1 : i64, size = 1 : i64} : (!eco.value) -> !eco.value
 

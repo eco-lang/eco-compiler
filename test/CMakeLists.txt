@@ -103,6 +103,8 @@ add_executable(test
         allocator/EcoApplyClosureTypedTest.cpp
         allocator/GCPressureTest.cpp
         allocator/SliceRepresentationTest.cpp
+        allocator/AddressSpaceReservationTest.cpp
+        allocator/HPointerLayoutTest.cpp
         kernel/KernelExportsTest.cpp
 )
 

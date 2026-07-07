@@ -5,7 +5,7 @@
 
 module {
   func.func @main() -> i64 {
-    %nil = eco.constant Nil : !eco.value
+    %nil = eco.constant Empty : !eco.value
     %i1 = arith.constant 1 : i64
     %b1 = eco.box %i1 : i64 -> !eco.value
 

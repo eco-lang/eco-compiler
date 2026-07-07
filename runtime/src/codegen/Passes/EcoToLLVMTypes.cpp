@@ -69,7 +69,7 @@ struct StringLiteralOpLowering : public OpConversionPattern<StringLiteralOp> {
 
         // Empty string -> use embedded constant
         if (value.empty()) {
-            int64_t encoded = value_enc::encodeConstant(value_enc::EmptyString);
+            int64_t encoded = value_enc::encodeConstant(value_enc::Empty);
             Value i64Val = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, encoded);
             Value result = rewriter.create<LLVM::IntToPtrOp>(loc, hptrTy, i64Val);
             rewriter.replaceOp(op, result);

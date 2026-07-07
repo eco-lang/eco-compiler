@@ -157,7 +157,7 @@ inline i64 length(void* str) {
  * Checks if a string is empty.
  */
 inline bool isEmpty(HPointer ptr) {
-    return alloc::isConstant(ptr) && ptr.constant == Const_EmptyString + 1;
+    return alloc::isConstant(ptr) && Elm::alloc::isEmptyString(ptr);
 }
 
 // Forward declaration so all inline ops below can call toStdU16String to

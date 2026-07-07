@@ -5,7 +5,7 @@
 
 module {
   func.func @value_cons_head(%head: i64) -> i64 {
-    %nil = eco.constant Nil : !eco.value
+    %nil = eco.constant Empty : !eco.value
     %c = eco.make.cons %head, %nil : (i64, !eco.value) -> !eco.cons<i64, !eco.value>
     %h = eco.project.list_head %c : !eco.cons<i64, !eco.value> -> i64
     return %h : i64

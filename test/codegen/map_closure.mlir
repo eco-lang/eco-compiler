@@ -42,7 +42,7 @@ module {
     %two = arith.constant 2 : i64
     %three = arith.constant 3 : i64
 
-    %nil = eco.constant Nil : !eco.value
+    %nil = eco.constant Empty : !eco.value
 
     // Cons 3 Nil
     %boxed3 = eco.box %three : i64 -> !eco.value

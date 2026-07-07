@@ -22,6 +22,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 namespace Elm::platform {
 
@@ -29,6 +30,16 @@ namespace Elm::platform {
 // region is unbacked (PROT_NONE / PAGE_NOACCESS) and must be committed in
 // subranges before use. Returns nullptr on failure.
 void* reserveAddressSpace(std::size_t size);
+
+// Reserve `size` bytes of address space placed entirely below `limit` — that
+// is, the returned base `b` satisfies `b + size <= limit`. Probes a series of
+// low candidate bases and verifies placement, falling back to a kernel-chosen
+// address only if it happens to fit. Returns nullptr if no fitting region
+// could be reserved. Used by the HPointer representation, which stores raw
+// absolute heap addresses in the low bits of a 64-bit word and therefore
+// requires the whole heap to live below 2^43 (8 TB). The region is unbacked
+// (PROT_NONE / PAGE_NOACCESS), same as reserveAddressSpace.
+void* reserveAddressSpaceBelow(std::size_t size, std::uintptr_t limit);
 
 // Commit a subrange of an existing reservation. `addr` must be inside a
 // previous reservation and the [addr, addr+size) range must lie wholly

@@ -27,6 +27,8 @@
 #define ECO_HEAP_H
 
 #include <assert.h>
+#include <bit>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -63,6 +65,13 @@ typedef double f64;                  // 64-bit floating point.
 #define CTOR_BITS 16
 #define POINTER_BITS 40
 #define ID_BITS 16  // Process and Task ID field
+
+// Upper bound (exclusive) on any raw heap address. The HPointer `ptr` field is
+// POINTER_BITS wide and sits at bit offset 3 (above the 3-bit constant/ptr_ind
+// low field), so a raw 8-byte-aligned heap address occupies bits
+// [0, POINTER_BITS+3). The whole heap must be reserved below this limit (8 TB)
+// so an address round-trips through an HPointer word without loss. See D1/D7.
+#define HPOINTER_ADDRESS_LIMIT (1ULL << (POINTER_BITS + 3))
 
 typedef enum {
     Tag_Int,
@@ -149,24 +158,50 @@ typedef struct {
 static_assert(sizeof(Header) == 8, "Header must be 64 bits");
 
 // Frequently used constants in Elm can be embedded directly into HPointer.
-// There is no need to trace a pointer to reach them.
+// There is no need to trace a pointer to reach them. The `constant` field is a
+// 2-bit code, meaningful only when `ptr_ind == 1`:
+//   bit 0 = Bool value (0 = False, 1 = True) — matches the SSA/ABI i1 value.
+//   bit 1 = Empty flag — the single unified nullary/empty constant, shared by
+//           Unit, EmptyRec, Nil, Nothing, and "" (the type checker guarantees a
+//           merged empty is only produced/matched where its type is expected).
+// See plan D3. The old distinct Unit/EmptyRec/Nil/Nothing/EmptyString constants
+// collapse into Const_Empty.
 typedef enum {
-    Const_Unit,
-    Const_EmptyRec,
-    Const_True,
-    Const_False,
-    Const_Nil, // Empty list
-    Const_Nothing,
-    Const_EmptyString
+    Const_False = 0, // bit 0 clear
+    Const_True  = 1, // bit 0 set
+    Const_Empty = 2, // bit 1 set — unifies Unit / EmptyRec / Nil / Nothing / ""
 } Constant;
 
-// A logical pointer into the heap.
+// A pointer into the heap, or an embedded constant. Layout (LSB first):
+//   [0-1]   constant : 2   — see Constant above (valid only when ptr_ind == 1)
+//   [2]     ptr_ind  : 1   — 0 = heap pointer, 1 = not a pointer (constant/enum)
+//   [3-42]  ptr      : 40  — absolute, 8-byte-aligned heap address. Because the
+//                            field starts at bit 3, the low 43 bits of the word
+//                            ARE the raw address (its low 3 bits are 0 and land
+//                            in constant/ptr_ind): no heap_base, no shift. Plan D1.
+//   [43-52] enum_idx : 10  — reserved bare constructor index for a future enum
+//                            optimization; always 0 for now. (`enum` is a C++
+//                            keyword, hence `enum_idx`.)
+//   [53-63] padding  : 11  — reserved, always 0.
 typedef struct {
-    u64 ptr : POINTER_BITS;
-    u64 constant : 4; // Embedded constant index (0 means regular pointer, 1-15 encode constants).
-    u64 padding : 20; // Reserved for future use.
+    u64 constant : 2;
+    u64 ptr_ind  : 1;
+    u64 ptr      : POINTER_BITS;
+    u64 enum_idx : 10;
+    u64 padding  : 11;
 } HPointer;
 static_assert(sizeof(HPointer) == 8, "HPointer must be 64 bits");
+
+// Golden-word checks (plan D6): the bitfield packing must produce the canonical
+// constant/pointer words (False 0x4, True 0x5, Empty 0x6, null 0x0, and a heap
+// pointer's word == its address). These cannot be static_asserts because
+// std::bit_cast of a bit-field struct is not a constant expression (bit-field
+// layout is implementation-defined); they are validated at runtime by
+// HPointerLayoutTest, which catches any ABI/compiler bitfield-layout surprise.
+
+// Bit position of the pointer/non-pointer discriminator within the 64-bit word.
+// Equals CONST_BITS (2) + 0; the ptr field begins at PTR_IND_BIT + 1 = bit 3.
+#define PTR_IND_BIT 2
 
 // Opaque 64-bit HPointer representation for C-linkage boundaries.
 // On the LLVM side this is declared as ptr addrspace(1); on x86-64 SysV ABI
@@ -228,6 +263,82 @@ inline u64 pointerMaskFromKindBitmap(u64 kindBitmap, unsigned numSlots) {
         if (fieldKind(kindBitmap, i) == 0) mask |= (1ULL << i);
     }
     return mask;
+}
+
+// ============================================================================
+// Centralized low-level HPointer bit access (see plan D1/D2/D8)
+// ============================================================================
+//
+// Single source of truth for turning an HPointer into a 64-bit word, resolving
+// a heap pointer to its raw address, classifying it as a constant vs a heap
+// pointer, and encoding/decoding forwarding pointers. The representation is
+// defined by these bodies plus the HPointer struct above.
+//
+// New layout (plan D1/D3/D6/D8): `ptr` is a raw absolute 8-byte-aligned address
+// occupying bits [3, 43); `ptr_ind` (bit 2) discriminates pointer (0) vs
+// constant/enum (1); `constant` (bits 0-1) is False=0 / True=1 / Empty=2.
+// Golden words: null = 0x0, False = 0x4, True = 0x5, Empty = 0x6, and a heap
+// pointer's word IS its address.
+
+// Bit-preserving reinterpretation between an HPointer and its 64-bit word.
+inline u64 hpBits(HPointer hp) {
+    u64 b;
+    std::memcpy(&b, &hp, sizeof(b));
+    return b;
+}
+inline HPointer hpFromBits(u64 b) {
+    HPointer hp;
+    std::memcpy(&hp, &b, sizeof(hp));
+    return hp;
+}
+
+// Resolve a heap-pointer HPointer to its raw absolute address. The low
+// POINTER_BITS+3 (= 43) bits of the word are the 8-byte-aligned address itself
+// (constant/ptr_ind are 0 for a pointer, and encode zeroes enum_idx/padding).
+// No heap_base, no shift. Only valid when the HPointer is a pointer (ptr_ind==0).
+inline void* hpToAddr(HPointer hp) {
+    return reinterpret_cast<void*>(hpBits(hp) & ((1ULL << (POINTER_BITS + 3)) - 1));
+}
+
+// "Is this word an embedded constant rather than a heap pointer?" Discriminated
+// by ptr_ind (bit 2), since a False constant has constant field 0 just like a
+// heap pointer.
+inline bool isConstantBits(u64 b) { return hpFromBits(b).ptr_ind != 0; }
+
+// "Is this word the unified empty constant (not Bool)?" i.e. ptr_ind set and the
+// empty bit (bit 1 of the constant field) set.
+inline bool isEmptyBits(u64 b) {
+    HPointer hp = hpFromBits(b);
+    return hp.ptr_ind != 0 && hp.constant == Const_Empty;
+}
+
+// For a Bool-constant word, the i1 value (0 = False, 1 = True) — bit 0 of the
+// constant field. Only meaningful when the word is a Bool constant
+// (isConstantBits && !isEmptyBits).
+inline u64 boolValueBits(u64 b) {
+    return hpFromBits(b).constant & 1u;
+}
+
+// Reserved constructor tag for embedded "empty" constants (Nil / Nothing / Unit /
+// EmptyRec / EmptyString), which under the merged representation share one bit
+// pattern and can no longer be told apart by constant value. Sits just below the
+// Dict reservations (0xFFFF / 0xFFFE). The compiler emits this tag for
+// embedded-constant constructor branches; the runtime derives it in eco_get_tag
+// and the eco.case lowering. Must stay in sync with
+// `Compiler.Data.CtorTag.constantTag` and `value_enc::ConstantTag`. See plan D9.
+#define CONSTANT_TAG 0xFFFD
+
+// Forwarding-pointer field (POINTER_BITS wide) <-> physical address. Unlike the
+// HPointer `ptr` field, the Forward header's `forward_ptr` cannot start at bit 3
+// (bits 0-4 hold the Tag_Forward tag), so it stores the absolute address in
+// 8-byte units (addr >> 3) and decodes with addr = forward_ptr << 3 — the ÷8
+// unit stays, only the heap_base term is dropped (plan D8). The `heap_base`
+// parameter is retained for call-site stability and is unused.
+inline u64 encodeForwardPtr(void* newObj, char* /*heap_base*/) {
+    return static_cast<u64>(reinterpret_cast<uintptr_t>(newObj)) >> 3;
+}
+inline char* decodeForwardPtr(u64 forwardPtr, char* /*heap_base*/) {
+    return reinterpret_cast<char*>(static_cast<uintptr_t>(forwardPtr) << 3);
 }
 
 // ============================================================================

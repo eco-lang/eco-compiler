@@ -770,7 +770,7 @@ Testing::TestCase testEcoAllocConsListLongPromotion(
         size_t expected_idx = kLen - 1;
         size_t walked = 0;
         HPointer cur = head;
-        while (cur.constant == 0) {
+        while (cur.ptr_ind == 0) {
             void* obj = readBarrier(cur);
             GCP_ASSERT(obj != nullptr);
             Header* hdr = getHeader(obj);
@@ -1137,7 +1137,7 @@ Testing::TestCase testMajorGCInitiatedByOccupancyAndAllocFailure(
             GCP_ASSERT(after_fail > before_fail || majorGCCount() >= 1);
 
             for (auto& r : live) {
-                if (r.constant == 0) alloc.getRootSet().removeRoot(&r);
+                if (r.ptr_ind == 0) alloc.getRootSet().removeRoot(&r);
             }
         }
     });

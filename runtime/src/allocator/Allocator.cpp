@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#include <stdexcept>
 // musl (Stage B static build) ships no <execinfo.h>/backtrace; stub them as
 // no-ops so the debug paths compile. glibc keeps its real backtrace. See
 // plans/static-link-eco-binary.md. Windows ships no <execinfo.h> either —
@@ -177,15 +178,33 @@ void Allocator::initialize(const HeapConfig& config) {
 
     heap_reserved = config_.max_heap_size;
 
+    // The HPointer representation stores raw absolute heap addresses in the low
+    // 43 bits of a 64-bit word, so the entire heap must live below 2^43 (8 TB).
+    // Reject configurations that cannot fit, then reserve a low base. This is
+    // harmless under the legacy heap_base-relative encoding (pointers are
+    // offsets from heap_base wherever it lands) and de-risks the representation
+    // flip. See plan D7.
+    if (heap_reserved > HPOINTER_ADDRESS_LIMIT) {
+        throw std::invalid_argument(
+            "max_heap_size exceeds the 8 TB HPointer address limit");
+    }
+
     // Reserve address space without committing physical memory — see
     // PlatformVirtualMemory.hpp for the POSIX (mmap PROT_NONE) and Win64
     // (VirtualAlloc MEM_RESERVE PAGE_NOACCESS) implementations.
     heap_base = static_cast<char *>(
-        Elm::platform::reserveAddressSpace(heap_reserved));
+        Elm::platform::reserveAddressSpaceBelow(heap_reserved,
+                                                HPOINTER_ADDRESS_LIMIT));
 
     if (heap_base == nullptr) {
         throw std::bad_alloc();
     }
+
+    // Post-condition: the whole reservation fits below the HPointer address
+    // limit, so every heap address round-trips through an HPointer word.
+    assert(reinterpret_cast<uintptr_t>(heap_base) + heap_reserved
+               <= HPOINTER_ADDRESS_LIMIT &&
+           "heap reservation must fit below 2^43 for HPointer encoding");
 
     // Set global heap_base for pointer conversion.
     g_heap_base = heap_base;
@@ -364,7 +383,7 @@ bool Allocator::isInNursery(void *ptr) {
 // Compiles to a no-op when ECO_HEAP_VALIDATE is off — see HeapHelpers.hpp.
 void Allocator::validateInNurserySafe(HPointer hp) {
 #if ECO_HEAP_VALIDATE
-    if (hp.constant != 0 || hp.ptr == 0) return;
+    if (hp.ptr_ind != 0 || hp.ptr == 0) return;
     void* obj = fromPointerRaw(hp);
     if (tl_heap_ && tl_heap_->isInNursery(obj)) {
         tl_heap_->debugAssertValidNurseryPointer(obj);
@@ -765,7 +784,7 @@ void Allocator::reset(const HeapConfig* new_config) {
 
 // Resolves an HPointer to its physical address, following forwarding pointers.
 void* Allocator::resolve(HPointer ptr) {
-    assert(ptr.constant == 0 && "Cannot resolve HPointer with constant field set (embedded constant)");
+    assert(ptr.ptr_ind == 0 && "Cannot resolve an embedded constant HPointer");
 
     void* obj = fromPointerRaw(ptr);
     assert(obj && "Null pointer from valid HPointer");
@@ -790,8 +809,7 @@ void* Allocator::resolve(HPointer ptr) {
     Header* hdr = getHeader(obj);
     while (hdr->tag == Tag_Forward) {
         Forward* fwd = static_cast<Forward*>(obj);
-        uintptr_t byte_offset = static_cast<uintptr_t>(fwd->header.forward_ptr) << 3;
-        obj = heap_base + byte_offset;
+        obj = decodeForwardPtr(fwd->header.forward_ptr, heap_base);
         hdr = getHeader(obj);
     }
 

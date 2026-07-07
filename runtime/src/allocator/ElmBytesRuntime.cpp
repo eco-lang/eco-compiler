@@ -51,7 +51,7 @@ inline uint64_t hpointerToU64(Elm::HPointer hp) {
 // For embedded constants (constant!=0), returns nullptr
 inline void* u64ToPtr(uint64_t val) {
     Elm::HPointer hp = u64ToHPointer(val);
-    if (hp.constant != 0) {
+    if (hp.ptr_ind != 0) {
         return nullptr;  // Embedded constant has no heap object
     }
     return Elm::Allocator::instance().resolve(hp);
@@ -111,7 +111,7 @@ void elm_bytebuffer_with_data(HPtr bbVal, elm_bytebuffer_callback fn, void* ctx)
 
 u32 elm_utf8_width(HPtr strVal) {
     Elm::HPointer hp = u64ToHPointer(strVal.toBits());
-    if (hp.constant == Elm::Const_EmptyString + 1) {
+    if (Elm::alloc::isEmptyString(hp)) {
         return 0;  // Empty string constant
     }
 
@@ -157,7 +157,7 @@ u32 elm_utf8_width(HPtr strVal) {
 
 u32 elm_utf8_copy(HPtr strVal, u8* dst) {
     Elm::HPointer hp = u64ToHPointer(strVal.toBits());
-    if (hp.constant == Elm::Const_EmptyString + 1) {
+    if (Elm::alloc::isEmptyString(hp)) {
         return 0;
     }
 

@@ -158,104 +158,97 @@ namespace alloc {
 // ============================================================================
 
 /**
- * Returns an HPointer representing the Nil constant (empty list).
+ * Returns the unified empty/nullary constant (word 0x6): ptr_ind set, the empty
+ * bit set. Under the merged representation Unit, EmptyRec, Nil, Nothing, and ""
+ * all share this one bit pattern (plan D3); the builders below are aliases.
  */
-inline HPointer listNil() {
-    HPointer ptr;
-    ptr.ptr = 0;
-    ptr.constant = Const_Nil + 1;  // +1 because 0 means "real pointer"
-    ptr.padding = 0;
-    return ptr;
+inline HPointer empty() {
+    HPointer p{};
+    p.ptr_ind = 1;
+    p.constant = Const_Empty;
+    return p;
 }
 
-/**
- * Returns an HPointer representing the Unit constant ().
- */
-inline HPointer unit() {
-    HPointer ptr;
-    ptr.ptr = 0;
-    ptr.constant = Const_Unit + 1;
-    ptr.padding = 0;
-    return ptr;
-}
+inline HPointer listNil()     { return empty(); }  // []
+inline HPointer unit()        { return empty(); }  // ()
+inline HPointer nothing()     { return empty(); }  // Nothing
+inline HPointer emptyString() { return empty(); }  // ""
+inline HPointer emptyRecord() { return empty(); }  // {}
 
 /**
- * Returns an HPointer representing the True boolean.
+ * Returns an HPointer representing the True boolean (word 0x5): ptr_ind set,
+ * constant bit 0 set so the word's low bit is the i1 value.
  */
 inline HPointer elmTrue() {
-    HPointer ptr;
-    ptr.ptr = 0;
-    ptr.constant = Const_True + 1;
-    ptr.padding = 0;
-    return ptr;
+    HPointer p{};
+    p.ptr_ind = 1;
+    p.constant = Const_True;
+    return p;
 }
 
 /**
- * Returns an HPointer representing the False boolean.
+ * Returns an HPointer representing the False boolean (word 0x4).
  */
 inline HPointer elmFalse() {
-    HPointer ptr;
-    ptr.ptr = 0;
-    ptr.constant = Const_False + 1;
-    ptr.padding = 0;
-    return ptr;
+    HPointer p{};
+    p.ptr_ind = 1;
+    p.constant = Const_False;
+    return p;
 }
 
 /**
- * Returns an HPointer representing Nothing (Maybe).
- */
-inline HPointer nothing() {
-    HPointer ptr;
-    ptr.ptr = 0;
-    ptr.constant = Const_Nothing + 1;
-    ptr.padding = 0;
-    return ptr;
-}
-
-/**
- * Returns an HPointer representing the empty string.
- */
-inline HPointer emptyString() {
-    HPointer ptr;
-    ptr.ptr = 0;
-    ptr.constant = Const_EmptyString + 1;
-    ptr.padding = 0;
-    return ptr;
-}
-
-/**
- * Returns an HPointer representing an empty record {}.
- */
-inline HPointer emptyRecord() {
-    HPointer ptr;
-    ptr.ptr = 0;
-    ptr.constant = Const_EmptyRec + 1;
-    ptr.padding = 0;
-    return ptr;
-}
-
-/**
- * Checks if an HPointer is an embedded constant.
+ * Checks if an HPointer is an embedded constant (not a heap pointer).
  */
 inline bool isConstant(HPointer ptr) {
-    return ptr.constant != 0;
+    return ptr.ptr_ind != 0;
 }
 
 /**
- * Returns true if pointer represents Nil (empty list).
+ * Returns true if pointer represents Nil / any merged empty (empty list, etc.).
  */
 inline bool isNil(HPointer ptr) {
-    return ptr.constant == Const_Nil + 1;
+    return Elm::isEmptyBits(Elm::hpBits(ptr));
 }
 
 inline bool isEmptyString(HPointer ptr) {
-    return ptr.constant == Const_EmptyString + 1;
+    return Elm::isEmptyBits(Elm::hpBits(ptr));
 }
 
-/// Returns true if the HPointer is any embedded constant (constant field 1-7).
+/// Returns true if the HPointer is any embedded constant.
 inline bool isEmbeddedConstant(HPointer ptr) {
-    return ptr.constant != 0;
+    return ptr.ptr_ind != 0;
 }
+
+// ============================================================================
+// Semantic HPointer constant predicates (see plan D2/D3)
+// ============================================================================
+//
+// Low-level word/forward helpers (hpBits/hpFromBits/isConstantBits/
+// isEmptyBits/encode|decodeForwardPtr) live in Heap.hpp so the GC core can use
+// them without depending on this higher-level file. The predicates below add
+// the specific-constant and Bool classifications used by the printer, JSON,
+// equality, and kernels.
+//
+// Under the merged representation all five empties share one bit pattern, so the
+// specific-empty predicates all collapse to isEmpty; Bool is read from bit 0.
+// See plan D3.
+
+// True for the unified empty constant (Unit/EmptyRec/Nil/Nothing/"") — i.e. an
+// embedded constant that is not a Bool.
+inline bool isEmpty(HPointer p) {
+    return Elm::isEmptyBits(Elm::hpBits(p));
+}
+
+// Specific-constant predicates (all now the merged empty constant).
+inline bool isNothing(HPointer p)   { return isEmpty(p); }
+inline bool isUnit(HPointer p)      { return isEmpty(p); }
+inline bool isEmptyRec(HPointer p)  { return isEmpty(p); }
+
+// Bool-constant predicates.
+inline bool isBoolConst(HPointer p) {
+    return p.ptr_ind != 0 && p.constant != Const_Empty;
+}
+inline bool boolValue(HPointer p) { return (p.constant & 1u) != 0; }
 
 /**
  * Per-write stale-pointer tripwire (ECO_HEAP_VALIDATE-gated).

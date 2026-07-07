@@ -107,82 +107,79 @@ mlirOp env =
 
 {-| eco.constant - create an embedded constant value.
 
-Constants from Ops.td (1-indexed for MLIR):
+The `kind` is a 2-bit constant code matching the runtime `Constant` enum and
+`value_enc::ConstantKind` (see plan D3/D6):
 
-  - Unit = 1
-  - EmptyRec = 2
-  - True = 3
-  - False = 4
-  - Nil = 5
-  - Nothing = 6
-  - EmptyString = 7
+  - False = 0
+  - True = 1
+  - Empty = 2  (the unified empty constant: Unit, EmptyRec, Nil, Nothing, "")
+
+The five former empty constants now all emit kind 2; the type checker guarantees
+each is only produced/matched where its type is expected, so a shared bit pattern
+is safe.
 
 -}
 ecoConstantUnit : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
 ecoConstantUnit ctx resultVar =
-    mlirOp ctx "eco.constant"
-        |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
-        |> opBuilder.withAttrs (Dict.singleton "kind" (IntAttr (Just I32) 1))
-        |> opBuilder.build
+    ecoConstantEmpty ctx resultVar
 
 
 {-| Create an eco.constant op for an empty record.
 -}
 ecoConstantEmptyRec : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
 ecoConstantEmptyRec ctx resultVar =
-    mlirOp ctx "eco.constant"
-        |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
-        |> opBuilder.withAttrs (Dict.singleton "kind" (IntAttr (Just I32) 2))
-        |> opBuilder.build
+    ecoConstantEmpty ctx resultVar
 
 
-{-| Create an eco.constant op for True.
+{-| Create an eco.constant op for True (kind 1).
 -}
 ecoConstantTrue : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
 ecoConstantTrue ctx resultVar =
     mlirOp ctx "eco.constant"
         |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
-        |> opBuilder.withAttrs (Dict.singleton "kind" (IntAttr (Just I32) 3))
+        |> opBuilder.withAttrs (Dict.singleton "kind" (IntAttr (Just I32) 1))
         |> opBuilder.build
 
 
-{-| Create an eco.constant op for False.
+{-| Create an eco.constant op for False (kind 0).
 -}
 ecoConstantFalse : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
 ecoConstantFalse ctx resultVar =
     mlirOp ctx "eco.constant"
         |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
-        |> opBuilder.withAttrs (Dict.singleton "kind" (IntAttr (Just I32) 4))
+        |> opBuilder.withAttrs (Dict.singleton "kind" (IntAttr (Just I32) 0))
         |> opBuilder.build
 
 
-{-| Create an eco.constant op for Nil (empty list).
+{-| Create an eco.constant op for Nil (empty list) — the unified empty constant.
 -}
 ecoConstantNil : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
 ecoConstantNil ctx resultVar =
-    mlirOp ctx "eco.constant"
-        |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
-        |> opBuilder.withAttrs (Dict.singleton "kind" (IntAttr (Just I32) 5))
-        |> opBuilder.build
+    ecoConstantEmpty ctx resultVar
 
 
-{-| Create an eco.constant op for Nothing.
+{-| Create an eco.constant op for Nothing — the unified empty constant.
 -}
 ecoConstantNothing : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
 ecoConstantNothing ctx resultVar =
-    mlirOp ctx "eco.constant"
-        |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
-        |> opBuilder.withAttrs (Dict.singleton "kind" (IntAttr (Just I32) 6))
-        |> opBuilder.build
+    ecoConstantEmpty ctx resultVar
 
 
-{-| Create an eco.constant op for an empty string.
+{-| Create an eco.constant op for an empty string — the unified empty constant.
 -}
 ecoConstantEmptyString : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
 ecoConstantEmptyString ctx resultVar =
+    ecoConstantEmpty ctx resultVar
+
+
+{-| Create an eco.constant op for the unified empty constant (kind 2), shared by
+Unit, EmptyRec, Nil, Nothing, and the empty string.
+-}
+ecoConstantEmpty : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
+ecoConstantEmpty ctx resultVar =
     mlirOp ctx "eco.constant"
         |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
-        |> opBuilder.withAttrs (Dict.singleton "kind" (IntAttr (Just I32) 7))
+        |> opBuilder.withAttrs (Dict.singleton "kind" (IntAttr (Just I32) 2))
         |> opBuilder.build
 
 

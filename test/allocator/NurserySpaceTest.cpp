@@ -50,7 +50,7 @@ void verifyUnboxedList(HPointer head, const std::vector<i64>& expected) {
     HPointer current = head;
     size_t idx = 0;
 
-    while (current.constant == 0) {
+    while (current.ptr_ind == 0) {
         void* obj = readBarrier(current);
         if (!obj) break;
 
@@ -75,7 +75,7 @@ size_t measureListLocality(HPointer head) {
     std::vector<uintptr_t> addresses;
     HPointer current = head;
 
-    while (current.constant == 0) {
+    while (current.ptr_ind == 0) {
         void* obj = readBarrier(current);
         if (!obj) break;
 

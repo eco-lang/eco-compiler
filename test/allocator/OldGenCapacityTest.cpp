@@ -113,7 +113,7 @@ Testing::TestCase testCapacityShrinksAfterMajorGC(
     // Allocate one more large object — must succeed without abort.
     HPointer extra = allocLargeByteBuffer(alloc, LARGE_PAYLOAD);
     alloc.getRootSet().addRoot(&extra);
-    TEST_ASSERT(extra.constant == 0 || extra.ptr != 0);
+    TEST_ASSERT(extra.ptr_ind == 0 || extra.ptr != 0);
     alloc.getRootSet().removeRoot(&extra);
 });
 

@@ -114,7 +114,7 @@ std::unordered_map<std::string, uint64_t> g_trackerToken;   // tracker -> token
 
 std::string elmStringToUTF8(uint64_t strEnc) {
     HPointer hp = Export::decode(strEnc);
-    if (hp.constant == Const_EmptyString + 1) return "";
+    if (Elm::alloc::isEmptyString(hp)) return "";
     void* ptr = Export::toPtr(strEnc);
     if (!ptr) return "";
     return Elm::StringOps::toStdString(ptr);
@@ -135,7 +135,7 @@ static inline HPointer decodeHP(uint64_t val) {
 // EmptyString) have a non-zero constant field and must not be passed to
 // Allocator::resolve (which asserts). Returns nullptr for those.
 static inline void* resolveOrNull(HPointer hp) {
-    if (hp.constant != 0) return nullptr;
+    if (hp.ptr_ind != 0) return nullptr;
     return Allocator::instance().resolve(hp);
 }
 

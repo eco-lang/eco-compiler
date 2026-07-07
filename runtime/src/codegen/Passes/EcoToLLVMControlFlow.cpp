@@ -376,7 +376,7 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                 // Empty string is an embedded HPointer constant. Wrap the
                 // encoded i64 in an inttoptr so it has the `ptr<1>` type
                 // Elm_Kernel_Utils_equal expects for both operands.
-                int64_t emptyStringVal = static_cast<int64_t>(value_enc::EmptyString) << value_enc::ConstFieldShift;
+                int64_t emptyStringVal = value_enc::encodeConstant(value_enc::Empty);
                 auto hptrTy = getHPtrLLVMType(*ctx);
                 Value emptyI64 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, emptyStringVal);
                 patternValue = rewriter.create<LLVM::IntToPtrOp>(loc, hptrTy, emptyI64);
@@ -582,27 +582,40 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             // Result stays in this basic block: lshr → and → icmp chain only.
             Value scrutineeI64 = caseScrutineeToI64(rewriter, loc, scrutinee);
 
-            // Check for embedded constant
-            auto shift40 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, value_enc::ConstFieldShift);
-            auto shifted = rewriter.create<LLVM::LShrOp>(loc, scrutineeI64, shift40);
+            // Check for embedded constant: ptr_ind (bit 2) distinguishes a
+            // constant from a heap pointer; the constant field is bits 0-1.
+            auto ptrIndShift = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, value_enc::PtrIndBit);
+            auto ptrIndShifted = rewriter.create<LLVM::LShrOp>(loc, scrutineeI64, ptrIndShift);
+            auto one64 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 1);
+            auto ptrIndBit = rewriter.create<LLVM::AndOp>(loc, ptrIndShifted, one64);
             auto maskF = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, value_enc::ConstFieldMask);
-            auto constField = rewriter.create<LLVM::AndOp>(loc, shifted, maskF);
+            auto constField = rewriter.create<LLVM::AndOp>(loc, scrutineeI64, maskF);
             auto zero64 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 0);
             isConstant = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::ne,
-                                                             constField, zero64);
+                                                             ptrIndBit, zero64);
 
             embConstBlock = rewriter.createBlock(parentRegion);
             embHeapBlock = rewriter.createBlock(parentRegion);
             Block *tagMergeBlock = rewriter.createBlock(parentRegion);
             tagMergeBlock->addArgument(i32Ty, loc);
 
-            // Constant case: map Nil (5) to tag 0
+            // Constant case: derive the ctor tag without the scrutinee's type
+            // (see plan D9). An "empty" constant (anything but a Bool) maps to
+            // the reserved CONSTANT_TAG; a Bool constant maps to its i1 value
+            // (0 = False, 1 = True). `constField` here is non-zero (this block is
+            // only reached when isConstant), so "empty" = "not True and not
+            // False".
             rewriter.setInsertionPointToStart(embConstBlock);
-            auto nilConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, value_enc::Nil);
-            auto isNil = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::eq,
-                                                        constField, nilConst);
-            auto tag0_64 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 0);
-            auto constTag64 = rewriter.create<LLVM::SelectOp>(loc, isNil, tag0_64, constField);
+            auto trueConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, value_enc::True);
+            auto falseConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, value_enc::False);
+            auto isTrue = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::eq,
+                                                        constField, trueConst);
+            auto isFalse = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::eq,
+                                                         constField, falseConst);
+            auto isBool = rewriter.create<LLVM::OrOp>(loc, isTrue, isFalse);
+            auto boolTag64 = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, isTrue);
+            auto constantTagC = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, value_enc::ConstantTag);
+            auto constTag64 = rewriter.create<LLVM::SelectOp>(loc, isBool, boolTag64, constantTagC);
             auto constTag = rewriter.create<LLVM::TruncOp>(loc, i32Ty, constTag64);
             rewriter.create<cf::BranchOp>(loc, tagMergeBlock, ValueRange{constTag});
 

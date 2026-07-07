@@ -33,13 +33,13 @@ module {
     // CHECK: 100
 
     // Store a constructed value
-    %nil = eco.constant Nil : !eco.value
+    %nil = eco.constant Empty : !eco.value
     %list = eco.construct.custom(%b42, %nil) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
     eco.store_global %list, @g2
 
     %v3 = eco.load_global @g2
     eco.dbg %v3 : !eco.value
-    // CHECK: Ctor0 42 []
+    // CHECK: Ctor0 42 <empty>
 
     // Update a global multiple times
     %i1 = arith.constant 1 : i64
@@ -65,11 +65,11 @@ module {
     // CHECK: 3
 
     // Store constants
-    %unit = eco.constant Unit : !eco.value
+    %unit = eco.constant Empty : !eco.value
     eco.store_global %unit, @g1
     %v_unit = eco.load_global @g1
     eco.dbg %v_unit : !eco.value
-    // CHECK: ()
+    // CHECK: <empty>
 
     %true_const = eco.constant True : !eco.value
     eco.store_global %true_const, @g2

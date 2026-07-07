@@ -517,9 +517,9 @@ bool member(Unboxable value, bool is_boxed, HPointer list) {
         if (!is_boxed && !elem_is_boxed) {
             if (value.i == c->head.i) return true;
         } else if (is_boxed && elem_is_boxed) {
-            // Pointer equality for boxed values
-            if (value.p.ptr == c->head.p.ptr &&
-                value.p.constant == c->head.p.constant) return true;
+            // Identity equality for boxed values: same HPointer word (covers
+            // heap pointers and embedded constants — Bool, empty, etc.).
+            if (hpBits(value.p) == hpBits(c->head.p)) return true;
         }
 
         current = c->tail;

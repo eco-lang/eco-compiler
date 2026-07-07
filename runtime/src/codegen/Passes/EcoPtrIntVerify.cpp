@@ -12,7 +12,7 @@
 //
 //   inttoptr i64 → ptr<1>:
 //     1. Operand loaded from a recognised heap/global/closure/args struct slot.
-//     2. Operand is an embedded-constant pattern (kind << 40).
+//     2. Operand is an embedded-constant word (False 0x4 / True 0x5 / Empty 0x6).
 //     3. Operand is a PHI whose every incoming value satisfies (1) or (2).
 //
 // Diagnostic severity: hard error via llvm::report_fatal_error.
@@ -54,17 +54,16 @@ static bool isGCLeafCallee(Function *F) {
     return F && F->hasFnAttribute("gc-leaf-function");
 }
 
-/// Check if a value is a recognised embedded constant (kind << 40).
+/// Check if a value is a recognised embedded constant word (False 0x4, True 0x5,
+/// or Empty 0x6 — see plan D6).
 static bool isEmbeddedConstant(Value *V) {
     auto *CI = dyn_cast<ConstantInt>(V);
     if (!CI) return false;
     int64_t val = CI->getSExtValue();
-    // Must be exactly (kind << 40) for known constant kinds 1-7.
-    for (unsigned kind = 1; kind <= 7; ++kind) {
-        if (val == eco::detail::value_enc::encodeConstant(kind))
-            return true;
-    }
-    return false;
+    namespace ve = eco::detail::value_enc;
+    return val == ve::encodeConstant(ve::False) ||
+           val == ve::encodeConstant(ve::True) ||
+           val == ve::encodeConstant(ve::Empty);
 }
 
 /// Build the set of allocas that are registered as GC root ranges via

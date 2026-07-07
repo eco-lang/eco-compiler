@@ -1,5 +1,15 @@
 # EcoToLLVM Pass
 
+> **Note (HPointer representation redesign):** Sections referencing the old
+> constant encoding (`ConstFieldShift = 40`, `kind << 40`, constants 1–15, the
+> bits-0-39-offset diagram) are superseded. Embedded constants now lower to the
+> words `False = 0x4`, `True = 0x5`, `Empty = 0x6` (`encodeConstant(kind) =
+> (1 << PtrIndBit) | kind`, `PtrIndBit = 2`); `ptr` is a raw absolute address at
+> bit 3; the ADT-case constant discriminator is the `ptr_ind` bit; and the merged
+> empty ctor dispatches via `CONSTANT_TAG` (0xFFFD). See `THEORY.md`, invariants
+> HEAP_008/010/028/029, and `plans/hpointer-representation-redesign.md`
+> (D1/D3/D6/D9) for the authoritative description.
+
 ## Overview
 
 The EcoToLLVM pass is the main lowering pass that converts ECO dialect operations to LLVM dialect. It handles type conversion, heap allocation, control flow, arithmetic operations, and function calls. This is the final dialect conversion before LLVM IR generation.

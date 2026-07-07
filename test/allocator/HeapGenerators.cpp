@@ -11,10 +11,9 @@ namespace Elm {
 
 // Helper to create a constant HPointer.
 static HPointer createConstant(Constant c) {
-    HPointer ptr;
-    ptr.ptr = 0;
+    HPointer ptr{};
+    ptr.ptr_ind = 1;
     ptr.constant = c;
-    ptr.padding = 0;
     return ptr;
 }
 
@@ -40,7 +39,7 @@ static Unboxable makeUnboxableFromConsHead(const ConsHeadDesc& head, const std::
         val.p = AllocatorTestAccess::toPointer(allocated[idx]);
     } else if (head.head_boxed && allocated.empty()) {
         // No objects to reference, use Nil constant.
-        val.p = createConstant(Const_Nil);
+        val.p = createConstant(Const_Empty);
     } else {
         // Unboxed: use primitive value or constant based on head.unboxed.
         switch (head.unboxed) {
@@ -54,10 +53,10 @@ static Unboxable makeUnboxableFromConsHead(const ConsHeadDesc& head, const std::
                 val.c = head.char_val;
                 break;
             case UnboxedUnit:
-                val.p = createConstant(Const_Unit);
+                val.p = createConstant(Const_Empty);
                 break;
             case UnboxedEmptyRec:
-                val.p = createConstant(Const_EmptyRec);
+                val.p = createConstant(Const_Empty);
                 break;
             case UnboxedTrue:
                 val.p = createConstant(Const_True);
@@ -66,13 +65,13 @@ static Unboxable makeUnboxableFromConsHead(const ConsHeadDesc& head, const std::
                 val.p = createConstant(Const_False);
                 break;
             case UnboxedNil:
-                val.p = createConstant(Const_Nil);
+                val.p = createConstant(Const_Empty);
                 break;
             case UnboxedNothing:
-                val.p = createConstant(Const_Nothing);
+                val.p = createConstant(Const_Empty);
                 break;
             case UnboxedEmptyString:
-                val.p = createConstant(Const_EmptyString);
+                val.p = createConstant(Const_Empty);
                 break;
         }
     }
@@ -89,7 +88,7 @@ static Unboxable makeUnboxable(bool is_boxed, const HeapObjectDesc &desc, const 
         val.p = AllocatorTestAccess::toPointer(allocated[idx]);
     } else if (is_boxed && allocated.empty()) {
         // No objects to reference, use Nil constant.
-        val.p = createConstant(Const_Nil);
+        val.p = createConstant(Const_Empty);
     } else {
         // Unboxed: use primitive value or constant based on desc.unboxed.
         switch (desc.unboxed) {
@@ -103,10 +102,10 @@ static Unboxable makeUnboxable(bool is_boxed, const HeapObjectDesc &desc, const 
                 val.c = desc.char_val;
                 break;
             case UnboxedUnit:
-                val.p = createConstant(Const_Unit);
+                val.p = createConstant(Const_Empty);
                 break;
             case UnboxedEmptyRec:
-                val.p = createConstant(Const_EmptyRec);
+                val.p = createConstant(Const_Empty);
                 break;
             case UnboxedTrue:
                 val.p = createConstant(Const_True);
@@ -115,13 +114,13 @@ static Unboxable makeUnboxable(bool is_boxed, const HeapObjectDesc &desc, const 
                 val.p = createConstant(Const_False);
                 break;
             case UnboxedNil:
-                val.p = createConstant(Const_Nil);
+                val.p = createConstant(Const_Empty);
                 break;
             case UnboxedNothing:
-                val.p = createConstant(Const_Nothing);
+                val.p = createConstant(Const_Empty);
                 break;
             case UnboxedEmptyString:
-                val.p = createConstant(Const_EmptyString);
+                val.p = createConstant(Const_Empty);
                 break;
         }
     }
@@ -132,11 +131,8 @@ static Unboxable makeUnboxable(bool is_boxed, const HeapObjectDesc &desc, const 
 HPointer allocateList(const ListDesc& list_desc, const std::vector<void*>& allocated) {
     auto& alloc = Allocator::instance();
 
-    // Start with Nil constant.
-    HPointer tail;
-    tail.ptr = 0;
-    tail.constant = Const_Nil;
-    tail.padding = 0;
+    // Start with Nil constant (the unified empty constant).
+    HPointer tail = createConstant(Const_Empty);
 
     // Build list from end to beginning.
     for (auto it = list_desc.elements.rbegin(); it != list_desc.elements.rend(); ++it) {
@@ -192,10 +188,10 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
             }
 
             case HeapObjectDesc::String: {
-                // Empty strings should use Const_EmptyString, not heap allocation.
+                // Empty strings should use Const_Empty, not heap allocation.
                 // Generator should prevent this, but assert for safety.
                 if (desc.string_chars.empty()) {
-                    std::cerr << "ERROR: Empty string generated - should use Const_EmptyString" << std::endl;
+                    std::cerr << "ERROR: Empty string generated - should use Const_Empty" << std::endl;
                     std::abort();
                 }
 
@@ -291,9 +287,7 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
                     dynrec->fieldgroup = AllocatorTestAccess::toPointer(allocated[desc.dynrec_child_fieldgroup]);
                 } else {
                     // Create Nil constant if no valid fieldgroup.
-                    dynrec->fieldgroup.ptr = 0;
-                    dynrec->fieldgroup.constant = Const_Nil;
-                    dynrec->fieldgroup.padding = 0;
+                    dynrec->fieldgroup = createConstant(Const_Empty);
                 }
 
                 for (size_t i = 0; i < num_values; i++) {
@@ -301,9 +295,7 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
                         size_t idx = desc.dynrec_child_values[i] % allocated.size();
                         dynrec->values[i] = AllocatorTestAccess::toPointer(allocated[idx]);
                     } else {
-                        dynrec->values[i].ptr = 0;
-                        dynrec->values[i].constant = Const_Nil;
-                        dynrec->values[i].padding = 0;
+                        dynrec->values[i] = createConstant(Const_Empty);
                     }
                 }
                 break;
@@ -398,9 +390,9 @@ std::vector<void *> allocateHeapGraphInOldGen(OldGenSpace& oldgen,
             }
 
             case HeapObjectDesc::String: {
-                // Empty strings should use Const_EmptyString, not heap allocation.
+                // Empty strings should use Const_Empty, not heap allocation.
                 if (desc.string_chars.empty()) {
-                    std::cerr << "ERROR: Empty string generated - should use Const_EmptyString" << std::endl;
+                    std::cerr << "ERROR: Empty string generated - should use Const_Empty" << std::endl;
                     std::abort();
                 }
 
@@ -510,9 +502,7 @@ std::vector<void *> allocateHeapGraphInOldGen(OldGenSpace& oldgen,
                     dynrec->fieldgroup = AllocatorTestAccess::toPointer(allocated[desc.dynrec_child_fieldgroup]);
                 } else {
                     // Create Nil constant if no valid fieldgroup.
-                    dynrec->fieldgroup.ptr = 0;
-                    dynrec->fieldgroup.constant = Const_Nil;
-                    dynrec->fieldgroup.padding = 0;
+                    dynrec->fieldgroup = createConstant(Const_Empty);
                 }
 
                 for (size_t i = 0; i < num_values; i++) {
@@ -520,9 +510,7 @@ std::vector<void *> allocateHeapGraphInOldGen(OldGenSpace& oldgen,
                         size_t idx = desc.dynrec_child_values[i] % allocated.size();
                         dynrec->values[i] = AllocatorTestAccess::toPointer(allocated[idx]);
                     } else {
-                        dynrec->values[i].ptr = 0;
-                        dynrec->values[i].constant = Const_Nil;
-                        dynrec->values[i].padding = 0;
+                        dynrec->values[i] = createConstant(Const_Empty);
                     }
                 }
                 break;

@@ -18,7 +18,7 @@ extern "C" {
 int64_t Elm_Kernel_String_length(HPtr str) {
     uint64_t str_bits = str.toBits();
     HPointer h = Export::decode(str_bits);
-    if (h.constant == Const_EmptyString + 1) {
+    if (Elm::alloc::isEmptyString(h)) {
         return 0;
     }
     void* ptr = Export::toPtr(str_bits);
