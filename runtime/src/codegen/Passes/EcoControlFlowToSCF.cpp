@@ -102,7 +102,7 @@ bool isStringCase(CaseOp op) {
 /// in the EcoToLLVM pass, which requires CF control flow). If we convert an
 /// outer case to SCF while it contains a nested string case, the nested case
 /// becomes unreachable by CaseOpLowering due to dynamic legality constraints.
-bool containsNestedStringCase(CaseOp op) {
+bool computeContainsNestedStringCase(CaseOp op) {
     auto result = op.walk([&](CaseOp nested) -> WalkResult {
         if (nested != op && isStringCase(nested))
             return WalkResult::interrupt();
@@ -110,6 +110,32 @@ bool containsNestedStringCase(CaseOp op) {
     });
     return result.wasInterrupted();
 }
+
+/// Memo for containsNestedStringCase, keyed by operation. The greedy driver
+/// re-attempts patterns on an op whenever anything nearby changes, and each
+/// attempt used to re-walk the op's whole subtree — O(subtree x attempts) on
+/// case-dense self-host functions. The answer for a surviving op is stable
+/// during this pass: the patterns never create string cases, and a rewrite
+/// only restructures ops *within* the matched op's own subtree (cloned string
+/// cases stay under the same ancestors), so a memoized FALSE stays FALSE; a
+/// TRUE could only become stale-TRUE (via DCE of a nested string case), which
+/// merely skips a conversion — conservative and safe. Erased ops are evicted
+/// via the driver-listener hook so a later clone reusing the same address
+/// cannot inherit a stale answer.
+struct StringCaseMemo : public RewriterBase::Listener {
+    DenseMap<Operation *, bool> cache;
+
+    bool contains(CaseOp op) {
+        auto it = cache.find(op.getOperation());
+        if (it != cache.end())
+            return it->second;
+        bool result = computeContainsNestedStringCase(op);
+        cache[op.getOperation()] = result;
+        return result;
+    }
+
+    void notifyOperationErased(Operation *op) override { cache.erase(op); }
+};
 
 //===----------------------------------------------------------------------===//
 // Pattern: eco.case with pure yields -> scf.if (2-way case)
@@ -133,7 +159,9 @@ bool containsNestedStringCase(CaseOp op) {
 ///   ... scf.yield %v0 : T0
 /// }
 struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
-    using OpRewritePattern::OpRewritePattern;
+    StringCaseMemo *stringCaseMemo;
+    CaseToScfIfPattern(MLIRContext *ctx, StringCaseMemo *memo, PatternBenefit benefit)
+        : OpRewritePattern(ctx, benefit), stringCaseMemo(memo) {}
 
     LogicalResult matchAndRewrite(CaseOp op,
                                   PatternRewriter &rewriter) const override {
@@ -160,7 +188,7 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
 
         // Skip cases that contain nested string cases — string cases need
         // CaseOpLowering (CF-based), which can't run inside SCF regions.
-        if (containsNestedStringCase(op))
+        if (stringCaseMemo->contains(op))
             return failure();
 
         // NOTE: We intentionally do NOT skip cases nested inside other eco.case
@@ -324,7 +352,9 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
 
 /// Lowers eco.case with >2 alternatives (all ending with eco.yield) to scf.index_switch.
 struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
-    using OpRewritePattern::OpRewritePattern;
+    StringCaseMemo *stringCaseMemo;
+    CaseToScfIndexSwitchPattern(MLIRContext *ctx, StringCaseMemo *memo, PatternBenefit benefit)
+        : OpRewritePattern(ctx, benefit), stringCaseMemo(memo) {}
 
     LogicalResult matchAndRewrite(CaseOp op,
                                   PatternRewriter &rewriter) const override {
@@ -364,7 +394,7 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
 
         // Skip cases that contain nested string cases — string cases need
         // CaseOpLowering (CF-based), which can't run inside SCF regions.
-        if (containsNestedStringCase(op))
+        if (stringCaseMemo->contains(op))
             return failure();
 
         // NOTE: We intentionally do NOT skip cases nested inside other eco.case
@@ -508,7 +538,9 @@ static void cloneAlternativeWithScfYield(Region &alt, PatternRewriter &rewriter,
 /// Note: String cases are NOT handled here - they require runtime string
 /// comparison which is only available at the LLVM lowering level.
 struct CaseToScfIfChainPattern : public OpRewritePattern<CaseOp> {
-    using OpRewritePattern::OpRewritePattern;
+    StringCaseMemo *stringCaseMemo;
+    CaseToScfIfChainPattern(MLIRContext *ctx, StringCaseMemo *memo, PatternBenefit benefit)
+        : OpRewritePattern(ctx, benefit), stringCaseMemo(memo) {}
 
     LogicalResult matchAndRewrite(CaseOp op,
                                   PatternRewriter &rewriter) const override {
@@ -542,7 +574,7 @@ struct CaseToScfIfChainPattern : public OpRewritePattern<CaseOp> {
             return failure();
 
         // Skip cases that contain nested string cases
-        if (containsNestedStringCase(op))
+        if (stringCaseMemo->contains(op))
             return failure();
 
         auto loc = op.getLoc();
@@ -1090,15 +1122,20 @@ struct EcoControlFlowToSCFPass
         // 1. Joinpoint patterns first (higher benefit to consume case+joinpoint together)
         // 2. Then case patterns for remaining cases
         // 3. If-chain pattern last (fallback for int cases with negative tags)
+        // Shared memo for containsNestedStringCase; the driver-listener hook
+        // evicts erased ops so address reuse can't resurrect stale answers.
+        StringCaseMemo stringCaseMemo;
+
         patterns.add<JoinpointToScfWhilePattern>(ctx, /*benefit=*/10);
         patterns.add<CaseStringToScfIfChainPattern>(ctx, /*benefit=*/6);
-        patterns.add<CaseToScfIfPattern>(ctx, /*benefit=*/5);
-        patterns.add<CaseToScfIndexSwitchPattern>(ctx, /*benefit=*/5);
-        patterns.add<CaseToScfIfChainPattern>(ctx, /*benefit=*/4);
+        patterns.add<CaseToScfIfPattern>(ctx, &stringCaseMemo, /*benefit=*/5);
+        patterns.add<CaseToScfIndexSwitchPattern>(ctx, &stringCaseMemo, /*benefit=*/5);
+        patterns.add<CaseToScfIfChainPattern>(ctx, &stringCaseMemo, /*benefit=*/4);
 
         // Apply patterns greedily (with folding disabled to prevent DCE)
         GreedyRewriteConfig config;
         config.enableFolding(false);
+        config.setListener(&stringCaseMemo);
 
         if (failed(applyPatternsGreedily(module, std::move(patterns), config))) {
             // Note: This may not be a hard error - some patterns might not match

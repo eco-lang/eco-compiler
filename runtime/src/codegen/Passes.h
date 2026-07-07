@@ -105,6 +105,16 @@ std::unique_ptr<mlir::Pass> createEcoBoxedStoreVerifyPass();
 // lowering of bf.write.*, bf.alloc, bf.cursor.init etc.
 std::unique_ptr<mlir::Pass> createBFToLLVMPass();
 
+// ========== Tail Conversions (post-EcoToLLVM) ==========
+
+// Per-function scf->cf + cf->llvm + arith->llvm conversion, anchored on
+// LLVM::LLVMFuncOp so the pass manager parallelizes it across functions.
+// Replaces the module-anchored SCFToControlFlow / ConvertControlFlowToLLVM /
+// ArithToLLVM tail; cf.assert is deliberately unsupported (eco never emits it —
+// its lowering would require module-level symbol insertion, which is what
+// forces the stock cf-to-llvm pass to be module-anchored).
+std::unique_ptr<mlir::Pass> createEcoTailConversionsPass();
+
 //===----------------------------------------------------------------------===//
 // Pattern Population
 //===----------------------------------------------------------------------===//

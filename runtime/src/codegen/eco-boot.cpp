@@ -770,6 +770,7 @@ int main(int argc, char **argv) {
         job.splitCodegen = splitCodegen;
         job.splitEligible = isExecutable;
         job.parallelOpt = parallelOpt;
+        job.stats = &stats;
         job.objectFilePath = objFile;
         if (auto err = eco::runEcoBackend(*llvmModule, job, &backendResult)) {
             llvm::errs() << "Error: backend pipeline failed: " << err << "\n";

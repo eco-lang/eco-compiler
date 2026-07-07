@@ -353,6 +353,7 @@ add_mlir_library(EcoPasses
     Passes/EcoPAPSimplify.cpp
     Passes/JoinpointNormalization.cpp
     Passes/EcoControlFlowToSCF.cpp
+    Passes/EcoTailConversions.cpp
     Passes/UndefinedFunction.cpp
     Passes/CheckEcoClosureCaptures.cpp
     # GC preparation pass (root sets, allocation grouping)
@@ -439,6 +440,7 @@ add_llvm_executable(ecoc
     ecoc.cpp
     EcoBackend.cpp
     EcoPipeline.cpp
+    LoweringStats.cpp
     RuntimeSymbols.cpp
     ../jit/EcoJIT.cpp
     ../allocator/StackMap.cpp
@@ -557,6 +559,7 @@ add_mlir_library(EcoRunner
     EcoRunner.cpp
     EcoBackend.cpp
     EcoPipeline.cpp
+    LoweringStats.cpp
     RuntimeSymbols.cpp
     ../jit/EcoJIT.cpp
     ../allocator/StackMap.cpp

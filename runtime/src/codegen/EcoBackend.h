@@ -26,6 +26,8 @@ class TargetMachine;
 
 namespace eco {
 
+class LoweringStats;
+
 //===----------------------------------------------------------------------===//
 // Target machine configuration
 //
@@ -170,6 +172,12 @@ struct EcoBackendJob {
     /// per-partition workers (see ParallelOpt). Only honoured for
     /// `EmitObjectFile` with `optLevel != None` and `splitEligible`.
     ParallelOpt parallelOpt = ParallelOpt::None;
+
+    /// Optional timing collector for backend sub-phases (RS4GC, opt prologue,
+    /// module split + bitcode serialization, parallel opt+emit region). Null =
+    /// no recording. Thread-safe (LoweringStats::record is mutex-guarded), so
+    /// per-partition workers may record too.
+    LoweringStats *stats = nullptr;
 
     /// EXPERIMENTAL, off by default. Run RewriteStatepointsForGC AFTER the O2
     /// optimization pipeline instead of before it (upstream LLVM's intended

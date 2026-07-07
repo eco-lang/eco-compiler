@@ -396,8 +396,9 @@ never emitted, discardable); plain `linkonce` is *not* inlinable.
 > Backend **2.1–2.3×**, total **1.6–1.8×**. The ~51 s serial opt is gone (cheap
 > IPO prologue + per-partition opt on the emission threads). This confirms the
 > §6.3 premise: dropping the fused CGSCC inliner + parallelizing recovered ~37 s,
-> so it *was* the bulk. Produced-binary runtime-quality (the ≤3% recursive-tax
-> gate) is still to be measured. The estimate below predicted ~40–45 s; the extra
+> so it *was* the bulk. **Produced-binary runtime-quality measured (clean self-host
+> self-compile): cgu −0.5% (≈0, passes the ≤3% gate), dev +1.7%** — see
+> `plans/parallel-llvm-opt-partitioning.md` / `backendstats-runs.txt`. The estimate below predicted ~40–45 s; the extra
 > few seconds is the MLIR-lowering + translation floor (~17 s) now dominating.
 
 Parallelizing opt at N≈16 (Tier 2/2′), keeping emission parallel and fusing

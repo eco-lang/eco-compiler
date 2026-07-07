@@ -2,6 +2,7 @@
 
 #include "EcoBackend.h"
 
+#include "LoweringStats.h"
 #include "Passes/EcoPtrIntVerify.h" // for addEcoGCPipeline
 
 #include "mlir/ExecutionEngine/OptUtils.h" // for makeOptimizingTransformer
@@ -37,6 +38,7 @@
 
 #include <atomic>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -45,6 +47,15 @@ using namespace llvm;
 namespace eco {
 
 namespace {
+
+// RAII sub-phase timing scope that is a no-op when `stats` is null.
+struct MaybeScope {
+    MaybeScope(eco::LoweringStats *stats, llvm::StringRef name) {
+        if (stats)
+            scope.emplace(*stats, name);
+    }
+    std::optional<eco::LoweringStats::Scope> scope;
+};
 
 void dumpIRTo(const Module &m, const std::string &path, const char *tag) {
     std::error_code ec;
@@ -189,80 +200,110 @@ Error optimizePartitionModule(Module &m, TargetMachine *tm, ParallelOpt mode,
 Error emitObjectFilesSplit(Module &m, unsigned numPartitions,
                            const std::vector<std::string> &paths,
                            CodeGenOptLevel optLevel,
-                           ParallelOpt perPartitionMode) {
+                           ParallelOpt perPartitionMode,
+                           eco::LoweringStats *stats,
+                           const RS4GCOptions *partitionRS4GC) {
     if (paths.size() != numPartitions)
         return createStringError(std::errc::invalid_argument,
             "emitObjectFilesSplit: paths count != numPartitions");
 
-    // Serialize each partition to bitcode in the parent context
-    // (single-threaded — SplitModule hands sub-modules over one at a time).
+    // Serialize each partition to bitcode in the parent context and DISPATCH
+    // its worker immediately — the remaining partitions' clone+serialize then
+    // overlaps with already-running workers instead of gating all of them.
+    // (SplitModule hands sub-modules over one at a time on this thread;
+    // LLVMContext is not thread-safe, hence the bitcode hand-off.)
     std::vector<SmallString<0>> bitcodes(numPartitions);
-    unsigned idx = 0;
-    SplitModule(
-        m, numPartitions,
-        [&](std::unique_ptr<Module> mp) {
-            if (idx < numPartitions) {
-                raw_svector_ostream os(bitcodes[idx]);
-                WriteBitcodeToFile(*mp, os);
-            }
-            ++idx;
-        },
-        /*PreserveLocals=*/false);
+    std::atomic<unsigned> nextFail{0};
+    std::vector<std::string> errs(numPartitions);
+    std::vector<std::thread> threads;
+    threads.reserve(numPartitions);
 
-    unsigned produced = idx;
+    auto worker = [&, optLevel, perPartitionMode](unsigned i) {
+        LLVMContext ctx;
+        auto buf = MemoryBuffer::getMemBuffer(
+            StringRef(bitcodes[i].data(), bitcodes[i].size()),
+            "eco-partition", /*RequiresNullTerminator=*/false);
+        auto modOr = parseBitcodeFile(buf->getMemBufferRef(), ctx);
+        if (!modOr) {
+            errs[i] = "parseBitcodeFile failed for partition " +
+                      std::to_string(i);
+            nextFail++;
+            return;
+        }
+        std::unique_ptr<Module> mod = std::move(*modOr);
+        auto tm = createEcoTargetMachine(*mod,
+                                         static_cast<unsigned>(optLevel));
+        if (!tm) {
+            errs[i] = "createEcoTargetMachine failed for partition " +
+                      std::to_string(i);
+            nextFail++;
+            return;
+        }
+        // Per-partition RS4GC (+ frame pointers): when the caller skipped the
+        // whole-module RS4GC (parallel-opt modes), each worker statepoints its
+        // own partition here — RS4GC is per-function and consults only callee
+        // DECLARATION attrs (gc-leaf-function), which CloneModule preserved,
+        // so partition-local RS4GC is semantically identical to whole-module
+        // (design doc finding: per-partition RS4GC confirmed safe). It runs
+        // BEFORE opt, preserving the RS4GC-before-optimization GC invariant
+        // per partition.
+        if (partitionRS4GC) {
+            MaybeScope s(stats, "  partition RS4GC (sum over workers)");
+            runRS4GCAndMaybeFramePointers(*mod, *partitionRS4GC);
+        }
+        // Parallel opt: optimize this partition on its own thread before
+        // emission (the whole-module -O2 was skipped upstream).
+        if (perPartitionMode != ParallelOpt::None) {
+            MaybeScope s(stats, "  partition opt (sum over workers)");
+            if (auto err = optimizePartitionModule(
+                    *mod, tm.get(), perPartitionMode, optLevel)) {
+                errs[i] = "partition opt failed for partition " +
+                          std::to_string(i) + ": " +
+                          toString(std::move(err));
+                nextFail++;
+                return;
+            }
+        }
+        MaybeScope s(stats, "  partition emit (sum over workers)");
+        if (auto err = emitObjectFile(*mod, *tm, paths[i])) {
+            errs[i] = "emitObjectFile failed for partition " +
+                      std::to_string(i) + ": " + toString(std::move(err));
+            nextFail++;
+            return;
+        }
+    };
+
+    unsigned idx = 0;
+    {
+        MaybeScope s(stats, "  split + bitcode serialize (serial)");
+        SplitModule(
+            m, numPartitions,
+            [&](std::unique_ptr<Module> mp) {
+                if (idx < numPartitions) {
+                    {
+                        raw_svector_ostream os(bitcodes[idx]);
+                        WriteBitcodeToFile(*mp, os);
+                    }
+                    // Free the partition clone before dispatching; the worker
+                    // re-materializes from bitcode in its own context.
+                    mp.reset();
+                    threads.emplace_back(worker, idx);
+                }
+                ++idx;
+            },
+            /*PreserveLocals=*/false);
+    }
+
+    unsigned produced = std::min(idx, numPartitions);
     if (produced == 0)
         return createStringError(std::errc::invalid_argument,
             "emitObjectFilesSplit: SplitModule produced no partitions");
 
-    // Emit partitions concurrently: fresh context + TargetMachine per thread.
-    std::atomic<unsigned> nextFail{0};
-    std::vector<std::string> errs(produced);
-    std::vector<std::thread> threads;
-    threads.reserve(produced);
-    for (unsigned i = 0; i < produced; ++i) {
-        threads.emplace_back([&, i] {
-            LLVMContext ctx;
-            auto buf = MemoryBuffer::getMemBuffer(
-                StringRef(bitcodes[i].data(), bitcodes[i].size()),
-                "eco-partition", /*RequiresNullTerminator=*/false);
-            auto modOr = parseBitcodeFile(buf->getMemBufferRef(), ctx);
-            if (!modOr) {
-                errs[i] = "parseBitcodeFile failed for partition " +
-                          std::to_string(i);
-                nextFail++;
-                return;
-            }
-            std::unique_ptr<Module> mod = std::move(*modOr);
-            auto tm = createEcoTargetMachine(*mod,
-                                             static_cast<unsigned>(optLevel));
-            if (!tm) {
-                errs[i] = "createEcoTargetMachine failed for partition " +
-                          std::to_string(i);
-                nextFail++;
-                return;
-            }
-            // Parallel opt: optimize this partition on its own thread before
-            // emission (the whole-module -O2 was skipped upstream).
-            if (perPartitionMode != ParallelOpt::None) {
-                if (auto err = optimizePartitionModule(
-                        *mod, tm.get(), perPartitionMode, optLevel)) {
-                    errs[i] = "partition opt failed for partition " +
-                              std::to_string(i) + ": " +
-                              toString(std::move(err));
-                    nextFail++;
-                    return;
-                }
-            }
-            if (auto err = emitObjectFile(*mod, *tm, paths[i])) {
-                errs[i] = "emitObjectFile failed for partition " +
-                          std::to_string(i) + ": " + toString(std::move(err));
-                nextFail++;
-                return;
-            }
-        });
+    {
+        MaybeScope s(stats, "  parallel opt+emit drain (post-split wait)");
+        for (auto &t : threads)
+            t.join();
     }
-    for (auto &t : threads)
-        t.join();
 
     // Any unused partition slots (produced < numPartitions) get an empty
     // object so the linker still finds every expected path. In practice
@@ -427,8 +468,28 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
     const bool deferRS4GC =
         job.rs4gcAfterOpt && job.kind == BackendKind::EmitObjectFile &&
         job.parallelOpt == ParallelOpt::None;
-    if (!deferRS4GC)
+
+    // Parallel-opt modes move RS4GC + frame-pointer injection INTO the
+    // per-partition workers: RS4GC is per-function (consults only callee
+    // declaration attrs, preserved by the partition split), so statepointing
+    // each partition in parallel is semantically identical to the whole-module
+    // run — and the cheap-IPO prologue + split then operate on statepoint-free
+    // IR (smaller, faster to serialize). Each worker runs RS4GC BEFORE its
+    // optimization, preserving the GC ordering invariant per partition.
+    // Diagnostic RS4GC IR dumps force the whole-module path so --dump-*-rs4gc-ir
+    // keeps meaning "the module", not "one partition".
+    const bool parallelOptEnabled =
+        job.kind == BackendKind::EmitObjectFile &&
+        job.parallelOpt != ParallelOpt::None &&
+        job.optLevel != CodeGenOptLevel::None && job.splitEligible;
+    const bool wantRS4GCDumps =
+        !job.preRS4GCDumpPath.empty() || !job.postRS4GCDumpPath.empty();
+    const bool rs4gcInWorkers = parallelOptEnabled && !wantRS4GCDumps;
+
+    if (!deferRS4GC && !rs4gcInWorkers) {
+        MaybeScope s(job.stats, "  RS4GC + frame-pointers (serial)");
         runRS4GCAndMaybeFramePointers(m, rs4gcOpts);
+    }
 
     switch (job.kind) {
     case BackendKind::DumpLLVMText:
@@ -437,18 +498,14 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
         return Error::success();
 
     case BackendKind::EmitObjectFile: {
-        // Parallel-opt is honoured only for optimized, split-eligible exe
-        // output; otherwise fall back to today's whole-module -O2.
-        const bool parallelOptEnabled =
-            job.parallelOpt != ParallelOpt::None &&
-            job.optLevel != CodeGenOptLevel::None && job.splitEligible;
-
         if (parallelOptEnabled) {
             // Replace the whole-module -O2 with a cheap whole-module IPO
             // prologue; the heavy per-function work moves into the parallel
             // per-partition workers below (design doc §6.2/§6.3).
+            MaybeScope s(job.stats, "  cheap-IPO prologue (serial)");
             runCheapModuleIPO(m);
         } else if (job.optLevel != CodeGenOptLevel::None && job.tm) {
+            MaybeScope s(job.stats, "  whole-module opt (serial)");
             auto optPipeline = mlir::makeOptimizingTransformer(
                 static_cast<unsigned>(job.optLevel), /*sizeLevel=*/0, job.tm);
             if (auto err = optPipeline(&m))
@@ -492,8 +549,9 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
                 paths.emplace_back(p.str());
                 owned.emplace_back(p.str());
             }
-            if (auto err = emitObjectFilesSplit(m, numParts, paths,
-                                                job.optLevel, perPart)) {
+            if (auto err = emitObjectFilesSplit(
+                    m, numParts, paths, job.optLevel, perPart, job.stats,
+                    rs4gcInWorkers ? &rs4gcOpts : nullptr)) {
                 for (auto &f : owned)
                     sys::fs::remove(f);
                 return err;
@@ -507,7 +565,10 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
 
         // Single-object emission. If parallel-opt is enabled but the policy
         // chose a single partition (small module / split off), run the
-        // per-partition pipeline here inline — the whole-module -O2 was skipped.
+        // per-partition pipeline here inline — the whole-module -O2 was
+        // skipped (and RS4GC too when rs4gcInWorkers).
+        if (rs4gcInWorkers)
+            runRS4GCAndMaybeFramePointers(m, rs4gcOpts);
         if (perPart != ParallelOpt::None) {
             if (auto err =
                     optimizePartitionModule(m, job.tm, perPart, job.optLevel))

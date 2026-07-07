@@ -12,7 +12,7 @@ Measured results in `backendstats-runs.txt`; design doc §7 updated.
 | 1 — shared split policy | ✅ done | `choosePartitionCount` + temp-file lifecycle hoisted into `runEcoBackend`; `EcoBackendJob.splitCodegen/splitEligible` + `EcoBackendResult`; eco-boot / EcoNativeDriver / ecoc migrated; `EcoNativeOptions.splitCodegen=0` (auto) brings parallel emission to `eco make` with no Elm change. Builds green; JIT E2E no regression; scale smoke (both paths → working 61.8 MB exe). |
 | 2 — custom partitioner | ⏸ substituted | **Reused the proven `llvm::SplitModule`** for the dev/cgu tiers instead of a from-scratch `EcoModulePartition` — the ~15-45-line insertion the design doc predicted, on already-validated infra (bitcode round-trip, per-thread ctx/TM, multi-blob stackmap). The size-cost balancer (`partitionBySize`) and call-graph clustering (`partitionByCallGraph`) remain as measured refinements (only needed if a straggler shows — none observed). |
 | 3 — dev tier | ✅ done | `--parallel-opt=none\|dev\|cgu` (eco-boot) + `EcoNativeOptions.parallelOpt`. Cheap whole-module IPO prologue (IPSCCP/GlobalOpt/function-attrs/GlobalDCE) → per-partition no-inline function pipeline. **Backend 65.8→28.7 s (2.3×), total 86.5→49.0 s, CPU 180→281%.** GC-safe (RS4GC stays before all opt; never combined with `--rs4gc-after-opt`). |
-| 4 — release tier (cgu) | 🟡 basic done | cgu = per-partition **full -O2** implemented (keeps intra-partition inlining). **Backend 65.8→31.4 s (2.1×), total →53.4 s, CPU 303%**, exe size within 0.1% of baseline. **Remaining:** physical `available_externally` glue replication (recover cross-partition inlining) + `alwaysinline`-marking the wrapper trampolines + the ≤3% recursive-tax gate. Deferred *by design*: adding replication is premature until the recursive-tax measurement shows it's needed (and that measurement needs a self-host stage-6-9 build under the mode — not yet wired). |
+| 4 — release tier (cgu) | ✅ done, **gate passed** | cgu = per-partition **full -O2** (keeps intra-partition inlining). Backend 65.8→31.4 s (2.1×), exe size within 0.1% of baseline. **Recursive-tax gate MEASURED (clean self-host, §below): cgu = −0.5% (within noise, ~0), dev = +1.7% — cgu passes ≤3% with huge margin.** ⇒ the `available_externally` glue replication + `alwaysinline` trampolines are **NOT needed** (cross-partition inlining loss is negligible for the compiler's own runtime); cgu is release-viable as-is. |
 | 5 — ThinLTO | ⏸ not needed yet | Only if the cgu recursive-tax gate fails. |
 
 Test hook added: `ECO_AOT_EXTRA_FLAGS` in `test/aot_e2e_main.cpp` lets the AOT
@@ -29,6 +29,31 @@ E2E suite exercise the backend under `--parallel-opt=dev/cgu`.
 - **AOT elm-core** (serial, fresh cache/mode): default 98/98, dev 99/99,
   cgu 99/99 — 0 backend failures each.
 - Perf: `backendstats-runs.txt`.
+
+**Recursive-tax measurement (2026-07-06, clean self-host env).** Method: `rm -rf
+build ~/.eco`, `cmake --preset build`, rebuild `eco-boot-native` +
+`eco-compiler.mlir`; build three compilers `eco-boot-native
+[--parallel-opt=none|dev|cgu] eco-compiler.mlir -o eco-{mode}`; run each through
+the Stage-7a self-compile (`make --optimize … --output=*.mlir`, frontend only =
+the mode-sensitive Elm-native code), fresh `--builddir` per run (cold 234-module
+compile), `/usr/bin/time -v` **user time** (single-threaded, 99% CPU). All runs
+rc=0, 234 modules.
+
+| mode | user time (s), samples | mean | tax vs none |
+|---|---|---|---|
+| none | 273.3 / 274.0 / 270.9 | 272.7 | — |
+| dev  | 278.4 / 276.6          | 277.5 | **+1.7 %** |
+| cgu  | 271.8 / 270.9          | 271.4 | **−0.5 % (within ~1% noise ≈ 0)** |
+
+**cgu passes the ≤3 % gate with a huge margin (~0 %)** — its per-partition full
+-O2 keeps the inlining that matters (most callee/caller pairs are intra-partition;
+the hash-split's cross-partition loss is negligible for the compiler's runtime).
+Even fully-no-inline **dev costs only +1.7 %**, confirming the design thesis: the
+Elm frontend already inlines (threshold 10) and the closure/PAP/alloc glue bottoms
+out in external runtime calls, so LLVM inlining contributes little to *this*
+program's runtime. Consequence: the deferred Phase-4 replication + ThinLTO work is
+**not needed** — cgu is release-viable as-is, and dev is safe even for the
+self-host build (though still scoped to dev iteration by default).
 
 Caveat: the `~/.eco`/`eco-stuff` frontend caches corrupt easily under
 concurrent/back-to-back runs (documented, orthogonal to the backend); AOT E2E

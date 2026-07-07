@@ -288,8 +288,21 @@ struct EcoPAPSimplifyPass
         RewritePatternSet patterns(ctx);
         patterns.add<SaturatedPapToCallPattern>(ctx, symTable);
         patterns.add<FusePapExtendChainPattern>(ctx);
+        FrozenRewritePatternSet frozen(std::move(patterns));
 
-        if (failed(applyPatternsGreedily(module, std::move(patterns))))
+        // Both patterns root on eco.papExtend, so seed the driver with ONLY
+        // those ops instead of every op in the module (the whole-module
+        // greedy driver spent ~1s/self-host-build folding+DCE-probing ~12MB
+        // of ops that can never match). The seeded driver still follows the
+        // rewrite cascade: P2-fused papExtends are newly created ops (re-tried
+        // for saturation), and papCreate/papExtend producers of replaced ops
+        // get enqueued and DCE'd exactly as the module driver did.
+        SmallVector<Operation *> seeds;
+        module.walk([&](PapExtendOp op) { seeds.push_back(op); });
+        if (seeds.empty())
+            return;
+
+        if (failed(applyOpPatternsGreedily(seeds, frozen)))
             signalPassFailure();
     }
 };
