@@ -31,9 +31,11 @@
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "mlir/IR/Threading.h"
 
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 
@@ -168,109 +170,33 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         };
 
 
-        // Set up type converter for eco.value -> i64
+        // One EcoTypeConverter, reused SERIALLY across Stage 0 (module-level
+        // signature + global lowering) and Stage 2 (per-function body
+        // lowering). Sequential reuse is safe: the parked concurrency bug
+        // (see EcoTailConversions.cpp) was about sharing an LLVMTypeConverter
+        // across THREADS / pass-clones — its internal caches mutate during
+        // conversion — not about reusing one converter across serial
+        // applyFullConversion calls. Declared at function scope so it OUTLIVES
+        // the Stage 2 FrozenRewritePatternSet, which captures it by reference.
         EcoTypeConverter typeConverter(ctx);
 
-        // Set up conversion target
-        ConversionTarget target(*ctx);
-        target.addLegalDialect<LLVM::LLVMDialect>();
-        target.addLegalDialect<cf::ControlFlowDialect>();  // CF ops handled by later pass
-        target.addLegalOp<ModuleOp>();
-        target.addLegalOp<UnrealizedConversionCastOp>();  // Resolved by reconcile pass
-
-        // Arith ops are dynamically legal: only if they don't contain eco.value types.
-        // This ensures arith.select gets type-converted.
-        target.addDynamicallyLegalDialect<arith::ArithDialect>(
-            [&](Operation *op) {
-                for (auto operand : op->getOperands()) {
-                    if (isa<eco::ValueType>(operand.getType()))
-                        return false;
-                }
-                for (auto result : op->getResults()) {
-                    if (isa<eco::ValueType>(result.getType()))
-                        return false;
-                }
-                return true;
-            });
-
-        // CF ops are dynamically legal: only if they don't contain eco.value types.
-        // This ensures the branch type conversion patterns convert CF ops with eco types.
-        target.addDynamicallyLegalDialect<cf::ControlFlowDialect>(
-            [&](Operation *op) {
-                // Check if any operand or result has eco.value type
-                for (auto operand : op->getOperands()) {
-                    if (isa<eco::ValueType>(operand.getType()))
-                        return false;
-                }
-                for (auto result : op->getResults()) {
-                    if (isa<eco::ValueType>(result.getType()))
-                        return false;
-                }
-                // Check block argument types for branch ops
-                if (auto branchOp = dyn_cast<BranchOpInterface>(op)) {
-                    for (auto successorIdx : llvm::seq<unsigned>(0, op->getNumSuccessors())) {
-                        Block *successor = op->getSuccessor(successorIdx);
-                        for (auto arg : successor->getArguments()) {
-                            if (isa<eco::ValueType>(arg.getType()))
-                                return false;
-                        }
-                    }
-                }
-                return true;
-            });
-
-        // func dialect: convert to LLVM
-        target.addIllegalOp<func::FuncOp>();
-        target.addIllegalOp<func::CallOp>();
-        target.addIllegalOp<func::ReturnOp>();
-
-        // Mark all Eco dialect operations as illegal (to be lowered)
-        target.addIllegalDialect<EcoDialect>();
-
-        // Override for CaseOp: temporarily legal when nested under SCF.
-        // This defers CaseOpLowering until SCF regions are converted to CF,
-        // preventing the creation of multiple blocks inside SCF single-block regions.
-        target.addDynamicallyLegalOp<CaseOp>([](CaseOp op) {
-            // If nested under SCF, treat as temporarily legal (don't convert yet)
-            if (op->getParentOfType<scf::IfOp>() ||
-                op->getParentOfType<scf::IndexSwitchOp>() ||
-                op->getParentOfType<scf::WhileOp>()) {
-                return true;
-            }
-            // Otherwise, require conversion (illegal)
-            return false;
-        });
-
-        // Also defer ReturnOp conversion when inside a CaseOp that's inside SCF.
-        // This prevents eco.return from being converted to llvm.return while the
-        // parent eco.case is still temporarily legal (which would cause a verifier error).
-        target.addDynamicallyLegalOp<ReturnOp>([](ReturnOp op) {
-            // Check if we're inside a CaseOp that's inside SCF
-            if (auto caseOp = op->getParentOfType<CaseOp>()) {
-                if (caseOp->getParentOfType<scf::IfOp>() ||
-                    caseOp->getParentOfType<scf::IndexSwitchOp>() ||
-                    caseOp->getParentOfType<scf::WhileOp>()) {
-                    return true;  // Legal for now
-                }
-            }
-            // Otherwise, require conversion (illegal)
-            return false;
-        });
-
-        // Set up lowering patterns
-        RewritePatternSet patterns(ctx);
-
-        // Create runtime helper and control flow context
+        // Runtime helper (module symbol cache, origFuncTypes, deterministic
+        // string-literal counter) and control-flow lowering context. Both are
+        // shared across Stage 0 and Stage 2 exactly as the single-conversion
+        // path shared one instance across the whole module: the symbol cache
+        // dedups getOrCreate* wrappers/decls created lazily during Stage 2, and
+        // cfCtx threads control-flow state across all functions (cleared once,
+        // not per function).
         EcoRuntime runtime(module);
         EcoCFContext cfCtx;
         cfCtx.clear();
 
         // Pre-scan all func::FuncOps to save original types before conversion.
-        // This is needed because getOrCreateWrapper must distinguish primitive
-        // params (Int i64) from !eco.value params (HPointer i64), but after
-        // conversion both become LLVM i64 and the func::FuncOp is gone.
-        // Also collect functions marked with eco.shadow_roots for the
-        // post-conversion shadow root frame installation.
+        // getOrCreateWrapper must distinguish primitive params (Int i64) from
+        // !eco.value params (HPointer i64), but after conversion both become
+        // LLVM i64 and the func::FuncOp is gone. Also collect functions marked
+        // eco.shadow_roots for post-conversion shadow-root frame installation.
+        // MUST run before Stage 0 (which erases every func::FuncOp).
         llvm::DenseSet<llvm::StringRef> shadowRootFuncs;
         module.walk([&](func::FuncOp funcOp) {
             runtime.origFuncTypes[funcOp.getSymName()] = funcOp.getFunctionType();
@@ -278,111 +204,298 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
                 shadowRootFuncs.insert(funcOp.getSymName());
         });
 
-        // NOTE: The papCreate/papExtend type-inference scan that was here
-        // (Bug 8 fix) has been removed. It inferred kernel parameter types from
-        // captured operand types and papExtend new-arg types for functions without
-        // func::FuncOp declarations. This is no longer needed because:
-        //
-        // 1. The Elm compiler's registerKernelCall + generateKernelDecl pipeline
-        //    emits func.func is_kernel declarations for ALL kernel functions,
-        //    so origFuncTypes is populated from the func::FuncOp pre-scan above.
-        //
-        // 2. Hand-crafted test MLIR files that define evaluator functions as
-        //    llvm.func (args-array convention) are handled by getOrCreateWrapper's
-        //    usesArgsArrayConvention() check, which returns the function directly
-        //    without consulting origFuncTypes.
-        //
-        // See: CGEN_057 invariant (Kernel Declaration Completeness).
-
-        // Add kernel function lowering first (higher priority)
-        populateEcoFuncPatterns(typeConverter, patterns, runtime);
-
-        // Add func-to-llvm conversion patterns for non-kernel functions.
-        // NOTE: MLIR's CallOpLowering does an O(N) symbol lookup per func.call
-        // to check for the llvm.bareptr attribute. Since Eco never uses bare
-        // pointer calling convention (no memref types), we can't pass a
-        // SymbolTableCollection (it asserts on duplicate names during
-        // applyFullConversion). Instead, we'll add our own call lowering below.
-        populateFuncToLLVMConversionPatterns(typeConverter, patterns);
-
-        // Add call op conversion patterns
-        populateCallOpTypeConversionPattern(patterns, typeConverter);
-
-        // Add branch type conversion pattern
-        populateBranchOpInterfaceTypeConversionPattern(patterns, typeConverter);
-
-        // Add SCF structural type conversion patterns
-        // This adds patterns to convert SCF ops' types and marks SCF ops as dynamically legal.
-        scf::populateSCFStructuralTypeConversionsAndLegality(typeConverter, patterns, target);
-
-        // Override: SCF must be fully eliminated, not just type-converted.
-        // This ensures SCF-to-CF patterns run to completion.
-        target.addIllegalDialect<scf::SCFDialect>();
-
-        // scf.index_switch is dynamically legal: legal only when its result types
-        // are already converted (not !eco.value). This allows the type conversion
-        // patterns to run first, converting the yield types inside.
-        target.addDynamicallyLegalOp<scf::IndexSwitchOp>([](scf::IndexSwitchOp op) {
-            // Legal if no result types are eco.value
-            for (Type t : op.getResultTypes()) {
-                if (isa<eco::ValueType>(t))
-                    return false;
-            }
-            return true;
-        });
-
-        // scf.yield is dynamically legal based on its operand types
-        target.addDynamicallyLegalOp<scf::YieldOp>([](scf::YieldOp op) {
-            for (Value operand : op.getOperands()) {
-                if (isa<eco::ValueType>(operand.getType()))
-                    return false;
-            }
-            return true;
-        });
-
-        // Add SCF-to-CF lowering patterns (for scf.if, scf.while, etc.)
-        // Note: scf.index_switch is intentionally NOT lowered here.
-        populateSCFToControlFlowConversionPatterns(patterns);
-
-        // Add arith type conversion pattern for select ops
-        // (needed when scf.if is lowered to arith.select with eco.value types)
-        patterns.add<SelectOpTypeConversion>(typeConverter, ctx);
-
-        // Add SCF type conversion patterns for index_switch
-        // (needed because scf::populateSCFStructuralTypeConversionsAndLegality
-        // doesn't handle index_switch type conversion)
-        patterns.add<IndexSwitchOpTypeConversion>(typeConverter, ctx);
-        patterns.add<YieldOpTypeConversion>(typeConverter, ctx);
-
-        // Add all ECO lowering patterns from modular files
-        populateEcoTypePatterns(typeConverter, patterns, runtime);
-        populateEcoHeapPatterns(typeConverter, patterns, runtime);
-        populateEcoClosurePatterns(typeConverter, patterns, runtime);
-        // Phase 0 escape-analysis plumbing: value-level aggregate ops
-        // (eco.make.*, eco.to_heap, eco.make.closure) and a parallel
-        // higher-benefit project.closure pattern for !eco.closure_env.
-        populateEcoValueAggPatterns(typeConverter, patterns, runtime);
-        populateEcoControlFlowPatterns(typeConverter, patterns, runtime, cfCtx);
-        populateEcoArithPatterns(typeConverter, patterns);
-        populateEcoArithPatternsWithRuntime(typeConverter, patterns, runtime);
-        populateEcoGlobalPatterns(typeConverter, patterns);
-        populateEcoErrorDebugPatterns(typeConverter, patterns, runtime);
-
-        ecoStageReport("1. pattern population/setup");
-
         // Lower allocation groups (eco.gc_group_size > 1) into fast/slow/merge
-        // CFG before the per-op conversion patterns run. Group member ops are
-        // erased; remaining singleton alloc ops are lowered by patterns below.
+        // CFG before ANY conversion. lowerAllocGroups walks
+        // module.getOps<func::FuncOp>(), so it MUST run before Stage 0 erases
+        // the func::FuncOps; group member ops are erased, remaining singleton
+        // alloc ops are lowered by the Stage 2 body patterns.
         lowerAllocGroups(module, runtime);
-        ecoStageReport("2. lowerAllocGroups");
+        ecoStageReport("1. pre-scan + lowerAllocGroups");
 
-        // Apply the conversion patterns to the module
-        // Use applyFullConversion to ensure all operations are legalized.
-        // This is important because dynamic legality for CaseOp depends on
-        // structural context that changes during conversion.
-        if (failed(applyFullConversion(module, target, std::move(patterns))))
-            signalPassFailure();
-        ecoStageReport("3. applyFullConversion");
+        //===--------------------------------------------------------------===//
+        // Stage 0 (serial): func SIGNATURE conversion + module-level lowering.
+        //===--------------------------------------------------------------===//
+        // At MODULE scope, convert: every func::FuncOp -> llvm.func (kernel
+        // decls -> extern llvm.func via KernelFuncOpLowering; every other
+        // func.func -> an llvm.func SHELL whose signature is type-converted but
+        // whose body region is moved verbatim and left in the Eco/scf/arith/cf
+        // dialects), plus the two module-level Eco globals (eco.global ->
+        // llvm.mlir.global, eco.type_table -> llvm globals). Everything else
+        // (bodies, func.call, func.return, eco.load_global/eco.store_global) is
+        // DEFERRED (kept legal) to Stage 2. The resulting llvm.func-with-eco-
+        // body IR is intentionally type-inconsistent, but nothing verifies it
+        // between stages (applyFullConversion only checks target legality and
+        // unreachable blocks; the pass verifier runs after the whole pass), and
+        // Stage 2 finishes lowering every deferred op.
+        {
+            ConversionTarget sigTarget(*ctx);
+            sigTarget.addLegalDialect<LLVM::LLVMDialect>();
+            sigTarget.addLegalOp<ModuleOp>();
+            sigTarget.addLegalOp<UnrealizedConversionCastOp>();
+            // Bodies are deferred to Stage 2: keep their dialects legal so the
+            // signature conversion converts only the func shell.
+            sigTarget.addLegalDialect<EcoDialect>();
+            sigTarget.addLegalDialect<scf::SCFDialect>();
+            sigTarget.addLegalDialect<arith::ArithDialect>();
+            sigTarget.addLegalDialect<cf::ControlFlowDialect>();
+            // func.call / func.return are body ops (their operands are produced
+            // and consumed by deferred eco ops); defer them so the producer eco
+            // op and the call/return convert together in Stage 2, exactly as in
+            // the single conversion. Only the func.func SHELL converts now.
+            sigTarget.addLegalDialect<func::FuncDialect>();
+            sigTarget.addIllegalOp<func::FuncOp>();
+            // Module-level Eco globals must lower serially at module scope
+            // (top-level replaceOp/eraseOp). Body-level load/store globals stay
+            // Eco-legal here and defer to Stage 2.
+            sigTarget.addIllegalOp<eco::GlobalOp>();
+            sigTarget.addIllegalOp<eco::TypeTableOp>();
+
+            RewritePatternSet sigPatterns(ctx);
+            // Kernel func.func -> extern llvm.func (benefit 10; MODULE
+            // mutation). Higher benefit than the signature pattern so kernel
+            // decls are handled here rather than shell-converted.
+            populateEcoFuncPatterns(typeConverter, sigPatterns, runtime);
+            // Non-kernel func.func -> llvm.func SHELL (signature only). This is
+            // the isolated FuncOpConversionPattern that the full func-to-llvm
+            // set also carries; taken alone it moves the body region verbatim
+            // and type-converts the entry block args, bridging the still-Eco
+            // body with unrealized_conversion_cast arg materializations.
+            populateFuncToLLVMFuncOpConversionPattern(typeConverter, sigPatterns);
+            // GlobalOpLowering + TypeTableOpLowering fire (module level);
+            // LoadGlobalOpLowering / StoreGlobalOpLowering are also added but
+            // stay inert (their Eco ops are legal/deferred here).
+            populateEcoGlobalPatterns(typeConverter, sigPatterns);
+
+            if (failed(applyFullConversion(module, sigTarget,
+                                           std::move(sigPatterns)))) {
+                signalPassFailure();
+                return;
+            }
+        }
+
+        // CRITICAL: Stage 0 op-REPLACED every func::FuncOp with an llvm.func
+        // (the old op is erased). runtime.symCache was populated DURING Stage 0
+        // (EcoToLLVMFunc's kernel-decl lowering calls runtime.lookupSymbol,
+        // which triggers ensureSymCache over the then-mixed module), so every
+        // cached func::FuncOp pointer now DANGLES. Clear it so Stage 2 rebuilds
+        // the cache from the live all-llvm.func module on its first lookup —
+        // otherwise getOrCreateWrapper's dyn_cast<LLVM::LLVMFuncOp> on a stale
+        // pointer is UB and silently miscompiles closures (runtime SIGSEGV).
+        runtime.symCache.clear();
+
+        ecoStageReport("2. stage0 signature + module conversion");
+
+        // ---- Phase 2 pre-materialization (Option B) ----
+        // Eagerly create every module-level artifact a Stage 2 body pattern
+        // would otherwise create on demand (runtime decls, string-literal +
+        // string-case globals, closure wrappers, eval-layouts), so the symbol
+        // table + artifact caches become READ-ONLY during body conversion (this
+        // is what makes the body stage safe to run in parallel later). Snapshot
+        // bodyFuncs BEFORE pre-mat so the wrappers/decls it creates are excluded
+        // from body conversion (they are pure LLVM and need none). The walk
+        // order == module program order + pre-order within each function.
+        SmallVector<LLVM::LLVMFuncOp> bodyFuncs;
+        for (LLVM::LLVMFuncOp func : module.getOps<LLVM::LLVMFuncOp>())
+            bodyFuncs.push_back(func);
+        {
+            OpBuilder preBuilder(ctx);
+            // Pre-declare ALL runtime helper externs so getOrCreateFunc hits a
+            // read-only cache during parallel Stage 2 (unused ones are stripped
+            // below so codegen CHECK-NOT fixtures still pass).
+            runtime.materializeAllRuntimeDecls(preBuilder);
+            preMaterializeStringLiterals(preBuilder, runtime, bodyFuncs);
+            preMaterializeStringCases(preBuilder, runtime, bodyFuncs);
+            preMaterializeClosureArtifacts(preBuilder, runtime, &typeConverter,
+                                           bodyFuncs);
+        }
+        // Flip read-only: from here every getOrCreate*/wrapper/eval-layout/string
+        // artifact MUST hit the cache; any create trips freeze()'s cacheSymbol
+        // assert, pinpointing an artifact pre-materialization missed.
+        runtime.freeze();
+        ecoStageReport("2b. pre-materialization");
+
+        //===--------------------------------------------------------------===//
+        // Stage 2: per-function BODY conversion (lock-free parallel).
+        //===--------------------------------------------------------------===//
+        // Each chunk builds its OWN EcoTypeConverter + FrozenRewritePatternSet +
+        // ConversionTarget + EcoCFContext (thread-local): the type converter
+        // mutates internal caches during conversion and ConversionTarget lazily
+        // caches legality, so neither may be shared across threads. `runtime` is
+        // shared but READ-ONLY (symCache fully populated by freeze(); every
+        // getOrCreate*/wrapper/eval-layout/string artifact hits the cache), so
+        // concurrent DenseMap reads need no lock. cfCtx is keyed by
+        // {parentFunc, jpId}; a per-chunk instance matches the legacy single
+        // cfCtx exactly (entries never collide across functions). MLIRContext
+        // attribute/type uniquing is thread-safe when multithreading is on.
+        auto convertChunk =
+            [&](llvm::ArrayRef<LLVM::LLVMFuncOp> chunk) -> LogicalResult {
+            EcoTypeConverter tc(ctx);
+            EcoCFContext cf;
+            cf.clear();
+
+            ConversionTarget bodyTarget(*ctx);
+            bodyTarget.addLegalDialect<LLVM::LLVMDialect>();
+            bodyTarget.addLegalDialect<cf::ControlFlowDialect>();
+            bodyTarget.addLegalOp<ModuleOp>();
+            bodyTarget.addLegalOp<UnrealizedConversionCastOp>();
+            bodyTarget.addDynamicallyLegalDialect<arith::ArithDialect>(
+                [](Operation *op) {
+                    for (auto operand : op->getOperands())
+                        if (isa<eco::ValueType>(operand.getType())) return false;
+                    for (auto result : op->getResults())
+                        if (isa<eco::ValueType>(result.getType())) return false;
+                    return true;
+                });
+            bodyTarget.addDynamicallyLegalDialect<cf::ControlFlowDialect>(
+                [](Operation *op) {
+                    for (auto operand : op->getOperands())
+                        if (isa<eco::ValueType>(operand.getType())) return false;
+                    for (auto result : op->getResults())
+                        if (isa<eco::ValueType>(result.getType())) return false;
+                    if (auto branchOp = dyn_cast<BranchOpInterface>(op)) {
+                        for (auto sIdx : llvm::seq<unsigned>(0, op->getNumSuccessors())) {
+                            Block *successor = op->getSuccessor(sIdx);
+                            for (auto arg : successor->getArguments())
+                                if (isa<eco::ValueType>(arg.getType())) return false;
+                        }
+                    }
+                    return true;
+                });
+            bodyTarget.addIllegalOp<func::FuncOp>();
+            bodyTarget.addIllegalOp<func::CallOp>();
+            bodyTarget.addIllegalOp<func::ReturnOp>();
+            bodyTarget.addIllegalDialect<EcoDialect>();
+            bodyTarget.addDynamicallyLegalOp<CaseOp>([](CaseOp op) {
+                if (op->getParentOfType<scf::IfOp>() ||
+                    op->getParentOfType<scf::IndexSwitchOp>() ||
+                    op->getParentOfType<scf::WhileOp>())
+                    return true;
+                return false;
+            });
+            bodyTarget.addDynamicallyLegalOp<ReturnOp>([](ReturnOp op) {
+                if (auto caseOp = op->getParentOfType<CaseOp>()) {
+                    if (caseOp->getParentOfType<scf::IfOp>() ||
+                        caseOp->getParentOfType<scf::IndexSwitchOp>() ||
+                        caseOp->getParentOfType<scf::WhileOp>())
+                        return true;
+                }
+                return false;
+            });
+
+            RewritePatternSet bodyPatterns(ctx);
+            populateFuncToLLVMConversionPatterns(tc, bodyPatterns);
+            populateCallOpTypeConversionPattern(bodyPatterns, tc);
+            populateBranchOpInterfaceTypeConversionPattern(bodyPatterns, tc);
+            scf::populateSCFStructuralTypeConversionsAndLegality(tc, bodyPatterns,
+                                                                 bodyTarget);
+            bodyTarget.addIllegalDialect<scf::SCFDialect>();
+            bodyTarget.addDynamicallyLegalOp<scf::IndexSwitchOp>(
+                [](scf::IndexSwitchOp op) {
+                    for (Type t : op.getResultTypes())
+                        if (isa<eco::ValueType>(t)) return false;
+                    return true;
+                });
+            bodyTarget.addDynamicallyLegalOp<scf::YieldOp>([](scf::YieldOp op) {
+                for (Value operand : op.getOperands())
+                    if (isa<eco::ValueType>(operand.getType())) return false;
+                return true;
+            });
+            populateSCFToControlFlowConversionPatterns(bodyPatterns);
+            bodyPatterns.add<SelectOpTypeConversion>(tc, ctx);
+            bodyPatterns.add<IndexSwitchOpTypeConversion>(tc, ctx);
+            bodyPatterns.add<YieldOpTypeConversion>(tc, ctx);
+            populateEcoTypePatterns(tc, bodyPatterns, runtime);
+            populateEcoHeapPatterns(tc, bodyPatterns, runtime);
+            populateEcoClosurePatterns(tc, bodyPatterns, runtime);
+            populateEcoValueAggPatterns(tc, bodyPatterns, runtime);
+            populateEcoControlFlowPatterns(tc, bodyPatterns, runtime, cf);
+            populateEcoArithPatterns(tc, bodyPatterns);
+            populateEcoArithPatternsWithRuntime(tc, bodyPatterns, runtime);
+            populateEcoGlobalPatterns(tc, bodyPatterns);
+            populateEcoErrorDebugPatterns(tc, bodyPatterns, runtime);
+            FrozenRewritePatternSet bodyFrozen(std::move(bodyPatterns));
+
+            for (LLVM::LLVMFuncOp func : chunk)
+                if (failed(applyFullConversion(func, bodyTarget, bodyFrozen)))
+                    return failure();
+            return success();
+        };
+
+        // Per-function body conversion runs in PARALLEL by default. Validated
+        // 2026-07-07: byte-reproducible IR (after the eval-layout ordering fix
+        // above), full JIT E2E + GC-stress green, and the byte-exact native
+        // bootstrap fixed-point (Stage 8c) holds under parallel. Force the
+        // serial path with ECO_ECO2LLVM_PARALLEL=0 (determinism bisection /
+        // debugging); it is also serial whenever the MLIRContext has
+        // multithreading disabled (e.g. Win32 in eco-boot.cpp).
+        const char *parEnv = ::getenv("ECO_ECO2LLVM_PARALLEL");
+        const bool forceSerial = parEnv && parEnv[0] == '0' && parEnv[1] == '\0';
+        const bool runParallel = ctx->isMultithreadingEnabled() && !forceSerial;
+        if (!runParallel) {
+            if (failed(convertChunk(bodyFuncs))) {
+                signalPassFailure();
+                return;
+            }
+        } else {
+            unsigned numChunks =
+                std::max(1u, ctx->getThreadPool().getMaxConcurrency());
+            numChunks = std::min<unsigned>(numChunks, (unsigned)bodyFuncs.size());
+            SmallVector<llvm::ArrayRef<LLVM::LLVMFuncOp>> chunks;
+            if (numChunks <= 1) {
+                chunks.push_back(llvm::ArrayRef<LLVM::LLVMFuncOp>(bodyFuncs));
+            } else {
+                size_t base = bodyFuncs.size() / numChunks;
+                size_t rem = bodyFuncs.size() % numChunks;
+                size_t offset = 0;
+                for (unsigned i = 0; i < numChunks; ++i) {
+                    size_t len = base + (i < rem ? 1u : 0u);
+                    chunks.push_back(
+                        llvm::ArrayRef<LLVM::LLVMFuncOp>(bodyFuncs)
+                            .slice(offset, len));
+                    offset += len;
+                }
+            }
+            if (failed(failableParallelForEach(ctx, chunks, convertChunk))) {
+                signalPassFailure();
+                return;
+            }
+        }
+        ecoStageReport("3. stage2 per-function body conversion");
+
+        // Re-enable module mutation for the SERIAL post-Stage-2 work
+        // (shadow-root prologues + createGlobalRootInitFunction, which create
+        // __eco_init_globals and may cacheSymbol).
+        runtime.frozen = false;
+
+        // Determinism: eval-layout globals are the ONE module artifact created
+        // on demand (ensureEvalLayoutGlobal) instead of in a fixed serial order.
+        // Their emission order tracks demand-DISCOVERY order — a StringAttr-keyed
+        // dedup set + module-start insertion — which is pointer/hash dependent
+        // (and, under ECO_ECO2LLVM_PARALLEL, thread-arrival dependent), so it
+        // varies run-to-run in BOTH serial and parallel lowering. They are
+        // semantically inert (referenced only by symbol name via AddressOfOp),
+        // but the reordering makes eco-boot-native output non-byte-reproducible
+        // and breaks the byte-exact native bootstrap fixed-point (Stage 8c).
+        // Sort them into a canonical by-name block anchored before the first
+        // non-layout op (whose relative order is already deterministic).
+        {
+            SmallVector<LLVM::GlobalOp> layouts;
+            Operation *anchor = nullptr;
+            for (Operation &op : *module.getBody()) {
+                auto g = dyn_cast<LLVM::GlobalOp>(&op);
+                if (g && g.getSymName().starts_with("__eco_eval_layout_"))
+                    layouts.push_back(g);
+                else if (!anchor)
+                    anchor = &op;
+            }
+            if (anchor && !layouts.empty()) {
+                llvm::sort(layouts, [](LLVM::GlobalOp a, LLVM::GlobalOp b) {
+                    return a.getSymName() < b.getSymName();
+                });
+                for (LLVM::GlobalOp g : layouts)
+                    g->moveBefore(anchor);
+            }
+        }
 
         // Single post-conversion walk over all LLVM functions: (1) set the GC
         // strategy so statepoint intrinsics are recognized, and (2) install
@@ -412,6 +525,28 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
 
         // Generate global root initialization function
         createGlobalRootInitFunction(module, runtime);
+
+        // Strip runtime-decl externs that no op ended up using. We pre-declare
+        // ALL runtime helpers (materializeAllRuntimeDecls) so getOrCreateFunc is
+        // a lock-free cache hit during parallel Stage 2; the unused ones would
+        // otherwise linger until the backend's internalize+GlobalDCE and trip
+        // codegen-fixture CHECK-NOT patterns that assert e.g. eco_alloc_tuple2
+        // is absent. Erasing declaration-only, use-less external llvm.funcs here
+        // restores the pre-parallelization symbol set exactly.
+        {
+            // Build the module's symbol-use map ONCE (O(module)); useEmpty is
+            // then O(1) per decl. (SymbolTable::symbolKnownUseEmpty is O(module)
+            // PER call — 135 pre-declared decls x an 85k-function module was
+            // ~213s.)
+            SymbolTableCollection symbolTables;
+            SymbolUserMap userMap(symbolTables, module.getOperation());
+            SmallVector<LLVM::LLVMFuncOp> deadDecls;
+            for (LLVM::LLVMFuncOp fn : module.getOps<LLVM::LLVMFuncOp>())
+                if (fn.isExternal() && userMap.useEmpty(fn))
+                    deadDecls.push_back(fn);
+            for (LLVM::LLVMFuncOp fn : deadDecls)
+                fn.erase();
+        }
         ecoStageReport("5. createGlobalRootInitFunction");
     }
 };

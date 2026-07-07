@@ -19,6 +19,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringMap.h"
 #include <vector>
+#include <mutex>
 
 namespace eco {
 namespace detail {
@@ -258,6 +259,16 @@ struct EcoRuntime {
     /// Built lazily on first use from the module's top-level operations.
     mutable llvm::DenseMap<mlir::StringAttr, mlir::Operation*> symCache;
 
+    /// Eval-layout globals are the one artifact class whose exact demand cannot
+    /// be pre-derived (the 4 getOrCreateEvalLayout call sites compute `kinds`
+    /// from a path-specific type mix), so they are still created on demand
+    /// during parallel Stage 2. They live OUTSIDE symCache — referenced only by
+    /// name via AddressOfOp, never looked up — so guarding just their dedup set
+    /// + creation with this dedicated mutex keeps the hot symCache LOCK-FREE.
+    /// Contention is low: taken per closure-apply site, not per symbol ref.
+    mutable llvm::DenseSet<mlir::StringAttr> evalLayoutNames;
+    mutable std::mutex evalLayoutMutex;
+
     /// Pre-scanned original function types (before LLVM type conversion).
     /// Maps function name -> original FunctionType (with eco::ValueType etc.).
     ///
@@ -283,6 +294,35 @@ struct EcoRuntime {
     /// per EcoRuntime instance (one is constructed per module conversion).
     mutable llvm::StringMap<std::vector<uint16_t>> utf16PatternCache;
 
+    //===------------------------------------------------------------------===//
+    // Parallel-Stage-2 support: freeze + pre-materialization side maps
+    //===------------------------------------------------------------------===//
+
+    /// Set by freeze() once serial pre-materialization is complete. While set,
+    /// the module symbol table and every artifact cache are READ-ONLY so the
+    /// body stage can run lock-free across functions. Any mutation after
+    /// freeze() is a completeness bug (an artifact a body pattern demands was
+    /// not pre-created) and trips a debug assertion.
+    mutable bool frozen = false;
+
+    /// StringLiteralOp -> assigned literal index N (global "__eco_str_N").
+    /// Filled by preMaterializeStringLiterals(); read by StringLiteralOpLowering.
+    mutable llvm::DenseMap<mlir::Operation *, uint64_t> stringLiteralIndexForOp;
+
+    /// String-kind eco.case op -> assigned caseId (names its per-pattern
+    /// "__eco_str_case_<caseId>_<i>" globals). Filled by preMaterializeStringCases.
+    mutable llvm::DenseMap<mlir::Operation *, uint64_t> caseIdForOp;
+
+    /// Force the symbol cache fully materialized, then mark the runtime frozen.
+    /// Called once after serial pre-materialization, before body conversion.
+    void freeze() const { ensureSymCache(); frozen = true; }
+
+    /// Pre-create every runtime function declaration so body patterns only READ
+    /// them. Declarations no op uses are dropped by the later internalize +
+    /// globalDCE, so the emitted binary is unchanged. Must run before freeze().
+    /// Defined in EcoToLLVMRuntime.cpp.
+    void materializeAllRuntimeDecls(mlir::OpBuilder &builder) const;
+
     explicit EcoRuntime(mlir::ModuleOp m) : module(m), ctx(m.getContext()) {}
 
     /// Ensure the symbol cache is populated from the module.
@@ -297,23 +337,30 @@ struct EcoRuntime {
 
     /// Register a newly created symbol in the cache.
     void cacheSymbol(mlir::Operation *op) const {
+        assert(!frozen &&
+               "EcoRuntime::cacheSymbol() after freeze(): a Stage-2 body pattern "
+               "created a module-level symbol pre-materialization missed "
+               "(parallel-conversion UB)");
         if (auto nameAttr = op->getAttrOfType<mlir::StringAttr>(
                 mlir::SymbolTable::getSymbolAttrName()))
             symCache[nameAttr] = op;
     }
 
-    /// Look up a symbol in the module using the cached map (O(1)).
+    /// Look up a symbol in the module using the cached map (O(1)). LOCK-FREE:
+    /// symCache is fully pre-materialized + frozen before parallel Stage 2, so
+    /// it is READ-ONLY there (no writer races these reads). `frozen` guards the
+    /// serial-only lazy build.
     template <typename T>
     T lookupSymbol(llvm::StringRef name) const {
-        ensureSymCache();
+        if (!frozen) ensureSymCache();
         auto it = symCache.find(mlir::StringAttr::get(ctx, name));
         if (it == symCache.end()) return nullptr;
         return mlir::dyn_cast<T>(it->second);
     }
 
-    /// Look up any operation by name using the cached map.
+    /// Look up any operation by name using the cached map. LOCK-FREE (see above).
     mlir::Operation *lookupSymbol(llvm::StringRef name) const {
-        ensureSymCache();
+        if (!frozen) ensureSymCache();
         auto it = symCache.find(mlir::StringAttr::get(ctx, name));
         if (it == symCache.end()) return nullptr;
         return it->second;
@@ -655,6 +702,22 @@ void populateEcoValueAggPatterns(
     EcoTypeConverter &typeConverter,
     mlir::RewritePatternSet &patterns,
     const EcoRuntime &runtime);
+
+//===----------------------------------------------------------------------===//
+// Phase-2 pre-materialization (create module artifacts serially before the
+// per-function body stage; see EcoToLLVM.cpp runOnOperation).
+//===----------------------------------------------------------------------===//
+
+void preMaterializeStringLiterals(
+    mlir::OpBuilder &builder, const EcoRuntime &runtime,
+    llvm::ArrayRef<mlir::LLVM::LLVMFuncOp> funcs);
+void preMaterializeStringCases(
+    mlir::OpBuilder &builder, const EcoRuntime &runtime,
+    llvm::ArrayRef<mlir::LLVM::LLVMFuncOp> funcs);
+void preMaterializeClosureArtifacts(
+    mlir::OpBuilder &builder, const EcoRuntime &runtime,
+    const mlir::TypeConverter *typeConverter,
+    llvm::ArrayRef<mlir::LLVM::LLVMFuncOp> funcs);
 
 //===----------------------------------------------------------------------===//
 // Shadow Root Frame (TCO-safe GC rooting for func.func parameters)

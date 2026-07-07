@@ -358,10 +358,13 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
 
         size_t numPatterns = stringPatternsAttr.size();
 
-        // One deterministic id per CaseOp lowering. Used to name the
-        // per-pattern LLVM globals; see usage below.
-        static std::atomic<uint64_t> caseCounter{0};
-        const uint64_t caseId = caseCounter.fetch_add(1, std::memory_order_relaxed);
+        // caseId assigned deterministically in preMaterializeStringCases; its
+        // per-pattern "__eco_str_case_<caseId>_<i>" globals already exist. Read
+        // from the side map (no counter, no create — read-only during Stage 2).
+        auto caseIdIt = runtime.caseIdForOp.find(op.getOperation());
+        assert(caseIdIt != runtime.caseIdForOp.end() &&
+               "string-case globals not pre-materialized");
+        const uint64_t caseId = caseIdIt->second;
 
         for (size_t i = 0; i < numPatterns; ++i) {
             auto patternAttr = cast<StringAttr>(stringPatternsAttr[i]);
@@ -378,58 +381,16 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                 Value emptyI64 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, emptyStringVal);
                 patternValue = rewriter.create<LLVM::IntToPtrOp>(loc, hptrTy, emptyI64);
             } else {
-                // Create global for non-empty string
-                // Convert UTF-8 to UTF-16, cached per pattern content so
-                // repeated identical literals don't re-run the conversion.
-                auto cacheIt = runtime.utf16PatternCache.find(pattern);
-                if (cacheIt == runtime.utf16PatternCache.end())
-                    cacheIt = runtime.utf16PatternCache
-                                  .try_emplace(pattern, utf8ToUtf16(pattern))
-                                  .first;
-                const std::vector<uint16_t> &utf16 = cacheIt->second;
+                // Global pre-created in preMaterializeStringCases; recompute the
+                // length (pure — no cache write) and take the pre-created
+                // global's address. No module insertion during the body stage.
+                std::vector<uint16_t> utf16 = utf8ToUtf16(pattern);
                 size_t length = utf16.size();
-
-                // Create unique global name. Use the per-CaseOp `caseId`
-                // (hoisted out of this loop, one bump per CaseOp) rather
-                // than `op.getOperation()`'s runtime address — ASLR made
-                // the address vary across runs, which made
-                // `eco-boot-native`'s output non-deterministic and broke
-                // the Stage 8c native fixed-point check. The counter is
-                // process-static; the same MLIR input processed in the
-                // same pattern order assigns the same caseId, so two
-                // independent invocations produce byte-identical binaries.
                 llvm::SmallString<48> globalName;
                 {
                     llvm::raw_svector_ostream os(globalName);
                     os << "__eco_str_case_" << caseId << "_" << i;
                 }
-
-                auto arrayTy = LLVM::LLVMArrayType::get(i16Ty, length);
-
-                // Create global with initializer
-                {
-                    OpBuilder::InsertionGuard guard(rewriter);
-                    rewriter.setInsertionPointToStart(runtime.module.getBody());
-
-                    auto globalOp = rewriter.create<LLVM::GlobalOp>(
-                        loc, arrayTy, /*isConstant=*/true, LLVM::Linkage::Internal,
-                        globalName, /*value=*/Attribute{});
-
-                    Block *initBlock = rewriter.createBlock(&globalOp.getInitializerRegion());
-                    rewriter.setInsertionPointToStart(initBlock);
-
-                    SmallVector<int16_t> charValues;
-                    for (uint16_t c : utf16) {
-                        charValues.push_back(static_cast<int16_t>(c));
-                    }
-                    auto denseAttr = DenseElementsAttr::get(
-                        RankedTensorType::get({static_cast<int64_t>(length)}, i16Ty),
-                        ArrayRef<int16_t>(charValues));
-                    auto initValue = rewriter.create<LLVM::ConstantOp>(loc, arrayTy, denseAttr);
-                    rewriter.create<LLVM::ReturnOp>(loc, initValue.getResult());
-                }
-
-                // Get address of global chars array
                 auto addrOf = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, globalName);
 
                 // Call eco_alloc_string_literal(chars, length) -> HPointer
@@ -1066,4 +1027,56 @@ void eco::detail::populateEcoControlFlowPatterns(
     patterns.add<YieldOpLowering>(typeConverter, ctx);  // Safety net for unlowered yields
     patterns.add<JoinpointOpLowering>(typeConverter, ctx, cfCtx);
     patterns.add<JumpOpLowering>(typeConverter, ctx, cfCtx);
+}
+
+// Phase-2 pre-materialization: walk string-kind eco.case ops in module program
+// order, assign each a deterministic caseId (a per-module counter, replacing the
+// old file-static atomic — same input + same order => same ids => deterministic
+// output), create its per-pattern __eco_str_case_<caseId>_<i> globals, and
+// record the caseId in the side map read by lowerStringCase during Stage 2.
+void eco::detail::preMaterializeStringCases(
+    OpBuilder &builder, const EcoRuntime &runtime,
+    llvm::ArrayRef<LLVM::LLVMFuncOp> funcs) {
+    auto *ctx = builder.getContext();
+    auto i16Ty = IntegerType::get(ctx, 16);
+    uint64_t caseCounter = 0;
+    for (LLVM::LLVMFuncOp func : funcs) {
+        func.walk([&](CaseOp op) {
+            auto ck = op.getCaseKindAttr();
+            if (!(ck && ck.getValue() == "str")) return;
+            auto pats = op.getStringPatternsAttr();
+            if (!pats) return;
+            uint64_t caseId = caseCounter++;
+            runtime.caseIdForOp[op.getOperation()] = caseId;
+            for (size_t i = 0; i < pats.size(); ++i) {
+                StringRef pattern = cast<StringAttr>(pats[i]).getValue();
+                if (pattern.empty()) continue;  // embedded empty-string const
+                std::vector<uint16_t> utf16 = utf8ToUtf16(pattern);
+                size_t length = utf16.size();
+                llvm::SmallString<48> globalName;
+                {
+                    llvm::raw_svector_ostream os(globalName);
+                    os << "__eco_str_case_" << caseId << "_" << i;
+                }
+                auto arrayTy = LLVM::LLVMArrayType::get(i16Ty, length);
+                OpBuilder::InsertionGuard guard(builder);
+                builder.setInsertionPointToStart(runtime.module.getBody());
+                auto globalOp = builder.create<LLVM::GlobalOp>(
+                    op.getLoc(), arrayTy, /*isConstant=*/true,
+                    LLVM::Linkage::Internal, globalName, /*value=*/Attribute{});
+                Block *initBlock =
+                    builder.createBlock(&globalOp.getInitializerRegion());
+                builder.setInsertionPointToStart(initBlock);
+                SmallVector<int16_t> charValues;
+                for (uint16_t c : utf16)
+                    charValues.push_back(static_cast<int16_t>(c));
+                auto denseAttr = DenseElementsAttr::get(
+                    RankedTensorType::get({static_cast<int64_t>(length)}, i16Ty),
+                    ArrayRef<int16_t>(charValues));
+                auto initValue =
+                    builder.create<LLVM::ConstantOp>(op.getLoc(), arrayTy, denseAttr);
+                builder.create<LLVM::ReturnOp>(op.getLoc(), initValue.getResult());
+            }
+        });
+    }
 }

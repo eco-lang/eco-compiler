@@ -125,8 +125,16 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateFunc(
     LLVM::LLVMFunctionType funcType,
     bool gcLeaf) const {
 
+    // Lock-free HIT: all runtime decls are pre-declared by
+    // materializeAllRuntimeDecls before freeze(), so during parallel Stage 2
+    // every call hits the read-only symCache. A miss may only legitimately
+    // happen in the serial phases; a miss while frozen means a decl escaped the
+    // pre-declaration (parallel-conversion UB) — the assert pins it.
     if (auto func = lookupSymbol<LLVM::LLVMFuncOp>(name))
         return func;
+    assert(!frozen &&
+           "getOrCreateFunc miss after freeze(): a runtime decl was not "
+           "pre-declared by materializeAllRuntimeDecls (parallel UB)");
 
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointToStart(module.getBody());
@@ -139,9 +147,9 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateFunc(
         attrs.push_back(builder.getStringAttr("gc-leaf-function"));
         newFunc->setAttr("passthrough", builder.getArrayAttr(attrs));
     }
-
-    // Register in cached symbol map so subsequent lookups find it in O(1)
-    cacheSymbol(newFunc);
+    if (auto nameAttr = newFunc->getAttrOfType<mlir::StringAttr>(
+            mlir::SymbolTable::getSymbolAttrName()))
+        symCache[nameAttr] = newFunc;
     return newFunc;
 }
 
@@ -1056,4 +1064,64 @@ std::vector<uint16_t> eco::detail::utf8ToUtf16(StringRef utf8) {
     }
 
     return result;
+}
+
+// Phase-2 pre-materialization: pre-create every runtime function declaration so
+// Stage 2 body patterns only READ them (symbol table read-only during the
+// parallel body stage). Each getOrCreate* dedups via symCache and is idempotent;
+// unused declarations are dropped by the later internalize + globalDCE, so the
+// emitted binary is unchanged.
+void EcoRuntime::materializeAllRuntimeDecls(OpBuilder &b) const {
+    getOrCreateAllocInt(b); getOrCreateAllocFloat(b); getOrCreateAllocChar(b);
+    getOrCreateAllocCons(b); getOrCreateAllocTuple2(b); getOrCreateAllocTuple3(b);
+    getOrCreateAllocRecord(b); getOrCreateAllocCustom(b); getOrCreateAllocString(b);
+    getOrCreateAllocStringLiteral(b); getOrCreateAllocClosure(b);
+    getOrCreateAllocClosureK(b); getOrCreateAllocate(b);
+    getOrCreateAllocIntFast(b); getOrCreateAllocFloatFast(b); getOrCreateAllocCharFast(b);
+    getOrCreateAllocConsFast(b); getOrCreateAllocTuple2Fast(b); getOrCreateAllocTuple3Fast(b);
+    getOrCreateAllocRecordFast(b); getOrCreateAllocCustomFast(b); getOrCreateAllocStringFast(b);
+    getOrCreateAllocClosureFast(b);
+    getOrCreateAllocIntSlow(b); getOrCreateAllocFloatSlow(b); getOrCreateAllocCharSlow(b);
+    getOrCreateAllocConsSlow(b); getOrCreateAllocTuple2Slow(b); getOrCreateAllocTuple3Slow(b);
+    getOrCreateAllocRecordSlow(b); getOrCreateAllocCustomSlow(b); getOrCreateAllocStringSlow(b);
+    getOrCreateAllocClosureSlow(b); getOrCreateAllocClosureGroupSlow(b);
+    getOrCreateAllocRegionFast(b); getOrCreateAllocRegionSlow(b);
+    getOrCreateInitIntAt(b); getOrCreateInitFloatAt(b); getOrCreateInitCharAt(b);
+    getOrCreateInitConsAt(b); getOrCreateInitTuple2At(b); getOrCreateInitTuple3At(b);
+    getOrCreateInitRecordAt(b); getOrCreateInitCustomAt(b); getOrCreateInitStringAt(b);
+    getOrCreateStoreField(b); getOrCreateStoreFieldI64(b); getOrCreateStoreFieldF64(b);
+    getOrCreateStoreRecordField(b); getOrCreateStoreRecordFieldI64(b);
+    getOrCreateStoreRecordFieldF64(b); getOrCreateSetUnboxed(b);
+    getOrCreateAllocTuple2Uninit(b); getOrCreateAllocTuple3Uninit(b); getOrCreateAllocConsUninit(b);
+    getOrCreateStoreTupleField(b); getOrCreateStoreTupleFieldI64(b); getOrCreateStoreTupleFieldF64(b);
+    getOrCreateStoreConsHead(b); getOrCreateStoreConsHeadI64(b); getOrCreateStoreConsHeadF64(b);
+    getOrCreateStoreConsTail(b);
+    getOrCreatePapExtend(b); getOrCreateClosureCallSaturated(b);
+    getOrCreateClosureCallSaturatedEval(b); getOrCreateApplyClosure(b);
+    getOrCreateApplyClosureTyped(b); getOrCreateApplyClosureEval(b);
+    getOrCreateApplySegmentationUnknown(b);
+    getOrCreateResolveHPtr(b); getOrCreateGetTag(b);
+    getOrCreateConsHeadI64(b); getOrCreateConsHeadF64(b); getOrCreateConsHeadI16(b);
+    getOrCreateTuple2Get0I64(b); getOrCreateTuple2Get1I64(b);
+    getOrCreateTuple2Get0F64(b); getOrCreateTuple2Get1F64(b);
+    getOrCreateTuple2Get0I16(b); getOrCreateTuple2Get1I16(b);
+    getOrCreateTuple3Get0I64(b); getOrCreateTuple3Get1I64(b); getOrCreateTuple3Get2I64(b);
+    getOrCreateTuple3Get0F64(b); getOrCreateTuple3Get1F64(b); getOrCreateTuple3Get2F64(b);
+    getOrCreateTuple3Get0I16(b); getOrCreateTuple3Get1I16(b); getOrCreateTuple3Get2I16(b);
+    getOrCreateRecordGetI64(b); getOrCreateRecordGetF64(b); getOrCreateRecordGetI16(b);
+    getOrCreateCustomGetI64(b); getOrCreateCustomGetF64(b); getOrCreateCustomGetI16(b);
+    getOrCreateArrayGetI64(b); getOrCreateArrayGetF64(b); getOrCreateArrayGetI16(b);
+    getOrCreateCrash(b); getOrCreateGcAddRoot(b); getOrCreateGcStackRangePoint(b);
+    getOrCreateGcPushStackRange(b); getOrCreateGcRestoreStackRangePoint(b);
+    getOrCreateRegisterTypeGraph(b); getOrCreateIntPow(b); getOrCreateUtilsEqual(b);
+    getOrCreateGetOrderLT(b); getOrCreateGetOrderEQ(b); getOrCreateGetOrderGT(b);
+    getOrCreateCloneArray(b); getOrCreateArraySetFixKind(b); getOrCreateArrayEmpty(b);
+    getOrCreateArraySingletonInt(b); getOrCreateArraySingletonFloat(b);
+    getOrCreateArraySingletonChar(b); getOrCreateArraySingletonBox(b);
+    getOrCreateArrayPushInt(b); getOrCreateArrayPushFloat(b); getOrCreateArrayPushChar(b);
+    getOrCreateArrayPushBox(b); getOrCreateArraySlice(b); getOrCreateArrayAppendN(b);
+    getOrCreateStringFromInt(b); getOrCreateStringFromDouble(b);
+    getOrCreateDbgPrint(b); getOrCreateDbgPrintInt(b); getOrCreateDbgPrintFloat(b);
+    getOrCreateDbgPrintChar(b); getOrCreateDbgPrintTyped(b);
+    getOrCreateAsin(b); getOrCreateAcos(b); getOrCreateAtan(b); getOrCreateAtan2(b);
 }

@@ -241,7 +241,10 @@ static bool usesArgsArrayConvention(LLVM::LLVMFuncOp func) {
 /// is now derived from the closure header inside the legacy entry, so
 /// the runtime helper picks the correct cast even when the caller is
 /// unaware of K.
-static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp module, StringRef funcName,
+// Takes OpBuilder& (not PatternRewriter&) so the Phase-2 serial pre-pass can
+// call it with a plain OpBuilder. It only CREATEs ops (no replaceOp/eraseOp);
+// pattern callers pass their ConversionPatternRewriter which IS-A OpBuilder&.
+static LLVM::LLVMFuncOp getOrCreateWrapper(OpBuilder &rewriter, ModuleOp module, StringRef funcName,
                                            int64_t arity, Location loc, const TypeConverter *typeConverter,
                                            const EcoRuntime &runtime,
                                            bool typedNewargs = false,
@@ -280,9 +283,19 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
     // the typedNewargs flag. The caller is responsible for tagging slots
     // as PK_Boxed in `closure->unboxed[i]` for closures whose evaluator
     // resolves to an args-array-convention function.
-    if (auto existingFunc = runtime.lookupSymbol<LLVM::LLVMFuncOp>(funcName)) {
-        if (usesArgsArrayConvention(existingFunc)) {
-            return existingFunc;
+    // A genuine args-array-convention target is a hand-written llvm.func that
+    // was NEVER a func::FuncOp, so it is absent from the pre-scanned
+    // origFuncTypes. Under the Stage0/Stage2 conversion split EVERY eco
+    // function is already an llvm.func shell here, and a converted eco
+    // signature can superficially resemble the args-array shape — so only
+    // treat NOT-pre-scanned funcs as args-array, else the typed wrapper for a
+    // normal function gets suppressed (missing __closure_wrapper_typed_* ->
+    // dangling closure evaluator -> runtime SIGSEGV).
+    if (!runtime.origFuncTypes.contains(funcName)) {
+        if (auto existingFunc = runtime.lookupSymbol<LLVM::LLVMFuncOp>(funcName)) {
+            if (usesArgsArrayConvention(existingFunc)) {
+                return existingFunc;
+            }
         }
     }
 
@@ -1332,8 +1345,16 @@ static uint64_t deriveAllParamKindsBitmap(const EcoRuntime &runtime,
 /// `closure->unboxed[i]`.
 static bool wrapperWillBeTypedNewargs(const EcoRuntime &runtime,
                                        StringRef funcSymbol) {
-    if (auto existingFunc = runtime.lookupSymbol<LLVM::LLVMFuncOp>(funcSymbol)) {
-        if (usesArgsArrayConvention(existingFunc)) return false;
+    // See getOrCreateWrapper: a normal eco function (present in origFuncTypes)
+    // is an llvm.func shell after signature conversion whose shape can look
+    // args-array; only a NOT-pre-scanned hand-written llvm.func is genuinely
+    // args-array convention. Keying on origFuncTypes makes this robust to the
+    // func.func->llvm.func conversion timing (which the Stage0/Stage2 split
+    // changes: all targets are shells by the time this predicts).
+    if (!runtime.origFuncTypes.contains(funcSymbol)) {
+        if (auto existingFunc = runtime.lookupSymbol<LLVM::LLVMFuncOp>(funcSymbol)) {
+            if (usesArgsArrayConvention(existingFunc)) return false;
+        }
     }
     return true;
 }
@@ -1347,20 +1368,15 @@ static bool wrapperWillBeTypedNewargs(const EcoRuntime &runtime,
 /// (ParamKind: 0=Boxed, 1=Int, 2=Float, 3=Char). Existing callers that
 /// don't yet plumb a Mono result type pass 0 (PK_Boxed), preserving
 /// today's "wrappers always return HPtr" behaviour.
-static Value getOrCreateEvalLayout(ConversionPatternRewriter &rewriter, Location loc,
-                                   const EcoRuntime &runtime, ArrayRef<uint8_t> kinds,
-                                   uint8_t resultKind = 0) {
-    auto *ctx = rewriter.getContext();
+// OpBuilder-based global creator (callable from the Phase-2 serial pre-pass).
+// Creates the __eco_eval_layout_* global if absent; no-op if it already exists.
+static void ensureEvalLayoutGlobal(OpBuilder &builder, Location loc,
+                                   const EcoRuntime &runtime,
+                                   ArrayRef<uint8_t> kinds, uint8_t resultKind) {
+    auto *ctx = builder.getContext();
     ModuleOp module = runtime.module;
     auto i8Ty = IntegerType::get(ctx, 8);
-    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
     uint32_t n = kinds.size();
-
-    // Only ~dozens of distinct layouts exist, but this helper is called once
-    // per closure apply site (tens of thousands on a whole-program module).
-    // Route the existence check through EcoRuntime's O(1) symbol cache instead
-    // of ModuleOp::lookupSymbol's O(N) top-level scan (was ~3.7B comparisons
-    // on the self-host module).
     llvm::SmallString<48> nameBuf;
     {
         llvm::raw_svector_ostream os(nameBuf);
@@ -1369,44 +1385,60 @@ static Value getOrCreateEvalLayout(ConversionPatternRewriter &rewriter, Location
         os << n;
     }
     StringRef name = nameBuf;
-
-    if (runtime.lookupSymbol<LLVM::GlobalOp>(name)) {
-        return rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, name);
-    }
-
+    // Eval-layouts are the ONE artifact class whose exact demand cannot be
+    // pre-derived, so they are created on demand here even during parallel
+    // Stage 2. They are referenced ONLY by name via AddressOfOp (never looked
+    // up in symCache), so they live in a dedicated dedup set guarded by their
+    // own mutex — leaving the hot symCache LOCK-FREE. insert().second is false
+    // if already created (this worker earlier or another); the lock is held
+    // through creation so the module.getBody() insertion is serialized across
+    // workers. Content-keyed, ~dozens exist, taken per closure-apply site.
+    auto key = mlir::StringAttr::get(ctx, name);
+    std::lock_guard<std::mutex> lk(runtime.evalLayoutMutex);
+    if (!runtime.evalLayoutNames.insert(key).second)
+        return;  // already created
     auto arrayTy = LLVM::LLVMArrayType::get(i8Ty, n);
     auto structTy = LLVM::LLVMStructType::getLiteral(ctx, {i8Ty, i8Ty, arrayTy});
-
-    {
-        OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPointToStart(module.getBody());
-        auto globalOp = rewriter.create<LLVM::GlobalOp>(
-            loc, structTy, /*isConstant=*/true, LLVM::Linkage::Private,
-            name, Attribute{});
-        runtime.cacheSymbol(globalOp);
-
-        Block *initBlock = rewriter.createBlock(&globalOp.getInitializerRegion());
-        rewriter.setInsertionPointToStart(initBlock);
-
-        Value structVal = rewriter.create<LLVM::UndefOp>(loc, structTy);
-        auto numParamsConst = rewriter.create<LLVM::ConstantOp>(loc, i8Ty, static_cast<int64_t>(n));
-        structVal = rewriter.create<LLVM::InsertValueOp>(loc, structTy, structVal, numParamsConst,
-                                                          ArrayRef<int64_t>{0});
-        auto resultKindConst = rewriter.create<LLVM::ConstantOp>(loc, i8Ty, static_cast<int64_t>(resultKind));
-        structVal = rewriter.create<LLVM::InsertValueOp>(loc, structTy, structVal, resultKindConst,
-                                                          ArrayRef<int64_t>{1});
-        Value arrayVal = rewriter.create<LLVM::UndefOp>(loc, arrayTy);
-        for (uint32_t i = 0; i < n; ++i) {
-            auto kindConst = rewriter.create<LLVM::ConstantOp>(loc, i8Ty, static_cast<int64_t>(kinds[i]));
-            arrayVal = rewriter.create<LLVM::InsertValueOp>(loc, arrayTy, arrayVal, kindConst,
-                                                             ArrayRef<int64_t>{static_cast<int64_t>(i)});
-        }
-        structVal = rewriter.create<LLVM::InsertValueOp>(loc, structTy, structVal, arrayVal,
-                                                          ArrayRef<int64_t>{2});
-        rewriter.create<LLVM::ReturnOp>(loc, structVal);
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(module.getBody());
+    auto globalOp = builder.create<LLVM::GlobalOp>(
+        loc, structTy, /*isConstant=*/true, LLVM::Linkage::Private, name, Attribute{});
+    Block *initBlock = builder.createBlock(&globalOp.getInitializerRegion());
+    builder.setInsertionPointToStart(initBlock);
+    Value structVal = builder.create<LLVM::UndefOp>(loc, structTy);
+    auto numParamsConst = builder.create<LLVM::ConstantOp>(loc, i8Ty, static_cast<int64_t>(n));
+    structVal = builder.create<LLVM::InsertValueOp>(loc, structTy, structVal, numParamsConst,
+                                                    ArrayRef<int64_t>{0});
+    auto resultKindConst = builder.create<LLVM::ConstantOp>(loc, i8Ty, static_cast<int64_t>(resultKind));
+    structVal = builder.create<LLVM::InsertValueOp>(loc, structTy, structVal, resultKindConst,
+                                                    ArrayRef<int64_t>{1});
+    Value arrayVal = builder.create<LLVM::UndefOp>(loc, arrayTy);
+    for (uint32_t i = 0; i < n; ++i) {
+        auto kindConst = builder.create<LLVM::ConstantOp>(loc, i8Ty, static_cast<int64_t>(kinds[i]));
+        arrayVal = builder.create<LLVM::InsertValueOp>(loc, arrayTy, arrayVal, kindConst,
+                                                       ArrayRef<int64_t>{static_cast<int64_t>(i)});
     }
+    structVal = builder.create<LLVM::InsertValueOp>(loc, structTy, structVal, arrayVal,
+                                                    ArrayRef<int64_t>{2});
+    builder.create<LLVM::ReturnOp>(loc, structVal);
+}
 
-    return rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, name);
+// Thin per-use wrapper: ensure the global exists (hits cache in Stage 2 since
+// pre-materialized), then take its address in the current function.
+static Value getOrCreateEvalLayout(ConversionPatternRewriter &rewriter, Location loc,
+                                   const EcoRuntime &runtime, ArrayRef<uint8_t> kinds,
+                                   uint8_t resultKind = 0) {
+    auto *ctx = rewriter.getContext();
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+    ensureEvalLayoutGlobal(rewriter, loc, runtime, kinds, resultKind);
+    llvm::SmallString<48> nameBuf;
+    {
+        llvm::raw_svector_ostream os(nameBuf);
+        os << "__eco_eval_layout_r" << unsigned(resultKind) << "_";
+        for (uint8_t k : kinds) os << unsigned(k) << "_";
+        os << unsigned(kinds.size());
+    }
+    return rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, StringRef(nameBuf));
 }
 
 //===----------------------------------------------------------------------===//
@@ -2216,6 +2248,33 @@ struct CallOpLowering : public OpConversionPattern<CallOp> {
     }
 };
 
+// Phase-2 pre-materialization helper: create the eval-layout globals a closure
+// apply site demands (the exact layout, the resultKind==0 variant several
+// dispatch paths use, and the capture-prefixed layout of the saturated-inline
+// captureAbi path). Over-approximation is safe: unused private globals are
+// dropped by globalDCE.
+static void preMaterializeApplyLayouts(OpBuilder &builder,
+                                       const EcoRuntime &runtime, Operation *op,
+                                       ValueRange origNewargs, uint8_t resultKind,
+                                       ArrayAttr captureAbi) {
+    Location loc = op->getLoc();
+    SmallVector<uint8_t> kinds;
+    kinds.reserve(origNewargs.size());
+    for (Value v : origNewargs) kinds.push_back(mlirTypeToParamKind(v.getType()));
+    ensureEvalLayoutGlobal(builder, loc, runtime, kinds, resultKind);
+    if (resultKind != 0)
+        ensureEvalLayoutGlobal(builder, loc, runtime, kinds, /*resultKind=*/0);
+    if (captureAbi) {
+        SmallVector<uint8_t> ck;
+        for (Attribute a : captureAbi) {
+            auto ta = dyn_cast<TypeAttr>(a);
+            ck.push_back(ta ? mlirTypeToParamKind(ta.getValue()) : 0);
+        }
+        for (size_t i = 0; i < kinds.size(); ++i) ck.push_back(0);
+        ensureEvalLayoutGlobal(builder, loc, runtime, ck, /*resultKind=*/0);
+    }
+}
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -2232,4 +2291,66 @@ void eco::detail::populateEcoClosurePatterns(EcoTypeConverter &typeConverter, Re
     patterns.add<PapCreateGroupOpLowering>(typeConverter, ctx, runtime);
     patterns.add<PapExtendOpLowering>(typeConverter, ctx, runtime);
     patterns.add<CallOpLowering>(typeConverter, ctx, runtime);
+}
+
+// Phase-2 pre-materialization: create every closure wrapper + eval-layout global
+// a body pattern demands, by walking the pap/apply ops (whose operands still
+// carry their ORIGINAL eco types at this pre-Stage-2 point) and calling the SAME
+// creators the patterns call. After this, Stage 2 getOrCreateWrapper/eval-layout
+// calls all HIT the cache (read-only symbol table).
+void eco::detail::preMaterializeClosureArtifacts(
+    OpBuilder &builder, const EcoRuntime &runtime,
+    const TypeConverter *typeConverter,
+    llvm::ArrayRef<LLVM::LLVMFuncOp> funcs) {
+    ModuleOp module = runtime.module;
+    for (LLVM::LLVMFuncOp func : funcs) {
+        func.walk([&](Operation *op) {
+            if (auto pc = dyn_cast<PapCreateOp>(op)) {
+                StringRef funcSymbol;
+                if (auto fe = pc->getAttrOfType<SymbolRefAttr>("_fast_evaluator"))
+                    funcSymbol = fe.getRootReference();
+                else
+                    funcSymbol = pc.getFunction();
+                getOrCreateWrapper(builder, module, funcSymbol, pc.getArity(),
+                                   pc.getLoc(), typeConverter, runtime,
+                                   /*typedNewargs=*/true,
+                                   static_cast<uint8_t>(pc.get_resultKind()));
+            } else if (auto pg = dyn_cast<PapCreateGroupOp>(op)) {
+                auto fes = pg.getFastEvaluators();
+                auto arities = pg.getArities();
+                auto rks = pg.get_resultKindsAttr();
+                for (unsigned i = 0; i < fes.size(); ++i) {
+                    StringRef funcSymbol =
+                        cast<FlatSymbolRefAttr>(fes[i]).getValue();
+                    int64_t arity = cast<IntegerAttr>(arities[i]).getInt();
+                    uint8_t rk = 0;
+                    if (rks && i < rks.getValue().size())
+                        rk = static_cast<uint8_t>(
+                            cast<IntegerAttr>(rks.getValue()[i]).getInt());
+                    getOrCreateWrapper(builder, module, funcSymbol, arity,
+                                       pg.getLoc(), typeConverter, runtime,
+                                       /*typedNewargs=*/true, rk);
+                }
+            } else if (auto pe = dyn_cast<PapExtendOp>(op)) {
+                preMaterializeApplyLayouts(
+                    builder, runtime, op, pe.getNewargs(),
+                    static_cast<uint8_t>(pe.get_resultKind()),
+                    pe->getAttrOfType<ArrayAttr>("_capture_abi"));
+            } else if (auto call = dyn_cast<CallOp>(op)) {
+                if (call.getCallee()) return;  // direct call: no closure layout
+                unsigned rootCount = call.getGCRoots().size();
+                auto operands = call.getOperands();
+                unsigned realCount = operands.size() - rootCount;
+                SmallVector<Value> newargs;
+                for (unsigned i = 1; i < realCount; ++i)
+                    newargs.push_back(operands[i]);
+                uint8_t rk = 0;
+                if (auto a = call->getAttrOfType<IntegerAttr>("_result_kind"))
+                    rk = static_cast<uint8_t>(a.getInt());
+                preMaterializeApplyLayouts(builder, runtime, op,
+                                           ValueRange(newargs), rk,
+                                           /*captureAbi=*/nullptr);
+            }
+        });
+    }
 }
