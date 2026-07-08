@@ -222,8 +222,6 @@ struct UnboxOpLowering : public OpConversionPattern<UnboxOp> {
         auto loc = op.getLoc();
         auto *ctx = rewriter.getContext();
         auto i64Ty = IntegerType::get(ctx, 64);
-        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
-        auto i8Ty = IntegerType::get(ctx, 8);
         auto i1Ty = IntegerType::get(ctx, 1);
 
         Value input = adaptor.getValue();
@@ -241,27 +239,10 @@ struct UnboxOpLowering : public OpConversionPattern<UnboxOp> {
             return success();
         }
 
-        if (runtime.inlineDeref) {
-            // Inline: resolve (as1) + GEP(+8) + typed load (align 8). Boxed
-            // Int/Float/Char are heap objects; the forward check applies.
-            Value result = emitInlinePrimLoad(input, layout::HeaderSize,
-                                              resultType, loc, rewriter, runtime);
-            rewriter.replaceOp(op, result);
-            return success();
-        }
-
-        // Convert HPointer to raw pointer via runtime function
-        auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-        auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{input});
-        Value ptr = resolveCall.getResult();
-
-        // Offset 8 bytes past the Header to access the value field
-        auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
-        auto valuePtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
-                                                      ValueRange{offset});
-
-        // Load the unboxed value
-        Value result = rewriter.create<LLVM::LoadOp>(loc, resultType, valuePtr);
+        // Inline: resolve (as1) + GEP(+8) + typed load (align 8). Boxed
+        // Int/Float/Char are heap objects; the forward check applies.
+        Value result = emitInlinePrimLoad(input, layout::HeaderSize,
+                                          resultType, loc, rewriter, runtime);
         rewriter.replaceOp(op, result);
         return success();
     }
@@ -439,7 +420,6 @@ struct ListHeadOpLowering : public OpConversionPattern<ListHeadOp> {
     matchAndRewrite(ListHeadOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto *ctx = rewriter.getContext();
         Value input = adaptor.getList();
 
         // Check the original ECO result type to decide how to extract the head.
@@ -476,29 +456,9 @@ struct ListHeadOpLowering : public OpConversionPattern<ListHeadOp> {
             return success();
         }
 
-        // For !eco.value (HPointer), load i64 from Cons.head then convert to ptr<1>.
-        auto i64Ty = IntegerType::get(ctx, 64);
-        auto i8Ty = IntegerType::get(ctx, 8);
-        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
-
-        if (runtime.inlineDeref) {
-            rewriter.replaceOp(op, emitInlineBoxedLoad(input, layout::ConsHeadOffset,
-                                                       loc, rewriter, runtime));
-            return success();
-        }
-
-        auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-        auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{input});
-        Value ptr = resolveCall.getResult();
-
-        auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::ConsHeadOffset);
-        auto fieldPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
-                                                      ValueRange{offset});
-
-        // Heap slots store i64; load i64 then convert to ptr<1>
-        Value loaded = rewriter.create<LLVM::LoadOp>(loc, i64Ty, fieldPtr);
-        Value result = heapLoadI64ToValue(rewriter, loc, loaded);
-        rewriter.replaceOp(op, result);
+        // For !eco.value (HPointer): inline resolve + GEP(head) + load i64 + wrap.
+        rewriter.replaceOp(op, emitInlineBoxedLoad(input, layout::ConsHeadOffset,
+                                                   loc, rewriter, runtime));
         return success();
     }
 };
@@ -518,11 +478,6 @@ struct ListTailOpLowering : public OpConversionPattern<ListTailOp> {
     matchAndRewrite(ListTailOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto *ctx = rewriter.getContext();
-        auto i64Ty = IntegerType::get(ctx, 64);
-        auto i8Ty = IntegerType::get(ctx, 8);
-        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
-
         Value input = adaptor.getList();
 
         // Value-aggregate path: operand is an LLVM struct (from !eco.cons).
@@ -535,24 +490,8 @@ struct ListTailOpLowering : public OpConversionPattern<ListTailOp> {
             return success();
         }
 
-        if (runtime.inlineDeref) {
-            rewriter.replaceOp(op, emitInlineBoxedLoad(input, layout::ConsTailOffset,
-                                                       loc, rewriter, runtime));
-            return success();
-        }
-
-        auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-        auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{input});
-        Value ptr = resolveCall.getResult();
-
-        auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::ConsTailOffset);
-        auto fieldPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
-                                                      ValueRange{offset});
-
-        // Heap slots store i64; load and convert to ptr<1>
-        Value loaded = rewriter.create<LLVM::LoadOp>(loc, i64Ty, fieldPtr);
-        Value result = i64ToValue(rewriter, loc, loaded);
-        rewriter.replaceOp(op, result);
+        rewriter.replaceOp(op, emitInlineBoxedLoad(input, layout::ConsTailOffset,
+                                                   loc, rewriter, runtime));
         return success();
     }
 };
@@ -728,11 +667,6 @@ struct Tuple2ProjectOpLowering : public OpConversionPattern<Tuple2ProjectOp> {
     matchAndRewrite(Tuple2ProjectOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto *ctx = rewriter.getContext();
-        auto i64Ty = IntegerType::get(ctx, 64);
-        auto i8Ty = IntegerType::get(ctx, 8);
-        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
-
         Value input = adaptor.getTuple();
         int64_t field = op.getField();
         Type resultType = getTypeConverter()->convertType(op.getResult().getType());
@@ -749,51 +683,18 @@ struct Tuple2ProjectOpLowering : public OpConversionPattern<Tuple2ProjectOp> {
 
         int64_t offsetBytes = layout::Tuple2FirstOffset + field * layout::PtrSize;
 
-        if (runtime.inlineDeref) {
-            // Tuple slots are simple (resolve + load raw slot), boxed or
-            // primitive — inline both.
-            Value result = isHPtrLLVMType(resultType)
-                ? emitInlineBoxedLoad(input, offsetBytes, loc, rewriter, runtime)
-                : emitInlinePrimLoad(input, offsetBytes, resultType, loc,
-                                     rewriter, runtime);
-            rewriter.replaceOp(op, result);
-            return success();
-        }
-
-        if (isHPtrLLVMType(resultType)) {
-            // Boxed branch: resolve + GEP + load i64 + heapLoadI64ToValue.
-            // Boxed pointers are GC-safe under RS4GC; Pattern C does not apply.
-            auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-            auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{input});
-            Value ptr = resolveCall.getResult();
-
-            auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, offsetBytes);
-            auto fieldPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
-                                                          ValueRange{offset});
-            Value loaded = rewriter.create<LLVM::LoadOp>(loc, i64Ty, fieldPtr);
-            rewriter.replaceOp(op, heapLoadI64ToValue(rewriter, loc, loaded));
-            return success();
-        }
-
-        // Primitive branch: dispatch to a gc-leaf runtime helper so the
-        // resolve+load sits behind a call boundary RS4GC cannot move past.
-        LLVM::LLVMFuncOp callee;
-        if (resultType.isInteger(64))
-            callee = (field == 0) ? runtime.getOrCreateTuple2Get0I64(rewriter)
-                                  : runtime.getOrCreateTuple2Get1I64(rewriter);
-        else if (resultType.isF64())
-            callee = (field == 0) ? runtime.getOrCreateTuple2Get0F64(rewriter)
-                                  : runtime.getOrCreateTuple2Get1F64(rewriter);
-        else if (resultType.isInteger(16))
-            callee = (field == 0) ? runtime.getOrCreateTuple2Get0I16(rewriter)
-                                  : runtime.getOrCreateTuple2Get1I16(rewriter);
-        else
+        // Tuple slots are simple (resolve + load raw slot), boxed or primitive.
+        if (!isHPtrLLVMType(resultType) && !resultType.isInteger(64) &&
+            !resultType.isF64() && !resultType.isInteger(16))
             return op.emitOpError(
                 "unsupported primitive type for eco.project.tuple2 — "
                 "Bool must go through !eco.value + eco.unbox");
 
-        auto call = rewriter.create<LLVM::CallOp>(loc, callee, ValueRange{input});
-        rewriter.replaceOp(op, call.getResult());
+        Value result = isHPtrLLVMType(resultType)
+            ? emitInlineBoxedLoad(input, offsetBytes, loc, rewriter, runtime)
+            : emitInlinePrimLoad(input, offsetBytes, resultType, loc,
+                                 rewriter, runtime);
+        rewriter.replaceOp(op, result);
         return success();
     }
 };
@@ -813,11 +714,6 @@ struct Tuple3ProjectOpLowering : public OpConversionPattern<Tuple3ProjectOp> {
     matchAndRewrite(Tuple3ProjectOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto *ctx = rewriter.getContext();
-        auto i64Ty = IntegerType::get(ctx, 64);
-        auto i8Ty = IntegerType::get(ctx, 8);
-        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
-
         Value input = adaptor.getTuple();
         int64_t field = op.getField();
         Type resultType = getTypeConverter()->convertType(op.getResult().getType());
@@ -832,51 +728,17 @@ struct Tuple3ProjectOpLowering : public OpConversionPattern<Tuple3ProjectOp> {
 
         int64_t offsetBytes = layout::Tuple3FirstOffset + field * layout::PtrSize;
 
-        if (runtime.inlineDeref) {
-            Value result = isHPtrLLVMType(resultType)
-                ? emitInlineBoxedLoad(input, offsetBytes, loc, rewriter, runtime)
-                : emitInlinePrimLoad(input, offsetBytes, resultType, loc,
-                                     rewriter, runtime);
-            rewriter.replaceOp(op, result);
-            return success();
-        }
-
-        if (isHPtrLLVMType(resultType)) {
-            // Boxed branch unchanged; primitive branch goes through the
-            // Pattern-C-safe runtime helpers below.
-            auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-            auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{input});
-            Value ptr = resolveCall.getResult();
-
-            auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, offsetBytes);
-            auto fieldPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
-                                                          ValueRange{offset});
-            Value loaded = rewriter.create<LLVM::LoadOp>(loc, i64Ty, fieldPtr);
-            rewriter.replaceOp(op, heapLoadI64ToValue(rewriter, loc, loaded));
-            return success();
-        }
-
-        LLVM::LLVMFuncOp callee;
-        if (resultType.isInteger(64)) {
-            callee = (field == 0) ? runtime.getOrCreateTuple3Get0I64(rewriter)
-                  : (field == 1) ? runtime.getOrCreateTuple3Get1I64(rewriter)
-                                 : runtime.getOrCreateTuple3Get2I64(rewriter);
-        } else if (resultType.isF64()) {
-            callee = (field == 0) ? runtime.getOrCreateTuple3Get0F64(rewriter)
-                  : (field == 1) ? runtime.getOrCreateTuple3Get1F64(rewriter)
-                                 : runtime.getOrCreateTuple3Get2F64(rewriter);
-        } else if (resultType.isInteger(16)) {
-            callee = (field == 0) ? runtime.getOrCreateTuple3Get0I16(rewriter)
-                  : (field == 1) ? runtime.getOrCreateTuple3Get1I16(rewriter)
-                                 : runtime.getOrCreateTuple3Get2I16(rewriter);
-        } else {
+        if (!isHPtrLLVMType(resultType) && !resultType.isInteger(64) &&
+            !resultType.isF64() && !resultType.isInteger(16))
             return op.emitOpError(
                 "unsupported primitive type for eco.project.tuple3 — "
                 "Bool must go through !eco.value + eco.unbox");
-        }
 
-        auto call = rewriter.create<LLVM::CallOp>(loc, callee, ValueRange{input});
-        rewriter.replaceOp(op, call.getResult());
+        Value result = isHPtrLLVMType(resultType)
+            ? emitInlineBoxedLoad(input, offsetBytes, loc, rewriter, runtime)
+            : emitInlinePrimLoad(input, offsetBytes, resultType, loc,
+                                 rewriter, runtime);
+        rewriter.replaceOp(op, result);
         return success();
     }
 };
@@ -969,12 +831,6 @@ struct RecordProjectOpLowering : public OpConversionPattern<RecordProjectOp> {
     matchAndRewrite(RecordProjectOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto *ctx = rewriter.getContext();
-        auto i64Ty = IntegerType::get(ctx, 64);
-        auto i32Ty = IntegerType::get(ctx, 32);
-        auto i8Ty = IntegerType::get(ctx, 8);
-        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
-
         Value input = adaptor.getRecord();
         int64_t index = op.getFieldIndex();
         Type resultType = getTypeConverter()->convertType(op.getResult().getType());
@@ -989,42 +845,17 @@ struct RecordProjectOpLowering : public OpConversionPattern<RecordProjectOp> {
 
         int64_t offsetBytes = layout::RecordFieldsOffset + index * layout::PtrSize;
 
-        if (runtime.inlineDeref) {
-            Value result = isHPtrLLVMType(resultType)
-                ? emitInlineBoxedLoad(input, offsetBytes, loc, rewriter, runtime)
-                : emitInlinePrimLoad(input, offsetBytes, resultType, loc,
-                                     rewriter, runtime);
-            rewriter.replaceOp(op, result);
-            return success();
-        }
+        if (!isHPtrLLVMType(resultType) && !resultType.isInteger(64) &&
+            !resultType.isF64() && !resultType.isInteger(16))
+            return op.emitOpError(
+                "unsupported primitive type for eco.project.record — "
+                "Bool must go through !eco.value + eco.unbox");
 
-        if (isHPtrLLVMType(resultType)) {
-            // Boxed branch unchanged; primitive branch is Pattern-C-safe below.
-            auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-            auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{input});
-            Value ptr = resolveCall.getResult();
-
-            auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, offsetBytes);
-            auto fieldPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
-                                                          ValueRange{offset});
-            Value loaded = rewriter.create<LLVM::LoadOp>(loc, i64Ty, fieldPtr);
-            rewriter.replaceOp(op, heapLoadI64ToValue(rewriter, loc, loaded));
-            return success();
-        }
-
-        LLVM::LLVMFuncOp callee;
-        if (resultType.isInteger(64))      callee = runtime.getOrCreateRecordGetI64(rewriter);
-        else if (resultType.isF64())       callee = runtime.getOrCreateRecordGetF64(rewriter);
-        else if (resultType.isInteger(16)) callee = runtime.getOrCreateRecordGetI16(rewriter);
-        else return op.emitOpError(
-            "unsupported primitive type for eco.project.record — "
-            "Bool must go through !eco.value + eco.unbox");
-
-        auto fieldIdx = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
-                            static_cast<int32_t>(index));
-        auto call = rewriter.create<LLVM::CallOp>(loc, callee,
-                        ValueRange{input, fieldIdx});
-        rewriter.replaceOp(op, call.getResult());
+        Value result = isHPtrLLVMType(resultType)
+            ? emitInlineBoxedLoad(input, offsetBytes, loc, rewriter, runtime)
+            : emitInlinePrimLoad(input, offsetBytes, resultType, loc,
+                                 rewriter, runtime);
+        rewriter.replaceOp(op, result);
         return success();
     }
 };
@@ -1122,12 +953,6 @@ struct CustomProjectOpLowering : public OpConversionPattern<CustomProjectOp> {
     matchAndRewrite(CustomProjectOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto *ctx = rewriter.getContext();
-        auto i64Ty = IntegerType::get(ctx, 64);
-        auto i32Ty = IntegerType::get(ctx, 32);
-        auto i8Ty = IntegerType::get(ctx, 8);
-        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
-
         Value input = adaptor.getContainer();
         int64_t index = op.getFieldIndex();
         Type resultType = getTypeConverter()->convertType(op.getResult().getType());
@@ -1142,42 +967,17 @@ struct CustomProjectOpLowering : public OpConversionPattern<CustomProjectOp> {
 
         int64_t offsetBytes = layout::CustomFieldsOffset + index * layout::PtrSize;
 
-        if (runtime.inlineDeref) {
-            Value result = isHPtrLLVMType(resultType)
-                ? emitInlineBoxedLoad(input, offsetBytes, loc, rewriter, runtime)
-                : emitInlinePrimLoad(input, offsetBytes, resultType, loc,
-                                     rewriter, runtime);
-            rewriter.replaceOp(op, result);
-            return success();
-        }
+        if (!isHPtrLLVMType(resultType) && !resultType.isInteger(64) &&
+            !resultType.isF64() && !resultType.isInteger(16))
+            return op.emitOpError(
+                "unsupported primitive type for eco.project.custom — "
+                "Bool must go through !eco.value + eco.unbox");
 
-        if (isHPtrLLVMType(resultType)) {
-            // Boxed branch unchanged; primitive branch is Pattern-C-safe below.
-            auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-            auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{input});
-            Value ptr = resolveCall.getResult();
-
-            auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, offsetBytes);
-            auto fieldPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
-                                                          ValueRange{offset});
-            Value loaded = rewriter.create<LLVM::LoadOp>(loc, i64Ty, fieldPtr);
-            rewriter.replaceOp(op, heapLoadI64ToValue(rewriter, loc, loaded));
-            return success();
-        }
-
-        LLVM::LLVMFuncOp callee;
-        if (resultType.isInteger(64))      callee = runtime.getOrCreateCustomGetI64(rewriter);
-        else if (resultType.isF64())       callee = runtime.getOrCreateCustomGetF64(rewriter);
-        else if (resultType.isInteger(16)) callee = runtime.getOrCreateCustomGetI16(rewriter);
-        else return op.emitOpError(
-            "unsupported primitive type for eco.project.custom — "
-            "Bool must go through !eco.value + eco.unbox");
-
-        auto fieldIdx = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
-                            static_cast<int32_t>(index));
-        auto call = rewriter.create<LLVM::CallOp>(loc, callee,
-                        ValueRange{input, fieldIdx});
-        rewriter.replaceOp(op, call.getResult());
+        Value result = isHPtrLLVMType(resultType)
+            ? emitInlineBoxedLoad(input, offsetBytes, loc, rewriter, runtime)
+            : emitInlinePrimLoad(input, offsetBytes, resultType, loc,
+                                 rewriter, runtime);
+        rewriter.replaceOp(op, result);
         return success();
     }
 };
@@ -1200,28 +1000,13 @@ struct ArrayLengthOpLowering : public OpConversionPattern<ArrayLengthOp> {
         auto *ctx = rewriter.getContext();
         auto i64Ty = IntegerType::get(ctx, 64);
         auto i32Ty = IntegerType::get(ctx, 32);
-        auto i8Ty = IntegerType::get(ctx, 8);
-        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
         Value input = adaptor.getArray();
 
-        Value fieldPtr;
-        if (runtime.inlineDeref) {
-            auto offset = rewriter.create<LLVM::ConstantOp>(
-                loc, i64Ty, static_cast<int64_t>(layout::ArrayLengthOffset));
-            fieldPtr = emitInlineFieldPtr(input, offset, loc, rewriter, runtime);
-        } else {
-            // Resolve HPointer to raw pointer
-            auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-            auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{input});
-            Value ptr = resolveCall.getResult();
-
-            // GEP to length field at offset 8 (after Header)
-            auto offset = rewriter.create<LLVM::ConstantOp>(
-                loc, i64Ty, static_cast<int64_t>(layout::ArrayLengthOffset));
-            fieldPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
-                                                    ValueRange{offset});
-        }
+        // Inline: resolve (as1) + GEP to the length field at offset 8.
+        auto offset = rewriter.create<LLVM::ConstantOp>(
+            loc, i64Ty, static_cast<int64_t>(layout::ArrayLengthOffset));
+        Value fieldPtr = emitInlineFieldPtr(input, offset, loc, rewriter, runtime);
 
         // Load u32 length (offset 8 is 8-aligned; natural i32 alignment).
         Value len32 = rewriter.create<LLVM::LoadOp>(loc, i32Ty, fieldPtr, 4);
@@ -1251,69 +1036,37 @@ struct ArrayGetOpLowering : public OpConversionPattern<ArrayGetOp> {
         auto loc = op.getLoc();
         auto *ctx = rewriter.getContext();
         auto i64Ty = IntegerType::get(ctx, 64);
-        auto i8Ty = IntegerType::get(ctx, 8);
-        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
         Value arrayVal = adaptor.getArray();
         Value indexVal = adaptor.getIndex();
 
         Type origResultType = op.getResult().getType();
 
-        if (runtime.inlineDeref) {
-            // Element pointer = resolve(array) + ArrayElementsOffset + index*8.
-            // Array elements are a uniform kind; both boxed and primitive
-            // reads are a simple slot load.
-            auto baseOffset = rewriter.create<LLVM::ConstantOp>(
-                loc, i64Ty, static_cast<int64_t>(layout::ArrayElementsOffset));
-            auto elemSize = rewriter.create<LLVM::ConstantOp>(
-                loc, i64Ty, static_cast<int64_t>(layout::PtrSize));
-            auto indexOffset = rewriter.create<LLVM::MulOp>(loc, i64Ty, indexVal, elemSize);
-            auto totalOffset = rewriter.create<LLVM::AddOp>(loc, i64Ty, baseOffset, indexOffset);
-            Value elemPtr = emitInlineFieldPtr(arrayVal, totalOffset, loc, rewriter, runtime);
-            if (isa<eco::ValueType>(origResultType)) {
-                Value raw = rewriter.create<LLVM::LoadOp>(loc, i64Ty, elemPtr,
-                                                          layout::Alignment);
-                rewriter.replaceOp(op, heapLoadI64ToValue(rewriter, loc, raw));
-            } else {
-                Type resultType = getTypeConverter()->convertType(origResultType);
-                Value v = rewriter.create<LLVM::LoadOp>(loc, resultType, elemPtr,
-                                                        layout::Alignment);
-                rewriter.replaceOp(op, v);
-            }
-            return success();
-        }
+        if (!isa<eco::ValueType>(origResultType) &&
+            !origResultType.isInteger(64) && !origResultType.isF64() &&
+            !origResultType.isInteger(16))
+            return op.emitOpError("unsupported element type for eco.array.get");
 
+        // Element pointer = resolve(array) + ArrayElementsOffset + index*8.
+        // Array elements are a uniform kind; both boxed and primitive reads are
+        // a simple slot load.
+        auto baseOffset = rewriter.create<LLVM::ConstantOp>(
+            loc, i64Ty, static_cast<int64_t>(layout::ArrayElementsOffset));
+        auto elemSize = rewriter.create<LLVM::ConstantOp>(
+            loc, i64Ty, static_cast<int64_t>(layout::PtrSize));
+        auto indexOffset = rewriter.create<LLVM::MulOp>(loc, i64Ty, indexVal, elemSize);
+        auto totalOffset = rewriter.create<LLVM::AddOp>(loc, i64Ty, baseOffset, indexOffset);
+        Value elemPtr = emitInlineFieldPtr(arrayVal, totalOffset, loc, rewriter, runtime);
         if (isa<eco::ValueType>(origResultType)) {
-            // Boxed branch unchanged: resolve + GEP + load i64 + ptr<1> wrap.
-            auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-            auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{arrayVal});
-            Value ptr = resolveCall.getResult();
-
-            auto baseOffset = rewriter.create<LLVM::ConstantOp>(
-                loc, i64Ty, static_cast<int64_t>(layout::ArrayElementsOffset));
-            auto elemSize = rewriter.create<LLVM::ConstantOp>(
-                loc, i64Ty, static_cast<int64_t>(layout::PtrSize));
-            auto indexOffset = rewriter.create<LLVM::MulOp>(loc, i64Ty, indexVal, elemSize);
-            auto totalOffset = rewriter.create<LLVM::AddOp>(loc, i64Ty, baseOffset, indexOffset);
-            auto elemPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
-                                                         ValueRange{totalOffset});
-            Value raw = rewriter.create<LLVM::LoadOp>(loc, i64Ty, elemPtr);
+            Value raw = rewriter.create<LLVM::LoadOp>(loc, i64Ty, elemPtr,
+                                                      layout::Alignment);
             rewriter.replaceOp(op, heapLoadI64ToValue(rewriter, loc, raw));
-            return success();
+        } else {
+            Type resultType = getTypeConverter()->convertType(origResultType);
+            Value v = rewriter.create<LLVM::LoadOp>(loc, resultType, elemPtr,
+                                                    layout::Alignment);
+            rewriter.replaceOp(op, v);
         }
-
-        // Primitive branch: dispatch to a gc-leaf helper. The internal
-        // bitcast (i64→f64) and truncate (i64→i16) move into the helper
-        // body; they are no longer visible in user IR.
-        LLVM::LLVMFuncOp callee;
-        if (origResultType.isInteger(64))      callee = runtime.getOrCreateArrayGetI64(rewriter);
-        else if (origResultType.isF64())       callee = runtime.getOrCreateArrayGetF64(rewriter);
-        else if (origResultType.isInteger(16)) callee = runtime.getOrCreateArrayGetI16(rewriter);
-        else return op.emitOpError("unsupported element type for eco.array.get");
-
-        auto call = rewriter.create<LLVM::CallOp>(loc, callee,
-                        ValueRange{arrayVal, indexVal});
-        rewriter.replaceOp(op, call.getResult());
         return success();
     }
 };
@@ -1336,7 +1089,6 @@ struct ArraySetOpLowering : public OpConversionPattern<ArraySetOp> {
         auto *ctx = rewriter.getContext();
         auto i64Ty = IntegerType::get(ctx, 64);
         auto i8Ty = IntegerType::get(ctx, 8);
-        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
         Value arrayVal = adaptor.getArray();
         Value indexVal = adaptor.getIndex();
@@ -1372,21 +1124,11 @@ struct ArraySetOpLowering : public OpConversionPattern<ArraySetOp> {
             loc, i64Ty, static_cast<int64_t>(layout::PtrSize));
         auto indexOffset = rewriter.create<LLVM::MulOp>(loc, i64Ty, indexVal, elemSize);
         auto totalOffset = rewriter.create<LLVM::AddOp>(loc, i64Ty, baseOffset, indexOffset);
-        Value elemPtr;
-        if (runtime.inlineDeref) {
-            // newArrayHPtr is a freshly-cloned object (never forwarded): its as1
-            // word is the address, so GEP directly — no resolve/forward check.
-            auto hptrTy = getHPtrLLVMType(*ctx);
-            elemPtr = rewriter.create<LLVM::GEPOp>(loc, hptrTy, i8Ty, newArrayHPtr,
-                                                   ValueRange{totalOffset});
-        } else {
-            // Resolve new array HPointer to raw pointer
-            auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-            auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{newArrayHPtr});
-            Value ptr = resolveCall.getResult();
-            elemPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
-                                                   ValueRange{totalOffset});
-        }
+        // newArrayHPtr is a freshly-cloned object (never forwarded): its as1
+        // word is the address, so GEP directly — no resolve/forward check.
+        auto hptrTy = getHPtrLLVMType(*ctx);
+        Value elemPtr = rewriter.create<LLVM::GEPOp>(loc, hptrTy, i8Ty, newArrayHPtr,
+                                                     ValueRange{totalOffset});
 
         // Normalize value to i64 for storage in Unboxable slot
         Type origValueType = op.getValue().getType();

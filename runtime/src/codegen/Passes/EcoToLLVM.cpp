@@ -35,8 +35,6 @@
 
 #include "llvm/Support/raw_ostream.h"
 
-#include "llvm/Support/CommandLine.h"
-
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -44,18 +42,6 @@
 using namespace mlir;
 using namespace eco;
 using namespace eco::detail;
-
-// Plan P2 (HPointer deref inline fast paths). When enabled, heap-dereference
-// lowering emits inline `__eco_resolve_fwd` marker calls + GEP + load which the
-// ExpandInlineDeref LLVM pass later expands to an inline forwarding-check,
-// instead of out-of-line eco_resolve_hptr / eco_*_get_* helper calls. Defaults
-// ON (flip validated by the P3 GC-stress gate); `--inline-deref=false` restores
-// the helper-call lowering.
-llvm::cl::opt<bool> ecoInlineDeref(
-    "inline-deref",
-    llvm::cl::desc("Inline heap-dereference fast paths (plan P2) instead of "
-                   "calling eco_resolve_hptr / eco_*_get_* helpers"),
-    llvm::cl::init(true));
 
 //===----------------------------------------------------------------------===//
 // Arith Type Conversion Patterns
@@ -202,7 +188,6 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         // cfCtx threads control-flow state across all functions (cleared once,
         // not per function).
         EcoRuntime runtime(module);
-        runtime.inlineDeref = ecoInlineDeref;
         EcoCFContext cfCtx;
         cfCtx.clear();
 

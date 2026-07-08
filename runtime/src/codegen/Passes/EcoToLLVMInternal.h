@@ -268,13 +268,6 @@ struct EcoRuntime {
     mutable mlir::ModuleOp module;
     mlir::MLIRContext *ctx;
 
-    /// When true (plan P2, `--inline-deref`), heap-dereference lowering emits an
-    /// inline `__eco_resolve_fwd` marker call + GEP + load (later expanded to an
-    /// inline forwarding-check by the ExpandInlineDeref LLVM pass) instead of the
-    /// out-of-line eco_resolve_hptr / eco_*_get_* helper calls. Set from the
-    /// `--inline-deref` cl::opt at pass construction (see EcoToLLVM.cpp).
-    bool inlineDeref = false;
-
     /// Cached symbol map for O(1) lookups instead of O(N) module walks.
     /// Built lazily on first use from the module's top-level operations.
     mutable llvm::DenseMap<mlir::StringAttr, mlir::Operation*> symCache;

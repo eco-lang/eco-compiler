@@ -1,6 +1,11 @@
 # HPointer Deref Optimization — Inline Fast Paths
 
-## Status: IMPLEMENTED (2026-07-08) — --inline-deref default ON, full gate green
+## Status: IMPLEMENTED (2026-07-08) — inline deref permanent (flag removed), full gate green
+
+> Update: the `--inline-deref` cl::opt and the `EcoRuntime.inlineDeref` field were
+> removed; the inline lowering is now the only path (the old eco_resolve_hptr /
+> eco_*_get_* fallback branches in EcoToLLVMHeap.cpp are deleted). D7 (flag +
+> fallback) no longer applies.
 
 ### Implementation outcome
 

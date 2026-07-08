@@ -1445,7 +1445,7 @@ static inline void validateBitmapSlotKind(NurserySpace* /*self*/,
     // distinctive layouts that are much less likely to be hit by random
     // Int bit patterns, so a trip there is strong evidence of a real
     // wrong-bitmap bug.
-    Header* tgt_hdr = static_cast<Header*>(tgt);
+    Header* tgt_hdr = getHeader(tgt);
     if (tgt_hdr->tag <= Tag_Char) return;          // primitive coincidence
     if (tgt_hdr->tag > Tag_Forward) return;
     if (tgt_hdr->size == 0) return;
@@ -1649,7 +1649,7 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
                     if (tgt < hbase || tgt >= hbase + hres) continue;
                     if (!isInFromSpaceAllocatedRegion(tgt)) continue;
                     // Target-header sanity check (see validateBitmapSlotKind).
-                    Header* tgt_hdr = static_cast<Header*>(tgt);
+                    Header* tgt_hdr = getHeader(tgt);
                     if (tgt_hdr->tag <= Tag_Char) continue;
                     if (tgt_hdr->tag > Tag_Forward) continue;
                     if (tgt_hdr->size == 0 || tgt_hdr->size > 0x10000) continue;
