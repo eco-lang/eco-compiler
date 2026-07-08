@@ -218,7 +218,7 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
                 if (!desc.a_boxed)
                     hdr->unboxed |= 1;
                 if (!desc.b_boxed)
-                    hdr->unboxed |= 2;
+                    hdr->unboxed |= (1u << 2);  // slot 1 kind bits [2,3]
                 break;
             }
 
@@ -237,9 +237,9 @@ std::vector<void *> allocateHeapGraph(const std::vector<HeapObjectDesc> &nodes) 
                 if (!desc.a_boxed)
                     hdr->unboxed |= 1;
                 if (!desc.b_boxed)
-                    hdr->unboxed |= 2;
+                    hdr->unboxed |= (1u << 2);  // slot 1 kind bits [2,3]
                 if (!desc.c_boxed)
-                    hdr->unboxed |= 4;
+                    hdr->unboxed |= (1u << 4);  // slot 2 kind bits [4,5]
                 break;
             }
 
@@ -423,7 +423,7 @@ std::vector<void *> allocateHeapGraphInOldGen(OldGenSpace& oldgen,
                 if (!desc.a_boxed)
                     hdr->unboxed |= 1;
                 if (!desc.b_boxed)
-                    hdr->unboxed |= 2;
+                    hdr->unboxed |= (1u << 2);  // slot 1 kind bits [2,3]
                 break;
             }
 
@@ -443,9 +443,9 @@ std::vector<void *> allocateHeapGraphInOldGen(OldGenSpace& oldgen,
                 if (!desc.a_boxed)
                     hdr->unboxed |= 1;
                 if (!desc.b_boxed)
-                    hdr->unboxed |= 2;
+                    hdr->unboxed |= (1u << 2);  // slot 1 kind bits [2,3]
                 if (!desc.c_boxed)
-                    hdr->unboxed |= 4;
+                    hdr->unboxed |= (1u << 4);  // slot 2 kind bits [4,5]
                 break;
             }
 

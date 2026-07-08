@@ -53,7 +53,15 @@ struct StackMapData {
 struct EcoJITOptions {
     /// If provided, called on the LLVM module after MLIR→LLVM IR translation.
     /// Used for statepoint conversion and optimization.
-    llvm::function_ref<llvm::Error(llvm::Module *)> transformer = {};
+    ///
+    /// Owning std::function (NOT llvm::function_ref): callers assign a temporary
+    /// lambda here, and EcoJIT::create invokes it later — after that temporary
+    /// would have been destroyed. A non-owning function_ref dangled, so the
+    /// deferred call read a dead lambda's captured state, producing a garbage
+    /// job.optLevel that tripped makeOptimizingTransformer's "invalid
+    /// optimization/size level" cantFail (flaky SIGABRT in the test runner).
+    /// std::function owns a copy, so it stays valid until the options die.
+    std::function<llvm::Error(llvm::Module *)> transformer = {};
 
     /// Optimization level for code generation.
     std::optional<llvm::CodeGenOptLevel> jitCodeGenOptLevel;
