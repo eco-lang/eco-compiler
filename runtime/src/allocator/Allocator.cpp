@@ -168,6 +168,7 @@ void Allocator::initialize(const HeapConfig& config) {
     if (initialized) {
         return;
     }
+    ++heap_generation_;  // new heap epoch (invalidates cross-lifetime caches)
 
     // Apply JSON overrides from $ECO_HEAP_CONFIG, if set, on top of the
     // caller-supplied defaults. Lets us tweak heap parameters without a
@@ -745,6 +746,8 @@ char* Allocator::acquireOldGenRegion(size_t initial_size, size_t /*max_size*/) {
 // Accumulates stats from all thread heaps before destroying them.
 void Allocator::reset(const HeapConfig* new_config) {
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+
+    ++heap_generation_;  // destroys all thread heaps/RootSets below; bump epoch
 
     // Update config if provided.
     if (new_config) {

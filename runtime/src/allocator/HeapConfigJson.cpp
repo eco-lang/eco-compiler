@@ -177,6 +177,8 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         "small_class_cell_max_bytes",
         "string_flatten_limit",
         "string_tiny_slice_limit",
+        "utf8_view_min_len",
+        "utf8_strings_enabled",
         "rope_max_height",
         "rope_leaf_count_limit",
         "rope_min_leaf_size",
@@ -257,6 +259,10 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
     if (auto it = doc.find("string_tiny_slice_limit"); it != doc.end())
         cfg.string_tiny_slice_limit =
             parseByteSize(*it, "string_tiny_slice_limit");
+    if (auto it = doc.find("utf8_view_min_len"); it != doc.end())
+        cfg.utf8_view_min_len = parseByteSize(*it, "utf8_view_min_len");
+    if (auto it = doc.find("utf8_strings_enabled"); it != doc.end())
+        cfg.utf8_strings_enabled = parseBool(*it, "utf8_strings_enabled");
     if (auto it = doc.find("rope_max_height"); it != doc.end())
         cfg.rope_max_height = parseU32(*it, "rope_max_height");
     if (auto it = doc.find("rope_leaf_count_limit"); it != doc.end())

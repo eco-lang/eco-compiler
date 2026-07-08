@@ -225,6 +225,13 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocStringLiteral(OpBuilder &builder) c
     return getOrCreateFunc(builder, "eco_alloc_string_literal", funcTy);
 }
 
+LLVM::LLVMFuncOp
+EcoRuntime::getOrCreateAllocStringLiteralUtf8(OpBuilder &builder) const {
+    // eco_alloc_string_literal_utf8(bytes: ptr, byteLen: i32) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {PTR_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_alloc_string_literal_utf8", funcTy);
+}
+
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocClosure(OpBuilder &builder) const {
     // eco_alloc_closure(func_ptr: ptr, num_captures: i32) -> hptr
     auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {PTR_TY, I32_TY});
@@ -1075,7 +1082,8 @@ void EcoRuntime::materializeAllRuntimeDecls(OpBuilder &b) const {
     getOrCreateAllocInt(b); getOrCreateAllocFloat(b); getOrCreateAllocChar(b);
     getOrCreateAllocCons(b); getOrCreateAllocTuple2(b); getOrCreateAllocTuple3(b);
     getOrCreateAllocRecord(b); getOrCreateAllocCustom(b); getOrCreateAllocString(b);
-    getOrCreateAllocStringLiteral(b); getOrCreateAllocClosure(b);
+    getOrCreateAllocStringLiteral(b); getOrCreateAllocStringLiteralUtf8(b);
+    getOrCreateAllocClosure(b);
     getOrCreateAllocClosureK(b); getOrCreateAllocate(b);
     getOrCreateAllocIntFast(b); getOrCreateAllocFloatFast(b); getOrCreateAllocCharFast(b);
     getOrCreateAllocConsFast(b); getOrCreateAllocTuple2Fast(b); getOrCreateAllocTuple3Fast(b);

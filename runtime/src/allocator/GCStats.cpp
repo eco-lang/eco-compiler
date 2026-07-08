@@ -73,6 +73,8 @@ static const char* tagName(int t) {
         case Tag_ByteBufferSlice:   return "ByteBufferSlice";
         case Tag_LargeStringHeader: return "LargeStringHeader";
         case Tag_LargeByteHeader:   return "LargeByteHeader";
+        case Tag_StringUtf8View:    return "StringUtf8View";
+        case Tag_StringUtf8Leaf:    return "StringUtf8Leaf";
         case Tag_Free:              return "Free";
         case Tag_Forward:           return "Forward";
         default:                    return "<unknown>";

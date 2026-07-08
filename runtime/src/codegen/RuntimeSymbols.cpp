@@ -55,6 +55,10 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_string_literal),
                 llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_alloc_string_literal_utf8")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_string_literal_utf8),
+                llvm::JITSymbolFlags::Exported);
         symbolMap[interner("eco_alloc_closure")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_closure),

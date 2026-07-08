@@ -241,6 +241,60 @@ The plan that drove this work documents the compiler's contract in `Compiler/Gen
 - **All-ASCII bit in `ElmStringSlice`.** The `_padding` field is reserved for a future flag that could enable byte-level fast paths for ASCII-only ranges.
 - **Char iterators / cursor types** for rope traversal in user-facing kernel code, replacing `charAt` indexing in inner loops.
 
+## UTF-8 (all-ASCII) Forms
+
+*(added Jul 8, 2026 — see **HEAP_028** and
+`plans/utf8-string-representation.md`)*
+
+Two further forms hold **pure-ASCII** content as UTF-8 bytes (1 byte per
+logical UTF-16 unit), enabling zero-copy between `Bytes` and `String`:
+
+```cpp
+struct ALIGN(8) ElmStringUtf8View {   // Tag_StringUtf8View — zero-copy byte view
+    Header header;                    // header.size = UTF-16 unit count == byteLen
+    HPointer base;                    // -> Tag_ByteBuffer | Tag_LargeByteHeader
+                                      //    | Tag_StringUtf8Leaf (never a slice/view)
+    u32 offset;                       // byte offset into base's payload
+    u32 byteLen;                      // == header.size (all-ASCII invariant)
+};
+struct ALIGN(8) ElmStringUtf8Leaf {   // Tag_StringUtf8Leaf — inline ASCII bytes
+    Header header;                    // header.size = byte count == unit count
+    u8 bytes[];
+};
+```
+
+**Why all-ASCII.** Restricting to bytes `< 0x80` makes `unit index == byte
+offset`, so `length`/`slice`/`charAt` stay O(1) and correct with no index
+translation; no code point spans units; no lone surrogate is representable;
+and `equal`/`compare` reduce to `memcmp` (byte order == UTF-16 unit order for
+ASCII). Non-ASCII content always stays in the UTF-16 forms — byte-for-byte
+behavioural compatibility. The all-ASCII invariant is asserted under
+`ECO_HEAP_VALIDATE`.
+
+**Creation is gated** (valid + all-ASCII only), at exactly: `Bytes.Decode.string`
+(`read_string` via `Elm::Utf8::scan`; `>= utf8_view_min_len` bytes → view,
+shorter → leaf), `StringOps::makeUtf8View`/`makeUtf8LeafFromBytes` (slice/uncons
+of an existing UTF-8 form; `fromInt`/`fromFloat`), and
+`eco_alloc_string_literal_utf8` (ASCII string literals + string-`case`
+patterns, emitted by the compiler as `[N x i8]` globals and interned).
+`HeapConfig::utf8_strings_enabled = false` rolls everything back to UTF-16.
+
+**GC** treats `Tag_StringUtf8View` exactly like `Tag_StringSlice` (trace the
+single boxed `base`; fixed-size `getObjectSize`) and `Tag_StringUtf8Leaf` like
+`Tag_String` (pointer-free, footprint from `header.size`). A view's `base`
+points at a `Tag_LargeByteHeader`'s *header* (not its pinned body), matching
+slice-of-large.
+
+**Operation handling.** `StringOps` reads UTF-8 payloads via `isUtf8` /
+`utf8Bytes`; `forEachSegmentEx` fires a `u8` callback for UTF-8 segments with
+stable pointers (so `equal`/`compare` can collect mixed-width segments safely),
+while the u16-only `forEachSegment` wrapper widens through a transient buffer
+for consume-immediately callers. `ensureFlat` widens a UTF-8 form to a UTF-16
+leaf unconditionally (parser and other `chars[]` consumers; the parser also has
+a direct byte fast path). `getStringWidth`/`elm_utf8_width` are O(1)
+(`header.size`) and `Encode.string`/`elm_utf8_copy` are a `memcpy` for UTF-8
+inputs.
+
 ## See Also
 
 - `runtime/src/allocator/Heap.hpp` — `Tag` enum, `ElmString` / `ElmStringSlice` / `ElmStringRope` structs, `HeapValue` union

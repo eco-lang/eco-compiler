@@ -19,6 +19,7 @@
 
 #include "Allocator.hpp"
 #include "HeapHelpers.hpp"
+#include "Utf8.hpp"
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -56,6 +57,51 @@ inline bool isSlice(void* obj) { return alloc::getTag(obj) == Tag_StringSlice; }
  * True if `obj` is a concat-tree rope node (Tag_StringRope).
  */
 inline bool isRope(void* obj) { return alloc::getTag(obj) == Tag_StringRope; }
+
+/**
+ * True if `obj` is a UTF-8 (all-ASCII) String form — an inline-bytes leaf or a
+ * zero-copy byte view. These hold 1 ASCII byte per logical UTF-16 code unit.
+ */
+inline bool isUtf8View(void* obj) { return alloc::getTag(obj) == Tag_StringUtf8View; }
+inline bool isUtf8Leaf(void* obj) { return alloc::getTag(obj) == Tag_StringUtf8Leaf; }
+inline bool isUtf8(void* obj) {
+    Tag t = alloc::getTag(obj);
+    return t == Tag_StringUtf8View || t == Tag_StringUtf8Leaf;
+}
+
+/**
+ * Resolves a UTF-8 String form to its contiguous ASCII byte payload and byte
+ * length. A leaf returns its inline bytes; a view resolves its base
+ * (Tag_ByteBuffer, Tag_LargeByteHeader body, or Tag_StringUtf8Leaf) and adds
+ * the byte offset. No allocation — the returned pointer is valid only until the
+ * next allocation (same contract as singleSegmentView). Caller must have
+ * verified isUtf8(o).
+ */
+inline std::pair<const u8*, u32> utf8Bytes(void* o) {
+    Header* hdr = static_cast<Header*>(o);
+    if (hdr->tag == Tag_StringUtf8Leaf) {
+        ElmStringUtf8Leaf* l = static_cast<ElmStringUtf8Leaf*>(o);
+        return {l->bytes, l->header.size};
+    }
+    // Tag_StringUtf8View
+    ElmStringUtf8View* v = static_cast<ElmStringUtf8View*>(o);
+    void* base = Allocator::instance().resolve(v->base);
+    if (!base) return {nullptr, 0};
+    Header* bh = static_cast<Header*>(base);
+    const u8* p;
+    if (bh->tag == Tag_StringUtf8Leaf) {
+        p = static_cast<ElmStringUtf8Leaf*>(base)->bytes;
+    } else if (bh->tag == Tag_LargeByteHeader) {
+        void* body = Allocator::instance().resolve(
+            static_cast<LargeByteHeader*>(base)->body);
+        if (!body) return {nullptr, 0};
+        p = static_cast<ByteBuffer*>(body)->bytes;
+    } else {
+        // Tag_ByteBuffer
+        p = static_cast<ByteBuffer*>(base)->bytes;
+    }
+    return {p + v->offset, v->byteLen};
+}
 
 /**
  * Logical UTF-16 length read directly from the header. Works for any
@@ -119,6 +165,25 @@ HPointer makeSlice(HPointer base, u32 offset, u32 len);
 HPointer makeRope(HPointer left, HPointer right);
 
 /**
+ * Allocates a Tag_StringUtf8View over `base` (a Tag_ByteBuffer,
+ * Tag_LargeByteHeader, or Tag_StringUtf8Leaf) with the given byte `offset` and
+ * logical length `len` (== byteLen under the all-ASCII invariant). If `base`
+ * resolves to a Tag_ByteBufferSlice or another Tag_StringUtf8View, the offset
+ * is absorbed so the view's base is never itself a slice/view. len==0 returns
+ * the empty constant. Roots `base` across the allocation internally.
+ */
+HPointer makeUtf8View(HPointer base, u32 byteOffset, u32 len);
+
+/**
+ * Allocates a Tag_StringUtf8Leaf holding a copy of `bytes[0..len)`. The bytes
+ * MUST be all-ASCII (each < 0x80); asserted under ECO_HEAP_VALIDATE. If the
+ * object would meet the large-object threshold it falls back to a widened
+ * UTF-16 leaf (no large UTF-8 form in v1). `bytes` may point into the movable
+ * heap; the payload is snapshotted before the allocation. len==0 returns empty.
+ */
+HPointer makeUtf8LeafFromBytes(const u8* bytes, u32 len);
+
+/**
  * Materialise any string into a fresh leaf. Returns the empty constant for
  * len==0. Roots `s` across the allocation internally so callers don't need
  * to (the only field read after the alloc is the leaf's own chars[]).
@@ -177,15 +242,22 @@ inline std::u16string toStdU16String(void* str);
 // own chars[]; no heap allocation at all. Ropes use a small std::vector
 // stack to avoid C-stack blowup on deep trees — that is the only allocation
 // the visitor itself performs.
-template <class F>
-inline void forEachSegment(void* str, F&& cb) {
+//
+// forEachSegmentEx distinguishes the two payload widths: it fires
+// `u16cb(const u16*, u32)` for UTF-16 segments (Tag_String leaves, slices,
+// large-header bodies) and `u8cb(const u8*, u32)` for UTF-8 segments
+// (Tag_StringUtf8Leaf / Tag_StringUtf8View), in logical order. Both callbacks
+// receive STABLE pointers into the actual heap payload — safe to retain until
+// the next allocation. Ropes may freely mix UTF-8 and UTF-16 children.
+template <class F16, class F8>
+inline void forEachSegmentEx(void* str, F16&& u16cb, F8&& u8cb) {
     if (!str) return;
     auto& allocator = Allocator::instance();
     Header* hdr = static_cast<Header*>(str);
 
     if (hdr->tag == Tag_String) {
         ElmString* s = static_cast<ElmString*>(str);
-        if (s->header.size > 0) cb(static_cast<const u16*>(s->chars), s->header.size);
+        if (s->header.size > 0) u16cb(static_cast<const u16*>(s->chars), s->header.size);
         return;
     }
     if (hdr->tag == Tag_LargeStringHeader) {
@@ -194,7 +266,7 @@ inline void forEachSegment(void* str, F&& cb) {
         if (!body) return;
         ElmString* leaf = static_cast<ElmString*>(body);
         if (leaf->header.size > 0)
-            cb(static_cast<const u16*>(leaf->chars), leaf->header.size);
+            u16cb(static_cast<const u16*>(leaf->chars), leaf->header.size);
         return;
     }
     if (hdr->tag == Tag_StringSlice) {
@@ -208,7 +280,12 @@ inline void forEachSegment(void* str, F&& cb) {
             if (!base) return;
         }
         ElmString* leaf = static_cast<ElmString*>(base);
-        cb(static_cast<const u16*>(leaf->chars + slc->offset), slc->header.size);
+        u16cb(static_cast<const u16*>(leaf->chars + slc->offset), slc->header.size);
+        return;
+    }
+    if (hdr->tag == Tag_StringUtf8View || hdr->tag == Tag_StringUtf8Leaf) {
+        auto pr = utf8Bytes(str);
+        if (pr.second > 0) u8cb(pr.first, pr.second);
         return;
     }
     if (hdr->tag != Tag_StringRope) return;
@@ -225,14 +302,14 @@ inline void forEachSegment(void* str, F&& cb) {
         if (h->tag == Tag_String) {
             ElmString* s = static_cast<ElmString*>(top);
             if (s->header.size > 0)
-                cb(static_cast<const u16*>(s->chars), s->header.size);
+                u16cb(static_cast<const u16*>(s->chars), s->header.size);
         } else if (h->tag == Tag_LargeStringHeader) {
             LargeStringHeader* lh = static_cast<LargeStringHeader*>(top);
             void* body = allocator.resolve(lh->body);
             if (body) {
                 ElmString* leaf = static_cast<ElmString*>(body);
                 if (leaf->header.size > 0)
-                    cb(static_cast<const u16*>(leaf->chars), leaf->header.size);
+                    u16cb(static_cast<const u16*>(leaf->chars), leaf->header.size);
             }
         } else if (h->tag == Tag_StringSlice) {
             ElmStringSlice* slc = static_cast<ElmStringSlice*>(top);
@@ -245,11 +322,14 @@ inline void forEachSegment(void* str, F&& cb) {
                     }
                     if (base) {
                         ElmString* leaf = static_cast<ElmString*>(base);
-                        cb(static_cast<const u16*>(leaf->chars + slc->offset),
-                           slc->header.size);
+                        u16cb(static_cast<const u16*>(leaf->chars + slc->offset),
+                              slc->header.size);
                     }
                 }
             }
+        } else if (h->tag == Tag_StringUtf8View || h->tag == Tag_StringUtf8Leaf) {
+            auto pr = utf8Bytes(top);
+            if (pr.second > 0) u8cb(pr.first, pr.second);
         } else if (h->tag == Tag_StringRope) {
             ElmStringRope* r = static_cast<ElmStringRope*>(top);
             void* rightObj = allocator.resolve(r->right);
@@ -258,6 +338,30 @@ inline void forEachSegment(void* str, F&& cb) {
             if (leftObj)  stack.push_back(leftObj);
         }
     }
+}
+
+// Thin u16-only wrapper: fires `cb(const u16*, u32)` for every segment,
+// widening UTF-8 (ASCII) segments through a small transient stack buffer.
+// IMPORTANT: for UTF-8 inputs the pointer passed to `cb` is TRANSIENT — it may
+// point into the stack buffer below and is only valid for that one call.
+// Callers that RETAIN segment pointers past the callback (equal/compare) must
+// use forEachSegmentEx instead. All other callers (which consume the pointer
+// immediately, e.g. copyInto/map/filter) are safe with this wrapper.
+template <class F>
+inline void forEachSegment(void* str, F&& cb) {
+    forEachSegmentEx(
+        str,
+        [&](const u16* p, u32 n) { cb(p, n); },
+        [&](const u8* p, u32 n) {
+            u16 tmp[512];
+            u32 i = 0;
+            while (i < n) {
+                u32 chunk = std::min<u32>(n - i, 512);
+                for (u32 j = 0; j < chunk; ++j) tmp[j] = static_cast<u16>(p[i + j]);
+                cb(static_cast<const u16*>(tmp), chunk);
+                i += chunk;
+            }
+        });
 }
 
 // Copies the contents of `str` into `dst` (which must have room for
@@ -313,6 +417,12 @@ inline u16 charAt(void* str, i64 index) {
             }
             ElmString* leaf = static_cast<ElmString*>(base);
             return leaf->chars[slc->offset + index];
+        }
+        if (hdr->tag == Tag_StringUtf8View || hdr->tag == Tag_StringUtf8Leaf) {
+            // ASCII: the unit index is the byte index (bounds checked above).
+            auto pr = utf8Bytes(str);
+            if (!pr.first) return 0;
+            return static_cast<u16>(pr.first[index]);
         }
         // Tag_StringRope: descend.
         ElmStringRope* r = static_cast<ElmStringRope*>(str);
@@ -485,6 +595,15 @@ inline bool contains(void* needle, void* haystack) {
     if (needle_len == 0) return true;
     if (needle_len > haystack_len) return false;
 
+    // Both UTF-8 (ASCII): byte-level std::search — bytes == units, so a byte
+    // match is a unit match. The common case now that literals are UTF-8.
+    if (isUtf8(needle) && isUtf8(haystack)) {
+        auto n = utf8Bytes(needle);
+        auto h = utf8Bytes(haystack);
+        return std::search(h.first, h.first + h.second, n.first,
+                           n.first + n.second) != h.first + h.second;
+    }
+
     // Fast path: both sides are contiguous u16 segments (leaf, slice, or
     // large-split-header). Use std::search; for libstdc++ this is the
     // straightforward naive search but operates on raw u16* without any
@@ -519,6 +638,13 @@ inline bool startsWith(void* prefix, void* str) {
     if (prefix_len > str_len) return false;
     if (prefix_len == 0) return true;
 
+    // Both UTF-8 (ASCII): byte memcmp.
+    if (isUtf8(prefix) && isUtf8(str)) {
+        auto p = utf8Bytes(prefix);
+        auto s = utf8Bytes(str);
+        return std::memcmp(s.first, p.first, prefix_len) == 0;
+    }
+
     auto [pPtr, pLen] = singleSegmentView(prefix);
     auto [sPtr, sLen] = singleSegmentView(str);
     if (pPtr && sPtr) {
@@ -544,6 +670,14 @@ inline bool endsWith(void* suffix, void* str) {
     if (suffix_len == 0) return true;
 
     size_t offset = str_len - suffix_len;
+
+    // Both UTF-8 (ASCII): byte memcmp at the tail.
+    if (isUtf8(suffix) && isUtf8(str)) {
+        auto suf = utf8Bytes(suffix);
+        auto s = utf8Bytes(str);
+        return std::memcmp(s.first + offset, suf.first, suffix_len) == 0;
+    }
+
     auto [sufPtr, sufLen] = singleSegmentView(suffix);
     auto [sPtr, sLen]     = singleSegmentView(str);
     if (sufPtr && sPtr) {
@@ -892,30 +1026,34 @@ inline HPointer fromInt(i64 n) {
     // shortest decimal representation. i64 max is 20 chars including sign.
     char buf[24];
     auto [end, ec] = std::to_chars(buf, buf + sizeof(buf), n);
-    size_t len = static_cast<size_t>(end - buf);
-    u16 wide[24];
-    for (size_t i = 0; i < len; ++i) wide[i] = static_cast<u16>(buf[i]);
-    return alloc::allocString(wide, len);
+    (void)ec;
+    // Decimal digits + optional '-' are pure ASCII, so emit a UTF-8 leaf.
+    return makeUtf8LeafFromBytes(reinterpret_cast<const u8*>(buf),
+                                 static_cast<u32>(end - buf));
 }
 
 /**
  * Converts a float to a string.
  */
 inline HPointer fromFloat(f64 n) {
-    if (std::isnan(n)) return alloc::allocString(u"NaN");
+    // All outputs are pure ASCII, so emit UTF-8 leaves.
+    if (std::isnan(n))
+        return makeUtf8LeafFromBytes(reinterpret_cast<const u8*>("NaN"), 3);
     if (std::isinf(n)) {
-        return n > 0 ? alloc::allocString(u"Infinity")
-                     : alloc::allocString(u"-Infinity");
+        return n > 0
+                   ? makeUtf8LeafFromBytes(reinterpret_cast<const u8*>("Infinity"), 8)
+                   : makeUtf8LeafFromBytes(reinterpret_cast<const u8*>("-Infinity"), 9);
     }
-    if (n == 0.0) return alloc::allocString(u"0");
+    if (n == 0.0)
+        return makeUtf8LeafFromBytes(reinterpret_cast<const u8*>("0"), 1);
 
     // Use std::to_chars for the shortest round-trip representation,
     // matching JavaScript/Elm's Number.prototype.toString() behavior.
     char buf[32];
     auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), n);
-    std::string s(buf, ptr);
-    std::u16string u16(s.begin(), s.end());
-    return alloc::allocString(u16);
+    (void)ec;
+    return makeUtf8LeafFromBytes(reinterpret_cast<const u8*>(buf),
+                                 static_cast<u32>(ptr - buf));
 }
 
 /**
@@ -1056,6 +1194,13 @@ inline std::u16string toStdU16String(void* str) {
         ElmString* leaf = static_cast<ElmString*>(base);
         return std::u16string(reinterpret_cast<const char16_t*>(leaf->chars + offset), len);
     }
+    if (hdr->tag == Tag_StringUtf8View || hdr->tag == Tag_StringUtf8Leaf) {
+        auto pr = utf8Bytes(str);
+        std::u16string out(pr.second, u'\0');
+        if (pr.second > 0)
+            Utf8::widenAscii(pr.first, pr.second, reinterpret_cast<u16*>(out.data()));
+        return out;
+    }
     // Tag_StringRope: in-order DFS, copying each leaf/slice segment into the
     // result buffer. The buffer is pre-sized to avoid reallocation. We use an
     // explicit stack so deep ropes don't blow the C stack.
@@ -1101,6 +1246,11 @@ inline std::u16string toStdU16String(void* str) {
                     dst += slc->header.size;
                 }
             }
+        } else if (h->tag == Tag_StringUtf8View || h->tag == Tag_StringUtf8Leaf) {
+            auto pr = utf8Bytes(top);
+            for (u32 k = 0; k < pr.second; ++k)
+                dst[k] = static_cast<char16_t>(pr.first[k]);
+            dst += pr.second;
         } else if (h->tag == Tag_StringRope) {
             ElmStringRope* r = static_cast<ElmStringRope*>(top);
             // Push right then left so we visit left first (in-order).
@@ -1118,13 +1268,36 @@ inline std::u16string toStdU16String(void* str) {
  */
 std::string toStdString(void* str);
 
+// ---------------------------------------------------------------------------
+// Mixed-width segment collection, used by equal/compare when a rope (which may
+// mix UTF-8 and UTF-16 children) is involved. Pointers are gathered via
+// forEachSegmentEx and are STABLE (no widening buffer), so retaining them
+// across the lockstep loop is safe — equal/compare never allocate in between.
+// ---------------------------------------------------------------------------
+struct SegView {
+    const void* p;
+    u32 len;
+    bool isU16;
+};
+
+inline void collectSegs(void* str, std::vector<SegView>& out) {
+    forEachSegmentEx(
+        str,
+        [&](const u16* p, u32 n) { out.push_back(SegView{p, n, true}); },
+        [&](const u8* p, u32 n) { out.push_back(SegView{p, n, false}); });
+}
+
+// Reads logical unit `i` of a segment, widening ASCII bytes to a u16 unit.
+inline u16 segElemAt(const SegView& s, u32 i) {
+    return s.isU16 ? static_cast<const u16*>(s.p)[i]
+                   : static_cast<u16>(static_cast<const u8*>(s.p)[i]);
+}
+
 /**
  * Compares two strings for equality. Pure leaf+leaf path is unchanged
- * (memcmp on chars[]). If either side is a slice or rope and the total
- * length is below config.string_flatten_limit, both are snapshotted via
- * toStdU16String and compared with memcmp. Above the limit, falls back to
- * a char-by-char walk via charAt to keep peak memory bounded
- * (// TODO: streaming compare).
+ * (memcmp on chars[]). Both-UTF-8 compares bytes directly. Otherwise a
+ * width-aware lockstep over collected segments handles slices, ropes, and any
+ * UTF-8/UTF-16 mixture without flattening.
  */
 inline bool equal(void* a, void* b) {
     if (!a || !b) return a == b;  // both nullptr means both EmptyString
@@ -1138,33 +1311,39 @@ inline bool equal(void* a, void* b) {
         return std::memcmp(sa->chars, sb->chars, ha->size * sizeof(u16)) == 0;
     }
 
-    // Single-segment-on-each-side fast path: covers any combination of
-    // leaf / slice / large-split-header without flattening.
+    // Both UTF-8: byte memcmp. ASCII => byte value == unit value, and sizes
+    // (== byteLen) are already known equal.
+    if (isUtf8(a) && isUtf8(b)) {
+        auto pa = utf8Bytes(a);
+        auto pb = utf8Bytes(b);
+        return pa.second == pb.second &&
+               std::memcmp(pa.first, pb.first, pa.second) == 0;
+    }
+
+    // Single-segment-on-each-side fast path (pure UTF-16): leaf / slice /
+    // large-split-header without flattening. UTF-8 forms return {nullptr,0}
+    // from singleSegmentView, so at least one side reaching here as UTF-8
+    // falls through to the width-aware walk below.
     auto [aPtr, aLen] = singleSegmentView(a);
     auto [bPtr, bLen] = singleSegmentView(b);
     if (aPtr && bPtr) {
         return std::memcmp(aPtr, bPtr, ha->size * sizeof(u16)) == 0;
     }
 
-    // Lockstep leaf-segment walk: collect contiguous segments from each
-    // side and memcmp them piecewise. No allocation beyond two small
-    // segment vectors (one per side), regardless of total string size.
-    std::vector<std::pair<const u16*, u32>> aSegs, bSegs;
+    // General width-aware lockstep: handles ropes that may mix UTF-8 and
+    // UTF-16 children, and any UTF-8-vs-UTF-16 pairing. Stable pointers,
+    // allocation-free beyond two small segment vectors.
+    std::vector<SegView> aSegs, bSegs;
     aSegs.reserve(16); bSegs.reserve(16);
-    forEachSegment(a, [&](const u16* p, u32 n) { aSegs.emplace_back(p, n); });
-    forEachSegment(b, [&](const u16* p, u32 n) { bSegs.emplace_back(p, n); });
+    collectSegs(a, aSegs);
+    collectSegs(b, bSegs);
 
     size_t ai = 0, bi = 0;
     u32 aOff = 0, bOff = 0;
     while (ai < aSegs.size() && bi < bSegs.size()) {
-        u32 aRem = aSegs[ai].second - aOff;
-        u32 bRem = bSegs[bi].second - bOff;
-        u32 chunk = std::min(aRem, bRem);
-        if (std::memcmp(aSegs[ai].first + aOff, bSegs[bi].first + bOff,
-                        chunk * sizeof(u16)) != 0) return false;
-        aOff += chunk; bOff += chunk;
-        if (aOff == aSegs[ai].second) { ++ai; aOff = 0; }
-        if (bOff == bSegs[bi].second) { ++bi; bOff = 0; }
+        if (segElemAt(aSegs[ai], aOff) != segElemAt(bSegs[bi], bOff)) return false;
+        if (++aOff == aSegs[ai].len) { ++ai; aOff = 0; }
+        if (++bOff == bSegs[bi].len) { ++bi; bOff = 0; }
     }
     return ai == aSegs.size() && bi == bSegs.size();
 }
@@ -1203,7 +1382,18 @@ inline int compare(void* a, void* b) {
         return static_cast<int>(ha->size) - static_cast<int>(hb->size);
     }
 
-    // Single-segment-on-each-side fast path.
+    // Both UTF-8: byte compare. ASCII => byte order == UTF-16 unit order, so
+    // memcmp's sign is the correct lexicographic sign.
+    if (isUtf8(a) && isUtf8(b)) {
+        auto pa = utf8Bytes(a);
+        auto pb = utf8Bytes(b);
+        size_t min_len = std::min<size_t>(pa.second, pb.second);
+        int c = std::memcmp(pa.first, pb.first, min_len);
+        if (c != 0) return c;
+        return static_cast<int>(pa.second) - static_cast<int>(pb.second);
+    }
+
+    // Single-segment-on-each-side fast path (pure UTF-16).
     auto [aPtr, aLen] = singleSegmentView(a);
     auto [bPtr, bLen] = singleSegmentView(b);
     if (aPtr && bPtr) {
@@ -1213,24 +1403,22 @@ inline int compare(void* a, void* b) {
         return static_cast<int>(aLen) - static_cast<int>(bLen);
     }
 
-    // Lockstep leaf-segment walk: memcmp-compatible char-compare in chunks.
-    std::vector<std::pair<const u16*, u32>> aSegs, bSegs;
+    // General width-aware lockstep (ropes possibly mixing UTF-8 / UTF-16, or
+    // any UTF-8-vs-UTF-16 pairing). ASCII bytes widen to u16 units, matching
+    // UTF-16 unit order.
+    std::vector<SegView> aSegs, bSegs;
     aSegs.reserve(16); bSegs.reserve(16);
-    forEachSegment(a, [&](const u16* p, u32 n) { aSegs.emplace_back(p, n); });
-    forEachSegment(b, [&](const u16* p, u32 n) { bSegs.emplace_back(p, n); });
+    collectSegs(a, aSegs);
+    collectSegs(b, bSegs);
 
     size_t ai = 0, bi = 0;
     u32 aOff = 0, bOff = 0;
     while (ai < aSegs.size() && bi < bSegs.size()) {
-        u32 aRem = aSegs[ai].second - aOff;
-        u32 bRem = bSegs[bi].second - bOff;
-        u32 chunk = std::min(aRem, bRem);
-        int c = charCompare(aSegs[ai].first + aOff,
-                            bSegs[bi].first + bOff, chunk);
-        if (c != 0) return c;
-        aOff += chunk; bOff += chunk;
-        if (aOff == aSegs[ai].second) { ++ai; aOff = 0; }
-        if (bOff == bSegs[bi].second) { ++bi; bOff = 0; }
+        u16 ca = segElemAt(aSegs[ai], aOff);
+        u16 cb = segElemAt(bSegs[bi], bOff);
+        if (ca != cb) return static_cast<int>(ca) - static_cast<int>(cb);
+        if (++aOff == aSegs[ai].len) { ++ai; aOff = 0; }
+        if (++bOff == bSegs[bi].len) { ++bi; bOff = 0; }
     }
     return static_cast<int>(ha->size) - static_cast<int>(hb->size);
 }

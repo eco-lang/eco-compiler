@@ -1707,6 +1707,11 @@ void OldGenSpace::markChildren(void *obj) {
             markHPointer(slc->base);
             break;
         }
+        case Tag_StringUtf8View: {
+            ElmStringUtf8View *v = static_cast<ElmStringUtf8View *>(obj);
+            markHPointer(v->base);
+            break;
+        }
         case Tag_ByteBufferSlice: {
             ElmByteBufferSlice *slc = static_cast<ElmByteBufferSlice *>(obj);
             markHPointer(slc->base);
@@ -3953,6 +3958,11 @@ void OldGenSpace::fixPointersInObject(void* obj) {
         case Tag_StringSlice: {
             ElmStringSlice* slc = static_cast<ElmStringSlice*>(obj);
             fixHPointer(slc->base);
+            break;
+        }
+        case Tag_StringUtf8View: {
+            ElmStringUtf8View* v = static_cast<ElmStringUtf8View*>(obj);
+            fixHPointer(v->base);
             break;
         }
         case Tag_ByteBufferSlice: {

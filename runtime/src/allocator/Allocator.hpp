@@ -112,6 +112,14 @@ public:
         return config_.large_object_threshold;
     }
 
+    // Monotonically increasing counter bumped on every initialize()/reset().
+    // Consumers that cache heap pointers across the process lifetime (e.g. the
+    // string-literal interning table) compare it to detect a heap reset — which
+    // destroys all thread heaps and RootSets — and drop their now-stale caches.
+    // The shipped AOT runtime bumps this exactly once (at startup); only the
+    // test harness resets, so this is effectively free in production.
+    uint64_t heapGeneration() const { return heap_generation_; }
+
     // Returns the calling thread's ThreadLocalHeap (or nullptr if the
     // thread isn't initialized). Public form of the internal accessor; used
     // by the GC_STATS_TLH_RECORD_ALLOC helper to find the current thread's
@@ -245,6 +253,7 @@ private:
     // bumping `old_gen_committed`.
     std::vector<std::pair<char*, size_t>> old_gen_free_blocks_;
     bool initialized;             // True after initialize() has been called.
+    uint64_t heap_generation_ = 0; // Bumped on initialize()/reset(); see heapGeneration().
 
 #if ENABLE_GC_STATS
     // Accumulated statistics from destroyed thread heaps.

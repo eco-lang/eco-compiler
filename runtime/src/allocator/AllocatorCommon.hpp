@@ -87,6 +87,15 @@ constexpr size_t STRING_FLATTEN_LIMIT = 32 * 1024;
 // slice() ranges <= this many UTF-16 code units flatten directly instead of allocating a Tag_StringSlice.
 constexpr size_t STRING_TINY_SLICE_LIMIT = 128;
 
+// Bytes.Decode.string builds a zero-copy Tag_StringUtf8View for valid all-ASCII
+// payloads at least this many bytes; shorter valid-ASCII input copies a small
+// Tag_StringUtf8Leaf (mirrors MAKE_BYTEBUFFER_SLICE_MIN_LEN).
+constexpr size_t UTF8_VIEW_MIN_LEN = 32;
+
+// Master switch for creating any UTF-8 String form (view or leaf). When false,
+// every creation path falls back to the UTF-16 forms — a config-only rollback.
+constexpr bool UTF8_STRINGS_ENABLED = true;
+
 // Rope tree depth above which the rebalance heuristic flags the rope (rebalance itself is TODO).
 constexpr u32 ROPE_MAX_HEIGHT = 32;
 
@@ -298,6 +307,16 @@ inline size_t getObjectSize(void *obj) {
             // GC evacuation/scan stride (HEAP_004).
             size = sizeof(ElmByteBufferSlice);
             break;
+        case Tag_StringUtf8View:
+            // Fixed-size byte view; header.size is the logical unit count, not
+            // the footprint. Mirrors Tag_StringSlice / Tag_ByteBufferSlice.
+            size = sizeof(ElmStringUtf8View);
+            break;
+        case Tag_StringUtf8Leaf:
+            // Inline ASCII bytes: 1 byte per unit. Footprint derives from
+            // header.size exactly like Tag_String (but u8, not u16).
+            size = sizeof(ElmStringUtf8Leaf) + hdr->size * sizeof(u8);
+            break;
         default:
             size = sizeof(Header);
             break;
@@ -336,6 +355,13 @@ struct HeapConfig {
 
     // slice() ranges <= this many UTF-16 code units flatten directly instead of allocating a slice.
     size_t string_tiny_slice_limit = STRING_TINY_SLICE_LIMIT;
+
+    // Min byte length for Bytes.Decode.string to build a zero-copy UTF-8 view
+    // (shorter valid-ASCII decodes copy a small UTF-8 leaf).
+    size_t utf8_view_min_len = UTF8_VIEW_MIN_LEN;
+
+    // Master switch: when false, no UTF-8 String form is ever created.
+    bool utf8_strings_enabled = UTF8_STRINGS_ENABLED;
 
     // Rope tree depth above which the rebalance heuristic flags the rope.
     u32 rope_max_height = ROPE_MAX_HEIGHT;

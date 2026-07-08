@@ -215,6 +215,15 @@ static void writeEncoder(Custom* encoder, u8* buf, size_t& offset) {
             }
             void* strPtr = allocator.resolve(encoder->values[1].p);
 
+            // UTF-8 (ASCII) forms: the bytes are already the UTF-8 encoding —
+            // copy straight into the output buffer, no transcode.
+            if (Elm::StringOps::isUtf8(strPtr)) {
+                auto pr = Elm::StringOps::utf8Bytes(strPtr);
+                std::memcpy(buf + offset, pr.first, pr.second);
+                offset += pr.second;
+                break;
+            }
+
             // Fast path for flat leaves and Tag_LargeStringHeader bodies:
             // read chars[] directly without materialising a snapshot. The
             // pointer is valid for the duration of this call because we
@@ -307,6 +316,12 @@ int64_t Elm_Kernel_Bytes_getStringWidth(HPtr str) {
     }
     void* ptr = Export::toPtr(strBits);
     if (!ptr) return 0;
+
+    // UTF-8 (ASCII) forms: every char is one byte, so the UTF-8 width equals
+    // the logical length. O(1), no walk.
+    if (Elm::StringOps::isUtf8(ptr)) {
+        return static_cast<int64_t>(Elm::StringOps::length(ptr));
+    }
 
     // Flat leaves (and Tag_LargeStringHeader bodies) read chars[] directly,
     // skipping the std::u16string materialization. Slices/ropes still

@@ -98,10 +98,16 @@ void initHeaderForTag(Header* hdr, Tag tag, size_t size) {
             break;
         case Tag_StringSlice:
         case Tag_StringRope:
-            // Constructors (StringOps::makeSlice / makeRope) set header.size
-            // explicitly to the logical UTF-16 length; nothing to derive from
-            // byte size.
+        case Tag_StringUtf8View:
+            // Constructors (StringOps::makeSlice / makeRope / makeUtf8View) set
+            // header.size explicitly to the logical UTF-16 length; nothing to
+            // derive from byte size.
             hdr->size = 0;
+            break;
+        case Tag_StringUtf8Leaf:
+            // Inline ASCII bytes: 1 unit per byte, so the logical length is the
+            // payload byte count (mirrors Tag_String's u16 derivation).
+            hdr->size = static_cast<u32>(size - sizeof(ElmStringUtf8Leaf));
             break;
         case Tag_Custom:
             hdr->size = (size - sizeof(Custom)) / sizeof(Unboxable);

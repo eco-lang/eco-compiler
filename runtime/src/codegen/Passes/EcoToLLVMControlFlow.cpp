@@ -22,6 +22,10 @@ using namespace mlir;
 using namespace eco;
 using namespace eco::detail;
 
+// Defined below (before preMaterializeStringCases); forward-declared here so
+// the string-case lowering inside the anonymous namespace can use it.
+static bool isAsciiCasePattern(llvm::StringRef s);
+
 namespace {
 
 //===----------------------------------------------------------------------===//
@@ -381,11 +385,10 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                 Value emptyI64 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, emptyStringVal);
                 patternValue = rewriter.create<LLVM::IntToPtrOp>(loc, hptrTy, emptyI64);
             } else {
-                // Global pre-created in preMaterializeStringCases; recompute the
-                // length (pure — no cache write) and take the pre-created
-                // global's address. No module insertion during the body stage.
-                std::vector<uint16_t> utf16 = utf8ToUtf16(pattern);
-                size_t length = utf16.size();
+                // Global pre-created in preMaterializeStringCases; take its
+                // address. ASCII patterns are [N x i8] built as UTF-8 leaves;
+                // others are [N x i16] UTF-16. The ASCII decision is recomputed
+                // (pure in the bytes) so it matches pre-materialization.
                 llvm::SmallString<48> globalName;
                 {
                     llvm::raw_svector_ostream os(globalName);
@@ -393,13 +396,23 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                 }
                 auto addrOf = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, globalName);
 
-                // Call eco_alloc_string_literal(chars, length) -> HPointer
-                auto allocFunc = runtime.getOrCreateAllocStringLiteral(rewriter);
-                auto lengthVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
-                    static_cast<int32_t>(length));
-                auto allocCall = rewriter.create<LLVM::CallOp>(loc, allocFunc,
-                    ValueRange{addrOf, lengthVal});
-                patternValue = allocCall.getResult();
+                if (isAsciiCasePattern(pattern)) {
+                    auto allocFunc = runtime.getOrCreateAllocStringLiteralUtf8(rewriter);
+                    auto lenVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+                        static_cast<int32_t>(pattern.size()));
+                    auto allocCall = rewriter.create<LLVM::CallOp>(loc, allocFunc,
+                        ValueRange{addrOf, lenVal});
+                    patternValue = allocCall.getResult();
+                } else {
+                    std::vector<uint16_t> utf16 = utf8ToUtf16(pattern);
+                    size_t length = utf16.size();
+                    auto allocFunc = runtime.getOrCreateAllocStringLiteral(rewriter);
+                    auto lengthVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+                        static_cast<int32_t>(length));
+                    auto allocCall = rewriter.create<LLVM::CallOp>(loc, allocFunc,
+                        ValueRange{addrOf, lengthVal});
+                    patternValue = allocCall.getResult();
+                }
             }
 
             // Call Elm_Kernel_Utils_equal(scrutinee, patternValue) -> i64 (boxed Bool)
@@ -1047,11 +1060,22 @@ void eco::detail::populateEcoControlFlowPatterns(
 // old file-static atomic — same input + same order => same ids => deterministic
 // output), create its per-pattern __eco_str_case_<caseId>_<i> globals, and
 // record the caseId in the side map read by lowerStringCase during Stage 2.
+// A string-case pattern is all-ASCII iff every byte is < 0x80. ASCII patterns
+// are emitted as [N x i8] globals and constructed as inline UTF-8 leaves,
+// matching EcoToLLVMTypes.cpp's literal handling. Pure in the bytes, so
+// pre-materialization and lowering agree without a side map.
+static bool isAsciiCasePattern(llvm::StringRef s) {
+    for (char c : s)
+        if (static_cast<unsigned char>(c) & 0x80) return false;
+    return true;
+}
+
 void eco::detail::preMaterializeStringCases(
     OpBuilder &builder, const EcoRuntime &runtime,
     llvm::ArrayRef<LLVM::LLVMFuncOp> funcs) {
     auto *ctx = builder.getContext();
     auto i16Ty = IntegerType::get(ctx, 16);
+    auto i8Ty = IntegerType::get(ctx, 8);
     uint64_t caseCounter = 0;
     for (LLVM::LLVMFuncOp func : funcs) {
         func.walk([&](CaseOp op) {
@@ -1064,16 +1088,38 @@ void eco::detail::preMaterializeStringCases(
             for (size_t i = 0; i < pats.size(); ++i) {
                 StringRef pattern = cast<StringAttr>(pats[i]).getValue();
                 if (pattern.empty()) continue;  // embedded empty-string const
-                std::vector<uint16_t> utf16 = utf8ToUtf16(pattern);
-                size_t length = utf16.size();
                 llvm::SmallString<48> globalName;
                 {
                     llvm::raw_svector_ostream os(globalName);
                     os << "__eco_str_case_" << caseId << "_" << i;
                 }
-                auto arrayTy = LLVM::LLVMArrayType::get(i16Ty, length);
                 OpBuilder::InsertionGuard guard(builder);
                 builder.setInsertionPointToStart(runtime.module.getBody());
+
+                if (isAsciiCasePattern(pattern)) {
+                    size_t byteLen = pattern.size();
+                    auto arrayTy = LLVM::LLVMArrayType::get(i8Ty, byteLen);
+                    auto globalOp = builder.create<LLVM::GlobalOp>(
+                        op.getLoc(), arrayTy, /*isConstant=*/true,
+                        LLVM::Linkage::Internal, globalName, /*value=*/Attribute{});
+                    Block *initBlock =
+                        builder.createBlock(&globalOp.getInitializerRegion());
+                    builder.setInsertionPointToStart(initBlock);
+                    SmallVector<int8_t> byteValues;
+                    for (char c : pattern)
+                        byteValues.push_back(static_cast<int8_t>(c));
+                    auto denseAttr = DenseElementsAttr::get(
+                        RankedTensorType::get({static_cast<int64_t>(byteLen)}, i8Ty),
+                        ArrayRef<int8_t>(byteValues));
+                    auto initValue = builder.create<LLVM::ConstantOp>(
+                        op.getLoc(), arrayTy, denseAttr);
+                    builder.create<LLVM::ReturnOp>(op.getLoc(), initValue.getResult());
+                    continue;
+                }
+
+                std::vector<uint16_t> utf16 = utf8ToUtf16(pattern);
+                size_t length = utf16.size();
+                auto arrayTy = LLVM::LLVMArrayType::get(i16Ty, length);
                 auto globalOp = builder.create<LLVM::GlobalOp>(
                     op.getLoc(), arrayTy, /*isConstant=*/true,
                     LLVM::Linkage::Internal, globalName, /*value=*/Attribute{});

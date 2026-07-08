@@ -605,7 +605,61 @@ static void test_multiple_alloc_types_survive_gc() {
 // Test Registration
 // ============================================================================
 
+// String-literal interning: repeated calls with the same global address are
+// interned to one object; distinct addresses stay distinct; content survives a
+// major GC (the cached slot is a long-lived root).
+static void test_string_literal_interning() {
+    auto& alloc = initAllocator();
+
+    static const uint16_t litA[] = {'h', 'e', 'l', 'l', 'o'};
+    static const uint16_t litB[] = {'w', 'o', 'r', 'l', 'd'};
+
+    HPtr a1 = eco_alloc_string_literal(litA, 5);
+    HPtr a2 = eco_alloc_string_literal(litA, 5);
+    HPtr b1 = eco_alloc_string_literal(litB, 5);
+
+    TEST_ASSERT(a1.toBits() != 0);
+    TEST_ASSERT(a1.toBits() == a2.toBits());  // same global -> interned once
+    TEST_ASSERT(b1.toBits() != a1.toBits());  // distinct global -> distinct
+
+    ElmString* sa = static_cast<ElmString*>(alloc.resolve(a1.toHPointer()));
+    TEST_ASSERT(sa && sa->header.size == 5);
+    TEST_ASSERT(std::memcmp(sa->chars, litA, 5 * sizeof(uint16_t)) == 0);
+
+    // Survives a major GC: re-calling returns the cached (fixed-up) object.
+    alloc.majorGC();
+    HPtr a3 = eco_alloc_string_literal(litA, 5);
+    TEST_ASSERT(a3.toBits() != 0);
+    ElmString* s3 = static_cast<ElmString*>(alloc.resolve(a3.toHPointer()));
+    TEST_ASSERT(s3 && s3->header.size == 5);
+    TEST_ASSERT(std::memcmp(s3->chars, litA, 5 * sizeof(uint16_t)) == 0);
+}
+
+// After a heap reset (which destroys all thread heaps + RootSets) the cache
+// must self-invalidate: the same global address must yield a fresh, valid
+// object rather than a dangling stale pointer.
+static void test_string_literal_interning_survives_reset() {
+    static const uint16_t lit[] = {'r', 'e', 's', 'e', 't', '!'};
+
+    initAllocator();
+    HPtr first = eco_alloc_string_literal(lit, 6);
+    TEST_ASSERT(first.toBits() != 0);
+
+    initAllocator();  // bumps heap generation, destroys the previous heap
+    HPtr second = eco_alloc_string_literal(lit, 6);
+    TEST_ASSERT(second.toBits() != 0);
+
+    ElmString* s = static_cast<ElmString*>(
+        Allocator::instance().resolve(second.toHPointer()));
+    TEST_ASSERT(s && s->header.size == 6);
+    TEST_ASSERT(std::memcmp(s->chars, lit, 6 * sizeof(uint16_t)) == 0);
+}
+
 void registerRuntimeExportsTests(Testing::TestSuite& suite) {
+    suite.add(Testing::TestCase("eco_alloc_string_literal interns by global address",
+                                test_string_literal_interning));
+    suite.add(Testing::TestCase("eco_alloc_string_literal survives heap reset",
+                                test_string_literal_interning_survives_reset));
     // Allocation function tests
     suite.add(Testing::TestCase("eco_alloc_int stores correct value", test_eco_alloc_int_stores_value));
     suite.add(Testing::TestCase("eco_alloc_float stores correct value", test_eco_alloc_float_stores_value));

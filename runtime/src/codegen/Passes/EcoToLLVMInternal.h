@@ -387,6 +387,7 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateAllocCustom(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateAllocString(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateAllocStringLiteral(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateAllocStringLiteralUtf8(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateAllocClosure(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateAllocClosureK(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateAllocate(mlir::OpBuilder &builder) const;

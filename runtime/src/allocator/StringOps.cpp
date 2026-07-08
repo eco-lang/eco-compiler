@@ -91,6 +91,78 @@ HPointer makeRope(HPointer left, HPointer right) {
     return allocator.wrap(rope);
 }
 
+HPointer makeUtf8View(HPointer base, u32 byteOffset, u32 len) {
+    if (len == 0) return alloc::emptyString();
+    auto& allocator = Allocator::instance();
+
+    // Collapse view-of-slice / view-of-view so `base` is a leaf / buffer /
+    // large-header, never itself a slice or view (mirrors makeByteBufferSlice).
+    void* base_obj = allocator.resolve(base);
+    if (base_obj) {
+        Header* h = static_cast<Header*>(base_obj);
+        if (h->tag == Tag_ByteBufferSlice) {
+            ElmByteBufferSlice* inner = static_cast<ElmByteBufferSlice*>(base_obj);
+            base = inner->base;
+            byteOffset += inner->offset;
+        } else if (h->tag == Tag_StringUtf8View) {
+            ElmStringUtf8View* inner = static_cast<ElmStringUtf8View*>(base_obj);
+            base = inner->base;
+            byteOffset += inner->offset;
+        }
+    }
+
+    size_t total_size = (sizeof(ElmStringUtf8View) + 7) & ~7;
+    uint64_t roots[1];
+    std::memcpy(&roots[0], &base, sizeof(base));
+    ElmStringUtf8View* v = static_cast<ElmStringUtf8View*>(
+        eco_alloc_with_roots(Tag_StringUtf8View, total_size, roots, 1, 0x1));
+    std::memcpy(&base, &roots[0], sizeof(base));
+    v->header.size = len;
+    std::memcpy(&v->base, &roots[0], sizeof(v->base));
+    v->offset = byteOffset;
+    v->byteLen = len;
+    return allocator.wrap(v);
+}
+
+HPointer makeUtf8LeafFromBytes(const u8* bytes, u32 len) {
+    if (len == 0) return alloc::emptyString();
+    auto& allocator = Allocator::instance();
+
+    // Master switch: when UTF-8 strings are disabled, widen to a UTF-16 leaf.
+    // This is the single "from raw bytes" chokepoint (fromInt/fromFloat, the
+    // slice tiny path, read_string's short path), so gating it here — plus the
+    // read_string view gate — means no UTF-8 form is ever created when off.
+    if (!allocator.getConfig().utf8_strings_enabled) {
+        std::vector<u16> wide(len);
+        Utf8::widenAscii(bytes, len, wide.data());
+        return alloc::allocString(wide.data(), len);
+    }
+
+    size_t total_size = (sizeof(ElmStringUtf8Leaf) + len + 7) & ~7;
+    if (total_size >= allocator.getLargeObjectThreshold()) {
+        // No large UTF-8 form in v1: widen to a UTF-16 leaf (which routes to
+        // the split-header path). `bytes` is read into `wide` before any Elm
+        // allocation, so a GC in allocString cannot invalidate it.
+        std::vector<u16> wide(len);
+        Utf8::widenAscii(bytes, len, wide.data());
+        return alloc::allocString(wide.data(), len);
+    }
+
+    // `bytes` may point into a movable heap object (a ByteBuffer payload or a
+    // UTF-8 leaf); the allocation below can trigger a minor GC that relocates
+    // it. Snapshot to the C stack first.
+    std::vector<u8> snapshot(bytes, bytes + len);
+    void* obj = eco_alloc_with_roots(Tag_StringUtf8Leaf, total_size, nullptr, 0, 0);
+    ElmStringUtf8Leaf* leaf = static_cast<ElmStringUtf8Leaf*>(obj);
+    leaf->header.size = len;
+    std::memcpy(leaf->bytes, snapshot.data(), len);
+#if ECO_HEAP_VALIDATE
+    for (u32 i = 0; i < len; ++i)
+        assert(!(leaf->bytes[i] & 0x80) && "UTF-8 leaf must be all-ASCII");
+#endif
+    return allocator.wrap(leaf);
+}
+
 HPointer flattenToLeaf(HPointer s) {
     if (alloc::isEmbeddedConstant(s)) return s;  // Const_EmptyString stays embedded
 
@@ -124,6 +196,12 @@ HPointer maybeFlattenOrRebalance(HPointer s, FlattenReason reason) {
     Header* hdr = static_cast<Header*>(obj);
     if (hdr->tag == Tag_String) return s;  // already flat
     if (hdr->tag == Tag_LargeStringHeader) return s;  // split-header is leaf-like
+    if (hdr->tag == Tag_StringUtf8View || hdr->tag == Tag_StringUtf8Leaf) {
+        // ensureFlat consumers (e.g. the parser) cast the result to
+        // ElmString* and index chars[], so a UTF-8 form must always widen to a
+        // UTF-16 leaf regardless of size — never pass through structurally.
+        return flattenToLeaf(s);
+    }
     const HeapConfig& cfg = allocator.getConfig();
     if (hdr->size <= cfg.string_flatten_limit) {
         return flattenToLeaf(s);
@@ -171,6 +249,27 @@ HPointer slice(void* str, i64 start, i64 end) {
 
     size_t slice_len = static_cast<size_t>(end - start);
     auto& allocator = Allocator::instance();
+
+    // UTF-8 (ASCII) forms: the unit index is the byte offset. Tiny ranges copy
+    // a fresh UTF-8 leaf; larger ranges share the source via a UTF-8 view. No
+    // transcode, result stays UTF-8.
+    if (hdr->tag == Tag_StringUtf8View || hdr->tag == Tag_StringUtf8Leaf) {
+        if (slice_len <= allocator.getConfig().string_tiny_slice_limit) {
+            auto pr = utf8Bytes(str);
+            return makeUtf8LeafFromBytes(pr.first + start,
+                                         static_cast<u32>(slice_len));
+        }
+        if (hdr->tag == Tag_StringUtf8Leaf) {
+            HPointer baseHp = allocator.wrap(str);
+            return makeUtf8View(baseHp, static_cast<u32>(start),
+                                static_cast<u32>(slice_len));
+        }
+        // View: collapse onto the view's own base + adjusted byte offset.
+        ElmStringUtf8View* v = static_cast<ElmStringUtf8View*>(str);
+        HPointer baseHp = v->base;
+        u32 baseOffset = v->offset + static_cast<u32>(start);
+        return makeUtf8View(baseHp, baseOffset, static_cast<u32>(slice_len));
+    }
 
     // Tiny slice: flatten directly into a leaf — avoids slice metadata for
     // short ranges and matches the prior behaviour.
@@ -741,6 +840,13 @@ HPointer uncons(void* str) {
             HPointer baseHp = slc->base;
             u32 newOffset = slc->offset + 1;
             rest = makeSlice(baseHp, newOffset, restLen);
+        } else if (hdr->tag == Tag_StringUtf8Leaf) {
+            // ASCII: rest is a UTF-8 view advanced by one byte over the leaf.
+            HPointer baseHp = allocator.wrap(str);
+            rest = makeUtf8View(baseHp, 1, restLen);
+        } else if (hdr->tag == Tag_StringUtf8View) {
+            ElmStringUtf8View* v = static_cast<ElmStringUtf8View*>(str);
+            rest = makeUtf8View(v->base, v->offset + 1, restLen);
         } else {
             // Rope: defer to slice() which handles rope-aware partitioning.
             rest = slice(str, 1, static_cast<i64>(hdr->size));
@@ -833,6 +939,14 @@ Unboxable foldr(CharFolder fold, Unboxable acc, void* str) {
 
 std::string toStdString(void* str) {
     if (!str) return {};
+    // UTF-8 (ASCII) forms: the bytes are already valid UTF-8 — copy directly.
+    {
+        Header* hdr = static_cast<Header*>(str);
+        if (hdr->tag == Tag_StringUtf8View || hdr->tag == Tag_StringUtf8Leaf) {
+            auto pr = utf8Bytes(str);
+            return std::string(reinterpret_cast<const char*>(pr.first), pr.second);
+        }
+    }
     auto buf = toStdU16String(str);
     const u16* p = reinterpret_cast<const u16*>(buf.data());
     const size_t n = buf.size();

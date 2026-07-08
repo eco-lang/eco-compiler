@@ -25,28 +25,50 @@ namespace {
 constexpr u32 TUPLE2_INT_INT       = 0x5;
 constexpr u32 TUPLE3_INT_INT_INT   = 0x15;
 
-// Resolves an HPtr-encoded string to a flat leaf ElmString*, or nullptr for
-// the empty-string constant. The string is unconditionally flattened (slices
-// become leaves) so the parser hot loops can index ->chars[] directly. Per
-// the plan, the parser is the heaviest consumer of String operations and
-// pays a single flatten allocation rather than per-char tag dispatch.
-//
-// Split-header awareness (HEAP_026): ensureFlat may return a
-// Tag_LargeStringHeader (it treats the split form as leaf-like). Resolve
-// through `body` so the returned ElmString* points at the actual flat leaf
-// with a usable chars[] inline array.
-inline ElmString* resolveString(HPtr str) {
+// Resolves an HPtr-encoded string into a ParserStr the hot loops can index via
+// at(i). A UTF-8 (all-ASCII) source exposes its bytes directly — no allocation,
+// no transcode — so repeated primitive calls over a decoded UTF-8 source stay
+// linear. Any other form (UTF-16 leaf / slice / rope / large-header) is
+// flattened once per call to a u16 leaf (HEAP_026: ensureFlat may return a
+// Tag_LargeStringHeader, resolved through `body`), exactly as before. The
+// empty-string constant yields an empty ParserStr.
+// A resolved parser string: either a UTF-16 payload (`wide`) or a UTF-8/ASCII
+// byte payload (`narrow`). A UTF-8 (all-ASCII) source exposes its bytes
+// directly — no flatten, no transcode, no allocation per primitive call —
+// which keeps parsing a decoded UTF-8 source linear rather than O(n^2) (each
+// primitive would otherwise re-widen the whole source via ensureFlat). UTF-16 /
+// rope / slice sources flatten to a leaf once per call as before. `at(i)`
+// widens an ASCII byte to a u16 unit; ASCII has no surrogates, so the surrogate
+// branches in the loops below are simply never taken.
+struct ParserStr {
+    const u16* wide = nullptr;
+    const u8* narrow = nullptr;
+    int64_t len = 0;
+    u16 at(int64_t i) const {
+        return wide ? wide[i] : static_cast<u16>(narrow[i]);
+    }
+    bool valid() const { return wide != nullptr || narrow != nullptr; }
+};
+
+inline ParserStr resolveString(HPtr str) {
     HPointer hp;
     uint64_t bits = str.toBits();
     std::memcpy(&hp, &bits, sizeof(hp));
+    if (alloc::isEmbeddedConstant(hp)) return {};  // empty string
+    void* obj = Allocator::instance().resolve(hp);
+    if (obj && StringOps::isUtf8(obj)) {
+        // UTF-8 (ASCII): index the bytes directly, no flatten / transcode.
+        auto pr = StringOps::utf8Bytes(obj);
+        return ParserStr{nullptr, pr.first, static_cast<int64_t>(pr.second)};
+    }
+    // UTF-16 / rope / slice: flatten to a leaf once and index chars[].
     HPointer flat = StringOps::ensureFlat(hp);
-    if (alloc::isEmbeddedConstant(flat)) return nullptr;
-    return alloc::resolveStringBody(Allocator::instance().resolve(flat));
+    if (alloc::isEmbeddedConstant(flat)) return {};
+    ElmString* s = alloc::resolveStringBody(Allocator::instance().resolve(flat));
+    return ParserStr{s->chars, nullptr, static_cast<int64_t>(s->header.size)};
 }
 
-inline int64_t stringLen(const ElmString* s) {
-    return s ? static_cast<int64_t>(s->header.size) : 0;
-}
+inline int64_t stringLen(const ParserStr& s) { return s.len; }
 
 inline bool isHighSurrogate(u16 c) {
     return (c & 0xF800) == 0xD800;
@@ -54,10 +76,10 @@ inline bool isHighSurrogate(u16 c) {
 
 // Walks offset..target updating row/col, skipping the low surrogate of any
 // surrogate pair. Matches the inner loop of the JS kernel's findSubString.
-inline void advancePosition(const ElmString* s, int64_t& offset, int64_t target,
+inline void advancePosition(const ParserStr& s, int64_t& offset, int64_t target,
                             int64_t& row, int64_t& col) {
     while (offset < target) {
-        u16 code = s->chars[offset++];
+        u16 code = s.at(offset++);
         if (code == 0x000A) {
             col = 1;
             row++;
@@ -88,9 +110,9 @@ extern "C" {
 
 // isAsciiCode code offset src == (src.charCodeAt(offset) === code)
 HPtr Elm_Kernel_Parser_isAsciiCode(int64_t code, int64_t offset, HPtr str) {
-    ElmString* s = resolveString(str);
+    ParserStr s = resolveString(str);
     i64 len = stringLen(s);
-    bool result = (offset >= 0 && offset < len && s->chars[offset] == code);
+    bool result = (offset >= 0 && offset < len && s.at(offset) == code);
     return HPtr::fromBits(Export::encodeBoxedBool(result));
 }
 
@@ -101,7 +123,7 @@ HPtr Elm_Kernel_Parser_isAsciiCode(int64_t code, int64_t offset, HPtr str) {
 //
 // Supplementary chars (surrogate pairs) advance offset by 2 when matched.
 int64_t Elm_Kernel_Parser_isSubChar(HPtr closure, int64_t offset, HPtr str) {
-    ElmString* s = resolveString(str);
+    ParserStr s = resolveString(str);
     i64 len = stringLen(s);
     if (offset < 0 || offset >= len) {
         return -1;
@@ -110,11 +132,11 @@ int64_t Elm_Kernel_Parser_isSubChar(HPtr closure, int64_t offset, HPtr str) {
     // Load the char(s) at offset. Only the low 16 bits of the code point
     // survive the call (matching the JS kernel's BMP-only behaviour and the
     // u16 ABI of PK_Char); supplementary code points still advance offset by 2.
-    u16 c0 = s->chars[offset];
+    u16 c0 = s.at(offset);
     i64 advance = 1;
     u32 codePoint = c0;
     if (isHighSurrogate(c0) && offset + 1 < len) {
-        u16 c1 = s->chars[offset + 1];
+        u16 c1 = s.at(offset + 1);
         if (c1 >= 0xDC00 && c1 <= 0xDFFF) {
             codePoint = 0x10000u + ((c0 - 0xD800u) << 10) + (c1 - 0xDC00u);
             advance = 2;
@@ -147,16 +169,16 @@ int64_t Elm_Kernel_Parser_isSubChar(HPtr closure, int64_t offset, HPtr str) {
 //   (-1, row', col') with row'/col' advanced up to the first mismatch.
 HPtr Elm_Kernel_Parser_isSubString(HPtr target, int64_t offset, int64_t row,
                                    int64_t col, HPtr str) {
-    ElmString* small = resolveString(target);
-    ElmString* big = resolveString(str);
+    ParserStr small = resolveString(target);
+    ParserStr big = resolveString(str);
     i64 smallLen = stringLen(small);
     i64 bigLen = stringLen(big);
 
     bool isGood = (offset >= 0 && offset + smallLen <= bigLen);
 
     for (i64 i = 0; isGood && i < smallLen;) {
-        u16 code = big->chars[offset];
-        isGood = (small->chars[i++] == big->chars[offset++]);
+        u16 code = big.at(offset);
+        isGood = (small.at(i++) == big.at(offset++));
         if (!isGood) break;
 
         if (code == 0x000A) {
@@ -167,7 +189,7 @@ HPtr Elm_Kernel_Parser_isSubString(HPtr target, int64_t offset, int64_t row,
             // For a surrogate pair, consume the paired low surrogate from both
             // strings and advance i/offset by one more. Matches JS semantics.
             if (isHighSurrogate(code) && i < smallLen) {
-                isGood = (small->chars[i++] == big->chars[offset++]);
+                isGood = (small.at(i++) == big.at(offset++));
             }
         }
     }
@@ -183,8 +205,8 @@ HPtr Elm_Kernel_Parser_isSubString(HPtr target, int64_t offset, int64_t row,
 //   when not found) — mirrors JS, which advances through [offset, target).
 HPtr Elm_Kernel_Parser_findSubString(HPtr target, int64_t offset, int64_t row,
                                      int64_t col, HPtr str) {
-    ElmString* small = resolveString(target);
-    ElmString* big = resolveString(str);
+    ParserStr small = resolveString(target);
+    ParserStr big = resolveString(str);
     i64 smallLen = stringLen(small);
     i64 bigLen = stringLen(big);
 
@@ -197,7 +219,7 @@ HPtr Elm_Kernel_Parser_findSubString(HPtr target, int64_t offset, int64_t row,
         for (i64 pos = offset; pos + smallLen <= bigLen; pos++) {
             bool match = true;
             for (i64 j = 0; j < smallLen; j++) {
-                if (small->chars[j] != big->chars[pos + j]) {
+                if (small.at(j) != big.at(pos + j)) {
                     match = false;
                     break;
                 }
@@ -210,7 +232,7 @@ HPtr Elm_Kernel_Parser_findSubString(HPtr target, int64_t offset, int64_t row,
     }
 
     i64 target_end = (index < 0) ? bigLen : (index + smallLen);
-    if (big && offset >= 0) {
+    if (big.valid() && offset >= 0) {
         advancePosition(big, offset, target_end, row, col);
     }
 
@@ -219,10 +241,10 @@ HPtr Elm_Kernel_Parser_findSubString(HPtr target, int64_t offset, int64_t row,
 
 // chompBase10 offset src — advance past any run of ASCII '0'-'9', return new offset.
 int64_t Elm_Kernel_Parser_chompBase10(int64_t offset, HPtr str) {
-    ElmString* s = resolveString(str);
+    ParserStr s = resolveString(str);
     i64 len = stringLen(s);
     while (offset < len) {
-        u16 code = s->chars[offset];
+        u16 code = s.at(offset);
         if (code < 0x30 || code > 0x39) {
             break;
         }
@@ -234,11 +256,11 @@ int64_t Elm_Kernel_Parser_chompBase10(int64_t offset, HPtr str) {
 // consumeBase base offset src — parse a run of base-N digits ('0'..base-1),
 // return (newOffset, accumulatedValue). Assumes base in [2, 10].
 HPtr Elm_Kernel_Parser_consumeBase(int64_t base, int64_t offset, HPtr str) {
-    ElmString* s = resolveString(str);
+    ParserStr s = resolveString(str);
     i64 len = stringLen(s);
     i64 total = 0;
     while (offset < len) {
-        i64 digit = static_cast<i64>(s->chars[offset]) - 0x30;
+        i64 digit = static_cast<i64>(s.at(offset)) - 0x30;
         if (digit < 0 || digit >= base) {
             break;
         }
@@ -251,11 +273,11 @@ HPtr Elm_Kernel_Parser_consumeBase(int64_t base, int64_t offset, HPtr str) {
 // consumeBase16 offset src — parse a run of hex digits (0-9, A-F, a-f),
 // return (newOffset, accumulatedValue).
 HPtr Elm_Kernel_Parser_consumeBase16(int64_t offset, HPtr str) {
-    ElmString* s = resolveString(str);
+    ParserStr s = resolveString(str);
     i64 len = stringLen(s);
     i64 total = 0;
     while (offset < len) {
-        u16 code = s->chars[offset];
+        u16 code = s.at(offset);
         i64 digit;
         if (code >= 0x30 && code <= 0x39) {
             digit = code - 0x30;

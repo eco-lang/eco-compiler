@@ -24,6 +24,8 @@
 #include "allocator/OldGenSweepBudgetTest.hpp"
 #include "allocator/OldGenSmallClassBudgetTest.hpp"
 #include "allocator/HeapHelpersTest.hpp"
+#include "allocator/Utf8Test.hpp"
+#include "allocator/Utf8StringTest.hpp"
 #include "allocator/StringOpsTest.hpp"
 #include "allocator/ListOpsTest.hpp"
 #include "allocator/BytesOpsTest.hpp"
@@ -720,6 +722,14 @@ int main(int argc, char* argv[]) {
     Testing::TestSuite heapHelpersTests("HeapHelpers");
     registerHeapHelpersTests(heapHelpersTests);
 
+    // UTF-8 codec tests
+    Testing::TestSuite utf8Tests("Utf8");
+    registerUtf8Tests(utf8Tests);
+
+    // UTF-8 String representation differential tests
+    Testing::TestSuite utf8StringTests("Utf8String");
+    registerUtf8StringTests(utf8StringTests);
+
     // String operations tests
     Testing::TestSuite stringOpsTests("StringOps");
     registerStringOpsTests(stringOpsTests);
@@ -855,6 +865,8 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(elmTests));
     suite.add(std::move(allocatorCommonTests));
     suite.add(std::move(heapHelpersTests));
+    suite.add(std::move(utf8Tests));
+    suite.add(std::move(utf8StringTests));
     suite.add(std::move(stringOpsTests));
     suite.add(std::move(listOpsTests));
     suite.add(std::move(bytesOpsTests));

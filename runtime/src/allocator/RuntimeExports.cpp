@@ -14,13 +14,16 @@
 #include "TypeInfo.hpp"
 
 #include <cassert>
+#include <array>
 #include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 
 using namespace Elm;
 
@@ -411,20 +414,128 @@ extern "C" HPtr eco_alloc_string(uint32_t length) {
     return ptrToHPointer(obj);
 }
 
+// -----------------------------------------------------------------------------
+// String-literal interning.
+//
+// Each `eco.string_literal` / string-`case` pattern lowers to a call to one of
+// the eco_alloc_string_literal* functions, passing the address of its unique,
+// stable rodata global (`__eco_str_N` / `__eco_str_case_*`). Historically each
+// call allocated a fresh permanent old-gen object *every time the op executed*
+// — repeated allocation churn and old-gen pressure for literals in hot code.
+//
+// We intern by that global's address: the first call for a given global
+// allocates the permanent object and caches its HPointer in an addRoot'd slot;
+// subsequent calls return the cached value. The cache is THREAD-LOCAL because
+// permanent allocation and the RootSet are per-thread (ThreadLocalHeap): a
+// literal is interned at most once per thread, its object lives in that
+// thread's old gen, and the cached HPointer is registered as a long-lived root
+// in that thread's RootSet (for liveness across major GC and fixup across
+// compaction). No HPointer is ever shared across threads.
+// -----------------------------------------------------------------------------
+namespace {
+
+struct LiteralTable {
+    uint64_t generation = 0;  // heap epoch this cache was built under
+    std::unordered_map<const void*, Elm::HPointer*> byGlobal;
+    // Stable storage for the root slots: a deque of fixed chunks so slot
+    // addresses never move as the table grows (addRoot holds these pointers).
+    std::deque<std::array<Elm::HPointer, 64>> chunks;
+    size_t nextSlot = 64;  // forces a fresh chunk on first use
+
+    // Drops the whole cache if the heap was reset since it was built: reset()
+    // destroys all thread heaps and RootSets, so every cached HPointer (and
+    // every addRoot registration) is stale. The next miss rebuilds against the
+    // fresh heap. Never fires in the AOT runtime (one heap epoch for the whole
+    // process); only the test harness resets.
+    void syncEpoch(uint64_t gen) {
+        if (gen != generation) {
+            byGlobal.clear();
+            chunks.clear();
+            nextSlot = 64;
+            generation = gen;
+        }
+    }
+
+    Elm::HPointer* newSlot() {
+        if (nextSlot == 64) {
+            chunks.emplace_back();
+            nextSlot = 0;
+        }
+        Elm::HPointer* slot = &chunks.back()[nextSlot++];
+        *slot = Elm::HPointer{};  // null until filled by the caller
+        Elm::Allocator::instance().getRootSet().addRoot(slot);
+        return slot;
+    }
+};
+
+LiteralTable& literalTable() {
+    static thread_local LiteralTable table;
+    return table;
+}
+
+// Shared interning body: `alloc` allocates + fills the permanent object on a
+// cache miss and returns its HPointer word.
+template <class AllocFn>
+inline HPtr internLiteral(const void* key, AllocFn&& alloc) {
+    LiteralTable& table = literalTable();
+    table.syncEpoch(Allocator::instance().heapGeneration());
+    auto it = table.byGlobal.find(key);
+    if (it != table.byGlobal.end()) {
+        return HPtr::fromHPointer(*it->second);
+    }
+    HPtr result = alloc();
+    Elm::HPointer* slot = table.newSlot();
+    *slot = result.toHPointer();
+    table.byGlobal[key] = slot;
+    return result;
+}
+
+}  // namespace
+
 extern "C" HPtr eco_alloc_string_literal(const uint16_t* chars, uint32_t length) {
-    // Allocate string literal directly in old generation (permanent, never collected).
-    // Size: Header + length * sizeof(u16), aligned to 8 bytes
-    size_t size = sizeof(Header) + length * sizeof(u16);
-    size = (size + 7) & ~7;  // Align to 8 bytes
+    return internLiteral(chars, [&]() -> HPtr {
+        // Allocate directly in old gen (permanent). Size: Header + UTF-16 payload.
+        size_t size = sizeof(Header) + length * sizeof(u16);
+        size = (size + 7) & ~7;
+        void* obj = Allocator::instance().allocatePermanent(size, Tag_String);
+        if (!obj) return HPtr::fromBits(0);
+        ElmString* str = static_cast<ElmString*>(obj);
+        str->header.size = length;
+        std::memcpy(str->chars, chars, length * sizeof(u16));
+        return ptrToHPointer(obj);
+    });
+}
 
-    void* obj = Allocator::instance().allocatePermanent(size, Tag_String);
-    if (!obj) return HPtr::fromBits(0);
-
-    ElmString* str = static_cast<ElmString*>(obj);
-    str->header.size = length;
-    std::memcpy(str->chars, chars, length * sizeof(u16));
-
-    return ptrToHPointer(obj);
+// ASCII string literal: the compiler emits an [N x i8] global and calls this
+// for literals whose bytes are all < 0x80. Interned (like the UTF-16 form) and
+// allocated as a permanent inline Tag_StringUtf8Leaf — half the memory of the
+// UTF-16 form and no transcode. `byteLen` == the logical UTF-16 unit count
+// (1 ASCII byte per unit). When UTF-8 strings are disabled it widens to a
+// permanent UTF-16 leaf so the master switch fully rolls back.
+extern "C" HPtr eco_alloc_string_literal_utf8(const uint8_t* bytes,
+                                              uint32_t byteLen) {
+    return internLiteral(bytes, [&]() -> HPtr {
+        if (!Allocator::instance().getConfig().utf8_strings_enabled) {
+            size_t size = sizeof(Header) + byteLen * sizeof(u16);
+            size = (size + 7) & ~7;
+            void* obj = Allocator::instance().allocatePermanent(size, Tag_String);
+            if (!obj) return HPtr::fromBits(0);
+            ElmString* str = static_cast<ElmString*>(obj);
+            str->header.size = byteLen;
+            for (uint32_t i = 0; i < byteLen; ++i)
+                str->chars[i] = static_cast<u16>(bytes[i]);
+            return ptrToHPointer(obj);
+        }
+        size_t size = sizeof(ElmStringUtf8Leaf) + byteLen * sizeof(u8);
+        size = (size + 7) & ~7;
+        void* obj =
+            Allocator::instance().allocatePermanent(size, Tag_StringUtf8Leaf);
+        if (!obj) return HPtr::fromBits(0);
+        ElmStringUtf8Leaf* leaf = static_cast<ElmStringUtf8Leaf*>(obj);
+        leaf->header.size = byteLen;
+        std::memcpy(leaf->bytes, bytes, byteLen);
+        return ptrToHPointer(obj);
+    });
 }
 
 extern "C" HPtr eco_alloc_closure_k(void* func_ptr, uint32_t num_captures,
@@ -2474,7 +2585,9 @@ static void print_value(uint64_t val, int depth) {
         case Tag_String:
         case Tag_StringSlice:
         case Tag_StringRope:
-        case Tag_LargeStringHeader: {
+        case Tag_LargeStringHeader:
+        case Tag_StringUtf8View:
+        case Tag_StringUtf8Leaf: {
             print_string(ptr);
             break;
         }

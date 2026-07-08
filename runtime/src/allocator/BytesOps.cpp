@@ -178,6 +178,16 @@ HPointer decodeUtf8(void* buf) {
 // One copy out of the C++ std::u16string into the heap; no vector growth.
 HPointer encodeUtf8(void* str) {
     if (!str) return empty();
+
+    // UTF-8 (ASCII) forms: the bytes ARE the UTF-8 encoding. Snapshot to the C
+    // stack (read before any Elm allocation) then copy into a fresh ByteBuffer.
+    if (Elm::StringOps::isUtf8(str)) {
+        auto pr = Elm::StringOps::utf8Bytes(str);
+        if (pr.second == 0) return empty();
+        std::vector<u8> snap(pr.first, pr.first + pr.second);
+        return alloc::allocByteBuffer(snap.data(), snap.size());
+    }
+
     auto src = Elm::StringOps::toStdU16String(str);
     size_t len = src.size();
     if (len == 0) return empty();

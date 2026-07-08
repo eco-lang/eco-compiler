@@ -160,6 +160,14 @@ HPtr eco_alloc_string(uint32_t length);
 /// @return HPointer (as uint64_t) to the allocated ElmString object
 HPtr eco_alloc_string_literal(const uint16_t* chars, uint32_t length);
 
+/// Allocates an ASCII string literal as a permanent inline UTF-8 leaf
+/// (Tag_StringUtf8Leaf). The compiler emits this for literals whose bytes are
+/// all < 0x80, passing an [N x i8] global. Interned by the global's address.
+/// @param bytes  Pointer to the ASCII byte data (each < 0x80)
+/// @param byteLen Number of bytes == logical UTF-16 code-unit count
+/// @return HPointer (as uint64_t) to the allocated string
+HPtr eco_alloc_string_literal_utf8(const uint8_t* bytes, uint32_t byteLen);
+
 /// Allocates a closure object with PK_Boxed result kind (legacy entry).
 /// Forwards to `eco_alloc_closure_k(func_ptr, num_captures, PK_Boxed)` so
 /// existing callers (which all return boxed Tasks/HPointers) keep working

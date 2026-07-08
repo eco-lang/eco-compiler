@@ -812,6 +812,11 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                         checkChild(slc->base, "slice-base", 0);
                         break;
                     }
+                    case Tag_StringUtf8View: {
+                        ElmStringUtf8View* v = static_cast<ElmStringUtf8View*>(static_cast<void*>(scan));
+                        checkChild(v->base, "utf8view-base", 0);
+                        break;
+                    }
                     case Tag_ByteBufferSlice: {
                         ElmByteBufferSlice* slc = static_cast<ElmByteBufferSlice*>(static_cast<void*>(scan));
                         checkChild(slc->base, "byte-slice-base", 0);
@@ -943,6 +948,11 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                     case Tag_StringSlice: {
                         ElmStringSlice* slc = static_cast<ElmStringSlice*>(static_cast<void*>(scan));
                         checkOGChild(slc->base, scan, "slice-base", 0);
+                        break;
+                    }
+                    case Tag_StringUtf8View: {
+                        ElmStringUtf8View* v = static_cast<ElmStringUtf8View*>(static_cast<void*>(scan));
+                        checkOGChild(v->base, scan, "utf8view-base", 0);
                         break;
                     }
                     case Tag_ByteBufferSlice: {
@@ -1665,6 +1675,13 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
         case Tag_StringSlice: {
             ElmStringSlice *slc = static_cast<ElmStringSlice *>(obj);
             evacuate(slc->base, oldgen, promoted_objects);
+            break;
+        }
+
+        case Tag_StringUtf8View: {
+            // Same shape as Tag_StringSlice: the only boxed field is `base`.
+            ElmStringUtf8View *v = static_cast<ElmStringUtf8View *>(obj);
+            evacuate(v->base, oldgen, promoted_objects);
             break;
         }
 

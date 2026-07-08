@@ -100,6 +100,14 @@ typedef enum {
     // plans/large-object-split-header-bodies.md.
     Tag_LargeStringHeader, // header.size = logical UTF-16 length, body -> Tag_String.
     Tag_LargeByteHeader,   // header.size = logical byte count,    body -> Tag_ByteBuffer.
+    // UTF-8 (all-ASCII) String forms. header.size = logical UTF-16 unit count
+    // (== byte count under the ASCII invariant). Produced only by runtime
+    // String ops / Bytes.Decode.string / interned literals; never by MLIR
+    // codegen. Kept BEFORE Tag_Free/Tag_Forward so every live object stays
+    // `< Tag_Forward` (Allocator.cpp resolution assert) and "Forward is last"
+    // holds. See plans/utf8-string-representation.md, HEAP_028.
+    Tag_StringUtf8View,  // Zero-copy byte view: HPointer base + u32 offset + u32 byteLen.
+    Tag_StringUtf8Leaf,  // Inline ASCII bytes: header.size = byte count, u8 bytes[].
     Tag_Free,        // Free cell on a segregated free list (header.size = byte size).
     Tag_Forward,     // Used for forwarding pointers during GC.
 } Tag;
@@ -612,6 +620,33 @@ struct ALIGN(8) elm_bytebuffer {
 };
 typedef struct elm_bytebuffer ByteBuffer;
 
+// UTF-8 (all-ASCII) String as a zero-copy view over a byte buffer. 24 bytes,
+// mirroring ElmStringSlice. header.size = logical UTF-16 unit count, which
+// equals byteLen because every char is a single ASCII byte (< 0x80).
+// `base` points to a Tag_ByteBuffer, a Tag_LargeByteHeader (its *header*, not
+// the pinned body — same lifetime rule as slice-of-large), or a
+// Tag_StringUtf8Leaf. `base` is the only boxed field; `offset`/`byteLen` are
+// scalars never read by GC (header.unboxed == 0). GC treats this exactly like
+// Tag_StringSlice (trace `base`). See HEAP_028.
+struct ALIGN(8) elm_string_utf8_view {
+    Header header;
+    HPointer base;
+    u32 offset;    // byte offset into base's payload
+    u32 byteLen;   // == header.size under the ASCII invariant
+};
+typedef struct elm_string_utf8_view ElmStringUtf8View;
+static_assert(sizeof(ElmStringUtf8View) == 24, "ElmStringUtf8View must be 24 bytes");
+
+// UTF-8 (all-ASCII) String with inline bytes; mirrors ElmString but 1 byte per
+// code unit. header.size = logical UTF-16 unit count == payload byte count.
+// Pointer-free (like Tag_String / Tag_ByteBuffer): GC copies it wholesale and
+// traces no children. Not nul-terminated.
+struct ALIGN(8) elm_string_utf8_leaf {
+    Header header;  // header.size = byte count == UTF-16 unit count
+    u8 bytes[];     // Flexible array of ASCII bytes (each < 0x80)
+};
+typedef struct elm_string_utf8_leaf ElmStringUtf8Leaf;
+
 /**
  * Mutable/growable array of Elm values.
  *
@@ -670,6 +705,8 @@ typedef union HeapValue {
     LargeStringHeader largeStringHeader;
     LargeByteHeader   largeByteHeader;
     ElmByteBufferSlice byteBufferSlice;
+    ElmStringUtf8View  stringUtf8View;
+    ElmStringUtf8Leaf  stringUtf8Leaf;
 } HeapValue;
 
 } // namespace Elm

@@ -1545,7 +1545,8 @@ inline bool isCons(void* obj) {
 inline bool isString(void* obj) {
     Tag t = getTag(obj);
     return t == Tag_String || t == Tag_StringSlice || t == Tag_StringRope ||
-           t == Tag_LargeStringHeader;
+           t == Tag_LargeStringHeader ||
+           t == Tag_StringUtf8View || t == Tag_StringUtf8Leaf;
 }
 
 /**

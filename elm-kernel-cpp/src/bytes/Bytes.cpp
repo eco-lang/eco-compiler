@@ -72,6 +72,8 @@ HPointer getHostEndianness() {
 }
 
 i64 getStringWidth(void* str) {
+    // UTF-8 (ASCII) forms: byte width == logical length. O(1).
+    if (StringOps::isUtf8(str)) return StringOps::length(str);
     // Calculate UTF-8 byte count for any String form (leaf or slice).
     auto chars = StringOps::toStdU16String(str);
     i64 width = 0;
@@ -258,6 +260,31 @@ HPointer read_string(i64 length, void* bytes, i64 offset) {
 
     if (length == 0) {
         return readSuccessBoxed(alloc::emptyString(), offset);
+    }
+
+    // Fast path: a valid all-ASCII payload becomes a zero-copy UTF-8 view over
+    // the source buffer (or a small UTF-8 leaf below the view threshold) — no
+    // transcode, no UTF-16 allocation. Non-ASCII or invalid input falls through
+    // to the legacy UTF-16 decode below, byte-for-byte unchanged (including its
+    // no-validation / garbage-on-invalid behaviour). buf_view.data is stable
+    // here: nothing has allocated since byteBufferView() above.
+    const auto& cfg = allocator.getConfig();
+    if (cfg.utf8_strings_enabled) {
+        Elm::Utf8::ScanResult scan =
+            Elm::Utf8::scan(buf_view.data + offset, static_cast<size_t>(length));
+        if (scan.valid && scan.ascii) {
+            if (static_cast<size_t>(length) >= cfg.utf8_view_min_len) {
+                // View base is the source buffer; makeUtf8View collapses a
+                // Tag_ByteBufferSlice base into its underlying buffer + offset.
+                HPointer baseHp = allocator.wrap(bytes);
+                HPointer view = Elm::StringOps::makeUtf8View(
+                    baseHp, static_cast<u32>(offset), static_cast<u32>(length));
+                return readSuccessBoxed(view, offset + length);
+            }
+            HPointer leaf = Elm::StringOps::makeUtf8LeafFromBytes(
+                buf_view.data + offset, static_cast<u32>(length));
+            return readSuccessBoxed(leaf, offset + length);
+        }
     }
 
     HPointer srcHP = allocator.wrap(bytes);

@@ -94,6 +94,8 @@ add_executable(test
         allocator/AllocatorCommonTest.cpp
         allocator/ElmTest.cpp
         allocator/HeapHelpersTest.cpp
+        allocator/Utf8Test.cpp
+        allocator/Utf8StringTest.cpp
         allocator/StringOpsTest.cpp
         allocator/ListOpsTest.cpp
         allocator/BytesOpsTest.cpp

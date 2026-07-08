@@ -118,6 +118,11 @@ u32 elm_utf8_width(HPtr strVal) {
     void* ptr = u64ToPtr(strVal.toBits());
     if (!ptr) return 0;
 
+    // UTF-8 (ASCII) forms: byte width == logical length. O(1).
+    if (Elm::StringOps::isUtf8(ptr)) {
+        return static_cast<u32>(Elm::StringOps::length(ptr));
+    }
+
     // Materialise contiguous UTF-16 via StringOps; this transparently handles
     // both flat leaves and slices so we don't need to read s->chars directly.
     auto buf = Elm::StringOps::toStdU16String(ptr);
@@ -163,6 +168,13 @@ u32 elm_utf8_copy(HPtr strVal, u8* dst) {
 
     void* ptr = u64ToPtr(strVal.toBits());
     if (!ptr) return 0;
+
+    // UTF-8 (ASCII) forms: bytes are already the UTF-8 encoding — copy direct.
+    if (Elm::StringOps::isUtf8(ptr)) {
+        auto pr = Elm::StringOps::utf8Bytes(ptr);
+        std::memcpy(dst, pr.first, pr.second);
+        return pr.second;
+    }
 
     auto buf = Elm::StringOps::toStdU16String(ptr);
     size_t len = buf.size();
