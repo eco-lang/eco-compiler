@@ -142,6 +142,20 @@ public:
     static constexpr int STRING_ALLOC_BUCKETS = 18;
     uint64_t string_alloc_size_histogram[STRING_ALLOC_BUCKETS] = {0};
 
+    // ========== UTF-8 -> UTF-16 Widen Events ==========
+    //
+    // A UTF-8 (all-ASCII) String form (Tag_StringUtf8View / Tag_StringUtf8Leaf)
+    // widened back to UTF-16 — either into a fresh Tag_String leaf
+    // (maybeFlattenOrRebalance's UTF-8 arm, the ensureFlat backstop) or into a
+    // transient std::u16string (toStdU16String's UTF-8 arm, the snapshot path
+    // feeding foldl/split/lines/... fallbacks). Counted at those two
+    // chokepoints only; the forEachSegment 512-unit chunk-widen is a known,
+    // accepted blind spot. Near zero during a UTF-8-clean parse/self-compile;
+    // a large residual names a conservative-widening consumer that still decays
+    // UTF-8 -> UTF-16. See plans/utf8-string-pipeline-wiring.md (W0/W5).
+    uint64_t utf8_widen_calls = 0;
+    uint64_t utf8_widen_units = 0;
+
     // ========== Per-Kind Mutator Allocation Histogram ==========
     //
     // Counts ThreadLocalHeap-level mutator allocations grouped by Tag,
@@ -465,6 +479,9 @@ public:
     // taken.
     void recordStringAllocation(size_t bytes);
 
+    // Records a single UTF-8 -> UTF-16 widen event of `units` code units.
+    void recordUtf8Widen(size_t units);
+
     // Records completion of a minor GC cycle with timing and reclaimed bytes.
     void recordMinorGCEnd(uint64_t elapsed_ns, size_t freed);
 
@@ -559,6 +576,11 @@ void recordTLHAllocOnCurrentThread(size_t bytes, Tag tag) noexcept;
 // from the stats-on branch of GC_STATS_STRING_RECORD_ALLOC.
 void recordStringAllocOnCurrentThread(size_t bytes) noexcept;
 
+// Per-thread routing helper for the UTF-8 widen counter. Same shape as the
+// String-histogram trampoline: the widen sites (StringOps) have no GCStats&
+// in scope, so route through the current thread's heap here.
+void recordUtf8WidenOnCurrentThread(size_t units) noexcept;
+
 // ============================================================================
 // Zero-Overhead Macros
 // ============================================================================
@@ -586,6 +608,10 @@ void recordStringAllocOnCurrentThread(size_t bytes) noexcept;
     // leaf into the current thread's String size histogram.
     #define GC_STATS_STRING_RECORD_ALLOC(bytes) \
         do { ::Elm::recordStringAllocOnCurrentThread((bytes)); } while(0)
+
+    // Per-widen hook: a UTF-8 form was widened to UTF-16 (`units` code units).
+    #define GC_STATS_UTF8_WIDEN(units) \
+        do { ::Elm::recordUtf8WidenOnCurrentThread((units)); } while(0)
 
     #define GC_STATS_MINOR_RECORD_GC_END(stats, elapsed_ns, freed) \
         do { (stats).recordMinorGCEnd(elapsed_ns, freed); } while(0)
@@ -634,6 +660,7 @@ void recordStringAllocOnCurrentThread(size_t bytes) noexcept;
     #define GC_STATS_OLDGEN_DIRECT_RECORD_ALLOC(stats, bytes) do {} while(0)
     #define GC_STATS_TLH_RECORD_ALLOC(bytes, tag) do {} while(0)
     #define GC_STATS_STRING_RECORD_ALLOC(bytes) do {} while(0)
+    #define GC_STATS_UTF8_WIDEN(units) do {} while(0)
     #define GC_STATS_MINOR_RECORD_GC_END(stats, elapsed_ns, freed) do {} while(0)
     #define GC_STATS_MINOR_INC_SURVIVORS(stats) do {} while(0)
     #define GC_STATS_MINOR_INC_PROMOTED(stats) do {} while(0)

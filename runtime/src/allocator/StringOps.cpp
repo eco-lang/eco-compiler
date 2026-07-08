@@ -163,6 +163,54 @@ HPointer makeUtf8LeafFromBytes(const u8* bytes, u32 len) {
     return allocator.wrap(leaf);
 }
 
+// The UTF-8 ingestion gate (BB-1). Declared in HeapHelpers.hpp; defined here so
+// it can use makeUtf8LeafFromBytes / makeUtf8View. `data` is C-heap memory (a
+// std::string's buffer), stable across the ByteBuffer allocation below.
+bool tryMakeAsciiString(const char* data, size_t len, HPointer* out) {
+    auto& allocator = Allocator::instance();
+    if (!allocator.getConfig().utf8_strings_enabled) return false;
+    if (len == 0 || len > 0xFFFFFFFFull) return false;  // empty handled by caller
+    const u8* bytes = reinterpret_cast<const u8*>(data);
+    if (!Utf8::allAscii(bytes, len)) return false;  // all-ASCII => valid UTF-8
+    size_t leafSize = (sizeof(ElmStringUtf8Leaf) + len + 7) & ~static_cast<size_t>(7);
+    if (leafSize < allocator.getLargeObjectThreshold()) {
+        *out = makeUtf8LeafFromBytes(bytes, static_cast<u32>(len));
+        return true;
+    }
+    // Large ASCII: a leaf would widen (see makeUtf8LeafFromBytes's LOT arm), so
+    // copy into a ByteBuffer (routes >= LOT to the pinned split-header form) and
+    // return a whole-buffer zero-copy view. `data` is C-heap, stable across the
+    // buffer allocation; makeUtf8View roots the buffer internally.
+    HPointer buf = alloc::allocByteBuffer(bytes, len);
+    *out = makeUtf8View(buf, 0, static_cast<u32>(len));
+    return true;
+}
+
+AsciiOut allocAsciiOut(size_t len) {
+    auto& allocator = Allocator::instance();
+    size_t leafSize = (sizeof(ElmStringUtf8Leaf) + len + 7) & ~static_cast<size_t>(7);
+    if (leafSize < allocator.getLargeObjectThreshold()) {
+        ElmStringUtf8Leaf* leaf = static_cast<ElmStringUtf8Leaf*>(
+            eco_alloc_with_roots(Tag_StringUtf8Leaf, leafSize, nullptr, 0, 0));
+        leaf->header.size = static_cast<u32>(len);
+        return AsciiOut{allocator.wrap(leaf), leaf->bytes, static_cast<u32>(len), true};
+    }
+    // >= LOT: write into a pinned split-header ByteBuffer body, wrap as a view.
+    alloc::BlankByteBuffer bb = alloc::allocByteBufferBlank(len);
+    return AsciiOut{bb.hp, bb.bytes, static_cast<u32>(len), false};
+}
+
+HPointer finishAsciiOut(const AsciiOut& out) {
+#if ECO_HEAP_VALIDATE
+    for (u32 i = 0; i < out.len; ++i)
+        assert(!(out.dst[i] & 0x80) && "AsciiOut result must be all-ASCII");
+#endif
+    if (out.isLeaf) return out.hp;
+    // Buffer case: the payload is already written; makeUtf8View roots out.hp
+    // across its own allocation and does not read the payload.
+    return makeUtf8View(out.hp, 0, out.len);
+}
+
 HPointer flattenToLeaf(HPointer s) {
     if (alloc::isEmbeddedConstant(s)) return s;  // Const_EmptyString stays embedded
 
@@ -200,6 +248,8 @@ HPointer maybeFlattenOrRebalance(HPointer s, FlattenReason reason) {
         // ensureFlat consumers (e.g. the parser) cast the result to
         // ElmString* and index chars[], so a UTF-8 form must always widen to a
         // UTF-16 leaf regardless of size — never pass through structurally.
+        // (This widen is counted by GC_STATS_UTF8_WIDEN inside toStdU16String,
+        // which flattenToLeaf calls — do not double-count it here.)
         return flattenToLeaf(s);
     }
     const HeapConfig& cfg = allocator.getConfig();
@@ -464,6 +514,7 @@ HPointer concat(HPointer stringList) {
     // First pass: calculate total length using header.size for any string tag.
     size_t total_len = 0;
     size_t count = 0;
+    bool allUtf8 = true;  // all non-empty elements are UTF-8 forms (W4.b)
     HPointer current = stringList;
 
     while (!alloc::isNil(current)) {
@@ -476,6 +527,7 @@ HPointer concat(HPointer stringList) {
             if (strObj) {
                 total_len += static_cast<Header*>(strObj)->size;
                 ++count;
+                if (!isUtf8(strObj)) allUtf8 = false;
             }
         }
         current = c->tail;
@@ -488,6 +540,32 @@ HPointer concat(HPointer stringList) {
     // keep it live across the allocate via the helper's slow-path
     // rooting, then re-read the (possibly relocated) handle from roots[].
     if (total_len <= allocator.getConfig().string_flatten_limit) {
+        // All-UTF-8 elements => byte-concat into a UTF-8 result. W4.b. Pattern
+        // B: root the list across allocAsciiOut, then walk (no alloc) copying
+        // each element's ASCII bytes.
+        if (allUtf8 && allocator.getConfig().utf8_strings_enabled) {
+            HPointer listHp = stringList;
+            AsciiOut out;
+            { Elm::StackRootGuard g(&listHp); out = allocAsciiOut(total_len); }
+            size_t off = 0;
+            HPointer cur = listHp;
+            while (!alloc::isNil(cur)) {
+                void* cell = allocator.resolve(cur);
+                if (!cell) break;
+                Cons* c = static_cast<Cons*>(cell);
+                if (!alloc::isEmptyString(c->head.p)) {
+                    void* strObj = allocator.resolve(c->head.p);
+                    if (strObj) {
+                        auto pr = utf8Bytes(strObj);
+                        std::memcpy(out.dst + off, pr.first, pr.second);
+                        off += pr.second;
+                    }
+                }
+                cur = c->tail;
+            }
+            return finishAsciiOut(out);
+        }
+
         size_t data_size = total_len * sizeof(u16);
         size_t total_size = sizeof(ElmString) + data_size;
         total_size = (total_size + 7) & ~7;
@@ -559,6 +637,7 @@ HPointer join(void* sep, HPointer stringList) {
     // First pass: count strings and total length.
     size_t total_len = 0;
     size_t count = 0;
+    bool allUtf8 = true;  // all non-empty elements are UTF-8 forms (W4.b)
     HPointer current = stringList;
 
     while (!alloc::isNil(current)) {
@@ -570,6 +649,7 @@ HPointer join(void* sep, HPointer stringList) {
             void* strObj = allocator.resolve(c->head.p);
             if (strObj) {
                 total_len += static_cast<Header*>(strObj)->size;
+                if (!isUtf8(strObj)) allUtf8 = false;
             }
         }
         ++count;
@@ -578,8 +658,42 @@ HPointer join(void* sep, HPointer stringList) {
 
     if (count == 0) return alloc::emptyString();
     total_len += sep_len * (count - 1);
+    // The separator (when it contributes) must also be UTF-8 for a byte-join.
+    bool sepUtf8 = (sep_len == 0) || (sep && isUtf8(sep));
 
     if (total_len <= allocator.getConfig().string_flatten_limit) {
+        // All-UTF-8 elements + UTF-8 separator => byte-join. W4.b. Root the
+        // list and separator across allocAsciiOut, then walk (no alloc).
+        if (allUtf8 && sepUtf8 && allocator.getConfig().utf8_strings_enabled) {
+            HPointer listHp = stringList;
+            AsciiOut out;
+            { Elm::StackRootGuard g(&listHp, &sepHp); out = allocAsciiOut(total_len); }
+            size_t off = 0;
+            bool first = true;
+            HPointer cur = listHp;
+            while (!alloc::isNil(cur)) {
+                void* cell = allocator.resolve(cur);
+                if (!cell) break;
+                Cons* c = static_cast<Cons*>(cell);
+                if (!first && sep_len > 0) {
+                    auto ps = utf8Bytes(allocator.resolve(sepHp));
+                    std::memcpy(out.dst + off, ps.first, ps.second);
+                    off += ps.second;
+                }
+                first = false;
+                if (!alloc::isEmptyString(c->head.p)) {
+                    void* strObj = allocator.resolve(c->head.p);
+                    if (strObj) {
+                        auto pr = utf8Bytes(strObj);
+                        std::memcpy(out.dst + off, pr.first, pr.second);
+                        off += pr.second;
+                    }
+                }
+                cur = c->tail;
+            }
+            return finishAsciiOut(out);
+        }
+
         size_t data_size = total_len * sizeof(u16);
         size_t total_size = sizeof(ElmString) + data_size;
         total_size = (total_size + 7) & ~7;
@@ -726,6 +840,68 @@ HPointer split(void* sep, void* str) {
 
     if (sep_len == 0 || !sep) {
         return toList(str);
+    }
+
+    // Both UTF-8 => byte search + slice()-based parts, which stay UTF-8 (no
+    // widen, parts share the source). W4.f. Mixed encodings fall through to the
+    // UTF-16 snapshot path below.
+    if (isUtf8(str) && isUtf8(sep) &&
+        Allocator::instance().getConfig().utf8_strings_enabled) {
+        auto& allocator = Allocator::instance();
+        // Phase 1: search over raw bytes. No Elm allocation here, so the
+        // in-place payload pointers stay valid for the whole scan.
+        auto sp = utf8Bytes(str);
+        auto np = utf8Bytes(sep);
+        const u8* strB = sp.first;
+        const u8* sepB = np.first;
+        std::vector<size_t> splitPositions;
+        if (sep_len >= 4) {
+            u32 skip[256];
+            for (u32 i = 0; i < 256; ++i) skip[i] = static_cast<u32>(sep_len);
+            for (size_t i = 0; i + 1 < sep_len; ++i)
+                skip[sepB[i]] = static_cast<u32>(sep_len - 1 - i);
+            size_t i = 0;
+            while (i + sep_len <= str_len) {
+                size_t j = sep_len;
+                while (j > 0 && strB[i + j - 1] == sepB[j - 1]) --j;
+                if (j == 0) { splitPositions.push_back(i); i += sep_len; }
+                else { i += skip[strB[i + sep_len - 1]]; }
+            }
+        } else {
+            for (size_t i = 0; i + sep_len <= str_len; ++i) {
+                bool match = true;
+                for (size_t j = 0; j < sep_len && match; ++j)
+                    if (strB[i + j] != sepB[j]) match = false;
+                if (match) { splitPositions.push_back(i); i += sep_len - 1; }
+            }
+        }
+        // Phase 2: build parts via slice() (UTF-8 sub-forms). slice allocates,
+        // so root the source + parts and re-resolve the source each iteration.
+        size_t numParts = splitPositions.size() + 1;
+        std::vector<HPointer> parts(numParts, alloc::listNil());
+        HPointer srcHp = allocator.wrap(str);
+        auto& rs = allocator.getRootSet();
+        size_t saved = rs.stackRangePoint();
+        // Chunk into <=64-slot ranges: StackRootRange's hpointer_mask is a
+        // uint64_t indexed by `1ULL << i`, UB for i>=64 (see JsonExports.cpp).
+        for (size_t base = 0; base < parts.size(); base += 64) {
+            size_t chunk = std::min<size_t>(64, parts.size() - base);
+            uint64_t mask = (chunk == 64) ? ~uint64_t{0} : ((uint64_t{1} << chunk) - 1);
+            rs.pushStackRootRange(parts.data() + base, chunk, mask);
+        }
+        rs.pushStackRootRange(&srcHp, 1, ~0ULL);
+        size_t start = 0;
+        for (size_t idx = 0; idx < splitPositions.size(); ++idx) {
+            parts[idx] = slice(allocator.resolve(srcHp),
+                               static_cast<i64>(start),
+                               static_cast<i64>(splitPositions[idx]));
+            start = splitPositions[idx] + sep_len;
+        }
+        parts[splitPositions.size()] = slice(allocator.resolve(srcHp),
+                                             static_cast<i64>(start),
+                                             static_cast<i64>(str_len));
+        rs.restoreStackRangePoint(saved);
+        return alloc::listFromPointers(parts);
     }
 
     // Snapshot both strings before any allocation. toStdU16String handles
@@ -893,6 +1069,28 @@ HPointer filter(CharPredicate pred, void* str) {
     auto& allocator = Allocator::instance();
     HPointer srcHp = allocator.wrap(str);
 
+    // UTF-8 in => UTF-8 out: a subset of ASCII is ASCII. W4.d. `pred` is a
+    // non-allocating C predicate (the existing arms hold raw segment pointers
+    // across pred calls), so the utf8Bytes pointer is stable across the count
+    // pass; the copy pass re-fetches after allocAsciiOut.
+    if (isUtf8(str) && allocator.getConfig().utf8_strings_enabled) {
+        auto pr = utf8Bytes(allocator.resolve(srcHp));
+        u32 kept = 0;
+        for (u32 i = 0; i < pr.second; ++i)
+            if (pred(static_cast<u16>(pr.first[i]))) ++kept;
+        if (kept == 0) return alloc::emptyString();
+        if (kept == len) return allocator.wrap(allocator.resolve(srcHp));  // all kept
+        AsciiOut out;
+        { Elm::StackRootGuard guard(&srcHp); out = allocAsciiOut(kept); }
+        auto pr2 = utf8Bytes(allocator.resolve(srcHp));  // re-fetch post-alloc
+        u32 w = 0;
+        for (u32 i = 0; i < pr2.second; ++i) {
+            u8 c = pr2.first[i];
+            if (pred(static_cast<u16>(c))) out.dst[w++] = c;
+        }
+        return finishAsciiOut(out);
+    }
+
     u32 keptCount = 0;
     forEachSegment(allocator.resolve(srcHp), [&](const u16* p, u32 n) {
         for (u32 i = 0; i < n; ++i) if (pred(p[i])) ++keptCount;
@@ -919,8 +1117,17 @@ HPointer filter(CharPredicate pred, void* str) {
 
 Unboxable foldl(CharFolder fold, Unboxable acc, void* str) {
     if (!str) return acc;
-    auto buf = toStdU16String(str);
     Unboxable result = acc;
+    // UTF-8: iterate bytes (zext to u16) instead of widening. `fold` may
+    // allocate, so snapshot the bytes to the C stack first (same discipline as
+    // the toStdU16String snapshot on the UTF-16 path). W4.e.
+    if (isUtf8(str)) {
+        auto pr = utf8Bytes(str);
+        std::string snap(reinterpret_cast<const char*>(pr.first), pr.second);
+        for (unsigned char c : snap) result = fold(static_cast<u16>(c), result);
+        return result;
+    }
+    auto buf = toStdU16String(str);
     for (auto c : buf) {
         result = fold(c, result);
     }
@@ -929,8 +1136,15 @@ Unboxable foldl(CharFolder fold, Unboxable acc, void* str) {
 
 Unboxable foldr(CharFolder fold, Unboxable acc, void* str) {
     if (!str) return acc;
-    auto buf = toStdU16String(str);
     Unboxable result = acc;
+    if (isUtf8(str)) {
+        auto pr = utf8Bytes(str);
+        std::string snap(reinterpret_cast<const char*>(pr.first), pr.second);
+        for (size_t i = snap.size(); i > 0; --i)
+            result = fold(static_cast<u16>(static_cast<unsigned char>(snap[i - 1])), result);
+        return result;
+    }
+    auto buf = toStdU16String(str);
     for (size_t i = buf.size(); i > 0; --i) {
         result = fold(buf[i - 1], result);
     }

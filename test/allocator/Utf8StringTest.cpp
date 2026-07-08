@@ -2,7 +2,7 @@
  * Differential tests for the UTF-8 (all-ASCII) String forms
  * (Tag_StringUtf8Leaf / Tag_StringUtf8View).
  *
- * The contract (design_docs/utf8-string-encoding-investigation.md, HEAP_028):
+ * The contract (design_docs/utf8-string-encoding-investigation.md, HEAP_032):
  * a UTF-8 form holds 1 ASCII byte per logical UTF-16 code unit, so every
  * StringOps operation must produce results bit-identical to the UTF-16 twin.
  * These tests build the same ASCII content in four representations —
@@ -318,7 +318,104 @@ static void test_utf8_survives_gc() {
     alloc.getRootSet().removeRoot(&v1);
 }
 
+// W2: alloc::allocStringFromUTF8 (the kernel ingestion chokepoint) produces a
+// UTF-8 form for ASCII and keeps UTF-16 for non-ASCII / invalid / kill-switch.
+static void test_ingestion_gate() {
+    {
+        auto& alloc = initAllocator();
+        // Small ASCII -> inline leaf.
+        HPointer small = alloc::allocStringFromUTF8("hello world");
+        TEST_ASSERT(alloc::getTag(rz(small)) == Tag_StringUtf8Leaf);
+        TEST_ASSERT(content(small) == "hello world");
+
+        // Large ASCII (>= large_object_threshold) -> ByteBuffer + view.
+        std::string big(9000, 'a');
+        HPointer large = alloc::allocStringFromUTF8(big);
+        TEST_ASSERT(alloc::getTag(rz(large)) == Tag_StringUtf8View);
+        TEST_ASSERT(content(large) == big);
+        TEST_ASSERT(StringOps::length(rz(large)) == 9000);
+
+        // Non-ASCII -> legacy UTF-16 leaf, content preserved (café).
+        HPointer nonAscii = alloc::allocStringFromUTF8("caf\xC3\xA9");
+        TEST_ASSERT(alloc::getTag(rz(nonAscii)) == Tag_String);
+        TEST_ASSERT(StringOps::length(rz(nonAscii)) == 4);
+
+        // Invalid UTF-8 -> legacy path (Tag_String), must not crash.
+        HPointer invalid = alloc::allocStringFromUTF8(std::string("\x80\xC2", 2));
+        (void)invalid;
+        TEST_ASSERT(alloc::getTag(rz(invalid)) == Tag_String);
+
+        // Empty -> embedded constant.
+        TEST_ASSERT(alloc::isConstant(alloc::allocStringFromUTF8("")));
+    }
+    {
+        // Kill switch off -> ASCII stays UTF-16.
+        HeapConfig cfg;
+        cfg.utf8_strings_enabled = false;
+        initAllocator(cfg);
+        HPointer s = alloc::allocStringFromUTF8("hello world");
+        TEST_ASSERT(alloc::getTag(rz(s)) == Tag_String);
+        TEST_ASSERT(content(s) == "hello world");
+    }
+}
+
+// W4/W6.2: conservative widening — a UTF-8 input must yield a UTF-8 result
+// (leaf or view), not decay to a UTF-16 Tag_String, for every arm.
+static bool isU8(HPointer hp) {
+    void* o = rz(hp);
+    return o != nullptr && StringOps::isUtf8(o);
+}
+
+static void test_conservative_widening() {
+    auto& alloc = initAllocator();
+    HPointer a = makeU8Leaf("Hello, World foo bar baz qux 123");  // 32 ASCII
+    HPointer b = makeU8Leaf("XYZ");
+    alloc.getRootSet().addRoot(&a);
+    alloc.getRootSet().addRoot(&b);
+
+    TEST_ASSERT(isU8(StringOps::toUpper(rz(a))));
+    TEST_ASSERT(isU8(StringOps::toLower(rz(a))));
+    TEST_ASSERT(isU8(StringOps::reverse(rz(a))));
+    TEST_ASSERT(isU8(StringOps::repeat(rz(a), 3)));
+    TEST_ASSERT(isU8(StringOps::padLeft(rz(a), 50, static_cast<u16>(' '))));
+    TEST_ASSERT(isU8(StringOps::padRight(rz(a), 50, static_cast<u16>(' '))));
+    TEST_ASSERT(isU8(StringOps::filter([](u16 c) { return c != static_cast<u16>(' '); },
+                                       rz(a))));
+    TEST_ASSERT(isU8(StringOps::append(rz(a), rz(b))));
+
+    // concat of a UTF-8 list stays UTF-8.
+    HPointer list = alloc::listFromPointers(std::vector<HPointer>{a, b, a});
+    TEST_ASSERT(isU8(StringOps::concat(list)));
+
+    // join of a UTF-8 list with a UTF-8 separator stays UTF-8.
+    HPointer sep = makeU8Leaf(", ");
+    alloc.getRootSet().addRoot(&sep);
+    HPointer list2 = alloc::listFromPointers(std::vector<HPointer>{a, b});
+    TEST_ASSERT(isU8(StringOps::join(rz(sep), list2)));
+
+    // split parts stay UTF-8.
+    HPointer csv = makeU8Leaf("aaa,bbb,ccc");
+    HPointer comma = makeU8Leaf(",");
+    alloc.getRootSet().addRoot(&csv);
+    HPointer parts = StringOps::split(rz(comma), rz(csv));
+    void* cell = rz(parts);
+    TEST_ASSERT(cell != nullptr);
+    Cons* c = static_cast<Cons*>(cell);
+    TEST_ASSERT(StringOps::isUtf8(alloc.resolve(c->head.p)));
+
+    // Mixed operand: append(UTF-8, UTF-16) must still give the right VALUE
+    // (representation may be either — assert value, not form).
+    HPointer u16 = makeU16("MID");
+    alloc.getRootSet().addRoot(&u16);
+    TEST_ASSERT(content(StringOps::append(rz(a), rz(u16))) ==
+                std::string("Hello, World foo bar baz qux 123") + "MID");
+}
+
 void registerUtf8StringTests(Testing::TestSuite& suite) {
+    suite.add(Testing::TestCase("Utf8String: conservative widening (UTF-8 in => UTF-8 out)",
+                                test_conservative_widening));
+    suite.add(Testing::TestCase("Utf8String: ingestion gate (allocStringFromUTF8)",
+                                test_ingestion_gate));
     suite.add(Testing::TestCase("Utf8String: all forms agree (single-operand)",
                                 test_forms_agree_single));
     suite.add(Testing::TestCase("Utf8String: large view agrees",

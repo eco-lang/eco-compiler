@@ -220,10 +220,32 @@ static uint64_t callFoldClosure(HPtr closure_hptr, uint16_t c, uint64_t acc) {
 // Snapshot a String (any form) into a stable std::vector<u16>. The snapshot
 // lives on the C stack so callbacks that allocate (and may trigger GC) can't
 // invalidate it. Returns an empty vector for nullptr / empty input.
+// UTF-8 forms zero-extend their ASCII bytes directly (no toStdU16String
+// widen); the result is identical (1 byte == 1 unit under the gate). W4.e.
 static std::vector<u16> snapshotChars(void* str) {
     if (!str) return {};
+    if (Elm::StringOps::isUtf8(str)) {
+        auto pr = Elm::StringOps::utf8Bytes(str);
+        return std::vector<u16>(pr.first, pr.first + pr.second);
+    }
     auto u16str = Elm::StringOps::toStdU16String(str);
     return std::vector<u16>(u16str.begin(), u16str.end());
+}
+
+// Materialize a computed char vector into a String, choosing a UTF-8 form when
+// the content is all-ASCII (W4.e). `result` is C-heap, so allocAsciiOut/GC
+// cannot invalidate it and no rooting is needed. Empty -> the Empty constant.
+static HPtr materializeString(const std::vector<u16>& result) {
+    if (result.empty()) return HPtr::fromBits(Export::encode(Elm::alloc::emptyString()));
+    u16 acc = 0;
+    for (u16 c : result) acc |= c;
+    if (acc < 0x80 && Allocator::instance().getConfig().utf8_strings_enabled) {
+        Elm::StringOps::AsciiOut out = Elm::StringOps::allocAsciiOut(result.size());
+        for (size_t i = 0; i < result.size(); ++i) out.dst[i] = static_cast<u8>(result[i]);
+        return HPtr::fromBits(Export::encode(Elm::StringOps::finishAsciiOut(out)));
+    }
+    return HPtr::fromBits(
+        Export::encode(Elm::alloc::allocString(result.data(), result.size())));
 }
 
 HPtr Elm_Kernel_String_map(HPtr closure, HPtr str) {
@@ -241,7 +263,7 @@ HPtr Elm_Kernel_String_map(HPtr closure, HPtr str) {
         HPtr cl = HPtr::fromBits(Export::encode(closureHP));
         result.push_back(callCharToCharClosure(cl, c));
     }
-    return HPtr::fromBits(Export::encode(Elm::alloc::allocString(result.data(), result.size())));
+    return materializeString(result);
 }
 
 HPtr Elm_Kernel_String_filter(HPtr closure, HPtr str) {
@@ -259,7 +281,7 @@ HPtr Elm_Kernel_String_filter(HPtr closure, HPtr str) {
         HPtr cl = HPtr::fromBits(Export::encode(closureHP));
         if (callCharToBoolClosure(cl, c)) result.push_back(c);
     }
-    return HPtr::fromBits(Export::encode(Elm::alloc::allocString(result.data(), result.size())));
+    return materializeString(result);
 }
 
 HPtr Elm_Kernel_String_any(HPtr closure, HPtr str) {

@@ -161,6 +161,48 @@ HPointer lines(void* str) {
     if (!str) {
         return alloc::cons(alloc::boxed(alloc::emptyString()), alloc::listNil(), true);
     }
+    // UTF-8 in => UTF-8 parts (scan bytes, cut via slice; no widen, no UTF-16
+    // parts). W4.c. CR/LF are ASCII so the byte scan is identical.
+    if (StringOps::isUtf8(str) &&
+        Allocator::instance().getConfig().utf8_strings_enabled) {
+        auto& allocator = Allocator::instance();
+        auto pr = StringOps::utf8Bytes(str);
+        const u8* d = pr.first;
+        size_t len = pr.second;
+        if (len == 0) {
+            return alloc::cons(alloc::boxed(alloc::emptyString()), alloc::listNil(), true);
+        }
+        struct LineRange { size_t start; size_t len; };
+        std::vector<LineRange> ranges;
+        size_t start = 0;
+        for (size_t i = 0; i < len; ++i) {
+            bool eol = false;
+            size_t skip = 0;
+            if (d[i] == '\r') { eol = true; skip = (i + 1 < len && d[i + 1] == '\n') ? 2 : 1; }
+            else if (d[i] == '\n') { eol = true; skip = 1; }
+            if (eol) { ranges.push_back({start, i - start}); start = i + skip; i = start - 1; }
+        }
+        ranges.push_back({start, len - start});
+        std::vector<HPointer> parts(ranges.size(), alloc::listNil());
+        HPointer srcHp = allocator.wrap(str);
+        auto& rs = allocator.getRootSet();
+        size_t saved = rs.stackRangePoint();
+        // Chunk into <=64-slot ranges (StackRootRange mask is 1ULL<<i, UB
+        // for i>=64 — see JsonExports.cpp).
+        for (size_t base = 0; base < parts.size(); base += 64) {
+            size_t chunk = std::min<size_t>(64, parts.size() - base);
+            uint64_t mask = (chunk == 64) ? ~uint64_t{0} : ((uint64_t{1} << chunk) - 1);
+            rs.pushStackRootRange(parts.data() + base, chunk, mask);
+        }
+        rs.pushStackRootRange(&srcHp, 1, ~0ULL);
+        for (size_t i = 0; i < ranges.size(); ++i) {
+            parts[i] = StringOps::slice(allocator.resolve(srcHp),
+                                        static_cast<i64>(ranges[i].start),
+                                        static_cast<i64>(ranges[i].start + ranges[i].len));
+        }
+        rs.restoreStackRangePoint(saved);
+        return alloc::listFromPointers(parts);
+    }
     auto snapshot = StringOps::toStdU16String(str);
     size_t len = snapshot.size();
 
@@ -205,7 +247,14 @@ HPointer lines(void* str) {
     std::vector<HPointer> parts(ranges.size(), alloc::listNil());
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
-    rs.pushStackRootRange(parts.data(), parts.size(), ~0ULL);
+    // Chunk into <=64-slot ranges (StackRootRange mask is 1ULL<<i, UB for
+    // i>=64 — see JsonExports.cpp). Pre-existing single-range fixed alongside
+    // the new UTF-8 arm.
+    for (size_t base = 0; base < parts.size(); base += 64) {
+        size_t chunk = std::min<size_t>(64, parts.size() - base);
+        uint64_t mask = (chunk == 64) ? ~uint64_t{0} : ((uint64_t{1} << chunk) - 1);
+        rs.pushStackRootRange(parts.data() + base, chunk, mask);
+    }
 
     for (size_t i = 0; i < ranges.size(); ++i) {
         parts[i] = alloc::allocString(strData + ranges[i].start, ranges[i].len);
@@ -224,6 +273,49 @@ HPointer words(void* str) {
     }
 
     auto& allocator = Allocator::instance();
+
+    // UTF-8 in => UTF-8 parts. trim() already returned a UTF-8 form (it cuts
+    // via slice); scan its bytes and cut words via slice — no widen. W4.c.
+    if (StringOps::isUtf8(allocator.resolve(trimmed)) &&
+        allocator.getConfig().utf8_strings_enabled) {
+        HPointer trimmedHp = trimmed;
+        auto pr = StringOps::utf8Bytes(allocator.resolve(trimmedHp));
+        const u8* d = pr.first;
+        size_t len = pr.second;
+        struct WordRange { size_t start; size_t len; };
+        std::vector<WordRange> ranges;
+        size_t start = 0;
+        bool in_word = false;
+        for (size_t i = 0; i <= len; ++i) {
+            bool ws = (i == len) ||
+                d[i] == ' ' || d[i] == '\t' || d[i] == '\n' || d[i] == '\r';
+            if (ws) {
+                if (in_word) { ranges.push_back({start, i - start}); in_word = false; }
+            } else if (!in_word) {
+                start = i;
+                in_word = true;
+            }
+        }
+        if (ranges.empty()) return alloc::listNil();
+        std::vector<HPointer> parts(ranges.size(), alloc::listNil());
+        auto& rs = allocator.getRootSet();
+        size_t saved = rs.stackRangePoint();
+        // Chunk into <=64-slot ranges (mask is 1ULL<<i, UB for i>=64).
+        for (size_t base = 0; base < parts.size(); base += 64) {
+            size_t chunk = std::min<size_t>(64, parts.size() - base);
+            uint64_t mask = (chunk == 64) ? ~uint64_t{0} : ((uint64_t{1} << chunk) - 1);
+            rs.pushStackRootRange(parts.data() + base, chunk, mask);
+        }
+        rs.pushStackRootRange(&trimmedHp, 1, ~0ULL);
+        for (size_t i = 0; i < ranges.size(); ++i) {
+            parts[i] = StringOps::slice(allocator.resolve(trimmedHp),
+                                        static_cast<i64>(ranges[i].start),
+                                        static_cast<i64>(ranges[i].start + ranges[i].len));
+        }
+        rs.restoreStackRangePoint(saved);
+        return alloc::listFromPointers(parts);
+    }
+
     void* trimmedObj = allocator.resolve(trimmed);
     auto snapshot = StringOps::toStdU16String(trimmedObj);
     size_t len = snapshot.size();
@@ -260,7 +352,14 @@ HPointer words(void* str) {
     std::vector<HPointer> parts(ranges.size(), alloc::listNil());
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
-    rs.pushStackRootRange(parts.data(), parts.size(), ~0ULL);
+    // Chunk into <=64-slot ranges (StackRootRange mask is 1ULL<<i, UB for
+    // i>=64 — see JsonExports.cpp). Pre-existing single-range fixed alongside
+    // the new UTF-8 arm.
+    for (size_t base = 0; base < parts.size(); base += 64) {
+        size_t chunk = std::min<size_t>(64, parts.size() - base);
+        uint64_t mask = (chunk == 64) ? ~uint64_t{0} : ((uint64_t{1} << chunk) - 1);
+        rs.pushStackRootRange(parts.data() + base, chunk, mask);
+    }
 
     for (size_t i = 0; i < ranges.size(); ++i) {
         parts[i] = alloc::allocString(strData + ranges[i].start, ranges[i].len);

@@ -61,7 +61,9 @@ HPointer read_u32(bool littleEndian, void* bytes, i64 offset);
 HPointer read_f32(bool littleEndian, void* bytes, i64 offset);
 HPointer read_f64(bool littleEndian, void* bytes, i64 offset);
 HPointer read_bytes(i64 length, void* bytes, i64 offset);
-HPointer read_string(i64 length, void* bytes, i64 offset);
+// read_string removed: the live Bytes.Decode.string kernel is
+// Elm_Kernel_Bytes_read_string (BytesExports.cpp), which now carries the
+// UTF-8 gate. See plans/utf8-string-pipeline-wiring.md (W1).
 
 // ============================================================================
 // Write Operations

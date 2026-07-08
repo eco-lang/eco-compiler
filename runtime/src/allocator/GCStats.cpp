@@ -392,6 +392,11 @@ void GCStats::recordStringAllocation(size_t bytes) {
     string_alloc_size_histogram[bucket]++;
 }
 
+void GCStats::recordUtf8Widen(size_t units) {
+    utf8_widen_calls++;
+    utf8_widen_units += units;
+}
+
 // Records a typed mutator allocation through the ThreadLocalHeap path.
 // Called from initHeaderForTag, exactly once per successful mutator alloc.
 void GCStats::recordTLHAllocation(size_t bytes, Tag tag) {
@@ -429,6 +434,16 @@ void recordStringAllocOnCurrentThread(size_t bytes) noexcept {
     // See recordTLHAllocOnCurrentThread above: body is dead in stats-disabled
     // builds where getStats() does not exist.
     (void)bytes;
+#endif
+}
+
+// UTF-8 widen trampoline: same shape as the String-histogram helper.
+void recordUtf8WidenOnCurrentThread(size_t units) noexcept {
+#if ENABLE_GC_STATS
+    ThreadLocalHeap* tlh = Allocator::instance().getCurrentThreadHeap();
+    if (tlh) tlh->getStats().recordUtf8Widen(units);
+#else
+    (void)units;
 #endif
 }
 
@@ -740,6 +755,9 @@ void GCStats::combine(const GCStats& other) {
     for (int i = 0; i < STRING_ALLOC_BUCKETS; i++) {
         string_alloc_size_histogram[i] += other.string_alloc_size_histogram[i];
     }
+
+    utf8_widen_calls += other.utf8_widen_calls;
+    utf8_widen_units += other.utf8_widen_units;
 
     // Combine per-kind ThreadLocalHeap allocation counters.
     for (int i = 0; i < NUM_ALLOC_TAGS; i++) {
@@ -1270,6 +1288,14 @@ void GCStats::print() const {
                         /*fine_16_24_count=*/0,
                         /*split_bucket_1=*/false);
 
+    // UTF-8 -> UTF-16 widen events (see plans/utf8-string-pipeline-wiring.md).
+    // Near zero on a UTF-8-clean workload; a large residual means a String op
+    // is still decaying UTF-8 to UTF-16 on the hot path.
+    std::cout << "\nUTF-8 -> UTF-16 widen events:" << std::endl;
+    std::cout << "  Widen calls:           " << std::setw(15) << utf8_widen_calls << std::endl;
+    std::cout << "  Widened code units:    " << std::setw(15) << utf8_widen_units << std::endl;
+    std::cout << std::endl;
+
     // ========== Old-Gen Page Residency Histogram ==========
     //
     // Two flavours:
@@ -1399,6 +1425,9 @@ void GCStats::reset() {
     for (int i = 0; i < STRING_ALLOC_BUCKETS; i++) {
         string_alloc_size_histogram[i] = 0;
     }
+
+    utf8_widen_calls = 0;
+    utf8_widen_units = 0;
 
     for (int i = 0; i < NUM_ALLOC_TAGS; i++) {
         tlh_alloc_count_by_tag[i] = 0;

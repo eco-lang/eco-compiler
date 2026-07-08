@@ -243,7 +243,7 @@ The plan that drove this work documents the compiler's contract in `Compiler/Gen
 
 ## UTF-8 (all-ASCII) Forms
 
-*(added Jul 8, 2026 — see **HEAP_028** and
+*(added Jul 8, 2026 — see **HEAP_032** and
 `plans/utf8-string-representation.md`)*
 
 Two further forms hold **pure-ASCII** content as UTF-8 bytes (1 byte per

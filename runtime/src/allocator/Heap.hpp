@@ -102,10 +102,12 @@ typedef enum {
     Tag_LargeByteHeader,   // header.size = logical byte count,    body -> Tag_ByteBuffer.
     // UTF-8 (all-ASCII) String forms. header.size = logical UTF-16 unit count
     // (== byte count under the ASCII invariant). Produced only by runtime
-    // String ops / Bytes.Decode.string / interned literals; never by MLIR
-    // codegen. Kept BEFORE Tag_Free/Tag_Forward so every live object stays
-    // `< Tag_Forward` (Allocator.cpp resolution assert) and "Forward is last"
-    // holds. See plans/utf8-string-representation.md, HEAP_028.
+    // String ops / Bytes.Decode.string / kernel string ingestion
+    // (alloc::allocStringFromUTF8: File.readString, Console, Env, Http, ports) /
+    // interned literals; never by MLIR codegen. Kept BEFORE Tag_Free/Tag_Forward
+    // so every live object stays `< Tag_Forward` (Allocator.cpp resolution
+    // assert) and "Forward is last" holds. See
+    // plans/utf8-string-pipeline-wiring.md, HEAP_032.
     Tag_StringUtf8View,  // Zero-copy byte view: HPointer base + u32 offset + u32 byteLen.
     Tag_StringUtf8Leaf,  // Inline ASCII bytes: header.size = byte count, u8 bytes[].
     Tag_Free,        // Free cell on a segregated free list (header.size = byte size).
@@ -627,7 +629,7 @@ typedef struct elm_bytebuffer ByteBuffer;
 // the pinned body — same lifetime rule as slice-of-large), or a
 // Tag_StringUtf8Leaf. `base` is the only boxed field; `offset`/`byteLen` are
 // scalars never read by GC (header.unboxed == 0). GC treats this exactly like
-// Tag_StringSlice (trace `base`). See HEAP_028.
+// Tag_StringSlice (trace `base`). See HEAP_032.
 struct ALIGN(8) elm_string_utf8_view {
     Header header;
     HPointer base;

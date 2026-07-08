@@ -9,6 +9,7 @@
 #include <cstring>
 #include <cmath>
 #include "../../runtime/src/allocator/HeapHelpers.hpp"
+#include "../../runtime/src/allocator/StringOps.hpp"
 #include "TestHelpers.hpp"
 
 using namespace Elm;
@@ -246,9 +247,12 @@ Testing::TestCase testAllocStringFromUTF8("UTF-8 string allocation works", []() 
 
         RC_ASSERT(stringLength(obj) == len);
 
-        const u16* data = stringData(obj);
+        // allocStringFromUTF8 now yields a UTF-8 form for ASCII input
+        // (HEAP_032), so read content through the representation-agnostic
+        // StringOps::charAt rather than stringData() (UTF-16-leaf only).
         for (size_t i = 0; i < len; ++i) {
-            RC_ASSERT(data[i] == static_cast<u16>(ascii[i]));
+            RC_ASSERT(Elm::StringOps::charAt(obj, static_cast<i64>(i))
+                      == static_cast<u16>(ascii[i]));
         }
     });
 });

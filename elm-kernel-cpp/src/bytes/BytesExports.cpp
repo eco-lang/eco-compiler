@@ -602,7 +602,45 @@ HPtr Elm_Kernel_Bytes_read_string(int64_t length, HPtr bytes, int64_t offset) {
     // post-allocation copy must re-resolve through the rooted handle.
     HPointer srcHP = Export::decode(bytes.toBits());
     auto src_view = alloc::byteBufferView(allocator.resolve(srcHP));
+    // Bounds-check offset/length against the buffer, like every sibling reader
+    // (read_bytes at ~:581). Guards both the UTF-8 fast path and the legacy
+    // transcode against an out-of-bounds read on malformed length-prefixed
+    // input (e.g. a non-fused `Decode.string n`). length==0 is handled above.
+    if (offset < 0 || length < 0 ||
+        static_cast<size_t>(offset) + static_cast<size_t>(length) > src_view.length) {
+        return decoderNothing();
+    }
     const u8* src = src_view.data + offset;
+
+    // UTF-8 fast path (HEAP_032): a strictly-valid all-ASCII payload becomes a
+    // zero-copy view over the source buffer (>= utf8_view_min_len bytes) or a
+    // small inline UTF-8 leaf — no transcode, no UTF-16 allocation. Non-ASCII
+    // or invalid input falls through to the legacy two-pass decode below,
+    // byte-for-byte unchanged (pinned by the W0 goldens, K8b). The scan reads
+    // `src` before any allocation, so the pointer is stable here.
+    // See plans/utf8-string-pipeline-wiring.md (W1).
+    const auto& cfg = allocator.getConfig();
+    if (cfg.utf8_strings_enabled) {
+        Elm::Utf8::ScanResult scan =
+            Elm::Utf8::scan(src, static_cast<size_t>(length));
+        if (scan.valid && scan.ascii) {
+            HPointer result;
+            if (static_cast<size_t>(length) >= cfg.utf8_view_min_len) {
+                // makeUtf8View collapses a Tag_ByteBufferSlice base into
+                // base + inner.offset itself, matching byteBufferView's data
+                // pointer (bytes + slc->offset) — offsets stay consistent for
+                // plain-buffer, slice, and large-header sources.
+                result = Elm::StringOps::makeUtf8View(
+                    srcHP, static_cast<u32>(offset), static_cast<u32>(length));
+            } else {
+                // makeUtf8LeafFromBytes snapshots `src` to the C stack before
+                // allocating, so no rooting is needed at this call site.
+                result = Elm::StringOps::makeUtf8LeafFromBytes(
+                    src, static_cast<u32>(length));
+            }
+            return HPtr::fromBits(makeTuple2_ip(offset + length, result));
+        }
+    }
 
     // Count UTF-16 code units needed for the UTF-8 input.
     size_t utf16Count = 0;

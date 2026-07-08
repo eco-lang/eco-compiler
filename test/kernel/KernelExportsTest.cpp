@@ -19,6 +19,9 @@
 #include "../TestSuite.hpp"
 #include <string>
 #include <vector>
+#include <cstdio>
+#include <cstdlib>
+#include <iostream>
 
 using namespace Elm;
 namespace Ex = Elm::Kernel::Export;
@@ -260,6 +263,187 @@ static void test_bytes_width_on_slice() {
     TEST_ASSERT(w == 40);
 }
 
+// ---- W0.2: Bytes.Decode.string behavior goldens ---------------------------
+//
+// Pins the CURRENT (pre-W1) observable behavior of Elm_Kernel_Bytes_read_string
+// on ASCII, non-ASCII, and INVALID UTF-8 input, so wiring the UTF-8 fast path
+// (plans/utf8-string-pipeline-wiring.md W1) cannot change decoded values. The
+// legacy decoder reads past `length` on truncated sequences (a known quirk);
+// to keep the golden deterministic we place each invalid prefix inside a
+// zero-padded buffer and decode only the prefix length, so any read-past lands
+// on known 0x00 padding rather than unallocated heap.
+struct DecodeGolden {
+    const char* name;
+    std::vector<u8> prefix;   // the bytes to decode (length = prefix.size())
+    bool nothing;             // expected: decode returned Nothing
+    std::vector<u16> units;   // expected: decoded UTF-16 code units (if !nothing)
+};
+
+// Decode `prefix` (padded with 4 zero bytes so any read-past is deterministic)
+// and return the resulting code units, or {nothing=true}.
+static bool decodeGoldenUnits(const std::vector<u8>& prefix,
+                              std::vector<u16>& outUnits) {
+    std::vector<u8> padded = prefix;
+    padded.insert(padded.end(), {0, 0, 0, 0});
+    HPtr bb = bbFromVec(padded);
+    HPtr r = Elm_Kernel_Bytes_read_string(static_cast<int64_t>(prefix.size()), bb, 0);
+    if (isNothing(r)) return false;
+    Tuple2* t = asTuple(r);
+    void* strObj = Allocator::instance().resolve(t->b.p);
+    size_t n = StringOps::length(strObj);
+    outUnits.clear();
+    for (size_t i = 0; i < n; ++i) outUnits.push_back(StringOps::charAt(strObj, i));
+    return true;
+}
+
+static void test_decoder_read_string_goldens() {
+    initAllocator();
+    // The battery. `units` filled from a capture run against the unmodified
+    // export; asserted verbatim thereafter (bug-compatibility, not "correct").
+    std::vector<DecodeGolden> battery = {
+        // --- valid ASCII (W1 DIVERTS these to UTF-8 forms; value must hold) ---
+        {"ascii_1",   {'x'}, false, {'x'}},
+        {"ascii_5",   {'h','e','l','l','o'}, false, {'h','e','l','l','o'}},
+        {"ascii_31",  std::vector<u8>(31, 'a'), false, std::vector<u16>(31, u'a')},
+        {"ascii_32",  std::vector<u8>(32, 'b'), false, std::vector<u16>(32, u'b')},
+        {"ascii_33",  std::vector<u8>(33, 'c'), false, std::vector<u16>(33, u'c')},
+        // --- valid non-ASCII (legacy path; must stay byte-identical) ---
+        {"u0080",     {0xC2, 0x80}, false, {0x0080}},
+        {"u07FF",     {0xDF, 0xBF}, false, {0x07FF}},
+        {"u0800",     {0xE0, 0xA0, 0x80}, false, {0x0800}},
+        {"uFFFF",     {0xEF, 0xBF, 0xBF}, false, {0xFFFF}},
+        {"u10000",    {0xF0, 0x90, 0x80, 0x80}, false, {0xD800, 0xDC00}},
+        {"u10FFFF",   {0xF4, 0x8F, 0xBF, 0xBF}, false, {0xDBFF, 0xDFFF}},
+        {"mixed_astral", {'A', 0xF0, 0x9F, 0x98, 0x80, 'B'}, false,
+                         {u'A', 0xD83D, 0xDE00, u'B'}},
+        // --- invalid (legacy lenient path; values captured from the
+        //     UNMODIFIED export via W0_CAPTURE_GOLDENS — garbage-tolerant, not
+        //     "correct"; the point is byte-for-byte stability across W1/W2) ---
+        {"bare_cont",     {0x80}, false, {0x0000}},
+        {"trunc_2",       {0xC2}, false, {0x0080}},
+        {"trunc_3",       {0xE2, 0x82}, false, {0x2080}},
+        {"trunc_4",       {0xF0, 0x9F, 0x98}, false, {0xD83D, 0xDE00}},
+        {"overlong_2",    {0xC0, 0x80}, false, {0x0000}},
+        {"overlong_3",    {0xE0, 0x80, 0x80}, false, {0x0000}},
+        {"overlong_4",    {0xF0, 0x80, 0x80, 0x80}, false, {0x0000, 0x0000}},
+        {"surrogate",     {0xED, 0xA0, 0x80}, false, {0xD800}},
+        {"gt_10FFFF",     {0xF4, 0x90, 0x80, 0x80}, false, {0xDC00, 0xDC00}},
+        {"bad_cont",      {0xC2, 0x00}, false, {0x0080}},
+    };
+
+    bool CAPTURE = std::getenv("W0_CAPTURE_GOLDENS") != nullptr;
+    for (auto& g : battery) {
+        std::vector<u16> units;
+        bool ok = decodeGoldenUnits(g.prefix, units);
+        if (CAPTURE) {
+            std::cout << "WGOLDEN|" << g.name << "|"
+                      << (ok ? "SOME" : "NOTHING") << "|len=" << units.size()
+                      << "|";
+            for (u16 u : units) {
+                char buf[8];
+                std::snprintf(buf, sizeof(buf), "%04X ", u);
+                std::cout << buf;
+            }
+            std::cout << std::endl;
+            continue;
+        }
+        TEST_ASSERT(ok == !g.nothing);
+        if (ok) {
+            TEST_ASSERT(units.size() == g.units.size());
+            for (size_t i = 0; i < units.size() && i < g.units.size(); ++i) {
+                TEST_ASSERT(units[i] == g.units[i]);
+            }
+        }
+    }
+}
+
+// ---- W1: Bytes.Decode.string representation matrix ------------------------
+//
+// Asserts the FORM produced by the wired UTF-8 fast path as a function of
+// (ascii-ness, length, source shape). Value-equality is covered by the K8b
+// goldens + E2E; here we pin the representation. See W1.
+static void expectDecodeTag(const std::vector<u8>& bytesVec, int64_t length,
+                            HPtr srcBuf, int64_t offset, Tag expectTag,
+                            const std::string& expectContent) {
+    HPtr r = Elm_Kernel_Bytes_read_string(length, srcBuf, offset);
+    TEST_ASSERT(!isNothing(r));
+    Tuple2* t = asTuple(r);
+    void* strObj = Allocator::instance().resolve(t->b.p);
+    TEST_ASSERT(alloc::getTag(strObj) == expectTag);
+    TEST_ASSERT(StringOps::toStdString(strObj) == expectContent);
+    (void)bytesVec;
+}
+
+static void test_decoder_read_string_representation() {
+    auto& alloc = initAllocator();
+
+    // ASCII >= utf8_view_min_len (32) -> zero-copy view.
+    {
+        std::vector<u8> v(40, 'a');
+        HPtr bb = bbFromVec(v);
+        expectDecodeTag(v, 40, bb, 0, Tag_StringUtf8View, std::string(40, 'a'));
+    }
+    // ASCII < 32 -> inline leaf.
+    {
+        std::vector<u8> v = {'h','e','l','l','o'};
+        HPtr bb = bbFromVec(v);
+        expectDecodeTag(v, 5, bb, 0, Tag_StringUtf8Leaf, "hello");
+    }
+    // ASCII exactly at the boundary: 31 -> leaf, 32 -> view.
+    {
+        std::vector<u8> v31(31, 'x'); HPtr b31 = bbFromVec(v31);
+        expectDecodeTag(v31, 31, b31, 0, Tag_StringUtf8Leaf, std::string(31, 'x'));
+        std::vector<u8> v32(32, 'y'); HPtr b32 = bbFromVec(v32);
+        expectDecodeTag(v32, 32, b32, 0, Tag_StringUtf8View, std::string(32, 'y'));
+    }
+    // Non-ASCII (2-byte char embedded in an otherwise-long payload) -> legacy
+    // UTF-16 Tag_String, regardless of length.
+    {
+        std::vector<u8> v(40, 'a');
+        v[10] = 0xC3; v[11] = 0xA9;  // 'é' U+00E9; makes it non-ASCII
+        HPtr bb = bbFromVec(v);
+        // length 40 bytes -> 39 UTF-16 units (the 2-byte é collapses to 1).
+        HPtr r = Elm_Kernel_Bytes_read_string(40, bb, 0);
+        TEST_ASSERT(!isNothing(r));
+        void* s = alloc.resolve(asTuple(r)->b.p);
+        TEST_ASSERT(alloc::getTag(s) == Tag_String);
+        TEST_ASSERT(StringOps::length(s) == 39);
+    }
+    // Source is a Tag_ByteBufferSlice: decode collapses onto the underlying
+    // buffer; content must be correct and the form a UTF-8 view.
+    {
+        std::vector<u8> v(100, 'a');
+        for (size_t i = 0; i < 100; ++i) v[i] = static_cast<u8>('A' + (i % 26));
+        HPtr bb = bbFromVec(v);
+        HPointer sliceHP = alloc::makeByteBufferSlice(bb.toHPointer(), 10, 60);
+        TEST_ASSERT(alloc::getTag(alloc.resolve(sliceHP)) == Tag_ByteBufferSlice);
+        std::string expect((const char*)v.data() + 10, 50);
+        expectDecodeTag(v, 50, HPtr::fromHPointer(sliceHP), 0,
+                        Tag_StringUtf8View, expect);
+    }
+    // Source is a >= LOT ByteBuffer (Tag_LargeByteHeader): view still correct.
+    {
+        std::vector<u8> v(9000, 0);
+        for (size_t i = 0; i < v.size(); ++i) v[i] = static_cast<u8>('a' + (i % 26));
+        HPtr bb = bbFromVec(v);
+        TEST_ASSERT(alloc::getTag(alloc.resolve(bb.toHPointer())) == Tag_LargeByteHeader);
+        std::string expect((const char*)v.data(), 100);
+        expectDecodeTag(v, 100, bb, 0, Tag_StringUtf8View, expect);
+    }
+    // Kill switch off -> always UTF-16, even for long ASCII.
+    {
+        HeapConfig cfg;
+        cfg.utf8_strings_enabled = false;
+        auto& a2 = initAllocator(cfg);
+        std::vector<u8> v(40, 'a');
+        HPtr bb = bbFromVec(v);
+        HPtr r = Elm_Kernel_Bytes_read_string(40, bb, 0);
+        void* s = a2.resolve(asTuple(r)->b.p);
+        TEST_ASSERT(alloc::getTag(s) == Tag_String);
+        TEST_ASSERT(StringOps::toStdString(s) == std::string(40, 'a'));
+    }
+}
+
 }  // namespace
 
 void registerKernelExportsTests(Testing::TestSuite& suite) {
@@ -271,6 +455,8 @@ void registerKernelExportsTests(Testing::TestSuite& suite) {
     suite.add(Testing::UnitTest("K6 decoder read primitives", test_decoder_read_primitives));
     suite.add(Testing::UnitTest("K7 decoder read_bytes -> slice", test_decoder_read_bytes_slice));
     suite.add(Testing::UnitTest("K8 decoder read_string utf8", test_decoder_read_string_utf8));
+    suite.add(Testing::UnitTest("K8b decoder read_string goldens", test_decoder_read_string_goldens));
+    suite.add(Testing::UnitTest("K8c decoder read_string representation", test_decoder_read_string_representation));
     suite.add(Testing::UnitTest("K9 string length all forms", test_string_length_all_forms));
     suite.add(Testing::UnitTest("K10 string foldl astral code-unit count", test_string_foldl_astral_count));
     suite.add(Testing::UnitTest("K12 elm_bytebuffer runtime flat+large", test_elm_bytebuffer_runtime_flat_large));

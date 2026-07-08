@@ -63,6 +63,17 @@
 
 namespace Elm {
 
+// Forward declaration for the UTF-8 ingestion gate. Defined in StringOps.cpp
+// (layering: StringOps.hpp includes THIS header, so it cannot be included from
+// here). If `data[0..len)` is all-ASCII and UTF-8 strings are enabled, builds a
+// Tag_StringUtf8Leaf (small) or a ByteBuffer + Tag_StringUtf8View (>= LOT) and
+// returns true; otherwise leaves *out untouched and returns false. `data` must
+// be C-heap memory (not a GC payload) — it is read after allocations.
+// See plans/utf8-string-pipeline-wiring.md (W2, BB-1).
+namespace StringOps {
+bool tryMakeAsciiString(const char* data, size_t len, HPointer* out);
+}
+
 // ============================================================================
 // GC Stack Root Guard (RAII)
 // ============================================================================
@@ -490,6 +501,21 @@ inline HPointer allocString(const std::u16string& s) {
 inline HPointer allocStringFromUTF8(const std::string& utf8) {
     if (utf8.empty()) {
         return emptyString();
+    }
+
+    // ASCII fast path (HEAP_032): an all-ASCII payload becomes a UTF-8 form
+    // (inline leaf, or ByteBuffer + zero-copy view >= LOT) instead of widening
+    // to UTF-16. This is the single ingestion chokepoint behind
+    // Eco.File.readString, Console, Env, Http, and ports — so they all produce
+    // UTF-8 for ASCII with no call-site change, which is what lets the parser
+    // scan its own source at 1 byte/char. Non-ASCII / invalid input falls
+    // through to the legacy lenient transcode below, byte-for-byte unchanged.
+    // See plans/utf8-string-pipeline-wiring.md (W2).
+    {
+        HPointer asciiOut;
+        if (StringOps::tryMakeAsciiString(utf8.data(), utf8.size(), &asciiOut)) {
+            return asciiOut;
+        }
     }
 
     // Simple UTF-8 to UTF-16 conversion

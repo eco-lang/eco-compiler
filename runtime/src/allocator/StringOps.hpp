@@ -184,6 +184,29 @@ HPointer makeUtf8View(HPointer base, u32 byteOffset, u32 len);
 HPointer makeUtf8LeafFromBytes(const u8* bytes, u32 len);
 
 /**
+ * ASCII result builder (W4, plans/utf8-string-pipeline-wiring.md). Lets a
+ * conservative-widening op emit "ASCII in => UTF-8 out" without each site
+ * re-deriving the leaf-vs-large-buffer split. Usage contract:
+ *
+ *   AsciiOut out = allocAsciiOut(len);   // len > 0; ONE allocation
+ *   ... write exactly `len` ASCII bytes to out.dst, with NO other allocation
+ *       on this thread in between (out.dst is a fresh leaf payload or a pinned
+ *       >= LOT buffer body; a GC would move a sub-LOT leaf) ...
+ *   HPointer result = finishAsciiOut(out);   // out.dst invalid afterwards
+ *
+ * Callers gate on utf8_strings_enabled before using this (else widen to UTF-16
+ * as before). finishAsciiOut asserts every byte < 0x80 under ECO_HEAP_VALIDATE.
+ */
+struct AsciiOut {
+    HPointer hp;    // the leaf itself, or the backing ByteBuffer (buffer case)
+    u8* dst;        // write target: exactly `len` bytes
+    u32 len;
+    bool isLeaf;
+};
+AsciiOut allocAsciiOut(size_t len);
+HPointer finishAsciiOut(const AsciiOut& out);
+
+/**
  * Materialise any string into a fresh leaf. Returns the empty constant for
  * len==0. Roots `s` across the allocation internally so callers don't need
  * to (the only field read after the alloc is the leaf's own chars[]).
@@ -463,6 +486,21 @@ inline HPointer append(void* a, void* b) {
 
     size_t total_len = len_a + len_b;
     if (total_len <= Allocator::instance().getConfig().string_flatten_limit) {
+        // Both UTF-8 => byte-concat into a UTF-8 result (ASCII+ASCII=ASCII).
+        // W4.b. Mixed encodings fall through to the UTF-16 widen below.
+        if (isUtf8(a) && isUtf8(b) &&
+            Allocator::instance().getConfig().utf8_strings_enabled) {
+            auto& allocator = Allocator::instance();
+            HPointer aHp = allocator.wrap(a);
+            HPointer bHp = allocator.wrap(b);
+            AsciiOut out;
+            { Elm::StackRootGuard g(&aHp, &bHp); out = allocAsciiOut(total_len); }
+            auto pa = utf8Bytes(allocator.resolve(aHp));
+            auto pb = utf8Bytes(allocator.resolve(bHp));
+            std::memcpy(out.dst, pa.first, pa.second);
+            std::memcpy(out.dst + pa.second, pb.first, pb.second);
+            return finishAsciiOut(out);
+        }
         auto bufA = toStdU16String(a);
         auto bufB = toStdU16String(b);
         std::vector<u16> data(total_len);
@@ -708,6 +746,20 @@ inline HPointer toUpper(void* str) {
     u32 len = rawLen(str);
     if (len == 0) return alloc::emptyString();
 
+    // UTF-8 in => UTF-8 out (ASCII upper-case is closed over ASCII). W4.d.
+    if (isUtf8(str) && Allocator::instance().getConfig().utf8_strings_enabled) {
+        auto& allocator = Allocator::instance();
+        HPointer srcHp = allocator.wrap(str);
+        AsciiOut out;
+        { Elm::StackRootGuard guard(&srcHp); out = allocAsciiOut(len); }
+        auto pr = utf8Bytes(allocator.resolve(srcHp));
+        for (u32 i = 0; i < len; ++i) {
+            u8 c = pr.first[i];
+            out.dst[i] = (c >= 'a' && c <= 'z') ? static_cast<u8>(c - 32) : c;
+        }
+        return finishAsciiOut(out);
+    }
+
     // Root the source across allocStringBlank (which may GC); after the
     // alloc, resolve back and copy directly into the result chars[].
     auto& allocator = Allocator::instance();
@@ -733,6 +785,20 @@ inline HPointer toLower(void* str) {
     u32 len = rawLen(str);
     if (len == 0) return alloc::emptyString();
 
+    // UTF-8 in => UTF-8 out (ASCII lower-case is closed over ASCII). W4.d.
+    if (isUtf8(str) && Allocator::instance().getConfig().utf8_strings_enabled) {
+        auto& allocator = Allocator::instance();
+        HPointer srcHp = allocator.wrap(str);
+        AsciiOut out;
+        { Elm::StackRootGuard guard(&srcHp); out = allocAsciiOut(len); }
+        auto pr = utf8Bytes(allocator.resolve(srcHp));
+        for (u32 i = 0; i < len; ++i) {
+            u8 c = pr.first[i];
+            out.dst[i] = (c >= 'A' && c <= 'Z') ? static_cast<u8>(c + 32) : c;
+        }
+        return finishAsciiOut(out);
+    }
+
     auto& allocator = Allocator::instance();
     HPointer srcHp = allocator.wrap(str);
     alloc::BlankString out;
@@ -756,6 +822,18 @@ inline HPointer reverse(void* str) {
     u32 len = rawLen(str);
     if (len == 0) return alloc::emptyString();
     if (len == 1 && isLeaf(str)) return Allocator::instance().wrap(str);
+
+    // UTF-8 in => UTF-8 out: reversing ASCII bytes is a valid ASCII string
+    // (astral pairs would be a problem, but the gate forbids them). W4.d.
+    if (isUtf8(str) && Allocator::instance().getConfig().utf8_strings_enabled) {
+        auto& allocator = Allocator::instance();
+        HPointer srcHp = allocator.wrap(str);
+        AsciiOut out;
+        { Elm::StackRootGuard guard(&srcHp); out = allocAsciiOut(len); }
+        auto pr = utf8Bytes(allocator.resolve(srcHp));
+        for (u32 i = 0; i < len; ++i) out.dst[i] = pr.first[len - 1 - i];
+        return finishAsciiOut(out);
+    }
 
     auto& allocator = Allocator::instance();
     HPointer srcHp = allocator.wrap(str);
@@ -850,6 +928,20 @@ inline HPointer repeat(void* str, i64 n) {
     u32 srcLen = rawLen(str);
     if (srcLen == 0) return alloc::emptyString();
 
+    // UTF-8 in => UTF-8 out: repeat one ASCII copy then fan it out. W4.d.
+    if (isUtf8(str) && Allocator::instance().getConfig().utf8_strings_enabled) {
+        size_t total = static_cast<size_t>(srcLen) * static_cast<size_t>(n);
+        auto& allocator = Allocator::instance();
+        HPointer srcHp = allocator.wrap(str);
+        AsciiOut out;
+        { Elm::StackRootGuard guard(&srcHp); out = allocAsciiOut(total); }
+        auto pr = utf8Bytes(allocator.resolve(srcHp));
+        std::memcpy(out.dst, pr.first, srcLen);
+        for (i64 i = 1; i < n; ++i)
+            std::memcpy(out.dst + static_cast<size_t>(i) * srcLen, out.dst, srcLen);
+        return finishAsciiOut(out);
+    }
+
     size_t total_len = static_cast<size_t>(srcLen) * static_cast<size_t>(n);
     auto& allocator = Allocator::instance();
     HPointer srcHp = allocator.wrap(str);
@@ -877,6 +969,11 @@ inline HPointer padLeft(void* str, i64 n, u16 padChar) {
     }
     if (!str) {
         // All padding, no source data.
+        if (padChar < 0x80 && Allocator::instance().getConfig().utf8_strings_enabled) {
+            AsciiOut out = allocAsciiOut(static_cast<size_t>(n));
+            for (u32 i = 0; i < out.len; ++i) out.dst[i] = static_cast<u8>(padChar);
+            return finishAsciiOut(out);
+        }
         alloc::BlankString out = alloc::allocStringBlank(static_cast<size_t>(n));
         for (u32 i = 0; i < out.length; ++i) out.chars[i] = padChar;
         return out.hp;
@@ -885,6 +982,20 @@ inline HPointer padLeft(void* str, i64 n, u16 padChar) {
     if (static_cast<i64>(len) >= n) return Allocator::instance().wrap(str);
 
     size_t pad_count = static_cast<size_t>(n) - len;
+
+    // UTF-8 in + ASCII pad char => UTF-8 out. W4.d.
+    if (padChar < 0x80 && isUtf8(str) &&
+        Allocator::instance().getConfig().utf8_strings_enabled) {
+        auto& allocator = Allocator::instance();
+        HPointer srcHp = allocator.wrap(str);
+        AsciiOut out;
+        { Elm::StackRootGuard guard(&srcHp); out = allocAsciiOut(static_cast<size_t>(n)); }
+        for (size_t i = 0; i < pad_count; ++i) out.dst[i] = static_cast<u8>(padChar);
+        auto pr = utf8Bytes(allocator.resolve(srcHp));
+        std::memcpy(out.dst + pad_count, pr.first, len);
+        return finishAsciiOut(out);
+    }
+
     auto& allocator = Allocator::instance();
     HPointer srcHp = allocator.wrap(str);
     alloc::BlankString out;
@@ -905,12 +1016,30 @@ inline HPointer padRight(void* str, i64 n, u16 padChar) {
         return str ? Allocator::instance().wrap(str) : alloc::emptyString();
     }
     if (!str) {
+        if (padChar < 0x80 && Allocator::instance().getConfig().utf8_strings_enabled) {
+            AsciiOut out = allocAsciiOut(static_cast<size_t>(n));
+            for (u32 i = 0; i < out.len; ++i) out.dst[i] = static_cast<u8>(padChar);
+            return finishAsciiOut(out);
+        }
         alloc::BlankString out = alloc::allocStringBlank(static_cast<size_t>(n));
         for (u32 i = 0; i < out.length; ++i) out.chars[i] = padChar;
         return out.hp;
     }
     u32 len = rawLen(str);
     if (static_cast<i64>(len) >= n) return Allocator::instance().wrap(str);
+
+    // UTF-8 in + ASCII pad char => UTF-8 out. W4.d.
+    if (padChar < 0x80 && isUtf8(str) &&
+        Allocator::instance().getConfig().utf8_strings_enabled) {
+        auto& allocator = Allocator::instance();
+        HPointer srcHp = allocator.wrap(str);
+        AsciiOut out;
+        { Elm::StackRootGuard guard(&srcHp); out = allocAsciiOut(static_cast<size_t>(n)); }
+        auto pr = utf8Bytes(allocator.resolve(srcHp));
+        std::memcpy(out.dst, pr.first, len);
+        for (u32 i = len; i < out.len; ++i) out.dst[i] = static_cast<u8>(padChar);
+        return finishAsciiOut(out);
+    }
 
     auto& allocator = Allocator::instance();
     HPointer srcHp = allocator.wrap(str);
@@ -951,6 +1080,14 @@ HPointer toList(void* str);
 // Tag-aware: uses forEachSegment so leaves/slices/ropes all work without
 // allocating an intermediate std::u16string.
 inline bool narrowAsciiToStack(void* str, char* buf, size_t cap, size_t* out_len) {
+    // UTF-8 form: bytes are already ASCII (HEAP_032) — memcpy, no widen.
+    if (isUtf8(str)) {
+        auto pr = utf8Bytes(str);
+        if (pr.second > cap) return false;
+        std::memcpy(buf, pr.first, pr.second);
+        *out_len = pr.second;
+        return true;
+    }
     size_t written = 0;
     bool ok = true;
     forEachSegment(str, [&](const u16* p, u32 n) {
@@ -1196,6 +1333,7 @@ inline std::u16string toStdU16String(void* str) {
     }
     if (hdr->tag == Tag_StringUtf8View || hdr->tag == Tag_StringUtf8Leaf) {
         auto pr = utf8Bytes(str);
+        GC_STATS_UTF8_WIDEN(pr.second);
         std::u16string out(pr.second, u'\0');
         if (pr.second > 0)
             Utf8::widenAscii(pr.first, pr.second, reinterpret_cast<u16*>(out.data()));

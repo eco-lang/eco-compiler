@@ -82,19 +82,51 @@ inline Tuple2* asTuple2(HPointer captured) {
 HPointer readStringBody(HPointer captured) {
     std::string pathStr = toString(Export::encode(captured));
     ECO_KLOG("file", "readString start path=%s", pathStr.c_str());
-    std::ifstream file(pathStr);
+    // Binary + ate to size the file up front, then read straight into a heap
+    // ByteBuffer — no std::string intermediate. Binary vs text is identical on
+    // Linux; keeping the bytes verbatim is exactly what the UTF-8 view wants.
+    // See plans/utf8-string-pipeline-wiring.md (W3).
+    std::ifstream file(pathStr, std::ios::binary | std::ios::ate);
     if (!file) {
         int err = errno;
         ECO_KLOG("file", "readString fail path=%s errno=%d msg=%s",
                  pathStr.c_str(), err, std::strerror(err));
         return failErrno(err, pathStr, "could not open file for reading");
     }
-    std::ostringstream ss;
-    ss << file.rdbuf();
-    std::string contents = ss.str();
-    ECO_KLOG("file", "readString done path=%s size=%zu",
-             pathStr.c_str(), contents.size());
-    return succeedString(std::move(contents));
+    std::streamoff sz = file.tellg();
+    if (sz < 0) {
+        int err = errno;
+        return failErrno(err, pathStr, "could not size file for reading");
+    }
+    size_t size = static_cast<size_t>(sz);
+    file.seekg(0, std::ios::beg);
+    // Empty file -> the EmptyString embedded constant (via succeedString).
+    if (size == 0) {
+        ECO_KLOG("file", "readString done path=%s size=0", pathStr.c_str());
+        return succeedString(std::string());
+    }
+    // Allocate the destination buffer and read directly into its payload.
+    // Nothing allocates between allocByteBufferBlank and the read, so bb.bytes
+    // is stable (BlankByteBuffer contract), and bufHp stays valid because no GC
+    // can occur before makeUtf8View (which roots the base across its own alloc).
+    Elm::alloc::BlankByteBuffer bb = Elm::alloc::allocByteBufferBlank(size);
+    HPointer bufHp = bb.hp;
+    file.read(reinterpret_cast<char*>(bb.bytes), static_cast<std::streamsize>(size));
+    if (!file || static_cast<size_t>(file.gcount()) != size) {
+        int err = errno;
+        ECO_KLOG("file", "readString short-read path=%s errno=%d", pathStr.c_str(), err);
+        return failErrno(err, pathStr, "could not read file contents");
+    }
+    ECO_KLOG("file", "readString done path=%s size=%zu", pathStr.c_str(), size);
+    // ASCII source -> zero-copy UTF-8 view over the buffer we just filled (this
+    // is what lets an ASCII .elm file reach the parser in UTF-8 with no extra
+    // copy). Non-ASCII -> one copy into a std::string then the legacy transcode.
+    if (Elm::Allocator::instance().getConfig().utf8_strings_enabled &&
+        Elm::Utf8::allAscii(bb.bytes, size)) {
+        return succeed(Elm::StringOps::makeUtf8View(bufHp, 0, static_cast<Elm::u32>(size)));
+    }
+    return succeedString(
+        std::string(reinterpret_cast<const char*>(bb.bytes), size));
 }
 
 HPointer readBytesBody(HPointer captured) {
