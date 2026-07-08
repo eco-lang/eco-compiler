@@ -205,7 +205,7 @@ constexpr unsigned TagBits = 5;
 /// tests for it and defers to eco_follow_forward. Must match the position of
 /// `Tag_Forward` in the `Tag` enum in Heap.hpp. A static_assert in
 /// EcoToLLVMHeap.cpp cross-checks this against the enum so the two cannot drift.
-constexpr int64_t TagForward = 22;
+constexpr int64_t TagForward = 24;
 
 } // namespace value_enc
 
