@@ -614,6 +614,22 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateResolveHPtr(OpBuilder &builder) const {
     return getOrCreateFunc(builder, "eco_resolve_hptr", funcTy, /*gcLeaf=*/true);
 }
 
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateResolveFwdMarker(OpBuilder &builder) const {
+    auto *ctx = builder.getContext();
+    // __eco_resolve_fwd(ptr as1) -> ptr as1. gc-leaf so RS4GC inserts no
+    // statepoint; expanded inline (fast/slow forwarding-check) by
+    // ExpandInlineDeref before RS4GC ever runs, so it never reaches codegen.
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "__eco_resolve_fwd", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateFollowForward(OpBuilder &builder) const {
+    auto *ctx = builder.getContext();
+    // eco_follow_forward(ptr as1) -> ptr as1. gc-leaf cold slow path.
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "eco_follow_forward", funcTy, /*gcLeaf=*/true);
+}
+
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateGetTag(OpBuilder &builder) const {
     // eco_get_tag(value: hptr) -> i32
     auto funcTy = LLVM::LLVMFunctionType::get(I32_TY, {HPTR_TY});
@@ -1109,6 +1125,7 @@ void EcoRuntime::materializeAllRuntimeDecls(OpBuilder &b) const {
     getOrCreateApplyClosureTyped(b); getOrCreateApplyClosureEval(b);
     getOrCreateApplySegmentationUnknown(b);
     getOrCreateResolveHPtr(b); getOrCreateGetTag(b);
+    getOrCreateResolveFwdMarker(b); getOrCreateFollowForward(b);
     getOrCreateConsHeadI64(b); getOrCreateConsHeadF64(b); getOrCreateConsHeadI16(b);
     getOrCreateTuple2Get0I64(b); getOrCreateTuple2Get1I64(b);
     getOrCreateTuple2Get0F64(b); getOrCreateTuple2Get1F64(b);

@@ -20,6 +20,7 @@
 #include "../EcoDialect.h"
 #include "../EcoOps.h"
 #include "../EcoTypes.h"
+#include "../../allocator/Heap.hpp"
 
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -28,12 +29,81 @@ using namespace mlir;
 using namespace eco;
 using namespace eco::detail;
 
+// Plan D6: the inline-deref layout constants must not drift from the runtime
+// heap layout. Cross-check them against Heap.hpp at compile time.
+static_assert(eco::detail::value_enc::TagForward == Elm::Tag_Forward,
+              "value_enc::TagForward out of sync with Elm::Tag_Forward");
+static_assert(eco::detail::value_enc::TagBits == TAG_BITS,
+              "value_enc::TagBits out of sync with TAG_BITS");
+
 namespace {
 
 // Forward declaration: defined further down in this file. Needed earlier by
 // ListConstructOpLowering for the narrow-int head-store path.
 static Value widenFieldToI64(Value val, Location loc,
                              ConversionPatternRewriter &rewriter);
+
+//===----------------------------------------------------------------------===//
+// Inline heap dereference (plan P2 / --inline-deref)
+//
+// Instead of `call eco_resolve_hptr` (returns a raw addrspace(0) pointer, out
+// of line, behind a gc-leaf call) followed by GEP + load, the inline path emits
+// a `__eco_resolve_fwd` marker call that stays in addrspace(1) — so RS4GC keeps
+// tracking the derived pointer — then the GEP + load directly on that as1
+// pointer. The marker is expanded to an inline forwarding-check diamond by the
+// ExpandInlineDeref LLVM pass (before RS4GC), turning the common no-forward case
+// into a header load + predicted-not-taken branch with no call. All loads are
+// `align 8` (HEAP_028: every heap slot is 8-byte aligned).
+//===----------------------------------------------------------------------===//
+
+/// Resolve `hptr` (as1) to its object base (as1) via the inline marker.
+static Value emitResolvedBase(Value hptr, Location loc,
+                              ConversionPatternRewriter &rewriter,
+                              const EcoRuntime &runtime) {
+    auto marker = runtime.getOrCreateResolveFwdMarker(rewriter);
+    return rewriter.create<LLVM::CallOp>(loc, marker, ValueRange{hptr})
+        .getResult();
+}
+
+/// Inline field pointer: resolved-base + byteOffset, typed as1.
+static Value emitInlineFieldPtr(Value hptr, Value byteOffset, Location loc,
+                                ConversionPatternRewriter &rewriter,
+                                const EcoRuntime &runtime) {
+    auto *ctx = rewriter.getContext();
+    auto i8Ty = IntegerType::get(ctx, 8);
+    auto hptrTy = getHPtrLLVMType(*ctx);
+    Value base = emitResolvedBase(hptr, loc, rewriter, runtime);
+    return rewriter.create<LLVM::GEPOp>(loc, hptrTy, i8Ty, base,
+                                        ValueRange{byteOffset});
+}
+
+/// Inline boxed field load: resolve + GEP(constant offset) + load i64 (align 8)
+/// + inttoptr to as1. Returns the field's !eco.value (as1) SSA value.
+static Value emitInlineBoxedLoad(Value hptr, int64_t offsetBytes, Location loc,
+                                 ConversionPatternRewriter &rewriter,
+                                 const EcoRuntime &runtime) {
+    auto *ctx = rewriter.getContext();
+    auto i64Ty = IntegerType::get(ctx, 64);
+    auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, offsetBytes);
+    Value fieldPtr = emitInlineFieldPtr(hptr, offset, loc, rewriter, runtime);
+    Value loaded = rewriter.create<LLVM::LoadOp>(loc, i64Ty, fieldPtr,
+                                                 layout::Alignment);
+    return heapLoadI64ToValue(rewriter, loc, loaded);
+}
+
+/// Inline primitive field load: resolve + GEP(constant offset) + typed load
+/// (align 8). `primTy` is i64/f64/i16.
+static Value emitInlinePrimLoad(Value hptr, int64_t offsetBytes, Type primTy,
+                                Location loc,
+                                ConversionPatternRewriter &rewriter,
+                                const EcoRuntime &runtime) {
+    auto *ctx = rewriter.getContext();
+    auto i64Ty = IntegerType::get(ctx, 64);
+    auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, offsetBytes);
+    Value fieldPtr = emitInlineFieldPtr(hptr, offset, loc, rewriter, runtime);
+    return rewriter.create<LLVM::LoadOp>(loc, primTy, fieldPtr,
+                                         layout::Alignment);
+}
 
 //===----------------------------------------------------------------------===//
 // Allocation coalescing helpers (Phase 4 infrastructure)
@@ -167,6 +237,15 @@ struct UnboxOpLowering : public OpConversionPattern<UnboxOp> {
             Value trueConst = rewriter.create<LLVM::IntToPtrOp>(loc, hptrTy, trueI64);
             Value result = rewriter.create<LLVM::ICmpOp>(
                 loc, LLVM::ICmpPredicate::eq, input, trueConst);
+            rewriter.replaceOp(op, result);
+            return success();
+        }
+
+        if (runtime.inlineDeref) {
+            // Inline: resolve (as1) + GEP(+8) + typed load (align 8). Boxed
+            // Int/Float/Char are heap objects; the forward check applies.
+            Value result = emitInlinePrimLoad(input, layout::HeaderSize,
+                                              resultType, loc, rewriter, runtime);
             rewriter.replaceOp(op, result);
             return success();
         }
@@ -402,6 +481,12 @@ struct ListHeadOpLowering : public OpConversionPattern<ListHeadOp> {
         auto i8Ty = IntegerType::get(ctx, 8);
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
+        if (runtime.inlineDeref) {
+            rewriter.replaceOp(op, emitInlineBoxedLoad(input, layout::ConsHeadOffset,
+                                                       loc, rewriter, runtime));
+            return success();
+        }
+
         auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
         auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{input});
         Value ptr = resolveCall.getResult();
@@ -447,6 +532,12 @@ struct ListTailOpLowering : public OpConversionPattern<ListTailOp> {
             Value result = rewriter.create<LLVM::ExtractValueOp>(
                 loc, resultType, input, ArrayRef<int64_t>{1});
             rewriter.replaceOp(op, result);
+            return success();
+        }
+
+        if (runtime.inlineDeref) {
+            rewriter.replaceOp(op, emitInlineBoxedLoad(input, layout::ConsTailOffset,
+                                                       loc, rewriter, runtime));
             return success();
         }
 
@@ -656,6 +747,19 @@ struct Tuple2ProjectOpLowering : public OpConversionPattern<Tuple2ProjectOp> {
             return success();
         }
 
+        int64_t offsetBytes = layout::Tuple2FirstOffset + field * layout::PtrSize;
+
+        if (runtime.inlineDeref) {
+            // Tuple slots are simple (resolve + load raw slot), boxed or
+            // primitive — inline both.
+            Value result = isHPtrLLVMType(resultType)
+                ? emitInlineBoxedLoad(input, offsetBytes, loc, rewriter, runtime)
+                : emitInlinePrimLoad(input, offsetBytes, resultType, loc,
+                                     rewriter, runtime);
+            rewriter.replaceOp(op, result);
+            return success();
+        }
+
         if (isHPtrLLVMType(resultType)) {
             // Boxed branch: resolve + GEP + load i64 + heapLoadI64ToValue.
             // Boxed pointers are GC-safe under RS4GC; Pattern C does not apply.
@@ -663,7 +767,6 @@ struct Tuple2ProjectOpLowering : public OpConversionPattern<Tuple2ProjectOp> {
             auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{input});
             Value ptr = resolveCall.getResult();
 
-            int64_t offsetBytes = layout::Tuple2FirstOffset + field * layout::PtrSize;
             auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, offsetBytes);
             auto fieldPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
                                                           ValueRange{offset});
@@ -727,6 +830,17 @@ struct Tuple3ProjectOpLowering : public OpConversionPattern<Tuple3ProjectOp> {
             return success();
         }
 
+        int64_t offsetBytes = layout::Tuple3FirstOffset + field * layout::PtrSize;
+
+        if (runtime.inlineDeref) {
+            Value result = isHPtrLLVMType(resultType)
+                ? emitInlineBoxedLoad(input, offsetBytes, loc, rewriter, runtime)
+                : emitInlinePrimLoad(input, offsetBytes, resultType, loc,
+                                     rewriter, runtime);
+            rewriter.replaceOp(op, result);
+            return success();
+        }
+
         if (isHPtrLLVMType(resultType)) {
             // Boxed branch unchanged; primitive branch goes through the
             // Pattern-C-safe runtime helpers below.
@@ -734,7 +848,6 @@ struct Tuple3ProjectOpLowering : public OpConversionPattern<Tuple3ProjectOp> {
             auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{input});
             Value ptr = resolveCall.getResult();
 
-            int64_t offsetBytes = layout::Tuple3FirstOffset + field * layout::PtrSize;
             auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, offsetBytes);
             auto fieldPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
                                                           ValueRange{offset});
@@ -874,13 +987,23 @@ struct RecordProjectOpLowering : public OpConversionPattern<RecordProjectOp> {
             return success();
         }
 
+        int64_t offsetBytes = layout::RecordFieldsOffset + index * layout::PtrSize;
+
+        if (runtime.inlineDeref) {
+            Value result = isHPtrLLVMType(resultType)
+                ? emitInlineBoxedLoad(input, offsetBytes, loc, rewriter, runtime)
+                : emitInlinePrimLoad(input, offsetBytes, resultType, loc,
+                                     rewriter, runtime);
+            rewriter.replaceOp(op, result);
+            return success();
+        }
+
         if (isHPtrLLVMType(resultType)) {
             // Boxed branch unchanged; primitive branch is Pattern-C-safe below.
             auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
             auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{input});
             Value ptr = resolveCall.getResult();
 
-            int64_t offsetBytes = layout::RecordFieldsOffset + index * layout::PtrSize;
             auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, offsetBytes);
             auto fieldPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
                                                           ValueRange{offset});
@@ -1017,13 +1140,23 @@ struct CustomProjectOpLowering : public OpConversionPattern<CustomProjectOp> {
             return success();
         }
 
+        int64_t offsetBytes = layout::CustomFieldsOffset + index * layout::PtrSize;
+
+        if (runtime.inlineDeref) {
+            Value result = isHPtrLLVMType(resultType)
+                ? emitInlineBoxedLoad(input, offsetBytes, loc, rewriter, runtime)
+                : emitInlinePrimLoad(input, offsetBytes, resultType, loc,
+                                     rewriter, runtime);
+            rewriter.replaceOp(op, result);
+            return success();
+        }
+
         if (isHPtrLLVMType(resultType)) {
             // Boxed branch unchanged; primitive branch is Pattern-C-safe below.
             auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
             auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{input});
             Value ptr = resolveCall.getResult();
 
-            int64_t offsetBytes = layout::CustomFieldsOffset + index * layout::PtrSize;
             auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, offsetBytes);
             auto fieldPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
                                                           ValueRange{offset});
@@ -1072,19 +1205,26 @@ struct ArrayLengthOpLowering : public OpConversionPattern<ArrayLengthOp> {
 
         Value input = adaptor.getArray();
 
-        // Resolve HPointer to raw pointer
-        auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-        auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{input});
-        Value ptr = resolveCall.getResult();
+        Value fieldPtr;
+        if (runtime.inlineDeref) {
+            auto offset = rewriter.create<LLVM::ConstantOp>(
+                loc, i64Ty, static_cast<int64_t>(layout::ArrayLengthOffset));
+            fieldPtr = emitInlineFieldPtr(input, offset, loc, rewriter, runtime);
+        } else {
+            // Resolve HPointer to raw pointer
+            auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
+            auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{input});
+            Value ptr = resolveCall.getResult();
 
-        // GEP to length field at offset 8 (after Header)
-        auto offset = rewriter.create<LLVM::ConstantOp>(
-            loc, i64Ty, static_cast<int64_t>(layout::ArrayLengthOffset));
-        auto fieldPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
-                                                      ValueRange{offset});
+            // GEP to length field at offset 8 (after Header)
+            auto offset = rewriter.create<LLVM::ConstantOp>(
+                loc, i64Ty, static_cast<int64_t>(layout::ArrayLengthOffset));
+            fieldPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
+                                                    ValueRange{offset});
+        }
 
-        // Load u32 length
-        Value len32 = rewriter.create<LLVM::LoadOp>(loc, i32Ty, fieldPtr);
+        // Load u32 length (offset 8 is 8-aligned; natural i32 alignment).
+        Value len32 = rewriter.create<LLVM::LoadOp>(loc, i32Ty, fieldPtr, 4);
 
         // Zero-extend to i64 (Elm Int)
         Value len64 = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, len32);
@@ -1118,6 +1258,30 @@ struct ArrayGetOpLowering : public OpConversionPattern<ArrayGetOp> {
         Value indexVal = adaptor.getIndex();
 
         Type origResultType = op.getResult().getType();
+
+        if (runtime.inlineDeref) {
+            // Element pointer = resolve(array) + ArrayElementsOffset + index*8.
+            // Array elements are a uniform kind; both boxed and primitive
+            // reads are a simple slot load.
+            auto baseOffset = rewriter.create<LLVM::ConstantOp>(
+                loc, i64Ty, static_cast<int64_t>(layout::ArrayElementsOffset));
+            auto elemSize = rewriter.create<LLVM::ConstantOp>(
+                loc, i64Ty, static_cast<int64_t>(layout::PtrSize));
+            auto indexOffset = rewriter.create<LLVM::MulOp>(loc, i64Ty, indexVal, elemSize);
+            auto totalOffset = rewriter.create<LLVM::AddOp>(loc, i64Ty, baseOffset, indexOffset);
+            Value elemPtr = emitInlineFieldPtr(arrayVal, totalOffset, loc, rewriter, runtime);
+            if (isa<eco::ValueType>(origResultType)) {
+                Value raw = rewriter.create<LLVM::LoadOp>(loc, i64Ty, elemPtr,
+                                                          layout::Alignment);
+                rewriter.replaceOp(op, heapLoadI64ToValue(rewriter, loc, raw));
+            } else {
+                Type resultType = getTypeConverter()->convertType(origResultType);
+                Value v = rewriter.create<LLVM::LoadOp>(loc, resultType, elemPtr,
+                                                        layout::Alignment);
+                rewriter.replaceOp(op, v);
+            }
+            return success();
+        }
 
         if (isa<eco::ValueType>(origResultType)) {
             // Boxed branch unchanged: resolve + GEP + load i64 + ptr<1> wrap.
@@ -1201,20 +1365,28 @@ struct ArraySetOpLowering : public OpConversionPattern<ArraySetOp> {
         rewriter.create<LLVM::CallOp>(
             loc, fixKindFn, ValueRange{newArrayHPtr, kindConst});
 
-        // Resolve new array HPointer to raw pointer
-        auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-        auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{newArrayHPtr});
-        Value ptr = resolveCall.getResult();
-
-        // Compute element pointer: base + ArrayElementsOffset + index * 8
+        // Compute element pointer: base + ArrayElementsOffset + index * 8.
         auto baseOffset = rewriter.create<LLVM::ConstantOp>(
             loc, i64Ty, static_cast<int64_t>(layout::ArrayElementsOffset));
         auto elemSize = rewriter.create<LLVM::ConstantOp>(
             loc, i64Ty, static_cast<int64_t>(layout::PtrSize));
         auto indexOffset = rewriter.create<LLVM::MulOp>(loc, i64Ty, indexVal, elemSize);
         auto totalOffset = rewriter.create<LLVM::AddOp>(loc, i64Ty, baseOffset, indexOffset);
-        auto elemPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
-                                                     ValueRange{totalOffset});
+        Value elemPtr;
+        if (runtime.inlineDeref) {
+            // newArrayHPtr is a freshly-cloned object (never forwarded): its as1
+            // word is the address, so GEP directly — no resolve/forward check.
+            auto hptrTy = getHPtrLLVMType(*ctx);
+            elemPtr = rewriter.create<LLVM::GEPOp>(loc, hptrTy, i8Ty, newArrayHPtr,
+                                                   ValueRange{totalOffset});
+        } else {
+            // Resolve new array HPointer to raw pointer
+            auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
+            auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{newArrayHPtr});
+            Value ptr = resolveCall.getResult();
+            elemPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
+                                                   ValueRange{totalOffset});
+        }
 
         // Normalize value to i64 for storage in Unboxable slot
         Type origValueType = op.getValue().getType();
@@ -1243,7 +1415,8 @@ struct ArraySetOpLowering : public OpConversionPattern<ArraySetOp> {
         // StoreOp that writes a boxed slot from compiled Elm — every other
         // boxed-slot write goes through eco_store_field/_record_field,
         // which already self-validate.
-        auto storeOp = rewriter.create<LLVM::StoreOp>(loc, raw, elemPtr);
+        auto storeOp = rewriter.create<LLVM::StoreOp>(loc, raw, elemPtr,
+                                                      layout::Alignment);
         if (isa<eco::ValueType>(origValueType))
             storeOp->setAttr("eco.boxed_slot", rewriter.getUnitAttr());
 

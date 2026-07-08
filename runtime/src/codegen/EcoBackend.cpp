@@ -39,6 +39,10 @@
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/MDBuilder.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h" // SplitBlockAndInsertIfThen
+#include "../allocator/Heap.hpp"                   // TAG_BITS, Elm::Tag_Forward
 
 #include <cstdint>
 
@@ -667,8 +671,85 @@ void internalizeAndDCEForExecutable(Module &m) {
     MPM.run(m, MAM);
 }
 
+// Plan P2 (--inline-deref). Expand each `__eco_resolve_fwd` marker call into an
+// inline forwarding-check diamond:
+//
+//     %hdr   = load i32, ptr addrspace(1) %h, align 8   ; object header word
+//     %tag   = and i32 %hdr, TAG_MASK
+//     %isfwd = icmp eq i32 %tag, Tag_Forward
+//     br i1 %isfwd, label %fwd, label %cont, !prof !unlikely   ; predicted cont
+//   fwd:
+//     %r = call ptr addrspace(1) @eco_follow_forward(ptr addrspace(1) %h) [gc-leaf]
+//     br label %cont
+//   cont:
+//     %base = phi [ %h, %head ], [ %r, %fwd ]   ; replaces the marker result
+//
+// Runs on the whole module at the very start of runEcoBackend — i.e. before ANY
+// RewriteStatepointsForGC pass (whole-module serial, deferred, or per-partition)
+// and before module splitting — so RS4GC sees the fully-expanded diamond and
+// tracks %base / the field pointers derived from it as ordinary GC pointers.
+// The header load stays in addrspace(1); no ptrtoint is introduced. Callee
+// eco_follow_forward is gc-leaf so RS4GC inserts no statepoint around the cold
+// call. Idempotent / cheap when there are no markers (flag off).
+static void expandInlineDerefs(Module &m) {
+    Function *marker = m.getFunction("__eco_resolve_fwd");
+    if (!marker || marker->use_empty())
+        return;
+
+    LLVMContext &ctx = m.getContext();
+    Type *i32Ty = Type::getInt32Ty(ctx);
+    PointerType *as1 = PointerType::get(ctx, 1);
+    const uint64_t tagMask = (1ULL << TAG_BITS) - 1;
+
+    FunctionCallee followCallee = m.getOrInsertFunction(
+        "eco_follow_forward", FunctionType::get(as1, {as1}, /*isVarArg=*/false));
+    if (auto *ff = dyn_cast<Function>(followCallee.getCallee()))
+        ff->addFnAttr("gc-leaf-function");
+
+    MDBuilder mdb(ctx);
+    // Forwarding is rare (only during an old-gen compaction window): weight the
+    // taken (fwd) edge far below the fall-through so the cold call is laid out
+    // out of line.
+    MDNode *unlikely = mdb.createBranchWeights(/*fwd=*/1, /*cont=*/1u << 20);
+
+    SmallVector<CallInst *, 64> calls;
+    for (User *u : marker->users())
+        if (auto *ci = dyn_cast<CallInst>(u))
+            calls.push_back(ci);
+
+    for (CallInst *ci : calls) {
+        Value *h = ci->getArgOperand(0);
+        IRBuilder<> b(ci);
+        LoadInst *hdr = b.CreateAlignedLoad(i32Ty, h, Align(8), "eco.hdr");
+        Value *tag = b.CreateAnd(hdr, tagMask);
+        Value *isfwd = b.CreateICmpEQ(
+            tag, ConstantInt::get(i32Ty, (uint64_t)Elm::Tag_Forward), "eco.isfwd");
+
+        // Split ci's block at ci; insert an if(isfwd) then-block. thenTerm is the
+        // unconditional branch terminating the new then-block.
+        Instruction *thenTerm = SplitBlockAndInsertIfThen(
+            isfwd, ci, /*Unreachable=*/false, unlikely);
+        BasicBlock *thenBB = thenTerm->getParent();
+        BasicBlock *headBB = thenBB->getSinglePredecessor();
+
+        IRBuilder<> tb(thenTerm);
+        CallInst *fwd = tb.CreateCall(followCallee, {h}, "eco.fwd");
+
+        IRBuilder<> pb(&*ci->getParent()->getFirstInsertionPt());
+        PHINode *phi = pb.CreatePHI(as1, 2, "eco.base");
+        phi->addIncoming(h, headBB);
+        phi->addIncoming(fwd, thenBB);
+
+        ci->replaceAllUsesWith(phi);
+        ci->eraseFromParent();
+    }
+}
+
 Error runEcoBackend(Module &m, const EcoBackendJob &job,
                     EcoBackendResult *result) {
+    // Plan P2: expand inline-deref markers before RS4GC / partition splitting.
+    expandInlineDerefs(m);
+
     RS4GCOptions rs4gcOpts;
     rs4gcOpts.preDumpPath = job.preRS4GCDumpPath;
     rs4gcOpts.postDumpPath = job.postRS4GCDumpPath;

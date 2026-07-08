@@ -786,13 +786,21 @@ void Allocator::reset(const HeapConfig* new_config) {
 // ============================================================================
 
 // Resolves an HPointer to its physical address, following forwarding pointers.
+//
+// Hot path (plan D9): under HEAP_028 the word IS the address, so the common
+// no-forwarding case is a pure reinterpret (fromPointerRaw). The four
+// correctness asserts (ptr_ind, non-null, heap-bounds x2) and the nursery
+// stale-pointer tripwire are demoted to ECO_HEAP_VALIDATE builds only — they
+// fired on every dereference of every Elm program under the asserts-on `build`
+// preset, which is pure overhead in production. Only the forward-follow loop is
+// real semantic work, and it iterates only while old-gen compaction has a
+// forwarding window open (rare; see the __builtin_expect hint).
 void* Allocator::resolve(HPointer ptr) {
-    assert(ptr.ptr_ind == 0 && "Cannot resolve an embedded constant HPointer");
-
     void* obj = fromPointerRaw(ptr);
-    assert(obj && "Null pointer from valid HPointer");
 
 #if ECO_HEAP_VALIDATE
+    assert(ptr.ptr_ind == 0 && "Cannot resolve an embedded constant HPointer");
+    assert(obj && "Null pointer from valid HPointer");
     // Stale-pointer tripwire: if obj is in nursery, verify it points at an
     // allocated region (not post-swap to-space-free). Hot path — only run
     // in validator builds.
@@ -802,15 +810,14 @@ void* Allocator::resolve(HPointer ptr) {
             heap->debugAssertValidNurseryPointer(obj);
         }
     }
-#endif
-
     // Validate pointer is within the reserved heap address space.
     assert(static_cast<char*>(obj) >= heap_base && "Pointer below heap base");
     assert(static_cast<char*>(obj) < heap_base + heap_reserved && "Pointer above heap end");
+#endif
 
     // Follow forwarding chain to final location.
     Header* hdr = getHeader(obj);
-    while (hdr->tag == Tag_Forward) {
+    while (__builtin_expect(hdr->tag == Tag_Forward, 0)) {
         Forward* fwd = static_cast<Forward*>(obj);
         obj = decodeForwardPtr(fwd->header.forward_ptr, heap_base);
         hdr = getHeader(obj);

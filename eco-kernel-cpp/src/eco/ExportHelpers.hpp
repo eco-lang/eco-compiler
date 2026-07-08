@@ -41,11 +41,14 @@ inline void* toPtr(uint64_t val) {
     if (h.ptr_ind != 0 && h.ptr == 0 && h.enum_idx == 0 && h.padding == 0) {
         return nullptr;
     }
-    // Otherwise a heap HPointer: its word IS the absolute address; resolve()
-    // follows forwarding. enum_idx/padding must be zero for a heap pointer.
+    // Otherwise a heap HPointer: its word IS the absolute address; resolveFast
+    // reinterprets it inline (following forwarding only in the rare compaction
+    // window). enum_idx/padding must be zero for a heap pointer.
+#if ECO_HEAP_VALIDATE
     assert(h.ptr_ind == 0 && h.enum_idx == 0 && h.padding == 0 &&
            "Export::toPtr: not a heap pointer (ptr_ind/enum/padding bits set)");
-    return Allocator::instance().resolve(h);
+#endif
+    return Allocator::resolveFast(h);
 }
 
 // Encode a raw pointer as uint64_t.

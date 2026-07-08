@@ -195,6 +195,18 @@ inline int64_t encodeConstant(int kind) {
 /// match CONSTANT_TAG in Heap.hpp and Compiler.Data.CtorTag.constantTag. See D9.
 constexpr int64_t ConstantTag = 0xFFFD;
 
+/// Number of low bits of the object Header's first word occupied by the `tag`
+/// field. Must match TAG_BITS in Heap.hpp. Used by the inline-deref expansion to
+/// mask the tag out of a loaded header word.
+constexpr unsigned TagBits = 5;
+
+/// The `Tag_Forward` enumerator value: a header carrying this tag is a
+/// forwarding tombstone left by old-gen compaction; the inline-deref fast path
+/// tests for it and defers to eco_follow_forward. Must match the position of
+/// `Tag_Forward` in the `Tag` enum in Heap.hpp. A static_assert in
+/// EcoToLLVMHeap.cpp cross-checks this against the enum so the two cannot drift.
+constexpr int64_t TagForward = 22;
+
 } // namespace value_enc
 
 //===----------------------------------------------------------------------===//
@@ -255,6 +267,13 @@ constexpr uint64_t ClosureValuesOffset = HeaderSize + 2 * PtrSize;
 struct EcoRuntime {
     mutable mlir::ModuleOp module;
     mlir::MLIRContext *ctx;
+
+    /// When true (plan P2, `--inline-deref`), heap-dereference lowering emits an
+    /// inline `__eco_resolve_fwd` marker call + GEP + load (later expanded to an
+    /// inline forwarding-check by the ExpandInlineDeref LLVM pass) instead of the
+    /// out-of-line eco_resolve_hptr / eco_*_get_* helper calls. Set from the
+    /// `--inline-deref` cl::opt at pass construction (see EcoToLLVM.cpp).
+    bool inlineDeref = false;
 
     /// Cached symbol map for O(1) lookups instead of O(N) module walks.
     /// Built lazily on first use from the module's top-level operations.
@@ -467,6 +486,13 @@ struct EcoRuntime {
 
     // Utility functions
     mlir::LLVM::LLVMFuncOp getOrCreateResolveHPtr(mlir::OpBuilder &builder) const;
+
+    // Inline-deref (plan P2) helpers. `__eco_resolve_fwd` is a marker call
+    // emitted by heap-deref lowering: (ptr as1) -> (ptr as1), gc-leaf, expanded
+    // to an inline forwarding-check diamond by the ExpandInlineDeref LLVM pass
+    // before RS4GC. `eco_follow_forward` is the cold slow path it defers to.
+    mlir::LLVM::LLVMFuncOp getOrCreateResolveFwdMarker(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateFollowForward(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateGetTag(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateConsHeadI64(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateConsHeadF64(mlir::OpBuilder &builder) const;

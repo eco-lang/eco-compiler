@@ -3686,8 +3686,32 @@ extern "C" int64_t eco_int_pow(int64_t base, int64_t exp) {
 
 extern "C" void* eco_resolve_hptr(HPtr hptr) {
     void* ptr = hpointerToPtr(hptr.toBits());
+#if ECO_HEAP_VALIDATE
     assert(ptr && "eco_resolve_hptr: received an embedded constant (not a heap pointer)");
+#endif
     return ptr;
+}
+
+// Cold slow path for the inline-deref lowering (plan D1/P2). Generated code
+// checks the object header tag inline; only when it is Tag_Forward — i.e. old-
+// gen compaction has moved the object and left a forwarding tombstone that the
+// fixup pass has not yet rewritten — does it call here to follow the forward
+// chain. Input and output are HPointer words (== raw addresses under HEAP_028),
+// typed `ptr addrspace(1)` on the codegen side so the result stays a GC-tracked
+// pointer. gc-leaf: no allocation, so RS4GC inserts no statepoint around it.
+//
+// NB the caller only reaches this on the cold branch, but the function is
+// correct for any heap HPointer (it re-checks the tag and returns the input
+// unchanged when there is no forward), so it is also a safe standalone resolve.
+extern "C" void* eco_follow_forward(HPtr hptr) {
+    void* obj = Elm::hpToAddr(hptr.toHPointer());
+    Elm::Header* hdr = static_cast<Elm::Header*>(obj);
+    while (__builtin_expect(hdr->tag == Elm::Tag_Forward, 1)) {
+        Elm::Forward* fwd = static_cast<Elm::Forward*>(obj);
+        obj = Elm::decodeForwardPtr(fwd->header.forward_ptr, nullptr);
+        hdr = static_cast<Elm::Header*>(obj);
+    }
+    return obj;
 }
 
 // Update an ElmArray's `header.unboxed` to the kind of the value about

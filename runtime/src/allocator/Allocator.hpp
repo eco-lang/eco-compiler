@@ -55,6 +55,20 @@ public:
     // Asserts on invalid pointers or corrupted memory.
     void* resolve(HPointer ptr);
 
+    // Inline fast-path resolve for hot kernel dereferences (plan D9). Under
+    // HEAP_028 the word IS the address, so the common (no-forwarding) case is a
+    // pure reinterpret; only when the target header is Tag_Forward — the rare
+    // old-gen compaction window — do we fall to the out-of-line resolve() loop.
+    // Header-defined so it actually inlines into kernel callers (unlike the
+    // out-of-line resolve(), which is a separate TU with no LTO). Caller must
+    // have already excluded embedded constants (ptr_ind == 0).
+    static inline void* resolveFast(HPointer ptr) {
+        void* obj = fromPointerRaw(ptr);
+        if (__builtin_expect(getHeader(obj)->tag == Tag_Forward, 0))
+            return Allocator::instance().resolve(ptr);
+        return obj;
+    }
+
     // Wraps a physical address as an HPointer.
     // Converts raw pointer returned by allocate() into a storable logical pointer.
     HPointer wrap(void* obj);

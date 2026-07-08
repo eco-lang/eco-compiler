@@ -672,6 +672,14 @@ int64_t eco_int_pow(int64_t base, int64_t exp);
 /// @return Raw pointer to the heap object, or nullptr
 void* eco_resolve_hptr(HPtr hptr);
 
+/// Cold slow path for the inline-deref lowering (plan P2). Follows a Tag_Forward
+/// chain and returns the final HPointer word (== the object address under
+/// HEAP_028), typed ptr addrspace(1) on the codegen side. gc-leaf: never
+/// allocates. Emitted only on the cold branch of the ExpandInlineDeref diamond,
+/// but correct as a standalone resolve for any heap HPointer. Must be JIT-
+/// registerable (see RuntimeSymbols.cpp) — the JIT links it by name.
+void* eco_follow_forward(HPtr hptr);
+
 /// Stale-pointer barrier emitted by the EcoBoxedStoreVerify pass before
 /// each compiled-Elm direct heap store of a boxed value. Routes the bits
 /// through Elm::alloc::validateNurseryHPtrBits, which resolves the

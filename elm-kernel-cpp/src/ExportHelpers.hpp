@@ -62,7 +62,7 @@ inline void* toPtr(uint64_t val) {
     // handles forwarding. Otherwise it is a raw non-heap pointer (e.g. a global
     // string literal in the data segment) and is used directly.
     if (Allocator::instance().isInHeap(raw)) {
-        return Allocator::instance().resolve(h);
+        return Allocator::resolveFast(h);
     }
     return raw;
 }

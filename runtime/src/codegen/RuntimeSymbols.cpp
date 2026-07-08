@@ -435,6 +435,14 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_resolve_hptr),
                 llvm::JITSymbolFlags::Exported);
 
+        // Inline-deref (plan P2) cold slow path. Generated code calls this on
+        // the rare forwarding branch of the ExpandInlineDeref diamond, so the
+        // JIT must be able to resolve it by name.
+        symbolMap[interner("eco_follow_forward")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_follow_forward),
+                llvm::JITSymbolFlags::Exported);
+
         // Stale-pointer barrier injected by EcoBoxedStoreVerify in front of
         // direct heap stores from compiled Elm. Always registered so the JIT
         // can resolve the symbol; the call is only emitted when the pass
