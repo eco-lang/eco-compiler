@@ -67,6 +67,8 @@ import Compiler.Generate.MLIR.Backend as MLIR
 import Compiler.Generate.Mode as Mode
 import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
+import Compiler.MonoSolver.Diff as MonoDiff
+import Compiler.MonoSolver.Monomorphize as MonoSolver
 import Compiler.Monomorphize.Monomorphize as Monomorphize
 import Compiler.Nitpick.Debug as Nitpick
 import Compiler.Reporting.Render.Type.Localizer as L
@@ -728,7 +730,7 @@ runMonoOptPipeline : Config.EcoConfig -> FEStats.Handle -> TOpt.GlobalGraph Name
 runMonoOptPipeline ecoConfig stats typedGraph globalTypeEnv =
     FEStats.withPhase stats
         FEStats.PhaseMono
-        (case Monomorphize.monomorphize "main" globalTypeEnv typedGraph of
+        (case selectMonomorphizer ecoConfig globalTypeEnv typedGraph of
             Err err ->
                 Task.throw (Exit.GenerateMonomorphizationError err)
 
@@ -737,6 +739,24 @@ runMonoOptPipeline ecoConfig stats typedGraph globalTypeEnv =
         )
         -- Hand off to a separate function so typedGraph and globalTypeEnv go out of scope
         |> Task.andThen (runInlineSimplifyPhase ecoConfig stats)
+
+
+{-| Choose the monomorphizer engine per `eco-config.json` / `ECO_MONO_ENGINE`.
+`EngineSubst` (default) is the original engine; `EngineSolver` is the new
+solver-based one; `EngineDiff` runs both and asserts their output matches. This
+is the single production dispatch point between the two engines.
+-}
+selectMonomorphizer : Config.EcoConfig -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
+selectMonomorphizer ecoConfig globalTypeEnv typedGraph =
+    case ecoConfig.mono.engine of
+        Config.EngineSubst ->
+            Monomorphize.monomorphize "main" globalTypeEnv typedGraph
+
+        Config.EngineSolver ->
+            MonoSolver.monomorphize "main" globalTypeEnv typedGraph
+
+        Config.EngineDiff ->
+            MonoDiff.run ecoConfig.mono.diffDump "main" globalTypeEnv typedGraph
 
 
 {-| Inline+simplify phase in its own scope so monomorphization inputs are GC-eligible.

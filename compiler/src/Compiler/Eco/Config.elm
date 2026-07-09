@@ -1,6 +1,8 @@
 module Compiler.Eco.Config exposing
     ( EcoConfig, InlineConfig, BytesFusionConfig, LogicalTypesConfig
+    , MonoEngine(..), MonoConfig
     , default, decoder, hash, clamp
+    , monoEngineFromString
     )
 
 {-| Project-level tunable compiler settings, read from `eco-config.json`
@@ -31,6 +33,34 @@ type alias EcoConfig =
     { inline : InlineConfig
     , bytesFusion : BytesFusionConfig
     , logicalTypes : LogicalTypesConfig
+    , mono : MonoConfig
+    }
+
+
+{-| Which monomorphizer engine to run.
+
+  - `EngineSubst` (default): the original Dict-substitution engine
+    (`Compiler.Monomorphize.Monomorphize`). Reproduces today's behaviour.
+  - `EngineSolver`: the solver-based engine (`Compiler.MonoSolver.Monomorphize`).
+  - `EngineDiff`: run both and assert their MonoGraph output matches — the A/B
+    gate. Emits the original engine's graph so the build still succeeds.
+
+-}
+type MonoEngine
+    = EngineSubst
+    | EngineSolver
+    | EngineDiff
+
+
+{-| Monomorphizer selection + debug knobs.
+
+`diffDump` (env `ECO_MONO_DIFF_DUMP=1`, never from JSON) makes `EngineDiff`
+embed both `Debug.toString` renderings in the mismatch error for offline diff.
+
+-}
+type alias MonoConfig =
+    { engine : MonoEngine
+    , diffDump : Bool
     }
 
 
@@ -79,6 +109,7 @@ default =
         }
     , bytesFusion = { enabled = True }
     , logicalTypes = { customMaxFields = 8 }
+    , mono = { engine = EngineSubst, diffDump = False }
     }
 
 
@@ -92,6 +123,7 @@ decoder =
         |> D.apply (D.optionalField "inline" inlineDecoder default.inline)
         |> D.apply (D.optionalField "bytesFusion" bytesFusionDecoder default.bytesFusion)
         |> D.apply (D.optionalField "logicalTypes" logicalTypesDecoder default.logicalTypes)
+        |> D.apply (D.optionalField "mono" monoDecoder default.mono)
 
 
 inlineDecoder : D.Decoder x InlineConfig
@@ -114,6 +146,39 @@ logicalTypesDecoder : D.Decoder x LogicalTypesConfig
 logicalTypesDecoder =
     D.pure LogicalTypesConfig
         |> D.apply (D.optionalField "customMaxFields" D.int default.logicalTypes.customMaxFields)
+
+
+{-| Decode the `mono` block. Only `engine` is JSON-configurable; an unrecognized
+string falls back to the default. `diffDump` is env-only (never from JSON).
+-}
+monoDecoder : D.Decoder x MonoConfig
+monoDecoder =
+    D.pure
+        (\s ->
+            { engine = Maybe.withDefault default.mono.engine (monoEngineFromString s)
+            , diffDump = default.mono.diffDump
+            }
+        )
+        |> D.apply (D.optionalField "engine" D.string "subst")
+
+
+{-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
+decoder and the `ECO_MONO_ENGINE` env override. `Nothing` on an unknown value.
+-}
+monoEngineFromString : String -> Maybe MonoEngine
+monoEngineFromString s =
+    case String.toLower (String.trim s) of
+        "subst" ->
+            Just EngineSubst
+
+        "solver" ->
+            Just EngineSolver
+
+        "diff" ->
+            Just EngineDiff
+
+        _ ->
+            Nothing
 
 
 {-| Clamp values that have hard bounds, returning the corrected config plus any
@@ -151,18 +216,31 @@ when the config changes. Comparison is plain string equality; an absent file
 hash : EcoConfig -> String
 hash cfg =
     String.join "|"
-        [ "v1"
-        , "thr=" ++ String.fromInt cfg.inline.threshold
-        , "wl=" ++ String.join "," cfg.inline.whitelist
-        , "bl=" ++ String.join "," cfg.inline.blacklist
-        , "mpf=" ++ String.fromInt cfg.inline.maxPerFunction
-        , "fpi=" ++ String.fromInt cfg.inline.fixpointIterations
-        , "bf="
+        ([ "v1"
+         , "thr=" ++ String.fromInt cfg.inline.threshold
+         , "wl=" ++ String.join "," cfg.inline.whitelist
+         , "bl=" ++ String.join "," cfg.inline.blacklist
+         , "mpf=" ++ String.fromInt cfg.inline.maxPerFunction
+         , "fpi=" ++ String.fromInt cfg.inline.fixpointIterations
+         , "bf="
             ++ (if cfg.bytesFusion.enabled then
                     "1"
 
                 else
                     "0"
                )
-        , "cmf=" ++ String.fromInt cfg.logicalTypes.customMaxFields
-        ]
+         , "cmf=" ++ String.fromInt cfg.logicalTypes.customMaxFields
+         ]
+            -- Engine token appears ONLY for non-default engines, so a default
+            -- config (or any absent eco-config.json) hashes exactly as before.
+            ++ (case cfg.mono.engine of
+                    EngineSubst ->
+                        []
+
+                    EngineSolver ->
+                        [ "mono=solver" ]
+
+                    EngineDiff ->
+                        [ "mono=diff" ]
+               )
+        )

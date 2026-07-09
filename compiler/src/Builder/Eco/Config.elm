@@ -35,6 +35,14 @@ Rules:
 -}
 load : Maybe FilePath -> FilePath -> Task Exit.Make EcoConfig
 load maybeExplicit root =
+    loadBase maybeExplicit root
+        |> Task.andThen applyEnvOverrides
+
+
+{-| Load the effective config from the file (or defaults), before env overrides.
+-}
+loadBase : Maybe FilePath -> FilePath -> Task Exit.Make EcoConfig
+loadBase maybeExplicit root =
     let
         path : FilePath
         path =
@@ -63,6 +71,78 @@ load maybeExplicit root =
                                         Task.throw (Exit.MakeBadConfig path err)
                             )
             )
+
+
+{-| Apply developer env overrides on top of the file/default config:
+
+  - `ECO_MONO_ENGINE=subst|solver|diff` selects the monomorphizer engine.
+  - `ECO_MONO_DIFF_DUMP=1` makes `EngineDiff` embed full renderings on mismatch.
+
+Applied here (not further downstream) so the override participates in
+`Config.hash`, which keys the Details cache. An unrecognized engine value is a
+loud stderr warning that keeps the current engine (rather than a hard failure)
+— this is a dev-only knob.
+
+-}
+applyEnvOverrides : EcoConfig -> Task Exit.Make EcoConfig
+applyEnvOverrides cfg =
+    (Utils.envLookupEnv "ECO_MONO_ENGINE" |> Task.mapError never)
+        |> Task.andThen (\engVal -> applyEngineOverride engVal cfg)
+        |> Task.andThen
+            (\cfg1 ->
+                (Utils.envLookupEnv "ECO_MONO_DIFF_DUMP" |> Task.mapError never)
+                    |> Task.map (\dumpVal -> applyDumpOverride dumpVal cfg1)
+            )
+
+
+applyEngineOverride : Maybe String -> EcoConfig -> Task Exit.Make EcoConfig
+applyEngineOverride maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            Task.succeed cfg
+
+        Just raw ->
+            if String.trim raw == "" then
+                Task.succeed cfg
+
+            else
+                case Config.monoEngineFromString raw of
+                    Just engine ->
+                        let
+                            mono =
+                                cfg.mono
+                        in
+                        Task.succeed { cfg | mono = { mono | engine = engine } }
+
+                    Nothing ->
+                        Task.io (IO.writeLn IO.stderr ("eco: unrecognized ECO_MONO_ENGINE=" ++ raw ++ " (expected subst|solver|diff); keeping current engine"))
+                            |> Task.map (\_ -> cfg)
+
+
+applyDumpOverride : Maybe String -> EcoConfig -> EcoConfig
+applyDumpOverride maybeVal cfg =
+    let
+        on =
+            case maybeVal of
+                Just v ->
+                    let
+                        t =
+                            String.toLower (String.trim v)
+                    in
+                    t == "1" || t == "true" || t == "yes"
+
+                Nothing ->
+                    False
+    in
+    if on then
+        let
+            mono =
+                cfg.mono
+        in
+        { cfg | mono = { mono | diffDump = True } }
+
+    else
+        cfg
 
 
 {-| Clamp out-of-range values and print any resulting warnings to stderr.
