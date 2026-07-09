@@ -1,0 +1,441 @@
+================================================================================
+ BACKEND TIMING LOG
+ MLIR -> native executable lowering (LLVM backend) of the self-host compiler
+================================================================================
+
+--------------------------------------------------------------------------------
+ TABLE OF CONTENTS
+--------------------------------------------------------------------------------
+  1. Purpose
+  2. How to do a timing run (repeatable methodology + exact commands)
+  3. Run log (chronological)
+       2026-07-06  Parallel-opt tiers (dev / cgu)
+       2026-07-06  Recursive-tax measurement
+       2026-07-07  Serial-floor pipelining (Phases 0-6)
+       2026-07-07  N-partition sweep (lazy split default)
+       2026-07-07  Functional validation (parallel-opt tiers)
+       2026-07-07  Round 4 — serial-spine optimizations (M0-M7)
+       2026-07-07  Round 4 — function-parallel EcoToLLVM
+  4. Summary table (by timestamp: description, timing, delta to baseline)
+
+================================================================================
+ 1. PURPOSE
+================================================================================
+    Wall-clock timings for the LLVM backend lowering the self-host compiler's
+    MLIR to a native executable. Tracks the multi-round backend perf effort:
+    parallel-opt partitioning, serial-floor pipelining, lazy split, and the
+    round-4 serial-spine + function-parallel EcoToLLVM work.
+
+    Reference points:
+      * Whole-module -O2 backend baseline (pre-parallel work): ~65.8 s LLVM
+        backend / ~86.5 s total wall  (see 2026-07-06 parallel-opt tiers).
+      * Round-4 dev-mode baseline (M0): 28.95 s wall (post serial-floor + lazy
+        split; the starting point for the M1-M7 serial-spine milestones).
+
+================================================================================
+ 2. HOW TO DO A TIMING RUN
+================================================================================
+Machine of record:  24 cores, 15 GB RAM (Linux 6.12).
+Input:    build/compiler/build-kernel/bin/eco-compiler.mlir  (~85k LLVM fns).
+Binary:   build/runtime/src/codegen/eco-boot-native  (RelWithDebInfo, LLVM 21.1.8).
+
+--------------------------------------------------------------------------------
+ COMPILE-TIME (backend lowering) — primary measurement
+--------------------------------------------------------------------------------
+  B=build/runtime/src/codegen/eco-boot-native
+  IN=build/compiler/build-kernel/bin/eco-compiler.mlir
+  /usr/bin/time -v $B --lowering-stats -O 2 [--parallel-opt=dev|cgu] -o /tmp/o.exe $IN
+
+  * --lowering-stats prints the per-phase sub-timings (MLIR pipeline, MLIR->LLVM
+    translation, cheap-IPO prologue, parallel opt+emit drain, externalize +
+    serialize, link, ...). Use the 3-run median of "Elapsed (wall clock) time".
+  * Modes:  none = whole-module -O2;  dev = no per-partition inlining;
+            cgu = per-partition full -O2.
+  * Round-4 sub-phase attribution uses ECO_ECO2LLVM_STATS=1 (EcoToLLVM stage
+    timers) and --parallel-opt=dev unless noted.
+
+--------------------------------------------------------------------------------
+ RECURSIVE-TAX (produced-binary quality) — clean env
+--------------------------------------------------------------------------------
+ Build the compiler under each mode, then time it AS a compiler doing the
+ Stage-7a self-compile (frontend only, --output=*.mlir). Clean env
+ (rm -rf build ~/.eco; cmake --preset build). 234-module cold compile, fresh
+ --builddir per run, /usr/bin/time -v user time, 99% CPU.
+
+  # build eco-{none,dev,cgu}:
+  $B [--parallel-opt=MODE] $IN -o /tmp/eco-MODE
+  # then in build/compiler/build-kernel:
+  /usr/bin/time -v /tmp/eco-MODE make --optimize --kernel-package eco/compiler \
+     --local-package eco/kernel=/work/eco-kernel-cpp --builddir bdX \
+     --output=bin/x.mlir /work/compiler/src/Terminal/Main.elm
+
+ Gate: recursive tax must be <=3% (a faster backend that produces a slower
+ compiler binary is a net loss on every subsequent frontend compile).
+
+--------------------------------------------------------------------------------
+ GOTCHA — regenerating the input .mlir
+--------------------------------------------------------------------------------
+  The `full` target runs `clean`, which wipes eco-compiler.mlir (it is a
+  CUSTOM_COMMAND, not in `all`). Regenerate with:
+      ninja -C build compiler/build-kernel/bin/eco-compiler.mlir
+
+================================================================================
+ 3. RUN LOG
+================================================================================
+
+--------------------------------------------------------------------------------
+ 2026-07-06 — Parallel-opt tiers (plans/parallel-llvm-opt-partitioning.md)
+--------------------------------------------------------------------------------
+Description: Replace serial whole-module -O2 with a cheap whole-module IPO
+             prologue (IPSCCP/GlobalOpt/GlobalDCE) + per-partition opt on the
+             emission threads. Two tiers: dev (no per-partition inlining) and cgu
+             (per-partition full -O2).
+
+Raw output — Compile-time (self-host mlir -> native exe, -O 2):
+  mode                       LLVM backend   total wall   CPU
+  default (whole-module -O2)   65.8 s        86.5 s      180%
+  --parallel-opt=dev           28.7 s        49.0 s      281%
+  --parallel-opt=cgu           31.4 s        53.4 s      303%
+  Backend speedup: dev 2.30x, cgu 2.09x.  Total: dev 1.77x, cgu 1.62x.
+
+  The serial whole-module -O2 (~51 s @ 107% CPU) is replaced by a cheap
+  whole-module IPO prologue + per-partition opt. Confirms the inliner+fused-
+  simplification was the bulk.
+
+--------------------------------------------------------------------------------
+ 2026-07-06 — Recursive-tax measurement (clean self-host env)
+--------------------------------------------------------------------------------
+Description: Produced-binary quality gate for the parallel-opt tiers. Clean env,
+             234-module cold compile, /usr/bin/time -v user time, 99% CPU.
+
+Raw output:
+   mode   user time (s) samples     mean      tax vs none
+   none   273.3 / 274.0 / 270.9     272.7 s   —
+   dev    278.4 / 276.6             277.5 s   +1.7 %
+   cgu    271.8 / 270.9             271.4 s   -0.5 %  (within ~1% noise ~= 0)
+
+Verdict: cgu passes the <=3% recursive-tax gate with a huge margin (~0%):
+         per-partition full -O2 keeps the inlining that matters. dev (no inlining
+         at all) costs only +1.7% — the Elm frontend already inlines and the
+         runtime glue is external calls. => Phase-4 glue replication / ThinLTO
+         NOT needed; cgu is release-viable as-is.
+
+--------------------------------------------------------------------------------
+ 2026-07-07 — Serial-floor pipelining (plans/backend-serial-floor-pipelining.md)
+--------------------------------------------------------------------------------
+Description: Phases 0-6 on top of the parallel-opt tiers. Instrumented sub-phases
+             (--lowering-stats), self-host module, 24 cores. Dev mode unless noted.
+
+Raw output — Phases 0-3:
+  metric (wall s)             | before | P0-2  | P0-3  |
+  ----------------------------+--------+-------+-------+
+  total                       | 51.3   | 41.7  | 41.8  |
+  LLVM backend                | 30.7   | 22.35 | 23.05 |
+    RS4GC (serial)            | 4.23   | -> workers (3.2 s summed/16, hidden)
+    cheap-IPO prologue        | 5.61   | 4.23  | 4.31  |  (statepoint-free input)
+    split + bitcode serialize | 14.75  | 12.15 | 12.65 |  (statepoint-free bitcode)
+  MLIR lowering               | 11.07  | 10.15 | 9.46  |
+    EcoPAPSimplify            | 1.00   | 1.00  | 0.072 |  (seeded driver, 14x)
+    EcoControlFlowToSCF       | 1.28   | 1.28  | 1.23  |  (string-case memo)
+  CPU                         | 279%   | 337%  | 341%  |
+
+  cgu: 53.3 -> 42.1 s. none: within noise (whole-module path untouched; MLIR
+  phase improvements apply: 86.5 -> ~84 s).
+
+Phase notes:
+  * Phase 1: shipped the SAFE subset (stock SCFToControlFlow + ArithToLLVM nested
+    per-function on LLVM::LLVMFuncOp). The fused custom conversion
+    (Passes/EcoTailConversions.cpp) is PARKED: it caused Heisenbug memory
+    corruption (garbage std::function captures in ecoc's JIT path; 176/288
+    codegen failures, even single-threaded). Root-cause before reviving.
+  * Phase 4 (partition count): --split-codegen=24 vs 16 (dev): backend 23.7 vs
+    23.05 s — split+serialize grows with N (12.6 -> 15.6 s; more CloneModule) and
+    eats the parallel gain. KEEP auto=16 (later revised by the N-sweep below).
+  * Phase 6 (frontend overlap): PhaseMlir measured = 20.3 s of 278.6 s frontend
+    (MLIR codegen row). K-unit chunked-emission ceiling ~20 s on a ~330 s
+    pipeline -> NO-GO. Single-module chunked Bytes transport rejected: MLIR
+    bytecode cannot be parsed incrementally, encoder writes head-of-file tables
+    last.
+
+Raw output — Phase 5 (lazy split, ThinLTO-importer pattern — NOW DEFAULT,
+             --lazy-split=0 reverts): externalize + serialize the whole module
+             ONCE, each worker getLazyBitcodeModule + materialize only its ~1/N
+             functions (deleteBody strips the rest to decls without loading
+             bodies), setInitializer(nullptr) non-owned globals, materializeAll to
+             detach. Membership = stable FNV-1a(name)%N.
+
+    metric (dev, wall s)        | P0-3  | P0-5 (lazy) |
+    ----------------------------+-------+-------------+
+    total                       | 41.8  | 31.0        |
+    LLVM backend                | 23.05 | 12.36       |
+    split serial (serialize)    | 12.65 | 1.28        |  (10x: one write, no N clones)
+    lazy extract (sum/16)       |  -    | 2.30        |  (only 1/N bodies materialized)
+    CPU                         | 341%  | 426%        |
+
+Validation: nm defined-symbol set byte-identical to the SplitModule path
+            (dev+none); 0 duplicate defs; self-host --help functional output
+            identical (none/dev/cgu, lazy vs non-lazy); AOT elm-core dev 99/99,
+            cgu 99/99, 0 backend failures. Falls back to SplitModule if a module
+            has aliases/ifuncs (eco emits none). Cumulative dev: 51.3 -> 31.0 s;
+            backend 30.7 -> 12.4 s (from 224 s at the start of backend perf work
+            = ~7x).
+
+--------------------------------------------------------------------------------
+ 2026-07-07 — N-partition sweep (lazy split default, self-host module)
+--------------------------------------------------------------------------------
+Description: --split-codegen=N swept 4..24. ext+ser = whole-module externalize+
+             serialize (once); lazyextr = per-worker lazy extract summed;
+             partopt/partemit summed.
+
+Raw output:
+   N   dev-bk  dev-wall dev-cpu | cgu-bk  cgu-wall cgu-cpu | ext+ser lazyextr(dev)
+   4   30.5 s   49.0 s   285%   | 34.8 s   52.8 s   287%   | 1.3 s    1.5 s
+   8   18.8 s   37.3 s   378%   | 20.1 s   38.4 s   395%   | 1.3 s    1.8 s
+   12  14.5 s   33.0 s   416%   | 15.2 s   33.3 s   444%   | 1.3 s    2.3 s
+   16  12.4 s   31.0 s   430%   | 13.5 s   31.9 s   463%   | 1.3 s    3.2 s
+   20  10.9 s   29.5 s   452%   | 12.1 s   30.6 s   509%   | 1.3 s    3.9 s
+   24  10.1 s   28.8 s   455%   | 11.0 s   29.2 s   532%   | 1.3 s    5.0 s
+
+Verdict: Scales cleanly to 24 — no plateau/regression (contrast Phase-4's N=24
+         wash on SplitModule). ext+serialize is N-INDEPENDENT (~1.3 s at every N)
+         — the Phase-5 payoff; the old SplitModule split grew 12.6->15.6 s over
+         16->24 and ate the win. CPU tops 455% dev / 532% cgu => serial-floor/
+         mem-bw bound. 16->24 marginal: dev -18% backend / -7% wall. Phase-5
+         removed the N-dependent split cost that justified the 16 clamp => auto
+         cap should be min(cores) (drop the 16). Free ~7-8% wall on >=20-core
+         hosts, no downside seen.
+
+--------------------------------------------------------------------------------
+ 2026-07-07 — Functional validation (parallel-opt tiers)
+--------------------------------------------------------------------------------
+  - Builds clean (all targets).
+  - JIT E2E (cmake --build build --target check): 1528/1547; all 19 failures are
+    pre-existing sandbox-unreachable elm-http network tests (0 codegen/GC).
+  - Self-host binary equivalence: eco-compiler built default/dev/cgu runs with
+    BYTE-IDENTICAL functional output (banner + GC allocation profile + all
+    histograms; only timing differs) => same execution, no miscompile.
+  - AOT elm-core (serial, fresh cache/mode): none 98/98, dev 99/99, cgu 99/99 --
+    0 backend failures each.
+
+--------------------------------------------------------------------------------
+ 2026-07-07 — Round 4: serial-spine optimizations (plans/backend-spine-round4-optimizations.md)
+--------------------------------------------------------------------------------
+Box: 24-core; cmd: eco-boot-native --lowering-stats -O 2 --parallel-opt=dev
+     -o /tmp/out build/compiler/build-kernel/bin/eco-compiler.mlir
+
+M0 BASELINE (2026-07-07, 3-run median)
+  wall (s):        28.67 / 28.95 / 29.24   -> median 28.95
+  CPU %:           463 / 459 / 459
+  RSS (KB):        4,837,144 / 4,920,864 / 4,899,084  (~4.9 GB)
+  phase breakdown (run 3):
+    MLIR lowering pipeline .......... 9.54
+    MLIR -> LLVM IR translation ..... 5.72   <- M1 target
+    cheap-IPO prologue (serial) ..... 4.38   <- M4 target
+    parallel opt+emit drain ......... 4.48
+    externalize + serialize ......... 1.38
+    Link ............................ 1.16
+    MLIR parse + verify ............. 0.73   <- M2 (parse side)
+    Internalize + GlobalDCE ......... 0.40
+    EcoToLLVMPass (pass timer) ...... 5.35   <- M7 target
+  artifact: build/compiler/build-kernel/bin/eco-compiler.mlir = 12,016,118 bytes
+
+M1 — disable LLVM-IR verifier in translation (eco-boot/EcoNativeDriver/ecoc)
+  edit: translateModuleToLLVMIR(..., disableVerify=true) gated #ifdef
+        ECO_LOWERING_VALIDATION. EcoJIT path deliberately untouched.
+  CLEAN 3-run (contention-free):
+    translation (s): 4.77 / 4.86 / 5.26   -> median 4.86   (baseline 5.72; -0.86)
+    wall (s):        27.99 / 28.01 / 29.52 -> median 28.01  (baseline 28.95; -0.94, -3.2%)
+    CPU %:           467 / 466 / 449
+  Verdict: SHIP. ~0.9s wall; LLVM verifier was cheaper than the 1-2s estimate.
+
+M2 — strip _operand_types from bytecode (AttrType.bytecodeAttrs; 5 Elm edits)
+  artifact: 12,016,118 -> 11,697,947 bytes  (-318,171; -2.65%)  [deterministic]
+  BACKEND measurement (M1 binary on new smaller artifact, 3-run):
+    parse (ms):      728 / 706 / 724   -> ~0.72   (baseline 0.73; unchanged)
+    MLIR pipeline:   9.15 / 9.28 / 9.65 -> 9.28    (M1 ~9.5; marginal)
+    wall (s):        27.53 / 28.01 / 28.17 -> 28.01 (M1 28.01; NEUTRAL)
+    CPU %:           477 / 474 / 466
+  Verdict: SHIP. Backend-neutral (backend parse was already 0.73s). Value = 2.65%
+    smaller artifact + frontend PhaseMlir (not separately benchmarked).
+
+M5 — micro-algorithm batch (5a fuse post-conversion walks; 5b flushGroup +
+     mirror SmallPtrSet in EcoGCPrepare; 5c utf16 cache on EcoRuntime +
+     SmallString global names; 5d SKIPPED)
+  PERF (3-run, on M2 artifact; compare to M2 point wall 28.01):
+    MLIR pipeline:   9.33 / 9.10 / 9.11 -> 9.11    (M2 9.28)
+    EcoToLLVMPass:   5.16 / 5.03 / 5.02 -> 5.03    (baseline 5.35; 5a -~0.3)
+    EcoGCPrepare:    519 / 512 / 528 ms  -> 0.52    (baseline 0.52; flat)
+    wall (s):        28.12 / 27.83 / 27.81 -> 27.83 (M2 28.01; -0.18)
+    CPU %:           471 / 476 / 476
+  FUNCTIONAL GATE: full JIT E2E build/test/test = 1547/1547/0 -> PASSED.
+  Verdict: SHIP. ~0.18s wall (mostly 5a walk fusion), zero regressions.
+
+M6 — release MLIR (ModuleOp + MLIRContext + input buffer) before workers
+  PERF/RSS (3-run, on M2 artifact; compare M5 wall 27.83, baseline RSS ~4.9GB):
+    RSS (KB):        4,629,160 / 4,623,280 / 4,603,924 -> ~4.62 GB
+                     (baseline/M1 ~4.84-4.92 GB; -~260 MB, ~5.5%)
+    wall (s):        27.81 / 27.95 / 27.75 -> 27.81   (M5 27.83; NEUTRAL)
+    minor faults:    1.40M (baseline 1.47M)
+    CPU %:           472 / 466 / 466
+  FUNCTIONAL: M6-built self-host binary runs (--help, exit 0); no crash/UB.
+  Verdict: SHIP. RSS -0.27GB is below the plan's 0.5GB bar, but zero-risk +
+    wall-neutral so it's free money. Peak now worker-phase-bound.
+
+M3 — dev-tier cheaper emission + O1 (new --dev-emit-cg=<0|1|2> + --dev-opt-o1)
+  SWEEP (--parallel-opt=dev, 2 runs each; wall median / exe size):
+    config            wall     exe(MB)  emit-sum  opt-sum   note
+    default (off)   ~28.02s    60.58    ~59s      ~20s      == M6 (no regress)
+    --dev-emit-cg=1 ~28.2s     60.58    ~59s      ~20s      NO-OP (O1~O2 codegen)
+    --dev-emit-cg=0 ~26.1s     68.30    ~22s      ~19s      FastISel: -1.9s/+13%
+    --dev-opt-o1    ~27.35s    61.85    ~60s      ~9.5s     O1 opt: -0.7s/+2%
+    cg0 + o1        ~25.8s     70.41    ~24s      ~9.5s     BEST: -2.2s(-7.9%)/+16%
+  FUNCTIONAL: cg0o1 binary — `eco init` runs clean; --help core BYTE-IDENTICAL.
+  Verdict: SHIP FLAGS OPT-IN, DEFAULT OFF (default == M6). Recommend
+    `--dev-emit-cg=0 --dev-opt-o1` for max dev iteration speed (-7.9% wall, +16%
+    throwaway dev-binary size). Default-flip DEFERRED: fails recursive-tax gate
+    (see round-4 summary). `--dev-emit-cg=1` is a no-op.
+
+M4 — cheap-IPO / canonicalizer attribution + removals
+  ATTRIBUTION (per-pass, dev; temporary instrumentation):
+    IPSCCP ................ ~2.0s   KEEP (dominant; monomorphized const-prop)
+    GlobalOpt ............. ~0.87s  KEEP (unused-global elim / fn merge)
+    PostOrderFunctionAttrs  ~0.90s  DROP
+    GlobalDCE ............. ~0.20s  KEEP/WONTFIX (strips IPSCCP/GlobalOpt dead code)
+    ReversePostOrderFnAttrs ~0.008s DROP (pairs with PostOrder)
+  A/B (canonicalizer + FnAttrs pair both removed, measured together):
+    MLIR pipeline: 9.2 -> 8.66s  (canonicalizer: -~0.5s)
+    cheap-IPO:     4.2 -> 3.14s  (FnAttrs pair:  -~1.06s)
+    wall:          ~28.0 -> 26.15s  (-1.85s, -6.6%)
+    exe size:      60,576,360 -> 60,748,392  (+0.28% only)
+    functional:    core BYTE-IDENTICAL to default
+  SHIPPED both removals (FnAttrs re-derived by per-partition -O2 in cgu; canon
+    re-canonicalized by LLVM; fewer pre-GC folds only make EcoGCPrepare liveness
+    MORE conservative = GC-SAFE).
+  Verdict: SHIP. Validated by full E2E 1547/1547 + AOT self-host functional
+    identity. GlobalDCE double-DCE = WONTFIX.
+
+M7 — EcoToLLVM instrument then decide (env-gated ECO_ECO2LLVM_STATS timers)
+  SHIPPED: std::chrono sub-phase timers, printed only when ECO_ECO2LLVM_STATS set.
+  MEASURED stage breakdown (self-host, dev):
+    1. pattern population/setup ........   36.0 ms   0.7%
+    2. lowerAllocGroups ................   15.5 ms   0.3%
+    3. applyFullConversion ............. 4402.2 ms  89.7%   <-- DOMINANT
+    4. GC-strategy + shadow-root walks .  232.8 ms   4.7%
+    5. createGlobalRootInitFunction ....  220.4 ms   4.5%
+  DECISION: applyFullConversion is 89.7% (>>70% bar) => function-parallel
+    conversion is the right lever. Follow-up design:
+    plans/eco-to-llvm-parallel-conversion.md.
+
+  ---- ROUND 4 SUMMARY (M1-M7 implemented, tested, validated) ----
+  Default dev wall:  28.95s (M0) -> 26.4s  =  -2.55s  (-8.8%)
+    contributors: M1 -0.94 (LLVM verifier off), M5 -0.18 (walk fusion),
+                  M4 -~1.5 (FnAttrs + canonicalizer removal).
+    neutral-by-design on wall: M2 (frontend/artifact), M6 (RSS), M3 (opt-in).
+  Opt-in dev speed (M3 --dev-emit-cg=0 --dev-opt-o1): stacks ~ -2s more
+    (sweep 28->25.8; with M4 removals ~24s), +16% throwaway dev-binary size.
+  Artifact (M2):     12,016,118 -> 11,697,947 bytes  (-2.65%) + frontend PhaseMlir.
+  Peak RSS (M6):     ~4.9GB -> ~4.62GB  (-0.27GB).
+  VALIDATION (all green):
+    - full JIT E2E build/test/test: 1547 / 1547 / 0 fail (PASSED).
+    - AOT self-host binary: builds+runs; --help functional core BYTE-IDENTICAL
+      to the pre-M4 binary (covers M1 verifier-off + M6 early-free + M4 codegen).
+    - cgu-mode + none-mode self-host builds: exit 0, functional core IDENTICAL.
+  M3 RECURSIVE-TAX (decided): built eco-compiler two ways with the final backend,
+    timed each compiling Terminal/Main.elm (whole frontend):
+      normal codegen : 4:31.09 / 4:31.61 / 4:30.34  -> ~271s
+      cg0o1 (dev flags): 4:50.62 / 4:48.68           -> ~289.5s
+    Recursive tax = +6.8% (>3% gate). cg0o1's -2.2s backend win is outweighed by
+    +18.5s on every subsequent large frontend compile the dev binary runs.
+    DECISION: keep --dev-emit-cg / --dev-opt-o1 OPT-IN, default OFF.
+  DEFERRED (documented, not shipped): M2 frontend PhaseMlir precise benchmark;
+    short-symbol mode.
+
+--------------------------------------------------------------------------------
+ 2026-07-07 — Round 4: function-parallel EcoToLLVM (plans/eco-to-llvm-parallel-conversion.md)
+--------------------------------------------------------------------------------
+Description: Parallelize the M7-identified dominant phase (applyFullConversion,
+             89.7% of EcoToLLVM). Env-gated ECO_ECO2LLVM_PARALLEL (default serial).
+
+PHASE 1 (serial signature/body split) — DONE + VALIDATED:
+   Restructured EcoToLLVMPass::runOnOperation into Stage 0 (module-anchored:
+   func-signature conversion + kernel decls + module globals) and Stage 2
+   (per-llvm.func serial loop with the original body target/patterns). Two bugs
+   found+fixed via deterministic ecoc repro (CombinatorTest.mlir) + IR diff:
+     (1) symCache staleness: clear after Stage 0 op-replace.
+     (2) typedNewargs shell-sensitivity: only run the args-array check when target
+         is NOT in origFuncTypes (else 15 typed wrappers dropped -> SIGSEGV).
+   Validation: codegen 376 + E2E 226->2 (2 flaky, pass standalone); self-host
+   functional core BYTE-IDENTICAL. Stage breakdown (ECO_ECO2LLVM_STATS):
+     Stage0 806ms (serial) | Stage2 4951ms (78%, PARALLELIZABLE) |
+     GC-walk 293 | rootInit 270 | pre-scan+allocGroups 52.
+   NOTE: serial split adds ~1.5s overhead vs the 4906ms single conversion
+   (per-function applyFullConversion setup x85k). Parallel must beat that.
+
+PHASE 2 (pre-materialize + parallel) — DONE + VALIDATED. IT SCALES.
+   Design (Option B): make symCache READ-ONLY during Stage 2 so lookupSymbol is
+   LOCK-FREE, then run per-function body conversion in parallel. Serial priming:
+   materializeAllRuntimeDecls pre-declares ALL ~135 runtime externs (unused ones
+   stripped after Stage 2 via SymbolUserMap); string-literal + string-case
+   globals via Operation*->index side maps; closure wrappers via getOrCreateWrapper
+   walk. Eval-layouts moved OUT of symCache into a dedicated DenseSet + std::mutex.
+   Stage 2 driver: chunked mlir::failableParallelForEach, N=maxConcurrency chunks,
+   each chunk builds its OWN EcoTypeConverter+FrozenRewritePatternSet+
+   ConversionTarget+EcoCFContext.
+   MEASURED (self-host, 24-core, isolated, ECO_ECO2LLVM_STATS):
+     Stage 2 body conversion:  4376 ms  ->  737 ms   (5.9x)
+     MLIR lowering pipeline:   11.89 s  ->  8.02 s
+     wall:                     27.27 s  ->  23.81 s   (-3.46s serial-vs-parallel)
+     CPU:                      466%     ->  557%
+     NET vs round-4 baseline (single conversion 26.4s): -> 23.81s = -2.6s (-9.8%)
+       (split+pre-mat+strip infra adds ~0.9s serial; parallelism removes ~3.6s.)
+   CORRECTNESS: serial codegen 376; parallel closure repros exit 0; PARALLEL
+     self-host binary FUNCTIONAL CORE BYTE-IDENTICAL to serial.
+   BUGS FOUND+FIXED (each via deterministic ecoc repro + IR diff):
+     (1) symCache staleness after Stage 0 op-replace; (2) typedNewargs shell-
+     sensitivity dropping 15 typed wrappers; (3) dead-decl strip was O(decls x
+     module) = 213s (symbolKnownUseEmpty -> SymbolUserMap, once); (4) parallel
+     driver was initially not wired (Stage 2 left as serial loop).
+   VERDICT: function-parallel EcoToLLVM is a REAL WIN (~-2.6s / -10% wall),
+     contradicting the design doc's "blocked / not-a-win" prior. Kept ENV-GATED
+     (default serial) pending broader validation before default-on: full E2E in
+     parallel mode + ECO_HEAP_VALIDATE GC-stress + self-host byte-identity across
+     none/dev/cgu (the parked-EcoTailConversions Heisenbug family warrants it).
+   FOLLOW-UP OPT: the ~2s SymbolUserMap strip is pure overhead on the production
+     path (backend internalize+GlobalDCE drops the unused externs anyway); gate
+     it to a test/dump mode to recover ~2s and push the net win toward -4.6s.
+
+================================================================================
+ 4. SUMMARY TABLE
+================================================================================
+ Timestamp   Change                          Metric                 Delta vs baseline
+ ----------  ------------------------------  ---------------------  ----------------------
+ 2026-07-06  Whole-module -O2 (reference)    86.5s wall/65.8s bk    — (backend baseline)
+ 2026-07-06  parallel-opt=dev                49.0s wall/28.7s bk    -37.5s wall (1.77x)
+ 2026-07-06  parallel-opt=cgu                53.4s wall/31.4s bk    -33.1s wall (1.62x)
+ 2026-07-07  Serial-floor P0-3 (dev)         41.8s wall/23.05s bk   from 51.3s -> -9.5s
+ 2026-07-07  Serial-floor P0-5 lazy (dev)    31.0s wall/12.36s bk   backend 30.7->12.4 (~7x
+                                                                      from 224s start of effort)
+ 2026-07-07  N-sweep N=24 (dev)              28.8s wall/10.1s bk    -7% wall vs N=16
+ ----------  ---- Round 4 (dev, M0 = 28.95s wall lazy-split baseline) --------------------
+ 2026-07-07  M0 baseline                     28.95s wall            — (round-4 reference)
+ 2026-07-07  M1 verifier-off                 28.01s wall            -0.94s (-3.2%)
+ 2026-07-07  M2 strip bytecode               28.01s wall            neutral; artifact -2.65%
+ 2026-07-07  M5 walk-fusion batch            27.83s wall            -0.18s
+ 2026-07-07  M6 early MLIR free              27.81s wall            neutral; RSS -0.27GB
+ 2026-07-07  M3 dev-emit-cg0+opt-o1 (opt-in) ~25.8s wall            -2.2s (-7.9%); tax +6.8%
+ 2026-07-07  M4 FnAttrs+canon removal        26.15s wall            -1.85s (-6.6%)
+ 2026-07-07  Round-4 cumulative (M1-M7)      26.4s wall             -2.55s (-8.8%) vs M0
+ 2026-07-07  Function-parallel EcoToLLVM     23.81s wall            -2.6s (-9.8%) vs 26.4s
+                                                                      (env-gated, default off)
+
+ Notes:
+   * Two baselines: (a) the whole-module -O2 backend reference (86.5s wall /
+     65.8s LLVM backend) that the parallel-opt effort improved; (b) the round-4
+     dev-mode M0 (28.95s wall) that the M1-M7 serial-spine milestones improve.
+   * "bk" = LLVM backend sub-phase wall; "wall" = total elapsed.
+   * From the very start of the backend perf effort (~224s backend) to the
+     function-parallel EcoToLLVM state, the LLVM backend is ~10s and total wall
+     ~23.8s dev — roughly an order of magnitude.
+   * M3 (dev-emit-cg0 / opt-o1) and function-parallel EcoToLLVM are OPT-IN /
+     ENV-GATED, not default. M3 is gated by a failing +6.8% recursive-tax.
+================================================================================

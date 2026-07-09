@@ -1,0 +1,367 @@
+================================================================================
+ FRONT-END SELF-COMPILE TIMING LOG
+ Compiler front-end compiling its own source (Terminal/Main.elm) -> MLIR
+================================================================================
+
+--------------------------------------------------------------------------------
+ TABLE OF CONTENTS
+--------------------------------------------------------------------------------
+  1. Purpose
+  2. How to do a timing run (repeatable methodology + exact commands)
+  3. Baseline environment
+  4. Run log (chronological, one entry per change)
+       2026-07-07  Baseline
+       2026-07-07  HPointer representation change (post-merge)
+       2026-07-08  HPointer deref inline fast paths
+       2026-07-08  UTF-8 String support merge
+       2026-07-08  UTF-8 pipeline WIRING (W0-W5)
+       2026-07-08  UTF-16 seed elimination + chain healing (W7)
+  5. Summary table (by timestamp: description, timing, delta to baseline)
+
+================================================================================
+ 1. PURPOSE
+================================================================================
+    Baseline wall-clock timings for the compiler front-end compiling its own
+    source (compiler/src/Terminal/Main.elm) to MLIR. Use these numbers as the
+    reference point when evaluating future front-end / compiler optimisations.
+    Re-run with the SAME methodology below and compare.
+
+    NOTE: this measures the COMPILE-TIME cost of the compiler workload, not the
+    runtime performance of arbitrary compiled programs.
+
+================================================================================
+ 2. HOW TO DO A TIMING RUN
+================================================================================
+
+--------------------------------------------------------------------------------
+ METHODOLOGY
+--------------------------------------------------------------------------------
+Cache regime: WARM package cache, COLD compiler-module cache.
+
+  * WARM package cache (~/.eco): leave it in place. The dependency packages
+    (elm/core, elm/json, ...) stay downloaded AND keep their compiled
+    artifacts.dat / typed-artifacts.dat. This is valid and repeatable — we are
+    not measuring package download/rebuild time.
+
+  * COLD compiler build (build/compiler/build-kernel/eco-stuff): DELETE this
+    directory IMMEDIATELY BEFORE each timed run. eco-stuff holds the per-project
+    build cache for the compiler's OWN ~234 modules. Wiping it forces a full
+    cold recompile of the compiler source every run. It MUST be deleted right
+    before the timed command — if the compiler self-builds first (e.g. an
+    earlier bootstrap stage), it repopulates eco-stuff and warms the cache,
+    invalidating the measurement.
+
+Prerequisite: a completed bootstrap so that both compilers exist:
+    build/compiler/build-kernel/bin/eco-boot-2-runner.js   (Stage 5, JS)
+    build/compiler/build-kernel/bin/eco-compiler           (Stage 7a, native ELF)
+Build them with:  export NODE_OPTIONS="--max-old-space-size=12000"
+                  cmake --preset build && cmake --build build --target bootstrap
+(Node needs the 12 GB heap for the JS self-compile stages — see guides/bootstrap.md.)
+
+Take several samples; discard the first Stage 7a sample as a cold-start outlier
+(OS page-cache warm-up on the package source files).
+
+Run only ONE node process at a time — this host has 15 GiB RAM and the JS
+self-compile is configured for a large heap.
+
+--------------------------------------------------------------------------------
+ EXACT COMMANDS
+--------------------------------------------------------------------------------
+Run from the build-kernel working directory:
+
+    BK=build/compiler/build-kernel
+    KERNEL=$PWD/eco-kernel-cpp
+    ENTRY=$PWD/compiler/src/Terminal/Main.elm
+    export NODE_OPTIONS="--max-old-space-size=12000"
+
+  # ---- Stage 5: JS compiler (eco-boot-2.js) -> MLIR ----
+    rm -rf "$BK/eco-stuff"; rm -f "$BK/bin/eco-compiler.mlir"
+    ( cd "$BK" && /usr/bin/time -v -o timing-stage5.txt \
+        node --stack-size=65536 --max-old-space-size=4096 bin/eco-boot-2-runner.js make \
+        --optimize --kernel-package eco/compiler --local-package eco/kernel=$KERNEL \
+        --output=bin/eco-compiler.mlir "$ENTRY" )
+
+  # ---- Stage 7a: native compiler (eco-compiler ELF) -> MLIR ----
+    rm -rf "$BK/eco-stuff"; rm -f "$BK/bin/eco-compiler-boot.mlir"
+    ( cd "$BK" && /usr/bin/time -v -o timing-stage7a.txt \
+        ./bin/eco-compiler make \
+        --optimize --kernel-package eco/compiler --local-package eco/kernel=$KERNEL \
+        --output=bin/eco-compiler-boot.mlir "$ENTRY" )
+
+The wall-clock figure is "Elapsed (wall clock) time" in each timing-*.txt.
+
+================================================================================
+ 3. BASELINE ENVIRONMENT
+================================================================================
+    Date:            2026-07-07
+    Eco version:     0.1.1
+    CMake preset:    build  (RelWithDebInfo, -O2 -g -UNDEBUG => ASSERTS ON, GC stats ON)
+    Host CPU:        Intel(R) Xeon(R) 6521P, 24 logical CPUs
+    RAM:             15 GiB
+    Node.js:         v22.22.3
+    Source state:    baseline (compiler/src/Compiler/Parse/Primitives.elm:624)
+                     unsafeIndex uses: String.uncons (String.dropLeft index str)
+    MLIR output:     11,697,947 bytes (deterministic across all runs & both stages)
+
+    General caveat on preset: the native eco-compiler here is built with the
+    `build` preset = RelWithDebInfo with asserts ON and GC stats ON, i.e. a
+    debug-instrumented binary that runs single-threaded. A release-optimised
+    (asserts-off) build would be far faster; for native-speed optimisation work,
+    rebuild eco-compiler with an optimised preset and record a separate baseline.
+
+================================================================================
+ 4. RUN LOG
+================================================================================
+
+--------------------------------------------------------------------------------
+ 2026-07-07 — Baseline
+--------------------------------------------------------------------------------
+Description: Reference baseline (3 samples each; warm ~/.eco, cold eco-stuff).
+             Environment as section 3.
+
+Raw output:
+    Stage 5  (JS eco-boot-2.js  -> MLIR):
+        sample 1 : 1:47.91  (107.9 s)   CPU 132%
+        sample 2 : 1:49.52  (109.5 s)   CPU 130%
+        sample 3 : 1:47.90  (107.9 s)   CPU 131%
+        MEDIAN   : ~108 s               CPU ~131%   (some parallelism)
+
+    Stage 7a (native eco-compiler -> MLIR):
+        sample 1 : 5:14.85  (314.9 s)   CPU 99%   [cold-start outlier, discard]
+        sample 2 : 4:38.46  (278.5 s)   CPU 99%
+        sample 3 : 4:35.37  (275.4 s)   CPU 99%
+        MEDIAN   : ~277 s               CPU 99%     (single-threaded)
+
+Notes:
+    * Stage 7a (native, ~277 s) is ~2.6x SLOWER than Stage 5 (JS, ~108 s) — but
+      NOT a fair "native vs JS" statement (see preset caveat, section 3).
+    * These cold-eco-stuff numbers are larger than in-bootstrap Stage 5/7a
+      figures, because during a bootstrap Stage 7a reuses the eco-stuff cache
+      that Stage 5 just populated. Wiping eco-stuff before each run is the whole
+      point: it isolates a full cold compile of the compiler's own source.
+
+--------------------------------------------------------------------------------
+ 2026-07-07 — HPointer representation change (post-merge)
+--------------------------------------------------------------------------------
+Description: Large representation change on HPointer (mostly C++ runtime/codegen;
+             only ~6 Elm compiler modules recompiled at Stage 1). Full bootstrap
+             re-run first; BOTH fixed-point checks passed (JS Stage 4b + native
+             Stage 8c), so the change bootstraps cleanly.
+             MLIR out: 11,698,078 bytes (baseline 11,697,947 B; +131 B, expected
+             from the representation change — deterministic across all runs).
+             Same environment, preset, and protocol as baseline.
+
+Raw output:
+    Stage 5  (JS eco-boot-2.js  -> MLIR):
+        samples : 1:47.19 / 1:45.77 / 1:46.16   (107.2 / 105.8 / 106.2 s)  CPU ~132%
+        MEDIAN  : ~106 s     vs baseline ~108 s   ->  ~2% faster (within noise)
+
+    Stage 7a (native eco-compiler -> MLIR):
+        samples : 4:29.82 / 4:35.52 / 4:35.39   (269.8 / 275.5 / 275.4 s)  CPU 99%
+        (quieter re-measure of 3 runs gave 263.8 / 265.2 / 263.8 s,
+         avg 264.3 s, range 1.4 s — cleaner)
+        AVERAGE : ~264 s     vs baseline ~277 s   ->  ~5% faster (within noise)
+
+Verdict: No meaningful change in front-end self-compile time from the HPointer
+         representation change. Both stages within run-to-run noise of baseline.
+
+--------------------------------------------------------------------------------
+ 2026-07-08 — HPointer deref inline fast paths (plan hpointer-deref-inline-fastpath.md)
+--------------------------------------------------------------------------------
+Description: Exploits HEAP_028 (HPointer word == raw address) to slim heap
+             dereferences in the native runtime + generated code:
+             * P1 (runtime): Allocator::resolve() demotes its 4 always-on asserts
+               (ptr_ind / null / heap-bounds x2) + nursery tripwire to
+               ECO_HEAP_VALIDATE only; __builtin_expect on the forward loop. New
+               Allocator::resolveFast() header-inline fast path; kernel toPtr()
+               (both trees) route through it.
+             * P2 (codegen, --inline-deref, DEFAULT ON): boxed/primitive
+               projections, scalar unbox, array get/length lower to an inline
+               `__eco_resolve_fwd` marker + addrspace(1) GEP + load (align 8)
+               instead of out-of-line eco_resolve_hptr / eco_*_get_* calls. The
+               ExpandInlineDeref LLVM pass (pre-RS4GC) expands each marker into an
+               inline header-tag forwarding-check diamond; only the rare
+               old-gen-compaction forward defers to eco_follow_forward (gc-leaf).
+               cons-head primitive getter kept as a call; construct.* field
+               stores still via eco_store_* helpers (P2.4 TODO).
+Validation:  FULL bootstrap green — Stage 6/7a/8a self-compiles + Stage 8c native
+             fixed-point (byte-identical) all pass with --inline-deref ON. MLIR
+             out 11,698,078 B — identical to the HPointer baseline.
+             Same environment, preset, and protocol as baseline.
+
+Raw output:
+    Stage 5  (JS eco-boot-2.js  -> MLIR):  [control — JS path, unaffected]
+        samples : 1:49.23 / 1:45.10 / 1:45.00   (109.2 / 105.1 / 105.0 s)  CPU ~136%
+        MEDIAN  : ~105 s     (unchanged vs baseline, as expected)
+
+    Stage 7a (native eco-compiler -> MLIR):
+        samples : 4:00.24 / 4:00.52 / 4:02.64   (240.2 / 240.5 / 242.6 s)  CPU 99%
+        AVERAGE : ~241 s     vs HPointer baseline 264.3 s  ->  ~8.8% FASTER
+        (in-bootstrap warm-cache Stage 7a also improved: 162 s -> 144 s, ~11%)
+
+Verdict: Inline heap-deref fast paths give a real, repeatable ~9% cut to the
+         native front-end self-compile time (cold eco-stuff, warm ~/.eco), on top
+         of correct byte-identical output and a green self-compile fixed point.
+         The win comes from eliminating ~150k out-of-line resolve/getter calls
+         per self-compile in favour of an inline header-checked load that GVN can
+         CSE across sibling field reads.
+
+--------------------------------------------------------------------------------
+ 2026-07-08 — UTF-8 String support merge (plans/utf8-string-representation.md)
+--------------------------------------------------------------------------------
+Description: Merge of UTF-8 String representation work: new heap tags
+             Tag_StringUtf8View / Tag_StringUtf8Leaf (all-ASCII forms), zero-copy
+             Bytes.Decode.string views, literal interning, ASCII literals lowered
+             to UTF-8 leaves, O(1) getStringWidth, memcpy Encode.string. The new
+             tags are RUNTIME-produced only — never emitted by MLIR codegen — so
+             the compiler's own self-compile output is unaffected. See HEAP_028.
+Build fix:   The merge inserted the two new tags BEFORE Tag_Forward in the Tag
+             enum (Heap.hpp), moving Tag_Forward 22 -> 24, but the hardcoded
+             mirror value_enc::TagForward in EcoToLLVMInternal.h was left at 22.
+             The static_assert in EcoToLLVMHeap.cpp caught the drift and broke the
+             C++ build; fixed by updating the mirror to 24 (one line).
+Validation:  elm-test 12868/12868 pass; E2E 1568/1568 pass (UTF-8 paths
+             exercised). FULL bootstrap green: JS (4b) + native (8c) fixed points
+             both pass. MLIR out 11,698,078 B — byte-identical to the HPointer /
+             inline-deref baseline across all three self-compiles.
+             Same environment, preset, and protocol as baseline. Host confirmed
+             identical: Xeon 6521P, 24 CPUs, ~15 GiB, Node v22.22.3.
+
+Raw output:
+    Stage 7a (native eco-compiler -> MLIR):  [cold eco-stuff, warm ~/.eco]
+        sample 1 : 4:00.25  (240.25 s)   CPU 99%   [first run; not a real outlier]
+        sample 2 : 3:59.00  (239.00 s)   CPU 99%
+        sample 3 : 3:51.42  (231.42 s)   CPU 99%
+        sample 4 : 4:00.08  (240.08 s)   CPU 99%
+        AVERAGE (samples 2-4) : ~237 s   vs inline-deref baseline ~241 s
+                                          ->  within run-to-run noise (~1.7%)
+        (Stage 5 JS path not separately re-measured — only Stage 7a requested.
+         In-bootstrap warm-cache Stage 7a this run: 2:10.03 / 130.0 s.)
+
+Verdict: The UTF-8 String support merge introduces NO measurable front-end
+         self-compile regression. Stage 7a within noise, MLIR byte-identical,
+         green self-compile fixed point. Only defect surfaced was the stale
+         Tag_Forward mirror (build-time static_assert), now fixed.
+
+--------------------------------------------------------------------------------
+ 2026-07-08 — UTF-8 pipeline WIRING (plans/utf8-string-pipeline-wiring.md, W0-W5)
+--------------------------------------------------------------------------------
+Description: Wired the (previously-dead) UTF-8 String layer into the pipeline so
+             the parser actually receives UTF-8: (W1) Bytes.Decode.string live
+             export now gates to a zero-copy view; (W2) alloc::allocStringFromUTF8
+             — the kernel ingestion chokepoint behind File.readString / Console /
+             Env / Http / ports — produces UTF-8 for ASCII; (W3) File.readString
+             reads straight into a ByteBuffer and returns a zero-copy view; (W4)
+             conservative widening — append/concat/join/toUpper/toLower/reverse/
+             repeat/pad/filter/foldl/foldr/split/lines/words + kernel map/filter/
+             fold + narrowAsciiToStack keep ASCII results UTF-8 via a shared
+             AsciiOut builder. UTF-8 rep invariant renumbered HEAP_028 -> HEAP_032.
+             Adversarial GC-review workflow found + fixed 2 defects: split/lines/
+             words root-range chunked to <=64 slots (1ULL<<i UB); read_string
+             offset/length bounds guard.
+Validation:  E2E 1577/1577 pass (new elm-bytes + elm-core tests; C++ K8b/K8c +
+             Utf8String tests). FULL bootstrap green: Stage 4b JS + Stage 8c
+             native fixed points; all three self-compile MLIRs share one md5
+             (11,698,078 B — byte-identical to baseline; string CONTENT unchanged,
+             only internal representation differs).
+             Same environment, preset, protocol, and host as baseline.
+
+Goal achieved (representation mix, from an instrumented Stage 7a self-compile):
+        StringUtf8Leaf : 46,160,277 allocs   <- dominant string form
+        StringSlice    :  9,783,687
+        StringUtf8View :  5,898,422          <- zero-copy views (source/decode)
+        StringRope     :  5,397,515
+        String (UTF-16):  3,818,466          <- now a minority (~14:1 UTF-8:UTF-16)
+
+Raw output:
+    Stage 7a (native eco-compiler -> MLIR):  [cold eco-stuff, warm ~/.eco]
+        warmup (discard) : 3:57.37  (237.4 s)   peak RSS 3.79 GiB
+        sample 1         : 4:02.76  (242.8 s)   peak RSS 3.79 GiB
+        sample 2         : 4:05.18  (245.2 s)   peak RSS 3.79 GiB
+        sample 3         : 4:09.35  (249.4 s)   peak RSS 3.79 GiB
+        AVERAGE (1-3)    : ~246 s   vs baseline ~237 s ; peak RSS 3.79 vs 3.84 GiB
+
+Verdict: The GOAL is met and proven — .elm source becomes a zero-copy UTF-8 view
+         and reaches the parser in UTF-8 (green byte-identical fixed point). But
+         Stage 7a WALL is flat-to-marginally-higher (warmup 237.4 s == baseline;
+         samples drift up to 249 s, partly thermal drift), NOT faster, and peak
+         RSS only ~1.3% lower. Reason: parsing is NOT the self-compile bottleneck,
+         and the compiler is a UTF-16-heavy DOWNSTREAM consumer — the run still
+         performs 1,703,983 UTF-8->UTF-16 widen events in phases needing chars[]
+         (MLIR text emission, Debug/error rendering, and ops deliberately left
+         UTF-16 in W4). Those widens are the lever for an actual speedup and are
+         the W7 follow-up. Net: correctness + zero-copy parser delivered;
+         wall-time neutral; a SPEEDUP requires converting the downstream UTF-16
+         consumers (W7), not just the parser.
+
+--------------------------------------------------------------------------------
+ 2026-07-08 — UTF-16 seed elimination + chain healing (plans/utf16-seed-elimination.md)
+--------------------------------------------------------------------------------
+Description: W7 phase 1. Constructor seeds (R1): fromChar/cons/fromList emit UTF-8
+             for ASCII content. Compiler-side (C1/C2, .elm changes): StringTable
+             unescapeString short-circuits backslash-free strings (was rebuilding
+             EVERY bytecode table string via toList/fromList -> UTF-16);
+             stringByteLength -> BE.getStringWidth (O(1) on UTF-8 forms, fixes a
+             latent lone-surrogate length mismatch). Post-measurement pivot: R1+
+             C1+C2 alone did NOT move the needle (1.702M widens remained) — the
+             dominant seed was NAMES SLICED FROM THE 74 NON-ASCII SOURCE MODULES
+             (whole-file ASCII gate -> UTF-16 file -> every identifier sliced from
+             it is UTF-16 -> every mangling append is mixed). Healing arms (H1-H3,
+             runtime): slice()'s tiny path narrows all-ASCII UTF-16 ranges to
+             UTF-8 leaves (tinyFromU16 — kills the name seed at origin); mixed
+             append/concat/join return UTF-8 when the RESULT is all-ASCII
+             (healAsciiResult — stops chain self-propagation).
+Widen attribution (instrumented self-compile, before -> after):
+             widen calls        1,703,983 -> 931        (-99.95%)
+             append-mixed       1,676,359 -> 908
+             split-mixed           27,601 -> 0
+             [blind] seg-chunk 51,239,725 -> 0          (-100%)
+             UTF-16 String allocs 3,745,261 -> 640      (only true non-ASCII left)
+Validation:  unit suites green incl. new seed-constructor repr tests; ONE
+             full-suite segfault observed once (OldGenSpace mark region), then
+             5/5 consecutive full runs green (incl. under gdb) + 2 bootstraps
+             green — treated as flake, WATCH ITEM. Note: rc::check failures do NOT
+             propagate to the suite result ("Falsifiable" yet PASSED) — audited
+             all prior gate logs: zero Falsifiable anywhere; grep for it in future
+             gates. Full E2E 1578/1578. Bootstrap: Stage 4b + 8c fixed points
+             green; all three self-compile MLIRs md5-identical (5d0d2b05...,
+             11,697,717 B — new baseline after C1/C2 changed compiler source;
+             H1-H3 byte-identical to that, pure representation).
+             Same protocol/host as baseline.
+
+Raw output:
+    Stage 7a (native eco-compiler -> MLIR):
+        samples : 3:52.75 / 3:51.34 / 3:52.24  (232.8 / 231.3 / 232.2 s)
+        AVERAGE : ~232 s    peak RSS 3.76 GiB   (spread 1.4 s — much tighter than
+                  the pre-healing 6.6 s spread; the widen churn was also noise)
+        vs UTF-8-wiring state ~246 s  -> ~5.6% FASTER
+        vs original baseline  ~237 s  -> ~2% faster (first net win vs baseline)
+
+Verdict: Seeds eliminated and chains healed: 99.95% of widen events gone, the
+         51M-event chunk-widen iceberg gone entirely, and UTF-16 heap strings
+         reduced to the 640 genuinely non-ASCII ones. The string pipeline is now
+         UTF-8-pure for ASCII content end to end, and the self-compile is
+         measurably faster with lower variance.
+
+================================================================================
+ 5. SUMMARY TABLE  (Stage 7a = native front-end self-compile, primary metric)
+================================================================================
+ Timestamp   Change                          Stg7a   Stg5    Delta vs baseline(Stg7a)
+ ----------  ------------------------------  ------  ------   ------------------------
+ 2026-07-07  Baseline                        ~277s   ~108s   — (reference)
+ 2026-07-07  HPointer representation         ~264s   ~106s   -13s  (~5%, within noise)
+ 2026-07-08  HPointer deref inline fastpath  ~241s   ~105s   -36s  (~9% faster, real)
+ 2026-07-08  UTF-8 String support merge      ~237s   n/m     -40s  (~1.7% vs prior; noise)
+ 2026-07-08  UTF-8 pipeline wiring (W0-W5)    ~246s   n/m     -31s  (flat/+ vs prior; goal met)
+ 2026-07-08  UTF-16 seed elim + healing (W7)  ~232s   n/m     -45s  (~2% vs baseline; real win)
+
+ Notes:
+   * Primary metric is Stage 7a (native, cold eco-stuff, warm ~/.eco). "Delta vs
+     baseline" compares against the 2026-07-07 ~277s reference. n/m = not measured.
+   * The HPointer-representation change re-based the "baseline" the later native
+     rows compare their step-deltas against (~264s clean); the inline-deref win
+     (~9%) is the first real, repeatable speedup. Seed-elimination (W7) is the
+     first net win versus the ORIGINAL baseline that traces to the string work.
+   * Stage 5 (JS path) is a control — unaffected by the native/runtime changes;
+     re-measured only when relevant, else "n/m".
+================================================================================
