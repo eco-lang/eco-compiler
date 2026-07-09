@@ -60,7 +60,6 @@ These are computed from MonoType shapes during code generation.
 
 -}
 
-import Bitwise
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
 import Dict exposing (Dict)
@@ -443,20 +442,48 @@ encodeUnboxedKind monoType =
             0
 
 
+{-| Maximum number of 2-bit typed slots representable in an Elm-computed
+bitmap: 26 slots = 52 bits, within Int's exact range (2^53). This also
+equals the closure header's 52-bit unboxed field (REP\_CLOSURE\_001).
+Runtime containers allow up to 32 (Record) / 24 (Custom) typed slots; the
+effective cap per container is the minimum of this and the container's own
+capacity. Fields at or beyond the cap must be stored boxed (kind 00).
+-}
+maxTypedSlots : Int
+maxTypedSlots =
+    26
+
+
 {-| Sets the 2-bit kind at slot `index` into an Int-encoded bitmap.
+
+Implemented with exact Int arithmetic, NOT Bitwise: Elm's Bitwise operates
+on 32-bit values (JS semantics — shift counts wrap at 32), which silently
+corrupted bitmaps for containers with more than 16 slots. A slot at index
+i >= 16 wrapped onto slot (i - 16), and writing kind 00 there CLEARED the
+low slot's real kind — e.g. a 23-field record with an unboxed Int at slot
+0 emitted bitmap 0 (all boxed), so the GC scanned the raw Int as a pointer
+("Pointer below heap base" abort). Plain Int arithmetic is exact up to
+2^53, covering `maxTypedSlots` (26) two-bit slots; dividing by a power of
+two and flooring is exact in both the JS and native backends, so the two
+bootstrap pipelines compute identical bitmaps.
+
+Slots at index >= `maxTypedSlots` are left boxed (00); callers must demote
+such fields to boxed storage (see computeRecordLayout/computeCtorLayout).
 -}
 bitmapSetKind : Int -> Int -> Int -> Int
 bitmapSetKind bitmap index kind =
-    let
-        shift =
-            2 * index
+    if index >= maxTypedSlots then
+        bitmap
 
-        mask =
-            Bitwise.shiftLeftBy shift 3
-    in
-    Bitwise.or
-        (Bitwise.and bitmap (Bitwise.complement mask))
-        (Bitwise.shiftLeftBy shift (Bitwise.and kind 3))
+    else
+        let
+            weight =
+                4 ^ index
+
+            current =
+                modBy 4 (floor (toFloat bitmap / toFloat weight))
+        in
+        bitmap + (modBy 4 kind - current) * weight
 
 
 {-| Compute runtime layout for a record type, ordering fields to place unboxed values first.
@@ -483,30 +510,31 @@ computeRecordLayout fields =
         orderedFields =
             sortedUnboxed ++ sortedBoxed
 
+        -- Fields at index >= maxTypedSlots demote to boxed storage: isUnboxed
+        -- is index-capped so the projection type, the stored value (boxed by
+        -- generateRecordCreate), and the GC bitmap all agree (REP_BOUNDARY_002).
+        -- The runtime Record bitmap holds 32 slots, but Elm-side bitmap
+        -- arithmetic is exact only to 26 (see maxTypedSlots).
         indexedFields =
             List.indexedMap
                 (\idx ( name, ty ) ->
                     { name = name
                     , index = idx
                     , monoType = ty
-                    , isUnboxed = canUnbox ty
+                    , isUnboxed = canUnbox ty && idx < maxTypedSlots
                     }
                 )
                 orderedFields
 
         unboxedCount =
-            List.length sortedUnboxed
+            List.length (List.filter .isUnboxed indexedFields)
 
-        -- Record.unboxed is a full 64-bit word; 2-bit kinds fit up to 32 fields.
-        -- Fields beyond index 31 silently demote to boxed (kind 0); the
-        -- MLIR verifier enforces the cap downstream when the field count
-        -- would be emitted as an actual construct op.
         unboxedBitmap =
             List.foldl
                 (\field acc ->
                     let
                         kind =
-                            if field.isUnboxed && field.index < 32 then
+                            if field.isUnboxed then
                                 encodeUnboxedKind field.monoType
 
                             else
@@ -568,27 +596,29 @@ constructor's CtorShape (stored in MonoGraph.ctorShapes).
 computeCtorLayout : Mono.CtorShape -> CtorLayout
 computeCtorLayout shape =
     let
+        -- Custom.unboxed is 48 bits wide; 2-bit kinds fit up to 24 fields.
+        -- Fields at index >= 24 demote to BOXED STORAGE (not just bitmap kind
+        -- 0): isUnboxed is index-capped so the stored value, projection type,
+        -- and GC bitmap agree (REP_BOUNDARY_002). The verifier's size <= 24
+        -- check in EcoOps.cpp catches the overflow if an overflowing
+        -- constructor is actually emitted.
         fields =
             List.indexedMap
                 (\idx ty ->
                     { name = "field" ++ String.fromInt idx
                     , index = idx
                     , monoType = ty
-                    , isUnboxed = canUnbox ty
+                    , isUnboxed = canUnbox ty && idx < 24
                     }
                 )
                 shape.fieldTypes
 
-        -- Custom.unboxed is 48 bits wide; 2-bit kinds fit up to 24 fields.
-        -- Fields beyond index 23 silently demote to boxed (kind 0); the
-        -- verifier's size <= 24 check in EcoOps.cpp catches the overflow
-        -- if an overflowing constructor is actually emitted.
         unboxedBitmap =
             List.foldl
                 (\field acc ->
                     let
                         kind =
-                            if field.isUnboxed && field.index < 24 then
+                            if field.isUnboxed then
                                 encodeUnboxedKind field.monoType
 
                             else

@@ -811,8 +811,15 @@ def Eco_RecordConstructOp : Eco_Op<"construct.record", [Pure,
 
     Each slot occupies 2 bits of `unboxed_bitmap`: `00` = boxed HPointer,
     `01` = Int, `10` = Float, `11` = Char. Slot i's kind lives at bits
-    [2i, 2i+1]. Record's bitmap is 64 bits wide (up to 32 fields with
-    typed slots); fields beyond index 31 are stored boxed.
+    [2i, 2i+1]. Record's bitmap is 64 bits wide, but the GC scan reads
+    kinds for the first 32 slots only, and the Elm front-end computes
+    bitmaps with exact Int arithmetic capped at 26 typed slots
+    (Types.maxTypedSlots); fields beyond that cap are stored boxed.
+
+    The per-slot kind must exactly match the field operand's SSA type
+    (REP_BOUNDARY_002): the lowering dispatches the store on the operand
+    type while the GC trusts the bitmap, so any mismatch is a
+    GC-corruption bug. The verifier enforces this.
 
     GC live roots may be appended after the fields by EcoGCPrepare.
     The first `field_count` operands are fields; any beyond that are
@@ -833,6 +840,8 @@ def Eco_RecordConstructOp : Eco_Op<"construct.record", [Pure,
   let results = (outs Eco_Value:$result);
 
   let assemblyFormat = "`(` $fields `)` attr-dict `:` functional-type($fields, $result)";
+
+  let hasVerifier = 1;
 }
 
 def Eco_RecordProjectOp : Eco_Op<"project.record", [Pure]> {

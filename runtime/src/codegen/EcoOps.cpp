@@ -379,6 +379,78 @@ LogicalResult CustomConstructOp::verify() {
   return success();
 }
 
+LogicalResult RecordConstructOp::verify() {
+  // The fields operand list may contain GC live roots appended after the
+  // actual fields by EcoGCPrepare. The first `field_count` entries are
+  // fields; any beyond that are live roots (always !eco.value).
+  int64_t fieldCount = getFieldCount();
+  if (static_cast<int64_t>(getFields().size()) < fieldCount) {
+    return emitOpError("number of operands (")
+           << getFields().size()
+           << ") must be at least field_count attribute ("
+           << fieldCount << ")";
+  }
+
+  // The GC record scan reads per-slot kinds for the first 32 slots only;
+  // a record with more fields would leave boxed fields unscanned.
+  if (fieldCount > 32) {
+    return emitOpError("field_count (")
+           << fieldCount
+           << ") exceeds Record's 32-slot GC scan limit";
+  }
+
+  // Verify the 2-bit kind per slot matches the field SSA types
+  // (REP_BOUNDARY_002). The store lowering dispatches on the operand type
+  // while the GC trusts the bitmap: a kind=boxed slot holding a raw
+  // primitive is scanned as a pointer (heap corruption), and a typed slot
+  // holding a boxed value is skipped by the GC (stale pointer). This is
+  // the check that would have caught the 32-bit Bitwise wraparound in the
+  // front-end's bitmapSetKind (>16-field records zeroed their low kinds).
+  int64_t unboxedBits = getUnboxedBitmap();
+  auto fields = getFields();
+  for (int64_t i = 0; i < fieldCount; i++) {
+    const uint64_t shift = 2ULL * static_cast<uint64_t>(i);
+    const uint64_t kind =
+        i < 32 ? (static_cast<uint64_t>(unboxedBits) >> shift) & 0x3ULL : 0;
+    Type fieldType = fields[i].getType();
+
+    switch (kind) {
+      case 0:  // Boxed HPointer (!eco.value)
+        // Aggregate-typed fields are accepted under kind=0: the Eco→LLVM
+        // construct lowering boxes them via eco.to_heap so the slot ends up
+        // holding a boxed HPointer like any other kind=0 field. i1 (Bool)
+        // is accepted because Bool lowers to an embedded-constant HPointer.
+        if (!isa<eco::ValueType, eco::Tuple2Type, eco::Tuple3Type,
+                 eco::RecordType, eco::CustomType, eco::ConsType>(fieldType) &&
+            !fieldType.isInteger(1)) {
+          return emitOpError("field ") << i
+                 << " has kind=boxed but non-boxed SSA type " << fieldType;
+        }
+        break;
+      case 1:  // Unboxed Int
+        if (!fieldType.isInteger(64)) {
+          return emitOpError("field ") << i
+                 << " has kind=Int but SSA type " << fieldType;
+        }
+        break;
+      case 2:  // Unboxed Float
+        if (!fieldType.isF64()) {
+          return emitOpError("field ") << i
+                 << " has kind=Float but SSA type " << fieldType;
+        }
+        break;
+      case 3:  // Unboxed Char
+        if (!fieldType.isInteger(16)) {
+          return emitOpError("field ") << i
+                 << " has kind=Char but SSA type " << fieldType;
+        }
+        break;
+    }
+  }
+
+  return success();
+}
+
 LogicalResult PapCreateOp::verify() {
   // Verify that num_captured matches the number of captured operands.
   // Subtract appended GC roots from operand count.
