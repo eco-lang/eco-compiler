@@ -43,6 +43,16 @@ HPointer uncons(void* str) {
     return StringOps::uncons(str);
 }
 
+// Reads the Char value out of a list cell (unboxed slot or boxed ElmChar).
+// Resolve-only: performs no allocation.
+static u16 consCellChar(Allocator& allocator, Cons* c) {
+    if (Elm::tupleFieldKind(c->header.unboxed, 0) != 0) {
+        return c->head.c;
+    }
+    void* charObj = allocator.resolve(c->head.p);
+    return static_cast<ElmChar*>(charObj)->value;
+}
+
 HPointer fromList(HPointer chars) {
     // Two-pass: count list length, allocate exact-size result, then walk
     // again writing chars directly into the heap object. Eliminates the
@@ -50,15 +60,39 @@ HPointer fromList(HPointer chars) {
     auto& allocator = Allocator::instance();
 
     size_t count = 0;
+    u16 acc = 0;  // or-accumulate: acc < 0x80 <=> every char is ASCII
     HPointer current = chars;
     while (!alloc::isNil(current)) {
         void* cell = allocator.resolve(current);
         if (!cell) break;
         Cons* c = static_cast<Cons*>(cell);
+        acc |= consCellChar(allocator, c);
         ++count;
         current = c->tail;
     }
     if (count == 0) return alloc::emptyString();
+
+    // All-ASCII => UTF-8 result (seed elimination, see
+    // plans/utf16-seed-elimination.md). Same rooting discipline as the
+    // UTF-16 path below: one allocation with the list rooted, then an
+    // allocation-free write walk.
+    if (acc < 0x80 && allocator.getConfig().utf8_strings_enabled) {
+        StringOps::AsciiOut out;
+        {
+            Elm::StackRootGuard guard(&chars);
+            out = StringOps::allocAsciiOut(count);
+        }
+        size_t idx = 0;
+        current = chars;
+        while (!alloc::isNil(current)) {
+            void* cell = allocator.resolve(current);
+            if (!cell) break;
+            Cons* c = static_cast<Cons*>(cell);
+            out.dst[idx++] = static_cast<u8>(consCellChar(allocator, c));
+            current = c->tail;
+        }
+        return StringOps::finishAsciiOut(out);
+    }
 
     // Root the list across the allocation; the result chars[] are filled
     // before any further alloc, so we don't need to re-root mid-loop.
@@ -73,15 +107,7 @@ HPointer fromList(HPointer chars) {
         void* cell = allocator.resolve(current);
         if (!cell) break;
         Cons* c = static_cast<Cons*>(cell);
-        u16 charVal;
-        if (Elm::tupleFieldKind(c->header.unboxed, 0) != 0) {
-            charVal = c->head.c;
-        } else {
-            void* charObj = allocator.resolve(c->head.p);
-            ElmChar* ec = static_cast<ElmChar*>(charObj);
-            charVal = ec->value;
-        }
-        out.chars[idx++] = charVal;
+        out.chars[idx++] = consCellChar(allocator, c);
         current = c->tail;
     }
     return out.hp;

@@ -397,6 +397,12 @@ void GCStats::recordUtf8Widen(size_t units) {
     utf8_widen_units += units;
 }
 
+void GCStats::recordUtf8WidenSite(int site, size_t units) {
+    if (site < 0 || site >= UTF8_WIDEN_SITE_COUNT) return;
+    utf8_widen_site_calls[site]++;
+    utf8_widen_site_units[site] += units;
+}
+
 // Records a typed mutator allocation through the ThreadLocalHeap path.
 // Called from initHeaderForTag, exactly once per successful mutator alloc.
 void GCStats::recordTLHAllocation(size_t bytes, Tag tag) {
@@ -443,6 +449,16 @@ void recordUtf8WidenOnCurrentThread(size_t units) noexcept {
     ThreadLocalHeap* tlh = Allocator::instance().getCurrentThreadHeap();
     if (tlh) tlh->getStats().recordUtf8Widen(units);
 #else
+    (void)units;
+#endif
+}
+
+void recordUtf8WidenSiteOnCurrentThread(int site, size_t units) noexcept {
+#if ENABLE_GC_STATS
+    ThreadLocalHeap* tlh = Allocator::instance().getCurrentThreadHeap();
+    if (tlh) tlh->getStats().recordUtf8WidenSite(site, units);
+#else
+    (void)site;
     (void)units;
 #endif
 }
@@ -758,6 +774,10 @@ void GCStats::combine(const GCStats& other) {
 
     utf8_widen_calls += other.utf8_widen_calls;
     utf8_widen_units += other.utf8_widen_units;
+    for (int i = 0; i < UTF8_WIDEN_SITE_COUNT; i++) {
+        utf8_widen_site_calls[i] += other.utf8_widen_site_calls[i];
+        utf8_widen_site_units[i] += other.utf8_widen_site_units[i];
+    }
 
     // Combine per-kind ThreadLocalHeap allocation counters.
     for (int i = 0; i < NUM_ALLOC_TAGS; i++) {
@@ -1294,6 +1314,35 @@ void GCStats::print() const {
     std::cout << "\nUTF-8 -> UTF-16 widen events:" << std::endl;
     std::cout << "  Widen calls:           " << std::setw(15) << utf8_widen_calls << std::endl;
     std::cout << "  Widened code units:    " << std::setw(15) << utf8_widen_units << std::endl;
+    {
+        // Per-site attribution. TRIM..B64HEX partition utf8_widen_calls; the
+        // two [blind] rows are additional widens outside that counter.
+        static const char* kWidenSiteNames[UTF8_WIDEN_SITE_COUNT] = {
+            "trim/trimLeft/trimRight",
+            "toList",
+            "indexes (needle+haystack)",
+            "split (mixed encodings)",
+            "append (mixed encodings)",
+            "ensureFlat/flattenToLeaf",
+            "fromBase64/fromHex",
+            "[blind] rope-child widen",
+            "[blind] segment-chunk widen",
+        };
+        uint64_t attributed = 0;
+        for (int i = 0; i < UTF8_WIDEN_SITE_COUNT; i++) {
+            if (i < UTF8_WIDEN_ROPE_CHILD) attributed += utf8_widen_site_calls[i];
+            if (utf8_widen_site_calls[i] == 0) continue;
+            std::cout << "    " << std::left << std::setw(28) << kWidenSiteNames[i]
+                      << std::right << std::setw(12) << utf8_widen_site_calls[i]
+                      << " calls " << std::setw(14) << utf8_widen_site_units[i]
+                      << " units" << std::endl;
+        }
+        if (utf8_widen_calls > attributed) {
+            std::cout << "    " << std::left << std::setw(28) << "(unattributed)"
+                      << std::right << std::setw(12) << (utf8_widen_calls - attributed)
+                      << " calls" << std::endl;
+        }
+    }
     std::cout << std::endl;
 
     // ========== Old-Gen Page Residency Histogram ==========
@@ -1428,6 +1477,10 @@ void GCStats::reset() {
 
     utf8_widen_calls = 0;
     utf8_widen_units = 0;
+    for (int i = 0; i < UTF8_WIDEN_SITE_COUNT; i++) {
+        utf8_widen_site_calls[i] = 0;
+        utf8_widen_site_units[i] = 0;
+    }
 
     for (int i = 0; i < NUM_ALLOC_TAGS; i++) {
         tlh_alloc_count_by_tag[i] = 0;

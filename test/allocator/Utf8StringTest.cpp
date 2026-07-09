@@ -17,6 +17,7 @@
 #include "../../runtime/src/allocator/StringOps.hpp"
 #include "../../runtime/src/allocator/HeapHelpers.hpp"
 #include "../../runtime/src/allocator/Allocator.hpp"
+#include "../../elm-kernel-cpp/src/core/String.hpp"
 #include "TestHelpers.hpp"
 #include <rapidcheck.h>
 #include <string>
@@ -411,7 +412,69 @@ static void test_conservative_widening() {
                 std::string("Hello, World foo bar baz qux 123") + "MID");
 }
 
+// UTF-16 seed elimination (plans/utf16-seed-elimination.md): fromChar, cons,
+// and fromList emit UTF-8 for ASCII content, UTF-16 otherwise.
+static void test_seed_constructors() {
+    auto& alloc = initAllocator();
+
+    // fromChar: ASCII -> 1-byte UTF-8 leaf; non-ASCII -> UTF-16 leaf.
+    HPointer a = StringOps::fromChar(u'a');
+    TEST_ASSERT(alloc::getTag(rz(a)) == Tag_StringUtf8Leaf);
+    TEST_ASSERT(content(a) == "a");
+    HPointer e = StringOps::fromChar(0x00E9);  // é
+    TEST_ASSERT(alloc::getTag(rz(e)) == Tag_String);
+    TEST_ASSERT(StringOps::length(rz(e)) == 1);
+
+    // cons: ASCII char onto UTF-8 stays UTF-8; onto UTF-16 stays UTF-16;
+    // non-ASCII char widens.
+    HPointer base8 = makeU8Leaf("bc");
+    alloc.getRootSet().addRoot(&base8);
+    HPointer c1 = StringOps::cons(u'a', rz(base8));
+    TEST_ASSERT(StringOps::isUtf8(rz(c1)));
+    TEST_ASSERT(content(c1) == "abc");
+    HPointer base16 = makeU16("bc");
+    alloc.getRootSet().addRoot(&base16);
+    HPointer c2 = StringOps::cons(u'a', rz(base16));
+    TEST_ASSERT(alloc::getTag(rz(c2)) == Tag_String);
+    TEST_ASSERT(content(c2) == "abc");
+    HPointer c3 = StringOps::cons(0x00E9, rz(base8));
+    TEST_ASSERT(alloc::getTag(rz(c3)) == Tag_String);
+    TEST_ASSERT(StringOps::length(rz(c3)) == 3);
+
+    // fromList: all-ASCII Char list -> UTF-8 leaf; with non-ASCII -> UTF-16.
+    {
+        HPointer l = alloc::listNil();
+        alloc.getRootSet().addRoot(&l);
+        l = alloc::cons(alloc::unboxedChar(u'c'), l, static_cast<u8>(3));
+        l = alloc::cons(alloc::unboxedChar(u'b'), l, static_cast<u8>(3));
+        l = alloc::cons(alloc::unboxedChar(u'a'), l, static_cast<u8>(3));
+        HPointer s = Elm::Kernel::String::fromList(l);
+        TEST_ASSERT(StringOps::isUtf8(rz(s)));
+        TEST_ASSERT(content(s) == "abc");
+    }
+    {
+        HPointer l = alloc::listNil();
+        alloc.getRootSet().addRoot(&l);
+        l = alloc::cons(alloc::unboxedChar(0x00E9), l, static_cast<u8>(3));
+        l = alloc::cons(alloc::unboxedChar(u'a'), l, static_cast<u8>(3));
+        HPointer s = Elm::Kernel::String::fromList(l);
+        TEST_ASSERT(alloc::getTag(rz(s)) == Tag_String);
+        TEST_ASSERT(StringOps::length(rz(s)) == 2);
+        TEST_ASSERT(StringOps::charAt(rz(s), 1) == 0x00E9);
+    }
+
+    // Seed-poisoning regression: literal ++ fromChar-built ++ literal chain
+    // stays UTF-8 end to end.
+    HPointer x = StringOps::fromChar(u'x');
+    alloc.getRootSet().addRoot(&x);
+    HPointer chain = StringOps::append(rz(base8), rz(x));
+    TEST_ASSERT(StringOps::isUtf8(rz(chain)));
+    TEST_ASSERT(content(chain) == "bcx");
+}
+
 void registerUtf8StringTests(Testing::TestSuite& suite) {
+    suite.add(Testing::TestCase("Utf8String: seed constructors (fromChar/cons/fromList)",
+                                test_seed_constructors));
     suite.add(Testing::TestCase("Utf8String: conservative widening (UTF-8 in => UTF-8 out)",
                                 test_conservative_widening));
     suite.add(Testing::TestCase("Utf8String: ingestion gate (allocStringFromUTF8)",

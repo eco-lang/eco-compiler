@@ -368,6 +368,8 @@ static int base64_decode_char(char16_t c) {
 // Decodes a Base64 String (any form) into a ByteBuffer.
 HPointer fromBase64(void* str) {
     if (!str) return alloc::just(alloc::boxed(empty()), true);
+    if (Elm::StringOps::isUtf8(str))
+        GC_STATS_UTF8_WIDEN_SITE(UTF8_WIDEN_B64HEX, static_cast<Header*>(str)->size);
     auto buf = Elm::StringOps::toStdU16String(str);
     size_t len = buf.size();
 
@@ -439,6 +441,8 @@ static int hex_decode_char(char16_t c) {
 // Decodes a hexadecimal String (any form) into a ByteBuffer.
 HPointer fromHex(void* str) {
     if (!str) return alloc::just(alloc::boxed(empty()), true);
+    if (Elm::StringOps::isUtf8(str))
+        GC_STATS_UTF8_WIDEN_SITE(UTF8_WIDEN_B64HEX, static_cast<Header*>(str)->size);
     auto buf = Elm::StringOps::toStdU16String(str);
     size_t len = buf.size();
 

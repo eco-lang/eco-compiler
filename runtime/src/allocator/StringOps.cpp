@@ -228,6 +228,8 @@ HPointer flattenToLeaf(HPointer s) {
 
     // Materialise the bytes BEFORE allocation (the resolved void* is invalid
     // after a GC). Read with offset for slice; full chars[] for leaf.
+    if (isUtf8(obj))
+        GC_STATS_UTF8_WIDEN_SITE(UTF8_WIDEN_ENSURE_FLAT, hdr->size);
     std::u16string buf = toStdU16String(obj);
 
     // No need to root `s` here: we never read `obj` again after the alloc,
@@ -281,6 +283,27 @@ HPointer ensureFlat(HPointer s) {
 // slice-of-slice into a single slice over the underlying leaf base.
 // ============================================================================
 
+// Tiny-slice materializer for UTF-16 sources (H1, seed elimination follow-up:
+// design_docs/utf8-widen-attribution.md). The range is being copied anyway, so
+// narrow all-ASCII content into a UTF-8 leaf instead of a UTF-16 one:
+// identifiers sliced out of UTF-16 leaves (every name parsed from a source file
+// whose ASCII gate failed on a single non-ASCII char) otherwise reseed
+// mixed-encoding append chains throughout the compiler. Non-ASCII ranges (and
+// ranges beyond the stack buffer) keep the UTF-16 copy.
+static HPointer tinyFromU16(const u16* p, size_t n) {
+    auto& allocator = Allocator::instance();
+    if (n > 0 && n <= 512 && allocator.getConfig().utf8_strings_enabled) {
+        u16 acc = 0;
+        for (size_t i = 0; i < n; ++i) acc |= p[i];
+        if (acc < 0x80) {
+            u8 buf[512];
+            for (size_t i = 0; i < n; ++i) buf[i] = static_cast<u8>(p[i]);
+            return makeUtf8LeafFromBytes(buf, static_cast<u32>(n));
+        }
+    }
+    return alloc::allocString(p, n);
+}
+
 HPointer slice(void* str, i64 start, i64 end) {
     if (!str) return alloc::emptyString();
     Header* hdr = static_cast<Header*>(str);
@@ -325,16 +348,17 @@ HPointer slice(void* str, i64 start, i64 end) {
     // short ranges and matches the prior behaviour.
     if (slice_len <= allocator.getConfig().string_tiny_slice_limit) {
         if (hdr->tag == Tag_String) {
-            // Direct allocString from the source pointer — no intermediate vector.
+            // Direct copy from the source pointer — no intermediate vector.
+            // ASCII content narrows to a UTF-8 leaf (H1).
             ElmString* s = static_cast<ElmString*>(str);
-            return alloc::allocString(s->chars + start, slice_len);
+            return tinyFromU16(s->chars + start, slice_len);
         }
         if (hdr->tag == Tag_LargeStringHeader) {
             LargeStringHeader* h = static_cast<LargeStringHeader*>(str);
             void* body = allocator.resolve(h->body);
             if (!body) return alloc::emptyString();
             ElmString* leaf = static_cast<ElmString*>(body);
-            return alloc::allocString(leaf->chars + start, slice_len);
+            return tinyFromU16(leaf->chars + start, slice_len);
         }
         if (hdr->tag == Tag_StringSlice) {
             ElmStringSlice* slc = static_cast<ElmStringSlice*>(str);
@@ -354,7 +378,7 @@ HPointer slice(void* str, i64 start, i64 end) {
                        static_cast<u64>(slice_len) <=
                    static_cast<u64>(leaf->header.size) &&
                    "slice range exceeds underlying leaf");
-            return alloc::allocString(leaf->chars + baseOffset + start, slice_len);
+            return tinyFromU16(leaf->chars + baseOffset + start, slice_len);
         }
         // Rope: walk leaf segments via forEachSegment, advancing past `start`
         // logical positions and writing the next `slice_len` units into the
@@ -508,6 +532,30 @@ static HPointer buildBalancedRope(std::vector<HPointer>& parts) {
     return stack[0];
 }
 
+// H3 (chain healing, see H2 in append): a freshly-built UTF-16 leaf whose
+// content is all ASCII converts to a UTF-8 form, so one UTF-16 element in a
+// concat/join list stops poisoning the result (and thus every later chain the
+// result enters). Input must be a fresh flat Tag_String leaf (or the empty
+// constant / split-header, which pass through untouched).
+static HPointer healAsciiResult(HPointer leafHp) {
+    auto& allocator = Allocator::instance();
+    if (!allocator.getConfig().utf8_strings_enabled) return leafHp;
+    if (alloc::isEmbeddedConstant(leafHp)) return leafHp;
+    void* obj = allocator.resolve(leafHp);
+    if (!obj || static_cast<Header*>(obj)->tag != Tag_String) return leafHp;
+    ElmString* s = static_cast<ElmString*>(obj);
+    size_t n = s->header.size;
+    u16 acc = 0;
+    for (size_t i = 0; i < n; ++i) acc |= s->chars[i];
+    if (acc >= 0x80 || n == 0) return leafHp;
+    // Convert: root the leaf across the AsciiOut allocation, re-resolve, copy.
+    AsciiOut out;
+    { Elm::StackRootGuard guard(&leafHp); out = allocAsciiOut(n); }
+    ElmString* s2 = static_cast<ElmString*>(allocator.resolve(leafHp));
+    for (size_t i = 0; i < n; ++i) out.dst[i] = static_cast<u8>(s2->chars[i]);
+    return finishAsciiOut(out);
+}
+
 HPointer concat(HPointer stringList) {
     auto& allocator = Allocator::instance();
 
@@ -599,7 +647,7 @@ HPointer concat(HPointer stringList) {
             current = c->tail;
         }
 
-        return allocator.wrap(result);
+        return healAsciiResult(allocator.wrap(result));
     }
 
     // Large total: collect element HPointers and build a balanced rope.
@@ -740,7 +788,7 @@ HPointer join(void* sep, HPointer stringList) {
             }
             current = c->tail;
         }
-        return allocator.wrap(result);
+        return healAsciiResult(allocator.wrap(result));
     }
 
     // Large total: build a balanced rope with `sep` interleaved between elems.
@@ -780,6 +828,10 @@ HPointer indexes(void* needle, void* haystack) {
         return alloc::listFromInts(indices);
     }
 
+    if (isUtf8(needle))
+        GC_STATS_UTF8_WIDEN_SITE(UTF8_WIDEN_INDEXES, static_cast<Header*>(needle)->size);
+    if (isUtf8(haystack))
+        GC_STATS_UTF8_WIDEN_SITE(UTF8_WIDEN_INDEXES, static_cast<Header*>(haystack)->size);
     auto needleBuf = toStdU16String(needle);
     auto haystackBuf = toStdU16String(haystack);
     const u16* nPtr = reinterpret_cast<const u16*>(needleBuf.data());
@@ -908,6 +960,10 @@ HPointer split(void* sep, void* str) {
     // both leaf and slice tags and produces a contiguous std::u16string,
     // which is already a contiguous read-only u16 buffer — no need to
     // duplicate it into a std::vector.
+    if (isUtf8(str))
+        GC_STATS_UTF8_WIDEN_SITE(UTF8_WIDEN_SPLIT_MIXED, str_len);
+    if (isUtf8(sep))
+        GC_STATS_UTF8_WIDEN_SITE(UTF8_WIDEN_SPLIT_MIXED, sep_len);
     auto strU16 = toStdU16String(str);
     auto sepU16 = toStdU16String(sep);
     const u16* strData = reinterpret_cast<const u16*>(strU16.data());
@@ -970,6 +1026,8 @@ HPointer split(void* sep, void* str) {
 
 HPointer toList(void* str) {
     if (!str) return alloc::listNil();
+    if (isUtf8(str))
+        GC_STATS_UTF8_WIDEN_SITE(UTF8_WIDEN_TO_LIST, static_cast<Header*>(str)->size);
     auto buf = toStdU16String(str);
     size_t len = buf.size();
     if (len == 0) return alloc::listNil();

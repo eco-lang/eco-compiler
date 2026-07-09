@@ -376,6 +376,7 @@ inline void forEachSegment(void* str, F&& cb) {
         str,
         [&](const u16* p, u32 n) { cb(p, n); },
         [&](const u8* p, u32 n) {
+            GC_STATS_UTF8_WIDEN_SITE(UTF8_WIDEN_SEGMENT_CHUNK, n);
             u16 tmp[512];
             u32 i = 0;
             while (i < n) {
@@ -501,11 +502,28 @@ inline HPointer append(void* a, void* b) {
             std::memcpy(out.dst + pa.second, pb.first, pb.second);
             return finishAsciiOut(out);
         }
+        if (isUtf8(a)) GC_STATS_UTF8_WIDEN_SITE(UTF8_WIDEN_APPEND_MIXED, len_a);
+        if (isUtf8(b)) GC_STATS_UTF8_WIDEN_SITE(UTF8_WIDEN_APPEND_MIXED, len_b);
         auto bufA = toStdU16String(a);
         auto bufB = toStdU16String(b);
         std::vector<u16> data(total_len);
         std::memcpy(data.data(), bufA.data(), bufA.size() * sizeof(u16));
         std::memcpy(data.data() + bufA.size(), bufB.data(), bufB.size() * sizeof(u16));
+        // H2 (chain healing): a mixed-encoding append whose CONTENT is all
+        // ASCII returns a UTF-8 result, so one UTF-16 operand (e.g. a name
+        // sliced from a non-ASCII source file) stops poisoning every
+        // subsequent append in the chain. `data` is C-heap: safe across the
+        // allocation, no rooting needed.
+        if (Allocator::instance().getConfig().utf8_strings_enabled) {
+            u16 acc = 0;
+            for (size_t i = 0; i < total_len; ++i) acc |= data[i];
+            if (acc < 0x80) {
+                AsciiOut out = allocAsciiOut(total_len);
+                for (size_t i = 0; i < total_len; ++i)
+                    out.dst[i] = static_cast<u8>(data[i]);
+                return finishAsciiOut(out);
+            }
+        }
         return alloc::allocString(data.data(), total_len);
     }
 
@@ -859,6 +877,8 @@ inline HPointer reverse(void* str) {
  */
 inline HPointer trim(void* str) {
     if (!str) return alloc::emptyString();
+    if (isUtf8(str))
+        GC_STATS_UTF8_WIDEN_SITE(UTF8_WIDEN_TRIM, static_cast<Header*>(str)->size);
     auto buf = toStdU16String(str);
     size_t len = buf.size();
     if (len == 0) return alloc::emptyString();
@@ -884,6 +904,8 @@ inline HPointer trim(void* str) {
  */
 inline HPointer trimLeft(void* str) {
     if (!str) return alloc::emptyString();
+    if (isUtf8(str))
+        GC_STATS_UTF8_WIDEN_SITE(UTF8_WIDEN_TRIM, static_cast<Header*>(str)->size);
     auto buf = toStdU16String(str);
     size_t len = buf.size();
     if (len == 0) return alloc::emptyString();
@@ -904,6 +926,8 @@ inline HPointer trimLeft(void* str) {
  */
 inline HPointer trimRight(void* str) {
     if (!str) return alloc::emptyString();
+    if (isUtf8(str))
+        GC_STATS_UTF8_WIDEN_SITE(UTF8_WIDEN_TRIM, static_cast<Header*>(str)->size);
     auto buf = toStdU16String(str);
     size_t len = buf.size();
     if (len == 0) return alloc::emptyString();
@@ -1194,9 +1218,16 @@ inline HPointer fromFloat(f64 n) {
 }
 
 /**
- * Converts a character to a single-character string.
+ * Converts a character to a single-character string. ASCII chars produce a
+ * 1-byte UTF-8 leaf — fromChar was the dominant UTF-16 "seed" that made
+ * otherwise-UTF-8 append/concat chains widen (98.4% of measured widen events;
+ * see design_docs/utf8-widen-attribution.md). Non-ASCII keeps the UTF-16 leaf.
  */
 inline HPointer fromChar(u16 c) {
+    if (c < 0x80 && Allocator::instance().getConfig().utf8_strings_enabled) {
+        u8 b = static_cast<u8>(c);
+        return makeUtf8LeafFromBytes(&b, 1);
+    }
     u16 buf[1] = {c};
     return alloc::allocString(buf, 1);
 }
@@ -1213,6 +1244,20 @@ inline HPointer cons(u16 c, void* str) {
     size_t total_len = static_cast<size_t>(len) + 1;
 
     auto& allocator = Allocator::instance();
+
+    // ASCII char onto a UTF-8 string => UTF-8 result (seed elimination, see
+    // plans/utf16-seed-elimination.md). Same wrap/guard/re-resolve discipline
+    // as append's byte arm.
+    if (c < 0x80 && isUtf8(str) && allocator.getConfig().utf8_strings_enabled) {
+        HPointer srcHp = allocator.wrap(str);
+        AsciiOut out;
+        { Elm::StackRootGuard guard(&srcHp); out = allocAsciiOut(total_len); }
+        out.dst[0] = static_cast<u8>(c);
+        auto pr = utf8Bytes(allocator.resolve(srcHp));
+        std::memcpy(out.dst + 1, pr.first, pr.second);
+        return finishAsciiOut(out);
+    }
+
     HPointer srcHp = allocator.wrap(str);
     alloc::BlankString out;
     {
@@ -1386,6 +1431,7 @@ inline std::u16string toStdU16String(void* str) {
             }
         } else if (h->tag == Tag_StringUtf8View || h->tag == Tag_StringUtf8Leaf) {
             auto pr = utf8Bytes(top);
+            GC_STATS_UTF8_WIDEN_SITE(UTF8_WIDEN_ROPE_CHILD, pr.second);
             for (u32 k = 0; k < pr.second; ++k)
                 dst[k] = static_cast<char16_t>(pr.first[k]);
             dst += pr.second;

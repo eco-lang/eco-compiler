@@ -272,9 +272,26 @@ encode (StringTable st) =
 Converts escape sequences to actual bytes:
 \\n → newline, \\t → tab, \\\\ → backslash, \\" → quote
 Also handles \\xNN hex escapes and \\uXXXX unicode escapes.
+
+The vast majority of table strings (symbol names, dedup keys, op names) contain
+no backslash at all, so short-circuit those: it skips a pointless per-Char
+toList/fromList rebuild of every string, and — on the native runtime — keeps
+the original zero-copy UTF-8 representation alive into BE.string's memcpy path
+(the rebuild used to convert the whole string section to UTF-16; see
+design_docs/utf8-widen-attribution.md). Content is identical either way: the
+loop is an identity copy for backslash-free input.
 -}
 unescapeString : String -> String
 unescapeString s =
+    if not (String.contains "\\" s) then
+        s
+
+    else
+        unescapeStringSlow s
+
+
+unescapeStringSlow : String -> String
+unescapeStringSlow s =
     let
         go : List Char -> List Char -> String
         go acc chars =
@@ -378,36 +395,15 @@ string-section size varints diverge from the string data and MLIR's bytecode
 reader rejects the whole file ("unexpected trailing data between the offsets
 for strings and their data").
 
-Surrogate halves (0xD800-0xDFFF) count as 2 bytes each: the native kernel's
-`String.foldl` yields astral characters as two UTF-16 code units (native Char
-is i16, REP\_ABI\_001), while `BE.string` encodes the recombined code point as
-one 4-byte UTF-8 sequence — 2 + 2 keeps the total right. Under the JS
-compiler build, `String.foldl` yields the combined code point (>= 0x10000)
-directly, which takes the 4-byte branch.
+`BE.getStringWidth` is that agreement by construction: it is the same kernel
+function `BE.string` itself uses to size its output, on both the native and
+JS runtimes (native: O(1) header read for UTF-8 heap forms; a hand-rolled
+`String.foldl` here would widen every UTF-8 table string and — worse — count
+a *lone* surrogate half as 2 bytes where `BE.string` writes 3 WTF-8 bytes,
+silently corrupting the section). Paired astral surrogates need no special
+casing: width and data come from the same codec.
 
 -}
 stringByteLength : String -> Int
 stringByteLength s =
-    String.foldl
-        (\c acc ->
-            let
-                code =
-                    Char.toCode c
-            in
-            if code < 0x80 then
-                acc + 1
-
-            else if code < 0x0800 then
-                acc + 2
-
-            else if code >= 0xD800 && code <= 0xDFFF then
-                acc + 2
-
-            else if code < 0x00010000 then
-                acc + 3
-
-            else
-                acc + 4
-        )
-        0
-        s
+    BE.getStringWidth s

@@ -324,7 +324,10 @@ static void test_slice_tiny_returns_leaf() {
         HPointer sliceHp = StringOps::slice(baseObj, 10, 20);
         void* sliceObj = alloc.resolve(sliceHp);
         RC_ASSERT(static_cast<bool>(sliceObj));
-        RC_ASSERT(alloc::getTag(sliceObj) == Tag_String);
+        // The point of this property is "tiny ranges materialize flat, never
+        // Tag_StringSlice". Since H1 (plans/utf16-seed-elimination.md), tiny
+        // ALL-ASCII ranges narrow to a UTF-8 leaf rather than a UTF-16 one.
+        RC_ASSERT(alloc::getTag(sliceObj) == Tag_StringUtf8Leaf);
         RC_ASSERT(StringOps::length(sliceObj) == 10);
     });
 }

@@ -156,6 +156,17 @@ public:
     uint64_t utf8_widen_calls = 0;
     uint64_t utf8_widen_units = 0;
 
+    // Per-site attribution for the widen counter above. Sites TRIM..B64HEX are
+    // the exhaustive set of toStdU16String callers that can receive a UTF-8
+    // form (their sum should equal utf8_widen_calls; a residual means a new
+    // caller appeared). ROPE_CHILD and SEGMENT_CHUNK are the two known blind
+    // spots NOT included in utf8_widen_calls: UTF-8 children widened inside
+    // toStdU16String's rope DFS, and the forEachSegment wrapper's chunked
+    // widen of UTF-8 segments. See plans/utf8-string-pipeline-wiring.md (W7).
+    static constexpr int UTF8_WIDEN_SITE_COUNT = 9;
+    uint64_t utf8_widen_site_calls[UTF8_WIDEN_SITE_COUNT] = {0};
+    uint64_t utf8_widen_site_units[UTF8_WIDEN_SITE_COUNT] = {0};
+
     // ========== Per-Kind Mutator Allocation Histogram ==========
     //
     // Counts ThreadLocalHeap-level mutator allocations grouped by Tag,
@@ -482,6 +493,10 @@ public:
     // Records a single UTF-8 -> UTF-16 widen event of `units` code units.
     void recordUtf8Widen(size_t units);
 
+    // Records a widen event attributed to a specific call site (see the
+    // Utf8WidenSite enum at namespace scope).
+    void recordUtf8WidenSite(int site, size_t units);
+
     // Records completion of a minor GC cycle with timing and reclaimed bytes.
     void recordMinorGCEnd(uint64_t elapsed_ns, size_t freed);
 
@@ -581,6 +596,24 @@ void recordStringAllocOnCurrentThread(size_t bytes) noexcept;
 // in scope, so route through the current thread's heap here.
 void recordUtf8WidenOnCurrentThread(size_t units) noexcept;
 
+// Which String operation widened a UTF-8 form. TRIM..B64HEX cover every
+// toStdU16String caller that can receive a UTF-8 input; ROPE_CHILD and
+// SEGMENT_CHUNK are blind spots outside utf8_widen_calls (see the field docs).
+enum Utf8WidenSite : int {
+    UTF8_WIDEN_TRIM = 0,       // trim / trimLeft / trimRight scan
+    UTF8_WIDEN_TO_LIST,        // String.toList
+    UTF8_WIDEN_INDEXES,        // String.indexes (needle and haystack each)
+    UTF8_WIDEN_SPLIT_MIXED,    // String.split with mixed encodings
+    UTF8_WIDEN_APPEND_MIXED,   // (++) with mixed encodings (UTF-8 side only)
+    UTF8_WIDEN_ENSURE_FLAT,    // ensureFlat/flattenToLeaf backstop
+    UTF8_WIDEN_B64HEX,         // BytesOps fromBase64 / fromHex
+    UTF8_WIDEN_ROPE_CHILD,     // [blind spot] UTF-8 child in rope DFS widen
+    UTF8_WIDEN_SEGMENT_CHUNK,  // [blind spot] forEachSegment chunked widen
+};
+
+// Per-thread routing helper for the per-site widen attribution.
+void recordUtf8WidenSiteOnCurrentThread(int site, size_t units) noexcept;
+
 // ============================================================================
 // Zero-Overhead Macros
 // ============================================================================
@@ -612,6 +645,10 @@ void recordUtf8WidenOnCurrentThread(size_t units) noexcept;
     // Per-widen hook: a UTF-8 form was widened to UTF-16 (`units` code units).
     #define GC_STATS_UTF8_WIDEN(units) \
         do { ::Elm::recordUtf8WidenOnCurrentThread((units)); } while(0)
+
+    // Site-attributed widen hook (see Utf8WidenSite).
+    #define GC_STATS_UTF8_WIDEN_SITE(site, units) \
+        do { ::Elm::recordUtf8WidenSiteOnCurrentThread((site), (units)); } while(0)
 
     #define GC_STATS_MINOR_RECORD_GC_END(stats, elapsed_ns, freed) \
         do { (stats).recordMinorGCEnd(elapsed_ns, freed); } while(0)
@@ -661,6 +698,7 @@ void recordUtf8WidenOnCurrentThread(size_t units) noexcept;
     #define GC_STATS_TLH_RECORD_ALLOC(bytes, tag) do {} while(0)
     #define GC_STATS_STRING_RECORD_ALLOC(bytes) do {} while(0)
     #define GC_STATS_UTF8_WIDEN(units) do {} while(0)
+    #define GC_STATS_UTF8_WIDEN_SITE(site, units) do {} while(0)
     #define GC_STATS_MINOR_RECORD_GC_END(stats, elapsed_ns, freed) do {} while(0)
     #define GC_STATS_MINOR_INC_SURVIVORS(stats) do {} while(0)
     #define GC_STATS_MINOR_INC_PROMOTED(stats) do {} while(0)
