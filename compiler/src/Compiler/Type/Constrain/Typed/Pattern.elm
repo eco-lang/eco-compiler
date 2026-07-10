@@ -321,78 +321,81 @@ recursive formulation's.
 
 -}
 addConsWithIds : A.Region -> Can.Pattern -> Can.Pattern -> E.PExpected Type -> State -> IO State
-addConsWithIds region headPattern tailPattern expectation state =
-    IO.loop consSpineStep ( ( region, headPattern, tailPattern ), expectation, ( state, [] ) )
-        |> IO.andThen
-            (\( finalState, frames ) -> IO.foldM applyConsFrame finalState frames)
+addConsWithIds region headPattern tailPattern expectation state s0 =
+    -- A5: direct self-tail-recursive spine (TCO → while-loop; stack-safe) replacing
+    -- the `IO.loop`/`Step` trampoline. The PCons arm ends in a DIRECT self-tail-call
+    -- of `consSpineGo`. Byte-identical var-alloc/recording order sans trampoline.
+    let
+        ( s1, ( finalState, frames ) ) =
+            consSpineGo region headPattern tailPattern expectation state [] s0
+    in
+    IO.foldM applyConsFrame finalState frames s1
 
 
-consSpineStep :
-    ( ( A.Region, Can.Pattern, Can.Pattern ), E.PExpected Type, ( State, List ConsFrame ) )
-    -> IO (IO.Step ( ( A.Region, Can.Pattern, Can.Pattern ), E.PExpected Type, ( State, List ConsFrame ) ) ( State, List ConsFrame ))
-consSpineStep ( ( region, headPattern, tailPattern ), expectation, ( state, frames ) ) =
-    Type.mkFlexVar
-        |> IO.andThen
-            (\entryVar ->
-                let
-                    entryType : Type
-                    entryType =
-                        Type.VarN entryVar
+consSpineGo : A.Region -> Can.Pattern -> Can.Pattern -> E.PExpected Type -> State -> List ConsFrame -> IO.State -> ( IO.State, ( State, List ConsFrame ) )
+consSpineGo region headPattern tailPattern expectation state frames s0 =
+    let
+        ( s1, entryVar ) =
+            Type.mkFlexVar s0
 
-                    listType : Type
-                    listType =
-                        Type.AppN ModuleName.list Name.list [ entryType ]
+        entryType : Type
+        entryType =
+            Type.VarN entryVar
 
-                    tailExpectation : E.PExpected Type
-                    tailExpectation =
-                        E.PFromContext region E.PTail listType
+        listType : Type
+        listType =
+            Type.AppN ModuleName.list Name.list [ entryType ]
 
-                    newFrames : List ConsFrame
-                    newFrames =
-                        { entryVar = entryVar
-                        , entryType = entryType
-                        , listType = listType
-                        , region = region
-                        , headPattern = headPattern
-                        , expectation = expectation
-                        }
-                            :: frames
+        tailExpectation : E.PExpected Type
+        tailExpectation =
+            E.PFromContext region E.PTail listType
 
-                    (A.At tailRegion tailInfo) =
-                        tailPattern
-                in
-                case tailInfo.node of
-                    Can.PCons nextHead nextTail ->
-                        -- The tail is another cons level: inline the constrained
-                        -- wrapper prefix addWithIds would apply (PCons always
-                        -- takes the constrained path), then keep descending.
-                        Type.mkFlexVar
-                            |> IO.andThen
-                                (\patVar ->
-                                    let
-                                        eqCon : Type.Constraint
-                                        eqCon =
-                                            Type.CPattern tailRegion (patternToCategory tailInfo.node) (Type.VarN patVar) tailExpectation
+        newFrames : List ConsFrame
+        newFrames =
+            { entryVar = entryVar
+            , entryType = entryType
+            , listType = listType
+            , region = region
+            , headPattern = headPattern
+            , expectation = expectation
+            }
+                :: frames
 
-                                        (State headers vars revCons) =
-                                            state
+        (A.At tailRegion tailInfo) =
+            tailPattern
+    in
+    case tailInfo.node of
+        Can.PCons nextHead nextTail ->
+            -- The tail is another cons level: inline the constrained wrapper prefix
+            -- addWithIds would apply (PCons always takes the constrained path), then
+            -- keep descending via a self-tail-call.
+            let
+                ( s2, patVar ) =
+                    Type.mkFlexVar s1
 
-                                        stateWithPatVar : State
-                                        stateWithPatVar =
-                                            State headers (patVar :: vars) (eqCon :: revCons)
-                                    in
-                                    NodeIds.recordNodeVar tailInfo.id patVar
-                                        |> IO.map
-                                            (\() ->
-                                                IO.Loop ( ( tailRegion, nextHead, nextTail ), tailExpectation, ( stateWithPatVar, newFrames ) )
-                                            )
-                                )
+                eqCon : Type.Constraint
+                eqCon =
+                    Type.CPattern tailRegion (patternToCategory tailInfo.node) (Type.VarN patVar) tailExpectation
 
-                    _ ->
-                        -- Non-cons tail: the spine ends here; constrain it normally.
-                        addWithIds tailPattern tailExpectation state
-                            |> IO.map (\newState -> IO.Done ( newState, newFrames ))
-            )
+                (State headers vars revCons) =
+                    state
+
+                stateWithPatVar : State
+                stateWithPatVar =
+                    State headers (patVar :: vars) (eqCon :: revCons)
+
+                ( s3, () ) =
+                    NodeIds.recordNodeVar tailInfo.id patVar s2
+            in
+            consSpineGo tailRegion nextHead nextTail tailExpectation stateWithPatVar newFrames s3
+
+        _ ->
+            -- Non-cons tail: the spine ends here; constrain it normally.
+            let
+                ( s2, newState ) =
+                    addWithIds tailPattern tailExpectation state s1
+            in
+            ( s2, ( newState, newFrames ) )
 
 
 applyConsFrame : State -> ConsFrame -> IO State

@@ -131,26 +131,31 @@ flattenDecls decls acc =
 declaration list, one declaration per iteration.
 -}
 constrainDeclsWithVars : Can.Decls -> Constraint -> IO Constraint
-constrainDeclsWithVars decls finalConstraint =
-    IO.loop constrainDeclsWithVarsStep
-        ( List.reverse (flattenDecls decls []), finalConstraint )
+constrainDeclsWithVars decls finalConstraint s0 =
+    -- A5: direct tail-recursion (TCO → while-loop; stack-safe) replacing the
+    -- `IO.loop`/`Step` trampoline; no per-decl Step/loop-tuple/closure.
+    constrainDeclsGo (List.reverse (flattenDecls decls [])) finalConstraint s0
 
 
-constrainDeclsWithVarsStep :
-    ( List DeclItem, Constraint )
-    -> IO (IO.Step ( List DeclItem, Constraint ) Constraint)
-constrainDeclsWithVarsStep ( items, bodyCon ) =
+constrainDeclsGo : List DeclItem -> Constraint -> IO.State -> ( IO.State, Constraint )
+constrainDeclsGo items bodyCon s0 =
     case items of
         [] ->
-            IO.pure (IO.Done bodyCon)
+            ( s0, bodyCon )
 
         (Single def) :: rest ->
-            Expr.constrainDefWithIds Dict.empty def bodyCon
-                |> IO.map (\con -> IO.Loop ( rest, con ))
+            let
+                ( s1, con ) =
+                    Expr.constrainDefWithIds Dict.empty def bodyCon s0
+            in
+            constrainDeclsGo rest con s1
 
         (Rec def defs) :: rest ->
-            Expr.constrainRecursiveDefsWithIds Dict.empty (def :: defs) bodyCon
-                |> IO.map (\con -> IO.Loop ( rest, con ))
+            let
+                ( s1, con ) =
+                    Expr.constrainRecursiveDefsWithIds Dict.empty (def :: defs) bodyCon s0
+            in
+            constrainDeclsGo rest con s1
 
 
 

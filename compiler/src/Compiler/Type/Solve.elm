@@ -179,28 +179,30 @@ type State
 -- ====== Main Solver ======
 
 
-{-| Main solver loop using tail recursion via IO.loop.
-Processes constraints recursively, maintaining pools and state.
+{-| Main solver loop. A5: direct self-tail-recursive `solveGo` (TCO'd to a
+while-loop → stack-safe) replacing the former `IO.loop solveHelp`/`Step`
+trampoline. Each `Loop` transition becomes a self-tail-call of `solveGo` with the
+next constraint (state threaded through explicit `let`-bindings); each `Done`
+applies the `cont` continuation directly. This drops the `Step` ctor and the
+nested loop-state 3-tuple that were rebuilt per constraint. Byte-identical: same
+unify/introduce/generalize order and the same `cont` composition (`>> cont`).
 -}
 solve : Env -> Int -> Pools -> State -> Constraint -> IO State
 solve env rank pools state constraint =
-    IO.loop solveHelp ( ( env, rank ), ( pools, state ), ( constraint, identity ) )
+    solveGo env rank pools state constraint identity
 
 
-{-| Helper function for the solver loop that processes individual constraints.
-Handles all constraint types: CTrue, CSaveTheEnvironment, CEqual, CLocal, CForeign, CPattern, CAnd, and CLet.
--}
-solveHelp : ( ( Env, Int ), ( Pools, State ), ( Type.Constraint, IO State -> IO State ) ) -> IO (IO.Step ( ( Env, Int ), ( Pools, State ), ( Type.Constraint, IO State -> IO State ) ) State)
-solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constraint, cont ) ) =
+solveGo : Env -> Int -> Pools -> State -> Constraint -> (IO State -> IO State) -> IO.State -> ( IO.State, State )
+solveGo env rank pools ((State _ sMark sErrors) as state) constraint cont s0 =
     case constraint of
         CTrue ->
-            IO.pure state |> cont |> IO.map IO.Done
+            (IO.pure state |> cont) s0
 
         CSaveTheEnvironment ->
-            IO.pure (State env sMark sErrors) |> cont |> IO.map IO.Done
+            (IO.pure (State env sMark sErrors) |> cont) s0
 
         CEqual region category tipe expectation ->
-            typeToVariable rank pools tipe
+            (typeToVariable rank pools tipe
                 |> IO.andThen
                     (\actual ->
                         expectedToVariable rank pools expectation
@@ -212,20 +214,22 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
                                                 case answer of
                                                     Unify.AnswerOk vars ->
                                                         introduce rank pools vars
-                                                            |> IO.andThen (\_ -> IO.pure state |> cont |> IO.map IO.Done)
+                                                            |> IO.andThen (\_ -> IO.pure state |> cont)
 
                                                     Unify.AnswerErr vars actualType expectedType ->
                                                         introduce rank pools vars
                                                             |> IO.andThen
                                                                 (\_ ->
-                                                                    Error.typeReplace expectation expectedType |> Error.BadExpr region category actualType |> addError state |> IO.pure |> cont |> IO.map IO.Done
+                                                                    Error.typeReplace expectation expectedType |> Error.BadExpr region category actualType |> addError state |> IO.pure |> cont
                                                                 )
                                             )
                                 )
                     )
+            )
+                s0
 
         CLocal region name expectation ->
-            makeCopy rank pools (Utils.dictFind name env)
+            (makeCopy rank pools (Utils.dictFind name env)
                 |> IO.andThen
                     (\actual ->
                         expectedToVariable rank pools expectation
@@ -237,20 +241,22 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
                                                 case answer of
                                                     Unify.AnswerOk vars ->
                                                         introduce rank pools vars
-                                                            |> IO.andThen (\_ -> IO.pure state |> cont |> IO.map IO.Done)
+                                                            |> IO.andThen (\_ -> IO.pure state |> cont)
 
                                                     Unify.AnswerErr vars actualType expectedType ->
                                                         introduce rank pools vars
                                                             |> IO.andThen
                                                                 (\_ ->
-                                                                    Error.typeReplace expectation expectedType |> Error.BadExpr region (Error.Local name) actualType |> addError state |> IO.pure |> cont |> IO.map IO.Done
+                                                                    Error.typeReplace expectation expectedType |> Error.BadExpr region (Error.Local name) actualType |> addError state |> IO.pure |> cont
                                                                 )
                                             )
                                 )
                     )
+            )
+                s0
 
         CForeign region name (Can.Forall freeVars srcType) expectation ->
-            srcTypeToVariable rank pools freeVars srcType
+            (srcTypeToVariable rank pools freeVars srcType
                 |> IO.andThen
                     (\actual ->
                         expectedToVariable rank pools expectation
@@ -262,20 +268,22 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
                                                 case answer of
                                                     Unify.AnswerOk vars ->
                                                         introduce rank pools vars
-                                                            |> IO.andThen (\_ -> IO.pure state |> cont |> IO.map IO.Done)
+                                                            |> IO.andThen (\_ -> IO.pure state |> cont)
 
                                                     Unify.AnswerErr vars actualType expectedType ->
                                                         introduce rank pools vars
                                                             |> IO.andThen
                                                                 (\_ ->
-                                                                    Error.typeReplace expectation expectedType |> Error.BadExpr region (Error.Foreign name) actualType |> addError state |> IO.pure |> cont |> IO.map IO.Done
+                                                                    Error.typeReplace expectation expectedType |> Error.BadExpr region (Error.Foreign name) actualType |> addError state |> IO.pure |> cont
                                                                 )
                                             )
                                 )
                     )
+            )
+                s0
 
         CPattern region category tipe expectation ->
-            typeToVariable rank pools tipe
+            (typeToVariable rank pools tipe
                 |> IO.andThen
                     (\actual ->
                         patternExpectationToVariable rank pools expectation
@@ -287,7 +295,7 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
                                                 case answer of
                                                     Unify.AnswerOk vars ->
                                                         introduce rank pools vars
-                                                            |> IO.andThen (\_ -> IO.pure state |> cont |> IO.map IO.Done)
+                                                            |> IO.andThen (\_ -> IO.pure state |> cont)
 
                                                     Unify.AnswerErr vars actualType expectedType ->
                                                         introduce rank pools vars
@@ -300,140 +308,115 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
                                                                         |> addError state
                                                                         |> IO.pure
                                                                         |> cont
-                                                                        |> IO.map IO.Done
                                                                 )
                                             )
                                 )
                     )
+            )
+                s0
 
         CAnd constraints ->
-            IO.foldM (solve env rank pools) state constraints |> cont |> IO.map IO.Done
+            (IO.foldM (solve env rank pools) state constraints |> cont) s0
 
         CLet [] flexs _ headerCon CTrue ->
-            introduce rank pools flexs
-                |> IO.map (\_ -> IO.Loop ( ( env, rank ), ( pools, state ), ( headerCon, cont ) ))
+            let
+                ( s1, _ ) =
+                    introduce rank pools flexs s0
+            in
+            solveGo env rank pools state headerCon cont s1
 
         CLet [] [] header headerCon subCon ->
-            solve env rank pools state headerCon
-                |> IO.andThen
-                    (\state1 ->
-                        traverseDictIO (A.traverse (typeToVariable rank pools)) header
-                            |> IO.map
-                                (\locals ->
-                                    let
-                                        newEnv : Env
-                                        newEnv =
-                                            Dict.union env (Dict.map (\_ -> A.toValue) locals)
-                                    in
-                                    IO.Loop
-                                        ( ( newEnv, rank )
-                                        , ( pools, state1 )
-                                        , ( subCon
-                                          , IO.andThen
-                                                (\state2 ->
-                                                    IO.foldM occurs state2 (Dict.toList locals)
-                                                )
-                                                >> cont
-                                          )
-                                        )
-                                )
-                    )
+            let
+                ( s1, state1 ) =
+                    solve env rank pools state headerCon s0
+
+                ( s2, locals ) =
+                    traverseDictIO (A.traverse (typeToVariable rank pools)) header s1
+
+                newEnv : Env
+                newEnv =
+                    Dict.union env (Dict.map (\_ -> A.toValue) locals)
+
+                newCont : IO State -> IO State
+                newCont =
+                    IO.andThen (\state2 -> IO.foldM occurs state2 (Dict.toList locals)) >> cont
+            in
+            solveGo newEnv rank pools state1 subCon newCont s2
 
         CLet rigids flexs header headerCon subCon ->
             let
-                -- work in the next pool to localize header
                 nextRank : Int
                 nextRank =
                     rank + 1
-            in
-            MVector.length pools
-                |> IO.andThen
-                    (\poolsLength ->
-                        (if nextRank < poolsLength then
-                            IO.pure pools
 
-                         else
-                            MVector.grow pools poolsLength
-                        )
-                            |> IO.andThen
-                                (\nextPools ->
-                                    let
-                                        -- introduce variables
-                                        vars : List Variable
-                                        vars =
-                                            rigids ++ flexs
-                                    in
-                                    IO.forM_ vars
-                                        (\var ->
-                                            UF.modify var <|
-                                                \props ->
-                                                    IO.makeDescriptor props.content nextRank props.mark props.copy
-                                        )
-                                        |> IO.andThen
-                                            (\_ ->
-                                                MVector.write nextPools nextRank vars
-                                                    |> IO.andThen
-                                                        (\_ ->
-                                                            -- run solver in next pool
-                                                            traverseDictIO (A.traverse (typeToVariable nextRank nextPools)) header
-                                                                |> IO.andThen
-                                                                    (\locals ->
-                                                                        solve env nextRank nextPools state headerCon
-                                                                            |> IO.andThen
-                                                                                (\(State savedEnv mark errors) ->
-                                                                                    let
-                                                                                        youngMark : Mark
-                                                                                        youngMark =
-                                                                                            mark
+                ( s1, poolsLength ) =
+                    MVector.length pools s0
 
-                                                                                        visitMark : Mark
-                                                                                        visitMark =
-                                                                                            nextMark youngMark
+                ( s2, nextPools ) =
+                    (if nextRank < poolsLength then
+                        IO.pure pools
 
-                                                                                        finalMark : Mark
-                                                                                        finalMark =
-                                                                                            nextMark visitMark
-                                                                                    in
-                                                                                    -- pop pool
-                                                                                    generalize youngMark visitMark nextRank nextPools
-                                                                                        |> IO.andThen
-                                                                                            (\_ ->
-                                                                                                MVector.write nextPools nextRank []
-                                                                                                    |> IO.andThen
-                                                                                                        (\_ ->
-                                                                                                            -- check that things went well
-                                                                                                            IO.mapM_ isGeneric rigids
-                                                                                                                |> IO.map
-                                                                                                                    (\_ ->
-                                                                                                                        let
-                                                                                                                            newEnv : Env
-                                                                                                                            newEnv =
-                                                                                                                                Dict.union env (Dict.map (\_ -> A.toValue) locals)
-
-                                                                                                                            tempState : State
-                                                                                                                            tempState =
-                                                                                                                                State savedEnv finalMark errors
-                                                                                                                        in
-                                                                                                                        IO.Loop
-                                                                                                                            ( ( newEnv, rank )
-                                                                                                                            , ( nextPools, tempState )
-                                                                                                                            , ( subCon
-                                                                                                                              , IO.andThen
-                                                                                                                                    (\newState ->
-                                                                                                                                        IO.foldM occurs newState (Dict.toList locals)
-                                                                                                                                    )
-                                                                                                                                    >> cont
-                                                                                                                              )
-                                                                                                                            )
-                                                                                                                    )
-                                                                                                        )
-                                                                                            )
-                                                                                )
-                                                                    )
-                                                        )
-                                            )
-                                )
+                     else
+                        MVector.grow pools poolsLength
                     )
+                        s1
+
+                vars : List Variable
+                vars =
+                    rigids ++ flexs
+
+                ( s3, _ ) =
+                    IO.forM_ vars
+                        (\var ->
+                            UF.modify var <|
+                                \props ->
+                                    IO.makeDescriptor props.content nextRank props.mark props.copy
+                        )
+                        s2
+
+                ( s4, _ ) =
+                    MVector.write nextPools nextRank vars s3
+
+                ( s5, locals ) =
+                    traverseDictIO (A.traverse (typeToVariable nextRank nextPools)) header s4
+
+                ( s6, State savedEnv mark errors ) =
+                    solve env nextRank nextPools state headerCon s5
+
+                youngMark : Mark
+                youngMark =
+                    mark
+
+                visitMark : Mark
+                visitMark =
+                    nextMark youngMark
+
+                finalMark : Mark
+                finalMark =
+                    nextMark visitMark
+
+                ( s7, _ ) =
+                    generalize youngMark visitMark nextRank nextPools s6
+
+                ( s8, _ ) =
+                    MVector.write nextPools nextRank [] s7
+
+                ( s9, _ ) =
+                    IO.mapM_ isGeneric rigids s8
+
+                newEnv : Env
+                newEnv =
+                    Dict.union env (Dict.map (\_ -> A.toValue) locals)
+
+                tempState : State
+                tempState =
+                    State savedEnv finalMark errors
+
+                newCont : IO State -> IO State
+                newCont =
+                    IO.andThen (\newState -> IO.foldM occurs newState (Dict.toList locals)) >> cont
+            in
+            solveGo newEnv rank nextPools tempState subCon newCont s9
 
 
 {-| Check that a variable has rank == noRank, meaning that it can be generalized.

@@ -3,7 +3,6 @@ module System.TypeCheck.IO exposing
     , IO, State, pure, apply, map, andThen, foldrM, foldM, traverseMapWithKey, forM_, mapM_
     , mapM, traverseList, traverseTuple
     , traverseArrayMaybe, foldMArray
-    , Step(..), loop
     , Point(..), PointInfo(..)
     , Descriptor, Content(..), SuperType(..), Mark(..), Variable, RootedVar, FlatType(..)
     , Canonical(..)
@@ -30,11 +29,6 @@ Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 @docs IO, State, pure, apply, map, andThen, foldrM, foldM, traverseMapWithKey, forM_, mapM_
 @docs mapM, traverseList, traverseTuple
 @docs traverseArrayMaybe, foldMArray
-
-
-# Loop
-
-@docs Step, loop
 
 
 # Point
@@ -94,34 +88,11 @@ unsafePerformIO ioA =
 
 
 
--- ====== LOOP ======
-
-
-{-| Represents a step in a looping computation.
-
-  - `Loop state`: Continue iterating with the given state
-  - `Done a`: Terminate and return the result
-
--}
-type Step state a
-    = Loop state
-    | Done a
-
-
-{-| Execute a tail-recursive loop in the IO monad.
-
-The callback function receives the current state and returns either `Loop newState`
-to continue iterating or `Done result` to terminate.
-
--}
-loop : (state -> IO (Step state a)) -> state -> IO a
-loop callback loopState ioState =
-    case callback loopState ioState of
-        ( newIOState, Loop newLoopState ) ->
-            loop callback newLoopState newIOState
-
-        ( newIOState, Done a ) ->
-            ( newIOState, a )
+-- A5: `type Step`/`loop` (the trampoline) REMOVED — all `IO.loop` call sites were
+-- rewritten to direct self-tail-recursion (constraint solver `solveGo`, the five
+-- `*Go` iterators, and the expression/pattern/decl spine walks), which the compiler
+-- TCO's to while-loops (still stack-safe) while dropping the per-iteration
+-- `Step`/loop-state-tuple/closure allocations.
 
 
 
@@ -318,18 +289,25 @@ Similar to `List.foldr`, but the combining function returns an IO action.
 
 -}
 foldrM : (a -> b -> IO b) -> b -> List a -> IO b
-foldrM f z0 xs =
-    loop (foldrMHelp f) ( xs, z0 )
+foldrM f z0 xs s0 =
+    -- Direct self-tail-recursion (TCO'd to a while-loop → stack-safe) replacing the
+    -- `loop`/`Step` trampoline: no `Step` ctor, no loop-state tuple, no `map`
+    -- closure per element. Byte-identical element order + state threading.
+    foldrMGo f xs z0 s0
 
 
-foldrMHelp : (a -> b -> IO b) -> ( List a, b ) -> IO (Step ( List a, b ) b)
-foldrMHelp callback ( list, result ) =
-    case list of
+foldrMGo : (a -> b -> IO b) -> List a -> b -> State -> ( State, b )
+foldrMGo f xs acc s0 =
+    case xs of
         [] ->
-            pure (Done result)
+            ( s0, acc )
 
         a :: rest ->
-            map (\b -> Loop ( rest, b )) (callback a result)
+            let
+                ( s1, b ) =
+                    f a acc s0
+            in
+            foldrMGo f rest b s1
 
 
 {-| Fold over a list from left to right with an IO-producing function.
@@ -338,18 +316,24 @@ Similar to `List.foldl`, but the combining function returns an IO action.
 
 -}
 foldM : (b -> a -> IO b) -> b -> List a -> IO b
-foldM f b list =
-    loop (foldMHelp f) ( list, b )
+foldM f b0 list s0 =
+    -- Direct tail-recursion (TCO → while-loop). Byte-identical to the former
+    -- `loop (foldMHelp f) …`, without the per-element trampoline allocations.
+    foldMGo f b0 list s0
 
 
-foldMHelp : (b -> a -> IO b) -> ( List a, b ) -> IO (Step ( List a, b ) b)
-foldMHelp callback ( list, result ) =
+foldMGo : (b -> a -> IO b) -> b -> List a -> State -> ( State, b )
+foldMGo f acc list s0 =
     case list of
         [] ->
-            pure (Done result)
+            ( s0, acc )
 
         a :: rest ->
-            map (\b -> Loop ( rest, b )) (callback result a)
+            let
+                ( s1, b ) =
+                    f acc a s0
+            in
+            foldMGo f b rest s1
 
 
 {-| Traverse a dictionary, applying an IO-producing function to each key-value pair.
@@ -358,18 +342,23 @@ The function receives both the key and value, allowing key-dependent transformat
 
 -}
 traverseMapWithKey : (k -> comparable) -> (k -> k -> Order) -> (k -> a -> IO b) -> Dict comparable k a -> IO (Dict comparable k b)
-traverseMapWithKey toComparable keyComparison f dict =
-    loop (traverseWithKeyHelp toComparable f) ( Dict.toList keyComparison dict, Dict.empty )
+traverseMapWithKey toComparable keyComparison f dict s0 =
+    -- Direct tail-recursion (TCO → while-loop); same Dict.toList order + inserts.
+    traverseMapGo toComparable f (Dict.toList keyComparison dict) Dict.empty s0
 
 
-traverseWithKeyHelp : (k -> comparable) -> (k -> a -> IO b) -> ( List ( k, a ), Dict comparable k b ) -> IO (Step ( List ( k, a ), Dict comparable k b ) (Dict comparable k b))
-traverseWithKeyHelp toComparable callback ( pairs, result ) =
+traverseMapGo : (k -> comparable) -> (k -> a -> IO b) -> List ( k, a ) -> Dict comparable k b -> State -> ( State, Dict comparable k b )
+traverseMapGo toComparable f pairs result s0 =
     case pairs of
         [] ->
-            pure (Done result)
+            ( s0, result )
 
         ( k, a ) :: rest ->
-            map (\b -> Loop ( rest, Dict.insert toComparable k b result )) (callback k a)
+            let
+                ( s1, b ) =
+                    f k a s0
+            in
+            traverseMapGo toComparable f rest (Dict.insert toComparable k b result) s1
 
 
 {-| Map an IO-producing function over a list, discarding the results.
@@ -378,18 +367,24 @@ Used for executing side effects in sequence without collecting return values.
 
 -}
 mapM_ : (a -> IO b) -> List a -> IO ()
-mapM_ f list =
-    loop (mapMHelp_ f) ( List.reverse list, pure () )
+mapM_ f list s0 =
+    -- Direct tail-recursion (TCO → while-loop). Preserves the former impl's
+    -- REVERSED evaluation order (`List.reverse list`) and (), sans trampoline.
+    mapMGo_ f (List.reverse list) s0
 
 
-mapMHelp_ : (a -> IO b) -> ( List a, IO () ) -> IO (Step ( List a, IO () ) ())
-mapMHelp_ callback ( list, result ) =
+mapMGo_ : (a -> IO b) -> List a -> State -> ( State, () )
+mapMGo_ f list s0 =
     case list of
         [] ->
-            map Done result
+            ( s0, () )
 
         a :: rest ->
-            map (\_ -> Loop ( rest, result )) (callback a)
+            let
+                ( s1, _ ) =
+                    f a s0
+            in
+            mapMGo_ f rest s1
 
 
 {-| Flipped version of `mapM_` for convenient pipeline-style code.
@@ -408,19 +403,29 @@ Collects results into a new list while threading state through each computation.
 
 -}
 traverseList : (a -> IO b) -> List a -> IO (List b)
-traverseList f list =
-    loop (traverseListHelp f) ( list, [] )
-        |> map List.reverse
+traverseList f list s0 =
+    -- Direct tail-recursion (TCO → while-loop). Builds a reversed accumulator then
+    -- reverses once (== the former `loop … |> map List.reverse`). No per-element
+    -- Step/loop-tuple/closure. Byte-identical order + state threading.
+    let
+        ( s1, revAcc ) =
+            traverseListGo f list [] s0
+    in
+    ( s1, List.reverse revAcc )
 
 
-traverseListHelp : (a -> IO b) -> ( List a, List b ) -> IO (Step ( List a, List b ) (List b))
-traverseListHelp f ( remaining, acc ) =
-    case remaining of
+traverseListGo : (a -> IO b) -> List a -> List b -> State -> ( State, List b )
+traverseListGo f list acc s0 =
+    case list of
         [] ->
-            pure (Done acc)
+            ( s0, acc )
 
         a :: rest ->
-            map (\b -> Loop ( rest, b :: acc )) (f a)
+            let
+                ( s1, b ) =
+                    f a s0
+            in
+            traverseListGo f rest (b :: acc) s1
 
 
 {-| Traverse the second element of a tuple with an IO-producing function.

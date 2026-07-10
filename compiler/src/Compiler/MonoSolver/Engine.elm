@@ -1,12 +1,14 @@
 module Compiler.MonoSolver.Engine exposing
-    ( S, Step, Failure(..), WorkItem(..), NumberMultiEntry, NumberInstance
+    ( S, Env, Step, Failure(..), WorkItem(..), NumberMultiEntry, NumberInstance, NodeResolution
     , succeed, fail, andThen, map, map2, traverse, foldlS
     , getS, modifyS, liftIO, runStep
     , freshVar, enqueueSpec
     , freshStore, resetItem, harvestSuperTable, harvestSuperTableExcept
     , insertVar, lookupVar, scoped
     , pushNumberMulti, popNumberMulti, isNumberMultiTarget, recordNumberInstance, numberMultiRootType
-    , pushLocalMulti, popLocalMulti, isLocalMultiTarget, recordLocalInstance
+    , pushLocalMulti, popLocalMulti, isLocalMultiTarget, recordLocalInstance, localVarInfo
+    , lookupSchemeMono, putSchemeMono, lookupKernelAbi, putKernelAbi
+    , lookupCallMemo, putCallMemo
     , mvarIdKey, pointKey
     )
 
@@ -55,6 +57,18 @@ type WorkItem
     = SpecializeGlobal Mono.SpecId
 
 
+{-| M7: the immutable Reader-style context — set once at `initState`, never
+updated. Grouped so `S` updates copy one `env` ref rather than five dead ones.
+-}
+type alias Env =
+    { toptNodes : DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId)
+    , annotations : TOpt.AnnotationsByGlobal TypeIds.MVarId
+    , globalTypeEnv : TypeEnv.GlobalTypeEnv
+    , currentModule : IO.Canonical -- entry module; home of every AnonymousLambda
+    , superStatic : Dict Int IO.SuperType -- static solver truth ONLY (loadVar)
+    }
+
+
 {-| The whole engine state: global fields persist across work items; the
 per-item fields (`store`, `memo`, `revMemo`) are reset by `resetItem`.
 -}
@@ -71,25 +85,43 @@ type alias S =
     -- Number/super truth: seeded from AssignMVarIds' superVars, read by
     -- loadType when minting a var, and fed to shared Prune at the end.
     , superTable : Dict Int IO.SuperType -- static solver truth + Join-R harvested number-taint (zonk/key/Prune)
-    , superStatic : Dict Int IO.SuperType -- static solver truth ONLY (loadVar) — one item's bindings must never constrain another item's instantiation
     , nextMVarId : TypeIds.MVarId
 
-    -- Fixed context (currentGlobal changes per item)
-    , toptNodes : DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId)
-    , annotations : TOpt.AnnotationsByGlobal TypeIds.MVarId
-    , globalTypeEnv : TypeEnv.GlobalTypeEnv
-    , currentModule : IO.Canonical -- entry module; home of every AnonymousLambda (matches original)
-    , currentGlobal : Maybe Mono.Global
+    -- M2 caches (GLOBAL — survive resetItem; a ground/closed classification is
+    -- item-independent). schemeMono: a CLOSED (var-free) callee scheme's
+    -- classification, keyed by TOpt.toComparableGlobal. kernelAbiMono: a kernel
+    -- ABI derived at all-ground args, keyed by "home.name|argKeys".
+    , schemeMono : CoreDict.Dict String Mono.MonoType
+    , kernelAbiMono : CoreDict.Dict String Mono.MonoType
+    , callMemo : CoreDict.Dict String ( Mono.MonoType, Mono.MonoType, Mono.SpecId ) -- open-scheme call at all-ground args: (funcMonoType, resultMonoType, specId) — D10 caches specId to skip re-enqueue/re-serialize on a hit
+    , nodeResolution : CoreDict.Dict String NodeResolution -- D13: per-GLOBAL node lookup + annotation-id set, keyed by TOpt.toComparableGlobal. Depends only on the immutable toptNodes, so it survives resetItem; a global with N specs resolves once instead of N times.
+
+    -- M7: the 5 IMMUTABLE context fields (never updated after initState) live in
+    -- one `env` sub-record, so each `{ s | … }` copies one `env` ref instead of
+    -- five refs it never changes.
+    , env : Env
+    , currentGlobal : Maybe Mono.Global -- (changes per item — stays top-level)
 
     -- Per-work-item solver state
     , store : IO.State
     , memo : Dict Int IO.Variable -- MVarId (Id.toComparable) -> Point
-    , revMemo : Dict Int TypeIds.MVarId -- Point index -> first MVarId that minted it
+    , revMemo : Array (Maybe TypeIds.MVarId) -- A2: Point index -> first MVarId that minted it. Point indices are DENSE from 0 in a fresh per-item store, so an Array (indexed by point) replaces the former Dict Int — O(log32) point-keyed reads with no `_Utils_cmp`, sparse structure-point slots hold Nothing.
     , varEnv : CoreDict.Dict String Mono.MonoType -- local variable name -> monomorphized type
     , numberMulti : List NumberMultiEntry -- stack of let-bound number vars being multi-specialized
     , localMulti : List NumberMultiEntry -- stack of let-bound FUNCTIONS being multi-specialized (f, f$1, …)
     , derivedDestructors : CoreDict.Dict String (Can.Type TypeIds.MVarId) -- destructor-bound name -> the destructor's canType (bridges a derived fn's call back to its root's type vars)
     , localCanTypes : CoreDict.Dict String (Can.Type TypeIds.MVarId) -- let-bound name -> its RHS canType (destructor root slot lookup)
+    }
+
+
+{-| D13: the per-global result of resolving a `Mono.Global` against `toptNodes`,
+plus the annotation-id set harvested from the resolved node. Both depend only on
+the immutable node map, so they are computed once per global and reused across
+every specialization of that global (memoized in `S.nodeResolution`).
+-}
+type alias NodeResolution =
+    { node : Maybe (TOpt.Node TypeIds.MVarId)
+    , annIds : EverySet.EverySet Int Int
     }
 
 
@@ -151,21 +183,66 @@ andThen f step =
                 f a s1
 
 
+{-| D1: direct form. The former `andThen (\a -> succeed (f a)) step` allocated the
+`\a -> …` closure PLUS the `succeed (f a)` closure on every run; `map` fires on
+essentially every zonk/encode node, so the direct `case` form (one closure) is a
+broad cut to the monad-closure bucket. Monad-law-preserving → byte-identical.
+-}
 map : (a -> b) -> Step a -> Step b
 map f step =
-    andThen (\a -> succeed (f a)) step
+    \s ->
+        case step s of
+            Err e ->
+                Err e
+
+            Ok ( a, s1 ) ->
+                Ok ( f a, s1 )
 
 
 map2 : (a -> b -> c) -> Step a -> Step b -> Step c
 map2 f sa sb =
-    andThen (\a -> andThen (\b -> succeed (f a b)) sb) sa
+    \s ->
+        case sa s of
+            Err e ->
+                Err e
+
+            Ok ( a, s1 ) ->
+                case sb s1 of
+                    Err e ->
+                        Err e
+
+                    Ok ( b, s2 ) ->
+                        Ok ( f a b, s2 )
 
 
-{-| Thread a step over a list, preserving order.
+{-| Thread a step over a list, preserving order. Direct order-preserving
+recursion (no intermediate reversed list, no per-element `map` closure); the
+lists here are short (type arities / tuple slots / record fields), matching the
+non-tail shape already used by `Store.loadListC`/`Translate.classifyList`.
 -}
 traverse : (a -> Step b) -> List a -> Step (List b)
 traverse f items =
-    map List.reverse (foldlS (\x acc -> map (\b -> b :: acc) (f x)) [] items)
+    \s -> traverseGo f items s
+
+
+traverseGo : (a -> Step b) -> List a -> S -> Result Failure ( List b, S )
+traverseGo f items s =
+    case items of
+        [] ->
+            Ok ( [], s )
+
+        x :: rest ->
+            case f x s of
+                Err e ->
+                    Err e
+
+                Ok ( b, s1 ) ->
+                    case traverseGo f rest s1 of
+                        Err e ->
+                            Err e
+
+                        Ok ( bs, s2 ) ->
+                            Ok ( b :: bs, s2 )
 
 
 {-| Left fold in the Step monad.
@@ -228,14 +305,19 @@ freshVar content =
 Mirrors the original `enqueueSpec`: LIFO worklist (cons), `scheduled` dedups.
 -}
 enqueueSpec : Mono.Global -> Mono.MonoType -> Step Mono.SpecId
-enqueueSpec global monoType =
-    \s ->
-        let
-            ( specId, reg1 ) =
-                Registry.getOrCreateSpecId global monoType s.registry
-        in
+enqueueSpec global monoType s =
+    -- A1: explicit trailing-S param (was `\s -> …`) → saturated callers avoid the
+    -- per-call closure; body unchanged → byte-identical.
+    let
+        ( specId, reg1 ) =
+            Registry.getOrCreateSpecId global monoType s.registry
+    in
         if BitSet.member specId s.scheduled then
-            Ok ( specId, { s | registry = reg1 } )
+            -- D2: already scheduled ⇒ the spec existed ⇒ `getOrCreateSpecId`
+            -- returned the SAME registry (its found branch is `(specId,
+            -- registry)`), so `{ s | registry = reg1 }` would copy the whole S
+            -- to change nothing. Return S unaltered (no-op update elided).
+            Ok ( specId, s )
 
         else
             Ok
@@ -282,49 +364,48 @@ freshStore =
 -}
 resetItem : S -> S
 resetItem s =
-    { s | store = freshStore, memo = CoreDict.empty, revMemo = CoreDict.empty, varEnv = CoreDict.empty, numberMulti = [], localMulti = [], derivedDestructors = CoreDict.empty, localCanTypes = CoreDict.empty }
+    { s | store = freshStore, memo = CoreDict.empty, revMemo = Array.empty, varEnv = CoreDict.empty, numberMulti = [], localMulti = [], derivedDestructors = CoreDict.empty, localCanTypes = CoreDict.empty }
 
 
 {-| Bind a local variable's monomorphized type.
 -}
 insertVar : String -> Mono.MonoType -> Step ()
-insertVar name monoType =
-    modifyS (\s -> { s | varEnv = CoreDict.insert name monoType s.varEnv })
+insertVar name monoType s =
+    Ok ( (), { s | varEnv = CoreDict.insert name monoType s.varEnv } )
 
 
 {-| Look up a local variable's type (populated by let/lambda/destructor bindings).
 -}
 lookupVar : String -> Step (Maybe Mono.MonoType)
-lookupVar name =
-    getS (\s -> CoreDict.get name s.varEnv)
+lookupVar name s =
+    Ok ( CoreDict.get name s.varEnv, s )
 
 
 {-| Push an empty number-multi entry for a let-bound number var before walking
 its body (instance discovery is body-first).
 -}
 pushNumberMulti : String -> Step ()
-pushNumberMulti defName =
-    modifyS (\s -> { s | numberMulti = { defName = defName, instances = CoreDict.empty } :: s.numberMulti })
+pushNumberMulti defName s =
+    Ok ( (), { s | numberMulti = { defName = defName, instances = CoreDict.empty } :: s.numberMulti } )
 
 
 {-| Pop the top number-multi entry after the body is specialized.
 -}
 popNumberMulti : Step (Maybe NumberMultiEntry)
-popNumberMulti =
-    \s ->
-        case s.numberMulti of
-            top :: rest ->
-                Ok ( Just top, { s | numberMulti = rest } )
+popNumberMulti s =
+    case s.numberMulti of
+        top :: rest ->
+            Ok ( Just top, { s | numberMulti = rest } )
 
-            [] ->
-                Ok ( Nothing, s )
+        [] ->
+            Ok ( Nothing, s )
 
 
 {-| Is `name` a let-bound number var currently being multi-specialized?
 -}
 isNumberMultiTarget : String -> Step Bool
-isNumberMultiTarget name =
-    getS (\s -> List.any (\e -> e.defName == name) s.numberMulti)
+isNumberMultiTarget name s =
+    Ok ( List.any (\e -> e.defName == name) s.numberMulti, s )
 
 
 {-| The eager (index-0, bare-name) instance monoType of a number-multi target,
@@ -332,16 +413,16 @@ or Nothing if `name` is not one. Used by the destructor-derived divert to
 overlay a refined slot onto the root container's type.
 -}
 numberMultiRootType : String -> Step (Maybe Mono.MonoType)
-numberMultiRootType name =
-    getS
-        (\s ->
-            case List.head (List.filter (\e -> e.defName == name) s.numberMulti) of
-                Just entry ->
-                    List.head (List.filter (\i -> i.freshName == name) (CoreDict.values entry.instances))
-                        |> Maybe.map .monoType
+numberMultiRootType name s =
+    Ok
+        ( case List.head (List.filter (\e -> e.defName == name) s.numberMulti) of
+            Just entry ->
+                List.head (List.filter (\i -> i.freshName == name) (CoreDict.values entry.instances))
+                    |> Maybe.map .monoType
 
-                Nothing ->
-                    Nothing
+            Nothing ->
+                Nothing
+        , s
         )
 
 
@@ -350,40 +431,54 @@ returning its per-instance name (`defName` for the first/Int instance, then
 `defName$v<idx>`). Keyed by `toComparableMonoType`.
 -}
 recordNumberInstance : String -> Mono.MonoType -> Step ( String, Mono.MonoType )
-recordNumberInstance =
-    recordMultiInstance .numberMulti (\stk s -> { s | numberMulti = stk }) "$v"
+recordNumberInstance name monoType s =
+    recordMultiInstance .numberMulti (\stk st -> { st | numberMulti = stk }) "$v" name monoType s
 
 
 {-| Push an empty local-multi entry for a let-bound function before walking its
 body (each use records the concrete type it is applied at).
 -}
 pushLocalMulti : String -> Step ()
-pushLocalMulti defName =
-    modifyS (\s -> { s | localMulti = { defName = defName, instances = CoreDict.empty } :: s.localMulti })
+pushLocalMulti defName s =
+    Ok ( (), { s | localMulti = { defName = defName, instances = CoreDict.empty } :: s.localMulti } )
 
 
 popLocalMulti : Step (Maybe NumberMultiEntry)
-popLocalMulti =
-    \s ->
-        case s.localMulti of
-            top :: rest ->
-                Ok ( Just top, { s | localMulti = rest } )
+popLocalMulti s =
+    case s.localMulti of
+        top :: rest ->
+            Ok ( Just top, { s | localMulti = rest } )
 
-            [] ->
-                Ok ( Nothing, s )
+        [] ->
+            Ok ( Nothing, s )
 
 
 isLocalMultiTarget : String -> Step Bool
-isLocalMultiTarget name =
-    getS (\s -> List.any (\e -> e.defName == name) s.localMulti)
+isLocalMultiTarget name s =
+    Ok ( List.any (\e -> e.defName == name) s.localMulti, s )
+
+
+{-| D9: read all three `VarLocal` classifiers in one `getS` (is-local-multi,
+is-number-multi, varEnv binding) — collapses three sequential `getS` andThen
+closures on the hot local-ref node into one.
+-}
+localVarInfo : String -> Step ( Bool, Bool, Maybe Mono.MonoType )
+localVarInfo name s =
+    Ok
+        ( ( List.any (\e -> e.defName == name) s.localMulti
+          , List.any (\e -> e.defName == name) s.numberMulti
+          , CoreDict.get name s.varEnv
+          )
+        , s
+        )
 
 
 {-| Record (or reuse) an instance of a local-multi FUNCTION at a demanded type;
 per-instance name is `defName` (first) then `defName$<idx>`.
 -}
 recordLocalInstance : String -> Mono.MonoType -> Step ( String, Mono.MonoType )
-recordLocalInstance =
-    recordMultiInstance .localMulti (\stk s -> { s | localMulti = stk }) "$"
+recordLocalInstance name monoType s =
+    recordMultiInstance .localMulti (\stk st -> { st | localMulti = stk }) "$" name monoType s
 
 
 {-| Shared machinery behind `recordNumberInstance` / `recordLocalInstance`:
@@ -392,8 +487,7 @@ by `toComparableMonoType`, and name it `defName` for index 0 else
 `defName ++ sep ++ idx`.
 -}
 recordMultiInstance : (S -> List NumberMultiEntry) -> (List NumberMultiEntry -> S -> S) -> String -> String -> Mono.MonoType -> Step ( String, Mono.MonoType )
-recordMultiInstance getStack setStack sep name monoType =
-    \s ->
+recordMultiInstance getStack setStack sep name monoType s =
         let
             key =
                 Mono.toComparableMonoType monoType
@@ -453,14 +547,13 @@ discarded afterward (so they don't leak to sibling expressions). Mirrors the
 original engine's varEnv push/pop.
 -}
 scoped : Step a -> Step a
-scoped step =
-    \s0 ->
-        case step s0 of
-            Err e ->
-                Err e
+scoped step s0 =
+    case step s0 of
+        Err e ->
+            Err e
 
-            Ok ( a, s1 ) ->
-                Ok ( a, { s1 | varEnv = s0.varEnv } )
+        Ok ( a, s1 ) ->
+            Ok ( a, { s1 | varEnv = s0.varEnv } )
 
 
 {-| Harvest number-taint (Join-R, §5.5) from the finished item's store into the
@@ -484,9 +577,17 @@ erased-typed call site — an ABI break (ListConcatMap empty-call crash).
 harvestSuperTableExcept : EverySet.EverySet Int Int -> S -> S
 harvestSuperTableExcept excluded s =
     let
-        ( _, superTable1 ) =
-            CoreDict.foldl
-                (\pointIdx mvarId ( store, super ) ->
+        -- A2: revMemo is now an Array indexed by point index; Array.foldl visits
+        -- indices 0,1,2,… ascending (== the former Dict.foldl ascending-key order)
+        -- with a threaded index counter, skipping empty (Nothing) structure-point
+        -- slots (== keys the Dict never had). Byte-identical harvest.
+        step maybeMvarId ( pointIdx, ( store, super ) ) =
+            ( pointIdx + 1
+            , case maybeMvarId of
+                Nothing ->
+                    ( store, super )
+
+                Just mvarId ->
                     if EverySet.member identity (mvarIdKey mvarId) excluded then
                         ( store, super )
 
@@ -504,11 +605,46 @@ harvestSuperTableExcept excluded s =
 
                             _ ->
                                 ( store1, super )
-                )
-                ( s.store, s.superTable )
-                s.revMemo
+            )
+
+        ( _, ( _, superTable1 ) ) =
+            Array.foldl step ( 0, ( s.store, s.superTable ) ) s.revMemo
     in
     { s | superTable = superTable1 }
+
+
+
+-- ====== M2 CACHES ======
+
+
+lookupSchemeMono : String -> Step (Maybe Mono.MonoType)
+lookupSchemeMono key =
+    getS (\s -> CoreDict.get key s.schemeMono)
+
+
+putSchemeMono : String -> Mono.MonoType -> Step ()
+putSchemeMono key monoType =
+    modifyS (\s -> { s | schemeMono = CoreDict.insert key monoType s.schemeMono })
+
+
+lookupKernelAbi : String -> Step (Maybe Mono.MonoType)
+lookupKernelAbi key =
+    getS (\s -> CoreDict.get key s.kernelAbiMono)
+
+
+putKernelAbi : String -> Mono.MonoType -> Step ()
+putKernelAbi key monoType =
+    modifyS (\s -> { s | kernelAbiMono = CoreDict.insert key monoType s.kernelAbiMono })
+
+
+lookupCallMemo : String -> Step (Maybe ( Mono.MonoType, Mono.MonoType, Mono.SpecId ))
+lookupCallMemo key =
+    getS (\s -> CoreDict.get key s.callMemo)
+
+
+putCallMemo : String -> ( Mono.MonoType, Mono.MonoType, Mono.SpecId ) -> Step ()
+putCallMemo key entry =
+    modifyS (\s -> { s | callMemo = CoreDict.insert key entry s.callMemo })
 
 
 

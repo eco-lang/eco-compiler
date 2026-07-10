@@ -6,7 +6,7 @@
 
 module {
   func.func @returns_record(%x: i64, %y: !eco.value) -> !eco.value {
-    %r = eco.construct.record(%x, %y) {field_count = 2 : i64, unboxed_bitmap = 0 : i64}
+    %r = eco.construct.record(%x, %y) {field_count = 2 : i64, unboxed_bitmap = 1 : i64}
        : (i64, !eco.value) -> !eco.value
     return %r : !eco.value
   }

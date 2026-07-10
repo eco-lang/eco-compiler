@@ -580,47 +580,57 @@ the Group A exists/CEqual wrapper — exactly what the recursive arms did.
 
 -}
 constrainLetSpine : RigidTypeVar -> Can.Expr -> E.Expected Type -> IO Constraint
-constrainLetSpine rtv expr expected =
-    IO.loop (letSpineStep rtv) ( expr, expected, [] )
-        |> IO.andThen
-            (\( leafCon, frames ) -> IO.foldM (applyLetFrame rtv) leafCon frames)
-
-
-letSpineStep :
-    RigidTypeVar
-    -> ( Can.Expr, E.Expected Type, List LetFrame )
-    -> IO (IO.Step ( Can.Expr, E.Expected Type, List LetFrame ) ( Constraint, List LetFrame ))
-letSpineStep rtv ( (A.At region exprInfo) as current, expected, frames ) =
+constrainLetSpine rtv expr expected s0 =
+    -- A5: direct self-tail-recursive spine (TCO → while-loop; stack-safe) replacing
+    -- the `IO.loop`/`Step` trampoline. `descend` is inlined into each Let* arm so
+    -- the recursive call is a DIRECT self-tail-call of `letSpineGo` (Elm does not
+    -- TCO through a local helper). Byte-identical order/allocations sans trampoline.
     let
-        descend : LetPayload -> Can.Expr -> IO (IO.Step ( Can.Expr, E.Expected Type, List LetFrame ) ( Constraint, List LetFrame ))
-        descend payload body =
-            Type.mkFlexVar
-                |> IO.andThen
-                    (\exprVar ->
-                        NodeIds.recordNodeVar exprInfo.id exprVar
-                            |> IO.map
-                                (\() ->
-                                    IO.Loop
-                                        ( body
-                                        , NoExpectation (VarN exprVar)
-                                        , { region = region, exprVar = exprVar, payload = payload, expected = expected } :: frames
-                                        )
-                                )
-                    )
+        ( s1, ( leafCon, frames ) ) =
+            letSpineGo rtv expr expected [] s0
     in
+    IO.foldM (applyLetFrame rtv) leafCon frames s1
+
+
+letSpineGo : RigidTypeVar -> Can.Expr -> E.Expected Type -> List LetFrame -> IO.State -> ( IO.State, ( Constraint, List LetFrame ) )
+letSpineGo rtv ((A.At region exprInfo) as current) expected frames s0 =
     case exprInfo.node of
         Can.Let def body ->
-            descend (LetDef def) body
+            let
+                ( s1, exprVar ) =
+                    Type.mkFlexVar s0
+
+                ( s2, () ) =
+                    NodeIds.recordNodeVar exprInfo.id exprVar s1
+            in
+            letSpineGo rtv body (NoExpectation (VarN exprVar)) ({ region = region, exprVar = exprVar, payload = LetDef def, expected = expected } :: frames) s2
 
         Can.LetRec defs body ->
-            descend (LetRecDefs defs) body
+            let
+                ( s1, exprVar ) =
+                    Type.mkFlexVar s0
+
+                ( s2, () ) =
+                    NodeIds.recordNodeVar exprInfo.id exprVar s1
+            in
+            letSpineGo rtv body (NoExpectation (VarN exprVar)) ({ region = region, exprVar = exprVar, payload = LetRecDefs defs, expected = expected } :: frames) s2
 
         Can.LetDestruct pattern defExpr body ->
-            descend (LetDestructPat pattern defExpr) body
+            let
+                ( s1, exprVar ) =
+                    Type.mkFlexVar s0
+
+                ( s2, () ) =
+                    NodeIds.recordNodeVar exprInfo.id exprVar s1
+            in
+            letSpineGo rtv body (NoExpectation (VarN exprVar)) ({ region = region, exprVar = exprVar, payload = LetDestructPat pattern defExpr, expected = expected } :: frames) s2
 
         _ ->
-            constrainWithIds rtv current expected
-                |> IO.map (\con -> IO.Done ( con, frames ))
+            let
+                ( s1, con ) =
+                    constrainWithIds rtv current expected s0
+            in
+            ( s1, ( con, frames ) )
 
 
 applyLetFrame : RigidTypeVar -> Constraint -> LetFrame -> IO Constraint
@@ -708,95 +718,96 @@ Only when BOTH operands are binops does the deferred right side re-enter
 
 -}
 constrainBinopSpine : RigidTypeVar -> Can.Expr -> E.Expected Type -> IO Constraint
-constrainBinopSpine rtv expr expected =
-    IO.loop (binopSpineStep rtv) ( expr, expected, [] )
-        |> IO.andThen
-            (\( leafCon, frames ) -> IO.foldM (applyBinopFrame rtv) leafCon frames)
+constrainBinopSpine rtv expr expected s0 =
+    -- A5: direct self-tail-recursive spine (TCO → while-loop; stack-safe) replacing
+    -- the `IO.loop`/`Step` trampoline. Both `Loop` transitions are DIRECT self-tail-
+    -- calls of `binopSpineGo`. Byte-identical var-alloc order + frame stack.
+    let
+        ( s1, ( leafCon, frames ) ) =
+            binopSpineGo rtv expr expected [] s0
+    in
+    IO.foldM (applyBinopFrame rtv) leafCon frames s1
 
 
-binopSpineStep :
-    RigidTypeVar
-    -> ( Can.Expr, E.Expected Type, List BinopFrame )
-    -> IO (IO.Step ( Can.Expr, E.Expected Type, List BinopFrame ) ( Constraint, List BinopFrame ))
-binopSpineStep rtv ( (A.At region exprInfo) as current, expected, frames ) =
+binopSpineGo : RigidTypeVar -> Can.Expr -> E.Expected Type -> List BinopFrame -> IO.State -> ( IO.State, ( Constraint, List BinopFrame ) )
+binopSpineGo rtv ((A.At region exprInfo) as current) expected frames s0 =
     case exprInfo.node of
         Can.Binop op _ _ annotation leftExpr rightExpr ->
-            Type.mkFlexVar
-                |> IO.andThen
-                    (\leftVar ->
-                        Type.mkFlexVar
-                            |> IO.andThen
-                                (\rightVar ->
-                                    Type.mkFlexVar
-                                        |> IO.andThen
-                                            (\answerVar ->
-                                                -- Record answerVar as the type for this binop expression
-                                                NodeIds.recordNodeVar exprInfo.id answerVar
-                                                    |> IO.andThen
-                                                        (\() ->
-                                                            let
-                                                                leftType : Type
-                                                                leftType =
-                                                                    VarN leftVar
+            let
+                ( s1, leftVar ) =
+                    Type.mkFlexVar s0
 
-                                                                rightType : Type
-                                                                rightType =
-                                                                    VarN rightVar
+                ( s2, rightVar ) =
+                    Type.mkFlexVar s1
 
-                                                                answerType : Type
-                                                                answerType =
-                                                                    VarN answerVar
+                ( s3, answerVar ) =
+                    Type.mkFlexVar s2
 
-                                                                binopType : Type
-                                                                binopType =
-                                                                    Type.funType leftType (Type.funType rightType answerType)
+                -- Record answerVar as the type for this binop expression
+                ( s4, () ) =
+                    NodeIds.recordNodeVar exprInfo.id answerVar s3
 
-                                                                level : BinopLevel
-                                                                level =
-                                                                    { region = region
-                                                                    , op = op
-                                                                    , opCon = CForeign region op annotation (NoExpectation binopType)
-                                                                    , leftVar = leftVar
-                                                                    , rightVar = rightVar
-                                                                    , answerVar = answerVar
-                                                                    , answerType = answerType
-                                                                    , expected = expected
-                                                                    }
+                leftType : Type
+                leftType =
+                    VarN leftVar
 
-                                                                leftExpected : E.Expected Type
-                                                                leftExpected =
-                                                                    FromContext region (OpLeft op) leftType
+                rightType : Type
+                rightType =
+                    VarN rightVar
 
-                                                                rightExpected : E.Expected Type
-                                                                rightExpected =
-                                                                    FromContext region (OpRight op) rightType
-                                                            in
-                                                            if isBinopNode leftExpr then
-                                                                IO.pure (IO.Loop ( leftExpr, leftExpected, BinopDeferRight level rightExpr rightExpected :: frames ))
+                answerType : Type
+                answerType =
+                    VarN answerVar
 
-                                                            else
-                                                                constrainWithIds rtv leftExpr leftExpected
-                                                                    |> IO.andThen
-                                                                        (\leftCon ->
-                                                                            if isBinopNode rightExpr then
-                                                                                IO.pure (IO.Loop ( rightExpr, rightExpected, BinopLeftDone level leftCon :: frames ))
+                binopType : Type
+                binopType =
+                    Type.funType leftType (Type.funType rightType answerType)
 
-                                                                            else
-                                                                                constrainWithIds rtv rightExpr rightExpected
-                                                                                    |> IO.map
-                                                                                        (\rightCon ->
-                                                                                            IO.Done ( assembleBinop level leftCon rightCon, frames )
-                                                                                        )
-                                                                        )
-                                                        )
-                                            )
-                                )
-                    )
+                level : BinopLevel
+                level =
+                    { region = region
+                    , op = op
+                    , opCon = CForeign region op annotation (NoExpectation binopType)
+                    , leftVar = leftVar
+                    , rightVar = rightVar
+                    , answerVar = answerVar
+                    , answerType = answerType
+                    , expected = expected
+                    }
+
+                leftExpected : E.Expected Type
+                leftExpected =
+                    FromContext region (OpLeft op) leftType
+
+                rightExpected : E.Expected Type
+                rightExpected =
+                    FromContext region (OpRight op) rightType
+            in
+            if isBinopNode leftExpr then
+                binopSpineGo rtv leftExpr leftExpected (BinopDeferRight level rightExpr rightExpected :: frames) s4
+
+            else
+                let
+                    ( s5, leftCon ) =
+                        constrainWithIds rtv leftExpr leftExpected s4
+                in
+                if isBinopNode rightExpr then
+                    binopSpineGo rtv rightExpr rightExpected (BinopLeftDone level leftCon :: frames) s5
+
+                else
+                    let
+                        ( s6, rightCon ) =
+                            constrainWithIds rtv rightExpr rightExpected s5
+                    in
+                    ( s6, ( assembleBinop level leftCon rightCon, frames ) )
 
         _ ->
             -- Unreachable: the spine only enters/loops on Binop nodes.
-            constrainWithIds rtv current expected
-                |> IO.map (\con -> IO.Done ( con, frames ))
+            let
+                ( s1, con ) =
+                    constrainWithIds rtv current expected s0
+            in
+            ( s1, ( con, frames ) )
 
 
 applyBinopFrame : RigidTypeVar -> Constraint -> BinopFrame -> IO Constraint
@@ -878,138 +889,133 @@ the recursive order). Then:
 
 -}
 constrainCallSpine : RigidTypeVar -> Can.Expr -> E.Expected Type -> IO Constraint
-constrainCallSpine rtv expr expected =
-    IO.loop (callSpineStep rtv) ( expr, expected, [] )
-        |> IO.andThen
-            (\( leafCon, frames ) -> IO.foldM (applyCallFrame rtv) leafCon frames)
+constrainCallSpine rtv expr expected s0 =
+    -- A5: direct self-tail-recursive spine (TCO -> while-loop; stack-safe) replacing
+    -- the IO.loop/Step trampoline. callSpineGo self-tail-calls on each spine descent
+    -- (func axis / last-arg axis); the width-bounded arg walk callSpineArgsGo returns
+    -- a CallArgsOutcome that callSpineGo inspects (no trampoline, no mutual tail-
+    -- recursion). Byte-identical var-alloc/constrain order + frame stack.
+    let
+        ( s1, ( leafCon, frames ) ) =
+            callSpineGo rtv expr expected [] s0
+    in
+    IO.foldM (applyCallFrame rtv) leafCon frames s1
 
 
-callSpineStep :
-    RigidTypeVar
-    -> ( Can.Expr, E.Expected Type, List CallFrame )
-    -> IO (IO.Step ( Can.Expr, E.Expected Type, List CallFrame ) ( Constraint, List CallFrame ))
-callSpineStep rtv ( (A.At region exprInfo) as current, expected, frames ) =
+type CallArgsOutcome
+    = CallArgsDone Constraint
+    | CallArgsDescend Can.Expr (E.Expected Type) CallFrame
+
+
+callSpineGo : RigidTypeVar -> Can.Expr -> E.Expected Type -> List CallFrame -> IO.State -> ( IO.State, ( Constraint, List CallFrame ) )
+callSpineGo rtv ((A.At region exprInfo) as current) expected frames s0 =
     case exprInfo.node of
         Can.Call ((A.At funcRegion _) as func) args ->
-            Type.mkFlexVar
-                |> IO.andThen
-                    (\funcVar ->
-                        Type.mkFlexVar
-                            |> IO.andThen
-                                (\resultVar ->
-                                    -- Record resultVar for this call expression
-                                    NodeIds.recordNodeVar exprInfo.id resultVar
-                                        |> IO.andThen
-                                            (\() ->
-                                                let
-                                                    level : CallLevel
-                                                    level =
-                                                        { region = region
-                                                        , funcRegion = funcRegion
-                                                        , maybeName = getName func
-                                                        , funcVar = funcVar
-                                                        , resultVar = resultVar
-                                                        , funcType = VarN funcVar
-                                                        , resultType = VarN resultVar
-                                                        , numArgs = List.length args
-                                                        , expected = expected
-                                                        }
-                                                in
-                                                if isCallNode func then
-                                                    IO.pure (IO.Loop ( func, E.NoExpectation level.funcType, CallDeferArgs level args :: frames ))
+            let
+                ( s1, funcVar ) =
+                    Type.mkFlexVar s0
 
-                                                else
-                                                    constrainWithIds rtv func (E.NoExpectation level.funcType)
-                                                        |> IO.andThen
-                                                            (\funcCon ->
-                                                                callSpineArgs rtv level funcCon Index.first args [] [] [] frames
-                                                            )
-                                            )
-                                )
-                    )
+                ( s2, resultVar ) =
+                    Type.mkFlexVar s1
+
+                ( s3, () ) =
+                    NodeIds.recordNodeVar exprInfo.id resultVar s2
+
+                level : CallLevel
+                level =
+                    { region = region
+                    , funcRegion = funcRegion
+                    , maybeName = getName func
+                    , funcVar = funcVar
+                    , resultVar = resultVar
+                    , funcType = VarN funcVar
+                    , resultType = VarN resultVar
+                    , numArgs = List.length args
+                    , expected = expected
+                    }
+            in
+            if isCallNode func then
+                callSpineGo rtv func (E.NoExpectation level.funcType) (CallDeferArgs level args :: frames) s3
+
+            else
+                let
+                    ( s4, funcCon ) =
+                        constrainWithIds rtv func (E.NoExpectation level.funcType) s3
+
+                    ( s5, outcome ) =
+                        callSpineArgsGo rtv level funcCon Index.first args [] [] [] s4
+                in
+                case outcome of
+                    CallArgsDone con ->
+                        ( s5, ( con, frames ) )
+
+                    CallArgsDescend lastArg argExpected lastFrame ->
+                        callSpineGo rtv lastArg argExpected (lastFrame :: frames) s5
 
         _ ->
-            -- Unreachable: the spine only enters/loops on Call nodes.
-            constrainWithIds rtv current expected
-                |> IO.map (\con -> IO.Done ( con, frames ))
+            let
+                ( s1, con ) =
+                    constrainWithIds rtv current expected s0
+            in
+            ( s1, ( con, frames ) )
 
 
-{-| Process a level's arguments in order (width-bounded), descending into the
-last argument when it is itself a call.
--}
-callSpineArgs :
-    RigidTypeVar
-    -> CallLevel
-    -> Constraint
-    -> Index.ZeroBased
-    -> List Can.Expr
-    -> List IO.Variable
-    -> List Type
-    -> List Constraint
-    -> List CallFrame
-    -> IO (IO.Step ( Can.Expr, E.Expected Type, List CallFrame ) ( Constraint, List CallFrame ))
-callSpineArgs rtv level funcCon index remaining accVars accTypes accCons frames =
+callSpineArgsGo : RigidTypeVar -> CallLevel -> Constraint -> Index.ZeroBased -> List Can.Expr -> List IO.Variable -> List Type -> List Constraint -> IO.State -> ( IO.State, CallArgsOutcome )
+callSpineArgsGo rtv level funcCon index remaining accVars accTypes accCons s0 =
     case remaining of
         [] ->
-            IO.pure
-                (IO.Done
-                    ( assembleCall level funcCon (List.reverse accVars) (List.reverse accTypes) (List.reverse accCons)
-                    , frames
+            ( s0
+            , CallArgsDone (assembleCall level funcCon (List.reverse accVars) (List.reverse accTypes) (List.reverse accCons))
+            )
+
+        [ lastArg ] ->
+            let
+                ( s1, argVar ) =
+                    Type.mkFlexVar s0
+
+                argType : Type
+                argType =
+                    VarN argVar
+
+                argExpected : E.Expected Type
+                argExpected =
+                    FromContext level.region (CallArg level.maybeName index) argType
+            in
+            if isCallNode lastArg then
+                ( s1
+                , CallArgsDescend lastArg
+                    argExpected
+                    (CallLastArg level funcCon (List.reverse accVars) (List.reverse accTypes) (List.reverse accCons) argVar argType)
+                )
+
+            else
+                let
+                    ( s2, argCon ) =
+                        constrainWithIds rtv lastArg argExpected s1
+                in
+                ( s2
+                , CallArgsDone
+                    (assembleCall level
+                        funcCon
+                        (List.reverse (argVar :: accVars))
+                        (List.reverse (argType :: accTypes))
+                        (List.reverse (argCon :: accCons))
                     )
                 )
 
-        [ lastArg ] ->
-            Type.mkFlexVar
-                |> IO.andThen
-                    (\argVar ->
-                        let
-                            argType : Type
-                            argType =
-                                VarN argVar
-
-                            argExpected : E.Expected Type
-                            argExpected =
-                                FromContext level.region (CallArg level.maybeName index) argType
-                        in
-                        if isCallNode lastArg then
-                            IO.pure
-                                (IO.Loop
-                                    ( lastArg
-                                    , argExpected
-                                    , CallLastArg level funcCon (List.reverse accVars) (List.reverse accTypes) (List.reverse accCons) argVar argType :: frames
-                                    )
-                                )
-
-                        else
-                            constrainWithIds rtv lastArg argExpected
-                                |> IO.map
-                                    (\argCon ->
-                                        IO.Done
-                                            ( assembleCall level
-                                                funcCon
-                                                (List.reverse (argVar :: accVars))
-                                                (List.reverse (argType :: accTypes))
-                                                (List.reverse (argCon :: accCons))
-                                            , frames
-                                            )
-                                    )
-                    )
-
         arg :: rest ->
-            Type.mkFlexVar
-                |> IO.andThen
-                    (\argVar ->
-                        let
-                            argType : Type
-                            argType =
-                                VarN argVar
-                        in
-                        constrainWithIds rtv arg (FromContext level.region (CallArg level.maybeName index) argType)
-                            |> IO.andThen
-                                (\argCon ->
-                                    callSpineArgs rtv level funcCon (Index.next index) rest (argVar :: accVars) (argType :: accTypes) (argCon :: accCons) frames
-                                )
-                    )
+            let
+                ( s1, argVar ) =
+                    Type.mkFlexVar s0
+
+                argType : Type
+                argType =
+                    VarN argVar
+
+                ( s2, argCon ) =
+                    constrainWithIds rtv arg (FromContext level.region (CallArg level.maybeName index) argType) s1
+            in
+            callSpineArgsGo rtv level funcCon (Index.next index) rest (argVar :: accVars) (argType :: accTypes) (argCon :: accCons) s2
 
 
 applyCallFrame : RigidTypeVar -> Constraint -> CallFrame -> IO Constraint
@@ -1101,17 +1107,24 @@ an `if` (else constrain it and close the level).
 
 -}
 constrainIfSpine : RigidTypeVar -> Can.Expr -> E.Expected Type -> IO Constraint
-constrainIfSpine rtv expr expected =
-    IO.loop (ifSpineStep rtv) ( expr, expected, [] )
-        |> IO.andThen
-            (\( leafCon, frames ) -> IO.foldM applyIfFrame leafCon frames)
+constrainIfSpine rtv expr expected s0 =
+    -- A5: direct self-tail-recursive spine (TCO -> while-loop; stack-safe) replacing
+    -- the IO.loop/Step trampoline; the width-bounded branch walk returns an
+    -- IfBranchesOutcome that ifSpineGo inspects (no trampoline). Byte-identical.
+    let
+        ( s1, ( leafCon, frames ) ) =
+            ifSpineGo rtv expr expected [] s0
+    in
+    IO.foldM applyIfFrame leafCon frames s1
 
 
-ifSpineStep :
-    RigidTypeVar
-    -> ( Can.Expr, E.Expected Type, List IfFrame )
-    -> IO (IO.Step ( Can.Expr, E.Expected Type, List IfFrame ) ( Constraint, List IfFrame ))
-ifSpineStep rtv ( (A.At region exprInfo) as current, expected, frames ) =
+type IfBranchesOutcome
+    = IfBranchesDone Constraint
+    | IfBranchesDescend Can.Expr (E.Expected Type) IfFrame
+
+
+ifSpineGo : RigidTypeVar -> Can.Expr -> E.Expected Type -> List IfFrame -> IO.State -> ( IO.State, ( Constraint, List IfFrame ) )
+ifSpineGo rtv ((A.At region exprInfo) as current) expected frames s0 =
     case exprInfo.node of
         Can.If branches finally ->
             let
@@ -1121,10 +1134,11 @@ ifSpineStep rtv ( (A.At region exprInfo) as current, expected, frames ) =
 
                 ( conditions, exprs ) =
                     List.foldr (\( c, e ) ( cs, es ) -> ( c :: cs, e :: es )) ( [], [ finally ] ) branches
-            in
-            constrainExprsWithIds rtv conditions boolExpect []
-                |> IO.andThen
-                    (\condCons ->
+
+                ( s1, condCons ) =
+                    constrainExprsWithIds rtv conditions boolExpect [] s0
+
+                ( s2, ( mkExpected, assemble ) ) =
                         (case expected of
                             FromAnnotation name arity _ tipe ->
                                 -- Record ID with the expected type (tipe is the type var)
@@ -1187,57 +1201,49 @@ ifSpineStep rtv ( (A.At region exprInfo) as current, expected, frames ) =
                                                     )
                                         )
                         )
-                            |> IO.andThen
-                                (\( mkExpected, assemble ) ->
-                                    ifSpineBranches rtv mkExpected assemble Index.first exprs [] frames
-                                )
-                    )
+                        s1
+
+                ( s3, outcome ) =
+                    ifSpineBranchesGo rtv mkExpected assemble Index.first exprs [] s2
+            in
+            case outcome of
+                IfBranchesDone con ->
+                    ( s3, ( con, frames ) )
+
+                IfBranchesDescend finalExpr fExpected fFrame ->
+                    ifSpineGo rtv finalExpr fExpected (fFrame :: frames) s3
 
         _ ->
-            -- Unreachable: the spine only enters/loops on If nodes.
-            constrainWithIds rtv current expected
-                |> IO.map (\con -> IO.Done ( con, frames ))
+            let
+                ( s1, con ) =
+                    constrainWithIds rtv current expected s0
+            in
+            ( s1, ( con, frames ) )
 
 
-{-| Constrain a level's branch expressions in index order (width-bounded),
-descending into the final one when it is itself an `if`.
--}
-ifSpineBranches :
-    RigidTypeVar
-    -> (Index.ZeroBased -> E.Expected Type)
-    -> (List Constraint -> Constraint)
-    -> Index.ZeroBased
-    -> List Can.Expr
-    -> List Constraint
-    -> List IfFrame
-    -> IO (IO.Step ( Can.Expr, E.Expected Type, List IfFrame ) ( Constraint, List IfFrame ))
-ifSpineBranches rtv mkExpected assemble index remaining accCons frames =
+ifSpineBranchesGo : RigidTypeVar -> (Index.ZeroBased -> E.Expected Type) -> (List Constraint -> Constraint) -> Index.ZeroBased -> List Can.Expr -> List Constraint -> IO.State -> ( IO.State, IfBranchesOutcome )
+ifSpineBranchesGo rtv mkExpected assemble index remaining accCons s0 =
     case remaining of
         [] ->
-            -- Unreachable: exprs always ends with the final branch.
-            IO.pure (IO.Done ( assemble (List.reverse accCons), frames ))
+            ( s0, IfBranchesDone (assemble (List.reverse accCons)) )
 
         [ finalExpr ] ->
             if isIfNode finalExpr then
-                IO.pure
-                    (IO.Loop
-                        ( finalExpr
-                        , mkExpected index
-                        , { assemble = assemble, earlierBranchCons = List.reverse accCons } :: frames
-                        )
-                    )
+                ( s0, IfBranchesDescend finalExpr (mkExpected index) { assemble = assemble, earlierBranchCons = List.reverse accCons } )
 
             else
-                constrainWithIds rtv finalExpr (mkExpected index)
-                    |> IO.map
-                        (\con -> IO.Done ( assemble (List.reverse (con :: accCons)), frames ))
+                let
+                    ( s1, con ) =
+                        constrainWithIds rtv finalExpr (mkExpected index) s0
+                in
+                ( s1, IfBranchesDone (assemble (List.reverse (con :: accCons))) )
 
         branchExpr :: rest ->
-            constrainWithIds rtv branchExpr (mkExpected index)
-                |> IO.andThen
-                    (\con ->
-                        ifSpineBranches rtv mkExpected assemble (Index.next index) rest (con :: accCons) frames
-                    )
+            let
+                ( s1, con ) =
+                    constrainWithIds rtv branchExpr (mkExpected index) s0
+            in
+            ifSpineBranchesGo rtv mkExpected assemble (Index.next index) rest (con :: accCons) s1
 
 
 applyIfFrame : Constraint -> IfFrame -> IO Constraint
@@ -1268,65 +1274,67 @@ ordinary dispatcher; fold up applying each level's exists/CEqual wrapper.
 
 -}
 constrainAccessSpine : RigidTypeVar -> Can.Expr -> E.Expected Type -> IO Constraint
-constrainAccessSpine rtv expr expected =
-    IO.loop (accessSpineStep rtv) ( expr, expected, [] )
-        |> IO.andThen
-            (\( leafCon, frames ) -> IO.foldM applyAccessFrame leafCon frames)
+constrainAccessSpine rtv expr expected s0 =
+    -- A5: direct self-tail-recursive spine (TCO -> while-loop; stack-safe) replacing
+    -- the IO.loop/Step trampoline. The Access arm ends in a DIRECT self-tail-call of
+    -- accessSpineGo. Byte-identical var-alloc/recording order + frame stack.
+    let
+        ( s1, ( leafCon, frames ) ) =
+            accessSpineGo rtv expr expected [] s0
+    in
+    IO.foldM applyAccessFrame leafCon frames s1
 
 
-accessSpineStep :
-    RigidTypeVar
-    -> ( Can.Expr, E.Expected Type, List AccessFrame )
-    -> IO (IO.Step ( Can.Expr, E.Expected Type, List AccessFrame ) ( Constraint, List AccessFrame ))
-accessSpineStep rtv ( (A.At region exprInfo) as current, expected, frames ) =
+accessSpineGo : RigidTypeVar -> Can.Expr -> E.Expected Type -> List AccessFrame -> IO.State -> ( IO.State, ( Constraint, List AccessFrame ) )
+accessSpineGo rtv ((A.At region exprInfo) as current) expected frames s0 =
     case exprInfo.node of
         Can.Access childExpr (A.At accessRegion field) ->
-            Type.mkFlexVar
-                |> IO.andThen
-                    (\extVar ->
-                        Type.mkFlexVar
-                            |> IO.andThen
-                                (\fieldVar ->
-                                    -- Record fieldVar as the type for this access expression
-                                    NodeIds.recordNodeVar exprInfo.id fieldVar
-                                        |> IO.map
-                                            (\() ->
-                                                let
-                                                    extType : Type
-                                                    extType =
-                                                        VarN extVar
+            let
+                ( s1, extVar ) =
+                    Type.mkFlexVar s0
 
-                                                    fieldType : Type
-                                                    fieldType =
-                                                        VarN fieldVar
+                ( s2, fieldVar ) =
+                    Type.mkFlexVar s1
 
-                                                    recordType : Type
-                                                    recordType =
-                                                        RecordN (Dict.singleton field fieldType) extType
+                ( s3, () ) =
+                    NodeIds.recordNodeVar exprInfo.id fieldVar s2
 
-                                                    context : Context
-                                                    context =
-                                                        RecordAccess (A.toRegion childExpr) (getAccessName childExpr) accessRegion field
-                                                in
-                                                IO.Loop
-                                                    ( childExpr
-                                                    , FromContext region context recordType
-                                                    , { region = region
-                                                      , field = field
-                                                      , fieldType = fieldType
-                                                      , fieldVar = fieldVar
-                                                      , extVar = extVar
-                                                      , expected = expected
-                                                      }
-                                                        :: frames
-                                                    )
-                                            )
-                                )
-                    )
+                extType : Type
+                extType =
+                    VarN extVar
+
+                fieldType : Type
+                fieldType =
+                    VarN fieldVar
+
+                recordType : Type
+                recordType =
+                    RecordN (Dict.singleton field fieldType) extType
+
+                context : Context
+                context =
+                    RecordAccess (A.toRegion childExpr) (getAccessName childExpr) accessRegion field
+            in
+            accessSpineGo rtv
+                childExpr
+                (FromContext region context recordType)
+                ({ region = region
+                 , field = field
+                 , fieldType = fieldType
+                 , fieldVar = fieldVar
+                 , extVar = extVar
+                 , expected = expected
+                 }
+                    :: frames
+                )
+                s3
 
         _ ->
-            constrainWithIds rtv current expected
-                |> IO.map (\con -> IO.Done ( con, frames ))
+            let
+                ( s1, con ) =
+                    constrainWithIds rtv current expected s0
+            in
+            ( s1, ( con, frames ) )
 
 
 applyAccessFrame : Constraint -> AccessFrame -> IO Constraint

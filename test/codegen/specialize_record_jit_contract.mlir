@@ -9,7 +9,7 @@ module {
   func.func @main() -> i64 {
     %a = arith.constant 42 : i64
     %b = arith.constant 7.0 : f64
-    %r = eco.construct.record(%a, %b) {field_count = 2 : i64, unboxed_bitmap = 5 : i64}
+    %r = eco.construct.record(%a, %b) {field_count = 2 : i64, unboxed_bitmap = 9 : i64}
        : (i64, f64) -> !eco.value
     %x = eco.project.record %r[0] : !eco.value -> i64
     %y = eco.project.record %r[1] : !eco.value -> f64

@@ -3,6 +3,7 @@ module Compiler.Monomorphize.KernelAbi exposing
     , canTypeToMonoType_preserveVars
     , suffixSelectingKernels, comparePair
     , freeVarIds
+    , hasAnyFreeVar
     )
 
 {-| Kernel ABI type derivation for monomorphization.
@@ -95,18 +96,13 @@ deriveKernelAbiMode ( home, _ ) canFuncType _ =
     if EverySet.member List.singleton home alwaysPolymorphicModules then
         PreserveVars
 
-    else
-        let
-            varIds =
-                freeVarIds canFuncType []
-        in
-        if List.isEmpty varIds then
-            -- Case A: Monomorphic kernel - use substitution
-            UseSubstitution
+    else if not (hasAnyFreeVar canFuncType) then
+        -- Case A: Monomorphic kernel - use substitution
+        UseSubstitution
 
-        else
-            -- Case B: Polymorphic kernel
-            PreserveVars
+    else
+        -- Case B: Polymorphic kernel
+        PreserveVars
 
 
 
@@ -222,8 +218,44 @@ comparePair ( a, b ) =
 -- ============================================================================
 
 
-{-| Collect all free type variable MVarIds from a canonical type.
+{-| D6: True iff `canType` has any free type variable — a short-circuiting walk
+that avoids materializing the full `freeVarIds` list just to test emptiness.
+Mirrors `freeVarIdsHelp` exactly (record extension var counts; Holey-alias body
+and args both count), so `hasAnyFreeVar t == not (List.isEmpty (freeVarIds t []))`.
 -}
+hasAnyFreeVar : Can.Type MVarId -> Bool
+hasAnyFreeVar canType =
+    case canType of
+        Can.TVar _ ->
+            True
+
+        Can.TLambda from to ->
+            hasAnyFreeVar from || hasAnyFreeVar to
+
+        Can.TType _ _ args ->
+            List.any hasAnyFreeVar args
+
+        Can.TRecord fields maybeExt ->
+            case maybeExt of
+                Just _ ->
+                    True
+
+                Nothing ->
+                    List.any (\( _, Can.FieldType _ t ) -> hasAnyFreeVar t) (Dict.toList fields)
+
+        Can.TTuple a b rest ->
+            List.any hasAnyFreeVar (a :: b :: rest)
+
+        Can.TUnit ->
+            False
+
+        Can.TAlias _ _ _ (Can.Filled inner) ->
+            hasAnyFreeVar inner
+
+        Can.TAlias _ _ args (Can.Holey inner) ->
+            hasAnyFreeVar inner || List.any (\( _, t ) -> hasAnyFreeVar t) args
+
+
 freeVarIds : Can.Type MVarId -> List MVarId -> List MVarId
 freeVarIds canType acc =
     let

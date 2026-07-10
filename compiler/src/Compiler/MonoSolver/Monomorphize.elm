@@ -110,16 +110,22 @@ initState currentModule nodes annotations globalTypeEnv mvarState =
     , ports = []
     , lambdaCounter = 0
     , superTable = mvarState.superVars
-    , superStatic = mvarState.superVars
     , nextMVarId = mvarState.nextId
-    , toptNodes = nodes
-    , annotations = annotations
-    , globalTypeEnv = globalTypeEnv
-    , currentModule = currentModule
+    , schemeMono = Dict.empty
+    , kernelAbiMono = Dict.empty
+    , callMemo = Dict.empty
+    , nodeResolution = Dict.empty
+    , env =
+        { toptNodes = nodes
+        , annotations = annotations
+        , globalTypeEnv = globalTypeEnv
+        , currentModule = currentModule
+        , superStatic = mvarState.superVars
+        }
     , currentGlobal = Nothing
     , store = Engine.freshStore
     , memo = Dict.empty
-    , revMemo = Dict.empty
+    , revMemo = Array.empty
     , varEnv = Dict.empty
     , numberMulti = []
     , localMulti = []
@@ -222,12 +228,20 @@ processItem specId s =
                                 Err (EngineBug ("accessor global " ++ fieldName ++ ": expected MFunction [MRecord] fieldType"))
 
                     Mono.Global home name ->
-                        case DMap.get TOpt.toComparableGlobal (TOpt.Global home name) sItem.toptNodes of
+                        let
+                            -- D13: resolve the node + its annotation-id set ONCE per
+                            -- global (both depend only on the immutable node map), then
+                            -- reuse across every spec of the same global. `sItem2`
+                            -- carries the memo insert on the first resolve.
+                            ( resolution, sItem2 ) =
+                                resolveGlobalNode home name sItem
+                        in
+                        case resolution.node of
                             Nothing ->
-                                Ok (finishNode specId (Mono.MonoExtern monoType) sItem)
+                                Ok (finishNode specId (Mono.MonoExtern monoType) sItem2)
 
                             Just node ->
-                                case specializeNode name home node monoType sItem of
+                                case specializeNode name home node monoType sItem2 of
                                     Err e ->
                                         Err e
 
@@ -235,9 +249,9 @@ processItem specId s =
                                         let
                                             -- Harvest Join-R number taints from this item's store into
                                             -- the global super table before the store is discarded —
-                                            -- EXCLUDING the node's own annotation vars (per-spec).
+                                            -- EXCLUDING the node's own annotation vars (per-spec, memoized).
                                             s1 =
-                                                Engine.harvestSuperTableExcept (nodeAnnotationIds node) s1raw
+                                                Engine.harvestSuperTableExcept resolution.annIds s1raw
 
                                             ( monoNode, newLambdaCounter ) =
                                                 ResolveAccessorValues.rewriteNode home s1.lambdaCounter monoNode0
@@ -280,7 +294,7 @@ specializeNode name home node monoType s =
             Engine.runStep (Translate.specializeCtorViaScheme name 0 1 canType monoType) s
 
         TOpt.Link linkedGlobal ->
-            case DMap.get TOpt.toComparableGlobal linkedGlobal s.toptNodes of
+            case DMap.get TOpt.toComparableGlobal linkedGlobal s.env.toptNodes of
                 Nothing ->
                     Ok ( Mono.MonoExtern monoType, s )
 
@@ -323,6 +337,41 @@ specializeNode name home node monoType s =
 
         TOpt.PortOutgoing expr _ meta ->
             Engine.runStep (Translate.specializePort False expr meta.tipe monoType) s
+
+
+{-| D13: resolve a `Mono.Global` to its `TOpt.Node` and annotation-id set, memoized
+by the comparable global. The node map and `nodeAnnotationIds` are both functions
+of the immutable `toptNodes`, so a global with N specializations resolves once and
+the DMap descent + `freeVarIds` walk are skipped for the other N-1. The memo lives
+in `S.nodeResolution` (survives `resetItem`); byte-identical to recomputing.
+-}
+resolveGlobalNode : IO.Canonical -> Name -> S -> ( Engine.NodeResolution, S )
+resolveGlobalNode home name s =
+    let
+        gkey =
+            TOpt.toComparableGlobal (TOpt.Global home name)
+    in
+    case Dict.get gkey s.nodeResolution of
+        Just resolution ->
+            ( resolution, s )
+
+        Nothing ->
+            let
+                node =
+                    DMap.get TOpt.toComparableGlobal (TOpt.Global home name) s.env.toptNodes
+
+                annIds =
+                    case node of
+                        Just n ->
+                            nodeAnnotationIds n
+
+                        Nothing ->
+                            EverySet.empty
+
+                resolution =
+                    { node = node, annIds = annIds }
+            in
+            ( resolution, { s | nodeResolution = Dict.insert gkey resolution s.nodeResolution } )
 
 
 {-| The item node's annotation free-var ids (excluded from taint harvest).
@@ -405,14 +454,18 @@ assembleRawGraph s mainSpecId flagsDecoderSpecId =
 
                         Just node ->
                             let
-                                neighbors =
-                                    collectCallsFromNode node
+                                -- D14: one fused walk yields both the call-edges and
+                                -- the effects flag (was two full `foldExpr` passes over
+                                -- the same expr). Byte-identical: same traversal order,
+                                -- same cons order for edges, same Debug-kernel effect.
+                                ( neighbors, hasEffects ) =
+                                    collectEdgesAndEffectsFromNode node
 
                                 newEdges =
                                     Array.set specId (Just neighbors) edgesAcc
 
                                 newEffects =
-                                    if nodeHasEffects node then
+                                    if hasEffects then
                                         BitSet.insertGrowing specId effectsAcc
 
                                     else
@@ -449,7 +502,7 @@ pruneGraph : S -> Mono.MonoGraph -> Mono.MonoGraph
 pruneGraph s rawGraph =
     Prune.pruneUnreachableSpecs
         (State.initMVarEnv s.nextMVarId s.superTable)
-        s.globalTypeEnv
+        s.env.globalTypeEnv
         rawGraph
 
 
@@ -457,79 +510,42 @@ pruneGraph s rawGraph =
 -- ====== CALL-EDGE / EFFECT COLLECTION (mirror of the original private helpers) ======
 
 
-extractSpecId : Mono.MonoExpr -> List Int -> List Int
-extractSpecId expr acc =
+{-| D14: fused edge-and-effect step. One `foldExpr` pass accumulates both the
+call-edge spec ids (a `MonoVarGlobal`, cons order preserved) and the effects flag
+(a `Debug` kernel reference). Replaces the former `extractSpecId` + `checkExpr`
+double walk over the same expr; each expr node contributes to at most one field,
+so the union is exact and byte-identical.
+-}
+collectEdgesAndEffects : Mono.MonoExpr -> ( List Int, Bool ) -> ( List Int, Bool )
+collectEdgesAndEffects expr (( edges, effects ) as acc) =
     case expr of
         Mono.MonoVarGlobal _ specId _ ->
-            specId :: acc
+            ( specId :: edges, effects )
+
+        Mono.MonoVarKernel _ _ "Debug" _ _ ->
+            ( edges, True )
 
         _ ->
             acc
 
 
-collectCalls : Mono.MonoExpr -> List Int
-collectCalls =
-    Traverse.foldExpr extractSpecId []
-
-
-collectCallsFromNode : Mono.MonoNode -> List Int
-collectCallsFromNode node =
+collectEdgesAndEffectsFromNode : Mono.MonoNode -> ( List Int, Bool )
+collectEdgesAndEffectsFromNode node =
     case node of
         Mono.MonoDefine expr _ ->
-            collectCalls expr
+            Traverse.foldExpr collectEdgesAndEffects ( [], False ) expr
 
         Mono.MonoTailFunc _ expr _ ->
-            collectCalls expr
+            Traverse.foldExpr collectEdgesAndEffects ( [], False ) expr
 
         Mono.MonoPortIncoming expr _ ->
-            collectCalls expr
+            Traverse.foldExpr collectEdgesAndEffects ( [], False ) expr
 
         Mono.MonoPortOutgoing expr _ ->
-            collectCalls expr
-
-        Mono.MonoCtor _ _ ->
-            []
-
-        Mono.MonoEnum _ _ ->
-            []
-
-        Mono.MonoExtern _ ->
-            []
-
-        Mono.MonoManagerLeaf _ _ ->
-            []
-
-
-nodeHasEffects : Mono.MonoNode -> Bool
-nodeHasEffects node =
-    let
-        checkExpr expr acc =
-            if acc then
-                True
-
-            else
-                case expr of
-                    Mono.MonoVarKernel _ _ "Debug" _ _ ->
-                        True
-
-                    _ ->
-                        False
-    in
-    case node of
-        Mono.MonoDefine expr _ ->
-            Traverse.foldExpr checkExpr False expr
-
-        Mono.MonoTailFunc _ expr _ ->
-            Traverse.foldExpr checkExpr False expr
-
-        Mono.MonoPortIncoming expr _ ->
-            Traverse.foldExpr checkExpr False expr
-
-        Mono.MonoPortOutgoing expr _ ->
-            Traverse.foldExpr checkExpr False expr
+            Traverse.foldExpr collectEdgesAndEffects ( [], False ) expr
 
         _ ->
-            False
+            ( [], False )
 
 
 
