@@ -1,4 +1,4 @@
-module Compiler.GlobalOpt.Staging.Rewriter exposing (applyStagingSolution)
+module Compiler.GlobalOpt.Staging.Rewriter exposing (applyStagingSolution, wrapperHome)
 
 {-| Applies the staging solution to rewrite the MonoGraph.
 
@@ -37,9 +37,19 @@ type alias RewriteCtx =
 initRewriteCtx : Mono.MonoGraph -> RewriteCtx
 initRewriteCtx (Mono.MonoGraph record) =
     { lambdaCounter = record.nextLambdaIndex
-    , home = IO.Canonical ( "eco", "internal" ) "GlobalOpt"
+    , home = wrapperHome
     , wrappersInserted = 0
     }
+
+
+{-| The synthetic `LambdaId` home of every closure this rewriter creates.
+AbiCloning keys its blocker classification on it (LSS_009): wrapper stages
+carry the wrappee's `srcLambda` (LSS_008) but are NOT the member's code —
+they must never be picked as interchangeable representatives.
+-}
+wrapperHome : IO.Canonical
+wrapperHome =
+    IO.Canonical ( "eco", "internal" ) "GlobalOpt"
 
 
 freshLambdaId : RewriteCtx -> ( Mono.LambdaId, RewriteCtx )

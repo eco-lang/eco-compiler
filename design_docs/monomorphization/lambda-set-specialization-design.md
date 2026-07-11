@@ -1001,8 +1001,9 @@ sites):
 Known v1 precision gap: local-multi arguments (let-bound lambdas passed to
 HOFs) do not transport members — their stash vars are fresh instantiations
 and `enrichFromEnv` deliberately skips local-multi targets. The annotation
-stays `LTop`: no upgrade, no unsoundness. Candidate follow-up ("M3.5")
-once census data shows it matters.
+stays `LTop`: no upgrade, no unsoundness. Candidate follow-up (post-M4)
+once census data shows it matters. (M3.5 is a different item — the
+interchangeability-aware uniqueness rule, §9.2.)
 
 ### 8.5 Keys and the budget (`Engine.enqueueSpec`, `Engine.elm:307`)
 
@@ -1093,6 +1094,56 @@ module doc already describes this job):
 **Precondition**: the wrapper identity rule (§9.3, LSS_008) must land
 before this pass is enabled — without it, staging wrappers falsify step
 2's uniqueness test and the stamp is a silent miscompile.
+
+**M3.5 — interchangeability-aware uniqueness (refines step 2).** The
+literal "exactly one reachable instance" rule declines a benign class:
+**verbatim copies** of one member. The inliner copies closures verbatim
+(`srcLambda` preserved *because* "same code object" is the intended
+semantics, OQ6; only `lambdaId` is freshened for MLIR symbol uniqueness),
+local-multi retranslation mints per-instance copies, and different
+specializations of an enclosing polymorphic function copy any lambda
+whose own layout the type argument does not touch. (The M3 census'
+`declinedMultiInstance=24774` on AccessorVariableTest turned out, once
+M3.5's finer counters landed, to be layout mismatches — `declinedShape` —
+not copies; the copy class is real but program-dependent, pinned by
+`LssVerbatimCopiesFastDispatchTest`.) Reordering inlining after
+AbiCloning is
+NOT the fix — inlining must precede Staging for the same value-finality
+reason AbiCloning must follow it (its rewrites falsify every downstream
+claim: producer classes, GOPT_001 types, CGEN_052 metadata, the stamps
+themselves). The fix is pass-local:
+
+1. Index ALL instances per member (not one/many), each with a
+   *candidate/blocker* classification and two precomputed comparable
+   keys: `sigKey` (widened param + return layout) and `abiKey` (widened
+   capture layout). **Candidates** are closures whose `srcLambda` is
+   directly stamped and whose `lambdaId` home is a real module — created
+   by mono translation, inliner copying, or local-multi retranslation:
+   all verbatim copies of the source lambda at some mono type.
+   **Blockers** are staging-wrapper stages (`lambdaId` home = the Staging
+   Rewriter's synthetic home; they carry `m`'s `srcLambda` per LSS_008
+   but are NOT `m`'s code — different evaluator, capture slot 0 is the
+   wrappee) and adopted synthetic closures (`srcLambda = Nothing` +
+   singleton head annotation: `wrapTopLevelCallables` eta-wrappers, §9.3
+   addendum).
+2. At a singleton site: any blocker for `m` → decline
+   (`declinedBlocked`). Otherwise filter candidates to the site's callee
+   layout (`sigKey` equality — mono type-correctness means only
+   layout-compatible instances can flow there; this also resolves the
+   cross-spec `Int`-vs-`Float` case). Among the survivors require
+   `abiKey` unanimity, then stamp a **representative** (the first in the
+   deterministic node-walk order). Non-unanimous capture layouts (the
+   same source lambda capturing a type var its arrow doesn't mention,
+   instantiated differently per enclosing spec) → `declinedAbiMismatch`.
+
+Soundness: same source lambda + same capture/param/return *layout* ⇒
+alpha-equivalent compiled bodies — monomorphization is type-directed and
+every external influence on a lambda body enters through its captures and
+params; annotation-only differences cannot change behavior (LSS_005) —
+and `computeClosureCaptures` is a deterministic function of the body, so
+all survivors share one capture slot order. Calling copy A's fast clone
+on an object created at copy B's site is therefore exactly equivalent.
+Recorded as **LSS_009** (§12).
 
 ### 9.3 Pass ordering — AbiCloning runs after Staging
 
@@ -1360,6 +1411,15 @@ semantics. Every knob's fallback is the fully-implemented `LTop` pipeline.
   consumes; a wrapper hiding its provenance under `srcLambda = Nothing`
   while the annotation still names m re-establishes false uniqueness and
   licenses a wrong `Known` stamp (§9.3).
+- **LSS_009 (lands with M3.5)** — AbiCloning may stamp a *representative*
+  instance over several only when every one is a verbatim copy of the
+  member (directly `srcLambda`-stamped, `lambdaId` home a real module —
+  mono / inliner / local-multi producers), filtered to the call site's
+  callee layout (`sigKey`), and unanimous in capture layout (`abiKey`).
+  Staging-wrapper stages (synthetic home) and adopted synthetic closures
+  (`srcLambda = Nothing` + singleton annotation) are BLOCKERS: their
+  presence declines the member's sites outright — they share the member's
+  identity but not its code or capture layout (§9.2 M3.5).
 - Amend: MONO_005/MONO_017 wording (registry keys may be set-widened while
   reverse-mapping types carry annotations, §8.5); MONO_019 (LambdaId
   uniqueness) explicitly does **not** apply to `srcLambda`.
@@ -1387,7 +1447,7 @@ semantics. Every knob's fallback is the fully-implemented `LTop` pipeline.
 | `Compiler/Eco/Config.elm`, `Builder/Eco/Config.elm`, `Builder/Generate.elm` | `LssConfig`, env overrides, entry plumbing | S |
 | `Compiler/MonoSolver/Diff.elm` | force-lss-off rule note (§5.4) | S |
 | `Compiler/GlobalOpt/AbiCloning.elm` | M3 — the singleton pass (§9.2) | M (M3) |
-| `Compiler/GlobalOpt/Staging/Rewriter.elm` | M3 — propagate `srcLambda` onto wrapper stages (§9.3, LSS_008) | S (M3) |
+| `Compiler/GlobalOpt/Staging/Rewriter.elm` | M3 — propagate `srcLambda` onto wrapper stages (§9.3, LSS_008); M3.5 — export `wrapperHome` for blocker classification | S (M3) |
 | `design_docs/invariants.csv` | §12 | S |
 
 ---

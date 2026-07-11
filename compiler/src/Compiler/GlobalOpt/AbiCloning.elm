@@ -1,37 +1,44 @@
 module Compiler.GlobalOpt.AbiCloning exposing (AbiCloningStats, abiCloningPass, emptyStats)
 
-{-| ABI Cloning Pass — LSS singleton dispatch upgrade (design §9.2/§9.3).
+{-| ABI Cloning Pass — LSS singleton dispatch upgrade (design §9.2/§9.3,
+M3.5 interchangeability rule, LSS_009).
 
 Runs at GlobalOpt Phase 4, AFTER Staging (Phases 2-3) — the order is a
 correctness dependency, not convention (design §9.3): the stamps placed
 here denote value identity, and Staging's Rewriter is the last pass that
 replaces values (wrapper closures). Staging wrappers propagate the
-wrappee's `srcLambda` (LSS_008), so they register as additional instances
-below and the uniqueness guard declines the upgrade wherever wrapping
-occurred.
+wrappee's `srcLambda` (LSS_008), so they register as BLOCKER instances
+below and decline the upgrade wherever wrapping occurred.
 
 The pass:
 
-1.  Indexes the graph: `srcLambda -> reachable MonoClosure instances`.
+1.  Indexes the graph: `srcLambda -> all reachable MonoClosure instances`,
+    each classified candidate/blocker with precomputed layout keys.
 2.  For each `MonoCall` whose callee-type head annotation is a singleton
-    lambda set `LSet [m]` with exactly ONE reachable instance of `m` whose
-    ABI is determinable, stamps `callInfo.closureKind`,
-    `callInfo.captureAbi`, and `callInfo.fastEvaluator`.
-3.  Any ambiguity (no instance, several instances, shape mismatch) leaves
-    the call untouched — `CallGenericApply`/`CallSegmentationUnknown`
-    remain dynamically safe (CGEN_060). The multiple-instance case is
-    ABI_CLONE_001's future cloning trigger; v1 only counts it.
+    lambda set `LSet [m]`: if `m` has no blockers, and the candidates
+    compatible with the site's callee layout are unanimous in capture
+    layout, stamps `callInfo.closureKind`/`captureAbi`/`fastEvaluator`
+    with a REPRESENTATIVE instance (LSS_009 — verbatim copies of one
+    member at one layout are interchangeable: monomorphization is
+    type-directed and all external influence enters a lambda body via its
+    captures/params, so same source + same layouts means alpha-equivalent
+    compiled bodies with one `computeClosureCaptures` slot order).
+3.  Anything else (no instance, blockers, layout mismatch, ABI
+    disagreement) leaves the call untouched —
+    `CallGenericApply`/`CallSegmentationUnknown` remain dynamically safe
+    (CGEN_060). The declined classes are ABI_CLONE_001 / M5 sizing data.
 
 MLIR codegen consults the stamps ONLY on the generic-apply and
 segmentation-unknown emission paths (sites the staging solver could not
 type). Typed direct paths are never rerouted — they are already at least
 as good.
 
-The instance-uniqueness guard is load-bearing: `_fast_evaluator` dispatch
-calls the instance's fast clone directly with typed capture loads and NO
+The blocker rule is load-bearing: `_fast_evaluator` dispatch calls the
+stamped instance's fast clone directly with typed capture loads and NO
 runtime identity check (EcoToLLVMClosures.cpp `emitFastClosureCall`).
-Stamping a site whose value could be any other object — a staging
-wrapper, an inliner copy — is a silent miscompile.
+Staging wrappers and `wrapTopLevelCallables` eta-wrappers share a member's
+identity but not its code or capture layout — stamping across them is a
+silent miscompile.
 
 
 # API
@@ -43,6 +50,7 @@ wrapper, an inliner copy — is a silent miscompile.
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Id as Id
+import Compiler.GlobalOpt.Staging.Rewriter as Rewriter
 import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Dict exposing (Dict)
 
@@ -56,20 +64,24 @@ import Dict exposing (Dict)
 {-| Census counters (reported behind `lss.report` / ECO_MONO_LSS_REPORT).
 
   - dispatchUpgraded: call sites stamped for fast dispatch
-  - declinedMultiInstance: singleton member with >1 reachable instance
-    (staging wrappers, inliner copies — ABI_CLONE_001's trigger set)
+  - declinedBlocked: singleton member with a blocker instance (staging
+    wrapper stage or adopted synthetic eta-wrapper)
   - declinedNoInstance: singleton member with no MonoClosure instance
     (interned globals/ctors/kernels, tail-def'd lambdas)
-  - declinedShape: instance found but site/instance ABI shapes disagree
-    (arity mismatch = the value would be a PAP; Char captures = untested
-    i16 load path in emitFastClosureCall)
+  - declinedShape: no candidate matches the site's callee layout / arg
+    count / guard set (a PAP value would be the only inhabitant, or Char
+    captures)
+  - declinedAbiMismatch: layout-compatible candidates disagree on capture
+    layout (same source lambda capturing differently-typed environment
+    per enclosing specialization)
 
 -}
 type alias AbiCloningStats =
     { dispatchUpgraded : Int
-    , declinedMultiInstance : Int
+    , declinedBlocked : Int
     , declinedNoInstance : Int
     , declinedShape : Int
+    , declinedAbiMismatch : Int
     }
 
 
@@ -78,9 +90,10 @@ type alias AbiCloningStats =
 emptyStats : AbiCloningStats
 emptyStats =
     { dispatchUpgraded = 0
-    , declinedMultiInstance = 0
+    , declinedBlocked = 0
     , declinedNoInstance = 0
     , declinedShape = 0
+    , declinedAbiMismatch = 0
     }
 
 
@@ -90,23 +103,33 @@ emptyStats =
 -- ============================================================================
 
 
-{-| Reachable `MonoClosure` instances of one source member. Only exact
-uniqueness matters; beyond one instance the details are irrelevant.
+{-| One reachable `MonoClosure` counted against a member, in deterministic
+node-walk order (the first compatible candidate is the stamped
+representative).
+
+`blocker = True` marks instances that share the member's identity but not
+its code: staging-wrapper stages (LSS_008 propagation, synthetic
+`Rewriter.wrapperHome`) and adopted synthetic closures (`srcLambda =
+Nothing` under a singleton annotation — `wrapTopLevelCallables`
+eta-wrappers). Their presence declines the member's sites outright.
+
+`sigKey`/`abiKey` are annotation-widened comparable layouts (params+return
+/ captures), precomputed so per-site checks are string compares instead of
+repeated `eqLayout` walks.
+
 -}
-type Instances
-    = One Instance
-    | Many
-
-
 type alias Instance =
     { lambdaId : Mono.LambdaId
     , captureTypes : List Mono.MonoType
     , paramTypes : List Mono.MonoType
     , returnType : Mono.MonoType
+    , blocker : Bool
+    , sigKey : String
+    , abiKey : String
     }
 
 
-collectInstances : Mono.MonoGraph -> Dict Int Instances
+collectInstances : Mono.MonoGraph -> Dict Int (List Instance)
 collectInstances (Mono.MonoGraph record) =
     Array.foldl
         (\maybeNode acc ->
@@ -119,6 +142,7 @@ collectInstances (Mono.MonoGraph record) =
         )
         Dict.empty
         record.nodes
+        |> Dict.map (\_ instancesRev -> List.reverse instancesRev)
 
 
 nodeExprs : Mono.MonoNode -> List Mono.MonoExpr
@@ -149,29 +173,33 @@ nodeExprs node =
             []
 
 
-collectExpr : Mono.MonoExpr -> Dict Int Instances -> Dict Int Instances
+collectExpr : Mono.MonoExpr -> Dict Int (List Instance) -> Dict Int (List Instance)
 collectExpr expr acc =
     case expr of
         Mono.MonoClosure closureInfo body tipe ->
             case instanceMember closureInfo tipe of
-                Just m ->
-                    Dict.update m
-                        (\present ->
-                            case present of
-                                Nothing ->
-                                    Just
-                                        (One
-                                            { lambdaId = closureInfo.lambdaId
-                                            , captureTypes = List.map (\( _, e, _ ) -> Mono.typeOf e) closureInfo.captures
-                                            , paramTypes = List.map Tuple.second closureInfo.params
-                                            , returnType = Mono.typeOf body
-                                            }
-                                        )
+                Just ( m, isAdopted ) ->
+                    let
+                        captureTypes =
+                            List.map (\( _, e, _ ) -> Mono.typeOf e) closureInfo.captures
 
-                                Just _ ->
-                                    Just Many
-                        )
-                        acc
+                        paramTypes =
+                            List.map Tuple.second closureInfo.params
+
+                        returnType =
+                            Mono.typeOf body
+
+                        inst =
+                            { lambdaId = closureInfo.lambdaId
+                            , captureTypes = captureTypes
+                            , paramTypes = paramTypes
+                            , returnType = returnType
+                            , blocker = isAdopted || isWrapperHome closureInfo.lambdaId
+                            , sigKey = layoutKey (paramTypes ++ [ returnType ])
+                            , abiKey = layoutKey captureTypes
+                            }
+                    in
+                    Dict.update m (\present -> Just (inst :: Maybe.withDefault [] present)) acc
 
                 Nothing ->
                     acc
@@ -180,31 +208,48 @@ collectExpr expr acc =
             acc
 
 
-{-| Which member this closure instance counts against in the index.
+{-| Which member this closure instance counts against, and whether the
+identity was ADOPTED rather than stamped.
 
   - `srcLambda = Just m`: the stamped identity (mono-created instances,
-    staging wrapper stages via LSS_008 propagation, inliner copies).
+    inliner copies, local-multi retranslations — all verbatim copies —
+    plus staging wrapper stages via LSS_008 propagation, separated into
+    blockers by their synthetic `lambdaId` home).
   - `srcLambda = Nothing` but the type's head annotation is a singleton
     `LSet [m]`: identity adoption (LSS_008) — GlobalOpt-synthesized
     closures (alias/general wrappers from wrapTopLevelCallables) carry no
     provenance stamp, yet their TYPE claims exactly one member, so the
-    value can impersonate it at singleton call sites. Counting them as
-    instances of that member makes the uniqueness guard decline the
-    upgrade there. (`SrcLambdaId` is an opaque supply-only Id, so adoption
+    value can impersonate it at singleton call sites. They register as
+    blockers. (`SrcLambdaId` is an opaque supply-only Id, so adoption
     happens here in the index rather than by stamping the ClosureInfo.)
   - `srcLambda = Nothing` with LTop / multi-member annotation: not
     indexed. Such a value can only flow to sites whose sets are at least
     as wide, and v1 never stamps non-singleton sites.
 
 -}
-instanceMember : Mono.ClosureInfo -> Mono.MonoType -> Maybe Int
+instanceMember : Mono.ClosureInfo -> Mono.MonoType -> Maybe ( Int, Bool )
 instanceMember closureInfo tipe =
     case closureInfo.srcLambda of
         Just m ->
-            Just (Id.toComparable m)
+            Just ( Id.toComparable m, False )
 
         Nothing ->
-            Mono.singletonHeadMember tipe
+            Maybe.map (\m -> ( m, True )) (Mono.singletonHeadMember tipe)
+
+
+isWrapperHome : Mono.LambdaId -> Bool
+isWrapperHome (Mono.AnonymousLambda home _) =
+    home == Rewriter.wrapperHome
+
+
+{-| Annotation-widened comparable layout of a list of types (LSS_009's
+`sigKey`/`abiKey` encoding). Widening first makes the key set-insensitive:
+annotation-only differences never change behavior (LSS_005), so they must
+not separate interchangeable instances.
+-}
+layoutKey : List Mono.MonoType -> String
+layoutKey types =
+    String.join "|" (List.map (\t -> Mono.toComparableMonoType (Mono.widenSets t)) types)
 
 
 
@@ -258,7 +303,7 @@ abiCloningPass ((Mono.MonoGraph record) as graph) =
         ( Mono.MonoGraph { record | nodes = nodes1 }, finalCtx.stats )
 
 
-stampNode : Dict Int Instances -> StampCtx -> Mono.MonoNode -> ( Mono.MonoNode, StampCtx )
+stampNode : Dict Int (List Instance) -> StampCtx -> Mono.MonoNode -> ( Mono.MonoNode, StampCtx )
 stampNode index ctx node =
     case node of
         Mono.MonoDefine expr tipe ->
@@ -293,43 +338,41 @@ stampNode index ctx node =
             ( other, ctx )
 
 
-stampExpr : Dict Int Instances -> StampCtx -> Mono.MonoExpr -> ( Mono.MonoExpr, StampCtx )
+stampExpr : Dict Int (List Instance) -> StampCtx -> Mono.MonoExpr -> ( Mono.MonoExpr, StampCtx )
 stampExpr index ctx expr =
     case expr of
         Mono.MonoCall region func args resultType callInfo ->
             case Mono.headAnno (Mono.typeOf func) of
                 Mono.LSet [ m ] ->
                     case Dict.get m index of
-                        Just (One inst) ->
-                            if shapeOk (Mono.typeOf func) args inst then
-                                let
-                                    ( kindId, ctx1 ) =
-                                        kindIdFor m ctx
+                        Just instances ->
+                            case resolveRepresentative (Mono.typeOf func) args instances of
+                                Stamp inst ->
+                                    let
+                                        ( kindId, ctx1 ) =
+                                            kindIdFor m ctx
 
-                                    stamped =
-                                        { callInfo
-                                            | closureKind = Just (Mono.Known (Mono.ClosureKindId kindId))
-                                            , captureAbi =
-                                                Just
-                                                    { captureTypes = inst.captureTypes
-                                                    , paramTypes = inst.paramTypes
-                                                    , returnType = inst.returnType
-                                                    }
-                                            , fastEvaluator = Just inst.lambdaId
-                                        }
+                                        stamped =
+                                            { callInfo
+                                                | closureKind = Just (Mono.Known (Mono.ClosureKindId kindId))
+                                                , captureAbi =
+                                                    Just
+                                                        { captureTypes = inst.captureTypes
+                                                        , paramTypes = inst.paramTypes
+                                                        , returnType = inst.returnType
+                                                        }
+                                                , fastEvaluator = Just inst.lambdaId
+                                            }
 
-                                    stats1 =
-                                        ctx1.stats
-                                in
-                                ( Mono.MonoCall region func args resultType stamped
-                                , { ctx1 | stats = { stats1 | dispatchUpgraded = stats1.dispatchUpgraded + 1 } }
-                                )
+                                        stats1 =
+                                            ctx1.stats
+                                    in
+                                    ( Mono.MonoCall region func args resultType stamped
+                                    , { ctx1 | stats = { stats1 | dispatchUpgraded = stats1.dispatchUpgraded + 1 } }
+                                    )
 
-                            else
-                                ( expr, bumpShape ctx )
-
-                        Just Many ->
-                            ( expr, bumpMulti ctx )
+                                Decline bump ->
+                                    ( expr, bump ctx )
 
                         Nothing ->
                             ( expr, bumpNoInstance ctx )
@@ -341,40 +384,62 @@ stampExpr index ctx expr =
             ( expr, ctx )
 
 
-{-| ABI-shape guards (all load-bearing, design §9.3):
+type Resolution
+    = Stamp Instance
+    | Decline (StampCtx -> StampCtx)
 
-  - non-empty params: zero-param closures are evaluated eagerly and never
-    dispatch through papExtend;
-  - site arg count == instance stage arity: the fast clone consumes the
-    full stage — over/under-application keeps the dynamic path;
-  - callee-type first-stage arity == instance stage arity: a PAP of the
-    instance has strictly fewer remaining params, so this type check is
-    what proves the flowing value is the RAW instance, not a runtime PAP
-    of it (sets track provenance, not application depth — OQ4);
-  - no Char captures: `emitFastClosureCall` loads every capture slot as
-    i64 and only converts f64/pointer types; a Char capture would skew
-    the fast clone's i16 parameter. First producer of that C++ path —
-    keep it out of scope until it is exercised deliberately.
+
+{-| LSS_009: pick an interchangeable representative for the site, or
+decline with the census reason.
+
+  - any blocker among the member's instances → decline (the flowing value
+    could be the wrapper — its code and capture layout differ);
+  - filter candidates to the site's callee layout (`sigKey`) plus the M3
+    shape guards (non-empty params, site arg count == stage arity, no
+    Char captures — `emitFastClosureCall`'s i16 capture load is still
+    unexercised C++);
+  - survivors must be unanimous in capture layout (`abiKey`); the FIRST
+    survivor (deterministic node-walk order) is the representative.
 
 -}
-shapeOk : Mono.MonoType -> List Mono.MonoExpr -> Instance -> Bool
-shapeOk calleeType args inst =
-    let
-        stageArity =
-            List.length inst.paramTypes
+resolveRepresentative : Mono.MonoType -> List Mono.MonoExpr -> List Instance -> Resolution
+resolveRepresentative calleeType args instances =
+    if List.any .blocker instances then
+        Decline bumpBlocked
 
-        calleeHeadArity =
-            case calleeType of
-                Mono.MFunction _ fargs _ ->
-                    List.length fargs
+    else
+        let
+            siteSigKey =
+                case calleeType of
+                    Mono.MFunction _ fargs fret ->
+                        layoutKey (fargs ++ [ fret ])
 
-                _ ->
-                    -1
-    in
-    (stageArity > 0)
-        && (List.length args == stageArity)
-        && (calleeHeadArity == stageArity)
-        && not (List.any ((==) Mono.MChar) inst.captureTypes)
+                    _ ->
+                        ""
+
+            argCount =
+                List.length args
+
+            compatible =
+                List.filter
+                    (\inst ->
+                        (inst.sigKey == siteSigKey)
+                            && (List.length inst.paramTypes == argCount)
+                            && (argCount > 0)
+                            && not (List.any ((==) Mono.MChar) inst.captureTypes)
+                    )
+                    instances
+        in
+        case compatible of
+            [] ->
+                Decline bumpShape
+
+            first :: rest ->
+                if List.all (\inst -> inst.abiKey == first.abiKey) rest then
+                    Stamp first
+
+                else
+                    Decline bumpAbiMismatch
 
 
 kindIdFor : Int -> StampCtx -> ( Int, StampCtx )
@@ -389,13 +454,13 @@ kindIdFor m ctx =
             )
 
 
-bumpMulti : StampCtx -> StampCtx
-bumpMulti ctx =
+bumpBlocked : StampCtx -> StampCtx
+bumpBlocked ctx =
     let
         stats =
             ctx.stats
     in
-    { ctx | stats = { stats | declinedMultiInstance = stats.declinedMultiInstance + 1 } }
+    { ctx | stats = { stats | declinedBlocked = stats.declinedBlocked + 1 } }
 
 
 bumpNoInstance : StampCtx -> StampCtx
@@ -414,3 +479,12 @@ bumpShape ctx =
             ctx.stats
     in
     { ctx | stats = { stats | declinedShape = stats.declinedShape + 1 } }
+
+
+bumpAbiMismatch : StampCtx -> StampCtx
+bumpAbiMismatch ctx =
+    let
+        stats =
+            ctx.stats
+    in
+    { ctx | stats = { stats | declinedAbiMismatch = stats.declinedAbiMismatch + 1 } }

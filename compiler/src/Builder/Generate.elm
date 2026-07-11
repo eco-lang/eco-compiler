@@ -810,12 +810,14 @@ runGlobalOptPhase lssReport stats simplifiedGraph =
                         ++ String.fromInt goStats.wrappersInserted
                         ++ " dispatchUpgraded="
                         ++ String.fromInt goStats.abiCloning.dispatchUpgraded
-                        ++ " declinedMultiInstance="
-                        ++ String.fromInt goStats.abiCloning.declinedMultiInstance
+                        ++ " declinedBlocked="
+                        ++ String.fromInt goStats.abiCloning.declinedBlocked
                         ++ " declinedNoInstance="
                         ++ String.fromInt goStats.abiCloning.declinedNoInstance
                         ++ " declinedShape="
                         ++ String.fromInt goStats.abiCloning.declinedShape
+                        ++ " declinedAbiMismatch="
+                        ++ String.fromInt goStats.abiCloning.declinedAbiMismatch
                     )
                 )
                 |> Task.map (\_ -> result)

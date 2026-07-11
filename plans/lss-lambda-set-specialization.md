@@ -1,6 +1,17 @@
 # LSS v1 Implementation Plan — Lambda Set Specialization (id-only members)
 
-## Status: M1 + M2 + M3 COMPLETE AND GATED (2026-07-11); M4 not started
+## Status: M1 + M2 + M3 + M3.5 COMPLETE AND GATED (2026-07-11); M4 not started
+
+**M3.5 final gates (2026-07-11):** elm-tests 12991/12 baseline-identical.
+Full E2E **1582/1582** (LssVerbatimCopiesFastDispatchTest added) under all
+three configurations — the flag-on run executes the representative-stamped
+fast dispatch across BOTH copies' runtime objects (capture values 1 vs 10,
+outputs correct). Census: the new test `dispatchUpgraded=1` with both
+`$cap` copies in the `.mlir`; AccessorVariableTest's former
+`declinedMultiInstance=24774` re-classified entirely as `declinedShape`
+(see step 3.5.2 findings — the copy class is real but program-dependent;
+the 24k there is layout-mismatch/PAP-consumption territory, correctly
+declined).
 
 **M3 final gates (2026-07-11):** elm-tests 12991 passed / 12 failed —
 failure set byte-identical to baseline (POST_010 class + if-chain golden;
@@ -829,7 +840,9 @@ anno ≠ available ⇒ inert). Runtime spot-check: a program whose hot loop is
   lambdas passed to HOFs) don't transport members — the stash var is a
   fresh instantiation, `enrichFromEnv` is deliberately skipped for
   local-multi targets. The anno stays LTop → no stamp, no counter. Pinned
-  by LssSingletonLetBoundLambdaTest (correctness only). Candidate M3.5.
+  by LssSingletonLetBoundLambdaTest (correctness only). Candidate
+  follow-up post-M4, census-gated (Milestone M3.5 below is a different
+  item: the interchangeability rule).
 - **New E2E tests** (auto-discovered from `test/elm/src`):
   `LssSingletonFastDispatchTest` (the upgrade fires: census
   `dispatchUpgraded=1`, `.mlir` shows
@@ -885,6 +898,87 @@ E2E + perf suite green; `dispatchUpgraded` and `wrappersInserted` counts
 recorded in the report (they feed design §9.4's staging-retirement
 criterion); LSS_002 checker green post-3.0; no regressions flag-off.
 Record in Status.
+
+---
+
+## Milestone M3.5 — interchangeability-aware uniqueness (design §9.2 M3.5, LSS_009)
+
+Motivation: M3's `declinedMultiInstance=24774` (AccessorVariableTest) is
+dominated by verbatim copies — the inliner copies closures with
+`srcLambda` preserved (OQ6: "same code object" IS the semantics) and
+local-multi retranslation mints per-instance copies. Reordering inlining
+after AbiCloning is NOT an option (inlining must precede Staging for the
+same value-finality reason AbiCloning must follow it); the fix is
+pass-local.
+
+### Step 3.5.1 — instance classification + representative stamping
+
+**Change** (`Compiler/GlobalOpt/AbiCloning.elm`): index ALL instances per
+member (replace `One|Many`), each carrying:
+
+- `blocker : Bool` — True for staging-wrapper stages (`lambdaId` home ==
+  `Rewriter.wrapperHome`, newly exported from
+  `Compiler/GlobalOpt/Staging/Rewriter.elm`; they carry m's `srcLambda`
+  per LSS_008 but are NOT m's code) and for adopted synthetic closures
+  (`srcLambda = Nothing` + singleton head anno — wrapTopLevelCallables
+  eta-wrappers).
+- `sigKey : String` — widened param+return layout
+  (`toComparableMonoType << widenSets`), precomputed once per instance so
+  per-site filtering is a string compare, not repeated `eqLayout` walks.
+- `abiKey : String` — widened capture layout, same encoding.
+
+Stamp rule at a singleton `LSet [m]` site: any blocker → decline
+(`declinedBlocked`); else filter candidates by `sigKey` == the site's
+callee layout key (mono type-correctness: only layout-compatible
+instances can flow — also resolves cross-spec Int-vs-Float); empty →
+`declinedShape`; survivors non-unanimous in `abiKey` →
+`declinedAbiMismatch`; else stamp the FIRST survivor (walk order —
+deterministic) as representative. Keep the M3 guards: non-empty params,
+site argCount == stage arity, no Char captures (checked on the
+representative — unanimity makes any survivor equivalent).
+
+Counters: `declinedMultiInstance` is REPLACED by `declinedBlocked` +
+`declinedAbiMismatch` (same-ABI copies now upgrade instead of counting);
+report line updated in `Builder/Generate.runGlobalOptPhase`.
+
+**Verify:** flag-off byte gate trivially unchanged (index empty ⇒ pass
+inert); `LssSingletonFastDispatchTest` still upgrades (single candidate).
+
+### Step 3.5.2 — E2E test + census
+
+New `test/elm/src/LssVerbatimCopiesFastDispatchTest.elm`: `runWith` is
+polymorphic in a parameter its capturing lambda never touches, so its two
+specializations each contain a VERBATIM copy of the lambda at identical
+layout; the shared `applyN` spec's internal site sees a singleton set
+with two instances — declined under M3's literal uniqueness, upgraded
+under M3.5 with either copy as representative (capture VALUES differ per
+object; the fast clone loads them from the object, so outputs must stay
+correct with LSS on or off).
+
+Implementation finding while building it: the INLINER almost never
+duplicates closures under the default config — `computeCost` charges
+5+body per `MonoClosure` and 5 per call against `threshold = 10`, so any
+closure-containing body exceeds the budget; the practical inliner-copy
+source is the WHITELIST (elm/bytes decode/encode combinators). Cross-spec
+duplication (this test's mechanism) and local-multi retranslation are the
+deterministic producers.
+
+Census (2026-07-11): `LssVerbatimCopiesFastDispatchTest` →
+`dispatchUpgraded=1` with BOTH `$cap` copies present in the `.mlir`
+(`_lambda_1$cap` + `_lambda_3$cap`, one `singleton_fast` papExtend);
+`LssSingletonFastDispatchTest` still `dispatchUpgraded=1`.
+AccessorVariableTest: the former `declinedMultiInstance=24774`
+re-classifies ENTIRELY as `declinedShape=24774` (blocked=0, abiMismatch=0)
+— under M3 the multiplicity guard fired first and masked that none of
+those sites' layouts match any instance (arg-count/layout mismatch — PAP
+consumption and partial application through dynamic sites). So the copy
+class was NOT the blocking population there; the shape class is
+M5/generic-protocol territory, correctly declined.
+
+### Step 3.5.3 — M3.5 gate
+
+elm-tests baseline-identical; full E2E green under subst, solver, and
+solver+`ECO_MONO_LSS=1`; census recorded. Record in Status.
 
 ---
 
@@ -978,6 +1072,9 @@ contraction to the LTop residue post-M5; census-gated by
 - [x] 3.1 dispatch-attr audit (findings recorded above)
 - [x] 3.2 AbiCloning singleton pass (+ CallInfo.fastEvaluator + generateFastDispatchCall + instanceMember adoption + the three transport fixes)
 - [x] 3.3 **M3 gate** (see Status header)
+- [x] 3.5.1 interchangeability-aware uniqueness (blockers + sigKey/abiKey + representative, LSS_009)
+- [x] 3.5.2 LssVerbatimCopiesFastDispatchTest + census split (findings recorded in 3.5.2)
+- [x] 3.5.3 **M3.5 gate** (see Status header)
 - [ ] 4.1 budgeted keying
 - [ ] 4.2 == audit
 - [ ] 4.3 **M4 gate**
