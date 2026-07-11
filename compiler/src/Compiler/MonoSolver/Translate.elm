@@ -1,4 +1,4 @@
-module Compiler.MonoSolver.Translate exposing (translate, demandUnify, specializeCtorViaScheme, enumNode, specializeCycle, specializePort, canKindDebug, monoKindDebug)
+module Compiler.MonoSolver.Translate exposing (translate, demandUnify, demandUnifyRoot, specializeCtorViaScheme, enumNode, specializeCycle, specializePort, canKindDebug, monoKindDebug)
 
 {-| Translate a TypedOptimized expression into a monomorphized expression — the
 M1 (monomorphic-spine) arms, ported from `Specialize.specializeExpr`.
@@ -63,9 +63,56 @@ item memo). A no-op when the demand equals the annotation (monomorphic case).
 -}
 demandUnify : Can.Type TypeIds.MVarId -> Mono.MonoType -> Step ()
 demandUnify annCanType demand =
+    Engine.map (\_ -> ()) (demandUnifyVar annCanType demand)
+
+
+{-| `demandUnify` returning the loaded annotation var. Function-root defs
+stash it (`S.lssRootAnn`) so the root lambda's `classifyLambdaHead` can
+reuse THE seeded var: `Store.loadType` mints fresh arrow structure per load
+(LSS_006 — only leaf MVarIds are memo-shared), so re-loading a GROUND
+annotation shares nothing and the demand's lambda-set content would be
+unreachable from the def's binder types.
+-}
+demandUnifyVar : Can.Type TypeIds.MVarId -> Mono.MonoType -> Step IO.Variable
+demandUnifyVar annCanType demand =
     Engine.andThen
-        (\annVar -> Engine.andThen (unifyStepCtx (\() -> "demandUnify " ++ canKind annCanType ++ " vs " ++ monoKind demand) annVar) (Store.monoTypeToVar demand))
+        (\annVar ->
+            Engine.map (\_ -> annVar)
+                (Engine.andThen (unifyStepCtx (\() -> "demandUnify " ++ canKind annCanType ++ " vs " ++ monoKind demand) annVar) (Store.monoTypeToVar demand))
+        )
         (Store.loadType annCanType)
+
+
+{-| `demandUnify` for a def root: when the def's expression is syntactically
+a lambda and lss is on, stash the seeded annotation var for the root
+`classifyLambdaHead` to consume (see `demandUnifyVar`). Non-function defs
+and lss-off behave exactly like `demandUnify`.
+-}
+demandUnifyRoot : Can.Type TypeIds.MVarId -> Mono.MonoType -> TOpt.Expr TypeIds.MVarId -> Step ()
+demandUnifyRoot annCanType demand expr s0 =
+    case demandUnifyVar annCanType demand s0 of
+        Err e ->
+            Err e
+
+        Ok ( annVar, s1 ) ->
+            if s1.env.lss.enabled && exprIsLambda expr then
+                Ok ( (), { s1 | lssRootAnn = Just ( annCanType, annVar ) } )
+
+            else
+                Ok ( (), s1 )
+
+
+exprIsLambda : TOpt.Expr TypeIds.MVarId -> Bool
+exprIsLambda expr =
+    case expr of
+        TOpt.Function _ _ _ _ ->
+            True
+
+        TOpt.TrackedFunction _ _ _ _ ->
+            True
+
+        _ ->
+            False
 
 
 {-| Best-effort in-store unification of two canonical types (child vs parent
@@ -653,7 +700,7 @@ specializeCycleValue : TOpt.Expr TypeIds.MVarId -> Mono.MonoType -> Step Mono.Mo
 specializeCycleValue vexpr demand =
     Engine.andThen
         (\_ -> Engine.map (\monoExpr -> Mono.MonoDefine monoExpr (Mono.typeOf monoExpr)) (translate vexpr))
-        (demandUnify (TOpt.typeOf vexpr) demand)
+        (demandUnifyRoot (TOpt.typeOf vexpr) demand vexpr)
 
 
 
@@ -1013,24 +1060,67 @@ specializeCycleFuncDef def demand =
         TOpt.Def _ _ body defType ->
             Engine.andThen
                 (\_ -> Engine.map (\monoExpr -> Mono.MonoDefine monoExpr (Mono.typeOf monoExpr)) (translate body))
-                (demandUnify defType demand)
+                (demandUnifyRoot defType demand body)
 
         TOpt.TailDef _ _ typedArgs body defType _ ->
-            Engine.andThen
-                (\_ ->
+            \sIn ->
+                if sIn.env.lss.enabled then
+                    -- lss on: the node/param types must come from a zonk of THE
+                    -- demand-seeded annotation var — a storeless classify (or a
+                    -- fresh re-load) cannot see the transported lambda sets
+                    -- (LSS_006: set slots live on per-load arrow structure).
+                    case demandUnifyVar defType demand sIn of
+                        Err e ->
+                            Err e
+
+                        Ok ( annVar, s1 ) ->
+                            case Store.zonkToMono annVar s1 of
+                                Err e ->
+                                    Err e
+
+                                Ok ( funcType, s2 ) ->
+                                    let
+                                        peeled =
+                                            extractFieldTypes (List.length typedArgs) funcType
+                                    in
+                                    case
+                                        (if List.length peeled == List.length typedArgs then
+                                            Ok ( List.map2 (\( locName, _ ) mt -> ( A.toValue locName, mt )) typedArgs peeled, s2 )
+
+                                         else
+                                            -- Shape fallback: annotation stages don't
+                                            -- cover the params — classify as before.
+                                            Engine.traverse (\( locName, argType ) -> Engine.map (\mt -> ( A.toValue locName, mt )) (classify argType)) typedArgs s2
+                                        )
+                                    of
+                                        Err e ->
+                                            Err e
+
+                                        Ok ( monoParams, s3 ) ->
+                                            case Engine.scoped (Engine.andThen (\_ -> translate body) (insertVars monoParams)) s3 of
+                                                Err e ->
+                                                    Err e
+
+                                                Ok ( monoBody, s4 ) ->
+                                                    Ok ( Mono.MonoTailFunc monoParams monoBody funcType, s4 )
+
+                else
                     Engine.andThen
-                        (\monoParams ->
+                        (\_ ->
                             Engine.andThen
-                                (\funcType ->
-                                    Engine.map
-                                        (\monoBody -> Mono.MonoTailFunc monoParams monoBody funcType)
-                                        (Engine.scoped (Engine.andThen (\_ -> translate body) (insertVars monoParams)))
+                                (\monoParams ->
+                                    Engine.andThen
+                                        (\funcType ->
+                                            Engine.map
+                                                (\monoBody -> Mono.MonoTailFunc monoParams monoBody funcType)
+                                                (Engine.scoped (Engine.andThen (\_ -> translate body) (insertVars monoParams)))
+                                        )
+                                        (classify defType)
                                 )
-                                (classify defType)
+                                (Engine.traverse (\( locName, argType ) -> Engine.map (\mt -> ( A.toValue locName, mt )) (classify argType)) typedArgs)
                         )
-                        (Engine.traverse (\( locName, argType ) -> Engine.map (\mt -> ( A.toValue locName, mt )) (classify argType)) typedArgs)
-                )
-                (demandUnify defType demand)
+                        (demandUnify defType demand)
+                        sIn
 
 
 
@@ -1171,11 +1261,40 @@ byte-identical path). lss on: LOAD the lambda's type (arrows slotted, through
 the ITEM memo so demand concretization is visible), inject the lambda's own
 member into the head arrow's slot, and zonk — the closure's MonoType then
 carries `LSet [self, …demand-joined members]` on its head arrow (design §8.2).
+
+Def-root lambdas consume the stashed `demandUnifyVar` annotation var
+(matched by canonical type) instead of a fresh load: the fresh load of a
+GROUND annotation shares no vars with the demand-seeded one (LSS_006), so
+without the reuse the demand's transported lambda sets never reach the
+def's binder/param types and every param-use call site zonks LTop. The
+zonked structure is identical either way (leaf demand flow is memo-shared);
+only annotations gain content — lss-off byte-identity untouched.
 -}
 classifyLambdaHead : Maybe TypeIds.SrcLambdaId -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
 classifyLambdaHead srcLam canType s0 =
     if s0.env.lss.enabled then
-        case Store.loadType canType s0 of
+        let
+            ( maybeRootVar, s0b ) =
+                case s0.lssRootAnn of
+                    Just ( annCanType, annVar ) ->
+                        if annCanType == canType then
+                            ( Just annVar, { s0 | lssRootAnn = Nothing } )
+
+                        else
+                            ( Nothing, s0 )
+
+                    Nothing ->
+                        ( Nothing, s0 )
+        in
+        case
+            (case maybeRootVar of
+                Just annVar ->
+                    Ok ( annVar, s0b )
+
+                Nothing ->
+                    Store.loadType canType s0b
+            )
+        of
             Err e ->
                 Err e
 
@@ -2136,7 +2255,41 @@ argUnifyVar arg s0 =
                         Err e
 
                     Ok ( _, s2 ) ->
-                        Ok ( canVar, s2 )
+                        case injectArgLambdaMember arg canVar s2 of
+                            Err e ->
+                                Err e
+
+                            Ok ( _, s3 ) ->
+                                Ok ( canVar, s3 )
+
+
+{-| M3 arg-side member transport: a lambda LITERAL passed directly as an
+argument must contribute its member to the callee's param arrow slot.
+
+`Store.loadType` mints fresh arrow structure per load (LSS_006 — only leaf
+MVarIds are memo-shared), so the set slot `classifyLambdaHead` injects into
+when the lambda is TRANSLATED is a different slot from `canVar`'s — the one
+unified with the callee's param. Without this injection the member never
+reaches the callee's demand, every downstream call-site annotation zonks to
+LTop, and AbiCloning finds nothing to upgrade.
+
+Locals referencing a closure transport through `enrichFromEnv` (the bound
+MonoType carries the closure's annotation) when they are not local-multi
+targets; local-multi args (fresh-instantiated stash vars) remain a known
+precision gap in v1 — safe: no member, no stamp.
+
+-}
+injectArgLambdaMember : TOpt.Expr TypeIds.MVarId -> IO.Variable -> Step ()
+injectArgLambdaMember arg canVar =
+    case arg of
+        TOpt.Function srcLam _ _ _ ->
+            LssInfer.injectLambdaMember srcLam canVar
+
+        TOpt.TrackedFunction srcLam _ _ _ ->
+            LssInfer.injectLambdaMember srcLam canVar
+
+        _ ->
+            \s -> Ok ( (), s )
 
 
 {-| Best-effort unify `canVar` with environment-derived structure for `arg`.
@@ -2899,7 +3052,7 @@ retranslateAt defBody instType s0 =
             { s0 | store = Engine.freshStore, memo = Dict.empty, revMemo = Array.empty }
 
         step =
-            Engine.andThen (\_ -> translate defBody) (demandUnify (TOpt.typeOf defBody) instType)
+            Engine.andThen (\_ -> translate defBody) (demandUnifyRoot (TOpt.typeOf defBody) instType defBody)
     in
     case step sFresh of
         Err e ->

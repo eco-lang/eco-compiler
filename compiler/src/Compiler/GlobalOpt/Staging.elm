@@ -60,7 +60,7 @@ This function:
 -}
 analyzeAndSolveStaging :
     Mono.MonoGraph
-    -> ( StagingSolution, Mono.MonoGraph )
+    -> ( StagingSolution, Mono.MonoGraph, Int )
 analyzeAndSolveStaging graph0 =
     let
         -- 1+2. Fused (F2): compute ProducerInfo AND build the staging graph in one walk.
@@ -76,6 +76,7 @@ analyzeAndSolveStaging graph0 =
           , dynamicSlots = Set.empty
           }
         , graph0
+        , 0
         )
 
     else
@@ -85,10 +86,10 @@ analyzeAndSolveStaging graph0 =
                 Solver.solveStagingGraph producerInfo sg
 
             -- 4. Rewrite graph: wrap producers, adjust types
-            graph1 =
+            ( graph1, wrappersInserted ) =
                 Rewriter.applyStagingSolution solution producerInfo graph0
         in
-        ( solution, graph1 )
+        ( solution, graph1, wrappersInserted )
 
 
 

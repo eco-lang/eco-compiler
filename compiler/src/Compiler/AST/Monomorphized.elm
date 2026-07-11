@@ -1,6 +1,6 @@
 module Compiler.AST.Monomorphized exposing
     ( MonoType(..), Literal(..), Constraint(..)
-    , LambdaSetAnno(..), widenSets, eqLayout, headAnno, unionAnno
+    , LambdaSetAnno(..), widenSets, eqLayout, headAnno, unionAnno, singletonHeadMember
     , LambdaId(..)
     , Global(..), SpecKey(..), SpecId, SpecializationRegistry
     , MonoGraph(..), MainInfo(..), MonoNode(..), CtorShape, nodeType
@@ -310,6 +310,28 @@ headAnno monoType =
 
         _ ->
             LTop
+
+
+{-| The sole member of a singleton head annotation, if any.
+
+Every GlobalOpt-synthesized closure whose provenance is unknown (alias /
+general wrappers from wrapTopLevelCallables) must adopt this identity as
+its `srcLambda` (LSS_008): its type claims exactly one member, so the
+wrapper must register as an instance of that member — instance
+MULTIPLICITY is what keeps AbiCloning's singleton upgrade sound. A
+synthesized closure hiding under `srcLambda = Nothing` while its type
+names one member would let the upgrade stamp that member's evaluator and
+capture ABI at sites whose runtime value is the wrapper.
+
+-}
+singletonHeadMember : MonoType -> Maybe Int
+singletonHeadMember monoType =
+    case headAnno monoType of
+        LSet [ m ] ->
+            Just m
+
+        _ ->
+            Nothing
 
 
 {-| Join two annotations: the least annotation covering both. `LTop`
@@ -1254,6 +1276,14 @@ Extended for typed closure calling:
 
   - closureKind: Three-way lattice for callee value's closure kind
   - captureAbi: For typed closure calls with known ABI
+  - fastEvaluator: LambdaId of the UNIQUE reachable closure instance the
+    callee value must be (stamped by AbiCloning's LSS singleton upgrade,
+    design §9.2/§9.3). MLIR codegen derives the fast-clone symbol from it
+    (`lambdaIdToString id ++ "$cap"` when captures are non-empty, the base
+    name otherwise) and emits `_fast_evaluator`/`_capture_abi` on the
+    saturating typed papExtend. Only consulted on the
+    CallGenericApply/CallSegmentationUnknown emission paths — sites the
+    staging solver could not type; advisory metadata everywhere else.
 
 -}
 type alias CallInfo =
@@ -1264,6 +1294,7 @@ type alias CallInfo =
     , remainingStageArities : List Int
     , closureKind : MaybeClosureKind
     , captureAbi : Maybe CaptureABI
+    , fastEvaluator : Maybe LambdaId
     , callKind : CallKind
     , evaluatorReturnType : MonoType
     }
@@ -1281,6 +1312,7 @@ defaultCallInfo =
     , remainingStageArities = []
     , closureKind = Nothing
     , captureAbi = Nothing
+    , fastEvaluator = Nothing
     , callKind = CallGenericApply
     , evaluatorReturnType = MUnit
     }

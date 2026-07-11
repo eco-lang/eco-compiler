@@ -236,6 +236,7 @@ initState lssConfig currentModule nodes annotations globalTypeEnv mvarState =
     , localMulti = []
     , derivedDestructors = Dict.empty
     , localCanTypes = Dict.empty
+    , lssRootAnn = Nothing
     }
 
 
@@ -505,7 +506,7 @@ annotation and the unification is a no-op.
 -}
 defineFrom : Can.Type TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId -> Mono.MonoType -> S -> Result Failure ( Mono.MonoNode, S )
 defineFrom annCanType expr demand s =
-    case Engine.runStep (Translate.demandUnify annCanType demand) s of
+    case Engine.runStep (Translate.demandUnifyRoot annCanType demand expr) s of
         Err e ->
             Err e
 

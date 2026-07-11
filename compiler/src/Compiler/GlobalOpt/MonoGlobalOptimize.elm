@@ -1,4 +1,4 @@
-module Compiler.GlobalOpt.MonoGlobalOptimize exposing (globalOptimize)
+module Compiler.GlobalOpt.MonoGlobalOptimize exposing (GlobalOptStats, globalOptimize, globalOptimizeWithStats)
 
 {-| Global optimization pass that runs after monomorphization and inlining but before MLIR codegen.
 
@@ -18,7 +18,7 @@ GlobalOpt owns all staging/ABI decisions and canonicalizes the types to match pa
 Note: GOPT\_001 (closure params == stage arity) is verified by TestLogic.Generate.MonoFunctionArity,
 not at runtime. The compiler trusts that canonicalizeClosureStaging produces correct output.
 
-@docs globalOptimize
+@docs GlobalOptStats, globalOptimize, globalOptimizeWithStats
 
 -}
 
@@ -107,6 +107,23 @@ Assumes MonoInlineSimplify.optimize has already been applied externally.
 -}
 globalOptimize : Mono.MonoGraph -> Mono.MonoGraph
 globalOptimize graph0a =
+    Tuple.first (globalOptimizeWithStats graph0a)
+
+
+{-| GlobalOpt census counters (LSS report, design §9.4 retirement
+criterion): staging wrapper insertions + AbiCloning singleton-upgrade
+outcomes.
+-}
+type alias GlobalOptStats =
+    { wrappersInserted : Int
+    , abiCloning : AbiCloning.AbiCloningStats
+    }
+
+
+{-| `globalOptimize` plus the census counters.
+-}
+globalOptimizeWithStats : Mono.MonoGraph -> ( Mono.MonoGraph, GlobalOptStats )
+globalOptimizeWithStats graph0a =
     let
         -- Phase 1: Wrap top-level function-typed values in closures
         -- (alias wrappers for globals/kernels, general closures for other exprs).
@@ -114,21 +131,25 @@ globalOptimize graph0a =
             wrapTopLevelCallables graph0a
 
         -- Phase 2: Staging analysis + graph rewrite (wrappers + types)
-        ( stagingSolution, graph2 ) =
+        ( stagingSolution, graph2, wrappersInserted ) =
             Staging.analyzeAndSolveStaging graph1
 
         -- Phase 3: Validate closure staging invariants (GOPT_001, GOPT_003)
         graph3 =
             Staging.validateClosureStaging graph2
 
-        -- Phase 4: ABI Cloning - ensure homogeneous closure parameters
-        -- Clones functions when a closure-typed parameter receives different
-        -- capture ABIs at different call sites.
-        graph4 =
+        -- Phase 4: ABI Cloning — LSS singleton dispatch upgrade (design
+        -- §9.2/§9.3). MUST stay after Staging: the stamps denote value
+        -- identity and Staging's Rewriter is the last pass that replaces
+        -- values (wrapper closures, LSS_008).
+        ( graph4, abiStats ) =
             AbiCloning.abiCloningPass graph3
     in
-    -- Phase 5: Annotate call staging metadata (with dynamic slots from solver)
-    annotateCallStaging stagingSolution.dynamicSlots graph4
+    -- Phase 5: Annotate call staging metadata (with dynamic slots from solver).
+    -- annotateExprCalls preserves the Phase-4 stamps when re-deriving CallInfo.
+    ( annotateCallStaging stagingSolution.dynamicSlots graph4
+    , { wrappersInserted = wrappersInserted, abiCloning = abiStats }
+    )
 
 
 
@@ -416,6 +437,7 @@ buildNestedCallsGO region calleeExpr params =
                             , remainingStageArities = restSeg
                             , closureKind = Nothing
                             , captureAbi = Nothing
+                            , fastEvaluator = Nothing
                             , callKind = Mono.CallDirectKnownSegmentation
                             , evaluatorReturnType = resultType
                             }
@@ -469,7 +491,7 @@ makeAliasClosureGO home calleeExpr argTypes retType funcType ctx =
 
         closureInfo =
             { lambdaId = lambdaId
-            , srcLambda = Nothing
+            , srcLambda = Nothing -- LSS_008: AbiCloning's index adopts the type's singleton member for srcLambda-less closures
             , captures = captures
             , params = params
             , closureKind = Nothing
@@ -512,7 +534,7 @@ makeGeneralClosureGO home expr argTypes retType funcType ctx =
 
         closureInfo =
             { lambdaId = lambdaId
-            , srcLambda = Nothing
+            , srcLambda = Nothing -- LSS_008: AbiCloning's index adopts the type's singleton member for srcLambda-less closures
             , captures = captures
             , params = params
             , closureKind = Nothing
@@ -650,7 +672,7 @@ buildAbiWrapperGO home targetType calleeExpr ctx0 =
 
                             closureInfo =
                                 { lambdaId = lambdaId
-                                , srcLambda = Nothing
+                                , srcLambda = Nothing -- LSS_008: AbiCloning's index adopts the type's singleton member for srcLambda-less closures
                                 , captures = captures
                                 , params = paramsForStage
                                 , closureKind = Nothing
@@ -1150,7 +1172,18 @@ annotateExprCalls graph env expr =
                         existingCallInfo
 
                     else
-                        computeCallInfo graph env newFunc newArgs resultType
+                        let
+                            derived =
+                                computeCallInfo graph env newFunc newArgs resultType
+                        in
+                        -- Preserve Phase-4 AbiCloning stamps (design §9.3):
+                        -- computeCallInfo knows nothing about closure identity
+                        -- and would reset these to Nothing.
+                        { derived
+                            | closureKind = existingCallInfo.closureKind
+                            , captureAbi = existingCallInfo.captureAbi
+                            , fastEvaluator = existingCallInfo.fastEvaluator
+                        }
             in
             Mono.MonoCall region newFunc newArgs resultType callInfo
 
@@ -1948,6 +1981,7 @@ computeCallInfo graph env func args resultType =
             , remainingStageArities = []
             , closureKind = Nothing
             , captureAbi = Nothing
+            , fastEvaluator = Nothing
             , callKind = Mono.CallDirectFlat
             , evaluatorReturnType = resultType
             }
@@ -2076,6 +2110,7 @@ computeCallInfo graph env func args resultType =
             , remainingStageArities = remainingStageArities
             , closureKind = Nothing
             , captureAbi = Nothing
+            , fastEvaluator = Nothing
             , callKind = callKind
             , evaluatorReturnType = evaluatorReturnType
             }

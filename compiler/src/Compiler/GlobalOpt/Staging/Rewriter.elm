@@ -30,6 +30,7 @@ import Utils.Crash exposing (crash)
 type alias RewriteCtx =
     { lambdaCounter : Int
     , home : IO.Canonical
+    , wrappersInserted : Int -- census: wrapClosureToCanonical invocations (design §9.4 retirement criterion)
     }
 
 
@@ -37,6 +38,7 @@ initRewriteCtx : Mono.MonoGraph -> RewriteCtx
 initRewriteCtx (Mono.MonoGraph record) =
     { lambdaCounter = record.nextLambdaIndex
     , home = IO.Canonical ( "eco", "internal" ) "GlobalOpt"
+    , wrappersInserted = 0
     }
 
 
@@ -54,12 +56,13 @@ freshLambdaId ctx =
 
 
 {-| Apply the staging solution to rewrite the MonoGraph.
+Also returns the number of wrapper closures inserted (census).
 -}
 applyStagingSolution :
     StagingSolution
     -> ProducerInfo
     -> Mono.MonoGraph
-    -> Mono.MonoGraph
+    -> ( Mono.MonoGraph, Int )
 applyStagingSolution solution producerInfo (Mono.MonoGraph mono0) =
     let
         ctx0 =
@@ -86,7 +89,7 @@ applyStagingSolution solution producerInfo (Mono.MonoGraph mono0) =
         mono1 =
             { mono0 | nodes = nodes1, nextLambdaIndex = finalCtx.lambdaCounter }
     in
-    Mono.MonoGraph mono1
+    ( Mono.MonoGraph mono1, finalCtx.wrappersInserted )
 
 
 
@@ -515,23 +518,35 @@ wrapClosureToCanonical originalInfo originalBody originalType canonType canonica
             buildSegmentedFunctionType (Mono.headAnno originalType) canonicalSeg flatArgs flatRet
 
         -- Build nested closures matching canonical staging
+        ctx0Counted =
+            { ctx0 | wrappersInserted = ctx0.wrappersInserted + 1 }
     in
     buildNestedWrapper
+        originalInfo
         targetType
         (Mono.MonoClosure originalInfo originalBody canonType)
         []
-        ctx0
+        ctx0Counted
 
 
 {-| Build nested closures that implement the canonical staging.
+
+Every wrapper stage propagates the wrappee's `srcLambda` (LSS_008,
+design §9.3): the stage types all carry the original head annotation
+(buildSegmentedFunctionType replicates it), so the wrapper stages ARE
+additional reachable instances of that member — hiding their provenance
+under `srcLambda = Nothing` would let AbiCloning's singleton upgrade
+stamp the member's ABI at sites whose runtime value is the wrapper.
+
 -}
 buildNestedWrapper :
-    Mono.MonoType
+    Mono.ClosureInfo
+    -> Mono.MonoType
     -> Mono.MonoExpr
     -> List ( Name, Mono.MonoType )
     -> RewriteCtx
     -> ( Mono.MonoExpr, RewriteCtx )
-buildNestedWrapper remainingType calleeExpr accParams ctx0 =
+buildNestedWrapper originalInfo remainingType calleeExpr accParams ctx0 =
     let
         stageArgTypes =
             Mono.stageParamTypes remainingType
@@ -561,7 +576,7 @@ buildNestedWrapper remainingType calleeExpr accParams ctx0 =
                     accParams ++ paramsForStage
 
                 ( innerBody, ctx1 ) =
-                    buildNestedWrapper stageRetType calleeExpr newAccParams ctx0
+                    buildNestedWrapper originalInfo stageRetType calleeExpr newAccParams ctx0
 
                 captures =
                     Closure.computeClosureCaptures paramsForStage innerBody
@@ -571,7 +586,7 @@ buildNestedWrapper remainingType calleeExpr accParams ctx0 =
 
                 closureInfo =
                     { lambdaId = lambdaId
-                    , srcLambda = Nothing
+                    , srcLambda = originalInfo.srcLambda -- LSS_008: wrapper stages count as instances of the wrappee's member
                     , captures = captures
                     , params = paramsForStage
                     , closureKind = Nothing
@@ -643,6 +658,7 @@ buildNestedCalls region calleeExpr params =
                             , remainingStageArities = restStages
                             , closureKind = Nothing
                             , captureAbi = Nothing
+                            , fastEvaluator = Nothing
                             , callKind = Mono.CallDirectKnownSegmentation
                             , evaluatorReturnType = resultType
                             }

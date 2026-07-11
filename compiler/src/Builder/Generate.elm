@@ -782,19 +782,46 @@ runInlineSimplifyPhase ecoConfig stats monoGraph0 =
          Task.succeed simplifiedGraph
         )
         -- Hand off to a separate function so monoGraph0 goes out of scope
-        |> Task.andThen (runGlobalOptPhase stats)
+        |> Task.andThen (runGlobalOptPhase ecoConfig.mono.lss.report stats)
 
 
 {-| Global optimization phase in its own scope so inline+simplify inputs are GC-eligible.
 -}
-runGlobalOptPhase : FEStats.Handle -> Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
-runGlobalOptPhase stats simplifiedGraph =
+runGlobalOptPhase : Bool -> FEStats.Handle -> Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
+runGlobalOptPhase lssReport stats simplifiedGraph =
     FEStats.withPhase stats
         FEStats.PhaseGlobalOpt
-        (Task.succeed
-            { monoGraph = MonoGlobalOptimize.globalOptimize simplifiedGraph
-            , mode = Mode.Dev Nothing
-            }
+        (let
+            ( optimizedGraph, goStats ) =
+                MonoGlobalOptimize.globalOptimizeWithStats simplifiedGraph
+
+            result =
+                { monoGraph = optimizedGraph
+                , mode = Mode.Dev Nothing
+                }
+         in
+         if lssReport then
+            -- GlobalOpt census line (stderr, like the mono census above):
+            -- staging wrapper insertions + AbiCloning singleton-upgrade
+            -- outcomes (design §9.4's retirement counters).
+            Task.io
+                (System.IO.writeLn System.IO.stderr
+                    ("lss globalopt: wrappersInserted="
+                        ++ String.fromInt goStats.wrappersInserted
+                        ++ " dispatchUpgraded="
+                        ++ String.fromInt goStats.abiCloning.dispatchUpgraded
+                        ++ " declinedMultiInstance="
+                        ++ String.fromInt goStats.abiCloning.declinedMultiInstance
+                        ++ " declinedNoInstance="
+                        ++ String.fromInt goStats.abiCloning.declinedNoInstance
+                        ++ " declinedShape="
+                        ++ String.fromInt goStats.abiCloning.declinedShape
+                    )
+                )
+                |> Task.map (\_ -> result)
+
+         else
+            Task.succeed result
         )
 
 

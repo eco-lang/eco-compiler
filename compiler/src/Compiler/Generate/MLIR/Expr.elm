@@ -1277,53 +1277,45 @@ generateCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoTy
 generateCall ctx func args resultType callInfo =
     case callInfo.callKind of
         Mono.CallGenericApply ->
-            -- Generic apply: staging unknown at compile time.
-            -- Emit eco.papExtend without remaining_arity; EcoToLLVM will
-            -- read the closure header at runtime to determine saturation.
-            -- Result is always !eco.value, so coerce back to expected ABI type.
-            let
-                genericRes =
-                    generateGenericApply ctx func args resultType callInfo
+            case fastDispatchStamp callInfo args of
+                Just ( fastLambdaId, fastAbi ) ->
+                    -- LSS singleton upgrade (AbiCloning stamp, design §9.2):
+                    -- the callee value is provably one specific closure
+                    -- instance; call its fast clone directly.
+                    generateFastDispatchCall ctx func args resultType fastLambdaId fastAbi
 
-                expectedType =
-                    Types.monoTypeToAbi resultType
-
-                ( coerceOps, finalVar, finalCtx ) =
-                    coerceResultToType genericRes.ctx
-                        genericRes.resultVar
-                        genericRes.resultType
-                        expectedType
-            in
-            { ops = genericRes.ops ++ coerceOps
-            , resultVar = finalVar
-            , resultType = expectedType
-            , ctx = finalCtx
-            , isTerminated = False
-            }
+                Nothing ->
+                    generateGenericApplyCoerced ctx func args resultType callInfo
 
         Mono.CallSegmentationUnknown ->
-            -- Known ABI + unknown staging: typed papExtend without remaining_arity.
-            -- Runtime reads closure header for saturation decisions.
-            -- Result is always !eco.value, so coerce back to expected ABI type.
-            let
-                unkRes =
-                    generateUnknownSegmentationCall ctx func args resultType callInfo
+            case fastDispatchStamp callInfo args of
+                Just ( fastLambdaId, fastAbi ) ->
+                    -- LSS singleton upgrade — same as the generic-apply case.
+                    generateFastDispatchCall ctx func args resultType fastLambdaId fastAbi
 
-                expectedType =
-                    Types.monoTypeToAbi resultType
+                Nothing ->
+                    -- Known ABI + unknown staging: typed papExtend without remaining_arity.
+                    -- Runtime reads closure header for saturation decisions.
+                    -- Result is always !eco.value, so coerce back to expected ABI type.
+                    let
+                        unkRes =
+                            generateUnknownSegmentationCall ctx func args resultType callInfo
 
-                ( coerceOps, finalVar, finalCtx ) =
-                    coerceResultToType unkRes.ctx
-                        unkRes.resultVar
-                        unkRes.resultType
-                        expectedType
-            in
-            { ops = unkRes.ops ++ coerceOps
-            , resultVar = finalVar
-            , resultType = expectedType
-            , ctx = finalCtx
-            , isTerminated = False
-            }
+                        expectedType =
+                            Types.monoTypeToAbi resultType
+
+                        ( coerceOps, finalVar, finalCtx ) =
+                            coerceResultToType unkRes.ctx
+                                unkRes.resultVar
+                                unkRes.resultType
+                                expectedType
+                    in
+                    { ops = unkRes.ops ++ coerceOps
+                    , resultVar = finalVar
+                    , resultType = expectedType
+                    , ctx = finalCtx
+                    , isTerminated = False
+                    }
 
         Mono.CallDirectFlat ->
             -- Kernels / externs: use ABI-flattened model.
@@ -1617,6 +1609,189 @@ generateUnknownSegmentationCall ctx func args resultType _ =
     , resultVar = resVar
     , resultType = resultMlirType
     , ctx = ctx4
+    , isTerminated = False
+    }
+
+
+{-| Generic apply plus the result coercion `generateCall` owes its caller.
+Extracted so the CallGenericApply arm can gate on the LSS fast-dispatch
+stamp first.
+-}
+generateGenericApplyCoerced : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
+generateGenericApplyCoerced ctx func args resultType callInfo =
+    let
+        genericRes =
+            generateGenericApply ctx func args resultType callInfo
+
+        expectedType =
+            Types.monoTypeToAbi resultType
+
+        ( coerceOps, finalVar, finalCtx ) =
+            coerceResultToType genericRes.ctx
+                genericRes.resultVar
+                genericRes.resultType
+                expectedType
+    in
+    { ops = genericRes.ops ++ coerceOps
+    , resultVar = finalVar
+    , resultType = expectedType
+    , ctx = finalCtx
+    , isTerminated = False
+    }
+
+
+{-| The AbiCloning singleton-upgrade stamp, if usable at this site.
+
+Both fields are stamped together by `AbiCloning.abiCloningPass`; the
+arg-count re-check mirrors the pass's own shape guard (belt and braces —
+the stamp is only ever placed on exactly-stage-saturating calls).
+
+-}
+fastDispatchStamp : Mono.CallInfo -> List Mono.MonoExpr -> Maybe ( Mono.LambdaId, Mono.CaptureABI )
+fastDispatchStamp callInfo args =
+    case ( callInfo.fastEvaluator, callInfo.captureAbi ) of
+        ( Just fastLambdaId, Just abi ) ->
+            if not (List.isEmpty abi.paramTypes) && List.length args == List.length abi.paramTypes then
+                Just ( fastLambdaId, abi )
+
+            else
+                Nothing
+
+        _ ->
+            Nothing
+
+
+{-| Singleton fast dispatch (LSS M3, design §9.2): the callee value is
+provably ONE specific closure instance, so emit a SATURATED typed
+eco.papExtend carrying `_fast_evaluator` + `_capture_abi`. The C++
+lowering (PapExtendOpLowering saturated branch -> emitFastClosureCall)
+then loads the captures with typed offsets and calls the instance's fast
+clone directly — no closure-header dispatch at all.
+
+Contract (established by AbiCloning's guards, design §9.3):
+
+  - the runtime value IS the instance (unique reachable instance of the
+    singleton member; PAP forms excluded by the first-stage arity check);
+  - `remaining_arity == List.length args` — the call exactly saturates
+    the instance's stage, so CGEN_052's truthfulness obligation is met by
+    the instance's own shape;
+  - args are passed at the fast clone's param ABI
+    (`monoTypeToAbi abi.paramTypes`), captures load per
+    `monoTypeToAbi abi.captureTypes` — same derivation Lambdas.elm uses
+    for the clone's signature;
+  - fast-clone symbol: `lambdaIdToString id ++ "$cap"` when the instance
+    has captures, the base lambda symbol otherwise (captureless lambdas
+    ARE their own fast evaluator — Lambdas.elm emits them un-suffixed).
+
+-}
+generateFastDispatchCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.LambdaId -> Mono.CaptureABI -> ExprResult
+generateFastDispatchCall ctx func args resultType fastLambdaId abi =
+    let
+        funcResult : ExprResult
+        funcResult =
+            generateExpr ctx func
+
+        -- Generate all argument expressions
+        ( argOps, argsWithTypes, ctx1 ) =
+            generateExprListTyped funcResult.ctx args
+
+        -- Coerce each arg to the fast clone's param ABI
+        paramAbiTypes =
+            List.map Types.monoTypeToAbi abi.paramTypes
+
+        ( coerceArgOpsRev, coercedArgsRev, ctx2 ) =
+            List.foldl
+                (\( ( argVar, argTy ), wantTy ) ( opsAcc, argsAcc, ctxAcc ) ->
+                    let
+                        ( ops, v, c ) =
+                            coerceResultToType ctxAcc argVar argTy wantTy
+                    in
+                    ( List.reverse ops ++ opsAcc, ( v, wantTy ) :: argsAcc, c )
+                )
+                ( [], [], ctx1 )
+                (List.map2 Tuple.pair argsWithTypes paramAbiTypes)
+
+        coercedArgs =
+            List.reverse coercedArgsRev
+
+        fastSymbol =
+            if List.isEmpty abi.captureTypes then
+                lambdaIdToString fastLambdaId
+
+            else
+                lambdaIdToString fastLambdaId ++ "$cap"
+
+        -- The fast clone's return ABI = the papExtend op's SSA result type
+        -- (the C++ saturated branch builds the call with exactly this type).
+        retAbiType =
+            Types.monoTypeToAbi abi.returnType
+
+        allOperandNames =
+            funcResult.resultVar :: List.map Tuple.first coercedArgs
+
+        allOperandTypes =
+            funcResult.resultType :: List.map Tuple.second coercedArgs
+
+        -- 2-bit-per-slot bitmap over newargs (GC root mask derivation)
+        newargsUnboxedBitmap =
+            List.indexedMap Tuple.pair coercedArgs
+                |> List.foldl
+                    (\( i, ( _, mlirTy ) ) acc ->
+                        Types.bitmapSetKind acc i (Types.mlirTypeToKind mlirTy)
+                    )
+                    0
+
+        ( resVar, ctx3 ) =
+            Ctx.freshVar ctx2
+
+        gcRootHintsF =
+            emitSafepointHints ctx3
+
+        ( gcRootNamesF, gcRootTypesF ) =
+            List.unzip gcRootHintsF
+
+        gcRootsCountAttrF =
+            if List.isEmpty gcRootHintsF then
+                []
+
+            else
+                [ ( "eco.gc_roots_count", IntAttr Nothing (List.length gcRootHintsF) ) ]
+
+        papExtendAttrs =
+            Dict.fromList
+                ([ ( "_operand_types"
+                   , ArrayAttr Nothing
+                        (List.map TypeAttr allOperandTypes ++ List.map TypeAttr gcRootTypesF)
+                   )
+                 , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
+                 , ( "remaining_arity", IntAttr Nothing (List.length args) )
+                 , ( "_call_kind", StringAttr "singleton_fast" )
+                 , ( "_fast_evaluator", SymbolRefAttr fastSymbol )
+                 , ( "_capture_abi"
+                   , ArrayAttr Nothing (List.map (\t -> TypeAttr (Types.monoTypeToAbi t)) abi.captureTypes)
+                   )
+                 ]
+                    ++ gcRootsCountAttrF
+                )
+
+        ( ctx4, papExtendOp ) =
+            Ops.mlirOp ctx3 "eco.papExtend"
+                |> Ops.opBuilder.withOperands (allOperandNames ++ gcRootNamesF)
+                |> Ops.opBuilder.withResults [ ( resVar, retAbiType ) ]
+                |> Ops.opBuilder.withAttrs papExtendAttrs
+                |> Ops.opBuilder.build
+
+        -- Coerce to the ABI type the caller expects for this call's result
+        expectedType =
+            Types.monoTypeToAbi resultType
+
+        ( coerceOps, finalVar, finalCtx ) =
+            coerceResultToType ctx4 resVar retAbiType expectedType
+    in
+    { ops = funcResult.ops ++ argOps ++ List.reverse coerceArgOpsRev ++ [ papExtendOp ] ++ coerceOps
+    , resultVar = finalVar
+    , resultType = expectedType
+    , ctx = finalCtx
     , isTerminated = False
     }
 

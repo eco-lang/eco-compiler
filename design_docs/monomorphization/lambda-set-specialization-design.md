@@ -1,7 +1,10 @@
 # Lambda Set Specialization (LSS) in Eco — Detailed Design
 
 *Status: DETAILED DESIGN v1 (2026-07-10). Supersedes the v0 outline (same
-file, same date). Code references verified against the tree as of MonoSolver
+file, same date). v1.1 (2026-07-11, after the M1+M2 implementation gate):
+added §9.3 (pass ordering — AbiCloning after Staging, the wrapper identity
+rule, LSS_008) and §9.4 (staging retirement outlook).
+Code references verified against the tree as of MonoSolver
 runtime parity (plan rev 11, 2026-07-09): `Compiler/MonoSolver/*`,
 `Compiler/Type/{Unify,Occurs,Type,Solve}.elm`, `System/TypeCheck/IO.elm`,
 `Compiler/AST/{Monomorphized,TypedOptimized,TypeIds}.elm`,
@@ -968,6 +971,39 @@ Indirect calls (`translateIndirectCall`, `:1316`) need **no** set-specific
 code: the callee expression's zonked type carries its annotation, which is
 precisely the dispatch fact consumers want on that `MonoCall`.
 
+**M3 correction — the transport gap.** The two claims above ("sets ride
+the same Points", "the callee expression's zonked type carries its
+annotation") turned out to hold only for closure-literal heads and
+direct-call callee types; measured on real graphs, **no `MonoCall` callee
+type carried a set** at GlobalOpt time. The reason is LSS_006 itself:
+`Store.loadType` mints fresh arrow structure per load — only leaf MVarIds
+are memo-shared — so two loads of the same canonical type (and *any* two
+loads of a GROUND type) have disconnected set slots. Three fixes, landed
+with M3, restore the transport chain end-to-end
+(literal-arg member → callee demand → spec binder types → param-use call
+sites):
+
+1. `Translate.injectArgLambdaMember` (inside `argUnifyVar`): a lambda
+   LITERAL argument injects its member into the arg var that is unified
+   with the callee's param slot. (`classifyLambdaHead`'s own injection
+   lands in the lambda's *own* load — disconnected from the call.)
+2. `Translate.demandUnifyRoot` + `Engine.S.lssRootAnn`: function-root defs
+   stash the demand-seeded annotation var; the def-root
+   `classifyLambdaHead` consumes it (matched by canonical type,
+   consume-once) instead of fresh-loading, so `specializeLambda`'s peeled
+   binder/param types zonk the transported sets, and `VarLocal` uses (the
+   varEnv-bound type) carry them to indirect call sites.
+3. `specializeCycleFuncDef`'s TailDef arm gains an lss-on branch that
+   zonks node/param types from the seeded var (self-recursive HOFs are
+   cycle tail-defs; the storeless `classify` cannot see store content).
+   The lss-off chain is kept verbatim (byte identity).
+
+Known v1 precision gap: local-multi arguments (let-bound lambdas passed to
+HOFs) do not transport members — their stash vars are fresh instantiations
+and `enrichFromEnv` deliberately skips local-multi targets. The annotation
+stays `LTop`: no upgrade, no unsoundness. Candidate follow-up ("M3.5")
+once census data shows it matters.
+
 ### 8.5 Keys and the budget (`Engine.enqueueSpec`, `Engine.elm:307`)
 
 ```elm
@@ -1025,8 +1061,12 @@ mapping with the actual node type (MONO_017), annotations included.
 - `_fast_evaluator` clones (`$cap`) are emitted per closure today
   (`Generate/MLIR/Expr.elm:1082`, `:4524`).
 - The dispatch tiers `fast | closure | unknown` are fully implemented in
-  `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp:1108–1256`, driven by
-  `_dispatch_mode` + `_capture_abi` (CGEN_CLOSURE_005/007).
+  `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp:1108–1256`.
+  *Correction from the M3 audit (plan step 3.1)*: the `_dispatch_mode`
+  attribute has **no producer** and its consumers are bypassed; the live
+  trigger is `PapExtendOpLowering` — a SATURATED typed papExtend
+  (`remaining_arity` present) carrying `_fast_evaluator` + `_capture_abi`
+  takes `emitFastClosureCall`; that helper was dead code until M3.
 - `Mono.ClosureKindId`/`Known`/`captureAbi` have **no producer**;
   `AbiCloning.abiCloningPass` is a stub; call sites default to
   `CallGenericApply` (`Mono.defaultCallInfo`) unless
@@ -1050,14 +1090,195 @@ module doc already describes this job):
    this *is* the ABI-cloning trigger condition (ABI_CLONE_001) if cloning is
    ever implemented — LSS supplies the analysis it was waiting for.
 
-### 9.3 M5 — small-set dispatch (deferred design)
+**Precondition**: the wrapper identity rule (§9.3, LSS_008) must land
+before this pass is enabled — without it, staging wrappers falsify step
+2's uniqueness test and the stamp is a silent miscompile.
+
+### 9.3 Pass ordering — AbiCloning runs after Staging
+
+`globalOptimize` (`MonoGlobalOptimize.elm:108–132`) runs Phase 2
+`Staging.analyzeAndSolveStaging` (+ Phase 3 validation), Phase 4
+`AbiCloning`, Phase 5 `annotateCallStaging`. That order is load-bearing,
+not incidental: the two passes act on orthogonal axes of the closure ABI —
+Staging on *arity segmentation* (how a curried value's parameters split
+into stages), AbiCloning on *code identity* (which evaluator + capture
+layout inhabits the arrow) — and the second **depends on the first for
+correctness** in three ways.
+
+**(a) The fast tier consumes staging facts as correctness inputs.** An
+M3-upgraded call is still "typed mode": saturation is decided *statically*
+(`EcoToLLVMClosures.cpp:2039`,
+`isSaturated = (numNewArgs == remainingArity)`), and CGEN_052 makes a wrong
+`remaining_arity` a **silent miscompile** — the runtime sanity check in
+`eco_pap_extend` only catches over-saturation, so an under-saturating chain
+quietly builds a PAP where the evaluator should have been entered.
+`initialRemaining`/`remainingStageArities` are derived by `computeCallInfo`
+(`MonoGlobalOptimize.elm:1994–2017`) from the callee's
+**post-canonicalization** type. A join point (`case`/`if` producing
+functions) has one static type, but runtime values from different branches
+can have different natural segmentations; the Staging solver's union-find
+over producers and join/param slots (`SlotIfResult`/`SlotCaseResult`/
+`SlotParam`, `Staging/GraphBuilder.elm`) is what makes that single type
+*truthful of every value that can flow*, wrapping minority producers and
+demoting producer-less classes (`dynamicSlots`) to `CallGenericApply`
+(GOPT_001/GOPT_003, GOPT_010–016). The M3 stamp only *adds* evaluator and
+capture knowledge on top of that segmentation truth; it never replaces it.
+
+**(b) AbiCloning's stamps denote value identity; Staging rewrites values.**
+`closureKind = Known kindId` + `captureAbi` at a call site is a claim about
+*the runtime object that arrives there* — its evaluator symbol and capture
+layout. Staging's `wrapClosureToCanonical` (`Staging/Rewriter.elm:500`)
+**replaces** a producer's value with nested wrapper closures whenever its
+natural segmentation differs from the class canonical. A pass whose output
+facts name value identity must run after the last pass that rewrites
+values. Inverting the order — AbiCloning first — turns a guarded
+interaction into unguarded stamp falsification:
+
+```elm
+let f = \x y -> ...            -- member m, natural staging [2]
+in ( f 1 2                     -- singleton site: would stamp Known(m)
+   , case c of                 -- join with g, canonical staging [1,1]
+       A -> f
+       B -> g )
+```
+
+`f` is created once. Staging must wrap it *at the producer* for the join's
+benefit (or the join's other consumers miscompile under CGEN_052); every
+consumer — including the already-stamped direct site — then receives the
+wrapper: different evaluator, different capture ABI. The stamp is now wrong
+and nothing detects it, because Staging has no map from a rewritten
+producer to the downstream `CallInfo`s that mention it — building that map
+is exactly the reachable-instance analysis AbiCloning itself performs, so
+"AbiCloning first" degenerates into running AbiCloning *again* after
+Staging. The remaining escalation — pinning stamped producers as
+unwrappable — dies on classes containing two pinned producers with
+different natural segmentations: a contradiction that forces un-stamping
+and a fixpoint iteration between the two passes. Staging-first costs one
+line (below) and is guarded automatically.
+
+**(c) Phase 5 threading.** `annotateCallStaging` recomputes and threads
+`CallInfo` from the staging solution and must *preserve* M3 stamps. With
+AbiCloning at Phase 4, stamps are produced immediately before the one pass
+that threads them, on a graph no later phase rewrites.
+
+**The wrapper identity hole and its fix.** As implemented at M2, wrapping
+breaks LSS's identity link: `buildNestedWrapper` constructs each wrapper
+stage with `srcLambda = Nothing` (`Staging/Rewriter.elm:574`), while
+`wrapClosureToCanonical` deliberately preserves the *type* annotation
+(`Mono.headAnno originalType`, `:515`) — and
+`Mono.buildSegmentedFunctionType` (`Monomorphized.elm:1390`) replicates
+that same annotation onto **every** stage arrow it builds. A call site can
+therefore see head annotation `LSet [m]` while the flowing value is a
+wrapper. M3's index (`srcLambda → reachable instances`) would find exactly
+one instance of `m` — the original, nested *inside* the wrapper — and stamp
+`Known(m)` with m's capture ABI at a site whose runtime value is the
+wrapper: wrong capture loads, wrong evaluator, silent miscompile.
+
+Fix (an M3 precondition, one line plus tests): propagate the wrappee's
+identity onto every wrapper stage —
+
+```elm
+-- Staging/Rewriter.elm, buildNestedWrapper (thread originalInfo down):
+closureInfo =
+    { lambdaId = lambdaId
+    , srcLambda = originalInfo.srcLambda   -- was: Nothing
+    , ...
+```
+
+Sound on both axes:
+
+- **LSS_002 holds by construction**: every wrapper stage's type is a suffix
+  of `buildSegmentedFunctionType anno …`, whose head annotation at each
+  stage is the same `anno` — `LTop` or a set containing m. Inner stages are
+  m's PAPs, and v1's "PAPs keep the callee's member" rule (§3.3/OQ4) makes
+  annotating them with m the intended semantics, not a fudge.
+- **M3 becomes sound by construction**: m now has ≥ 2 reachable instances
+  (original + wrapper stages) with differing capture ABIs, so step 3's
+  ambiguity rule declines the upgrade at every stage depth — with no
+  wrapper-specific logic inside AbiCloning.
+
+Framing matters here: this is *not* a wrapper workaround bolted onto M3.
+Instance uniqueness is already M3's core soundness condition — step 3
+exists because instances multiply for several reasons (the inliner
+duplicates closures too, though its rebuilds carry `srcLambda = Nothing`
+under `LTop` heads and are safe by absence, per OQ6). Staging wrappers are
+simply one more producer of instance multiplicity; the fix makes them tell
+the truth to a guard that already exists. Recorded as **LSS_008** (§12).
+
+*Implementation addendum (M3):* staging wrappers are not the only
+impersonators. `wrapTopLevelCallables`' **alias/general wrappers**
+(`makeAliasClosureGO`/`makeGeneralClosureGO`) eta-expand a callable at its
+full stage arity, so their type can carry a singleton `LSet [m]` (the set
+flows through `f = g` aliases) while the runtime value is the synthesized
+wrapper — and full arity means the shape guards alone do NOT catch them.
+They wrap arbitrary expressions, not a `MonoClosure`, so there is no
+`srcLambda` to propagate — and `SrcLambdaId` is an opaque supply-only
+`Id`, so one cannot be fabricated. The fix lives at the consumer instead:
+`AbiCloning.instanceMember` counts any `srcLambda`-less closure whose head
+annotation is a singleton `LSet [m]` as an instance of `m` (identity
+adoption), which restores multiplicity and makes the guard decline. The
+inliner's partial-application rebuilds remain safe by construction: they
+carry `LTop` heads AND strictly reduced first-stage arity, so both the
+annotation gate and the arity guard reject them independently.
+
+The cost is precision, not correctness: the upgrade is declined exactly
+where wrapping occurred — where the flowing value genuinely is not m in
+m's natural shape. Recovering those sites is a staging-side refinement,
+not an ordering change — see §9.4.
+
+### 9.4 Retiring Staging (outlook)
+
+Not part of v1; recorded so the intent survives. Staging exists to make
+static segmentation truthful for the *generic* closure world. As LSS
+coverage grows, that world shrinks, and staging's one expensive artifact —
+wrapper closures (an allocation plus an indirect call per canonicalized
+stage) — pays off at progressively fewer call sites. The retirement path
+is **staged shrinkage driven by census evidence**, never one-shot
+deletion:
+
+1. **Post-M3, census-gated — bias the canonical choice.** Make
+   `chooseCanonicalSegmentation` prefer the natural segmentation of
+   producers whose consumers are singleton-upgradable, so the wrapping
+   burden falls on cold/generic producers instead and hot members keep
+   their natural shape for fast dispatch. A stronger variant — skipping
+   wrapping entirely when *no* typed-segmentation consumer of the join
+   remains — additionally requires relaxing GOPT_003 (branch types agree
+   *including staging*) for such joins and is a separate design. Build
+   either only if the census shows wrapper insertion and singleton sets
+   actually collide on hot paths: compare `dispatchUpgraded` against a new
+   `wrappersInserted` counter. (`NormalizeLambdaBoundaries` already
+   flattens most staging heterogeneity pre-mono, so the overlap may be
+   small — measure first.)
+2. **Post-M5.** Small-set dispatch (§9.5) calls each member with its *own*
+   natural segmentation and capture ABI inside the tag match, so joins
+   whose members all fit one small set no longer need canonical wrapping
+   for those consumers at all. Staging's wrapping obligation then
+   contracts to the `LTop` residue — kernel/port boundaries,
+   budget-widened arrows, erased types.
+3. **What is never deleted while the typed call protocol exists**:
+   GOPT_001 type↔parameter normalization, truthful segmentation for
+   `LTop`-headed joins feeding `CallDirectKnownSegmentation` sites, and
+   the `dynamicSlots` demotion to `CallGenericApply`. These are cheap
+   type-level rewrites with no runtime cost; they are the ABI discipline
+   of the ⊤ world, and LSS's tiers are escape hatches out of it, not
+   replacements for it.
+
+**Retirement criterion** (measurable, from the census): on the perf corpus
+and the eco self-compile, (i) the share of non-direct calls dispatched
+through LSS tiers and (ii) `wrappersInserted` on hot paths. When wrappers
+on hot paths approach zero, steps 1–2 have de facto retired staging's
+*runtime* cost; solver/rewriter machinery that then serves only dead
+wrapping can be dismantled behind the usual gates (full E2E + perf suite,
+flag-off byte gate).
+
+### 9.5 M5 — small-set dispatch (deferred design)
 
 `LSet [m1..mk]`, k ≤ K: lower the closure value to a k-variant tagged
 capture union and the call to a match over known targets (paper §5.2). New
 value representation + REP_*/HEAP_* invariants — explicitly out of v1's
 scope; the annotations M2–M4 produce are its complete input.
 
-### 9.4 M6 — borrow inference
+### 9.6 M6 — borrow inference
 
 Reads `LSet` annotations + `srcLambda` to resolve higher-order callees when
 computing borrow summaries; no mono changes beyond M4.
@@ -1101,12 +1322,14 @@ semantics. Every knob's fallback is the fully-implemented `LTop` pipeline.
   `TestLogic` (every reachable `MonoClosure`'s `srcLambda` ∈ its head
   annotation's set unless `LTop`); census plausibility on the E2E corpus +
   eco self-compile; wall-time delta measured.
-- **M3 — singleton consumer** (§9.2) + call-site attr emission. Gate:
-  E2E + perf suite; dispatch-upgrade counts in the report.
+- **M3 — singleton consumer** (§9.2) + wrapper identity propagation
+  (§9.3, LSS_008 — lands first) + call-site attr emission. Gate:
+  E2E + perf suite; dispatch-upgrade and wrapper-insertion counts in the
+  report.
 - **M4 — `keyed = True` + budgets + `==` audit** (§5.2, §8.5). Gate:
   spec-count/binary-size deltas within budget on the corpus **and**
   elm-aws-codegen (the known pathological input); no `eqLayout` regressions.
-- **M5 / M6** — separate design docs (§9.3–9.4).
+- **M5 / M6** — separate design docs (§9.5–9.6).
 
 ---
 
@@ -1129,6 +1352,14 @@ semantics. Every knob's fallback is the fully-implemented `LTop` pipeline.
 - **LSS_007** — Store content discipline: `FunL` set slots contain `FlexVar`
   or `Structure (LambdaSet1 …)`; `LambdaSet1` appears nowhere else; the
   typechecking phase's stores contain neither constructor.
+- **LSS_008 (lands with M3)** — Any GlobalOpt rewrite that wraps or
+  replaces a reachable `MonoClosure` must propagate the original's
+  `srcLambda` onto every closure it creates whose type head-annotation can
+  name that member (staging wrappers: all stages). Instance
+  *multiplicity*, not absence, is the signal M3's uniqueness guard
+  consumes; a wrapper hiding its provenance under `srcLambda = Nothing`
+  while the annotation still names m re-establishes false uniqueness and
+  licenses a wrong `Known` stamp (§9.3).
 - Amend: MONO_005/MONO_017 wording (registry keys may be set-widened while
   reverse-mapping types carry annotations, §8.5); MONO_019 (LambdaId
   uniqueness) explicitly does **not** apply to `srcLambda`.
@@ -1156,6 +1387,7 @@ semantics. Every knob's fallback is the fully-implemented `LTop` pipeline.
 | `Compiler/Eco/Config.elm`, `Builder/Eco/Config.elm`, `Builder/Generate.elm` | `LssConfig`, env overrides, entry plumbing | S |
 | `Compiler/MonoSolver/Diff.elm` | force-lss-off rule note (§5.4) | S |
 | `Compiler/GlobalOpt/AbiCloning.elm` | M3 — the singleton pass (§9.2) | M (M3) |
+| `Compiler/GlobalOpt/Staging/Rewriter.elm` | M3 — propagate `srcLambda` onto wrapper stages (§9.3, LSS_008) | S (M3) |
 | `design_docs/invariants.csv` | §12 | S |
 
 ---

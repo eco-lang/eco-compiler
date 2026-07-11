@@ -1,6 +1,26 @@
 # LSS v1 Implementation Plan — Lambda Set Specialization (id-only members)
 
-## Status: M1 + M2 COMPLETE AND GATED (2026-07-11); M3/M4 not started
+## Status: M1 + M2 + M3 COMPLETE AND GATED (2026-07-11); M4 not started
+
+**M3 final gates (2026-07-11):** elm-tests 12991 passed / 12 failed —
+failure set byte-identical to baseline (POST_010 class + if-chain golden;
+the golden byte-identity gates confirm lss-off is untouched by the M3
+transport changes to Translate/Engine). Full E2E **1581/1581** (two new
+LSS E2E tests added) under all three configurations: default subst,
+`ECO_MONO_ENGINE=solver` (flag-off), and `solver + ECO_MONO_LSS=1`
+(flag-on — `LssSingletonFastDispatchTest` compiles through the upgraded
+`emitFastClosureCall` path and produces correct runtime output). Census
+(direct `node compiler/bin/index.js make` with `ECO_MONO_LSS_REPORT=1`):
+`LssSingletonFastDispatchTest` → `dispatchUpgraded=1`, `.mlir` shows the
+saturated typed papExtend with `_call_kind="singleton_fast"`,
+`_capture_abi=[i64]`, `_fast_evaluator=@…$cap`, `remaining_arity=1`;
+`AccessorVariableTest` → `declinedMultiInstance=24774` (the transport fix
+surfaces singleton annotations at scale; all declined for instance
+multiplicity — inliner copies — i.e. ABI_CLONE_001's future trigger set,
+prime M5/cloning census data); `wrappersInserted=0` on these programs
+(NormalizeLambdaBoundaries pre-flattens; expect >0 only on heterogeneous
+join programs). See "M3 implementation notes" for the transport-gap fixes
+and the v1 local-multi precision gap.
 
 **M2 final gates (2026-07-11):** elm-tests 12991 passed / 12 failed —
 failure set byte-identical to the pre-LSS baseline (POST_010 class), with
@@ -639,6 +659,46 @@ before proceeding). Update this plan's Status.
 
 ## Milestone M3 — the singleton dispatch consumer
 
+Ordering note (design §9.3): AbiCloning stays at its Phase-4 slot, AFTER
+Staging (Phases 2-3). The order is a correctness dependency, not
+convention — the fast tier is still typed mode (static `remaining_arity`,
+CGEN_052 silent-miscompile class), staging is what makes the callee type's
+segmentation truthful for every flowing value, and staging's Rewriter
+REPLACES values (wrappers), which would falsify already-placed `Known`
+stamps if the order were inverted. Do not reorder.
+
+### Step 3.0 — wrapper identity propagation (design §9.3, LSS_008)
+
+**Change**: `Staging/Rewriter.elm` `buildNestedWrapper` (`:528-577`) —
+thread `originalInfo` down from `wrapClosureToCanonical` (`:500`) and
+build every wrapper-stage `ClosureInfo` with
+`srcLambda = originalInfo.srcLambda` instead of `Nothing` (`:574`).
+
+Why first: `wrapClosureToCanonical` preserves the type annotation
+(`Mono.headAnno originalType`, `:515`) and
+`Mono.buildSegmentedFunctionType` (`Monomorphized.elm:1390`) replicates
+that annotation onto every stage arrow — so a call site can see
+`LSet [m]` while the flowing value is a wrapper. Without this step, 3.2's
+uniqueness test finds exactly one instance of m (the original, nested
+inside the wrapper) and stamps `Known(m)` at a site whose runtime value is
+the wrapper: wrong capture loads, wrong evaluator, silent miscompile. With
+it, m has >= 2 reachable instances with differing ABIs and 3.2's step-3
+ambiguity rule declines the upgrade — soundness by construction, no
+wrapper-specific logic in AbiCloning. LSS_002 holds by construction
+(every stage's head anno is the same `anno`, LTop or containing m; inner
+stages are m's PAPs — design §3.3/OQ4 semantics).
+
+Also add a `wrappersInserted : Int` counter to `RewriteCtx`, bumped per
+`wrapClosureToCanonical` invocation, surfaced through the census (feeds
+design §9.4's retirement criterion alongside `dispatchUpgraded`).
+
+Add LSS_008 to `design_docs/invariants.csv` (text in design §12).
+
+**Verify:** flag-off byte gate trivially unchanged (lss-off stamps no
+`srcLambda`, so the propagated value is `Nothing` everywhere); flag-on
+full E2E green; LSS_002 checker green (wrapper stages now carry
+`srcLambda` under annos containing m).
+
 ### Step 3.1 — dispatch-attribute producer audit (design §14 bullet 4)
 
 Before writing the pass: map exactly where the Elm side emits
@@ -653,14 +713,60 @@ emissions, (b) what a stamped `Known id + captureAbi` will trigger, (c) any
 gap to fix. Do not skip: M3's payoff depends on the emission actually
 firing.
 
-### Step 3.2 — the AbiCloning singleton pass (design §9.2)
+**FINDINGS (2026-07-11, audit done):**
+
+(a) Producer reality pre-M3:
+
+- `_dispatch_mode`: NO producer anywhere in `compiler/src`. The C++
+  consumers (`dispatchClosureCall` :1235-1274, which errors on a missing
+  attr, and `CallOpLowering` :2233) are dead-or-bypassed: indirect
+  `eco.call` always takes the `else` → `emitInlineClosureCall`. The design
+  doc's "driven by `_dispatch_mode`" framing describes dead plumbing.
+- The REAL dispatch key is `PapExtendOpLowering` (:2030-2090):
+  `remaining_arity` ABSENT → `_call_kind == "segmentation_unknown"` ?
+  `lowerSegmentationUnknown` : `lowerGenericApply` (both runtime-header
+  driven, CGEN_060). `remaining_arity` PRESENT + saturated →
+  `_fast_evaluator && _capture_abi` ? **emitFastClosureCall** (fast tier:
+  typed capture loads + direct call to the symbol) : `_closure_kind` ?
+  `emitClosureCall` (header-loaded evaluator) : `emitInlineClosureCall`
+  (legacy; layout-aware if `_capture_abi` alone).
+- `_fast_evaluator` was emitted ONLY on `eco.papCreate` (Expr.elm
+  :1082/:4524/:4762, Lambdas.elm:234) for runtime wrapper creation —
+  never on papExtend. `_capture_abi` was emitted only on stage-2+
+  papExtends in `applyByStages` (:1807-1815) for the LEGACY layout path.
+  Conclusion: **`emitFastClosureCall` was dead code — M3 is its first
+  producer** (hence the Char-capture guard in AbiCloning: its i16 capture
+  load path is unexercised).
+
+(b) A stamped `Known id + captureAbi` alone triggers NOTHING: no call-site
+emission consumed `callInfo.closureKind`/`captureAbi` (only
+`closureInfo.closureKind` at papCreate, :1088). The fast tier needs the
+fast-clone SYMBOL at the call site.
+
+(c) Gap fixed by this milestone: `CallInfo.fastEvaluator : Maybe LambdaId`
+(the unique instance's lambdaId; symbol = `lambdaIdToString id ++ "$cap"`
+with captures, un-suffixed base name for captureless lambdas — Lambdas.elm
+emits captureless fast clones without the suffix) + new
+`generateFastDispatchCall` emitting a SATURATED typed `eco.papExtend`
+(`remaining_arity = argCount`, `_fast_evaluator`, `_capture_abi`,
+`_call_kind = "singleton_fast"` for greppability), gated to the
+`CallGenericApply`/`CallSegmentationUnknown` arms of `generateCall` only —
+typed direct paths are never rerouted. `.mlir` observable is
+`_call_kind = "singleton_fast"` / `_fast_evaluator` on `eco.papExtend`
+(NOT `_dispatch_mode="fast"` as this plan's 3.2 verify step originally
+guessed).
+
+### Step 3.2 — the AbiCloning singleton pass (design §9.2, ordering §9.3)
 
 **Change**: complete `Compiler/GlobalOpt/AbiCloning.elm` (currently a
 documented no-op, `AbiCloning.elm:39-41`) — note its module doc describes
 ABI *cloning*; this step implements the LSS *upgrade* portion only:
 
 1. One graph walk indexing `srcLambda -> [reachable MonoClosure instances]`
-   (via `MonoTraverse.foldExpr` over post-prune nodes).
+   (via `MonoTraverse.foldExpr` over post-prune nodes). This walk runs on
+   the POST-staging graph and, given 3.0, sees staging wrapper stages as
+   additional instances of their member — that is the mechanism that makes
+   step 3 decline upgrades where wrapping occurred (design §9.3).
 2. For each `MonoCall` whose callee-expression `MonoType` head annotation
    is `LSet [m]`: if `m` has exactly ONE reachable instance and its capture
    ABI is determinable from that instance's `ClosureInfo`
@@ -670,9 +776,15 @@ ABI *cloning*; this step implements the LSS *upgrade* portion only:
    (srcLambda, abi) pair in a pass-local intern table.
 3. Multiple instances / differing ABIs / `LTop` → leave `CallGenericApply`
    (this ambiguity is ABI_CLONE_001's future trigger; record a counter).
-4. Extend the M2 census with `dispatchUpgraded : Int` (report reruns after
-   GlobalOpt or the counter is returned through the pass — simplest:
+   This rule is load-bearing, not best-effort: it is what keeps the pass
+   sound against instance multiplicity from staging wrappers (3.0) and
+   inliner duplication (design §9.3, LSS_008).
+4. Extend the M2 census with `dispatchUpgraded : Int` and 3.0's
+   `wrappersInserted : Int` (report reruns after
+   GlobalOpt or the counters are returned through the pass — simplest:
    stderr print from the pass itself behind `ECO_MONO_LSS_REPORT`).
+   Together they answer design §9.4's retirement question: do wrapper
+   insertion and singleton sets collide on hot paths?
 
 The pass runs at its existing Phase-4 slot in `globalOptimize`
 (`MonoGlobalOptimize.elm:128`) — before `annotateCallStaging` (Phase 5,
@@ -688,10 +800,91 @@ anno ≠ available ⇒ inert). Runtime spot-check: a program whose hot loop is
 `List.map (\x -> …)` shows `_dispatch_mode="fast"` on the call in its
 `.mlir` (grep the build dir).
 
+### M3 implementation notes (2026-07-11, as built)
+
+- **TRANSPORT GAP found and fixed (the M3-critical discovery).** M2's set
+  annotations reached only closure-literal heads (`classifyLambdaHead`)
+  and direct-call callee types (`zonkToMono funcVar`) — **no call site in
+  any final graph carried a singleton set** (measured: `callsWithSet=0`
+  across probes; the M2 census' singleton sets were all closure own-types).
+  Root cause: `Store.loadType` mints fresh arrow structure per load
+  (LSS_006 — only leaf MVarIds are memo-shared), so set slots on two loads
+  of the same (especially GROUND) canonical type are disconnected. Three
+  mono-engine fixes:
+    1. `Translate.injectArgLambdaMember` (in `argUnifyVar`): a lambda
+       LITERAL argument injects its member into the arg var that is
+       unified with the callee's param slot — `classifyLambdaHead`'s own
+       injection lands in a different load and never reached the call.
+    2. `Translate.demandUnifyRoot` + `Engine.S.lssRootAnn`: function-root
+       defs stash the demand-seeded annotation var; the def-root
+       `classifyLambdaHead` consumes it (matched by canonical type,
+       consume-once) instead of fresh-loading — a ground annotation's
+       fresh load shares nothing with the demand, so binder/param types
+       would zonk LTop.
+    3. `specializeCycleFuncDef` TailDef arm, lss-on branch: node/param
+       types zonk from the seeded var with param peeling — self-recursive
+       HOFs are cycle tail-defs, and the storeless `classify` cannot see
+       transported sets. lss-off branch kept verbatim (byte identity).
+- **v1 precision gap (documented, safe)**: local-multi args (let-bound
+  lambdas passed to HOFs) don't transport members — the stash var is a
+  fresh instantiation, `enrichFromEnv` is deliberately skipped for
+  local-multi targets. The anno stays LTop → no stamp, no counter. Pinned
+  by LssSingletonLetBoundLambdaTest (correctness only). Candidate M3.5.
+- **New E2E tests** (auto-discovered from `test/elm/src`):
+  `LssSingletonFastDispatchTest` (the upgrade fires: census
+  `dispatchUpgraded=1`, `.mlir` shows
+  `"eco.papExtend"(...) {_call_kind = "singleton_fast", _capture_abi =
+  [i64], _fast_evaluator = @..._lambda_0$cap, remaining_arity = 1} :
+  (!eco.value, i64) -> i64` under `--text-mlir`), and
+  `LssSingletonLetBoundLambdaTest` (gap correctness pin).
+
+- **CallInfo gains `fastEvaluator : Maybe LambdaId`** (audit finding (c)):
+  `closureKind`/`captureAbi` alone cannot name the fast-clone symbol.
+  All 5 CallInfo literal constructors updated with `Nothing`.
+- **Emission**: new `Expr.generateFastDispatchCall` (saturated typed
+  papExtend, `remaining_arity = argCount`, `_fast_evaluator`,
+  `_capture_abi`, `_call_kind = "singleton_fast"`), gated via
+  `fastDispatchStamp` on ONLY the `CallGenericApply` and
+  `CallSegmentationUnknown` arms of `generateCall` (the sites staging
+  could not type; typed direct paths never rerouted). Generic-apply arm's
+  original body extracted to `generateGenericApplyCoerced` (byte-identical
+  when unstamped). Args coerced to `monoTypeToAbi abi.paramTypes`; result
+  typed `monoTypeToAbi abi.returnType` then coerced to the site's ABI.
+- **Stamp survival**: `annotateExprCalls`' MonoCall arm threads
+  `closureKind`/`captureAbi`/`fastEvaluator` from the existing CallInfo
+  onto the freshly derived one (Phase 5 preservation).
+- **Identity adoption at the consumer** (LSS_008 refinement): the
+  singleton-impersonation hole extends beyond staging wrappers to
+  `wrapTopLevelCallables`' alias/general wrappers, which eta-expand at
+  FULL stage arity (shape guards don't catch them). `SrcLambdaId` is an
+  opaque supply-only Id (cannot be fabricated for stamping), so
+  `AbiCloning.instanceMember` counts any srcLambda-less closure whose
+  head annotation is `LSet [m]` as an instance of m. Inliner
+  partial-application rebuilds stay safe two independent ways (LTop head
+  + strictly reduced first-stage arity).
+- **Pass guards** (`AbiCloning.shapeOk`): non-empty params; site argCount
+  == instance stage arity; callee-type first-stage arity == instance
+  stage arity (excludes runtime-PAP values — a PAP's type has strictly
+  fewer params); no Char captures (`emitFastClosureCall`'s i16 capture
+  load is unexercised C++ — first producer caution).
+- **ClosureKindIds** minted per member (not per (member, abi)) — with a
+  unique instance the abi is functionally determined.
+- **Counters**: `declined` split three ways (multiInstance / noInstance /
+  shape) for census diagnosability; `wrappersInserted` from the staging
+  Rewriter; all printed by `Builder/Generate.runGlobalOptPhase` as an
+  `lss globalopt:` stderr line behind `lss.report` /
+  `ECO_MONO_LSS_REPORT=1` (GlobalOpt runs after the mono census print;
+  same stderr side-channel).
+- **`globalOptimize` kept** as `Tuple.first << globalOptimizeWithStats`
+  (tests/TestPipeline unchanged). Flag-off inertness: index empty (no
+  srcLambda, no LSet) → graph returned untouched, zero rebuild.
+
 ### Step 3.3 — M3 gate
 
-E2E + perf suite green; upgrade counts recorded in the report; no
-regressions flag-off. Record in Status.
+E2E + perf suite green; `dispatchUpgraded` and `wrappersInserted` counts
+recorded in the report (they feed design §9.4's staging-retirement
+criterion); LSS_002 checker green post-3.0; no regressions flag-off.
+Record in Status.
 
 ---
 
@@ -739,8 +932,11 @@ data-driven flip — not part of this plan.
 Typed set members; M5 small-set dispatch lowering (tagged capture unions —
 own design doc); per-use let-boundary sets (v1 `joinArrowSets` union is the
 accepted precision loss); cross-build signature caching; specializing into
-C++ kernels; borrow-inference consumption (LSS §9.4 / M6 — see
-`design_docs/globalopt/borrow-inference-design.md`).
+C++ kernels; borrow-inference consumption (LSS §9.6 / M6 — see
+`design_docs/globalopt/borrow-inference-design.md`); staging retirement
+refinements (design §9.4 — canonical-choice biasing post-M3, wrapping
+contraction to the LTop residue post-M5; census-gated by
+`dispatchUpgraded` vs `wrappersInserted`, both landed at M3).
 
 ## Risk ledger
 
@@ -753,6 +949,8 @@ C++ kernels; borrow-inference consumption (LSS §9.4 / M6 — see
 | Kernel fabricated types poison too little/much | Poison-at-boundary is conservative by design (2.9); census `widenedByKernel` reviewed at 2.12 |
 | Fast-path cache serves stale set-free types | `lssFast` conjunct gates every cached path (2.8); caches keyed only under the guard |
 | `computeCallInfo` clobbers M3 stamps | explicit thread-through check in 3.2 |
+| Staging wrapper masquerades as member m at a stamped site | LSS_008 propagation (3.0) makes 3.2's uniqueness guard decline; LSS_002 checker covers the annos |
+| AbiCloning reordered before Staging | forbidden — design §9.3 (stamps denote value identity; staging rewrites values) |
 | elm-aws-codegen blowup under `keyed` | budget + `widenedByBudget` counter (4.1); M4 gate runs it explicitly |
 
 ## Progress checklist
@@ -776,9 +974,10 @@ C++ kernels; borrow-inference consumption (LSS §9.4 / M6 — see
 - [x] 2.10 stats + census + report (monomorphizeWithReport)
 - [x] 2.11 LSS_002 checker + invariants.csv (LSS_001-007, MONO_019 amended)
 - [x] 2.12 **M2 gate** (see Status header + gate findings)
-- [ ] 3.1 dispatch-attr audit
-- [ ] 3.2 AbiCloning singleton pass
-- [ ] 3.3 **M3 gate**
+- [x] 3.0 wrapper srcLambda propagation + wrappersInserted counter (LSS_008)
+- [x] 3.1 dispatch-attr audit (findings recorded above)
+- [x] 3.2 AbiCloning singleton pass (+ CallInfo.fastEvaluator + generateFastDispatchCall + instanceMember adoption + the three transport fixes)
+- [x] 3.3 **M3 gate** (see Status header)
 - [ ] 4.1 budgeted keying
 - [ ] 4.2 == audit
 - [ ] 4.3 **M4 gate**

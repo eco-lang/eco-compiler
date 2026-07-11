@@ -194,6 +194,7 @@ type alias S =
     , localMulti : List NumberMultiEntry -- stack of let-bound FUNCTIONS being multi-specialized (f, f$1, …)
     , derivedDestructors : CoreDict.Dict String (Can.Type TypeIds.MVarId) -- destructor-bound name -> the destructor's canType (bridges a derived fn's call back to its root's type vars)
     , localCanTypes : CoreDict.Dict String (Can.Type TypeIds.MVarId) -- let-bound name -> its RHS canType (destructor root slot lookup)
+    , lssRootAnn : Maybe ( Can.Type TypeIds.MVarId, IO.Variable ) -- lss on, function-root defs only: the demandUnify-seeded annotation var, consumed ONCE by the def-root classifyLambdaHead so binder/param types zonk demand-transported lambda sets (a fresh loadType mints fresh set slots — LSS_006 — so re-loading would lose them)
     }
 
 
@@ -501,7 +502,7 @@ freshStore =
 -}
 resetItem : S -> S
 resetItem s =
-    { s | store = freshStore, memo = CoreDict.empty, revMemo = Array.empty, varEnv = CoreDict.empty, numberMulti = [], localMulti = [], derivedDestructors = CoreDict.empty, localCanTypes = CoreDict.empty }
+    { s | store = freshStore, memo = CoreDict.empty, revMemo = Array.empty, varEnv = CoreDict.empty, numberMulti = [], localMulti = [], derivedDestructors = CoreDict.empty, localCanTypes = CoreDict.empty, lssRootAnn = Nothing }
 
 
 {-| Bind a local variable's monomorphized type.
