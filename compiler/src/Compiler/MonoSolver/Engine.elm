@@ -154,6 +154,7 @@ type alias S =
     , nodes : Array (Maybe Mono.MonoNode)
     , inProgress : BitSet
     , scheduled : BitSet
+    , dirtySpecs : BitSet -- LSS_010: specs whose stored type was annotation-JOINED after scheduling; re-translated when popped (flag-off: never set)
     , registry : Mono.SpecializationRegistry
     , ports : List Mono.PortRegistration
     , lambdaCounter : Int
@@ -438,24 +439,55 @@ enqueueSpec global monoType s =
     -- A1: explicit trailing-S param (was `\s -> …`) → saturated callers avoid the
     -- per-call closure; body unchanged → byte-identical.
     let
-        ( specId, reg1 ) =
+        ( specId, reg1, storedChanged ) =
             if s.env.lss.enabled && not s.env.lss.keyed then
                 -- §8.5, keyed=False (M2/M3): keys are today's keys — lambda
-                -- sets never fan out specializations; the stored demand keeps
-                -- its annotations. (M4 adds keyed=True + per-global budget.)
+                -- sets never fan out specializations; the stored demand is the
+                -- annotation JOIN of every admitted demand (LSS_010).
+                -- (M4 adds keyed=True + per-global budget.)
                 Registry.getOrCreateSpecIdKeyed global (Mono.widenSets monoType) monoType s.registry
 
             else
                 -- lss off (byte-identical path — no widenSets allocation),
                 -- or keyed=True (M4).
-                Registry.getOrCreateSpecId global monoType s.registry
+                let
+                    ( sid, r ) =
+                        Registry.getOrCreateSpecId global monoType s.registry
+                in
+                ( sid, r, False )
     in
         if BitSet.member specId s.scheduled then
-            -- D2: already scheduled ⇒ the spec existed ⇒ `getOrCreateSpecId`
-            -- returned the SAME registry (its found branch is `(specId,
-            -- registry)`), so `{ s | registry = reg1 }` would copy the whole S
-            -- to change nothing. Return S unaltered (no-op update elided).
-            Ok ( specId, s )
+            if storedChanged then
+                -- LSS_010: a later demand widened the stored annotations of an
+                -- already-scheduled spec. The node (translated, in flight, or
+                -- pending) was/will be seeded from a NARROWER demand — its
+                -- body annotations could claim a singleton set that lies about
+                -- this caller's values, and a fast-dispatch stamp on such a
+                -- site is a silent miscompile. Mark dirty; re-push unless the
+                -- spec is mid-translation (finishNode re-pushes those).
+                if BitSet.member specId s.dirtySpecs then
+                    Ok ( specId, { s | registry = reg1 } )
+
+                else
+                    Ok
+                        ( specId
+                        , { s
+                            | registry = reg1
+                            , dirtySpecs = BitSet.insertGrowing specId s.dirtySpecs
+                            , worklist =
+                                if BitSet.member specId s.inProgress then
+                                    s.worklist
+
+                                else
+                                    SpecializeGlobal specId :: s.worklist
+                          }
+                        )
+
+            else
+                -- D2: already scheduled and stored type unchanged ⇒ the
+                -- registry is the SAME value, so `{ s | registry = reg1 }`
+                -- would copy the whole S to change nothing. Return S unaltered.
+                Ok ( specId, s )
 
         else
             Ok

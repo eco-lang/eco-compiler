@@ -1040,6 +1040,27 @@ forbid it; this is the sets-widen-first asymmetry from the foundation
 report). `Registry.updateRegistryType` continues to overwrite the reverse
 mapping with the actual node type (MONO_017), annotations included.
 
+**LSS_010 correction (post-M3.5, soundness).** This section originally
+said "on a key hit the first demand's stored type wins; node annotations
+come from in-item facts, not the winning demand." M3's transport fixes
+made the second half false — node/binder annotations ARE seeded from the
+stored demand (`demandUnifyRoot`) — and the first half then became a live
+miscompile: two different same-type lambdas calling one HOF share a
+widened-key spec, whose body annotation named only the FIRST caller's
+member; AbiCloning stamped that singleton and the second caller executed
+the first caller's lambda (found by a targeted probe, not by the 1582-test
+E2E — now pinned by `LssSharedSpecJoinTest`). The fix: on a key hit,
+`getOrCreateSpecIdKeyed` stores the annotation JOIN
+(`Mono.joinAnnotations`, pointwise `unionAnno`) of the stored type and the
+new demand, and a CHANGED join re-translates an already-scheduled spec
+(`S.dirtySpecs` + worklist re-push; `finishNode` re-pushes joins that land
+mid-translation; `processItem` skips clean duplicates). The join is
+monotone in a finite lattice, so re-translation terminates. Two pleasant
+consequences: bare global references enqueue storeless-classified all-LTop
+demands, so ESCAPING function values automatically ⊤-poison the join —
+exactly the soundness an escaped callee needs; and flag-off never joins
+(all annotations LTop), so the machinery is byte-invisible there.
+
 ### 8.6 Assembly, Prune, report
 
 - **Prune:** no set-specific closing pass exists or is needed — `LSet`/`LTop`
@@ -1420,6 +1441,13 @@ semantics. Every knob's fallback is the fully-implemented `LTop` pipeline.
   (`srcLambda = Nothing` + singleton annotation) are BLOCKERS: their
   presence declines the member's sites outright — they share the member's
   identity but not its code or capture layout (§9.2 M3.5).
+- **LSS_010 (lands with M3.5, tested)** — Under widened (`keyed = False`)
+  spec keys the stored registry type is the annotation JOIN of every
+  admitted demand, and a changed join re-translates an already-scheduled
+  spec (monotone, terminating). Seeding a shared spec's body annotations
+  from only its first demand lets a singleton set lie about later
+  callers' values — a live miscompile under M3's transport (§8.5
+  correction; `LssSharedSpecJoinTest`).
 - Amend: MONO_005/MONO_017 wording (registry keys may be set-widened while
   reverse-mapping types carry annotations, §8.5); MONO_019 (LambdaId
   uniqueness) explicitly does **not** apply to `srcLambda`.

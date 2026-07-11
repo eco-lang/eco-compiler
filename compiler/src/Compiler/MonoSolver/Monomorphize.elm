@@ -237,6 +237,7 @@ initState lssConfig currentModule nodes annotations globalTypeEnv mvarState =
     , derivedDestructors = Dict.empty
     , localCanTypes = Dict.empty
     , lssRootAnn = Nothing
+    , dirtySpecs = BitSet.empty
     }
 
 
@@ -302,6 +303,12 @@ processItem specId s =
         -- Recursive self-reference: already being specialized; drop.
         Ok s
 
+    else if nodeAlreadyDone specId s && not (BitSet.member specId s.dirtySpecs) then
+        -- Stale duplicate work item: a LSS_010 re-push already satisfied by a
+        -- later (re-)translation, or a duplicate re-push. Flag-off never
+        -- reaches this (each spec is pushed exactly once).
+        Ok s
+
     else
         case Registry.lookupSpecKey specId s.registry of
             Nothing ->
@@ -314,6 +321,12 @@ processItem specId s =
                             { s
                                 | inProgress = BitSet.insertGrowing specId s.inProgress
                                 , currentGlobal = Just global
+
+                                -- LSS_010: consume the dirty mark before
+                                -- translating with the (joined) stored type; a
+                                -- join arriving DURING this translation re-marks
+                                -- it and finishNode re-pushes.
+                                , dirtySpecs = BitSet.removeGrowing specId s.dirtySpecs
                             }
                 in
                 case global of
@@ -525,7 +538,27 @@ finishNode specId monoNode s =
         | nodes = arraySetGrowing specId (Just monoNode) s.nodes
         , inProgress = BitSet.removeGrowing specId s.inProgress
         , currentGlobal = Nothing
+
+        -- LSS_010: a demand join landed while this spec was mid-translation
+        -- (enqueueSpec cannot re-push an inProgress item) — re-translate with
+        -- the joined stored type. The dirty mark is consumed at the re-pop.
+        , worklist =
+            if BitSet.member specId s.dirtySpecs then
+                SpecializeGlobal specId :: s.worklist
+
+            else
+                s.worklist
     }
+
+
+nodeAlreadyDone : Mono.SpecId -> S -> Bool
+nodeAlreadyDone specId s =
+    case Array.get specId s.nodes of
+        Just (Just _) ->
+            True
+
+        _ ->
+            False
 
 
 

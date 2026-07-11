@@ -75,10 +75,18 @@ getOrCreateSpecId global monoType registry =
 while the reverse mapping stores `storeType`. LSS `keyed = False` semantics
 (design §8.5): keys are annotation-widened so lambda sets never fan out
 specializations, while the stored demand keeps its annotations (types never
-widen — MONO_020/021/024). On a key hit the first demand's stored type wins;
-node annotations come from in-item facts, not the winning demand.
+widen — MONO_020/021/024).
+
+On a key hit the stored type becomes the annotation JOIN of itself and the
+new demand (LSS_010): the single translated node serves every caller that
+hits this key, so its demand-seeded annotations must cover all of them —
+keeping only the first demand lets a singleton set lie about later
+callers' values, which a fast-dispatch stamp turns into a silent
+miscompile. The returned Bool is True when the join CHANGED the stored
+type — the caller must re-translate an already-translated spec.
+
 -}
-getOrCreateSpecIdKeyed : Global -> MonoType -> MonoType -> SpecializationRegistry -> ( SpecId, SpecializationRegistry )
+getOrCreateSpecIdKeyed : Global -> MonoType -> MonoType -> SpecializationRegistry -> ( SpecId, SpecializationRegistry, Bool )
 getOrCreateSpecIdKeyed global keyType storeType registry =
     let
         key =
@@ -86,7 +94,31 @@ getOrCreateSpecIdKeyed global keyType storeType registry =
     in
     case Dict.get key registry.mapping of
         Just specId ->
-            ( specId, registry )
+            case Array.get specId registry.reverseMapping |> Maybe.andThen identity of
+                Just ( storedGlobal, storedType ) ->
+                    if storedType == storeType then
+                        -- Common case: identical demand — one == walk, no join.
+                        ( specId, registry, False )
+
+                    else
+                        let
+                            joined =
+                                Mono.joinAnnotations storedType storeType
+                        in
+                        if joined == storedType then
+                            ( specId, registry, False )
+
+                        else
+                            ( specId
+                            , { registry
+                                | reverseMapping =
+                                    Array.set specId (Just ( storedGlobal, joined )) registry.reverseMapping
+                              }
+                            , True
+                            )
+
+                Nothing ->
+                    ( specId, registry, False )
 
         Nothing ->
             let
@@ -98,6 +130,7 @@ getOrCreateSpecIdKeyed global keyType storeType registry =
               , mapping = Dict.insert key specId registry.mapping
               , reverseMapping = Array.push (Just ( global, storeType )) registry.reverseMapping
               }
+            , False
             )
 
 

@@ -1,6 +1,6 @@
 module Compiler.AST.Monomorphized exposing
     ( MonoType(..), Literal(..), Constraint(..)
-    , LambdaSetAnno(..), widenSets, eqLayout, headAnno, unionAnno, singletonHeadMember
+    , LambdaSetAnno(..), widenSets, eqLayout, headAnno, unionAnno, singletonHeadMember, joinAnnotations
     , LambdaId(..)
     , Global(..), SpecKey(..), SpecId, SpecializationRegistry
     , MonoGraph(..), MainInfo(..), MonoNode(..), CtorShape, nodeType
@@ -310,6 +310,59 @@ headAnno monoType =
 
         _ ->
             LTop
+
+
+{-| Pointwise annotation join of two layout-identical types (LSS_010).
+
+Used on spec-registry key hits under widened keys: the stored type must be
+the JOIN of every admitted demand's annotations, because the (single)
+translated node serves all of those callers — seeding it from just the
+first demand lets a singleton annotation lie about later callers' values
+(a fast-dispatch stamp on such a site is a silent miscompile). Layout
+mismatch (impossible for same-widened-key inputs, but total anyway) falls
+back to widening the whole type — always sound.
+
+-}
+joinAnnotations : MonoType -> MonoType -> MonoType
+joinAnnotations a b =
+    case ( a, b ) of
+        ( MFunction annoA argsA retA, MFunction annoB argsB retB ) ->
+            if List.length argsA == List.length argsB then
+                MFunction (unionAnno annoA annoB) (List.map2 joinAnnotations argsA argsB) (joinAnnotations retA retB)
+
+            else
+                widenSets a
+
+        ( MList xa, MList xb ) ->
+            MList (joinAnnotations xa xb)
+
+        ( MTuple xsa, MTuple xsb ) ->
+            if List.length xsa == List.length xsb then
+                MTuple (List.map2 joinAnnotations xsa xsb)
+
+            else
+                widenSets a
+
+        ( MRecord fieldsA, MRecord fieldsB ) ->
+            if Dict.keys fieldsA == Dict.keys fieldsB then
+                MRecord (Dict.map (\k ta -> joinAnnotations ta (Maybe.withDefault ta (Dict.get k fieldsB))) fieldsA)
+
+            else
+                widenSets a
+
+        ( MCustom homeA nameA argsA, MCustom homeB nameB argsB ) ->
+            if homeA == homeB && nameA == nameB && List.length argsA == List.length argsB then
+                MCustom homeA nameA (List.map2 joinAnnotations argsA argsB)
+
+            else
+                widenSets a
+
+        _ ->
+            if a == b then
+                a
+
+            else
+                widenSets a
 
 
 {-| The sole member of a singleton head annotation, if any.

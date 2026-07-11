@@ -1,6 +1,18 @@
 # LSS v1 Implementation Plan — Lambda Set Specialization (id-only members)
 
-## Status: M1 + M2 + M3 + M3.5 COMPLETE AND GATED (2026-07-11); M4 not started
+## Status: M1 + M2 + M3 + M3.5 + 3.6 COMPLETE AND GATED (2026-07-11); M4 not started
+
+**3.6 soundness fix gates (2026-07-11):** a LIVE flag-on miscompile was
+found post-M3.5 by a targeted probe (NOT by the green 1582-test matrix):
+shared widened-key specs seeded from the first demand only let AbiCloning
+stamp a singleton that lied about later callers — two same-type lambdas
+through one HOF executed the wrong code (`b: 4` for `b: 8`). Fixed by the
+LSS_010 demand join + dirty re-translation (step 3.6). Gates after fix:
+elm-tests 12991/12 baseline-identical (flag-off never joins — golden byte
+gates prove it); full E2E **1583/1583** (LssSharedSpecJoinTest added)
+under subst, solver, and solver+`ECO_MONO_LSS=1`; census:
+LssSharedSpecJoinTest `dispatchUpgraded=0`, the two legitimate upgrade
+tests still `dispatchUpgraded=1`.
 
 **M3.5 final gates (2026-07-11):** elm-tests 12991/12 baseline-identical.
 Full E2E **1582/1582** (LssVerbatimCopiesFastDispatchTest added) under all
@@ -980,6 +992,39 @@ M5/generic-protocol territory, correctly declined.
 elm-tests baseline-identical; full E2E green under subst, solver, and
 solver+`ECO_MONO_LSS=1`; census recorded. Record in Status.
 
+### Step 3.6 — LSS_010: shared-spec demand join (SOUNDNESS, found post-M3.5)
+
+**The bug (live miscompile, flag-on):** two DIFFERENT same-type lambdas
+calling one HOF share a widened-key (`keyed=False`) specialization. The
+registry kept only the FIRST demand's stored type; M3's transport seeds
+the spec's body annotations from that stored type, so the HOF's internal
+call site claimed the singleton `{m1}` while the second caller's values
+were `m2`. AbiCloning stamped `m1`'s evaluator and caller b executed
+caller a's lambda — probe output `b: 4` instead of `b: 8`. The 1582-test
+E2E matrix did NOT catch it (no test feeds two different same-type
+lambdas through one HOF on an observable path); a targeted adversarial
+probe did. Design §8.5's "first demand's stored type wins; node
+annotations come from in-item facts" was the guard sentence M3's
+transport unknowingly violated.
+
+**Fix:** `Registry.getOrCreateSpecIdKeyed` returns a changed-flag and, on
+a key hit, stores `Mono.joinAnnotations stored new` (pointwise
+`unionAnno`; layout mismatch falls back to full widening — total and
+sound). `Engine.enqueueSpec` on a changed join marks `S.dirtySpecs` and
+re-pushes the spec unless it is mid-translation; `finishNode` re-pushes
+dirty in-flight specs; `processItem` consumes the dirty mark and skips
+clean duplicates. Monotone finite lattice ⇒ terminates. Escaping function
+refs (`translateVarRef`'s storeless all-LTop demands) automatically
+⊤-poison the join — the correct semantics for escaped callees. Flag-off
+never joins (all LTop) — byte-identical, and the elm-tests golden gates
+confirm it.
+
+**Test:** `LssSharedSpecJoinTest` (a: 3, b: 8) — fails with `b: 4`
+pre-fix under `ECO_MONO_LSS=1`; census shows `dispatchUpgraded=0` there
+post-fix while `LssSingletonFastDispatchTest` and
+`LssVerbatimCopiesFastDispatchTest` keep `dispatchUpgraded=1` (same-member
+demands join to no change).
+
 ---
 
 ## Milestone M4 — keyed specialization, budgets, `==` audit
@@ -1046,6 +1091,8 @@ contraction to the LTop residue post-M5; census-gated by
 | Staging wrapper masquerades as member m at a stamped site | LSS_008 propagation (3.0) makes 3.2's uniqueness guard decline; LSS_002 checker covers the annos |
 | AbiCloning reordered before Staging | forbidden — design §9.3 (stamps denote value identity; staging rewrites values) |
 | elm-aws-codegen blowup under `keyed` | budget + `widenedByBudget` counter (4.1); M4 gate runs it explicitly |
+| Shared-spec annos lie about later callers (keyed=False) | LSS_010 demand join + dirty re-translation (3.6); LssSharedSpecJoinTest |
+| E2E corpus blind to flag-on-only miscompiles | the corpus is flag-off-shaped; every LSS consumer feature needs a TARGETED adversarial test (3.6 lesson — the stamp bug survived 1582 green tests) |
 
 ## Progress checklist
 
@@ -1075,6 +1122,7 @@ contraction to the LTop residue post-M5; census-gated by
 - [x] 3.5.1 interchangeability-aware uniqueness (blockers + sigKey/abiKey + representative, LSS_009)
 - [x] 3.5.2 LssVerbatimCopiesFastDispatchTest + census split (findings recorded in 3.5.2)
 - [x] 3.5.3 **M3.5 gate** (see Status header)
+- [x] 3.6 LSS_010 shared-spec demand join (soundness fix + LssSharedSpecJoinTest)
 - [ ] 4.1 budgeted keying
 - [ ] 4.2 == audit
 - [ ] 4.3 **M4 gate**
