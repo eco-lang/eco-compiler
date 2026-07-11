@@ -1,6 +1,15 @@
 # LSS v1 Implementation Plan — Lambda Set Specialization (id-only members)
 
-## Status: M1 + M2 + M3 + M3.5 + 3.6 COMPLETE AND GATED (2026-07-11); M4 not started
+## Status: M1 + M2 + M3 + M3.5 + 3.6 + M4 COMPLETE AND GATED (2026-07-11) — v1 plan done; keyed default-flip decision deferred (needs elm-aws-codegen)
+
+**M4 final gates (2026-07-11):** see Step 4.3 GATE RESULTS. Headline:
+full E2E **1584/1584** under five configurations, all verified as genuine
+recompiles after discovering the env-blind harness compile cache (mtime
+only — see risk ledger; earlier corpus-level flag-on runs re-executed
+stale binaries). Keyed mode compiles the whole corpus in 120s with the
+default budget; adversarial tests prove fan-out (3 specs/3 upgrades),
+mixed-mode budget fallback (join + `widenedByBudget`), and the 3.6
+regression staying fixed in both keyed and unkeyed modes.
 
 **3.6 soundness fix gates (2026-07-11):** a LIVE flag-on miscompile was
 found post-M3.5 by a targeted probe (NOT by the green 1582-test matrix):
@@ -1043,6 +1052,26 @@ the true annotated node type (MONO_017).
 **Verify:** `keyed=False` unchanged (byte gate). `ECO_MONO_LSS=keyed` full
 E2E green; census shows per-global spec counts and any budget widening.
 
+**As built (2026-07-11):** `Engine.enqueueSpecKeyed` (dispatched from
+`enqueueSpec`, keeping the two existing modes byte-untouched):
+`S.specCountByGlobal` counts CREATED specs (detected by
+`registry.nextId` advancing, so spec reuse never burns budget);
+under budget the annotated type IS the key; past it, widened key +
+`widenedByBudget` event count. CRITICAL deviation from the design
+snippet: BOTH branches route through the JOINING
+`getOrCreateSpecIdKeyed` (LSS_010) — an annotated key COLLIDES with a
+widened key when the demand is all-LTop (an escaping reference's
+storeless classify keys exactly like a widened set-bearing type), and a
+plain first-demand-wins hit there would resurrect the 3.6 miscompile
+through the keyed path. New env override `ECO_MONO_LSS_MAX_SPECS=<n>`
+(hash token `lssB=` pre-existed) for budget-boundary testing.
+Adversarial results: LssSharedSpecJoinTest keyed → `applyN=2` specs,
+`dispatchUpgraded=2` (each site dispatches ITS OWN lambda — the M3.5/3.6
+decline converts to two sound upgrades); LssKeyedFanoutTest (new, 3
+lambdas) → 3 specs / 3 upgrades; with `ECO_MONO_LSS_MAX_SPECS=1` → 2
+specs (1 keyed + 1 joined fallback), `widenedByBudget=2`,
+`dispatchUpgraded=1`, runtime-correct outputs in every mode.
+
 ### Step 4.2 — the `==`-on-MonoType audit (design §5.2)
 
 Sweep every `==`/`Dict`-key/`comparable` use of `MonoType` outside the
@@ -1056,6 +1085,26 @@ at the site (`-- eqLayout: layout comparison, sets irrelevant`).
 **Verify:** full E2E green keyed + unkeyed; EngineDiff unaffected (diff
 runs lss-off by 1.6).
 
+**As built (2026-07-11):** the audit found ONE live hazard class: every
+LAYOUT-intent comparable Dict keyed by `toComparableMonoType` — the MLIR
+type registry (`Context.elm`, 6 sites), `TypeTable.elm` (2),
+`LogicalTypes.elm` ctorShapes lookup (1), `Patterns.elm` container keys
+(4), and the ctorShapes BUILD side (`Analysis.elm`, 3) — where a
+set-annotated key on one side and a differently-annotated (or LTop) key
+on the other is a SILENT MISS (wrong/missing ctor shape). Latent since
+M3's transport; keyed mode multiplies exposure. Fixed with a new
+annotation-insensitive `Mono.toComparableLayoutKey` (same encoding,
+arrows always `"A("` — flag-off strings byte-identical by construction)
+swapped at all 16 sites. Deliberately annotation-SENSITIVE sites kept and
+comment-tagged: the spec registry (keyed-mode intent),
+`Engine.recordMultiInstance` (per-instance local/number-multi bindings),
+`Translate`'s callMemo (annotation-neutral by construction — canTypeToMono
+stamps LTop and lssFastOk excludes arrow args; commented). Subst-engine
+sites (`Specialize/State/TypeSubst`) untouched: EngineSubst never mints
+`LSet`, so sensitivity is vacuous there. `Diff.elm` runs lss-off (rule
+1.6). Intrinsics' `resultType == Mono.MFloat` and similar leaf compares
+are anno-free.
+
 ### Step 4.3 — M4 gate
 
 Spec-count and binary-size deltas within budget on the E2E corpus AND
@@ -1063,6 +1112,30 @@ elm-aws-codegen (the known pathological input — watch wall time, the
 GlobalOpt-exponential lesson); no `eqLayout` regressions; census reviewed.
 Record in Status. Decide defaults (`keyed = True`?) as a separate,
 data-driven flip — not part of this plan.
+
+**GATE RESULTS (2026-07-11):**
+
+- elm-tests 12991/12 baseline-identical (the layout-key swap and keyed
+  machinery are byte-invisible flag-off — golden gates prove it).
+- Full E2E **1584/1584** (LssKeyedFanoutTest added) under FIVE
+  configurations, each verified as a GENUINE recompile ("0 cached, 522 to
+  compile") after discovering the env-blind harness cache (risk ledger):
+  subst, solver flag-off, solver+`ECO_MONO_LSS=1`,
+  solver+`ECO_MONO_LSS=keyed` (whole corpus compiled keyed in 120s wall,
+  default budget 64, no blowups/timeouts), and the
+  `ECO_MONO_LSS_MAX_SPECS=1` mixed-mode filtered run.
+- Census: keyed converts the 3.6-class decline into per-caller upgrades
+  (LssSharedSpecJoinTest `applyN=2`/`dispatchUpgraded=2`;
+  LssKeyedFanoutTest `applyN=3`/3 upgrades; budget=1 → 1 keyed + 1
+  joined fallback, `widenedByBudget=2`, 1 upgrade, outputs correct).
+- DEVIATION: elm-aws-codegen is not available in this container — the
+  pathological-input wall-time/binary-size check is DEFERRED to the
+  `keyed = True` default-flip decision (which was already out of this
+  plan's scope). Until then keyed stays opt-in; the corpus-scale keyed
+  run above is the coverage evidence.
+- The env-blind harness cache discovery also retroactively strengthens
+  the M3/M3.5/3.6 corpus claims: the genuine (touched) recompile runs
+  under solver and solver+LSS=1 above cover the same tree state.
 
 ---
 
@@ -1093,6 +1166,7 @@ contraction to the LTop residue post-M5; census-gated by
 | elm-aws-codegen blowup under `keyed` | budget + `widenedByBudget` counter (4.1); M4 gate runs it explicitly |
 | Shared-spec annos lie about later callers (keyed=False) | LSS_010 demand join + dirty re-translation (3.6); LssSharedSpecJoinTest |
 | E2E corpus blind to flag-on-only miscompiles | the corpus is flag-off-shaped; every LSS consumer feature needs a TARGETED adversarial test (3.6 lesson — the stamp bug survived 1582 green tests) |
+| E2E harness compile cache is ENV-BLIND (mtime-only: `needsRecompile` compares .elm vs .mlir timestamps, `ElmE2ETestBase.hpp:432`) | a `check` run with ECO_MONO_* env after a `full` reuses the previous config's .mlir — the run is VACUOUS as flag-on compile verification. Discovered at the M4 gate ("All 522 tests cached"); every corpus-level flag-on claim before that point verified runtime re-execution only. To gate a flag configuration genuinely: `find /work/test -name "*.elm" \| xargs touch` first (never wipe single builddirs — corrupt-cache gotcha), or use TEST_FILTER with freshly-created files |
 
 ## Progress checklist
 
@@ -1123,9 +1197,9 @@ contraction to the LTop residue post-M5; census-gated by
 - [x] 3.5.2 LssVerbatimCopiesFastDispatchTest + census split (findings recorded in 3.5.2)
 - [x] 3.5.3 **M3.5 gate** (see Status header)
 - [x] 3.6 LSS_010 shared-spec demand join (soundness fix + LssSharedSpecJoinTest)
-- [ ] 4.1 budgeted keying
-- [ ] 4.2 == audit
-- [ ] 4.3 **M4 gate**
+- [x] 4.1 budgeted keying (enqueueSpecKeyed + specCountByGlobal + ECO_MONO_LSS_MAX_SPECS; join-on-hit in BOTH branches)
+- [x] 4.2 == audit (toComparableLayoutKey + 16-site swap; sensitive sites comment-tagged)
+- [x] 4.3 **M4 gate** (see Step 4.3 results; elm-aws-codegen deferred to the default-flip decision)
 
 ## M2 gate findings (2026-07-11)
 

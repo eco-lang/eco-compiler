@@ -1831,6 +1831,12 @@ translateGlobalCallGroundMemo region funcRegion global funcCanType args callCanT
         (\superStatic ->
             let
                 key =
+                    -- Annotation-neutral by construction (M4 == audit):
+                    -- canTypeToMono stamps LTop on every arrow, and lssFastOk
+                    -- gates this memo to trivial-signature callees with
+                    -- arrow-free args, so no set can differ under one key and
+                    -- the cached (funcMonoType, resultMonoType, specId) replay
+                    -- is exact.
                     TOpt.toComparableGlobal global
                         ++ "|"
                         ++ String.join "," (List.map (Mono.toComparableMonoType << Zonk.canTypeToMono superStatic << TOpt.typeOf) args)

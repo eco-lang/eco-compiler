@@ -105,6 +105,11 @@ applyEnvOverrides cfg =
                 (Utils.envLookupEnv "ECO_MONO_LSS_REPORT" |> Task.mapError never)
                     |> Task.map (\repVal -> applyLssReportOverride repVal cfg3)
             )
+        |> Task.andThen
+            (\cfg4 ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_MAX_SPECS" |> Task.mapError never)
+                    |> Task.map (\budgetVal -> applyLssBudgetOverride budgetVal cfg4)
+            )
 
 
 applyEngineOverride : Maybe String -> EcoConfig -> Task Exit.Make EcoConfig
@@ -174,6 +179,23 @@ applyLssOverride maybeVal cfg =
             updateLss (\lss -> { lss | enabled = True, keyed = True }) cfg
 
         _ ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_MAX_SPECS=<n>`: override `mono.lss.maxSpecsPerGlobal`
+(the keyed-mode spec budget, design §8.5). Test/tuning knob — a tiny value
+forces the budget-exhausted widened-key + LSS_010-join fallback so the
+mixed-mode path can be exercised deliberately. Non-numeric values are
+ignored. Participates in the config hash via the `lssB=` token, so
+eco-stuff artifacts never alias across budgets.
+-}
+applyLssBudgetOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssBudgetOverride maybeVal cfg =
+    case Maybe.andThen (String.trim >> String.toInt) maybeVal of
+        Just n ->
+            updateLss (\lss -> { lss | maxSpecsPerGlobal = n }) cfg
+
+        Nothing ->
             cfg
 
 

@@ -128,7 +128,7 @@ monoTypeToLogical customMaxFields ctorShapes ty =
 -}
 customDescFor : Int -> Dict String (List Mono.CtorShape) -> Mono.MonoType -> LogicalTypeDesc
 customDescFor customMaxFields ctorShapes ty =
-    case Dict.get (Mono.toComparableMonoType ty) ctorShapes of
+    case Dict.get (Mono.toComparableLayoutKey ty) ctorShapes of
         Just [ singleCtor ] ->
             let
                 fieldCount =

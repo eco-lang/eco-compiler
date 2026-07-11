@@ -299,7 +299,7 @@ lookupTypeId : Dict.Dict String Int -> Mono.MonoType -> Int
 lookupTypeId typeIds monoType =
     let
         key =
-            Mono.toComparableMonoType monoType
+            Mono.toComparableLayoutKey monoType
     in
     Dict.get key typeIds |> Maybe.withDefault 0
 
@@ -421,7 +421,7 @@ addCustomType typeIds typeId _ monoType accum =
     let
         -- Look up constructor shapes and compute layouts
         key =
-            Mono.toComparableMonoType monoType
+            Mono.toComparableLayoutKey monoType
 
         ctorShapes =
             Dict.get key accum.ctorShapes

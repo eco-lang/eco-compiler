@@ -155,6 +155,7 @@ type alias S =
     , inProgress : BitSet
     , scheduled : BitSet
     , dirtySpecs : BitSet -- LSS_010: specs whose stored type was annotation-JOINED after scheduling; re-translated when popped (flag-off: never set)
+    , specCountByGlobal : CoreDict.Dict String Int -- M4 keyed budget: specs created per global (only maintained under lss.keyed; consulted by underBudget)
     , registry : Mono.SpecializationRegistry
     , ports : List Mono.PortRegistration
     , lambdaCounter : Int
@@ -438,18 +439,20 @@ enqueueSpec : Mono.Global -> Mono.MonoType -> Step Mono.SpecId
 enqueueSpec global monoType s =
     -- A1: explicit trailing-S param (was `\s -> …`) → saturated callers avoid the
     -- per-call closure; body unchanged → byte-identical.
+    if s.env.lss.enabled && s.env.lss.keyed then
+        enqueueSpecKeyed global monoType s
+
+    else
     let
         ( specId, reg1, storedChanged ) =
-            if s.env.lss.enabled && not s.env.lss.keyed then
+            if s.env.lss.enabled then
                 -- §8.5, keyed=False (M2/M3): keys are today's keys — lambda
                 -- sets never fan out specializations; the stored demand is the
                 -- annotation JOIN of every admitted demand (LSS_010).
-                -- (M4 adds keyed=True + per-global budget.)
                 Registry.getOrCreateSpecIdKeyed global (Mono.widenSets monoType) monoType s.registry
 
             else
-                -- lss off (byte-identical path — no widenSets allocation),
-                -- or keyed=True (M4).
+                -- lss off (byte-identical path — no widenSets allocation).
                 let
                     ( sid, r ) =
                         Registry.getOrCreateSpecId global monoType s.registry
@@ -498,6 +501,100 @@ enqueueSpec global monoType s =
                     , worklist = SpecializeGlobal specId :: s.worklist
                   }
                 )
+
+
+{-| M4 (`keyed = True`, design §8.5): the dedup KEY is the fully annotated
+type while this global is under its spec budget — lambda sets fan out
+specializations, giving each caller's member its own copy of the callee
+(the precondition for fast dispatch inside shared HOF bodies). Past the
+budget, new demands fall back to the widened key (types never widen —
+MONO_020/021/024) and the event is counted in `widenedByBudget`.
+
+BOTH branches go through the JOINING variant (LSS_010): an annotated key
+can collide with a widened one when the demand is all-`LTop` (an escaping
+reference's storeless classify keys exactly like a widened set-bearing
+type), and a plain first-demand-wins hit there would resurrect the shared
+-spec miscompile through the keyed path. Under-budget hits with identical
+annotations short-circuit inside `getOrCreateSpecIdKeyed` (equal stored
+type, or a join that changes nothing).
+
+`specCountByGlobal` counts CREATED specs per global (detected by
+`registry.nextId` advancing), so budget checks are O(log n) and reuse of
+an existing spec never burns budget.
+-}
+enqueueSpecKeyed : Mono.Global -> Mono.MonoType -> Step Mono.SpecId
+enqueueSpecKeyed global monoType s =
+    let
+        gkey =
+            Mono.toComparableGlobal global
+
+        count =
+            Maybe.withDefault 0 (CoreDict.get gkey s.specCountByGlobal)
+
+        underBudget =
+            count < s.env.lss.maxSpecsPerGlobal
+
+        ( specId, reg1, storedChanged ) =
+            if underBudget then
+                Registry.getOrCreateSpecIdKeyed global monoType monoType s.registry
+
+            else
+                Registry.getOrCreateSpecIdKeyed global (Mono.widenSets monoType) monoType s.registry
+
+        created =
+            reg1.nextId > s.registry.nextId
+
+        stats0 =
+            s.lssStats
+
+        s1 =
+            { s
+                | registry = reg1
+                , specCountByGlobal =
+                    if created then
+                        CoreDict.insert gkey (count + 1) s.specCountByGlobal
+
+                    else
+                        s.specCountByGlobal
+                , lssStats =
+                    if underBudget then
+                        stats0
+
+                    else
+                        { stats0 | widenedByBudget = stats0.widenedByBudget + 1 }
+            }
+    in
+    if BitSet.member specId s1.scheduled then
+        if storedChanged then
+            -- LSS_010 dirty machinery — same as enqueueSpec's tail.
+            if BitSet.member specId s1.dirtySpecs then
+                Ok ( specId, s1 )
+
+            else
+                Ok
+                    ( specId
+                    , { s1
+                        | dirtySpecs = BitSet.insertGrowing specId s1.dirtySpecs
+                        , worklist =
+                            if BitSet.member specId s1.inProgress then
+                                s1.worklist
+
+                            else
+                                SpecializeGlobal specId :: s1.worklist
+                      }
+                    )
+
+        else
+            Ok ( specId, s1 )
+
+    else
+        Ok
+            ( specId
+            , { s1
+                | scheduled = BitSet.insertGrowing specId s1.scheduled
+                , worklist = SpecializeGlobal specId :: s1.worklist
+              }
+            )
 
 
 
@@ -660,6 +757,9 @@ recordMultiInstance : (S -> List NumberMultiEntry) -> (List NumberMultiEntry -> 
 recordMultiInstance getStack setStack sep name monoType s =
         let
             key =
+                -- Deliberately annotation-SENSITIVE (M4 == audit): local-multi
+                -- instances are specialization-intent — differing lambda sets
+                -- mint separate per-instance bindings (f / f$1), never share.
                 Mono.toComparableMonoType monoType
 
             update entry =

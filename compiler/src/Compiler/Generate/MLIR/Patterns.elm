@@ -635,7 +635,7 @@ generateMonoPathHelper ctx path targetType revAcc =
 
                 -- Look up the shape for this unbox type
                 typeKey =
-                    Mono.toComparableMonoType containerType
+                    Mono.toComparableLayoutKey containerType
 
                 maybeShapes =
                     Dict.get typeKey ctx1.typeRegistry.ctorShapes
@@ -791,7 +791,7 @@ lookupCtorFieldInfo : Ctx.Context -> Mono.MonoType -> Name.Name -> Int -> Maybe 
 lookupCtorFieldInfo ctx containerType ctorName fieldIndex =
     let
         typeKey =
-            Mono.toComparableMonoType containerType
+            Mono.toComparableLayoutKey containerType
 
         preferredShapes : Maybe (List Mono.CtorShape)
         preferredShapes =
@@ -884,11 +884,11 @@ findConcreteCtorField ctx referenceShapes ctorName fieldIndex =
                 firstInfo :: rest ->
                     let
                         firstKey =
-                            Mono.toComparableMonoType firstInfo.monoType
+                            Mono.toComparableLayoutKey firstInfo.monoType
 
                         allAgree =
                             List.all
-                                (\fi -> Mono.toComparableMonoType fi.monoType == firstKey)
+                                (\fi -> Mono.toComparableLayoutKey fi.monoType == firstKey)
                                 rest
                     in
                     if allAgree then

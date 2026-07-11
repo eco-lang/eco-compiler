@@ -238,6 +238,7 @@ initState lssConfig currentModule nodes annotations globalTypeEnv mvarState =
     , localCanTypes = Dict.empty
     , lssRootAnn = Nothing
     , dirtySpecs = BitSet.empty
+    , specCountByGlobal = Dict.empty
     }
 
 

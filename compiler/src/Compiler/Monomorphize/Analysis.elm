@@ -64,14 +64,14 @@ collectCustomTypesFromMonoType : Mono.MonoType -> EverySet String Mono.MonoType 
 collectCustomTypesFromMonoType monoType acc =
     case monoType of
         Mono.MCustom _ _ args ->
-            -- Skip if already in set (avoids redundant toComparableMonoType calls)
-            if EverySet.member Mono.toComparableMonoType monoType acc then
+            -- Skip if already in set (avoids redundant toComparableLayoutKey calls)
+            if EverySet.member Mono.toComparableLayoutKey monoType acc then
                 acc
 
             else
                 -- Add this MCustom, then recurse into type args
                 List.foldl collectCustomTypesFromMonoType
-                    (EverySet.insert Mono.toComparableMonoType monoType acc)
+                    (EverySet.insert Mono.toComparableLayoutKey monoType acc)
                     args
 
         Mono.MList elem ->
@@ -556,7 +556,7 @@ computeCtorShapesForGraph globalTypeEnv nodes =
                 Mono.MCustom canonical typeName monoArgs ->
                     let
                         key =
-                            Mono.toComparableMonoType monoType
+                            Mono.toComparableLayoutKey monoType
                     in
                     case lookupUnion globalTypeEnv canonical typeName of
                         Nothing ->

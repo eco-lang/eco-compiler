@@ -290,7 +290,7 @@ getOrCreateTypeIdForMonoType monoType ctx =
                     -- Include type args and constructor field types
                     let
                         customKey =
-                            Mono.toComparableMonoType mt
+                            Mono.toComparableLayoutKey mt
 
                         ctorShapesForType =
                             Dict.get customKey c.typeRegistry.ctorShapes
@@ -301,7 +301,7 @@ getOrCreateTypeIdForMonoType monoType ctx =
                                 |> List.filter
                                     (\ft ->
                                         -- Exclude direct self-references to avoid infinite work
-                                        Mono.toComparableMonoType ft /= customKey
+                                        Mono.toComparableLayoutKey ft /= customKey
                                     )
                     in
                     args ++ fieldTypes
@@ -335,7 +335,7 @@ getOrCreateTypeIdForMonoType monoType ctx =
         registerSingleType mt c =
             let
                 typeKey =
-                    Mono.toComparableMonoType mt
+                    Mono.toComparableLayoutKey mt
 
                 reg =
                     c.typeRegistry
@@ -371,13 +371,13 @@ getOrCreateTypeIdForMonoType monoType ctx =
                 current :: rest ->
                     let
                         currentKey =
-                            Mono.toComparableMonoType current
+                            Mono.toComparableLayoutKey current
                     in
                     if Dict.member currentKey c.typeRegistry.typeIds then
                         -- Already registered, skip
                         processWorklist rest toRegister c
 
-                    else if List.any (\t -> Mono.toComparableMonoType t == currentKey) toRegister then
+                    else if List.any (\t -> Mono.toComparableLayoutKey t == currentKey) toRegister then
                         -- Already in toRegister list, skip
                         processWorklist rest toRegister c
 
@@ -396,7 +396,7 @@ getOrCreateTypeIdForMonoType monoType ctx =
 
         -- Look up the typeId for the original type
         originalKey =
-            Mono.toComparableMonoType monoType
+            Mono.toComparableLayoutKey monoType
     in
     case Dict.get originalKey finalCtx.typeRegistry.typeIds of
         Just typeId ->

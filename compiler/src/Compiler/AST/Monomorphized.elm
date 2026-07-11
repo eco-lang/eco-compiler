@@ -10,7 +10,7 @@ module Compiler.AST.Monomorphized exposing
     , Decider(..), MonoChoice(..)
     , ContainerKind(..)
     , typeOf
-    , toComparableSpecKey, toComparableMonoType, toComparableGlobal
+    , toComparableSpecKey, toComparableMonoType, toComparableLayoutKey, toComparableGlobal
     , getMonoPathType
     , monoTypeToDebugString
     , resolveNumberType, typeHasResidualNumber
@@ -105,7 +105,7 @@ This module defines the data structures for the monomorphized program
 
 # Comparison and Ordering
 
-@docs toComparableSpecKey, toComparableMonoType, toComparableGlobal
+@docs toComparableSpecKey, toComparableMonoType, toComparableLayoutKey, toComparableGlobal
 
 
 # Path Utilities
@@ -1063,7 +1063,28 @@ from repeated ++.
 -}
 toComparableMonoType : MonoType -> String
 toComparableMonoType monoType =
-    toComparableMonoTypeHelper [ WorkType monoType ] []
+    toComparableMonoTypeHelper True [ WorkType monoType ] []
+        |> List.reverse
+        |> String.concat
+
+
+{-| Annotation-INSENSITIVE comparable key: identical to
+`toComparableMonoType` except every arrow keys as the plain `"A("`
+fragment regardless of its lambda set (M4 `==` audit, design §5.2).
+
+Use this for LAYOUT-intent dictionaries — the MLIR type registry,
+`ctorShapes` build/lookup, pattern container keys: two types with the same
+shape have identical representation whatever their sets (REP\_\* untouched
+by LSS), so a set-bearing key on one side of such a Dict and not the other
+is a silent miss. Keep `toComparableMonoType` for SPECIALIZATION-intent
+keys (the registry under `keyed = True`, per-instance local-multi keys),
+where sets deliberately split entries. Flag-off graphs are all-`LTop`, so
+both functions produce byte-identical strings there.
+
+-}
+toComparableLayoutKey : MonoType -> String
+toComparableLayoutKey monoType =
+    toComparableMonoTypeHelper False [ WorkType monoType ] []
         |> List.reverse
         |> String.concat
 
@@ -1083,34 +1104,34 @@ any nested types onto the work stack for later processing. The caller reverses
 and concatenates the list once at the end.
 
 -}
-toComparableMonoTypeHelper : List WorkItem -> List String -> List String
-toComparableMonoTypeHelper work acc =
+toComparableMonoTypeHelper : Bool -> List WorkItem -> List String -> List String
+toComparableMonoTypeHelper annoSensitive work acc =
     case work of
         [] ->
             acc
 
         (WorkMarker s) :: rest ->
-            toComparableMonoTypeHelper rest (s :: acc)
+            toComparableMonoTypeHelper annoSensitive rest (s :: acc)
 
         (WorkType mt) :: rest ->
             case mt of
                 MInt ->
-                    toComparableMonoTypeHelper rest ("I" :: acc)
+                    toComparableMonoTypeHelper annoSensitive rest ("I" :: acc)
 
                 MFloat ->
-                    toComparableMonoTypeHelper rest ("F" :: acc)
+                    toComparableMonoTypeHelper annoSensitive rest ("F" :: acc)
 
                 MBool ->
-                    toComparableMonoTypeHelper rest ("B" :: acc)
+                    toComparableMonoTypeHelper annoSensitive rest ("B" :: acc)
 
                 MChar ->
-                    toComparableMonoTypeHelper rest ("C" :: acc)
+                    toComparableMonoTypeHelper annoSensitive rest ("C" :: acc)
 
                 MString ->
-                    toComparableMonoTypeHelper rest ("S" :: acc)
+                    toComparableMonoTypeHelper annoSensitive rest ("S" :: acc)
 
                 MUnit ->
-                    toComparableMonoTypeHelper rest ("U" :: acc)
+                    toComparableMonoTypeHelper annoSensitive rest ("U" :: acc)
 
                 MVar _ constraint ->
                     case constraint of
@@ -1118,6 +1139,7 @@ toComparableMonoTypeHelper work acc =
                             -- Layout-erased: ignore numeric ID (MONO_003). All CEcoValue MVars
                             -- produce the same key fragment so fresh IDs don't split specializations.
                             toComparableMonoTypeHelper
+                                annoSensitive
                                 rest
                                 ("ecovalue" :: "\u{0000}" :: "0" :: "V" :: acc)
 
@@ -1133,10 +1155,11 @@ toComparableMonoTypeHelper work acc =
                             -- i64. The MVarId is dropped so fresh ids never split specs.
                             -- Callers apply `refreshConstraints` before keying so a
                             -- number-tainted (Join-R) var reaches this arm.
-                            toComparableMonoTypeHelper rest ("I" :: acc)
+                            toComparableMonoTypeHelper annoSensitive rest ("I" :: acc)
 
                 MList inner ->
                     toComparableMonoTypeHelper
+                        annoSensitive
                         (WorkType inner :: WorkMarker ")" :: rest)
                         ("L(" :: acc)
 
@@ -1145,7 +1168,7 @@ toComparableMonoTypeHelper work acc =
                         newWork =
                             List.foldl (\t w -> WorkType t :: w) (WorkMarker ")" :: rest) elementTypes
                     in
-                    toComparableMonoTypeHelper newWork ("(" :: String.fromInt (List.length elementTypes) :: "T" :: acc)
+                    toComparableMonoTypeHelper annoSensitive newWork ("(" :: String.fromInt (List.length elementTypes) :: "T" :: acc)
 
                 MRecord fields ->
                     let
@@ -1155,7 +1178,7 @@ toComparableMonoTypeHelper work acc =
                                 (WorkMarker ")" :: rest)
                                 (Dict.toList fields)
                     in
-                    toComparableMonoTypeHelper newWork ("R(" :: acc)
+                    toComparableMonoTypeHelper annoSensitive newWork ("R(" :: acc)
 
                 MCustom canonical name args ->
                     let
@@ -1165,26 +1188,32 @@ toComparableMonoTypeHelper work acc =
                         newWork =
                             List.foldl (\t w -> WorkType t :: w) (WorkMarker ")" :: rest) args
                     in
-                    toComparableMonoTypeHelper newWork ("(" :: name :: "\u{0000}" :: modName :: "\u{0000}" :: project :: "\u{0000}" :: author :: "X" :: acc)
+                    toComparableMonoTypeHelper annoSensitive newWork ("(" :: name :: "\u{0000}" :: modName :: "\u{0000}" :: project :: "\u{0000}" :: author :: "X" :: acc)
 
                 MFunction anno args ret ->
                     let
                         -- LTop must keep today's exact "A(" fragment so that
                         -- all-LTop graphs key byte-identically (M1 gate).
                         annoKey =
-                            case anno of
-                                LTop ->
-                                    "A("
+                            if annoSensitive then
+                                case anno of
+                                    LTop ->
+                                        "A("
 
-                                LSet members ->
-                                    "A[" ++ String.join "," (List.map String.fromInt members) ++ "]("
+                                    LSet members ->
+                                        "A[" ++ String.join "," (List.map String.fromInt members) ++ "]("
+
+                            else
+                                -- toComparableLayoutKey: arrows key uniformly —
+                                -- layout-intent Dicts must not split on sets.
+                                "A("
 
                         newWork =
                             List.foldl (\t w -> WorkType t :: w)
                                 (WorkMarker "->" :: WorkType ret :: WorkMarker ")" :: rest)
                                 args
                     in
-                    toComparableMonoTypeHelper newWork (annoKey :: acc)
+                    toComparableMonoTypeHelper annoSensitive newWork (annoKey :: acc)
 
 
 {-| Convert a specialization key to a single comparable String for use in dictionaries.
