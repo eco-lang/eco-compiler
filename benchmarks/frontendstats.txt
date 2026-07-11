@@ -16,6 +16,7 @@
        2026-07-08  UTF-8 String support merge
        2026-07-08  UTF-8 pipeline WIRING (W0-W5)
        2026-07-08  UTF-16 seed elimination + chain healing (W7)
+       2026-07-10  Monomorphizer engine A/B: original subst vs MonoSolver
   5. Summary table (by timestamp: description, timing, delta to baseline)
 
 ================================================================================
@@ -343,6 +344,77 @@ Verdict: Seeds eliminated and chains healed: 99.95% of widen events gone, the
          UTF-8-pure for ASCII content end to end, and the self-compile is
          measurably faster with lower variance.
 
+--------------------------------------------------------------------------------
+ 2026-07-10 — Monomorphizer engine A/B: original subst vs MonoSolver
+--------------------------------------------------------------------------------
+Description: Head-to-head of the two monomorphizer engines on the SAME freshly
+             self-compiled native eco-compiler, selected at runtime via
+             ECO_MONO_ENGINE=subst|solver (subst = original Dict-substitution
+             engine; solver = MonoSolver, Architecture-C, the type checker's real
+             HM union-find unification engine). Standard protocol: warm ~/.eco,
+             cold eco-stuff wiped IMMEDIATELY before every timed run; samples
+             interleaved (subst,solver alternating); first subst run discarded as
+             a cold-start warmup. Host/preset identical to baseline: Xeon 6521P,
+             24 CPU, 15 GiB, Node v22.22.3, eco 0.1.1, `build` preset (asserts ON,
+             GC stats ON, single-threaded).
+
+             NOTE on absolute drift vs W7 (~232 s -> ~257 s subst): ROOT-CAUSED by
+             a controlled workload-isolation experiment (same binary, subst mode,
+             standard protocol; Builder/Generate.elm temporarily stubbed so the
+             Compiler.MonoSolver.* modules drop out of the import graph):
+                 source WITHOUT MonoSolver : 224.5 / 220.4 s   RSS 3.55 GiB   MLIR 11,595,508 B
+                 source WITH    MonoSolver : 259.7 s (--stats) RSS 4.57 GiB   MLIR 11,948,415 B
+             The ENTIRE +25 s drift (and more) is the new self-compile WORKLOAD:
+             the MonoSolver engine source (6 modules, 6,823 lines, reachable from
+             Builder.Generate.selectMonomorphizer in every mode) costs ~+35 s to
+             front-end-compile — ~5.2 ms/line vs the ~1.4 ms/line whole-compiler
+             average (~3.8x): it is heavily-polymorphic Step-monad combinator
+             code (unification-heavy to check, specialization-heavy to
+             monomorphize, 4k-line Translate.elm with deep andThen nesting), and
+             it inflates the whole-program graph by ~1.0 GiB live heap (nursery-
+             copy GC time 38.0 -> 45.4 s) and the emitted MLIR by ~353 KB
+             (codegen 13.5 -> 17.9 s). Phase split of the +35 s: parse/check/build
+             +25.9 s, MLIR codegen +4.4 s (GC inside both). A full audit of the
+             W7->now diff found NO shared-path slowdown: the typechecker changes
+             in the window are the A5 IO-trampoline removal (byte-identical
+             gated, a WIN), KernelAbi gained a short-circuit, MLIR/Types.elm is a
+             cold-path bitmap-wraparound FIX, EcoOps.cpp adds a build-time
+             verifier only. Indeed WITHOUT the MonoSolver workload today's binary
+             beats W7 (~222 s vs ~232 s, ~-10 s of real binary wins since W7):
+             232 - 10 (binary wins) + 35 (MonoSolver workload) ~= 257. The engine
+             A/B below is apples-to-apples (one binary, one source tree,
+             interleaved runs).
+
+Raw output (Stage 7a, native eco-compiler -> MLIR; cold eco-stuff, warm ~/.eco):
+    ORIGINAL monomorphizer  (ECO_MONO_ENGINE=subst):
+        warmup (discard) : 4:19.44  (259.4 s)
+        sample 1 : 4:16.90  (256.9 s)
+        sample 2 : 4:16.67  (256.7 s)
+        sample 3 : 4:16.84  (256.8 s)
+        MEAN     : 256.8 s   peak RSS 4.56 GiB   (spread 0.2 s — extremely tight)
+        MLIR out : 11,948,415 B   md5 620fb4cc2d119baf0684fd7ec68bf37a
+
+    MonoSolver              (ECO_MONO_ENGINE=solver):
+        sample 1 : 5:10.93  (310.9 s)
+        sample 2 : 5:10.41  (310.4 s)
+        sample 3 : 5:11.50  (311.5 s)
+        MEAN     : 311.0 s   peak RSS 4.56 GiB   (spread 1.1 s)
+        MLIR out : 11,976,902 B   md5 5a72cd181d4417ede6badec1c8c2de3a
+
+    DELTA: MonoSolver is +54.1 s / +21.1% SLOWER than subst (ratio 1.21x). Every
+    solver sample (310.4-311.5 s) is far above every subst sample (256.7-256.9 s)
+    — zero overlap, a clean signal. The two engines emit DIFFERENT MLIR (solver
+    +28,487 B, different md5) — the known runtime-benign monomorphization diffs
+    (byte gate ~466/515), not a correctness regression; both self-compiles run.
+
+Verdict: The MonoSolver runs the front-end self-compile ~21% (1.21x) slower than
+         the original Dict-substitution monomorphizer — consistent with the
+         ~1.19x recorded at runtime-parity (2026-07-09). The gap is inherent:
+         full union-find HM unification per node costs more than direct Dict
+         substitution. subst remains the default and the faster front-end engine;
+         this is the first recorded front-end A/B between the two engines under
+         the standard methodology.
+
 ================================================================================
  5. SUMMARY TABLE  (Stage 7a = native front-end self-compile, primary metric)
 ================================================================================
@@ -354,6 +426,8 @@ Verdict: Seeds eliminated and chains healed: 99.95% of widen events gone, the
  2026-07-08  UTF-8 String support merge      ~237s   n/m     -40s  (~1.7% vs prior; noise)
  2026-07-08  UTF-8 pipeline wiring (W0-W5)    ~246s   n/m     -31s  (flat/+ vs prior; goal met)
  2026-07-08  UTF-16 seed elim + healing (W7)  ~232s   n/m     -45s  (~2% vs baseline; real win)
+ 2026-07-10  Engine A/B: subst (orig)        ~257s   n/m     -20s  (+25s vs W7 = MonoSolver src in workload; ~222s without it)
+ 2026-07-10  Engine A/B: MonoSolver          ~311s   n/m     +34s  (+21% / 1.21x SLOWER than subst, same binary)
 
  Notes:
    * Primary metric is Stage 7a (native, cold eco-stuff, warm ~/.eco). "Delta vs
