@@ -173,7 +173,7 @@ collectCaseLeafFunctionsGO monoDecider monoJumps =
                     case choice of
                         Mono.Inline expr ->
                             case Mono.typeOf expr of
-                                Mono.MFunction _ _ ->
+                                Mono.MFunction _ _ _ ->
                                     Mono.typeOf expr :: acc
 
                                 _ ->
@@ -183,7 +183,7 @@ collectCaseLeafFunctionsGO monoDecider monoJumps =
                             case Dict.get idx jumpDict of
                                 Just jumpExpr ->
                                     case Mono.typeOf jumpExpr of
-                                        Mono.MFunction _ _ ->
+                                        Mono.MFunction _ _ _ ->
                                             Mono.typeOf jumpExpr :: acc
 
                                         _ ->
@@ -231,8 +231,19 @@ computeBranchNormalization funcTypes =
                 ( canonicalSeg, flatArgs, flatRet ) =
                     Mono.chooseCanonicalSegmentation funcTypes
 
+                -- Join the branch types' head annotations: the canonical type
+                -- covers every branch's possible callees (rebuilder rule —
+                -- thread, never blanket-LTop).
+                canonicalAnno =
+                    case List.map Mono.headAnno funcTypes of
+                        first :: rest ->
+                            List.foldl Mono.unionAnno first rest
+
+                        [] ->
+                            Mono.LTop
+
                 canonicalType =
-                    Mono.buildSegmentedFunctionType flatArgs flatRet canonicalSeg
+                    Mono.buildSegmentedFunctionType canonicalAnno flatArgs flatRet canonicalSeg
             in
             Just
                 { canonicalType = canonicalType
@@ -263,7 +274,7 @@ processBranchResult home maybeNorm expr ctx =
 
         Just norm ->
             case Mono.typeOf processedExpr of
-                Mono.MFunction _ _ ->
+                Mono.MFunction _ _ _ ->
                     if Mono.segmentLengths (Mono.typeOf processedExpr) == norm.canonicalSeg then
                         ( processedExpr, ctx1 )
 
@@ -458,6 +469,7 @@ makeAliasClosureGO home calleeExpr argTypes retType funcType ctx =
 
         closureInfo =
             { lambdaId = lambdaId
+            , srcLambda = Nothing
             , captures = captures
             , params = params
             , closureKind = Nothing
@@ -500,6 +512,7 @@ makeGeneralClosureGO home expr argTypes retType funcType ctx =
 
         closureInfo =
             { lambdaId = lambdaId
+            , srcLambda = Nothing
             , captures = captures
             , params = params
             , closureKind = Nothing
@@ -521,7 +534,7 @@ ensureCallableForNode :
     -> ( Mono.MonoExpr, GlobalCtx )
 ensureCallableForNode home expr monoType ctx =
     case monoType of
-        Mono.MFunction _ _ ->
+        Mono.MFunction _ _ _ ->
             let
                 stageArgTypes =
                     Mono.stageParamTypes monoType
@@ -550,7 +563,8 @@ ensureCallableForNode home expr monoType ctx =
                             Closure.flattenFunctionType kernelAbiType
 
                         flattenedFuncType =
-                            Mono.MFunction kernelFlatArgTypes kernelFlatRetType
+                            -- Kernel-facing arrow: LTop (LSS_004).
+                            Mono.MFunction Mono.LTop kernelFlatArgTypes kernelFlatRetType
                     in
                     makeAliasClosureGO home
                         (Mono.MonoVarKernel region kernelPrefix kernelHome name kernelAbiType)
@@ -636,6 +650,7 @@ buildAbiWrapperGO home targetType calleeExpr ctx0 =
 
                             closureInfo =
                                 { lambdaId = lambdaId
+                                , srcLambda = Nothing
                                 , captures = captures
                                 , params = paramsForStage
                                 , closureKind = Nothing
@@ -907,7 +922,7 @@ rewriteIfForAbi home branches final resultType ctx0 =
                 |> List.filterMap
                     (\e ->
                         case Mono.typeOf e of
-                            Mono.MFunction _ _ ->
+                            Mono.MFunction _ _ _ ->
                                 Just (Mono.typeOf e)
 
                             _ ->
@@ -1613,7 +1628,7 @@ For non-function types, returns 0.
 firstStageArityFromType : Mono.MonoType -> Int
 firstStageArityFromType monoType =
     case monoType of
-        Mono.MFunction argTypes _ ->
+        Mono.MFunction _ argTypes _ ->
             List.length argTypes
 
         _ ->
@@ -1862,7 +1877,7 @@ peelStages n t =
 
     else
         case t of
-            Mono.MFunction _ body ->
+            Mono.MFunction _ _ body ->
                 peelStages (n - 1) body
 
             _ ->

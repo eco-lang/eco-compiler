@@ -12,6 +12,7 @@ module TestLogic.TestPipeline exposing
     , expectMLIRGeneration
     , expectMonomorphization
     , runToGlobalOpt
+    , runToGlobalOptLssOn
     , runToMlir
       -- Low-level helpers (for tests needing fine-grained control)
     , runToMono
@@ -58,6 +59,7 @@ import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.LocalOpt.Typed.Module as TypedOptimize
 import Compiler.Monomorphize.Monomorphize as Monomorphize
+import Compiler.MonoSolver.Monomorphize as MonoSolver
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Result as RResult
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
@@ -349,6 +351,55 @@ runToGlobalOpt srcModule =
                 , monoGraph = monoGraph
                 , optimizedMonoGraph = optimizedMonoGraph
                 }
+
+
+{-| Run pipeline through global optimization on the SOLVER engine with LSS
+enabled (keys unchanged: keyed = False). For LSS\_00x invariant checkers,
+which need real lambda-set annotations to inspect.
+-}
+runToGlobalOptLssOn : Src.Module -> Result String GlobalOptArtifacts
+runToGlobalOptLssOn srcModule =
+    case runToTypedOpt srcModule of
+        Err e ->
+            Err e
+
+        Ok { canonical, annotations, nodeTypes, kernelEnv, localGraph } ->
+            let
+                globalGraph =
+                    localGraphToGlobalGraph localGraph
+
+                globalTypeEnv =
+                    buildGlobalTypeEnv canonical
+
+                defaultLss =
+                    Config.defaultLss
+
+                lssOn =
+                    { defaultLss | enabled = True }
+            in
+            case MonoSolver.monomorphize lssOn "main" globalTypeEnv globalGraph of
+                Err monoErr ->
+                    Err ("Monomorphization (solver + lss) failed: " ++ monoErr)
+
+                Ok monoGraph ->
+                    let
+                        ( simplifiedGraph, _ ) =
+                            MonoInlineSimplify.optimize Config.default.inline monoGraph
+
+                        optimizedMonoGraph =
+                            MonoGlobalOptimize.globalOptimize simplifiedGraph
+                    in
+                    Ok
+                        { canonical = canonical
+                        , annotations = annotations
+                        , nodeTypes = nodeTypes
+                        , kernelEnv = kernelEnv
+                        , localGraph = localGraph
+                        , globalGraph = globalGraph
+                        , globalTypeEnv = globalTypeEnv
+                        , monoGraph = monoGraph
+                        , optimizedMonoGraph = optimizedMonoGraph
+                        }
 
 
 {-| Run pipeline through MLIR generation.

@@ -158,7 +158,7 @@ checkNodeCallability specId node =
     case node of
         Mono.MonoDefine expr monoType ->
             case monoType of
-                Mono.MFunction _ _ ->
+                Mono.MFunction _ _ _ ->
                     -- Function-typed define is callable if the expression:
                     -- 1. Is a MonoClosure (direct closure)
                     -- 2. Is a MonoVarGlobal to a function (creates papCreate in codegen)
@@ -177,7 +177,7 @@ checkNodeCallability specId node =
         Mono.MonoTailFunc _ _ monoType ->
             -- TailFunc is always callable (it's explicitly a function)
             case monoType of
-                Mono.MFunction _ _ ->
+                Mono.MFunction _ _ _ ->
                     []
 
                 _ ->
@@ -277,7 +277,7 @@ isCallableExpression expr =
 isFunctionType : Mono.MonoType -> Bool
 isFunctionType monoType =
     case monoType of
-        Mono.MFunction _ _ ->
+        Mono.MFunction _ _ _ ->
             True
 
         _ ->
@@ -310,7 +310,7 @@ collectCustomTypeRefsFromType monoType =
         Mono.MList elemType ->
             collectCustomTypeRefsFromType elemType
 
-        Mono.MFunction paramTypes returnType ->
+        Mono.MFunction _ paramTypes returnType ->
             List.concatMap collectCustomTypeRefsFromType paramTypes
                 ++ collectCustomTypeRefsFromType returnType
 

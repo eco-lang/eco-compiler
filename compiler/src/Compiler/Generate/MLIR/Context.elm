@@ -306,7 +306,7 @@ getOrCreateTypeIdForMonoType monoType ctx =
                     in
                     args ++ fieldTypes
 
-                Mono.MFunction argTypes resultType ->
+                Mono.MFunction _ argTypes resultType ->
                     argTypes ++ [ resultType ]
 
                 Mono.MInt ->
@@ -660,7 +660,7 @@ extractNodeSignature node =
                     let
                         extractedReturnType =
                             case monoType of
-                                Mono.MFunction _ retType ->
+                                Mono.MFunction _ _ retType ->
                                     retType
 
                                 _ ->
@@ -683,7 +683,7 @@ extractNodeSignature node =
             let
                 returnType =
                     case monoType of
-                        Mono.MFunction _ ret ->
+                        Mono.MFunction _ _ ret ->
                             ret
 
                         _ ->
@@ -711,7 +711,7 @@ extractNodeSignature node =
 
         Mono.MonoExtern monoType ->
             case monoType of
-                Mono.MFunction _ _ ->
+                Mono.MFunction _ _ _ ->
                     let
                         ( argMonoTypes, resultMonoType ) =
                             Mono.decomposeFunctionType monoType
@@ -727,7 +727,7 @@ extractNodeSignature node =
 
         Mono.MonoManagerLeaf _ monoType ->
             case monoType of
-                Mono.MFunction _ _ ->
+                Mono.MFunction _ _ _ ->
                     let
                         ( argMonoTypes, resultMonoType ) =
                             Mono.decomposeFunctionType monoType
@@ -747,7 +747,7 @@ extractNodeSignature node =
                     let
                         extractedReturnType =
                             case monoType of
-                                Mono.MFunction _ retType ->
+                                Mono.MFunction _ _ retType ->
                                     retType
 
                                 _ ->
@@ -772,7 +772,7 @@ extractNodeSignature node =
                     let
                         extractedReturnType =
                             case monoType of
-                                Mono.MFunction _ retType ->
+                                Mono.MFunction _ _ retType ->
                                     retType
 
                                 _ ->

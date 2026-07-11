@@ -344,7 +344,7 @@ collectCEcoValueVars monoType =
         Mono.MList inner ->
             collectCEcoValueVars inner
 
-        Mono.MFunction args result ->
+        Mono.MFunction _ args result ->
             List.concatMap collectCEcoValueVars args
                 ++ collectCEcoValueVars result
 
@@ -422,7 +422,7 @@ monoTypeToString monoType =
         Mono.MCustom _ name _ ->
             name
 
-        Mono.MFunction params result ->
+        Mono.MFunction _ params result ->
             let
                 paramStr =
                     case params of

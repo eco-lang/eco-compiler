@@ -351,7 +351,7 @@ canTypeToMonoType_preserveVars env canType =
                 ( toMono, env2 ) =
                     canTypeToMonoType_preserveVars env1 to
             in
-            ( Mono.MFunction [ fromMono ] toMono, env2 )
+            ( Mono.MFunction Mono.LTop [ fromMono ] toMono, env2 )
 
         Can.TType canonical name args ->
             convertTType canTypeToMonoType_preserveVars env canonical name args

@@ -141,11 +141,11 @@ collectExprNestedTypeIssues context expr =
     in
     typeIssue
         ++ (case expr of
-                TOpt.Function params bodyExpr _ ->
+                TOpt.Function _ params bodyExpr _ ->
                     List.concatMap (\( _, paramType ) -> checkTypeNotEmpty (context ++ " Function param") paramType) params
                         ++ collectExprNestedTypeIssues context bodyExpr
 
-                TOpt.TrackedFunction params bodyExpr _ ->
+                TOpt.TrackedFunction _ params bodyExpr _ ->
                     List.concatMap (\( _, paramType ) -> checkTypeNotEmpty (context ++ " TrackedFunction param") paramType) params
                         ++ collectExprNestedTypeIssues context bodyExpr
 
@@ -244,11 +244,11 @@ collectExprTypeWellFormedness context expr =
     in
     typeIssue
         ++ (case expr of
-                TOpt.Function params bodyExpr _ ->
+                TOpt.Function _ params bodyExpr _ ->
                     List.concatMap (\( _, paramType ) -> checkTypeWellFormed (context ++ " Function param") paramType) params
                         ++ collectExprTypeWellFormedness context bodyExpr
 
-                TOpt.TrackedFunction params bodyExpr _ ->
+                TOpt.TrackedFunction _ params bodyExpr _ ->
                     List.concatMap (\( _, paramType ) -> checkTypeWellFormed (context ++ " TrackedFunction param") paramType) params
                         ++ collectExprTypeWellFormedness context bodyExpr
 

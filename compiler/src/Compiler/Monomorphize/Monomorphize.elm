@@ -446,7 +446,7 @@ processOneWorkItem specId rest state =
 specializeAccessorGlobal : Name -> Mono.MonoType -> MonoState -> ( Mono.MonoNode, MonoState )
 specializeAccessorGlobal fieldName monoType state =
     case monoType of
-        Mono.MFunction [ Mono.MRecord fields ] fieldType ->
+        Mono.MFunction _ [ Mono.MRecord fields ] fieldType ->
             let
                 recordType =
                     Mono.MRecord fields

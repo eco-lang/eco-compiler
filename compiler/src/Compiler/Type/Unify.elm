@@ -729,6 +729,30 @@ unifyStructure ctx flatType content otherContent =
                         |> andThen (\_ -> subUnify res1 res2)
                         |> andThen (\_ -> merge ctx otherContent)
 
+                ( IO.FunL arg1 res1 set1, IO.FunL arg2 res2 set2 ) ->
+                    subUnify arg1 arg2
+                        |> andThen (\_ -> subUnify res1 res2)
+                        |> andThen (\_ -> subUnify set1 set2)
+                        |> andThen (\_ -> merge ctx otherContent)
+
+                -- Mixed arrows: unify the type structure, keep the slotted
+                -- side. Legal only transiently (a demand encoded before lss
+                -- gating); semantically Fun1 ≡ FunL with an unconstrained slot.
+                ( IO.Fun1 arg1 res1, IO.FunL arg2 res2 _ ) ->
+                    subUnify arg1 arg2
+                        |> andThen (\_ -> subUnify res1 res2)
+                        |> andThen (\_ -> merge ctx otherContent)
+
+                ( IO.FunL arg1 res1 _, IO.Fun1 arg2 res2 ) ->
+                    subUnify arg1 arg2
+                        |> andThen (\_ -> subUnify res1 res2)
+                        |> andThen (\_ -> merge ctx content)
+
+                ( IO.LambdaSet1 top1 members1, IO.LambdaSet1 top2 members2 ) ->
+                    -- Join-semilattice union (LSS): TOTAL — set unification
+                    -- never mismatches. Members are ground ids; ⊤ absorbs.
+                    merge ctx (IO.Structure (IO.LambdaSet1 (top1 || top2) (Dict.union members1 members2)))
+
                 ( IO.EmptyRecord1, IO.EmptyRecord1 ) ->
                     merge ctx otherContent
 

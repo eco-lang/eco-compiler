@@ -662,7 +662,8 @@ monoTypeToKey monoType =
         Mono.MUnit ->
             "Unit"
 
-        Mono.MFunction args ret ->
+        Mono.MFunction _ args ret ->
+            -- Staging keys are layout keys: deliberately annotation-insensitive.
             "Fn(" ++ String.join "," (List.map monoTypeToKey args) ++ ")->" ++ monoTypeToKey ret
 
         Mono.MList elem ->

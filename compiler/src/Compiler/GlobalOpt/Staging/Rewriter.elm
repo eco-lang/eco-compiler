@@ -512,7 +512,7 @@ wrapClosureToCanonical originalInfo originalBody originalType canonType canonica
             Mono.decomposeFunctionType originalType
 
         targetType =
-            buildSegmentedFunctionType canonicalSeg flatArgs flatRet
+            buildSegmentedFunctionType (Mono.headAnno originalType) canonicalSeg flatArgs flatRet
 
         -- Build nested closures matching canonical staging
     in
@@ -571,6 +571,7 @@ buildNestedWrapper remainingType calleeExpr accParams ctx0 =
 
                 closureInfo =
                     { lambdaId = lambdaId
+                    , srcLambda = Nothing
                     , captures = captures
                     , params = paramsForStage
                     , closureKind = Nothing
@@ -666,7 +667,7 @@ buildNestedCalls region calleeExpr params =
 countTotalArityFromType : Mono.MonoType -> Int
 countTotalArityFromType monoType =
     case monoType of
-        Mono.MFunction argTypes resultType ->
+        Mono.MFunction _ argTypes resultType ->
             List.length argTypes + countTotalArityFromType resultType
 
         _ ->
@@ -685,6 +686,11 @@ Flattens nested MFunction to match the target param count.
 flattenTypeToArity : Int -> Mono.MonoType -> Mono.MonoType
 flattenTypeToArity targetArity monoType =
     let
+        -- Rebuilder: all re-segmented stage arrows of one callable share the
+        -- original head annotation (stages share provenance).
+        anno =
+            Mono.headAnno monoType
+
         ( allArgs, finalResult ) =
             Closure.flattenFunctionType monoType
     in
@@ -694,7 +700,7 @@ flattenTypeToArity targetArity monoType =
 
     else if List.length allArgs == targetArity then
         -- Already correct arity
-        Mono.MFunction allArgs finalResult
+        Mono.MFunction anno allArgs finalResult
 
     else if List.length allArgs > targetArity then
         -- More args than params - take first N, nest the rest
@@ -707,9 +713,9 @@ flattenTypeToArity targetArity monoType =
                     finalResult
 
                 else
-                    Mono.MFunction restArgs finalResult
+                    Mono.MFunction anno restArgs finalResult
         in
-        Mono.MFunction firstArgs nestedResult
+        Mono.MFunction anno firstArgs nestedResult
 
     else if List.isEmpty allArgs then
         -- Non-function type - return as-is
@@ -726,12 +732,13 @@ flattenTypeToArity targetArity monoType =
             )
 
 
-{-| Build a function type from segmentation and flattened args/return.
+{-| Build a function type from segmentation and flattened args/return,
+stamping the given head annotation on every stage arrow (rebuilder rule).
 -}
-buildSegmentedFunctionType : Segmentation -> List Mono.MonoType -> Mono.MonoType -> Mono.MonoType
-buildSegmentedFunctionType seg args ret =
-    -- Note: Mono.buildSegmentedFunctionType takes (flatArgs, finalRet, seg)
-    Mono.buildSegmentedFunctionType args ret seg
+buildSegmentedFunctionType : Mono.LambdaSetAnno -> Segmentation -> List Mono.MonoType -> Mono.MonoType -> Mono.MonoType
+buildSegmentedFunctionType anno seg args ret =
+    -- Note: Mono.buildSegmentedFunctionType takes (anno, flatArgs, finalRet, seg)
+    Mono.buildSegmentedFunctionType anno args ret seg
 
 
 {-| Split a list at index n.

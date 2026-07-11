@@ -204,7 +204,7 @@ checkTypeLayoutComplete context monoType =
         Mono.MCustom _ _ typeArgs ->
             List.concatMap (checkTypeLayoutComplete context) typeArgs
 
-        Mono.MFunction paramTypes returnType ->
+        Mono.MFunction _ paramTypes returnType ->
             List.concatMap (checkTypeLayoutComplete context) paramTypes
                 ++ checkTypeLayoutComplete context returnType
 

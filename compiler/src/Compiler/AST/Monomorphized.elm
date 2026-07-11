@@ -1,5 +1,6 @@
 module Compiler.AST.Monomorphized exposing
     ( MonoType(..), Literal(..), Constraint(..)
+    , LambdaSetAnno(..), widenSets, eqLayout, headAnno, unionAnno
     , LambdaId(..)
     , Global(..), SpecKey(..), SpecId, SpecializationRegistry
     , MonoGraph(..), MainInfo(..), MonoNode(..), CtorShape, nodeType
@@ -151,7 +152,7 @@ This module defines the data structures for the monomorphized program
 
 import Array exposing (Array)
 import Compiler.AST.DecisionTree.Test as DT
-import Compiler.AST.TypeIds exposing (MVarId)
+import Compiler.AST.TypeIds as TypeIds exposing (MVarId)
 import Compiler.Data.BitSet exposing (BitSet)
 import Compiler.Data.Id as Id
 import Compiler.Data.Name exposing (Name)
@@ -210,7 +211,7 @@ type MonoType
     | MTuple (List MonoType) -- Element types (layout computed at codegen)
     | MRecord (Dict Name MonoType) -- Field name -> type (layout computed at codegen)
     | MCustom IO.Canonical Name (List MonoType)
-    | MFunction (List MonoType) MonoType
+    | MFunction LambdaSetAnno (List MonoType) MonoType
     | MVar MVarId Constraint
 
 
@@ -248,6 +249,105 @@ type Constraint
 -- ============================================================================
 -- ====== LAMBDA SETS ======
 -- ============================================================================
+
+
+{-| The lambda-set fact on an arrow. `LTop` = statically unknown or
+deliberately widened — exactly today's world; the whole existing pipeline
+(boxed closures, papCreate/papExtend, CallGenericApply) is the correct
+lowering of `LTop`. `LSet` is a non-empty, ascending-sorted list of member
+ids (Phase-0 lambda ids + engine-interned globals/ctors/kernels/accessors);
+an unconstrained residual zonks to `LTop`, never to an empty set, so
+`LSet []` is unrepresentable by construction (LSS_001).
+-}
+type LambdaSetAnno
+    = LTop
+    | LSet (List Int)
+
+
+{-| Widen every arrow annotation to `LTop`, recursively. Used for
+annotation-insensitive keying/comparison (`eqLayout`, budget-widened
+specialization keys).
+-}
+widenSets : MonoType -> MonoType
+widenSets monoType =
+    case monoType of
+        MFunction _ args result ->
+            MFunction LTop (List.map widenSets args) (widenSets result)
+
+        MList inner ->
+            MList (widenSets inner)
+
+        MTuple elems ->
+            MTuple (List.map widenSets elems)
+
+        MRecord fields ->
+            MRecord (Dict.map (\_ t -> widenSets t) fields)
+
+        MCustom home name args ->
+            MCustom home name (List.map widenSets args)
+
+        _ ->
+            monoType
+
+
+{-| Annotation-insensitive structural equality. Layout comparisons must not
+become set-sensitive: two types with the same shape but different lambda
+sets have identical representation (an arrow is a boxed closure value
+regardless of its set — REP_* untouched by LSS).
+-}
+eqLayout : MonoType -> MonoType -> Bool
+eqLayout a b =
+    widenSets a == widenSets b
+
+
+{-| The head arrow's annotation; `LTop` for non-function types.
+-}
+headAnno : MonoType -> LambdaSetAnno
+headAnno monoType =
+    case monoType of
+        MFunction anno _ _ ->
+            anno
+
+        _ ->
+            LTop
+
+
+{-| Join two annotations: the least annotation covering both. `LTop`
+absorbs; sets union (kept ascending-sorted for key canonicality).
+-}
+unionAnno : LambdaSetAnno -> LambdaSetAnno -> LambdaSetAnno
+unionAnno a b =
+    case ( a, b ) of
+        ( LTop, _ ) ->
+            LTop
+
+        ( _, LTop ) ->
+            LTop
+
+        ( LSet xs, LSet ys ) ->
+            LSet (unionSortedInts xs ys)
+
+
+{-| Union of two ascending-sorted int lists, ascending and deduplicated.
+-}
+unionSortedInts : List Int -> List Int -> List Int
+unionSortedInts xs ys =
+    case ( xs, ys ) of
+        ( [], _ ) ->
+            ys
+
+        ( _, [] ) ->
+            xs
+
+        ( x :: xRest, y :: yRest ) ->
+            if x < y then
+                x :: unionSortedInts xRest ys
+
+            else if y < x then
+                y :: unionSortedInts xs yRest
+
+            else
+                x :: unionSortedInts xRest yRest
 
 
 {-| Closing operator for quiescence-before-defaulting: structurally resolve every
@@ -300,7 +400,7 @@ typeHasResidualNumber isNumber monoType =
         MCustom _ _ args ->
             List.any (typeHasResidualNumber isNumber) args
 
-        MFunction args result ->
+        MFunction _ args result ->
             List.any (typeHasResidualNumber isNumber) args || typeHasResidualNumber isNumber result
 
         _ ->
@@ -334,8 +434,9 @@ resolveNumberTypeRebuild isNumber monoType =
         MCustom home name args ->
             MCustom home name (List.map (resolveNumberType isNumber) args)
 
-        MFunction args result ->
-            MFunction (List.map (resolveNumberType isNumber) args) (resolveNumberType isNumber result)
+        MFunction anno args result ->
+            -- Rebuilder: thread the annotation through (never stamp LTop here).
+            MFunction anno (List.map (resolveNumberType isNumber) args) (resolveNumberType isNumber result)
 
         MInt ->
             monoType
@@ -363,7 +464,7 @@ For non-function types, returns the type itself.
 resultTypeOf : MonoType -> MonoType
 resultTypeOf monoType =
     case monoType of
-        MFunction _ result ->
+        MFunction _ _ result ->
             resultTypeOf result
 
         _ ->
@@ -381,7 +482,7 @@ containsAnyMVar monoType =
         MList t ->
             containsAnyMVar t
 
-        MFunction args result ->
+        MFunction _ args result ->
             containsAnyMVarList args || containsAnyMVar result
 
         MTuple elems ->
@@ -617,6 +718,7 @@ Extended for typed closure calling:
 -}
 type alias ClosureInfo =
     { lambdaId : LambdaId
+    , srcLambda : Maybe TypeIds.SrcLambdaId -- source identity (LSS member); several instances MAY share one (inliner copies verbatim — unlike lambdaId, MONO_019)
     , captures : List ( Name, MonoExpr, Bool )
     , params : List ( Name, MonoType )
     , closureKind : MaybeClosureKind
@@ -723,7 +825,7 @@ monoTypeToDebugString monoType =
         MCustom _ name _ ->
             "MCustom " ++ name ++ " ..."
 
-        MFunction _ _ ->
+        MFunction _ _ _ ->
             "MFunction ..."
 
         MVar mvarId _ ->
@@ -990,14 +1092,24 @@ toComparableMonoTypeHelper work acc =
                     in
                     toComparableMonoTypeHelper newWork ("(" :: name :: "\u{0000}" :: modName :: "\u{0000}" :: project :: "\u{0000}" :: author :: "X" :: acc)
 
-                MFunction args ret ->
+                MFunction anno args ret ->
                     let
+                        -- LTop must keep today's exact "A(" fragment so that
+                        -- all-LTop graphs key byte-identically (M1 gate).
+                        annoKey =
+                            case anno of
+                                LTop ->
+                                    "A("
+
+                                LSet members ->
+                                    "A[" ++ String.join "," (List.map String.fromInt members) ++ "]("
+
                         newWork =
                             List.foldl (\t w -> WorkType t :: w)
                                 (WorkMarker "->" :: WorkType ret :: WorkMarker ")" :: rest)
                                 args
                     in
-                    toComparableMonoTypeHelper newWork ("A(" :: acc)
+                    toComparableMonoTypeHelper newWork (annoKey :: acc)
 
 
 {-| Convert a specialization key to a single comparable String for use in dictionaries.
@@ -1026,7 +1138,7 @@ toComparableSpecKey (SpecKey global monoType) =
 isFunctionType : MonoType -> Bool
 isFunctionType monoType =
     case monoType of
-        MFunction _ _ ->
+        MFunction _ _ _ ->
             True
 
         _ ->
@@ -1038,7 +1150,7 @@ isFunctionType monoType =
 countTotalArity : MonoType -> Int
 countTotalArity monoType =
     case monoType of
-        MFunction argTypes result ->
+        MFunction _ argTypes result ->
             List.length argTypes + countTotalArity result
 
         _ ->
@@ -1050,7 +1162,7 @@ countTotalArity monoType =
 stageParamTypes : MonoType -> List MonoType
 stageParamTypes monoType =
     case monoType of
-        MFunction argTypes _ ->
+        MFunction _ argTypes _ ->
             argTypes
 
         _ ->
@@ -1066,7 +1178,7 @@ For non-function types, returns the type itself.
 stageReturnType : MonoType -> MonoType
 stageReturnType monoType =
     case monoType of
-        MFunction _ result ->
+        MFunction _ _ result ->
             result
 
         other ->
@@ -1078,7 +1190,7 @@ stageReturnType monoType =
 decomposeFunctionType : MonoType -> ( List MonoType, MonoType )
 decomposeFunctionType monoType =
     case monoType of
-        MFunction argTypes result ->
+        MFunction _ argTypes result ->
             let
                 ( nestedArgs, finalResult ) =
                     decomposeFunctionType result
@@ -1184,7 +1296,7 @@ segmentLengths monoType =
     let
         go t acc =
             case t of
-                MFunction stageArgs stageRet ->
+                MFunction _ stageArgs stageRet ->
                     go stageRet (List.length stageArgs :: acc)
 
                 _ ->
@@ -1266,11 +1378,17 @@ chooseCanonicalSegmentation leafTypes =
 
 
 {-| Rebuild a nested MFunction from flat args and a segmentation.
-buildSegmentedFunctionType [A,B,C,D] R [2,2] = MFunction [A,B] (MFunction [C,D] R)
-buildSegmentedFunctionType [A,B,C,D] R [4] = MFunction [A,B,C,D] R
+buildSegmentedFunctionType anno [A,B,C,D] R [2,2] = MFunction anno [A,B] (MFunction anno [C,D] R)
+buildSegmentedFunctionType anno [A,B,C,D] R [4] = MFunction anno [A,B,C,D] R
+
+The annotation is stamped on EVERY stage arrow it builds: the stages of one
+callable share provenance (PAP results keep the underlying callee's member),
+so re-segmenting a type must not lose or invent set facts. Callers derive
+`anno` from the original type's head arrow (`headAnno`), joining branch
+annotations (`unionAnno`) where several types merge.
 -}
-buildSegmentedFunctionType : List MonoType -> MonoType -> Segmentation -> MonoType
-buildSegmentedFunctionType flatArgs finalRet seg =
+buildSegmentedFunctionType : LambdaSetAnno -> List MonoType -> MonoType -> Segmentation -> MonoType
+buildSegmentedFunctionType anno flatArgs finalRet seg =
     let
         -- Split flatArgs according to seg = [m1, m2, ...]
         splitBySegments : List MonoType -> Segmentation -> List (List MonoType)
@@ -1291,7 +1409,7 @@ buildSegmentedFunctionType flatArgs finalRet seg =
     in
     -- Build nested MFunction from inside out
     List.foldr
-        (\stageArgs acc -> MFunction stageArgs acc)
+        (\stageArgs acc -> MFunction anno stageArgs acc)
         finalRet
         stageArgsLists
 

@@ -53,7 +53,7 @@ toEncoder tipe =
                             funcType =
                                 Can.TLambda Can.TUnit (Can.TType ModuleName.jsonEncode "Value" [])
                         in
-                        TOpt.Function [ ( Name.dollar, Can.TUnit ) ] null { tipe = funcType, tvar = Nothing }
+                        TOpt.Function Nothing [ ( Name.dollar, Can.TUnit ) ] null { tipe = funcType, tvar = Nothing }
                     )
 
         Can.TTuple a b cs ->
@@ -136,7 +136,7 @@ toEncoder tipe =
                                             Can.TLambda tipe valueType
                                     in
                                     Names.registerFieldList (Dict.keys fields)
-                                        (TOpt.Function [ ( Name.dollar, tipe ) ]
+                                        (TOpt.Function Nothing [ ( Name.dollar, tipe ) ]
                                             (TOpt.Call A.zero object [ TOpt.List A.zero keyValuePairs { tipe = listType, tvar = Nothing } ] { tipe = valueType, tvar = Nothing })
                                             { tipe = funcType, tvar = Nothing }
                                         )
@@ -170,7 +170,7 @@ encodeMaybe tipe =
                                             funcType =
                                                 Can.TLambda maybeType valueType
                                         in
-                                        TOpt.Function [ ( Name.dollar, maybeType ) ]
+                                        TOpt.Function Nothing [ ( Name.dollar, maybeType ) ]
                                             (TOpt.Call A.zero
                                                 destruct
                                                 [ null
@@ -290,7 +290,7 @@ encodeTuple a b cs =
                                                                     funcType =
                                                                         Can.TLambda tupleType valueType
                                                                 in
-                                                                TOpt.Function [ ( Name.dollar, tupleType ) ]
+                                                                TOpt.Function Nothing [ ( Name.dollar, tupleType ) ]
                                                                     (let_ "a"
                                                                         a
                                                                         Index.first
@@ -558,7 +558,7 @@ indexAndThen i tipe decoder =
                                         in
                                         TOpt.Call A.zero
                                             andThen
-                                            [ TOpt.Function [ ( Name.fromVarIndex i, tipe ) ] decoder { tipe = funcType, tvar = Nothing }
+                                            [ TOpt.Function Nothing [ ( Name.fromVarIndex i, tipe ) ] decoder { tipe = funcType, tvar = Nothing }
                                             , TOpt.Call A.zero index [ TOpt.Int A.zero i { tipe = Can.TType ModuleName.basics "Int" [], tvar = Nothing }, typeDecoder ] { tipe = subDecoderType, tvar = Nothing }
                                             ]
                                             { tipe = decoderResultType, tvar = Nothing }
@@ -617,7 +617,7 @@ fieldAndThen decoder ( key, Can.FieldType _ tipe ) =
                                         in
                                         TOpt.Call A.zero
                                             andThen
-                                            [ TOpt.Function [ ( key, tipe ) ] decoder { tipe = funcType, tvar = Nothing }
+                                            [ TOpt.Function Nothing [ ( key, tipe ) ] decoder { tipe = funcType, tvar = Nothing }
                                             , TOpt.Call A.zero field [ TOpt.Str A.zero (Name.toElmString key) { tipe = Can.TType ModuleName.basics "String" [], tvar = Nothing }, typeDecoder ] { tipe = subDecoderType, tvar = Nothing }
                                             ]
                                             { tipe = decoderResultType, tvar = Nothing }

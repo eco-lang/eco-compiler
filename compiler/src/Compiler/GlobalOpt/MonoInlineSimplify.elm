@@ -1210,7 +1210,9 @@ betaReduce ctx region info closureBody args resultType =
                 freshenLetBoundNames ctx1 (substituteAll bindings closureBody)
 
             newClosureType =
-                Mono.MFunction (List.map Tuple.second remainingParams) resultType
+                -- Partial-application rebuild: LTop (sound; the original
+                -- head anno is not in scope here — precision-only loss).
+                Mono.MFunction Mono.LTop (List.map Tuple.second remainingParams) resultType
 
             -- Recompute captures for the new closure body.
             -- The substitution may have introduced new free variables (the fresh names
@@ -2128,7 +2130,7 @@ tryInlineCall ctx specId args resultType =
 
                         resultIsFunctionType =
                             case resultType of
-                                Mono.MFunction _ _ ->
+                                Mono.MFunction _ _ _ ->
                                     True
 
                                 _ ->
@@ -2178,7 +2180,9 @@ tryInlineCall ctx specId args resultType =
                             freshLambdaIdForSpec ctx2a specId
 
                         newClosureType =
-                            Mono.MFunction (List.map Tuple.second remainingParams) resultType
+                            -- Partial-application rebuild: LTop (sound; the original
+                            -- head anno is not in scope here — precision-only loss).
+                            Mono.MFunction Mono.LTop (List.map Tuple.second remainingParams) resultType
 
                         -- Compute captures for the new closure
                         newCaptures =
@@ -2186,6 +2190,7 @@ tryInlineCall ctx specId args resultType =
 
                         newClosureInfo =
                             { lambdaId = newLambdaId
+                            , srcLambda = Nothing
                             , params = remainingParams
                             , captures = newCaptures
                             , closureKind = Nothing

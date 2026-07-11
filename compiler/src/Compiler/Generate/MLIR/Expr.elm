@@ -636,7 +636,7 @@ generateVarGlobal ctx specId monoType =
             -- No signature found - fall back to monoType-based logic
             -- This should only happen for constants, not functions.
             case monoType of
-                Mono.MFunction _ _ ->
+                Mono.MFunction _ _ _ ->
                     Utils.Crash.crash
                         ("generateVarGlobal: missing FuncSignature for function-typed global "
                             ++ specIdToFuncName ctx.registry specId
@@ -686,7 +686,7 @@ generateVarKernel ctx kernelPrefix home name monoType =
         Just _ ->
             -- Other intrinsic matched with zero args - but check if it's function-typed
             case monoType of
-                Mono.MFunction _ _ ->
+                Mono.MFunction _ _ _ ->
                     -- Kernels use total ABI arity (flattened), not stage arity
                     let
                         arity : Int
@@ -742,7 +742,7 @@ generateVarKernel ctx kernelPrefix home name monoType =
         Nothing ->
             -- No intrinsic match - check if this is a function type
             case monoType of
-                Mono.MFunction _ _ ->
+                Mono.MFunction _ _ _ ->
                     -- Kernels use total ABI arity (flattened), not stage arity
                     let
                         arity : Int

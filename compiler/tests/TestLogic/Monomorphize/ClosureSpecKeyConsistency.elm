@@ -216,7 +216,8 @@ checkClosureParams ctx keyMonoType closureParams bodyType =
                             List.drop closureParamCount keyParamTypes
 
                         expectedBodyType =
-                            Mono.MFunction remainingKeyParams keyResultType
+                            -- Compared via monoTypeEq, which ignores annotations.
+                            Mono.MFunction Mono.LTop remainingKeyParams keyResultType
 
                         ( bodyParamTypes, bodyResultType ) =
                             flattenMFunction bodyType
@@ -263,7 +264,7 @@ checkClosureParams ctx keyMonoType closureParams bodyType =
 flattenMFunction : Mono.MonoType -> ( List Mono.MonoType, Mono.MonoType )
 flattenMFunction monoType =
     case monoType of
-        Mono.MFunction params result ->
+        Mono.MFunction _ params result ->
             let
                 ( restParams, finalResult ) =
                     flattenMFunction result
@@ -300,7 +301,7 @@ monoTypeEq a b =
         ( Mono.MList a1, Mono.MList b1 ) ->
             monoTypeEq a1 b1
 
-        ( Mono.MFunction aParams aResult, Mono.MFunction bParams bResult ) ->
+        ( Mono.MFunction _ aParams aResult, Mono.MFunction _ bParams bResult ) ->
             listEq monoTypeEq aParams bParams && monoTypeEq aResult bResult
 
         ( Mono.MTuple aElems, Mono.MTuple bElems ) ->
@@ -429,7 +430,7 @@ monoTypeToString monoType =
         Mono.MCustom _ name _ ->
             name
 
-        Mono.MFunction params result ->
+        Mono.MFunction _ params result ->
             let
                 paramStr =
                     case params of

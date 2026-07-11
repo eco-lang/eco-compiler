@@ -115,7 +115,7 @@ For example, `MFunction [a] (MFunction [b] c)` becomes `([a, b], c)`.
 flattenFunctionType : Mono.MonoType -> ( List Mono.MonoType, Mono.MonoType )
 flattenFunctionType monoType =
     case monoType of
-        Mono.MFunction params result ->
+        Mono.MFunction _ params result ->
             let
                 ( innerParams, innerResult ) =
                     flattenFunctionType result
@@ -155,7 +155,7 @@ equal the stage arity, not the flattened arity.
 getStageArity : Mono.MonoType -> Int
 getStageArity monoType =
     case monoType of
-        Mono.MFunction params _ ->
+        Mono.MFunction _ params _ ->
             List.length params
 
         _ ->

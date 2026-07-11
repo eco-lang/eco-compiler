@@ -318,7 +318,7 @@ containsAnyMVar monoType =
         Mono.MList inner ->
             containsAnyMVar inner
 
-        Mono.MFunction args ret ->
+        Mono.MFunction _ args ret ->
             List.any containsAnyMVar args || containsAnyMVar ret
 
         Mono.MRecord fields ->
@@ -414,7 +414,7 @@ collectCEcoValueVars monoType =
         Mono.MList inner ->
             collectCEcoValueVars inner
 
-        Mono.MFunction args ret ->
+        Mono.MFunction _ args ret ->
             List.concatMap collectCEcoValueVars args ++ collectCEcoValueVars ret
 
         Mono.MRecord fields ->
@@ -482,7 +482,7 @@ monoTypeToString monoType =
         Mono.MList inner ->
             "MList (" ++ monoTypeToString inner ++ ")"
 
-        Mono.MFunction args ret ->
+        Mono.MFunction _ args ret ->
             "MFunction ["
                 ++ String.join ", " (List.map monoTypeToString args)
                 ++ "] "

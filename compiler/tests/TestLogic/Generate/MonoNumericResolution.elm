@@ -237,7 +237,7 @@ checkForCNumber context monoType =
         Mono.MCustom _ _ typeArgs ->
             List.concatMap (checkForCNumber context) typeArgs
 
-        Mono.MFunction paramTypes returnType ->
+        Mono.MFunction _ paramTypes returnType ->
             List.concatMap (checkForCNumber context) paramTypes
                 ++ checkForCNumber context returnType
 
@@ -416,7 +416,7 @@ checkNumericTypeResolved context monoType =
         Mono.MCustom _ _ typeArgs ->
             List.concatMap (checkNumericTypeResolved context) typeArgs
 
-        Mono.MFunction paramTypes returnType ->
+        Mono.MFunction _ paramTypes returnType ->
             List.concatMap (checkNumericTypeResolved context) paramTypes
                 ++ checkNumericTypeResolved context returnType
 

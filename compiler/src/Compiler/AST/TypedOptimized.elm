@@ -81,6 +81,7 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.DecisionTree.Test as DT
 import Compiler.AST.DecisionTree.TypedPath as DT
 import Compiler.AST.StringTable as StringTable exposing (StringTable)
+import Compiler.AST.TypeIds as TypeIds
 import Compiler.AST.Utils.Shader as Shader
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
@@ -157,8 +158,8 @@ type Expr id
     | VarDebug A.Region Name IO.Canonical (Maybe Name) (Meta id)
     | VarKernel A.Region Name Name Name (Meta id)
     | List A.Region (List (Expr id)) (Meta id)
-    | Function (List ( Name, Can.Type id )) (Expr id) (Meta id) -- params with types, body, function type
-    | TrackedFunction (List ( A.Located Name, Can.Type id )) (Expr id) (Meta id)
+    | Function (Maybe TypeIds.SrcLambdaId) (List ( Name, Can.Type id )) (Expr id) (Meta id) -- source-lambda id (LSS member identity; NOT persisted), params with types, body, function type
+    | TrackedFunction (Maybe TypeIds.SrcLambdaId) (List ( A.Located Name, Can.Type id )) (Expr id) (Meta id)
     | Call A.Region (Expr id) (List (Expr id)) (Meta id)
     | TailCall Name (List ( Name, Expr id )) (Meta id)
     | If (List ( Expr id, Expr id )) (Expr id) (Meta id)
@@ -229,10 +230,10 @@ metaOf expr =
         List _ _ meta ->
             meta
 
-        Function _ _ meta ->
+        Function _ _ _ meta ->
             meta
 
-        TrackedFunction _ _ meta ->
+        TrackedFunction _ _ _ meta ->
             meta
 
         Call _ _ _ meta ->
@@ -884,7 +885,10 @@ exprEncoderS st expr =
                 , Can.typeEncoderS st meta.tipe
                 ]
 
-        Function args body meta ->
+        Function _ args body meta ->
+            -- srcLambda is NOT persisted (the Meta.tvar precedent): the wire
+            -- format is unchanged, the decoder fills Nothing, and ids are
+            -- re-stamped per run by AssignMVarIds (LSS_003).
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 14
                 , BE.list (typedNameEncoderS st) args
@@ -892,7 +896,7 @@ exprEncoderS st expr =
                 , Can.typeEncoderS st meta.tipe
                 ]
 
-        TrackedFunction args body meta ->
+        TrackedFunction _ args body meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 15
                 , BE.list (typedLocatedNameEncoderS st) args
@@ -1116,13 +1120,13 @@ exprDecoderS st =
                             (metaDecoderS st)
 
                     14 ->
-                        Bytes.Decode.map3 Function
+                        Bytes.Decode.map3 (Function Nothing)
                             (BD.list (typedNameDecoderS st))
                             (exprDecoderS st)
                             (metaDecoderS st)
 
                     15 ->
-                        Bytes.Decode.map3 TrackedFunction
+                        Bytes.Decode.map3 (TrackedFunction Nothing)
                             (BD.list (typedLocatedNameDecoderS st))
                             (exprDecoderS st)
                             (metaDecoderS st)
@@ -1920,7 +1924,7 @@ collectStringsFromExpr expr acc =
         List _ values meta ->
             List.foldl collectStringsFromExpr (collectStringsFromMeta meta acc) values
 
-        Function args body meta ->
+        Function _ args body meta ->
             let
                 withArgs : Set String
                 withArgs =
@@ -1931,7 +1935,7 @@ collectStringsFromExpr expr acc =
             in
             withArgs |> collectStringsFromExpr body |> collectStringsFromMeta meta
 
-        TrackedFunction args body meta ->
+        TrackedFunction _ args body meta ->
             let
                 withArgs : Set String
                 withArgs =

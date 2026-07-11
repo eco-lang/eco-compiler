@@ -514,7 +514,7 @@ generateClosureFuncSingle ctx funcName closureInfo body monoType =
         extractedReturnType : Mono.MonoType
         extractedReturnType =
             case monoType of
-                Mono.MFunction _ retType ->
+                Mono.MFunction _ _ retType ->
                     retType
 
                 _ ->
@@ -598,7 +598,7 @@ generateClosureFuncWithClones ctx funcName closureInfo body monoType =
         extractedReturnType : Mono.MonoType
         extractedReturnType =
             case monoType of
-                Mono.MFunction _ retType ->
+                Mono.MFunction _ _ retType ->
                     retType
 
                 _ ->

@@ -205,7 +205,7 @@ monoTypeToString monoType =
         Mono.MCustom _ name _ ->
             name
 
-        Mono.MFunction params result ->
+        Mono.MFunction _ params result ->
             "(" ++ String.join ", " (List.map monoTypeToString params) ++ ") -> " ++ monoTypeToString result
 
         Mono.MVar mvarId _ ->

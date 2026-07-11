@@ -715,7 +715,7 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                                         wrappedBody =
                                             List.foldr (wrapDestruct bodyType) obody destructors
                                     in
-                                    TOpt.TrackedFunction argNamesWithTypes wrappedBody { tipe = tipe, tvar = tvar }
+                                    TOpt.TrackedFunction Nothing argNamesWithTypes wrappedBody { tipe = tipe, tvar = tvar }
                                 )
                     )
 
@@ -1387,7 +1387,7 @@ optimizeDefHelp kernelEnv annotations exprTypes exprVars home cycle region name 
                                             List.foldr (wrapDestruct bodyType) oexpr destructors
 
                                         ofunc =
-                                            TOpt.TrackedFunction argNamesWithTypes wrappedBody { tipe = funcType, tvar = funcTvar }
+                                            TOpt.TrackedFunction Nothing argNamesWithTypes wrappedBody { tipe = funcType, tvar = funcTvar }
                                     in
                                     TOpt.Let (TOpt.Def region name ofunc funcType) body { tipe = resultType, tvar = letTvar }
                                 )
@@ -1507,7 +1507,7 @@ optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle re
                                 TOpt.TailDef region name argNamesWithTypes wrappedBody defType nodeTvar
 
                             else
-                                TOpt.Def region name (TOpt.TrackedFunction argNamesWithTypes wrappedBody { tipe = defType, tvar = nodeTvar }) defType
+                                TOpt.Def region name (TOpt.TrackedFunction Nothing argNamesWithTypes wrappedBody { tipe = defType, tvar = nodeTvar }) defType
                         )
             )
 

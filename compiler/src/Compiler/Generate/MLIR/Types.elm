@@ -224,7 +224,9 @@ monoTypeToOperand monoType =
         Mono.MCustom _ _ _ ->
             ecoValue
 
-        Mono.MFunction _ _ ->
+        Mono.MFunction _ _ _ ->
+            -- Layout ignores the lambda-set annotation: an arrow is a boxed
+            -- closure value regardless of its set (REP_* untouched).
             ecoValue
 
         Mono.MVar _ constraint_ ->
@@ -245,7 +247,7 @@ monoTypeToOperand monoType =
 isFunctionType : Mono.MonoType -> Bool
 isFunctionType monoType =
     case monoType of
-        Mono.MFunction _ _ ->
+        Mono.MFunction _ _ _ ->
             True
 
         _ ->
@@ -257,7 +259,7 @@ isFunctionType monoType =
 countTotalArity : Mono.MonoType -> Int
 countTotalArity monoType =
     case monoType of
-        Mono.MFunction argTypes result ->
+        Mono.MFunction _ argTypes result ->
             List.length argTypes + countTotalArity result
 
         _ ->

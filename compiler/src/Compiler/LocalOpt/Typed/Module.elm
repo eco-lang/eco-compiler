@@ -229,7 +229,7 @@ addAlias home _ name (Can.Alias vars tipe) ((TOpt.LocalGraph data) as graph) =
 
                 function : TOpt.Expr Name
                 function =
-                    TOpt.Function argNamesWithTypes bodyRecord { tipe = funcType, tvar = Nothing }
+                    TOpt.Function Nothing argNamesWithTypes bodyRecord { tipe = funcType, tvar = Nothing }
 
                 node : TOpt.Node Name
                 node =
@@ -570,7 +570,7 @@ addDefNode home annotations exprTypes exprVars kernelEnv annotationVars region n
                                                     wrappedBody =
                                                         List.foldr (wrapDestruct bodyType) obody destructors
                                                 in
-                                                TOpt.TrackedFunction argNamesWithTypes wrappedBody { tipe = defType, tvar = nodeTvar }
+                                                TOpt.TrackedFunction Nothing argNamesWithTypes wrappedBody { tipe = defType, tvar = nodeTvar }
                                             )
                                 )
     in

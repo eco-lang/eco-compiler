@@ -30,6 +30,8 @@ type alias GlobalMVarState =
     { nextId : TypeIds.MVarId
     , superVars : Dict Int IO.SuperType
     , rootEnv : Dict ( String, Int ) TypeIds.MVarId
+    , nextLam : TypeIds.SrcLambdaId -- LSS: source-lambda id supply; seeds the engine's member interning
+    , lamLabels : Dict Int String -- LSS: member id -> "defKey#id" (census rendering only)
     }
 
 
@@ -48,7 +50,36 @@ type alias Ctx =
     , schemeRootsForDef : SolverRoots.SchemeRootsForDef
     , varSupers : Dict Name IO.SuperType
     , moduleKey : String
+    , defKey : String -- enclosing global's comparable key (lambda-label rendering)
     }
+
+
+{-| Mint a fresh source-lambda id (LSS member identity), labeling it with the
+enclosing def for census rendering. Because `AssignMVarIds` runs on the
+merged whole-program graph with a deterministic walk, ids are per-run stable
+(LSS_003) — the same stability class as `MVarId`s.
+-}
+freshLamId : Ctx -> ( TypeIds.SrcLambdaId, Ctx )
+freshLamId ctx =
+    let
+        st =
+            ctx.state
+
+        lamId =
+            st.nextLam
+
+        key =
+            Id.toComparable lamId
+    in
+    ( lamId
+    , { ctx
+        | state =
+            { st
+                | nextLam = Id.succ lamId
+                , lamLabels = Dict.insert key (ctx.defKey ++ "#" ++ String.fromInt key) st.lamLabels
+            }
+      }
+    )
 
 
 {-| Run a function with a fresh binding-local SchemeEnv, then discard the
@@ -82,6 +113,8 @@ assignIds (TOpt.GlobalGraph nodes fields annotations allSchemeRoots varSupers) =
             { nextId = TypeIds.firstMVarId
             , superVars = Dict.empty
             , rootEnv = Dict.empty
+            , nextLam = TypeIds.firstSrcLambdaId
+            , lamLabels = Dict.empty
             }
 
         dummyCompare _ _ =
@@ -104,10 +137,11 @@ assignIdsToType canType =
     let
         ctx =
             { env = Dict.empty
-            , state = { nextId = TypeIds.firstMVarId, superVars = Dict.empty, rootEnv = Dict.empty }
+            , state = { nextId = TypeIds.firstMVarId, superVars = Dict.empty, rootEnv = Dict.empty, nextLam = TypeIds.firstSrcLambdaId, lamLabels = Dict.empty }
             , schemeRootsForDef = Dict.empty
             , varSupers = TOpt.varSupersOfType canType
             , moduleKey = ""
+            , defKey = ""
             }
 
         ( newType, ctx1 ) =
@@ -141,9 +175,9 @@ freshMVarId maybeSuper state =
                     state.superVars
     in
     ( currentId
-    , { nextId = Id.succ currentId
-      , superVars = newSuperVars
-      , rootEnv = state.rootEnv
+    , { state
+        | nextId = Id.succ currentId
+        , superVars = newSuperVars
       }
     )
 
@@ -281,6 +315,7 @@ rewriteAnnotation varSupers moduleKey schemeRootsForDef (Can.Forall freeVars tip
             , schemeRootsForDef = schemeRootsForDef
             , varSupers = varSupers
             , moduleKey = moduleKey
+            , defKey = "" -- annotations contain no lambdas; label context unused
             }
 
         -- Pre-seed the binder env (and rootEnv) via the shared dispatch so the
@@ -323,6 +358,7 @@ rewriteNodes cmp varSupers allSchemeRoots nodes state =
                     , schemeRootsForDef = schemeRootsForDef
                     , varSupers = varSupers
                     , moduleKey = moduleKeyOf global
+                    , defKey = TOpt.toComparableGlobal global
                     }
 
                 ( newNode, ctx1 ) =
@@ -543,10 +579,13 @@ rewriteExpr ctx expr =
             in
             ( TOpt.List region newItems newMeta, ctx2 )
 
-        TOpt.Function args body meta ->
+        TOpt.Function _ args body meta ->
             let
+                ( lamId, ctx0a ) =
+                    freshLamId ctx
+
                 ( newMeta, ctx1 ) =
-                    rewriteMeta ctx meta
+                    rewriteMeta ctx0a meta
 
                 ( newArgs, ctx2 ) =
                     rewriteTypedArgs ctx1 args
@@ -554,12 +593,15 @@ rewriteExpr ctx expr =
                 ( newBody, ctx3 ) =
                     rewriteExpr ctx2 body
             in
-            ( TOpt.Function newArgs newBody newMeta, ctx3 )
+            ( TOpt.Function (Just lamId) newArgs newBody newMeta, ctx3 )
 
-        TOpt.TrackedFunction args body meta ->
+        TOpt.TrackedFunction _ args body meta ->
             let
+                ( lamId, ctx0a ) =
+                    freshLamId ctx
+
                 ( newMeta, ctx1 ) =
-                    rewriteMeta ctx meta
+                    rewriteMeta ctx0a meta
 
                 ( newArgs, ctx2 ) =
                     rewriteTrackedArgs ctx1 args
@@ -567,7 +609,7 @@ rewriteExpr ctx expr =
                 ( newBody, ctx3 ) =
                     rewriteExpr ctx2 body
             in
-            ( TOpt.TrackedFunction newArgs newBody newMeta, ctx3 )
+            ( TOpt.TrackedFunction (Just lamId) newArgs newBody newMeta, ctx3 )
 
         TOpt.Call region func args meta ->
             let

@@ -734,8 +734,17 @@ runMonoOptPipeline ecoConfig stats typedGraph globalTypeEnv =
             Err err ->
                 Task.throw (Exit.GenerateMonomorphizationError err)
 
-            Ok monoGraph0 ->
-                Task.succeed monoGraph0
+            Ok ( monoGraph0, maybeLssReport ) ->
+                case maybeLssReport of
+                    Just report ->
+                        -- LSS census (lss.report / ECO_MONO_LSS_REPORT=1):
+                        -- stderr side-channel, never stdout (MLIR text mode
+                        -- owns stdout).
+                        Task.io (System.IO.writeLn System.IO.stderr report)
+                            |> Task.map (\_ -> monoGraph0)
+
+                    Nothing ->
+                        Task.succeed monoGraph0
         )
         -- Hand off to a separate function so typedGraph and globalTypeEnv go out of scope
         |> Task.andThen (runInlineSimplifyPhase ecoConfig stats)
@@ -746,17 +755,18 @@ runMonoOptPipeline ecoConfig stats typedGraph globalTypeEnv =
 solver-based one; `EngineDiff` runs both and asserts their output matches. This
 is the single production dispatch point between the two engines.
 -}
-selectMonomorphizer : Config.EcoConfig -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
+selectMonomorphizer : Config.EcoConfig -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String ( Mono.MonoGraph, Maybe String )
 selectMonomorphizer ecoConfig globalTypeEnv typedGraph =
     case ecoConfig.mono.engine of
         Config.EngineSubst ->
-            Monomorphize.monomorphize "main" globalTypeEnv typedGraph
+            Result.map (\g -> ( g, Nothing )) (Monomorphize.monomorphize "main" globalTypeEnv typedGraph)
 
         Config.EngineSolver ->
-            MonoSolver.monomorphize "main" globalTypeEnv typedGraph
+            MonoSolver.monomorphizeWithReport ecoConfig.mono.lss "main" globalTypeEnv typedGraph
 
         Config.EngineDiff ->
-            MonoDiff.run ecoConfig.mono.diffDump "main" globalTypeEnv typedGraph
+            -- Diff forces lss off internally; no census.
+            Result.map (\g -> ( g, Nothing )) (MonoDiff.run ecoConfig.mono.diffDump "main" globalTypeEnv typedGraph)
 
 
 {-| Inline+simplify phase in its own scope so monomorphization inputs are GC-eligible.

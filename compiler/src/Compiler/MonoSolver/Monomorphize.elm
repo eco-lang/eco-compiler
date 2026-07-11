@@ -1,4 +1,4 @@
-module Compiler.MonoSolver.Monomorphize exposing (monomorphize)
+module Compiler.MonoSolver.Monomorphize exposing (monomorphize, monomorphizeWithReport)
 
 {-| The solver-based monomorphizer (Architecture C) — a drop-in replacement for
 `Compiler.Monomorphize.Monomorphize`, using the type checker's real HM
@@ -31,6 +31,7 @@ import Compiler.Data.BitSet as BitSet
 import Compiler.Data.CtorTag as CtorTag
 import Compiler.Data.Id as Id
 import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Eco.Config as Config
 import Compiler.Monomorphize.AssignMVarIds as AssignMVarIds
 import Compiler.Monomorphize.EntryPrep as EntryPrep
 import Compiler.Monomorphize.KernelAbi as KernelAbi
@@ -49,10 +50,22 @@ import System.TypeCheck.IO as IO
 
 
 {-| Transform a typed optimized graph into a monomorphized graph, entering from
-the named entry point. Same signature as the original engine.
+the named entry point. Same as the original engine plus the LSS knobs (the
+original engine never computes sets; `lss.enabled = False` here is
+byte-identical to it).
 -}
-monomorphize : Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
-monomorphize entryPointName globalTypeEnv globalGraph =
+monomorphize : Config.LssConfig -> Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
+monomorphize lssConfig entryPointName globalTypeEnv globalGraph =
+    Result.map Tuple.first (monomorphizeWithReport lssConfig entryPointName globalTypeEnv globalGraph)
+
+
+{-| `monomorphize` additionally returning the rendered LSS census
+(`Just` iff `lss.report`). The report rides the result because this function
+is pure and `compiler/src` cannot use `Debug.toString` — the census is plain
+string concatenation, printed to stderr by the Builder.
+-}
+monomorphizeWithReport : Config.LssConfig -> Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String ( Mono.MonoGraph, Maybe String )
+monomorphizeWithReport lssConfig entryPointName globalTypeEnv globalGraph =
     let
         ( graphWithFlags, maybeFlagsGlobal ) =
             EntryPrep.insertFlagsDecoderNode entryPointName globalGraph
@@ -74,7 +87,7 @@ monomorphize entryPointName globalTypeEnv globalGraph =
 
                 s0 : S
                 s0 =
-                    initState mainHome nodesWithIds annotationsWithIds globalTypeEnv mvarState
+                    initState lssConfig mainHome nodesWithIds annotationsWithIds globalTypeEnv mvarState
 
                 -- Entry seeding uses an EMPTY super table (matching the original
                 -- engine's `entryPointMonoType Dict.empty`).
@@ -93,15 +106,100 @@ monomorphize entryPointName globalTypeEnv globalGraph =
                     Err (renderFailure failure)
 
                 Ok sFinal ->
-                    Ok (pruneGraph sFinal (assembleRawGraph sFinal mainSpecId maybeFlagsSpecId))
+                    let
+                        graph =
+                            pruneGraph sFinal (assembleRawGraph sFinal mainSpecId maybeFlagsSpecId)
+
+                        report =
+                            if lssConfig.report then
+                                Just (renderLssReport sFinal graph)
+
+                            else
+                                Nothing
+                    in
+                    Ok ( graph, report )
+
+
+{-| The LSS census (design §8.6): member counts, set-size histogram, widening
+events by cause, signature memo stats, and the top per-global spec counts.
+Rendered post-prune; plain string concatenation only.
+-}
+renderLssReport : S -> Mono.MonoGraph -> String
+renderLssReport sFinal (Mono.MonoGraph g) =
+    let
+        stats =
+            sFinal.lssStats
+
+        lambdaCount =
+            Dict.size sFinal.env.lamLabels
+
+        internedCount =
+            Dict.size sFinal.lssMembers
+
+        sigCount =
+            Dict.size sFinal.lssSignatures
+
+        trivialCount =
+            Dict.foldl
+                (\_ sig n ->
+                    if sig.trivial then
+                        n + 1
+
+                    else
+                        n
+                )
+                0
+                sFinal.lssSignatures
+
+        histLine =
+            if Dict.isEmpty stats.sizeHist then
+                "(none)"
+
+            else
+                String.join " "
+                    (Dict.foldr (\size count acc -> (String.fromInt size ++ "->" ++ String.fromInt count) :: acc) [] stats.sizeHist)
+
+        specCounts =
+            Array.foldl
+                (\maybeEntry acc ->
+                    case maybeEntry of
+                        Just ( global, _ ) ->
+                            let
+                                k =
+                                    Mono.toComparableGlobal global
+                            in
+                            Dict.insert k (1 + Maybe.withDefault 0 (Dict.get k acc)) acc
+
+                        Nothing ->
+                            acc
+                )
+                Dict.empty
+                g.registry.reverseMapping
+
+        topSpecs =
+            Dict.toList specCounts
+                |> List.sortBy (\( _, n ) -> negate n)
+                |> List.take 5
+                |> List.map (\( k, n ) -> k ++ "=" ++ String.fromInt n)
+                |> String.join " "
+    in
+    String.join "\n"
+        [ "=== LSS census ==="
+        , "members: " ++ String.fromInt sFinal.nextMemberId ++ " total (" ++ String.fromInt lambdaCount ++ " source lambdas, " ++ String.fromInt internedCount ++ " interned)"
+        , "signatures: " ++ String.fromInt sigCount ++ " memoized (" ++ String.fromInt trivialCount ++ " trivial)"
+        , "sets zonked: " ++ String.fromInt stats.setsZonked ++ "; size histogram: " ++ histLine
+        , "widened: bySize=" ++ String.fromInt stats.widenedBySize ++ " byKernel=" ++ String.fromInt stats.widenedByKernel ++ " byBudget=" ++ String.fromInt stats.widenedByBudget
+        , "top specs/global: " ++ topSpecs
+        , "=================="
+        ]
 
 
 
 -- ====== INITIAL STATE ======
 
 
-initState : IO.Canonical -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> AssignMVarIds.GlobalMVarState -> S
-initState currentModule nodes annotations globalTypeEnv mvarState =
+initState : Config.LssConfig -> IO.Canonical -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> AssignMVarIds.GlobalMVarState -> S
+initState lssConfig currentModule nodes annotations globalTypeEnv mvarState =
     { worklist = []
     , nodes = Array.empty
     , inProgress = BitSet.empty
@@ -111,6 +209,11 @@ initState currentModule nodes annotations globalTypeEnv mvarState =
     , lambdaCounter = 0
     , superTable = mvarState.superVars
     , nextMVarId = mvarState.nextId
+    , lssSignatures = Dict.empty
+    , lssInProgress = Dict.empty
+    , lssMembers = Dict.empty
+    , nextMemberId = Id.toComparable mvarState.nextLam
+    , lssStats = Engine.emptyLssStats
     , schemeMono = Dict.empty
     , kernelAbiMono = Dict.empty
     , callMemo = Dict.empty
@@ -121,6 +224,8 @@ initState currentModule nodes annotations globalTypeEnv mvarState =
         , globalTypeEnv = globalTypeEnv
         , currentModule = currentModule
         , superStatic = mvarState.superVars
+        , lss = lssConfig
+        , lamLabels = mvarState.lamLabels
         }
     , currentGlobal = Nothing
     , store = Engine.freshStore
@@ -213,7 +318,7 @@ processItem specId s =
                 case global of
                     Mono.Accessor fieldName ->
                         case monoType of
-                            Mono.MFunction [ Mono.MRecord fields ] fieldType ->
+                            Mono.MFunction _ [ Mono.MRecord fields ] fieldType ->
                                 Ok
                                     (finishNode specId
                                         (Mono.MonoTailFunc
@@ -326,7 +431,7 @@ specializeNode name home node monoType s =
 
         TOpt.PortIncoming expr _ meta ->
             case monoType of
-                Mono.MFunction _ _ ->
+                Mono.MFunction _ _ _ ->
                     Engine.runStep (Translate.specializePort True expr meta.tipe monoType) s
 
                 _ ->

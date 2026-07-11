@@ -218,7 +218,7 @@ recordWidened from to =
                 > List.length fromKeys
                 && List.all (\k -> Dict.member k toFields) fromKeys
 
-        ( Mono.MFunction fromArgs fromRet, Mono.MFunction toArgs toRet ) ->
+        ( Mono.MFunction _ fromArgs fromRet, Mono.MFunction _ toArgs toRet ) ->
             (List.length fromArgs == List.length toArgs)
                 && (List.any identity (List.map2 recordWidened fromArgs toArgs)
                         || recordWidened fromRet toRet
@@ -537,7 +537,7 @@ monoTypeMentionsNumeric mt =
         Mono.MCustom _ _ args ->
             List.any monoTypeMentionsNumeric args
 
-        Mono.MFunction args r ->
+        Mono.MFunction _ args r ->
             List.any monoTypeMentionsNumeric args || monoTypeMentionsNumeric r
 
         _ ->
@@ -1123,13 +1123,13 @@ peelCallResult numArgs monoType =
 
     else
         case monoType of
-            Mono.MFunction params result ->
+            Mono.MFunction anno params result ->
                 let
                     pcount =
                         List.length params
                 in
                 if pcount > numArgs then
-                    Mono.MFunction (List.drop numArgs params) result
+                    Mono.MFunction anno (List.drop numArgs params) result
 
                 else if pcount == numArgs then
                     result
@@ -1435,10 +1435,10 @@ specializeLambda lambdaExpr canType subst state =
         -- 2. Extract params and body directly (no peelFunctionChain).
         ( params, bodyExpr ) =
             case lambdaExpr of
-                TOpt.Function ps body _ ->
+                TOpt.Function _ ps body _ ->
                     ( ps, body )
 
-                TOpt.TrackedFunction trackedPs body _ ->
+                TOpt.TrackedFunction _ trackedPs body _ ->
                     ( List.map (\( locName, ty ) -> ( A.toValue locName, ty )) trackedPs, body )
 
                 _ ->
@@ -1499,6 +1499,7 @@ specializeLambda lambdaExpr canType subst state =
 
         closureInfo =
             { lambdaId = lambdaId
+            , srcLambda = Nothing
             , captures = captures
             , params = monoParams
             , closureKind = Nothing
@@ -1667,7 +1668,7 @@ specializeNode ctorName node requestedMonoType state =
 
         TOpt.PortIncoming expr _ meta ->
             case requestedMonoType of
-                Mono.MFunction _ _ ->
+                Mono.MFunction _ _ _ ->
                     -- The port itself, used as `(payload -> msg) -> Sub msg`:
                     -- lower to the Fx_Leaf wrapper closure and enqueue the
                     -- payload Decoder as a separate specialization.
@@ -1743,7 +1744,7 @@ specializePortNode incoming expr canType requestedMonoType state =
 
         ( paramType, resultType ) =
             case requestedMonoType of
-                Mono.MFunction [ p ] r ->
+                Mono.MFunction _ [ p ] r ->
                     ( p, r )
 
                 _ ->
@@ -1779,10 +1780,11 @@ specializePortNode incoming expr canType requestedMonoType state =
                 "Elm"
                 "Platform"
                 "leaf"
-                (Mono.MFunction [ Mono.MString, valueType ] resultType)
+                (Mono.MFunction Mono.LTop [ Mono.MString, valueType ] resultType)
 
         closureInfo =
             { lambdaId = lambdaId
+            , srcLambda = Nothing
             , captures = []
             , params = [ ( paramName, paramType ) ]
             , closureKind = Nothing
@@ -1825,7 +1827,7 @@ specializePortNode incoming expr canType requestedMonoType state =
 
             encodedType =
                 case Mono.typeOf encoderMono of
-                    Mono.MFunction _ r ->
+                    Mono.MFunction _ _ r ->
                         r
 
                     t ->
@@ -2763,19 +2765,19 @@ specializeExpr expr subst state =
             in
             ( Mono.MonoList region monoExprs monoType, stateAfter )
 
-        TOpt.Function params body meta ->
+        TOpt.Function srcLam params body meta ->
             let
                 canType =
                     meta.tipe
             in
-            specializeLambda (TOpt.Function params body meta) canType subst state
+            specializeLambda (TOpt.Function srcLam params body meta) canType subst state
 
-        TOpt.TrackedFunction params body meta ->
+        TOpt.TrackedFunction srcLam params body meta ->
             let
                 canType =
                     meta.tipe
             in
-            specializeLambda (TOpt.TrackedFunction params body meta) canType subst state
+            specializeLambda (TOpt.TrackedFunction srcLam params body meta) canType subst state
 
         TOpt.Call region func args meta ->
             -- Two-phase argument processing: defer accessor specialization until after
@@ -4280,7 +4282,7 @@ resolveProcessedArg processedArg maybeParamType subst state =
 
         PendingAccessor region fieldName _ ->
             case maybeParamType of
-                Just (Mono.MFunction [ Mono.MRecord fields ] _) ->
+                Just (Mono.MFunction _ [ Mono.MRecord fields ] _) ->
                     -- The parameter type is a function from record to something.
                     -- Derive accessor's MonoType from the full record layout.
                     let
@@ -4296,7 +4298,7 @@ resolveProcessedArg processedArg maybeParamType subst state =
                             Mono.MRecord fields
 
                         accessorMonoType =
-                            Mono.MFunction [ recordType ] fieldType
+                            Mono.MFunction Mono.LTop [ recordType ] fieldType
 
                         accessorGlobal =
                             Mono.Accessor fieldName
@@ -4322,7 +4324,7 @@ resolveProcessedArg processedArg maybeParamType subst state =
                             Mono.MRecord fields
 
                         accessorMonoType =
-                            Mono.MFunction [ recordType ] fieldType
+                            Mono.MFunction Mono.LTop [ recordType ] fieldType
 
                         accessorGlobal =
                             Mono.Accessor fieldName
@@ -4357,7 +4359,7 @@ resolveProcessedArg processedArg maybeParamType subst state =
             case maybeParamType of
                 Just paramType ->
                     case paramType of
-                        Mono.MFunction _ _ ->
+                        Mono.MFunction _ _ _ ->
                             let
                                 -- J5: keep the refine env and thread it via stateU.
                                 ( refinedSubst, refinedEnv ) =
@@ -4554,7 +4556,7 @@ extractCtorResultType n monoType =
 
     else
         case monoType of
-            Mono.MFunction args result ->
+            Mono.MFunction _ args result ->
                 extractCtorResultType (n - List.length args) result
 
             _ ->
@@ -5242,7 +5244,7 @@ monoDefExprType monoDef =
         Mono.MonoTailDef _ monoArgs monoExpr ->
             -- For TailDef, construct the function type from args and body return type.
             List.foldr
-                (\( _, argType ) acc -> Mono.MFunction [ argType ] acc)
+                (\( _, argType ) acc -> Mono.MFunction Mono.LTop [ argType ] acc)
                 (Mono.typeOf monoExpr)
                 monoArgs
 
@@ -5309,7 +5311,7 @@ extractFieldTypes n monoType =
 
     else
         case monoType of
-            Mono.MFunction args result ->
+            Mono.MFunction _ args result ->
                 args ++ extractFieldTypes (n - List.length args) result
 
             _ ->
@@ -5339,7 +5341,7 @@ isFullyMonomorphicType monoType =
         Mono.MList inner ->
             isFullyMonomorphicType inner
 
-        Mono.MFunction args result ->
+        Mono.MFunction _ args result ->
             List.all isFullyMonomorphicType args
                 && isFullyMonomorphicType result
 

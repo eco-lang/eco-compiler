@@ -2,6 +2,13 @@ module Compiler.MonoSolver.Store exposing
     ( classifyDirect
     , loadType
     , loadTypeIsolated
+    , loadTypeWithArrows
+    , loadTypeIsolatedWithArrows
+    , arrowParts
+    , arrowSetSlot
+    , unifySlotWithSet
+    , unifyBestEffort
+    , poisonArrowSets
     , monoTypeToVar
     , unifyStep
     , zonkToMono
@@ -59,6 +66,8 @@ type alias LoadCtx =
     { store : IO.State
     , memo : Dict.Dict Int IO.Variable
     , revMemo : Array (Maybe TypeIds.MVarId)
+    , lssOn : Bool -- mint FunL set slots (lambda-set specialization)
+    , arrowSlots : List IO.Variable -- minted set slots, REVERSED minting order
     }
 
 
@@ -67,9 +76,39 @@ loadType canType =
     \s ->
         let
             ( v, c ) =
-                loadTypeC s.env.superStatic canType { store = s.store, memo = s.memo, revMemo = s.revMemo }
+                loadTypeC s.env.superStatic canType { store = s.store, memo = s.memo, revMemo = s.revMemo, lssOn = s.env.lss.enabled, arrowSlots = [] }
         in
         Ok ( v, { s | store = c.store, memo = c.memo, revMemo = c.revMemo } )
+
+
+{-| `loadType` additionally returning the minted arrow set slots in minting
+order. **This function (with its isolated sibling) DEFINES arrow ordinals**
+(LSS_006): `LssSignature.arrows` and fact application both index by position
+in this array. Shared item memo — unit members loaded through one memo share
+annotation Points (the Σ self-reference rule).
+-}
+loadTypeWithArrows : Can.Type TypeIds.MVarId -> Step ( IO.Variable, Array IO.Variable )
+loadTypeWithArrows canType =
+    \s ->
+        let
+            ( v, c ) =
+                loadTypeC s.env.superStatic canType { store = s.store, memo = s.memo, revMemo = s.revMemo, lssOn = s.env.lss.enabled, arrowSlots = [] }
+        in
+        Ok ( ( v, Array.fromList (List.reverse c.arrowSlots) ), { s | store = c.store, memo = c.memo, revMemo = c.revMemo } )
+
+
+{-| `loadTypeIsolated` additionally returning the minted arrow set slots in
+minting order (fresh per-call-site instantiation; see `loadTypeWithArrows`
+for the ordinal contract).
+-}
+loadTypeIsolatedWithArrows : Can.Type TypeIds.MVarId -> Step ( IO.Variable, Array IO.Variable )
+loadTypeIsolatedWithArrows canType =
+    \s ->
+        let
+            ( v, c ) =
+                loadTypeC s.env.superStatic canType { store = s.store, memo = Dict.empty, revMemo = s.revMemo, lssOn = s.env.lss.enabled, arrowSlots = [] }
+        in
+        Ok ( ( v, Array.fromList (List.reverse c.arrowSlots) ), { s | store = c.store, revMemo = c.revMemo } )
 
 
 {-| D8: load a scheme with an ISOLATED (empty) memo so its vars do not share
@@ -84,7 +123,7 @@ loadTypeIsolated canType =
     \s ->
         let
             ( v, c ) =
-                loadTypeC s.env.superStatic canType { store = s.store, memo = Dict.empty, revMemo = s.revMemo }
+                loadTypeC s.env.superStatic canType { store = s.store, memo = Dict.empty, revMemo = s.revMemo, lssOn = s.env.lss.enabled, arrowSlots = [] }
         in
         Ok ( v, { s | store = c.store, revMemo = c.revMemo } )
 
@@ -103,7 +142,17 @@ loadTypeC superStatic canType c0 =
                 ( pTo, c2 ) =
                     loadTypeC superStatic to c1
             in
-            structC (IO.Fun1 pFrom pTo) c2
+            if c2.lssOn then
+                -- LSS: slot every arrow. The unconstrained FlexVar slot reads
+                -- back LTop at zonk; ordinals = minting order (LSS_006).
+                let
+                    ( pSet, c3 ) =
+                        freshVarC (IO.FlexVar Nothing) c2
+                in
+                structC (IO.FunL pFrom pTo pSet) { c3 | arrowSlots = pSet :: c3.arrowSlots }
+
+            else
+                structC (IO.Fun1 pFrom pTo) c2
 
         Can.TType canonical name args ->
             let
@@ -347,7 +396,7 @@ monoTypeToVar monoType =
     \s ->
         let
             ( v, store1 ) =
-                monoTypeToVarC monoType s.store
+                monoTypeToVarC s.env.lss.enabled monoType s.store
         in
         Ok ( v, { s | store = store1 } )
 
@@ -366,8 +415,8 @@ structS flat st =
     freshVarS (IO.Structure flat) st
 
 
-monoTypeToVarC : Mono.MonoType -> IO.State -> ( IO.Variable, IO.State )
-monoTypeToVarC monoType st =
+monoTypeToVarC : Bool -> Mono.MonoType -> IO.State -> ( IO.Variable, IO.State )
+monoTypeToVarC lssOn monoType st =
     case monoType of
         Mono.MInt ->
             structS (IO.App1 ModuleName.basics "Int" []) st
@@ -390,7 +439,7 @@ monoTypeToVarC monoType st =
         Mono.MList inner ->
             let
                 ( p, st1 ) =
-                    monoTypeToVarC inner st
+                    monoTypeToVarC lssOn inner st
             in
             structS (IO.App1 ModuleName.list "List" [ p ]) st1
 
@@ -399,13 +448,13 @@ monoTypeToVarC monoType st =
                 a :: b :: rest ->
                     let
                         ( pa, st1 ) =
-                            monoTypeToVarC a st
+                            monoTypeToVarC lssOn a st
 
                         ( pb, st2 ) =
-                            monoTypeToVarC b st1
+                            monoTypeToVarC lssOn b st1
 
                         ( pRest, st3 ) =
-                            monoListToVarC rest st2
+                            monoListToVarC lssOn rest st2
                     in
                     structS (IO.Tuple1 pa pb pRest) st3
 
@@ -416,7 +465,7 @@ monoTypeToVarC monoType st =
         Mono.MRecord fields ->
             let
                 ( pFields, st1 ) =
-                    recordFieldPointsC (Dict.toList fields) st
+                    recordFieldPointsC lssOn (Dict.toList fields) st
 
                 ( ext, st2 ) =
                     structS IO.EmptyRecord1 st1
@@ -426,26 +475,56 @@ monoTypeToVarC monoType st =
         Mono.MCustom home name args ->
             let
                 ( pArgs, st1 ) =
-                    monoListToVarC args st
+                    monoListToVarC lssOn args st
             in
             structS (IO.App1 home name pArgs) st1
 
-        Mono.MFunction args result ->
+        Mono.MFunction anno args result ->
             -- Fold args right-to-left into nested Fun1 (one arg per arrow).
+            -- Under lss, fold into FunL whose slots carry the annotation's
+            -- content. Deliberate asymmetry with zonkSetSlot: a DEMAND's LTop
+            -- encodes as top=True (poison — "some caller was widened, this
+            -- arrow must stay dynamic"), while an unconstrained slot merely
+            -- READS BACK as LTop without ever having poisoned anything.
             let
                 ( pResult, st1 ) =
-                    monoTypeToVarC result st
+                    monoTypeToVarC lssOn result st
             in
-            List.foldl
-                (\argType ( accPoint, stA ) ->
-                    let
-                        ( pa, stA1 ) =
-                            monoTypeToVarC argType stA
-                    in
-                    structS (IO.Fun1 pa accPoint) stA1
-                )
-                ( pResult, st1 )
-                (List.reverse args)
+            if lssOn then
+                let
+                    setContent =
+                        case anno of
+                            Mono.LTop ->
+                                IO.LambdaSet1 True Dict.empty
+
+                            Mono.LSet members ->
+                                IO.LambdaSet1 False (Dict.fromList (List.map (\m -> ( m, () )) members))
+                in
+                List.foldl
+                    (\argType ( accPoint, stA ) ->
+                        let
+                            ( pa, stA1 ) =
+                                monoTypeToVarC lssOn argType stA
+
+                            ( pSet, stA2 ) =
+                                freshVarS (IO.Structure setContent) stA1
+                        in
+                        structS (IO.FunL pa accPoint pSet) stA2
+                    )
+                    ( pResult, st1 )
+                    (List.reverse args)
+
+            else
+                List.foldl
+                    (\argType ( accPoint, stA ) ->
+                        let
+                            ( pa, stA1 ) =
+                                monoTypeToVarC lssOn argType stA
+                        in
+                        structS (IO.Fun1 pa accPoint) stA1
+                    )
+                    ( pResult, st1 )
+                    (List.reverse args)
 
         Mono.MVar _ Mono.CNumber ->
             freshVarS (IO.FlexSuper IO.Number Nothing) st
@@ -454,8 +533,8 @@ monoTypeToVarC monoType st =
             freshVarS (IO.FlexVar Nothing) st
 
 
-monoListToVarC : List Mono.MonoType -> IO.State -> ( List IO.Variable, IO.State )
-monoListToVarC types st =
+monoListToVarC : Bool -> List Mono.MonoType -> IO.State -> ( List IO.Variable, IO.State )
+monoListToVarC lssOn types st =
     case types of
         [] ->
             ( [], st )
@@ -463,21 +542,21 @@ monoListToVarC types st =
         t :: rest ->
             let
                 ( p, st1 ) =
-                    monoTypeToVarC t st
+                    monoTypeToVarC lssOn t st
 
                 ( ps, st2 ) =
-                    monoListToVarC rest st1
+                    monoListToVarC lssOn rest st1
             in
             ( p :: ps, st2 )
 
 
-recordFieldPointsC : List ( String, Mono.MonoType ) -> IO.State -> ( Dict.Dict String IO.Variable, IO.State )
-recordFieldPointsC fields st =
+recordFieldPointsC : Bool -> List ( String, Mono.MonoType ) -> IO.State -> ( Dict.Dict String IO.Variable, IO.State )
+recordFieldPointsC lssOn fields st =
     List.foldl
         (\( k, t ) ( acc, stA ) ->
             let
                 ( pt, stA1 ) =
-                    monoTypeToVarC t stA
+                    monoTypeToVarC lssOn t stA
             in
             ( Dict.insert k pt acc, stA1 )
         )
@@ -545,6 +624,144 @@ unifyStep v1 v2 =
         (Engine.liftIO (Unify.unify v1 v2))
 
 
+{-| Best-effort unify: a mismatch is swallowed, restoring the pre-unify state
+(free via Elm's persistent arrays — the failed attempt's partial merges are
+simply not kept). Used by the LSS inference walk, where structural failure
+means "no set flow here", never "abort the item".
+-}
+unifyBestEffort : IO.Variable -> IO.Variable -> Step ()
+unifyBestEffort v1 v2 s =
+    case unifyStep v1 v2 s of
+        Ok ( _, s1 ) ->
+            Ok ( (), s1 )
+
+        Err _ ->
+            Ok ( (), s )
+
+
+
+-- ====== LSS ARROW HELPERS ======
+
+
+{-| The (param, rest) of an arrow content, whichever arrow form it is. The
+single dispatch point that lets param-walkers handle `Fun1` and `FunL`
+uniformly (identical Fun1 semantics when lss is off).
+-}
+arrowParts : IO.Content -> Maybe ( IO.Variable, IO.Variable )
+arrowParts content =
+    case content of
+        IO.Structure (IO.Fun1 pParam pRest) ->
+            Just ( pParam, pRest )
+
+        IO.Structure (IO.FunL pParam pRest _) ->
+            Just ( pParam, pRest )
+
+        _ ->
+            Nothing
+
+
+{-| The set slot of a slotted arrow's content (Nothing for `Fun1` — no slot
+to constrain — and for non-arrows).
+-}
+arrowSetSlot : IO.Content -> Maybe IO.Variable
+arrowSetSlot content =
+    case content of
+        IO.Structure (IO.FunL _ _ slot) ->
+            Just slot
+
+        _ ->
+            Nothing
+
+
+{-| Unify a set slot with `LambdaSet1 top members`. Set unification is a
+total join (Unify's LambdaSet1×LambdaSet1 arm) — a mismatch here would be an
+engine bug, so the strict `unifyStep` is correct.
+-}
+unifySlotWithSet : Bool -> List Int -> IO.Variable -> Step ()
+unifySlotWithSet top members slot s0 =
+    case Engine.freshVar (IO.Structure (IO.LambdaSet1 top (Dict.fromList (List.map (\m -> ( m, () )) members)))) s0 of
+        Err e ->
+            Err e
+
+        Ok ( setVar, s1 ) ->
+            unifyStep slot setVar s1
+
+
+{-| Poison every arrow set slot reachable in a loaded type structure: kernels
+apply closures through the generic runtime path, so any arrow crossing the
+kernel/port ABI is dynamic (LSS_004). Point-indexed `seen` set guards against
+revisits; store structure is finite.
+-}
+poisonArrowSets : IO.Variable -> Step ()
+poisonArrowSets v0 s0 =
+    poisonGo Dict.empty [ v0 ] s0
+
+
+poisonGo : Dict.Dict Int () -> List IO.Variable -> Step ()
+poisonGo seen worklist s0 =
+    case worklist of
+        [] ->
+            Ok ( (), s0 )
+
+        v :: rest ->
+            let
+                key =
+                    Engine.pointKey v
+            in
+            if Dict.member key seen then
+                poisonGo seen rest s0
+
+            else
+                let
+                    seen1 =
+                        Dict.insert key () seen
+
+                    ( store1, desc ) =
+                        UF.get v s0.store
+
+                    s1 =
+                        { s0 | store = store1 }
+                in
+                case desc.content of
+                    IO.Structure flat ->
+                        case flat of
+                            IO.FunL a b slot ->
+                                case unifySlotWithSet True [] slot s1 of
+                                    Err e ->
+                                        Err e
+
+                                    Ok ( _, s2 ) ->
+                                        poisonGo seen1 (a :: b :: rest) s2
+
+                            IO.Fun1 a b ->
+                                poisonGo seen1 (a :: b :: rest) s1
+
+                            IO.App1 _ _ args ->
+                                poisonGo seen1 (args ++ rest) s1
+
+                            IO.Record1 fields ext ->
+                                poisonGo seen1 (Dict.values fields ++ (ext :: rest)) s1
+
+                            IO.Tuple1 a b cs ->
+                                poisonGo seen1 (a :: b :: cs ++ rest) s1
+
+                            IO.EmptyRecord1 ->
+                                poisonGo seen1 rest s1
+
+                            IO.Unit1 ->
+                                poisonGo seen1 rest s1
+
+                            IO.LambdaSet1 _ _ ->
+                                poisonGo seen1 rest s1
+
+                    IO.Alias _ _ _ real ->
+                        poisonGo seen1 (real :: rest) s1
+
+                    _ ->
+                        -- Variables: nothing reachable to poison.
+                        poisonGo seen1 rest s1
+
+
 
 -- ====== ZONK: store Point -> MonoType ======
 
@@ -559,18 +776,63 @@ allocation order threaded through `next`.
 type alias ZonkCtx =
     { store : IO.State
     , next : TypeIds.MVarId
+    , lss : Maybe LssZonkAcc -- Just iff lss.enabled; keeps the off path lean
+    }
+
+
+{-| Set-slot readback accumulator (maxSetSize policy + census counters,
+folded back into `S.lssStats` by the `zonkToMono` wrapper).
+-}
+type alias LssZonkAcc =
+    { maxSetSize : Int
+    , zonked : Int
+    , widenedBySize : Int
+    , hist : Dict.Dict Int Int
     }
 
 
 zonkToMono : IO.Variable -> Step Mono.MonoType
 zonkToMono var =
     \s ->
-        case zonkToMonoC s.superTable s.revMemo var { store = s.store, next = s.nextMVarId } of
+        let
+            lssAcc =
+                if s.env.lss.enabled then
+                    Just { maxSetSize = s.env.lss.maxSetSize, zonked = 0, widenedBySize = 0, hist = Dict.empty }
+
+                else
+                    Nothing
+        in
+        case zonkToMonoC s.superTable s.revMemo var { store = s.store, next = s.nextMVarId, lss = lssAcc } of
             Err e ->
                 Err e
 
             Ok ( mt, c ) ->
-                Ok ( mt, { s | store = c.store, nextMVarId = c.next } )
+                Ok ( mt, foldZonkStats c { s | store = c.store, nextMVarId = c.next } )
+
+
+foldZonkStats : ZonkCtx -> Engine.S -> Engine.S
+foldZonkStats c s =
+    case c.lss of
+        Nothing ->
+            s
+
+        Just acc ->
+            if acc.zonked == 0 && acc.widenedBySize == 0 then
+                s
+
+            else
+                let
+                    stats =
+                        s.lssStats
+                in
+                { s
+                    | lssStats =
+                        { stats
+                            | setsZonked = stats.setsZonked + acc.zonked
+                            , widenedBySize = stats.widenedBySize + acc.widenedBySize
+                            , sizeHist = Dict.foldl (\k v h -> Dict.insert k (v + Maybe.withDefault 0 (Dict.get k h)) h) stats.sizeHist acc.hist
+                        }
+                }
 
 
 zonkToMonoC : Dict.Dict Int IO.SuperType -> Array (Maybe TypeIds.MVarId) -> IO.Variable -> ZonkCtx -> Result Failure ( Mono.MonoType, ZonkCtx )
@@ -670,7 +932,29 @@ zonkFlatC superTable revMemo flat c0 =
                             Err e
 
                         Ok ( mb, c2 ) ->
-                            Ok ( Mono.MFunction [ ma ] mb, c2 )
+                            Ok ( Mono.MFunction Mono.LTop [ ma ] mb, c2 )
+
+        IO.FunL a b setVar ->
+            case zonkToMonoC superTable revMemo a c0 of
+                Err e ->
+                    Err e
+
+                Ok ( ma, c1 ) ->
+                    case zonkToMonoC superTable revMemo b c1 of
+                        Err e ->
+                            Err e
+
+                        Ok ( mb, c2 ) ->
+                            let
+                                ( anno, c3 ) =
+                                    zonkSetSlot setVar c2
+                            in
+                            Ok ( Mono.MFunction anno [ ma ] mb, c3 )
+
+        IO.LambdaSet1 _ _ ->
+            -- LSS_007: a LambdaSet1 only ever lives inside a FunL set slot,
+            -- which is consumed by the FunL arm — reaching here is a bug.
+            Err (EngineBug "LambdaSet1 outside an arrow slot in zonkFlatC")
 
         IO.EmptyRecord1 ->
             Ok ( Mono.MRecord Dict.empty, c0 )
@@ -703,6 +987,70 @@ zonkFlatC superTable revMemo flat c0 =
 
                                 Ok ( mRest, c3 ) ->
                                     Ok ( Mono.MTuple (ma :: mb :: mRest), c3 )
+
+
+{-| Read a set slot back to an annotation. THE only producer of `LSet`. Runs
+at item quiescence (zonk is the commit point — MONO_028 discipline), so a set
+is read only after every unification the item will ever do. Policy:
+
+  - unresolved slot (FlexVar) -> LTop (unknown, NOT empty — an empty claim
+    would license consumers to treat the arrow as dead)
+  - LambdaSet1 True \_ -> LTop (widened / kernel-facing)
+  - LambdaSet1 False members -> LSet (ascending ids), unless
+    |members| > maxSetSize -> LTop (counted in widenedBySize)
+
+-}
+zonkSetSlot : IO.Variable -> ZonkCtx -> ( Mono.LambdaSetAnno, ZonkCtx )
+zonkSetSlot setVar c0 =
+    let
+        ( store1, desc ) =
+            UF.get setVar c0.store
+
+        c1 =
+            { c0 | store = store1 }
+    in
+    case desc.content of
+        IO.Structure (IO.LambdaSet1 True _) ->
+            ( Mono.LTop, bumpZonkAcc Nothing c1 )
+
+        IO.Structure (IO.LambdaSet1 False members) ->
+            let
+                size =
+                    Dict.size members
+            in
+            case c1.lss of
+                Just acc ->
+                    if size > acc.maxSetSize then
+                        ( Mono.LTop, { c1 | lss = Just { acc | zonked = acc.zonked + 1, widenedBySize = acc.widenedBySize + 1 } } )
+
+                    else
+                        -- Dict.keys is ascending — LSet stays sorted (key
+                        -- canonicality for toComparableMonoType).
+                        ( Mono.LSet (Dict.keys members), bumpZonkAcc (Just size) c1 )
+
+                Nothing ->
+                    -- A FunL zonked outside an lss-enabled wrapper (e.g. a
+                    -- direct zonkToMonoC caller): sound fallback.
+                    ( Mono.LTop, c1 )
+
+        _ ->
+            -- FlexVar residual: no information — LTop, never empty.
+            ( Mono.LTop, bumpZonkAcc Nothing c1 )
+
+
+bumpZonkAcc : Maybe Int -> ZonkCtx -> ZonkCtx
+bumpZonkAcc maybeSize c =
+    case c.lss of
+        Nothing ->
+            c
+
+        Just acc ->
+            case maybeSize of
+                Nothing ->
+                    { c | lss = Just { acc | zonked = acc.zonked + 1 } }
+
+                Just size ->
+                    { c | lss = Just { acc | zonked = acc.zonked + 1, hist = Dict.insert size (1 + Maybe.withDefault 0 (Dict.get size acc.hist)) acc.hist } }
 
 
 zonkListC : Dict.Dict Int IO.SuperType -> Array (Maybe TypeIds.MVarId) -> List IO.Variable -> ZonkCtx -> Result Failure ( List Mono.MonoType, ZonkCtx )
@@ -870,8 +1218,10 @@ classifyGo s aliasSubst canType =
 
                         Ok ( mTo, s2 ) ->
                             -- One arrow per MFunction, mirroring zonkFlat's Fun1 arm
-                            -- (GlobalOpt flattens later per GOPT_016).
-                            Ok ( Mono.MFunction [ mFrom ] mTo, s2 )
+                            -- (GlobalOpt flattens later per GOPT_016). Storeless
+                            -- classification stamps LTop (sound-but-imprecise;
+                            -- fast paths gate on signature triviality in M2).
+                            Ok ( Mono.MFunction Mono.LTop [ mFrom ] mTo, s2 )
 
         Can.TType canonical name args ->
             case classifyList s aliasSubst args of

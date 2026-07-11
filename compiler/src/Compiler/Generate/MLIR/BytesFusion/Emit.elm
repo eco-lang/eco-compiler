@@ -1735,7 +1735,7 @@ uncurryReturnType monoType remainingArgs =
 
     else
         case monoType of
-            Mono.MFunction params returnType ->
+            Mono.MFunction _ params returnType ->
                 let
                     consumed =
                         min (List.length params) remainingArgs

@@ -521,7 +521,7 @@ monoTypeTag monoType =
         Mono.MCustom _ n _ ->
             "MCustom " ++ n
 
-        Mono.MFunction _ _ ->
+        Mono.MFunction _ _ _ ->
             "MFunction"
 
         Mono.MVar _ Mono.CEcoValue ->

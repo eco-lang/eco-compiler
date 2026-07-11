@@ -629,20 +629,32 @@ type alias RootedVar =
 {-| The flattened representation of concrete type structures.
 
   - `App1 module name args`: Type constructor application (e.g., List Int)
-  - `Fun1 arg result`: Function type
+  - `Fun1 arg result`: Function type (no lambda-set slot)
+  - `FunL arg result setSlot`: Function type WITH a lambda-set slot. Minted
+    ONLY by MonoSolver stores with `lss.enabled`; the typechecking phase
+    never constructs it. `Fun1` retains the meaning "arrow with no set
+    slot" so the lss-off path is allocation-identical to today.
   - `EmptyRecord1`: The empty record type {}
   - `Record1 fields extension`: Record type with named fields and optional extension
   - `Unit1`: The unit type ()
   - `Tuple1 first second rest`: Tuple type (2 or more elements)
+  - `LambdaSet1 top members`: A lambda set — the ONLY legal content of a
+    `FunL` set slot besides `FlexVar` (LSS_007); it never appears anywhere
+    else, and typecheck-phase stores contain neither `FunL` nor
+    `LambdaSet1`. `top = True` is ⊤ (widened/kernel-facing), absorbing
+    under union. Members are ground per-run ids (no Variables inside), so
+    set unification is a total Dict union — it can never mismatch.
 
 -}
 type FlatType
     = App1 Canonical String (List Variable)
     | Fun1 Variable Variable
+    | FunL Variable Variable Variable
     | EmptyRecord1
     | Record1 (CoreDict.Dict String Variable) Variable
     | Unit1
     | Tuple1 Variable Variable (List Variable)
+    | LambdaSet1 Bool (CoreDict.Dict Int ())
 
 
 

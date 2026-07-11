@@ -223,7 +223,7 @@ lookupCalleeParamTypes registry specId =
     case Array.get specId registry.reverseMapping of
         Just (Just ( _, monoType )) ->
             case monoType of
-                Mono.MFunction paramTypes _ ->
+                Mono.MFunction _ paramTypes _ ->
                     Just paramTypes
 
                 _ ->
@@ -404,7 +404,7 @@ collectListElemTypes monoType =
         Mono.MList elemType ->
             [ elemType ]
 
-        Mono.MFunction argTypes returnType ->
+        Mono.MFunction _ argTypes returnType ->
             List.concatMap collectListElemTypes argTypes
                 ++ collectListElemTypes returnType
 

@@ -108,7 +108,7 @@ hasStaleConstraint env monoType =
         Mono.MCustom _ _ args ->
             List.any (hasStaleConstraint env) args
 
-        Mono.MFunction args result ->
+        Mono.MFunction _ args result ->
             List.any (hasStaleConstraint env) args || hasStaleConstraint env result
 
         _ ->
@@ -133,8 +133,8 @@ refreshConstraintsRebuild env monoType =
         Mono.MCustom home name args ->
             Mono.MCustom home name (List.map (refreshConstraintsRebuild env) args)
 
-        Mono.MFunction args result ->
-            Mono.MFunction (List.map (refreshConstraintsRebuild env) args) (refreshConstraintsRebuild env result)
+        Mono.MFunction anno args result ->
+            Mono.MFunction anno (List.map (refreshConstraintsRebuild env) args) (refreshConstraintsRebuild env result)
 
         _ ->
             monoType
@@ -264,7 +264,7 @@ normalizeMonoType env subst ty =
                 in
                 ( Mono.MVar root rootConstraint, subst1, env1 )
 
-        Mono.MFunction args ret ->
+        Mono.MFunction anno args ret ->
             let
                 ( argsNorm, subst1, env1 ) =
                     normalizeList env subst args
@@ -272,7 +272,7 @@ normalizeMonoType env subst ty =
                 ( retNorm, subst2, env2 ) =
                     normalizeMonoType env1 subst1 ret
             in
-            ( Mono.MFunction argsNorm retNorm, subst2, env2 )
+            ( Mono.MFunction anno argsNorm retNorm, subst2, env2 )
 
         Mono.MList inner ->
             let
@@ -416,7 +416,7 @@ unifyHelp env canType monoType subst =
         ( Can.TType (IO.Canonical ( "elm", "core" ) "String") "String" [], Mono.MString ) ->
             ( subst, env )
 
-        ( Can.TLambda from to, Mono.MFunction args ret ) ->
+        ( Can.TLambda from to, Mono.MFunction anno args ret ) ->
             case args of
                 [] ->
                     ( subst, env )
@@ -430,7 +430,7 @@ unifyHelp env canType monoType subst =
                         unifyHelp env1 to ret subst1
 
                     else
-                        unifyHelp env1 to (Mono.MFunction restArgs ret) subst1
+                        unifyHelp env1 to (Mono.MFunction anno restArgs ret) subst1
 
         ( Can.TType _ _ args, Mono.MCustom _ _ monoArgs ) ->
             List.foldl
@@ -548,7 +548,7 @@ unifyMonoMono env m1 m2 subst =
         ( _, Mono.MVar mvarId _ ) ->
             insertBinding env mvarId m1 subst
 
-        ( Mono.MFunction args1 ret1, Mono.MFunction args2 ret2 ) ->
+        ( Mono.MFunction _ args1 ret1, Mono.MFunction _ args2 ret2 ) ->
             let
                 ( substWithArgs, env1 ) =
                     List.foldl
@@ -627,7 +627,7 @@ For non-function types, returns an empty list.
 extractParamTypes : Mono.MonoType -> List Mono.MonoType
 extractParamTypes monoType =
     case monoType of
-        Mono.MFunction argTypes returnType ->
+        Mono.MFunction _ argTypes returnType ->
             argTypes ++ extractParamTypes returnType
 
         _ ->
@@ -679,7 +679,7 @@ resolveMonoVarsHelp visiting subst monoType =
                             Mono.CEcoValue ->
                                 ( False, monoType )
 
-        Mono.MFunction args ret ->
+        Mono.MFunction anno args ret ->
             let
                 ( argsChanged, newArgs ) =
                     listMapChanged (resolveMonoVarsHelp visiting subst) args
@@ -688,7 +688,7 @@ resolveMonoVarsHelp visiting subst monoType =
                     resolveMonoVarsHelp visiting subst ret
             in
             if argsChanged || retChanged then
-                ( True, Mono.MFunction newArgs newRet )
+                ( True, Mono.MFunction anno newArgs newRet )
 
             else
                 ( False, monoType )
@@ -992,7 +992,7 @@ collectMVarIdsFromMonoHelp monoType (( acc, seen ) as pair) =
             else
                 ( mvarId :: acc, Set.insert key seen )
 
-        Mono.MFunction args result ->
+        Mono.MFunction _ args result ->
             let
                 argsPair =
                     List.foldl (\a accPair -> collectMVarIdsFromMonoHelp a accPair) pair args
@@ -1026,7 +1026,7 @@ applySubstLambdaChain env subst argsAcc to =
         _ ->
             List.foldl
                 (\argType acc ->
-                    Mono.MFunction [ applySubstPure env subst argType ] acc
+                    Mono.MFunction Mono.LTop [ applySubstPure env subst argType ] acc
                 )
                 (applySubstPure env subst to)
                 argsAcc
@@ -1434,7 +1434,7 @@ unifyCallSiteDirectWithExpected env schemeArgTypes schemeResultType argMonoTypes
 
                         expectedResidualMono =
                             List.foldr
-                                (\argMono acc -> Mono.MFunction [ argMono ] acc)
+                                (\argMono acc -> Mono.MFunction Mono.LTop [ argMono ] acc)
                                 callResultMono
                                 surplusArgMonos
                     in
@@ -1500,7 +1500,7 @@ buildCurriedFuncType : List (Can.Type MVarId) -> List Mono.MonoType -> Mono.Mono
 buildCurriedFuncType schemeArgs resolvedArgs resultMono =
     case ( schemeArgs, resolvedArgs ) of
         ( _ :: schemeRest, arg :: argRest ) ->
-            Mono.MFunction [ arg ] (buildCurriedFuncType schemeRest argRest resultMono)
+            Mono.MFunction Mono.LTop [ arg ] (buildCurriedFuncType schemeRest argRest resultMono)
 
         _ ->
             resultMono
@@ -1564,7 +1564,7 @@ normalizeAndOccursCheck env targetId subst ty =
                 in
                 Just ( Mono.MVar root rootConstraint, subst1, env1 )
 
-        Mono.MFunction args ret ->
+        Mono.MFunction anno args ret ->
             case normalizeAndOccursCheckList env targetId subst args of
                 Nothing ->
                     Nothing
@@ -1575,7 +1575,7 @@ normalizeAndOccursCheck env targetId subst ty =
                             Nothing
 
                         Just ( retNorm, subst2, env2 ) ->
-                            Just ( Mono.MFunction argsNorm retNorm, subst2, env2 )
+                            Just ( Mono.MFunction anno argsNorm retNorm, subst2, env2 )
 
         Mono.MList inner ->
             case normalizeAndOccursCheck env targetId subst inner of

@@ -243,7 +243,7 @@ processType typeIds ( typeId, monoType ) accum =
         Mono.MCustom _ typeName _ ->
             addCustomType typeIds typeId typeName monoType accum
 
-        Mono.MFunction argTypes resultType ->
+        Mono.MFunction _ argTypes resultType ->
             addFunctionType typeIds typeId argTypes resultType accum
 
         Mono.MVar _ constraint ->

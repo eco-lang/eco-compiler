@@ -543,6 +543,17 @@ termToCanType term =
                 |> IO.apply (variableToCanType a)
                 |> IO.apply (variableToCanType b)
 
+        FunL a b _ ->
+            -- Erasure: canonical types never see lambda sets.
+            IO.pure Can.TLambda
+                |> IO.apply (variableToCanType a)
+                |> IO.apply (variableToCanType b)
+
+        LambdaSet1 _ _ ->
+            -- Unreachable from well-formed content (LSS_007): a LambdaSet1
+            -- only ever lives inside a FunL set slot, which erases above.
+            crash "LambdaSet1 outside an arrow slot in variableToCanType"
+
         EmptyRecord1 ->
             IO.pure (Can.TRecord Dict.empty Nothing)
 
@@ -724,6 +735,26 @@ termToErrorType term =
                                             ET.Lambda arg result []
                                 )
                     )
+
+        FunL a b _ ->
+            -- Render as the plain arrow: error types never see lambda sets.
+            variableToErrorType a
+                |> IO.andThen
+                    (\arg ->
+                        variableToErrorType b
+                            |> IO.map
+                                (\result ->
+                                    case result of
+                                        ET.Lambda arg1 arg2 others ->
+                                            ET.Lambda arg arg1 (arg2 :: others)
+
+                                        _ ->
+                                            ET.Lambda arg result []
+                                )
+                    )
+
+        LambdaSet1 _ _ ->
+            crash "LambdaSet1 outside an arrow slot in variableToErrorType"
 
         EmptyRecord1 ->
             IO.pure (ET.Record Dict.empty ET.Closed)
@@ -930,6 +961,13 @@ getVarNames var takenNames =
 
                                             Fun1 arg body ->
                                                 getVarNames body takenNames |> IO.andThen (getVarNames arg)
+
+                                            FunL arg body _ ->
+                                                -- Set slots carry no names (never rendered).
+                                                getVarNames body takenNames |> IO.andThen (getVarNames arg)
+
+                                            LambdaSet1 _ _ ->
+                                                IO.pure takenNames
 
                                             EmptyRecord1 ->
                                                 IO.pure takenNames

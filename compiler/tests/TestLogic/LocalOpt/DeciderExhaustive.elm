@@ -146,10 +146,10 @@ collectExprNestedPatternIssues context expr =
             checkDeciderNestedPatterns context decider
                 ++ List.concatMap (\( _, branchExpr ) -> collectExprNestedPatternIssues context branchExpr) branches
 
-        TOpt.Function _ bodyExpr _ ->
+        TOpt.Function _ _ bodyExpr _ ->
             collectExprNestedPatternIssues context bodyExpr
 
-        TOpt.TrackedFunction _ bodyExpr _ ->
+        TOpt.TrackedFunction _ _ bodyExpr _ ->
             collectExprNestedPatternIssues context bodyExpr
 
         TOpt.Call _ fnExpr argExprs _ ->
@@ -309,10 +309,10 @@ collectExprExhaustivenessIssues context expr =
             checkDeciderExhaustiveness decider
                 ++ List.concatMap (\( _, branchExpr ) -> collectExprExhaustivenessIssues context branchExpr) branches
 
-        TOpt.Function _ bodyExpr _ ->
+        TOpt.Function _ _ bodyExpr _ ->
             collectExprExhaustivenessIssues context bodyExpr
 
-        TOpt.TrackedFunction _ bodyExpr _ ->
+        TOpt.TrackedFunction _ _ bodyExpr _ ->
             collectExprExhaustivenessIssues context bodyExpr
 
         TOpt.Call _ fnExpr argExprs _ ->

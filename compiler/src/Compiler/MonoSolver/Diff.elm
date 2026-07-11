@@ -33,6 +33,7 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name exposing (Name)
+import Compiler.Eco.Config as Config
 import Compiler.MonoSolver.Monomorphize as MonoSolver
 import Compiler.Monomorphize.Monomorphize as Monomorphize
 
@@ -47,7 +48,10 @@ run dump entryPointName globalTypeEnv globalGraph =
             Err e
 
         Ok oldGraph ->
-            case MonoSolver.monomorphize entryPointName globalTypeEnv globalGraph of
+            -- LSS is FORCED OFF for diff runs: the subst engine cannot produce
+            -- sets, so parity is only meaningful against the set-free pipeline
+            -- (defaultLss.enabled = False).
+            case MonoSolver.monomorphize Config.defaultLss entryPointName globalTypeEnv globalGraph of
                 Err e ->
                     Err ("ECO_MONO_DIFF " ++ e)
 

@@ -175,7 +175,7 @@ checkMonoTailFuncType funcName (Mono.MonoGraph data) =
 
                 -- Under stage-aware design, Int -> Int -> Int becomes nested MFunction
                 expectedMonoType =
-                    Mono.MFunction [ Mono.MInt ] (Mono.MFunction [ Mono.MInt ] Mono.MInt)
+                    Mono.MFunction Mono.LTop [ Mono.MInt ] (Mono.MFunction Mono.LTop [ Mono.MInt ] Mono.MInt)
 
                 -- Check argument types
                 argTypeErrors =
@@ -297,7 +297,7 @@ monoTypesMatch actual expected =
         ( Mono.MList a, Mono.MList b ) ->
             monoTypesMatch a b
 
-        ( Mono.MFunction args1 ret1, Mono.MFunction args2 ret2 ) ->
+        ( Mono.MFunction _ args1 ret1, Mono.MFunction _ args2 ret2 ) ->
             List.length args1
                 == List.length args2
                 && List.all identity (List.map2 monoTypesMatch args1 args2)
@@ -340,7 +340,7 @@ monoTypeToString monoType =
         Mono.MList inner ->
             "MList (" ++ monoTypeToString inner ++ ")"
 
-        Mono.MFunction args ret ->
+        Mono.MFunction _ args ret ->
             "MFunction ["
                 ++ String.join ", " (List.map monoTypeToString args)
                 ++ "] "

@@ -68,7 +68,9 @@ rebuildLambda :
 rebuildLambda kind params body funcMeta =
     case kind of
         PlainLambda ->
-            TOpt.Function params body funcMeta
+            -- LocalOpt runs before AssignMVarIds stamps lambda ids, so
+            -- constructions here carry Nothing (stamped later, per run).
+            TOpt.Function Nothing params body funcMeta
 
         TrackedLambda region ->
             let
@@ -78,7 +80,7 @@ rebuildLambda kind params body funcMeta =
                         (\( name, tipe ) -> ( A.At region name, tipe ))
                         params
             in
-            TOpt.TrackedFunction locParams body funcMeta
+            TOpt.TrackedFunction Nothing locParams body funcMeta
 
 
 
@@ -203,11 +205,11 @@ renameExpr env expr =
 
         -- Lambdas: rename body only (params not touched here;
         -- alpha-renaming of params handled by normalization code via rebuildLambda)
-        TOpt.Function args body meta ->
-            TOpt.Function args (ren body) meta
+        TOpt.Function srcLam args body meta ->
+            TOpt.Function srcLam args (ren body) meta
 
-        TOpt.TrackedFunction args body meta ->
-            TOpt.TrackedFunction args (ren body) meta
+        TOpt.TrackedFunction srcLam args body meta ->
+            TOpt.TrackedFunction srcLam args (ren body) meta
 
         -- Calls
         TOpt.Call region func args meta ->
@@ -401,7 +403,7 @@ normalizeDef def =
 normalizeExpr : TOpt.Expr Name -> TOpt.Expr Name
 normalizeExpr expr =
     case expr of
-        TOpt.Function params body lambdaMeta ->
+        TOpt.Function _ params body lambdaMeta ->
             let
                 normalizedBody =
                     normalizeExpr body
@@ -411,7 +413,7 @@ normalizeExpr expr =
             in
             rebuildLambda PlainLambda finalParams finalBody lambdaMeta
 
-        TOpt.TrackedFunction params body lambdaMeta ->
+        TOpt.TrackedFunction _ params body lambdaMeta ->
             let
                 normalizedBody =
                     normalizeExpr body
@@ -574,7 +576,7 @@ tryNormalizeLetBoundary :
 tryNormalizeLetBoundary outerParams body =
     -- Handle nested Lets: collect defs, find innermost lambda, rebuild
     case peelLets body [] of
-        ( defs, TOpt.Function innerParams innerBody _ ) ->
+        ( defs, TOpt.Function _ innerParams innerBody _ ) ->
             if List.isEmpty defs then
                 Nothing
 
@@ -584,7 +586,7 @@ tryNormalizeLetBoundary outerParams body =
                     , rebuildLets defs innerBody
                     )
 
-        ( defs, TOpt.TrackedFunction innerParams innerBody _ ) ->
+        ( defs, TOpt.TrackedFunction _ innerParams innerBody _ ) ->
             if List.isEmpty defs then
                 Nothing
 
@@ -653,13 +655,13 @@ hoistInlineLambdaChoicesToJumps decider jumps0 =
                     case choice of
                         TOpt.Inline expr ->
                             case expr of
-                                TOpt.Function _ _ _ ->
+                                TOpt.Function _ _ _ _ ->
                                     ( TOpt.Leaf (TOpt.Jump nextIdx)
                                     , nextIdx + 1
                                     , ( nextIdx, expr ) :: accJumps
                                     )
 
-                                TOpt.TrackedFunction _ _ _ ->
+                                TOpt.TrackedFunction _ _ _ _ ->
                                     ( TOpt.Leaf (TOpt.Jump nextIdx)
                                     , nextIdx + 1
                                     , ( nextIdx, expr ) :: accJumps
@@ -781,10 +783,10 @@ extractAndUnifyBranchParams jumps =
     let
         extractBranch ( idx, expr ) =
             case expr of
-                TOpt.Function params body _ ->
+                TOpt.Function _ params body _ ->
                     Just ( idx, params, body )
 
-                TOpt.TrackedFunction params body _ ->
+                TOpt.TrackedFunction _ params body _ ->
                     Just ( idx, List.map (\( A.At _ n, t ) -> ( n, t )) params, body )
 
                 _ ->

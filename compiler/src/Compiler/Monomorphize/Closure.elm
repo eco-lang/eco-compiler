@@ -50,7 +50,7 @@ import Utils.Crash
 flattenFunctionType : Mono.MonoType -> ( List Mono.MonoType, Mono.MonoType )
 flattenFunctionType monoType =
     case monoType of
-        Mono.MFunction args ret ->
+        Mono.MFunction _ args ret ->
             let
                 ( moreArgs, finalRet ) =
                     flattenFunctionType ret

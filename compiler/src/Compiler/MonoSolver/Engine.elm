@@ -1,5 +1,6 @@
 module Compiler.MonoSolver.Engine exposing
     ( S, Env, Step, Failure(..), WorkItem(..), NumberMultiEntry, NumberInstance, NodeResolution
+    , ArrowFact, LssSignature, LssStats
     , succeed, fail, andThen, map, map2, traverse, foldlS
     , getS, modifyS, liftIO, runStep
     , freshVar, enqueueSpec
@@ -10,6 +11,8 @@ module Compiler.MonoSolver.Engine exposing
     , lookupSchemeMono, putSchemeMono, lookupKernelAbi, putKernelAbi
     , lookupCallMemo, putCallMemo
     , mvarIdKey, pointKey
+    , memberIdFor, srcLambdaKey, trivialSignature, emptyLssStats
+    , bumpWidenedByKernel, withScratchStore
     )
 
 {-| Core state + step monad for the solver-based monomorphizer.
@@ -38,6 +41,7 @@ import Compiler.AST.TypeIds as TypeIds
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.BitSet as BitSet exposing (BitSet)
 import Compiler.Data.Id as Id
+import Compiler.Eco.Config as Config
 import Compiler.Monomorphize.Registry as Registry
 import Compiler.Type.Type as Type
 import Compiler.Type.UnionFind as UF
@@ -57,6 +61,76 @@ type WorkItem
     = SpecializeGlobal Mono.SpecId
 
 
+{-| One annotation arrow's LSS facts (design §7.1):
+
+  - `rep`: smallest ordinal whose set slot the body unified with this one
+    (the "same α at two positions" linkage, e.g. `twice : (a -> a) -> a -> a`
+    sharing its two arrows).
+  - `members`: ids the body itself injects into this arrow's set.
+  - `top`: the body forces ⊤ (e.g. the arrow reaches a kernel boundary).
+
+-}
+type alias ArrowFact =
+    { rep : Int
+    , members : List Int
+    , top : Bool
+    }
+
+
+{-| Per-definition lambda-set signature: the facts a caller must apply to the
+arrows of a fresh instantiation of the def's annotation type, indexed by
+ARROW ORDINAL — position in the slot array minted by
+`Store.loadTypeIsolatedWithArrows`/`loadTypeWithArrows` over the SAME
+annotation type (LSS_006).
+-}
+type alias LssSignature =
+    { arrows : Array ArrowFact
+    , trivial : Bool -- every fact is {rep=self, members=[], top=False}
+    }
+
+
+{-| LSS census counters (rendered by the report, `lss.report`).
+-}
+type alias LssStats =
+    { setsZonked : Int
+    , widenedBySize : Int
+    , widenedByKernel : Int
+    , widenedByBudget : Int
+    , sizeHist : CoreDict.Dict Int Int -- set size -> count (post-zonk)
+    }
+
+
+emptyLssStats : LssStats
+emptyLssStats =
+    { setsZonked = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, sizeHist = CoreDict.empty }
+
+
+{-| The all-defaults signature for an annotation with `n` arrows.
+-}
+trivialSignature : Int -> LssSignature
+trivialSignature n =
+    { arrows = Array.initialize n (\i -> { rep = i, members = [], top = False })
+    , trivial = True
+    }
+
+
+{-| A source lambda's member id IS its stamped id (the engine's interning
+supply is seeded past `GlobalMVarState.nextLam`, so the two never collide).
+-}
+srcLambdaKey : TypeIds.SrcLambdaId -> Int
+srcLambdaKey =
+    Id.toComparable
+
+
+bumpWidenedByKernel : S -> S
+bumpWidenedByKernel s =
+    let
+        stats =
+            s.lssStats
+    in
+    { s | lssStats = { stats | widenedByKernel = stats.widenedByKernel + 1 } }
+
+
 {-| M7: the immutable Reader-style context — set once at `initState`, never
 updated. Grouped so `S` updates copy one `env` ref rather than five dead ones.
 -}
@@ -66,6 +140,8 @@ type alias Env =
     , globalTypeEnv : TypeEnv.GlobalTypeEnv
     , currentModule : IO.Canonical -- entry module; home of every AnonymousLambda
     , superStatic : Dict Int IO.SuperType -- static solver truth ONLY (loadVar)
+    , lss : Config.LssConfig -- lambda-set specialization knobs; enabled=False is byte-identical off
+    , lamLabels : CoreDict.Dict Int String -- member id -> "defKey#id" (census rendering only)
     }
 
 
@@ -91,6 +167,13 @@ type alias S =
     -- item-independent). schemeMono: a CLOSED (var-free) callee scheme's
     -- classification, keyed by TOpt.toComparableGlobal. kernelAbiMono: a kernel
     -- ABI derived at all-ground args, keyed by "home.name|argKeys".
+    -- LSS (all GLOBAL — survive resetItem; signatures/members are per-run facts)
+    , lssSignatures : CoreDict.Dict String LssSignature -- TOpt.toComparableGlobal -> signature
+    , lssInProgress : CoreDict.Dict String () -- in-flight inference units (re-entry = EngineBug)
+    , lssMembers : CoreDict.Dict String Int -- interned non-lambda member ids (§3.3 keys)
+    , nextMemberId : Int -- shared supply, seeded past GlobalMVarState.nextLam
+    , lssStats : LssStats
+
     , schemeMono : CoreDict.Dict String Mono.MonoType
     , kernelAbiMono : CoreDict.Dict String Mono.MonoType
     , callMemo : CoreDict.Dict String ( Mono.MonoType, Mono.MonoType, Mono.SpecId ) -- open-scheme call at all-ground args: (funcMonoType, resultMonoType, specId) — D10 caches specId to skip re-enqueue/re-serialize on a hit
@@ -297,6 +380,51 @@ freshVar content =
     liftIO (UF.fresh (IO.makeDescriptor content Type.outermostRank Type.noMark Nothing))
 
 
+{-| Member id for a non-lambda function value, interned by kind+identity.
+Keys: "g|<global>" (global function ref), "c|<global>" (ctor used as a
+function), "k|home.name" (kernel ref), "a|field" (accessor value). Ids come
+from the same supply as Phase-0 lambda ids (`nextMemberId` is seeded past
+`GlobalMVarState.nextLam`), so member ids never collide (LSS_003).
+-}
+memberIdFor : String -> Step Int
+memberIdFor key s =
+    case CoreDict.get key s.lssMembers of
+        Just mid ->
+            Ok ( mid, s )
+
+        Nothing ->
+            let
+                mid =
+                    s.nextMemberId
+            in
+            Ok
+                ( mid
+                , { s
+                    | lssMembers = CoreDict.insert key mid s.lssMembers
+                    , nextMemberId = mid + 1
+                  }
+                )
+
+
+{-| Run a Step against a fresh scratch store, restoring the item's
+store/memo/revMemo afterward. This is `Translate.retranslateAt`'s
+stash/restore promoted to a combinator — the scratch store's Points never
+leak into the surrounding item, and vice versa.
+-}
+withScratchStore : Step a -> Step a
+withScratchStore step s0 =
+    let
+        sFresh =
+            { s0 | store = freshStore, memo = CoreDict.empty, revMemo = Array.empty }
+    in
+    case step sFresh of
+        Err e ->
+            Err e
+
+        Ok ( a, s1 ) ->
+            Ok ( a, { s1 | store = s0.store, memo = s0.memo, revMemo = s0.revMemo } )
+
+
 
 -- ====== WORKLIST / REGISTRY ======
 
@@ -310,7 +438,16 @@ enqueueSpec global monoType s =
     -- per-call closure; body unchanged → byte-identical.
     let
         ( specId, reg1 ) =
-            Registry.getOrCreateSpecId global monoType s.registry
+            if s.env.lss.enabled && not s.env.lss.keyed then
+                -- §8.5, keyed=False (M2/M3): keys are today's keys — lambda
+                -- sets never fan out specializations; the stored demand keeps
+                -- its annotations. (M4 adds keyed=True + per-global budget.)
+                Registry.getOrCreateSpecIdKeyed global (Mono.widenSets monoType) monoType s.registry
+
+            else
+                -- lss off (byte-identical path — no widenSets allocation),
+                -- or keyed=True (M4).
+                Registry.getOrCreateSpecId global monoType s.registry
     in
         if BitSet.member specId s.scheduled then
             -- D2: already scheduled ⇒ the spec existed ⇒ `getOrCreateSpecId`

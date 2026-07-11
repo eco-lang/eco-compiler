@@ -660,7 +660,7 @@ Non-function types have flattened arity 0.
 getFlattenedArity : Mono.MonoType -> Int
 getFlattenedArity monoType =
     case monoType of
-        Mono.MFunction params result ->
+        Mono.MFunction _ params result ->
             List.length params + getFlattenedArity result
 
         _ ->

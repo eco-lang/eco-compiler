@@ -32,7 +32,7 @@ For a non-function type, returns [].
 collectStageArities : Mono.MonoType -> List Int
 collectStageArities monoType =
     case monoType of
-        Mono.MFunction paramTypes resultType ->
+        Mono.MFunction _ paramTypes resultType ->
             List.length paramTypes :: collectStageArities resultType
 
         _ ->

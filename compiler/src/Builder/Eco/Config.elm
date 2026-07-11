@@ -77,6 +77,8 @@ loadBase maybeExplicit root =
 
   - `ECO_MONO_ENGINE=subst|solver|diff` selects the monomorphizer engine.
   - `ECO_MONO_DIFF_DUMP=1` makes `EngineDiff` embed full renderings on mismatch.
+  - `ECO_MONO_LSS=0|1|keyed` toggles lambda-set specialization (solver engine).
+  - `ECO_MONO_LSS_REPORT=1` renders the LSS census to stderr after mono.
 
 Applied here (not further downstream) so the override participates in
 `Config.hash`, which keys the Details cache. An unrecognized engine value is a
@@ -92,6 +94,16 @@ applyEnvOverrides cfg =
             (\cfg1 ->
                 (Utils.envLookupEnv "ECO_MONO_DIFF_DUMP" |> Task.mapError never)
                     |> Task.map (\dumpVal -> applyDumpOverride dumpVal cfg1)
+            )
+        |> Task.andThen
+            (\cfg2 ->
+                (Utils.envLookupEnv "ECO_MONO_LSS" |> Task.mapError never)
+                    |> Task.map (\lssVal -> applyLssOverride lssVal cfg2)
+            )
+        |> Task.andThen
+            (\cfg3 ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_REPORT" |> Task.mapError never)
+                    |> Task.map (\repVal -> applyLssReportOverride repVal cfg3)
             )
 
 
@@ -143,6 +155,59 @@ applyDumpOverride maybeVal cfg =
 
     else
         cfg
+
+
+{-| `ECO_MONO_LSS=0|1|keyed`: toggle lambda-set specialization. Unknown values
+are ignored (dev-only knob; silence beats failure here since `0` must always
+be a safe escape hatch).
+-}
+applyLssOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssOverride maybeVal cfg =
+    case Maybe.map (String.trim >> String.toLower) maybeVal of
+        Just "0" ->
+            updateLss (\lss -> { lss | enabled = False, keyed = False }) cfg
+
+        Just "1" ->
+            updateLss (\lss -> { lss | enabled = True }) cfg
+
+        Just "keyed" ->
+            updateLss (\lss -> { lss | enabled = True, keyed = True }) cfg
+
+        _ ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_REPORT=1|true|yes`: render the LSS census after mono.
+-}
+applyLssReportOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssReportOverride maybeVal cfg =
+    let
+        on =
+            case maybeVal of
+                Just v ->
+                    let
+                        t =
+                            String.toLower (String.trim v)
+                    in
+                    t == "1" || t == "true" || t == "yes"
+
+                Nothing ->
+                    False
+    in
+    if on then
+        updateLss (\lss -> { lss | report = True }) cfg
+
+    else
+        cfg
+
+
+updateLss : (Config.LssConfig -> Config.LssConfig) -> EcoConfig -> EcoConfig
+updateLss f cfg =
+    let
+        mono =
+            cfg.mono
+    in
+    { cfg | mono = { mono | lss = f mono.lss } }
 
 
 {-| Clamp out-of-range values and print any resulting warnings to stderr.

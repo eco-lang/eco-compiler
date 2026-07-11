@@ -49,9 +49,9 @@ Defer when:
 accessorTypeNeedsDefer : MonoType -> Bool
 accessorTypeNeedsDefer monoType =
     case monoType of
-        MFunction ((MRecord _) :: _) resultType ->
+        MFunction _ ((MRecord _) :: _) resultType ->
             case resultType of
-                MFunction _ _ ->
+                MFunction _ _ _ ->
                     True
 
                 _ ->
@@ -198,7 +198,7 @@ where neither fields nor fieldType contain any MVar.
 maybeAccessorSigFromExpected : MonoType -> Maybe ( MonoType, MonoType )
 maybeAccessorSigFromExpected expectedType =
     case expectedType of
-        MFunction ((MRecord fields) :: []) fieldType ->
+        MFunction _ ((MRecord fields) :: []) fieldType ->
             if not (Mono.containsAnyMVar (MRecord fields)) && not (Mono.containsAnyMVar fieldType) then
                 Just ( MRecord fields, fieldType )
 
@@ -219,6 +219,7 @@ buildAccessorClosure home counter fieldName recordType fieldType expectedType =
 
         closureInfo =
             { lambdaId = lambdaId
+            , srcLambda = Nothing
             , captures = []
             , params = [ ( "record", recordType ) ]
             , closureKind = Nothing
@@ -429,7 +430,7 @@ rewriteExpr home counter env maybeExpected expr =
                                 intermediateType =
                                     Maybe.withDefault
                                         (case Mono.typeOf funcExpr1 of
-                                            MFunction _ rt ->
+                                            MFunction _ _ rt ->
                                                 rt
 
                                             _ ->
@@ -532,7 +533,7 @@ rewriteExpr home counter env maybeExpected expr =
 
                 bodyExpected =
                     case closureType of
-                        MFunction _ rt ->
+                        MFunction _ _ rt ->
                             Just rt
 
                         _ ->

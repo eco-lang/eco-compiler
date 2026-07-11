@@ -30,6 +30,7 @@ import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.ResolveAccessorValues as ResolveAccessorValues
 import Compiler.Monomorphize.State as State
 import Compiler.MonoSolver.Engine as Engine exposing (Failure(..), Step)
+import Compiler.MonoSolver.LssInfer as LssInfer
 import Compiler.MonoSolver.Store as Store
 import Compiler.MonoSolver.Zonk as Zonk
 import Compiler.Reporting.Annotation as A
@@ -568,11 +569,11 @@ translate expr s0 =
                                 Ok ( specId, s2 ) ->
                                     Ok ( Mono.MonoVarGlobal region specId monoType, s2 )
 
-        TOpt.Function params body meta ->
-            specializeLambda params body meta.tipe s0
+        TOpt.Function srcLam params body meta ->
+            specializeLambda srcLam params body meta.tipe s0
 
-        TOpt.TrackedFunction trackedParams body meta ->
-            specializeLambda (List.map (\( locName, pt ) -> ( A.toValue locName, pt )) trackedParams) body meta.tipe s0
+        TOpt.TrackedFunction srcLam trackedParams body meta ->
+            specializeLambda srcLam (List.map (\( locName, pt ) -> ( A.toValue locName, pt )) trackedParams) body meta.tipe s0
 
         -- Deferred to later milestones:
         _ ->
@@ -665,7 +666,38 @@ closure over `Elm.Platform.leaf name value`. Incoming ports enqueue their decode
 Mirrors `Specialize.specializePortNode`.
 -}
 specializePort : Bool -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoNode
-specializePort incoming expr canType requestedMonoType =
+specializePort incoming expr canType requestedMonoType s0 =
+    -- LSS_004: port payload/encoder arrows are kernel-facing — poison their
+    -- set slots before the body walks/loads them (no-op when lss is off).
+    case poisonPortArrowsIfOn canType s0 of
+        Err e ->
+            Err e
+
+        Ok ( _, s1 ) ->
+            specializePortBody incoming expr canType requestedMonoType s1
+
+
+poisonPortArrowsIfOn : Can.Type TypeIds.MVarId -> Step ()
+poisonPortArrowsIfOn canType s =
+    if s.env.lss.enabled then
+        case Store.loadType canType s of
+            Err e ->
+                Err e
+
+            Ok ( v, s1 ) ->
+                case Store.poisonArrowSets v s1 of
+                    Err e ->
+                        Err e
+
+                    Ok ( _, s2 ) ->
+                        Ok ( (), Engine.bumpWidenedByKernel s2 )
+
+    else
+        Ok ( (), s )
+
+
+specializePortBody : Bool -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoNode
+specializePortBody incoming expr canType requestedMonoType =
     Engine.andThen
         (\_ ->
             Engine.andThen
@@ -678,14 +710,14 @@ specializePort incoming expr canType requestedMonoType =
                             let
                                 effectiveType =
                                     case requestedMonoType of
-                                        Mono.MFunction _ _ ->
+                                        Mono.MFunction _ _ _ ->
                                             requestedMonoType
 
                                         _ ->
                                             classifiedCan
                             in
                             case effectiveType of
-                                Mono.MFunction [ paramType ] resultType ->
+                                Mono.MFunction _ [ paramType ] resultType ->
                                     Engine.andThen
                                         (\lambdaId ->
                                             let
@@ -702,10 +734,11 @@ specializePort incoming expr canType requestedMonoType =
                                                     Mono.MonoLiteral (Mono.LStr portName) Mono.MString
 
                                                 leafKernel valueType =
-                                                    Mono.MonoVarKernel region "Elm" "Platform" "leaf" (Mono.MFunction [ Mono.MString, valueType ] resultType)
+                                                    Mono.MonoVarKernel region "Elm" "Platform" "leaf" (Mono.MFunction Mono.LTop [ Mono.MString, valueType ] resultType)
 
                                                 closureInfo =
                                                     { lambdaId = lambdaId
+                                                    , srcLambda = Nothing
                                                     , captures = []
                                                     , params = [ ( paramName, paramType ) ]
                                                     , closureKind = Nothing
@@ -740,7 +773,7 @@ specializePort incoming expr canType requestedMonoType =
                                                         let
                                                             encodedType =
                                                                 case Mono.typeOf encoderMono of
-                                                                    Mono.MFunction _ r ->
+                                                                    Mono.MFunction _ _ r ->
                                                                         r
 
                                                                     t ->
@@ -834,7 +867,7 @@ remapEcoVarsFresh nextId0 abiType =
                 Mono.MVar _ _ ->
                     ( t, ( mapping, nextId ) )
 
-                Mono.MFunction args r ->
+                Mono.MFunction anno args r ->
                     let
                         ( args1, acc1 ) =
                             List.foldr (\a ( accL, accS ) -> let ( a1, accS1 ) = go a accS in ( a1 :: accL, accS1 )) ( [], ( mapping, nextId ) ) args
@@ -842,7 +875,7 @@ remapEcoVarsFresh nextId0 abiType =
                         ( r1, acc2 ) =
                             go r acc1
                     in
-                    ( Mono.MFunction args1 r1, acc2 )
+                    ( Mono.MFunction anno args1 r1, acc2 )
 
                 Mono.MList e ->
                     let
@@ -925,7 +958,7 @@ monoKindDebug =
 monoKind : Mono.MonoType -> String
 monoKind mt =
     case mt of
-        Mono.MFunction ps r ->
+        Mono.MFunction _ ps r ->
             "(" ++ String.join "," (List.map monoKind ps) ++ "->" ++ monoKind r ++ ")"
 
         Mono.MCustom _ n args ->
@@ -1056,7 +1089,7 @@ extractFieldTypes n monoType =
 
     else
         case monoType of
-            Mono.MFunction args result ->
+            Mono.MFunction _ args result ->
                 args ++ extractFieldTypes (n - List.length args) result
 
             _ ->
@@ -1070,7 +1103,7 @@ extractCtorResultType n monoType =
 
     else
         case monoType of
-            Mono.MFunction _ result ->
+            Mono.MFunction _ _ result ->
                 extractCtorResultType (n - 1) result
 
             _ ->
@@ -1087,8 +1120,8 @@ allocate `AnonymousLambda currentModule counter++`, translate the body, and
 compute captures via the shared `Closure.computeClosureCaptures`. `closureKind`
 and `captureAbi` are placeholder `Nothing` at mono time (filled by GlobalOpt).
 -}
-specializeLambda : List ( Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
-specializeLambda params body canType =
+specializeLambda : Maybe TypeIds.SrcLambdaId -> List ( Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
+specializeLambda srcLam params body canType =
     Engine.andThen
         (\monoType0 ->
             Engine.andThen
@@ -1115,6 +1148,7 @@ specializeLambda params body canType =
                                 (\monoBody ->
                                     Mono.MonoClosure
                                         { lambdaId = lambdaId
+                                        , srcLambda = srcLam
                                         , captures = Closure.computeClosureCaptures monoParams monoBody
                                         , params = monoParams
                                         , closureKind = Nothing
@@ -1129,7 +1163,32 @@ specializeLambda params body canType =
                 )
                 (Engine.traverse (\( name, paramCanType ) -> Engine.map (\mt -> ( name, mt )) (classify paramCanType)) params)
         )
-        (classify canType)
+        (classifyLambdaHead srcLam canType)
+
+
+{-| The lambda's head type. lss off: exactly the storeless `classify` (the
+byte-identical path). lss on: LOAD the lambda's type (arrows slotted, through
+the ITEM memo so demand concretization is visible), inject the lambda's own
+member into the head arrow's slot, and zonk — the closure's MonoType then
+carries `LSet [self, …demand-joined members]` on its head arrow (design §8.2).
+-}
+classifyLambdaHead : Maybe TypeIds.SrcLambdaId -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
+classifyLambdaHead srcLam canType s0 =
+    if s0.env.lss.enabled then
+        case Store.loadType canType s0 of
+            Err e ->
+                Err e
+
+            Ok ( funcVar, s1 ) ->
+                case LssInfer.injectLambdaMember srcLam funcVar s1 of
+                    Err e ->
+                        Err e
+
+                    Ok ( _, s2 ) ->
+                        Store.zonkToMono funcVar s2
+
+    else
+        classify canType s0
 
 
 allocLambdaId : Step Mono.LambdaId
@@ -1167,7 +1226,7 @@ monoTypeMentionsEco mt =
         Mono.MVar _ Mono.CEcoValue ->
             True
 
-        Mono.MFunction args r ->
+        Mono.MFunction _ args r ->
             List.any monoTypeMentionsEco args || monoTypeMentionsEco r
 
         Mono.MList t ->
@@ -1406,25 +1465,89 @@ translateGlobalCall region funcRegion global funcCanType args callCanType s =
         -- Fast paths are guarded to no multi-instance recording in flight (that
         -- path has side effects they must not skip).
         if List.isEmpty s.numberMulti && List.isEmpty s.localMulti then
-            if groundCanType funcCanType then
-                -- M2a: a CLOSED (var-free) scheme instantiates to a fully-ground
-                -- structure — its classification is item-independent (cached) and
-                -- unifying params against args is a no-op on the scheme, so only
-                -- flow demand INTO non-ground args.
-                translateGlobalCallFast region funcRegion global funcCanType args callCanType s
+            -- LSS gate: the cached/storeless fast classifications stamp LTop,
+            -- which is exact only when the callee's signature is trivial AND
+            -- no argument type mentions an arrow (an arrow-free ground call
+            -- cannot transport sets). lss off ⇒ trivially permitted.
+            case lssFastOk global args s of
+                Err e ->
+                    Err e
 
-            else if groundCanType callCanType && List.all (groundCanType << TOpt.typeOf) args then
-                -- M2b: an OPEN scheme called with all-ground args and result. The
-                -- instantiate+unify+zonk outcome is then a pure function of
-                -- (global, argMonos, resultMono) — memoize it. Ground args carry
-                -- no vars, so there is no demand to flow into them or back.
-                translateGlobalCallGroundMemo region funcRegion global funcCanType args callCanType s
+                Ok ( fastOk, s0 ) ->
+                    if not fastOk then
+                        translateGlobalCallSlow region funcRegion global funcCanType args callCanType s0
 
-            else
-                translateGlobalCallSlow region funcRegion global funcCanType args callCanType s
+                    else if groundCanType funcCanType then
+                        -- M2a: a CLOSED (var-free) scheme instantiates to a fully-ground
+                        -- structure — its classification is item-independent (cached) and
+                        -- unifying params against args is a no-op on the scheme, so only
+                        -- flow demand INTO non-ground args.
+                        translateGlobalCallFast region funcRegion global funcCanType args callCanType s0
+
+                    else if groundCanType callCanType && List.all (groundCanType << TOpt.typeOf) args then
+                        -- M2b: an OPEN scheme called with all-ground args and result. The
+                        -- instantiate+unify+zonk outcome is then a pure function of
+                        -- (global, argMonos, resultMono) — memoize it. Ground args carry
+                        -- no vars, so there is no demand to flow into them or back.
+                        translateGlobalCallGroundMemo region funcRegion global funcCanType args callCanType s0
+
+                    else
+                        translateGlobalCallSlow region funcRegion global funcCanType args callCanType s0
 
         else
             translateGlobalCallSlow region funcRegion global funcCanType args callCanType s
+
+
+{-| May this call take the cached fast paths under LSS? `sigTrivial` forces
+the signature computation on first use — the memo makes that a one-time cost
+per global.
+-}
+lssFastOk : TOpt.Global -> List (TOpt.Expr TypeIds.MVarId) -> Step Bool
+lssFastOk global args s =
+    if not s.env.lss.enabled then
+        Ok ( True, s )
+
+    else if List.any (canTypeHasArrow << TOpt.typeOf) args then
+        Ok ( False, s )
+
+    else
+        case LssInfer.signatureFor global s of
+            Err e ->
+                Err e
+
+            Ok ( sig, s1 ) ->
+                Ok ( sig.trivial, s1 )
+
+
+{-| Does a canonical type mention an arrow anywhere? (Syntactic; aliases
+followed when filled.)
+-}
+canTypeHasArrow : Can.Type TypeIds.MVarId -> Bool
+canTypeHasArrow t =
+    case t of
+        Can.TLambda _ _ ->
+            True
+
+        Can.TVar _ ->
+            False
+
+        Can.TType _ _ typeArgs ->
+            List.any canTypeHasArrow typeArgs
+
+        Can.TRecord fields _ ->
+            Dict.foldl (\_ (Can.FieldType _ ft) acc -> acc || canTypeHasArrow ft) False fields
+
+        Can.TUnit ->
+            False
+
+        Can.TTuple a b rest ->
+            canTypeHasArrow a || canTypeHasArrow b || List.any canTypeHasArrow rest
+
+        Can.TAlias _ _ aliasArgs (Can.Filled real) ->
+            canTypeHasArrow real || List.any (\( _, at ) -> canTypeHasArrow at) aliasArgs
+
+        Can.TAlias _ _ aliasArgs (Can.Holey real) ->
+            canTypeHasArrow real || List.any (\( _, at ) -> canTypeHasArrow at) aliasArgs
 
 
 {-| True when a canonical type has no free type variable (a closed scheme).
@@ -1474,7 +1597,7 @@ mFunctionParams n mt =
 
     else
         case mt of
-            Mono.MFunction (p :: _) result ->
+            Mono.MFunction _ (p :: _) result ->
                 p :: mFunctionParams (n - 1) result
 
             _ ->
@@ -1697,7 +1820,7 @@ translateGlobalCallSlow region funcRegion global funcCanType args callCanType s0
     -- needed for number-multi and for a faithful funcMonoType).
     -- D11: direct state-passing (desugared 7-deep andThen/map nest). Eliminates
     -- the seven per-call monad closures; monad-law-preserving → byte-identical.
-        case instantiate funcCanType s0 of
+        case instantiateLss global funcCanType s0 of
             Err e ->
                 Err e
 
@@ -1799,7 +1922,7 @@ peelResult n monoType =
 
     else
         case monoType of
-            Mono.MFunction _ result ->
+            Mono.MFunction _ _ result ->
                 peelResult (n - 1) result
 
             _ ->
@@ -1836,8 +1959,8 @@ unifyParamsBestEffort funcVar argCanTypes =
         argCanType :: rest ->
             Engine.andThen
                 (\desc ->
-                    case desc.content of
-                        IO.Structure (IO.Fun1 pParam pRest) ->
+                    case Store.arrowParts desc.content of
+                        Just ( pParam, pRest ) ->
                             Engine.andThen
                                 (\argVar ->
                                     Engine.andThen
@@ -1846,7 +1969,7 @@ unifyParamsBestEffort funcVar argCanTypes =
                                 )
                                 (Store.loadType argCanType)
 
-                        _ ->
+                        Nothing ->
                             Engine.succeed ()
                 )
                 (Engine.liftIO (UF.get funcVar))
@@ -1887,8 +2010,8 @@ unifyParamsCollect funcVar args s0 =
                         Err e
 
                     Ok ( desc, s1 ) ->
-                        case desc.content of
-                            IO.Structure (IO.Fun1 pParam pRest) ->
+                        case Store.arrowParts desc.content of
+                            Just ( pParam, pRest ) ->
                                 case localMultiArgName arg s1 of
                                     Err e ->
                                         Err e
@@ -1931,7 +2054,7 @@ unifyParamsCollect funcVar args s0 =
                                                                     Ok ( restStash, s5 ) ->
                                                                         Ok ( Nothing :: restStash, s5 )
 
-                            _ ->
+                            Nothing ->
                                 Ok ( List.map (\_ -> Nothing) args, s1 )
 
 
@@ -2155,7 +2278,26 @@ deriveKernelAbiTypeWith kernelId canFuncType funcVarStep =
                 )
                 (Store.zonkToMono funcVar)
         )
-        funcVarStep
+        (Engine.andThen poisonKernelArrowsThen funcVarStep)
+
+
+{-| LSS_004: arrows crossing the kernel ABI are dynamic. Poison the loaded
+kernel scheme's set slots BEFORE it is zonked or unified with args, so both
+the ABI readback and the item-memo Points shared with the arguments carry ⊤.
+No-op when lss is off.
+-}
+poisonKernelArrowsThen : IO.Variable -> Step IO.Variable
+poisonKernelArrowsThen funcVar s =
+    if s.env.lss.enabled then
+        case Store.poisonArrowSets funcVar s of
+            Err e ->
+                Err e
+
+            Ok ( _, s1 ) ->
+                Ok ( funcVar, Engine.bumpWidenedByKernel s1 )
+
+    else
+        Ok ( funcVar, s )
 
 
 {-| Load a type with a fresh, isolated memo so its vars do not share Points with
@@ -2166,6 +2308,20 @@ instantiate : Can.Type TypeIds.MVarId -> Step IO.Variable
 instantiate canType =
     -- D8: one S-write instead of three (see Store.loadTypeIsolated).
     Store.loadTypeIsolated canType
+
+
+{-| `instantiate` with the callee's LSS signature facts applied to the fresh
+instantiation's arrow slots (design §8.4). lss-off = exactly `instantiate`.
+`funcCanType` is already annotation-sourced by `translateCall` (LSS_006's
+other half — the signature side enumerates the same source).
+-}
+instantiateLss : TOpt.Global -> Can.Type TypeIds.MVarId -> Step IO.Variable
+instantiateLss global funcCanType s =
+    if s.env.lss.enabled then
+        LssInfer.instantiateWithSignature global funcCanType s
+
+    else
+        instantiate funcCanType s
 
 
 {-| Unify each parameter slot of a (possibly polymorphic) function Point with
@@ -2181,8 +2337,8 @@ unifyParamsWithArgs funcVar argCanTypes =
         argCanType :: rest ->
             Engine.andThen
                 (\desc ->
-                    case desc.content of
-                        IO.Structure (IO.Fun1 pParam pRest) ->
+                    case Store.arrowParts desc.content of
+                        Just ( pParam, pRest ) ->
                             Engine.andThen
                                 (\argVar ->
                                     Engine.andThen
@@ -2191,7 +2347,7 @@ unifyParamsWithArgs funcVar argCanTypes =
                                 )
                                 (Store.loadType argCanType)
 
-                        _ ->
+                        Nothing ->
                             -- Over-applied or not a function at this depth: stop.
                             Engine.succeed ()
                 )
@@ -2285,11 +2441,11 @@ resultVarAfter funcVar n =
     else
         Engine.andThen
             (\desc ->
-                case desc.content of
-                    IO.Structure (IO.Fun1 _ pRest) ->
+                case Store.arrowParts desc.content of
+                    Just ( _, pRest ) ->
                         resultVarAfter pRest (n - 1)
 
-                    _ ->
+                    Nothing ->
                         Engine.succeed Nothing
             )
             (Engine.liftIO (UF.get funcVar))
@@ -2378,7 +2534,7 @@ sameShapeModuloNumeric a b =
         ( Mono.MFloat, Mono.MVar _ Mono.CNumber ) ->
             True
 
-        ( Mono.MFunction args1 r1, Mono.MFunction args2 r2 ) ->
+        ( Mono.MFunction _ args1 r1, Mono.MFunction _ args2 r2 ) ->
             List.length args1 == List.length args2 && List.all identity (List.map2 sameShapeModuloNumeric args1 args2) && sameShapeModuloNumeric r1 r2
 
         ( Mono.MList e1, Mono.MList e2 ) ->
@@ -2830,7 +2986,7 @@ monoTypeMentionsNumeric mt =
         Mono.MCustom _ _ args ->
             List.any monoTypeMentionsNumeric args
 
-        Mono.MFunction args r ->
+        Mono.MFunction _ args r ->
             List.any monoTypeMentionsNumeric args || monoTypeMentionsNumeric r
 
         _ ->
@@ -3984,10 +4140,10 @@ toptToMonoGlobal (TOpt.Global home name) =
 nodeKind : TOpt.Expr TypeIds.MVarId -> String
 nodeKind expr =
     case expr of
-        TOpt.Function _ _ _ ->
+        TOpt.Function _ _ _ _ ->
             "closure/lambda (M4)"
 
-        TOpt.TrackedFunction _ _ _ ->
+        TOpt.TrackedFunction _ _ _ _ ->
             "closure/lambda (M4)"
 
         TOpt.Case _ _ _ _ _ ->

@@ -160,7 +160,8 @@ lambdaChain superVars subst argsAcc to =
         _ ->
             List.foldl
                 (\argType acc ->
-                    Mono.MFunction [ canTypeToMonoWith superVars subst argType ] acc
+                    -- Pure classification path: stamps LTop (design §6.2).
+                    Mono.MFunction Mono.LTop [ canTypeToMonoWith superVars subst argType ] acc
                 )
                 (canTypeToMonoWith superVars subst to)
                 argsAcc

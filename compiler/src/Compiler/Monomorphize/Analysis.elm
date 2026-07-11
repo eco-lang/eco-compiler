@@ -83,7 +83,7 @@ collectCustomTypesFromMonoType monoType acc =
         Mono.MRecord fields ->
             Dict.foldl (\_ t a -> collectCustomTypesFromMonoType t a) acc fields
 
-        Mono.MFunction argTypes resultType ->
+        Mono.MFunction _ argTypes resultType ->
             List.foldl collectCustomTypesFromMonoType
                 (collectCustomTypesFromMonoType resultType acc)
                 argTypes

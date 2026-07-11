@@ -239,7 +239,7 @@ checkMonoType context monoType =
         Mono.MCustom _ _ typeArgs ->
             List.concatMap (checkMonoType context) typeArgs
 
-        Mono.MFunction paramTypes returnType ->
+        Mono.MFunction _ paramTypes returnType ->
             List.concatMap (checkMonoType context) paramTypes
                 ++ checkMonoType context returnType
 

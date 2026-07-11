@@ -261,7 +261,7 @@ checkExpr env context expr =
         -- Note: We don't check that function type matches param -> body type directly
         -- because polymorphic functions may have more general return types than the body.
         -- Instead, we just check the body with the extended environment.
-        TOpt.Function params body _ ->
+        TOpt.Function _ params body _ ->
             let
                 extendedEnv =
                     { env
@@ -274,7 +274,7 @@ checkExpr env context expr =
             in
             checkExpr extendedEnv context body
 
-        TOpt.TrackedFunction params body _ ->
+        TOpt.TrackedFunction _ params body _ ->
             let
                 extendedEnv =
                     { env

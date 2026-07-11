@@ -130,7 +130,7 @@ MONO\_021 specifically targets function parameter and result types.
 checkNodeType : String -> String -> Mono.MonoType -> List Violation
 checkNodeType ctx nodeKind monoType =
     case monoType of
-        Mono.MFunction _ _ ->
+        Mono.MFunction _ _ _ ->
             let
                 cEcoVars =
                     collectCEcoValueVars monoType
@@ -341,7 +341,7 @@ checkTailDefParams ctx defName params =
 checkFunctionExprType : String -> String -> Mono.MonoType -> List Violation
 checkFunctionExprType ctx exprKind monoType =
     case monoType of
-        Mono.MFunction _ _ ->
+        Mono.MFunction _ _ _ ->
             let
                 cEcoVars =
                     collectCEcoValueVars monoType
@@ -407,7 +407,7 @@ collectCEcoValueVars monoType =
         Mono.MList inner ->
             collectCEcoValueVars inner
 
-        Mono.MFunction args result ->
+        Mono.MFunction _ args result ->
             List.concatMap collectCEcoValueVars args
                 ++ collectCEcoValueVars result
 

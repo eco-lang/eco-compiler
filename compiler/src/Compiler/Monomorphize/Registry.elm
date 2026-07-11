@@ -1,6 +1,7 @@
 module Compiler.Monomorphize.Registry exposing
     ( emptyRegistry
     , getOrCreateSpecId
+    , getOrCreateSpecIdKeyed
     , lookupSpecKey
     , updateRegistryType
     )
@@ -66,6 +67,36 @@ getOrCreateSpecId global monoType registry =
             , { nextId = specId + 1
               , mapping = Dict.insert key specId registry.mapping
               , reverseMapping = Array.push (Just ( global, monoType )) registry.reverseMapping
+              }
+            )
+
+
+{-| Like `getOrCreateSpecId`, but the dedup KEY is computed from `keyType`
+while the reverse mapping stores `storeType`. LSS `keyed = False` semantics
+(design §8.5): keys are annotation-widened so lambda sets never fan out
+specializations, while the stored demand keeps its annotations (types never
+widen — MONO_020/021/024). On a key hit the first demand's stored type wins;
+node annotations come from in-item facts, not the winning demand.
+-}
+getOrCreateSpecIdKeyed : Global -> MonoType -> MonoType -> SpecializationRegistry -> ( SpecId, SpecializationRegistry )
+getOrCreateSpecIdKeyed global keyType storeType registry =
+    let
+        key =
+            Mono.toComparableSpecKey (Mono.SpecKey global keyType)
+    in
+    case Dict.get key registry.mapping of
+        Just specId ->
+            ( specId, registry )
+
+        Nothing ->
+            let
+                specId =
+                    registry.nextId
+            in
+            ( specId
+            , { nextId = specId + 1
+              , mapping = Dict.insert key specId registry.mapping
+              , reverseMapping = Array.push (Just ( global, storeType )) registry.reverseMapping
               }
             )
 

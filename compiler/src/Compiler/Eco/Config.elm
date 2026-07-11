@@ -1,7 +1,7 @@
 module Compiler.Eco.Config exposing
     ( EcoConfig, InlineConfig, BytesFusionConfig, LogicalTypesConfig
-    , MonoEngine(..), MonoConfig
-    , default, decoder, hash, clamp
+    , MonoEngine(..), MonoConfig, LssConfig
+    , default, defaultLss, decoder, hash, clamp
     , monoEngineFromString
     )
 
@@ -61,6 +61,42 @@ embed both `Debug.toString` renderings in the mismatch error for offline diff.
 type alias MonoConfig =
     { engine : MonoEngine
     , diffDump : Bool
+    , lss : LssConfig
+    }
+
+
+{-| Lambda-set specialization knobs (design_docs/monomorphization/
+lambda-set-specialization-design.md §10). `enabled = False` must reproduce
+today's pipeline byte-for-byte: every arrow annotation is `LTop` and no set
+slots are minted in solver stores. Only meaningful under `EngineSolver`;
+`EngineDiff` always forces it off (the subst engine cannot produce sets).
+
+  - `enabled`: master switch (M2+).
+  - `keyed`: lambda sets participate in specialization keys (M4+).
+  - `maxSetSize`: a zonked set larger than this widens to `LTop`.
+  - `maxSpecsPerGlobal`: registry budget; past it, NEW demands key set-widened.
+  - `report`: render an LSS census to stderr after mono (excluded from `hash`,
+    like `diffDump` — output-only).
+
+-}
+type alias LssConfig =
+    { enabled : Bool
+    , keyed : Bool
+    , maxSetSize : Int
+    , maxSpecsPerGlobal : Int
+    , report : Bool
+    }
+
+
+{-| The built-in LSS defaults (everything off; budgets per the design doc).
+-}
+defaultLss : LssConfig
+defaultLss =
+    { enabled = False
+    , keyed = False
+    , maxSetSize = 8
+    , maxSpecsPerGlobal = 64
+    , report = False
     }
 
 
@@ -109,7 +145,7 @@ default =
         }
     , bytesFusion = { enabled = True }
     , logicalTypes = { customMaxFields = 8 }
-    , mono = { engine = EngineSubst, diffDump = False }
+    , mono = { engine = EngineSubst, diffDump = False, lss = defaultLss }
     }
 
 
@@ -154,12 +190,27 @@ string falls back to the default. `diffDump` is env-only (never from JSON).
 monoDecoder : D.Decoder x MonoConfig
 monoDecoder =
     D.pure
-        (\s ->
+        (\s lss ->
             { engine = Maybe.withDefault default.mono.engine (monoEngineFromString s)
             , diffDump = default.mono.diffDump
+            , lss = lss
             }
         )
         |> D.apply (D.optionalField "engine" D.string "subst")
+        |> D.apply (D.optionalField "lss" lssDecoder defaultLss)
+
+
+{-| Decode the `mono.lss` block. `report` is env-only in spirit but accepted
+from JSON for convenience; it never affects `hash`.
+-}
+lssDecoder : D.Decoder x LssConfig
+lssDecoder =
+    D.pure LssConfig
+        |> D.apply (D.optionalField "enabled" D.bool defaultLss.enabled)
+        |> D.apply (D.optionalField "keyed" D.bool defaultLss.keyed)
+        |> D.apply (D.optionalField "maxSetSize" D.int defaultLss.maxSetSize)
+        |> D.apply (D.optionalField "maxSpecsPerGlobal" D.int defaultLss.maxSpecsPerGlobal)
+        |> D.apply (D.optionalField "report" D.bool defaultLss.report)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -242,5 +293,34 @@ hash cfg =
 
                     EngineDiff ->
                         [ "mono=diff" ]
+               )
+            -- LSS tokens appear ONLY for non-default values (report excluded:
+            -- output-only, never affects artifacts).
+            ++ (let
+                    lss =
+                        cfg.mono.lss
+                in
+                List.concat
+                    [ if lss.enabled then
+                        [ "lss=1" ]
+
+                      else
+                        []
+                    , if lss.keyed then
+                        [ "lssK=1" ]
+
+                      else
+                        []
+                    , if lss.maxSetSize /= defaultLss.maxSetSize then
+                        [ "lssS=" ++ String.fromInt lss.maxSetSize ]
+
+                      else
+                        []
+                    , if lss.maxSpecsPerGlobal /= defaultLss.maxSpecsPerGlobal then
+                        [ "lssB=" ++ String.fromInt lss.maxSpecsPerGlobal ]
+
+                      else
+                        []
+                    ]
                )
         )

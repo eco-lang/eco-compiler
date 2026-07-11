@@ -118,7 +118,7 @@ checkDefFunctionTypes context def =
 collectExprFunctionTypeChecks : String -> TOpt.Expr Name -> List (() -> Expect.Expectation)
 collectExprFunctionTypeChecks context expr =
     case expr of
-        TOpt.Function params bodyExpr fnMeta ->
+        TOpt.Function _ params bodyExpr fnMeta ->
             -- The function's attached type should match TLambda chain of params -> body type
             let
                 paramTypes =
@@ -134,7 +134,7 @@ collectExprFunctionTypeChecks context expr =
             in
             typeCheck ++ collectExprFunctionTypeChecks context bodyExpr
 
-        TOpt.TrackedFunction params bodyExpr fnMeta ->
+        TOpt.TrackedFunction _ params bodyExpr fnMeta ->
             let
                 paramTypes =
                     List.map Tuple.second params

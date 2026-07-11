@@ -74,6 +74,15 @@ occursHelp seen var foundCycle =
                                 IO.Fun1 a b ->
                                     occursHelp newSeen b foundCycle |> IO.andThen (occursHelp newSeen a)
 
+                                IO.FunL a b s ->
+                                    occursHelp newSeen s foundCycle
+                                        |> IO.andThen (occursHelp newSeen b)
+                                        |> IO.andThen (occursHelp newSeen a)
+
+                                IO.LambdaSet1 _ _ ->
+                                    -- Ground member ids: no child variables.
+                                    IO.pure foundCycle
+
                                 IO.EmptyRecord1 ->
                                     IO.pure foundCycle
 

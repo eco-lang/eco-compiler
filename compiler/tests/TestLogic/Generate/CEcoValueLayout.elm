@@ -147,7 +147,7 @@ checkCEcoValueInLayoutPosition context monoType =
             -- Custom type arguments can be CEcoValue (passed through)
             List.concatMap (checkCEcoValueInLayoutPosition context) typeArgs
 
-        Mono.MFunction paramTypes returnType ->
+        Mono.MFunction _ paramTypes returnType ->
             -- Function parameters and return types can contain CEcoValue
             List.concatMap (checkCEcoValueInLayoutPosition context) paramTypes
                 ++ checkCEcoValueInLayoutPosition context returnType

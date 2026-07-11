@@ -184,7 +184,7 @@ monoTypeToString monoType =
         Mono.MCustom _ name _ ->
             name
 
-        Mono.MFunction params result ->
+        Mono.MFunction _ params result ->
             let
                 paramStr =
                     case params of
