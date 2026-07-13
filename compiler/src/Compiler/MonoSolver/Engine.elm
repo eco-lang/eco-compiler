@@ -93,6 +93,8 @@ type alias LssSignature =
 -}
 type alias LssStats =
     { setsZonked : Int
+    , joinRounds : Int -- LSS_010 drain-end flush rounds
+    , retranslations : Int -- specs re-translated across all flush rounds
     , widenedBySize : Int
     , widenedByKernel : Int
     , widenedByBudget : Int
@@ -102,7 +104,7 @@ type alias LssStats =
 
 emptyLssStats : LssStats
 emptyLssStats =
-    { setsZonked = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, sizeHist = CoreDict.empty }
+    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, sizeHist = CoreDict.empty }
 
 
 {-| The all-defaults signature for an annotation with `n` arrows.
@@ -154,7 +156,8 @@ type alias S =
     , nodes : Array (Maybe Mono.MonoNode)
     , inProgress : BitSet
     , scheduled : BitSet
-    , dirtySpecs : BitSet -- LSS_010: specs whose stored type was annotation-JOINED after scheduling; re-translated when popped (flag-off: never set)
+    , dirtySpecs : BitSet -- LSS_010: specs whose stored type was annotation-JOINED after scheduling; re-translated at drain-end flush rounds (flag-off: never set)
+    , dirtyList : List Mono.SpecId -- enumeration twin of dirtySpecs (BitSet has no iteration); duplicate-free via the bit check; consumed by the drain-end flush
     , specCountByGlobal : CoreDict.Dict String Int -- M4 keyed budget: specs created per global (only maintained under lss.keyed; consulted by underBudget)
     , registry : Mono.SpecializationRegistry
     , ports : List Mono.PortRegistration
@@ -466,25 +469,12 @@ enqueueSpec global monoType s =
                 -- pending) was/will be seeded from a NARROWER demand — its
                 -- body annotations could claim a singleton set that lies about
                 -- this caller's values, and a fast-dispatch stamp on such a
-                -- site is a silent miscompile. Mark dirty; re-push unless the
-                -- spec is mid-translation (finishNode re-pushes those).
-                if BitSet.member specId s.dirtySpecs then
-                    Ok ( specId, { s | registry = reg1 } )
-
-                else
-                    Ok
-                        ( specId
-                        , { s
-                            | registry = reg1
-                            , dirtySpecs = BitSet.insertGrowing specId s.dirtySpecs
-                            , worklist =
-                                if BitSet.member specId s.inProgress then
-                                    s.worklist
-
-                                else
-                                    SpecializeGlobal specId :: s.worklist
-                          }
-                        )
+                -- site is a silent miscompile. Mark dirty ONLY — re-translation
+                -- happens in drain-end flush rounds (markDirty), so a spec
+                -- re-translates once per round with its FULLY-joined demand
+                -- instead of once per join (the per-join immediate re-push
+                -- cascaded into hour-scale churn on the self-compile).
+                Ok ( specId, markDirty specId reg1 s )
 
             else
                 -- D2: already scheduled and stored type unchanged ⇒ the
@@ -501,6 +491,23 @@ enqueueSpec global monoType s =
                     , worklist = SpecializeGlobal specId :: s.worklist
                   }
                 )
+
+
+{-| LSS_010: record that a scheduled spec's stored type was join-widened.
+Duplicate-free: the BitSet guards the list. The drain-end flush re-pushes
+and `processItem` consumes the bit when it re-translates.
+-}
+markDirty : Mono.SpecId -> Mono.SpecializationRegistry -> S -> S
+markDirty specId reg1 s =
+    if BitSet.member specId s.dirtySpecs then
+        { s | registry = reg1 }
+
+    else
+        { s
+            | registry = reg1
+            , dirtySpecs = BitSet.insertGrowing specId s.dirtySpecs
+            , dirtyList = specId :: s.dirtyList
+        }
 
 
 {-| M4 (`keyed = True`, design §8.5): the dedup KEY is the fully annotated
@@ -566,23 +573,8 @@ enqueueSpecKeyed global monoType s =
     in
     if BitSet.member specId s1.scheduled then
         if storedChanged then
-            -- LSS_010 dirty machinery — same as enqueueSpec's tail.
-            if BitSet.member specId s1.dirtySpecs then
-                Ok ( specId, s1 )
-
-            else
-                Ok
-                    ( specId
-                    , { s1
-                        | dirtySpecs = BitSet.insertGrowing specId s1.dirtySpecs
-                        , worklist =
-                            if BitSet.member specId s1.inProgress then
-                                s1.worklist
-
-                            else
-                                SpecializeGlobal specId :: s1.worklist
-                      }
-                    )
+            -- LSS_010 dirty machinery — mark only; drain-end flush re-pushes.
+            Ok ( specId, markDirty specId s1.registry s1 )
 
         else
             Ok ( specId, s1 )

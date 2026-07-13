@@ -189,6 +189,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         , "signatures: " ++ String.fromInt sigCount ++ " memoized (" ++ String.fromInt trivialCount ++ " trivial)"
         , "sets zonked: " ++ String.fromInt stats.setsZonked ++ "; size histogram: " ++ histLine
         , "widened: bySize=" ++ String.fromInt stats.widenedBySize ++ " byKernel=" ++ String.fromInt stats.widenedByKernel ++ " byBudget=" ++ String.fromInt stats.widenedByBudget
+        , "join flush: rounds=" ++ String.fromInt stats.joinRounds ++ " retranslations=" ++ String.fromInt stats.retranslations
         , "top specs/global: " ++ topSpecs
         , "=================="
         ]
@@ -238,6 +239,7 @@ initState lssConfig currentModule nodes annotations globalTypeEnv mvarState =
     , localCanTypes = Dict.empty
     , lssRootAnn = Nothing
     , dirtySpecs = BitSet.empty
+    , dirtyList = []
     , specCountByGlobal = Dict.empty
     }
 
@@ -287,7 +289,40 @@ drain : S -> Result Failure S
 drain s =
     case s.worklist of
         [] ->
-            Ok s
+            -- LSS_010 drain-end flush: specs whose stored types were
+            -- annotation-JOINED since their translation re-translate now,
+            -- once per ROUND with their fully-joined demands (never once
+            -- per join — that cascade was hour-scale on the self-compile).
+            -- Each round only exists because some stored type CHANGED, and
+            -- joins are monotone in a finite lattice, so rounds terminate;
+            -- the cap turns a would-be livelock into a loud EngineBug.
+            case s.dirtyList of
+                [] ->
+                    Ok s
+
+                dirty ->
+                    if s.lssStats.joinRounds >= maxJoinRounds then
+                        Err
+                            (EngineBug
+                                ("LSS_010 join flush exceeded "
+                                    ++ String.fromInt maxJoinRounds
+                                    ++ " rounds ("
+                                    ++ String.fromInt (List.length dirty)
+                                    ++ " specs still dirty) — non-monotone join or registry/actualType oscillation"
+                                )
+                            )
+
+                    else
+                        let
+                            stats0 =
+                                s.lssStats
+                        in
+                        drain
+                            { s
+                                | worklist = List.map SpecializeGlobal dirty
+                                , dirtyList = []
+                                , lssStats = { stats0 | joinRounds = stats0.joinRounds + 1 }
+                            }
 
         (SpecializeGlobal specId) :: rest ->
             case processItem specId { s | worklist = rest } of
@@ -296,6 +331,15 @@ drain s =
 
                 Ok s1 ->
                     drain s1
+
+
+{-| LSS_010 flush-round cap. Real programs stabilize in a handful of
+rounds (set-flow chain depth); triple digits means something is
+oscillating and must fail loudly rather than spin.
+-}
+maxJoinRounds : Int
+maxJoinRounds =
+    100
 
 
 processItem : Mono.SpecId -> S -> Result Failure S
@@ -317,16 +361,27 @@ processItem specId s =
 
             Just ( global, monoType ) ->
                 let
+                    stats0 =
+                        s.lssStats
+
+                    stats1 =
+                        if nodeAlreadyDone specId s then
+                            { stats0 | retranslations = stats0.retranslations + 1 }
+
+                        else
+                            stats0
+
                     sItem =
                         Engine.resetItem
                             { s
                                 | inProgress = BitSet.insertGrowing specId s.inProgress
                                 , currentGlobal = Just global
+                                , lssStats = stats1
 
                                 -- LSS_010: consume the dirty mark before
                                 -- translating with the (joined) stored type; a
                                 -- join arriving DURING this translation re-marks
-                                -- it and finishNode re-pushes.
+                                -- it for the next flush round.
                                 , dirtySpecs = BitSet.removeGrowing specId s.dirtySpecs
                             }
                 in
@@ -535,20 +590,12 @@ defineFrom annCanType expr demand s =
 
 finishNode : Mono.SpecId -> Mono.MonoNode -> S -> S
 finishNode specId monoNode s =
+    -- A join that landed mid-translation left the spec's dirty mark set;
+    -- the drain-end flush re-pushes it (LSS_010) — no per-item re-push.
     { s
         | nodes = arraySetGrowing specId (Just monoNode) s.nodes
         , inProgress = BitSet.removeGrowing specId s.inProgress
         , currentGlobal = Nothing
-
-        -- LSS_010: a demand join landed while this spec was mid-translation
-        -- (enqueueSpec cannot re-push an inProgress item) — re-translate with
-        -- the joined stored type. The dirty mark is consumed at the re-pop.
-        , worklist =
-            if BitSet.member specId s.dirtySpecs then
-                SpecializeGlobal specId :: s.worklist
-
-            else
-                s.worklist
     }
 
 

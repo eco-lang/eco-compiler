@@ -7,33 +7,38 @@ Runs at GlobalOpt Phase 4, AFTER Staging (Phases 2-3) — the order is a
 correctness dependency, not convention (design §9.3): the stamps placed
 here denote value identity, and Staging's Rewriter is the last pass that
 replaces values (wrapper closures). Staging wrappers propagate the
-wrappee's `srcLambda` (LSS_008), so they register as BLOCKER instances
-below and decline the upgrade wherever wrapping occurred.
+wrappee's `srcLambda` (LSS_008), so they mark their member BLOCKED below
+and decline the upgrade wherever wrapping occurred.
 
 The pass:
 
-1.  Indexes the graph: `srcLambda -> all reachable MonoClosure instances`,
-    each classified candidate/blocker with precomputed layout keys.
+1.  Indexes the graph: member -> { blocked, instances bucketed by
+    param+return layout }, with layout keys precomputed per instance.
 2.  For each `MonoCall` whose callee-type head annotation is a singleton
-    lambda set `LSet [m]`: if `m` has no blockers, and the candidates
-    compatible with the site's callee layout are unanimous in capture
-    layout, stamps `callInfo.closureKind`/`captureAbi`/`fastEvaluator`
-    with a REPRESENTATIVE instance (LSS_009 — verbatim copies of one
-    member at one layout are interchangeable: monomorphization is
-    type-directed and all external influence enters a lambda body via its
-    captures/params, so same source + same layouts means alpha-equivalent
-    compiled bodies with one `computeClosureCaptures` slot order).
-3.  Anything else (no instance, blockers, layout mismatch, ABI
+    lambda set `LSet [m]`: if `m` is unblocked and the site's layout
+    bucket is unanimous in capture layout, stamps
+    `callInfo.closureKind`/`captureAbi`/`fastEvaluator` with a
+    REPRESENTATIVE instance (LSS_009 — verbatim copies of one member at
+    one layout are interchangeable: monomorphization is type-directed and
+    all external influence enters a lambda body via its captures/params,
+    so same source + same layouts means alpha-equivalent compiled bodies
+    with one `computeClosureCaptures` slot order).
+3.  Anything else (no instance, blocked member, layout mismatch, ABI
     disagreement) leaves the call untouched —
     `CallGenericApply`/`CallSegmentationUnknown` remain dynamically safe
     (CGEN_060). The declined classes are ABI_CLONE_001 / M5 sizing data.
 
-MLIR codegen consults the stamps ONLY on the generic-apply and
-segmentation-unknown emission paths (sites the staging solver could not
-type). Typed direct paths are never rerouted — they are already at least
-as good.
+SCALE DISCIPLINE (self-compile profiling, 2026-07-12): this pass runs over
+graphs with 10^5 nodes and members with THOUSANDS of verbatim instances
+(cross-spec copies of hot core lambdas). Three rules keep it linear:
+integer guards run before any key-string is built; instances are bucketed
+by layout key at index time so a site does one Dict.get instead of
+filtering the member's whole instance list; and a node's expression tree
+is only REBUILT (traverseExpr allocates a fresh tree) when a cheap
+foldExpr pre-scan finds at least one candidate call site — the vast
+majority of nodes have none and pass through untouched.
 
-The blocker rule is load-bearing: `_fast_evaluator` dispatch calls the
+The blocked rule is load-bearing: `_fast_evaluator` dispatch calls the
 stamped instance's fast clone directly with typed capture loads and NO
 runtime identity check (EcoToLLVMClosures.cpp `emitFastClosureCall`).
 Staging wrappers and `wrapTopLevelCallables` eta-wrappers share a member's
@@ -50,8 +55,8 @@ silent miscompile.
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Id as Id
+import Compiler.Reporting.Annotation exposing (Region)
 import Compiler.GlobalOpt.Staging.Rewriter as Rewriter
-import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Dict exposing (Dict)
 
 
@@ -82,6 +87,12 @@ type alias AbiCloningStats =
     , declinedNoInstance : Int
     , declinedShape : Int
     , declinedAbiMismatch : Int
+
+    -- TEMP volume diagnostics (self-compile blowup hunt; remove before commit)
+    , dbgNodesRebuilt : Int
+    , dbgNodesSkipped : Int
+    , dbgExprsVisited : Int
+    , dbgCandidateSites : Int
     }
 
 
@@ -94,6 +105,10 @@ emptyStats =
     , declinedNoInstance = 0
     , declinedShape = 0
     , declinedAbiMismatch = 0
+    , dbgNodesRebuilt = 0
+    , dbgNodesSkipped = 0
+    , dbgExprsVisited = 0
+    , dbgCandidateSites = 0
     }
 
 
@@ -103,46 +118,81 @@ emptyStats =
 -- ============================================================================
 
 
-{-| One reachable `MonoClosure` counted against a member, in deterministic
-node-walk order (the first compatible candidate is the stamped
-representative).
+{-| Everything the pass knows about one member's reachable instances.
 
-`blocker = True` marks instances that share the member's identity but not
+`blocked = True` when ANY instance shares the member's identity but not
 its code: staging-wrapper stages (LSS_008 propagation, synthetic
 `Rewriter.wrapperHome`) and adopted synthetic closures (`srcLambda =
 Nothing` under a singleton annotation — `wrapTopLevelCallables`
-eta-wrappers). Their presence declines the member's sites outright.
+eta-wrappers). A blocked member declines all its sites; its buckets are
+dropped (their contents are irrelevant).
 
-`sigKey`/`abiKey` are annotation-widened comparable layouts (params+return
-/ captures), precomputed so per-site checks are string compares instead of
-repeated `eqLayout` walks.
+`buckets` maps a DEPTH-CAPPED layout fingerprint of (params ++ return) to
+the layout GROUPS behind it. A group holds all instances with `eqLayout`-
+equal param+return layout; its resolution (representative + capture
+unanimity + Char guard) is computed INCREMENTALLY at index time, so a
+call site pays integer guards, one bounded fingerprint, one Dict.get and
+one full `eqLayout` confirm per group — never a per-site key string over
+self-compile-sized types and never a per-site scan of thousand-instance
+member lists (the 2026-07-12 profiling findings).
 
 -}
+type alias MemberInfo =
+    { blocked : Bool
+    , buckets : Dict String (List LayoutGroup)
+    }
+
+
+{-| All instances sharing one param+return layout. `rep` is the FIRST in
+deterministic node-walk order (the stamped representative). `unanimous`
+tracks capture-layout agreement across the group; `charFree` tracks the
+absence of Char captures (both checked against `rep` as members join).
+`paramCount` is denormalized for the integer guard.
+-}
+type alias LayoutGroup =
+    { rep : Instance
+    , paramCount : Int
+    , unanimous : Bool
+    , charFree : Bool
+    }
+
+
 type alias Instance =
     { lambdaId : Mono.LambdaId
     , captureTypes : List Mono.MonoType
     , paramTypes : List Mono.MonoType
     , returnType : Mono.MonoType
-    , blocker : Bool
-    , sigKey : String
-    , abiKey : String
     }
 
 
-collectInstances : Mono.MonoGraph -> Dict Int (List Instance)
+{-| Fingerprint depth: enough to separate real-world layout families
+(collisions only cost an extra eqLayout confirm, never soundness).
+-}
+fingerprintDepth : Int
+fingerprintDepth =
+    4
+
+
+siteFingerprint : List Mono.MonoType -> Mono.MonoType -> String
+siteFingerprint params ret =
+    String.join "," (List.map (Mono.shallowLayoutKey fingerprintDepth) params)
+        ++ "->"
+        ++ Mono.shallowLayoutKey fingerprintDepth ret
+
+
+collectInstances : Mono.MonoGraph -> Dict Int MemberInfo
 collectInstances (Mono.MonoGraph record) =
     Array.foldl
         (\maybeNode acc ->
             case maybeNode of
                 Just node ->
-                    List.foldl (\e a -> MonoTraverse.foldExpr collectExpr a e) acc (nodeExprs node)
+                    List.foldl collectGo acc (nodeExprs node)
 
                 Nothing ->
                     acc
         )
         Dict.empty
         record.nodes
-        |> Dict.map (\_ instancesRev -> List.reverse instancesRev)
 
 
 nodeExprs : Mono.MonoNode -> List Mono.MonoExpr
@@ -173,39 +223,193 @@ nodeExprs node =
             []
 
 
-collectExpr : Mono.MonoExpr -> Dict Int (List Instance) -> Dict Int (List Instance)
-collectExpr expr acc =
+{-| First-order accumulating walk for the instance index (same de-HOF
+rationale as the stamping walk below).
+-}
+collectGo : Mono.MonoExpr -> Dict Int MemberInfo -> Dict Int MemberInfo
+collectGo expr acc =
     case expr of
         Mono.MonoClosure closureInfo body tipe ->
-            case instanceMember closureInfo tipe of
-                Just ( m, isAdopted ) ->
-                    let
-                        captureTypes =
-                            List.map (\( _, e, _ ) -> Mono.typeOf e) closureInfo.captures
+            let
+                acc1 =
+                    case instanceMember closureInfo tipe of
+                        Just ( m, isAdopted ) ->
+                            if isAdopted || isWrapperHome closureInfo.lambdaId then
+                                -- Blocked members never stamp; drop any buckets.
+                                Dict.insert m { blocked = True, buckets = Dict.empty } acc
 
-                        paramTypes =
-                            List.map Tuple.second closureInfo.params
+                            else
+                                Dict.update m
+                                    (\present ->
+                                        case present of
+                                            Just mi ->
+                                                if mi.blocked then
+                                                    present
 
-                        returnType =
-                            Mono.typeOf body
+                                                else
+                                                    Just { mi | buckets = insertInstance closureInfo body mi.buckets }
 
-                        inst =
-                            { lambdaId = closureInfo.lambdaId
-                            , captureTypes = captureTypes
-                            , paramTypes = paramTypes
-                            , returnType = returnType
-                            , blocker = isAdopted || isWrapperHome closureInfo.lambdaId
-                            , sigKey = layoutKey (paramTypes ++ [ returnType ])
-                            , abiKey = layoutKey captureTypes
-                            }
-                    in
-                    Dict.update m (\present -> Just (inst :: Maybe.withDefault [] present)) acc
+                                            Nothing ->
+                                                Just { blocked = False, buckets = insertInstance closureInfo body Dict.empty }
+                                    )
+                                    acc
 
-                Nothing ->
-                    acc
+                        Nothing ->
+                            acc
+
+                acc2 =
+                    List.foldl (\( _, e, _ ) a -> collectGo e a) acc1 closureInfo.captures
+            in
+            collectGo body acc2
+
+        Mono.MonoCall _ func args _ _ ->
+            List.foldl collectGo (collectGo func acc) args
+
+        Mono.MonoTailCall _ args _ ->
+            List.foldl (\( _, e ) a -> collectGo e a) acc args
+
+        Mono.MonoIf branches final _ ->
+            collectGo final (List.foldl (\( c, t ) a -> collectGo t (collectGo c a)) acc branches)
+
+        Mono.MonoLet def body _ ->
+            collectGo body (collectGoDef def acc)
+
+        Mono.MonoDestruct _ inner _ ->
+            collectGo inner acc
+
+        Mono.MonoCase _ _ decider jumps _ ->
+            List.foldl (\( _, e ) a -> collectGo e a) (collectGoDecider decider acc) jumps
+
+        Mono.MonoList _ items _ ->
+            List.foldl collectGo acc items
+
+        Mono.MonoRecordCreate fields _ ->
+            List.foldl (\( _, e ) a -> collectGo e a) acc fields
+
+        Mono.MonoRecordAccess inner _ _ ->
+            collectGo inner acc
+
+        Mono.MonoRecordUpdate record updates _ ->
+            List.foldl (\( _, e ) a -> collectGo e a) (collectGo record acc) updates
+
+        Mono.MonoTupleCreate _ elements _ ->
+            List.foldl collectGo acc elements
+
+        Mono.MonoLiteral _ _ ->
+            acc
+
+        Mono.MonoVarLocal _ _ ->
+            acc
+
+        Mono.MonoVarGlobal _ _ _ ->
+            acc
+
+        Mono.MonoVarKernel _ _ _ _ _ ->
+            acc
+
+        Mono.MonoUnit ->
+            acc
+
+        Mono.MonoAccessorValue _ _ _ ->
+            acc
+
+
+collectGoDef : Mono.MonoDef -> Dict Int MemberInfo -> Dict Int MemberInfo
+collectGoDef def acc =
+    case def of
+        Mono.MonoDef _ e ->
+            collectGo e acc
+
+        Mono.MonoTailDef _ _ e ->
+            collectGo e acc
+
+
+collectGoDecider : Mono.Decider Mono.MonoChoice -> Dict Int MemberInfo -> Dict Int MemberInfo
+collectGoDecider decider acc =
+    case decider of
+        Mono.Leaf (Mono.Inline e) ->
+            collectGo e acc
+
+        Mono.Leaf (Mono.Jump _) ->
+            acc
+
+        Mono.Chain _ success failure ->
+            collectGoDecider failure (collectGoDecider success acc)
+
+        Mono.FanOut _ edges fallback ->
+            collectGoDecider fallback (List.foldl (\( _, d ) a -> collectGoDecider d a) acc edges)
+
+
+insertInstance : Mono.ClosureInfo -> Mono.MonoExpr -> Dict String (List LayoutGroup) -> Dict String (List LayoutGroup)
+insertInstance closureInfo body buckets =
+    let
+        paramTypes =
+            List.map Tuple.second closureInfo.params
+
+        returnType =
+            Mono.typeOf body
+
+        inst =
+            { lambdaId = closureInfo.lambdaId
+            , captureTypes = List.map (\( _, e, _ ) -> Mono.typeOf e) closureInfo.captures
+            , paramTypes = paramTypes
+            , returnType = returnType
+            }
+    in
+    Dict.update (siteFingerprint paramTypes returnType)
+        (\present -> Just (joinGroup inst (Maybe.withDefault [] present)))
+        buckets
+
+
+{-| Add an instance to its layout group within a fingerprint bucket (or
+start a new group). Group facts update incrementally against `rep`:
+capture unanimity and Char-freedom, both with the allocation-free
+`eqLayout`. Order of groups and the identity of `rep` follow the
+deterministic node walk.
+-}
+joinGroup : Instance -> List LayoutGroup -> List LayoutGroup
+joinGroup inst groups =
+    case groups of
+        [] ->
+            [ { rep = inst
+              , paramCount = List.length inst.paramTypes
+              , unanimous = True
+              , charFree = not (List.any ((==) Mono.MChar) inst.captureTypes)
+              }
+            ]
+
+        g :: rest ->
+            if sameSignatureLayout g.rep inst then
+                { g
+                    | unanimous = g.unanimous && sameCaptureLayout g.rep inst
+                }
+                    :: rest
+
+            else
+                g :: joinGroup inst rest
+
+
+sameSignatureLayout : Instance -> Instance -> Bool
+sameSignatureLayout a b =
+    eqLayoutLists a.paramTypes b.paramTypes && Mono.eqLayout a.returnType b.returnType
+
+
+sameCaptureLayout : Instance -> Instance -> Bool
+sameCaptureLayout a b =
+    eqLayoutLists a.captureTypes b.captureTypes
+
+
+eqLayoutLists : List Mono.MonoType -> List Mono.MonoType -> Bool
+eqLayoutLists xs ys =
+    case ( xs, ys ) of
+        ( [], [] ) ->
+            True
+
+        ( x :: restX, y :: restY ) ->
+            Mono.eqLayout x y && eqLayoutLists restX restY
 
         _ ->
-            acc
+            False
 
 
 {-| Which member this closure instance counts against, and whether the
@@ -219,8 +423,8 @@ identity was ADOPTED rather than stamped.
     `LSet [m]`: identity adoption (LSS_008) — GlobalOpt-synthesized
     closures (alias/general wrappers from wrapTopLevelCallables) carry no
     provenance stamp, yet their TYPE claims exactly one member, so the
-    value can impersonate it at singleton call sites. They register as
-    blockers. (`SrcLambdaId` is an opaque supply-only Id, so adoption
+    value can impersonate it at singleton call sites. They block the
+    member. (`SrcLambdaId` is an opaque supply-only Id, so adoption
     happens here in the index rather than by stamping the ClosureInfo.)
   - `srcLambda = Nothing` with LTop / multi-member annotation: not
     indexed. Such a value can only flow to sites whose sets are at least
@@ -240,17 +444,6 @@ instanceMember closureInfo tipe =
 isWrapperHome : Mono.LambdaId -> Bool
 isWrapperHome (Mono.AnonymousLambda home _) =
     home == Rewriter.wrapperHome
-
-
-{-| Annotation-widened comparable layout of a list of types (LSS_009's
-`sigKey`/`abiKey` encoding). Widening first makes the key set-insensitive:
-annotation-only differences never change behavior (LSS_005), so they must
-not separate interchangeable instances.
--}
-layoutKey : List Mono.MonoType -> String
-layoutKey types =
-    String.join "|" (List.map (\t -> Mono.toComparableMonoType (Mono.widenSets t)) types)
-
 
 
 -- ============================================================================
@@ -303,34 +496,34 @@ abiCloningPass ((Mono.MonoGraph record) as graph) =
         ( Mono.MonoGraph { record | nodes = nodes1 }, finalCtx.stats )
 
 
-stampNode : Dict Int (List Instance) -> StampCtx -> Mono.MonoNode -> ( Mono.MonoNode, StampCtx )
+stampNode : Dict Int MemberInfo -> StampCtx -> Mono.MonoNode -> ( Mono.MonoNode, StampCtx )
 stampNode index ctx node =
     case node of
         Mono.MonoDefine expr tipe ->
             let
                 ( newExpr, ctx1 ) =
-                    MonoTraverse.traverseExpr (stampExpr index) ctx expr
+                    stampExprTree index ctx expr
             in
             ( Mono.MonoDefine newExpr tipe, ctx1 )
 
         Mono.MonoTailFunc params expr tipe ->
             let
                 ( newExpr, ctx1 ) =
-                    MonoTraverse.traverseExpr (stampExpr index) ctx expr
+                    stampExprTree index ctx expr
             in
             ( Mono.MonoTailFunc params newExpr tipe, ctx1 )
 
         Mono.MonoPortIncoming expr tipe ->
             let
                 ( newExpr, ctx1 ) =
-                    MonoTraverse.traverseExpr (stampExpr index) ctx expr
+                    stampExprTree index ctx expr
             in
             ( Mono.MonoPortIncoming newExpr tipe, ctx1 )
 
         Mono.MonoPortOutgoing expr tipe ->
             let
                 ( newExpr, ctx1 ) =
-                    MonoTraverse.traverseExpr (stampExpr index) ctx expr
+                    stampExprTree index ctx expr
             in
             ( Mono.MonoPortOutgoing newExpr tipe, ctx1 )
 
@@ -338,50 +531,462 @@ stampNode index ctx node =
             ( other, ctx )
 
 
-stampExpr : Dict Int (List Instance) -> StampCtx -> Mono.MonoExpr -> ( Mono.MonoExpr, StampCtx )
-stampExpr index ctx expr =
+{-| Stamp one node body. The walk is FIRST-ORDER on purpose (2026-07-12
+self-compile profiling): the generic `MonoTraverse` combinators route every
+recursive step through the runtime's generic closure apply
+(`invokeSaturatedTyped`), which multiplies into minutes at 10^6-expression
+scale — the same lesson the solver engine's D11/A5 de-HOF rewrites
+recorded. `scanExpr` is an early-exit candidate probe (a `foldExpr` cannot
+stop early); nodes without a candidate site pass through UNTOUCHED (no
+rebuild, no allocation). Only candidate-bearing nodes are rebuilt by the
+direct `goExpr` recursion.
+-}
+stampExprTree : Dict Int MemberInfo -> StampCtx -> Mono.MonoExpr -> ( Mono.MonoExpr, StampCtx )
+stampExprTree index ctx expr =
+    if scanExpr index expr then
+        let
+            stats0 =
+                ctx.stats
+        in
+        goExpr index { ctx | stats = { stats0 | dbgNodesRebuilt = stats0.dbgNodesRebuilt + 1 } } expr
+
+    else
+        let
+            stats0 =
+                ctx.stats
+        in
+        ( expr, { ctx | stats = { stats0 | dbgNodesSkipped = stats0.dbgNodesSkipped + 1 } } )
+
+
+{-| Early-exit candidate probe: does this tree contain a call whose callee
+head annotation is a singleton set? Allocation-free.
+-}
+scanExpr : Dict Int MemberInfo -> Mono.MonoExpr -> Bool
+scanExpr index expr =
     case expr of
-        Mono.MonoCall region func args resultType callInfo ->
-            case Mono.headAnno (Mono.typeOf func) of
-                Mono.LSet [ m ] ->
-                    case Dict.get m index of
-                        Just instances ->
-                            case resolveRepresentative (Mono.typeOf func) args instances of
-                                Stamp inst ->
-                                    let
-                                        ( kindId, ctx1 ) =
-                                            kindIdFor m ctx
+        Mono.MonoCall _ func args _ _ ->
+            isSingletonHead func || scanExpr index func || List.any (scanExpr index) args
 
-                                        stamped =
-                                            { callInfo
-                                                | closureKind = Just (Mono.Known (Mono.ClosureKindId kindId))
-                                                , captureAbi =
-                                                    Just
-                                                        { captureTypes = inst.captureTypes
-                                                        , paramTypes = inst.paramTypes
-                                                        , returnType = inst.returnType
-                                                        }
-                                                , fastEvaluator = Just inst.lambdaId
-                                            }
+        Mono.MonoClosure info body _ ->
+            List.any (\( _, e, _ ) -> scanExpr index e) info.captures || scanExpr index body
 
-                                        stats1 =
-                                            ctx1.stats
-                                    in
-                                    ( Mono.MonoCall region func args resultType stamped
-                                    , { ctx1 | stats = { stats1 | dispatchUpgraded = stats1.dispatchUpgraded + 1 } }
-                                    )
+        Mono.MonoTailCall _ args _ ->
+            List.any (\( _, e ) -> scanExpr index e) args
 
-                                Decline bump ->
-                                    ( expr, bump ctx )
+        Mono.MonoIf branches final _ ->
+            List.any (\( c, t ) -> scanExpr index c || scanExpr index t) branches || scanExpr index final
 
-                        Nothing ->
-                            ( expr, bumpNoInstance ctx )
+        Mono.MonoLet def body _ ->
+            scanDef index def || scanExpr index body
 
-                _ ->
-                    ( expr, ctx )
+        Mono.MonoDestruct _ inner _ ->
+            scanExpr index inner
+
+        Mono.MonoCase _ _ decider jumps _ ->
+            scanDecider index decider || List.any (\( _, e ) -> scanExpr index e) jumps
+
+        Mono.MonoList _ items _ ->
+            List.any (scanExpr index) items
+
+        Mono.MonoRecordCreate fields _ ->
+            List.any (\( _, e ) -> scanExpr index e) fields
+
+        Mono.MonoRecordAccess inner _ _ ->
+            scanExpr index inner
+
+        Mono.MonoRecordUpdate record updates _ ->
+            scanExpr index record || List.any (\( _, e ) -> scanExpr index e) updates
+
+        Mono.MonoTupleCreate _ elements _ ->
+            List.any (scanExpr index) elements
+
+        Mono.MonoLiteral _ _ ->
+            False
+
+        Mono.MonoVarLocal _ _ ->
+            False
+
+        Mono.MonoVarGlobal _ _ _ ->
+            False
+
+        Mono.MonoVarKernel _ _ _ _ _ ->
+            False
+
+        Mono.MonoUnit ->
+            False
+
+        Mono.MonoAccessorValue _ _ _ ->
+            False
+
+
+isSingletonHead : Mono.MonoExpr -> Bool
+isSingletonHead func =
+    case Mono.headAnno (Mono.typeOf func) of
+        Mono.LSet [ _ ] ->
+            True
 
         _ ->
+            False
+
+
+scanDef : Dict Int MemberInfo -> Mono.MonoDef -> Bool
+scanDef index def =
+    case def of
+        Mono.MonoDef _ e ->
+            scanExpr index e
+
+        Mono.MonoTailDef _ _ e ->
+            scanExpr index e
+
+
+scanDecider : Dict Int MemberInfo -> Mono.Decider Mono.MonoChoice -> Bool
+scanDecider index decider =
+    case decider of
+        Mono.Leaf choice ->
+            scanChoice index choice
+
+        Mono.Chain _ success failure ->
+            scanDecider index success || scanDecider index failure
+
+        Mono.FanOut _ edges fallback ->
+            List.any (\( _, d ) -> scanDecider index d) edges || scanDecider index fallback
+
+
+scanChoice : Dict Int MemberInfo -> Mono.MonoChoice -> Bool
+scanChoice index choice =
+    case choice of
+        Mono.Inline e ->
+            scanExpr index e
+
+        Mono.Jump _ ->
+            False
+
+
+{-| Direct bottom-up stamping recursion (children first, then the node
+itself). Mirrors `MonoTraverse.traverseExprChildren`'s constructor
+coverage exactly; every recursive call is saturated and first-order.
+-}
+goExpr : Dict Int MemberInfo -> StampCtx -> Mono.MonoExpr -> ( Mono.MonoExpr, StampCtx )
+goExpr index ctx expr =
+    case expr of
+        Mono.MonoCall region func args resultType callInfo ->
+            let
+                ( newFunc, ctx1 ) =
+                    goExpr index ctx func
+
+                ( newArgs, ctx2 ) =
+                    goList index ctx1 args
+            in
+            stampCall index ctx2 region newFunc newArgs resultType callInfo
+
+        Mono.MonoClosure info body closureType ->
+            let
+                ( newCaptures, ctx1 ) =
+                    goCaptures index ctx info.captures
+
+                ( newBody, ctx2 ) =
+                    goExpr index ctx1 body
+            in
+            ( Mono.MonoClosure { info | captures = newCaptures } newBody closureType, ctx2 )
+
+        Mono.MonoTailCall name args resultType ->
+            let
+                ( newArgs, ctx1 ) =
+                    goNamedList index ctx args
+            in
+            ( Mono.MonoTailCall name newArgs resultType, ctx1 )
+
+        Mono.MonoIf branches final resultType ->
+            let
+                ( newBranches, ctx1 ) =
+                    goBranches index ctx branches
+
+                ( newFinal, ctx2 ) =
+                    goExpr index ctx1 final
+            in
+            ( Mono.MonoIf newBranches newFinal resultType, ctx2 )
+
+        Mono.MonoLet def body resultType ->
+            let
+                ( newDef, ctx1 ) =
+                    goDef index ctx def
+
+                ( newBody, ctx2 ) =
+                    goExpr index ctx1 body
+            in
+            ( Mono.MonoLet newDef newBody resultType, ctx2 )
+
+        Mono.MonoDestruct path inner resultType ->
+            let
+                ( newInner, ctx1 ) =
+                    goExpr index ctx inner
+            in
+            ( Mono.MonoDestruct path newInner resultType, ctx1 )
+
+        Mono.MonoCase label scrutinee decider jumps resultType ->
+            let
+                ( newDecider, ctx1 ) =
+                    goDecider index ctx decider
+
+                ( newJumps, ctx2 ) =
+                    goJumps index ctx1 jumps
+            in
+            ( Mono.MonoCase label scrutinee newDecider newJumps resultType, ctx2 )
+
+        Mono.MonoList region items resultType ->
+            let
+                ( newItems, ctx1 ) =
+                    goList index ctx items
+            in
+            ( Mono.MonoList region newItems resultType, ctx1 )
+
+        Mono.MonoRecordCreate fields resultType ->
+            let
+                ( newFields, ctx1 ) =
+                    goNamedList index ctx fields
+            in
+            ( Mono.MonoRecordCreate newFields resultType, ctx1 )
+
+        Mono.MonoRecordAccess inner field resultType ->
+            let
+                ( newInner, ctx1 ) =
+                    goExpr index ctx inner
+            in
+            ( Mono.MonoRecordAccess newInner field resultType, ctx1 )
+
+        Mono.MonoRecordUpdate record updates resultType ->
+            let
+                ( newRecord, ctx1 ) =
+                    goExpr index ctx record
+
+                ( newUpdates, ctx2 ) =
+                    goNamedList index ctx1 updates
+            in
+            ( Mono.MonoRecordUpdate newRecord newUpdates resultType, ctx2 )
+
+        Mono.MonoTupleCreate region elements resultType ->
+            let
+                ( newElements, ctx1 ) =
+                    goList index ctx elements
+            in
+            ( Mono.MonoTupleCreate region newElements resultType, ctx1 )
+
+        Mono.MonoLiteral _ _ ->
             ( expr, ctx )
+
+        Mono.MonoVarLocal _ _ ->
+            ( expr, ctx )
+
+        Mono.MonoVarGlobal _ _ _ ->
+            ( expr, ctx )
+
+        Mono.MonoVarKernel _ _ _ _ _ ->
+            ( expr, ctx )
+
+        Mono.MonoUnit ->
+            ( expr, ctx )
+
+        Mono.MonoAccessorValue _ _ _ ->
+            ( expr, ctx )
+
+
+goList : Dict Int MemberInfo -> StampCtx -> List Mono.MonoExpr -> ( List Mono.MonoExpr, StampCtx )
+goList index ctx items =
+    case items of
+        [] ->
+            ( [], ctx )
+
+        e :: rest ->
+            let
+                ( e1, ctx1 ) =
+                    goExpr index ctx e
+
+                ( rest1, ctx2 ) =
+                    goList index ctx1 rest
+            in
+            ( e1 :: rest1, ctx2 )
+
+
+goNamedList : Dict Int MemberInfo -> StampCtx -> List ( a, Mono.MonoExpr ) -> ( List ( a, Mono.MonoExpr ), StampCtx )
+goNamedList index ctx items =
+    case items of
+        [] ->
+            ( [], ctx )
+
+        ( n, e ) :: rest ->
+            let
+                ( e1, ctx1 ) =
+                    goExpr index ctx e
+
+                ( rest1, ctx2 ) =
+                    goNamedList index ctx1 rest
+            in
+            ( ( n, e1 ) :: rest1, ctx2 )
+
+
+goCaptures : Dict Int MemberInfo -> StampCtx -> List ( a, Mono.MonoExpr, b ) -> ( List ( a, Mono.MonoExpr, b ), StampCtx )
+goCaptures index ctx items =
+    case items of
+        [] ->
+            ( [], ctx )
+
+        ( n, e, t ) :: rest ->
+            let
+                ( e1, ctx1 ) =
+                    goExpr index ctx e
+
+                ( rest1, ctx2 ) =
+                    goCaptures index ctx1 rest
+            in
+            ( ( n, e1, t ) :: rest1, ctx2 )
+
+
+goBranches : Dict Int MemberInfo -> StampCtx -> List ( Mono.MonoExpr, Mono.MonoExpr ) -> ( List ( Mono.MonoExpr, Mono.MonoExpr ), StampCtx )
+goBranches index ctx branches =
+    case branches of
+        [] ->
+            ( [], ctx )
+
+        ( c, t ) :: rest ->
+            let
+                ( c1, ctx1 ) =
+                    goExpr index ctx c
+
+                ( t1, ctx2 ) =
+                    goExpr index ctx1 t
+
+                ( rest1, ctx3 ) =
+                    goBranches index ctx2 rest
+            in
+            ( ( c1, t1 ) :: rest1, ctx3 )
+
+
+goJumps : Dict Int MemberInfo -> StampCtx -> List ( Int, Mono.MonoExpr ) -> ( List ( Int, Mono.MonoExpr ), StampCtx )
+goJumps =
+    goNamedList
+
+
+goDef : Dict Int MemberInfo -> StampCtx -> Mono.MonoDef -> ( Mono.MonoDef, StampCtx )
+goDef index ctx def =
+    case def of
+        Mono.MonoDef name e ->
+            let
+                ( e1, ctx1 ) =
+                    goExpr index ctx e
+            in
+            ( Mono.MonoDef name e1, ctx1 )
+
+        Mono.MonoTailDef name params e ->
+            let
+                ( e1, ctx1 ) =
+                    goExpr index ctx e
+            in
+            ( Mono.MonoTailDef name params e1, ctx1 )
+
+
+goDecider : Dict Int MemberInfo -> StampCtx -> Mono.Decider Mono.MonoChoice -> ( Mono.Decider Mono.MonoChoice, StampCtx )
+goDecider index ctx decider =
+    case decider of
+        Mono.Leaf choice ->
+            let
+                ( c1, ctx1 ) =
+                    goChoice index ctx choice
+            in
+            ( Mono.Leaf c1, ctx1 )
+
+        Mono.Chain testChain success failure ->
+            let
+                ( s1, ctx1 ) =
+                    goDecider index ctx success
+
+                ( f1, ctx2 ) =
+                    goDecider index ctx1 failure
+            in
+            ( Mono.Chain testChain s1 f1, ctx2 )
+
+        Mono.FanOut path edges fallback ->
+            let
+                ( edges1, ctx1 ) =
+                    goEdges index ctx edges
+
+                ( fb1, ctx2 ) =
+                    goDecider index ctx1 fallback
+            in
+            ( Mono.FanOut path edges1 fb1, ctx2 )
+
+
+goEdges : Dict Int MemberInfo -> StampCtx -> List ( a, Mono.Decider Mono.MonoChoice ) -> ( List ( a, Mono.Decider Mono.MonoChoice ), StampCtx )
+goEdges index ctx edges =
+    case edges of
+        [] ->
+            ( [], ctx )
+
+        ( t, d ) :: rest ->
+            let
+                ( d1, ctx1 ) =
+                    goDecider index ctx d
+
+                ( rest1, ctx2 ) =
+                    goEdges index ctx1 rest
+            in
+            ( ( t, d1 ) :: rest1, ctx2 )
+
+
+goChoice : Dict Int MemberInfo -> StampCtx -> Mono.MonoChoice -> ( Mono.MonoChoice, StampCtx )
+goChoice index ctx choice =
+    case choice of
+        Mono.Inline e ->
+            let
+                ( e1, ctx1 ) =
+                    goExpr index ctx e
+            in
+            ( Mono.Inline e1, ctx1 )
+
+        Mono.Jump _ ->
+            ( choice, ctx )
+
+
+{-| The per-call stamping decision (children already rebuilt).
+-}
+stampCall : Dict Int MemberInfo -> StampCtx -> Region -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ( Mono.MonoExpr, StampCtx )
+stampCall index ctx region func args resultType callInfo =
+    case Mono.headAnno (Mono.typeOf func) of
+        Mono.LSet [ m ] ->
+            case Dict.get m index of
+                Just memberInfo ->
+                    case resolveRepresentative (Mono.typeOf func) (List.length args) memberInfo of
+                        Stamp inst ->
+                            let
+                                ( kindId, ctx1 ) =
+                                    kindIdFor m ctx
+
+                                stamped =
+                                    { callInfo
+                                        | closureKind = Just (Mono.Known (Mono.ClosureKindId kindId))
+                                        , captureAbi =
+                                            Just
+                                                { captureTypes = inst.captureTypes
+                                                , paramTypes = inst.paramTypes
+                                                , returnType = inst.returnType
+                                                }
+                                        , fastEvaluator = Just inst.lambdaId
+                                    }
+
+                                stats1 =
+                                    ctx1.stats
+                            in
+                            ( Mono.MonoCall region func args resultType stamped
+                            , { ctx1 | stats = { stats1 | dispatchUpgraded = stats1.dispatchUpgraded + 1 } }
+                            )
+
+                        Decline bump ->
+                            ( Mono.MonoCall region func args resultType callInfo, bump ctx )
+
+                Nothing ->
+                    ( Mono.MonoCall region func args resultType callInfo, bumpNoInstance ctx )
+
+        _ ->
+            ( Mono.MonoCall region func args resultType callInfo, ctx )
 
 
 type Resolution
@@ -390,56 +995,62 @@ type Resolution
 
 
 {-| LSS_009: pick an interchangeable representative for the site, or
-decline with the census reason.
+decline with the census reason. Guard order is a scale invariant: integer
+guards first, then one BOUNDED fingerprint, one Dict.get, and one full
+`eqLayout` confirm per group in the bucket (usually one).
 
-  - any blocker among the member's instances → decline (the flowing value
-    could be the wrapper — its code and capture layout differ);
-  - filter candidates to the site's callee layout (`sigKey`) plus the M3
-    shape guards (non-empty params, site arg count == stage arity, no
-    Char captures — `emitFastClosureCall`'s i16 capture load is still
-    unexercised C++);
-  - survivors must be unanimous in capture layout (`abiKey`); the FIRST
-    survivor (deterministic node-walk order) is the representative.
+  - blocked member → decline (the flowing value could be a wrapper — its
+    code and capture layout differ);
+  - non-empty args and callee-type first-stage arity == arg count (a PAP
+    of the instance has strictly fewer remaining params, so this is what
+    proves the flowing value is a RAW instance);
+  - the site's layout group must exist, be capture-unanimous, and be free
+    of Char captures (`emitFastClosureCall`'s i16 capture load is still
+    unexercised C++); its `rep` is the stamped representative.
 
 -}
-resolveRepresentative : Mono.MonoType -> List Mono.MonoExpr -> List Instance -> Resolution
-resolveRepresentative calleeType args instances =
-    if List.any .blocker instances then
+resolveRepresentative : Mono.MonoType -> Int -> MemberInfo -> Resolution
+resolveRepresentative calleeType argCount memberInfo =
+    if memberInfo.blocked then
         Decline bumpBlocked
 
     else
-        let
-            siteSigKey =
-                case calleeType of
-                    Mono.MFunction _ fargs fret ->
-                        layoutKey (fargs ++ [ fret ])
+        case calleeType of
+            Mono.MFunction _ fargs fret ->
+                if argCount == 0 || List.length fargs /= argCount then
+                    Decline bumpShape
 
-                    _ ->
-                        ""
+                else
+                    case Dict.get (siteFingerprint fargs fret) memberInfo.buckets of
+                        Nothing ->
+                            Decline bumpShape
 
-            argCount =
-                List.length args
+                        Just groups ->
+                            resolveInGroups fargs fret argCount groups
 
-            compatible =
-                List.filter
-                    (\inst ->
-                        (inst.sigKey == siteSigKey)
-                            && (List.length inst.paramTypes == argCount)
-                            && (argCount > 0)
-                            && not (List.any ((==) Mono.MChar) inst.captureTypes)
-                    )
-                    instances
-        in
-        case compatible of
-            [] ->
+            _ ->
                 Decline bumpShape
 
-            first :: rest ->
-                if List.all (\inst -> inst.abiKey == first.abiKey) rest then
-                    Stamp first
+
+resolveInGroups : List Mono.MonoType -> Mono.MonoType -> Int -> List LayoutGroup -> Resolution
+resolveInGroups fargs fret argCount groups =
+    case groups of
+        [] ->
+            Decline bumpShape
+
+        g :: rest ->
+            if g.paramCount == argCount && eqLayoutLists g.rep.paramTypes fargs && Mono.eqLayout g.rep.returnType fret then
+                if not g.charFree then
+                    Decline bumpShape
+
+                else if g.unanimous then
+                    Stamp g.rep
 
                 else
                     Decline bumpAbiMismatch
+
+            else
+                resolveInGroups fargs fret argCount rest
 
 
 kindIdFor : Int -> StampCtx -> ( Int, StampCtx )

@@ -1078,31 +1078,55 @@ specializeCycleFuncDef def demand =
                                 Err e ->
                                     Err e
 
-                                Ok ( funcType, s2 ) ->
-                                    let
-                                        peeled =
-                                            extractFieldTypes (List.length typedArgs) funcType
-                                    in
-                                    case
-                                        (if List.length peeled == List.length typedArgs then
-                                            Ok ( List.map2 (\( locName, _ ) mt -> ( A.toValue locName, mt )) typedArgs peeled, s2 )
-
-                                         else
-                                            -- Shape fallback: annotation stages don't
-                                            -- cover the params — classify as before.
-                                            Engine.traverse (\( locName, argType ) -> Engine.map (\mt -> ( A.toValue locName, mt )) (classify argType)) typedArgs s2
-                                        )
-                                    of
+                                Ok ( zonkedType, s1b ) ->
+                                    case classify defType s1b of
                                         Err e ->
                                             Err e
 
-                                        Ok ( monoParams, s3 ) ->
-                                            case Engine.scoped (Engine.andThen (\_ -> translate body) (insertVars monoParams)) s3 of
+                                        Ok ( classifiedType, s2 ) ->
+                                            let
+                                                -- ABI guard (overlayAnnotations doc): classify
+                                                -- structure + zonk annotations. The zonk alone
+                                                -- diverged from the byte path on loop-param
+                                                -- ABIs (eco.case i64 vs !eco.value yields).
+                                                funcType =
+                                                    Mono.overlayAnnotations classifiedType zonkedType
+
+                                                peeled =
+                                                    extractFieldTypes (List.length typedArgs) funcType
+                                            in
+                                            case
+                                                -- Params: per-param classify is the byte-path
+                                                -- STRUCTURE truth (peeling defType can diverge on
+                                                -- alias/number resolution); the peeled zonk
+                                                -- contributes only annotations.
+                                                (if List.length peeled == List.length typedArgs then
+                                                    Engine.traverse identity
+                                                        (List.map2
+                                                            (\( locName, argType ) peeledType ->
+                                                                Engine.map (\mt -> ( A.toValue locName, Mono.overlayAnnotations mt peeledType )) (classify argType)
+                                                            )
+                                                            typedArgs
+                                                            peeled
+                                                        )
+                                                        s2
+
+                                                 else
+                                                    -- Shape fallback: annotation stages don't
+                                                    -- cover the params — classify as before.
+                                                    Engine.traverse (\( locName, argType ) -> Engine.map (\mt -> ( A.toValue locName, mt )) (classify argType)) typedArgs s2
+                                                )
+                                            of
                                                 Err e ->
                                                     Err e
 
-                                                Ok ( monoBody, s4 ) ->
-                                                    Ok ( Mono.MonoTailFunc monoParams monoBody funcType, s4 )
+                                                Ok ( monoParams, s3 ) ->
+                                                    case Engine.scoped (Engine.andThen (\_ -> translate body) (insertVars monoParams)) s3 of
+                                                        Err e ->
+                                                            Err e
+
+                                                        Ok ( monoBody, s4 ) ->
+                                                            Ok ( Mono.MonoTailFunc monoParams monoBody funcType, s4 )
 
                 else
                     Engine.andThen
@@ -1304,7 +1328,23 @@ classifyLambdaHead srcLam canType s0 =
                         Err e
 
                     Ok ( _, s2 ) ->
-                        Store.zonkToMono funcVar s2
+                        case Store.zonkToMono funcVar s2 of
+                            Err e ->
+                                Err e
+
+                            Ok ( zonked, s3 ) ->
+                                -- ABI guard (overlayAnnotations doc): the
+                                -- storeless classification is the structure
+                                -- truth; the store zonk contributes ONLY the
+                                -- lambda-set annotations. Letting the zonk
+                                -- decide structure diverged from the byte
+                                -- path on demand-concretized leaves.
+                                case classify canType s3 of
+                                    Err e ->
+                                        Err e
+
+                                    Ok ( classified, s4 ) ->
+                                        Ok ( Mono.overlayAnnotations classified zonked, s4 )
 
     else
         classify canType s0

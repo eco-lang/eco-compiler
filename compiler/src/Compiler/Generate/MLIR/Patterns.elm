@@ -301,11 +301,15 @@ generateMonoPathHelper ctx path targetType revAcc =
                 ( varName, actualType ) =
                     Ctx.lookupVar ctx name
             in
-            if Types.isEcoValueType actualType && targetType == I1 then
-                -- Bool variable stored as eco.value (per ABI) needs unboxing to i1
+            if Types.isEcoValueType actualType && (targetType == I1 || Types.isUnboxable targetType) then
+                -- Variable stored boxed (per its ABI) but the path consumer
+                -- expects an unboxed primitive (i1 Bool test, or an i64/f64
+                -- destructor target whose recorded element type was erased —
+                -- the solver engine's residuals surface here; returning the
+                -- boxed var raw would LIE about the SSA type and miscompile).
                 let
                     ( unboxOps, unboxedVar, ctxU ) =
-                        Intrinsics.unboxToType ctx varName I1
+                        Intrinsics.unboxToType ctx varName targetType
                 in
                 ( List.foldl (::) revAcc unboxOps, unboxedVar, ctxU )
 
@@ -388,6 +392,28 @@ generateMonoPathHelper ctx path targetType revAcc =
                                     in
                                     ( projectOp :: unboxOps, unboxedVar, ctxU )
 
+                                else if Types.isUnboxable targetType then
+                                    -- The field's RECORDED type says boxed (erased
+                                    -- solver residuals land here) while the
+                                    -- destructor's reconciled element type is a
+                                    -- concrete primitive. Tuple slots are
+                                    -- LAYOUT-STATIC (the lowering loads raw or boxed
+                                    -- purely by the asked type — no header consult),
+                                    -- and every constructor that saw the concrete
+                                    -- annotation stored this slot UNBOXED — so read
+                                    -- the raw slot at the target type. Boxed-load +
+                                    -- unbox here dereferences raw i64 bits as an
+                                    -- HPointer (segfault, found in the keyed
+                                    -- self-built compiler's foldMGo).
+                                    let
+                                        ( primVar, ctxP ) =
+                                            Ctx.freshVar ctx2
+
+                                        ( ctxQ, primOp ) =
+                                            Ops.ecoProjectTuple2 ctxP primVar index targetType subVar
+                                    in
+                                    ( [ primOp ], primVar, ctxQ )
+
                                 else
                                     ( [ projectOp ], valVar, ctx4 )
 
@@ -433,6 +459,19 @@ generateMonoPathHelper ctx path targetType revAcc =
                                             Intrinsics.unboxToType ctx4 valVar I1
                                     in
                                     ( projectOp :: unboxOps, unboxedVar, ctxU )
+
+                                else if Types.isUnboxable targetType then
+                                    -- Raw-slot read at the reconciled primitive
+                                    -- target — same layout-static rationale as the
+                                    -- Tuple2 arm above.
+                                    let
+                                        ( primVar, ctxP ) =
+                                            Ctx.freshVar ctx2
+
+                                        ( ctxQ, primOp ) =
+                                            Ops.ecoProjectTuple3 ctxP primVar index targetType subVar
+                                    in
+                                    ( [ primOp ], primVar, ctxQ )
 
                                 else
                                     ( [ projectOp ], valVar, ctx4 )
@@ -691,6 +730,19 @@ generateMonoPathHelper ctx path targetType revAcc =
                                             Intrinsics.unboxToType ctx3 resultVar I1
                                     in
                                     ( List.foldl (::) (projectOp :: revAcc1) unboxOps, unboxedVar, ctxU )
+
+                                else if Types.isUnboxable targetType then
+                                    -- Raw-slot read at the reconciled primitive
+                                    -- target — layout-static rationale as in the
+                                    -- tuple arms.
+                                    let
+                                        ( primVar, ctxP ) =
+                                            Ctx.freshVar ctx2
+
+                                        ( ctxQ, primOp ) =
+                                            Ops.ecoProjectCustom ctxP primVar 0 targetType subVar
+                                    in
+                                    ( primOp :: revAcc1, primVar, ctxQ )
 
                                 else if Types.isUnboxable targetType then
                                     -- Caller wants primitive, need to unbox

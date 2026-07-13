@@ -502,6 +502,43 @@ compileBaseReturnStep ctx loopSpec expr =
 
 
 
+{-| Invariant guard (kept from the 2026-07 solver self-compile bug hunt):
+crash with function/branch context when an alternative's yield operand
+types disagree with the loop state types the eco.case will declare. A
+mismatch here is always a miscompile-in-progress (the backend verifier
+rejects it later, but with no source location); a loud, located crash at
+emission is strictly better. Cost: a few type compares per yield.
+-}
+checkedYieldOperands : LoopSpec -> String -> List ( String, MlirType ) -> List ( String, MlirType )
+checkedYieldOperands loopSpec label operands =
+    let
+        expected =
+            List.map Tuple.second loopSpec.paramVars ++ [ I1, loopSpec.retType ]
+
+        mismatches =
+            List.map2 (\( _, actual ) exp -> ( actual, exp )) operands expected
+                |> List.indexedMap Tuple.pair
+                |> List.filter (\( _, ( actual, exp ) ) -> actual /= exp)
+    in
+    case mismatches of
+        [] ->
+            operands
+
+        ( idx, ( actual, exp ) ) :: _ ->
+            crash
+                ("TailRec yield ABI mismatch in "
+                    ++ loopSpec.funcName
+                    ++ " ["
+                    ++ label
+                    ++ "] operand "
+                    ++ String.fromInt idx
+                    ++ ": yields "
+                    ++ Types.mlirTypeToString actual
+                    ++ " but loop state declares "
+                    ++ Types.mlirTypeToString exp
+                )
+
+
 -- ============================================================================
 -- ====== CASE STEP ======
 -- ============================================================================
@@ -621,10 +658,13 @@ compileCaseChainStep ctx loopSpec testChain success failure jumpLookup =
                     compileCaseChainStep ctx1 loopSpec restTests success failure jumpLookup
 
                 thenYieldOperands =
-                    thenStep.nextParams
-                        ++ [ ( thenStep.doneVar, I1 )
-                           , ( thenStep.resultVar, thenStep.resultType )
-                           ]
+                    checkedYieldOperands loopSpec
+                        "then"
+                        (thenStep.nextParams
+                            ++ [ ( thenStep.doneVar, I1 )
+                               , ( thenStep.resultVar, thenStep.resultType )
+                               ]
+                        )
 
                 ( thenYieldCtx, thenYieldOp ) =
                     Ops.ecoYieldMany thenStep.ctx thenYieldOperands
@@ -640,10 +680,13 @@ compileCaseChainStep ctx loopSpec testChain success failure jumpLookup =
                     compileCaseDeciderStep ctxForElse loopSpec failure jumpLookup
 
                 elseYieldOperands =
-                    elseStep.nextParams
-                        ++ [ ( elseStep.doneVar, I1 )
-                           , ( elseStep.resultVar, elseStep.resultType )
-                           ]
+                    checkedYieldOperands loopSpec
+                        "else"
+                        (elseStep.nextParams
+                            ++ [ ( elseStep.doneVar, I1 )
+                               , ( elseStep.resultVar, elseStep.resultType )
+                               ]
+                        )
 
                 ( elseYieldCtx, elseYieldOp ) =
                     Ops.ecoYieldMany elseStep.ctx elseYieldOperands
@@ -771,10 +814,13 @@ compileCaseFanOutStep ctx loopSpec path edges fallback jumpLookup =
                             compileCaseDeciderStep branchCtx loopSpec subTree jumpLookup
 
                         yieldOperands =
-                            subStep.nextParams
-                                ++ [ ( subStep.doneVar, I1 )
-                                   , ( subStep.resultVar, subStep.resultType )
-                                   ]
+                            checkedYieldOperands loopSpec
+                                "fanout-edge"
+                                (subStep.nextParams
+                                    ++ [ ( subStep.doneVar, I1 )
+                                       , ( subStep.resultVar, subStep.resultType )
+                                       ]
+                                )
 
                         ( yieldCtx, yieldOp ) =
                             Ops.ecoYieldMany subStep.ctx yieldOperands
@@ -795,10 +841,13 @@ compileCaseFanOutStep ctx loopSpec path edges fallback jumpLookup =
             compileCaseDeciderStep (Ctx.ctxForSiblingRegion ctx1 ctx2) loopSpec fallback jumpLookup
 
         fallbackYieldOperands =
-            fallbackStep.nextParams
-                ++ [ ( fallbackStep.doneVar, I1 )
-                   , ( fallbackStep.resultVar, fallbackStep.resultType )
-                   ]
+            checkedYieldOperands loopSpec
+                "fanout-fallback"
+                (fallbackStep.nextParams
+                    ++ [ ( fallbackStep.doneVar, I1 )
+                       , ( fallbackStep.resultVar, fallbackStep.resultType )
+                       ]
+                )
 
         ( fallbackYieldCtx, fallbackYieldOp ) =
             Ops.ecoYieldMany fallbackStep.ctx fallbackYieldOperands
@@ -924,7 +973,7 @@ compileIfStep ctx loopSpec branches final =
 
                 -- Build then region that yields the step tuple
                 thenYieldOperands =
-                    thenStep.nextParams ++ [ ( thenStep.doneVar, I1 ), ( thenStep.resultVar, thenStep.resultType ) ]
+                    checkedYieldOperands loopSpec "if-then" (thenStep.nextParams ++ [ ( thenStep.doneVar, I1 ), ( thenStep.resultVar, thenStep.resultType ) ])
 
                 ( thenYieldCtx, thenYieldOp ) =
                     Ops.ecoYieldMany thenStep.ctx thenYieldOperands
@@ -938,7 +987,7 @@ compileIfStep ctx loopSpec branches final =
 
                 -- Build else region that yields the step tuple
                 elseYieldOperands =
-                    elseStep.nextParams ++ [ ( elseStep.doneVar, I1 ), ( elseStep.resultVar, elseStep.resultType ) ]
+                    checkedYieldOperands loopSpec "if-else" (elseStep.nextParams ++ [ ( elseStep.doneVar, I1 ), ( elseStep.resultVar, elseStep.resultType ) ])
 
                 ( elseYieldCtx, elseYieldOp ) =
                     Ops.ecoYieldMany elseStep.ctx elseYieldOperands

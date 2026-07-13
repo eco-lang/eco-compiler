@@ -1,6 +1,6 @@
 module Compiler.AST.Monomorphized exposing
     ( MonoType(..), Literal(..), Constraint(..)
-    , LambdaSetAnno(..), widenSets, eqLayout, headAnno, unionAnno, singletonHeadMember, joinAnnotations
+    , LambdaSetAnno(..), widenSets, eqLayout, shallowLayoutKey, headAnno, unionAnno, singletonHeadMember, joinAnnotations, overlayAnnotations
     , LambdaId(..)
     , Global(..), SpecKey(..), SpecId, SpecializationRegistry
     , MonoGraph(..), MainInfo(..), MonoNode(..), CtorShape, nodeType
@@ -294,10 +294,114 @@ widenSets monoType =
 become set-sensitive: two types with the same shape but different lambda
 sets have identical representation (an arrow is a boxed closure value
 regardless of its set — REP_* untouched by LSS).
+
+Allocation-free with early exit (M3.5/M4 scale discipline): the widenSets
+formulation copies both types per call, which is ruinous on
+self-compile-sized types (the solver's `S` record reaches tens of KB of
+structure).
+
 -}
 eqLayout : MonoType -> MonoType -> Bool
 eqLayout a b =
-    widenSets a == widenSets b
+    case ( a, b ) of
+        ( MFunction _ argsA retA, MFunction _ argsB retB ) ->
+            eqLayoutList argsA argsB && eqLayout retA retB
+
+        ( MList xa, MList xb ) ->
+            eqLayout xa xb
+
+        ( MTuple xsa, MTuple xsb ) ->
+            eqLayoutList xsa xsb
+
+        ( MRecord fieldsA, MRecord fieldsB ) ->
+            (Dict.size fieldsA == Dict.size fieldsB)
+                && eqLayoutFields (Dict.toList fieldsA) (Dict.toList fieldsB)
+
+        ( MCustom homeA nameA argsA, MCustom homeB nameB argsB ) ->
+            nameA == nameB && homeA == homeB && eqLayoutList argsA argsB
+
+        _ ->
+            a == b
+
+
+eqLayoutList : List MonoType -> List MonoType -> Bool
+eqLayoutList xs ys =
+    case ( xs, ys ) of
+        ( [], [] ) ->
+            True
+
+        ( x :: restX, y :: restY ) ->
+            eqLayout x y && eqLayoutList restX restY
+
+        _ ->
+            False
+
+
+eqLayoutFields : List ( Name, MonoType ) -> List ( Name, MonoType ) -> Bool
+eqLayoutFields xs ys =
+    case ( xs, ys ) of
+        ( [], [] ) ->
+            True
+
+        ( ( na, ta ) :: restX, ( nb, tb ) :: restY ) ->
+            na == nb && eqLayout ta tb && eqLayoutFields restX restY
+
+        _ ->
+            False
+
+
+{-| A small, DEPTH-CAPPED layout fingerprint for bucketing (never a full
+key): constructors and arities only, annotations ignored, subtrees beyond
+the cap collapse to "…". Bounded size regardless of type size, so it is
+safe to build once per closure instance and once per candidate call site.
+Bucket collisions are resolved by a full `eqLayout` confirm — the
+fingerprint only has to be RIGHT, not injective.
+-}
+shallowLayoutKey : Int -> MonoType -> String
+shallowLayoutKey depth monoType =
+    if depth <= 0 then
+        "…"
+
+    else
+        case monoType of
+            MInt ->
+                "I"
+
+            MFloat ->
+                "F"
+
+            MBool ->
+                "B"
+
+            MChar ->
+                "C"
+
+            MString ->
+                "S"
+
+            MUnit ->
+                "U"
+
+            MVar _ CEcoValue ->
+                "V"
+
+            MVar _ CNumber ->
+                "I"
+
+            MList inner ->
+                "L(" ++ shallowLayoutKey (depth - 1) inner ++ ")"
+
+            MTuple elems ->
+                "T" ++ String.fromInt (List.length elems) ++ "(" ++ String.join "," (List.map (shallowLayoutKey (depth - 1)) elems) ++ ")"
+
+            MRecord fields ->
+                "R" ++ String.fromInt (Dict.size fields) ++ "(" ++ String.join "," (Dict.keys fields) ++ ")"
+
+            MCustom _ name args ->
+                "X" ++ name ++ String.fromInt (List.length args) ++ "(" ++ String.join "," (List.map (shallowLayoutKey (depth - 1)) args) ++ ")"
+
+            MFunction _ args ret ->
+                "A" ++ String.fromInt (List.length args) ++ "(" ++ String.join "," (List.map (shallowLayoutKey (depth - 1)) args) ++ "->" ++ shallowLayoutKey (depth - 1) ret ++ ")"
 
 
 {-| The head arrow's annotation; `LTop` for non-function types.
@@ -363,6 +467,60 @@ joinAnnotations a b =
 
             else
                 widenSets a
+
+
+{-| Structure from the FIRST type, lambda-set annotations from the SECOND
+where the layouts agree pointwise (keep the first's annotation on any
+mismatch). NOT a join: `unionAnno` treats `LTop` as absorbing, but here
+the first type is a storeless classification whose annotations are all
+`LTop` placeholders — the store zonk's sets must REPLACE them, not be
+absorbed by them.
+
+This is the M3-transport ABI guard: binder/param/node types must keep the
+byte-path `classify` STRUCTURE (the storeless classification is the ABI
+truth the rest of codegen — tail-rec loop params, case results — is built
+around), while the demand-seeded store zonk contributes ONLY annotations.
+Letting the zonk decide structure diverged on demand-concretized erased
+leaves and number residuals, yielding loop-param ABI mismatches at
+self-compile scale (eco.case result i64 vs !eco.value yields).
+
+-}
+overlayAnnotations : MonoType -> MonoType -> MonoType
+overlayAnnotations structural annoSource =
+    case ( structural, annoSource ) of
+        ( MFunction annoA argsA retA, MFunction annoB argsB retB ) ->
+            if List.length argsA == List.length argsB then
+                MFunction annoB (List.map2 overlayAnnotations argsA argsB) (overlayAnnotations retA retB)
+
+            else
+                MFunction annoA argsA retA
+
+        ( MList xa, MList xb ) ->
+            MList (overlayAnnotations xa xb)
+
+        ( MTuple xsa, MTuple xsb ) ->
+            if List.length xsa == List.length xsb then
+                MTuple (List.map2 overlayAnnotations xsa xsb)
+
+            else
+                structural
+
+        ( MRecord fieldsA, MRecord fieldsB ) ->
+            if Dict.keys fieldsA == Dict.keys fieldsB then
+                MRecord (Dict.map (\k ta -> overlayAnnotations ta (Maybe.withDefault ta (Dict.get k fieldsB))) fieldsA)
+
+            else
+                structural
+
+        ( MCustom homeA nameA argsA, MCustom homeB nameB argsB ) ->
+            if homeA == homeB && nameA == nameB && List.length argsA == List.length argsB then
+                MCustom homeA nameA (List.map2 overlayAnnotations argsA argsB)
+
+            else
+                structural
+
+        _ ->
+            structural
 
 
 {-| The sole member of a singleton head annotation, if any.

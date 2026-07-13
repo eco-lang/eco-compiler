@@ -265,6 +265,15 @@ LogicalResult CaseOp::verify() {
     }
     for (size_t i = 0; i < resultTypes.size(); ++i) {
       if (yieldTypes[i] != resultTypes[i]) {
+        // ECO_LAX_CASE_VERIFY=1: demote to a warning so invalid IR can be
+        // dumped for diagnosis (--emit=mlir); never set in real builds.
+        if (::getenv("ECO_LAX_CASE_VERIFY")) {
+          mlir::emitWarning(getLoc())
+              << "LAX: alternative " << altIndex << " eco.yield operand " << i
+              << " has type " << yieldTypes[i] << " but eco.case result " << i
+              << " has type " << resultTypes[i];
+          continue;
+        }
         return emitOpError("alternative ")
                << altIndex << " eco.yield operand " << i
                << " has type " << yieldTypes[i]
@@ -298,6 +307,14 @@ LogicalResult YieldOp::verify() {
 
   for (size_t i = 0; i < caseResultTypes.size(); ++i) {
     if (yieldTypes[i] != caseResultTypes[i]) {
+      // ECO_LAX_CASE_VERIFY=1: diagnostic dumps only (see CaseOp verifier).
+      if (::getenv("ECO_LAX_CASE_VERIFY")) {
+        mlir::emitWarning(getLoc())
+            << "LAX: operand " << i << " has type " << yieldTypes[i]
+            << " but parent eco.case result " << i << " has type "
+            << caseResultTypes[i];
+        continue;
+      }
       return emitOpError("operand ") << i << " has type " << yieldTypes[i]
              << " but parent eco.case result " << i
              << " has type " << caseResultTypes[i];

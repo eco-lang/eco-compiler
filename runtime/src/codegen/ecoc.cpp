@@ -161,9 +161,16 @@ static cl::opt<std::string> dumpRS4GCIR(
 // MLIR Loading
 //===----------------------------------------------------------------------===//
 
+static llvm::cl::opt<bool> noVerifyParse(
+    "no-verify-parse",
+    llvm::cl::desc("Parse the input without running the verifier (diagnostic "
+                   "dumps of invalid IR, e.g. with --emit=mlir)"),
+    llvm::cl::init(false));
+
 static OwningOpRef<ModuleOp> loadMLIR(MLIRContext &context,
                                        llvm::SourceMgr &sourceMgr) {
-    auto module = parseSourceFile<ModuleOp>(sourceMgr, &context);
+    ParserConfig config(&context, /*verifyAfterParse=*/!noVerifyParse);
+    auto module = parseSourceFile<ModuleOp>(sourceMgr, config);
     if (!module) {
         llvm::errs() << "Error: Failed to parse MLIR file\n";
         return nullptr;

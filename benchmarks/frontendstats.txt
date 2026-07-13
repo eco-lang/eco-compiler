@@ -17,6 +17,7 @@
        2026-07-08  UTF-8 pipeline WIRING (W0-W5)
        2026-07-08  UTF-16 seed elimination + chain healing (W7)
        2026-07-10  Monomorphizer engine A/B: original subst vs MonoSolver
+       2026-07-13  Solver + LSS + keyed self-compile (first measured)
   5. Summary table (by timestamp: description, timing, delta to baseline)
 
 ================================================================================
@@ -414,6 +415,37 @@ Verdict: The MonoSolver runs the front-end self-compile ~21% (1.21x) slower than
          substitution. subst remains the default and the faster front-end engine;
          this is the first recorded front-end A/B between the two engines under
          the standard methodology.
+
+--------------------------------------------------------------------------------
+ 2026-07-13 — Solver + LSS + keyed self-compile (first measured; NOT a subst run)
+--------------------------------------------------------------------------------
+Description: First Stage-7a-style timings for the SOLVER engine and the LSS
+             keyed configuration (env ECO_MONO_ENGINE=solver [ECO_MONO_LSS=keyed]),
+             measured while establishing the solver+LSS+keyed SELF-BUILD fixed
+             point (K1 -> keyed binary -> K2, byte-identical). Same host,
+             preset, and cold-eco-stuff/warm-~/.eco protocol as baseline; the
+             subst reference for this tree state is the in-bootstrap ~232s
+             class. NOT comparable line-for-line to the subst rows above:
+             different engine and features.
+
+Raw output (single samples, not medians):
+    Stage 7a-style (native eco-compiler -> MLIR):
+        solver, LSS off       : 5:53.41  (353 s)
+        solver + LSS keyed K1 : 7:35.35  (455 s)   dispatchUpgraded=3140
+        solver + LSS keyed K2 : 7:30.31  (450 s)   [run by the KEYED-BUILT binary]
+
+Notes:
+    * K2 ran on the compiler binary produced by K1 (3,140 singleton
+      fast-dispatch sites live in its own code) and produced byte-identical
+      MLIR — the solver+LSS+keyed self-build fixed point.
+    * Attribution: solver engine alone ~1.5x subst; LSS+keyed adds ~28% on
+      top (~1.95x total). The keyed graph carries ~+2.8% MLIR bytes.
+    * The JS-hosted (Stage 5) solver self-compile is >=12x subst and
+      unbounded in practice — bootstraps under ECO_MONO_ENGINE=solver are
+      impractical until profiled/fixed (see monosolver plan).
+    * This work also fixed a pre-existing solver-engine miscompile
+      (layout-static projections vs erased residuals, foldMGo class) — no
+      solver-emitted self-compile MLIR had ever been lowered before.
 
 ================================================================================
  5. SUMMARY TABLE  (Stage 7a = native front-end self-compile, primary metric)

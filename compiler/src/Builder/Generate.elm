@@ -818,6 +818,12 @@ runGlobalOptPhase lssReport stats simplifiedGraph =
                         ++ String.fromInt goStats.abiCloning.declinedShape
                         ++ " declinedAbiMismatch="
                         ++ String.fromInt goStats.abiCloning.declinedAbiMismatch
+                        ++ " dbg: rebuilt="
+                        ++ String.fromInt goStats.abiCloning.dbgNodesRebuilt
+                        ++ " skipped="
+                        ++ String.fromInt goStats.abiCloning.dbgNodesSkipped
+                        ++ " exprs="
+                        ++ String.fromInt goStats.abiCloning.dbgExprsVisited
                     )
                 )
                 |> Task.map (\_ -> result)

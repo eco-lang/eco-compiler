@@ -1150,6 +1150,95 @@ refinements (design §9.4 — canonical-choice biasing post-M3, wrapping
 contraction to the LTop residue post-M5; census-gated by
 `dispatchUpgraded` vs `wrappersInserted`, both landed at M3).
 
+## Post-M4: self-build under solver+LSS+keyed (2026-07-12, in progress)
+
+Goal: the solver+LSS+keyed compiler can self-build itself.
+
+**Bootstrap attempt (env `ECO_MONO_ENGINE=solver ECO_MONO_LSS=keyed`):**
+Stages 1-4a and the 4b JS fixed point PASSED — those target JavaScript and
+never run monomorphization. The first MLIR-producing stage (the eco mono
+pipeline's first real self-compile-scale run) sat at 100% CPU for
+**8h49m without completing** (subst: ~108s) and was killed.
+
+**Discriminating runs** (Stage-5 command per benchmarks/frontendstats.txt,
+JS-hosted eco-boot-2, cold eco-stuff):
+
+- subst: **2:30** (control, sane)
+- solver, LSS OFF: **TIMEOUT at 30 min** — ≥12× subst and unfinished
+- solver + LSS=1 (pre-coalescing code): TIMEOUT at 30 min
+
+⇒ **The PRIMARY blowup is the JS-hosted solver engine itself, before any
+LSS machinery.** The monosolver's 1.19×-faster-than-subst figure is
+NATIVE-only; its JS-hosted self-compile was never performance-qualified
+(corpus programs are tiny). This is a pre-existing monosolver-plan gap
+that the keyed bootstrap was first to expose.
+
+**Secondary (compounding) cause, fixed:** LSS_010's immediate per-join
+re-translation — every stored-type join re-pushed the spec at once, so a
+hub spec gaining members one join at a time re-translated per member,
+cascading into its callees. FIX: drain-end coalescing — joins only mark
+`S.dirtySpecs`/`dirtyList`; when the worklist empties, all dirty specs
+re-push as ONE flush round (re-translating with fully-joined demands);
+rounds repeat until no joins occur, capped at 100 with a loud EngineBug
+(monotone lattice ⇒ termination; the cap converts any latent oscillation
+into a diagnosable failure instead of a hang). Census gains
+`join flush: rounds=N retranslations=M`. Keyed corpus behavior unchanged
+(all Lss* tests keep their upgrade counts; rounds=0 on small programs).
+
+**Revised self-build strategy:** demonstrate the fixed point NATIVE-hosted
+(where the solver is fast): native eco-compiler --(solver+keyed)-->
+eco-compiler-2.mlir --> eco-compiler-2 binary --(solver+keyed)-->
+eco-compiler-3.mlir; fixed point = 2 and 3 byte-identical. The JS-hosted
+solver perf hole is documented as its own follow-up (monosolver plan
+territory), not a blocker for the goal.
+
+**OUTCOME (2026-07-13): GOAL MET — `FIXED POINT: BYTE-IDENTICAL`.**
+K1 (subst-built native compiler, solver+keyed self-compile): **7:35**,
+`dispatchUpgraded=3140`; its binary builds and verifies; K2 (the
+KEYED-COMPILED compiler — 3,140 fast-dispatch sites live in its own
+code — self-compiling under solver+keyed): **7:30**, output byte-identical
+to K1. Reference points: native subst Stage-7a ≈ 232s, native solver
+(LSS off) 5:53, keyed ≈ 7:33 avg ⇒ solver+LSS+keyed ≈ 1.95× subst
+compile time at self-compile scale (most of the delta is the solver
+engine itself: 1.5×; LSS+keyed adds ~28% on top).
+
+Getting there required three further fixes beyond the join coalescing,
+each found by profiling/verifying at self-compile scale:
+
+1. **AbiCloning de-HOF + index redesign** (perf): the pass's
+   `MonoTraverse` walks pay the runtime's generic closure apply per
+   recursive step and per-site/per-instance layout-key STRINGS over
+   compiler-sized types (the solver `S` record) are ruinous. Rewritten
+   first-order (early-exit `scanExpr` probe; direct `goExpr` rebuild only
+   for candidate nodes) with fingerprint-bucketed layout groups
+   (`shallowLayoutKey` depth-4 + allocation-free `eqLayout` confirms +
+   per-group precomputed unanimity). GlobalOpt phase: hours → seconds
+   (whole keyed self-compile 7.5 min).
+2. **`overlayAnnotations` ABI guard** (correctness): M3's transport must
+   never let the store zonk decide binder/param/node STRUCTURE — the
+   storeless `classify` is the ABI truth codegen is built around; the
+   zonk contributes annotations only (structure from zonk diverged on
+   demand-concretized/erased leaves).
+3. **PRE-EXISTING solver-engine miscompile** (correctness, NOT an LSS
+   bug — reproduces with LSS off): erased residuals (`MVar CEcoValue`)
+   in a path node's recorded element type route tuple/custom projections
+   through the BOXED arm while every concrete-typed constructor stored
+   the slot UNBOXED; tuple slots are LAYOUT-STATIC (the lowering loads
+   raw-vs-boxed purely by the asked type), so the boxed load treats raw
+   i64 bits as an HPointer (found in `System.TypeCheck.IO.foldMGo`:
+   first as an eco.case verifier reject, then — after a type-consistency
+   patch — as a SIGSEGV in the keyed-built compiler). Fix in
+   `Patterns.generateMonoPathHelper`: when the reconciled destructor
+   target is an unboxable primitive, project the RAW slot at the target
+   type (byte-path/subst semantics). Solver self-compile MLIR had NEVER
+   been fed to the backend before this work (bootstraps ran subst;
+   Stage-7a timing runs never lowered their output) — a monosolver-plan
+   verification gap now closed. Kept: a permanent invariant guard in
+   `TailRec.checkedYieldOperands` (loud located crash on loop-state ABI
+   mismatch) and the `ECO_LAX_CASE_VERIFY=1` diagnostic env in the eco
+   dialect verifier (dump-invalid-IR tool; the `--no-verify-parse` flag
+   in ecoc likewise).
+
 ## Risk ledger
 
 | Risk | Guard |
