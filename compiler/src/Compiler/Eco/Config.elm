@@ -105,6 +105,8 @@ defaultLss =
 
   - `whitelist` is **additive**: appended to the built-in `defaultWhitelist`.
   - `blacklist` is subtracted from the effective whitelist afterward.
+  - `report` renders the inline census to stderr after the pass
+    (`ECO_INLINE_REPORT=1`); output-only, never affects `hash`.
 
 -}
 type alias InlineConfig =
@@ -113,6 +115,7 @@ type alias InlineConfig =
     , blacklist : List String
     , maxPerFunction : Int
     , fixpointIterations : Int
+    , report : Bool
     }
 
 
@@ -143,6 +146,7 @@ default =
         , blacklist = []
         , maxPerFunction = 1000
         , fixpointIterations = 4
+        , report = False
         }
     , bytesFusion = { enabled = True }
     , logicalTypes = { customMaxFields = 8 }
@@ -163,6 +167,9 @@ decoder =
         |> D.apply (D.optionalField "mono" monoDecoder default.mono)
 
 
+{-| Decode the `inline` block. `report` is env-only in spirit but accepted
+from JSON for convenience; it never affects `hash`.
+-}
 inlineDecoder : D.Decoder x InlineConfig
 inlineDecoder =
     D.pure InlineConfig
@@ -171,6 +178,7 @@ inlineDecoder =
         |> D.apply (D.optionalField "blacklist" (D.list D.string) default.inline.blacklist)
         |> D.apply (D.optionalField "maxPerFunction" D.int default.inline.maxPerFunction)
         |> D.apply (D.optionalField "fixpointIterations" D.int default.inline.fixpointIterations)
+        |> D.apply (D.optionalField "report" D.bool default.inline.report)
 
 
 bytesFusionDecoder : D.Decoder x BytesFusionConfig

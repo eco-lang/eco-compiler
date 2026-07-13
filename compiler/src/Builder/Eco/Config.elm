@@ -79,6 +79,8 @@ loadBase maybeExplicit root =
   - `ECO_MONO_DIFF_DUMP=1` makes `EngineDiff` embed full renderings on mismatch.
   - `ECO_MONO_LSS=0|1|keyed` toggles lambda-set specialization (solver engine).
   - `ECO_MONO_LSS_REPORT=1` renders the LSS census to stderr after mono.
+  - `ECO_INLINE_REPORT=1` renders the inline census to stderr after
+    inline+simplify (HOF-elimination plan H0.2).
 
 Applied here (not further downstream) so the override participates in
 `Config.hash`, which keys the Details cache. An unrecognized engine value is a
@@ -114,6 +116,11 @@ applyEnvOverrides cfg =
             (\cfg5 ->
                 (Utils.envLookupEnv "ECO_MONO_VALIDATE" |> Task.mapError never)
                     |> Task.map (\valVal -> applyValidateOverride valVal cfg5)
+            )
+        |> Task.andThen
+            (\cfg6 ->
+                (Utils.envLookupEnv "ECO_INLINE_REPORT" |> Task.mapError never)
+                    |> Task.map (\repVal -> applyInlineReportOverride repVal cfg6)
             )
 
 
@@ -253,6 +260,35 @@ applyLssReportOverride maybeVal cfg =
     in
     if on then
         updateLss (\lss -> { lss | report = True }) cfg
+
+    else
+        cfg
+
+
+{-| `ECO_INLINE_REPORT=1|true|yes`: render the inline census after
+inline+simplify. Output-only, never affects `Config.hash`.
+-}
+applyInlineReportOverride : Maybe String -> EcoConfig -> EcoConfig
+applyInlineReportOverride maybeVal cfg =
+    let
+        on =
+            case maybeVal of
+                Just v ->
+                    let
+                        t =
+                            String.toLower (String.trim v)
+                    in
+                    t == "1" || t == "true" || t == "yes"
+
+                Nothing ->
+                    False
+    in
+    if on then
+        let
+            inline =
+                cfg.inline
+        in
+        { cfg | inline = { inline | report = True } }
 
     else
         cfg

@@ -13,6 +13,8 @@
 #include "ThreadLocalHeap.hpp"
 #include "TypeInfo.hpp"
 
+#include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <array>
 #include <charconv>
@@ -21,9 +23,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <new>
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 using namespace Elm;
 
@@ -538,9 +542,140 @@ extern "C" HPtr eco_alloc_string_literal_utf8(const uint8_t* bytes,
     });
 }
 
+//===----------------------------------------------------------------------===//
+// Closure allocation census (ECO_CLOSURE_STATS=1)
+//
+// Counts every closure allocation, keyed by evaluator function pointer, so
+// the top allocation sites can be ranked (HOF-elimination plan H0.1,
+// plans/hof-elimination-closure-alloc-reduction.md). `creates` counts fresh
+// closures (papCreate paths incl. group allocation); `extends` counts the
+// copy-allocations eco_pap_extend performs.
+//
+// The table is a fixed-size open-addressed array claimed with CAS so worker
+// threads (scheduler/timers) can record safely. Zero overhead when the env
+// var is unset beyond one cached-bool branch per allocation. The dump runs
+// via atexit and prints an `anchor=` line (runtime address of
+// eco_alloc_closure) so benchmarks/closure-census.sh can compute the ASLR slide
+// against `nm` output when symbolizing.
+//===----------------------------------------------------------------------===//
+
+extern "C" HPtr eco_alloc_closure(void* func_ptr, uint32_t num_captures);
+
+namespace {
+
+struct ClosureStatsEntry {
+    std::atomic<uint64_t> fp{0};
+    std::atomic<uint64_t> creates{0};
+    std::atomic<uint64_t> extends{0};
+};
+
+constexpr size_t kClosureStatsSlots = 1 << 16; // 64Ki slots, power of two
+constexpr size_t kClosureStatsMaxProbe = 128;
+
+ClosureStatsEntry* g_closure_stats_table = nullptr;
+std::atomic<uint64_t> g_closure_stats_overflow{0};
+std::atomic<uint64_t> g_closure_creates_total{0};
+std::atomic<uint64_t> g_closure_extends_total{0};
+std::atomic<bool> g_closure_stats_dumped{false};
+
+void closureStatsDumpImpl() {
+    if (g_closure_stats_dumped.exchange(true)) return;
+    if (!g_closure_stats_table) return;
+
+    struct Row {
+        uint64_t fp;
+        uint64_t creates;
+        uint64_t extends;
+    };
+    std::vector<Row> rows;
+    for (size_t i = 0; i < kClosureStatsSlots; ++i) {
+        uint64_t fp = g_closure_stats_table[i].fp.load(std::memory_order_relaxed);
+        if (fp == 0) continue;
+        rows.push_back({fp,
+                        g_closure_stats_table[i].creates.load(std::memory_order_relaxed),
+                        g_closure_stats_table[i].extends.load(std::memory_order_relaxed)});
+    }
+    std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) {
+        return a.creates + a.extends > b.creates + b.extends;
+    });
+
+    std::fprintf(stderr, "[closure-stats] anchor=eco_alloc_closure:0x%llx\n",
+                 static_cast<unsigned long long>(
+                     reinterpret_cast<uint64_t>(&eco_alloc_closure)));
+    std::fprintf(stderr,
+                 "[closure-stats] creates=%llu extends=%llu distinct=%zu overflow=%llu\n",
+                 static_cast<unsigned long long>(
+                     g_closure_creates_total.load(std::memory_order_relaxed)),
+                 static_cast<unsigned long long>(
+                     g_closure_extends_total.load(std::memory_order_relaxed)),
+                 rows.size(),
+                 static_cast<unsigned long long>(
+                     g_closure_stats_overflow.load(std::memory_order_relaxed)));
+    for (const Row& r : rows) {
+        std::fprintf(stderr, "[closure-stats] fp=0x%llx creates=%llu extends=%llu\n",
+                     static_cast<unsigned long long>(r.fp),
+                     static_cast<unsigned long long>(r.creates),
+                     static_cast<unsigned long long>(r.extends));
+    }
+    std::fflush(stderr);
+}
+
+bool closureStatsInit() {
+    const char* e = std::getenv("ECO_CLOSURE_STATS");
+    if (!e || !*e || std::strcmp(e, "0") == 0) return false;
+    // Value-initialize so the atomics start at zero.
+    g_closure_stats_table = new (std::nothrow) ClosureStatsEntry[kClosureStatsSlots]();
+    if (!g_closure_stats_table) return false;
+    std::atexit(closureStatsDumpImpl);
+    return true;
+}
+
+inline bool closureStatsEnabled() {
+    static const bool enabled = closureStatsInit();
+    return enabled;
+}
+
+void closureStatsRecord(const void* func_ptr, bool isExtend) {
+    if (!closureStatsEnabled()) return;
+    uint64_t fp = reinterpret_cast<uint64_t>(func_ptr);
+    if (fp == 0) fp = 1; // 0 marks an empty slot
+    if (isExtend) {
+        g_closure_extends_total.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        g_closure_creates_total.fetch_add(1, std::memory_order_relaxed);
+    }
+    size_t idx = (fp >> 3) & (kClosureStatsSlots - 1);
+    for (size_t probe = 0; probe < kClosureStatsMaxProbe; ++probe) {
+        ClosureStatsEntry& entry =
+            g_closure_stats_table[(idx + probe) & (kClosureStatsSlots - 1)];
+        uint64_t cur = entry.fp.load(std::memory_order_relaxed);
+        if (cur == 0) {
+            uint64_t expected = 0;
+            if (!entry.fp.compare_exchange_strong(expected, fp,
+                                                  std::memory_order_relaxed)) {
+                if (expected != fp) continue; // lost race to a different fp
+            }
+            cur = fp;
+        }
+        if (cur == fp) {
+            (isExtend ? entry.extends : entry.creates)
+                .fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+    }
+    g_closure_stats_overflow.fetch_add(1, std::memory_order_relaxed);
+}
+
+} // anonymous namespace
+
+// Manual/embedder hook: dump the census now (idempotent). The atexit path
+// covers normal AOT exits; embed hosts that never exit can call this.
+extern "C" void eco_closure_stats_dump(void) { closureStatsDumpImpl(); }
+
 extern "C" HPtr eco_alloc_closure_k(void* func_ptr, uint32_t num_captures,
                                     uint8_t result_kind) {
     assert(result_kind <= 3 && "eco_alloc_closure_k: result_kind out of range");
+    closureStatsRecord(func_ptr, /*isExtend=*/false);
     // Size: Header + metadata (8 bytes) + evaluator ptr + captures
     size_t size = sizeof(Header) + 8 + sizeof(EvalFunction) + num_captures * sizeof(Unboxable);
 
@@ -820,6 +955,7 @@ extern "C" HPtr eco_alloc_closure_fast(void* func_ptr, uint32_t num_captures) {
     size_t size = sizeof(Header) + 8 + sizeof(EvalFunction) + num_captures * sizeof(Unboxable);
     void* obj = Allocator::instance().allocateFast(size);
     if (!obj) return HPtr::fromBits(0);
+    closureStatsRecord(func_ptr, /*isExtend=*/false);
 
     Header* hdr = getHeader(obj);
     std::memset(hdr, 0, sizeof(Header));
@@ -839,6 +975,7 @@ extern "C" HPtr eco_alloc_closure_slow(void* func_ptr, uint32_t num_captures) {
     size_t size = sizeof(Header) + 8 + sizeof(EvalFunction) + num_captures * sizeof(Unboxable);
     void* obj = Allocator::instance().allocateSlow(size, Tag_Closure);
     if (!obj) return HPtr::fromBits(0);
+    closureStatsRecord(func_ptr, /*isExtend=*/false);
 
     Closure* closure = static_cast<Closure*>(obj);
     closure->n_values = 0;
@@ -990,6 +1127,7 @@ extern "C" void eco_alloc_closure_group_slow(
         closure->unboxed = unboxedBitmaps[i];
         closure->evaluator = reinterpret_cast<EvalFunction>(
             const_cast<void*>(evaluators[i]));
+        closureStatsRecord(evaluators[i], /*isExtend=*/false);
 
         // Non-sibling captures: pre-ordered into slots [0 .. capture_counts[i]).
         const uint32_t capStart = captureOffsets[i];
@@ -1742,6 +1880,8 @@ extern "C" HPtr eco_pap_extend(HPtr closure_hptr, uint64_t* args, uint32_t num_n
     new_closure->max_values = max_values;
     new_closure->result_kind = old_result_kind;
     new_closure->evaluator = old_closure->evaluator;
+    closureStatsRecord(reinterpret_cast<const void*>(new_closure->evaluator),
+                       /*isExtend=*/true);
 
     // Merge 2-bit-per-slot unboxed bitmaps: old kinds + new kinds shifted by
     // old_n_values * 2 bits per slot.

@@ -801,13 +801,57 @@ runInlineSimplifyPhase ecoConfig stats monoGraph0 =
     FEStats.withPhase stats
         FEStats.PhaseInlineSimplify
         (let
-            ( simplifiedGraph, _ ) =
+            ( simplifiedGraph, inlineMetrics ) =
                 MonoInlineSimplify.optimize ecoConfig.inline monoGraph0
          in
-         Task.succeed simplifiedGraph
+         if ecoConfig.inline.report then
+            -- Inline census (inline.report / ECO_INLINE_REPORT=1): pass
+            -- metrics + the static count of closures surviving the pass
+            -- (HOF-elimination plan H0.2). stderr, like the LSS census.
+            Task.io
+                (System.IO.writeLn System.IO.stderr
+                    (renderInlineReport inlineMetrics simplifiedGraph)
+                )
+                |> Task.map (\_ -> simplifiedGraph)
+
+         else
+            Task.succeed simplifiedGraph
         )
         -- Hand off to a separate function so monoGraph0 goes out of scope
         |> Task.andThen (runGlobalOptPhase ecoConfig.mono.lss.report stats)
+
+
+renderInlineReport : MonoInlineSimplify.Metrics -> Mono.MonoGraph -> String
+renderInlineReport m graph =
+    let
+        topCallees =
+            Dict.toList m.inlinedByCallee
+                |> List.sortBy (\( _, n ) -> negate n)
+                |> List.take 20
+                |> List.map (\( callee, n ) -> callee ++ "=" ++ String.fromInt n)
+                |> String.join " "
+    in
+    String.join "\n"
+        [ "inline-simplify: inlined="
+            ++ String.fromInt m.inlineCount
+            ++ " beta="
+            ++ String.fromInt m.betaReductions
+            ++ " betaForwards="
+            ++ String.fromInt m.betaForwards
+            ++ " letDCE="
+            ++ String.fromInt m.letEliminations
+            ++ " closureDCE="
+            ++ String.fromInt m.closureDCE
+            ++ " closuresRemaining="
+            ++ String.fromInt (MonoInlineSimplify.countClosures graph)
+        , "inline top callees: "
+            ++ (if String.isEmpty topCallees then
+                    "(none)"
+
+                else
+                    topCallees
+               )
+        ]
 
 
 {-| Global optimization phase in its own scope so inline+simplify inputs are GC-eligible.

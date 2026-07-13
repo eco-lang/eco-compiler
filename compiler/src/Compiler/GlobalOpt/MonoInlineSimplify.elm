@@ -1,4 +1,4 @@
-module Compiler.GlobalOpt.MonoInlineSimplify exposing (Metrics, optimize, buildBodyLookup)
+module Compiler.GlobalOpt.MonoInlineSimplify exposing (Metrics, optimize, buildBodyLookup, countClosures)
 
 {-| Mono IR Inliner and Simplifier.
 
@@ -10,11 +10,13 @@ Key optimizations:
 
   - Small-function inlining (with recursion guard)
   - Beta-reduction of immediate lambdas
+  - Let-callee forwarding (a let-bound closure whose single use is the
+    callee of a call is beta-reduced into that call site)
   - Let-sinking/let-elimination
-  - Dead code elimination
+  - Dead code elimination (incl. chain-aware dead closure bindings)
   - Case simplifications
 
-@docs Metrics, optimize, buildBodyLookup
+@docs Metrics, optimize, buildBodyLookup, countClosures
 
 -}
 
@@ -37,12 +39,24 @@ import System.TypeCheck.IO as IO
 -- ============================================================================
 
 
-{-| Metrics collected during optimization, available for debugging.
+{-| Metrics collected during optimization, available for debugging and the
+`ECO_INLINE_REPORT=1` census (HOF-elimination plan H0.2/H1.3):
+
+  - `betaForwards` counts let-bound closures forwarded into their single
+    callee-position use (H1.1).
+  - `closureDCE` counts dead closure bindings dropped by the chain-aware
+    let simplifier (H1.2).
+  - `inlinedByCallee` tallies successful direct-call inlines per callee
+    global ("Module.name").
+
 -}
 type alias Metrics =
     { inlineCount : Int
     , betaReductions : Int
+    , betaForwards : Int
     , letEliminations : Int
+    , closureDCE : Int
+    , inlinedByCallee : Dict String Int
     }
 
 
@@ -96,6 +110,63 @@ buildBodyLookup (MonoGraph { nodes, callEdges }) =
         ( Dict.empty, 0 )
         nodes
         |> Tuple.first
+
+
+{-| Static census helper (`ECO_INLINE_REPORT=1`): count the `MonoClosure`
+nodes remaining in the graph. Top-level closures of function definitions are
+skipped — they lower to `func.func`s, not runtime allocations; only closures
+in expression position (which become `eco.papCreate`s at reference sites)
+are counted.
+-}
+countClosures : MonoGraph -> Int
+countClosures (MonoGraph { nodes }) =
+    let
+        countInExpr : MonoExpr -> Int
+        countInExpr e =
+            Traverse.foldExpr
+                (\sub acc ->
+                    case sub of
+                        MonoClosure _ _ _ ->
+                            acc + 1
+
+                        _ ->
+                            acc
+                )
+                0
+                e
+
+        countInNode : MonoNode -> Int
+        countInNode node =
+            case node of
+                MonoDefine (MonoClosure _ body _) _ ->
+                    countInExpr body
+
+                MonoDefine expr _ ->
+                    countInExpr expr
+
+                MonoTailFunc _ expr _ ->
+                    countInExpr expr
+
+                MonoPortIncoming expr _ ->
+                    countInExpr expr
+
+                MonoPortOutgoing expr _ ->
+                    countInExpr expr
+
+                _ ->
+                    0
+    in
+    Array.foldl
+        (\maybeNode acc ->
+            case maybeNode of
+                Just node ->
+                    acc + countInNode node
+
+                Nothing ->
+                    acc
+        )
+        0
+        nodes
 
 
 {-| Optimize a MonoGraph by inlining small functions and simplifying expressions.
@@ -155,10 +226,7 @@ optimizeNodes nodesList ctx main registry ctorShapes ports flagsDecoder =
             Array.fromList (List.reverse optimizedNodesList)
 
         metrics =
-            { inlineCount = finalCtx.metrics.inlineCount
-            , betaReductions = finalCtx.metrics.betaReductions
-            , letEliminations = finalCtx.metrics.letEliminations
-            }
+            finalCtx.metrics
     in
     ( MonoGraph
         { nodes = optimizedNodes
@@ -572,7 +640,74 @@ type alias RewriteCtx =
 type alias InternalMetrics =
     { inlineCount : Int
     , betaReductions : Int
+    , betaForwards : Int
     , letEliminations : Int
+    , closureDCE : Int
+    , inlinedByCallee : Dict String Int
+    }
+
+
+bumpBetaReductions : RewriteCtx -> RewriteCtx
+bumpBetaReductions ctx =
+    let
+        m =
+            ctx.metrics
+    in
+    { ctx | metrics = { m | betaReductions = m.betaReductions + 1 } }
+
+
+bumpBetaForwards : RewriteCtx -> RewriteCtx
+bumpBetaForwards ctx =
+    let
+        m =
+            ctx.metrics
+    in
+    { ctx | metrics = { m | betaForwards = m.betaForwards + 1 } }
+
+
+bumpLetElimination : RewriteCtx -> RewriteCtx
+bumpLetElimination ctx =
+    let
+        m =
+            ctx.metrics
+    in
+    { ctx | metrics = { m | letEliminations = m.letEliminations + 1 } }
+
+
+bumpClosureDCE : RewriteCtx -> RewriteCtx
+bumpClosureDCE ctx =
+    let
+        m =
+            ctx.metrics
+    in
+    { ctx | metrics = { m | closureDCE = m.closureDCE + 1 } }
+
+
+{-| Record a successful direct-call inline: global count, per-callee tally,
+and the per-function budget counter.
+-}
+recordInline : SpecId -> RewriteCtx -> RewriteCtx
+recordInline specId ctx =
+    let
+        m =
+            ctx.metrics
+
+        calleeKey =
+            Array.get specId ctx.registry.reverseMapping
+                |> Maybe.andThen identity
+                |> Maybe.andThen (\( g, _ ) -> globalToQualifiedName g)
+                |> Maybe.withDefault ("spec:" ++ String.fromInt specId)
+    in
+    { ctx
+        | metrics =
+            { m
+                | inlineCount = m.inlineCount + 1
+                , inlinedByCallee =
+                    Dict.insert calleeKey
+                        (1 + Maybe.withDefault 0 (Dict.get calleeKey m.inlinedByCallee))
+                        m.inlinedByCallee
+            }
+        , inlineCountThisFunction = ctx.inlineCountThisFunction + 1
     }
 
 
@@ -643,7 +778,10 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
     , metrics =
         { inlineCount = 0
         , betaReductions = 0
+        , betaForwards = 0
         , letEliminations = 0
+        , closureDCE = 0
+        , inlinedByCallee = Dict.empty
         }
     }
 
@@ -895,15 +1033,15 @@ rewriteExpr ctx expr =
                 _ ->
                     ( MonoIf rewrittenBranches rewrittenFinal resultType, ctx2 )
 
-        MonoLet def body resultType ->
-            let
-                ( rewrittenDef, ctx1 ) =
-                    rewriteDef ctx def
-
-                ( rewrittenBody, ctx2 ) =
-                    rewriteExpr ctx1 body
-            in
-            ( MonoLet rewrittenDef rewrittenBody resultType, ctx2 )
+        MonoLet _ _ _ ->
+            -- Let CHAINS are rewritten as a group: the let-callee forwarding
+            -- decision (H1.1) needs to see uses of a def's name in EVERY
+            -- sibling def of the chain, including EARLIER ones — letrec
+            -- sibling closures reference each other in both directions, and
+            -- from an inner let node an earlier sibling is an ancestor,
+            -- invisible to a subtree usage count (the same reason
+            -- freshenLetChain and simplifyLetChain work on the whole spine).
+            rewriteLetChain ctx expr
 
         MonoDestruct destructor inner resultType ->
             let
@@ -1188,14 +1326,8 @@ betaReduce ctx region info closureBody args resultType =
 
             ( substituted, ctx2 ) =
                 freshenLetBoundNames ctx1 (substituteAll bindings closureBody)
-
-            newMetrics =
-                { inlineCount = ctx2.metrics.inlineCount
-                , betaReductions = ctx2.metrics.betaReductions + 1
-                , letEliminations = ctx2.metrics.letEliminations
-                }
         in
-        ( wrapInLets bindings substituted resultType, { ctx2 | metrics = newMetrics } )
+        ( wrapInLets bindings substituted resultType, bumpBetaReductions ctx2 )
 
     else if numArgs < numParams then
         -- Partial application: bind available params, return closure with remaining
@@ -1222,15 +1354,9 @@ betaReduce ctx region info closureBody args resultType =
 
             newInfo =
                 { info | params = remainingParams, captures = newCaptures }
-
-            newMetrics =
-                { inlineCount = ctx2.metrics.inlineCount
-                , betaReductions = ctx2.metrics.betaReductions + 1
-                , letEliminations = ctx2.metrics.letEliminations
-                }
         in
         ( wrapInLets bindings (MonoClosure newInfo substituted newClosureType) newClosureType
-        , { ctx2 | metrics = newMetrics }
+        , bumpBetaReductions ctx2
         )
 
     else
@@ -1245,17 +1371,11 @@ betaReduce ctx region info closureBody args resultType =
             ( substituted, ctx2 ) =
                 freshenLetBoundNames ctx1 (substituteAll bindings closureBody)
 
-            newMetrics =
-                { inlineCount = ctx2.metrics.inlineCount
-                , betaReductions = ctx2.metrics.betaReductions + 1
-                , letEliminations = ctx2.metrics.letEliminations
-                }
-
             innerExpr =
                 wrapInLets bindings substituted resultType
         in
         ( MonoCall region innerExpr extraArgs resultType Mono.defaultCallInfo
-        , { ctx2 | metrics = newMetrics }
+        , bumpBetaReductions ctx2
         )
 
 
@@ -1538,6 +1658,439 @@ setDefName newName def =
 
         Mono.MonoTailDef _ params bound ->
             Mono.MonoTailDef newName params bound
+
+
+
+-- ============================================================================
+-- ====== LET-CALLEE FORWARDING (H1.1) ======
+-- ============================================================================
+
+
+{-| Rewrite one let chain as a group: rewrite every def's bound expression
+and the final body (exactly what the per-let recursion did before), then
+attempt let-callee forwarding with full-chain visibility.
+-}
+rewriteLetChain : RewriteCtx -> MonoExpr -> ( MonoExpr, RewriteCtx )
+rewriteLetChain ctx chainExpr =
+    let
+        splitSpine : MonoExpr -> List ( Mono.MonoDef, Mono.MonoType ) -> ( List ( Mono.MonoDef, Mono.MonoType ), MonoExpr )
+        splitSpine e acc =
+            case e of
+                MonoLet d b t ->
+                    splitSpine b (( d, t ) :: acc)
+
+                _ ->
+                    ( List.reverse acc, e )
+
+        ( spine0, finalBody0 ) =
+            splitSpine chainExpr []
+
+        ( spineRev, ctx1 ) =
+            List.foldl
+                (\( d, t ) ( acc, c ) ->
+                    let
+                        ( d1, c1 ) =
+                            rewriteDef c d
+                    in
+                    ( ( d1, t ) :: acc, c1 )
+                )
+                ( [], ctx )
+                spine0
+
+        ( finalBody1, ctx2 ) =
+            rewriteExpr ctx1 finalBody0
+
+        ( spine2, finalBody2, ctx3 ) =
+            forwardInChain ctx2 (List.reverse spineRev) finalBody1
+    in
+    ( List.foldr (\( d, t ) acc -> MonoLet d acc t) finalBody2 spine2, ctx3 )
+
+
+{-| Forward let-bound closures into their single callee-position use, with
+the whole chain in view. A def is forwardable only when ALL of:
+
+  - it is a plain `MonoDef` bound to a closure literal;
+  - the closure does not reference its own name (a recursive closure's
+    self-call lives inside its own bound expression, invisible to any
+    body-side count — forwarding would delete the binding its body needs);
+  - no EARLIER sibling references the name. Letrec siblings reference each
+    other in both directions; forwarding into an earlier sibling's bound
+    expression would move the closure's capture reads BEFORE bindings they
+    may depend on, and deleting the def dangles the earlier capture. (This
+    is also why the decision needs the chain view at all: from an inner let
+    node an earlier sibling is an ancestor, invisible to a subtree count.)
+  - LATER siblings' bounds plus the final body reference the name exactly
+    once, and `forwardGo` proves that use is a legal callee position.
+    Forwarding INTO a later position is evaluation-order safe: every name
+    the closure references was already bound before the def's own position.
+
+Forwarding one def can expose another (counts change), so the pass restarts
+until nothing forwards; each success removes a def, so this terminates.
+-}
+forwardInChain : RewriteCtx -> List ( Mono.MonoDef, Mono.MonoType ) -> MonoExpr -> ( List ( Mono.MonoDef, Mono.MonoType ), MonoExpr, RewriteCtx )
+forwardInChain ctx spine finalBody =
+    let
+        usesInDefsOf : Name -> List ( Mono.MonoDef, Mono.MonoType ) -> Int
+        usesInDefsOf name defs =
+            List.foldl (\( d, _ ) n -> n + countUsagesInDef name d) 0 defs
+
+        splitSpine : MonoExpr -> List ( Mono.MonoDef, Mono.MonoType ) -> ( List ( Mono.MonoDef, Mono.MonoType ), MonoExpr )
+        splitSpine e acc =
+            case e of
+                MonoLet d b t ->
+                    splitSpine b (( d, t ) :: acc)
+
+                _ ->
+                    ( List.reverse acc, e )
+
+        tryAt :
+            List ( Mono.MonoDef, Mono.MonoType )
+            -> List ( Mono.MonoDef, Mono.MonoType )
+            -> MonoExpr
+            -> RewriteCtx
+            -> Maybe ( List ( Mono.MonoDef, Mono.MonoType ), MonoExpr, RewriteCtx )
+        tryAt beforeRev after fb c =
+            case after of
+                [] ->
+                    Nothing
+
+                (( d, _ ) as entry) :: rest ->
+                    let
+                        skip () =
+                            tryAt (entry :: beforeRev) rest fb c
+                    in
+                    case d of
+                        Mono.MonoDef name ((MonoClosure cinfo cbody _) as closureExpr) ->
+                            if
+                                countUsages name closureExpr
+                                    == 0
+                                    && usesInDefsOf name beforeRev
+                                    == 0
+                                    && (usesInDefsOf name rest + countUsages name fb)
+                                    == 1
+                            then
+                                -- Rebuild the tail (later defs + final body) as
+                                -- one expression so forwardGo can reach a use in
+                                -- either place, then split it back.
+                                let
+                                    tailExpr =
+                                        List.foldr (\( d2, t2 ) acc -> MonoLet d2 acc t2) fb rest
+                                in
+                                case forwardGo c name cinfo cbody tailExpr of
+                                    Just ( tail1, c1 ) ->
+                                        let
+                                            ( rest1, fb1 ) =
+                                                splitSpine tail1 []
+                                        in
+                                        Just ( List.reverse beforeRev ++ rest1, fb1, bumpBetaForwards c1 )
+
+                                    Nothing ->
+                                        skip ()
+
+                            else
+                                skip ()
+
+                        _ ->
+                            skip ()
+
+        loop sp fb c =
+            case tryAt [] sp fb c of
+                Just ( sp1, fb1, c1 ) ->
+                    loop sp1 fb1 c1
+
+                Nothing ->
+                    ( sp, fb, c )
+    in
+    loop spine finalBody ctx
+
+
+{-| Find the single callee-position use of `name` in `expr` and replace the
+call with the beta-reduction of the given closure against the call's args.
+Returns `Nothing` when no legal use is found (the caller keeps the let).
+
+PRECONDITION: `countUsages name expr == 1` — the walk replaces the first
+qualifying call it finds and relies on the count for uniqueness (any other
+occurrence would make the count ≥ 2 and the caller skips forwarding).
+
+Guards (all return "not found here" so the caller conservatively keeps the
+let):
+
+  - Never descends into `MonoClosure` captures/bodies or `MonoTailDef`
+    bound expressions. For closures this is a CORRECTNESS guard, not just a
+    perf one: the forwarded body references outer names, and an enclosing
+    closure's `ClosureInfo.captures` was already computed — injecting new
+    free variables into its body would violate CGEN_CLOSURE_003 (FV ⊆
+    params ∪ captures ∪ siblings). For tail-def bounds it is the sinking
+    guard: a partial-application residue would allocate per loop iteration
+    instead of once.
+  - Never descends past any construct that rebinds `name` (shadowing —
+    should not occur post-freshening, but letrec sibling defs make a
+    same-named def genuinely ambiguous, so refuse outright).
+  - `MonoIf`/`MonoCase` branches are fine: they execute at most once per
+    evaluation of the let body.
+
+-}
+forwardGo : RewriteCtx -> Name -> Mono.ClosureInfo -> MonoExpr -> MonoExpr -> Maybe ( MonoExpr, RewriteCtx )
+forwardGo ctx name cinfo cbody expr =
+    case expr of
+        MonoCall region func args t ci ->
+            case func of
+                MonoVarLocal n _ ->
+                    if n == name then
+                        -- Only SATURATED, GROUND-RESULT uses forward.
+                        --
+                        -- A partial application would route through
+                        -- betaReduce's partial-rebuild branch, and a
+                        -- function-typed result means the beta yields a
+                        -- closure the enclosing expression applies (curried
+                        -- defs like `compose f g = \x -> …`). Both leave a
+                        -- closure whose call site carries the mono result
+                        -- type while the compiled body keeps the generic
+                        -- boxed ABI — a latent CGEN_056 mismatch (saturated
+                        -- papExtend result type vs callee return type) that
+                        -- the SKI-combinator / identity-composition unit
+                        -- fixtures catch. Returning Nothing keeps the let
+                        -- (the count precondition means this was the only
+                        -- use).
+                        if
+                            List.length args
+                                == List.length cinfo.params
+                                && not (isFunctionType t)
+                        then
+                            Just (betaReduce ctx region cinfo cbody args t)
+
+                        else
+                            Nothing
+
+                    else
+                        forwardGoList ctx name cinfo cbody args
+                            |> Maybe.map (\( args1, c ) -> ( MonoCall region func args1 t ci, c ))
+
+                _ ->
+                    case forwardGo ctx name cinfo cbody func of
+                        Just ( func1, c ) ->
+                            Just ( MonoCall region func1 args t ci, c )
+
+                        Nothing ->
+                            forwardGoList ctx name cinfo cbody args
+                                |> Maybe.map (\( args1, c ) -> ( MonoCall region func args1 t ci, c ))
+
+        MonoClosure _ _ _ ->
+            -- Sinking guard: never move an allocation into a closure body,
+            -- and a capture-position use is not a callee anyway.
+            Nothing
+
+        MonoLet d b t ->
+            if getDefName d == name then
+                -- Rebinding (letrec sibling or shadow): everything below is
+                -- ambiguous — refuse.
+                Nothing
+
+            else
+                case d of
+                    Mono.MonoDef dn bound ->
+                        case forwardGo ctx name cinfo cbody bound of
+                            Just ( bound1, c ) ->
+                                Just ( MonoLet (Mono.MonoDef dn bound1) b t, c )
+
+                            Nothing ->
+                                forwardGo ctx name cinfo cbody b
+                                    |> Maybe.map (\( b1, c ) -> ( MonoLet d b1 t, c ))
+
+                    Mono.MonoTailDef _ _ _ ->
+                        -- Sinking guard: a tail-def bound expr is a loop body.
+                        forwardGo ctx name cinfo cbody b
+                            |> Maybe.map (\( b1, c ) -> ( MonoLet d b1 t, c ))
+
+        MonoDestruct ((Mono.MonoDestructor dn _ _) as dtor) inner t ->
+            if dn == name then
+                Nothing
+
+            else
+                forwardGo ctx name cinfo cbody inner
+                    |> Maybe.map (\( inner1, c ) -> ( MonoDestruct dtor inner1 t, c ))
+
+        MonoIf branches final t ->
+            case forwardGoIfBranches ctx name cinfo cbody branches of
+                Just ( branches1, c ) ->
+                    Just ( MonoIf branches1 final t, c )
+
+                Nothing ->
+                    forwardGo ctx name cinfo cbody final
+                        |> Maybe.map (\( final1, c ) -> ( MonoIf branches final1 t, c ))
+
+        MonoCase s r decider branches t ->
+            if s == name || r == name then
+                -- The case scrutinizes our variable: not a callee use.
+                Nothing
+
+            else
+                case forwardGoDecider ctx name cinfo cbody decider of
+                    Just ( decider1, c ) ->
+                        Just ( MonoCase s r decider1 branches t, c )
+
+                    Nothing ->
+                        forwardGoSndList ctx name cinfo cbody branches
+                            |> Maybe.map (\( branches1, c ) -> ( MonoCase s r decider branches1 t, c ))
+
+        MonoList region items t ->
+            forwardGoList ctx name cinfo cbody items
+                |> Maybe.map (\( items1, c ) -> ( MonoList region items1 t, c ))
+
+        MonoTailCall n args t ->
+            if n == name then
+                Nothing
+
+            else
+                forwardGoSndList ctx name cinfo cbody args
+                    |> Maybe.map (\( args1, c ) -> ( MonoTailCall n args1 t, c ))
+
+        MonoRecordCreate fields t ->
+            forwardGoSndList ctx name cinfo cbody fields
+                |> Maybe.map (\( fields1, c ) -> ( MonoRecordCreate fields1 t, c ))
+
+        MonoRecordAccess inner f t ->
+            forwardGo ctx name cinfo cbody inner
+                |> Maybe.map (\( inner1, c ) -> ( MonoRecordAccess inner1 f t, c ))
+
+        MonoRecordUpdate inner updates t ->
+            case forwardGo ctx name cinfo cbody inner of
+                Just ( inner1, c ) ->
+                    Just ( MonoRecordUpdate inner1 updates t, c )
+
+                Nothing ->
+                    forwardGoSndList ctx name cinfo cbody updates
+                        |> Maybe.map (\( updates1, c ) -> ( MonoRecordUpdate inner updates1 t, c ))
+
+        MonoTupleCreate region items t ->
+            forwardGoList ctx name cinfo cbody items
+                |> Maybe.map (\( items1, c ) -> ( MonoTupleCreate region items1 t, c ))
+
+        MonoLiteral _ _ ->
+            Nothing
+
+        MonoVarLocal _ _ ->
+            Nothing
+
+        MonoVarGlobal _ _ _ ->
+            Nothing
+
+        MonoVarKernel _ _ _ _ _ ->
+            Nothing
+
+        MonoUnit ->
+            Nothing
+
+        MonoAccessorValue _ _ _ ->
+            Nothing
+
+
+isFunctionType : Mono.MonoType -> Bool
+isFunctionType t =
+    case t of
+        Mono.MFunction _ _ _ ->
+            True
+
+        _ ->
+            False
+
+
+forwardGoList : RewriteCtx -> Name -> Mono.ClosureInfo -> MonoExpr -> List MonoExpr -> Maybe ( List MonoExpr, RewriteCtx )
+forwardGoList ctx name cinfo cbody exprs =
+    case exprs of
+        [] ->
+            Nothing
+
+        e :: rest ->
+            case forwardGo ctx name cinfo cbody e of
+                Just ( e1, c ) ->
+                    Just ( e1 :: rest, c )
+
+                Nothing ->
+                    forwardGoList ctx name cinfo cbody rest
+                        |> Maybe.map (\( rest1, c ) -> ( e :: rest1, c ))
+
+
+forwardGoSndList : RewriteCtx -> Name -> Mono.ClosureInfo -> MonoExpr -> List ( a, MonoExpr ) -> Maybe ( List ( a, MonoExpr ), RewriteCtx )
+forwardGoSndList ctx name cinfo cbody pairs =
+    case pairs of
+        [] ->
+            Nothing
+
+        ( k, e ) :: rest ->
+            case forwardGo ctx name cinfo cbody e of
+                Just ( e1, c ) ->
+                    Just ( ( k, e1 ) :: rest, c )
+
+                Nothing ->
+                    forwardGoSndList ctx name cinfo cbody rest
+                        |> Maybe.map (\( rest1, c ) -> ( ( k, e ) :: rest1, c ))
+
+
+forwardGoIfBranches : RewriteCtx -> Name -> Mono.ClosureInfo -> MonoExpr -> List ( MonoExpr, MonoExpr ) -> Maybe ( List ( MonoExpr, MonoExpr ), RewriteCtx )
+forwardGoIfBranches ctx name cinfo cbody branches =
+    case branches of
+        [] ->
+            Nothing
+
+        ( cond, then_ ) :: rest ->
+            case forwardGo ctx name cinfo cbody cond of
+                Just ( cond1, c ) ->
+                    Just ( ( cond1, then_ ) :: rest, c )
+
+                Nothing ->
+                    case forwardGo ctx name cinfo cbody then_ of
+                        Just ( then1, c ) ->
+                            Just ( ( cond, then1 ) :: rest, c )
+
+                        Nothing ->
+                            forwardGoIfBranches ctx name cinfo cbody rest
+                                |> Maybe.map (\( rest1, c ) -> ( ( cond, then_ ) :: rest1, c ))
+
+
+forwardGoDecider : RewriteCtx -> Name -> Mono.ClosureInfo -> MonoExpr -> Mono.Decider Mono.MonoChoice -> Maybe ( Mono.Decider Mono.MonoChoice, RewriteCtx )
+forwardGoDecider ctx name cinfo cbody decider =
+    case decider of
+        Mono.Leaf (Mono.Inline e) ->
+            forwardGo ctx name cinfo cbody e
+                |> Maybe.map (\( e1, c ) -> ( Mono.Leaf (Mono.Inline e1), c ))
+
+        Mono.Leaf (Mono.Jump _) ->
+            Nothing
+
+        Mono.Chain tests success failure ->
+            case forwardGoDecider ctx name cinfo cbody success of
+                Just ( s1, c ) ->
+                    Just ( Mono.Chain tests s1 failure, c )
+
+                Nothing ->
+                    forwardGoDecider ctx name cinfo cbody failure
+                        |> Maybe.map (\( f1, c ) -> ( Mono.Chain tests success f1, c ))
+
+        Mono.FanOut path tests fallback ->
+            case forwardGoDeciderSndList ctx name cinfo cbody tests of
+                Just ( tests1, c ) ->
+                    Just ( Mono.FanOut path tests1 fallback, c )
+
+                Nothing ->
+                    forwardGoDecider ctx name cinfo cbody fallback
+                        |> Maybe.map (\( fb1, c ) -> ( Mono.FanOut path tests fb1, c ))
+
+
+forwardGoDeciderSndList : RewriteCtx -> Name -> Mono.ClosureInfo -> MonoExpr -> List ( a, Mono.Decider Mono.MonoChoice ) -> Maybe ( List ( a, Mono.Decider Mono.MonoChoice ), RewriteCtx )
+forwardGoDeciderSndList ctx name cinfo cbody pairs =
+    case pairs of
+        [] ->
+            Nothing
+
+        ( k, d ) :: rest ->
+            case forwardGoDecider ctx name cinfo cbody d of
+                Just ( d1, c ) ->
+                    Just ( ( k, d1 ) :: rest, c )
+
+                Nothing ->
+                    forwardGoDeciderSndList ctx name cinfo cbody rest
+                        |> Maybe.map (\( rest1, c ) -> ( ( k, d ) :: rest1, c ))
 
 
 
@@ -2146,18 +2699,9 @@ tryInlineCall ctx specId args resultType =
 
                             inlined =
                                 MonoCall A.zero remappedBody args resultType Mono.defaultCallInfo
-
-                            newMetrics =
-                                { inlineCount = ctx1.metrics.inlineCount + 1
-                                , betaReductions = ctx1.metrics.betaReductions
-                                , letEliminations = ctx1.metrics.letEliminations
-                                }
                         in
                         ( Just inlined
-                        , { ctx1
-                            | metrics = newMetrics
-                            , inlineCountThisFunction = ctx1.inlineCountThisFunction + 1
-                          }
+                        , recordInline specId ctx1
                         )
 
                 else if numArgs < numParams then
@@ -2202,18 +2746,9 @@ tryInlineCall ctx specId args resultType =
 
                         inlined =
                             wrapInLetsForInline bindings newClosure newClosureType
-
-                        newMetrics =
-                            { inlineCount = ctx3.metrics.inlineCount + 1
-                            , betaReductions = ctx3.metrics.betaReductions
-                            , letEliminations = ctx3.metrics.letEliminations
-                            }
                     in
                     ( Just inlined
-                    , { ctx3
-                        | metrics = newMetrics
-                        , inlineCountThisFunction = ctx3.inlineCountThisFunction + 1
-                      }
+                    , recordInline specId ctx3
                     )
 
                 else if numArgs > numParams then
@@ -2236,18 +2771,9 @@ tryInlineCall ctx specId args resultType =
 
                         inlined =
                             MonoCall A.zero innerExpr extraArgs resultType Mono.defaultCallInfo
-
-                        newMetrics =
-                            { inlineCount = ctx3.metrics.inlineCount + 1
-                            , betaReductions = ctx3.metrics.betaReductions
-                            , letEliminations = ctx3.metrics.letEliminations
-                            }
                     in
                     ( Just inlined
-                    , { ctx3
-                        | metrics = newMetrics
-                        , inlineCountThisFunction = ctx3.inlineCountThisFunction + 1
-                      }
+                    , recordInline specId ctx3
                     )
 
                 else
@@ -2265,18 +2791,9 @@ tryInlineCall ctx specId args resultType =
 
                         inlined =
                             wrapInLetsForInline bindings substituted resultType
-
-                        newMetrics =
-                            { inlineCount = ctx3.metrics.inlineCount + 1
-                            , betaReductions = ctx3.metrics.betaReductions
-                            , letEliminations = ctx3.metrics.letEliminations
-                            }
                     in
                     ( Just inlined
-                    , { ctx3
-                        | metrics = newMetrics
-                        , inlineCountThisFunction = ctx3.inlineCountThisFunction + 1
-                      }
+                    , recordInline specId ctx3
                     )
 
 
@@ -2358,47 +2875,125 @@ wrapInLetsForInline =
 -- ============================================================================
 
 
+{-| Simplify one let chain as a group: simplify inside every def's bound
+expression and the final body, then drop dead defs.
+
+Two dead-def rules (H1.2):
+
+  - Non-closure pure defs drop when they have zero uses in their lexical
+    body (later siblings + final body) — the pre-existing rule, unchanged.
+  - Closure defs drop when they have zero uses across ALL other spine defs
+    and the final body. Closures need the both-directions check because
+    letrec siblings may reference each other backward (an earlier closure's
+    capture can point at a later one); a self-reference in the closure's own
+    bound expression does not keep it alive (the whole subtree is deleted).
+
+Dropping one def can make another dead (chains of dead closures referencing
+each other), so the drop pass iterates to a fixpoint within the chain.
+
+-}
+simplifyLetChain : RewriteCtx -> MonoExpr -> ( MonoExpr, RewriteCtx )
+simplifyLetChain ctx chainExpr =
+    let
+        splitSpine : MonoExpr -> List ( Mono.MonoDef, Mono.MonoType ) -> ( List ( Mono.MonoDef, Mono.MonoType ), MonoExpr )
+        splitSpine e acc =
+            case e of
+                MonoLet d b t ->
+                    splitSpine b (( d, t ) :: acc)
+
+                _ ->
+                    ( List.reverse acc, e )
+
+        ( spine0, finalBody0 ) =
+            splitSpine chainExpr []
+
+        ( spineSimplifiedRev, ctx1 ) =
+            List.foldl
+                (\( d, t ) ( acc, c ) ->
+                    let
+                        ( bound1, c1 ) =
+                            simplifyLets c (getDefBound d)
+                    in
+                    ( ( setDefBound d bound1, t ) :: acc, c1 )
+                )
+                ( [], ctx )
+                spine0
+
+        ( finalBody1, ctx2 ) =
+            simplifyLets ctx1 finalBody0
+
+        ( keptSpine, ctx3 ) =
+            dropDeadDefs ctx2 (List.reverse spineSimplifiedRev) finalBody1
+    in
+    ( List.foldr (\( d, t ) acc -> MonoLet d acc t) finalBody1 keptSpine, ctx3 )
+
+
+{-| One drop pass over the spine; re-runs itself while anything dropped.
+-}
+dropDeadDefs : RewriteCtx -> List ( Mono.MonoDef, Mono.MonoType ) -> MonoExpr -> ( List ( Mono.MonoDef, Mono.MonoType ), RewriteCtx )
+dropDeadDefs ctx spine finalBody =
+    let
+        usesInDefs : Name -> List ( Mono.MonoDef, Mono.MonoType ) -> Int
+        usesInDefs name defs =
+            List.foldl (\( d, _ ) n -> n + countUsagesInDef name d) 0 defs
+
+        go earlierRev remaining c anyDropped =
+            case remaining of
+                [] ->
+                    ( List.reverse earlierRev, c, anyDropped )
+
+                (( d, _ ) as entry) :: rest ->
+                    let
+                        keep () =
+                            go (entry :: earlierRev) rest c anyDropped
+
+                        name =
+                            getDefName d
+
+                        bound =
+                            getDefBound d
+                    in
+                    case d of
+                        Mono.MonoDef _ _ ->
+                            let
+                                laterUses =
+                                    usesInDefs name rest + countUsages name finalBody
+                            in
+                            if isClosure bound then
+                                if laterUses == 0 && usesInDefs name earlierRev == 0 then
+                                    go earlierRev rest (bumpClosureDCE c) True
+
+                                else
+                                    keep ()
+
+                            else if laterUses == 0 && isPureExpr bound then
+                                go earlierRev rest (bumpLetElimination c) True
+
+                            else
+                                keep ()
+
+                        Mono.MonoTailDef _ _ _ ->
+                            keep ()
+
+        ( kept, ctxOut, dropped ) =
+            go [] spine ctx False
+    in
+    if dropped then
+        dropDeadDefs ctxOut kept finalBody
+
+    else
+        ( kept, ctxOut )
+
+
 simplifyLets : RewriteCtx -> MonoExpr -> ( MonoExpr, RewriteCtx )
 simplifyLets ctx expr =
     case expr of
-        MonoLet def body resultType ->
-            let
-                defName =
-                    getDefName def
-
-                defBound =
-                    getDefBound def
-
-                usageCount =
-                    countUsages defName body
-            in
-            if usageCount == 0 && isPureExpr defBound && not (isClosure defBound) then
-                -- Unused binding with pure non-closure expression - safe to eliminate.
-                -- We exclude closures because in let-rec structures, closures may reference
-                -- each other via MonoVarLocal, but those references live in sibling/parent
-                -- let bindings, not in the immediate body. Eliminating a "unused" closure
-                -- would break those cross-references.
-                let
-                    newMetrics =
-                        { inlineCount = ctx.metrics.inlineCount
-                        , betaReductions = ctx.metrics.betaReductions
-                        , letEliminations = ctx.metrics.letEliminations + 1
-                        }
-                in
-                simplifyLets { ctx | metrics = newMetrics } body
-
-            else
-                let
-                    ( simplifiedBound, ctx1 ) =
-                        simplifyLets ctx defBound
-
-                    ( simplifiedBody, ctx2 ) =
-                        simplifyLets ctx1 body
-
-                    newDef =
-                        setDefBound def simplifiedBound
-                in
-                ( MonoLet newDef simplifiedBody resultType, ctx2 )
+        MonoLet _ _ _ ->
+            -- Let CHAINS are simplified as a group so dead-closure elimination
+            -- can see sibling references in BOTH directions (letrec closures
+            -- may reference each other backward and forward — the same reason
+            -- freshenLetChain works on the whole spine).
+            simplifyLetChain ctx expr
 
         -- Recursive cases
         MonoCall region func args resultType callInfo ->
