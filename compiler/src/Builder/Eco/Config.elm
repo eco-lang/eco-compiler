@@ -110,6 +110,11 @@ applyEnvOverrides cfg =
                 (Utils.envLookupEnv "ECO_MONO_LSS_MAX_SPECS" |> Task.mapError never)
                     |> Task.map (\budgetVal -> applyLssBudgetOverride budgetVal cfg4)
             )
+        |> Task.andThen
+            (\cfg5 ->
+                (Utils.envLookupEnv "ECO_MONO_VALIDATE" |> Task.mapError never)
+                    |> Task.map (\valVal -> applyValidateOverride valVal cfg5)
+            )
 
 
 applyEngineOverride : Maybe String -> EcoConfig -> Task Exit.Make EcoConfig
@@ -157,6 +162,36 @@ applyDumpOverride maybeVal cfg =
                 cfg.mono
         in
         { cfg | mono = { mono | diffDump = True } }
+
+    else
+        cfg
+
+
+{-| `ECO_MONO_VALIDATE=1`: run the MONO_029 layout-agreement validator
+(Compiler.Monomorphize.ValidateLayout) after monomorphization and fail the
+compile on violations. Output-only debug/CI knob, never from JSON.
+-}
+applyValidateOverride : Maybe String -> EcoConfig -> EcoConfig
+applyValidateOverride maybeVal cfg =
+    let
+        on =
+            case maybeVal of
+                Just v ->
+                    let
+                        t =
+                            String.toLower (String.trim v)
+                    in
+                    t == "1" || t == "true" || t == "yes"
+
+                Nothing ->
+                    False
+    in
+    if on then
+        let
+            mono =
+                cfg.mono
+        in
+        { cfg | mono = { mono | validate = True } }
 
     else
         cfg

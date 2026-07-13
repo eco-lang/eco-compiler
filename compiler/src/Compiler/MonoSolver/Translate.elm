@@ -96,7 +96,11 @@ demandUnifyRoot annCanType demand expr s0 =
 
         Ok ( annVar, s1 ) ->
             if s1.env.lss.enabled && exprIsLambda expr then
-                Ok ( (), { s1 | lssRootAnn = Just ( annCanType, annVar ) } )
+                let
+                    aux1 =
+                        s1.itemAux
+                in
+                Ok ( (), { s1 | itemAux = { aux1 | lssRootAnn = Just ( annCanType, annVar ) } } )
 
             else
                 Ok ( (), s1 )
@@ -135,6 +139,80 @@ connectTypes childCan parentCan s0 =
 
                 Ok ( childVar, s2 ) ->
                     unifyStepBestEffort childVar parentVar s2
+
+
+{-| MONO_029 R1: unify each TailCall argument's canType with the enclosing
+tail-recursive function's matching loop-param canType (frames pushed around
+TailDef bodies, matched by function then arg name). Best-effort like every
+connect.
+-}
+connectTailCallArgs : Name -> List ( Name, TOpt.Expr TypeIds.MVarId ) -> Step ()
+connectTailCallArgs funcName args s0 =
+    case lookupLoopFrame funcName s0.itemAux.loopParams of
+        Nothing ->
+            Ok ( (), s0 )
+
+        Just params ->
+            connectTailArgsGo params args s0
+
+
+connectTailArgsGo : List ( String, Can.Type TypeIds.MVarId ) -> List ( Name, TOpt.Expr TypeIds.MVarId ) -> Engine.S -> Result Failure ( (), Engine.S )
+connectTailArgsGo params args s0 =
+    case args of
+        [] ->
+            Ok ( (), s0 )
+
+        ( argName, argExpr ) :: rest ->
+            case List.filter (\( pn, _ ) -> pn == argName) params of
+                ( _, pCan ) :: _ ->
+                    case connectTypes (TOpt.typeOf argExpr) pCan s0 of
+                        Err e ->
+                            Err e
+
+                        Ok ( (), s1 ) ->
+                            connectTailArgsGo params rest s1
+
+                [] ->
+                    connectTailArgsGo params rest s0
+
+
+lookupLoopFrame : Name -> List ( String, List ( String, Can.Type TypeIds.MVarId ) ) -> Maybe (List ( String, Can.Type TypeIds.MVarId ))
+lookupLoopFrame funcName frames =
+    case frames of
+        [] ->
+            Nothing
+
+        ( n, ps ) :: rest ->
+            if n == funcName then
+                Just ps
+
+            else
+                lookupLoopFrame funcName rest
+
+
+{-| Run a step with a tail-recursion loop-param frame pushed (consumed by the
+TailCall arm's `connectTailCallArgs`), restoring the frame stack after.
+-}
+withLoopFrame : Name -> List ( A.Located Name, Can.Type TypeIds.MVarId ) -> Step a -> Step a
+withLoopFrame name typedArgs step s0 =
+    let
+        frame =
+            ( name, List.map (\( ln, t ) -> ( A.toValue ln, t )) typedArgs )
+    in
+    let
+        aux0 =
+            s0.itemAux
+    in
+    case step { s0 | itemAux = { aux0 | loopParams = frame :: aux0.loopParams } } of
+        Err e ->
+            Err e
+
+        Ok ( a, s1 ) ->
+            let
+                aux1 =
+                    s1.itemAux
+            in
+            Ok ( a, { s1 | itemAux = { aux1 | loopParams = s0.itemAux.loopParams } } )
 
 
 {-| The element type of a canonical `List a` (through filled aliases).
@@ -423,17 +501,25 @@ translate expr s0 =
 
         TOpt.TailCall name args meta ->
             -- M6: direct state-passing (desugared andThen/map) → byte-identical.
-                case classify meta.tipe s0 of
+                -- MONO_029 R1: connect the recursive-call args to the loop params
+                -- first — the TCO transform rebuilds this call chain with a fresh
+                -- id family that otherwise never joins the annotation component.
+                case connectTailCallArgs name args s0 of
                     Err e ->
                         Err e
 
-                    Ok ( monoType, s1 ) ->
-                        case Engine.traverse (\( argName, argExpr ) -> Engine.map (\me -> ( argName, me )) (translate argExpr)) args s1 of
+                    Ok ( (), s0c ) ->
+                        case classify meta.tipe s0c of
                             Err e ->
                                 Err e
 
-                            Ok ( monoArgs, s2 ) ->
-                                Ok ( Mono.MonoTailCall name monoArgs monoType, s2 )
+                            Ok ( monoType, s1 ) ->
+                                case Engine.traverse (\( argName, argExpr ) -> Engine.map (\me -> ( argName, me )) (translate argExpr)) args s1 of
+                                    Err e ->
+                                        Err e
+
+                                    Ok ( monoArgs, s2 ) ->
+                                        Ok ( Mono.MonoTailCall name monoArgs monoType, s2 )
 
         TOpt.Unit _ ->
             Ok ( Mono.MonoUnit, s0 )
@@ -1062,7 +1148,7 @@ specializeCycleFuncDef def demand =
                 (\_ -> Engine.map (\monoExpr -> Mono.MonoDefine monoExpr (Mono.typeOf monoExpr)) (translate body))
                 (demandUnifyRoot defType demand body)
 
-        TOpt.TailDef _ _ typedArgs body defType _ ->
+        TOpt.TailDef _ tailName typedArgs body defType _ ->
             \sIn ->
                 if sIn.env.lss.enabled then
                     -- lss on: the node/param types must come from a zonk of THE
@@ -1121,7 +1207,7 @@ specializeCycleFuncDef def demand =
                                                     Err e
 
                                                 Ok ( monoParams, s3 ) ->
-                                                    case Engine.scoped (Engine.andThen (\_ -> translate body) (insertVars monoParams)) s3 of
+                                                    case withLoopFrame tailName typedArgs (Engine.scoped (Engine.andThen (\_ -> translate body) (insertVars monoParams))) s3 of
                                                         Err e ->
                                                             Err e
 
@@ -1137,7 +1223,7 @@ specializeCycleFuncDef def demand =
                                         (\funcType ->
                                             Engine.map
                                                 (\monoBody -> Mono.MonoTailFunc monoParams monoBody funcType)
-                                                (Engine.scoped (Engine.andThen (\_ -> translate body) (insertVars monoParams)))
+                                                (withLoopFrame tailName typedArgs (Engine.scoped (Engine.andThen (\_ -> translate body) (insertVars monoParams))))
                                         )
                                         (classify defType)
                                 )
@@ -1299,10 +1385,14 @@ classifyLambdaHead srcLam canType s0 =
     if s0.env.lss.enabled then
         let
             ( maybeRootVar, s0b ) =
-                case s0.lssRootAnn of
+                case s0.itemAux.lssRootAnn of
                     Just ( annCanType, annVar ) ->
                         if annCanType == canType then
-                            ( Just annVar, { s0 | lssRootAnn = Nothing } )
+                            let
+                                aux0 =
+                                    s0.itemAux
+                            in
+                            ( Just annVar, { s0 | itemAux = { aux0 | lssRootAnn = Nothing } } )
 
                         else
                             ( Nothing, s0 )
@@ -1551,32 +1641,47 @@ appShapeConnect func args callCanType =
     Engine.andThen
         (\funcUseVar ->
             Engine.andThen
-                (\appVar ->
+                (\_ ->
+                    -- MONO_029 root fix (R1): also unify the callee's use var with
+                    -- its varEnv-bound MonoType. The use/arg/result canTypes of a
+                    -- TCO/TailDef-REBUILT call node form a fresh id family that is
+                    -- only internally consistent; the varEnv binding (a classified
+                    -- param/let type) carries the demand-seeded annotation family.
+                    -- Without this, the call-result element zonks to an erased
+                    -- residual while the destructure leaf stays concrete — the
+                    -- layout disagreement behind the foldMGo miscompile
+                    -- (SolverLayoutFoldMTest / SolverLayoutFoldMCycleTest).
+                    -- enrichFromEnv is best-effort and skips local-multi targets
+                    -- (their varEnv entry is only the declared classify).
                     Engine.andThen
-                        (\_ ->
-                            -- Bridge into the destructor's own type ids (and through
-                            -- them, the root case/tuple type) for derived functions.
-                            case accessedLocalName func of
-                                Just localName ->
-                                    Engine.andThen
-                                        (\maybeDCan ->
-                                            case maybeDCan of
-                                                Just dCan ->
-                                                    Engine.andThen
-                                                        (\dVar -> unifyStepBestEffort dVar appVar)
-                                                        (Store.loadType dCan)
+                        (\appVar ->
+                            Engine.andThen
+                                (\_ ->
+                                    -- Bridge into the destructor's own type ids (and through
+                                    -- them, the root case/tuple type) for derived functions.
+                                    case accessedLocalName func of
+                                        Just localName ->
+                                            Engine.andThen
+                                                (\maybeDCan ->
+                                                    case maybeDCan of
+                                                        Just dCan ->
+                                                            Engine.andThen
+                                                                (\dVar -> unifyStepBestEffort dVar appVar)
+                                                                (Store.loadType dCan)
 
-                                                Nothing ->
-                                                    Engine.succeed ()
-                                        )
-                                        (Engine.getS (\s -> Dict.get localName s.derivedDestructors))
+                                                        Nothing ->
+                                                            Engine.succeed ()
+                                                )
+                                                (Engine.getS (\s -> Dict.get localName s.derivedDestructors))
 
-                                Nothing ->
-                                    Engine.succeed ()
+                                        Nothing ->
+                                            Engine.succeed ()
+                                )
+                                (unifyStepBestEffort funcUseVar appVar)
                         )
-                        (unifyStepBestEffort funcUseVar appVar)
+                        (buildAppVar args callCanType)
                 )
-                (buildAppVar args callCanType)
+                (enrichFromEnv func funcUseVar)
         )
         (Store.loadType (TOpt.typeOf func))
 
@@ -2939,9 +3044,12 @@ translateLet def body letCanType =
                                                                                 )
                                                                                 (classify letCanType)
                                                                         )
-                                                                        (Engine.scoped
-                                                                            (Engine.andThen (\_ -> Engine.andThen (\_ -> translate tailBody) (insertVars monoParams))
-                                                                                (Engine.insertVar name defType)
+                                                                        (withLoopFrame name
+                                                                            typedArgs
+                                                                            (Engine.scoped
+                                                                                (Engine.andThen (\_ -> Engine.andThen (\_ -> translate tailBody) (insertVars monoParams))
+                                                                                    (Engine.insertVar name defType)
+                                                                                )
                                                                             )
                                                                         )
                                                                 )
@@ -3095,7 +3203,11 @@ retranslateAt : TOpt.Expr TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoExpr
 retranslateAt defBody instType s0 =
     let
         sFresh =
-            { s0 | store = Engine.freshStore, memo = Dict.empty, revMemo = Array.empty }
+            -- The MONO_029 read lists are stashed like the store: scratch
+            -- Point indices are meaningless against the restored item store
+            -- (leaking them aliases low outer point indices and livelocks the
+            -- saturation loop — found by the R0 census on elm-parser).
+            { s0 | store = Engine.freshStore, memo = Dict.empty, revMemo = Array.empty, itemAux = Engine.clearedAux s0.itemAux }
 
         step =
             Engine.andThen (\_ -> translate defBody) (demandUnifyRoot (TOpt.typeOf defBody) instType defBody)
@@ -3105,7 +3217,7 @@ retranslateAt defBody instType s0 =
             Err e
 
         Ok ( monoExpr, s1 ) ->
-            Ok ( monoExpr, { s1 | store = s0.store, memo = s0.memo, revMemo = s0.revMemo } )
+            Ok ( monoExpr, { s1 | store = s0.store, memo = s0.memo, revMemo = s0.revMemo, itemAux = Engine.restoredAux s0.itemAux s1.itemAux } )
 
 
 isNumberMultiEligible : Can.Type TypeIds.MVarId -> Step Bool

@@ -25,6 +25,7 @@ import Compiler.Generate.MLIR.Types as Types
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Dict
 import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirType(..))
+import Utils.Crash
 
 
 
@@ -393,26 +394,20 @@ generateMonoPathHelper ctx path targetType revAcc =
                                     ( projectOp :: unboxOps, unboxedVar, ctxU )
 
                                 else if Types.isUnboxable targetType then
-                                    -- The field's RECORDED type says boxed (erased
-                                    -- solver residuals land here) while the
-                                    -- destructor's reconciled element type is a
-                                    -- concrete primitive. Tuple slots are
-                                    -- LAYOUT-STATIC (the lowering loads raw or boxed
-                                    -- purely by the asked type — no header consult),
-                                    -- and every constructor that saw the concrete
-                                    -- annotation stored this slot UNBOXED — so read
-                                    -- the raw slot at the target type. Boxed-load +
-                                    -- unbox here dereferences raw i64 bits as an
-                                    -- HPointer (segfault, found in the keyed
-                                    -- self-built compiler's foldMGo).
-                                    let
-                                        ( primVar, ctxP ) =
-                                            Ctx.freshVar ctx2
-
-                                        ( ctxQ, primOp ) =
-                                            Ops.ecoProjectTuple2 ctxP primVar index targetType subVar
-                                    in
-                                    ( [ primOp ], primVar, ctxQ )
+                                    -- MONO_029 violation: the recorded container
+                                    -- element type is erased (boxed) while the
+                                    -- destructor target is a concrete unboxable
+                                    -- primitive — two layout-disagreeing views of
+                                    -- one value. Tuple slots are LAYOUT-STATIC, so
+                                    -- NO emission is safe here (raw read is wrong if
+                                    -- the producer boxed; boxed read is wrong if it
+                                    -- stored raw). The monomorphizer must record
+                                    -- layout-equal views (solver: appShapeConnect
+                                    -- enrichFromEnv, R1 in
+                                    -- plans/solver-layout-connectivity-reconciliation.md).
+                                    -- Sentinels: SolverLayoutFoldMTest /
+                                    -- SolverLayoutFoldMCycleTest.
+                                    Utils.Crash.crash "MONO_029 layout disagreement: erased tuple2 element vs unboxable destructor target — see plans/solver-layout-connectivity-reconciliation.md"
 
                                 else
                                     ( [ projectOp ], valVar, ctx4 )
@@ -461,17 +456,8 @@ generateMonoPathHelper ctx path targetType revAcc =
                                     ( projectOp :: unboxOps, unboxedVar, ctxU )
 
                                 else if Types.isUnboxable targetType then
-                                    -- Raw-slot read at the reconciled primitive
-                                    -- target — same layout-static rationale as the
-                                    -- Tuple2 arm above.
-                                    let
-                                        ( primVar, ctxP ) =
-                                            Ctx.freshVar ctx2
-
-                                        ( ctxQ, primOp ) =
-                                            Ops.ecoProjectTuple3 ctxP primVar index targetType subVar
-                                    in
-                                    ( [ primOp ], primVar, ctxQ )
+                                    -- MONO_029 violation — see the Tuple2 arm.
+                                    Utils.Crash.crash "MONO_029 layout disagreement: erased tuple3 element vs unboxable destructor target — see plans/solver-layout-connectivity-reconciliation.md"
 
                                 else
                                     ( [ projectOp ], valVar, ctx4 )
@@ -732,17 +718,8 @@ generateMonoPathHelper ctx path targetType revAcc =
                                     ( List.foldl (::) (projectOp :: revAcc1) unboxOps, unboxedVar, ctxU )
 
                                 else if Types.isUnboxable targetType then
-                                    -- Raw-slot read at the reconciled primitive
-                                    -- target — layout-static rationale as in the
-                                    -- tuple arms.
-                                    let
-                                        ( primVar, ctxP ) =
-                                            Ctx.freshVar ctx2
-
-                                        ( ctxQ, primOp ) =
-                                            Ops.ecoProjectCustom ctxP primVar 0 targetType subVar
-                                    in
-                                    ( primOp :: revAcc1, primVar, ctxQ )
+                                    -- MONO_029 violation — see the Tuple2 arm.
+                                    Utils.Crash.crash "MONO_029 layout disagreement: erased unboxed-custom field vs unboxable destructor target — see plans/solver-layout-connectivity-reconciliation.md"
 
                                 else if Types.isUnboxable targetType then
                                     -- Caller wants primitive, need to unbox

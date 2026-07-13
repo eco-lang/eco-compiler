@@ -43,6 +43,7 @@ import Compiler.Monomorphize.State as State
 import Compiler.MonoSolver.Engine as Engine exposing (Failure(..), S, WorkItem(..))
 import Compiler.MonoSolver.Translate as Translate
 import Compiler.MonoSolver.Zonk as Zonk
+import Compiler.Type.UnionFind as UF
 import Data.Map as DMap
 import Data.Set as EverySet
 import Dict
@@ -237,10 +238,11 @@ initState lssConfig currentModule nodes annotations globalTypeEnv mvarState =
     , localMulti = []
     , derivedDestructors = Dict.empty
     , localCanTypes = Dict.empty
-    , lssRootAnn = Nothing
+
     , dirtySpecs = BitSet.empty
     , dirtyList = []
     , specCountByGlobal = Dict.empty
+    , itemAux = Engine.emptyItemAux
     }
 
 
@@ -416,7 +418,7 @@ processItem specId s =
                                 Ok (finishNode specId (Mono.MonoExtern monoType) sItem2)
 
                             Just node ->
-                                case specializeNode name home node monoType sItem2 of
+                                case specializeNodeSaturating 1 name home node monoType sItem2 of
                                     Err e ->
                                         Err e
 
@@ -441,6 +443,57 @@ processItem specId s =
                                                 }
                                         in
                                         Ok (finishNode specId monoNode s2)
+
+
+{-| MONO_029 stale-read barrier (R2 of
+plans/solver-layout-connectivity-reconciliation.md): translate the item and, if
+any recorded CEcoValue residual was read from a var the translation LATER
+bound (read-before-saturation), re-translate immediately AGAINST THE SAME
+STORE. The item store is monotone — pass 2's zonks see every binding pass 1
+made anywhere in the body, so the previously-stale reads come back concrete.
+Re-translation must happen here (store in hand), not at the drain-end flush:
+`resetItem` would rebuild the store from scratch and deterministically
+reproduce the same stale snapshot.
+
+Convergence: each pass only ADDS bindings to one finite store; a pass with no
+newly-bound residual reads is a fixpoint. The cap turns oscillation into a
+loud EngineBug. Side effects of discarded passes are benign: `enqueueSpec` is
+key-idempotent (a spec enqueued under a since-healed erased key may survive as
+an unreferenced spec and is pruned), and multi-instance stacks are re-pushed
+per pass.
+-}
+specializeNodeSaturating : Int -> Name -> IO.Canonical -> TOpt.Node TypeIds.MVarId -> Mono.MonoType -> S -> Result Failure ( Mono.MonoNode, S )
+specializeNodeSaturating attempt name home node monoType s =
+    case specializeNode name home node monoType s of
+        Err e ->
+            Err e
+
+        Ok ( monoNode, s1 ) ->
+            if not (staleResidualRead s1) then
+                Ok ( monoNode, s1 )
+
+            else if attempt >= maxSaturationPasses then
+                Err
+                    (EngineBug
+                        ("MONO_029 stale-read saturation exceeded "
+                            ++ String.fromInt maxSaturationPasses
+                            ++ " passes for "
+                            ++ name
+                            ++ " — residual reads keep preceding their bindings"
+                        )
+                    )
+
+            else
+                specializeNodeSaturating (attempt + 1) name home node monoType (Engine.clearResidualReads s1)
+
+
+{-| Stale-read re-translation cap. One extra pass suffices for the observed
+shapes (a destructure recorded before a later app-shape unification); anything
+deeper indicates reads and bindings chasing each other and must fail loudly.
+-}
+maxSaturationPasses : Int
+maxSaturationPasses =
+    5
 
 
 {-| Specialize one top-level node. `name`/`home` identify the definition (used
@@ -597,6 +650,77 @@ finishNode specId monoNode s =
         , inProgress = BitSet.removeGrowing specId s.inProgress
         , currentGlobal = Nothing
     }
+
+
+{-| Did any recorded CEcoValue residual read become resolvable after the fact?
+Point-based reads (`ecoResidualReads`) are stale only when (a) the var's class
+is now bound (structure/alias — or a Number super that Prune would close to
+MInt) AND (b) the class is UF-equivalent to the ITEM MEMO's point for the
+var's canonical id — i.e. the shared canonical family. Isolated per-call
+instantiations (loadType with a fresh memo, the SKI/per-call-site design) are
+read-free-then-bound on EVERY pass by construction; treating them as stale
+livelocks the saturation loop (R0 census finding, RecordNarrow corpus).
+Key-based reads (`ecoResidualKeyReads`) are vars that had not entered the
+store when classified; they are stale only if the memo has since gained a
+BOUND point for them.
+-}
+staleResidualRead : S -> Bool
+staleResidualRead s =
+    List.any (staleVarRead s) s.itemAux.ecoResidualReads
+        || List.any
+            (\key ->
+                case Dict.get key s.memo of
+                    Just pt ->
+                        varResolvedNow s.store pt
+
+                    Nothing ->
+                        False
+            )
+            s.itemAux.ecoResidualKeyReads
+
+
+staleVarRead : S -> IO.Variable -> Bool
+staleVarRead s var =
+    varResolvedNow s.store var
+        && (case Maybe.andThen identity (Array.get (Engine.pointKey var) s.revMemo) of
+                Nothing ->
+                    False
+
+                Just mid ->
+                    case Dict.get (Engine.mvarIdKey mid) s.memo of
+                        Nothing ->
+                            False
+
+                        Just memoPoint ->
+                            let
+                                ( _, eq ) =
+                                    UF.equivalent memoPoint var s.store
+                            in
+                            eq
+           )
+
+
+varResolvedNow : IO.State -> IO.Variable -> Bool
+varResolvedNow store var =
+    let
+        ( _, desc ) =
+            UF.get var store
+    in
+    case desc.content of
+        IO.Structure _ ->
+            True
+
+        IO.Alias _ _ _ _ ->
+            True
+
+        IO.FlexSuper IO.Number _ ->
+            True
+
+        IO.RigidSuper IO.Number _ ->
+            True
+
+        _ ->
+            False
 
 
 nodeAlreadyDone : Mono.SpecId -> S -> Bool

@@ -70,6 +70,7 @@ import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.MonoSolver.Diff as MonoDiff
 import Compiler.MonoSolver.Monomorphize as MonoSolver
 import Compiler.Monomorphize.Monomorphize as Monomorphize
+import Compiler.Monomorphize.ValidateLayout as ValidateLayout
 import Compiler.Nitpick.Debug as Nitpick
 import Compiler.Reporting.Render.Type.Localizer as L
 import Data.Map
@@ -735,7 +736,7 @@ runMonoOptPipeline ecoConfig stats typedGraph globalTypeEnv =
                 Task.throw (Exit.GenerateMonomorphizationError err)
 
             Ok ( monoGraph0, maybeLssReport ) ->
-                case maybeLssReport of
+                (case maybeLssReport of
                     Just report ->
                         -- LSS census (lss.report / ECO_MONO_LSS_REPORT=1):
                         -- stderr side-channel, never stdout (MLIR text mode
@@ -745,6 +746,30 @@ runMonoOptPipeline ecoConfig stats typedGraph globalTypeEnv =
 
                     Nothing ->
                         Task.succeed monoGraph0
+                )
+                    |> Task.andThen
+                        (\g ->
+                            -- MONO_029 layout-agreement validator
+                            -- (ECO_MONO_VALIDATE=1): engine-agnostic, fails
+                            -- the compile on any layout-disagreeing views.
+                            if ecoConfig.mono.validate then
+                                case ValidateLayout.validate g of
+                                    [] ->
+                                        Task.succeed g
+
+                                    violations ->
+                                        Task.throw
+                                            (Exit.GenerateMonomorphizationError
+                                                ("ECO_MONO_VALIDATE: "
+                                                    ++ String.fromInt (List.length violations)
+                                                    ++ " MONO_029 layout violations\n"
+                                                    ++ String.join "\n" violations
+                                                )
+                                            )
+
+                            else
+                                Task.succeed g
+                        )
         )
         -- Hand off to a separate function so typedGraph and globalTypeEnv go out of scope
         |> Task.andThen (runInlineSimplifyPhase ecoConfig stats)

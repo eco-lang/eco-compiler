@@ -777,6 +777,7 @@ type alias ZonkCtx =
     { store : IO.State
     , next : TypeIds.MVarId
     , lss : Maybe LssZonkAcc -- Just iff lss.enabled; keeps the off path lean
+    , ecoReads : List IO.Variable -- MONO_029 stale-read barrier: vars read FREE while producing a CEcoValue residual (folded into S.ecoResidualReads)
     }
 
 
@@ -802,12 +803,25 @@ zonkToMono var =
                 else
                     Nothing
         in
-        case zonkToMonoC s.superTable s.revMemo var { store = s.store, next = s.nextMVarId, lss = lssAcc } of
+        case zonkToMonoC s.superTable s.revMemo var { store = s.store, next = s.nextMVarId, lss = lssAcc, ecoReads = [] } of
             Err e ->
                 Err e
 
             Ok ( mt, c ) ->
-                Ok ( mt, foldZonkStats c { s | store = c.store, nextMVarId = c.next } )
+                let
+                    s1 =
+                        case c.ecoReads of
+                            [] ->
+                                { s | store = c.store, nextMVarId = c.next }
+
+                            reads ->
+                                let
+                                    aux0 =
+                                        s.itemAux
+                                in
+                                { s | store = c.store, nextMVarId = c.next, itemAux = { aux0 | ecoResidualReads = reads ++ aux0.ecoResidualReads } }
+                in
+                Ok ( mt, foldZonkStats c s1 )
 
 
 foldZonkStats : ZonkCtx -> Engine.S -> Engine.S
@@ -887,15 +901,25 @@ residualWithTaintC superTable revMemo var c0 =
         ( mid, c1 ) =
             residualIdC revMemo var c0
     in
-    Ok
-        ( case Dict.get (Engine.mvarIdKey mid) superTable of
-            Just IO.Number ->
-                Mono.MVar mid Mono.CNumber
+    case Dict.get (Engine.mvarIdKey mid) superTable of
+        Just IO.Number ->
+            Ok ( Mono.MVar mid Mono.CNumber, c1 )
 
-            _ ->
-                Mono.MVar mid Mono.CEcoValue
-        , c1
-        )
+        _ ->
+            -- MONO_029 stale-read barrier: this zonk is recording an erased
+            -- view of a still-free var; if a later unification in the same
+            -- item binds it, the recorded output was a stale snapshot. Only
+            -- CANONICAL-backed vars (revMemo entry) are tracked: per-call
+            -- fresh instantiation vars are read-free-then-bound by design on
+            -- EVERY translation pass, so tracking them makes the saturation
+            -- loop livelock (found by the R0 census on RecordNarrow tests) —
+            -- and they are not the MONO_029 class (nothing else re-reads them).
+            case Maybe.andThen identity (Array.get (Engine.pointKey var) revMemo) of
+                Just _ ->
+                    Ok ( Mono.MVar mid Mono.CEcoValue, { c1 | ecoReads = var :: c1.ecoReads } )
+
+                Nothing ->
+                    Ok ( Mono.MVar mid Mono.CEcoValue, c1 )
 
 
 residualIdC : Array (Maybe TypeIds.MVarId) -> IO.Variable -> ZonkCtx -> ( TypeIds.MVarId, ZonkCtx )
@@ -1204,7 +1228,20 @@ classifyGo s aliasSubst canType =
                             zonkToMono pt s
 
                         Nothing ->
-                            Ok ( residualForVar mvarId s, s )
+                            case residualForVar mvarId s of
+                                Mono.MVar _ Mono.CEcoValue ->
+                                    -- MONO_029 stale-read barrier: an erased view of
+                                    -- a var that has not entered the store yet; if a
+                                    -- later loadType mints+binds it, the recorded
+                                    -- output was a stale snapshot.
+                                    let
+                                        aux0 =
+                                            s.itemAux
+                                    in
+                                    Ok ( Mono.MVar mvarId Mono.CEcoValue, { s | itemAux = { aux0 | ecoResidualKeyReads = key :: aux0.ecoResidualKeyReads } } )
+
+                                residual ->
+                                    Ok ( residual, s )
 
         Can.TLambda from to ->
             case classifyGo s aliasSubst from of

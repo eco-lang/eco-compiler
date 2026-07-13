@@ -13,6 +13,8 @@ module Compiler.MonoSolver.Engine exposing
     , mvarIdKey, pointKey
     , memberIdFor, srcLambdaKey, trivialSignature, emptyLssStats
     , bumpWidenedByKernel, withScratchStore
+    , markDirty
+    , ItemAux, emptyItemAux, clearedAux, restoredAux, clearResidualReads
     )
 
 {-| Core state + step monad for the solver-based monomorphizer.
@@ -199,8 +201,73 @@ type alias S =
     , localMulti : List NumberMultiEntry -- stack of let-bound FUNCTIONS being multi-specialized (f, f$1, …)
     , derivedDestructors : CoreDict.Dict String (Can.Type TypeIds.MVarId) -- destructor-bound name -> the destructor's canType (bridges a derived fn's call back to its root's type vars)
     , localCanTypes : CoreDict.Dict String (Can.Type TypeIds.MVarId) -- let-bound name -> its RHS canType (destructor root slot lookup)
-    , lssRootAnn : Maybe ( Can.Type TypeIds.MVarId, IO.Variable ) -- lss on, function-root defs only: the demandUnify-seeded annotation var, consumed ONCE by the def-root classifyLambdaHead so binder/param types zonk demand-transported lambda sets (a fresh loadType mints fresh set slots — LSS_006 — so re-loading would lose them)
+    -- Per-item auxiliary state, grouped into ONE field: compiled Record heap
+    -- objects have a 32-slot GC scan limit and S sits exactly at it — adding
+    -- a top-level field to S breaks the native self-compile at MLIR parse
+    -- ("field_count exceeds Record's 32-slot GC scan limit"). Group new
+    -- per-item state here.
+    --
+    --   lssRootAnn: lss on, function-root defs only — the demandUnify-seeded
+    --   annotation var, consumed ONCE by the def-root classifyLambdaHead so
+    --   binder/param types zonk demand-transported lambda sets (LSS_006).
+    --
+    --   ecoResidualReads/ecoResidualKeyReads (MONO_029 R2 stale-read
+    --   barrier): every zonk/classify that PRODUCES an erased CEcoValue
+    --   residual records what it read — a canonical-backed store var or a
+    --   never-loaded MVarId. At item end, a recorded read whose var/memo
+    --   entry has since been BOUND (or Number-tainted) in the SHARED memo
+    --   component proves the recorded output was a stale snapshot;
+    --   specializeNodeSaturating re-translates against the saturated store.
+    --   CNumber residuals are NOT tracked (eager-Int number-multi reads them
+    --   stale by design; Prune's number close owns them).
+    --
+    --   loopParams (MONO_029 R1): enclosing tail-recursive functions'
+    --   (name, typedArgs) frames, innermost first; the TailCall arm connects
+    --   recursive-call args to loop params (the TCO transform rebuilds that
+    --   call chain with a fresh id family).
+    , itemAux : ItemAux
     }
+
+
+type alias ItemAux =
+    { lssRootAnn : Maybe ( Can.Type TypeIds.MVarId, IO.Variable )
+    , ecoResidualReads : List IO.Variable
+    , ecoResidualKeyReads : List Int
+    , loopParams : List ( String, List ( String, Can.Type TypeIds.MVarId ) )
+    }
+
+
+emptyItemAux : ItemAux
+emptyItemAux =
+    { lssRootAnn = Nothing, ecoResidualReads = [], ecoResidualKeyReads = [], loopParams = [] }
+
+
+{-| Scratch-store entry: clear ONLY the read lists (scratch Point indices are
+meaningless against the restored item store); other aux fields flow through.
+-}
+clearedAux : ItemAux -> ItemAux
+clearedAux aux =
+    { aux | ecoResidualReads = [], ecoResidualKeyReads = [] }
+
+
+{-| Scratch-store exit: restore the outer read lists, keep everything else
+from the inner state (matches the pre-pack behavior field for field).
+-}
+restoredAux : ItemAux -> ItemAux -> ItemAux
+restoredAux outer inner =
+    { inner | ecoResidualReads = outer.ecoResidualReads, ecoResidualKeyReads = outer.ecoResidualKeyReads }
+
+
+{-| Saturation-pass reset (MONO_029 R2): drop the recorded reads before
+re-translating against the same store.
+-}
+clearResidualReads : S -> S
+clearResidualReads s =
+    let
+        aux =
+            s.itemAux
+    in
+    { s | itemAux = { aux | ecoResidualReads = [], ecoResidualKeyReads = [] } }
 
 
 {-| D13: the per-global result of resolving a `Mono.Global` against `toptNodes`,
@@ -421,14 +488,19 @@ withScratchStore : Step a -> Step a
 withScratchStore step s0 =
     let
         sFresh =
-            { s0 | store = freshStore, memo = CoreDict.empty, revMemo = Array.empty }
+            -- The stale-read barrier's read lists are stashed too: scratch
+            -- Points are meaningless against the restored item store, so
+            -- residual reads made inside the scratch must not be scanned at
+            -- item end (scratch re-translation is itself a re-translation
+            -- mechanism; its staleness is out of scope for MONO_029 v1).
+            { s0 | store = freshStore, memo = CoreDict.empty, revMemo = Array.empty, itemAux = clearedAux s0.itemAux }
     in
     case step sFresh of
         Err e ->
             Err e
 
         Ok ( a, s1 ) ->
-            Ok ( a, { s1 | store = s0.store, memo = s0.memo, revMemo = s0.revMemo } )
+            Ok ( a, { s1 | store = s0.store, memo = s0.memo, revMemo = s0.revMemo, itemAux = restoredAux s0.itemAux s1.itemAux } )
 
 
 
@@ -623,7 +695,7 @@ freshStore =
 -}
 resetItem : S -> S
 resetItem s =
-    { s | store = freshStore, memo = CoreDict.empty, revMemo = Array.empty, varEnv = CoreDict.empty, numberMulti = [], localMulti = [], derivedDestructors = CoreDict.empty, localCanTypes = CoreDict.empty, lssRootAnn = Nothing }
+    { s | store = freshStore, memo = CoreDict.empty, revMemo = Array.empty, varEnv = CoreDict.empty, numberMulti = [], localMulti = [], derivedDestructors = CoreDict.empty, localCanTypes = CoreDict.empty, itemAux = emptyItemAux }
 
 
 {-| Bind a local variable's monomorphized type.

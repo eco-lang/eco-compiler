@@ -61,6 +61,7 @@ embed both `Debug.toString` renderings in the mismatch error for offline diff.
 type alias MonoConfig =
     { engine : MonoEngine
     , diffDump : Bool
+    , validate : Bool -- env ECO_MONO_VALIDATE=1, never from JSON: run the MONO_029 layout-agreement validator after mono and FAIL the compile on violations (output-only, excluded from hash — a failed compile is never cached)
     , lss : LssConfig
     }
 
@@ -145,7 +146,7 @@ default =
         }
     , bytesFusion = { enabled = True }
     , logicalTypes = { customMaxFields = 8 }
-    , mono = { engine = EngineSubst, diffDump = False, lss = defaultLss }
+    , mono = { engine = EngineSubst, diffDump = False, validate = False, lss = defaultLss }
     }
 
 
@@ -193,6 +194,7 @@ monoDecoder =
         (\s lss ->
             { engine = Maybe.withDefault default.mono.engine (monoEngineFromString s)
             , diffDump = default.mono.diffDump
+            , validate = default.mono.validate
             , lss = lss
             }
         )
