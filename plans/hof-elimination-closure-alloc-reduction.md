@@ -433,10 +433,64 @@ plan).
 
 ### H4 — Intra-function closure elision (MLIR) + zero-capture interning
 
-**H4.1 Elision pattern.** New eco-dialect pass `EcoClosureElide` (`runtime/src/codegen/Passes/`), running **before** `EcoGCPrepare`:
+**PLACEMENT DECISION (investigated 2026-07-14 — front-end vs MLIR).**
+Question raised: should elision live in the Elm front end (GlobalOpt Phase
+4.5 on MonoAST), where all other HOF elimination lives, instead of MLIR?
+Findings:
 
-For each `eco.papCreate @f(%c1…%cn)` result `%p` carrying `_fast_evaluator @F`:
-- If **every** use of `%p` is an `eco.papExtend` with matching `_fast_evaluator @F`, saturated (typed mode, `remaining_arity` consumed by the site's args — CGEN_052/056), rewrite each use to a direct `func.call @F$cap(%c1…%cn, args…)` with types per `_capture_abi` (CGEN_CLOSURE_005 prefix rule), then erase the papCreate.
+1. **All papCreates originate from front-end-visible MonoClosure nodes**
+   (`wrapTopLevelCallables` converts bare global/kernel refs in GlobalOpt
+   Phase 1; the codegen fallback emitters at `Expr.elm:623/:840` are
+   unreachable) — so front-end VISIBILITY is not the differentiator the
+   original H4 text assumed.
+2. **The decisive structural fact:** in MonoAST, a `MonoClosure` node is
+   BOTH the lambda's definition template and its allocation site — codegen
+   emits the `$cap`/`$clo` func.funcs from it. Front-end elision would have
+   to split definition from allocation (a new marker/node + codegen
+   emission-trigger changes + keeping the lambda alive past pruning). At
+   MLIR level they are already split: the func.func exists independently
+   and erasing the papCreate is trivially safe.
+3. **The mechanism half already exists in MLIR:** `EcoPAPSimplify.cpp` is
+   IMPLEMENTED and in the default pipeline (`EcoPipeline.cpp:63`,
+   RCElimination → EcoPAPSimplify → … → EcoGCPrepare). Its P1 pattern is
+   exactly single-use elision — saturated `papCreate @f(caps)` +
+   `papExtend` (typed mode, single use) → `eco.call @f(caps ++ args)` with
+   capture forwarding — plus P2 chain fusion. H4.1's remaining delta is
+   the MULTI-USE case (every use a saturated typed extend) and any
+   fast-stamped shapes P1's guards skip.
+4. **The project's own placement principle** (pass_global_optimization
+   theory): decisions (staging/ABI/calling conventions) belong to the
+   front end; MLIR passes optimize canonical form; lowering implements.
+   The DECISION here (which calls may target `$cap`, with what capture
+   ABI) is already made by AbiCloning in the front end and transported via
+   `_fast_evaluator`/`_capture_abi` — the established contract. What H4
+   adds is a mechanical local rewrite over canonical ops: exactly the
+   category the theory assigns to MLIR passes. All judgment-bearing HOF
+   elimination (H1–H2.5, and H5's cloning) stays front-end.
+5. **Front-end residual advantages** (smaller .mlir artifacts, census in
+   one place) are real but minor; the census point is addressed by the
+   runtime `ECO_CLOSURE_STATS` truth-teller. NOTE the measurement
+   correction this investigation produced: `--text-mlir` papCreate counts
+   are FRONT-END output, before EcoPAPSimplify runs — static counts
+   overstate runtime allocations; use the runtime census for deltas.
+
+**Verdict: MLIR — implemented as an additional pattern in the existing
+`EcoPAPSimplify` pass (call it P4: multi-use elision), not a new pass.**
+H5 is unaffected: it is decision-bearing (per-set spec cloning, signature
+surgery) and stays a GlobalOpt phase.
+
+**H4.1 Elision pattern.** Extend `EcoPAPSimplify`
+(`runtime/src/codegen/Passes/EcoPAPSimplify.cpp`, already before
+`EcoGCPrepare` in the pipeline):
+
+For each `eco.papCreate @f(%c1…%cn)` result `%p`:
+- If **every** use of `%p` is a saturated typed-mode `eco.papExtend`
+  (P1's per-use conditions), rewrite each use to the direct call with the
+  papCreate's capture operands forwarded (P1's rewrite, applied per use),
+  then erase the papCreate. This generalizes P1 from "single use" to "all
+  uses qualify"; for fast-stamped uses (`_fast_evaluator @F` matching the
+  papCreate's), the direct call targets `@F$cap` with types per
+  `_capture_abi` (CGEN_CLOSURE_005 prefix rule).
 - SSA scoping makes the escape check trivial: any other use (operand of another papCreate/construct/make/call/return, unsaturated extend, generic-mode extend per CGEN_060) blocks elision. Values used across `eco.case` region boundaries / block args: v1 skips (direct def→use only).
 - Multi-use is fine (closure called twice → two direct calls, zero allocs, no code duplication — this is what H1 deliberately doesn't handle).
 - Captures become SSA values live to the calls; RS4GC/EcoGCPrepare root them (`REP_LLVM_001` respected — they're `!eco.value`/primitives, no ptrtoint games). Cap: elide only when `n ≤ 8` captures (statepoint-pressure conservatism; config knob).

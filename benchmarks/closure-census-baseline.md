@@ -21,6 +21,10 @@ all.
   closures excluded — they lower to `func.func`, not allocations).
 - **MLIR (static)**: compile with `--text-mlir` and
   `grep -c eco.papCreate` (bytecode `.mlir` is binary — text form required).
+  **CAVEAT (found 2026-07-14):** the text dump is FRONT-END output — the
+  `EcoPAPSimplify` MLIR pass (default pipeline, P1 saturated-single-use
+  elision + P2 chain fusion) runs AFTER it, so static papCreate counts
+  OVERSTATE runtime allocations. Use `ECO_CLOSURE_STATS` for real deltas.
 
 ## Adversarial probe results (2026-07-13, post-H1)
 
