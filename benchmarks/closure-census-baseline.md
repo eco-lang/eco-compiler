@@ -162,6 +162,32 @@ Notes:
   truncating corpus artifacts ("Symbols not found: _mlir_main" failures).
   If self-compile runs abort, check `core.*` and `df` FIRST.
 
+## H3 (LSS-on re-gate + solver-implies-LSS, 2026-07-14)
+
+First-ever flag-on corpus run against the H1–H2.5 inliner:
+`ECO_MONO_ENGINE=solver ECO_MONO_LSS=1` → **1602/1602** (genuineness proven:
+harness artifact byte-identical to an explicit solver+LSS compile, ≠ subst).
+`defaultLss.enabled` flipped to True — inert for the default subst engine,
+but every solver run now gets LSS without flags. Engine default stays subst
+(JS-hosted solver self-compile ≥12× — monosolver plan owns that blocker).
+
+Flag-on probe censuses (post H1–H2.5 — fully-collapsed modules have nothing
+left to stamp, exactly as intended):
+
+| probe | dispatchUpgraded | note |
+|---|---|---|
+| LssSingletonFastDispatchTest | 1 | singleton pin intact |
+| LssVerbatimCopiesFastDispatchTest | 1 | LSS_009 verbatim-copy stamping intact with new inliner |
+| AndThenProbe | 0 | spine fully inlined away pre-AbiCloning |
+| CombinatorBComposeTest | 0 | PAP shapes, correctly unstamped |
+
+The big flag-on census (self-compile scale) awaits a native solver run.
+EngineDiff note: the flip surfaced an implicit coupling — Diff.elm "forced
+LSS off" by USING `Config.defaultLss`; it now forces `enabled = False`
+explicitly. Residual-rebuild closures also now clear
+srcLambda/closureKind/captureAbi (LSS_009: residuals are not verbatim
+copies; impersonation prevented before flag-on exposure).
+
 ## Known measurement gotchas
 
 - The E2E harness compile cache is mtime-only and env/config-blind

@@ -1543,7 +1543,22 @@ betaReduce ctx region info closureBody args resultType =
                 Closure.computeClosureCaptures remainingParams substituted
 
             newInfo =
-                { info | params = remainingParams, captures = newCaptures }
+                -- The residual is a NEW function, not a verbatim copy of the
+                -- source lambda: params and capture layout differ. Claiming
+                -- the source's srcLambda would let AbiCloning treat it as an
+                -- interchangeable instance of the member (LSS_009
+                -- impersonation); clear the identity like tryInlineCall's
+                -- partial branch does. closureKind/captureAbi are stale for
+                -- the new capture set for the same reason (normally still
+                -- unset at inline time — AbiCloning runs later — but don't
+                -- rely on that).
+                { info
+                    | params = remainingParams
+                    , captures = newCaptures
+                    , srcLambda = Nothing
+                    , closureKind = Nothing
+                    , captureAbi = Nothing
+                }
         in
         ( wrapInLets bindings (MonoClosure newInfo substituted newClosureType) newClosureType
         , bumpBetaReductions ctx2

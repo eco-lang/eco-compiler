@@ -89,11 +89,18 @@ type alias LssConfig =
     }
 
 
-{-| The built-in LSS defaults (everything off; budgets per the design doc).
+{-| The built-in LSS defaults (budgets per the design doc).
+
+`enabled = True` means **solver implies LSS** (H3, 2026-07-14): the subst
+engine — still the `mono.engine` default — never consults this block, so
+default builds are unaffected; every solver run gets lambda-set
+specialization without extra flags. `keyed` stays False pending the M4
+elm-aws-codegen pathological-input check. `ECO_MONO_LSS=0` remains the
+escape hatch.
 -}
 defaultLss : LssConfig
 defaultLss =
-    { enabled = False
+    { enabled = True
     , keyed = False
     , maxSetSize = 8
     , maxSpecsPerGlobal = 64

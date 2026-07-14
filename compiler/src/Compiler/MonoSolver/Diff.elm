@@ -49,9 +49,16 @@ run dump entryPointName globalTypeEnv globalGraph =
 
         Ok oldGraph ->
             -- LSS is FORCED OFF for diff runs: the subst engine cannot produce
-            -- sets, so parity is only meaningful against the set-free pipeline
-            -- (defaultLss.enabled = False).
-            case MonoSolver.monomorphize Config.defaultLss entryPointName globalTypeEnv globalGraph of
+            -- sets, so parity is only meaningful against the set-free pipeline.
+            -- Forced EXPLICITLY — since H3 flipped defaultLss.enabled to True
+            -- ("solver implies LSS"), relying on the default here would diff
+            -- annotated solver output against subst and mismatch on every
+            -- set annotation.
+            let
+                lssOff =
+                    Config.defaultLss
+            in
+            case MonoSolver.monomorphize { lssOff | enabled = False } entryPointName globalTypeEnv globalGraph of
                 Err e ->
                     Err ("ECO_MONO_DIFF " ++ e)
 

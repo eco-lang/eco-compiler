@@ -1,6 +1,6 @@
 # HOF Elimination — Closure Allocation Reduction
 
-**Status:** H0 + H1 + H2 + H2.5 IMPLEMENTED 2026-07-14 (baselines + matrices in `benchmarks/closure-census-baseline.md` — native-stage-7a dynamic census still pending). Shipped: censuses; let-callee forwarding + chain closure DCE; case-body inlining (guard lift + cost-model decider fix); let-of-closure flattening; let-callee hoisting; `hofThreshold` (default 25, called-param heuristic); application merging (pipe-shape collapse, 5,188 merges on self-compile); faithful residual type (double-wrapped-arrow fix) with the ground-result guard removed and `exactOnly` retained by design. fpi stays 4. H3+ (LSS default-on → elision → flattening) not started.
+**Status:** H0 + H1 + H2 + H2.5 + H3 IMPLEMENTED 2026-07-14 (baselines + matrices in `benchmarks/closure-census-baseline.md` — native-stage-7a dynamic census still pending). Shipped: censuses; let-callee forwarding + chain closure DCE; case-body inlining (guard lift + cost-model decider fix); let-of-closure flattening; let-callee hoisting; `hofThreshold` (default 25, called-param heuristic); application merging (pipe-shape collapse, 5,188 merges on self-compile); faithful residual type (double-wrapped-arrow fix) with the ground-result guard removed and `exactOnly` retained by design; LSS-on re-gate (first flag-on corpus vs the new inliner, 1602/1602 genuine) + `defaultLss.enabled=True` ("solver implies LSS" — engine default stays subst, blocked on JS-hosted solver perf per the monosolver plan). fpi stays 4. Next: H4 (intra-function elision — build/gate under explicit solver+LSS configs until the engine default flips) → H5 (interprocedural capture flattening).
 **Date:** 2026-07-13
 **Input:** `/work/hof-elimination.md` (prioritized suggestions), deep code investigation (this doc supersedes the suggestion list)
 **Goal:** Greatly reduce the number of closures allocated at runtime (`eco_alloc_closure` executions), measured on the self-compile workload and the E2E corpus.
@@ -391,15 +391,43 @@ Outcome of the relaxation ladder:
     re-segmentation papers over statically wrong metadata and adds
     mid-chain GC-rooting obligations.
 
-### H3 — LSS singleton default-on (prerequisite for H4/H5)
+### H3 — LSS-on re-gate + "solver implies LSS" default (prerequisite for H4/H5)
 
-M1–M4 shipped and were gated green, but `lss.enabled=False`. Elision consumes stamps; flip the default.
+M1–M4 shipped and were gated green, but `lss.enabled=False`. Elision consumes
+stamps; make LSS the default wherever it CAN be.
 
-- H3.1 Re-gate at today's HEAD with H1/H2 in: touch-all-.elm, `--target full` with `lss=1` unkeyed; elm-tests; self-build fixed point under lss=1 (was proven Jul 13 for solver+LSS+keyed — re-establish post-H1/H2).
-- H3.2 Flip `defaultLss.enabled = True` (`Config.elm:96`). **Keyed stays False** (the elm-aws-codegen pathological-input check from M4 is still outstanding; H5 opts into keyed per-global instead).
-- H3.3 Record post-flip census: `dispatchUpgraded`, decline classes (numbers will differ from the 3140/7542 baseline after H1/H2 pruning).
+**Correction (2026-07-14): LSS is a SOLVER-engine feature.** The
+`EngineSubst` path of `selectMonomorphizer` never sees `lss`, and the engine
+default must stay `subst` for now — the JS-hosted solver self-compile is
+≥12× slower than subst (monosolver plan, Jul 12), which would break the
+bootstrap and every guida-under-node workflow. So H3's flip is
+`lss.enabled=True` with engine unchanged: inert for default (subst) users,
+but **solver now implies LSS** — every solver run (E2E flag-on gates,
+future engine-default flip, H4/H5 work) gets stamps without extra flags.
+The ENGINE default flip is a separate, blocked item owned by the monosolver
+plan (profile/fix JS-hosted solver perf first); H4/H5 must therefore be
+built and gated with explicit solver+LSS configs until it lands.
 
-**Gate:** all of the above green; EngineDiff flag-off junk-spec divergence (known open item in the LSS plan) re-checked as still runtime-benign.
+- H3.0 Flag-on prep fix: `betaReduce`'s partial rebuild kept the source's
+  `srcLambda` on a NON-verbatim residual (params/captures differ) —
+  an LSS_009 impersonation risk under flag-on. Residuals now clear
+  srcLambda/closureKind/captureAbi like `tryInlineCall`'s partial branch.
+- H3.1 Re-gate at today's HEAD (post H1/H2/H2.5 — the corpus had NEVER run
+  flag-on against the new inliner): touch-all-.elm, `--target full` under
+  `ECO_MONO_ENGINE=solver ECO_MONO_LSS=1`; elm-tests. Native self-build
+  fixed point under solver+LSS: re-verify with the next bootstrap run
+  (hours-scale; was proven Jul 13 pre-H1).
+- H3.2 Flip `defaultLss.enabled = True`. **Keyed stays False** (the
+  elm-aws-codegen pathological-input check from M4 is still outstanding;
+  H5 opts into keyed per-global instead). Note: the `lss=1` hash token is
+  value-based, so the flip invalidates all caches once.
+- H3.3 Record post-flip census on flag-on probes (self-compile census under
+  the JS-hosted solver is impractical — 12×; use corpus probes and defer
+  the big census to a native solver run).
+
+**Gate:** all of the above green; EngineDiff spot-check still runtime-benign
+(known flag-off junk-spec divergence remains documented in the monosolver
+plan).
 
 ---
 
