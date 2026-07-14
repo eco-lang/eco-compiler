@@ -15,6 +15,7 @@ gates).
 import Html exposing (text)
 
 -- CHECK: result: (24, 18)
+-- CHECK: probe2: 512
 
 
 type alias St =
@@ -62,5 +63,27 @@ main =
 
         _ =
             Debug.log "result" ( v, s1.n )
+
+        _ =
+            Debug.log "probe2" probe2
     in
     text "done"
+
+
+mkVar : Step Int
+mkVar s =
+    ( { s | n = s.n + 1 }, s.n + 1 )
+
+
+tupleish : Int -> Step Int
+tupleish a =
+    andThen (\v1 -> andThen (\v2 -> pure (a * 100 + v1 * 10 + v2)) mkVar) mkVar
+
+
+probe2 : Int
+probe2 =
+    let
+        ( _, v ) =
+            run (tupleish 5) { n = 0, hist = [] }
+    in
+    v

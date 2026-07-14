@@ -3439,6 +3439,34 @@ forwardGo ctx name payload expr =
                                 if List.length args == List.length cinfo.params then
                                     Just (betaReduce ctx region cinfo cbody args t)
 
+                                else if
+                                    (List.length args > List.length cinfo.params)
+                                        && not (List.isEmpty cinfo.params)
+                                then
+                                    -- H6.2 layer 3: a source-level multi-stage
+                                    -- application (`f a s1`) is ONE call node
+                                    -- carrying both stages' args, so the exact
+                                    -- check above never fires for a 1-param
+                                    -- literal and the whole bind-collapse
+                                    -- cascade stalls at its first link. Beta
+                                    -- the first stage EXACTLY (evaluation
+                                    -- order identical: stage-1 body runs at
+                                    -- application) and re-apply the rest to
+                                    -- the result — let-callee hoisting and
+                                    -- the merge arm consume the residual on
+                                    -- later fixpoint iterations.
+                                    let
+                                        nParams =
+                                            List.length cinfo.params
+
+                                        ( inner, ctx1 ) =
+                                            betaReduce ctx region cinfo cbody (List.take nParams args) (Mono.typeOf cbody)
+                                    in
+                                    Just
+                                        ( MonoCall region inner (List.drop nParams args) t Mono.defaultCallInfo
+                                        , ctx1
+                                        )
+
                                 else
                                     Nothing
 
@@ -3855,12 +3883,29 @@ freshenLetBoundNames ctx expr =
             in
             ( MonoIf (List.reverse branchesRev) final1 resultType, ctx2 )
 
-        MonoDestruct destructor inner resultType ->
+        MonoDestruct (Mono.MonoDestructor destructName path destructType) inner resultType ->
+            -- Destructure BINDERS are let-bound names too. Leaving them
+            -- unrenamed captures a same-named caller variable used after the
+            -- inlined segment: found live as the ECO_ARITY_RAISE self-compile
+            -- segfault (raised andThen's `let (s1, a) = ma s0` binder `a`
+            -- captured constrainTupleWithIds' source param `a`;
+            -- RaiseProbe.elm probe2 pins it — 212 instead of 512 pre-fix).
+            -- Flag-off the closure boundary happens to shield today's
+            -- inlinable bodies, but the freshener must not rely on that.
+            -- Inner is freshened FIRST (matching the def-rename policy), so
+            -- the binder rename cannot capture an inner shadowing binding.
             let
-                ( inner1, ctx1 ) =
+                ( inner0, ctx1 ) =
                     freshenLetBoundNames ctx inner
+
+                ( newName, ctx2 ) =
+                    freshVar ctx1
             in
-            ( MonoDestruct destructor inner1 resultType, ctx1 )
+            ( MonoDestruct (Mono.MonoDestructor newName path destructType)
+                (renameLocal destructName newName inner0)
+                resultType
+            , ctx2
+            )
 
         MonoCase unused rootName decider jumps resultType ->
             let

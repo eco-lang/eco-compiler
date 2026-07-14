@@ -1960,37 +1960,55 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
                         else
                             [ ( "eco.gc_roots_count", IntAttr Nothing (List.length gcRootHints3) ) ]
 
+                    -- H6.2 layer 1 (unconditional): a batch PAST the first
+                    -- stage boundary extends a RUNTIME-COMPUTED value — the
+                    -- callee's stage-1 result — not the callee itself. The old
+                    -- claims here (`_capture_abi` = prior-stage arg types,
+                    -- typed `remaining_arity`, direct-known `_call_kind`)
+                    -- assumed that value is the callee's own staged wrapper
+                    -- capturing the prior args. That contract holds only for
+                    -- compiler-materialized wrapper chains; for any source
+                    -- function whose staged type's stage-1 result is an
+                    -- arbitrary function (StagedResultProbe flag-off,
+                    -- RaiseProbe under ECO_ARITY_RAISE) the backend re-boxed
+                    -- foreign closure/PAP slots through the claimed layout —
+                    -- garbage or a lowering type mismatch. Cross-stage
+                    -- batches are now fully GENERIC (runtime derives arity
+                    -- from the closure header); the self-compile contains
+                    -- ZERO of the old stamps, so nothing measurable is lost.
+                    isCrossStage =
+                        not (List.isEmpty accCaptureTypes)
+
                     baseAttrs =
                         [ ( "_operand_types"
                           , ArrayAttr Nothing
                                 (List.map TypeAttr allOperandTypes ++ List.map TypeAttr gcRootTypes3)
                           )
-                        , ( "remaining_arity", IntAttr Nothing remainingArity )
                         , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
                         ]
+                            ++ (if isCrossStage then
+                                    []
+
+                                else
+                                    [ ( "remaining_arity", IntAttr Nothing remainingArity ) ]
+                               )
                             ++ resultKindAttrs
                             ++ gcRootsCountAttr3
 
                     callKindAttrs =
                         case callKindAttr of
                             Just ck ->
-                                [ ( "_call_kind", StringAttr ck ) ]
+                                if isCrossStage then
+                                    [ ( "_call_kind", StringAttr "segmentation_unknown" ) ]
+
+                                else
+                                    [ ( "_call_kind", StringAttr ck ) ]
 
                             Nothing ->
                                 []
 
-                    -- Emit _capture_abi for stages after the first. The accumulated
-                    -- capture types are the arg types from all previous stages, which
-                    -- match the captures of the current callee's staged wrapper closure.
-                    captureAbiAttrs =
-                        if List.isEmpty accCaptureTypes then
-                            []
-
-                        else
-                            [ ( "_capture_abi", ArrayAttr Nothing (List.map TypeAttr accCaptureTypes) ) ]
-
                     papExtendAttrs =
-                        Dict.fromList (baseAttrs ++ callKindAttrs ++ captureAbiAttrs)
+                        Dict.fromList (baseAttrs ++ callKindAttrs)
 
                     ( ctx2, papExtendOp ) =
                         Ops.mlirOp ctx1 "eco.papExtend"

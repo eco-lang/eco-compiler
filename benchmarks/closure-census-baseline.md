@@ -349,6 +349,53 @@ results:`): 1,211 function-typed-result specs; consumption = returned
 across function boundaries, confirming arity raising as the necessary
 H6.2 lever.
 
+### H6.2 layers 1–3 (2026-07-15)
+
+Layer 1 (unconditional): cross-stage batches in the staged-known call
+emission no longer claim `_capture_abi`/typed `remaining_arity`/direct
+`_call_kind` — the staged-wrapper contract only holds for
+compiler-materialized wrappers (self-compile contained ZERO of the old
+stamps). Layer 2 verdict: **standalone flag-off bug confirmed**, plus a
+second one — staged-result specs are TYPE-FLATTENED at monomorphization
+(`mk : Int -> (Int -> Int)` emits as `(i64)->(i64)`; repro in the plan;
+OPEN). Layer 3 (unconditional): `ForwardClosure` now betas the FIRST
+stage of a multi-stage single-call application and re-applies the rest —
+the stall that kept `f a s1` alive. Gate 1613/1613 with both
+unconditional layers on the default path. RaiseProbe flag-on:
+`closuresRemaining 3 → 0`, pap ops 12 → 6, correct output.
+
+Flag-on U2b measurement (2026-07-15, post layer-4 fix — see below):
+
+| native eco, full-compiler compile | creates | extends | total events |
+|---|---|---|---|
+| flag-off (F1+F2+F3) | 405,020,772 | 140,416,526 | 545.4M |
+| **flag-on (U2b)** | **261,542,727 (−35.4%)** | **400,257,605 (+185%)** | 661.8M (+21%) |
+
+Flag-on output BYTE-IDENTICAL to the JS-hosted flag-on compiler
+(fixed point holds). The creates win is exactly the H6.2 target (bind
+continuations die), but every ESCAPING bind site (60% per U0) now pays a
+PAP-extend on the interned raised combinator instead — top extends are
+the raised `andThen` specs themselves (41.2M/12.3M/9.9M) plus `apR`
+pipe-styling (20.6M; `x |> andThen k` adds an extend per pipe). 99.995%
+of extends sit on interned singletons. **Net: −0.9% artifact,
+−35% creates, +21% total allocation events → the flag stays OFF.**
+Follow-up levers: (a) single-alloc emission for raised-partial bind
+sites (create+extend fused into one PAP-with-args alloc → escaping
+sites reach parity and the net flips negative); (b) selective raising
+from U0's per-spec applied-share (collapse wins without the escape tax).
+
+**Layer 4 (the segfault's root cause — standalone freshener bug,
+FIXED unconditionally, gate 1614/1614)**: `freshenLetBoundNames` renamed
+MonoDef/MonoTailDef binders in inlined bodies but passed `MonoDestruct`
+BINDERS through verbatim. Raised `andThen`'s body (`let (s1, a) = ma s0`)
+inlines raw into thousands of callers; where a caller had its own `a`
+used after the inlined segment (`constrainTupleWithIds`' param `a`), the
+reference captured — gdb showed `constrainWithIds` receiving a Variable
+where a Can.Expr belonged. Pins: `RaiseProbe.elm` probe2 (212 → 512) and
+`DestructCaptureTest.elm` (flag-off shapes print correctly — the closure
+boundary shields today's flag-off inlinable bodies, so the hole was
+latent-but-unreached flag-off).
+
 **H6.3 V0 verdict**: post-F1/F2, generic-dispatch extend traffic is
 140M/544M events (~26%) but is now dominated by variable-HOF-arg
 partials — the class LSS stamp-coverage (V1/V2) addresses. Defer V1/V2

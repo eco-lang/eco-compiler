@@ -875,17 +875,63 @@ miniature TypeCheck.IO — keep as the pin; flag-off it must print
    types → AbiCloning stamped phantom singletons (garbage via stale
    `_capture_abi`). Mitigated: flag-on widens ALL annos
    (`Traverse.mapNodeTypes Mono.widenSets`).
-2. UNRESOLVED: the STAGED-KNOWN call emission (Expr.elm ~:1982) stamps
-   stage-2 extends with `_capture_abi` = prior-stage arg types, assuming
-   a known staged callee's stage-1 result is its OWN staged wrapper.
-   Post-raise, `(λ a) s1` shapes survive to emission (the beta cascade
-   does not consume them) where λ's stage-1 result is an arbitrary PAP —
-   the runtime reads a PAP arg slot as an unboxed capture:
-   `RaiseProbe` flag-on returns `(8589934618, 12)` instead of
-   `(24, 18)` at ANY fpi. Fix options for the next session: suppress the
-   staged-known capture-ABI fast path when `arityRaise` is on (emit
-   segmentation_unknown), or make beta consume literal-callee staged
-   applications in callee position. Until then the flag stays off.
+2. RESOLVED 2026-07-15 (three layers, gate 1613/1613 with layers 1+3
+   UNCONDITIONAL on the default path):
+   - **Layer 1 (emission guard)**: cross-stage batches in the
+     staged-known call emission are now fully GENERIC — no
+     `_capture_abi`, no typed `remaining_arity`, `_call_kind`
+     downgraded to segmentation_unknown (Expr.elm, `isCrossStage`).
+     The old claims assumed the callee's stage-1 result is its own
+     staged wrapper; that contract only holds for compiler-materialized
+     wrapper chains. The self-compile contained ZERO of the old stamps,
+     so nothing measurable was lost.
+   - **Layer 2 (standalone audit): CONFIRMED STANDALONE FLAG-OFF BUG —
+     and it found a SECOND one.** A recursive staged-result function
+     (`mk : Int -> (Int -> Int)` below) hits the same stamp flag-off;
+     worse, its SPEC is emitted as `(i64) -> (i64)` — monomorphization
+     drops the middle arrow of a staged-result def under flat demand, so
+     even after the layer-1 guard the P1 direct call dies at LLVM
+     translation with `result type mismatch: ptr != i64`. This
+     spec-typing producer bug (peelCallResult/demand-flattening family)
+     is OPEN; repro (was `StagedResultProbe.elm`, removed from the
+     corpus because elm tests have no XFAIL):
+
+         mk : Int -> (Int -> Int)
+         mk a =
+             if a <= 0 then \b -> b + 1000
+             else if modBy 2 a == 0 then \b -> a + b
+             else mk (a - 1)
+
+         use : Int -> Int
+         use n = mk n (n * 10)    -- expect (use 4, use 3, use 0) == (44, 32, 1000)
+
+   - **Layer 3 (cascade stall)**: `f a s1` is ONE MonoCall carrying both
+     stages' args, so `ForwardClosure`'s exact-arity check never fired
+     for 1-param literals and the collapse stalled at its first link.
+     The consumer now betas the FIRST stage exactly and re-applies the
+     rest to the result (evaluation-order identical; hoisting + merge
+     consume the residual). RaiseProbe flag-on: `closuresRemaining 3 →
+     0`, pap ops 12 → 6, `result: (24, 18)` correct.
+   - **Layer 4 (2026-07-15, found by the compiler-scale segfault):
+     DESTRUCTURE-BINDER CAPTURE in the inliner's alpha-renamer.**
+     `freshenLetBoundNames` renamed MonoDef/MonoTailDef binders in
+     instantiated bodies but passed `MonoDestruct` binders through
+     verbatim. Raised `andThen`'s body (`let (s1, a) = ma s0 in f a s1`)
+     inlines RAW into thousands of callers; wherever a caller had its own
+     `a` in scope and used it after the inlined segment
+     (`constrainTupleWithIds`' source param `a`), the reference resolved
+     to the bind result — gdb showed `constrainWithIds` receiving a
+     Variable where a Can.Expr belonged, segfaulting on the tag load at
+     entry. Diagnosis chain: symbolized native backtrace → IR read of the
+     collapsed caller (`11203(%arg0, %7=flexVar, %11)` — args
+     scrambled exactly one binder late) → minimal pin (`RaiseProbe.elm`
+     probe2: `212` instead of `512` pre-fix, flag-on; flag-off the
+     closure boundary shields today's inlinable bodies — both
+     `DestructCaptureTest.elm` shapes print correctly — so this is
+     latent-but-unreached flag-off). Fix (UNCONDITIONAL): the
+     `MonoDestruct` arm now freshens the binder (fresh name +
+     `renameLocal` over its scope, inner freshened first per the
+     def-rename policy).
 
 #### H6.3 — Stamp coverage for dispatch (dispatch value, not allocation)
 
