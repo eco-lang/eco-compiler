@@ -1,6 +1,6 @@
 # HOF Elimination — Closure Allocation Reduction
 
-**Status:** H0 + H1 + H2 IMPLEMENTED 2026-07-14 (baselines + H2 matrix in `benchmarks/closure-census-baseline.md` — native-stage-7a dynamic census still pending). H2 shipped: case-body inlining (H2.0 guard lift + cost-model decider fix), let-of-closure flattening, let-callee hoisting, `hofThreshold` (called-param heuristic, default 25, hofBudget candidates exact-application-only per lesson 4), `ECO_INLINE_HOF_THRESHOLD`/`ECO_INLINE_FPI` env knobs. fpi stays 4 (6 OOMs the JS-hosted self-compile). **Next highest-leverage item: the partial-rebuild staging fix (lesson 4) — unlocks pipe-shaped HOF collapse.** H3+ not started.
+**Status:** H0 + H1 + H2 + H2.5 IMPLEMENTED 2026-07-14 (baselines + matrices in `benchmarks/closure-census-baseline.md` — native-stage-7a dynamic census still pending). Shipped: censuses; let-callee forwarding + chain closure DCE; case-body inlining (guard lift + cost-model decider fix); let-of-closure flattening; let-callee hoisting; `hofThreshold` (default 25, called-param heuristic); application merging (pipe-shape collapse, 5,188 merges on self-compile); faithful residual type (double-wrapped-arrow fix) with the ground-result guard removed and `exactOnly` retained by design. fpi stays 4. H3+ (LSS default-on → elision → flattening) not started.
 **Date:** 2026-07-13
 **Input:** `/work/hof-elimination.md` (prioritized suggestions), deep code investigation (this doc supersedes the suggestion list)
 **Goal:** Greatly reduce the number of closures allocated at runtime (`eco_alloc_closure` executions), measured on the self-compile workload and the E2E corpus.
@@ -359,20 +359,37 @@ the partial-rebuild path is never entered:
   are not single-use callee-position bindings and must not change shape);
   self-compile betaForwards expected to recover past the unsound-era 1,571.
 
-**Step 2 — faithful residual rebuild, LATER (unlocks guard relaxation).**
-For genuinely partial applications that must produce a residual value
-(callback stored in a structure): rebuild with a stage-CONSUMING type
-(drop supplied leading stages from the original arrow, keep the remaining
-stage structure — never flatten to one fresh stage), and type residual
-application sites per the CALLEE ABI with an explicit coercion after
-(the `enforce-cgen056-remove-fixCallResultTypes.md` discipline), OR lower
-the residual to an actual PAP-creating expression so the runtime object
-carries the original evaluator + true arity metadata (the design-conformant
-option per mono-uncurry). Rejected alternative: teaching the runtime
-typed-apply to chain over-application dynamically — papers over statically
-wrong metadata and adds mid-chain GC-rooting obligations. After step 2,
-relax: H1's ground-result guard, H2's exactOnly, and add the SKI/compose
-shapes to the corpus flag-on. Each relaxation stays behind its existing pin.
+**Step 2 — faithful residual rebuild, IMPLEMENTED 2026-07-14.** The root
+cause turned out to be a one-line type bug present in BOTH rebuild sites:
+`peelCallResult` (Specialize.elm) already types a partial call node as the
+PEELED arrow `MFunction anno remainingTypes r`, and the rebuild wrapped it
+AGAIN (`MFunction LTop remTypes resultType`) — a double-wrapped arrow
+declaring a phantom extra application level, which is what result-kind,
+staging, and arity metadata all mis-derived from. Fix:
+`residualClosureType` uses the peeled arrow verbatim (with a defensive
+fallback to the legacy construction if the shape ever disagrees).
+
+Outcome of the relaxation ladder:
+
+  - H1's GROUND-RESULT forwarding guard: **removed**. An exact beta yields
+    the source body (never a rebuild); an applied residual is consumed by
+    hoisting + beta on later iterations; a stored one is a source-typed
+    literal. Pins: SKI/identity-composition CGEN_056 unit fixtures (now
+    reachable again and green), `HofCurriedForwardTest` (curried let-lambda
+    collapses to zero papCreate), `HofResidualPartialTest` (a runtime-
+    surviving literal-partial residual with the faithful type).
+  - `betaReduce`'s partial branch: **kept, now faithful**. Literal-partial
+    residuals are only ever applied within their true arity (the types
+    guarantee it), so the fixed rebuild is sound there.
+  - H2's `exactOnly`: **retained permanently, by design.** Partially
+    inlining a GLOBAL replaces its PAP value with a genuinely re-arited
+    closure while callers compiled against the global's curried TYPE may
+    over-apply it, and the runtime typed-apply cannot chain over-application
+    of a real closure. Per mono-uncurry's principle, partials of globals
+    stay PAPs; application merging (step 1) collapses the profitable
+    single-use shapes. The rejected alternative stands: dynamic runtime
+    re-segmentation papers over statically wrong metadata and adds
+    mid-chain GC-rooting obligations.
 
 ### H3 — LSS singleton default-on (prerequisite for H4/H5)
 

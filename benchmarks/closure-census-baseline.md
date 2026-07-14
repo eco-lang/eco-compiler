@@ -120,6 +120,24 @@ than baseline, wall time back at baseline. The pipe shape
 `m |> Maybe.andThen λ` now collapses to zero papCreate (AndThenProbe pins
 it module-wide under the default config).
 
+### H2.5 step 2 (faithful residual type + guard relaxation)
+
+| config | betaForwards | partialMerges | closuresRemaining | .mlir size |
+|---|---|---|---|---|
+| + step 2 | 1,660 | 5,188 | 13,880 | 11.80 MB |
+
+The partial rebuild's type bug (double-wrapped arrow — `peelCallResult`
+already returns the residual arrow and the rebuild wrapped it again) is
+fixed; H1's ground-result forwarding guard is removed (curried let-lambdas
+collapse — HofCurriedForwardTest, zero papCreate); `exactOnly` is retained
+permanently by design (partials of globals stay PAPs per mono-uncurry — the
+runtime typed-apply cannot chain over-application of re-arited closures).
+Self-compile delta is small (+5 betaForwards — curried let-lambdas are rare
+in the compiler); the value is soundness surface + curried-code collapse.
+Runtime-surviving literal-partial residuals are pinned by
+HofResidualPartialTest. E2E 1602/1602; elm-tests 12991/12 identical set
+with the CGEN_056 fixtures reachable again.
+
 **Decision: default `hofThreshold = 25`.** On the pipe-heavy self-compile
 workload the incremental win is small (+1.9% betaForwards) because
 `m |> andThen λ` partially applies `andThen` and exactOnly blocks it; on

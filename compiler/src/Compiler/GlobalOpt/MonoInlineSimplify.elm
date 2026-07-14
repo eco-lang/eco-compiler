@@ -660,11 +660,15 @@ computeCostDecider decider =
 type alias RewriteCtx =
     -- (params, body, exactOnly): exactOnly candidates were admitted via the
     -- H2 hofBudget (cost above the general threshold, not whitelisted) and
-    -- may inline at EXACT application only — the partial-application rebuild
-    -- produces a re-staged closure whose runtime arity metadata the typed
-    -- over-application path cannot chain (spliceArgsForSaturatedCall assert;
-    -- CombinatorB* corpus pins). Legacy and whitelisted candidates keep full
-    -- pre-H2 privileges.
+    -- may inline at EXACT application only. This is permanent by design, not
+    -- a temporary containment (H2.5 step 2): partially inlining a GLOBAL
+    -- replaces its PAP value with a genuinely re-arited closure, and callers
+    -- compiled against the global's curried TYPE may over-apply it — the
+    -- runtime typed-apply cannot chain over-application of a real closure
+    -- (spliceArgsForSaturatedCall assert; CombinatorB* corpus pins).
+    -- Partials of globals stay PAPs per mono-uncurry's design principle;
+    -- application MERGING collapses the profitable single-use shapes.
+    -- Legacy and whitelisted candidates keep full pre-H2 privileges.
     { inlineCandidates : Dict Int ( List ( Name, Mono.MonoType ), MonoExpr, Bool )
     , specArities : Dict Int Int -- H2.5: param count per spec (incl. recursive), for application merging
     , registry : Mono.SpecializationRegistry
@@ -1530,9 +1534,7 @@ betaReduce ctx region info closureBody args resultType =
                 freshenLetBoundNames ctx1 (substituteAll bindings closureBody)
 
             newClosureType =
-                -- Partial-application rebuild: LTop (sound; the original
-                -- head anno is not in scope here — precision-only loss).
-                Mono.MFunction Mono.LTop (List.map Tuple.second remainingParams) resultType
+                residualClosureType remainingParams resultType
 
             -- Recompute captures for the new closure body.
             -- The substitution may have introduced new free variables (the fresh names
@@ -1590,6 +1592,38 @@ createBindings ctx params args =
                 (List.map2 Tuple.pair params args)
     in
     ( List.reverse revBindings, finalCtx )
+
+
+{-| H2.5 step 2: the type of the residual closure a partial-application
+rebuild produces.
+
+`peelCallResult` (Specialize.elm) already types a partial call node as the
+PEELED arrow — `MFunction anno remainingTypes result` — so the residual
+closure's type IS the call's result type, verbatim. The old construction
+wrapped it AGAIN (`MFunction LTop remTypes resultType` where resultType was
+itself the residual arrow), declaring a phantom extra application level:
+result-kind, staging, and arity metadata downstream all read the
+double-wrapped arrow, which is the root of the CGEN_056 result-type
+mismatches and the runtime `spliceArgsForSaturatedCall` arity assert
+(plan H2.5, lesson 4).
+
+The shape check is defensive: if some producer typed the call differently
+(non-arrow, or an arrow whose param count disagrees with the actual
+remaining params), fall back to the legacy construction — no worse than the
+historical behavior, and the guards that contain the legacy path remain.
+-}
+residualClosureType : List ( Name, Mono.MonoType ) -> Mono.MonoType -> Mono.MonoType
+residualClosureType remainingParams resultType =
+    case resultType of
+        Mono.MFunction _ paramTypes _ ->
+            if List.length paramTypes == List.length remainingParams then
+                resultType
+
+            else
+                Mono.MFunction Mono.LTop (List.map Tuple.second remainingParams) resultType
+
+        _ ->
+            Mono.MFunction Mono.LTop (List.map Tuple.second remainingParams) resultType
 
 
 wrapInLets : List Binding -> MonoExpr -> Mono.MonoType -> MonoExpr
@@ -2119,25 +2153,21 @@ forwardGo ctx name payload expr =
                     if n == name then
                         case payload of
                             ForwardClosure cinfo cbody ->
-                                -- Only SATURATED, GROUND-RESULT closure uses
-                                -- forward. A partial application would route
-                                -- through betaReduce's partial-rebuild
-                                -- branch, and a function-typed result means
-                                -- the beta yields a closure the enclosing
-                                -- expression applies (curried defs like
-                                -- `compose f g = \x -> …`). Both leave a
-                                -- closure whose call site carries the mono
-                                -- result type while the compiled body keeps
-                                -- the generic boxed ABI — a latent CGEN_056
-                                -- mismatch the SKI-combinator /
-                                -- identity-composition unit fixtures catch.
-                                -- Returning Nothing keeps the let (the count
-                                -- precondition means this was the only use).
-                                if
-                                    List.length args
-                                        == List.length cinfo.params
-                                        && not (isFunctionType t)
-                                then
+                                -- Only SATURATED closure uses forward — a
+                                -- partial use would route through the
+                                -- partial-rebuild path at a NEW site.
+                                -- Function-typed results are allowed since
+                                -- H2.5 step 2: an exact beta yields the
+                                -- source body (no rebuild), and if the
+                                -- enclosing expression applies it, hoisting
+                                -- + beta consume it on later iterations;
+                                -- if it is stored, it is a source-typed
+                                -- literal. (The old ground-result refusal
+                                -- predates hoisting and the faithful
+                                -- residual type — SKI/identity-composition
+                                -- unit fixtures and HofCurriedForwardTest
+                                -- pin the relaxation.)
+                                if List.length args == List.length cinfo.params then
                                     Just (betaReduce ctx region cinfo cbody args t)
 
                                 else
@@ -3048,9 +3078,7 @@ tryInlineCall ctx specId args resultType =
                             freshLambdaIdForSpec ctx2a specId
 
                         newClosureType =
-                            -- Partial-application rebuild: LTop (sound; the original
-                            -- head anno is not in scope here — precision-only loss).
-                            Mono.MFunction Mono.LTop (List.map Tuple.second remainingParams) resultType
+                            residualClosureType remainingParams resultType
 
                         -- Compute captures for the new closure
                         newCaptures =
