@@ -210,6 +210,24 @@ copies; impersonation prevented before flag-on exposure).
   harness RUN-parser substring-matched `mlir-eco` as `mlir`. Both fixed —
   structural pass tests are now real.
 
+## H5 (2026-07-14): recursive-HOF loopification (self-compile, warm)
+
+| metric | H2.5/H4 baseline | + H5 |
+|---|---|---|
+| loopified | — | **779** (of 1,980 eligible tail-func specs) |
+| beta | 1,660 | 2,441 |
+| closuresRemaining | 13,880 | **13,152 (−5.2%)** |
+| .mlir size | 11.80 MB | 11.99 MB (+1.6%) |
+
+Call-site loopification (engine-independent, default-on): a saturated call
+of a tail-recursive HOF with a lambda LITERAL becomes a local specialized
+loop; the lambda's papCreate disappears at the front end and the loop
+shell (no self-capture for pure tail recursion) is elided by EcoPAPSimplify
+P1 — `HofFoldlLoopifyTest`'s module compiles to ZERO papCreates post-pass.
+The 779 sites are the `List.foldl/map`-class population every earlier
+phase had to walk around. Remaining for v2: variable-argument callers
+(LSS-annotation route), non-tail HOFs (`List.foldr`), multi-stage literals.
+
 ## Known measurement gotchas
 
 - The E2E harness compile cache is mtime-only and env/config-blind

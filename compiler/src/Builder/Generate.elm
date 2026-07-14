@@ -840,6 +840,10 @@ renderInlineReport m graph =
             ++ String.fromInt m.betaForwards
             ++ " partialMerges="
             ++ String.fromInt m.partialMerges
+            ++ " loopified="
+            ++ String.fromInt m.hofLoopified
+            ++ "/"
+            ++ String.fromInt m.loopifiable
             ++ " letDCE="
             ++ String.fromInt m.letEliminations
             ++ " closureDCE="

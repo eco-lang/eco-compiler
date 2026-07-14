@@ -85,6 +85,8 @@ loadBase maybeExplicit root =
     called-function-param inlining budget); experiment/tuning knob.
   - `ECO_INLINE_FPI=<n>` overrides `inline.fixpointIterations`;
     experiment/tuning knob (deep chains need extra passes to cascade).
+  - `ECO_INLINE_LOOPIFY=0` disables recursive-HOF loopification (plan H5);
+    escape hatch, participates in the hash via the `loop=` token.
 
 Applied here (not further downstream) so the override participates in
 `Config.hash`, which keys the Details cache. An unrecognized engine value is a
@@ -135,6 +137,11 @@ applyEnvOverrides cfg =
             (\cfg8 ->
                 (Utils.envLookupEnv "ECO_INLINE_FPI" |> Task.mapError never)
                     |> Task.map (\fpiVal -> applyFpiOverride fpiVal cfg8)
+            )
+        |> Task.andThen
+            (\cfg9 ->
+                (Utils.envLookupEnv "ECO_INLINE_LOOPIFY" |> Task.mapError never)
+                    |> Task.map (\loopVal -> applyLoopifyOverride loopVal cfg9)
             )
 
 
@@ -296,6 +303,35 @@ applyHofThresholdOverride maybeVal cfg =
 
         Nothing ->
             cfg
+
+
+{-| `ECO_INLINE_LOOPIFY=0|false|no`: disable recursive-HOF loopification
+(plan H5 escape hatch). Any other value leaves the config untouched.
+-}
+applyLoopifyOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLoopifyOverride maybeVal cfg =
+    let
+        off =
+            case maybeVal of
+                Just v ->
+                    let
+                        t =
+                            String.toLower (String.trim v)
+                    in
+                    t == "0" || t == "false" || t == "no"
+
+                Nothing ->
+                    False
+    in
+    if off then
+        let
+            inline =
+                cfg.inline
+        in
+        { cfg | inline = { inline | loopify = False } }
+
+    else
+        cfg
 
 
 {-| `ECO_INLINE_FPI=<n>`: override `inline.fixpointIterations`. Participates

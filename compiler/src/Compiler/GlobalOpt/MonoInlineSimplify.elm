@@ -55,6 +55,8 @@ type alias Metrics =
     , betaReductions : Int
     , betaForwards : Int
     , partialMerges : Int
+    , hofLoopified : Int
+    , loopifiable : Int
     , letEliminations : Int
     , closureDCE : Int
     , inlinedByCallee : Dict String Int
@@ -671,6 +673,8 @@ type alias RewriteCtx =
     -- Legacy and whitelisted candidates keep full pre-H2 privileges.
     { inlineCandidates : Dict Int ( List ( Name, Mono.MonoType ), MonoExpr, Bool )
     , specArities : Dict Int Int -- H2.5: param count per spec (incl. recursive), for application merging
+    , loopifiables : Dict Int LoopifyInfo -- H5: tail-func specs whose closure param can be loopified
+    , loopifyEnabled : Bool
     , registry : Mono.SpecializationRegistry
     , whitelist : InlineWhitelist
     , maxInlinesPerFunction : Int
@@ -687,10 +691,21 @@ type alias InternalMetrics =
     , betaReductions : Int
     , betaForwards : Int
     , partialMerges : Int
+    , hofLoopified : Int
+    , loopifiable : Int
     , letEliminations : Int
     , closureDCE : Int
     , inlinedByCallee : Dict String Int
     }
+
+
+bumpHofLoopified : RewriteCtx -> RewriteCtx
+bumpHofLoopified ctx =
+    let
+        m =
+            ctx.metrics
+    in
+    { ctx | metrics = { m | hofLoopified = m.hofLoopified + 1 } }
 
 
 bumpPartialMerges : RewriteCtx -> RewriteCtx
@@ -809,6 +824,637 @@ hasCalledFunctionParam params body =
             body
 
 
+-- ============================================================================
+-- ====== RECURSIVE-HOF LOOPIFICATION (H5) ======
+-- ============================================================================
+
+
+{-| A tail-recursive spec eligible for call-site loopification (plan H5):
+`params`/`body` are the spec's own, `flatParams` maps a function-typed
+parameter's index to its (uncurried) arity for every parameter that the
+body consumes ONLY as (a) exactly one saturated callee-position call plus
+(b) verbatim self-tail-call threading.
+
+At a saturated call site passing a lambda LITERAL at such an index, the
+call is rewritten to a local specialized loop (`MonoTailDef`) with the
+parameter eliminated: the literal replaces the callee of the single
+internal call (the existing beta arm reduces it on the next fixpoint
+iteration — captures are substituted to their caller-scope variables
+first), and self tail calls retarget the local loop with the flattened
+entry dropped. The lambda's papCreate disappears at this level; the local
+loop's own closure shell (a zero-self-capture papCreate with one saturated
+use — verified: pure tail recursion does not self-capture) is elided
+downstream by EcoPAPSimplify P1. Design note: this deliberately replaces
+the plan's original LSS-keyed spec-cloning formulation — the call-site
+literal makes the member identity self-evident, so v1 needs neither the
+solver engine nor keyed fan-out; variable-argument callers remain the
+LSS-based v2 extension.
+-}
+type alias LoopifyInfo =
+    { params : List ( Name, Mono.MonoType )
+    , body : MonoExpr
+    , flatParams : Dict Int Int
+    }
+
+
+buildLoopifiables : Config.InlineConfig -> Array (Maybe MonoNode) -> Dict Int LoopifyInfo
+buildLoopifiables inlineConfig nodes =
+    if not inlineConfig.loopify then
+        Dict.empty
+
+    else
+        let
+            -- Loopification copies the spec body per call site, like
+            -- inlining but for recursive HOFs; give it double the HOF
+            -- budget (List.foldl/map-class bodies land in the 15–30 range).
+            budget =
+                2 * max inlineConfig.threshold inlineConfig.hofThreshold
+        in
+        Array.foldl
+            (\maybeNode ( acc, specId ) ->
+                case maybeNode of
+                    Just (MonoTailFunc params body _) ->
+                        if computeCost body > budget || referencesSpec specId body then
+                            ( acc, specId + 1 )
+
+                        else
+                            let
+                                flatParams =
+                                    params
+                                        |> List.indexedMap Tuple.pair
+                                        |> List.filterMap
+                                            (\( i, ( pName, pType ) ) ->
+                                                case pType of
+                                                    Mono.MFunction _ _ _ ->
+                                                        let
+                                                            arity =
+                                                                flatArrowArity pType
+                                                        in
+                                                        if paramLoopifiable pName arity body then
+                                                            Just ( i, arity )
+
+                                                        else
+                                                            Nothing
+
+                                                    _ ->
+                                                        Nothing
+                                            )
+                                        |> Dict.fromList
+                            in
+                            if Dict.isEmpty flatParams then
+                                ( acc, specId + 1 )
+
+                            else
+                                ( Dict.insert specId (LoopifyInfo params body flatParams) acc, specId + 1 )
+
+                    _ ->
+                        ( acc, specId + 1 )
+            )
+            ( Dict.empty, 0 )
+            nodes
+            |> Tuple.first
+
+
+{-| Fully-peeled arrow arity: mono param types keep STAGE structure
+(`MFunction [a] (MFunction [b] r)` for a two-stage function), while
+internal call sites of a function-typed param apply all stages flat — the
+loopify arity must be the peeled total (the staged-currying twin of
+Specialize.peelCallResult).
+-}
+flatArrowArity : Mono.MonoType -> Int
+flatArrowArity t =
+    case t of
+        Mono.MFunction _ argTys ret ->
+            List.length argTys + flatArrowArity ret
+
+        _ ->
+            0
+
+
+{-| Any reference to the given spec (a non-tail self-call would make the
+copied body re-enter the ORIGINAL function).
+-}
+referencesSpec : Int -> MonoExpr -> Bool
+referencesSpec specId body =
+    Traverse.foldExpr
+        (\e acc ->
+            acc
+                || (case e of
+                        MonoVarGlobal _ sid _ ->
+                            sid == specId
+
+                        _ ->
+                            False
+                   )
+        )
+        False
+        body
+
+
+{-| Is param `p` (a function of `arity` args) consumed ONLY as one saturated
+callee-position call plus verbatim tail-threading? Uses an accounting
+identity over `countUsages` so no context-carrying walk is needed:
+
+  - any use inside a nested closure or inner tail-def bound would inflate
+    `usesInsideClosures` / `usesInsideInnerTailDefs` (over-counting for
+    nested nesting is fine — the requirement is zero);
+  - a use in a call's ARGUMENTS, a case scrutinee, storage, etc. would make
+    `totalUses > calleeSites + threadEntries`;
+  - rebinding anywhere disqualifies outright (count semantics get murky).
+
+-}
+paramLoopifiable : Name -> Int -> MonoExpr -> Bool
+paramLoopifiable p arity body =
+    let
+        totalUses =
+            countUsages p body
+
+        rebinds =
+            Traverse.foldExpr
+                (\e acc ->
+                    acc
+                        || (case e of
+                                MonoLet def _ _ ->
+                                    getDefName def
+                                        == p
+                                        || (case def of
+                                                Mono.MonoTailDef _ ps _ ->
+                                                    List.any (\( n, _ ) -> n == p) ps
+
+                                                _ ->
+                                                    False
+                                           )
+
+                                MonoClosure info _ _ ->
+                                    List.any (\( n, _ ) -> n == p) info.params
+
+                                MonoDestruct (Mono.MonoDestructor dn _ _) _ _ ->
+                                    dn == p
+
+                                _ ->
+                                    False
+                           )
+                )
+                False
+                body
+
+        usesInsideClosures =
+            Traverse.foldExpr
+                (\e acc ->
+                    case e of
+                        MonoClosure info b _ ->
+                            acc
+                                + List.foldl (\( _, ce, _ ) n -> n + countUsages p ce) 0 info.captures
+                                + countUsages p b
+
+                        _ ->
+                            acc
+                )
+                0
+                body
+
+        usesInsideInnerTailDefs =
+            Traverse.foldExpr
+                (\e acc ->
+                    case e of
+                        MonoLet (Mono.MonoTailDef _ _ b) _ _ ->
+                            acc + countUsages p b
+
+                        _ ->
+                            acc
+                )
+                0
+                body
+
+        calleeSites =
+            Traverse.foldExpr
+                (\e acc ->
+                    case e of
+                        MonoCall _ (MonoVarLocal n _) args _ _ ->
+                            if n == p && List.length args == arity then
+                                acc + 1
+
+                            else
+                                acc
+
+                        _ ->
+                            acc
+                )
+                0
+                body
+
+        threadEntries =
+            Traverse.foldExpr
+                (\e acc ->
+                    case e of
+                        MonoTailCall _ entries _ ->
+                            acc
+                                + List.length
+                                    (List.filter
+                                        (\( an, ae ) ->
+                                            an
+                                                == p
+                                                && (case ae of
+                                                        MonoVarLocal n _ ->
+                                                            n == p
+
+                                                        _ ->
+                                                            False
+                                                   )
+                                        )
+                                        entries
+                                    )
+
+                        _ ->
+                            acc
+                )
+                0
+                body
+    in
+    not rebinds
+        && usesInsideClosures
+        == 0
+        && usesInsideInnerTailDefs
+        == 0
+        && calleeSites
+        == 1
+        && totalUses
+        == calleeSites
+        + threadEntries
+
+
+{-| Attempt loopification of a saturated call to a loopifiable spec. The
+budget shares `inlineCountThisFunction` (loopification IS a form of
+inlining for code-growth purposes).
+-}
+tryLoopify : RewriteCtx -> Region -> Int -> List MonoExpr -> Mono.MonoType -> Maybe ( MonoExpr, RewriteCtx )
+tryLoopify ctx region specId args resultType =
+    if not ctx.loopifyEnabled || ctx.inlineCountThisFunction >= ctx.maxInlinesPerFunction then
+        Nothing
+
+    else
+        case Dict.get specId ctx.loopifiables of
+            Nothing ->
+                Nothing
+
+            Just info ->
+                if List.length args /= List.length info.params then
+                    Nothing
+
+                else
+                    let
+                        qualifying =
+                            args
+                                |> List.indexedMap Tuple.pair
+                                |> List.filterMap
+                                    (\( i, arg ) ->
+                                        case ( Dict.get i info.flatParams, arg ) of
+                                            ( Just lamArity, MonoClosure cinfo cbody ctype ) ->
+                                                if
+                                                    List.length cinfo.params
+                                                        == lamArity
+                                                        && List.all
+                                                            (\( _, ce, _ ) ->
+                                                                case ce of
+                                                                    MonoVarLocal _ _ ->
+                                                                        True
+
+                                                                    _ ->
+                                                                        False
+                                                            )
+                                                            cinfo.captures
+                                                then
+                                                    Just ( i, MonoClosure cinfo cbody ctype )
+
+                                                else
+                                                    Nothing
+
+                                            _ ->
+                                                Nothing
+                                    )
+                    in
+                    if List.isEmpty qualifying then
+                        Nothing
+
+                    else
+                        Just (loopifyCall ctx region info qualifying args resultType)
+
+
+loopifyCall : RewriteCtx -> Region -> LoopifyInfo -> List ( Int, MonoExpr ) -> List MonoExpr -> Mono.MonoType -> ( MonoExpr, RewriteCtx )
+loopifyCall ctx region info qualifying args resultType =
+    let
+        qualifyingIdxs =
+            List.map Tuple.first qualifying
+
+        ( sF, ctx1 ) =
+            freshVar ctx
+
+        -- Fresh names for EVERY spec param (the copied body enters caller
+        -- scope; source names could collide with caller locals).
+        ( renamesRev, ctx2 ) =
+            List.foldl
+                (\( old, _ ) ( acc, c ) ->
+                    let
+                        ( fresh, c1 ) =
+                            freshVar c
+                    in
+                    ( ( old, fresh ) :: acc, c1 )
+                )
+                ( [], ctx1 )
+                info.params
+
+        renames =
+            List.reverse renamesRev
+
+        renameOf old =
+            List.filterMap
+                (\( o, n ) ->
+                    if o == old then
+                        Just n
+
+                    else
+                        Nothing
+                )
+                renames
+                |> List.head
+                |> Maybe.withDefault old
+
+        -- The lambda that replaces the flattened param's single call site:
+        -- every capture is re-bound to an INLINER-FRESH name in a prelude
+        -- let OUTSIDE the loop, and the capture references substitute to
+        -- that fresh name. Substituting to the caller variable DIRECTLY is
+        -- unsound: the copied spec body's own binders come from a different
+        -- source function and may collide (List.member's capture `x` vs
+        -- List.any's destructured head `x` — the loop would rebind the
+        -- capture to the element; EqualityBoolListMemberTest is the pin).
+        -- Fresh names cannot collide with anything. The prelude lets also
+        -- make the values free variables of the loop body, so the lifted
+        -- loop closure captures them exactly like the lambda used to.
+        ( lambdaPairs, preludeRev, ctxCaps ) =
+            List.foldl
+                (\( i, lamExpr ) ( accPairs, accPrelude, c ) ->
+                    case lamExpr of
+                        MonoClosure cinfo cbody ctype ->
+                            let
+                                ( cbody1, accPrelude1, c1 ) =
+                                    List.foldl
+                                        (\( capName, capExpr, _ ) ( e, pre, cc ) ->
+                                            case capExpr of
+                                                MonoVarLocal _ vt ->
+                                                    let
+                                                        ( freshCap, cc1 ) =
+                                                            freshVar cc
+                                                    in
+                                                    ( substitute capName freshCap vt e
+                                                    , ( freshCap, capExpr ) :: pre
+                                                    , cc1
+                                                    )
+
+                                                _ ->
+                                                    ( e, pre, cc )
+                                        )
+                                        ( cbody, accPrelude, c )
+                                        cinfo.captures
+                            in
+                            ( ( i, MonoClosure { cinfo | captures = [] } cbody1 ctype ) :: accPairs
+                            , accPrelude1
+                            , c1
+                            )
+
+                        _ ->
+                            ( ( i, lamExpr ) :: accPairs, accPrelude, c )
+                )
+                ( [], [], ctx2 )
+                qualifying
+
+        lambdasByOldName =
+            lambdaPairs
+                |> List.filterMap
+                    (\( i, lam ) ->
+                        info.params
+                            |> List.indexedMap Tuple.pair
+                            |> List.filterMap
+                                (\( j, ( pn, _ ) ) ->
+                                    if j == i then
+                                        Just pn
+
+                                    else
+                                        Nothing
+                                )
+                            |> List.head
+                            |> Maybe.map (\pn -> ( renameOf pn, lam ))
+                    )
+                |> Dict.fromList
+
+        flatOldNames =
+            info.params
+                |> List.indexedMap Tuple.pair
+                |> List.filterMap
+                    (\( j, ( pn, _ ) ) ->
+                        if List.member j qualifyingIdxs then
+                            Just pn
+
+                        else
+                            Nothing
+                    )
+
+        -- Copy the spec body: fresh lambda ids, fresh internal lets, then
+        -- rename every param reference (VarLocals only — tail-call entry
+        -- keys and callee retargeting happen in loopifyBody).
+        ( bodyA, ctx3 ) =
+            remapLambdaIds ctxCaps info.body
+
+        ( bodyB, ctx4 ) =
+            freshenLetBoundNames ctx3 bodyA
+
+        bodyC =
+            List.foldl
+                (\( ( old, pt ), ( _, fresh ) ) e -> substitute old fresh pt e)
+                bodyB
+                (List.map2 Tuple.pair info.params renames)
+
+        bodyD =
+            loopifyBody sF renames flatOldNames lambdasByOldName [] bodyC
+
+        newParams =
+            info.params
+                |> List.indexedMap Tuple.pair
+                |> List.filterMap
+                    (\( j, ( pn, pt ) ) ->
+                        if List.member j qualifyingIdxs then
+                            Nothing
+
+                        else
+                            Just ( renameOf pn, pt )
+                    )
+
+        remainingArgs =
+            args
+                |> List.indexedMap Tuple.pair
+                |> List.filterMap
+                    (\( j, a ) ->
+                        if List.member j qualifyingIdxs then
+                            Nothing
+
+                        else
+                            Just a
+                    )
+
+        loopFnType =
+            Mono.MFunction Mono.LTop (List.map Tuple.second newParams) resultType
+
+        invocation =
+            MonoCall region (MonoVarLocal sF loopFnType) remainingArgs resultType Mono.defaultCallInfo
+
+        result =
+            List.foldl
+                (\( freshCap, capExpr ) acc ->
+                    MonoLet (Mono.MonoDef freshCap capExpr) acc resultType
+                )
+                (MonoLet (Mono.MonoTailDef sF newParams bodyD) invocation resultType)
+                preludeRev
+
+        ctx5 =
+            bumpHofLoopified { ctx4 | inlineCountThisFunction = ctx4.inlineCountThisFunction + 1 }
+    in
+    ( result, ctx5 )
+
+
+{-| The loopification body walk: retarget self tail calls to the local loop
+(renaming entry keys to the fresh param names and dropping the flattened
+entries), and replace the flattened params' single callee-position uses
+with their lambda literals. Inner tail defs keep their own tail calls (any
+callee in `innerNames` is left alone); closures are not descended into —
+the eligibility analysis proved the flattened params do not occur there,
+and their contents are otherwise untouched copies.
+-}
+loopifyBody : Name -> List ( Name, Name ) -> List Name -> Dict Name MonoExpr -> List Name -> MonoExpr -> MonoExpr
+loopifyBody sF renames flatOldNames lambdas innerNames expr =
+    let
+        go =
+            loopifyBody sF renames flatOldNames lambdas innerNames
+
+        renameOf old =
+            List.filterMap
+                (\( o, n ) ->
+                    if o == old then
+                        Just n
+
+                    else
+                        Nothing
+                )
+                renames
+                |> List.head
+                |> Maybe.withDefault old
+    in
+    case expr of
+        MonoTailCall callee entries t ->
+            if List.member callee innerNames then
+                MonoTailCall callee (List.map (\( an, ae ) -> ( an, go ae )) entries) t
+
+            else
+                MonoTailCall sF
+                    (entries
+                        |> List.filterMap
+                            (\( an, ae ) ->
+                                if List.member an flatOldNames then
+                                    Nothing
+
+                                else
+                                    Just ( renameOf an, go ae )
+                            )
+                    )
+                    t
+
+        MonoCall r ((MonoVarLocal n nt) as callee) cargs t ci ->
+            case Dict.get n lambdas of
+                Just lam ->
+                    MonoCall r lam (List.map go cargs) t ci
+
+                Nothing ->
+                    MonoCall r callee (List.map go cargs) t ci
+
+        MonoCall r f cargs t ci ->
+            MonoCall r (go f) (List.map go cargs) t ci
+
+        MonoClosure _ _ _ ->
+            expr
+
+        MonoLet ((Mono.MonoTailDef tn tps tb) as d) b t ->
+            let
+                inner1 =
+                    tn :: innerNames
+            in
+            MonoLet (Mono.MonoTailDef tn tps (loopifyBody sF renames flatOldNames lambdas inner1 tb))
+                (loopifyBody sF renames flatOldNames lambdas inner1 b)
+                t
+
+        MonoLet (Mono.MonoDef dn db) b t ->
+            MonoLet (Mono.MonoDef dn (go db)) (go b) t
+
+        MonoIf branches final t ->
+            MonoIf (List.map (\( c, th ) -> ( go c, go th )) branches) (go final) t
+
+        MonoDestruct d inner t ->
+            MonoDestruct d (go inner) t
+
+        MonoCase s r0 decider branches t ->
+            MonoCase s r0 (loopifyDecider sF renames flatOldNames lambdas innerNames decider) (List.map (\( i, e ) -> ( i, go e )) branches) t
+
+        MonoList r items t ->
+            MonoList r (List.map go items) t
+
+        MonoRecordCreate fields t ->
+            MonoRecordCreate (List.map (\( n, e ) -> ( n, go e )) fields) t
+
+        MonoRecordAccess inner f t ->
+            MonoRecordAccess (go inner) f t
+
+        MonoRecordUpdate inner updates t ->
+            MonoRecordUpdate (go inner) (List.map (\( n, e ) -> ( n, go e )) updates) t
+
+        MonoTupleCreate r items t ->
+            MonoTupleCreate r (List.map go items) t
+
+        MonoLiteral _ _ ->
+            expr
+
+        MonoVarLocal _ _ ->
+            expr
+
+        MonoVarGlobal _ _ _ ->
+            expr
+
+        MonoVarKernel _ _ _ _ _ ->
+            expr
+
+        MonoUnit ->
+            expr
+
+        MonoAccessorValue _ _ _ ->
+            expr
+
+
+loopifyDecider : Name -> List ( Name, Name ) -> List Name -> Dict Name MonoExpr -> List Name -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice
+loopifyDecider sF renames flatOldNames lambdas innerNames decider =
+    case decider of
+        Mono.Leaf (Mono.Inline e) ->
+            Mono.Leaf (Mono.Inline (loopifyBody sF renames flatOldNames lambdas innerNames e))
+
+        Mono.Leaf (Mono.Jump _) ->
+            decider
+
+        Mono.Chain tests success failure ->
+            Mono.Chain tests
+                (loopifyDecider sF renames flatOldNames lambdas innerNames success)
+                (loopifyDecider sF renames flatOldNames lambdas innerNames failure)
+
+        Mono.FanOut path tests fallback ->
+            Mono.FanOut path
+                (List.map (\( k, d ) -> ( k, loopifyDecider sF renames flatOldNames lambdas innerNames d )) tests)
+                (loopifyDecider sF renames flatOldNames lambdas innerNames fallback)
+
+
 initRewriteCtx : Config.InlineConfig -> Array (Maybe MonoNode) -> Mono.SpecializationRegistry -> CallGraph -> Int -> RewriteCtx
 initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
     let
@@ -900,9 +1546,14 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
                 ( Dict.empty, 0 )
                 nodes
                 |> Tuple.first
+
+        loopifiables =
+            buildLoopifiables inlineConfig nodes
     in
     { inlineCandidates = candidates
     , specArities = specArities
+    , loopifiables = loopifiables
+    , loopifyEnabled = inlineConfig.loopify
     , registry = registry
     , whitelist = effectiveWhitelist
     , maxInlinesPerFunction = inlineConfig.maxPerFunction
@@ -915,6 +1566,8 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
         , betaReductions = 0
         , betaForwards = 0
         , partialMerges = 0
+        , hofLoopified = 0
+        , loopifiable = Dict.size loopifiables
         , letEliminations = 0
         , closureDCE = 0
         , inlinedByCallee = Dict.empty
@@ -1105,22 +1758,32 @@ rewriteExpr ctx expr =
 
         -- Direct call inlining
         MonoCall region (MonoVarGlobal varRegion specId funcType) args resultType callInfo ->
-            let
-                ( maybeInlined, ctx1 ) =
-                    tryInlineCall ctx specId args resultType
-            in
-            case maybeInlined of
-                Just inlinedExpr ->
-                    -- Recursively rewrite the inlined expression
-                    rewriteExpr ctx1 inlinedExpr
+            -- Recursive-HOF loopification (H5) first: recursive specs are
+            -- never inline candidates, so there is no overlap with
+            -- tryInlineCall. The loopified expression is returned as-is;
+            -- the fixpoint's next iteration beta-reduces the inlined lambda
+            -- literal and continues normal rewriting inside the loop.
+            case tryLoopify ctx region specId args resultType of
+                Just ( loopified, ctxL ) ->
+                    ( loopified, ctxL )
 
                 Nothing ->
-                    -- Can't inline, just rewrite children
                     let
-                        ( rewrittenArgs, ctx2 ) =
-                            rewriteExprs ctx1 args
+                        ( maybeInlined, ctx1 ) =
+                            tryInlineCall ctx specId args resultType
                     in
-                    ( MonoCall region (MonoVarGlobal varRegion specId funcType) rewrittenArgs resultType callInfo, ctx2 )
+                    case maybeInlined of
+                        Just inlinedExpr ->
+                            -- Recursively rewrite the inlined expression
+                            rewriteExpr ctx1 inlinedExpr
+
+                        Nothing ->
+                            -- Can't inline, just rewrite children
+                            let
+                                ( rewrittenArgs, ctx2 ) =
+                                    rewriteExprs ctx1 args
+                            in
+                            ( MonoCall region (MonoVarGlobal varRegion specId funcType) rewrittenArgs resultType callInfo, ctx2 )
 
         -- Application merging (H2.5 step 1): `(f a1s) a2s` ⇒ `f (a1s ++ a2s)`
         -- when f's arity is statically known and the total does not exceed

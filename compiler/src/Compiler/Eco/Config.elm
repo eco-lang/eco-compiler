@@ -116,6 +116,10 @@ defaultLss =
     function-typed parameter (HOFs whose lambda argument beta-reduces away
     at the call site — plan H2). The effective budget is
     `max threshold hofThreshold`, so it can only widen eligibility.
+  - `loopify` enables recursive-HOF loopification (plan H5): a saturated
+    call of a tail-recursive function passing a lambda LITERAL is rewritten
+    to a local specialized loop with the lambda beta-inlined — the closure
+    allocation disappears (and EcoPAPSimplify elides the loop shell).
   - `report` renders the inline census to stderr after the pass
     (`ECO_INLINE_REPORT=1`); output-only, never affects `hash`.
 
@@ -127,6 +131,7 @@ type alias InlineConfig =
     , maxPerFunction : Int
     , fixpointIterations : Int
     , hofThreshold : Int
+    , loopify : Bool
     , report : Bool
     }
 
@@ -163,6 +168,7 @@ default =
         -- betaForwards over 10 at +2.7% code size and no measurable
         -- compile-time cost; 40 costs +9.6% size for the next step.
         , hofThreshold = 25
+        , loopify = True
         , report = False
         }
     , bytesFusion = { enabled = True }
@@ -196,6 +202,7 @@ inlineDecoder =
         |> D.apply (D.optionalField "maxPerFunction" D.int default.inline.maxPerFunction)
         |> D.apply (D.optionalField "fixpointIterations" D.int default.inline.fixpointIterations)
         |> D.apply (D.optionalField "hofThreshold" D.int default.inline.hofThreshold)
+        |> D.apply (D.optionalField "loopify" D.bool default.inline.loopify)
         |> D.apply (D.optionalField "report" D.bool default.inline.report)
 
 
@@ -302,6 +309,13 @@ hash cfg =
          , "mpf=" ++ String.fromInt cfg.inline.maxPerFunction
          , "fpi=" ++ String.fromInt cfg.inline.fixpointIterations
          , "hthr=" ++ String.fromInt cfg.inline.hofThreshold
+         , "loop="
+            ++ (if cfg.inline.loopify then
+                    "1"
+
+                else
+                    "0"
+               )
          , "bf="
             ++ (if cfg.bytesFusion.enabled then
                     "1"

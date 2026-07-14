@@ -1,6 +1,6 @@
 # HOF Elimination — Closure Allocation Reduction
 
-**Status:** H0 + H1 + H2 + H2.5 + H3 + H4 IMPLEMENTED 2026-07-14 (baselines + matrices in `benchmarks/closure-census-baseline.md` — native-stage-7a dynamic census still pending). Shipped: censuses; let-callee forwarding + chain closure DCE; case-body inlining (guard lift + cost-model decider fix); let-of-closure flattening; let-callee hoisting; `hofThreshold` (default 25, called-param heuristic); application merging (pipe-shape collapse, 5,188 merges on self-compile); faithful residual type (double-wrapped-arrow fix) with the ground-result guard removed and `exactOnly` retained by design; LSS-on re-gate (first flag-on corpus vs the new inliner, 1602/1602 genuine) + `defaultLss.enabled=True` ("solver implies LSS" — engine default stays subst, blocked on JS-hosted solver perf per the monosolver plan); H4 as EcoPAPSimplify P4 multi-use elision + eco_intern_closure0 zero-capture interning (HEAP_033) — engine-independent (keys off `remaining_arity`, not LSS stamps), plus the ecoc `-emit=mlir-eco` no-pipeline bug and the codegen-harness RUN-parser substring bug fixed en route. fpi stays 4. Next: H5 (interprocedural capture flattening, GlobalOpt).
+**Status:** H0 + H1 + H2 + H2.5 + H3 + H4 + H5 IMPLEMENTED 2026-07-14 (baselines + matrices in `benchmarks/closure-census-baseline.md` — native-stage-7a dynamic census still pending). Shipped: censuses; let-callee forwarding + chain closure DCE; case-body inlining (guard lift + cost-model decider fix); let-of-closure flattening; let-callee hoisting; `hofThreshold` (default 25, called-param heuristic); application merging (pipe-shape collapse, 5,188 merges on self-compile); faithful residual type (double-wrapped-arrow fix) with the ground-result guard removed and `exactOnly` retained by design; LSS-on re-gate (first flag-on corpus vs the new inliner, 1602/1602 genuine) + `defaultLss.enabled=True` ("solver implies LSS" — engine default stays subst, blocked on JS-hosted solver perf per the monosolver plan); H4 as EcoPAPSimplify P4 multi-use elision + eco_intern_closure0 zero-capture interning (HEAP_033) — engine-independent (keys off `remaining_arity`, not LSS stamps), plus the ecoc `-emit=mlir-eco` no-pipeline bug and the codegen-harness RUN-parser substring bug fixed en route; H5 as call-site LOOPIFICATION (engine-independent, default-on — 779 loopifications on self-compile, closuresRemaining −5.2%; the LSS-keyed route stays as the v2 variable-argument extension). fpi stays 4. Next: H6 (census-gated coverage residuals) and H7 (M5 design go/no-go) — both waiting on the native-census measurement.
 **Date:** 2026-07-13
 **Input:** `/work/hof-elimination.md` (prioritized suggestions), deep code investigation (this doc supersedes the suggestion list)
 **Goal:** Greatly reduce the number of closures allocated at runtime (`eco_alloc_closure` executions), measured on the self-compile workload and the E2E corpus.
@@ -554,10 +554,64 @@ For a spec `S` with closure-typed parameter `p` whose annotation is `LSet [m]`, 
 - v1 cuts: one closure param per spec; captures ≤ 6 (statepoint pressure — flattened captures are live across every GC in the loop); self-recursive `MonoTailFunc` + non-recursive callees only (no mutual cycles); `p` not re-passed to further callees (transitive flattening is v2).
 - Where: new GlobalOpt phase between P4 (AbiCloning — needs its index) and P5 (`annotateCallStaging` — must see final call shapes). MonoAST level, because signatures and call sites both change (graph surgery of the kind AbiCloning already does).
 
-**Milestones:**
-- H5.1 *Flattenable census*: analysis-only pass counting qualifying (S, p, m) triples + dynamic weight via H0 top sites. Go/no-go and target list from data.
-- H5.2 Transform for self-recursive TailFunc callees (`List.foldl/foldr/map`, `Dict.foldl` shapes) behind `ECO_FLATTEN=1`.
-- H5.3 Broaden (non-recursive multi-call callees, transitive passing) as census justifies.
+**IMPLEMENTED 2026-07-14 — with a design change that strengthens v1.**
+The shipped form is **call-site loopification**, not LSS-keyed spec
+cloning: when a SATURATED call of a loopifiable tail-recursive spec passes
+a lambda LITERAL, the call rewrites to a local `MonoTailDef` loop — the
+spec body copied (fresh lambda ids, freshened lets, freshened params),
+self tail calls retargeted with the flattened entry dropped, and the
+lambda literal substituted into the single internal callee position
+(captures pre-substituted to their caller-scope variables; the existing
+beta arm reduces it next fixpoint iteration). Rationale for the deviation:
+the call-site literal makes the member identity self-evident, so v1 needs
+NEITHER the solver engine NOR keyed fan-out — it is **engine-independent
+and active by default** (`inline.loopify`, `ECO_INLINE_LOOPIFY=0` escape
+hatch, `loop=` hash token), where the planned LSS-keyed form would have
+been dark until the solver engine default lands. The allocation story
+composes with H4: the λ's papCreate disappears at the front end, and the
+local loop's own closure shell (pure tail recursion does NOT self-capture
+— verified on `@_tail_f_0`; single saturated use) is elided downstream by
+EcoPAPSimplify P1 — probe modules compile to ZERO papCreates end-to-end.
+
+**Implementation lesson 5 (found by the first H5 gate):** the "Elm forbids
+shadowing, so post-mono names are collision-free" reasoning from H1 holds
+only WITHIN one source function. Loopification merges scopes ACROSS
+functions: `List.member`'s capture `x` collided with `List.any`'s
+destructured head `x`, rebinding the capture to the loop element
+(`member False [True,True] == True`; EqualityBoolListMemberTest and four
+siblings are the pins). Captures are therefore re-bound to INLINER-FRESH
+names in prelude lets outside the loop — fresh names collide with nothing,
+and the prelude keeps capture evaluation at the original position while
+making the values ordinary free variables of the lifted loop. Rule for any
+future cross-function code motion: NEVER substitute a moved body's names
+to source-level names; always route through fresh intermediates.
+
+Eligibility (buildLoopifiables/paramLoopifiable, MonoInlineSimplify): spec
+is `MonoTailFunc`, body cost ≤ 2×hofBudget, no `MonoVarGlobal` self-ref;
+per function-typed param — arity is the FULLY-PEELED arrow arity
+(`flatArrowArity`; param types keep stage structure `MFunction [a]
+(MFunction [b] r)` while internal call sites apply all stages flat — the
+staged-currying twin of `peelCallResult`, and the first implementation
+bug), and an accounting identity over `countUsages` proves the param is
+consumed only as exactly ONE saturated callee call plus verbatim
+tail-threading (uses inside nested closures / inner tail defs must be
+zero; rebinding disqualifies). Call-site qualification: literal lambda,
+param count == peeled arity, all captures are `MonoVarLocal` exprs.
+
+Self-compile: **loopified=779** of 1,980 eligible specs, closuresRemaining
+13,880 → 13,152 (−5.2%), beta +781 (the loopified lambdas reducing),
+artifact +1.6% (loop-body copies). Pins: `HofFoldlLoopifyTest` (user HOF +
+real `List.foldl`, GC pressure, `CHECK-MLIR: _tail_mono_inline`, zero
+papCreates post-pass verified), `HofLoopifyGuardTest` (param-storage
+refusal; captured multi-use closure shared correctly with the loop).
+
+**Milestones (original; superseded as noted):**
+- H5.1 *Flattenable census*: subsumed by the `loopified=N/M` report metric.
+- H5.2 Transform for self-recursive TailFunc callees — SHIPPED as above.
+- H5.3 Broaden: remaining as v2 — variable-argument callers (this is where
+  the LSS-annotation route comes back), non-tail-recursive HOFs like
+  `List.foldr` (a local general-recursive def would self-capture — needs a
+  different shell), multi-stage literal lambdas, transitive passing.
 
 **New invariants:** `FLAT_001` (clone signature = captures prefix per captureAbi + original params minus p, staging preserved per GOPT rules), `FLAT_002` (wrapper retained; unstamped callers unaffected), `FLAT_003` (flattening only under unanimous layout + non-escaping p). Add invariant tests per the `callinfo-invariant-tests` pattern.
 
