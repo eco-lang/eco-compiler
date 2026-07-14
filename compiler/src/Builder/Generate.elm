@@ -838,6 +838,8 @@ renderInlineReport m graph =
             ++ String.fromInt m.betaReductions
             ++ " betaForwards="
             ++ String.fromInt m.betaForwards
+            ++ " partialMerges="
+            ++ String.fromInt m.partialMerges
             ++ " letDCE="
             ++ String.fromInt m.letEliminations
             ++ " closureDCE="

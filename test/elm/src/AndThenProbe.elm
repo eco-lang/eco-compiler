@@ -1,15 +1,13 @@
 module AndThenProbe exposing (main)
 
-{-| H2 collapse witness (plans/hof-elimination-closure-alloc-reduction.md):
-under the DEFAULT config (hofThreshold=25 + case-body inlining + let-of-
-closure flattening + let-callee forwarding), the DIRECT saturated
-`Maybe.andThen` chain compiles to straight-line nested cases with zero
-closure allocations. The PIPE-shaped chain does NOT collapse yet: it
-partially applies `andThen`, and hofBudget-admitted candidates are
-exact-application-only (the partial rebuild's re-staged closure trips the
-runtime typed-apply arity assert — CombinatorB* pins). When the partial
-rebuild is fixed, the pipe shape should collapse too and a module-wide
-papCreate NOT-check can be added here.
+{-| H2/H2.5 collapse witness
+(plans/hof-elimination-closure-alloc-reduction.md): under the DEFAULT
+config, BOTH the pipe-shaped and the direct `Maybe.andThen` chains compile
+to straight-line nested cases with zero closure allocations. The pipe shape
+needs H2.5 step 1 — the strictly-partial `Maybe.andThen λ` binding that apR
+inlining leaves behind is forwarded and MERGED with its application into
+one saturated call (partialMerges), which then inlines exactly; no partial
+rebuild ever runs.
 -}
 
 import Html exposing (text)
@@ -18,6 +16,7 @@ import Html exposing (text)
 -- CHECK: chain0: Nothing
 -- CHECK: expr: 217
 -- CHECK: direct: Just 108
+-- CHECK-MLIR-NOT: eco.papCreate
 
 
 

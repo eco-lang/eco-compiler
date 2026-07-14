@@ -54,6 +54,7 @@ type alias Metrics =
     { inlineCount : Int
     , betaReductions : Int
     , betaForwards : Int
+    , partialMerges : Int
     , letEliminations : Int
     , closureDCE : Int
     , inlinedByCallee : Dict String Int
@@ -665,6 +666,7 @@ type alias RewriteCtx =
     -- CombinatorB* corpus pins). Legacy and whitelisted candidates keep full
     -- pre-H2 privileges.
     { inlineCandidates : Dict Int ( List ( Name, Mono.MonoType ), MonoExpr, Bool )
+    , specArities : Dict Int Int -- H2.5: param count per spec (incl. recursive), for application merging
     , registry : Mono.SpecializationRegistry
     , whitelist : InlineWhitelist
     , maxInlinesPerFunction : Int
@@ -680,10 +682,20 @@ type alias InternalMetrics =
     { inlineCount : Int
     , betaReductions : Int
     , betaForwards : Int
+    , partialMerges : Int
     , letEliminations : Int
     , closureDCE : Int
     , inlinedByCallee : Dict String Int
     }
+
+
+bumpPartialMerges : RewriteCtx -> RewriteCtx
+bumpPartialMerges ctx =
+    let
+        m =
+            ctx.metrics
+    in
+    { ctx | metrics = { m | partialMerges = m.partialMerges + 1 } }
 
 
 bumpBetaReductions : RewriteCtx -> RewriteCtx
@@ -868,8 +880,25 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
                 ( Dict.empty, 0 )
                 nodes
                 |> Tuple.first
+        specArities =
+            Array.foldl
+                (\maybeNode ( acc, specId ) ->
+                    case maybeNode of
+                        Just (MonoDefine (MonoClosure info _ _) _) ->
+                            ( Dict.insert specId (List.length info.params) acc, specId + 1 )
+
+                        Just (MonoTailFunc params _ _) ->
+                            ( Dict.insert specId (List.length params) acc, specId + 1 )
+
+                        _ ->
+                            ( acc, specId + 1 )
+                )
+                ( Dict.empty, 0 )
+                nodes
+                |> Tuple.first
     in
     { inlineCandidates = candidates
+    , specArities = specArities
     , registry = registry
     , whitelist = effectiveWhitelist
     , maxInlinesPerFunction = inlineConfig.maxPerFunction
@@ -881,6 +910,7 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
         { inlineCount = 0
         , betaReductions = 0
         , betaForwards = 0
+        , partialMerges = 0
         , letEliminations = 0
         , closureDCE = 0
         , inlinedByCallee = Dict.empty
@@ -1087,6 +1117,38 @@ rewriteExpr ctx expr =
                             rewriteExprs ctx1 args
                     in
                     ( MonoCall region (MonoVarGlobal varRegion specId funcType) rewrittenArgs resultType callInfo, ctx2 )
+
+        -- Application merging (H2.5 step 1): `(f a1s) a2s` ⇒ `f (a1s ++ a2s)`
+        -- when f's arity is statically known and the total does not exceed
+        -- it. A partial inner application only creates a PAP (no body runs),
+        -- so merging preserves evaluation order exactly; the merged
+        -- saturated call then takes the EXACT inline path — no residual
+        -- closure, no partial rebuild. Over-application totals are refused:
+        -- there the inner call executes the body, and merging would change
+        -- the call's shape into runtime over-application.
+        MonoCall region ((MonoCall _ innerFunc innerArgs _ _) as innerCall) outerArgs resultType callInfo ->
+            let
+                mergeable =
+                    case calleeArity ctx innerFunc of
+                        Just arity ->
+                            List.length innerArgs + List.length outerArgs <= arity
+
+                        Nothing ->
+                            False
+            in
+            if mergeable then
+                rewriteExpr (bumpPartialMerges ctx)
+                    (MonoCall region innerFunc (innerArgs ++ outerArgs) resultType Mono.defaultCallInfo)
+
+            else
+                let
+                    ( rewrittenFunc, ctx1 ) =
+                        rewriteExpr ctx innerCall
+
+                    ( rewrittenArgs, ctx2 ) =
+                        rewriteExprs ctx1 outerArgs
+                in
+                ( MonoCall region rewrittenFunc rewrittenArgs resultType callInfo, ctx2 )
 
         -- Let-callee hoisting (H2): `(let d in f) a` ⇒ `let d in (f a)`.
         -- Inlining a curried callee exactly leaves its closure-literal body
@@ -1788,8 +1850,22 @@ setDefName newName def =
 
 
 -- ============================================================================
--- ====== LET-CALLEE FORWARDING (H1.1) ======
+-- ====== LET-CALLEE FORWARDING (H1.1 / H2.5) ======
 -- ============================================================================
+
+
+{-| What a forwardable let binding carries to its single callee-position use:
+
+  - `ForwardClosure`: a closure literal — beta-reduced at the use
+    (saturated, ground-result uses only).
+  - `ForwardPartialCall`: a strictly-partial application of a known global —
+    merged with the use's arguments into one ordinary call (total ≤ arity),
+    so no residual closure is ever rebuilt (H2.5 step 1c).
+
+-}
+type ForwardPayload
+    = ForwardClosure Mono.ClosureInfo MonoExpr
+    | ForwardPartialCall MonoExpr (List MonoExpr) Int
 
 
 {-| Rewrite one let chain as a group: rewrite every def's bound expression
@@ -1935,37 +2011,64 @@ forwardInChain ctx spine finalBody =
                     let
                         skip () =
                             tryAt (entry :: beforeRev) rest fb c
-                    in
-                    case d of
-                        Mono.MonoDef name ((MonoClosure cinfo cbody _) as closureExpr) ->
+
+                        -- Shared eligibility: no self-reference in the bound
+                        -- expr, no earlier-sibling references, exactly one
+                        -- use across later siblings + final body. On a hit,
+                        -- rebuild the tail (later defs + final body) as one
+                        -- expression so forwardGo can reach a use in either
+                        -- place, then split it back.
+                        attempt name boundExpr payload bumper =
                             if
-                                countUsages name closureExpr
+                                countUsages name boundExpr
                                     == 0
                                     && usesInDefsOf name beforeRev
                                     == 0
                                     && (usesInDefsOf name rest + countUsages name fb)
                                     == 1
                             then
-                                -- Rebuild the tail (later defs + final body) as
-                                -- one expression so forwardGo can reach a use in
-                                -- either place, then split it back.
                                 let
                                     tailExpr =
                                         List.foldr (\( d2, t2 ) acc -> MonoLet d2 acc t2) fb rest
                                 in
-                                case forwardGo c name cinfo cbody tailExpr of
+                                case forwardGo c name payload tailExpr of
                                     Just ( tail1, c1 ) ->
                                         let
                                             ( rest1, fb1 ) =
                                                 splitSpine tail1 []
                                         in
-                                        Just ( List.reverse beforeRev ++ rest1, fb1, bumpBetaForwards c1 )
+                                        Just ( List.reverse beforeRev ++ rest1, fb1, bumper c1 )
 
                                     Nothing ->
                                         skip ()
 
                             else
                                 skip ()
+                    in
+                    case d of
+                        Mono.MonoDef name ((MonoClosure cinfo cbody _) as closureExpr) ->
+                            attempt name closureExpr (ForwardClosure cinfo cbody) bumpBetaForwards
+
+                        Mono.MonoDef name ((MonoCall _ ((MonoVarGlobal _ _ _) as funcExpr) boundArgs _ _) as boundCall) ->
+                            -- H2.5 step 1c: a STRICTLY-PARTIAL application of
+                            -- a known global (binding evaluation only creates
+                            -- a PAP, no body runs) with pure, relocatable
+                            -- args. The pipe shape `m |> andThen λ` leaves
+                            -- exactly this binding behind after apR inlining.
+                            case calleeArity c funcExpr of
+                                Just arity ->
+                                    if
+                                        List.length boundArgs
+                                            < arity
+                                            && List.all isPureExpr boundArgs
+                                    then
+                                        attempt name boundCall (ForwardPartialCall funcExpr boundArgs arity) bumpPartialMerges
+
+                                    else
+                                        skip ()
+
+                                Nothing ->
+                                    skip ()
 
                         _ ->
                             skip ()
@@ -2007,49 +2110,68 @@ let):
     evaluation of the let body.
 
 -}
-forwardGo : RewriteCtx -> Name -> Mono.ClosureInfo -> MonoExpr -> MonoExpr -> Maybe ( MonoExpr, RewriteCtx )
-forwardGo ctx name cinfo cbody expr =
+forwardGo : RewriteCtx -> Name -> ForwardPayload -> MonoExpr -> Maybe ( MonoExpr, RewriteCtx )
+forwardGo ctx name payload expr =
     case expr of
         MonoCall region func args t ci ->
             case func of
                 MonoVarLocal n _ ->
                     if n == name then
-                        -- Only SATURATED, GROUND-RESULT uses forward.
-                        --
-                        -- A partial application would route through
-                        -- betaReduce's partial-rebuild branch, and a
-                        -- function-typed result means the beta yields a
-                        -- closure the enclosing expression applies (curried
-                        -- defs like `compose f g = \x -> …`). Both leave a
-                        -- closure whose call site carries the mono result
-                        -- type while the compiled body keeps the generic
-                        -- boxed ABI — a latent CGEN_056 mismatch (saturated
-                        -- papExtend result type vs callee return type) that
-                        -- the SKI-combinator / identity-composition unit
-                        -- fixtures catch. Returning Nothing keeps the let
-                        -- (the count precondition means this was the only
-                        -- use).
-                        if
-                            List.length args
-                                == List.length cinfo.params
-                                && not (isFunctionType t)
-                        then
-                            Just (betaReduce ctx region cinfo cbody args t)
+                        case payload of
+                            ForwardClosure cinfo cbody ->
+                                -- Only SATURATED, GROUND-RESULT closure uses
+                                -- forward. A partial application would route
+                                -- through betaReduce's partial-rebuild
+                                -- branch, and a function-typed result means
+                                -- the beta yields a closure the enclosing
+                                -- expression applies (curried defs like
+                                -- `compose f g = \x -> …`). Both leave a
+                                -- closure whose call site carries the mono
+                                -- result type while the compiled body keeps
+                                -- the generic boxed ABI — a latent CGEN_056
+                                -- mismatch the SKI-combinator /
+                                -- identity-composition unit fixtures catch.
+                                -- Returning Nothing keeps the let (the count
+                                -- precondition means this was the only use).
+                                if
+                                    List.length args
+                                        == List.length cinfo.params
+                                        && not (isFunctionType t)
+                                then
+                                    Just (betaReduce ctx region cinfo cbody args t)
 
-                        else
-                            Nothing
+                                else
+                                    Nothing
+
+                            ForwardPartialCall funcExpr boundArgs arity ->
+                                -- H2.5 step 1c: merge a strictly-partial
+                                -- bound call with its single callee-position
+                                -- use. The merged node is an ordinary call
+                                -- of the original callee — no residual
+                                -- closure, staging metadata recomputed
+                                -- downstream. Over-application totals are
+                                -- refused (the residual would be applied
+                                -- again — the shape merging exists to avoid).
+                                if List.length boundArgs + List.length args <= arity then
+                                    Just
+                                        ( MonoCall region funcExpr (boundArgs ++ args) t Mono.defaultCallInfo
+                                        , ctx
+                                        )
+
+                                else
+                                    Nothing
 
                     else
-                        forwardGoList ctx name cinfo cbody args
+                        forwardGoList ctx name payload args
                             |> Maybe.map (\( args1, c ) -> ( MonoCall region func args1 t ci, c ))
 
                 _ ->
-                    case forwardGo ctx name cinfo cbody func of
+                    case forwardGo ctx name payload func of
                         Just ( func1, c ) ->
                             Just ( MonoCall region func1 args t ci, c )
 
                         Nothing ->
-                            forwardGoList ctx name cinfo cbody args
+                            forwardGoList ctx name payload args
                                 |> Maybe.map (\( args1, c ) -> ( MonoCall region func args1 t ci, c ))
 
         MonoClosure _ _ _ ->
@@ -2066,17 +2188,17 @@ forwardGo ctx name cinfo cbody expr =
             else
                 case d of
                     Mono.MonoDef dn bound ->
-                        case forwardGo ctx name cinfo cbody bound of
+                        case forwardGo ctx name payload bound of
                             Just ( bound1, c ) ->
                                 Just ( MonoLet (Mono.MonoDef dn bound1) b t, c )
 
                             Nothing ->
-                                forwardGo ctx name cinfo cbody b
+                                forwardGo ctx name payload b
                                     |> Maybe.map (\( b1, c ) -> ( MonoLet d b1 t, c ))
 
                     Mono.MonoTailDef _ _ _ ->
                         -- Sinking guard: a tail-def bound expr is a loop body.
-                        forwardGo ctx name cinfo cbody b
+                        forwardGo ctx name payload b
                             |> Maybe.map (\( b1, c ) -> ( MonoLet d b1 t, c ))
 
         MonoDestruct ((Mono.MonoDestructor dn _ _) as dtor) inner t ->
@@ -2084,16 +2206,16 @@ forwardGo ctx name cinfo cbody expr =
                 Nothing
 
             else
-                forwardGo ctx name cinfo cbody inner
+                forwardGo ctx name payload inner
                     |> Maybe.map (\( inner1, c ) -> ( MonoDestruct dtor inner1 t, c ))
 
         MonoIf branches final t ->
-            case forwardGoIfBranches ctx name cinfo cbody branches of
+            case forwardGoIfBranches ctx name payload branches of
                 Just ( branches1, c ) ->
                     Just ( MonoIf branches1 final t, c )
 
                 Nothing ->
-                    forwardGo ctx name cinfo cbody final
+                    forwardGo ctx name payload final
                         |> Maybe.map (\( final1, c ) -> ( MonoIf branches final1 t, c ))
 
         MonoCase s r decider branches t ->
@@ -2102,16 +2224,16 @@ forwardGo ctx name cinfo cbody expr =
                 Nothing
 
             else
-                case forwardGoDecider ctx name cinfo cbody decider of
+                case forwardGoDecider ctx name payload decider of
                     Just ( decider1, c ) ->
                         Just ( MonoCase s r decider1 branches t, c )
 
                     Nothing ->
-                        forwardGoSndList ctx name cinfo cbody branches
+                        forwardGoSndList ctx name payload branches
                             |> Maybe.map (\( branches1, c ) -> ( MonoCase s r decider branches1 t, c ))
 
         MonoList region items t ->
-            forwardGoList ctx name cinfo cbody items
+            forwardGoList ctx name payload items
                 |> Maybe.map (\( items1, c ) -> ( MonoList region items1 t, c ))
 
         MonoTailCall n args t ->
@@ -2119,28 +2241,28 @@ forwardGo ctx name cinfo cbody expr =
                 Nothing
 
             else
-                forwardGoSndList ctx name cinfo cbody args
+                forwardGoSndList ctx name payload args
                     |> Maybe.map (\( args1, c ) -> ( MonoTailCall n args1 t, c ))
 
         MonoRecordCreate fields t ->
-            forwardGoSndList ctx name cinfo cbody fields
+            forwardGoSndList ctx name payload fields
                 |> Maybe.map (\( fields1, c ) -> ( MonoRecordCreate fields1 t, c ))
 
         MonoRecordAccess inner f t ->
-            forwardGo ctx name cinfo cbody inner
+            forwardGo ctx name payload inner
                 |> Maybe.map (\( inner1, c ) -> ( MonoRecordAccess inner1 f t, c ))
 
         MonoRecordUpdate inner updates t ->
-            case forwardGo ctx name cinfo cbody inner of
+            case forwardGo ctx name payload inner of
                 Just ( inner1, c ) ->
                     Just ( MonoRecordUpdate inner1 updates t, c )
 
                 Nothing ->
-                    forwardGoSndList ctx name cinfo cbody updates
+                    forwardGoSndList ctx name payload updates
                         |> Maybe.map (\( updates1, c ) -> ( MonoRecordUpdate inner updates1 t, c ))
 
         MonoTupleCreate region items t ->
-            forwardGoList ctx name cinfo cbody items
+            forwardGoList ctx name payload items
                 |> Maybe.map (\( items1, c ) -> ( MonoTupleCreate region items1 t, c ))
 
         MonoLiteral _ _ ->
@@ -2172,101 +2294,119 @@ isFunctionType t =
             False
 
 
-forwardGoList : RewriteCtx -> Name -> Mono.ClosureInfo -> MonoExpr -> List MonoExpr -> Maybe ( List MonoExpr, RewriteCtx )
-forwardGoList ctx name cinfo cbody exprs =
+{-| H2.5: static arity of a callee expression, when knowable. Only closure
+literals and globals with function/tail-func nodes qualify — everything
+else (locals, kernel refs, computed callees) returns Nothing and is never
+merged.
+-}
+calleeArity : RewriteCtx -> MonoExpr -> Maybe Int
+calleeArity ctx funcExpr =
+    case funcExpr of
+        MonoClosure info _ _ ->
+            Just (List.length info.params)
+
+        MonoVarGlobal _ specId _ ->
+            Dict.get specId ctx.specArities
+
+        _ ->
+            Nothing
+
+
+forwardGoList : RewriteCtx -> Name -> ForwardPayload -> List MonoExpr -> Maybe ( List MonoExpr, RewriteCtx )
+forwardGoList ctx name payload exprs =
     case exprs of
         [] ->
             Nothing
 
         e :: rest ->
-            case forwardGo ctx name cinfo cbody e of
+            case forwardGo ctx name payload e of
                 Just ( e1, c ) ->
                     Just ( e1 :: rest, c )
 
                 Nothing ->
-                    forwardGoList ctx name cinfo cbody rest
+                    forwardGoList ctx name payload rest
                         |> Maybe.map (\( rest1, c ) -> ( e :: rest1, c ))
 
 
-forwardGoSndList : RewriteCtx -> Name -> Mono.ClosureInfo -> MonoExpr -> List ( a, MonoExpr ) -> Maybe ( List ( a, MonoExpr ), RewriteCtx )
-forwardGoSndList ctx name cinfo cbody pairs =
+forwardGoSndList : RewriteCtx -> Name -> ForwardPayload -> List ( a, MonoExpr ) -> Maybe ( List ( a, MonoExpr ), RewriteCtx )
+forwardGoSndList ctx name payload pairs =
     case pairs of
         [] ->
             Nothing
 
         ( k, e ) :: rest ->
-            case forwardGo ctx name cinfo cbody e of
+            case forwardGo ctx name payload e of
                 Just ( e1, c ) ->
                     Just ( ( k, e1 ) :: rest, c )
 
                 Nothing ->
-                    forwardGoSndList ctx name cinfo cbody rest
+                    forwardGoSndList ctx name payload rest
                         |> Maybe.map (\( rest1, c ) -> ( ( k, e ) :: rest1, c ))
 
 
-forwardGoIfBranches : RewriteCtx -> Name -> Mono.ClosureInfo -> MonoExpr -> List ( MonoExpr, MonoExpr ) -> Maybe ( List ( MonoExpr, MonoExpr ), RewriteCtx )
-forwardGoIfBranches ctx name cinfo cbody branches =
+forwardGoIfBranches : RewriteCtx -> Name -> ForwardPayload -> List ( MonoExpr, MonoExpr ) -> Maybe ( List ( MonoExpr, MonoExpr ), RewriteCtx )
+forwardGoIfBranches ctx name payload branches =
     case branches of
         [] ->
             Nothing
 
         ( cond, then_ ) :: rest ->
-            case forwardGo ctx name cinfo cbody cond of
+            case forwardGo ctx name payload cond of
                 Just ( cond1, c ) ->
                     Just ( ( cond1, then_ ) :: rest, c )
 
                 Nothing ->
-                    case forwardGo ctx name cinfo cbody then_ of
+                    case forwardGo ctx name payload then_ of
                         Just ( then1, c ) ->
                             Just ( ( cond, then1 ) :: rest, c )
 
                         Nothing ->
-                            forwardGoIfBranches ctx name cinfo cbody rest
+                            forwardGoIfBranches ctx name payload rest
                                 |> Maybe.map (\( rest1, c ) -> ( ( cond, then_ ) :: rest1, c ))
 
 
-forwardGoDecider : RewriteCtx -> Name -> Mono.ClosureInfo -> MonoExpr -> Mono.Decider Mono.MonoChoice -> Maybe ( Mono.Decider Mono.MonoChoice, RewriteCtx )
-forwardGoDecider ctx name cinfo cbody decider =
+forwardGoDecider : RewriteCtx -> Name -> ForwardPayload -> Mono.Decider Mono.MonoChoice -> Maybe ( Mono.Decider Mono.MonoChoice, RewriteCtx )
+forwardGoDecider ctx name payload decider =
     case decider of
         Mono.Leaf (Mono.Inline e) ->
-            forwardGo ctx name cinfo cbody e
+            forwardGo ctx name payload e
                 |> Maybe.map (\( e1, c ) -> ( Mono.Leaf (Mono.Inline e1), c ))
 
         Mono.Leaf (Mono.Jump _) ->
             Nothing
 
         Mono.Chain tests success failure ->
-            case forwardGoDecider ctx name cinfo cbody success of
+            case forwardGoDecider ctx name payload success of
                 Just ( s1, c ) ->
                     Just ( Mono.Chain tests s1 failure, c )
 
                 Nothing ->
-                    forwardGoDecider ctx name cinfo cbody failure
+                    forwardGoDecider ctx name payload failure
                         |> Maybe.map (\( f1, c ) -> ( Mono.Chain tests success f1, c ))
 
         Mono.FanOut path tests fallback ->
-            case forwardGoDeciderSndList ctx name cinfo cbody tests of
+            case forwardGoDeciderSndList ctx name payload tests of
                 Just ( tests1, c ) ->
                     Just ( Mono.FanOut path tests1 fallback, c )
 
                 Nothing ->
-                    forwardGoDecider ctx name cinfo cbody fallback
+                    forwardGoDecider ctx name payload fallback
                         |> Maybe.map (\( fb1, c ) -> ( Mono.FanOut path tests fb1, c ))
 
 
-forwardGoDeciderSndList : RewriteCtx -> Name -> Mono.ClosureInfo -> MonoExpr -> List ( a, Mono.Decider Mono.MonoChoice ) -> Maybe ( List ( a, Mono.Decider Mono.MonoChoice ), RewriteCtx )
-forwardGoDeciderSndList ctx name cinfo cbody pairs =
+forwardGoDeciderSndList : RewriteCtx -> Name -> ForwardPayload -> List ( a, Mono.Decider Mono.MonoChoice ) -> Maybe ( List ( a, Mono.Decider Mono.MonoChoice ), RewriteCtx )
+forwardGoDeciderSndList ctx name payload pairs =
     case pairs of
         [] ->
             Nothing
 
         ( k, d ) :: rest ->
-            case forwardGoDecider ctx name cinfo cbody d of
+            case forwardGoDecider ctx name payload d of
                 Just ( d1, c ) ->
                     Just ( ( k, d1 ) :: rest, c )
 
                 Nothing ->
-                    forwardGoDeciderSndList ctx name cinfo cbody rest
+                    forwardGoDeciderSndList ctx name payload rest
                         |> Maybe.map (\( rest1, c ) -> ( ( k, d ) :: rest1, c ))
 
 

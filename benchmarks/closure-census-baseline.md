@@ -106,6 +106,20 @@ Final numbers, all H2 machinery in (warm = 2nd consecutive same-config run):
 H2.0 machinery: case-body inlining, let-of-closure flattening, let-callee
 hoisting.)
 
+### H2.5 step 1 (application merging), same workload
+
+| config | warm wall | betaForwards | partialMerges | closuresRemaining | .mlir size |
+|---|---|---|---|---|---|
+| hof=25 + merging | 95.6 s | 1,655 | 5,188 | 13,885 | 11.80 MB |
+
+Application merging (`(f a1s) a2s` ⇒ one call when total ≤ arity, plus
+strictly-partial let-bound global calls forwarded into their single
+callee-position use) reunites the pipe-shaped spine: 5,188 merges on the
+self-compile, betaForwards +19% over the hof=10 baseline, artifact SMALLER
+than baseline, wall time back at baseline. The pipe shape
+`m |> Maybe.andThen λ` now collapses to zero papCreate (AndThenProbe pins
+it module-wide under the default config).
+
 **Decision: default `hofThreshold = 25`.** On the pipe-heavy self-compile
 workload the incremental win is small (+1.9% betaForwards) because
 `m |> andThen λ` partially applies `andThen` and exactOnly blocks it; on

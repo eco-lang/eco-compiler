@@ -308,6 +308,72 @@ that mention the guarded construct before lifting.
 
 ---
 
+### H2.5 — Partial-application soundness: merge, then (later) faithful rebuild
+
+**Problem (lesson 4's root cause, stated precisely).** Both partial-inline
+sites (`betaReduce`'s partial branch and `tryInlineCall`'s partial branch)
+manufacture a residual closure for "the rest of the function":
+fresh lambdaId, `srcLambda = Nothing`, and a FLATTENED single-stage type
+`MFunction LTop remainingParams resultType`. That violates the design
+principle `mono-uncurry-implementation.md` establishes — *partial
+application is represented only via PAPs, never via nested closures* — in
+two ways consumers notice: (a) STAGING — call sites elsewhere were compiled
+against the ORIGINAL arrow's stage structure, and the runtime typed-apply
+splices args per a static `EvalParamLayout` with no dynamic re-segmentation
+(`spliceArgsForSaturatedCall` assert); (b) ABI — the rebuilt lambda's body
+compiles with boxed returns while the application site is typed from the
+mono result type (CGEN_056 mismatch). One bug, three guards: H1's
+ground-result forwarding guard, H2's `exactOnly` containment, and the
+elm-tests SKI/identity-composition fixtures.
+
+**Step 1 — application merging (uncurry at the call site), IMPLEMENTED
+2026-07-14.** Self-compile: 5,188 partialMerges, betaForwards 1,392 → 1,655
+(+19% over baseline), closuresRemaining −233, artifact −0.9%, warm wall at
+baseline. AndThenProbe pins the pipe collapse module-wide
+(`CHECK-MLIR-NOT: eco.papCreate`) under the default config.
+The pipe shape `m |> Maybe.andThen λ` is not semantically partial — it is a
+saturated application split across two nodes. Make the inliner reunite it so
+the partial-rebuild path is never entered:
+
+- 1a. `specArities : Dict SpecId Int` in `RewriteCtx` (from `MonoDefine`
+  closure params / `MonoTailFunc` params; recursive functions included —
+  merging reshapes calls, it does not inline).
+- 1b. Nested-call merge arm in `rewriteExpr`:
+  `MonoCall (MonoCall f a1s) a2s` ⇒ `MonoCall f (a1s ++ a2s)` when `f` is a
+  closure literal or a global with known arity and
+  `len a1s + len a2s ≤ arity` (v1 refuses over-application merges: the inner
+  call would have EXECUTED the body; ≤ keeps the inner call a pure PAP
+  creation, so evaluation order is unaffected). Fresh `defaultCallInfo`;
+  phase 5 recomputes staging metadata downstream.
+- 1c. Generalize let-callee forwarding to STRICTLY-PARTIAL CALL bindings:
+  `let f = g a1s in … f a2s …` (single use, callee position, same chain
+  guards as closures, `len a1s < arity g` so binding evaluation creates a
+  PAP and runs no body) forwards to `MonoCall g (a1s ++ a2s)` at the use,
+  when the total ≤ arity. This is the piece that actually reaches the pipe
+  shape — apR inlining leaves the partial application LET-BOUND, so the
+  nested-call adjacency never appears literally.
+- 1d. Metrics: `partialMerges` counter; report line.
+- Tests: pipe-shaped andThen chain collapses under default config
+  (AndThenProbe gains the module-wide `CHECK-MLIR-NOT: eco.papCreate`);
+  CombinatorB*/SolverLayoutStepMonadTest stay green (their partial VALUES
+  are not single-use callee-position bindings and must not change shape);
+  self-compile betaForwards expected to recover past the unsound-era 1,571.
+
+**Step 2 — faithful residual rebuild, LATER (unlocks guard relaxation).**
+For genuinely partial applications that must produce a residual value
+(callback stored in a structure): rebuild with a stage-CONSUMING type
+(drop supplied leading stages from the original arrow, keep the remaining
+stage structure — never flatten to one fresh stage), and type residual
+application sites per the CALLEE ABI with an explicit coercion after
+(the `enforce-cgen056-remove-fixCallResultTypes.md` discipline), OR lower
+the residual to an actual PAP-creating expression so the runtime object
+carries the original evaluator + true arity metadata (the design-conformant
+option per mono-uncurry). Rejected alternative: teaching the runtime
+typed-apply to chain over-application dynamically — papers over statically
+wrong metadata and adds mid-chain GC-rooting obligations. After step 2,
+relax: H1's ground-result guard, H2's exactOnly, and add the SKI/compose
+shapes to the corpus flag-on. Each relaxation stays behind its existing pin.
+
 ### H3 — LSS singleton default-on (prerequisite for H4/H5)
 
 M1–M4 shipped and were gated green, but `lss.enabled=False`. Elision consumes stamps; flip the default.
