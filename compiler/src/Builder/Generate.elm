@@ -810,7 +810,7 @@ runInlineSimplifyPhase ecoConfig stats monoGraph0 =
             -- (HOF-elimination plan H0.2). stderr, like the LSS census.
             Task.io
                 (System.IO.writeLn System.IO.stderr
-                    (renderInlineReport inlineMetrics simplifiedGraph)
+                    (renderInlineReportWith ecoConfig.inline inlineMetrics simplifiedGraph)
                 )
                 |> Task.map (\_ -> simplifiedGraph)
 
@@ -823,12 +823,27 @@ runInlineSimplifyPhase ecoConfig stats monoGraph0 =
 
 renderInlineReport : MonoInlineSimplify.Metrics -> Mono.MonoGraph -> String
 renderInlineReport m graph =
+    renderInlineReportWith Config.default.inline m graph
+
+
+renderInlineReportWith : Config.InlineConfig -> MonoInlineSimplify.Metrics -> Mono.MonoGraph -> String
+renderInlineReportWith inlineConfig m graph =
     let
         topCallees =
             Dict.toList m.inlinedByCallee
                 |> List.sortBy (\( _, n ) -> negate n)
                 |> List.take 20
                 |> List.map (\( callee, n ) -> callee ++ "=" ++ String.fromInt n)
+                |> String.join " "
+
+        taxonomy =
+            MonoInlineSimplify.residualTaxonomy inlineConfig graph
+                |> List.map (\( bucket, n ) -> bucket ++ "=" ++ String.fromInt n)
+                |> String.join " "
+
+        fnResults =
+            MonoInlineSimplify.functionResultCensus graph
+                |> List.map (\( bucket, n ) -> bucket ++ "=" ++ String.fromInt n)
                 |> String.join " "
     in
     String.join "\n"
@@ -856,6 +871,20 @@ renderInlineReport m graph =
 
                 else
                     topCallees
+               )
+        , "residual closures: "
+            ++ (if String.isEmpty taxonomy then
+                    "(none)"
+
+                else
+                    taxonomy
+               )
+        , "function results: "
+            ++ (if String.isEmpty fnResults then
+                    "(none)"
+
+                else
+                    fnResults
                )
         ]
 
@@ -891,7 +920,17 @@ runGlobalOptPhase lssReport stats simplifiedGraph =
                         ++ String.fromInt goStats.abiCloning.declinedNoInstance
                         ++ " declinedShape="
                         ++ String.fromInt goStats.abiCloning.declinedShape
-                        ++ " declinedAbiMismatch="
+                        ++ " (arity="
+                        ++ String.fromInt goStats.abiCloning.declinedShapeArity
+                        ++ " bucketMiss="
+                        ++ String.fromInt goStats.abiCloning.declinedShapeBucketMiss
+                        ++ " layout="
+                        ++ String.fromInt goStats.abiCloning.declinedShapeLayout
+                        ++ " char="
+                        ++ String.fromInt goStats.abiCloning.declinedShapeChar
+                        ++ " nonArrow="
+                        ++ String.fromInt goStats.abiCloning.declinedShapeNonArrow
+                        ++ ") declinedAbiMismatch="
                         ++ String.fromInt goStats.abiCloning.declinedAbiMismatch
                         ++ " dbg: rebuilt="
                         ++ String.fromInt goStats.abiCloning.dbgNodesRebuilt

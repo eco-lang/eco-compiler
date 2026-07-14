@@ -132,6 +132,7 @@ type alias InlineConfig =
     , fixpointIterations : Int
     , hofThreshold : Int
     , loopify : Bool
+    , arityRaise : Bool
     , report : Bool
     }
 
@@ -169,6 +170,13 @@ default =
         -- compile-time cost; 40 costs +9.6% size for the next step.
         , hofThreshold = 25
         , loopify = True
+
+        -- H6.2 U2b (EXPERIMENTAL, ECO_ARITY_RAISE=1): uncurry staged
+        -- specs whose stage-1 work is trivial/cheap so monadic-bind
+        -- chains merge and beta away. Default OFF: delaying a cheap pure
+        -- stage-1 body to application time is unobservable in Elm modulo
+        -- ⊥-timing and Debug.log ordering.
+        , arityRaise = False
         , report = False
         }
     , bytesFusion = { enabled = True }
@@ -203,6 +211,7 @@ inlineDecoder =
         |> D.apply (D.optionalField "fixpointIterations" D.int default.inline.fixpointIterations)
         |> D.apply (D.optionalField "hofThreshold" D.int default.inline.hofThreshold)
         |> D.apply (D.optionalField "loopify" D.bool default.inline.loopify)
+        |> D.apply (D.optionalField "arityRaise" D.bool default.inline.arityRaise)
         |> D.apply (D.optionalField "report" D.bool default.inline.report)
 
 
@@ -325,6 +334,14 @@ hash cfg =
                )
          , "cmf=" ++ String.fromInt cfg.logicalTypes.customMaxFields
          ]
+            -- Arity-raise token appears ONLY when enabled, so default
+            -- configs hash exactly as before (no global cache invalidation).
+            ++ (if cfg.inline.arityRaise then
+                    [ "ar=1" ]
+
+                else
+                    []
+               )
             -- Engine token appears ONLY for non-default engines, so a default
             -- config (or any absent eco-config.json) hashes exactly as before.
             ++ (case cfg.mono.engine of

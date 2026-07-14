@@ -1,6 +1,6 @@
 # HOF Elimination — Closure Allocation Reduction
 
-**Status:** H0 + H1 + H2 + H2.5 + H3 + H4 + H5 IMPLEMENTED 2026-07-14 (baselines + matrices in `benchmarks/closure-census-baseline.md` — native-stage-7a dynamic census still pending). Shipped: censuses; let-callee forwarding + chain closure DCE; case-body inlining (guard lift + cost-model decider fix); let-of-closure flattening; let-callee hoisting; `hofThreshold` (default 25, called-param heuristic); application merging (pipe-shape collapse, 5,188 merges on self-compile); faithful residual type (double-wrapped-arrow fix) with the ground-result guard removed and `exactOnly` retained by design; LSS-on re-gate (first flag-on corpus vs the new inliner, 1602/1602 genuine) + `defaultLss.enabled=True` ("solver implies LSS" — engine default stays subst, blocked on JS-hosted solver perf per the monosolver plan); H4 as EcoPAPSimplify P4 multi-use elision + eco_intern_closure0 zero-capture interning (HEAP_033) — engine-independent (keys off `remaining_arity`, not LSS stamps), plus the ecoc `-emit=mlir-eco` no-pipeline bug and the codegen-harness RUN-parser substring bug fixed en route; H5 as call-site LOOPIFICATION (engine-independent, default-on — 779 loopifications on self-compile, closuresRemaining −5.2%; the LSS-keyed route stays as the v2 variable-argument extension). fpi stays 4. Next: H6 (census-gated coverage residuals) and H7 (M5 design go/no-go) — both waiting on the native-census measurement.
+**Status:** H0 + H1 + H2 + H2.5 + H3 + H4 + H5 IMPLEMENTED 2026-07-14 (baselines + matrices in `benchmarks/closure-census-baseline.md` — native-stage-7a dynamic census still pending). Shipped: censuses; let-callee forwarding + chain closure DCE; case-body inlining (guard lift + cost-model decider fix); let-of-closure flattening; let-callee hoisting; `hofThreshold` (default 25, called-param heuristic); application merging (pipe-shape collapse, 5,188 merges on self-compile); faithful residual type (double-wrapped-arrow fix) with the ground-result guard removed and `exactOnly` retained by design; LSS-on re-gate (first flag-on corpus vs the new inliner, 1602/1602 genuine) + `defaultLss.enabled=True` ("solver implies LSS" — engine default stays subst, blocked on JS-hosted solver perf per the monosolver plan); H4 as EcoPAPSimplify P4 multi-use elision + eco_intern_closure0 zero-capture interning (HEAP_033) — engine-independent (keys off `remaining_arity`, not LSS stamps), plus the ecoc `-emit=mlir-eco` no-pipeline bug and the codegen-harness RUN-parser substring bug fixed en route; H5 as call-site LOOPIFICATION (engine-independent, default-on — 779 loopifications on self-compile, closuresRemaining −5.2%; the LSS-keyed route stays as the v2 variable-argument extension). fpi stays 4. **H6.0 survey + H6.1 SHIPPED 2026-07-14** (extends −73.3% on the self-compile census; §H6.1 below); H6.2 U0 shipped, U2b implemented flag-off-only (flag-on unsound — §H6.2); H6.3 at V0 (post-H6.1 generic-dispatch extends re-ranked; V1/V2 remain census-gated). Next: fix U2b's staged-known capture-ABI interaction; then H6.3 V1/V2 or H7 per census.
 **Date:** 2026-07-13
 **Input:** `/work/hof-elimination.md` (prioritized suggestions), deep code investigation (this doc supersedes the suggestion list)
 **Goal:** Greatly reduce the number of closures allocated at runtime (`eco_alloc_closure` executions), measured on the self-compile workload and the E2E corpus.
@@ -623,16 +623,309 @@ refusal; captured multi-use closure shared correctly with the loop).
 
 ---
 
-### H6 — Stamp-coverage residuals (census-driven, demoted)
+### H6 — Residual coverage: survey first, then data-chosen items
 
-Only after the post-H5 census: the pre-investigation numbers (3,140 upgrades / 7,542 shape declines) describe a pipeline whose HOF spine H1/H2 will have partially deleted; investing here first would optimize sites that are about to vanish.
+Restructured 2026-07-14 (post-H5): H6 is explicitly split into a
+MEASUREMENT phase (H6.0) and implementation items (H6.1+) selected from
+its output. Rationale: every phase so far deleted sites that previous
+censuses described (the 3,140/7,542 numbers predate H1), and H6's two
+concerns — dispatch coverage (LSS stamps; performance) and allocation
+coverage (closures H1–H5 cannot remove) — target DIFFERENT residual
+populations that only measurements can rank.
 
-Candidate items, in the order the LSS plan documents them:
-- **Local-multi transport** (`lss-lambda-set-specialization.md:860–866`): let-bound lambdas passed to HOFs don't transport members (annotation stays LTop). Pinned by `LssSingletonLetBoundLambdaTest`; census-gated follow-up.
-- **Wrapper-home + adopted-synthetic blockers** (LSS_009 decline classes): teach staging wrappers/eta-wrappers to carry or forward capture layout so they stop blocking their member.
-- **PAP-consumption / layout-mismatch shapes** within `declinedShape`: add a decline-reason breakdown counter first (one-line change in AbiCloning stats) — "declinedShape" is currently a single bucket; split it before deciding anything.
+**H6.0 — the survey (do all three, then decide):**
 
-**Gate per item:** census delta justifying it, adversarial test, `--target full`.
+- **H6.0a Dynamic census**: `ECO_CLOSURE_STATS=1` on NATIVE binaries
+  (AOT-compiled workloads; the stage-7a self-compile when the bootstrap
+  chain is available), symbolized via `benchmarks/closure-census.sh` —
+  ranked evaluator table, post-EcoPAPSimplify truth. The master input:
+  orders residual classes by real runtime weight.
+- **H6.0b Decline histogram**: split AbiCloning's monolithic
+  `declinedShape` counter into sub-reasons (PAP consumption / bucket miss
+  / param-count / layout inequality / Char capture) so the flag-on census
+  says WHICH shape gap dominates dispatch coverage.
+- **H6.0c Static residual taxonomy**: classify surviving `MonoClosure`s
+  in the post-inline graph by consumption context (stored-in-data /
+  arg-to-tail-func / arg-to-other-global / arg-to-kernel / captured /
+  multi-use-let / returned / other) — tells us which MECHANISM gap
+  dominates allocation coverage; printed with `ECO_INLINE_REPORT=1`.
+
+**H6.0 survey results (2026-07-14)** — data in
+`benchmarks/closure-census-baseline.md` §H6.0:
+
+- **H6.0b**: 100% of `declinedShape` declines in the flag-on batch are
+  `arity` (PAP consumption); bucketMiss/layout/char/nonArrow all ZERO.
+  Side-finding: H2–H5 eroded Lss stamp counts (dispatch pins now 0 —
+  their annotated calls were inlined away; surviving sites still stamp).
+- **H6.0c**: self-compile taxonomy of 13,165 residuals: let-bound 51%
+  (overstates — P1/P4 elide the all-saturated subset downstream),
+  arg-to-global 31%, arg-to-ctor 9% (semantic, out of scope), value 5%,
+  arg-to-tailfunc 2.5%, arg-to-loopifiable 0.5%.
+- **H6.0a**: probe native census = 1 closure alloc / 20k iterations
+  (H4.2 intern). Flagship lowering of the self-compile artifact exposed a
+  LATENT MISCOMPILE: escaped-taildef Char captures were typed boxed in
+  the outlined shell but i16 at the papCreate site
+  (`mlirTypeToApproxMonoType` stale `I32 -> MChar` arm; Char is I16).
+  Pre-fix repro `CharCaptureEscapedTailDefTest.elm` segfaults under JIT
+  too. Fixed `I16 -> MChar` in `Expr.elm`; full gate 1610/1610 zero-
+  cached; regenerated artifact lowers clean and the native eco
+  self-compiles BYTE-IDENTICALLY to the JS-hosted compiler.
+  **Flagship census** (native eco compiling the full compiler, cold
+  cache): creates=403.9M, extends=523.4M, distinct=7,115. Extends are
+  99.996% on H4.2-interned singletons (Bitwise.and 156M — Dict/hash
+  kernels): generic apply of known-arity PAPs is the #1 allocation
+  source (~56% of events). Creates: top-50 = 68%; dominated by
+  TypeCheck.IO monadic-bind continuations + UnionFind/IORef reader
+  lambdas that ESCAPE into the returned IO value (arg-to-global/
+  stored-data classes — not inliner misses).
+
+**H6.1–H6.3 — the data-chosen items** (numbered 2026-07-14 from the
+survey; each starts with a DESIGN INVESTIGATION, and implementation is
+gated on that design plus the usual census-delta + adversarial test +
+`--target full` discipline). Standing constraints from review: STATIC
+analysis only — no runtime fast path unless the static routes measurably
+exhaust (<few % residual left); NO per-module intrinsics — every
+mechanism must be general (the elm/* kernels dominate the ranking only
+because Array/Dict internals are hot, and the tail is compiler-own code).
+
+#### H6.1 — Saturated PAP-chain elision (~56% of dynamic allocation events)
+
+**Investigated 2026-07-14 — both root causes found; implementation-ready.**
+
+*The shape.* "Interned known-arity PAPs" = the runtime POPULATION (H4.2
+singletons whose underlying arity sits in the closure header), not a
+mechanism. `Array_setHelp_$_350` is the flagship (elm/core source:
+`Bitwise.and bitMask <| Bitwise.shiftRightZfBy shift index`): after apL
+inlining the front end emits `papCreate @Bitwise_and_$_138` →
+`papExtend(bitMask) remaining=2` → `papExtend(shifted) remaining=1 → i64`
+— callee, args, and saturation all statically visible in ONE function.
+The direct-call styling of the SAME operation in the same function
+compiles to the `eco.int.and` intrinsic; only the `<|` styling pays.
+
+*Back-end root cause (PRIMARY — a bug, not a tuning gap).*
+`FusePapExtendChainPattern` (P2, `EcoPAPSimplify.cpp`) DOES fire and
+produces the fused saturated extend, but its comment "prevExtend will be
+DCE'd since it now has no uses" is FALSE: `Eco_PapCreateOp` carries the
+`Pure` trait (Ops.td:1169) so dead creates are DCE'd, but
+`Eco_PapExtendOp` (Ops.td:1287) has no purity trait — correctly, since a
+SATURATING extend calls arbitrary code — so the orphaned non-saturating
+intermediate survives. Post-pass self-compile IR (`ecoc -emit=mlir-eco`,
+NB: dump goes to STDERR): setHelp contains the dead `%2 =
+papExtend(%0,%1)` AND the fused `%4 = papExtend(%0,%1,%3)`. Consequences:
+(1) the dead extend EXECUTES at runtime — an allocated-and-discarded PAP
+per execution (the census's Bitwise.and 156M / shiftLeftBy 94M); (2) the
+dead extend keeps the papCreate multi-use, so P1
+(`SaturatedPapToCallPattern`, requires `hasOneUse`) cannot convert the
+fused saturated extend to a direct call, and P4 (requires every use
+saturated) is blocked by the unsaturated dead use. Measured: **14,449 of
+44,393 post-pass papExtend ops are dead** (results unused; 32.5% of the
+module's extends).
+
+*Back-end fix (F1+F2, `EcoPAPSimplify.cpp` — do this first):*
+- **F1**: in `FusePapExtendChainPattern.matchAndRewrite`, after
+  `rewriter.replaceOp(extendOp, fusedOp)`, add
+  `rewriter.eraseOp(prevExtend)`. Safe: the pattern already verified
+  `extendOp.getClosure().hasOneUse()` (prevExtend's only consumer was
+  extendOp) and that prevExtend is NOT saturated (pure allocation, no
+  call). Erasing via the rewriter keeps greedy-driver bookkeeping
+  correct, and the cascade then runs in the same fixpoint: papCreate
+  drops to one use → P1 converts the fused extend to `eco.call
+  @Bitwise_and_$_138(%1,%3)` → the create is DCE'd via `Pure`.
+- **F2 (P5, robustness)**: new `DeadPapExtendPattern`: erase a
+  `PapExtendOp` whose result has no uses AND whose `remaining_arity`
+  attr is present with `remaining > realNewargs` (strictly
+  non-saturating — saturating extends call code and generic-mode extends
+  without the attr may saturate at runtime; NEVER erase those). Strip GC
+  root hints the same way P1/P2 do when measuring `realNewargs`. Add to
+  the pattern set and rely on the existing extend-rooted seeding.
+- **Tests**: new `test/codegen/pap_simplify_dead_extend_erase.mlir`
+  (RUN `-emit=mlir-eco`; input = the setHelp shape; CHECK a direct
+  `eco.call`, CHECK-NOT any `papExtend`) + audit the existing
+  `pap_simplify_*.mlir` / `wrapper_*_return_*.mlir` pins — P1 now fires
+  in places it previously could not, so pinned outputs may legitimately
+  change. Gate: `--target full`, then rebuild the native eco (JS
+  self-compile → `eco-boot-native` → census workflow from H6.0a) and
+  re-census. **Acceptance: Bitwise.and/shiftLeftBy extends collapse from
+  156M/94M to ~0; total extends drop is the headline number.**
+
+*Front-end root cause (SECONDARY — confirmed by probe).* `specArities`
+(`MonoInlineSimplify.elm` ~:1710) records arity ONLY for
+`MonoDefine (MonoClosure …)` and `MonoTailFunc` nodes; `calleeArity`
+(~:3194) therefore returns Nothing for POINT-FREE specs — kernel aliases
+(`and = Elm.Kernel.Bitwise.and`, zero source params) and user aliases
+(`userAnd = Bitwise.and`) — and the merge arm refuses by design.
+`test/elm/src/MergeProbe.elm` pins this end-to-end: both alias styles
+emit create+extend+extend while direct style emits `eco.int.and`.
+
+*Front-end fix (F3, second wave — value: intrinsics instead of residual
+calls, plus static papCreate reduction; measure after F1/F2):* extend the
+`specArities` fold to cover non-closure-bodied defines by deriving the
+FLAT arity from the spec's mono type (`flatArrowArity` — the H5 helper;
+staged arrows must be fully peeled). Safety argument for merging into a
+saturated `MonoCall`: direct saturated source calls to these same specs
+already compile (setHelp's else-branch) — the calling convention accepts
+the flat form. Audit the merge arm's over-application refusal so it
+keeps refusing when the callee body could EXECUTE effects at the inner
+stage; point-free alias bodies are value-only so the refusal can be
+relaxed for exactly the class specArities now covers. After the fix,
+tighten MergeProbe's directive to `CHECK-MLIR-NOT: papExtend`.
+
+**H6.1 IMPLEMENTED + MEASURED 2026-07-14.** F1 (P2 erases its orphaned
+intermediate) + F2 (P5 `DeadPapExtendPattern`: unused result + strictly
+non-saturating only) shipped; gate 1612/1612 incl. new
+`pap_simplify_dead_extend_erase.mlir`. **Census on the identical
+artifact: extends 523.4M → 140.0M (−73.3%), total PAP events −41%,
+output byte-identical.** Bitwise/Array chains eliminated entirely.
+Remaining extends (140M, still ~all on interned singletons) = per-use
+generic application of HOF-arg partials (`applySubstPure` 11.3M,
+`typeEncoderS` 10.3M) + TypeCheck.IO combinators (map/traverseList ~20M
+combined). F3 (front-end): the real root cause was `specArities`
+skipping ALL point-free specs — kernel-BODIED defines get flat arity
+from the kernel type (stored STAGED; the emitted wrapper and papCreate
+`arity` attr use flatArrowArity — that is the correct merge bound),
+global-bodied aliases chase links (fuel 4); plus VarKernel arms in
+`calleeArity`/`ForwardPartialCall`. MergeProbe pins: `partialMerges=2`,
+both `<|` chains intrinsify to `eco.int.and`. Gate 1612/1612.
+Post-F1/F2 dead-extend recount with a FIXED detector: 9,805 → 7,940
+(remaining = 7,252 dead-GENERIC extends P5 correctly refuses — may
+saturate and call at runtime — plus 688 dead-but-SATURATING typed ones,
+also correctly refused).
+
+#### H6.2 — Stored monadic continuations (~22%+ of creates)
+
+**Investigated 2026-07-14 — mechanism understood; U0 census + U2a are
+implementation-ready, U2b needs a short design pass.**
+
+*The shape.* `IO a = State -> (State, a)` (a TYPE ALIAS —
+`System/TypeCheck/IO.elm:108`). `andThen f ma = \s0 -> …` returns a
+lambda; mono-uncurry flattens it so the spec's ENTIRE body is one
+`papCreate` of an arity-3 lambda capturing `(ma, f)`
+(`System_TypeCheck_IO_andThen_$_10041` in the self-compile IR). The
+inliner inlines andThen at every bind, so each bind allocates that
+closure + the continuation literal at the site — the census's top
+creates block (UF readers 34M/18M/7M, descriptor binds 17.7M…). The
+chains do NOT collapse intra-function because the state application
+`ma s0` happens in the CALLER's bind lambda (the IO value is returned
+across the function boundary) — this is why no amount of intra-function
+forwarding fixes it, and why it is NOT an inliner gap. Note the module
+already hand-eta-expands `map`/`foldrM`/`foldM`/`mapM_` (they take `s0`
+directly and are closure-free); `andThen`/`pure`/`apply` are not.
+
+*Implementation ladder:*
+- **U0 (measure first, ~half day)**: extend the `ECO_INLINE_REPORT`
+  machinery (residualTaxonomy precedent) with a "function-typed results"
+  census: count specs whose result mono type is `MFunction [_] _`, and
+  classify each call site of such specs by consumption — (a) result
+  applied in the same expression, (b) let-bound then applied
+  intra-function, (c) escaping (returned / stored / passed). Decision
+  input: (a)+(b) are collapsible by U2a alone; a (c)-dominated
+  distribution (expected — binds return upward) requires U2b.
+- **U2a (merge-arm relaxation, independently shippable)**: allow the
+  H2.5 merge arm to merge OVER-applications `(f args) extra` when f's
+  spec body is a pure closure-literal-returning expression (new
+  side-index alongside `specArities`: `specResultClosureArity : Dict Int
+  Int`, built in the same fold by matching defines whose body — after
+  let-peeling — is a `MonoClosure` literal). The inner "body would have
+  executed" objection vanishes for this class: the body only constructs
+  the closure. After merging, the existing inline+beta+case machinery
+  collapses the bind. Same treatment in `ForwardPartialCall` for the
+  let-bound variant. Tests: a corpus probe with a let-bound
+  `andThen`-style chain applied locally; census counter for merges via
+  the new index.
+- **U2b (result-arity raising — the real lever; design pass first)**:
+  worker/wrapper cloning for specs with function-typed results: raised
+  worker `f$W (params ++ [s])` whose body is `(origBody) s` (existing
+  rewrites then collapse it), original spec becomes a thin wrapper
+  returning the PAP of `f$W` (mono-uncurry compliant; escaping sites
+  allocate exactly what they do today — no regression). Call-site
+  rewrite rides U2a's merge (the wrapper IS a closure-literal-returning
+  spec). Design questions to settle before coding: insertion point in
+  the GlobalOpt phase order (must precede AbiCloning so stamps see final
+  shapes; verify against `MonoGlobalOptimize` phase list), interaction
+  with LSS annotations (raised workers change which closures exist),
+  recursion through the raised set (binds calling binds — likely fine
+  since raising is per-spec and the inliner fixpoint cleans up), and a
+  budget (raise only specs whose U0 site-count crosses a threshold).
+  Risk note: A4 taught that flattening State COPIES was a wall-clock
+  wash — U2b targets CLOSURE ALLOCATION, a different denominator; the
+  census delta, not wall time, is the primary gate (wall time reported
+  alongside).
+- **U1 (optional source A/B, cheap data)**: hand-eta-expand `andThen` in
+  `System/TypeCheck/IO.elm` (one line, matches the module's existing
+  style), self-compile, census. This is NOT the general fix (moves
+  allocs from lambdas to PAPs at escaping sites) but calibrates how far
+  source discipline alone goes — useful input to the U2b go/no-go.
+
+This item's numbers double as the H7 (capture unions) go/no-go
+population: whatever U2a+U2b cannot remove is small-k escaping-closure
+territory.
+
+**H6.2 STATUS 2026-07-14: U0 shipped (`function results:` line under
+ECO_INLINE_REPORT); U2b implemented but EXPERIMENTAL AND FLAG-ON
+UNSOUND — do not enable.** `inline.arityRaise` / `ECO_ARITY_RAISE=1` /
+hash token `ar=1` (present only when on; default hash untouched).
+`raiseStagedSpecs` runs before the inline fixpoint: closure-literal
+bodies splice (no freshening needed — same-source-function params);
+call-shaped bodies wrap as `MonoCall body svars` (deliberately
+unbounded — closure-literal ARGS cost 5+body, so any real bind chain
+blows a static bound). Two live findings from `RaiseProbe.elm` (the
+miniature TypeCheck.IO — keep as the pin; flag-off it must print
+`result: (24,18)`):
+1. Raising erases inner lambdas whose sets still annotate USE-site
+   types → AbiCloning stamped phantom singletons (garbage via stale
+   `_capture_abi`). Mitigated: flag-on widens ALL annos
+   (`Traverse.mapNodeTypes Mono.widenSets`).
+2. UNRESOLVED: the STAGED-KNOWN call emission (Expr.elm ~:1982) stamps
+   stage-2 extends with `_capture_abi` = prior-stage arg types, assuming
+   a known staged callee's stage-1 result is its OWN staged wrapper.
+   Post-raise, `(λ a) s1` shapes survive to emission (the beta cascade
+   does not consume them) where λ's stage-1 result is an arbitrary PAP —
+   the runtime reads a PAP arg slot as an unboxed capture:
+   `RaiseProbe` flag-on returns `(8589934618, 12)` instead of
+   `(24, 18)` at ANY fpi. Fix options for the next session: suppress the
+   staged-known capture-ABI fast path when `arityRaise` is on (emit
+   segmentation_unknown), or make beta consume literal-callee staged
+   applications in callee position. Until then the flag stays off.
+
+#### H6.3 — Stamp coverage for dispatch (dispatch value, not allocation)
+
+**Scoped 2026-07-14; strictly after H6.1 re-census (H6.1 removes the
+biggest extend traffic, so dispatch value must be re-ranked first).**
+
+- **V0**: re-census on the post-H6.1 native eco; if generic-dispatch
+  extends are now <a few % of events, stop here.
+- **V1 (local-multi transport)**: the documented v1 precision gap
+  (`lss-lambda-set-specialization.md` §M3 transport list): let-bound
+  lambdas passed to HOFs skip `enrichFromEnv`, anno stays LTop → no
+  stamp. Fix = transport the member set through local-multi targets in
+  `Translate` (the `demandUnifyRoot`/`lssRootAnn` machinery is the
+  precedent); flip `LssSingletonLetBoundLambdaTest` from gap-pin to
+  stamp-pin (`dispatchUpgraded=1`).
+- **V2 (wrapper-home / adopted-synthetic unblocking)**: the two LSS_009
+  blocker classes recorded in the M3.5 notes — representative stamping
+  currently declines when the member's home is a staging wrapper or an
+  adopted synthetic. Work is in `AbiCloning.instanceMember` /
+  `resolveRepresentative` plus the LSS_008 wrapper-identity rules.
+- **V3 (PAP-shape stamping — design only until V1/V2 are censused)**:
+  H6.0b showed 100% of remaining shape declines are `arity` (a PAP of
+  the instance flows, argCount < first-stage arity). Sketch: extend the
+  site fingerprint with an applied-prefix count k; a stamped PAP site
+  calls `$cap` with the k stored PAP args loaded from the (uniform,
+  boxed) PAP arg slots plus the site args — an `emitFastClosureCall`
+  variant. This is the only remaining shape class, but it needs its own
+  capture-ABI-adjacent invariant work; do not start it on dispatch
+  grounds alone.
+- All V-items are solver+LSS flag-on work: every gate uses the
+  genuineness protocol (explicit-compile byte-compare + touch-all-.elm
+  before flag-on corpus runs).
+
+**Demoted by measurement (do not build without new data):** H5 v2
+variable-arg loopification (arg-to-loopifiable = 0.5% dynamic);
+`List.foldr`-class loop vehicles (the 31% static arg-to-global turned
+out to be monadic binds, not folds — re-check per-symbol first).
+
+Anything under a few percent of dynamic allocations does not get built —
+and the same numbers feed H7's ~10% go/no-go directly.
 
 ---
 

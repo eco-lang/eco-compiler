@@ -228,6 +228,133 @@ The 779 sites are the `List.foldl/map`-class population every earlier
 phase had to walk around. Remaining for v2: variable-argument callers
 (LSS-annotation route), non-tail HOFs (`List.foldr`), multi-stage literals.
 
+## H6.0 survey (2026-07-14)
+
+### H6.0c — static residual taxonomy (self-compile, post-inline graph)
+
+`residual closures:` line of `ECO_INLINE_REPORT=1` (13,165 total):
+
+| bucket | count | share | meaning / actionability |
+|---|---|---|---|
+| let-bound | 6,752 | 51.3% | bound closures H1 kept (multi-use or refused positions). OVERSTATES final allocations — the all-saturated-use subset is elided downstream by P1/P4, which this static view cannot see. Needs the dynamic census to rank truly. |
+| arg-to-global | 4,086 | 31.0% | args to non-tail function specs — `List.foldr`-class + general HOFs (H6.1 candidates) |
+| arg-to-ctor | 1,204 | 9.1% | stored into data constructors — SEMANTIC, permanently out of scope (as predicted) |
+| value | 633 | 4.8% | closure-typed results/branches |
+| arg-to-tailfunc | 335 | 2.5% | tail-func HOFs H5 can't loopify (cost/analysis) |
+| arg-to-loopifiable | 67 | 0.5% | loopifiable specs, call site failed qual (non-literal/multi-stage) — H5 v2's ceiling is tiny on this workload |
+| stored-data / kernel / local / callee | 88 | 0.7% | long tail (callee=1 confirms beta converges) |
+
+### H6.0b — flag-on decline histogram (solver+LSS module batch)
+
+Every single `declinedShape` in the batch is **arity** (PAP consumption);
+bucketMiss = layout = char = nonArrow = 0 across all probes. Dispatch
+coverage's blocker is PAP-shaped consumption, NOT layout diversity — the
+wrapper-home/local-multi/layout items rank BELOW pap-shape handling.
+Second finding: the H2–H5 inliner phases have quietly ERODED stamp counts
+on the Lss pins (e.g. LssSingletonFastDispatchTest now `dispatchUpgraded=0`
+— its annotated call is inlined away entirely, so dispatch became moot at
+sites where allocation elimination succeeded). Old dispatch-coverage
+numbers are dead; sites that survive still stamp.
+
+### H6.0a — dynamic census on native binaries
+
+Pipeline validated end-to-end (eco-boot-native lowering of current-compiler
+.mlir → ELF → `ECO_CLOSURE_STATS=1` → `benchmarks/closure-census.sh`, which
+needed two portability fixes: no `-o pipefail` with early-exit awk over nm,
+and hex-string GLB lookup since mawk lacks strtonum). First result:
+`HofForwardGCPressureTest` native runs its 20,000-iteration workload with
+**ONE closure allocation total** — `__closure_wrapper_typed_Basics_add_$_9_ri`,
+created once by H4.2's interning.
+
+**Survey found a latent Char-capture miscompile.** Lowering the H6.0-era
+self-compile artifact natively hit `Calling a function with a bad
+signature` at LLVM translation — 1 call among 626,678: a loopified
+taildef, escaped as a value from a Char spec of `List.member`, whose
+outlined `$cap` shell typed its capture `!eco.value` while the papCreate
+site passed raw `i16` with `unboxed_bitmap=3`. Root cause (predates the
+HOF work): `mlirTypeToApproxMonoType` in `Expr.elm` kept a stale
+pre-i16-Char `I32 -> MChar` arm, so I16 fell to boxed `MUnit` — its ONLY
+consumer is escaped-taildef capture typing, and no corpus/self-compile
+program had ever reified a Char-capturing taildef until H6.0's new
+compiler code perturbed the workload into producing one. Repro
+`CharCaptureEscapedTailDefTest.elm` SEGFAULTS pre-fix (generic apply reads
+the closure per the i16 create-site bitmap, shell compiled boxed → Char
+dereferenced as pointer) — i.e. the JIT path silently miscompiled this
+shape too. Fixed (`I16 -> MChar`). Diagnosis recipe: dump final IR with
+`--mlir-print-ir-after-all --mlir-print-ir-tree-dir=<dir>` (module dump
+prints in GENERIC form when ops are invalid — itself a tell that the
+pipeline runs unverified) and scan `llvm.call` arg types against
+`llvm.func` decls.
+### H6.0a flagship — native eco compiling the full compiler (2026-07-14)
+
+Post-fix `eco-h6b.mlir` lowers clean; the resulting native eco (60.7MB)
+recompiled the whole compiler from a cold project cache and produced a
+**byte-identical artifact** to the JS-hosted compiler's (fixed point holds
+through H0–H6.0 + the Char fix). Census (`ECO_CLOSURE_STATS=1`, dump
+aggregate line): **creates=403,903,871 extends=523,370,892 distinct=7,115
+(overflow=91)** for one full compile.
+
+Headline structure:
+
+- **Extend traffic is the bigger half and it is ALL on interned
+  singletons**: 3,676 of 7,115 evaluators have creates≤2 (H4.2 interning
+  — every zero-capture closure is now created exactly once), and they
+  carry 523.35M of 523.37M extends (99.996%). Top: `Bitwise.and` 156M,
+  `Bitwise.shiftLeftBy` 94M (Dict/hash kernels), `TypeCheck.IO.map` 13M,
+  `TypeCheck.IO.traverseList` 6.8M. Each papExtend allocates a PAP node —
+  generic apply of known-arity global/kernel PAPs is now the single
+  biggest allocation source (~56% of events).
+- **Creates are concentrated capture-carrying continuations**: top-10 =
+  36%, top-50 = 68%, top-200 = 89% of 403.9M. The top block is the
+  typechecker's IO monad: `Terminal_Main_lambda_8274/8268/8605` (34M/18M/
+  7M — `Array.get`+crash-guard UnionFind/IORef readers), `lambda_8286`
+  (17.7M — `readIORefPointInfo/Descriptor` + `TypeCheck.IO.andThen`),
+  `lambda_8179` (10M — `TVar` ctors + andThen + `termToCanType`), plus
+  `List.cons` builder lambdas (11M/8M). These are monadic-bind
+  continuations that ESCAPE into the returned IO value — the
+  arg-to-global/stored-data residual classes of H6.0c, not inliner
+  misses.
+- Symbolizer caveat: a few rows resolve to `_GLOBAL__sub_I_StackMap.cpp`
+  (GLB fallthrough for local symbols) — read neighbors, not those rows.
+  The raw log is NOT creates-sorted; sort before `closure-census.sh`
+  (which takes the first N lines).
+
+## H6.1 (2026-07-14) — saturated PAP-chain elision, measured
+
+Same artifact (`eco-h6b.mlir`), same workload (native eco compiling the
+full compiler, cold project cache), backend F1+F2 only:
+
+| | creates | extends | distinct |
+|---|---|---|---|
+| pre-H6.1 | 403,903,871 | 523,370,892 | 7,115 |
+| F1+F2 | 403,903,415 | **139,999,056 (−73.3%)** | 6,660 |
+
+Output artifact BYTE-IDENTICAL both runs. Bitwise/Array extend traffic
+(156M+94M) eliminated entirely; total PAP events −41%. Post-F1/F2 top
+extends: `applySubstPure` 11.3M / `typeEncoderS` 10.3M /
+`typeHasResidualNumber` 9.5M (HOF-arg partials applied generically) +
+`TypeCheck.IO.map`/`traverseList` (~20M, the H6.2 monad). F3 (front-end
+point-free merge) additionally intrinsifies the `<|` chains at the Mono
+level (MergeProbe: `partialMerges=2`, `eco.int.and` ×3); its census
+delta rides the eco-h61 artifact.
+
+Final F1+F2+F3 run (`eco-h61.mlir` — note: different workload, the
+compiler source now includes the H6.1/H6.2 code itself): creates
+405,020,772 / extends 140,416,526 / distinct 6,664; native output
+BYTE-IDENTICAL to the JS-hosted compiler's. F3's runtime effect is
+subsumed by F1/F2 (its value: `partialMerges` 5,188 → 6,125, `<|` chains
+intrinsify at Mono level, arg-to-global taxonomy −744). U0 (`function
+results:`): 1,211 function-typed-result specs; consumption = returned
+700 / let-bound 471 / applied 410 / arg 148 — ~60% of sites escape
+across function boundaries, confirming arity raising as the necessary
+H6.2 lever.
+
+**H6.3 V0 verdict**: post-F1/F2, generic-dispatch extend traffic is
+140M/544M events (~26%) but is now dominated by variable-HOF-arg
+partials — the class LSS stamp-coverage (V1/V2) addresses. Defer V1/V2
+until after an H6.2 that works, since raising would delete many of the
+same sites.
+
 ## Known measurement gotchas
 
 - The E2E harness compile cache is mtime-only and env/config-blind

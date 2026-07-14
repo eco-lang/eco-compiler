@@ -75,7 +75,16 @@ import Dict exposing (Dict)
     (interned globals/ctors/kernels, tail-def'd lambdas)
   - declinedShape: no candidate matches the site's callee layout / arg
     count / guard set (a PAP value would be the only inhabitant, or Char
-    captures)
+    captures). H6.0b splits it into sub-reasons (the sub-counters sum to
+    declinedShape):
+      - declinedShapeArity: argCount == 0 or first-stage arity mismatch —
+        the flowing value is (or would be) a PAP of the instance
+      - declinedShapeBucketMiss: no layout bucket for the site fingerprint
+      - declinedShapeLayout: bucket found but no group passes the
+        paramCount + eqLayout confirm
+      - declinedShapeChar: matching group has Char captures (i16 capture
+        load unexercised)
+      - declinedShapeNonArrow: callee type is not an arrow
   - declinedAbiMismatch: layout-compatible candidates disagree on capture
     layout (same source lambda capturing differently-typed environment
     per enclosing specialization)
@@ -86,6 +95,11 @@ type alias AbiCloningStats =
     , declinedBlocked : Int
     , declinedNoInstance : Int
     , declinedShape : Int
+    , declinedShapeArity : Int
+    , declinedShapeBucketMiss : Int
+    , declinedShapeLayout : Int
+    , declinedShapeChar : Int
+    , declinedShapeNonArrow : Int
     , declinedAbiMismatch : Int
 
     -- TEMP volume diagnostics (self-compile blowup hunt; remove before commit)
@@ -104,6 +118,11 @@ emptyStats =
     , declinedBlocked = 0
     , declinedNoInstance = 0
     , declinedShape = 0
+    , declinedShapeArity = 0
+    , declinedShapeBucketMiss = 0
+    , declinedShapeLayout = 0
+    , declinedShapeChar = 0
+    , declinedShapeNonArrow = 0
     , declinedAbiMismatch = 0
     , dbgNodesRebuilt = 0
     , dbgNodesSkipped = 0
@@ -1018,30 +1037,30 @@ resolveRepresentative calleeType argCount memberInfo =
         case calleeType of
             Mono.MFunction _ fargs fret ->
                 if argCount == 0 || List.length fargs /= argCount then
-                    Decline bumpShape
+                    Decline bumpShapeArity
 
                 else
                     case Dict.get (siteFingerprint fargs fret) memberInfo.buckets of
                         Nothing ->
-                            Decline bumpShape
+                            Decline bumpShapeBucketMiss
 
                         Just groups ->
                             resolveInGroups fargs fret argCount groups
 
             _ ->
-                Decline bumpShape
+                Decline bumpShapeNonArrow
 
 
 resolveInGroups : List Mono.MonoType -> Mono.MonoType -> Int -> List LayoutGroup -> Resolution
 resolveInGroups fargs fret argCount groups =
     case groups of
         [] ->
-            Decline bumpShape
+            Decline bumpShapeLayout
 
         g :: rest ->
             if g.paramCount == argCount && eqLayoutLists g.rep.paramTypes fargs && Mono.eqLayout g.rep.returnType fret then
                 if not g.charFree then
-                    Decline bumpShape
+                    Decline bumpShapeChar
 
                 else if g.unanimous then
                     Stamp g.rep
@@ -1083,13 +1102,41 @@ bumpNoInstance ctx =
     { ctx | stats = { stats | declinedNoInstance = stats.declinedNoInstance + 1 } }
 
 
-bumpShape : StampCtx -> StampCtx
-bumpShape ctx =
+{-| H6.0b: every shape decline bumps the aggregate AND one sub-reason, so
+the sub-counters always sum to declinedShape.
+-}
+bumpShapeWith : (AbiCloningStats -> AbiCloningStats) -> StampCtx -> StampCtx
+bumpShapeWith sub ctx =
     let
         stats =
             ctx.stats
     in
-    { ctx | stats = { stats | declinedShape = stats.declinedShape + 1 } }
+    { ctx | stats = sub { stats | declinedShape = stats.declinedShape + 1 } }
+
+
+bumpShapeArity : StampCtx -> StampCtx
+bumpShapeArity =
+    bumpShapeWith (\st -> { st | declinedShapeArity = st.declinedShapeArity + 1 })
+
+
+bumpShapeBucketMiss : StampCtx -> StampCtx
+bumpShapeBucketMiss =
+    bumpShapeWith (\st -> { st | declinedShapeBucketMiss = st.declinedShapeBucketMiss + 1 })
+
+
+bumpShapeLayout : StampCtx -> StampCtx
+bumpShapeLayout =
+    bumpShapeWith (\st -> { st | declinedShapeLayout = st.declinedShapeLayout + 1 })
+
+
+bumpShapeChar : StampCtx -> StampCtx
+bumpShapeChar =
+    bumpShapeWith (\st -> { st | declinedShapeChar = st.declinedShapeChar + 1 })
+
+
+bumpShapeNonArrow : StampCtx -> StampCtx
+bumpShapeNonArrow =
+    bumpShapeWith (\st -> { st | declinedShapeNonArrow = st.declinedShapeNonArrow + 1 })
 
 
 bumpAbiMismatch : StampCtx -> StampCtx

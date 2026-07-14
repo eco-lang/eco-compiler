@@ -3991,7 +3991,10 @@ generateIfWithTerminatedElse condCtx condVar thenRes elseRes resultMlirType cond
 {-| Approximate reverse mapping from MlirType to MonoType.
 Used for PendingLambda capture types where only MlirType is available.
 Correctly round-trips: monoTypeToAbi (mlirTypeToApproxMonoType t) == t
-for all ABI types (I64, F64, I32, ecoValue).
+for all ABI types (I64, F64, I16, ecoValue). Char is I16 (NOT I32 — a
+stale pre-i16-Char arm here typed escaped-taildef Char captures as boxed
+while the papCreate bitmap said i16, splitting the capture ABI of the
+outlined shell from its creation site).
 -}
 mlirTypeToApproxMonoType : MlirType -> Mono.MonoType
 mlirTypeToApproxMonoType mlirType =
@@ -4002,7 +4005,7 @@ mlirTypeToApproxMonoType mlirType =
         F64 ->
             Mono.MFloat
 
-        I32 ->
+        I16 ->
             Mono.MChar
 
         _ ->

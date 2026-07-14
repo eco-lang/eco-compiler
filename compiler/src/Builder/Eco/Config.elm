@@ -143,6 +143,11 @@ applyEnvOverrides cfg =
                 (Utils.envLookupEnv "ECO_INLINE_LOOPIFY" |> Task.mapError never)
                     |> Task.map (\loopVal -> applyLoopifyOverride loopVal cfg9)
             )
+        |> Task.andThen
+            (\cfg10 ->
+                (Utils.envLookupEnv "ECO_ARITY_RAISE" |> Task.mapError never)
+                    |> Task.map (\arVal -> applyArityRaiseOverride arVal cfg10)
+            )
 
 
 applyEngineOverride : Maybe String -> EcoConfig -> Task Exit.Make EcoConfig
@@ -329,6 +334,36 @@ applyLoopifyOverride maybeVal cfg =
                 cfg.inline
         in
         { cfg | inline = { inline | loopify = False } }
+
+    else
+        cfg
+
+
+{-| `ECO_ARITY_RAISE=1|true|yes`: enable H6.2 U2b staged-spec arity
+raising (experimental, default off). Participates in the config hash via
+the `ar=` token (present only when enabled).
+-}
+applyArityRaiseOverride : Maybe String -> EcoConfig -> EcoConfig
+applyArityRaiseOverride maybeVal cfg =
+    let
+        on =
+            case maybeVal of
+                Just v ->
+                    let
+                        t =
+                            String.toLower (String.trim v)
+                    in
+                    t == "1" || t == "true" || t == "yes"
+
+                Nothing ->
+                    False
+    in
+    if on then
+        let
+            inline =
+                cfg.inline
+        in
+        { cfg | inline = { inline | arityRaise = True } }
 
     else
         cfg

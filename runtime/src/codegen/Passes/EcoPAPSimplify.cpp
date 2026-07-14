@@ -379,7 +379,52 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
         }
 
         rewriter.replaceOp(extendOp, fusedOp.getResult());
-        // prevExtend will be DCE'd since it now has no uses
+        // Erase the orphaned intermediate explicitly: papExtend has no
+        // purity trait (a saturating extend calls code), so the driver's
+        // DCE can NEVER remove it — left in place it executes at runtime
+        // as an allocate-and-discard PAP and keeps the papCreate
+        // multi-use, blocking P1/P4 on the fused extend. Safe here: the
+        // single-use and not-saturated checks above prove it is a pure
+        // allocation whose only consumer was just rewritten away.
+        rewriter.eraseOp(prevExtend);
+        return success();
+    }
+};
+
+//===----------------------------------------------------------------------===//
+// Pattern P5: dead non-saturating papExtend removal
+//===----------------------------------------------------------------------===//
+//
+// Match:
+//   %r = eco.papExtend %c(%args...) { remaining_arity = K }   (K > args, %r unused)
+//
+// Erase it. A strictly non-saturating typed extend is a pure PAP
+// allocation — if the result is unused the allocation is pure waste that
+// no other DCE can remove (papExtend carries no purity trait because the
+// SATURATING form calls arbitrary code). Generic-mode extends (no
+// remaining_arity) may saturate at runtime and are never touched.
+//
+struct DeadPapExtendPattern : public OpRewritePattern<PapExtendOp> {
+    using OpRewritePattern::OpRewritePattern;
+
+    LogicalResult matchAndRewrite(PapExtendOp extendOp,
+                                  PatternRewriter &rewriter) const override {
+        if (!extendOp.getResult().use_empty())
+            return failure();
+
+        auto remainingArityAttr = extendOp.getRemainingArityAttr();
+        if (!remainingArityAttr)
+            return failure();  // Generic mode: may saturate (and call) at runtime
+
+        // Real newargs exclude the trailing GC root hints (same accounting
+        // as P1/P2).
+        unsigned rootCount = extendOp.getGCRoots().size();
+        int64_t realNewargCount =
+            static_cast<int64_t>(extendOp.getNewargs().size()) - rootCount;
+        if (realNewargCount >= remainingArityAttr.getInt())
+            return failure();  // Saturating (or over): calls code — never erase
+
+        rewriter.eraseOp(extendOp);
         return success();
     }
 };
@@ -409,6 +454,7 @@ struct EcoPAPSimplifyPass
         patterns.add<SaturatedPapToCallPattern>(ctx, symTable);
         patterns.add<FusePapExtendChainPattern>(ctx);
         patterns.add<MultiUsePapElisionPattern>(ctx, symTable);
+        patterns.add<DeadPapExtendPattern>(ctx);
         FrozenRewritePatternSet frozen(std::move(patterns));
 
         // P1/P2 root on eco.papExtend and P4 on eco.papCreate, so seed the

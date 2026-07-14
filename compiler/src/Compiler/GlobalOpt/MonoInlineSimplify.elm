@@ -1,4 +1,4 @@
-module Compiler.GlobalOpt.MonoInlineSimplify exposing (Metrics, optimize, buildBodyLookup, countClosures)
+module Compiler.GlobalOpt.MonoInlineSimplify exposing (Metrics, optimize, buildBodyLookup, countClosures, residualTaxonomy, functionResultCensus)
 
 {-| Mono IR Inliner and Simplifier.
 
@@ -182,6 +182,529 @@ countClosures (MonoGraph { nodes }) =
         nodes
 
 
+{-| H6.0c static residual taxonomy (`ECO_INLINE_REPORT=1`): classify every
+surviving expression-position `MonoClosure` by its CONSUMPTION CONTEXT, so
+the census says which mechanism gap dominates the residual allocations:
+
+  - `arg-to-loopifiable` — argument of a call to a spec H5 COULD loopify
+    (the call site failed qualification: non-literal, multi-stage lambda…)
+  - `arg-to-tailfunc` — argument to a tail-recursive spec H5 can't loopify
+    (cost / self-ref / param analysis)
+  - `arg-to-global` — argument to a plain function spec (`List.foldr`
+    class: non-tail recursion or general HOFs)
+  - `arg-to-ctor` / `arg-to-kernel` / `arg-to-local` — escaping into data
+    constructors, kernel calls, or dynamically-dispatched callees
+  - `stored-data` — element of a list / record / tuple literal
+  - `let-bound` — bound and kept (multi-use or escaping uses)
+  - `captured` — a literal directly in another closure's capture list
+  - `callee` — literal in callee position (pending beta — should be ~0)
+  - `tailcall-arg` / `value` / `other`
+
+Counts include closures nested inside other closures' bodies (they
+allocate when the outer body runs).
+-}
+residualTaxonomy : Config.InlineConfig -> MonoGraph -> List ( String, Int )
+residualTaxonomy inlineConfig (MonoGraph { nodes }) =
+    let
+        loopifiables =
+            buildLoopifiables inlineConfig nodes
+
+        specKind : Int -> String
+        specKind specId =
+            case Array.get specId nodes of
+                Just (Just (MonoTailFunc _ _ _)) ->
+                    if Dict.member specId loopifiables then
+                        "arg-to-loopifiable"
+
+                    else
+                        "arg-to-tailfunc"
+
+                Just (Just (MonoCtor _ _)) ->
+                    "arg-to-ctor"
+
+                Just (Just (MonoDefine _ _)) ->
+                    "arg-to-global"
+
+                _ ->
+                    "arg-to-other-spec"
+
+        bump bucket acc =
+            Dict.insert bucket (1 + Maybe.withDefault 0 (Dict.get bucket acc)) acc
+
+        -- `here` = the bucket a closure at THIS position would land in.
+        taxExpr : String -> MonoExpr -> Dict String Int -> Dict String Int
+        taxExpr here expr acc =
+            case expr of
+                MonoClosure info body _ ->
+                    let
+                        acc1 =
+                            bump here acc
+
+                        acc2 =
+                            List.foldl (\( _, ce, _ ) a -> taxExpr "captured" ce a) acc1 info.captures
+                    in
+                    taxExpr "value" body acc2
+
+                MonoCall _ func args _ _ ->
+                    let
+                        argBucket =
+                            case func of
+                                MonoVarGlobal _ specId _ ->
+                                    specKind specId
+
+                                MonoVarKernel _ _ _ _ _ ->
+                                    "arg-to-kernel"
+
+                                _ ->
+                                    "arg-to-local"
+
+                        acc1 =
+                            taxExpr "callee" func acc
+                    in
+                    List.foldl (taxExpr argBucket) acc1 args
+
+                MonoLet def body _ ->
+                    let
+                        acc1 =
+                            case def of
+                                Mono.MonoDef _ bound ->
+                                    taxExpr "let-bound" bound acc
+
+                                Mono.MonoTailDef _ _ bound ->
+                                    taxExpr "value" bound acc
+                    in
+                    taxExpr here body acc1
+
+                MonoIf branches final _ ->
+                    let
+                        acc1 =
+                            List.foldl (\( c, t ) a -> taxExpr "other" c (taxExpr here t a)) acc branches
+                    in
+                    taxExpr here final acc1
+
+                MonoCase _ _ decider branches _ ->
+                    let
+                        acc1 =
+                            taxDecider here decider acc
+                    in
+                    List.foldl (\( _, e ) a -> taxExpr here e a) acc1 branches
+
+                MonoDestruct _ inner _ ->
+                    taxExpr here inner acc
+
+                MonoList _ items _ ->
+                    List.foldl (taxExpr "stored-data") acc items
+
+                MonoRecordCreate fields _ ->
+                    List.foldl (\( _, e ) a -> taxExpr "stored-data" e a) acc fields
+
+                MonoRecordUpdate inner updates _ ->
+                    List.foldl (\( _, e ) a -> taxExpr "stored-data" e a) (taxExpr "other" inner acc) updates
+
+                MonoTupleCreate _ items _ ->
+                    List.foldl (taxExpr "stored-data") acc items
+
+                MonoTailCall _ entries _ ->
+                    List.foldl (\( _, e ) a -> taxExpr "tailcall-arg" e a) acc entries
+
+                _ ->
+                    acc
+
+        taxDecider here decider acc =
+            case decider of
+                Mono.Leaf (Mono.Inline e) ->
+                    taxExpr here e acc
+
+                Mono.Leaf (Mono.Jump _) ->
+                    acc
+
+                Mono.Chain _ success failure ->
+                    taxDecider here failure (taxDecider here success acc)
+
+                Mono.FanOut _ tests fallback ->
+                    taxDecider here fallback (List.foldl (\( _, d ) a -> taxDecider here d a) acc tests)
+
+        taxNode node acc =
+            case node of
+                MonoDefine (MonoClosure _ body _) _ ->
+                    taxExpr "value" body acc
+
+                MonoDefine expr _ ->
+                    taxExpr "value" expr acc
+
+                MonoTailFunc _ expr _ ->
+                    taxExpr "value" expr acc
+
+                MonoPortIncoming expr _ ->
+                    taxExpr "value" expr acc
+
+                MonoPortOutgoing expr _ ->
+                    taxExpr "value" expr acc
+
+                _ ->
+                    acc
+    in
+    Array.foldl
+        (\maybeNode acc ->
+            case maybeNode of
+                Just node ->
+                    taxNode node acc
+
+                Nothing ->
+                    acc
+        )
+        Dict.empty
+        nodes
+        |> Dict.toList
+        |> List.sortBy (\( _, n ) -> negate n)
+
+
+{-| H6.2 U0 (`ECO_INLINE_REPORT=1`): census of FUNCTION-TYPED-RESULT specs
+(`f : args -> (s -> r)` — the TypeCheck.IO monadic-bind shape) and how
+their saturated call results are consumed. Decision input for U2b
+result-arity raising: `applied` / `let-bound` sites are reachable by
+intra-function rewrites alone; everything else (returned / stored /
+passed on) needs the raised-worker ABI to collapse.
+
+Buckets: `fnres-specs` (spec population), then per saturated call site
+`fnres-applied` (callee position — result immediately applied),
+`fnres-let-bound`, `fnres-arg` (passed to another call), `fnres-stored`
+(data), `fnres-returned` (value position), `fnres-other`.
+-}
+functionResultCensus : MonoGraph -> List ( String, Int )
+functionResultCensus (MonoGraph { nodes }) =
+    let
+        fnResultSpecs : Dict Int Int
+        fnResultSpecs =
+            Array.foldl
+                (\maybeNode ( acc, specId ) ->
+                    case maybeNode of
+                        Just (MonoDefine (MonoClosure info body _) _) ->
+                            case Mono.typeOf body of
+                                Mono.MFunction _ _ _ ->
+                                    ( Dict.insert specId (List.length info.params) acc, specId + 1 )
+
+                                _ ->
+                                    ( acc, specId + 1 )
+
+                        _ ->
+                            ( acc, specId + 1 )
+                )
+                ( Dict.empty, 0 )
+                nodes
+                |> Tuple.first
+
+        bump bucket acc =
+            Dict.insert bucket (1 + Maybe.withDefault 0 (Dict.get bucket acc)) acc
+
+        siteBucket here =
+            case here of
+                "callee" ->
+                    "fnres-applied"
+
+                "let-bound" ->
+                    "fnres-let-bound"
+
+                "arg" ->
+                    "fnres-arg"
+
+                "stored" ->
+                    "fnres-stored"
+
+                "value" ->
+                    "fnres-returned"
+
+                _ ->
+                    "fnres-other"
+
+        cenExpr : String -> MonoExpr -> Dict String Int -> Dict String Int
+        cenExpr here expr acc =
+            case expr of
+                MonoCall _ func args _ _ ->
+                    let
+                        acc1 =
+                            case func of
+                                MonoVarGlobal _ specId _ ->
+                                    case Dict.get specId fnResultSpecs of
+                                        Just nParams ->
+                                            if List.length args == nParams then
+                                                bump (siteBucket here) acc
+
+                                            else
+                                                acc
+
+                                        Nothing ->
+                                            acc
+
+                                _ ->
+                                    acc
+
+                        acc2 =
+                            cenExpr "callee" func acc1
+                    in
+                    List.foldl (cenExpr "arg") acc2 args
+
+                MonoClosure _ body _ ->
+                    cenExpr "value" body acc
+
+                MonoLet def body _ ->
+                    let
+                        acc1 =
+                            case def of
+                                Mono.MonoDef _ bound ->
+                                    cenExpr "let-bound" bound acc
+
+                                Mono.MonoTailDef _ _ bound ->
+                                    cenExpr "value" bound acc
+                    in
+                    cenExpr here body acc1
+
+                MonoIf branches final _ ->
+                    let
+                        acc1 =
+                            List.foldl (\( c, t ) a -> cenExpr "other" c (cenExpr here t a)) acc branches
+                    in
+                    cenExpr here final acc1
+
+                MonoCase _ _ decider branches _ ->
+                    let
+                        acc1 =
+                            cenDecider here decider acc
+                    in
+                    List.foldl (\( _, e ) a -> cenExpr here e a) acc1 branches
+
+                MonoDestruct _ inner _ ->
+                    cenExpr here inner acc
+
+                MonoList _ items _ ->
+                    List.foldl (cenExpr "stored") acc items
+
+                MonoRecordCreate fields _ ->
+                    List.foldl (\( _, e ) a -> cenExpr "stored" e a) acc fields
+
+                MonoRecordUpdate inner updates _ ->
+                    List.foldl (\( _, e ) a -> cenExpr "stored" e a) (cenExpr "other" inner acc) updates
+
+                MonoTupleCreate _ items _ ->
+                    List.foldl (cenExpr "stored") acc items
+
+                MonoTailCall _ entries _ ->
+                    List.foldl (\( _, e ) a -> cenExpr "arg" e a) acc entries
+
+                _ ->
+                    acc
+
+        cenDecider here decider acc =
+            case decider of
+                Mono.Leaf (Mono.Inline e) ->
+                    cenExpr here e acc
+
+                Mono.Leaf (Mono.Jump _) ->
+                    acc
+
+                Mono.Chain _ success failure ->
+                    cenDecider here failure (cenDecider here success acc)
+
+                Mono.FanOut _ tests fallback ->
+                    cenDecider here fallback (List.foldl (\( _, d ) a -> cenDecider here d a) acc tests)
+
+        cenNode node acc =
+            case node of
+                MonoDefine (MonoClosure _ body _) _ ->
+                    cenExpr "value" body acc
+
+                MonoDefine expr _ ->
+                    cenExpr "value" expr acc
+
+                MonoTailFunc _ expr _ ->
+                    cenExpr "value" expr acc
+
+                _ ->
+                    acc
+    in
+    Array.foldl
+        (\maybeNode acc ->
+            case maybeNode of
+                Just node ->
+                    cenNode node acc
+
+                Nothing ->
+                    acc
+        )
+        (Dict.singleton "fnres-specs" (Dict.size fnResultSpecs))
+        nodes
+        |> Dict.toList
+        |> List.sortBy (\( _, n ) -> negate n)
+
+
+{-| H6.1 F3: arity of a global-bodied point-free alias, chasing at most
+`fuel` links (alias-of-alias chains are short; cycles are cut by fuel).
+Kernel-bodied links use the FLAT arity — the convention the emitted
+wrapper spec and papCreate `arity` attr already use.
+-}
+aliasArity : Array (Maybe MonoNode) -> Int -> Int -> Maybe Int
+aliasArity nodes fuel specId =
+    if fuel <= 0 then
+        Nothing
+
+    else
+        case Array.get specId nodes of
+            Just (Just (MonoDefine (MonoClosure info _ _) _)) ->
+                Just (List.length info.params)
+
+            Just (Just (MonoTailFunc params _ _)) ->
+                Just (List.length params)
+
+            Just (Just (MonoDefine (MonoVarKernel _ _ _ _ kernelType) _)) ->
+                let
+                    n =
+                        flatArrowArity kernelType
+                in
+                if n > 0 then
+                    Just n
+
+                else
+                    Nothing
+
+            Just (Just (MonoDefine (MonoVarGlobal _ target _) _)) ->
+                aliasArity nodes (fuel - 1) target
+
+            _ ->
+                Nothing
+
+
+{-| H6.2 U2b (`ECO_ARITY_RAISE=1`, default off): uncurry a staged spec —
+`MonoDefine (MonoClosure [p…] body) : … -> (s… -> r)` becomes a FLAT
+`MonoClosure [p… ++ s…]` — when its stage-1 work is trivial (body IS a
+closure literal: the `andThen f ma = \s0 -> …` combinator shape) or cheap
+(body is a call within the inline threshold: the `unify a b =
+andThen … (…)` solver shape, wrapped as `MonoCall body svars` for the
+merge arm to collapse).
+
+Why this is the H6.2 lever: bind continuations escape because the state
+application happens in the CALLER. Raising moves the application point
+INTO each raised spec, where the existing merge / ForwardPartialCall /
+inline+beta fixpoint collapses the chain. Existing call sites need no
+rewrite: a saturated-at-old-arity call is simply a strictly-partial call
+of the raised spec (a PAP — the same single allocation the closure cost
+today), and `annotateCallStaging` re-derives all staging AFTER this pass.
+The raised closure clears srcLambda/closureKind/captureAbi (LSS_009 — the
+reshaped closure must not impersonate its source member). The hand-eta'd
+`TypeCheck.IO.map`/`foldrM` prove the raised shape is fully supported
+downstream — this pass mechanizes that source idiom.
+
+Semantics note (why default-off): delaying a cheap PURE stage-1 body to
+application time is unobservable in Elm except for ⊥ timing (crash moves
+to first application) and `Debug.log` ordering.
+-}
+raiseStagedSpecs : Config.InlineConfig -> Array (Maybe MonoNode) -> Array (Maybe MonoNode)
+raiseStagedSpecs inlineConfig nodes =
+    Array.foldl
+        (\maybeNode ( acc, specId ) ->
+            case maybeNode of
+                Just (MonoDefine (MonoClosure info body cty) defTy) ->
+                    case raiseOne inlineConfig specId info body cty defTy of
+                        Just raised ->
+                            ( Array.push (Just raised) acc, specId + 1 )
+
+                        Nothing ->
+                            ( Array.push maybeNode acc, specId + 1 )
+
+                _ ->
+                    ( Array.push maybeNode acc, specId + 1 )
+        )
+        ( Array.empty, 0 )
+        nodes
+        |> Tuple.first
+
+
+raiseOne : Config.InlineConfig -> Int -> Mono.ClosureInfo -> MonoExpr -> Mono.MonoType -> Mono.MonoType -> Maybe MonoNode
+raiseOne inlineConfig specId info body cty defTy =
+    case ( flattenArrowOnce cty, flattenArrowOnce defTy ) of
+        ( Just ctyFlat, Just defTyFlat ) ->
+            case body of
+                MonoClosure innerInfo innerBody _ ->
+                    -- Combinator shape: splice the inner body directly. The
+                    -- inner params are already distinct from the outer ones
+                    -- (same source function — Elm forbids shadowing), so no
+                    -- freshening is needed.
+                    Just
+                        (MonoDefine
+                            (MonoClosure
+                                { info
+                                    | params = info.params ++ innerInfo.params
+                                    , srcLambda = Nothing
+                                    , closureKind = Nothing
+                                    , captureAbi = Nothing
+                                }
+                                innerBody
+                                ctyFlat
+                            )
+                            defTyFlat
+                        )
+
+                MonoCall region _ _ _ _ ->
+                    -- Call shape: apply the old body to fresh stage-2 params.
+                    -- The nested application is exactly what the merge arm
+                    -- collapses in the fixpoint. Deliberately NOT
+                    -- cost-bounded: bind-chain bodies carry closure-literal
+                    -- args (cost 5+body each), so any real chain blows a
+                    -- static bound — yet that construction work is exactly
+                    -- what collapses once the chain merges. The residual risk
+                    -- (an ESCAPING multi-applied staged value re-runs its
+                    -- cheap pure stage-1 per application) is the experiment
+                    -- this flag exists to measure.
+                    case Mono.typeOf body of
+                        Mono.MFunction _ stageTys retTy ->
+                            let
+                                freshParams =
+                                    List.indexedMap
+                                        (\i ty -> ( "_h62ar" ++ String.fromInt specId ++ "_" ++ String.fromInt i, ty ))
+                                        stageTys
+
+                                argRefs =
+                                    List.map (\( n, ty ) -> MonoVarLocal n ty) freshParams
+                            in
+                            Just
+                                (MonoDefine
+                                    (MonoClosure
+                                        { info
+                                            | params = info.params ++ freshParams
+                                            , srcLambda = Nothing
+                                            , closureKind = Nothing
+                                            , captureAbi = Nothing
+                                        }
+                                        (MonoCall region body argRefs retTy Mono.defaultCallInfo)
+                                        ctyFlat
+                                    )
+                                    defTyFlat
+                                )
+
+                        _ ->
+                            Nothing
+
+                _ ->
+                    Nothing
+
+        _ ->
+            Nothing
+
+
+{-| H6.2 U2b: flatten one stage boundary of an arrow type. The inner
+stage's lambda-set annotation is dropped — the raised closure is a new
+shape with no source member to claim (annotation soundness over
+precision).
+-}
+flattenArrowOnce : Mono.MonoType -> Maybe Mono.MonoType
+flattenArrowOnce ty =
+    case ty of
+        Mono.MFunction anno stage1 (Mono.MFunction _ stage2 ret) ->
+            Just (Mono.MFunction anno (stage1 ++ stage2) ret)
+
+        _ ->
+            Nothing
+
+
 {-| Optimize a MonoGraph by inlining small functions and simplifying expressions.
 -}
 optimize : Config.InlineConfig -> MonoGraph -> ( MonoGraph, Metrics )
@@ -190,17 +713,33 @@ optimize inlineConfig graph =
         (MonoGraph { nodes, main, registry, ctorShapes, nextLambdaIndex, callEdges, ports, flagsDecoder }) =
             graph
 
+        rNodes =
+            if inlineConfig.arityRaise then
+                -- Raising erases inner lambdas whose lambda-set annotations
+                -- still live on USE-site types (loadType-minted arrows) —
+                -- AbiCloning would stamp fast dispatch for members that no
+                -- longer exist and the runtime would misread the actual PAP
+                -- (found live: RaiseProbe returned garbage via a stale
+                -- `_capture_abi` stamp). Widen every anno to LTop flag-on:
+                -- annotation soundness over dispatch precision.
+                Array.map
+                    (Maybe.map (Traverse.mapNodeTypes Mono.widenSets))
+                    (raiseStagedSpecs inlineConfig nodes)
+
+            else
+                nodes
+
         callGraph =
-            buildCallGraph nodes callEdges
+            buildCallGraph rNodes callEdges
 
         ctx =
-            initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex
+            initRewriteCtx inlineConfig rNodes registry callGraph nextLambdaIndex
 
         -- Convert nodes to a list so the Array can be GC'd during the fold.
         -- List.foldl releases consumed cons cells, enabling incremental GC
         -- of the input graph while building the output graph.
         nodesList =
-            Array.toList nodes
+            Array.toList rNodes
     in
     -- Call a separate function so `nodes` (Array) goes out of scope
     -- and becomes GC-eligible. Only `nodesList` is passed forward.
@@ -1540,6 +2079,36 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
                         Just (MonoTailFunc params _ _) ->
                             ( Dict.insert specId (List.length params) acc, specId + 1 )
 
+                        -- H6.1 F3: point-free specs. A kernel alias
+                        -- (`and = Elm.Kernel.Bitwise.and`) or a global alias
+                        -- (`userAnd = Bitwise.and`) has no closure literal, so
+                        -- the closure/tailfunc arms above never record it and
+                        -- `<|`-styled partials of it can never merge — the
+                        -- Array.setHelp papCreate+extend+extend chains of the
+                        -- H6.0 census. Kernel-bodied: the annotation's first
+                        -- stage is the kernel's real parameter list (deeper
+                        -- stages are the kernel's own business — never merged
+                        -- past stage one). Global-bodied: chase the alias,
+                        -- bounded.
+                        Just (MonoDefine (MonoVarKernel _ _ _ _ kernelType) _) ->
+                            let
+                                n =
+                                    flatArrowArity kernelType
+                            in
+                            if n > 0 then
+                                ( Dict.insert specId n acc, specId + 1 )
+
+                            else
+                                ( acc, specId + 1 )
+
+                        Just (MonoDefine (MonoVarGlobal _ target _) _) ->
+                            case aliasArity nodes 4 target of
+                                Just n ->
+                                    ( Dict.insert specId n acc, specId + 1 )
+
+                                Nothing ->
+                                    ( acc, specId + 1 )
+
                         _ ->
                             ( acc, specId + 1 )
                 )
@@ -2782,6 +3351,28 @@ forwardInChain ctx spine finalBody =
                                 Nothing ->
                                     skip ()
 
+                        Mono.MonoDef name ((MonoCall _ ((MonoVarKernel _ _ _ _ _) as funcExpr) boundArgs _ _) as boundCall) ->
+                            -- H6.1 F3: same rule for a strictly-partial KERNEL
+                            -- call — point-free kernel aliases inline to a bare
+                            -- VarKernel, so the `<|`-partial (`Bitwise.and
+                            -- bitMask <| …` in elm/core Array internals) binds
+                            -- exactly this shape. Merging within the first
+                            -- stage re-saturates it onto the intrinsics path.
+                            case calleeArity c funcExpr of
+                                Just arity ->
+                                    if
+                                        List.length boundArgs
+                                            < arity
+                                            && List.all isPureExpr boundArgs
+                                    then
+                                        attempt name boundCall (ForwardPartialCall funcExpr boundArgs arity) bumpPartialMerges
+
+                                    else
+                                        skip ()
+
+                                Nothing ->
+                                    skip ()
+
                         _ ->
                             skip ()
 
@@ -3015,6 +3606,23 @@ calleeArity ctx funcExpr =
 
         MonoVarGlobal _ specId _ ->
             Dict.get specId ctx.specArities
+
+        MonoVarKernel _ _ _ _ kernelType ->
+            -- H6.1 F3: partials with a bare kernel callee. Kernel types are
+            -- stored STAGED (`Int -> (Int -> Int)`), but emission flattens —
+            -- the wrapper spec and the papCreate `arity` attr both use
+            -- flatArrowArity — so the FLAT arity is the correct merge bound:
+            -- a merged saturated call reproduces exactly the shape a direct
+            -- source-level saturated call takes (intrinsics included).
+            let
+                n =
+                    flatArrowArity kernelType
+            in
+            if n > 0 then
+                Just n
+
+            else
+                Nothing
 
         _ ->
             Nothing
