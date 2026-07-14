@@ -69,6 +69,67 @@ Key confirmations against the plan's diagnosis:
   table here (needs the bootstrap chain; several minutes). This is the
   H2-targeting input.
 
+## H2 matrix (2026-07-13, JS-hosted compiler self-compile to MLIR)
+
+Workload: `build/compiler/build-kernel` (`src/Terminal/Main.elm`,
+`--local-package eco/kernel=/work/eco-kernel-cpp`,
+`NODE_OPTIONS=--max-old-space-size=12288`). "Warm" = second consecutive run
+of the same config (a config flip rewrites `d.dat` and forces a full
+front-end recompile, so interleaved runs are cold-only).
+
+| config | warm wall | inlined | betaForwards | closuresRemaining | .mlir size |
+|---|---|---|---|---|---|
+| hofThreshold=10 | 93.4 s | 63,460 | 1,160 | 14,525 | 12.00 MB |
+| hofThreshold=25 | 98.8 s | 65,450 | 1,571 | 15,894 | 12.32 MB (+2.7%) |
+| hofThreshold=40 | 98.4 s | 73,408 | 2,154 | 19,004 | 13.15 MB (+9.6%) |
+| hof=25, fpi=6 | — | — | — | — | OOM at 14 GB node heap |
+
+~~Cold interleaved timing showed no compile-time signal~~ — **RETRACTED**:
+all four interleaved runs OOM-crashed (12 GB node heap is insufficient for
+COLD self-compiles; `/usr/bin/time` still prints a wall line). Cold runs
+need `--max-old-space-size=14336`; interleaved timing is impossible on this
+host anyway because a config flip forces a cold run.
+
+The upper matrix rows predate the `exactOnly` soundness containment
+(hofBudget candidates inline at exact application only — the partial
+rebuild's re-staged closure trips the runtime typed-apply arity assert,
+`spliceArgsForSaturatedCall`; CombinatorB*/SolverLayoutStepMonadTest pins).
+Most of hof=25's +35% betaForwards came from the unsound partial path.
+Final numbers, all H2 machinery in (warm = 2nd consecutive same-config run):
+
+| config (final) | warm wall | inlined | betaForwards | closuresRemaining | .mlir size |
+|---|---|---|---|---|---|
+| hofThreshold=10 | 95.9 s | 63,470 | 1,392 | 14,094 | 11.90 MB |
+| hofThreshold=25 | 100.7 s | 63,666 | 1,418 | 14,118 | 11.91 MB (+0.11%) |
+
+(baseline betaForwards rose 1,160 → 1,392 from the threshold-independent
+H2.0 machinery: case-body inlining, let-of-closure flattening, let-callee
+hoisting.)
+
+**Decision: default `hofThreshold = 25`.** On the pipe-heavy self-compile
+workload the incremental win is small (+1.9% betaForwards) because
+`m |> andThen λ` partially applies `andThen` and exactOnly blocks it; on
+direct-application HOF code the collapse is total (AndThenProbe direct
+chain: zero papCreate, pinned in the corpus under the default). Costs:
++0.11% size, warm-wall delta +5.0 s on single samples (run-to-run noise
+≈ ±3 s — treat as ≤5%, unconfirmed). 40 rejected (+9.6% size pre-exactOnly);
+fpi=6 rejected (OOM even at 14 GB heap). The pipe-shape win unlocks when
+the partial-rebuild staging fix lands (plan H2 follow-up).
+
+Notes:
+- `closuresRemaining` RISES with the budget: inlining duplicates the
+  closure-creation SITES of data-escaping callbacks (Bytes.Decode-style
+  bodies). Static sites ≠ dynamic allocations; the dynamic self-compile
+  census (ECO_CLOSURE_STATS on a native stage-7a run) remains the pending
+  measurement for the true allocation delta.
+- The corpus-wide dynamic census via the JIT harness does NOT work: JIT
+  test allocations don't aggregate into the parent process census (only
+  in-process unit-test allocs appear). Use AOT binaries.
+- The first matrix runs OOM'd node's default heap and dumped ~47 GB of core
+  files into `build/compiler/build-kernel/`, filling the disk and silently
+  truncating corpus artifacts ("Symbols not found: _mlir_main" failures).
+  If self-compile runs abort, check `core.*` and `df` FIRST.
+
 ## Known measurement gotchas
 
 - The E2E harness compile cache is mtime-only and env/config-blind

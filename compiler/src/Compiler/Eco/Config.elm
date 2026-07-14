@@ -105,6 +105,10 @@ defaultLss =
 
   - `whitelist` is **additive**: appended to the built-in `defaultWhitelist`.
   - `blacklist` is subtracted from the effective whitelist afterward.
+  - `hofThreshold` is the cost budget for candidates with a CALLED
+    function-typed parameter (HOFs whose lambda argument beta-reduces away
+    at the call site — plan H2). The effective budget is
+    `max threshold hofThreshold`, so it can only widen eligibility.
   - `report` renders the inline census to stderr after the pass
     (`ECO_INLINE_REPORT=1`); output-only, never affects `hash`.
 
@@ -115,6 +119,7 @@ type alias InlineConfig =
     , blacklist : List String
     , maxPerFunction : Int
     , fixpointIterations : Int
+    , hofThreshold : Int
     , report : Bool
     }
 
@@ -146,6 +151,11 @@ default =
         , blacklist = []
         , maxPerFunction = 1000
         , fixpointIterations = 4
+
+        -- H2 matrix (2026-07-13, self-compile workload): 25 gives +35%
+        -- betaForwards over 10 at +2.7% code size and no measurable
+        -- compile-time cost; 40 costs +9.6% size for the next step.
+        , hofThreshold = 25
         , report = False
         }
     , bytesFusion = { enabled = True }
@@ -178,6 +188,7 @@ inlineDecoder =
         |> D.apply (D.optionalField "blacklist" (D.list D.string) default.inline.blacklist)
         |> D.apply (D.optionalField "maxPerFunction" D.int default.inline.maxPerFunction)
         |> D.apply (D.optionalField "fixpointIterations" D.int default.inline.fixpointIterations)
+        |> D.apply (D.optionalField "hofThreshold" D.int default.inline.hofThreshold)
         |> D.apply (D.optionalField "report" D.bool default.inline.report)
 
 
@@ -283,6 +294,7 @@ hash cfg =
          , "bl=" ++ String.join "," cfg.inline.blacklist
          , "mpf=" ++ String.fromInt cfg.inline.maxPerFunction
          , "fpi=" ++ String.fromInt cfg.inline.fixpointIterations
+         , "hthr=" ++ String.fromInt cfg.inline.hofThreshold
          , "bf="
             ++ (if cfg.bytesFusion.enabled then
                     "1"

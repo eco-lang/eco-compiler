@@ -1,6 +1,6 @@
 # HOF Elimination — Closure Allocation Reduction
 
-**Status:** H0 + H1 IMPLEMENTED + GATED 2026-07-13 (E2E 1595/1595; elm-tests at baseline 12991/12; baselines in `benchmarks/closure-census-baseline.md` — self-compile dynamic census still pending). H2+ not started.
+**Status:** H0 + H1 + H2 IMPLEMENTED 2026-07-14 (baselines + H2 matrix in `benchmarks/closure-census-baseline.md` — native-stage-7a dynamic census still pending). H2 shipped: case-body inlining (H2.0 guard lift + cost-model decider fix), let-of-closure flattening, let-callee hoisting, `hofThreshold` (called-param heuristic, default 25, hofBudget candidates exact-application-only per lesson 4), `ECO_INLINE_HOF_THRESHOLD`/`ECO_INLINE_FPI` env knobs. fpi stays 4 (6 OOMs the JS-hosted self-compile). **Next highest-leverage item: the partial-rebuild staging fix (lesson 4) — unlocks pipe-shaped HOF collapse.** H3+ not started.
 **Date:** 2026-07-13
 **Input:** `/work/hof-elimination.md` (prioritized suggestions), deep code investigation (this doc supersedes the suggestion list)
 **Goal:** Greatly reduce the number of closures allocated at runtime (`eco_alloc_closure` executions), measured on the self-compile workload and the E2E corpus.
@@ -197,6 +197,99 @@ analysis of letrec chains" as a suspect pattern in H2+ work.
 ---
 
 ### H2 — HOF-aware inlining budget
+
+#### H2.0 — Lift the case-body inlining refusal (INVESTIGATED 2026-07-13; prework, do first)
+
+`getInlinableBody` refuses closures whose body is a `MonoCase`
+(`MonoInlineSimplify.elm`, `isCase`), with the comment "eco.case … is a
+terminator (no result value)". **That rationale is stale.** Verified against
+dialect, codegen, and runtime behavior:
+
+- `eco.case` is a VALUE-PRODUCING expression op, not a terminator:
+  `Ops.td:268–331` (`SingleBlockImplicitTerminator<YieldOp>`, variadic
+  results, no `Terminator` trait). The verifier enforces it
+  (`EcoOps.cpp:130–288`): ≥1 result (void cases rejected), every alternative
+  ends in `eco.yield` (never `eco.return`/`jump`/`crash`), yield operand
+  types equal result types. Invariants CGEN_010/037/043/045/046/047/048/053/054
+  are all marked enforced. Lowering materializes results as merge-block
+  arguments (`EcoToLLVMControlFlow.cpp:147–291`, `eco.yield` → `cf.br`).
+- Cases compile AND RUN in every expression position: function tail,
+  let-bound, arithmetic operand, call argument — pinned by the new corpus
+  test `test/elm/src/CasePositionProbe.elm` (mid-block
+  `%9 = eco.case(…) : (!eco.value) -> i64` feeding `eco.int.add`; JIT-green).
+  The "MonoCase-TAIL" assumption in `eco-case-terminator-design.md` describes
+  the pre-`eco-case-yield` world; the yield design is what's implemented.
+- Guard-lift experiment (temporary edit, reverted): with `Maybe.andThen`
+  whitelisted, andThen inlines mechanically and a DIRECT saturated chain
+  `andThen λ (andThen λ (parse n))` collapses COMPLETELY — `betaForwards=3`,
+  zero papCreate/papExtend, pure nested value-producing cases — and runs
+  correctly (`test/elm/src/AndThenProbe.elm`, kept as a behavioral corpus
+  pin; its full collapse re-activates when H2.0 lands). `substitute` already
+  renames the MonoCase scrutinee/root names and decider (:1528–1545), so
+  beta-substitution over case bodies is sound.
+- **Gap found — the pipe shape needs one more rewrite.** `m |> Maybe.andThen λ`
+  reaches the inliner as a PARTIAL andThen application; `tryInlineCall`'s
+  partial branch rebuilds it as a let-wrapped closure
+  (`MonoDef f (MonoLet cb λ (MonoClosure …))`), which H1's forwarding cannot
+  match (it requires a closure LITERAL). Result: 0 forwards, closures remain.
+  Fix: **let-of-closure flattening** — rewrite
+  `let f = (let cb = λ in clo) in body` ⇒ `let cb = λ; f = clo in body`
+  (closure creation is pure; binding order d, clo is preserved), after which
+  the existing forward+beta chain collapses the pipe shape too. Implement
+  chain-level next to `forwardInChain`; this composes with lesson 2's
+  let-callee hoisting follow-up but does not require it.
+
+Work items (in order):
+
+1. Remove the `isCase` refusals in `getInlinableBody` (closure-body and
+   parameterless-define arms) and fix the stale `isCase` doc comment. Keep
+   the case filter for `buildBodyLookup`'s consumer (the bytes-fusion
+   reifier beta-reduces those bodies at reify time — verify its tolerance
+   separately or filter at its call site).
+2. Add let-of-closure flattening (chain-level rewrite in MonoInlineSimplify).
+3. Adversarial tests beyond the two probes already landed: (a) a
+   STRING-case-bodied helper inlined under an outer case —
+   `EcoToLLVMControlFlow.cpp:105–110` rejects nested string cases inside
+   SCF-converted outer cases via dynamic legality, the one real dialect
+   caveat found; (b) int/chr/bool `case_kind` bodies inlined into expression
+   positions; (c) a case-bodied helper inlined into a tail-recursive loop
+   under GC pressure.
+4. Gate: touch-all-.elm + `--target full`; elm-tests (12991/12 baseline);
+   census delta — expect the monadic-spine drop this phase exists for.
+
+Per the direction set for this work: NO name-based special-casing of
+`andThen` in the general path. The guard lift + flattening is fully general
+over `MonoCase` bodies. Intrinsics for specific `elm/*` functions remain a
+fallback ONLY if a blocker emerges (none did in this investigation).
+
+**Implementation lesson 4 (found by the H2 gate, 2026-07-13/14):** raising
+the budget surfaced the partial-rebuild soundness gap as a RUNTIME
+miscompile: `tryInlineCall`'s partial branch rebuilds a re-staged closure
+(fresh single-stage `MFunction`, fresh lambdaId) whose arity metadata the
+runtime typed-apply path cannot chain when a caller over-applies it —
+`spliceArgsForSaturatedCall` assertion; `CombinatorB*` (point-free S/K
+combinators) and `SolverLayoutStepMonadTest` are the pins. Containment
+shipped: hofBudget-admitted candidates are **exact-application-only**
+(`exactOnly` in the candidates index); legacy (≤ threshold) and whitelisted
+candidates keep pre-H2 privileges. Consequences: (a) the pipe shape
+`m |> andThen λ` does NOT collapse yet (partial application of an exactOnly
+candidate) — most of the self-compile spine is pipe-shaped, so hof=25's
+measured win dropped from +35% to +1.9% betaForwards; (b) fixing the
+partial-rebuild staging/typing (one bug, three manifestations: forwarding
+ground-result guard, CGEN_056 elm-tests fixtures, this assert) is now THE
+highest-leverage single fix in the whole plan — it unlocks pipe-shaped
+collapse everywhere and lets three guards relax. Also: let-callee hoisting
+(lesson 2's follow-up (b)) SHIPPED as part of this fix round.
+
+**Implementation lesson 3 (found while landing H2.0, 2026-07-13):** the cost
+model had a hole the case guard was masking — `computeCost` for `MonoCase`
+summed only the JUMP-table branches, not the decider's `Inline` leaf bodies,
+so any case-bodied function cost ~3 regardless of size and `Maybe.andThen`
+inlined at threshold 10 the moment the guard lifted. Fixed with
+`computeCostDecider` (Inline leaves counted, 1 per Chain/FanOut node).
+General rule: lifting a categorical guard can expose every downstream model
+that the guard was accidentally protecting — audit cost/eligibility models
+that mention the guarded construct before lifting.
 
 **Design.** Don't raise the global threshold (inflates all code). Add a second budget for callees where beta-reduction potential exists:
 

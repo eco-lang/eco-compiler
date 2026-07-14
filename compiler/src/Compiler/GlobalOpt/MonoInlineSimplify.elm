@@ -105,7 +105,17 @@ buildBodyLookup (MonoGraph { nodes, callEdges }) =
                                 ( accDict, specId + 1 )
 
                             Just ( params, body ) ->
-                                ( Dict.insert specId ( params, body ) accDict, specId + 1 )
+                                -- Keep case bodies out of THIS lookup even
+                                -- though the inliner proper accepts them
+                                -- (H2.0): the consumer is the bytes-fusion
+                                -- reifier's reify-time beta-reducer, whose
+                                -- tolerance for case bodies has not been
+                                -- verified.
+                                if isCase body then
+                                    ( accDict, specId + 1 )
+
+                                else
+                                    ( Dict.insert specId ( params, body ) accDict, specId + 1 )
         )
         ( Dict.empty, 0 )
         nodes
@@ -592,8 +602,12 @@ computeCost expr =
         MonoDestruct _ inner _ ->
             2 + computeCost inner
 
-        MonoCase _ _ _ branches _ ->
-            3 + sumBy (\( _, e ) -> computeCost e) branches
+        MonoCase _ _ decider branches _ ->
+            -- Count the decider's Inline leaf bodies too: they are real code,
+            -- and before the H2.0 case-guard lift this hole was masked (case
+            -- bodies never inlined). Without it a case whose branches all
+            -- live in Inline leaves costs 3 regardless of size.
+            3 + computeCostDecider decider + sumBy (\( _, e ) -> computeCost e) branches
 
         MonoRecordCreate fields _ ->
             3 + sumBy (\( _, e ) -> computeCost e) fields
@@ -618,6 +632,24 @@ computeCostDef def =
             computeCost bound
 
 
+computeCostDecider : Mono.Decider Mono.MonoChoice -> Int
+computeCostDecider decider =
+    case decider of
+        Mono.Leaf (Mono.Inline e) ->
+            computeCost e
+
+        Mono.Leaf (Mono.Jump _) ->
+            0
+
+        Mono.Chain _ success failure ->
+            1 + computeCostDecider success + computeCostDecider failure
+
+        Mono.FanOut _ tests fallback ->
+            1
+                + sumBy (\( _, d ) -> computeCostDecider d) tests
+                + computeCostDecider fallback
+
+
 
 -- ============================================================================
 -- ====== REWRITE CONTEXT ======
@@ -625,7 +657,14 @@ computeCostDef def =
 
 
 type alias RewriteCtx =
-    { inlineCandidates : Dict Int ( List ( Name, Mono.MonoType ), MonoExpr )
+    -- (params, body, exactOnly): exactOnly candidates were admitted via the
+    -- H2 hofBudget (cost above the general threshold, not whitelisted) and
+    -- may inline at EXACT application only — the partial-application rebuild
+    -- produces a re-staged closure whose runtime arity metadata the typed
+    -- over-application path cannot chain (spliceArgsForSaturatedCall assert;
+    -- CombinatorB* corpus pins). Legacy and whitelisted candidates keep full
+    -- pre-H2 privileges.
+    { inlineCandidates : Dict Int ( List ( Name, Mono.MonoType ), MonoExpr, Bool )
     , registry : Mono.SpecializationRegistry
     , whitelist : InlineWhitelist
     , maxInlinesPerFunction : Int
@@ -711,6 +750,49 @@ recordInline specId ctx =
     }
 
 
+{-| H2 "called-param" heuristic: does the candidate have a function-typed
+parameter that appears in CALLEE position in its body? Such candidates get
+the wider `hofThreshold` budget — inlining them lets a lambda argument
+beta-reduce away at the call site (`Maybe.andThen`-style case+call bodies).
+A function-typed param that is merely STORED (a `Task.andThen`-style body
+that tucks the callback into a structure) does not qualify: inlining those
+is pure code growth, the lambda escapes into data either way.
+
+The callee check is name-based without shadow tracking — sound as a
+heuristic: canonicalization forbids shadowing, and a false positive merely
+widens one candidate's budget.
+-}
+hasCalledFunctionParam : List ( Name, Mono.MonoType ) -> MonoExpr -> Bool
+hasCalledFunctionParam params body =
+    let
+        funcParams =
+            List.filterMap
+                (\( n, pt ) ->
+                    case pt of
+                        Mono.MFunction _ _ _ ->
+                            Just n
+
+                        _ ->
+                            Nothing
+                )
+                params
+    in
+    not (List.isEmpty funcParams)
+        && Traverse.foldExpr
+            (\e acc ->
+                acc
+                    || (case e of
+                            MonoCall _ (MonoVarLocal n _) _ _ _ ->
+                                List.member n funcParams
+
+                            _ ->
+                                False
+                       )
+            )
+            False
+            body
+
+
 initRewriteCtx : Config.InlineConfig -> Array (Maybe MonoNode) -> Mono.SpecializationRegistry -> CallGraph -> Int -> RewriteCtx
 initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
     let
@@ -720,6 +802,11 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
             List.filter
                 (\name -> not (List.member name inlineConfig.blacklist))
                 (defaultWhitelist ++ inlineConfig.whitelist)
+
+        -- H2: budget for candidates with a CALLED function-typed parameter.
+        -- `max` so a raised general threshold is never undercut.
+        hofBudget =
+            max inlineConfig.threshold inlineConfig.hofThreshold
 
         candidates =
             Array.foldl
@@ -756,12 +843,27 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
                                                 maybeGlobal
                                                     |> Maybe.map (isWhitelisted effectiveWhitelist)
                                                     |> Maybe.withDefault False
+
+                                            -- Ordered so the body scan only
+                                            -- runs for candidates over the
+                                            -- general threshold (the common
+                                            -- case stays one int compare).
+                                            withinBudget =
+                                                cost
+                                                    <= inlineConfig.threshold
+                                                    || (cost
+                                                            <= hofBudget
+                                                            && hasCalledFunctionParam params body
+                                                       )
+
+                                            exactOnly =
+                                                cost > inlineConfig.threshold && not whitelisted
                                         in
-                                        if cost > inlineConfig.threshold && not whitelisted then
+                                        if not withinBudget && not whitelisted then
                                             ( accDict, specId + 1 )
 
                                         else
-                                            ( Dict.insert specId ( params, body ) accDict, specId + 1 )
+                                            ( Dict.insert specId ( params, body, exactOnly ) accDict, specId + 1 )
                 )
                 ( Dict.empty, 0 )
                 nodes
@@ -985,6 +1087,30 @@ rewriteExpr ctx expr =
                             rewriteExprs ctx1 args
                     in
                     ( MonoCall region (MonoVarGlobal varRegion specId funcType) rewrittenArgs resultType callInfo, ctx2 )
+
+        -- Let-callee hoisting (H2): `(let d in f) a` ⇒ `let d in (f a)`.
+        -- Inlining a curried callee exactly leaves its closure-literal body
+        -- wrapped in the argument lets, and the ENCLOSING call then applies
+        -- that let-wrapped closure — a shape codegen mis-arities at runtime
+        -- (spliceArgsForSaturatedCall assertion; the CombinatorB* corpus
+        -- tests catch it at hofThreshold ≥ the combinators' cost). Hoisting
+        -- preserves evaluation order exactly (defs, callee, args) and cannot
+        -- capture (names are unique post-freshening); the inner call then
+        -- beta-reduces against the exposed literal on the recursive rewrite.
+        -- The hoisted lets adopt the call's result type (chain-tail typing,
+        -- the wrapInLets invariant).
+        MonoCall region ((MonoLet _ _ _) as callee) args resultType callInfo ->
+            let
+                ( calleeSpine, calleeInner ) =
+                    splitLetSpine callee
+
+                rebuilt =
+                    List.foldr
+                        (\( d, _ ) acc -> MonoLet d acc resultType)
+                        (MonoCall region calleeInner args resultType callInfo)
+                        calleeSpine
+            in
+            rewriteExpr ctx rebuilt
 
         -- Recursive cases - rewrite children
         MonoCall region func args resultType callInfo ->
@@ -1700,10 +1826,61 @@ rewriteLetChain ctx chainExpr =
         ( finalBody1, ctx2 ) =
             rewriteExpr ctx1 finalBody0
 
+        spineFlattened =
+            List.concatMap flattenClosureDef (List.reverse spineRev)
+
         ( spine2, finalBody2, ctx3 ) =
-            forwardInChain ctx2 (List.reverse spineRev) finalBody1
+            forwardInChain ctx2 spineFlattened finalBody1
     in
     ( List.foldr (\( d, t ) acc -> MonoLet d acc t) finalBody2 spine2, ctx3 )
+
+
+{-| H2.0 let-of-closure flattening: `let f = (let a = e in λ) in body` ⇒
+`let a = e; f = λ in body`.
+
+`tryInlineCall`'s partial-application branch wraps its rebuilt closure in
+the argument bindings (`wrapInLetsForInline`), which hides the closure
+LITERAL from let-callee forwarding — the pipe shape `m |> Maybe.andThen λ`
+lands exactly there. Splicing the inner bindings into the enclosing chain
+preserves evaluation order (a, then the closure, exactly as before) and
+cannot capture: all names are unique post-freshening (and Elm forbids
+source shadowing). Spliced entries adopt the outer entry's result type —
+within a chain every `MonoLet` node carries the chain tail's type
+(`wrapInLets` invariant). Only chains ENDING in a closure literal are
+flattened; the general rewrite is sound but this is the shape that pays.
+-}
+flattenClosureDef : ( Mono.MonoDef, Mono.MonoType ) -> List ( Mono.MonoDef, Mono.MonoType )
+flattenClosureDef (( d, t ) as entry) =
+    case d of
+        Mono.MonoDef name ((MonoLet _ _ _) as bound) ->
+            let
+                ( innerSpine, innerFinal ) =
+                    splitLetSpine bound
+            in
+            case innerFinal of
+                MonoClosure _ _ _ ->
+                    List.map (\( d2, _ ) -> ( d2, t )) innerSpine
+                        ++ [ ( Mono.MonoDef name innerFinal, t ) ]
+
+                _ ->
+                    [ entry ]
+
+        _ ->
+            [ entry ]
+
+
+splitLetSpine : MonoExpr -> ( List ( Mono.MonoDef, Mono.MonoType ), MonoExpr )
+splitLetSpine expr =
+    let
+        go e acc =
+            case e of
+                MonoLet d b t ->
+                    go b (( d, t ) :: acc)
+
+                _ ->
+                    ( List.reverse acc, e )
+    in
+    go expr []
 
 
 {-| Forward let-bound closures into their single callee-position use, with
@@ -2648,7 +2825,7 @@ tryInlineCall ctx specId args resultType =
             Nothing ->
                 ( Nothing, ctx )
 
-            Just ( params, body ) ->
+            Just ( params, body, exactOnly ) ->
                 let
                     numParams =
                         List.length params
@@ -2656,7 +2833,14 @@ tryInlineCall ctx specId args resultType =
                     numArgs =
                         List.length args
                 in
-                if numParams == 0 && numArgs > 0 then
+                if exactOnly && numArgs < numParams then
+                    -- hofBudget-admitted candidates never inline PARTIALLY:
+                    -- the partial rebuild's re-staged closure trips the
+                    -- runtime typed-apply arity assert when a caller
+                    -- over-applies it (see inlineCandidates doc).
+                    ( Nothing, ctx )
+
+                else if numParams == 0 && numArgs > 0 then
                     -- Inlining a non-closure value that's being called.
                     -- The body is likely a function reference. Inline it and
                     -- wrap with a call to apply the remaining arguments.
@@ -2801,26 +2985,18 @@ getInlinableBody : MonoNode -> Maybe ( List ( Name, Mono.MonoType ), MonoExpr )
 getInlinableBody node =
     case node of
         MonoDefine expr _ ->
-            -- Check if the define's expression is a closure
+            -- Check if the define's expression is a closure. Case bodies are
+            -- inlinable (H2.0): eco.case is a value-producing expression op
+            -- (CGEN_010/CGEN_045), legal in any expression position — pinned
+            -- by CasePositionProbe/AndThenProbe. The historical refusal dated
+            -- from the terminator-era eco.case design.
             case expr of
                 MonoClosure info body _ ->
-                    -- Don't inline closures with Case body.
-                    -- MonoCase becomes eco.case in MLIR, which is a terminator (no result value).
-                    -- Inlining Case into expression positions breaks MLIR generation.
-                    if isCase body then
-                        Nothing
-
-                    else
-                        Just ( info.params, body )
+                    Just ( info.params, body )
 
                 _ ->
                     -- Simple define with no parameters (e.g., constants)
-                    -- Don't inline if it's a Case expression
-                    if isCase expr then
-                        Nothing
-
-                    else
-                        Just ( [], expr )
+                    Just ( [], expr )
 
         MonoTailFunc _ _ _ ->
             -- Never inline tail-recursive functions. Their bodies contain
@@ -2834,10 +3010,12 @@ getInlinableBody node =
             Nothing
 
 
-{-| Check if an expression is a MonoCase.
-Cases cannot be inlined into expression positions because eco.case is a
-terminator in MLIR - it doesn't produce a result value, control exits
-through eco.return inside the case branches.
+{-| Check if an expression is a MonoCase (top level only).
+
+Used only to keep case bodies out of `buildBodyLookup` — the bytes-fusion
+reifier's reify-time beta-reducer hasn't been verified against them. The
+inliner itself accepts case bodies (H2.0): eco.case is value-producing
+(CGEN_010/CGEN_045), not a terminator.
 -}
 isCase : MonoExpr -> Bool
 isCase expr =

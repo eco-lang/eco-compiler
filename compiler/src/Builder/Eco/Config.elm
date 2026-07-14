@@ -81,6 +81,10 @@ loadBase maybeExplicit root =
   - `ECO_MONO_LSS_REPORT=1` renders the LSS census to stderr after mono.
   - `ECO_INLINE_REPORT=1` renders the inline census to stderr after
     inline+simplify (HOF-elimination plan H0.2).
+  - `ECO_INLINE_HOF_THRESHOLD=<n>` overrides `inline.hofThreshold` (the H2
+    called-function-param inlining budget); experiment/tuning knob.
+  - `ECO_INLINE_FPI=<n>` overrides `inline.fixpointIterations`;
+    experiment/tuning knob (deep chains need extra passes to cascade).
 
 Applied here (not further downstream) so the override participates in
 `Config.hash`, which keys the Details cache. An unrecognized engine value is a
@@ -121,6 +125,16 @@ applyEnvOverrides cfg =
             (\cfg6 ->
                 (Utils.envLookupEnv "ECO_INLINE_REPORT" |> Task.mapError never)
                     |> Task.map (\repVal -> applyInlineReportOverride repVal cfg6)
+            )
+        |> Task.andThen
+            (\cfg7 ->
+                (Utils.envLookupEnv "ECO_INLINE_HOF_THRESHOLD" |> Task.mapError never)
+                    |> Task.map (\hofVal -> applyHofThresholdOverride hofVal cfg7)
+            )
+        |> Task.andThen
+            (\cfg8 ->
+                (Utils.envLookupEnv "ECO_INLINE_FPI" |> Task.mapError never)
+                    |> Task.map (\fpiVal -> applyFpiOverride fpiVal cfg8)
             )
 
 
@@ -263,6 +277,42 @@ applyLssReportOverride maybeVal cfg =
 
     else
         cfg
+
+
+{-| `ECO_INLINE_HOF_THRESHOLD=<n>`: override `inline.hofThreshold` (the H2
+called-function-param budget). Participates in the config hash via the
+`hthr=` token, so eco-stuff artifacts never alias across budgets.
+Non-numeric values are ignored.
+-}
+applyHofThresholdOverride : Maybe String -> EcoConfig -> EcoConfig
+applyHofThresholdOverride maybeVal cfg =
+    case Maybe.andThen (String.trim >> String.toInt) maybeVal of
+        Just n ->
+            let
+                inline =
+                    cfg.inline
+            in
+            { cfg | inline = { inline | hofThreshold = n } }
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_INLINE_FPI=<n>`: override `inline.fixpointIterations`. Participates
+in the config hash via the `fpi=` token. Non-numeric values are ignored.
+-}
+applyFpiOverride : Maybe String -> EcoConfig -> EcoConfig
+applyFpiOverride maybeVal cfg =
+    case Maybe.andThen (String.trim >> String.toInt) maybeVal of
+        Just n ->
+            let
+                inline =
+                    cfg.inline
+            in
+            { cfg | inline = { inline | fixpointIterations = n } }
+
+        Nothing ->
+            cfg
 
 
 {-| `ECO_INLINE_REPORT=1|true|yes`: render the inline census after
