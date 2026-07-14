@@ -192,10 +192,16 @@ static int runPipeline(ModuleOp module, bool lowerToLLVM) {
         return 1;
 
     // Build the appropriate pipeline based on the emit action.
+    eco::EcoPipelineOptions pipeOpts;
     if (lowerToLLVM) {
         // Use the shared pipeline from EcoPipeline.cpp
-        eco::EcoPipelineOptions pipeOpts;
         eco::buildEcoToLLVMPipeline(pm, pipeOpts);
+    } else {
+        // -emit=mlir-eco: the eco-to-eco stage only. This previously built
+        // NO pipeline at all, so "dump MLIR after eco-to-eco passes"
+        // actually dumped the verified input — structural FileCheck tests
+        // of EcoPAPSimplify et al. were vacuous.
+        eco::buildEcoToEcoPipeline(pm, pipeOpts);
     }
 
     if (failed(pm.run(module)))

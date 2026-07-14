@@ -41,5 +41,5 @@ module {
 // CHECK-NOT: @eco_alloc_float
 // CHECK-NOT: @eco_alloc_char
 
-// `eco_alloc_closure_k` registers the wrapper with K = 3 (PK_Char).
-// CHECK: ptr @__closure_wrapper_typed_upper_char_rc, i32 1, i8 3
+// eco_intern_closure0 (HEAP_033) registers the wrapper; K = 3 (PK_Char) rides in the packed word (and the _rc suffix).
+// CHECK: ptr @__closure_wrapper_typed_upper_char_rc, i32 1, i64

@@ -41,5 +41,5 @@ module {
 // CHECK-NOT: @eco_alloc_float
 // CHECK-NOT: @eco_alloc_char
 
-// `eco_alloc_closure_k` registers the wrapper with K = 2 (PK_Float).
-// CHECK: ptr @__closure_wrapper_typed_double_float_rf, i32 1, i8 2
+// eco_intern_closure0 (HEAP_033) registers the wrapper; K = 2 (PK_Float) rides in the packed word (and the _rf suffix).
+// CHECK: ptr @__closure_wrapper_typed_double_float_rf, i32 1, i64

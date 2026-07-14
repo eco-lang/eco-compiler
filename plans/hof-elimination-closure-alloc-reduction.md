@@ -1,6 +1,6 @@
 # HOF Elimination — Closure Allocation Reduction
 
-**Status:** H0 + H1 + H2 + H2.5 + H3 IMPLEMENTED 2026-07-14 (baselines + matrices in `benchmarks/closure-census-baseline.md` — native-stage-7a dynamic census still pending). Shipped: censuses; let-callee forwarding + chain closure DCE; case-body inlining (guard lift + cost-model decider fix); let-of-closure flattening; let-callee hoisting; `hofThreshold` (default 25, called-param heuristic); application merging (pipe-shape collapse, 5,188 merges on self-compile); faithful residual type (double-wrapped-arrow fix) with the ground-result guard removed and `exactOnly` retained by design; LSS-on re-gate (first flag-on corpus vs the new inliner, 1602/1602 genuine) + `defaultLss.enabled=True` ("solver implies LSS" — engine default stays subst, blocked on JS-hosted solver perf per the monosolver plan). fpi stays 4. Next: H4 (intra-function elision — build/gate under explicit solver+LSS configs until the engine default flips) → H5 (interprocedural capture flattening).
+**Status:** H0 + H1 + H2 + H2.5 + H3 + H4 IMPLEMENTED 2026-07-14 (baselines + matrices in `benchmarks/closure-census-baseline.md` — native-stage-7a dynamic census still pending). Shipped: censuses; let-callee forwarding + chain closure DCE; case-body inlining (guard lift + cost-model decider fix); let-of-closure flattening; let-callee hoisting; `hofThreshold` (default 25, called-param heuristic); application merging (pipe-shape collapse, 5,188 merges on self-compile); faithful residual type (double-wrapped-arrow fix) with the ground-result guard removed and `exactOnly` retained by design; LSS-on re-gate (first flag-on corpus vs the new inliner, 1602/1602 genuine) + `defaultLss.enabled=True` ("solver implies LSS" — engine default stays subst, blocked on JS-hosted solver perf per the monosolver plan); H4 as EcoPAPSimplify P4 multi-use elision + eco_intern_closure0 zero-capture interning (HEAP_033) — engine-independent (keys off `remaining_arity`, not LSS stamps), plus the ecoc `-emit=mlir-eco` no-pipeline bug and the codegen-harness RUN-parser substring bug fixed en route. fpi stays 4. Next: H5 (interprocedural capture flattening, GlobalOpt).
 **Date:** 2026-07-13
 **Input:** `/work/hof-elimination.md` (prioritized suggestions), deep code investigation (this doc supersedes the suggestion list)
 **Goal:** Greatly reduce the number of closures allocated at runtime (`eco_alloc_closure` executions), measured on the self-compile workload and the E2E corpus.
@@ -478,6 +478,39 @@ Findings:
 `EcoPAPSimplify` pass (call it P4: multi-use elision), not a new pass.**
 H5 is unaffected: it is decision-bearing (per-set spec cloning, signature
 surgery) and stays a GlobalOpt phase.
+
+**IMPLEMENTED 2026-07-14 (H4.1 + H4.2; full JIT suite 1606/1606).**
+What landed, including two latent infrastructure bugs the work surfaced:
+
+- **P4** in `EcoPAPSimplify.cpp`: papCreate-rooted pattern; every use must
+  be the closure operand (#0) of a saturated typed-mode papExtend; each
+  use rewrites to a direct call (P1's operand construction per use,
+  targeting `_fast_evaluator` for two-clone closures), then the create is
+  erased. Driver seeds now include PapCreateOps. Guards inherited from P1:
+  self-capture refusal, args-array-convention refusal, symbol lookup.
+  Pins: `pap_simplify_multi_use_elision{,_ir}.mlir` (the old
+  `_no_transform` test pinned the OPPOSITE and was repurposed),
+  `pap_simplify_multi_use_escape_guard.mlir` (newarg escape keeps the
+  create), `pap_simplify_multi_use_fast_evaluator.mlir` ($cap targeting),
+  `HofMultiUseElisionTest.elm` (end-to-end).
+- **ecoc bug found**: `-emit=mlir-eco` built NO pipeline (dumped verified
+  input) — every structural mlir-eco CHECK ever written was vacuous. Fixed
+  (`runPipeline` now builds `buildEcoToEcoPipeline` for the non-lowering
+  action). **Harness bug found**: the codegen RUN-line parser substring-
+  matched `-emit=mlir-eco` as `-emit=mlir`; fixed with an explicit branch.
+- **H4.2 interning**: `eco_intern_closure0(fp, arity, packed)` in the
+  runtime — permanent singleton per wrapper fp via the string-literal
+  `internLiteral` machinery (thread-local, epoch-synced, rooted slots);
+  the papCreate lowering calls it for `num_captured == 0` &&
+  no-self-capture creates, passing the Phase-C packed header word.
+  Invariant HEAP_033. Gotcha for future runtime decls: new
+  `getOrCreate*` helpers MUST be added to `materializeAllRuntimeDecls`
+  (post-freeze assertion in parallel lowering — cost one debug round).
+  The four `wrapper_*_return_*.mlir` tests pinned the old
+  `eco_alloc_closure_k` callsite shape and were updated (K now rides in
+  the packed word; still pinned via wrapper-name suffix + return type).
+- Dynamic magnitude of interning remains a native-census item (the JIT
+  harness cannot aggregate per-test allocation counts — known limitation).
 
 **H4.1 Elision pattern.** Extend `EcoPAPSimplify`
 (`runtime/src/codegen/Passes/EcoPAPSimplify.cpp`, already before

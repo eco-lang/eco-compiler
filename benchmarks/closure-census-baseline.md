@@ -192,6 +192,24 @@ explicitly. Residual-rebuild closures also now clear
 srcLambda/closureKind/captureAbi (LSS_009: residuals are not verbatim
 copies; impersonation prevented before flag-on exposure).
 
+## H4 (2026-07-14): P4 multi-use elision + zero-capture interning
+
+- `EcoPAPSimplify` P4: multi-use papCreates whose every use is a saturated
+  typed papExtend are elided (each use → direct call, capture forwarded).
+  Engine-independent (needs `remaining_arity`, not LSS stamps). Structural
+  pins in `test/codegen/pap_simplify_multi_use_*.mlir`.
+- `eco_intern_closure0`: zero-capture creates (the duplicated
+  `Basics_add`/`List_cons` wrapper PAPs this doc's probes identified)
+  allocate ONE permanent singleton per wrapper (HEAP_033).
+- **Measurement note**: static text-MLIR counts see neither (both are
+  post-front-end); the JIT harness census cannot aggregate per-test JIT
+  allocations. The dynamic magnitude of both belongs to the pending
+  native-binary census run.
+- Trap fixed en route: `ecoc -emit=mlir-eco` ran NO passes (dumped input) —
+  all prior structural mlir-eco CHECKs were vacuous; and the codegen
+  harness RUN-parser substring-matched `mlir-eco` as `mlir`. Both fixed —
+  structural pass tests are now real.
+
 ## Known measurement gotchas
 
 - The E2E harness compile cache is mtime-only and env/config-blind

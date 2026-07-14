@@ -83,7 +83,7 @@ inline std::string readFile(const std::string& path) {
 
 /**
  * Parse the // RUN: line from a test file.
- * Returns the emit mode (jit, mlir-llvm, llvm, mlir).
+ * Returns the emit mode (jit, mlir-llvm, llvm, mlir-eco, mlir).
  */
 inline std::string parseEmitMode(const std::string& content) {
     std::istringstream stream(content);
@@ -98,6 +98,12 @@ inline std::string parseEmitMode(const std::string& content) {
                 return "llvm";
             } else if (line.find("-emit=mlir-llvm") != std::string::npos) {
                 return "mlir-llvm";
+            } else if (line.find("-emit=mlir-eco") != std::string::npos) {
+                // Must come before the "-emit=mlir" substring check, which
+                // would otherwise shadow it and run an INPUT dump (no
+                // passes), making structural CHECKs of eco-to-eco passes
+                // vacuous.
+                return "mlir-eco";
             } else if (line.find("-emit=mlir") != std::string::npos) {
                 return "mlir";
             }

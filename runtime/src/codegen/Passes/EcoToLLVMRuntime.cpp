@@ -245,6 +245,13 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocClosureK(OpBuilder &builder) const 
     return getOrCreateFunc(builder, "eco_alloc_closure_k", funcTy);
 }
 
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateInternClosure0(OpBuilder &builder) const {
+    // eco_intern_closure0(func_ptr: ptr, arity: i32, packed: i64) -> hptr
+    // (H4.2: interned permanent singleton for a zero-capture papCreate)
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {PTR_TY, I32_TY, I64_TY});
+    return getOrCreateFunc(builder, "eco_intern_closure0", funcTy);
+}
+
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocate(OpBuilder &builder) const {
     // eco_allocate(size: i64, tag: i32) -> hptr
     auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY, I32_TY});
@@ -1100,7 +1107,8 @@ void EcoRuntime::materializeAllRuntimeDecls(OpBuilder &b) const {
     getOrCreateAllocRecord(b); getOrCreateAllocCustom(b); getOrCreateAllocString(b);
     getOrCreateAllocStringLiteral(b); getOrCreateAllocStringLiteralUtf8(b);
     getOrCreateAllocClosure(b);
-    getOrCreateAllocClosureK(b); getOrCreateAllocate(b);
+    getOrCreateAllocClosureK(b); getOrCreateInternClosure0(b);
+    getOrCreateAllocate(b);
     getOrCreateAllocIntFast(b); getOrCreateAllocFloatFast(b); getOrCreateAllocCharFast(b);
     getOrCreateAllocConsFast(b); getOrCreateAllocTuple2Fast(b); getOrCreateAllocTuple3Fast(b);
     getOrCreateAllocRecordFast(b); getOrCreateAllocCustomFast(b); getOrCreateAllocStringFast(b);

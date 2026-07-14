@@ -49,7 +49,7 @@ module {
 // CHECK-NOT: @eco_alloc_float
 // CHECK-NOT: @eco_alloc_char
 
-// `eco_alloc_closure_k` is invoked with the wrapper pointer and the
+// The zero-capture papCreate interns (eco_intern_closure0, HEAP_033) with the wrapper pointer and the
 // constants `i32 1` (arity) and `i8 1` (PK_Int) — confirming the
 // wrapper is registered on the closure header as primitive-Int.
-// CHECK: ptr @__closure_wrapper_typed_double_int_ri, i32 1, i8 1
+// CHECK: ptr @__closure_wrapper_typed_double_int_ri, i32 1, i64

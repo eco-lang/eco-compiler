@@ -190,6 +190,15 @@ HPtr eco_alloc_closure(void* func_ptr, uint32_t num_captures);
 HPtr eco_alloc_closure_k(void* func_ptr, uint32_t num_captures,
                          uint8_t result_kind);
 
+/// Interned zero-capture closure (HOF-elimination plan H4.2, HEAP_033).
+/// Returns the process-wide (per-thread table, epoch-synced) permanent
+/// singleton closure for `func_ptr`. Callers guarantee num_captured == 0
+/// and no self-capture; `packed` is the Phase-C header word the papCreate
+/// lowering computes (a pure function of `func_ptr`), `arity` sizes the
+/// value-slot area like eco_alloc_closure_k's capacity.
+/// @return HPointer (as uint64_t) to the interned Closure object
+HPtr eco_intern_closure0(void* func_ptr, uint32_t arity, uint64_t packed);
+
 /// Allocates a boxed Int.
 /// @param value The integer value
 /// @return HPointer (as uint64_t) to the allocated ElmInt object

@@ -402,6 +402,7 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateAllocStringLiteralUtf8(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateAllocClosure(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateAllocClosureK(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateInternClosure0(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateAllocate(mlir::OpBuilder &builder) const;
 
     // Fast allocation variants (bump-pointer only, no GC, return 0 on failure)

@@ -1,6 +1,10 @@
 // RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s
 //
-// Test that closures with multiple uses are NOT incorrectly optimized.
+// Multi-use papCreate elision (P4, HOF-elimination plan H4.1): a closure
+// applied at TWO saturated typed-mode sites is rewritten to two direct
+// calls and the allocation disappears — behavior must be identical.
+// (This file previously pinned the opposite: that multi-use was NOT
+// transformed, back when only single-use P1 existed.)
 
 module {
   func.func @add(%a: i64, %b: i64) -> i64 {

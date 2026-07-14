@@ -675,6 +675,33 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
                                               closureResultKind);
         Value funcPtr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, wrapperFunc.getSymName());
 
+        // H4.2 (HEAP_033): a zero-capture, non-self-capturing closure is
+        // immutable after construction (capture writes only happen for
+        // num_captured > 0; eco_pap_extend copies) — intern one permanent
+        // singleton per wrapper instead of allocating per execution. The
+        // packed header word (same Phase-C layout as the store below) is a
+        // compile-time constant per site and a pure function of the wrapper
+        // symbol, so cache hits always agree with it.
+        if (numCaptured == 0 && !op->hasAttr("self_capture_indices")) {
+            bool isTyped0 = wrapperWillBeTypedNewargs(runtime, funcSymbol);
+            uint64_t bitmap0 =
+                isTyped0 ? deriveAllParamKindsBitmap(runtime, funcSymbol, arity)
+                         : op.getUnboxedBitmap();
+            uint64_t packed0 =
+                  ((static_cast<uint64_t>(arity) & 0x3F) << 6)
+                | ((static_cast<uint64_t>(closureResultKind) & 0x3) << 12)
+                | ((bitmap0 & ((1ULL << 50) - 1)) << 14);
+            auto internFunc = runtime.getOrCreateInternClosure0(rewriter);
+            auto arityConst32 = rewriter.create<LLVM::ConstantOp>(
+                loc, i32Ty, static_cast<int32_t>(arity));
+            auto packedConst0 = rewriter.create<LLVM::ConstantOp>(
+                loc, i64Ty, rewriter.getI64IntegerAttr(packed0));
+            auto internCall = rewriter.create<LLVM::CallOp>(
+                loc, internFunc, ValueRange{funcPtr, arityConst32, packedConst0});
+            rewriter.replaceOp(op, internCall.getResult());
+            return success();
+        }
+
         // Allocate closure with max_values = arity, n_values = 0,
         // result_kind matching the wrapper's return ABI. The runtime stores
         // result_kind on the closure header so every dispatch path can cast

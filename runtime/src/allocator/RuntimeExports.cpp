@@ -697,6 +697,38 @@ extern "C" HPtr eco_alloc_closure(void* func_ptr, uint32_t num_captures) {
     return eco_alloc_closure_k(func_ptr, num_captures, /*result_kind=*/0);
 }
 
+// Zero-capture closure interning (HOF-elimination plan H4.2, HEAP_033).
+//
+// A zero-capture closure is immutable after construction: capture writes
+// only happen for num_captured > 0 creates, self-capturing creates are
+// excluded by the caller, and eco_pap_extend COPIES instead of mutating.
+// So one permanent object per evaluator can serve every papCreate
+// execution of that site. Reuses the string-literal interning machinery
+// (thread-local table, heap-generation epoch sync for harness resets,
+// rooted slots).
+//
+// `packed` is the Phase-C header word the papCreate lowering computes
+// (n_values | max_values<<6 | result_kind<<12 | unboxed<<14, stored at
+// byte offset 8 — must match EcoToLLVMClosures.cpp and Heap.hpp exactly);
+// it is a per-site compile-time constant and a pure function of the
+// wrapper `func_ptr`, so cache hits always agree with it. `arity` sizes
+// the value-slot area identically to eco_alloc_closure_k's capacity.
+extern "C" HPtr eco_intern_closure0(void* func_ptr, uint32_t arity,
+                                    uint64_t packed) {
+    return internLiteral(func_ptr, [&]() -> HPtr {
+        closureStatsRecord(func_ptr, /*isExtend=*/false);
+        size_t size = sizeof(Header) + 8 + sizeof(EvalFunction)
+                    + static_cast<size_t>(arity) * sizeof(Unboxable);
+        void* obj = Allocator::instance().allocatePermanent(size, Tag_Closure);
+        if (!obj) return HPtr::fromBits(0);
+        Closure* closure = static_cast<Closure*>(obj);
+        std::memcpy(reinterpret_cast<char*>(obj) + 8, &packed,
+                    sizeof(uint64_t));
+        closure->evaluator = reinterpret_cast<EvalFunction>(func_ptr);
+        return ptrToHPointer(obj);
+    });
+}
+
 extern "C" HPtr eco_alloc_int(int64_t value) {
     void* obj = eco_alloc_with_roots(Tag_Int, sizeof(ElmInt), nullptr, 0, 0);
     if (!obj) return HPtr::fromBits(0);

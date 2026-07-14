@@ -45,5 +45,5 @@ module {
 // (the legacy path C++-kernel callers depend on).
 // CHECK: @eco_alloc_float
 
-// `eco_alloc_closure_k` registers the wrapper with K = 0 (PK_Boxed).
-// CHECK: ptr @__closure_wrapper_typed_double_float_boxed, i32 1, i8 0
+// eco_intern_closure0 (HEAP_033) registers the wrapper; K = 0 (PK_Boxed) rides in the packed word (and the _boxed suffix).
+// CHECK: ptr @__closure_wrapper_typed_double_float_boxed, i32 1, i64

@@ -2,6 +2,8 @@
 //
 // This pass optimizes partial application patterns in the ECO dialect:
 // - Converts saturated papCreate+papExtend to direct calls (P1)
+// - Elides multi-use papCreates whose every use is a saturated typed
+//   papExtend, rewriting each use to a direct call (P4, plan H4.1)
 // - Fuses papExtend chains (P2)
 // - Enables DCE of unused closures (P3 - via canonical DCE)
 //
@@ -155,6 +157,124 @@ struct SaturatedPapToCallPattern : public OpRewritePattern<PapExtendOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// Pattern P4: multi-use papCreate elision (HOF-elimination plan H4.1)
+//===----------------------------------------------------------------------===//
+//
+// Generalizes P1 from "single use" to "every use qualifies". Match a
+// papCreate whose EVERY use is the closure operand (#0) of a saturated
+// typed-mode papExtend; rewrite each such papExtend to a direct call with
+// the papCreate's capture operands forwarded (P1's per-use rewrite), then
+// erase the papCreate. This is the population P1 cannot touch: closures
+// applied more than once (both branches of a case, loop bodies) — the
+// front-end inliner (H1/H2.5) deliberately leaves multi-use closures alone
+// because collapsing them there would duplicate code; here each use becomes
+// a direct call with no duplication and the allocation disappears.
+//
+// The DECISION content is unchanged and stays front-end: which target is
+// callable directly comes from the papCreate's own attributes
+// (`_fast_evaluator` for two-clone closures, else `function`), exactly as
+// P1 consumes them. Any other use — the closure stored as a newarg of some
+// papExtend, captured by another papCreate, passed to a call, kept as a GC
+// root hint — disqualifies the whole papCreate (escape).
+//
+struct MultiUsePapElisionPattern : public OpRewritePattern<PapCreateOp> {
+    const mlir::SymbolTable &symTable;
+    MultiUsePapElisionPattern(MLIRContext *ctx, const mlir::SymbolTable &symTable)
+        : OpRewritePattern(ctx), symTable(symTable) {}
+
+    LogicalResult matchAndRewrite(PapCreateOp createOp,
+                                  PatternRewriter &rewriter) const override {
+        Value pap = createOp.getResult();
+
+        // Single-use is P1's territory (cheaper, extend-rooted); dead creates
+        // are the greedy driver's DCE territory.
+        if (pap.use_empty() || pap.hasOneUse())
+            return failure();
+
+        // Same non-negotiables as P1: self-capturing closures get their
+        // self slot backpatched at runtime — forwarding captures would pass
+        // the unpatched Unit placeholder.
+        if (createOp->hasAttr("self_capture_indices"))
+            return failure();
+
+        // For two-clone closures the direct call targets $cap (captures +
+        // params); otherwise the referenced function itself.
+        auto fastEvalAttr = createOp->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator");
+        FlatSymbolRefAttr calleeAttr = fastEvalAttr ? fastEvalAttr : createOp.getFunctionAttr();
+
+        auto targetFunc = symTable.lookup(calleeAttr.getValue());
+        if (!targetFunc)
+            return failure();
+        if (usesArgsArrayConvention(targetFunc))
+            return failure();
+
+        // Every use must be the closure operand (#0) of a saturated
+        // typed-mode papExtend. Collect the extends (deduped: one closure
+        // use per extend by construction — any second use of %pap on the
+        // same op would be a newarg/root-hint use with operand index != 0,
+        // which disqualifies below).
+        SmallVector<PapExtendOp> extends;
+        for (OpOperand &use : pap.getUses()) {
+            auto ext = dyn_cast<PapExtendOp>(use.getOwner());
+            if (!ext)
+                return failure();
+            if (use.getOperandNumber() != 0)
+                return failure();  // %pap escapes as a newarg or root hint
+            auto remainingArityAttr = ext.getRemainingArityAttr();
+            if (!remainingArityAttr)
+                return failure();  // generic mode: saturation unknown
+            unsigned rootCount = ext.getGCRoots().size();
+            auto allNewargs = ext.getNewargs();
+            unsigned realNewargCount = allNewargs.size() - rootCount;
+            if (static_cast<int64_t>(realNewargCount) != remainingArityAttr.getInt())
+                return failure();  // not saturated
+            extends.push_back(ext);
+        }
+
+        // Rewrite every use to a direct call (P1's operand construction,
+        // applied per use). The papCreate's own GC root hints ride along on
+        // each call; duplicates across calls are harmless (EcoGCPrepare
+        // dedupes during liveness unioning).
+        for (PapExtendOp ext : extends) {
+            unsigned rootCount = ext.getGCRoots().size();
+            auto allNewargs = ext.getNewargs();
+            unsigned realNewargCount = allNewargs.size() - rootCount;
+            auto newargs = allNewargs.take_front(realNewargCount);
+            auto rootHints = allNewargs.drop_front(realNewargCount);
+
+            SmallVector<Value> allOperands;
+            allOperands.append(createOp.getCaptured().begin(),
+                               createOp.getCaptured().end());
+            allOperands.append(newargs.begin(), newargs.end());
+            ValueRange createRoots = createOp.getGCRoots();
+            for (Value r : createRoots) allOperands.push_back(r);
+            for (Value r : rootHints) allOperands.push_back(r);
+            unsigned newRootCount = createRoots.size() + rootHints.size();
+
+            // CGEN_056: saturated papExtend result type == callee return type.
+            Type resultType = ext.getResult().getType();
+
+            rewriter.setInsertionPoint(ext);
+            auto callOp = rewriter.create<CallOp>(
+                ext.getLoc(),
+                TypeRange{resultType},
+                allOperands,
+                calleeAttr,
+                nullptr,   // musttail
+                nullptr);  // remaining_arity
+            if (newRootCount > 0) {
+                callOp->setAttr("eco.gc_roots_count",
+                    rewriter.getI64IntegerAttr(static_cast<int64_t>(newRootCount)));
+            }
+            rewriter.replaceOp(ext, callOp.getResults());
+        }
+
+        rewriter.eraseOp(createOp);
+        return success();
+    }
+};
+
+//===----------------------------------------------------------------------===//
 // Pattern P2: papExtend chain fusion
 //===----------------------------------------------------------------------===//
 //
@@ -288,17 +408,20 @@ struct EcoPAPSimplifyPass
         RewritePatternSet patterns(ctx);
         patterns.add<SaturatedPapToCallPattern>(ctx, symTable);
         patterns.add<FusePapExtendChainPattern>(ctx);
+        patterns.add<MultiUsePapElisionPattern>(ctx, symTable);
         FrozenRewritePatternSet frozen(std::move(patterns));
 
-        // Both patterns root on eco.papExtend, so seed the driver with ONLY
-        // those ops instead of every op in the module (the whole-module
-        // greedy driver spent ~1s/self-host-build folding+DCE-probing ~12MB
-        // of ops that can never match). The seeded driver still follows the
-        // rewrite cascade: P2-fused papExtends are newly created ops (re-tried
-        // for saturation), and papCreate/papExtend producers of replaced ops
-        // get enqueued and DCE'd exactly as the module driver did.
+        // P1/P2 root on eco.papExtend and P4 on eco.papCreate, so seed the
+        // driver with ONLY those ops instead of every op in the module (the
+        // whole-module greedy driver spent ~1s/self-host-build
+        // folding+DCE-probing ~12MB of ops that can never match). The seeded
+        // driver still follows the rewrite cascade: P2-fused papExtends are
+        // newly created ops (re-tried for saturation), and
+        // papCreate/papExtend producers of replaced ops get enqueued and
+        // DCE'd exactly as the module driver did.
         SmallVector<Operation *> seeds;
         module.walk([&](PapExtendOp op) { seeds.push_back(op); });
+        module.walk([&](PapCreateOp op) { seeds.push_back(op); });
         if (seeds.empty())
             return;
 
