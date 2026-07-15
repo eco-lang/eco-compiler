@@ -425,6 +425,48 @@ path; flag-off unaffected). ECO_ARITY_RAISE stays default-off; next
 session: front-end shape audit of the newly-collapsed IR (GC root hints
 across the layer-3 split residuals are the prime suspect).
 
+### H6.2 flag-on stability — root-caused and FIXED (2026-07-15)
+
+The "OPEN — flag-on stability" crash above is resolved. It was TWO distinct GC
+use-after-frees, both latent, both exposed by ECO_ARITY_RAISE, and NEITHER in the
+front end (the "newly-collapsed IR" suspicion above was wrong):
+
+1. `Elm_Kernel_JsArray_initialize_Int` (elm-kernel-cpp) decoded and
+   `StackRootGuard`-rooted its by-value `closure` AFTER `allocArrayBuilder` (a GC
+   point), so the kernel's private copy went stale across a minor GC. Fixed by
+   rooting before the alloc, matching the boxed `Elm_Kernel_JsArray_initialize`.
+   Reproduces deterministically under `ECO_HEAP_VALIDATE`; post-fix that binary
+   is `aborts=0` through the module-compile phase.
+2. `eco_intern_closure0` (runtime, the H4.2 interning) allocates a permanent
+   zero-capture singleton with `max_values == arity` value slots but never writes
+   them, and `allocatePermanent` does not zero the old-gen body. The `Tag_Closure`
+   scan (`OldGenSpace::markChildren` / `NurserySpace::scanObject`) iterates all
+   `max_values` slots, so major GC followed uninitialized garbage as boxed
+   HPointers. Deterministic (permanent singleton). Root-caused by static analysis
+   of the post-RS4GC IR (`eco_intern_closure0` is the sole construction site,
+   `packed=192` → `n_values=0/max_values=3/unboxed=0`) plus core forensics: the
+   corrupt object was the interned `Terminal_Main_lambda_30517` closure, whose
+   capture[2] was a use-after-free into a reused `Bytes.Decode.Decoder` type
+   string. Fixed by `memset`-ing the arity value slots to 0.
+
+STABLE flag-on census (both fixes in, native eco compiling the full compiler,
+4/4 runs `rc=0`, byte-identical `.mlir` across runs):
+
+| native eco, full-compiler compile | creates | extends | total events |
+|---|---|---|---|
+| flag-off (F1+F2+F3) | 405,020,772 | 140,416,526 | 545.4M |
+| **flag-on (U2b), fixed** | **252,036,780 (−37.8%)** | **218,371,581 (+55.5%)** | **470.4M (−13.7%)** |
+
+Pre-fix this workload crashed ~75% (3/4) in `OldGenSpace::markHPointer` during
+major GC (heap-validate could not pin it — too slow to reach the crash, and the
+stale value is a valid old-gen address the nursery tripwire cannot catch; static
+IR + core forensics did). The `-13.7%` supersedes the single-run `-12%` above.
+The crash is no longer a blocker; the enable decision still rests on wall-clock
+(events are down but extends are still +55.5%). A parallel sweep of all
+runtime/kernel C++ for the same unrooted-across-GC class found 28 latent
+candidates (`kernel-gc-root-audit.md`) — separate, kernel-side, none the cause of
+this crash.
+
 **H6.3 V0 verdict**: post-F1/F2, generic-dispatch extend traffic is
 140M/544M events (~26%) but is now dominated by variable-HOF-arg
 partials — the class LSS stamp-coverage (V1/V2) addresses. Defer V1/V2

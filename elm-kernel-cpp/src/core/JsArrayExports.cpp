@@ -942,12 +942,21 @@ HPtr Elm_Kernel_JsArray_unsafeSet_Char(int64_t idx, uint16_t value, HPtr array) 
 
 // initialize: same loop as the boxed root with typed Int parameters.
 HPtr Elm_Kernel_JsArray_initialize_Int(int64_t size, int64_t offset, HPtr closure) {
-    // Pin the result array to nursery (HEAP_BUILDER_001/003).
-    HPointer arr = alloc::allocArrayBuilder(static_cast<size_t>(size));
+    // Decode and root the closure BEFORE allocArrayBuilder. The alloc can
+    // fire a minor GC that relocates the closure; the `closure` param lives
+    // unrooted on the caller's C stack, so without rooting it first the
+    // param would be left stale across the alloc (a minor GC swaps the
+    // nursery semispaces, freeing the old address the param still holds).
+    // This mirrors the boxed Elm_Kernel_JsArray_initialize, which documents
+    // and guards against the exact same hazard.
     HPointer closureHP = Export::decode(closure.toBits());
+    HPointer arr = alloc::listNil();  // placeholder until the alloc below
+    StackRootGuard loopRoots(&arr, &closureHP);
+
+    // Pin the result array to nursery (HEAP_BUILDER_001/003).
+    arr = alloc::allocArrayBuilder(static_cast<size_t>(size));
     auto& allocator = Allocator::instance();
 
-    StackRootGuard loopRoots(&arr, &closureHP);
     alloc::BuilderGuard builderGuard(&arr);
     ResultSlot slot{};
     for (int64_t i = 0; i < size; i++) {

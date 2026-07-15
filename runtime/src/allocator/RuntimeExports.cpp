@@ -725,6 +725,16 @@ extern "C" HPtr eco_intern_closure0(void* func_ptr, uint32_t arity,
         std::memcpy(reinterpret_cast<char*>(obj) + 8, &packed,
                     sizeof(uint64_t));
         closure->evaluator = reinterpret_cast<EvalFunction>(func_ptr);
+        // GC-safety: `packed` sets max_values == arity, and the closure scan
+        // (OldGenSpace::markChildren / NurserySpace::scanObject, Tag_Closure)
+        // iterates ALL max_values value slots — deliberately, to cover captures
+        // stored-but-not-yet-applied. This interned singleton has n_values == 0
+        // and never writes its value slots (it is immutable; eco_pap_extend
+        // COPIES for application), and allocatePermanent does NOT zero the
+        // old-gen body. Without zeroing, the scan follows uninitialized garbage
+        // in values[0..arity) as boxed HPointers -> use-after-free at major GC.
+        std::memset(closure->values, 0,
+                    static_cast<size_t>(arity) * sizeof(Unboxable));
         return ptrToHPointer(obj);
     });
 }

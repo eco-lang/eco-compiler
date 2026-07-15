@@ -940,6 +940,81 @@ miniature TypeCheck.IO — keep as the pin; flag-off it must print
      creates 261.0M / extends 218.5M = 479.5M events, −12% vs flag-off
      (pre-round flag-on was +21%) — indicative, not settled, until the
      flake is fixed.
+   - **Layer 5b — the flake ROOT-CAUSED 2026-07-15 (ECO_HEAP_VALIDATE +
+     kernel bisection): a GC-LIVENESS GAP in RAISED staged-result
+     closure-passing code. ECO_ARITY_RAISE stays default-off (unsafe).**
+     Method: `ECO_HEAP_VALIDATE` (release heap layout + heap walk; does
+     NOT add the `in_minor_gc_` member that `ECO_GC_DEBUG` does, so it
+     doesn't perturb the bug) reproduced deterministically (1/1 SIGABRT).
+     Symbolized backtrace: `readClosureResultKind` ← `Array_initializeHelp`
+     ← `Array_initialize` ← `Array_repeat` ← `NodeIds.arraySetGrowing` ←
+     `recordNodeVar`, i.e. reading a STALE closure inside the
+     `Elm_Kernel_JsArray_initialize_Int` per-element loop. The closure is
+     `\_ -> e` from `Array.repeat n e = Array.initialize n (\_ -> e)` —
+     and `Array.repeat`/`Array.initialize` are STAGED-RESULT specs
+     (`Int -> ((Int->a) -> Array a)`), so U2b RAISES them flag-on.
+     Kernel bisection probes (per-iteration closure resolve + minor/major
+     GC seq counters + old-gen phase) proved: the closure arrives ALREADY
+     STALE at the kernel (dead nursery to-space object, block marked
+     `(free) <-- PTR`), and during the whole failing loop `minor`,
+     `major`, `ogphase`, `compact` are ALL CONSTANT + Idle — NO GC runs.
+     So it is not a runtime evacuation/root-scan bug: the kernel's
+     `StackRootGuard` is correct, phase-1e has no cap, major-GC
+     compaction is idle, and the runtime over-saturated-apply mislabel
+     hypothesis (H1/SPLICE-KIND-DISAGREE from the parallel audit) was
+     REFUTED by a targeted producer detector that never fired. The
+     closure was collected by an EARLIER minor GC while in-flight through
+     the deeply-nested (`rangePoint`≈769 active C++ stack ranges — the
+     raised over-application's pathological nesting) `Array.initialize`
+     tree-build, because the compiled RAISED code lost RS4GC root
+     coverage of the initializer closure. **Class: raising a
+     staged-result HOF that threads a closure through many allocations /
+     kernel calls produces a compiled-code GC-liveness gap under deep
+     nesting.** Disposition: `ECO_ARITY_RAISE` default-off (also
+     non-net-win per Layer-5a). Exact dropped-root statepoint =
+     flag-on/off RS4GC-IR diff of the raised caller chain, deferred until
+     U2b is revisited. All debug scaffolding removed; build config reset.
+   - **Layer 5 RESOLVED (2026-07-15): the flake was TWO GC use-after-frees,
+     and the RS4GC-coverage hypothesis above was WRONG.** The deferred
+     flag-on/off RS4GC-IR diff got done (`/tmp/u2b-rs4gc.ll`) plus a 6-agent
+     Workflow, and both proved RS4GC coverage COMPLETE — every closure is
+     `gc-live`+relocated at each statepoint and every stackmap root is
+     `Indirect(3)` (zero Register/Direct). The two real bugs, both latent,
+     both exposed by raising, neither in the front end:
+     (a) `Elm_Kernel_JsArray_initialize_Int` decoded + `StackRootGuard`-rooted
+     its by-value `closure` AFTER `allocArrayBuilder` (a GC point), so the
+     kernel's private copy went stale; FIXED by rooting before the alloc
+     (matches the boxed `Elm_Kernel_JsArray_initialize`). An in-kernel probe
+     disproved the "arrives already stale" claim above — ENTRY-CHECK passed,
+     POSTALLOC-CHECK stale, i.e. it staled ACROSS the alloc, not before.
+     (b) `eco_intern_closure0` (the H4.2 interning) `allocatePermanent`s a
+     zero-capture singleton with `max_values == arity` value slots but never
+     writes them and does not zero the old-gen body; the `Tag_Closure` scan
+     (`OldGenSpace::markChildren` / `NurserySpace::scanObject`) iterates ALL
+     `max_values` slots, so major GC followed uninitialized garbage as boxed
+     HPointers → the census crash (deterministic `OldGenSpace::markHPointer`
+     on a mid-string pointer into a reused `Bytes.Decode.Decoder` type string
+     mis-marked `Tag_DynRecord`). Pinned by STATIC post-RS4GC IR
+     (`eco_intern_closure0` is the SOLE construction of the corrupt
+     `Terminal_Main_lambda_30517`; `packed=192` = n_values0/max_values3/
+     unboxed0) + a core `PT_LOAD` pointer-scan (its `capture[2]` was the UAF,
+     the single heap referrer). FIXED by `memset`-ing the arity value slots
+     to 0 — `max_values` MUST stay `= arity` for apply/saturation, so zero
+     the slots rather than shrink the header. Tooling lesson: heap-validate
+     could NOT pin this (too slow to reach the mono crash — attempt1 timed
+     out at 100 min mid-compile — and the stale value is a valid old-gen
+     address the nursery tripwire never fires on), and bpftrace is blocked
+     in-container (no CAP_BPF, `unprivileged_bpf_disabled=2`); static
+     post-RS4GC-IR + core forensics were the arbiters. Verification: E2E
+     `--target full` **1615/1615**; flag-on census 4/4 `rc=0`, byte-identical
+     `.mlir`, creates 252.0M / extends 218.4M = **470.4M events = −13.7%** vs
+     flag-off 545.4M (supersedes the −12% single run; pre-fix 3/4 crashed).
+     `ECO_ARITY_RAISE` stays default-off — the crash is gone, but the enable
+     decision still rests on wall-clock (extends still +55.5%). A parallel
+     `/work/kernel-gc-root-audit.md` sweep (87 agents) found **28 more latent
+     same-class candidates** (8 dead-code ListOps, ~18 reachable; undercounts
+     — `mailboxPopFront`'s `next` missed) — separate kernel-side cleanup,
+     none the cause of this crash. `commit.txt` written for both fixes.
    - **Layer 4 (2026-07-15, found by the compiler-scale segfault):
      DESTRUCTURE-BINDER CAPTURE in the inliner's alpha-renamer.**
      `freshenLetBoundNames` renamed MonoDef/MonoTailDef binders in
