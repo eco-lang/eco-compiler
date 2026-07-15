@@ -643,6 +643,19 @@ raiseOne inlineConfig specId info body cty defTy =
                             defTyFlat
                         )
 
+                MonoCall _ (MonoVarLocal _ _) _ _ _ ->
+                    -- Param-callee bodies (`apR x f = f x`): raising these is
+                    -- a strict LOSS. Pre-raise they inline at every saturated
+                    -- site and the pipe collapses to a single partial of the
+                    -- real callee; raised, the old-arity call becomes a PAP
+                    -- that wraps ANOTHER layer around the value, and every
+                    -- escaping pipe pays 2-4 allocations instead of 1
+                    -- (measured: raised apR wrappers carried 20.6M runtime
+                    -- extends on the self-compile census). Callers THROUGH
+                    -- such combinators still collapse: the unraised tiny spec
+                    -- inlines during the fixpoint and the merge arm proceeds.
+                    Nothing
+
                 MonoCall region _ _ _ _ ->
                     -- Call shape: apply the old body to fresh stage-2 params.
                     -- The nested application is exactly what the merge arm

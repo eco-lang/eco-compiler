@@ -912,6 +912,34 @@ miniature TypeCheck.IO — keep as the pin; flag-off it must print
      rest to the result (evaluation-order identical; hoisting + merge
      consume the residual). RaiseProbe flag-on: `closuresRemaining 3 →
      0`, pap ops 12 → 6, `result: (24, 18)` correct.
+   - **Layer 5 (2026-07-15/16, single-alloc follow-up): PAP-EXTEND
+     KIND-ENCODING SPLIT fixed — but the flag-on flake it was suspected
+     of causing REMAINS OPEN.** The real latent hole: `eco_pap_extend`
+     stored caller-encoded args RAW and OR-merged the caller's kind
+     bitmap over the closure's declared kind map, splitting the GC's
+     view from the stored representation in both directions
+     (boxed-on-primitive-slot = GC-invisible pointer;
+     primitive-on-boxed-slot = misread). Fixed unconditionally: args are
+     converted to the slot's DECLARED kind at store time (the contract
+     the GenericApplyBoxing unit-test file documents; those tests pinned
+     the old mechanism and now declare slot kinds at create, as real
+     typed wrappers do). Suite 1615/1615.
+     **Flake status — open, next session's entry point.** Full matrix:
+     h62on2 (pre-round) 3/3 stable; h62on3 (apR-exclusion + fusion)
+     ~2-3/3 crash; h62on3 relowered with fusion DISABLED still crashes →
+     fusion exonerated; broad pap-fix binary 4/4 stable ONCE then an
+     identical rebuild 3/3 crash → that stability was LUCK, the
+     conversion fix is principled but not the live hole; narrowed
+     (unbox-only) fix also 3/3 crash. The one constant in every flaky
+     binary is the apR-exclusion's extra inline/hoist/beta collapsing
+     (flag-on-only code; flag-off unaffected). Prime suspect: GC root
+     hints across the layer-3 first-stage-split residual shapes.
+     Stats-on vs stats-off shifts the flake (a heap-layout-sensitive
+     corruption); NEVER trust single stability runs on this class —
+     3-4 repeats minimum. Flag-on census from the one passing run:
+     creates 261.0M / extends 218.5M = 479.5M events, −12% vs flag-off
+     (pre-round flag-on was +21%) — indicative, not settled, until the
+     flake is fixed.
    - **Layer 4 (2026-07-15, found by the compiler-scale segfault):
      DESTRUCTURE-BINDER CAPTURE in the inliner's alpha-renamer.**
      `freshenLetBoundNames` renamed MonoDef/MonoTailDef binders in

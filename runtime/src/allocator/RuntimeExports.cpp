@@ -1867,31 +1867,89 @@ extern "C" HPtr eco_pap_extend(HPtr closure_hptr, uint64_t* args, uint32_t num_n
         return HPtr::fromBits(0);
     }
 
+    // Convert each incoming arg from the CALLER's encoding
+    // (new_unboxed_bitmap) to the closure's SLOT encoding — "new args are
+    // converted by the runtime to match the slot's declared kind", the
+    // Phase-D contract. The old code stored caller-encoded bits raw and
+    // OR-merged the bitmaps, splitting the GC's view from the stored
+    // representation in BOTH directions: a BOXED-encoded arg landing on a
+    // PRIMITIVE-declared slot became a pointer the GC could not see
+    // (stale after any move), and a primitive-encoded arg on a
+    // boxed-declared slot was read as a pointer by the wrapper. Found
+    // live as nondeterministic segfaults + silently wrong output in the
+    // H6.2 flag-on native self-compile; latent flag-off. Matched kinds —
+    // every typed emission site — copy through untouched. Conversions
+    // happen BEFORE the new closure is allocated: boxing may GC, which
+    // would move a partially-built (unrooted) closure.
+    uint64_t conv[63] = {0};
+    size_t saved_range = eco_gc_stack_range_point();
+    eco_gc_push_stack_range(&closure_bits, 1, 1);
+    if (num_newargs > 0) {
+        uint64_t callerMask = pointerMaskFromKindBitmap(new_unboxed_bitmap, num_newargs);
+        if (callerMask != 0) {
+            eco_gc_push_stack_range(args, num_newargs, callerMask);
+        }
+        // Root the conversion buffer per the TARGET kinds (zero-filled
+        // slots are null HPtrs — skipped by the scan).
+        uint64_t targetMask = 0;
+        for (uint32_t i = 0; i < num_newargs; ++i) {
+            uint64_t slotKind = (old_unboxed >> (2 * (old_n_values + i))) & 0x3ULL;
+            if (slotKind == 0) targetMask |= (uint64_t{1} << i);
+        }
+        if (targetMask != 0) {
+            eco_gc_push_stack_range(conv, num_newargs, targetMask);
+        }
+        for (uint32_t i = 0; i < num_newargs; ++i) {
+            uint64_t slotKind = (old_unboxed >> (2 * (old_n_values + i))) & 0x3ULL;
+            uint64_t callerKind = (new_unboxed_bitmap >> (2 * i)) & 0x3ULL;
+            uint64_t raw = args[i];
+            if (callerKind == slotKind) {
+                // Matched encoding: copy through (the universal case).
+            } else if (callerKind == 0 && slotKind != 0) {
+                // Boxed → primitive: un-box (no allocation).
+                void* hp_ptr = hpointerToPtr(raw);
+                assert(hp_ptr && "eco_pap_extend: cannot un-box null/embedded HPointer");
+                const char* base = reinterpret_cast<const char*>(hp_ptr) + sizeof(Header);
+                switch (slotKind) {
+                    case 1: { int64_t v; memcpy(&v, base, sizeof(v)); raw = static_cast<uint64_t>(v); break; }
+                    case 2: { double f; memcpy(&f, base, sizeof(f)); memcpy(&raw, &f, sizeof(raw)); break; }
+                    case 3: { u16 c; memcpy(&c, base, sizeof(c)); raw = static_cast<uint64_t>(c); break; }
+                    default: assert(false && "unreachable slotKind"); __builtin_unreachable();
+                }
+            } else if (callerKind != 0 && slotKind == 0) {
+                // Primitive → boxed: box via the matching allocator (may GC;
+                // closure_bits / args / conv are rooted above).
+                switch (callerKind) {
+                    case 1: raw = eco_alloc_int(static_cast<int64_t>(raw)).toBits(); break;
+                    case 2: { double f; memcpy(&f, &raw, sizeof(f)); raw = eco_alloc_float(f).toBits(); break; }
+                    case 3: raw = eco_alloc_char(static_cast<uint32_t>(raw & 0xFFFFu)).toBits(); break;
+                    default: assert(false && "unreachable callerKind"); __builtin_unreachable();
+                }
+            } else {
+                // Both primitive but distinct: representation mismatch the
+                // compiler should have ruled out. Pass through (old
+                // behavior).
+            }
+            conv[i] = raw;
+        }
+        // Re-resolve after possible GC in the boxing path.
+        old_closure = static_cast<Closure*>(hpointerToPtr(closure_bits));
+        old_unboxed = old_closure->unboxed;
+    }
+
     // Allocate a new closure with room for all captured values.
     size_t size = sizeof(Header) + 8 + sizeof(EvalFunction) + new_n_values * sizeof(Unboxable);
 
-    // Fast path: bump-pointer with no rooting. allocateFast cannot GC, so
-    // closure_bits and args remain valid across the allocation.
+    // Fast path: bump-pointer with no rooting — allocateFast cannot GC,
+    // and closure_bits / conv stay rooted from above regardless.
     void* obj = Allocator::instance().allocateFast(size);
-    bool slow_path_rooted = false;
-    size_t saved_range = 0;
     if (obj) {
         Header* hdr = getHeader(obj);
         std::memset(hdr, 0, sizeof(Header));
         hdr->tag = Tag_Closure;
         hdr->size = (size - sizeof(Closure)) / sizeof(Unboxable);
     } else {
-        // Slow path: root closure_bits and HPointer args across the GC that
-        // allocateSlow may run.
-        saved_range = eco_gc_stack_range_point();
-        slow_path_rooted = true;
-        eco_gc_push_stack_range(&closure_bits, 1, 1);
-        if (num_newargs > 0) {
-            uint64_t mask = pointerMaskFromKindBitmap(new_unboxed_bitmap, num_newargs);
-            if (mask != 0) {
-                eco_gc_push_stack_range(args, num_newargs, mask);
-            }
-        }
+        // Slow path: closure_bits / args / conv are already rooted above.
         obj = Allocator::instance().allocateSlow(size, Tag_Closure);
         if (!obj) {
             eco_gc_restore_stack_range_point(saved_range);
@@ -1915,28 +1973,25 @@ extern "C" HPtr eco_pap_extend(HPtr closure_hptr, uint64_t* args, uint32_t num_n
     closureStatsRecord(reinterpret_cast<const void*>(new_closure->evaluator),
                        /*isExtend=*/true);
 
-    // Merge 2-bit-per-slot unboxed bitmaps: old kinds + new kinds shifted by
-    // old_n_values * 2 bits per slot.
-    uint64_t new_bitmap_width = num_newargs < 32 ? (1ULL << (2 * num_newargs)) - 1 : ~0ULL;
-    uint64_t masked_new_bitmap = new_unboxed_bitmap & new_bitmap_width;
-    uint64_t shifted_new_bitmap = masked_new_bitmap << (2 * old_n_values);
-    new_closure->unboxed = old_unboxed | shifted_new_bitmap;
+    // Stored values were converted to the closure's slot encodings above,
+    // so the merged bitmap is simply the closure's own kind map: typed
+    // creates declare every position (deriveAllParamKindsBitmap); legacy
+    // creates declare all-boxed and the conversions boxed everything to
+    // match. The old OR-merge recorded CALLER kinds over slot kinds,
+    // splitting the GC's view from the stored representation.
+    new_closure->unboxed = old_unboxed;
 
     // Copy old captured values.
     for (uint32_t i = 0; i < old_n_values; i++) {
         new_closure->values[i] = old_closure->values[i];
     }
 
-    // Copy new arguments.
+    // Copy new arguments (converted to slot encodings).
     for (uint32_t i = 0; i < num_newargs; i++) {
-        new_closure->values[old_n_values + i].i = static_cast<i64>(args[i]);
+        new_closure->values[old_n_values + i].i = static_cast<i64>(conv[i]);
     }
 
-    // Only the slow path opened a root range; fast path skipped rooting
-    // entirely.
-    if (slow_path_rooted) {
-        eco_gc_restore_stack_range_point(saved_range);
-    }
+    eco_gc_restore_stack_range_point(saved_range);
     return ptrToHPointer(obj);
 }
 

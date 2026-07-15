@@ -396,6 +396,35 @@ where a Can.Expr belonged. Pins: `RaiseProbe.elm` probe2 (212 → 512) and
 boundary shields today's flag-off inlinable bodies, so the hole was
 latent-but-unreached flag-off).
 
+### H6.2 single-alloc follow-up (2026-07-15/16)
+
+Shipped (all default-path gates green, final suite 1615/1615): (a) the
+raiser no longer raises param-callee combinators (`apR x f = f x` —
+raising them wrapped an extra PAP layer around every escaping pipe);
+(b) P2 fuses GENERIC extend chains (pin:
+`pap_simplify_generic_chain_fusion.mlir`; the runtime's multi-arg
+generic apply chains through mid-saturation, making fusion sound);
+(c) `eco_pap_extend` now CONVERTS args to the slot's declared kind (the
+documented Phase-D contract) instead of storing caller encodings raw
+under an OR-merged bitmap — a latent GC/read split in both directions;
+the GenericApplyBoxing unit tests now declare slot kinds at create like
+real typed wrappers.
+
+Flag-on census (single PASSING run — see caveat):
+creates=260,993,782 extends=218,545,991 → 479.5M events = **−12% vs
+flag-off (545.4M)** and vs the pre-round flag-on 661.8M (+21%): the
+extends tax dropped 400.3M → 218.5M.
+
+**OPEN — flag-on stability**: the apR-exclusion round introduced a
+nondeterministic compiler-scale crash (flake matrix: h62on2 3/3 stable;
+h62on3 ~2-3/3 crash; fusion-disabled relower still crashes → fusion
+exonerated; the pap_extend fix looked 4/4 stable once, then 3/3 crash on
+an identical rebuild → luck, not fix). The trigger is the extra
+inline/hoist/beta collapsing the exclusion unblocks (flag-on-only code
+path; flag-off unaffected). ECO_ARITY_RAISE stays default-off; next
+session: front-end shape audit of the newly-collapsed IR (GC root hints
+across the layer-3 split residuals are the prime suspect).
+
 **H6.3 V0 verdict**: post-F1/F2, generic-dispatch extend traffic is
 140M/544M events (~26%) but is now dominated by variable-HOF-arg
 partials — the class LSS stamp-coverage (V1/V2) addresses. Defer V1/V2

@@ -300,11 +300,20 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
         if (!extendOp.getClosure().hasOneUse())
             return failure();
 
-        // Skip if either extend is generic-mode (no remaining_arity)
+        // Typed×typed chains fuse to a typed extend (the original P2).
+        // Chains with a GENERIC link (no remaining_arity) fuse to a GENERIC
+        // extend: the runtime's multi-arg generic apply chains through
+        // mid-chain saturation (it applies until the closure saturates,
+        // calls, and continues with the result — the compiler's own
+        // emission of `f a s1` as ONE 2-arg generic extend depends on
+        // exactly this), so `extend(extend(c, xs), ys)` and
+        // `extend(c, xs ++ ys)` are observationally identical while the
+        // fused form allocates ONE intermediate PAP instead of two. This is
+        // the dominant flag-on (H6.2 arity-raise) allocation shape and
+        // exists flag-off as well.
         auto prevRemainingAttr = prevExtend.getRemainingArityAttr();
         auto curRemainingAttr = extendOp.getRemainingArityAttr();
-        if (!prevRemainingAttr || !curRemainingAttr)
-            return failure();
+        bool bothTyped = static_cast<bool>(prevRemainingAttr) && static_cast<bool>(curRemainingAttr);
 
         // Split off the trailing GC root hints from each papExtend's newargs
         // — they are not real call arguments and must not be folded into the
@@ -318,11 +327,15 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
         auto prevRootHints = prevAllNewargs.drop_front(prevRealNewargs.size());
         auto curRootHints = curAllNewargs.drop_front(curRealNewargs.size());
 
-        // Check prev extend is NOT saturated (otherwise it would have been
-        // converted to a call, or if it's saturated, P1 should handle it)
-        int64_t prevRemaining = prevRemainingAttr.getInt();
-        if (static_cast<int64_t>(prevRealNewargs.size()) == prevRemaining)
-            return failure();
+        // A TYPED prev that saturates would have called already — leave it
+        // to P1 (typed case) and never fold a call boundary into a typed
+        // fusion. A generic prev's saturation is unknown at compile time,
+        // which is fine: the chaining argument above covers it.
+        if (prevRemainingAttr) {
+            int64_t prevRemaining = prevRemainingAttr.getInt();
+            if (static_cast<int64_t>(prevRealNewargs.size()) >= prevRemaining)
+                return failure();
+        }
 
         // Build fused real newargs: prev.realNewargs + this.realNewargs
         SmallVector<Value> fusedNewargs;
@@ -354,24 +367,35 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
         // Get result type from current extendOp
         Type resultType = extendOp.getResult().getType();
 
-        // Create fused papExtend with remaining_arity from first extend
+        // Create the fused papExtend. Typed×typed keeps the original typed
+        // form (remaining_arity from the first extend + typed attribute
+        // propagation); any generic link produces a GENERIC fused extend:
+        // no remaining_arity, no typed closure claims (the intermediate's
+        // identity is a runtime value), segmentation_unknown call kind, and
+        // the CURRENT extend's _result_kind (the final result's ABI claim).
         // PapExtendOp build signature: (result, closure, newargs, remaining_arity, newargs_unboxed_bitmap,
         //                               _closure_kind, _dispatch_mode, _fast_evaluator)
-        // Propagate typed closure calling attributes from the first extend (prevExtend)
         auto fusedOp = rewriter.create<PapExtendOp>(
             extendOp.getLoc(),
             resultType,                             // Result type
             prevExtend.getClosure(),                // Original closure (skip intermediate)
             allOperands,                            // Fused real newargs + appended GC root hints
-            prevRemainingAttr,                      // Use K1 (arity before first apply) as IntegerAttr
+            bothTyped ? prevRemainingAttr : IntegerAttr(),
             fusedBitmap,                            // Computed bitmap
-            prevExtend->getAttr("_closure_kind"),   // Propagate _closure_kind
-            prevExtend->getAttrOfType<StringAttr>("_dispatch_mode"),    // Propagate _dispatch_mode
-            prevExtend->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator"));  // Propagate _fast_evaluator
+            bothTyped ? prevExtend->getAttr("_closure_kind") : Attribute(),
+            bothTyped ? prevExtend->getAttrOfType<StringAttr>("_dispatch_mode") : StringAttr(),
+            bothTyped ? prevExtend->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator") : FlatSymbolRefAttr());
 
-        // Propagate _call_kind from the first extend
-        if (auto callKindAttr = prevExtend->getAttrOfType<StringAttr>("_call_kind")) {
-            fusedOp->setAttr("_call_kind", callKindAttr);
+        if (bothTyped) {
+            // Propagate _call_kind from the first extend
+            if (auto callKindAttr = prevExtend->getAttrOfType<StringAttr>("_call_kind")) {
+                fusedOp->setAttr("_call_kind", callKindAttr);
+            }
+        } else {
+            fusedOp->setAttr("_call_kind", rewriter.getStringAttr("segmentation_unknown"));
+            if (auto resultKindAttr = extendOp->getAttr("_result_kind")) {
+                fusedOp->setAttr("_result_kind", resultKindAttr);
+            }
         }
         if (fusedRootCount > 0) {
             fusedOp->setAttr("eco.gc_roots_count",
@@ -383,9 +407,10 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
         // purity trait (a saturating extend calls code), so the driver's
         // DCE can NEVER remove it — left in place it executes at runtime
         // as an allocate-and-discard PAP and keeps the papCreate
-        // multi-use, blocking P1/P4 on the fused extend. Safe here: the
-        // single-use and not-saturated checks above prove it is a pure
-        // allocation whose only consumer was just rewritten away.
+        // multi-use, blocking P1/P4 on the fused extend. Safe: typed
+        // prevs are proven non-saturating (pure allocation); a generic
+        // prev's possible mid-chain call is SUBSUMED by the fused generic
+        // extend (same callee, same argument order), not skipped.
         rewriter.eraseOp(prevExtend);
         return success();
     }

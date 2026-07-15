@@ -35,6 +35,20 @@ static void* hptrToRaw(uint64_t hptr) {
     return Allocator::instance().resolve(hp);
 }
 
+
+// Declare the closure's full-arity slot kinds, as the compiler's papCreate
+// lowering does for typed wrappers (deriveAllParamKindsBitmap). The
+// asymmetric mock evaluators below model a typed wrapper whose slot 0 is
+// an unboxed Int, so the create must declare it — since the pap_extend
+// kind-conversion fix, extends CONVERT args to the slot's declared kind
+// instead of recording the caller's encoding, so an undeclared (legacy,
+// all-boxed) closure would box the captured 5 and the mock would misread.
+static void declareSlotKinds(HPtr closure, uint64_t kindBitmap) {
+    Closure* c = static_cast<Closure*>(hptrToRaw(closure.toBits()));
+    TEST_ASSERT(c != nullptr);
+    c->unboxed = kindBitmap;
+}
+
 // ============================================================================
 // Mock evaluator: matches the asymmetric (Int unboxed, Int boxed) signature a
 // compiler-generated wrapper for `((==) 5)` produces when slot 0 is captured
@@ -92,6 +106,7 @@ static void test_generic_apply_boxes_captured_unboxed_int_equal() {
     HPtr eq_closure = eco_alloc_closure(
         reinterpret_cast<void*>(&mock_eq_evaluator), 2);
     TEST_ASSERT(eq_closure.toBits() != 0);
+    declareSlotKinds(eq_closure, /*slot0=Int, slot1=boxed*/ 1);
 
     // Step 2: Partially apply with unboxed i64 value 5.
     // This simulates ((==) 5) — the 5 is stored unboxed in the PAP.
@@ -135,6 +150,8 @@ static void test_generic_apply_boxes_captured_unboxed_int_not_equal() {
 
     HPtr eq_closure = eco_alloc_closure(
         reinterpret_cast<void*>(&mock_eq_evaluator), 2);
+
+    declareSlotKinds(eq_closure, /*slot0=Int, slot1=boxed*/ 1);
 
     uint64_t raw_5 = static_cast<uint64_t>(5);
     uint64_t unboxed_bitmap = 1;
@@ -180,6 +197,7 @@ static void test_generic_apply_with_real_kernel_equal() {
     // Create (==) closure, capture unboxed 42, then apply boxed 42.
     HPtr eq_closure = eco_alloc_closure(
         reinterpret_cast<void*>(&real_eq_evaluator_asymmetric), 2);
+    declareSlotKinds(eq_closure, /*slot0=Int, slot1=boxed*/ 1);
 
     uint64_t raw_42 = static_cast<uint64_t>(42);
     uint64_t bitmap = 1;
