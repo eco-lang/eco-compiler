@@ -869,11 +869,16 @@ generateTailFunc ctx funcName params expr monoType =
             { ctx | nextVar = List.length params, varMappings = freshVarMappings }
                 |> Ctx.resetDefinedSsaVars paramSsaVarsTail
 
-        -- monoType is the full curried function type (e.g., MFunction [MInt] (MFunction [MInt] MInt))
-        -- Use decomposeFunctionType to extract the FINAL return type after all args are consumed.
-        -- For sumHelper : Int -> Int -> Int, this extracts MInt (not MFunction [MInt] MInt).
-        ( _, actualReturnType ) =
-            Mono.decomposeFunctionType monoType
+        -- monoType is the full curried function type (e.g., MFunction [MInt] (MFunction [MInt] MInt)).
+        -- A NORMAL def consumes every arrow arg, so the ABI return is the final leaf
+        -- (sumHelper : Int -> Int -> Int extracts MInt). But a STAGED-RESULT def
+        -- (`mk : Int -> (Int -> Int)` written `mk a = \b -> ...`) has FEWER value
+        -- params than its type has arrow args; dropping every arg would collapse the
+        -- returned CLOSURE to its leaf (mistyping the func as returning i64 and forcing
+        -- an unbox of the closure). Drop exactly the consumed params so any residual
+        -- arrows survive as the function-typed (closure) result.
+        actualReturnType =
+            Ctx.residualResultType (List.length params) monoType
 
         retTy =
             Types.monoTypeToAbi actualReturnType

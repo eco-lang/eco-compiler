@@ -356,9 +356,14 @@ emission no longer claim `_capture_abi`/typed `remaining_arity`/direct
 `_call_kind` — the staged-wrapper contract only holds for
 compiler-materialized wrappers (self-compile contained ZERO of the old
 stamps). Layer 2 verdict: **standalone flag-off bug confirmed**, plus a
-second one — staged-result specs are TYPE-FLATTENED at monomorphization
-(`mk : Int -> (Int -> Int)` emits as `(i64)->(i64)`; repro in the plan;
-OPEN). Layer 3 (unconditional): `ForwardClosure` now betas the FIRST
+second one — staged-result specs were TYPE-FLATTENED at codegen
+(`mk : Int -> (Int -> Int)` emitted as `(i64)->(i64)`), **FIXED 2026-07-15**:
+`generateTailFunc` typed a tail-func spec's return via
+`decomposeFunctionType` (drops ALL arrow args to the leaf), collapsing the
+returned closure when a def has fewer value params than arrow args;
+`Context.residualResultType` now re-curries the un-consumed args. Pin:
+`test/elm/src/StagedResultTest.elm` (E2E, 44/32/1000); gate 1616/1616.
+Layer 3 (unconditional): `ForwardClosure` now betas the FIRST
 stage of a multi-stage single-call application and re-applies the rest —
 the stall that kept `f a s1` alive. Gate 1613/1613 with both
 unconditional layers on the default path. RaiseProbe flag-on:

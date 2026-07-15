@@ -3,7 +3,7 @@ module Compiler.Generate.MLIR.Context exposing
     , initContext, withInlineBodies, withEcoConfig
     , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp, liveEcoValueVars, resetDefinedSsaVars
     , getOrCreateTypeIdForMonoType, registerKernelCall
-    , buildSignatures, kernelFuncSignatureFromType
+    , buildSignatures, kernelFuncSignatureFromType, residualResultType
     , isTypeVar, hasKernelImplementation
     , KernelDeclInfo
     , registerKernelInstance
@@ -645,6 +645,37 @@ insertKernelDecl ctx info =
 -- ====== SIGNATURE EXTRACTION (for invariant checking)
 
 
+{-| Extract a spec's actual return type given how many VALUE parameters it has.
+
+A staged-result definition carries more arrow layers in its (flattened) MonoType
+than it has value params — e.g. `mk : Int -> (Int -> Int)` defined as
+`mk a = \b -> ...` has ONE param but TWO flattened arrow args. Peeling the whole
+`MFunction` (dropping every arg in one node) would collapse to the leaf type
+(`Int`), mistyping the spec as returning `Int` when it actually returns the closure
+`Int -> Int`. Drop exactly the consumed params so any residual arrows survive as a
+function-typed result. When params == args this is the ordinary leaf return type.
+-}
+residualResultType : Int -> Mono.MonoType -> Mono.MonoType
+residualResultType numParams monoType =
+    let
+        ( allArgTypes, finalLeaf ) =
+            Mono.decomposeFunctionType monoType
+    in
+    if List.length allArgTypes > numParams then
+        -- Staged result: the un-consumed args re-curry into a function-typed
+        -- result. Decompose normalises flat vs nested MFunction forms; keep the
+        -- outer arrow's annotation.
+        case monoType of
+            Mono.MFunction anno _ _ ->
+                Mono.MFunction anno (List.drop numParams allArgTypes) finalLeaf
+
+            _ ->
+                finalLeaf
+
+    else
+        finalLeaf
+
+
 {-| Extract the function signature (param types, return type) from a MonoNode.
 Returns Nothing for nodes that aren't callable functions.
 
@@ -657,18 +688,9 @@ extractNodeSignature node =
         Mono.MonoDefine expr monoType ->
             case expr of
                 Mono.MonoClosure closureInfo _ _ ->
-                    let
-                        extractedReturnType =
-                            case monoType of
-                                Mono.MFunction _ _ retType ->
-                                    retType
-
-                                _ ->
-                                    monoType
-                    in
                     Just
                         { paramTypes = List.map Tuple.second closureInfo.params
-                        , returnType = extractedReturnType
+                        , returnType = residualResultType (List.length closureInfo.params) monoType
                         , evaluatorBoxesAll = False
                         }
 
@@ -682,12 +704,7 @@ extractNodeSignature node =
         Mono.MonoTailFunc params _ monoType ->
             let
                 returnType =
-                    case monoType of
-                        Mono.MFunction _ _ ret ->
-                            ret
-
-                        _ ->
-                            monoType
+                    residualResultType (List.length params) monoType
             in
             Just
                 { paramTypes = List.map Tuple.second params
@@ -744,18 +761,9 @@ extractNodeSignature node =
         Mono.MonoPortIncoming expr monoType ->
             case expr of
                 Mono.MonoClosure closureInfo _ _ ->
-                    let
-                        extractedReturnType =
-                            case monoType of
-                                Mono.MFunction _ _ retType ->
-                                    retType
-
-                                _ ->
-                                    monoType
-                    in
                     Just
                         { paramTypes = List.map Tuple.second closureInfo.params
-                        , returnType = extractedReturnType
+                        , returnType = residualResultType (List.length closureInfo.params) monoType
                         , evaluatorBoxesAll = False
                         }
 
@@ -769,18 +777,9 @@ extractNodeSignature node =
         Mono.MonoPortOutgoing expr monoType ->
             case expr of
                 Mono.MonoClosure closureInfo _ _ ->
-                    let
-                        extractedReturnType =
-                            case monoType of
-                                Mono.MFunction _ _ retType ->
-                                    retType
-
-                                _ ->
-                                    monoType
-                    in
                     Just
                         { paramTypes = List.map Tuple.second closureInfo.params
-                        , returnType = extractedReturnType
+                        , returnType = residualResultType (List.length closureInfo.params) monoType
                         , evaluatorBoxesAll = False
                         }
 

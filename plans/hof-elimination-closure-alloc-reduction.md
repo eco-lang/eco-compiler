@@ -891,10 +891,24 @@ miniature TypeCheck.IO — keep as the pin; flag-off it must print
      worse, its SPEC is emitted as `(i64) -> (i64)` — monomorphization
      drops the middle arrow of a staged-result def under flat demand, so
      even after the layer-1 guard the P1 direct call dies at LLVM
-     translation with `result type mismatch: ptr != i64`. This
-     spec-typing producer bug (peelCallResult/demand-flattening family)
-     is OPEN; repro (was `StagedResultProbe.elm`, removed from the
-     corpus because elm tests have no XFAIL):
+     translation with `result type mismatch: '!llvm.ptr<1>' != 'i64'`.
+     **FIXED 2026-07-15** — and the producer was NOT the
+     peelCallResult/demand-flattening family guessed here, but
+     `generateTailFunc` (`Compiler/Generate/MLIR/Functions.elm`), which
+     typed a tail-recursive spec's return via `Mono.decomposeFunctionType`
+     — dropping EVERY arrow arg down to the leaf. A staged-result def has
+     fewer value params than arrow args, so the returned CLOSURE collapsed
+     to its leaf (`mk` → `(i64)->i64`, body unboxing each returned
+     papCreate to i64). Fix: `Context.residualResultType numParams monoType`
+     decomposes the type and, when there are more arrow args than value
+     params, re-curries the un-consumed args into a function-typed result;
+     used in `generateTailFunc` (emitter) AND `extractNodeSignature`
+     (invariant checker: MonoTailFunc + 3 MonoClosure cases). `mk`'s spec is
+     now `(i64)->!eco.value`, the scf.while carries the closure with no
+     unbox. Repro is now a permanent E2E pin
+     `test/elm/src/StagedResultTest.elm` (elm-test lacks XFAIL, but the E2E
+     JIT harness runs it and CHECKs 44/32/1000); full gate 1616/1616. The
+     source shape (removed `StagedResultProbe.elm`, no XFAIL in elm tests):
 
          mk : Int -> (Int -> Int)
          mk a =
