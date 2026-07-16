@@ -1384,6 +1384,25 @@ Deliverable: `design_docs/monomorphization/capture-union-representation.md` cove
 - Boxing boundary rules (escape ⇒ box to heap closure), GC rooting of boxed slots inside a stack value, interaction with sret/aggregate lowering limits (kMaxDirectFields).
 - Go/no-go criterion: post-H6 census share of allocations attributable to k≥2 sets and to escaping-but-small closures. If < ~10%, don't build it.
 
+**RESOLVED 2026-07-16 — NO-GO.** The design doc is written
+(`design_docs/monomorphization/capture-union-representation.md`) and the
+criterion evaluated against the fresh post-P6 census (flag-off,
+creates = 543.3M): the top 46% of dynamic creates contains **zero** rows
+in M5's win class — 175.5M are TypeCheck.IO monadic continuations
+CAPTURED into heap data (the escape⇒box boundary), 65.6M are k=1
+HOF-arg pairs (identical creator/consumer counts — H5's class, not M5
+residual). LSS singleton-dominance corroborates that the tail is not
+different. Two additional nails: (a) post-P6 a create is a bump-pointer
+alloc+store — the cheapest event in the system — while M5's cost lands on
+new GC scan machinery (dynamic per-discriminant root masks, §2.4 of the
+doc) with the worst recent defect history; (b) the U2b sweep proved
+allocation counts do not govern wall-clock here (−13.5% events cost +55%
+wall). Note the plan's `kMaxDirectFields` never existed in-tree — the
+real aggregate cap is `logicalTypes.customMaxFields` (≤24). Revisit
+conditions recorded in the doc (§5): a set-size-keyed census showing
+k≥2 ≥ 10%, an IO-chain defunctionalization removing the heap-capture
+boundary, or profiling that attributes wall-clock to create traffic.
+
 ---
 
 ## 4. Changes vs `hof-elimination.md` (explicit re-prioritization)
