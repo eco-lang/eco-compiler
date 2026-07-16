@@ -463,6 +463,10 @@ HPointer slice(void* str, i64 start, i64 end) {
     // Spans both children: build a rope of (left[start..leftLen) ++ right[0..end-leftLen)).
     HPointer leftPiece = slice(leftObj, start, static_cast<i64>(leftLen));
     Elm::StackRootGuard rootLeft(&leftPiece);
+    // Re-derive the right child from the rooted `self`: the recursive slice
+    // above allocates whenever start > 0, and a GC there moves the child —
+    // the pre-recursion `rightHp` snapshot would be stale.
+    rightHp = static_cast<ElmStringRope*>(allocator.resolve(self))->right;
     void* rightObj = allocator.resolve(rightHp);
     HPointer rightPiece = slice(rightObj, 0, end - static_cast<i64>(leftLen));
     return makeRope(leftPiece, rightPiece);

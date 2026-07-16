@@ -309,6 +309,11 @@ HPointer minimum(HPointer list);
 inline bool all(Predicate pred, HPointer list) {
     auto& allocator = Allocator::instance();
     HPointer current = list;
+    // Root the spine and each iteration's head/tail snapshots across
+    // pred(), which can run user code that allocates (see filter/partition
+    // in ListOps.cpp); advance from the rooted snapshot, never from the raw
+    // Cons* resolved before the call.
+    Elm::StackRootGuard spine_guard(&current);
 
     while (!alloc::isNil(current)) {
         void* cell = allocator.resolve(current);
@@ -318,8 +323,17 @@ inline bool all(Predicate pred, HPointer list) {
         Header* hdr = getHeader(cell);
         bool is_boxed = tupleFieldKind(hdr->unboxed, 0) == 0;
 
-        if (!pred(c->head, is_boxed)) return false;
-        current = c->tail;
+        Unboxable head = c->head;
+        HPointer next = c->tail;
+
+        bool ok;
+        {
+            HPointer* head_root = is_boxed ? &head.p : nullptr;
+            Elm::StackRootGuard iter_guard({&next, head_root});
+            ok = pred(head, is_boxed);
+        }
+        if (!ok) return false;
+        current = next;
     }
 
     return true;
@@ -331,6 +345,8 @@ inline bool all(Predicate pred, HPointer list) {
 inline bool any(Predicate pred, HPointer list) {
     auto& allocator = Allocator::instance();
     HPointer current = list;
+    // Same rooting discipline as all() above.
+    Elm::StackRootGuard spine_guard(&current);
 
     while (!alloc::isNil(current)) {
         void* cell = allocator.resolve(current);
@@ -340,8 +356,17 @@ inline bool any(Predicate pred, HPointer list) {
         Header* hdr = getHeader(cell);
         bool is_boxed = tupleFieldKind(hdr->unboxed, 0) == 0;
 
-        if (pred(c->head, is_boxed)) return true;
-        current = c->tail;
+        Unboxable head = c->head;
+        HPointer next = c->tail;
+
+        bool hit;
+        {
+            HPointer* head_root = is_boxed ? &head.p : nullptr;
+            Elm::StackRootGuard iter_guard({&next, head_root});
+            hit = pred(head, is_boxed);
+        }
+        if (hit) return true;
+        current = next;
     }
 
     return false;

@@ -50,22 +50,39 @@ struct ParserStr {
     bool valid() const { return wide != nullptr || narrow != nullptr; }
 };
 
+// Flatten `hp` (if needed) to a form whose payload can be indexed without
+// further allocation. UTF-8 (ASCII) and already-flat forms pass through;
+// UTF-16 rope/slice sources flatten to a leaf via ensureFlat — which
+// ALLOCATES and is therefore a GC point. Callers holding raw payload
+// pointers (or unrooted HPointers/closures) across this call must root or
+// re-derive them.
+inline HPointer parserFlatten(HPointer hp) {
+    if (alloc::isEmbeddedConstant(hp)) return hp;  // empty string
+    void* obj = Allocator::instance().resolve(hp);
+    if (obj && StringOps::isUtf8(obj)) return hp;
+    return StringOps::ensureFlat(hp);
+}
+
+// Derive the raw payload view from an already-flattened string. Performs no
+// allocation; the returned raw pointers stay valid only until the next GC
+// point.
+inline ParserStr parserView(HPointer hp) {
+    if (alloc::isEmbeddedConstant(hp)) return {};  // empty string
+    void* obj = Allocator::instance().resolve(hp);
+    if (obj && StringOps::isUtf8(obj)) {
+        // UTF-8 (ASCII): index the bytes directly, no transcode.
+        auto pr = StringOps::utf8Bytes(obj);
+        return ParserStr{nullptr, pr.first, static_cast<int64_t>(pr.second)};
+    }
+    ElmString* s = alloc::resolveStringBody(obj);
+    return ParserStr{s->chars, nullptr, static_cast<int64_t>(s->header.size)};
+}
+
 inline ParserStr resolveString(HPtr str) {
     HPointer hp;
     uint64_t bits = str.toBits();
     std::memcpy(&hp, &bits, sizeof(hp));
-    if (alloc::isEmbeddedConstant(hp)) return {};  // empty string
-    void* obj = Allocator::instance().resolve(hp);
-    if (obj && StringOps::isUtf8(obj)) {
-        // UTF-8 (ASCII): index the bytes directly, no flatten / transcode.
-        auto pr = StringOps::utf8Bytes(obj);
-        return ParserStr{nullptr, pr.first, static_cast<int64_t>(pr.second)};
-    }
-    // UTF-16 / rope / slice: flatten to a leaf once and index chars[].
-    HPointer flat = StringOps::ensureFlat(hp);
-    if (alloc::isEmbeddedConstant(flat)) return {};
-    ElmString* s = alloc::resolveStringBody(Allocator::instance().resolve(flat));
-    return ParserStr{s->chars, nullptr, static_cast<int64_t>(s->header.size)};
+    return parserView(parserFlatten(hp));
 }
 
 inline int64_t stringLen(const ParserStr& s) { return s.len; }
@@ -123,6 +140,13 @@ HPtr Elm_Kernel_Parser_isAsciiCode(int64_t code, int64_t offset, HPtr str) {
 //
 // Supplementary chars (surrogate pairs) advance offset by 2 when matched.
 int64_t Elm_Kernel_Parser_isSubChar(HPtr closure, int64_t offset, HPtr str) {
+    // Root the predicate closure across resolveString: flattening a rope/
+    // slice source allocates (GC point), which would leave the by-value
+    // closure bits stale when the predicate is applied below (mirrors
+    // Elm_Kernel_String_map's closure rooting).
+    HPointer closureHP = Export::decode(closure.toBits());
+    Elm::StackRootGuard closureRoot(&closureHP);
+
     ParserStr s = resolveString(str);
     i64 len = stringLen(s);
     if (offset < 0 || offset >= len) {
@@ -151,7 +175,8 @@ int64_t Elm_Kernel_Parser_isSubChar(HPtr closure, int64_t offset, HPtr str) {
     static constexpr unsigned char kLayoutChar1[3] = { 1, 0, 3 };
     const auto* layout = reinterpret_cast<const Elm::EvalParamLayout*>(kLayoutChar1);
     int64_t args[1] = { static_cast<int64_t>(codePoint & 0xFFFFu) };
-    HPtr result = eco_apply_closure_typed(closure, args, 1, layout);
+    HPtr cl = HPtr::fromBits(Export::encode(closureHP));
+    HPtr result = eco_apply_closure_typed(cl, args, 1, layout);
     if (!Export::decodeBoxedBool(result.toBits())) {
         return -1;
     }
@@ -169,8 +194,17 @@ int64_t Elm_Kernel_Parser_isSubChar(HPtr closure, int64_t offset, HPtr str) {
 //   (-1, row', col') with row'/col' advanced up to the first mismatch.
 HPtr Elm_Kernel_Parser_isSubString(HPtr target, int64_t offset, int64_t row,
                                    int64_t col, HPtr str) {
-    ParserStr small = resolveString(target);
-    ParserStr big = resolveString(str);
+    // Flatten both strings BEFORE deriving any raw payload pointers: either
+    // flatten can allocate (GC point), which would invalidate a raw pointer
+    // derived earlier. Both HPointers are rooted so each survives the
+    // other's flatten; the views below perform no allocation.
+    HPointer targetHP = Export::decode(target.toBits());
+    HPointer strHP = Export::decode(str.toBits());
+    Elm::StackRootGuard guard(&targetHP, &strHP);
+    targetHP = parserFlatten(targetHP);
+    strHP = parserFlatten(strHP);
+    ParserStr small = parserView(targetHP);
+    ParserStr big = parserView(strHP);
     i64 smallLen = stringLen(small);
     i64 bigLen = stringLen(big);
 
@@ -205,8 +239,15 @@ HPtr Elm_Kernel_Parser_isSubString(HPtr target, int64_t offset, int64_t row,
 //   when not found) — mirrors JS, which advances through [offset, target).
 HPtr Elm_Kernel_Parser_findSubString(HPtr target, int64_t offset, int64_t row,
                                      int64_t col, HPtr str) {
-    ParserStr small = resolveString(target);
-    ParserStr big = resolveString(str);
+    // Same discipline as isSubString: flatten both (GC points) before
+    // deriving raw payload pointers.
+    HPointer targetHP = Export::decode(target.toBits());
+    HPointer strHP = Export::decode(str.toBits());
+    Elm::StackRootGuard guard(&targetHP, &strHP);
+    targetHP = parserFlatten(targetHP);
+    strHP = parserFlatten(strHP);
+    ParserStr small = parserView(targetHP);
+    ParserStr big = parserView(strHP);
     i64 smallLen = stringLen(small);
     i64 bigLen = stringLen(big);
 

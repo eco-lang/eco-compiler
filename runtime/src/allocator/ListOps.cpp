@@ -4,6 +4,7 @@
 
 #include "ListOps.hpp"
 #include <algorithm>
+#include <numeric>
 
 namespace Elm {
 namespace ListOps {
@@ -91,12 +92,17 @@ HPointer map(MapperWithBoxed mapper, HPointer list) {
     if (alloc::isNil(list)) return alloc::listNil();
 
     auto& allocator = Allocator::instance();
+    auto& rs = allocator.getRootSet();
 
-    // Collect mapped values. The spine pointer `current` and each iteration's
-    // `next` snapshot cross the user mapper callback (which can GC), so they
-    // must be registered as stack roots; otherwise GC moves their target and
-    // the next iteration walks into freed memory.
+    // Collect mapped values. The spine pointer `current`, each iteration's
+    // `next`/`head` snapshots, AND the boxed mapper results accumulated in
+    // `mapped` all cross later mapper callbacks (which can GC), so all of
+    // them must be registered as stack roots. `mapped` is reserved up front
+    // so entry addresses stay stable for the incremental registration below
+    // (a std::vector reallocation would invalidate registered roots); the
+    // accumulated roots are released by spine_guard's destructor.
     std::vector<std::pair<Unboxable, bool>> mapped;
+    mapped.reserve(static_cast<size_t>(length(list)));
     HPointer current = list;
     Elm::StackRootGuard spine_guard(&current);
 
@@ -120,6 +126,9 @@ HPointer map(MapperWithBoxed mapper, HPointer list) {
             result = mapper(head, is_boxed);
         }
         mapped.push_back(result);
+        if (result.second) {
+            rs.pushStackRootRange(&mapped.back().first.p, 1, 1);
+        }
         current = next;
     }
 
@@ -130,9 +139,12 @@ HPointer indexedMap(IndexedMapper mapper, HPointer list) {
     if (alloc::isNil(list)) return alloc::listNil();
 
     auto& allocator = Allocator::instance();
+    auto& rs = allocator.getRootSet();
 
-    // Collect mapped values. See `map` for the rooting rationale.
+    // Collect mapped values. See `map` for the rooting rationale (incl. the
+    // incremental rooting of accumulated boxed results).
     std::vector<std::pair<Unboxable, bool>> mapped;
+    mapped.reserve(static_cast<size_t>(length(list)));
     HPointer current = list;
     i64 index = 0;
     Elm::StackRootGuard spine_guard(&current);
@@ -157,6 +169,9 @@ HPointer indexedMap(IndexedMapper mapper, HPointer list) {
             result = mapper(index, head, is_boxed);
         }
         mapped.push_back(result);
+        if (result.second) {
+            rs.pushStackRootRange(&mapped.back().first.p, 1, 1);
+        }
         ++index;
         current = next;
     }
@@ -168,10 +183,14 @@ HPointer filter(Predicate pred, HPointer list) {
     if (alloc::isNil(list)) return alloc::listNil();
 
     auto& allocator = Allocator::instance();
+    auto& rs = allocator.getRootSet();
 
-    // Collect passing elements. Spine and per-iteration tail/head must be
-    // rooted across pred() (which can run user code that allocates).
+    // Collect passing elements. Spine, per-iteration tail/head, AND the
+    // accumulated boxed heads in `passing` must be rooted across pred()
+    // (which can run user code that allocates). `passing` is reserved up
+    // front so entry addresses stay stable for the incremental rooting.
     std::vector<std::pair<Unboxable, bool>> passing;
+    passing.reserve(static_cast<size_t>(length(list)));
     HPointer current = list;
     Elm::StackRootGuard spine_guard(&current);
 
@@ -194,7 +213,12 @@ HPointer filter(Predicate pred, HPointer list) {
             Elm::StackRootGuard iter_guard({&next, head_root});
             keep = pred(head, is_boxed);
         }
-        if (keep) passing.emplace_back(head, is_boxed);
+        if (keep) {
+            passing.emplace_back(head, is_boxed);
+            if (is_boxed) {
+                rs.pushStackRootRange(&passing.back().first.p, 1, 1);
+            }
+        }
         current = next;
     }
 
@@ -205,10 +229,14 @@ HPointer filterMap(FilterMapper mapper, HPointer list) {
     if (alloc::isNil(list)) return alloc::listNil();
 
     auto& allocator = Allocator::instance();
+    auto& rs = allocator.getRootSet();
 
-    // Collect non-Nothing results. mapper() may GC; spine, head, tail and the
-    // returned `maybeResult` must all be rooted across it.
+    // Collect non-Nothing results. mapper() may GC; spine, head, tail and
+    // the returned `maybeResult` must all be rooted across it — and so must
+    // the boxed just-values already accumulated in `results` (rooted
+    // incrementally below; reserve keeps their addresses stable).
     std::vector<std::pair<Unboxable, bool>> results;
+    results.reserve(static_cast<size_t>(length(list)));
     HPointer current = list;
     Elm::StackRootGuard spine_guard(&current);
 
@@ -242,6 +270,9 @@ HPointer filterMap(FilterMapper mapper, HPointer list) {
                     // It's Just - extract the value; slot 0 kind 0 means boxed.
                     bool val_boxed = fieldKind(just->unboxed, 0) == 0;
                     results.emplace_back(just->values[0], val_boxed);
+                    if (val_boxed) {
+                        rs.pushStackRootRange(&results.back().first.p, 1, 1);
+                    }
                 }
             }
         }
@@ -405,9 +436,16 @@ HPointer partition(Predicate pred, HPointer list) {
     }
 
     auto& allocator = Allocator::instance();
+    auto& rs = allocator.getRootSet();
 
+    // Accumulated boxed heads in passing/failing cross later pred() GC
+    // points, so they are rooted incrementally as they are appended
+    // (reserve keeps entry addresses stable; see `map`).
     std::vector<std::pair<Unboxable, bool>> passing;
     std::vector<std::pair<Unboxable, bool>> failing;
+    const size_t listLen = static_cast<size_t>(length(list));
+    passing.reserve(listLen);
+    failing.reserve(listLen);
     HPointer current = list;
     Elm::StackRootGuard spine_guard(&current);
 
@@ -432,8 +470,14 @@ HPointer partition(Predicate pred, HPointer list) {
         }
         if (pass) {
             passing.emplace_back(head, is_boxed);
+            if (is_boxed) {
+                rs.pushStackRootRange(&passing.back().first.p, 1, 1);
+            }
         } else {
             failing.emplace_back(head, is_boxed);
+            if (is_boxed) {
+                rs.pushStackRootRange(&failing.back().first.p, 1, 1);
+            }
         }
         current = next;
     }
@@ -483,14 +527,25 @@ Unboxable foldl(Folder fold, Unboxable acc, HPointer list) {
 }
 
 Unboxable foldr(Folder fold, Unboxable acc, HPointer list) {
-    // Collect elements first (need to process in reverse)
+    // Collect elements first (need to process in reverse). The boxed head
+    // snapshots are read across each fold callback (user code that can GC),
+    // so root them for the duration — mirroring foldl's per-iteration
+    // rooting. The accumulator is type-erased and consumed/overwritten at
+    // each call, so it needs no root here (see foldl's rationale).
     auto elements = toVector(list);
+
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRangePoint();
+    for (auto& [val, is_boxed] : elements) {
+        if (is_boxed) rs.pushStackRootRange(&val.p, 1, 1);
+    }
 
     Unboxable result = acc;
     for (auto it = elements.rbegin(); it != elements.rend(); ++it) {
         result = fold(it->first, it->second, result);
     }
 
+    rs.restoreStackRangePoint(saved);
     return result;
 }
 
@@ -546,13 +601,33 @@ HPointer sortBy(KeyExtractor keyFn, HPointer list) {
 
     auto elements = toVector(list);
 
-    // Sort by key
-    std::sort(elements.begin(), elements.end(),
-              [&keyFn](const auto& a, const auto& b) {
-                  return keyFn(a.first, a.second) < keyFn(b.first, b.second);
+    // Root every boxed head for the duration of the key extractions: keyFn
+    // runs user code that can GC and move the snapshotted heads. Sort
+    // indices (scalars) rather than the entries themselves so no boxed
+    // value ever passes through std::sort's unrooted temporaries; the
+    // rooted `elements` slots are re-read (post-GC-fixup) per comparison.
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRangePoint();
+    for (auto& [val, is_boxed] : elements) {
+        if (is_boxed) rs.pushStackRootRange(&val.p, 1, 1);
+    }
+
+    std::vector<size_t> indices(elements.size());
+    std::iota(indices.begin(), indices.end(), 0);
+    std::sort(indices.begin(), indices.end(),
+              [&](size_t ia, size_t ib) {
+                  i64 ka = keyFn(elements[ia].first, elements[ia].second);
+                  // b's entry is read only after a's key extraction — a GC
+                  // there updates the rooted slots in place.
+                  i64 kb = keyFn(elements[ib].first, elements[ib].second);
+                  return ka < kb;
               });
 
-    return alloc::listFromUnboxables(elements);
+    std::vector<std::pair<Unboxable, bool>> sorted;
+    sorted.reserve(elements.size());
+    for (size_t idx : indices) sorted.push_back(elements[idx]);
+    rs.restoreStackRangePoint(saved);
+    return alloc::listFromUnboxables(sorted);
 }
 
 HPointer sortWith(Comparator cmp, HPointer list) {
@@ -560,13 +635,28 @@ HPointer sortWith(Comparator cmp, HPointer list) {
 
     auto elements = toVector(list);
 
-    // Sort with custom comparator
-    std::sort(elements.begin(), elements.end(),
-              [&cmp](const auto& a, const auto& b) {
-                  return cmp(a.first, a.second, b.first, b.second) < 0;
+    // Same discipline as sortBy: root the boxed heads and sort indices so
+    // no boxed value crosses the comparator's GC points via std::sort's
+    // unrooted temporaries.
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRangePoint();
+    for (auto& [val, is_boxed] : elements) {
+        if (is_boxed) rs.pushStackRootRange(&val.p, 1, 1);
+    }
+
+    std::vector<size_t> indices(elements.size());
+    std::iota(indices.begin(), indices.end(), 0);
+    std::sort(indices.begin(), indices.end(),
+              [&](size_t ia, size_t ib) {
+                  return cmp(elements[ia].first, elements[ia].second,
+                             elements[ib].first, elements[ib].second) < 0;
               });
 
-    return alloc::listFromUnboxables(elements);
+    std::vector<std::pair<Unboxable, bool>> sorted;
+    sorted.reserve(elements.size());
+    for (size_t idx : indices) sorted.push_back(elements[idx]);
+    rs.restoreStackRangePoint(saved);
+    return alloc::listFromUnboxables(sorted);
 }
 
 HPointer maximum(HPointer list) {

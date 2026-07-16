@@ -1681,12 +1681,17 @@ inline HPointer makeByteBufferSlice(HPointer base, u32 offset, u32 length) {
         }
     }
 
-    // Tiny slices: flatten to a copy.
+    // Tiny slices: flatten to a copy. Snapshot the payload to the C stack
+    // BEFORE allocating (Pattern 3): allocByteBuffer allocates first and
+    // memcpys after, so a GC during the alloc could move/reclaim the
+    // unrooted source buffer and leave `src->bytes + offset` dangling.
     if (length < MAKE_BYTEBUFFER_SLICE_MIN_LEN) {
         // Re-resolve base post-collapse — possible Tag_LargeByteHeader.
         void* obj = allocator.resolve(base);
         ByteBuffer* src = resolveByteBufferBody(obj);
-        return allocByteBuffer(src->bytes + offset, length);
+        u8 tmp[MAKE_BYTEBUFFER_SLICE_MIN_LEN];
+        std::memcpy(tmp, src->bytes + offset, length);
+        return allocByteBuffer(tmp, length);
     }
 
     size_t total_size = sizeof(ElmByteBufferSlice);

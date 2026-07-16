@@ -1105,14 +1105,16 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
             while (!isNil(decoders)) {
                 Cons* cell = static_cast<Cons*>(allocator.resolve(decoders));
                 HPointer decHP = cell->head.p;
-                HPointer tailHP = cell->tail;
 
                 uint64_t result = runDecoder(decHP, jvalEnc);
                 if (isOk(result)) {
                     return result;
                 }
 
-                decoders = tailHP;
+                // Advance via the rooted cursor: runDecoder is a GC point,
+                // which updates `decoders` (rooted above) but would leave a
+                // pre-call tail snapshot stale.
+                decoders = static_cast<Cons*>(allocator.resolve(decoders))->tail;
             }
 
             return makeErr("Ran into a oneOf with no possibilities");

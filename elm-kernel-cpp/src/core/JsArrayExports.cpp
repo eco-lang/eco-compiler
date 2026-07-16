@@ -886,16 +886,20 @@ namespace {
 // Caller must overwrite elements[idx] with the new typed value before the
 // returned HPointer escapes.
 inline HPointer copyForUnsafeSet(HPtr array, uint32_t &outLen, uint32_t &outKind) {
-    uint64_t array_bits = array.toBits();
-    void* srcPtr = Export::toPtr(array_bits);
-    ElmArray* src = static_cast<ElmArray*>(srcPtr);
+    auto& allocator = Allocator::instance();
+    // Root the source across alloc::allocArray (a GC point): the by-value
+    // HPtr word would otherwise go stale when a minor GC moves the array.
+    // Mirrors the boxed twin Elm_Kernel_JsArray_unsafeSet.
+    HPointer srcHP = Export::decode(array.toBits());
+    StackRootGuard guard(&srcHP);
+
+    ElmArray* src = static_cast<ElmArray*>(allocator.resolve(srcHP));
     uint32_t len = src->length;
     uint32_t kind = src->header.unboxed & 0x3;
 
     HPointer result = alloc::allocArray(len);
-    srcPtr = Export::toPtr(array_bits);
-    src = static_cast<ElmArray*>(srcPtr);
-    void* dstPtr = Allocator::instance().resolve(result);
+    src = static_cast<ElmArray*>(allocator.resolve(srcHP));
+    void* dstPtr = allocator.resolve(result);
     ElmArray* dst = static_cast<ElmArray*>(dstPtr);
 
     for (uint32_t i = 0; i < len; i++) {

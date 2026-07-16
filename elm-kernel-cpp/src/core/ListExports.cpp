@@ -44,10 +44,19 @@ inline uint64_t callBinaryClosure(HPtr closure_hptr, uint64_t arg1, uint64_t arg
 
 // Convert list to vector of uint64_t (all HPointer-encoded).
 // For unboxed ints, boxes via allocInt so values are HPointer-encoded.
+//
+// Two-phase (GC-safe, mirrors List.cpp::toArray): first a no-allocation
+// spine walk snapshots each head with its kind; then the boxing pass runs
+// with every HPointer slot (already-boxed heads AND freshly boxed results)
+// pinned in a stack root range, since each boxElement call may trigger a
+// minor GC that moves any of them. The returned encoded values are NOT
+// rooted — callers must root them before the next allocation.
 std::vector<uint64_t> listToVectorU64(HPointer list) {
-    std::vector<uint64_t> result;
     Allocator& allocator = Allocator::instance();
 
+    // Phase 1: raw spine walk, no allocation.
+    struct Entry { Unboxable head; uint8_t kind; };
+    std::vector<Entry> entries;
     HPointer current = list;
     while (!alloc::isNil(current)) {
         void* ptr = allocator.resolve(current);
@@ -57,32 +66,35 @@ std::vector<uint64_t> listToVectorU64(HPointer list) {
         if (hdr->tag != Tag_Cons) break;
 
         Cons* cons = static_cast<Cons*>(ptr);
-        uint32_t kind = Elm::tupleFieldKind(hdr->unboxed, 0);
-        if (kind != 0) {
-            result.push_back(Export::encode(alloc::boxElement(cons->head, kind)));
-        } else {
-            result.push_back(Export::encode(cons->head.p));
-        }
+        entries.push_back(Entry{
+            cons->head,
+            static_cast<uint8_t>(Elm::tupleFieldKind(hdr->unboxed, 0))});
         current = cons->tail;
     }
 
-    return result;
-}
-
-// Convert vector of uint64_t back to list.
-// The headIsBoxed parameter determines whether values are stored as
-// boxed HPointers (true) or unboxed i64 (false).
-HPointer vectorU64ToList(const std::vector<uint64_t>& vec, bool headIsBoxed) {
-    HPointer result = alloc::listNil();
-    for (auto it = vec.rbegin(); it != vec.rend(); ++it) {
-        Unboxable head;
-        if (headIsBoxed) {
-            head.p = Export::decode(*it);
-        } else {
-            head.i = static_cast<int64_t>(*it);
-        }
-        result = List::cons(head, result, headIsBoxed);
+    // Phase 2: box primitives under a root range covering the whole buffer.
+    // Boxed heads are seeded first; primitive slots stay null until boxed
+    // (null roots are ignored by the scanner).
+    std::vector<HPointer> hps(entries.size(), HPointer{});
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (entries[i].kind == 0) hps[i] = entries[i].head.p;
     }
+    auto& rs = allocator.getRootSet();
+    size_t saved = rs.stackRangePoint();
+    if (!hps.empty()) {
+        rs.pushStackRootRange(hps.data(), hps.size(),
+                              /*hpointer_mask=*/~uint64_t(0));
+    }
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (entries[i].kind != 0) {
+            hps[i] = alloc::boxElement(entries[i].head, entries[i].kind);
+        }
+    }
+    rs.restoreStackRangePoint(saved);
+
+    std::vector<uint64_t> result;
+    result.reserve(hps.size());
+    for (HPointer hp : hps) result.push_back(Export::encode(hp));
     return result;
 }
 
@@ -294,10 +306,18 @@ HPtr Elm_Kernel_List_fromArray(HPtr array) {
     u32 len = elmArr->length;
     bool isUnboxed = elmArr->header.unboxed != 0;
 
+    // Root the source array across the cons loop: each List::cons may GC
+    // and move it, so re-resolve the raw pointer from the rooted HPointer
+    // after every allocation. (`result` and each `head` are rooted by cons
+    // itself as direct args.)
+    HPointer arrHP = hp;
+    Elm::StackRootGuard arrRoot(&arrHP);
+
     HPointer result = alloc::listNil();
     for (u32 i = len; i > 0; i--) {
         Unboxable head = elmArr->elements[i - 1];
         result = List::cons(head, result, !isUnboxed);
+        elmArr = static_cast<ElmArray*>(Allocator::instance().resolve(arrHP));
     }
 
     return HPtr::fromBits(Export::encode(result));
@@ -425,6 +445,13 @@ HPointer kernelListMapN(int n_args, HPointer* lists, HPointer& closureHP) {
         // Phase 1: pre-box any cons heads that the closure wants in boxed
         // form. A rolling-prefix root range keeps already-boxed slots
         // alive across later boxing GCs.
+        //
+        // Boxed-source heads (kind==0) are NOT taken from the cb[] snapshot
+        // here: a boxElement GC at a lower index would leave a higher
+        // index's snapshotted head stale (and rooting the stale value in
+        // the rolling re-pin would corrupt the root scan). Their prebox
+        // slots stay null through this loop and are filled from the rooted,
+        // GC-updated lists[] cursors after all boxing is done.
         HPointer prebox[kMaxArgs] = {};
         uint8_t  deliveryKinds[kMaxArgs] = {0};
         for (int i = 0; i < n_args; ++i) {
@@ -433,7 +460,6 @@ HPointer kernelListMapN(int n_args, HPointer* lists, HPointer& closureHP) {
                 deliveryKinds[i] = cb[i].kind;
             } else if (cb[i].kind == 0) {
                 deliveryKinds[i] = 0;
-                prebox[i] = cb[i].head.p;
             } else if (closureKind == 0) {
                 rs.restoreStackRangePoint(outerSaved);
                 rs.pushStackRootRange(lists, n_args, /*hpointer_mask=*/~uint64_t(0));
@@ -451,6 +477,16 @@ HPointer kernelListMapN(int n_args, HPointer* lists, HPointer& closureHP) {
                 deliveryKinds[i] = 0;
             } else {
                 deliveryKinds[i] = cb[i].kind;
+            }
+        }
+
+        // Fill boxed-source slots now that all Phase-1 boxing is done:
+        // lists[] is rooted (GC-updated), and readCons does not allocate,
+        // so these heads are fresh — there is no further GC point until
+        // the closure call below.
+        for (int i = 0; i < n_args; ++i) {
+            if (deliveryKinds[i] == 0 && cb[i].kind == 0) {
+                prebox[i] = readCons(lists[i]).head.p;
             }
         }
 
@@ -627,21 +663,15 @@ HPtr Elm_Kernel_List_sortBy(HPtr closure, HPtr list) {
         return order->ctor == 0;  // LT
     });
 
-    // Reorder elements; build the result list while keeping the sorted
-    // buffer rooted (vectorU64ToList allocates).
+    // Reorder elements; build the result list via the self-rooting helper
+    // (listFromPointers pins its working copy across each cons, so no
+    // unrooted mirror of the buffer crosses the cons GC points).
     std::vector<HPointer> sorted;
     sorted.reserve(elements.size());
     for (size_t idx : indices) sorted.push_back(elements[idx]);
     rs.restoreStackRangePoint(saved);
-    rs.pushStackRootRange(sorted.data(), sorted.size(),
-                          /*hpointer_mask=*/~uint64_t(0));
 
-    std::vector<uint64_t> encoded;
-    encoded.reserve(sorted.size());
-    for (auto& hp : sorted) encoded.push_back(Export::encode(hp));
-
-    HPointer result = vectorU64ToList(encoded, true);
-    rs.restoreStackRangePoint(saved);
+    HPointer result = alloc::listFromPointers(sorted);
     return HPtr::fromBits(Export::encode(result));
 }
 
@@ -665,13 +695,20 @@ HPtr Elm_Kernel_List_sortWith(HPtr closure, HPtr list) {
                           /*hpointer_mask=*/~uint64_t(0));
     rs.pushStackRootRange(&closureHP, 1, 1);
 
-    std::stable_sort(elements.begin(), elements.end(),
-                     [&](HPointer a, HPointer b) {
-        // a, b are by-value HPointer copies. They originate from `elements`
-        // (range-rooted) but the comparator's local copies need their own
-        // root: callBinaryClosure may GC and move both.
-        HPointer aRoot = a;
-        HPointer bRoot = b;
+    // Sort indices, not the HPointers themselves (mirrors sortBy):
+    // stable_sort moves elements through an internal temporary buffer that
+    // is invisible to the root set, so a GC inside the user comparator
+    // would leave buffer-resident HPointers stale. Indices are scalars;
+    // the rooted `elements` buffer is re-read (post-GC-fixup) on every
+    // comparison.
+    std::vector<size_t> indices(elements.size());
+    std::iota(indices.begin(), indices.end(), 0);
+    std::stable_sort(indices.begin(), indices.end(),
+                     [&](size_t ia, size_t ib) {
+        // By-value copies of the rooted slots need their own root:
+        // callBinaryClosure may GC and move both.
+        HPointer aRoot = elements[ia];
+        HPointer bRoot = elements[ib];
         size_t innerSaved = rs.stackRangePoint();
         rs.pushStackRootRange(&aRoot, 1, 1);
         rs.pushStackRootRange(&bRoot, 1, 1);
@@ -685,12 +722,15 @@ HPtr Elm_Kernel_List_sortWith(HPtr closure, HPtr list) {
         return lt;
     });
 
-    std::vector<uint64_t> encoded;
-    encoded.reserve(elements.size());
-    for (auto& hp : elements) encoded.push_back(Export::encode(hp));
-
-    HPointer result = vectorU64ToList(encoded, true);
+    // Materialise the sorted order and build the result list via the
+    // self-rooting helper (listFromPointers pins its working copy across
+    // each cons).
+    std::vector<HPointer> sorted;
+    sorted.reserve(elements.size());
+    for (size_t idx : indices) sorted.push_back(elements[idx]);
     rs.restoreStackRangePoint(saved);
+
+    HPointer result = alloc::listFromPointers(sorted);
     return HPtr::fromBits(Export::encode(result));
 }
 

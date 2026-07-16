@@ -198,6 +198,10 @@ HPointer PlatformRuntime::setupEffects(HPointer sendToAppClosure) {
         routerFields[0] = boxed(sendToAppClosure);
         routerFields[1] = unboxedInt(static_cast<i64>(selfProcId));
         HPointer router = custom(CTOR_Router, routerFields, 0x4);
+        // Root router: it is held across the init-thunk force / rawSpawn /
+        // drain GC points below and only consumed at encodeHP() at the end
+        // of this iteration (mirrors self_guard for selfProc).
+        Elm::StackRootGuard router_guard(&router);
 
         // Register the self-process message handler (Q-H). When this process
         // receives a mailbox message, the scheduler's dedicated step invokes
@@ -354,6 +358,10 @@ void PlatformRuntime::dispatchEffects() {
         // old manual cons() loop whose accumulator + un-consumed HPointers
         // were unrooted across each cons allocation.
         HPointer cmdList = listFromEncoded(per.cmdHPs);
+        // Root cmdList across the subList build: listFromEncoded conses (a
+        // GC point) and cmdList's fresh spine is reachable only from this
+        // local until call_guard takes over below.
+        Elm::StackRootGuard cmd_guard(&cmdList);
         HPointer subList = listFromEncoded(per.subHPs);
 
         // Re-read router / state / fn from the rooted maps after list
@@ -518,7 +526,11 @@ HPointer PlatformRuntime::applyTaggers(HPointer taggers, HPointer value) {
     // Walk the list and apply each. result, current and the next-tail must
     // survive each callClosure1 (which runs Elm code that may GC).
     HPointer current = taggers;
-    Elm::StackRootGuard guard(&result, &current);
+    // `next` (the per-iteration tail snapshot) is the loop's advance value
+    // and crosses the callClosure1 GC point, so it must be rooted too
+    // (mirrors the Fx_Node itemGuard in gatherEffects).
+    HPointer next = listNil();
+    Elm::StackRootGuard guard(&result, &current, &next);
     while (!alloc::isNil(current)) {
         void* ptr = resolveHP(current);
         if (!ptr) break;
@@ -526,7 +538,7 @@ HPointer PlatformRuntime::applyTaggers(HPointer taggers, HPointer value) {
         HPointer tagger = cell->head.p;
         // Snapshot tail before the closure call — `cell` is invalidated by
         // any GC inside callClosure1.
-        HPointer next = cell->tail;
+        next = cell->tail;
         result = Scheduler::callClosure1(tagger, result);
         current = next;
     }

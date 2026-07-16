@@ -270,12 +270,15 @@ HPointer Scheduler::procWithMailbox(HPointer srcHP, HPointer newMailbox) {
 // Push message to back of mailbox. Returns a new Process HPointer with the
 // updated mailbox; the old Process becomes garbage.
 HPointer Scheduler::mailboxPushBack(HPointer procHP, HPointer msg) {
-    // Read old mailbox (we keep its HPointer rooted via procHP in the caller).
     void* procPtr = resolveHP(procHP);
     if (!procPtr) return procHP;
     HPointer oldMailbox = static_cast<Process*>(procPtr)->mailbox;
-    // cons() allocates — may GC. procHP is rooted (the caller's responsibility)
-    // and oldMailbox is reachable via the old Process so survives evacuation.
+    // cons() allocates — may GC. Root the by-value procHP local: it is
+    // reused by procWithMailbox below, and a caller-side guard on the
+    // caller's own local cannot update this independent copy (mirrors
+    // procWithRoot/procWithStack/pushStack). msg and oldMailbox are rooted
+    // by cons itself as direct args.
+    Elm::StackRootGuard guard(&procHP);
     HPointer newCell = cons(boxed(msg), oldMailbox, true);
     // Build new Process with new mailbox.
     return procWithMailbox(procHP, newCell);
@@ -290,12 +293,14 @@ Scheduler::MailboxPopResult Scheduler::mailboxPopFront(HPointer procHP) {
     if (alloc::isNil(mailbox)) return {false, procHP, listNil()};
 
     // Reverse the list to get FIFO order, then take the head.
-    // procHP, mailbox, reversed, current all need to survive each cons() — any
-    // of them can be moved by GC inside cons.
+    // procHP, mailbox, reversed, current AND the per-iteration `next` tail
+    // snapshot (the loop's advance value) all need to survive each cons() —
+    // any of them can be moved by GC inside cons.
     HPointer reversed = listNil();
     HPointer current = mailbox;
+    HPointer next = listNil();
     {
-        Elm::StackRootGuard guard(&procHP, &mailbox, &reversed, &current);
+        Elm::StackRootGuard guard({&procHP, &mailbox, &reversed, &current, &next});
         while (!alloc::isNil(current)) {
             void* ptr = resolveHP(current);
             if (!ptr) break;
@@ -303,7 +308,7 @@ Scheduler::MailboxPopResult Scheduler::mailboxPopFront(HPointer procHP) {
             // Snapshot head/tail BEFORE cons allocates — `cell` becomes stale
             // afterwards.
             Unboxable head = cell->head;
-            HPointer next = cell->tail;
+            next = cell->tail;
             reversed = cons(head, reversed, true);
             current = next;
         }
@@ -319,16 +324,19 @@ Scheduler::MailboxPopResult Scheduler::mailboxPopFront(HPointer procHP) {
     HPointer rest = revCell->tail;
     HPointer newMailbox = listNil();
     HPointer cur2 = rest;
+    HPointer next2 = listNil();
     {
-        Elm::StackRootGuard guard(&procHP, &outMsg, &newMailbox, &cur2);
+        // next2 (the tail snapshot advancing cur2) crosses each cons GC
+        // point, so it is rooted alongside the other loop state.
+        Elm::StackRootGuard guard({&procHP, &outMsg, &newMailbox, &cur2, &next2});
         while (!alloc::isNil(cur2)) {
             void* p = resolveHP(cur2);
             if (!p) break;
             Cons* c = static_cast<Cons*>(p);
             Unboxable head = c->head;
-            HPointer next = c->tail;
+            next2 = c->tail;
             newMailbox = cons(head, newMailbox, true);
-            cur2 = next;
+            cur2 = next2;
         }
     }
     HPointer newProcHP = procWithMailbox(procHP, newMailbox);
