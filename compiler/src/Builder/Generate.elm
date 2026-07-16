@@ -863,6 +863,10 @@ renderInlineReportWith inlineConfig m graph =
             ++ String.fromInt m.letEliminations
             ++ " closureDCE="
             ++ String.fromInt m.closureDCE
+            ++ " raised="
+            ++ String.fromInt m.arityRaised
+            ++ " raiseSkipped="
+            ++ String.fromInt m.arityRaiseSkipped
             ++ " closuresRemaining="
             ++ String.fromInt (MonoInlineSimplify.countClosures graph)
         , "inline top callees: "

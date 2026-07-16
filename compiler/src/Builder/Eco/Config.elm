@@ -87,6 +87,9 @@ loadBase maybeExplicit root =
     experiment/tuning knob (deep chains need extra passes to cascade).
   - `ECO_INLINE_LOOPIFY=0` disables recursive-HOF loopification (plan H5);
     escape hatch, participates in the hash via the `loop=` token.
+  - `ECO_ARITY_RAISE_MIN_APPLIED=<0..100>` overrides
+    `inline.raiseAppliedShareMin` (H6.2.5 Lever 2 selective raising);
+    participates in the hash via the `arm=` token when nonzero.
 
 Applied here (not further downstream) so the override participates in
 `Config.hash`, which keys the Details cache. An unrecognized engine value is a
@@ -147,6 +150,11 @@ applyEnvOverrides cfg =
             (\cfg10 ->
                 (Utils.envLookupEnv "ECO_ARITY_RAISE" |> Task.mapError never)
                     |> Task.map (\arVal -> applyArityRaiseOverride arVal cfg10)
+            )
+        |> Task.andThen
+            (\cfg11 ->
+                (Utils.envLookupEnv "ECO_ARITY_RAISE_MIN_APPLIED" |> Task.mapError never)
+                    |> Task.map (\armVal -> applyRaiseMinAppliedOverride armVal cfg11)
             )
 
 
@@ -367,6 +375,27 @@ applyArityRaiseOverride maybeVal cfg =
 
     else
         cfg
+
+
+{-| `ECO_ARITY_RAISE_MIN_APPLIED=<0..100>`: override
+`inline.raiseAppliedShareMin` (H6.2.5 Lever 2 — raise a staged spec only
+when at least this percent of its saturated-call results are applied).
+Participates in the config hash via the `arm=` token (present only when
+nonzero and raising is enabled). Non-numeric values are ignored; values
+are clamped to [0,100].
+-}
+applyRaiseMinAppliedOverride : Maybe String -> EcoConfig -> EcoConfig
+applyRaiseMinAppliedOverride maybeVal cfg =
+    case Maybe.andThen (String.trim >> String.toInt) maybeVal of
+        Just n ->
+            let
+                inline =
+                    cfg.inline
+            in
+            { cfg | inline = { inline | raiseAppliedShareMin = clamp 0 100 n } }
+
+        Nothing ->
+            cfg
 
 
 {-| `ECO_INLINE_FPI=<n>`: override `inline.fixpointIterations`. Participates

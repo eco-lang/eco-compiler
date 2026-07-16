@@ -120,6 +120,13 @@ defaultLss =
     call of a tail-recursive function passing a lambda LITERAL is rewritten
     to a local specialized loop with the lambda beta-inlined — the closure
     allocation disappears (and EcoPAPSimplify elides the loop shell).
+  - `raiseAppliedShareMin` (H6.2.5 Lever 2, percent 0–100): raise a staged
+    spec only when at least this share of its saturated-call results are
+    APPLIED (callee position, per the U0 site census). Escaping results
+    (returned / let-bound / arg / stored) pay a PAP-extend per stage when
+    raised, so escape-dominated specs are better left staged. `0` (the
+    default) raises every qualifying spec — exactly the pre-H6.2.5
+    behaviour. Only meaningful when `arityRaise` is on.
   - `report` renders the inline census to stderr after the pass
     (`ECO_INLINE_REPORT=1`); output-only, never affects `hash`.
 
@@ -133,6 +140,7 @@ type alias InlineConfig =
     , hofThreshold : Int
     , loopify : Bool
     , arityRaise : Bool
+    , raiseAppliedShareMin : Int
     , report : Bool
     }
 
@@ -177,6 +185,10 @@ default =
         -- stage-1 body to application time is unobservable in Elm modulo
         -- ⊥-timing and Debug.log ordering.
         , arityRaise = False
+
+        -- H6.2.5 Lever 2: 0 = raise everything (pre-Lever-2 behaviour).
+        -- The M3 census sweep picks any nonzero default.
+        , raiseAppliedShareMin = 0
         , report = False
         }
     , bytesFusion = { enabled = True }
@@ -212,6 +224,7 @@ inlineDecoder =
         |> D.apply (D.optionalField "hofThreshold" D.int default.inline.hofThreshold)
         |> D.apply (D.optionalField "loopify" D.bool default.inline.loopify)
         |> D.apply (D.optionalField "arityRaise" D.bool default.inline.arityRaise)
+        |> D.apply (D.optionalField "raiseAppliedShareMin" D.int default.inline.raiseAppliedShareMin)
         |> D.apply (D.optionalField "report" D.bool default.inline.report)
 
 
@@ -336,8 +349,17 @@ hash cfg =
          ]
             -- Arity-raise token appears ONLY when enabled, so default
             -- configs hash exactly as before (no global cache invalidation).
+            -- The applied-share threshold (H6.2.5 Lever 2) joins only when
+            -- nonzero AND raising is on — it changes which specs raise, so
+            -- it must invalidate flag-on caches, and only those.
             ++ (if cfg.inline.arityRaise then
-                    [ "ar=1" ]
+                    "ar=1"
+                        :: (if cfg.inline.raiseAppliedShareMin > 0 then
+                                [ "arm=" ++ String.fromInt cfg.inline.raiseAppliedShareMin ]
+
+                            else
+                                []
+                           )
 
                 else
                     []

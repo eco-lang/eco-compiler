@@ -59,6 +59,8 @@ type alias Metrics =
     , loopifiable : Int
     , letEliminations : Int
     , closureDCE : Int
+    , arityRaised : Int
+    , arityRaiseSkipped : Int
     , inlinedByCallee : Dict String Int
     }
 
@@ -370,9 +372,14 @@ Buckets: `fnres-specs` (spec population), then per saturated call site
 `fnres-applied` (callee position — result immediately applied),
 `fnres-let-bound`, `fnres-arg` (passed to another call), `fnres-stored`
 (data), `fnres-returned` (value position), `fnres-other`.
+
+H6.2.5 Lever 2 refactor: the walk now tallies PER SPEC
+(`fnResultSiteCensus`), because the arity-raise gate needs each spec's
+applied share; the aggregate report derives from the per-spec census
+unchanged.
 -}
-functionResultCensus : MonoGraph -> List ( String, Int )
-functionResultCensus (MonoGraph { nodes }) =
+fnResultSiteCensus : Array (Maybe MonoNode) -> Dict Int (Dict String Int)
+fnResultSiteCensus nodes =
     let
         fnResultSpecs : Dict Int Int
         fnResultSpecs =
@@ -394,8 +401,18 @@ functionResultCensus (MonoGraph { nodes }) =
                 nodes
                 |> Tuple.first
 
-        bump bucket acc =
-            Dict.insert bucket (1 + Maybe.withDefault 0 (Dict.get bucket acc)) acc
+        -- Every fn-result spec gets an entry (possibly empty) so the
+        -- population size survives into the derived report.
+        emptyCensus : Dict Int (Dict String Int)
+        emptyCensus =
+            Dict.map (\_ _ -> Dict.empty) fnResultSpecs
+
+        bump specId bucket acc =
+            Dict.update specId
+                (Maybe.map
+                    (\d -> Dict.insert bucket (1 + Maybe.withDefault 0 (Dict.get bucket d)) d)
+                )
+                acc
 
         siteBucket here =
             case here of
@@ -417,7 +434,7 @@ functionResultCensus (MonoGraph { nodes }) =
                 _ ->
                     "fnres-other"
 
-        cenExpr : String -> MonoExpr -> Dict String Int -> Dict String Int
+        cenExpr : String -> MonoExpr -> Dict Int (Dict String Int) -> Dict Int (Dict String Int)
         cenExpr here expr acc =
             case expr of
                 MonoCall _ func args _ _ ->
@@ -428,7 +445,7 @@ functionResultCensus (MonoGraph { nodes }) =
                                     case Dict.get specId fnResultSpecs of
                                         Just nParams ->
                                             if List.length args == nParams then
-                                                bump (siteBucket here) acc
+                                                bump specId (siteBucket here) acc
 
                                             else
                                                 acc
@@ -531,10 +548,54 @@ functionResultCensus (MonoGraph { nodes }) =
                 Nothing ->
                     acc
         )
-        (Dict.singleton "fnres-specs" (Dict.size fnResultSpecs))
+        emptyCensus
         nodes
+
+
+{-| The aggregate U0 report, derived from the per-spec census (output
+identical to the pre-H6.2.5 direct tally).
+-}
+functionResultCensus : MonoGraph -> List ( String, Int )
+functionResultCensus (MonoGraph { nodes }) =
+    let
+        perSpec =
+            fnResultSiteCensus nodes
+    in
+    Dict.foldl
+        (\_ buckets acc ->
+            Dict.foldl
+                (\bucket n a -> Dict.insert bucket (n + Maybe.withDefault 0 (Dict.get bucket a)) a)
+                acc
+                buckets
+        )
+        (Dict.singleton "fnres-specs" (Dict.size perSpec))
+        perSpec
         |> Dict.toList
         |> List.sortBy (\( _, n ) -> negate n)
+
+
+{-| H6.2.5 Lever 2: does spec `specId`'s site profile justify raising?
+`applied * 100 >= total * minPercent`, requiring at least one applied
+site. Specs with NO observed saturated sites are refused under any
+nonzero threshold (no evidence of a win; escapes-only specs only pay
+the PAP-extend tax when raised). Callers bypass this entirely at
+`minPercent <= 0` (raise-everything, the pre-Lever-2 behaviour).
+-}
+raiseAllowedBySites : Int -> Dict Int (Dict String Int) -> Int -> Bool
+raiseAllowedBySites minPercent census specId =
+    case Dict.get specId census of
+        Nothing ->
+            False
+
+        Just buckets ->
+            let
+                applied =
+                    Maybe.withDefault 0 (Dict.get "fnres-applied" buckets)
+
+                total =
+                    Dict.foldl (\_ n s -> s + n) 0 buckets
+            in
+            applied > 0 && applied * 100 >= total * minPercent
 
 
 {-| H6.1 F3: arity of a global-bodied point-free alias, chasing at most
@@ -597,25 +658,33 @@ Semantics note (why default-off): delaying a cheap PURE stage-1 body to
 application time is unobservable in Elm except for ⊥ timing (crash moves
 to first application) and `Debug.log` ordering.
 -}
-raiseStagedSpecs : Config.InlineConfig -> Array (Maybe MonoNode) -> Array (Maybe MonoNode)
-raiseStagedSpecs inlineConfig nodes =
+raiseStagedSpecs : Config.InlineConfig -> (Int -> Bool) -> Array (Maybe MonoNode) -> ( Array (Maybe MonoNode), ( Int, Int ) )
+raiseStagedSpecs inlineConfig allowSpec nodes =
     Array.foldl
-        (\maybeNode ( acc, specId ) ->
+        (\maybeNode ( acc, specId, ( nRaised, nSkipped ) ) ->
             case maybeNode of
                 Just (MonoDefine (MonoClosure info body cty) defTy) ->
                     case raiseOne inlineConfig specId info body cty defTy of
                         Just raised ->
-                            ( Array.push (Just raised) acc, specId + 1 )
+                            -- H6.2.5 Lever 2: the spec QUALIFIES structurally;
+                            -- the applied-share predicate decides whether its
+                            -- site profile pays for raising. Refused specs
+                            -- stay staged (identical to flag-off treatment).
+                            if allowSpec specId then
+                                ( Array.push (Just raised) acc, specId + 1, ( nRaised + 1, nSkipped ) )
+
+                            else
+                                ( Array.push maybeNode acc, specId + 1, ( nRaised, nSkipped + 1 ) )
 
                         Nothing ->
-                            ( Array.push maybeNode acc, specId + 1 )
+                            ( Array.push maybeNode acc, specId + 1, ( nRaised, nSkipped ) )
 
                 _ ->
-                    ( Array.push maybeNode acc, specId + 1 )
+                    ( Array.push maybeNode acc, specId + 1, ( nRaised, nSkipped ) )
         )
-        ( Array.empty, 0 )
+        ( Array.empty, 0, ( 0, 0 ) )
         nodes
-        |> Tuple.first
+        |> (\( acc, _, counters ) -> ( acc, counters ))
 
 
 raiseOne : Config.InlineConfig -> Int -> Mono.ClosureInfo -> MonoExpr -> Mono.MonoType -> Mono.MonoType -> Maybe MonoNode
@@ -726,6 +795,25 @@ optimize inlineConfig graph =
         (MonoGraph { nodes, main, registry, ctorShapes, nextLambdaIndex, callEdges, ports, flagsDecoder }) =
             graph
 
+        ( raisedNodes, raiseCounters ) =
+            if inlineConfig.arityRaise then
+                let
+                    -- H6.2.5 Lever 2: gate raising on the per-spec applied
+                    -- share. The site census walk is skipped entirely at
+                    -- threshold 0 (raise-everything, zero added cost).
+                    allowSpec =
+                        if inlineConfig.raiseAppliedShareMin <= 0 then
+                            \_ -> True
+
+                        else
+                            raiseAllowedBySites inlineConfig.raiseAppliedShareMin
+                                (fnResultSiteCensus nodes)
+                in
+                raiseStagedSpecs inlineConfig allowSpec nodes
+
+            else
+                ( nodes, ( 0, 0 ) )
+
         rNodes =
             if inlineConfig.arityRaise then
                 -- Raising erases inner lambdas whose lambda-set annotations
@@ -737,10 +825,10 @@ optimize inlineConfig graph =
                 -- annotation soundness over dispatch precision.
                 Array.map
                     (Maybe.map (Traverse.mapNodeTypes Mono.widenSets))
-                    (raiseStagedSpecs inlineConfig nodes)
+                    raisedNodes
 
             else
-                nodes
+                raisedNodes
 
         callGraph =
             buildCallGraph rNodes callEdges
@@ -755,8 +843,16 @@ optimize inlineConfig graph =
             Array.toList rNodes
     in
     -- Call a separate function so `nodes` (Array) goes out of scope
-    -- and becomes GC-eligible. Only `nodesList` is passed forward.
+    -- and becomes GC-eligible. Only `nodesList` is passed forward (the
+    -- raise counters are plain Ints — no graph state retained).
     optimizeNodes nodesList ctx main registry ctorShapes ports flagsDecoder
+        |> Tuple.mapSecond
+            (\m ->
+                { m
+                    | arityRaised = Tuple.first raiseCounters
+                    , arityRaiseSkipped = Tuple.second raiseCounters
+                }
+            )
 
 
 optimizeNodes :
@@ -1247,6 +1343,8 @@ type alias InternalMetrics =
     , loopifiable : Int
     , letEliminations : Int
     , closureDCE : Int
+    , arityRaised : Int
+    , arityRaiseSkipped : Int
     , inlinedByCallee : Dict String Int
     }
 
@@ -2152,6 +2250,10 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
         , loopifiable = Dict.size loopifiables
         , letEliminations = 0
         , closureDCE = 0
+
+        -- Overwritten by `optimize` from the raise pre-pass counters.
+        , arityRaised = 0
+        , arityRaiseSkipped = 0
         , inlinedByCallee = Dict.empty
         }
     }

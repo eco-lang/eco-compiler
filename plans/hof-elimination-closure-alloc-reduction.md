@@ -1,6 +1,6 @@
 # HOF Elimination — Closure Allocation Reduction
 
-**Status:** H0 + H1 + H2 + H2.5 + H3 + H4 + H5 IMPLEMENTED 2026-07-14 (baselines + matrices in `benchmarks/closure-census-baseline.md` — native-stage-7a dynamic census still pending). Shipped: censuses; let-callee forwarding + chain closure DCE; case-body inlining (guard lift + cost-model decider fix); let-of-closure flattening; let-callee hoisting; `hofThreshold` (default 25, called-param heuristic); application merging (pipe-shape collapse, 5,188 merges on self-compile); faithful residual type (double-wrapped-arrow fix) with the ground-result guard removed and `exactOnly` retained by design; LSS-on re-gate (first flag-on corpus vs the new inliner, 1602/1602 genuine) + `defaultLss.enabled=True` ("solver implies LSS" — engine default stays subst, blocked on JS-hosted solver perf per the monosolver plan); H4 as EcoPAPSimplify P4 multi-use elision + eco_intern_closure0 zero-capture interning (HEAP_033) — engine-independent (keys off `remaining_arity`, not LSS stamps), plus the ecoc `-emit=mlir-eco` no-pipeline bug and the codegen-harness RUN-parser substring bug fixed en route; H5 as call-site LOOPIFICATION (engine-independent, default-on — 779 loopifications on self-compile, closuresRemaining −5.2%; the LSS-keyed route stays as the v2 variable-argument extension). fpi stays 4. **H6.0 survey + H6.1 SHIPPED 2026-07-14** (extends −73.3% on the self-compile census; §H6.1 below); H6.2 U0 shipped, U2b implemented flag-off-only (flag-on unsound — §H6.2); H6.3 at V0 (post-H6.1 generic-dispatch extends re-ranked; V1/V2 remain census-gated). Next: fix U2b's staged-known capture-ABI interaction; then H6.3 V1/V2 or H7 per census.
+**Status:** H0 + H1 + H2 + H2.5 + H3 + H4 + H5 IMPLEMENTED 2026-07-14 (baselines + matrices in `benchmarks/closure-census-baseline.md` — native-stage-7a dynamic census still pending). Shipped: censuses; let-callee forwarding + chain closure DCE; case-body inlining (guard lift + cost-model decider fix); let-of-closure flattening; let-callee hoisting; `hofThreshold` (default 25, called-param heuristic); application merging (pipe-shape collapse, 5,188 merges on self-compile); faithful residual type (double-wrapped-arrow fix) with the ground-result guard removed and `exactOnly` retained by design; LSS-on re-gate (first flag-on corpus vs the new inliner, 1602/1602 genuine) + `defaultLss.enabled=True` ("solver implies LSS" — engine default stays subst, blocked on JS-hosted solver perf per the monosolver plan); H4 as EcoPAPSimplify P4 multi-use elision + eco_intern_closure0 zero-capture interning (HEAP_033) — engine-independent (keys off `remaining_arity`, not LSS stamps), plus the ecoc `-emit=mlir-eco` no-pipeline bug and the codegen-harness RUN-parser substring bug fixed en route; H5 as call-site LOOPIFICATION (engine-independent, default-on — 779 loopifications on self-compile, closuresRemaining −5.2%; the LSS-keyed route stays as the v2 variable-argument extension). fpi stays 4. **H6.0 survey + H6.1 SHIPPED 2026-07-14** (extends −73.3% on the self-compile census; §H6.1 below); H6.2 U0 shipped, U2b implemented flag-off-only (flag-on unsound — §H6.2); H6.3 at V0 (post-H6.1 generic-dispatch extends re-ranked; V1/V2 remain census-gated). U2b's staged-known capture-ABI interaction is fixed (Layers 1–3) and the flag-on crashes are fixed + stable (2026-07-15, E2E 1616/1616). Next: **H6.2.5** (U2b enablement — selective raising + single-alloc raised partials, §below); then H6.3 V1/V2 or H7 per census.
 **Date:** 2026-07-13
 **Input:** `/work/hof-elimination.md` (prioritized suggestions), deep code investigation (this doc supersedes the suggestion list)
 **Goal:** Greatly reduce the number of closures allocated at runtime (`eco_alloc_closure` executions), measured on the self-compile workload and the E2E corpus.
@@ -1049,6 +1049,289 @@ miniature TypeCheck.IO — keep as the pin; flag-off it must print
      `MonoDestruct` arm now freshens the binder (fresh name +
      `renameLocal` over its scope, inner freshened first per the
      def-rename policy).
+
+#### H6.2.5 — U2b enablement: raised-partial cost reduction (Levers 1+2)
+
+**Scoped 2026-07-15, directly after the H6.2 crash fixes. This is the
+continuation of H6.2, not a new phase: U2b is now crash-free and stable
+(E2E 1616/1616; flag-on census 4/4 identical) but still default-OFF
+because its allocation win is lopsided.**
+
+*Where U2b stands (stable numbers, native eco compiling the full
+compiler):*
+
+| | creates | extends | total events |
+|---|---|---|---|
+| flag-off (F1+F2+F3) | 405.0M | 140.4M | 545.4M |
+| flag-on (U2b, fixed) | 252.0M (−37.8%) | 218.4M (+55.5%) | 470.4M (−13.7%) |
+
+Delta: creates −153.0M, extends **+78.0M**. Raising kills the stored
+bind-continuation creates (the H6.2 target) but every ESCAPING use of a
+raised spec (returned / let-bound / arg / stored — the majority per U0:
+1,211 fn-result specs consumed 700 returned / 471 let-bound / 410
+applied / 148 arg) rebuilds the continuation as a PAP partial, and each
+partial STAGE costs one `eco_pap_extend` copy-allocation. Two levers
+close the gap; both build on the crash-free base and are census-gated.
+
+**The enable bar (all four, or the flag stays OFF):**
+1. Allocation: total events < flag-off AND extends ≤ flag-off + ~10%
+   (the extend axis must stop regressing — extends are copy-allocs,
+   costlier per event than creates).
+2. Wall-clock: Stage-7a native self-compile ≤ flag-off (interleaved A/B,
+   3 runs each side; run-to-run noise ≈ ±3–5 s).
+3. Fixed point: flag-on native output stays byte-identical to the
+   JS-hosted flag-on compiler's.
+4. Stability/soundness: 4× census runs identical, full corpus green
+   flag-on (touch-all-`.elm` first — the harness compile cache is
+   mtime-only and env-blind), suite with GC stats OFF as well as ON
+   (stats shift flake timing).
+
+Standing discipline: native AOT binaries only for censuses (JIT census
+does not aggregate; harness swallows census stderr — run the workload
+manually from `/work/build/compiler/build-kernel`); any new config field
+must join the compile-cache hash token next to `ar=1` (eco-stuff caches
+are config-hash keyed); sort the census log before
+`benchmarks/closure-census.sh` (it takes the first N lines).
+
+---
+
+**M0 — decompose the +78M extends delta (do first, ~half day).**
+The naive "escaping site pays create+extend = 2 allocs" model is wrong
+for the common case: the raised combinators are zero-capture, so their
+`papCreate` INTERNS (H4.2, 0 runtime allocs) and a single-stage partial
+already costs 1 alloc — count-parity with flag-off's 1 closure create.
+The +78M must therefore come from some mix of:
+- **S1** multi-stage partials: raised arity adds staging boundaries —
+  `x |> andThen k` builds `extend(k)` then generic-applies `x` (another
+  extend, non-saturating at the raised arity) where flag-off's arity-2
+  `andThen k` saturated directly on `x`. Each extra stage = one PAP
+  copy-alloc flag-off never paid.
+- **S2** cross-function stages: the partial escapes and later stages
+  extend a function PARAMETER — invisible to any intra-function fusion.
+- **S3** non-interned pairs: creates with captures followed by extends
+  (2 allocs today).
+- **S4** pure event-cost skew: even at count parity an extend
+  (alloc + copy base values + Phase-D kind-convert) costs more than a
+  create (alloc + store).
+
+Steps: re-run ONE flag-on census (the stable workflow from the crash
+verification: fresh eco-stuff, `ECO_CLOSURE_STATS=1`, native binary,
+Stage-7a `make` of `/work/compiler/src/Terminal/Main.elm`), sort by
+extends, symbolize the top ~30 fps with `benchmarks/closure-census.sh`,
+and for each top site read its emission IR (`ecoc --emit=mlir`, dump is
+on STDERR) to classify S1–S4. The pre-exclusion ranking (raised
+`andThen` specs 41.2M/12.3M/9.9M + `apR` pipes 20.6M) is STALE — it
+predates the apR-exclusion + P2-generic-fusion round; re-rank before
+building anything. M0's output decides how much of Lever 1 is needed
+and whether M2 (front-end emission) is justified.
+
+---
+
+**Lever 2 — selective raising via per-spec applied-share (front end;
+do second, independent win).**
+
+Today `raiseStagedSpecs` raises EVERY qualifying staged-result spec.
+Escape-dominated specs only ever pay the extend tax; applied-dominated
+specs are pure wins. Gate raising per spec on the evidence U0 already
+computes.
+
+Implementation:
+1. **Per-spec site census.** `functionResultCensus`
+   (`MonoInlineSimplify.elm:375`) already builds
+   `fnResultSpecs : Dict SpecId paramCount` and classifies every
+   saturated call site via `siteBucket` (:400–420) — but tallies
+   globally. Refactor to
+   `fnResultSitesPerSpec : Array (Maybe MonoNode) -> Dict SpecId { applied : Int, escaping : Int }`
+   (escaping = let-bound + arg + stored + returned + other), and derive
+   the existing aggregate report from it so the `function results:`
+   line is unchanged.
+2. **Gate the raiser.** At the `inlineConfig.arityRaise` gate
+   (`MonoInlineSimplify.elm:730–740`), compute the per-spec census on
+   the pre-raise `nodes` and pass a predicate into `raiseStagedSpecs`
+   (:600); the per-spec decision point is the `raiseOne` call at :606
+   where `specId` is in scope. Raise spec S iff
+   `applied(S) * 100 >= (applied(S) + escaping(S)) * raiseAppliedShareMin`
+   AND `applied(S) > 0`. Zero observed sites → refuse (dead or
+   non-saturated-only; no evidence of win). Keep the existing
+   param-callee (apR) exclusion arm untouched — it composes.
+3. **Config plumbing.** Add `inline.raiseAppliedShareMin : Int`
+   (percent, 0–100; Int avoids Float in config+hash) to
+   `Compiler/Eco/Config.elm` and an `ECO_ARITY_RAISE_MIN_APPLIED` env
+   override in `Builder/Eco/Config.elm` (pattern:
+   `applyLoopifyOverride` :316). **Join the compile-cache hash token**
+   next to `ar=1`, or threshold changes silently reuse stale artifacts.
+   `0` must reproduce today's raise-everything behavior exactly.
+4. **Observability.** Add `raised=` / `raiseSkipped=` counters to the
+   `inline-simplify:` report line so every census records the split.
+5. **Sweep.** Thresholds {0, 50, 60, 75, 90} on the Stage-7a native
+   census; record creates/extends/events + wall-clock per point; pick
+   the knee. Known caveat: classification is pre-raise AND pre-inline —
+   the fixpoint later collapses some applied sites and hoists some
+   escapes, so the share is a heuristic; the sweep, not the model,
+   picks the default.
+6. **Gates.** RaiseProbe flag-on still collapses at threshold 0; corpus
+   flag-on green (touch-all first); byte-identical vs the JS-hosted
+   flag-on compiler AT THE SAME THRESHOLD; 4× stability.
+
+Risk: LOW. Front-end-only, inert when `arityRaise` is off, and any
+threshold > 0 strictly reduces the raised population (never changes how
+a raised spec is transformed).
+
+---
+
+**Lever 1 — single-alloc raised partials (backend pattern first).**
+
+**M1 — EcoPAPSimplify P6 `FuseCreateIntoExtendPattern`**
+(`runtime/src/codegen/Passes/EcoPAPSimplify.cpp`, joining P1 :62 /
+P4 :180 / P2 :289 / P5 :432).
+
+*Match:* `%q = eco.papExtend(%p, a1..ak)` that is NON-saturating
+(carries `remaining_arity > 0`; saturating extends are P1's domain and
+must stay there) where `%p = eco.papCreate(f, c1..cc)` and `%p`
+`hasOneUse()`.
+
+*Rewrite:* one `eco.papCreate(f, c1..cc, a1..ak)` with
+`num_captured = c+k`, `arity`/`_result_kind` unchanged, bitmap merged
+(below). Replace all uses of `%q`, erase both ops, and seed the new
+create into the worklist (the pass already re-seeds — :485 — so the
+fused create feeds P4, and a later saturating extend on it feeds P1:
+partial chains collapse transitively).
+
+*Why the rewrite is sound (the object argument):* downstream consumers
+read only the HEAP OBJECT — `values[0..n_values)`, the packed header,
+the evaluator. `papCreate` lowering (`EcoToLLVMClosures.cpp:748–753`)
+packs `n_values = numCaptured` (bits 0–5), `max_values = arity`
+(6–11), `result_kind` (12–13), `unboxed` (14–63, 2-bit kinds, 25
+slots) and stores operands in order from the values offset; a create
+with `c+k` operands therefore produces a byte-identical object to
+create(c)-then-extend(k). Generic apply and further extends are
+producer-blind.
+
+*Fences (all must hold, else skip):*
+- create has no `self_capture_indices` (self-capture patching indexes
+  capture slots; fusing shifts them) and no `_fast_evaluator` /
+  typed-capture-ABI stamp (the `$cap` contract fixes the
+  capture-vs-call-arg split; the raised escaping partials are emitted
+  GENERIC per H6.2 Layer 1, so this fence costs ~nothing on target);
+- `c + k ≤ 25` (unboxed field: 25 × 2-bit slots) and `< 64`
+  (`n_values` is 6 bits);
+- create/extend `_result_kind` agree (both describe `f`'s return).
+
+*Bitmap merge:* fused `unboxed_bitmap = createBitmap | (newargsBitmap
+<< 2c)` — but FIRST verify at the papExtend lowering that
+`newargs_unboxed_bitmap` uses the same 2-bit-kind-per-slot encoding as
+papCreate's `unboxed_bitmap` (the corrupt-closure forensics confirmed
+2-bit slots on the create side). If extend's is 1-bit the shift math
+differs; do not guess.
+
+*Kind-conversion contract:* `eco_pap_extend` converts args to the
+slot's DECLARED kind at store time (the Phase-D fix). The fused create
+stores operands raw per its bitmap. These agree when the site's
+operand encodings match the callee param kinds — true for
+known-segmentation sites where both derive from the same wrapper
+signature — but pin it: extend `GenericApplyBoxing` with a
+fused-create case, plus structural
+`test/codegen/pap_simplify_create_extend_fusion.mlir` (positive:
+generic + known-segmentation partial; negative: self-capture,
+`_fast_evaluator`, saturating extend, multi-use create).
+
+*What M1 buys:* S3 pairs drop 2→1 allocs. S1 pipe stages drop where
+the chain is intra-function: P2 first fuses `extend(k)+extend(x)` into
+`extend(k,x)`, then P6 folds it into the create — one alloc for the
+whole visible partial. Interned bases stay count-neutral (0+1 → 1)
+but swap the extend's alloc+copy+convert for a plain alloc+store (the
+S4 skew), and the fused create unblocks P1/P4 elision that the
+create/extend split was hiding. NOTE the fused create has
+`num_captured > 0` so it does NOT intern — that is correct (its args
+are dynamic), just don't be surprised that `creates` rise as
+`extends` fall in the census.
+
+**M2 — front-end single-alloc emission (ONLY if M0/M3 show P6's
+def-use visibility is insufficient).** Emit known-global partial
+applications as ONE `papCreate(f, args...)` at the
+`direct_known_segmentation` path (`Generate/MLIR/Expr.elm` ~:1448)
+instead of create+extend. Same object argument as P6; catches sites
+before any pattern visibility question. Do not start here: P6 is
+smaller, engine-independent, and testable with .mlir pins. Neither
+layer touches S2 (cross-function stages — extends on function
+parameters); if M0 shows S2 dominates, stop and re-plan (that needs
+caller-side restaging, a different design).
+
+**M3 — re-census + enable decision.** Full sweep with Lever 2's chosen
+threshold × {P6 off, P6 on}; evaluate the four-condition enable bar.
+Pass → flip `ECO_ARITY_RAISE` default ON (and its hash token default).
+Fail → record the numbers here, flag stays OFF, and H6.3/H7 proceed
+per the existing plan order.
+
+*Ordering & effort:* M0 (~½ day) → Lever 2 (~1–2 days) → M1 (~1–2
+days) → M3 (~½ day). Lever 2 before Lever 1 because it is
+front-end-only, cannot regress flag-off, and its sweep quantifies the
+escape tax that P6 must recover — if selective raising alone crosses
+the enable bar, P6 becomes optional hygiene.
+
+*Traps (all previously paid for):* single stability runs lie — 4×
+minimum, stats-on AND stats-off; eco-stuff caches are config-hash keyed
+and mtime-blind — touch-all + hash-token both; the harness swallows
+census stderr; OOM'd runs dump multi-GB `core.*` into
+`build/compiler/build-kernel` and silently truncate later artifacts —
+check `df` and `core.*` first when runs misbehave; the JS-hosted
+flag-on compile for the byte-compare is slow but non-negotiable.
+
+##### H6.2.5 RESULTS (2026-07-16) — implemented in full; U2b stays OFF; P6 is the shipped win
+
+All milestones executed. M0 as recorded above. Lever 2 shipped
+(`inline.raiseAppliedShareMin`, `ECO_ARITY_RAISE_MIN_APPLIED`, `arm=`
+hash token, `raised=/raiseSkipped=` report counters; ARM=0 ==
+raise-everything exactly; refused specs measurably get flag-off
+treatment). M1/P6 shipped default-on (`FuseCreateIntoExtendPattern`,
+behavioral + structural pins, codegen 383/383). Full gate with both:
+**1618/1618**.
+
+M3 sweep (native Stage-7a self-compile, same source for every point;
+census = stats-on run, wall = 2× stats-off runs; ALL 20 runs `rc=0`,
+output `.mlir` byte-identical across every config and run):
+
+| config | raised/skipped | creates | extends | events | wall (2 runs) |
+|---|---|---|---|---|---|
+| flag-off | 0/0 | 543,335,453 | 1,121,086 | 544.5M | 4:19.9 / 4:18.4 |
+| ARM=0 (raise all) | 717/0 | 467,319,676 | 3,802,978 | 471.1M (−13.5%) | **6:45.4 / 6:42.3 (+55%)** |
+| ARM=60 | 2/715 | = flag-off exactly | = flag-off | = flag-off | 4:20.4 / 4:18.8 |
+| ARM=90 | 2/715 | = flag-off exactly | = flag-off | = flag-off | 4:19.6 / 4:19.7 |
+
+**Headline 1 — P6 eliminated the extend axis for EVERYONE (default-on):**
+flag-off extends collapsed 140.4M → **1.1M (−99.2%)**, converted to
+plain creates (events net −1.0M ≈ neutral count; each converted event
+swaps an alloc+copy+kind-convert extend for an alloc+store create).
+Flag-on extends likewise 218.4M → 3.8M (−98.3%) — the raised-partial
+extend tax is gone, exactly as M0 predicted (the dominant shape was the
+same-function create+extend pair).
+
+**Headline 2 — the U2b enable bar FAILS on wall-clock, decisively:**
+ARM=0 wins allocation events (−13.5%) and holds byte-identity and
+stability, but runs **+55% slower** (6:44 vs 4:20, consistent across
+3 runs each, no environmental drift — the fast configs ran after the
+slow one). With extends eliminated by P6, the slowdown is not
+allocation traffic: the raised code SHAPE itself (higher-arity staging,
+generic applies, lost direct-call fast paths in hot typechecker code)
+is the cost. Allocation counts were never the right proxy for this
+flag.
+
+**Headline 3 — there is no useful threshold:** the raise population is
+escape-dominated end to end — at ARM=60 only **2 of 717** specs pass
+the applied-share gate and the result is census-IDENTICAL to flag-off
+(to the digit). Selective raising ≈ no raising on this workload;
+no middle ground exists between "all (+55% wall)" and "none".
+
+**DECISION: `ECO_ARITY_RAISE` stays default-OFF.** The H6.2 hypothesis
+(collapse stored monadic continuations by raising) is now fully
+falsified on wall-clock grounds rather than crash/soundness grounds:
+the crashes are fixed, the measurement is clean, and the answer is no.
+Lever 2 remains as the experiment knob (`arm=` keyed); P6 remains
+default-on as the durable win of this phase. Follow-up candidates if
+U2b is ever revisited: profile WHERE the +55% goes (perf/callgrind on
+the arm0 binary vs off), and U0-guided raising at the CALL-SITE level
+(rewrite applied sites only, leave the spec staged) rather than
+per-spec.
 
 #### H6.3 — Stamp coverage for dispatch (dispatch value, not allocation)
 

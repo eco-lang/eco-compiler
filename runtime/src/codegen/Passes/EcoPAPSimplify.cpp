@@ -417,6 +417,139 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// Pattern P6: non-saturating papExtend(papCreate) -> single papCreate
+// (H6.2.5 M1 — single-alloc raised partials)
+//===----------------------------------------------------------------------===//
+//
+// Match:
+//   %c = eco.papCreate @f(%caps...) { arity = A, num_captured = C }
+//   %r = eco.papExtend %c(%args...) { remaining_arity = R }
+// where |args| < R (strictly non-saturating) and %c has a single use.
+//
+// Rewrite:
+//   %r = eco.papCreate @f(%caps..., %args...) { arity = A,
+//                                               num_captured = C + |args| }
+//
+// Object equivalence: the runtime treats capture slots and applied-arg
+// slots uniformly — `values[0..n_values)` are spliced with the call's
+// args and the evaluator receives all `max_values` args
+// (invokeSaturatedTyped / spliceArgsForSaturatedCall), and
+// eco_pap_extend COPIES the base values and appends. So
+// create(caps)+extend(args) and create(caps++args) produce identical
+// heap objects; the fused form performs ONE plain allocation instead of
+// a create (interned or real) plus an alloc+copy+kind-convert extend.
+// This is the dominant raised escaping-partial shape flag-on (H6.2:
+// papCreate of an interned raised combinator + one non-saturating
+// known-segmentation extend). Composition: a later saturating extend
+// now sees a papCreate base directly, unlocking P1/P4 on two-stage
+// chains that the intermediate extend used to hide.
+//
+// Fences:
+// - Strictly non-saturating only: saturated extends are P1's domain;
+//   generic extends (no remaining_arity) may saturate at runtime and
+//   are never touched (mirrors P5's reasoning).
+// - No self_capture_indices on the create (runtime backpatch of the
+//   self slot is wired at create-lowering; stay conservative — the
+//   raised-partial target population is zero-capture anyway).
+// - Fused count must stay a strict PAP (< arity; guaranteed by
+//   non-saturation) and fit the 25-slot 2-bit bitmap
+//   (PapCreateOp::verify limits).
+// - The fused bitmap is recomputed from operand SSA types (P2's
+//   source-of-truth rule; PapCreateOp::verify enforces kind == SSA type
+//   per slot).
+//
+struct FuseCreateIntoExtendPattern : public OpRewritePattern<PapExtendOp> {
+    using OpRewritePattern::OpRewritePattern;
+
+    LogicalResult matchAndRewrite(PapExtendOp extendOp,
+                                  PatternRewriter &rewriter) const override {
+        auto remainingArityAttr = extendOp.getRemainingArityAttr();
+        if (!remainingArityAttr)
+            return failure();  // Generic-mode: runtime saturation unknown
+
+        // Split trailing GC root hints from the real newargs.
+        unsigned extendRootCount = extendOp.getGCRoots().size();
+        auto allNewargs = extendOp.getNewargs();
+        unsigned realNewargCount = allNewargs.size() - extendRootCount;
+        auto newargs = allNewargs.take_front(realNewargCount);
+        auto extendRoots = allNewargs.drop_front(realNewargCount);
+
+        if (newargs.empty())
+            return failure();  // Nothing to fuse
+
+        // Strictly non-saturating only (saturated is P1's domain).
+        int64_t remaining = remainingArityAttr.getInt();
+        if (static_cast<int64_t>(newargs.size()) >= remaining)
+            return failure();
+
+        auto createOp = extendOp.getClosure().getDefiningOp<PapCreateOp>();
+        if (!createOp)
+            return failure();
+        if (!extendOp.getClosure().hasOneUse())
+            return failure();
+        if (createOp->hasAttr("self_capture_indices"))
+            return failure();
+
+        // A non-saturating extend returns a boxed closure; so does
+        // papCreate. Anything else is a front-end inconsistency — bail.
+        if (!isa<eco::ValueType>(extendOp.getResult().getType()))
+            return failure();
+
+        unsigned createRootCount = createOp.getGCRoots().size();
+        auto allCaptured = createOp.getCaptured();
+        auto caps = allCaptured.take_front(allCaptured.size() - createRootCount);
+        auto createRoots = allCaptured.drop_front(caps.size());
+
+        int64_t fusedCaptured =
+            static_cast<int64_t>(caps.size()) + static_cast<int64_t>(newargs.size());
+        if (fusedCaptured >= static_cast<int64_t>(createOp.getArity()) ||
+            fusedCaptured > 25)
+            return failure();  // Verifier limits (strict PAP, bitmap slots)
+
+        // Fused values: caps ++ newargs; bitmap from SSA types.
+        SmallVector<Value> allOperands;
+        allOperands.append(caps.begin(), caps.end());
+        allOperands.append(newargs.begin(), newargs.end());
+        uint64_t fusedBitmap = 0;
+        for (size_t i = 0; i < allOperands.size(); ++i) {
+            Type ty = allOperands[i].getType();
+            uint64_t kind = 0;
+            if (ty.isInteger(64)) kind = 1;
+            else if (ty.isF64()) kind = 2;
+            else if (ty.isInteger(16)) kind = 3;
+            fusedBitmap |= (kind << (2 * i));
+        }
+
+        // GC root hints from BOTH ops trail the real operands (duplicates
+        // are harmless — EcoGCPrepare dedupes during liveness unioning).
+        for (Value r : createRoots) allOperands.push_back(r);
+        for (Value r : extendRoots) allOperands.push_back(r);
+        unsigned fusedRootCount = createRootCount + extendRootCount;
+
+        // Clone the create (keeps function/arity/_result_kind/
+        // _fast_evaluator/_closure_kind verbatim) at the extend's
+        // position, then rewrite operands + capture bookkeeping.
+        rewriter.setInsertionPoint(extendOp);
+        Operation *cloned = rewriter.clone(*createOp.getOperation());
+        cloned->setOperands(allOperands);
+        cloned->setAttr("num_captured", rewriter.getI64IntegerAttr(fusedCaptured));
+        cloned->setAttr("unboxed_bitmap",
+                        rewriter.getI64IntegerAttr(static_cast<int64_t>(fusedBitmap)));
+        if (fusedRootCount > 0)
+            cloned->setAttr("eco.gc_roots_count",
+                rewriter.getI64IntegerAttr(static_cast<int64_t>(fusedRootCount)));
+        else
+            cloned->removeAttr("eco.gc_roots_count");
+
+        rewriter.replaceOp(extendOp, cloned->getResult(0));
+        // The original create's only use was the extend — erase it
+        // explicitly (it is Pure, so DCE would also get it).
+        rewriter.eraseOp(createOp);
+        return success();
+    }
+};
+
+//===----------------------------------------------------------------------===//
 // Pattern P5: dead non-saturating papExtend removal
 //===----------------------------------------------------------------------===//
 //
@@ -478,6 +611,7 @@ struct EcoPAPSimplifyPass
         RewritePatternSet patterns(ctx);
         patterns.add<SaturatedPapToCallPattern>(ctx, symTable);
         patterns.add<FusePapExtendChainPattern>(ctx);
+        patterns.add<FuseCreateIntoExtendPattern>(ctx);
         patterns.add<MultiUsePapElisionPattern>(ctx, symTable);
         patterns.add<DeadPapExtendPattern>(ctx);
         FrozenRewritePatternSet frozen(std::move(patterns));
