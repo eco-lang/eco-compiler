@@ -15,6 +15,8 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 
+#include <cstdlib>   // ::getenv for the E0.4 dispatch-site counter gate
+
 using namespace mlir;
 using namespace eco;
 using namespace eco::detail;
@@ -1147,6 +1149,24 @@ static Value emitFastClosureCall(ConversionPatternRewriter &rewriter, Location l
     auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
     auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{closureI64});
     Value closurePtr = resolveCall.getResult();
+
+    // E0.4 (LSS dispatch-value plan): count this stamped fast-dispatch execution
+    // under ECO_DISPATCH_STATS. Emitted ONLY when ECO_LSS_DISPATCH_SITE_COUNTERS is
+    // set at lowering time (census builds); inert otherwise. Keyed on the LIVE
+    // closure->evaluator so the `fast` row joins the same fp as the `sat`/`gen`
+    // rows for this closure. The E2E binary cache is mtime/config-blind, so this
+    // env is census-workflow-only, never under the harness.
+    static const bool lssDispatchSiteCounters =
+        (::getenv("ECO_LSS_DISPATCH_SITE_COUNTERS") != nullptr);
+    if (lssDispatchSiteCounters) {
+        auto evalOffset = rewriter.create<LLVM::ConstantOp>(
+            loc, i64Ty, rewriter.getI64IntegerAttr(layout::ClosureEvaluatorOffset));
+        auto evalPtrPtr = rewriter.create<LLVM::GEPOp>(
+            loc, ptrTy, i8Ty, closurePtr, ValueRange{evalOffset});
+        Value evaluatorFp = rewriter.create<LLVM::LoadOp>(loc, ptrTy, evalPtrPtr);
+        auto statsFunc = runtime.getOrCreateDispatchStatsFast(rewriter);
+        rewriter.create<LLVM::CallOp>(loc, statsFunc, ValueRange{evaluatorFp});
+    }
 
     // Build argument list: captures from closure + newArgs
     SmallVector<Value> callArgs;

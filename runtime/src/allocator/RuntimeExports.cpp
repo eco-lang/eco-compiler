@@ -672,6 +672,186 @@ void closureStatsRecord(const void* func_ptr, bool isExtend) {
 // covers normal AOT exits; embed hosts that never exit can call this.
 extern "C" void eco_closure_stats_dump(void) { closureStatsDumpImpl(); }
 
+//===----------------------------------------------------------------------===//
+// Closure-dispatch census (ECO_DISPATCH_STATS=1)
+//
+// Counts every DYNAMIC dispatch — an indirect call through a closure's
+// evaluator function pointer — keyed by that evaluator, so the hottest
+// dynamically-dispatched call sites can be ranked (LSS dispatch-value plan E0,
+// plans/lss-dispatch-value-extraction.md). Statically-resolved calls (a direct
+// call to a $cap fast clone) never make an indirect evaluator call and so are
+// NOT counted here (their coverage is tracked separately as `fast`, below).
+//
+// WHERE the indirect call actually happens (verified): there are exactly two
+// leaf primitives that invoke `closure->evaluator`:
+//   1. invokeSaturatedTyped()            — the K-switch; reached from
+//      eco_apply_closure_eval's exact branch, eco_closure_call_saturated_eval,
+//      and eco_closure_call_saturated's K!=0 branch.
+//   2. eco_closure_call_saturated()'s K==0 boxed-result direct call.
+// Recording `sat` at those two points counts every saturated indirect call
+// EXACTLY ONCE regardless of how the site was lowered — the generic/unknown-
+// saturation funnel (eco_apply_closure_eval / eco_apply_segmentation_unknown),
+// the typed statically-known-saturation path (emitInlineClosureCall ->
+// eco_closure_call_saturated{,_eval}), C++ kernel callers, and thunk force.
+//
+// Counter semantics:
+//   sat  : a saturated indirect evaluator call — THE dynamic-dispatch total,
+//          and the population LSS singleton/small-set stamping would convert to
+//          direct calls. Recorded at the two leaf primitives above.
+//   gen  : the SUBSET of `sat` that flowed through the generic/unknown-
+//          saturation funnel (recorded at eco_apply_closure_eval's exact + over
+//          branches, which each lead to exactly one `sat` for that stage). So
+//          `gen` <= `sat`, and `typed = sat - gen` is the statically-known-
+//          arity dispatch (the emitInlineClosureCall path). An over-saturated
+//          apply records one `gen` per stage, matching its per-stage `sat`.
+//   fast : statically-stamped fast-dispatch executions (a direct $cap call,
+//          no indirect evaluator call), emitted by eco_dispatch_stats_fast at
+//          the call site under the ECO_LSS_DISPATCH_SITE_COUNTERS lowering env.
+//          Kept for LSS coverage = fast / (sat + fast).
+//
+// NB under-saturated applies (num_args < remaining) do NOT call the evaluator —
+// they grow a PAP via eco_pap_extend, an allocation already counted by the
+// closure census (ECO_CLOSURE_STATS `extends`). They are intentionally NOT in
+// this dispatch census.
+//
+// Same fixed 64Ki open-addressed CAS table as the closure census; zero cost
+// (one cached-bool branch) when ECO_DISPATCH_STATS is unset. Dumps at exit with
+// an `anchor=eco_alloc_closure:0x...` line (shared with the closure census) so
+// benchmarks/dispatch-census.sh can slide-correct fp values against `nm`.
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+enum class DispatchKind { Sat, Generic, Fast };
+
+struct DispatchStatsEntry {
+    std::atomic<uint64_t> fp{0};
+    std::atomic<uint64_t> sat{0};   // saturated indirect evaluator calls (dispatch total)
+    std::atomic<uint64_t> gen{0};   // subset of sat reached via the generic funnel
+    std::atomic<uint64_t> fast{0};  // stamped direct $cap calls (coverage; E0.4)
+};
+
+constexpr size_t kDispatchStatsSlots = 1 << 16; // 64Ki slots, power of two
+constexpr size_t kDispatchStatsMaxProbe = 128;
+
+DispatchStatsEntry* g_dispatch_stats_table = nullptr;
+std::atomic<uint64_t> g_dispatch_stats_overflow{0};
+std::atomic<uint64_t> g_dispatch_sat_total{0};
+std::atomic<uint64_t> g_dispatch_gen_total{0};
+std::atomic<uint64_t> g_dispatch_fast_total{0};
+std::atomic<bool> g_dispatch_stats_dumped{false};
+
+void dispatchStatsDumpImpl() {
+    if (g_dispatch_stats_dumped.exchange(true)) return;
+    if (!g_dispatch_stats_table) return;
+
+    struct Row {
+        uint64_t fp, sat, gen, fast;
+    };
+    std::vector<Row> rows;
+    for (size_t i = 0; i < kDispatchStatsSlots; ++i) {
+        uint64_t fp = g_dispatch_stats_table[i].fp.load(std::memory_order_relaxed);
+        if (fp == 0) continue;
+        rows.push_back({fp,
+                        g_dispatch_stats_table[i].sat.load(std::memory_order_relaxed),
+                        g_dispatch_stats_table[i].gen.load(std::memory_order_relaxed),
+                        g_dispatch_stats_table[i].fast.load(std::memory_order_relaxed)});
+    }
+    std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) {
+        return a.sat > b.sat; // rank by dynamic-dispatch weight
+    });
+
+    uint64_t sat_total = g_dispatch_sat_total.load(std::memory_order_relaxed);
+    uint64_t gen_total = g_dispatch_gen_total.load(std::memory_order_relaxed);
+    std::fprintf(stderr, "[dispatch-stats] anchor=eco_alloc_closure:0x%llx\n",
+                 static_cast<unsigned long long>(
+                     reinterpret_cast<uint64_t>(&eco_alloc_closure)));
+    std::fprintf(stderr,
+                 "[dispatch-stats] sat=%llu gen=%llu typed=%llu fast=%llu "
+                 "distinct=%zu overflow=%llu\n",
+                 static_cast<unsigned long long>(sat_total),
+                 static_cast<unsigned long long>(gen_total),
+                 static_cast<unsigned long long>(sat_total - gen_total),
+                 static_cast<unsigned long long>(g_dispatch_fast_total.load(std::memory_order_relaxed)),
+                 rows.size(),
+                 static_cast<unsigned long long>(g_dispatch_stats_overflow.load(std::memory_order_relaxed)));
+    for (const Row& r : rows) {
+        std::fprintf(stderr,
+                     "[dispatch-stats] fp=0x%llx sat=%llu gen=%llu fast=%llu\n",
+                     static_cast<unsigned long long>(r.fp),
+                     static_cast<unsigned long long>(r.sat),
+                     static_cast<unsigned long long>(r.gen),
+                     static_cast<unsigned long long>(r.fast));
+    }
+    std::fflush(stderr);
+}
+
+bool dispatchStatsInit() {
+    const char* e = std::getenv("ECO_DISPATCH_STATS");
+    if (!e || !*e || std::strcmp(e, "0") == 0) return false;
+    // Value-initialize so the atomics start at zero.
+    g_dispatch_stats_table = new (std::nothrow) DispatchStatsEntry[kDispatchStatsSlots]();
+    if (!g_dispatch_stats_table) return false;
+    std::atexit(dispatchStatsDumpImpl);
+    return true;
+}
+
+inline bool dispatchStatsEnabled() {
+    static const bool enabled = dispatchStatsInit();
+    return enabled;
+}
+
+// Record one dispatch event. Allocation-free and heap-free (reads only the
+// evaluator code pointer), so it is safe to call anywhere in the apply path,
+// including between GC stack-range pushes.
+void dispatchStatsRecord(const void* evaluator_fp, DispatchKind kind) {
+    if (!dispatchStatsEnabled()) return;
+    uint64_t fp = reinterpret_cast<uint64_t>(evaluator_fp);
+    if (fp == 0) fp = 1; // 0 marks an empty slot
+    switch (kind) {
+        case DispatchKind::Sat:     g_dispatch_sat_total.fetch_add(1, std::memory_order_relaxed); break;
+        case DispatchKind::Generic: g_dispatch_gen_total.fetch_add(1, std::memory_order_relaxed); break;
+        case DispatchKind::Fast:    g_dispatch_fast_total.fetch_add(1, std::memory_order_relaxed); break;
+    }
+    size_t idx = (fp >> 3) & (kDispatchStatsSlots - 1);
+    for (size_t probe = 0; probe < kDispatchStatsMaxProbe; ++probe) {
+        DispatchStatsEntry& entry =
+            g_dispatch_stats_table[(idx + probe) & (kDispatchStatsSlots - 1)];
+        uint64_t cur = entry.fp.load(std::memory_order_relaxed);
+        if (cur == 0) {
+            uint64_t expected = 0;
+            if (!entry.fp.compare_exchange_strong(expected, fp,
+                                                  std::memory_order_relaxed)) {
+                if (expected != fp) continue; // lost race to a different fp
+            }
+            cur = fp;
+        }
+        if (cur == fp) {
+            switch (kind) {
+                case DispatchKind::Sat:     entry.sat.fetch_add(1, std::memory_order_relaxed); break;
+                case DispatchKind::Generic: entry.gen.fetch_add(1, std::memory_order_relaxed); break;
+                case DispatchKind::Fast:    entry.fast.fetch_add(1, std::memory_order_relaxed); break;
+            }
+            return;
+        }
+    }
+    g_dispatch_stats_overflow.fetch_add(1, std::memory_order_relaxed);
+}
+
+} // anonymous namespace
+
+// Manual/embedder hook: dump the dispatch census now (idempotent).
+extern "C" void eco_dispatch_stats_dump(void) { dispatchStatsDumpImpl(); }
+
+// Lowering-time hook (LSS plan E0.4): the MLIR lowering emits a call to this
+// immediately before a stamped fast-dispatch `$cap` call when
+// ECO_LSS_DISPATCH_SITE_COUNTERS is set at lowering time, passing the closure's
+// generic-clone ($clo) symbol so the fast row keys to the same fp the sat rows
+// use. Allocation-free / GC-leaf.
+extern "C" void eco_dispatch_stats_fast(void* evaluator_fp) {
+    dispatchStatsRecord(evaluator_fp, DispatchKind::Fast);
+}
+
 extern "C" HPtr eco_alloc_closure_k(void* func_ptr, uint32_t num_captures,
                                     uint8_t result_kind) {
     assert(result_kind <= 3 && "eco_alloc_closure_k: result_kind out of range");
@@ -1688,6 +1868,8 @@ extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
     if (num_args < remaining) {
         // Under-saturated: extend with newargs. Always produces a closure
         // HPtr regardless of `K`, so the caller must want PK_Boxed.
+        // (No dispatch here — this grows a PAP via eco_pap_extend, an
+        //  allocation the closure census counts as an `extend`.)
         assert(desired_kind == 0 &&
                "eco_apply_closure_eval: under-saturated apply requires PK_Boxed "
                "desired_kind (well-typed IR cannot have a primitive result on "
@@ -1709,6 +1891,10 @@ extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
     }
 
     if (num_args == remaining) {
+        // Generic funnel reached a saturated call — tag the subset; the actual
+        // `sat` is recorded inside invokeSaturatedTyped below.
+        dispatchStatsRecord(reinterpret_cast<const void*>(closure->evaluator),
+                            DispatchKind::Generic);
         // Exactly saturated. Dispatch on the evaluator's real C ABI (`K`).
         // `invokeSaturatedTyped` casts `closure->evaluator` to the matching
         // primitive-return signature and converts the result to
@@ -1719,6 +1905,11 @@ extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
         return;
     }
 
+    // Generic funnel reached an over-saturated call — tag this stage's subset;
+    // the actual `sat` is recorded inside eco_closure_call_saturated below, and
+    // the recursive trailing stage records its own gen/sat.
+    dispatchStatsRecord(reinterpret_cast<const void*>(closure->evaluator),
+                        DispatchKind::Generic);
     // Over-saturated: saturate this stage (always boxed result intermediate,
     // since under-saturation produces a closure HPtr), then apply the
     // remainder to the result closure with a PK_Boxed sub-layout. If the
@@ -1842,6 +2033,8 @@ extern "C" HPtr eco_apply_segmentation_unknown(HPtr closure_hptr,
                                 num_args, bitmap);
     } else {
         // Saturated/over-saturated: forward to the typed-apply entry point,
+        // which reaches eco_apply_closure_eval; the `gen`+`sat` are recorded
+        // there.
         // which centralises any required primitive re-boxing before invoking
         // the evaluator. No parallel boxed buffer is needed.
         result = eco_apply_closure_typed(HPtr::fromBits(closure_bits),
@@ -2267,6 +2460,10 @@ extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args
                                          layout, combined_args,
                                          out_max_values, out_bitmap);
 
+    // Dispatch census (E0): the K==0 (boxed-result) direct evaluator call — the
+    // one indirect call that does NOT flow through invokeSaturatedTyped.
+    dispatchStatsRecord(reinterpret_cast<const void*>(closure->evaluator),
+                        DispatchKind::Sat);
     void* result = closure->evaluator(combined_args);
 
     eco_gc_restore_stack_range_point(saved_range);
@@ -2292,6 +2489,13 @@ void invokeSaturatedTyped(uint64_t closure_bits,
                           void* result_slot) {
     Closure* closure = static_cast<Closure*>(hpointerToPtr(closure_bits));
     assert(closure && "invokeSaturatedTyped: null closure");
+    // Dispatch census (E0): THE saturated indirect evaluator call. This is the
+    // single leaf primitive for every typed saturated dispatch — funnel-exact,
+    // eco_closure_call_saturated_eval, eco_closure_call_saturated (K!=0). The
+    // evaluator code pointer is invariant under GC relocation, so reading it
+    // pre-splice keys to the same fp that is actually called below.
+    dispatchStatsRecord(reinterpret_cast<const void*>(closure->evaluator),
+                        DispatchKind::Sat);
     uint32_t max_values = closure->max_values;
 
     // Splice captures + newargs into combined_args. Re-uses the shared

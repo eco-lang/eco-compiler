@@ -532,6 +532,9 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateGcPushStackRange(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateGcRestoreStackRangePoint(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateRegisterTypeGraph(mlir::OpBuilder &builder) const;
+    // LSS dispatch-value plan E0.4: void eco_dispatch_stats_fast(ptr) — records a
+    // stamped fast-dispatch execution under ECO_DISPATCH_STATS. GC-leaf.
+    mlir::LLVM::LLVMFuncOp getOrCreateDispatchStatsFast(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateIntPow(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateUtilsEqual(mlir::OpBuilder &builder) const;
 

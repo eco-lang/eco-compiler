@@ -822,6 +822,12 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateRegisterTypeGraph(OpBuilder &builder) co
     return getOrCreateFunc(builder, "eco_register_type_graph", funcTy, /*gcLeaf=*/true);
 }
 
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateDispatchStatsFast(OpBuilder &builder) const {
+    // eco_dispatch_stats_fast(evaluator_fp: ptr) -> void  (LSS plan E0.4)
+    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {PTR_TY});
+    return getOrCreateFunc(builder, "eco_dispatch_stats_fast", funcTy, /*gcLeaf=*/true);
+}
+
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateIntPow(OpBuilder &builder) const {
     // eco_int_pow(base: i64, exp: i64) -> i64
     auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, I64_TY});
@@ -1146,7 +1152,8 @@ void EcoRuntime::materializeAllRuntimeDecls(OpBuilder &b) const {
     getOrCreateArrayGetI64(b); getOrCreateArrayGetF64(b); getOrCreateArrayGetI16(b);
     getOrCreateCrash(b); getOrCreateGcAddRoot(b); getOrCreateGcStackRangePoint(b);
     getOrCreateGcPushStackRange(b); getOrCreateGcRestoreStackRangePoint(b);
-    getOrCreateRegisterTypeGraph(b); getOrCreateIntPow(b); getOrCreateUtilsEqual(b);
+    getOrCreateRegisterTypeGraph(b); getOrCreateDispatchStatsFast(b);
+    getOrCreateIntPow(b); getOrCreateUtilsEqual(b);
     getOrCreateGetOrderLT(b); getOrCreateGetOrderEQ(b); getOrCreateGetOrderGT(b);
     getOrCreateCloneArray(b); getOrCreateArraySetFixKind(b); getOrCreateArrayEmpty(b);
     getOrCreateArraySingletonInt(b); getOrCreateArraySingletonFloat(b);
