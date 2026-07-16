@@ -92,21 +92,30 @@ import Dict exposing (Dict)
 -}
 type alias AbiCloningStats =
     { dispatchUpgraded : Int
+    , stampedPapPrefix : Int
+
+    -- ^ E2 (LSS_011): sites stamped via the PAP-suffix match — the callee
+    -- value is an m-PAP holding k applied args; captureAbi carries the
+    -- merged captures++prefix and CallInfo.fastPapPrefix = Just k.
     , declinedBlocked : Int
     , declinedNoInstance : Int
     , declinedShape : Int
     , declinedShapeArity : Int
+
+    -- E2 sub-split of declinedShapeArity (the three sum to it):
+    --   Zero  — argCount == 0 (bare reference in callee position);
+    --   Under — site applies fewer args than its own callee type's first
+    --           stage (the call CREATES a PAP — no dispatch to convert);
+    --   Over  — site applies more (flat multi-stage call; dispatch exists
+    --           but needs staging-aware stamping — v2).
+    , declinedShapeArityZero : Int
+    , declinedShapeArityUnder : Int
+    , declinedShapeArityOver : Int
     , declinedShapeBucketMiss : Int
     , declinedShapeLayout : Int
     , declinedShapeChar : Int
     , declinedShapeNonArrow : Int
     , declinedAbiMismatch : Int
-
-    -- TEMP volume diagnostics (self-compile blowup hunt; remove before commit)
-    , dbgNodesRebuilt : Int
-    , dbgNodesSkipped : Int
-    , dbgExprsVisited : Int
-    , dbgCandidateSites : Int
     }
 
 
@@ -115,19 +124,19 @@ type alias AbiCloningStats =
 emptyStats : AbiCloningStats
 emptyStats =
     { dispatchUpgraded = 0
+    , stampedPapPrefix = 0
     , declinedBlocked = 0
     , declinedNoInstance = 0
     , declinedShape = 0
     , declinedShapeArity = 0
+    , declinedShapeArityZero = 0
+    , declinedShapeArityUnder = 0
+    , declinedShapeArityOver = 0
     , declinedShapeBucketMiss = 0
     , declinedShapeLayout = 0
     , declinedShapeChar = 0
     , declinedShapeNonArrow = 0
     , declinedAbiMismatch = 0
-    , dbgNodesRebuilt = 0
-    , dbgNodesSkipped = 0
-    , dbgExprsVisited = 0
-    , dbgCandidateSites = 0
     }
 
 
@@ -563,18 +572,10 @@ direct `goExpr` recursion.
 stampExprTree : Dict Int MemberInfo -> StampCtx -> Mono.MonoExpr -> ( Mono.MonoExpr, StampCtx )
 stampExprTree index ctx expr =
     if scanExpr index expr then
-        let
-            stats0 =
-                ctx.stats
-        in
-        goExpr index { ctx | stats = { stats0 | dbgNodesRebuilt = stats0.dbgNodesRebuilt + 1 } } expr
+        goExpr index ctx expr
 
     else
-        let
-            stats0 =
-                ctx.stats
-        in
-        ( expr, { ctx | stats = { stats0 | dbgNodesSkipped = stats0.dbgNodesSkipped + 1 } } )
+        ( expr, ctx )
 
 
 {-| Early-exit candidate probe: does this tree contain a call whose callee
@@ -998,6 +999,37 @@ stampCall index ctx region func args resultType callInfo =
                             , { ctx1 | stats = { stats1 | dispatchUpgraded = stats1.dispatchUpgraded + 1 } }
                             )
 
+                        StampPap inst k ->
+                            -- E2 (LSS_011): the flowing value is inst's PAP
+                            -- holding k applied args. Its filled value slots
+                            -- are [captures…, k args…] in slot order, so the
+                            -- merged captureAbi makes the unchanged fast
+                            -- lowering load exactly the filled prefix and
+                            -- call the SAME clone with the full argument row.
+                            let
+                                ( kindId, ctx1 ) =
+                                    kindIdFor m ctx
+
+                                stamped =
+                                    { callInfo
+                                        | closureKind = Just (Mono.Known (Mono.ClosureKindId kindId))
+                                        , captureAbi =
+                                            Just
+                                                { captureTypes = inst.captureTypes ++ List.take k inst.paramTypes
+                                                , paramTypes = List.drop k inst.paramTypes
+                                                , returnType = inst.returnType
+                                                }
+                                        , fastEvaluator = Just inst.lambdaId
+                                        , fastPapPrefix = Just k
+                                    }
+
+                                stats1 =
+                                    ctx1.stats
+                            in
+                            ( Mono.MonoCall region func args resultType stamped
+                            , { ctx1 | stats = { stats1 | stampedPapPrefix = stats1.stampedPapPrefix + 1 } }
+                            )
+
                         Decline bump ->
                             ( Mono.MonoCall region func args resultType callInfo, bump ctx )
 
@@ -1010,22 +1042,36 @@ stampCall index ctx region func args resultType callInfo =
 
 type Resolution
     = Stamp Instance
+    | StampPap Instance Int
     | Decline (StampCtx -> StampCtx)
 
 
-{-| LSS_009: pick an interchangeable representative for the site, or
-decline with the census reason. Guard order is a scale invariant: integer
-guards first, then one BOUNDED fingerprint, one Dict.get, and one full
-`eqLayout` confirm per group in the bucket (usually one).
+{-| LSS_009 (+ LSS_011 PAP arm): pick an interchangeable representative for
+the site, or decline with the census reason. Guard order is a scale
+invariant: integer guards first, then one BOUNDED fingerprint, one
+Dict.get, and one full `eqLayout` confirm per group in the bucket
+(usually one).
 
   - blocked member → decline (the flowing value could be a wrapper — its
     code and capture layout differ);
-  - non-empty args and callee-type first-stage arity == arg count (a PAP
-    of the instance has strictly fewer remaining params, so this is what
-    proves the flowing value is a RAW instance);
-  - the site's layout group must exist, be capture-unanimous, and be free
-    of Char captures (`emitFastClosureCall`'s i16 capture load is still
-    unexercised C++); its `rep` is the stamped representative.
+  - non-empty args and callee-type first-stage arity == arg count (the
+    site must exactly saturate its OWN callee type — an under-applying
+    site creates a PAP rather than dispatching, an over-applying site is
+    a flat multi-stage call: both v1-declined, sub-counted);
+  - exact path: the site's layout group must exist, be capture-unanimous,
+    and be free of Char captures (`emitFastClosureCall`'s i16 capture
+    load is still unexercised C++); its `rep` is the stamped
+    representative — the flowing value is a RAW instance;
+  - PAP path (E2, LSS_011): when no group matches the site's FULL param
+    layout, the flowing value may be an m-PAP holding k applied args —
+    its peeled type has k fewer params than the instance. Scan all of the
+    member's groups for one whose k-dropped param suffix (k ≥ 1) matches
+    the site; the PAP's filled value slots are then [captures…, k args…]
+    in slot order (Heap: n_values = captures + k, max_values = captures +
+    params), so stamping captureAbi = captures ++ take k params lets the
+    unchanged fast lowering load exactly the filled prefix. The k prefix
+    types face the same Char gate as captures (they are loaded by the
+    same code).
 
 -}
 resolveRepresentative : Mono.MonoType -> Int -> MemberInfo -> Resolution
@@ -1036,26 +1082,32 @@ resolveRepresentative calleeType argCount memberInfo =
     else
         case calleeType of
             Mono.MFunction _ fargs fret ->
-                if argCount == 0 || List.length fargs /= argCount then
-                    Decline bumpShapeArity
+                if argCount == 0 then
+                    Decline bumpShapeArityZero
+
+                else if argCount < List.length fargs then
+                    Decline bumpShapeArityUnder
+
+                else if argCount > List.length fargs then
+                    Decline bumpShapeArityOver
 
                 else
                     case Dict.get (siteFingerprint fargs fret) memberInfo.buckets of
                         Nothing ->
-                            Decline bumpShapeBucketMiss
+                            resolvePapSuffix fargs fret argCount memberInfo bumpShapeBucketMiss
 
                         Just groups ->
-                            resolveInGroups fargs fret argCount groups
+                            resolveInGroups fargs fret argCount groups memberInfo
 
             _ ->
                 Decline bumpShapeNonArrow
 
 
-resolveInGroups : List Mono.MonoType -> Mono.MonoType -> Int -> List LayoutGroup -> Resolution
-resolveInGroups fargs fret argCount groups =
+resolveInGroups : List Mono.MonoType -> Mono.MonoType -> Int -> List LayoutGroup -> MemberInfo -> Resolution
+resolveInGroups fargs fret argCount groups memberInfo =
     case groups of
         [] ->
-            Decline bumpShapeLayout
+            resolvePapSuffix fargs fret argCount memberInfo bumpShapeLayout
 
         g :: rest ->
             if g.paramCount == argCount && eqLayoutLists g.rep.paramTypes fargs && Mono.eqLayout g.rep.returnType fret then
@@ -1069,7 +1121,46 @@ resolveInGroups fargs fret argCount groups =
                     Decline bumpAbiMismatch
 
             else
-                resolveInGroups fargs fret argCount rest
+                resolveInGroups fargs fret argCount rest memberInfo
+
+
+{-| E2 (LSS_011): the PAP-suffix match. The site saturates its own callee
+type (argCount == |fargs|), but no group carries that FULL param layout —
+so if any group's k-dropped suffix matches, the flowing value is that
+group's instance partially applied with k args. Scans every group of the
+member (members have very few groups; the exact path's bucket already
+missed). `noMatch` is the decline the exact path would have charged.
+-}
+resolvePapSuffix : List Mono.MonoType -> Mono.MonoType -> Int -> MemberInfo -> (StampCtx -> StampCtx) -> Resolution
+resolvePapSuffix fargs fret argCount memberInfo noMatch =
+    papScan fargs fret argCount (List.concat (Dict.values memberInfo.buckets)) noMatch
+
+
+papScan : List Mono.MonoType -> Mono.MonoType -> Int -> List LayoutGroup -> (StampCtx -> StampCtx) -> Resolution
+papScan fargs fret argCount groups noMatch =
+    case groups of
+        [] ->
+            Decline noMatch
+
+        g :: rest ->
+            let
+                k =
+                    g.paramCount - argCount
+            in
+            if k >= 1 && eqLayoutLists (List.drop k g.rep.paramTypes) fargs && Mono.eqLayout g.rep.returnType fret then
+                if not g.charFree || List.any ((==) Mono.MChar) (List.take k g.rep.paramTypes) then
+                    -- the k prefix slots are loaded by the same capture-load
+                    -- code as real captures — same i16 gate (E4c lifts it)
+                    Decline bumpShapeChar
+
+                else if g.unanimous then
+                    StampPap g.rep k
+
+                else
+                    Decline bumpAbiMismatch
+
+            else
+                papScan fargs fret argCount rest noMatch
 
 
 kindIdFor : Int -> StampCtx -> ( Int, StampCtx )
@@ -1114,9 +1205,37 @@ bumpShapeWith sub ctx =
     { ctx | stats = sub { stats | declinedShape = stats.declinedShape + 1 } }
 
 
-bumpShapeArity : StampCtx -> StampCtx
-bumpShapeArity =
-    bumpShapeWith (\st -> { st | declinedShapeArity = st.declinedShapeArity + 1 })
+bumpShapeArityZero : StampCtx -> StampCtx
+bumpShapeArityZero =
+    bumpShapeWith
+        (\st ->
+            { st
+                | declinedShapeArity = st.declinedShapeArity + 1
+                , declinedShapeArityZero = st.declinedShapeArityZero + 1
+            }
+        )
+
+
+bumpShapeArityUnder : StampCtx -> StampCtx
+bumpShapeArityUnder =
+    bumpShapeWith
+        (\st ->
+            { st
+                | declinedShapeArity = st.declinedShapeArity + 1
+                , declinedShapeArityUnder = st.declinedShapeArityUnder + 1
+            }
+        )
+
+
+bumpShapeArityOver : StampCtx -> StampCtx
+bumpShapeArityOver =
+    bumpShapeWith
+        (\st ->
+            { st
+                | declinedShapeArity = st.declinedShapeArity + 1
+                , declinedShapeArityOver = st.declinedShapeArityOver + 1
+            }
+        )
 
 
 bumpShapeBucketMiss : StampCtx -> StampCtx

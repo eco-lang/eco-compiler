@@ -1278,20 +1278,21 @@ generateCall ctx func args resultType callInfo =
     case callInfo.callKind of
         Mono.CallGenericApply ->
             case fastDispatchStamp callInfo args of
-                Just ( fastLambdaId, fastAbi ) ->
+                Just ( fastLambdaId, fastAbi, papPrefix ) ->
                     -- LSS singleton upgrade (AbiCloning stamp, design §9.2):
                     -- the callee value is provably one specific closure
-                    -- instance; call its fast clone directly.
-                    generateFastDispatchCall ctx func args resultType fastLambdaId fastAbi
+                    -- instance (or its k-arg PAP, E2); call its fast clone
+                    -- directly.
+                    generateFastDispatchCall ctx func args resultType fastLambdaId fastAbi papPrefix
 
                 Nothing ->
                     generateGenericApplyCoerced ctx func args resultType callInfo
 
         Mono.CallSegmentationUnknown ->
             case fastDispatchStamp callInfo args of
-                Just ( fastLambdaId, fastAbi ) ->
+                Just ( fastLambdaId, fastAbi, papPrefix ) ->
                     -- LSS singleton upgrade — same as the generic-apply case.
-                    generateFastDispatchCall ctx func args resultType fastLambdaId fastAbi
+                    generateFastDispatchCall ctx func args resultType fastLambdaId fastAbi papPrefix
 
                 Nothing ->
                     -- Known ABI + unknown staging: typed papExtend without remaining_arity.
@@ -1647,12 +1648,15 @@ arg-count re-check mirrors the pass's own shape guard (belt and braces —
 the stamp is only ever placed on exactly-stage-saturating calls).
 
 -}
-fastDispatchStamp : Mono.CallInfo -> List Mono.MonoExpr -> Maybe ( Mono.LambdaId, Mono.CaptureABI )
+fastDispatchStamp : Mono.CallInfo -> List Mono.MonoExpr -> Maybe ( Mono.LambdaId, Mono.CaptureABI, Int )
 fastDispatchStamp callInfo args =
     case ( callInfo.fastEvaluator, callInfo.captureAbi ) of
         ( Just fastLambdaId, Just abi ) ->
             if not (List.isEmpty abi.paramTypes) && List.length args == List.length abi.paramTypes then
-                Just ( fastLambdaId, abi )
+                -- Third component: the E2 PAP-prefix k (0 for an exact
+                -- instance stamp). The emission needs it to pick the
+                -- bare-vs-$cap symbol from the REAL capture count.
+                Just ( fastLambdaId, abi, Maybe.withDefault 0 callInfo.fastPapPrefix )
 
             else
                 Nothing
@@ -1684,8 +1688,8 @@ Contract (established by AbiCloning's guards, design §9.3):
     ARE their own fast evaluator — Lambdas.elm emits them un-suffixed).
 
 -}
-generateFastDispatchCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.LambdaId -> Mono.CaptureABI -> ExprResult
-generateFastDispatchCall ctx func args resultType fastLambdaId abi =
+generateFastDispatchCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.LambdaId -> Mono.CaptureABI -> Int -> ExprResult
+generateFastDispatchCall ctx func args resultType fastLambdaId abi papPrefix =
     let
         funcResult : ExprResult
         funcResult =
@@ -1715,7 +1719,12 @@ generateFastDispatchCall ctx func args resultType fastLambdaId abi =
             List.reverse coercedArgsRev
 
         fastSymbol =
-            if List.isEmpty abi.captureTypes then
+            -- The bare-vs-$cap choice keys on the instance's REAL capture
+            -- count: under an E2 PAP stamp (papPrefix = k > 0) captureTypes
+            -- carries k merged prefix params on top of the real captures,
+            -- and a captureless member has no $cap clone (Lambdas.elm emits
+            -- it un-suffixed with signature = its params).
+            if List.length abi.captureTypes - papPrefix <= 0 then
                 lambdaIdToString fastLambdaId
 
             else
@@ -1771,6 +1780,15 @@ generateFastDispatchCall ctx func args resultType fastLambdaId abi =
                    , ArrayAttr Nothing (List.map (\t -> TypeAttr (Types.monoTypeToAbi t)) abi.captureTypes)
                    )
                  ]
+                    ++ (if papPrefix > 0 then
+                            -- E2 audit marker (LSS_011): k merged prefix
+                            -- params ride at the tail of _capture_abi. No
+                            -- C++ consumer — documentation/verifier hook.
+                            [ ( "_pap_prefix", IntAttr Nothing papPrefix ) ]
+
+                        else
+                            []
+                       )
                     ++ gcRootsCountAttrF
                 )
 

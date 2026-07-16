@@ -918,6 +918,8 @@ runGlobalOptPhase lssReport stats simplifiedGraph =
                         ++ String.fromInt goStats.wrappersInserted
                         ++ " dispatchUpgraded="
                         ++ String.fromInt goStats.abiCloning.dispatchUpgraded
+                        ++ " stampedPapPrefix="
+                        ++ String.fromInt goStats.abiCloning.stampedPapPrefix
                         ++ " declinedBlocked="
                         ++ String.fromInt goStats.abiCloning.declinedBlocked
                         ++ " declinedNoInstance="
@@ -926,7 +928,13 @@ runGlobalOptPhase lssReport stats simplifiedGraph =
                         ++ String.fromInt goStats.abiCloning.declinedShape
                         ++ " (arity="
                         ++ String.fromInt goStats.abiCloning.declinedShapeArity
-                        ++ " bucketMiss="
+                        ++ " [zero="
+                        ++ String.fromInt goStats.abiCloning.declinedShapeArityZero
+                        ++ " under="
+                        ++ String.fromInt goStats.abiCloning.declinedShapeArityUnder
+                        ++ " over="
+                        ++ String.fromInt goStats.abiCloning.declinedShapeArityOver
+                        ++ "] bucketMiss="
                         ++ String.fromInt goStats.abiCloning.declinedShapeBucketMiss
                         ++ " layout="
                         ++ String.fromInt goStats.abiCloning.declinedShapeLayout
@@ -936,12 +944,6 @@ runGlobalOptPhase lssReport stats simplifiedGraph =
                         ++ String.fromInt goStats.abiCloning.declinedShapeNonArrow
                         ++ ") declinedAbiMismatch="
                         ++ String.fromInt goStats.abiCloning.declinedAbiMismatch
-                        ++ " dbg: rebuilt="
-                        ++ String.fromInt goStats.abiCloning.dbgNodesRebuilt
-                        ++ " skipped="
-                        ++ String.fromInt goStats.abiCloning.dbgNodesSkipped
-                        ++ " exprs="
-                        ++ String.fromInt goStats.abiCloning.dbgExprsVisited
                     )
                 )
                 |> Task.map (\_ -> result)

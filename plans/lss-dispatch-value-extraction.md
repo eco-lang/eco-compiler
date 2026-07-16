@@ -83,6 +83,14 @@ A1 spike (parallel to E1/E2) ─ parity? ──→ GO: E-track runs on subst; E6
 E0 → E1 → E2 (+E4c) are unconditional-order. A1 runs in parallel with E1/E2.
 E3/E5/E6/E7 are data-chosen. E8 is externally scheduled (borrow plan).
 
+**Gate verdicts as of 2026-07-16 (from E0/E1 results, details in §4/§5):** E0 DONE
+(Run A 922.3 M dispatches; Run B coverage 1.75 %/3.52 %; stamped ≠ hot; 89.3 % of
+arrows `LTop`). E1 audit DONE — devirt already works, inlining is the gap (E1.3),
+payoff scales with coverage → do E1.3 with/after a coverage phase. **E2 GO** (gate
+met, §6/E2.−1). **E3 deprioritized** (multi-sets = 0.8 % of arrows). E5/E6 await
+analysis-precision work + A1; E8 external. The hot-dispatch ceiling is
+analysis-side (trivial signatures + escape-to-data soundness), not mechanism-side.
+
 ---
 
 ## 4. E0 — Dispatch census
@@ -249,8 +257,42 @@ stamped closures have `sat=0` (always-fast, and cold). Singleton stamping never
 reaches the high-frequency HOF-arg / stored-continuation closures — the E2/E3/E5–E6
 population. So the E-track's ceiling is ~the 98 % of dispatch that is currently
 generic, and the immediate levers are PAP-shape (E2) and small-set (E3), not more
-singleton coverage. Remaining E0: E0.5 (`ECO_MONO_LSS_SITES` per-member decline
-attribution — rank *which* hot sites are declined and why) + E0.8 (dbg* cleanup).
+singleton coverage.
+
+**E0.5 DONE (2026-07-16) via the existing `ECO_MONO_LSS_REPORT` (no code change
+needed — its mono-side census already carries the deciding data).** Set-size
+histogram over 388,035 zonked arrows: **only 10.7% carry a concrete `LSet`; 89.3%
+are `LTop`.** Concrete sets are 92% singletons (38,371); **multi-member `LSet[2..8]`
+are just 3,164 (0.8% of arrows)** (2→1625, 3→981, 4→299, …, 8→11). Widening cause:
+`byKernel=3004`, `bySize=35`, `byBudget=0` — so the 89% `LTop` is overwhelmingly
+UNCONSTRAINED, not widened. **All 8,673 def signatures are trivial** → the analysis
+propagates ~no cross-def set flow; sets come only from per-item lambda grounding.
+Singleton declines are 99.2% `arity` (6,801/6,856).
+
+**Verdict — coverage is ANALYSIS-limited, not mechanism-limited, and it reorders the
+E-track:**
+- **E3 (small-set dispatch) is DEPRIORITIZED.** Its entire target is the 3,164
+  multi-sets (0.8%); the gate ("k∈[2..8] ≥ ~10% of dispatch") fails on the static
+  population. (One residual: the per-site×census join, the only thing the built
+  E0.5 code would add, could still show a few multi-sets are super-hot — build it
+  only to de-risk an E3 bet, which the data already argues against.)
+- **E2 (PAP-shape stamping) is the clean bounded win** — 6,801 arity-declined
+  singletons, identity already known. Do it.
+- **The hot dispatch lives in the 89% `LTop`, and that is the real ceiling.** It
+  splits by cause: (i) HOF-argument closures (`List.cons`, `Maybe.map`) are `LTop`
+  because signatures are trivial + the local-multi transport gap (§8.4) — reachable
+  only by ANALYSIS precision (E4a V1 transport, per-use let sets §7.4) plus keyed
+  per-call-site specialization (E5/E6, the paper's core mechanism); (ii) the IO
+  bind continuations are `LTop` by SOUNDNESS (they escape into the returned IO
+  value) — no analysis precision helps; they need defunctionalization / the borrow
+  track (E8). So the biggest prize is gated on analysis+keying (E4a/E5/E6) and E8,
+  not on new dispatch lowering.
+- **A1 (LSS-Lite) note:** any post-mono re-inference must clear the same 89%-LTop
+  bar — decoupling from the solver is orthogonal to the coverage ceiling.
+
+Remaining E0: E0.8 (dbg* cleanup). The `ECO_MONO_LSS_SITES` per-site code path
+(§E0.5 original) is now optional — build it only to weight the 3,164 multi-sets by
+runtime dispatch (the E3 de-risk).
 
 Configurations:
 1. **Run A — subst-built default binary** (the shipping configuration): total
@@ -307,6 +349,31 @@ inlined into their callers? Record per backend tier; the Dev tier
 (`runNoInlineFunctionPipeline`, `EcoBackend.cpp:161–182`) is expected to inline
 nothing — every dev-loop wall number understates Channel A+B and must say so.
 
+**E1.1 AUDIT DONE (2026-07-16, default/cgu tier binaries).** Two findings that
+reshape E1:
+- **(a) Devirtualization already works — E1.2 is largely unnecessary.** The entire
+  ~60 MB binary has only **409 indirect `call *` instructions** (identical in the
+  subst and solver-built binaries). LLVM at -O2 folds the `AddressOf($cap)`+indirect
+  fast-call into a direct call already; the 409 are the runtime's genuine dispatch
+  primitives (`invokeSaturatedTyped`'s K-switch etc.) plus a few function-pointer
+  tables. So emitting a direct symbol call buys ~nothing — the optimizer beat us to it.
+- **(b) Inlining is the real gap.** **9,449** (subst) / **10,264** (solver) direct
+  `call <…$cap>` sites survive un-inlined, against **18,422 `$cap` bodies of which 55 %
+  are ≤64 bytes** (mean 190 B). Small, trivially-inlinable clone bodies are being
+  called directly but NOT inlined into their callers — so the cross-boundary
+  optimization the paper's speedups come from is absent. Likely inhibitors (to
+  confirm in E1.3): GC-statepoint conservatism around `addrspace(1)` values, and the
+  backend's parallel/`--split-codegen` partitioning (a `$cap` and its caller in
+  different partitions cannot inline). **E1.3 (`inlinehint`/`alwaysinline` on `$cap`,
+  or same-partition placement) is the lever, not E1.2.**
+- **Strategic caveat — E1's payoff scales with coverage.** The HOT dispatch
+  (`List.cons`, IO continuations) is GENERIC (routed through the runtime, not `$cap`),
+  so `$cap` inlining only benefits the fast + Channel-A slice — under subst that is
+  Channel A (weight unmeasured; no counter on P1/P4 direct calls); under solver only
+  the +16 M fast events. So E1 is a **multiplier on E2/E3/E5 coverage growth**, not a
+  large standalone win today. Do E1.3 alongside/after the first coverage phase, and
+  add a Channel-A direct-call counter if its weight needs sizing.
+
 ### E1.2 Direct symbol call in `emitFastClosureCall`
 
 Replace the `AddressOf` + indirect `LLVM::CallOp` (`EcoToLLVMClosures.cpp:
@@ -351,9 +418,103 @@ and `paramTypes = drop k m.params`, and **`generateFastDispatchCall` +
 `emitFastClosureCall` work unchanged** (they load `|captureTypes|` slots and append
 site args).
 
+### E2.−1 What E0 settled (2026-07-16) — build-gate verdict, numbers, expectations
+
+Fresh HEAD numbers (unkeyed solver, `ECO_MONO_LSS_REPORT` Stage-7a run):
+`dispatchUpgraded=2395`; declines `declinedShape=6856 (arity=6801 bucketMiss=17
+layout=37 char=1 nonArrow=0)`, `declinedNoInstance=524`, `declinedAbiMismatch=2`.
+So **the arity/PAP class is 6,801 sites — 99.2 % of shape declines and ~70 % of
+every singleton site the stamper consults.** (The "~3,140 stamped" figure in §2 was
+the K1 *keyed* gate; unkeyed HEAD stamps 2,395 — use 2,395 as E2's baseline.)
+
+**Build-gate verdict: PROCEED, with bounded expectations.** The static half of the
+gate is met (the class dominates declines). The dynamic half is deliberately not
+pre-measured: Run B showed the *hot* dispatch rows (`List.cons`, IO continuations)
+are `LTop`, so E2's direct dynamic win is expected to be modest — and the E0.4 fast
+counter makes the actual value a free by-product of the post-E2 re-census (counts
+are deterministic; one run suffices). **Strategic role (why build it anyway):**
+arity/PAP-consumption is the #1 decline *mode of the stamping machinery itself*.
+E5/E6 keyed fan-out — where the big prize lives — will mint many more singleton
+sites, and partial-application sites among them will present this same PAP shape.
+E2 removes that mode once, ahead of the phases that need it.
+
+Execution order within E2: E2.0 pins → E2.3 CallInfo plumbing (mechanical, wide) →
+E2.2 resolution + stamping → E2.4 tests → E2.6 gates + re-census.
+
+**E2 IMPLEMENTED + GATED (2026-07-16).** Everything below shipped:
+`fastPapPrefix` CallInfo field (+5 construction sites), `resolveRepresentative`
+arity split (`zero/under/over` sub-counters) + `resolvePapSuffix`/`papScan` +
+`StampPap` arm in `stampCall`, `_pap_prefix` emission + real-capture-count
+symbol choice in `Expr.elm`, report-line extension (+ E0.8 dbg* cleanup),
+LSS_011 in `invariants.csv`, pins `test/codegen/fast_dispatch_pap_prefix.mlir`
+(JIT, 753 — slot order + merged-ABI lowering) and
+`test/elm/src/HofPapPrefixDispatchTest.elm` (behavioral). Gates: full E2E
+**1620/1620** (default) green incl. both new tests; flag-on JIT correctness of
+the test module (`result: 22564` under solver); flag-on corpus
+**1620/1620 PASSED** under `ECO_MONO_ENGINE=solver` (touch-all first — genuine
+recompiles). elm-tests: **12987/16 — the 4
+delta-vs-baseline failures are PRE-EXISTING at HEAD** (A/B-proven: identical
+with the E2 suffix arm neutralized): `majority2Flat` + "Case returns
+differently staged lambdas" under the flag-on unit leg (`runToGlobalOptLssOn`)
+emit a papExtend with NO `remaining_arity` and no exempt `_call_kind` — a
+latent solver+LSS staging-emission defect (plausibly H6.2-Layer-1-era) that
+needs its own investigation; E2 neither causes nor masks it. NOTE: contrary to
+the E0-era finding, automated flag-on coverage DOES exist — the TestLogic
+SourceIR suites run every fixture through `runToGlobalOptLssOn`
+(`tests/TestLogic/TestPipeline.elm:356`) — new flag-on pins belong there.
+
+**Activation status (verified live):** the suffix arm is correctly
+conservative and currently near-dormant — the v1 analysis grounds members on
+HEAD arrows only, while every PAP-application site has a peeled INNER-arrow
+type, so genuine PAP-dispatch sites are not yet consulted (annos `LTop`); the
+one consulted partial site in the probe (`f 10`, staged return) was correctly
+DECLINED by the return-layout fence (stamping it would miscompile). E2 is the
+mechanism half; activation arrives with inner-arrow set transport (E4a-class)
+or keyed fan-out (E5/E6) — exactly the "analysis-limited" E0.5 verdict. The
+post-E2 re-census is therefore deferred to those phases (no coverage delta to
+measure today).
+
+**AS BUILT (2026-07-16) — three corrections discovered during implementation:**
+
+1. **The hook point is NOT the arity decline — it is bucketMiss/layout-exhaustion.**
+   `resolveRepresentative`'s arity guard compares the site's arg count to the
+   site's OWN callee type (`argCount == |fargs|`), not to the instance. A
+   saturating call on a PAP value PASSES that guard (its peeled type has exactly
+   the applied params) and then misses the bucket (the instance is bucketed under
+   its FULL param fingerprint) — today's `bucketMiss=17`. The 6,801 `arity`
+   declines are sites that DON'T saturate their own type: under-applying sites
+   (which CREATE PAPs — no dispatch to convert), over-applying flat multi-stage
+   calls (dispatch exists; needs staging-aware stamping — v2), and bare
+   references (argCount=0). As built: `resolvePapSuffix` hooks at bucketMiss AND
+   at group-exhaustion (`bumpShapeLayout` path), scanning all of the member's
+   groups for a k-dropped suffix match; the arity decline is split into
+   `declinedShapeArity[Zero|Under|Over]` sub-counters so the report finally
+   sizes those populations. Consequence: E2's static target is the bucketMiss
+   class (small today) plus whatever E5/E6-minted singletons produce later — the
+   6,801 was never the PAP-stampable population (the plan's own "bounded
+   expectations" verdict stands, with sharper attribution).
+2. **Captureless members need the bare symbol.** `fastSymbol` keyed `$cap` on
+   `captureTypes` non-empty; under a PAP stamp the merged captureTypes is
+   non-empty even for captureless members, which have NO `$cap` clone. As built:
+   `fastDispatchStamp` returns the papPrefix k and the suffix decision keys on
+   the REAL capture count (`|captureTypes| − k`).
+3. **No automated flag-on report pins exist.** The E2E harness sets no env and
+   pins only runtime output (`-- CHECK: result:`); the existing `Lss*Test`
+   "dispatchUpgraded=1" pins are doc comments, not assertions. As built: the E2E
+   test (`HofPapPrefixDispatchTest.elm`) pins correctness under the default
+   pipeline (LSS_005) with a shape that survives forwarding/merging/loopification
+   (two-use let-bound partial inside a recursive HOF); the `stampedPapPrefix`
+   assertion is a MANUAL gate step (solver+report compile of the test module +
+   self-compile). The codegen pin (`fast_dispatch_pap_prefix.mlir`, `-emit=jit`)
+   validates the merged-ABI lowering + slot order end-to-end (753 vs 573).
+   E2.0 premise 3 fully settled: papCreate packs `arity` = TOTAL slots
+   (`max_values`), `n_values = numCaptured` (`EcoToLLVMClosures.cpp:736–762`;
+   the multi-use-fast-evaluator test uses arity=2 for 1 capture + 1 param).
+
 ### E2.0 Verify the object-layout premises (before any compiler change)
 
-Three claims to pin, each with a small test, because the whole phase rests on them:
+Premises 1–2 need pins; premise 3 was settled by code read during E0 and needs one
+residual pin.
 
 1. **Slot order:** a PAP's value slots are `[captures…, applied args…]` in
    append order. papCreate stores captures from the values offset
@@ -366,81 +527,144 @@ Three claims to pin, each with a small test, because the whole phase rests on th
    declare kinds for future arg slots. Therefore the k applied slots hold `m`'s
    declared param kinds. Extend the `GenericApplyBoxing` test file with a
    prefix-load case.
-3. **Header accounting:** confirm the `n_values`/`max_values` semantics for
-   captures-bearing closures (the packed-word docs and `eco_alloc_closure_k`
-   (`RuntimeExports.cpp:688–689`) read differently — `n_values=captures?`,
-   `max_values=captures+arity?`). The stamped claim is: at a site whose peeled
-   callee type takes `n` args, the flowing `m`-PAP has exactly
-   `n_values = |m.captures| + k` filled slots, `k = flatArity(m) − n`. Settle this
-   by reading the papCreate lowering's header packing and writing the number into
-   the invariant text (E2.5).
+3. **Header accounting — SETTLED (E0 code read), one residual pin.**
+   `eco_closure_call_saturated` allocates `combined_args = alloca(max_values)` and
+   `spliceArgsForSaturatedCall` fills it with captures + newargs before invoking
+   the evaluator (`RuntimeExports.cpp:2426–2471`); saturation everywhere is
+   `n_values + num_newargs == max_values`. Therefore **`max_values` = TOTAL
+   evaluator slots = |captures| + |params|**, **`n_values` = filled slots =
+   |captures| + applied args**, `remaining` = unapplied params. (The interned
+   zero-capture case `max_values = arity` is the c = 0 degenerate; and
+   `eco_alloc_closure_k`'s `num_captures` parameter (`RuntimeExports.cpp:688–689`,
+   sets `max_values = num_captures`) actually receives the evaluator's total slot
+   count — a naming quirk, not a contradiction.) The stamped claim
+   `n_values = c + k`, `k = |m.params| − siteArgs` follows directly.
+   **Residual pin:** read the papCreate lowering's header packing
+   (`EcoToLLVMClosures.cpp:~748`) and confirm it packs
+   `max_values = numCaptured + arity` (equivalently, that its `arity`/packed field
+   means total slots when captures are present); write the confirmed wording into
+   LSS_011 (E2.5).
 
-If any of the three fails, stop and re-derive — the rest of the phase is mechanical
+If premise 1 or 2 fails, stop and re-derive — the rest of the phase is mechanical
 only because of them.
 
-### E2.1 Fences (v1 scope)
+### E2.1 Fences (v1 scope) — with k defined precisely
 
-Stamp only when ALL hold, else decline into the existing counters:
-- singleton `LSet [m]`, instance resolution passes LSS_009 exactly as today;
-- the instance is **single-stage** (its type has no nested `MFunction` stage
-  structure past the site's application — multi-stage PAP prefixes interact with
-  staging segmentation and are v2; count them in a new `declinedShapePapStaged`);
-- `k ≥ 1` derived as `flatArity(instance) − siteArgCount`, and
-  `siteArgCount == |peeled callee params|` (the site saturates the remainder);
-- prefix param kinds pass the same char/unboxability gates as captures do today
-  (i16 prefix slots blocked until E4c lands, same `charFree` check).
+Let `A = |inst.paramTypes|` (the resolved instance's fast-clone param count, i.e.
+the `Instance` record `stampCall` already consumes at `AbiCloning.elm:987–991`)
+and `n = siteArgCount`. Stamp only when ALL hold, else decline into the existing
+counters:
 
-### E2.2 AbiCloning changes
+- singleton `LSet [m]` and instance resolution passes LSS_009 exactly as today
+  (blocker instances, abiKey unanimity — unchanged);
+- `n ≥ 1` (a 0-arg site is a bare reference — nothing saturates) and
+  `k = A − n ≥ 1`;
+- **PAP-aware layout match** (this replaces today's exact-arity comparison for the
+  PAP arm): `eqLayout` of the site's peeled callee param layout against
+  `List.drop k inst.paramTypes`, and of the site's return against
+  `inst.returnType` — i.e. the site saturates exactly the instance's remaining
+  suffix;
+- the instance is **single-stage** (no nested `MFunction` stage structure past the
+  site's application — multi-stage PAP prefixes interact with staging segmentation
+  and are v2; count them in a new `declinedShapePapStaged`);
+- the k prefix param kinds pass the same gates captures pass today: `charFree`
+  until E4c lands (count in the existing `declinedShapeChar`), unboxability per
+  the existing capture rules.
 
-In the arity-decline path that currently bumps `declinedShapeArity`
-(`AbiCloning.elm:1119` helper; the check feeding it sits in the candidate filter
-around `:1062`): before declining, attempt the PAP stamp — compute `k`, apply
-E2.1's fences, and on success stamp exactly like `stampCall` (`:982–999`) but with
-the merged `captureAbi` above. New counters: `stampedPapPrefix`,
-`declinedShapePapStaged`; wire both into the `lss globalopt:` line
-(`Builder/Generate.elm:911–946`).
+### E2.2 AbiCloning changes (decision point located)
 
-### E2.3 Emission marker
+The stamping decision is `resolveRepresentative (Mono.typeOf func)
+(List.length args) memberInfo → Stamp Instance | Decline bump`, called from
+`stampCall` (`AbiCloning.elm:976`; the `Resolution` type at `:1011–1013`; decline
+helpers `:1088–1148`). Steps:
 
-`generateFastDispatchCall` needs no functional change (E2's stamp is shape-
-compatible). Add one attr for auditability: when the stamp came from the PAP arm,
-emit `_pap_prefix = k` (IntegerAttr) on the papExtend (`Expr.elm:1760–1775` attr
-block). CallInfo carries it as `fastPapPrefix : Maybe Int` (add to the record at
-`AST/Monomorphized.elm:1535–1537`, default `Nothing` in `defaultCallInfo:1553` —
-mechanical sweep of the ~10 construction sites the compiler's exhaustiveness will
-list).
+1. Read `resolveRepresentative`'s body (directly below `Resolution`, `:1014–1087`)
+   and locate the exact arity comparison that feeds `bumpShapeArity` (`:1119`) and
+   the sigKey/bucket filtering it sits in.
+2. Extend the resolution: when the exact-arity match fails with `n < A`, attempt
+   the PAP match per E2.1 against the SAME bucket/candidate machinery, but with the
+   site layout compared to the k-dropped param suffix. Widen the result type to
+   `Stamp Instance | StampPap Instance Int {- k -} | Decline (StampCtx -> StampCtx)`
+   so `stampCall` distinguishes the arms (compiler exhaustiveness finds the two
+   match sites).
+3. In `stampCall`, the `StampPap inst k` arm stamps:
+   `captureAbi = Just { captureTypes = inst.captureTypes ++ List.take k inst.paramTypes,
+   paramTypes = List.drop k inst.paramTypes, returnType = inst.returnType }`,
+   `fastEvaluator = Just inst.lambdaId`, `closureKind` as the exact arm does, plus
+   `fastPapPrefix = Just k` (E2.3); bump `stampedPapPrefix`.
+4. New counters `stampedPapPrefix` + `declinedShapePapStaged` join
+   `AbiCloningStats` (`AbiCloning.elm:93–110`, zero-init `:115–131`) and the report
+   line (`Builder/Generate.elm:911–946`) — current printed format is
+   `lss globalopt: wrappersInserted=… dispatchUpgraded=… declinedBlocked=…
+   declinedNoInstance=… declinedShape=… (arity=… bucketMiss=… layout=… char=…
+   nonArrow=…) declinedAbiMismatch=…`; append `stampedPapPrefix=` right after
+   `dispatchUpgraded=` and `papStaged=` inside the declinedShape parens.
+
+### E2.3 CallInfo field + emission marker
+
+`generateFastDispatchCall` needs no functional change — E2's stamp is
+shape-compatible (its `fastDispatchStamp` gate at `Expr.elm:1650–1661` checks
+`argCount == |abi.paramTypes|`, which holds by construction for the k-dropped
+paramTypes). Add one attr for auditability: when `fastPapPrefix = Just k`, emit
+`_pap_prefix = k` (IntegerAttr) in the attr block at `Expr.elm:1760–1775`; no C++
+consumer (documentation + future verifier hook only). CallInfo carries
+`fastPapPrefix : Maybe Int` — add to the record at `AST/Monomorphized.elm:1535–1537`,
+`Nothing` in `defaultCallInfo` (`:1553`), then the mechanical sweep of construction
+sites the compiler's exhaustiveness errors list (~10 sites: MonoGlobalOptimize
+wrapper synthesis, ResolveAccessorValues, Specialize ×2, Staging/Rewriter,
+MonoInlineSimplify stamp-clearing sites — the inliner must CLEAR `fastPapPrefix`
+wherever it already clears `fastEvaluator`/`captureAbi`, `MonoInlineSimplify.elm:
+652, 706–707, 756–757, 824–827, 2906–2907`, or a stale k survives reshaping).
 
 ### E2.4 Tests
 
-- Unit `.mlir` pins from E2.0.
-- `test/elm/src/HofPapPrefixDispatchTest.elm` (E2E, solver+LSS config): a 3-arity
-  global partially applied with 2 args, the PAP passed through a non-inlinable
-  boundary (stored in a record field is NOT eligible — pass as a function argument
-  to a `NOINLINE`-shaped consumer, i.e. one whose cost exceeds the inline
-  threshold), applied to 1 arg; assert result correctness AND
-  `dispatchUpgraded`/`stampedPapPrefix` via the report (grep the compile stderr in
-  the harness the way existing `Lss*Test` pins do); a variant with a boxed + an
-  unboxed prefix arg under tiny-nursery `ECO_HEAP_VALIDATE`.
-- Negative pin: a two-stage member's PAP declines (`declinedShapePapStaged=1`).
+- Unit `.mlir` pins from E2.0 (slot order; `GenericApplyBoxing` prefix-kind case).
+- `test/elm/src/HofPapPrefixDispatchTest.elm` (E2E, run under
+  `ECO_MONO_ENGINE=solver`): a 3-arity global partially applied with 2 args, the
+  PAP passed **as a function argument** to a consumer whose cost exceeds the inline
+  threshold (storing it in a record/ctor field escapes to data and stays `LTop` —
+  per E0.5 that shape is out of reach by design), then applied to 1 arg; assert
+  result correctness AND grep the compile stderr for `stampedPapPrefix=1` the way
+  existing `Lss*Test` pins grep the `lss globalopt:` line. Variant: one boxed + one
+  unboxed (i64/f64) prefix arg under tiny-nursery `ECO_HEAP_VALIDATE` (GC-move the
+  PAP between partial application and call).
+- Negative pins: a two-stage member's PAP declines (`papStaged=1`); a Char-prefix
+  PAP declines into `declinedShapeChar` (flips when E4c lands).
+- Adversarial discipline: the corpus is flag-off-shaped (LSS 3.6 lesson) — these
+  pins are the only thing that fails if E2 is broken while the corpus stays green.
 
 ### E2.5 Invariant
 
-New `LSS_011`: *"A PAP-prefix stamp (`_pap_prefix = k`) is legal only when the
-site's callee annotation is a singleton `LSet [m]`, the resolved instance is
-single-stage, `k = flatArity(m) − siteArgs ≥ 1`, and the stamped
-`_capture_abi` equals m's capture ABI followed by m's first k param ABIs; the
-runtime object at such a site holds exactly |captures|+k filled value slots whose
-declared kinds equal that prefix"* — add to `invariants.csv` with the E2.0-settled
-header-accounting numbers, tested by the E2.4 pins.
+New `LSS_011`: *"A PAP-prefix stamp (`fastPapPrefix = Just k`, emitted as
+`_pap_prefix = k`) is legal only when the site's callee annotation is a singleton
+`LSet [m]`, the resolved instance is single-stage, `k = |m.params| − siteArgs` with
+`siteArgs ≥ 1` and `k ≥ 1`, the site's param/return layout eqLayout-matches the
+instance's k-dropped suffix, and the stamped `_capture_abi` equals m's capture ABI
+followed by m's first k param ABIs. The runtime object at such a site is an m-PAP
+whose header satisfies `max_values = |m.captures| + |m.params|` (total evaluator
+slots) and `n_values = |m.captures| + k` (filled slots), so the fast lowering's
+`|_capture_abi|` loads read exactly the filled prefix"* — add to `invariants.csv`
+after confirming the E2.0(3) residual pin; tested by the E2.4 pins.
 
 ### E2.6 Gate
 
-Gate to build: E0's `declinedShapeArity`-attributed generic events are material
-(≥ a few % of Run-B events). Gate to keep: touch-all + `--target full` under
-`ECO_MONO_ENGINE=solver` green; elm-tests baseline-identical (12991/12);
-`declinedShapeArity` drops in the report; E0 re-census shows the converted sites'
-generic events moving to fast rows; interleaved wall A/B; flag-off (subst) builds
-byte-identical.
+- **Gate to build: MET** (E2.−1 — 6,801 sites = 99.2 % of declines; dynamic value
+  measured after, not before).
+- Gate to keep: touch-all-`.elm` + `--target full` under `ECO_MONO_ENGINE=solver`
+  green; elm-tests baseline-identical (12991/12); **subst byte-identity is cheap
+  and total** — AbiCloning only acts on `LSet` annos (absent under subst: all
+  `LTop`) and `fastPapPrefix = Nothing` emits nothing, so one subst Stage-7a run
+  must reproduce the known-good 12,007,395 B `eco-compiler-boot.mlir` exactly.
+- Report deltas on the solver Stage-7a: `declinedShape (arity=…)` drops from 6,801
+  toward the papStaged/char residue; `stampedPapPrefix` ≈ the difference;
+  `dispatchUpgraded` stays ≈ 2,395 (the exact arm is untouched).
+- **Value measurement (the E2 number):** one post-E2 Run B re-census — exact
+  recipe in `benchmarks/runtime-calls.md` (solver front-end → lower with
+  `ECO_LSS_DISPATCH_SITE_COUNTERS=1` → census; deterministic, 1 run per workload).
+  Coverage rises from 1.75 % (subst workload) / 3.52 % (solver workload) by the
+  dynamic weight of the converted sites; append the row to `runtime-calls.md`.
+- Afterwards: the §15.1 U2b trigger-2 re-measure (one interleaved ARM=0 A/B)
+  becomes due — E2 is the phase that was named in the U2b disposition.
 
 ---
 
@@ -739,6 +963,9 @@ separate research note and shares little code with the per-spec raiser.
 2. Do the existing ~3,140 stamps carry dynamic weight (fast rows), or did
    inlining already eat Channel B's hot sites?
 3. Is the PAP-under-saturation bucket (E2's target) dispatch-hot post-P6?
+   **Statically answered by E0.5** (6,801 sites = 99.2 % of declines); dynamic
+   weight is measured by the post-E2 re-census (hot rows are `LTop`, so expect a
+   bounded gain — E2.−1).
 4. Can A1's DSU inference match unkeyed solver-LSS singleton counts — globally
    and on E0's hot sites? Which precision-gap classes appear (data-stored arrows
    are the expected one)?
@@ -747,4 +974,7 @@ separate research note and shares little code with the per-spec raiser.
    whether Dev should gain a cheap inliner.)
 6. Does `wrappersInserted` collide with stamped sites on hot paths (E7 trigger)?
 7. E2.0(3): what exactly do `n_values`/`max_values` hold for captures-bearing
-   closures? (Settles LSS_011's wording.)
+   closures? **SETTLED** (E0 code read of `eco_closure_call_saturated`'s
+   `combined_args = alloca(max_values)` + splice semantics): `max_values` =
+   |captures| + |params| (total evaluator slots), `n_values` = filled slots. One
+   residual pin on the papCreate lowering's header packing remains in E2.0(3).

@@ -1524,6 +1524,14 @@ Extended for typed closure calling:
     saturating typed papExtend. Only consulted on the
     CallGenericApply/CallSegmentationUnknown emission paths — sites the
     staging solver could not type; advisory metadata everywhere else.
+  - fastPapPrefix: E2 PAP-shape stamp (LSS_011). `Just k` when the stamped
+    callee value is a PAP of the fastEvaluator instance holding k applied
+    args: `captureAbi.captureTypes` then equals the instance's REAL
+    captures ++ its first k param types (the PAP's filled value slots, in
+    slot order), and `captureAbi.paramTypes` is the remaining param
+    suffix. Codegen must derive the bare-vs-$cap symbol from the REAL
+    capture count (`length captureTypes - k`), not from captureTypes
+    alone — a captureless member has no $cap clone.
 
 -}
 type alias CallInfo =
@@ -1535,6 +1543,7 @@ type alias CallInfo =
     , closureKind : MaybeClosureKind
     , captureAbi : Maybe CaptureABI
     , fastEvaluator : Maybe LambdaId
+    , fastPapPrefix : Maybe Int
     , callKind : CallKind
     , evaluatorReturnType : MonoType
     }
@@ -1553,6 +1562,7 @@ defaultCallInfo =
     , closureKind = Nothing
     , captureAbi = Nothing
     , fastEvaluator = Nothing
+    , fastPapPrefix = Nothing
     , callKind = CallGenericApply
     , evaluatorReturnType = MUnit
     }

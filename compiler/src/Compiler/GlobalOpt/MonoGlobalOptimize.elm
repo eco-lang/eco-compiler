@@ -438,6 +438,7 @@ buildNestedCallsGO region calleeExpr params =
                             , closureKind = Nothing
                             , captureAbi = Nothing
                             , fastEvaluator = Nothing
+                            , fastPapPrefix = Nothing
                             , callKind = Mono.CallDirectKnownSegmentation
                             , evaluatorReturnType = resultType
                             }
@@ -1982,6 +1983,7 @@ computeCallInfo graph env func args resultType =
             , closureKind = Nothing
             , captureAbi = Nothing
             , fastEvaluator = Nothing
+            , fastPapPrefix = Nothing
             , callKind = Mono.CallDirectFlat
             , evaluatorReturnType = resultType
             }
@@ -2111,6 +2113,7 @@ computeCallInfo graph env func args resultType =
             , closureKind = Nothing
             , captureAbi = Nothing
             , fastEvaluator = Nothing
+            , fastPapPrefix = Nothing
             , callKind = callKind
             , evaluatorReturnType = evaluatorReturnType
             }

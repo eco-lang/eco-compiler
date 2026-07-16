@@ -669,6 +669,7 @@ buildNestedCalls region calleeExpr params =
                             , closureKind = Nothing
                             , captureAbi = Nothing
                             , fastEvaluator = Nothing
+                            , fastPapPrefix = Nothing
                             , callKind = Mono.CallDirectKnownSegmentation
                             , evaluatorReturnType = resultType
                             }
