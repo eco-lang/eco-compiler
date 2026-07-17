@@ -2014,16 +2014,25 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
                             ++ gcRootsCountAttr3
 
                     callKindAttrs =
-                        case callKindAttr of
-                            Just ck ->
-                                if isCrossStage then
-                                    [ ( "_call_kind", StringAttr "segmentation_unknown" ) ]
+                        -- The cross-stage downgrade must apply regardless of
+                        -- callKindAttr: later batches recurse with Nothing
+                        -- (only the first batch carries the site's kind), so
+                        -- gating the tag on `Just` left every cross-stage
+                        -- batch with NEITHER remaining_arity NOR _call_kind —
+                        -- lowered via the boxing lowerGenericApply instead of
+                        -- the typed-buffer lowerSegmentationUnknown (CGEN_060
+                        -- no-boxing mandate), and flagged by the CGEN_052
+                        -- checkers. Pin: CrossStageCallKindTest.elm.
+                        if isCrossStage then
+                            [ ( "_call_kind", StringAttr "segmentation_unknown" ) ]
 
-                                else
+                        else
+                            case callKindAttr of
+                                Just ck ->
                                     [ ( "_call_kind", StringAttr ck ) ]
 
-                            Nothing ->
-                                []
+                                Nothing ->
+                                    []
 
                     papExtendAttrs =
                         Dict.fromList (baseAttrs ++ callKindAttrs)

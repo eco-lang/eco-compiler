@@ -457,8 +457,30 @@ delta-vs-baseline failures are PRE-EXISTING at HEAD** (A/B-proven: identical
 with the E2 suffix arm neutralized): `majority2Flat` + "Case returns
 differently staged lambdas" under the flag-on unit leg (`runToGlobalOptLssOn`)
 emit a papExtend with NO `remaining_arity` and no exempt `_call_kind` — a
-latent solver+LSS staging-emission defect (plausibly H6.2-Layer-1-era) that
-needs its own investigation; E2 neither causes nor masks it. NOTE: contrary to
+latent staging-emission defect; E2 neither causes nor masks it.
+**ROOT-CAUSED (2026-07-16, engine-INDEPENDENT — reproduces under plain subst
+with a real module, `caseFunc 0 5 3` over differently-staged case lambdas):**
+in `applyByStages` (`Expr.elm:~2016–2051`), later-stage batches recurse with
+`callKindAttr = Nothing`, but the H6.2-Layer-1 `segmentation_unknown`
+downgrade lives only inside the `Just ck` arm — dead code, since the first
+batch is never cross-stage and later batches are always `Nothing`. Cross-stage
+batches therefore emit NEITHER attribute. Consequences: (a) the CGEN_052
+checkers flag them (the 4 elm-tests failures, present since Layer 1 landed
+Jul 15 — elm-tests were not re-run at HEAD after it); (b) a real (small)
+runtime cost: attr-less generic extends lower via `lowerGenericApply` (boxes
+primitives) instead of Layer 1's intended `lowerSegmentationUnknown` (typed
+buffer, no boxing — CGEN_060's explicit no-boxing mandate for this shape).
+**FIXED (2026-07-16, test-first):** the E2E pin
+`test/elm/src/CrossStageCallKindTest.elm` (`-- CHECK-MLIR: segmentation_unknown`
++ `-- CHECK: result: 8`) reproduced the bug in the harness
+("MLIR-shape check failed: Missing pattern") BEFORE the fix; the 6-line hoist
+(`callKindAttrs = if isCrossStage then [("_call_kind","segmentation_unknown")]
+else case callKindAttr of …`) then flipped it green. Gates: full E2E
+**1621/1621** (touch-all — genuine recompiles under the changed emission);
+elm-tests **12991/12 — the exact known baseline restored** (all four papExtend
+invariant failures flipped green; the 12 remaining are the old tvar-scoping
+family). Cross-stage batches now lower via `lowerSegmentationUnknown`
+(typed buffer, no primitive boxing) as Layer 1 intended. NOTE: contrary to
 the E0-era finding, automated flag-on coverage DOES exist — the TestLogic
 SourceIR suites run every fixture through `runToGlobalOptLssOn`
 (`tests/TestLogic/TestPipeline.elm:356`) — new flag-on pins belong there.
