@@ -127,19 +127,23 @@ instantiateWithSignature global funcCanType s0 =
                             Ok ( funcVar, s3 )
 
 
-{-| Unify a source lambda's own member into the head set slot of its loaded
-type. No-op for untagged lambdas and non-slotted heads (an erased-var head
-has no slot to constrain — sound: the arrow reads back whatever its other
-constraints say, or LTop).
+{-| Unify a source lambda's own member into the first `arity` arrows of its
+loaded type's result spine (LSS_013 spine injection), via 'injectSpineMemberId'.
+`arity` is the lambda's parameter count — the exact number of arrows a partial
+application of it can peel; the spine is bounded there so a function-returning
+body never stamps its returned closure's arrows (see 'injectSpineMemberId').
+No-op for untagged lambdas and for any spine arrow with no slot (an erased-var
+head has no slot to constrain — sound: the arrow reads back whatever its other
+constraints say, or LTop). The argument arrows are deliberately never touched.
 -}
-injectLambdaMember : Maybe TypeIds.SrcLambdaId -> IO.Variable -> Step ()
-injectLambdaMember srcLam funcVar s0 =
+injectLambdaMember : Int -> Maybe TypeIds.SrcLambdaId -> IO.Variable -> Step ()
+injectLambdaMember arity srcLam funcVar s0 =
     case srcLam of
         Nothing ->
             Ok ( (), s0 )
 
         Just lamId ->
-            injectHeadMemberId (Engine.srcLambdaKey lamId) funcVar s0
+            injectSpineMemberId arity (Engine.srcLambdaKey lamId) funcVar s0
 
 
 
@@ -583,26 +587,26 @@ type alias LetEnv =
 walkExpr : LetEnv -> TOpt.Expr TypeIds.MVarId -> Step ()
 walkExpr letEnv expr s0 =
     case expr of
-        TOpt.Function srcLam _ body meta ->
+        TOpt.Function srcLam params body meta ->
             case Store.loadType meta.tipe s0 of
                 Err e ->
                     Err e
 
                 Ok ( funcVar, s1 ) ->
-                    case injectLambdaMember srcLam funcVar s1 of
+                    case injectLambdaMember (List.length params) srcLam funcVar s1 of
                         Err e ->
                             Err e
 
                         Ok ( _, s2 ) ->
                             walkExpr letEnv body s2
 
-        TOpt.TrackedFunction srcLam _ body meta ->
+        TOpt.TrackedFunction srcLam params body meta ->
             case Store.loadType meta.tipe s0 of
                 Err e ->
                     Err e
 
                 Ok ( funcVar, s1 ) ->
-                    case injectLambdaMember srcLam funcVar s1 of
+                    case injectLambdaMember (List.length params) srcLam funcVar s1 of
                         Err e ->
                             Err e
 
@@ -823,8 +827,20 @@ poisonArgList args s0 =
                             poisonArgList rest s2
 
 
-{-| A standalone function value contributes an interned member to the head
-arrow of its OWN type at this occurrence (nothing to do for non-arrows).
+{-| A standalone function value (a named global/ctor/kernel/accessor referenced
+as a value) contributes its interned member to the HEAD arrow of its OWN type at
+this occurrence (LSS_013 spine injection with an arity bound of 1; nothing to do
+for non-arrows).
+
+Head-only, not the full spine: unlike a lambda literal, a name reference carries
+no local parameter count, and a global's own return may itself be a function (a
+chomper combinator `... -> (State -> ChomperResult)`). Bounding to arity 1 —
+identical to the pre-spine baseline for these forms — keeps the injection sound
+(the head arrow is always inhabited by `m`) without descending into a returned
+closure's arrows. Standalone-value PAP spine (bounded by the global's declared
+arity) is a follow-up once that arity is threaded here; the primary E2 target
+(lambda literals flowing into HOFs) rides the arity-bounded 'injectLambdaMember'
+path instead.
 -}
 standaloneMember : String -> TOpt.Meta TypeIds.MVarId -> Step ()
 standaloneMember key meta s0 =
@@ -839,27 +855,89 @@ standaloneMember key meta s0 =
                         Err e
 
                     Ok ( funcVar, s2 ) ->
-                        injectHeadMemberId mid funcVar s2
+                        injectSpineMemberId 1 mid funcVar s2
 
     else
         Ok ( (), s0 )
 
 
-injectHeadMemberId : Int -> IO.Variable -> Step ()
-injectHeadMemberId mid funcVar s0 =
-    let
-        ( store1, desc ) =
-            UF.get funcVar s0.store
+{-| LSS_013 (spine injection): a member id names not just the value's own head
+arrow but every arrow of its RESULT chain that a partial application of `m`
+traverses — a partial application of member `m` is still `m`, one stage further
+in (design §3.3/OQ4). The store shares a partial application's result Point with
+the callee's inner-arrow Point (Unify's `FunL × FunL` arm subUnifies
+`res1 ~ res2`), so writing `m` on the spine makes ordinary call unification
+transport the fact to every partial-application site of `m` — no new transport
+machinery.
 
-        s1 =
-            { s0 | store = store1 }
-    in
-    case Store.arrowSetSlot desc.content of
-        Just slot ->
-            Store.unifySlotWithSet False [ mid ] slot s1
+BOUNDED BY THE VALUE'S ARITY. Only the first `arity` arrows are `m`'s: those are
+the value's own parameter arrows, the ones a partial application peels. The type
+spine can extend PAST the arity when the fully-applied result is itself a
+function (a returned closure `q`): `weird : Int -> (Int -> Int)` has arity 1 but
+a 2-arrow spine, and that second arrow is inhabited by `q`, NOT by a PAP of `m`.
+The type cannot distinguish it from `add : Int -> Int -> Int` (arity 2, both
+arrows `m`'s) — only the value's parameter count can. Descending past the arity
+would stamp `q`'s arrow with `m` (unsound: a downstream singleton consumer would
+mis-dispatch), and when that beyond-arity Point later unifies against a concrete
+return type (e.g. `ChomperResult`) it fails `Lambda /vs/ Type`. So `spineGo`
+stops when `remaining` reaches 0.
 
-        Nothing ->
-            Ok ( (), s1 )
+ARGUMENT-position arrows are never injected: an argument arrow is inhabited by
+the CALLER's values, not by `m`. Only the result chain is `m`'s.
+
+The `seen` set mirrors `Store.poisonGo` — defensive against a cyclic type
+(store structure is finite and `loadTypeC` alias-expands at load, so a cycle
+should not arise, but recursion over an unbounded chain must terminate). Slots
+are written with the total-join `Store.unifySlotWithSet` (extra inhabitants
+from later unification widen the set; they never corrupt it — LSS_005).
+-}
+injectSpineMemberId : Int -> Int -> IO.Variable -> Step ()
+injectSpineMemberId arity mid v0 s0 =
+    spineGo mid arity CoreDict.empty v0 s0
+
+
+spineGo : Int -> Int -> Dict Int () -> IO.Variable -> Step ()
+spineGo mid remaining seen v s0 =
+    if remaining <= 0 then
+        Ok ( (), s0 )
+
+    else
+        let
+            key =
+                Engine.pointKey v
+        in
+        if CoreDict.member key seen then
+            Ok ( (), s0 )
+
+        else
+            let
+                ( store1, desc ) =
+                    UF.get v s0.store
+
+                s1 =
+                    { s0 | store = store1 }
+            in
+            case desc.content of
+                IO.Structure (IO.FunL _ res slot) ->
+                    case Store.unifySlotWithSet False [ mid ] slot s1 of
+                        Err e ->
+                            Err e
+
+                        Ok ( _, s2 ) ->
+                            -- One arrow consumed: descend the result with one
+                            -- fewer arrow of budget.
+                            spineGo mid (remaining - 1) (CoreDict.insert key () seen) res s2
+
+                IO.Alias _ _ _ real ->
+                    -- Transparent alias: chase the aliased Point WITHOUT
+                    -- spending budget (same arrow, not a new one). Mono stores
+                    -- are alias-expanded at load, so this is defensive.
+                    spineGo mid remaining (CoreDict.insert key () seen) real s1
+
+                _ ->
+                    -- Non-arrow result (ground type / var), or a slotless `Fun1`
+                    -- (lss-off — no slot to write): the spine ends here.
+                    Ok ( (), s1 )
 
 
 joinLetUse : LetEnv -> Name -> TOpt.Meta TypeIds.MVarId -> Step ()

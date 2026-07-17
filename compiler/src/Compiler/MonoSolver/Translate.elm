@@ -1363,14 +1363,16 @@ specializeLambda srcLam params body canType =
                 )
                 (Engine.traverse (\( name, paramCanType ) -> Engine.map (\mt -> ( name, mt )) (classify paramCanType)) params)
         )
-        (classifyLambdaHead srcLam canType)
+        (classifyLambdaHead (List.length params) srcLam canType)
 
 
 {-| The lambda's head type. lss off: exactly the storeless `classify` (the
 byte-identical path). lss on: LOAD the lambda's type (arrows slotted, through
 the ITEM memo so demand concretization is visible), inject the lambda's own
-member into the head arrow's slot, and zonk — the closure's MonoType then
-carries `LSet [self, …demand-joined members]` on its head arrow (design §8.2).
+member into the first `arity` result-spine arrows (LSS_013 spine injection,
+bounded by the parameter count so a function-returning body never stamps its
+returned closure's arrows), and zonk — the closure's MonoType then carries
+`LSet [self, …demand-joined members]` on those arrows (design §8.2).
 
 Def-root lambdas consume the stashed `demandUnifyVar` annotation var
 (matched by canonical type) instead of a fresh load: the fresh load of a
@@ -1380,8 +1382,8 @@ def's binder/param types and every param-use call site zonks LTop. The
 zonked structure is identical either way (leaf demand flow is memo-shared);
 only annotations gain content — lss-off byte-identity untouched.
 -}
-classifyLambdaHead : Maybe TypeIds.SrcLambdaId -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
-classifyLambdaHead srcLam canType s0 =
+classifyLambdaHead : Int -> Maybe TypeIds.SrcLambdaId -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
+classifyLambdaHead arity srcLam canType s0 =
     if s0.env.lss.enabled then
         let
             ( maybeRootVar, s0b ) =
@@ -1413,7 +1415,7 @@ classifyLambdaHead srcLam canType s0 =
                 Err e
 
             Ok ( funcVar, s1 ) ->
-                case LssInfer.injectLambdaMember srcLam funcVar s1 of
+                case LssInfer.injectLambdaMember arity srcLam funcVar s1 of
                     Err e ->
                         Err e
 
@@ -1708,13 +1710,63 @@ translateIndirectCallBody region func args callCanType =
         (\monoArgs ->
             Engine.andThen
                 (\monoFunc ->
-                    Engine.map
-                        (\resultMonoType -> Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo)
+                    Engine.andThen
+                        (\classifiedResult ->
+                            Engine.map
+                                (\resultMonoType -> Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo)
+                                (indirectResultAnno (Mono.typeOf monoFunc) (List.length args) classifiedResult)
+                        )
                         (classify callCanType)
                 )
                 (translate func)
         )
         (Engine.traverse translate args)
+
+
+{-| LSS_013 transport: an indirect call's result type carries the CALLEE's
+peeled inner-arrow lambda sets. `classify callCanType` gives the byte-path
+result STRUCTURE (LTop annos); flag-on we overlay the annotations from the
+already-translated callee's own MonoType (which carries the transported sets on
+its arrows — spine injection + demand seeding), peeled by the arg count. This is
+what moves a member from `f`'s inner arrow to `let g = f 10`'s type. GATED on
+`lss.enabled` so flag-off is a pure passthrough → byte-identical (the overlay
+would be a no-op there anyway, since flag-off callee arrows are slotless, but the
+guard makes byte-identity independent of any structural subtlety in the peel).
+-}
+indirectResultAnno : Mono.MonoType -> Int -> Mono.MonoType -> Step Mono.MonoType
+indirectResultAnno funcMono argCount classifiedResult s0 =
+    if s0.env.lss.enabled then
+        Ok ( Mono.overlayAnnotations classifiedResult (peelResultAnno argCount funcMono), s0 )
+
+    else
+        Ok ( classifiedResult, s0 )
+
+
+{-| Peel `n` argument positions off a (possibly multi-param-per-arrow) function
+MonoType, returning the residual result type (for annotation overlay only). A
+partial peel within a multi-param arrow keeps the arrow's own annotation on the
+remaining params (a PAP of member m is m — OQ4 / LSS_013).
+-}
+peelResultAnno : Int -> Mono.MonoType -> Mono.MonoType
+peelResultAnno n t =
+    if n <= 0 then
+        t
+
+    else
+        case t of
+            Mono.MFunction anno params ret ->
+                let
+                    np =
+                        List.length params
+                in
+                if n >= np then
+                    peelResultAnno (n - np) ret
+
+                else
+                    Mono.MFunction anno (List.drop n params) ret
+
+            _ ->
+                t
 
 
 {-| Specialize a call to a top-level global (monomorphic or polymorphic). The
@@ -2433,11 +2485,11 @@ precision gap in v1 — safe: no member, no stamp.
 injectArgLambdaMember : TOpt.Expr TypeIds.MVarId -> IO.Variable -> Step ()
 injectArgLambdaMember arg canVar =
     case arg of
-        TOpt.Function srcLam _ _ _ ->
-            LssInfer.injectLambdaMember srcLam canVar
+        TOpt.Function srcLam params _ _ ->
+            LssInfer.injectLambdaMember (List.length params) srcLam canVar
 
-        TOpt.TrackedFunction srcLam _ _ _ ->
-            LssInfer.injectLambdaMember srcLam canVar
+        TOpt.TrackedFunction srcLam params _ _ ->
+            LssInfer.injectLambdaMember (List.length params) srcLam canVar
 
         _ ->
             \s -> Ok ( (), s )

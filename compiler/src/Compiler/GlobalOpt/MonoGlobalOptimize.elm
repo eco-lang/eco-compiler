@@ -1179,11 +1179,18 @@ annotateExprCalls graph env expr =
                         in
                         -- Preserve Phase-4 AbiCloning stamps (design §9.3):
                         -- computeCallInfo knows nothing about closure identity
-                        -- and would reset these to Nothing.
+                        -- and would reset these to Nothing. fastPapPrefix is
+                        -- part of the stamp (E2/LSS_011): dropping it made
+                        -- emission read papPrefix=0 on a StampPap'd call, pick
+                        -- the `$cap` symbol for a captureless base lambda, and
+                        -- emit a dangling `_fast_evaluator` (first tripped by
+                        -- the first live StampPap, via LSS_013 spine
+                        -- injection — the field was dormant until then).
                         { derived
                             | closureKind = existingCallInfo.closureKind
                             , captureAbi = existingCallInfo.captureAbi
                             , fastEvaluator = existingCallInfo.fastEvaluator
+                            , fastPapPrefix = existingCallInfo.fastPapPrefix
                         }
             in
             Mono.MonoCall region newFunc newArgs resultType callInfo

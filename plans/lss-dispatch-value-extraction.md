@@ -1,7 +1,8 @@
 # LSS Dispatch Value Extraction
 
 **Status:** v2 (2026-07-16) — implementation-ready refinement of the v1 outline.
-Phases E0/E1/E2/A1 are specified to step level; E3/E5 to step level with an explicit
+Phases E0/E1/E2/S are specified to step level (A1 was removed 2026-07-17, replaced
+by S — §7); E3/E5 to step level with an explicit
 design-settling step first; E4/E6/E7/E8 remain gated outlines with their design
 questions named. Line anchors were verified 2026-07-16; treat them as "near here",
 re-grep before editing.
@@ -60,7 +61,8 @@ cost so it can ship on the default (subst) pipeline.
   char gate (`AbiCloning.elm:1026–1028, 1062–1063`); `AbiCloningStats.dbg*`
   counters marked "remove before commit" (`AbiCloning.elm:105–110`).
 - Subst engine constructs `ClosureInfo.srcLambda = Nothing` at both closure sites
-  (`Specialize.elm:1502, 1787`) — A1's prerequisite (A1.0).
+  (`Specialize.elm:1502, 1787`) — only relevant if borrow (E8) ever consumes
+  subst graphs (was A1.0; A1 itself removed, §7).
 - `EcoBackend.cpp`: default/`cgu` tiers run the full -O2 `PassBuilder` pipeline with
   the CGSCC inliner (`:105–115, 190–192`); the Dev/parallel tier runs
   `runNoInlineFunctionPipeline` — AlwaysInliner only (`:161–182`). No inline hints
@@ -74,22 +76,26 @@ E0 (census) ──┬─ dispatch events negligible? ──→ STOP E-track; E8 
               ├─ E1 audit (always; half-day)
               ├─ PAP bucket big? ──→ E2
               ├─ k∈[2..8] ≥ ~10%? ──→ E3 (E3.0 design step first)
-              ├─ join-widened hot HOFs? ──→ E5 (solver route) …or E6 if A1 GO
+              ├─ join-widened hot HOFs? ──→ E5 (solver route, after S)
               └─ wrappers collide with stamps? ──→ E7 (design first)
-A1 spike (parallel to E1/E2) ─ parity? ──→ GO: E-track runs on subst; E6 replaces E5
-                                └─ NO-GO: E-track stays solver-gated; record why
+S (spine injection, §7) ── activates E2's suffix arm + grows the consulted set;
+                           re-read the census/histogram after it before E3/E5 calls
 ```
 
-E0 → E1 → E2 (+E4c) are unconditional-order. A1 runs in parallel with E1/E2.
-E3/E5/E6/E7 are data-chosen. E8 is externally scheduled (borrow plan).
+E0 → E1 → E2 (+E4c) are unconditional-order; **S follows E2** (it is E2's
+activation). E3/E5/E7 are data-chosen post-S. E8 is externally scheduled
+(borrow plan). A1 was REMOVED 2026-07-17 (see §7's decision note) — lambda-set
+work stays solver-side; there is no subst-side set implementation to align.
 
 **Gate verdicts as of 2026-07-16 (from E0/E1 results, details in §4/§5):** E0 DONE
 (Run A 922.3 M dispatches; Run B coverage 1.75 %/3.52 %; stamped ≠ hot; 89.3 % of
 arrows `LTop`). E1 audit DONE — devirt already works, inlining is the gap (E1.3),
 payoff scales with coverage → do E1.3 with/after a coverage phase. **E2 GO** (gate
-met, §6/E2.−1). **E3 deprioritized** (multi-sets = 0.8 % of arrows). E5/E6 await
-analysis-precision work + A1; E8 external. The hot-dispatch ceiling is
-analysis-side (trivial signatures + escape-to-data soundness), not mechanism-side.
+met, §6/E2.−1). **E3 deprioritized** (multi-sets = 0.8 % of arrows). **S (spine
+injection, §7) is the next build** — it attacks the analysis-side ceiling
+directly and activates E2; E5 follows it; E8 external. The hot-dispatch ceiling
+is analysis-side (trivial signatures + escape-to-data soundness), not
+mechanism-side.
 
 ---
 
@@ -287,8 +293,9 @@ E-track:**
   value) — no analysis precision helps; they need defunctionalization / the borrow
   track (E8). So the biggest prize is gated on analysis+keying (E4a/E5/E6) and E8,
   not on new dispatch lowering.
-- **A1 (LSS-Lite) note:** any post-mono re-inference must clear the same 89%-LTop
-  bar — decoupling from the solver is orthogonal to the coverage ceiling.
+- **(Superseded note:** the A1 post-mono re-inference idea recorded here was
+  removed 2026-07-17 — the 89%-LTop ceiling is attacked solver-side by spine
+  injection, §7.)
 
 Remaining E0: E0.8 (dbg* cleanup). The `ECO_MONO_LSS_SITES` per-site code path
 (§E0.5 original) is now optional — build it only to weight the 3,164 multi-sets by
@@ -690,82 +697,359 @@ after confirming the E2.0(3) residual pin; tested by the E2.4 pins.
 
 ---
 
-## 7. A1 — LSS-Lite: post-mono lambda-set inference (decoupling spike)
+## 7. S — Spine injection: lambda sets on inner arrows (REPLACES A1)
 
-Target: singleton stamps (Channel B) under the **subst** engine at parity with
-unkeyed solver-LSS. Timebox: ~1 week; throwaway allowed; go/no-go on parity
-numbers.
+**Decision (2026-07-17):** A1 (post-mono "LSS-Lite" on the subst graph) is
+REMOVED from the plan. Rationale: it would have been a THIRD lambda-set
+implementation, bolted onto the engine whose recorded-types layer is the one
+with documented completeness doubts (the 12-test analysis, §history in memory),
+while the principled engine sits unused — exactly the divergence the project
+does not want. The one thing A1 uniquely promised — member transport to
+inner-arrow (partial-application) types — is available INSIDE the solver for
+less work, through machinery that already exists: this section. The solver
+remains the single source of truth for lambda sets; subst never had them, so
+nothing needs aligning.
 
-### A1.0 Prerequisite — thread `srcLambda` through the subst engine
+**Design in one line:** v1 injects a lambda's member id into the set slot of
+its type's HEAD arrow only (`injectHeadMemberId`, one-slot write); change it to
+write the member into **every arrow slot along the type's result chain** (the
+"spine"), and ordinary call unification transports the fact to every
+partial-application site for free — because in the store, a partial
+application's result Point IS the callee type's inner-arrow Point.
 
-`Specialize.elm` constructs `ClosureInfo` with `srcLambda = Nothing` at `:1502`
-and `:1787`. The source tag exists engine-independently (`TOpt.Function
-(Just lamId) …`, stamped by `AssignMVarIds`). Thread it: both construction sites
-take the enclosing `TOpt.Function`'s tag (the surrounding code already pattern-
-matches the Function node to get params/body — pull the first field through).
-Inliner/staging propagation rules already exist engine-agnostically (OQ6 verbatim
-copy; LSS_008 wrapper propagation in `Staging/Rewriter.elm` reads
-`originalInfo.srcLambda`). Gate: flag-off byte-identity of `.mlir` output
-(srcLambda is never emitted), full E2E green.
+**Why transport is free (the premise, verified):** `Unify.elm:727–749`'s
+`FunL × FunL` arm does `subUnify res1 res2` and `subUnify set1 set2` — when
+`translateCall` unifies a callee `f : FunL a (FunL b c)` against
+`FunL argVar resultVar`, the call's `resultVar` MERGES with the inner
+`FunL b c` Point. Any member sitting on the inner arrow's slot is then simply
+*there* at every downstream use of the partial application (`let g = f 10`,
+g passed around, g applied). No new transport machinery; the M3-era transport
+fixes (`demandUnifyRoot`, `argUnifyVar`) keep doing their jobs unchanged.
 
-### A1.1 The pass (`Compiler/GlobalOpt/LambdaSetLite.elm`, new)
+**Why it is sound (the OQ4 rule, promoted to an invariant):** the design
+already states "PAP results keep the underlying callee's member" (design §3.3,
+OQ4) — a partial application of m IS m, one stage further in. Inner arrows can
+also receive OTHER members through joins (two functions unified at an if/case
+or a shared spec): set unification is a total JOIN (`LambdaSet1 × LambdaSet1` =
+union), so extra inhabitants widen the set rather than corrupting it —
+singleton consumers simply decline non-singletons, exactly as today (LSS_005).
 
-Pipeline position: inside `globalOptimize` immediately **before Phase 4
-AbiCloning** (`MonoGlobalOptimize.elm:146`) — after staging, so the values it
-annotates are the final ones AbiCloning indexes, and LSS_008-propagated wrapper
-`srcLambda`s are visible. Gated on new config `lss.lite : Bool` (default False),
-env `ECO_MONO_LSS_LITE=1`, hash token `lssl=1` (this DOES change artifacts).
-When the engine is solver (annos already present), `lite` is ignored — assert or
-no-op, decide in review.
+### S.0 Premise pins (write these tests FIRST — they fail today, flip after)
 
-Algorithm (id-only sets over ground types — Int-DSU + one worklist; no
-`Type.Unify`):
+1. **Unit (TestLogic, flag-on):** a SourceIR fixture of the
+   `HofPapPrefixDispatchTest` shape (capture-carrying 2-param lambda literal →
+   recursion-protected HOF; inside, `let g = f 10` used TWICE, `g x + g 1`),
+   run through `TestPipeline.runToGlobalOptLssOn`
+   (`tests/TestLogic/TestPipeline.elm:356`) and then MLIR generation; a checker
+   in the `PapExtendArity` style walks the emitted ops and asserts a
+   `eco.papExtend` carrying `_call_kind = "singleton_fast"` AND
+   `_pap_prefix = 1` exists (the E2 stamp firing). This is the AUTOMATED
+   flag-on activation pin the E2 phase could not have (unit level — the E2E
+   harness sets no env, but TestLogic runs flag-on in-process).
+2. **E2E (manual gate step):** `test/elm/src/HofPapPrefixDispatchTest.elm`
+   compiled with `ECO_MONO_ENGINE=solver ECO_MONO_LSS_REPORT=1` (via
+   `node /work/compiler/bin/index.js make --optimize … --builddir=<name>` from
+   `test/elm/`) reports `stampedPapPrefix=2` on the `lss globalopt:` line —
+   its doc comment already names this as the activation criterion. Runtime
+   output stays `result: 22564` under BOTH engines (LSS_005).
 
-1. **Slot minting.** One traversal of the pruned graph; for every arrow occurrence
-   in a type reachable from a node (node result types, binder/param types, closure
-   types, capture-recorded types, call annotation types), mint a dense slot id.
-   Key: traversal is deterministic; keep a side map from each *typed position you
-   will need to find again* (spec params/results per SpecId; per-node binder names)
-   to its slot list, mirroring how `loadTypeWithArrows` defines ordinals (LSS_006's
-   moral equivalent).
-2. **Union edges (v0 set):**
-   - closure literal: seed `srcLambda` (or the interned-member key for
-     global/ctor/kernel *values* — reuse the `"g|" / "c|" / "k|" / "a|"` key scheme
-     from `Engine.memberIdFor`) into its own head slot;
-   - let/def binder ↔ every use (names are unique post-freshening; chain-level,
-     remembering the letrec earlier-sibling trap);
-   - `MonoCall` with known callee spec: arg-i slots ↔ spec param-i slots,
-     result ↔ spec return (peeled per stage exactly as `computeCallInfo` peels);
-   - captures: capture expr slots ↔ the closure's recorded capture-type slots;
-   - `MonoCase`/`MonoIf` joins: branch result slots ↔ node result slot.
-3. **⊤-poisoning (v0):** any arrow slot that flows into a constructor/record/
-   list/tuple field, a kernel/port boundary, or `MonoTailCall` argument positions
-   the pass does not model → union with ⊤. (This is v0's deliberate precision
-   loss vs the solver, which transports through data. Measure it; a v1 could add
-   per-field edges for `MCustom`/`MRecord` if parity demands.)
-4. **Fixpoint:** DSU union is monotone; a single worklist pass over edges suffices
-   (edges are static; no re-derivation needed). Read back: slot root → `LSet`
-   (sorted ids) or `LTop`; rewrite the graph's `MFunction` annos in place
-   (`Traverse.mapNodeTypes` machinery).
+### S.1 The code change (`Compiler/MonoSolver/LssInfer.elm`)
 
-### A1.2 Consumption
+Replace `injectHeadMemberId` (`LssInfer.elm:848–861`) with a spine walk.
+Recursion template = `Store.poisonGo` (`Store.elm`, directly below
+`poisonArrowSets:~690`): worklist-free linear descent with a Point-keyed seen
+set (defensive — `loadTypeC` expands `TAlias` at load (`Store.elm:189–193`),
+so mono stores are alias-free in practice, but chase `IO.Alias` anyway and
+guard cycles the way `poisonGo` does):
 
-None needed: AbiCloning already runs unconditionally at Phase 4 and simply finds
-all-LTop annos under subst today. With Lite annos it stamps. The LSS_002 integrity
-checker (`tests/TestLogic/Monomorphize/LambdaSetIntegrity.elm`) runs as-is.
+```elm
+{-| LSS_013 (spine injection): a member id names not just the value's own
+head arrow but EVERY arrow along its result chain — a partial application
+of m is still m (OQ4). The store shares result Points with inner arrows
+(Unify FunL arm: subUnify res1 res2), so writing the member on the whole
+spine makes ordinary call unification transport it to every
+partial-application site. Seen-set mirrors poisonGo (defensive; store
+structure is finite and alias-expanded at load).
+-}
+injectSpineMemberId : Int -> IO.Variable -> Step ()
+injectSpineMemberId mid v0 s0 =
+    spineGo mid Dict.empty v0 s0
 
-### A1.3 Parity + gates
 
-- Soundness: LSS_002 checker green under subst+lite; full corpus
-  `--target full` (touch-all first) with `ECO_MONO_LSS_LITE=1`; adversarial: the
-  existing `Lss*Test` pins run under subst+lite must not stamp anything the solver
-  wouldn't (compare report lines).
-- Precision: `dispatchUpgraded` (subst+lite) vs (solver unkeyed) on the corpus and
-  the self-compile; also join with E0's Run-B hot-site list — parity ON HOT SITES
-  matters more than the global count.
-- **GO** ⇒ E-track phases run under subst+lite by default and E6 becomes the
-  fan-out route. **NO-GO** ⇒ record the precision gap classes in this file and
-  stay solver-gated.
+spineGo : Int -> Dict.Dict Int () -> IO.Variable -> Step ()
+spineGo mid seen v s0 =
+    let
+        key =
+            Engine.pointKey v
+    in
+    if Dict.member key seen then
+        Ok ( (), s0 )
+
+    else
+        let
+            ( store1, desc ) =
+                UF.get v s0.store
+
+            s1 =
+                { s0 | store = store1 }
+        in
+        case desc.content of
+            IO.Structure (IO.FunL _ res slot) ->
+                case Store.unifySlotWithSet False [ mid ] slot s1 of
+                    Err e ->
+                        Err e
+
+                    Ok ( _, s2 ) ->
+                        spineGo mid (Dict.insert key () seen) res s2
+
+            IO.Alias _ _ _ real ->
+                spineGo mid (Dict.insert key () seen) real s1
+
+            _ ->
+                Ok ( (), s1 )
+```
+
+Notes for the implementer:
+- `Store.unifySlotWithSet False [mid] slot` (`Store.elm:680–688`) is the
+  existing total-join write — reuse it verbatim per slot.
+- `Engine.pointKey` is what `poisonGo` uses for its seen set — same here.
+- Do NOT descend into ARGUMENT positions (`FunL a …`'s `a`): an argument arrow
+  is inhabited by the *caller's* values, not by m. Result-chain only.
+- `IO.Structure (IO.Fun1 _ _)` (slotless arrow) should be unreachable lss-on;
+  treat as stop (the `_` arm covers it).
+- Imports: LssInfer already uses `UF.get`, `Store.arrowSetSlot`,
+  `Store.unifySlotWithSet`, `Engine` — no new imports beyond what
+  `injectHeadMemberId` uses plus `Dict` (already imported for memo tables).
+
+### S.2 Call-site audit (one helper, three routes — all switch at once)
+
+Every member injection routes through `injectHeadMemberId` today (grep
+verified 2026-07-17):
+
+| caller | anchor | what it injects | switch? |
+|---|---|---|---|
+| `injectLambdaMember` | `LssInfer.elm:135–142` | source lambda's member into the lambda's own loaded type (from `classifyLambdaHead`, `Translate.elm:1383–1416`, AND from `injectArgLambdaMember`, `Translate.elm:2409` — lambda literals as call args) | YES — rename call to `injectSpineMemberId` |
+| walk arm (standalone function values) | `LssInfer.elm:842` | interned member (`"g|" / "c|" / "k|" / "a|"`) for a global/ctor/kernel/accessor used AS A VALUE | YES — a partial application of a global is that global's PAP (OQ4 verbatim) |
+| `applyFacts` | `LssInfer.elm:204–207` | signature facts per arrow ORDINAL | NO — already per-arrow (LSS_006 ordinals enumerate inner arrows too: `loadTypeC` accumulates `arrowSlots` per `TLambda`, `Store.elm:137–155`) |
+| `poisonArrowSets` | `Store.elm:~690` | ⊤ on kernel/port boundaries | NO — already recurses everything (LSS_004); poison-after-inject is safe (⊤ absorbs) |
+
+Delete `injectHeadMemberId` after the switch (grep must come back empty) so
+no future caller reintroduces head-only injection silently.
+
+### S.3 Semantics — invariant delta
+
+New **LSS_013**: *"A member value's type carries its member id on EVERY arrow
+of its result spine (head arrow and each nested result arrow), or ⊤: a partial
+application of member m is m at the next stage (OQ4), so consumers reading any
+peeled arrow of an m-derived value see m in the set or an honest ⊤. Injection
+sites: `injectSpineMemberId` (source lambdas via `classifyLambdaHead` /
+`injectArgLambdaMember`; interned global/ctor/kernel/accessor values via the
+LssInfer walk). Argument-position arrows are NOT injected — they are inhabited
+by callers' values."* Add to `invariants.csv`; LSS_001/002/004/005/006/010 are
+unchanged in wording and force (spine injection only ADDS members, and the
+LSS_002 checker's condition — head anno contains `srcLambda` or is LTop —
+still holds a fortiori).
+
+### S.4 What must NOT change (verified no-ops — do not touch)
+
+- **Encode/readback:** `Store.monoTypeToVarC` already encodes each nested
+  `MFunction` layer's own anno; `zonkSetSlot` already reads each arrow's own
+  slot (design §6.1/§6.3). Inner annos flow into MonoTypes mechanically.
+- **Keys:** unkeyed `enqueueSpec` widens sets in keys (`Mono.widenSets`) —
+  registry/spec identity untouched flag-on-unkeyed; flag-off mints no slots at
+  all → subst byte-identity is structural.
+- **EngineDiff:** forces lss-off (design §5.4) — unchanged.
+- **Staging/AbiCloning ordering, LSS_008/009 blocker semantics:** unchanged —
+  the value flowing at a PAP site is a runtime PAP of m (evaluator = m's
+  clone), not a wrapper; wrapper multiplicity still declines via `blocked`.
+
+### S.5 Interactions and honest expectations
+
+- **E2 goes live.** PAP sites become consulted; the E2 suffix arm (`StampPap`)
+  is the consumer — its fences are now load-bearing in production: the
+  staged-return decline (proven live on the `f 10` probe), charFree, abiKey
+  unanimity. Expect `stampedPapPrefix > 0` and `bucketMiss` to grow (consulted
+  sites that decline for real reasons) — both are the point.
+- **More multi-member sites too.** Inner arrows at joins union more members →
+  `LSet [k≥2]` populations grow; `stampCall` ignores them (v1) — this is
+  E3-sizing data, re-read the set-size histogram after landing.
+- **Solver mono time may rise.** Two channels: (a) `sigTrivial` fast-path
+  erosion — today ALL 8,673 signatures are trivial (C2a report), so `lssFast`
+  short-circuits everywhere; spine facts can make signatures non-trivial,
+  disabling the M2a/M2b fast paths at their call sites (design §8.4); (b) more
+  set-slot unifications per lambda (arity-many instead of 1). GATE: solver
+  Stage-7a self-compile wall (C2a protocol) before/after, budget ≤ +5% or
+  explicit sign-off with the census win recorded alongside.
+- **What this does NOT unlock (say it in the gate report):** `List.cons`-class
+  ctor members (no `MonoClosure` instance → `declinedNoInstance`; stamping
+  ctors is separate future work) and the escaping IO-bind continuations
+  (`LTop` by soundness — they enter data structures; that is E8/borrow
+  territory). The addressable class is lambda-origin and interned-global
+  partial applications — `applySubstPure`/`typeEncoderS`-shaped HOF-arg sites
+  from the census. The census delta, not a prediction, is the payoff number.
+
+### S.6 Tests (beyond the S.0 pins)
+
+- **Join fixture (multi-member correctness):** two DIFFERENT lambdas reaching
+  one inner arrow (if/else producing partial applications of two lambdas) —
+  no stamp (non-singleton), output correct. Guards against any consumer
+  assuming singleton-ness of inner annos.
+- **Kernel poison unchanged:** a lambda passed to a kernel HOF (`List.map2`
+  class) stays ⊤ on the whole spine (LSS_004 fixture exists — re-run flag-on).
+- **`LssSharedSpecJoinTest` / `RaiseProbe` / existing `Lss*` pins:** must stay
+  green (LSS_010 join now carries inner annos — mechanical, but pinned).
+- **LSS_002 integrity checker** (`TestLogic/Monomorphize/LambdaSetIntegrity`):
+  green as-is; optionally extend to assert the LSS_013 spine property on
+  reachable closures (nice-to-have, not a gate).
+- **Adversarial GC variant:** the S.0 fixture under tiny-nursery
+  `ECO_HEAP_VALIDATE` (stamped PAP dispatch across a GC point).
+
+### S.7 Gates (in order)
+
+1. S.0 pins written and RED (they fail before the change — proves they bite).
+2. Change lands; S.0 pins GREEN; full unit suite `elm-tests` at its known
+   baseline (no new failures beyond the documented set).
+3. Default corpus: `--target full` green; subst Stage-7a output byte-identical
+   (structural — no slots minted lss-off; one run, compare size/hash).
+4. Flag-on corpus: touch-all + `ECO_MONO_ENGINE=solver` `--target full` green.
+5. Solver self-compile (C2a protocol): report deltas recorded —
+   `dispatchUpgraded` / `stampedPapPrefix` / decline mix / set-size histogram;
+   solver wall within budget (S.5).
+6. Census (Run-D, runtime-calls.md methodology): solver-built binary lowered
+   with `ECO_LSS_DISPATCH_SITE_COUNTERS=1`; **coverage = fast/(sat+fast) is
+   the payoff number** vs Run B/C's 1.75%/3.52%. Append the run + summary row.
+7. Genuineness: byte-compare the native flag-on self-compile against the
+   JS-hosted compiler at the same config (established protocol).
+
+### S.8 Effort / risk / order
+
+Effort: S (the change) + M (gates/census). Risk: LOW-MEDIUM — additive facts
+through proven join machinery; the two real risks are solver mono-time (gated,
+S.5) and consumer assumptions of head-only injection (covered by the join
+fixture + the fences E2 already shipped). Execution order:
+S.0 pins → S.1/S.2 change → S.6 fixtures → S.7 gates 2–7.
+
+### S.9 AS BUILT (2026-07-17) — the transport is a THREE-link chain; spine is one link
+
+Implemented and unit-gated (elm-tests baseline-identical, 12/12 known failures
+unchanged, no new). But a live trace of the canonical PAP shape
+(`applyPartial f n acc = … let g = f 10 in g acc + g 1`, HOF called with one
+lambda literal) established that spine injection ALONE does not activate E2 —
+it is **one necessary link of three**, and my original "shortest path to E2
+firing" framing was over-optimistic:
+
+1. **Spine injection (S.1, DONE, correct).** `injectSpineMemberId` writes the
+   member on every result-spine arrow. VERIFIED: `f 10`'s callee arrow carries
+   `LSet [m]` (the inner arrow got the member). Pin: `SpinePapDispatchTest.elm`
+   RED head-only / GREEN spine.
+2. **Indirect-call-result transport (companion, DONE, correct).** Found that
+   `translateIndirectCallBody` classified the call RESULT storelessly (`LTop`),
+   dropping the callee's inner-arrow set at the call boundary — `Store.loadType`
+   re-mints fresh LTop slots (LSS_006), so the set had to come from the already-
+   translated `Mono.typeOf monoFunc` (which carries it). Fix: `indirectResultAnno`
+   overlays the peeled callee annotations onto the classified structure (gated on
+   `lss.enabled`; flag-off passthrough → byte-identical). VERIFIED: `let g = f 10`'s
+   DEFINITION now carries `LSet [m]` (diag `letdefs=LSet[0]`).
+3. **Local-multi USE transport (E4a, NOT DONE — the remaining co-requisite).**
+   `g` is a FUNCTION-typed let → `translateLet` routes it to
+   `translateLocalMultiLet`; its USE sites (`g acc`) are classified independently
+   of the def (`classify meta.tipe` = `LTop` on the `isLM` path,
+   `Translate.elm:335`), per the design §8.4 deferred local-multi gap. So `g`'s
+   def carries the set but its USES do not, and E2's suffix arm never sees a
+   singleton at the dispatch site (decline = `bucketMiss`; the ONE consulted
+   singleton site is `f 10` itself, a PAP-CREATING call whose function return the
+   E2 fence CORRECTLY declines). `stampedPapPrefix` stays 0 on this shape.
+
+### S.10 CRITICAL BUG + FIX (2026-07-17) — spine injection MUST be arity-bounded
+
+The first spine implementation walked the ENTIRE result spine of a value's type
+with no bound (`spineGo` recursed `res` until a non-arrow). This is UNSOUND for
+any value whose type spine is longer than its arity — i.e. a **function-returning
+body**: point-free/eta-reduced defs, accessors-as-values, and above all **parser
+chomper combinators** (`... -> (State -> ChomperResult)`). For those, the arrows
+BEYOND the arity are inhabited by the value's RETURNED closure `q`, not by a PAP
+of `m`; stamping them with `m` (a) violates LSS_013's own "PAP of m is m"
+justification and LSS_002, and (b) via arg/result store-Point aliasing on
+identity-like functions, also stamps ARGUMENT arrows (violating the "argument
+arrows never injected" guarantee). The type CANNOT distinguish `add : I->I->I`
+(arity 2, both arrows m's) from `weird : I->(I->I)` (arity 1, 2nd arrow is the
+return) — only the value's **parameter count** can.
+
+**How it surfaced — and what did NOT catch it.** The flag-on E2E **corpus passed
+1621/1621** and the **adversarial review's verify pass returned confirmed:[]**
+(it could construct no end-to-end miscompile — the widening machinery rescued
+every hand-built shape). What caught it was the **compiler self-compile** (Stage
+5, native `eco-compiler` build under solver+LSS): mono crashed
+`unify-mismatch: Lambda /vs/ Type:ChomperResult` when a beyond-arity Point,
+forced to `{m}`, later unified against the concrete `ChomperResult` return type.
+LESSON: **the self-compile bootstrap is a non-negotiable gate for any LSS-set
+change** — the corpus is too small/first-order and adversarial verification is
+too conservative to expose higher-order-return over-injection. The review's
+SOUNDNESS lens (rated `major`, `likely`) was right; its own VERIFY step
+under-called it. Trust the self-compile.
+
+**Fix (shipped):** thread the value's arity to `injectSpineMemberId arity mid v`;
+`spineGo` carries a `remaining` budget, decrements per FunL arrow (NOT per Alias
+— same arrow), stops at 0. Arity source: `List.length params` at the four
+lambda-literal sites (`walkExpr` Function/TrackedFunction, `classifyLambdaHead`
+via `specializeLambda`, `injectArgLambdaMember`); `standaloneMember` uses
+head-only (arity 1) — no local param count, identical to the pre-spine baseline
+for named-value forms, sound. Follow-up: thread a global's declared arity to
+`standaloneMember` to re-enable standalone-value PAP spine. Pin
+`SpinePapDispatchTest` stays GREEN (its `\a b -> …` is arity 2 = full 2-arrow
+spine, so arity-bounding stamps both arrows exactly as before).
+
+### S.11 SECOND self-compile blocker (2026-07-17): E2's fastPapPrefix dropped in
+### GlobalOpt phase 5 — one-line latent bug, exposed by the first live StampPap
+
+After the S.10 arity fix, the solver+LSS self-compile failed later, at backend
+MLIR verification: `'eco.papExtend' op references undefined fast evaluator
+'Terminal_Main_lambda_NNNNN$cap'` (uid varies per build). Root cause — found
+only after three WRONG AbiCloning-side guards (capture-divergence scan,
+StampPap-capturing-decline, value-position materialization scan; censuses
+proved each inert) — via **`--text-mlir` ground truth**:
+
+- Spine injection activated the **first-ever live StampPap** (`stampedPapPrefix`
+  0→1, on `Round.roundFun`'s rounding-lambda PAP — elm-round's
+  `roundFun (\i f -> …) : (Int -> Float -> b) -> …` partially applied inside).
+- The StampPap stamp is self-consistent: captureless base, `captureAbi =
+  take k params ++ drop k`, `fastPapPrefix = Just k` ⇒ emission computes
+  `|captureTypes| − k = 0` ⇒ names the BARE symbol. Safe.
+- **But `annotateCallStaging` (GlobalOpt phase 5, AFTER AbiCloning) re-derives
+  CallInfo and its stamp-preservation copy carried `closureKind`/`captureAbi`/
+  `fastEvaluator` — NOT `fastPapPrefix`** (`MonoGlobalOptimize.elm:1184`;
+  `computeCallInfo` re-inits it `Nothing`). Emission then read papPrefix=0,
+  computed `1−0 > 0`, chose `$cap` — for a **captureless** lambda that emits
+  only its bare symbol ⇒ dangling `_fast_evaluator` symbolref ⇒ verifier
+  rejects the module. E2 shipped with this field-drop latent (every prior
+  census had `stampedPapPrefix=0` — the arm was dormant); spine tripped it on
+  first use.
+- **Fix (one line): preserve `fastPapPrefix` alongside the other stamp fields
+  in `annotateCallStaging`.** All three AbiCloning guards reverted (wrong
+  layer; the stamp was correct — phase 5 corrupted it).
+
+DEBUGGING LESSONS (hard-won): (1) `--text-mlir` exists and turns bytecode
+archaeology into direct op reading — reach for it FIRST when the backend
+verifier rejects front-end output. (2) `Debug.log` is stripped in `--optimize`
+self-compiles — thread diagnostics through census/stats fields instead.
+(3) When a census is IDENTICAL before/after a guard, the guard targets the
+wrong mechanism — stop iterating there. (4) A dormant-until-now code path
+(counter permanently 0) is a red flag: the FIRST activation exercises every
+downstream consumer of its outputs for the first time — audit field-by-field
+what those consumers preserve.
+
+**Consequence for the plan.** E2 activation on let-bound partials (the common
+shape) requires **S + E4a together**. E4a is no longer "census-gated backlog"
+(§9) — it is the **direct co-requisite of S**, promoted to the next build after
+S. The two ship and benchmark together; benchmarking S alone shows the analysis
+propagating sets one link further (call results / let-defs) with NO dispatch-
+coverage change (E2 stays dormant until E4a). E4a's fix lands at the local-multi
+use/record seam (`translateLocalMultiCall` / `recordLocalInstance` /
+`buildLocalDefs`): overlay the def's set onto the per-use recorded instance type
+— more entangled than S's overlay (it rides the per-use re-translation
+machinery), hence its own design pass. Non-let PAP consumers (a PAP passed
+directly as a call arg to a non-inlinable local) may activate without E4a — the
+census will say whether any exist at weight.
 
 ---
 
@@ -838,7 +1122,7 @@ boundary)"* + a CGEN sibling for the lowering shape.
 
 ### E3.6 Gate
 
-Gate to keep: corpus green (solver or subst+lite per A1 outcome); census delta on
+Gate to keep: corpus green (solver route, post-S); census delta on
 E0 re-run (targeted k-sites move from under/exact rows to fast rows); wall A/B;
 binary-size budget (≤ ~2% or sign-off).
 
@@ -856,8 +1140,9 @@ binary-size budget (≤ ~2% or sign-off).
 - **E4a — V1 local-multi transport (M):** solver-route precision fix
   (design §8.4 gap; `demandUnifyRoot`/`lssRootAnn` precedent in
   `Translate.elm:91–103, 2622–2628`); flips `LssSingletonLetBoundLambdaTest` from
-  gap-pin to stamp-pin. Note: A1's dataflow gets this class structurally — if A1
-  is GO, E4a is dead; sequence accordingly.
+  gap-pin to stamp-pin. Note: spine injection (§7/S) does NOT cover this class
+  (the local-multi stash var is a fresh instantiation, a different hole) — E4a
+  stays a distinct solver-route item; re-rank it after S's census.
 - **E4b — V2 wrapper-home recovery (M–L):** staging-side
   (`chooseCanonicalSegmentation` bias toward singleton-upgradable producers);
   overlaps E7 — build only under E7's gate.
@@ -888,11 +1173,12 @@ fixed by drain-end coalescing).
 
 ## 11. E6 / E7 / E8 (design-first outlines — unchanged from v1)
 
-- **E6 — per-set cloning post-mono** (pairs with A1; the solver-free fan-out):
-  first step is a design doc reviving H5's "closure-parameter worker cloning" with
-  the H5 risk ledger (staging revalidation via `validateClosureStaging` on the
-  mutated graph, statepoint-pressure caps, budget). Do not start before A1 GO +
-  an E5-class prize confirmed by E0.
+- **E6 — per-set cloning post-mono: SUPERSEDED with A1's removal (2026-07-17).**
+  Its premise was solver-free fan-out over A1-computed sets; with lambda-set
+  work staying solver-side, fan-out is E5 (keyed, solver route). Revive only if
+  a solver-independent route ever becomes strategic again; the H5 risk ledger
+  (staging revalidation via `validateClosureStaging`, statepoint-pressure caps,
+  budget) still applies to any revival.
 - **E7 — staging retirement dividend:** trigger = E0's `wrappersInserted` (already
   reported, `Builder/Generate.elm:917`) colliding with stamped sites on hot paths.
   First step is its own design doc (§9.4 ladder; the GOPT_003 relaxation variant
@@ -901,8 +1187,10 @@ fixed by drain-end coalescing).
   `LSet`/`srcLambda` query API over the post-GlobalOpt graph for borrow summaries
   (`design_docs/globalopt/borrow-inference-design.md` names LSS facts as its
   precision upgrade). Build when the borrow plan reaches its LSS-consuming
-  milestone. Note A1.0 (`srcLambda` under subst) is also a prerequisite HERE —
-  another reason A1.0 lands early regardless of the spike's outcome.
+  milestone. Note: solver-produced graphs already carry `srcLambda`/`LSet`
+  facts; threading `srcLambda` through the SUBST engine (`Specialize.elm:1502,
+  1787` construct `Nothing`) is only needed if borrow ever consumes subst
+  graphs — a small standalone item, no longer scheduled here (it was A1.0).
 
 ## 12. A-track side items (not phases of this plan)
 
@@ -910,7 +1198,9 @@ fixed by drain-end coalescing).
   policy for long-lived UnionFind/IORef state (≈248 s minor GC), `S`-record
   splitting (32-slot GC scan limit, `Engine.elm:204–208`), hottest-path
   de-allocation. Root-cause the Stage-8a warm-cache anomaly (solver 5.17×) before
-  any engine-default flip. A1 makes all of this non-blocking for exploitation.
+  any engine-default flip. With A1 removed (§7), exploitation is solver-gated,
+  which makes this track MORE important, not less — it is now the only route to
+  running LSS-exploited builds affordably by default.
 - **A3 — policy note (zero code):** "LSS on optimized builds only" is expressible
   with existing config; write it down once something ships.
 
@@ -928,7 +1218,8 @@ fixed by drain-end coalescing).
 - Wall-clock: interleaved A/B ×3 per side (±3–5 s drift); record backend tier on
   every number (Dev tier does not inline — E1.1).
 - Every knob that changes front-end artifacts joins the config hash
-  (`lssl=`, `lssKG=`, `maxDispatchArms` when non-default). Report-only envs
+  (`lssKG=`, `maxDispatchArms` when non-default; S needs no knob — it changes
+  flag-on behavior only, and lss-off mints no slots). Report-only envs
   (`ECO_MONO_LSS_SITES`) and lowering-time envs (`ECO_LSS_DISPATCH_SITE_COUNTERS`,
   `ECO_DISPATCH_STATS`) stay out of the hash but are census-workflow-only.
 - Every new optimization ships targeted adversarial tests that fail if it breaks
@@ -945,9 +1236,10 @@ fixed by drain-end coalescing).
 - E3: **LSS_012** (set-dispatch stamp discipline + default arm — §8/E3.5) + CGEN
   sibling for the switch lowering; delete the `_dispatch_mode` rows if any exist.
 - E4c: CGEN_CLOSURE_005 extended to i16 captures.
-- A1: LSS_001/002 now apply to Lite-annotated graphs; note in LSS_003 that
-  `srcLambda` threading is engine-independent after A1.0.
-- E6: FLAT_001–003 revived (own design doc).
+- S: **LSS_013** (spine injection — member on every result-spine arrow or ⊤;
+  argument-position arrows excluded; §7/S.3). LSS_001/002/004/005/006/010
+  unchanged in force.
+- E6: superseded (FLAT_001–003 revive only with it).
 
 ## 15. Non-goals / falsified (do not rebuild)
 
@@ -978,7 +1270,7 @@ freshening, `eco_pap_extend` kind conversion, two kernel GC use-after-frees) are
 default-path and stay regardless. The call-site-level raising variant is a
 separate research note and shares little code with the per-spec raiser.
 
-## 16. Open questions (answered by E0/A1)
+## 16. Open questions (answered by E0/S)
 
 1. How many generic-apply events does the native self-compile execute
    (Run A), and what fraction is addressable (Run B split)?
@@ -988,9 +1280,12 @@ separate research note and shares little code with the per-spec raiser.
    **Statically answered by E0.5** (6,801 sites = 99.2 % of declines); dynamic
    weight is measured by the post-E2 re-census (hot rows are `LTop`, so expect a
    bounded gain — E2.−1).
-4. Can A1's DSU inference match unkeyed solver-LSS singleton counts — globally
-   and on E0's hot sites? Which precision-gap classes appear (data-stored arrows
-   are the expected one)?
+4. (Replaced with A1's removal.) After S lands: how much of the 89 % `LTop`
+   converts to concrete sets, what does the new set-size histogram look like
+   (E3's gate re-opens on it), and what coverage does the Run-D census show —
+   does the addressable class (lambda/global-origin partial applications)
+   carry real dynamic weight, given `List.cons` (ctor, no instance) and the
+   escaping IO continuations (⊤ by soundness) remain out of reach?
 5. Are hot `$cap` bodies inlined at -O2 (E1.1), and what does the Dev tier's
    no-inliner policy cost in day-to-day measurements? (Separate decision:
    whether Dev should gain a cheap inliner.)

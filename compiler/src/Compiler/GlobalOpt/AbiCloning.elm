@@ -1006,6 +1006,11 @@ stampCall index ctx region func args resultType callInfo =
                             -- merged captureAbi makes the unchanged fast
                             -- lowering load exactly the filled prefix and
                             -- call the SAME clone with the full argument row.
+                            -- fastPapPrefix = Just k is part of the stamp and
+                            -- MUST survive to emission (annotateCallStaging
+                            -- preserves it with the other stamp fields) — the
+                            -- bare-vs-$cap symbol choice subtracts it from
+                            -- |captureTypes|.
                             let
                                 ( kindId, ctx1 ) =
                                     kindIdFor m ctx

@@ -13,6 +13,7 @@ module TestLogic.TestPipeline exposing
     , expectMonomorphization
     , runToGlobalOpt
     , runToGlobalOptLssOn
+    , runToGlobalOptLssOnStats
     , runToMlir
       -- Low-level helpers (for tests needing fine-grained control)
     , runToMono
@@ -400,6 +401,45 @@ runToGlobalOptLssOn srcModule =
                         , monoGraph = monoGraph
                         , optimizedMonoGraph = optimizedMonoGraph
                         }
+
+
+{-| Solver+LSS through GlobalOpt, returning the GlobalOpt STATS (AbiCloning
+dispatch/decline counters) — for activation/decline assertions that the
+graph-only `runToGlobalOptLssOn` cannot see.
+-}
+runToGlobalOptLssOnStats : Src.Module -> Result String MonoGlobalOptimize.GlobalOptStats
+runToGlobalOptLssOnStats srcModule =
+    case runToTypedOpt srcModule of
+        Err e ->
+            Err e
+
+        Ok { canonical, localGraph } ->
+            let
+                globalGraph =
+                    localGraphToGlobalGraph localGraph
+
+                globalTypeEnv =
+                    buildGlobalTypeEnv canonical
+
+                defaultLss =
+                    Config.defaultLss
+
+                lssOn =
+                    { defaultLss | enabled = True }
+            in
+            case MonoSolver.monomorphize lssOn "main" globalTypeEnv globalGraph of
+                Err monoErr ->
+                    Err ("Monomorphization (solver + lss) failed: " ++ monoErr)
+
+                Ok monoGraph ->
+                    let
+                        ( simplifiedGraph, _ ) =
+                            MonoInlineSimplify.optimize Config.default.inline monoGraph
+
+                        ( _, stats ) =
+                            MonoGlobalOptimize.globalOptimizeWithStats simplifiedGraph
+                    in
+                    Ok stats
 
 
 {-| Run pipeline through MLIR generation.
