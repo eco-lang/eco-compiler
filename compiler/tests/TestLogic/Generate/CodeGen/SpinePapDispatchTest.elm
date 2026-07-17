@@ -1,28 +1,28 @@
 module TestLogic.Generate.CodeGen.SpinePapDispatchTest exposing (suite)
 
-{-| LSS_013 spine injection — transport pin.
+{-| LSS_013 spine injection + E4a local-multi use transport — activation pins.
 
 Fixture (mirrors `test/elm/src/HofPapPrefixDispatchTest.elm` in the SourceIR
 DSL): a capture-carrying 2-param lambda literal flows into a recursion-
 protected HOF `applyPartial` (never inlined — SCC recursion guard). Inside,
 `let g = f 10` is a PARTIAL application of that lambda.
 
-What spine injection delivers, and what this pins: the lambda's member id lands
-on the INNER arrow of its type (spine injection), and the call `f 10` peels one
-arrow so its result — the let-binding `g` — carries `LSet [m]`. Without spine
-injection the inner arrow stays `LTop`, so `g`'s type would be `LTop`. This test
-therefore asserts: SOME function-typed let-binding in the solver+LSS graph
-carries a SINGLETON `LSet` head annotation. RED under head-only injection,
-GREEN with spine injection + the indirect-call-result transport
-(`Translate.indirectResultAnno`).
+The transport chain (plan §S.9) has three links, each pinned here:
 
-NOTE — the E2 fast-dispatch STAMP does NOT yet fire on this shape: `g` is a
-function-typed (local-multi) let, whose USE sites are classified independently
-of the def (design §8.4 / plan E4a — the local-multi use-transport gap), so
-`g acc` sees `LTop` even though `g`'s def carries the set. Spine injection is one
-necessary link of a three-link transport chain (spine -> call result -> local-
-multi use); E4a is the remaining co-requisite for E2 activation. This pin guards
-the two links spine injection is responsible for.
+1. SPINE (LSS_013): the lambda's member lands on the INNER arrow of its type,
+   so the call `f 10` peels one arrow and its result — the let-binding `g` —
+   carries `LSet [m]`. Pinned by the letdef assertion (RED under head-only
+   injection).
+2. INDIRECT-CALL-RESULT transport (`Translate.indirectResultAnno`): part of
+   the same letdef assertion (the set must survive the `f 10` call boundary).
+3. E4a local-multi USE transport (`Translate.enrichLocalMultiUses`, plan
+   §9.1): `g` is a function-typed (local-multi) let, whose use sites are
+   emitted from fresh all-`LTop` instantiations; E4a overlays the instance
+   def's annos back onto them. Pinned by the use-site assertion (a call whose
+   CALLEE `MonoVarLocal` carries a singleton `LSet` head) and by the STAMP
+   assertion (`callInfo.fastPapPrefix == Just 1` — the E2 StampPap fired on
+   `g acc`/`g 1`; the pipeline output is post-AbiCloning so stamps are
+   visible). Both RED without E4a, GREEN with it.
 
 -}
 
@@ -53,23 +53,34 @@ import TestLogic.TestPipeline as Pipeline
 
 suite : Test
 suite =
-    Test.describe "LSS_013: spine injection transports members to inner (PAP) arrows"
-        [ Test.test "a partial-application let-binding carries a singleton lambda set (solver+LSS)" <|
+    Test.describe "LSS_013 spine + E4a use transport activate PAP fast dispatch"
+        [ Test.test "a partial-application let-binding carries a singleton lambda set (spine + call-result transport)" <|
             \_ ->
-                case Pipeline.runToGlobalOptLssOn fixtureModule of
-                    Err e ->
-                        Expect.fail ("solver+LSS pipeline failed: " ++ e)
-
-                    Ok { optimizedMonoGraph } ->
-                        if hasSingletonFnLetDef optimizedMonoGraph then
-                            Expect.pass
-
-                        else
-                            Expect.fail
-                                ("no function-typed let-binding carries a singleton LSet — spine "
-                                    ++ "injection + call-result transport did not reach `let g = f 10`"
-                                )
+                expectOnGraph hasSingletonFnLetDef
+                    "no function-typed let-binding carries a singleton LSet — spine injection + call-result transport did not reach `let g = f 10`"
+        , Test.test "a use-site callee carries the singleton lambda set (E4a local-multi use transport)" <|
+            \_ ->
+                expectOnGraph hasSingletonCalleeUse
+                    "no call's MonoVarLocal callee carries a singleton LSet head — E4a did not transport the def's set to the use sites"
+        , Test.test "the PAP-consuming call is StampPap'd (fastPapPrefix = Just 1)" <|
+            \_ ->
+                expectOnGraph hasPapPrefixStamp
+                    "no call carries callInfo.fastPapPrefix == Just 1 — the E2 StampPap did not fire on `g acc`"
         ]
+
+
+expectOnGraph : (Mono.MonoGraph -> Bool) -> String -> Expect.Expectation
+expectOnGraph predicate failureMsg =
+    case Pipeline.runToGlobalOptLssOn fixtureModule of
+        Err e ->
+            Expect.fail ("solver+LSS pipeline failed: " ++ e)
+
+        Ok { optimizedMonoGraph } ->
+            if predicate optimizedMonoGraph then
+                Expect.pass
+
+            else
+                Expect.fail failureMsg
 
 
 
@@ -148,12 +159,20 @@ testValueDef =
 
 
 
--- GRAPH WALK ----------------------------------------------------------------
+-- GRAPH WALKS ---------------------------------------------------------------
 
 
-hasSingletonFnLetDef : Mono.MonoGraph -> Bool
-hasSingletonFnLetDef (Mono.MonoGraph data) =
-    Array.foldl (\mn found -> found || List.any exprHasSingletonFnLet (nodeExprs mn)) False data.nodes
+anyGraphExpr : (Mono.MonoExpr -> Bool) -> Mono.MonoGraph -> Bool
+anyGraphExpr predicate (Mono.MonoGraph data) =
+    Array.foldl
+        (\mn found ->
+            found
+                || List.any
+                    (\e -> MonoTraverse.foldExpr (\sub acc -> acc || predicate sub) False e)
+                    (nodeExprs mn)
+        )
+        False
+        data.nodes
 
 
 nodeExprs : Maybe Mono.MonoNode -> List Mono.MonoExpr
@@ -175,23 +194,69 @@ nodeExprs maybeNode =
             []
 
 
-exprHasSingletonFnLet : Mono.MonoExpr -> Bool
-exprHasSingletonFnLet expr =
-    MonoTraverse.foldExpr
-        (\e acc ->
-            acc
-                || (case e of
-                        Mono.MonoLet (Mono.MonoDef _ rhs) _ _ ->
-                            case Mono.typeOf rhs of
-                                Mono.MFunction (Mono.LSet [ _ ]) _ _ ->
-                                    True
+hasSingletonFnLetDef : Mono.MonoGraph -> Bool
+hasSingletonFnLetDef =
+    anyGraphExpr
+        (\e ->
+            case e of
+                Mono.MonoLet (Mono.MonoDef _ rhs) _ _ ->
+                    isSingletonFn (Mono.typeOf rhs)
 
-                                _ ->
-                                    False
+                _ ->
+                    False
+        )
+
+
+hasSingletonCalleeUse : Mono.MonoGraph -> Bool
+hasSingletonCalleeUse =
+    -- Specifically the PAP-CONSUMING shape (`g acc`): singleton callee whose
+    -- result is GROUND. The `f 10` site also has a singleton callee (M3 arg
+    -- transport, pre-E4a) but its result is a function — excluded here so this
+    -- pin is RED without E4a.
+    anyGraphExpr
+        (\e ->
+            case e of
+                Mono.MonoCall _ (Mono.MonoVarLocal _ t) _ _ _ ->
+                    case t of
+                        Mono.MFunction (Mono.LSet [ _ ]) _ ret ->
+                            not (isFn ret)
 
                         _ ->
                             False
-                   )
+
+                _ ->
+                    False
         )
-        False
-        expr
+
+
+hasPapPrefixStamp : Mono.MonoGraph -> Bool
+hasPapPrefixStamp =
+    anyGraphExpr
+        (\e ->
+            case e of
+                Mono.MonoCall _ _ _ _ callInfo ->
+                    callInfo.fastPapPrefix == Just 1
+
+                _ ->
+                    False
+        )
+
+
+isSingletonFn : Mono.MonoType -> Bool
+isSingletonFn t =
+    case t of
+        Mono.MFunction (Mono.LSet [ _ ]) _ _ ->
+            True
+
+        _ ->
+            False
+
+
+isFn : Mono.MonoType -> Bool
+isFn t =
+    case t of
+        Mono.MFunction _ _ _ ->
+            True
+
+        _ ->
+            False

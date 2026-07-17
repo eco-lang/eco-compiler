@@ -243,6 +243,83 @@ deltas below include every front-end change since Jul 10, not E2 alone.
   Needs its own bisection (fresh bootstrap per candidate landing). Until then,
   compare walls only within a front-end generation.
 
+### Run D — spine injection (§S), same-input A/B (2026-07-17)
+
+Two-phase clean method (this doc's Methodology): baseline binary
+`eco-compiler-solver` (pre-spine) vs `eco-compiler-spine`, each compiling the
+SAME source tree, `rm -rf eco-stuff` before every leg, four legs (each
+binary × {solver+LSS, subst}).
+
+- **Flag-off byte-identity — CONFIRMED.** `out-baseline-subst.mlir` and
+  `out-spine-subst.mlir` are **byte-identical** (`cmp` clean). Spine +
+  arity-bound + the `fastPapPrefix` fix touch only the solver/LSS path
+  (`Compiler/MonoSolver/*`, lss-gated `indirectResultAnno`, and an
+  `annotateCallStaging` copy that is `Nothing`-over-`Nothing` flag-off), so the
+  shipping subst engine is provably untouched — now shown empirically on the
+  full compiler, not just by construction.
+- **Solver census delta — exactly one stamp.** The ONLY difference in the
+  GlobalOpt census is **`stampedPapPrefix` 0 → 1**; `dispatchUpgraded=2395`,
+  `declinedShape=6857 (arity=6802 over=6802 bucketMiss=17 layout=37 char=1)`,
+  `declinedAbiMismatch=2` are all identical. Spine activates precisely one live
+  PAP-prefix stamp at self-compile scale (`Round.roundFun`'s directly-applied
+  rounding-lambda partial — the one non-let PAP consumer), now emitted as a
+  correct BARE fast symbol (was the dangling `$cap` before the fix). This is the
+  §S.9 three-link finding made concrete: the common **let-bound** partial shape
+  stays LTop at its use sites until **E4a**, so dispatch coverage is unchanged
+  (1 stamp of 2395 ≈ 0.04 %).
+- **Output size:** solver `12,074,405 → 12,074,430` B (**+25 B**, the single
+  extra fast-dispatch site). Subst byte-identical (see above).
+- **Wall — neutral.** solver `6:14.25 → 6:14.57` (+0.3 s, noise); subst
+  `5:47.15 → 5:46.25` (spine 0.9 s faster, noise — byte-identical output
+  confirms it is not real). The absolute ~6:14 is the current front-end
+  generation carrying the Run-C +33 % regression; it cancels in the A/B (both
+  legs share it), so spine adds **no measurable analysis or mono-time cost**.
+
+*Reading Run D:* spine injection is a pure analysis extension — it propagates
+lambda sets one transport link further (call results / let-definitions) with
+zero flag-off impact and essentially zero dispatch-coverage change. Its
+exploitation payoff is gated on **E4a** (local-multi use transport); the value
+here is (a) the analysis is now correct and self-hosting, and (b) it flushed out
+two latent bugs — the arity-unbounded over-injection and E2's dropped
+`fastPapPrefix` — that any future stamp activation would also have tripped.
+
+### Run E — E4a local-multi use transport, same-input A/B (2026-07-17)
+
+Two-phase clean method, four legs: `eco-compiler-spine` (pre-E4a) vs
+`eco-compiler-e4a`, each × {solver+LSS, subst}, same source tree,
+`rm -rf eco-stuff` per leg.
+
+- **Mechanism PROVEN live, activation ZERO at self-compile scale.** The unit
+  pin proves the full chain fires on the canonical shape (`let g = f 10` →
+  use-site singleton → `fastPapPrefix = Just 1`, RED/GREEN-proven), and the
+  flag-on corpus runs `HofPapPrefixDispatchTest`'s StampPap'd fast dispatches
+  correctly at runtime. But on the compiler's own code the A/B is **completely
+  neutral**: solver census IDENTICAL (`stampedPapPrefix=1` both — still only
+  Run D's `Round.roundFun` site; `dispatchUpgraded=2397` both), and the solver
+  MLIRs are **byte-identical** (12,088,832 B both). Subst legs byte-identical
+  as always. Walls within noise (6:06→6:07 solver, 5:54→5:53 subst).
+- **Why zero (the sharpened analysis-limit).** A let-bound partial qualifies
+  only if the HOF param it peels carries a SINGLETON set. Specs are
+  demand-monomorphized per TYPE, so a HOF called from several sites with
+  different lambdas at one type carries the JOIN (multi-member/⊤) — never a
+  singleton. The fixture qualifies because exactly ONE lambda ever flows in;
+  the compiler's own HOFs don't have that property. This is E0.5's
+  "coverage is analysis-limited" verdict made precise: **the let-bound-partial
+  class needs per-call-site keyed fan-out (E5) to mint singletons; transport
+  alone (S + E4a) is now complete and waiting.**
+- Dispatch-coverage census leg SKIPPED — byte-identical MLIR lowers to an
+  identical binary; the counts cannot differ.
+- (Baseline drift note: Run D reported `dispatchUpgraded=2395`; both Run-E legs
+  say 2397 because the WORKLOAD grew — the tree now contains the E4a source
+  itself. Same-tree A/B keeps this controlled.)
+
+*Reading Run E:* E4a completes the three-link transport chain and is fully
+gated + runtime-proven, at zero cost (byte-neutral when inactive). The
+self-compile workload contains no naturally-singleton let-bound partials, so
+the coverage needle moves only when E5 keyed fan-out (or user code with
+single-provenance HOFs) supplies them. Next measurement point: after E5.1/E5.2
+on census-chosen targets.
+
 ---
 
 ## Summary

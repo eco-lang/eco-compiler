@@ -27,6 +27,7 @@ import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.Monomorphize.Analysis as Analysis
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.KernelAbi as KernelAbi
+import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Compiler.Monomorphize.ResolveAccessorValues as ResolveAccessorValues
 import Compiler.Monomorphize.State as State
 import Compiler.MonoSolver.Engine as Engine exposing (Failure(..), Step)
@@ -4012,23 +4013,35 @@ translateLocalMultiLet name defBody body letCanType =
                     (\maybeEntry ->
                         Engine.andThen
                             (\instanceDefs ->
-                                Engine.map
-                                    (\letType0 ->
-                                        let
-                                            letType =
-                                                if
-                                                    Mono.containsAnyMVar letType0
-                                                        || (not (monoTypeMentionsEco (Mono.typeOf monoBody)) && numericLeafOnlyDiff letType0 (Mono.typeOf monoBody))
-                                                then
-                                                    Mono.typeOf monoBody
+                                Engine.andThen
+                                    (\lssOn ->
+                                        Engine.map
+                                            (\letType0 ->
+                                                let
+                                                    letType =
+                                                        if
+                                                            Mono.containsAnyMVar letType0
+                                                                || (not (monoTypeMentionsEco (Mono.typeOf monoBody)) && numericLeafOnlyDiff letType0 (Mono.typeOf monoBody))
+                                                        then
+                                                            Mono.typeOf monoBody
 
-                                                else
-                                                    letType0
-                                        in
-                                        List.foldl (\d acc -> Mono.MonoLet d acc (Mono.typeOf acc)) monoBody (List.reverse instanceDefs)
-                                            |> retypeLet letType
+                                                        else
+                                                            letType0
+
+                                                    -- E4a (plan §9.1): transport the per-instance
+                                                    -- re-translated defs' lambda-set annos to the
+                                                    -- already-emitted USE sites. letType stays
+                                                    -- computed from the un-enriched body (its
+                                                    -- branch choice must not move flag-on).
+                                                    monoBody1 =
+                                                        enrichLocalMultiUses lssOn instanceDefs monoBody
+                                                in
+                                                List.foldl (\d acc -> Mono.MonoLet d acc (Mono.typeOf acc)) monoBody1 (List.reverse instanceDefs)
+                                                    |> retypeLet letType
+                                            )
+                                            (classify letCanType)
                                     )
-                                    (classify letCanType)
+                                    (\s -> Ok ( s.env.lss.enabled, s ))
                             )
                             (buildLocalDefs name defBody maybeEntry)
                     )
@@ -4048,6 +4061,63 @@ retypeLet letType expr =
 
         _ ->
             expr
+
+
+{-| E4a (plan §9.1): transport the defs' lambda-set annotations to the
+local-multi USE sites. Uses are emitted during body translation with MonoTypes
+from fresh per-use instantiations — all-`LTop` annos — while the per-instance
+re-translated def RHS (`buildLocalDefs`, carrying S's spine + indirect-result
+transport) holds the concrete sets. The runtime values reaching a use ARE the
+values that instance's RHS produces, so overlaying the def's annos onto each
+`MonoVarLocal` of the instance binding is the graph-level image of the §7.4
+def→use set join (union over uses at one layout; per-layout instances carry
+their own re-translated type, so precision is per-instance).
+`Mono.overlayAnnotations` is shape-guarded (keeps the use's structure, falls
+back on mismatch — worst case an untransported `LTop`, sound widening), and
+Elm's no-shadowing rule plus `$`-suffixed freshNames make the name-keyed
+rewrite safe. lss-off: identity, so flag-off output is byte-identical.
+-}
+enrichLocalMultiUses : Bool -> List Mono.MonoDef -> Mono.MonoExpr -> Mono.MonoExpr
+enrichLocalMultiUses lssOn instanceDefs monoBody =
+    if not lssOn then
+        monoBody
+
+    else
+        let
+            annoByName =
+                List.filterMap
+                    (\d ->
+                        case d of
+                            Mono.MonoDef n rhs ->
+                                Just ( n, Mono.typeOf rhs )
+
+                            Mono.MonoTailDef _ _ _ ->
+                                Nothing
+                    )
+                    instanceDefs
+                    |> Dict.fromList
+        in
+        if Dict.isEmpty annoByName then
+            monoBody
+
+        else
+            MonoTraverse.traverseExpr
+                (\() e ->
+                    case e of
+                        Mono.MonoVarLocal n t ->
+                            case Dict.get n annoByName of
+                                Just src ->
+                                    ( Mono.MonoVarLocal n (Mono.overlayAnnotations t src), () )
+
+                                Nothing ->
+                                    ( e, () )
+
+                        _ ->
+                            ( e, () )
+                )
+                ()
+                monoBody
+                |> Tuple.first
 
 
 buildLocalDefs : Name -> TOpt.Expr TypeIds.MVarId -> Maybe Engine.NumberMultiEntry -> Step (List Mono.MonoDef)

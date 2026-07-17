@@ -1137,18 +1137,142 @@ binary-size budget (≤ ~2% or sign-off).
   boundary, solver+LSS; (3) delete the `charFree` decline
   (`AbiCloning.elm:1026–1028, 1062–1063`), keep `declinedShapeChar` (should read 0
   thereafter); (4) extend CGEN_CLOSURE_005 wording to i16.
-- **E4a — V1 local-multi transport (M):** solver-route precision fix
-  (design §8.4 gap; `demandUnifyRoot`/`lssRootAnn` precedent in
-  `Translate.elm:91–103, 2622–2628`); flips `LssSingletonLetBoundLambdaTest` from
-  gap-pin to stamp-pin. Note: spine injection (§7/S) does NOT cover this class
-  (the local-multi stash var is a fresh instantiation, a different hole) — E4a
-  stays a distinct solver-route item; re-rank it after S's census.
+- **E4a — V1 local-multi transport (M): IMPLEMENTATION-READY DESIGN (2026-07-17
+  design pass; promoted to S's direct co-requisite by §S.9). See §9.1 below.**
 - **E4b — V2 wrapper-home recovery (M–L):** staging-side
   (`chooseCanonicalSegmentation` bias toward singleton-upgradable producers);
   overlaps E7 — build only under E7's gate.
 
 Gate: E0 per-class ranking (H6.0b currently shows zero declines from these
 classes; they stay backlog until the census disagrees).
+
+### 9.1 E4a — local-multi USE transport: design (implementation-ready)
+
+**The gap, precisely (verified against the code, not the old §8.4 sketch).**
+A function-typed let (`let g = f 10 in … g acc … g 1`) routes through
+`translateLocalMultiLet` (`Translate.elm:3994`). Order of events:
+
+1. `pushLocalMulti name` — a registry entry goes on `s.localMulti`.
+2. The let BODY is translated. Every use of `g` hits one of two paths, and both
+   mint the use's MonoType from a **fresh, per-use instantiation** whose arrow
+   annos are all `LTop`:
+   - call path `translateLocalMultiCall` (`:1568`): `instantiate funcCanType` →
+     unify args → `Store.zonkToMono funcVar` → `recordLocalInstance name
+     funcMonoType` → emits `MonoCall (MonoVarLocal freshName instType) …`;
+   - value path `TOpt.VarLocal` isLM branch (`:335–348`): `classify meta.tipe`
+     (storeless ⇒ `LTop`) → `recordLocalInstance` → `MonoVarLocal freshName
+     instType`.
+3. `popLocalMulti`, then `buildLocalDefs` (`:4053`): per recorded instance,
+   `retranslateAt defBody inst.monoType` (`:3254`) re-translates the RHS **in a
+   scratch store** (fresh store/memo/aux, restored after — no Points survive)
+   seeded by `demandUnifyRoot`. THANKS TO S (spine + `indirectResultAnno`), the
+   re-translated RHS's MonoType **carries `LSet [m]`** (the existing
+   `SpinePapDispatchTest` pin proves this on the final graph).
+
+So the def-side set exists only AFTER every use is already emitted with `LTop`,
+and in a store that is discarded. **A solver-side def→use Point join is
+timing-impossible for local-multi** (unlike LssInfer's signature-walk
+`joinLetUse`/`joinArrowSets` §7.4, whose union-over-uses POLICY we mirror). The
+correct seam is a **post-hoc annotation overlay on the already-built body**.
+
+**The change (one new helper + one wiring edit, both in `Translate.elm`).**
+
+- `enrichLocalMultiUses : Bool -> List Mono.MonoDef -> Mono.MonoExpr ->
+  Mono.MonoExpr` (pure): when the Bool (lss.enabled) is False or the def list
+  is empty, return the body unchanged. Otherwise build
+  `annoByName : Dict Name Mono.MonoType` from the instance defs
+  (`Mono.MonoDef n rhs → (n, Mono.typeOf rhs)`; `MonoTailDef` arm skipped —
+  local-multi defs are always `MonoDef`), then rewrite the body with
+  `MonoTraverse.traverseExpr` (bottom-up, full constructor coverage incl.
+  closure captures/bodies; ctx = ()): each `MonoVarLocal n t` with
+  `Dict.get n annoByName == Just src` becomes
+  `MonoVarLocal n (Mono.overlayAnnotations t src)`. Everything else unchanged.
+- Wiring in `translateLocalMultiLet`: read `s.env.lss.enabled` once (a pure
+  state READ — zero store mutation, zero effect order change), and apply
+  `enrichLocalMultiUses lssOn instanceDefs monoBody` in the existing final
+  `Engine.map` block before the `List.foldl (MonoLet…)` assembly (`:4028`).
+  The `classify letCanType` call and all other stateful steps keep their exact
+  order — byte-identity is structural flag-off (helper returns the body
+  untouched) and unthreatened flag-on (pure rewrite, deterministic).
+
+**Why this is sound.**
+
+- The runtime values reaching a use of `freshName` are exactly the values the
+  instance's re-translated RHS produces — the def's lambda-set IS the use's
+  lambda-set. Narrowing the use's `LTop` to the def's set is the graph-level
+  image of §7.4 `joinArrowSets` (union over uses at one layout; per-layout
+  instances get their own re-translated RHS type, so precision is per-instance).
+- `Mono.overlayAnnotations` (`Monomorphized.elm:488`) is shape-guarded: on any
+  structural mismatch it keeps the use's own structure and falls back —
+  worst case is an untransported anno (`LTop`, sound widening; LSS_005).
+- Name-keying is safe: Elm canonicalization forbids shadowing, `$`-suffixed
+  freshNames cannot collide with source names, and the first instance's bare
+  `name` is the unique in-scope source binder. Capture ENTRIES rewrite only
+  their expr component (the name field is the inner binder, untouched).
+- `eqLayout` ignores annos (`Monomorphized.elm:304` MFunction arm), so the
+  enriched use types cannot perturb layout keys, instance dedup
+  (`recordMultiInstance`), or `ECO_MONO_VALIDATE`.
+- The stamp consumer reads `Mono.headAnno (Mono.typeOf func)` on the callee
+  (`AbiCloning.stampCall`); the callee at these sites IS the rewritten
+  `MonoVarLocal` — no other consumer of the instType exists post-emission
+  (`inst.monoType` is only the `retranslateAt` demand, already consumed).
+
+**What then happens downstream (the activation chain, now fully proven).** A
+saturating call `g acc` gets callee head `LSet [m]` → `stampCall` resolves
+member m's index (the base lambda's instance, params `[a,b]`) → site layout
+`[b]→ret` bucket-misses → `resolvePapSuffix`/`papScan` k=1 suffix-match →
+`StampPap inst 1` → captureless base ⇒ `captureAbi = take 1 params`,
+`fastPapPrefix = Just 1` ⇒ emission picks the BARE symbol with `_pap_prefix=1`
+(the S.11 fix makes the field survive `annotateCallStaging`), and
+`emitFastClosureCall` loads the PAP's filled slot + arg row. The whole runtime
+path was already exercised once by Run D's `Round.roundFun` stamp.
+
+**V1 scope limits (documented, measured later, not blockers).**
+
+- Callee-head transport only. Chained partial lets (`let h = g 1 in h y`) stay
+  `LTop` at h's uses: h's own `buildLocalDefs` runs DURING g's body translation,
+  before g's overlay exists, so h's re-translated RHS type misses the set.
+  Follow-up (E4a.2) only if the Run-E census says chained partials carry weight.
+- No MonoCall-result overlay (only matters for the chained case above).
+- Union-over-uses per layout (v1 policy, same as §7.4).
+
+**Pins & gates.**
+
+1. Upgrade `SpinePapDispatchTest`: keep the letdef assertion; ADD the use-site
+   assertion — some `MonoCall` whose func is a `MonoVarLocal` with singleton
+   `LSet` head — and the STAMP assertion — some call's
+   `callInfo.fastPapPrefix == Just 1` (runToGlobalOptLssOn output is
+   post-AbiCloning, so the stamp is visible to the unit test). RED before the
+   change, GREEN after.
+2. Full elm-tests: 12992/12 baseline, no new failures.
+3. Native solver+LSS self-compile — THE gate (S.10/S.11 lesson).
+4. Flag-off byte-identity + flag-on corpus via the Run-D A/B method.
+5. Benchmark Run E: `stampedPapPrefix` census delta (expect ≫1: every singleton
+   let-bound-partial site with a layout match), solver-leg wall, subst-leg
+   byte-compare; if stamps move at weight, the dispatch-coverage census leg.
+
+Effort: S–M (one pure helper + one wiring line + test). Risk: LOW — pure,
+lss-gated, shape-guarded; the dangerous parts (StampPap runtime path, prefix
+survival) were de-risked by S.
+
+**AS BUILT (2026-07-17) — SHIPPED, all gates green, activation zero at
+self-compile scale (Run E).** Implemented exactly as designed
+(`enrichLocalMultiUses` + the `translateLocalMultiLet` wiring; letType kept on
+the un-enriched body). Pins: `SpinePapDispatchTest` now 3 tests — letdef
+singleton (spine), use-site singleton on the PAP-CONSUMING shape (ground
+result, excluding the `f 10` M3-covered site), and `fastPapPrefix == Just 1`;
+the last two RED-proven with E4a neutralized. Gates: elm-tests 12994/12
+(baseline + the 2 new pins), native solver+LSS self-compile GREEN first try
+(S.10/S.11 fixes held), flag-on corpus 1621/1621 incl.
+`HofPapPrefixDispatchTest` running its now-live StampPap'd dispatches, subst
+legs byte-identical. **Run E: solver MLIR BYTE-IDENTICAL spine↔e4a —
+`stampedPapPrefix` stays 1.** The compiler's own code has no
+naturally-singleton let-bound partials: a qualifying site needs its HOF param
+to carry a SINGLETON set, but per-TYPE demand monomorphization joins all call
+sites' lambdas at one type (multi-member/⊤). The transport chain (S links 1–2
++ E4a link 3) is now COMPLETE and waiting; minting singletons is E5's job
+(per-call-site keyed fan-out) — re-measure there. E4a.2 (chained partials) —
+unmotivated; nothing chained can qualify before E5 either.
 
 ## 10. E5 — Selective keyed fan-out (solver route)
 

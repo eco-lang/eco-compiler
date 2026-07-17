@@ -10,19 +10,20 @@ let-callee forwarding and application merging (H2.5 only collapses
 single-use partials) — so the `g acc` / `g 1` sites genuinely apply a
 PAP-typed callee at runtime.
 
-Flag-on status (verified 2026-07-16, solver+LSS): the `g` apply sites are
-NOT stamped today — their peeled arrow types carry `LTop` because the v1
-analysis grounds members only on HEAD arrows (the inner-arrow transport
-gap, plan E0.5); and the one site that IS consulted (`f 10`, the
-PAP-CREATING partial whose static return is an arrow) is correctly
-DECLINED by the E2 suffix scan's return-layout fence — stamping it would
-be a miscompile. When inner-arrow set transport lands (E4a/E5-class
-work), the `g` sites become the activation pin for `stampedPapPrefix=2`.
-Until then this test pins (a) default-pipeline correctness of the shape
-(LSS_005 — output identical with or without LSS), and (b) that the shape
-survives forwarding/merging/loopification so the PAP dispatch is real.
-The E2 lowering itself is pinned end-to-end by
-test/codegen/fast_dispatch_pap_prefix.mlir.
+Flag-on status (ACTIVE since 2026-07-17, solver+LSS): spine injection
+(LSS_013) puts the lambda's member on its inner arrow, the indirect-call
+transport carries it through `f 10`'s result, and E4a
+(`Translate.enrichLocalMultiUses`, plan §9.1) overlays it onto the `g`
+use sites — so `g acc` / `g 1` are StampPap'd (`fastPapPrefix = Just 1`)
+and lower to BARE fast calls loading the PAP's filled slot. The flag-on
+corpus run of this test is therefore the live RUNTIME pin for the whole
+chain (the CHECK below must print the same answer as the un-stamped
+build). `f 10` (the PAP-CREATING partial whose static return is an
+arrow) remains correctly DECLINED by the E2 suffix scan's return-layout
+fence. Flag-off this still pins default-pipeline correctness of the
+shape (LSS_005). The unit-level stamp pin is
+compiler/tests/TestLogic/Generate/CodeGen/SpinePapDispatchTest.elm; the
+lowering is pinned by test/codegen/fast_dispatch_pap_prefix.mlir.
 
 -}
 
