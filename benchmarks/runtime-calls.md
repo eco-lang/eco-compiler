@@ -320,6 +320,44 @@ the coverage needle moves only when E5 keyed fan-out (or user code with
 single-provenance HOFs) supplies them. Next measurement point: after E5.1/E5.2
 on census-chosen targets.
 
+### Run F — E5 selective keyed fan-out (2026-07-17)
+
+Five build legs (`eco-compiler-e4a` vs `eco-compiler-e5`, same tree, clean
+`eco-stuff` per leg) + a two-binary dispatch-census A/B. Keyed targets
+(plan §10 selection, chain-keyed): `elm/core:List.foldl`, `List.foldr`,
+`List.foldrHelper`, `List.map` + `eco/compiler:System.TypeCheck.IO.andThen`
+(the over-apply class, included as v2 evidence).
+
+- **Safety: all clean.** Unkeyed solver legs BYTE-IDENTICAL e4a↔e5 (the E5.1
+  gate is inert unconfigured); subst legs BYTE-IDENTICAL (flag-off untouched);
+  the KEYED self-compile builds and runs correctly (first selective-keying
+  outing of the M4 machinery at scale).
+- **Keying is FREE at this dose:** mono wall 9:58.80 → 9:52.93 (noise; the
+  +28 % figure was ALL-globals keying), output +16,984 B (+0.14 %), binary
+  +63 KB.
+- **Static census delta (unkeyed → keyed):** `dispatchUpgraded` 2399 → 2409
+  (**+10** exact stamps from the List chain); `stampedPapPrefix` 1 → 1;
+  `declinedShapeArityOver` 6817 → **6905 (+88)** — the `IO.andThen`
+  singletons land in E2's v1-declined staged class exactly as the design
+  predicted.
+- **Dynamic coverage A/B (both binaries, identical subst workload, cold):**
+  `sat=912,460,929 gen=894,476,930 typed=17,983,999 fast=16,241,234` —
+  **IDENTICAL TO THE LAST DIGIT** in both; only `distinct` grew 6008 → 6031
+  (the keyed spec evaluators exist but redistribute identity, not counts).
+  Coverage stays **1.75 %**. The +10 stamped sites executed ZERO times on
+  this workload.
+
+*Reading Run F:* the E5 mechanism is proven end-to-end and costs nothing,
+but these targets have no v1 dynamic payoff at self-compile scale: the hot
+List rows are the CTOR class (`List.cons` — no instance to stamp), the hot
+IO rows are the OVER-APPLY class (v1-declined), and lambda-literal List
+callers were already H5-loopified. The actionable positive is the +88:
+keying demonstrably mints singletons at the staged over-apply sites, so the
+combination that can finally convert the hot IO-continuation dispatch is
+**E5 keying + E2-v2 staged stamping** — the staged stamp is now the
+highest-value open item on the E-track, with ctor instances (the cons class)
+second. Re-measure coverage after either lands.
+
 ---
 
 ## Summary
@@ -334,15 +372,20 @@ stamps (front-end run under solver, lowered with `ECO_LSS_DISPATCH_SITE_COUNTERS
 | 2026-07-16 19:40 | solver-built / solver (Run B) | 1,779,261,015 | 1,761,633,971 | 17,627,044 | 64,955,590 | 3.52 % | 6,581 | 10:00 |
 | 2026-07-17 07:50 | E2-built / subst (Run C1) | 922,756,871 | 904,916,613 | 17,840,258 | 0 | 0 % | 5,990 | 6:08* |
 | 2026-07-17 08:03 | E2-solver-built / subst (Run C2b) | 906,166,573 | 888,325,694 | 17,840,879 | 16,126,268 | 1.75 % | 6,006 | 6:02* |
+| 2026-07-17 21:0x | E5-solver-built UNKEYED / subst (Run F) | 912,460,929 | 894,476,930 | 17,983,999 | 16,241,234 | 1.75 % | 6,008 | — |
+| 2026-07-17 21:1x | E5-solver-built KEYED×5 / subst (Run F) | 912,460,929 | 894,476,930 | 17,983,999 | 16,241,234 | 1.75 % | 6,031 | — |
 
 *Run-C walls carry an unattributed +30 % vs Run A/B (see the Run C section) — the
 counts are the meaningful comparison; treat the walls as provisional.
 
 *Reading it:* current LSS singleton stamping converts **1.75 %** of the shipping
-(subst) workload's dispatch and **3.52 %** in the full solver world — low, because
-the hot dispatch sites (`List.cons`, IO continuations) are not singleton-stampable.
-That headroom is what the E-track (E2/E3/E5) exists to capture.
+(subst) workload's dispatch and **3.52 %** in the full solver world — and the Run-F
+rows show that S+E4a transport plus E5 keying of the first five census targets
+moved that number by exactly ZERO (identical counts to the last digit): the hot
+dispatch sites are `List.cons` (ctor — no instance to stamp) and the IO
+continuations (staged over-apply — E2's v1-declined class). The 1.75 % is a
+CONVERSION ceiling, not an analysis ceiling.
 
-*Next:* per-member attribution join (E0.5, `ECO_MONO_LSS_SITES`) to rank *which*
-declined sites carry the most unstamped weight; then E1 (make the 16 M fast calls
-actually inline).
+*Next:* E2-v2 staged stamping (keying provably feeds it — Run F's +88 singleton
+over-applies) and ctor instances for the cons class; re-census after either. E1.3
+(`inlinehint` on `$cap`) rides whichever lands first.

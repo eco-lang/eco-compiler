@@ -145,6 +145,7 @@ type alias Env =
     , currentModule : IO.Canonical -- entry module; home of every AnonymousLambda
     , superStatic : Dict Int IO.SuperType -- static solver truth ONLY (loadVar)
     , lss : Config.LssConfig -- lambda-set specialization knobs; enabled=False is byte-identical off
+    , lssKeyedSet : CoreDict.Dict String () -- E5: comparable gkeys of lss.keyedGlobals (parsed once at initState)
     , lamLabels : CoreDict.Dict Int String -- member id -> "defKey#id" (census rendering only)
     }
 
@@ -514,7 +515,17 @@ enqueueSpec : Mono.Global -> Mono.MonoType -> Step Mono.SpecId
 enqueueSpec global monoType s =
     -- A1: explicit trailing-S param (was `\s -> …`) → saturated callers avoid the
     -- per-call closure; body unchanged → byte-identical.
-    if s.env.lss.enabled && s.env.lss.keyed then
+    -- E5: a global listed in lss.keyedGlobals routes into the budgeted keyed
+    -- path even when global keying is off. The isEmpty short-circuit keeps
+    -- the empty-config hot path free of the per-enqueue gkey string build.
+    if
+        s.env.lss.enabled
+            && (s.env.lss.keyed
+                    || (not (CoreDict.isEmpty s.env.lssKeyedSet)
+                            && CoreDict.member (Mono.toComparableGlobal global) s.env.lssKeyedSet
+                       )
+               )
+    then
         enqueueSpecKeyed global monoType s
 
     else

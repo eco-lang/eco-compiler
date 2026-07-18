@@ -73,7 +73,12 @@ slots are minted in solver stores. Only meaningful under `EngineSolver`;
 `EngineDiff` always forces it off (the subst engine cannot produce sets).
 
   - `enabled`: master switch (M2+).
-  - `keyed`: lambda sets participate in specialization keys (M4+).
+  - `keyed`: lambda sets participate in specialization keys (M4+) — ALL
+    globals.
+  - `keyedGlobals`: E5 selective keying — key ONLY these globals (user format
+    `author/project:Module.Name.value`, e.g. `elm/core:List.foldl`); the
+    engine converts to comparable gkeys at init. Irrelevant when `keyed` is
+    already True.
   - `maxSetSize`: a zonked set larger than this widens to `LTop`.
   - `maxSpecsPerGlobal`: registry budget; past it, NEW demands key set-widened.
   - `report`: render an LSS census to stderr after mono (excluded from `hash`,
@@ -83,6 +88,7 @@ slots are minted in solver stores. Only meaningful under `EngineSolver`;
 type alias LssConfig =
     { enabled : Bool
     , keyed : Bool
+    , keyedGlobals : List String
     , maxSetSize : Int
     , maxSpecsPerGlobal : Int
     , report : Bool
@@ -102,6 +108,7 @@ defaultLss : LssConfig
 defaultLss =
     { enabled = True
     , keyed = False
+    , keyedGlobals = []
     , maxSetSize = 8
     , maxSpecsPerGlobal = 64
     , report = False
@@ -265,6 +272,7 @@ lssDecoder =
     D.pure LssConfig
         |> D.apply (D.optionalField "enabled" D.bool defaultLss.enabled)
         |> D.apply (D.optionalField "keyed" D.bool defaultLss.keyed)
+        |> D.apply (D.optionalField "keyedGlobals" (D.list D.string) defaultLss.keyedGlobals)
         |> D.apply (D.optionalField "maxSetSize" D.int defaultLss.maxSetSize)
         |> D.apply (D.optionalField "maxSpecsPerGlobal" D.int defaultLss.maxSpecsPerGlobal)
         |> D.apply (D.optionalField "report" D.bool defaultLss.report)
@@ -393,6 +401,13 @@ hash cfg =
 
                       else
                         []
+                    , if List.isEmpty lss.keyedGlobals then
+                        []
+
+                      else
+                        -- E5 selective keying: sorted so equivalent configs
+                        -- share artifacts regardless of listing order.
+                        [ "lssKG=" ++ String.join "," (List.sort lss.keyedGlobals) ]
                     , if lss.maxSetSize /= defaultLss.maxSetSize then
                         [ "lssS=" ++ String.fromInt lss.maxSetSize ]
 

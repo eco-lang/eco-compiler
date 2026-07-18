@@ -13,6 +13,7 @@ module TestLogic.TestPipeline exposing
     , expectMonomorphization
     , runToGlobalOpt
     , runToGlobalOptLssOn
+    , runToGlobalOptLssKeyedOn
     , runToGlobalOptLssOnStats
     , runToMlir
       -- Low-level helpers (for tests needing fine-grained control)
@@ -359,7 +360,17 @@ enabled (keys unchanged: keyed = False). For LSS\_00x invariant checkers,
 which need real lambda-set annotations to inspect.
 -}
 runToGlobalOptLssOn : Src.Module -> Result String GlobalOptArtifacts
-runToGlobalOptLssOn srcModule =
+runToGlobalOptLssOn =
+    runToGlobalOptLssKeyedOn []
+
+
+{-| Like `runToGlobalOptLssOn` but with E5 selective keying: the listed
+globals (user format `author/project:Module.Name.value`; the fixture package
+is `eco/example`, module `Test`) key their specializations per annotated
+type, fanning out one spec per call-site lambda set.
+-}
+runToGlobalOptLssKeyedOn : List String -> Src.Module -> Result String GlobalOptArtifacts
+runToGlobalOptLssKeyedOn keyedGlobals srcModule =
     case runToTypedOpt srcModule of
         Err e ->
             Err e
@@ -376,7 +387,7 @@ runToGlobalOptLssOn srcModule =
                     Config.defaultLss
 
                 lssOn =
-                    { defaultLss | enabled = True }
+                    { defaultLss | enabled = True, keyedGlobals = keyedGlobals }
             in
             case MonoSolver.monomorphize lssOn "main" globalTypeEnv globalGraph of
                 Err monoErr ->

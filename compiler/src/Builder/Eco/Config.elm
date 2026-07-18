@@ -78,6 +78,9 @@ loadBase maybeExplicit root =
   - `ECO_MONO_ENGINE=subst|solver|diff` selects the monomorphizer engine.
   - `ECO_MONO_DIFF_DUMP=1` makes `EngineDiff` embed full renderings on mismatch.
   - `ECO_MONO_LSS=0|1|keyed` toggles lambda-set specialization (solver engine).
+  - `ECO_MONO_LSS_KEYED_GLOBALS=g1,g2` keys ONLY these globals (E5 selective
+    fan-out; user format `author/project:Module.Name.value`); participates in
+    the hash via the `lssKG=` token.
   - `ECO_MONO_LSS_REPORT=1` renders the LSS census to stderr after mono.
   - `ECO_INLINE_REPORT=1` renders the inline census to stderr after
     inline+simplify (HOF-elimination plan H0.2).
@@ -120,6 +123,11 @@ applyEnvOverrides cfg =
             (\cfg4 ->
                 (Utils.envLookupEnv "ECO_MONO_LSS_MAX_SPECS" |> Task.mapError never)
                     |> Task.map (\budgetVal -> applyLssBudgetOverride budgetVal cfg4)
+            )
+        |> Task.andThen
+            (\cfg4b ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_KEYED_GLOBALS" |> Task.mapError never)
+                    |> Task.andThen (\kgVal -> applyLssKeyedGlobalsOverride kgVal cfg4b)
             )
         |> Task.andThen
             (\cfg5 ->
@@ -273,6 +281,52 @@ applyLssBudgetOverride maybeVal cfg =
 
         Nothing ->
             cfg
+
+
+{-| `ECO_MONO_LSS_KEYED_GLOBALS=g1,g2` (E5 selective keying): key ONLY these
+globals. User format `author/project:Module.Name.value`; REPLACES the config
+list. Malformed entries are warned to stderr and dropped (dev knob — mirror
+the unrecognized-`ECO_MONO_ENGINE` handling). Participates in `Config.hash`
+via the `lssKG=` token.
+-}
+applyLssKeyedGlobalsOverride : Maybe String -> EcoConfig -> Task Exit.Make EcoConfig
+applyLssKeyedGlobalsOverride maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            Task.succeed cfg
+
+        Just raw ->
+            let
+                entries =
+                    String.split "," raw
+                        |> List.map String.trim
+                        |> List.filter (\e -> e /= "")
+
+                ( good, bad ) =
+                    List.partition wellFormedKeyedGlobal entries
+
+                cfg1 =
+                    updateLss (\lss -> { lss | keyedGlobals = good }) cfg
+            in
+            if List.isEmpty bad then
+                Task.succeed cfg1
+
+            else
+                Task.io (IO.writeLn IO.stderr ("eco: dropping malformed ECO_MONO_LSS_KEYED_GLOBALS entries (expected author/project:Module.Name.value): " ++ String.join ", " bad))
+                    |> Task.map (\_ -> cfg1)
+
+
+{-| `author/project:Module.Name.value` — a `:` separating a `/`-bearing
+package from a dot-qualified value (module segments + value name).
+-}
+wellFormedKeyedGlobal : String -> Bool
+wellFormedKeyedGlobal entry =
+    case String.split ":" entry of
+        [ pkg, def ] ->
+            List.length (String.split "/" pkg) == 2 && List.length (String.split "." def) >= 2
+
+        _ ->
+            False
 
 
 {-| `ECO_MONO_LSS_REPORT=1|true|yes`: render the LSS census after mono.

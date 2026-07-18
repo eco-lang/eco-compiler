@@ -1274,26 +1274,180 @@ sites' lambdas at one type (multi-member/⊤). The transport chain (S links 1–
 (per-call-site keyed fan-out) — re-measure there. E4a.2 (chained partials) —
 unmotivated; nothing chained can qualify before E5 either.
 
-## 10. E5 — Selective keyed fan-out (solver route)
+## 10. E5 — Selective keyed fan-out (solver route) — IMPLEMENTATION-READY
+## (design pass 2026-07-17; every seam verified in code)
 
-Prep (do regardless): fix the stale "JS solver ≥12×/impractical" claims in the
+**Why this is the next lever (post-Run-E).** S + E4a completed the transport
+chain, and Run E proved zero self-compile activation: a let-bound partial (or
+any HOF-internal dispatch) stamps only when the HOF's param carries a
+SINGLETON set, but specs are demand-monomorphized per TYPE, so a HOF called
+from several sites with different lambdas at one type carries the JOIN. E5
+keys chosen globals per ANNOTATED type, so each call site's lambda mints its
+own spec of the callee — the spec's param set is that site's singleton, and
+the dormant E2/exact-Stamp machinery fires inside the specialized body.
+
+**Mechanism already exists.** `enqueueSpecKeyed` (`Engine.elm:604–661`, M4)
+does budgeted keying (`maxSpecsPerGlobal`, default 64; over-budget demands
+fall back to the widened key and count `widenedByBudget`), and BOTH branches
+route through the LSS_010 joining registry (`getOrCreateSpecIdKeyed` — an
+annotated key can collide with a widened one when a demand is all-`LTop`;
+join-on-hit prevents the shared-spec miscompile). The M3 arg-side injection
+(`injectArgLambdaMember`) already puts the call-site lambda's member on the
+zonked demand the enqueue receives. NOTHING in the keyed path changes; E5.1
+only widens WHO enters it.
+
+### E5.1 Per-global keying (config + env + hash + gate)
+
+1. **Config field** (`Compiler/Eco/Config.elm`): add
+   `keyedGlobals : List String` to `LssConfig`, USER format
+   `author/project:Module.Name.value` (e.g. `eco/compiler:Terminal.Main.foo`,
+   `elm/core:List.foldl`). NOTE the comparable gkey
+   (`Mono.toComparableGlobal` = `"G" ++ author ++ NUL ++ project ++ NUL ++
+   modName ++ NUL ++ name`, `Monomorphized.elm:1191`) is NUL-separated and
+   cannot be typed in an env var — the config stores user format and the
+   engine converts. Only TWO construction sites exist: the `defaultLss`
+   literal (`:101`, add `keyedGlobals = []`) and the POSITIONAL applicative
+   `lssDecoder` (`:263`, add
+   `|> D.apply (D.optionalField "keyedGlobals" (D.list D.string) [])` in
+   field order). All other sites are record updates — unaffected.
+2. **Env override** (`Builder/Eco/Config.elm`, the `applyEnvOverrides` chain):
+   `ECO_MONO_LSS_KEYED_GLOBALS=g1,g2` — split on `,`, trim, drop empties;
+   REPLACES the config list (mirror `applyLssBudgetOverride:268`). Malformed
+   entries (no `:`, no `/` left of it, no `.` right of it) warn on stderr and
+   are dropped — dev-knob behavior, mirroring the unrecognized
+   `ECO_MONO_ENGINE` handling.
+3. **Hash token** (`Compiler/Eco/Config.elm` token builder, `:381–407`):
+   `lssKG=<comma-joined SORTED list>` when non-empty (sort normalizes order so
+   equivalent configs share artifacts).
+4. **Engine plumbing**: add `lssKeyedSet : Dict String ()` to `Engine.Env`
+   (`Engine.elm:141`), built ONCE in `initState`
+   (`MonoSolver/Monomorphize.elm:203–229`) by parsing each user entry into the
+   comparable shape (split `:`; left `/`→author,project; right LAST-`.`→
+   modName,name; unparseable → skipped, already warned at Builder level).
+5. **Gate** (`Engine.elm:513–518`): the condition becomes
+
+   ```elm
+   if s.env.lss.enabled
+       && (s.env.lss.keyed
+               || (not (CoreDict.isEmpty s.env.lssKeyedSet)
+                       && CoreDict.member (Mono.toComparableGlobal global) s.env.lssKeyedSet))
+   then enqueueSpecKeyed global monoType s
+   ```
+
+   The `isEmpty` short-circuit keeps the empty-config hot path free of the
+   per-enqueue `toComparableGlobal` string build (enqueueSpec is hot). With
+   the set empty this is behaviorally identical to today on every path;
+   flag-off (subst) never reaches it at all.
+
+### E5.2 Target selection (census-driven, with the instance precondition)
+
+**Precondition — instance availability.** A singleton `{m}` stamps only if
+member m has a `MonoClosure` INSTANCE in AbiCloning's index. Lambda literals
+qualify; CTOR values (`List.cons` passed to `foldr`) and bare global
+references do NOT (no MonoClosure in the graph → `declinedNoInstance`, even
+keyed). So select HOFs whose hot call sites pass LAMBDAS.
+
+**Procedure:** from the Run-B dispatch census (top `gen` rows = hot
+evaluators), map each hot LAMBDA evaluator to the HOF that dispatches it
+(the enclosing apply site), filter by the precondition, key ≤5. Known
+candidates at self-compile scale: the `TypeCheck.IO` bind/andThen family
+(continuation lambdas ARE literals; the state-function monad dispatches the
+continuation from the bind-body-returned closure — whether the escape
+analysis leaves the capture's set intact is exactly what Run F measures) and
+`List.foldl`/`foldr` sites called with lambdas. `List.cons`-as-HOF rows are
+NOT addressable (ctor; needs a separate ctor-instance work item).
+
+**Two selection corrections found during implementation (2026-07-17):**
+
+- **Key the transitive HOF CHAIN, not one function.** `List.map` delegates to
+  `foldr`, which delegates to `foldrHelper` (where the `fn a acc` dispatch
+  lives). If only the leaf is keyed, the shared UNKEYED middle spec re-joins
+  every caller's set before enqueueing the leaf — the leaf fans out on the
+  JOIN (useless). So: `List.map` + `List.foldr` + `List.foldrHelper` together.
+- **Dispatch SHAPE decides stampability, not just the singleton.** The
+  `TypeCheck.IO` family dispatches continuations as staged OVER-applies
+  (`f a state1` — `f a` yields the `IO b` state-function, then the state is
+  applied), which is E2's v1-DECLINED class (`declinedShapeArityOver`, the
+  6,802-site census bucket; staged stamping is declared v2). Keying it mints
+  singletons that show up as decline-shift, not stamps — include ONE such
+  target as v2-evidence measurement, not as a win. Exact-arity dispatchers
+  (`foldl`'s `func x acc`, `foldrHelper`'s `fn a acc`) are the stampable
+  class. Also note `foldl` is tail-recursive with a saturated closure-param
+  call ⇒ lambda-LITERAL callers are already H5-loopified (no dispatch left);
+  keying pays only at var/pipeline-closure callers.
+
+**Run-F target list (finalized):** `elm/core:List.foldl`,
+`elm/core:List.foldr`, `elm/core:List.foldrHelper`, `elm/core:List.map`,
+`eco/compiler:System.TypeCheck.IO.andThen`.
+
+### E5.3 Pins & gates
+
+1. **Unit pin** (`SpineE5KeyedDispatchTest` or extend SpinePapDispatchTest
+   family): recursion-guarded HOF (`applyBoth f n acc = if n <= 0 then acc
+   else applyBoth f (n-1) (f acc)`) called with TWO different lambdas at the
+   SAME type (`applyBoth (\a -> a*2) 2 1 + applyBoth (\b -> b+7) 2 1`).
+   Unkeyed: one spec, joined 2-member set, NO stamped call. Keyed on
+   `eco/example:Test.applyBoth` (the TestLogic fixture package is
+   `("eco","example")`, module `Test`): two specs, each singleton →
+   `f acc` exact-Stamps (`callInfo.fastEvaluator /= Nothing`). RED/GREEN by
+   keying. Needs a TestPipeline variant `runToGlobalOptLssKeyedOn :
+   List String -> …` = `runToGlobalOptLssOn` with
+   `{ defaultLss | enabled = True, keyedGlobals = ks }`.
+2. Full elm-tests baseline (12994/12).
+3. UNKEYED gates unchanged: native solver+LSS self-compile green; flag-off
+   byte-identity; flag-on corpus 1621/1621 (corpus runs default config — the
+   keyed path is exercised by the unit pin and the Run-F legs).
+4. KEYED self-compile (Run F legs): the compiler builds itself with
+   `ECO_MONO_LSS_KEYED_GLOBALS=<targets>` — THE gate for keyed correctness at
+   scale (per S.10/S.11 doctrine), and the benchmark in one.
+5. Optional (M-series genuineness): byte-compare the native keyed artifact
+   against the JS-hosted compiler at the same config — run only if Run F
+   shows a surprising delta.
+
+### E5.4 Run F (benchmark; two-phase clean method)
+
+Legs (same tree, `rm -rf eco-stuff` each): (a) e5-binary unkeyed solver —
+must be byte-identical to the pre-E5 binary's output (the gate change is
+inert when the set is empty); (b) e5-binary keyed-on-targets solver — census
+deltas (`dispatchUpgraded`, `stampedPapPrefix`, `declinedNoInstance`,
+`widenedByBudget`), output size (spec fan-out), mono wall (expect near-free —
+the global-keying +28 % was ALL-globals; per-global should be ~zero) ;
+(c) subst legs byte-identical. If (b) moves stamps at weight: lower with
+`ECO_LSS_DISPATCH_SITE_COUNTERS=1`, run under `ECO_DISPATCH_STATS=1`, and
+report the coverage delta on the target rows vs the Run-B baseline. Record
+as Run F in `benchmarks/runtime-calls.md`.
+
+Prep (do alongside): fix the stale "JS solver ≥12×/impractical" claims in the
 HOF plan §H3 and the monosolver plan — overturned Jul 16 (Stage 5 = 1.79× in
 12 GB; the 8h49m keyed blowup was the pre-fix JS solver; LSS_010 churn already
 fixed by drain-end coalescing).
 
-- **E5.1 Config:** `lss.keyedGlobals : List String` (comparable-gkey strings),
-  env `ECO_MONO_LSS_KEYED_GLOBALS=g1,g2`, hash token `lssKG=<joined>` when
-  non-empty. Gate in `enqueueSpec` (`Engine.elm:513–518`) becomes
-  `lss.enabled && (lss.keyed || member gkey keyedGlobalsSet)`; the budgeted keyed
-  path (`enqueueSpecKeyed:604–661`) is unchanged (both branches already route
-  through the LSS_010 joining registry).
-- **E5.2 Target selection:** from E0 Run-B — evaluators hot in generic rows whose
-  sites report multi-member joined sets (E0.5 data). Start with ≤ 5 globals.
-- **E5.3 Gates:** spec-count/binary-size/compile-time budgets recorded per target;
-  corpus green flag-on; byte-compare vs the JS-hosted compiler at the same config
-  (genuineness protocol); E0 re-census (target sites become singletons → stamped).
-- Known cost model: keyed adds ~28% mono time when GLOBAL — per-global keying
-  should be near-free; measure and record.
+Effort: S (E5.1 is ~5 small edits) + M (Run F). Risk: LOW for E5.1 (inert
+when unconfigured; the keyed path itself is M4-tested); the EXPERIMENT risk
+(keyed self-compile correctness, spec blowup) is bounded by
+`maxSpecsPerGlobal` and surfaces in Run F where it belongs.
+
+**AS BUILT (2026-07-17) — SHIPPED + Run F complete; mechanism proven,
+targets falsified, next lever identified.** E5.1 landed exactly as designed
+(config field + decoder + `lssKG=` hash token + `ECO_MONO_LSS_KEYED_GLOBALS`
+env override with malformed-entry stderr warnings + `Env.lssKeyedSet` +
+gate). Pins: `E5KeyedDispatchTest` — keyed run mints ≥2 DISTINCT stamped
+fast evaluators on a two-lambda fixture, unkeyed run mints 0 (the premise
+and the RED proof in one). FIXTURE LESSON: the HOF must be NON-TAIL
+recursive — a tail-recursive spec with a saturated closure-param call is
+H5-loopified and no dispatch survives to stamp (first fixture draft found
+this the hard way; the E4a fixture dodges it by under-applying). Gates:
+elm-tests 12996/12; unkeyed self-compile green + byte-identical to e4a;
+subst byte-identical; flag-on corpus 1621/1621; KEYED self-compile builds
+and runs correctly. Run F verdict (see benchmarks/runtime-calls.md): keying
+is free (+0.14 % output, wall noise), +10 static exact stamps, **+88
+`declinedShapeArityOver`** (the andThen singletons hit the v1 staged
+decline, as §E5.2 predicted), and the dynamic census is IDENTICAL to the
+last digit (fast=16,241,234 both; the +10 sites are cold). **Conclusion:
+transport (S+E4a) and minting (E5) are both DONE and free; conversion of
+the hot classes now needs E2-v2 STAGED STAMPING (the +88 proves keying
+feeds it) for the IO rows, and ctor instances for the cons rows. Those two
+are the E-track's open items; re-census after either.**
 
 ## 11. E6 / E7 / E8 (design-first outlines — unchanged from v1)
 

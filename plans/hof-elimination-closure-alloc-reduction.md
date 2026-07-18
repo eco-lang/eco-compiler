@@ -398,9 +398,11 @@ stamps; make LSS the default wherever it CAN be.
 
 **Correction (2026-07-14): LSS is a SOLVER-engine feature.** The
 `EngineSubst` path of `selectMonomorphizer` never sees `lss`, and the engine
-default must stay `subst` for now — the JS-hosted solver self-compile is
-≥12× slower than subst (monosolver plan, Jul 12), which would break the
-bootstrap and every guida-under-node workflow. So H3's flip is
+default stays `subst` for now. (STALE CLAIM FIXED 2026-07-17: "JS-hosted
+solver ≥12× slower / breaks the bootstrap" was the PRE-FIX JS solver;
+re-measured Jul 16 at 1.79× on Stage 5 within 12 GB — the flip is a
+cost/benefit decision owned by the monosolver plan, not an infeasibility.)
+So H3's flip is
 `lss.enabled=True` with engine unchanged: inert for default (subst) users,
 but **solver now implies LSS** — every solver run (E2E flag-on gates,
 future engine-default flip, H4/H5 work) gets stamps without extra flags.
@@ -421,9 +423,9 @@ built and gated with explicit solver+LSS configs until it lands.
   elm-aws-codegen pathological-input check from M4 is still outstanding;
   H5 opts into keyed per-global instead). Note: the `lss=1` hash token is
   value-based, so the flip invalidates all caches once.
-- H3.3 Record post-flip census on flag-on probes (self-compile census under
-  the JS-hosted solver is impractical — 12×; use corpus probes and defer
-  the big census to a native solver run).
+- H3.3 Record post-flip census on flag-on probes (STALE 2026-07-17: the
+  "12×/impractical" figure was the pre-fix JS solver — now 1.79×; native
+  solver censuses are routine anyway, see benchmarks/runtime-calls.md).
 
 **Gate:** all of the above green; EngineDiff spot-check still runtime-benign
 (known flag-off junk-spec divergence remains documented in the monosolver

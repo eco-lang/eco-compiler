@@ -227,6 +227,7 @@ initState lssConfig currentModule nodes annotations globalTypeEnv mvarState =
         , currentModule = currentModule
         , superStatic = mvarState.superVars
         , lss = lssConfig
+        , lssKeyedSet = keyedGlobalSet lssConfig.keyedGlobals
         , lamLabels = mvarState.lamLabels
         }
     , currentGlobal = Nothing
@@ -244,6 +245,42 @@ initState lssConfig currentModule nodes annotations globalTypeEnv mvarState =
     , specCountByGlobal = Dict.empty
     , itemAux = Engine.emptyItemAux
     }
+
+
+{-| E5: parse `lss.keyedGlobals` user entries
+(`author/project:Module.Name.value`) into the comparable-gkey set the
+`enqueueSpec` gate consults. The comparable shape must match
+`Mono.toComparableGlobal`, so build a real `Mono.Global` and key it.
+Unparseable entries are skipped (the Builder env override already warned).
+-}
+keyedGlobalSet : List String -> Dict.Dict String ()
+keyedGlobalSet entries =
+    List.filterMap parseKeyedGlobal entries
+        |> List.map (\g -> ( Mono.toComparableGlobal g, () ))
+        |> Dict.fromList
+
+
+parseKeyedGlobal : String -> Maybe Mono.Global
+parseKeyedGlobal entry =
+    case String.split ":" entry of
+        [ pkg, def ] ->
+            case ( String.split "/" pkg, List.reverse (String.split "." def) ) of
+                ( [ author, project ], valueName :: revModSegs ) ->
+                    if List.isEmpty revModSegs then
+                        Nothing
+
+                    else
+                        Just
+                            (Mono.Global
+                                (IO.Canonical ( author, project ) (String.join "." (List.reverse revModSegs)))
+                                valueName
+                            )
+
+                _ ->
+                    Nothing
+
+        _ ->
+            Nothing
 
 
 seedSpec : Mono.Global -> Mono.MonoType -> S -> ( Mono.SpecId, S )
