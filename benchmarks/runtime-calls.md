@@ -396,6 +396,50 @@ over-apply declines (first-stage layout misses — per-member attribution
 would say whether any carry weight), and later-stage chaining (v3). E1.3
 (`inlinehint` on the now-50 M `$cap` calls) is now materially interesting.
 
+### Run H — E9 ctor devirtualization (2026-07-18)
+
+Five build legs (`eco-compiler-e2v2` vs `eco-compiler-e9`, same tree) + the
+dynamic A/B. E9 = translate-time rewrite of singleton-CTOR indirect calls to
+direct ctor calls (LSS_015), fed by the new arg-side standalone-member
+injection; scoped to actual `Ctor`/`Box` nodes v1.
+
+- **Safety: all clean** — subst BYTE-IDENTICAL; elm-tests 12998/12; solver
+  self-compile green; corpus 1623/1623 incl. `CtorDevirtTest`.
+- **Static:** `devirtDirect=2454` unkeyed (vastly above the 532-noInstance
+  estimate — the arg injection transports singletons to many more sites);
+  output −79,925 B (direct ctor calls are SMALLER than dispatch machinery);
+  `declinedNoInstance` 532→3,848 (fn-global singletons now visible but
+  devirt-scoped-out, v1). Keyed leg: devirt **+1 only** — `List.::` is NOT
+  an ordinary Ctor node (kernel-represented), so THE cons class is NOT
+  captured; that's the E9.2 follow-up.
+- **Dynamic A/B:** `sat` 889,123,974 → 885,636,450 = **−3,487,524 dispatch
+  events REMOVED per run** (fast unchanged +3 — the removal signature, not
+  conversion; `distinct` −84: devirted ctor closures never dispatch at
+  all). Coverage 5.39 % → 5.41 %. Walls flat (4:51.6/4:52.8).
+- **COST (the honest number): solver mono wall +38 % same-run**
+  (10:04 → 13:56; keyed 14:16) — the arg-injection's set-joins trigger mass
+  LSS_010 re-translation rounds. Optimizable (registry anno-size caps,
+  dirty granularity) — tracked as E9-cost follow-up.
+- **Three pre-existing infrastructure bugs found + fixed en route** (each
+  latent, exposed by the first-ever demand-side member churn): (1) the
+  dirty-flush re-translated shape-derived (ctor/enum) specs whose registry
+  entry had been rewritten to a VALUE type — crash; now skipped. (2)
+  `updateRegistryType`'s overwrite DISCARDED demand-side annos — join-grow/
+  update-shrink ping-pong, flush never converged; the update now JOINS
+  (structure from actualType, annos unioned; flag-off keeps the plain
+  update). (3) `Engine.S` hit the native runtime's 32-slot record scan cap
+  at 33 fields (the compiler self-hosts!) — member tables merged into one
+  sub-record field.
+
+*Reading Run H:* the devirt mechanism works and is free at runtime
+(−3.5 M events, smaller output), but the class it currently reaches is the
+cool tail — the hot cons rows need `List.::` ctor-node representation
+(E9.2), and fn-global devirt (valuable BECAUSE it unlocks inlining) is
+gated on hardening the inliner's freshening seam (`lookupVar:
+mono_inline_N` at MLIR emit — reproduced and documented). The +38 % mono
+wall is E9's real price and the first flag-on compile-time regression of
+the track — cap/optimize before enabling further injection classes.
+
 ---
 
 ## Summary
@@ -414,6 +458,8 @@ stamps (front-end run under solver, lowered with `ECO_LSS_DISPATCH_SITE_COUNTERS
 | 2026-07-17 21:1x | E5-solver-built KEYED×5 / subst (Run F) | 912,460,929 | 894,476,930 | 17,983,999 | 16,241,234 | 1.75 % | 6,031 | — |
 | 2026-07-18 09:5x | pre-v2 (e5) / subst (Run G) | 914,788,678 | 896,753,530 | 18,035,148 | 16,279,298 | 1.75 % | 6,008 | 4:46.60 |
 | 2026-07-18 10:0x | **E2.7-built (e2v2) / subst (Run G)** | 881,022,127 | 862,986,979 | 18,035,148 | **50,045,849** | **5.37 %** | 6,008 | 4:42.06 |
+| 2026-07-18 14:2x | pre-E9 (e2v2) / subst (Run H) | 889,123,974 | 870,921,349 | 18,202,625 | 50,628,273 | 5.39 % | 6,008 | 4:51.56 |
+| 2026-07-18 14:3x | **E9-built (e9) / subst (Run H)** | **885,636,450** | 868,262,575 | 17,373,875 | 50,628,276 | **5.41 %** | 5,924 | 4:52.84 |
 
 *Run-C walls carry an unattributed +30 % vs Run A/B (see the Run C section) — the
 counts are the meaningful comparison; treat the walls as provisional.

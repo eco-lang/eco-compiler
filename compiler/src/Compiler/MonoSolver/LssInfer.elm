@@ -2,6 +2,7 @@ module Compiler.MonoSolver.LssInfer exposing
     ( signatureFor
     , instantiateWithSignature
     , injectLambdaMember
+    , injectSpineMemberId
     )
 
 {-| Lambda-set signature inference (LSS design §7).
@@ -622,16 +623,17 @@ walkExpr letEnv expr s0 =
                     walkChildren letEnv (func :: args) s1
 
         TOpt.VarGlobal _ g meta ->
-            standaloneMember ("g|" ++ TOpt.toComparableGlobal g) meta s0
+            standaloneMemberWith (Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal g) g) meta s0
 
         TOpt.VarEnum _ g _ meta ->
-            standaloneMember ("c|" ++ TOpt.toComparableGlobal g) meta s0
+            -- E9: ctor mints register the Global for devirt lookup.
+            standaloneMemberWith (Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g) meta s0
 
         TOpt.VarBox _ g meta ->
-            standaloneMember ("c|" ++ TOpt.toComparableGlobal g) meta s0
+            standaloneMemberWith (Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g) meta s0
 
         TOpt.VarCycle _ home name meta ->
-            standaloneMember ("g|" ++ TOpt.toComparableGlobal (TOpt.Global home name)) meta s0
+            standaloneMemberWith (Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal (TOpt.Global home name)) (TOpt.Global home name)) meta s0
 
         TOpt.VarKernel _ _ home name meta ->
             standaloneMember ("k|" ++ home ++ "." ++ name) meta s0
@@ -843,9 +845,19 @@ arity) is a follow-up once that arity is threaded here; the primary E2 target
 path instead.
 -}
 standaloneMember : String -> TOpt.Meta TypeIds.MVarId -> Step ()
-standaloneMember key meta s0 =
+standaloneMember key =
+    standaloneMemberWith (Engine.memberIdFor key)
+
+
+{-| `standaloneMember` with an explicit mint step — the ctor arms mint via
+`Engine.standaloneMemberIdFor` so the member's Global lands in the E9
+devirt reverse map (globals AND ctors — `Can.Normal` ctors like `List.::`
+are VarGlobal/"g|"); kernel/accessor arms keep the plain intern.
+-}
+standaloneMemberWith : Step Int -> TOpt.Meta TypeIds.MVarId -> Step ()
+standaloneMemberWith mint meta s0 =
     if canTypeIsArrow meta.tipe then
-        case Engine.memberIdFor key s0 of
+        case mint s0 of
             Err e ->
                 Err e
 

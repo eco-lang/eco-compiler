@@ -1712,16 +1712,164 @@ translateIndirectCallBody region func args callCanType =
             Engine.andThen
                 (\monoFunc ->
                     Engine.andThen
-                        (\classifiedResult ->
-                            Engine.map
-                                (\resultMonoType -> Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo)
-                                (indirectResultAnno (Mono.typeOf monoFunc) (List.length args) classifiedResult)
+                        (\maybeCtor ->
+                            case maybeCtor of
+                                Just ctorGlobal ->
+                                    -- E9 (LSS_015): the callee value is provably
+                                    -- ONE ctor — rewrite the callee to the ctor
+                                    -- reference at the site's own type (enqueues
+                                    -- the ctor spec at this layout); downstream
+                                    -- staging/codegen emit a DIRECT ctor call,
+                                    -- removing the dispatch. monoFunc's own
+                                    -- translation (a var read) already happened,
+                                    -- so state effects are identical.
+                                    Engine.andThen
+                                        (\ctorRef ->
+                                            Engine.andThen
+                                                (\classifiedResult ->
+                                                    Engine.map
+                                                        (\resultMonoType -> Mono.MonoCall region ctorRef monoArgs resultMonoType Mono.defaultCallInfo)
+                                                        (indirectResultAnno (Mono.typeOf monoFunc) (List.length args) classifiedResult)
+                                                )
+                                                (classify callCanType)
+                                        )
+                                        (Engine.andThen
+                                            (\_ -> translateVarRef region ctorGlobal (TOpt.typeOf func))
+                                            bumpDevirtDirect
+                                        )
+
+                                Nothing ->
+                                    Engine.andThen
+                                        (\classifiedResult ->
+                                            Engine.map
+                                                (\resultMonoType -> Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo)
+                                                (indirectResultAnno (Mono.typeOf monoFunc) (List.length args) classifiedResult)
+                                        )
+                                        (classify callCanType)
                         )
-                        (classify callCanType)
+                        (devirtDirectTarget func args monoFunc)
                 )
                 (translate func)
         )
         (Engine.traverse translate args)
+
+
+{-| E9 (LSS_015): decide whether this indirect call devirtualizes to a
+direct call. All of: lss on; the callee EXPR is a plain var (purity — the
+rewrite drops the callee computation, and only a var read is guaranteed
+effect-and-bottom-free); the translated callee's head anno is a singleton
+whose member is a STANDALONE GLOBAL ("g|" named function/ctor — `Can.Normal`
+ctors like `List.::` are VarGlobal — or "c|" box/enum ctor); and the site
+EXACTLY saturates the target's declared annotation arity (a partial
+application is a PAP — out of scope).
+Provisional-singleton soundness rides LSS_010: if the spec's demand widens
+later, the dirty flush re-translates this node with the joined set and the
+devirt re-decides.
+-}
+devirtDirectTarget : TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Mono.MonoExpr -> Step (Maybe TOpt.Global)
+devirtDirectTarget func args monoFunc s0 =
+    if not s0.env.lss.enabled then
+        Ok ( Nothing, s0 )
+
+    else if not (calleeIsPlainVar func) then
+        Ok ( Nothing, s0 )
+
+    else
+        case Mono.headAnno (Mono.typeOf monoFunc) of
+            Mono.LSet [ m ] ->
+                case Engine.standaloneMemberGlobal m s0 of
+                    Err e ->
+                        Err e
+
+                    Ok ( Nothing, s1 ) ->
+                        Ok ( Nothing, s1 )
+
+                    Ok ( Just ctorGlobal, s1 ) ->
+                        if not (isCtorNode ctorGlobal s1) then
+                            -- v1 scope: CTORS ONLY. Devirtualizing FUNCTION
+                            -- globals is valid too (and valuable — it unlocks
+                            -- inlining of previously-indirect calls), but the
+                            -- new inline shapes it feeds the inliner exposed a
+                            -- pre-existing let-freshening seam
+                            -- (`lookupVar: unbound mono_inline_N` at MLIR
+                            -- emit). Direct CTOR calls have no body and are
+                            -- never inlined — no new inliner surface. The
+                            -- fn-global extension is a documented follow-up
+                            -- gated on hardening that seam.
+                            Ok ( Nothing, s1 )
+
+                        else
+                            case lookupAnnotation ctorGlobal s1 of
+                                Err e ->
+                                    Err e
+
+                                Ok ( Just (Can.Forall _ annType), s2 ) ->
+                                    let
+                                        arity =
+                                            arrowSpineLength annType
+                                    in
+                                    if arity >= 1 && arity == List.length args then
+                                        Ok ( Just ctorGlobal, s2 )
+
+                                    else
+                                        Ok ( Nothing, s2 )
+
+                                Ok ( Nothing, s2 ) ->
+                                    Ok ( Nothing, s2 )
+
+            _ ->
+                Ok ( Nothing, s0 )
+
+
+{-| Is the global's node an actual CONSTRUCTOR (Ctor/Box, chasing Links)?
+Enum ctors are nullary and excluded by the arity guard anyway.
+-}
+isCtorNode : TOpt.Global -> Engine.S -> Bool
+isCtorNode g s =
+    case DMap.get TOpt.toComparableGlobal g s.env.toptNodes of
+        Just (TOpt.Ctor _ _ _) ->
+            True
+
+        Just (TOpt.Box _) ->
+            True
+
+        Just (TOpt.Link target) ->
+            isCtorNode target s
+
+        _ ->
+            False
+
+
+calleeIsPlainVar : TOpt.Expr TypeIds.MVarId -> Bool
+calleeIsPlainVar func =
+    case func of
+        TOpt.VarLocal _ _ ->
+            True
+
+        TOpt.TrackedVarLocal _ _ _ ->
+            True
+
+        _ ->
+            False
+
+
+arrowSpineLength : Can.Type TypeIds.MVarId -> Int
+arrowSpineLength t =
+    case t of
+        Can.TLambda _ rest ->
+            1 + arrowSpineLength rest
+
+        _ ->
+            0
+
+
+bumpDevirtDirect : Step ()
+bumpDevirtDirect s =
+    let
+        stats =
+            s.lssStats
+    in
+    Ok ( (), { s | lssStats = { stats | devirtDirect = stats.devirtDirect + 1 } } )
 
 
 {-| LSS_013 transport: an indirect call's result type carries the CALLEE's
@@ -2492,8 +2640,31 @@ injectArgLambdaMember arg canVar =
         TOpt.TrackedFunction srcLam params _ _ ->
             LssInfer.injectLambdaMember (List.length params) srcLam canVar
 
+        TOpt.VarGlobal _ g _ ->
+            -- E9: standalone globals/ctors passed as function args contribute
+            -- their member the same way lambda literals do (head-only, like
+            -- standaloneMember — no local arity). Makes the global inhabitant
+            -- VISIBLE at the callee's param arrow, which both enables the
+            -- devirt (singleton {g|X}) and honestly widens joins where a
+            -- global flows alongside lambdas. Flag-off: slotless arrows, the
+            -- injection no-ops (spineGo's `_` arm).
+            standaloneArgMember ("g|" ++ TOpt.toComparableGlobal g) g canVar
+
+        TOpt.VarEnum _ g _ _ ->
+            standaloneArgMember ("c|" ++ TOpt.toComparableGlobal g) g canVar
+
+        TOpt.VarBox _ g _ ->
+            standaloneArgMember ("c|" ++ TOpt.toComparableGlobal g) g canVar
+
         _ ->
             \s -> Ok ( (), s )
+
+
+standaloneArgMember : String -> TOpt.Global -> IO.Variable -> Step ()
+standaloneArgMember key g canVar =
+    Engine.andThen
+        (\mid -> LssInfer.injectSpineMemberId 1 mid canVar)
+        (Engine.standaloneMemberIdFor key g)
 
 
 {-| Best-effort unify `canVar` with environment-derived structure for `arg`.

@@ -11,7 +11,8 @@ module Compiler.MonoSolver.Engine exposing
     , lookupSchemeMono, putSchemeMono, lookupKernelAbi, putKernelAbi
     , lookupCallMemo, putCallMemo
     , mvarIdKey, pointKey
-    , memberIdFor, srcLambdaKey, trivialSignature, emptyLssStats
+    , memberIdFor, standaloneMemberIdFor, standaloneMemberGlobal, srcLambdaKey, trivialSignature, emptyLssStats
+    , LssMemberTable, emptyMemberTable
     , bumpWidenedByKernel, withScratchStore
     , markDirty
     , ItemAux, emptyItemAux, clearedAux, restoredAux, clearResidualReads
@@ -100,13 +101,41 @@ type alias LssStats =
     , widenedBySize : Int
     , widenedByKernel : Int
     , widenedByBudget : Int
+    , devirtDirect : Int -- E9 (LSS_015): singleton-ctor indirect calls rewritten to direct ctor calls
     , sizeHist : CoreDict.Dict Int Int -- set size -> count (post-zonk)
     }
 
 
+{-| Interned non-lambda member ids (§3.3 keys) + the E9 standalone-global
+reverse map. One S field for both: the engine self-hosts and `S` must stay
+within the native runtime's 32-slot record GC-scan cap (HEAP invariant) —
+adding a 33rd top-level field to `S` fails the backend verifier on the
+self-compile.
+-}
+type alias LssMemberTable =
+    { byKey : CoreDict.Dict String Int
+    , globals : CoreDict.Dict Int TOpt.Global
+    }
+
+
+emptyMemberTable : LssMemberTable
+emptyMemberTable =
+    { byKey = CoreDict.empty, globals = CoreDict.empty }
+
+
+insertMemberKey : String -> Int -> LssMemberTable -> LssMemberTable
+insertMemberKey key mid t =
+    { t | byKey = CoreDict.insert key mid t.byKey }
+
+
+insertMemberGlobal : Int -> TOpt.Global -> LssMemberTable -> LssMemberTable
+insertMemberGlobal mid g t =
+    { t | globals = CoreDict.insert mid g t.globals }
+
+
 emptyLssStats : LssStats
 emptyLssStats =
-    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, sizeHist = CoreDict.empty }
+    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, sizeHist = CoreDict.empty }
 
 
 {-| The all-defaults signature for an annotation with `n` arrows.
@@ -178,7 +207,7 @@ type alias S =
     -- LSS (all GLOBAL — survive resetItem; signatures/members are per-run facts)
     , lssSignatures : CoreDict.Dict String LssSignature -- TOpt.toComparableGlobal -> signature
     , lssInProgress : CoreDict.Dict String () -- in-flight inference units (re-entry = EngineBug)
-    , lssMembers : CoreDict.Dict String Int -- interned non-lambda member ids (§3.3 keys)
+    , lssMemberTable : LssMemberTable -- interned non-lambda member ids + E9 devirt reverse map (ONE field: S self-hosts and must stay within the runtime's 32-slot record scan cap)
     , nextMemberId : Int -- shared supply, seeded past GlobalMVarState.nextLam
     , lssStats : LssStats
 
@@ -462,7 +491,7 @@ from the same supply as Phase-0 lambda ids (`nextMemberId` is seeded past
 -}
 memberIdFor : String -> Step Int
 memberIdFor key s =
-    case CoreDict.get key s.lssMembers of
+    case CoreDict.get key s.lssMemberTable.byKey of
         Just mid ->
             Ok ( mid, s )
 
@@ -474,10 +503,38 @@ memberIdFor key s =
             Ok
                 ( mid
                 , { s
-                    | lssMembers = CoreDict.insert key mid s.lssMembers
+                    | lssMemberTable = insertMemberKey key mid s.lssMemberTable
                     , nextMemberId = mid + 1
                   }
                 )
+
+
+{-| E9: intern a STANDALONE-GLOBAL member ("g|" or "c|" key — named
+globals, ctors incl. `Can.Normal` ones like `List.::`, box/enum ctors) and
+record its Global in the reverse map the devirt consults
+(`standaloneMemberGlobal`). Same interning as `memberIdFor`; the reverse
+insert is idempotent.
+-}
+standaloneMemberIdFor : String -> TOpt.Global -> Step Int
+standaloneMemberIdFor key g s0 =
+    case memberIdFor key s0 of
+        Err e ->
+            Err e
+
+        Ok ( mid, s1 ) ->
+            if CoreDict.member mid s1.lssMemberTable.globals then
+                Ok ( mid, s1 )
+
+            else
+                Ok ( mid, { s1 | lssMemberTable = insertMemberGlobal mid g s1.lssMemberTable } )
+
+
+{-| E9: the Global behind a member id, when the member is a standalone
+global/ctor reference.
+-}
+standaloneMemberGlobal : Int -> Step (Maybe TOpt.Global)
+standaloneMemberGlobal mid s =
+    Ok ( CoreDict.get mid s.lssMemberTable.globals, s )
 
 
 {-| Run a Step against a fresh scratch store, restoring the item's

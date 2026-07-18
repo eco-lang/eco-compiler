@@ -567,6 +567,53 @@ recordFieldPointsC lssOn fields st =
 -- ====== UNIFY ======
 
 
+{-| Deep type rendering for unify-mismatch diagnostics (E9 crash hunt made
+the shallow kind-only message insufficient; the full shape names the bug).
+-}
+errDeep : TErr.Type -> String
+errDeep t =
+    case t of
+        TErr.Lambda a b cs ->
+            "(" ++ String.join " -> " (List.map errDeep (a :: b :: cs)) ++ ")"
+
+        TErr.Type _ name args ->
+            if List.isEmpty args then
+                name
+
+            else
+                name ++ "<" ++ String.join "," (List.map errDeep args) ++ ">"
+
+        TErr.FlexVar n ->
+            "?" ++ n
+
+        TErr.RigidVar n ->
+            "!" ++ n
+
+        TErr.FlexSuper _ n ->
+            "?s" ++ n
+
+        TErr.RigidSuper _ n ->
+            "!s" ++ n
+
+        TErr.Infinite ->
+            "INF"
+
+        TErr.Error ->
+            "ERR"
+
+        TErr.Record _ _ ->
+            "{..}"
+
+        TErr.Unit ->
+            "()"
+
+        TErr.Tuple _ _ _ ->
+            "(,,)"
+
+        TErr.Alias _ name _ real ->
+            "~" ++ name ++ "=" ++ errDeep real
+
+
 {-| Unify two Points. A mismatch is a hard failure (no fallback): the real
 unifier rejected something, which is a compiler bug or an M2+ gap.
 -}
@@ -619,7 +666,31 @@ unifyStep v1 v2 =
                     Engine.succeed ()
 
                 Unify.AnswerErr _ t1 t2 ->
-                    Engine.fail (UnifyMismatch ("unify-fail " ++ errKind t1 ++ " /vs/ " ++ errKind t2))
+                    -- Diagnostic context: the spec being translated + flush state
+                    (\s ->
+                        Engine.fail
+                            (UnifyMismatch
+                                ("unify-fail "
+                                    ++ errDeep t1
+                                    ++ " /vs/ "
+                                    ++ errDeep t2
+                                    ++ " [in "
+                                    ++ (case s.currentGlobal of
+                                            Just g ->
+                                                Mono.toComparableGlobal g
+
+                                            Nothing ->
+                                                "?"
+                                       )
+                                    ++ " joinRounds="
+                                    ++ String.fromInt s.lssStats.joinRounds
+                                    ++ " retrans="
+                                    ++ String.fromInt s.lssStats.retranslations
+                                    ++ "]"
+                                )
+                            )
+                            s
+                    )
         )
         (Engine.liftIO (Unify.unify v1 v2))
 

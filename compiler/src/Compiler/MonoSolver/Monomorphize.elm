@@ -135,7 +135,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
             Dict.size sFinal.env.lamLabels
 
         internedCount =
-            Dict.size sFinal.lssMembers
+            Dict.size sFinal.lssMemberTable.byKey
 
         sigCount =
             Dict.size sFinal.lssSignatures
@@ -191,6 +191,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         , "sets zonked: " ++ String.fromInt stats.setsZonked ++ "; size histogram: " ++ histLine
         , "widened: bySize=" ++ String.fromInt stats.widenedBySize ++ " byKernel=" ++ String.fromInt stats.widenedByKernel ++ " byBudget=" ++ String.fromInt stats.widenedByBudget
         , "join flush: rounds=" ++ String.fromInt stats.joinRounds ++ " retranslations=" ++ String.fromInt stats.retranslations
+        , "devirtDirect=" ++ String.fromInt stats.devirtDirect
         , "top specs/global: " ++ topSpecs
         , "=================="
         ]
@@ -213,7 +214,7 @@ initState lssConfig currentModule nodes annotations globalTypeEnv mvarState =
     , nextMVarId = mvarState.nextId
     , lssSignatures = Dict.empty
     , lssInProgress = Dict.empty
-    , lssMembers = Dict.empty
+    , lssMemberTable = Engine.emptyMemberTable
     , nextMemberId = Id.toComparable mvarState.nextLam
     , lssStats = Engine.emptyLssStats
     , schemeMono = Dict.empty
@@ -347,7 +348,20 @@ drain s =
                                     ++ String.fromInt maxJoinRounds
                                     ++ " rounds ("
                                     ++ String.fromInt (List.length dirty)
-                                    ++ " specs still dirty) — non-monotone join or registry/actualType oscillation"
+                                    ++ " specs still dirty: "
+                                    ++ String.join ", "
+                                        (List.map
+                                            (\sid ->
+                                                case Registry.lookupSpecKey sid s.registry of
+                                                    Just ( g, _ ) ->
+                                                        Mono.toComparableGlobal g ++ "#" ++ String.fromInt sid
+
+                                                    Nothing ->
+                                                        "#" ++ String.fromInt sid
+                                            )
+                                            (List.take 5 dirty)
+                                        )
+                                    ++ ") — non-monotone join or registry/actualType oscillation"
                                 )
                             )
 
@@ -455,6 +469,27 @@ processItem specId s =
                                 Ok (finishNode specId (Mono.MonoExtern monoType) sItem2)
 
                             Just node ->
+                                if nodeAlreadyDone specId s && not (nodeSupportsRetranslation node) then
+                                    -- LSS_010 latent-bug guard (found by E9): a
+                                    -- dirty-flush RE-translation only makes sense
+                                    -- for body-bearing nodes. Ctor/enum/box/
+                                    -- kernel/manager specs have no set-consuming
+                                    -- body, AND their registry type was updated
+                                    -- to `nodeType` (the VALUE/result type) at
+                                    -- finishNode — feeding that back through
+                                    -- `specializeCtorViaScheme`'s whole-scheme
+                                    -- unify crashes (arrow vs value). Keep the
+                                    -- existing node; the dirty mark was consumed
+                                    -- above. Mirror finishNode's bookkeeping
+                                    -- (inProgress + currentGlobal) without
+                                    -- touching the node.
+                                    Ok
+                                        { sItem2
+                                            | inProgress = BitSet.removeGrowing specId sItem2.inProgress
+                                            , currentGlobal = Nothing
+                                        }
+
+                                else
                                 case specializeNodeSaturating 1 name home node monoType sItem2 of
                                     Err e ->
                                         Err e
@@ -473,9 +508,52 @@ processItem specId s =
                                             actualType =
                                                 Mono.nodeType monoNode
 
+                                            -- LSS_010 registry-join invariant (found by
+                                            -- E9): for a NON-body node (ctor/enum/box/
+                                            -- kernel/manager) `nodeType` is the VALUE/
+                                            -- result type, and overwriting the stored
+                                            -- FUNCTION-typed demand with it makes every
+                                            -- later same-key enqueue mismatch-join —
+                                            -- storedChanged oscillates and the flush
+                                            -- never converges (and a re-translation
+                                            -- would feed the value type to the ctor
+                                            -- scheme unify — a crash). Keep the demand
+                                            -- for those; body-bearing nodes keep the
+                                            -- actualType update they need.
+                                            registry2 =
+                                                if nodeSupportsRetranslation node then
+                                                    -- LSS_010 monotonicity (found by E9): the
+                                                    -- registry entry is the JOIN of every
+                                                    -- admitted demand's annotations; a plain
+                                                    -- actualType overwrite DISCARDS demand-side
+                                                    -- members the body's own zonk doesn't carry
+                                                    -- (arg-side injected globals), so join-grow /
+                                                    -- update-shrink ping-pongs the flush forever
+                                                    -- ("registry/actualType oscillation").
+                                                    -- Structure from actualType, annos UNIONED
+                                                    -- with the stored entry. Flag-off the annos
+                                                    -- are all LTop — keep the byte-identical
+                                                    -- plain update there.
+                                                    if s1.env.lss.enabled then
+                                                        Registry.updateRegistryType specId
+                                                            (case Registry.lookupSpecKey specId s1.registry of
+                                                                Just ( _, storedT ) ->
+                                                                    Mono.joinAnnotations actualType storedT
+
+                                                                Nothing ->
+                                                                    actualType
+                                                            )
+                                                            s1.registry
+
+                                                    else
+                                                        Registry.updateRegistryType specId actualType s1.registry
+
+                                                else
+                                                    s1.registry
+
                                             s2 =
                                                 { s1
-                                                    | registry = Registry.updateRegistryType specId actualType s1.registry
+                                                    | registry = registry2
                                                     , lambdaCounter = newLambdaCounter
                                                 }
                                         in
@@ -676,6 +754,39 @@ defineFrom annCanType expr demand s =
 
                 Ok ( monoExpr, s2 ) ->
                     Ok ( Mono.MonoDefine monoExpr (Mono.typeOf monoExpr), s2 )
+
+
+{-| LSS_010 re-translation eligibility: only body-bearing nodes can be
+meaningfully re-translated with a joined demand. Ctor/enum/box/kernel/
+manager specs are shape-derived — and their registry type is rewritten to
+the node's VALUE type at finishNode, which the ctor-scheme unify rejects.
+Links chase to their target's kind.
+-}
+nodeSupportsRetranslation : TOpt.Node TypeIds.MVarId -> Bool
+nodeSupportsRetranslation node =
+    case node of
+        TOpt.Define _ _ _ ->
+            True
+
+        TOpt.TrackedDefine _ _ _ _ ->
+            True
+
+        TOpt.Cycle _ _ _ _ ->
+            True
+
+        TOpt.PortIncoming _ _ _ ->
+            True
+
+        TOpt.PortOutgoing _ _ _ ->
+            True
+
+        TOpt.Link _ ->
+            -- The linked target is Define/Cycle in practice; allowing the
+            -- chase is safe (specializeNode recurses into the target).
+            True
+
+        _ ->
+            False
 
 
 finishNode : Mono.SpecId -> Mono.MonoNode -> S -> S

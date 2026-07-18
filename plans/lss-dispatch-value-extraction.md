@@ -1588,6 +1588,110 @@ are the E-track's open items; re-census after either.**
   1787` construct `Nothing`) is only needed if borrow ever consumes subst
   graphs — a small standalone item, no longer scheduled here (it was A1.0).
 
+## 11.5 E9 — Ctor devirtualization at singleton dispatch sites
+## (designed 2026-07-18; implementation-ready)
+
+**Why (Run G's mandate).** The `List.cons`-as-HOF rows are the largest
+remaining dispatch family (~15 % / 139 M events): `foldr`/`foldrHelper`
+dispatch `fn a acc` where `fn` is the `::` CONSTRUCTOR used as a value.
+Ctor members ("c|" keys, LSS_003) have NO `MonoClosure` instance, so every
+stamp path declines (`declinedNoInstance`, 532 sites unkeyed). Yet the
+runtime value of a ctor reference is trivially interchangeable — no
+captures, one identity per global — stronger than the lambda case. NOTE
+the hot sites live inside SHARED HOF specs whose param sets are JOINS; they
+become singletons only under E5 keying of the foldr chain — E9 composes
+with E5, and Run H must include a keyed leg to see the weight.
+
+**Mechanism: translate-time callee rewrite (NOT AbiCloning).** The
+load-bearing constraint: a devirtualized site needs the ctor's spec AT THE
+SITE'S LAYOUT (`::` is polymorphic; one "c|" member covers all layouts),
+and only the SOLVER can enqueue specs — AbiCloning is post-mono. Also
+verified: `translateCall` has NO VarEnum/VarBox arm — a direct source-level
+ctor call already flows through `translateIndirectCall`, whose
+`MonoVarGlobal ctorSpec` callee is classified direct by
+`annotateCallStaging` and emitted as `eco.call @Ctor_spec` (the Run-D text
+MLIR shows `Maybe_Just_$_486` etc.). So the ENTIRE devirt is: rewrite the
+indirect call's CALLEE to the ctor reference; every downstream layer
+(staging, callInfo, codegen) already does the right thing. The dispatch is
+REMOVED, not converted (`sat` drops with no `fast` gain in the census).
+
+**Steps.**
+
+1. **Reverse ctor-member map** (`Engine.elm`): add
+   `lssCtorMembers : CoreDict.Dict Int TOpt.Global` to `S`, populated
+   wherever a `"c|"` member is minted (the `memberIdFor` call sites that
+   hold the actual `TOpt.Global` — LssInfer's VarEnum/VarBox
+   `standaloneMember` arms and any Translate twin; thread the global to the
+   mint or insert beside it). Lookup helper `Engine.ctorMemberGlobal :
+   Int -> Step (Maybe TOpt.Global)`.
+2. **Devirt branch** (`Translate.translateIndirectCallBody`): AFTER the
+   existing `translate func` (state effects preserved — byte-stability),
+   when ALL of:
+   - `s.env.lss.enabled`;
+   - the callee EXPR is a plain var (`TOpt.VarLocal`/`TrackedVarLocal`) —
+     purity guard: rewriting the callee DROPS its computation, and only a
+     var read is guaranteed effect-and-⊥-free;
+   - `Mono.headAnno (Mono.typeOf monoFunc) == Mono.LSet [ m ]`;
+   - `ctorMemberGlobal m == Just g`;
+   - `argCount == ctorArity g` (arrow-spine length of g's annotation via
+     `lookupAnnotation` — exact saturation only; partial ctor application
+     is a PAP, out of scope),
+   then translate the callee AS the ctor reference at the site's own
+   canonical type — `translateVarRef region g (TOpt.typeOf func)` (this
+   enqueues the ctor spec at the site's layout) — and build
+   `MonoCall region ctorRef monoArgs resultMonoType defaultCallInfo`;
+   otherwise the existing indirect construction, unchanged.
+3. **Census**: `ctorDevirt : Int` in `Engine.lssStats` + the
+   `renderLssReport` mono census line.
+4. **Invariant LSS_015**: singleton-ctor devirt — conditions above; the
+   member's interchangeability is definitional (ctors are captureless and
+   unique per global); provisional-singleton soundness rides LSS_010 (a
+   later join marks the spec dirty and the drain-end flush re-translates
+   with the fully-joined demand, re-deciding the devirt).
+5. **Pins**: unit `E9CtorDevirtTest` — a ctor passed to a keyed
+   recursion-guarded HOF; assert the dispatch site's callee became
+   `MonoVarGlobal` (a direct call), RED with the branch neutralized. E2E
+   runtime `test/elm/src/CtorDevirtTest.elm` (result CHECK, engine-neutral).
+6. **Gates**: elm-tests baseline; solver+LSS self-compile; flag-off
+   byte-identity + flag-on corpus (Run-H legs).
+7. **Run H**: e2v2 vs e9 binaries; unkeyed census (`ctorDevirt` ≈ the 532
+   noInstance singletons' subset) + KEYED-foldr-chain leg (the hot rows);
+   dynamic A/B — expect `sat` to DROP on the cons rows (events removed).
+
+Effort: S–M. Risk: LOW-MEDIUM — the rewrite reuses the existing direct-call
+pipeline wholesale; the purity guard confines dropped computation to var
+reads; LSS_010 covers provisional sets.
+
+**AS BUILT (2026-07-18) — SHIPPED (ctor-scoped) + THREE pre-existing
+infrastructure bugs fixed; Run H: −3.49 M dispatch events/run.** The devirt
+needed the arg-side standalone-member injection (`standaloneArgMember` —
+VarGlobal/VarEnum/VarBox args now contribute members like lambda literals
+do; the design's "existing transport suffices" assumption was WRONG for the
+fixture class). That injection's first-ever demand-side member churn exposed
+and forced fixes for: (1) dirty-flush re-translation of shape-derived specs
+(value-typed registry entries → ctor-scheme unify crash) — now skipped via
+`nodeSupportsRetranslation`; (2) `updateRegistryType` overwrite discarding
+demand-side annos — join-grow/update-shrink PING-PONG, flush never
+converged; the update now JOINS (flag-off keeps the plain update); (3)
+`Engine.S` hit the native 32-slot record scan cap at 33 fields (the
+compiler SELF-HOSTS — its own state records must respect runtime limits!);
+member tables merged into one `lssMemberTable` sub-record. SCOPE
+CORRECTION: devirt restricted to actual `Ctor`/`Box` nodes — devirtualizing
+FUNCTION globals feeds the inliner new direct-call shapes that trip a
+pre-existing freshening seam (`lookupVar: unbound mono_inline_N` at MLIR
+emit; reproduced, documented) — E9.1 follow-up gated on hardening it.
+KEY GAP FOUND: `List.::` is NOT an ordinary Ctor node (kernel-represented)
+— THE cons class (15 % of dispatch, this section's original motivation) is
+NOT yet captured; E9.2 = give cons a devirt-able representation. Run H:
+`devirtDirect=2454` unkeyed (output −80 KB), dynamic sat −3,487,524
+(events REMOVED; fast unchanged — the devirt signature), coverage
+5.39→5.41 %. COST: solver mono wall +38 % same-run (10:04→13:56) from the
+injection's re-translation rounds — E9.3 = cap/registry-join optimization
+before enabling more injection classes. All gates green (12998/12, corpus
+1623/1623 incl. CtorDevirtTest, subst byte-identical). Debug playbook
+addition: the enqueue-trap + deep errDeep rendering + currentGlobal/
+flush-round context in unify failures are now PERMANENT diagnostics.
+
 ## 12. A-track side items (not phases of this plan)
 
 - **A2 — cheapen the solver** (owned by `plans/monosolver-*`): pretenuring/nursery
