@@ -60,7 +60,11 @@ Takes an expression compiler callback to compile embedded MonoExpr values.
 Returns the MLIR ops and the result variable name.
 -}
 emitFusedEncoder : ExprCompiler -> Context -> List Op -> ( List MlirOp, String, Context )
-emitFusedEncoder compileExpr ctx ops =
+emitFusedEncoder compileExpr ctxIn ops =
+    emitFusedEncoderTagged compileExpr { ctxIn | currentFuncName = ctxIn.currentFuncName ++ "/bf-enc" } ops
+
+
+emitFusedEncoderTagged compileExpr ctx ops =
     let
         initialState =
             { ctx = ctx

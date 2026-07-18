@@ -87,7 +87,12 @@ processLambdas ctx =
 
 
 generateLambdaFunc : Ctx.Context -> Ctx.PendingLambda -> ( List MlirOp, Ctx.Context )
-generateLambdaFunc ctx lambda =
+generateLambdaFunc ctxIn lambda =
+    generateLambdaFuncNamed { ctxIn | currentFuncName = lambda.name } lambda
+
+
+generateLambdaFuncNamed : Ctx.Context -> Ctx.PendingLambda -> ( List MlirOp, Ctx.Context )
+generateLambdaFuncNamed ctx lambda =
     let
         hasCaptures =
             not (List.isEmpty lambda.captures)

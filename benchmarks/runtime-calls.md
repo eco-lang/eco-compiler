@@ -440,6 +440,59 @@ mono_inline_N` at MLIR emit — reproduced and documented). The +38 % mono
 wall is E9's real price and the first flag-on compile-time regression of
 the track — cap/optimize before enabling further injection classes.
 
+### Run I — E9.1 fn-global devirtualization, flag `lssDF` (2026-07-18)
+
+Five build legs (`eco-compiler-e9` vs `eco-compiler-e91`, same tree, clean
+`eco-stuff` per leg: e9-solver / e91-solver flag-off / e91-solver
+`ECO_MONO_LSS_DEVIRT_FN=1` / both subst) + the two-binary dynamic census A/B.
+E9.1 = E9's devirt extended to body-bearing FUNCTION globals
+(Define/TrackedDefine/Cycle) behind `lss.devirtFnGlobals` (hash token
+`lssDF=1`), unblocked by fixing the BytesFusion walked-past-let seam
+(`Expr.bfExprCompiler`/`resolveFusedLets` — the `lookupVar: mono_inline_N`
+crash Run H documented).
+
+- **Safety: all clean.** Flag-off solver legs BYTE-IDENTICAL e9↔e91 (the seam
+  fix + flag plumbing are provably inert when off); subst legs BYTE-IDENTICAL;
+  DF-on native self-compile green (Stage 5+6); DF-on corpus 1624/1624 incl.
+  `FnDevirtInlineTest`; elm-tests 12998/12 baseline.
+- **Static census (off → DF-on):** `devirtDirect` **2,455 → 6,458 (+4,003)**;
+  `declinedNoInstance` 3,858 → 835 (−3,023 — the fn-global singleton class Run
+  H scoped out, now converted; the ~980 extra devirts beyond it are
+  second-order, minted by the re-translation rounds the devirts trigger). All
+  other census fields identical. Output **+201,970 B (+1.67 %)** — unlike ctor
+  devirt (which shrank output), fn devirt grows it: direct calls become
+  inliner-visible and bodies get inlined.
+- **Dynamic census A/B (both binaries, same subst workload, cold):**
+  `off: sat=889,095,785  gen=871,574,493  typed=17,521,292  fast=50,895,544  distinct=5,913`
+  `DF:  sat=836,155,570  gen=820,008,787  typed=16,146,783  fast=50,734,946  distinct=5,452`
+  → **sat −52,940,215 (−5.95 %); total dispatch events (sat+fast)
+  940.0 M → 886.9 M = −53.1 M (−5.65 %) REMOVED per run** — the removal
+  signature (devirted calls leave the census entirely), the largest
+  single-phase dispatch reduction of the track (vs E2.7's 33.8 M conversion,
+  E9's 3.5 M removal). `fast` −160,598 and `typed` −1.37 M: previously-stamped
+  and known-arity sites upgraded all the way to direct. `distinct` −461.
+  Coverage (fast/(sat+fast)) reads 5.41 % → 5.72 %, but that metric
+  under-states removal phases — events-removed is the E9-family signal.
+- **COST (both honest numbers).** (1) Solver mono wall flag-on
+  **13:03.78 → 19:02.46 (+46 %)** — the same LSS_010 re-translation
+  amplification as E9's +38 %, now with ~2.6× the devirt churn; the E9.3
+  cost work is now blocking for any default-on. (2) Census-workload wall
+  **4:57.43 → 6:42.20 (+35 %)** — single instrumented run on a machine that
+  swung 17 % between identical-work legs the same session (15:42 vs 13:03),
+  so treat as UNRESOLVED, not established; but it is the first time a
+  dispatch-reducing phase has read slower, and +1.67 % more code (inlined
+  bodies) is a plausible i-cache mechanism. **An uninstrumented multi-run
+  wall A/B is required before enabling `lssDF` by default.**
+
+*Reading Run I:* fn-global devirt does exactly what the E9.1 hypothesis said —
+it converts the biggest static class yet (+4,003 sites) and removes 53.1 M
+dynamic dispatches/run, 15× E9's ctor haul. But it is the first phase where
+the wall-clock story does not follow the event count: compile-time +46 % and
+a suspicious (unconfirmed) workload-wall regression. The flag stays OFF until
+(a) the E9.3 re-translation cost work lands and (b) a clean perf A/B settles
+the workload wall. `List.::` kernel-ctor representation (E9.2) remains the
+other big census row.
+
 ---
 
 ## Summary
@@ -460,9 +513,12 @@ stamps (front-end run under solver, lowered with `ECO_LSS_DISPATCH_SITE_COUNTERS
 | 2026-07-18 10:0x | **E2.7-built (e2v2) / subst (Run G)** | 881,022,127 | 862,986,979 | 18,035,148 | **50,045,849** | **5.37 %** | 6,008 | 4:42.06 |
 | 2026-07-18 14:2x | pre-E9 (e2v2) / subst (Run H) | 889,123,974 | 870,921,349 | 18,202,625 | 50,628,273 | 5.39 % | 6,008 | 4:51.56 |
 | 2026-07-18 14:3x | **E9-built (e9) / subst (Run H)** | **885,636,450** | 868,262,575 | 17,373,875 | 50,628,276 | **5.41 %** | 5,924 | 4:52.84 |
+| 2026-07-18 18:0x | pre-DF (e91, flag off) / subst (Run I) | 889,095,785 | 871,574,493 | 17,521,292 | 50,895,544 | 5.41 % | 5,913 | 4:57.43 |
+| 2026-07-18 18:2x | **E9.1 DF-on-built (e91-df) / subst (Run I)** | **836,155,570** | 820,008,787 | 16,146,783 | 50,734,946 | **5.72 %** | 5,452 | 6:42.20* |
 
 *Run-C walls carry an unattributed +30 % vs Run A/B (see the Run C section) — the
-counts are the meaningful comparison; treat the walls as provisional.
+counts are the meaningful comparison; treat the walls as provisional. The Run-I
+DF wall is a single instrumented run on a noisy machine — unresolved, see Run I.
 
 *Reading it:* Run G's E2.7 staged stamp is the first phase to move the dynamic
 needle: **coverage 1.75 % → 5.37 % (3.1×)** — 344 static staged stamps convert
@@ -471,7 +527,12 @@ The prior plateau was a CONVERSION ceiling: S+E4a transport and E5 keying were
 correct but their sites were cold or v1-declined; the staged over-apply class
 (the IO continuations) was where the weight sat.
 
-*Next:* ctor instances for the `List.cons` class (~15 % of dispatch, the biggest
-remaining row), per-member attribution over the residual 6,472 over-apply
-declines, later-stage chaining (v3), and E1.3 (`inlinehint` on the now-50 M
-`$cap` calls — materially interesting at this coverage).
+Run I's fn-global devirt (flag `lssDF`, default OFF) is the largest dispatch
+reduction yet — **53.1 M events/run removed (−5.65 % of all dispatch)** — but
+carries a +46 % flag-on mono wall and an unresolved workload-wall question.
+
+*Next:* the E9.3 re-translation cost work (now blocking `lssDF` default-on) +
+an uninstrumented wall A/B; `List.::` kernel-ctor representation (E9.2, the
+~15 % cons class); per-member attribution over the residual over-apply
+declines; later-stage chaining (v3); E1.3 (`inlinehint` on the 50 M `$cap`
+calls).

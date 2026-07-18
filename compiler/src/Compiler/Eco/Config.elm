@@ -89,6 +89,7 @@ type alias LssConfig =
     { enabled : Bool
     , keyed : Bool
     , keyedGlobals : List String
+    , devirtFnGlobals : Bool
     , maxSetSize : Int
     , maxSpecsPerGlobal : Int
     , report : Bool
@@ -109,6 +110,7 @@ defaultLss =
     { enabled = True
     , keyed = False
     , keyedGlobals = []
+    , devirtFnGlobals = False
     , maxSetSize = 8
     , maxSpecsPerGlobal = 64
     , report = False
@@ -273,6 +275,7 @@ lssDecoder =
         |> D.apply (D.optionalField "enabled" D.bool defaultLss.enabled)
         |> D.apply (D.optionalField "keyed" D.bool defaultLss.keyed)
         |> D.apply (D.optionalField "keyedGlobals" (D.list D.string) defaultLss.keyedGlobals)
+        |> D.apply (D.optionalField "devirtFnGlobals" D.bool defaultLss.devirtFnGlobals)
         |> D.apply (D.optionalField "maxSetSize" D.int defaultLss.maxSetSize)
         |> D.apply (D.optionalField "maxSpecsPerGlobal" D.int defaultLss.maxSpecsPerGlobal)
         |> D.apply (D.optionalField "report" D.bool defaultLss.report)
@@ -408,6 +411,11 @@ hash cfg =
                         -- E5 selective keying: sorted so equivalent configs
                         -- share artifacts regardless of listing order.
                         [ "lssKG=" ++ String.join "," (List.sort lss.keyedGlobals) ]
+                    , if lss.devirtFnGlobals then
+                        [ "lssDF=1" ]
+
+                      else
+                        []
                     , if lss.maxSetSize /= defaultLss.maxSetSize then
                         [ "lssS=" ++ String.fromInt lss.maxSetSize ]
 

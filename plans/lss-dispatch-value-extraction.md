@@ -1662,6 +1662,61 @@ Effort: S–M. Risk: LOW-MEDIUM — the rewrite reuses the existing direct-call
 pipeline wholesale; the purity guard confines dropped computation to var
 reads; LSS_010 covers provisional sets.
 
+### E9.1 — fn-global devirt + the inliner freshening seam (planned 2026-07-18,
+### implementation-ready)
+
+**Why (the user's call, and it's right):** an inlined direct function costs
+ZERO per call; a devirtualized kernel call still pays the call. The
+fn-global devirt's value is precisely the inlining it unlocks — call sites
+that were indirect their whole lives become direct calls to small bodies
+(`identity`, combinators) the inliner then erases. That door is also the
+hazard: the new inline shapes trip a pre-existing codegen/inliner seam
+(`lookupVar: unbound variable mono_inline_N` at MLIR emit — the
+`Expr.elm:2781` comment documents the crash class: a walker consumes a
+let-chain without compiling the inliner-minted bindings, and
+`generateLet`'s scope restore leaves them unbound). E9.1 = fix the seam,
+then enable the devirt class.
+
+**Step 1 — feature flag (buildable compiler throughout):**
+`LssConfig.devirtFnGlobals : Bool` (default False), env
+`ECO_MONO_LSS_DEVIRT_FN=1|true|yes`, hash token `lssDF=1` when set (mono
+output changes ⇒ must key the artifact cache). Consumed in
+`devirtDirectTarget`: the node-kind guard becomes
+`isCtorNode g s || (s.env.lss.devirtFnGlobals && isBodyNode g s)` where
+`isBodyNode` = Define/TrackedDefine/Cycle (Link-chased). Same var-callee
+purity guard, same exact-annotation-arity guard (a multi-stage fn global's
+over-arity spine is fine — staging handles it — but v1 keeps EXACT).
+
+**Step 2 — reproduce + localize:** (a) flag-on solver self-compile →
+expect `lookupVar: unbound mono_inline_N`; (b) add the CURRENT FUNCTION to
+`Context.lookupVar`'s crash (thread `currentFuncName` into `Ctx.Context`,
+set where each func's generation starts — codegen-only state, no output
+impact); (c) read the named function's mono/inlined form, identify the
+shape; (d) minimize into `test/elm/src/FnDevirtInlineTest.elm` — must
+CRASH the flag-on E2E harness pre-fix (the RED pin) and print a CHECK
+result post-fix.
+
+**Step 3 — fix-space (root-cause among, in likelihood order):**
+1. a SEVENTH un-freshened inline seam in `MonoInlineSimplify` (six were
+   fixed before; the devirt creates inlinable calls at sites the freshening
+   audit never saw — e.g. inlining INSIDE a context the auditor assumed
+   couldn't hold a direct call);
+2. a codegen walker consuming a let-chain without
+   `compileSkippedBindings`-style handling (the BytesFusion precedent —
+   check every walker that pattern-matches through `MonoLet`);
+3. `generateLet` scope-restore vs. a consumer that emits references after
+   the group closes (an ops-ordering rather than scoping bug).
+Fix at the source, not by suppressing the inlining (that would forfeit the
+value). Add the pin regardless of which suspect it is.
+
+**Step 4 — gates:** repro test green flag-on; flag-OFF byte-identity
+(subst AND unkeyed solver legs — the flag defaults off, so shipped
+behavior is unchanged); elm-tests baseline; **flag-ON solver self-compile
+green — the decisive gate**; flag-on corpus run. Benchmark note: the
+dynamic payoff (Run I) rides E1.3-style measurement and is NOT part of
+E9.1's goal (planned/implemented/tested); record the census counter delta
+only.
+
 **AS BUILT (2026-07-18) — SHIPPED (ctor-scoped) + THREE pre-existing
 infrastructure bugs fixed; Run H: −3.49 M dispatch events/run.** The devirt
 needed the arg-side standalone-member injection (`standaloneArgMember` —
@@ -1691,6 +1746,38 @@ before enabling more injection classes. All gates green (12998/12, corpus
 1623/1623 incl. CtorDevirtTest, subst byte-identical). Debug playbook
 addition: the enqueue-trap + deep errDeep rendering + currentGlobal/
 flush-round context in unify failures are now PERMANENT diagnostics.
+
+**E9.1 AS BUILT (2026-07-18) — SHIPPED flag-gated (`lss.devirtFnGlobals` /
+`ECO_MONO_LSS_DEVIRT_FN` / hash `lssDF=1`, default OFF); Run I: −53.1 M
+dispatch events/run, the largest reduction of the track.** Devirt guard
+extended to body-bearing globals via `isBodyNode` (Define/TrackedDefine/
+Cycle, Link-chased). The blocking crash was NOT an inliner freshening bug:
+BytesFusion's reifier walks past `MonoLet` bindings via `exprCache`, so
+residual `MonoExpr`s inside Encoder/DecoderNodes referenced `mono_inline_N`
+bindings never compiled at the emit callback (`lookupVar: unbound`, at
+self-compile scale in `Mlir.Bytecode.StreamEncode.assembleModule`). Fix at
+the fused-emit boundary: `Expr.bfExprCompiler`/`resolveFusedLets` substitute
+walked-past bindings ONLY when absent from `ctx.varMappings` (working paths
+untouched); site-local `collectFusedLets` + miss-path
+`findLetInInlineBodies` (bindings inside inlined spec bodies are invisible
+to site-local collection — the second half of the bug). PERMANENT
+diagnostics added: `Context.currentFuncName` (+ `/bf-enc` tag) and in-scope
+mono_inline list in the lookupVar crash. The E2E fixture
+(`FnDevirtInlineTest`) pins devirt+inline+fusion functionally but does NOT
+reproduce the seam — the self-compile is the RED/GREEN repro (neutralize →
+Stage 5 crashes; restore → green, both demonstrated). Test hardening:
+`FusionPartialOpaqueTest` needed a runtime 2-member `pickEnc` (fn devirt
+resolved its "opaque" param and the whole encoder fused — a strictly
+better compile over-failing an over-specified CHECK). Gates: flag-off
+solver AND subst byte-identical e9↔e91 (seam fix provably inert), DF-on
+self-compile green, DF corpus 1624/1624, elm-tests 12998/12. Run I:
+`devirtDirect` 2,455→6,458 (+4,003; noInstance −3,023 + ~980 second-order),
+output +202 KB (+1.67 % — inlined bodies), sat −52.94 M / events −53.1 M
+(−5.65 %), fast −0.16 M (fast sites upgraded to direct), coverage
+5.41→5.72 %. COST: flag-on mono wall +46 % (13:04→19:02, E9.3 now BLOCKING
+for default-on) and an UNRESOLVED instrumented workload-wall read
+(4:57→6:42, single run, noisy machine — uninstrumented multi-run A/B
+required before any default-on decision).
 
 ## 12. A-track side items (not phases of this plan)
 

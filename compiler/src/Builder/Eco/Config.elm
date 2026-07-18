@@ -130,6 +130,11 @@ applyEnvOverrides cfg =
                     |> Task.andThen (\kgVal -> applyLssKeyedGlobalsOverride kgVal cfg4b)
             )
         |> Task.andThen
+            (\cfg4c ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_DEVIRT_FN" |> Task.mapError never)
+                    |> Task.map (\dfVal -> applyLssDevirtFnOverride dfVal cfg4c)
+            )
+        |> Task.andThen
             (\cfg5 ->
                 (Utils.envLookupEnv "ECO_MONO_VALIDATE" |> Task.mapError never)
                     |> Task.map (\valVal -> applyValidateOverride valVal cfg5)
@@ -314,6 +319,28 @@ applyLssKeyedGlobalsOverride maybeVal cfg =
             else
                 Task.io (IO.writeLn IO.stderr ("eco: dropping malformed ECO_MONO_LSS_KEYED_GLOBALS entries (expected author/project:Module.Name.value): " ++ String.join ", " bad))
                     |> Task.map (\_ -> cfg1)
+
+
+{-| `ECO_MONO_LSS_DEVIRT_FN=1|true|yes` (E9.1): devirtualize singleton
+FUNCTION-global dispatch sites too (not just ctors). Participates in the
+hash via the `lssDF=` token.
+-}
+applyLssDevirtFnOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssDevirtFnOverride maybeVal cfg =
+    let
+        on =
+            case maybeVal of
+                Just v ->
+                    List.member (String.toLower (String.trim v)) [ "1", "true", "yes" ]
+
+                Nothing ->
+                    False
+    in
+    if on then
+        updateLss (\lss -> { lss | devirtFnGlobals = True }) cfg
+
+    else
+        cfg
 
 
 {-| `author/project:Module.Name.value` — a `:` separating a `/`-bearing

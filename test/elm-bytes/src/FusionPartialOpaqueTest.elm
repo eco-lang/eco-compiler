@@ -42,10 +42,26 @@ encodeWith mkEnc n =
         )
 
 
+{-| E9.1 robustness: `E.unsignedInt8` passed directly is a SINGLETON the
+fn-global devirt (lss.devirtFnGlobals) resolves — the "opaque" subtree
+turns transparent, the whole encoder fuses, and the escape-hatch op this
+test exists to pin disappears (a strictly better compile, but the wrong
+test). Choosing between TWO encoders at runtime keeps the set 2-membered —
+genuinely opaque under every optimizer config.
+-}
+pickEnc : Int -> (Int -> E.Encoder)
+pickEnc n =
+    if modBy 2 n == 0 then
+        E.unsignedInt8
+
+    else
+        \v -> E.unsignedInt8 (v + 0)
+
+
 main =
     let
         bytes =
-            encodeWith E.unsignedInt8 42
+            encodeWith (pickEnc 42) 42
 
         result =
             Bytes.width bytes

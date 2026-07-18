@@ -281,7 +281,7 @@ generateNode ctx specId node =
             specIdToFuncName ctx.registry specId
 
         ( ops, dirtyCtx ) =
-            generateNodeInner ctx funcName specId node
+            generateNodeInner { ctx | currentFuncName = funcName } funcName specId node
 
         -- Mark the main entrypoint's func.func with eco.shadow_roots so that
         -- EcoToLLVM installs a shadow root frame for its parameters (TCO safety).

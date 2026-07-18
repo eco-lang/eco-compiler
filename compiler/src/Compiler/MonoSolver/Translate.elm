@@ -1785,7 +1785,7 @@ devirtDirectTarget func args monoFunc s0 =
                         Ok ( Nothing, s1 )
 
                     Ok ( Just ctorGlobal, s1 ) ->
-                        if not (isCtorNode ctorGlobal s1) then
+                        if not (isCtorNode ctorGlobal s1 || (s1.env.lss.devirtFnGlobals && isBodyNode ctorGlobal s1)) then
                             -- v1 scope: CTORS ONLY. Devirtualizing FUNCTION
                             -- globals is valid too (and valuable — it unlocks
                             -- inlining of previously-indirect calls), but the
@@ -1835,6 +1835,31 @@ isCtorNode g s =
 
         Just (TOpt.Link target) ->
             isCtorNode target s
+
+        _ ->
+            False
+
+
+{-| E9.1 (flag `lss.devirtFnGlobals`): is the global a body-bearing
+FUNCTION node? Devirtualizing these unlocks INLINING of previously-indirect
+calls — the class E9 v1 excluded because the new inline shapes tripped the
+`lookupVar: unbound mono_inline_N` codegen seam. Enabled only behind the
+flag until the seam fix is proven at self-compile scale.
+-}
+isBodyNode : TOpt.Global -> Engine.S -> Bool
+isBodyNode g s =
+    case DMap.get TOpt.toComparableGlobal g s.env.toptNodes of
+        Just (TOpt.Define _ _ _) ->
+            True
+
+        Just (TOpt.TrackedDefine _ _ _ _) ->
+            True
+
+        Just (TOpt.Cycle _ _ _ _) ->
+            True
+
+        Just (TOpt.Link target) ->
+            isBodyNode target s
 
         _ ->
             False

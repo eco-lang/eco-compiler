@@ -158,6 +158,7 @@ type alias Context =
     , kernelDecls : Dict.Dict String KernelDeclInfo -- Kernel symbol -> ABI declaration info
     , typeRegistry : TypeRegistry -- Type graph: MonoType -> TypeId for debug printing
     , decoderExprs : Dict.Dict String Mono.MonoExpr -- Cache of let-bound decoder expressions for BytesFusion
+    , currentFuncName : String -- diagnostics only: the func being generated (crash context)
     , externBoxedVars : Set.Set String -- Local vars that alias extern/kernel functions (evaluator has all !eco.value params)
     , definedSsaVars : Set.Set String -- SSA variables defined in the current function scope (for safepoint filtering)
     , inlineBodies : Dict.Dict Int ( List ( Name.Name, Mono.MonoType ), Mono.MonoExpr )
@@ -230,6 +231,7 @@ initContext mode registry signatures initialCtorShapes =
             | ctorShapes = initialCtorShapes
         }
     , decoderExprs = Dict.empty
+    , currentFuncName = ""
     , externBoxedVars = Set.empty
     , definedSsaVars = Set.empty
     , inlineBodies = Dict.empty
@@ -481,7 +483,15 @@ lookupVar ctx name =
             ( info.ssaVar, info.mlirType )
 
         Nothing ->
-            crash ("lookupVar: unbound variable " ++ name)
+            crash
+                ("lookupVar: unbound variable "
+                    ++ name
+                    ++ " [in "
+                    ++ ctx.currentFuncName
+                    ++ "; in-scope mono_inline: "
+                    ++ String.join "," (List.filter (String.startsWith "mono_inline") (Dict.keys ctx.varMappings))
+                    ++ "]"
+                )
 
 
 {-| Add a variable mapping from a let-bound name to its SSA variable and type.

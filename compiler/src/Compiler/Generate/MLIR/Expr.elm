@@ -57,6 +57,7 @@ import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Intrinsics as Intrinsics
 import Compiler.Generate.MLIR.KernelAbi as KernelAbi
 import Compiler.Generate.MLIR.Names as Names
+import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Patterns as Patterns
 import Compiler.Generate.MLIR.Types as Types
@@ -2604,6 +2605,132 @@ tryInlinedDecodeFusion ctx def body =
             Nothing
 
 
+{-| E9.1 seam fix: BytesFusion reification walks PAST `MonoLet` bindings
+(caching name→bound in its `exprCache`) and structurally consumes most
+references — but a reference surviving into a RESIDUAL `MonoExpr` inside an
+Encoder/DecoderNode is compiled by the emit callback in the ops stream,
+where the walked-past binding was never compiled → `lookupVar: unbound
+variable mono_inline_N`. Historically no reachable shape did this;
+fn-global devirtualization (`lss.devirtFnGlobals`) lets the inliner plant
+`mono_inline_N` lets inside encoder trees, minting the shape. Fix: the
+shared BF expr-compiler substitutes a binding ONLY when the name is absent
+from `varMappings` — every working path resolves through `varMappings`
+exactly as before; only the would-crash case changes. Let chains are
+non-recursive (`MonoDef` only), so substitution terminates.
+-}
+bfExprCompiler : Dict.Dict Name.Name Mono.MonoExpr -> BFEmit.ExprCompiler
+bfExprCompiler fusedLets monoExpr compilerCtx =
+    let
+        result =
+            generateExpr compilerCtx (resolveFusedLets fusedLets compilerCtx monoExpr)
+    in
+    { ops = result.ops
+    , resultVar = result.resultVar
+    , resultType = result.resultType
+    , ctx = result.ctx
+    }
+
+
+resolveFusedLets : Dict.Dict Name.Name Mono.MonoExpr -> Ctx.Context -> Mono.MonoExpr -> Mono.MonoExpr
+resolveFusedLets fusedLets ctx expr =
+    MonoTraverse.traverseExpr
+        (\() e ->
+            case e of
+                Mono.MonoVarLocal name _ ->
+                    if Dict.member name ctx.varMappings then
+                        ( e, () )
+
+                    else
+                        case Dict.get name fusedLets of
+                            Just bound ->
+                                ( resolveFusedLets fusedLets ctx bound, () )
+
+                            Nothing ->
+                                -- Reification also PULLS IN inlined spec
+                                -- bodies (`reifyEncoderWith ctx.inlineBodies`)
+                                -- and walks past lets INSIDE them — trees the
+                                -- site-local collection never sees. Search
+                                -- them only on this rare miss path.
+                                case findLetInInlineBodies name ctx of
+                                    Just bound ->
+                                        ( resolveFusedLets fusedLets ctx bound, () )
+
+                                    Nothing ->
+                                        ( e, () )
+
+                _ ->
+                    ( e, () )
+        )
+        ()
+        expr
+        |> Tuple.first
+
+
+findLetInInlineBodies : Name.Name -> Ctx.Context -> Maybe Mono.MonoExpr
+findLetInInlineBodies name ctx =
+    Dict.foldl
+        (\_ ( _, bodyExpr ) acc ->
+            case acc of
+                Just _ ->
+                    acc
+
+                Nothing ->
+                    MonoTraverse.foldExpr
+                        (\e found ->
+                            case found of
+                                Just _ ->
+                                    found
+
+                                Nothing ->
+                                    case e of
+                                        Mono.MonoLet (Mono.MonoDef n b) _ _ ->
+                                            if n == name then
+                                                Just b
+
+                                            else
+                                                Nothing
+
+                                        _ ->
+                                            Nothing
+                        )
+                        Nothing
+                        bodyExpr
+        )
+        Nothing
+        ctx.inlineBodies
+
+
+{-| Every non-recursive let binding anywhere in a fused expression tree
+(the reifier may walk past any of them).
+-}
+collectFusedLets : Mono.MonoExpr -> Dict.Dict Name.Name Mono.MonoExpr
+collectFusedLets expr =
+    MonoTraverse.foldExpr
+        (\e acc ->
+            case e of
+                Mono.MonoLet (Mono.MonoDef n b) _ _ ->
+                    Dict.insert n b acc
+
+                _ ->
+                    acc
+        )
+        Dict.empty
+        expr
+
+
+fusedLetsFromChain : List ( Name.Name, Mono.MonoExpr ) -> Mono.MonoExpr -> Dict.Dict Name.Name Mono.MonoExpr
+fusedLetsFromChain chain body =
+    List.foldl
+        (\( n, b ) acc -> Dict.union (collectFusedLets b) (Dict.insert n b acc))
+        (collectFusedLets body)
+        chain
+
+
+fusedLetsFromExprs : List Mono.MonoExpr -> Dict.Dict Name.Name Mono.MonoExpr
+fusedLetsFromExprs exprs =
+    List.foldl (\e acc -> Dict.union (collectFusedLets e) acc) Dict.empty exprs
+
+
 {-| Search for the decode fusion pattern through nested MonoLet bindings.
 Accumulates let bindings to resolve the decoder expression when found.
 -}
@@ -2638,16 +2765,8 @@ tryDecodeFusionWithBindings ctx bindings body =
                                     BFReify.decoderNodeToOps decoderNode
 
                                 exprCompiler : BFEmit.ExprCompiler
-                                exprCompiler monoExpr compilerCtx =
-                                    let
-                                        result =
-                                            generateExpr compilerCtx monoExpr
-                                    in
-                                    { ops = result.ops
-                                    , resultVar = result.resultVar
-                                    , resultType = result.resultType
-                                    , ctx = result.ctx
-                                    }
+                                exprCompiler =
+                                    bfExprCompiler (fusedLetsFromChain bindings body)
 
                                 ( mlirOps, resultVar, ctx2 ) =
                                     BFEmit.emitFusedDecoder exprCompiler ctx1 bytesVar decoderOps
@@ -2826,16 +2945,8 @@ tryEncoderFusionWithBindings ctx accumulated encoderExpr =
                             BFReify.nodesToOps nodes
 
                         exprCompiler : BFEmit.ExprCompiler
-                        exprCompiler monoExpr compilerCtx =
-                            let
-                                result =
-                                    generateExpr compilerCtx monoExpr
-                            in
-                            { ops = result.ops
-                            , resultVar = result.resultVar
-                            , resultType = result.resultType
-                            , ctx = result.ctx
-                            }
+                        exprCompiler =
+                            bfExprCompiler (fusedLetsFromChain accumulated encoderExpr)
 
                         ( bindingOps, ctxAfterBindings ) =
                             compileSkippedBindings ctx (List.reverse accumulated)
@@ -3032,16 +3143,8 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
 
                                 -- Wrap generateExpr to match ExprCompiler type
                                 exprCompiler : BFEmit.ExprCompiler
-                                exprCompiler monoExpr compilerCtx =
-                                    let
-                                        result =
-                                            generateExpr compilerCtx monoExpr
-                                    in
-                                    { ops = result.ops
-                                    , resultVar = result.resultVar
-                                    , resultType = result.resultType
-                                    , ctx = result.ctx
-                                    }
+                                exprCompiler =
+                                    bfExprCompiler (fusedLetsFromExprs args)
 
                                 ( mlirOps, bufferVar, ctx2 ) =
                                     BFEmit.emitFusedEncoder exprCompiler ctx1 loopOps
@@ -3116,16 +3219,8 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
 
                                         -- Wrap generateExpr to match ExprCompiler type
                                         exprCompiler : BFEmit.ExprCompiler
-                                        exprCompiler monoExpr compilerCtx =
-                                            let
-                                                result =
-                                                    generateExpr compilerCtx monoExpr
-                                            in
-                                            { ops = result.ops
-                                            , resultVar = result.resultVar
-                                            , resultType = result.resultType
-                                            , ctx = result.ctx
-                                            }
+                                        exprCompiler =
+                                            bfExprCompiler (fusedLetsFromExprs args)
 
                                         -- Emit the fused decoder operations
                                         ( mlirOps, resultVar, ctx2 ) =
@@ -3547,16 +3642,8 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                             BFReify.nodesToOps nodes
 
                                         exprCompiler : BFEmit.ExprCompiler
-                                        exprCompiler monoExpr compilerCtx =
-                                            let
-                                                result =
-                                                    generateExpr compilerCtx monoExpr
-                                            in
-                                            { ops = result.ops
-                                            , resultVar = result.resultVar
-                                            , resultType = result.resultType
-                                            , ctx = result.ctx
-                                            }
+                                        exprCompiler =
+                                            bfExprCompiler (fusedLetsFromExprs args)
 
                                         ( mlirOps, bufferVar, ctx2 ) =
                                             BFEmit.emitFusedEncoder exprCompiler ctx1 loopOps
@@ -3627,16 +3714,8 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                             BFReify.decoderNodeToOps decoderNode
 
                                         exprCompiler : BFEmit.ExprCompiler
-                                        exprCompiler monoExpr compilerCtx =
-                                            let
-                                                result =
-                                                    generateExpr compilerCtx monoExpr
-                                            in
-                                            { ops = result.ops
-                                            , resultVar = result.resultVar
-                                            , resultType = result.resultType
-                                            , ctx = result.ctx
-                                            }
+                                        exprCompiler =
+                                            bfExprCompiler (fusedLetsFromExprs args)
 
                                         ( mlirOps, resultVar, ctx2 ) =
                                             BFEmit.emitFusedDecoder exprCompiler ctx1 bytesVar decoderOps
