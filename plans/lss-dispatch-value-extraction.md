@@ -695,6 +695,124 @@ after confirming the E2.0(3) residual pin; tested by the E2.4 pins.
 - Afterwards: the §15.1 U2b trigger-2 re-measure (one interleaved ARM=0 A/B)
   becomes due — E2 is the phase that was named in the U2b disposition.
 
+### E2.7 — v2 STAGED STAMPING (designed 2026-07-18; implementation-ready)
+
+**Why now (Run F's mandate).** The Over class is the largest and hottest
+unconverted bucket: 6,817 singleton over-apply sites UNKEYED at self-compile
+scale (`declinedShapeArityOver`), +88 more when keying (Run F) — and the hot
+IO-continuation dispatch (`f a state1` on `f : a -> IO b`, where `IO b` is a
+state FUNCTION) lives exactly here. v1 declines any site applying more args
+than its callee type's first stage. v2 converts the FIRST stage of such a
+site to a fast direct call and applies the remainder generically.
+
+**Semantics (LSS_014).** At an over-apply site with singleton `{m}` whose
+callee-type FIRST stage matches an instance of m exactly (params + return,
+layout-wise), the runtime callee IS that instance (LSS_009), so applying the
+first `|inst.paramTypes|` args saturates the instance's own stage — the same
+truthfulness contract as the v1 exact stamp (`remaining_arity =
+|inst.paramTypes|`, the instance's own shape; CGEN_052 satisfied). The
+intermediate result (the instance's staged return — a runtime-computed
+closure) then receives the REMAINING args through the generic
+segmentation-unknown path — precisely the H6.2-L1 cross-stage doctrine
+("a batch past the first stage boundary extends a runtime-computed value").
+v2 converts dispatch #1 of the chain; later-stage dispatches stay generic
+(chaining them needs per-stage result-set reasoning — v3, census-gated).
+
+**Resolution (`AbiCloning.elm`).**
+
+1. `Resolution` gains `StampStaged Instance`.
+2. `resolveRepresentative`'s Over arm (`:1096-1097`) stops declining blindly:
+   `argCount > |fargs|` → scan `Dict.get (siteFingerprint fargs fret) buckets`
+   with the EXACT-path group test minus the argCount equality
+   (`g.paramCount == |fargs| && eqLayoutLists g.rep.paramTypes fargs &&
+   eqLayout g.rep.returnType fret`), gated `g.charFree` (captures load the
+   same i16-gated path) and `g.unanimous`; hit → `StampStaged g.rep`; any
+   miss → `Decline bumpShapeArityOver` (census bucket preserved). NO PAP
+   fallback in the staged arm (an over-applied PAP is v3; `fastPapPrefix`
+   stays `Nothing` on staged stamps).
+3. `stampCall`'s `StampStaged` arm stamps the SAME fields as exact `Stamp`
+   (`closureKind`, `captureAbi` = the instance row verbatim, `fastEvaluator`)
+   and bumps a NEW `stampedStaged` counter (add to `AbiCloningStats`,
+   `emptyStats`, and the `Builder/Generate.elm` census line). No new CallInfo
+   field ⇒ the S.11 phase-5 preservation copy needs NO change (emission
+   detects stagedness as `|args| > |captureAbi.paramTypes|`).
+
+**Emission (`Expr.elm`).**
+
+4. New `fastDispatchStampStaged callInfo args`: `Just (lid, abi)` iff
+   `fastEvaluator`+`captureAbi` present, `fastPapPrefix == Nothing`,
+   `not (List.isEmpty abi.paramTypes)`, and
+   `List.length args > List.length abi.paramTypes`.
+5. New `generateStagedFastDispatchCall ctx func args resultType lid abi`:
+   `batch1 = take |abi.paramTypes| args`, `rest = drop …`;
+   (a) emit batch 1 via the EXISTING `generateFastDispatchCall` with
+   `resultType = abi.returnType` (its papExtend claims
+   `remaining_arity = |paramTypes|` and returns
+   `monoTypeToAbi abi.returnType` = `!eco.value`, an arrow);
+   (b) apply `rest` to the batch-1 result var with ONE generic
+   `eco.papExtend` carrying `_call_kind = "segmentation_unknown"` and NO
+   `remaining_arity` (runtime drives multi-stage saturation from the closure
+   header — the same op shape `generateUnknownSegmentationCall` builds;
+   factor its op-builder core into a var-level helper), then coerce to the
+   site's expected ABI result.
+6. Consult points: extend the two existing stamp consults
+   (`CallGenericApply`, `CallSegmentationUnknown` arms of `generateCall`) with
+   the staged fallback, and add BOTH consults at the top of the
+   `CallDirectKnownSegmentation` arm (multi-stage dispatched calls route
+   there and today never consult the stamp at all — DISCOVERED GAP: only
+   1,571 `singleton_fast` ops emit from 2,397 v1 stamps; the multi-stage-
+   routed remainder is silently dropped at emission. The added consult also
+   recovers any EXACT stamps routed there). `CallDirectFlat` (kernels) is
+   never stamped — untouched.
+
+**What v2 must NOT do.** No stamp when the first-stage layouts mismatch
+(different specialization — decline); no staged+PAP combination; no touching
+`applyByStages` internals (the tail is one generic op, not a batch chain —
+segmentation-unknown is always correct and the runtime already owns
+cross-stage segmentation).
+
+**Pins & gates (E2.7).**
+
+- Unit pin `E2V2StagedDispatchTest`: curried lambda literal
+  (`\a -> \b -> a*10+b`) into a NON-TAIL recursion-guarded HOF
+  (`applyStaged f n acc = if n <= 0 then acc else f 10 (applyStaged f (n-1)
+  acc)` — non-tail to dodge H5 loopification, the E5-pin lesson), site
+  `f 10 …` applies 2 args over a 1-param instance. RED today
+  (`declinedShapeArityOver`), GREEN after: some call has
+  `fastEvaluator /= Nothing` AND `|args| > |captureAbi.paramTypes|`.
+- E2E runtime test `test/elm/src/StagedFastDispatchTest.elm` (result CHECK
+  only — no CHECK-MLIR: the default corpus runs flag-off where no stamp
+  exists).
+- elm-tests baseline; solver+LSS native self-compile — THE gate (thousands
+  of sites activate at once; watch for S-class materialization/verifier
+  fallout); flag-off byte-identity + flag-on corpus via the A/B legs.
+- Run G benchmark: census (`stampedStaged` ≈ thousands, `declinedShapeArityOver`
+  drop, `dispatchUpgraded` recovery from the consult gap), sizes/walls,
+  subst byte-identity, and the DYNAMIC coverage A/B — the first run where
+  `fast` is expected to actually move (the IO rows). Optional keyed leg
+  (E5+v2 compose: the +88).
+
+Effort: M. Risk: MEDIUM — thousands of first-activation stamps at scale;
+bounded by the fences (first-stage layout equality, charFree, unanimous,
+blocked) and caught by the self-compile gate.
+
+**AS BUILT (2026-07-18) — SHIPPED; first E-track phase to move the dynamic
+needle: coverage 1.75 % → 5.37 % (Run G).** Implemented exactly as designed;
+all gates green FIRST TRY (pin RED/GREEN-proven; elm-tests 12997/12;
+solver+LSS self-compile clean with the stamps live; flag-on corpus 1622/1622
+incl. `StagedFastDispatchTest`; subst byte-identical). Static: 344 of 6,817
+over-apply sites stamp unkeyed (5 % — the first-stage layout equality is the
+filter; the 6,472 residue misses the bucket), +35 more keyed (the E5
+compose, Run F's +88 partially converting). Dynamic: those 344 sites carry
+33.8 M dispatches/run — `fast` +207 %, `sat` down by EXACTLY the same
+(1:1 conversion), wall −1.6 % (directional). The hot-site prediction held:
+the staged class WAS the IO-continuation weight. Remaining in census order:
+ctor instances (`List.cons`, ~15 % of dispatch), per-member attribution of
+the 6,472 residue, v3 later-stage chaining, E1.3 inlinehint (now on 50 M
+fast calls). NOTE the emission-gap recovery (`CallDirectKnownSegmentation`
+consult) is part of the dynamic gain — placement census unchanged (2,399),
+emitted-op census is what moved.
+
 ---
 
 ## 7. S — Spine injection: lambda sets on inner arrows (REPLACES A1)

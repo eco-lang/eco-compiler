@@ -920,6 +920,8 @@ runGlobalOptPhase lssReport stats simplifiedGraph =
                         ++ String.fromInt goStats.abiCloning.dispatchUpgraded
                         ++ " stampedPapPrefix="
                         ++ String.fromInt goStats.abiCloning.stampedPapPrefix
+                        ++ " stampedStaged="
+                        ++ String.fromInt goStats.abiCloning.stampedStaged
                         ++ " declinedBlocked="
                         ++ String.fromInt goStats.abiCloning.declinedBlocked
                         ++ " declinedNoInstance="

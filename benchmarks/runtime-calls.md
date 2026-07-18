@@ -358,6 +358,44 @@ combination that can finally convert the hot IO-continuation dispatch is
 highest-value open item on the E-track, with ctor instances (the cons class)
 second. Re-measure coverage after either lands.
 
+### Run G — E2.7 staged stamping (2026-07-18): **coverage 1.75 % → 5.37 %**
+
+Five build legs (`eco-compiler-e5` vs `eco-compiler-e2v2`, same tree, clean
+`eco-stuff` per leg) + the two-binary dynamic census A/B (same subst
+workload, cold).
+
+- **Safety: all clean.** Subst legs BYTE-IDENTICAL (flag-off untouched);
+  solver+LSS self-compile GREEN first try with the staged stamps live;
+  flag-on corpus 1622/1622 incl. the new `StagedFastDispatchTest` runtime
+  pin; elm-tests 12997/12 baseline.
+- **Static census (unkeyed):** `stampedStaged=344` — over-apply declines
+  drop 6,817 → 6,472 (344 stamped + 1 reclassified `declinedAbiMismatch`;
+  the accounting closes). `dispatchUpgraded` unchanged at 2,399 (placement
+  untouched — the E2.7 emission-gap consult changes WHERE stamps emit, not
+  where they are placed). Keyed compose leg: `stampedStaged=379` (+35 —
+  E5-minted singletons convert too, as Run F predicted). Output
+  +7,708 B; solver mono wall within noise (10:15 → 10:22).
+- **Dynamic census A/B (the headline):**
+  `e5:   sat=914,788,678  gen=896,753,530  typed=18,035,148  fast=16,279,298`
+  `e2v2: sat=881,022,127  gen=862,986,979  typed=18,035,148  fast=50,045,849`
+  → **fast +33,766,551 (+207 %), sat −33,766,551 — EXACTLY equal**, the
+  1:1 indirect→direct conversion signature. **Coverage 1.75 % → 5.37 %
+  (3.1×).** 344 static stamps convert 33.8 M dynamic dispatches — the
+  staged sites ARE the hot IO-continuation class, as the E0 census always
+  said. Wall 4:46.60 → 4:42.06 (−1.6 %, single run — treat as directional;
+  the counts are the deterministic signal). Note the dynamic gain includes
+  both the staged stamps AND previously-placed exact stamps recovered by
+  the new `CallDirectKnownSegmentation` consult (the 1,571-of-2,397
+  emission gap).
+
+*Reading Run G:* E2.7 is the first E-track phase to move the dynamic
+needle — 3.1× coverage at essentially zero compile-time cost, with the E5
+compose path live (+35 keyed stamps). Remaining headroom in census order:
+the ctor class (`List.cons`, needs ctor instances), the residual 6,472
+over-apply declines (first-stage layout misses — per-member attribution
+would say whether any carry weight), and later-stage chaining (v3). E1.3
+(`inlinehint` on the now-50 M `$cap` calls) is now materially interesting.
+
 ---
 
 ## Summary
@@ -374,18 +412,20 @@ stamps (front-end run under solver, lowered with `ECO_LSS_DISPATCH_SITE_COUNTERS
 | 2026-07-17 08:03 | E2-solver-built / subst (Run C2b) | 906,166,573 | 888,325,694 | 17,840,879 | 16,126,268 | 1.75 % | 6,006 | 6:02* |
 | 2026-07-17 21:0x | E5-solver-built UNKEYED / subst (Run F) | 912,460,929 | 894,476,930 | 17,983,999 | 16,241,234 | 1.75 % | 6,008 | — |
 | 2026-07-17 21:1x | E5-solver-built KEYED×5 / subst (Run F) | 912,460,929 | 894,476,930 | 17,983,999 | 16,241,234 | 1.75 % | 6,031 | — |
+| 2026-07-18 09:5x | pre-v2 (e5) / subst (Run G) | 914,788,678 | 896,753,530 | 18,035,148 | 16,279,298 | 1.75 % | 6,008 | 4:46.60 |
+| 2026-07-18 10:0x | **E2.7-built (e2v2) / subst (Run G)** | 881,022,127 | 862,986,979 | 18,035,148 | **50,045,849** | **5.37 %** | 6,008 | 4:42.06 |
 
 *Run-C walls carry an unattributed +30 % vs Run A/B (see the Run C section) — the
 counts are the meaningful comparison; treat the walls as provisional.
 
-*Reading it:* current LSS singleton stamping converts **1.75 %** of the shipping
-(subst) workload's dispatch and **3.52 %** in the full solver world — and the Run-F
-rows show that S+E4a transport plus E5 keying of the first five census targets
-moved that number by exactly ZERO (identical counts to the last digit): the hot
-dispatch sites are `List.cons` (ctor — no instance to stamp) and the IO
-continuations (staged over-apply — E2's v1-declined class). The 1.75 % is a
-CONVERSION ceiling, not an analysis ceiling.
+*Reading it:* Run G's E2.7 staged stamp is the first phase to move the dynamic
+needle: **coverage 1.75 % → 5.37 % (3.1×)** — 344 static staged stamps convert
+33.8 M dispatches/run (sat drops by EXACTLY the fast gain; 1:1 indirect→direct).
+The prior plateau was a CONVERSION ceiling: S+E4a transport and E5 keying were
+correct but their sites were cold or v1-declined; the staged over-apply class
+(the IO continuations) was where the weight sat.
 
-*Next:* E2-v2 staged stamping (keying provably feeds it — Run F's +88 singleton
-over-applies) and ctor instances for the cons class; re-census after either. E1.3
-(`inlinehint` on `$cap`) rides whichever lands first.
+*Next:* ctor instances for the `List.cons` class (~15 % of dispatch, the biggest
+remaining row), per-member attribution over the residual 6,472 over-apply
+declines, later-stage chaining (v3), and E1.3 (`inlinehint` on the now-50 M
+`$cap` calls — materially interesting at this coverage).

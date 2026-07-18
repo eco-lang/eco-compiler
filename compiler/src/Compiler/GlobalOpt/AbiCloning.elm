@@ -93,6 +93,10 @@ import Dict exposing (Dict)
 type alias AbiCloningStats =
     { dispatchUpgraded : Int
     , stampedPapPrefix : Int
+    , stampedStaged : Int
+
+    -- ^ E2.7 (LSS_014): over-applying sites whose first stage matched an
+    -- instance exactly — batch-1 fast dispatch + generic remainder.
 
     -- ^ E2 (LSS_011): sites stamped via the PAP-suffix match — the callee
     -- value is an m-PAP holding k applied args; captureAbi carries the
@@ -125,6 +129,7 @@ emptyStats : AbiCloningStats
 emptyStats =
     { dispatchUpgraded = 0
     , stampedPapPrefix = 0
+    , stampedStaged = 0
     , declinedBlocked = 0
     , declinedNoInstance = 0
     , declinedShape = 0
@@ -1035,6 +1040,39 @@ stampCall index ctx region func args resultType callInfo =
                             , { ctx1 | stats = { stats1 | stampedPapPrefix = stats1.stampedPapPrefix + 1 } }
                             )
 
+                        StampStaged inst ->
+                            -- E2.7 (LSS_014): over-applying site whose FIRST
+                            -- stage matches the instance exactly. Stamp the
+                            -- SAME fields as the exact arm (the instance row
+                            -- verbatim; fastPapPrefix stays Nothing) —
+                            -- emission detects stagedness as
+                            -- |args| > |captureAbi.paramTypes| and splits:
+                            -- fast batch 1, then a generic
+                            -- segmentation-unknown application of the
+                            -- remainder to the intermediate.
+                            let
+                                ( kindId, ctx1 ) =
+                                    kindIdFor m ctx
+
+                                stamped =
+                                    { callInfo
+                                        | closureKind = Just (Mono.Known (Mono.ClosureKindId kindId))
+                                        , captureAbi =
+                                            Just
+                                                { captureTypes = inst.captureTypes
+                                                , paramTypes = inst.paramTypes
+                                                , returnType = inst.returnType
+                                                }
+                                        , fastEvaluator = Just inst.lambdaId
+                                    }
+
+                                stats1 =
+                                    ctx1.stats
+                            in
+                            ( Mono.MonoCall region func args resultType stamped
+                            , { ctx1 | stats = { stats1 | stampedStaged = stats1.stampedStaged + 1 } }
+                            )
+
                         Decline bump ->
                             ( Mono.MonoCall region func args resultType callInfo, bump ctx )
 
@@ -1048,6 +1086,7 @@ stampCall index ctx region func args resultType callInfo =
 type Resolution
     = Stamp Instance
     | StampPap Instance Int
+    | StampStaged Instance
     | Decline (StampCtx -> StampCtx)
 
 
@@ -1094,7 +1133,17 @@ resolveRepresentative calleeType argCount memberInfo =
                     Decline bumpShapeArityUnder
 
                 else if argCount > List.length fargs then
-                    Decline bumpShapeArityOver
+                    -- E2.7 (LSS_014, v2 staged stamping): the site applies
+                    -- MORE args than its callee type's first stage — a flat
+                    -- multi-stage call. If an instance matches the site's
+                    -- FIRST stage exactly (params + return, layout-wise),
+                    -- the runtime callee IS that instance (LSS_009) and
+                    -- applying |inst.paramTypes| args saturates the
+                    -- instance's own stage — stamp batch 1; emission applies
+                    -- the remainder generically to the intermediate. Misses
+                    -- keep the Over census bucket. No PAP fallback here (an
+                    -- over-applied PAP is v3).
+                    resolveStagedFirstStage fargs fret memberInfo
 
                 else
                     case Dict.get (siteFingerprint fargs fret) memberInfo.buckets of
@@ -1127,6 +1176,42 @@ resolveInGroups fargs fret argCount groups memberInfo =
 
             else
                 resolveInGroups fargs fret argCount rest memberInfo
+
+
+{-| E2.7 (LSS_014): first-stage match for an OVER-applying site. The exact
+path's group test minus the argCount equality — the group's params/return
+must equal the SITE's first stage. Same charFree gate (batch-1 args load
+through the same code as captures) and unanimity gate as the exact path.
+-}
+resolveStagedFirstStage : List Mono.MonoType -> Mono.MonoType -> MemberInfo -> Resolution
+resolveStagedFirstStage fargs fret memberInfo =
+    case Dict.get (siteFingerprint fargs fret) memberInfo.buckets of
+        Nothing ->
+            Decline bumpShapeArityOver
+
+        Just groups ->
+            stagedScan fargs fret groups
+
+
+stagedScan : List Mono.MonoType -> Mono.MonoType -> List LayoutGroup -> Resolution
+stagedScan fargs fret groups =
+    case groups of
+        [] ->
+            Decline bumpShapeArityOver
+
+        g :: rest ->
+            if g.paramCount == List.length fargs && eqLayoutLists g.rep.paramTypes fargs && Mono.eqLayout g.rep.returnType fret then
+                if not g.charFree then
+                    Decline bumpShapeChar
+
+                else if g.unanimous then
+                    StampStaged g.rep
+
+                else
+                    Decline bumpAbiMismatch
+
+            else
+                stagedScan fargs fret rest
 
 
 {-| E2 (LSS_011): the PAP-suffix match. The site saturates its own callee

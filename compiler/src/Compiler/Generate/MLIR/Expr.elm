@@ -1286,7 +1286,14 @@ generateCall ctx func args resultType callInfo =
                     generateFastDispatchCall ctx func args resultType fastLambdaId fastAbi papPrefix
 
                 Nothing ->
-                    generateGenericApplyCoerced ctx func args resultType callInfo
+                    case fastDispatchStampStaged callInfo args of
+                        Just ( fastLambdaId, fastAbi ) ->
+                            -- E2.7: over-applying stamped site — fast batch 1,
+                            -- generic remainder.
+                            generateStagedFastDispatchCall ctx func args resultType fastLambdaId fastAbi
+
+                        Nothing ->
+                            generateGenericApplyCoerced ctx func args resultType callInfo
 
         Mono.CallSegmentationUnknown ->
             case fastDispatchStamp callInfo args of
@@ -1295,28 +1302,35 @@ generateCall ctx func args resultType callInfo =
                     generateFastDispatchCall ctx func args resultType fastLambdaId fastAbi papPrefix
 
                 Nothing ->
-                    -- Known ABI + unknown staging: typed papExtend without remaining_arity.
-                    -- Runtime reads closure header for saturation decisions.
-                    -- Result is always !eco.value, so coerce back to expected ABI type.
-                    let
-                        unkRes =
-                            generateUnknownSegmentationCall ctx func args resultType callInfo
+                    case fastDispatchStampStaged callInfo args of
+                        Just ( fastLambdaId, fastAbi ) ->
+                            -- E2.7: over-applying stamped site — fast batch 1,
+                            -- generic remainder.
+                            generateStagedFastDispatchCall ctx func args resultType fastLambdaId fastAbi
 
-                        expectedType =
-                            Types.monoTypeToAbi resultType
+                        Nothing ->
+                            -- Known ABI + unknown staging: typed papExtend without remaining_arity.
+                            -- Runtime reads closure header for saturation decisions.
+                            -- Result is always !eco.value, so coerce back to expected ABI type.
+                            let
+                                unkRes =
+                                    generateUnknownSegmentationCall ctx func args resultType callInfo
 
-                        ( coerceOps, finalVar, finalCtx ) =
-                            coerceResultToType unkRes.ctx
-                                unkRes.resultVar
-                                unkRes.resultType
-                                expectedType
-                    in
-                    { ops = unkRes.ops ++ coerceOps
-                    , resultVar = finalVar
-                    , resultType = expectedType
-                    , ctx = finalCtx
-                    , isTerminated = False
-                    }
+                                expectedType =
+                                    Types.monoTypeToAbi resultType
+
+                                ( coerceOps, finalVar, finalCtx ) =
+                                    coerceResultToType unkRes.ctx
+                                        unkRes.resultVar
+                                        unkRes.resultType
+                                        expectedType
+                            in
+                            { ops = unkRes.ops ++ coerceOps
+                            , resultVar = finalVar
+                            , resultType = expectedType
+                            , ctx = finalCtx
+                            , isTerminated = False
+                            }
 
         Mono.CallDirectFlat ->
             -- Kernels / externs: use ABI-flattened model.
@@ -1332,8 +1346,23 @@ generateCall ctx func args resultType callInfo =
                 generateSaturatedCall ctx func args resultType callInfo
 
             else
-                -- Multi-stage call or partial application: use closure path
-                generateClosureApplication ctx func args resultType callInfo
+                -- Multi-stage call or partial application: use closure path.
+                -- E2.7: consult the stamps FIRST — multi-stage dispatched
+                -- calls route here and previously never consulted them (the
+                -- 1,571-of-2,397 emission gap). A direct-global callee can't
+                -- carry a stamp (its member has no closure instance), so
+                -- these hits are genuine closure-value applications.
+                case fastDispatchStamp callInfo args of
+                    Just ( fastLambdaId, fastAbi, papPrefix ) ->
+                        generateFastDispatchCall ctx func args resultType fastLambdaId fastAbi papPrefix
+
+                    Nothing ->
+                        case fastDispatchStampStaged callInfo args of
+                            Just ( fastLambdaId, fastAbi ) ->
+                                generateStagedFastDispatchCall ctx func args resultType fastLambdaId fastAbi
+
+                            Nothing ->
+                                generateClosureApplication ctx func args resultType callInfo
 
 
 {-| Generate a generic apply call: eco.papExtend without remaining\_arity.
@@ -1610,6 +1639,160 @@ generateUnknownSegmentationCall ctx func args resultType _ =
     , resultVar = resVar
     , resultType = resultMlirType
     , ctx = ctx4
+    , isTerminated = False
+    }
+
+
+{-| E2.7 (LSS_014): the staged-stamp match. `Just` iff the call carries an
+exact-instance stamp (`fastEvaluator` + `captureAbi`, `fastPapPrefix`
+ABSENT — staged PAPs are v3) and applies MORE args than the instance's
+first stage. Emission then splits: fast batch 1, generic remainder.
+-}
+fastDispatchStampStaged : Mono.CallInfo -> List Mono.MonoExpr -> Maybe ( Mono.LambdaId, Mono.CaptureABI )
+fastDispatchStampStaged callInfo args =
+    case ( callInfo.fastEvaluator, callInfo.captureAbi, callInfo.fastPapPrefix ) of
+        ( Just fastLambdaId, Just abi, Nothing ) ->
+            if not (List.isEmpty abi.paramTypes) && List.length args > List.length abi.paramTypes then
+                Just ( fastLambdaId, abi )
+
+            else
+                Nothing
+
+        _ ->
+            Nothing
+
+
+{-| E2.7 (LSS_014): staged fast dispatch. The site applies more args than
+the stamped instance's first stage: emit the EXACT fast dispatch for batch 1
+(exactly `|abi.paramTypes|` args — saturating the instance's own stage, the
+same `remaining_arity` truthfulness contract as v1), then apply the
+remaining args to the intermediate (the instance's staged return — a
+runtime-computed closure) with ONE generic segmentation-unknown papExtend,
+per the H6.2-L1 cross-stage doctrine. The tail coerces to the site's
+expected ABI result.
+-}
+generateStagedFastDispatchCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.LambdaId -> Mono.CaptureABI -> ExprResult
+generateStagedFastDispatchCall ctx func args resultType fastLambdaId abi =
+    let
+        stage1Count =
+            List.length abi.paramTypes
+
+        batch1 =
+            List.take stage1Count args
+
+        rest =
+            List.drop stage1Count args
+
+        -- Batch 1: the v1 exact fast dispatch, typed at the instance's own
+        -- return (an arrow -> !eco.value) so the internal coercion is a
+        -- no-op and the result is the intermediate closure.
+        innerRes =
+            generateFastDispatchCall ctx func batch1 abi.returnType fastLambdaId abi 0
+
+        tailRes =
+            applySegUnknownToVar innerRes.ctx innerRes.resultVar innerRes.resultType rest resultType
+    in
+    { ops = innerRes.ops ++ tailRes.ops
+    , resultVar = tailRes.resultVar
+    , resultType = tailRes.resultType
+    , ctx = tailRes.ctx
+    , isTerminated = False
+    }
+
+
+{-| Apply `args` to an already-computed closure VALUE with one generic
+segmentation-unknown `eco.papExtend` (no `remaining_arity`; the runtime
+drives multi-stage saturation from the closure header), then coerce to the
+site's expected ABI result. Var-level sibling of
+`generateUnknownSegmentationCall` — the callee here is a runtime-computed
+intermediate, so the per-callee boxing policy is the generic `False`.
+-}
+applySegUnknownToVar : Ctx.Context -> String -> MlirType -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
+applySegUnknownToVar ctx funcVar funcMlirType args resultType =
+    let
+        ( argOps, argsWithTypes, ctx1 ) =
+            generateExprListTyped ctx args
+
+        ( boxOps, argsForClosure, ctx2 ) =
+            boxArgsForClosureBoundary False ctx1 argsWithTypes
+
+        allOperandNames =
+            funcVar :: List.map Tuple.first argsForClosure
+
+        allOperandTypes =
+            funcMlirType :: List.map Tuple.second argsForClosure
+
+        newargsUnboxedBitmap =
+            List.indexedMap Tuple.pair argsForClosure
+                |> List.foldl
+                    (\( i, ( _, mlirTy ) ) acc ->
+                        Types.bitmapSetKind acc i (Types.mlirTypeToKind mlirTy)
+                    )
+                    0
+
+        ( resVar, ctx3 ) =
+            Ctx.freshVar ctx2
+
+        callResultMlirType =
+            Types.monoTypeToAbi resultType
+
+        segResultKind =
+            Types.mlirTypeToKind callResultMlirType
+
+        resultMlirType =
+            if segResultKind == 0 then
+                Types.ecoValue
+
+            else
+                callResultMlirType
+
+        segResultKindAttr =
+            if segResultKind == 0 then
+                []
+
+            else
+                [ ( "_result_kind", IntAttr (Just I8) segResultKind ) ]
+
+        gcRootHintsT =
+            emitSafepointHints ctx3
+
+        ( gcRootNamesT, gcRootTypesT ) =
+            List.unzip gcRootHintsT
+
+        gcRootsCountAttrT =
+            if List.isEmpty gcRootHintsT then
+                []
+
+            else
+                [ ( "eco.gc_roots_count", IntAttr Nothing (List.length gcRootHintsT) ) ]
+
+        papExtendAttrs =
+            Dict.fromList
+                ([ ( "_operand_types"
+                   , ArrayAttr Nothing
+                        (List.map TypeAttr allOperandTypes ++ List.map TypeAttr gcRootTypesT)
+                   )
+                 , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
+                 , ( "_call_kind", StringAttr "segmentation_unknown" )
+                 ]
+                    ++ segResultKindAttr
+                    ++ gcRootsCountAttrT
+                )
+
+        ( ctx4, papExtendOp ) =
+            Ops.mlirOp ctx3 "eco.papExtend"
+                |> Ops.opBuilder.withOperands (allOperandNames ++ gcRootNamesT)
+                |> Ops.opBuilder.withResults [ ( resVar, resultMlirType ) ]
+                |> Ops.opBuilder.withAttrs papExtendAttrs
+                |> Ops.opBuilder.build
+
+        ( coerceOps, finalVar, finalCtx ) =
+            coerceResultToType ctx4 resVar resultMlirType callResultMlirType
+    in
+    { ops = argOps ++ boxOps ++ [ papExtendOp ] ++ coerceOps
+    , resultVar = finalVar
+    , resultType = callResultMlirType
+    , ctx = finalCtx
     , isTerminated = False
     }
 
