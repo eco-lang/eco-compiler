@@ -70,6 +70,7 @@ import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Solve
 import Compiler.TypedCanonical.Build as TCanBuild
 import Data.Map
+import Data.Set
 import Dict exposing (Dict)
 import Expect
 import Mlir.Mlir exposing (MlirModule)
@@ -538,7 +539,35 @@ localGraphToGlobalGraph localGraph =
         crossModuleAnnotations =
             interfaceAnnotations Basic.testIfaces
     in
-    TOpt.GlobalGraph nodes fields (Data.Map.union crossModuleAnnotations annotations) roots varSupers
+    TOpt.GlobalGraph (Data.Map.union (kernelAliasNodes Basic.testIfaces) nodes) fields (Data.Map.union crossModuleAnnotations annotations) roots varSupers
+
+
+{-| E9.2 unit-env fidelity: production dependency graphs carry real TOpt
+nodes; this mock env synthesizes annotations only, so node-less dependency
+globals become `MonoExtern` specs. Kernel-identity recognition (LSS_016 —
+`(::)`-as-value resolving through `List.cons`'s eta-free kernel alias
+`cons = Elm.Kernel.List.cons`) needs the node, so synthesize exactly the
+node production builds for it: `Define (VarKernel "Elm" "List" "cons")`.
+-}
+kernelAliasNodes : Dict Name I.Interface -> Data.Map.Dict String TOpt.Global (TOpt.Node Name)
+kernelAliasNodes ifaces =
+    case Dict.get "List" ifaces of
+        Just (I.Interface idata) ->
+            case Dict.get "cons" idata.values of
+                Just (Can.Forall _ tipe) ->
+                    Data.Map.singleton TOpt.toComparableGlobal
+                        (TOpt.Global (IO.Canonical idata.home "List") "cons")
+                        (TOpt.Define
+                            (TOpt.VarKernel A.zero "Elm" "List" "cons" { tipe = tipe, tvar = Nothing })
+                            Data.Set.empty
+                            { tipe = tipe, tvar = Nothing }
+                        )
+
+                Nothing ->
+                    Data.Map.empty
+
+        Nothing ->
+            Data.Map.empty
 
 
 {-| Build AnnotationsByGlobal from test interfaces.

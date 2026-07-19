@@ -493,6 +493,61 @@ a suspicious (unconfirmed) workload-wall regression. The flag stays OFF until
 the workload wall. `List.::` kernel-ctor representation (E9.2) remains the
 other big census row.
 
+### Run J — E9.2 kernel devirtualization, `List.cons` whitelist (2026-07-19):
+### **−159.9 M events/run keyed (−16.9 %) — the cons class captured**
+
+Five build legs (`eco-compiler-e91` vs `eco-compiler-e92`, same tree, clean
+`eco-stuff` per leg: e91-solver / e92-solver / e92-solver keyed on the Run-F
+List chain `elm/core:List.{foldl,foldr,foldrHelper,map}` / both subst) + a
+THREE-binary dynamic census A/B. E9.2 (LSS_016) = singleton-`{k|List.cons}`
+indirect calls rewritten to the direct kernel-call form a written-out
+`x :: xs` produces (typed `cons_Int` variants included), via the kernel
+member reverse map + the g|/k| IDENTITY FOLD (`(::)`-as-value is
+`VarGlobal List.cons`, a kernel-ALIAS global — plan §E9.2 implementation
+corrections). Whitelist v1 = List.cons only. `lssDF` OFF everywhere
+(default config).
+
+- **Safety: all clean.** Subst legs BYTE-IDENTICAL (flag-off untouched);
+  flag-on corpus 1625/1625 incl. the new `ConsDevirtTest` (Int `cons_Int` +
+  boxed String legs); elm-tests 12,999/12 (baseline + the new
+  `E92ConsDevirtTest` unit pin, RED/GREEN-proven); flag-on native
+  self-compile green first try.
+- **Static census:** unkeyed `devirtKernel=763` (`devirtDirect` 2,455
+  unchanged — the identity fold does not disturb ctor devirt;
+  `declinedNoInstance` −500). Keyed: `devirtKernel=784` (**+21**),
+  `dispatchUpgraded` +10 (the Run-F List-chain stamps). Output −795 B
+  unkeyed (direct kernel calls are SMALLER than dispatch machinery); keyed
+  +13.4 KB (spec fan-out). Solver mono walls 16:26 → 13:49/13:44 —
+  within the machine's noise band, and keying is FREE (Run F re-confirmed);
+  no E9.3-scale cost added.
+- **Dynamic census A/B/C (same subst workload, cold):**
+  `e91:       sat=895,539,852  gen=877,898,752  typed=17,641,100  fast=51,352,097  distinct=5,938`
+  `e92:       sat=879,376,791  gen=861,735,691  typed=17,641,100  fast=51,352,094  distinct=5,791`
+  `e92-keyed: sat=735,637,567  gen=717,996,467  typed=17,641,100  fast=51,352,094  distinct=5,791`
+  → unkeyed **−16.2 M events/run** (the 763 single-provenance sites; 4.6×
+  E9's ctor haul); keyed **−143.7 M more — total −159.9 M/run vs baseline
+  (−16.9 % of all dispatch events)**, the largest reduction of the track
+  (3× Run I's flag-gated DF win, and this one is default-config + keying).
+  The +21 keyed static sites carry ~143.7 M dynamic events — the cons rows
+  were always FEW SITES × HUGE WEIGHT (139 M in Run A), and per-set keyed
+  fan-out is what mints their singletons. All removal came out of `gen`
+  (typed identical) — the cons dispatches were pure generic-funnel, as the
+  Run A census said. Census walls 8:50/8:33/8:46 — flat across legs (no
+  workload-wall regression signal, unlike Run I's unresolved DF read; the
+  absolute level vs Run I's 4:57 is machine state, compare within-run
+  only).
+
+*Reading Run J:* E9.2 + E5 keying finally converts the biggest census
+family, at near-zero static cost (763+21 sites, output smaller unkeyed,
+walls flat). Two follow-ups now write themselves: (1) the List-chain
+keying config earns default-on consideration — E5 shipped it default-empty
+because Run F showed zero payoff; E9.2 is what unlocked the payoff
+(−143.7 M for +21 sites and +13 KB); (2) whitelist growth (other pure
+kernel-alias values that flow into HOFs) should be census-driven. The
+inline-allocation follow-up (E9.4 — every cons is still a runtime
+`eco_alloc_cons`/kernel call at machine level) is the remaining
+beyond-direct-call lever on this family.
+
 ---
 
 ## Summary
@@ -515,6 +570,9 @@ stamps (front-end run under solver, lowered with `ECO_LSS_DISPATCH_SITE_COUNTERS
 | 2026-07-18 14:3x | **E9-built (e9) / subst (Run H)** | **885,636,450** | 868,262,575 | 17,373,875 | 50,628,276 | **5.41 %** | 5,924 | 4:52.84 |
 | 2026-07-18 18:0x | pre-DF (e91, flag off) / subst (Run I) | 889,095,785 | 871,574,493 | 17,521,292 | 50,895,544 | 5.41 % | 5,913 | 4:57.43 |
 | 2026-07-18 18:2x | **E9.1 DF-on-built (e91-df) / subst (Run I)** | **836,155,570** | 820,008,787 | 16,146,783 | 50,734,946 | **5.72 %** | 5,452 | 6:42.20* |
+| 2026-07-19 00:2x | pre-E9.2 (e91) / subst (Run J) | 895,539,852 | 877,898,752 | 17,641,100 | 51,352,097 | 5.42 % | 5,938 | 8:50.98* |
+| 2026-07-19 00:3x | E9.2-built (e92) / subst (Run J) | 879,376,791 | 861,735,691 | 17,641,100 | 51,352,094 | 5.52 % | 5,791 | 8:33.09* |
+| 2026-07-19 00:4x | **E9.2 KEYED List chain (e92-keyed) / subst (Run J)** | **735,637,567** | 717,996,467 | 17,641,100 | 51,352,094 | **6.53 %** | 5,791 | 8:46.42* |
 
 *Run-C walls carry an unattributed +30 % vs Run A/B (see the Run C section) — the
 counts are the meaningful comparison; treat the walls as provisional. The Run-I
@@ -527,12 +585,17 @@ The prior plateau was a CONVERSION ceiling: S+E4a transport and E5 keying were
 correct but their sites were cold or v1-declined; the staged over-apply class
 (the IO continuations) was where the weight sat.
 
-Run I's fn-global devirt (flag `lssDF`, default OFF) is the largest dispatch
-reduction yet — **53.1 M events/run removed (−5.65 % of all dispatch)** — but
-carries a +46 % flag-on mono wall and an unresolved workload-wall question.
+Run I's fn-global devirt (flag `lssDF`, default OFF) removed 53.1 M
+events/run but carries a +46 % flag-on mono wall and an unresolved
+workload-wall question. Run J's E9.2 kernel devirt then captured THE cons
+class: **−159.9 M events/run (−16.9 %) with the List chain keyed** —
+the largest reduction of the track, in default config (no `lssDF`), with
+flat walls and smaller unkeyed output. Run-J census walls (8:3x–8:5x) are a
+different machine state than Run I's (4:5x–6:4x) — compare within-run only.
 
-*Next:* the E9.3 re-translation cost work (now blocking `lssDF` default-on) +
-an uninstrumented wall A/B; `List.::` kernel-ctor representation (E9.2, the
-~15 % cons class); per-member attribution over the residual over-apply
-declines; later-stage chaining (v3); E1.3 (`inlinehint` on the 50 M `$cap`
-calls).
+*Next:* List-chain keying default-on decision (its payoff went 0 → 143.7 M
+with E9.2); census-driven kernel-whitelist growth; E9.4 inline nursery
+allocation for cons (the beyond-direct-call lever); the E9.3 re-translation
+cost work (still blocking `lssDF` default-on) + an uninstrumented wall A/B;
+per-member attribution over the residual over-apply declines; later-stage
+chaining (v3); E1.3 (`inlinehint` on the 51 M `$cap` calls).

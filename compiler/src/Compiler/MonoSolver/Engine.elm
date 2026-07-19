@@ -11,7 +11,7 @@ module Compiler.MonoSolver.Engine exposing
     , lookupSchemeMono, putSchemeMono, lookupKernelAbi, putKernelAbi
     , lookupCallMemo, putCallMemo
     , mvarIdKey, pointKey
-    , memberIdFor, standaloneMemberIdFor, standaloneMemberGlobal, srcLambdaKey, trivialSignature, emptyLssStats
+    , memberIdFor, standaloneMemberIdFor, standaloneMemberGlobal, kernelMemberIdFor, standaloneMemberKernel, srcLambdaKey, trivialSignature, emptyLssStats
     , LssMemberTable, emptyMemberTable
     , bumpWidenedByKernel, withScratchStore
     , markDirty
@@ -102,25 +102,27 @@ type alias LssStats =
     , widenedByKernel : Int
     , widenedByBudget : Int
     , devirtDirect : Int -- E9 (LSS_015): singleton-ctor indirect calls rewritten to direct ctor calls
+    , devirtKernel : Int -- E9.2 (LSS_016): singleton whitelisted-kernel indirect calls rewritten to direct kernel calls
     , sizeHist : CoreDict.Dict Int Int -- set size -> count (post-zonk)
     }
 
 
 {-| Interned non-lambda member ids (§3.3 keys) + the E9 standalone-global
-reverse map. One S field for both: the engine self-hosts and `S` must stay
-within the native runtime's 32-slot record GC-scan cap (HEAP invariant) —
-adding a 33rd top-level field to `S` fails the backend verifier on the
-self-compile.
+and E9.2 kernel reverse maps. One S field for all three: the engine
+self-hosts and `S` must stay within the native runtime's 32-slot record
+GC-scan cap (HEAP invariant) — adding a 33rd top-level field to `S` fails
+the backend verifier on the self-compile.
 -}
 type alias LssMemberTable =
     { byKey : CoreDict.Dict String Int
     , globals : CoreDict.Dict Int TOpt.Global
+    , kernels : CoreDict.Dict Int ( String, String, String )
     }
 
 
 emptyMemberTable : LssMemberTable
 emptyMemberTable =
-    { byKey = CoreDict.empty, globals = CoreDict.empty }
+    { byKey = CoreDict.empty, globals = CoreDict.empty, kernels = CoreDict.empty }
 
 
 insertMemberKey : String -> Int -> LssMemberTable -> LssMemberTable
@@ -133,9 +135,14 @@ insertMemberGlobal mid g t =
     { t | globals = CoreDict.insert mid g t.globals }
 
 
+insertMemberKernel : Int -> ( String, String, String ) -> LssMemberTable -> LssMemberTable
+insertMemberKernel mid k t =
+    { t | kernels = CoreDict.insert mid k t.kernels }
+
+
 emptyLssStats : LssStats
 emptyLssStats =
-    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, sizeHist = CoreDict.empty }
+    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty }
 
 
 {-| The all-defaults signature for an annotation with `n` arrows.
@@ -535,6 +542,33 @@ global/ctor reference.
 standaloneMemberGlobal : Int -> Step (Maybe TOpt.Global)
 standaloneMemberGlobal mid s =
     Ok ( CoreDict.get mid s.lssMemberTable.globals, s )
+
+
+{-| E9.2 (LSS_016): intern a KERNEL member ("k|home.name" key — unchanged,
+so member ids are identical to the pre-E9.2 mint) and record its
+(prefix, home, name) identity in the reverse map the kernel devirt
+consults (`standaloneMemberKernel`). Mirrors `standaloneMemberIdFor`.
+-}
+kernelMemberIdFor : String -> ( String, String, String ) -> Step Int
+kernelMemberIdFor key k s0 =
+    case memberIdFor key s0 of
+        Err e ->
+            Err e
+
+        Ok ( mid, s1 ) ->
+            if CoreDict.member mid s1.lssMemberTable.kernels then
+                Ok ( mid, s1 )
+
+            else
+                Ok ( mid, { s1 | lssMemberTable = insertMemberKernel mid k s1.lssMemberTable } )
+
+
+{-| E9.2: the kernel (prefix, home, name) behind a member id, when the
+member is a kernel-value reference.
+-}
+standaloneMemberKernel : Int -> Step (Maybe ( String, String, String ))
+standaloneMemberKernel mid s =
+    Ok ( CoreDict.get mid s.lssMemberTable.kernels, s )
 
 
 {-| Run a Step against a fresh scratch store, restoring the item's

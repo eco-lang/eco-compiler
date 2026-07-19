@@ -47,6 +47,7 @@ module Compiler.AST.SourceBuilder exposing
     , parensExpr
       -- Module builders
     , qualVarExpr
+    , opExpr
     , recordExpr
     , strExpr
       -- Type builders
@@ -202,6 +203,13 @@ ctorExpr name =
 qualVarExpr : String -> Name -> Src.Expr
 qualVarExpr moduleName name =
     A.At A.zero (Src.VarQual Src.LowVar moduleName name)
+
+
+{-| Create an operator-as-value reference (e.g., `(::)`, `(+)`).
+-}
+opExpr : Name -> Src.Expr
+opExpr name =
+    A.At A.zero (Src.Op name)
 
 
 {-| Create a List expression.

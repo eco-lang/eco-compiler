@@ -1714,7 +1714,7 @@ translateIndirectCallBody region func args callCanType =
                     Engine.andThen
                         (\maybeCtor ->
                             case maybeCtor of
-                                Just ctorGlobal ->
+                                Just (DevirtGlobal ctorGlobal) ->
                                     -- E9 (LSS_015): the callee value is provably
                                     -- ONE ctor — rewrite the callee to the ctor
                                     -- reference at the site's own type (enqueues
@@ -1738,6 +1738,37 @@ translateIndirectCallBody region func args callCanType =
                                             bumpDevirtDirect
                                         )
 
+                                Just (DevirtKernel kernelPrefix home name) ->
+                                    -- E9.2 (LSS_016): the callee value is provably
+                                    -- ONE whitelisted kernel — build the same
+                                    -- direct form a written-out call produces
+                                    -- (`translateKernelCall`'s shape), but on the
+                                    -- ALREADY-translated monoArgs: re-invoking the
+                                    -- full kernel path would translate the args a
+                                    -- second time (doubled state effects). The ABI
+                                    -- derives post-hoc — sound here because the
+                                    -- args were already unified against the callee
+                                    -- var's arrow, so the kernel-param unification
+                                    -- is a refinement, and it still selects the
+                                    -- typed variant (cons_Int etc.) for codegen.
+                                    Engine.andThen
+                                        (\_ ->
+                                            Engine.andThen
+                                                (\funcMonoType ->
+                                                    Engine.map
+                                                        (\resultMonoType ->
+                                                            Mono.MonoCall region
+                                                                (Mono.MonoVarKernel region kernelPrefix home name funcMonoType)
+                                                                monoArgs
+                                                                resultMonoType
+                                                                Mono.defaultCallInfo
+                                                        )
+                                                        (callResultType (List.length args) funcMonoType callCanType)
+                                                )
+                                                (deriveKernelAbiTypeCall ( home, name ) (TOpt.typeOf func) args)
+                                        )
+                                        bumpDevirtKernel
+
                                 Nothing ->
                                     Engine.andThen
                                         (\classifiedResult ->
@@ -1754,19 +1785,43 @@ translateIndirectCallBody region func args callCanType =
         (Engine.traverse translate args)
 
 
+{-| E9 (LSS_015) / E9.2 (LSS_016): what a devirtualized indirect call
+rewrites to — a standalone global (ctor, or fn-global behind
+`lss.devirtFnGlobals`), or a whitelisted kernel (prefix, home, name).
+-}
+type DevirtTarget
+    = DevirtGlobal TOpt.Global
+    | DevirtKernel Name Name Name
+
+
+{-| E9.2 (LSS_016): kernels a singleton `{k|home.name}` may devirtualize
+to. Kernels have no annotation to arity-check against and may be
+effectful, so the whitelist is the soundness boundary: each entry must be
+pure (a plain allocator/value function) and pins its exact arity here.
+-}
+kernelDevirtArity : Name -> Name -> Maybe Int
+kernelDevirtArity home name =
+    if home == "List" && name == "cons" then
+        Just 2
+
+    else
+        Nothing
+
+
 {-| E9 (LSS_015): decide whether this indirect call devirtualizes to a
 direct call. All of: lss on; the callee EXPR is a plain var (purity — the
 rewrite drops the callee computation, and only a var read is guaranteed
 effect-and-bottom-free); the translated callee's head anno is a singleton
 whose member is a STANDALONE GLOBAL ("g|" named function/ctor — `Can.Normal`
-ctors like `List.::` are VarGlobal — or "c|" box/enum ctor); and the site
-EXACTLY saturates the target's declared annotation arity (a partial
-application is a PAP — out of scope).
+ctors like `List.::` are VarGlobal — or "c|" box/enum ctor) or an E9.2
+whitelisted KERNEL ("k|"); and the site EXACTLY saturates the target's
+declared annotation arity (a partial application is a PAP — out of scope;
+kernel arity is pinned by the whitelist).
 Provisional-singleton soundness rides LSS_010: if the spec's demand widens
 later, the dirty flush re-translates this node with the joined set and the
 devirt re-decides.
 -}
-devirtDirectTarget : TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Mono.MonoExpr -> Step (Maybe TOpt.Global)
+devirtDirectTarget : TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Mono.MonoExpr -> Step (Maybe DevirtTarget)
 devirtDirectTarget func args monoFunc s0 =
     if not s0.env.lss.enabled then
         Ok ( Nothing, s0 )
@@ -1782,7 +1837,7 @@ devirtDirectTarget func args monoFunc s0 =
                         Err e
 
                     Ok ( Nothing, s1 ) ->
-                        Ok ( Nothing, s1 )
+                        devirtKernelTarget m (List.length args) s1
 
                     Ok ( Just ctorGlobal, s1 ) ->
                         if not (isCtorNode ctorGlobal s1 || (s1.env.lss.devirtFnGlobals && isBodyNode ctorGlobal s1)) then
@@ -1809,7 +1864,7 @@ devirtDirectTarget func args monoFunc s0 =
                                             arrowSpineLength annType
                                     in
                                     if arity >= 1 && arity == List.length args then
-                                        Ok ( Just ctorGlobal, s2 )
+                                        Ok ( Just (DevirtGlobal ctorGlobal), s2 )
 
                                     else
                                         Ok ( Nothing, s2 )
@@ -1819,6 +1874,32 @@ devirtDirectTarget func args monoFunc s0 =
 
             _ ->
                 Ok ( Nothing, s0 )
+
+
+{-| E9.2 (LSS_016): the kernel leg of the devirt decision — the singleton
+member is not a standalone global; if it is a WHITELISTED kernel and the
+site exactly saturates the whitelist-pinned arity, devirtualize.
+-}
+devirtKernelTarget : Int -> Int -> Step (Maybe DevirtTarget)
+devirtKernelTarget m argCount s0 =
+    case Engine.standaloneMemberKernel m s0 of
+        Err e ->
+            Err e
+
+        Ok ( Nothing, s1 ) ->
+            Ok ( Nothing, s1 )
+
+        Ok ( Just ( kernelPrefix, home, name ), s1 ) ->
+            case kernelDevirtArity home name of
+                Just arity ->
+                    if arity == argCount then
+                        Ok ( Just (DevirtKernel kernelPrefix home name), s1 )
+
+                    else
+                        Ok ( Nothing, s1 )
+
+                Nothing ->
+                    Ok ( Nothing, s1 )
 
 
 {-| Is the global's node an actual CONSTRUCTOR (Ctor/Box, chasing Links)?
@@ -1895,6 +1976,15 @@ bumpDevirtDirect s =
             s.lssStats
     in
     Ok ( (), { s | lssStats = { stats | devirtDirect = stats.devirtDirect + 1 } } )
+
+
+bumpDevirtKernel : Step ()
+bumpDevirtKernel s =
+    let
+        stats =
+            s.lssStats
+    in
+    Ok ( (), { s | lssStats = { stats | devirtKernel = stats.devirtKernel + 1 } } )
 
 
 {-| LSS_013 transport: an indirect call's result type carries the CALLEE's
@@ -2673,7 +2763,19 @@ injectArgLambdaMember arg canVar =
             -- devirt (singleton {g|X}) and honestly widens joins where a
             -- global flows alongside lambdas. Flag-off: slotless arrows, the
             -- injection no-ops (spineGo's `_` arm).
-            standaloneArgMember ("g|" ++ TOpt.toComparableGlobal g) g canVar
+            -- E9.2 (LSS_016) identity fold: a kernel-ALIAS global (`(::)` →
+            -- VarGlobal List.cons, node = Define (VarKernel …)) IS the kernel
+            -- value — mint the kernel member (one identity; a split g|/k|
+            -- identity would join to a 2-set and kill singleton consumers),
+            -- registered for the kernel devirt's reverse lookup.
+            (\s ->
+                case LssInfer.kernelAliasOf g s of
+                    Just ( kernelPrefix, home, name ) ->
+                        standaloneArgKernelMember ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name ) canVar s
+
+                    Nothing ->
+                        standaloneArgMember ("g|" ++ TOpt.toComparableGlobal g) g canVar s
+            )
 
         TOpt.VarEnum _ g _ _ ->
             standaloneArgMember ("c|" ++ TOpt.toComparableGlobal g) g canVar
@@ -2690,6 +2792,13 @@ standaloneArgMember key g canVar =
     Engine.andThen
         (\mid -> LssInfer.injectSpineMemberId 1 mid canVar)
         (Engine.standaloneMemberIdFor key g)
+
+
+standaloneArgKernelMember : String -> ( Name, Name, Name ) -> IO.Variable -> Step ()
+standaloneArgKernelMember key k canVar =
+    Engine.andThen
+        (\mid -> LssInfer.injectSpineMemberId 1 mid canVar)
+        (Engine.kernelMemberIdFor key k)
 
 
 {-| Best-effort unify `canVar` with environment-derived structure for `arg`.

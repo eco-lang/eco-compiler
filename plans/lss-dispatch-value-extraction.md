@@ -1779,7 +1779,203 @@ for default-on) and an UNRESOLVED instrumented workload-wall read
 (4:57→6:42, single run, noisy machine — uninstrumented multi-run A/B
 required before any default-on decision).
 
-## 12. A-track side items (not phases of this plan)
+### E9.2 — kernel devirtualization (E9-K), whitelist = `List.cons`
+### (planned 2026-07-18, implementation-ready)
+
+**Why.** The cons rows are the largest dispatch family (139 M/run = 15 % of
+Run A; STILL uncaptured after E9/E9.1 — Run H's keyed leg moved devirt by
++1). `List.::`/`(::)`/`List.cons` is kernel-represented end to end: source
+`cons = Elm.Kernel.List.cons`, cons-as-value is `TOpt.VarKernel "List"
+"cons"`, and the runtime kernel is a pure allocator
+(`ListExports.cpp: Elm_Kernel_List_cons` + typed `cons_Int/Float/Char`
+variants with unboxed heads). The intrinsic-grade DIRECT form already
+exists: a written-out `x :: xs` compiles via `translateKernelCall` →
+`deriveKernelAbiTypeCall` picks the typed variant per element layout →
+direct kernel call, no dispatch. E9.2 rewrites a singleton-`{k|List.cons}`
+indirect call into exactly that form. No Elm shim (the shim's inlined body
+IS this same kernel call — identical endpoint, more moving parts, plus an
+`lssDF` dependency), no ctor node for List, no new MLIR ops. Beyond-
+direct-call speed (inline nursery allocation — today even literal
+`eco.construct.list` lowers to `call eco_alloc_cons`,
+`EcoToLLVMHeap.cpp:349`) is a SEPARATE backend item (E9.4), orthogonal to
+this rewrite and compounding with it.
+
+**Verified ground truth (2026-07-18, code-read):**
+- LssInfer ALREADY mints + injects the kernel member at every occurrence,
+  arg positions included: `walkExpr`'s `VarKernel` arm (LssInfer.elm:638)
+  → `standaloneMember ("k|" ++ home ++ "." ++ name)` → head-only
+  `injectSpineMemberId 1`. The report's "piece 2" (arg-side VarKernel
+  injection) therefore ALREADY EXISTS; transport to HOF param slots rides
+  the same call unification as ctor members. What is missing is only
+  (a) the member→kernel reverse map and (b) the devirt arm + rewrite.
+- LSS_004 kernel poison is about calls TO kernels (arrows crossing the
+  kernel ABI); it does not touch the kernel VALUE's own identity member,
+  and `cons : a -> List a -> List a` has no arrow args anyway.
+- `translateIndirectCallBody` translates ARGS FIRST, then the callee, then
+  decides devirt — so the kernel arm must NOT call `translateKernelCall`
+  wholesale (it re-translates args = doubled state effects). It must build
+  the call from the already-translated `monoArgs`, deriving the kernel ABI
+  post-hoc (see step 3). The direct path's derive-BEFORE-args ordering
+  exists for number-demand concretization of literal args; at devirt sites
+  the args were already unified against the callee var's arrow (fully
+  concrete in a spec body), so post-hoc derivation is a no-op refinement.
+  Caveat recorded: if a whitelisted kernel with number-polymorphic literal
+  args ever devirts, re-examine this ordering. For cons it is moot.
+
+**Step 1 — Engine: kernel reverse map (NO new `S` field — 32-slot cap).**
+`LssMemberTable` gains `kernels : Dict Int ( Name, Name, Name )`
+(prefix, home, name — prefix needed to reconstruct `MonoVarKernel`
+exactly). New `kernelMemberIdFor : String -> ( Name, Name, Name ) -> Step
+Int` mirroring `standaloneMemberIdFor` (same interning, idempotent reverse
+insert) and `standaloneMemberKernel : Int -> Step (Maybe ( Name, Name,
+Name ))` mirroring `standaloneMemberGlobal`. `emptyMemberTable` gains
+`kernels = empty`.
+
+**Step 2 — LssInfer: register the kernel identity at the mint.** The
+`walkExpr` `VarKernel` arm binds `kernelPrefix` (currently `_`) and mints
+via `standaloneMemberWith (Engine.kernelMemberIdFor ("k|" ++ home ++ "."
+++ name) ( kernelPrefix, home, name )) meta` — the "k|" KEY is unchanged
+(same member ids as today; only the reverse map is new). Accessor arm
+stays plain.
+
+**Step 3 — Translate: the devirt arm.** `devirtDirectTarget` returns
+`Maybe DevirtTarget` where `type DevirtTarget = DevirtGlobal TOpt.Global |
+DevirtKernel Name Name Name`. Decision, after the existing singleton +
+plain-var-callee guards: if `standaloneMemberGlobal` misses, consult
+`standaloneMemberKernel`; require the WHITELIST — v1 exactly
+`( home, name ) == ( "List", "cons" )`, which also pins arity — and
+`List.length args == 2` (exact saturation; a partial is a PAP, out of
+scope). Whitelist rationale: kernels can be effectful and have no
+annotation to arity-check against; the list is the soundness boundary and
+each addition must argue purity + arity. In `translateIndirectCallBody`'s
+`DevirtKernel` arm, build the direct form on the ALREADY-translated args:
+`deriveKernelAbiTypeCall ( home, name ) (TOpt.typeOf func) args` →
+`funcMonoType` (typed-variant selection: `cons_Int` in an Int spec —
+unboxed head, a bonus the generic evaluator path can never have) →
+`callResultType (List.length args) funcMonoType callCanType` →
+`Mono.MonoCall region (Mono.MonoVarKernel region prefix home name
+funcMonoType) monoArgs resultMonoType Mono.defaultCallInfo` — byte-wise
+the same call form a written-out `x :: xs` produces. (`indirectResultAnno`
+not needed: cons's result `List a` carries no arrows, and the kernel path's
+`callResultType` is what the direct form uses.) The ctor/fn arms are
+untouched (`DevirtGlobal` preserves today's behavior exactly).
+Provisional-singleton soundness rides LSS_010 unchanged: a later widen
+re-translates the node and the devirt re-decides.
+
+**Step 4 — census.** `LssStats` gains `devirtKernel : Int` (separate from
+`devirtDirect` for attribution); bump in the `DevirtKernel` arm; print in
+`Monomorphize.elm`'s report line next to `devirtDirect`.
+
+**Step 5 — invariant.** LSS_016: a singleton `{k|home.name}` at an exactly
+saturating plain-var call site may be rewritten to the direct kernel call
+IFF (home,name) is on the kernel-devirt whitelist (v1: List.cons only);
+whitelist entries must be pure (no effects, no bottoms beyond the value's
+own semantics) and their arity pinned by the whitelist. Add to
+`design_docs/invariants.csv`.
+
+**Non-flag decision.** Like E9 (ctors) and unlike E9.1 (fn globals), E9.2
+ships UNCONDITIONAL under `lss.enabled`: the rewrite lands on the
+battle-tested kernel-call form, no inliner surface is added (kernel calls
+are never inlined), and the whitelist bounds exposure to one pure
+allocator. No config/hash change. Cost watch: the kernel member class adds
+no NEW injection (the mints predate E9.2); only devirt-triggered
+re-translation churn is new — measure the mono wall in Run J and file
+under E9.3 if it moves.
+
+**Step 6 — pins + gates (order).**
+1. `test/elm/src/ConsDevirtTest.elm` — mirror `CtorDevirtTest`'s shape: a
+   LOCAL non-tail fold (single provenance → singleton without keying) with
+   `(::)` passed as the HOF value, plus an Int-element leg so the typed
+   `cons_Int` variant is observable; `-- CHECK:` the folded result. RED
+   first (assert the direct-call MLIR shape via CHECK-MLIR on
+   `Elm_Kernel_List_cons`/kernel-call form — absent pre-implementation),
+   GREEN after. Corpus gotcha: touch all test `.elm` before flag-on runs
+   (env-blind mtime cache).
+2. elm-tests baseline (12998/12) — kernel devirt is solver/LSS-gated, the
+   JS/subst front-end must be untouched.
+3. Subst byte-identity A/B on the compiler tree (flag-off legs).
+4. **Native solver+LSS self-compile — THE gate** (S.10/S.11 doctrine).
+   Watch specifically for: devirt firing inside `Bytes`-fusion contexts
+   (the kernel call is a plain MonoCall — BytesFusion treats it as any
+   saturated kernel call, but this is the first devirt class that lands
+   INSIDE fused encoder subtrees at scale) and the `declinedShape` /
+   census accounting still closing.
+5. Flag-on corpus (touch-all), expect 1625/1625 with the new pin.
+
+**Step 7 — benchmark = Run J (two-phase clean method, this doc's
+Methodology).** Legs: `e91-solver` (baseline binary, unkeyed) /
+`e92-solver` (unkeyed) / `e92-solver-keyed` (the Run-F List chain
+`elm/core:List.foldl,List.foldr,List.foldrHelper,List.map` — the hot cons
+dispatches live in SHARED fold specs, so the keyed leg is where the 139 M
+class converts; unkeyed converts only single-provenance sites) /
+`e91-subst` / `e92-subst` (byte-identity). Dynamic census A/B: lower
+e91-solver, e92-solver, AND e92-solver-keyed with
+`ECO_LSS_DISPATCH_SITE_COUNTERS=1`; cold `ECO_DISPATCH_STATS=1`
+self-compile each; the E9-family signal is EVENTS REMOVED
+(sat+fast delta), not coverage. Record devirtKernel, mono walls (E9.3
+watch), output sizes. `lssDF` stays OFF for all legs (default config —
+E9.2 must be measured on shipped-config behavior).
+
+Effort: S. Risk: LOW — smaller surface than E9 (one whitelisted kernel,
+existing call form, no new injection); the named risks are the
+BytesFusion-context interaction and re-translation churn, both measured at
+the gates.
+
+**IMPLEMENTATION CORRECTIONS (2026-07-18, found via the unit pin's RED):**
+1. **Operator-as-value is a GLOBAL, not a VarKernel.** `(::)` canonicalizes
+   via `Names.registerGlobal` (LocalOpt Typed Expression's `VarOperator`
+   arm) to `VarGlobal (elm/core List) cons` — the "verified ground truth"
+   claim that cons-as-value is `TOpt.VarKernel` was WRONG (VarKernel occurs
+   at direct call sites via the Binop arm, and inside the alias's own def
+   body). So the devirt-relevant member at HOF-arg sites minted as
+   `g|List.cons`, whose node is not a Ctor → E9 declined it.
+2. **The mint that matters is Translate-side, not LssInfer-side.** E9's
+   arg-side standalone injection lives in `Translate.injectArgLambdaMember`
+   (:2749) — that is what writes members into the solver store the devirt
+   reads. The LssInfer `walkExpr` arms feed signatures only.
+3. **The fix is an IDENTITY FOLD, not a second resolve path**: at BOTH
+   mint sites (Translate's `injectArgLambdaMember` VarGlobal arm and
+   LssInfer's `walkExpr` VarGlobal arm), a kernel-ALIAS global — node is
+   `Define`/`TrackedDefine` whose body is EXACTLY a `VarKernel`
+   (`cons = Elm.Kernel.List.cons`), Link-chased (`LssInfer.kernelAliasOf`)
+   — mints the KERNEL member `k|home.name` (via `kernelMemberIdFor`, which
+   registers the (prefix,home,name) reverse map) instead of `g|`. One value
+   = one identity: a split g|/k| identity would join to a 2-set and kill
+   every singleton consumer. The `k|` devirt leg then handles everything;
+   no `kernelAliasOf` consult in the devirt decision itself.
+   Consequence flag-on-DF: kernel-alias globals no longer devirt via the
+   E9.1 fn-global path (they are k| now, whitelist-gated) — a Run-I-vs-J
+   census shift under `lssDF=1` only; default config unaffected.
+4. **Unit-env fidelity**: TestPipeline's mock env carries dependency
+   ANNOTATIONS but no nodes (node-less globals become `MonoExtern`), so
+   `kernelAliasNodes` synthesizes the production-true `List.cons` node
+   (`Define (VarKernel "Elm" "List" "cons")`) for the pin. Unit pin:
+   `E92ConsDevirtTest` (RED/GREEN proven; asserts no VarLocal-callee call
+   remains AND a `MonoVarKernel List cons` call EXISTS, with callee-anno +
+   node-key diagnostics in the failure message).
+
+**AS BUILT (2026-07-19) — SHIPPED unconditional under lss.enabled; Run J:
+−159.9 M events/run keyed (−16.9 %), THE cons class captured.** All gates
+green: unit pin RED/GREEN; elm-tests 12,999/12 (baseline + new pin);
+default corpus 1624+1 (the one first-pass failure was the fixture's own
+CHECK — `Debug.log` prints Strings QUOTED, `result2: "ab"`); flag-on
+corpus 1625/1625; flag-on native self-compile green FIRST TRY with
+`devirtKernel=763` live (devirtDirect 2,455 unchanged — the identity fold
+does not disturb ctor devirt); subst legs byte-identical. Static: keyed
++21 devirts only (784) but those sites carry ~143.7 M dynamic events —
+few-sites × huge-weight, exactly the Run-A concentration; unkeyed −16.2 M
+(763 single-provenance sites, 4.6× E9's ctor haul); output −795 B unkeyed
+(direct kernel calls SMALLER than dispatch), +13.4 KB keyed; mono walls in
+noise (no E9.3-scale cost added); census walls flat across legs (no
+Run-I-style workload-wall signal). All removal came out of `gen` (typed
+identical) — cons dispatch was pure generic-funnel. FOLLOW-UPS opened:
+List-chain keying default-on decision (E5's payoff went 0 → 143.7 M with
+E9.2 — measure the keyed mono wall on a quiet machine, then decide);
+census-driven whitelist growth; E9.4 inline nursery allocation
+(every cons is still a runtime call at machine level). Run J recorded in
+benchmarks/runtime-calls.md.
+
+
 
 - **A2 — cheapen the solver** (owned by `plans/monosolver-*`): pretenuring/nursery
   policy for long-lived UnionFind/IORef state (≈248 s minor GC), `S`-record

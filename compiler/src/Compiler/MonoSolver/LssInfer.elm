@@ -3,6 +3,7 @@ module Compiler.MonoSolver.LssInfer exposing
     , instantiateWithSignature
     , injectLambdaMember
     , injectSpineMemberId
+    , kernelAliasOf
     )
 
 {-| Lambda-set signature inference (LSS design §7).
@@ -623,7 +624,18 @@ walkExpr letEnv expr s0 =
                     walkChildren letEnv (func :: args) s1
 
         TOpt.VarGlobal _ g meta ->
-            standaloneMemberWith (Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal g) g) meta s0
+            case kernelAliasOf g s0 of
+                Just ( kernelPrefix, home, name ) ->
+                    -- E9.2 (LSS_016) identity fold: a kernel-ALIAS global
+                    -- (`cons = Elm.Kernel.List.cons`) IS the kernel value —
+                    -- mint the kernel member so the alias body's own VarKernel
+                    -- occurrence and every reference share ONE identity (a
+                    -- split g|/k| identity would join to a 2-set and kill
+                    -- every singleton consumer).
+                    standaloneMemberWith (Engine.kernelMemberIdFor ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name )) meta s0
+
+                Nothing ->
+                    standaloneMemberWith (Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal g) g) meta s0
 
         TOpt.VarEnum _ g _ meta ->
             -- E9: ctor mints register the Global for devirt lookup.
@@ -635,8 +647,10 @@ walkExpr letEnv expr s0 =
         TOpt.VarCycle _ home name meta ->
             standaloneMemberWith (Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal (TOpt.Global home name)) (TOpt.Global home name)) meta s0
 
-        TOpt.VarKernel _ _ home name meta ->
-            standaloneMember ("k|" ++ home ++ "." ++ name) meta s0
+        TOpt.VarKernel _ kernelPrefix home name meta ->
+            -- E9.2: kernel mints register (prefix, home, name) for devirt
+            -- lookup — the "k|" key (and so the member id) is unchanged.
+            standaloneMemberWith (Engine.kernelMemberIdFor ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name )) meta s0
 
         TOpt.Accessor _ field meta ->
             standaloneMember ("a|" ++ field) meta s0
@@ -849,10 +863,32 @@ standaloneMember key =
     standaloneMemberWith (Engine.memberIdFor key)
 
 
+{-| E9.2: is the global an eta-free KERNEL ALIAS — a Define whose body is
+exactly a `VarKernel` reference (`cons = Elm.Kernel.List.cons`), Link-chased?
+Operator-as-value canonicalizes to the aliasing GLOBAL (`(::)` becomes
+`VarGlobal List.cons`), so kernel identity must be recognized through it.
+-}
+kernelAliasOf : TOpt.Global -> Engine.S -> Maybe ( Name, Name, Name )
+kernelAliasOf g s =
+    case DMap.get TOpt.toComparableGlobal g s.env.toptNodes of
+        Just (TOpt.Define (TOpt.VarKernel _ kernelPrefix home name _) _ _) ->
+            Just ( kernelPrefix, home, name )
+
+        Just (TOpt.TrackedDefine _ (TOpt.VarKernel _ kernelPrefix home name _) _ _) ->
+            Just ( kernelPrefix, home, name )
+
+        Just (TOpt.Link target) ->
+            kernelAliasOf target s
+
+        _ ->
+            Nothing
+
+
 {-| `standaloneMember` with an explicit mint step — the ctor arms mint via
 `Engine.standaloneMemberIdFor` so the member's Global lands in the E9
 devirt reverse map (globals AND ctors — `Can.Normal` ctors like `List.::`
-are VarGlobal/"g|"); kernel/accessor arms keep the plain intern.
+are VarGlobal/"g|"), and the kernel arm mints via `Engine.kernelMemberIdFor`
+for the E9.2 kernel reverse map; the accessor arm keeps the plain intern.
 -}
 standaloneMemberWith : Step Int -> TOpt.Meta TypeIds.MVarId -> Step ()
 standaloneMemberWith mint meta s0 =
