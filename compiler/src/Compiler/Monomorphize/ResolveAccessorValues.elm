@@ -220,6 +220,7 @@ buildAccessorClosure home counter fieldName recordType fieldType expectedType =
         closureInfo =
             { lambdaId = lambdaId
             , srcLambda = Nothing
+            , lssMember = Nothing
             , captures = []
             , params = [ ( "record", recordType ) ]
             , closureKind = Nothing

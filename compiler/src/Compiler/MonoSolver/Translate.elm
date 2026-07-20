@@ -873,6 +873,7 @@ specializePortBody incoming expr canType requestedMonoType =
                                                 closureInfo =
                                                     { lambdaId = lambdaId
                                                     , srcLambda = Nothing
+                                                    , lssMember = Nothing
                                                     , captures = []
                                                     , params = [ ( paramName, paramType ) ]
                                                     , closureKind = Nothing
@@ -1344,23 +1345,33 @@ specializeLambda srcLam params body canType =
                                 classifiedParams
                     in
                     Engine.andThen
-                        (\lambdaId ->
-                            Engine.map
-                                (\monoBody ->
-                                    Mono.MonoClosure
-                                        { lambdaId = lambdaId
-                                        , srcLambda = srcLam
-                                        , captures = Closure.computeClosureCaptures monoParams monoBody
-                                        , params = monoParams
-                                        , closureKind = Nothing
-                                        , captureAbi = Nothing
-                                        }
-                                        monoBody
-                                        monoType0
+                        (\maybeMember ->
+                            Engine.andThen
+                                (\lambdaId ->
+                                    Engine.map
+                                        (\monoBody ->
+                                            Mono.MonoClosure
+                                                { lambdaId = lambdaId
+                                                , srcLambda = srcLam
+
+                                                -- Fix B (LSS_017): the id this instance was minted
+                                                -- under (spec-qualified when keyed-routed) — the
+                                                -- interning is idempotent, so this re-reads the id
+                                                -- classifyLambdaHead already injected.
+                                                , lssMember = maybeMember
+                                                , captures = Closure.computeClosureCaptures monoParams monoBody
+                                                , params = monoParams
+                                                , closureKind = Nothing
+                                                , captureAbi = Nothing
+                                                }
+                                                monoBody
+                                                monoType0
+                                        )
+                                        (Engine.scoped (Engine.andThen (\_ -> translate body) (insertVars monoParams)))
                                 )
-                                (Engine.scoped (Engine.andThen (\_ -> translate body) (insertVars monoParams)))
+                                allocLambdaId
                         )
-                        allocLambdaId
+                        (Engine.lambdaInstanceMemberMaybe srcLam)
                 )
                 (Engine.traverse (\( name, paramCanType ) -> Engine.map (\mt -> ( name, mt )) (classify paramCanType)) params)
         )
@@ -1416,7 +1427,8 @@ classifyLambdaHead arity srcLam canType s0 =
                 Err e
 
             Ok ( funcVar, s1 ) ->
-                case LssInfer.injectLambdaMember arity srcLam funcVar s1 of
+                -- Fix B (LSS_017): translation-phase mint — spec-qualified.
+                case LssInfer.injectLambdaMemberQualified arity srcLam funcVar s1 of
                     Err e ->
                         Err e
 
@@ -2933,10 +2945,11 @@ injectArgLambdaMember : TOpt.Expr TypeIds.MVarId -> IO.Variable -> Step ()
 injectArgLambdaMember arg canVar =
     case arg of
         TOpt.Function srcLam params _ _ ->
-            LssInfer.injectLambdaMember (List.length params) srcLam canVar
+            -- Fix B (LSS_017): translation-phase mint — spec-qualified.
+            LssInfer.injectLambdaMemberQualified (List.length params) srcLam canVar
 
         TOpt.TrackedFunction srcLam params _ _ ->
-            LssInfer.injectLambdaMember (List.length params) srcLam canVar
+            LssInfer.injectLambdaMemberQualified (List.length params) srcLam canVar
 
         TOpt.VarGlobal _ g _ ->
             -- E9: standalone globals/ctors passed as function args contribute

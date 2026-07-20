@@ -105,8 +105,17 @@ checkOne specId expr acc =
 
                 Just m ->
                     let
+                        -- Fix B (LSS_017): the identity a closure's annotation
+                        -- must cover is the id it was MINTED under —
+                        -- spec-qualified for keyed-routed globals — not the
+                        -- raw source id.
                         mid =
-                            Id.toComparable m
+                            case info.lssMember of
+                                Just q ->
+                                    q
+
+                                Nothing ->
+                                    Id.toComparable m
                     in
                     case Mono.headAnno closType of
                         Mono.LTop ->

@@ -952,6 +952,7 @@ Extended for typed closure calling:
 type alias ClosureInfo =
     { lambdaId : LambdaId
     , srcLambda : Maybe TypeIds.SrcLambdaId -- source identity (LSS member); several instances MAY share one (inliner copies verbatim — unlike lambdaId, MONO_019)
+    , lssMember : Maybe Int -- Fix B (LSS_017): the member id this instance was minted under — spec-qualified for keyed-routed globals, srcLambdaKey otherwise. AbiCloning's index key; keeps annotations and instances in ONE member space. Nothing when lss is off or the lambda is untagged.
     , captures : List ( Name, MonoExpr, Bool )
     , params : List ( Name, MonoType )
     , closureKind : MaybeClosureKind

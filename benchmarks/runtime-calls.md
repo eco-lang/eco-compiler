@@ -668,8 +668,53 @@ test surface. The E-track's shipped arc: Run A 922.3 M events / 0 fast /
 0 % → Run L 753.0 M events / 51.3 M fast / 6.81 % — on stock settings,
 with the flag-on wall at ~6:10–6:35 (post-E9.3 GC policy) instead of the
 ~14 min it measured a week ago. Remaining census-ordered work: E9.4
-inline nursery allocation, E9.5 layout-blind demand-join audit, E1.3
-inlinehint, whitelist growth, later-stage chaining (v3).
+inline nursery allocation, E9.5 layout-blind demand-join audit + E10
+post-settle kernel-devirt relocation (plan §11.6 — commit-after-settle;
+E10.0 sizes the prize via a declinedUnsettled counter), E1.3 inlinehint,
+whitelist growth, later-stage chaining (v3).
+
+---
+
+### Run M — Fix B fork-qualified members: all-globals keying SOUND + first census (2026-07-20):
+### **coverage 6.81 % → 13.22 % (fast 51.3 M → 99.6 M) at identical total events, wall parity**
+
+Context: the §11.6 root-cause campaign proved all-globals keying (`ECO_MONO_LSS=keyed`)
+miscompiled via the AbiCloning singleton-REPRESENTATIVE hijack (keyed clones of one source
+lambda sharing one `srcLambdaKey` member; one `LayoutGroup.rep` stamped for all) — the census
+leg had NEVER completed (rc=139 ~7 s in). Fix B (`plans/lss-fork-qualified-members.md`,
+LSS_017) qualifies translation-phase lambda members by their minting spec (interned
+`l|<lam>|<specId>`), stamps the id into `ClosureInfo.lssMember`, and lets the keyed spec keys
+fork downstream HOFs per clone — recovering the devirt legitimately instead of declining it.
+
+- **Binary**: all-keyed-built (front-end `ECO_MONO_ENGINE=solver ECO_MONO_LSS=keyed`, Fix B
+  front-end; 115,672,024 B text MLIR), lowered with `ECO_LSS_DISPATCH_SITE_COUNTERS=1`.
+  **Workload**: cold subst (Run-L convention). Repro gate first: the UN-instrumented twin
+  completes the full self-compile in 4:21 (12,110,336 B output) where the pre-fix all-keyed
+  binary deterministically SIGSEGV'd.
+- **Mono census (keyed, Fix B)**: members 51,676 total (41,495 interned — the qualified
+  fan-out), `widenedByBudget=46,394` (the M4 budget bounding the qualification spiral,
+  as designed), `dispatchUpgraded=3035 stampedStaged=463 stampedPapPrefix=1`
+  `devirtDirect=5693 devirtKernel=764 declinedAbiMismatch=0 unqualifiedLambdaMints=0`;
+  `multiInstanceGroups=1749` vs 1,721 on stock — the verbatim-inliner-copy population
+  (fresh lambdaIds per copy), NOT divergent clones; monitoring delta only.
+- **Run M dynamic census (all-keyed-built / subst workload):**
+  `sat=653,381,374  gen=636,731,802  typed=16,649,572  fast=99,561,487  distinct=5,806`
+  → **total dispatch events 752.9 M — IDENTICAL to Run L's 753.0 M** (−0.005 %), with
+  **+48.3 M events/run converted gen→fast (1:1: gen −48.4 M), coverage 6.81 % → 13.22 %**.
+  Census wall 4:32.49 at 10 majors (Run L: 4:27.18 at 9 — parity within GC noise),
+  RSS 5.31 GB. Non-perturbation: census/plain binaries emit byte-identical workload output.
+- **Top rows unchanged in kind** (IO-continuation family 34.8 M/18.9 M/18.5 M…,
+  `typeHasResidualNumber` 10.3 M, `identity` 9.6 M, `accessor_name` 9.6 M,
+  `traverseList` 7.3 M — the E8-only ⊤-by-soundness class): all-keying converts the
+  REACHABLE singleton tier; the escaping-continuation tier still needs E8.
+
+*Reading Run M:* keying every global is now SOUND (gates: all-keyed self-compile green,
+corpus 1625/1625, elm-tests baseline, stock stamps unchanged with +21 List-chain specs /
++0.07 % MLIR) and DOUBLES the track's dynamic coverage for free at run time — same event
+total, same wall, ~48 M fewer generic funnel trips. Compile-time cost of all-keying is the
+open question for a default flip (Run-L-era read: ~+6 % wall; re-measure post-Fix-B with
+majors recorded — the fork population grew). §11.7's E11 key-on-conflict is now a
+COST optimization question (fork less than all-globals), not a soundness prerequisite.
 
 ---
 
@@ -697,6 +742,7 @@ stamps (front-end run under solver, lowered with `ECO_LSS_DISPATCH_SITE_COUNTERS
 | 2026-07-19 00:3x | E9.2-built (e92) / subst (Run J) | 879,376,791 | 861,735,691 | 17,641,100 | 51,352,094 | 5.52 % | 5,791 | 8:33.09* |
 | 2026-07-19 00:4x | **E9.2 KEYED List chain (e92-keyed) / subst (Run J)** | **735,637,567** | 717,996,467 | 17,641,100 | 51,352,094 | **6.53 %** | 5,791 | 8:46.42* |
 | 2026-07-20 16:xx | **TIER-1 DEFAULTS: keyed+DF+guards (Run L)** | **701,687,500** | 685,103,759 | 16,583,741 | 51,293,775 | **6.81 %** | 5,481 | 4:27.18† |
+| 2026-07-20 22:39 | **Fix B ALL-KEYED-built / subst (Run M)** | **653,381,374** | 636,731,802 | 16,649,572 | **99,561,487** | **13.22 %** | 5,806 | 4:32.49† |
 
 *Run-C walls carry an unattributed +30 % vs Run A/B (see the Run C section) — the
 counts are the meaningful comparison; treat the walls as provisional. The Run-I

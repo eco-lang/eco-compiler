@@ -946,6 +946,8 @@ runGlobalOptPhase lssReport stats simplifiedGraph =
                         ++ String.fromInt goStats.abiCloning.declinedShapeNonArrow
                         ++ ") declinedAbiMismatch="
                         ++ String.fromInt goStats.abiCloning.declinedAbiMismatch
+                        ++ " multiInstanceGroups="
+                        ++ String.fromInt goStats.abiCloning.multiInstanceGroups
                     )
                 )
                 |> Task.map (\_ -> result)

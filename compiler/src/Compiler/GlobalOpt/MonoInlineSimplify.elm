@@ -703,6 +703,7 @@ raiseOne inlineConfig specId info body cty defTy =
                                 { info
                                     | params = info.params ++ innerInfo.params
                                     , srcLambda = Nothing
+                                    , lssMember = Nothing
                                     , closureKind = Nothing
                                     , captureAbi = Nothing
                                 }
@@ -753,6 +754,7 @@ raiseOne inlineConfig specId info body cty defTy =
                                         { info
                                             | params = info.params ++ freshParams
                                             , srcLambda = Nothing
+                                            , lssMember = Nothing
                                             , closureKind = Nothing
                                             , captureAbi = Nothing
                                         }
@@ -2903,6 +2905,7 @@ betaReduce ctx region info closureBody args resultType =
                     | params = remainingParams
                     , captures = newCaptures
                     , srcLambda = Nothing
+                    , lssMember = Nothing
                     , closureKind = Nothing
                     , captureAbi = Nothing
                 }
@@ -4533,6 +4536,7 @@ tryInlineCall ctx specId args resultType =
                         newClosureInfo =
                             { lambdaId = newLambdaId
                             , srcLambda = Nothing
+                            , lssMember = Nothing
                             , params = remainingParams
                             , captures = newCaptures
                             , closureKind = Nothing

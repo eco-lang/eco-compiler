@@ -20,6 +20,17 @@ Checks (violations are strings; the caller fails the compile on any):
 3.  `MonoTupleCreate` element expression types vs the recorded tuple node
     type's slots (construct-side agreement).
 
+Closure-capture / call-arg interior checks were prototyped (2026-07-20)
+for the all-globals-keying record-field-boxedness class and REMOVED: at
+the mono-type level, keying's disagreements are erased-vs-concrete
+(benign — the erased consumer is a polymorphic pass-through that never
+derefs the field; the whole E2E corpus compiles CORRECTLY under
+all-globals keying), which a per-node boxedness check cannot distinguish
+from the malign concrete-raw-vs-concrete-boxed case, while the real
+crash (self-compile-scale solver Unify pattern) never surfaces as a
+call-boundary field flip at all. MONO_029 is enforced by engine
+connectivity (R1/R2), not a per-node validator, for exactly this reason.
+
 @docs validate
 
 -}

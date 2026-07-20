@@ -12,6 +12,7 @@ module Compiler.MonoSolver.Engine exposing
     , lookupCallMemo, putCallMemo
     , mvarIdKey, pointKey
     , memberIdFor, standaloneMemberIdFor, standaloneMemberGlobal, kernelMemberIdFor, standaloneMemberKernel, srcLambdaKey, trivialSignature, emptyLssStats
+    , lambdaInstanceMemberId, lambdaInstanceMemberMaybe
     , LssMemberTable, emptyMemberTable
     , bumpWidenedByKernel, withScratchStore
     , markDirty
@@ -104,6 +105,7 @@ type alias LssStats =
     , devirtDirect : Int -- E9 (LSS_015): singleton-ctor indirect calls rewritten to direct ctor calls
     , devirtKernel : Int -- E9.2 (LSS_016): singleton whitelisted-kernel indirect calls rewritten to direct kernel calls
     , sizeHist : CoreDict.Dict Int Int -- set size -> count (post-zonk)
+    , unqualifiedLambdaMints : Int -- Fix B (LSS_017): translation-phase lambda-instance mints under keyed routing with no current spec id (expected 0; nonzero = a mint site outside any work item)
     }
 
 
@@ -142,7 +144,7 @@ insertMemberKernel mid k t =
 
 emptyLssStats : LssStats
 emptyLssStats =
-    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty }
+    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0 }
 
 
 {-| The all-defaults signature for an annotation with `n` arrows.
@@ -160,6 +162,91 @@ supply is seeded past `GlobalMVarState.nextLam`, so the two never collide).
 srcLambdaKey : TypeIds.SrcLambdaId -> Int
 srcLambdaKey =
     Id.toComparable
+
+
+{-| Fix B (LSS_017): the member id for a lambda INSTANCE minted during
+translation. When the defining global routes through the keyed spec path
+(the same predicate `enqueueSpec` uses), the id is qualified by the
+enclosing SpecId — interned as `l|<lam>|<spec>` — so keyed clones of one
+source lambda carry DISTINCT members and can never impersonate each other
+at singleton consumers (the §11.6 representative-hijack root cause:
+`plans/lss-fork-qualified-members.md`). Non-keyed-routed globals keep the
+raw id: their spec keys are annotation-insensitive (`widenSets` /
+lss-off), so same-layout duplicate instances are impossible and raw stays
+sound AND byte-identical. Interning is idempotent, so LSS_010 dirty-flush
+re-translations of a spec re-mint the same id.
+
+A translation-phase mint under keyed routing with no current spec falls
+back to the raw id and bumps `unqualifiedLambdaMints` (expected 0 —
+visible in the census, never a silent mis-qualification).
+
+Inference-phase signature mints (`LssInfer.walkExpr`) deliberately do NOT
+use this: signatures are per-unit and pre-spec; their raw members carry no
+instances post-Fix-B, so signature-transported singletons decline at
+AbiCloning (unstampable-but-sound).
+-}
+lambdaInstanceMemberId : TypeIds.SrcLambdaId -> Step Int
+lambdaInstanceMemberId lamId s0 =
+    let
+        raw =
+            srcLambdaKey lamId
+    in
+    if not s0.env.lss.enabled then
+        Ok ( raw, s0 )
+
+    else
+        let
+            routed =
+                case s0.currentGlobal of
+                    Just g ->
+                        s0.env.lss.keyed
+                            || (not (CoreDict.isEmpty s0.env.lssKeyedSet)
+                                    && CoreDict.member (Mono.toComparableGlobal g) s0.env.lssKeyedSet
+                               )
+
+                    Nothing ->
+                        -- Outside any item: under all-globals keying treat as
+                        -- routed so the missing spec id is COUNTED, not
+                        -- silently raw-minted.
+                        s0.env.lss.keyed
+        in
+        if not routed then
+            Ok ( raw, s0 )
+
+        else
+            case s0.itemAux.currentSpecId of
+                Just specId ->
+                    memberIdFor ("l|" ++ String.fromInt raw ++ "|" ++ String.fromInt specId) s0
+
+                Nothing ->
+                    let
+                        stats =
+                            s0.lssStats
+                    in
+                    Ok ( raw, { s0 | lssStats = { stats | unqualifiedLambdaMints = stats.unqualifiedLambdaMints + 1 } } )
+
+
+{-| `lambdaInstanceMemberId` lifted over the optional provenance stamp, for
+the `ClosureInfo.lssMember` field: `Nothing` for untagged lambdas and on
+the lss-off path (where AbiCloning is inert and the field is never read).
+-}
+lambdaInstanceMemberMaybe : Maybe TypeIds.SrcLambdaId -> Step (Maybe Int)
+lambdaInstanceMemberMaybe srcLam s0 =
+    if s0.env.lss.enabled then
+        case srcLam of
+            Just lamId ->
+                case lambdaInstanceMemberId lamId s0 of
+                    Err e ->
+                        Err e
+
+                    Ok ( mid, s1 ) ->
+                        Ok ( Just mid, s1 )
+
+            Nothing ->
+                Ok ( Nothing, s0 )
+
+    else
+        Ok ( Nothing, s0 )
 
 
 bumpWidenedByKernel : S -> S
@@ -271,12 +358,13 @@ type alias ItemAux =
     , ecoResidualReads : List IO.Variable
     , ecoResidualKeyReads : List Int
     , loopParams : List ( String, List ( String, Can.Type TypeIds.MVarId ) )
+    , currentSpecId : Maybe Int -- Fix B (LSS_017): the SpecId being translated; set by processItem after resetItem, cleared at finishNode. Qualifies lambda-instance member ids for keyed-routed globals.
     }
 
 
 emptyItemAux : ItemAux
 emptyItemAux =
-    { lssRootAnn = Nothing, ecoResidualReads = [], ecoResidualKeyReads = [], loopParams = [] }
+    { lssRootAnn = Nothing, ecoResidualReads = [], ecoResidualKeyReads = [], loopParams = [], currentSpecId = Nothing }
 
 
 {-| Scratch-store entry: clear ONLY the read lists (scratch Point indices are

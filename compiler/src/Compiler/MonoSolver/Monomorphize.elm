@@ -191,7 +191,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         , "sets zonked: " ++ String.fromInt stats.setsZonked ++ "; size histogram: " ++ histLine
         , "widened: bySize=" ++ String.fromInt stats.widenedBySize ++ " byKernel=" ++ String.fromInt stats.widenedByKernel ++ " byBudget=" ++ String.fromInt stats.widenedByBudget
         , "join flush: rounds=" ++ String.fromInt stats.joinRounds ++ " retranslations=" ++ String.fromInt stats.retranslations
-        , "devirtDirect=" ++ String.fromInt stats.devirtDirect ++ " devirtKernel=" ++ String.fromInt stats.devirtKernel
+        , "devirtDirect=" ++ String.fromInt stats.devirtDirect ++ " devirtKernel=" ++ String.fromInt stats.devirtKernel ++ " unqualifiedLambdaMints=" ++ String.fromInt stats.unqualifiedLambdaMints
         , "top specs/global: " ++ topSpecs
         , "=================="
         ]
@@ -424,7 +424,7 @@ processItem specId s =
                         else
                             stats0
 
-                    sItem =
+                    sItemR =
                         Engine.resetItem
                             { s
                                 | inProgress = BitSet.insertGrowing specId s.inProgress
@@ -437,6 +437,15 @@ processItem specId s =
                                 -- it for the next flush round.
                                 , dirtySpecs = BitSet.removeGrowing specId s.dirtySpecs
                             }
+
+                    auxR =
+                        sItemR.itemAux
+
+                    -- Fix B (LSS_017): expose the spec being translated to the
+                    -- lambda-instance member mints. AFTER resetItem — it
+                    -- rebuilds itemAux.
+                    sItem =
+                        { sItemR | itemAux = { auxR | currentSpecId = Just specId } }
                 in
                 case global of
                     Mono.Accessor fieldName ->
@@ -484,10 +493,16 @@ processItem specId s =
                                     -- (inProgress + currentGlobal) without
                                     -- touching the node.
                                     Ok
-                                        { sItem2
+                                        (let
+                                            aux2 =
+                                                sItem2.itemAux
+                                         in
+                                         { sItem2
                                             | inProgress = BitSet.removeGrowing specId sItem2.inProgress
                                             , currentGlobal = Nothing
-                                        }
+                                            , itemAux = { aux2 | currentSpecId = Nothing }
+                                         }
+                                        )
 
                                 else
                                 case specializeNodeSaturating 1 name home node monoType sItem2 of
@@ -793,10 +808,18 @@ finishNode : Mono.SpecId -> Mono.MonoNode -> S -> S
 finishNode specId monoNode s =
     -- A join that landed mid-translation left the spec's dirty mark set;
     -- the drain-end flush re-pushes it (LSS_010) — no per-item re-push.
+    let
+        aux =
+            s.itemAux
+    in
     { s
         | nodes = arraySetGrowing specId (Just monoNode) s.nodes
         , inProgress = BitSet.removeGrowing specId s.inProgress
         , currentGlobal = Nothing
+
+        -- Fix B (LSS_017): a mint outside any item must not silently adopt a
+        -- stale spec — clear alongside currentGlobal.
+        , itemAux = { aux | currentSpecId = Nothing }
     }
 
 

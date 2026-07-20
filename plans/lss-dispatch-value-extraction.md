@@ -2169,6 +2169,353 @@ open; (b) lssDF default-on UNBLOCKED from the compile-time side;
 remaining blocker = Run I's instrumented workload-wall read; (c) v2
 micro-candidates above remain unclaimed.
 
+## 11.6 E10 — post-settle kernel devirt: relocate to GlobalOpt
+## (design-first exploration, added 2026-07-20)
+
+**Origin.** The Tier-1 hardening proved translate-time kernel devirt is
+COMMIT-BEFORE-SETTLE: it freezes a layout-committed kernel identity while
+the site may still carry residual `CNumber` vars, and the demand-close (a
+positional annotation rewrite that cannot re-derive kernel ABIs or
+un-devirt) then collapses those positions out from under it. The three
+E9.2 guards enforce "commit only what is already settled" — sound, but
+the conservative approximation. The right architecture (user-identified):
+**commit-after-settle** — decide the devirt where types are final, so
+late-settling sites are CAPTURED (settle → cons-shaped → typed variant)
+or correctly refused (settle → non-cons-shaped → stay indirect) instead
+of blanket-declined.
+
+**Design sketch.** A GlobalOpt pass in/adjacent to AbiCloning — which
+already runs post-mono on fully settled types and consumes the same
+singleton annotations for the fast-dispatch stamps. Walk `MonoCall` sites
+with a `MonoVarLocal` callee whose head annotation is a singleton
+`{k|home.name}` on the WHITELIST at exact whitelist arity, and swap the
+callee for `Mono.MonoVarKernel` at the site's (final) types. Unlike the
+ctor devirt, NOTHING from translate-time is needed: no `translateVarRef`,
+no spec enqueue, no solver store — emission already derives the kernel
+decl/variant from the node's final types, which is exactly what makes the
+post-settle position safe. The E9.2 guards and the translate-time
+`DevirtKernel` arm are then DELETED — one mechanism, no ordering hazard
+by construction.
+
+**Known design points to explore (why this is design-first):**
+1. **Member→kernel resolution post-mono:** the `lssMemberTable.kernels`
+   reverse map lives in `Engine.S`, which is discarded after mono.
+   AbiCloning resolves members via the instances/registry plumbing that
+   IS exported — the kernels map must ride the same channel (thread it
+   into the GlobalOpt env alongside the member/instance tables).
+2. **Node shape parity:** the swapped call must match what
+   `translateKernelCall` produces (callInfo, staging attributes) so
+   `annotateCallStaging`/emission treat it identically — audit the
+   attrs a kernel MonoCall carries and whether GlobalOpt ordering
+   (pass runs before/after staging annotation) needs the swap early.
+3. **Anno availability:** confirm the `{k|…}` singleton survives on the
+   callee var's MonoType annotation at GlobalOpt time for exactly the
+   site population the translate-time arm sees today (it should — the
+   stamps read the same annos — but verify with a census A/B).
+4. **Sizing the prize (E10.0, do FIRST):** add a `declinedUnsettled`
+   census counter to the current guards and measure at self-compile +
+   corpus + a numeric-heavy fixture. Today's evidence says ~0 at
+   self-compile (devirtKernel 784 with and without guards) — if the
+   late-settling population stays ~0 everywhere, E10 is hygiene
+   (guard/arm deletion, single mechanism) rather than coverage, and can
+   wait for whitelist growth to justify it.
+
+**Gates when implemented:** flag-on self-compile MLIR byte-identical to
+the translate-time mechanism on settled sites (the swap should emit
+identically); the Combinator trio green WITHOUT the guards (the
+non-cons-shaped closings must refuse naturally); `E92ConsDevirtTest`
+re-targeted at the GlobalOpt pass; census: devirtKernel ≥ today's 784
+(strictly more if late-settling sites exist).
+
+**Relationship to E9.5:** same machinery neighborhood (the layout-blind
+demand-join audit explains WHY non-cons-shaped closings of cons-claiming
+slots exist at all); do E10 with or after E9.5.
+
+## 11.7 E11 — key-on-conflict: whitelist-free selective keying
+## (outline only, added 2026-07-20)
+## PREREQUISITE LANDED (2026-07-20): Fix B shipped + gated
+## (`plans/lss-fork-qualified-members.md`) — all-globals keying is now
+## SOUND, and Run M (benchmarks/runtime-calls.md) measured it: coverage
+## 6.81%→13.22% at identical total events and wall parity. E11 is
+## therefore a COMPILE-COST optimization (fork less than all-globals),
+## not a soundness gate: decide it against a post-Fix-B all-keyed
+## compile-wall A/B (majors recorded — the fork population grew;
+## widenedByBudget=46,394 on the keyed self-compile).
+
+**Motivation.** The Run-L census's actionable tier is un-keyed HOF hosts
+(`Maybe.map`, `System.TypeCheck.IO.traverseList`/`IO.map`, the hosts of
+`typeHasResidualNumber`/`applySubstPure`/`identity` rows, a residual
+6.2 M `List.cons` evaluator). The keying whitelist is a BUDGET device,
+not a correctness device — and it cannot name WORKLOAD globals: a
+compiler-shipped list may only contain standard-lib entries
+(`elm/core:*`, `eco/*`); `System.TypeCheck.IO.traverseList` is the
+compiled program's own code. Per-project `eco-config.json` keying exists
+but is manual tuning. Key-on-conflict keys hosts automatically, with no
+one naming anything.
+
+**Trigger (the core idea).** Fork a spec precisely when a JOIN is about
+to destroy usable information. At `enqueueSpec`, when the incoming
+demand carries a SINGLETON STANDALONE MEMBER (g|/c|/k| — anything a
+stamp, E9/E9.2 devirt, or DF could consume) on some arrow, and the
+existing spec's set for that arrow DIFFERS (a different singleton, a
+multi-set, or ⊤ — any join result that is not the same singleton), key
+the incoming demand into its own spec instead of joining. The trigger IS
+the lost singleton, so fan-out occurs only where sets genuinely diverge
+AND a consumer could have used the information. Self-targeting:
+`traverseList` in the compiler workload, `Maybe.map` in stdlib, and any
+user HOF key exactly when it pays.
+
+**Cost bounds.** Fan-out ≤ real set diversity per (global × layout), and
+`maxSpecsPerGlobal` already caps the worst case (past budget, new demands
+key set-widened — the M4 machinery). Expected far below all-globals
+keying: conflict-free globals (the overwhelming majority) never fork.
+
+**Open questions for the detailed design (outline-level only here):**
+1. Key identity: reuse M4's keyed-spec key form (layout × set key) so
+   downstream (registry, AbiCloning, EngineDiff) is unchanged; the fork
+   decision is the ONLY new logic.
+2. Exact conflict predicate: singleton-vs-⊤ joins (⊤ absorbs — clearly a
+   conflict), singleton-vs-different-singleton (conflict), singleton-vs-
+   same-singleton (no conflict — join is a no-op), multi-vs-anything
+   (no fork — nothing usable to save). Arrow position scope: params
+   only? head-only vs spine?
+3. Retroactivity: the conflicting join usually arrives AFTER the shared
+   spec exists — fork the NEW demand (leave the old spec); does the OLD
+   spec deserve a dirty re-key when its own surviving set becomes
+   singleton? Interplay with LSS_010 flush.
+4. Relationship to Tier-1 defaults: if E11 ships, `defaultKeyedGlobals`
+   is subsumed and retires (it becomes a pre-seeded special case).
+5. Census: `keyOnConflictForks` counter + per-global fork histogram —
+   needed to verify the self-targeting claim and watch for pathological
+   workloads (elm-aws-codegen class).
+
+**Sequencing:** measure ALL-GLOBALS keying under the new baselines FIRST
+(one bench — the +28 % verdict is old-GC-policy vintage; if all-globals
+is now cheap, E11 is unnecessary). E11 is the fallback design if
+all-globals still costs too much.
+
+**ALL-GLOBALS RE-MEASURE DONE (2026-07-20) — cheap but MISCOMPILES; E11
+is the live path.** Interleaved bench (`ECO_MONO_LSS=keyed`, tier1
+binary, warm-up + ×2 pairs, `bench-allkey/`): compile cost is now only
+**+5.7 % wall** (6:08.5/6:09.2 → 6:30.7/6:28.6; 2 of the ~21 s are +2
+majors, so compute ≈ +3 %), output +4.4 %, RSS +1 % — the M4-era "+28 %"
+verdict is RETIRED (old GC policy). Static value is real:
+`dispatchUpgraded` 2,409 → 3,028 (+619), `stampedStaged` +117,
+`devirtDirect` +148 (`devirtKernel` 764 vs 784 — −20, un-investigated;
+possibly guard declines inside newly-forked specs). Keyed output
+deterministic across legs. **BUT the all-keyed binary SIGSEGVs ~7 s into
+its first self-compile workload** (census leg rc=139, 1 major GC, core
+preserved: `build-kernel/core.4073111`, binary `bin/cens-allkey`, MLIR
+`bench-allkey/out-allkey-a.mlir`) — an ALL-keyed binary had never been
+EXECUTED at self-compile scale before (the M-era keyed gates ran the
+CORPUS keyed, and Run F/J ran SELECTIVE-keyed binaries green). So
+all-globals keying is cheap but carries a latent miscompile that
+selective keying does not hit. VERDICT: whitelist stays the shipping
+mechanism; E11 key-on-conflict is the whitelist-free path (its fork
+population is far smaller and closer in character to the proven
+selective mode); the all-keyed segfault is a separate root-cause
+campaign (unbudgeted — likely another first-activation latent bug of the
+E9-family class; the core + binary + deterministic MLIR are preserved
+for it).
+
+**ALL-KEYED SIGSEGV ROOT-CAUSED (2026-07-20): record-field boxedness
+split under fine keying — a NEW AbiCloning REP-consistency bug, NOT in
+shipping mode.** Deterministic crash at `Terminal_Main_lambda_9872$cap+62`
+(`mov (%rsi),%eax` with `rsi=0x9` — raw int 9 dereferenced as a heap
+pointer), reached via a `Unify`/`Solve` recursion (`10088→9900→9872`).
+`9872$cap`'s MLIR body is BYTE-IDENTICAL to the default build's
+equivalent (`9354`) — the CODE is correct; the DATA is poisoned. `rsi` =
+the captured `%desc1Props`, a solver `Descriptor` (`record:4:i:v:v:v`),
+captured in `Unify.merge` as `project.record(%props){field 0}`. The
+consumer expects `props.field0` BOXED (nested Descriptor `v`); it arrived
+UNBOXED i64 = 9 (a rank/mark/var-id). Corroboration: a sibling keyed
+closure `Compiler_Type_Solve_lambda_38358` carries an unboxed-Int capture
+slot (decoded header max_values=3, slot 1 = PK_Int). CLASS = same
+REP-boundary family as the Tier-1 CNumber cons crash (a scalar settling
+UNBOXED on one side, read BOXED on the other) but on a RECORD FIELD /
+closure capture, not a kernel ABI: all-globals keying forks the spec key
+finely enough that two specs of the same record type get divergent
+field-kind (i vs v) layouts and a value crosses between them. Latent
+under selective keying (the solver record types are never forked there —
+all Tier-1/whitelist gates green). BEARING ON E11 (user's question,
+answered): "all-keyable ⇒ subset-safe" — the crash REFUTES the antecedent
+(all globals are NOT currently keyable), so the implication does not
+carry. But E11's narrow singleton-triggered forking touches the SAME
+AbiCloning machinery and could trip the same class. SEQUENCING: fix this
+record-field boxedness-consistency hole (or add the analogous
+decline/guard the cons case used) BEFORE/ALONGSIDE E11, and land E11 with
+the `keyOnConflictForks` counter + self-compile gate (which would have
+caught this). Next drill-down if E11 is scheduled: the exact AbiCloning
+decision that flips the field kind (is it a single guardable site like
+the CNumber case?). Artifacts: `bench-allkey/`, `bin/allkey-bin`,
+`bin/allkey-text.mlir`, `core.4078617`.
+
+**DETECTION EXPERIMENT (2026-07-20) — the crash is NEARLY-ISOLATED to
+self-compile; a mono-type validator cannot gate it.** Extended
+`ValidateLayout` with closure-capture + call-arg interior-boxedness
+checks and ran the corpus under all-globals keying:
+- **Full corpus PASSES 1625/1625 under all-globals keying with
+  validation OFF** — no small test miscompiles or crashes at runtime.
+  All-globals keying is very nearly correct; the ONLY known failure is
+  the self-compile SIGSEGV (the solver Unify/Descriptor pattern at
+  scale). This materially LOWERS the risk read for E11's far narrower
+  forking.
+- With validation ON, the check fired on exactly 2 tests
+  (`TupleSlotBoxingRecord{Single,Multi}Test`) — but both produce CORRECT
+  output at runtime ("[1,1]"): **false positives.** They are benign
+  `idx:Int` (producer) vs `idx:erased` (polymorphic pass-through
+  consumer) record-field disagreements that codegen handles; the erased
+  consumer never derefs the field. A per-node boxedness check cannot
+  distinguish this benign erased-vs-concrete case from the malign
+  concrete-raw-vs-concrete-boxed one, and the real self-compile crash
+  never surfaces as a call-boundary field flip (boxedness check = 0 on
+  the all-keyed self-compile). Shipping config: clean (the
+  erased-vs-concrete pattern is keying-specific).
+- CONCLUSION: the checks were REMOVED (`ValidateLayout` restored to its
+  3 sound checks with a doc note). MONO_029 is enforced by ENGINE
+  connectivity (R1/R2), not a per-node validator — exactly because the
+  keying disagreement is erased-vs-concrete (benign, ubiquitous)
+  statically and raw-vs-boxed only at runtime. Fixing the self-compile
+  crash needs RUNTIME localization at scale (trace the raw-9 to its
+  producing spec / the keyed spec-routing link), not a static gate.
+  E11 remains gateable by the all-globals-corpus-clean + self-compile
+  green criteria, plus the `keyOnConflictForks` census.
+
+**RUNTIME TRACE — ROOT CAUSE PINNED (2026-07-20, gdb on the deterministic
+all-keyed reproducer; every claim is trace evidence, no speculation).**
+Crash `Terminal_Main_lambda_9872$cap+62`, `mov (%rsi)` with `rsi=0x9`
+(raw int dereferenced as a pointer). Trace chain:
+- `9872` is `Unify.merge`'s continuation. rsi = its capture `desc1Props`
+  = `props.desc1` = `9`. The closure header (`0x144`) decodes
+  n_values=4, max_values=5, **unboxed bitmap = 0 (all captures BOXED)** —
+  so builder and evaluator AGREE the slot is boxed; the value is wrong.
+- `props` (`merge`'s `Context` argument, `0x10302275570`) is byte-for-byte
+  a `Descriptor`: `{field0=9 (rank), field1=0x1800000004 (mark = noMark),
+  field2/3 = ptrs}` — identical shape to the known-valid `content`
+  Descriptor (`rank=25, mark=noMark`). So **a `Descriptor` value is in
+  the `Context` slot.**
+- Caller chain (conditional breakpoint on `merge` when `props.field1 ==
+  noMark`): `actuallyUnify → unifyStructure → lambda_9877 → merge`, all
+  carrying the Descriptor in their `Context`-typed parameter. `9877` is
+  built in `unifyStructure`.
+- `Context {var1, desc1, var2, desc2}` and `Descriptor {content, rank,
+  mark, copy}` are DISTINCT 4-field records (distinct field names → distinct
+  spec keys AND layout keys). So this is a genuine wrong-object cross, not a
+  same-layout reinterpretation.
+ROOT CAUSE: **all-globals keying routes a `Descriptor` value into
+`merge`'s `Context` parameter; `merge` reads the Descriptor's unboxed
+`rank` (Int 9) as `Context.desc1` (a boxed pointer) and dereferences it.**
+MECHANISM PINNED TO CLOSURE DISPATCH, NOT THE REGISTRY: a precise
+conflation probe was added to `Registry.updateRegistryType` +
+`getOrCreateSpecIdKeyed` (`structurallyIncompatible` — crash iff a spec's
+stored type changes to a structurally-different CONCRETE type, excluding
+benign erased-vs-concrete refinement; verified shipping-clean, it does NOT
+false-positive on the routine `Unit→erased` demand updates). Under
+all-globals keying the probe **did NOT fire, yet the produced binary still
+SIGSEGVs** — so `Context` and `Descriptor` keep SEPARATE specs and the
+cross is NOT a spec-type conflation. The Descriptor crosses into the
+Context slot via **keyed CLOSURE DISPATCH / value-routing** (two
+continuations sharing a lambda-set-derived dispatch identity, one carrying
+a Descriptor). Two precise, structurally-sound, shipping-clean probes were then run to
+localize the compiler mechanism (each: crash iff two views are genuinely
+different CONCRETE types — record/custom/tuple identity — excluding benign
+erased-vs-concrete; the naive layout-key version false-positived on
+`Json.Decode.succeed`'s routine `Unit→erased` refinement, so both use an
+erasure-tolerant `structurallyIncompatible`):
+- **Spec registry** (`updateRegistryType` + `getOrCreateSpecIdKeyed`):
+  clean on shipping; under all-keyed it did NOT fire yet the produced
+  binary STILL SIGSEGVs → **RULED OUT** (Context/Descriptor keep separate
+  specs; not a spec-type change).
+- **AbiCloning stamp grouping** (`joinGroup` — the `eqLayout`
+  same-signature unification that shares one stamped representative):
+  clean on shipping; under all-keyed it did NOT fire yet the produced
+  binary STILL SIGSEGVs → **RULED OUT** (no two structurally-different
+  closures share a stamp group).
+Both probes were reverted after ruling out their mechanisms (diagnostic
+scaffolding, not hot-path guards). CONCLUSION (evidence, not speculation):
+the conflation is NEITHER a spec-type conflation NOR a stamp-representative
+share — it is a pure **VALUE cross**, a `Descriptor` value placed into a
+`Context`-typed slot with NO type-level record (every spec/stamp keeps the
+two types correctly separate). Remaining candidate: closure CONSTRUCTION /
+value routing — a `papCreate` capturing a value whose runtime type
+(Descriptor) differs from its declared slot type (Context), most plausibly
+via a keyed erased-container (IORef/Array of Descriptors) whose element
+type erases such that a Descriptor read is bound into a Context position.
+Next instrument: watchpoint the specific Context SSA that first receives a
+Descriptor (trace up the `actuallyUnify`/`unifyStructure` value chain past
+`makeContext`), or instrument closure-capture construction to flag a
+captured value whose runtime tag ≠ its declared capture type. Artifacts:
+`bin/eco-compiler-probe`, `bin/eco-compiler-stamp`, `bin/stamp.mlir`,
+`/tmp/trace{1,2,3,4}.out`, `/tmp/stamp-run2.txt`.
+
+**ROOT CAUSE FOUND (2026-07-20, bpftrace uprobes + one-shot gdb + MLIR +
+source; every link direct evidence): AbiCloning singleton-REPRESENTATIVE
+hijack — LSS_009's "interchangeable representative" premise is violated by
+keyed clones.** The decisive instrument was a `sudo bpftrace` uprobe on
+`eco_alloc_closure_k` with an in-kernel arg0 filter (the step gdb stalled
+42+ min on ran in ~18 s wall over 27,561,458 alloc events): **the crashing
+"9877 closure" was NEVER BUILT** — zero allocs with 9877's wrapper across
+the whole run — and `9877$cap` executes exactly once: the crash. The object
+actually flowing is a genuine **`lambda_9878` closure** (gdb one-shot at
+`10088$cap+0xab`: evaluator `wrapper_9878$cap`, captures c0=content,
+c1=`0x10302275570` the Descriptor — LEGITIMATE for 9878's own signature).
+Mechanism, MLIR-confirmed (`allkey-text.mlir` lines cited in
+`debug-context.md`): `unifyStructure`'s branches build per-key continuations
+(9877 br-A ctx-capturing / 9878 br-B desc-capturing) and per-key
+`Unify.andThen` clones (`_$_11371`/`_$_11373`) with per-key inner handlers
+(`lambda_10088` singleton_fast→9877 / `lambda_10084` singleton_fast→9878) —
+all correct — but BOTH chains converge on ONE
+`System_TypeCheck_IO_andThen_$_11397` (both 10088-PAP and 10084-PAP carry
+the SAME lambda-set member, since members are minted per SOURCE lambda —
+`LssInfer.elm:141-148` `srcLambdaKey` — and 10084/10088 are keyed clones of
+one source lambda → same singleton → same keyed-spec key → shared clone).
+Its inner `lambda_9900`'s dispatch is stamped `singleton_fast →
+@lambda_10088$cap`; **no `singleton_fast → 10084$cap` exists in the entire
+program** (grep). The stamp comes from `AbiCloning.joinGroup`
+(`AbiCloning.elm:403-422`) merging same-member same-signature-layout
+instances into one `LayoutGroup`, DISCARDING the second `lambdaId` (`rep` =
+first in walk order; `unanimous` = capture-LAYOUT agreement only), and
+`resolveInGroups` (:1167-1175) stamping `g.rep` for the site. Sound when
+multi-instance members are verbatim copies (inliner copies etc. — the
+shipping population); UNSOUND under keying, where clones are
+layout-identical but behaviorally divergent. Runtime asymmetry seals it
+(trace11 counts to crash): `built9878=1, built9877=0, calls10084=0,
+calls9878=0, calls10088=1, calls9877=1` — the 9878 chain's own code never
+runs; TWO layout-clean hijacks (10084-PAP read as 10088-PAP `[value]`, then
+9878 closure read as 9877 closure `[value,value]`) deliver 9878's
+Descriptor capture into `merge`'s Context param. SCOPE CORRECTION: the
+earlier "stamp grouping RULED OUT" probe crashed only on STRUCTURALLY
+different groupings — 10084/10088 are structurally identical, so it
+correctly stayed silent while this mechanism was live; the earlier
+"record-field boxedness split" hypothesis is RETIRED (boxedness was never
+inconsistent — the value is simply the wrong object). Why self-compile
+only: requires ≥2 same-layout keyed clones of one source lambda flowing
+into a SHARED downstream keyed spec's singleton site (nested-HOF
+Unify.andThen-over-IO.andThen multi-branch shape; corpus lacks it —
+1625/1625 keyed-green). FIX OPTIONS (pending): **A (minimal)** — track
+distinct lambdaIds per LayoutGroup (dedup same-id re-encounters) and
+Decline all stamp arms on ≥2 distinct instances unless bodies verbatim-eq;
+step 0 = `declinedMultiInstance` census on shipping (byte-identity gate)
+and all-keyed. **B (architectural, E11-era)** — fork-qualified member ids:
+keyed clones mint distinct members, sets stay honest (no false singleton)
+AND downstream HOFs fork per member, legitimately recovering the devirt;
+needs member minting to see the enclosing keyed spec (LssInfer is per-unit
+pre-fork today). E11 bearing: its singleton-triggered forking creates
+exactly this clone population, so the fix (either) is a PREREQUISITE; the
+`keyOnConflictForks`+self-compile gate stands. **DECISION (2026-07-20,
+user): Fix B. Detailed design ready at
+`plans/lss-fork-qualified-members.md`** (qualified id = interned
+`l|lam|specId` via the existing memberIdFor table; qualification gated on
+the defining global's keyed routing; spec identity threaded via
+ItemAux.currentSpecId — S is at the 32-slot cap; signature-baked members
+stay raw = unstampable-but-sound; Fix A's multi-instance check retained as
+the standing census probe `multiInstanceGroups == 0`; milestones B0-B4,
+gate = the debug-context repro green + §7 grep gates; B3 re-opens the
+"does E11 still pay?" question if all-globals keying lands sound+cheap). Fast-resume digest with
+methodology notes (ASLR-proof bpftrace base trick, mid-function-offset
+limitation, tracefs mount): `debug-context.md`; scripts trace9/10/11 in the
+session scratchpad.
+
 ## 12. A-track side items (not phases of this plan)
 
 - **A2 — cheapen the solver** (owned by `plans/monosolver-*`): pretenuring/nursery

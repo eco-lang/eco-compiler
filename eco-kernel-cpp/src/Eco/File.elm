@@ -107,9 +107,31 @@ writeBytes path bytes =
 -}
 open : String -> IOMode -> Task IOError Handle
 open path mode =
-    Eco.Kernel.File.open path mode
+    Eco.Kernel.File.open path (ioModeToInt mode)
         |> Task.mapError IOErr.ofKernelTuple
         |> Task.map Handle
+
+
+{-| The kernel ABI takes the mode as a plain Int (both backends switch on
+0..3 — File.js `mode === 0 ? 'r' : …`, File.cpp `switch (modeVal)`). Passing
+the `IOMode` ctor directly hands the backend the ENUM CONSTANT WORD
+(`0x4 | idx << enum_idx_shift` on native), which misses every arm and falls
+back to read-only — silently, for every mode but ReadMode.
+-}
+ioModeToInt : IOMode -> Int
+ioModeToInt mode =
+    case mode of
+        ReadMode ->
+            0
+
+        WriteMode ->
+            1
+
+        AppendMode ->
+            2
+
+        ReadWriteMode ->
+            3
 
 
 {-| Close a file handle.

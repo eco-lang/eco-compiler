@@ -597,6 +597,7 @@ buildNestedWrapper originalInfo remainingType calleeExpr accParams ctx0 =
                 closureInfo =
                     { lambdaId = lambdaId
                     , srcLambda = originalInfo.srcLambda -- LSS_008: wrapper stages count as instances of the wrappee's member
+                    , lssMember = originalInfo.lssMember -- Fix B (LSS_017): the adopted identity rides the same qualified id
                     , captures = captures
                     , params = paramsForStage
                     , closureKind = Nothing

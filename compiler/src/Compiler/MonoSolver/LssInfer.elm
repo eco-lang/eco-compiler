@@ -2,6 +2,7 @@ module Compiler.MonoSolver.LssInfer exposing
     ( signatureFor
     , instantiateWithSignature
     , injectLambdaMember
+    , injectLambdaMemberQualified
     , injectSpineMemberId
     , kernelAliasOf
     )
@@ -146,6 +147,27 @@ injectLambdaMember arity srcLam funcVar s0 =
 
         Just lamId ->
             injectSpineMemberId arity (Engine.srcLambdaKey lamId) funcVar s0
+
+
+{-| Fix B (LSS_017): `injectLambdaMember` for TRANSLATION-phase mints —
+the member id is spec-qualified via `Engine.lambdaInstanceMemberId` when
+the defining global routes keyed, so keyed clones of one source lambda
+stay distinguishable. The inference-phase walk (`walkExpr`) keeps the raw
+`injectLambdaMember`: signatures are per-unit and pre-spec by design.
+-}
+injectLambdaMemberQualified : Int -> Maybe TypeIds.SrcLambdaId -> IO.Variable -> Step ()
+injectLambdaMemberQualified arity srcLam funcVar s0 =
+    case srcLam of
+        Nothing ->
+            Ok ( (), s0 )
+
+        Just lamId ->
+            case Engine.lambdaInstanceMemberId lamId s0 of
+                Err e ->
+                    Err e
+
+                Ok ( mid, s1 ) ->
+                    injectSpineMemberId arity mid funcVar s1
 
 
 

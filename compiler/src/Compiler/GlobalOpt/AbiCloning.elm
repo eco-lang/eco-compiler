@@ -120,6 +120,7 @@ type alias AbiCloningStats =
     , declinedShapeChar : Int
     , declinedShapeNonArrow : Int
     , declinedAbiMismatch : Int
+    , multiInstanceGroups : Int -- Fix B probe (LSS_009/LSS_017 verifier): layout groups holding ≥2 distinct lambdaIds. MUST be 0 under qualified members; >0 = clones sharing a member = the §11.6 representative-hijack precondition.
     }
 
 
@@ -142,6 +143,7 @@ emptyStats =
     , declinedShapeChar = 0
     , declinedShapeNonArrow = 0
     , declinedAbiMismatch = 0
+    , multiInstanceGroups = 0
     }
 
 
@@ -187,6 +189,7 @@ type alias LayoutGroup =
     , paramCount : Int
     , unanimous : Bool
     , charFree : Bool
+    , multi : Bool -- Fix B probe (LSS_009 verifier): ≥2 DISTINCT lambdaIds joined this group. Sound only when instances are verbatim copies sharing one lambdaId — any True is counted in `multiInstanceGroups` (must be 0 under LSS_017 qualified members).
     }
 
 
@@ -408,6 +411,7 @@ joinGroup inst groups =
               , paramCount = List.length inst.paramTypes
               , unanimous = True
               , charFree = not (List.any ((==) Mono.MChar) inst.captureTypes)
+              , multi = False
               }
             ]
 
@@ -415,6 +419,7 @@ joinGroup inst groups =
             if sameSignatureLayout g.rep inst then
                 { g
                     | unanimous = g.unanimous && sameCaptureLayout g.rep inst
+                    , multi = g.multi || inst.lambdaId /= g.rep.lambdaId
                 }
                     :: rest
 
@@ -466,12 +471,21 @@ identity was ADOPTED rather than stamped.
 -}
 instanceMember : Mono.ClosureInfo -> Mono.MonoType -> Maybe ( Int, Bool )
 instanceMember closureInfo tipe =
-    case closureInfo.srcLambda of
+    -- Fix B (LSS_017): prefer the minted-under member id — spec-qualified for
+    -- keyed-routed globals — so the index lives in the SAME id space as the
+    -- set annotations the call sites carry. The raw srcLambda fallback only
+    -- serves graphs minted without the stamp (lss off — pass inert anyway).
+    case closureInfo.lssMember of
         Just m ->
-            Just ( Id.toComparable m, False )
+            Just ( m, False )
 
         Nothing ->
-            Maybe.map (\m -> ( m, True )) (Mono.singletonHeadMember tipe)
+            case closureInfo.srcLambda of
+                Just m ->
+                    Just ( Id.toComparable m, False )
+
+                Nothing ->
+                    Maybe.map (\m -> ( m, True )) (Mono.singletonHeadMember tipe)
 
 
 isWrapperHome : Mono.LambdaId -> Bool
@@ -509,6 +523,11 @@ abiCloningPass ((Mono.MonoGraph record) as graph) =
 
     else
         let
+            -- Fix B probe: count multi-instance groups up front (index-time
+            -- fact, independent of stamping outcomes).
+            stats0 =
+                { emptyStats | multiInstanceGroups = countMultiInstanceGroups index }
+
             ( nodes1, finalCtx ) =
                 Array.foldl
                     (\maybeNode ( accNodes, accCtx ) ->
@@ -523,10 +542,34 @@ abiCloningPass ((Mono.MonoGraph record) as graph) =
                             Nothing ->
                                 ( Array.push Nothing accNodes, accCtx )
                     )
-                    ( Array.empty, { kindIds = Dict.empty, nextKind = 0, stats = emptyStats } )
+                    ( Array.empty, { kindIds = Dict.empty, nextKind = 0, stats = stats0 } )
                     record.nodes
         in
         ( Mono.MonoGraph { record | nodes = nodes1 }, finalCtx.stats )
+
+
+countMultiInstanceGroups : Dict Int MemberInfo -> Int
+countMultiInstanceGroups index =
+    Dict.foldl
+        (\_ mi acc ->
+            Dict.foldl
+                (\_ groups acc2 ->
+                    List.foldl
+                        (\g a ->
+                            if g.multi then
+                                a + 1
+
+                            else
+                                a
+                        )
+                        acc2
+                        groups
+                )
+                acc
+                mi.buckets
+        )
+        0
+        index
 
 
 stampNode : Dict Int MemberInfo -> StampCtx -> Mono.MonoNode -> ( Mono.MonoNode, StampCtx )
