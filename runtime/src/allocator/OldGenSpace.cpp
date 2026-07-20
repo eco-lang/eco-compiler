@@ -2726,18 +2726,20 @@ OldGenSpace::evaluateMajorGCTrigger() const {
     // space all the way to the cap before the per-thread ratio crosses the
     // threshold.
     //
-    // We use 1/3 of `initiating_occupancy` (≈0.25 with the default 0.75)
-    // as the global cap threshold. A major GC fires at ~25% of the cap so
-    // the per-thread shrink path can release the freshly-emptied pages
-    // before the cap is approached, and the mutator never gets close to
-    // OOM. Empirically: triggering later (e.g. at 0.75 of cap) means each
-    // GC cycle has to sweep many more blocks at once, which is slower
-    // overall than several smaller cycles.
+    // The bar is `major_gc_global_pressure_fraction` of the cap (its own
+    // config field; historically hard-coded as initiating_occupancy/3,
+    // which fired at ~28% of the cap and dominated major-GC counts on
+    // compile workloads — see the constant's comment and Run K in
+    // benchmarks/runtime-calls.md; the old "several smaller cycles beat
+    // big sweeps" rationale predates lazy sweep and measured false:
+    // rare majors averaged 2.76 s vs 4.56 s under the low bar). At the
+    // 0.85 default this is a genuine anti-ballooning backstop; Occupancy
+    // and GarbageFraction do the routine collection scheduling.
     if (allocator_ != nullptr) {
         const size_t global_committed = allocator_->getOldGenCommittedBytes();
         const size_t cap = allocator_->getOldGenMaxBytes();
         const double global_pressure_threshold =
-            static_cast<double>(threshold) / 3.0;
+            static_cast<double>(config_->major_gc_global_pressure_fraction);
         if (cap > 0 &&
             static_cast<double>(global_committed) / cap >=
                 global_pressure_threshold) {
@@ -2898,8 +2900,8 @@ void OldGenSpace::maybeShrinkCapacity(size_t desired_heap_bytes,
         if (allocator_ != nullptr) {
             const size_t global_committed = allocator_->getOldGenCommittedBytes();
             const size_t cap = allocator_->getOldGenMaxBytes();
-            const double global_pressure_threshold =
-                static_cast<double>(config_->major_gc_initiating_occupancy) / 3.0;
+            const double global_pressure_threshold = static_cast<double>(
+                config_->major_gc_global_pressure_fraction);
             if (cap > 0 &&
                 static_cast<double>(global_committed) / cap >=
                     global_pressure_threshold) {

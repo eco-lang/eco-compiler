@@ -2090,10 +2090,12 @@ benchmarks/runtime-calls.md):
    controlled = +14 s) and retires the "first-leg/page-cache" reading
    (majflt=0 everywhere; the user's no-drift claim was correct).
 3. Trigger breakdown: 95/103 majors = **GlobalPressure**
-   (`committed ≥ occupancy/3 ≈ 28 % of old-gen cap`,
-   OldGenSpace.cpp:evaluateMajorGCTrigger) — the cap derives from
-   `max_heap_size` (24 GB VIRTUAL reservation), so the bar sits at
-   ~6.8 GB committed on a ~2 GB-live workload.
+   (`committed ≥ occupancy/3 ≈ 28.3 % of old-gen cap`,
+   OldGenSpace.cpp:evaluateMajorGCTrigger; stale in-code comment still
+   says 0.25/0.75) — the cap is HALF the `max_heap_size` VIRTUAL
+   reservation (`nursery_offset = heap_reserved/2`, Allocator.cpp:214),
+   so the bar ≈ 14.2 % of the reservation = ~3.4 GB committed with the
+   24 GB default, on a ~2 GB-live workload; 96g moves it to ~13.6 GB.
    `ECO_HEAP_CONFIG='{"max_heap_size":"96g"}'`: majors 103 → 12,
    **wall 13:44 → 6:27 (−53 %), RSS +1.7 %, output byte-identical**.
    Anti-lesson: `initial_old_gen_size=6g` is PESSIMAL (committed/cap
@@ -2104,12 +2106,16 @@ benchmarks/runtime-calls.md):
    (+13.7 %): two-thirds GC/alloc churn from the +29 % concrete-set
    population, the rest smeared set machinery — the INHERENT cost of
    carrying lambda-sets, now bounded and understood.
-FOLLOW-UPS: (a) GlobalPressure `/3` policy / default reservation revisit
-for compile workloads = a DEFAULT-change decision (affects
-memory-constrained embeddings — user call); (b) lssDF default-on
-UNBLOCKED from the compile-time side; remaining blocker = Run I's
-instrumented workload-wall read; (c) v2 micro-candidates above remain
-unclaimed.
+FOLLOW-UPS: (a) ~~GlobalPressure `/3` policy revisit~~ **DONE (user
+decision, 2026-07-20): new HeapConfig field
+`major_gc_global_pressure_fraction`, DEFAULT 0.85** (decoupled from
+`initiating_occupancy` — the /3 coupling was accidental and its comment
+stale; both OldGenSpace sites updated; JSON-configurable). Verified: stock
+run = 12 majors / GlobalPressure 0 / wall 6:35 / RSS +1.8 % /
+byte-identical; check 1625/1625. Small-cap embedding measurement remains
+open; (b) lssDF default-on UNBLOCKED from the compile-time side;
+remaining blocker = Run I's instrumented workload-wall read; (c) v2
+micro-candidates above remain unclaimed.
 
 ## 12. A-track side items (not phases of this plan)
 

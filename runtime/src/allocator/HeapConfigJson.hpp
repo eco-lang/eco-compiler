@@ -18,6 +18,7 @@ namespace Elm {
 //   "nursery_gc_threshold"           number (0..1)
 //   "nursery_growth_threshold"       number (0..1)
 //   "major_gc_initiating_occupancy"  number (0..1)
+//   "major_gc_global_pressure_fraction" number (0..1)
 //   "major_gc_target_utilization"    number (0..1)
 //   "major_gc_garbage_fraction"      number [0..1)  (0 disables)
 //   "use_hybrid_dfs"                 bool

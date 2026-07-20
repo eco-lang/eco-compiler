@@ -133,6 +133,17 @@ constexpr size_t INITIAL_OLD_GEN_SIZE = 16 * 1024 * 1024;
 // Old-gen committed/cap fraction above which a major GC is scheduled (must exceed MAJOR_GC_TARGET_UTILIZATION).
 constexpr float MAJOR_GC_INITIATING_OCCUPANCY = 0.85f;
 
+// Fraction of the old-gen cap (= half the max_heap_size reservation) at which
+// the GlobalPressure trigger schedules a major GC. Historically this was
+// hard-coded as initiating_occupancy/3 (~0.28), which on a 24 GB default
+// reservation fired at ~3.4 GB committed — 92% of all majors on compile
+// workloads whose live set never neared the cap, and 56% of their wall clock.
+// Decoupled and raised to the anti-ballooning-backstop role: 0.85 of cap.
+// (Run K, benchmarks/runtime-calls.md: majors 103 -> 12, flag-on self-compile
+// wall 13:44 -> 6:27, RSS +1.7%.) The Occupancy and GarbageFraction triggers
+// keep bounding per-thread crowding and garbage accumulation below this bar.
+constexpr float MAJOR_GC_GLOBAL_PRESSURE_FRACTION = 0.85f;
+
 // Post-major-GC live/committed target; the old-gen cap is grown to keep utilization below this.
 constexpr float MAJOR_GC_TARGET_UTILIZATION = 0.50f;
 
@@ -399,6 +410,9 @@ struct HeapConfig {
 
     // Old-gen committed/cap fraction above which a major GC is scheduled (must be > target_utilization).
     float major_gc_initiating_occupancy = MAJOR_GC_INITIATING_OCCUPANCY;
+
+    // Global-committed/cap fraction at which the GlobalPressure trigger fires (anti-ballooning backstop).
+    float major_gc_global_pressure_fraction = MAJOR_GC_GLOBAL_PRESSURE_FRACTION;
 
     // Post-major-GC live/committed target; the old-gen cap is grown to stay below this.
     float major_gc_target_utilization = MAJOR_GC_TARGET_UTILIZATION;

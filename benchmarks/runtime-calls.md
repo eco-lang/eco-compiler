@@ -579,13 +579,16 @@ overturning the entire E9-family cost story. Full evidence chain in plan
   The elided fresh vars do NOT leak through point numbering — worth
   having pinned empirically.
 - **The real lever: the GlobalPressure major-GC trigger.** 95 of the
-  103 majors (92 %) fire at `committed ≥ initiating_occupancy/3 ≈ 28 %`
-  of the old-gen cap, which derives from `max_heap_size` (default 24 GB,
-  a VIRTUAL reservation) — i.e. at ~6.8 GB committed, over and over, on a
-  ~2 GB-live workload. `ECO_HEAP_CONFIG='{"max_heap_size":"96g"}'` moves
-  the bar to ~27 GB: **majors 103 → 12 (GlobalPressure → 0), flag-on wall
-  13:44 → 6:27 (−53 %), RSS +1.7 %** (5.33 vs 5.24 GB), output
-  BYTE-IDENTICAL. (The naive `initial_old_gen_size=6g` config does the
+  103 majors (92 %) fire at `committed ≥ initiating_occupancy/3 ≈ 28.3 %`
+  of the old-gen cap, and the cap is HALF the `max_heap_size` virtual
+  reservation (`nursery_offset = heap_reserved/2`, Allocator.cpp:214) —
+  net ≈ 14.2 % of the reservation, i.e. ~3.4 GB committed with the 24 GB
+  default, crossed over and over by a ~2 GB-live workload.
+  (The in-code comment "≈0.25 with the default 0.75" is stale — the
+  occupancy default is 0.85.) `ECO_HEAP_CONFIG='{"max_heap_size":"96g"}'`
+  moves the bar to ~13.6 GB: **majors 103 → 12 (GlobalPressure → 0),
+  flag-on wall 13:44 → 6:27 (−53 %), RSS +1.7 %** (5.33 vs 5.24 GB),
+  output BYTE-IDENTICAL. (The naive `initial_old_gen_size=6g` config does the
   OPPOSITE — committed/cap starts above the bar → major per minor,
   1227/1227, wall 1:03:53 — the trigger design assumes the old gen grows
   into its cap.) Major GC was **56 % of the default-policy flag-on wall**
@@ -603,14 +606,24 @@ overturning the entire E9-family cost story. Full evidence chain in plan
 
 *Reading Run K:* the E9-family "compile-time cost" mostly never existed —
 it was GC-trigger lottery plus a modest (+13.7 %) set-machinery cost
-that is inherent to carrying lambda-sets. The heap-policy lever dwarfs
-everything: one config line more than halves the flag-on wall at ~2 %
-memory. Follow-ups: (1) revisit the GlobalPressure `/3` policy or the
-default 24 GB reservation for compile-shaped workloads (default-change
-decision — affects memory-constrained embeddings); (2) `lssDF`
-default-on is UNBLOCKED from the compile-time side (its +46 % was
-misattributed) — the remaining blocker is only Run I's unresolved
-instrumented workload-wall read.
+that is inherent to carrying lambda-sets.
+
+**SHIPPED AS DEFAULT (2026-07-20):** the GlobalPressure bar is now its own
+config field `major_gc_global_pressure_fraction` (HeapConfig + JSON),
+**default 0.85** (was the hard-coded `initiating_occupancy/3 ≈ 0.283`;
+both OldGenSpace sites — the trigger and the shrink bypass — use the
+knob). Verification leg on stock settings (no `ECO_HEAP_CONFIG`):
+**majors 12 (GlobalPressure 0), wall 6:35, RSS +1.8 %, output
+BYTE-IDENTICAL**; check suite 1625/1625. The wall-baseline for ALL future
+runs is therefore ~6:30-flag-on / ~4:25-subst — do not compare against
+pre-Run-K walls without noting the policy change. Follow-ups:
+(1) memory-constrained embeddings with small `max_heap_size` now take
+their anti-ballooning major at 85 % of cap instead of 28 % — the
+GarbageFraction (0.70) and Occupancy (0.85) triggers still bound garbage
+and crowding, but small-cap deployments deserve their own measurement;
+(2) `lssDF` default-on is UNBLOCKED from the compile-time side (its
++46 % was misattributed) — the remaining blocker is only Run I's
+unresolved instrumented workload-wall read.
 
 ---
 
