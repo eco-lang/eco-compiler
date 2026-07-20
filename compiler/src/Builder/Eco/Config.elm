@@ -321,26 +321,29 @@ applyLssKeyedGlobalsOverride maybeVal cfg =
                     |> Task.map (\_ -> cfg1)
 
 
-{-| `ECO_MONO_LSS_DEVIRT_FN=1|true|yes` (E9.1): devirtualize singleton
-FUNCTION-global dispatch sites too (not just ctors). Participates in the
-hash via the `lssDF=` token.
+{-| `ECO_MONO_LSS_DEVIRT_FN=1|true|yes / 0|false|no` (E9.1): devirtualize
+singleton FUNCTION-global dispatch sites too (not just ctors). DEFAULT-ON
+since Tier 1 (2026-07-20; the deciding uninstrumented A/B retired Run I's
+instrumented "+35%" workload read — see Run L), so the override is
+bidirectional: `0|false|no` is the escape hatch. Unset or unrecognized
+leaves the config/default value. Participates in the hash via the
+`lssDF=` token.
 -}
 applyLssDevirtFnOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssDevirtFnOverride maybeVal cfg =
-    let
-        on =
-            case maybeVal of
-                Just v ->
-                    List.member (String.toLower (String.trim v)) [ "1", "true", "yes" ]
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                updateLss (\lss -> { lss | devirtFnGlobals = True }) cfg
 
-                Nothing ->
-                    False
-    in
-    if on then
-        updateLss (\lss -> { lss | devirtFnGlobals = True }) cfg
+            else if List.member v [ "0", "false", "no" ] then
+                updateLss (\lss -> { lss | devirtFnGlobals = False }) cfg
 
-    else
-        cfg
+            else
+                cfg
+
+        Nothing ->
+            cfg
 
 
 {-| `author/project:Module.Name.value` — a `:` separating a `/`-bearing

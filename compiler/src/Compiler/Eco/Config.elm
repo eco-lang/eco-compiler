@@ -109,12 +109,31 @@ defaultLss : LssConfig
 defaultLss =
     { enabled = True
     , keyed = False
-    , keyedGlobals = []
-    , devirtFnGlobals = False
+    , keyedGlobals = defaultKeyedGlobals
+    , devirtFnGlobals = True
     , maxSetSize = 8
     , maxSpecsPerGlobal = 64
     , report = False
     }
+
+
+{-| The default selective-keying set (Tier 1, 2026-07-20): the elm/core List
+fold chain. E5 shipped keying default-empty because Run F measured zero
+payoff; E9.2's kernel devirt is what unlocked it — the hot cons dispatches
+live inside these SHARED fold specs, and per-set keyed fan-out is what
+mints their `{k|List.cons}` singletons. Measured: −143.7 M dispatch
+events/run (Run J) at zero wall cost (Run J + the Tier-1 A/B: keyed ≈
+unkeyed, equal major-GC counts). Chain-keyed per the Run-F selection rule
+(an unkeyed middle like `foldrHelper` re-joins the sets).
+`ECO_MONO_LSS_KEYED_GLOBALS` REPLACES this list — set it empty to unkey.
+-}
+defaultKeyedGlobals : List String
+defaultKeyedGlobals =
+    [ "elm/core:List.foldl"
+    , "elm/core:List.foldr"
+    , "elm/core:List.foldrHelper"
+    , "elm/core:List.map"
+    ]
 
 
 {-| Inliner / simplifier knobs (consumed by `Compiler.GlobalOpt.MonoInlineSimplify`).

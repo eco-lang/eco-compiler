@@ -1746,37 +1746,46 @@ translateIndirectCallBody region func args callCanType =
                                     -- ALREADY-translated monoArgs: re-invoking the
                                     -- full kernel path would translate the args a
                                     -- second time (doubled state effects). The ABI
-                                    -- derives post-hoc — sound here because the
-                                    -- args were already unified against the callee
-                                    -- var's arrow, so the kernel-param unification
-                                    -- is a refinement, and it still selects the
-                                    -- typed variant (cons_Int etc.) for codegen.
+                                    -- derives post-hoc, and the SITE type can be
+                                    -- IMPRECISE: deep shared specs (combinator
+                                    -- soups) reach the devirt with unresolved
+                                    -- tvars defaulted to Int, and deriving cons
+                                    -- over (Int, Int -> Int) would mint a
+                                    -- poisonous cons_Int ABI (i64 tail/result —
+                                    -- a list pointer reinterpreted as raw i64;
+                                    -- caught by the CGEN_038 kernel-decl
+                                    -- registry as a signature mismatch). GUARD:
+                                    -- the derived type must have the whitelist
+                                    -- entry's true shape or the devirt is
+                                    -- DECLINED and the site falls back to the
+                                    -- always-correct indirect call.
                                     Engine.andThen
-                                        (\_ ->
+                                        (\funcMonoType ->
                                             Engine.andThen
-                                                (\funcMonoType ->
-                                                    Engine.map
-                                                        (\resultMonoType ->
-                                                            Mono.MonoCall region
-                                                                (Mono.MonoVarKernel region kernelPrefix home name funcMonoType)
-                                                                monoArgs
-                                                                resultMonoType
-                                                                Mono.defaultCallInfo
-                                                        )
-                                                        (callResultType (List.length args) funcMonoType callCanType)
+                                                (\resultMonoType ->
+                                                    if
+                                                        kernelDevirtShapeOk home name funcMonoType
+                                                            && kernelDevirtEmissionOk home name monoArgs resultMonoType
+                                                    then
+                                                        Engine.map
+                                                            (\_ ->
+                                                                Mono.MonoCall region
+                                                                    (Mono.MonoVarKernel region kernelPrefix home name funcMonoType)
+                                                                    monoArgs
+                                                                    resultMonoType
+                                                                    Mono.defaultCallInfo
+                                                            )
+                                                            bumpDevirtKernel
+
+                                                    else
+                                                        indirectCallFallback region monoFunc monoArgs (List.length args) callCanType
                                                 )
-                                                (deriveKernelAbiTypeCall ( home, name ) (TOpt.typeOf func) args)
+                                                (callResultType (List.length args) funcMonoType callCanType)
                                         )
-                                        bumpDevirtKernel
+                                        (deriveKernelAbiTypeCall ( home, name ) (TOpt.typeOf func) args)
 
                                 Nothing ->
-                                    Engine.andThen
-                                        (\classifiedResult ->
-                                            Engine.map
-                                                (\resultMonoType -> Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo)
-                                                (indirectResultAnno (Mono.typeOf monoFunc) (List.length args) classifiedResult)
-                                        )
-                                        (classify callCanType)
+                                    indirectCallFallback region monoFunc monoArgs (List.length args) callCanType
                         )
                         (devirtDirectTarget func args monoFunc)
                 )
@@ -1806,6 +1815,149 @@ kernelDevirtArity home name =
 
     else
         Nothing
+
+
+{-| E9.2 (LSS_016) shape guard: the DERIVED site ABI type must be sane for
+the whitelist entry before the devirt may emit the direct kernel call. For
+`List.cons : a -> List a -> List a` the tail arg and the result are BOXED
+slots in every legal ABI variant (`eco.value` — only the HEAD is ever
+unboxed, REP rules), so they derive as `MVar CEcoValue` (preserved-vars
+mode) or a list type (substitution mode) — never as an unboxed SCALAR. An
+imprecise site (unresolved tvars defaulted to Int in a deep shared
+combinator spec) derives `(Int, Int) -> Int`, whose cons_Int ABI would
+treat the tail list pointer as a raw i64 (caught as a CGEN_038 kernel-decl
+mismatch pre-guard). Decline on scalar tail/result ⇒ the site stays an
+indirect call, which is layout-agnostic and always correct.
+-}
+kernelDevirtShapeOk : Name -> Name -> Mono.MonoType -> Bool
+kernelDevirtShapeOk home name funcMonoType =
+    if home == "List" && name == "cons" then
+        case consTailAndResult funcMonoType of
+            Just ( tail, result ) ->
+                not (unboxedScalar tail) && not (unboxedScalar result)
+
+            Nothing ->
+                False
+
+    else
+        False
+
+
+{-| Peel cons's two args off the derived arrow — which arrives CURRIED
+(one arg per `MFunction` level, from the `Can.TLambda` spine) or FLAT
+(site-substituted classify form). Anything else declines (safe).
+-}
+consTailAndResult : Mono.MonoType -> Maybe ( Mono.MonoType, Mono.MonoType )
+consTailAndResult funcMonoType =
+    case funcMonoType of
+        Mono.MFunction _ [ _, tail ] result ->
+            Just ( tail, result )
+
+        Mono.MFunction _ [ _ ] (Mono.MFunction _ [ tail ] result) ->
+            Just ( tail, result )
+
+        _ ->
+            Nothing
+
+
+{-| E9.2 (LSS_016) EMISSION guard — the decisive one: codegen derives the
+kernel DECLARATION from the actual argument/result mono types (not the
+callee type), so those are what must be sane. In preserved-vars mode the
+DERIVED callee type is all boxed placeholders and passes the shape guard,
+while the site's real args are scalar-typed (an Int-layout `List.foldl`
+spec whose `func` slot wrongly carries {k|List.cons}) — emitting would
+register `Elm_Kernel_List_cons_Int : (i64, i64) -> i64` and collide with
+the true declaration (CGEN_038). For cons: the TAIL arg's and the
+RESULT's mono types must not be unboxed scalars.
+-}
+kernelDevirtEmissionOk : Name -> Name -> List Mono.MonoExpr -> Mono.MonoType -> Bool
+kernelDevirtEmissionOk home name monoArgs resultMonoType =
+    if home == "List" && name == "cons" then
+        case monoArgs of
+            [ headArg, tailArg ] ->
+                not (unboxedScalar (Mono.typeOf tailArg))
+                    && not (unboxedScalar resultMonoType)
+                    -- DEEP CNumber-freedom: a residual number var ANYWHERE in
+                    -- the site's types (observed live: tail `MList (MVar
+                    -- CNumber)` in a generic foldl translation) means the
+                    -- layout is not settled — the demand-closing rewrite can
+                    -- later collapse those positions for a different
+                    -- instantiation (b := Int), leaving this frozen kernel
+                    -- call ill-typed (the (i64,i64)->i64 cons_Int CGEN_038
+                    -- collision). Devirt only fully-settled sites.
+                    && not (containsCNumber (Mono.typeOf headArg))
+                    && not (containsCNumber (Mono.typeOf tailArg))
+                    && not (containsCNumber resultMonoType)
+
+            _ ->
+                False
+
+    else
+        False
+
+
+containsCNumber : Mono.MonoType -> Bool
+containsCNumber t =
+    case t of
+        Mono.MVar _ Mono.CNumber ->
+            True
+
+        Mono.MFunction _ argTypes result ->
+            List.any containsCNumber argTypes || containsCNumber result
+
+        Mono.MList elem ->
+            containsCNumber elem
+
+        Mono.MTuple elems ->
+            List.any containsCNumber elems
+
+        Mono.MCustom _ _ typeArgs ->
+            List.any containsCNumber typeArgs
+
+        Mono.MRecord fields ->
+            Dict.foldl (\_ ft acc -> acc || containsCNumber ft) False fields
+
+        _ ->
+            False
+
+
+unboxedScalar : Mono.MonoType -> Bool
+unboxedScalar t =
+    case t of
+        Mono.MInt ->
+            True
+
+        Mono.MFloat ->
+            True
+
+        Mono.MChar ->
+            True
+
+        Mono.MVar _ Mono.CNumber ->
+            -- The Prune taint the deriveKernelAbiTypeWith comment warns
+            -- about: a residual CNumber var looks boxed at translate time
+            -- but Prune CLOSES it to MInt before emission — the derived
+            -- cons ABI then carries an i64 tail/result after all. Only
+            -- CEcoValue residuals are guaranteed to stay boxed.
+            True
+
+        _ ->
+            False
+
+
+{-| The plain indirect-call emission (LSS_013 result-anno transport) — the
+no-devirt path, shared with devirt arms that must DECLINE at rewrite time
+(the E9.2 shape guard).
+-}
+indirectCallFallback : A.Region -> Mono.MonoExpr -> List Mono.MonoExpr -> Int -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
+indirectCallFallback region monoFunc monoArgs argCount callCanType =
+    Engine.andThen
+        (\classifiedResult ->
+            Engine.map
+                (\resultMonoType -> Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo)
+                (indirectResultAnno (Mono.typeOf monoFunc) argCount classifiedResult)
+        )
+        (classify callCanType)
 
 
 {-| E9 (LSS_015): decide whether this indirect call devirtualizes to a
@@ -1840,40 +1992,71 @@ devirtDirectTarget func args monoFunc s0 =
                         devirtKernelTarget m (List.length args) s1
 
                     Ok ( Just ctorGlobal, s1 ) ->
-                        if not (isCtorNode ctorGlobal s1 || (s1.env.lss.devirtFnGlobals && isBodyNode ctorGlobal s1)) then
-                            -- v1 scope: CTORS ONLY. Devirtualizing FUNCTION
-                            -- globals is valid too (and valuable — it unlocks
-                            -- inlining of previously-indirect calls), but the
-                            -- new inline shapes it feeds the inliner exposed a
-                            -- pre-existing let-freshening seam
-                            -- (`lookupVar: unbound mono_inline_N` at MLIR
-                            -- emit). Direct CTOR calls have no body and are
-                            -- never inlined — no new inliner surface. The
-                            -- fn-global extension is a documented follow-up
-                            -- gated on hardening that seam.
-                            Ok ( Nothing, s1 )
+                        case LssInfer.kernelAliasOf ctorGlobal s1 of
+                            Just ( kernelPrefix, home, name ) ->
+                                -- E9.2/Tier-1 hardening: a KERNEL-ALIAS global
+                                -- (`cons = Elm.Kernel.List.cons`) must devirt
+                                -- ONLY via the kernel whitelist + guards, never
+                                -- via the E9.1 fn-global path: DevirtGlobal
+                                -- would enqueue the alias spec at the SITE's
+                                -- type and the inliner then plants the raw
+                                -- kernel call there — at an imprecise site
+                                -- (an Int-layout foldl spec whose slot wrongly
+                                -- carries the cons member) that emits a
+                                -- poisonous i64-tail cons ABI (CGEN_038
+                                -- collision). The g| mint for such globals is
+                                -- normally identity-folded to k|, but any
+                                -- unfolded mint path lands here — route it to
+                                -- the same whitelist decision.
+                                case kernelDevirtArity home name of
+                                    Just arity ->
+                                        if arity == List.length args then
+                                            Ok ( Just (DevirtKernel kernelPrefix home name), s1 )
 
-                        else
-                            case lookupAnnotation ctorGlobal s1 of
-                                Err e ->
-                                    Err e
+                                        else
+                                            Ok ( Nothing, s1 )
 
-                                Ok ( Just (Can.Forall _ annType), s2 ) ->
-                                    let
-                                        arity =
-                                            arrowSpineLength annType
-                                    in
-                                    if arity >= 1 && arity == List.length args then
-                                        Ok ( Just (DevirtGlobal ctorGlobal), s2 )
+                                    Nothing ->
+                                        Ok ( Nothing, s1 )
 
-                                    else
-                                        Ok ( Nothing, s2 )
-
-                                Ok ( Nothing, s2 ) ->
-                                    Ok ( Nothing, s2 )
+                            Nothing ->
+                                devirtGlobalTarget ctorGlobal (List.length args) s1
 
             _ ->
                 Ok ( Nothing, s0 )
+
+
+{-| The ctor / (flag-gated) fn-global leg of the devirt decision — the
+singleton's standalone global is NOT a kernel alias (those route through
+the kernel whitelist above).
+-}
+devirtGlobalTarget : TOpt.Global -> Int -> Step (Maybe DevirtTarget)
+devirtGlobalTarget ctorGlobal argCount s1 =
+    if not (isCtorNode ctorGlobal s1 || (s1.env.lss.devirtFnGlobals && isBodyNode ctorGlobal s1)) then
+        -- CTORS + (behind lss.devirtFnGlobals) body-bearing FUNCTION
+        -- globals. Direct CTOR calls have no body and are never inlined —
+        -- no inliner surface; the fn-global class unlocks inlining (E9.1,
+        -- after the BytesFusion walked-past-let seam fix).
+        Ok ( Nothing, s1 )
+
+    else
+        case lookupAnnotation ctorGlobal s1 of
+            Err e ->
+                Err e
+
+            Ok ( Just (Can.Forall _ annType), s2 ) ->
+                let
+                    arity =
+                        arrowSpineLength annType
+                in
+                if arity >= 1 && arity == argCount then
+                    Ok ( Just (DevirtGlobal ctorGlobal), s2 )
+
+                else
+                    Ok ( Nothing, s2 )
+
+            Ok ( Nothing, s2 ) ->
+                Ok ( Nothing, s2 )
 
 
 {-| E9.2 (LSS_016): the kernel leg of the devirt decision — the singleton

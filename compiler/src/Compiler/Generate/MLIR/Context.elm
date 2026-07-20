@@ -647,7 +647,9 @@ insertKernelDecl ctx info =
                         ++ showTypes info.abiArgTypes
                         ++ " -> "
                         ++ Types.mlirTypeToString info.abiResultType
-                        ++ ")"
+                        ++ ") [in "
+                        ++ ctx.currentFuncName
+                        ++ "]"
                     )
 
 

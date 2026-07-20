@@ -1954,6 +1954,58 @@ the gates.
    remains AND a `MonoVarKernel List cons` call EXISTS, with callee-anno +
    node-key diagnostics in the failure message).
 
+**TIER-1 HARDENING (2026-07-20) — the CNumber-residual soundness hole,
+found by the first keyed×DF corpus and fixed with three guards.** Three
+Combinator fixtures crashed at MLIR emit: `Kernel signature mismatch for
+Elm_Kernel_List_cons_Int: (i64, eco.value → eco.value) vs (i64, i64 → i64)
+[in List_foldl_$_N]` (the `[in …]` provenance is a new permanent CGEN_038
+diagnostic). ROOT CAUSE (probe-verified — the devirt-emit probe showed the
+site typed `(MVar CNumber, MList (MVar CNumber)) → MList (MVar CNumber)`):
+the kernel devirt fired at a translation whose types still carried
+RESIDUAL NUMBER VARS; the demand-close is a POSITIONAL TYPE-ANNOTATION
+REWRITE, not a re-translation — it stamps the settled demand onto node
+types but cannot re-derive kernel ABIs or un-devirt, an invariant that is
+sound for the layout-AGNOSTIC nodes the normal translator produces
+(indirect calls, boxed convention) and was broken by the layout-COMMITTED
+direct kernel call. Cons flows into `List.foldl` legitimately
+(`reverse = foldl cons []`; `foldrHelper` forwards its own `fn` into
+`foldl fn acc (reverse r4)`); at an unsettled site the close later
+collapsed the number positions (to Int here; a Float program would poison
+identically) leaving the frozen cons call ill-typed. FIXES (all decline ⇒
+`indirectCallFallback`, always correct): (1) shape guard on the derived
+callee type (curried AND flat spines — the unit pin caught a flat-only
+version silently declining EVERYWHERE, devirtKernel=0: the corpus cannot
+distinguish devirt from fallback, ONLY the pin can); (2) emission guard on
+the ACTUAL monoArgs/result types (codegen derives the kernel DECL from
+those, and preserved-vars callee types pass the shape guard while args are
+scalar); (3) **deep CNumber-freedom** over head/tail/result
+(`containsCNumber` — the decisive one; the residue hid INSIDE `MList`).
+Plus: kernel-ALIAS globals now route through the kernel whitelist in
+`devirtDirectTarget` (never the E9.1 fn-global path — DevirtGlobal +
+inliner would plant the raw kernel call at the site type; defense in
+depth even though the observed producer was the kernel arm itself).
+Debugging trail for the record: THREE wrong producer theories
+(instanceClosureResult value path, translateKernelCall, ecoCallNamed)
+were eliminated by probes before the devirt-emit probe told the truth —
+`registerKernelInstance` fires BEFORE `ecoCallNamed` in the direct-call
+emission, which is why the ecoCallNamed probe only saw the healthy
+registration. Guards cost ZERO devirts at self-compile scale
+(devirtKernel=784 unchanged, Run L). OPEN (E9.5): why the winning demand
+for that spec closed b to Int when the translation-time shape was
+list-flavored — the layout-blind demand-join question; the guards make it
+unexploitable meanwhile. V2 DESIGN NOTE (ordering insight, user-prompted):
+the guard is the conservative approximation of the RIGHT architecture —
+commit-after-settle. A post-close revisit would legitimately devirt the
+late-settling cons-shaped sites (settle → cons-shaped → typed variant;
+settle → non-cons-shaped → stay indirect). The clean implementation is to
+MOVE the kernel devirt out of translate-time into GlobalOpt/AbiCloning,
+which already runs on fully settled types and consumes the same singleton
+annos: the kernel rewrite (unlike the ctor one) needs NO translate-time
+machinery — it only swaps a MonoVarLocal callee for a MonoVarKernel. No
+ordering hazard, no guards, late sites captured. Do this with E9.5 if a
+census ever shows late-settling cons sites carrying weight (today: zero
+at self-compile scale).
+
 **AS BUILT (2026-07-19) — SHIPPED unconditional under lss.enabled; Run J:
 −159.9 M events/run keyed (−16.9 %), THE cons class captured.** All gates
 green: unit pin RED/GREEN; elm-tests 12,999/12 (baseline + new pin);

@@ -625,6 +625,52 @@ and crowding, but small-cap deployments deserve their own measurement;
 +46 % was misattributed) — the remaining blocker is only Run I's
 unresolved instrumented workload-wall read.
 
+### Run L — Tier 1 defaults shipped: keying + lssDF on by default (2026-07-20):
+### **753.0 M total events (−20.5 % vs Run J baseline) on stock settings**
+
+Tier 1 = flip the two proven wins to defaults: `defaultKeyedGlobals` = the
+elm/core List fold chain (E5 keying, unlocked by E9.2) and
+`lss.devirtFnGlobals = True` (E9.1, unblocked by E9.3's attribution;
+`ECO_MONO_LSS_DEVIRT_FN=0` and `ECO_MONO_LSS_KEYED_GLOBALS=""` are the
+escape hatches).
+
+- **Deciding benchmarks (corrected protocol, majors recorded).** Keying:
+  keyed ≈ unkeyed walls (6:32.6/6:32.7 vs 6:45.7/6:31.1, majors 12
+  everywhere) — free. lssDF: UNINSTRUMENTED workload A/B in the keyed
+  context — DF binary 4:08.7/4:11.3 vs 4:11.2/4:11.9, majors 9 all legs,
+  workload outputs identical: **Run I's instrumented "+35 %" read is
+  RETIRED; DF is wall-neutral-to-positive at runtime and adds zero
+  compile time** (keyed-DF front leg 6:32.8, majors 12).
+- **The first keyed×DF corpus found a real soundness hole** (three
+  Combinator fixtures, `Elm_Kernel_List_cons_Int` decl collision): the
+  kernel devirt fired at CNumber-RESIDUAL sites and the demand-close
+  (a positional annotation rewrite that cannot re-derive kernel ABIs)
+  later collapsed the number positions, leaving frozen ill-typed cons
+  calls. Fixed with three decline-guards (derived-shape, emission
+  arg/result, deep CNumber-freedom) + kernel-alias routing away from the
+  fn-devirt path — plan §E9.2 Tier-1 hardening has the full
+  probe-verified anatomy. Guards cost zero devirts at self-compile scale.
+- **Gates (final defaults + guards):** flag-on corpus 1625/1625;
+  elm-tests 12,999/12; native self-compile green
+  (`devirtDirect=5511 devirtKernel=784`, wall 6:09, 11 majors; output
+  12,017,238 B).
+- **Run L dynamic census (stock settings, cold subst workload):**
+  `sat=701,687,500  gen=685,103,759  typed=16,583,741  fast=51,293,775  distinct=5,481`
+  → **total dispatch events 753.0 M — −193.9 M/run (−20.5 %) vs the
+  same-tree pre-Tier-1 baseline** (Run J e91: 946.9 M), coverage 6.81 %,
+  census wall 4:27 at 9 majors. The default-config compiler now does a
+  fifth less dynamic dispatch than it did three days ago, with ~51 M
+  direct fast calls on top.
+
+*Reading Run L:* both Tier-1 items shipped as defaults with their wins
+intact and one latent soundness hole flushed out and fixed by the wider
+test surface. The E-track's shipped arc: Run A 922.3 M events / 0 fast /
+0 % → Run L 753.0 M events / 51.3 M fast / 6.81 % — on stock settings,
+with the flag-on wall at ~6:10–6:35 (post-E9.3 GC policy) instead of the
+~14 min it measured a week ago. Remaining census-ordered work: E9.4
+inline nursery allocation, E9.5 layout-blind demand-join audit, E1.3
+inlinehint, whitelist growth, later-stage chaining (v3).
+
 ---
 
 ## Summary
@@ -650,10 +696,13 @@ stamps (front-end run under solver, lowered with `ECO_LSS_DISPATCH_SITE_COUNTERS
 | 2026-07-19 00:2x | pre-E9.2 (e91) / subst (Run J) | 895,539,852 | 877,898,752 | 17,641,100 | 51,352,097 | 5.42 % | 5,938 | 8:50.98* |
 | 2026-07-19 00:3x | E9.2-built (e92) / subst (Run J) | 879,376,791 | 861,735,691 | 17,641,100 | 51,352,094 | 5.52 % | 5,791 | 8:33.09* |
 | 2026-07-19 00:4x | **E9.2 KEYED List chain (e92-keyed) / subst (Run J)** | **735,637,567** | 717,996,467 | 17,641,100 | 51,352,094 | **6.53 %** | 5,791 | 8:46.42* |
+| 2026-07-20 16:xx | **TIER-1 DEFAULTS: keyed+DF+guards (Run L)** | **701,687,500** | 685,103,759 | 16,583,741 | 51,293,775 | **6.81 %** | 5,481 | 4:27.18† |
 
 *Run-C walls carry an unattributed +30 % vs Run A/B (see the Run C section) — the
 counts are the meaningful comparison; treat the walls as provisional. The Run-I
-DF wall is a single instrumented run on a noisy machine — unresolved, see Run I.
+DF wall is a single instrumented run — RETIRED by Run K/L's corrected protocol
+(the "+35 %" was GC-trigger variance; uninstrumented DF is wall-neutral).
+†Run-L wall is post-E9.3 GC policy (9 majors) — not comparable to pre-Run-K walls.
 
 *Reading it:* Run G's E2.7 staged stamp is the first phase to move the dynamic
 needle: **coverage 1.75 % → 5.37 % (3.1×)** — 344 static staged stamps convert
