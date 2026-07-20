@@ -1975,7 +1975,143 @@ census-driven whitelist growth; E9.4 inline nursery allocation
 (every cons is still a runtime call at machine level). Run J recorded in
 benchmarks/runtime-calls.md.
 
+### E9.3 — flag-on mono-wall cost: measured attribution + allocation-free
+### set joins (planned 2026-07-19, implementation-ready)
 
+**Problem restatement (evidence-corrected).** The E9-family "mono wall
++38 %/+46 %" turns out to be THREE conflated effects, separated on
+2026-07-19 by gdb-sampled profiles (poor-man's profiler, ~400 samples/run,
+job-tmp `prof/`, analyzer `pmp-analyze.py` + `pmp-diff.py`):
+1. **Leg-position/page-cache penalty in the benchmark methodology** —
+   reproducible in our own data: Run I's e9 (first leg, cold) 15:42 vs e91
+   (second leg) 13:03 on BYTE-IDENTICAL work; Run J's first leg 16:26 vs
+   13:49/13:44. First legs pay ~+20 %. NOT machine drift — a within-run
+   artifact. Run K fixes the protocol (warm-up leg, below).
+2. **The real e2v2→e92 regression, measured controlled** (same day, same
+   position, same sampling overhead): 844 s → 960 s = **+116 s (+13.7 %)**.
+   Bucket diff: RUNTIME_GC **+52.8 s** + runtime-other +26 s (two-thirds
+   is ALLOCATION CHURN); Type_Unify +19.2 s (3.6×), MonoSolver_Store
+   +16 s, AST_TypedOptimized +13.9 s (mint-key string builds),
+   AST_Monomorphized +12 s (anno joins). Controls flat
+   (Analysis/AssignMVarIds/UnionFind ±0.2 s; collectCustomTypes is
+   anno-blind and did NOT grow). No new hot function — the regression is
+   the SAME operations made heavier by E9's +29 % concrete-set population
+   (singleton arrows 66,138 → 86,132; census diff bench-e9/census-e2v2-*
+   vs census-e9-*).
+3. **Falsified attributions (do not re-chase):** flush volume
+   (retranslations 882 → 1,146 = ≤ ~1 min); E9-specific frames
+   (inject/mint/devirt/registry ≈ 1 % of samples); DF's "+46 %" (Run I's
+   19:02 was a first-leg read; controlled P1 vs P2 = 16:00 vs 16:14);
+   layout-key length (keys are anno-blind).
+
+**Root mechanism (code-verified).** `Store.unifySlotWithSet`
+(Store.elm:751) services EVERY set write — member injection (args, spine,
+facts) and every LSS_004 kernel poison — by ALWAYS allocating a fresh UF
+Point + descriptor + `Dict.fromList` set structure (`Engine.freshVar`) and
+running a full `unifyStep`, even when the join is a NO-OP. With ~90 % of
+slots ⊤ and injection member lists of size 1, the overwhelming majority of
+these millions of executions allocate garbage to compute nothing. The
+Unify `LambdaSet1×LambdaSet1` arm (Unify.elm:751) likewise allocates
+`Dict.union members1 members2` on every slot×slot unification even when
+one side subsumes the other. Join semantics: `(top1 || top2, union)` —
+total, monotone.
+
+**Design (v1, two edits, both pure perf — the fixed point is unchanged):**
+- **(A) Read-first no-op skip in `unifySlotWithSet`:** `UF.get slot`; if
+  the content is `LambdaSet1 slotTop slotMembers` and
+  `(slotTop || not top) && List.all (\m -> Dict.member m slotMembers) members`,
+  the join result IS the current content — return with no fresh var, no
+  Dict build, no unify. Otherwise fall through to the existing path
+  unchanged. (Poison of an already-⊤ slot and re-injection of a present
+  member — the dominant cases — both hit the skip.)
+- **(B) Subset-reuse merge in Unify's `LambdaSet1` arm:** if
+  `(top2 ⇒ top1) && members2 ⊆ members1`, merge with the FIRST content
+  as-is (no union allocation); symmetric other side; only build
+  `Dict.union` when neither subsumes. Sets are ≤ 8 members (widening
+  cap), so the subset test is trivially cheap.
+
+**Soundness/observability + the one risk.** In every skip case the
+resulting store CONTENT is bit-equal to what the full path produces; all
+engine vars share `outermostRank`, so rank bookkeeping is degenerate. The
+only machine-state difference is the elided fresh var: the store's
+var-count advances differently, so LATER points get different indices.
+Nothing output-affecting is supposed to key on raw point numbers
+(`pointKey` feeds seen-sets/diagnostics; specs key on layout strings;
+members have their own id supply) — but the byte-gate decides, not the
+argument: **flag-on solver self-compile MLIR must be byte-identical to
+e92's `out-e92-solver.mlir` on the same tree** (no compiler-src change
+since e92 except E9.3 itself). If byte-identity FAILS, diagnose the leak;
+do not ship on "runtime-equivalent" without understanding it.
+
+**Gates (order):** (1) elm-tests baseline 12,999/12; (2) subst
+byte-identity; (3) **flag-on native self-compile green AND byte-identical
+to e92's flag-on output**; (4) flag-on corpus 1625/1625 (touch-all);
+(5) census equality vs e92: identical `lss globalopt` +
+devirtDirect/devirtKernel + flush lines (same decisions, only faster).
+
+**Run K (benchmark, corrected protocol).** Two-phase clean method PLUS:
+leg 0 = un-timed WARM-UP (discarded) so no timed leg pays the
+first-position penalty; then INTERLEAVED timed legs e92/e93/e92/e93
+(flag-on unkeyed, `rm -rf eco-stuff` each), one e93-keyed leg, subst
+byte-identity legs. NO gdb sampling in timed legs. Optional: an e93 DF leg
+to restate Run I's walls under the corrected protocol. Report: wall delta
+(expect roughly −60 s on the ~13:50 flag-on wall — the skip also wins on
+the PRE-E9 baseline population, kernel poisons included), and the
+census-equality verdict. Record as Run K in benchmarks/runtime-calls.md
+and RETIRE the "+38 %/+46 %" attributions.
+
+**Non-goals (v2 candidates, census-driven):** mint-key string-build
+reduction (AST_TypedOptimized +13.9 s — needs an id-order-preserving memo;
+not worth output instability in v1); collectCustomTypes miss-path double
+stringification (pre-existing, not a regression); signature/Solve growth
+(+4.6 s each); retranslation-count reduction (bounded ~1 min; LSS_010's
+correctness story stays simplest as-is).
+
+**AS BUILT (2026-07-20) — v1+v1.1 SHIPPED (wall-neutral, byte-proven) +
+THE REAL FINDING: major-GC trigger policy is 56 % of the flag-on wall;
+one config line = −53 %.** Chronology and evidence (Run K,
+benchmarks/runtime-calls.md):
+1. v1 (no-op skip + Unify subset-reuse) measured ZERO wall win — root
+   cause: LSS_006 means set writes target FRESHLY-MINTED flex slots, so
+   the "already constrained" fast path never fires. v1.1 added the
+   flex-slot direct-set (`UF.set` content adoption — what unify(flex ×
+   LambdaSet1) merges to, minus the fresh var + unifyStep). Also
+   wall-neutral (±10 s interleaved; −2 s under the low-GC regime). KEPT:
+   provably inert (byte-gate ×4 legs + subst + census + 12,999/12 +
+   1625/1625), allocation-avoiding, and the byte-gates pinned a
+   load-bearing fact: elided fresh vars do NOT leak through point
+   numbering.
+2. The wall itself decomposed via GC stats: **major GC = 470 s of the
+   834 s flag-on wall (103 majors × 4.56 s)**. Major counts are
+   deterministic per (binary × tree) — exactly reproduced across Run-K
+   legs — but chaotically input-sensitive across trees/binaries (same
+   binary: 94 vs 135 majors = 13:03 vs 16:26). This retro-explains the
+   "+38 %/+46 %" as GC-trigger lottery (e2v2: 62 majors vs e9: 108; DF
+   controlled = +14 s) and retires the "first-leg/page-cache" reading
+   (majflt=0 everywhere; the user's no-drift claim was correct).
+3. Trigger breakdown: 95/103 majors = **GlobalPressure**
+   (`committed ≥ occupancy/3 ≈ 28 % of old-gen cap`,
+   OldGenSpace.cpp:evaluateMajorGCTrigger) — the cap derives from
+   `max_heap_size` (24 GB VIRTUAL reservation), so the bar sits at
+   ~6.8 GB committed on a ~2 GB-live workload.
+   `ECO_HEAP_CONFIG='{"max_heap_size":"96g"}'`: majors 103 → 12,
+   **wall 13:44 → 6:27 (−53 %), RSS +1.7 %, output byte-identical**.
+   Anti-lesson: `initial_old_gen_size=6g` is PESSIMAL (committed/cap
+   starts over the bar → major per minor, 1227/1227, 1:03:53).
+4. Standing methodology: walls are meaningless without `Major GC cycles`
+   + trigger counts; pin ECO_HEAP_CONFIG for wall A/Bs; warm-up leg +
+   interleave. The controlled e2v2→e92 compute regression is +116 s
+   (+13.7 %): two-thirds GC/alloc churn from the +29 % concrete-set
+   population, the rest smeared set machinery — the INHERENT cost of
+   carrying lambda-sets, now bounded and understood.
+FOLLOW-UPS: (a) GlobalPressure `/3` policy / default reservation revisit
+for compile workloads = a DEFAULT-change decision (affects
+memory-constrained embeddings — user call); (b) lssDF default-on
+UNBLOCKED from the compile-time side; remaining blocker = Run I's
+instrumented workload-wall read; (c) v2 micro-candidates above remain
+unclaimed.
+
+## 12. A-track side items (not phases of this plan)
 
 - **A2 — cheapen the solver** (owned by `plans/monosolver-*`): pretenuring/nursery
   policy for long-lived UnionFind/IORef state (≈248 s minor GC), `S`-record

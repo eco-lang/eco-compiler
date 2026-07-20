@@ -548,6 +548,70 @@ inline-allocation follow-up (E9.4 — every cons is still a runtime
 `eco_alloc_cons`/kernel call at machine level) is the remaining
 beyond-direct-call lever on this family.
 
+### Run K — E9.3: the mono-wall investigation (2026-07-19/20):
+### **majors are the wall — 96g reservation: flag-on 13:44 → 6:27 (−53 %)**
+
+Run K set out to benchmark the §E9.3 set-join optimizations and ended up
+overturning the entire E9-family cost story. Full evidence chain in plan
+§E9.3 + as-built; profiles/GC data under the job tmp (`prof/`, `bench-e93*`).
+
+- **Corrected attribution (gdb-sampled profiles + GC stats, ~400
+  samples/run).** The historical "+38 % (E9) / +46 % (DF)" walls were
+  dominated by **major-GC count variance**, not compiler work: e2v2 ran 62
+  majors where e9 ran 108 (+46 × ~4.5 s ≈ the whole Run-H delta), and
+  Run I's DF 19:02 read was a leg with a high major count (controlled
+  re-measure: DF ≈ +14 s). Major-GC counts are DETERMINISTIC per
+  (binary × tree) — Run K legs reproduce them exactly (103/103, 105/105) —
+  but chaotically sensitive to the allocation stream: the same binary ran
+  94 majors on one tree and 135 on a slightly larger one (13:03 vs 16:26).
+  **Cross-generation wall comparisons are meaningless without recording
+  majors.** The real controlled e2v2→e92 compute regression is +116 s
+  (+13.7 %), two-thirds of it GC/alloc churn from E9's +29 % concrete-set
+  population, the rest smeared across Store/Unify/anno-join buckets;
+  every named suspect (flush retranslations 882→1,146, injection frames
+  ≈1 %, devirt consults, layout-key length) measured innocent.
+- **v1/v1.1 set-join optimizations (SHIPPED, wall-neutral).**
+  `unifySlotWithSet` no-op skip + flex-slot direct-set (Store.elm) and the
+  Unify `LambdaSet1` subset-reuse merge: interleaved A/B says ±10 s ≈ 0.
+  Kept: allocation-avoidance in a hot path, provably inert — **flag-on
+  self-compile MLIR byte-identical to e92's across every leg** (×4), subst
+  byte-identical, census identical, elm-tests 12,999/12, corpus 1625/1625.
+  The elided fresh vars do NOT leak through point numbering — worth
+  having pinned empirically.
+- **The real lever: the GlobalPressure major-GC trigger.** 95 of the
+  103 majors (92 %) fire at `committed ≥ initiating_occupancy/3 ≈ 28 %`
+  of the old-gen cap, which derives from `max_heap_size` (default 24 GB,
+  a VIRTUAL reservation) — i.e. at ~6.8 GB committed, over and over, on a
+  ~2 GB-live workload. `ECO_HEAP_CONFIG='{"max_heap_size":"96g"}'` moves
+  the bar to ~27 GB: **majors 103 → 12 (GlobalPressure → 0), flag-on wall
+  13:44 → 6:27 (−53 %), RSS +1.7 %** (5.33 vs 5.24 GB), output
+  BYTE-IDENTICAL. (The naive `initial_old_gen_size=6g` config does the
+  OPPOSITE — committed/cap starts above the bar → major per minor,
+  1227/1227, wall 1:03:53 — the trigger design assumes the old gen grows
+  into its cap.) Major GC was **56 % of the default-policy flag-on wall**
+  (470 s of 834 s; 103 × 4.56 s avg).
+- **The policy helps every engine — corrected engine ratio.** Subst under
+  the same 96g config: **8:28 → 4:24 (−48 %, 9 majors)**. Under the clean
+  low-GC regime the solver+LSS/subst wall ratio is **1.47×** (6:27 vs
+  4:24) — notably better than the ~2× believed under default policy,
+  because GC amplified the solver's extra allocation into extra majors.
+- **Methodology amendments (standing):** record `Major GC cycles` +
+  trigger breakdown alongside every wall; pin `ECO_HEAP_CONFIG` for wall
+  A/Bs; interleave legs and discard a warm-up leg. The earlier
+  "first-leg/page-cache" reading was WRONG (majflt=0, cpu=99 % on all
+  legs) — slow legs were high-major-count legs.
+
+*Reading Run K:* the E9-family "compile-time cost" mostly never existed —
+it was GC-trigger lottery plus a modest (+13.7 %) set-machinery cost
+that is inherent to carrying lambda-sets. The heap-policy lever dwarfs
+everything: one config line more than halves the flag-on wall at ~2 %
+memory. Follow-ups: (1) revisit the GlobalPressure `/3` policy or the
+default 24 GB reservation for compile-shaped workloads (default-change
+decision — affects memory-constrained embeddings); (2) `lssDF`
+default-on is UNBLOCKED from the compile-time side (its +46 % was
+misattributed) — the remaining blocker is only Run I's unresolved
+instrumented workload-wall read.
+
 ---
 
 ## Summary

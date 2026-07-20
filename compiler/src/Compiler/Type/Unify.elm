@@ -751,7 +751,19 @@ unifyStructure ctx flatType content otherContent =
                 ( IO.LambdaSet1 top1 members1, IO.LambdaSet1 top2 members2 ) ->
                     -- Join-semilattice union (LSS): TOTAL — set unification
                     -- never mismatches. Members are ground ids; ⊤ absorbs.
-                    merge ctx (IO.Structure (IO.LambdaSet1 (top1 || top2) (Dict.union members1 members2)))
+                    -- E9.3: when one side subsumes the other, merge with that
+                    -- side's content AS-IS — the union would be bit-equal and
+                    -- the per-call Dict.union allocation is the dominant cost
+                    -- of slot×slot unification (plan §E9.3). Sets are ≤8
+                    -- members (widening cap), so the subset test is cheap.
+                    if (top1 || not top2) && Dict.size members2 <= Dict.size members1 && List.all (\m -> Dict.member m members1) (Dict.keys members2) then
+                        merge ctx content
+
+                    else if (top2 || not top1) && Dict.size members1 <= Dict.size members2 && List.all (\m -> Dict.member m members2) (Dict.keys members1) then
+                        merge ctx otherContent
+
+                    else
+                        merge ctx (IO.Structure (IO.LambdaSet1 (top1 || top2) (Dict.union members1 members2)))
 
                 ( IO.EmptyRecord1, IO.EmptyRecord1 ) ->
                     merge ctx otherContent

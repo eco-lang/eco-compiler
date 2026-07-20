@@ -747,9 +747,51 @@ arrowSetSlot content =
 {-| Unify a set slot with `LambdaSet1 top members`. Set unification is a
 total join (Unify's LambdaSet1×LambdaSet1 arm) — a mismatch here would be an
 engine bug, so the strict `unifyStep` is correct.
+
+E9.3: read the slot first and SKIP when the join is a no-op — the join
+`(slotTop || top, slotMembers ∪ members)` equals the current content
+exactly when `(slotTop || not top)` and every member is already present.
+This services every injection and every LSS_004 kernel poison, ~90 % of
+which hit an already-⊤ or already-containing slot; the full path allocates
+a fresh Point + descriptor + Dict per call, which the profile showed as
+pure GC churn (plan §E9.3). The skip leaves the store content bit-equal to
+the full path — only the elided fresh var differs.
 -}
 unifySlotWithSet : Bool -> List Int -> IO.Variable -> Step ()
 unifySlotWithSet top members slot s0 =
+    let
+        ( store1, desc ) =
+            UF.get slot s0.store
+
+        s1 =
+            { s0 | store = store1 }
+    in
+    case desc.content of
+        IO.Structure (IO.LambdaSet1 slotTop slotMembers) ->
+            if (slotTop || not top) && List.all (\m -> Dict.member m slotMembers) members then
+                Ok ( (), s1 )
+
+            else
+                unifySlotWithSetSlow top members slot s1
+
+        IO.FlexVar _ ->
+            -- E9.3 v1.1 — the DOMINANT case: LSS_006 makes loadType mint
+            -- fresh arrow structure per load, so a set write almost always
+            -- targets an unconstrained flex slot. Adopt the set content
+            -- directly — exactly what unify(flex × LambdaSet1) merges to —
+            -- without the fresh var + full unifyStep.
+            let
+                ( store2, () ) =
+                    UF.set slot { desc | content = IO.Structure (IO.LambdaSet1 top (Dict.fromList (List.map (\m -> ( m, () )) members))) } s1.store
+            in
+            Ok ( (), { s1 | store = store2 } )
+
+        _ ->
+            unifySlotWithSetSlow top members slot s1
+
+
+unifySlotWithSetSlow : Bool -> List Int -> IO.Variable -> Step ()
+unifySlotWithSetSlow top members slot s0 =
     case Engine.freshVar (IO.Structure (IO.LambdaSet1 top (Dict.fromList (List.map (\m -> ( m, () )) members)))) s0 of
         Err e ->
             Err e
