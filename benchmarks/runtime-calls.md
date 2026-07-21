@@ -834,6 +834,48 @@ longer risks the annihilation class.
 
 ---
 
+### Run Q — the Allocator::resolve campaign (P2.5 + R5) (2026-07-21):
+### **dispatch-count-NEUTRAL by construction; −14.5 % workload wall**
+
+`plans/allocator-resolve-inlining.md` (§7 P2.5, §8.6 R5): every compiled-code
+out-of-line `eco_resolve_hptr`/`eco_get_tag` call inlined (34,972 sites → 0,
+forwarding-check diamonds + fresh-object no-resolve stores), then the
+construct.* field-store family inlined (`emitFreshFieldStore`, HEAP_031) and
+StringOps routed through `resolveFast`. All of it sits BELOW the dispatch
+layer, so this is the first big-wall phase with an exactly-unchanged census.
+
+- **Census leg (this file's protocol: census binary lowered with
+  `ECO_LSS_DISPATCH_SITE_COUNTERS=1`, run cold-subst with
+  `ECO_DISPATCH_STATS=1`):**
+  `sat=658,526,335  gen=641,694,578  typed=16,831,757  fast=100,378,065
+  distinct=5,804` — **IDENTICAL to the last digit** to the pre-campaign
+  v4-generation baseline (the census-instruments tree; Run O's row is the
+  slightly smaller v3 tree). Census-on wall **3:45.94 at 9 majors** vs the
+  pre-campaign census leg's 4:26.29 at 9 majors = **−15.1 %**. Output
+  byte-identical to the uninstrumented legs (non-perturbation).
+- **Uninstrumented interleaved wall batteries** (each ×3, cold subst, stock
+  GC, majors 9 on every leg, outputs byte-identical across all legs):
+  P2.5 base 4:13.2 → +inline-deref-ext 3:56.7 (**−6.8 %**); → +R5 Part 1
+  fresh-store inline 3:38.5 (**−7.7 %**); → +R5 Part 2 StringOps
+  resolveFast 3:36.5 (**−0.9 %**). **Cumulative 4:13.2 → 3:36.5 =
+  −14.5 %.**
+- **Profile arc:** `Allocator::resolve` 11.49 % → 5.28 % → **3.51 %** of
+  wall; `eco_get_tag` (2.79 %) and the whole `eco_store_*` family (3.48 %)
+  GONE from the profile. Binary: +3.1 % from the P2.5 diamonds, then
+  −544 KB back from R5 Part 1.
+- Gates per phase: ext-OFF byte-identity to the pre-plan artifact; corpus
+  1628/1628; all-keyed self-compile FIXED POINT byte-identical;
+  EcoPtrIntVerify silent (it caught one real cross-BB bit-test during
+  development); tiny-nursery ECO_HEAP_VALIDATE legs green.
+
+*Reading Run Q:* the counts table shows its own limitation here — two
+phases that cut a seventh of the wall moved NO census number. Dispatch
+conversion (Runs G-M) and access-machinery elimination (Run Q) are
+orthogonal axes; interleaved wall A/Bs with majors recorded are the only
+instrument that sees the second.
+
+---
+
 ## Summary
 
 Coverage = `fast / (sat + fast)`. "solver-built" = compiler's own code carries LSS
@@ -861,6 +903,7 @@ stamps (front-end run under solver, lowered with `ECO_LSS_DISPATCH_SITE_COUNTERS
 | 2026-07-20 22:39 | **Fix B ALL-KEYED-built / subst (Run M)** | **653,381,374** | 636,731,802 | 16,649,572 | **99,561,487** | **13.22 %** | 5,806 | 4:32.49† |
 | 2026-07-21 | E1.3 v1 (257-body guard) all-keyed / subst (Run N) | ‡ | ‡ | ‡ | ‡ | 13.22 % | — | 4:31.5†×3 |
 | 2026-07-21 15:xx | **E1.3 v3 FULL LIFT (15,744) all-keyed / subst (Run O)** | 653,394,605 | 636,744,631 | 16,649,974 | **99,563,928** | **13.22 %** | 5,804 | 4:29.5†×3 |
+| 2026-07-21 late | **RESOLVE CAMPAIGN P2.5+R5 all-keyed / subst (Run Q)** | 658,526,335 | 641,694,578 | 16,831,757 | 100,378,065 | 13.23 % | 5,804 | **3:45.94†§** |
 
 *Run-C walls carry an unattributed +30 % vs Run A/B (see the Run C section) — the
 counts are the meaningful comparison; treat the walls as provisional. The Run-I
@@ -875,6 +918,12 @@ generation's counts explicitly (identical to the last digit across all six
 interleaved legs — the small sat/fast drift vs Run M is tree growth, not the
 change); its wall is the lift mean ×3 (guard mean 4:28.1, also 10 majors) — E1.3
 runs are wall/infrastructure measurements, so the count columns are flat by design.
+§Run Q's counts are IDENTICAL to its own pre-campaign baseline (the v4
+census-instruments tree — slightly larger than Run O's v3 tree, hence the
+sat/fast uptick vs the Run O row is TREE GROWTH, not a dispatch change): the
+resolve campaign is dispatch-neutral by construction. Its story is the WALL —
+census-on 4:26.29 → 3:45.94 (−15.1 %) and uninstrumented interleaved
+4:13.2 → 3:36.5 (−14.5 %), majors 9 throughout. See the Run Q section.
 Runs D, E and K have NO dispatch-census legs and hence no table rows: D ran only the
 mono-census A/B (its solver MLIR differed by one stamp, +25 B), E skipped the leg
 outright (byte-identical MLIR ⇒ identical counts), and K was the GC-policy

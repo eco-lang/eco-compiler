@@ -261,3 +261,202 @@ byte-identity gate makes the fallback provably faithful meanwhile.
 R5 optional milestone (write-side P2.4 + runtime-internal resolve, now the
 whole residual 5.28 %); the §6.1 threshold bump if the −433 marking delta
 ever matters; R4 deletion after soak.
+
+---
+
+## 8. R5 — write-side + runtime-internal resolve (detailed design; the
+## residual 5.28 % + 3.16 %)
+
+**Trigger met (Run P, §7.3):** `Allocator::resolve` remains at 5.28 % of wall
+and `eco_store_field` at 3.16 % — both in the profile head. Combined pool
+≈ 8.5 %; realistic prize ≈ 2–4 % (see the honest-sizing note in §8.3).
+Naming note: "R5" the CLASS (closure-construct fresh stores) shipped in §7;
+this section is "R5" the MILESTONE.
+
+### 8.1 Part 1 — the write side (P2's deferred P2.4)
+
+Every boxed field WRITE in a `construct.*` lowering is still a runtime call:
+`eco_store_field` / `eco_store_record_field` / `eco_store_tuple_field*` /
+`eco_store_cons_head/tail` — each paying call machinery (the 3.16 %) plus an
+INTERNAL resolve of the target (part of the 5.28 %). The key fact: compiled
+Elm's heap writes are (audit to confirm: universally) writes into objects
+allocated moments earlier — Elm is immutable, record-update clones first —
+so the HEAP_031 freshness argument applies and the inline form is the FREE
+one: **direct AS1 GEP + store off the allocation result, no resolve, no
+diamond** (exactly the shipped array.set / make.closure / papCreate shape).
+Boxed values route through the REP_LLVM_002 barriered store helpers that
+already exist.
+
+Design points:
+1. **Emitter sweep** (the R0 discipline, greps NEVER piped through head):
+   every `getOrCreateStoreField*/StoreRecordField*/StoreTupleField*/
+   StoreConsHead*/StoreConsTail` caller in `Passes/*.cpp`, plus the
+   group-alloc merge-block stores (`emitInitAtPtr` family). Classify each:
+   fresh-target (inline, no resolve) vs anything else (marker form).
+2. **Freshness proof per site**: the alloc→store window must be
+   safepoint-free (pure ops + StoreOps + gc-leaf calls only). Any site that
+   can see a non-fresh target uses the marker+diamond form instead — never
+   ship "probably fresh".
+3. **Validator hook preserved**: `eco_store_field` self-validates under
+   ECO_HEAP_VALIDATE; inlined boxed stores must carry the `eco.boxed_slot`
+   attr so EcoBoxedStoreVerify re-inserts the stale-HPointer write barrier
+   (the array.set precedent, EcoToLLVMHeap.cpp:~1154).
+4. The `eco_store_*` exports stay (kernel/JIT users); only compiled-code
+   emission moves inline. Env-gate under the SAME `ECO_INLINE_DEREF_EXT`
+   switch (one lever for the whole family).
+
+### 8.2 Part 2 — runtime-internal resolve (the P1 continuation)
+
+The 5.28 % residual is C++-side. Candidate buckets (measurement first —
+§8.3 — then route in measured order):
+1. **`eco_store_field`-family internal resolves** — eliminated by Part 1.
+2. **Kernel structure-walkers**: `Utils::cmp`/`compare` (Dict/Set compare
+   loops), `StringOps`, `ListOps` — route through `resolveFast()` (P1's
+   header-inline check) and hoist per-object resolves out of per-field
+   loops where the walker shape allows.
+3. **Dispatch funnel**: `eco_apply_closure_eval`,
+   `spliceArgsForSaturatedCall`, `invokeSaturatedTyped` — same resolveFast
+   routing; audit found at least one plain-`resolve()` straggler already
+   (the runtime `eco_get_tag` body, noted in R0).
+4. **GC-internal resolve** (evacuate/mark chasing forwards): NOT
+   addressable — the collector doing its job. Must be measured and
+   SUBTRACTED from the prize, not attacked.
+5. `resolve()` body micro-opts (separate TU, no LTO): tail-end only; P1
+   already demoted the asserts.
+
+### 8.3 Measurement first (R5.M — the gate for everything above)
+
+The Run-P attribution is polluted by sibling-call optimization: wrappers
+tail-call `resolve`, so perf's caller frames alias to the GRAND-caller
+(observed all session). Protocol:
+- A diagnostic build tree with the standard `build`-preset flags PLUS
+  `-fno-optimize-sibling-calls` (runtime C++ keeps its frames; compiled-Elm
+  codegen is untouched by the C++ flag). Lower `allkey-v4.mlir` with its
+  `eco-boot-native`, profile the standard cold subst workload (perf 199 Hz,
+  fp call-graph).
+- Deliverables: `resolve` DIRECT-caller histogram (unaliased) bucketed into
+  §8.2's five classes; `eco_store_field`-family shares + their internal
+  resolve slice; the GC-internal (untouchable) share, explicitly.
+- Static side: the exhaustive `.resolve(`-caller list in
+  `runtime/src/{allocator,codegen}` + kernel ExportHelpers as the
+  resolveFast routing worklist.
+- Wall numbers from the diagnostic binary are NOT comparable to Run P
+  (frame-keeping slows the runtime); only SHARES and caller splits are the
+  outputs.
+- **Build gate:** Part 1 proceeds if the store-family (calls + internal
+  resolve) measures ≥ 2 % of wall; Part 2 routing proceeds per-bucket for
+  any bucket ≥ 1 %; anything smaller is recorded and closed as
+  not-worth-it.
+
+### 8.4 Gates (when built)
+
+The §4 battery unchanged (fixed point, corpus, verifier, heap-validate with
+the eco.boxed_slot hook exercised, interleaved wall ×3) + ext-OFF
+byte-identity extended to the new arms.
+
+### 8.5 R5.M RESULTS (2026-07-21) — measurement DONE; both build gates met,
+### priorities reordered by data
+
+Diagnostic tree `/work/build-diag` (build-preset flags +
+`-fno-optimize-sibling-calls -fno-omit-frame-pointer`); the SECOND flag was
+the decisive one — the runtime's default `-fomit-frame-pointer` was the real
+attribution breaker all along (perf's fp-walker skips frameless C++ frames
+up to the nearest compiled-Elm frame, which always keeps frames via the
+RS4GC frame-pointer attr). First diag attempt (sibling-calls only) still
+showed 67 % unknown; with frame pointers, resolve's caller attribution is
+100 % of its flat samples. 49,440 samples, standard cold subst workload.
+
+**`Allocator::resolve` (4.57 % flat in this build) callers, bucketed:**
+
+| bucket | share of resolve | reading |
+|---|--:|---|
+| compiled-Elm frames | 45.1 % | prologue-skew artifact: leaf sampled before frame push attributes to caller-of-caller; distributes over the buckets below in proportion (top rows `Dict_RBNode_elm_builtin` 289, `writeEncoder` 260 mirror the store-family/StringOps chains exactly) |
+| runtime string/list ops | 28.9 % | dominated by ONE function: `StringOps::forEachSegmentEx` (519 = 23 % of ALL resolve callers — the rope/segment walker resolves per segment) + `StringOps::join` |
+| store-family (Part 1) | 18.1 % | `eco_store_field` 282 + tuple/record variants |
+| dispatch funnel | 5.2 % | `eco_apply_closure_eval` 108 |
+| kernel walkers | 2.6 % | small — P1's `toPtr`→`resolveFast` already covers kernel access |
+| **GC-internal** | **0.0 %** | **the GC does NOT use resolve** (own forwarding logic) — the hypothesized "untouchable share" is ZERO; the entire residual is in-principle addressable |
+
+**Flat shares (diag build):** store-family total **3.48 %**
+(`eco_store_field` 2.64 + `_tuple_field` + `_record_field` + `_i64`
+variants); `eco_apply_closure_eval` 2.94 (dispatch machinery, resolve slice
+small — not an R5 item); `StringOps::compare` 1.49; `Utils::cmp` 1.06;
+`eco_get_tag` and `eco_resolve_hptr` **0.00** (P2.5 elimination re-confirmed
+on a third build).
+
+**`eco_store_field`'s callers: >90 % is the Dict node constructor**
+(`Dict_RBNode_elm_builtin` 767+45+31, `Dict_balance` 226, `Dict_insertHelp`
+31) — persistent-tree rebuilds construct a 5-field node per insert-path
+level, paying ~4 store_field calls each. Part 1 is therefore highly
+concentrated: inlining the construct.* store path is, in practice, a
+Dict/Set-insert optimization.
+
+**Verdicts against the §8.3 gates:**
+1. **Part 1 PROCEEDS** (store-family 3.48 % flat + its ~0.8-2 % internal
+   resolve slice ≥ the 2 % gate, concentrated in the Dict-node class).
+2. **Part 2 REORDERED:** `StringOps` first (the forEachSegmentEx segment
+   walker + join; 43 static plain-`resolve()` sites) — NOT the compare
+   walkers the plan hypothesized; dispatch funnel (5.2 %) and kernel
+   walkers (2.6 %) fall below the 1 % per-bucket gate once the skew bucket
+   is redistributed — record-and-close unless Part 1 + StringOps shift the
+   picture.
+3. **No GC subtraction needed.** Refined total prize: ~3-4 % wall
+   (store-family call machinery + its resolves + StringOps resolveFast
+   routing).
+
+Static routing worklist (exhaustive, no head-truncation): 115 plain
+`.resolve(` sites — StringOps.cpp 43, RuntimeExports.cpp 34, ListOps.cpp
+25, BytesOps.cpp 9, platform 4; `resolveFast` currently used ONLY by the
+kernel's `ExportHelpers.hpp` `toPtr()`.
+
+Artifacts: `$S/r5m2.perf.data`, `r5m2_analysis.txt` (session scratchpad);
+binaries `p25-diag`/`p25-diag2` in build-kernel/bin. Diag walls are NOT
+comparable to Run P (frame-keeping tax) — shares only.
+
+### 8.6 R5 AS BUILT (2026-07-21) — Parts 1+2 SHIPPED + GATED
+
+**Round-robin wall battery** (three binaries interleaved ×3, cold subst,
+stock GC, majors 9 on every leg, all outputs byte-identical):
+
+| binary | walls | mean | delta |
+|---|---|--:|--:|
+| base (P2.5, pre-R5) | 3:57.17 / 3:55.06 / 3:57.96 | 3:56.7 | — |
+| + Part 1 (fresh-store inline) | 3:39.13 / 3:37.97 / 3:38.49 | 3:38.5 | **−7.7 %** |
+| + Part 2 (StringOps resolveFast) | 3:36.42 / 3:35.44 / 3:37.59 | 3:36.5 | **−0.9 % more; −8.5 % total** |
+
+Every Part-1 leg beats every base leg by ≥16 s; every Part-2 leg beats every
+Part-1 leg (small but consistent, matching the ~1 % expectation).
+**Cumulative from pre-P2.5: 4:13.2 → 3:36.5 = −14.5 % workload wall.**
+
+**Final profile:** `Allocator::resolve` **3.51 %** (was 5.28 pre-R5, 11.49
+pre-P2.5 — cut to less than a third overall); the `eco_store_*` family has
+VANISHED from the profile (was 3.48 % flat); residual resolve is
+StringOps-internal remainder + dispatch funnel + misc — the §8.3 close-out
+line: recorded, not worth further work. Part 1 also SHRANK the binary
+544 KB (removed call machinery beats added inline stores).
+
+**Part 1 shape:** `emitFreshFieldStore` (EcoToLLVMInternal.h) — direct AS1
+GEP + i64 store off the fresh allocation, boxed fields via the REP_LLVM_002
+barriered helper with `eco.boxed_slot` tagging (EcoBoxedStoreVerify hook
+preserved). Converted: the 8 singleton construct/to_heap store loops
+(Heap custom/record/tuple2/tuple3 + ValueAgg equivalents) — the measured
+hot class (>90 % Dict RBNode constructs). KEPT as calls (below gate /
+extra semantics): cons-store helpers (header unboxed-bit handling),
+`eco_set_unboxed` (once per construct), and the group-alloc merge-block
+stores (i64-base path, low weight). Same `ECO_INLINE_DEREF_EXT` lever;
+ext-OFF byte-identity unaffected (verified in the pin suite).
+
+**Part 2 shape:** all 45 `allocator.resolve(` sites in StringOps.cpp →
+`Allocator::resolveFast(` (contract identical — callers already exclude
+embedded constants, enforced by the same VALIDATE assert family).
+
+**Gates:** codegen 387/387 (5 stale to_heap pins updated to the inline
+shape); corpus **1628/1628** with the final state; all-keyed self-compile
+FIXED POINT byte-identical; EcoPtrIntVerify (validation build) silent,
+true rc=0; ECO_HEAP_VALIDATE tiny-nursery leg green (134 minors + 1 major
+through the inlined+tagged stores); outputs identical across all three
+battery binaries.
+
+**R5 is CLOSED.** Remaining residue (≈3.5 % resolve, StringOps-internal +
+funnel) is recorded as below the worth-it line per §8.3. Plan-wide open
+items: R4 flag deletion after soak, nothing else.

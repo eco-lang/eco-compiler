@@ -25,8 +25,14 @@ module {
 // CHECK: llvm.func @to_heap_tuple2_two_boxed
 // New ABI: alloc-uninit + per-field store helpers for boxed slots.
 // CHECK: llvm.call @eco_alloc_tuple2_uninit
-// CHECK: llvm.call @eco_store_tuple_field(
-// CHECK: llvm.call @eco_store_tuple_field(
+// P2.5 R5 Part 1 (plans/allocator-resolve-inlining.md §8.1): fresh-object
+// stores are INLINE — barriered slot word (`__eco_hptr_to_slot` for boxed
+// fields, REP_LLVM_002) + direct AS1 store; no eco_store_* runtime call.
+// CHECK: llvm.call @__eco_hptr_to_slot
+// CHECK: llvm.store
+// CHECK: llvm.call @__eco_hptr_to_slot
+// CHECK: llvm.store
+// CHECK-NOT: llvm.call @eco_store_tuple_field
 // And — the smoking gun against the pre-Fix-C lowering — no ptrtoint
 // in the boxed-field path:
 // CHECK-NOT: llvm.ptrtoint

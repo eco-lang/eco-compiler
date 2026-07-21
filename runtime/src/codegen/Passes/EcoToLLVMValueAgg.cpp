@@ -247,6 +247,12 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             auto storeFieldF64   = runtime.getOrCreateStoreTupleFieldF64(rewriter);
 
             auto storeOne = [&](unsigned idx, Value v, Type origTy) {
+                // P2.5 R5 Part 1 (HEAP_031): fresh tuple -> direct AS1 store.
+                if (inlineDerefExtEnabled()) {
+                    emitFreshFieldStore(rewriter, loc, tuple,
+                        layout::HeaderSize + int64_t(idx) * layout::PtrSize, v, origTy);
+                    return;
+                }
                 auto idxVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
                     static_cast<int32_t>(idx));
                 if (origTy.isF64()) {
@@ -299,6 +305,12 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             auto storeFieldF64   = runtime.getOrCreateStoreTupleFieldF64(rewriter);
 
             auto storeOne = [&](unsigned idx, Value v, Type origTy) {
+                // P2.5 R5 Part 1 (HEAP_031): fresh tuple -> direct AS1 store.
+                if (inlineDerefExtEnabled()) {
+                    emitFreshFieldStore(rewriter, loc, tuple,
+                        layout::HeaderSize + int64_t(idx) * layout::PtrSize, v, origTy);
+                    return;
+                }
                 auto idxVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
                     static_cast<int32_t>(idx));
                 if (origTy.isF64()) {
@@ -359,6 +371,12 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             for (int64_t i = 0; i < fieldCount; ++i) {
                 Type origTy = fields[i];
                 Value fieldVal = extracted[i];
+                // P2.5 R5 Part 1 (HEAP_031): fresh record -> direct AS1 store.
+                if (inlineDerefExtEnabled()) {
+                    emitFreshFieldStore(rewriter, loc, objHPtr,
+                        layout::RecordFieldsOffset + i * layout::PtrSize, fieldVal, origTy);
+                    continue;
+                }
                 auto idx = rewriter.create<LLVM::ConstantOp>(
                     loc, i32Ty, static_cast<int32_t>(i));
                 if (origTy.isF64()) {
@@ -416,6 +434,12 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             for (int64_t i = 0; i < fieldCount; ++i) {
                 Type origTy = fields[i];
                 Value fieldVal = extracted[i];
+                // P2.5 R5 Part 1 (HEAP_031): fresh custom -> direct AS1 store.
+                if (inlineDerefExtEnabled()) {
+                    emitFreshFieldStore(rewriter, loc, objHPtr,
+                        layout::CustomFieldsOffset + i * layout::PtrSize, fieldVal, origTy);
+                    continue;
+                }
                 auto idx = rewriter.create<LLVM::ConstantOp>(
                     loc, i32Ty, static_cast<int32_t>(i));
                 if (origTy.isF64()) {

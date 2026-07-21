@@ -568,6 +568,13 @@ struct Tuple2ConstructOpLowering : public OpConversionPattern<Tuple2ConstructOp>
         auto storeFieldF64   = runtime.getOrCreateStoreTupleFieldF64(rewriter);
 
         auto storeOne = [&](unsigned idx, Value v, Type origTy) {
+            // P2.5 R5 Part 1 (HEAP_031): fresh tuple -> direct AS1 store
+            // (Tuple2/Tuple3 fields both start at +8).
+            if (inlineDerefExtEnabled()) {
+                emitFreshFieldStore(rewriter, loc, tuple,
+                    layout::HeaderSize + int64_t(idx) * layout::PtrSize, v, origTy);
+                return;
+            }
             auto idxVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
                 static_cast<int32_t>(idx));
             if (origTy.isF64()) {
@@ -633,6 +640,13 @@ struct Tuple3ConstructOpLowering : public OpConversionPattern<Tuple3ConstructOp>
         auto storeFieldF64   = runtime.getOrCreateStoreTupleFieldF64(rewriter);
 
         auto storeOne = [&](unsigned idx, Value v, Type origTy) {
+            // P2.5 R5 Part 1 (HEAP_031): fresh tuple -> direct AS1 store
+            // (Tuple2/Tuple3 fields both start at +8).
+            if (inlineDerefExtEnabled()) {
+                emitFreshFieldStore(rewriter, loc, tuple,
+                    layout::HeaderSize + int64_t(idx) * layout::PtrSize, v, origTy);
+                return;
+            }
             auto idxVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
                 static_cast<int32_t>(idx));
             if (origTy.isF64()) {
@@ -794,9 +808,15 @@ struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp>
         // Store each field (rewriter is now in contBlock)
         auto origFields = op.getFields();
         for (int64_t i = 0; i < fieldCount; i++) {
-            auto idx = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(i));
             Type origType = origFields[i].getType();
             Value fieldVal = fields[i];
+            // P2.5 R5 Part 1 (HEAP_031): fresh record -> direct AS1 store.
+            if (inlineDerefExtEnabled()) {
+                emitFreshFieldStore(rewriter, loc, objHPtr,
+                    layout::RecordFieldsOffset + i * layout::PtrSize, fieldVal, origType);
+                continue;
+            }
+            auto idx = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(i));
 
             if (origType.isF64()) {
                 rewriter.create<LLVM::CallOp>(loc, storeF64Func,
@@ -910,9 +930,16 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
         // Store each field (rewriter is now in contBlock)
         auto origFields = op.getFields();
         for (int64_t i = 0; i < opSize; i++) {
-            auto idx = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(i));
             Type origType = origFields[i].getType();
             Value fieldVal = fields[i];
+            // P2.5 R5 Part 1 (HEAP_031): fresh custom -> direct AS1 store —
+            // the measured hot class (Dict RBNode constructs).
+            if (inlineDerefExtEnabled()) {
+                emitFreshFieldStore(rewriter, loc, objHPtr,
+                    layout::CustomFieldsOffset + i * layout::PtrSize, fieldVal, origType);
+                continue;
+            }
+            auto idx = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(i));
 
             if (origType.isF64()) {
                 rewriter.create<LLVM::CallOp>(loc, storeF64Func,

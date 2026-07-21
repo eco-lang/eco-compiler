@@ -44,7 +44,7 @@ HPointer makeRope(HPointer left, HPointer right) {
     auto sizeOf = [&](HPointer hp) -> u32 {
         if (alloc::isEmptyString(hp)) return 0;
         if (alloc::isEmbeddedConstant(hp)) return 0;
-        void* obj = allocator.resolve(hp);
+        void* obj = Allocator::resolveFast(hp);
         return obj ? static_cast<Header*>(obj)->size : 0;
     };
 
@@ -58,7 +58,7 @@ HPointer makeRope(HPointer left, HPointer right) {
     // become invalid after a GC, but the integers we read are scalars).
     auto heightLeafOf = [&](HPointer hp) -> std::pair<u32, u32> {
         if (alloc::isEmbeddedConstant(hp)) return {0, 0};
-        void* obj = allocator.resolve(hp);
+        void* obj = Allocator::resolveFast(hp);
         if (!obj) return {0, 0};
         Tag t = alloc::getTag(obj);
         if (t == Tag_StringRope) {
@@ -97,7 +97,7 @@ HPointer makeUtf8View(HPointer base, u32 byteOffset, u32 len) {
 
     // Collapse view-of-slice / view-of-view so `base` is a leaf / buffer /
     // large-header, never itself a slice or view (mirrors makeByteBufferSlice).
-    void* base_obj = allocator.resolve(base);
+    void* base_obj = Allocator::resolveFast(base);
     if (base_obj) {
         Header* h = static_cast<Header*>(base_obj);
         if (h->tag == Tag_ByteBufferSlice) {
@@ -215,7 +215,7 @@ HPointer flattenToLeaf(HPointer s) {
     if (alloc::isEmbeddedConstant(s)) return s;  // Const_EmptyString stays embedded
 
     auto& allocator = Allocator::instance();
-    void* obj = allocator.resolve(s);
+    void* obj = Allocator::resolveFast(s);
     if (!obj) return alloc::emptyString();
 
     Header* hdr = static_cast<Header*>(obj);
@@ -241,7 +241,7 @@ HPointer flattenToLeaf(HPointer s) {
 HPointer maybeFlattenOrRebalance(HPointer s, FlattenReason reason) {
     if (alloc::isEmbeddedConstant(s)) return s;
     auto& allocator = Allocator::instance();
-    void* obj = allocator.resolve(s);
+    void* obj = Allocator::resolveFast(s);
     if (!obj) return s;
     Header* hdr = static_cast<Header*>(obj);
     if (hdr->tag == Tag_String) return s;  // already flat
@@ -355,7 +355,7 @@ HPointer slice(void* str, i64 start, i64 end) {
         }
         if (hdr->tag == Tag_LargeStringHeader) {
             LargeStringHeader* h = static_cast<LargeStringHeader*>(str);
-            void* body = allocator.resolve(h->body);
+            void* body = Allocator::resolveFast(h->body);
             if (!body) return alloc::emptyString();
             ElmString* leaf = static_cast<ElmString*>(body);
             return tinyFromU16(leaf->chars + start, slice_len);
@@ -363,11 +363,11 @@ HPointer slice(void* str, i64 start, i64 end) {
         if (hdr->tag == Tag_StringSlice) {
             ElmStringSlice* slc = static_cast<ElmStringSlice*>(str);
             u32 baseOffset = slc->offset;
-            void* baseObj = allocator.resolve(slc->base);
+            void* baseObj = Allocator::resolveFast(slc->base);
             if (!baseObj) return alloc::emptyString();
             if (static_cast<Header*>(baseObj)->tag == Tag_LargeStringHeader) {
                 LargeStringHeader* lh = static_cast<LargeStringHeader*>(baseObj);
-                baseObj = allocator.resolve(lh->body);
+                baseObj = Allocator::resolveFast(lh->body);
                 if (!baseObj) return alloc::emptyString();
             }
             ElmString* leaf = static_cast<ElmString*>(baseObj);
@@ -391,7 +391,7 @@ HPointer slice(void* str, i64 start, i64 end) {
         }
         i64 remaining_skip = start;
         u32 written = 0;
-        forEachSegment(allocator.resolve(srcHp), [&](const u16* p, u32 n) {
+        forEachSegment(Allocator::resolveFast(srcHp), [&](const u16* p, u32 n) {
             if (written >= slice_len) return;
             u32 segOff = 0;
             if (remaining_skip > 0) {
@@ -442,13 +442,13 @@ HPointer slice(void* str, i64 start, i64 end) {
     // makeSlice/makeRope both allocate.
     HPointer self = allocator.wrap(str);
     Elm::StackRootGuard rootSelf(&self);
-    void* topObj = allocator.resolve(self);
+    void* topObj = Allocator::resolveFast(self);
     if (!topObj) return alloc::emptyString();
     ElmStringRope* topRope = static_cast<ElmStringRope*>(topObj);
     HPointer leftHp = topRope->left;
     HPointer rightHp = topRope->right;
 
-    void* leftObj = allocator.resolve(leftHp);
+    void* leftObj = Allocator::resolveFast(leftHp);
     u32 leftLen = leftObj ? static_cast<Header*>(leftObj)->size : 0;
 
     if (static_cast<u64>(end) <= leftLen) {
@@ -456,7 +456,7 @@ HPointer slice(void* str, i64 start, i64 end) {
         return slice(leftObj, start, end);
     }
     if (static_cast<u64>(start) >= leftLen) {
-        void* rightObj = allocator.resolve(rightHp);
+        void* rightObj = Allocator::resolveFast(rightHp);
         return slice(rightObj, start - leftLen, end - leftLen);
     }
 
@@ -466,8 +466,8 @@ HPointer slice(void* str, i64 start, i64 end) {
     // Re-derive the right child from the rooted `self`: the recursive slice
     // above allocates whenever start > 0, and a GC there moves the child —
     // the pre-recursion `rightHp` snapshot would be stale.
-    rightHp = static_cast<ElmStringRope*>(allocator.resolve(self))->right;
-    void* rightObj = allocator.resolve(rightHp);
+    rightHp = static_cast<ElmStringRope*>(Allocator::resolveFast(self))->right;
+    void* rightObj = Allocator::resolveFast(rightHp);
     HPointer rightPiece = slice(rightObj, 0, end - static_cast<i64>(leftLen));
     return makeRope(leftPiece, rightPiece);
 }
@@ -494,7 +494,7 @@ static HPointer buildBalancedRope(std::vector<HPointer>& parts) {
     auto& allocator = Allocator::instance();
     auto rawSize = [&](HPointer hp) -> u32 {
         if (alloc::isEmbeddedConstant(hp)) return 0;
-        void* obj = allocator.resolve(hp);
+        void* obj = Allocator::resolveFast(hp);
         return obj ? static_cast<Header*>(obj)->size : 0;
     };
 
@@ -545,7 +545,7 @@ static HPointer healAsciiResult(HPointer leafHp) {
     auto& allocator = Allocator::instance();
     if (!allocator.getConfig().utf8_strings_enabled) return leafHp;
     if (alloc::isEmbeddedConstant(leafHp)) return leafHp;
-    void* obj = allocator.resolve(leafHp);
+    void* obj = Allocator::resolveFast(leafHp);
     if (!obj || static_cast<Header*>(obj)->tag != Tag_String) return leafHp;
     ElmString* s = static_cast<ElmString*>(obj);
     size_t n = s->header.size;
@@ -555,7 +555,7 @@ static HPointer healAsciiResult(HPointer leafHp) {
     // Convert: root the leaf across the AsciiOut allocation, re-resolve, copy.
     AsciiOut out;
     { Elm::StackRootGuard guard(&leafHp); out = allocAsciiOut(n); }
-    ElmString* s2 = static_cast<ElmString*>(allocator.resolve(leafHp));
+    ElmString* s2 = static_cast<ElmString*>(Allocator::resolveFast(leafHp));
     for (size_t i = 0; i < n; ++i) out.dst[i] = static_cast<u8>(s2->chars[i]);
     return finishAsciiOut(out);
 }
@@ -570,12 +570,12 @@ HPointer concat(HPointer stringList) {
     HPointer current = stringList;
 
     while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
+        void* cell = Allocator::resolveFast(current);
         if (!cell) break;
 
         Cons* c = static_cast<Cons*>(cell);
         if (!alloc::isEmptyString(c->head.p)) {
-            void* strObj = allocator.resolve(c->head.p);
+            void* strObj = Allocator::resolveFast(c->head.p);
             if (strObj) {
                 total_len += static_cast<Header*>(strObj)->size;
                 ++count;
@@ -602,11 +602,11 @@ HPointer concat(HPointer stringList) {
             size_t off = 0;
             HPointer cur = listHp;
             while (!alloc::isNil(cur)) {
-                void* cell = allocator.resolve(cur);
+                void* cell = Allocator::resolveFast(cur);
                 if (!cell) break;
                 Cons* c = static_cast<Cons*>(cell);
                 if (!alloc::isEmptyString(c->head.p)) {
-                    void* strObj = allocator.resolve(c->head.p);
+                    void* strObj = Allocator::resolveFast(c->head.p);
                     if (strObj) {
                         auto pr = utf8Bytes(strObj);
                         std::memcpy(out.dst + off, pr.first, pr.second);
@@ -635,12 +635,12 @@ HPointer concat(HPointer stringList) {
         current = stringList;
 
         while (!alloc::isNil(current)) {
-            void* cell = allocator.resolve(current);
+            void* cell = Allocator::resolveFast(current);
             if (!cell) break;
 
             Cons* c = static_cast<Cons*>(cell);
             if (!alloc::isEmptyString(c->head.p)) {
-                void* strObj = allocator.resolve(c->head.p);
+                void* strObj = Allocator::resolveFast(c->head.p);
                 if (strObj) {
                     forEachSegment(strObj, [&](const u16* p, u32 n) {
                         std::memcpy(result->chars + offset, p, n * sizeof(u16));
@@ -660,11 +660,11 @@ HPointer concat(HPointer stringList) {
     parts.reserve(count);
     current = stringList;
     while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
+        void* cell = Allocator::resolveFast(current);
         if (!cell) break;
         Cons* c = static_cast<Cons*>(cell);
         if (!alloc::isEmptyString(c->head.p)) {
-            void* strObj = allocator.resolve(c->head.p);
+            void* strObj = Allocator::resolveFast(c->head.p);
             if (strObj && static_cast<Header*>(strObj)->size > 0) {
                 parts.push_back(c->head.p);
             }
@@ -693,12 +693,12 @@ HPointer join(void* sep, HPointer stringList) {
     HPointer current = stringList;
 
     while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
+        void* cell = Allocator::resolveFast(current);
         if (!cell) break;
 
         Cons* c = static_cast<Cons*>(cell);
         if (!alloc::isEmptyString(c->head.p)) {
-            void* strObj = allocator.resolve(c->head.p);
+            void* strObj = Allocator::resolveFast(c->head.p);
             if (strObj) {
                 total_len += static_cast<Header*>(strObj)->size;
                 if (!isUtf8(strObj)) allUtf8 = false;
@@ -724,17 +724,17 @@ HPointer join(void* sep, HPointer stringList) {
             bool first = true;
             HPointer cur = listHp;
             while (!alloc::isNil(cur)) {
-                void* cell = allocator.resolve(cur);
+                void* cell = Allocator::resolveFast(cur);
                 if (!cell) break;
                 Cons* c = static_cast<Cons*>(cell);
                 if (!first && sep_len > 0) {
-                    auto ps = utf8Bytes(allocator.resolve(sepHp));
+                    auto ps = utf8Bytes(Allocator::resolveFast(sepHp));
                     std::memcpy(out.dst + off, ps.first, ps.second);
                     off += ps.second;
                 }
                 first = false;
                 if (!alloc::isEmptyString(c->head.p)) {
-                    void* strObj = allocator.resolve(c->head.p);
+                    void* strObj = Allocator::resolveFast(c->head.p);
                     if (strObj) {
                         auto pr = utf8Bytes(strObj);
                         std::memcpy(out.dst + off, pr.first, pr.second);
@@ -767,13 +767,13 @@ HPointer join(void* sep, HPointer stringList) {
         current = stringList;
 
         while (!alloc::isNil(current)) {
-            void* cell = allocator.resolve(current);
+            void* cell = Allocator::resolveFast(current);
             if (!cell) break;
 
             Cons* c = static_cast<Cons*>(cell);
 
             if (!first && sep_len > 0) {
-                void* sepObj = allocator.resolve(sepHp);
+                void* sepObj = Allocator::resolveFast(sepHp);
                 forEachSegment(sepObj, [&](const u16* p, u32 n) {
                     std::memcpy(result->chars + offset, p, n * sizeof(u16));
                     offset += n;
@@ -782,7 +782,7 @@ HPointer join(void* sep, HPointer stringList) {
             first = false;
 
             if (!alloc::isEmptyString(c->head.p)) {
-                void* strObj = allocator.resolve(c->head.p);
+                void* strObj = Allocator::resolveFast(c->head.p);
                 if (strObj) {
                     forEachSegment(strObj, [&](const u16* p, u32 n) {
                         std::memcpy(result->chars + offset, p, n * sizeof(u16));
@@ -801,7 +801,7 @@ HPointer join(void* sep, HPointer stringList) {
     current = stringList;
     bool first = true;
     while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
+        void* cell = Allocator::resolveFast(current);
         if (!cell) break;
         Cons* c = static_cast<Cons*>(cell);
         if (!first && sep_len > 0) {
@@ -809,7 +809,7 @@ HPointer join(void* sep, HPointer stringList) {
         }
         first = false;
         if (!alloc::isEmptyString(c->head.p)) {
-            void* strObj = allocator.resolve(c->head.p);
+            void* strObj = Allocator::resolveFast(c->head.p);
             if (strObj && static_cast<Header*>(strObj)->size > 0) {
                 parts.push_back(c->head.p);
             }
@@ -948,12 +948,12 @@ HPointer split(void* sep, void* str) {
         rs.pushStackRootRange(&srcHp, 1, ~0ULL);
         size_t start = 0;
         for (size_t idx = 0; idx < splitPositions.size(); ++idx) {
-            parts[idx] = slice(allocator.resolve(srcHp),
+            parts[idx] = slice(Allocator::resolveFast(srcHp),
                                static_cast<i64>(start),
                                static_cast<i64>(splitPositions[idx]));
             start = splitPositions[idx] + sep_len;
         }
-        parts[splitPositions.size()] = slice(allocator.resolve(srcHp),
+        parts[splitPositions.size()] = slice(Allocator::resolveFast(srcHp),
                                              static_cast<i64>(start),
                                              static_cast<i64>(str_len));
         rs.restoreStackRangePoint(saved);
@@ -1114,7 +1114,7 @@ HPointer map(CharToCharMapper mapFunc, void* str) {
     }
     // Walk segments directly into the result, applying mapFunc per char.
     u32 written = 0;
-    forEachSegment(allocator.resolve(srcHp), [&](const u16* p, u32 n) {
+    forEachSegment(Allocator::resolveFast(srcHp), [&](const u16* p, u32 n) {
         for (u32 i = 0; i < n; ++i) out.chars[written + i] = mapFunc(p[i]);
         written += n;
     });
@@ -1136,15 +1136,15 @@ HPointer filter(CharPredicate pred, void* str) {
     // across pred calls), so the utf8Bytes pointer is stable across the count
     // pass; the copy pass re-fetches after allocAsciiOut.
     if (isUtf8(str) && allocator.getConfig().utf8_strings_enabled) {
-        auto pr = utf8Bytes(allocator.resolve(srcHp));
+        auto pr = utf8Bytes(Allocator::resolveFast(srcHp));
         u32 kept = 0;
         for (u32 i = 0; i < pr.second; ++i)
             if (pred(static_cast<u16>(pr.first[i]))) ++kept;
         if (kept == 0) return alloc::emptyString();
-        if (kept == len) return allocator.wrap(allocator.resolve(srcHp));  // all kept
+        if (kept == len) return allocator.wrap(Allocator::resolveFast(srcHp));  // all kept
         AsciiOut out;
         { Elm::StackRootGuard guard(&srcHp); out = allocAsciiOut(kept); }
-        auto pr2 = utf8Bytes(allocator.resolve(srcHp));  // re-fetch post-alloc
+        auto pr2 = utf8Bytes(Allocator::resolveFast(srcHp));  // re-fetch post-alloc
         u32 w = 0;
         for (u32 i = 0; i < pr2.second; ++i) {
             u8 c = pr2.first[i];
@@ -1154,13 +1154,13 @@ HPointer filter(CharPredicate pred, void* str) {
     }
 
     u32 keptCount = 0;
-    forEachSegment(allocator.resolve(srcHp), [&](const u16* p, u32 n) {
+    forEachSegment(Allocator::resolveFast(srcHp), [&](const u16* p, u32 n) {
         for (u32 i = 0; i < n; ++i) if (pred(p[i])) ++keptCount;
     });
 
     if (keptCount == 0) return alloc::emptyString();
-    if (keptCount == len && isLeaf(allocator.resolve(srcHp))) {
-        return allocator.wrap(allocator.resolve(srcHp));
+    if (keptCount == len && isLeaf(Allocator::resolveFast(srcHp))) {
+        return allocator.wrap(Allocator::resolveFast(srcHp));
     }
 
     alloc::BlankString out;
@@ -1169,7 +1169,7 @@ HPointer filter(CharPredicate pred, void* str) {
         out = alloc::allocStringBlank(keptCount);
     }
     u32 written = 0;
-    forEachSegment(allocator.resolve(srcHp), [&](const u16* p, u32 n) {
+    forEachSegment(Allocator::resolveFast(srcHp), [&](const u16* p, u32 n) {
         for (u32 i = 0; i < n; ++i) {
             if (pred(p[i])) out.chars[written++] = p[i];
         }

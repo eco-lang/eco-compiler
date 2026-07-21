@@ -700,6 +700,48 @@ inline mlir::Value inlineResolvedBase(mlir::OpBuilder &b, mlir::Location loc,
         .getResult();
 }
 
+/// P2.5 R5 Part 1 (plans/allocator-resolve-inlining.md §8.1): store ONE
+/// construct/to_heap field into a FRESH heap object at a statically-known
+/// byte offset — a direct AS1 GEP + i64 store, no resolve and no diamond
+/// (HEAP_031: no safepoint can intervene between the allocation and these
+/// stores, so the object cannot carry a forwarding header). Field-kind
+/// handling mirrors the eco_store_field/_i64/_f64 runtime helpers exactly:
+/// f64 bitcast, narrow ints zext, boxed values through the REP_LLVM_002
+/// barriered helper with the store tagged `eco.boxed_slot` so
+/// EcoBoxedStoreVerify re-inserts the stale-HPointer write tripwire in
+/// validator builds (the array.set precedent — the always-on tripwire in
+/// the out-of-line helpers is validator-build-only on this path).
+inline void emitFreshFieldStore(mlir::OpBuilder &b, mlir::Location loc,
+                                mlir::Value baseHptr, int64_t byteOffset,
+                                mlir::Value fieldVal, mlir::Type origType) {
+    auto *ctx = b.getContext();
+    auto i64Ty = mlir::IntegerType::get(ctx, 64);
+    auto i8Ty = mlir::IntegerType::get(ctx, 8);
+    auto hptrTy = getHPtrLLVMType(*ctx);
+
+    auto off = b.create<mlir::LLVM::ConstantOp>(loc, i64Ty, byteOffset);
+    auto slotPtr = b.create<mlir::LLVM::GEPOp>(loc, hptrTy, i8Ty, baseHptr,
+                                               mlir::ValueRange{off});
+
+    bool boxed = false;
+    mlir::Value word;
+    if (origType.isF64()) {
+        word = b.create<mlir::LLVM::BitcastOp>(loc, i64Ty, fieldVal);
+    } else if (origType.isInteger(64)) {
+        word = fieldVal;
+    } else if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(origType);
+               intTy && intTy.getWidth() < 64) {
+        word = b.create<mlir::LLVM::ZExtOp>(loc, i64Ty, fieldVal);
+    } else {
+        // Boxed field: ptr<1> value -> barriered slot word.
+        boxed = true;
+        word = heapStoreValueToI64(b, loc, fieldVal);
+    }
+    auto store = b.create<mlir::LLVM::StoreOp>(loc, word, slotPtr);
+    if (boxed)
+        store->setAttr("eco.boxed_slot", mlir::UnitAttr::get(ctx));
+}
+
 //===----------------------------------------------------------------------===//
 // Control Flow Context
 //===----------------------------------------------------------------------===//

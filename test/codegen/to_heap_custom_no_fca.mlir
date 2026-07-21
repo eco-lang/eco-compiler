@@ -22,5 +22,11 @@ module {
 // CHECK: llvm.extractvalue
 // CHECK: llvm.extractvalue
 // CHECK: llvm.call @eco_alloc_custom
-// CHECK: llvm.call @eco_store_field
-// CHECK: llvm.call @eco_store_field
+// P2.5 R5 Part 1 (plans/allocator-resolve-inlining.md §8.1): fresh-object
+// stores are INLINE — barriered slot word (`__eco_hptr_to_slot` for boxed
+// fields, REP_LLVM_002) + direct AS1 store; no eco_store_* runtime call.
+// CHECK: llvm.call @__eco_hptr_to_slot
+// CHECK: llvm.store
+// CHECK: llvm.call @__eco_hptr_to_slot
+// CHECK: llvm.store
+// CHECK-NOT: llvm.call @eco_store_field
