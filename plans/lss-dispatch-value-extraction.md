@@ -414,6 +414,57 @@ the native Stage-7a self-compile (±3–5 s noise band; both runs default tier);
 front-end `.mlir` artifacts byte-identical (E1 is lowering-only); E0 re-census
 optional (call counts shouldn't move — only their cost).
 
+### E1.6 AS BUILT (2026-07-21) — the inline-annihilation GC hazard; v1 ships
+### the GC-call-free class only
+
+**Why nothing ever inlined (E1.4's question, answered):** the DEFAULT pipeline
+order is RS4GC → optimize on EVERY path (serial, and per-partition workers run
+RS4GC before their -O2 — EcoBackend.cpp:769-775; the experimental
+`rs4gc-after-opt` flag exists but is off pending REP_LLVM_001(a) validation).
+Statepointed calls are gc.statepoint intrinsics — no inliner touches them. So
+`$cap` inlining is possible ONLY in a pre-RS4GC prepass, which is what
+`runCapInlinePrepass` (EcoBackend.cpp) now is: mark + whole-module
+AlwaysInlinerPass + attr STRIP afterwards (attrs surviving into the
+post-RS4GC worker pipelines would invite the forbidden late inlining).
+
+**The GC hazard that killed the naive versions (bisected to ONE function,
+`Terminal_Main_lambda_15194$cap`, IR-dump verified):** capture unpacking at
+call sites (typed wrappers, `$clo` wrappers, `emitFastClosureCall`) loads
+boxed slots as **i64 + inttoptr** to ptr addrspace(1); the callee body's own
+boundary `ptrtoint` then folds with it DURING INLINING
+(`ptrtoint(inttoptr(x)) → x`), annihilating the tracked ptr<1> hop. If the
+body contains a statepoint (papCreate/allocs/apply), the resurrected raw i64s
+are live across it — invisible to RS4GC — and go stale on any GC inside the
+body: REP_LLVM_001(a) violated by IR folding, "Pointer below heap base" at
+the next evacuation. Three variants (site-coercing direct-call fold;
+matching-only; attrs-stripped) all crashed the all-keyed self-compile in
+1-4 s while the 1626-test corpus stayed green — small heaps cannot see it;
+the self-compile remains THE gate. A signature-coercing LLVM-level fold
+(ptrtoint/inttoptr at mismatched sites) is doubly forbidden — it BUILDS the
+violation even without inlining pressure; do not reattempt (the guard comment
+in EcoBackend.cpp records it).
+
+**v1 shipped:** alwaysinline only bodies that are ≤ ECO_CAP_INLINE_MAX_INSTS
+(default 64) AND **GC-call-free** (`bodyIsGCCallFree`: no non-intrinsic,
+non-gc-leaf, no indirect calls) — sound by construction (no statepoint in the
+body ⇒ the annihilated hop has no liveness gap to fall into). Population at
+self-compile scale: 257 bodies / 263 call sites (of 11,557 surviving direct
+`$cap` calls). Delta-debug hooks kept: `ECO_CAP_INLINE_DEBUG=1` (marked-set
+listing), `ECO_CAP_INLINE_LIST=<file>` (exact-set marking — the bisection
+driver that found 15194 lives in the session scratchpad pattern; threshold
+bisect T=16 green / T=32 crash localized the band first).
+
+**v2 unlock (designed, not built): TYPED capture loads.** Emit
+`load ptr addrspace(1)` directly for PK_Boxed slots at the three unpack sites
+(getOrCreateWrapper, the `$clo` project.closure lowering, emitFastClosureCall)
+instead of load-i64+inttoptr. The loaded value is then TRACKED across any
+inlined body's statepoints; the body's store-boundary ptrtoint derives from a
+relocated value adjacent to each store — the annihilation becomes harmless
+and the GC-call-free guard can lift, unlocking the full ≥6-12 K-body
+population. Must land with EcoPtrIntVerify (ECO_LOWERING_VALIDATION build)
+runs + the all-keyed self-compile gate, and bit-identical non-inlined
+behavior (same loaded bits, different SSA type).
+
 ---
 
 ## 6. E2 — PAP-shape stamping (absorbs H6.3 V3)

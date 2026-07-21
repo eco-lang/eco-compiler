@@ -715,6 +715,47 @@ total, same wall, ~48 M fewer generic funnel trips. Compile-time cost of all-key
 open question for a default flip (Run-L-era read: ~+6 % wall; re-measure post-Fix-B with
 majors recorded — the fork population grew). §11.7's E11 key-on-conflict is now a
 COST optimization question (fork less than all-globals), not a soundness prerequisite.
+**[Superseded same-day: the user flipped `lss.keyed = True` as the shipping default with
+`ECO_MONO_LSS=unkeyed` as the escape (Config.elm); gates: corpus 1625/1625 + 1626/1626,
+elm-tests baseline, TestPipeline pins keyed=False for the E5 contrast fixtures.]**
+
+---
+
+### Run N — E1.3 `$cap` inlining v1 (2026-07-21): the inline-annihilation GC hazard;
+### **sound class = GC-call-free bodies only (257); wall-neutral; v2 = typed capture loads**
+
+E1.1's gap ("small bodies called directly but never inlined") is root-caused: the pipeline
+runs RS4GC BEFORE every optimizer (serial and per-partition), and nothing inlines a
+statepointed call — so `$cap` inlining exists ONLY as a pre-RS4GC prepass
+(`runCapInlinePrepass`, EcoBackend.cpp: mark → whole-module AlwaysInlinerPass → attr strip).
+
+The naive prepass MISCOMPILES (three variants: signature-coercing direct-call fold /
+matching-only / attrs-stripped — all `Pointer below heap base` within seconds of the
+all-keyed self-compile while the 1626-test corpus stayed green). Bisected via
+`ECO_CAP_INLINE_LIST` to ONE function (`Terminal_Main_lambda_15194$cap`) and IR-verified:
+call-site capture unpacking loads boxed slots as i64+inttoptr; the body's boundary ptrtoint
+folds with it during inlining (`ptrtoint(inttoptr(x)) → x`), annihilating the tracked
+ptr<1> hop; the raw i64s then cross the inlined body's statepoints invisible to RS4GC and
+go stale on any GC inside the body — REP_LLVM_001(a) violated by IR folding. Full anatomy:
+plan §5/E1.6.
+
+- **v1 (shipped): alwaysinline only ≤64-inst AND GC-call-free bodies** (no non-intrinsic /
+  non-gc-leaf / indirect calls — no statepoint in the body ⇒ no liveness gap): 257 bodies /
+  263 of 11,557 surviving direct `$cap` sites. **Threshold saturates: T=256 marks the same
+  257** — the guard, not size, binds; the sweep question is closed.
+- **Run N interleaved A/B ×3 (all-keyed census binaries, cold subst workload, majors
+  recorded):** pre-E1.3 4:29.84/4:29.86/4:29.99 vs v1 4:32.16/4:30.95/4:31.30, 10 majors
+  all legs — **wall-neutral** (within the ±3–5 s band); census counts IDENTICAL
+  line-for-line (fast counters are call-site-side); workload outputs byte-identical.
+- **v2 unlock (designed, plan §5/E1.6): typed `ptr addrspace(1)` capture loads** at the
+  three unpack sites kill the annihilation at its source and lift the guard — the full
+  small-body population (~6–12 K sites) plus the E1 payoff at today's 99.6 M fast
+  calls/run. Land with EcoPtrIntVerify + the all-keyed self-compile gate.
+
+*Reading Run N:* no dynamic win yet — the value is the SOUND infrastructure, the closed
+"why does nothing inline" question, and the precisely-mapped hazard that any future
+inlining work must respect. The self-compile remains THE gate for GC-adjacent backend
+changes; the corpus cannot see this class.
 
 ---
 

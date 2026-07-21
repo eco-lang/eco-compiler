@@ -1204,7 +1204,14 @@ static Value emitFastClosureCall(ConversionPatternRewriter &rewriter, Location l
         paramTypes.push_back(arg.getType());
     }
 
-    // Get address of fast clone function
+    // Get address of fast clone function. Deliberately the AddressOf+indirect
+    // form: the SITE-derived funcType can differ from the callee's converted
+    // signature (erased/boxed i64<->ptr classes), and a direct MLIR call is
+    // translation-asserted against the callee's real type. The E1.2/E1.3 fold
+    // in the backend (`runCapInlinePrepass`, EcoBackend.cpp) rebuilds these
+    // sites as well-typed DIRECT calls at LLVM-IR level — where the real
+    // callee signature is visible — with bit-identical coercions, so the
+    // pre-RS4GC AlwaysInliner can then inline them.
     auto flatSymbol = FlatSymbolRefAttr::get(ctx, fastEvaluator.getRootReference());
     Value funcPtr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, flatSymbol);
 

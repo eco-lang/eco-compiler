@@ -251,9 +251,12 @@ applyValidateOverride maybeVal cfg =
         cfg
 
 
-{-| `ECO_MONO_LSS=0|1|keyed`: toggle lambda-set specialization. Unknown values
-are ignored (dev-only knob; silence beats failure here since `0` must always
-be a safe escape hatch).
+{-| `ECO_MONO_LSS=0|1|keyed|unkeyed`: toggle lambda-set specialization. Unknown
+values are ignored (dev-only knob; silence beats failure here since `0` must
+always be a safe escape hatch). With `keyed = True` the default (post-Fix-B),
+`unkeyed` is the bidirectional escape to the selective-whitelist mode
+(`keyedGlobals` routing only); `keyed` is kept as an explicit no-op for
+existing scripts.
 -}
 applyLssOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssOverride maybeVal cfg =
@@ -266,6 +269,9 @@ applyLssOverride maybeVal cfg =
 
         Just "keyed" ->
             updateLss (\lss -> { lss | enabled = True, keyed = True }) cfg
+
+        Just "unkeyed" ->
+            updateLss (\lss -> { lss | enabled = True, keyed = False }) cfg
 
         _ ->
             cfg

@@ -33,6 +33,10 @@
 #include "llvm/Transforms/Utils/SplitModule.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/Bitcode/BitcodeReader.h"
+#include <cstdlib>  // getenv/strtoul (E1.3 threshold override)
+#include <fstream>  // ECO_CAP_INLINE_LIST delta-debug hook
+#include <set>
+#include <string>
 #include "llvm/IR/GlobalAlias.h"
 #include "llvm/IR/GlobalIFunc.h"
 #include "llvm/IR/GlobalValue.h"
@@ -745,10 +749,148 @@ static void expandInlineDerefs(Module &m) {
     }
 }
 
+// E1.3 (LSS dispatch-value plan §5): force-inline small `$cap` fast-evaluator
+// bodies BEFORE any RS4GC. Once a call is statepointed no inliner will touch
+// it (the per-partition -O2 runs post-RS4GC), which is exactly why the E1.1
+// audit found 9,449 un-inlined direct `$cap` calls despite 55 % of bodies
+// being ≤64 B — this pre-statepoint prepass is the ONLY point in the pipeline
+// where `$cap` inlining can happen. The order (inline → statepoint) is the
+// standard upstream one, so relocation semantics (REP_LLVM_001) are
+// unaffected; the merged bodies are statepointed and then optimized normally.
+//
+// Bodies at or under the instruction threshold get `alwaysinline` (honoured by
+// the whole-module AlwaysInlinerPass run here, pre-split — so would-be
+// cross-partition pairs inline too); larger bodies get `inlinehint` for any
+// later cost-model inliner. `$cap` symbols are address-taken (closure
+// evaluator fields), so the bodies survive for indirect dispatch regardless.
+// ECO_CAP_INLINE_MAX_INSTS overrides the threshold (0 = hint-only, no
+// forcing) for A/B tuning without a rebuild.
+
+// NO signature-coercing direct-call fold here — that was tried and it
+// MISCOMPILES (2026-07-20, "Pointer below heap base" at self-compile minor
+// GC #52): rebuilding a mismatched `$cap` site with ptrtoint/inttoptr
+// coercions and then INLINING it splices the crossings into open code, so an
+// i64 derived from `ptrtoint ptr addrspace(1)` becomes live across the
+// inlined body's statepoints — a REP_LLVM_001(a) violation by construction.
+// Mismatched-view sites (the erased/boxed i64<->ptr classes) therefore stay
+// in their AddressOf+indirect form and are simply not inlined (the pre-E1.3
+// status quo, sound). Matching-signature sites need no fold at all: MLIR
+// translation resolves their called operand to the Function with a matching
+// FTy, so `getCalledFunction()` works and the AlwaysInliner below can eat
+// them directly. Recovering the mismatched population would require callee
+// cloning at the callee's REAL boxedness (AbiCloning-family work), not
+// site-side casts.
+
+// A `$cap` body is safe to inline ONLY if it contains no GC-capable call.
+// Root-caused 2026-07-21 (bisected to Terminal_Main_lambda_15194$cap, IR dump
+// verified): call-site capture unpacking loads boxed slots as i64 + inttoptr
+// to ptr addrspace(1); the body's own boundary ptrtoint then folds with it
+// during inlining (ptrtoint(inttoptr(x)) -> x), annihilating the TRACKED hop.
+// If the body contains a statepoint (alloc/apply/...), the resurrected raw
+// i64s are live across it, invisible to RS4GC, and go stale on any GC inside
+// the body — REP_LLVM_001(a) violated by IR folding, "Pointer below heap
+// base" at the next evacuation. A GC-call-free body has no statepoint between
+// the loads and every use, so the annihilation is harmless there. Lifting
+// this guard requires typed (ptr addrspace(1)) capture loads at the unpack
+// sites first — the v2 unlock, not a threshold question.
+static bool bodyIsGCCallFree(const Function &f) {
+    for (const BasicBlock &bb : f)
+        for (const Instruction &i : bb)
+            if (auto *cb = dyn_cast<CallBase>(&i)) {
+                const Function *cf = cb->getCalledFunction();
+                if (!cf)
+                    return false; // indirect: assume it can GC
+                if (cf->isIntrinsic())
+                    continue;
+                if (cf->hasFnAttribute("gc-leaf-function"))
+                    continue;
+                return false;
+            }
+    return true;
+}
+
+static void runCapInlinePrepass(Module &m) {
+    unsigned maxInsts = 64;
+    if (const char *e = ::getenv("ECO_CAP_INLINE_MAX_INSTS"))
+        maxInsts = (unsigned)strtoul(e, nullptr, 10);
+
+    // Delta-debug hook: ECO_CAP_INLINE_LIST=<file> marks EXACTLY the named
+    // functions (one symbol per line), ignoring the threshold. Diagnostic
+    // only — lets a crashing marked set be bisected to the guilty body.
+    std::set<std::string> onlyList;
+    bool useList = false;
+    if (const char *lf = ::getenv("ECO_CAP_INLINE_LIST")) {
+        useList = true;
+        std::ifstream in(lf);
+        std::string line;
+        while (std::getline(in, line))
+            if (!line.empty())
+                onlyList.insert(line);
+    }
+
+    bool any = false;
+    for (Function &f : m) {
+        if (f.isDeclaration() || !f.getName().ends_with("$cap"))
+            continue;
+        if (f.hasFnAttribute(Attribute::NoInline))
+            continue;
+        // No InlineHint arm: nothing pre-RS4GC consumes a hint, and any attr
+        // surviving into the post-RS4GC worker pipelines invites the
+        // E1.4-forbidden inlining — attrs are strictly pass-local here.
+        if (useList ? onlyList.count(f.getName().str()) != 0
+                    : (maxInsts && f.getInstructionCount() <= maxInsts &&
+                       bodyIsGCCallFree(f))) {
+            f.addFnAttr(Attribute::AlwaysInline);
+            any = true;
+            static const bool dbg =
+                (::getenv("ECO_CAP_INLINE_DEBUG") != nullptr);
+            if (dbg)
+                llvm::errs() << "[cap-inline] " << f.getName() << " insts="
+                             << f.getInstructionCount() << "\n";
+        }
+    }
+    if (!any)
+        return;
+
+    PassBuilder PB;
+    LoopAnalysisManager LAM;
+    FunctionAnalysisManager FAM;
+    CGSCCAnalysisManager CGAM;
+    ModuleAnalysisManager MAM;
+    PB.registerModuleAnalyses(MAM);
+    PB.registerCGSCCAnalyses(CGAM);
+    PB.registerFunctionAnalyses(FAM);
+    PB.registerLoopAnalyses(LAM);
+    PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+    ModulePassManager MPM;
+    MPM.addPass(AlwaysInlinerPass());
+    MPM.run(m, MAM);
+
+    // STRIP the inline attrs now that the pre-RS4GC inline pass has consumed
+    // them. Leaving them on would arm the POST-RS4GC per-partition pipelines
+    // (Dev's explicit AlwaysInlinerPass, Cgu's -O2 inliner) on `$cap` bodies
+    // that are statepointed by then — the E1.4-forbidden post-RS4GC inlining
+    // that breaks relocation semantics. The attrs exist only for this pass.
+    for (Function &f : m) {
+        if (f.isDeclaration() || !f.getName().ends_with("$cap"))
+            continue;
+        f.removeFnAttr(Attribute::AlwaysInline);
+    }
+}
+
 Error runEcoBackend(Module &m, const EcoBackendJob &job,
                     EcoBackendResult *result) {
     // Plan P2: expand inline-deref markers before RS4GC / partition splitting.
     expandInlineDerefs(m);
+
+    // E1.3: `$cap` inline prepass — must precede EVERY RS4GC flavour (serial,
+    // deferred, and per-partition; all are downstream of this point). Skipped
+    // at -O0 only.
+    if (job.optLevel != CodeGenOptLevel::None) {
+        MaybeScope s(job.stats, "  $cap inline prepass (serial)");
+        runCapInlinePrepass(m);
+    }
 
     RS4GCOptions rs4gcOpts;
     rs4gcOpts.preDumpPath = job.preRS4GCDumpPath;

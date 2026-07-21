@@ -101,14 +101,21 @@ type alias LssConfig =
 `enabled = True` means **solver implies LSS** (H3, 2026-07-14): the subst
 engine — still the `mono.engine` default — never consults this block, so
 default builds are unaffected; every solver run gets lambda-set
-specialization without extra flags. `keyed` stays False pending the M4
-elm-aws-codegen pathological-input check. `ECO_MONO_LSS=0` remains the
-escape hatch.
+specialization without extra flags.
+
+`keyed = True` (2026-07-20, post-Fix-B): ALL-GLOBALS keying is the default.
+Sound since LSS_017 fork-qualified members (`plans/lss-fork-qualified-members.md`
+— the singleton-representative hijack is fixed by construction) and measured
+free at run time (Run M, `benchmarks/runtime-calls.md`: coverage 6.81 % →
+13.22 %, identical total events, wall parity). `ECO_MONO_LSS=unkeyed` restores
+the selective-whitelist mode (`keyedGlobals`); `ECO_MONO_LSS=0` disables LSS
+entirely. Watch item: the elm-aws-codegen pathological-workload class (§11.7
+census note) — the M4 `maxSpecsPerGlobal` budget is the backstop.
 -}
 defaultLss : LssConfig
 defaultLss =
     { enabled = True
-    , keyed = False
+    , keyed = True
     , keyedGlobals = defaultKeyedGlobals
     , devirtFnGlobals = True
     , maxSetSize = 8

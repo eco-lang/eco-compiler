@@ -388,7 +388,12 @@ runToGlobalOptLssKeyedOn keyedGlobals srcModule =
                     Config.defaultLss
 
                 lssOn =
-                    { defaultLss | enabled = True, keyedGlobals = keyedGlobals }
+                    -- keyed pinned False: this pipeline tests the SELECTIVE
+                    -- keying mechanism (the listed globals vs an unkeyed
+                    -- baseline). The shipping default is keyed = True
+                    -- (post-Fix-B) — tests must not silently track it or the
+                    -- E5 keyed-vs-unkeyed contrast pin loses its baseline leg.
+                    { defaultLss | enabled = True, keyed = False, keyedGlobals = keyedGlobals }
             in
             case MonoSolver.monomorphize lssOn "main" globalTypeEnv globalGraph of
                 Err monoErr ->
