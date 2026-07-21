@@ -750,6 +750,120 @@ static void expandInlineDerefs(Module &m) {
     }
 }
 
+// P2.5 R1b (plans/allocator-resolve-inlining.md). Expand each
+// `__eco_get_tag_inline` marker call into the open-coded eco_get_tag
+// semantics (replicated EXACTLY from RuntimeExports.cpp):
+//
+//   embedded constant (ptr_ind set) -> Bool -> its i1 value; "empty" ->
+//     CONSTANT_TAG (0xFFFD);
+//   heap object -> Tag_Custom -> ctor (low 16 bits of the word at +8;
+//     the upper bits are the unboxed bitmap — load i16, never i32);
+//     Tag_Cons -> 1; anything else -> 0.
+//
+// The marker exists because eco.get_tag sits INSIDE single-block scf regions
+// (loopified tail recursion — the hot Dict/Set case loops), where the MLIR
+// lowering cannot create blocks; here at the LLVM level block structure is
+// free. The heap arm resolves via a `__eco_resolve_fwd` marker call, so this
+// MUST run BEFORE expandInlineDerefs (which then expands those) — and, like
+// it, before the `$cap` prepass and every RS4GC flavour. The transient
+// ptrtoint feeds only a same-block bit-test chain (REP_LLVM_001(c)/(d)); it
+// has no foldable inttoptr partner because every slot decode is barriered or
+// typed (REP_LLVM_002 §7.6). Idempotent / cheap when there are no markers.
+static void expandGetTagMarkers(Module &m) {
+    Function *marker = m.getFunction("__eco_get_tag_inline");
+    if (!marker || marker->use_empty()) {
+        if (marker) marker->eraseFromParent();
+        return;
+    }
+
+    LLVMContext &ctx = m.getContext();
+    Type *i16Ty = Type::getInt16Ty(ctx);
+    Type *i32Ty = Type::getInt32Ty(ctx);
+    Type *i64Ty = Type::getInt64Ty(ctx);
+    Type *i8Ty = Type::getInt8Ty(ctx);
+    PointerType *as1 = PointerType::get(ctx, 1);
+
+    FunctionCallee fwdMarker = m.getOrInsertFunction(
+        "__eco_resolve_fwd", FunctionType::get(as1, {as1}, /*isVarArg=*/false));
+    if (auto *ff = dyn_cast<Function>(fwdMarker.getCallee()))
+        ff->addFnAttr("gc-leaf-function");
+
+    SmallVector<CallInst *, 64> calls;
+    for (User *u : marker->users())
+        if (auto *ci = dyn_cast<CallInst>(u))
+            calls.push_back(ci);
+
+    for (CallInst *ci : calls) {
+        Value *v = ci->getArgOperand(0);
+        IRBuilder<> b(ci);
+        Value *bits = b.CreatePtrToInt(v, i64Ty, "eco.tagbits");
+        // ALL direct users of the ptrtoint stay in THIS block —
+        // EcoPtrIntVerify's bit-test acceptance is same-BB only
+        // (REP_LLVM_001(d)); downstream blocks consume only the derived
+        // i64s (constField), never the ptrtoint result itself.
+        Value *ptrInd = b.CreateAnd(b.CreateLShr(bits, 2), 1);
+        Value *constField = b.CreateAnd(bits, 3, "eco.constfield");
+        Value *isConst =
+            b.CreateICmpNE(ptrInd, ConstantInt::get(i64Ty, 0), "eco.isconst");
+
+        Instruction *embTerm = nullptr, *heapTerm = nullptr;
+        SplitBlockAndInsertIfThenElse(isConst, ci, &embTerm, &heapTerm);
+        BasicBlock *contBB = ci->getParent();
+
+        // Embedded constant: Bool -> i1 value; empty -> CONSTANT_TAG.
+        IRBuilder<> tb(embTerm);
+        Value *isTrue = tb.CreateICmpEQ(constField, ConstantInt::get(i64Ty, 1));
+        Value *isFalse = tb.CreateICmpEQ(constField, ConstantInt::get(i64Ty, 0));
+        Value *isBool = tb.CreateOr(isTrue, isFalse);
+        Value *embTag = tb.CreateSelect(
+            isBool, tb.CreateZExt(isTrue, i32Ty),
+            ConstantInt::get(i32Ty, (uint64_t)CONSTANT_TAG), "eco.embtag");
+        BasicBlock *embBB = embTerm->getParent();
+
+        // Heap: resolve (marker), load header, mask tag, discriminate.
+        IRBuilder<> hb(heapTerm);
+        CallInst *base = hb.CreateCall(fwdMarker, {v}, "eco.tagbase");
+        Value *hdr = hb.CreateAlignedLoad(i32Ty, base, Align(8), "eco.taghdr");
+        Value *tag = hb.CreateAnd(hdr, (1u << TAG_BITS) - 1, "eco.tag");
+        Value *isCustom =
+            hb.CreateICmpEQ(tag, ConstantInt::get(i32Ty, (uint64_t)Elm::Tag_Custom));
+        Instruction *custTerm = nullptr, *otherTerm = nullptr;
+        SplitBlockAndInsertIfThenElse(isCustom, heapTerm, &custTerm, &otherTerm);
+        BasicBlock *heapJoinBB = heapTerm->getParent();
+
+        IRBuilder<> cb(custTerm);
+        Value *ctorPtr =
+            cb.CreateGEP(i8Ty, base, ConstantInt::get(i64Ty, 8), "eco.ctorp");
+        Value *ctor = cb.CreateZExt(
+            cb.CreateAlignedLoad(i16Ty, ctorPtr, Align(8), "eco.ctor"), i32Ty);
+        BasicBlock *custBB = custTerm->getParent();
+
+        IRBuilder<> ob(otherTerm);
+        Value *isCons =
+            ob.CreateICmpEQ(tag, ConstantInt::get(i32Ty, (uint64_t)Elm::Tag_Cons));
+        Value *consOrZero = ob.CreateSelect(isCons, ConstantInt::get(i32Ty, 1),
+                                            ConstantInt::get(i32Ty, 0));
+        BasicBlock *otherBB = otherTerm->getParent();
+
+        IRBuilder<> jb(&*heapJoinBB->getFirstInsertionPt());
+        PHINode *heapTag = jb.CreatePHI(i32Ty, 2, "eco.heaptag");
+        heapTag->addIncoming(ctor, custBB);
+        heapTag->addIncoming(consOrZero, otherBB);
+
+        IRBuilder<> pb(&*contBB->getFirstInsertionPt());
+        PHINode *result = pb.CreatePHI(i32Ty, 2, "eco.gettag");
+        result->addIncoming(embTag, embBB);
+        result->addIncoming(heapTag, heapJoinBB);
+
+        ci->replaceAllUsesWith(result);
+        ci->eraseFromParent();
+    }
+
+    if (!marker->use_empty())
+        report_fatal_error("expandGetTagMarkers: surviving __eco_get_tag_inline use");
+    marker->eraseFromParent();
+}
+
 // E1.3 (LSS dispatch-value plan §5): force-inline small `$cap` fast-evaluator
 // bodies BEFORE any RS4GC. Once a call is statepointed no inliner will touch
 // it (the per-partition -O2 runs post-RS4GC), which is exactly why the E1.1
@@ -914,6 +1028,9 @@ static void runCapInlinePrepass(Module &m) {
 
 Error runEcoBackend(Module &m, const EcoBackendJob &job,
                     EcoBackendResult *result) {
+    // P2.5 R1b: expand get_tag markers FIRST (their heap arms emit
+    // __eco_resolve_fwd calls the next expansion consumes).
+    expandGetTagMarkers(m);
     // Plan P2: expand inline-deref markers before RS4GC / partition splitting.
     expandInlineDerefs(m);
 

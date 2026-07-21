@@ -537,7 +537,12 @@ struct FromHeapOpLowering : public OpConversionPattern<FromHeapOp> {
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
         auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, offsetBytes);
-        auto fieldPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
+        // P2.5 R4: the base may be AS1 (inline-deref marker) or AS0
+        // (out-of-line fallback); the GEP follows the base's addrspace.
+        Type gepTy = isHPtrLLVMType(ptr.getType())
+                         ? static_cast<Type>(getHPtrLLVMType(*ctx))
+                         : static_cast<Type>(ptrTy);
+        auto fieldPtr = rewriter.create<LLVM::GEPOp>(loc, gepTy, i8Ty, ptr,
                                                      ValueRange{offset});
         if (isHPtrLLVMType(elemTy)) {
             Value loaded = rewriter.create<LLVM::LoadOp>(loc, i64Ty, fieldPtr);
@@ -567,11 +572,21 @@ struct FromHeapOpLowering : public OpConversionPattern<FromHeapOp> {
         Type structTy = getTypeConverter()->convertType(resTy);
         if (!structTy) return failure();
 
-        // Resolve HPointer to a raw pointer, then GEP per field.
-        auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-        auto resolveCall = rewriter.create<LLVM::CallOp>(
-            loc, resolveFunc, ValueRange{adaptor.getValue()});
-        Value ptr = resolveCall.getResult();
+        // Resolve the aggregate base, then GEP per field. from_heap operands
+        // are real heap objects (embedded constants never reach this op —
+        // the runtime resolve's ECO_HEAP_VALIDATE assert has always enforced
+        // it), so the inline forwarding-check marker applies (P2.5 R4,
+        // plans/allocator-resolve-inlining.md).
+        Value ptr;
+        if (inlineDerefExtEnabled()) {
+            ptr = inlineResolvedBase(rewriter, loc, adaptor.getValue(), runtime);
+        } else {
+            // Out-of-line fallback (A/B leg).
+            auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
+            auto resolveCall = rewriter.create<LLVM::CallOp>(
+                loc, resolveFunc, ValueRange{adaptor.getValue()});
+            ptr = resolveCall.getResult();
+        }
 
         SmallVector<Value, 8> fields;
 
@@ -669,11 +684,27 @@ struct MakeClosureOpLowering : public OpConversionPattern<MakeClosureOp> {
             ValueRange{funcPtr, arityConst},
             adaptor.getLiveRoots());
 
-        // Resolve to raw pointer for in-place stores.
-        auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-        auto resolveCall = rewriter.create<LLVM::CallOp>(
-            loc, resolveFunc, ValueRange{closureHPtr});
-        Value closurePtr = resolveCall.getResult();
+        // Base pointer for the in-place stores. P2.5 R5
+        // (plans/allocator-resolve-inlining.md): the closure was allocated a
+        // few straight-line instructions above with NO intervening safepoint
+        // (the alloc's own safepoint is inside the call; everything below is
+        // pure ops + StoreOps + gc-leaf barrier calls), so the object is
+        // FRESH and cannot carry a forwarding header — no resolve, no
+        // diamond: store directly through the AS1 allocation result (the
+        // shipped array.set fresh-clone precedent, EcoToLLVMHeap.cpp).
+        Value closurePtr;
+        Type storeGepTy;
+        if (inlineDerefExtEnabled()) {
+            closurePtr = closureHPtr;
+            storeGepTy = getHPtrLLVMType(*ctx);
+        } else {
+            // Out-of-line fallback (A/B leg).
+            auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
+            auto resolveCall = rewriter.create<LLVM::CallOp>(
+                loc, resolveFunc, ValueRange{closureHPtr});
+            closurePtr = resolveCall.getResult();
+            storeGepTy = ptrTy;
+        }
 
         // Store the packed header field at offset 8:
         //   n_values:6 | max_values:6 | unboxed:52
@@ -686,7 +717,7 @@ struct MakeClosureOpLowering : public OpConversionPattern<MakeClosureOp> {
         auto offset8 = rewriter.create<LLVM::ConstantOp>(
             loc, i64Ty, rewriter.getI64IntegerAttr(layout::ClosurePackedOffset));
         auto packedPtr = rewriter.create<LLVM::GEPOp>(
-            loc, ptrTy, i8Ty, closurePtr, ValueRange{offset8});
+            loc, storeGepTy, i8Ty, closurePtr, ValueRange{offset8});
         rewriter.create<LLVM::StoreOp>(loc, packedConst, packedPtr);
 
         // Store captures into values[].
@@ -708,7 +739,7 @@ struct MakeClosureOpLowering : public OpConversionPattern<MakeClosureOp> {
             auto offConst = rewriter.create<LLVM::ConstantOp>(
                 loc, i64Ty, rewriter.getI64IntegerAttr(off));
             auto slotPtr = rewriter.create<LLVM::GEPOp>(
-                loc, ptrTy, i8Ty, closurePtr, ValueRange{offConst});
+                loc, storeGepTy, i8Ty, closurePtr, ValueRange{offConst});
             rewriter.create<LLVM::StoreOp>(loc, cap, slotPtr);
         }
 

@@ -643,6 +643,16 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateGetTag(OpBuilder &builder) const {
     return getOrCreateFunc(builder, "eco_get_tag", funcTy, /*gcLeaf=*/true);
 }
 
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateGetTagInlineMarker(OpBuilder &builder) const {
+    // __eco_get_tag_inline(hptr) -> i32 ctor tag. P2.5 R1b marker
+    // (plans/allocator-resolve-inlining.md): gc-leaf, declare-only; expanded
+    // to the open-coded embedded-constant / Tag_Cons / Tag_Custom tag
+    // diamond by expandGetTagMarkers (EcoBackend.cpp) before
+    // ExpandInlineDeref + every RS4GC flavour, so it never reaches codegen.
+    auto funcTy = LLVM::LLVMFunctionType::get(I32_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "__eco_get_tag_inline", funcTy, /*gcLeaf=*/true);
+}
+
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateConsHeadI64(OpBuilder &builder) const {
     // eco_cons_head_i64(cons: hptr) -> i64
     auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {HPTR_TY});
@@ -1160,6 +1170,7 @@ void EcoRuntime::materializeAllRuntimeDecls(OpBuilder &b) const {
     getOrCreateApplySegmentationUnknown(b);
     getOrCreateResolveHPtr(b); getOrCreateGetTag(b);
     getOrCreateResolveFwdMarker(b); getOrCreateFollowForward(b);
+    getOrCreateGetTagInlineMarker(b);
     getOrCreateConsHeadI64(b); getOrCreateConsHeadF64(b); getOrCreateConsHeadI16(b);
     getOrCreateTuple2Get0I64(b); getOrCreateTuple2Get1I64(b);
     getOrCreateTuple2Get0F64(b); getOrCreateTuple2Get1F64(b);

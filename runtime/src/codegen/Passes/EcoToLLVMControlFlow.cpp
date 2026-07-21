@@ -61,9 +61,25 @@ struct GetTagOpLowering : public OpConversionPattern<GetTagOp> {
 
         Value value = adaptor.getValue();
 
-        // Use runtime helper that handles both heap objects and embedded constants.
-        auto getTagFunc = runtime.getOrCreateGetTag(rewriter);
-        auto call = rewriter.create<LLVM::CallOp>(loc, getTagFunc, ValueRange{value});
+        if (!inlineDerefExtEnabled()) {
+            // Out-of-line fallback (A/B leg): the runtime helper handles both
+            // heap objects and embedded constants.
+            auto getTagFunc = runtime.getOrCreateGetTag(rewriter);
+            auto call = rewriter.create<LLVM::CallOp>(loc, getTagFunc, ValueRange{value});
+            rewriter.replaceOp(op, call.getResult());
+            return success();
+        }
+
+        // P2.5 R1b (plans/allocator-resolve-inlining.md): emit the
+        // `__eco_get_tag_inline` MARKER call. eco.get_tag lives INSIDE
+        // structured scf regions (loopified tail recursion — the hot Dict/Set
+        // loops), where multi-block lowering is illegal, so the open-coded
+        // emb/heap/Custom/Cons diamond is built at the LLVM-IR level instead
+        // (expandGetTagMarkers, EcoBackend.cpp — the ExpandInlineDeref
+        // architecture), where block structure is unconstrained. The marker
+        // is gc-leaf and declare-only; it never survives to codegen.
+        auto markerFunc = runtime.getOrCreateGetTagInlineMarker(rewriter);
+        auto call = rewriter.create<LLVM::CallOp>(loc, markerFunc, ValueRange{value});
         rewriter.replaceOp(op, call.getResult());
         return success();
     }
@@ -118,18 +134,27 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                 unboxedValue = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, unboxedValue);
             }
         } else {
-            // Boxed eco.value - need to unbox from heap
-            // 1. Resolve HPointer to raw pointer
-            auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-            auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{scrutinee});
-            Value ptr = resolveCall.getResult();
-
-            // 2. Offset past header (8 bytes) to get to value field
-            auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
-            auto valuePtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr, ValueRange{offset});
-
-            // 3. Load the unboxed value (always i64 for Int, then truncate for Char)
-            unboxedValue = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valuePtr);
+            // Boxed eco.value - need to unbox from heap. A boxed Int/Char
+            // scrutinee is ALWAYS a real heap box (only False/True/Empty are
+            // embedded constants), so the inline forwarding-check marker
+            // applies directly (P2.5 R2, plans/allocator-resolve-inlining.md).
+            // The loaded payload is an unboxed WORD (the Int/Char value),
+            // never a pointer — no REP_LLVM_002 barrier applies.
+            if (inlineDerefExtEnabled()) {
+                auto hptrTy = getHPtrLLVMType(*ctx);
+                Value base = inlineResolvedBase(rewriter, loc, scrutinee, runtime);
+                auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
+                auto valuePtr = rewriter.create<LLVM::GEPOp>(loc, hptrTy, i8Ty, base, ValueRange{offset});
+                unboxedValue = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valuePtr, layout::Alignment);
+            } else {
+                // Out-of-line fallback (A/B leg).
+                auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
+                auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{scrutinee});
+                Value ptr = resolveCall.getResult();
+                auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
+                auto valuePtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr, ValueRange{offset});
+                unboxedValue = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valuePtr);
+            }
 
             // For char case, truncate to i16
             if (!isIntCase) {
@@ -632,16 +657,29 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             auto constTag = rewriter.create<LLVM::TruncOp>(loc, i32Ty, constTag64);
             rewriter.create<cf::BranchOp>(loc, tagMergeBlock, ValueRange{constTag});
 
-            // Heap case: load ctor from offset 8
+            // Heap case: load ctor from offset 8. The emb/heap split above
+            // guarantees this arm only sees real heap pointers, so the
+            // inline forwarding-check marker applies (P2.5 R1a,
+            // plans/allocator-resolve-inlining.md) — this is the hot
+            // per-compare tag fetch in Dict/Set case loops.
             rewriter.setInsertionPointToStart(embHeapBlock);
 
-            auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-            auto resolveCall = rewriter.create<LLVM::CallOp>(
-                loc, resolveFunc, ValueRange{scrutinee});
-            Value ptr = resolveCall.getResult();
+            Value ptr;
+            Type ctorGepTy;
+            if (inlineDerefExtEnabled()) {
+                ptr = inlineResolvedBase(rewriter, loc, scrutinee, runtime);
+                ctorGepTy = getHPtrLLVMType(*ctx);
+            } else {
+                // Out-of-line fallback (A/B leg).
+                auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
+                auto resolveCall = rewriter.create<LLVM::CallOp>(
+                    loc, resolveFunc, ValueRange{scrutinee});
+                ptr = resolveCall.getResult();
+                ctorGepTy = ptrTy;
+            }
 
             auto offset8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::CustomCtorOffset);
-            auto ctorPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
+            auto ctorPtr = rewriter.create<LLVM::GEPOp>(loc, ctorGepTy, i8Ty, ptr,
                                                         ValueRange{offset8});
             // Custom layout packs `u16 ctor : 16` with `u64 unboxed : 48` into one
             // 8-byte word at offset 8 (Heap.hpp). Loading i32 here would mix the

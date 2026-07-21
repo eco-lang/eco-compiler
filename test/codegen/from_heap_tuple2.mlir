@@ -16,7 +16,10 @@ module {
 }
 
 // CHECK: llvm.func @from_heap_tuple2
-// CHECK: llvm.call @eco_resolve_hptr
+// P2.5 (plans/allocator-resolve-inlining.md R4): the base resolves via the
+// inline forwarding-check marker, not the out-of-line runtime call.
+// CHECK: llvm.call @__eco_resolve_fwd
+// CHECK-NOT: llvm.call @eco_resolve_hptr
 // CHECK: llvm.mlir.undef : !llvm.struct<(i64, i64)>
 // CHECK: llvm.insertvalue
 // CHECK: llvm.extractvalue

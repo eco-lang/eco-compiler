@@ -111,15 +111,28 @@ struct ProjectClosureOpLowering : public OpConversionPattern<ProjectClosureOp> {
 
         Value closureI64 = adaptor.getClosure();
 
-        // Resolve closure HPointer to raw pointer
-        auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-        auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{closureI64});
-        Value closurePtr = resolveCall.getResult();
+        // Resolve the closure base. A closure value is always a real heap
+        // object (never an embedded constant), so the inline forwarding-check
+        // marker applies (P2.5 R3, plans/allocator-resolve-inlining.md); the
+        // AS1 base keeps the derived slot pointer GC-tracked, and the diamond
+        // inlines into `$cap` callers under E1.3 v3.
+        Value closurePtr;
+        Type slotGepTy;
+        if (inlineDerefExtEnabled()) {
+            closurePtr = inlineResolvedBase(rewriter, loc, closureI64, runtime);
+            slotGepTy = getHPtrLLVMType(*ctx);
+        } else {
+            // Out-of-line fallback (A/B leg).
+            auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
+            auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{closureI64});
+            closurePtr = resolveCall.getResult();
+            slotGepTy = ptrTy;
+        }
 
         // Compute offset: values[index] is at offset ClosureValuesOffset + index * 8
         int64_t valueOffset = layout::ClosureValuesOffset + index * layout::PtrSize;
         auto offsetConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(valueOffset));
-        auto valuePtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, closurePtr, ValueRange{offsetConst});
+        auto valuePtr = rewriter.create<LLVM::GEPOp>(loc, slotGepTy, i8Ty, closurePtr, ValueRange{offsetConst});
 
         Type resultType = getTypeConverter()->convertType(op.getResult().getType());
 
@@ -425,6 +438,19 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(OpBuilder &rewriter, ModuleOp module,
     // When original types are unavailable, fall back to converted-type heuristics.
     auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
     bool hasOrigTypes = !origParamTypes.empty();
+    // P2.5 (plans/allocator-resolve-inlining.md): the legacy scalar-unbox
+    // arms below resolve a boxed Int/Float/Char argument; under the
+    // extended inline-deref they use the forwarding-check marker (AS1
+    // base + AS1 GEP) instead of the out-of-line eco_resolve_hptr call.
+    const bool wrapDerefExt = inlineDerefExtEnabled();
+    auto hptrTyW = getHPtrLLVMType(*ctx);
+    auto resolveScalarBase = [&](Value hptr) -> std::pair<Value, Type> {
+        if (wrapDerefExt)
+            return {inlineResolvedBase(rewriter, loc, hptr, runtime),
+                    static_cast<Type>(hptrTyW)};
+        auto rc = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{hptr});
+        return {rc.getResult(), static_cast<Type>(ptrTy)};
+    };
 
     SmallVector<Value, 8> liveRoots;
     SmallVector<Value> callArgs;
@@ -488,36 +514,36 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(OpBuilder &rewriter, ModuleOp module,
         } else if (origType && origType.isInteger(64)) {
             // Legacy Int param: arg is HPointer to ElmInt → resolve and read value at offset 8
             Value hptr = wrapperLoadArgSlotToValue(rewriter, loc, argI64, getHPtrLLVMType(*ctx));
-            auto resolved = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{hptr});
+            auto [rbase, rGepTy] = resolveScalarBase(hptr);
             auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
-            auto valPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty,
-                                                        resolved.getResult(), ValueRange{off8});
+            auto valPtr = rewriter.create<LLVM::GEPOp>(loc, rGepTy, i8Ty,
+                                                        rbase, ValueRange{off8});
             convertedArg = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valPtr);
         } else if (origType && origType.isF64()) {
             // Legacy Float param: arg is HPointer to ElmFloat → resolve, read i64 at offset 8, bitcast
             Value hptr = wrapperLoadArgSlotToValue(rewriter, loc, argI64, getHPtrLLVMType(*ctx));
-            auto resolved = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{hptr});
+            auto [rbase, rGepTy] = resolveScalarBase(hptr);
             auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
-            auto valPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty,
-                                                        resolved.getResult(), ValueRange{off8});
+            auto valPtr = rewriter.create<LLVM::GEPOp>(loc, rGepTy, i8Ty,
+                                                        rbase, ValueRange{off8});
             Value loadedI64 = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valPtr);
             convertedArg = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, loadedI64);
         } else if (auto intTy = dyn_cast<IntegerType>(targetType); intTy && intTy.getWidth() < 64) {
             // Legacy Char (i16/i32): arg is HPointer to ElmChar → resolve and read value at offset 8
             Value hptr = wrapperLoadArgSlotToValue(rewriter, loc, argI64, getHPtrLLVMType(*ctx));
-            auto resolved = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{hptr});
+            auto [rbase, rGepTy] = resolveScalarBase(hptr);
             auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
-            auto valPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty,
-                                                        resolved.getResult(), ValueRange{off8});
+            auto valPtr = rewriter.create<LLVM::GEPOp>(loc, rGepTy, i8Ty,
+                                                        rbase, ValueRange{off8});
             Value fullVal = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valPtr);
             convertedArg = rewriter.create<LLVM::TruncOp>(loc, targetType, fullVal);
         } else if (targetType == f64Ty && !origType) {
             // Legacy fallback: no orig types, target is f64 → unbox from HPointer
             Value hptr = wrapperLoadArgSlotToValue(rewriter, loc, argI64, getHPtrLLVMType(*ctx));
-            auto resolved = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{hptr});
+            auto [rbase, rGepTy] = resolveScalarBase(hptr);
             auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
-            auto valPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty,
-                                                        resolved.getResult(), ValueRange{off8});
+            auto valPtr = rewriter.create<LLVM::GEPOp>(loc, rGepTy, i8Ty,
+                                                        rbase, ValueRange{off8});
             Value loadedI64 = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valPtr);
             convertedArg = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, loadedI64);
         } else if (isa<LLVM::LLVMPointerType>(targetType)) {
@@ -732,9 +758,23 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
             ValueRange{funcPtr, arityConst, resultKindConst});
         Value closureHPtr = allocCall.getResult();
 
-        // Convert HPointer to raw pointer for memory operations
-        auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{closureHPtr});
-        Value closurePtr = resolveCall.getResult();
+        // Base pointer for the in-place stores. P2.5 R5
+        // (plans/allocator-resolve-inlining.md): the closure was allocated a
+        // few straight-line instructions above with NO intervening safepoint
+        // (pure ops + StoreOps + gc-leaf barrier calls below), so it is
+        // FRESH and cannot carry a forwarding header — store directly
+        // through the AS1 allocation result, no resolve at all.
+        Value closurePtr;
+        Type papGepTy;
+        if (inlineDerefExtEnabled()) {
+            closurePtr = closureHPtr;
+            papGepTy = getHPtrLLVMType(*ctx);
+        } else {
+            // Out-of-line fallback (A/B leg).
+            auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{closureHPtr});
+            closurePtr = resolveCall.getResult();
+            papGepTy = ptrTy;
+        }
 
         // Closure bitmap covers ALL params (captures + remaining newargs)
         // so the runtime can read slot N's kind from `closure->unboxed`
@@ -774,7 +814,7 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
         // Store packed field at offset 8
         auto offset8 =
             rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(layout::ClosurePackedOffset));
-        auto packedPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, closurePtr, ValueRange{offset8});
+        auto packedPtr = rewriter.create<LLVM::GEPOp>(loc, papGepTy, i8Ty, closurePtr, ValueRange{offset8});
         rewriter.create<LLVM::StoreOp>(loc, packedConst, packedPtr);
 
         // Store captured values starting at offset 24.
@@ -783,7 +823,7 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
         for (size_t i = 0; i < captured.size(); ++i) {
             int64_t valueOffset = layout::ClosureValuesOffset + i * layout::PtrSize;
             auto offsetConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(valueOffset));
-            auto valuePtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, closurePtr, ValueRange{offsetConst});
+            auto valuePtr = rewriter.create<LLVM::GEPOp>(loc, papGepTy, i8Ty, closurePtr, ValueRange{offsetConst});
 
             Value capturedValue = captured[i];
             if (auto intTy = dyn_cast<IntegerType>(capturedValue.getType());
@@ -812,7 +852,7 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
                 int64_t valueOffset = layout::ClosureValuesOffset + selfIdx * layout::PtrSize;
                 auto offsetConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
                     rewriter.getI64IntegerAttr(valueOffset));
-                auto valuePtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, closurePtr,
+                auto valuePtr = rewriter.create<LLVM::GEPOp>(loc, papGepTy, i8Ty, closurePtr,
                     ValueRange{offsetConst});
                 rewriter.create<LLVM::StoreOp>(loc, closureI64, valuePtr);
             }
@@ -1162,10 +1202,22 @@ static Value emitFastClosureCall(ConversionPatternRewriter &rewriter, Location l
     auto f64Ty = Float64Type::get(ctx);
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
-    // Resolve closure HPointer to raw pointer
-    auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-    auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{closureI64});
-    Value closurePtr = resolveCall.getResult();
+    // Resolve the closure base. P2.5 (plans/allocator-resolve-inlining.md):
+    // THE hottest converted class — every stamped fast dispatch resolves
+    // here (99.6 M/run at Run-M scale); the marker diamond inlines into
+    // `$cap` callers under E1.3 v3. Closures are never embedded constants.
+    Value closurePtr;
+    Type fcGepTy;
+    if (inlineDerefExtEnabled()) {
+        closurePtr = inlineResolvedBase(rewriter, loc, closureI64, runtime);
+        fcGepTy = getHPtrLLVMType(*ctx);
+    } else {
+        // Out-of-line fallback (A/B leg).
+        auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
+        auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{closureI64});
+        closurePtr = resolveCall.getResult();
+        fcGepTy = ptrTy;
+    }
 
     // E0.4 (LSS dispatch-value plan): count this stamped fast-dispatch execution
     // under ECO_DISPATCH_STATS. Emitted ONLY when ECO_LSS_DISPATCH_SITE_COUNTERS is
@@ -1179,7 +1231,7 @@ static Value emitFastClosureCall(ConversionPatternRewriter &rewriter, Location l
         auto evalOffset = rewriter.create<LLVM::ConstantOp>(
             loc, i64Ty, rewriter.getI64IntegerAttr(layout::ClosureEvaluatorOffset));
         auto evalPtrPtr = rewriter.create<LLVM::GEPOp>(
-            loc, ptrTy, i8Ty, closurePtr, ValueRange{evalOffset});
+            loc, fcGepTy, i8Ty, closurePtr, ValueRange{evalOffset});
         Value evaluatorFp = rewriter.create<LLVM::LoadOp>(loc, ptrTy, evalPtrPtr);
         auto statsFunc = runtime.getOrCreateDispatchStatsFast(rewriter);
         rewriter.create<LLVM::CallOp>(loc, statsFunc, ValueRange{evaluatorFp});
@@ -1193,7 +1245,7 @@ static Value emitFastClosureCall(ConversionPatternRewriter &rewriter, Location l
     for (size_t i = 0; i < captureAbiTypes.size(); ++i) {
         int64_t valueOffset = layout::ClosureValuesOffset + i * layout::PtrSize;
         auto offsetConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(valueOffset));
-        auto valuePtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, closurePtr, ValueRange{offsetConst});
+        auto valuePtr = rewriter.create<LLVM::GEPOp>(loc, fcGepTy, i8Ty, closurePtr, ValueRange{offsetConst});
 
         // captureAbiTypes contains TypeAttr elements
         auto typeAttr = mlir::dyn_cast<TypeAttr>(captureAbiTypes[i]);

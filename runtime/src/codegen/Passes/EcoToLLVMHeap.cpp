@@ -35,6 +35,12 @@ static_assert(eco::detail::value_enc::TagForward == Elm::Tag_Forward,
               "value_enc::TagForward out of sync with Elm::Tag_Forward");
 static_assert(eco::detail::value_enc::TagBits == TAG_BITS,
               "value_enc::TagBits out of sync with TAG_BITS");
+// P2.5 (plans/allocator-resolve-inlining.md R1b): the inline get_tag lowering
+// discriminates on these two tags.
+static_assert(eco::detail::value_enc::TagCons == Elm::Tag_Cons,
+              "value_enc::TagCons out of sync with Elm::Tag_Cons");
+static_assert(eco::detail::value_enc::TagCustom == Elm::Tag_Custom,
+              "value_enc::TagCustom out of sync with Elm::Tag_Custom");
 
 namespace {
 

@@ -276,6 +276,14 @@ constexpr unsigned TagBits = 5;
 /// EcoToLLVMHeap.cpp cross-checks this against the enum so the two cannot drift.
 constexpr int64_t TagForward = 24;
 
+/// `Tag_Cons` / `Tag_Custom` enumerator values, needed by the P2.5 inline
+/// eco.get_tag lowering (plans/allocator-resolve-inlining.md R1b): the tag
+/// discriminates the Cons→1 / Custom→ctor / other→0 result exactly as the
+/// runtime eco_get_tag does. Cross-checked by static_asserts in
+/// EcoToLLVMHeap.cpp alongside TagForward.
+constexpr int64_t TagCons = 6;
+constexpr int64_t TagCustom = 7;
+
 } // namespace value_enc
 
 //===----------------------------------------------------------------------===//
@@ -557,6 +565,12 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateResolveFwdMarker(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateFollowForward(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateGetTag(mlir::OpBuilder &builder) const;
+    // P2.5 R1b (plans/allocator-resolve-inlining.md): `__eco_get_tag_inline`
+    // marker — (hptr) -> i32, gc-leaf, declare-only. Emitted by the
+    // eco.get_tag lowering (which may sit inside single-block scf regions);
+    // expanded to the open-coded emb/heap/Custom/Cons tag diamond by
+    // expandGetTagMarkers (EcoBackend.cpp) before ExpandInlineDeref + RS4GC.
+    mlir::LLVM::LLVMFuncOp getOrCreateGetTagInlineMarker(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateConsHeadI64(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateConsHeadF64(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateConsHeadI16(mlir::OpBuilder &builder) const;
@@ -653,6 +667,38 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateAtan(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateAtan2(mlir::OpBuilder &builder) const;
 };
+
+//===----------------------------------------------------------------------===//
+// P2.5 extended inline-deref (plans/allocator-resolve-inlining.md)
+//===----------------------------------------------------------------------===//
+
+/// Rollout switch for the EXTENDED inline-deref classes (case tag/scrutinee,
+/// get_tag, aggregate unbox, closure projection/construct — the resolve
+/// classes P2 never converted). Default ON; `ECO_INLINE_DEREF_EXT=0` restores
+/// the out-of-line `eco_resolve_hptr`/`eco_get_tag` emission for A/B and
+/// bisection. TEMPORARY per the P2 precedent: delete the env + the
+/// out-of-line arms after soak (plan milestone R4).
+inline bool inlineDerefExtEnabled() {
+    static const bool enabled = [] {
+        const char *e = ::getenv("ECO_INLINE_DEREF_EXT");
+        return !(e && e[0] == '0' && e[1] == '\0');
+    }();
+    return enabled;
+}
+
+/// P2.5: resolve an HPointer base via the inline forwarding-check marker
+/// (`__eco_resolve_fwd`, AS1→AS1, gc-leaf; expanded to the header-tag
+/// diamond by ExpandInlineDeref before RS4GC — plan P2 machinery). The
+/// operand MUST be a real heap pointer: embedded constants (False/True/
+/// Empty) must be branched away BEFORE the marker, exactly as the runtime
+/// `resolve()` asserts under ECO_HEAP_VALIDATE.
+inline mlir::Value inlineResolvedBase(mlir::OpBuilder &b, mlir::Location loc,
+                                      mlir::Value hptr,
+                                      const EcoRuntime &runtime) {
+    auto marker = runtime.getOrCreateResolveFwdMarker(b);
+    return b.create<mlir::LLVM::CallOp>(loc, marker, mlir::ValueRange{hptr})
+        .getResult();
+}
 
 //===----------------------------------------------------------------------===//
 // Control Flow Context
