@@ -1775,10 +1775,21 @@ translateIndirectCallBody region func args callCanType =
                                         (\funcMonoType ->
                                             Engine.andThen
                                                 (\resultMonoType ->
-                                                    if
-                                                        kernelDevirtShapeOk home name funcMonoType
-                                                            && kernelDevirtEmissionOk home name monoArgs resultMonoType
-                                                    then
+                                                    if not (kernelDevirtShapeOk home name funcMonoType) then
+                                                        -- census (E10.0): shape-guard decline.
+                                                        Engine.andThen
+                                                            (\_ -> indirectCallFallback region monoFunc monoArgs (List.length args) callCanType)
+                                                            (bumpKernelDeclineShape ())
+
+                                                    else if not (kernelDevirtEmissionOk home name monoArgs resultMonoType) then
+                                                        -- census (E10.0): emission-guard decline, split
+                                                        -- CNumber (unsettled site — the declinedUnsettled
+                                                        -- proxy) vs other (scalar tail/result, arg shape).
+                                                        Engine.andThen
+                                                            (\_ -> indirectCallFallback region monoFunc monoArgs (List.length args) callCanType)
+                                                            (bumpKernelDeclineEmission home name monoArgs resultMonoType)
+
+                                                    else
                                                         Engine.map
                                                             (\_ ->
                                                                 Mono.MonoCall region
@@ -1788,9 +1799,6 @@ translateIndirectCallBody region func args callCanType =
                                                                     Mono.defaultCallInfo
                                                             )
                                                             bumpDevirtKernel
-
-                                                    else
-                                                        indirectCallFallback region monoFunc monoArgs (List.length args) callCanType
                                                 )
                                                 (callResultType (List.length args) funcMonoType callCanType)
                                         )
@@ -2026,10 +2034,10 @@ devirtDirectTarget func args monoFunc s0 =
                                             Ok ( Just (DevirtKernel kernelPrefix home name), s1 )
 
                                         else
-                                            Ok ( Nothing, s1 )
+                                            Ok ( Nothing, recordKernelArityMiss s1 )
 
                                     Nothing ->
-                                        Ok ( Nothing, s1 )
+                                        Ok ( Nothing, recordKernelMiss home name s1 )
 
                             Nothing ->
                                 devirtGlobalTarget ctorGlobal (List.length args) s1
@@ -2091,10 +2099,45 @@ devirtKernelTarget m argCount s0 =
                         Ok ( Just (DevirtKernel kernelPrefix home name), s1 )
 
                     else
-                        Ok ( Nothing, s1 )
+                        Ok ( Nothing, recordKernelArityMiss s1 )
 
                 Nothing ->
-                    Ok ( Nothing, s1 )
+                    Ok ( Nothing, recordKernelMiss home name s1 )
+
+
+{-| Census (whitelist growth): a kernel-member SINGLETON call site whose
+kernel is not on the E9.2 whitelist — the histogram is the shopping list
+for whitelist growth, weighted later by the runtime dispatch census.
+Stats-only.
+-}
+recordKernelMiss : Name -> Name -> Engine.S -> Engine.S
+recordKernelMiss home name s =
+    let
+        stats =
+            s.lssStats
+
+        key =
+            home ++ "." ++ name
+    in
+    { s
+        | lssStats =
+            { stats
+                | kernelMissHist =
+                    Dict.update key (\v -> Just (Maybe.withDefault 0 v + 1)) stats.kernelMissHist
+            }
+    }
+
+
+{-| Census: a WHITELISTED kernel singleton consulted at a site that does
+not saturate the whitelist-pinned arity. Stats-only.
+-}
+recordKernelArityMiss : Engine.S -> Engine.S
+recordKernelArityMiss s =
+    let
+        stats =
+            s.lssStats
+    in
+    { s | lssStats = { stats | declinedKernelArity = stats.declinedKernelArity + 1 } }
 
 
 {-| Is the global's node an actual CONSTRUCTOR (Ctor/Box, chasing Links)?
@@ -2180,6 +2223,51 @@ bumpDevirtKernel s =
             s.lssStats
     in
     Ok ( (), { s | lssStats = { stats | devirtKernel = stats.devirtKernel + 1 } } )
+
+
+{-| Census (E10.0): the kernel-devirt SHAPE guard declined. Stats-only.
+-}
+bumpKernelDeclineShape : () -> Step ()
+bumpKernelDeclineShape () s =
+    let
+        stats =
+            s.lssStats
+    in
+    Ok ( (), { s | lssStats = { stats | declinedKernelShape = stats.declinedKernelShape + 1 } } )
+
+
+{-| Census (E10.0): the kernel-devirt EMISSION guard declined — classify
+CNumber (residual number var anywhere in the site types = the site is
+UNSETTLED; the `declinedUnsettled` population E10's commit-after-settle
+relocation would capture) vs other (unboxed-scalar tail/result, arg
+shape). The classification re-runs only the cheap non-CNumber clauses:
+if they all pass, the failing clause was one of the deep-CNumber checks.
+Stats-only.
+-}
+bumpKernelDeclineEmission : Name -> Name -> List Mono.MonoExpr -> Mono.MonoType -> Step ()
+bumpKernelDeclineEmission home name monoArgs resultMonoType s =
+    let
+        stats =
+            s.lssStats
+
+        isCNumber =
+            if home == "List" && name == "cons" then
+                case monoArgs of
+                    [ _, tailArg ] ->
+                        not (unboxedScalar (Mono.typeOf tailArg))
+                            && not (unboxedScalar resultMonoType)
+
+                    _ ->
+                        False
+
+            else
+                False
+    in
+    if isCNumber then
+        Ok ( (), { s | lssStats = { stats | declinedKernelCNumber = stats.declinedKernelCNumber + 1 } } )
+
+    else
+        Ok ( (), { s | lssStats = { stats | declinedKernelEmission = stats.declinedKernelEmission + 1 } } )
 
 
 {-| LSS_013 transport: an indirect call's result type carries the CALLEE's

@@ -64,7 +64,9 @@ import Compiler.Elm.Package as Pkg
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.CodeGen.JavaScript as JavaScript
 import Compiler.Generate.MLIR.Backend as MLIR
+import Compiler.Generate.MLIR.Names as MLIRNames
 import Compiler.Generate.Mode as Mode
+import Compiler.GlobalOpt.AbiCloning as AbiCloning
 import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.MonoSolver.Diff as MonoDiff
@@ -948,6 +950,10 @@ runGlobalOptPhase lssReport stats simplifiedGraph =
                         ++ String.fromInt goStats.abiCloning.declinedAbiMismatch
                         ++ " multiInstanceGroups="
                         ++ String.fromInt goStats.abiCloning.multiInstanceGroups
+                        ++ " stampedWrapperInstances="
+                        ++ String.fromInt goStats.abiCloning.stampedWrapperInstances
+                        ++ "\n"
+                        ++ abiCensusLines goStats.abiCloning
                     )
                 )
                 |> Task.map (\_ -> result)
@@ -955,6 +961,60 @@ runGlobalOptPhase lssReport stats simplifiedGraph =
          else
             Task.succeed result
         )
+
+
+{-| Census lines (2026-07-21, plans/lss-dispatch-value-extraction.md open
+questions): per-member decline attribution (+ rep symbols for the runtime
+census join), the multi-set site histogram (E3 de-risk), and the LTop
+callee-shape split (E8 sizing). Report-only.
+-}
+abiCensusLines : AbiCloning.AbiCloningStats -> String
+abiCensusLines abi =
+    let
+        lambdaSym lid =
+            case lid of
+                Mono.AnonymousLambda home uid ->
+                    MLIRNames.canonicalToMLIRName home ++ "_lambda_" ++ String.fromInt uid
+
+        repsFor mid =
+            Dict.get mid abi.memberReps
+                |> Maybe.withDefault []
+                |> List.take 4
+                |> List.map lambdaSym
+                |> String.join ","
+
+        topOf d n =
+            Dict.toList d
+                |> List.sortBy (\( _, c ) -> negate c)
+                |> List.take n
+
+        declineTop =
+            topOf abi.declineByMember 20
+                |> List.map (\( mid, c ) -> String.fromInt mid ++ ":" ++ String.fromInt c ++ ":" ++ repsFor mid)
+                |> String.join " "
+
+        multiHist =
+            Dict.toList abi.multiSetSiteHist
+                |> List.map (\( k, c ) -> String.fromInt k ++ "->" ++ String.fromInt c)
+                |> String.join " "
+
+        multiTop =
+            topOf abi.multiSetMembers 12
+                |> List.map (\( mid, c ) -> String.fromInt mid ++ ":" ++ String.fromInt c ++ ":" ++ repsFor mid)
+                |> String.join " "
+
+        shapes =
+            Dict.toList abi.topSiteShapes
+                |> List.sortBy (\( _, c ) -> negate c)
+                |> List.map (\( k, c ) -> k ++ "=" ++ String.fromInt c)
+                |> String.join " "
+    in
+    String.join "\n"
+        [ "lss census declineByMember top20 (member:count:repSyms): " ++ declineTop
+        , "lss census multiSetSites |set|->sites: " ++ (if String.isEmpty multiHist then "(none)" else multiHist)
+        , "lss census multiSetMembers top12 (member:count:repSyms): " ++ (if String.isEmpty multiTop then "(none)" else multiTop)
+        , "lss census topSiteShapes (LTop callee shapes): " ++ (if String.isEmpty shapes then "(none)" else shapes)
+        ]
 
 
 {-| Stream MLIR output directly to a file, avoiding holding the full text in memory.

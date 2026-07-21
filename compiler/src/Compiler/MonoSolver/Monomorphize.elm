@@ -183,6 +183,17 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                 |> List.take 5
                 |> List.map (\( k, n ) -> k ++ "=" ++ String.fromInt n)
                 |> String.join " "
+
+        kernelMissLine =
+            if Dict.isEmpty stats.kernelMissHist then
+                "(none)"
+
+            else
+                Dict.toList stats.kernelMissHist
+                    |> List.sortBy (\( _, n ) -> negate n)
+                    |> List.take 12
+                    |> List.map (\( k, n ) -> k ++ "=" ++ String.fromInt n)
+                    |> String.join " "
     in
     String.join "\n"
         [ "=== LSS census ==="
@@ -192,6 +203,11 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         , "widened: bySize=" ++ String.fromInt stats.widenedBySize ++ " byKernel=" ++ String.fromInt stats.widenedByKernel ++ " byBudget=" ++ String.fromInt stats.widenedByBudget
         , "join flush: rounds=" ++ String.fromInt stats.joinRounds ++ " retranslations=" ++ String.fromInt stats.retranslations
         , "devirtDirect=" ++ String.fromInt stats.devirtDirect ++ " devirtKernel=" ++ String.fromInt stats.devirtKernel ++ " unqualifiedLambdaMints=" ++ String.fromInt stats.unqualifiedLambdaMints
+
+        -- Census (2026-07-21): E9.2 guard-decline split (declinedKernelCNumber
+        -- = the E10.0 `declinedUnsettled` proxy) + the whitelist-growth list.
+        , "kernel declines: shape=" ++ String.fromInt stats.declinedKernelShape ++ " cnumber=" ++ String.fromInt stats.declinedKernelCNumber ++ " emission=" ++ String.fromInt stats.declinedKernelEmission ++ " arity=" ++ String.fromInt stats.declinedKernelArity
+        , "kernel whitelist misses: " ++ kernelMissLine
         , "top specs/global: " ++ topSpecs
         , "=================="
         ]

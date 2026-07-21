@@ -2717,3 +2717,31 @@ separate research note and shares little code with the per-spec raiser.
    `combined_args = alloca(max_values)` + splice semantics): `max_values` =
    |captures| + |params| (total evaluator slots), `n_values` = filled slots. One
    residual pin on the papCreate lowering's header packing remains in E2.0(3).
+
+---
+
+## 12. OPEN-QUESTIONS CENSUS — ALL SETTLED (2026-07-21): `/work/census.md`
+
+One campaign closed every open census question in this plan. Verdicts
+(full evidence in census.md; permanent report-only instruments added to
+LssStats/AbiCloningStats behind ECO_MONO_LSS_REPORT):
+
+- **E10.0:** `declinedUnsettled` = 0 (guards decline zero sites) — E10 is
+  hygiene only. The §11.7 keyed devirtKernel −20 delta is consult-population
+  drift, NOT guard declines (hypothesis refuted).
+- **Whitelist growth: CLOSED** — largest candidate `Basics.not` = 0.025 % of
+  dispatch; `Scheduler.*` never dispatches. List.cons was the only prize.
+- **Over-apply residue (staged v3): CLOSED** — statically flat (top member
+  21 sites), top-20 members' reps carry 258 sat total.
+- **E3: definitively CLOSED** — 2 multi-set consulted sites in the whole
+  self-compile, 0 dynamic events.
+- **E8 sizing:** within-LSS precision headroom EXHAUSTED — the 641.7 M
+  residual gen is ⊤-through-locals/escape (E8-or-nothing); LTop callee
+  shapes: local=7,248 vs recordAccess=28 (globals/kernels are direct-call).
+- **ABI floor:** ~40 M fast calls/run expectation (bounds 4–77 %) — real but
+  LOW priority (Run O: call overhead is wall-neutral here).
+- **E7:** trigger never fired (`stampedWrapperInstances=0`).
+- **E9.4: DEPRIORITIZED** — cons alloc call = 0.06 % of wall. The profile's
+  REAL heap-side levers (new): `Allocator::resolve` 11.5 % (measure P2
+  `--inline-deref`) and `eco_gc_push_stack_range` 5.1 % (post-E1.3-inline
+  coalescing target).

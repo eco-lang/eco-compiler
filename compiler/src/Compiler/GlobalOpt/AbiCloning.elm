@@ -121,6 +121,16 @@ type alias AbiCloningStats =
     , declinedShapeNonArrow : Int
     , declinedAbiMismatch : Int
     , multiInstanceGroups : Int -- Fix B probe (LSS_009/LSS_017 verifier): layout groups holding ≥2 distinct lambdaIds. MUST be 0 under qualified members; >0 = clones sharing a member = the §11.6 representative-hijack precondition.
+
+    -- Census (2026-07-21, plans/lss-dispatch-value-extraction.md open
+    -- questions). Stats-only — never touches the graph; the maps are
+    -- bounded by consulted-site populations.
+    , declineByMember : Dict Int Int -- consulted-singleton DECLINES per member id (dominated by the Over class) — the residue-attribution join key
+    , memberReps : Dict Int (List Mono.LambdaId) -- group-representative lambdaIds for members recorded in declineByMember/multiSetMembers (symbol join)
+    , multiSetSiteHist : Dict Int Int -- E3 de-risk: |set| -> consulted call sites carrying a MULTI-member set
+    , multiSetMembers : Dict Int Int -- E3 de-risk: member id -> occurrences across multi-set sites
+    , topSiteShapes : Dict String Int -- E8 split: LTop-annotated call sites by callee-expression shape (escape proxy: recordAccess/callResult vs local/global)
+    , stampedWrapperInstances : Int -- E7 trigger: stamped sites whose representative is a staging wrapper (collision signal)
     }
 
 
@@ -144,6 +154,12 @@ emptyStats =
     , declinedShapeNonArrow = 0
     , declinedAbiMismatch = 0
     , multiInstanceGroups = 0
+    , declineByMember = Dict.empty
+    , memberReps = Dict.empty
+    , multiSetSiteHist = Dict.empty
+    , multiSetMembers = Dict.empty
+    , topSiteShapes = Dict.empty
+    , stampedWrapperInstances = 0
     }
 
 
@@ -1042,9 +1058,23 @@ stampCall index ctx region func args resultType callInfo =
 
                                 stats1 =
                                     ctx1.stats
+
+                                -- census (E7 trigger): a stamped wrapper rep.
+                                wrapperInc =
+                                    if isWrapperHome inst.lambdaId then
+                                        1
+
+                                    else
+                                        0
                             in
                             ( Mono.MonoCall region func args resultType stamped
-                            , { ctx1 | stats = { stats1 | dispatchUpgraded = stats1.dispatchUpgraded + 1 } }
+                            , { ctx1
+                                | stats =
+                                    { stats1
+                                        | dispatchUpgraded = stats1.dispatchUpgraded + 1
+                                        , stampedWrapperInstances = stats1.stampedWrapperInstances + wrapperInc
+                                    }
+                              }
                             )
 
                         StampPap inst k ->
@@ -1117,13 +1147,129 @@ stampCall index ctx region func args resultType callInfo =
                             )
 
                         Decline bump ->
-                            ( Mono.MonoCall region func args resultType callInfo, bump ctx )
+                            -- census: attribute the decline to the member and
+                            -- capture its group reps (the runtime-join key).
+                            let
+                                ctxB =
+                                    bump ctx
+
+                                statsB =
+                                    ctxB.stats
+                            in
+                            ( Mono.MonoCall region func args resultType callInfo
+                            , { ctxB
+                                | stats =
+                                    { statsB
+                                        | declineByMember = bumpDict m statsB.declineByMember
+                                        , memberReps = Dict.insert m (memberRepsOf memberInfo) statsB.memberReps
+                                    }
+                              }
+                            )
 
                 Nothing ->
                     ( Mono.MonoCall region func args resultType callInfo, bumpNoInstance ctx )
 
+        Mono.LSet ms ->
+            -- census (E3 de-risk): a consulted site carrying a MULTI-member
+            -- set — |set| histogram + per-member occurrences (+ reps for the
+            -- runtime join, when the member has instances in the index).
+            let
+                stats0 =
+                    ctx.stats
+
+                statsMembers =
+                    List.foldl
+                        (\mid acc ->
+                            { acc
+                                | multiSetMembers = bumpDict mid acc.multiSetMembers
+                                , memberReps =
+                                    case Dict.get mid index of
+                                        Just mi ->
+                                            Dict.insert mid (memberRepsOf mi) acc.memberReps
+
+                                        Nothing ->
+                                            acc.memberReps
+                            }
+                        )
+                        { stats0 | multiSetSiteHist = bumpDict (List.length ms) stats0.multiSetSiteHist }
+                        ms
+            in
+            ( Mono.MonoCall region func args resultType callInfo, { ctx | stats = statsMembers } )
+
+        Mono.LTop ->
+            -- census (E8 split): an unknowable-callee site — classify the
+            -- callee expression shape (escape proxy).
+            let
+                stats0 =
+                    ctx.stats
+            in
+            ( Mono.MonoCall region func args resultType callInfo
+            , { ctx | stats = { stats0 | topSiteShapes = bumpDictStr (calleeShape func) stats0.topSiteShapes } }
+            )
+
+
+{-| Census helpers (2026-07-21). Stats-only.
+-}
+bumpDict : Int -> Dict Int Int -> Dict Int Int
+bumpDict k d =
+    Dict.update k (\v -> Just (Maybe.withDefault 0 v + 1)) d
+
+
+bumpDictStr : String -> Dict String Int -> Dict String Int
+bumpDictStr k d =
+    Dict.update k (\v -> Just (Maybe.withDefault 0 v + 1)) d
+
+
+{-| All group-representative lambdaIds of a member — the symbol-join key
+for the runtime dispatch census (rendered `Module_lambda_N` downstream).
+-}
+memberRepsOf : MemberInfo -> List Mono.LambdaId
+memberRepsOf mi =
+    Dict.foldl
+        (\_ groups acc -> List.foldl (\g a -> g.rep.lambdaId :: a) acc groups)
+        []
+        mi.buckets
+
+
+{-| Census (E8 split): the callee-expression SHAPE of an LTop site. An
+approximation of escape provenance: `recordAccess`/`callResult` callees
+were loaded from data / computed (the escape classes only E8-family work
+can reach); `local` absorbs params AND destructured projections (so the
+data-loaded share is an UNDER-count); `closureLiteral`/`global` are
+analysis-reachable in principle.
+-}
+calleeShape : Mono.MonoExpr -> String
+calleeShape f =
+    case f of
+        Mono.MonoVarLocal _ _ ->
+            "local"
+
+        Mono.MonoRecordAccess _ _ _ ->
+            "recordAccess"
+
+        Mono.MonoCall _ _ _ _ _ ->
+            "callResult"
+
+        Mono.MonoVarGlobal _ _ _ ->
+            "global"
+
+        Mono.MonoVarKernel _ _ _ _ _ ->
+            "kernel"
+
+        Mono.MonoClosure _ _ _ ->
+            "closureLiteral"
+
+        Mono.MonoCase _ _ _ _ _ ->
+            "case"
+
+        Mono.MonoIf _ _ _ ->
+            "if"
+
+        Mono.MonoLet _ _ _ ->
+            "let"
+
         _ ->
-            ( Mono.MonoCall region func args resultType callInfo, ctx )
+            "other"
 
 
 type Resolution

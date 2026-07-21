@@ -106,6 +106,16 @@ type alias LssStats =
     , devirtKernel : Int -- E9.2 (LSS_016): singleton whitelisted-kernel indirect calls rewritten to direct kernel calls
     , sizeHist : CoreDict.Dict Int Int -- set size -> count (post-zonk)
     , unqualifiedLambdaMints : Int -- Fix B (LSS_017): translation-phase lambda-instance mints under keyed routing with no current spec id (expected 0; nonzero = a mint site outside any work item)
+
+    -- Census (2026-07-21, plans/lss-dispatch-value-extraction.md open
+    -- questions): the E9.2 kernel-devirt guard-decline split (E10.0's
+    -- `declinedUnsettled` proxy = the CNumber bucket) + the whitelist-growth
+    -- shopping list. Stats-only — never touches the graph.
+    , declinedKernelShape : Int -- kernel devirt declined by the SHAPE guard (site type not the whitelist entry's true shape)
+    , declinedKernelCNumber : Int -- declined by the deep-CNumber emission checks (residual number vars = UNSETTLED site; the E10.0 population)
+    , declinedKernelEmission : Int -- declined by the non-CNumber emission checks (unboxed-scalar tail/result, arg shape)
+    , declinedKernelArity : Int -- whitelisted kernel singleton consulted at a non-whitelist-arity site
+    , kernelMissHist : CoreDict.Dict String Int -- NON-whitelisted kernel singleton call sites, "home.name" -> count (whitelist growth)
     }
 
 
@@ -144,7 +154,7 @@ insertMemberKernel mid k t =
 
 emptyLssStats : LssStats
 emptyLssStats =
-    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0 }
+    { setsZonked = 0, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelMissHist = CoreDict.empty }
 
 
 {-| The all-defaults signature for an annotation with `n` arrows.
