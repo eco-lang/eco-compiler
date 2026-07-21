@@ -859,12 +859,26 @@ stamps (front-end run under solver, lowered with `ECO_LSS_DISPATCH_SITE_COUNTERS
 | 2026-07-19 00:4x | **E9.2 KEYED List chain (e92-keyed) / subst (Run J)** | **735,637,567** | 717,996,467 | 17,641,100 | 51,352,094 | **6.53 %** | 5,791 | 8:46.42* |
 | 2026-07-20 16:xx | **TIER-1 DEFAULTS: keyed+DF+guards (Run L)** | **701,687,500** | 685,103,759 | 16,583,741 | 51,293,775 | **6.81 %** | 5,481 | 4:27.18† |
 | 2026-07-20 22:39 | **Fix B ALL-KEYED-built / subst (Run M)** | **653,381,374** | 636,731,802 | 16,649,572 | **99,561,487** | **13.22 %** | 5,806 | 4:32.49† |
+| 2026-07-21 | E1.3 v1 (257-body guard) all-keyed / subst (Run N) | ‡ | ‡ | ‡ | ‡ | 13.22 % | — | 4:31.5†×3 |
+| 2026-07-21 15:xx | **E1.3 v3 FULL LIFT (15,744) all-keyed / subst (Run O)** | 653,394,605 | 636,744,631 | 16,649,974 | **99,563,928** | **13.22 %** | 5,804 | 4:29.5†×3 |
 
 *Run-C walls carry an unattributed +30 % vs Run A/B (see the Run C section) — the
 counts are the meaningful comparison; treat the walls as provisional. The Run-I
 DF wall is a single instrumented run — RETIRED by Run K/L's corrected protocol
 (the "+35 %" was GC-trigger variance; uninstrumented DF is wall-neutral).
-†Run-L wall is post-E9.3 GC policy (9 majors) — not comparable to pre-Run-K walls.
+†Run-L and later walls are post-E9.3 GC policy (9–10 majors) — not comparable to
+pre-Run-K walls.
+‡Run N recorded count-IDENTITY between its pre-E1.3 and v1 legs (E1.3 inlining is
+count-neutral by construction — the fast counters are call-site-side), not absolute
+figures; wall is the v1 mean ×3 at 10 majors. Run O re-measured the same binary
+generation's counts explicitly (identical to the last digit across all six
+interleaved legs — the small sat/fast drift vs Run M is tree growth, not the
+change); its wall is the lift mean ×3 (guard mean 4:28.1, also 10 majors) — E1.3
+runs are wall/infrastructure measurements, so the count columns are flat by design.
+Runs D, E and K have NO dispatch-census legs and hence no table rows: D ran only the
+mono-census A/B (its solver MLIR differed by one stamp, +25 B), E skipped the leg
+outright (byte-identical MLIR ⇒ identical counts), and K was the GC-policy
+investigation (self-compile walls only). See their sections.
 
 *Reading it:* Run G's E2.7 staged stamp is the first phase to move the dynamic
 needle: **coverage 1.75 % → 5.37 % (3.1×)** — 344 static staged stamps convert
@@ -880,6 +894,17 @@ class: **−159.9 M events/run (−16.9 %) with the List chain keyed** —
 the largest reduction of the track, in default config (no `lssDF`), with
 flat walls and smaller unkeyed output. Run-J census walls (8:3x–8:5x) are a
 different machine state than Run I's (4:5x–6:4x) — compare within-run only.
+
+Runs L–O complete the arc. Tier-1 defaults (Run L) land the J/I wins in stock
+config (753.0 M events, 6.81 %); Fix B (Run M) makes all-globals keying sound
+— now the shipping default — and doubles coverage for free (99.6 M fast,
+13.22 %, same event total, wall parity); E1.3 v1→v3 (Runs N/O) then makes the
+fast calls' `$cap` bodies actually INLINE — 257 under the v1 GC-call-free
+guard, the full 15,744 under the v3 fold-proof slot-cast barriers
+(REP_LLVM_002) — at neutral wall and a 0.55 % smaller binary. Net shipped
+arc: Run A 922.3 M events / 0 fast / 0 % → Run O 753.0 M events / 99.6 M
+fast / 13.22 %, with every fast call now direct and (below 64 insts)
+inlined; the residual `$cap` indirection is the ~1.7 K mismatched-ABI floor.
 
 *Next:* census-driven kernel-whitelist growth; E9.4 inline nursery
 allocation for cons (the beyond-direct-call lever); E9.5 layout-blind
