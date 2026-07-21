@@ -4,6 +4,7 @@
 
 #include "LoweringStats.h"
 #include "Passes/EcoPtrIntVerify.h" // for addEcoGCPipeline
+#include "Passes/EcoSlotCastBarriers.h" // REP_LLVM_002: barrier switch <-> gcfree-guard coupling
 
 #include "mlir/ExecutionEngine/OptUtils.h" // for makeOptimizingTransformer
 
@@ -781,18 +782,41 @@ static void expandInlineDerefs(Module &m) {
 // cloning at the callee's REAL boxedness (AbiCloning-family work), not
 // site-side casts.
 
-// A `$cap` body is safe to inline ONLY if it contains no GC-capable call.
-// Root-caused 2026-07-21 (bisected to Terminal_Main_lambda_15194$cap, IR dump
-// verified): call-site capture unpacking loads boxed slots as i64 + inttoptr
-// to ptr addrspace(1); the body's own boundary ptrtoint then folds with it
-// during inlining (ptrtoint(inttoptr(x)) -> x), annihilating the TRACKED hop.
-// If the body contains a statepoint (alloc/apply/...), the resurrected raw
-// i64s are live across it, invisible to RS4GC, and go stale on any GC inside
-// the body — REP_LLVM_001(a) violated by IR folding, "Pointer below heap
-// base" at the next evacuation. A GC-call-free body has no statepoint between
-// the loads and every use, so the annihilation is harmless there. Lifting
-// this guard requires typed (ptr addrspace(1)) capture loads at the unpack
-// sites first — the v2 unlock, not a threshold question.
+// The GC-call-free guard is CONDITIONAL as of E1.3 v3 (REP_LLVM_002,
+// plans/fold-proof-boxed-slot-crossings.md): with slot-cast barriers ON
+// (ECO_SLOT_CAST_BARRIERS default), every boxed-slot i64<->ptr<1> crossing
+// is an opaque gc-leaf barrier call this pass's AlwaysInliner cannot fold,
+// so BOTH annihilation classes below are structurally impossible and
+// GC-bearing bodies inline soundly — the guard is lifted. It is FORCED back
+// on when barriers are disabled (ECO_SLOT_CAST_BARRIERS=0 would otherwise
+// reconstruct the miscompiles) and available for A/B via
+// ECO_CAP_INLINE_GCFREE_ONLY=1. The two bisected, IR-verified miscompile
+// classes that used to force it unconditionally (both now fold-proof):
+//
+// 1. Capture-load annihilation (Terminal_Main_lambda_15194$cap): unpack
+//    sites loaded boxed slots as i64+inttoptr; the body's boundary ptrtoint
+//    folded with it during inlining (ptrtoint(inttoptr(x)) -> x) — raw i64s
+//    crossed the inlined body's statepoints invisible to RS4GC. FIXED at the
+//    source: the three unpack sites (ProjectClosureOpLowering,
+//    emitFastClosureCall, getOrCreateWrapper) now emit TYPED
+//    ptr addrspace(1) loads (E1.3 v2 — keep; sound and prerequisite).
+//
+// 2. INTERIOR boundary annihilation (Terminal_Main_lambda_14615$cap): the
+//    SAME fold fires on every other boxed-slot idiom pair INSIDE an inlined
+//    body — e.g. a tuple-projection (load i64 + inttoptr) feeding an
+//    args-slot store (ptrtoint + store) across a direct call: the tracked
+//    hop folds away, the raw i64 state pointer crosses the statepoint, and
+//    a stale pointer lands in the GC-registered args buffer ("Invalid tag
+//    value" at evacuate). Standalone bodies never fold (nothing simplifies
+//    pre-RS4GC); InlineFunction's SimplifyInstruction does. FIXED by v3:
+//    every boxed-slot crossing is now emitted as an opaque gc-leaf barrier
+//    (EcoToLLVMInternal.h slot* helpers, REP_LLVM_002) that the inliner
+//    cannot fold; StripEcoCastBarriers restores the bare casts strictly
+//    post-RS4GC (addEcoGCPipeline placement).
+//
+// With no statepoint inside the body there is nothing to be live across, so
+// the GC-call-free class is sound regardless of folding — which is why it
+// remains the forced fallback when barriers are disabled.
 static bool bodyIsGCCallFree(const Function &f) {
     for (const BasicBlock &bb : f)
         for (const Instruction &i : bb)
@@ -837,9 +861,18 @@ static void runCapInlinePrepass(Module &m) {
         // No InlineHint arm: nothing pre-RS4GC consumes a hint, and any attr
         // surviving into the post-RS4GC worker pipelines invites the
         // E1.4-forbidden inlining — attrs are strictly pass-local here.
+        // REP_LLVM_002 coupling: the GC-call-free restriction applies only
+        // for A/B (ECO_CAP_INLINE_GCFREE_ONLY=1) or FORCED when slot-cast
+        // barriers are off — barriers-off + GC-bearing inlining is the
+        // known-unsound combination (both bisected miscompiles). The old
+        // ECO_CAP_INLINE_NO_GCFREE_GUARD escape is deleted: there is no
+        // sound configuration it could enable that the default doesn't.
+        static const bool gcfreeOnly =
+            (::getenv("ECO_CAP_INLINE_GCFREE_ONLY") != nullptr) ||
+            !slotCastBarriersEnabled();
         if (useList ? onlyList.count(f.getName().str()) != 0
                     : (maxInsts && f.getInstructionCount() <= maxInsts &&
-                       bodyIsGCCallFree(f))) {
+                       (!gcfreeOnly || bodyIsGCCallFree(f)))) {
             f.addFnAttr(Attribute::AlwaysInline);
             any = true;
             static const bool dbg =

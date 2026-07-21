@@ -828,6 +828,26 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateDispatchStatsFast(OpBuilder &builder) co
     return getOrCreateFunc(builder, "eco_dispatch_stats_fast", funcTy, /*gcLeaf=*/true);
 }
 
+// Fold-proof slot-cast barriers (REP_LLVM_002,
+// plans/fold-proof-boxed-slot-crossings.md): declare-only; every call is
+// rewritten back to a bare inttoptr/ptrtoint by StripEcoCastBarriers
+// strictly post-RS4GC, so no definition ever exists and no call survives to
+// codegen. Attrs are gc-leaf ONLY — do NOT add memory(none)/speculatable/
+// willreturn: motion-enabling attributes would let a pre-RS4GC pass move the
+// call across a statepoint, recreating exactly the raw-i64 crossing the
+// barrier exists to prevent.
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateSlotToHPtr(OpBuilder &builder) const {
+    // __eco_slot_to_hptr(slot_word: i64) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY});
+    return getOrCreateFunc(builder, kSlotToHPtrSym, funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateHPtrToSlot(OpBuilder &builder) const {
+    // __eco_hptr_to_slot(v: hptr) -> i64 slot word
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, kHPtrToSlotSym, funcTy, /*gcLeaf=*/true);
+}
+
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateIntPow(OpBuilder &builder) const {
     // eco_int_pow(base: i64, exp: i64) -> i64
     auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, I64_TY});
@@ -1153,6 +1173,7 @@ void EcoRuntime::materializeAllRuntimeDecls(OpBuilder &b) const {
     getOrCreateCrash(b); getOrCreateGcAddRoot(b); getOrCreateGcStackRangePoint(b);
     getOrCreateGcPushStackRange(b); getOrCreateGcRestoreStackRangePoint(b);
     getOrCreateRegisterTypeGraph(b); getOrCreateDispatchStatsFast(b);
+    getOrCreateSlotToHPtr(b); getOrCreateHPtrToSlot(b);
     getOrCreateIntPow(b); getOrCreateUtilsEqual(b);
     getOrCreateGetOrderLT(b); getOrCreateGetOrderEQ(b); getOrCreateGetOrderGT(b);
     getOrCreateCloneArray(b); getOrCreateArraySetFixKind(b); getOrCreateArrayEmpty(b);

@@ -759,6 +759,81 @@ changes; the corpus cannot see this class.
 
 ---
 
+### Run O — E1.3 v3 fold-proof barriers: `$cap` inlining ENABLED, full population
+### (2026-07-21): **15,744 bodies inlined (was 257), wall-neutral, binary −0.55 %**
+
+E1.3 v3 (`plans/fold-proof-boxed-slot-crossings.md`, REP_LLVM_002) shipped the
+fold-proof slot-cast barriers and LIFTED the GC-call-free guard: `$cap` inlining
+now covers GC-bearing bodies. This run measures the enabled configuration per
+the standing protocol.
+
+**Binaries.** All-keyed-built (front-end `ECO_MONO_ENGINE=solver ECO_MONO_LSS=1`,
+keyed default; `allkey-v3.mlir`, bytecode 12,573,140 B), lowered with
+`ECO_LSS_DISPATCH_SITE_COUNTERS=1`, on the SAME mlir:
+
+- `cens-o-guard` — `ECO_CAP_INLINE_GCFREE_ONLY=1` = the Run-N v1 class
+  (marks exactly the same **257** bodies; the A/B lever works). 59,969,800 B.
+- `cens-o-lift` — shipping default (barriers on, guard lifted, T=64):
+  **15,744** bodies marked (+15,487 GC-bearing). 59,639,688 B (**−0.55 %** —
+  inlining + DCE net shrink). `$cap` inline prepass 165 → 332 ms inside a
+  ~208 s lowering; total lowering wall identical (208.4 vs 207.9 s).
+
+**Workload.** Cold subst (Run-L/M/N convention), census-on, stock GC settings,
+majors recorded. Warm-up leg discarded; interleaved ×3 per side:
+
+```
+guard: 4:26.40 / 4:30.69 / 4:27.22   (mean 4:28.1, majors 10/10/10)
+lift:  4:28.86 / 4:28.26 / 4:31.41   (mean 4:29.5, majors 10/10/10)
+```
+
+- **Wall: NEUTRAL** (+1.4 s / +0.5 %, inside the ±3–5 s band; identical major
+  counts). Inlining 15.7 K bodies neither wins nor costs wall on this
+  workload — and the Run-I-style i-cache worry does NOT materialize (the
+  binary got smaller).
+- **Census sanity: PASSED** — all six timed legs report
+  `sat=653,394,605  gen=636,744,631  typed=16,649,974  fast=99,563,928
+  distinct=5,804` **identical to the last digit** (counts are call-site-side;
+  inlining removes call overhead, not dispatch events — by design). Same
+  figures as Run M's generation (tree grew slightly: out = 12,110,547 B).
+  All workload outputs byte-identical across every leg. (Footnote: two
+  first-run-after-lowering legs read sat +70 / distinct 5,833 — an
+  environment-state wobble in dependency verification, 1e-7 of the total,
+  binary-independent; the interleaved deciding legs are exact.)
+- **objdump surviving direct `$cap` calls (same census-binary family):**
+  guard **11,294** → lift T=64 **5,183**. The `ECO_CAP_INLINE_MAX_INSTS`
+  sweep — now meaningful (v1's threshold saturated at the guard; size binds
+  at last):
+
+  | T | bodies marked | binary B | surviving `$cap` calls | wall (1 run) |
+  |--:|--:|--:|--:|--:|
+  | 64 (default) | 15,744 | 59,639,688 | 5,183 | 4:29.5 (mean ×3) |
+  | 128 | 18,033 | 59,368,968 | 2,926 | 4:30.95 |
+  | 256 | 19,247 | 59,183,608 | 1,711 | 4:30.09 |
+
+  Monotone: higher thresholds keep inlining more, the binary keeps
+  SHRINKING, walls stay flat, outputs stay byte-identical. No cliff. The
+  T=256 residue (1,711) ≈ the true mismatched-ABI floor — so of T=64's
+  5,183 survivors, ~3,470 are merely the oversized class (64 < insts ≤ 256),
+  not ABI-blocked. **Decision: default stays T=64** (no measured wall
+  benefit from raising; the knob is free and safe — outputs identical — if
+  a workload ever shows `$cap` call-overhead heat, and the mismatched-ABI
+  class stays the only structural residue, AbiCloning-family per plan §6.4).
+
+*Reading Run O:* the E1.3 arc closes as infrastructure, not as a wall win at
+this workload: v3 makes the FULL `$cap` population inlinable soundly (61×
+the v1 body count), for free (walls, census, and outputs all unchanged;
+binary smaller; lowering unchanged). The 99.6 M fast calls/run save only
+call overhead here — the self-compile is allocation/GC-bound, so
+cross-boundary inlining doesn't move its wall. The payoff thesis shifts to
+(a) workloads where `$cap` call overhead is actually hot, and (b) the
+optimizations that INLINING UNLOCKS (post-inline simplification inside the
+per-partition -O2 — already reflected in the smaller binary). The
+correctness dividend is standing: every boxed-slot crossing is fold-proof
+(REP_LLVM_002), so future inlining/optimization work in this region no
+longer risks the annihilation class.
+
+---
+
 ## Summary
 
 Coverage = `fast / (sat + fast)`. "solver-built" = compiler's own code carries LSS
@@ -806,9 +881,13 @@ the largest reduction of the track, in default config (no `lssDF`), with
 flat walls and smaller unkeyed output. Run-J census walls (8:3x–8:5x) are a
 different machine state than Run I's (4:5x–6:4x) — compare within-run only.
 
-*Next:* List-chain keying default-on decision (its payoff went 0 → 143.7 M
-with E9.2); census-driven kernel-whitelist growth; E9.4 inline nursery
-allocation for cons (the beyond-direct-call lever); the E9.3 re-translation
-cost work (still blocking `lssDF` default-on) + an uninstrumented wall A/B;
-per-member attribution over the residual over-apply declines; later-stage
-chaining (v3); E1.3 (`inlinehint` on the 51 M `$cap` calls).
+*Next:* census-driven kernel-whitelist growth; E9.4 inline nursery
+allocation for cons (the beyond-direct-call lever); E9.5 layout-blind
+demand-join audit + E10 post-settle kernel-devirt relocation; per-member
+attribution over the residual over-apply declines; later-stage chaining
+(v3). (Resolved since Run L: keying + lssDF shipped as defaults (Run L),
+all-globals keying sound + default (Run M), and E1.3 `$cap` inlining is
+DONE — v1 guard-limited (Run N), v3 barriers + full-population lift
+(Run O): wall-neutral, binary −0.55 %, correctness-complete. The
+remaining `$cap` lever is the 1,711-call mismatched-ABI floor,
+AbiCloning-family.)

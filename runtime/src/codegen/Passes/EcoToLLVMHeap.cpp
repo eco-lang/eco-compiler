@@ -1340,17 +1340,15 @@ static Value castToI64(OpBuilder &builder, Location loc, Value v) {
     if (v.getType().isInteger(64))
         return v;
     if (isHPtrLLVMType(v.getType())) {
-        auto i64Ty = IntegerType::get(builder.getContext(), 64);
-        return builder.create<LLVM::PtrToIntOp>(loc, i64Ty, v);
+        // REP_LLVM_002: group-init boxed-slot store side — fold-proof.
+        return slotValueToI64(builder, loc, v);
     }
     // Check if v is an unrealized_conversion_cast(ptr<1> → eco.value).
-    // If so, look through the cast and use PtrToIntOp on the original ptr<1>.
+    // If so, look through the cast and convert the original ptr<1>.
     if (auto castOp = v.getDefiningOp<UnrealizedConversionCastOp>()) {
         if (castOp.getNumOperands() == 1 &&
             isHPtrLLVMType(castOp.getOperand(0).getType())) {
-            auto i64Ty = IntegerType::get(builder.getContext(), 64);
-            return builder.create<LLVM::PtrToIntOp>(loc, i64Ty,
-                                                     castOp.getOperand(0));
+            return slotValueToI64(builder, loc, castOp.getOperand(0));
         }
     }
     auto i64Ty = IntegerType::get(builder.getContext(), 64);
@@ -1366,7 +1364,9 @@ static Value castToHPtr(OpBuilder &builder, Location loc, Value v) {
         return v;
     auto hptrTy = LLVM::LLVMPointerType::get(builder.getContext(), /*addressSpace=*/1);
     if (v.getType().isInteger(64))
-        return builder.create<LLVM::IntToPtrOp>(loc, hptrTy, v);
+        // REP_LLVM_002: an i64 here is a slot-word HPointer — fold-proof
+        // decode (over-barriering is sound; strips to the identical cast).
+        return slotI64ToValue(builder, loc, v);
     // Check if v is an unrealized_conversion_cast(ptr<1> → eco.value).
     if (auto castOp = v.getDefiningOp<UnrealizedConversionCastOp>()) {
         if (castOp.getNumOperands() == 1 &&
@@ -1387,13 +1387,14 @@ static Value widenToI64ForInit(OpBuilder &builder, Location loc, Value v) {
     Type ty = v.getType();
     if (ty.isInteger(64)) return v;
     if (isHPtrLLVMType(ty))
-        return builder.create<LLVM::PtrToIntOp>(loc, i64Ty, v);
+        // REP_LLVM_002: group-init boxed-slot store side — fold-proof.
+        return slotValueToI64(builder, loc, v);
     if (isa<eco::ValueType>(ty)) {
         // Go through ptr<1> first, then to i64. This avoids creating
         // eco.value→i64 unrealized casts that become unresolvable when
         // the eco.value is later replaced by a ptr<1> materialization.
         Value hptr = castToHPtr(builder, loc, v);
-        return builder.create<LLVM::PtrToIntOp>(loc, i64Ty, hptr);
+        return slotValueToI64(builder, loc, hptr);
     }
     if (auto intTy = dyn_cast<IntegerType>(ty)) {
         if (intTy.getWidth() < 64)

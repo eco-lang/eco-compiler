@@ -342,3 +342,29 @@ ModulePass):
    consumers are the EcoToLLVM* files rewritten in Steps 2–5. Moving the
    primitives under `detail::` is safe; no installed headers or external
    libraries depend on them.
+
+---
+
+## ADDENDUM (2026-07-21): the fold gap and its closure (REP_LLVM_002)
+
+A KNOWN GAP in this verifier was found during E1.3 v1/v2
+(`plans/lss-dispatch-value-extraction.md` §E1.6): it CANNOT see the folded
+form. When `InlineFunction`'s SimplifyInstruction annihilates a
+`ptrtoint(inttoptr(x)) → x` pair across an inlining seam, the resulting raw
+i64 that is live across statepoints comes straight from a load — the
+`ptrtoint` predicate (a) keys on is ERASED, and the load satisfies the (b)
+provenance allowance. Both bisected miscompiles of that era lowered CLEAN
+through this verifier.
+
+CLOSED by `plans/fold-proof-boxed-slot-crossings.md` (E1.3 v3, REP_LLVM_002):
+boxed-slot crossings are now emitted as opaque gc-leaf barrier calls
+(`__eco_slot_to_hptr`/`__eco_hptr_to_slot`) that no inliner can fold, so the
+folded form CANNOT EXIST pre-RS4GC. `StripEcoCastBarriers` — which lives in
+this pass's own file and runs in `addEcoGCPipeline` between RS4GC and this
+verifier — restores the bare casts, so THIS VERIFIER CONTINUES TO CHECK
+EXACTLY THE SHAPES DOCUMENTED ABOVE (the restored casts), unchanged. The
+verifier's role is now genuinely complete: emission-side fold-proofing
+prevents the class it cannot see, and it still checks everything it can see.
+Verified 2026-07-21: an ECO_LOWERING_VALIDATION build lowered the full
+all-keyed self-compile module with 15,744 `$cap` bodies force-inlined
+(GC-bearing included) — silent.

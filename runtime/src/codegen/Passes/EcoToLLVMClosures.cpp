@@ -121,11 +121,24 @@ struct ProjectClosureOpLowering : public OpConversionPattern<ProjectClosureOp> {
         auto offsetConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(valueOffset));
         auto valuePtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, closurePtr, ValueRange{offsetConst});
 
+        Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+
+        // E1.3 v2 (plan §5/E1.6): TYPED capture load. Boxed slots hold
+        // HPointers; loading directly as ptr addrspace(1) keeps the value
+        // GC-TRACKED from birth. The former load-i64 + inttoptr pair is the
+        // half that ANNIHILATES against the callee body's boundary ptrtoint
+        // when the pre-RS4GC AlwaysInliner splices `$cap` bodies in — the
+        // resurrected raw i64 then crosses the body's statepoints invisible
+        // to RS4GC and goes stale on GC (the bisected "Pointer below heap
+        // base" miscompile). Same bits loaded; only the SSA type changes.
+        if (!isUnboxed && isHPtrLLVMType(resultType)) {
+            Value result = rewriter.create<LLVM::LoadOp>(loc, resultType, valuePtr);
+            rewriter.replaceOp(op, result);
+            return success();
+        }
+
         // Load the value as i64
         Value loadedValue = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valuePtr);
-
-        // Convert to result type
-        Type resultType = getTypeConverter()->convertType(op.getResult().getType());
         Value result = loadedValue;
 
         if (isUnboxed) {
@@ -138,11 +151,9 @@ struct ProjectClosureOpLowering : public OpConversionPattern<ProjectClosureOp> {
                 result = rewriter.create<LLVM::TruncOp>(loc, resultType, loadedValue);
             }
             // else: i64, no conversion needed
-        } else {
-            // Boxed value (!eco.value) - load i64 from closure slot then convert to ptr<1>
-            if (isHPtrLLVMType(resultType))
-                result = closureLoadI64ToValue(rewriter, loc, loadedValue);
         }
+        // else: boxed with a non-HPointer converted result type — raw i64
+        // pass-through (unchanged legacy arm).
 
         rewriter.replaceOp(op, result);
         return success();
@@ -443,10 +454,14 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(OpBuilder &rewriter, ModuleOp module,
         Value convertedArg = argI64;
 
         if (origType && isa<eco::ValueType>(origType)) {
-            // !eco.value param: arg is HPointer i64 from wrapper args array.
-            // Identical between the legacy and typed conventions — boxed
-            // slots are HPointer-encoded in both.
-            convertedArg = wrapperLoadArgSlotToValue(rewriter, loc, argI64, getHPtrLLVMType(*ctx));
+            // !eco.value param: arg is HPointer-encoded in the args slot
+            // (identical between the legacy and typed conventions).
+            // E1.3 v2: load the slot AT ptr addrspace(1) — GC-tracked from
+            // birth, no inttoptr for the pre-RS4GC inliner to annihilate
+            // against the callee's boundary ptrtoint when the `$cap` body is
+            // spliced in here (plan §5/E1.6). The i64 load above still feeds
+            // the gc-live root alloca protocol unchanged.
+            convertedArg = rewriter.create<LLVM::LoadOp>(loc, getHPtrLLVMType(*ctx), argPtr);
         } else if (typedNewargs && origType && origType.isInteger(64)) {
             // Typed Int slot: the wrapper args slot already carries the raw
             // i64 value (no HPointer indirection).
@@ -466,7 +481,8 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(OpBuilder &rewriter, ModuleOp module,
             } else if (targetType == f64Ty) {
                 convertedArg = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, argI64);
             } else if (isa<LLVM::LLVMPointerType>(targetType)) {
-                convertedArg = wrapperLoadArgSlotToValue(rewriter, loc, argI64, targetType);
+                // E1.3 v2: typed slot load (see the !eco.value arm above).
+                convertedArg = rewriter.create<LLVM::LoadOp>(loc, targetType, argPtr);
             }
             // i64 target → pass through.
         } else if (origType && origType.isInteger(64)) {
@@ -1109,7 +1125,6 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
         // Load result HPointers from outClosures[] and deliver them as the
         // op's results. Each load yields an i64 which we turn into ptr<1>
         // (the closure Eco_Value SSA type).
-        auto hptrPtrTy = getHPtrLLVMType(*ctx);
         SmallVector<Value> results;
         results.reserve(numSiblings);
         for (unsigned i = 0; i < numSiblings; ++i) {
@@ -1118,8 +1133,10 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
             auto slotPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty,
                 outClosuresArr, ValueRange{idxConst});
             Value loadedI64 = rewriter.create<LLVM::LoadOp>(loc, i64Ty, slotPtr);
-            Value asHPtr = rewriter.create<LLVM::IntToPtrOp>(
-                loc, hptrPtrTy, ValueRange{loadedI64});
+            // REP_LLVM_002: outClosures[] is a GC-registered slot buffer — the
+            // i64 -> ptr<1> decode must be fold-proof (slot-cast barrier),
+            // not a bare inttoptr.
+            Value asHPtr = argsSlotLoadI64ToValue(rewriter, loc, loadedI64);
             results.push_back(asHPtr);
         }
 
@@ -1177,22 +1194,26 @@ static Value emitFastClosureCall(ConversionPatternRewriter &rewriter, Location l
         int64_t valueOffset = layout::ClosureValuesOffset + i * layout::PtrSize;
         auto offsetConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(valueOffset));
         auto valuePtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, closurePtr, ValueRange{offsetConst});
-        Value loadedValue = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valuePtr);
 
-        // Convert loaded i64 to the capture's actual type
         // captureAbiTypes contains TypeAttr elements
         auto typeAttr = mlir::dyn_cast<TypeAttr>(captureAbiTypes[i]);
         Type captureType = typeAttr ? typeAttr.getValue() : i64Ty;
-        Value captureVal = loadedValue;
 
-        if (captureType.isF64()) {
+        // E1.3 v2: pointer-typed captures are loaded AT their pointer type —
+        // GC-tracked from birth, no inttoptr for the inliner to annihilate
+        // against the callee's boundary ptrtoint (plan §5/E1.6). Scalar
+        // captures keep the raw i64 load (not GC pointers).
+        Value captureVal;
+        if (isa<LLVM::LLVMPointerType>(captureType)) {
+            captureVal = rewriter.create<LLVM::LoadOp>(loc, captureType, valuePtr);
+            paramTypes.push_back(captureType);
+        } else if (captureType.isF64()) {
+            Value loadedValue = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valuePtr);
             captureVal = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, loadedValue);
             paramTypes.push_back(f64Ty);
-        } else if (isa<LLVM::LLVMPointerType>(captureType)) {
-            captureVal = rewriter.create<LLVM::IntToPtrOp>(loc, captureType, loadedValue);
-            paramTypes.push_back(captureType);
         } else {
             // i64 or other integer types
+            captureVal = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valuePtr);
             paramTypes.push_back(i64Ty);
         }
         callArgs.push_back(captureVal);
@@ -2175,7 +2196,13 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
                 auto idxConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(i));
                 auto slotPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty, argsArray, ValueRange{idxConst});
                 Value arg = newargs[i];
-                if (arg.getType() != i64Ty && isa<LLVM::LLVMPointerType>(arg.getType())) {
+                if (isHPtrLLVMType(arg.getType())) {
+                    // REP_LLVM_002: boxed arg into the GC-registered args
+                    // buffer — fold-proof store-side slot crossing.
+                    arg = argsSlotStoreValueToI64(rewriter, loc, arg);
+                } else if (arg.getType() != i64Ty && isa<LLVM::LLVMPointerType>(arg.getType())) {
+                    // AS0 kernel pointer: raw ptrtoint (not a GC crossing;
+                    // the barrier signature is ptr<1>-typed).
                     arg = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, arg);
                 } else if (auto intTy = dyn_cast<IntegerType>(arg.getType())) {
                     if (intTy.getWidth() < 64) {

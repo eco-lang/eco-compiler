@@ -22,14 +22,17 @@
 //===----------------------------------------------------------------------===//
 
 #include "EcoPtrIntVerify.h"
+#include "EcoSlotCastBarriers.h"
 #include "EcoToLLVMInternal.h"
 
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Scalar/RewriteStatepointsForGC.h"
 #include "llvm/Transforms/Scalar/SROA.h"
@@ -442,6 +445,60 @@ struct FoldExtractValuePass : public PassInfoMixin<FoldExtractValuePass> {
     }
 };
 
+//===----------------------------------------------------------------------===//
+// StripEcoCastBarriers (REP_LLVM_002)
+//===----------------------------------------------------------------------===//
+
+/// Rewrite every call to the fold-proof slot-cast barrier declarations
+/// (`__eco_slot_to_hptr` / `__eco_hptr_to_slot`, emitted by the
+/// EcoToLLVMInternal.h slot-crossing helpers under ECO_SLOT_CAST_BARRIERS)
+/// back to the bare inttoptr/ptrtoint, then erase the declarations. Runs
+/// strictly AFTER RewriteStatepointsForGC (the barriers exist to survive the
+/// pre-RS4GC AlwaysInliner un-folded) and BEFORE EcoPtrIntVerify (so the
+/// validation build verifies the RESTORED casts — today's exact IR shape).
+/// The cast is built at the call's own position, so dominance over every use
+/// (including statepoint gc-live operands rewired by RAUW) holds by
+/// construction. Cheap no-op when the symbols are absent (barriers off).
+///
+/// Any surviving reference is a HARD error even in release builds
+/// (report_fatal_error, not assert): a barrier reaching codegen would be an
+/// undefined symbol and, worse, a silently un-restored crossing.
+struct StripEcoCastBarriersPass : public PassInfoMixin<StripEcoCastBarriersPass> {
+    static bool stripOne(Module &M, StringRef name, bool toPtr) {
+        Function *barrier = M.getFunction(name);
+        if (!barrier)
+            return false;
+        SmallVector<CallInst *, 128> calls;
+        for (User *u : barrier->users()) {
+            auto *ci = dyn_cast<CallInst>(u);
+            if (!ci || ci->getCalledOperand() != barrier)
+                report_fatal_error(Twine("StripEcoCastBarriers: non-call use "
+                                         "of barrier symbol ") + name);
+            calls.push_back(ci);
+        }
+        for (CallInst *ci : calls) {
+            IRBuilder<> b(ci);
+            Value *arg = ci->getArgOperand(0);
+            Value *cast =
+                toPtr ? b.CreateIntToPtr(arg, PointerType::get(M.getContext(), 1))
+                      : b.CreatePtrToInt(arg, Type::getInt64Ty(M.getContext()));
+            ci->replaceAllUsesWith(cast);
+            ci->eraseFromParent();
+        }
+        if (!barrier->use_empty())
+            report_fatal_error(Twine("StripEcoCastBarriers: surviving "
+                                     "reference to barrier symbol ") + name);
+        barrier->eraseFromParent();
+        return true;
+    }
+
+    PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
+        bool a = stripOne(M, eco::kSlotToHPtrSym, /*toPtr=*/true);
+        bool b = stripOne(M, eco::kHPtrToSlotSym, /*toPtr=*/false);
+        return (a || b) ? PreservedAnalyses::none() : PreservedAnalyses::all();
+    }
+};
+
 } // namespace
 
 void eco::addEcoGCPipeline(ModulePassManager &MPM) {
@@ -468,8 +525,13 @@ void eco::addEcoGCPipeline(ModulePassManager &MPM) {
     }
 
     MPM.addPass(RewriteStatepointsForGC());
+    // REP_LLVM_002: restore bare slot casts now that no inliner will ever see
+    // them again (everything downstream is post-RS4GC). Must precede
+    // EcoPtrIntVerify so the validation build checks the restored casts —
+    // exactly today's verified IR shape.
+    MPM.addPass(StripEcoCastBarriersPass());
 #ifdef ECO_LOWERING_VALIDATION
-    // Run ptr<1>↔i64 boundary verification after RS4GC.
+    // Run ptr<1>↔i64 boundary verification after RS4GC + barrier strip.
     MPM.addPass(createModuleToFunctionPassAdaptor(EcoPtrIntVerifyPass()));
 #endif
 }

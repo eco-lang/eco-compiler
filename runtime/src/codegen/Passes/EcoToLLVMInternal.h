@@ -8,6 +8,8 @@
 #ifndef ECO_TO_LLVM_INTERNAL_H
 #define ECO_TO_LLVM_INTERNAL_H
 
+#include "EcoSlotCastBarriers.h"
+
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
@@ -78,6 +80,63 @@ inline mlir::Value i64ToValue(mlir::OpBuilder &builder, mlir::Location loc, mlir
 }
 
 //===----------------------------------------------------------------------===//
+// Fold-proof boxed-slot crossings (REP_LLVM_002)
+//
+// plans/fold-proof-boxed-slot-crossings.md: the pre-RS4GC AlwaysInliner
+// (`runCapInlinePrepass`) annihilates raw inttoptr/ptrtoint pairs met across
+// an inlining seam (`ptrtoint(inttoptr(x)) -> x`), leaving a raw i64 live
+// across the spliced body's statepoints — invisible to RS4GC, stale on GC.
+// The slot-crossing forms below therefore emit the crossing as a call to a
+// declare-only gc-leaf barrier (see EcoSlotCastBarriers.h) that no inliner
+// can fold through; StripEcoCastBarriers restores the bare cast strictly
+// post-RS4GC. Pass-through parity with the raw primitives is REQUIRED: a
+// barrier is emitted exactly where the raw form would emit a cast, so the
+// pre-RS4GC IR is a 1:1 cast->call swap (same instruction count/positions —
+// keeps `bodyIsGCCallFree` and the `$cap` inline threshold env-invariant).
+//
+// The barrier declarations are pre-materialized unconditionally
+// (materializeAllRuntimeDecls), so emitting by symbol name here is always
+// resolvable; with barriers disabled the unused decls are erased by the
+// EcoToLLVM unused-decl strip, restoring today's exact symbol set.
+//===----------------------------------------------------------------------===//
+
+/// Slot-crossing form of valueToI64: ptr<1> -> i64 for a boxed-slot STORE.
+/// Emits the __eco_hptr_to_slot barrier (bare ptrtoint when barriers are off).
+inline mlir::Value slotValueToI64(mlir::OpBuilder &builder, mlir::Location loc, mlir::Value v) {
+    if (v.getType().isInteger(64))
+        return v;
+    if (isHPtrLLVMType(v.getType())) {
+        auto i64Ty = mlir::IntegerType::get(builder.getContext(), 64);
+        if (slotCastBarriersEnabled())
+            return builder
+                .create<mlir::LLVM::CallOp>(loc, mlir::TypeRange{i64Ty},
+                                            llvm::StringRef(kHPtrToSlotSym),
+                                            mlir::ValueRange{v})
+                .getResult();
+        return builder.create<mlir::LLVM::PtrToIntOp>(loc, i64Ty, v);
+    }
+    return v;
+}
+
+/// Slot-crossing form of i64ToValue: i64 -> ptr<1> for a boxed-slot LOAD.
+/// Emits the __eco_slot_to_hptr barrier (bare inttoptr when barriers are off).
+inline mlir::Value slotI64ToValue(mlir::OpBuilder &builder, mlir::Location loc, mlir::Value v) {
+    if (isHPtrLLVMType(v.getType()))
+        return v;
+    if (v.getType().isInteger(64)) {
+        auto hptrTy = mlir::LLVM::LLVMPointerType::get(builder.getContext(), /*addressSpace=*/1);
+        if (slotCastBarriersEnabled())
+            return builder
+                .create<mlir::LLVM::CallOp>(loc, mlir::TypeRange{hptrTy},
+                                            llvm::StringRef(kSlotToHPtrSym),
+                                            mlir::ValueRange{v})
+                .getResult();
+        return builder.create<mlir::LLVM::IntToPtrOp>(loc, hptrTy, v);
+    }
+    return v;
+}
+
+//===----------------------------------------------------------------------===//
 // Role-specific ptr<1> ↔ i64 boundary helpers
 //
 // Each helper documents the single allowed pattern it authorizes.
@@ -88,51 +147,59 @@ inline mlir::Value i64ToValue(mlir::OpBuilder &builder, mlir::Location loc, mlir
 
 /// Heap field store: ptr<1> → i64 for storing into a heap object field.
 /// Result must be immediately stored via StoreOp into a heap struct slot.
+/// Fold-proof (REP_LLVM_002): emits the slot-cast barrier form.
 inline mlir::Value heapStoreValueToI64(mlir::OpBuilder &b, mlir::Location loc, mlir::Value v) {
-    return valueToI64(b, loc, v);
+    return slotValueToI64(b, loc, v);
 }
 
 /// Heap field load: i64 loaded from a heap object field → ptr<1>.
 /// Operand must come directly from a LoadOp on a heap struct GEP.
+/// Fold-proof (REP_LLVM_002): emits the slot-cast barrier form.
 inline mlir::Value heapLoadI64ToValue(mlir::OpBuilder &b, mlir::Location loc, mlir::Value v) {
-    return i64ToValue(b, loc, v);
+    return slotI64ToValue(b, loc, v);
 }
 
 /// Global store: ptr<1> → i64 for storing into a module-level eco.value global.
 /// Result must be immediately stored via StoreOp into the global address.
+/// Fold-proof (REP_LLVM_002): emits the slot-cast barrier form.
 inline mlir::Value globalStoreValueToI64(mlir::OpBuilder &b, mlir::Location loc, mlir::Value v) {
-    return valueToI64(b, loc, v);
+    return slotValueToI64(b, loc, v);
 }
 
 /// Global load: i64 loaded from a module-level eco.value global → ptr<1>.
 /// Operand must come directly from a LoadOp on a global AddressOfOp.
+/// Fold-proof (REP_LLVM_002): emits the slot-cast barrier form.
 inline mlir::Value globalLoadI64ToValue(mlir::OpBuilder &b, mlir::Location loc, mlir::Value v) {
-    return i64ToValue(b, loc, v);
+    return slotI64ToValue(b, loc, v);
 }
 
 /// Closure store: ptr<1> → i64 for storing into Closure.values[] slots.
 /// Result must be immediately stored via StoreOp into a closure values GEP.
+/// Fold-proof (REP_LLVM_002): emits the slot-cast barrier form.
 inline mlir::Value closureStoreValueToI64(mlir::OpBuilder &b, mlir::Location loc, mlir::Value v) {
-    return valueToI64(b, loc, v);
+    return slotValueToI64(b, loc, v);
 }
 
 /// Closure load: i64 loaded from Closure.values[] → ptr<1>.
 /// Operand must come directly from a LoadOp on a closure values GEP.
+/// Fold-proof (REP_LLVM_002): emits the slot-cast barrier form.
 inline mlir::Value closureLoadI64ToValue(mlir::OpBuilder &b, mlir::Location loc, mlir::Value v) {
-    return i64ToValue(b, loc, v);
+    return slotI64ToValue(b, loc, v);
 }
 
 /// Args-array store: ptr<1> → i64 for storing into a stack-allocated args
 /// buffer registered via eco_gc_push_stack_range.
 /// Result must be immediately stored via StoreOp into an args alloca slot.
+/// Fold-proof (REP_LLVM_002): emits the slot-cast barrier form.
 inline mlir::Value argsSlotStoreValueToI64(mlir::OpBuilder &b, mlir::Location loc, mlir::Value v) {
-    return valueToI64(b, loc, v);
+    return slotValueToI64(b, loc, v);
 }
 
 /// Args-array load: i64 loaded from an args alloca slot → ptr<1>.
 /// Operand must come directly from a LoadOp on an args alloca GEP.
+/// Fold-proof (REP_LLVM_002): emits the slot-cast barrier form.
 inline mlir::Value argsSlotLoadI64ToValue(mlir::OpBuilder &b, mlir::Location loc, mlir::Value v) {
-    return i64ToValue(b, loc, v);
+    return slotI64ToValue(b, loc, v);
 }
 
 /// ADT case scrutinee: ptr<1> → i64 for tag bit-tests.
@@ -154,10 +221,12 @@ inline mlir::Value wrapperReturnValueToPtr0(mlir::OpBuilder &b, mlir::Location l
 /// Wrapper arg-slot unboxing: load i64 from wrapper args alloca, convert
 /// to the target type (ptr<1> for !eco.value, or pass through for primitives).
 /// The loadOp must be a LoadOp from the wrapper's args array GEP.
+/// The ptr<1> branch is a boxed-slot crossing → fold-proof (REP_LLVM_002);
+/// the plain-AS0 branch below is kernel-pointer ABI, not a GC crossing.
 inline mlir::Value wrapperLoadArgSlotToValue(mlir::OpBuilder &b, mlir::Location loc,
                                              mlir::Value loadedI64, mlir::Type targetType) {
     if (isHPtrLLVMType(targetType))
-        return i64ToValue(b, loc, loadedI64);
+        return slotI64ToValue(b, loc, loadedI64);
     if (mlir::isa<mlir::LLVM::LLVMPointerType>(targetType))
         return b.create<mlir::LLVM::IntToPtrOp>(loc, targetType, mlir::ValueRange{loadedI64});
     return loadedI64;
@@ -535,6 +604,12 @@ struct EcoRuntime {
     // LSS dispatch-value plan E0.4: void eco_dispatch_stats_fast(ptr) — records a
     // stamped fast-dispatch execution under ECO_DISPATCH_STATS. GC-leaf.
     mlir::LLVM::LLVMFuncOp getOrCreateDispatchStatsFast(mlir::OpBuilder &builder) const;
+    // Fold-proof slot-cast barrier decls (REP_LLVM_002): declare-only,
+    // gc-leaf; every call is rewritten back to a bare inttoptr/ptrtoint by
+    // StripEcoCastBarriers strictly post-RS4GC (no definition ever exists,
+    // no call survives to codegen).
+    mlir::LLVM::LLVMFuncOp getOrCreateSlotToHPtr(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateHPtrToSlot(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateIntPow(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateUtilsEqual(mlir::OpBuilder &builder) const;
 

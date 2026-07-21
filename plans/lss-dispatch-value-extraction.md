@@ -454,16 +454,63 @@ listing), `ECO_CAP_INLINE_LIST=<file>` (exact-set marking — the bisection
 driver that found 15194 lives in the session scratchpad pattern; threshold
 bisect T=16 green / T=32 crash localized the band first).
 
-**v2 unlock (designed, not built): TYPED capture loads.** Emit
-`load ptr addrspace(1)` directly for PK_Boxed slots at the three unpack sites
-(getOrCreateWrapper, the `$clo` project.closure lowering, emitFastClosureCall)
-instead of load-i64+inttoptr. The loaded value is then TRACKED across any
-inlined body's statepoints; the body's store-boundary ptrtoint derives from a
-relocated value adjacent to each store — the annihilation becomes harmless
-and the GC-call-free guard can lift, unlocking the full ≥6-12 K-body
-population. Must land with EcoPtrIntVerify (ECO_LOWERING_VALIDATION build)
-runs + the all-keyed self-compile gate, and bit-identical non-inlined
-behavior (same loaded bits, different SSA type).
+**v2 BUILT (2026-07-21): typed capture loads landed — but the guard CANNOT
+lift; a SECOND annihilation class exists.** The three unpack sites
+(ProjectClosureOpLowering, emitFastClosureCall, getOrCreateWrapper) now emit
+`load ptr addrspace(1)` for boxed slots. Battery: codegen 385/385, corpus
+green, guarded self-compile green + output byte-identical, EcoPtrIntVerify
+SILENT on the shipping config, multi-hour ECO_HEAP_VALIDATE self-compile leg
+clean. But the guard-lifted config STILL miscompiles — second bisection
+(base = the 257 GC-call-free bodies, band = 15,465) pinned
+`Terminal_Main_lambda_14615$cap` (a State-bind body), IR-verified: the SAME
+`ptrtoint(inttoptr(x)) → x` fold fires on INTERIOR boxed-slot idiom pairs —
+here a tuple-projection (load i64 + inttoptr) feeding an args-slot store
+(ptrtoint + store) ACROSS the body's direct call — so a raw i64 state
+pointer crosses the statepoint and a stale pointer lands in the
+GC-registered args buffer ("Invalid tag value" at evacuate). Standalone
+bodies never fold (nothing simplifies pre-RS4GC); `InlineFunction`'s
+SimplifyInstruction folds everything it clones. Capture loads were ONE
+producer; projections/args-slots/closure-stores are the rest.
+
+**VERIFIER GAP (recorded):** the unsound config lowers CLEAN through
+EcoPtrIntVerify — the fold ERASES the ptrtoint, so REP_LLVM_001(a)'s
+"i64 derived from ptrtoint" predicate never matches; the stale i64 comes
+straight from a load whose inttoptr consumer satisfies the (b) provenance
+allowance. Any v3 attempt needs either a new check class or the barrier
+design below (which makes the check unnecessary).
+
+**v3 SHIPPED (2026-07-21) — the real unlock, fully gated:
+`plans/fold-proof-boxed-slot-crossings.md` §9 (as-built).**
+Opaque gc-leaf cast barriers (`__eco_slot_to_hptr`/`__eco_hptr_to_slot`) at
+the `EcoToLLVMInternal.h` slot-crossing helper layer (all 8 role wrappers +
+`wrapperLoadArgSlotToValue` ptr<1> branch + the §8 raw-cast stragglers),
+stripped to bare casts by `StripEcoCastBarriers` inside `addEcoGCPipeline`
+(ONE placement, after RS4GC + before EcoPtrIntVerify, covering all five
+RS4GC call sites + JIT + dumps) with a `report_fatal_error` zero-survivors
+check; v2's typed loads stay. **THE GUARD IS LIFTED**: `bodyIsGCCallFree`
+applies only under `ECO_CAP_INLINE_GCFREE_ONLY=1` (A/B, marks exactly the
+old 257) or forced when `ECO_SLOT_CAST_BARRIERS=0` (the unsound combo is
+unreachable); `ECO_CAP_INLINE_NO_GCFREE_GUARD` deleted. Gate results:
+barriers byte-transparent (60 MB all-keyed binary on-vs-off BYTE-IDENTICAL,
++2.7 % lowering wall); lifted population 15,744 bodies (+15,487 GC-bearing);
+100-body culprit-class pre-gate + FULL lift leg both run the all-keyed
+Stage-7a rc=0 with output byte-identical (self-compile fixed point holds);
+surviving direct `$cap` calls 11,294 → 5,161 (the mismatched-ABI residue);
+binary −0.56 %; corpus 1628/1628; EcoPtrIntVerify (validation build) silent
+over the lifted IR; bounded ECO_HEAP_VALIDATE leg (tiny nursery, 149
+minors + 1 major over 108 M objects) clean. New invariant REP_LLVM_002.
+**Run O DONE (2026-07-21, `benchmarks/runtime-calls.md` §Run O):**
+interleaved wall A/B ×3 = NEUTRAL (guard 4:28.1 vs lift 4:29.5 mean,
+majors 10 all legs); census identical to the last digit; MAX_INSTS sweep
+64/128/256 monotone (15,744/18,033/19,247 marked; binary keeps shrinking
+to 59.18 MB; survivors 5,183/2,926/1,711 — T=256 residue ≈ the true
+mismatched-ABI floor), default stays 64. E1.3 closes as a
+correctness/infrastructure win: full population inlines for FREE on the
+allocation/GC-bound self-compile; payoff thesis moves to call-overhead-hot
+workloads + post-inline optimization (binary −0.55 % already reflects it).
+Delta-debug hooks kept: `ECO_CAP_INLINE_DEBUG`,
+`ECO_CAP_INLINE_LIST` + the halving driver (two culprits, ~14 lowerings
+each).
 
 ---
 
