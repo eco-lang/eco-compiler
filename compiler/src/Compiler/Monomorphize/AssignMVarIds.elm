@@ -76,7 +76,12 @@ freshLamId ctx =
         | state =
             { st
                 | nextLam = Id.succ lamId
-                , lamLabels = Dict.insert key (ctx.defKey ++ "#" ++ String.fromInt key) st.lamLabels
+
+                -- Perf (#6): the value is census-rendering only and is read solely
+                -- via `Dict.size` (behind `if lssConfig.report`, default off), so the
+                -- per-lambda string build (`defKey ++ "#" ++ fromInt`) was pure garbage.
+                -- Keep the key (so the count is unchanged) with a constant value.
+                , lamLabels = Dict.insert key "" st.lamLabels
             }
       }
     )

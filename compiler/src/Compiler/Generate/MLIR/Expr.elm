@@ -4812,47 +4812,41 @@ generateLetSingle ctx def body =
                 -- We also clean definedSsaVars of any SSA vars that only the inner entries referenced.
                 scopedCtx : Ctx.Context
                 scopedCtx =
+                    -- Perf (#4): RHS evaluation only ADDS varMappings on top of
+                    -- ctxWithPlaceholders, so scoping back to the outer group = removing
+                    -- exactly the inner-only keys. The old code rebuilt the entire outer
+                    -- map from Dict.empty on every let (O(scope^2) down a let chain).
+                    -- Collect the inner-only entries; if there are none (the common case)
+                    -- share exprCtx unchanged, otherwise Dict.remove just those keys
+                    -- (structure-sharing). Equivalent because outerKeys ⊆ exprCtx keys.
                     let
                         exprCtx =
                             exprResult.ctx
 
-                        outerKeys =
-                            Dict.keys ctxWithPlaceholders.varMappings
-
-                        innerOnlyVars =
+                        innerOnly =
                             Dict.foldl
                                 (\k v acc ->
                                     if Dict.member k ctxWithPlaceholders.varMappings then
                                         acc
 
                                     else
-                                        Set.insert v.ssaVar acc
+                                        ( k, v.ssaVar ) :: acc
                                 )
-                                Set.empty
+                                []
                                 exprCtx.varMappings
-
-                        restoredMappings =
-                            List.foldl
-                                (\k acc ->
-                                    case Dict.get k exprCtx.varMappings of
-                                        Just v ->
-                                            Dict.insert k v acc
-
-                                        Nothing ->
-                                            case Dict.get k ctxWithPlaceholders.varMappings of
-                                                Just v ->
-                                                    Dict.insert k v acc
-
-                                                Nothing ->
-                                                    acc
-                                )
-                                Dict.empty
-                                outerKeys
-
-                        cleanedDefinedVars =
-                            Set.diff exprCtx.definedSsaVars innerOnlyVars
                     in
-                    { exprCtx | varMappings = restoredMappings, definedSsaVars = cleanedDefinedVars }
+                    case innerOnly of
+                        [] ->
+                            exprCtx
+
+                        _ ->
+                            { exprCtx
+                                | varMappings =
+                                    List.foldl (\( k, _ ) acc -> Dict.remove k acc) exprCtx.varMappings innerOnly
+                                , definedSsaVars =
+                                    Set.diff exprCtx.definedSsaVars
+                                        (List.foldl (\( _, sv ) acc -> Set.insert sv acc) Set.empty innerOnly)
+                            }
 
                 -- Update varMappings for this name to use the effective SSA var,
                 -- with the actual result type.

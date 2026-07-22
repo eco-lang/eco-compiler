@@ -282,6 +282,22 @@ recordFieldCanTypes t =
             Nothing
 
 
+{-| Perf (#10): read a SINGLE field's canonical type with one `Dict.get`, without
+`recordFieldCanTypes`' `Dict.map` that allocates a whole fresh field tree per access.
+-}
+recordFieldCanType : Name -> Can.Type TypeIds.MVarId -> Maybe (Can.Type TypeIds.MVarId)
+recordFieldCanType f t =
+    case t of
+        Can.TRecord fields _ ->
+            Dict.get f fields |> Maybe.map (\(Can.FieldType _ ft) -> ft)
+
+        Can.TAlias _ _ _ (Can.Filled inner) ->
+            recordFieldCanType f inner
+
+        _ ->
+            Nothing
+
+
 translate : TOpt.Expr TypeIds.MVarId -> Step Mono.MonoExpr
 translate expr s0 =
     case expr of
@@ -4033,7 +4049,7 @@ genericAccess record fieldName meta =
                 )
                 (classify meta.tipe)
         )
-        (case recordFieldCanTypes (TOpt.typeOf record) |> Maybe.andThen (Dict.get fieldName) of
+        (case recordFieldCanType fieldName (TOpt.typeOf record) of
             Just fieldCan ->
                 connectTypes meta.tipe fieldCan
 
@@ -4453,8 +4469,7 @@ canSlotForPath rootCan path =
 
         TOpt.Field f sub ->
             canSlotForPath rootCan sub
-                |> Maybe.andThen recordFieldCanTypes
-                |> Maybe.andThen (Dict.get f)
+                |> Maybe.andThen (recordFieldCanType f)
 
         _ ->
             Nothing

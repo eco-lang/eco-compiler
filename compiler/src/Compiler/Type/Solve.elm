@@ -813,7 +813,10 @@ typeToVar rank pools _ tipe =
             IO.traverseList (IO.traverseTuple go) args
                 |> IO.andThen
                     (\argVars ->
-                        typeToVar rank pools (Dict.fromList argVars) aliasType
+                        -- Perf (#17): typeToVar ignores its 3rd (dict) arg, so the
+                        -- `Dict.fromList argVars` built here was dead. `go` already
+                        -- passes `Dict.empty`; use it and drop the allocation.
+                        go aliasType
                             |> IO.andThen
                                 (\aliasVar ->
                                     register rank pools (IO.Alias home name argVars aliasVar)
