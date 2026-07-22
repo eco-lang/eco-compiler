@@ -682,14 +682,27 @@ type Lifetime
 ```
 
 `join` (⊔): `LEmpty` is ⊥; `LParams s ⊔ LParams t = LParams (s ∪ t)`;
-`LLocal _ ⊔ LParams s = LParams s`; on `LLocal`,
-`InSeq i _ ⊔ InSeq j _` keeps the LATER index (recurse on tie), and
+`LLocal _ ⊔ LParams s = LParams s`; on `LLocal`, joining two `InSeq`
+values keeps the LATER child index (recurse on tie), and
 `InAlts ⊔ InAlts` joins pointwise per arm. Predicates:
 `leq` (every branch of L covered by L′), `endsBefore : Lifetime -> Path
 -> Bool` (the paper's `L ≺ p` — no branch of L contains p; the value is
 dead at p) and `onBoundary` (`L ≍ p` — p coincides with a final
 occurrence). These orderings are subtle (the paper warns `L ≺ p` is not
 `¬(p ≤ L)`); B1 property-tests them on randomized skeletons (§19.1).
+
+**Constructor-argument convention (fixed by the Phase-1 plan; note it
+here so the two documents agree).** The `Step`/`InSeq` two-`Int` fields
+are `(nodeId, index)` — **node id first, child/arm index second** — where
+`nodeId` is a skeleton position minted by the constraint walker. The node
+id exists so `join`/`leq` can confirm they are comparing at the same tree
+position (equal node ids by construction) and then branch on the index;
+the arm *count* needed for missing-arm (`— ∥ ℓ`) completeness lives in
+`InAlts`'s own `Int`. The informal `Seq i n` / `Arm i n` notation used in
+§8.2's rule table is readability shorthand for "position i of n in
+evaluation order", **not** literal constructor arguments — see
+`plans/borrow-inference-phase1-foundations.md` (U1.1) and Phase 2's D4
+note for the concrete lowering.
 
 ### 7.5 Constraints and occurrences
 
@@ -954,24 +967,40 @@ map that today it discards:
 ```elm
 -- Compiler/AST/Monomorphized.elm
 type MemberOrigin
-    = OriginGlobal TOpt.Global    -- g| members (E9.2 kernel-alias folds already resolve to k|)
+    = OriginGlobal Global         -- g| members (E9.2 kernel-alias folds already resolve to k|)
     | OriginKernel Name Name      -- k| members (home, name)
-    | OriginCtor TOpt.Global      -- c| members
+    | OriginCtor Global           -- c| members
     | OriginAccessor Name         -- a| members
 
 -- MonoGraph gains:
 --   , lssMemberOrigins : Dict Int MemberOrigin
 ```
 
+**`Global` here is Monomorphized's OWN `Global`** (`Monomorphized.elm`,
+`Global IO.Canonical Name | Accessor Name`), **not** `TypedOptimized`'s
+`TOpt.Global` — Monomorphized does not import `TypedOptimized`, and its
+`SpecializationRegistry.reverseMapping` already keys by `Mono.Global`.
+The `s.lssMemberTable.globals` payloads *are* `TOpt.Global`, so
+`assembleRawGraph` converts them (`TOpt.Global h n → Mono.Global h n`) at
+the export site, which already imports `TOpt`. This matters concretely:
+`Mono.toComparableGlobal` and `TOpt.toComparableGlobal` produce
+**different string formats**, so the `Global → SpecId` index build and
+its query must both key by `Mono.toComparableGlobal` — mixing them makes
+every `OriginGlobal`/`OriginCtor` silently resolve `PUnresolved`.
+
 Populated by `assembleRawGraph` from `s.lssMemberTable.globals/kernels`
-plus the ctor/accessor intern keys, just before engine state is dropped.
-Under `EngineSubst` (or LSS off) it is `Dict.empty` — the inert path.
-Size is a few thousand entries (member ids are interned, not per-site).
-`MonoGraph` goes from 10 fields to 11 — nowhere near the native 32-slot
-record scan cap that constrains `Engine.S`. To translate an
-`OriginGlobal` to a `SpecId` (for `BorrowSig` lookup), the driver builds
-a one-shot `Global → SpecId` index from `registry.reverseMapping` at
-Phase-6 start.
+by inverting `byKey` and dispatching on the 2-char member-key prefix
+(`g|`/`c|` join `globals`; `k|` joins `kernels`; `a|` field name =
+`String.dropLeft 2 key`), just before engine state is dropped. Under
+`EngineSubst` (or LSS off) it is `Dict.empty` — the inert path. Size is a
+few thousand entries (member ids are interned, not per-site). `MonoGraph`
+goes from 10 fields to 11 — nowhere near the native 32-slot record scan
+cap that constrains `Engine.S`. To translate an `OriginGlobal` to a
+`SpecId` (for `BorrowSig` lookup), the driver builds a one-shot
+`Mono.Global → SpecId` index from `registry.reverseMapping` at Phase-6
+start (one-to-many — a global specializes to several SpecIds — so the
+query picks the SpecId whose stored `MonoType` `eqLayout`-matches the
+callee).
 
 Alternative considered and rejected: re-deriving origins from graph shape
 (fragile — exactly the kind of positional reconstruction the Fix-B
@@ -1091,8 +1120,12 @@ fall back to raw `srcLambda`, and let synthesized closures (both fields
 obligation.** Closure bodies are nested in their enclosing defs, so they
 are constrained during the enclosing def's analysis (§8.4); from B3.5
 each indexed lambda additionally registers a `BorrowSig` in a
-`lambdaSigs : Dict LambdaId BorrowSig` table, read back from the body's
-solved param/result resources. A lambda's sig is only ever solved by its
+`lambdaSigs : Dict String BorrowSig` table, read back from the body's
+solved param/result resources. (`Mono.LambdaId` is
+`AnonymousLambda IO.Canonical Int` — a non-`comparable` custom type, so
+it cannot key an Elm `Dict` directly; key by a derived `String`
+`lambdaKey` = `toComparableCanonical home ++ "|" ++ String.fromInt n`,
+the same shape LSS uses for its member interning.) A lambda's sig is only ever solved by its
 **enclosing** def's SCC — but a *routed caller* can live in a different
 SCC, and nothing in the plain call graph orders that caller after the
 enclosing def. Without a fix, reverse-topological order can solve the
@@ -1201,17 +1234,32 @@ is the Perceus baseline — sound without any audit.
 
 ### 12.2 The v1 audited allowlist
 
-Audit criterion per entry, verified against the `elm-kernel-cpp`
-implementation before listing: *reads argument heap data; does not store
-the argument or any interior pointer into a result or global; result
-shares no identity with the argument unless declared via
-`resultAliases`.* Initial entries (the paper's Perceus-fairness spirit):
-`Utils.{equal,notEqual,compare,lt,le,gt,ge}`, `List.length`,
-`String.{length,isEmpty,startsWith,endsWith,contains}`,
-`JsArray.{length,unsafeGet}` (`unsafeGet` with `resultAliases = Just 0`),
-`Basics.*` numeric ops (scalar-anyway), `Debug.{log,toString}`,
-`Console.write`-family sinks. Growing the list is cheap, per-entry,
-independently testable — each upgrade is pure RC-op savings.
+Audit criterion per entry: *reads argument heap data; does not store the
+argument or any interior pointer into a result or global; result shares
+no identity with the argument unless declared via `resultAliases`.* The
+authoritative audit is performed in Phase 0 / the B0 report
+(`plans/borrow-inference-phase0-measurement.md` U0.3), verified against
+each function's actual `elm-kernel-cpp` implementation; the corrected v1
+allowlist is:
+`Utils.{equal,notEqual,compare,lt,le,gt,ge}`,
+`String.{length,startsWith,endsWith,contains}`,
+`JsArray.{length,unsafeGet}` (`unsafeGet index array`: `resultAliases =
+Just 1` — the result is interior data of the *array*, param 1),
+`Basics.*` numeric ops (scalar-anyway), `Debug.log` (`resultAliases =
+Just 1` — returns its second argument by identity) and `Debug.toString`
+(`resultAliases = Nothing` — fresh string). Growing the list is cheap,
+per-entry, independently testable — each upgrade is pure RC-op savings.
+
+*Corrections from the Phase-0 audit (the v1 draft list above these was
+partly wrong — recorded so the error is not reintroduced):* `List.length`
+and `String.isEmpty` are pure-Elm, not kernels — they never surface as
+`MonoVarKernel` and are handled by the Phase-3 SCC fixpoint as ordinary
+SpecIds, so a `KernelSigs` entry would be dead weight. `Console.write`
+is **not** read-only: it stores its `content` argument into a surviving
+`Task_Binding` stepped later by the scheduler (`POwned`), and it is an
+`eco/kernel` function tracked outside the ~322 `elm/core` kernels of
+§12.1 — dropped from the list, the all-owned default already covers it.
+`JsArray.unsafeGet`'s alias is param 1, not 0.
 
 ### 12.3 Kernel counting obligations (RC mode)
 
@@ -1503,10 +1551,15 @@ existing suites. B0–B3 are engine-independent; B3.5 is the solver-only
 handshake; B4+ are the optimization program, each gated on the census of
 the milestone before it.
 
-- **B0 — foundation report** (doc-only): the runtime-strategy call with
-  DS6's evidence; a cheap Perceus-style syntactic dup-site count;
-  the §12.3 kernel counting-audit checklist; the `rcManaged` v1 set
-  fixed; the §22.2 view-counting decision.
+- **B0 — foundation report** (doc-only): a *preliminary* runtime-strategy
+  lean argued from DS6's evidence and B0's own measurement (a cheap
+  Perceus-style syntactic dup-site count + the dynamic payoff ceiling);
+  the §12.3 kernel counting-audit checklist; the `rcManaged` v1 set fixed;
+  the §22.2 view-counting decision. The runtime-strategy call is only
+  *preliminary* at B0 — it is **revisited and made definitive against the
+  B2 analysis census** (§22.1), which measures would-be RC traffic
+  precisely rather than syntactically. B0 fixes the scope and the
+  audit; B2 fixes the go/no-go.
 - **B1 — foundations**: `Borrow/{Lifetime,Dsu}.elm` + unit/property
   tests (§19.1). No pipeline wiring.
 - **B2 — intra-def analysis + census**: `Rty/Constrain/Solve` wired as
