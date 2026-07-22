@@ -321,6 +321,18 @@ void *Allocator::allocateSlow(size_t size, Tag tag) {
     return tl_heap_->allocateSlow(size, tag);
 }
 
+// Inline-alloc slow path: minor GC + retry, no header init (HEAP_034).
+void *Allocator::allocateSlowRaw(size_t size) {
+    assert(tl_heap_ && "Thread not initialized - call initThread() first");
+    return tl_heap_->allocateSlowRaw(size);
+}
+
+// Address of the calling thread's nursery bump state (HEAP_034).
+void *Allocator::bumpState() {
+    assert(tl_heap_ && "Thread not initialized - call initThread() first");
+    return tl_heap_->getNursery().bumpState();
+}
+
 // Slow-path region: contiguous allocation, may GC.
 void *Allocator::allocateRegionSlow(size_t total) {
     assert(tl_heap_ && "Thread not initialized - call initThread() first");

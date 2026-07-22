@@ -2,6 +2,7 @@
 #define ECO_NURSERYSPACE_H
 
 #include <algorithm>
+#include <cstddef>
 #include <vector>
 #include "AllocatorCommon.hpp"
 #include "GCStats.hpp"
@@ -32,6 +33,26 @@ class NurserySpace {
 public:
     NurserySpace();
     ~NurserySpace();
+
+    // Current bump-allocation state. These ARE the allocator's working fields
+    // (not a mirror): every update site — init/reset, block advance,
+    // post-minor-GC — keeps the exported view coherent by construction.
+    // The layout (ptr at +0, end at +8) is ABI for the compiled-code inline
+    // allocation fast path (HEAP_034, plans/inline-nursery-allocation.md):
+    // eco_bump_state() exports this struct's address and the expandInlineAllocs
+    // backend pass emits `load ptr/end; bump; compare; store` against it.
+    // `end` is pre-clamped to min(block end, proactive-GC threshold trip) by
+    // computeAllocEndForBlock, so the single compare preserves all GC-trigger
+    // semantics.
+    struct NurseryBump {
+        char* ptr;   // Bump pointer within current from-space block.
+        char* end;   // End address of current from-space block (clamped).
+    };
+    static_assert(offsetof(NurseryBump, ptr) == 0 && offsetof(NurseryBump, end) == 8,
+                  "NurseryBump layout is ABI for the inline-alloc expansion");
+
+    // Address of the bump state (thread-stable; consumed by eco_bump_state).
+    NurseryBump* bumpState() { return &bump_; }
 
     // Allocates memory in the nursery using bump pointer. Returns nullptr if full.
     void *allocate(size_t size);
@@ -73,8 +94,7 @@ private:
 
     // Current allocation state (bump pointer allocation).
     size_t current_from_idx_;         // Index of active from-space block.
-    char* alloc_ptr_;                 // Bump pointer within current from-space block.
-    char* alloc_end_;                 // End address of current from-space block.
+    NurseryBump bump_;                // {ptr, end} — see the public NurseryBump doc.
 
     // GC state (active only during minorGC execution).
     size_t current_to_idx_;           // Index of active to-space block for evacuation.

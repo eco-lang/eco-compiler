@@ -750,13 +750,41 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
         // result_kind matching the wrapper's return ABI. The runtime stores
         // result_kind on the closure header so every dispatch path can cast
         // `closure->evaluator` correctly.
-        auto allocFuncK = runtime.getOrCreateAllocClosureK(rewriter);
-        auto arityConst = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(arity));
-        auto resultKindConst = rewriter.create<LLVM::ConstantOp>(loc, i8Ty,
-            rewriter.getI8IntegerAttr(static_cast<int8_t>(closureResultKind)));
-        auto allocCall = rewriter.create<LLVM::CallOp>(loc, allocFuncK,
-            ValueRange{funcPtr, arityConst, resultKindConst});
-        Value closureHPtr = allocCall.getResult();
+        Value closureHPtr;
+        uint64_t cloByteSize = layout::ClosureBaseSize +
+            static_cast<uint64_t>(arity) * layout::PtrSize;
+        if (inlineAllocEnabled() && cloByteSize <= 4096) {
+            // Inline nursery allocation (HEAP_034): marker + header
+            // (sizeField = value slot count) + evaluator store. The packed
+            // metadata word at +8 — which on the call path OVERWRITES what
+            // eco_alloc_closure_k initialised — is stored below as the sole
+            // init; result_kind/n_values/max_values/unboxed all live there.
+            // NOTE: closureStatsRecord (ECO_CLOSURE_STATS) lives inside
+            // eco_alloc_closure_k and is bypassed here — census workflows
+            // must run with ECO_INLINE_ALLOC=0.
+            uint64_t header = value_enc::composeHeader(
+                value_enc::TagClosure, 0, static_cast<uint64_t>(arity));
+            closureHPtr = emitInlineAllocWithHeader(
+                rewriter, loc, runtime, cloByteSize, header);
+            // Evaluator slot at +16: a CODE pointer (never GC-scanned; the
+            // Tag_Closure scan iterates value slots only) — plain ptr store,
+            // no barrier.
+            auto evOff = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+                static_cast<int64_t>(layout::ClosureEvaluatorOffset));
+            auto evSlot = rewriter.create<LLVM::GEPOp>(
+                loc, getHPtrLLVMType(*ctx), i8Ty, closureHPtr,
+                ValueRange{evOff});
+            rewriter.create<LLVM::StoreOp>(loc, funcPtr, evSlot,
+                                           /*alignment=*/8);
+        } else {
+            auto allocFuncK = runtime.getOrCreateAllocClosureK(rewriter);
+            auto arityConst = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(arity));
+            auto resultKindConst = rewriter.create<LLVM::ConstantOp>(loc, i8Ty,
+                rewriter.getI8IntegerAttr(static_cast<int8_t>(closureResultKind)));
+            auto allocCall = rewriter.create<LLVM::CallOp>(loc, allocFuncK,
+                ValueRange{funcPtr, arityConst, resultKindConst});
+            closureHPtr = allocCall.getResult();
+        }
 
         // Base pointer for the in-place stores. P2.5 R5
         // (plans/allocator-resolve-inlining.md): the closure was allocated a

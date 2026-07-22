@@ -13,6 +13,6 @@ module {
 }
 
 // CHECK: llvm.func @returns_record
-// CHECK: llvm.call @eco_alloc_record
+// CHECK: llvm.call @__eco_alloc_inline
 //
 // CHECK-NOT: llvm.struct<(i64, ptr<1>)>

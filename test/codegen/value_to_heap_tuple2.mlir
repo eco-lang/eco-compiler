@@ -14,4 +14,4 @@ module {
 // CHECK: llvm.func @value_to_heap_tuple2
 // CHECK: llvm.mlir.undef : !llvm.struct<(i64, ptr<1>)>
 // CHECK: llvm.extractvalue
-// CHECK: llvm.call @eco_alloc_tuple2
+// CHECK: llvm.call @__eco_alloc_inline

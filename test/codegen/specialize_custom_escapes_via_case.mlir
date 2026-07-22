@@ -21,6 +21,6 @@ module {
 }
 
 // CHECK: llvm.func @custom_into_case
-// CHECK: llvm.call @eco_alloc_custom
+// CHECK: llvm.call @__eco_alloc_inline
 //
 // CHECK-NOT: llvm.struct<(ptr<1>)>

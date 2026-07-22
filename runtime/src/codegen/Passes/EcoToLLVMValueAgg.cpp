@@ -230,6 +230,24 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
 
             int64_t mask = op.getUnboxedBitmap();
             if (mask == 0) mask = kindBitmapFor(elts);
+
+            // Inline nursery allocation (HEAP_034): marker + constant header
+            // store + fresh field stores; no zero-init needed (no safepoint
+            // can observe the object before its stores).
+            if (inlineAllocEnabled()) {
+                uint64_t header = value_enc::composeHeader(
+                    value_enc::TagTuple2,
+                    static_cast<uint64_t>(mask) & 0xF, layout::Tuple2Size);
+                Value tuple = emitInlineAllocWithHeader(
+                    rewriter, loc, runtime, layout::Tuple2Size, header);
+                emitFreshFieldStore(rewriter, loc, tuple,
+                    layout::Tuple2FirstOffset, a, elts[0]);
+                emitFreshFieldStore(rewriter, loc, tuple,
+                    layout::Tuple2FirstOffset + layout::PtrSize, b, elts[1]);
+                rewriter.replaceOp(op, tuple);
+                return success();
+            }
+
             auto unboxedVal = rewriter.create<LLVM::ConstantOp>(
                 loc, i32Ty, static_cast<int32_t>(mask));
 
@@ -291,6 +309,24 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
 
             int64_t mask = op.getUnboxedBitmap();
             if (mask == 0) mask = kindBitmapFor(elts);
+
+            // Inline nursery allocation (HEAP_034): see the Tuple2 arm.
+            if (inlineAllocEnabled()) {
+                uint64_t header = value_enc::composeHeader(
+                    value_enc::TagTuple3,
+                    static_cast<uint64_t>(mask) & 0x3F, layout::Tuple3Size);
+                Value tuple = emitInlineAllocWithHeader(
+                    rewriter, loc, runtime, layout::Tuple3Size, header);
+                emitFreshFieldStore(rewriter, loc, tuple,
+                    layout::Tuple3FirstOffset, a, elts[0]);
+                emitFreshFieldStore(rewriter, loc, tuple,
+                    layout::Tuple3FirstOffset + layout::PtrSize, b, elts[1]);
+                emitFreshFieldStore(rewriter, loc, tuple,
+                    layout::Tuple3FirstOffset + 2 * layout::PtrSize, c, elts[2]);
+                rewriter.replaceOp(op, tuple);
+                return success();
+            }
+
             auto unboxedVal = rewriter.create<LLVM::ConstantOp>(
                 loc, i32Ty, static_cast<int32_t>(mask));
 
@@ -353,6 +389,26 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                 extracted.push_back(extractField(rewriter, loc, agg, i, llvmElt));
             }
 
+            // Inline nursery allocation (HEAP_034): see the Heap
+            // RecordConstructOpLowering arm.
+            uint64_t recByteSize = layout::RecordBaseSize +
+                static_cast<uint64_t>(fieldCount) * layout::PtrSize;
+            if (inlineAllocEnabled() && recByteSize <= 4096) {
+                uint64_t header = value_enc::composeHeader(
+                    value_enc::TagRecord, 0, static_cast<uint64_t>(fieldCount));
+                Value objHPtr = emitInlineAllocWithHeader(
+                    rewriter, loc, runtime, recByteSize, header);
+                emitInlineAllocMetaWord(rewriter, loc, objHPtr,
+                                        static_cast<uint64_t>(mask));
+                for (int64_t i = 0; i < fieldCount; ++i) {
+                    emitFreshFieldStore(rewriter, loc, objHPtr,
+                        layout::RecordFieldsOffset + i * layout::PtrSize,
+                        extracted[i], fields[i]);
+                }
+                rewriter.replaceOp(op, objHPtr);
+                return success();
+            }
+
             auto fieldCountVal = rewriter.create<LLVM::ConstantOp>(
                 loc, i32Ty, static_cast<int32_t>(fieldCount));
             auto unboxedBitmapVal = rewriter.create<LLVM::ConstantOp>(
@@ -412,6 +468,31 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             for (int64_t i = 0; i < fieldCount; ++i) {
                 Type llvmElt = getTypeConverter()->convertType(fields[i]);
                 extracted.push_back(extractField(rewriter, loc, agg, i, llvmElt));
+            }
+
+            // Inline nursery allocation (HEAP_034): see the Heap
+            // CustomConstructOpLowering arm (ctor|bitmap<<16 meta word folds
+            // the eco_set_unboxed call away).
+            uint64_t cusByteSize = layout::CustomBaseSize +
+                static_cast<uint64_t>(fieldCount) * layout::PtrSize;
+            if (inlineAllocEnabled() && cusByteSize <= 4096) {
+                uint64_t bitmap = static_cast<uint64_t>(mask);
+                assert((bitmap >> 48) == 0 &&
+                       "Custom unboxed bitmap overflow (>48 bits)");
+                uint64_t header = value_enc::composeHeader(
+                    value_enc::TagCustom, 0, static_cast<uint64_t>(fieldCount));
+                uint64_t meta = (static_cast<uint64_t>(op.getTag()) & 0xFFFF)
+                              | (bitmap << 16);
+                Value objHPtr = emitInlineAllocWithHeader(
+                    rewriter, loc, runtime, cusByteSize, header);
+                emitInlineAllocMetaWord(rewriter, loc, objHPtr, meta);
+                for (int64_t i = 0; i < fieldCount; ++i) {
+                    emitFreshFieldStore(rewriter, loc, objHPtr,
+                        layout::CustomFieldsOffset + i * layout::PtrSize,
+                        extracted[i], fields[i]);
+                }
+                rewriter.replaceOp(op, objHPtr);
+                return success();
             }
 
             auto tagVal = rewriter.create<LLVM::ConstantOp>(
@@ -491,6 +572,24 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                 else if (ht.isF64())  kind = 2;
                 else if (ht.isInteger(16)) kind = 3;
             }
+            // Inline nursery allocation (HEAP_034): see the Heap
+            // ListConstructOpLowering arm. Post-derivation, `kind`
+            // corresponds 1:1 with cons.getHead()'s type, so
+            // emitFreshFieldStore's type dispatch reproduces the kind
+            // switch below exactly.
+            if (inlineAllocEnabled()) {
+                uint64_t header = value_enc::composeHeader(
+                    value_enc::TagCons, kind, layout::ConsSize);
+                Value consHPtr = emitInlineAllocWithHeader(
+                    rewriter, loc, runtime, layout::ConsSize, header);
+                emitFreshFieldStore(rewriter, loc, consHPtr,
+                    layout::ConsHeadOffset, head, cons.getHead());
+                emitFreshFieldStore(rewriter, loc, consHPtr,
+                    layout::ConsTailOffset, tail, cons.getTail());
+                rewriter.replaceOp(op, consHPtr);
+                return success();
+            }
+
             auto kindVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
                 static_cast<int32_t>(kind));
 
@@ -700,13 +799,33 @@ struct MakeClosureOpLowering : public OpConversionPattern<MakeClosureOp> {
 
         // Resolve the function symbol and allocate a closure of size `arity`.
         Value funcPtr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, op.getFunction());
-        auto arityConst = rewriter.create<LLVM::ConstantOp>(
-            loc, i32Ty, static_cast<int32_t>(arity));
-        Value closureHPtr = emitAllocWithSafepoint(
-            op, rewriter, runtime,
-            runtime.getOrCreateAllocClosure(rewriter),
-            ValueRange{funcPtr, arityConst},
-            adaptor.getLiveRoots());
+        Value closureHPtr;
+        uint64_t cloByteSize = layout::ClosureBaseSize +
+            static_cast<uint64_t>(arity) * layout::PtrSize;
+        if (inlineAllocEnabled() && cloByteSize <= 4096) {
+            // Inline nursery allocation (HEAP_034): see papCreate's arm
+            // (EcoToLLVMClosures.cpp). The packed word store below is the
+            // sole +8 init on this path.
+            uint64_t header = value_enc::composeHeader(
+                value_enc::TagClosure, 0, static_cast<uint64_t>(arity));
+            closureHPtr = emitInlineAllocWithHeader(
+                rewriter, loc, runtime, cloByteSize, header);
+            auto evOff = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+                static_cast<int64_t>(layout::ClosureEvaluatorOffset));
+            auto evSlot = rewriter.create<LLVM::GEPOp>(
+                loc, getHPtrLLVMType(*ctx), i8Ty, closureHPtr,
+                ValueRange{evOff});
+            rewriter.create<LLVM::StoreOp>(loc, funcPtr, evSlot,
+                                           /*alignment=*/8);
+        } else {
+            auto arityConst = rewriter.create<LLVM::ConstantOp>(
+                loc, i32Ty, static_cast<int32_t>(arity));
+            closureHPtr = emitAllocWithSafepoint(
+                op, rewriter, runtime,
+                runtime.getOrCreateAllocClosure(rewriter),
+                ValueRange{funcPtr, arityConst},
+                adaptor.getLiveRoots());
+        }
 
         // Base pointer for the in-place stores. P2.5 R5
         // (plans/allocator-resolve-inlining.md): the closure was allocated a

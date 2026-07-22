@@ -58,7 +58,7 @@ namespace Elm {
 NurserySpace::NurserySpace() :
     config_(nullptr), allocator_(nullptr), block_size_(0), from_is_low_(true),
     low_base_(nullptr), low_end_(nullptr), high_base_(nullptr), high_end_(nullptr),
-    current_from_idx_(0), alloc_ptr_(nullptr), alloc_end_(nullptr),
+    current_from_idx_(0), bump_{nullptr, nullptr},
     current_to_idx_(0), copy_ptr_(nullptr), copy_end_(nullptr),
     scan_block_idx_(0), scan_ptr_(nullptr),
     growth_threshold_(NURSERY_GROWTH_THRESHOLD),
@@ -119,8 +119,8 @@ void NurserySpace::initialize(Allocator* allocator, const HeapConfig* config) {
     from_is_low_ = true;
     current_from_idx_ = 0;
     refreshCapacityCaches();
-    alloc_ptr_ = low_blocks_[0];
-    alloc_end_ = computeAllocEndForBlock(low_blocks_[0]);
+    bump_.ptr = low_blocks_[0];
+    bump_.end = computeAllocEndForBlock(low_blocks_[0]);
 
 #if ENABLE_GC_STATS
     stats.nursery_size_bytes =
@@ -163,8 +163,8 @@ void NurserySpace::initialize(ThreadLocalHeap* heap, const HeapConfig* config) {
     from_is_low_ = true;
     current_from_idx_ = 0;
     refreshCapacityCaches();
-    alloc_ptr_ = low_blocks_[0];
-    alloc_end_ = computeAllocEndForBlock(low_blocks_[0]);
+    bump_.ptr = low_blocks_[0];
+    bump_.end = computeAllocEndForBlock(low_blocks_[0]);
 
 #if ENABLE_GC_STATS
     stats.nursery_size_bytes =
@@ -209,8 +209,8 @@ void NurserySpace::reset(OldGenSpace &oldgen, const HeapConfig* new_config) {
     from_is_low_ = true;
     current_from_idx_ = 0;
     refreshCapacityCaches();
-    alloc_ptr_ = low_blocks_[0];
-    alloc_end_ = computeAllocEndForBlock(low_blocks_[0]);
+    bump_.ptr = low_blocks_[0];
+    bump_.end = computeAllocEndForBlock(low_blocks_[0]);
 
     // Reset the root set.
     root_set.reset();
@@ -252,9 +252,9 @@ void *NurserySpace::allocate(size_t size) {
     // bump-pointer body is too short for `clock_gettime` brackets to be
     // anything but pure overhead (~25% of total CPU on the Stage 7 profile).
     // Slow-path timing is done inside `allocateSlow` below.
-    if (alloc_ptr_ + size <= alloc_end_) {
-        void* result = alloc_ptr_;
-        alloc_ptr_ += size;
+    if (bump_.ptr + size <= bump_.end) {
+        void* result = bump_.ptr;
+        bump_.ptr += size;
         GC_STATS_MINOR_RECORD_ALLOC(stats, size);
         return result;
     }
@@ -276,31 +276,31 @@ void* NurserySpace::allocateSlow(size_t size) {
 
     std::vector<char*>& from_blocks = from_is_low_ ? low_blocks_ : high_blocks_;
 
-    // The fast path fell through (alloc_ptr_ + size > alloc_end_).
-    // `alloc_end_` is the earlier of (block end, threshold trip point) —
-    // see computeAllocEndForBlock. The disambiguator is `alloc_end_ <
+    // The fast path fell through (bump_.ptr + size > bump_.end).
+    // `bump_.end` is the earlier of (block end, threshold trip point) —
+    // see computeAllocEndForBlock. The disambiguator is `bump_.end <
     // block_end`: that means the threshold cap fired inside this block,
     // and the right action is to signal a minor GC (`result` stays null).
-    // Otherwise the block is genuinely exhausted (alloc_end_ == block_end)
+    // Otherwise the block is genuinely exhausted (bump_.end == block_end)
     // and we should advance to the next block.
 
     char* block_start = from_blocks[current_from_idx_];
     char* block_end = block_start + block_size_;
 
-    if (alloc_end_ >= block_end) {
+    if (bump_.end >= block_end) {
         // Block exhausted: try next block in from-space.
         ++current_from_idx_;
         if (current_from_idx_ < from_blocks.size()) {
-            alloc_ptr_ = from_blocks[current_from_idx_];
-            alloc_end_ = computeAllocEndForBlock(alloc_ptr_);
+            bump_.ptr = from_blocks[current_from_idx_];
+            bump_.end = computeAllocEndForBlock(bump_.ptr);
 
-            if (alloc_ptr_ + size <= alloc_end_) {
-                result = alloc_ptr_;
-                alloc_ptr_ += size;
+            if (bump_.ptr + size <= bump_.end) {
+                result = bump_.ptr;
+                bump_.ptr += size;
                 GC_STATS_MINOR_RECORD_ALLOC(stats, size);
             }
             // Else the new block is also threshold-clamped
-            // (alloc_end_ <= alloc_ptr_ + size). Signal GC. Note:
+            // (bump_.end <= bump_.ptr + size). Signal GC. Note:
             // computeAllocEndForBlock returns block_end once already_full
             // passes threshold_total_bytes_, so this can only happen when
             // the trip point falls exactly on a block boundary or earlier
@@ -326,7 +326,7 @@ size_t NurserySpace::bytesAllocated() const {
     const std::vector<char*>& from_blocks = from_is_low_ ? low_blocks_ : high_blocks_;
     size_t bytes = current_from_idx_ * block_size_;
     if (current_from_idx_ < from_blocks.size()) {
-        bytes += static_cast<size_t>(alloc_ptr_ - from_blocks[current_from_idx_]);
+        bytes += static_cast<size_t>(bump_.ptr - from_blocks[current_from_idx_]);
     }
     return bytes;
 }
@@ -511,7 +511,7 @@ void NurserySpace::checkAndGrow() {
     updateBounds();
 
     // Both low and high block counts changed; refresh capacity caches so
-    // the post-GC alloc_end_ reflects the new threshold. (from_is_low_ may
+    // the post-GC bump_.end reflects the new threshold. (from_is_low_ may
     // have just been flipped by the caller — refresh against whichever
     // side is now from-space.)
     refreshCapacityCaches();
@@ -993,7 +993,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     from_is_low_ = !from_is_low_;
 
     // The from-space changed; refresh capacity-derived caches before deriving
-    // the new alloc_end_. (Block counts of the two spaces are kept equal,
+    // the new bump_.end. (Block counts of the two spaces are kept equal,
     // but we still want from_capacity_bytes_ recomputed against the
     // possibly-new from-blocks vector.)
     refreshCapacityCaches();
@@ -1002,9 +1002,9 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // After swap: the old to_blocks (with survivors) is now from-space.
     std::vector<char*>& new_from = from_is_low_ ? low_blocks_ : high_blocks_;
     current_from_idx_ = current_to_idx_;
-    alloc_ptr_ = copy_ptr_;
+    bump_.ptr = copy_ptr_;
     if (current_from_idx_ < new_from.size()) {
-        alloc_end_ = computeAllocEndForBlock(new_from[current_from_idx_]);
+        bump_.end = computeAllocEndForBlock(new_from[current_from_idx_]);
     }
 
 #if ENABLE_GC_STATS
@@ -1014,7 +1014,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
         to_space_used += block_size_;
     }
     if (current_from_idx_ < new_from.size()) {
-        to_space_used += (alloc_ptr_ - new_from[current_from_idx_]);
+        to_space_used += (bump_.ptr - new_from[current_from_idx_]);
     }
     size_t bytes_freed = from_space_used > to_space_used ? from_space_used - to_space_used : 0;
     uint64_t elapsed_ns = GC_STATS_TIMER_ELAPSED_NS(gc_start);
@@ -1956,7 +1956,7 @@ void NurserySpace::poisonOldFromSpaceUsedRegion() {
     for (size_t i = 0; i <= current_from_idx_ && i < from_blocks.size(); ++i) {
         char* block_start = from_blocks[i];
         char* block_end   = block_start + block_size_;
-        char* end         = (i == current_from_idx_) ? alloc_ptr_ : block_end;
+        char* end         = (i == current_from_idx_) ? bump_.ptr : block_end;
         if (end > block_start) {
             std::memset(block_start, kPoisonByte,
                         static_cast<size_t>(end - block_start));
@@ -1978,15 +1978,15 @@ void NurserySpace::poisonOldFromSpaceUsedRegion() {
 void NurserySpace::preEvacuationFromSpaceWalk() {
     // Restricted to the current from-space block only: prior ("completed")
     // blocks may have tail gaps left by the allocator's slow-path
-    // transition (alloc_ptr_ < alloc_end_ when an allocation overshoots
-    // alloc_end_). There's no block_end_of_objects_-style tracking for
+    // transition (bump_.ptr < bump_.end when an allocation overshoots
+    // bump_.end). There's no block_end_of_objects_-style tracking for
     // from-space, so we can't safely linear-walk those tails. The current
-    // block ends at alloc_ptr_, so it's safe to walk.
+    // block ends at bump_.ptr, so it's safe to walk.
     std::vector<char*>& from_blocks = from_is_low_ ? low_blocks_ : high_blocks_;
     if (from_blocks.empty() || current_from_idx_ >= from_blocks.size()) return;
 
     char* block_start = from_blocks[current_from_idx_];
-    char* end = alloc_ptr_;
+    char* end = bump_.ptr;
     char* scan = block_start;
     while (scan < end) {
         Header* h = getHeader(scan);
@@ -2087,14 +2087,14 @@ bool NurserySpace::isInFromSpaceAllocatedRegion(void* ptr) const {
     // — single comparison resolves the common case before any scan.
     if (current_from_idx_ < from_blocks.size()) {
         char* cur_start = from_blocks[current_from_idx_];
-        if (p >= cur_start && p < alloc_ptr_) return true;
+        if (p >= cur_start && p < bump_.ptr) return true;
     }
 
     size_t i = findBlockContaining(from_blocks, p, block_size_);
     if (i == SIZE_MAX) return false;
     if (i < current_from_idx_) return true;     // Fully filled earlier block.
     if (i > current_from_idx_) return false;    // Block past current alloc.
-    return p < alloc_ptr_;                      // Current block: bump bound.
+    return p < bump_.ptr;                      // Current block: bump bound.
 }
 
 bool NurserySpace::isInToSpaceAllocatedRegion(void* ptr) const {
@@ -2141,7 +2141,7 @@ void NurserySpace::debugAssertValidNurseryPointer(void* ptr) const {
             "  from_space: current_from_idx=%zu alloc_ptr=%p (%zu blocks)\n"
             "  to_space:   current_to_idx=%zu   copy_ptr=%p  (%zu blocks)\n",
             ptr, (int)in_minor_gc_, (int)from_is_low_,
-            current_from_idx_, (void*)alloc_ptr_, from_blocks.size(),
+            current_from_idx_, (void*)bump_.ptr, from_blocks.size(),
             current_to_idx_,   (void*)copy_ptr_,  to_blocks.size());
         for (size_t i = 0; i < from_blocks.size(); ++i) {
             char* bs = from_blocks[i];

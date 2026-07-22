@@ -21,7 +21,7 @@ module {
 // CHECK: llvm.func @value_make_closure
 // CHECK: llvm.mlir.undef : !llvm.struct<(i64, ptr<1>)>
 // CHECK: llvm.insertvalue
-// CHECK: llvm.call @eco_alloc_closure
+// CHECK: llvm.call @__eco_alloc_inline
 // P2.5 R5 (plans/allocator-resolve-inlining.md): the closure is FRESH (no
 // safepoint between alloc and stores), so there is no resolve and no
 // forwarding diamond — stores go directly through the AS1 alloc result.

@@ -88,6 +88,20 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_allocate),
                 llvm::JITSymbolFlags::Exported);
 
+        // Inline nursery allocation (plans/inline-nursery-allocation.md,
+        // HEAP_034): bump-state accessor + uninitialized-storage slow path.
+        // The `__eco_alloc_inline` marker itself never survives to execution
+        // (expanded pre-RS4GC by expandInlineAllocs), so it is deliberately
+        // NOT mapped — a surviving marker fails the JIT link loudly.
+        symbolMap[interner("eco_bump_state")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_bump_state),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_alloc_inline_slow")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_inline_slow),
+                llvm::JITSymbolFlags::Exported);
+
         // Fast allocation functions (bump-pointer only, no GC, return 0 on failure).
         symbolMap[interner("eco_alloc_custom_fast")] =
             llvm::orc::ExecutorSymbolDef(

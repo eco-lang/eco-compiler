@@ -643,6 +643,18 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateGetTag(OpBuilder &builder) const {
     return getOrCreateFunc(builder, "eco_get_tag", funcTy, /*gcLeaf=*/true);
 }
 
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocInlineMarker(OpBuilder &builder) const {
+    // __eco_alloc_inline(size: i64) -> ptr as1. Inline nursery allocation
+    // marker (plans/inline-nursery-allocation.md, HEAP_034): gc-leaf,
+    // declare-only; expanded to the bump-pointer fast/slow diamond by
+    // expandInlineAllocs (EcoBackend.cpp) before every RS4GC flavour and
+    // before partition splitting, so it never reaches codegen. The size
+    // operand MUST be a compile-time constant (8-aligned, <= 4096) — the
+    // expansion asserts it.
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY});
+    return getOrCreateFunc(builder, "__eco_alloc_inline", funcTy, /*gcLeaf=*/true);
+}
+
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateGetTagInlineMarker(OpBuilder &builder) const {
     // __eco_get_tag_inline(hptr) -> i32 ctor tag. P2.5 R1b marker
     // (plans/allocator-resolve-inlining.md): gc-leaf, declare-only; expanded
@@ -1171,6 +1183,7 @@ void EcoRuntime::materializeAllRuntimeDecls(OpBuilder &b) const {
     getOrCreateResolveHPtr(b); getOrCreateGetTag(b);
     getOrCreateResolveFwdMarker(b); getOrCreateFollowForward(b);
     getOrCreateGetTagInlineMarker(b);
+    getOrCreateAllocInlineMarker(b);
     getOrCreateConsHeadI64(b); getOrCreateConsHeadF64(b); getOrCreateConsHeadI16(b);
     getOrCreateTuple2Get0I64(b); getOrCreateTuple2Get1I64(b);
     getOrCreateTuple2Get0F64(b); getOrCreateTuple2Get1F64(b);

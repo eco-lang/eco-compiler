@@ -140,6 +140,16 @@ void eco_store_record_field_f64(HPtr record, uint32_t index, double value);
 HPtr eco_alloc_tuple2_uninit(uint32_t unboxed_mask);
 HPtr eco_alloc_tuple3_uninit(uint32_t unboxed_mask);
 HPtr eco_alloc_cons_uninit(uint32_t head_kind);
+
+//===----------------------------------------------------------------------===//
+// Inline nursery allocation (plans/inline-nursery-allocation.md, HEAP_034)
+//===----------------------------------------------------------------------===//
+
+// Address of the calling thread's nursery bump state {ptr at +0, end at +8}.
+void* eco_bump_state(void);
+// Inline-bump slow path: block advance / minor GC; returns UNINITIALIZED
+// storage — caller stores header + all fields before its next safepoint.
+HPtr eco_alloc_inline_slow(uint64_t size);
 void eco_store_tuple_field(HPtr tuple, uint32_t index, HPtr value);
 void eco_store_tuple_field_i64(HPtr tuple, uint32_t index, int64_t value);
 void eco_store_tuple_field_f64(HPtr tuple, uint32_t index, double value);

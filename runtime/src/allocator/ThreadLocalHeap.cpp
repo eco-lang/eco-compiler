@@ -227,6 +227,30 @@ void* ThreadLocalHeap::allocateSlow(size_t size, Tag tag) {
     return nullptr;
 }
 
+void* ThreadLocalHeap::allocateSlowRaw(size_t size) {
+    // Slow path for the compiled-code inline nursery bump
+    // (eco_alloc_inline_slow, HEAP_034): minor GC + retry, but NO header
+    // init — the caller composes and stores the full header word itself
+    // before its next safepoint. Inline-alloc sizes are compile-time
+    // constants far below the large-object threshold, so assert rather than
+    // route to old gen (the caller's fresh-object stores assume a nursery
+    // placement; old-gen placement would create unremembered old→young
+    // edges).
+    size = (size + 7) & ~static_cast<size_t>(7);
+    assert(size < config_->large_object_threshold &&
+           "allocateSlowRaw: inline-alloc size must be below the LOT threshold");
+
+    minorGC();
+
+    void* obj = nursery_.allocate(size);
+    if (obj) {
+        return obj;
+    }
+
+    assert(false && "Failed to allocate after GC in slow path (raw).");
+    return nullptr;
+}
+
 void* ThreadLocalHeap::allocateRegionSlow(size_t total) {
     // Slow path for contiguous region allocation. May GC.
     // Caller handles header init for each sub-object.

@@ -18,7 +18,7 @@ module {
 }
 
 // CHECK: llvm.func @returns_tuple
-// CHECK: llvm.call @eco_alloc_tuple2
+// CHECK: llvm.call @__eco_alloc_inline
 //
 // No value-aggregate machinery should appear for this function.
 // CHECK-NOT: llvm.struct<(i64, i64)>

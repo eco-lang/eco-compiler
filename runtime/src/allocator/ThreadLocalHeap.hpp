@@ -77,6 +77,14 @@ public:
     void* allocateSlow(size_t size, Tag tag);
 
     /**
+     * Slow path for the compiled-code inline nursery bump (HEAP_034):
+     * minor GC + retry, NO header init (the caller stores the full header
+     * word before its next safepoint). Size must be below the large-object
+     * threshold. Always succeeds or aborts.
+     */
+    void* allocateSlowRaw(size_t size);
+
+    /**
      * Slow-path region allocation: allocates a contiguous region of total bytes.
      * May trigger GC. Returns raw pointer to start of region.
      * Caller slices into per-object chunks and initializes headers inline.

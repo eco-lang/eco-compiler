@@ -12,4 +12,4 @@ module {
 }
 
 // CHECK: llvm.func @value_to_heap_tuple3
-// CHECK: llvm.call @eco_alloc_tuple3
+// CHECK: llvm.call @__eco_alloc_inline

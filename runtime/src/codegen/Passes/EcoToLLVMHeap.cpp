@@ -3,16 +3,26 @@
 // This file implements lowering patterns for ECO heap operations:
 // box, unbox, allocate, construct, and project operations.
 //
-// Allocation ops are lowered to calls to runtime C ABI functions (eco_alloc_*).
-// These functions may trigger GC. GC root tracking is handled by LLVM's
+// Allocation takes one of three forms (GC root tracking is handled by LLVM's
 // RewriteStatepointsForGC (RS4GC) pass, which automatically inserts
 // gc.statepoint/gc.relocate around calls to non-gc-leaf functions in
-// functions with gc "eco-gc". GC pointers are identified as ptr addrspace(1).
+// functions with gc "eco-gc"; GC pointers are identified as ptr addrspace(1)):
 //
-// Fast/slow allocation splitting is available in the runtime (eco_alloc_*_fast/slow)
-// but is not yet used in codegen — allocation calls use the unified functions
-// that handle GC internally. The fast/slow split will be enabled once the
-// statepoint-based approach is validated.
+// 1. INLINE NURSERY BUMP (HEAP_034, plans/inline-nursery-allocation.md, the
+//    default): statically-sized construct/box/closure sites emit the
+//    `__eco_alloc_inline(size)` marker + a constant header-word store +
+//    fresh field stores (emitFreshFieldStore). expandInlineAllocs
+//    (EcoBackend.cpp, pre-RS4GC) expands the marker to a bump-pointer
+//    fast/slow diamond against eco_bump_state()'s {ptr, end}; only the
+//    slow edge (eco_alloc_inline_slow) is a statepoint.
+//    `ECO_INLINE_ALLOC=0` restores form 2 (temporary rollout env, N6).
+// 2. UNIFIED RUNTIME CALLS (eco_alloc_*): statepointed calls that handle GC
+//    internally — the fallback for dynamically-sized/fill-later classes
+//    (eco.allocate, allocate_ctor, allocate_string, allocate_closure,
+//    strings/arrays) and the ECO_INLINE_ALLOC=0 A/B leg.
+// 3. ALLOCATION GROUPS (eco.gc_group_size >= 2, lowerAllocGroups below):
+//    one region fast/slow diamond for a whole group of adjacent allocs
+//    (gc-leaf eco_gc_alloc_region_fast + statepointed region_slow).
 //
 //===----------------------------------------------------------------------===//
 
@@ -41,6 +51,35 @@ static_assert(eco::detail::value_enc::TagCons == Elm::Tag_Cons,
               "value_enc::TagCons out of sync with Elm::Tag_Cons");
 static_assert(eco::detail::value_enc::TagCustom == Elm::Tag_Custom,
               "value_enc::TagCustom out of sync with Elm::Tag_Custom");
+// Inline nursery allocation (plans/inline-nursery-allocation.md, HEAP_034):
+// the converted lowerings compose full header words from these tags. The
+// bitfield SHIFTS cannot be static_assert-ed (implementation-defined
+// packing) — they are pinned at runtime by testHeaderWordComposition.
+static_assert(eco::detail::value_enc::TagInt == Elm::Tag_Int,
+              "value_enc::TagInt out of sync with Elm::Tag_Int");
+static_assert(eco::detail::value_enc::TagFloat == Elm::Tag_Float,
+              "value_enc::TagFloat out of sync with Elm::Tag_Float");
+static_assert(eco::detail::value_enc::TagChar == Elm::Tag_Char,
+              "value_enc::TagChar out of sync with Elm::Tag_Char");
+static_assert(eco::detail::value_enc::TagTuple2 == Elm::Tag_Tuple2,
+              "value_enc::TagTuple2 out of sync with Elm::Tag_Tuple2");
+static_assert(eco::detail::value_enc::TagTuple3 == Elm::Tag_Tuple3,
+              "value_enc::TagTuple3 out of sync with Elm::Tag_Tuple3");
+static_assert(eco::detail::value_enc::TagRecord == Elm::Tag_Record,
+              "value_enc::TagRecord out of sync with Elm::Tag_Record");
+static_assert(eco::detail::value_enc::TagClosure == Elm::Tag_Closure,
+              "value_enc::TagClosure out of sync with Elm::Tag_Closure");
+// Inline-alloc byte-size constants must match the runtime structs.
+static_assert(eco::detail::layout::Tuple2Size == sizeof(Elm::Tuple2) &&
+              eco::detail::layout::Tuple3Size == sizeof(Elm::Tuple3) &&
+              eco::detail::layout::ConsSize == sizeof(Elm::Cons) &&
+              eco::detail::layout::BoxedPrimSize == sizeof(Elm::ElmInt) &&
+              eco::detail::layout::BoxedPrimSize == sizeof(Elm::ElmFloat) &&
+              eco::detail::layout::BoxedPrimSize == sizeof(Elm::ElmChar) &&
+              eco::detail::layout::RecordBaseSize == sizeof(Elm::Record) &&
+              eco::detail::layout::CustomBaseSize == sizeof(Elm::Custom) &&
+              eco::detail::layout::ClosureBaseSize == sizeof(Elm::Closure),
+              "inline-alloc layout:: sizes drifted from Heap.hpp");
 
 namespace {
 
@@ -173,6 +212,27 @@ struct BoxOpLowering : public OpConversionPattern<BoxOp> {
         Value result;
 
         auto liveRoots = adaptor.getLiveRoots();
+
+        // Inline nursery allocation (HEAP_034): boxed Int/Float/Char are
+        // header + one payload slot; emitFreshFieldStore's type dispatch
+        // (i64 direct, f64 bitcast, i16 zext — the zext fully defines the
+        // Char slot, a refinement over the runtime's u16-only write).
+        // Bool (i1) keeps the embedded-constant path below (CGEN_019).
+        if (inlineAllocEnabled() &&
+            (inputType.isInteger(64) || inputType.isF64() ||
+             inputType.isInteger(16))) {
+            uint64_t tag = inputType.isInteger(64) ? value_enc::TagInt
+                         : inputType.isF64()       ? value_enc::TagFloat
+                                                   : value_enc::TagChar;
+            uint64_t header =
+                value_enc::composeHeader(tag, 0, layout::BoxedPrimSize);
+            Value obj = emitInlineAllocWithHeader(
+                rewriter, loc, runtime, layout::BoxedPrimSize, header);
+            emitFreshFieldStore(rewriter, loc, obj, layout::HeaderSize,
+                                input, inputType);
+            rewriter.replaceOp(op, obj);
+            return success();
+        }
 
         if (inputType.isInteger(64)) {
             // Box i64 -> eco_alloc_int with safepoint marker
@@ -373,6 +433,28 @@ struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
         Value tailVal  = adaptor.getTail();
         // 2-bit kind: 0=boxed, 1=Int(i64), 2=Float(f64), 3=Char(i16).
         uint32_t headKind = static_cast<uint32_t>(op.getHeadKind()) & 0x3;
+
+        // Inline nursery allocation (HEAP_034): marker + header (head kind
+        // in Header.unboxed) + fresh head/tail stores — cons goes from
+        // THREE runtime calls per cell (alloc + head store + tail store,
+        // the R5 Part 1 leftovers) to zero on the fast path. The head
+        // operand's type corresponds 1:1 with head_kind (Bool heads are
+        // always boxed !eco.value, REP invariants), so emitFreshFieldStore's
+        // type dispatch reproduces the kind switch below exactly. No
+        // zero-init: no safepoint can observe the cell before its stores.
+        if (inlineAllocEnabled()) {
+            uint64_t header = value_enc::composeHeader(
+                value_enc::TagCons, headKind, layout::ConsSize);
+            Value consHPtr = emitInlineAllocWithHeader(
+                rewriter, loc, runtime, layout::ConsSize, header);
+            emitFreshFieldStore(rewriter, loc, consHPtr,
+                layout::ConsHeadOffset, headLLVM, op.getHead().getType());
+            emitFreshFieldStore(rewriter, loc, consHPtr,
+                layout::ConsTailOffset, tailVal, op.getTail().getType());
+            rewriter.replaceOp(op, consHPtr);
+            return success();
+        }
+
         auto headKindVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, headKind);
 
         // Alloc uninit with head_kind set up-front so a collection between
@@ -554,6 +636,26 @@ struct Tuple2ConstructOpLowering : public OpConversionPattern<Tuple2ConstructOp>
         Type bOrig = op.getB().getType();
 
         int64_t unboxedMask = op.getUnboxedBitmap();
+
+        // Inline nursery allocation (HEAP_034): bump-diamond marker + one
+        // constant header store + fresh field stores — zero calls on the
+        // fast path. sizeField for Tuple2 = byte size (initHeaderForTag
+        // default arm).
+        if (inlineAllocEnabled()) {
+            uint64_t header = value_enc::composeHeader(
+                value_enc::TagTuple2,
+                static_cast<uint64_t>(unboxedMask) & 0xF,
+                layout::Tuple2Size);
+            Value tuple = emitInlineAllocWithHeader(
+                rewriter, loc, runtime, layout::Tuple2Size, header);
+            emitFreshFieldStore(rewriter, loc, tuple,
+                layout::Tuple2FirstOffset, aLLVM, aOrig);
+            emitFreshFieldStore(rewriter, loc, tuple,
+                layout::Tuple2FirstOffset + layout::PtrSize, bLLVM, bOrig);
+            rewriter.replaceOp(op, tuple);
+            return success();
+        }
+
         auto unboxedVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
             static_cast<int32_t>(unboxedMask));
 
@@ -626,6 +728,25 @@ struct Tuple3ConstructOpLowering : public OpConversionPattern<Tuple3ConstructOp>
         Type cOrig = op.getC().getType();
 
         int64_t unboxedMask = op.getUnboxedBitmap();
+
+        // Inline nursery allocation (HEAP_034): see the Tuple2 arm.
+        if (inlineAllocEnabled()) {
+            uint64_t header = value_enc::composeHeader(
+                value_enc::TagTuple3,
+                static_cast<uint64_t>(unboxedMask) & 0x3F,
+                layout::Tuple3Size);
+            Value tuple = emitInlineAllocWithHeader(
+                rewriter, loc, runtime, layout::Tuple3Size, header);
+            emitFreshFieldStore(rewriter, loc, tuple,
+                layout::Tuple3FirstOffset, aLLVM, aOrig);
+            emitFreshFieldStore(rewriter, loc, tuple,
+                layout::Tuple3FirstOffset + layout::PtrSize, bLLVM, bOrig);
+            emitFreshFieldStore(rewriter, loc, tuple,
+                layout::Tuple3FirstOffset + 2 * layout::PtrSize, cLLVM, cOrig);
+            rewriter.replaceOp(op, tuple);
+            return success();
+        }
+
         auto unboxedVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
             static_cast<int32_t>(unboxedMask));
 
@@ -795,6 +916,29 @@ struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp>
         auto fields = allOperands.take_front(fieldCount);
         auto liveRoots = allOperands.drop_front(fieldCount);
 
+        // Inline nursery allocation (HEAP_034): marker + header (sizeField =
+        // field count) + unboxed-bitmap meta word + fresh field stores.
+        // Oversized records (> the expansion's 4096-byte bound) keep the
+        // call path.
+        uint64_t recByteSize =
+            layout::RecordBaseSize + static_cast<uint64_t>(fieldCount) * layout::PtrSize;
+        if (inlineAllocEnabled() && recByteSize <= 4096) {
+            uint64_t header = value_enc::composeHeader(
+                value_enc::TagRecord, 0, static_cast<uint64_t>(fieldCount));
+            Value objHPtr = emitInlineAllocWithHeader(
+                rewriter, loc, runtime, recByteSize, header);
+            emitInlineAllocMetaWord(rewriter, loc, objHPtr,
+                                    static_cast<uint64_t>(unboxedBitmap));
+            auto origFieldsInl = op.getFields();
+            for (int64_t i = 0; i < fieldCount; i++) {
+                emitFreshFieldStore(rewriter, loc, objHPtr,
+                    layout::RecordFieldsOffset + i * layout::PtrSize,
+                    fields[i], origFieldsInl[i].getType());
+            }
+            rewriter.replaceOp(op, objHPtr);
+            return success();
+        }
+
         auto fieldCountVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
             static_cast<int32_t>(fieldCount));
         auto unboxedBitmapVal = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, unboxedBitmap);
@@ -911,6 +1055,33 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
         auto setUnboxedFunc = runtime.getOrCreateSetUnboxed(rewriter);
 
         int64_t opSize = op.getSize();
+
+        // Inline nursery allocation (HEAP_034): marker + header (sizeField =
+        // field count) + ctor|bitmap<<16 meta word (folds the separate
+        // eco_set_unboxed call away) + fresh field stores.
+        uint64_t cusByteSize =
+            layout::CustomBaseSize + static_cast<uint64_t>(opSize) * layout::PtrSize;
+        if (inlineAllocEnabled() && cusByteSize <= 4096) {
+            uint64_t bitmap = static_cast<uint64_t>(op.getUnboxedBitmap());
+            assert((bitmap >> 48) == 0 && "Custom unboxed bitmap overflow (>48 bits)");
+            uint64_t header = value_enc::composeHeader(
+                value_enc::TagCustom, 0, static_cast<uint64_t>(opSize));
+            uint64_t meta = (static_cast<uint64_t>(op.getTag()) & 0xFFFF)
+                          | (bitmap << 16);
+            Value objHPtr = emitInlineAllocWithHeader(
+                rewriter, loc, runtime, cusByteSize, header);
+            emitInlineAllocMetaWord(rewriter, loc, objHPtr, meta);
+            auto fieldsInl = adaptor.getFields().take_front(opSize);
+            auto origFieldsInl = op.getFields();
+            for (int64_t i = 0; i < opSize; i++) {
+                emitFreshFieldStore(rewriter, loc, objHPtr,
+                    layout::CustomFieldsOffset + i * layout::PtrSize,
+                    fieldsInl[i], origFieldsInl[i].getType());
+            }
+            rewriter.replaceOp(op, objHPtr);
+            return success();
+        }
+
         auto tag = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(op.getTag()));
         auto size = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(opSize));
         auto scalarBytes = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 0);

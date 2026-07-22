@@ -876,6 +876,82 @@ instrument that sees the second.
 
 ---
 
+### Run R — inline nursery allocation (plans/inline-nursery-allocation.md)
+### (2026-07-21/22): **−7.8 % census-on / −9.6 % uninstrumented workload wall;**
+### **dispatch counts identical to Run Q to the digit; majors/minors identical**
+
+N0–N4 shipped default-on: every statically-sized allocation
+(box int/float/char, cons, tuple2/3, record, custom, papCreate,
+make.closure — both Heap and ValueAgg twins) lowers to the
+`__eco_alloc_inline` bump marker + ONE constant header-word store + fresh
+field stores; `expandInlineAllocs` (EcoBackend, pre-RS4GC, with the other
+marker expansions) opens each into a bump-pointer diamond against
+`eco_bump_state()`'s `{ptr, end}` with `eco_alloc_inline_slow` as the only
+statepoint. Cons drops from THREE runtime calls per cell to zero on the
+fast path (the R5 leftovers). `ECO_INLINE_ALLOC=0` = rollout fallback
+(temporary, N6 deletes it).
+
+**Static (subst boot.mlir, this container).** Converted classes at ZERO
+surviving calls (was 37,768 alloc + ~22.3K cons-store call sites) →
+38,603 diamonds; residual `eco_alloc_*` = 11,203 (fill-later/dynamic/
+intern classes, out of scope §3). Binary 58,682,880 → 60,816,792 B
+(+3.6 %). `$cap` T=64 marking set 14,824 → 14,388 (−436; T=128 known-free
+per Run O if ever wanted). Lowering wall ~14 s (parallel tier) both
+states.
+
+**Dynamic — PRIMARY battery (methodology-conformant: all-keyed
+solver-BUILT census binaries from the fixed-point `allkey-n2.mlir`, both
+flag states lowered with `ECO_LSS_DISPATCH_SITE_COUNTERS=1`, workload
+subst, census-on `ECO_DISPATCH_STATS=1` walls, cold `eco-stuff` per leg,
+warm-up discarded, interleaved ×3):**
+
+```
+off: 225.96 / 225.80 / 224.66   mean 225.47 s (3:45.5)   majors 9, minors 757
+on:  207.59 / 207.85 / 208.14   mean 207.86 s (3:27.9)   majors 9, minors 757
+```
+
+**−17.6 s = −7.8 % census-on**; every on leg beats every off leg by
+≥ 16.5 s; GC-event counts IDENTICAL to the leg (trigger fidelity proven
+dynamically — the clamped `bump.end` compare reproduces the runtime's
+decisions exactly); all 6 timed outputs byte-identical (one sha across
+off/on legs, 12,143,501 B).
+
+**Census: `sat=658,526,335 gen=641,694,578 typed=16,831,757
+fast=100,378,065 distinct=5,804` on BOTH sides — identical to Run Q's row
+to the last digit** (same front-end generation; inline allocation is
+dispatch-neutral at digit precision). Coverage 13.23 %. One on-side leg
+read the documented Run-O first-run-after-lowering wobble (sat +70,
+distinct 5,833 — environment-state noise in dependency verification,
+1e-7 of the total); the other five legs are exact.
+
+**Secondary battery (uninstrumented, subst-BUILT boot binaries — the
+first, pre-correction run; kept as the census-overhead-free read):**
+off 226.91/225.44/224.61 (mean 225.65) → on 204.87/203.21/204.21
+(mean 204.10) = **−9.6 %**, majors 9 / minors 758 all legs, outputs
+byte-identical. The two batteries bracket the win: −7.8 % with the
+per-dispatch census atomics diluting the denominator, −9.6 % clean.
+Exceeds/matches R5 Part 1's −7.7 % and confirms the statepoint-removal
+thesis the plan bet on (store calls were gc-leaf; alloc calls were the
+last statepoints in the construct path — flat self-time under-measured
+them, as it did before Run P).
+
+**Gates (full record in the plan §9):** codegen 388/388; corpus 1629/1629;
+flag-off generated code INSTRUCTION-IDENTICAL to pre-plan (binary differs
+only by the 5 additive runtime symbols); all-keyed solver+LSS self-compile
+**byte-exact fixed point** (n3 == n2 = 12,607,069 B; the n1→n2 delta was
+the env-blind ~/.eco package-artifact trap, not divergence); EcoPtrIntVerify
+compiled-in leg SILENT true-rc (first attempt was the §7.1 vacuous-env trap
+— the pass is `#ifdef ECO_LOWERING_VALIDATION`, env alone does nothing);
+tiny-nursery ECO_HEAP_VALIDATE JIT leg (256K×2 blocks, 1M+ inline allocs)
+clean.
+
+Caveats standing: ECO_CLOSURE_STATS + per-alloc GC_STATS byte counters are
+blind at inline sites — closure-census/stats-accurate runs use
+ECO_INLINE_ALLOC=0 (the DISPATCH census is unaffected;
+majors/minors/GC-event counters unaffected). N5 (group-leader
+unification) not built: groups are already statepoint-free, call overhead
+only. N6 (flag + fallback-arm deletion) after soak, the P2 arc.
+
 ## Summary
 
 Coverage = `fast / (sat + fast)`. "solver-built" = compiler's own code carries LSS
@@ -904,6 +980,7 @@ stamps (front-end run under solver, lowered with `ECO_LSS_DISPATCH_SITE_COUNTERS
 | 2026-07-21 | E1.3 v1 (257-body guard) all-keyed / subst (Run N) | ‡ | ‡ | ‡ | ‡ | 13.22 % | — | 4:31.5†×3 |
 | 2026-07-21 15:xx | **E1.3 v3 FULL LIFT (15,744) all-keyed / subst (Run O)** | 653,394,605 | 636,744,631 | 16,649,974 | **99,563,928** | **13.22 %** | 5,804 | 4:29.5†×3 |
 | 2026-07-21 late | **RESOLVE CAMPAIGN P2.5+R5 all-keyed / subst (Run Q)** | 658,526,335 | 641,694,578 | 16,831,757 | 100,378,065 | 13.23 % | 5,804 | **3:45.94†§** |
+| 2026-07-21/22 | **INLINE NURSERY ALLOC (Run R) all-keyed / subst** | 658,526,335 | 641,694,578 | 16,831,757 | 100,378,065 | 13.23 % | 5,804 | **3:27.9†¶** |
 
 *Run-C walls carry an unattributed +30 % vs Run A/B (see the Run C section) — the
 counts are the meaningful comparison; treat the walls as provisional. The Run-I
@@ -924,6 +1001,19 @@ sat/fast uptick vs the Run O row is TREE GROWTH, not a dispatch change): the
 resolve campaign is dispatch-neutral by construction. Its story is the WALL —
 census-on 4:26.29 → 3:45.94 (−15.1 %) and uninstrumented interleaved
 4:13.2 → 3:36.5 (−14.5 %), majors 9 throughout. See the Run Q section.
+¶Run R follows the standard recipe: all-keyed solver-BUILT census binaries
+(the fixed-point `allkey-n2.mlir`, both `ECO_INLINE_ALLOC` states lowered
+with `ECO_LSS_DISPATCH_SITE_COUNTERS=1`), subst workload, census-on walls.
+Counts are IDENTICAL on both sides and identical to Run Q's row to the
+last digit (same front-end generation) — inline allocation is
+dispatch-neutral at digit precision; the dispatch counters sit at the
+dispatch primitives, untouched by how allocation is emitted (it is the
+CLOSURE census, `ECO_CLOSURE_STATS`, and per-alloc GC_STATS byte counters
+that go blind at inline sites and need `ECO_INLINE_ALLOC=0`). Wall =
+census-on interleaved ×3 mean in a different container than the pre-R rows
+(compare within-run only): off 3:45.5 → on **3:27.9** = −**7.8 %**
+(uninstrumented secondary battery: −9.6 %), majors 9 / minors 757
+identical on every leg, outputs byte-identical. See the Run R section.
 Runs D, E and K have NO dispatch-census legs and hence no table rows: D ran only the
 mono-census A/B (its solver MLIR differed by one stamp, +25 B), E skipped the leg
 outright (byte-identical MLIR ⇒ identical counts), and K was the GC-policy
@@ -954,14 +1044,23 @@ guard, the full 15,744 under the v3 fold-proof slot-cast barriers
 arc: Run A 922.3 M events / 0 fast / 0 % → Run O 753.0 M events / 99.6 M
 fast / 13.22 %, with every fast call now direct and (below 64 insts)
 inlined; the residual `$cap` indirection is the ~1.7 K mismatched-ABI floor.
+Runs Q and R then move the WALL axis on top of the closed dispatch arc:
+−14.5 % (the resolve/store campaign) and −7.8 % census-on / −9.6 % clean
+more (inline nursery allocation — the last runtime call AND the last
+statepoint in every statically-sized construct path, gone on the fast
+path), at digit-identical dispatch counts.
 
-*Next:* census-driven kernel-whitelist growth; E9.4 inline nursery
-allocation for cons (the beyond-direct-call lever); E9.5 layout-blind
+*Next:* census-driven kernel-whitelist growth; E9.5 layout-blind
 demand-join audit + E10 post-settle kernel-devirt relocation; per-member
 attribution over the residual over-apply declines; later-stage chaining
-(v3). (Resolved since Run L: keying + lssDF shipped as defaults (Run L),
-all-globals keying sound + default (Run M), and E1.3 `$cap` inlining is
-DONE — v1 guard-limited (Run N), v3 barriers + full-population lift
-(Run O): wall-neutral, binary −0.55 %, correctness-complete. The
-remaining `$cap` lever is the 1,711-call mismatched-ABI floor,
-AbiCloning-family.)
+(v3); N6 `ECO_INLINE_ALLOC` flag deletion after soak + the parked v2
+inline-alloc candidates (fill-later classes, dialect-level allocation
+merging — plans/inline-nursery-allocation.md §8). (Resolved since Run L:
+keying + lssDF shipped as defaults (Run L), all-globals keying sound +
+default (Run M), E1.3 `$cap` inlining DONE — v1 guard-limited (Run N), v3
+barriers + full-population lift (Run O): wall-neutral, binary −0.55 %,
+correctness-complete — and E9.4 SHIPPED GENERALIZED as inline nursery
+allocation (Run R, plans/inline-nursery-allocation.md): every
+statically-sized class, not just cons, at −7.8 % census-on / −9.6 % clean
+wall. The remaining
+`$cap` lever is the 1,711-call mismatched-ABI floor, AbiCloning-family.)

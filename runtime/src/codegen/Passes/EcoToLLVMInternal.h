@@ -284,6 +284,34 @@ constexpr int64_t TagForward = 24;
 constexpr int64_t TagCons = 6;
 constexpr int64_t TagCustom = 7;
 
+/// Header-word composition for the inline nursery allocation fast path
+/// (plans/inline-nursery-allocation.md, HEAP_034). The Header bitfields
+/// (Heap.hpp) pack LSB-first as tag:5 | color:2 | pin:1 | age:2 | unboxed:6 |
+/// refcount:15 | builder:1 | size:32; at allocation everything except tag,
+/// unboxed, and size is zero, so one i64 constant fully initializes the
+/// header. Bitfield packing is implementation-defined and therefore NOT
+/// static_assert-able — the equivalence is pinned at runtime by
+/// testHeaderWordComposition (test/allocator/HPointerLayoutTest.cpp), the
+/// same discipline as the HPointer golden words.
+constexpr unsigned HeaderUnboxedShift = 10;  // tag:5 + color:2 + pin:1 + age:2
+constexpr unsigned HeaderSizeShift = 32;
+constexpr uint64_t composeHeader(uint64_t tag, uint64_t unboxedBits,
+                                 uint64_t sizeField) {
+    return tag | (unboxedBits << HeaderUnboxedShift)
+               | (sizeField << HeaderSizeShift);
+}
+
+/// Remaining Tag enumerator values needed to compose inline-alloc headers.
+/// Cross-checked by static_asserts in EcoToLLVMHeap.cpp alongside
+/// TagForward/TagCons/TagCustom.
+constexpr int64_t TagInt = 0;
+constexpr int64_t TagFloat = 1;
+constexpr int64_t TagChar = 2;
+constexpr int64_t TagTuple2 = 4;
+constexpr int64_t TagTuple3 = 5;
+constexpr int64_t TagRecord = 8;
+constexpr int64_t TagClosure = 11;
+
 } // namespace value_enc
 
 //===----------------------------------------------------------------------===//
@@ -329,6 +357,18 @@ constexpr uint64_t ArrayElementsOffset = HeaderSize + PtrSize; // 16 (length:4 +
 constexpr uint64_t ClosurePackedOffset = HeaderSize;
 constexpr uint64_t ClosureEvaluatorOffset = HeaderSize + PtrSize;
 constexpr uint64_t ClosureValuesOffset = HeaderSize + 2 * PtrSize;
+
+// Inline-alloc fixed byte sizes (HEAP_034,
+// plans/inline-nursery-allocation.md); pinned against the runtime structs by
+// static_asserts in EcoToLLVMHeap.cpp (the one pass file that includes
+// Heap.hpp).
+constexpr uint64_t BoxedPrimSize = 16;   // ElmInt / ElmFloat / ElmChar
+constexpr uint64_t ConsSize = 24;        // Header + head + tail
+constexpr uint64_t Tuple2Size = 24;      // Header + a + b
+constexpr uint64_t Tuple3Size = 32;      // Header + a + b + c
+constexpr uint64_t RecordBaseSize = 16;  // Header + unboxed bitmap (+ N*8)
+constexpr uint64_t CustomBaseSize = 16;  // Header + ctor/unboxed (+ N*8)
+constexpr uint64_t ClosureBaseSize = 24; // Header + packed + evaluator (+ N*8)
 
 } // namespace layout
 
@@ -571,6 +611,13 @@ struct EcoRuntime {
     // expanded to the open-coded emb/heap/Custom/Cons tag diamond by
     // expandGetTagMarkers (EcoBackend.cpp) before ExpandInlineDeref + RS4GC.
     mlir::LLVM::LLVMFuncOp getOrCreateGetTagInlineMarker(mlir::OpBuilder &builder) const;
+    // Inline nursery allocation (plans/inline-nursery-allocation.md,
+    // HEAP_034): `__eco_alloc_inline` marker — (i64 size) -> ptr as1,
+    // gc-leaf, declare-only. Emitted by the converted construct/box/closure
+    // lowerings (which may sit inside single-block scf regions); expanded to
+    // the bump fast/slow diamond by expandInlineAllocs (EcoBackend.cpp)
+    // before RS4GC and before partition splitting.
+    mlir::LLVM::LLVMFuncOp getOrCreateAllocInlineMarker(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateConsHeadI64(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateConsHeadF64(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateConsHeadI16(mlir::OpBuilder &builder) const;
@@ -686,6 +733,24 @@ inline bool inlineDerefExtEnabled() {
     return enabled;
 }
 
+/// Rollout switch for inline nursery allocation
+/// (plans/inline-nursery-allocation.md, HEAP_034). Default ON;
+/// `ECO_INLINE_ALLOC=0` restores the unified `eco_alloc_*` call emission for
+/// A/B, bisection, and census workflows (ECO_CLOSURE_STATS counts closure
+/// creates inside eco_alloc_closure_k, and ENABLE_GC_STATS=1 builds count
+/// per-alloc bytes on the runtime fast path — both go blind at inline sites,
+/// so census/stats runs must set =0; the E2E harness binary cache is
+/// mtime-blind, so A/B legs need the touch discipline). TEMPORARY per the
+/// P2/P2.5 precedent: delete the env + the call-emission arms after soak
+/// (plan milestone N6).
+inline bool inlineAllocEnabled() {
+    static const bool enabled = [] {
+        const char *e = ::getenv("ECO_INLINE_ALLOC");
+        return !(e && e[0] == '0' && e[1] == '\0');
+    }();
+    return enabled;
+}
+
 /// P2.5: resolve an HPointer base via the inline forwarding-check marker
 /// (`__eco_resolve_fwd`, AS1→AS1, gc-leaf; expanded to the header-tag
 /// diamond by ExpandInlineDeref before RS4GC — plan P2 machinery). The
@@ -740,6 +805,61 @@ inline void emitFreshFieldStore(mlir::OpBuilder &b, mlir::Location loc,
     auto store = b.create<mlir::LLVM::StoreOp>(loc, word, slotPtr);
     if (boxed)
         store->setAttr("eco.boxed_slot", mlir::UnitAttr::get(ctx));
+}
+
+/// Inline nursery allocation (plans/inline-nursery-allocation.md, HEAP_034):
+/// emit the `__eco_alloc_inline(byteSize)` marker call (expanded to the
+/// bump-pointer fast/slow diamond by expandInlineAllocs in EcoBackend.cpp,
+/// pre-RS4GC) followed by ONE i64 constant store of the composed header word
+/// at offset 0. Returns the AS1 object pointer.
+///
+/// HEAP_034 caller contract: byteSize is a compile-time constant (8-aligned,
+/// <= 4096) and the caller stores EVERY payload field via straight-line code
+/// (emitFreshFieldStore / plain constant stores) before any possible
+/// safepoint — no call may intervene except gc-leaf barriers. The runtime's
+/// zero-init of the `*_uninit` alloc family is deliberately NOT replicated:
+/// with no safepoint between the bump and the last store, the GC can never
+/// observe the object partially initialized.
+inline mlir::Value emitInlineAllocWithHeader(mlir::OpBuilder &b,
+                                             mlir::Location loc,
+                                             const EcoRuntime &runtime,
+                                             uint64_t byteSize,
+                                             uint64_t headerWord) {
+    auto *ctx = b.getContext();
+    auto i64Ty = mlir::IntegerType::get(ctx, 64);
+    auto hptrTy = getHPtrLLVMType(*ctx);
+
+    auto marker = runtime.getOrCreateAllocInlineMarker(b);
+    auto sizeConst = b.create<mlir::LLVM::ConstantOp>(
+        loc, i64Ty, static_cast<int64_t>(byteSize));
+    mlir::Value obj =
+        b.create<mlir::LLVM::CallOp>(loc, marker, mlir::ValueRange{sizeConst})
+            .getResult();
+
+    auto headerConst = b.create<mlir::LLVM::ConstantOp>(
+        loc, i64Ty, static_cast<int64_t>(headerWord));
+    // Store at offset 0: the object pointer IS the header address (align 8,
+    // HEAP_028).
+    b.create<mlir::LLVM::StoreOp>(loc, headerConst, obj, /*alignment=*/8);
+
+    return obj;
+}
+
+/// Store a second constant metadata word at byte offset 8 (custom's
+/// ctor|unboxed<<16, record's unboxed bitmap, closure's packed word).
+inline void emitInlineAllocMetaWord(mlir::OpBuilder &b, mlir::Location loc,
+                                    mlir::Value obj, uint64_t metaWord) {
+    auto *ctx = b.getContext();
+    auto i64Ty = mlir::IntegerType::get(ctx, 64);
+    auto i8Ty = mlir::IntegerType::get(ctx, 8);
+    auto hptrTy = getHPtrLLVMType(*ctx);
+    auto off = b.create<mlir::LLVM::ConstantOp>(loc, i64Ty,
+                                                static_cast<int64_t>(8));
+    auto slot = b.create<mlir::LLVM::GEPOp>(loc, hptrTy, i8Ty, obj,
+                                            mlir::ValueRange{off});
+    auto metaConst = b.create<mlir::LLVM::ConstantOp>(
+        loc, i64Ty, static_cast<int64_t>(metaWord));
+    b.create<mlir::LLVM::StoreOp>(loc, metaConst, slot, /*alignment=*/8);
 }
 
 //===----------------------------------------------------------------------===//

@@ -105,6 +105,17 @@ public:
     // Slow-path allocation: may trigger GC, always succeeds or aborts.
     void *allocateSlow(size_t size, Tag tag);
 
+    // Slow path for the compiled-code inline nursery bump (HEAP_034):
+    // minor GC + retry, NO header init. See ThreadLocalHeap::allocateSlowRaw.
+    void *allocateSlowRaw(size_t size);
+
+    // Address of the calling thread's nursery bump state {ptr, end} —
+    // consumed by eco_bump_state() for the compiled-code inline allocation
+    // fast path (HEAP_034). Address-stable for the thread's lifetime
+    // (NurserySpace is a by-value member of the heap-allocated
+    // ThreadLocalHeap).
+    void *bumpState();
+
     // Slow-path region allocation: contiguous region, may GC.
     void *allocateRegionSlow(size_t total);
 

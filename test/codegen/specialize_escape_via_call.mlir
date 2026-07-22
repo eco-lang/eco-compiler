@@ -19,6 +19,6 @@ module {
 }
 
 // CHECK: llvm.func @escapes_via_call
-// CHECK: llvm.call @eco_alloc_tuple2
+// CHECK: llvm.call @__eco_alloc_inline
 //
 // CHECK-NOT: llvm.struct<(i64, i64)>

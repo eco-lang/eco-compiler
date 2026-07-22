@@ -11,4 +11,4 @@ module {
 }
 
 // CHECK: llvm.func @value_to_heap_cons
-// CHECK: llvm.call @eco_alloc_cons
+// CHECK: llvm.call @__eco_alloc_inline

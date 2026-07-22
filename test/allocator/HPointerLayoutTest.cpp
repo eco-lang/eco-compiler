@@ -103,3 +103,78 @@ Testing::TestCase testHPointerBitsRoundTrip(
             TEST_ASSERT(hpBits(hpFromBits(w)) == w);
         }
     });
+
+// Compose a Header via the C++ bitfields and return its 64-bit word.
+static uint64_t headerWordViaBitfields(Tag tag, uint32_t unboxed, uint32_t size) {
+    Header h;
+    memset(&h, 0, sizeof(h));
+    h.tag = tag;
+    h.unboxed = unboxed;
+    h.size = size;
+    uint64_t w;
+    memcpy(&w, &h, sizeof(w));
+    return w;
+}
+
+// The codegen inline-allocation formula (plans/inline-nursery-allocation.md
+// §1.3, mirrored by value_enc::HeaderUnboxedShift/HeaderSizeShift in
+// EcoToLLVMInternal.h). Bitfield packing is implementation-defined, so this
+// equivalence CANNOT be a static_assert — same reason as the HPointer golden
+// words above. Any compiler/ABI packing surprise fails here before it can
+// miscompile a header store.
+static constexpr uint64_t headerWordViaFormula(uint64_t tag, uint64_t unboxed,
+                                               uint64_t size) {
+    return tag | (unboxed << 10) | (size << 32);
+}
+
+Testing::TestCase testHeaderWordComposition(
+    "inline-alloc header formula matches the Header bitfield layout (HEAP_034)",
+    []() {
+        // One case per inline-allocated class (plan §1.3 table).
+        struct Case { Tag tag; uint32_t unboxed; uint32_t size; };
+        Case cases[] = {
+            {Tag_Int, 0, 16},          // box Int (sizeField = byte size)
+            {Tag_Float, 0, 16},        // box Float
+            {Tag_Char, 0, 16},         // box Char
+            {Tag_Cons, 0x1, 24},       // cons, unboxed head kind (Int)
+            {Tag_Cons, 0x0, 24},       // cons, boxed head
+            {Tag_Tuple2, 0x9, 24},     // tuple2, mixed kinds
+            {Tag_Tuple3, 0x2A, 32},    // tuple3, all-Float kinds
+            {Tag_Record, 0, 5},        // record (sizeField = field count)
+            {Tag_Custom, 0, 3},        // custom (sizeField = field count)
+            {Tag_Closure, 0, 7},       // closure (sizeField = slot count)
+        };
+        for (const Case& c : cases) {
+            TEST_ASSERT(headerWordViaBitfields(c.tag, c.unboxed, c.size) ==
+                        headerWordViaFormula(c.tag, c.unboxed, c.size));
+        }
+        // Field-boundary probes: max values of each composed field must not
+        // bleed into neighbours (tag 5 bits, unboxed 6 bits at shift 10,
+        // size 32 bits at shift 32).
+        TEST_ASSERT(headerWordViaBitfields(Tag_Forward, 0x3F, 0xFFFFFFFFu) ==
+                    headerWordViaFormula(static_cast<uint64_t>(Tag_Forward),
+                                         0x3F, 0xFFFFFFFFull));
+        // Custom's second word: ctor (16 bits) | unboxed bitmap << 16.
+        {
+            Custom c2;
+            memset(&c2, 0, sizeof(c2));
+            c2.ctor = 0xABCD;
+            c2.unboxed = 0x123456789ABCull;  // 48-bit bitmap
+            uint64_t w;
+            memcpy(&w, reinterpret_cast<char*>(&c2) + sizeof(Header), sizeof(w));
+            TEST_ASSERT(w == (0xABCDull | (0x123456789ABCull << 16)));
+        }
+        // Closure's packed word: n_values | max_values<<6 | result_kind<<12 |
+        // unboxed<<14 (the Phase-C layout papCreate already emits).
+        {
+            Closure cl;
+            memset(&cl, 0, sizeof(cl));
+            cl.n_values = 3;
+            cl.max_values = 7;
+            cl.result_kind = 2;
+            cl.unboxed = 0x155ull;
+            uint64_t w;
+            memcpy(&w, reinterpret_cast<char*>(&cl) + sizeof(Header), sizeof(w));
+            TEST_ASSERT(w == (3ull | (7ull << 6) | (2ull << 12) | (0x155ull << 14)));
+        }
+    });

@@ -750,6 +750,135 @@ static void expandInlineDerefs(Module &m) {
     }
 }
 
+// Inline nursery allocation (plans/inline-nursery-allocation.md, HEAP_034).
+// Expand each `__eco_alloc_inline(SIZE)` marker call into the bump-pointer
+// fast/slow diamond:
+//
+//     %state = call ptr @eco_bump_state()          ; memory(none) gc-leaf
+//     %top   = load ptr addrspace(1), ptr %state   ; bump.ptr at +0
+//     %end   = load ptr addrspace(1), ptr %state+8 ; bump.end at +8 (clamped)
+//     %new   = gep i8, %top, SIZE
+//     %miss  = icmp ugt %new, %end
+//     br %miss, slow, fast                          ; !prof slow=1 fast=1<<20
+//   slow:  %r = call ptr addrspace(1) @eco_alloc_inline_slow(SIZE)  ; statepointed
+//   fast:  store %new, %state                       ; publish the bump
+//   cont:  %obj = phi [ %top, fast ], [ %r, slow ]
+//
+// The single compare preserves ALL GC-trigger semantics: NurserySpace's
+// bump.end is pre-clamped to min(block end, proactive-GC threshold trip)
+// (computeAllocEndForBlock), so both block exhaustion and threshold trips
+// miss into the statepointed slow call (block advance, then minor GC).
+//
+// Address-space discipline: the bump slots are loaded/stored as
+// `ptr addrspace(1)` directly (the HPointer word IS the raw address, plan
+// D1), so this expansion introduces NO ptrtoint/inttoptr — out of
+// REP_LLVM_001(b)'s provenance rules and fold-immune (REP_LLVM_002) by
+// construction, exactly like expandInlineDerefs.
+//
+// RS4GC-liveness fact (HEAP_034(d)): no bump-derived as1 value is live
+// across the slow call — `%end`/`%miss` die at the branch, `%new` dies at
+// the fast-edge store, and `%top`'s only post-branch use is the merge phi's
+// fast-edge incoming. The phi result is a legitimate fresh base pointer on
+// both edges; the header + field stores the lowering emitted after the
+// marker land in the merge block, so a GC can never observe a
+// partially-initialized object (no safepoint between the phi and the
+// stores).
+//
+// Runs with the other marker expansions at the top of runEcoBackend —
+// before the `$cap` inline prepass, before partition splitting, and before
+// every RS4GC flavour. Idempotent / cheap when there are no markers
+// (ECO_INLINE_ALLOC=0 emits none).
+static void expandInlineAllocs(Module &m) {
+    Function *marker = m.getFunction("__eco_alloc_inline");
+    if (!marker || marker->use_empty())
+        return;
+
+    LLVMContext &ctx = m.getContext();
+    Type *i64Ty = Type::getInt64Ty(ctx);
+    Type *i8Ty = Type::getInt8Ty(ctx);
+    PointerType *as0 = PointerType::get(ctx, 0);
+    PointerType *as1 = PointerType::get(ctx, 1);
+
+    // eco_bump_state() -> ptr: address of the calling thread's {ptr as1 at
+    // +0, end as1 at +8}. memory(none): the ADDRESS is thread-stable (set
+    // once at initThread), so LLVM may CSE repeated calls per function and
+    // LICM them out of allocation loops; the CONTENTS change across block
+    // advance / minor GC but are re-loaded per allocation, never cached
+    // across a diamond. speculatable: executing it early is harmless (the
+    // runtime is initialized before any compiled code runs).
+    FunctionCallee bumpStateCallee = m.getOrInsertFunction(
+        "eco_bump_state", FunctionType::get(as0, {}, /*isVarArg=*/false));
+    if (auto *bs = dyn_cast<Function>(bumpStateCallee.getCallee())) {
+        bs->setDoesNotAccessMemory();
+        bs->setDoesNotThrow();
+        bs->setWillReturn();
+        bs->setSpeculatable();
+        bs->addFnAttr("gc-leaf-function");
+    }
+
+    // eco_alloc_inline_slow(i64) -> ptr addrspace(1). Deliberately NOT
+    // gc-leaf: this is the ONE statepoint of an inline-allocated construct
+    // (it may run a minor GC); field values live across it are relocated by
+    // RS4GC as ordinary SSA values (no hand-rooting anywhere).
+    FunctionCallee slowCallee = m.getOrInsertFunction(
+        "eco_alloc_inline_slow",
+        FunctionType::get(as1, {i64Ty}, /*isVarArg=*/false));
+    if (auto *sf = dyn_cast<Function>(slowCallee.getCallee()))
+        sf->setDoesNotThrow();
+
+    MDBuilder mdb(ctx);
+    // The slow edge fires once per nursery block (thousands of allocations)
+    // plus once per minor GC — weight it far below the fall-through.
+    MDNode *unlikely = mdb.createBranchWeights(/*slow=*/1, /*fast=*/1u << 20);
+
+    SmallVector<CallInst *, 64> calls;
+    for (User *u : marker->users())
+        if (auto *ci = dyn_cast<CallInst>(u))
+            calls.push_back(ci);
+
+    for (CallInst *ci : calls) {
+        auto *sizeC = dyn_cast<ConstantInt>(ci->getArgOperand(0));
+        if (!sizeC || sizeC->getZExtValue() == 0 ||
+            (sizeC->getZExtValue() & 7) != 0 || sizeC->getZExtValue() > 4096)
+            report_fatal_error("expandInlineAllocs: __eco_alloc_inline size "
+                               "must be a constant, 8-aligned, in (0, 4096]");
+
+        IRBuilder<> b(ci);
+        Value *state = b.CreateCall(bumpStateCallee, {}, "eco.bump.state");
+        Value *top = b.CreateAlignedLoad(as1, state, Align(8), "eco.bump.top");
+        Value *endp = b.CreateGEP(i8Ty, state, {b.getInt64(8)}, "eco.bump.endp");
+        Value *end = b.CreateAlignedLoad(as1, endp, Align(8), "eco.bump.end");
+        // Plain (non-inbounds) GEP: when the block is nearly full the bumped
+        // address may exceed the block end before the compare rejects it.
+        Value *newTop = b.CreateGEP(i8Ty, top,
+                                    {b.getInt64(sizeC->getSExtValue())},
+                                    "eco.bump.new");
+        Value *miss = b.CreateICmpUGT(newTop, end, "eco.bump.miss");
+
+        Instruction *thenTerm = nullptr;  // slow (cold)
+        Instruction *elseTerm = nullptr;  // fast
+        SplitBlockAndInsertIfThenElse(miss, ci, &thenTerm, &elseTerm, unlikely);
+
+        IRBuilder<> tb(thenTerm);
+        CallInst *slowObj = tb.CreateCall(slowCallee, {sizeC}, "eco.alloc.slow");
+
+        IRBuilder<> eb(elseTerm);
+        eb.CreateAlignedStore(newTop, state, Align(8));
+
+        IRBuilder<> pb(&*ci->getParent()->getFirstInsertionPt());
+        PHINode *phi = pb.CreatePHI(as1, 2, "eco.alloc.obj");
+        phi->addIncoming(top, elseTerm->getParent());
+        phi->addIncoming(slowObj, thenTerm->getParent());
+
+        ci->replaceAllUsesWith(phi);
+        ci->eraseFromParent();
+    }
+
+    if (!marker->use_empty())
+        report_fatal_error("expandInlineAllocs: surviving __eco_alloc_inline use");
+    marker->eraseFromParent();
+}
+
 // P2.5 R1b (plans/allocator-resolve-inlining.md). Expand each
 // `__eco_get_tag_inline` marker call into the open-coded eco_get_tag
 // semantics (replicated EXACTLY from RuntimeExports.cpp):
@@ -1033,6 +1162,11 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
     expandGetTagMarkers(m);
     // Plan P2: expand inline-deref markers before RS4GC / partition splitting.
     expandInlineDerefs(m);
+    // Inline nursery allocation (HEAP_034): expand bump-diamond markers.
+    // Before the $cap prepass so marker-bearing bodies are correctly
+    // classified (the expanded diamond's slow call makes them non-GC-free
+    // for bodyIsGCCallFree in the barriers-off fallback config).
+    expandInlineAllocs(m);
 
     // E1.3: `$cap` inline prepass — must precede EVERY RS4GC flavour (serial,
     // deferred, and per-partition; all are downstream of this point). Skipped

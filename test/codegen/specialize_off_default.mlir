@@ -14,7 +14,7 @@ module {
 }
 
 // CHECK: llvm.func @local_tuple_default
-// CHECK: llvm.call @eco_alloc_tuple2
+// CHECK: llvm.call @__eco_alloc_inline
 //
 // Aggregate-form lowering must NOT appear without the flag.
 // CHECK-NOT: llvm.struct<(i64, i64)>

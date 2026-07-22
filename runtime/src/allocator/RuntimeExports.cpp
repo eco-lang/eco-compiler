@@ -169,6 +169,38 @@ extern "C" void* eco_alloc_with_roots(uint32_t tag, uint64_t size,
     return obj;
 }
 
+//===----------------------------------------------------------------------===//
+// Inline nursery allocation (plans/inline-nursery-allocation.md, HEAP_034)
+//===----------------------------------------------------------------------===//
+
+// Address of the calling thread's nursery bump state {ptr at +0, end at +8}.
+// Declared memory(none) + gc-leaf on the codegen side (expandInlineAllocs)
+// so LLVM can CSE/hoist it per function: the ADDRESS is thread-stable, only
+// the contents change (block advance / minor GC), and the expansion re-loads
+// them per allocation.
+extern "C" void* eco_bump_state(void) {
+    return Allocator::instance().bumpState();
+}
+
+// Slow path for the codegen inline nursery bump: the inline compare missed
+// (current block exhausted or the proactive-GC threshold tripped). Returns
+// UNINITIALIZED nursery storage — the caller stores the full header word and
+// every payload field before its next safepoint (HEAP_034). Never returns
+// null (aborts on OOM, HEAP_017 discipline). Statepointed: the ONLY
+// statepoint in an inline-allocated construct sequence; field values live
+// across it are relocated by RS4GC as ordinary SSA values (no hand-rooting).
+extern "C" HPtr eco_alloc_inline_slow(uint64_t size) {
+    assert(size <= 4096 && (size & 7) == 0 &&
+           "eco_alloc_inline_slow: size out of inline-alloc bounds");
+    // Try block advance without GC first — the inline compare only sees the
+    // CURRENT block's clamped end; the nursery may have further blocks.
+    void* obj = Allocator::instance().allocateFast(size);
+    if (!obj) {
+        obj = Allocator::instance().allocateSlowRaw(size);
+    }
+    return ptrToHPointer(obj);
+}
+
 extern "C" HPtr eco_alloc_custom(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes) {
     // Calculate size: Header + ctor/unboxed (8 bytes) + fields
     size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable) + scalar_bytes;

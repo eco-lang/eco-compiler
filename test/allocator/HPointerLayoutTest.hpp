@@ -11,3 +11,4 @@ extern Testing::TestCase testHPointerConstantPredicates;
 extern Testing::TestCase testHPointerPointerRoundTrip;
 extern Testing::TestCase testHPointerForwardPtrRoundTrip;
 extern Testing::TestCase testHPointerBitsRoundTrip;
+extern Testing::TestCase testHeaderWordComposition;
