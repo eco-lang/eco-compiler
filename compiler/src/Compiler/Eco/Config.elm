@@ -39,9 +39,9 @@ type alias EcoConfig =
 
 {-| Which monomorphizer engine to run.
 
-  - `EngineSubst` (default): the original Dict-substitution engine
-    (`Compiler.Monomorphize.Monomorphize`). Reproduces today's behaviour.
-  - `EngineSolver`: the solver-based engine (`Compiler.MonoSolver.Monomorphize`).
+  - `EngineSubst`: the original Dict-substitution engine
+    (`Compiler.Monomorphize.Monomorphize`). Reproduces the legacy behaviour.
+  - `EngineSolver` (default): the solver-based engine (`Compiler.MonoSolver.Monomorphize`).
   - `EngineDiff`: run both and assert their MonoGraph output matches — the A/B
     gate. Emits the original engine's graph so the build still succeeds.
 
@@ -98,10 +98,11 @@ type alias LssConfig =
 
 {-| The built-in LSS defaults (budgets per the design doc).
 
-`enabled = True` means **solver implies LSS** (H3, 2026-07-14): the subst
-engine — still the `mono.engine` default — never consults this block, so
-default builds are unaffected; every solver run gets lambda-set
-specialization without extra flags.
+`enabled = True` means **solver implies LSS** (H3, 2026-07-14): the solver
+engine — now the `mono.engine` default (2026-07-22) — consults this block, so
+default builds get lambda-set specialization without extra flags. The subst
+engine never consults this block, so `ECO_MONO_ENGINE=subst` builds are
+unaffected.
 
 `keyed = True` (2026-07-20, post-Fix-B): ALL-GLOBALS keying is the default.
 Sound since LSS_017 fork-qualified members (`plans/lss-fork-qualified-members.md`
@@ -228,7 +229,7 @@ default =
         }
     , bytesFusion = { enabled = True }
     , logicalTypes = { customMaxFields = 8 }
-    , mono = { engine = EngineSubst, diffDump = False, validate = False, lss = defaultLss }
+    , mono = { engine = EngineSolver, diffDump = False, validate = False, lss = defaultLss }
     }
 
 

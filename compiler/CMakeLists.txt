@@ -292,7 +292,8 @@ add_custom_command(
     # absolute build-tree path so non-default CMake build dirs (e.g. debug/)
     # resolve correctly.
     COMMAND ${CMAKE_COMMAND} -E env "GUIDA_JS_PATH=${COMPILER_OUTPUT}"
-        ${NODE_EXECUTABLE} ${COMPILER_DIR}/bin/index.js make
+        ${NODE_EXECUTABLE} --stack-size=65536 --max-old-space-size=12288
+        ${COMPILER_DIR}/bin/index.js make
         --optimize
         --kernel-package eco/compiler
         --local-package eco/kernel=${COMPILER_DIR}/../eco-kernel-cpp
@@ -320,7 +321,8 @@ set(ECO_BOOT_2_RUNNER_OUTPUT "${BUILD_KERNEL_DIR}/bin/eco-boot-2-runner.js")
 # invoke the runner.
 add_custom_command(
     OUTPUT ${ECO_BOOT_2_OUTPUT} ${ECO_BOOT_2_RUNNER_OUTPUT}
-    COMMAND ${NODE_EXECUTABLE} bin/eco-boot-runner.js make
+    COMMAND ${NODE_EXECUTABLE} --stack-size=65536 --max-old-space-size=12288
+        bin/eco-boot-runner.js make
         --optimize
         --kernel-package eco/compiler
         --local-package eco/kernel=${COMPILER_DIR}/../eco-kernel-cpp
@@ -350,7 +352,8 @@ set(ECO_BOOT_3_OUTPUT "${BUILD_KERNEL_DIR}/bin/eco-boot-3.js")
 
 add_custom_command(
     OUTPUT ${ECO_BOOT_3_OUTPUT}
-    COMMAND ${NODE_EXECUTABLE} bin/eco-boot-2-runner.js make
+    COMMAND ${NODE_EXECUTABLE} --stack-size=65536 --max-old-space-size=12288
+        bin/eco-boot-2-runner.js make
         --optimize
         --kernel-package eco/compiler
         --local-package eco/kernel=${COMPILER_DIR}/../eco-kernel-cpp
@@ -409,13 +412,13 @@ add_custom_command(
         "-DECO_PATTERN=*.ecot"
         "-DECO_RECURSIVE=1"
         -P ${CMAKE_SOURCE_DIR}/cmake/EcoDeletePattern.cmake
-    # --max-old-space-size=4096: pin the V8 heap explicitly. Node's default
+    # --max-old-space-size=12288: pin the V8 heap explicitly. Node's default
     # old-space limit scales with host RAM (~4 GB on big machines, ~2 GB on
-    # small ones), and Stage 5 needs a bit over 2 GB — it OOM'd on a 7 GB
-    # macOS CI runner where the default came out at 2 GB while passing on
-    # big-RAM dev machines that defaulted to 4 GB.
+    # small ones). Under the solver mono engine (the 2026-07-22 default) the
+    # JS-hosted self-compile needs ~12 GB — it passes in 12 GB and OOMs below
+    # that, so all node-hosted bootstrap stages are pinned to 12 GiB.
     COMMAND ${_stage5_time_prefix}
-        ${NODE_EXECUTABLE} --stack-size=65536 --max-old-space-size=4096
+        ${NODE_EXECUTABLE} --stack-size=65536 --max-old-space-size=12288
         bin/eco-boot-2-runner.js make
         --optimize
         --kernel-package eco/compiler
@@ -974,7 +977,7 @@ set(ECO_STAGE9_2_OUTPUT "${BUILD_KERNEL_DIR}/bin/eco-2")
 
 add_custom_command(
     OUTPUT ${ECO_STAGE9_2_OUTPUT}
-    COMMAND ${CMAKE_COMMAND} -E env "NODE_OPTIONS=--max-old-space-size=12000"
+    COMMAND ${CMAKE_COMMAND} -E env "NODE_OPTIONS=--max-old-space-size=12288"
         ${ECO_STAGE9_OUTPUT} make
         --optimize
         --kernel-package eco/compiler
