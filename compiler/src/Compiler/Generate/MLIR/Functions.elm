@@ -29,6 +29,7 @@ import Compiler.Monomorphize.Registry as Registry
 import Dict
 import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirRegion, MlirType(..), Visibility(..))
 import Set
+import System.TypeCheck.IO as IO
 
 
 
@@ -295,7 +296,15 @@ generateNode ctx specId node =
 
         finalOps =
             if isMainEntry then
-                List.map addShadowRootsAttr ops
+                -- main is a MonoDefine thunk too, but its shadow-root frame
+                -- epilogues must balance the prologue on EVERY return — a CAF
+                -- guard's hit-path early return would skip the frame push.
+                -- Strip the memoization here (the C++ installer also skips
+                -- shadow-root funcs — belt and braces). main runs once anyway.
+                ops
+                    |> List.filter (\op -> op.name /= "eco.global")
+                    |> List.map (\op -> { op | attrs = Dict.remove "eco.caf_memo" op.attrs })
+                    |> List.map addShadowRootsAttr
 
             else
                 ops
@@ -314,7 +323,7 @@ generateNodeInner : Ctx.Context -> String -> Mono.SpecId -> Mono.MonoNode -> ( L
 generateNodeInner ctx funcName specId node =
     case node of
         Mono.MonoDefine expr monoType ->
-            generateDefine ctx funcName expr monoType
+            generateDefine ctx funcName True expr monoType
 
         Mono.MonoTailFunc params expr monoType ->
             let
@@ -351,8 +360,39 @@ generateNodeInner ctx funcName specId node =
 
                 ( ctx1, op ) =
                     generateEnum ctx funcName tag monoType maybeCtorName
+
+                -- M4 (plans/caf-memoization-implementation.md): nullary custom
+                -- constructors allocate a fresh object per reference
+                -- (eco.construct.custom size 0) — give them CAF slots too, so
+                -- each enum spec allocates once per process. Well-known
+                -- constants (True/False/Nothing) compile to embedded-constant
+                -- immediates: trivial bodies, a guard would only add cost.
+                -- Sharing is sound: constructed customs are immutable once
+                -- escaped (HEAP_031) and equality/dispatch are tag-based
+                -- (bit-equality even improves on a shared object).
+                isWellKnownConstant =
+                    List.member maybeCtorName [ Just "True", Just "False", Just "Nothing" ]
+
+                ( _, enumResultType ) =
+                    Mono.decomposeFunctionType monoType
+
+                cafQualifies =
+                    ctx.ecoConfig.cafMemo.enabled
+                        && not isWellKnownConstant
+                        && not (monoTypeHasEffects enumResultType)
             in
-            ( [ op ], ctx1 )
+            if cafQualifies then
+                let
+                    ( ctx2, globalOp ) =
+                        Ops.ecoGlobal ctx1 (cafSlotName funcName)
+
+                    opTagged =
+                        { op | attrs = Dict.insert "eco.caf_memo" UnitAttr op.attrs }
+                in
+                ( [ globalOp, opTagged ], ctx2 )
+
+            else
+                ( [ op ], ctx1 )
 
         Mono.MonoExtern monoType ->
             let
@@ -368,11 +408,14 @@ generateNodeInner ctx funcName specId node =
             in
             ( [ op ], ctx1 )
 
+        -- Ports stay unmemoized (PORT_003: the registration preamble owns
+        -- their lifecycle); port DECODER specs are plain MonoDefines above
+        -- and memoize normally.
         Mono.MonoPortIncoming expr monoType ->
-            generateDefine ctx funcName expr monoType
+            generateDefine ctx funcName False expr monoType
 
         Mono.MonoPortOutgoing expr monoType ->
-            generateDefine ctx funcName expr monoType
+            generateDefine ctx funcName False expr monoType
 
 
 specIdToFuncName : Mono.SpecializationRegistry -> Mono.SpecId -> String
@@ -405,8 +448,95 @@ addShadowRootsAttr op =
 -- ====== GENERATE DEFINE ======
 
 
-generateDefine : Ctx.Context -> String -> Mono.MonoExpr -> Mono.MonoType -> ( List MlirOp, Ctx.Context )
-generateDefine ctx funcName expr monoType =
+{-| The eco.global slot symbol for a memoized thunk. Keyed on the emitted
+thunk symbol, which embeds the SpecId — monomorphization splits one source
+CAF into several specialized thunks (one per demanded type, more under LSS
+keying) with DIFFERENT layouts, so slots are per-SpecId by construction and
+must never be shared across specializations. The C++ guard installer
+(EcoToLLVMGlobals.cpp installCafMemoGuard) derives the same name.
+-}
+cafSlotName : String -> String
+cafSlotName funcName =
+    "__eco_caf$" ++ funcName
+
+
+{-| Does this nullary value thunk get a memoization slot?
+
+v1 scope (design_docs/caf-memoization-design.md DS5): `!eco.value` ABI
+results only — a slot holding a raw scalar (i64 Int, f64, i16 Char) must
+never be GC-rooted (the root scan would misread it as a heap address), and
+the eco.global rooting walk roots every internal i64 global. Slot value 0 is
+the uninitialized sentinel; no valid `!eco.value` word is 0 (pointers are
+nonzero, embedded constants are 0x4/0x5/0x6). Trivial single-node bodies
+(scalar/string literal, unit) are skipped — the guard would cost more than
+the body.
+-}
+cafMemoQualifies : Ctx.Context -> Mono.MonoExpr -> Mono.MonoType -> Bool
+cafMemoQualifies ctx expr monoType =
+    ctx.ecoConfig.cafMemo.enabled
+        && (Types.monoTypeToAbi monoType == Types.ecoValue)
+        && not (monoTypeHasEffects monoType)
+        && (case expr of
+                Mono.MonoClosure _ _ _ ->
+                    False
+
+                Mono.MonoLiteral _ _ ->
+                    False
+
+                Mono.MonoUnit ->
+                    False
+
+                _ ->
+                    True
+           )
+
+
+{-| Effect types are EXCLUDED from CAF memoization. Two reasons, both
+native-runtime realities rather than Elm semantics:
+
+1.  The scheduler mutates Task heap nodes in place (Scheduler.cpp
+    Task\_Binding kill-handle install) — tasks are one-shot objects there.
+2.  Native kernel task VALUES can be EAGER: `Eco_Kernel_MVar_new()` performs
+    the effect at value-evaluation time and returns `Task_Succeed id`
+    (see plans/defer-eager-kernel-tasks-via-binding.md). The per-reference
+    thunk call was load-bearing: caching one instance made a second
+    `MVar.new` return the first (dropped) id — the MVarDropReleasesSlot
+    regression.
+
+The walk recurses through containers and custom-type ARGUMENTS; `MFunction`
+is a barrier (values behind an arrow are constructed per application, so a
+record of task-RETURNING functions is safe to cache). Residual risk
+accepted: a monomorphic user custom whose FIELD hard-codes an effect type
+is invisible in the instantiation args (would need ctor-shape expansion) —
+the E2E corpus and self-compile gate that class.
+-}
+monoTypeHasEffects : Mono.MonoType -> Bool
+monoTypeHasEffects t =
+    case t of
+        Mono.MCustom (IO.Canonical _ home) name args ->
+            (home == "Platform" && (name == "Task" || name == "ProcessId" || name == "Router" || name == "Program"))
+                || (home == "Platform.Cmd" && name == "Cmd")
+                || (home == "Platform.Sub" && name == "Sub")
+                || List.any monoTypeHasEffects args
+
+        Mono.MList inner ->
+            monoTypeHasEffects inner
+
+        Mono.MTuple items ->
+            List.any monoTypeHasEffects items
+
+        Mono.MRecord fields ->
+            Dict.foldl (\_ fieldType acc -> acc || monoTypeHasEffects fieldType) False fields
+
+        Mono.MFunction _ _ _ ->
+            False
+
+        _ ->
+            False
+
+
+generateDefine : Ctx.Context -> String -> Bool -> Mono.MonoExpr -> Mono.MonoType -> ( List MlirOp, Ctx.Context )
+generateDefine ctx funcName cafEligible expr monoType =
     case expr of
         Mono.MonoClosure closureInfo body _ ->
             generateClosureFunc ctx funcName closureInfo body monoType
@@ -450,7 +580,22 @@ generateDefine ctx funcName expr monoType =
                 ( ctx2, funcOp ) =
                     Ops.funcFunc exprResult.ctx funcName [] retTy region
             in
-            ( [ funcOp ], ctx2 )
+            if cafEligible && cafMemoQualifies ctx expr monoType then
+                -- CAF memoization (plans/caf-memoization-implementation.md):
+                -- emit the per-SpecId slot next to the thunk and tag it; the
+                -- EcoToLLVM serial post-Stage-2 phase installs the lazy
+                -- once-init guard (CGEN_068).
+                let
+                    ( ctx3, globalOp ) =
+                        Ops.ecoGlobal ctx2 (cafSlotName funcName)
+
+                    funcOpTagged =
+                        { funcOp | attrs = Dict.insert "eco.caf_memo" UnitAttr funcOp.attrs }
+                in
+                ( [ globalOp, funcOpTagged ], ctx3 )
+
+            else
+                ( [ funcOp ], ctx2 )
 
 
 {-| Generate closure functions.

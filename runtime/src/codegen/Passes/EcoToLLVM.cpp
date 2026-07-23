@@ -198,10 +198,13 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         // eco.shadow_roots for post-conversion shadow-root frame installation.
         // MUST run before Stage 0 (which erases every func::FuncOp).
         llvm::DenseSet<llvm::StringRef> shadowRootFuncs;
+        llvm::DenseSet<llvm::StringRef> cafMemoFuncs;
         module.walk([&](func::FuncOp funcOp) {
             runtime.origFuncTypes[funcOp.getSymName()] = funcOp.getFunctionType();
             if (funcOp->hasAttr("eco.shadow_roots"))
                 shadowRootFuncs.insert(funcOp.getSymName());
+            if (funcOp->hasAttr("eco.caf_memo"))
+                cafMemoFuncs.insert(funcOp.getSymName());
         });
 
         // Lower allocation groups (eco.gc_group_size > 1) into fast/slow/merge
@@ -509,6 +512,18 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
                 return;
             if (!func.getGarbageCollector())
                 func.setGarbageCollector("eco-gc");
+            // CAF memoization guard (plans/caf-memoization-implementation.md).
+            // Shadow-root funcs (main) are skipped: the guard's hit-path early
+            // return would bypass the frame push the epilogues balance. The
+            // Elm side also strips the attr from main — belt and braces.
+            if (!cafMemoFuncs.empty() &&
+                cafMemoFuncs.contains(func.getSymName()) &&
+                !shadowRootFuncs.contains(func.getSymName())) {
+                if (failed(installCafMemoGuard(func))) {
+                    signalPassFailure();
+                    return;
+                }
+            }
             if (!shadowRootFuncs.empty() &&
                 shadowRootFuncs.contains(func.getSymName())) {
                 OpBuilder builder(func.getContext());

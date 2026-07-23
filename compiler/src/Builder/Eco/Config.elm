@@ -93,6 +93,9 @@ loadBase maybeExplicit root =
   - `ECO_ARITY_RAISE_MIN_APPLIED=<0..100>` overrides
     `inline.raiseAppliedShareMin` (H6.2.5 Lever 2 selective raising);
     participates in the hash via the `arm=` token when nonzero.
+  - `ECO_CAF_MEMO=0` disables CAF memoization (default-on; per-SpecId lazy
+    once-init `eco.global` slots for nullary value thunks); participates in
+    the hash via the `cafm=` token.
 
 Applied here (not further downstream) so the override participates in
 `Config.hash`, which keys the Details cache. An unrecognized engine value is a
@@ -168,6 +171,11 @@ applyEnvOverrides cfg =
             (\cfg11 ->
                 (Utils.envLookupEnv "ECO_ARITY_RAISE_MIN_APPLIED" |> Task.mapError never)
                     |> Task.map (\armVal -> applyRaiseMinAppliedOverride armVal cfg11)
+            )
+        |> Task.andThen
+            (\cfg12 ->
+                (Utils.envLookupEnv "ECO_CAF_MEMO" |> Task.mapError never)
+                    |> Task.map (\cmVal -> applyCafMemoOverride cmVal cfg12)
             )
 
 
@@ -344,6 +352,30 @@ applyLssDevirtFnOverride maybeVal cfg =
 
             else if List.member v [ "0", "false", "no" ] then
                 updateLss (\lss -> { lss | devirtFnGlobals = False }) cfg
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_CAF_MEMO=1|true|yes / 0|false|no`: CAF memoization — per-SpecId
+lazy once-init `eco.global` slots for nullary value thunks
+(plans/caf-memoization-implementation.md). DEFAULT-ON, so the override is
+bidirectional: `0|false|no` is the escape hatch (compile-time only — the
+guard is baked into generated code). Unset or unrecognized leaves the
+config/default value. Participates in the hash via the `cafm=` token.
+-}
+applyCafMemoOverride : Maybe String -> EcoConfig -> EcoConfig
+applyCafMemoOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                { cfg | cafMemo = { enabled = True } }
+
+            else if List.member v [ "0", "false", "no" ] then
+                { cfg | cafMemo = { enabled = False } }
 
             else
                 cfg

@@ -952,6 +952,134 @@ majors/minors/GC-event counters unaffected). N5 (group-leader
 unification) not built: groups are already statepoint-free, call overhead
 only. N6 (flag + fallback-arm deletion) after soak, the P2 arc.
 
+### Run S — CAF memoization (plans/caf-memoization-implementation.md)
+### (2026-07-22): **−5.1 % census-on wall, one FEWER major GC (10→9), −8.27 M
+### dispatches; all six leg outputs byte-identical across BOTH flag states**
+
+CAF memoization shipped default-on (`cafMemo`, escape `ECO_CAF_MEMO=0`,
+hash token `cafm=1`): every qualifying nullary value thunk (`MonoDefine`
+non-closure, `!eco.value` ABI result, non-trivial body, **effect-type-free**
+— Task/Cmd/Sub/ProcessId excluded, see below) gets a per-SpecId
+`eco.global` slot + a lazy once-init guard installed by EcoToLLVM's serial
+post-Stage-2 phase (entry load/icmp-ne-0/early-return; store-before-every-
+return through the REP_LLVM_002 slot-cast barriers). Reference sites are
+untouched. Slots ride the existing eco.global machinery: rooted by
+`__eco_init_globals`, evacuated in place at minor GC, marked at major.
+**1,215 slots** in the self-compile MLIR (1,214 survive to the binary).
+
+**The effect-type exclusion is load-bearing** (found via the only first-run
+E2E failure, MVarDropReleasesSlotTest): native kernel task VALUES can be
+EAGER — `Eco_Kernel_MVar_new()` allocates the MVar id at value-evaluation
+time and returns `Task_Succeed id` — and the scheduler mutates Task nodes
+in place (one-shot kill-handle install). The per-reference thunk call was
+load-bearing for that class; `monoTypeHasEffects` (Functions.elm) excludes
+it (recursive over containers + custom args, `MFunction` a barrier).
+
+**Static.** cafon vs cafoff self-compile MLIR 12,701,444 B vs 12,615,305 B
+(+0.68 %); census binaries 63,282,408 B vs 63,199,664 B (+0.13 %). Three
+new codegen fixtures (caf_memo_basic/gc/constant — guard shape, memoize-
+once, GC survival via the rooted slot, embedded-constant caching).
+
+**Dynamic — methodology-conformant battery (both flavors minted by the
+default solver+LSS boot chain, lowered with
+`ECO_LSS_DISPATCH_SITE_COUNTERS=1`; workload subst; census-on
+`ECO_DISPATCH_STATS=1`; cold `eco-stuff` per leg; warm-up discarded;
+interleaved ×3):**
+
+```
+on:  200.58 / 200.66 / 202.51   mean 201.25 s (3:21.2)   majors 9,  minors 760
+off: 211.33 / 211.95 / 212.69   mean 211.99 s (3:32.0)   majors 10, minors 762
+```
+
+**−10.74 s = −5.1 % census-on**; every on leg beats every off leg by
+≥ 8.8 s; GC-event counts leg-identical within each side — memoization
+removes enough allocation to retire ONE full major GC cycle (plus 2
+minors) per self-compile.
+
+**Census (deterministic to the digit on all three legs per side):**
+
+```
+off: sat=661,274,739 gen=644,052,484 typed=17,222,255 fast=101,058,795 distinct=5,809
+on:  sat=653,001,749 gen=635,779,494 typed=17,222,255 fast=101,058,795 distinct=5,809
+```
+
+**−8,272,990 dispatches (−1.25 %), ALL of it out of the `gen` funnel** —
+`typed` and `fast` are identical to the last digit. Exactly the expected
+shape: CAF thunk calls are direct calls (never dispatch), so the savings
+are the closure dispatches *inside* no-longer-re-executed CAF bodies (the
+decoder-graph combinator builds, table constructions, parser-atom
+assembly). Coverage 13.26 % → 13.40 % (denominator shrink, fast flat).
+
+**Non-perturbation, strongest form:** all SIX timed workload outputs share
+one sha256 (12,235,950 B) — the on-side and off-side compilers produce
+BYTE-IDENTICAL output while the on side runs 5.1 % faster. (Both sides
+emit memoized MLIR for the workload — `ECO_CAF_MEMO` only differed at the
+binaries' own build. Evaluation sharing is output-invisible, as purity +
+the effect exclusion predict.)
+
+**Gates (full record in the plan):** E2E 1633/1633 flag-on (incl. the 3 new
+fixtures and the MVar regression test); front-end unit tests 12,999 passed
+with the SAME 12 pre-existing typechecker-refactor failures as baseline
+(POST_010/TYPE_007/golden-fingerprint — the in-flight Design B/C track,
+untouched by this change); full bootstrap green with **both fixed points**:
+Stage 4b JS (eco-boot-2.js == eco-boot-3.js) and Stage 8c native
+byte-exact (eco-compiler-boot == eco-compiler-boot-2 = 63,265,880 B).
+
+### Run T — CAF memoization M4: nullary custom constructors
+### (2026-07-23): **−4.5 % census-on wall ON TOP of Run S, minors 760→727
+### (−33), majors 9 flat; dispatch-neutral by construction**
+
+M4 shipped (same `cafMemo` flag / `ECO_CAF_MEMO=0` escape): `MonoEnum`
+thunks — nullary custom constructors like `LT`/user enums, whose
+`eco.construct.custom` size-0 bodies allocated a FRESH ~16 B object per
+reference — now get the same per-SpecId `eco.global` slot + lazy guard.
+Well-known constants (True/False/Nothing → embedded immediates) stay
+unstamped (trivial bodies); the effect-type exclusion applies to the enum's
+result type. Sharing is sound: constructed customs are immutable once
+escaped (HEAP_031), equality/dispatch are tag-based, and bit-equality fast
+paths only improve on a shared object. New fixture `caf_memo_enum.mlir`
+(construct.custom-size-0 body: alloc-once + tag dispatch on the cached
+object across forced minor+major GC).
+
+**Static.** Self-compile slots 1,215 → **1,489** (+274 enum slots); MLIR
+12,701,444 → 12,722,631 B (+0.17 %); binary 63,282,408 → 63,304,720 B
+(+0.035 %).
+
+**Dynamic — same-container A/B (post-M4 binary vs Run S's ON binary, both
+counters-lowered, BOTH compiling the SAME current tree; workload subst,
+census-on, cold `eco-stuff` per leg, warm-up discarded, interleaved ×3):**
+
+```
+m4:  194.26 / 191.58 / 193.63   mean 193.16 s (3:13.2)   majors 9, minors 727
+pre: 202.12 / 202.57 / 202.32   mean 202.34 s (3:22.3)   majors 9, minors 760
+```
+
+**−9.18 s = −4.5 % census-on on top of Run S**; every m4 leg beats every
+pre leg by ≥ 7.9 s. Majors flat at 9; **minors 760 → 727 (−33)** — the win
+is pure nursery-allocation elimination (every nullary-ctor reference was a
+fresh object) plus its scan/copy tail, exactly the M4 thesis. Cumulative
+CAF-memoization arc (Run S off-baseline → Run T): census-on wall
+211.99 → 193.16 s = **−8.9 %**, majors 10 → 9, minors 762 → 727.
+
+**Census (deterministic to the digit ×3 per side): dispatch-NEUTRAL by
+construction** — enum thunk calls are direct `eco.call`s, invisible to the
+dispatch counters:
+
+```
+pre: sat=653,143,552 gen=635,916,724 typed=17,226,828 fast=101,087,195 distinct=5,809
+m4:  sat=653,155,060 gen=635,928,232 typed=17,226,828 fast=101,088,017 distinct=5,809
+```
+
+(Δsat +11.5 K = +0.002 % — the two BINARIES differ by the M4 source itself,
+tree growth, not a dispatch change; `typed` identical, `fast` +822.)
+Coverage 13.40 %. Outputs: one sha256 per side ×3; the sides differ from
+each other BY DESIGN (the m4 binary emits enum slots into the workload
+output: 12,237,342 → 12,257,312 B).
+
+**Gates:** E2E **1634/1634** (incl. the new fixture); full bootstrap green,
+both fixed points — Stage 4b JS and Stage 8c native byte-exact
+(63,292,288 B ELFs); Stage 7a uninstrumented single read 3:11.42.
+
 ## Summary
 
 Coverage = `fast / (sat + fast)`. "solver-built" = compiler's own code carries LSS
@@ -981,6 +1109,10 @@ stamps (front-end run under solver, lowered with `ECO_LSS_DISPATCH_SITE_COUNTERS
 | 2026-07-21 15:xx | **E1.3 v3 FULL LIFT (15,744) all-keyed / subst (Run O)** | 653,394,605 | 636,744,631 | 16,649,974 | **99,563,928** | **13.22 %** | 5,804 | 4:29.5†×3 |
 | 2026-07-21 late | **RESOLVE CAMPAIGN P2.5+R5 all-keyed / subst (Run Q)** | 658,526,335 | 641,694,578 | 16,831,757 | 100,378,065 | 13.23 % | 5,804 | **3:45.94†§** |
 | 2026-07-21/22 | **INLINE NURSERY ALLOC (Run R) all-keyed / subst** | 658,526,335 | 641,694,578 | 16,831,757 | 100,378,065 | 13.23 % | 5,804 | **3:27.9†¶** |
+| 2026-07-22 | CAF-memo OFF baseline (Run S) all-keyed / subst | 661,274,739 | 644,052,484 | 17,222,255 | 101,058,795 | 13.26 % | 5,809 | 3:32.0†∥ |
+| 2026-07-22 | **CAF MEMOIZATION ON (Run S) all-keyed / subst** | **653,001,749** | 635,779,494 | 17,222,255 | 101,058,795 | **13.40 %** | 5,809 | **3:21.2†∥** |
+| 2026-07-23 | pre-M4 (= Run S ON binary, grown tree) (Run T) | 653,143,552 | 635,916,724 | 17,226,828 | 101,087,195 | 13.40 % | 5,809 | 3:22.3†◊ |
+| 2026-07-23 | **CAF-MEMO M4 enum ctors (Run T) all-keyed / subst** | 653,155,060 | 635,928,232 | 17,226,828 | 101,088,017 | 13.40 % | 5,809 | **3:13.2†◊** |
 
 *Run-C walls carry an unattributed +30 % vs Run A/B (see the Run C section) — the
 counts are the meaningful comparison; treat the walls as provisional. The Run-I
@@ -1014,6 +1146,22 @@ census-on interleaved ×3 mean in a different container than the pre-R rows
 (compare within-run only): off 3:45.5 → on **3:27.9** = −**7.8 %**
 (uninstrumented secondary battery: −9.6 %), majors 9 / minors 757
 identical on every leg, outputs byte-identical. See the Run R section.
+∥Run S rows are a same-container A/B (compare within-run): both flavors
+minted by the default solver+LSS boot chain, workload subst, census-on
+interleaved ×3, warm-up discarded. The off-side counts sit slightly above
+Run R's row from TREE GROWTH (the feature's own compiler source joins the
+workload: +2.7 M sat off-vs-R, distinct 5,804 → 5,809) — the Run-S delta
+(−8.27 M sat, all `gen`; typed/fast digit-identical across the two sides)
+is the memoization effect proper. Walls: on beats off on every interleaved
+pairing with one FEWER major (9 vs 10; minors 760 vs 762, leg-identical
+per side). All six timed outputs one sha256. See the Run S section.
+◊Run T is the M4 A/B (same container, same current input tree for both
+sides): dispatch-NEUTRAL by construction (enum thunk calls are direct
+calls — the +11.5 K sat / +822 fast vs the pre row is the two binaries'
+own tree growth, not a dispatch change). The story is wall + minor GCs:
+−4.5 % census-on with minors 760 → 727 at 9 majors flat (GC counts from a
+dedicated stats leg per side, counts-identical battery). Cumulative CAF
+arc S+T: 211.99 → 193.16 s (−8.9 %), majors 10 → 9, minors 762 → 727.
 Runs D, E and K have NO dispatch-census legs and hence no table rows: D ran only the
 mono-census A/B (its solver MLIR differed by one stamp, +25 B), E skipped the leg
 outright (byte-identical MLIR ⇒ identical counts), and K was the GC-policy
@@ -1055,7 +1203,12 @@ demand-join audit + E10 post-settle kernel-devirt relocation; per-member
 attribution over the residual over-apply declines; later-stage chaining
 (v3); N6 `ECO_INLINE_ALLOC` flag deletion after soak + the parked v2
 inline-alloc candidates (fill-later classes, dialect-level allocation
-merging — plans/inline-nursery-allocation.md §8). (Resolved since Run L:
+merging — plans/inline-nursery-allocation.md §8); CAF-memo follow-ups
+(design_docs/caf-memoization-design.md §12): caller-side fast path,
+permanent-space promotion of large memoized structures, and revisiting the
+effect-type exclusion if defer-eager-kernel-tasks-via-binding lands.
+(Resolved since Run S: M4 nullary-ctor slots SHIPPED — Run T, −4.5 % wall,
+minors −33.) (Resolved since Run L:
 keying + lssDF shipped as defaults (Run L), all-globals keying sound +
 default (Run M), E1.3 `$cap` inlining DONE — v1 guard-limited (Run N), v3
 barriers + full-population lift (Run O): wall-neutral, binary −0.55 %,

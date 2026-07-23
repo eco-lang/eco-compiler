@@ -1,5 +1,5 @@
 module Compiler.Generate.MLIR.Ops exposing
-    ( opBuilder, mlirOp, mkRegion, mkRegionTerminatedByOps, funcFunc
+    ( opBuilder, mlirOp, mkRegion, mkRegionTerminatedByOps, funcFunc, ecoGlobal
     , ecoConstantUnit, ecoConstantEmptyRec, ecoConstantTrue, ecoConstantFalse, ecoConstantNil, ecoConstantNothing, ecoConstantEmptyString
     , ecoConstructList, ecoConstructTuple2, ecoConstructTuple3, ecoConstructRecord, ecoConstructCustom
     , ecoProjectListHead, ecoProjectListTail, ecoProjectTuple2, ecoProjectTuple3, ecoProjectRecord, ecoProjectCustom
@@ -834,6 +834,19 @@ mkRegionTerminatedByOps args ops =
                     }
                 , blocks = OrderedDict.empty
                 }
+
+
+{-| eco.global - module-level GC-rooted value slot (CAF memoization,
+plans/caf-memoization-implementation.md). Lowered to an internal i64 LLVM
+global initialized to 0 and registered as a GC root at startup by
+`__eco_init_globals` (EcoToLLVMGlobals.cpp). No operands, results, or
+regions — an attr-only module-level op like eco.type\_table.
+-}
+ecoGlobal : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
+ecoGlobal ctx symName =
+    mlirOp ctx "eco.global"
+        |> opBuilder.withAttrs (Dict.fromList [ ( "sym_name", StringAttr symName ) ])
+        |> opBuilder.build
 
 
 {-| func.func - define a function

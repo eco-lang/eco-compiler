@@ -525,3 +525,83 @@ void eco::detail::createGlobalRootInitFunction(
 
     builder.create<LLVM::ReturnOp>(loc, ValueRange{});
 }
+
+//===----------------------------------------------------------------------===//
+// CAF memoization guard (plans/caf-memoization-implementation.md, CGEN_068)
+//
+// A func.func tagged `eco.caf_memo` is a nullary value thunk (arity 0,
+// !eco.value result). Wrap it so its body runs at most once per process:
+//
+//   entry:  %bits = load i64 from @__eco_caf$<name>
+//           cond_br (%bits != 0), ^hit, ^body
+//   ^hit:   return __eco_slot_to_hptr(%bits)      ; barrier, REP_LLVM_002
+//   ^body:  <original body>
+//           ; every llvm.return %r becomes:
+//           store __eco_hptr_to_slot(%r), @slot ; return %r
+//
+// Slot value 0 = uninitialized: no valid !eco.value word is 0 (heap pointers
+// are nonzero addresses; embedded constants are 0x4/0x5/0x6). The hit path
+// contains no statepoint, and each publish store sits immediately before its
+// return (CGEN_067 discipline), so no pointer-provenance i64 is live across
+// a statepoint. The slot itself is an eco.global-lowered internal i64 global:
+// createGlobalRootInitFunction roots it (it runs AFTER this), minor GC
+// evacuates it in place, major GC marks through it.
+//===----------------------------------------------------------------------===//
+
+LogicalResult eco::detail::installCafMemoGuard(LLVM::LLVMFuncOp func) {
+    if (func.isExternal())
+        return success();
+
+    auto *ctx = func.getContext();
+    auto loc = func.getLoc();
+    Region &body = func.getBody();
+    Block *oldEntry = &body.front();
+
+    auto i64Ty = IntegerType::get(ctx, 64);
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+    auto hptrTy = LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
+
+    // Shape check: nullary thunk returning ptr addrspace(1) (the converted
+    // !eco.value). The Elm side only stamps such thunks; anything else here
+    // is a compiler bug.
+    auto fnTy = func.getFunctionType();
+    if (fnTy.getNumParams() != 0 || fnTy.getReturnType() != hptrTy)
+        return func.emitError(
+            "eco.caf_memo on a non-thunk or non-!eco.value function");
+
+    std::string slotName = ("__eco_caf$" + func.getSymName()).str();
+
+    OpBuilder builder(ctx);
+
+    // 1. Instrument every existing return FIRST, so the hit-path return
+    //    created below is not instrumented.
+    SmallVector<LLVM::ReturnOp> rets;
+    body.walk([&](LLVM::ReturnOp r) { rets.push_back(r); });
+    for (LLVM::ReturnOp r : rets) {
+        builder.setInsertionPoint(r);
+        auto addr = builder.create<LLVM::AddressOfOp>(loc, ptrTy, slotName);
+        Value bits = globalStoreValueToI64(builder, loc, r.getOperand(0));
+        builder.create<LLVM::StoreOp>(loc, bits, addr);
+    }
+
+    // 2. New entry block (guard) + hit block. The thunk has no parameters,
+    //    so the new entry block carries no arguments.
+    Block *entry = new Block();
+    body.push_front(entry);
+    Block *hit = new Block();
+    body.push_back(hit);
+
+    builder.setInsertionPointToEnd(entry);
+    auto addr = builder.create<LLVM::AddressOfOp>(loc, ptrTy, slotName);
+    auto bits = builder.create<LLVM::LoadOp>(loc, i64Ty, addr);
+    auto zero = builder.create<LLVM::ConstantOp>(loc, i64Ty, 0);
+    auto isSet = builder.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::ne,
+                                              bits, zero);
+    builder.create<LLVM::CondBrOp>(loc, isSet, hit, oldEntry);
+
+    builder.setInsertionPointToEnd(hit);
+    Value cached = globalLoadI64ToValue(builder, loc, bits);
+    builder.create<LLVM::ReturnOp>(loc, ValueRange{cached});
+
+    return success();
+}

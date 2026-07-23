@@ -1,5 +1,5 @@
 module Compiler.Eco.Config exposing
-    ( EcoConfig, InlineConfig, BytesFusionConfig, LogicalTypesConfig
+    ( EcoConfig, InlineConfig, BytesFusionConfig, LogicalTypesConfig, CafMemoConfig
     , MonoEngine(..), MonoConfig, LssConfig
     , default, defaultLss, decoder, hash, clamp
     , monoEngineFromString
@@ -33,6 +33,7 @@ type alias EcoConfig =
     { inline : InlineConfig
     , bytesFusion : BytesFusionConfig
     , logicalTypes : LogicalTypesConfig
+    , cafMemo : CafMemoConfig
     , mono : MonoConfig
     }
 
@@ -187,6 +188,19 @@ type alias BytesFusionConfig =
     { enabled : Bool }
 
 
+{-| CAF-memoization master switch (consumed by MLIR codegen —
+plans/caf-memoization-implementation.md, design_docs/caf-memoization-design.md).
+`enabled = True` gives every qualifying nullary value thunk (`MonoDefine`
+non-closure, `!eco.value` ABI result, non-trivial body) a lazy once-init
+`eco.global` slot: the thunk body runs at most once per process and every
+later reference returns the cached value. `ECO_CAF_MEMO=0` is the env escape.
+Compile-time only: the guard is baked into generated code, so there is no
+runtime toggle.
+-}
+type alias CafMemoConfig =
+    { enabled : Bool }
+
+
 {-| Logical-type codegen knobs.
 
   - `customMaxFields`: max fields a single-ctor custom may have to be eligible
@@ -229,6 +243,7 @@ default =
         }
     , bytesFusion = { enabled = True }
     , logicalTypes = { customMaxFields = 8 }
+    , cafMemo = { enabled = True }
     , mono = { engine = EngineSolver, diffDump = False, validate = False, lss = defaultLss }
     }
 
@@ -243,6 +258,7 @@ decoder =
         |> D.apply (D.optionalField "inline" inlineDecoder default.inline)
         |> D.apply (D.optionalField "bytesFusion" bytesFusionDecoder default.bytesFusion)
         |> D.apply (D.optionalField "logicalTypes" logicalTypesDecoder default.logicalTypes)
+        |> D.apply (D.optionalField "cafMemo" cafMemoDecoder default.cafMemo)
         |> D.apply (D.optionalField "mono" monoDecoder default.mono)
 
 
@@ -268,6 +284,12 @@ bytesFusionDecoder : D.Decoder x BytesFusionConfig
 bytesFusionDecoder =
     D.pure BytesFusionConfig
         |> D.apply (D.optionalField "enabled" D.bool default.bytesFusion.enabled)
+
+
+cafMemoDecoder : D.Decoder x CafMemoConfig
+cafMemoDecoder =
+    D.pure CafMemoConfig
+        |> D.apply (D.optionalField "enabled" D.bool default.cafMemo.enabled)
 
 
 logicalTypesDecoder : D.Decoder x LogicalTypesConfig
@@ -385,6 +407,16 @@ hash cfg =
                )
          , "cmf=" ++ String.fromInt cfg.logicalTypes.customMaxFields
          ]
+            -- CAF-memoization token appears when ENABLED (the default):
+            -- enabling changes generated MLIR, so the new default must
+            -- invalidate every pre-feature cache once. ECO_CAF_MEMO=0
+            -- hashes like the pre-feature world and can share its caches.
+            ++ (if cfg.cafMemo.enabled then
+                    [ "cafm=1" ]
+
+                else
+                    []
+               )
             -- Arity-raise token appears ONLY when enabled, so default
             -- configs hash exactly as before (no global cache invalidation).
             -- The applied-share threshold (H6.2.5 Lever 2) joins only when

@@ -1078,6 +1078,14 @@ void createGlobalRootInitFunction(
     mlir::ModuleOp module,
     EcoRuntime &runtime);
 
+/// CAF memoization (plans/caf-memoization-implementation.md): wrap a nullary
+/// thunk tagged `eco.caf_memo` in a load-check-return / store-on-return guard
+/// against its `__eco_caf$<name>` slot (an eco.global-lowered internal i64
+/// LLVM global). Must run in the serial post-Stage-2 phase, BEFORE
+/// createGlobalRootInitFunction (which roots the slot) and before the
+/// unused-decl strip (the barrier decls this references must count as used).
+mlir::LogicalResult installCafMemoGuard(mlir::LLVM::LLVMFuncOp func);
+
 } // namespace detail
 } // namespace eco
 
