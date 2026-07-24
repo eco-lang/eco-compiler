@@ -138,8 +138,11 @@ cafMemoQualifies ctx expr monoType =
            )
 ```
 
-**Effect-type exclusion (added after the first flag-on E2E run — the
-MVarDropReleasesSlot regression, 1632/1633).** `monoTypeHasEffects` walks
+**Effect-type exclusion — REMOVED 2026-07-23** by
+`plans/task-purity-and-caf-guard-removal.md` (kernel tasks are now fully
+deferred and Task nodes immutable, so Task/Cmd/Sub CAFs memoize soundly;
+`monoTypeHasEffects` deleted). Historical record of why it existed:
+`monoTypeHasEffects` walks
 the mono type and returns True for `Platform.Task`/`ProcessId`/`Router`/
 `Program`, `Platform.Cmd.Cmd`, `Platform.Sub.Sub` — recursing through
 `MList`/`MTuple`/`MRecord` and `MCustom` instantiation args, with

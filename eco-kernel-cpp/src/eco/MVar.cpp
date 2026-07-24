@@ -19,6 +19,7 @@
 #include "MVar.hpp"
 #include "ExportHelpers.hpp"
 #include "KernelHelpers.hpp"
+#include "TaskBinding.hpp"
 #include "allocator/Allocator.hpp"
 #include "allocator/HeapHelpers.hpp"
 #include "allocator/Heap.hpp"
@@ -120,13 +121,32 @@ static void processTakeDeparture(MVarSlot& slot) {
     }
 }
 
+// Resume a stepped binding with the recoverable "MVar not found" failure
+// (IO_ERR_002 / D6). Task purity (plans/task-purity-and-caf-guard-removal.md
+// F1) moved the not-found check from task CREATION into the evaluators, so
+// the failure must be DELIVERED here — returning without resuming would
+// silently strand the fiber.
+static void resumeNotFound(HPointer resumeHP, int64_t id) {
+    HPointer failTask = listNil();
+    {
+        Elm::StackRootGuard guard(&resumeHP, &failTask);
+        failTask = Export::decode(
+            taskFailIO(0, "", "MVar not found: " + std::to_string(id)));
+        Elm::Platform::Scheduler::callClosure1(resumeHP, failTask);
+    }
+}
+
 // ============================================================================
 // Binding callback evaluators
 // ============================================================================
 //
 // Each evaluator is invoked by the scheduler when a Task_Binding is stepped.
 // rawArgs layout mirrors the capture order in the kernel export: captured
-// values first, resume closure last.
+// values first, resume closure last. Since the F1 always-binding reshape
+// (Task purity), these evaluators are the ONLY place MVar state is read or
+// written for read/take/put — the exported kernel functions are pure
+// binding constructors, so one Task value fulfilled N times performs the
+// operation N times.
 
 // Captured: [0]=unboxed Int (mvar id, PK_Int). Passed: [1]=resume closure (PK_Boxed HPointer).
 //
@@ -143,7 +163,7 @@ static void* readBindingEvaluator(void* rawArgs[]) {
     auto& sched = Elm::Platform::Scheduler::instance();
     auto it = s_mvars.find(id);
     if (it == s_mvars.end()) {
-        // MVar was dropped between the read call and this callback. Abandon.
+        resumeNotFound(resumeHP, id);
         return reinterpret_cast<void*>(Export::encode(unit()));
     }
     if (it->second.value.has_value()) {
@@ -170,6 +190,7 @@ static void* takeBindingEvaluator(void* rawArgs[]) {
     auto& sched = Elm::Platform::Scheduler::instance();
     auto it = s_mvars.find(id);
     if (it == s_mvars.end()) {
+        resumeNotFound(resumeHP, id);
         return reinterpret_cast<void*>(Export::encode(unit()));
     }
     if (it->second.value.has_value()) {
@@ -203,6 +224,7 @@ static void* putBindingEvaluator(void* rawArgs[]) {
     auto& sched = Elm::Platform::Scheduler::instance();
     auto it = s_mvars.find(id);
     if (it == s_mvars.end()) {
+        resumeNotFound(resumeHP, id);
         return reinterpret_cast<void*>(Export::encode(unit()));
     }
     if (!it->second.value.has_value()) {
@@ -231,17 +253,16 @@ int64_t newEmpty() {
     return id;
 }
 
+// Task purity (plans/task-purity-and-caf-guard-removal.md F1): read/take/put
+// are PURE binding constructors — no MVar state is read or written here.
+// Every slot inspection (including the not-found check) lives in the
+// evaluators, so the returned Task performs the operation once per
+// FULFILMENT, not once at creation. This deletes KERNEL_TASK_IO_001's old
+// exemption (d) and makes the tasks safe to share and to cache in memoized
+// CAF slots (CGEN_068).
+
 uint64_t read(uint64_t id) {
     int64_t mvarId = static_cast<int64_t>(id);
-    auto it = s_mvars.find(mvarId);
-    if (it == s_mvars.end()) {
-        // Recoverable rather than a fatal abort (IO_ERR_002 / D6): surface a
-        // neutral IO error tuple so Eco.MVar.{read,take,put} fails with IOError.
-        return taskFailIO(0, "", "MVar not found: " + std::to_string(mvarId));
-    }
-    if (it->second.value.has_value()) {
-        return taskSucceed(it->second.value.value());
-    }
     // readBindingEvaluator returns a boxed Task HPtr → K = PK_Boxed.
     HPointer cb = allocClosureK(
         reinterpret_cast<Elm::EvalFunction>(readBindingEvaluator), 2,
@@ -255,21 +276,6 @@ uint64_t read(uint64_t id) {
 
 uint64_t take(uint64_t id) {
     int64_t mvarId = static_cast<int64_t>(id);
-    auto it = s_mvars.find(mvarId);
-    if (it == s_mvars.end()) {
-        // Recoverable rather than a fatal abort (IO_ERR_002 / D6): surface a
-        // neutral IO error tuple so Eco.MVar.{read,take,put} fails with IOError.
-        return taskFailIO(0, "", "MVar not found: " + std::to_string(mvarId));
-    }
-    if (it->second.value.has_value()) {
-        HPointer v = it->second.value.value();
-        it->second.value.reset();
-        {
-            Elm::StackRootGuard guard(&v);
-            processTakeDeparture(it->second);
-        }
-        return taskSucceed(v);
-    }
     // takeBindingEvaluator returns a boxed Task HPtr → K = PK_Boxed.
     HPointer cb = allocClosureK(
         reinterpret_cast<Elm::EvalFunction>(takeBindingEvaluator), 2,
@@ -283,20 +289,7 @@ uint64_t take(uint64_t id) {
 
 uint64_t put(uint64_t id, uint64_t value) {
     int64_t mvarId = static_cast<int64_t>(id);
-    auto it = s_mvars.find(mvarId);
-    if (it == s_mvars.end()) {
-        // Recoverable rather than a fatal abort (IO_ERR_002 / D6): surface a
-        // neutral IO error tuple so Eco.MVar.{read,take,put} fails with IOError.
-        return taskFailIO(0, "", "MVar not found: " + std::to_string(mvarId));
-    }
     HPointer valueHP = Export::decode(value);
-    if (!it->second.value.has_value()) {
-        {
-            Elm::StackRootGuard guard(&valueHP);
-            processPutArrival(it->second, valueHP);
-        }
-        return taskSucceedUnit();
-    }
     Elm::StackRootGuard guard(&valueHP);
     // putBindingEvaluator returns a boxed Task HPtr → K = PK_Boxed.
     HPointer cb = allocClosureK(
@@ -310,8 +303,13 @@ uint64_t put(uint64_t id, uint64_t value) {
     return Export::encode(task);
 }
 
-uint64_t drop(uint64_t id) {
-    int64_t mvarId = static_cast<int64_t>(id);
+// Binding body for `drop` — the erase + waiter abandonment happens at
+// FULFILMENT (F1). Captured: tuple2(unboxedInt(id), boxed(unit), 0x1), the
+// File.cpp Q2 packing convention for a 1-arg unboxed-Int kernel.
+static HPointer dropBody(HPointer captured) {
+    Tuple2* tup =
+        static_cast<Tuple2*>(Elm::Allocator::instance().resolve(captured));
+    int64_t mvarId = tup->a.i;
     auto it = s_mvars.find(mvarId);
     if (it != s_mvars.end()) {
         // Elm.MVar.drop docs: "Any pending waiters are abandoned." Release
@@ -333,7 +331,13 @@ uint64_t drop(uint64_t id) {
         abandon(it->second.putters);
         s_mvars.erase(it);
     }
-    return taskSucceedUnit();
+    return Export::decode(taskSucceedUnit());
+}
+
+uint64_t drop(uint64_t id) {
+    HPointer payload = tuple2(
+        unboxedInt(static_cast<int64_t>(id)), boxed(unit()), 0x1);
+    return Export::encode(Eco::Kernel::makeBinding<dropBody>(payload));
 }
 
 void registerGcRootScanner() {

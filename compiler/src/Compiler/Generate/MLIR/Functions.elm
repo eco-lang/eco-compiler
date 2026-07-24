@@ -29,7 +29,6 @@ import Compiler.Monomorphize.Registry as Registry
 import Dict
 import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirRegion, MlirType(..), Visibility(..))
 import Set
-import System.TypeCheck.IO as IO
 
 
 
@@ -373,13 +372,9 @@ generateNodeInner ctx funcName specId node =
                 isWellKnownConstant =
                     List.member maybeCtorName [ Just "True", Just "False", Just "Nothing" ]
 
-                ( _, enumResultType ) =
-                    Mono.decomposeFunctionType monoType
-
                 cafQualifies =
                     ctx.ecoConfig.cafMemo.enabled
                         && not isWellKnownConstant
-                        && not (monoTypeHasEffects enumResultType)
             in
             if cafQualifies then
                 let
@@ -475,7 +470,6 @@ cafMemoQualifies : Ctx.Context -> Mono.MonoExpr -> Mono.MonoType -> Bool
 cafMemoQualifies ctx expr monoType =
     ctx.ecoConfig.cafMemo.enabled
         && (Types.monoTypeToAbi monoType == Types.ecoValue)
-        && not (monoTypeHasEffects monoType)
         && (case expr of
                 Mono.MonoClosure _ _ _ ->
                     False
@@ -491,48 +485,22 @@ cafMemoQualifies ctx expr monoType =
            )
 
 
-{-| Effect types are EXCLUDED from CAF memoization. Two reasons, both
-native-runtime realities rather than Elm semantics:
+{-| Effect types (Task/Cmd/Sub) are NO LONGER excluded from CAF memoization
+(plans/task-purity-and-caf-guard-removal.md, 2026-07-23). The old
+`monoTypeHasEffects` guard worked around two native-runtime impurities that
+have been FIXED at the source:
 
-1.  The scheduler mutates Task heap nodes in place (Scheduler.cpp
-    Task\_Binding kill-handle install) — tasks are one-shot objects there.
-2.  Native kernel task VALUES can be EAGER: `Eco_Kernel_MVar_new()` performs
-    the effect at value-evaluation time and returns `Task_Succeed id`
-    (see plans/defer-eager-kernel-tasks-via-binding.md). The per-reference
-    thunk call was load-bearing: caching one instance made a second
-    `MVar.new` return the first (dropped) id — the MVarDropReleasesSlot
-    regression.
+1.  The scheduler's Task\_Binding kill-handle install now builds a
+    per-execution COPY instead of mutating the shared node (Scheduler.cpp,
+    Task immutability).
+2.  The last eager kernel tasks now defer their effects to fulfilment
+    (MVar new/read/take/put/drop always-binding, Scheduler spawn/kill as
+    bindings) — KERNEL\_TASK\_IO\_001 with no partial-eager exemptions.
 
-The walk recurses through containers and custom-type ARGUMENTS; `MFunction`
-is a barrier (values behind an arrow are constructed per application, so a
-record of task-RETURNING functions is safe to cache). Residual risk
-accepted: a monomorphic user custom whose FIELD hard-codes an effect type
-is invisible in the instantiation args (would need ctor-shape expansion) —
-the E2E corpus and self-compile gate that class.
+A Task is an immutable request for IO, fulfilled once per execution — so a
+memoized CAF holding one is sound (pinned by MVarSharedNewTaskTest and the
+MVar E2E suite).
 -}
-monoTypeHasEffects : Mono.MonoType -> Bool
-monoTypeHasEffects t =
-    case t of
-        Mono.MCustom (IO.Canonical _ home) name args ->
-            (home == "Platform" && (name == "Task" || name == "ProcessId" || name == "Router" || name == "Program"))
-                || (home == "Platform.Cmd" && name == "Cmd")
-                || (home == "Platform.Sub" && name == "Sub")
-                || List.any monoTypeHasEffects args
-
-        Mono.MList inner ->
-            monoTypeHasEffects inner
-
-        Mono.MTuple items ->
-            List.any monoTypeHasEffects items
-
-        Mono.MRecord fields ->
-            Dict.foldl (\_ fieldType acc -> acc || monoTypeHasEffects fieldType) False fields
-
-        Mono.MFunction _ _ _ ->
-            False
-
-        _ ->
-            False
 
 
 generateDefine : Ctx.Context -> String -> Bool -> Mono.MonoExpr -> Mono.MonoType -> ( List MlirOp, Ctx.Context )

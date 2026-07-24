@@ -3,17 +3,28 @@
 #include "KernelExports.h"
 #include "KernelHelpers.hpp"
 #include "MVar.hpp"
+#include "TaskBinding.hpp"
 #include "allocator/HeapHelpers.hpp"
 
 using namespace Eco::Kernel;
 using Elm::HPtr;
 
+// Task purity (plans/task-purity-and-caf-guard-removal.md F1): the slot is
+// allocated when the Task is FULFILLED, not when the value is evaluated.
+// One `MVar.new` Task value — shared, or cached in a memoized CAF slot —
+// yields a fresh MVar per fulfilment (JS/XHR parity; the
+// MVarDropReleasesSlot regression class).
+static Elm::HPointer mvarNewBody(Elm::HPointer /*captured*/) {
+    int64_t id = MVar::newEmpty();
+    // Task Never Int with the id stored unboxed in Task.value.
+    return succeedInt(id);
+}
+
 extern "C" {
 
 HPtr Eco_Kernel_MVar_new() {
-    int64_t id = MVar::newEmpty();
-    // Wrap as Task Never Int with the id stored unboxed in Task.value.
-    return HPtr::fromBits(taskSucceedInt(id));
+    return HPtr::fromBits(Export::encode(
+        makeBinding<mvarNewBody>(Elm::alloc::unit())));
 }
 
 HPtr Eco_Kernel_MVar_read(uint64_t id) {

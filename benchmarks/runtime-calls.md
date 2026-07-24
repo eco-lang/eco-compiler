@@ -1080,6 +1080,63 @@ output: 12,237,342 → 12,257,312 B).
 both fixed points — Stage 4b JS and Stage 8c native byte-exact
 (63,292,288 B ELFs); Stage 7a uninstrumented single read 3:11.42.
 
+### Run U — Task purity + CAF effect-guard removal
+### (2026-07-23): **−2.7 % census-on wall, majors 9→8; Task/Cmd CAFs now
+### memoize (slots 1,489→1,558); kernel effects defer to fulfilment**
+
+`plans/task-purity-and-caf-guard-removal.md` shipped: Tasks are immutable
+requests for IO, fulfilled once per execution. (1) MVar
+`new/read/take/put/drop` are always-binding — every slot inspection incl.
+the not-found check happens at FULFILMENT, deleting KERNEL_TASK_IO_001's
+partial-eager exemption (d); (2) `Scheduler spawn/kill` are bindings
+(elm/core parity — both previously performed their effect at task
+CREATION while mislabelled pure); (3) the tree's only Task-node mutation
+(the kill-handle install, Scheduler.cpp) is now a per-execution
+Task_Binding COPY. On that basis the CAF-memoization effect-type guard
+(`monoTypeHasEffects`, Runs S/T) is REMOVED — Task/Cmd/Sub-typed CAFs
+memoize like any value. New E2E `MVarSharedNewTaskTest` pins the contract:
+ONE `MV.new` task value fulfilled twice yields two fresh MVars.
+
+**Static.** Slots 1,489 → **1,558** (+69 effect-typed CAF slots);
+self-compile MLIR 12,722,631 → 12,725,223 B; census binary 63,304,720 →
+63,322,400 B.
+
+**Dynamic — same-container A/B vs the Run T binary (both counters-lowered,
+same current tree; workload subst, census-on, cold `eco-stuff` per leg,
+warm-up discarded, interleaved ×3; GC stats from captured stdout):**
+
+```
+u:  185.68 / 187.87 / 187.78   mean 187.11 s (3:07.1)   majors 8, minors 739
+t:  190.40 / 193.59 / 193.13   mean 192.37 s (3:12.4)   majors 9, minors 726
+```
+
+**−5.26 s = −2.7 % census-on**; every u leg beats every t leg. The GC
+ledger is the story: **majors 9 → 8** (the newly-memoized task-description
+CAFs stop re-allocating their graphs) at minors 726 → 739 (+13 — the
+always-binding MVar/spawn closures and per-execution kill copies; a cheap
+trade). Leg-identical GC events per side ×3. Cumulative CAF-memoization
+arc (Run S off-baseline → U): **211.99 → 187.11 s = −11.7 %**, majors
+10 → 8, minors 762 → 739.
+
+**Census (deterministic ×3 per side): dispatch-neutral at digit scale** —
+`sat` +22,245 (+0.003 %; the new binding-evaluator indirect calls plus the
+guard-removal tree growth; `distinct` 5,809 → 5,812 = the three new MVar/
+spawn/kill evaluator fps), `typed` identical, `fast` +209:
+
+```
+t:  sat=653,085,279 gen=635,859,510 typed=17,225,769 fast=101,075,594 distinct=5,809
+u:  sat=653,107,524 gen=635,881,755 typed=17,225,769 fast=101,075,803 distinct=5,812
+```
+
+Coverage 13.40 %. Outputs: one sha256 per side (u includes the warm-up
+leg); sides differ BY DESIGN (u emits the effect-typed slots:
+12,255,908 → 12,260,222 B).
+
+**Gates:** E2E **1635/1635** (incl. MVarSharedNewTaskTest); bootstrap green
+with both fixed points — Stage 4b JS and Stage 8c native byte-exact
+(63,305,872 B ELFs). Invariants: KERNEL_TASK_IO_001 exemption (d) deleted +
+(a) narrowed + Task-immutability corollary; CGEN_068 effect clause removed.
+
 ## Summary
 
 Coverage = `fast / (sat + fast)`. "solver-built" = compiler's own code carries LSS
@@ -1113,6 +1170,8 @@ stamps (front-end run under solver, lowered with `ECO_LSS_DISPATCH_SITE_COUNTERS
 | 2026-07-22 | **CAF MEMOIZATION ON (Run S) all-keyed / subst** | **653,001,749** | 635,779,494 | 17,222,255 | 101,058,795 | **13.40 %** | 5,809 | **3:21.2†∥** |
 | 2026-07-23 | pre-M4 (= Run S ON binary, grown tree) (Run T) | 653,143,552 | 635,916,724 | 17,226,828 | 101,087,195 | 13.40 % | 5,809 | 3:22.3†◊ |
 | 2026-07-23 | **CAF-MEMO M4 enum ctors (Run T) all-keyed / subst** | 653,155,060 | 635,928,232 | 17,226,828 | 101,088,017 | 13.40 % | 5,809 | **3:13.2†◊** |
+| 2026-07-23 | Run T binary re-read (Run U baseline) | 653,085,279 | 635,859,510 | 17,225,769 | 101,075,594 | 13.40 % | 5,809 | 3:12.4†◊ |
+| 2026-07-23 | **TASK PURITY + guard removal (Run U) all-keyed / subst** | 653,107,524 | 635,881,755 | 17,225,769 | 101,075,803 | 13.40 % | 5,812 | **3:07.1†◊** |
 
 *Run-C walls carry an unattributed +30 % vs Run A/B (see the Run C section) — the
 counts are the meaningful comparison; treat the walls as provisional. The Run-I
@@ -1160,8 +1219,11 @@ sides): dispatch-NEUTRAL by construction (enum thunk calls are direct
 calls — the +11.5 K sat / +822 fast vs the pre row is the two binaries'
 own tree growth, not a dispatch change). The story is wall + minor GCs:
 −4.5 % census-on with minors 760 → 727 at 9 majors flat (GC counts from a
-dedicated stats leg per side, counts-identical battery). Cumulative CAF
-arc S+T: 211.99 → 193.16 s (−8.9 %), majors 10 → 9, minors 762 → 727.
+dedicated stats leg per side, counts-identical battery). Run U (same ◊
+protocol) then ships Task purity + the effect-guard removal on top:
+−2.7 % more wall with majors 9 → 8, minors +13 (binding allocs), +69
+effect-typed slots, dispatch drift +22 K (+0.003 %). Cumulative CAF arc
+S+T+U: 211.99 → 187.11 s (**−11.7 %**), majors 10 → 8, minors 762 → 739.
 Runs D, E and K have NO dispatch-census legs and hence no table rows: D ran only the
 mono-census A/B (its solver MLIR differed by one stamp, +25 B), E skipped the leg
 outright (byte-identical MLIR ⇒ identical counts), and K was the GC-policy
@@ -1204,11 +1266,12 @@ attribution over the residual over-apply declines; later-stage chaining
 (v3); N6 `ECO_INLINE_ALLOC` flag deletion after soak + the parked v2
 inline-alloc candidates (fill-later classes, dialect-level allocation
 merging — plans/inline-nursery-allocation.md §8); CAF-memo follow-ups
-(design_docs/caf-memoization-design.md §12): caller-side fast path,
-permanent-space promotion of large memoized structures, and revisiting the
-effect-type exclusion if defer-eager-kernel-tasks-via-binding lands.
+(design_docs/caf-memoization-design.md §12): caller-side fast path and
+permanent-space promotion of large memoized structures.
 (Resolved since Run S: M4 nullary-ctor slots SHIPPED — Run T, −4.5 % wall,
-minors −33.) (Resolved since Run L:
+minors −33; the effect-type exclusion is GONE — Run U shipped Task purity
+(plans/task-purity-and-caf-guard-removal.md) and removed the guard at
+−2.7 % wall, majors 9→8.) (Resolved since Run L:
 keying + lssDF shipped as defaults (Run L), all-globals keying sound +
 default (Run M), E1.3 `$cap` inlining DONE — v1 guard-limited (Run N), v3
 barriers + full-population lift (Run O): wall-neutral, binary −0.55 %,

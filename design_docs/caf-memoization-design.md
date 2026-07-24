@@ -72,6 +72,15 @@ per-reference evaluation except for:
 This is the same observability argument already accepted for
 `raiseStagedSpecs` (`MonoInlineSimplify.elm:657`).
 
+**RESOLVED (Jul 23 2026): the effect-type exclusion below is REMOVED** —
+`plans/task-purity-and-caf-guard-removal.md` fixed both impurities at the
+source (MVar/spawn/kill defer their effects to fulfilment per
+KERNEL_TASK_IO_001 with no partial-eager exemptions; the scheduler's
+kill-handle install copies instead of mutating, so Task nodes are
+immutable). `monoTypeHasEffects` is deleted; Task/Cmd/Sub CAFs memoize like
+any other value, pinned by `MVarSharedNewTaskTest`. The section below is
+kept as the historical record of why the guard existed.
+
 **EXCEPTION (found during implementation, Jul 22 2026): platform effect
 types are NOT pure data in the native runtime and must be excluded.** Two
 independent native-runtime realities break the "Task values are pure

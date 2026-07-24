@@ -1,4 +1,5 @@
 #include "Scheduler.hpp"
+#include "TaskBinding.hpp"
 #include "TimerService.hpp"
 #include "allocator/Allocator.hpp"
 #include "allocator/HeapHelpers.hpp"
@@ -451,13 +452,20 @@ static void* resumeEvaluator(void* args[]) {
     return reinterpret_cast<void*>(encodeHP(unit()));
 }
 
+// Binding body for spawnTask (Task purity,
+// plans/task-purity-and-caf-guard-removal.md F2): the child process is
+// allocated and enqueued when the binding is STEPPED, matching elm/core's
+// `spawn = binding (\cb -> cb (succeed (rawSpawn task)))`. The old eager
+// shape ran rawSpawn at task CREATION, so a shared/memoized spawn task
+// spawned once instead of once per fulfilment.
+static HPointer spawnBindingBody(HPointer capturedTask) {
+    auto& sched = Scheduler::instance();
+    HPointer proc = sched.rawSpawn(capturedTask);
+    return sched.taskSucceed(proc);
+}
+
 HPointer Scheduler::spawnTask(HPointer rootTask) {
-    // Returns a Task that, when run, spawns a process and succeeds with the Process handle
-    // This is a binding task
-    // But for simplicity, since spawn is synchronous, we can do it directly:
-    // spawn creates a process and returns Task.succeed(process)
-    HPointer proc = rawSpawn(rootTask);
-    return taskSucceed(proc);
+    return makeBinding<spawnBindingBody>(rootTask);
 }
 
 void Scheduler::rawSend(HPointer procHP, HPointer msg) {
@@ -470,15 +478,14 @@ void Scheduler::rawSend(HPointer procHP, HPointer msg) {
     enqueue(newProcHP);
 }
 
-HPointer Scheduler::killTask(HPointer procHP) {
-    // Kill returns Task.succeed(Unit) after attempting to kill the target
-    // process's currently-active Task_Binding (if any). It does NOT mutate
-    // the target Process. Since callers pass the old HPointer and nothing in
-    // the scheduler's outstanding state tracks them, the effect is that any
-    // future dequeue of the target continues to see the old root. This is a
-    // best-effort kill — a full solution would need runQueue-side bookkeeping
-    // per logical process id, which is outside the scope of this change.
-    void* ptr = resolveHP(procHP);
+// Binding body for killTask (Task purity, F2): the kill ATTEMPT happens when
+// the binding is stepped, once per fulfilment. The attempt itself is
+// unchanged: best-effort — call the target root Task_Binding's kill handle
+// (if any) without mutating the target Process; callers holding stale
+// HPointers are not tracked (a full solution needs runQueue-side bookkeeping
+// per logical process id, outside this scope).
+static HPointer killBindingBody(HPointer targetProcHP) {
+    void* ptr = resolveHP(targetProcHP);
     if (ptr) {
         Process* proc = static_cast<Process*>(ptr);
         void* rootPtr = resolveHP(proc->root);
@@ -487,12 +494,16 @@ HPointer Scheduler::killTask(HPointer procHP) {
             if (rootTask->ctor == Task_Binding) {
                 void* killPtr = resolveHP(rootTask->kill);
                 if (killPtr) {
-                    callClosure1(rootTask->kill, unit());
+                    Scheduler::callClosure1(rootTask->kill, unit());
                 }
             }
         }
     }
-    return taskSucceed(unit());
+    return Scheduler::instance().taskSucceed(unit());
+}
+
+HPointer Scheduler::killTask(HPointer procHP) {
+    return makeBinding<killBindingBody>(procHP);
 }
 
 // ============================================================================
@@ -850,16 +861,23 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
             proc = resolveProc();
             if (!proc) break;
 
-            // Install killHandle onto the current root if it's still a
-            // Task_Binding. Task heap objects ARE still allowed to be
-            // mutated in-place — only Process is logically immutable in
-            // this change — because tasks are one-shot and don't share the
-            // long-lived-root problem. (See test-fails.md root-cause report.)
+            // Install killHandle WITHOUT mutating the Task node. Tasks are
+            // immutable shared values (they may be aliased across fibers or
+            // cached in memoized CAF slots and fulfilled many times —
+            // plans/task-purity-and-caf-guard-removal.md F3), so instead of
+            // writing into the root, build a per-execution Task_Binding COPY
+            // carrying the kill handle and swap it in as this Process's
+            // root. killTask's reader (proc->root->kill) sees the copy.
             void* newRootPtr = resolveHP(proc->root);
             if (newRootPtr) {
                 Task* currentTask = static_cast<Task*>(newRootPtr);
                 if (currentTask->ctor == Task_Binding) {
-                    currentTask->kill = killHandle;
+                    HPointer cbHP = currentTask->callback;
+                    HPointer newRoot = listNil();
+                    Elm::StackRootGuard guard2(&cbHP, &killHandle, &newRoot);
+                    HPointer nil = listNil();
+                    newRoot = allocTask(Task_Binding, nil, cbHP, killHandle, nil);
+                    setRoot(newRoot);
                 }
             }
 

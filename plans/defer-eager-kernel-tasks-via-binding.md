@@ -1,6 +1,13 @@
 # Defer Eager Kernel `Task`s via `taskBinding`
 
-## Status: PLAN ONLY
+## Status: LANDED (Phases 0–8; audit tables below are the PRE-conversion
+## state). COMPLETED 2026-07-23 by `plans/task-purity-and-caf-guard-removal.md`,
+## which OVERTURNS Q5 (the MVar partial-eager fast paths were part of the
+## purity bug class after all — they made shared/memoized MVar tasks observe
+## creation-time state), converts `Scheduler spawn/kill` (mislabelled "N"
+## below — both performed their effect at creation), makes MVar
+## new/read/take/put/drop always-binding, and removes the scheduler's
+## in-place Task kill-handle write (per-execution copy instead).
 
 ## Goal
 
