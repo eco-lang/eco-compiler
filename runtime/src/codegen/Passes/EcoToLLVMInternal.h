@@ -1086,6 +1086,28 @@ void createGlobalRootInitFunction(
 /// unused-decl strip (the barrier decls this references must count as used).
 mlir::LogicalResult installCafMemoGuard(mlir::LLVM::LLVMFuncOp func);
 
+/// CAF caller-side fast path (benchmarks/runtime-calls.md Run W): rewrite
+/// every zero-arg call to a `eco.caf_memo`-tagged thunk into a
+/// load-slot/icmp/diamond — the hit edge takes the barrier-cast cached
+/// value with NO call; the miss edge keeps the original call (the thunk
+/// retains its callee-side guard and publish logic, so unrewritten sites
+/// and the miss path stay correct). Runs in the serial post-Stage-2 phase
+/// on every non-external function. `ECO_CAF_CALLER_FAST=0` disables.
+void rewriteCafCallSitesFast(
+    mlir::LLVM::LLVMFuncOp func,
+    const llvm::DenseSet<llvm::StringRef> &cafMemoFuncs);
+
+/// Master switch for the caller-side fast path (default ON;
+/// `ECO_CAF_CALLER_FAST=0` is the escape / A-B lever — lowering-time only,
+/// so a same-MLIR A/B isolates its effect exactly).
+inline bool cafCallerFastEnabled() {
+    static const bool enabled = [] {
+        const char *e = ::getenv("ECO_CAF_CALLER_FAST");
+        return !(e && e[0] == '0' && e[1] == '\0');
+    }();
+    return enabled;
+}
+
 } // namespace detail
 } // namespace eco
 

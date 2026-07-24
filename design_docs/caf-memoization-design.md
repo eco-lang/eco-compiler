@@ -444,10 +444,60 @@ Measurement (M3):
 
 ## 12. Future work
 
-- **Caller-side fast path:** inline load+cmp at reference sites, calling
-  the thunk only on miss — eliminates the residual call per reference.
-  Only worth it if M3 shows thunk-call overhead surviving; interacts with
-  code size and the `$cap` threshold economy.
+- **Inner CAFs (closed expressions inside function bodies) — surveyed
+  Jul 24 2026.** Hoisting a let-bound or inline closed expression (no free
+  locals, e.g. `vals = [1,2,3] |> Array.fromList` inside `f x`) to a fresh
+  top-level spec would let the existing slot machinery memoize it
+  unchanged. Source scan of the 275 compiler files: loose bound 251
+  closed let-values (heavily false-positive — regex scoping), STRICT bound
+  **17 let-values + 34 closed local functions**, true population
+  ≈ O(10–40) values, inline literal builds outside lets: 0. A few are hot
+  allocation sites (`Type/PostSolve.elm:414` mints a `Can.TType` per
+  string-literal post-solve; `Mlir/Bytecode/AttrType.elm:988` builds a
+  `BD.map2` decoder graph per float attr written); most are tiny or
+  LLVM-foldable. Already covered without new work: closed local functions
+  (lambda lifting + HEAP_033 closure interning), nullary ctors (M4),
+  string literals (interning) — the residual class is composite structure
+  builds. Verdict: not a source-level transform; the correct venue is a
+  **mono-graph census + hoist** — free variables are exact on MonoExpr,
+  inlining MULTIPLIES sites and specialization CLOSES more expressions,
+  and the hoist is small (mint a MonoDefine spec per closed subtree,
+  hash-consed to re-merge inliner duplicates; slots do the rest). Lazy
+  slots preserve evaluation timing exactly (no GHC full-laziness
+  eagerness hazard); space cost is the accepted immortality tradeoff.
+  Estimated win: low single-digit % — run an ECO_INLINE_REPORT-style mono
+  census first, decide on its numbers.
+  **OUTCOME (Jul 24 2026): implemented (CafHoist.elm, CGEN_069), all
+  gates green, measured NEGATIVE on the self-compile wall (+1.5 %/+0.9 %
+  at mn=3/mn=8 despite minors −9 and a 1.13 MB smaller binary) — ships
+  DEFAULT-OFF. The economics: hoisting introduces a statepointed call
+  where HEAP_034 inline construction stood; small hot candidates lose,
+  large ones are cold, and the dispatch-heavy bodies were bytes-excluded
+  (dispatch-neutral to the digit). benchmarks/runtime-calls.md Run V.
+  Revisit with the caller-side fast path or profile-guided selection.**
+  **Mono census RUN (Jul 24 2026, `ECO_CAF_CENSUS=1` →
+  `Compiler/GlobalOpt/CafCensus.elm`, reported from `runGlobalOptPhase`
+  over the final graph; full report was /work/caf-mono-census.md):
+  6,083 maximal closed subexpressions across 38,267 specs (~360× the
+  strict source count — inlining multiplies, specialization closes),
+  98.5 % value-ABI, 941 of size ≥10 nodes; kinds call=3,756 let=1,816
+  tuple=317 list=174 record=20. Biggest cluster: constant
+  serialization-encoder cells (Bytes.Encode.U8=998 + F64=622, warm/hot);
+  parser atoms + Intrinsics.basicsIntrinsic hot; top enclosing specs skew
+  COLD (Reporting.Error toReport/encoder tail). Hash-consing would
+  collapse the 6,083 sites to far fewer distinct slots. Implementation
+  sketch: GlobalOpt tail pass reusing CafCensus.walkExpr — hoist maximal
+  closed subtrees (size ≥ 3) into hash-consed fresh MonoDefine specs,
+  replace sites with MonoVarGlobal; slots do the rest. Expected
+  low-single-digit % + minor-GC relief.**
+- **Caller-side fast path — SHIPPED default-on (Jul 24 2026, Run W):**
+  `rewriteCafCallSitesFast` turns each thunk call site into an scf.if
+  diamond (hit = load+icmp+barrier, no call; miss = the original call).
+  −1.2 % wall on the shipped config at dispatch/GC identity and one-sha
+  outputs; +1.27 % binary. `ECO_CAF_CALLER_FAST=0` escape. Two lessons:
+  scf single-block regions forbid block surgery in this phase (use scf.if
+  expressions), and it did NOT rescue inner-CAF hoisting (Run X: +2.1 % —
+  construction is the fast path for small structures).
 - **Scalar-ABI CAFs (v2):** unrooted slot + i8 flag global per HEAP_035's
   constraint. Survey suggests near-zero value; do only if census disagrees.
 - **Publish-time root registration:** `eco_caf_publish(slot, bits)` gc-leaf

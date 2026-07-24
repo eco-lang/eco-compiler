@@ -1137,6 +1137,120 @@ with both fixed points — Stage 4b JS and Stage 8c native byte-exact
 (63,305,872 B ELFs). Invariants: KERNEL_TASK_IO_001 exemption (d) deleted +
 (a) narrowed + Task-immutability corollary; CGEN_068 effect clause removed.
 
+### Run V — CAF hoisting of closed inner expressions (2026-07-24):
+### **NEGATIVE at both operating points (+1.5 % / +0.9 % wall) despite real
+### allocation reduction — ships DEFAULT-OFF; HEAP_034 made inline
+### construction cheaper than memoization-by-call**
+
+`plans/caf-hoist-closed-expressions.md` implemented in full: closed inner
+expressions hoist to fresh nullary specs (maximal collect+replace,
+collision-impossible dedupe via region-zeroed structural equality,
+verbatim move) and the CGEN_068 slot machinery memoizes them. Config
+`cafMemo.hoist{enabled,minNodes,maxHoists}`, env `ECO_CAF_HOIST[_*]`,
+hash tokens `cafh*`. Two mid-flight design corrections, both caught by
+the plan's own tripwires: the layered scheme was falsified by H0
+(12,668 layered vs 4,642 maximal — 2.1× mint inflation, valve bound,
++8.7 % MLIR) and replaced by true maximality; and FUNCTION-TYPED
+candidates are excluded after the first flag-on corpus run SIGABRT'd the
+Combinator tests (a hoisted `composeR f g` in callee position invalidates
+the enclosing call's staged CallInfo — the typed-apply arity assert).
+
+**Statics (defaults mn=3):** hoisted=2,845 sites=3,350 deduped=505
+(valve unbound); census cross-check sites 3,350 vs eligible 3,255 (+3 %,
+well inside the ±25 % gate); post-hoist census eligible=0 (total
+collapse). Self-compile MLIR +3.0 %; hoist-compiled binary **1.13 MB
+SMALLER** (62,580,200 vs 63,710,272 — dedupe shrinks code); lowering wall
+FLAT (103.4 s vs 105.8 s off). Gates all green: flag-off E2E 1635/1635
+byte-stable, flag-on E2E 1635/1635, flag-on 3-leg self-compile fixed
+point n2 == n3 byte-exact (b1 == b2 binaries too), elm-tests +4 new
+CafHoist unit tests passing.
+
+**Dynamic — two interleaved ×3 batteries vs the Run U binary (same
+protocol as Runs S/T/U; workload subst, hoist off on the workload side so
+the delta is the binaries' own codegen):**
+
+```
+mn=3: v 201.17/198.77/200.20 mean 200.05 s  vs  u 197.39/197.65/196.16 mean 197.07 s  → +1.5 %
+      majors 9/9, minors 742 vs 751 (−9: the allocation win is REAL)
+mn=8: w 195.16/198.81/198.77 mean 197.58 s  vs  u 194.60/195.85/196.86 mean 195.77 s  → +0.9 %
+      majors 9/9, minors 749 vs 751 (the small sites held most of the alloc win)
+```
+
+**Census: dispatch-NEUTRAL to the digit** (v sat=663,487,705 vs
+u=663,487,682, Δ=+23; typed/fast identical; distinct +11 = the hoisted
+evaluator fps) — refuting the plan's own "sat should drop −0.5–10 M"
+prediction: the dispatch-heavy closed bodies were exactly the
+bytes-EXCLUDED ones, and hoisted bodies' internal calls are direct.
+
+**Why negative — the economics lesson:** Run S/T won because top-level CAF
+references were ALREADY calls (thunk per reference → guarded thunk).
+Hoisting INTRODUCES a statepointed call + guard where inline construction
+stood, and post-HEAP_034 a small construction is a handful of straight-line
+bump-and-store ops — cheaper than any call. The numerous hot candidates
+are small (5,105 of 6,083 at 3–9 nodes); the large closed structures are
+mostly cold (Reporting.Error tail). Fewer minor GCs did not buy back the
+per-execution call overhead at either operating point.
+
+**Decision: hoisting ships DEFAULT-OFF** (fully gated, census-instrumented,
+per-project enableable via eco-config). Revisit paths that could flip the
+economics: the caller-side fast path (inline load+cmp at sites — removes
+the call from the hit path), or profile-guided hoisting restricted to
+provably-hot large sites.
+
+### Run W — CAF caller-side fast path (2026-07-24): **−1.2 % wall on the
+### shipped config, dispatch- and GC-identical, +1.27 % binary — SHIPPED
+### default-on (`ECO_CAF_CALLER_FAST=0` escape)**
+
+`rewriteCafCallSitesFast` (EcoToLLVMGlobals.cpp, same serial post-Stage-2
+phase as the callee guard): every zero-arg call to an `eco.caf_memo`
+thunk becomes an `scf.if` diamond — hit edge = slot load + icmp +
+barrier-cast, NO call; miss edge keeps the original call (the callee
+guard still publishes, so unrewritten sites stay correct). Built as an
+scf.if EXPRESSION, not block surgery — the first attempt split blocks and
+violated the scf single-block constraint (105 corpus failures, the P2.5
+expandGetTagMarkers lesson re-learned; also re-learned: `ecoc` is its own
+target — rebuild it before reproducing "failures" with it).
+
+**Same-MLIR A/B** (the pass is lowering-time): one pristine self-compile
+MLIR lowered twice (counters on), interleaved ×3, workload subst:
+
+```
+on:  194.61 / 194.61 / 198.18   mean 195.80 s (3:15.8)   majors 9, minors 751
+off: 198.64 / 198.82 / 197.18   mean 198.21 s (3:18.2)   majors 9, minors 751
+```
+
+**−2.41 s = −1.2 %**; GC events identical on every leg (no allocation
+change — pure call elision); census IDENTICAL TO THE LAST DIGIT
+(sat=663,487,733 both sides, distinct 5,823 both — direct calls are
+invisible to the dispatch counters); all 7 outputs one sha256. Cost:
+binary 63,761,848 → 64,568,952 (+1.27 % — ~4.6 K diamonds). Gates: full
+suite 1636/1636 (incl. the new `caf_memo_caller_fast.mlir` fixture),
+bootstrap Stage 8c byte-exact (64,556,520 B ELFs).
+
+### Run X — hoisting re-tested ON TOP of the caller-side fast path
+### (2026-07-24): **still NEGATIVE (+2.1 %) — flip hypothesis REFUTED;
+### hoisting stays default-off**
+
+Fresh hoisted self-compile MLIR (identical hoist stats to Run V:
+hoisted=2,845 sites=3,350) lowered with caller-fast + counters, battled
+against Run W's own on-side binary:
+
+```
+x  (hoist+fast): 201.42 / 199.37 / 199.38   mean 200.06 s (3:20.1)   majors 9, minors 742
+bx (fast only):  197.00 / 194.55 / 196.41   mean 195.99 s (3:16.0)   majors 9, minors 751
+```
+
+**+4.07 s = +2.1 %, every leg ordered against hoisting** — worse than Run
+V's +1.5 % even though the allocation win persists (minors −9). The
+economics conclusion is now two-battery solid: at hoisted sites the hit
+path (load+icmp+branch+barrier) replaces an inline HEAP_034 construction
+of comparable instruction count, then pays icache/branch pressure for
+~4.6 K in-body diamonds and old-gen locality for values that used to be
+cache-hot nursery data. **For small structures, CONSTRUCTION IS THE FAST
+PATH.** Hoisting remains implemented, gated, and default-off; the
+remaining plausible lever is profile-guided selection (hoist ONLY
+provably-hot LARGE sites), not mechanism.
+
 ## Summary
 
 Coverage = `fast / (sat + fast)`. "solver-built" = compiler's own code carries LSS
@@ -1172,6 +1286,12 @@ stamps (front-end run under solver, lowered with `ECO_LSS_DISPATCH_SITE_COUNTERS
 | 2026-07-23 | **CAF-MEMO M4 enum ctors (Run T) all-keyed / subst** | 653,155,060 | 635,928,232 | 17,226,828 | 101,088,017 | 13.40 % | 5,809 | **3:13.2†◊** |
 | 2026-07-23 | Run T binary re-read (Run U baseline) | 653,085,279 | 635,859,510 | 17,225,769 | 101,075,594 | 13.40 % | 5,809 | 3:12.4†◊ |
 | 2026-07-23 | **TASK PURITY + guard removal (Run U) all-keyed / subst** | 653,107,524 | 635,881,755 | 17,225,769 | 101,075,803 | 13.40 % | 5,812 | **3:07.1†◊** |
+| 2026-07-24 | Run U binary re-read (Run V baseline) | 663,487,682 | 645,853,711 | 17,633,971 | 102,921,798 | 13.43 % | 5,812 | 3:17.1†✪ |
+| 2026-07-24 | CAF-HOIST mn=3 (Run V) — NEGATIVE, ships OFF | 663,487,705 | 645,853,734 | 17,633,971 | 102,921,798 | 13.43 % | 5,823 | 3:20.0†✪ |
+| 2026-07-24 | CAF-HOIST mn=8 (Run V) — NEGATIVE, ships OFF | 663,487,705 | 645,853,734 | 17,633,971 | 102,921,798 | 13.43 % | 5,823 | 3:17.6†✪ |
+| 2026-07-24 | caller-fast OFF baseline (Run W, same-MLIR) | 663,487,733 | 645,853,754 | 17,633,979 | 102,921,798 | 13.43 % | 5,823 | 3:18.2†✪ |
+| 2026-07-24 | **CAF CALLER-FAST PATH (Run W) — SHIPPED ON** | 663,487,733 | 645,853,754 | 17,633,979 | 102,921,798 | 13.43 % | 5,823 | **3:15.8†✪** |
+| 2026-07-24 | HOIST + caller-fast (Run X) — NEGATIVE, stays OFF | — | — | — | — | — | — | 3:20.1†✪ |
 
 *Run-C walls carry an unattributed +30 % vs Run A/B (see the Run C section) — the
 counts are the meaningful comparison; treat the walls as provisional. The Run-I
@@ -1224,6 +1344,17 @@ protocol) then ships Task purity + the effect-guard removal on top:
 −2.7 % more wall with majors 9 → 8, minors +13 (binding allocs), +69
 effect-typed slots, dispatch drift +22 K (+0.003 %). Cumulative CAF arc
 S+T+U: 211.99 → 187.11 s (**−11.7 %**), majors 10 → 8, minors 762 → 739.
+✪Run V rows are a same-container A/B vs the Run U BINARY re-read in a
+later container epoch (absolute walls shifted ~+10 s vs the Run U rows —
+compare within-run only; count deltas vs the U row are tree growth).
+Hoisting is dispatch-neutral to the digit (Δsat=+23); the deltas are wall
+(+1.5 % / +0.9 % — NEGATIVE) and minors (−9 / −2). Ships default-off; see
+the Run V section for the economics. Run W is a SAME-MLIR lowering A/B
+(census identical to the last digit, GC identical, outputs one sha —
+the cleanest A/B shape in this file): caller-fast −1.2 % wall, shipped
+default-on. Run X (hoist on top of caller-fast, vs Run W's on binary)
+re-refutes hoisting at +2.1 % — its census row is omitted (counts equal
+Run W's to tree-growth noise; the battle is wall + minors 742 vs 751).
 Runs D, E and K have NO dispatch-census legs and hence no table rows: D ran only the
 mono-census A/B (its solver MLIR differed by one stamp, +25 B), E skipped the leg
 outright (byte-identical MLIR ⇒ identical counts), and K was the GC-policy
@@ -1271,7 +1402,12 @@ permanent-space promotion of large memoized structures.
 (Resolved since Run S: M4 nullary-ctor slots SHIPPED — Run T, −4.5 % wall,
 minors −33; the effect-type exclusion is GONE — Run U shipped Task purity
 (plans/task-purity-and-caf-guard-removal.md) and removed the guard at
-−2.7 % wall, majors 9→8.) (Resolved since Run L:
+−2.7 % wall, majors 9→8; inner-CAF HOISTING measured NEGATIVE and ships
+default-off — Run V, RE-REFUTED on top of the caller-fast path at +2.1 %
+(Run X): for small structures CONSTRUCTION IS THE FAST PATH; the
+caller-side fast path itself SHIPPED default-on — Run W, −1.2 % wall at
+dispatch/GC identity; remaining hoist lever = profile-guided selection
+of hot LARGE sites only.) (Resolved since Run L:
 keying + lssDF shipped as defaults (Run L), all-globals keying sound +
 default (Run M), E1.3 `$cap` inlining DONE — v1 guard-limited (Run N), v3
 barriers + full-population lift (Run O): wall-neutral, binary −0.55 %,

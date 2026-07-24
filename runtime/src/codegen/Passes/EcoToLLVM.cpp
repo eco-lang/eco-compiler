@@ -524,6 +524,11 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
                     return;
                 }
             }
+            // CAF caller-side fast path (Run W): elide the thunk call at
+            // reference sites when the slot is already published.
+            if (!cafMemoFuncs.empty() && cafCallerFastEnabled()) {
+                rewriteCafCallSitesFast(func, cafMemoFuncs);
+            }
             if (!shadowRootFuncs.empty() &&
                 shadowRootFuncs.contains(func.getSymName())) {
                 OpBuilder builder(func.getContext());

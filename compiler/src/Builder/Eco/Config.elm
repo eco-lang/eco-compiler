@@ -96,6 +96,9 @@ loadBase maybeExplicit root =
   - `ECO_CAF_MEMO=0` disables CAF memoization (default-on; per-SpecId lazy
     once-init `eco.global` slots for nullary value thunks); participates in
     the hash via the `cafm=` token.
+  - `ECO_CAF_HOIST=1|0`, `ECO_CAF_HOIST_MIN_NODES=<n>`, `ECO_CAF_HOIST_MAX=<n>`:
+    CAF hoisting of closed inner expressions (default-off; hash tokens
+    `cafh=`/`cafhN=`/`cafhM=` when enabled).
 
 Applied here (not further downstream) so the override participates in
 `Config.hash`, which keys the Details cache. An unrecognized engine value is a
@@ -176,6 +179,26 @@ applyEnvOverrides cfg =
             (\cfg12 ->
                 (Utils.envLookupEnv "ECO_CAF_MEMO" |> Task.mapError never)
                     |> Task.map (\cmVal -> applyCafMemoOverride cmVal cfg12)
+            )
+        |> Task.andThen
+            (\cfg13 ->
+                (Utils.envLookupEnv "ECO_CAF_CENSUS" |> Task.mapError never)
+                    |> Task.map (\ccVal -> applyCafCensusOverride ccVal cfg13)
+            )
+        |> Task.andThen
+            (\cfg14 ->
+                (Utils.envLookupEnv "ECO_CAF_HOIST" |> Task.mapError never)
+                    |> Task.map (\chVal -> applyCafHoistOverride chVal cfg14)
+            )
+        |> Task.andThen
+            (\cfg15 ->
+                (Utils.envLookupEnv "ECO_CAF_HOIST_MIN_NODES" |> Task.mapError never)
+                    |> Task.map (\mnVal -> applyCafHoistMinNodesOverride mnVal cfg15)
+            )
+        |> Task.andThen
+            (\cfg16 ->
+                (Utils.envLookupEnv "ECO_CAF_HOIST_MAX" |> Task.mapError never)
+                    |> Task.map (\mxVal -> applyCafHoistMaxOverride mxVal cfg16)
             )
 
 
@@ -372,16 +395,103 @@ applyCafMemoOverride maybeVal cfg =
     case Maybe.map (String.toLower << String.trim) maybeVal of
         Just v ->
             if List.member v [ "1", "true", "yes" ] then
-                { cfg | cafMemo = { enabled = True } }
+                { cfg | cafMemo = { enabled = True, census = cfg.cafMemo.census, hoist = cfg.cafMemo.hoist } }
 
             else if List.member v [ "0", "false", "no" ] then
-                { cfg | cafMemo = { enabled = False } }
+                { cfg | cafMemo = { enabled = False, census = cfg.cafMemo.census, hoist = cfg.cafMemo.hoist } }
 
             else
                 cfg
 
         Nothing ->
             cfg
+
+
+{-| `ECO_CAF_CENSUS=1|true|yes`: render the inner-CAF opportunity census
+(Compiler.GlobalOpt.CafCensus) over the final MonoGraph to stderr after
+GlobalOpt. Output-only debug knob, never affects artifacts or the hash.
+-}
+applyCafCensusOverride : Maybe String -> EcoConfig -> EcoConfig
+applyCafCensusOverride maybeVal cfg =
+    let
+        on =
+            case maybeVal of
+                Just v ->
+                    let
+                        t =
+                            String.toLower (String.trim v)
+                    in
+                    t == "1" || t == "true" || t == "yes"
+
+                Nothing ->
+                    False
+    in
+    if on then
+        { cfg | cafMemo = { enabled = cfg.cafMemo.enabled, census = True, hoist = cfg.cafMemo.hoist } }
+
+    else
+        cfg
+
+
+{-| `ECO_CAF_HOIST=1|true|yes / 0|false|no`: CAF hoisting — closed
+expressions inside function bodies get per-SpecId slots
+(plans/caf-hoist-closed-expressions.md). Default-off during bring-up.
+Participates in the hash via the `cafh=` token.
+-}
+applyCafHoistOverride : Maybe String -> EcoConfig -> EcoConfig
+applyCafHoistOverride maybeVal cfg =
+    let
+        setEnabled b =
+            updateCafHoist (\h -> { h | enabled = b }) cfg
+    in
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                setEnabled True
+
+            else if List.member v [ "0", "false", "no" ] then
+                setEnabled False
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_CAF_HOIST_MIN_NODES=<n>`: original-subtree size floor for hoisting
+(plan DQ1). Tuning/sweep knob; hash token `cafhN=` when non-default.
+-}
+applyCafHoistMinNodesOverride : Maybe String -> EcoConfig -> EcoConfig
+applyCafHoistMinNodesOverride maybeVal cfg =
+    case Maybe.andThen (String.trim >> String.toInt) maybeVal of
+        Just n ->
+            updateCafHoist (\h -> { h | minNodes = n }) cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_CAF_HOIST_MAX=<n>`: global mint budget safety valve (plan DQ1).
+Tuning/sweep knob; hash token `cafhM=` when non-default.
+-}
+applyCafHoistMaxOverride : Maybe String -> EcoConfig -> EcoConfig
+applyCafHoistMaxOverride maybeVal cfg =
+    case Maybe.andThen (String.trim >> String.toInt) maybeVal of
+        Just n ->
+            updateCafHoist (\h -> { h | maxHoists = n }) cfg
+
+        Nothing ->
+            cfg
+
+
+updateCafHoist : (Config.CafHoistConfig -> Config.CafHoistConfig) -> EcoConfig -> EcoConfig
+updateCafHoist f cfg =
+    let
+        cafMemo =
+            cfg.cafMemo
+    in
+    { cfg | cafMemo = { cafMemo | hoist = f cafMemo.hoist } }
 
 
 {-| `author/project:Module.Name.value` — a `:` separating a `/`-bearing

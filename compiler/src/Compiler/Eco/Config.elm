@@ -1,5 +1,5 @@
 module Compiler.Eco.Config exposing
-    ( EcoConfig, InlineConfig, BytesFusionConfig, LogicalTypesConfig, CafMemoConfig
+    ( EcoConfig, InlineConfig, BytesFusionConfig, LogicalTypesConfig, CafMemoConfig, CafHoistConfig
     , MonoEngine(..), MonoConfig, LssConfig
     , default, defaultLss, decoder, hash, clamp
     , monoEngineFromString
@@ -198,7 +198,29 @@ Compile-time only: the guard is baked into generated code, so there is no
 runtime toggle.
 -}
 type alias CafMemoConfig =
-    { enabled : Bool }
+    { enabled : Bool
+    , census : Bool -- env ECO_CAF_CENSUS=1: inner-CAF opportunity census over the final MonoGraph (CafCensus.elm); output-only, excluded from hash
+    , hoist : CafHoistConfig
+    }
+
+
+{-| CAF hoisting knobs (plans/caf-hoist-closed-expressions.md): closed
+expressions inside function bodies are hoisted to fresh nullary specs and
+memoized by the CGEN_068 slot machinery.
+
+  - `enabled`: master switch (env `ECO_CAF_HOIST=1|0`); artifact-affecting →
+    hash token `cafh=1` when on.
+  - `minNodes`: original-subtree size floor (DQ1; env
+    `ECO_CAF_HOIST_MIN_NODES`); token `cafhN=` when non-default and on.
+  - `maxHoists`: global mint budget safety valve (DQ1; env
+    `ECO_CAF_HOIST_MAX`); token `cafhM=` when non-default and on.
+
+-}
+type alias CafHoistConfig =
+    { enabled : Bool
+    , minNodes : Int
+    , maxHoists : Int
+    }
 
 
 {-| Logical-type codegen knobs.
@@ -243,7 +265,7 @@ default =
         }
     , bytesFusion = { enabled = True }
     , logicalTypes = { customMaxFields = 8 }
-    , cafMemo = { enabled = True }
+    , cafMemo = { enabled = True, census = False, hoist = { enabled = False, minNodes = 3, maxHoists = 8192 } }
     , mono = { engine = EngineSolver, diffDump = False, validate = False, lss = defaultLss }
     }
 
@@ -290,6 +312,16 @@ cafMemoDecoder : D.Decoder x CafMemoConfig
 cafMemoDecoder =
     D.pure CafMemoConfig
         |> D.apply (D.optionalField "enabled" D.bool default.cafMemo.enabled)
+        |> D.apply (D.optionalField "census" D.bool default.cafMemo.census)
+        |> D.apply (D.optionalField "hoist" cafHoistDecoder default.cafMemo.hoist)
+
+
+cafHoistDecoder : D.Decoder x CafHoistConfig
+cafHoistDecoder =
+    D.pure CafHoistConfig
+        |> D.apply (D.optionalField "enabled" D.bool default.cafMemo.hoist.enabled)
+        |> D.apply (D.optionalField "minNodes" D.int default.cafMemo.hoist.minNodes)
+        |> D.apply (D.optionalField "maxHoists" D.int default.cafMemo.hoist.maxHoists)
 
 
 logicalTypesDecoder : D.Decoder x LogicalTypesConfig
@@ -413,6 +445,28 @@ hash cfg =
             -- hashes like the pre-feature world and can share its caches.
             ++ (if cfg.cafMemo.enabled then
                     [ "cafm=1" ]
+
+                else
+                    []
+               )
+            -- CAF-hoist tokens (plans/caf-hoist-closed-expressions.md DQ9):
+            -- artifact-affecting, so they key caches when the pass is on;
+            -- knob tokens only when non-default so default-on configs share.
+            ++ (if cfg.cafMemo.hoist.enabled then
+                    "cafh=1"
+                        :: ((if cfg.cafMemo.hoist.minNodes /= default.cafMemo.hoist.minNodes then
+                                [ "cafhN=" ++ String.fromInt cfg.cafMemo.hoist.minNodes ]
+
+                             else
+                                []
+                            )
+                                ++ (if cfg.cafMemo.hoist.maxHoists /= default.cafMemo.hoist.maxHoists then
+                                        [ "cafhM=" ++ String.fromInt cfg.cafMemo.hoist.maxHoists ]
+
+                                    else
+                                        []
+                                   )
+                           )
 
                 else
                     []

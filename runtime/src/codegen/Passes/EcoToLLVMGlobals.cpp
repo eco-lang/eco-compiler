@@ -10,6 +10,7 @@
 #include "../EcoDialect.h"
 #include "../EcoOps.h"
 #include "../../allocator/TypeInfo.hpp"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 
 using namespace mlir;
 using namespace eco;
@@ -604,4 +605,90 @@ LogicalResult eco::detail::installCafMemoGuard(LLVM::LLVMFuncOp func) {
     builder.create<LLVM::ReturnOp>(loc, ValueRange{cached});
 
     return success();
+}
+
+//===----------------------------------------------------------------------===//
+// CAF caller-side fast path (benchmarks/runtime-calls.md Run W)
+//
+// Rewrite each zero-arg call to a caf_memo thunk:
+//
+//   %v = llvm.call @thunk()           ; always a call, even on cache hits
+//
+// into a diamond whose hit edge never calls:
+//
+//   %bits  = llvm.load @__eco_caf$thunk
+//   %isset = llvm.icmp ne %bits, 0
+//   llvm.cond_br %isset, ^hit, ^miss
+//   ^hit:  %cached = __eco_slot_to_hptr(%bits)   ; barrier → bare cast post-RS4GC
+//          llvm.br ^merge(%cached)
+//   ^miss: %computed = llvm.call @thunk()        ; publishes via the callee guard
+//          llvm.br ^merge(%computed)
+//   ^merge(%v: ptr<1>): ...original continuation...
+//
+// Motivation (Run V): a statepointed call on the hit path loses to
+// HEAP_034 inline construction for small values; load+icmp+branch wins.
+// GC-safety: the load/branch carry no gc pointers; the barrier form is the
+// REP_LLVM_002 slot-crossing; the merge block-arg is ordinary tracked
+// ptr<1> SSA. Pre-RS4GC, serial phase.
+//===----------------------------------------------------------------------===//
+
+void eco::detail::rewriteCafCallSitesFast(
+    LLVM::LLVMFuncOp func,
+    const llvm::DenseSet<llvm::StringRef> &cafMemoFuncs) {
+    if (func.isExternal())
+        return;
+
+    auto *ctx = func.getContext();
+    auto i64Ty = IntegerType::get(ctx, 64);
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+    auto hptrTy = LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
+
+    // Collect first: block splitting below relocates later ops (their
+    // Operation*s stay valid; getBlock() is re-read at rewrite time).
+    SmallVector<LLVM::CallOp> sites;
+    func.walk([&](LLVM::CallOp call) {
+        auto callee = call.getCallee();
+        if (!callee || !cafMemoFuncs.contains(*callee))
+            return;
+        if (call.getNumOperands() != 0 || call->getNumResults() != 1)
+            return;
+        if (call->getResult(0).getType() != hptrTy)
+            return;
+        sites.push_back(call);
+    });
+
+    for (LLVM::CallOp call : sites) {
+        auto loc = call.getLoc();
+        std::string slotName = ("__eco_caf$" + *call.getCallee()).str();
+
+        // The diamond is built as an scf.if EXPRESSION, not block surgery:
+        // post-Stage-2 bodies still contain scf.if/scf.while regions whose
+        // single-block constraint block-splitting would violate (the P2.5
+        // expandGetTagMarkers lesson). scf lowers to CFG later in the
+        // backend pipeline, in every region kind uniformly.
+        OpBuilder bb(call);
+        auto addr = bb.create<LLVM::AddressOfOp>(loc, ptrTy, slotName);
+        auto bits = bb.create<LLVM::LoadOp>(loc, i64Ty, addr);
+        auto zero = bb.create<LLVM::ConstantOp>(loc, i64Ty, 0);
+        auto isSet =
+            bb.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::ne, bits, zero);
+
+        auto ifOp = bb.create<scf::IfOp>(loc, TypeRange{hptrTy}, isSet,
+                                         /*withElseRegion=*/true);
+
+        // Hit arm: barrier-cast the cached word.
+        {
+            OpBuilder hb = OpBuilder::atBlockBegin(ifOp.thenBlock());
+            Value cached = globalLoadI64ToValue(hb, loc, bits);
+            hb.create<scf::YieldOp>(loc, ValueRange{cached});
+        }
+
+        // Miss arm: the ORIGINAL call (its callee guard publishes).
+        call->getResult(0).replaceAllUsesWith(ifOp.getResult(0));
+        call->moveBefore(ifOp.elseBlock(), ifOp.elseBlock()->end());
+        {
+            OpBuilder mb = OpBuilder::atBlockEnd(ifOp.elseBlock());
+            mb.create<scf::YieldOp>(loc, ValueRange{call->getResult(0)});
+        }
+    }
 }

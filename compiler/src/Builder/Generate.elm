@@ -67,6 +67,8 @@ import Compiler.Generate.MLIR.Backend as MLIR
 import Compiler.Generate.MLIR.Names as MLIRNames
 import Compiler.Generate.Mode as Mode
 import Compiler.GlobalOpt.AbiCloning as AbiCloning
+import Compiler.GlobalOpt.CafCensus as CafCensus
+import Compiler.GlobalOpt.CafHoist as CafHoist
 import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.MonoSolver.Diff as MonoDiff
@@ -820,7 +822,7 @@ runInlineSimplifyPhase ecoConfig stats monoGraph0 =
             Task.succeed simplifiedGraph
         )
         -- Hand off to a separate function so monoGraph0 goes out of scope
-        |> Task.andThen (runGlobalOptPhase ecoConfig.mono.lss.report stats)
+        |> Task.andThen (runGlobalOptPhase ecoConfig.mono.lss.report ecoConfig.cafMemo stats)
 
 
 renderInlineReport : MonoInlineSimplify.Metrics -> Mono.MonoGraph -> String
@@ -897,20 +899,67 @@ renderInlineReportWith inlineConfig m graph =
 
 {-| Global optimization phase in its own scope so inline+simplify inputs are GC-eligible.
 -}
-runGlobalOptPhase : Bool -> FEStats.Handle -> Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
-runGlobalOptPhase lssReport stats simplifiedGraph =
+runGlobalOptPhase : Bool -> Config.CafMemoConfig -> FEStats.Handle -> Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
+runGlobalOptPhase lssReport cafMemo stats simplifiedGraph =
     FEStats.withPhase stats
         FEStats.PhaseGlobalOpt
         (let
             ( optimizedGraph, goStats ) =
                 MonoGlobalOptimize.globalOptimizeWithStats simplifiedGraph
 
+            -- CAF hoisting (plans/caf-hoist-closed-expressions.md DQ3 order:
+            -- GlobalOpt → census(pre) → hoist → hoist stats → census(post)).
+            ( hoistedGraph, hoistStats ) =
+                if cafMemo.hoist.enabled then
+                    CafHoist.run
+                        { minNodes = cafMemo.hoist.minNodes
+                        , maxHoists = cafMemo.hoist.maxHoists
+                        }
+                        optimizedGraph
+
+                else
+                    ( optimizedGraph, CafHoist.emptyStats )
+
+            censusCfg =
+                { minNodes = cafMemo.hoist.minNodes }
+
             result =
-                { monoGraph = optimizedGraph
+                { monoGraph = hoistedGraph
                 , mode = Mode.Dev Nothing
                 }
+
+            writeLnErr line =
+                Task.io (System.IO.writeLn System.IO.stderr line)
          in
-         if lssReport then
+         (if cafMemo.census then
+            -- Inner-CAF opportunity census (cafMemo.census /
+            -- ECO_CAF_CENSUS=1) over the PRE-hoist graph: the opportunity
+            -- baseline. stderr, like the LSS census.
+            writeLnErr (CafCensus.report "caf-census" censusCfg optimizedGraph)
+
+          else
+            Task.succeed ()
+         )
+            |> Task.andThen
+                (\_ ->
+                    if cafMemo.hoist.enabled then
+                        writeLnErr (CafHoist.renderStats hoistStats)
+
+                    else
+                        Task.succeed ()
+                )
+            |> Task.andThen
+                (\_ ->
+                    if cafMemo.census && cafMemo.hoist.enabled then
+                        -- POST-hoist residue: the H2 collapse gate.
+                        writeLnErr (CafCensus.report "caf-census(post-hoist)" censusCfg hoistedGraph)
+
+                    else
+                        Task.succeed ()
+                )
+            |> Task.andThen
+                (\_ ->
+                    if lssReport then
             -- GlobalOpt census line (stderr, like the mono census above):
             -- staging wrapper insertions + AbiCloning singleton-upgrade
             -- outcomes (design §9.4's retirement counters).
@@ -956,10 +1005,11 @@ runGlobalOptPhase lssReport stats simplifiedGraph =
                         ++ abiCensusLines goStats.abiCloning
                     )
                 )
-                |> Task.map (\_ -> result)
+                            |> Task.map (\_ -> result)
 
-         else
-            Task.succeed result
+                    else
+                        Task.succeed result
+                )
         )
 
 
