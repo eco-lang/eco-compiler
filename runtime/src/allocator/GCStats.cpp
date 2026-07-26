@@ -1405,17 +1405,34 @@ void GCStats::print() const {
             /*include_per_major_avg=*/false);
     }
 
-    // ========== CAF Permanent Space (ECO_CAF_PERMANENT=1) ==========
+    // ========== CAF Permanent Space (default-on; ECO_CAF_PERMANENT=0) ====
     {
         const PermanentSpace::Stats &ps = PermanentSpace::instance().stats;
-        if (ps.values_promoted + ps.values_constant + ps.values_declined > 0) {
-            std::cout << "\n[caf-permanent] promoted=" << ps.values_promoted
-                      << " constant=" << ps.values_constant
-                      << " declined=" << ps.values_declined
-                      << " objects=" << ps.objects_copied
-                      << " KB=" << (ps.bytes_copied / 1024)
-                      << " abandonedKB=" << (ps.bytes_abandoned / 1024)
-                      << " slotsDeregistered=" << ps.slots_deregistered
+        const uint64_t promoted = ps.values_promoted.load();
+        const uint64_t constant = ps.values_constant.load();
+        const uint64_t declined = ps.values_declined.load();
+        const uint64_t interned = ps.interned_objects.load();
+        if (promoted + constant + declined + interned > 0) {
+            std::cout << "\n[caf-permanent] promoted=" << promoted
+                      << " constant=" << constant
+                      << " declined=" << declined
+                      << " objects=" << ps.objects_copied.load()
+                      << " KB=" << (ps.bytes_copied.load() / 1024)
+                      << " abandonedKB=" << (ps.bytes_abandoned.load() / 1024)
+                      << " slotsRooted=" << ps.slots_rooted.load()
+                      << " interned=" << interned
+                      << " internKB=" << (ps.interned_bytes.load() / 1024)
+                      << std::endl;
+        }
+        // Root-set population at print time (validates the no-pre-rooting
+        // work: jit == declined slots only, longLived == transients +
+        // old-gen intern fallbacks). Guarded: atexit may run after
+        // cleanupThread or on a foreign thread, where the TL heap is gone.
+        if (Allocator::instance().getCurrentThreadHeap() != nullptr) {
+            RootSet &rs = Allocator::instance().getRootSet();
+            std::cout << "[gc-roots] longLived=" << rs.getRoots().size()
+                      << " jit=" << rs.getJitRoots().size()
+                      << " stackRanges=" << rs.getStackRootRanges().size()
                       << std::endl;
         }
     }

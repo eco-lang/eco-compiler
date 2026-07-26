@@ -467,12 +467,18 @@ void eco::detail::createGlobalRootInitFunction(
     ModuleOp module,
     EcoRuntime &runtime) {
 
-    // Collect all internal LLVM globals (these came from eco.global)
+    // Collect all internal LLVM globals (these came from eco.global) EXCEPT
+    // CAF memo slots: those are never pre-registered — eco_caf_promote roots
+    // a slot at first evaluation exactly when its value stays heap-resident
+    // (declined promotion or ECO_CAF_PERMANENT=0). Pre-registering all of
+    // them left every never-evaluated slot (61 % on the self-compile
+    // workload) in the JIT root set forever, holding 0, swept every minor.
     SmallVector<LLVM::GlobalOp> ecoGlobals;
     module.walk([&](LLVM::GlobalOp globalOp) {
         // eco.global creates internal linkage globals with i64 type
         if (globalOp.getLinkage() == LLVM::Linkage::Internal &&
-            globalOp.getGlobalType().isInteger(64)) {
+            globalOp.getGlobalType().isInteger(64) &&
+            !globalOp.getSymName().starts_with("__eco_caf$")) {
             ecoGlobals.push_back(globalOp);
         }
     });
@@ -544,9 +550,11 @@ void eco::detail::createGlobalRootInitFunction(
 // are nonzero addresses; embedded constants are 0x4/0x5/0x6). The hit path
 // contains no statepoint, and each publish store sits immediately before its
 // return (CGEN_067 discipline), so no pointer-provenance i64 is live across
-// a statepoint. The slot itself is an eco.global-lowered internal i64 global:
-// createGlobalRootInitFunction roots it (it runs AFTER this), minor GC
-// evacuates it in place, major GC marks through it.
+// a statepoint. The slot itself is an eco.global-lowered internal i64 global
+// that is NOT pre-registered as a GC root (createGlobalRootInitFunction
+// skips __eco_caf$): eco_caf_promote on the miss path either moves the value
+// into the permanent space (slot never needs GC attention) or registers the
+// slot as a JIT root when the value stays heap-resident (HEAP_036).
 //===----------------------------------------------------------------------===//
 
 LogicalResult eco::detail::installCafMemoGuard(LLVM::LLVMFuncOp func) {

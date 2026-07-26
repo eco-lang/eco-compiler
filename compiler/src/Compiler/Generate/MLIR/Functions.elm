@@ -459,8 +459,10 @@ cafSlotName funcName =
 
 v1 scope (design_docs/caf-memoization-design.md DS5): `!eco.value` ABI
 results only — a slot holding a raw scalar (i64 Int, f64, i16 Char) must
-never be GC-rooted (the root scan would misread it as a heap address), and
-the eco.global rooting walk roots every internal i64 global. Slot value 0 is
+never be GC-rooted (the root scan would misread it as a heap address).
+Slots are no longer pre-registered (the rooting walk skips `__eco_caf$`;
+eco_caf_promote roots on decline, HEAP_036), but the scalar exclusion
+stands: a declined scalar slot would still be rooted. Slot value 0 is
 the uninitialized sentinel; no valid `!eco.value` word is 0 (pointers are
 nonzero, embedded constants are 0x4/0x5/0x6). Trivial single-node bodies
 (scalar/string literal, unit) are skipped — the guard would cost more than

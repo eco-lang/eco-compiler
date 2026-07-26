@@ -1369,6 +1369,55 @@ mark/scan cost was the real prize and is worth 5 % of wall. Shipped
 default-on. The CAF arc's GC story is now: values evaluated once (memo),
 called cheaply (caller-fast), and owned by no GC phase at all (permanent).
 
+### Run AA — root-scan elimination (2026-07-26): **root sets emptied
+### (jit 1,562→0, longLived ~15-20K→4), wall-NEUTRAL — SHIPPED (same
+### `ECO_CAF_PERMANENT` gate)**
+
+Follow-up to the root-scanning survey: two changes ride the HEAP_036
+machinery.
+
+1. **CAF slots are no longer pre-registered.** `createGlobalRootInitFunction`
+   skips `__eco_caf$` globals; `eco_caf_promote` is the sole registration
+   point, rooting a slot exactly when its value stays heap-resident
+   (declined promotion, or `ECO_CAF_PERMANENT=0`). Previously all 1,562
+   slots were registered at startup holding 0 and 949 never-evaluated ones
+   (61 %) were swept every minor forever.
+2. **Intern tables allocate TRUE permanents.** `eco_alloc_string_literal*`
+   and `eco_intern_closure0` now allocate in the `PermanentSpace`
+   (`allocInternObject`; both populations are closed by construction —
+   pointer-free string leaves, zeroed closure0 value slots — no copier
+   involved) and their cache slots are rooted only on the old-gen fallback.
+   Previously every interned literal/closure0 was a permanently-rooted
+   old-gen object scanned every minor and re-marked every major.
+   `ECO_CAF_PERMANENT=0` reverts interning too, restoring the entire
+   pre-HEAP_036 world (validated: escape smoke shows longLived=1,671
+   jit=387 on the scaffold).
+
+New `[gc-roots]` stats line validates the result on the self-compile:
+**longLived=4 jit=0 stackRanges=14** (from ~15-20K + 1,562). Side effect:
+promote deep-copies shrink 20 % (objects 3,833→3,074, 117→94 KB) because
+CAF values now SHARE already-permanent interned objects instead of copying
+them; interned=3,454 objects / 106 KB born permanent.
+
+Corrected battery (first attempt used a stale-default base binary — its
+"base" legs actually re-measured the fully-off state at 3:18.9/3:17.5/3:20.2
+majors 9, incidentally re-confirming Run Z's off side). Proper A/B, base =
+Run Z shipped state (`eco-compiler-permtest` + `ECO_CAF_PERMANENT=1`), new =
+`eco-compiler-aa` default, interleaved ×3:
+
+```
+basez: 190.47 / 190.02 / 190.55   mean 190.35 s (3:10.3)   majors 8, minors 756
+new:   190.21 / 193.16 / 191.32   mean 191.56 s (3:11.6)   majors 8, minors 756
+```
+
+**+1.2 s = +0.6 % — within the ±0.7 % floor (one outlier leg; the other two
+new legs match base).** The per-minor scan work eliminated (~15-20K roots ×
+756 minors ≈ 11-15M no-op evacuations) was real but evidently cheap on this
+workload. Shipped anyway: strictly less GC work, the cost scales with
+program size (bigger apps = more literals/slots), and slots now root only
+on initialization — never speculatively. Gates: E2E 1636/1636 default AND
+1636/1636 escape; scaffold outputs byte-identical in both modes.
+
 ## Summary
 
 Coverage = `fast / (sat + fast)`. "solver-built" = compiler's own code carries LSS
@@ -1412,6 +1461,7 @@ stamps (front-end run under solver, lowered with `ECO_LSS_DISPATCH_SITE_COUNTERS
 | 2026-07-24 | HOIST + caller-fast (Run X) — NEGATIVE, stays OFF | — | — | — | — | — | — | 3:20.1†✪ |
 | 2026-07-24 | CAF spec DEDUPE (Run Y) — NEUTRAL +0.85 %, stays OFF | — | — | — | — | — | — | 3:20.5†✪ |
 | 2026-07-25 | **CAF PERMANENT SPACE (Run Z) — SHIPPED ON, majors 9→8** | — | — | — | — | — | — | **3:10.5†✪** |
+| 2026-07-26 | Root-scan elimination (Run AA) — roots 17K→4, NEUTRAL, SHIPPED | — | — | — | — | — | — | 3:11.6†✪ |
 
 *Run-C walls carry an unattributed +30 % vs Run A/B (see the Run C section) — the
 counts are the meaningful comparison; treat the walls as provisional. The Run-I

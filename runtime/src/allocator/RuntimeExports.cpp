@@ -9,6 +9,7 @@
 #include "Allocator.hpp"
 #include "Heap.hpp"
 #include "HeapHelpers.hpp"
+#include "PermanentSpace.hpp"
 #include "StringOps.hpp"
 #include "ThreadLocalHeap.hpp"
 #include "TypeInfo.hpp"
@@ -499,7 +500,10 @@ struct LiteralTable {
         }
         Elm::HPointer* slot = &chunks.back()[nextSlot++];
         *slot = Elm::HPointer{};  // null until filled by the caller
-        Elm::Allocator::instance().getRootSet().addRoot(slot);
+        // NOT rooted here: interned objects are born in the PermanentSpace
+        // (GC-invisible, immortal — HEAP_036), so the cached HPointer never
+        // needs GC fixup or liveness. internLiteral roots the slot only on
+        // the old-gen fallback path (PermanentSpace exhaustion).
         return slot;
     }
 };
@@ -509,8 +513,37 @@ LiteralTable& literalTable() {
     return table;
 }
 
+// Allocates an intern object as a TRUE permanent (Elm::PermanentSpace —
+// GC-invisible, never rooted, HEAP_036); falls back to rooted old-gen
+// allocation only if the permanent reservation is exhausted. Interned
+// string literals are pointer-free and interned closure0s have zeroed
+// value slots, so both are CLOSED subgraphs by construction — no copier
+// involved.
+inline void* allocInternObject(Elm::Tag tag, size_t size) {
+    // ECO_CAF_PERMANENT=0 reverts interning to rooted old-gen allocation
+    // too, so the escape hatch restores the entire pre-HEAP_036 behavior.
+    static const bool permanent_enabled = [] {
+        const char* e = std::getenv("ECO_CAF_PERMANENT");
+        return e == nullptr || e[0] != '0';
+    }();
+    size = (size + 7) & ~static_cast<size_t>(7);
+    if (permanent_enabled) {
+        auto& perm = Elm::PermanentSpace::instance();
+        if (void* obj = perm.allocate(size)) {
+            initHeaderForTag(getHeader(obj), tag, size);
+            perm.stats.interned_objects++;
+            perm.stats.interned_bytes += size;
+            return obj;
+        }
+    }
+    return Allocator::instance().allocatePermanent(size, tag);
+}
+
 // Shared interning body: `alloc` allocates + fills the permanent object on a
-// cache miss and returns its HPointer word.
+// cache miss and returns its HPointer word. The cached slot is GC-rooted
+// only when the object did NOT land in the PermanentSpace (old-gen
+// fallback) — permanent objects never move and never die, so their cached
+// pointers need no GC attention.
 template <class AllocFn>
 inline HPtr internLiteral(const void* key, AllocFn&& alloc) {
     LiteralTable& table = literalTable();
@@ -523,6 +556,12 @@ inline HPtr internLiteral(const void* key, AllocFn&& alloc) {
     Elm::HPointer* slot = table.newSlot();
     *slot = result.toHPointer();
     table.byGlobal[key] = slot;
+    uint64_t raw = result.toBits();
+    if (!Elm::isConstantBits(raw) &&
+        !Elm::PermanentSpace::instance().contains(
+            reinterpret_cast<void*>(raw))) {
+        Elm::Allocator::instance().getRootSet().addRoot(slot);
+    }
     return result;
 }
 
@@ -533,7 +572,7 @@ extern "C" HPtr eco_alloc_string_literal(const uint16_t* chars, uint32_t length)
         // Allocate directly in old gen (permanent). Size: Header + UTF-16 payload.
         size_t size = sizeof(Header) + length * sizeof(u16);
         size = (size + 7) & ~7;
-        void* obj = Allocator::instance().allocatePermanent(size, Tag_String);
+        void* obj = allocInternObject(Tag_String, size);
         if (!obj) return HPtr::fromBits(0);
         ElmString* str = static_cast<ElmString*>(obj);
         str->header.size = length;
@@ -554,7 +593,7 @@ extern "C" HPtr eco_alloc_string_literal_utf8(const uint8_t* bytes,
         if (!Allocator::instance().getConfig().utf8_strings_enabled) {
             size_t size = sizeof(Header) + byteLen * sizeof(u16);
             size = (size + 7) & ~7;
-            void* obj = Allocator::instance().allocatePermanent(size, Tag_String);
+            void* obj = allocInternObject(Tag_String, size);
             if (!obj) return HPtr::fromBits(0);
             ElmString* str = static_cast<ElmString*>(obj);
             str->header.size = byteLen;
@@ -565,7 +604,7 @@ extern "C" HPtr eco_alloc_string_literal_utf8(const uint8_t* bytes,
         size_t size = sizeof(ElmStringUtf8Leaf) + byteLen * sizeof(u8);
         size = (size + 7) & ~7;
         void* obj =
-            Allocator::instance().allocatePermanent(size, Tag_StringUtf8Leaf);
+            allocInternObject(Tag_StringUtf8Leaf, size);
         if (!obj) return HPtr::fromBits(0);
         ElmStringUtf8Leaf* leaf = static_cast<ElmStringUtf8Leaf*>(obj);
         leaf->header.size = byteLen;
@@ -931,7 +970,7 @@ extern "C" HPtr eco_intern_closure0(void* func_ptr, uint32_t arity,
         closureStatsRecord(func_ptr, /*isExtend=*/false);
         size_t size = sizeof(Header) + 8 + sizeof(EvalFunction)
                     + static_cast<size_t>(arity) * sizeof(Unboxable);
-        void* obj = Allocator::instance().allocatePermanent(size, Tag_Closure);
+        void* obj = allocInternObject(Tag_Closure, size);
         if (!obj) return HPtr::fromBits(0);
         Closure* closure = static_cast<Closure*>(obj);
         std::memcpy(reinterpret_cast<char*>(obj) + 8, &packed,

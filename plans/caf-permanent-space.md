@@ -1,5 +1,15 @@
 # CAF permanent space (option #4, for-real measurement)
 
+> **FOLLOW-UP SHIPPED (Run AA, 2026-07-26): root-scan elimination.** CAF
+> slots are no longer pre-registered (init walk skips `__eco_caf$`;
+> `eco_caf_promote` roots on decline/flag-off only) and the intern tables
+> (string literals + closure0) allocate TRUE permanents via
+> `allocInternObject`, rooting only on old-gen fallback. Root sets on the
+> self-compile: longLived ~15-20K → 4, jit 1,562 → 0; promote copies −20 %
+> (shared interned objects). Wall-neutral (+0.6 %, within floor), E2E
+> 1636/1636 both modes; `ECO_CAF_PERMANENT=0` now reverts interning too.
+> New `[gc-roots]` line in the stats dump.
+>
 > **STATUS: SHIPPED DEFAULT-ON (2026-07-25).** Run Z: −5.0 % wall
 > (3:20.6 → 3:10.5 ×3 interleaved), majors 9→8, minors count-identical;
 > 596 promoted + 17 constant = 613 slots deregistered, 3,832 objects /
