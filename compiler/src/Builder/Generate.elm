@@ -68,6 +68,7 @@ import Compiler.Generate.MLIR.Names as MLIRNames
 import Compiler.Generate.Mode as Mode
 import Compiler.GlobalOpt.AbiCloning as AbiCloning
 import Compiler.GlobalOpt.CafCensus as CafCensus
+import Compiler.GlobalOpt.CafDedupe as CafDedupe
 import Compiler.GlobalOpt.CafHoist as CafHoist
 import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
@@ -904,8 +905,19 @@ runGlobalOptPhase lssReport cafMemo stats simplifiedGraph =
     FEStats.withPhase stats
         FEStats.PhaseGlobalOpt
         (let
-            ( optimizedGraph, goStats ) =
+            ( goGraph, goStats ) =
                 MonoGlobalOptimize.globalOptimizeWithStats simplifiedGraph
+
+            -- CAF spec dedupe (cafMemo.dedupe / ECO_CAF_DEDUPE=1): merge
+            -- structurally identical nullary specs BEFORE census/hoist so
+            -- downstream counts see the deduped graph. Its stats line IS
+            -- the dedupe census.
+            ( optimizedGraph, dedupeStats ) =
+                if cafMemo.dedupe then
+                    CafDedupe.run goGraph
+
+                else
+                    ( goGraph, CafDedupe.emptyStats )
 
             -- CAF hoisting (plans/caf-hoist-closed-expressions.md DQ3 order:
             -- GlobalOpt → census(pre) → hoist → hoist stats → census(post)).
@@ -931,15 +943,23 @@ runGlobalOptPhase lssReport cafMemo stats simplifiedGraph =
             writeLnErr line =
                 Task.io (System.IO.writeLn System.IO.stderr line)
          in
-         (if cafMemo.census then
-            -- Inner-CAF opportunity census (cafMemo.census /
-            -- ECO_CAF_CENSUS=1) over the PRE-hoist graph: the opportunity
-            -- baseline. stderr, like the LSS census.
-            writeLnErr (CafCensus.report "caf-census" censusCfg optimizedGraph)
+         (if cafMemo.dedupe then
+            writeLnErr (CafDedupe.renderStats dedupeStats)
 
           else
             Task.succeed ()
          )
+            |> Task.andThen
+                (\_ ->
+                    if cafMemo.census then
+                        -- Inner-CAF opportunity census (cafMemo.census /
+                        -- ECO_CAF_CENSUS=1) over the PRE-hoist graph: the
+                        -- opportunity baseline. stderr, like the LSS census.
+                        writeLnErr (CafCensus.report "caf-census" censusCfg optimizedGraph)
+
+                    else
+                        Task.succeed ()
+                )
             |> Task.andThen
                 (\_ ->
                     if cafMemo.hoist.enabled then

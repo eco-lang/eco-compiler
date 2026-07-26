@@ -122,6 +122,17 @@ static void *eco_main_thread(void *arg) {
     // Run the Elm program.
     int64_t result = eco_main();
 
+    // ECO_GC_EXIT_MAJOR=1: force one major GC after the program finishes
+    // (still on the Elm thread, before teardown) so the exit stats'
+    // "latest: most recent major-GC end" residency block reports the LIVE
+    // retained set — rooted globals such as memoized CAF slots — rather
+    // than whatever the last organic major happened to leave behind.
+    // Measurement-only knob; no effect on program results.
+    if (const char *exit_major = std::getenv("ECO_GC_EXIT_MAJOR");
+        exit_major && exit_major[0] == '1') {
+        Elm::Allocator::instance().majorGC();
+    }
+
     // Cleanup thread-local allocator state.
     Elm::Allocator::instance().cleanupThread();
 
@@ -176,6 +187,20 @@ static void printGCStatsOnce(const char *reason) {
 }
 
 static void atexitPrintStats() {
+    // ECO_GC_EXIT_MAJOR=1: the Elm program usually terminates via the
+    // kernel's exit (std::exit), so the post-eco_main() hook in the runner
+    // thread never runs. atexit handlers execute on the exiting thread —
+    // normally the Elm thread — so the TL heap is still valid here (guarded:
+    // after cleanupThread(), or from a foreign thread, it is null and the
+    // forced major is skipped). Doing it before the print makes the
+    // "latest: most recent major-GC end" residency block report the live
+    // retained set at exit. NOT done on the signal path — running a GC in a
+    // signal context is unsafe.
+    if (const char *exit_major = std::getenv("ECO_GC_EXIT_MAJOR");
+        exit_major && exit_major[0] == '1' &&
+        Elm::Allocator::instance().getCurrentThreadHeap() != nullptr) {
+        Elm::Allocator::instance().majorGC();
+    }
     printGCStatsOnce("normal exit");
 }
 

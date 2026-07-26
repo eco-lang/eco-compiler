@@ -99,6 +99,8 @@ loadBase maybeExplicit root =
   - `ECO_CAF_HOIST=1|0`, `ECO_CAF_HOIST_MIN_NODES=<n>`, `ECO_CAF_HOIST_MAX=<n>`:
     CAF hoisting of closed inner expressions (default-off; hash tokens
     `cafh=`/`cafhN=`/`cafhM=` when enabled).
+  - `ECO_CAF_DEDUPE=1|0`: merge structurally identical nullary specs onto one
+    canonical spec (default-off; hash token `cafd=` when enabled).
 
 Applied here (not further downstream) so the override participates in
 `Config.hash`, which keys the Details cache. An unrecognized engine value is a
@@ -199,6 +201,11 @@ applyEnvOverrides cfg =
             (\cfg16 ->
                 (Utils.envLookupEnv "ECO_CAF_HOIST_MAX" |> Task.mapError never)
                     |> Task.map (\mxVal -> applyCafHoistMaxOverride mxVal cfg16)
+            )
+        |> Task.andThen
+            (\cfg17 ->
+                (Utils.envLookupEnv "ECO_CAF_DEDUPE" |> Task.mapError never)
+                    |> Task.map (\cdVal -> applyCafDedupeOverride cdVal cfg17)
             )
 
 
@@ -395,10 +402,10 @@ applyCafMemoOverride maybeVal cfg =
     case Maybe.map (String.toLower << String.trim) maybeVal of
         Just v ->
             if List.member v [ "1", "true", "yes" ] then
-                { cfg | cafMemo = { enabled = True, census = cfg.cafMemo.census, hoist = cfg.cafMemo.hoist } }
+                { cfg | cafMemo = { enabled = True, census = cfg.cafMemo.census, dedupe = cfg.cafMemo.dedupe, hoist = cfg.cafMemo.hoist } }
 
             else if List.member v [ "0", "false", "no" ] then
-                { cfg | cafMemo = { enabled = False, census = cfg.cafMemo.census, hoist = cfg.cafMemo.hoist } }
+                { cfg | cafMemo = { enabled = False, census = cfg.cafMemo.census, dedupe = cfg.cafMemo.dedupe, hoist = cfg.cafMemo.hoist } }
 
             else
                 cfg
@@ -427,10 +434,32 @@ applyCafCensusOverride maybeVal cfg =
                     False
     in
     if on then
-        { cfg | cafMemo = { enabled = cfg.cafMemo.enabled, census = True, hoist = cfg.cafMemo.hoist } }
+        { cfg | cafMemo = { enabled = cfg.cafMemo.enabled, census = True, dedupe = cfg.cafMemo.dedupe, hoist = cfg.cafMemo.hoist } }
 
     else
         cfg
+
+
+{-| `ECO_CAF_DEDUPE=1|true|yes / 0|false|no`: CAF spec dedupe — merge
+structurally identical nullary `MonoDefine` specs onto one canonical spec
+(Compiler.GlobalOpt.CafDedupe). Default-off pending Run Y. Artifact-affecting;
+participates in the hash via the `cafd=` token.
+-}
+applyCafDedupeOverride : Maybe String -> EcoConfig -> EcoConfig
+applyCafDedupeOverride maybeVal cfg =
+    case Maybe.map (String.toLower << String.trim) maybeVal of
+        Just v ->
+            if List.member v [ "1", "true", "yes" ] then
+                { cfg | cafMemo = { enabled = cfg.cafMemo.enabled, census = cfg.cafMemo.census, dedupe = True, hoist = cfg.cafMemo.hoist } }
+
+            else if List.member v [ "0", "false", "no" ] then
+                { cfg | cafMemo = { enabled = cfg.cafMemo.enabled, census = cfg.cafMemo.census, dedupe = False, hoist = cfg.cafMemo.hoist } }
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
 
 
 {-| `ECO_CAF_HOIST=1|true|yes / 0|false|no`: CAF hoisting — closed

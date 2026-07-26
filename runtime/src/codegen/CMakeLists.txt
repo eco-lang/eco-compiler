@@ -451,6 +451,7 @@ add_llvm_executable(ecoc
     ../allocator/HeapConfigJson.cpp
     ../allocator/NurserySpace.cpp
     ../allocator/OldGenSpace.cpp
+    ../allocator/PermanentSpace.cpp
     ../allocator/RootSet.cpp
     ../allocator/ThreadLocalHeap.cpp
     ../allocator/GCStats.cpp
@@ -570,6 +571,7 @@ add_mlir_library(EcoRunner
     ../allocator/HeapConfigJson.cpp
     ../allocator/NurserySpace.cpp
     ../allocator/OldGenSpace.cpp
+    ../allocator/PermanentSpace.cpp
     ../allocator/RootSet.cpp
     ../allocator/ThreadLocalHeap.cpp
     ../allocator/GCStats.cpp
@@ -650,6 +652,7 @@ add_library(EcoRuntimeStatic STATIC
     ../allocator/HeapConfigJson.cpp
     ../allocator/NurserySpace.cpp
     ../allocator/OldGenSpace.cpp
+    ../allocator/PermanentSpace.cpp
     ../allocator/RootSet.cpp
     ../allocator/ThreadLocalHeap.cpp
     ../allocator/GCStats.cpp

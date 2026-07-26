@@ -1251,6 +1251,124 @@ PATH.** Hoisting remains implemented, gated, and default-off; the
 remaining plausible lever is profile-guided selection (hoist ONLY
 provably-hot LARGE sites), not mechanism.
 
+### Run Y — CAF spec DEDUPE (2026-07-24): **wall-NEUTRAL (+0.85 %, at the
+### noise floor) — correctness-clean, stays default-off**
+
+New pass `Compiler/GlobalOpt/CafDedupe.elm` (`ECO_CAF_DEDUPE=1`, hash token
+`cafd=1`): merges structurally identical nullary `MonoDefine` specs onto one
+canonical spec (exact region-zeroed body + type equality; closure bodies never
+merge — fresh lambdaIds block `==`, which is precisely the LSS-safe behavior;
+victims become Prune-style `Nothing` gaps; refs remapped in node exprs, ports,
+flagsDecoder, main; fixpoint for alias cascades). FORBID_OPT_003 is satisfied
+because identical `(body, type)` implies identical layout.
+
+Census on the self-compile workload: **rounds=2 groups=14 removed=75
+refsRewritten=1,459** (~0.15 % of specs) — dedupe opportunity is real but tiny.
+MLIR shrinks 12,394,478 → 12,384,115 B (−10.4 KB); linked binary −22.7 KB.
+
+Battery (interleaved ×3, cold `eco-stuff`, subst workload; on-legs run the pass
+during the workload = as-shipped semantics):
+
+```
+yoff (cafdoff): 199.77 / 197.46 / 199.28   mean 198.84 s (3:18.8)   majors 9, minors 756
+yon  (cafdon):  202.47 / 199.86 / 199.23   mean 200.52 s (3:20.5)   majors 9, minors 761
+```
+
+**+1.68 s = +0.85 % — at the ±0.7 % container floor, leaning slightly
+negative.** Expected: a memoized thunk runs ONCE regardless, so deduping 75 of
+them saves ~nothing at runtime, while the pass itself costs a little front-end
+time (+5 minors from pass allocation). Gates all green: unit tests 5/5
+(CafDedupeTest), full E2E flag-on 1636/1636 (all tests force-recompiled),
+**fixed point: all three yon MLIRs byte-identical to the census MLIR produced
+by the non-deduped binary** (deduped compiler reproduces its own output), off
+legs byte-identical to the off mint (determinism). Verdict: keep the pass
+gated default-off as spec-count hygiene; there is no perf case for shipping it
+on at the current duplicate count.
+
+### Promotion decision measurement (2026-07-24): **memoization LOWERS live
+### residency −5.9 % — permanent-space promotion NOT justified, deep-copier
+### shelved**
+
+New measurement knob `ECO_GC_EXIT_MAJOR=1` (runtime, `eco_entry.cpp`): forces
+one major GC in the atexit stats handler — the Elm program terminates via the
+kernel's `std::exit`, so a post-`eco_main()` hook never runs; atexit executes
+on the exiting (Elm) thread with the TL heap still valid (null-guarded; not on
+the signal path). The stats' "latest: most recent major-GC end" residency
+block then reports the LIVE retained set at exit instead of the last organic
+major's snapshot.
+
+A/B on the self-compile workload (cold `eco-stuff`, subst; binaries differ
+only in `ECO_CAF_MEMO`; both majors=10 = 9 organic + 1 forced):
+
+```
+memo-ON  (default): latest live 965.04 MB   wall 3:19.60
+memo-OFF:           latest live 1025.11 MB  wall 3:25.81
+```
+
+**Memoization RETAINS LESS, not more: −60.1 MB (−5.9 %).** Without memo,
+every thunk re-evaluation mints a fresh copy of the value and long-lived
+consumers (caches, tables) each retain their own duplicate; with memo they all
+share the slot's single copy. Alongside: majors unchanged, pinned live tiny
+and equal (1.34 MB), and the wall gap reproduces the Run S memoization win.
+
+Verdict on option #4 (deep-copy memoized values into a never-collected
+permanent space): **the precondition is refuted** — memoized data imposes no
+measurable old-gen or major-GC burden to eliminate; it is already net
+GC-positive. The risky deep-copier (every heap tag layout, closure cycles,
+backpatching) is not worth building. `ECO_GC_EXIT_MAJOR` stays as a permanent
+zero-cost-when-unset measurement knob.
+
+### Run Z — CAF PERMANENT SPACE (2026-07-25): **−5.0 % wall, majors 9→8 —
+### SHIPPED DEFAULT-ON (`ECO_CAF_PERMANENT=0` escape)**
+
+The real #4 (plans/caf-permanent-space.md), built after the residency probe
+was rightly challenged: retention deltas say nothing about the RECURRING
+costs — the per-minor JIT-root sweep of every CAF slot and the per-major
+re-marking of immortal data. This eliminates both.
+
+Mechanism: a separate VA reservation outside `[heap_base, +reserved)` (below
+the 2^43 HPointer limit) is invisible to the entire GC by construction —
+`markHPointer`/`pushMarkRoot` bail on the existing bounds checks, minor
+evacuation only follows nursery-range pointers. `eco_caf_promote` (gc-leaf,
+called on the memo-guard miss path, emitted by `installCafMemoGuard`)
+transitively deep-copies the thunk result into the region (visited-map for
+sharing/cycles; two-phase so ANY unsupported tag declines BEFORE allocating
+— slot stays rooted, soundness never depends on copier completeness), stores
+the permanent copy, RETURNS it (first caller shares it — no duplicate), and
+deregisters the slot from the JIT root set. Runtime-env gated; one binary
+serves both legs. Support surface: all immutable tags incl. every
+string/bytes form verbatim (grep-verified: no in-place representation
+healing anywhere in StringOps/BytesOps); declined: `Tag_Process` + unknown.
+Collateral fixes: `evacuate`'s hard heap-bounds asserts → permanent-aware
+non-heap early-out (validate-build tripwire retained); `Allocator::wrap`/
+`resolve` accept heap-or-permanent. HEAP_036.
+
+Battery (same binary `eco-compiler-permtest`, runtime env A/B, interleaved
+×3, cold `eco-stuff`, subst workload):
+
+```
+zoff: 200.15 / 200.07 / 201.46   mean 200.56 s (3:20.6)   majors 9, minors 756
+zon:  190.34 / 190.27 / 191.01   mean 190.54 s (3:10.5)   majors 8, minors 756
+```
+
+**−10.02 s = −5.0 %, every leg ordered, on-side spread ±0.4 s.** Counters
+deterministic across legs: promoted=596 constant=17 (=613 slots
+deregistered), objects=3,832, 117 KB copied, declined=0, abandoned=0.
+Majors drop 9→8 (one fewer >1 s major — the dominant term) and the
+remaining majors get cheaper (no immortal re-marking, 613 fewer mark
+roots); minors identical in count but each skips 613 root evacuations.
+All 7 battery MLIRs byte-identical (performance-only flag).
+
+Gates: E2E 1636/1636 with the flag off AND on (all test binaries promote
+under the on-leg), 1636/1636 again after the default flip; scaffold smokes
+green both modes; compiler output byte-identical under the flag.
+
+**Verdict: the challenge to the residency-probe conclusion was CORRECT.**
+Retention measured −60 MB and said "nothing to save"; the recurring
+mark/scan cost was the real prize and is worth 5 % of wall. Shipped
+default-on. The CAF arc's GC story is now: values evaluated once (memo),
+called cheaply (caller-fast), and owned by no GC phase at all (permanent).
+
 ## Summary
 
 Coverage = `fast / (sat + fast)`. "solver-built" = compiler's own code carries LSS
@@ -1292,6 +1410,8 @@ stamps (front-end run under solver, lowered with `ECO_LSS_DISPATCH_SITE_COUNTERS
 | 2026-07-24 | caller-fast OFF baseline (Run W, same-MLIR) | 663,487,733 | 645,853,754 | 17,633,979 | 102,921,798 | 13.43 % | 5,823 | 3:18.2†✪ |
 | 2026-07-24 | **CAF CALLER-FAST PATH (Run W) — SHIPPED ON** | 663,487,733 | 645,853,754 | 17,633,979 | 102,921,798 | 13.43 % | 5,823 | **3:15.8†✪** |
 | 2026-07-24 | HOIST + caller-fast (Run X) — NEGATIVE, stays OFF | — | — | — | — | — | — | 3:20.1†✪ |
+| 2026-07-24 | CAF spec DEDUPE (Run Y) — NEUTRAL +0.85 %, stays OFF | — | — | — | — | — | — | 3:20.5†✪ |
+| 2026-07-25 | **CAF PERMANENT SPACE (Run Z) — SHIPPED ON, majors 9→8** | — | — | — | — | — | — | **3:10.5†✪** |
 
 *Run-C walls carry an unattributed +30 % vs Run A/B (see the Run C section) — the
 counts are the meaningful comparison; treat the walls as provisional. The Run-I

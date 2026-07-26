@@ -574,15 +574,39 @@ LogicalResult eco::detail::installCafMemoGuard(LLVM::LLVMFuncOp func) {
 
     OpBuilder builder(ctx);
 
+    // Declare the promotion hook once per module: gc-leaf (never triggers
+    // GC, never re-enters Elm), so RS4GC adds no statepoint and the
+    // barrier-i64 crossing it is the authorized store-helper→gc-leaf-arg
+    // pattern (EcoPtrIntVerify pattern 2; the return value is pattern 4).
+    auto module = func->getParentOfType<ModuleOp>();
+    if (!module.lookupSymbol<LLVM::LLVMFuncOp>("eco_caf_promote")) {
+        OpBuilder mb = OpBuilder::atBlockEnd(module.getBody());
+        auto promoteTy = LLVM::LLVMFunctionType::get(i64Ty, {i64Ty, ptrTy});
+        auto decl = mb.create<LLVM::LLVMFuncOp>(loc, "eco_caf_promote",
+                                                promoteTy);
+        decl->setAttr("passthrough",
+                      ArrayAttr::get(ctx, {StringAttr::get(
+                                              ctx, "gc-leaf-function")}));
+    }
+
     // 1. Instrument every existing return FIRST, so the hit-path return
-    //    created below is not instrumented.
+    //    created below is not instrumented. The miss path routes the value
+    //    through eco_caf_promote (ECO_CAF_PERMANENT=1 deep-copies it into
+    //    the permanent space and deregisters the slot; default-off returns
+    //    it unchanged) and returns the PROMOTED value, so the first caller
+    //    shares the permanent copy instead of keeping a heap duplicate.
     SmallVector<LLVM::ReturnOp> rets;
     body.walk([&](LLVM::ReturnOp r) { rets.push_back(r); });
     for (LLVM::ReturnOp r : rets) {
         builder.setInsertionPoint(r);
         auto addr = builder.create<LLVM::AddressOfOp>(loc, ptrTy, slotName);
         Value bits = globalStoreValueToI64(builder, loc, r.getOperand(0));
-        builder.create<LLVM::StoreOp>(loc, bits, addr);
+        auto perm = builder.create<LLVM::CallOp>(
+            loc, TypeRange{i64Ty}, llvm::StringRef("eco_caf_promote"),
+            ValueRange{bits, addr});
+        builder.create<LLVM::StoreOp>(loc, perm.getResult(), addr);
+        Value promoted = globalLoadI64ToValue(builder, loc, perm.getResult());
+        r.setOperand(0, promoted);
     }
 
     // 2. New entry block (guard) + hit block. The thunk has no parameters,

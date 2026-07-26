@@ -13,6 +13,7 @@
 #include <sstream>
 #include "Allocator.hpp"
 #include "GCStats.hpp"
+#include "PermanentSpace.hpp"
 #include "ThreadLocalHeap.hpp"
 
 namespace Elm {
@@ -1402,6 +1403,21 @@ void GCStats::print() const {
             latest_freelist_large_block_bytes,
             latest_freelist_snapshots,
             /*include_per_major_avg=*/false);
+    }
+
+    // ========== CAF Permanent Space (ECO_CAF_PERMANENT=1) ==========
+    {
+        const PermanentSpace::Stats &ps = PermanentSpace::instance().stats;
+        if (ps.values_promoted + ps.values_constant + ps.values_declined > 0) {
+            std::cout << "\n[caf-permanent] promoted=" << ps.values_promoted
+                      << " constant=" << ps.values_constant
+                      << " declined=" << ps.values_declined
+                      << " objects=" << ps.objects_copied
+                      << " KB=" << (ps.bytes_copied / 1024)
+                      << " abandonedKB=" << (ps.bytes_abandoned / 1024)
+                      << " slotsDeregistered=" << ps.slots_deregistered
+                      << std::endl;
+        }
     }
 
     std::cout << std::endl;

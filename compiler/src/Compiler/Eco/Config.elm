@@ -200,6 +200,7 @@ runtime toggle.
 type alias CafMemoConfig =
     { enabled : Bool
     , census : Bool -- env ECO_CAF_CENSUS=1: inner-CAF opportunity census over the final MonoGraph (CafCensus.elm); output-only, excluded from hash
+    , dedupe : Bool -- env ECO_CAF_DEDUPE=1: merge structurally identical nullary specs onto one canonical spec (CafDedupe.elm); artifact-affecting → hash token cafd=1 when on
     , hoist : CafHoistConfig
     }
 
@@ -265,7 +266,7 @@ default =
         }
     , bytesFusion = { enabled = True }
     , logicalTypes = { customMaxFields = 8 }
-    , cafMemo = { enabled = True, census = False, hoist = { enabled = False, minNodes = 3, maxHoists = 8192 } }
+    , cafMemo = { enabled = True, census = False, dedupe = False, hoist = { enabled = False, minNodes = 3, maxHoists = 8192 } }
     , mono = { engine = EngineSolver, diffDump = False, validate = False, lss = defaultLss }
     }
 
@@ -313,6 +314,7 @@ cafMemoDecoder =
     D.pure CafMemoConfig
         |> D.apply (D.optionalField "enabled" D.bool default.cafMemo.enabled)
         |> D.apply (D.optionalField "census" D.bool default.cafMemo.census)
+        |> D.apply (D.optionalField "dedupe" D.bool default.cafMemo.dedupe)
         |> D.apply (D.optionalField "hoist" cafHoistDecoder default.cafMemo.hoist)
 
 
@@ -445,6 +447,15 @@ hash cfg =
             -- hashes like the pre-feature world and can share its caches.
             ++ (if cfg.cafMemo.enabled then
                     [ "cafm=1" ]
+
+                else
+                    []
+               )
+            -- CAF-dedupe token appears ONLY when enabled (default-off), so
+            -- default configs hash exactly as before. Artifact-affecting:
+            -- deduping rewrites spec references in generated MLIR.
+            ++ (if cfg.cafMemo.dedupe then
+                    [ "cafd=1" ]
 
                 else
                     []

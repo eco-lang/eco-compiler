@@ -28,6 +28,7 @@
 
 #include "NurserySpace.hpp"
 #include "Allocator.hpp"
+#include "PermanentSpace.hpp"
 #include "ThreadLocalHeap.hpp"
 #include <algorithm>
 #include <cassert>
@@ -1075,9 +1076,24 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
 #endif
 
     // Use cached allocator reference instead of repeated singleton lookup.
+    // Non-heap addresses are legal since HEAP_036: permanent-space objects
+    // (immortal, closed, GC-invisible) may be referenced from anywhere and
+    // need no evacuation. The former hard bounds asserts survive as a
+    // permanent-aware tripwire in validator builds (out-of-range garbage
+    // still aborts there).
     char *heap_base = allocator_->getHeapBase();
-    assert(static_cast<char*>(obj) >= heap_base && "Pointer below heap base!");
-    assert(static_cast<char*>(obj) < heap_base + allocator_->getHeapReserved() && "Pointer above heap end!");
+    if (static_cast<char*>(obj) < heap_base ||
+        static_cast<char*>(obj) >= heap_base + allocator_->getHeapReserved()) {
+#if ECO_HEAP_VALIDATE
+        if (!PermanentSpace::instance().contains(obj)) {
+            std::fprintf(stderr,
+                "[gc-debug] evacuate: pointer outside heap AND permanent "
+                "space: %p\n", obj);
+            std::abort();
+        }
+#endif
+        return;
+    }
 
     // First priority: Check if this location has a forward pointer.
     // This must happen BEFORE the from-space check so that pointers from

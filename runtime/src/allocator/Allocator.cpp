@@ -14,6 +14,7 @@
 #include "Allocator.hpp"
 #include "HeapConfigJson.hpp"
 #include "OldGenSpace.hpp"
+#include "PermanentSpace.hpp"
 #include "PlatformVirtualMemory.hpp"
 #include "ThreadLocalHeap.hpp"
 #include <cassert>
@@ -822,9 +823,14 @@ void* Allocator::resolve(HPointer ptr) {
             heap->debugAssertValidNurseryPointer(obj);
         }
     }
-    // Validate pointer is within the reserved heap address space.
-    assert(static_cast<char*>(obj) >= heap_base && "Pointer below heap base");
-    assert(static_cast<char*>(obj) < heap_base + heap_reserved && "Pointer above heap end");
+    // Validate pointer is within the reserved heap address space OR the
+    // permanent space (HEAP_036: immortal CAF values live outside the heap
+    // range and resolve like any other object — headers are well-formed,
+    // never forwarded).
+    assert(((static_cast<char*>(obj) >= heap_base &&
+             static_cast<char*>(obj) < heap_base + heap_reserved) ||
+            PermanentSpace::instance().contains(obj)) &&
+           "Pointer outside heap and permanent space");
 #endif
 
     // Follow forwarding chain to final location.
@@ -843,7 +849,10 @@ void* Allocator::resolve(HPointer ptr) {
 HPointer Allocator::wrap(void* obj) {
     assert(obj && "Cannot wrap null pointer - Elm never produces null pointers");
     assert((reinterpret_cast<uintptr_t>(obj) & 7) == 0 && "Pointer must be 8-byte aligned");
-    assert(isInHeap(obj) && "Pointer must be within heap");
+    // Permanent-space objects (HEAP_036) wrap like any heap object — the
+    // HPointer word is the raw address in both cases.
+    assert((isInHeap(obj) || PermanentSpace::instance().contains(obj)) &&
+           "Pointer must be within heap or permanent space");
     return toPointerRaw(obj);
 }
 
