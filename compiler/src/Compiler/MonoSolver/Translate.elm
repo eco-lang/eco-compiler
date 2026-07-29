@@ -3202,6 +3202,47 @@ deriveKernelAbiTypeWith kernelId canFuncType funcVarStep =
                                     then
                                         Engine.succeed monoAfterSubst
 
+                                    else if EverySet.member KernelAbi.comparePair kernelId KernelAbi.suffixSelectingKernels then
+                                        -- Suffix-selecting kernel with residual vars in the
+                                        -- store truth: use the STORE-TRUTH zonk (not a canType
+                                        -- re-derivation), remapping its CEcoValue residuals to
+                                        -- fresh, taint-proof engine ids (ConsNumberTaintTest,
+                                        -- the Stage-7a bootstrap SIGSEGV):
+                                        --
+                                        --   * A structurally CONCRETE param whose FIELDS carry
+                                        --     erased residuals (e.g. a `(Name, MonoExpr, Bool)`
+                                        --     cons element zonking `T(eco,MonoExpr,eco)`) fails
+                                        --     the whole-type `containsAnyMVar` gate above, but
+                                        --     its top-level shape — all the suffix selection
+                                        --     reads — is exact. The former canType re-derivation
+                                        --     DISCARDED that shape for the kernel scheme's
+                                        --     annotation var (e.g. `List.cons`'s `a`), whose id
+                                        --     is SHARED by every use of the kernel in the whole
+                                        --     program.
+                                        --
+                                        --   * A shared annotation id can be Number-stamped by a
+                                        --     FOREIGN item (`harvestSuperTable` covers only the
+                                        --     finishing item's own annIds, not callee-scheme
+                                        --     vars left at `FlexSuper Number` — e.g. an
+                                        --     unresolved-number `1 :: 2 :: []`). Prune then
+                                        --     closes `MVar a CEcoValue -> MInt` behind this
+                                        --     spec's back and the kernel selects `_Int` over a
+                                        --     BOXED element — `eco.unbox` of a heap pointer.
+                                        --
+                                        -- Store-truth params align the ABI with the spec's own
+                                        -- body/param types (same zonk source); the fresh eco
+                                        -- ids make genuinely-erased elements immune to foreign
+                                        -- stamps (they stay boxed, matching the subst engine).
+                                        -- CNumber residuals keep their unconditional
+                                        -- close-to-MInt — the intended same-item taint.
+                                        (\st ->
+                                            let
+                                                ( abi2, nextId2 ) =
+                                                    remapEcoVarsFresh st.nextMVarId monoAfterSubst
+                                            in
+                                            Ok ( abi2, { st | nextMVarId = nextId2 } )
+                                        )
+
                                     else
                                         -- The preserved-vars ABI keeps the canType's var ids,
                                         -- which THIS item's demand unification may have Join-R
@@ -3218,13 +3259,14 @@ deriveKernelAbiTypeWith kernelId canFuncType funcVarStep =
                                                 ( abiType, env1 ) =
                                                     KernelAbi.canTypeToMonoType_preserveVars mvarEnv canFuncType
 
-                                                -- Suffix-selecting kernels and Debug WANT the
-                                                -- taint (they close to Int like the original
-                                                -- refreshConstraints); only genuinely-generic
-                                                -- kernels get taint-proof fresh ids.
+                                                -- Debug WANTS the taint (it closes to Int like
+                                                -- the original refreshConstraints); only
+                                                -- genuinely-generic kernels get taint-proof
+                                                -- fresh ids. (Suffix-selecting kernels take the
+                                                -- store-truth branch above and never reach
+                                                -- here.)
                                                 remapWanted =
-                                                    not (EverySet.member KernelAbi.comparePair kernelId KernelAbi.suffixSelectingKernels)
-                                                        && Tuple.first kernelId /= "Debug"
+                                                    Tuple.first kernelId /= "Debug"
 
                                                 ( finalAbi, nextId2 ) =
                                                     if remapWanted then
