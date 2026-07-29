@@ -207,6 +207,83 @@ applyEnvOverrides cfg =
                 (Utils.envLookupEnv "ECO_CAF_DEDUPE" |> Task.mapError never)
                     |> Task.map (\cdVal -> applyCafDedupeOverride cdVal cfg17)
             )
+        |> Task.andThen
+            (\cfg18 ->
+                (Utils.envLookupEnv "ECO_BORROW_CENSUS0" |> Task.mapError never)
+                    |> Task.map (\bcVal -> applyBorrowCensus0Override bcVal cfg18)
+            )
+        |> Task.andThen
+            (\cfg19 ->
+                (Utils.envLookupEnv "ECO_BORROW" |> Task.mapError never)
+                    |> Task.map (\bVal -> applyBorrowOverride bVal cfg19)
+            )
+        |> Task.andThen
+            (\cfg20 ->
+                (Utils.envLookupEnv "ECO_BORROW_REPORT" |> Task.mapError never)
+                    |> Task.map (\brVal -> applyBorrowReportOverride brVal cfg20)
+            )
+
+
+{-| `ECO_BORROW=off|1|rc`: run the borrow-inference analysis (GlobalOpt
+Phase 6). `1`/`true`/`yes`/`on` ⇒ census oracle (enabled, reify=ROff, graph
+unchanged); `rc` ⇒ enabled + reify=RRc (RRc is a no-op until B4); `off`/`0` ⇒
+disabled. Unknown values are ignored.
+-}
+applyBorrowOverride : Maybe String -> EcoConfig -> EcoConfig
+applyBorrowOverride maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            cfg
+
+        Just raw ->
+            let
+                t =
+                    String.toLower (String.trim raw)
+
+                borrow =
+                    cfg.borrow
+            in
+            if t == "1" || t == "true" || t == "yes" || t == "on" then
+                { cfg | borrow = { borrow | enabled = True, reify = Config.ROff } }
+
+            else if t == "rc" then
+                { cfg | borrow = { borrow | enabled = True, reify = Config.RRc } }
+
+            else if t == "0" || t == "off" then
+                { cfg | borrow = { borrow | enabled = False } }
+
+            else
+                cfg
+
+
+{-| `ECO_BORROW_REPORT=1|true|yes`: emit the borrow census to stderr after
+GlobalOpt. Also enables the pass (so the census actually runs even if
+`ECO_BORROW` was not set). Output-only, excluded from `Config.hash`.
+-}
+applyBorrowReportOverride : Maybe String -> EcoConfig -> EcoConfig
+applyBorrowReportOverride maybeVal cfg =
+    let
+        on =
+            case maybeVal of
+                Just v ->
+                    let
+                        t =
+                            String.toLower (String.trim v)
+                    in
+                    t == "1" || t == "true" || t == "yes"
+
+                Nothing ->
+                    False
+    in
+    if on then
+        let
+            borrow =
+                cfg.borrow
+        in
+        { cfg | borrow = { borrow | enabled = True, report = True } }
+
+    else
+        cfg
 
 
 applyEngineOverride : Maybe String -> EcoConfig -> Task Exit.Make EcoConfig
@@ -284,6 +361,37 @@ applyValidateOverride maybeVal cfg =
                 cfg.mono
         in
         { cfg | mono = { mono | validate = True } }
+
+    else
+        cfg
+
+
+{-| `ECO_BORROW_CENSUS0=1|true|yes`: emit the Phase-0 throwaway Perceus-denominator
+census (`borrow census0: …`) to stderr after GlobalOpt. Output-only, excluded from
+`Config.hash` (never referenced there), so flag-off caches are unaffected. Deleted
+when the B2 real census lands (borrow-inference Phase 2).
+-}
+applyBorrowCensus0Override : Maybe String -> EcoConfig -> EcoConfig
+applyBorrowCensus0Override maybeVal cfg =
+    let
+        on =
+            case maybeVal of
+                Just v ->
+                    let
+                        t =
+                            String.toLower (String.trim v)
+                    in
+                    t == "1" || t == "true" || t == "yes"
+
+                Nothing ->
+                    False
+    in
+    if on then
+        let
+            mono =
+                cfg.mono
+        in
+        { cfg | mono = { mono | borrowCensus0 = True } }
 
     else
         cfg

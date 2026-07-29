@@ -993,7 +993,57 @@ assembleRawGraph s mainSpecId flagsDecoderSpecId =
         , specValueUsed = valueUsedWithMain
         , ports = s.ports
         , flagsDecoder = flagsDecoderSpecId
+        , lssMemberOrigins = buildMemberOrigins s.lssMemberTable
         }
+
+
+{-| B3.5: invert `LssMemberTable.byKey` into member-id → origin, dispatching on
+the 2-char key prefix (`g|`/`c|`/`k|`/`a|`; `l|` lambdas are skipped — resolved
+via the instance index). TOpt.Global payloads convert to Mono.Global here (the
+origin carries Monomorphized's own Global; this site imports TOpt).
+-}
+buildMemberOrigins : Engine.LssMemberTable -> Dict.Dict Int Mono.MemberOrigin
+buildMemberOrigins table =
+    Dict.foldl
+        (\key mid acc ->
+            case String.left 2 key of
+                "g|" ->
+                    case Dict.get mid table.globals of
+                        Just g ->
+                            Dict.insert mid (Mono.OriginGlobal (toptToMono g)) acc
+
+                        Nothing ->
+                            acc
+
+                "c|" ->
+                    case Dict.get mid table.globals of
+                        Just g ->
+                            Dict.insert mid (Mono.OriginCtor (toptToMono g)) acc
+
+                        Nothing ->
+                            acc
+
+                "k|" ->
+                    case Dict.get mid table.kernels of
+                        Just ( _, home, name ) ->
+                            Dict.insert mid (Mono.OriginKernel home name) acc
+
+                        Nothing ->
+                            acc
+
+                "a|" ->
+                    Dict.insert mid (Mono.OriginAccessor (String.dropLeft 2 key)) acc
+
+                _ ->
+                    acc
+        )
+        Dict.empty
+        table.byKey
+
+
+toptToMono : TOpt.Global -> Mono.Global
+toptToMono (TOpt.Global h n) =
+    Mono.Global h n
 
 
 pruneGraph : S -> Mono.MonoGraph -> Mono.MonoGraph

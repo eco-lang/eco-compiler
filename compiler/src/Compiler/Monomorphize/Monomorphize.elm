@@ -272,6 +272,7 @@ assembleRawGraphFrom finalAccum lambdaCounter mainSpecIdVal flagsDecoderSpecId =
         , specValueUsed = valueUsedWithMain
         , ports = finalAccum.ports
         , flagsDecoder = flagsDecoderSpecId
+        , lssMemberOrigins = Dict.empty -- subst engine: all-LTop, no LSS members
         }
 
 

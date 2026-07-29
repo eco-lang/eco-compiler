@@ -1,8 +1,9 @@
 module Compiler.Eco.Config exposing
     ( EcoConfig, InlineConfig, BytesFusionConfig, LogicalTypesConfig, CafMemoConfig, CafHoistConfig
     , MonoEngine(..), MonoConfig, LssConfig
+    , BorrowConfig, BorrowReify(..)
     , default, defaultLss, decoder, hash, clamp
-    , monoEngineFromString
+    , monoEngineFromString, borrowReifyFromString
     )
 
 {-| Project-level tunable compiler settings, read from `eco-config.json`
@@ -35,7 +36,27 @@ type alias EcoConfig =
     , logicalTypes : LogicalTypesConfig
     , cafMemo : CafMemoConfig
     , mono : MonoConfig
+    , borrow : BorrowConfig
     }
+
+
+{-| Borrow-inference (GlobalOpt Phase 6) knobs (design §6, D2: top-level,
+engine-agnostic). `enabled = False` reproduces today's pipeline byte-for-byte
+(the pass is not run). `reify = ROff` runs the analysis as an inert census
+oracle (graph returned unchanged); `RRc` (unused until B4) emits RC ops.
+`report`/`validate` are output-only and excluded from `hash`.
+-}
+type alias BorrowConfig =
+    { enabled : Bool
+    , reify : BorrowReify
+    , report : Bool
+    , validate : Bool
+    }
+
+
+type BorrowReify
+    = ROff
+    | RRc
 
 
 {-| Which monomorphizer engine to run.
@@ -63,6 +84,7 @@ type alias MonoConfig =
     { engine : MonoEngine
     , diffDump : Bool
     , validate : Bool -- env ECO_MONO_VALIDATE=1, never from JSON: run the MONO_029 layout-agreement validator after mono and FAIL the compile on violations (output-only, excluded from hash — a failed compile is never cached)
+    , borrowCensus0 : Bool -- env ECO_BORROW_CENSUS0=1, never from JSON: Phase-0 throwaway Perceus-denominator census to stderr (output-only, excluded from hash; deleted when the B2 census lands)
     , lss : LssConfig
     }
 
@@ -267,7 +289,8 @@ default =
     , bytesFusion = { enabled = True }
     , logicalTypes = { customMaxFields = 8 }
     , cafMemo = { enabled = True, census = False, dedupe = False, hoist = { enabled = False, minNodes = 3, maxHoists = 8192 } }
-    , mono = { engine = EngineSolver, diffDump = False, validate = False, lss = defaultLss }
+    , mono = { engine = EngineSolver, diffDump = False, validate = False, borrowCensus0 = False, lss = defaultLss }
+    , borrow = { enabled = False, reify = ROff, report = False, validate = False }
     }
 
 
@@ -283,6 +306,7 @@ decoder =
         |> D.apply (D.optionalField "logicalTypes" logicalTypesDecoder default.logicalTypes)
         |> D.apply (D.optionalField "cafMemo" cafMemoDecoder default.cafMemo)
         |> D.apply (D.optionalField "mono" monoDecoder default.mono)
+        |> D.apply (D.optionalField "borrow" borrowDecoder default.borrow)
 
 
 {-| Decode the `inline` block. `report` is env-only in spirit but accepted
@@ -332,6 +356,40 @@ logicalTypesDecoder =
         |> D.apply (D.optionalField "customMaxFields" D.int default.logicalTypes.customMaxFields)
 
 
+{-| Decode the `borrow` block. `reify` is a string `"off"|"rc"`; `report`/
+`validate` are accepted from JSON for convenience but never affect `hash`.
+-}
+borrowDecoder : D.Decoder x BorrowConfig
+borrowDecoder =
+    D.pure
+        (\enabled reifyStr report validate ->
+            { enabled = enabled
+            , reify = Maybe.withDefault default.borrow.reify (borrowReifyFromString reifyStr)
+            , report = report
+            , validate = validate
+            }
+        )
+        |> D.apply (D.optionalField "enabled" D.bool default.borrow.enabled)
+        |> D.apply (D.optionalField "reify" D.string "off")
+        |> D.apply (D.optionalField "report" D.bool default.borrow.report)
+        |> D.apply (D.optionalField "validate" D.bool default.borrow.validate)
+
+
+{-| Parse a borrow-reify mode name (case-insensitive). `Nothing` on unknown.
+-}
+borrowReifyFromString : String -> Maybe BorrowReify
+borrowReifyFromString s =
+    case String.toLower (String.trim s) of
+        "off" ->
+            Just ROff
+
+        "rc" ->
+            Just RRc
+
+        _ ->
+            Nothing
+
+
 {-| Decode the `mono` block. Only `engine` is JSON-configurable; an unrecognized
 string falls back to the default. `diffDump` is env-only (never from JSON).
 -}
@@ -342,6 +400,7 @@ monoDecoder =
             { engine = Maybe.withDefault default.mono.engine (monoEngineFromString s)
             , diffDump = default.mono.diffDump
             , validate = default.mono.validate
+            , borrowCensus0 = default.mono.borrowCensus0
             , lss = lss
             }
         )

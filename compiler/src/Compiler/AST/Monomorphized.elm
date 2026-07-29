@@ -3,7 +3,7 @@ module Compiler.AST.Monomorphized exposing
     , LambdaSetAnno(..), widenSets, eqLayout, shallowLayoutKey, headAnno, unionAnno, singletonHeadMember, joinAnnotations, overlayAnnotations
     , LambdaId(..)
     , Global(..), SpecKey(..), SpecId, SpecializationRegistry
-    , MonoGraph(..), MainInfo(..), MonoNode(..), CtorShape, nodeType
+    , MonoGraph(..), MainInfo(..), MonoNode(..), CtorShape, nodeType, MemberOrigin(..)
     , PortRegistration
     , MonoExpr(..), ClosureInfo, MonoDef(..), MonoDestructor(..), MonoPath(..)
     , MonoDtPath(..), dtPathType
@@ -822,7 +822,19 @@ type MonoGraph
         , specValueUsed : BitSet -- SpecIds whose value is referenced via MonoVarGlobal
         , ports : List PortRegistration -- Ports reached during monomorphization; drives @__eco_register_ports emission (PORT_003)
         , flagsDecoder : Maybe SpecId -- The root program's flags decoder (Phase 5); registered at startup like port decoders
+        , lssMemberOrigins : Dict Int MemberOrigin -- B3.5: LSS standalone-member origins (mid → global/ctor/kernel/accessor); Dict.empty under subst
         }
+
+
+{-| What an LSS member id resolves to when it is NOT a lambda (borrow B3.5,
+design §10). Built by inverting `LssMemberTable.byKey` at the solver assemble
+site; empty under the subst engine.
+-}
+type MemberOrigin
+    = OriginGlobal Global -- g| members (Monomorphized's own Global)
+    | OriginKernel Name Name -- k| members (home, name; prefix dropped)
+    | OriginCtor Global -- c| members
+    | OriginAccessor Name -- a| members (field name)
 
 
 {-| One port registration collected during monomorphization.

@@ -454,7 +454,7 @@ runToGlobalOptLssOnStats srcModule =
                             MonoInlineSimplify.optimize Config.default.inline monoGraph
 
                         ( _, stats ) =
-                            MonoGlobalOptimize.globalOptimizeWithStats simplifiedGraph
+                            MonoGlobalOptimize.globalOptimizeWithStats Config.default.borrow simplifiedGraph
                     in
                     Ok stats
 

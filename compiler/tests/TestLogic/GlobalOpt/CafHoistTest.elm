@@ -184,4 +184,5 @@ testGraph =
         , specValueUsed = BitSet.empty
         , ports = []
         , flagsDecoder = Nothing
+        , lssMemberOrigins = Dict.empty
         }

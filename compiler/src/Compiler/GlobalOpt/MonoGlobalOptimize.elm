@@ -25,7 +25,9 @@ not at runtime. The compiler trusts that canonicalizeClosureStaging produces cor
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
+import Compiler.Eco.Config as Config
 import Compiler.GlobalOpt.AbiCloning as AbiCloning
+import Compiler.GlobalOpt.Borrow as Borrow
 import Compiler.GlobalOpt.MonoReturnArity as MonoReturnArity
 import Compiler.GlobalOpt.Staging as Staging
 import Compiler.Monomorphize.Closure as Closure
@@ -107,7 +109,7 @@ Assumes MonoInlineSimplify.optimize has already been applied externally.
 -}
 globalOptimize : Mono.MonoGraph -> Mono.MonoGraph
 globalOptimize graph0a =
-    Tuple.first (globalOptimizeWithStats graph0a)
+    Tuple.first (globalOptimizeWithStats Config.default.borrow graph0a)
 
 
 {-| GlobalOpt census counters (LSS report, design §9.4 retirement
@@ -117,13 +119,14 @@ outcomes.
 type alias GlobalOptStats =
     { wrappersInserted : Int
     , abiCloning : AbiCloning.AbiCloningStats
+    , borrow : Borrow.BorrowStats
     }
 
 
 {-| `globalOptimize` plus the census counters.
 -}
-globalOptimizeWithStats : Mono.MonoGraph -> ( Mono.MonoGraph, GlobalOptStats )
-globalOptimizeWithStats graph0a =
+globalOptimizeWithStats : Config.BorrowConfig -> Mono.MonoGraph -> ( Mono.MonoGraph, GlobalOptStats )
+globalOptimizeWithStats borrowCfg graph0a =
     let
         -- Phase 1: Wrap top-level function-typed values in closures
         -- (alias wrappers for globals/kernels, general closures for other exprs).
@@ -144,11 +147,24 @@ globalOptimizeWithStats graph0a =
         -- values (wrapper closures, LSS_008).
         ( graph4, abiStats ) =
             AbiCloning.abiCloningPass graph3
+
+        -- Phase 5: Annotate call staging metadata (with dynamic slots from solver).
+        -- annotateExprCalls preserves the Phase-4 stamps when re-deriving CallInfo.
+        graph5 =
+            annotateCallStaging stagingSolution.dynamicSlots graph4
+
+        -- Phase 6: Borrow inference (design §6). reify = ROff ⇒ graph6 == graph5
+        -- (census/oracle only; graph-inert). Skipped entirely when disabled so
+        -- the default build pays zero analysis cost.
+        ( graph6, borrowStats ) =
+            if borrowCfg.enabled then
+                Borrow.run borrowCfg graph5
+
+            else
+                ( graph5, Borrow.emptyStats )
     in
-    -- Phase 5: Annotate call staging metadata (with dynamic slots from solver).
-    -- annotateExprCalls preserves the Phase-4 stamps when re-deriving CallInfo.
-    ( annotateCallStaging stagingSolution.dynamicSlots graph4
-    , { wrappersInserted = wrappersInserted, abiCloning = abiStats }
+    ( graph6
+    , { wrappersInserted = wrappersInserted, abiCloning = abiStats, borrow = borrowStats }
     )
 
 

@@ -202,6 +202,7 @@ mkGraph nodes ports =
         , specValueUsed = BitSet.empty
         , ports = ports
         , flagsDecoder = Nothing
+        , lssMemberOrigins = Dict.empty
         }
 
 

@@ -1059,6 +1059,25 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
  * The original object is replaced with a forwarding pointer (Tag_Forward)
  * to prevent redundant copying if multiple pointers reference it.
  */
+#if ECO_HEAP_VALIDATE
+// U0.5 (borrow-inference Phase 0, plans/borrow-inference-phase0-measurement.md):
+// the §16.2 header-preservation obligation. A minor-GC copy/promotion must carry
+// the header word — INCLUDING `refcount` [16,30] — verbatim, editing ONLY `color`
+// and `age` (D0.4: `pin` is memcpy-preserved, never GC-edited). If a future
+// refactor replaces the `std::memcpy` with a field-wise header construction and
+// forgets `refcount`, promoted survivors silently reset to refcount 0 =
+// "untracked" and RC-1 dies for them. This assertion is that regression tripwire.
+// Load-bearing once alloc-site count-init lands (B4); until then `refcount` is
+// always 0 (unused) so it is trivially true.
+static inline void assertHeaderPreservedAcrossCopy(const Header &src, const Header *dst) {
+    assert(dst->tag == src.tag && dst->pin == src.pin &&
+           dst->unboxed == src.unboxed && dst->refcount == src.refcount &&
+           dst->builder == src.builder && dst->size == src.size &&
+           "HEAP: minor-GC copy/promotion must preserve header modulo age/color (U0.5/§16.2)");
+    // `color` and `age` are the ONLY fields GC legitimately edits on a copy (D0.4).
+}
+#endif
+
 void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void*> *promoted_objects) {
     if (ptr.ptr_ind != 0)
         return;  // It's a constant.
@@ -1168,6 +1187,11 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     // Now proceed with evacuation (object is in from-space and not yet forwarded).
 
     size_t size = getObjectSize(obj);
+#if ECO_HEAP_VALIDATE
+    // U0.5: snapshot the source header before any copy/mutation, so each copy
+    // path can assert §16.2 header preservation at its tail.
+    const Header srcHdr = *hdr;
+#endif
     void *new_obj = nullptr;
 
     // Promote to old gen iff age has reached promotion_age AND neither pin
@@ -1190,6 +1214,9 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         // color should already be White. Reset anyway to keep the promotion
         // path independent of that invariant.
         new_hdr->color = static_cast<u32>(Color::White);
+#if ECO_HEAP_VALIDATE
+        assertHeaderPreservedAcrossCopy(srcHdr, new_hdr);
+#endif
 
         // Split-header forms transfer body ownership from nursery_owned to
         // major-GC-managed on promotion (HEAP_026).
@@ -1265,6 +1292,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
 #if ECO_HEAP_VALIDATE
         assert(!(new_hdr->builder && new_hdr->age != 0) &&
                "HEAP_BUILDER_002: builder objects must have age == 0");
+        assertHeaderPreservedAcrossCopy(srcHdr, new_hdr);
 #endif
 
         GC_STATS_MINOR_INC_SURVIVORS(stats);
@@ -1336,6 +1364,10 @@ void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vecto
         return;
 
     size_t size = getObjectSize(obj);
+#if ECO_HEAP_VALIDATE
+    // U0.5: header-preservation tripwire also covers this JIT-root copier.
+    const Header srcHdr = *hdr;
+#endif
     void *new_obj = nullptr;
 
     // Promote to old gen iff aged AND not pinned/builder (HEAP_BUILDER_001).
@@ -1347,6 +1379,9 @@ void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vecto
 
         Header *new_hdr = getHeader(new_obj);
         new_hdr->age = 0;
+#if ECO_HEAP_VALIDATE
+        assertHeaderPreservedAcrossCopy(srcHdr, new_hdr);
+#endif
 
         if (promoted_objects) {
             promoted_objects->push_back(new_obj);
@@ -1367,6 +1402,9 @@ void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vecto
         if (!new_hdr->builder) {
             new_hdr->age++;
         }
+#if ECO_HEAP_VALIDATE
+        assertHeaderPreservedAcrossCopy(srcHdr, new_hdr);
+#endif
 
         GC_STATS_MINOR_INC_SURVIVORS(stats);
     }
@@ -1821,6 +1859,10 @@ void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
 
         // Copy this Cons cell (may go to old gen if aged)
         size_t size = sizeof(Cons);
+#if ECO_HEAP_VALIDATE
+        // U0.5: header-preservation tripwire also covers the list-spine copier.
+        const Header srcHdr = *hdr;
+#endif
         void* new_obj = nullptr;
 
         // HEAP_BUILDER_001/002: defensively respect pin/builder on Cons,
@@ -1833,6 +1875,9 @@ void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
 
             Header* new_hdr = getHeader(new_obj);
             new_hdr->age = 0;
+#if ECO_HEAP_VALIDATE
+            assertHeaderPreservedAcrossCopy(srcHdr, new_hdr);
+#endif
 
             if (promoted_objects) {
                 promoted_objects->push_back(new_obj);
@@ -1848,6 +1893,9 @@ void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
             if (!new_hdr->builder) {
                 new_hdr->age++;
             }
+#if ECO_HEAP_VALIDATE
+            assertHeaderPreservedAcrossCopy(srcHdr, new_hdr);
+#endif
             GC_STATS_MINOR_INC_SURVIVORS(stats);
         }
 

@@ -40,6 +40,7 @@ produce JavaScript, MLIR, or other target code.
 
 -}
 
+import Array
 import Builder.Build as Build
 import Builder.Eco.FEStats as FEStats
 import Builder.Elm.Details as Details
@@ -70,11 +71,13 @@ import Compiler.GlobalOpt.AbiCloning as AbiCloning
 import Compiler.GlobalOpt.CafCensus as CafCensus
 import Compiler.GlobalOpt.CafDedupe as CafDedupe
 import Compiler.GlobalOpt.CafHoist as CafHoist
+import Compiler.GlobalOpt.Borrow as Borrow
 import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.MonoSolver.Diff as MonoDiff
 import Compiler.MonoSolver.Monomorphize as MonoSolver
 import Compiler.Monomorphize.Monomorphize as Monomorphize
+import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Compiler.Monomorphize.ValidateLayout as ValidateLayout
 import Compiler.Nitpick.Debug as Nitpick
 import Compiler.Reporting.Render.Type.Localizer as L
@@ -823,7 +826,7 @@ runInlineSimplifyPhase ecoConfig stats monoGraph0 =
             Task.succeed simplifiedGraph
         )
         -- Hand off to a separate function so monoGraph0 goes out of scope
-        |> Task.andThen (runGlobalOptPhase ecoConfig.mono.lss.report ecoConfig.cafMemo stats)
+        |> Task.andThen (runGlobalOptPhase ecoConfig.mono.lss.report ecoConfig.mono.borrowCensus0 ecoConfig.borrow ecoConfig.cafMemo stats)
 
 
 renderInlineReport : MonoInlineSimplify.Metrics -> Mono.MonoGraph -> String
@@ -900,13 +903,13 @@ renderInlineReportWith inlineConfig m graph =
 
 {-| Global optimization phase in its own scope so inline+simplify inputs are GC-eligible.
 -}
-runGlobalOptPhase : Bool -> Config.CafMemoConfig -> FEStats.Handle -> Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
-runGlobalOptPhase lssReport cafMemo stats simplifiedGraph =
+runGlobalOptPhase : Bool -> Bool -> Config.BorrowConfig -> Config.CafMemoConfig -> FEStats.Handle -> Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
+runGlobalOptPhase lssReport borrowCensus0 borrowCfg cafMemo stats simplifiedGraph =
     FEStats.withPhase stats
         FEStats.PhaseGlobalOpt
         (let
             ( goGraph, goStats ) =
-                MonoGlobalOptimize.globalOptimizeWithStats simplifiedGraph
+                MonoGlobalOptimize.globalOptimizeWithStats borrowCfg simplifiedGraph
 
             -- CAF spec dedupe (cafMemo.dedupe / ECO_CAF_DEDUPE=1): merge
             -- structurally identical nullary specs BEFORE census/hoist so
@@ -1030,7 +1033,222 @@ runGlobalOptPhase lssReport cafMemo stats simplifiedGraph =
                     else
                         Task.succeed result
                 )
+            |> Task.andThen
+                (\_ ->
+                    -- Borrow-inference Phase-0 throwaway census (borrowCensus0 /
+                    -- ECO_BORROW_CENSUS0=1): the Perceus-cost denominator over the
+                    -- post-GlobalOpt graph. stderr side-channel, graph-inert
+                    -- (returns `result` untouched). Deleted when the B2 census lands.
+                    if borrowCensus0 then
+                        writeLnErr (borrowCensus0Line result.monoGraph)
+                            |> Task.map (\_ -> result)
+
+                    else
+                        Task.succeed result
+                )
+            |> Task.andThen
+                (\_ ->
+                    -- Borrow-inference census (borrow.report / ECO_BORROW_REPORT):
+                    -- the real B2 uniqueness/sharing oracle census. stderr,
+                    -- graph-inert.
+                    if borrowCfg.report then
+                        writeLnErr (Borrow.renderStats goStats.borrow)
+                            |> Task.map (\_ -> result)
+
+                    else
+                        Task.succeed result
+                )
         )
+
+
+{-| Borrow-inference Phase-0 throwaway census accumulator (U0.1).
+-}
+type alias Census0 =
+    { heapOcc : Int
+    , wouldDups : Int
+    , wouldDrops : Int
+    , strings : Int
+    , lists : Int
+    , records : Int
+    , customs : Int
+    , closures : Int
+    , immortal : Int
+    }
+
+
+{-| Borrow-inference Phase-0 throwaway census (U0.1): a cheap syntactic count
+over the final Mono graph — the Perceus-cost denominator. No solving; a raw
+upper bound with no liveness. Heap-typed = design §7.2 resources (MString,
+MList, MTuple, MRecord, MCustom, MFunction, MVar); MInt/MFloat/MBool/MChar/
+MUnit are unboxed non-resources. `wouldDups` counts EVERY heap-typed variable
+occurrence as a candidate dup; `wouldDrops` counts heap-typed binders
+(node-level MonoTailFunc params + MonoLet MonoDef/MonoTailDef bindings and
+tail-def params); `immortal` counts interned string literals (LStr, S5). This
+is throwaway — superseded by the real B2 census; delete this helper, its
+`Census0` alias, and the `ECO_BORROW_CENSUS0` flag when borrow Phase 2 lands.
+Not exported.
+-}
+borrowCensus0Line : Mono.MonoGraph -> String
+borrowCensus0Line (Mono.MonoGraph { nodes }) =
+    let
+        heapTyped : Mono.MonoType -> Bool
+        heapTyped t =
+            case t of
+                Mono.MInt ->
+                    False
+
+                Mono.MFloat ->
+                    False
+
+                Mono.MBool ->
+                    False
+
+                Mono.MChar ->
+                    False
+
+                Mono.MUnit ->
+                    False
+
+                Mono.MString ->
+                    True
+
+                Mono.MList _ ->
+                    True
+
+                Mono.MTuple _ ->
+                    True
+
+                Mono.MRecord _ ->
+                    True
+
+                Mono.MCustom _ _ _ ->
+                    True
+
+                Mono.MFunction _ _ _ ->
+                    True
+
+                Mono.MVar _ _ ->
+                    True
+
+        countOcc : Mono.MonoType -> Census0 -> Census0
+        countOcc t acc =
+            let
+                a1 =
+                    { acc | heapOcc = acc.heapOcc + 1, wouldDups = acc.wouldDups + 1 }
+            in
+            case t of
+                Mono.MString ->
+                    { a1 | strings = a1.strings + 1 }
+
+                Mono.MList _ ->
+                    { a1 | lists = a1.lists + 1 }
+
+                Mono.MRecord _ ->
+                    { a1 | records = a1.records + 1 }
+
+                Mono.MCustom _ _ _ ->
+                    { a1 | customs = a1.customs + 1 }
+
+                Mono.MFunction _ _ _ ->
+                    { a1 | closures = a1.closures + 1 }
+
+                _ ->
+                    -- MTuple / MVar fold into customs (U0.1 bucketOf)
+                    { a1 | customs = a1.customs + 1 }
+
+        countDropIf : Mono.MonoType -> Census0 -> Census0
+        countDropIf t acc =
+            if heapTyped t then
+                { acc | wouldDrops = acc.wouldDrops + 1 }
+
+            else
+                acc
+
+        classify : Mono.MonoExpr -> Census0 -> Census0
+        classify expr acc =
+            case expr of
+                Mono.MonoVarLocal _ t ->
+                    if heapTyped t then
+                        countOcc t acc
+
+                    else
+                        acc
+
+                Mono.MonoVarGlobal _ _ t ->
+                    if heapTyped t then
+                        countOcc t acc
+
+                    else
+                        acc
+
+                Mono.MonoLet def _ _ ->
+                    case def of
+                        Mono.MonoDef _ e ->
+                            countDropIf (Mono.typeOf e) acc
+
+                        Mono.MonoTailDef _ params e ->
+                            List.foldl (\( _, pt ) a -> countDropIf pt a)
+                                (countDropIf (Mono.typeOf e) acc)
+                                params
+
+                Mono.MonoLiteral (Mono.LStr _) _ ->
+                    { acc | immortal = acc.immortal + 1 }
+
+                _ ->
+                    acc
+
+        tallyNode : Maybe Mono.MonoNode -> Census0 -> Census0
+        tallyNode maybeNode acc =
+            case maybeNode of
+                Just (Mono.MonoDefine body _) ->
+                    MonoTraverse.foldExpr classify acc body
+
+                Just (Mono.MonoTailFunc params body _) ->
+                    MonoTraverse.foldExpr classify
+                        (List.foldl (\( _, pt ) a -> countDropIf pt a) acc params)
+                        body
+
+                Just (Mono.MonoPortIncoming body _) ->
+                    MonoTraverse.foldExpr classify acc body
+
+                Just (Mono.MonoPortOutgoing body _) ->
+                    MonoTraverse.foldExpr classify acc body
+
+                _ ->
+                    acc
+
+        c =
+            Array.foldl tallyNode
+                { heapOcc = 0
+                , wouldDups = 0
+                , wouldDrops = 0
+                , strings = 0
+                , lists = 0
+                , records = 0
+                , customs = 0
+                , closures = 0
+                , immortal = 0
+                }
+                nodes
+    in
+    "borrow census0: heapOcc="
+        ++ String.fromInt c.heapOcc
+        ++ " wouldDups="
+        ++ String.fromInt c.wouldDups
+        ++ " wouldDrops="
+        ++ String.fromInt c.wouldDrops
+        ++ " strings="
+        ++ String.fromInt c.strings
+        ++ " lists="
+        ++ String.fromInt c.lists
+        ++ " records="
+        ++ String.fromInt c.records
+        ++ " customs="
+        ++ String.fromInt c.customs
+        ++ " closures="
+        ++ String.fromInt c.closures
+        ++ " immortal="
+        ++ String.fromInt c.immortal
 
 
 {-| Census lines (2026-07-21, plans/lss-dispatch-value-extraction.md open
