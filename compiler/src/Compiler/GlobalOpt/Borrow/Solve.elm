@@ -44,11 +44,16 @@ type alias Solved =
 solve : Int -> Bool -> Constraints -> Solved
 solve nRes allOwnedFlag cs =
     let
-        -- Stage A: storage classes.
+        -- Stage A: storage classes. (item 24: fold storageEq then flows into the
+        -- same DSU accumulator — union is order-independent for the partition —
+        -- instead of allocating a fresh `storageEq ++ flows` concat per solve.)
         dsuA =
             List.foldl (\( a, b ) d -> Dsu.union a b d)
-                (Dsu.empty (max 1 nRes))
-                (cs.storageEq ++ cs.flows)
+                (List.foldl (\( a, b ) d -> Dsu.union a b d)
+                    (Dsu.empty (max 1 nRes))
+                    cs.storageEq
+                )
+                cs.flows
 
         ownedClass =
             List.foldl
@@ -139,14 +144,18 @@ fixLifetimes flows arr budget =
                             cur =
                                 arrGet b acc
 
-                            new =
-                                L.join cur (arrGet u acc)
+                            ltu =
+                                arrGet u acc
                         in
-                        if L.eq new cur then
+                        -- item 8: join cur ltu == cur iff ltu ⊑ cur, so test
+                        -- `leq ltu cur` (one walk) and only join/allocate when it
+                        -- grows — exactly equivalent to the old `eq (join…) cur`
+                        -- (join is LUB ⇒ new ≥ cur always), on the hottest loop.
+                        if L.leq ltu cur then
                             ( acc, ch )
 
                         else
-                            ( Array.set b new acc, True )
+                            ( Array.set b (L.join cur ltu) acc, True )
                     )
                     ( arr, False )
                     flows
@@ -217,14 +226,16 @@ joinInto target source acc ch =
         cur =
             arrGet target acc
 
-        new =
-            L.join cur (arrGet source acc)
+        src =
+            arrGet source acc
     in
-    if L.eq new cur then
+    -- item 8: only join/allocate when `src` actually grows `cur` (leq = one walk,
+    -- exactly equivalent to the old `eq (join cur src) cur`).
+    if L.leq src cur then
         ( acc, ch )
 
     else
-        ( Array.set target new acc, True )
+        ( Array.set target (L.join cur src) acc, True )
 
 
 

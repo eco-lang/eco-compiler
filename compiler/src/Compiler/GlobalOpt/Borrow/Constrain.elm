@@ -54,7 +54,7 @@ type alias Get =
 
 
 type alias Occ =
-    { occId : Int, binder : Name, path : Path, res : List ResVar }
+    { res : List ResVar }
 
 
 type Reason
@@ -141,72 +141,44 @@ freshR t g =
     let
         ( rty, n ) =
             Rty.freshRTy t g.next
-
-        g1 =
-            poisonErasedIn rty { g | next = n }
     in
-    ( rty, { g1 | stringRes = collectStringRes rty ++ g1.stringRes } )
+    ( rty, harvestFresh rty { g | next = n } )
 
 
-{-| RString head resvars in an RTy (the rcManaged v1 target).
+{-| item 19: one walk over a fresh RTy doing BOTH jobs that used to be separate
+passes over it — (a) collect `RString` head resvars into `stringRes` (rcManaged v1
+target), consed directly (no `collectStringRes ++` intermediate/`concatMap`), and
+(b) boundary-poison each erased `ROpaque` resource Owned (RErased) + bump the
+census (§7.3). `stringRes` is only ever membership-tested, so its order is
+irrelevant; `forcedOwned` folds into the order-independent DSU — so this is
+behavior-preserving.
 -}
-collectStringRes : RTy -> List ResVar
-collectStringRes rty =
+harvestFresh : RTy -> Gen -> Gen
+harvestFresh rty g =
     case rty of
         Rty.RScalar ->
-            []
+            g
 
         Rty.RString r ->
-            [ r ]
-
-        Rty.ROpaque _ ->
-            []
-
-        Rty.RClosure _ ->
-            []
-
-        Rty.RList _ elem ->
-            collectStringRes elem
-
-        Rty.RTuple _ elems ->
-            List.concatMap collectStringRes elems
-
-        Rty.RRecord _ fields ->
-            List.concatMap (\( _, t ) -> collectStringRes t) fields
-
-        Rty.RCustom _ args ->
-            List.concatMap collectStringRes args
-
-
-{-| Erased `MVar _ CEcoValue` values (ROpaque) are boundary-poisoned owned
-(§7.3): force each ROpaque resource Owned (RErased) and bump the census.
--}
-poisonErasedIn : RTy -> Gen -> Gen
-poisonErasedIn rty g =
-    case rty of
-        Rty.RScalar ->
-            g
-
-        Rty.RString _ ->
-            g
-
-        Rty.RClosure _ ->
-            g
+            { g | stringRes = r :: g.stringRes }
 
         Rty.ROpaque r ->
             { g | poisonedByErased = g.poisonedByErased + 1 } |> addForced r RErased
 
+        Rty.RClosure _ ->
+            g
+
         Rty.RList _ elem ->
-            poisonErasedIn elem g
+            harvestFresh elem g
 
         Rty.RTuple _ elems ->
-            List.foldl poisonErasedIn g elems
+            List.foldl harvestFresh g elems
 
         Rty.RRecord _ fields ->
-            List.foldl (\( _, t ) acc -> poisonErasedIn t acc) g fields
+            List.foldl (\( _, t ) acc -> harvestFresh t acc) g fields
 
         Rty.RCustom _ args ->
-            List.foldl poisonErasedIn g args
+            List.foldl harvestFresh g args
 
 
 freshNode : Gen -> ( Int, Gen )
@@ -228,6 +200,16 @@ addFlows ps =
     emit (\c -> { c | flows = ps ++ c.flows })
 
 
+{-| Add each pair in BOTH directions (item 26: `unifyArms` needs bidirectional
+flow between arm results). Conses both directions straight onto `c.flows` in one
+fold, avoiding the `pairs ++ List.map reverse pairs` intermediate list + concat.
+Flow order does not affect the (confluent) fixpoints or the DSU partition.
+-}
+addFlowsBidir : List ( ResVar, ResVar ) -> Gen -> Gen
+addFlowsBidir ps =
+    emit (\c -> { c | flows = List.foldl (\( a, b ) acc -> ( a, b ) :: ( b, a ) :: acc) c.flows ps })
+
+
 addStorageEqs : List ( ResVar, ResVar ) -> Gen -> Gen
 addStorageEqs ps =
     emit (\c -> { c | storageEq = ps ++ c.storageEq })
@@ -236,6 +218,44 @@ addStorageEqs ps =
 addSeeds : List ResVar -> Path -> Gen -> Gen
 addSeeds rs path =
     emit (\c -> { c | seeds = List.map (\r -> ( r, path )) rs ++ c.seeds })
+
+
+{-| item 19c: cons `(r, tag)` for every resvar in an RTy directly onto an
+accumulator in one walk — replaces `List.map (\r -> (r, tag)) (Rty.allRes rty)`
+(an `allRes` concatMap list + a map list). Order within the RTy is irrelevant to
+`seeds`/`paramSeeds` (both fold into resvar-keyed commutative joins).
+-}
+resPairsInto : b -> RTy -> List ( ResVar, b ) -> List ( ResVar, b )
+resPairsInto tag rty acc =
+    case rty of
+        Rty.RScalar ->
+            acc
+
+        Rty.RString r ->
+            ( r, tag ) :: acc
+
+        Rty.ROpaque r ->
+            ( r, tag ) :: acc
+
+        Rty.RClosure r ->
+            ( r, tag ) :: acc
+
+        Rty.RList r elem ->
+            resPairsInto tag elem (( r, tag ) :: acc)
+
+        Rty.RTuple r elems ->
+            List.foldl (\e a -> resPairsInto tag e a) (( r, tag ) :: acc) elems
+
+        Rty.RRecord r fields ->
+            List.foldl (\( _, t ) a -> resPairsInto tag t a) (( r, tag ) :: acc) fields
+
+        Rty.RCustom r args ->
+            List.foldl (\e a -> resPairsInto tag e a) (( r, tag ) :: acc) args
+
+
+addSeedsOfRTy : RTy -> Path -> Gen -> Gen
+addSeedsOfRTy rty path =
+    emit (\c -> { c | seeds = resPairsInto path rty c.seeds })
 
 
 addScope : ResVar -> Path -> Gen -> Gen
@@ -258,11 +278,11 @@ addGet get =
     emit (\c -> { c | gets = get :: c.gets })
 
 
-addOcc : Name -> Path -> List ResVar -> Gen -> Gen
-addOcc binder path res g =
+addOcc : List ResVar -> Gen -> Gen
+addOcc res g =
     emit
         (\c ->
-            { c | occs = { occId = List.length c.occs, binder = binder, path = path, res = res } :: c.occs }
+            { c | occs = { res = res } :: c.occs }
         )
         g
 
@@ -377,7 +397,7 @@ bindParamsRtys params env g =
                         -- α-seed: every resource of param position i carries LParams {i}
                         -- so a result resource that flows from it reads back its coupling.
                         accG2 =
-                            emit (\c -> { c | paramSeeds = List.map (\r -> ( r, i )) (Rty.allRes rty) ++ c.paramSeeds }) accG1
+                            emit (\c -> { c | paramSeeds = resPairsInto i rty c.paramSeeds }) accG1
                     in
                     ( bindVar name rty accEnv, rty :: accRtys, ( accG2, i + 1 ) )
                 )
@@ -426,11 +446,8 @@ constrainExpr env path expr g =
 
                 Just bindRty ->
                     let
-                        ( useRty, g1 ) =
-                            cloneRTy bindRty g
-
-                        pairs =
-                            Rty.zipRTy bindRty useRty
+                        ( useRty, pairs, g1 ) =
+                            cloneRTyF bindRty g
 
                         g2 =
                             addFlows pairs g1
@@ -439,7 +456,9 @@ constrainExpr env path expr g =
                             addStorageEqs (List.drop 1 pairs) g2
 
                         g4 =
-                            addOcc x path (Rty.allRes useRty) g3
+                            -- allRes useRty ≡ the new-resvar (second) components of
+                            -- the pre-order pairs — reuse them, no extra RTy walk.
+                            addOcc (List.map Tuple.second pairs) g3
                     in
                     ( useRty, g4 )
 
@@ -486,7 +505,7 @@ constrainExpr env path expr g =
                     addGet { container = container, out = zipTop eRty outRty, path = path } g2
 
                 g4 =
-                    addSeeds (Rty.allRes eRty) path g3
+                    addSeedsOfRTy eRty path g3
             in
             ( outRty, g4 )
 
@@ -499,7 +518,7 @@ constrainExpr env path expr g =
                     constrainExpr env (Seq n 0 :: path) base g0
 
                 g2 =
-                    addSeeds (Rty.allRes baseRty) path g1
+                    addSeedsOfRTy baseRty path g1
 
                 ( _, g3 ) =
                     constrainFields env n path 1 fes g2
@@ -800,17 +819,31 @@ applyDirectSig sig path argRtys resultRty g =
 
 applyResultModes : RTy -> Sig.SigTy -> Gen -> Gen
 applyResultModes resultRty sigTy g =
-    List.foldl
-        (\( r, m ) acc ->
-            case m of
-                Owned ->
-                    addForced r RConstruct acc
+    -- item 12: index `sigTy.modes` positionally instead of allocating
+    -- `Array.toList modes` + a `map2` pair list. The `idx >= modesLen` stop
+    -- reproduces `List.map2`'s truncation to the shorter of the two.
+    let
+        modesLen =
+            Array.length sigTy.modes
 
-                Borrowed ->
+        go idx rs acc =
+            case rs of
+                [] ->
                     acc
-        )
-        g
-        (List.map2 Tuple.pair (Rty.allRes resultRty) (Array.toList sigTy.modes))
+
+                r :: rest ->
+                    if idx >= modesLen then
+                        acc
+
+                    else
+                        case Array.get idx sigTy.modes of
+                            Just Owned ->
+                                go (idx + 1) rest (addForced r RConstruct acc)
+
+                            _ ->
+                                go (idx + 1) rest acc
+    in
+    go 0 (Rty.allRes resultRty) g
 
 
 applyResultLts : List ( Int, Set Int ) -> List RTy -> RTy -> Gen -> Gen
@@ -863,27 +896,35 @@ applyParamList path argRtys sigTys g =
 
 applyParamModes : RTy -> Sig.SigTy -> Path -> Gen -> Gen
 applyParamModes argRty sigTy path g =
+    -- item 12: one indexed pass over allRes reading `sigTy.modes` via `Array.get`
+    -- — computes both the fold (`g1`) and `anyOwned` (for `forcedHeapOwned`) in a
+    -- single traversal, no `Array.toList` + `map2` pair list. The `idx >= modesLen`
+    -- stop reproduces `List.map2`'s truncation to the shorter list.
     let
-        pairs =
-            List.map2 Tuple.pair (Rty.allRes argRty) (Array.toList sigTy.modes)
+        modesLen =
+            Array.length sigTy.modes
 
-        forcedHeapOwned =
-            isHeapRty argRty && List.any (\( _, m ) -> m == Owned) pairs
+        go idx rs acc anyOwned =
+            case rs of
+                [] ->
+                    ( acc, anyOwned )
 
-        g1 =
-            List.foldl
-                (\( r, m ) acc ->
-                    case m of
-                        Owned ->
-                            addForced r RConstruct acc
+                r :: rest ->
+                    if idx >= modesLen then
+                        ( acc, anyOwned )
 
-                        Borrowed ->
-                            addSeeds [ r ] path acc
-                )
-                g
-                pairs
+                    else
+                        case Array.get idx sigTy.modes of
+                            Just Owned ->
+                                go (idx + 1) rest (addForced r RConstruct acc) True
+
+                            _ ->
+                                go (idx + 1) rest (addSeeds [ r ] path acc) anyOwned
+
+        ( g1, forcedOwned ) =
+            go 0 (Rty.allRes argRty) g False
     in
-    if forcedHeapOwned then
+    if isHeapRty argRty && forcedOwned then
         { g1 | poisoningCallSites = g1.poisoningCallSites + 1 }
 
     else
@@ -918,7 +959,7 @@ applyKernelParams path argRtys pmodes g =
                 g1 =
                     case pm of
                         KernelSigs.PBorrowed ->
-                            addSeeds (Rty.allRes argRty) path g
+                            addSeedsOfRTy argRty path g
 
                         KernelSigs.POwned ->
                             ownEverything argRty g
@@ -1066,7 +1107,7 @@ unifyArms env n path arms resultRty g =
                         Rty.zipRTy armRty resultRty
 
                     acc2 =
-                        addFlows (pairs ++ List.map (\( a, b ) -> ( b, a )) pairs) acc1
+                        addFlowsBidir pairs acc1
                 in
                 ( i + 1, acc2 )
             )
@@ -1143,6 +1184,114 @@ cloneRTy rty g =
                     cloneList args g1
             in
             ( Rty.RCustom r args2, g2 )
+
+
+{-| item 11: like `cloneRTy` but also returns the pre-order `(oldRes, newRes)`
+pairs — i.e. `zipRTy bindRty useRty` — computed during the single clone walk, so
+the `MonoVarLocal` hot path drops the separate `zipRTy` and `allRes` traversals
+(and the `++`/`concatMap` intermediates those build). Pairs are root-first
+pre-order, matching `zipRTy`, so `List.drop 1 pairs` still drops the root pair.
+-}
+cloneRTyF : RTy -> Gen -> ( RTy, List ( ResVar, ResVar ), Gen )
+cloneRTyF rty g =
+    case rty of
+        Rty.RScalar ->
+            ( Rty.RScalar, [], g )
+
+        Rty.RString old ->
+            let
+                ( r, g1 ) =
+                    fresh g
+            in
+            ( Rty.RString r, [ ( old, r ) ], { g1 | stringRes = r :: g1.stringRes } )
+
+        Rty.ROpaque old ->
+            let
+                ( r, g1 ) =
+                    fresh g
+            in
+            ( Rty.ROpaque r, [ ( old, r ) ], g1 )
+
+        Rty.RClosure old ->
+            let
+                ( r, g1 ) =
+                    fresh g
+            in
+            ( Rty.RClosure r, [ ( old, r ) ], g1 )
+
+        Rty.RList old elem ->
+            let
+                ( r, g1 ) =
+                    fresh g
+
+                ( elem2, elemPairs, g2 ) =
+                    cloneRTyF elem g1
+            in
+            ( Rty.RList r elem2, ( old, r ) :: elemPairs, g2 )
+
+        Rty.RTuple old elems ->
+            let
+                ( r, g1 ) =
+                    fresh g
+
+                ( elems2, elemPairs, g2 ) =
+                    cloneListF elems g1
+            in
+            ( Rty.RTuple r elems2, ( old, r ) :: elemPairs, g2 )
+
+        Rty.RRecord old fields ->
+            let
+                ( r, g1 ) =
+                    fresh g
+
+                ( fields2, fieldPairs, g2 ) =
+                    cloneFieldsF fields g1
+            in
+            ( Rty.RRecord r fields2, ( old, r ) :: fieldPairs, g2 )
+
+        Rty.RCustom old args ->
+            let
+                ( r, g1 ) =
+                    fresh g
+
+                ( args2, argPairs, g2 ) =
+                    cloneListF args g1
+            in
+            ( Rty.RCustom r args2, ( old, r ) :: argPairs, g2 )
+
+
+cloneListF : List RTy -> Gen -> ( List RTy, List ( ResVar, ResVar ), Gen )
+cloneListF rtys g =
+    case rtys of
+        [] ->
+            ( [], [], g )
+
+        x :: rest ->
+            let
+                ( x2, xp, g1 ) =
+                    cloneRTyF x g
+
+                ( rest2, rp, g2 ) =
+                    cloneListF rest g1
+            in
+            ( x2 :: rest2, xp ++ rp, g2 )
+
+
+cloneFieldsF : List ( Name, RTy ) -> Gen -> ( List ( Name, RTy ), List ( ResVar, ResVar ), Gen )
+cloneFieldsF fields g =
+    case fields of
+        [] ->
+            ( [], [], g )
+
+        ( name, x ) :: rest ->
+            let
+                ( x2, xp, g1 ) =
+                    cloneRTyF x g
+
+                ( rest2, rp, g2 ) =
+                    cloneFieldsF rest g1
+            in
+            ( ( name, x2 ) :: rest2, xp ++ rp, g2 )
 
 
 cloneList : List RTy -> Gen -> ( List RTy, Gen )
@@ -1323,19 +1472,52 @@ isHeapRty rty =
 
 
 ownEverything : RTy -> Gen -> Gen
-ownEverything rty g =
-    addForcedAll (Rty.allRes rty) RConstruct g
+ownEverything =
+    forceAllOf RConstruct
+
+
+{-| item 19 (extension): force every resvar in an RTy to Owned with `reason`, by
+walking the RTy directly instead of `addForcedAll (Rty.allRes rty)` which
+materialises an `allRes` list (concatMap). Used on the ~8 `ownEverything` sites
+plus `ownArgs`/`poison`. `forcedOwned` is order-independent.
+-}
+forceAllOf : Reason -> RTy -> Gen -> Gen
+forceAllOf reason rty g =
+    case rty of
+        Rty.RScalar ->
+            g
+
+        Rty.RString r ->
+            addForced r reason g
+
+        Rty.ROpaque r ->
+            addForced r reason g
+
+        Rty.RClosure r ->
+            addForced r reason g
+
+        Rty.RList r elem ->
+            forceAllOf reason elem (addForced r reason g)
+
+        Rty.RTuple r elems ->
+            List.foldl (forceAllOf reason) (addForced r reason g) elems
+
+        Rty.RRecord r fields ->
+            List.foldl (\( _, t ) acc -> forceAllOf reason t acc) (addForced r reason g) fields
+
+        Rty.RCustom r args ->
+            List.foldl (forceAllOf reason) (addForced r reason g) args
 
 
 ownArgs : List RTy -> Gen -> Gen
 ownArgs rtys g =
-    List.foldl (\rty acc -> addForcedAll (Rty.allRes rty) RConstruct acc) g rtys
+    List.foldl ownEverything g rtys
 
 
 poison : RTy -> Reason -> (Gen -> Gen) -> Gen -> Gen
 poison rty reason bump g =
     if isHeapRty rty then
-        bump (addForcedAll (Rty.allRes rty) reason g)
+        bump (forceAllOf reason rty g)
 
     else
         g

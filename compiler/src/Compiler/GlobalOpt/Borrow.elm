@@ -116,7 +116,21 @@ maxIterConst =
 
 
 run : Config.BorrowConfig -> Mono.MonoGraph -> ( Mono.MonoGraph, BorrowStats )
-run _ graph =
+run cfg graph =
+    if not (cfg.report || cfg.validate || cfg.reify /= Config.ROff) then
+        -- The census/oracle is the ONLY product of the analysis (reify=ROff leaves
+        -- the graph untouched), and it is consumed only when `report`/`validate` is
+        -- on. When neither is, running `solveSigs` + the whole-graph `censusNode`
+        -- fold (which re-invokes constrainDef+Solve.solve on every def) is pure dead
+        -- work — skip it entirely. (perf item 1)
+        ( graph, emptyStats )
+
+    else
+        runCensus graph
+
+
+runCensus : Mono.MonoGraph -> ( Mono.MonoGraph, BorrowStats )
+runCensus graph =
     let
         (Mono.MonoGraph { nodes, registry, lssMemberOrigins }) =
             graph
@@ -615,7 +629,8 @@ countPoisonedParams table =
         (\maybeSig acc ->
             case maybeSig of
                 Just sig ->
-                    acc + List.sum (List.map (\st -> Array.foldl (\m a -> ownedInc m a) 0 st.modes) sig.params)
+                    -- item 27: fold param sig-tys directly (no intermediate List.map list)
+                    List.foldl (\st a -> Array.foldl ownedInc a st.modes) acc sig.params
 
                 Nothing ->
                     acc
@@ -694,10 +709,10 @@ mergeDef table facts node stats =
             List.length ownedScoped
 
         stringSet =
-            Set.fromList g.stringRes
+            List.foldl BitSet.insertGrowing BitSet.empty g.stringRes
 
         wouldFree =
-            countWhere (\r -> Set.member r stringSet) ownedScoped
+            countWhere (\r -> BitSet.member r stringSet) ownedScoped
 
         -- precise borrow-lifetime depth (Stage D ltP, not the ltA approximation).
         maxExt =
@@ -723,11 +738,11 @@ mergeDef table facts node stats =
         -- position (LParams). This is an UPPER bound — it does not chase
         -- transitive store-into-escaping-container escape.
         resultResSet =
-            Set.fromList (Rty.allRes da.resultRty)
+            List.foldl BitSet.insertGrowing BitSet.empty (Rty.allRes da.resultRty)
 
         escapesR r =
             not (Set.isEmpty (Solve.alphaOf r solved))
-                || Set.member r resultResSet
+                || BitSet.member r resultResSet
                 || (case Solve.ltPOf r solved of
                         LParams _ ->
                             True
