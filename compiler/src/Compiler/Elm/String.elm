@@ -42,41 +42,35 @@ Handles unicode code points and escape sequences.
 -}
 fromChunks : String -> List Chunk -> String
 fromChunks src chunks =
-    writeChunks src "" 0 chunks
+    -- Collect the pieces in order and join once with `String.concat`, rather
+    -- than a left-to-right `mba ++ chunk` fold. The fold had two encoding-
+    -- independent costs: after the first non-ASCII chunk every later append
+    -- widened the (now UTF-16) accumulator, and because each append is below
+    -- the 32 KiB flatten limit it memcpied the whole accumulator — O(n²) for a
+    -- literal assembled a couple of characters at a time. `String.concat` has
+    -- all-UTF-8 and rope arms, so it pays neither. (`writeChunks` accumulates
+    -- reversed and is tail-recursive; the former `offset` was dead — only
+    -- threaded, never read — so it is gone.)
+    String.concat (List.reverse (writeChunks src [] chunks))
 
 
-writeChunks : String -> String -> Int -> List Chunk -> String
-writeChunks src mba offset chunks =
+writeChunks : String -> List String -> List Chunk -> List String
+writeChunks src acc chunks =
     case chunks of
         [] ->
-            mba
+            acc
 
         chunk :: otherChunks ->
             case chunk of
                 Slice ptr len ->
-                    let
-                        newOffset : Int
-                        newOffset =
-                            offset + len
-                    in
-                    writeChunks src (mba ++ String.slice ptr (ptr + len) src) newOffset otherChunks
+                    writeChunks src (String.slice ptr (ptr + len) src :: acc) otherChunks
 
                 Escape word ->
-                    let
-                        newOffset : Int
-                        newOffset =
-                            offset + 2
-                    in
-                    writeChunks src (mba ++ "\\" ++ String.fromChar word) newOffset otherChunks
+                    writeChunks src (String.fromChar word :: "\\" :: acc) otherChunks
 
                 CodePoint code ->
                     if code < 0xFFFF then
-                        let
-                            newOffset : Int
-                            newOffset =
-                                offset + 6
-                        in
-                        writeChunks src (mba ++ writeCode code) newOffset otherChunks
+                        writeChunks src (writeCode code :: acc) otherChunks
 
                     else
                         let
@@ -90,12 +84,8 @@ writeChunks src mba offset chunks =
                             lowCode : String
                             lowCode =
                                 writeCode (lo + 0xDC00)
-
-                            newOffset : Int
-                            newOffset =
-                                offset + 12
                         in
-                        writeChunks src (mba ++ hiCode ++ lowCode) newOffset otherChunks
+                        writeChunks src (lowCode :: hiCode :: acc) otherChunks
 
 
 writeCode : Int -> String

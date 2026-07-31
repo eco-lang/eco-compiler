@@ -352,15 +352,21 @@ eqLayoutFields xs ys =
 
 {-| A small, DEPTH-CAPPED layout fingerprint for bucketing (never a full
 key): constructors and arities only, annotations ignored, subtrees beyond
-the cap collapse to "…". Bounded size regardless of type size, so it is
+the cap collapse to "~". Bounded size regardless of type size, so it is
 safe to build once per closure instance and once per candidate call site.
 Bucket collisions are resolved by a full `eqLayout` confirm — the
 fingerprint only has to be RIGHT, not injective.
+
+The marker is a single opaque ASCII token (`~`, which cannot occur elsewhere
+in the key grammar `I F B C S U V L( T<n>( R<n>( X<name><n>( A<n>( -> , )`).
+It was formerly U+2026 (`…`), a non-ASCII code point that forced the whole
+key to UTF-16 and made every subsequent ASCII fragment append widen — see
+`utf8-widen-cliff-solver-2026-07-31.md`. ASCII keeps the append path UTF-8.
 -}
 shallowLayoutKey : Int -> MonoType -> String
 shallowLayoutKey depth monoType =
     if depth <= 0 then
-        "…"
+        "~"
 
     else
         case monoType of
