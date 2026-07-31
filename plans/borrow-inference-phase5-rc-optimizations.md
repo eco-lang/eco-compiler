@@ -1,6 +1,21 @@
 # Borrow Inference — Phase 5: RC Optimization Track (B4 + B5)
 
-Status: IMPLEMENTATION-READY (v2, deep-dive pass). Parent design:
+> **Superseded for sequencing (2026-07-31):** the active optimization
+> roadmap is the tier series `plans/opt-tier{1..4}-*.md`; this track is
+> wrapped by **tier 3** (`opt-tier3-rc-runtime.md`), which restates the
+> reactivation trigger. This file remains THE implementation spec for
+> B4/B5; do not take execution order from it.
+
+Status: IMPLEMENTATION-READY (v2, deep-dive pass) — **DEFERRED TO v2**
+(2026-07-31): G1 took Strategy B (stop at the analysis oracle,
+`plans/borrow-inference-phase1.5-analysis-oracle-track.md` §2), and the
+2026-07-31 full-precision census **confirms** the deferral
+(`design_docs/borrow-inf-census.md` §16: `wouldFree=13,869` — the v1
+string-reclaim surface — stays single-digit-thousands; fact 10's empty
+RC-1 candidate set stands). **Re-activation trigger:** phase-6 item 2
+graduation (arrays into `rcManaged`). Census §17.2 identifies stack/scalar
+promotion (phase-6 NEW item 8) as the higher-value v1 lever consuming the
+same oracle. Parent design:
 `design_docs/globalopt/borrow-inference-design.md` (v2) §14–§17, §19.3;
 milestones B4/B5. Series: `plans/borrow-inference-phase{0..6}-*.md`.
 
@@ -393,6 +408,11 @@ gate. No pipeline byte-effect when `borrow.validate=off`.
 
 ## U5.5 — Old-gen reclaim + `DropFree` (B5a — the v1 payoff)
 
+**Census sizing (2026-07-31):** the B5a reclaim opportunity is
+`wouldFree = 13,869` owned `rcManaged` drops on the self-compile census
+(`design_docs/borrow-inf-census.md` §16) — single-digit-thousands,
+consistent with the §2d ceiling verdict that motivated the deferral.
+
 - **`eco_rc_reclaim(Header* h)`** in `RefCount.cpp` per §16.3, dispatch
   on residency (fact 8): **nursery** (`Allocator::isInNursery`) → no-op
   (the copying collector reclaims it free at the next minor GC; the zero
@@ -427,7 +447,13 @@ nursery pinning or a scoped remembered set). Kept as a numbered unit to
 preserve the series' IDs and to record the S1–S6 conditions (§17) that
 the v2 arrays plan must satisfy; the `updateCopiedHeapFields` census
 counter (§13) and per-field dup selectors (§22.4) are its hard
-prerequisites. **No code, no gate here** — the B5 payoff is U5.5.
+prerequisites. The kernel audit (`design_docs/borrow-inf-census.md` §15.2,
+2026-07-27 correction) re-confirms fact 10 and adds one genuine future B4
+lever: `StringOps::append`'s over-32 KiB `makeRope` path RETAINS both
+operands (a runtime size decision no static sig can discriminate), so in
+an RC world `makeRope` could **dup** its operands instead of consuming
+them (caller passes borrowed; RC bump only on the rope path) — recorded
+for the v2 plan. **No code, no gate here** — the B5 payoff is U5.5.
 
 ## U5.7 — Benchmark verdict
 

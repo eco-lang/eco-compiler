@@ -1,6 +1,16 @@
 # Borrow Inference — Phase 1.5: The Analysis-Oracle Track (Strategy B)
 
-**Status:** TRACK / COORDINATION plan. This is **not** a new implementation
+> **Superseded for sequencing (2026-07-31):** the active optimization
+> roadmap is the tier series `plans/opt-tier{1..4}-*.md` (impact-ordered);
+> the phase-6 items 8/9 this track graduated now live in tier 1. This file
+> remains the track's as-built record; do not take execution order from it.
+
+**Status:** TRACK / COORDINATION plan — **COMPLETE (2026-07-31)**. B0→B3.5
+are shipped and gated, plus the beyond-plan precision items (`resultLts`
+arg-return coupling and Stage-D precise `ltP`); the full-precision census is
+published and the Strategy-B verdict is **confirmed**
+(`design_docs/borrow-inf-census.md` §16). G-B is met (§6); the standing
+backlog graduates to phase-6 items 8/9 (§7). This is **not** a new implementation
 spec — it is the umbrella that ties the analysis-half milestones together
 under one owner, adds the cross-cutting concerns that live in no single
 phase plan, and records the scope decision (Strategy B) and its exit gate.
@@ -87,6 +97,14 @@ graph-inert, engine-independent, and the prerequisite for the version that
 
 This is **not "no" to RC** — it is "not yet," with an explicit trigger (§7).
 
+**Decision FINAL (2026-07-31), no longer preliminary.** The B2-final
+full-precision census — **32% borrowed**, `wouldFree = 13,869`
+(`design_docs/borrow-inf-census.md` §16) — **confirms** the Phase-0 ceiling:
+the v1 string-RC reclaim surface stays single-digit-thousands, so the
+analysis-only scope stands. This discharges **D0.6** — the design said the
+B2 census, not the Phase-0 ceiling, is the deciding evidence, and that
+evidence is now in.
+
 ---
 
 ## 3. The consolidated deliverable: an inert oracle + census
@@ -112,6 +130,12 @@ This posture is identical to the Phase-0 census I already shipped
 Phase-0 census is the throwaway precursor; B2 replaces it with the real
 per-def analysis and the flag/field are deleted then.
 
+> **As-built note (2026-07-31): that deletion is still OUTSTANDING.** The
+> throwaway `ECO_BORROW_CENSUS0` flag/fold survives — `Compiler/Eco/Config.elm`
+> (`borrowCensus0`), `Builder/Eco/Config.elm` (`applyBorrowCensus0Override`,
+> ~line 369–374), and the `Builder/Generate.elm` fold. Recorded here as an
+> open cleanup item, not performed.
+
 ### T-DECISION-1 — shipped default posture
 
 Ship `borrow.enabled = True, borrow.reify = ROff` **as the default** iff
@@ -123,6 +147,14 @@ as-built section at B3.5. (Rationale: an always-inert oracle is only worth
 defaulting on if downstream consumers or standing census value justify the
 per-build analysis cost; until a consumer lands, off-by-default + report
 flag captures the census value at zero standing cost.)
+
+**RESOLVED (2026-07-31): ship OFF by default.** The always-run analysis
+measures **~15% of report-on Stage-7a wall** (compute-bound; perf-tune-loop
+measurements, 2026-07-29/30) — far over the §6 "≤3% cumulative" always-on
+wall gate, so the off-by-default posture follows this decision's own
+criterion. As built: `borrow.enabled` defaults **False**; opt-in via
+`ECO_BORROW=1` / `ECO_BORROW_REPORT=1` (report also enables). The census
+value is captured at **zero standing cost** via the report flag.
 
 ---
 
@@ -142,6 +174,8 @@ detail is in the owning plan (§0 table). Dependency order in §5.
   **Gate:** `elm-tests` green incl. the exhaustive lattice battery + DSU
   laws (dev-loop `--fuzz 200`); byte-identity trivially preserved (nothing
   wired).
+  **Gate ✅ MET (2026-07-26):** 28/28 Borrow units at `--fuzz 200`
+  (`design_docs/borrow-inf-census.md` §9).
 
 - **B2 — intra-def analysis + census.** `borrow-inference-phase2-*.md`.
   Wire `Borrow/{Rty,Constrain,Solve}.elm` + `Borrow.elm` as GlobalOpt
@@ -150,6 +184,9 @@ detail is in the owning plan (§0 table). Dependency order in §5.
   **Gate:** emitted-MLIR **byte-identical** flag-on vs off (the load-bearing
   graph-inertness gate); E2E green; first real census published here;
   wall ≤3% with majors recorded; elm-aws-codegen canary linear.
+  **Gate ✅ MET (2026-07-26):** byte-identical MLIR flag-on vs off
+  (13,007,671 B); E2E 1636/1636; first real census published — **20%
+  borrowed** (860,962 of 4,159,795) (`design_docs/borrow-inf-census.md` §9).
 
 - **B3 — interprocedural signatures.** `borrow-inference-phase3-*.md`.
   `Borrow/Sig.elm` (per-`SpecId` `BorrowSig` via SCC fixpoint) +
@@ -157,6 +194,11 @@ detail is in the owning plan (§0 table). Dependency order in §5.
   §3). Calls stop being all-owned poison. `BORROW_005` test.
   **Gate:** still byte-identical (analysis-only); `sccFixpointBailouts=0`;
   `sigMissReads=0`; census delta vs B2 recorded; wall ≤3%.
+  **Gate ✅ MET (2026-07-26):** `--text-mlir` byte-identity (119,553,624 B —
+  note the default bytecode `--output` is NOT byte-canonical; the identity
+  gate must use `--text-mlir`); **26% borrowed**; `sccBailouts=0`,
+  `maxSccIter=3` (design predicted 2–3: met), `sigMissReads=0`
+  (`design_docs/borrow-inf-census.md` §10).
 
 - **B3.5 — LSS handshake.** `borrow-inference-phase4-*.md`.
   `Borrow/LssFacts.elm` + `MonoGraph.lssMemberOrigins`; route
@@ -164,6 +206,21 @@ detail is in the owning plan (§0 table). Dependency order in §5.
   **Gate:** subst engine **byte-identical to B3** (hard inert gate);
   solver leg E2E green; PoisonCause census published; wall ≤3%.
   **Completing B3.5 = the analysis track is code-complete.**
+  **Gate ✅ MET (2026-07-26):** `--text-mlir` identical (119,951,614 B);
+  **27% borrowed**, closure poison 116,868 → 99,486 = **−14.9%** of B3's
+  closure poison (> the predicted Run-M 13.2% fast-routed share); units
+  29/29; **U4.1 standalone-member routing landed too** (`closureRouted`
+  11,109 → 11,627) (`design_docs/borrow-inf-census.md` §11–§11a).
+
+**Beyond-plan precision (2026-07-26; `design_docs/borrow-inf-census.md`
+§13–§14):** two items no milestone above scheduled also landed —
+**`resultLts` arg-return coupling** (α-seeding + forward α-propagation +
+readback + call-site application, the two conservative "force result owned"
+rules removed; the biggest single recovery, **27% → 32% borrowed**) and
+**Stage-D precise `ltP`** (lifetime-only, borrowed stays 32%;
+`ltpRefined = 101,011` at the definitive re-run, §16). With these,
+**analysis precision is complete** (§14): every analysis-precision item the
+borrow-inference plans specify is implemented.
 
 ---
 
@@ -211,8 +268,19 @@ Consolidated so it is stated once, not re-derived per phase:
   measurement run (Phase-0 lesson).
 
 **Track exit gate (G-B):** B3.5 shipped + all four milestone gates green +
-`BorrowStats` census published on the full corpus + wall gate met + the
-`Borrow/Check.elm` certifying checker green + T-DECISION-1 recorded.
+`BorrowStats` census published on the full corpus + wall gate met +
+T-DECISION-1 recorded.
+
+> **Amendment (2026-07-31):** the gate originally also listed "the
+> `Borrow/Check.elm` certifying checker green" — **struck** as an internal
+> scope inconsistency. `Check.elm` is a U5.2 (Phase-5 / B4) deliverable,
+> out of Strategy-B scope, and does not exist; under `reify = ROff` there
+> are **zero** emitted RC ops to certify — the byte-identity
+> graph-inertness gate above IS the certifying evidence.
+
+**G-B: MET (2026-07-31).** All milestone gates green (§4); the
+full-precision census published (`design_docs/borrow-inf-census.md` §16);
+the wall gate resolved via T-DECISION-1's off-by-default posture (§3).
 
 ---
 
@@ -239,6 +307,23 @@ stated trigger (design §18 B6, `borrow-inference-phase6-v2-backlog.md`):
 If neither trigger fires, the track's terminal state (inert oracle +
 census) is the shipped end state and this plan closes.
 
+**Outcome (2026-07-31): B is done; NO escalation trigger fired.**
+Arrays/lists have not entered `rcManaged`, and no concentrated string
+pocket surfaced — the kernel audit (`design_docs/borrow-inf-census.md`
+§15.2) shows **genuine owners dominate** the conservatively-poisoned mass
+(~78%: `List.cons`, `Utils.append`, `Scheduler.*`). B4/B5 stays deferred
+to v2.
+
+The census also produced a **third finding the dichotomy above did not
+anticipate**: the largest v1-viable lever is **lateral** — stack/scalar
+promotion of `nonEscapingOwned = 1,961,771` (**46.7%** of resources)
+non-escaping owned intermediates, consuming the oracle with **no RC
+runtime** at all (§16/§17.2). It is graduated to the phase-6 backlog as
+**item 8** (stack/scalar promotion; prerequisite = the storage-transitive
+escape closure) and **item 9** (`KernelSigs` allowlist growth, which
+cross-feeds it). The track closes with that standing backlog;
+`design_docs/borrow-inf-census.md` §17 is the plan-review record.
+
 ---
 
 ## 8. Track deliverable — the oracle-consumer surface (new here)
@@ -251,14 +336,23 @@ consumers are opportunistic and each is its own future plan:
 - **Census-as-sizing** (immediate, in-scope): the `BorrowStats` counters
   are the source of truth for every B6 v2 go/no-go. This is the one
   consumer B *must* deliver — it is the census, already in B2's scope.
+  **DELIVERED (2026-07-31)** — the definitive census + the plan review it
+  drove are `design_docs/borrow-inf-census.md` §16/§17.
 - **Uniqueness-informed kernel specialization** (future/opportunistic):
   in-place-when-unique variants of individual kernels can read the oracle
-  without any RC machinery.
+  without any RC machinery. *Fed by phase-6 item 9's `KernelSigs`
+  whitelist growth (the §15.2 reader worklist).*
 - **Fusion / cons-reduction legality** (future): the sharing facts can
   inform the fusion work tracked in the cons-reduction investigation.
-- **Escape / value-aggregate lowering** (future): the design positions
-  borrow analysis as superseding a separate escape analysis (DS-series);
-  the oracle is the substrate.
+- **Escape / value-aggregate lowering — now the evidence-backed LEAD
+  consumer (2026-07-31):** the oracle **is** an escape analysis — the
+  predicate reads straight off `Solved`:
+  `notEscape(r) = reifiedOwned(r) ∧ α(r)=∅ ∧ r ∉ resultResvars ∧ ltP(r) ≠ LParams`
+  (`design_docs/borrow-inf-census.md` §15.1) — and it sizes the oracle's
+  single largest v1-viable opportunity: `nonEscapingOwned = 1,961,771`
+  (**46.7%** of resources, **~140×** the `wouldFree` string-RC target by
+  count; an upper bound pending the storage-transitive escape closure).
+  Graduated to **phase-6 item 8** (stack/scalar promotion).
 
 Contract for consumers: read facts through the `Borrow.elm` readback API
 (`reifiedMode`/`ltAOf`/`coercionPoints` + `BorrowSig`s); **never** assume an

@@ -1,8 +1,22 @@
 # Borrow Inference — Phase 1: Analysis Foundations (B1)
 
+> **Superseded for sequencing (2026-07-31):** the active optimization
+> roadmap is the tier series `plans/opt-tier{1..4}-*.md` (impact-ordered).
+> This file remains the implementation spec / as-built record for its
+> milestone; do not take execution order from it.
+
 Status: IMPLEMENTATION-READY (v2, deep-dive pass). Parent design:
 `design_docs/globalopt/borrow-inference-design.md` (v2) §6, §7.4, §19.1;
 milestone B1. Series: `plans/borrow-inference-phase{0..6}-*.md`.
+
+> **As-built (2026-07-31): B1 shipped 2026-07-26.** `Borrow/Lifetime.elm`
+> + `Borrow/Dsu.elm` landed with `SkelFuzz`/`LifetimeTest`/`DsuTest`;
+> gate met **28/28** at `--fuzz 200` (exhaustive lattice battery vs the
+> brute-force reference arbiter + fuzzed lattice laws + pinned
+> regressions + DSU model test). The downstream track completed through
+> B3.5 + `resultLts` + Stage-D at **32%** provably-borrowable
+> (`design_docs/borrow-inf-census.md` §9–§16). No census-driven changes
+> to this plan's content.
 
 **Dependencies:** none (parallel with Phase 0). **Feeds:** Phase 2.
 **Gates:** elm-tests green. No pipeline wiring — these are two leaf

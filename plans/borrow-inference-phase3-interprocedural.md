@@ -1,5 +1,10 @@
 # Borrow Inference — Phase 3: Interprocedural Signatures (B3)
 
+> **Superseded for sequencing (2026-07-31):** the active optimization
+> roadmap is the tier series `plans/opt-tier{1..4}-*.md` (impact-ordered).
+> This file remains the implementation spec / as-built record for its
+> milestone; do not take execution order from it.
+
 Status: IMPLEMENTATION-READY (v2, deep-dive pass). Parent design:
 `design_docs/globalopt/borrow-inference-design.md` (v2) §11, §12;
 milestone B3. Series: `plans/borrow-inference-phase{0..6}-*.md`.
@@ -162,6 +167,16 @@ supply.
   the caller-side consumer only *adds* coupling flows (§8.3), so a
   superset is the conservative direction. Flagged as an open question
   for design ratification.
+  **RESOLVED (as-built, 2026-07-26):** superseded — B3 shipped
+  `resultLts = []` (deferred), and the coupling was subsequently
+  implemented (2026-07-26) via a dedicated **α mechanism** rather than
+  a lifetime readback: α-seeding of param positions (`paramSeeds`) +
+  forward α-propagation (bind→use, the opposite direction from
+  lifetimes) + `resultLtsOf` readback + call-site application, with the
+  two conservative "force result owned" rules REMOVED (ownership is now
+  demand-driven). Lifted borrowed **27% → 32%** — the biggest single
+  recovery (`design_docs/borrow-inf-census.md` §13). The ltA-vs-ltP
+  deferral is discharged.
   - **Phase 2 API dependency:** this unit (and U3.3's BORROW_005 test)
     read approximate lifetimes via Phase 2 U2.3's already-exported
     `Solve.ltAOf : ResVar -> Solved -> Lifetime.Lifetime` (Phase 2's
@@ -371,6 +386,18 @@ lookup : ( Name, Name ) -> KernelSig
   and a miss counter per defaulted key with heap-typed args
   (`kernelSigHits`/`kernelDefaultedHeapCalls`) — the evidence stream for
   growing the list.
+  **As-built (2026-07-31):** this evidence stream is now a standing
+  backlog item — phase-6 NEW item 9 (KernelSigs allowlist growth). The
+  kernel audit (`design_docs/borrow-inf-census.md` §15.2) shows **~78%**
+  of the 13,230 defaulted sites are **genuine owners** —
+  `List.cons` = 4,175 (stores both args); `Utils.append` = 3,262 (an
+  owner for String AND List: the over-32 KiB path calls `makeRope`,
+  which RETAINS both operands — a runtime size decision a static sig
+  cannot discriminate, so the sound sig is `POwned`); `Scheduler.*`
+  ≈ 2,800 (wraps into Task/Process) — leaving a recoverable reader
+  slice of **~2–3K sites**. The table MUST stay a whitelist
+  (unknown ⇒ owned); growing it cross-feeds escape analysis (borrowed
+  args become stack-alloc candidates).
 
 ## U3.3 — B3 gate run
 
@@ -426,6 +453,36 @@ lookup : ( Name, Name ) -> KernelSig
 E2E + byte-identity + elm-tests green · poisonedParams census delta
 recorded · BORROW_005 scaffold green (positive + negative control) ·
 `sccFixpointBailouts = 0` · wall ≤3% total · canary passes.
+
+## As-built — census delta vs B2 (B3 shipped 2026-07-26)
+
+B3 shipped 2026-07-26; full record in `design_docs/borrow-inf-census.md`
+§10, current values §16. The census delta U3.3 reserves:
+
+- **borrowed 20% → 26%** — the headline boundary recovery: direct and
+  kernel call args stop being all-owned poison.
+- `poisonedByKernel` 26,988 → 23,564 — the audited kernel table
+  recovered read-only args (`kernelSigHits = 5,252` at ship);
+  `kernelDefaultedHeapCalls = 13,113` (the allowlist-growth evidence
+  stream, live).
+- `poisonedParams = 135,278` / `poisoningCallSites = 46,621` — now live.
+- **Predictions ALL MET:** `sccBailouts = 0` (the as-built name of this
+  plan's `sccFixpointBailouts`), `maxSccIter = 3` (design predicted
+  2–3), `sigMissReads = 0` — the fixpoint converged cleanly and the
+  reverse-topological ordering held (no premature reads).
+- **Re-attribution caveat:** `poisonedByClosure` ROSE 45,286 → 116,868
+  because B3 explicitly classifies non-saturated global calls (PAP
+  creation) as closure-boundary poison that B2 silently owned — NOT a
+  regression; net ownership only improved (borrowed ↑).
+- **Gates:** `--text-mlir` byte-identity PASS (both 119,553,624 B) —
+  the default bytecode `--output` is NOT byte-canonical, so the
+  identity gate must use `--text-mlir`, as this plan specified; B1 +
+  BORROW_005 units 29/29 (`--fuzz 50`); full E2E 1636/1636; full
+  `elm-tests` 13,037 pass / 12 fail (all pre-existing POST_010, none
+  borrow-related).
+- **Current values (2026-07-31 re-run, census doc §16):**
+  `kernelSigHits = 5,312`, `kernelDefaultedHeapCalls = 13,230`,
+  `poisonedParams = 133,231` — stable.
 
 ## References
 

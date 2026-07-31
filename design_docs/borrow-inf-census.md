@@ -910,3 +910,193 @@ directly grows §15.1's opportunity.
 **Files:** `Borrow.elm` (`ownedResources`/`nonEscapingOwned`/`kernelDefaultedNames`
 + `renderKernelAudit`), `Borrow/Constrain.elm` (`Gen.kernelDefaultedNames` tally
 at the kernel-default site). Graph-inert; census-only.
+
+---
+
+## 16. Full census re-run (2026-07-31) — analysis stable at 32% borrowed
+
+The complete Strategy-B oracle census was re-run on the standing self-compile
+workload (native `eco-compiler` compiling `Terminal/Main.elm`, `--optimize`,
+solver/all-keyed, `ECO_BORROW_REPORT=1`) after the 2026-07-27→07-30 refinements
+to `Borrow/{Solve,Constrain}.elm` + `Borrow.elm`. **Result: the census is
+stable — every counter is within noise of the last recorded (§14/§15) values,
+and provably-borrowable holds at 32%.** The post-07-26 source edits did not move
+the analysis. Run: EXIT=0, wall **4:04.15** (user 241.5 s), max RSS 6.64 GB.
+
+### Full census line (current, definitive)
+
+```
+borrow: defs=31375 resources=4197041 borrowed=1367828 (32%) wouldDup=207167
+        wouldDrop=112636 wouldFree=13869 poisonedByClosure=99530 closureRouted=11640
+        poisonedByErased=7323 poisonedByKernel=23802 poisonedParams=133231
+        poisoningCallSites=60537 sigMissReads=0 kernelSigHits=5312
+        kernelDefaultedHeapCalls=13230 sccBailouts=0 maxSccIter=3
+        capturesForcedOwned=22986 nonVarOwnedFresh=38200 nonVarBorrowedProducer=12073
+        updateCopiedHeapFields=5743 immortal=11831 maxExt=90 ltpRefined=101011
+        ownedResources=2829213 nonEscapingOwned=1961771
+```
+
+### Stability vs last recorded
+
+| counter | prior (source) | current | Δ | reading |
+|---|---:|---:|---:|---|
+| **borrowed %** | 32% (§14) | **32%** | — | steady — the headline; full precision holds |
+| borrowed count | — | 1,367,828 | — | first recorded absolute |
+| resources | 4,197,948 (§15) | 4,197,041 | −907 | noise |
+| wouldDup | 210,020 (§10) | 207,167 | −2,853 | noise |
+| wouldDrop | 112,635 (§15) | 112,636 | +1 | noise |
+| **wouldFree** (v1 string-RC target) | 14,031 (§10) | 13,869 | −162 | still tiny — the RC-reclaim opportunity |
+| poisonedByClosure | 99,486 (§11) | 99,530 | +44 | noise |
+| closureRouted | 11,627 (§11a) | 11,640 | +13 | noise |
+| poisonedByKernel | 23,564 (§10) | 23,802 | +238 | noise |
+| poisonedParams | 135,278 (§10) | 133,231 | −2,047 | noise |
+| poisoningCallSites | 46,621 (§10) | 60,537 | **+13,916** | **re-attribution** (07-30 Constrain call-site counting), not a regression — see note |
+| kernelSigHits | 5,311 (§15) | 5,312 | +1 | stable |
+| kernelDefaultedHeapCalls | 13,217 (§15) | 13,230 | +13 | stable |
+| sccBailouts / maxSccIter / sigMissReads | 0 / 3 / 0 | 0 / 3 / 0 | — | fixpoint clean & converged |
+| capturesForcedOwned | 22,956 (§10) | 22,986 | +30 | noise |
+| ltpRefined | 101,035 (§14) | 101,011 | −24 | Stage-D stable |
+| ownedResources | 2,829,721 (§15) | 2,829,213 | −508 | noise |
+| nonEscapingOwned | 1,962,244 (§15) | 1,961,771 | −473 | noise |
+
+> **Note on `poisoningCallSites` (+30%).** Only this counter moved materially;
+> it is a **counting re-attribution** from the 07-30 `Constrain` refinement (how
+> non-saturated / PAP call sites are tallied), exactly the B2→B3 pattern in §10:
+> `poisonedByClosure` (the *ownership* effect) is unmoved (+44) and borrowed %
+> is unmoved (32%), so net ownership is unaffected. `defs` grew 31,140→31,375
+> (compiler source grew over the 5 days), which accounts for the small positive
+> drifts in the absolute counters.
+
+### Escape-analysis headline (confirmed stable)
+
+`nonEscapingOwned = 1,961,771` = **46.7 % of resources / 69.3 % of owned** — the
+oracle's single largest v1-viable opportunity (§15.1), and **~140× the
+string-RC reclaim target** (`wouldFree = 13,869`) by count. Confirmed stable
+across the re-run (Δ −473).
+
+### Kernel-audit worklist (top 40, current) — matches §15.2
+
+```
+List.cons=4175 Utils.append=3262 Scheduler.andThen=1625 Scheduler.succeed=907
+Bytes.getStringWidth=696 Crash.crash=461 JsArray.foldl=322 List.map2=229
+Scheduler.fail=167 JsArray.unsafeSet=137 JsArray.initializeFromList=122
+Scheduler.onError=112 JsArray.initialize=96 List.sortBy=74 String.slice=72
+String.cons=68 MVar.put=66 JsArray.push=61 JsArray.foldr=42 JsArray.singleton=39
+File.fileExists=30 JsArray.map=30 String.fromList=28 Env.lookup=27 Bytes.encode=24
+Scheduler.spawn=24 Bytes.decode=22 List.sortWith=22 JsArray.indexedMap=21
+String.toLower=21 JsArray.appendN=18 JsArray.slice=18 String.uncons=17
+String.words=15 Bytes.width=14 String.trim=14 File.dirExists=12 Json.wrap=10
+String.all=9 String.toUpper=9
+```
+
+Ordering and magnitudes match §15.2 (List.cons/Utils.append/Scheduler.* dominate
+as genuine owners). No new audit candidates surfaced.
+
+### Runtime GC profile of the report-on run (context only — NOT the RC ceiling)
+
+| metric | value |
+|---|---:|
+| Objects allocated | 1,084,454,099 |
+| Bytes allocated | 67,747.9 MB |
+| Minor GC cycles | 1,513 |
+| Objects promoted | 164,619,884 (15.2%) |
+| Major GC cycles | 11 |
+| Total GC/Alloc time | 59.70 s (~24% of wall) |
+
+> **Caveat — do not compare to §2c's 798 M baseline.** This dump is a
+> *report-on* self-compile: it includes the borrow pass's own compile-time
+> allocation (4.2 M ResVars + DSU + constraints + solver), so it is **not** the
+> flag-off RC-target allocation profile §2c measured (via the lightweight
+> `ECO_BORROW_CENSUS0` fold). It does **not** revise the §2 ceiling; the
+> Strategy-B verdict rests on the §1/§2 flag-off denominators, which are
+> unchanged.
+
+### Verdict unchanged; plan-review triggers
+
+Strategy-B is **re-confirmed**: `wouldFree = 13,869` (the v1 string-RC reclaim
+surface) remains a single-digit-thousands count, borrowed holds at 32%, and **no
+counter crosses a §7 escalation trigger** (arrays/lists have not entered
+`rcManaged`). The RC runtime track (B4/B5, `phase-5` plan) stays deferred, and
+the phase-5 U5.6 "no RC-1 targets" downgrade stands. The plan-review conclusions
+this re-run prompts — chiefly that the **largest v1-viable lever the oracle
+exposes is stack/scalar promotion of the 1.96 M non-escaping owned resources
+(§15.1), which no phase plan yet schedules** — are recorded in §17.
+
+---
+
+## 17. Plan review against the census (2026-07-31)
+
+Reviewed all `plans/borrow-inference*.md` against the §16 census. The plans'
+**analysis** milestones (B0→B3.5 + resultLts + Stage-D) are complete and their
+predictions confirmed; the **value-extraction** plans need three updates.
+
+### 17.1 Predictions confirmed — no change needed
+
+- **Phase 3:** `sccBailouts=0`, `sigMissReads=0`, `maxSccIter=3` (predicted
+  "2–3"), `poisonedParams` present and stable. All met.
+- **Phase 4:** closure poison recovered = 116,868 (B3 §10) → 99,530 = **14.8%**
+  of B3's closure poison, a strict superset of the predicted Run-M 13.2%
+  fast-routed share. `lambdaSigNoSigReads ≈ 0`. Met.
+- **Phase 2 / phase-1.5 track:** graph-inert census oracle shipped; the
+  Strategy-B scope boundary (stop before B4) holds. `wouldFree` sizing confirms
+  the §2 ceiling on the full corpus, discharging the D0.6 "B2-census-decides"
+  obligation — **the preliminary §6 Strategy-B call is now confirmed by the
+  full-precision census, not just the Phase-0 ceiling.**
+
+### 17.2 Gap 1 (highest value) — escape analysis / stack promotion is unplanned
+
+The census's largest v1-viable signal — `nonEscapingOwned = 1,961,771` (46.7% of
+resources), **~140× `wouldFree` by count** — has **no owning plan**. §15.1
+already sketches it as a 4th reify target (`stack-promote r`, gated on
+`notEscape(r) ∧ fresh-here ∧ statically-bounded-size`), but neither phase-5 (RC
+runtime) nor phase-6 (v2 backlog) lists it. This is the clearest "plans must
+change" finding: **the oracle's best v1 payoff is scalar/stack promotion of
+short-lived non-escaping owned intermediates, not buffer RC.** Recommended:
+add it as a **new phase-6 backlog item (item 8, "stack/scalar promotion of
+non-escaping owned resources")**, or graduate it to its own plan. Its one
+prerequisite analysis increment is the **storage-transitive escape closure**
+(§15.1): a small escape-union pass over the existing DSU to turn the 1.96 M
+*upper bound* into a tight lower bound (today it does not chase
+store-into-escaping-container escape). Caveat from §15.1 stands: the hot classes
+(Cons, closures) mostly escape, so the realized win concentrates in short-lived
+records/tuples — real but at the low end; the escape-closure pass is what sizes
+it honestly.
+
+### 17.3 Gap 2 (cheap, incremental) — kernel-allowlist growth is untracked as a deliverable
+
+`kernelDefaultedHeapCalls = 13,230` with `kernelSigHits = 5,312`. §15.2
+establishes ~78% of the defaulted calls are **genuine owners** (List.cons 4,175
+/ Utils.append 3,262 / Scheduler.* — audited-optimal already), leaving a
+**recoverable slice of ~2–3K sites** in the read-only kernels
+(JsArray.foldl/map, List.map2/sortBy, String.slice/toLower/trim/uncons/words,
+Bytes.width, Env.lookup, File.*Exists). Phase-3 already names
+`kernelSigHits`/`kernelDefaultedHeapCalls` as "the evidence stream for growing
+the list," but no plan schedules the growth as a deliverable. Recommended: a
+small standing task to extend `Borrow/KernelSigs.elm` top-down over the §15.2
+reader list — sound (whitelist-only), zero runtime risk, and it **cross-feeds
+17.2** (a kernel audited `PBorrowed` makes its args escape-analysis candidates).
+Payoff is low-thousands of sites — modest, so it is a background item, not a
+milestone.
+
+### 17.4 Gap 3 (doc hygiene) — declared-but-unemitted census counters
+
+Phase-2's declared counter table (its "single source of truth") and phase-4 name
+counters the as-built census line **does not emit**: `lambdaSigNoSigReads`,
+`meetDegraded`, the 5-way `PoisonCause` split (phase-4 predicted these), and
+`rc1CrossingFlows` (phase-2/phase-6 item-5/6 trigger). The as-built pass instead
+emits a single `closureRouted` counter. This is a naming/wiring drift, not a
+correctness issue (`rc1CrossingFlows` is a v2/RC-1 sizing counter and legitimately
+stays unpopulated until B4). Recommended: either wire the named counters or mark
+them "computed-internally / not-reported" in the phase-2/4 plans and the phase-6
+standing-evidence table (where several rows will otherwise read "—" forever).
+
+### 17.5 No strategy reversal
+
+Nothing in the census re-opens Strategy A. `wouldFree` is tiny and falling; no §7
+trigger fires (arrays not yet in `rcManaged`). Phase-5 (B4/B5) stays deferred to
+v2; phase-6 items 2/3 (arrays + per-ctor precision) remain the correct home for
+the RC payoff. The value-extraction shift the census argues for is **lateral**
+(RC buffer reclaim → stack promotion of non-escaping owned intermediates), all
+within the shipped analysis oracle — no new solver machinery, only the
+escape-closure refinement (17.2) plus reification, both v1-viable and
+GC-coexisting.

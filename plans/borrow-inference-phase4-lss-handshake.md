@@ -1,5 +1,10 @@
 # Borrow Inference — Phase 4: LSS Handshake (B3.5, solver-only)
 
+> **Superseded for sequencing (2026-07-31):** the active optimization
+> roadmap is the tier series `plans/opt-tier{1..4}-*.md` (impact-ordered).
+> This file remains the implementation spec / as-built record for its
+> milestone; do not take execution order from it.
+
 Status: IMPLEMENTATION-READY (v2, deep-dive pass). Parent design:
 `design_docs/globalopt/borrow-inference-design.md` (v2) §10; milestone
 B3.5. Series: `plans/borrow-inference-phase{0..6}-*.md`.
@@ -13,6 +18,12 @@ split; cross-engine A/B archived.
 **Scheduling freedom:** independent of Phase 5's U5.1 — if the Phase-2/3
 census shows `poisonedByClosure` is a small share of would-be dups, this
 phase can slide after Phase 5a.
+
+> **Resolved (2026-07-31): moot AND refuted.** Strategy B removed Phase 5
+> from v1 scope entirely (there is no Phase 5a to slide after), and the
+> census showed `poisonedByClosure` was a *large* share — **99,530**
+> final, ~48% of `wouldDup=207,167` — so this phase was justified on its
+> own evidence (`design_docs/borrow-inf-census.md` §16).
 
 **Goal:** where LSS knows a singleton lambda set, route the call boundary
 through the member's real signature instead of poisoning — without ever
@@ -326,6 +337,14 @@ query : Facts -> Mono.CallInfo -> Mono.MonoType -> ( CalleeFacts, Census )
 `lambdaSigNoSigReads` and `meetDegraded` (Phase 2's declared field name
 for meet-degraded sites — U2's census table; NOT `mixedMeetSites`),
 folded back by Constrain.
+
+> **As-built emission drift (2026-07-31).** The `PoisonCause` decline
+> ladder (`PTop/PBlocked/PUnresolved/PNoSig/PMixedMeet`) IS implemented
+> internally in `LssFacts` as specified, but the as-built census stderr
+> line emits only the single `closureRouted` counter —
+> `lambdaSigNoSigReads` and `meetDegraded` are not on the line
+> (`design_docs/borrow-inf-census.md` §17.4).
+
 Resolution order:
 
 1. **Stamp shortcut.** `case callInfo.fastEvaluator of Just lambdaId ->`
@@ -461,6 +480,46 @@ PoisonCause census published · `lambdaSigNoSigReads ≈ 0` steady-state ·
 `sccFixpointBailouts = 0` (Phase-3 counter, re-checked with routed edges
 added) · wall budget ≤3% on both engines (record majors per the
 major-GC-lottery lesson).
+
+## As-built (B3.5 shipped 2026-07-26; stable at 2026-07-31)
+
+**Solver leg (the U4.3 census).** B3.5 landed 2026-07-26: borrowed
+**26% → 27%**; `poisonedByClosure` **116,868 → 99,486** (−17,382 =
+**−14.9%** of B3's closure poison) — the prediction above ("a strict
+superset of Run M's 13.2% fast-routed *events*") is **MET** (14.9% >
+13.2%). `closureRouted = 11,109` (lambda members only). **U4.1
+standalone-member routing landed the same day:** +518 → **11,627** —
+requiring `MonoGraph.lssMemberOrigins`/`MemberOrigin` threaded through
+all four full-construction sites exactly per U4.1; verified fact 2 ("no
+test/fixture builds a full MonoGraph") turned out **stale** — the
+`CafDedupeTest`/`CafHoistTest` fixtures build one and gained the field.
+Fixpoint stayed clean with the routed facts live: `sccBailouts=0`,
+`maxSccIter=3`, `sigMissReads=0`.
+
+**Subst leg (the hard inert gate).** Fully inert as designed: all arrows
+`LTop` ⇒ every `query` returns `Poison PTop` ⇒ the boundary is exactly
+Phase 3's. The engine asymmetry — the recovery exists only under
+solver/all-keyed — is the archived §22.6 engine-default evidence.
+
+**Gates:** `--text-mlir` byte-identity **119,951,614 B** (B3.5), then
+**120,247,780 B** with U4.1 — IDENTICAL flag-on-vs-off both times; full
+E2E **1636/1636**; units **29/29**; `elm-tests` **13,037 pass / 12
+fail** (all pre-existing POST_010, none borrow-related). The PoisonCause
+census-split gate was satisfied via the internal decline ladder + the
+single `closureRouted` counter (see the emission-drift note in U4.2.b).
+
+**Current (2026-07-31 definitive re-run):** `closureRouted = 11,640`,
+`poisonedByClosure = 99,530` — stable, within noise of the shipped
+values. Both censuses archived in `design_docs/borrow-inf-census.md`
+§11/§11a/§16.
+
+**Still deferred (sound-conservative, recorded in census doc §11):** the
+`fastEvaluator` stamp shortcut (step 1 of U4.2.b — set-resolution via
+`headAnno` is used instead) and routed edges into the SCC def-sig graph
+(the scan-2 ordering fix — lambda sigs are computed post-fixpoint, so
+only the census recovery benefits from lambda routing, not def sigs).
+The third §11 deferral, `resultLts` arg-return coupling, has since
+shipped (census doc §13: 27% → 32% borrowed).
 
 ## References
 

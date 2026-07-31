@@ -1,5 +1,10 @@
 # Borrow Inference — Phase 0: Up-front Measurement & Groundwork
 
+> **Superseded for sequencing (2026-07-31):** the active optimization
+> roadmap is the tier series `plans/opt-tier{1..4}-*.md` (impact-ordered).
+> This file remains the implementation spec / as-built record for its
+> milestone; do not take execution order from it.
+
 Status: IMPLEMENTATION-READY (v2, deep-dive pass). Parent design:
 `design_docs/globalopt/borrow-inference-design.md` (DETAILED DESIGN v2,
 2026-07-21) — this phase implements its B0 milestone (§18) plus the
@@ -11,6 +16,15 @@ optimization is scheduled. Series:
 report is decision gate **G1** (so named in Phase 5) — it gates Phase 5
 (the optimization track), NOT Phases 1–4 (the analysis), which may start
 immediately and concurrently.
+
+**CLOSED 2026-07-31 — B0 DONE; D0.6 DISCHARGED.** The B2-final
+full-precision census (**32% borrowed**, `wouldFree=13,869`;
+`design_docs/borrow-inf-census.md` §16) confirms the preliminary
+Strategy-B call this phase produced — the runtime track (B4/B5) stays
+deferred. The census doc §17 records the plan-review outcome, including
+the **new lateral finding**: stack promotion of
+`nonEscapingOwned=1,961,771` (**46.7%** of resources, §15.1) → phase-6
+backlog item 8. (B0's as-built record lives in the census doc, §§9–17.)
 
 **Goal:** produce the evidence base — the Perceus-cost denominator, the
 dynamic payoff ceiling, the kernel audit, and the runtime-strategy call —
@@ -149,6 +163,14 @@ all-owned model (every non-final owned occurrence), would-be drops,
 per-type split (strings / lists / records / customs / closures),
 immortal-literal share. Throwaway-shaped — superseded by the real B2
 census (Phase 2); delete this unit's code when B2 lands.
+
+> **Cleanup OUTSTANDING (2026-07-31).** B2's real census landed
+> 2026-07-26 (`design_docs/borrow-inf-census.md` §9) but the deletion
+> has NOT been performed — `ECO_BORROW_CENSUS0` still exists:
+> `Compiler/Eco/Config.elm` `borrowCensus0`, `Builder/Eco/Config.elm`
+> `applyBorrowCensus0Override` (~:369-374), and the
+> `Builder/Generate.elm` fold. Recorded here as an outstanding cleanup
+> item, not performed as part of this closure stamp.
 
 **Flag plumbing (`ECO_BORROW_CENSUS0=1`, output-only, hash-inert —
 mirror `mono.validate`).** Five edits:
@@ -456,7 +478,8 @@ Assemble U0.1–U0.5 into `design_docs/globalopt/borrow-b0-report.md`
   carry binary chars); run E2E and elm-tests **serially** (typed-
   artifacts cache race). Build/run once, tee to `/tmp/test_output.txt`,
   grep — never re-run (CLAUDE.md). The flag+field are deleted when B2's
-  real census lands.
+  real census lands. **(OUTSTANDING 2026-07-31: B2 landed 2026-07-26 but
+  the flag/fold still exist — see the U0.1 cleanup note above.)**
   ```bash
   cmake --preset build                      # ELM_SOURCES glob is non-CONFIGURE_DEPENDS
   cmake --build build --target full 2>&1 | tee /tmp/test_output.txt

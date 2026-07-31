@@ -1,5 +1,10 @@
 # Borrow Inference — Phase 2: Intra-def Analysis + Census (B2)
 
+> **Superseded for sequencing (2026-07-31):** the active optimization
+> roadmap is the tier series `plans/opt-tier{1..4}-*.md` (impact-ordered).
+> This file remains the implementation spec / as-built record for its
+> milestone; do not take execution order from it.
+
 Status: IMPLEMENTATION-READY (v2, deep-dive pass). Parent design:
 `design_docs/globalopt/borrow-inference-design.md` (v2) §6–§9, §13;
 milestone B2. Series: `plans/borrow-inference-phase{0..6}-*.md`.
@@ -164,7 +169,9 @@ preset name in CLAUDE.md is stale. Test files need no reconfigure
 
 This plan **declares** the counter set that Phases 3/4/5/6 consume. The
 `BorrowStats` record (U2.4) is the one place they live; keep it ≤32
-fields (fact 7 — currently 20, room to grow). Each §13 line verbatim →
+fields (fact 7 — currently 20, room to grow; **as-built 2026-07-31: 27
+fields** — 26 `Int` + 1 `Dict` `kernelDefaultedNames`, `Borrow.elm:46-74`
+— still under the cap). Each §13 line verbatim →
 its canonical field name; counters that only become nonzero in a later
 phase are declared here at `0` so downstream plans have stable names.
 
@@ -188,6 +195,17 @@ phase are declared here at `0` so downstream plans have stable names.
 | max borrow-induced lifetime extension per def | `maxBorrowExtension` | B2 |
 | `immortal` literal count | `immortalLiterals` | B2 |
 | meet-degraded sites (`PMixedMeet`) | `meetDegraded` | B3.5 (declared 0) |
+
+> **As-built emission drift (2026-07-31,
+> `design_docs/borrow-inf-census.md` §17.4).** Three declared counters
+> are **not emitted** on the as-built census stderr line:
+> `lambdaSigNoSigReads`, `meetDegraded`, and `rc1CrossingFlows` — the
+> last legitimately dormant until B4 (an RC-1 sizing counter with nothing
+> to size under `reify = ROff`). The 5-way `PoisonCause` split
+> (`PTop`/`PBlocked`/`PUnresolved`/`PNoSig`/`PMixedMeet`) **is**
+> implemented internally (the `LssFacts` decline ladder) but reports as
+> the single `closureRouted` counter. Naming/wiring drift, not a
+> correctness issue; this table stays the naming source of truth.
 
 ## U2.1 — `Borrow/Rty.elm` (~150 LoC)
 
@@ -605,6 +623,36 @@ poisonedByKernel=… capturesForcedOwned=… immortal=… maxExt=…`.
 E2E 100% flag-on · emitted-MLIR byte-identity flag-on/off · elm-tests
 green (Rty/Constrain/Solve suites) · wall ≤3% (majors recorded) · canary
 passes · census published · BORROW_001 row landed.
+
+## As-built — the first real census + precision ramp (recorded 2026-07-31)
+
+**B2 shipped 2026-07-26** — the first real census (the U2.5 deliverable),
+self-compile Stage-7a workload, solver/all-keyed
+(`design_docs/borrow-inf-census.md` §9):
+
+```
+borrow: defs=31002 resources=4159795 borrowed=860962 (20%) wouldDup=238774
+        wouldDrop=122930 wouldFree=14400 poisonedByClosure=45286
+        poisonedByErased=7242 poisonedByKernel=26988 capturesForcedOwned=22932
+        nonVarOwnedFresh=14434 nonVarBorrowedProducer=2416
+        updateCopiedHeapFields=5597 immortal=11788 maxExt=91
+```
+
+Gates, per U2.5: emitted-MLIR **byte-identical** report-on vs off (both
+13,007,671 B); full E2E **1636/1636**; B1 units **28/28** at `--fuzz 200`.
+Honest v1 caveats as recorded (§9): the counts come from a first-pass
+solver — Stage D was `ltP = ltA` then, and `wouldDup`/`wouldDrop` are
+**ceilings** (owned occurrences / owned scope-bindings), not
+liveness-minimal counts; the poison/structural counters are exact.
+
+**Precision ramp after B2** (all shipped 2026-07-26, every step gated —
+census doc §10–§14): B3 interprocedural sigs → **26%** borrowed; B3.5 LSS
+handshake → **27%**; `resultLts` arg-return coupling → **32%** (the
+biggest single recovery — the two conservative "force result owned" rules
+removed, ownership demand-driven); Stage-D precise `ltP` →
+`ltpRefined=101,035` (lifetime-only — borrowed stays 32%). **Final
+full-precision census 2026-07-31: 32% borrowed, stable** — every counter
+within noise of last recorded (census doc §16).
 
 ## References
 

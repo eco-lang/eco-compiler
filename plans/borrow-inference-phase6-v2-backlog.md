@@ -1,5 +1,13 @@
 # Borrow Inference — Phase 6: v2 Backlog (B6)
 
+> **Superseded for sequencing (2026-07-31):** the active optimization
+> roadmap is the tier series `plans/opt-tier{1..4}-*.md`. Item→tier
+> mapping: items 8, 9 → **tier 1** (`opt-tier1-aggregate-promotion.md`
+> U-T1.1/U-T1.3 and U-T1.2); items 1, 2, 3, 5, 6 → **tier 3**
+> (`opt-tier3-rc-runtime.md`); items 4, 7 → **tier 4**
+> (`opt-tier4-parked.md`). This file remains the detail register each
+> tier cites; do not take execution order from it.
+
 Status: IMPLEMENTATION-READY (v2, deep-dive pass). Parent design:
 `design_docs/globalopt/borrow-inference-design.md` (v2) §18 B6, §22.
 Series: `plans/borrow-inference-phase{0..6}-*.md`.
@@ -52,6 +60,9 @@ this.
    (`compiler/src/Compiler/GlobalOpt/AbiCloning.elm`). Constraint:
    merge specializations with identical induced RC behavior — the
    paper's primes_sieve measured ±7% noise from unmerged copies.
+   *Trigger status (2026-07-31 census):* `poisonedParams`=133,231 /
+   `poisoningCallSites`=60,537 are sizeable, but the item only pays
+   under reification — deferred with B4 (no graduation).
 2. **Arrays in `rcManaged`** (design §16.3:1418-1433, §17 S6:1464-1472).
    Trigger: B0-report ceiling + the phase-5 RC-1 benchmark verdict
    showing buffer-RC pays. Prerequisites: item 3 (hard, above) +
@@ -94,6 +105,8 @@ this.
    on the table. Constraint: needs closure-lifetime ≤ capture-lifetime —
    genuinely harder than call-boundary routing (closures escape); weigh
    against E8 defunctionalization before building.
+   *Trigger status (2026-07-31 census):* `capturesForcedOwned`=22,986
+   is NOT dominant (vs `poisonedByClosure`=99,530) — trigger not fired.
 5. **Drop-sliding** (design §14.2:1315-1319, §17 C1:1487-1493).
    Trigger: RC-1 hit-rate telemetry (`ECO_RC_STATS`, B4/B5 runtime
    counters) shows copies caused by late scope-end drops (the paper's
@@ -114,6 +127,57 @@ this.
    deliberately unimplemented per paper §6.7; RC-1 + drop-sliding is the
    reuse story). Recorded here only so nobody re-opens it early.
    Trigger: none until items 2/5/6 are shipped and measured.
+8. **Stack/scalar promotion of non-escaping owned resources** (added
+   2026-07-31; `design_docs/borrow-inf-census.md` §15.1/§16/§17.2).
+   Evidence: `nonEscapingOwned`=**1,961,771** = **46.7%** of resources /
+   **69.3%** of owned (`ownedResources`=2,829,213) — **~140×** the v1
+   string-RC reclaim target (`wouldFree`=13,869) by count, the largest
+   v1-viable lever the oracle exposes. Predicate (read straight off
+   `Solved`): `notEscape(r) = reifiedOwned(r) ∧ α(r)=∅ ∧
+   r ∉ resultResvars ∧ ltP(r) ≠ LParams`. Reify sketch: a **4th reify
+   target `stack-promote r`**, gated on `notEscape(r) ∧ fresh-here ∧
+   statically-bounded-size(r)`. Trigger (graduation): the
+   **storage-transitive escape-closure pass** — a small escape-union
+   over the existing DSU (the DSU already links
+   store-into-escaping-container classes, so this is a closure pass,
+   not new machinery) — turning the 1.96M UPPER bound into a tight
+   lower bound, PLUS a per-class dynamic weighting showing a worthwhile
+   allocation share. Honest caveat (census §15.1): the hot classes
+   (Cons, closures, tuples ≈65% of allocation) mostly ESCAPE — the
+   realized win concentrates in short-lived intermediate records/tuples,
+   real but at the low end; the escape closure + weighting is what
+   sizes it honestly. Prerequisites: (a) the escape-closure analysis
+   increment (new `Borrow/*.elm` module ⇒ `cmake --preset build`
+   reconfigure per this plan's header note); (b) a graduated design for
+   stack-resident objects vs the GC — root-scan visibility of
+   heap-pointer fields in stack aggregates, no heap→stack pointers —
+   which must comply with the REP_*/HEAP_*/CGEN_* invariants and mint
+   new ones per `design_docs/invariants.csv` discipline. Unlike items
+   2/5/6 this needs **no RC runtime** — it consumes the shipped oracle
+   directly.
+9. **`KernelSigs` allowlist growth** (added 2026-07-31;
+   `design_docs/borrow-inf-census.md` §15.2/§17.3). Evidence stream:
+   `kernelSigHits`=5,312 / `kernelDefaultedHeapCalls`=13,230 + the
+   `kernelDefaultedNames` histogram (the prioritized audit worklist).
+   **~78% of the 13,230 defaulted sites are genuine owners** —
+   `List.cons`=4,175 (stores both args), `Utils.append`=3,262 (an owner
+   for String AND List: the over-32 KiB path calls `makeRope`, which
+   RETAINS both operands — a runtime size decision a static sig cannot
+   discriminate, so the sound sig is `POwned`), `Scheduler.*` ≈2,800
+   (wraps into Task/Process) — so the recoverable reader slice is
+   **~2–3K sites**: `Bytes.getStringWidth`=696, `Crash.crash`=461,
+   `JsArray.foldl`=322/`foldr`=42/`map`=30, `List.map2`=229
+   /`sortBy`=74/`sortWith`=22, `String.slice`=72/`toLower`=21
+   /`uncons`=17/`words`=15/`trim`=14/`toUpper`=9/`all`=9,
+   `File.fileExists`=30/`dirExists`=12, `Env.lookup`=27,
+   `Bytes.width`=14. Method: top-down audit over the §15.2 reader list,
+   each row source-verified like the phase-0 §3a audit. Soundness: the
+   table MUST stay a **whitelist** (unknown ⇒ owned); a blacklist would
+   be unsound (a forgotten retaining kernel ⇒ premature free). Zero
+   runtime risk (analysis-only), and it **cross-feeds item 8** — a
+   kernel audited `PBorrowed` leaves its args borrowed, making them
+   escape/stack-promotion candidates. Ceiling is low (low-thousands of
+   sites) ⇒ a **standing background item**, not a milestone.
 
 ## Standing evidence table
 
@@ -123,21 +187,32 @@ counters; the phase-2 plan's "Census counters" table maps each §13 line
 to its field). Phases 3-5 populate them under these same names, and fill
 values in their as-built sections mirrored here.
 
-| Counter (census key) | Source phase (milestone) | Drives item | Value |
+**Values filled 2026-07-31** from the definitive self-compile census
+(Stage-7a workload, `ECO_BORROW_REPORT=1`;
+`design_docs/borrow-inf-census.md` §16).
+
+| Counter (census key) | Source phase (milestone) | Drives item | Value (2026-07-31) |
 |---|---|---|---|
-| `poisonedParams` | 3 (B3) | 1 | — |
-| `poisoningCallSites` | 3 (B3) | 1 | — |
-| `updateCopiedHeapFields` | 2 (B2) | 2, 3 | — |
-| `capturesForcedOwned` | 2 (B2) | 4 | — |
-| `poisonedByClosure` + `PoisonCause` split | 2/4 (B2/B3.5) | 4 | — |
-| `poisonedByErased` | 2 (B2) | 3 | — |
-| `poisonedByKernel` | 2/3 (B2/B3) | 1 | — |
-| `nonVarOperandHeapOwnedFresh` / `nonVarOperandHeapBorrowedProducer` (§13 `nonVarOperandHeapResults`, split by producer mode) | 2 (B2) | DS4 watch | — |
-| `lambdaSigNoSigReads` | 4 (B3.5) | 4 | — |
-| `rc1CrossingFlows` (RC-1 sizing: borrow-lifetimes × owned-mutator flows) | 3 (B3) | 5, 6 | — |
-| `maxBorrowExtension` (memory watch: max borrow-induced lifetime extension) | 2 (B2) | 5 | — |
-| `meetDegraded` (`PMixedMeet` meet-degraded sites) | 4 (B3.5) | 3 | — |
-| `ECO_RC_STATS` dup/drop executed + RC-1 hit/miss | 5 (B4/B5, runtime) | 5, 6, 2 | — |
+| `poisonedParams` | 3 (B3) | 1 | 133,231 |
+| `poisoningCallSites` | 3 (B3) | 1 | 60,537 † |
+| `updateCopiedHeapFields` | 2 (B2) | 2, 3 | 5,743 |
+| `capturesForcedOwned` | 2 (B2) | 4 | 22,986 |
+| `poisonedByClosure` + `PoisonCause` split | 2/4 (B2/B3.5) | 4 | 99,530 — `PoisonCause` split NOT emitted as counters; as-built reports the single `closureRouted`=11,640 (census §17.4) |
+| `poisonedByErased` | 2 (B2) | 3 | 7,323 |
+| `poisonedByKernel` | 2/3 (B2/B3) | 1 | 23,802 (`kernelSigHits`=5,312 / `kernelDefaultedHeapCalls`=13,230) |
+| `nonVarOperandHeapOwnedFresh` / `nonVarOperandHeapBorrowedProducer` (§13 `nonVarOperandHeapResults`, split by producer mode) | 2 (B2) | DS4 watch | 38,200 / 12,073 |
+| `lambdaSigNoSigReads` | 4 (B3.5) | 4 | not emitted (drift — census §17.4) |
+| `rc1CrossingFlows` (RC-1 sizing: borrow-lifetimes × owned-mutator flows) | 3 (B3) | 5, 6 | not emitted — dormant until B4 (legitimate) |
+| `maxBorrowExtension` (memory watch: max borrow-induced lifetime extension) | 2 (B2) | 5 | 90 |
+| `meetDegraded` (`PMixedMeet` meet-degraded sites) | 4 (B3.5) | 3 | not emitted (drift — census §17.4) |
+| `ECO_RC_STATS` dup/drop executed + RC-1 hit/miss | 5 (B4/B5, runtime) | 5, 6, 2 | n/a — B4/B5 deferred |
+| `ltpRefined` (Stage-D precise `ltP` ≠ `ltA`) | Stage D (census §14) | 5 (drop-sliding sizing) | 101,011 |
+| `nonEscapingOwned` / `ownedResources` | escape counters (census §15.1) | 8 | 1,961,771 / 2,829,213 |
+| `wouldFree` (v1 string-RC reclaim target) | 2 (B2) | sizes the deferred phase-5 U5.5 reclaim | 13,869 |
+
+† +13,916 vs the 07-26 recorded value 46,621 — a 07-30 `Constrain`
+call-site counting re-attribution (`poisonedByClosure` moved +44 only,
+borrowed % unmoved ⇒ ownership unaffected; census §16).
 
 ## Design discrepancies
 
@@ -151,6 +226,17 @@ values in their as-built sections mirrored here.
   numbering may shift; triggers above are therefore stated in terms of
   the stable artifact (`ECO_RC_STATS`, the B5 benchmark verdict), not
   unit IDs.
+- **Counter-emission drift (2026-07-31,
+  `design_docs/borrow-inf-census.md` §17.4):** the canonical Phase-2
+  names `lambdaSigNoSigReads` / `meetDegraded` / `rc1CrossingFlows` and
+  the 5-way `PoisonCause` split
+  (`PTop/PBlocked/PUnresolved/PNoSig/PMixedMeet` — implemented
+  internally in `LssFacts` as the decline ladder) are computed but NOT
+  emitted on the as-built census stderr line; the single
+  `closureRouted` counter is the as-built emitted signal
+  (`rc1CrossingFlows` is legitimately dormant until B4 — no RC ops
+  exist to size). The standing-evidence table above marks these rows
+  accordingly rather than leaving them "—" forever.
 
 ## References
 
