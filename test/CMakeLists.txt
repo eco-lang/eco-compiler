@@ -98,6 +98,7 @@ add_executable(test
         allocator/Utf8StringTest.cpp
         allocator/StringOpsTest.cpp
         allocator/ListOpsTest.cpp
+        allocator/ChunkedListTest.cpp
         allocator/BytesOpsTest.cpp
         allocator/RuntimeExportsTest.cpp
         allocator/GenericApplyBoxingTest.cpp

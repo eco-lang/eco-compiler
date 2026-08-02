@@ -157,6 +157,14 @@ HPtr Elm_Kernel_List_cons_Float(double   head, HPtr tail);
 HPtr Elm_Kernel_List_cons_Char (uint16_t head, HPtr tail);
 HPtr Elm_Kernel_List_fromArray(HPtr array);
 HPtr Elm_Kernel_List_toArray(HPtr list);
+// Tier-B closure-free combinator shunts (chunked lists, plan §6 L1.3):
+// chunk-producing replacements the MLIR generator targets for recognized
+// elm/core specializations under config.list.chunks.
+HPtr Elm_Kernel_List_reverse(HPtr list);
+HPtr Elm_Kernel_List_append(HPtr a, HPtr b);
+HPtr Elm_Kernel_List_concat(HPtr listOfLists);
+HPtr Elm_Kernel_List_take(int64_t n, HPtr list);
+HPtr Elm_Kernel_List_drop(int64_t n, HPtr list);
 // Higher-order List functions
 HPtr Elm_Kernel_List_map2(HPtr closure, HPtr xs, HPtr ys);
 HPtr Elm_Kernel_List_map3(HPtr closure, HPtr xs, HPtr ys, HPtr zs);

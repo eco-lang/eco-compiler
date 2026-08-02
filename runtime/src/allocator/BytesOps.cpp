@@ -23,15 +23,8 @@ HPointer fromList(HPointer list) {
     // Pass 1: count. Pure reads; list cannot move during this pass because
     // no allocation occurs.
     size_t count = 0;
-    {
-        HPointer cur = list;
-        while (!alloc::isNil(cur)) {
-            void* cell = allocator.resolve(cur);
-            if (!cell) break;
-            Cons* c = static_cast<Cons*>(cell);
-            ++count;
-            cur = c->tail;
-        }
+    for (alloc::ListCursor lc(list); !lc.done(); lc.next()) {
+        ++count;
     }
 
     if (count == 0) return empty();
@@ -49,12 +42,9 @@ HPointer fromList(HPointer list) {
             hp = allocator.allocLargeByteBuffer(nullptr, count);
         }
         ByteBuffer* dst = alloc::resolveByteBufferBody(allocator.resolve(hp));
-        HPointer cur = list;
         size_t i = 0;
-        while (!alloc::isNil(cur) && i < count) {
-            Cons* c = static_cast<Cons*>(allocator.resolve(cur));
-            dst->bytes[i++] = static_cast<u8>(c->head.i & 0xFF);
-            cur = c->tail;
+        for (alloc::ListCursor lc(list); !lc.done() && i < count; lc.next()) {
+            dst->bytes[i++] = static_cast<u8>(lc.current().i & 0xFF);
         }
         return hp;
     }
@@ -66,12 +56,9 @@ HPointer fromList(HPointer list) {
     std::memcpy(&list, &roots[0], sizeof(list));
     dst->header.size = static_cast<u32>(count);
 
-    HPointer cur = list;
     size_t i = 0;
-    while (!alloc::isNil(cur) && i < count) {
-        Cons* c = static_cast<Cons*>(allocator.resolve(cur));
-        dst->bytes[i++] = static_cast<u8>(c->head.i & 0xFF);
-        cur = c->tail;
+    for (alloc::ListCursor lc(list); !lc.done() && i < count; lc.next()) {
+        dst->bytes[i++] = static_cast<u8>(lc.current().i & 0xFF);
     }
     return allocator.wrap(dst);
 }
@@ -267,18 +254,11 @@ HPointer concat(HPointer bufferList) {
 
     // First pass: calculate total length (no allocation, pointers stable)
     size_t total_len = 0;
-    HPointer current = bufferList;
-
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        void* bufObj = allocator.resolve(c->head.p);
+    for (alloc::ListCursor lc(bufferList); !lc.done(); lc.next()) {
+        void* bufObj = allocator.resolve(lc.current().p);
         if (bufObj) {
             total_len += alloc::byteBufferLength(bufObj);
         }
-        current = c->tail;
     }
 
     if (total_len == 0) return empty();
@@ -295,20 +275,13 @@ HPointer concat(HPointer bufferList) {
 
     // Second pass: copy buffers (bufferList updated by GC if needed)
     size_t offset = 0;
-    current = bufferList;
-
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        void* bufObj = allocator.resolve(c->head.p);
+    for (alloc::ListCursor lc(bufferList); !lc.done(); lc.next()) {
+        void* bufObj = allocator.resolve(lc.current().p);
         if (bufObj) {
             auto vbuf = alloc::byteBufferView(bufObj);
             std::memcpy(dst.bytes + offset, vbuf.data, vbuf.length);
             offset += vbuf.length;
         }
-        current = c->tail;
     }
 
     return dst.hp;

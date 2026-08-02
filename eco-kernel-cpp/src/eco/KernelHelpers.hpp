@@ -170,17 +170,16 @@ inline uint64_t taskSucceedStringList(const std::vector<std::string>& items) {
     return taskSucceed(listFromPointers(ptrs));
 }
 
-// Iterate over an Elm List (Cons chain) calling a visitor function on each element.
-// The visitor receives the head Unboxable and whether it's boxed.
+// Iterate over an Elm List (hybrid spine: Cons cells + chunk views) calling
+// a visitor function on each element. The visitor receives the head
+// Unboxable and whether it's boxed. Non-allocating walk — visitors that
+// allocate must snapshot what they need (ListCursor caches raw interior
+// pointers; see HeapHelpers.hpp).
 template<typename F>
 inline void forEachListElement(uint64_t encodedList, F&& visitor) {
-    HPointer current = Export::decode(encodedList);
-    auto& allocator = Allocator::instance();
-    while (!isNil(current)) {
-        Cons* cell = static_cast<Cons*>(allocator.resolve(current));
-        bool head_is_boxed = (cell->header.unboxed == 0);
-        visitor(cell->head, head_is_boxed);
-        current = cell->tail;
+    for (Elm::alloc::ListCursor c(Export::decode(encodedList)); !c.done();
+         c.next()) {
+        visitor(c.current(), c.currentKind() == 0);
     }
 }
 

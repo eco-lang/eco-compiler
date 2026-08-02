@@ -195,13 +195,11 @@ static void writeEncoder(Custom* encoder, u8* buf, size_t& offset) {
             break;
         }
         case ENC_SEQ: {
-            HPointer list = encoder->values[1].p;
-            while (!alloc::isNil(list)) {
-                void* cellPtr = allocator.resolve(list);
-                Cons* cons = static_cast<Cons*>(cellPtr);
-                void* subPtr = allocator.resolve(cons->head.p);
+            // Non-allocating walk over hybrid spines (writeEncoder writes
+            // into a pre-sized buffer; no allocation).
+            for (alloc::ListCursor l(encoder->values[1].p); !l.done(); l.next()) {
+                void* subPtr = allocator.resolve(l.current().p);
                 writeEncoder(static_cast<Custom*>(subPtr), buf, offset);
-                list = cons->tail;
             }
             break;
         }

@@ -257,6 +257,14 @@ inline size_t getObjectSize(void *obj) {
         case Tag_Cons:
             size = sizeof(Cons);
             break;
+        case Tag_ConsChunk:
+            size = sizeof(ConsChunk);
+            break;
+        case Tag_ListBacking:
+            // header.size is the capacity in ELEMENTS (like Tag_Array); the
+            // footprint covers the whole element array, live or slack.
+            size = sizeof(ListBacking) + hdr->size * sizeof(Unboxable);
+            break;
         case Tag_Custom:
             size = sizeof(Custom) + hdr->size * sizeof(Unboxable);
             break;

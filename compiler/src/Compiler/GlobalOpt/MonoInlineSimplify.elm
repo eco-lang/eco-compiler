@@ -2160,6 +2160,19 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
                                                     |> Maybe.map (isWhitelisted effectiveWhitelist)
                                                     |> Maybe.withDefault False
 
+                                            -- Blacklisted globals are never
+                                            -- inline candidates at all (not
+                                            -- merely removed from the
+                                            -- whitelist): list.chunks relies
+                                            -- on this to keep combinator
+                                            -- calls intact for the kernel
+                                            -- shunt (Generate.MLIR.Functions
+                                            -- listChunksShunt).
+                                            blacklisted =
+                                                maybeGlobal
+                                                    |> Maybe.map (isWhitelisted inlineConfig.blacklist)
+                                                    |> Maybe.withDefault False
+
                                             -- Ordered so the body scan only
                                             -- runs for candidates over the
                                             -- general threshold (the common
@@ -2175,7 +2188,7 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
                                             exactOnly =
                                                 cost > inlineConfig.threshold && not whitelisted
                                         in
-                                        if not withinBudget && not whitelisted then
+                                        if blacklisted || (not withinBudget && not whitelisted) then
                                             ( accDict, specId + 1 )
 
                                         else

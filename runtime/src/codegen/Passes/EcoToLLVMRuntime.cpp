@@ -685,6 +685,37 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateConsHeadI16(OpBuilder &builder) const {
     return getOrCreateFunc(builder, "eco_cons_head_i16", funcTy, /*gcLeaf=*/true);
 }
 
+// Chunked-list projection MARKERS (plans/chunked-list-representation.md §6):
+// gc-leaf, declare-only; expanded to the cell-fast / chunk-slow diamond by
+// expandListProjMarkers (EcoBackend.cpp) before ExpandInlineDeref + every
+// RS4GC flavour, so they never reach codegen — the __eco_get_tag_inline
+// architecture. The tail marker's expanded slow path (eco_list_tail_hybrid)
+// is the allocating, statepointed edge.
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateListHeadInlineMarker(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "__eco_list_head_inline", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateListTailInlineMarker(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "__eco_list_tail_inline", funcTy, /*gcLeaf=*/true);
+}
+
+// Hybrid-spine (chunked-list) projections, used when the module carries the
+// eco.list_chunks attribute (plans/chunked-list-representation.md §6).
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateListHeadHybrid(OpBuilder &builder) const {
+    // eco_list_head_hybrid(list: hptr) -> hptr (raw slot bits; gc-leaf)
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "eco_list_head_hybrid", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateListTailHybrid(OpBuilder &builder) const {
+    // eco_list_tail_hybrid(list: hptr) -> hptr — may allocate a successor
+    // view, so NOT gc-leaf (RS4GC statepoints the call site).
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "eco_list_tail_hybrid", funcTy, /*gcLeaf=*/false);
+}
+
 // Tuple2 unboxed-primitive field accessors. See plans/projection-helpers-everywhere.md.
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple2Get0I64(OpBuilder &builder) const {
     auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {HPTR_TY});
@@ -1185,6 +1216,8 @@ void EcoRuntime::materializeAllRuntimeDecls(OpBuilder &b) const {
     getOrCreateGetTagInlineMarker(b);
     getOrCreateAllocInlineMarker(b);
     getOrCreateConsHeadI64(b); getOrCreateConsHeadF64(b); getOrCreateConsHeadI16(b);
+    getOrCreateListHeadHybrid(b); getOrCreateListTailHybrid(b);
+    getOrCreateListHeadInlineMarker(b); getOrCreateListTailInlineMarker(b);
     getOrCreateTuple2Get0I64(b); getOrCreateTuple2Get1I64(b);
     getOrCreateTuple2Get0F64(b); getOrCreateTuple2Get1F64(b);
     getOrCreateTuple2Get0I16(b); getOrCreateTuple2Get1I16(b);

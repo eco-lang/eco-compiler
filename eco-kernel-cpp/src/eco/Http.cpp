@@ -85,15 +85,13 @@ constexpr uint16_t KIND_GET_ARCHIVE = 0xEC02;
 std::vector<std::pair<std::string, std::string>>
 listOfTuplesToHeaders(uint64_t headersEnc) {
     std::vector<std::pair<std::string, std::string>> result;
-    HPointer current = Export::decode(headersEnc);
     auto& allocator = Elm::Allocator::instance();
-    while (!Elm::alloc::isNil(current)) {
-        Cons* cell = static_cast<Cons*>(allocator.resolve(current));
-        Tuple2* tup = static_cast<Tuple2*>(allocator.resolve(cell->head.p));
+    for (Elm::alloc::ListCursor c(Export::decode(headersEnc)); !c.done();
+         c.next()) {
+        Tuple2* tup = static_cast<Tuple2*>(allocator.resolve(c.current().p));
         std::string key = toString(Export::encode(tup->a.p));
         std::string val = toString(Export::encode(tup->b.p));
         result.push_back({std::move(key), std::move(val)});
-        current = cell->tail;
     }
     return result;
 }

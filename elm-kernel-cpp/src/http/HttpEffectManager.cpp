@@ -110,19 +110,17 @@ static void* httpOnEffectsEvaluator(void* args[]) {
     // the loop body (allocClosure / closureCapture / taskAndThen / rawSpawn);
     // by-value HPointer locals would otherwise become stale across the GC.
     HPointer router = decodeHP(reinterpret_cast<uint64_t>(args[0]));
-    HPointer current = decodeHP(reinterpret_cast<uint64_t>(args[1]));
-    Elm::StackRootGuard outerRoots(&router, &current);
+    Elm::StackRootGuard outerRoots(&router);
+    // RootedListCursor (hybrid spines): the spine node stays rooted and each
+    // read/advance re-resolves fresh across the loop body's GC points.
+    Elm::alloc::RootedListCursor cursor(
+        decodeHP(reinterpret_cast<uint64_t>(args[1])));
+    Elm::Unboxable cursorHead;
+    u8 cursorKind;
 
-    while (!isNil(current)) {
-        void* cellPtr = allocator.resolve(current);
-        if (!cellPtr) break;
-
-        Cons* cell = static_cast<Cons*>(cellPtr);
-        // Snapshot head/tail BEFORE any subsequent alloc; cell becomes a stale
-        // raw pointer the moment the next allocation runs.
-        HPointer cmdHP = cell->head.p;
-        HPointer nextCurrent = cell->tail;
-        Elm::StackRootGuard iterRoots(&cmdHP, &nextCurrent);
+    while (cursor.read(cursorHead, cursorKind)) {
+        HPointer cmdHP = cursorHead.p;
+        Elm::StackRootGuard iterRoots(&cmdHP);
 
         void* cmdPtr = allocator.resolve(cmdHP);
         if (cmdPtr) {
@@ -175,7 +173,7 @@ static void* httpOnEffectsEvaluator(void* args[]) {
             }
         }
 
-        current = nextCurrent;
+        cursor.advance();
     }
 
     // The manager State is the current subscription list (List (MySub msg));
@@ -213,15 +211,14 @@ static void* httpOnSelfMsgEvaluator(void* args[]) {
 
         // Walk the subscription list (state). router and progress must survive
         // each toMsg / sendToApp call (both run Elm code that may GC).
-        HPointer current = state;
-        Elm::StackRootGuard walkRoots(&current, &router, &progress);
-        while (!isNil(current)) {
-            void* cellPtr = allocator.resolve(current);
-            if (!cellPtr) break;
-            Cons* cell = static_cast<Cons*>(cellPtr);
-            HPointer subHP = cell->head.p;
-            HPointer nextCurrent = cell->tail;
-            Elm::StackRootGuard iterRoots(&subHP, &nextCurrent);
+        // RootedListCursor keeps the spine node rooted across those calls.
+        Elm::StackRootGuard walkRoots(&router, &progress);
+        Elm::alloc::RootedListCursor cursor(state);
+        Elm::Unboxable cursorHead;
+        u8 cursorKind;
+        while (cursor.read(cursorHead, cursorKind)) {
+            HPointer subHP = cursorHead.p;
+            Elm::StackRootGuard iterRoots(&subHP);
 
             void* subPtr = allocator.resolve(subHP);
             if (subPtr) {
@@ -235,7 +232,7 @@ static void* httpOnSelfMsgEvaluator(void* args[]) {
                     PlatformRuntime::instance().sendToApp(router, msg);
                 }
             }
-            current = nextCurrent;
+            cursor.advance();
         }
     }
 

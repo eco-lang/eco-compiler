@@ -274,7 +274,7 @@ constexpr unsigned TagBits = 5;
 /// tests for it and defers to eco_follow_forward. Must match the position of
 /// `Tag_Forward` in the `Tag` enum in Heap.hpp. A static_assert in
 /// EcoToLLVMHeap.cpp cross-checks this against the enum so the two cannot drift.
-constexpr int64_t TagForward = 24;
+constexpr int64_t TagForward = 26; // After Tag_ConsChunk/Tag_ListBacking (chunked lists, L1.2).
 
 /// `Tag_Cons` / `Tag_Custom` enumerator values, needed by the P2.5 inline
 /// eco.get_tag lowering (plans/allocator-resolve-inlining.md R1b): the tag
@@ -621,6 +621,20 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateConsHeadI64(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateConsHeadF64(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateConsHeadI16(mlir::OpBuilder &builder) const;
+    // Hybrid-spine (chunked-list) projections, used when the module carries
+    // the eco.list_chunks attribute (plans/chunked-list-representation.md §6).
+    // Head is non-allocating (gc-leaf); tail may MATERIALIZE a successor
+    // chunk view (allocating — statepointed).
+    mlir::LLVM::LLVMFuncOp getOrCreateListHeadHybrid(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateListTailHybrid(mlir::OpBuilder &builder) const;
+    // Marker forms (expanded to cell-fast/chunk-slow diamonds pre-RS4GC by
+    // expandListProjMarkers, EcoBackend.cpp).
+    mlir::LLVM::LLVMFuncOp getOrCreateListHeadInlineMarker(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateListTailInlineMarker(mlir::OpBuilder &builder) const;
+    /// True when the module being lowered carries `eco.list_chunks` (set at
+    /// EcoToLLVM pass entry): list head/tail projections must handle chunk
+    /// views, so !eco.value head and all tail projections go out-of-line.
+    bool listChunks = false;
 
     // Tuple2 / Tuple3 unboxed-primitive field accessors.
     // Each is a single resolve+load behind a gc-leaf call boundary — see the

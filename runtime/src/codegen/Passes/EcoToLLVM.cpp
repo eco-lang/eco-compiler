@@ -191,6 +191,14 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         EcoCFContext cfCtx;
         cfCtx.clear();
 
+        // Chunked-list mode (plans/chunked-list-representation.md §6): the
+        // front-end stamps `eco.list_chunks` on @main (func attr; also
+        // honoured as a module attr for hand-written tests) when
+        // config.list.chunks is enabled; list head/tail projections must
+        // then handle chunk views (out-of-line hybrid helpers). Absent the
+        // marker, lowering is byte-identical to the pre-chunk world.
+        runtime.listChunks = module->hasAttr("eco.list_chunks");
+
         // Pre-scan all func::FuncOps to save original types before conversion.
         // getOrCreateWrapper must distinguish primitive params (Int i64) from
         // !eco.value params (HPointer i64), but after conversion both become
@@ -205,7 +213,34 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
                 shadowRootFuncs.insert(funcOp.getSymName());
             if (funcOp->hasAttr("eco.caf_memo"))
                 cafMemoFuncs.insert(funcOp.getSymName());
+            // Chunked-list marker: the front-end stamps @main when
+            // config.list.chunks is on (a func attr flows through text AND
+            // bytecode, unlike a module attr).
+            if (funcOp->hasAttr("eco.list_chunks"))
+                runtime.listChunks = true;
         });
+
+        // Chunked-list mode: inject `call @eco_enable_list_chunks()` at the
+        // top of @main so kernel bulk builders switch to chunk production in
+        // exactly the binaries whose compiled projections are chunk-aware
+        // (plans/chunked-list-representation.md §6). Injected while @main is
+        // still a func.func; the LLVM call is already target-legal and rides
+        // through Stage 0/2 untouched.
+        if (runtime.listChunks) {
+            if (auto mainFn = module.lookupSymbol<func::FuncOp>("main")) {
+                if (!mainFn.getBody().empty()) {
+                    OpBuilder eb(ctx);
+                    eb.setInsertionPointToStart(&mainFn.getBody().front());
+                    auto enableFn = runtime.getOrCreateFunc(
+                        eb, "eco_enable_list_chunks",
+                        LLVM::LLVMFunctionType::get(
+                            LLVM::LLVMVoidType::get(ctx), {}),
+                        /*gcLeaf=*/true);
+                    eb.create<LLVM::CallOp>(mainFn.getLoc(), enableFn,
+                                            ValueRange{});
+                }
+            }
+        }
 
         // Lower allocation groups (eco.gc_group_size > 1) into fast/slow/merge
         // CFG before ANY conversion. lowerAllocGroups walks

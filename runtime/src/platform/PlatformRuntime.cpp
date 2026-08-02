@@ -489,20 +489,17 @@ void PlatformRuntime::gatherEffects(
         // therefore GC: snapshot the tail BEFORE recursing and keep the
         // loop cursor + taggers chain rooted so iteration 2+ reads
         // GC-current values (`cell` is stale after any allocation).
-        HPointer current = custom->values[0].p;
+        // Hybrid spines: the batch list is user Elm (e.g. Cmd.batch of a
+        // mapped list) and may be a chunk spine. RootedListCursor keeps the
+        // spine node rooted across the recursive gatherEffects GC points.
         HPointer taggersLocal = taggers;
-        Elm::StackRootGuard loopGuard(&current, &taggersLocal);
-        while (!alloc::isNil(current)) {
-            void* cellPtr = resolveHP(current);
-            if (!cellPtr) break;
-            Cons* cell = static_cast<Cons*>(cellPtr);
-            HPointer innerBag = cell->head.p;
-            HPointer next = cell->tail;
-            {
-                Elm::StackRootGuard itemGuard(&next);
-                gatherEffects(isCmd, innerBag, effects, taggersLocal);
-            }
-            current = next;
+        Elm::StackRootGuard loopGuard(&taggersLocal);
+        Elm::alloc::RootedListCursor cursor(custom->values[0].p);
+        Elm::Unboxable bagHead;
+        u8 bagKind;
+        while (cursor.read(bagHead, bagKind)) {
+            gatherEffects(isCmd, bagHead.p, effects, taggersLocal);
+            cursor.advance();
         }
     }
     else if (ctor == Fx_Map) {
@@ -525,22 +522,13 @@ HPointer PlatformRuntime::applyTaggers(HPointer taggers, HPointer value) {
     // taggers is a list of functions to apply (innermost first).
     // Walk the list and apply each. result, current and the next-tail must
     // survive each callClosure1 (which runs Elm code that may GC).
-    HPointer current = taggers;
-    // `next` (the per-iteration tail snapshot) is the loop's advance value
-    // and crosses the callClosure1 GC point, so it must be rooted too
-    // (mirrors the Fx_Node itemGuard in gatherEffects).
-    HPointer next = listNil();
-    Elm::StackRootGuard guard(&result, &current, &next);
-    while (!alloc::isNil(current)) {
-        void* ptr = resolveHP(current);
-        if (!ptr) break;
-        Cons* cell = static_cast<Cons*>(ptr);
-        HPointer tagger = cell->head.p;
-        // Snapshot tail before the closure call — `cell` is invalidated by
-        // any GC inside callClosure1.
-        next = cell->tail;
-        result = Scheduler::callClosure1(tagger, result);
-        current = next;
+    Elm::StackRootGuard guard(&result);
+    Elm::alloc::RootedListCursor cursor(taggers);
+    Elm::Unboxable tagHead;
+    u8 tagKind;
+    while (cursor.read(tagHead, tagKind)) {
+        result = Scheduler::callClosure1(tagHead.p, result);
+        cursor.advance();
     }
     return result;
 }

@@ -25,10 +25,13 @@ import Compiler.Generate.MLIR.Names as Names
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.TailRec as TailRec
 import Compiler.Generate.MLIR.Types as Types
+import Compiler.Elm.Package as Pkg
 import Compiler.Monomorphize.Registry as Registry
+import Compiler.Reporting.Annotation as A
 import Dict
 import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirRegion, MlirType(..), Visibility(..))
 import Set
+import System.TypeCheck.IO as IO
 
 
 
@@ -83,8 +86,21 @@ generateMainEntry ctx ports flagsDecoder mainInfo =
                 region =
                     Ops.mkRegion [] (preambleOps ++ [ callOp ]) returnOp
 
-                ( ctx4, mainOp ) =
+                ( ctx4, mainOp0 ) =
                     Ops.funcFunc ctx3 "main" [] Types.ecoValue region
+
+                -- Chunked-list mode marker (plans/chunked-list-representation.md
+                -- §6): stamp `eco.list_chunks` on the @main entry func so the
+                -- backend lowers list head/tail projections chunk-aware. A
+                -- func attr (like eco.shadow_roots) flows through BOTH the
+                -- text and bytecode emitters unchanged; EcoToLLVM's pre-scan
+                -- walk picks it up.
+                mainOp =
+                    if ctx.ecoConfig.list.chunks then
+                        { mainOp0 | attrs = Dict.insert "eco.list_chunks" UnitAttr mainOp0.attrs }
+
+                    else
+                        mainOp0
             in
             -- Return the threaded context: generateRegisterPorts records
             -- the registration kernels in ctx.kernelDecls, and the backend
@@ -267,6 +283,108 @@ generateRegisterPorts ctx0 ports flagsDecoder =
 
 
 
+-- ====== TIER-B CLOSURE-FREE COMBINATOR SHUNTS (chunked lists) ======
+
+
+{-| Shunt-eligible elm/core `List` combinators and their arities
+(plans/chunked-list-representation.md §6 L1.3 / §9.2). All closure-free —
+no LSS devirtualization is at stake — and each has a chunk-producing
+kernel export (`Elm_Kernel_List_<name>`, ListExports.cpp) that builds
+through `alloc::listFromUnboxables`, replacing the `foldl cons`
+per-element cell chains (the L0 census's dominant 498M-cons HOF pool;
+`reverse` = `foldl cons []` is the single biggest producer).
+-}
+listShuntKernels : Dict.Dict Name.Name Int
+listShuntKernels =
+    Dict.fromList
+        [ ( "reverse", 1 )
+        , ( "append", 2 )
+        , ( "concat", 1 )
+        , ( "take", 2 )
+        , ( "drop", 2 )
+        ]
+
+
+{-| Under `config.list.chunks`, rewrite a recognized combinator
+specialization's body into a direct saturated kernel call. Guarded hard:
+only a capture-free `MonoDefine`/`MonoClosure` node whose flat param count
+matches the combinator's arity is rewritten (recognition is by
+specialization ORIGIN via the registry, so user functions named `reverse`
+are never touched); every other shape — staged closures, `MonoTailFunc`
+TCO forms (elm/core `drop`), partial stagings — compiles unchanged.
+Flag-off this is the identity, so default builds are byte-identical.
+-}
+listChunksShunt : Ctx.Context -> Mono.SpecId -> Mono.MonoNode -> Mono.MonoNode
+listChunksShunt ctx specId node =
+    if not ctx.ecoConfig.list.chunks then
+        node
+
+    else
+        case Registry.lookupSpecKey specId ctx.registry of
+            Just ( Mono.Global (IO.Canonical pkg "List") name, _ ) ->
+                if pkg == Pkg.core then
+                    case Dict.get name listShuntKernels of
+                        Just arity ->
+                            listShuntNode name arity node
+
+                        Nothing ->
+                            node
+
+                else
+                    node
+
+            _ ->
+                node
+
+
+listShuntNode : Name.Name -> Int -> Mono.MonoNode -> Mono.MonoNode
+listShuntNode kernelName arity node =
+    case node of
+        Mono.MonoDefine (Mono.MonoClosure ci body ct) nt ->
+            if List.isEmpty ci.captures && List.length ci.params == arity then
+                Mono.MonoDefine
+                    (Mono.MonoClosure ci
+                        (listShuntCall kernelName ci.params (Mono.typeOf body))
+                        ct
+                    )
+                    nt
+
+            else
+                node
+
+        _ ->
+            node
+
+
+{-| The synthesized body: one saturated `CallDirectFlat` kernel call over
+the closure's own params. `CallDirectFlat` routes generateCall to the
+ABI-flattened kernel path (KernelAbi derives the C symbol + per-arg ABI
+from the concrete param types — e.g. `take`'s `Int` argument crosses as
+raw i64, matching the C export's `int64_t`).
+-}
+listShuntCall : Name.Name -> List ( Name.Name, Mono.MonoType ) -> Mono.MonoType -> Mono.MonoExpr
+listShuntCall kernelName params resultTy =
+    let
+        kernelTy : Mono.MonoType
+        kernelTy =
+            Mono.MFunction Mono.LTop (List.map Tuple.second params) resultTy
+
+        defaultInfo : Mono.CallInfo
+        defaultInfo =
+            Mono.defaultCallInfo
+
+        callInfo : Mono.CallInfo
+        callInfo =
+            { defaultInfo | callKind = Mono.CallDirectFlat }
+    in
+    Mono.MonoCall A.zero
+        (Mono.MonoVarKernel A.zero "Elm" "List" kernelName kernelTy)
+        (List.map (\( n, pt ) -> Mono.MonoVarLocal n pt) params)
+        resultTy
+        callInfo
+
+
+
 -- ====== GENERATE NODE ======
 
 
@@ -281,7 +399,10 @@ generateNode ctx specId node =
             specIdToFuncName ctx.registry specId
 
         ( ops, dirtyCtx ) =
-            generateNodeInner { ctx | currentFuncName = funcName } funcName specId node
+            generateNodeInner { ctx | currentFuncName = funcName }
+                funcName
+                specId
+                (listChunksShunt ctx specId node)
 
         -- Mark the main entrypoint's func.func with eco.shadow_roots so that
         -- EcoToLLVM installs a shadow root frame for its parameters (TCO safety).

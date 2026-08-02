@@ -222,6 +222,16 @@ applyEnvOverrides cfg =
                 (Utils.envLookupEnv "ECO_BORROW_REPORT" |> Task.mapError never)
                     |> Task.map (\brVal -> applyBorrowReportOverride brVal cfg20)
             )
+        |> Task.andThen
+            (\cfg21 ->
+                (Utils.envLookupEnv "ECO_LIST_CHUNKS" |> Task.mapError never)
+                    |> Task.map (\lcVal -> applyListChunksOverride lcVal cfg21)
+            )
+        |> Task.andThen
+            (\cfg22 ->
+                (Utils.envLookupEnv "ECO_LIST_REPORT" |> Task.mapError never)
+                    |> Task.map (\lrVal -> applyListReportOverride lrVal cfg22)
+            )
 
 
 {-| `ECO_BORROW=off|1|rc`: run the borrow-inference analysis (GlobalOpt
@@ -281,6 +291,63 @@ applyBorrowReportOverride maybeVal cfg =
                 cfg.borrow
         in
         { cfg | borrow = { borrow | enabled = True, report = True } }
+
+    else
+        cfg
+
+
+{-| `ECO_LIST_CHUNKS=1|0`: force chunked-list codegen on/off
+(plans/chunked-list-representation.md; artifact-affecting, hash token
+`lchunks=1`). Unknown values are ignored.
+-}
+applyListChunksOverride : Maybe String -> EcoConfig -> EcoConfig
+applyListChunksOverride maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            cfg
+
+        Just raw ->
+            let
+                t =
+                    String.toLower (String.trim raw)
+
+                listCfg =
+                    cfg.list
+            in
+            if t == "1" || t == "true" || t == "yes" || t == "on" then
+                { cfg | list = { listCfg | chunks = True } }
+
+            else if t == "0" || t == "off" then
+                { cfg | list = { listCfg | chunks = False } }
+
+            else
+                cfg
+
+
+{-| `ECO_LIST_REPORT=1|true|yes`: emit the List-combinator recognition
+census to stderr after GlobalOpt (output-only, excluded from `hash`).
+-}
+applyListReportOverride : Maybe String -> EcoConfig -> EcoConfig
+applyListReportOverride maybeVal cfg =
+    let
+        on =
+            case maybeVal of
+                Just v ->
+                    let
+                        t =
+                            String.toLower (String.trim v)
+                    in
+                    t == "1" || t == "true" || t == "yes"
+
+                Nothing ->
+                    False
+    in
+    if on then
+        let
+            listCfg =
+                cfg.list
+        in
+        { cfg | list = { listCfg | report = True } }
 
     else
         cfg

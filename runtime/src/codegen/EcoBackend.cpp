@@ -898,6 +898,112 @@ static void expandInlineAllocs(Module &m) {
 // ptrtoint feeds only a same-block bit-test chain (REP_LLVM_001(c)/(d)); it
 // has no foldable inttoptr partner because every slot decode is barriered or
 // typed (REP_LLVM_002 §7.6). Idempotent / cheap when there are no markers.
+// Chunked-list projections (plans/chunked-list-representation.md §6).
+// Expand `__eco_list_head_inline` / `__eco_list_tail_inline` markers into a
+// cell-fast / chunk-slow diamond:
+//
+//   base = __eco_resolve_fwd(v); tag = header(base) & mask;
+//   tag == Tag_Cons ?  load the cell slot (head +8 / tail +16) through the
+//                      __eco_slot_to_hptr barrier (REP_LLVM_002)
+//                   :  call the chunk-aware runtime helper (head is gc-leaf;
+//                      tail MAY ALLOCATE a successor view and is deliberately
+//                      NOT gc-leaf, so RS4GC statepoints it like any
+//                      allocating call — the HEAP_034 slow-edge pattern).
+//
+// Cells dominate spines (~99.8% measured on the flag-on self-compile), so
+// the fast edge carries branch weights. Markers exist for the same reason as
+// __eco_get_tag_inline: the projections sit inside single-block scf regions.
+// MUST run before expandInlineDerefs (emits __eco_resolve_fwd) and before
+// every RS4GC flavour. Only chunk-compiled modules contain these markers.
+static void expandListProjMarker(Module &m, const char *markerName,
+                                 uint64_t slotOffset, const char *slowName,
+                                 bool slowIsGcLeaf) {
+    Function *marker = m.getFunction(markerName);
+    if (!marker || marker->use_empty()) {
+        if (marker) marker->eraseFromParent();
+        return;
+    }
+
+    LLVMContext &ctx = m.getContext();
+    Type *i8Ty = Type::getInt8Ty(ctx);
+    Type *i32Ty = Type::getInt32Ty(ctx);
+    Type *i64Ty = Type::getInt64Ty(ctx);
+    PointerType *as1 = PointerType::get(ctx, 1);
+    const uint64_t tagMask = (1ULL << TAG_BITS) - 1;
+
+    FunctionCallee fwdMarker = m.getOrInsertFunction(
+        "__eco_resolve_fwd", FunctionType::get(as1, {as1}, /*isVarArg=*/false));
+    if (auto *ff = dyn_cast<Function>(fwdMarker.getCallee()))
+        ff->addFnAttr("gc-leaf-function");
+
+    FunctionCallee slotBarrier = m.getOrInsertFunction(
+        eco::kSlotToHPtrSym, FunctionType::get(as1, {i64Ty}, /*isVarArg=*/false));
+    if (auto *bf = dyn_cast<Function>(slotBarrier.getCallee()))
+        bf->addFnAttr("gc-leaf-function");
+
+    FunctionCallee slowCallee = m.getOrInsertFunction(
+        slowName, FunctionType::get(as1, {as1}, /*isVarArg=*/false));
+    if (slowIsGcLeaf)
+        if (auto *sf = dyn_cast<Function>(slowCallee.getCallee()))
+            sf->addFnAttr("gc-leaf-function");
+
+    MDBuilder mdb(ctx);
+    MDNode *cellLikely = mdb.createBranchWeights(/*cell=*/1u << 20, /*chunk=*/1);
+
+    SmallVector<CallInst *, 64> calls;
+    for (User *u : marker->users())
+        if (auto *ci = dyn_cast<CallInst>(u))
+            calls.push_back(ci);
+
+    for (CallInst *ci : calls) {
+        Value *v = ci->getArgOperand(0);
+        IRBuilder<> b(ci);
+        CallInst *base = b.CreateCall(fwdMarker, {v}, "eco.listbase");
+        Value *hdr = b.CreateAlignedLoad(i32Ty, base, Align(8), "eco.listhdr");
+        Value *tag = b.CreateAnd(hdr, tagMask, "eco.listtag");
+        Value *isCell = b.CreateICmpEQ(
+            tag, ConstantInt::get(i32Ty, (uint64_t)Elm::Tag_Cons),
+            "eco.iscell");
+
+        Instruction *cellTerm = nullptr, *chunkTerm = nullptr;
+        SplitBlockAndInsertIfThenElse(isCell, ci, &cellTerm, &chunkTerm,
+                                      cellLikely);
+
+        IRBuilder<> fb(cellTerm);
+        Value *slotPtr = fb.CreateGEP(
+            i8Ty, base, ConstantInt::get(i64Ty, (uint64_t)slotOffset),
+            "eco.slotp");
+        Value *slotWord =
+            fb.CreateAlignedLoad(i64Ty, slotPtr, Align(8), "eco.slotw");
+        CallInst *fastVal =
+            fb.CreateCall(slotBarrier, {slotWord}, "eco.fastproj");
+        BasicBlock *cellBB = cellTerm->getParent();
+
+        IRBuilder<> sb(chunkTerm);
+        CallInst *slowVal = sb.CreateCall(slowCallee, {v}, "eco.slowproj");
+        BasicBlock *chunkBB = chunkTerm->getParent();
+
+        IRBuilder<> pb(&*ci->getParent()->getFirstInsertionPt());
+        PHINode *phi = pb.CreatePHI(as1, 2, "eco.listproj");
+        phi->addIncoming(fastVal, cellBB);
+        phi->addIncoming(slowVal, chunkBB);
+
+        ci->replaceAllUsesWith(phi);
+        ci->eraseFromParent();
+    }
+
+    if (!marker->use_empty())
+        report_fatal_error("expandListProjMarker: surviving marker use");
+    marker->eraseFromParent();
+}
+
+static void expandListProjMarkers(Module &m) {
+    expandListProjMarker(m, "__eco_list_head_inline", /*slotOffset=*/8,
+                         "eco_list_head_hybrid", /*slowIsGcLeaf=*/true);
+    expandListProjMarker(m, "__eco_list_tail_inline", /*slotOffset=*/16,
+                         "eco_list_tail_hybrid", /*slowIsGcLeaf=*/false);
+}
+
 static void expandGetTagMarkers(Module &m) {
     Function *marker = m.getFunction("__eco_get_tag_inline");
     if (!marker || marker->use_empty()) {
@@ -970,6 +1076,20 @@ static void expandGetTagMarkers(Module &m) {
         IRBuilder<> ob(otherTerm);
         Value *isCons =
             ob.CreateICmpEQ(tag, ConstantInt::get(i32Ty, (uint64_t)Elm::Tag_Cons));
+        // Chunked-list modules: a Tag_ConsChunk view is also the list Cons
+        // constructor (ctor 1) for case dispatch. The extra compare is
+        // emitted ONLY when the module enables chunk production (detected
+        // via the injected eco_enable_list_chunks call), so non-chunk
+        // binaries keep today's diamond byte-for-byte.
+        {
+            Function *chunksEnable = m.getFunction("eco_enable_list_chunks");
+            if (chunksEnable && !chunksEnable->use_empty()) {
+                Value *isChunk = ob.CreateICmpEQ(
+                    tag,
+                    ConstantInt::get(i32Ty, (uint64_t)Elm::Tag_ConsChunk));
+                isCons = ob.CreateOr(isCons, isChunk, "eco.isconslike");
+            }
+        }
         Value *consOrZero = ob.CreateSelect(isCons, ConstantInt::get(i32Ty, 1),
                                             ConstantInt::get(i32Ty, 0));
         BasicBlock *otherBB = otherTerm->getParent();
@@ -1160,6 +1280,17 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
     // P2.5 R1b: expand get_tag markers FIRST (their heap arms emit
     // __eco_resolve_fwd calls the next expansion consumes).
     expandGetTagMarkers(m);
+    // Chunked-list projection markers (must precede expandInlineDerefs —
+    // both this and get_tag emit __eco_resolve_fwd calls it then expands).
+    expandListProjMarkers(m);
+    // Scratch-stack helpers (chunked-list Tier-B templates): mark and the
+    // pushes never GC-allocate, so exempt them from RS4GC statepointing.
+    // eco_scratch_finish allocates and must statepoint normally.
+    for (const char *leaf : {"eco_scratch_mark", "eco_scratch_push_boxed",
+                             "eco_scratch_push_scalar"}) {
+        if (Function *lf = m.getFunction(leaf))
+            lf->addFnAttr("gc-leaf-function");
+    }
     // Plan P2: expand inline-deref markers before RS4GC / partition splitting.
     expandInlineDerefs(m);
     // Inline nursery allocation (HEAP_034): expand bump-diamond markers.

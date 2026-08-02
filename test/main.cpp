@@ -28,6 +28,7 @@
 #include "allocator/Utf8StringTest.hpp"
 #include "allocator/StringOpsTest.hpp"
 #include "allocator/ListOpsTest.hpp"
+#include "allocator/ChunkedListTest.hpp"
 #include "allocator/BytesOpsTest.hpp"
 #include "allocator/RuntimeExportsTest.hpp"
 #include "allocator/GenericApplyBoxingTest.hpp"
@@ -738,6 +739,10 @@ int main(int argc, char* argv[]) {
     Testing::TestSuite listOpsTests("ListOps");
     registerListOpsTests(listOpsTests);
 
+    // Chunked-list representation tests (hybrid spines, L1.2)
+    Testing::TestSuite chunkedListTests("ChunkedList");
+    registerChunkedListTests(chunkedListTests);
+
     // Bytes operations tests
     Testing::TestSuite bytesOpsTests("BytesOps");
     registerBytesOpsTests(bytesOpsTests);
@@ -869,6 +874,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(utf8StringTests));
     suite.add(std::move(stringOpsTests));
     suite.add(std::move(listOpsTests));
+    suite.add(std::move(chunkedListTests));
     suite.add(std::move(bytesOpsTests));
     suite.add(std::move(runtimeExportsTests));
     suite.add(std::move(genericApplyBoxingTests));

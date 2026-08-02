@@ -297,6 +297,11 @@ Scheduler::MailboxPopResult Scheduler::mailboxPopFront(HPointer procHP) {
     // procHP, mailbox, reversed, current AND the per-iteration `next` tail
     // snapshot (the loop's advance value) all need to survive each cons() —
     // any of them can be moved by GC inside cons.
+    //
+    // NB (chunked lists, plans/chunked-list-representation.md): mailboxes are
+    // runtime-INTERNAL lists built exclusively by this file's cons() calls,
+    // so they are cell-only by construction and these raw Cons walks stay
+    // valid without chunk-view handling.
     HPointer reversed = listNil();
     HPointer current = mailbox;
     HPointer next = listNil();

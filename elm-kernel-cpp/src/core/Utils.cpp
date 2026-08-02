@@ -221,6 +221,83 @@ static int compareUnboxableSlot(Allocator& allocator,
     }
 }
 
+// Non-empty lists appear in two spine-node forms (Tag_Cons cells and
+// Tag_ConsChunk views; hybrid spines, plans/chunked-list-representation.md
+// §6 / HEAP_039): chunk boundaries and node forms are NOT part of a list's
+// identity, so eq/compare walk the logical element sequence via
+// alloc::ListCursor — exactly the multi-representation treatment strings
+// already get above the tag-difference fallback.
+static inline bool isListNode(void* p) {
+    Tag t = getTag(p);
+    return t == Tag_Cons || t == Tag_ConsChunk;
+}
+
+// One list element vs another, preserving the historical semantics of the
+// old Tag_Cons compare arm: same-kind → compareUnboxableSlot; one side boxed
+// → resolve and compare when the boxed form matches the primitive kind;
+// otherwise arbitrary total order by kind.
+static int compareListElem(Elm::Allocator& allocator,
+                           Elm::Unboxable aSlot, uint32_t aKind,
+                           Elm::Unboxable bSlot, uint32_t bKind,
+                           int (*cmpFn)(void*, void*)) {
+    if (aKind == bKind) {
+        return compareUnboxableSlot(allocator, aSlot, bSlot, aKind, cmpFn);
+    }
+    if (aKind == 0 || bKind == 0) {
+        HPointer boxedHP = (aKind == 0) ? aSlot.p : bSlot.p;
+        Elm::Unboxable prim = (aKind == 0) ? bSlot : aSlot;
+        uint32_t primKind = (aKind == 0) ? bKind : aKind;
+        void* boxedPtr = safeResolve(allocator, boxedHP);
+        if (!boxedPtr) return (aKind == 0) ? 1 : -1;
+        Header* hdr = static_cast<Header*>(boxedPtr);
+        if ((hdr->tag == Tag_Int && primKind == 1)
+         || (hdr->tag == Tag_Float && primKind == 2)
+         || (hdr->tag == Tag_Char && primKind == 3)) {
+            int ord = 0;
+            if (primKind == 1) {
+                i64 bv = static_cast<ElmInt*>(boxedPtr)->value;
+                i64 uv = prim.i;
+                if (aKind == 0) { ord = (bv == uv) ? 0 : (bv < uv ? -1 : 1); }
+                else             { ord = (uv == bv) ? 0 : (uv < bv ? -1 : 1); }
+            } else if (primKind == 2) {
+                f64 bv = static_cast<ElmFloat*>(boxedPtr)->value;
+                f64 uv = prim.f;
+                if (aKind == 0) { ord = (bv == uv) ? 0 : (bv < uv ? -1 : 1); }
+                else             { ord = (uv == bv) ? 0 : (uv < bv ? -1 : 1); }
+            } else {
+                u16 bv = static_cast<ElmChar*>(boxedPtr)->value;
+                u16 uv = prim.c;
+                if (aKind == 0) { ord = (bv == uv) ? 0 : (bv < uv ? -1 : 1); }
+                else             { ord = (uv == bv) ? 0 : (uv < bv ? -1 : 1); }
+            }
+            return ord;
+        }
+        return aKind < bKind ? -1 : 1;
+    }
+    return aKind < bKind ? -1 : 1;
+}
+
+static int cmp(void* a, void* b);
+
+// Form-blind list comparison over hybrid spines (used for the RARE cases: a
+// cross-form pair, or a cell walk that runs into a chunk view mid-spine).
+// The hot cells-only path never comes here.
+static int cmpListHybrid(void* a, void* b) {
+    auto& allocator = Allocator::instance();
+    alloc::ListCursor ca(allocator.wrap(a));
+    alloc::ListCursor cb(allocator.wrap(b));
+    while (!ca.done() && !cb.done()) {
+        int ord = compareListElem(allocator, ca.current(), ca.currentKind(),
+                                  cb.current(), cb.currentKind(), cmp);
+        if (ord != 0) return ord;
+        ca.next();
+        cb.next();
+    }
+    if (!ca.done()) return 1;   // a is longer
+    if (!cb.done()) return -1;  // b is longer
+    return 0;
+}
+
 // Low-level comparison returning -1 (LT), 0 (EQ), or 1 (GT)
 static int cmp(void* a, void* b) {
     // Null checks
@@ -239,8 +316,15 @@ static int cmp(void* a, void* b) {
         return StringOps::compare(a, b);
     }
 
-    // Different types - compare by tag
+    // Different types - compare by tag. Lists are the one family with two
+    // heap forms (Tag_Cons cells / Tag_ConsChunk views, HEAP_039): a
+    // cross-form pair must compare by content, so the form-blind walk is
+    // checked HERE — inside the mismatch branch — where it costs nothing on
+    // the hot equal-tag path.
     if (tagA != tagB) {
+        if (isListNode(a) && isListNode(b)) {
+            return cmpListHybrid(a, b);
+        }
         return static_cast<int>(tagA) - static_cast<int>(tagB);
     }
 
@@ -317,76 +401,43 @@ static int cmp(void* a, void* b) {
         }
 
         case Tag_Cons: {
-            // Compare lists element by element
+            // Cells-fast walk — byte-comparable to the pre-chunk code for
+            // pure cell spines (the overwhelmingly common case). Falls over
+            // to the cursor-based hybrid walk the moment either spine hits
+            // a chunk view (Tag_ConsChunk lands here only via cmpListHybrid
+            // from the tag-mismatch branch, or mid-spine).
             Cons* ax = static_cast<Cons*>(a);
             Cons* bx = static_cast<Cons*>(b);
 
             while (ax && bx) {
                 Header* ahdr = getHeader(ax);
                 Header* bhdr = getHeader(bx);
-
-                uint32_t aKind = Elm::tupleFieldKind(ahdr->unboxed, 0);
-                uint32_t bKind = Elm::tupleFieldKind(bhdr->unboxed, 0);
-
-                if (aKind == bKind) {
-                    int ord = compareUnboxableSlot(allocator, ax->head, bx->head, aKind, cmp);
-                    if (ord != 0) return ord;
-                } else {
-                    // Mixed kinds — attempt mixed Int+boxed-Int comparison for backward
-                    // compatibility with mono-type lists; otherwise arbitrary total order
-                    // by kind.
-                    if (aKind == 0 || bKind == 0) {
-                        // One side boxed, the other primitive: resolve boxed and compare
-                        // if both are the same primitive type.
-                        HPointer boxedHP = (aKind == 0) ? ax->head.p : bx->head.p;
-                        Elm::Unboxable prim = (aKind == 0) ? bx->head : ax->head;
-                        uint32_t primKind = (aKind == 0) ? bKind : aKind;
-                        void* boxedPtr = safeResolve(allocator, boxedHP);
-                        if (!boxedPtr) return (aKind == 0) ? 1 : -1;
-                        Header* hdr = static_cast<Header*>(boxedPtr);
-                        if ((hdr->tag == Tag_Int && primKind == 1)
-                         || (hdr->tag == Tag_Float && primKind == 2)
-                         || (hdr->tag == Tag_Char && primKind == 3)) {
-                            // Compare boxed primitive vs unboxed primitive.
-                            int ord = 0;
-                            if (primKind == 1) {
-                                i64 bv = static_cast<ElmInt*>(boxedPtr)->value;
-                                i64 uv = prim.i;
-                                if (aKind == 0) { ord = (bv == uv) ? 0 : (bv < uv ? -1 : 1); }
-                                else             { ord = (uv == bv) ? 0 : (uv < bv ? -1 : 1); }
-                            } else if (primKind == 2) {
-                                f64 bv = static_cast<ElmFloat*>(boxedPtr)->value;
-                                f64 uv = prim.f;
-                                if (aKind == 0) { ord = (bv == uv) ? 0 : (bv < uv ? -1 : 1); }
-                                else             { ord = (uv == bv) ? 0 : (uv < bv ? -1 : 1); }
-                            } else {
-                                u16 bv = static_cast<ElmChar*>(boxedPtr)->value;
-                                u16 uv = prim.c;
-                                if (aKind == 0) { ord = (bv == uv) ? 0 : (bv < uv ? -1 : 1); }
-                                else             { ord = (uv == bv) ? 0 : (uv < bv ? -1 : 1); }
-                            }
-                            if (ord != 0) return ord;
-                        } else {
-                            return aKind < bKind ? -1 : 1;
-                        }
-                    } else {
-                        return aKind < bKind ? -1 : 1;
-                    }
+                if (ahdr->tag != Tag_Cons || bhdr->tag != Tag_Cons) {
+                    return cmpListHybrid(ax, bx);
                 }
 
-                // Move to tails
-                if (alloc::isNil(ax->tail)) ax = nullptr;
-                else ax = static_cast<Cons*>(safeResolve(allocator, ax->tail));
+                int ord = compareListElem(
+                    allocator, ax->head,
+                    Elm::tupleFieldKind(ahdr->unboxed, 0), bx->head,
+                    Elm::tupleFieldKind(bhdr->unboxed, 0), cmp);
+                if (ord != 0) return ord;
 
-                if (alloc::isNil(bx->tail)) bx = nullptr;
-                else bx = static_cast<Cons*>(safeResolve(allocator, bx->tail));
+                ax = alloc::isNil(ax->tail)
+                         ? nullptr
+                         : static_cast<Cons*>(safeResolve(allocator, ax->tail));
+                bx = alloc::isNil(bx->tail)
+                         ? nullptr
+                         : static_cast<Cons*>(safeResolve(allocator, bx->tail));
             }
 
-            // Shorter list is less
             if (ax != nullptr) return 1;   // a is longer
             if (bx != nullptr) return -1;  // b is longer
             return 0;
         }
+
+        case Tag_ConsChunk:
+            // Both sides are views (equal-tag dispatch): form-blind walk.
+            return cmpListHybrid(a, b);
 
         default:
             return 0;  // Other types compare as equal
@@ -411,6 +462,53 @@ HPointer compare(void* a, void* b) {
 
 bool equal(void* a, void* b) {
     return eqHelp(a, b, 0);
+}
+
+// One list element vs another for equality, preserving the historical
+// semantics of the old Tag_Cons eq arm: same-kind → eqUnboxableSlot; one
+// side boxed → resolve and compare against the primitive; otherwise unequal.
+static bool eqListElem(Elm::Allocator& allocator,
+                       Elm::Unboxable aSlot, uint32_t aKind,
+                       Elm::Unboxable bSlot, uint32_t bKind, int depth) {
+    if (aKind == bKind) {
+        return eqUnboxableSlot(allocator, aSlot, bSlot, aKind, bKind, depth);
+    }
+    if (aKind == 0 || bKind == 0) {
+        HPointer boxedHP = (aKind == 0) ? aSlot.p : bSlot.p;
+        Elm::Unboxable prim = (aKind == 0) ? bSlot : aSlot;
+        uint32_t primKind = (aKind == 0) ? bKind : aKind;
+        void* boxedPtr = safeResolve(allocator, boxedHP);
+        if (!boxedPtr) return false;
+        Header* hdr = static_cast<Header*>(boxedPtr);
+        if (hdr->tag == Tag_Int && primKind == 1) {
+            return static_cast<ElmInt*>(boxedPtr)->value == prim.i;
+        }
+        if (hdr->tag == Tag_Float && primKind == 2) {
+            return static_cast<ElmFloat*>(boxedPtr)->value == prim.f;
+        }
+        if (hdr->tag == Tag_Char && primKind == 3) {
+            return static_cast<ElmChar*>(boxedPtr)->value == prim.c;
+        }
+        return false;
+    }
+    return false;
+}
+
+// Form-blind list equality over hybrid spines (rare paths only — see
+// cmpListHybrid).
+static bool eqListHybrid(void* a, void* b, int depth) {
+    auto& allocator = Allocator::instance();
+    alloc::ListCursor ca(allocator.wrap(a));
+    alloc::ListCursor cb(allocator.wrap(b));
+    while (!ca.done() && !cb.done()) {
+        if (!eqListElem(allocator, ca.current(), ca.currentKind(),
+                        cb.current(), cb.currentKind(), depth)) {
+            return false;
+        }
+        ca.next();
+        cb.next();
+    }
+    return ca.done() && cb.done();
 }
 
 static bool eqHelp(void* a, void* b, int depth) {
@@ -441,8 +539,14 @@ static bool eqHelp(void* a, void* b, int depth) {
         return std::memcmp(va.data, vb.data, va.length) == 0;
     }
 
-    // Type mismatch
+    // Type mismatch. Lists are the one family with two heap forms
+    // (cells / chunk views, HEAP_039): a cross-form pair must compare by
+    // content, checked HERE — inside the mismatch branch — so the hot
+    // equal-tag path pays nothing.
     if (tagA != tagB) {
+        if (isListNode(a) && isListNode(b)) {
+            return eqListHybrid(a, b, depth);
+        }
         // TRACE: log tag mismatches to stderr for debugging.
         static int traceCount = 0;
         if (traceCount < 10) {
@@ -512,50 +616,38 @@ static bool eqHelp(void* a, void* b, int depth) {
         }
 
         case Tag_Cons: {
-            // Compare lists element by element
+            // Cells-fast walk with chunk escape (see cmp's Tag_Cons arm).
             Cons* ax = static_cast<Cons*>(a);
             Cons* bx = static_cast<Cons*>(b);
 
             while (ax && bx) {
                 Header* ahdr = getHeader(ax);
                 Header* bhdr = getHeader(bx);
-                uint32_t aKind = Elm::tupleFieldKind(ahdr->unboxed, 0);
-                uint32_t bKind = Elm::tupleFieldKind(bhdr->unboxed, 0);
+                if (ahdr->tag != Tag_Cons || bhdr->tag != Tag_Cons) {
+                    return eqListHybrid(ax, bx, depth);
+                }
 
-                if (aKind == bKind) {
-                    if (!eqUnboxableSlot(allocator, ax->head, bx->head, aKind, bKind, depth)) return false;
-                } else if (aKind == 0 || bKind == 0) {
-                    // One boxed, one unboxed primitive. Resolve boxed side to check if
-                    // it matches the primitive value.
-                    HPointer boxedHP = (aKind == 0) ? ax->head.p : bx->head.p;
-                    Elm::Unboxable prim = (aKind == 0) ? bx->head : ax->head;
-                    uint32_t primKind = (aKind == 0) ? bKind : aKind;
-                    void* boxedPtr = safeResolve(allocator, boxedHP);
-                    if (!boxedPtr) return false;
-                    Header* hdr = static_cast<Header*>(boxedPtr);
-                    if (hdr->tag == Tag_Int && primKind == 1) {
-                        if (static_cast<ElmInt*>(boxedPtr)->value != prim.i) return false;
-                    } else if (hdr->tag == Tag_Float && primKind == 2) {
-                        if (static_cast<ElmFloat*>(boxedPtr)->value != prim.f) return false;
-                    } else if (hdr->tag == Tag_Char && primKind == 3) {
-                        if (static_cast<ElmChar*>(boxedPtr)->value != prim.c) return false;
-                    } else {
-                        return false;
-                    }
-                } else {
+                if (!eqListElem(allocator, ax->head,
+                                Elm::tupleFieldKind(ahdr->unboxed, 0),
+                                bx->head,
+                                Elm::tupleFieldKind(bhdr->unboxed, 0),
+                                depth)) {
                     return false;
                 }
 
-                // Move to tails
-                if (alloc::isNil(ax->tail)) ax = nullptr;
-                else ax = static_cast<Cons*>(safeResolve(allocator, ax->tail));
-
-                if (alloc::isNil(bx->tail)) bx = nullptr;
-                else bx = static_cast<Cons*>(safeResolve(allocator, bx->tail));
+                ax = alloc::isNil(ax->tail)
+                         ? nullptr
+                         : static_cast<Cons*>(safeResolve(allocator, ax->tail));
+                bx = alloc::isNil(bx->tail)
+                         ? nullptr
+                         : static_cast<Cons*>(safeResolve(allocator, bx->tail));
             }
 
             return ax == nullptr && bx == nullptr;
         }
+
+        case Tag_ConsChunk:
+            return eqListHybrid(a, b, depth);
 
         case Tag_Custom: {
             Custom* ac = static_cast<Custom*>(a);
@@ -741,8 +833,9 @@ HPointer append(void* a, void* b) {
         return StringOps::append(a, b);
     }
 
-    if (tagA == Tag_Cons || alloc::isNil(Allocator::instance().wrap(a))) {
-        // List append
+    if (tagA == Tag_Cons || tagA == Tag_ConsChunk
+        || alloc::isNil(Allocator::instance().wrap(a))) {
+        // List append (either spine-node form; hybrid spines)
         HPointer listA = Allocator::instance().wrap(a);
         HPointer listB = Allocator::instance().wrap(b);
         return ListOps::append(listA, listB);

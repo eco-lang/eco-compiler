@@ -53,6 +53,13 @@ static u16 consCellChar(Allocator& allocator, Cons* c) {
     return static_cast<ElmChar*>(charObj)->value;
 }
 
+// Same, from a (element, kind) pair produced by a hybrid-spine cursor.
+static u16 elemChar(Allocator& allocator, Elm::Unboxable v, u8 kind) {
+    if (kind != 0) return v.c;
+    void* charObj = allocator.resolve(v.p);
+    return static_cast<ElmChar*>(charObj)->value;
+}
+
 HPointer fromList(HPointer chars) {
     // Two-pass: count list length, allocate exact-size result, then walk
     // again writing chars directly into the heap object. Eliminates the
@@ -61,14 +68,9 @@ HPointer fromList(HPointer chars) {
 
     size_t count = 0;
     u16 acc = 0;  // or-accumulate: acc < 0x80 <=> every char is ASCII
-    HPointer current = chars;
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-        Cons* c = static_cast<Cons*>(cell);
-        acc |= consCellChar(allocator, c);
+    for (alloc::ListCursor c(chars); !c.done(); c.next()) {
+        acc |= elemChar(allocator, c.current(), c.currentKind());
         ++count;
-        current = c->tail;
     }
     if (count == 0) return alloc::emptyString();
 
@@ -83,13 +85,9 @@ HPointer fromList(HPointer chars) {
             out = StringOps::allocAsciiOut(count);
         }
         size_t idx = 0;
-        current = chars;
-        while (!alloc::isNil(current)) {
-            void* cell = allocator.resolve(current);
-            if (!cell) break;
-            Cons* c = static_cast<Cons*>(cell);
-            out.dst[idx++] = static_cast<u8>(consCellChar(allocator, c));
-            current = c->tail;
+        for (alloc::ListCursor c(chars); !c.done(); c.next()) {
+            out.dst[idx++] =
+                static_cast<u8>(elemChar(allocator, c.current(), c.currentKind()));
         }
         return StringOps::finishAsciiOut(out);
     }
@@ -102,13 +100,8 @@ HPointer fromList(HPointer chars) {
         out = alloc::allocStringBlank(count);
     }
     size_t idx = 0;
-    current = chars;
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-        Cons* c = static_cast<Cons*>(cell);
-        out.chars[idx++] = consCellChar(allocator, c);
-        current = c->tail;
+    for (alloc::ListCursor c(chars); !c.done(); c.next()) {
+        out.chars[idx++] = elemChar(allocator, c.current(), c.currentKind());
     }
     return out.hp;
 }

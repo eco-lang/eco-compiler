@@ -441,19 +441,13 @@ static json heapJsonToNlohmann(uint64_t jvalEnc) {
 
         case CTOR_JSON_OBJECT: {
             json obj = json::object();
-            HPointer kvList = c->values[0].p;
-            while (!isNil(kvList)) {
-                void* cellPtr = allocator.resolve(kvList);
-                Cons* cell = static_cast<Cons*>(cellPtr);
-
-                void* tuplePtr = allocator.resolve(cell->head.p);
+            for (alloc::ListCursor kv(c->values[0].p); !kv.done(); kv.next()) {
+                void* tuplePtr = allocator.resolve(kv.current().p);
                 Tuple2* tup = static_cast<Tuple2*>(tuplePtr);
 
                 std::string key = elmStringToStd(Export::encode(tup->a.p));
                 json val = heapJsonToNlohmann(Export::encode(tup->b.p));
                 obj[key] = val;
-
-                kvList = cell->tail;
             }
             return obj;
         }
@@ -908,19 +902,17 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
             std::string fieldName =
                 elmStringToStd(Export::encode(decoder->values[0].p));
             HPointer nestedDecHP = decoder->values[1].p;
-            HPointer kvList = jval->values[0].p;
 
-            // Walk the key/value list. `kvList` and `nestedDecHP` survive
-            // a recursive `runDecoder` (in the matching branch) and any
-            // future allocations.
-            StackRootGuard fieldRoots(&kvList, &nestedDecHP);
+            // Walk the key/value list (hybrid spines: RootedListCursor keeps
+            // the spine node rooted and re-resolves per element).
+            // `nestedDecHP` survives into the recursive `runDecoder` call.
+            StackRootGuard fieldRoots(&nestedDecHP);
+            alloc::RootedListCursor kv(jval->values[0].p);
+            Unboxable kvHead;
+            u8 kvKind;
 
-            while (!isNil(kvList)) {
-                Cons* cell = static_cast<Cons*>(allocator.resolve(kvList));
-                HPointer headHP = cell->head.p;
-                HPointer tailHP = cell->tail;
-
-                Tuple2* tup = static_cast<Tuple2*>(allocator.resolve(headHP));
+            while (kv.read(kvHead, kvKind)) {
+                Tuple2* tup = static_cast<Tuple2*>(allocator.resolve(kvHead.p));
                 HPointer keyHP = tup->a.p;
                 HPointer valHP = tup->b.p;
 
@@ -929,7 +921,7 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
                     return runDecoder(nestedDecHP, Export::encode(valHP));
                 }
 
-                kvList = tailHP;
+                kv.advance();
             }
 
             return makeErr("Expecting an OBJECT with a field named `" + fieldName + "`");
@@ -976,13 +968,8 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
             // here; safe to walk with raw pointers if we re-resolve cell on
             // each iteration).
             std::vector<HPointer> tuples;
-            {
-                HPointer kvList = jval->values[0].p;
-                while (!isNil(kvList)) {
-                    Cons* cell = static_cast<Cons*>(allocator.resolve(kvList));
-                    tuples.push_back(cell->head.p);
-                    kvList = cell->tail;
-                }
+            for (alloc::ListCursor kv(jval->values[0].p); !kv.done(); kv.next()) {
+                tuples.push_back(kv.current().p);
             }
 
             // Build the result list in reverse. Pin `result`, `valDecHP`,
@@ -1096,25 +1083,19 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
         }
 
         case DEC_ONEOF: {
-            HPointer decoders = decoder->values[0].p;
+            // RootedListCursor keeps the spine node rooted and re-resolves
+            // fresh on every read/advance, so the recursive runDecoder GC
+            // points are safe (hybrid spines: cells + chunk views).
+            alloc::RootedListCursor decs(decoder->values[0].p);
+            Unboxable decHead;
+            u8 decKind;
 
-            // `decoders` (the cons-list head) and the running tail must
-            // survive recursive `runDecoder` calls.
-            StackRootGuard guard(&decoders);
-
-            while (!isNil(decoders)) {
-                Cons* cell = static_cast<Cons*>(allocator.resolve(decoders));
-                HPointer decHP = cell->head.p;
-
-                uint64_t result = runDecoder(decHP, jvalEnc);
+            while (decs.read(decHead, decKind)) {
+                uint64_t result = runDecoder(decHead.p, jvalEnc);
                 if (isOk(result)) {
                     return result;
                 }
-
-                // Advance via the rooted cursor: runDecoder is a GC point,
-                // which updates `decoders` (rooted above) but would leave a
-                // pre-call tail snapshot stale.
-                decoders = static_cast<Cons*>(allocator.resolve(decoders))->tail;
+                decs.advance();
             }
 
             return makeErr("Ran into a oneOf with no possibilities");
@@ -1294,12 +1275,8 @@ static json elmToJson(uint64_t valueEnc) {
                 // The internal list is in reverse order because List.foldl + cons
                 // prepends each element. Collect and reverse to restore original order.
                 std::vector<json> elements;
-                HPointer list = c->values[0].p;
-                while (!isNil(list)) {
-                    void* cellPtr = allocator.resolve(list);
-                    Cons* cell = static_cast<Cons*>(cellPtr);
-                    elements.push_back(elmToJson(Export::encode(cell->head.p)));
-                    list = cell->tail;
+                for (alloc::ListCursor l(c->values[0].p); !l.done(); l.next()) {
+                    elements.push_back(elmToJson(Export::encode(l.current().p)));
                 }
                 std::reverse(elements.begin(), elements.end());
                 return json(elements);
@@ -1307,19 +1284,13 @@ static json elmToJson(uint64_t valueEnc) {
 
             case ENC_OBJECT: {
                 json obj = json::object();
-                HPointer list = c->values[0].p;
-                while (!isNil(list)) {
-                    void* cellPtr = allocator.resolve(list);
-                    Cons* cell = static_cast<Cons*>(cellPtr);
-
-                    void* tuplePtr = allocator.resolve(cell->head.p);
+                for (alloc::ListCursor l(c->values[0].p); !l.done(); l.next()) {
+                    void* tuplePtr = allocator.resolve(l.current().p);
                     Tuple2* tuple = static_cast<Tuple2*>(tuplePtr);
 
                     std::string key = elmStringToStd(Export::encode(tuple->a.p));
                     json val = elmToJson(Export::encode(tuple->b.p));
                     obj[key] = val;
-
-                    list = cell->tail;
                 }
                 return obj;
             }

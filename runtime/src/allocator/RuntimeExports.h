@@ -88,6 +88,16 @@ HPtr eco_alloc_custom(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_by
 /// @return HPointer (as uint64_t) to the allocated Cons object
 HPtr eco_alloc_cons(uint64_t head, HPtr tail, uint32_t head_unboxed);
 
+/// List scratch stack (chunked-list Tier-B templates). A cons-accumulation
+/// loop is rewritten to mark once, push per element, and finish once; finish
+/// builds entry[top-1] :: ... :: entry[mark] :: next as one dense chunk (or
+/// cells when small / over-cap / chunks-off) and pops to the mark. Entries
+/// are GC roots (external root scanner), so code may allocate between pushes.
+int64_t eco_scratch_mark(void);
+void eco_scratch_push_boxed(HPtr value);
+void eco_scratch_push_scalar(uint64_t bits, int64_t kind);
+HPtr eco_scratch_finish(int64_t mark, HPtr next, int64_t kind);
+
 /// Allocates and initializes a Tuple2.
 /// @param a First element (HPointer or unboxed primitive as uint64_t)
 /// @param b Second element (HPointer or unboxed primitive as uint64_t)

@@ -9,19 +9,59 @@
 namespace Elm {
 namespace ListOps {
 
+namespace {
+
+// Length + element-kind uniformity of a hybrid spine, in one non-allocating
+// walk. `kind` is meaningful only when `uniform` and n > 0.
+struct SpineShape {
+    u32 n = 0;
+    bool uniform = true;
+    u8 kind = 0;
+};
+
+SpineShape probeShape(HPointer list) {
+    SpineShape s;
+    bool first = true;
+    for (alloc::ListCursor c(list); !c.done(); c.next()) {
+        u8 k = c.currentKind();
+        if (first) {
+            s.kind = k;
+            first = false;
+        } else if (k != s.kind) {
+            s.uniform = false;
+        }
+        ++s.n;
+    }
+    return s;
+}
+
+// A kind-uniform batch of n elements is worth ONE dense backing when chunks
+// are enabled, the batch is non-tiny, and the backing stays under the
+// large-object threshold so it is nursery-born (plan §2.2 cap — an over-LOT
+// backing would land in pinned old gen and hold unrecorded old→young edges).
+bool chunkEligible(const SpineShape& s) {
+    return eco_g_list_chunks && s.uniform && s.n >= 4
+        && sizeof(ListBacking) + s.n * sizeof(Unboxable)
+               < Allocator::instance().getLargeObjectThreshold();
+}
+
+// Backing pointer of a freshly built view, re-resolved AFTER the view
+// allocation (the caller's raw backing pointer may be stale by then).
+ListBacking* resolveViewBacking(HPointer view) {
+    auto& allocator = Allocator::instance();
+    return static_cast<ListBacking*>(allocator.resolve(
+        static_cast<ConsChunk*>(allocator.resolve(view))->backing));
+}
+
+} // namespace
+
 HPointer head(HPointer list) {
-    if (alloc::isNil(list)) {
+    // Hybrid spines: the first element may live in a chunk view's backing.
+    alloc::ListCursor c(list);
+    if (c.done()) {
         return alloc::nothing();
     }
-
-    auto& allocator = Allocator::instance();
-    void* cell = allocator.resolve(list);
-    if (!cell) return alloc::nothing();
-
-    Cons* c = static_cast<Cons*>(cell);
-    Header* hdr = getHeader(cell);
-    u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
-    return alloc::justKind(c->head, head_kind);
+    return alloc::justKind(c.current(), c.currentKind());
 }
 
 HPointer tail(HPointer list) {
@@ -33,33 +73,20 @@ HPointer tail(HPointer list) {
     void* cell = allocator.resolve(list);
     if (!cell) return alloc::nothing();
 
-    Cons* c = static_cast<Cons*>(cell);
-    return alloc::just(alloc::boxed(c->tail), true);
+    // Hybrid spines: listTailOf handles both Cons cells (pure load) and
+    // chunk views (materializes the successor view — allocating).
+    return alloc::just(alloc::boxed(alloc::listTailOf(list)), true);
 }
 
 HPointer getAt(i64 index, HPointer list) {
     if (index < 0) return alloc::nothing();
 
-    auto& allocator = Allocator::instance();
-    HPointer current = list;
     i64 i = 0;
-
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-
+    for (alloc::ListCursor c(list); !c.done(); c.next(), ++i) {
         if (i == index) {
-            Header* hdr = getHeader(cell);
-            u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
-            return alloc::justKind(c->head, head_kind);
+            return alloc::justKind(c.current(), c.currentKind());
         }
-
-        ++i;
-        current = c->tail;
     }
-
     return alloc::nothing();
 }
 
@@ -68,23 +95,13 @@ HPointer last(HPointer list) {
         return alloc::nothing();
     }
 
-    auto& allocator = Allocator::instance();
-    HPointer current = list;
     Unboxable lastVal;
+    lastVal.i = 0;
     u8 lastKind = 0;
-
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        Header* hdr = getHeader(cell);
-
-        lastVal = c->head;
-        lastKind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
-        current = c->tail;
+    for (alloc::ListCursor c(list); !c.done(); c.next()) {
+        lastVal = c.current();
+        lastKind = c.currentKind();
     }
-
     return alloc::justKind(lastVal, lastKind);
 }
 
@@ -103,33 +120,25 @@ HPointer map(MapperWithBoxed mapper, HPointer list) {
     // accumulated roots are released by spine_guard's destructor.
     std::vector<std::pair<Unboxable, bool>> mapped;
     mapped.reserve(static_cast<size_t>(length(list)));
-    HPointer current = list;
-    Elm::StackRootGuard spine_guard(&current);
+    // RootedListCursor walks hybrid spines (cells + chunk views) and
+    // re-resolves after every callback, so the mapper may GC freely.
+    alloc::RootedListCursor cursor(list);
+    Unboxable head;
+    u8 head_kind;
 
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        Header* hdr = getHeader(cell);
-        u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
+    while (cursor.read(head, head_kind)) {
         bool is_boxed = (head_kind == 0);
-
-        // Save head and tail BEFORE mapper callback which can trigger GC.
-        Unboxable head = c->head;
-        HPointer next = c->tail;
-
         std::pair<Unboxable, bool> result;
         {
             HPointer* head_root = is_boxed ? &head.p : nullptr;
-            Elm::StackRootGuard iter_guard({&next, head_root});
+            Elm::StackRootGuard iter_guard({head_root});
             result = mapper(head, is_boxed);
         }
         mapped.push_back(result);
         if (result.second) {
             rs.pushStackRootRange(&mapped.back().first.p, 1, 1);
         }
-        current = next;
+        cursor.advance();
     }
 
     return alloc::listFromUnboxables(mapped);
@@ -145,27 +154,17 @@ HPointer indexedMap(IndexedMapper mapper, HPointer list) {
     // incremental rooting of accumulated boxed results).
     std::vector<std::pair<Unboxable, bool>> mapped;
     mapped.reserve(static_cast<size_t>(length(list)));
-    HPointer current = list;
+    alloc::RootedListCursor cursor(list);
+    Unboxable head;
+    u8 head_kind;
     i64 index = 0;
-    Elm::StackRootGuard spine_guard(&current);
 
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        Header* hdr = getHeader(cell);
-        u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
+    while (cursor.read(head, head_kind)) {
         bool is_boxed = (head_kind == 0);
-
-        // Save head and tail BEFORE mapper callback which can trigger GC.
-        Unboxable head = c->head;
-        HPointer next = c->tail;
-
         std::pair<Unboxable, bool> result;
         {
             HPointer* head_root = is_boxed ? &head.p : nullptr;
-            Elm::StackRootGuard iter_guard({&next, head_root});
+            Elm::StackRootGuard iter_guard({head_root});
             result = mapper(index, head, is_boxed);
         }
         mapped.push_back(result);
@@ -173,7 +172,7 @@ HPointer indexedMap(IndexedMapper mapper, HPointer list) {
             rs.pushStackRootRange(&mapped.back().first.p, 1, 1);
         }
         ++index;
-        current = next;
+        cursor.advance();
     }
 
     return alloc::listFromUnboxables(mapped);
@@ -191,26 +190,16 @@ HPointer filter(Predicate pred, HPointer list) {
     // front so entry addresses stay stable for the incremental rooting.
     std::vector<std::pair<Unboxable, bool>> passing;
     passing.reserve(static_cast<size_t>(length(list)));
-    HPointer current = list;
-    Elm::StackRootGuard spine_guard(&current);
+    alloc::RootedListCursor cursor(list);
+    Unboxable head;
+    u8 head_kind;
 
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        Header* hdr = getHeader(cell);
-        u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
+    while (cursor.read(head, head_kind)) {
         bool is_boxed = (head_kind == 0);
-
-        // Save head and tail BEFORE pred callback which can trigger GC.
-        Unboxable head = c->head;
-        HPointer next = c->tail;
-
         bool keep;
         {
             HPointer* head_root = is_boxed ? &head.p : nullptr;
-            Elm::StackRootGuard iter_guard({&next, head_root});
+            Elm::StackRootGuard iter_guard({head_root});
             keep = pred(head, is_boxed);
         }
         if (keep) {
@@ -219,7 +208,7 @@ HPointer filter(Predicate pred, HPointer list) {
                 rs.pushStackRootRange(&passing.back().first.p, 1, 1);
             }
         }
-        current = next;
+        cursor.advance();
     }
 
     return alloc::listFromUnboxables(passing);
@@ -237,26 +226,16 @@ HPointer filterMap(FilterMapper mapper, HPointer list) {
     // incrementally below; reserve keeps their addresses stable).
     std::vector<std::pair<Unboxable, bool>> results;
     results.reserve(static_cast<size_t>(length(list)));
-    HPointer current = list;
-    Elm::StackRootGuard spine_guard(&current);
+    alloc::RootedListCursor cursor(list);
+    Unboxable head;
+    u8 head_kind;
 
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        Header* hdr = getHeader(cell);
-        u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
+    while (cursor.read(head, head_kind)) {
         bool is_boxed = (head_kind == 0);
-
-        // Save head and tail BEFORE mapper callback which can trigger GC.
-        Unboxable head = c->head;
-        HPointer next = c->tail;
-
         HPointer maybeResult;
         {
             HPointer* head_root = is_boxed ? &head.p : nullptr;
-            Elm::StackRootGuard iter_guard({&next, head_root});
+            Elm::StackRootGuard iter_guard({head_root});
             maybeResult = mapper(head, is_boxed);
         }
 
@@ -277,7 +256,7 @@ HPointer filterMap(FilterMapper mapper, HPointer list) {
             }
         }
 
-        current = next;
+        cursor.advance();
     }
 
     return alloc::listFromUnboxables(results);
@@ -287,23 +266,33 @@ HPointer append(HPointer a, HPointer b) {
     if (alloc::isNil(a)) return b;
     if (alloc::isNil(b)) return a;
 
-    auto& allocator = Allocator::instance();
+    // The probe walk is chunks-only so flag-off `++` keeps its single pass.
+    if (eco_g_list_chunks) {
+        SpineShape s = probeShape(a);
+        if (chunkEligible(s)) {
+            // Count-first direct fill (see reverse). The view's len must be
+            // the TOTAL logical length (len-consistency invariant), so b's
+            // length is probed too — the vector path paid the same walk
+            // inside listFromUnboxables.
+            StackRootGuard guard(&a, &b);
+            HPointer backing = alloc::listBacking(s.n, s.kind);
+            u32 totalLen = s.n + alloc::listLogicalLen(b);
+            HPointer view =
+                alloc::consChunkView(backing, 0, totalLen, b, s.kind);
+            ListBacking* lb = resolveViewBacking(view);
+            u32 i = 0;
+            for (alloc::ListCursor c(a); !c.done(); c.next()) {
+                lb->elems[i++] = c.current();
+            }
+            return view;
+        }
+    }
 
-    // Collect elements from a
+    // Small, mixed-kind, or chunks-off: collect a's prefix and build cells
+    // back-to-front (n cells — a reverse-then-recons pass would pay 2n).
     std::vector<std::pair<Unboxable, bool>> elements;
-    HPointer current = a;
-
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        Header* hdr = getHeader(cell);
-        u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
-        bool is_boxed = (head_kind == 0);
-
-        elements.emplace_back(c->head, is_boxed);
-        current = c->tail;
+    for (alloc::ListCursor c(a); !c.done(); c.next()) {
+        elements.emplace_back(c.current(), c.currentKind() == 0);
     }
 
     return alloc::listFromUnboxables(elements, b);
@@ -312,34 +301,53 @@ HPointer append(HPointer a, HPointer b) {
 HPointer concat(HPointer listOfLists) {
     if (alloc::isNil(listOfLists)) return alloc::listNil();
 
-    auto& allocator = Allocator::instance();
-
-    // Flatten all elements
-    std::vector<std::pair<Unboxable, bool>> allElements;
-    HPointer outer = listOfLists;
-
-    while (!alloc::isNil(outer)) {
-        void* outerCell = allocator.resolve(outer);
-        if (!outerCell) break;
-
-        Cons* outerCons = static_cast<Cons*>(outerCell);
-        HPointer innerList = outerCons->head.p;
-
-        // Traverse inner list
-        while (!alloc::isNil(innerList)) {
-            void* innerCell = allocator.resolve(innerList);
-            if (!innerCell) break;
-
-            Cons* innerCons = static_cast<Cons*>(innerCell);
-            Header* hdr = getHeader(innerCell);
-            u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
-        bool is_boxed = (head_kind == 0);
-
-            allElements.emplace_back(innerCons->head, is_boxed);
-            innerList = innerCons->tail;
+    // Chunks: probe every inner list in one non-allocating nested walk, then
+    // fill an exact-size backing directly (no vector, no per-element roots).
+    // The probe is chunks-only so the flag-off path keeps its single pass.
+    if (eco_g_list_chunks) {
+        SpineShape s;
+        bool first = true;
+        for (alloc::ListCursor outer(listOfLists); !outer.done();
+             outer.next()) {
+            for (alloc::ListCursor inner(outer.current().p); !inner.done();
+                 inner.next()) {
+                u8 k = inner.currentKind();
+                if (first) {
+                    s.kind = k;
+                    first = false;
+                } else if (k != s.kind) {
+                    s.uniform = false;
+                }
+                ++s.n;
+            }
         }
+        if (s.n == 0) return alloc::listNil();
+        if (chunkEligible(s)) {
+            StackRootGuard guard(&listOfLists);
+            HPointer backing = alloc::listBacking(s.n, s.kind);
+            HPointer view = alloc::consChunkView(backing, 0, s.n,
+                                                 alloc::listNil(), s.kind);
+            ListBacking* lb = resolveViewBacking(view);
+            u32 i = 0;
+            for (alloc::ListCursor outer(listOfLists); !outer.done();
+                 outer.next()) {
+                for (alloc::ListCursor inner(outer.current().p);
+                     !inner.done(); inner.next()) {
+                    lb->elems[i++] = inner.current();
+                }
+            }
+            return view;
+        }
+    }
 
-        outer = outerCons->tail;
+    // Flatten all elements (non-allocating nested walks over hybrid spines;
+    // outer elements are lists, i.e. always boxed).
+    std::vector<std::pair<Unboxable, bool>> allElements;
+    for (alloc::ListCursor outer(listOfLists); !outer.done(); outer.next()) {
+        for (alloc::ListCursor inner(outer.current().p); !inner.done();
+             inner.next()) {
+            allElements.emplace_back(inner.current(), inner.currentKind() == 0);
+        }
     }
 
     return alloc::listFromUnboxables(allElements);
@@ -350,21 +358,10 @@ HPointer intersperse(Unboxable sep, bool sep_is_boxed, HPointer list) {
 
     auto& allocator = Allocator::instance();
 
-    // Collect elements
+    // Collect elements (non-allocating walk over hybrid spines).
     std::vector<std::pair<Unboxable, bool>> elements;
-    HPointer current = list;
-
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        Header* hdr = getHeader(cell);
-        u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
-        bool is_boxed = (head_kind == 0);
-
-        elements.emplace_back(c->head, is_boxed);
-        current = c->tail;
+    for (alloc::ListCursor c(list); !c.done(); c.next()) {
+        elements.emplace_back(c.current(), c.currentKind() == 0);
     }
 
     if (elements.size() <= 1) {
@@ -387,23 +384,11 @@ HPointer take(i64 n, HPointer list) {
 
     auto& allocator = Allocator::instance();
 
-    // Collect first n elements
+    // Collect first n elements (non-allocating walk over hybrid spines).
     std::vector<std::pair<Unboxable, bool>> elements;
-    HPointer current = list;
     i64 count = 0;
-
-    while (!alloc::isNil(current) && count < n) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        Header* hdr = getHeader(cell);
-        u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
-        bool is_boxed = (head_kind == 0);
-
-        elements.emplace_back(c->head, is_boxed);
-        ++count;
-        current = c->tail;
+    for (alloc::ListCursor c(list); !c.done() && count < n; c.next(), ++count) {
+        elements.emplace_back(c.current(), c.currentKind() == 0);
     }
 
     return alloc::listFromUnboxables(elements);
@@ -415,15 +400,37 @@ HPointer drop(i64 n, HPointer list) {
 
     auto& allocator = Allocator::instance();
     HPointer current = list;
-    i64 count = 0;
+    i64 remaining = n;
 
-    while (!alloc::isNil(current) && count < n) {
-        void* cell = allocator.resolve(current);
-        if (!cell) return alloc::listNil();
-
-        Cons* c = static_cast<Cons*>(cell);
-        ++count;
-        current = c->tail;
+    // O(spine-nodes) rather than O(n): a chunk view skips its whole run at
+    // once; a mid-run drop materializes ONE successor view (plan §9.3).
+    while (remaining > 0 && !alloc::isNil(current) && current.ptr_ind == 0) {
+        void* node = allocator.resolve(current);
+        if (!node) return alloc::listNil();
+        Header* hdr = getHeader(node);
+        if (hdr->tag == Tag_Cons) {
+            current = static_cast<Cons*>(node)->tail;
+            --remaining;
+        } else if (hdr->tag == Tag_ConsChunk) {
+            ConsChunk* cv = static_cast<ConsChunk*>(node);
+            ListBacking* lb = static_cast<ListBacking*>(
+                allocator.resolve(cv->backing));
+            u32 run = lb->header.size - cv->offset;
+            if (cv->len < run) run = cv->len;
+            if (remaining >= static_cast<i64>(run)) {
+                remaining -= static_cast<i64>(run);
+                current = cv->next;
+            } else {
+                u32 k = static_cast<u32>(remaining);
+                // Fields are copied by value before the allocation and
+                // consChunkView roots its HPointer args — GC-safe.
+                return alloc::consChunkView(cv->backing, cv->offset + k,
+                                            cv->len - k, cv->next,
+                                            static_cast<u8>(hdr->unboxed & 0x3));
+            }
+        } else {
+            return alloc::listNil();
+        }
     }
 
     return current;
@@ -446,26 +453,16 @@ HPointer partition(Predicate pred, HPointer list) {
     const size_t listLen = static_cast<size_t>(length(list));
     passing.reserve(listLen);
     failing.reserve(listLen);
-    HPointer current = list;
-    Elm::StackRootGuard spine_guard(&current);
+    alloc::RootedListCursor cursor(list);
+    Unboxable head;
+    u8 head_kind;
 
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        Header* hdr = getHeader(cell);
-        u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
+    while (cursor.read(head, head_kind)) {
         bool is_boxed = (head_kind == 0);
-
-        // Save head and tail BEFORE pred callback which can trigger GC.
-        Unboxable head = c->head;
-        HPointer next = c->tail;
-
         bool pass;
         {
             HPointer* head_root = is_boxed ? &head.p : nullptr;
-            Elm::StackRootGuard iter_guard({&next, head_root});
+            Elm::StackRootGuard iter_guard({head_root});
             pass = pred(head, is_boxed);
         }
         if (pass) {
@@ -479,7 +476,7 @@ HPointer partition(Predicate pred, HPointer list) {
                 rs.pushStackRootRange(&failing.back().first.p, 1, 1);
             }
         }
-        current = next;
+        cursor.advance();
     }
 
     HPointer passingList = alloc::listFromUnboxables(passing);
@@ -493,34 +490,24 @@ HPointer partition(Predicate pred, HPointer list) {
 }
 
 Unboxable foldl(Folder fold, Unboxable acc, HPointer list) {
-    auto& allocator = Allocator::instance();
     Unboxable result = acc;
-    HPointer current = list;
-    // Spine pointer must survive each fold callback; the accumulator type is
-    // erased through Unboxable so we can't tell here whether result.p is a
-    // real pointer — leave it to callers that need it (foldl over a boxed
-    // accumulator should root the slot at the caller).
-    Elm::StackRootGuard spine_guard(&current);
+    // RootedListCursor keeps the spine rooted and re-resolves across fold
+    // callbacks (hybrid spines). The accumulator type is erased through
+    // Unboxable so we can't tell here whether result.p is a real pointer —
+    // leave it to callers that need it (foldl over a boxed accumulator
+    // should root the slot at the caller).
+    alloc::RootedListCursor cursor(list);
+    Unboxable head;
+    u8 head_kind;
 
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        Header* hdr = getHeader(cell);
-        u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
+    while (cursor.read(head, head_kind)) {
         bool is_boxed = (head_kind == 0);
-
-        // Save head and tail BEFORE fold callback which can trigger GC.
-        Unboxable head = c->head;
-        HPointer next = c->tail;
-
         {
             HPointer* head_root = is_boxed ? &head.p : nullptr;
-            Elm::StackRootGuard iter_guard({&next, head_root});
+            Elm::StackRootGuard iter_guard({head_root});
             result = fold(head, is_boxed, result);
         }
-        current = next;
+        cursor.advance();
     }
 
     return result;
@@ -550,34 +537,53 @@ Unboxable foldr(Folder fold, Unboxable acc, HPointer list) {
 }
 
 HPointer reverse(HPointer list) {
-    if (alloc::isNil(list)) return alloc::listNil();
+    if (alloc::isNil(list)) return list;
 
-    auto elements = toVector(list);
-    return alloc::listFromUnboxables(elements, alloc::listNil(), true);
+    SpineShape s = probeShape(list);
+    if (s.n <= 1) return list;  // lists are immutable; sharing is safe
+
+    if (chunkEligible(s)) {
+        // Count-first: exact-size backing, then fill straight from a source
+        // walk — no vector, no per-element rooting. Both allocations happen
+        // before the fill, so the raw pointers below cannot go stale.
+        StackRootGuard guard(&list);
+        HPointer backing = alloc::listBacking(s.n, s.kind);
+        HPointer view =
+            alloc::consChunkView(backing, 0, s.n, alloc::listNil(), s.kind);
+        ListBacking* lb = resolveViewBacking(view);
+        u32 i = s.n;
+        for (alloc::ListCursor c(list); !c.done(); c.next()) {
+            lb->elems[--i] = c.current();
+        }
+        return view;
+    }
+
+    // Small or mixed-kind: plain cons accumulation (exactly what the
+    // Elm-level `foldl cons []` compiled to).
+    HPointer result = alloc::listNil();
+    StackRootGuard guard(&result);
+    alloc::RootedListCursor c(list);
+    Unboxable head;
+    u8 kind;
+    while (c.read(head, kind)) {
+        result = alloc::cons(head, result, kind);
+        c.advance();
+    }
+    return result;
 }
 
 bool member(Unboxable value, bool is_boxed, HPointer list) {
-    auto& allocator = Allocator::instance();
-    HPointer current = list;
-
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        Header* hdr = getHeader(cell);
-        bool elem_is_boxed = !(hdr->unboxed & 1);
+    for (alloc::ListCursor c(list); !c.done(); c.next()) {
+        bool elem_is_boxed = (c.currentKind() == 0);
 
         // Simple equality check for unboxed primitives
         if (!is_boxed && !elem_is_boxed) {
-            if (value.i == c->head.i) return true;
+            if (value.i == c.current().i) return true;
         } else if (is_boxed && elem_is_boxed) {
             // Identity equality for boxed values: same HPointer word (covers
             // heap pointers and embedded constants — Bool, empty, etc.).
-            if (hpBits(value.p) == hpBits(c->head.p)) return true;
+            if (hpBits(value.p) == hpBits(c.current().p)) return true;
         }
-
-        current = c->tail;
     }
 
     return false;
@@ -696,24 +702,15 @@ HPointer map2(HPointer listA, HPointer listB) {
     // Store 2-bit kinds (0=boxed, 1=Int, 2=Float, 3=Char) from source cons headers.
     struct RawPair { Unboxable a; u8 a_kind; Unboxable b; u8 b_kind; };
     std::vector<RawPair> raw;
-    HPointer currA = listA;
-    HPointer currB = listB;
-
-    while (!alloc::isNil(currA) && !alloc::isNil(currB)) {
-        void* cellA = allocator.resolve(currA);
-        void* cellB = allocator.resolve(currB);
-        if (!cellA || !cellB) break;
-
-        Cons* cA = static_cast<Cons*>(cellA);
-        Cons* cB = static_cast<Cons*>(cellB);
-        Header* hdrA = getHeader(cellA);
-        Header* hdrB = getHeader(cellB);
-
-        u8 kindA = static_cast<u8>(tupleFieldKind(hdrA->unboxed, 0));
-        u8 kindB = static_cast<u8>(tupleFieldKind(hdrB->unboxed, 0));
-        raw.push_back({cA->head, kindA, cB->head, kindB});
-        currA = cA->tail;
-        currB = cB->tail;
+    {
+        alloc::ListCursor ca(listA);
+        alloc::ListCursor cb(listB);
+        while (!ca.done() && !cb.done()) {
+            raw.push_back({ca.current(), ca.currentKind(),
+                           cb.current(), cb.currentKind()});
+            ca.next();
+            cb.next();
+        }
     }
 
     if (raw.empty()) return alloc::listNil();
@@ -755,30 +752,18 @@ HPointer map3(HPointer listA, HPointer listB, HPointer listC) {
         Unboxable c; u8 c_kind;
     };
     std::vector<RawTriple> raw;
-    HPointer currA = listA;
-    HPointer currB = listB;
-    HPointer currC = listC;
-
-    while (!alloc::isNil(currA) && !alloc::isNil(currB) && !alloc::isNil(currC)) {
-        void* cellA = allocator.resolve(currA);
-        void* cellB = allocator.resolve(currB);
-        void* cellC = allocator.resolve(currC);
-        if (!cellA || !cellB || !cellC) break;
-
-        Cons* cA = static_cast<Cons*>(cellA);
-        Cons* cB = static_cast<Cons*>(cellB);
-        Cons* cC = static_cast<Cons*>(cellC);
-        Header* hdrA = getHeader(cellA);
-        Header* hdrB = getHeader(cellB);
-        Header* hdrC = getHeader(cellC);
-
-        u8 kindA = static_cast<u8>(tupleFieldKind(hdrA->unboxed, 0));
-        u8 kindB = static_cast<u8>(tupleFieldKind(hdrB->unboxed, 0));
-        u8 kindC = static_cast<u8>(tupleFieldKind(hdrC->unboxed, 0));
-        raw.push_back({cA->head, kindA, cB->head, kindB, cC->head, kindC});
-        currA = cA->tail;
-        currB = cB->tail;
-        currC = cC->tail;
+    {
+        alloc::ListCursor ca(listA);
+        alloc::ListCursor cb(listB);
+        alloc::ListCursor cc(listC);
+        while (!ca.done() && !cb.done() && !cc.done()) {
+            raw.push_back({ca.current(), ca.currentKind(),
+                           cb.current(), cb.currentKind(),
+                           cc.current(), cc.currentKind()});
+            ca.next();
+            cb.next();
+            cc.next();
+        }
     }
 
     if (raw.empty()) return alloc::listNil();
@@ -817,14 +802,8 @@ HPointer unzip(HPointer listOfPairs) {
     std::vector<std::pair<Unboxable, bool>> firsts;
     std::vector<std::pair<Unboxable, bool>> seconds;
 
-    HPointer current = listOfPairs;
-
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        void* tupleObj = allocator.resolve(c->head.p);
+    for (alloc::ListCursor c(listOfPairs); !c.done(); c.next()) {
+        void* tupleObj = allocator.resolve(c.current().p);
         if (tupleObj) {
             Tuple2* tuple = static_cast<Tuple2*>(tupleObj);
             Header* hdr = getHeader(tupleObj);
@@ -835,8 +814,6 @@ HPointer unzip(HPointer listOfPairs) {
             firsts.emplace_back(tuple->a, aBoxed);
             seconds.emplace_back(tuple->b, bBoxed);
         }
-
-        current = c->tail;
     }
 
     HPointer firstList = alloc::listFromUnboxables(firsts);

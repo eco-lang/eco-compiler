@@ -27,14 +27,8 @@ std::vector<HPointer> toArray(HPointer list) {
     // Convert list to vector, boxing any unboxed values using head-kind from each cell.
     auto& allocator = Allocator::instance();
     std::vector<std::pair<Unboxable, u8>> rawElems;
-    HPointer current = list;
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-        Cons* c = static_cast<Cons*>(cell);
-        Header* hdr = static_cast<Header*>(cell);
-        rawElems.push_back({c->head, static_cast<u8>(tupleFieldKind(hdr->unboxed, 0))});
-        current = c->tail;
+    for (alloc::ListCursor c(list); !c.done(); c.next()) {
+        rawElems.push_back({c.current(), c.currentKind()});
     }
 
     std::vector<HPointer> result(rawElems.size(), alloc::listNil());
@@ -63,19 +57,15 @@ HPointer map2(Map2Func func, HPointer xs, HPointer ys) {
     // Phase 1: collect raw values (no allocation)
     struct RawPair { Unboxable x; u8 x_kind; Unboxable y; u8 y_kind; };
     std::vector<RawPair> raw;
-    HPointer currX = xs, currY = ys;
-    while (!alloc::isNil(currX) && !alloc::isNil(currY)) {
-        void* cellX = allocator.resolve(currX);
-        void* cellY = allocator.resolve(currY);
-        if (!cellX || !cellY) break;
-        Cons* cX = static_cast<Cons*>(cellX);
-        Cons* cY = static_cast<Cons*>(cellY);
-        Header* hdrX = static_cast<Header*>(cellX);
-        Header* hdrY = static_cast<Header*>(cellY);
-        raw.push_back({cX->head, static_cast<u8>(tupleFieldKind(hdrX->unboxed, 0)),
-                        cY->head, static_cast<u8>(tupleFieldKind(hdrY->unboxed, 0))});
-        currX = cX->tail;
-        currY = cY->tail;
+    {
+        alloc::ListCursor cx(xs);
+        alloc::ListCursor cy(ys);
+        while (!cx.done() && !cy.done()) {
+            raw.push_back({cx.current(), cx.currentKind(),
+                           cy.current(), cy.currentKind()});
+            cx.next();
+            cy.next();
+        }
     }
     if (raw.empty()) return alloc::listNil();
 
@@ -110,22 +100,16 @@ HPointer map3(Map3Func func, HPointer xs, HPointer ys, HPointer zs) {
     auto& allocator = Allocator::instance();
     struct Raw3 { Unboxable x; u8 xk; Unboxable y; u8 yk; Unboxable z; u8 zk; };
     std::vector<Raw3> raw;
-    HPointer currX = xs, currY = ys, currZ = zs;
-    while (!alloc::isNil(currX) && !alloc::isNil(currY) && !alloc::isNil(currZ)) {
-        void* cellX = allocator.resolve(currX);
-        void* cellY = allocator.resolve(currY);
-        void* cellZ = allocator.resolve(currZ);
-        if (!cellX || !cellY || !cellZ) break;
-        Cons* cX = static_cast<Cons*>(cellX);
-        Cons* cY = static_cast<Cons*>(cellY);
-        Cons* cZ = static_cast<Cons*>(cellZ);
-        Header* hdrX = static_cast<Header*>(cellX);
-        Header* hdrY = static_cast<Header*>(cellY);
-        Header* hdrZ = static_cast<Header*>(cellZ);
-        raw.push_back({cX->head, static_cast<u8>(tupleFieldKind(hdrX->unboxed, 0)),
-                        cY->head, static_cast<u8>(tupleFieldKind(hdrY->unboxed, 0)),
-                        cZ->head, static_cast<u8>(tupleFieldKind(hdrZ->unboxed, 0))});
-        currX = cX->tail; currY = cY->tail; currZ = cZ->tail;
+    {
+        alloc::ListCursor cx(xs);
+        alloc::ListCursor cy(ys);
+        alloc::ListCursor cz(zs);
+        while (!cx.done() && !cy.done() && !cz.done()) {
+            raw.push_back({cx.current(), cx.currentKind(),
+                           cy.current(), cy.currentKind(),
+                           cz.current(), cz.currentKind()});
+            cx.next(); cy.next(); cz.next();
+        }
     }
     if (raw.empty()) return alloc::listNil();
 
@@ -160,20 +144,18 @@ HPointer map4(Map4Func func, HPointer ws, HPointer xs, HPointer ys, HPointer zs)
     auto& allocator = Allocator::instance();
     struct Raw4 { Unboxable w; u8 wk; Unboxable x; u8 xk; Unboxable y; u8 yk; Unboxable z; u8 zk; };
     std::vector<Raw4> raw;
-    HPointer cW = ws, cX = xs, cY = ys, cZ = zs;
-    while (!alloc::isNil(cW) && !alloc::isNil(cX) && !alloc::isNil(cY) && !alloc::isNil(cZ)) {
-        void* cellW = allocator.resolve(cW); void* cellX = allocator.resolve(cX);
-        void* cellY = allocator.resolve(cY); void* cellZ = allocator.resolve(cZ);
-        if (!cellW || !cellX || !cellY || !cellZ) break;
-        Cons* dW = static_cast<Cons*>(cellW); Cons* dX = static_cast<Cons*>(cellX);
-        Cons* dY = static_cast<Cons*>(cellY); Cons* dZ = static_cast<Cons*>(cellZ);
-        Header* hW = static_cast<Header*>(cellW); Header* hX = static_cast<Header*>(cellX);
-        Header* hY = static_cast<Header*>(cellY); Header* hZ = static_cast<Header*>(cellZ);
-        raw.push_back({dW->head, static_cast<u8>(tupleFieldKind(hW->unboxed, 0)),
-                        dX->head, static_cast<u8>(tupleFieldKind(hX->unboxed, 0)),
-                        dY->head, static_cast<u8>(tupleFieldKind(hY->unboxed, 0)),
-                        dZ->head, static_cast<u8>(tupleFieldKind(hZ->unboxed, 0))});
-        cW = dW->tail; cX = dX->tail; cY = dY->tail; cZ = dZ->tail;
+    {
+        alloc::ListCursor cw(ws);
+        alloc::ListCursor cx(xs);
+        alloc::ListCursor cy(ys);
+        alloc::ListCursor cz(zs);
+        while (!cw.done() && !cx.done() && !cy.done() && !cz.done()) {
+            raw.push_back({cw.current(), cw.currentKind(),
+                           cx.current(), cx.currentKind(),
+                           cy.current(), cy.currentKind(),
+                           cz.current(), cz.currentKind()});
+            cw.next(); cx.next(); cy.next(); cz.next();
+        }
     }
     if (raw.empty()) return alloc::listNil();
 
@@ -210,25 +192,21 @@ HPointer map5(Map5Func func, HPointer vs, HPointer ws, HPointer xs, HPointer ys,
     auto& allocator = Allocator::instance();
     struct Raw5 { Unboxable v; u8 vk; Unboxable w; u8 wk; Unboxable x; u8 xk; Unboxable y; u8 yk; Unboxable z; u8 zk; };
     std::vector<Raw5> raw;
-    HPointer cV = vs, cW = ws, cX = xs, cY = ys, cZ = zs;
-    while (!alloc::isNil(cV) && !alloc::isNil(cW) && !alloc::isNil(cX) &&
-           !alloc::isNil(cY) && !alloc::isNil(cZ)) {
-        void* cellV = allocator.resolve(cV); void* cellW = allocator.resolve(cW);
-        void* cellX = allocator.resolve(cX); void* cellY = allocator.resolve(cY);
-        void* cellZ = allocator.resolve(cZ);
-        if (!cellV || !cellW || !cellX || !cellY || !cellZ) break;
-        Cons* dV = static_cast<Cons*>(cellV); Cons* dW = static_cast<Cons*>(cellW);
-        Cons* dX = static_cast<Cons*>(cellX); Cons* dY = static_cast<Cons*>(cellY);
-        Cons* dZ = static_cast<Cons*>(cellZ);
-        Header* hV = static_cast<Header*>(cellV); Header* hW = static_cast<Header*>(cellW);
-        Header* hX = static_cast<Header*>(cellX); Header* hY = static_cast<Header*>(cellY);
-        Header* hZ = static_cast<Header*>(cellZ);
-        raw.push_back({dV->head, static_cast<u8>(tupleFieldKind(hV->unboxed, 0)),
-                        dW->head, static_cast<u8>(tupleFieldKind(hW->unboxed, 0)),
-                        dX->head, static_cast<u8>(tupleFieldKind(hX->unboxed, 0)),
-                        dY->head, static_cast<u8>(tupleFieldKind(hY->unboxed, 0)),
-                        dZ->head, static_cast<u8>(tupleFieldKind(hZ->unboxed, 0))});
-        cV = dV->tail; cW = dW->tail; cX = dX->tail; cY = dY->tail; cZ = dZ->tail;
+    {
+        alloc::ListCursor cv(vs);
+        alloc::ListCursor cw(ws);
+        alloc::ListCursor cx(xs);
+        alloc::ListCursor cy(ys);
+        alloc::ListCursor cz(zs);
+        while (!cv.done() && !cw.done() && !cx.done() && !cy.done() &&
+               !cz.done()) {
+            raw.push_back({cv.current(), cv.currentKind(),
+                           cw.current(), cw.currentKind(),
+                           cx.current(), cx.currentKind(),
+                           cy.current(), cy.currentKind(),
+                           cz.current(), cz.currentKind()});
+            cv.next(); cw.next(); cx.next(); cy.next(); cz.next();
+        }
     }
     if (raw.empty()) return alloc::listNil();
 

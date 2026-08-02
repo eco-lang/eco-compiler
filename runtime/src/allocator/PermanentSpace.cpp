@@ -127,6 +127,23 @@ static bool visitChildren(void *obj, F &&visit) {
             visit(c->tail);
             return true;
         }
+        case Tag_ConsChunk: {
+            ConsChunk *cv = static_cast<ConsChunk *>(obj);
+            visit(cv->backing);
+            visit(cv->next);
+            return true;
+        }
+        case Tag_ListBacking: {
+            // Chunked-list backing: visit live boxed slots [hd, capacity).
+            // A permanent copy freezes the chunk (immutable in v1 anyway);
+            // slack below hd (v1: none) is never visited.
+            if ((hdr->unboxed & 0x3) == 0) {
+                ListBacking *lb = static_cast<ListBacking *>(obj);
+                for (u32 i = lb->hd; i < hdr->size; i++)
+                    visit(lb->elems[i].p);
+            }
+            return true;
+        }
         case Tag_Custom: {
             Custom *c = static_cast<Custom *>(obj);
             for (u32 i = 0; i < hdr->size && i < 24; i++)

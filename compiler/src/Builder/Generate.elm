@@ -72,6 +72,7 @@ import Compiler.GlobalOpt.CafCensus as CafCensus
 import Compiler.GlobalOpt.CafDedupe as CafDedupe
 import Compiler.GlobalOpt.CafHoist as CafHoist
 import Compiler.GlobalOpt.Borrow as Borrow
+import Compiler.GlobalOpt.ListCombinators as ListCombinators
 import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.MonoSolver.Diff as MonoDiff
@@ -809,8 +810,24 @@ runInlineSimplifyPhase ecoConfig stats monoGraph0 =
     FEStats.withPhase stats
         FEStats.PhaseInlineSimplify
         (let
+            -- list.chunks: keep the shunted combinators' call sites intact —
+            -- their tiny delegate bodies (reverse = foldl cons [] etc.) are
+            -- otherwise threshold-inlined everywhere, and the generation-time
+            -- kernel shunt (Generate.MLIR.Functions.listChunksShunt) only
+            -- rewrites the spec definitions, not pasted copies.
+            effectiveInlineConfig =
+                if ecoConfig.list.chunks then
+                    let
+                        cfg =
+                            ecoConfig.inline
+                    in
+                    { cfg | blacklist = cfg.blacklist ++ [ "List.reverse", "List.append", "List.concat", "List.take", "List.drop" ] }
+
+                else
+                    ecoConfig.inline
+
             ( simplifiedGraph, inlineMetrics ) =
-                MonoInlineSimplify.optimize ecoConfig.inline monoGraph0
+                MonoInlineSimplify.optimize effectiveInlineConfig monoGraph0
          in
          if ecoConfig.inline.report then
             -- Inline census (inline.report / ECO_INLINE_REPORT=1): pass
@@ -826,7 +843,7 @@ runInlineSimplifyPhase ecoConfig stats monoGraph0 =
             Task.succeed simplifiedGraph
         )
         -- Hand off to a separate function so monoGraph0 goes out of scope
-        |> Task.andThen (runGlobalOptPhase ecoConfig.mono.lss.report ecoConfig.mono.borrowCensus0 ecoConfig.borrow ecoConfig.cafMemo stats)
+        |> Task.andThen (runGlobalOptPhase ecoConfig.mono.lss.report ecoConfig.mono.borrowCensus0 ecoConfig.list.report ecoConfig.borrow ecoConfig.cafMemo stats)
 
 
 renderInlineReport : MonoInlineSimplify.Metrics -> Mono.MonoGraph -> String
@@ -903,8 +920,8 @@ renderInlineReportWith inlineConfig m graph =
 
 {-| Global optimization phase in its own scope so inline+simplify inputs are GC-eligible.
 -}
-runGlobalOptPhase : Bool -> Bool -> Config.BorrowConfig -> Config.CafMemoConfig -> FEStats.Handle -> Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
-runGlobalOptPhase lssReport borrowCensus0 borrowCfg cafMemo stats simplifiedGraph =
+runGlobalOptPhase : Bool -> Bool -> Bool -> Config.BorrowConfig -> Config.CafMemoConfig -> FEStats.Handle -> Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
+runGlobalOptPhase lssReport borrowCensus0 listReport borrowCfg cafMemo stats simplifiedGraph =
     FEStats.withPhase stats
         FEStats.PhaseGlobalOpt
         (let
@@ -976,6 +993,18 @@ runGlobalOptPhase lssReport borrowCensus0 borrowCfg cafMemo stats simplifiedGrap
                     if cafMemo.census && cafMemo.hoist.enabled then
                         -- POST-hoist residue: the H2 collapse gate.
                         writeLnErr (CafCensus.report "caf-census(post-hoist)" censusCfg hoistedGraph)
+
+                    else
+                        Task.succeed ()
+                )
+            |> Task.andThen
+                (\_ ->
+                    if listReport then
+                        -- List-combinator recognition census (list.report /
+                        -- ECO_LIST_REPORT=1; chunked-list plan §6 L1.1).
+                        -- stderr, like the LSS census; compared against the
+                        -- L0 static census (§11.a) as the recognition gate.
+                        writeLnErr (ListCombinators.report hoistedGraph)
 
                     else
                         Task.succeed ()

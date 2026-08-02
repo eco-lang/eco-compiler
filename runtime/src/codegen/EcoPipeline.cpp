@@ -73,6 +73,12 @@ void buildEcoToLLVMPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     // Stage 2: Eco -> Standard MLIR (func/cf/arith).
     pm.addPass(eco::createJoinpointNormalizationPass());
     pm.addPass(eco::createEcoControlFlowToSCFPass());
+    // Chunked-list Tier-B templates: rewrite cons-accumulation loops to
+    // scratch-stack chunk builds. Runs after SCF conversion (needs
+    // scf.while / scf.if) and before EcoGCPrepare (the inserted runtime
+    // calls take part in normal root/safepoint analysis). No-op without
+    // the eco.list_chunks function attribute.
+    pm.addPass(eco::createEcoListTemplatePass());
     // M4/4b (measured): the func-level canonicalizer here was removed. Effect:
     // MLIR phase -~0.5s, exe +~0.28%, produced functional output byte-identical.
     // Safe because (1) LLVM's downstream pipeline re-canonicalizes anyway, and

@@ -501,19 +501,16 @@ ExtractedRequest extractRequest(HPointer requestHP) {
     out.pod.url    = elmStringToUTF8(encodeHP(req->values[REQ_URL].p));
 
     // headers : List Header, Header = Header String String (Custom ctor 0).
-    HPointer headersList = req->values[REQ_HEADERS].p;
-    while (!isNil(headersList)) {
-        void* cellPtr = resolveOrNull(headersList);
-        if (!cellPtr) break;
-        Cons* cell = static_cast<Cons*>(cellPtr);
-        void* hPtr = resolveOrNull(cell->head.p);
+    // Non-allocating walk over hybrid spines.
+    for (Elm::alloc::ListCursor l(req->values[REQ_HEADERS].p); !l.done();
+         l.next()) {
+        void* hPtr = resolveOrNull(l.current().p);
         if (hPtr) {
             Custom* hdr = static_cast<Custom*>(hPtr);
             std::string key = elmStringToUTF8(encodeHP(hdr->values[0].p));
             std::string val = elmStringToUTF8(encodeHP(hdr->values[1].p));
             out.pod.headers.push_back({key, val});
         }
-        headersList = cell->tail;
     }
 
     // body : Body (Custom). empty => no body; pair => [contentType, content].
@@ -530,13 +527,11 @@ ExtractedRequest extractRequest(HPointer requestHP) {
                           static_cast<Custom*>(cp)->ctor == BODY_FORM;
             if (isForm) {
                 const std::string boundary = "EcoBoundary7MA4YWxkTrZu0gW";
-                HPointer partsList = static_cast<Custom*>(cp)->values[0].p;
                 std::string mp;
-                while (!isNil(partsList)) {
-                    void* cellPtr = resolveOrNull(partsList);
-                    if (!cellPtr) break;
-                    Cons* cell = static_cast<Cons*>(cellPtr);
-                    void* partPtr = resolveOrNull(cell->head.p);
+                for (Elm::alloc::ListCursor l(
+                         static_cast<Custom*>(cp)->values[0].p);
+                     !l.done(); l.next()) {
+                    void* partPtr = resolveOrNull(l.current().p);
                     if (partPtr) {
                         Custom* part = static_cast<Custom*>(partPtr);  // pair [key, value]
                         std::string key = elmStringToUTF8(encodeHP(part->values[0].p));
@@ -545,7 +540,6 @@ ExtractedRequest extractRequest(HPointer requestHP) {
                         mp += "Content-Disposition: form-data; name=\"" + key + "\"\r\n\r\n";
                         mp += val + "\r\n";
                     }
-                    partsList = cell->tail;
                 }
                 mp += "--" + boundary + "--\r\n";
                 out.pod.body = mp;

@@ -567,22 +567,17 @@ HPointer concat(HPointer stringList) {
     size_t total_len = 0;
     size_t count = 0;
     bool allUtf8 = true;  // all non-empty elements are UTF-8 forms (W4.b)
-    HPointer current = stringList;
-
-    while (!alloc::isNil(current)) {
-        void* cell = Allocator::resolveFast(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        if (!alloc::isEmptyString(c->head.p)) {
-            void* strObj = Allocator::resolveFast(c->head.p);
+    // Hybrid spines: ListCursor walks cells + chunk views (elements are
+    // boxed strings). Non-allocating pass.
+    for (alloc::ListCursor lc(stringList); !lc.done(); lc.next()) {
+        if (!alloc::isEmptyString(lc.current().p)) {
+            void* strObj = Allocator::resolveFast(lc.current().p);
             if (strObj) {
                 total_len += static_cast<Header*>(strObj)->size;
                 ++count;
                 if (!isUtf8(strObj)) allUtf8 = false;
             }
         }
-        current = c->tail;
     }
 
     if (total_len == 0) return alloc::emptyString();
@@ -600,20 +595,15 @@ HPointer concat(HPointer stringList) {
             AsciiOut out;
             { Elm::StackRootGuard g(&listHp); out = allocAsciiOut(total_len); }
             size_t off = 0;
-            HPointer cur = listHp;
-            while (!alloc::isNil(cur)) {
-                void* cell = Allocator::resolveFast(cur);
-                if (!cell) break;
-                Cons* c = static_cast<Cons*>(cell);
-                if (!alloc::isEmptyString(c->head.p)) {
-                    void* strObj = Allocator::resolveFast(c->head.p);
+            for (alloc::ListCursor lc(listHp); !lc.done(); lc.next()) {
+                if (!alloc::isEmptyString(lc.current().p)) {
+                    void* strObj = Allocator::resolveFast(lc.current().p);
                     if (strObj) {
                         auto pr = utf8Bytes(strObj);
                         std::memcpy(out.dst + off, pr.first, pr.second);
                         off += pr.second;
                     }
                 }
-                cur = c->tail;
             }
             return finishAsciiOut(out);
         }
@@ -632,15 +622,9 @@ HPointer concat(HPointer stringList) {
         // Second pass: copy each element's segments straight into result->chars
         // via the tag-aware visitor — no per-element std::u16string alloc.
         size_t offset = 0;
-        current = stringList;
-
-        while (!alloc::isNil(current)) {
-            void* cell = Allocator::resolveFast(current);
-            if (!cell) break;
-
-            Cons* c = static_cast<Cons*>(cell);
-            if (!alloc::isEmptyString(c->head.p)) {
-                void* strObj = Allocator::resolveFast(c->head.p);
+        for (alloc::ListCursor lc(stringList); !lc.done(); lc.next()) {
+            if (!alloc::isEmptyString(lc.current().p)) {
+                void* strObj = Allocator::resolveFast(lc.current().p);
                 if (strObj) {
                     forEachSegment(strObj, [&](const u16* p, u32 n) {
                         std::memcpy(result->chars + offset, p, n * sizeof(u16));
@@ -648,7 +632,6 @@ HPointer concat(HPointer stringList) {
                     });
                 }
             }
-            current = c->tail;
         }
 
         return healAsciiResult(allocator.wrap(result));
@@ -658,18 +641,13 @@ HPointer concat(HPointer stringList) {
     // Skipping empty children matches the existing concat semantics.
     std::vector<HPointer> parts;
     parts.reserve(count);
-    current = stringList;
-    while (!alloc::isNil(current)) {
-        void* cell = Allocator::resolveFast(current);
-        if (!cell) break;
-        Cons* c = static_cast<Cons*>(cell);
-        if (!alloc::isEmptyString(c->head.p)) {
-            void* strObj = Allocator::resolveFast(c->head.p);
+    for (alloc::ListCursor lc(stringList); !lc.done(); lc.next()) {
+        if (!alloc::isEmptyString(lc.current().p)) {
+            void* strObj = Allocator::resolveFast(lc.current().p);
             if (strObj && static_cast<Header*>(strObj)->size > 0) {
-                parts.push_back(c->head.p);
+                parts.push_back(lc.current().p);
             }
         }
-        current = c->tail;
     }
 
     // Root all parts in one batch range across rope construction. mask=all-1s
@@ -690,22 +668,16 @@ HPointer join(void* sep, HPointer stringList) {
     size_t total_len = 0;
     size_t count = 0;
     bool allUtf8 = true;  // all non-empty elements are UTF-8 forms (W4.b)
-    HPointer current = stringList;
-
-    while (!alloc::isNil(current)) {
-        void* cell = Allocator::resolveFast(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        if (!alloc::isEmptyString(c->head.p)) {
-            void* strObj = Allocator::resolveFast(c->head.p);
+    // Hybrid spines: ListCursor walks cells + chunk views.
+    for (alloc::ListCursor lc(stringList); !lc.done(); lc.next()) {
+        if (!alloc::isEmptyString(lc.current().p)) {
+            void* strObj = Allocator::resolveFast(lc.current().p);
             if (strObj) {
                 total_len += static_cast<Header*>(strObj)->size;
                 if (!isUtf8(strObj)) allUtf8 = false;
             }
         }
         ++count;
-        current = c->tail;
     }
 
     if (count == 0) return alloc::emptyString();
@@ -722,26 +694,21 @@ HPointer join(void* sep, HPointer stringList) {
             { Elm::StackRootGuard g(&listHp, &sepHp); out = allocAsciiOut(total_len); }
             size_t off = 0;
             bool first = true;
-            HPointer cur = listHp;
-            while (!alloc::isNil(cur)) {
-                void* cell = Allocator::resolveFast(cur);
-                if (!cell) break;
-                Cons* c = static_cast<Cons*>(cell);
+            for (alloc::ListCursor lc(listHp); !lc.done(); lc.next()) {
                 if (!first && sep_len > 0) {
                     auto ps = utf8Bytes(Allocator::resolveFast(sepHp));
                     std::memcpy(out.dst + off, ps.first, ps.second);
                     off += ps.second;
                 }
                 first = false;
-                if (!alloc::isEmptyString(c->head.p)) {
-                    void* strObj = Allocator::resolveFast(c->head.p);
+                if (!alloc::isEmptyString(lc.current().p)) {
+                    void* strObj = Allocator::resolveFast(lc.current().p);
                     if (strObj) {
                         auto pr = utf8Bytes(strObj);
                         std::memcpy(out.dst + off, pr.first, pr.second);
                         off += pr.second;
                     }
                 }
-                cur = c->tail;
             }
             return finishAsciiOut(out);
         }
@@ -764,14 +731,7 @@ HPointer join(void* sep, HPointer stringList) {
 
         size_t offset = 0;
         bool first = true;
-        current = stringList;
-
-        while (!alloc::isNil(current)) {
-            void* cell = Allocator::resolveFast(current);
-            if (!cell) break;
-
-            Cons* c = static_cast<Cons*>(cell);
-
+        for (alloc::ListCursor lc(stringList); !lc.done(); lc.next()) {
             if (!first && sep_len > 0) {
                 void* sepObj = Allocator::resolveFast(sepHp);
                 forEachSegment(sepObj, [&](const u16* p, u32 n) {
@@ -781,8 +741,8 @@ HPointer join(void* sep, HPointer stringList) {
             }
             first = false;
 
-            if (!alloc::isEmptyString(c->head.p)) {
-                void* strObj = Allocator::resolveFast(c->head.p);
+            if (!alloc::isEmptyString(lc.current().p)) {
+                void* strObj = Allocator::resolveFast(lc.current().p);
                 if (strObj) {
                     forEachSegment(strObj, [&](const u16* p, u32 n) {
                         std::memcpy(result->chars + offset, p, n * sizeof(u16));
@@ -790,7 +750,6 @@ HPointer join(void* sep, HPointer stringList) {
                     });
                 }
             }
-            current = c->tail;
         }
         return healAsciiResult(allocator.wrap(result));
     }
@@ -798,23 +757,18 @@ HPointer join(void* sep, HPointer stringList) {
     // Large total: build a balanced rope with `sep` interleaved between elems.
     std::vector<HPointer> parts;
     parts.reserve(count * 2);
-    current = stringList;
     bool first = true;
-    while (!alloc::isNil(current)) {
-        void* cell = Allocator::resolveFast(current);
-        if (!cell) break;
-        Cons* c = static_cast<Cons*>(cell);
+    for (alloc::ListCursor lc(stringList); !lc.done(); lc.next()) {
         if (!first && sep_len > 0) {
             parts.push_back(sepHp);
         }
         first = false;
-        if (!alloc::isEmptyString(c->head.p)) {
-            void* strObj = Allocator::resolveFast(c->head.p);
+        if (!alloc::isEmptyString(lc.current().p)) {
+            void* strObj = Allocator::resolveFast(lc.current().p);
             if (strObj && static_cast<Header*>(strObj)->size > 0) {
-                parts.push_back(c->head.p);
+                parts.push_back(lc.current().p);
             }
         }
-        current = c->tail;
     }
 
     Elm::StackRootRangeGuard partsGuard(parts.data(), parts.size(), ~0ULL);

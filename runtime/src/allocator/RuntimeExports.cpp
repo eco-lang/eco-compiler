@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <unistd.h>
 #include <deque>
 #include <new>
 #include <sstream>
@@ -252,9 +253,102 @@ extern "C" void eco_set_unboxed(HPtr obj_hptr, uint64_t bitmap) {
     }
 }
 
+// Chunked-list production switch (plans/chunked-list-representation.md §6).
+// The backend injects a call to eco_enable_list_chunks() into @main's entry
+// for modules compiled with config.list.chunks, so kernel bulk builders
+// produce chunk spines exactly when compiled projections are chunk-aware.
+extern "C" bool eco_g_list_chunks = false;
+
+extern "C" void eco_enable_list_chunks(void) {
+    eco_g_list_chunks = true;
+}
+
+// Cons-site tally (ECO_CONS_SITES=1, measurement builds): counts cons
+// allocations by caller return address; dumped at exit with the main-module
+// base so sites can be symbolized offline via addr2line. Thread-local maps
+// merge into the global on thread destruction to keep the hot path lock-free.
+extern "C" bool eco_g_cons_sites = false;
+
+namespace {
+
+std::mutex g_consSiteMu;
+std::unordered_map<void *, uint64_t> g_consSitesAll;
+
+void dumpConsSites() {
+    std::lock_guard<std::mutex> l(g_consSiteMu);
+    // Base of the main module: lowest mapping backed by the executable
+    // itself (the heap arenas map lower, so the first line won't do).
+    uintptr_t base = 0;
+    char exe[512] = {0};
+    ssize_t exeLen = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    if (FILE *f = fopen("/proc/self/maps", "r")) {
+        char line[1024];
+        while (fgets(line, sizeof line, f)) {
+            if (exeLen > 0 && strstr(line, exe)) {
+                base = static_cast<uintptr_t>(strtoull(line, nullptr, 16));
+                break;
+            }
+        }
+        fclose(f);
+    }
+    std::vector<std::pair<void *, uint64_t>> v(g_consSitesAll.begin(),
+                                               g_consSitesAll.end());
+    std::sort(v.begin(), v.end(),
+              [](auto &a, auto &b) { return a.second > b.second; });
+    uint64_t total = 0;
+    for (auto &kv : v) total += kv.second;
+    fprintf(stderr, "[cons-sites] base=%#zx total=%llu sites=%zu\n",
+            static_cast<size_t>(base),
+            static_cast<unsigned long long>(total), v.size());
+    for (size_t i = 0; i < v.size() && i < 80; ++i) {
+        fprintf(stderr, "[cons-sites] +%#zx %llu\n",
+                reinterpret_cast<uintptr_t>(v[i].first) - base,
+                static_cast<unsigned long long>(v[i].second));
+    }
+}
+
+struct ConsSiteTls {
+    std::unordered_map<void *, uint64_t> sites;
+    ~ConsSiteTls() {
+        std::lock_guard<std::mutex> l(g_consSiteMu);
+        for (auto &kv : sites) g_consSitesAll[kv.first] += kv.second;
+    }
+};
+
+thread_local ConsSiteTls g_consSiteTls;
+
+struct ConsSiteInit {
+    ConsSiteInit() {
+        if (std::getenv("ECO_CONS_SITES")) {
+            eco_g_cons_sites = true;
+            std::atexit([] {
+                {
+                    // Merge the main thread's tally (its TLS destructor runs
+                    // after atexit handlers).
+                    std::lock_guard<std::mutex> l(g_consSiteMu);
+                    for (auto &kv : g_consSiteTls.sites)
+                        g_consSitesAll[kv.first] += kv.second;
+                    g_consSiteTls.sites.clear();
+                }
+                dumpConsSites();
+            });
+        }
+    }
+};
+
+ConsSiteInit g_consSiteInit;
+
+} // namespace
+
+extern "C" void eco_cons_site_tally(void *ra) {
+    g_consSiteTls.sites[ra]++;
+}
+
 // `head_kind`: 2-bit primitive kind for the head slot (0=boxed, 1=Int, 2=Float,
 // 3=Char). Stored into `cons->header.unboxed` at slot 0 (bits 1:0).
 extern "C" HPtr eco_alloc_cons(uint64_t head, HPtr tail, uint32_t head_kind) {
+    if (__builtin_expect(eco_g_cons_sites, 0))
+        eco_cons_site_tally(__builtin_return_address(0));
     // Pack the field values as roots so the generic helper can keep them
     // valid across a slow-path GC. Mask bit i is set iff slot i is an
     // HPointer. tail (slot 1) is always a list HPointer; head (slot 0) is
@@ -2910,6 +3004,28 @@ static void print_list(uint64_t val, int depth) {
 
             // Move to tail
             current = hpBits(cons->tail);
+        } else if (header->tag == Tag_ConsChunk) {
+            // Chunk view (hybrid spines): print the dense run from the
+            // backing by uniform element kind, then continue with `next`.
+            ConsChunk* cv = static_cast<ConsChunk*>(ptr);
+            ListBacking* lb = static_cast<ListBacking*>(hpointerToPtr(hpBits(cv->backing)));
+            u32 cap = lb->header.size;
+            u32 run = cap - cv->offset;
+            u32 k = (cv->len < run) ? cv->len : run;
+            uint32_t kind = static_cast<uint32_t>(header->unboxed & 0x3);
+            for (u32 i = 0; i < k && count < MAX_LIST_ITEMS; i++, count++) {
+                if (!first) output_text(", ");
+                first = false;
+                const Unboxable& v = lb->elems[cv->offset + i];
+                switch (kind) {
+                    case 1: output_format("%lld", (long long)v.i); break;
+                    case 2: output_format("%g", (double)v.f); break;
+                    case 3: output_format("'%c'", (int)v.c); break;
+                    default: print_value(hpBits(v.p), depth + 1); break;
+                }
+            }
+            current = hpBits(cv->next);
+            continue; // count already advanced per element
         } else {
             if (!first) output_text(", ");
             output_format("<non_cons_tag_%d>", header->tag);
@@ -3116,8 +3232,9 @@ static void print_value(uint64_t val, int depth) {
             break;
         }
 
-        case Tag_Cons: {
-            // Print as a list
+        case Tag_Cons:
+        case Tag_ConsChunk: {
+            // Print as a list (either hybrid spine-node form)
             print_list(val, depth);
             break;
         }
@@ -3363,6 +3480,39 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
                 head_val = static_cast<uint64_t>(cons->head.i);
                 head_unboxed = (tupleFieldKind(cons->header.unboxed, 0) != 0);
                 tail_val = hpBits(cons->tail);
+            } else if (header->tag == Tag_ConsChunk) {
+                // Chunk view (hybrid spines): head is the first live slot of
+                // the run; the logical tail is the rest of the run — which
+                // has no materialized node, so synthesize by walking the run
+                // inline here instead. Simplest correct handling for the
+                // bounded debug printer: print the whole run, continue at
+                // `next`.
+                ConsChunk* cv = static_cast<ConsChunk*>(ptr);
+                ListBacking* lb =
+                    static_cast<ListBacking*>(hpointerToPtr(hpBits(cv->backing)));
+                u32 cap = lb->header.size;
+                u32 run = cap - cv->offset;
+                u32 k = (cv->len < run) ? cv->len : run;
+                bool ub = (header->unboxed & 0x3) != 0;
+                for (u32 i = 0; i < k && count < MAX_LIST_ITEMS; i++, count++) {
+                    if (!first) output_text(", ");
+                    first = false;
+                    uint64_t hv =
+                        static_cast<uint64_t>(lb->elems[cv->offset + i].i);
+                    if (ub) {
+                        const Elm::EcoTypeInfo* elemType =
+                            &g_type_graph->types[elem_type_id];
+                        if (elemType->kind == Elm::EcoTypeKind::Primitive) {
+                            printPrimitive(hv, elemType->data.primitive.prim_kind);
+                        } else {
+                            printPrimitive(hv, Elm::EcoPrimKind::Int);
+                        }
+                    } else {
+                        print_typed_value(hv, elem_type_id, depth + 1);
+                    }
+                }
+                current = hpBits(cv->next);
+                continue;
             } else if (header->tag == Tag_Custom) {
                 Custom* custom = static_cast<Custom*>(ptr);
                 if (!is_list_cons(custom)) break;
@@ -3909,6 +4059,10 @@ extern "C" uint32_t eco_get_tag(HPtr val) {
     // Handle based on heap object type.
     switch (header->tag) {
         case Tag_Cons:
+        case Tag_ConsChunk:
+            // Both hybrid spine-node forms are the list Cons constructor
+            // (ctor 1) for case dispatch; Nil is the Empty constant
+            // (CONSTANT_TAG) and never reaches here.
             return 1;
         case Tag_Custom:
             return static_cast<Custom*>(obj)->ctor;
@@ -3923,29 +4077,47 @@ extern "C" uint32_t eco_get_tag(HPtr val) {
 
 /// Gets the head of a Cons cell as an unboxed i64.
 /// Handles both boxed and unboxed heads.
+// First element of a hybrid list node — a Cons cell's head or a chunk
+// view's first run slot — with its 2-bit kind. Non-allocating.
+// (plans/chunked-list-representation.md §6 hybrid spines.)
+static inline bool listFirstElem(void* obj, Unboxable& out, uint32_t& kind) {
+    Header* hdr = getHeader(obj);
+    if (hdr->tag == Tag_Cons) {
+        Cons* c = static_cast<Cons*>(obj);
+        out = c->head;
+        kind = tupleFieldKind(hdr->unboxed, 0);
+        return true;
+    }
+    if (hdr->tag == Tag_ConsChunk) {
+        ConsChunk* cv = static_cast<ConsChunk*>(obj);
+        ListBacking* lb = static_cast<ListBacking*>(
+            Allocator::instance().resolve(cv->backing));
+        out = lb->elems[cv->offset];
+        kind = hdr->unboxed & 0x3;
+        return true;
+    }
+    return false;
+}
+
 extern "C" int64_t eco_cons_head_i64(HPtr cons) {
     HPointer hp = cons.toHPointer();
 
-    // Resolve the Cons cell pointer.
+    // Resolve the list node (Cons cell or chunk view).
     void* obj = Allocator::instance().resolve(hp);
-    if (!obj) return 0;  // Should not happen for valid Cons
+    if (!obj) return 0;  // Should not happen for valid list node
 
-    Cons* consCell = static_cast<Cons*>(obj);
+    Unboxable head;
+    uint32_t kind;
+    if (!listFirstElem(obj, head, kind)) return 0;
 
-    // Head is unboxed iff slot-0 kind is non-zero (2-bit encoding).
-    if (tupleFieldKind(consCell->header.unboxed, 0) != 0) {
-        // Head is unboxed: return the i64 value directly.
-        return consCell->head.i;
+    // Head is unboxed iff the element kind is non-zero (2-bit encoding).
+    if (kind != 0) {
+        return head.i;
     } else {
         // Head is boxed: resolve the HPointer and load from ElmInt.
-        HPointer headHp = consCell->head.p;
-        void* headObj = Allocator::instance().resolve(headHp);
+        void* headObj = Allocator::instance().resolve(head.p);
         if (!headObj) return 0;  // Should not happen
-
-        // ElmInt has layout: [Header:8][value:8]
-        // value is at offset 8.
-        ElmInt* elmInt = static_cast<ElmInt*>(headObj);
-        return elmInt->value;
+        return static_cast<ElmInt*>(headObj)->value;
     }
 }
 
@@ -3954,26 +4126,19 @@ extern "C" int64_t eco_cons_head_i64(HPtr cons) {
 extern "C" double eco_cons_head_f64(HPtr cons) {
     HPointer hp = cons.toHPointer();
 
-    // Resolve the Cons cell pointer.
     void* obj = Allocator::instance().resolve(hp);
-    if (!obj) return 0.0;  // Should not happen for valid Cons
+    if (!obj) return 0.0;  // Should not happen for valid list node
 
-    Cons* consCell = static_cast<Cons*>(obj);
+    Unboxable head;
+    uint32_t kind;
+    if (!listFirstElem(obj, head, kind)) return 0.0;
 
-    // Head is unboxed iff slot-0 kind is non-zero (2-bit encoding).
-    if (tupleFieldKind(consCell->header.unboxed, 0) != 0) {
-        // Head is unboxed: return the f64 value directly.
-        return consCell->head.f;
+    if (kind != 0) {
+        return head.f;
     } else {
-        // Head is boxed: resolve the HPointer and load from ElmFloat.
-        HPointer headHp = consCell->head.p;
-        void* headObj = Allocator::instance().resolve(headHp);
+        void* headObj = Allocator::instance().resolve(head.p);
         if (!headObj) return 0.0;  // Should not happen
-
-        // ElmFloat has layout: [Header:8][value:8]
-        // value is at offset 8.
-        ElmFloat* elmFloat = static_cast<ElmFloat*>(headObj);
-        return elmFloat->value;
+        return static_cast<ElmFloat*>(headObj)->value;
     }
 }
 
@@ -3982,27 +4147,154 @@ extern "C" double eco_cons_head_f64(HPtr cons) {
 extern "C" int16_t eco_cons_head_i16(HPtr cons) {
     HPointer hp = cons.toHPointer();
 
-    // Resolve the Cons cell pointer.
     void* obj = Allocator::instance().resolve(hp);
-    if (!obj) return 0;  // Should not happen for valid Cons
+    if (!obj) return 0;  // Should not happen for valid list node
 
-    Cons* consCell = static_cast<Cons*>(obj);
+    Unboxable head;
+    uint32_t kind;
+    if (!listFirstElem(obj, head, kind)) return 0;
 
-    // Head is unboxed iff slot-0 kind is non-zero (2-bit encoding).
-    if (tupleFieldKind(consCell->header.unboxed, 0) != 0) {
-        // Head is unboxed: return the i16 value directly.
-        return consCell->head.c;
+    if (kind != 0) {
+        return head.c;
     } else {
-        // Head is boxed: resolve the HPointer and load from ElmChar.
-        HPointer headHp = consCell->head.p;
-        void* headObj = Allocator::instance().resolve(headHp);
+        void* headObj = Allocator::instance().resolve(head.p);
         if (!headObj) return 0;  // Should not happen
-
-        // ElmChar has layout: [Header:8][value:2][padding:6]
-        // value is at offset 8.
-        ElmChar* elmChar = static_cast<ElmChar*>(headObj);
-        return static_cast<int16_t>(elmChar->value);
+        return static_cast<int16_t>(static_cast<ElmChar*>(headObj)->value);
     }
+}
+
+/// Hybrid-spine head projection for !eco.value results: returns the raw
+/// 8-byte element slot bits (boxed HPointer or unboxed primitive — the
+/// caller's static typing decides, exactly like the inline
+/// ConsHeadOffset load it replaces). Non-allocating; gc-leaf.
+extern "C" HPtr eco_list_head_hybrid(HPtr list) {
+    void* obj = Allocator::instance().resolve(list.toHPointer());
+    if (!obj) return HPtr::fromBits(0);
+    Unboxable head;
+    uint32_t kind;
+    if (!listFirstElem(obj, head, kind)) return HPtr::fromBits(0);
+    return HPtr::fromBits(static_cast<uint64_t>(head.i));
+}
+
+/// Hybrid-spine tail projection: a Cons cell's stored tail, or a chunk
+/// view's successor (MATERIALIZING a new view when the run has more than
+/// one element left — ALLOCATING, so this is statepointed, not gc-leaf).
+extern "C" HPtr eco_list_tail_hybrid(HPtr list) {
+    HPointer tail = alloc::listTailOf(list.toHPointer());
+    return HPtr::fromBits(hpBits(tail));
+}
+
+//===----------------------------------------------------------------------===//
+// List scratch stack (chunked-list Tier-B templates, plan §6 L1.3).
+//
+// The EcoListTemplate pass rewrites cons-accumulation loops to push each
+// element here instead of allocating a cell per iteration; after the loop a
+// single eco_scratch_finish builds the whole result as one dense chunk (or
+// cells when small / over-cap / chunks-off — semantics identical to the loop
+// it replaced). Entries are GC roots: an external root scanner evacuates and
+// updates boxed entries in place, so loop bodies may allocate freely between
+// pushes (this is what makes templates safe WITHOUT the §10 builder-pinning
+// machinery — the growing state lives outside the heap). Nested accumulating
+// loops interleave safely under mark/finish stack discipline: an inner loop
+// finishes (popping to its own mark) before the outer loop pushes again.
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+struct ListScratch {
+    std::vector<uint64_t> bits;
+    std::vector<u8> kinds;  // 2-bit slot kind per entry (0 = boxed HPointer)
+    bool registered = false;
+};
+
+ListScratch& listScratch() {
+    static thread_local ListScratch s;  // matches the per-thread RootSet
+    if (!s.registered) {
+        s.registered = true;
+        s.bits.reserve(1024);
+        s.kinds.reserve(1024);
+        ListScratch* sp = &s;  // thread_local has no automatic storage
+        Allocator::instance().getRootSet().addExternalRootScanner(
+            [sp](RootSet::EvacuateFn evac) {
+                for (size_t i = 0; i < sp->bits.size(); ++i) {
+                    if (sp->kinds[i] == 0 && sp->bits[i] != 0) {
+                        evac(sp->bits[i]);
+                    }
+                }
+            });
+    }
+    return s;
+}
+
+}  // namespace
+
+extern "C" int64_t eco_scratch_mark(void) {
+    return static_cast<int64_t>(listScratch().bits.size());
+}
+
+extern "C" void eco_scratch_push_boxed(HPtr value) {
+    ListScratch& s = listScratch();
+    s.bits.push_back(value.toBits());
+    s.kinds.push_back(0);
+}
+
+extern "C" void eco_scratch_push_scalar(uint64_t bits, int64_t kind) {
+    ListScratch& s = listScratch();
+    s.bits.push_back(bits);
+    s.kinds.push_back(static_cast<u8>(kind & 0x3));
+}
+
+// Builds the list the replaced loop would have produced: entries [mark..top)
+// were pushed in cons order (each PREPENDED to the accumulator), so the
+// logical result is entry[top-1] :: ... :: entry[mark] :: next. Pops the
+// entries back to `mark`. `kind` is the loop's static element kind.
+extern "C" HPtr eco_scratch_finish(int64_t mark, HPtr next, int64_t kind) {
+    ListScratch& s = listScratch();
+    size_t m = static_cast<size_t>(mark);
+    size_t end = s.bits.size();
+    assert(m <= end && "eco_scratch_finish: unbalanced mark");
+    size_t n = end - m;
+    if (n == 0) return next;
+
+    HPointer acc = next.toHPointer();
+    u8 k = static_cast<u8>(kind & 0x3);
+    auto& allocator = Allocator::instance();
+
+    if (eco_g_list_chunks && n >= 4
+        && sizeof(ListBacking) + n * sizeof(Unboxable)
+               < allocator.getLargeObjectThreshold()) {
+        StackRootGuard guard(&acc);
+        u32 nn = static_cast<u32>(n);
+        u32 totalLen =
+            nn + (alloc::isNil(acc) ? 0 : alloc::listLogicalLen(acc));
+        HPointer backing = alloc::listBacking(nn, k);
+        HPointer view = alloc::consChunkView(backing, 0, totalLen, acc, k);
+        // Both allocations are done; the scanner kept the entries current,
+        // so read them fresh and fill without further allocation.
+        ListBacking* lb = static_cast<ListBacking*>(allocator.resolve(
+            static_cast<ConsChunk*>(allocator.resolve(view))->backing));
+        for (u32 i = 0; i < nn; ++i) {
+            lb->elems[i].i = static_cast<i64>(s.bits[end - 1 - i]);
+        }
+        s.bits.resize(m);
+        s.kinds.resize(m);
+        return HPtr::fromBits(hpBits(view));
+    }
+
+    // Small / mixed / chunks-off: exactly the cell loop the template
+    // replaced. cons() may GC per step; the scanner updates the remaining
+    // entries and `acc` is rooted, so each iteration reads fresh values.
+    {
+        StackRootGuard guard(&acc);
+        for (size_t i = m; i < end; ++i) {
+            Unboxable v;
+            v.i = static_cast<i64>(s.bits[i]);
+            acc = alloc::cons(v, acc, s.kinds[i]);
+        }
+    }
+    s.bits.resize(m);
+    s.kinds.resize(m);
+    return HPtr::fromBits(hpBits(acc));
 }
 
 //===----------------------------------------------------------------------===//

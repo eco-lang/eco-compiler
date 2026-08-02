@@ -103,22 +103,17 @@ static void* taskOnEffectsEvaluator(void* args[]) {
     // after evacuation and its payload bytes are cleared the next time
     // `clearToSpaceFreeRegion` runs. Snapshot the tail HP *before* any
     // allocation, so the loop never dereferences a stale pointer.
-    HPointer current = cmds;
-    // `nextTail` (the per-iteration tail snapshot) is the loop's advance
-    // value: it crosses the taskAndThen/rawSpawn GC points below, so it must
-    // be rooted alongside the cursor (mirrors httpOnEffectsEvaluator).
-    HPointer nextTail = listNil();
+    // RootedListCursor (hybrid spines): the spine node stays rooted and every
+    // read/advance re-resolves fresh, so the taskAndThen/rawSpawn GC points
+    // below never leave the walk holding a stale pointer.
     {
-        Elm::StackRootGuard guard(&current, &sendToAppCl, &nextTail);
+        Elm::StackRootGuard guard(&sendToAppCl);
+        Elm::alloc::RootedListCursor cursor(cmds);
+        Elm::Unboxable head;
+        u8 kind;
 
-        while (!isNil(current)) {
-            void* cellPtr = Allocator::instance().resolve(current);
-            if (!cellPtr) break;
-
-            // Snapshot tail and cmd HP before any allocation can move the Cons.
-            Cons* cell = static_cast<Cons*>(cellPtr);
-            nextTail = cell->tail;
-            HPointer cmdHP = cell->head.p;
+        while (cursor.read(head, kind)) {
+            HPointer cmdHP = head.p;
 
             // Each cmd is a Perform(task) Custom with values[0] = the task.
             void* cmdPtr = Allocator::instance().resolve(cmdHP);
@@ -133,7 +128,7 @@ static void* taskOnEffectsEvaluator(void* args[]) {
                 Scheduler::instance().rawSpawn(chainedTask);
             }
 
-            current = nextTail;
+            cursor.advance();
         }
     }
 

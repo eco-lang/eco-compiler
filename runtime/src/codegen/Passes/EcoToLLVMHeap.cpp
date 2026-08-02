@@ -544,6 +544,19 @@ struct ListHeadOpLowering : public OpConversionPattern<ListHeadOp> {
             return success();
         }
 
+        // Chunked-list modules (eco.list_chunks): the node may be a chunk
+        // view. Emit the inline MARKER; expandListProjMarkers (EcoBackend)
+        // opens it into a cell-fast (inline slot load) / chunk-slow (hybrid
+        // helper call) diamond at the LLVM level, where block structure is
+        // unconstrained. Same blind-8-byte semantics as the inline load.
+        if (runtime.listChunks) {
+            auto markerFunc = runtime.getOrCreateListHeadInlineMarker(rewriter);
+            auto call = rewriter.create<LLVM::CallOp>(loc, markerFunc,
+                                                      ValueRange{input});
+            rewriter.replaceOp(op, call.getResult());
+            return success();
+        }
+
         // For !eco.value (HPointer): inline resolve + GEP(head) + load i64 + wrap.
         rewriter.replaceOp(op, emitInlineBoxedLoad(input, layout::ConsHeadOffset,
                                                    loc, rewriter, runtime));
@@ -575,6 +588,19 @@ struct ListTailOpLowering : public OpConversionPattern<ListTailOp> {
             Value result = rewriter.create<LLVM::ExtractValueOp>(
                 loc, resultType, input, ArrayRef<int64_t>{1});
             rewriter.replaceOp(op, result);
+            return success();
+        }
+
+        // Chunked-list modules (eco.list_chunks): tail on a chunk view may
+        // MATERIALIZE a successor view. Emit the inline MARKER; the expanded
+        // diamond's cell edge is today's inline load, and only the chunk
+        // edge calls the allocating hybrid helper (statepointed, HEAP_034
+        // slow-edge pattern).
+        if (runtime.listChunks) {
+            auto markerFunc = runtime.getOrCreateListTailInlineMarker(rewriter);
+            auto call = rewriter.create<LLVM::CallOp>(loc, markerFunc,
+                                                      ValueRange{input});
+            rewriter.replaceOp(op, call.getResult());
             return success();
         }
 

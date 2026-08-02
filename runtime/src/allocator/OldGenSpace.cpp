@@ -1642,6 +1642,23 @@ void OldGenSpace::markChildren(void *obj) {
             markHPointer(c->tail);
             break;
         }
+        case Tag_ConsChunk: {
+            ConsChunk *cv = static_cast<ConsChunk *>(obj);
+            markHPointer(cv->backing);
+            markHPointer(cv->next);
+            break;
+        }
+        case Tag_ListBacking: {
+            // Live slots are [hd, capacity); scalar-kind backings (unboxed
+            // bits 1:0 != 0) are pointer-free. Slack below hd is never traced.
+            if ((hdr->unboxed & 0x3) == 0) {
+                ListBacking *lb = static_cast<ListBacking *>(obj);
+                for (u32 i = lb->hd; i < hdr->size; i++) {
+                    markUnboxable(lb->elems[i], true);
+                }
+            }
+            break;
+        }
         case Tag_Custom: {
             Custom *c = static_cast<Custom *>(obj);
             for (u32 i = 0; i < hdr->size && i < 24; i++) {
@@ -3899,6 +3916,21 @@ void OldGenSpace::fixPointersInObject(void* obj) {
             Cons* c = static_cast<Cons*>(obj);
             fixUnboxable(c->head, tupleFieldKind(hdr->unboxed, 0) == 0);
             fixHPointer(c->tail);
+            break;
+        }
+        case Tag_ConsChunk: {
+            ConsChunk* cv = static_cast<ConsChunk*>(obj);
+            fixHPointer(cv->backing);
+            fixHPointer(cv->next);
+            break;
+        }
+        case Tag_ListBacking: {
+            if ((hdr->unboxed & 0x3) == 0) {
+                ListBacking* lb = static_cast<ListBacking*>(obj);
+                for (u32 i = lb->hd; i < hdr->size; i++) {
+                    fixUnboxable(lb->elems[i], true);
+                }
+            }
             break;
         }
         case Tag_Custom: {

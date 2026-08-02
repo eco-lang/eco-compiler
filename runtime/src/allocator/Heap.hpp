@@ -110,6 +110,16 @@ typedef enum {
     // plans/utf8-string-pipeline-wiring.md, HEAP_032.
     Tag_StringUtf8View,  // Zero-copy byte view: HPointer base + u32 offset + u32 byteLen.
     Tag_StringUtf8Leaf,  // Inline ASCII bytes: header.size = byte count, u8 bytes[].
+    // Chunked-list forms (plans/chunked-list-representation.md §2.2/§6 hybrid
+    // spines). A list spine may freely MIX classic Cons cells and chunk view
+    // nodes; walkers, GC, eq/compare/toString handle both. v1 chunks are
+    // built whole (builder-bit rooted during construction) and IMMUTABLE
+    // once observable: hd == 0 always, no front-slack fill (§10 deferred).
+    // Kept BEFORE Tag_Free/Tag_Forward ("Forward is last" holds).
+    Tag_ConsChunk,   // Chunk view: HPointer backing, u32 offset, u32 len, HPointer next.
+    Tag_ListBacking, // Dense element array: header.size = capacity (elem count),
+                     // u32 hd (frontmost claimed; v1 always 0), Unboxable elems[].
+                     // Header.unboxed bits 1:0 = uniform element kind.
     Tag_Free,        // Free cell on a segregated free list (header.size = byte size).
     Tag_Forward,     // Used for forwarding pointers during GC.
 } Tag;
@@ -469,6 +479,38 @@ typedef struct {
     Unboxable head;
     HPointer tail;
 } Cons;
+
+// Chunk view node (Tag_ConsChunk): a non-empty list whose first elements are
+// the dense run `backing.elems[offset .. offset + k)` followed by `next`,
+// where k = min(len, backing capacity - offset) and `len` is the TOTAL
+// logical length of this list value. CONSISTENCY INVARIANT (never
+// truncating): len == k + logicalLength(next); in particular len <= run
+// implies next is Nil. O(1) `take n` therefore materializes a fresh view
+// {backing, offset, n, Nil} with n <= run rather than bounding `next`.
+// Immutable once observable. `next` is Nil, a Cons cell, or another view —
+// spines mix freely (hybrid spines, plans/chunked-list-representation.md §6).
+// Element kind: Header.unboxed bits 1:0 mirror the backing's uniform kind so
+// head projections type without touching the backing header.
+typedef struct {
+    Header header;    // Header.unboxed bits 1:0 = element kind (mirror of backing).
+    HPointer backing; // -> Tag_ListBacking.
+    u32 offset;       // First live index in the backing.
+    u32 len;          // Total logical length of this list value (>= 1).
+    HPointer next;    // Rest of the spine after this chunk's run.
+} ConsChunk;
+
+// Dense element storage for chunk views (Tag_ListBacking). header.size is the
+// CAPACITY in elements. Live slots are [hd, capacity); v1 always builds whole
+// chunks with hd == 0 and never mutates after construction (front-slack fill
+// is the deferred §10 ladder). GC scans [hd, capacity) by the uniform 2-bit
+// element kind in Header.unboxed bits 1:0; slots below hd are uninitialized
+// and must never be traced.
+typedef struct {
+    Header header;  // header.size = capacity (element count); unboxed bits 1:0 = kind.
+    u32 hd;         // Frontmost claimed slot (v1: always 0).
+    u32 _pad;
+    Unboxable elems[];
+} ListBacking;
 
 typedef struct {
     Header header;           // Header.size contains field count.

@@ -6,6 +6,7 @@
 #include "Utils.hpp"
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
+#include "allocator/ListOps.hpp"
 #include "allocator/RuntimeExports.h"
 #include <vector>
 #include <algorithm>
@@ -54,22 +55,12 @@ inline uint64_t callBinaryClosure(HPtr closure_hptr, uint64_t arg1, uint64_t arg
 std::vector<uint64_t> listToVectorU64(HPointer list) {
     Allocator& allocator = Allocator::instance();
 
-    // Phase 1: raw spine walk, no allocation.
+    // Phase 1: raw spine walk, no allocation (hybrid spines: cells + chunk
+    // views via ListCursor).
     struct Entry { Unboxable head; uint8_t kind; };
     std::vector<Entry> entries;
-    HPointer current = list;
-    while (!alloc::isNil(current)) {
-        void* ptr = allocator.resolve(current);
-        if (!ptr) break;
-
-        Header* hdr = static_cast<Header*>(ptr);
-        if (hdr->tag != Tag_Cons) break;
-
-        Cons* cons = static_cast<Cons*>(ptr);
-        entries.push_back(Entry{
-            cons->head,
-            static_cast<uint8_t>(Elm::tupleFieldKind(hdr->unboxed, 0))});
-        current = cons->tail;
+    for (alloc::ListCursor c(list); !c.done(); c.next()) {
+        entries.push_back(Entry{c.current(), c.currentKind()});
     }
 
     // Phase 2: box primitives under a root range covering the whole buffer.
@@ -101,21 +92,9 @@ std::vector<uint64_t> listToVectorU64(HPointer list) {
 // Legacy helper - convert list to vector of raw pointers
 std::vector<void*> listToVector(HPointer list) {
     std::vector<void*> result;
-    Allocator& allocator = Allocator::instance();
-
-    HPointer current = list;
-    while (!alloc::isNil(current)) {
-        void* ptr = allocator.resolve(current);
-        if (!ptr) break;
-
-        Header* hdr = static_cast<Header*>(ptr);
-        if (hdr->tag != Tag_Cons) break;
-
-        Cons* cons = static_cast<Cons*>(ptr);
-        result.push_back(reinterpret_cast<void*>(cons->head.i));
-        current = cons->tail;
+    for (alloc::ListCursor c(list); !c.done(); c.next()) {
+        result.push_back(reinterpret_cast<void*>(c.current().i));
     }
-
     return result;
 }
 
@@ -140,13 +119,63 @@ struct ConsBits {
     uint8_t   kind;  // 0 = boxed HPointer, otherwise primitive kind code
 };
 
-inline ConsBits readCons(HPointer listHP) {
-    Cons* c = static_cast<Cons*>(Elm::Allocator::instance().resolve(listHP));
-    ConsBits cb;
-    cb.head = c->head;
-    cb.tail = c->tail;
-    cb.kind = static_cast<uint8_t>(Elm::tupleFieldKind(c->header.unboxed, 0));
-    return cb;
+// Hybrid-spine (cells + chunk views) NON-ALLOCATING cursor primitives for
+// the mapN driver. State is a (spine-node HPointer, in-run index) pair; the
+// node lives in the driver's ROOTED lists[] range, and the index is a plain
+// integer, so both survive any GC and every call re-resolves fresh — the
+// kernelListMapN stale-cursor discipline extended to chunk views.
+
+// Fetch the current element into `out` (normalizing past exhausted runs by
+// mutating node/idx — non-allocating). Returns false at list end.
+inline bool listCurrentAt(HPointer& node, uint32_t& idx, ConsBits& out) {
+    auto& allocator = Elm::Allocator::instance();
+    while (true) {
+        if (alloc::isNil(node) || node.ptr_ind != 0) return false;
+        void* obj = allocator.resolve(node);
+        if (!obj) return false;
+        Header* hdr = static_cast<Header*>(obj);
+        if (hdr->tag == Tag_Cons) {
+            Cons* c = static_cast<Cons*>(obj);
+            out.head = c->head;
+            out.tail = c->tail;
+            out.kind = static_cast<uint8_t>(
+                Elm::tupleFieldKind(hdr->unboxed, 0));
+            return true;
+        }
+        if (hdr->tag == Tag_ConsChunk) {
+            ConsChunk* cv = static_cast<ConsChunk*>(obj);
+            ListBacking* lb = static_cast<ListBacking*>(
+                allocator.resolve(cv->backing));
+            uint32_t run = lb->header.size - cv->offset;
+            if (cv->len < run) run = cv->len;
+            if (idx >= run) {
+                node = cv->next;
+                idx = 0;
+                continue;
+            }
+            out.head = lb->elems[cv->offset + idx];
+            out.tail = alloc::listNil();  // unused by the driver
+            out.kind = static_cast<uint8_t>(hdr->unboxed & 0x3);
+            return true;
+        }
+        return false;
+    }
+}
+
+// Step past the current element (non-allocating; fresh resolve).
+inline void listStepAt(HPointer& node, uint32_t& idx) {
+    if (alloc::isNil(node) || node.ptr_ind != 0) return;
+    void* obj = Elm::Allocator::instance().resolve(node);
+    if (!obj) { node = alloc::listNil(); return; }
+    Header* hdr = static_cast<Header*>(obj);
+    if (hdr->tag == Tag_Cons) {
+        node = static_cast<Cons*>(obj)->tail;
+        idx = 0;
+    } else if (hdr->tag == Tag_ConsChunk) {
+        ++idx;  // listCurrentAt rolls into `next` when the run is exhausted
+    } else {
+        node = alloc::listNil();
+    }
 }
 
 //===----------------------------------------------------------------------===//
@@ -290,11 +319,12 @@ HPtr Elm_Kernel_List_fromArray(HPtr array) {
 
     Header* hdr = static_cast<Header*>(arr_ptr);
 
-    // If already a Cons list, pass through unchanged. This happens when
-    // C++ kernel functions (e.g., Elm_Kernel_String_split) return proper
-    // Cons lists, but the Elm source wraps with Elm.Kernel.List.fromArray
-    // (which in JS converts a JS Array to a Cons list).
-    if (hdr->tag == Tag_Cons) {
+    // If already a list (either hybrid spine-node form), pass through
+    // unchanged. This happens when C++ kernel functions (e.g.,
+    // Elm_Kernel_String_split) return proper lists, but the Elm source
+    // wraps with Elm.Kernel.List.fromArray (which in JS converts a JS
+    // Array to a Cons list).
+    if (hdr->tag == Tag_Cons || hdr->tag == Tag_ConsChunk) {
         return array;
     }
 
@@ -337,8 +367,8 @@ HPtr Elm_Kernel_List_toArray(HPtr list) {
     void* ptr = Export::toPtr(list_bits);
     if (ptr) {
         Header* hdr = static_cast<Header*>(ptr);
-        if (hdr->tag == Tag_Cons) {
-            // Already a Cons list — pass through unchanged.
+        if (hdr->tag == Tag_Cons || hdr->tag == Tag_ConsChunk) {
+            // Already a list (either hybrid spine-node form) — pass through.
             return list;
         }
     }
@@ -431,16 +461,19 @@ HPointer kernelListMapN(int n_args, HPointer* lists, HPointer& closureHP) {
         uint64_t bits;
     } resultSlot{};
 
-    auto allListsNonempty = [&]() -> bool {
+    // Per-list in-run indices for chunk views (plain ints — GC-stable; the
+    // nodes themselves live in the rooted lists[] range).
+    uint32_t idxs[kMaxArgs] = {0};
+    ConsBits cb[kMaxArgs];
+
+    auto readAll = [&]() -> bool {
         for (int i = 0; i < n_args; ++i) {
-            if (alloc::isNil(lists[i])) return false;
+            if (!listCurrentAt(lists[i], idxs[i], cb[i])) return false;
         }
         return true;
     };
 
-    while (allListsNonempty()) {
-        ConsBits cb[kMaxArgs];
-        for (int i = 0; i < n_args; ++i) cb[i] = readCons(lists[i]);
+    while (readAll()) {
 
         // Phase 1: pre-box any cons heads that the closure wants in boxed
         // form. A rolling-prefix root range keeps already-boxed slots
@@ -481,12 +514,14 @@ HPointer kernelListMapN(int n_args, HPointer* lists, HPointer& closureHP) {
         }
 
         // Fill boxed-source slots now that all Phase-1 boxing is done:
-        // lists[] is rooted (GC-updated), and readCons does not allocate,
-        // so these heads are fresh — there is no further GC point until
-        // the closure call below.
+        // lists[] is rooted (GC-updated), and listCurrentAt does not
+        // allocate, so these heads are fresh — there is no further GC point
+        // until the closure call below.
         for (int i = 0; i < n_args; ++i) {
             if (deliveryKinds[i] == 0 && cb[i].kind == 0) {
-                prebox[i] = readCons(lists[i]).head.p;
+                ConsBits fresh;
+                listCurrentAt(lists[i], idxs[i], fresh);
+                prebox[i] = fresh.head.p;
             }
         }
 
@@ -534,13 +569,13 @@ HPointer kernelListMapN(int n_args, HPointer* lists, HPointer& closureHP) {
                                layout, &resultSlot, resultKind);
         appendClosureResult(results, &resultSlot, resultKind);
 
-        // Advance each cursor to its tail. `cb[i].tail` is a *pre*-closure-call
-        // snapshot; `eco_apply_closure_eval` above can trigger a minor GC that
-        // evacuates the tail Cons, leaving that snapshot pointing into freed
-        // from-space. `lists[i]` is in the root set (pushStackRootRange above)
-        // and was updated by any such GC, so re-derive the tail from the live
-        // cursor rather than the stale snapshot. (readCons does not allocate.)
-        for (int i = 0; i < n_args; ++i) lists[i] = readCons(lists[i]).tail;
+        // Advance each cursor. `cb[i].tail` is a *pre*-closure-call snapshot;
+        // `eco_apply_closure_eval` above can trigger a minor GC that moves
+        // spine nodes. `lists[i]` is in the root set (pushStackRootRange
+        // above) and was updated by any such GC, so step from the live
+        // (node, idx) cursor rather than any stale snapshot. (listStepAt
+        // does not allocate; chunk views advance by index.)
+        for (int i = 0; i < n_args; ++i) listStepAt(lists[i], idxs[i]);
     }
 
     rs.restoreStackRangePoint(outerSaved);
@@ -598,6 +633,44 @@ HPtr Elm_Kernel_List_map5(HPtr closure, HPtr vs, HPtr ws,
     };
     HPointer closureHP = Export::decode(closure.toBits());
     HPointer result = kernelListMapN(5, lists, closureHP);
+    return HPtr::fromBits(Export::encode(result));
+}
+
+// ============================================================================
+// Tier-B closure-free combinator shunts (plans/chunked-list-representation.md
+// §6 L1.3 / §9.2). Under config.list.chunks the MLIR generator rewrites the
+// bodies of recognized elm/core List.{reverse,append,concat,take,drop}
+// specializations into calls to these exports. The ListOps implementations
+// collect-then-build through alloc::listFromUnboxables, which produces DENSE
+// CHUNKS when chunk production is enabled — replacing the `foldl cons`
+// per-element cell chains (the census's 498M-cons HOF pool) with one
+// backing + one view per (sub-LOT) list. All closure-free, so no LSS
+// devirtualization is at stake (§9.2's trap does not apply).
+// ============================================================================
+
+HPtr Elm_Kernel_List_reverse(HPtr list) {
+    HPointer result = Elm::ListOps::reverse(Export::decode(list.toBits()));
+    return HPtr::fromBits(Export::encode(result));
+}
+
+HPtr Elm_Kernel_List_append(HPtr a, HPtr b) {
+    HPointer result = Elm::ListOps::append(Export::decode(a.toBits()),
+                                           Export::decode(b.toBits()));
+    return HPtr::fromBits(Export::encode(result));
+}
+
+HPtr Elm_Kernel_List_concat(HPtr listOfLists) {
+    HPointer result = Elm::ListOps::concat(Export::decode(listOfLists.toBits()));
+    return HPtr::fromBits(Export::encode(result));
+}
+
+HPtr Elm_Kernel_List_take(int64_t n, HPtr list) {
+    HPointer result = Elm::ListOps::take(n, Export::decode(list.toBits()));
+    return HPtr::fromBits(Export::encode(result));
+}
+
+HPtr Elm_Kernel_List_drop(int64_t n, HPtr list) {
+    HPointer result = Elm::ListOps::drop(n, Export::decode(list.toBits()));
     return HPtr::fromBits(Export::encode(result));
 }
 

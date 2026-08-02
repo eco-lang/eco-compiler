@@ -91,13 +91,19 @@ inline i64 length(HPointer list) {
     i64 count = 0;
     HPointer current = list;
 
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
+    while (!alloc::isNil(current) && current.ptr_ind == 0) {
+        void* node = allocator.resolve(current);
+        if (!node) break;
+        Header* hdr = getHeader(node);
+        if (hdr->tag == Tag_ConsChunk) {
+            // A view's `len` is the TOTAL logical length of everything from
+            // here (consistency invariant, Heap.hpp) — O(1) completion.
+            count += static_cast<ConsChunk*>(node)->len;
+            break;
+        }
+        if (hdr->tag != Tag_Cons) break;
         ++count;
-        current = c->tail;
+        current = static_cast<Cons*>(node)->tail;
     }
 
     return count;
@@ -242,24 +248,11 @@ Unboxable foldr(Folder fold, Unboxable acc, HPointer list);
  * Computes the sum of a list of integers.
  */
 inline i64 sum(HPointer list) {
-    auto& allocator = Allocator::instance();
     i64 total = 0;
-    HPointer current = list;
-
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        Header* hdr = getHeader(cell);
-
-        // If unboxed (primitive), get the int value directly
-        if (tupleFieldKind(hdr->unboxed, 0) != 0) {
-            total += c->head.i;
-        }
-        current = c->tail;
+    for (alloc::ListCursor c(list); !c.done(); c.next()) {
+        // If unboxed (primitive), add the int value directly.
+        if (c.currentKind() != 0) total += c.current().i;
     }
-
     return total;
 }
 
@@ -267,23 +260,10 @@ inline i64 sum(HPointer list) {
  * Computes the product of a list of integers.
  */
 inline i64 product(HPointer list) {
-    auto& allocator = Allocator::instance();
     i64 total = 1;
-    HPointer current = list;
-
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        Header* hdr = getHeader(cell);
-
-        if (tupleFieldKind(hdr->unboxed, 0) != 0) {
-            total *= c->head.i;
-        }
-        current = c->tail;
+    for (alloc::ListCursor c(list); !c.done(); c.next()) {
+        if (c.currentKind() != 0) total *= c.current().i;
     }
-
     return total;
 }
 
@@ -307,35 +287,22 @@ HPointer minimum(HPointer list);
  * Checks if all elements satisfy a predicate.
  */
 inline bool all(Predicate pred, HPointer list) {
-    auto& allocator = Allocator::instance();
-    HPointer current = list;
-    // Root the spine and each iteration's head/tail snapshots across
-    // pred(), which can run user code that allocates (see filter/partition
-    // in ListOps.cpp); advance from the rooted snapshot, never from the raw
-    // Cons* resolved before the call.
-    Elm::StackRootGuard spine_guard(&current);
-
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        Header* hdr = getHeader(cell);
-        bool is_boxed = tupleFieldKind(hdr->unboxed, 0) == 0;
-
-        Unboxable head = c->head;
-        HPointer next = c->tail;
-
+    // RootedListCursor keeps the spine node rooted and re-resolves on every
+    // read/advance, so pred() may allocate/GC freely (hybrid spines: cells +
+    // chunk views). The head snapshot is additionally rooted across pred.
+    alloc::RootedListCursor cursor(list);
+    Unboxable head;
+    u8 kind;
+    while (cursor.read(head, kind)) {
         bool ok;
         {
-            HPointer* head_root = is_boxed ? &head.p : nullptr;
-            Elm::StackRootGuard iter_guard({&next, head_root});
-            ok = pred(head, is_boxed);
+            HPointer* head_root = (kind == 0) ? &head.p : nullptr;
+            Elm::StackRootGuard iter_guard({head_root});
+            ok = pred(head, kind == 0);
         }
         if (!ok) return false;
-        current = next;
+        cursor.advance();
     }
-
     return true;
 }
 
@@ -343,32 +310,20 @@ inline bool all(Predicate pred, HPointer list) {
  * Checks if any element satisfies a predicate.
  */
 inline bool any(Predicate pred, HPointer list) {
-    auto& allocator = Allocator::instance();
-    HPointer current = list;
     // Same rooting discipline as all() above.
-    Elm::StackRootGuard spine_guard(&current);
-
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        Header* hdr = getHeader(cell);
-        bool is_boxed = tupleFieldKind(hdr->unboxed, 0) == 0;
-
-        Unboxable head = c->head;
-        HPointer next = c->tail;
-
+    alloc::RootedListCursor cursor(list);
+    Unboxable head;
+    u8 kind;
+    while (cursor.read(head, kind)) {
         bool hit;
         {
-            HPointer* head_root = is_boxed ? &head.p : nullptr;
-            Elm::StackRootGuard iter_guard({&next, head_root});
-            hit = pred(head, is_boxed);
+            HPointer* head_root = (kind == 0) ? &head.p : nullptr;
+            Elm::StackRootGuard iter_guard({head_root});
+            hit = pred(head, kind == 0);
         }
         if (hit) return true;
-        current = next;
+        cursor.advance();
     }
-
     return false;
 }
 
@@ -416,22 +371,10 @@ HPointer sortWith(Comparator cmp, HPointer list);
  * Useful for interop and debugging.
  */
 inline std::vector<std::pair<Unboxable, bool>> toVector(HPointer list) {
-    auto& allocator = Allocator::instance();
     std::vector<std::pair<Unboxable, bool>> result;
-    HPointer current = list;
-
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        Header* hdr = getHeader(cell);
-        bool is_boxed = tupleFieldKind(hdr->unboxed, 0) == 0;
-
-        result.emplace_back(c->head, is_boxed);
-        current = c->tail;
+    for (alloc::ListCursor c(list); !c.done(); c.next()) {
+        result.emplace_back(c.current(), c.currentKind() == 0);
     }
-
     return result;
 }
 
@@ -439,19 +382,10 @@ inline std::vector<std::pair<Unboxable, bool>> toVector(HPointer list) {
  * Collects list elements into a std::vector of integers (assumes all unboxed).
  */
 inline std::vector<i64> toIntVector(HPointer list) {
-    auto& allocator = Allocator::instance();
     std::vector<i64> result;
-    HPointer current = list;
-
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        result.push_back(c->head.i);
-        current = c->tail;
+    for (alloc::ListCursor c(list); !c.done(); c.next()) {
+        result.push_back(c.current().i);
     }
-
     return result;
 }
 

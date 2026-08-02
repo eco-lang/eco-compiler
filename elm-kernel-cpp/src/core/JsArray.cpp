@@ -25,30 +25,56 @@ HPointer initializeFromList(u32 max, HPointer list) {
 
     arr = alloc::allocArray(max);
 
+    // Hybrid spines: walk via a rooted (node, idx) cursor. arrayPush can
+    // allocate (array growth), so re-resolve everything from rooted state
+    // each iteration; `remaining` is materialized at the end via
+    // listTailOf-equivalent stepping so a mid-chunk stop yields a proper
+    // list value.
     u32 count = 0;
-    while (count < max && !alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        Header* hdr = static_cast<Header*>(cell);
-
-        uint32_t kind = Elm::tupleFieldKind(hdr->unboxed, 0);
+    alloc::RootedListCursor cursor(current);
+    Unboxable head;
+    u8 kind;
+    while (count < max && cursor.read(head, kind)) {
         void* arrObj = allocator.resolve(arr);
-
         if (kind == 0) {
-            alloc::arrayPush(arrObj, alloc::boxed(c->head.p), true);
+            alloc::arrayPush(arrObj, alloc::boxed(head.p), true);
         } else {
             // Unboxed primitive — use kind-aware push to set the array's uniform kind.
-            alloc::arrayPushKind(arrObj, c->head, static_cast<u8>(kind));
+            alloc::arrayPushKind(arrObj, head, static_cast<u8>(kind));
         }
-
-        current = c->tail;
+        cursor.advance();
         ++count;
     }
 
-    // Return Tuple2(array, remaining_list)
-    return alloc::tuple2(alloc::boxed(arr), alloc::boxed(current), 0);
+    // Remaining list: the cursor's node with `idx` elements consumed from
+    // its run. For a cell (idx == 0) that is just the node; for a mid-run
+    // view materialize the successor view by stepping idx times via
+    // listTailOf (allocates at most once — listTailOf collapses the offset
+    // arithmetic in a single view when idx > 0).
+    HPointer remaining = cursor.node;
+    if (cursor.idx > 0 && !alloc::isNil(remaining) && remaining.ptr_ind == 0) {
+        void* obj = allocator.resolve(remaining);
+        if (obj && getHeader(obj)->tag == Tag_ConsChunk) {
+            ConsChunk* cv = static_cast<ConsChunk*>(obj);
+            ListBacking* lb = static_cast<ListBacking*>(
+                allocator.resolve(cv->backing));
+            u32 run = lb->header.size - cv->offset;
+            if (cv->len < run) run = cv->len;
+            if (cursor.idx >= run) {
+                remaining = cv->next;
+            } else {
+                remaining = alloc::consChunkView(
+                    cv->backing, cv->offset + cursor.idx,
+                    cv->len - cursor.idx, cv->next,
+                    static_cast<u8>(getHeader(obj)->unboxed & 0x3));
+            }
+        }
+    }
+
+    // Return Tuple2(array, remaining_list). `remaining` is rooted across
+    // tuple2 via the guard on `current`… it is a fresh value; root it.
+    Elm::StackRootGuard remGuard(&remaining);
+    return alloc::tuple2(alloc::boxed(arr), alloc::boxed(remaining), 0);
 }
 
 } // namespace Elm::Kernel::JsArray

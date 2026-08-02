@@ -61,6 +61,9 @@ struct GetTagOpLowering : public OpConversionPattern<GetTagOp> {
 
         Value value = adaptor.getValue();
 
+        // (Chunked-list modules keep the inline marker: expandGetTagMarkers
+        // extends the diamond's Cons test with Tag_ConsChunk when the module
+        // enables chunk production — see EcoBackend.cpp.)
         if (!inlineDerefExtEnabled()) {
             // Out-of-line fallback (A/B leg): the runtime helper handles both
             // heap objects and embedded constants.

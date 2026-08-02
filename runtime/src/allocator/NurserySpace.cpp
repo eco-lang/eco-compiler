@@ -764,6 +764,20 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                         checkChild(c->tail, "tail", 0);
                         break;
                     }
+                    case Tag_ConsChunk: {
+                        ConsChunk* cv = static_cast<ConsChunk*>(static_cast<void*>(scan));
+                        checkChild(cv->backing, "backing", 0);
+                        checkChild(cv->next, "next", 1);
+                        break;
+                    }
+                    case Tag_ListBacking: {
+                        ListBacking* lb = static_cast<ListBacking*>(static_cast<void*>(scan));
+                        if ((h->unboxed & 0x3) == 0) {
+                            for (u32 i = lb->hd; i < h->size; i++)
+                                checkChild(lb->elems[i].p, "elem", static_cast<int>(i));
+                        }
+                        break;
+                    }
                     case Tag_Tuple2: {
                         Tuple2* t = static_cast<Tuple2*>(static_cast<void*>(scan));
                         if (Elm::tupleFieldKind(h->unboxed, 0) == 0) checkChild(t->a.p, "a", 0);
@@ -937,6 +951,20 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                         Cons* c = static_cast<Cons*>(static_cast<void*>(scan));
                         if (Elm::tupleFieldKind(h->unboxed, 0) == 0) checkOGChild(c->head.p, scan, "head", 0);
                         checkOGChild(c->tail, scan, "tail", 0);
+                        break;
+                    }
+                    case Tag_ConsChunk: {
+                        ConsChunk* cv = static_cast<ConsChunk*>(static_cast<void*>(scan));
+                        checkOGChild(cv->backing, scan, "backing", 0);
+                        checkOGChild(cv->next, scan, "next", 1);
+                        break;
+                    }
+                    case Tag_ListBacking: {
+                        ListBacking* lb = static_cast<ListBacking*>(static_cast<void*>(scan));
+                        if ((h->unboxed & 0x3) == 0) {
+                            for (u32 i = lb->hd; i < h->size; i++)
+                                checkOGChild(lb->elems[i].p, scan, "elem", static_cast<int>(i));
+                        }
                         break;
                     }
                     case Tag_DynRecord: {
@@ -1654,6 +1682,28 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
                 // Standard BFS: evacuate head and tail normally
                 evacuateUnboxable(c->head, head_boxed, oldgen, promoted_objects);
                 evacuate(c->tail, oldgen, promoted_objects);
+            }
+            break;
+        }
+
+        // Chunked-list forms (plans/chunked-list-representation.md §6):
+        // a view traces its backing + spine continuation; a backing traces
+        // its live element range [hd, capacity) only when the uniform kind
+        // is boxed (scalar backings are pointer-free). Slots below hd are
+        // uninitialized and must never be traced (v1: hd == 0 always).
+        case Tag_ConsChunk: {
+            ConsChunk *cv = static_cast<ConsChunk *>(obj);
+            evacuate(cv->backing, oldgen, promoted_objects);
+            evacuate(cv->next, oldgen, promoted_objects);
+            break;
+        }
+        case Tag_ListBacking: {
+            if ((hdr->unboxed & 0x3) == 0) {
+                ListBacking *lb = static_cast<ListBacking *>(obj);
+                for (u32 i = lb->hd; i < hdr->size; i++) {
+                    evacuateUnboxable(lb->elems[i], /*is_boxed=*/true, oldgen,
+                                      promoted_objects);
+                }
             }
             break;
         }

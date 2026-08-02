@@ -76,6 +76,8 @@ static const char* tagName(int t) {
         case Tag_LargeByteHeader:   return "LargeByteHeader";
         case Tag_StringUtf8View:    return "StringUtf8View";
         case Tag_StringUtf8Leaf:    return "StringUtf8Leaf";
+        case Tag_ConsChunk:         return "ConsChunk";
+        case Tag_ListBacking:       return "ListBacking";
         case Tag_Free:              return "Free";
         case Tag_Forward:           return "Forward";
         default:                    return "<unknown>";

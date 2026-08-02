@@ -97,24 +97,22 @@ void* portOutgoingOnEffectsEvaluator(void* args[]) {
 
     std::string name = elmStringToStd(nameHP);
 
-    HPointer current = cmdList;
-    Elm::StackRootGuard loopGuard(&current, &state);
-    while (!alloc::isNil(current)) {
-        void* cellPtr = resolveHP(current);
-        if (!cellPtr) break;
-        Cons* cell = static_cast<Cons*>(cellPtr);
-        HPointer value = cell->head.p;
-        // Snapshot the tail before Json_encode — `cell` is stale after any
-        // GC the stringify allocation may trigger.
-        HPointer next = cell->tail;
+    // Hybrid spines: RootedListCursor keeps the spine rooted across the
+    // Json_encode GC points and re-resolves per element.
+    Elm::StackRootGuard loopGuard(&state);
+    Elm::alloc::RootedListCursor cursor(cmdList);
+    Elm::Unboxable cmdHead;
+    u8 cmdKind;
+    while (cursor.read(cmdHead, cmdKind)) {
+        HPointer value = cmdHead.p;
         {
-            Elm::StackRootGuard itemGuard(&value, &next);
+            Elm::StackRootGuard itemGuard(&value);
             HPtr jsonStr = Elm_Kernel_Json_encode(
                 0, HPtr::fromBits(encodeHP(value)));
             std::string json = elmStringToStd(decodeHP(jsonStr.toBits()));
             PortRuntime::instance().deliverOutgoing(name, json);
-            current = next;
         }
+        cursor.advance();
     }
 
     HPointer task = Scheduler::instance().taskSucceed(state);
@@ -428,22 +426,19 @@ void PortRuntime::drainPendingSends() {
 
         // Apply each subscribed (composed) tagger to the decoded payload
         // and push the message through the app's update cycle.
-        HPointer current = subs;
-        Elm::StackRootGuard loopGuard(&current);
-        while (!alloc::isNil(current)) {
-            void* cellPtr = resolveHP(current);
-            if (!cellPtr) break;
-            Cons* cell = static_cast<Cons*>(cellPtr);
-            HPointer tagger = cell->head.p;
-            HPointer next = cell->tail;
-            Elm::StackRootGuard itemGuard(&tagger, &next);
+        Elm::alloc::RootedListCursor cursor(subs);
+        Elm::Unboxable subHead;
+        u8 subKind;
+        while (cursor.read(subHead, subKind)) {
+            HPointer tagger = subHead.p;
+            Elm::StackRootGuard itemGuard(&tagger);
 
             HPointer msg = Scheduler::callClosure1(tagger, payload);
             {
                 Elm::StackRootGuard msgGuard(&msg);
                 PlatformRuntime::instance().deliverToApp(msg);
             }
-            current = next;
+            cursor.advance();
         }
     }
 }

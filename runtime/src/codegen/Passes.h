@@ -57,6 +57,10 @@ std::unique_ptr<mlir::Pass> createJoinpointNormalizationPass();
 // Non-eligible ops are left for createControlFlowLoweringPass.
 std::unique_ptr<mlir::Pass> createEcoControlFlowToSCFPass();
 
+/// Rewrites cons-accumulation scf.while loops to scratch-stack chunk builds
+/// (chunked lists Tier B). No-op unless a function carries eco.list_chunks.
+std::unique_ptr<mlir::Pass> createEcoListTemplatePass();
+
 // Lowers eco control flow ops (case, joinpoint, jump, return) to cf dialect.
 std::unique_ptr<mlir::Pass> createControlFlowLoweringPass();
 

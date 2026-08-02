@@ -231,15 +231,9 @@ static void* timeOnEffectsEvaluator(void* args[]) {
     // Collect all requested intervals from subscriptions
     std::unordered_map<double, uint64_t> requestedIntervals;  // interval -> tagger
 
-    HPointer current = subs;
-    while (!isNil(current)) {
-        void* cellPtr = Allocator::instance().resolve(current);
-        if (!cellPtr) break;
-
-        Cons* cell = static_cast<Cons*>(cellPtr);
-        HPointer subHP = cell->head.p;
-
-        void* subPtr = Allocator::instance().resolve(subHP);
+    // Non-allocating walk over hybrid spines (cells + chunk views).
+    for (Elm::alloc::ListCursor l(subs); !l.done(); l.next()) {
+        void* subPtr = Allocator::instance().resolve(l.current().p);
         if (subPtr) {
             Custom* sub = static_cast<Custom*>(subPtr);
             if (sub->ctor == CTOR_TIME_EVERY) {
@@ -250,8 +244,6 @@ static void* timeOnEffectsEvaluator(void* args[]) {
                 requestedIntervals[interval] = taggerEnc;
             }
         }
-
-        current = cell->tail;
     }
 
     // Q6: fold -0.0 to +0.0 so the double map key is stable across

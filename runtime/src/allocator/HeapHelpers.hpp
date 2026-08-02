@@ -61,6 +61,17 @@
 #include <vector>
 #include <initializer_list>
 
+// Chunked-list production switch (plans/chunked-list-representation.md §6).
+// Set ONCE at program start by eco_enable_list_chunks(), which the backend
+// injects into @main's entry ONLY for modules compiled with
+// config.list.chunks — so kernels produce chunk spines exactly when the
+// compiled code's projections are chunk-aware. Defined in RuntimeExports.cpp.
+extern "C" bool eco_g_list_chunks;
+
+// Cons-site tally (ECO_CONS_SITES=1 measurement runs; RuntimeExports.cpp).
+extern "C" bool eco_g_cons_sites;
+extern "C" void eco_cons_site_tally(void *ra);
+
 namespace Elm {
 
 // Forward declaration for the UTF-8 ingestion gate. Defined in StringOps.cpp
@@ -617,6 +628,8 @@ inline const u16* stringData(void* str) {
  */
 // `head_kind`: 2-bit slot kind (0=boxed HPointer, 1=Int, 2=Float, 3=Char).
 inline HPointer cons(Unboxable head, HPointer tail, u8 head_kind) {
+    if (__builtin_expect(eco_g_cons_sites, 0))
+        eco_cons_site_tally(__builtin_return_address(0));
     // Pack head + tail as roots; the helper roots only on the slow path.
     uint64_t roots[2] = { static_cast<uint64_t>(head.i), 0 };
     std::memcpy(&roots[1], &tail, sizeof(tail));
@@ -637,6 +650,270 @@ inline HPointer cons(Unboxable head, HPointer tail, u8 head_kind) {
 inline HPointer cons(Unboxable head, HPointer tail, bool head_is_boxed) {
     return cons(head, tail, static_cast<u8>(head_is_boxed ? 0 : 1));
 }
+
+// ============================================================================
+// Chunked-list allocation (plans/chunked-list-representation.md §6 L1.2).
+//
+// Hybrid spines: `::` stays a Cons cell; chunk views/backings are ADDITIONAL
+// spine forms that bulk builders produce. v1 chunks are built whole and are
+// IMMUTABLE once observable (hd == 0 always; §10 slack fill deferred).
+//
+// Construction discipline (GC safety): allocate the backing FIRST, fill every
+// live slot, then allocate the view. For boxed element kinds the backing's
+// slots are ZEROED at allocation, so a GC between backing allocation and the
+// fill scans null HPointers (skipped) rather than garbage. Callers that fill
+// across allocation points must root the backing (StackRootGuard or builder
+// bit) exactly like any fresh object.
+// ============================================================================
+
+/**
+ * Allocates a Tag_ListBacking with `capacity` element slots of uniform
+ * 2-bit kind `elem_kind` (0=boxed HPointer, 1=Int, 2=Float, 3=Char).
+ * Boxed-kind slots are zero-initialized; scalar kinds are left raw (they
+ * are never traced). hd = 0.
+ */
+inline HPointer listBacking(u32 capacity, u8 elem_kind) {
+    size_t size = sizeof(ListBacking) + capacity * sizeof(Unboxable);
+    ListBacking* lb = static_cast<ListBacking*>(
+        eco_alloc_with_roots(Tag_ListBacking, size, nullptr, 0, 0));
+    lb->header.size = capacity;
+    lb->header.unboxed = elem_kind & 0x3;
+    lb->hd = 0;
+    lb->_pad = 0;
+    if ((elem_kind & 0x3) == 0) {
+        std::memset(lb->elems, 0, capacity * sizeof(Unboxable));
+    }
+    return Allocator::instance().wrap(lb);
+}
+
+/**
+ * Allocates a Tag_ConsChunk view over `backing`. `len` is the TOTAL logical
+ * length of the resulting list (elements in this chunk's run plus everything
+ * in `next`). `elem_kind` mirrors the backing's uniform kind. `backing` and
+ * `next` are rooted across the allocation.
+ */
+inline HPointer consChunkView(HPointer backing, u32 offset, u32 len,
+                              HPointer next, u8 elem_kind) {
+    uint64_t roots[2];
+    std::memcpy(&roots[0], &backing, sizeof(backing));
+    std::memcpy(&roots[1], &next, sizeof(next));
+    ConsChunk* cv = static_cast<ConsChunk*>(
+        eco_alloc_with_roots(Tag_ConsChunk, sizeof(ConsChunk), roots, 2, 0x3));
+    cv->header.size = 0;
+    cv->header.unboxed = elem_kind & 0x3;
+    std::memcpy(&cv->backing, &roots[0], sizeof(cv->backing));
+    cv->offset = offset;
+    cv->len = len;
+    std::memcpy(&cv->next, &roots[1], sizeof(cv->next));
+    return Allocator::instance().wrap(cv);
+}
+
+/**
+ * Logical tail of a non-empty hybrid list node. For a Cons cell this is the
+ * stored tail (no allocation). For a chunk view whose run has more than one
+ * element it MATERIALIZES the successor view {backing, offset+1, len-1,
+ * next} — the plan's allocating-tail (§2.3(b)); with one element left it is
+ * `next` directly. All needed fields are copied by value before the
+ * allocation and consChunkView roots its HPointer arguments, so the call is
+ * GC-safe without extra rooting.
+ */
+inline HPointer listTailOf(HPointer list) {
+    void* obj = Allocator::instance().resolve(list);
+    Header* hdr = getHeader(obj);
+    if (hdr->tag == Tag_Cons) {
+        return static_cast<Cons*>(obj)->tail;
+    }
+    if (hdr->tag == Tag_ConsChunk) {
+        ConsChunk* cv = static_cast<ConsChunk*>(obj);
+        ListBacking* lb = static_cast<ListBacking*>(
+            Allocator::instance().resolve(cv->backing));
+        u32 run = lb->header.size - cv->offset;
+        if (cv->len < run) run = cv->len;
+        if (run <= 1) return cv->next;
+        return consChunkView(cv->backing, cv->offset + 1, cv->len - 1,
+                             cv->next, static_cast<u8>(hdr->unboxed & 0x3));
+    }
+    return listNil();
+}
+
+/**
+ * Allocation-TOLERANT forward cursor over a hybrid list spine. Holds only a
+ * rooted spine-node HPointer plus an index, and re-resolves on every read
+ * and advance, so user code (predicates, mappers) may allocate and trigger
+ * GC between reads (the kernelListMapN stale-cursor lesson baked into the
+ * type). Usage:
+ *
+ *     alloc::RootedListCursor c(list);
+ *     Unboxable head; u8 kind;
+ *     while (c.read(head, kind)) {
+ *         // ... call user code; may GC. Root `head.p` if kind == 0 and the
+ *         // call can allocate before using it.
+ *         c.advance();
+ *     }
+ */
+struct RootedListCursor {
+    HPointer node;  // Current spine node (a list value; Nil when finished).
+    u32 idx;        // Index within the current view's run.
+    Allocator* alloc_;  // Hoisted singleton (stable address across GC).
+    Elm::StackRootGuard guard;
+
+    explicit RootedListCursor(HPointer list)
+        : node(list), idx(0), alloc_(&Allocator::instance()), guard(&node) {}
+
+    // Fetch the current element (fresh resolve). Returns false at list end.
+    bool read(Unboxable& head, u8& kind) {
+        while (true) {
+            if (isNil(node) || node.ptr_ind != 0) return false;
+            void* obj = alloc_->resolve(node);
+            if (!obj) return false;
+            Header* hdr = getHeader(obj);
+            if (hdr->tag == Tag_Cons) {
+                Cons* c = static_cast<Cons*>(obj);
+                head = c->head;
+                kind = static_cast<u8>(Elm::tupleFieldKind(hdr->unboxed, 0));
+                return true;
+            }
+            if (hdr->tag == Tag_ConsChunk) {
+                ConsChunk* cv = static_cast<ConsChunk*>(obj);
+                ListBacking* lb = static_cast<ListBacking*>(
+                    alloc_->resolve(cv->backing));
+                u32 run = lb->header.size - cv->offset;
+                if (cv->len < run) run = cv->len;
+                if (idx >= run) {
+                    node = cv->next;
+                    idx = 0;
+                    continue;
+                }
+                head = lb->elems[cv->offset + idx];
+                kind = static_cast<u8>(hdr->unboxed & 0x3);
+                return true;
+            }
+            return false;
+        }
+    }
+
+    // Step past the element the last read() returned (fresh resolve).
+    void advance() {
+        if (isNil(node) || node.ptr_ind != 0) return;
+        void* obj = alloc_->resolve(node);
+        if (!obj) { node = listNil(); return; }
+        Header* hdr = getHeader(obj);
+        if (hdr->tag == Tag_Cons) {
+            node = static_cast<Cons*>(obj)->tail;
+            idx = 0;
+        } else if (hdr->tag == Tag_ConsChunk) {
+            ++idx;  // read() rolls over into `next` when the run is exhausted
+        } else {
+            node = listNil();
+        }
+    }
+};
+
+/**
+ * Non-allocating forward cursor over a hybrid list spine (cells + chunk
+ * views). GC DISCIPLINE: the cursor caches raw interior state that is
+ * invalidated by ANY allocation (objects move); after an allocation the
+ * caller must re-create the cursor from a rooted list HPointer and re-skip,
+ * or better, snapshot what it needs before allocating (the kernelListMapN
+ * stale-cursor lesson). Suitable as-is for the read-only walkers
+ * (eq/compare/toString/length) which never allocate mid-walk. For walks
+ * that allocate, use RootedListCursor above.
+ */
+struct ListCursor {
+    Allocator* alloc_;  // Hoisted singleton (walks are non-allocating).
+    HPointer rest;      // Un-entered part of the spine (list value; Nil at end).
+    ListBacking* lb;    // Current chunk's backing (null when in a cell / done).
+    u32 idx;            // Current index into lb->elems.
+    u32 chunkEnd;       // One past the last live index of the current run.
+    Unboxable cellHead; // Current element when walking a Cons cell.
+    u8 kind;            // 2-bit element kind of the CURRENT element.
+    bool inCell;        // True when current element came from a Cons cell.
+    bool done_;
+
+    explicit ListCursor(HPointer list) : alloc_(&Allocator::instance()) {
+        reset(list);
+    }
+
+    void reset(HPointer list) {
+        rest = list;
+        lb = nullptr;
+        idx = 0;
+        chunkEnd = 0;
+        kind = 0;
+        inCell = false;
+        done_ = false;
+        advanceSpine();
+    }
+
+    bool done() const { return done_; }
+
+    // Current element (valid when !done()).
+    Unboxable current() const { return inCell ? cellHead : lb->elems[idx]; }
+    u8 currentKind() const { return kind; }
+
+    // Advance to the next element.
+    void next() {
+        if (inCell) {
+            advanceSpine();
+        } else if (idx + 1 < chunkEnd) {
+            ++idx;
+        } else {
+            lb = nullptr;
+            advanceSpine();
+        }
+    }
+
+private:
+    // Enter the node `rest` points at (following the spine until an element
+    // is found or the list ends).
+    void advanceSpine() {
+        inCell = false;
+        while (true) {
+            if (isNil(rest) || rest.ptr_ind != 0) {
+                done_ = true;
+                return;
+            }
+            void* obj = alloc_->resolve(rest);
+            if (!obj) {
+                done_ = true;
+                return;
+            }
+            Header* hdr = getHeader(obj);
+            if (hdr->tag == Tag_Cons) {
+                Cons* c = static_cast<Cons*>(obj);
+                cellHead = c->head;
+                kind = static_cast<u8>(Elm::tupleFieldKind(hdr->unboxed, 0));
+                rest = c->tail;
+                inCell = true;
+                return;
+            }
+            if (hdr->tag == Tag_ConsChunk) {
+                ConsChunk* cv = static_cast<ConsChunk*>(obj);
+                ListBacking* backing = static_cast<ListBacking*>(
+                    alloc_->resolve(cv->backing));
+                u32 cap = backing->header.size;
+                u32 run = cap - cv->offset;
+                u32 total = cv->len;
+                u32 k = run < total ? run : total;
+                if (k == 0) {
+                    // Degenerate empty run (should not be constructed); skip.
+                    rest = cv->next;
+                    continue;
+                }
+                lb = backing;
+                idx = cv->offset;
+                chunkEnd = cv->offset + k;
+                kind = static_cast<u8>(hdr->unboxed & 0x3);
+                rest = cv->next;
+                return;
+            }
+            // Not a list node: treat as end (mirrors existing walkers'
+            // defensive `tag != Tag_Cons` breaks).
+            done_ = true;
+            return;
+        }
+    }
+};
 
 /**
  * Builds a list from a vector of boxed HPointers.
@@ -701,6 +978,27 @@ inline HPointer listFromFloats(const std::vector<f64>& elements) {
  * @param tail     Initial tail for the list (default: Nil).
  * @param reversed If true, iterate forward (producing a reversed list).
  */
+// Logical length of a list value (O(spine-nodes): a chunk view completes in
+// O(1) via its `len`). Non-allocating.
+inline u32 listLogicalLen(HPointer list) {
+    u32 n = 0;
+    HPointer cur = list;
+    while (!isNil(cur) && cur.ptr_ind == 0) {
+        void* obj = Allocator::instance().resolve(cur);
+        if (!obj) break;
+        Header* hdr = getHeader(obj);
+        if (hdr->tag == Tag_Cons) {
+            ++n;
+            cur = static_cast<Cons*>(obj)->tail;
+        } else if (hdr->tag == Tag_ConsChunk) {
+            return n + static_cast<ConsChunk*>(obj)->len;
+        } else {
+            break;
+        }
+    }
+    return n;
+}
+
 inline HPointer listFromUnboxables(
         std::vector<std::pair<Unboxable, bool>>& elems,
         HPointer tail = listNil(),
@@ -714,6 +1012,56 @@ inline HPointer listFromUnboxables(
     rs.pushStackRootRange(&result, 1, 1);
     for (auto& [val, is_boxed] : elems) {
         if (is_boxed) rs.pushStackRootRange(&val.p, 1, 1);
+    }
+
+    // Chunked-list fast path (plans/chunked-list-representation.md §6): when
+    // the program was compiled chunk-aware, a kind-UNIFORM batch becomes ONE
+    // dense backing + ONE view instead of n cells. The bool API collapses
+    // unboxed kinds to Int (pre-existing behaviour of the cons(bool)
+    // overload); mixed batches fall back to cells. Threshold 4 avoids
+    // tiny-chunk overhead. All boxed inputs and `result` are rooted above,
+    // so the backing/view allocations may GC freely; elements are re-read
+    // from the (GC-updated) vector after each allocation.
+    //
+    // SIZE CAP (plan §2.2, load-bearing): the backing must stay BELOW the
+    // large-object threshold so it is NURSERY-allocated. An over-LOT backing
+    // lands directly in pinned old gen, and filling it with fresh (nursery)
+    // element pointers creates unrecorded old→young edges — the exact
+    // no-write-barrier violation of §2.3(a); minor GC never rescans it and
+    // the slots go stale (bisected: the 76K-element `List.reverse
+    // encodedOps` chunk in the bytecode writer). Over-cap batches fall back
+    // to cells in v1; chunk CHAINING is the planned refinement.
+    if (eco_g_list_chunks && elems.size() >= 4
+        && sizeof(ListBacking) + elems.size() * sizeof(Unboxable)
+               < Allocator::instance().getLargeObjectThreshold()) {
+        bool uniform = true;
+        bool firstBoxed = elems[0].second;
+        for (auto& [val, is_boxed] : elems) {
+            (void)val;
+            if (is_boxed != firstBoxed) { uniform = false; break; }
+        }
+        if (uniform) {
+            u8 kind = firstBoxed ? 0 : 1;
+            u32 n = static_cast<u32>(elems.size());
+            HPointer backing = listBacking(n, kind);
+            {
+                ListBacking* lb = static_cast<ListBacking*>(
+                    Allocator::instance().resolve(backing));
+                if (reversed) {
+                    for (u32 i = 0; i < n; ++i) {
+                        lb->elems[n - 1 - i] = elems[i].first;
+                    }
+                } else {
+                    for (u32 i = 0; i < n; ++i) {
+                        lb->elems[i] = elems[i].first;
+                    }
+                }
+            }
+            u32 totalLen = n + (isNil(result) ? 0 : listLogicalLen(result));
+            HPointer view = consChunkView(backing, 0, totalLen, result, kind);
+            rs.restoreStackRangePoint(saved);
+            return view;
+        }
     }
 
     if (reversed) {

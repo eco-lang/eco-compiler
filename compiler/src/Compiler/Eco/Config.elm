@@ -2,6 +2,7 @@ module Compiler.Eco.Config exposing
     ( EcoConfig, InlineConfig, BytesFusionConfig, LogicalTypesConfig, CafMemoConfig, CafHoistConfig
     , MonoEngine(..), MonoConfig, LssConfig
     , BorrowConfig, BorrowReify(..)
+    , ListConfig
     , default, defaultLss, decoder, hash, clamp
     , monoEngineFromString, borrowReifyFromString
     )
@@ -37,6 +38,20 @@ type alias EcoConfig =
     , cafMemo : CafMemoConfig
     , mono : MonoConfig
     , borrow : BorrowConfig
+    , list : ListConfig
+    }
+
+
+{-| Chunked-list knobs (plans/chunked-list-representation.md §6).
+`chunks = False` (the default) reproduces today's pipeline byte-for-byte.
+`chunks` is artifact-affecting (hash token `lchunks=1` when enabled; L1.2+
+codegen consults it). `report` (env `ECO_LIST_REPORT=1`, never from JSON)
+renders the combinator-recognition census to stderr — output-only,
+excluded from `hash`.
+-}
+type alias ListConfig =
+    { chunks : Bool
+    , report : Bool
     }
 
 
@@ -291,6 +306,7 @@ default =
     , cafMemo = { enabled = True, census = False, dedupe = False, hoist = { enabled = False, minNodes = 3, maxHoists = 8192 } }
     , mono = { engine = EngineSolver, diffDump = False, validate = False, borrowCensus0 = False, lss = defaultLss }
     , borrow = { enabled = False, reify = ROff, report = False, validate = False }
+    , list = { chunks = False, report = False }
     }
 
 
@@ -307,6 +323,16 @@ decoder =
         |> D.apply (D.optionalField "cafMemo" cafMemoDecoder default.cafMemo)
         |> D.apply (D.optionalField "mono" monoDecoder default.mono)
         |> D.apply (D.optionalField "borrow" borrowDecoder default.borrow)
+        |> D.apply (D.optionalField "list" listDecoder default.list)
+
+
+{-| Decode the `list` block. Only `chunks` is JSON-configurable; `report`
+is env-only (`ECO_LIST_REPORT=1`, borrowCensus0 precedent).
+-}
+listDecoder : D.Decoder x ListConfig
+listDecoder =
+    D.pure (\chunks -> { chunks = chunks, report = default.list.report })
+        |> D.apply (D.optionalField "chunks" D.bool default.list.chunks)
 
 
 {-| Decode the `inline` block. `report` is env-only in spirit but accepted
@@ -610,5 +636,14 @@ hash cfg =
                       else
                         []
                     ]
+               )
+            -- Chunked-list token appears ONLY when enabled (default-off), so
+            -- default configs hash exactly as before. Artifact-affecting:
+            -- L1.2+ codegen consults it (plans/chunked-list-representation.md).
+            ++ (if cfg.list.chunks then
+                    [ "lchunks=1" ]
+
+                else
+                    []
                )
         )
