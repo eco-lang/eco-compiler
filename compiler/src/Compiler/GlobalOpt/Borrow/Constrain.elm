@@ -46,6 +46,7 @@ type alias Constraints =
     , forcedOwned : List ( ResVar, Reason )
     , occs : List Occ -- reification records
     , paramSeeds : List ( ResVar, Int ) -- α-seeds: param resource → param position (LParams {i})
+    , escEdges : List ( ResVar, ResVar ) -- U-T1.1 escape-only containment/alias edges (record-update stores, destructure reads); consumed ONLY by the escape closure, never by Solve
     }
 
 
@@ -77,6 +78,7 @@ emptyConstraints =
     , forcedOwned = []
     , occs = []
     , paramSeeds = []
+    , escEdges = []
     }
 
 
@@ -104,6 +106,8 @@ type alias Gen =
     , poisoningCallSites : Int -- B3: direct/kernel sites that forced ≥1 heap arg owned
     , tailArgRes : List ResVar -- BORROW_005: resources of MonoTailCall args (escape-seeded)
     , closureRouted : Int -- B3.5: closure calls routed to a real lambda sig (recovered)
+    , escSeeds : List ResVar -- U-T1.1: resources that escape by consumption (poisoned/owned call args, captures, global-resident values)
+    , freshSites : List ( ResVar, String, Int ) -- U-T1.1: (top resvar, class, weight) per in-def allocation site — the stack-promotion candidate universe
     }
 
 
@@ -128,6 +132,8 @@ emptyGen =
     , poisoningCallSites = 0
     , tailArgRes = []
     , closureRouted = 0
+    , escSeeds = []
+    , freshSites = []
     }
 
 
@@ -287,6 +293,95 @@ addOcc res g =
         g
 
 
+addEscEdges : List ( ResVar, ResVar ) -> Gen -> Gen
+addEscEdges ps =
+    emit (\c -> { c | escEdges = ps ++ c.escEdges })
+
+
+{-| U-T1.1: cons every resvar of an RTy onto an accumulator (one walk, no
+`allRes` concatMap intermediate) — the escape-seed collector.
+-}
+resInto : RTy -> List ResVar -> List ResVar
+resInto rty acc =
+    case rty of
+        Rty.RScalar ->
+            acc
+
+        Rty.RString r ->
+            r :: acc
+
+        Rty.ROpaque r ->
+            r :: acc
+
+        Rty.RClosure r ->
+            r :: acc
+
+        Rty.RList r elem ->
+            resInto elem (r :: acc)
+
+        Rty.RTuple r elems ->
+            List.foldl resInto (r :: acc) elems
+
+        Rty.RRecord r fields ->
+            List.foldl (\( _, t ) a -> resInto t a) (r :: acc) fields
+
+        Rty.RCustom r args ->
+            List.foldl resInto (r :: acc) args
+
+
+{-| U-T1.1: mark every resource of an RTy as escaping-by-consumption.
+-}
+escSeedAll : RTy -> Gen -> Gen
+escSeedAll rty g =
+    { g | escSeeds = resInto rty g.escSeeds }
+
+
+{-| U-T1.1: record an in-def allocation site (top resvar, class, weight) —
+the stack-promotion candidate universe, bucketed for the D-T1 weighting.
+No-op for scalars (no top) and zero weights (empty list literals).
+-}
+addFreshSite : String -> Int -> RTy -> Gen -> Gen
+addFreshSite prefix w rty g =
+    case Rty.topRes rty of
+        Just top ->
+            if w <= 0 then
+                g
+
+            else
+                { g | freshSites = ( top, prefix ++ shapeClass rty, w ) :: g.freshSites }
+
+        Nothing ->
+            g
+
+
+shapeClass : RTy -> String
+shapeClass rty =
+    case rty of
+        Rty.RScalar ->
+            "scalar"
+
+        Rty.RString _ ->
+            "str"
+
+        Rty.ROpaque _ ->
+            "opq"
+
+        Rty.RClosure _ ->
+            "clo"
+
+        Rty.RList _ _ ->
+            "cons"
+
+        Rty.RTuple _ elems ->
+            "tup" ++ String.fromInt (List.length elems)
+
+        Rty.RRecord _ _ ->
+            "rec"
+
+        Rty.RCustom _ _ ->
+            "custom"
+
+
 
 -- ENV
 
@@ -430,7 +525,9 @@ constrainExpr env path expr g =
                         ( rty, g1 ) =
                             freshR t g
                     in
-                    ( rty, { g1 | immortalLiterals = g1.immortalLiterals + 1 } )
+                    -- interned/immortal (S5): permanent-resident, never a
+                    -- stack-promotion candidate — escape-seed it (U-T1.1).
+                    ( rty, escSeedAll rty { g1 | immortalLiterals = g1.immortalLiterals + 1 } )
 
                 _ ->
                     ( Rty.RScalar, g )
@@ -464,11 +561,13 @@ constrainExpr env path expr g =
 
         Mono.MonoVarGlobal _ _ t ->
             -- value reference; Phase 2: sigs = Nothing ⇒ all-owned fresh.
+            -- U-T1.1: the referenced value is global/CAF-resident — it escapes
+            -- by residence (never a stack-promotion candidate).
             let
                 ( rty, g1 ) =
                     freshR t g
             in
-            ( rty, ownEverything rty g1 )
+            ( rty, ownEverything rty (escSeedAll rty g1) )
 
         Mono.MonoVarKernel _ _ _ _ t ->
             -- kernel value (not a call): boundary-poisoned closure.
@@ -520,7 +619,7 @@ constrainExpr env path expr g =
                 g2 =
                     addSeedsOfRTy baseRty path g1
 
-                ( _, g3 ) =
+                ( fieldRtys, g3 ) =
                     constrainFields env n path 1 fes g2
 
                 ( resultRty, g4 ) =
@@ -530,11 +629,38 @@ constrainExpr env path expr g =
                     ownEverything resultRty g4
 
                 -- copied-over heap fields: no occurrence to attach a dup to.
+                mentioned =
+                    List.map Tuple.first fes
+
                 copiedHeap =
-                    countCopiedHeapFields baseRty (List.map Tuple.first fes)
+                    countCopiedHeapFields baseRty mentioned
+
+                -- U-T1.1: the update result STORES the explicit-field values
+                -- and the base's copied heap fields — escape-link them so an
+                -- escaping result marks them escaping (escape-only edges).
+                g5b =
+                    case Rty.topRes resultRty of
+                        Just resTop ->
+                            addEscEdges
+                                (List.foldl
+                                    (\fr acc ->
+                                        case Rty.topRes fr of
+                                            Just ft ->
+                                                ( resTop, ft ) :: acc
+
+                                            Nothing ->
+                                                acc
+                                    )
+                                    (List.map (\ft -> ( resTop, ft )) (copiedHeapFieldTops baseRty mentioned))
+                                    fieldRtys
+                                )
+                                (addFreshSite "lit:" 1 resultRty g5)
+
+                        Nothing ->
+                            g5
 
                 g6 =
-                    { g5 | updateCopiedHeapFields = g5.updateCopiedHeapFields + copiedHeap }
+                    { g5b | updateCopiedHeapFields = g5b.updateCopiedHeapFields + copiedHeap }
             in
             ( resultRty, g6 )
 
@@ -552,11 +678,23 @@ constrainExpr env path expr g =
                 ( xRty, g2 ) =
                     freshR (Mono.getMonoPathType dpath) g1
 
+                -- U-T1.1: a destructured binding is a read/alias of the root
+                -- value — escape-link it so an escaping `x` marks the root's
+                -- class (and the values stored in it) escaping. Escape-only:
+                -- Solve never reads escEdges, so census counters are unchanged.
+                g2b =
+                    case ( rootTopFor dpath env, Rty.topRes xRty ) of
+                        ( Just rootTop, Just xTop ) ->
+                            addEscEdges [ ( rootTop, xTop ) ] g2
+
+                        _ ->
+                            g2
+
                 env1 =
                     bindVar x xRty env
 
                 g3 =
-                    addScope (Maybe.withDefault -1 (Rty.topRes xRty)) (Seq n 1 :: path) g2
+                    addScope (Maybe.withDefault -1 (Rty.topRes xRty)) (Seq n 1 :: path) g2b
 
                 ( bodyRty, g4 ) =
                     constrainExpr env1 (Seq n 1 :: path) body g3
@@ -689,7 +827,8 @@ constrainExpr env path expr g =
                 ( rty, g4 ) =
                     freshR t g3
             in
-            ( rty, ownEverything rty g4 )
+            -- U-T1.1: a closure env is an in-def allocation site.
+            ( rty, ownEverything rty (addFreshSite "lit:" 1 rty g4) )
 
         Mono.MonoAccessorValue _ _ t ->
             let
@@ -716,7 +855,10 @@ constrainCall env path f args t callInfo g =
             freshR t g1
 
         gNV =
-            countNonVarOperands args argRtys g2
+            -- U-T1.1: a call result is an allocation attributable to this def's
+            -- dynamic extent (ctor calls = ADT construction; general calls =
+            -- callee-fresh values) — bucketed separately under "call:".
+            countNonVarOperands args argRtys (addFreshSite "call:" 1 resultRty g2)
 
         -- A poisoned (unknown-callee) call result is conservatively owned; a
         -- routed/sig'd call gets its result ownership from the callee sig.
@@ -732,7 +874,7 @@ constrainCall env path f args t callInfo g =
                         ( resultRty, applyDirectSig sig path argRtys resultRty gNV )
 
                     Nothing ->
-                        ( resultRty, poisoned (ownArgs argRtys { gNV | sigMissReads = gNV.sigMissReads + 1 }) )
+                        ( resultRty, poisoned (ownArgsEsc argRtys { gNV | sigMissReads = gNV.sigMissReads + 1 }) )
 
             else
                 -- under/over-application (PAP): boundary-poisoned.
@@ -888,7 +1030,7 @@ applyParamList path argRtys sigTys g =
 
         ( argRty :: restA, [] ) ->
             -- extra arg beyond the sig (arity mismatch): default owned.
-            applyParamList path restA [] (ownEverything argRty g)
+            applyParamList path restA [] (ownEverything argRty (escSeedAll argRty g))
 
         ( [], _ ) ->
             g
@@ -916,7 +1058,9 @@ applyParamModes argRty sigTy path g =
                     else
                         case Array.get idx sigTy.modes of
                             Just Owned ->
-                                go (idx + 1) rest (addForced r RConstruct acc) True
+                                -- U-T1.1: an Owned param position is consumed by
+                                -- the callee (may be stored) — escape-seed it.
+                                go (idx + 1) rest (addForced r RConstruct { acc | escSeeds = r :: acc.escSeeds }) True
 
                             _ ->
                                 go (idx + 1) rest (addSeeds [ r ] path acc) anyOwned
@@ -938,17 +1082,20 @@ applyKernelSig ksig path argRtys resultRty g =
         g1 =
             ownEverything resultRty (applyKernelParams path argRtys ksig.params g)
     in
-    case ksig.resultAliases of
-        Just k ->
+    -- resultAliases is a LIST of param indices (U-T1.2): HOF kernels can
+    -- return closure outputs aliasing several inputs' interiors, so every
+    -- possibly-aliased param gets a Get edge (lifetime + escape coupling).
+    List.foldl
+        (\k acc ->
             case ( nthTop k argRtys, Rty.topRes resultRty ) of
                 ( Just src, Just dst ) ->
-                    addGet { container = src, out = [ ( src, dst ) ], path = path } g1
+                    addGet { container = src, out = [ ( src, dst ) ], path = path } acc
 
                 _ ->
-                    g1
-
-        Nothing ->
-            g1
+                    acc
+        )
+        g1
+        ksig.resultAliases
 
 
 applyKernelParams : Path -> List RTy -> List KernelSigs.ParamMode -> Gen -> Gen
@@ -962,13 +1109,14 @@ applyKernelParams path argRtys pmodes g =
                             addSeedsOfRTy argRty path g
 
                         KernelSigs.POwned ->
-                            ownEverything argRty g
+                            -- U-T1.1: consumed by the kernel — may be retained.
+                            ownEverything argRty (escSeedAll argRty g)
             in
             applyKernelParams path restA restP g1
 
         ( argRty :: restA, [] ) ->
             -- missing tail: default POwned (defensive).
-            applyKernelParams path restA [] (ownEverything argRty g)
+            applyKernelParams path restA [] (ownEverything argRty (escSeedAll argRty g))
 
         ( [], _ ) ->
             g
@@ -1060,8 +1208,22 @@ constrainContainer env path es t g =
         ( elemRtys, g1 ) =
             constrainArgs env n path 0 es g0
 
-        ( resultRty, g2 ) =
+        ( resultRty, g2a ) =
             freshR t g1
+
+        -- U-T1.1: allocation site. A literal list of k elements allocates k
+        -- cons cells (weight k); tuples/records allocate one object.
+        g2 =
+            addFreshSite "lit:"
+                (case resultRty of
+                    Rty.RList _ _ ->
+                        List.length es
+
+                    _ ->
+                        1
+                )
+                resultRty
+                g2a
 
         -- container top forced owned (RConstruct); each element storageEq with a
         -- container slot resource (heap-store position).
@@ -1353,6 +1515,13 @@ rootResFor dpath env =
             []
 
 
+rootTopFor : Mono.MonoPath -> Env -> Maybe ResVar
+rootTopFor dpath env =
+    rootName dpath
+        |> Maybe.andThen (\name -> Dict.get name env.vars)
+        |> Maybe.andThen Rty.topRes
+
+
 rootName : Mono.MonoPath -> Maybe Name
 rootName dpath =
     case dpath of
@@ -1383,6 +1552,24 @@ collectInlines decider =
 
         Mono.FanOut _ edges fallback ->
             List.concatMap (\( _, d ) -> collectInlines d) edges ++ collectInlines fallback
+
+
+copiedHeapFieldTops : RTy -> List Name -> List ResVar
+copiedHeapFieldTops baseRty mentioned =
+    case baseRty of
+        Rty.RRecord _ fields ->
+            List.filterMap
+                (\( name, fieldRty ) ->
+                    if List.member name mentioned then
+                        Nothing
+
+                    else
+                        Rty.topRes fieldRty
+                )
+                fields
+
+        _ ->
+            []
 
 
 countCopiedHeapFields : RTy -> List Name -> Int
@@ -1514,10 +1701,20 @@ ownArgs rtys g =
     List.foldl ownEverything g rtys
 
 
+{-| U-T1.1: like `ownArgs` but also escape-seeds — an owned arg handed to an
+unknown callee is consumed and may be stored (sigMiss boundary).
+-}
+ownArgsEsc : List RTy -> Gen -> Gen
+ownArgsEsc rtys g =
+    List.foldl (\rty acc -> ownEverything rty (escSeedAll rty acc)) g rtys
+
+
 poison : RTy -> Reason -> (Gen -> Gen) -> Gen -> Gen
 poison rty reason bump g =
     if isHeapRty rty then
-        bump (forceAllOf reason rty g)
+        -- U-T1.1: every boundary-poisoned value escapes by consumption
+        -- (unknown callee may store it; a capture lives in the closure env).
+        bump (forceAllOf reason rty (escSeedAll rty g))
 
     else
         g

@@ -1100,3 +1100,204 @@ the RC payoff. The value-extraction shift the census argues for is **lateral**
 within the shipped analysis oracle — no new solver machinery, only the
 escape-closure refinement (17.2) plus reification, both v1-viable and
 GC-coexisting.
+
+---
+
+## 18. Tier-1 U-T1.1 + U-T1.2 as-built: escape closure, class weighting, allowlist growth (2026-07-31)
+
+Implements `plans/opt-tier1-aggregate-promotion.md` U-T1.1 (storage-transitive
+escape closure + per-class weighting census) and U-T1.2 (`KernelSigs`
+allowlist growth). Census-only, graph-inert, default-off — the shipped-oracle
+posture unchanged.
+
+### 18.1 What was built
+
+**U-T1.1 — the escape closure (the §15.1 UPPER bound → a tight LOWER bound).**
+- `Constrain.elm`: `Constraints.escEdges` (escape-only containment/alias
+  edges, never read by `Solve`) emitted at the two structurally-unlinked
+  sites — record-update stores (result→explicit fields + copied heap fields)
+  and destructure reads (root→binding); `Gen.escSeeds` (escape by
+  consumption) seeded at every boundary: poisoned args (kernel/closure/PAP),
+  captures, Owned sig-param positions, `POwned` kernel params, sig-miss args,
+  arity-mismatch tails, global/CAF value references, interned literals;
+  `Gen.freshSites` — the allocation-site universe `(top resvar, class,
+  weight)`: in-def constructs (`lit:` — list literals weigh their cell count,
+  tuples/records/updates/closures weigh 1) and call results (`call:` — ctor
+  calls = ADT construction; general calls = callee-fresh values).
+- `Borrow.elm` (`mergeDef`): Stage A already unions `flows`+`storageEq` into
+  the DSU, so value webs are single classes; the closure extends a copy of
+  `solved.dsu` with the projection (`gets`) and `escEdges` pairs, then marks
+  every class containing an escape seed (the §15.1 predicate resvars +
+  `escSeeds` + BORROW_005 `tailArgRes`). `notEscapeLB(r)` = owned ∧ component
+  seed-free. New counters: `nonEscapingOwnedLB`, `escClassHisto`
+  (`BorrowStats` now 29 fields, cap 32).
+
+**U-T1.2 — `KernelSigs` 15 → 33 rows** (audit evidence per row in the file;
+all source-verified against the C++). New: `Bytes.getStringWidth/width/
+encode/decode`, `Crash.crash`, `JsArray.foldl/foldr/map`, `List.map2/sortBy/
+sortWith`, `String.slice/uncons/words/trim/toLower/toUpper/all`.
+**`resultAliases` upgraded `Maybe Int` → `List Int`** — a soundness
+requirement surfaced by the audit: HOF kernels return *closure outputs*,
+which can be the inputs' elements (`foldl (\x _ -> x)` returns an element;
+identity-`map` returns element pointers), so the result may alias several
+params (`foldl → [acc, array]`, `map2 → [xs, ys]`, `decode → [decoder,
+bytes]`). `LssFacts.kernelToSig` follows (result couples to the full index
+set). **REJECTED as Task-binding capturers** (Console.write precedent —
+`POwned`, never allowlist): `File.fileExists`/`dirExists` (`File.cpp:679/684`),
+`Env.lookup` (`Env.cpp:52`), `Scheduler.spawn` (`Scheduler.cpp:467`).
+
+### 18.2 Census (self-compile, solver/all-keyed, `ECO_BORROW_REPORT=1`)
+
+```
+borrow: defs=31431 resources=4209320 borrowed=1382579 (32%) wouldDup=205371
+        wouldDrop=111917 wouldFree=13375 poisonedByClosure=99783 closureRouted=11682
+        poisonedByErased=7325 poisonedByKernel=20508 poisonedParams=132100
+        poisoningCallSites=59696 sigMissReads=0 kernelSigHits=7415
+        kernelDefaultedHeapCalls=11165 sccBailouts=0 maxSccIter=3
+        capturesForcedOwned=22996 nonVarOwnedFresh=38312 nonVarBorrowedProducer=12101
+        updateCopiedHeapFields=5845 immortal=11885 maxExt=90 ltpRefined=104140
+        ownedResources=2826741 nonEscapingOwned=1961301 nonEscapingOwnedLB=610685
+```
+
+**U-T1.2 deltas vs §16:** `kernelSigHits` 5,312 → **7,415** (+2,103 —
+inside the predicted ~2–3K reader band), `kernelDefaultedHeapCalls` 13,230 →
+**11,165**, `poisonedByKernel` 23,802 → **20,508** (−3,294). Every audited
+reader vanished from the worklist; the remaining top is the genuine-owner
+set (`List.cons`=4,191, `Utils.append`=3,274, `Scheduler.*`), and the next
+un-audited tier is now single-to-double digits (`JsArray.unsafeSet`=137 …).
+`borrowed` +~15K resources (share stays 32% — sub-point, as §17.3 predicted:
+the audit's value is candidate growth + precision, not borrowed%).
+Fixpoint clean with the new rows: `sccBailouts=0, maxSccIter=3,
+sigMissReads=0`. (`defs` 31,375→31,431: the workload now includes this very
+feature's source.)
+
+**U-T1.1 headline:** `nonEscapingOwnedLB = 610,685` = **14.5% of resources**
+— the tight lower bound under the closure, vs the 46.7% §15.1 upper bound
+(LB:UB = 31%). The per-class allocation-site histogram
+(`nonEscLB/total`, weighted):
+
+```
+call:custom=18892/81086 (23.3%)   call:cons=2407/21816 (11.0%)
+lit:clo=1831/14351 (12.8%)        lit:cons=3936/12946 (30.4%)
+call:tup2=4301/11317 (38.0%)      lit:tup2=3078/9691 (31.8%)
+call:clo=4035/8741 (46.2%)        call:str=368/4828 (7.6%)
+lit:rec=51/2226 (2.3%)            call:rec=127/1343 (9.5%)
+lit:tup3=13/1176 (1.1%)           call:tup3=39/1048 (3.7%)
+```
+
+Reading: **tuples are the promotable class** (~35% of tuple2 sites are
+provably non-escaping — the State-threading pattern), customs contribute the
+largest absolute count (18.9K non-escaping ctor-call results),
+records/tuple3 almost always escape. `lit:` and `call:` overlap dynamically
+(a callee's `lit:` construct can be a caller's `call:` result) — do NOT sum
+them as distinct allocations; `lit:` sizes intra-def SROA, `call:` sizes
+call-boundary promotion (multi-return unpacking).
+
+### 18.3 THE DYNAMIC CORRECTION — the true allocation profile (major)
+
+The weighting leg exposed a measurement error in ALL prior allocation
+figures. The runtime's per-tag "Mutator Allocations by Object Kind"
+histogram (and the "Objects allocated" total feeding every earlier census)
+counts through `initHeaderForTag` — which the HEAP_034 **inline nursery
+fast path bypasses entirely**. Lowering the self-compile binary with
+`ECO_INLINE_ALLOC=0` (all allocations through the counted path) gives the
+complete profile:
+
+| metric | inline-build (all prior reports) | **complete count** |
+|---|---:|---:|
+| Objects allocated | 798M (§2c) / 1,084M (§16 report-on) | **6,515,123,626 (6.52 B)** |
+| Bytes allocated | 38.8 GB | **250.7 GB** |
+| Objects promoted | 158.7M "(19.9%)" | 164.5M = **2.5%** |
+| Minor / major GC | 1,203 / 10 | 1,528 / 11 (same work; wall 4:52 vs 4:04 = counter+statepoint overhead) |
+
+**Per-kind shares (complete):**
+
+| class | objects | share | note |
+|---|---:|---:|---|
+| **Custom** | 2.515 B | **38.6%** | 29.4 B avg |
+| **Closure** | 1.440 B | **22.1%** | 47.4 B avg |
+| **Tuple2** | 1.253 B | **19.2%** | 24 B avg |
+| Cons | 679 M | **10.4%** | ← NOT ~65% |
+| Array | 286 M | 4.4% | 179 B avg (JsArray) |
+| Record | 256 M | 3.9% | |
+| StringUtf8Leaf | 58 M | 0.9% | |
+| Tuple3 | 22 M | 0.3% | |
+
+**Corrections this forces on the standing evidence base:**
+1. **"Cons ≈65% of allocation" is an artifact** of the undercount: kernel-
+   internal allocations (List.cons runs inside the runtime) were counted
+   while codegen'd `construct.*` (Custom/Tuple2/Closure/Record) was
+   inline-invisible. True Cons share: **10.4%** — tier-2's fusion ceiling
+   shrinks accordingly (still 679M objects, but no longer the dominant mass).
+2. **True promotion rate is 2.5%**, not 19.9% — promotion counts were
+   GC-side (correct absolute) over an undercounted denominator. The nursery
+   is far more effective than believed.
+3. The dominant allocation mass is **codegen'd aggregates (Custom + Closure
+   + Tuple2 = 80%)** — exactly the classes the deleted REP_AGG pipeline
+   targeted and the tier-1 promotion track addresses.
+
+### 18.4 D-T1 decision gate: PASS — proceed to U-T1.3
+
+Weighted promotable share = Σ (class dynamic share × class static
+non-escaping-LB site share):
+
+| class | dyn % | LB share | weighted |
+|---|---:|---:|---:|
+| custom | 38.6% | 23.3% | 8.99% |
+| closure | 22.1% | 25.4% | 5.61% |
+| tuple2 | 19.2% | 35.1% | 6.75% |
+| cons | 10.4% | 18.2% | 1.90% |
+| record | 3.9% | 5.0% | 0.20% |
+| other (str/tup3/array) | 5.7% | — | 0.09% |
+| **TOTAL** | | | **≈23.5%** |
+
+**≈23.5% of allocation volume is in provably non-escaping classes — the
+D-T1 gate (≥5%) passes decisively.** The pure intra-def slice (`lit:` sites
+only — what SROA alone catches, without call-boundary work) is roughly ~6%;
+the larger share needs `call:`-side promotion (ctor-result/multi-return —
+U-T1.3 seams 1+3). Caveats, stated honestly: the estimate maps *static*
+site shares onto *dynamic* class weights (execution-frequency-blind — hot
+loops may concentrate in either sub-population), and `lit:`/`call:` overlap
+means the split, not the total, is the reliable part. Even halved, the
+total clears the gate with margin.
+
+### 18.5 Gates & files
+
+- **B1+BORROW_005 units: 29/29** (`--fuzz 50`).
+- **Byte-identity (`--text-mlir`, report-on vs off): see §18.6.**
+- **Full E2E: see §18.6.**
+- Census run: EXIT=0, wall 4:52.55 (census binary: `ECO_INLINE_ALLOC=0`
+  lowering + counters; the standard binary's 4:04 §16 wall is the
+  comparable), RSS 6.64 GB.
+- Files: `Borrow/Constrain.elm` (escEdges/escSeeds/freshSites + emitters +
+  site classification), `Borrow.elm` (escape closure, `nonEscapingOwnedLB`,
+  `escClassHisto`, render), `Borrow/KernelSigs.elm` (33 rows, `List Int`
+  aliases), `Borrow/LssFacts.elm` (`kernelToSig` alias-set), tier-1 plan §0
+  correction (REP_AGG pipeline deletion — see below).
+
+**REP_AGG correction (recorded in `plans/opt-tier1-aggregate-promotion.md`
+§0; refined 2026-08-02 by the U-T1.3 full audit):** the five
+escape-analysis/unboxed-agg **passes** are DELETED after a measured
+failure (local pass promoted 2/30,910 constructs; CrossSpec A/B
+net-negative on allocation — borrow design doc §2.1-2.2), but the whole
+**mechanism layer** was deliberately retained and is fixture-verified:
+all 6 aggregate types, all 9 `eco.make.*`/`to_heap`/`from_heap`/
+`make.closure` ops + `EcoToLLVMValueAgg` lowering, dual-form projections,
+SROA-before-RS4GC ordering, and the live consumer-less
+`eco.logical_param_types` channel (66,090 attrs in current self-compile
+MLIR). No producer of `eco.make.*` exists ⇒ every aggregate class
+currently heap-allocates. U-T1.3 (see the tier-1 plan's T1.3-I/T1.3-P
+inventory + postmortem tables) is a new consumer for that mechanism,
+staged to dodge the postmortem's five defects — not a re-landing of the
+failed analysis. Also found: ~15 stranded `cross_spec_*`/`flatten_*`
+fixtures pass E2E **vacuously** (harness drops unknown RUN flags and
+skips `CHECK-DAG`/`CHECK-SAME` lines — `CheckPatterns.hpp` parses only
+`CHECK:`/`CHECK-NOT:`); retired in U-T1.3 step 0.
+
+### 18.6 Gate results (final)
+
+- **Byte-identity (`--text-mlir`, report-on vs report-off): PASS** — both
+  121,067,112 B, `cmp` identical. Graph-inertness holds with the escape
+  closure, `escEdges`/`escSeeds`/`freshSites`, and the widened kernel table.
+- **Full E2E (`--target full`): 1637/1637 PASSED** (FULL_EXIT=0; borrow
+  default-off ⇒ behavior unchanged, no regression).

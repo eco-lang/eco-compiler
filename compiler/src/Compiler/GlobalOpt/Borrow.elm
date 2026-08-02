@@ -27,6 +27,7 @@ import Compiler.Data.Name exposing (Name)
 import Compiler.Data.BitSet as BitSet
 import Compiler.Eco.Config as Config
 import Compiler.GlobalOpt.Borrow.Constrain as C
+import Compiler.GlobalOpt.Borrow.Dsu as Dsu
 import Compiler.GlobalOpt.Borrow.Lifetime as L exposing (Life(..), Lifetime(..))
 import Compiler.GlobalOpt.Borrow.LssFacts as LssFacts
 import Compiler.GlobalOpt.Borrow.Mode as Mode exposing (Mode(..))
@@ -69,6 +70,8 @@ type alias BorrowStats =
     , ltpRefined : Int -- Stage D: resources whose precise ltP differs from ltA
     , ownedResources : Int -- reifiedOwned resources (escape-analysis universe)
     , nonEscapingOwned : Int -- owned + not coupled to a param, not returned, ltP-local (stack-alloc candidate proxy; upper bound — misses transitive store-escape)
+    , nonEscapingOwnedLB : Int -- U-T1.1: owned + provably non-escaping under the storage-transitive escape closure (the tight LOWER bound)
+    , escClassHisto : Dict String ( Int, Int ) -- U-T1.1: per allocation-site class → (total sites, nonEscLB sites), weighted (list literals weigh their cell count)
     , kernelDefaultedNames : Dict ( Name, Name ) Int -- audit histogram: per-kernel heap-defaulting call count
     , immortalLiterals : Int
     }
@@ -101,6 +104,8 @@ emptyStats =
     , ltpRefined = 0
     , ownedResources = 0
     , nonEscapingOwned = 0
+    , nonEscapingOwnedLB = 0
+    , escClassHisto = Dict.empty
     , kernelDefaultedNames = Dict.empty
     , immortalLiterals = 0
     }
@@ -756,6 +761,71 @@ mergeDef table facts node stats =
 
         nonEscapingOwned =
             countWhere (\r -> Solve.reifiedOwned r solved && not (escapesR r)) resList
+
+        -- U-T1.1: STORAGE-TRANSITIVE ESCAPE CLOSURE (the tight lower bound).
+        -- Stage A already unions flows+storageEq into the DSU, so value webs
+        -- are one class; extend a copy of it with the projection (`gets`) and
+        -- escape-only (`escEdges`) alias pairs, then mark every class that
+        -- contains an escape seed: the §15.1 predicate resvars, consumption
+        -- seeds from the walk (poisoned/owned call args, captures,
+        -- global-resident values, immortals), and tail-call args (BORROW_005).
+        -- A resource is non-escaping-LB iff its component holds no seed.
+        escDsu =
+            List.foldl (\( a, b ) d -> Dsu.union a b d)
+                (List.foldl
+                    (\get d -> List.foldl (\( a, b ) dd -> Dsu.union a b dd) d get.out)
+                    solved.dsu
+                    g.cs.gets
+                )
+                g.cs.escEdges
+
+        addRoots rs bits =
+            List.foldl (\r b -> BitSet.insertGrowing (Dsu.findRoot r escDsu) b) bits rs
+
+        escRoots =
+            List.foldl
+                (\r b ->
+                    if escapesR r then
+                        BitSet.insertGrowing (Dsu.findRoot r escDsu) b
+
+                    else
+                        b
+                )
+                (addRoots g.tailArgRes (addRoots g.escSeeds BitSet.empty))
+                resList
+
+        escapesLB r =
+            BitSet.member (Dsu.findRoot r escDsu) escRoots
+
+        nonEscapingOwnedLB =
+            countWhere (\r -> Solve.reifiedOwned r solved && not (escapesLB r)) resList
+
+        classHisto =
+            List.foldl
+                (\( top, cls, w ) acc ->
+                    let
+                        cand =
+                            Solve.reifiedOwned top solved && not (escapesLB top)
+                    in
+                    Dict.update cls
+                        (\m ->
+                            let
+                                ( t0, n0 ) =
+                                    Maybe.withDefault ( 0, 0 ) m
+                            in
+                            Just
+                                ( t0 + w
+                                , if cand then
+                                    n0 + w
+
+                                  else
+                                    n0
+                                )
+                        )
+                        acc
+                )
+                Dict.empty
+                g.freshSites
     in
     { stats
         | defsAnalyzed = stats.defsAnalyzed + 1
@@ -780,6 +850,22 @@ mergeDef table facts node stats =
         , ltpRefined = stats.ltpRefined + ltpRefined
         , ownedResources = stats.ownedResources + ownedResources
         , nonEscapingOwned = stats.nonEscapingOwned + nonEscapingOwned
+        , nonEscapingOwnedLB = stats.nonEscapingOwnedLB + nonEscapingOwnedLB
+        , escClassHisto =
+            Dict.foldl
+                (\k ( t, ne ) acc ->
+                    Dict.update k
+                        (\m ->
+                            let
+                                ( t0, n0 ) =
+                                    Maybe.withDefault ( 0, 0 ) m
+                            in
+                            Just ( t0 + t, n0 + ne )
+                        )
+                        acc
+                )
+                stats.escClassHisto
+                classHisto
         , kernelDefaultedNames =
             Dict.foldl
                 (\k v acc -> Dict.update k (\m -> Just (v + Maybe.withDefault 0 m)) acc)
@@ -928,8 +1014,23 @@ renderStats s =
         ++ String.fromInt s.ownedResources
         ++ " nonEscapingOwned="
         ++ String.fromInt s.nonEscapingOwned
+        ++ " nonEscapingOwnedLB="
+        ++ String.fromInt s.nonEscapingOwnedLB
+        ++ "\nborrow-esc-class (allocation sites nonEscLB/total by class; lit:=in-def construct, call:=call result):\n"
+        ++ renderEscClasses s.escClassHisto
         ++ "\nborrow-kernel-audit (top un-audited kernels by heap-defaulting call count):\n"
         ++ renderKernelAudit s.kernelDefaultedNames
+
+
+renderEscClasses : Dict String ( Int, Int ) -> String
+renderEscClasses d =
+    Dict.toList d
+        |> List.sortBy (\( _, ( t, _ ) ) -> negate t)
+        |> List.map
+            (\( cls, ( t, ne ) ) ->
+                "  " ++ cls ++ "=" ++ String.fromInt ne ++ "/" ++ String.fromInt t
+            )
+        |> String.join "\n"
 
 
 {-| Rank un-audited kernels by how many heap-bearing call sites they poison —

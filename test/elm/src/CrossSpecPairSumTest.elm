@@ -3,7 +3,7 @@ module CrossSpecPairSumTest exposing (main)
 {-| Phase 3 cross-function specialisation integration test.
 
 A top-level helper `addPair : (Int, Int) -> Int` takes a 2-tuple of
-primitives and projects both fields. Under `-enable-unboxed-agg`, the
+primitives and projects both fields. Under `-enable-unboxed-agg` (HISTORICAL — pass deleted 2026-06; kept as behavioral coverage, see plans/opt-tier1-aggregate-promotion.md U-T1.3), the
 EcoUnboxedAggCrossSpec pass clones it as `addPair$unboxed` with
 `!eco.tuple2<i64, i64>` parameter and rewrites the original body into a
 thin wrapper using `eco.from_heap`. Behaviour must match the heap path.

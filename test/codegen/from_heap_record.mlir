@@ -1,4 +1,4 @@
-// RUN: %ecoc %s -emit=mlir-llvm -enable-unboxed-agg 2>&1 | %FileCheck %s
+// RUN: %ecoc %s -emit=mlir-llvm 2>&1 | %FileCheck %s
 //
 // Phase 3: eco.from_heap on a record with a mixed bitmap (Int + Float)
 // loads each field at the correct slot width — i64 directly, f64 via

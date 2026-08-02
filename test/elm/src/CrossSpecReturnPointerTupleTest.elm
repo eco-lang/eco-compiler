@@ -1,7 +1,7 @@
 module CrossSpecReturnPointerTupleTest exposing (main)
 
 {-| Phase 3.3 end-to-end fixture: a helper returns a tuple containing
-an `!eco.value`-shaped element. Under `-enable-unboxed-agg`, the
+an `!eco.value`-shaped element. Under `-enable-unboxed-agg` (HISTORICAL — pass deleted 2026-06; kept as behavioral coverage, see plans/opt-tier1-aggregate-promotion.md U-T1.3), the
 EcoUnboxedAggCrossSpec pass classifies the result as Sret (mixed-kind
 aggregate with at least one heap pointer), promotes the helper to
 `makePair$unboxed` with a leading `!llvm.ptr` outparam, and emits the

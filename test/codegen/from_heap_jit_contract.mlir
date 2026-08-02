@@ -1,4 +1,4 @@
-// RUN: %ecoc %s -emit=jit -enable-unboxed-agg 2>&1 | %FileCheck %s
+// RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s
 //
 // Phase 3 end-to-end contract: `eco.to_heap` and `eco.from_heap` are
 // inverses. Build a heap tuple2 from primitives via the heap path,

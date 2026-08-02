@@ -14,7 +14,7 @@ Combines three Phase 3.1 features through a single Elm program:
 3. **Param-side unboxing:** `sumPair` projects the tuple at the
    bottom of the chain.
 
-Compiled with `-enable-unboxed-agg`, all three top-level helpers
+Compiled with `-enable-unboxed-agg` (HISTORICAL — pass deleted 2026-06; kept as behavioral coverage, see plans/opt-tier1-aggregate-promotion.md U-T1.3), all three top-level helpers
 should get `$unboxed` workers and the chain should call through
 workers end-to-end. Behaviour must match the boxed path either way.
 

@@ -11,10 +11,20 @@ for the series header and ordering rationale. Supersedes the
 
 ## 0. Why: the allocation mass IS the GC cost
 
-- Cons ≈ **65% of ~798M objects** per self-compile (cons-reduction survey;
-  flag-off ceiling, `design_docs/borrow-inf-census.md` §2c). Tracing GC is
-  ~29% of runtime self-time / ~25% of wall, driven by exactly this
-  population (root-scan 14.5% + evacuate/mark 14.4%).
+> **EVIDENCE CORRECTION (2026-07-31, census §18.3):** the "Cons ≈65% of
+> ~798M" figure below was an artifact of the inline-alloc counter bypass —
+> the complete count (`ECO_INLINE_ALLOC=0` lowering) is **6.52 B objects**
+> with **Cons at 10.4% (679M)**; the dominant mass is codegen'd aggregates
+> (Custom 38.6% + Closure 22.1% + Tuple2 19.2% = 80%), which belong to
+> tier 1's promotion track. This tier's ceiling shrinks accordingly: still
+> 679M objects absolute (worth having), but tier 1 now clearly leads and
+> the D-T2 gate below should be read against the corrected 6.52 B
+> denominator. True promotion rate is 2.5%, not 19.9%.
+
+- ~~Cons ≈ **65% of ~798M objects** per self-compile~~ (corrected above).
+  Tracing GC is ~29% of runtime self-time / ~25% of wall — driven by the
+  aggregate classes per the corrected profile (root-scan 14.5% +
+  evacuate/mark 14.4%).
 - **Calibration (perf-tune loop, 2026-07-29/30):** nine targeted fusions
   removed −62.4M objects (−5.1%) and −41 minor GCs — and wall stayed
   noise-bound. Conclusion: this tier only pays if it is *systematic* —

@@ -316,12 +316,14 @@ kernelToSig ksig calleeType =
     { params = List.map2 Sig.uniformSigTy modes paramTypes
     , result = Sig.uniformSigTy Borrowed resultType
     , resultLts =
+        -- resultAliases is a list of param indices (U-T1.2): the result
+        -- couples to every possibly-aliased param.
         case ksig.resultAliases of
-            Just i ->
-                [ ( 0, Set.singleton i ) ]
-
-            Nothing ->
+            [] ->
                 []
+
+            is ->
+                [ ( 0, Set.fromList is ) ]
     }
 
 

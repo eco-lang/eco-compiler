@@ -4,7 +4,7 @@ module EscapeTopLevelTupleTest exposing (main)
 rewritten to eco.make.tuple2 (the value crosses a module-global
 boundary, which the conservative escape classifier treats as
 escaping). The program must still produce the correct projected
-values via the heap path with -enable-unboxed-agg on.
+values via the heap path with -enable-unboxed-agg on (HISTORICAL — pass deleted 2026-06; kept as behavioral coverage, see plans/opt-tier1-aggregate-promotion.md U-T1.3).
 -}
 
 -- CHECK: a: 11
