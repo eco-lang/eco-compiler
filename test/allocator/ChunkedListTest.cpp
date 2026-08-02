@@ -11,6 +11,7 @@
 #include "../../runtime/src/allocator/Allocator.hpp"
 #include "../../runtime/src/allocator/Heap.hpp"
 #include "../../runtime/src/allocator/HeapHelpers.hpp"
+#include "../../runtime/src/allocator/RuntimeExports.h"
 #include "TestHelpers.hpp"
 #include <rapidcheck.h>
 #include <vector>
@@ -174,7 +175,90 @@ static void test_unboxed_chunk_gc_survival() {
     });
 }
 
+static void test_over_cap_chain() {
+    rc::check("over-cap batches build multi-backing chains (§6 L2)", []() {
+        initAllocator();
+        bool savedFlag = eco_g_list_chunks;
+        eco_g_list_chunks = true;
+
+        // Comfortably over one backing's capacity so the chain has >= 3
+        // links, with a remainder-sized tail link.
+        u32 maxElems = alloc::listBackingMaxElems();
+        u32 n = maxElems * 2 + maxElems / 3 + 1;
+        std::vector<std::pair<Unboxable, bool>> elems(n);
+        for (u32 i = 0; i < n; i++) {
+            elems[i].first.i = static_cast<i64>(i) * 7 - 3;
+            elems[i].second = false;
+        }
+        HPointer list = alloc::listFromUnboxables(elems);
+
+        // Every link's backing stays under the large-object threshold, lens
+        // telescope, and the logical length is exact.
+        RC_ASSERT(alloc::listLogicalLen(list) == n);
+        auto& allocator = Allocator::instance();
+        u32 seen = 0;
+        HPointer v = list;
+        while (seen < n) {
+            ConsChunk* cv = static_cast<ConsChunk*>(allocator.resolve(v));
+            RC_ASSERT(getHeader(cv)->tag == Tag_ConsChunk);
+            RC_ASSERT(cv->len == n - seen);
+            ListBacking* lb = static_cast<ListBacking*>(
+                allocator.resolve(cv->backing));
+            RC_ASSERT(sizeof(ListBacking) +
+                          lb->header.size * sizeof(Unboxable) <
+                      allocator.getLargeObjectThreshold());
+            seen += lb->header.size;
+            v = cv->next;
+        }
+        RC_ASSERT(seen == n);
+        RC_ASSERT(alloc::isNil(v));
+
+        std::vector<i64> got = intsOf(list);
+        for (u32 i = 0; i < n; i++) {
+            RC_ASSERT(got[i] == static_cast<i64>(i) * 7 - 3);
+        }
+        eco_g_list_chunks = savedFlag;
+    });
+}
+
+static void test_over_cap_reversed_and_scratch() {
+    rc::check("reversed chain fills and scratch finish agree (§6 L2)", []() {
+        initAllocator();
+        bool savedFlag = eco_g_list_chunks;
+        eco_g_list_chunks = true;
+
+        u32 n = alloc::listBackingMaxElems() + 17;
+        std::vector<std::pair<Unboxable, bool>> elems(n);
+        for (u32 i = 0; i < n; i++) {
+            elems[i].first.i = static_cast<i64>(i);
+            elems[i].second = false;
+        }
+        HPointer rev =
+            alloc::listFromUnboxables(elems, alloc::listNil(), true);
+        RC_ASSERT(alloc::listLogicalLen(rev) == n);
+        std::vector<i64> got = intsOf(rev);
+        for (u32 i = 0; i < n; i++) {
+            RC_ASSERT(got[i] == static_cast<i64>(n - 1 - i));
+        }
+
+        // Scratch finish over the same values: pushes 0..n-1, finish
+        // reverses, so the result must equal `rev`.
+        int64_t mark = eco_scratch_mark();
+        for (u32 i = 0; i < n; i++) {
+            eco_scratch_push_scalar(static_cast<uint64_t>(i), 1);
+        }
+        HPtr fin = eco_scratch_finish(mark, HPtr::fromBits(hpBits(alloc::listNil())), 1);
+        std::vector<i64> got2 = intsOf(fin.toHPointer());
+        RC_ASSERT(got2 == got);
+        eco_g_list_chunks = savedFlag;
+    });
+}
+
 void registerChunkedListTests(Testing::TestSuite& suite) {
+    suite.add(Testing::TestCase("Over-cap chunk chain structure",
+                                test_over_cap_chain));
+    suite.add(Testing::TestCase("Over-cap reversed + scratch finish",
+                                test_over_cap_reversed_and_scratch));
     suite.add(Testing::TestCase("Chunk cursor round-trip",
                                 test_chunk_cursor_roundtrip));
     suite.add(Testing::TestCase("Mixed cell+chunk spine cursor",

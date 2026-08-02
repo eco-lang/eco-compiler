@@ -490,6 +490,26 @@ Phases:
   split ⌈n/maxElems⌉ nursery-sized backings linked via `next`, replacing
   the v1 cell fallback; measured beneficiary: the bytecode writer's ~77K-
   element op lists.
+
+  **CHAINING AS-BUILT (Aug 2 2026) — shipped ahead of the rest of Tier A,
+  and it landed far bigger than the 77K-list estimate:**
+  `alloc::listChunkChain` builds ⌈n/`listBackingMaxElems()`⌉ nursery-born
+  backings chained tail-first (remainder in the tail link; every link
+  stays strictly under the large-object threshold, preserving the §2.2
+  invariant; lens telescope per the len-consistency invariant), with
+  `ListChainWriter`/`ListChainReverseWriter` doing allocation-free fills
+  after construction. All four producers converted: `listFromUnboxables`,
+  kernel `reverse`/`append`/`concat` (the LOT term dropped from
+  `chunkEligible`), and `eco_scratch_finish`. With LOT = 8 KB
+  (maxElems ≈ 1019), over-cap batches turned out to be COMMON — template
+  `finish` accumulations and big module lists, not just the bytecode
+  writer. Measured (true census, flag-on self-compile vs baseline):
+  **6.212B objects = −261.9M (−4.05%); Cons 387.9M = −349.6M (−47.4%);
+  ConsChunk 41.5M; ListBacking 10.6M (avg 277 B); wall 4:49.24 (parity
+  band); differential + ECO_HEAP_VALIDATE clean; BYTECODE self-compile —
+  the original `fromPointerRaw` over-cap crash scenario — byte-identical;
+  two over-cap chain unit tests in ChunkedListTest.** Cumulative Tier-B +
+  chaining ≈ the full §11.b −355M Cons-side target.
 - **L3 — cons amortization (§10 ladder), census-gated.** Front-slack
   in-place fill + builder-epoch pinning + HEAP_038/040/041 only if the
   post-L1 census shows remaining cell-chain volume worth it (measured

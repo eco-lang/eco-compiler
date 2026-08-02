@@ -999,6 +999,103 @@ inline u32 listLogicalLen(HPointer list) {
     return n;
 }
 
+// ============================================================================
+// Chunk chains (plan §6 L2): over-cap batches split across linked backings
+// ============================================================================
+
+// Largest element count whose backing stays strictly below the large-object
+// threshold — the §2.2 nursery-born invariant every chain link preserves (an
+// over-LOT backing would land in pinned old gen and hold unrecorded
+// old→young edges once filled with nursery pointers).
+inline u32 listBackingMaxElems() {
+    return static_cast<u32>(
+        (Allocator::instance().getLargeObjectThreshold() - 1
+         - sizeof(ListBacking)) / sizeof(Unboxable));
+}
+
+// Builds the chunk spine for an n-element batch ending in `next`:
+// ⌈n / listBackingMaxElems()⌉ nursery-born backings wrapped in views chained
+// tail-first (the tail-most link takes the remainder; earlier links are
+// full), each view's len telescoping per the len-consistency invariant.
+// Returns the head view. Boxed-kind slots are zero-initialized, so a GC
+// during construction scans nulls; callers fill AFTER this returns and must
+// not allocate between construction and the end of the fill.
+inline HPointer listChunkChain(u32 n, u8 kind, HPointer next) {
+    if (n == 0) return next;
+    u32 maxElems = listBackingMaxElems();
+    HPointer chain = next;
+    StackRootGuard guard(&chain);
+    u32 len = isNil(next) ? 0 : listLogicalLen(next);
+    u32 remaining = n;
+    while (remaining > 0) {
+        u32 run = remaining % maxElems;
+        if (run == 0) run = maxElems;
+        HPointer backing = listBacking(run, kind);
+        len += run;
+        chain = consChunkView(backing, 0, len, chain, kind);
+        remaining -= run;
+    }
+    return chain;
+}
+
+// Sequential logical-order writer over a freshly built chunk chain. Caches
+// raw pointers: the caller must not allocate while writing.
+struct ListChainWriter {
+    Allocator* alloc_;
+    ListBacking* lb;
+    HPointer nextView;
+    u32 idx, run;
+
+    explicit ListChainWriter(HPointer headView)
+        : alloc_(&Allocator::instance()), lb(nullptr), nextView(headView),
+          idx(0), run(0) {}
+
+    void put(Unboxable v) {
+        if (idx == run) {
+            ConsChunk* cv =
+                static_cast<ConsChunk*>(alloc_->resolve(nextView));
+            lb = static_cast<ListBacking*>(alloc_->resolve(cv->backing));
+            nextView = cv->next;
+            idx = 0;
+            run = lb->header.size;
+        }
+        lb->elems[idx++] = v;
+    }
+};
+
+// Reverse-order writer: fills the last logical slot first. Used by reverse,
+// whose source cursor can only walk forward. Resolves the whole chain's
+// backings up front (raw pointers — same no-allocation discipline).
+struct ListChainReverseWriter {
+    std::vector<ListBacking*> chunks;
+    size_t ci;
+    u32 idx;
+
+    ListChainReverseWriter(HPointer headView, u32 n) : ci(0), idx(0) {
+        auto& allocator = Allocator::instance();
+        u32 seen = 0;
+        HPointer v = headView;
+        while (seen < n) {
+            ConsChunk* cv = static_cast<ConsChunk*>(allocator.resolve(v));
+            ListBacking* lb =
+                static_cast<ListBacking*>(allocator.resolve(cv->backing));
+            chunks.push_back(lb);
+            seen += lb->header.size;
+            v = cv->next;
+        }
+        ci = chunks.size() - 1;
+        idx = chunks[ci]->header.size;
+    }
+
+    void put(Unboxable v) {
+        if (idx == 0) {
+            --ci;
+            idx = chunks[ci]->header.size;
+        }
+        chunks[ci]->elems[--idx] = v;
+    }
+};
+
 inline HPointer listFromUnboxables(
         std::vector<std::pair<Unboxable, bool>>& elems,
         HPointer tail = listNil(),
@@ -1015,25 +1112,15 @@ inline HPointer listFromUnboxables(
     }
 
     // Chunked-list fast path (plans/chunked-list-representation.md §6): when
-    // the program was compiled chunk-aware, a kind-UNIFORM batch becomes ONE
-    // dense backing + ONE view instead of n cells. The bool API collapses
-    // unboxed kinds to Int (pre-existing behaviour of the cons(bool)
-    // overload); mixed batches fall back to cells. Threshold 4 avoids
-    // tiny-chunk overhead. All boxed inputs and `result` are rooted above,
-    // so the backing/view allocations may GC freely; elements are re-read
-    // from the (GC-updated) vector after each allocation.
-    //
-    // SIZE CAP (plan §2.2, load-bearing): the backing must stay BELOW the
-    // large-object threshold so it is NURSERY-allocated. An over-LOT backing
-    // lands directly in pinned old gen, and filling it with fresh (nursery)
-    // element pointers creates unrecorded old→young edges — the exact
-    // no-write-barrier violation of §2.3(a); minor GC never rescans it and
-    // the slots go stale (bisected: the 76K-element `List.reverse
-    // encodedOps` chunk in the bytecode writer). Over-cap batches fall back
-    // to cells in v1; chunk CHAINING is the planned refinement.
-    if (eco_g_list_chunks && elems.size() >= 4
-        && sizeof(ListBacking) + elems.size() * sizeof(Unboxable)
-               < Allocator::instance().getLargeObjectThreshold()) {
+    // the program was compiled chunk-aware, a kind-UNIFORM batch becomes a
+    // chunk chain — one dense backing per listBackingMaxElems() run — instead
+    // of n cells. The bool API collapses unboxed kinds to Int (pre-existing
+    // behaviour of the cons(bool) overload); mixed batches fall back to
+    // cells. Threshold 4 avoids tiny-chunk overhead. All boxed inputs and
+    // `result` are rooted above, so the chain allocations may GC freely;
+    // elements are re-read from the (GC-updated) vector after construction,
+    // and the fill itself never allocates.
+    if (eco_g_list_chunks && elems.size() >= 4) {
         bool uniform = true;
         bool firstBoxed = elems[0].second;
         for (auto& [val, is_boxed] : elems) {
@@ -1043,24 +1130,15 @@ inline HPointer listFromUnboxables(
         if (uniform) {
             u8 kind = firstBoxed ? 0 : 1;
             u32 n = static_cast<u32>(elems.size());
-            HPointer backing = listBacking(n, kind);
-            {
-                ListBacking* lb = static_cast<ListBacking*>(
-                    Allocator::instance().resolve(backing));
-                if (reversed) {
-                    for (u32 i = 0; i < n; ++i) {
-                        lb->elems[n - 1 - i] = elems[i].first;
-                    }
-                } else {
-                    for (u32 i = 0; i < n; ++i) {
-                        lb->elems[i] = elems[i].first;
-                    }
-                }
+            HPointer head = listChunkChain(n, kind, result);
+            ListChainWriter w(head);
+            if (reversed) {
+                for (u32 i = n; i > 0; --i) w.put(elems[i - 1].first);
+            } else {
+                for (u32 i = 0; i < n; ++i) w.put(elems[i].first);
             }
-            u32 totalLen = n + (isNil(result) ? 0 : listLogicalLen(result));
-            HPointer view = consChunkView(backing, 0, totalLen, result, kind);
             rs.restoreStackRangePoint(saved);
-            return view;
+            return head;
         }
     }
 

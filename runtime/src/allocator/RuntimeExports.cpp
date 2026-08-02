@@ -4260,25 +4260,21 @@ extern "C" HPtr eco_scratch_finish(int64_t mark, HPtr next, int64_t kind) {
     u8 k = static_cast<u8>(kind & 0x3);
     auto& allocator = Allocator::instance();
 
-    if (eco_g_list_chunks && n >= 4
-        && sizeof(ListBacking) + n * sizeof(Unboxable)
-               < allocator.getLargeObjectThreshold()) {
+    if (eco_g_list_chunks && n >= 4) {
         StackRootGuard guard(&acc);
         u32 nn = static_cast<u32>(n);
-        u32 totalLen =
-            nn + (alloc::isNil(acc) ? 0 : alloc::listLogicalLen(acc));
-        HPointer backing = alloc::listBacking(nn, k);
-        HPointer view = alloc::consChunkView(backing, 0, totalLen, acc, k);
-        // Both allocations are done; the scanner kept the entries current,
-        // so read them fresh and fill without further allocation.
-        ListBacking* lb = static_cast<ListBacking*>(allocator.resolve(
-            static_cast<ConsChunk*>(allocator.resolve(view))->backing));
+        HPointer head = alloc::listChunkChain(nn, k, acc);
+        // The chain is fully allocated; the scanner kept the entries
+        // current, so read them fresh and fill without further allocation.
+        alloc::ListChainWriter w(head);
         for (u32 i = 0; i < nn; ++i) {
-            lb->elems[i].i = static_cast<i64>(s.bits[end - 1 - i]);
+            Unboxable v;
+            v.i = static_cast<i64>(s.bits[end - 1 - i]);
+            w.put(v);
         }
         s.bits.resize(m);
         s.kinds.resize(m);
-        return HPtr::fromBits(hpBits(view));
+        return HPtr::fromBits(hpBits(head));
     }
 
     // Small / mixed / chunks-off: exactly the cell loop the template

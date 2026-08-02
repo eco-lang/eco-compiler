@@ -35,14 +35,11 @@ SpineShape probeShape(HPointer list) {
     return s;
 }
 
-// A kind-uniform batch of n elements is worth ONE dense backing when chunks
-// are enabled, the batch is non-tiny, and the backing stays under the
-// large-object threshold so it is nursery-born (plan §2.2 cap — an over-LOT
-// backing would land in pinned old gen and hold unrecorded old→young edges).
+// A kind-uniform, non-tiny batch becomes a chunk chain when chunks are
+// enabled. Over-cap batches split across ⌈n/max⌉ nursery-born backings
+// (alloc::listChunkChain), preserving the §2.2 nursery-born invariant.
 bool chunkEligible(const SpineShape& s) {
-    return eco_g_list_chunks && s.uniform && s.n >= 4
-        && sizeof(ListBacking) + s.n * sizeof(Unboxable)
-               < Allocator::instance().getLargeObjectThreshold();
+    return eco_g_list_chunks && s.uniform && s.n >= 4;
 }
 
 // Backing pointer of a freshly built view, re-resolved AFTER the view
@@ -270,21 +267,17 @@ HPointer append(HPointer a, HPointer b) {
     if (eco_g_list_chunks) {
         SpineShape s = probeShape(a);
         if (chunkEligible(s)) {
-            // Count-first direct fill (see reverse). The view's len must be
-            // the TOTAL logical length (len-consistency invariant), so b's
-            // length is probed too — the vector path paid the same walk
-            // inside listFromUnboxables.
+            // Count-first direct fill (see reverse). The views' lens must be
+            // TOTAL logical lengths (len-consistency invariant), so b's
+            // length is probed inside listChunkChain — the vector path paid
+            // the same walk inside listFromUnboxables.
             StackRootGuard guard(&a, &b);
-            HPointer backing = alloc::listBacking(s.n, s.kind);
-            u32 totalLen = s.n + alloc::listLogicalLen(b);
-            HPointer view =
-                alloc::consChunkView(backing, 0, totalLen, b, s.kind);
-            ListBacking* lb = resolveViewBacking(view);
-            u32 i = 0;
+            HPointer head = alloc::listChunkChain(s.n, s.kind, b);
+            alloc::ListChainWriter w(head);
             for (alloc::ListCursor c(a); !c.done(); c.next()) {
-                lb->elems[i++] = c.current();
+                w.put(c.current());
             }
-            return view;
+            return head;
         }
     }
 
@@ -324,19 +317,17 @@ HPointer concat(HPointer listOfLists) {
         if (s.n == 0) return alloc::listNil();
         if (chunkEligible(s)) {
             StackRootGuard guard(&listOfLists);
-            HPointer backing = alloc::listBacking(s.n, s.kind);
-            HPointer view = alloc::consChunkView(backing, 0, s.n,
-                                                 alloc::listNil(), s.kind);
-            ListBacking* lb = resolveViewBacking(view);
-            u32 i = 0;
+            HPointer head =
+                alloc::listChunkChain(s.n, s.kind, alloc::listNil());
+            alloc::ListChainWriter w(head);
             for (alloc::ListCursor outer(listOfLists); !outer.done();
                  outer.next()) {
                 for (alloc::ListCursor inner(outer.current().p);
                      !inner.done(); inner.next()) {
-                    lb->elems[i++] = inner.current();
+                    w.put(inner.current());
                 }
             }
-            return view;
+            return head;
         }
     }
 
@@ -543,19 +534,17 @@ HPointer reverse(HPointer list) {
     if (s.n <= 1) return list;  // lists are immutable; sharing is safe
 
     if (chunkEligible(s)) {
-        // Count-first: exact-size backing, then fill straight from a source
-        // walk — no vector, no per-element rooting. Both allocations happen
-        // before the fill, so the raw pointers below cannot go stale.
+        // Count-first: exact-size chunk chain, then fill straight from a
+        // forward source walk writing last-slot-first — no vector, no
+        // per-element rooting. All allocations happen before the fill, so
+        // the writer's raw pointers cannot go stale.
         StackRootGuard guard(&list);
-        HPointer backing = alloc::listBacking(s.n, s.kind);
-        HPointer view =
-            alloc::consChunkView(backing, 0, s.n, alloc::listNil(), s.kind);
-        ListBacking* lb = resolveViewBacking(view);
-        u32 i = s.n;
+        HPointer head = alloc::listChunkChain(s.n, s.kind, alloc::listNil());
+        alloc::ListChainReverseWriter w(head, s.n);
         for (alloc::ListCursor c(list); !c.done(); c.next()) {
-            lb->elems[--i] = c.current();
+            w.put(c.current());
         }
-        return view;
+        return head;
     }
 
     // Small or mixed-kind: plain cons accumulation (exactly what the
