@@ -97,6 +97,11 @@ int64_t eco_scratch_mark(void);
 void eco_scratch_push_boxed(HPtr value);
 void eco_scratch_push_scalar(uint64_t bits, int64_t kind);
 HPtr eco_scratch_finish(int64_t mark, HPtr next, int64_t kind);
+HPtr eco_scratch_finish_fwd(int64_t mark, HPtr rest, int64_t kind);
+void eco_scratch_abandon(int64_t mark);
+
+/// Mixed-spine cursor position -> list value (EcoListCursor loop exits).
+HPtr eco_list_pos_view(HPtr node, int64_t idx);
 
 /// Allocates and initializes a Tuple2.
 /// @param a First element (HPointer or unboxed primitive as uint64_t)

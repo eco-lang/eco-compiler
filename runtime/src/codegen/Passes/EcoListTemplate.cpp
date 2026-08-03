@@ -36,6 +36,7 @@
 
 #include "mlir/Pass/Pass.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/BuiltinOps.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -61,6 +62,7 @@ constexpr const char *kMarkFn = "eco_scratch_mark";
 constexpr const char *kPushBoxedFn = "eco_scratch_push_boxed";
 constexpr const char *kPushScalarFn = "eco_scratch_push_scalar";
 constexpr const char *kFinishFn = "eco_scratch_finish";
+constexpr const char *kFinishFwdFn = "eco_scratch_finish_fwd";
 
 /// Debug counters (ECO_LIST_TEMPLATE_DEBUG=1): why candidates bailed.
 struct BailStats {
@@ -329,6 +331,22 @@ struct EcoListTemplatePass
             if (tryRewrite(m, w, declsMade, debug ? &bs : nullptr))
                 bs.rewritten++;
         });
+
+        // Phase 2: unwind-cons recursion (cons around a self-call result,
+        // the foldr/encoder family). Snapshot the function list first --
+        // rewrites add call-site wrappers inside other functions.
+        SmallVector<func::FuncOp, 64> fns;
+        for (auto f : m.getBody()->getOps<func::FuncOp>())
+            if (!f.getBody().empty())
+                fns.push_back(f);
+        unsigned unwindRewritten = 0;
+        for (auto f : fns)
+            if (tryRewriteUnwind(m, f, declsMade))
+                unwindRewritten++;
+        if (debug)
+            fprintf(stderr, "[eco-list-template] unwind rewritten=%u\n",
+                    unwindRewritten);
+
         if (debug) {
             bs.dump();
             std::map<std::string, unsigned> hist;
@@ -590,6 +608,256 @@ struct EcoListTemplatePass
         // the exit iteration; their post-rewrite value is a placeholder.
         for (unsigned q : qSlots)
             w.getResult(q).replaceAllUsesWith(fin.getResults()[0]);
+    }
+
+    //===------------------------------------------------------------------===//
+    // Phase 2: unwind-cons recursion.
+    //
+    // Shape: a function whose return value is a cons chain around either a
+    // SELF-call result (the recursive continuation) or any other value (the
+    // base "rest"). Rewrite: each cons becomes a push emitted BEFORE the op
+    // that leads toward the recursion on that path -- before the self-call
+    // for same-level links, before the region op for links sitting outside
+    // a case/if that recurses inside -- so pushes run top-down in descent
+    // order. The recursion then returns its rest value unchanged, and every
+    // NON-self call site wraps the call as mark / call / finish_fwd
+    // (entry[mark]::...::entry[top-1]::rest).
+    //===------------------------------------------------------------------===//
+
+    struct UnwindLink {
+        Operation *cons;    // eco.construct.list or kernel-cons eco.call
+        Operation *pushAt;  // insertion op the push must precede
+        int64_t kind;
+    };
+
+    struct UnwindPlan {
+        SmallVector<UnwindLink, 16> links;
+        SmallVector<Operation *, 4> selfCalls;  // chain-leaf self-calls
+        bool ok = true;
+    };
+
+    // Assigns the pending run of links (outer->inner) their push barrier.
+    void setRunBarrier(SmallVectorImpl<Operation *> &run, Operation *barrier,
+                       UnwindPlan &plan) {
+        for (Operation *c : run) {
+            for (auto &l : plan.links) {
+                if (l.cons == c && !l.pushAt)
+                    l.pushAt = barrier;
+            }
+        }
+        run.clear();
+    }
+
+    // Walks the return chain at one region level; recurses into region ops.
+    void walkUnwind(Value v, StringRef selfName, UnwindPlan &plan) {
+        SmallVector<Operation *, 8> run;  // outer -> inner cons run
+        while (plan.ok) {
+            Operation *def = v.getDefiningOp();
+            if (!def)
+                break;  // block-arg leaf = rest
+            int64_t ck = -1;
+            if (auto c = dyn_cast<eco::ListConstructOp>(def)) {
+                if (c.getLiveRoots().empty())
+                    ck = c.getHeadKind();
+            } else {
+                ck = kernelConsKind(def);
+            }
+            if (ck >= 0) {
+                if (!def->getResult(0).hasOneUse()) {
+                    plan.ok = false;
+                    return;
+                }
+                Type ht = def->getOperand(0).getType();
+                bool htOk = (ck == 0 && isa<eco::ValueType>(ht)) ||
+                            (ck == 1 && ht.isInteger(64)) ||
+                            (ck == 2 && ht.isF64()) ||
+                            (ck == 3 && ht.isInteger(16));
+                if (!htOk) {
+                    plan.ok = false;
+                    return;
+                }
+                run.push_back(def);
+                plan.links.push_back(UnwindLink{def, nullptr, ck});
+                v = def->getOperand(1);
+                continue;
+            }
+            if (auto call = dyn_cast<eco::CallOp>(def)) {
+                auto callee = call.getCalleeAttr();
+                if (callee && callee.getValue() == selfName) {
+                    bool mt = call.getMusttail() && *call.getMusttail();
+                    if (!def->getResult(0).hasOneUse() || mt) {
+                        plan.ok = false;
+                        return;
+                    }
+                    plan.selfCalls.push_back(def);
+                    setRunBarrier(run, def, plan);
+                    return;
+                }
+                break;  // foreign call result = rest leaf
+            }
+            if (isa<scf::IfOp, scf::IndexSwitchOp, eco::CaseOp>(def)) {
+                if (!v.hasOneUse()) {
+                    plan.ok = false;
+                    return;
+                }
+                unsigned idx = cast<OpResult>(v).getResultNumber();
+                setRunBarrier(run, def, plan);
+                for (Region &r : def->getRegions()) {
+                    if (!r.hasOneBlock()) {
+                        plan.ok = false;
+                        return;
+                    }
+                    Operation *term = r.front().getTerminator();
+                    if (!isa<scf::YieldOp, eco::YieldOp>(term) ||
+                        term->getNumOperands() <= idx) {
+                        plan.ok = false;
+                        return;
+                    }
+                    walkUnwind(term->getOperand(idx), selfName, plan);
+                    if (!plan.ok)
+                        return;
+                }
+                return;
+            }
+            break;  // any other def = rest leaf
+        }
+        // Plain leaf: this run's pushes sit at its outermost cons.
+        if (plan.ok && !run.empty())
+            setRunBarrier(run, run.front(), plan);
+    }
+
+    bool tryRewriteUnwind(ModuleOp m, func::FuncOp f, bool &declsMade) {
+        if (!llvm::hasSingleElement(f.getBody()))
+            return false;
+        Operation *term = f.getBody().front().getTerminator();
+        if (!term || term->getNumOperands() != 1 ||
+            !isa<eco::ValueType>(term->getOperand(0).getType()))
+            return false;
+        if (!isa<eco::ReturnOp, func::ReturnOp>(term))
+            return false;
+        StringRef name = f.getSymName();
+
+        UnwindPlan plan;
+        walkUnwind(term->getOperand(0), name, plan);
+        if (!plan.ok || plan.links.empty() || plan.selfCalls.empty())
+            return false;
+
+        int64_t kind = plan.links.front().kind;
+        for (auto &l : plan.links)
+            if (l.kind != kind || !l.pushAt)
+                return false;
+
+        // Every self-call in the body must be a chain leaf; otherwise a
+        // recursive result escapes the accumulation.
+        unsigned selfCallsInBody = 0;
+        f.walk([&](eco::CallOp c) {
+            auto callee = c.getCalleeAttr();
+            if (callee && callee.getValue() == name)
+                selfCallsInBody++;
+        });
+        if (selfCallsInBody != plan.selfCalls.size())
+            return false;
+
+        // Heads must dominate their push sites.
+        DominanceInfo dom(f);
+        for (auto &l : plan.links) {
+            Value h = l.cons->getOperand(0);
+            if (Operation *hd = h.getDefiningOp()) {
+                if (hd != l.pushAt && !dom.properlyDominates(hd, l.pushAt))
+                    return false;
+            }
+        }
+
+        // Every module-wide use must be a direct, non-musttail eco.call.
+        auto uses = SymbolTable::getSymbolUses(f, m);
+        if (!uses)
+            return false;
+        SmallVector<eco::CallOp, 8> outerSites;
+        for (const SymbolTable::SymbolUse &u : *uses) {
+            auto call = dyn_cast<eco::CallOp>(u.getUser());
+            if (!call || !call.getCalleeAttr() ||
+                call.getCalleeAttr().getValue() != name)
+                return false;
+            if (call->getParentOfType<func::FuncOp>() == f)
+                continue;  // recursion, handled by the chain rewrite
+            if (call.getMusttail() && *call.getMusttail())
+                return false;
+            if (call->getNumResults() != 1 ||
+                !isa<eco::ValueType>(call->getResult(0).getType()))
+                return false;
+            outerSites.push_back(call);
+        }
+        if (outerSites.empty())
+            return false;  // dead or closure-referenced-only function
+
+        MLIRContext *ctx = m.getContext();
+        Type i64 = IntegerType::get(ctx, 64);
+        Type value = eco::ValueType::get(ctx);
+        if (!declsMade) {
+            declsMade = true;
+            ensureDecl(m, kMarkFn, FunctionType::get(ctx, {}, {i64}), {},
+                       {"i64"});
+            ensureDecl(m, kPushBoxedFn, FunctionType::get(ctx, {value}, {}),
+                       {"value"}, {});
+            ensureDecl(m, kPushScalarFn,
+                       FunctionType::get(ctx, {i64, i64}, {}), {"i64", "i64"},
+                       {});
+            ensureDecl(m, kFinishFn,
+                       FunctionType::get(ctx, {i64, value, i64}, {value}),
+                       {"i64", "value", "i64"}, {"value"});
+        }
+        if (!m.lookupSymbol<func::FuncOp>(kFinishFwdFn))
+            ensureDecl(m, kFinishFwdFn,
+                       FunctionType::get(ctx, {i64, value, i64}, {value}),
+                       {"i64", "value", "i64"}, {"value"});
+
+        // Pushes first (collection order is outer->inner per path, which is
+        // descent order at every level), then collapse the conses.
+        for (auto &l : plan.links) {
+            OpBuilder cb(l.pushAt);
+            Location cl = l.cons->getLoc();
+            Value h = l.cons->getOperand(0);
+            if (isa<eco::ValueType>(h.getType())) {
+                cb.create<eco::CallOp>(
+                    cl, TypeRange{}, ValueRange{h},
+                    FlatSymbolRefAttr::get(ctx, kPushBoxedFn), nullptr,
+                    nullptr);
+            } else {
+                Value bits = h;
+                if (h.getType().isF64())
+                    bits = cb.create<arith::BitcastOp>(cl, i64, h);
+                else if (h.getType().isInteger(16))
+                    bits = cb.create<arith::ExtUIOp>(cl, i64, h);
+                Value kc = cb.create<arith::ConstantOp>(
+                    cl, cb.getI64IntegerAttr(kind));
+                cb.create<eco::CallOp>(
+                    cl, TypeRange{}, ValueRange{bits, kc},
+                    FlatSymbolRefAttr::get(ctx, kPushScalarFn), nullptr,
+                    nullptr);
+            }
+        }
+        for (auto &l : plan.links) {
+            l.cons->getResult(0).replaceAllUsesWith(l.cons->getOperand(1));
+            l.cons->erase();
+        }
+
+        for (auto call : outerSites) {
+            OpBuilder b(call);
+            Location loc = call.getLoc();
+            auto mark = b.create<eco::CallOp>(
+                loc, TypeRange{i64}, ValueRange{},
+                FlatSymbolRefAttr::get(ctx, kMarkFn), nullptr, nullptr);
+            b.setInsertionPointAfter(call);
+            Value kc =
+                b.create<arith::ConstantOp>(loc, b.getI64IntegerAttr(kind));
+            auto fin = b.create<eco::CallOp>(
+                loc, TypeRange{value},
+                ValueRange{mark.getResults()[0], call->getResult(0), kc},
+                FlatSymbolRefAttr::get(ctx, kFinishFwdFn), nullptr, nullptr);
+            call->getResult(0).replaceAllUsesExcept(fin.getResults()[0],
+                                                    fin);
+        }
+        return true;
     }
 };
 

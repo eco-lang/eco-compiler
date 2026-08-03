@@ -12,6 +12,7 @@
 #include "../../runtime/src/allocator/Heap.hpp"
 #include "../../runtime/src/allocator/HeapHelpers.hpp"
 #include "../../runtime/src/allocator/RuntimeExports.h"
+#include "../../runtime/src/allocator/ListOps.hpp"
 #include "TestHelpers.hpp"
 #include <rapidcheck.h>
 #include <vector>
@@ -254,7 +255,51 @@ static void test_over_cap_reversed_and_scratch() {
     });
 }
 
+static void test_backward_cursor_foldr() {
+    rc::check("backward cursor folds mixed over-cap spines right-to-left",
+              []() {
+        initAllocator();
+        bool savedFlag = eco_g_list_chunks;
+        eco_g_list_chunks = true;
+
+        // Mixed spine: a few cells consed onto an over-cap chunk chain.
+        u32 n = alloc::listBackingMaxElems() + 41;
+        std::vector<std::pair<Unboxable, bool>> elems(n);
+        for (u32 i = 0; i < n; i++) {
+            elems[i].first.i = static_cast<i64>(i);
+            elems[i].second = false;
+        }
+        HPointer list = alloc::listFromUnboxables(elems);
+        for (i64 v = -1; v >= -3; v--) {
+            Unboxable u;
+            u.i = v;
+            list = alloc::cons(u, list, static_cast<u8>(1));
+        }
+
+        // foldr (::) [] == identity, and the folder ALLOCATES a cell per
+        // element — exercising GC tolerance of the rooted node array.
+        Unboxable nilAcc;
+        nilAcc.p = alloc::listNil();
+        Unboxable rebuilt = Elm::ListOps::foldr(
+            [](Unboxable v, bool, Unboxable acc) {
+                Unboxable out;
+                out.p = alloc::cons(v, acc.p, static_cast<u8>(1));
+                return out;
+            },
+            nilAcc, list);
+
+        std::vector<i64> got = intsOf(rebuilt.p);
+        RC_ASSERT(got.size() == n + 3);
+        for (size_t i = 0; i < got.size(); i++) {
+            RC_ASSERT(got[i] == static_cast<i64>(i) - 3);
+        }
+        eco_g_list_chunks = savedFlag;
+    });
+}
+
 void registerChunkedListTests(Testing::TestSuite& suite) {
+    suite.add(Testing::TestCase("Backward-cursor foldr over mixed spine",
+                                test_backward_cursor_foldr));
     suite.add(Testing::TestCase("Over-cap chunk chain structure",
                                 test_over_cap_chain));
     suite.add(Testing::TestCase("Over-cap reversed + scratch finish",

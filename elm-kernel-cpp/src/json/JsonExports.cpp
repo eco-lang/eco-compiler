@@ -652,6 +652,46 @@ static uint64_t runDecoder(HPointer decoderHP, uint64_t jvalEnc) {
                 len = arr0->header.size;
             }
 
+            // Chunks: decode in the SAME reverse order (failure semantics —
+            // the error returned is the last failing index) but accumulate
+            // on the GC-rooted scratch stack; eco_scratch_finish reverses,
+            // so the logical order matches the cells path exactly, and the
+            // whole result becomes a dense chunk chain instead of len cells.
+            if (eco_g_list_chunks) {
+                StackRootGuard decRoots(&arrayHP, &elemDecHP);
+                int64_t mark = eco_scratch_mark();
+                for (i64 i = static_cast<i64>(len) - 1; i >= 0; i--) {
+                    ElmArray* arr =
+                        static_cast<ElmArray*>(allocator.resolve(arrayHP));
+                    uint64_t elemEnc = Export::encode(arr->elements[i].p);
+                    uint64_t elemResult = runDecoder(elemDecHP, elemEnc);
+                    if (!isOk(elemResult)) {
+                        eco_scratch_abandon(mark);
+                        return elemResult;
+                    }
+                    HPointer elemVal = getOkValue(elemResult);
+                    if (elemConsKind == 1) {
+                        ElmInt* ei = static_cast<ElmInt*>(
+                            allocator.resolve(elemVal));
+                        eco_scratch_push_scalar(
+                            static_cast<uint64_t>(ei->value), 1);
+                    } else if (elemConsKind == 2) {
+                        ElmFloat* ef = static_cast<ElmFloat*>(
+                            allocator.resolve(elemVal));
+                        Unboxable fbits;
+                        fbits.f = ef->value;
+                        eco_scratch_push_scalar(
+                            static_cast<uint64_t>(fbits.i), 2);
+                    } else {
+                        eco_scratch_push_boxed(
+                            HPtr::fromBits(hpBits(elemVal)));
+                    }
+                }
+                HPtr chunked = eco_scratch_finish(
+                    mark, HPtr::fromBits(hpBits(listNil())), elemConsKind);
+                return makeOk(chunked.toHPointer());
+            }
+
             // Decode each element in reverse to build the list. `result` is
             // the accumulator; `arrayHP` and `elemDecHP` may be moved by GC
             // during the recursion or `cons`. Root all three.

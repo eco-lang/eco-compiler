@@ -997,6 +997,180 @@ static void expandListProjMarker(Module &m, const char *markerName,
     marker->eraseFromParent();
 }
 
+// Expand the mixed-spine CURSOR markers (EcoListCursor pass):
+//
+//   __eco_list_cur_inline(node, idx)       element at position, !eco.value
+//   __eco_list_cur_{i64,f64,i16}_inline    unboxed element variants
+//   __eco_list_step_node_inline(node, idx) next node (cell tail / same chunk
+//                                          while the run lasts / chunk next)
+//   __eco_list_step_idx_inline(node, idx)  next index (0 on node change)
+//
+// Every edge is a pure load — stepping THROUGH a chunk allocates nothing
+// (the whole point: it replaces the per-element eco_list_tail_hybrid view
+// materialization). All markers are gc-leaf shaped and fully expanded here,
+// before every RS4GC flavour. Positions are normalized: idx > 0 only inside
+// a chunk with idx < run, so the cell edges may assume idx == 0.
+static void expandListCursorMarker(Module &m, const char *markerName,
+                                   int variant /*0=value,1=i64,2=f64,3=i16,
+                                                 4=stepNode,5=stepIdx*/) {
+    Function *marker = m.getFunction(markerName);
+    if (!marker || marker->use_empty()) {
+        if (marker) marker->eraseFromParent();
+        return;
+    }
+
+    LLVMContext &ctx = m.getContext();
+    Type *i8Ty = Type::getInt8Ty(ctx);
+    Type *i16Ty = Type::getInt16Ty(ctx);
+    Type *i32Ty = Type::getInt32Ty(ctx);
+    Type *i64Ty = Type::getInt64Ty(ctx);
+    Type *f64Ty = Type::getDoubleTy(ctx);
+    PointerType *as1 = PointerType::get(ctx, 1);
+    const uint64_t tagMask = (1ULL << TAG_BITS) - 1;
+
+    FunctionCallee fwdMarker = m.getOrInsertFunction(
+        "__eco_resolve_fwd", FunctionType::get(as1, {as1}, false));
+    if (auto *ff = dyn_cast<Function>(fwdMarker.getCallee()))
+        ff->addFnAttr("gc-leaf-function");
+    FunctionCallee slotBarrier = m.getOrInsertFunction(
+        eco::kSlotToHPtrSym, FunctionType::get(as1, {i64Ty}, false));
+    if (auto *bf = dyn_cast<Function>(slotBarrier.getCallee()))
+        bf->addFnAttr("gc-leaf-function");
+
+    MDBuilder mdb(ctx);
+    MDNode *cellLikely = mdb.createBranchWeights(1u << 20, 1);
+
+    SmallVector<CallInst *, 64> calls;
+    for (User *u : marker->users())
+        if (auto *ci = dyn_cast<CallInst>(u))
+            calls.push_back(ci);
+
+    for (CallInst *ci : calls) {
+        Value *node = ci->getArgOperand(0);
+        Value *idx = ci->getArgOperand(1);
+        IRBuilder<> b(ci);
+        CallInst *base = b.CreateCall(fwdMarker, {node}, "eco.curbase");
+        Value *hdr = b.CreateAlignedLoad(i32Ty, base, Align(8), "eco.curhdr");
+        Value *tag = b.CreateAnd(hdr, tagMask, "eco.curtag");
+        Value *isCell = b.CreateICmpEQ(
+            tag, ConstantInt::get(i32Ty, (uint64_t)Elm::Tag_Cons),
+            "eco.curiscell");
+
+        Instruction *cellTerm = nullptr, *chunkTerm = nullptr;
+        SplitBlockAndInsertIfThenElse(isCell, ci, &cellTerm, &chunkTerm,
+                                      cellLikely);
+
+        // Cell edge.
+        IRBuilder<> fb(cellTerm);
+        Value *cellVal = nullptr;
+        if (variant <= 3) {
+            Value *p = fb.CreateGEP(i8Ty, base,
+                                    ConstantInt::get(i64Ty, 8), "eco.curhp");
+            Value *w = fb.CreateAlignedLoad(i64Ty, p, Align(8), "eco.curhw");
+            if (variant == 0)
+                cellVal = fb.CreateCall(slotBarrier, {w});
+            else if (variant == 1)
+                cellVal = w;
+            else if (variant == 2)
+                cellVal = fb.CreateBitCast(w, f64Ty);
+            else
+                cellVal = fb.CreateTrunc(w, i16Ty);
+        } else if (variant == 4) {
+            Value *p = fb.CreateGEP(i8Ty, base,
+                                    ConstantInt::get(i64Ty, 16), "eco.curtp");
+            Value *w = fb.CreateAlignedLoad(i64Ty, p, Align(8), "eco.curtw");
+            cellVal = fb.CreateCall(slotBarrier, {w});
+        } else {
+            cellVal = ConstantInt::get(i64Ty, 0);
+        }
+        BasicBlock *cellBB = cellTerm->getParent();
+
+        // Chunk edge: shared field loads.
+        IRBuilder<> sb(chunkTerm);
+        Value *offP = sb.CreateGEP(i8Ty, base, ConstantInt::get(i64Ty, 16));
+        Value *off = sb.CreateZExt(
+            sb.CreateAlignedLoad(i32Ty, offP, Align(8), "eco.curoff"), i64Ty);
+        Value *chunkVal = nullptr;
+        if (variant <= 3) {
+            Value *bwP = sb.CreateGEP(i8Ty, base, ConstantInt::get(i64Ty, 8));
+            Value *bw = sb.CreateAlignedLoad(i64Ty, bwP, Align(8));
+            Value *bp = sb.CreateCall(slotBarrier, {bw});
+            Value *braw = sb.CreateCall(fwdMarker, {bp});
+            Value *pos = sb.CreateAdd(off, idx, "eco.curpos");
+            Value *byteOff = sb.CreateAdd(
+                ConstantInt::get(i64Ty, 16),
+                sb.CreateShl(pos, ConstantInt::get(i64Ty, 3)));
+            Value *ep = sb.CreateGEP(i8Ty, braw, byteOff, "eco.curep");
+            Value *w = sb.CreateAlignedLoad(i64Ty, ep, Align(8), "eco.curew");
+            if (variant == 0)
+                chunkVal = sb.CreateCall(slotBarrier, {w});
+            else if (variant == 1)
+                chunkVal = w;
+            else if (variant == 2)
+                chunkVal = sb.CreateBitCast(w, f64Ty);
+            else
+                chunkVal = sb.CreateTrunc(w, i16Ty);
+        } else {
+            Value *lenP =
+                sb.CreateGEP(i8Ty, base, ConstantInt::get(i64Ty, 20));
+            Value *len = sb.CreateZExt(
+                sb.CreateAlignedLoad(i32Ty, lenP, Align(4), "eco.curlen"),
+                i64Ty);
+            Value *bwP = sb.CreateGEP(i8Ty, base, ConstantInt::get(i64Ty, 8));
+            Value *bw = sb.CreateAlignedLoad(i64Ty, bwP, Align(8));
+            Value *bp = sb.CreateCall(slotBarrier, {bw});
+            Value *braw = sb.CreateCall(fwdMarker, {bp});
+            Value *capP =
+                sb.CreateGEP(i8Ty, braw, ConstantInt::get(i64Ty, 4));
+            Value *cap = sb.CreateZExt(
+                sb.CreateAlignedLoad(i32Ty, capP, Align(4), "eco.curcap"),
+                i64Ty);
+            Value *avail = sb.CreateSub(cap, off);
+            Value *run = sb.CreateSelect(sb.CreateICmpULT(len, avail), len,
+                                         avail, "eco.currun");
+            Value *idx1 = sb.CreateAdd(idx, ConstantInt::get(i64Ty, 1));
+            Value *inRun = sb.CreateICmpULT(idx1, run, "eco.curinrun");
+            if (variant == 4) {
+                Value *nxP =
+                    sb.CreateGEP(i8Ty, base, ConstantInt::get(i64Ty, 24));
+                Value *nxW = sb.CreateAlignedLoad(i64Ty, nxP, Align(8));
+                Value *nx = sb.CreateCall(slotBarrier, {nxW});
+                chunkVal = sb.CreateSelect(inRun, node, nx, "eco.stepnode");
+            } else {
+                chunkVal = sb.CreateSelect(inRun, idx1,
+                                           ConstantInt::get(i64Ty, 0),
+                                           "eco.stepidx");
+            }
+        }
+        BasicBlock *chunkBB = chunkTerm->getParent();
+
+        IRBuilder<> pb(&*ci->getParent()->getFirstInsertionPt());
+        Type *resTy = variant == 0 || variant == 4
+                          ? (Type *)as1
+                          : variant == 1 || variant == 5
+                                ? i64Ty
+                                : variant == 2 ? f64Ty : (Type *)i16Ty;
+        PHINode *phi = pb.CreatePHI(resTy, 2, "eco.cur");
+        phi->addIncoming(cellVal, cellBB);
+        phi->addIncoming(chunkVal, chunkBB);
+        ci->replaceAllUsesWith(phi);
+        ci->eraseFromParent();
+    }
+
+    if (!marker->use_empty())
+        report_fatal_error("expandListCursorMarker: surviving marker use");
+    marker->eraseFromParent();
+}
+
+static void expandListCursorMarkers(Module &m) {
+    expandListCursorMarker(m, "__eco_list_cur_inline", 0);
+    expandListCursorMarker(m, "__eco_list_cur_i64_inline", 1);
+    expandListCursorMarker(m, "__eco_list_cur_f64_inline", 2);
+    expandListCursorMarker(m, "__eco_list_cur_i16_inline", 3);
+    expandListCursorMarker(m, "__eco_list_step_node_inline", 4);
+    expandListCursorMarker(m, "__eco_list_step_idx_inline", 5);
+}
+
 static void expandListProjMarkers(Module &m) {
     expandListProjMarker(m, "__eco_list_head_inline", /*slotOffset=*/8,
                          "eco_list_head_hybrid", /*slowIsGcLeaf=*/true);
@@ -1283,6 +1457,8 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
     // Chunked-list projection markers (must precede expandInlineDerefs —
     // both this and get_tag emit __eco_resolve_fwd calls it then expands).
     expandListProjMarkers(m);
+    // Mixed-spine cursor markers (EcoListCursor): same discipline.
+    expandListCursorMarkers(m);
     // Scratch-stack helpers (chunked-list Tier-B templates): mark and the
     // pushes never GC-allocate, so exempt them from RS4GC statepointing.
     // eco_scratch_finish allocates and must statepoint normally.

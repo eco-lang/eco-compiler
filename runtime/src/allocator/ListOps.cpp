@@ -505,22 +505,22 @@ Unboxable foldl(Folder fold, Unboxable acc, HPointer list) {
 }
 
 Unboxable foldr(Folder fold, Unboxable acc, HPointer list) {
-    // Collect elements first (need to process in reverse). The boxed head
-    // snapshots are read across each fold callback (user code that can GC),
-    // so root them for the duration — mirroring foldl's per-iteration
-    // rooting. The accumulator is type-erased and consumed/overwritten at
-    // each call, so it needs no root here (see foldl's rationale).
-    auto elements = toVector(list);
-
+    // Backward-cursor walk (plan §6): collect spine NODES (chunk runs
+    // collapse to one entry) instead of copying every element, root them as
+    // contiguous ranges, and re-read each element fresh right before its
+    // callback — fold callbacks may allocate and GC freely. The accumulator
+    // is type-erased and consumed/overwritten at each call, so it needs no
+    // root here (see foldl's rationale).
+    alloc::ListBackwardCursor c(list);
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
-    for (auto& [val, is_boxed] : elements) {
-        if (is_boxed) rs.pushStackRootRange(&val.p, 1, 1);
-    }
+    c.rootNodes(rs);
 
     Unboxable result = acc;
-    for (auto it = elements.rbegin(); it != elements.rend(); ++it) {
-        result = fold(it->first, it->second, result);
+    Unboxable v;
+    u8 kind;
+    while (c.prev(v, kind)) {
+        result = fold(v, kind == 0, result);
     }
 
     rs.restoreStackRangePoint(saved);

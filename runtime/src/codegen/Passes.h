@@ -61,6 +61,11 @@ std::unique_ptr<mlir::Pass> createEcoControlFlowToSCFPass();
 /// (chunked lists Tier B). No-op unless a function carries eco.list_chunks.
 std::unique_ptr<mlir::Pass> createEcoListTemplatePass();
 
+/// Rewrites list-walking scf.while loops to non-allocating (node, idx)
+/// cursors (chunked lists). Runs post-EcoToLLVM; no-op unless the module
+/// declares __eco_list_tail_inline (chunk-compiled modules only).
+std::unique_ptr<mlir::Pass> createEcoListCursorPass();
+
 // Lowers eco control flow ops (case, joinpoint, jump, return) to cf dialect.
 std::unique_ptr<mlir::Pass> createControlFlowLoweringPass();
 

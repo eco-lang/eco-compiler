@@ -466,6 +466,68 @@ Phases:
     papCreate-referenced) or mono-level template generation in
     Functions.elm per the original BytesFusion-precedent design.
 
+    **AS-BUILT slice 3 (Aug 3 2026) — unwind-cons recursion, measured
+    NEUTRAL.** EcoListTemplate phase 2 captures functions whose return
+    value is a cons chain around a self-call result (the foldr/encoder
+    family): pushes are inserted BEFORE the op leading toward the
+    recursion on each path (self-call or region op), so pushes run in
+    descent order and `eco_scratch_finish_fwd` rebuilds forward
+    (entry[mark]::…::rest) at every non-self call site (mark/call/finish
+    wrapping; bails on papCreate references, musttail external sites,
+    escaping self-call results, and non-dominating heads). 29 of 55
+    candidate functions captured, all gates green (byte-identical
+    self-compile) — but Cons moved only −149K: recursive encoders yield
+    1–3 elements per call, below the ≥4 chunk threshold, so finish takes
+    the cells path. Kept (correct, attr-gated, and captures long-chain
+    `x :: recurse rest` patterns that other workloads will hit); the
+    remaining foldr-family pool is closure-mediated (λ≈7.7 papExtend
+    traffic) and stays uncapturable without defunctionalization — the
+    U2b/H7 NO-GO precedents apply.
+
+    **AS-BUILT slice 4 (Aug 3 2026) — mixed-spine cursors for compiled
+    walks, SHIPPED.** `EcoListCursor` (pipeline slot after EcoToLLVM,
+    before the SCF tail conversions — post-GCPrepare, so the per-step ops
+    acquire no statepoints or rooting; gated on the module declaring
+    `__eco_list_tail_inline`, i.e. chunk-compiled only) rewrites
+    list-walking `scf.while` loops to carry (node, idx): head projections
+    become `__eco_list_cur*_inline(node, idx)`, the yielded tail becomes
+    `__eco_list_step_{node,idx}_inline` pairs, and conditional stepping is
+    handled by STEP TREES — `scf.if`/`index_switch` interior nodes on the
+    yield chain are rebuilt with one extra i64 result carrying the per-arm
+    index (identity arms yield the current index). Emptiness tests stay
+    plain get_tag on the node (positions are normalized: idx > 0 only
+    inside a chunk with idx < run). Escaping loop results materialize ONE
+    view via the new `eco_list_pos_view` runtime export — per exit, not
+    per element. All markers expand to pure-load cell-fast/chunk diamonds
+    in EcoBackend (`expandListCursorMarkers`), so the cell edge keeps
+    today's inline loads exactly. **Captures 3,191 of 4,626 whiles**
+    (the rest: non-list value args and non-projection escapes). Measured:
+    walk-view churn ConsChunk 41.9M → 26.9M (−15.1M allocations +
+    as many statepointed calls removed); total −277.0M objects (−4.28%)
+    vs baseline; RSS flag-on now BELOW flag-off (5.38 vs 5.48 GB) for the
+    first time; walls remain parity-bound in a ±4% noise window (best
+    observed 4:44.13, interleaved means ~+2% — the default-off flip
+    criterion is still not met; re-measure in a quiet window). Gates:
+    differential identical, ECO_HEAP_VALIDATE clean, flag-on self-compile
+    output byte-identical, unit + full E2E green.**
+
+    **AS-BUILT slice 5 (Aug 3 2026) — backward-cursor foldr walks.**
+    Kernel side SHIPPED: `alloc::ListBackwardCursor` (HeapHelpers)
+    collects spine NODES front-to-back — one entry per cell or chunk
+    view, so chunk runs collapse ~1,019× versus per-element copies —
+    roots them as contiguous ≤64-entry ranges, and yields elements in
+    reverse with per-read re-resolution (fold callbacks may allocate and
+    GC freely). Kernel `ListOps::foldr` converted from
+    toVector-plus-per-element-roots to this cursor; unit test covers a
+    mixed over-cap spine with an ALLOCATING folder (`foldr (::) [] ==
+    id`). Compiled side CLOSED NO-GO BY MEASUREMENT: the post-slice-4
+    cons-site tally attributes **zero** residual cons to any
+    foldr-family symbol (223.4M tallied total — all in the work-stack /
+    closure-lambda / encoder pools) — the shunts took `foldr cons`,
+    chaining made the >500 `reverse` fallback cheap, and the cursor pass
+    de-allocated the `foldl` walk, leaving nothing for a compiled
+    foldrHelper rewrite to collect.**
+
     **Residual-Cons composition (ECO_CONS_SITES return-address tally on
     the flag-on census run; 409M of 611M symbolized):
     `toComparableMonoTypeHelper` 164.6M (40%! — one work-stack loop
@@ -481,6 +543,36 @@ Phases:
     `ECO_HEAP_VALIDATE` clean + census re-run hitting ≈ −350M objects ±
     justification + wall/GC-counts vs master (majors recorded, LSS lesson).
     Default-on only on a clean wall win; else flag-off and record.
+
+    **EXIT GATES RUN + DECISION RECORDED (Aug 2 2026): full E2E
+    1642/1642; differential + `ECO_HEAP_VALIDATE` clean; flag-on Stage 7a
+    fixed point byte-identical (text AND bytecode legs); census −349.6M
+    Cons / −261.9M objects (−4.05%) — the ≈ −350M target met on the Cons
+    side, with the object-count shortfall being the added chunk/backing
+    objects, exactly as §11.b priced. elm-tests: 13,037/13,049 pass; the
+    12 failures are ALL in the typechecker constraint-generator gates
+    (golden fingerprints + POST_010 groundedness) belonging to the
+    separate typechecker-simplification workstream — their test modules
+    reference nothing this plan touched, and the byte-identical self-host
+    fixed point independently pins front-end behavior.
+    **DECISION: list.chunks stays DEFAULT-OFF.** Walls are at parity
+    (interleaved: flag-on ≈ +1–2%, one extra major), not a win — the
+    plan's own flip criterion. Revisit after Tier C fusion (§6 L5), the
+    first phase expected to move wall time by deleting whole traversals;
+    flip requires a replicated, interleaved wall improvement. Invariants
+    HEAP_037–040 + CGEN_070/071 recorded in invariants.csv.
+
+    **WALL MEASUREMENT CLOSED (Aug 3 2026, post-cursor, post-foldr):
+    sole-job ×3 interleaved under this box's irreducible ambient load —
+    off 5:07.3/5:12.7/5:06.3 vs on 5:15.7/5:11.3/5:15.3, i.e. flag-on
+    ≈ +1.7%, replicated across all 8 interleaved pairs measured. The gap
+    is the extra major GC (12 vs 11 in every single pair — a
+    backing-promotion occupancy effect, tunable only at the GC-trigger
+    level, out of plan scope); RSS flag-on is LOWER in every pair. Final
+    trade at flag-on: −4.28% objects, −47.5% Cons, lower footprint, for
+    ~+1.7% wall on the self-compile workload. Default-off stands
+    conclusively; re-open only with a different workload class (retention-
+    or decode-heavy) or after tuning the major-GC trigger.**
 - **L2 — Tier A + owned producers.** Kernel-owned loops (`map2..5`,
   `sortBy`/`sortWith`, `fromArray`), JSON `Decode.list`, `String.split`
   family, list literals ≥ 2 elements, static list globals
@@ -490,6 +582,19 @@ Phases:
   split ⌈n/maxElems⌉ nursery-sized backings linked via `next`, replacing
   the v1 cell fallback; measured beneficiary: the bytecode writer's ~77K-
   element op lists.
+
+  **TIER-A AS-BUILT (Aug 3 2026):** most of the tier came free — `map2..5`,
+  `sortBy`/`sortWith`, `map`/`filter`/`partition`/`unzip`/`intersperse`
+  already build through the (now chunk-chain-native) `listFromUnboxables`.
+  Newly converted: JSON `DEC_LIST` accumulates on the scratch stack —
+  keeping the REVERSE decode order for failure semantics (the reversing
+  `eco_scratch_finish` restores logical order; new `eco_scratch_abandon`
+  rebalances on a failing element decoder), gated on `eco_g_list_chunks`;
+  `listFromPointers` (the `String.split` parts path and every other
+  pointer-list builder) and `listFromInts` gained chunk-chain fast paths.
+  **List literals and static globals: SKIPPED BY DATA** — the census
+  measured `alloc_cons_nil = 0` (no literal-started spines at runtime),
+  so there is no pool; recorded rather than built.
 
   **CHAINING AS-BUILT (Aug 2 2026) — shipped ahead of the rest of Tier A,
   and it landed far bigger than the 77K-list estimate:**
@@ -515,13 +620,55 @@ Phases:
   post-L1 census shows remaining cell-chain volume worth it (measured
   ceiling today: 19.6M compiled + residual HOF conses — likely NOT worth
   it; record the decision either way, as A4/H7 did).
+
+  **DECISION (Aug 2 2026): NO-GO — closed.** The post-chaining cons-site
+  tally decomposes the residual 388M Cons into: `toComparable`'s work
+  stack (LIFO push/pop churn — front-slack fill cannot amortize a stack),
+  sub-4-element lists (below any chunk threshold by design), and a thin
+  lambda tail spread across hundreds of sites. None of these pools wants
+  builder-epoch pinning or mutation-under-GC machinery; the scratch stack
+  (HEAP_040) already covers incremental building without any §10 heap
+  mutation. The §10 ladder and its HEAP_038/040/041 draft rows (as
+  originally drafted for slack fill) are retired; the shipped HEAP_038/040
+  ids were reused for the as-built nursery-born-backing and scratch-stack
+  invariants instead.
+
 - **L4 — full-conversion decision.** Retire cells entirely only if mixed
   spines prove costlier than the census predicts (extra tag dispatch in
   walkers vs +75M backing conversions). Default expectation: **keep hybrid
   permanently**; the census favors it.
+
+  **DECISION (Aug 2 2026): NO-GO for full conversion — hybrid is
+  permanent.** Measured basis: `::` as a cell keeps the hot single-prepend
+  path a 3-store inline bump alloc (HEAP_034) with a pure-load tail; the
+  cells-fast/chunk-escape form of eq/compare costs nothing measurable
+  (walls at parity across every gate run); sub-4-element traffic — the
+  bulk of list COUNT — would regress under mandatory backings (backing +
+  view ≥ cells for n ≤ 3); and full conversion would resurrect the §5.2
+  tail-view-per-step problem that hybrid confines to chunk spines only.
+  Nothing in the L1/L2 data contradicts the §11.b prediction that favored
+  hybrid.
 - **L5 — Tier C fusion** (§9.2): adjacent-combinator fusion over the L1
   loop templates, eliminating intermediate lists outright. Census-ranked
   by observed `map∘map` / `foldl∘filter` adjacency; strictly beyond Alm.
+
+  **ADJACENCY CENSUS RUN + DECISION (Aug 3 2026): NO-GO on this
+  workload — closed by the phase's own census gate.** Per-function-scoped
+  scan of the Stage 7a compiler MLIR (an earlier global-scope scan was
+  invalidated by SSA-name collisions across functions — 6,638 apparent
+  pairs collapsed to 1,162 real ones): `foldl ∘ reverse` 815 (70% — this
+  is `foldrHelper`'s internal >500-element fallback, one site per spec,
+  dynamically rare and already chunk-chain-cheap), `append ∘ append` 120,
+  `map ∘ map` 44, everything else ≤ 40. There is no high-value fusible
+  pool: the textbook lambda-composition engine (mono-level closure
+  composition + re-specialization) would target ~44–120 mostly-cold
+  sites, while the measured wall profile is dominated by Custom/Closure
+  churn and non-list work. A speculative `reverse ∘ reverse → id`
+  peephole was implemented, measured against the corrected census (0
+  real occurrences), and removed. Revisit only with a workload whose
+  adjacency census shows a hot `map∘map`/`fold∘map` pool; the capture
+  point then is mono-level composition in GlobalOpt over ListCombinators
+  recognition, not MLIR (lambdas are opaque papExtends by then).
 
 Invariants updates (§4.5) land with whichever phase first ships default-on;
 the §10-derived rows (HEAP_038/040/041) move to L3.

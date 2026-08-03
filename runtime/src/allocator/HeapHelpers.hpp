@@ -915,56 +915,6 @@ private:
     }
 };
 
-/**
- * Builds a list from a vector of boxed HPointers.
- * All elements are treated as boxed pointers.
- *
- * @param elements Vector of HPointers (first element becomes head).
- * @return HPointer to the list head (or Nil if empty).
- */
-inline HPointer listFromPointers(const std::vector<HPointer>& elements) {
-    // Copy elements into a local buffer and root them all (and the result
-    // accumulator) across the cons() calls, since each cons may GC.
-    std::vector<HPointer> rooted = elements;
-    HPointer result = listNil();
-    auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRangePoint();
-    rs.pushStackRootRange(&result, 1, 1);
-    for (auto& hp : rooted) rs.pushStackRootRange(&hp, 1, 1);
-    for (auto it = rooted.rbegin(); it != rooted.rend(); ++it) {
-        result = cons(boxed(*it), result, true);
-    }
-    rs.restoreStackRangePoint(saved);
-    return result;
-}
-
-/**
- * Builds a list from a vector of unboxed integers.
- *
- * @param elements Vector of i64 values.
- * @return HPointer to the list head (or Nil if empty).
- */
-inline HPointer listFromInts(const std::vector<i64>& elements) {
-    HPointer result = listNil();
-    for (auto it = elements.rbegin(); it != elements.rend(); ++it) {
-        result = cons(unboxedInt(*it), result, static_cast<u8>(1));
-    }
-    return result;
-}
-
-/**
- * Builds a list from a vector of unboxed floats.
- *
- * @param elements Vector of f64 values.
- * @return HPointer to the list head (or Nil if empty).
- */
-inline HPointer listFromFloats(const std::vector<f64>& elements) {
-    HPointer result = listNil();
-    for (auto it = elements.rbegin(); it != elements.rend(); ++it) {
-        result = cons(unboxedFloat(*it), result, static_cast<u8>(2));
-    }
-    return result;
-}
 
 /**
  * Builds a list from a vector of (Unboxable, is_boxed) pairs with proper
@@ -1066,6 +1016,90 @@ struct ListChainWriter {
 // Reverse-order writer: fills the last logical slot first. Used by reverse,
 // whose source cursor can only walk forward. Resolves the whole chain's
 // backings up front (raw pointers — same no-allocation discipline).
+/// Backward iterator over a hybrid spine (plan §6 "backward-cursor foldr
+/// walks"). The constructor collects the spine NODES front-to-back — one
+/// entry per Cons cell or chunk view, so chunk runs collapse to a single
+/// entry instead of per-element copies — and prev() then yields elements in
+/// REVERSE order, indexing backward through each chunk's run. Allocation-
+/// TOLERANT: the caller roots `nodes` (contiguous HPointer storage, stable
+/// after construction) and every read re-resolves, so fold callbacks may
+/// allocate and trigger GC between reads.
+struct ListBackwardCursor {
+    std::vector<HPointer> nodes;  // spine nodes, front-to-back
+    size_t ni;                    // node being drained (moving toward 0)
+    i64 idx;                      // next element index in ni's run, or -1
+    Allocator* alloc_;
+
+    explicit ListBackwardCursor(HPointer list)
+        : ni(0), idx(-1), alloc_(&Allocator::instance()) {
+        HPointer cur = list;
+        while (!isNil(cur) && cur.ptr_ind == 0) {
+            void* obj = alloc_->resolve(cur);
+            if (!obj) break;
+            Header* h = getHeader(obj);
+            if (h->tag == Tag_Cons) {
+                nodes.push_back(cur);
+                cur = static_cast<Cons*>(obj)->tail;
+            } else if (h->tag == Tag_ConsChunk) {
+                nodes.push_back(cur);
+                cur = static_cast<ConsChunk*>(obj)->next;
+            } else {
+                break;
+            }
+        }
+        ni = nodes.size();
+    }
+
+    // Roots the node array as <=64-entry all-boxed ranges. Pair with
+    // rs.restoreStackRangePoint(save-point taken before this call).
+    void rootNodes(RootSet& rs) {
+        for (size_t i = 0; i < nodes.size(); i += 64) {
+            size_t n = std::min<size_t>(64, nodes.size() - i);
+            rs.pushStackRootRange(nodes.data() + i, n,
+                                  n == 64 ? ~0ULL : ((1ULL << n) - 1));
+        }
+    }
+
+    // Yields the next element in reverse order; false when exhausted.
+    bool prev(Unboxable& out, u8& kind) {
+        while (true) {
+            if (idx < 0) {
+                if (ni == 0) return false;
+                --ni;
+                void* obj = alloc_->resolve(nodes[ni]);
+                Header* h = getHeader(obj);
+                if (h->tag == Tag_Cons) {
+                    idx = 0;
+                } else {
+                    ConsChunk* cv = static_cast<ConsChunk*>(obj);
+                    ListBacking* lb = static_cast<ListBacking*>(
+                        alloc_->resolve(cv->backing));
+                    u32 avail = lb->header.size - cv->offset;
+                    u32 run = cv->len < avail ? cv->len : avail;
+                    idx = static_cast<i64>(run) - 1;
+                }
+                if (idx < 0) continue;
+            }
+            void* obj = alloc_->resolve(nodes[ni]);
+            Header* h = getHeader(obj);
+            if (h->tag == Tag_Cons) {
+                Cons* c = static_cast<Cons*>(obj);
+                out = c->head;
+                kind = static_cast<u8>(Elm::tupleFieldKind(h->unboxed, 0));
+                idx = -1;
+                return true;
+            }
+            ConsChunk* cv = static_cast<ConsChunk*>(obj);
+            ListBacking* lb =
+                static_cast<ListBacking*>(alloc_->resolve(cv->backing));
+            out = lb->elems[cv->offset + static_cast<u32>(idx)];
+            kind = static_cast<u8>(h->unboxed & 0x3);
+            --idx;
+            return true;
+        }
+    }
+};
+
 struct ListChainReverseWriter {
     std::vector<ListBacking*> chunks;
     size_t ci;
@@ -1095,6 +1129,86 @@ struct ListChainReverseWriter {
         chunks[ci]->elems[--idx] = v;
     }
 };
+
+/**
+ * Builds a list from a vector of boxed HPointers.
+ * All elements are treated as boxed pointers.
+ *
+ * @param elements Vector of HPointers (first element becomes head).
+ * @return HPointer to the list head (or Nil if empty).
+ */
+inline HPointer listFromPointers(const std::vector<HPointer>& elements) {
+    // Copy elements into a local buffer and root them all (and the result
+    // accumulator) across the allocations, since each may GC.
+    std::vector<HPointer> rooted = elements;
+    HPointer result = listNil();
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRangePoint();
+    rs.pushStackRootRange(&result, 1, 1);
+    for (auto& hp : rooted) rs.pushStackRootRange(&hp, 1, 1);
+
+    // Chunks: one dense chain instead of n cells (String.split parts and
+    // the other pointer-list builders). Elements are re-read from the
+    // rooted vector after construction; the fill never allocates.
+    if (eco_g_list_chunks && rooted.size() >= 4) {
+        u32 n = static_cast<u32>(rooted.size());
+        HPointer head = listChunkChain(n, 0, listNil());
+        ListChainWriter w(head);
+        for (u32 i = 0; i < n; ++i) {
+            Unboxable v;
+            v.p = rooted[i];
+            w.put(v);
+        }
+        rs.restoreStackRangePoint(saved);
+        return head;
+    }
+
+    for (auto it = rooted.rbegin(); it != rooted.rend(); ++it) {
+        result = cons(boxed(*it), result, true);
+    }
+    rs.restoreStackRangePoint(saved);
+    return result;
+}
+
+/**
+ * Builds a list from a vector of unboxed integers.
+ *
+ * @param elements Vector of i64 values.
+ * @return HPointer to the list head (or Nil if empty).
+ */
+inline HPointer listFromInts(const std::vector<i64>& elements) {
+    // Chunks: scalar backings need no rooting discipline at all.
+    if (eco_g_list_chunks && elements.size() >= 4) {
+        u32 n = static_cast<u32>(elements.size());
+        HPointer head = listChunkChain(n, 1, listNil());
+        ListChainWriter w(head);
+        for (u32 i = 0; i < n; ++i) {
+            Unboxable v;
+            v.i = elements[i];
+            w.put(v);
+        }
+        return head;
+    }
+    HPointer result = listNil();
+    for (auto it = elements.rbegin(); it != elements.rend(); ++it) {
+        result = cons(unboxedInt(*it), result, static_cast<u8>(1));
+    }
+    return result;
+}
+
+/**
+ * Builds a list from a vector of unboxed floats.
+ *
+ * @param elements Vector of f64 values.
+ * @return HPointer to the list head (or Nil if empty).
+ */
+inline HPointer listFromFloats(const std::vector<f64>& elements) {
+    HPointer result = listNil();
+    for (auto it = elements.rbegin(); it != elements.rend(); ++it) {
+        result = cons(unboxedFloat(*it), result, static_cast<u8>(2));
+    }
+    return result;
+}
 
 inline HPointer listFromUnboxables(
         std::vector<std::pair<Unboxable, bool>>& elems,

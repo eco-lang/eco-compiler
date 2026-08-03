@@ -98,6 +98,11 @@ void buildEcoToLLVMPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     // Stage 3: Eco -> LLVM Dialect.
     pm.addPass(eco::createBFToLLVMPass());
     pm.addPass(eco::createEcoToLLVMPass());
+    // Mixed-spine cursors: rewrite list-walking scf.while loops to
+    // (node, idx) stepping. Must run after EcoToLLVM (projections are
+    // marker calls; EcoGCPrepare is done, so nothing statepoints the new
+    // per-step ops) and before the SCF tail conversions. No-op flag-off.
+    pm.addPass(eco::createEcoListCursorPass());
 #ifdef ECO_LOWERING_VALIDATION
     // Insert stale-HPointer barriers in front of direct boxed-slot stores
     // emitted by EcoToLLVM (currently only eco.array.set). Must run after

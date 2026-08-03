@@ -280,6 +280,7 @@ set_source_files_properties(
     Passes/JoinpointNormalization.cpp
     Passes/EcoControlFlowToSCF.cpp
     Passes/EcoListTemplate.cpp
+    Passes/EcoListCursor.cpp
     Passes/UndefinedFunction.cpp
     Passes/CheckEcoClosureCaptures.cpp
     Passes/EcoGCPrepare.cpp
@@ -355,6 +356,7 @@ add_mlir_library(EcoPasses
     Passes/JoinpointNormalization.cpp
     Passes/EcoControlFlowToSCF.cpp
     Passes/EcoListTemplate.cpp
+    Passes/EcoListCursor.cpp
     Passes/EcoTailConversions.cpp
     Passes/UndefinedFunction.cpp
     Passes/CheckEcoClosureCaptures.cpp

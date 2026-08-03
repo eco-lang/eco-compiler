@@ -4184,6 +4184,25 @@ extern "C" HPtr eco_list_tail_hybrid(HPtr list) {
     return HPtr::fromBits(hpBits(tail));
 }
 
+// Materializes the list VALUE for a mixed-spine cursor position (node, idx)
+// — the EcoListCursor while-rewrite keeps loop stepping allocation-free and
+// pays this single view allocation only when the remaining list escapes the
+// loop. idx > 0 implies the node is a chunk view (the inline step markers
+// normalize cell positions to idx == 0). NOT gc-leaf: allocates.
+extern "C" HPtr eco_list_pos_view(HPtr node, int64_t idx) {
+    if (idx == 0) return node;
+    auto& allocator = Allocator::instance();
+    HPointer hp = node.toHPointer();
+    ConsChunk* cv = static_cast<ConsChunk*>(allocator.resolve(hp));
+    assert(getHeader(cv)->tag == Tag_ConsChunk &&
+           "eco_list_pos_view: idx > 0 on a non-chunk node");
+    u8 kind = static_cast<u8>(getHeader(cv)->unboxed & 0x3);
+    HPointer view = alloc::consChunkView(
+        cv->backing, cv->offset + static_cast<u32>(idx),
+        cv->len - static_cast<u32>(idx), cv->next, kind);
+    return HPtr::fromBits(hpBits(view));
+}
+
 //===----------------------------------------------------------------------===//
 // List scratch stack (chunked-list Tier-B templates, plan §6 L1.3).
 //
@@ -4242,6 +4261,61 @@ extern "C" void eco_scratch_push_scalar(uint64_t bits, int64_t kind) {
     ListScratch& s = listScratch();
     s.bits.push_back(bits);
     s.kinds.push_back(static_cast<u8>(kind & 0x3));
+}
+
+// Discards entries above `mark` without building anything — early-failure
+// paths (e.g. a failing element decoder mid-list) must rebalance the stack.
+extern "C" void eco_scratch_abandon(int64_t mark) {
+    ListScratch& s = listScratch();
+    size_t m = static_cast<size_t>(mark);
+    if (m <= s.bits.size()) {
+        s.bits.resize(m);
+        s.kinds.resize(m);
+    }
+}
+
+// Forward variant for unwind-cons recursion (cons around a self-call
+// result): pushes happen top-down in DESCENT order, so the logical result
+// is entry[mark] :: entry[mark+1] :: ... :: entry[top-1] :: rest. Pops the
+// entries back to `mark`.
+extern "C" HPtr eco_scratch_finish_fwd(int64_t mark, HPtr rest,
+                                       int64_t kind) {
+    ListScratch& s = listScratch();
+    size_t m = static_cast<size_t>(mark);
+    size_t end = s.bits.size();
+    assert(m <= end && "eco_scratch_finish_fwd: unbalanced mark");
+    size_t n = end - m;
+    if (n == 0) return rest;
+
+    HPointer acc = rest.toHPointer();
+    u8 k = static_cast<u8>(kind & 0x3);
+
+    if (eco_g_list_chunks && n >= 4) {
+        StackRootGuard guard(&acc);
+        u32 nn = static_cast<u32>(n);
+        HPointer head = alloc::listChunkChain(nn, k, acc);
+        alloc::ListChainWriter w(head);
+        for (size_t i = m; i < end; ++i) {
+            Unboxable v;
+            v.i = static_cast<i64>(s.bits[i]);
+            w.put(v);
+        }
+        s.bits.resize(m);
+        s.kinds.resize(m);
+        return HPtr::fromBits(hpBits(head));
+    }
+
+    {
+        StackRootGuard guard(&acc);
+        for (size_t i = end; i > m; --i) {
+            Unboxable v;
+            v.i = static_cast<i64>(s.bits[i - 1]);
+            acc = alloc::cons(v, acc, s.kinds[i - 1]);
+        }
+    }
+    s.bits.resize(m);
+    s.kinds.resize(m);
+    return HPtr::fromBits(hpBits(acc));
 }
 
 // Builds the list the replaced loop would have produced: entries [mark..top)
