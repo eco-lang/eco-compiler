@@ -43,7 +43,10 @@ type alias EcoConfig =
 
 
 {-| Chunked-list knobs (plans/chunked-list-representation.md §6).
-`chunks = False` (the default) reproduces today's pipeline byte-for-byte.
+`chunks = True` (the default since the quiet-window wall verdict, Aug 3
+2026: parity wall, lower minor-GC time and RSS, −4.28% objects) enables
+hybrid chunk spines; `chunks = False` (JSON `"chunks": false` or env
+`ECO_LIST_CHUNKS=0`) reproduces the pre-chunk pipeline byte-for-byte.
 `chunks` is artifact-affecting (hash token `lchunks=1` when enabled; L1.2+
 codegen consults it). `report` (env `ECO_LIST_REPORT=1`, never from JSON)
 renders the combinator-recognition census to stderr — output-only,
@@ -306,7 +309,7 @@ default =
     , cafMemo = { enabled = True, census = False, dedupe = False, hoist = { enabled = False, minNodes = 3, maxHoists = 8192 } }
     , mono = { engine = EngineSolver, diffDump = False, validate = False, borrowCensus0 = False, lss = defaultLss }
     , borrow = { enabled = False, reify = ROff, report = False, validate = False }
-    , list = { chunks = False, report = False }
+    , list = { chunks = True, report = False }
     }
 
 
@@ -637,9 +640,10 @@ hash cfg =
                         []
                     ]
                )
-            -- Chunked-list token appears ONLY when enabled (default-off), so
-            -- default configs hash exactly as before. Artifact-affecting:
-            -- L1.2+ codegen consults it (plans/chunked-list-representation.md).
+            -- Chunked-list token appears ONLY when enabled (the default since
+            -- Aug 3 2026), so chunked and non-chunked artifacts key separate
+            -- cache entries. Artifact-affecting: L1.2+ codegen consults it
+            -- (plans/chunked-list-representation.md).
             ++ (if cfg.list.chunks then
                     [ "lchunks=1" ]
 
