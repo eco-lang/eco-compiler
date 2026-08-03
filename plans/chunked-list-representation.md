@@ -562,17 +562,22 @@ Phases:
     flip requires a replicated, interleaved wall improvement. Invariants
     HEAP_037–040 + CGEN_070/071 recorded in invariants.csv.
 
-    **WALL MEASUREMENT CLOSED (Aug 3 2026, post-cursor, post-foldr):
-    sole-job ×3 interleaved under this box's irreducible ambient load —
-    off 5:07.3/5:12.7/5:06.3 vs on 5:15.7/5:11.3/5:15.3, i.e. flag-on
-    ≈ +1.7%, replicated across all 8 interleaved pairs measured. The gap
-    is the extra major GC (12 vs 11 in every single pair — a
-    backing-promotion occupancy effect, tunable only at the GC-trigger
-    level, out of plan scope); RSS flag-on is LOWER in every pair. Final
-    trade at flag-on: −4.28% objects, −47.5% Cons, lower footprint, for
-    ~+1.7% wall on the self-compile workload. Default-off stands
-    conclusively; re-open only with a different workload class (retention-
-    or decode-heavy) or after tuning the major-GC trigger.**
+    **WALL MEASUREMENT CLOSED — SUPERSEDED VERDICT (Aug 3 2026, true
+    quiet window, load 0.21 at launch, walls back in the baseline
+    4:47–4:55 band): off 4:53.12/4:47.39/4:53.28 vs on
+    4:51.66/4:55.27/4:52.06 — means 4:51.3 vs 4:53.0 (+0.6%), medians
+    4:53.1 vs 4:52.1 (−0.4%), flag-on WINNING 2 of 3 pairs: TRUE WALL
+    PARITY. The earlier loaded-window "+1.7%" was ambient-load
+    amplification of the extra major (still 12 vs 11, now costing ~zero
+    net — total GC identical). Flag-on is strictly better on minor-GC
+    time (63.1–64.1 s vs 64.4–65.8 s in ALL pairs — the cursor pass's
+    churn removal) and RSS (5.39 vs 5.48 GB in all pairs). FINAL TRADE
+    at flag-on: −4.28% objects, −47.5% Cons, −24% list bytes, −1.7%
+    RSS, lower minor-GC time, for zero measurable wall cost. Default-off
+    STILL stands — parity is not the required wall WIN — but the flip is
+    now a judgment call on the allocation/footprint benefits rather than
+    a cost trade; re-open on any retention- or decode-heavy workload, or
+    if the 12-vs-11 major is tuned away at the GC-trigger level.**
 - **L2 — Tier A + owned producers.** Kernel-owned loops (`map2..5`,
   `sortBy`/`sortWith`, `fromArray`), JSON `Decode.list`, `String.split`
   family, list literals ≥ 2 elements, static list globals
@@ -1132,3 +1137,295 @@ exactly into the dynamic execution split (§11.b). The GO is conditional on
 Tier B exactly as §11 concluded — now with the tail-view risk quantified
 at 0.4% and the payoff at ≈ −7% of all allocations, plus the unquantified
 locality, spine-GC, and O(1)-length wins.
+
+
+---
+
+## 12. Deferred exploration — strip reservation (loop-level allocation grouping)
+
+Status: DESIGNED, unimplemented. Not part of the completed plan; priced here
+so it can be picked up without re-derivation. Motivation (Aug 3 2026
+discussion): make the GC-trigger point of cons-heavy loops SINGULAR and
+HOISTED, so the loop interior is provably GC-free — the phase property the
+chunk builders and the scratch stack already rely on, extended to compiled
+loops. Explicitly NOT gated on list.chunks: this changes inline allocation
+for all compiled code.
+
+### 12.1 What exists today
+
+- HEAP_034 inline bump: each fixed-size allocation site lowers to
+  `__eco_alloc_inline`, expanded by `expandInlineAllocs` (EcoBackend.cpp)
+  into load-bump-state / add / ONE compare against the pre-clamped end
+  (`computeAllocEndForBlock` folds the proactive-GC trip into the bound) /
+  fast-edge stores, with a single statepointed `eco_alloc_inline_slow(size)`
+  on the slow edge. Constraints (a)-(d) of HEAP_034 apply.
+- EcoGCPrepare already coalesces ADJACENT allocation ops into one group
+  (Step 1 of the pass; `isMayAllocOp` / `hasFixedAllocSize` /
+  `isAllocationBarrier` classify ops), so straight-line multi-alloc regions
+  already pay one bump. The gap is purely that a group cannot span the ops
+  BETWEEN allocations inside a loop iteration.
+
+### 12.2 Design
+
+Reserve one strip of `S = Σ sizeᵢ` bytes per loop iteration with a single
+guarded bump, then carve the iteration's allocations out of the strip with
+raw address arithmetic. One branch and one well-defined potential-GC point
+per iteration replace k of each.
+
+Soundness rests on one predicate, GC-QUIET BODY: between the strip
+reservation and the last carve there must be NO possible GC — no call that
+is not gc-leaf, no other slow-path allocation, no statepoint. Rationale: a
+minor GC flips nursery spaces, so carve pointers (raw addresses into the
+strip) become from-space garbage the moment any interior statepoint fires.
+With the predicate, the only statepoint is the strip's own slow edge, which
+runs BEFORE any carve pointer exists. This is the same discipline as the
+ListChainWriter fill rule, mechanized.
+
+Eligibility per scf.while after-region (checked at EcoGCPrepare level,
+where the op classification helpers already live):
+1. Every allocation op in the region satisfies `hasFixedAllocSize` and is
+   8-aligned; `S ≤ 4096` (the HEAP_034 size cap — larger sets simply stay
+   ungrouped, or split into two strips).
+2. Every other op in the region is neither `isMayAllocOp` nor a call/PAP
+   barrier (reuse `isAllocationBarrier`, minus the "stops at any op"
+   adjacency restriction). gc-leaf runtime calls (projection markers,
+   scratch pushes, get_tag) are allowed — they cannot GC.
+3. v1 restriction: all allocation sites in the ENTRY BLOCK of the region
+   only (no conditional sites). Conditional sites would leave unclaimed
+   holes in the strip; holes are unreachable garbage that ECO_HEAP_VALIDATE
+   linear sweeps would trip over unless formatted, so v1 excludes them.
+   (v2 option: include conditional sites and format not-taken holes with a
+   Tag_Free header + size — one store per skipped site.)
+
+### 12.3 Mechanics
+
+1. EcoGCPrepare: add a loop-grouping step after the existing adjacency
+   grouping. For each eligible scf.while, tag the member allocation ops
+   with the existing group attribute machinery plus a strip marker attr
+   (`eco.alloc_strip_member = groupId, byteOffset`); tag the region with
+   `eco.alloc_strip = totalSize`.
+2. EcoToLLVM lowering (EcoToLLVMHeap.cpp coalesced-allocation path): when a
+   group carries the strip attr, emit ONE `__eco_alloc_inline(totalSize)`
+   at the top of the iteration body and lower each member as
+   `base + byteOffset` (GEP) + its normal header/field stores. The
+   expansion in expandInlineAllocs is UNCHANGED — the strip is just a
+   bigger inline alloc.
+3. Each carved object needs its full 64-bit header word stored before the
+   next possible GC (HEAP_034 (b)); the GC-quiet predicate makes "before
+   iteration end" sufficient, but keep the store adjacent to the carve —
+   the existing per-site lowering already does this.
+4. Liveness: carve pointers and the strip base must not be added to any
+   root set (they are dead at the iteration's yield by construction —
+   assert this in the ECO_LOWERING_VALIDATION build via the existing
+   EcoGCLivenessAudit).
+
+### 12.4 Verification and gates
+
+- Unit: a codegen filecheck test pinning one-bump-per-iteration for a
+  synthetic two-cons loop (model: test/codegen/inline_alloc_tuple.mlir).
+- ECO_HEAP_VALIDATE soak + full E2E + Stage 7a byte-identity are the
+  correctness gates. NOTE this is NOT flag-gated: flag-off output changes,
+  so the byte-identity gate is self-against-self (fixed point), not
+  off-vs-master.
+- Census: object counts must be IDENTICAL (same allocations, different
+  grouping) — any census delta is a bug.
+- Wall: interleaved A/B per the §6 protocol. Honest expectation: small.
+  The removed branch is predicted; the win is the shortened dependency
+  chain (one bump-state load per iteration instead of k) plus the
+  reasoning property. Record either way, A4/H7-style.
+
+### 12.5 Go/no-go
+
+GO to keep only on a measured wall win ≥ 1% or a demonstrated enabling
+effect (a later pass that NEEDS the GC-free interior). Otherwise record
+NO-GO and keep the design here. Cons is ~6% of objects post-Tier-B; this
+is a micro-optimization by construction.
+
+### 12.6 DECISION (Aug 3 2026): NO-GO — implemented, measured, REVERTED
+
+Implemented as specified with two as-built corrections worth keeping for
+any future attempt: (a) no GC-quiet-body predicate or strip markers were
+needed — the existing group lowering already initializes every member at
+the leader's fast/slow blocks, so the whole change reduces to the
+grouping loop in EcoGCPrepare (skip `isMemoryEffectFree` ops instead of
+flushing; flush when a skipped op consumes a member result or a member
+consumes a skipped op's result; region-bearing ops flush conservatively);
+(b) members must then be PHYSICALLY HOISTED adjacent to the leader,
+because `lowerAllocGroups` (EcoToLLVMHeap.cpp) re-discovers groups via
+`getNextNode()` and asserts adjacency — the assert fires otherwise.
+~7,800 groups extended across the compiler. All gates green: differential
+identical, unit + full E2E pass, self-compile output byte-identical to
+the pre-strip control, census delta +1,118 objects of 6.2B (source-text
+delta, not grouping).
+
+Measured on a DEDICATED box (ABBA order-balanced after position bias
+invalidated three loaded-window attempts; steady self-load ~1.0, all runs
+in the 4:49–4:56 band, 12 majors each): pre 4:55.81/4:51.35 vs strip
+4:53.19/4:49.58 — strip −0.75% on means, but the within-config spread
+(3.6–4.5 s) exceeds the 2.2 s delta: at-or-slightly-better-than parity,
+BELOW the ≥1% keep bar. Reverted per the pre-agreed rule; revert
+re-gated (differential identical, unit suite green). The predicted-branch
+removal is worth roughly what modern OoO cores say it is: nothing
+measurable at this workload's scale. Re-open only bundled with a pass
+that NEEDS the hoisted-GC-point property (§12.5's enabling-effect arm).
+Reference data: /work/list-op-baseline.md.
+
+---
+
+## 13. Deferred exploration — packed position pointers (allocation-free chunk cons)
+
+Status: DESIGNED, unimplemented; v2-representation scale. This is the only
+identified route to a cons-onto-chunk that allocates NOTHING — the §10
+slack-fill scheme minus its fatal flaw (slack-fill still allocates the
+32 B successor view; §5 point 2). It is a representation-model change and
+must be priced as such: it amends REP_LLVM_001 and touches every scan
+loop. Record kept because the SSA half already exists (EcoListCursor).
+
+### 13.1 Core idea
+
+Let a list value be representable as a PACKED WORD encoding
+(backing address, offset) with no heap object:
+
+    packed = backingAddr | PPP_TAG | (offset << 48)
+
+- Backings are ≤ 8 KB (HEAP_038) with 8-byte slots → offset < 1024 fits in
+  10 bits. The eco heap is a fixed VA reservation below
+  HPOINTER_ADDRESS_LIMIT (HEAP_036 machinery), so bits 48+ are zero for
+  every real heap address BY CONSTRUCTION — no reliance on x86 canonical-
+  address folklore. Assert `heap_base + heap_reserved < (1<<48)` at init.
+- PPP_TAG: real pointers have low 3 bits 000; embedded constants use
+  0x0/0x4/0x5/0x6. Use bit 0 = 1 as the packed discriminator — disjoint
+  from both. `isPacked(w) = w & 1`.
+- Denotation: packed(B, o) is the non-empty list
+  `B.elems[o .. cap) ++ B.next` — which requires moving the spine
+  bookkeeping INTO the backing (13.2). Truncated windows (`take`, i.e.
+  len < run) still need Tag_ConsChunk views; packed words cover only
+  suffix windows, which is the cons/tail-walk case.
+
+### 13.2 Backing layout change
+
+ListBacking gains the fields a view carried per-window:
+
+    typedef struct {
+        Header    header;   // size = capacity; unboxed = elem kind
+        u32       hd;       // frontmost claimed slot (LIVE again, §10)
+        u32       baseLen;  // logicalLength(next), cached for O(1) length
+        HPointer  next;     // spine after this backing's run
+        Unboxable elems[];  // now at offset 24, not 16
+    } ListBacking;
+
+len(packed(B,o)) = (cap − o) + B.baseLen, O(1). The len-consistency
+invariant (HEAP_037) transfers: baseLen is fixed at construction; hd only
+decreases. ALL existing walkers read elems at +16 today — the offset moves
+to +24; this is a mechanical but total sweep (HeapHelpers cursors,
+expandListProjMarker/expandListCursorMarkers GEP constants, GC scan loops,
+ChunkedListTest). Do it as its own byte-identity-gated commit BEFORE any
+packed-word semantics land.
+
+### 13.3 Allocation-free cons
+
+cons(elem, packed(B, o)) with all guards passing:
+
+    guard1: o == B.hd            (first-claimant aliasing guard, §10)
+    guard2: B.hd > 0             (slack remains)
+    guard3: B.builder == 1       (nursery-resident; see 13.5)
+    B.elems[o-1] = elem; B.hd = o-1
+    result = packed(B, o-1)      (pure arithmetic — NO allocation)
+
+Any guard failing falls back to today's cell cons (bump). Slack is created
+by the producers: listChunkChain gains a slackHint parameter (e.g. build
+the HEAD backing with hd = min(cap/4, cap − run) free slots below the run)
+— only when the producing context expects prepends; default zero slack.
+Note the branch count: this path has three guards where bump-cons has one
+compare — the win is GC-freedom and density, never branchlessness (Aug 3
+discussion; set expectations accordingly).
+
+### 13.4 The SSA/heap split — why RS4GC survives
+
+THE load-bearing decision: packed words exist ONLY in heap slots, ABI
+boundaries, and roots — NEVER as compiled SSA values. In SSA, a list
+position is the (node ptr<1>, idx i64) PAIR that EcoListCursor already
+introduced. Packing happens at the store barrier, unpacking at the load
+barrier — the REP_LLVM_002 seam that already exists for slot crossings:
+
+- `__eco_slot_to_hptr` (load side): gains a decode diamond — if
+  `isPacked(w)`, produce (base = w & ADDR_MASK as ptr<1>, idx = w >> 48);
+  else (base = w, idx = 0). Both results feed the cursor-form consumers.
+- `__eco_hptr_to_slot` (store side): a list-typed store of a cursor pair
+  with idx != 0 packs; idx == 0 stores the plain address.
+- RS4GC therefore only ever sees REAL base pointers in ptr<1> SSA — no
+  derived-pointer support needed, REP_LLVM_001(a-d) undisturbed. The
+  amendment to REP_LLVM_001 is confined to the WORD FORMAT in slots: a
+  third word class (address | embedded constant | packed position).
+
+Type direction: monomorphized layouts know which slots are List-typed;
+only those loads/stores get the decode/encode diamonds in compiled code.
+Kernels go through the cursor types (ListCursor/RootedListCursor/
+ListBackwardCursor/ListChainWriter), which gain packed-entry decoding in
+ONE place each.
+
+### 13.5 GC integration
+
+- Scanning: the GC is type-blind, so EVERY boxed-slot scan must decode:
+  `if (w & 1) { markOrEvacuate(base); rewrite w preserving bits 48+ and
+  bit 0; }`. Touch points: NurserySpace::evacuateValueSlot + scanObject
+  slot loops, OldGenSpace markHPointer/fixPointersInObject, PermanentSpace
+  visit, JIT-root evacuation, external scanners. This is an AND+branch on
+  the hottest GC loops — budget a measured GC-time cost of a few percent
+  and gate the whole feature on winning it back.
+- resolve(): must strip the packed bits or assert. Audit every direct
+  `resolve` on values that may be lists — the cursor centralization from
+  L1.2 makes this tractable (grep for resolve sites outside the cursor
+  types; the walker slab list in §6 is the checklist).
+- Aliasing/residency (guards 1-3): hd mutation is single-threaded per
+  nursery (per-thread heaps), so plain load/compare/store suffices — no
+  CAS. Residency uses the EXISTING builder bit: producers set
+  `builder = 1` on slack-bearing backings ("pinned to nursery, no
+  promotion" per the Header contract), so guard3 is one bit test and the
+  no-write-barrier invariant (HEAP_038) holds by construction. Builder
+  clearing policy: clear when hd reaches 0 (backing full) and lazily at
+  minor GC for backings whose hd has not moved since the previous GC
+  (stamp the last-observed hd in the u32 that _pad freed up; equal stamps
+  ⇒ clear builder, allowing normal aging/promotion). This bounds nursery
+  pinning to one quiet GC cycle.
+- HEAP_037 already specifies the [hd, cap) trace rule — slots below hd are
+  never traced; the zero-init rule extends to slack slots for boxed kinds.
+
+### 13.6 What stays, what goes
+
+- Tag_ConsChunk views remain for truncated windows (`take`) and for
+  eco_list_pos_view escapes; packed words replace views for suffix
+  positions (tail-walks, cons-onto-front). The cursor pass's step markers
+  learn packed inputs for free (they already carry (node, idx)).
+- The gating story CHANGES: packed words alter heap contents, so flag-on
+  vs flag-off byte-identity of OUTPUT no longer holds run-to-run unless
+  the flag also keys the artifact hash — add a `lppp=1` token beside
+  lchunks. Flag-off must remain byte-identical (all packing behind
+  `eco_g_list_ppp`, enabled like eco_enable_list_chunks).
+
+### 13.7 Implementation ladder (each rung gated before the next)
+
+1. Layout commit: ListBacking → 24-byte header form (13.2), all offsets
+   updated, byte-identity + E2E + HEAP_VALIDATE. No semantics change.
+2. Word format + GC decode behind ECO_LIST_PPP, with HEAP_VALIDATE
+   tripwires (assert no packed word escapes when the flag is off); unit
+   tests packing/unpacking/GC-move preserving offsets (model:
+   ChunkedListTest GC-survival tests).
+3. Kernel-only producers/consumers: cursors decode packed entries;
+   eco_scratch_finish emits packed suffixes instead of head views where
+   next == Nil. Census the view-count delta.
+4. Compiled seam: barrier diamonds + List-typed slot classification;
+   cursor-pass integration. Full gate suite.
+5. Slack cons (13.3) last — it is the payoff but depends on everything
+   above; census + interleaved walls decide default.
+
+### 13.8 Go/no-go pricing
+
+The prize: the remaining per-element view allocations (26.9M post-cursor)
+plus every suffix-window view a producer emits (~10.7M chain-link views),
+AND the §10 slack-cons pool IF a workload with front-heavy building
+appears. The price: a few percent on GC scan loops, a total-sweep audit,
+and a REP-row amendment. On the self-compile census alone (~37M objects,
+0.6%) this does NOT pay — record it as the v2-representation option to
+open only alongside a workload where lists are retained or built
+front-heavy at scale, or if the GC-scan decode proves free in practice.
