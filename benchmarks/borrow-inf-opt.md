@@ -102,6 +102,23 @@ byte diff means the workload moved and walls are not comparable.
 
 ## Runs
 
+### 2026-08-04 12:30 UTC — Run L: T1.3.7 psplit selection fixpoint + justification widening (mechanism proven; population honest-small)
+
+Census-first (DEV-JS): candidates 982 vs justified **27** (passthrough-only
+params 1,176; other 1,629) — justification dominates ⇒ Phase B. Ships: a
+selection FIXPOINT (round N−1 table = walker allowance + scan seed,
+monotone), a PRE-ORDER site scan (**latent bug found: the foldExpr driver
+is bottom-up — binder shapes registered AFTER their call sites; the binder
+channel was dead since v1**), and sret→psplit NESTED COMPOSITION ($sret
+multi-results feed $psplit scalars, container-free end-to-end). At scale
+34 workers/294 sites (+6/+13): the census bounds were ADMISSIBILITY bounds;
+justification is bounded by upstream slot-form availability, not analysis
+precision. Wall −2.9% ≈ ship config; census −27.55M ≈ Run K (+60K delta).
+
+| wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|
+| **3:45.36** (r1 3:41.47; off 3:48.38/3:51.62) | 5,979,572 kB | 799,543,762 | 28,090.85 MB | 885 | 353,193,385 (44.2%) | 10 (off 11 — lottery) | 85.89 s | 12,914,984 B |
+
 ### 2026-08-03 23:55 UTC — Run K: T1.3.5 psplit param-side promotion (wall-neutral; alloc −27.5M; ships)
 
 Binary = full ship config (solver+LSS+borrow+aggp+ctori+sretr+**psplit**).
@@ -313,3 +330,4 @@ cold eco-stuff, both legs. Warmup leg wall 3:12.45; measured leg reported.
 | I — T1.3.3 sret result promotion (−5.9% claim corrected by Run J: −3.2%) | 3:40.04 | 775,152,632 obj / 27,218.00 MB |
 | J — T1.3.6 tail widening → default-off; ship sret **−3.2% vs off** (workload moved; see entry) | 3:45.35 | 798,562,682 obj / 28,057.24 MB |
 | K — T1.3.5 psplit, **−3.3% vs off**, census −27.5M obj (workload moved; see entry) | 3:44.14 | 798,562,858 obj / 28,057.25 MB |
+| L — T1.3.7 psplit fixpoint + justification (mechanism; +6 workers, workload moved) | 3:45.36 | 799,543,762 obj / 28,090.85 MB |

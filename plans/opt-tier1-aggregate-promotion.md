@@ -963,7 +963,38 @@ ceiling and keep the machinery (it also serves psplit's follow-on).
 
 ### T1.3.7 — psplit rejection-reason census → selection self-fixpoint (expected-value #1)
 
-**Status: PLANNED 2026-08-04 (from the borrow-facts exploration — the
+**Status: SHIPPED 2026-08-04 (Run L). AS-BUILT SUMMARY — mechanism
+proven, population honest-small.** Census A (DEV-JS, subst leg):
+adm-params 1,027 / passthrough-only 1,176 / other 1,629 /
+probe-new-fns 941 / **candidates 982 vs justified 27** — the decision
+rule passed on justification-only dominance. Phase B shipped three
+pieces: (1) the selection fixpoint as specced (`psplitFixpoint` /
+`psplitOnePass`, round N−1's FILTERED table = walker allowance + scan
+seed; monotone in both uses so the table only grows — iterating on the
+filtered table, not raw candidates, is what makes the fixpoint
+self-consistent with emission, so no admitted pass-through ever
+rematerializes); (2) a **pre-order site scan** (`psplitScanExpr`)
+replacing the `MonoTraverse.foldExpr` driver — **latent v1 bug found:
+foldExpr is BOTTOM-UP, so binder shapes were registered after the call
+sites that needed them; the binder-justification channel was dead from
+day one**, masked by inline-construct sites; (3) beyond spec, the
+**sret→psplit nested composition**: `psplitArgFree`/`emitPsplitSlotArg`
+accept an arg that IS a direct sret-promoted call (slot-type-exact) and
+emit the multi-result `$sret` call feeding scalars straight into the
+`$psplit` worker (`emitSretCallMulti` factored and shared with
+`emitSretLetBinding`) — fixture emits `(i64,i64)` end-to-end with no
+container. At scale: **34 workers / 294 sites (+6/+13 over v1)**;
+census −27.55M objects ≈ Run K (+60K from the delta); wall −2.9% ≈
+ship config; all gates green (E2E 1611/1611, corpus 35 CHECKs incl.
+`psplitchain`/`psplitsret`/`psplitneg`, byte-identity, leaks 0,
+all-flags bootstrap). **LESSON RECORDED: the census's admissibility
+buckets are upper bounds on a DIFFERENT gate — justification is
+bounded by upstream slot-form availability (closure/record/kernel
+producers), not by analysis precision; the remaining 950-odd
+candidates wait on upstream promotion classes (T1.3.4/T1.3.8), and no
+selection-side cleverness reaches them.**
+
+**Original spec follows (from the borrow-facts exploration — the
 five-agent review of what an oracle could lift; verdict: the liftable
 class is oracle-FREE).** v1 psplit reached only 28 workers / 281 sites
 from a ~31.8% census bracket because selection runs

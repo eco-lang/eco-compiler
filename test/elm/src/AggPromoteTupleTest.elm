@@ -51,6 +51,9 @@ Shapes exercised:
 -- CHECK: psplitid: 11
 -- CHECK: psplitpartial: 14
 -- CHECK: psplitst: 12
+-- CHECK: psplitchain: 53
+-- CHECK: psplitsret: 135
+-- CHECK: psplitneg: 7
 -- CHECK: tailpair: "3:6"
 -- CHECK: tailboth: 19
 
@@ -282,6 +285,64 @@ pairBoth p q =
 useBothPartial : Int -> ( Int, Int ) -> Int
 useBothPartial k q =
     pairBoth ( k, k ) q
+
+
+{-| U-T1.3.7 (selection fixpoint): `chainOuter` forwards its pair
+UNTOUCHED to a projection-only consumer — vetoed under round-1's empty
+allowance, admitted in round 2 once `pairMag` is in the table. Both
+split; no container exists anywhere on the chain.
+-}
+chainOuter : ( Int, Int ) -> Int
+chainOuter p =
+    pairMag p + 1
+
+
+useChain : Int -> Int
+useChain n =
+    chainOuter ( n, n + 2 )
+
+
+{-| U-T1.3.7 (sret-binder justification): `pairDot`'s ONLY site receives
+an sret-bound binder — slot-form after `trySretLetBinding` migration, so
+the widened site scan justifies (and the site migrates through) it.
+-}
+pairFromSret : Int -> ( Int, Int )
+pairFromSret n =
+    ( n * 3, n + 4 )
+
+
+pairDot : ( Int, Int ) -> Int
+pairDot p =
+    case p of
+        ( x, y ) ->
+            x * y
+
+
+useSretBinder : Int -> Int
+useSretBinder n =
+    let
+        t =
+            pairFromSret n
+    in
+    pairDot t
+
+
+{-| U-T1.3.7 NEGATIVE: forwarding to a WHOLE-USE consumer — no fixpoint
+round admits either function; both stay boxed. Behavior pinned.
+-}
+wholeSink : ( Int, Int ) -> Int
+wholeSink p =
+    List.length [ p ] + Tuple.first p
+
+
+fwdWhole : ( Int, Int ) -> Int
+fwdWhole p =
+    wholeSink p
+
+
+useFwdWhole : Int -> Int
+useFwdWhole n =
+    fwdWhole ( n, n * 5 )
 
 
 {-| U-T1.3.5 custom variant: single-ctor 3-field State consumed by
@@ -645,6 +706,15 @@ main =
 
         _ =
             Debug.log "psplitst" (useStSum 3)
+
+        _ =
+            Debug.log "psplitchain" (useChain 4)
+
+        _ =
+            Debug.log "psplitsret" (useSretBinder 5)
+
+        _ =
+            Debug.log "psplitneg" (useFwdWhole 6)
 
         _ =
             Debug.log "tailpair" (useTailAccPair 3)

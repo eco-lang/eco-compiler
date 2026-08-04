@@ -3254,7 +3254,17 @@ psplitArgFree ctx plan arg =
                     shape.name == clayout.name && List.length cargs == List.length clayout.fields
 
                 _ ->
-                    False
+                    -- U-T1.3.7 nested composition: the arg IS a direct call to
+                    -- an sret-promoted callee with this exact slot plan — the
+                    -- site emits the multi-result `$sret` call and feeds its
+                    -- scalars straight into the `$psplit` worker; no container
+                    -- exists on either side of the hop.
+                    case ( plan.spec, Dict.get sid ctx.sretPromoted ) of
+                        ( Ctx.SplitTuple _, Just sinfo ) ->
+                            sinfo.slotTypes == plan.slotTypes
+
+                        _ ->
+                            False
 
         Mono.MonoVarLocal v _ ->
             case Dict.get v ctx.splitAggParams of
@@ -3376,8 +3386,17 @@ emitPsplitSlotArg ctx plan arg =
         Mono.MonoTupleCreate _ es _ ->
             inlineElements es
 
-        Mono.MonoCall _ (Mono.MonoVarGlobal _ _ _) cargs _ _ ->
-            inlineElements cargs
+        Mono.MonoCall _ (Mono.MonoVarGlobal _ sid _) cargs _ _ ->
+            case ( plan.spec, Dict.get sid ctx.sretPromoted ) of
+                ( Ctx.SplitTuple _, Just sinfo ) ->
+                    if sinfo.slotTypes == plan.slotTypes then
+                        emitSretCallMulti ctx sid cargs sinfo
+
+                    else
+                        inlineElements cargs
+
+                _ ->
+                    inlineElements cargs
 
         Mono.MonoVarLocal v _ ->
             case Dict.get v ctx.splitAggParams of
@@ -7363,6 +7382,52 @@ finishSpineCase ctx resultTy buildSingle buildMany =
             singlePath ()
 
 
+{-| U-T1.3.7: the multi-result `$sret` call core — args boxed per the
+callee signature, one fresh SSA var per result slot. Shared by the
+let-binding migration and the nested psplit-arg composition (keep the
+two consumers' slot-type checks in sync with `psplitArgFree`).
+-}
+emitSretCallMulti : Ctx.Context -> Int -> List Mono.MonoExpr -> Ctx.SretInfo -> ( List MlirOp, List ( String, MlirType ), Ctx.Context )
+emitSretCallMulti ctx specId cargs info =
+    let
+        ( argOps, argsWithTypes, ctxA ) =
+            generateExprListTyped ctx cargs
+
+        funcName =
+            specIdToFuncName ctx.registry specId
+
+        maybeSig =
+            Array.get specId ctx.signatures |> Maybe.andThen identity
+
+        ( boxOps, argVarPairs, ctxB ) =
+            case maybeSig of
+                Just sig ->
+                    boxToMatchSignatureTyped ctxA argsWithTypes sig.paramTypes
+
+                Nothing ->
+                    ( [], argsWithTypes, ctxA )
+
+        ( resultPairsRev, ctxC ) =
+            List.foldl
+                (\slotTy ( acc, c ) ->
+                    let
+                        ( v, c1 ) =
+                            Ctx.freshVar c
+                    in
+                    ( ( v, slotTy ) :: acc, c1 )
+                )
+                ( [], ctxB )
+                info.slotTypes
+
+        resultPairs =
+            List.reverse resultPairsRev
+
+        ( ctxD, callOp ) =
+            Ops.ecoCallNamedMulti ctxC (emitSafepointHints ctxC) resultPairs (funcName ++ "$sret") argVarPairs
+    in
+    ( argOps ++ boxOps ++ [ callOp ], resultPairs, ctxD )
+
+
 {-| U-T1.3.3 per-site call migration. All conditions LOCAL:
 callee promoted (pre-pass) · saturated direct call · binder admitted by
 the SAME escape walk as tuple promotion (every use a projection; the
@@ -7435,41 +7500,8 @@ emitSretLetBinding ctx ctxWithPlaceholders name specId cargs info body =
         outerSiblings =
             ctx.currentLetSiblings
 
-        -- args exactly as the plain direct-call path prepares them
-        ( argOps, argsWithTypes, ctxA ) =
-            generateExprListTyped ctxWithPlaceholders cargs
-
-        funcName =
-            specIdToFuncName ctx.registry specId
-
-        maybeSig =
-            Array.get specId ctx.signatures |> Maybe.andThen identity
-
-        ( boxOps, argVarPairs, ctxB ) =
-            case maybeSig of
-                Just sig ->
-                    boxToMatchSignatureTyped ctxA argsWithTypes sig.paramTypes
-
-                Nothing ->
-                    ( [], argsWithTypes, ctxA )
-
-        ( resultPairsRev, ctxC ) =
-            List.foldl
-                (\slotTy ( acc, c ) ->
-                    let
-                        ( v, c1 ) =
-                            Ctx.freshVar c
-                    in
-                    ( ( v, slotTy ) :: acc, c1 )
-                )
-                ( [], ctxB )
-                info.slotTypes
-
-        resultPairs =
-            List.reverse resultPairsRev
-
-        ( ctxD, callOp ) =
-            Ops.ecoCallNamedMulti ctxC (emitSafepointHints ctxC) resultPairs (funcName ++ "$sret") argVarPairs
+        ( callOps, resultPairs, ctxD ) =
+            emitSretCallMulti ctxWithPlaceholders specId cargs info
 
         savedSplit =
             ctxD.splitAggParams
@@ -7506,7 +7538,7 @@ emitSretLetBinding ctx ctxWithPlaceholders name specId cargs info body =
                         , varMappings = Dict.remove name bodyCtx.varMappings
                     }
     in
-    { ops = argOps ++ boxOps ++ [ callOp ] ++ bodyResult.ops
+    { ops = callOps ++ bodyResult.ops
     , resultVar = bodyResult.resultVar
     , resultType = bodyResult.resultType
     , ctx = ctxOut
@@ -7598,6 +7630,7 @@ psplitAllowPositions kind table =
         )
         Dict.empty
         table
+
 
 
 isFunctionMonoType : Mono.MonoType -> Bool

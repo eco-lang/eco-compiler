@@ -641,7 +641,37 @@ buildPsplitPromoted config ctorShapes ctorBySpec sretPromoted nodes =
         Dict.empty
 
     else
-        let
+        psplitFixpoint ctorShapes ctorBySpec sretPromoted nodes 0 Dict.empty
+
+
+{-| U-T1.3.7: iterate selection to a fixpoint. Round N runs with round
+N-1's RESULT as the walker's pass-through allowance and the site scan's
+forwarded-param seed, so a param forwarded to an already-promoted callee
+position no longer vetoes, and a call inside a promoted worker justifies
+its callee. Both uses of `prev` are monotone (allowances only admit
+more, seeds only justify more), so the table only grows and the
+iteration terminates; the cap is a safety net, not a tuning knob. The
+fixpoint table is self-consistent — every member's admissibility and
+justification hold under the FINAL table, which is exactly what emission
+requires (it consults the same table via `ctx.psplitPromoted`), so no
+admitted pass-through ever rematerializes in a worker body.
+-}
+psplitFixpoint : Dict.Dict String (List Mono.CtorShape) -> Dict.Dict Int Mono.CtorShape -> Dict.Dict Int Ctx.SretInfo -> Array (Maybe Mono.MonoNode) -> Int -> Dict.Dict Int Ctx.PsplitInfo -> Dict.Dict Int Ctx.PsplitInfo
+psplitFixpoint ctorShapes ctorBySpec sretPromoted nodes iter prev =
+    let
+        next =
+            psplitOnePass ctorShapes ctorBySpec sretPromoted nodes prev
+    in
+    if next == prev || iter >= 4 then
+        next
+
+    else
+        psplitFixpoint ctorShapes ctorBySpec sretPromoted nodes (iter + 1) next
+
+
+psplitOnePass : Dict.Dict String (List Mono.CtorShape) -> Dict.Dict Int Mono.CtorShape -> Dict.Dict Int Ctx.SretInfo -> Array (Maybe Mono.MonoNode) -> Dict.Dict Int Ctx.PsplitInfo -> Dict.Dict Int Ctx.PsplitInfo
+psplitOnePass ctorShapes ctorBySpec sretPromoted nodes prev =
+    let
             planForParam ( name, monoTy ) body =
                 case monoTy of
                     Mono.MTuple ts ->
@@ -661,7 +691,7 @@ buildPsplitPromoted config ctorShapes ctorBySpec sretPromoted nodes =
                                     else
                                         Mono.Tuple3Container
                             in
-                            if Expr.paramSplitAdmissible Dict.empty kind name body then
+                            if Expr.paramSplitAdmissible prev kind name body then
                                 Just { spec = Ctx.SplitTuple layout, slotTypes = Types.tupleSlotTypes layout }
 
                             else
@@ -678,7 +708,7 @@ buildPsplitPromoted config ctorShapes ctorBySpec sretPromoted nodes =
                                         clayout =
                                             Types.computeCtorLayout shape
                                     in
-                                    if Expr.paramSplitAdmissible Dict.empty (Mono.CustomContainer shape.name) name body then
+                                    if Expr.paramSplitAdmissible prev (Mono.CustomContainer shape.name) name body then
                                         Just { spec = Ctx.SplitCtor clayout, slotTypes = Types.ctorSlotTypes clayout }
 
                                     else
@@ -724,89 +754,256 @@ buildPsplitPromoted config ctorShapes ctorBySpec sretPromoted nodes =
                         nodes
                     )
 
-            justified =
-                Array.foldl
-                    (\maybeNode acc ->
-                        case maybeNode of
-                            Just node ->
-                                nodeExprs node
-                                    |> List.foldl
-                                        (\e acc2 ->
-                                            Tuple.second
-                                                (MonoTraverse.foldExpr (psplitSiteScan ctorBySpec candidates) ( Dict.empty, acc2 ) e)
-                                        )
-                                        acc
+            -- U-T1.3.7: seed the binder-shape dict with the node's own
+            -- params that round N-1 already split — inside the (future)
+            -- worker they are slot-form, so passing one to a callee's
+            -- admitted position is a free, migrating site.
+            seedShapes specId node =
+                case ( Dict.get specId prev, node ) of
+                    ( Just info, Mono.MonoDefine (Mono.MonoClosure cinfo _ _) _ ) ->
+                        List.map2 Tuple.pair cinfo.params info.paramPlans
+                            |> List.foldl
+                                (\( ( pname, _ ), mPlan ) sh ->
+                                    case mPlan of
+                                        Just plan ->
+                                            Dict.insert pname (psplitPlanShape plan) sh
 
-                            Nothing ->
-                                acc
+                                        Nothing ->
+                                            sh
+                                )
+                                Dict.empty
+
+                    _ ->
+                        Dict.empty
+
+            justified =
+                Tuple.second
+                    (Array.foldl
+                        (\maybeNode ( specId, acc ) ->
+                            case maybeNode of
+                                Just node ->
+                                    ( specId + 1
+                                    , nodeExprs node
+                                        |> List.foldl
+                                            (\e acc2 ->
+                                                Tuple.second
+                                                    (psplitScanExpr ctorBySpec sretPromoted candidates e ( seedShapes specId node, acc2 ))
+                                            )
+                                            acc
+                                    )
+
+                                Nothing ->
+                                    ( specId + 1, acc )
+                        )
+                        ( 0, Set.empty )
+                        nodes
                     )
-                    Set.empty
-                    nodes
         in
         Dict.filter (\specId _ -> Set.member specId justified) candidates
 
 
-{-| One fold step of the constructish-site scan: track binder shapes
-(overapproximate — scope is ignored, fine for a win pre-check), and mark
-callees justified when an eligible position receives a matching inline
-construct or a tracked binder.
+psplitPlanShape : Ctx.SlotPlan -> ( String, Int )
+psplitPlanShape plan =
+    case plan.spec of
+        Ctx.SplitTuple layout ->
+            ( "t", layout.arity )
+
+        Ctx.SplitCtor clayout ->
+            ( "c:" ++ clayout.name, List.length clayout.fields )
+
+
+{-| U-T1.3.7: PRE-ORDER site scan. The previous `MonoTraverse.foldExpr`
+driver was BOTTOM-UP (children before parent), so a binder registered at
+a `MonoLet` was never visible to the call sites inside its body — the
+binder-shape channel was dead from v1 (masked by inline-construct
+justifications). This walker threads `shapes` lexically: let RHS first,
+then the registered binder, then the body. Scope is otherwise ignored
+(overapproximate — a win pre-check, not a soundness gate; emission's
+`psplitArgFree` is the exact per-site check).
 -}
-psplitSiteScan : Dict.Dict Int Mono.CtorShape -> Dict.Dict Int Ctx.PsplitInfo -> Mono.MonoExpr -> ( Dict.Dict String ( String, Int ), Set.Set Int ) -> ( Dict.Dict String ( String, Int ), Set.Set Int )
-psplitSiteScan ctorBySpec candidates e (( shapes, justified ) as acc) =
+psplitScanExpr :
+    Dict.Dict Int Mono.CtorShape
+    -> Dict.Dict Int Ctx.SretInfo
+    -> Dict.Dict Int Ctx.PsplitInfo
+    -> Mono.MonoExpr
+    -> ( Dict.Dict String ( String, Int ), Set.Set Int )
+    -> ( Dict.Dict String ( String, Int ), Set.Set Int )
+psplitScanExpr ctorBySpec sretPromoted candidates e (( shapes, justified ) as acc) =
+    let
+        go e2 a =
+            psplitScanExpr ctorBySpec sretPromoted candidates e2 a
+
+        goList es a =
+            List.foldl go a es
+    in
     case e of
-        Mono.MonoLet (Mono.MonoDef x rhs) _ _ ->
-            case psplitConstructShape ctorBySpec rhs of
-                Just sh ->
-                    ( Dict.insert x sh shapes, justified )
+        Mono.MonoLet (Mono.MonoDef x rhs) body _ ->
+            let
+                ( _, j1 ) =
+                    go rhs acc
 
-                Nothing ->
-                    acc
+                binderShape =
+                    case psplitConstructShape ctorBySpec rhs of
+                        Just sh ->
+                            Just sh
 
-        Mono.MonoCall _ (Mono.MonoVarGlobal _ fsid _) args _ _ ->
-            case Dict.get fsid candidates of
-                Just info ->
-                    let
-                        argOk plan arg =
-                            case psplitConstructShape ctorBySpec arg of
-                                Just sh ->
-                                    psplitShapeMatches plan sh
+                        Nothing ->
+                            -- an sret-promoted call result is slot-form at
+                            -- emission (trySretLetBinding migrates through
+                            -- the same walker/allowances), so it justifies
+                            -- a matching admitted position too
+                            case rhs of
+                                Mono.MonoCall _ (Mono.MonoVarGlobal _ sid _) _ _ _ ->
+                                    Dict.get sid sretPromoted
+                                        |> Maybe.map (\sinfo -> ( "t", sinfo.layout.arity ))
+
+                                _ ->
+                                    Nothing
+
+                shapes1 =
+                    case binderShape of
+                        Just sh ->
+                            Dict.insert x sh shapes
+
+                        Nothing ->
+                            shapes
+            in
+            go body ( shapes1, j1 )
+
+        Mono.MonoLet (Mono.MonoTailDef _ _ rhs) body _ ->
+            go body (go rhs acc)
+
+        Mono.MonoCall _ f args _ _ ->
+            let
+                accJ =
+                    case f of
+                        Mono.MonoVarGlobal _ fsid _ ->
+                            case Dict.get fsid candidates of
+                                Just info ->
+                                    if psplitSiteHit ctorBySpec sretPromoted shapes info args then
+                                        ( shapes, Set.insert fsid justified )
+
+                                    else
+                                        acc
 
                                 Nothing ->
-                                    case arg of
-                                        Mono.MonoVarLocal v _ ->
-                                            case Dict.get v shapes of
-                                                Just sh ->
-                                                    psplitShapeMatches plan sh
+                                    acc
 
-                                                Nothing ->
-                                                    False
+                        _ ->
+                            acc
+            in
+            goList args (go f accJ)
 
-                                        _ ->
-                                            False
+        Mono.MonoClosure info body _ ->
+            go body (goList (List.map (\( _, ce, _ ) -> ce) info.captures) acc)
 
-                        anyHit =
-                            List.map2 Tuple.pair info.paramPlans args
-                                |> List.any
-                                    (\( mPlan, arg ) ->
-                                        case mPlan of
-                                            Just plan ->
-                                                argOk plan arg
+        Mono.MonoTailCall _ args _ ->
+            goList (List.map Tuple.second args) acc
 
-                                            Nothing ->
-                                                False
-                                    )
-                    in
-                    if anyHit then
-                        ( shapes, Set.insert fsid justified )
+        Mono.MonoIf branches final _ ->
+            go final (List.foldl (\( c, b ) a -> go b (go c a)) acc branches)
 
-                    else
-                        acc
+        Mono.MonoDestruct _ inner _ ->
+            go inner acc
 
-                Nothing ->
-                    acc
+        Mono.MonoCase _ _ decider jumps _ ->
+            goList (List.map Tuple.second jumps) (psplitScanDecider ctorBySpec sretPromoted candidates decider acc)
 
-        _ ->
+        Mono.MonoList _ items _ ->
+            goList items acc
+
+        Mono.MonoRecordCreate fields _ ->
+            goList (List.map Tuple.second fields) acc
+
+        Mono.MonoRecordAccess inner _ _ ->
+            go inner acc
+
+        Mono.MonoRecordUpdate base updates _ ->
+            goList (List.map Tuple.second updates) (go base acc)
+
+        Mono.MonoTupleCreate _ elements _ ->
+            goList elements acc
+
+        Mono.MonoLiteral _ _ ->
             acc
+
+        Mono.MonoVarLocal _ _ ->
+            acc
+
+        Mono.MonoVarGlobal _ _ _ ->
+            acc
+
+        Mono.MonoVarKernel _ _ _ _ _ ->
+            acc
+
+        Mono.MonoUnit ->
+            acc
+
+        Mono.MonoAccessorValue _ _ _ ->
+            acc
+
+
+psplitScanDecider :
+    Dict.Dict Int Mono.CtorShape
+    -> Dict.Dict Int Ctx.SretInfo
+    -> Dict.Dict Int Ctx.PsplitInfo
+    -> Mono.Decider Mono.MonoChoice
+    -> ( Dict.Dict String ( String, Int ), Set.Set Int )
+    -> ( Dict.Dict String ( String, Int ), Set.Set Int )
+psplitScanDecider ctorBySpec sretPromoted candidates decider acc =
+    case decider of
+        Mono.Leaf (Mono.Inline e) ->
+            psplitScanExpr ctorBySpec sretPromoted candidates e acc
+
+        Mono.Leaf (Mono.Jump _) ->
+            acc
+
+        Mono.Chain _ success failure ->
+            psplitScanDecider ctorBySpec sretPromoted candidates failure
+                (psplitScanDecider ctorBySpec sretPromoted candidates success acc)
+
+        Mono.FanOut _ edges fallback ->
+            psplitScanDecider ctorBySpec sretPromoted candidates fallback
+                (List.foldl (\( _, d ) a -> psplitScanDecider ctorBySpec sretPromoted candidates d a) acc edges)
+
+
+{-| Does one call site justify its candidate callee? ≥1 admitted position
+receives a free-slot arg: a matching inline construct, a tracked binder,
+or (U-T1.3.7) a direct sret-promoted call feeding slots straight through
+(arity-level here; `psplitArgFree` rechecks slot-type-exact at emission).
+-}
+psplitSiteHit : Dict.Dict Int Mono.CtorShape -> Dict.Dict Int Ctx.SretInfo -> Dict.Dict String ( String, Int ) -> Ctx.PsplitInfo -> List Mono.MonoExpr -> Bool
+psplitSiteHit ctorBySpec sretPromoted shapes info args =
+    List.map2 Tuple.pair info.paramPlans args
+        |> List.any
+            (\( mPlan, arg ) ->
+                case mPlan of
+                    Just plan ->
+                        case psplitConstructShape ctorBySpec arg of
+                            Just sh ->
+                                psplitShapeMatches plan sh
+
+                            Nothing ->
+                                case arg of
+                                    Mono.MonoVarLocal v _ ->
+                                        Dict.get v shapes
+                                            |> Maybe.map (psplitShapeMatches plan)
+                                            |> Maybe.withDefault False
+
+                                    Mono.MonoCall _ (Mono.MonoVarGlobal _ sid2 _) _ _ _ ->
+                                        case ( plan.spec, Dict.get sid2 sretPromoted ) of
+                                            ( Ctx.SplitTuple layout, Just sinfo ) ->
+                                                sinfo.layout.arity == layout.arity
+
+                                            _ ->
+                                                False
+
+                                    _ ->
+                                        False
+
+                    Nothing ->
+                        False
+            )
 
 
 psplitConstructShape : Dict.Dict Int Mono.CtorShape -> Mono.MonoExpr -> Maybe ( String, Int )
