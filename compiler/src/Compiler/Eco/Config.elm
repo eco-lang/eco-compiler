@@ -43,6 +43,7 @@ type alias EcoConfig =
     , ctorInline : Bool -- U-T1.3.2c (plans/opt-tier1-aggregate-promotion.md): saturated direct ctor calls emit eco.construct.custom inline in the caller (call overhead erased; nullary excluded — CAF-memoized singletons); env ECO_CTOR_INLINE=1; artifact-affecting (hash token "ctori")
     , sretResults : Bool -- U-T1.3.3 (plans/opt-tier1-aggregate-promotion.md): result promotion via the sret ABI — functions returning a locally-constructed tuple2/3 gain a multi-result $sret worker (caller-slot ABI, CGEN_067); destructuring call sites migrate per-site; env ECO_SRET_RESULTS=1; artifact-affecting (hash token "sretr")
     , psplitParams : Bool -- U-T1.3.5 (plans/opt-tier1-aggregate-promotion.md): param-side promotion — projection-only tuple2/3 / single-ctor-custom params gain a $psplit worker taking the fields as scalars; call sites with free-slot args migrate per-site; env ECO_PSPLIT_PARAMS=1; artifact-affecting (hash token "psplit")
+    , sretFresh : Bool -- U-T1.3.8: widen sretResults selection to helper-mediated results — a result leaf that IS a direct call to an already-promoted callee with identical slots is admissible (selection fixpoint); emission feeds the multi-result $sret call through. Default OFF; env ECO_SRET_FRESH=1; artifact-affecting when enabled (hash token "sretf=1"); no-op unless sretResults
     , sretTailFuncs : Bool -- U-T1.3.6: widen sretResults selection to tail funcs (result columns through the while loop). Default OFF — measured REGRESSION ~+4% wall (2026-08-03 isolation A/B: it cancelled T1.3.3's −4% exactly; per-iteration slot-column carry in hot loops). Opt-in ECO_SRET_TAILFUNC=1 for future custom-result work; artifact-affecting when enabled (hash token "srtf=1"); no-op unless sretResults
     }
 
@@ -319,6 +320,7 @@ default =
     , ctorInline = False
     , sretResults = False
     , psplitParams = False
+    , sretFresh = False
     , sretTailFuncs = False
     }
 
@@ -341,6 +343,7 @@ decoder =
         |> D.apply (D.optionalField "ctorInline" D.bool default.ctorInline)
         |> D.apply (D.optionalField "sretResults" D.bool default.sretResults)
         |> D.apply (D.optionalField "psplitParams" D.bool default.psplitParams)
+        |> D.apply (D.optionalField "sretFresh" D.bool default.sretFresh)
         |> D.apply (D.optionalField "sretTailFuncs" D.bool default.sretTailFuncs)
 
 
@@ -692,6 +695,12 @@ hash cfg =
                )
             ++ (if cfg.psplitParams then
                     [ "psplit=1" ]
+
+                else
+                    []
+               )
+            ++ (if cfg.sretFresh then
+                    [ "sretf=1" ]
 
                 else
                     []

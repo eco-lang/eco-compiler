@@ -257,6 +257,11 @@ applyEnvOverrides cfg =
                 (Utils.envLookupEnv "ECO_SRET_TAILFUNC" |> Task.mapError never)
                     |> Task.map (\stVal -> applySretTailFuncOverride stVal cfg27)
             )
+        |> Task.andThen
+            (\cfg26 ->
+                (Utils.envLookupEnv "ECO_SRET_FRESH" |> Task.mapError never)
+                    |> Task.map (\sfVal -> applySretFreshOverride sfVal cfg26)
+            )
 
 
 {-| `ECO_AGG_PROMOTE=1|true|yes`: U-T1.3.1 aggregate promotion — emit
@@ -332,6 +337,31 @@ applySretResultsOverride maybeVal cfg =
 
             else if t == "0" || t == "off" then
                 { cfg | sretResults = False }
+
+            else
+                cfg
+
+
+{-| `ECO_SRET_FRESH=1|on`: U-T1.3.8 — widen sret selection to
+helper-mediated results (leaf = direct call to a promoted callee with
+identical slots). Default OFF. Hash-relevant when enabled ("sretf=1").
+-}
+applySretFreshOverride : Maybe String -> EcoConfig -> EcoConfig
+applySretFreshOverride maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            cfg
+
+        Just raw ->
+            let
+                t =
+                    String.toLower (String.trim raw)
+            in
+            if t == "1" || t == "true" || t == "yes" || t == "on" then
+                { cfg | sretFresh = True }
+
+            else if t == "0" || t == "off" then
+                { cfg | sretFresh = False }
 
             else
                 cfg

@@ -485,8 +485,110 @@ buildSretPromoted config nodes =
                     )
                     Set.empty
                     nodes
+            base =
+                Dict.filter (\specId _ -> Set.member specId calledInLetPosition) candidates
         in
-        Dict.filter (\specId _ -> Set.member specId calledInLetPosition) candidates
+        if config.sretFresh then
+            sretFreshFixpoint calledInLetPosition nodes 0 base
+
+        else
+            base
+
+
+{-| U-T1.3.8 (`ECO_SRET_FRESH`): widen selection to helper-mediated
+results — a leaf that IS a direct call to a table member with identical
+slot types is fresh by construction (the member's worker constructs it,
+and emission feeds the multi-result call straight through,
+`trySretFreshLeaf`). Iterated on the FILTERED (site-gated) table so
+admission stays self-consistent with emission — the T1.3.7 discipline.
+MonoDefine only in v1: tail-func bases stay under `sretTailFuncs`.
+-}
+sretFreshFixpoint : Set.Set Int -> Array (Maybe Mono.MonoNode) -> Int -> Dict.Dict Int Ctx.SretInfo -> Dict.Dict Int Ctx.SretInfo
+sretFreshFixpoint letPos nodes iter table =
+    let
+        next =
+            Tuple.second
+                (Array.foldl
+                    (\maybeNode ( sid, acc ) ->
+                        case maybeNode of
+                            Just (Mono.MonoDefine (Mono.MonoClosure cinfo cbody _) monoType) ->
+                                if List.isEmpty cinfo.captures && not (List.isEmpty cinfo.params) && not (Dict.member sid acc) && Set.member sid letPos then
+                                    case closureResultType monoType of
+                                        Mono.MTuple ts ->
+                                            let
+                                                ar =
+                                                    List.length ts
+
+                                                layout =
+                                                    Types.computeTupleLayout ts
+
+                                                slotTys =
+                                                    Types.tupleSlotTypes layout
+                                            in
+                                            if (ar == 2 || ar == 3) && sretFreshTailOk acc slotTys cbody then
+                                                ( sid + 1, Dict.insert sid { layout = layout, slotTypes = slotTys } acc )
+
+                                            else
+                                                ( sid + 1, acc )
+
+                                        _ ->
+                                            ( sid + 1, acc )
+
+                                else
+                                    ( sid + 1, acc )
+
+                            _ ->
+                                ( sid + 1, acc )
+                    )
+                    ( 0, table )
+                    nodes
+                )
+    in
+    if Dict.size next == Dict.size table || iter >= 6 then
+        next
+
+    else
+        sretFreshFixpoint letPos nodes (iter + 1) next
+
+
+sretFreshTailOk : Dict.Dict Int Ctx.SretInfo -> List MlirType -> Mono.MonoExpr -> Bool
+sretFreshTailOk table slotTys e =
+    case e of
+        Mono.MonoTupleCreate _ _ leafTy ->
+            sretLeafMatches slotTys leafTy
+
+        Mono.MonoCall _ (Mono.MonoVarGlobal _ sid _) _ _ _ ->
+            (Dict.get sid table |> Maybe.map .slotTypes) == Just slotTys
+
+        Mono.MonoLet _ b _ ->
+            sretFreshTailOk table slotTys b
+
+        Mono.MonoDestruct _ b _ ->
+            sretFreshTailOk table slotTys b
+
+        Mono.MonoCase _ _ decider jumps _ ->
+            sretFreshDeciderOk table slotTys decider
+                && List.all (\( _, je ) -> sretFreshTailOk table slotTys je) jumps
+
+        _ ->
+            False
+
+
+sretFreshDeciderOk : Dict.Dict Int Ctx.SretInfo -> List MlirType -> Mono.Decider Mono.MonoChoice -> Bool
+sretFreshDeciderOk table slotTys d =
+    case d of
+        Mono.Leaf (Mono.Inline e) ->
+            sretFreshTailOk table slotTys e
+
+        Mono.Leaf (Mono.Jump _) ->
+            True
+
+        Mono.Chain _ s f ->
+            sretFreshDeciderOk table slotTys s && sretFreshDeciderOk table slotTys f
+
+        Mono.FanOut _ edges fb ->
+            List.all (\( _, sub ) -> sretFreshDeciderOk table slotTys sub) edges
+                && sretFreshDeciderOk table slotTys fb
 
 
 closureResultType : Mono.MonoType -> Mono.MonoType

@@ -102,6 +102,26 @@ byte diff means the workload moved and walls are not comparable.
 
 ## Runs
 
+### 2026-08-04 16:45 UTC — Run M: T1.3.8 fresh leaf-call sret widening (neutral, ships default-off); custom-result DEFERRED by census
+
+Census-first (DEV-JS): base 266 tuple workers; helper-mediated TUPLE
+class = **5 fns / 11 sites** (near-empty); CUSTOM class = **32 fns /
+238 sites** — far under what the largest emission surface of the track
+would need, so **custom-result sret is DEFERRED with recorded numbers**
+(the plan's pre-registered rule; same census-NO-GO shape as
+case-of-known). Consumer 1 ships: `sretFreshFixpoint` (leaf = direct
+call to a table member with identical slots, site-gated filtered-table
+iteration) + `trySretFreshLeaf` (multi-result `$sret` call + make-form
+rebuild; unreachable flag-off by construction). At scale 273 workers
+(+5 — census-exact), leaks 0. 3-arm isolated: **ship+sretf ≡ ship**
+(3:48.9/3:48.2 vs 3:48.1/3:48.3; off 3:52.9/3:52.2) — neutral, NOT a
+cancellation; byte-identity ×3. No census pair: 5 fns cannot move a
+4.2B-object count (Run-H precedent). Fixtures sretfresh/sretmix/sretnegv.
+
+| wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|
+| **3:48.23** (r1 3:48.88; ship 3:48.34; off 3:52.21) | 6,049,396 kB | 801,827,597 | 28,176.81 MB | 888 | 349,696,696 (43.6%) | 11 (=off) | 88.12 s | 12,925,267 B |
+
 ### 2026-08-04 12:30 UTC — Run L: T1.3.7 psplit selection fixpoint + justification widening (mechanism proven; population honest-small)
 
 Census-first (DEV-JS): candidates 982 vs justified **27** (passthrough-only
@@ -331,3 +351,4 @@ cold eco-stuff, both legs. Warmup leg wall 3:12.45; measured leg reported.
 | J — T1.3.6 tail widening → default-off; ship sret **−3.2% vs off** (workload moved; see entry) | 3:45.35 | 798,562,682 obj / 28,057.24 MB |
 | K — T1.3.5 psplit, **−3.3% vs off**, census −27.5M obj (workload moved; see entry) | 3:44.14 | 798,562,858 obj / 28,057.25 MB |
 | L — T1.3.7 psplit fixpoint + justification (mechanism; +6 workers, workload moved) | 3:45.36 | 799,543,762 obj / 28,090.85 MB |
+| M — T1.3.8 fresh leaf-call sret (neutral, +5 workers; custom DEFERRED 32/238, workload moved) | 3:48.23 | 801,827,597 obj / 28,176.81 MB |

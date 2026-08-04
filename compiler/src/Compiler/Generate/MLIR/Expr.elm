@@ -420,7 +420,12 @@ generateExpr ctx0 expr =
             generateClosure ctx closureInfo body monoType
 
         Mono.MonoCall _ func args resultType callInfo ->
-            generateCall ctx func args resultType callInfo
+            case trySretFreshLeaf ctx0 func args of
+                Just res ->
+                    res
+
+                Nothing ->
+                    generateCall ctx func args resultType callInfo
 
         Mono.MonoTailCall name args _ ->
             generateTailCall ctx name args
@@ -7380,6 +7385,62 @@ finishSpineCase ctx resultTy buildSingle buildMany =
 
         Nothing ->
             singlePath ()
+
+
+{-| U-T1.3.8: a result-spine LEAF that is a direct call to an
+sret-promoted callee with this exact slot plan — emit the multi-result
+`$sret` call and rebuild the spine's make-form aggregate from its
+scalars (the make folds away in LLVM; no box/unbox on the hop). Only
+reachable when selection admitted the call leaf (the `ECO_SRET_FRESH`
+fixpoint): legacy selection rejects call leaves outright, so flag-off
+emission is untouched by construction.
+-}
+trySretFreshLeaf : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Maybe ExprResult
+trySretFreshLeaf ctx0 func args =
+    case ( ctx0.sretTailLayout, func ) of
+        ( Just layout, Mono.MonoVarGlobal _ sid _ ) ->
+            case Dict.get sid ctx0.sretPromoted of
+                Just info ->
+                    if info.slotTypes == Types.tupleSlotTypes layout then
+                        let
+                            ( callOps, resultPairs, ctxA ) =
+                                emitSretCallMulti { ctx0 | sretTailLayout = Nothing } sid args info
+
+                            ( aggVar, ctxB ) =
+                                Ctx.freshVar ctxA
+
+                            mMake =
+                                case resultPairs of
+                                    [ p1, p2 ] ->
+                                        Just (Ops.ecoMakeTuple2 ctxB aggVar p1 p2)
+
+                                    [ p1, p2, p3 ] ->
+                                        Just (Ops.ecoMakeTuple3 ctxB aggVar p1 p2 p3)
+
+                                    _ ->
+                                        Nothing
+                        in
+                        case mMake of
+                            Just ( ctxC, makeOp ) ->
+                                Just
+                                    { ops = callOps ++ [ makeOp ]
+                                    , resultVar = aggVar
+                                    , resultType = Ops.aggTupleType info.slotTypes
+                                    , ctx = { ctxC | sretTailLayout = ctx0.sretTailLayout }
+                                    , isTerminated = False
+                                    }
+
+                            Nothing ->
+                                Nothing
+
+                    else
+                        Nothing
+
+                Nothing ->
+                    Nothing
+
+        _ ->
+            Nothing
 
 
 {-| U-T1.3.7: the multi-result `$sret` call core — args boxed per the

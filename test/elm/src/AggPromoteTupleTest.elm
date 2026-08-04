@@ -54,6 +54,9 @@ Shapes exercised:
 -- CHECK: psplitchain: 53
 -- CHECK: psplitsret: 135
 -- CHECK: psplitneg: 7
+-- CHECK: sretfresh: 128
+-- CHECK: sretmix: 24
+-- CHECK: sretnegv: 8
 -- CHECK: tailpair: "3:6"
 -- CHECK: tailboth: 19
 
@@ -343,6 +346,64 @@ fwdWhole p =
 useFwdWhole : Int -> Int
 useFwdWhole n =
     fwdWhole ( n, n * 5 )
+
+
+{-| U-T1.3.8 (fresh leaf-call): `midPair`'s only result leaf IS a call
+to sret-promoted `pairFromSret` — under `ECO_SRET_FRESH=1` the fixpoint
+admits it and the worker feeds the multi-result `$sret` call straight
+through (no box/unbox on the hop).
+-}
+midPair : Int -> ( Int, Int )
+midPair n =
+    pairFromSret (n + 1)
+
+
+useFresh : Int -> Int
+useFresh n =
+    let
+        ( a, b ) =
+            midPair n
+    in
+    a * 10 + b
+
+
+{-| U-T1.3.8 mixed spine: one construct leaf + one fresh call leaf.
+-}
+mixedPair : Int -> ( Int, Int )
+mixedPair n =
+    case modBy 2 n of
+        0 ->
+            ( n, n + 1 )
+
+        _ ->
+            pairFromSret n
+
+
+useMixed : Int -> Int
+useMixed n =
+    let
+        ( a, b ) =
+            mixedPair n
+    in
+    a + b
+
+
+{-| U-T1.3.8 NEGATIVE: the leaf calls UNPROMOTED `pairId` (returns its
+param — never promoted), so `viaId` is not admitted in any round;
+behavior pinned.
+-}
+viaId : Int -> ( Int, Int )
+viaId n =
+    pairId ( n, n )
+
+
+useViaId : Int -> Int
+useViaId n =
+    let
+        ( a, b ) =
+            viaId n
+    in
+    a + b
 
 
 {-| U-T1.3.5 custom variant: single-ctor 3-field State consumed by
@@ -715,6 +776,15 @@ main =
 
         _ =
             Debug.log "psplitneg" (useFwdWhole 6)
+
+        _ =
+            Debug.log "sretfresh" (useFresh 3)
+
+        _ =
+            Debug.log "sretmix" (useMixed 5)
+
+        _ =
+            Debug.log "sretnegv" (useViaId 4)
 
         _ =
             Debug.log "tailpair" (useTailAccPair 3)

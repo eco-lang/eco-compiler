@@ -1033,7 +1033,33 @@ fixpoint is selection-internal, no new config surface.
 
 ### T1.3.8 — Result-freshness summary → custom/helper-mediated sret (expected-value #2)
 
-**Status: PLANNED 2026-08-04 (same exploration).** The highest-value
+**Status: CONSUMER 1 SHIPPED, CONSUMER 2 (CUSTOM) DEFERRED BY CENSUS
+2026-08-04 (Run M).** Census A (DEV-JS): helper-mediated TUPLE class =
+**5 fns / 11 sites** (near-empty — the freshness summary was built as
+the pre-registered fixpoint form, not a separate pass); CUSTOM class =
+**32 fns / 238 static sites** — far below what the track's largest
+emission surface (SretInfo generalization, custom spine machinery,
+custom decomposed yields, TailRec custom columns) would need to pay
+for itself; **deferred with numbers recorded, revive condition =
+dynamic evidence that the 238 sites are hot** (a dynamic per-site
+census, not more static counting). As-built for consumer 1:
+`Config.sretFresh` (`ECO_SRET_FRESH`, hash "sretf=1", default OFF);
+`sretFreshFixpoint`/`sretFreshTailOk` in Backend (leaf = direct call
+to a table member with IDENTICAL slot types; site-gated filtered-table
+iteration — the T1.3.7 discipline); `trySretFreshLeaf` in Expr (spine
+MonoCall leaf → `emitSretCallMulti` + make-form rebuild; consulted via
+the pre-hygiene ctx so dispatch clearing is unaffected; UNREACHABLE
+flag-off by construction since legacy selection rejects call leaves —
+no emission gate needed). At scale: 273 workers (+5, census-exact),
+leaks 0/68,570; 3-arm isolated Run M: **ship+sretf ≡ ship** (neutral,
+no cancellation); fixtures `sretfresh`/`sretmix`/`sretnegv`; E2E
+1611/1611. **The tier-wide pattern is now confirmed three times
+(psplit bracket, T1.3.7 justification, T1.3.8 helpers): static census
+brackets collapse at the admissibility/win gates — remaining tier-1
+upside lives in DYNAMIC evidence and upstream representation classes
+(closures/records), not in more selection precision.**
+
+**Original spec follows (2026-08-04).** The highest-value
 sret widening — helper-mediated construction (`let s2 = helper state`)
 and CUSTOM results — is gated on one derived fact: **"callee's result
 is freshly constructed and aliases no param."** That fact needs no
