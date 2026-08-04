@@ -342,9 +342,10 @@ applySretResultsOverride maybeVal cfg =
                 cfg
 
 
-{-| `ECO_SRET_FRESH=1|on`: U-T1.3.8 — widen sret selection to
-helper-mediated results (leaf = direct call to a promoted callee with
-identical slots). Default OFF. Hash-relevant when enabled ("sretf=1").
+{-| `ECO_SRET_FRESH=0|off`: U-T1.3.8 — disable the helper-mediated-result
+widening of sret selection (leaf = direct call to a promoted callee with
+identical slots). DEFAULT-ON since 2026-08-04. Hash-relevant when enabled
+("sretf=1").
 -}
 applySretFreshOverride : Maybe String -> EcoConfig -> EcoConfig
 applySretFreshOverride maybeVal cfg =
@@ -367,10 +368,11 @@ applySretFreshOverride maybeVal cfg =
                 cfg
 
 
-{-| `ECO_SRET_TAILFUNC=1|on`: U-T1.3.6 — enable the tail-func widening of
-sret result promotion (default OFF: measured ~+4% wall regression that
-cancels T1.3.3's win; see the tier-1 plan's T1.3.6 as-built). Hash-relevant
-when enabled ("srtf=1").
+{-| `ECO_SRET_TAILFUNC=0|off`: U-T1.3.6 — disable the tail-func widening of
+sret result promotion. DEFAULT-ON since 2026-08-04 by user decision,
+accepting the measured ~+4% self-compile wall regression that cancels
+T1.3.3's win (see the tier-1 plan's T1.3.6 as-built). Hash-relevant when
+enabled ("srtf=1").
 -}
 applySretTailFuncOverride : Maybe String -> EcoConfig -> EcoConfig
 applySretTailFuncOverride maybeVal cfg =

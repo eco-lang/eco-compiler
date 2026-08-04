@@ -39,12 +39,12 @@ type alias EcoConfig =
     , mono : MonoConfig
     , borrow : BorrowConfig
     , list : ListConfig
-    , aggPromote : Bool -- U-T1.3.1 (plans/opt-tier1-aggregate-promotion.md): emit eco.make.tuple2/3 for let-bound tuples proven non-escaping by the per-def use walk; env ECO_AGG_PROMOTE=1; artifact-affecting (hash token "aggp")
-    , ctorInline : Bool -- U-T1.3.2c (plans/opt-tier1-aggregate-promotion.md): saturated direct ctor calls emit eco.construct.custom inline in the caller (call overhead erased; nullary excluded — CAF-memoized singletons); env ECO_CTOR_INLINE=1; artifact-affecting (hash token "ctori")
-    , sretResults : Bool -- U-T1.3.3 (plans/opt-tier1-aggregate-promotion.md): result promotion via the sret ABI — functions returning a locally-constructed tuple2/3 gain a multi-result $sret worker (caller-slot ABI, CGEN_067); destructuring call sites migrate per-site; env ECO_SRET_RESULTS=1; artifact-affecting (hash token "sretr")
-    , psplitParams : Bool -- U-T1.3.5 (plans/opt-tier1-aggregate-promotion.md): param-side promotion — projection-only tuple2/3 / single-ctor-custom params gain a $psplit worker taking the fields as scalars; call sites with free-slot args migrate per-site; env ECO_PSPLIT_PARAMS=1; artifact-affecting (hash token "psplit")
-    , sretFresh : Bool -- U-T1.3.8: widen sretResults selection to helper-mediated results — a result leaf that IS a direct call to an already-promoted callee with identical slots is admissible (selection fixpoint); emission feeds the multi-result $sret call through. Default OFF; env ECO_SRET_FRESH=1; artifact-affecting when enabled (hash token "sretf=1"); no-op unless sretResults
-    , sretTailFuncs : Bool -- U-T1.3.6: widen sretResults selection to tail funcs (result columns through the while loop). Default OFF — measured REGRESSION ~+4% wall (2026-08-03 isolation A/B: it cancelled T1.3.3's −4% exactly; per-iteration slot-column carry in hot loops). Opt-in ECO_SRET_TAILFUNC=1 for future custom-result work; artifact-affecting when enabled (hash token "srtf=1"); no-op unless sretResults
+    , aggPromote : Bool -- U-T1.3.1 (plans/opt-tier1-aggregate-promotion.md): emit eco.make.tuple2/3 for let-bound tuples proven non-escaping by the per-def use walk; DEFAULT-ON since 2026-08-04 (ship config); env ECO_AGG_PROMOTE=0 disables; artifact-affecting (hash token "aggp")
+    , ctorInline : Bool -- U-T1.3.2c (plans/opt-tier1-aggregate-promotion.md): saturated direct ctor calls emit eco.construct.custom inline in the caller (call overhead erased; nullary excluded — CAF-memoized singletons); DEFAULT-ON since 2026-08-04 (ship config); env ECO_CTOR_INLINE=0 disables; artifact-affecting (hash token "ctori")
+    , sretResults : Bool -- U-T1.3.3 (plans/opt-tier1-aggregate-promotion.md): result promotion via the sret ABI — functions returning a locally-constructed tuple2/3 gain a multi-result $sret worker (caller-slot ABI, CGEN_067); destructuring call sites migrate per-site; DEFAULT-ON since 2026-08-04 (ship config); env ECO_SRET_RESULTS=0 disables; artifact-affecting (hash token "sretr")
+    , psplitParams : Bool -- U-T1.3.5 (plans/opt-tier1-aggregate-promotion.md): param-side promotion — projection-only tuple2/3 / single-ctor-custom params gain a $psplit worker taking the fields as scalars; call sites with free-slot args migrate per-site; DEFAULT-ON since 2026-08-04 (ship config); env ECO_PSPLIT_PARAMS=0 disables; artifact-affecting (hash token "psplit")
+    , sretFresh : Bool -- U-T1.3.8: widen sretResults selection to helper-mediated results — a result leaf that IS a direct call to an already-promoted callee with identical slots is admissible (selection fixpoint); emission feeds the multi-result $sret call through. DEFAULT-ON since 2026-08-04 (user decision; measured neutral, Run M); env ECO_SRET_FRESH=0 disables; artifact-affecting when enabled (hash token "sretf=1"); no-op unless sretResults
+    , sretTailFuncs : Bool -- U-T1.3.6: widen sretResults selection to tail funcs (result columns through the while loop). DEFAULT-ON since 2026-08-04 (user decision, ACCEPTING the measured ~+4% wall self-compile regression — 2026-08-03 isolation A/B: it cancelled T1.3.3's −4% exactly; per-iteration slot-column carry in hot loops); env ECO_SRET_TAILFUNC=0 disables; artifact-affecting when enabled (hash token "srtf=1"); no-op unless sretResults
     }
 
 
@@ -316,12 +316,20 @@ default =
     , mono = { engine = EngineSolver, diffDump = False, validate = False, borrowCensus0 = False, lss = defaultLss }
     , borrow = { enabled = False, reify = ROff, report = False, validate = False }
     , list = { chunks = True, report = False }
-    , aggPromote = False
-    , ctorInline = False
-    , sretResults = False
-    , psplitParams = False
-    , sretFresh = False
-    , sretTailFuncs = False
+
+    -- The ENTIRE tier-1 family DEFAULT-ON since 2026-08-04 (user
+    -- decision, reversing the same-day default-off verdict). Ship config
+    -- (aggp+ctori+sretr+psplit) measured −3.2/−3.3% wall same-day
+    -- interleaved (Runs J/K); sretFresh measured neutral (Run M);
+    -- sretTailFuncs carries a measured ~+4% wall self-compile regression
+    -- (Runs J/K isolation A/B) — accepted by the same decision. Each
+    -- flag's env var =0 disables individually.
+    , aggPromote = True
+    , ctorInline = True
+    , sretResults = True
+    , psplitParams = True
+    , sretFresh = True
+    , sretTailFuncs = True
     }
 
 
@@ -668,10 +676,11 @@ hash cfg =
                 else
                     []
                )
-            -- Aggregate-promotion token appears ONLY when enabled (default-off,
-            -- U-T1.3.1): promoting rewrites tuple constructs to eco.make.* in
-            -- generated MLIR, so flag-on artifacts must never share flag-off
-            -- caches; default configs hash exactly as before.
+            -- Aggregate-promotion token appears ONLY when enabled (the default
+            -- since 2026-08-04, U-T1.3.1): promoting rewrites tuple constructs
+            -- to eco.make.* in generated MLIR, so flag-on artifacts must never
+            -- share flag-off caches; explicitly-disabled configs hash exactly
+            -- like the historical default-off caches.
             ++ (if cfg.aggPromote then
                     [ "aggp=1" ]
 
@@ -679,8 +688,9 @@ hash cfg =
                     []
                )
             -- Ctor-inlining token, same posture as aggp: appears only when
-            -- enabled (default-off, U-T1.3.2c) — flag-on artifacts must never
-            -- share flag-off caches; default configs hash exactly as before.
+            -- enabled (the default since 2026-08-04, U-T1.3.2c) — flag-on
+            -- artifacts must never share flag-off caches; explicitly-disabled
+            -- configs hash exactly like the historical default-off caches.
             ++ (if cfg.ctorInline then
                     [ "ctori=1" ]
 

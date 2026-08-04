@@ -1,7 +1,11 @@
-# Eco optimization roadmap — Tier 2: list/Cons deforestation
+# Eco optimization roadmap — Tier 2: residual list-traversal deletion (cons fusion: CLOSED)
 
-**Status: SCOPING — activates on D-T1's outcome (immediately if D-T1 fails;
-after tier-1's U-T1.3 otherwise). Highest impact ceiling of any tier.**
+**Status: RESTRUCTURED 2026-08-04 — rebased onto the shipped chunked-list
+work (`plans/chunked-list-representation.md`, phases L0–L5 all decided;
+`list.chunks` default-ON since the Aug 3 quiet-window wall verdict).
+Classic pairwise combinator fusion — this tier's original program — was
+measured and CLOSED NO-GO by that plan's own L5 adjacency census. The
+census-ranked residual units below are what remains.**
 
 **Series:** `plans/opt-tier{1..4}-*.md` — see `opt-tier1-aggregate-promotion.md`
 for the series header and ordering rationale. Supersedes the
@@ -9,98 +13,143 @@ for the series header and ordering rationale. Supersedes the
 
 ---
 
-## 0. Why: the allocation mass IS the GC cost
+## 0. What happened to this tier (record, so nobody re-plans it)
 
-> **EVIDENCE CORRECTION (2026-07-31, census §18.3):** the "Cons ≈65% of
-> ~798M" figure below was an artifact of the inline-alloc counter bypass —
-> the complete count (`ECO_INLINE_ALLOC=0` lowering) is **6.52 B objects**
-> with **Cons at 10.4% (679M)**; the dominant mass is codegen'd aggregates
-> (Custom 38.6% + Closure 22.1% + Tuple2 19.2% = 80%), which belong to
-> tier 1's promotion track. This tier's ceiling shrinks accordingly: still
-> 679M objects absolute (worth having), but tier 1 now clearly leads and
-> the D-T2 gate below should be read against the corrected 6.52 B
-> denominator. True promotion rate is 2.5%, not 19.9%.
+As scoped pre-Aug-2 this tier was "list/Cons deforestation": whole-combinator
+recognition + fusion of adjacent pairs, on the premise that *"not allocating
+the intermediate list at all is the only lever."* The chunked-list plan then
+executed the recognition-and-loop-template half of that program under its own
+phasing, and measured the fusion half dead:
 
-- ~~Cons ≈ **65% of ~798M objects** per self-compile~~ (corrected above).
-  Tracing GC is ~29% of runtime self-time / ~25% of wall — driven by the
-  aggregate classes per the corrected profile (root-scan 14.5% +
-  evacuate/mark 14.4%).
-- **Calibration (perf-tune loop, 2026-07-29/30):** nine targeted fusions
-  removed −62.4M objects (−5.1%) and −41 minor GCs — and wall stayed
-  noise-bound. Conclusion: this tier only pays if it is *systematic* —
-  tens-of-% object reduction, not single digits. That is the bar D-T2 sets.
-- The borrow oracle confirmed the shape empirically: `List.cons` is the #1
-  owned kernel site (4,175 defaulting call sites) and Cons cells escape —
-  neither RC nor stack promotion touches them. **Not allocating the
-  intermediate list at all is the only lever.**
+- **The infrastructure this tier planned to build now exists** (chunk plan
+  §6 L1 as-builts): `GlobalOpt/ListCombinators.elm` whole-combinator
+  recognition; combinator shunts to chunk-building kernels
+  (`Functions.elm listChunksShunt`); the GC-rooted scratch stack
+  (`eco_scratch_mark/push_*/finish/finish_fwd/abandon`); backend passes
+  `EcoListTemplate` (unwind-cons capture) and `EcoListCursor` (3,191 of
+  4,626 whiles walk mixed spines allocation-free); chunk chaining for
+  over-cap batches. This was U-T2.2's option (b) — "List-LoopIR at
+  emission, BytesFusion precedent" — shipped under another name.
+- **The target mass collapsed via a different lever than fusion.** Final
+  flag-on trade, now the default baseline: **−4.28% objects, −47.5% Cons
+  (737.5M → 387.9M), −24% list bytes, −1.7% RSS, lower minor-GC time in
+  every pair, zero measurable wall cost** (true-quiet-window parity, chunk
+  plan §6 L1 superseded verdict). Chunks cheapened the intermediates and
+  de-allocated the walks instead of deleting them.
+- **Gate D-T2 (≥10% of allocation projected) is now unreachable by
+  arithmetic:** residual Cons is 388M of 6.21B objects ≈ **6.2%** — perfect
+  deforestation of every remaining cons could not clear the gate this plan
+  set for itself.
 
-## 1. Why it's hard, and why legality is NOT the hard part
+### The fusion verdict (chunk plan §6 L5, Aug 3 2026 — do not re-run on self-compile)
 
-- **Recognition is the hard part:** `List.map` is a recursive `foldr` —
-  per-op rewriting never sees a fusable "loop". Fusion needs
-  **whole-combinator recognition** (the cons-reduction investigation's
-  conclusion): treat `map/filter/foldl/foldr/concatMap/append/indexedMap/
-  reverse/map2` as known symbols and fuse adjacent pairs/chains.
-- **Legality is nearly free:** Elm is pure and strict — intermediate lists
-  are semantically unobservable, so `map f ∘ map g ⇒ map (f ∘ g)` etc. are
-  unconditionally sound up to two caveats to state as policy: (a)
-  `Debug.log`/`Debug.crash` ordering inside fused callbacks may interleave
-  differently; (b) a non-terminating producer fused with a partial consumer
-  can change which ⊥ you hit. Both are acceptable for `--optimize` (record
-  as an invariant note when implementing). The borrow oracle's sharing
-  facts are **optional** here — useful later for in-place reuse decisions,
-  not needed for deforestation soundness. Per tier-1's T1-R1, that keeps
-  this tier free of the ~15% analysis toll.
+Per-function-scoped adjacency census of the Stage-7a compiler MLIR (an
+earlier global-scope scan was invalidated by cross-function SSA-name
+collisions: 6,638 apparent pairs → **1,162 real**): `foldl∘reverse` 815
+(70% — `foldrHelper`'s internal >500-element fallback, one site per spec,
+dynamically rare, already chunk-chain-cheap), `append∘append` 120,
+`map∘map` 44, everything else ≤ 40. **No high-value fusible pool exists on
+the self-compile workload**; the measured wall profile is dominated by
+Custom/Closure churn and non-list work. A speculative `reverse∘reverse→id`
+peephole was implemented, measured against the corrected census (0 real
+occurrences), and removed.
 
-## 2. Existing infrastructure to build on (do not invent)
+| killed | by | revive iff |
+|---|---|---|
+| Pairwise fusion laws / deforestation on self-compile (the original U-T2.1–U-T2.3) | L5 adjacency census (1,162 real pairs, top pool cold) + D-T2 denominator arithmetic (6.2% < 10%) | a workload whose adjacency census shows a hot `map∘map`/`fold∘map`/`concatMap` pool — i.e. user programs; see U-T2.4′ |
 
-- **`Generate/MLIR/BytesFusion/{Emit,LoopIR,Reify}.elm`** — the in-repo
-  template: recognizes codec chains at emission and lowers them to a loop
-  IR. A List-LoopIR would mirror this shape.
-- **`GlobalOpt/Staging/{ProducerInfo,GraphBuilder,Rewriter,Solver,
-  UnionFind}.elm`** — the call-staging rewrite infrastructure; a
-  Mono-level rewrite-laws pass would live beside it.
-- **`AbiCloning`** keyed specialization — for fused-combinator
-  specializations if the strategy needs per-shape clones.
+## 1. What the residual Cons actually is (chunks-on census)
 
-## 3. Units
+Post-chaining cons-site tally (`ECO_CONS_SITES` return-address tally on the
+flag-on census run; chunk plan §6 L1.3/L3):
 
-- **U-T2.1 — combinator-chain census (first, cheap, decisive).** A
-  census-only GlobalOpt fold (same posture as the borrow census) counting
-  fusable adjacencies in the Mono graph: `map∘map`, `map∘filter`,
-  `foldr/foldl∘map`, `concatMap`, `append`-of-producer, `indexedMap`,
-  `reverse∘X`, `map2`, consumer-in-case-of-producer. Static counts + the
-  hot-def list; weight against the Cons allocation share. **Gate D-T2:**
-  projected object reduction from the top-N chain shapes **≥10% of total
-  allocation** → build; else record and stop (tier 4).
-- **U-T2.2 — strategy decision (short design doc).** Two candidates:
-  (a) **rewrite laws at Mono level** (build/fold-style pairwise laws over
-  known combinator symbols — simpler, catches adjacent pairs, no new IR);
-  (b) **List-LoopIR at emission** (recognize whole chains and lower to an
-  index/accumulator loop à la BytesFusion — bigger, catches long chains
-  and mixed consumers, kills the closure allocations of the combinators
-  too). Choose from U-T2.1's shape distribution; (a) can ship first and
-  (b) subsume it later.
-- **U-T2.3 — implement the top-N shapes** behind a config flag
-  (hash-relevant this time — it changes output), corpus + self-compile
-  gates, one shape at a time with the census re-run per shape.
-- **U-T2.4 — measure & verdict.** Objects allocated, minor-GC cycles,
-  promotion count, interleaved ×3 walls with majors, plus `elm-aws-codegen`
-  canary (deep-let-chain pathology). Related-but-separate follow-on to
-  record: TRMC (tail-recursion-modulo-cons) for spine-building loops —
-  reduces recursion overhead and enables `evacuateListSpine`-friendly
-  contiguous spines, but does not remove allocation; keep out of scope
-  until the fusion verdict is in.
+- **`toComparableMonoTypeHelper` work-stack loop ≈164.6M (40% of
+  symbolized)** — one LIFO push/pop churn loop building `List String`
+  comparable type keys; it also drives a matching Custom pool via WorkItem
+  wrappers. A stack, not a combinator chain: unfusable, and front-slack
+  amortization cannot help a stack (the §10/L3 NO-GO).
+- **Sub-4-element lists ≈61M** (kernel `reverse` n<4 cells fallback,
+  LTO-inlined into the specs) — below any chunk threshold by design;
+  irreducible.
+- **Lambda/tail-inline long tail ≈150M** — the tail-inline share is
+  capturable by function-level templates (below); the closure-mediated
+  foldr-family share (λ≈7.7 papExtend traffic) is uncapturable without
+  defunctionalization — the U2b/H7 NO-GO precedents apply. Parked.
+- Thin kernel tail: `append` cells 5.8M, `String.split` 5.5M, `map2` 4.8M
+  (the L2 Tier-A pool, already converted where it paid).
 
-## 4. Risks
+None of this is fusion-shaped. The units below are the chunk plan's own
+data-ranked next levers, adopted as this tier's residuals.
 
-- **Inliner interactions:** fused shapes must survive (or run after)
-  `MonoInlineSimplify`; the duplicate-let-name SSA-redefinition lesson
-  applies to any rewrite that copies bodies (`freshenLetBoundNames`).
-- **`annotateCallStaging` exponential gotcha** (GlobalOpt phase 5,
-  O(2^let-depth) on deep chains): a fusion pass that wraps bodies in lets
-  can re-trigger it — measure the canary.
-- Corpus is flag-off-shaped and the harness cache is env-blind — touch all
-  test `.elm` before flag-on gates; run E2E once, teed, grep the file.
-- `Debug.*` ordering / ⊥ policy must be written down (invariant note)
-  before the first law lands.
+## 2. Units (restructured)
+
+- **U-T2.1′ — function-level accumulator templates (the payoff unit).**
+  The slice-2 architecture correction (chunk plan §6 L1.3) is the design:
+  eco lowers TCO as `musttail` self-calls, never `scf.while`, so
+  accumulator recursion is invisible to loop-level capture — the capture
+  point is the **function**: self-musttail functions with an accumulator
+  parameter; rewrite non-recursive call sites to `mark/…/finish`; carry
+  over the slice-3 bail list (papCreate-referenced, musttail external
+  sites, escaping self-call results, non-dominating heads). Mono-level
+  template generation in `Functions.elm` (BytesFusion precedent) is the
+  recorded alternative altitude if backend capture proves awkward.
+  **Sizing:** toComparable's 164.6M plus the tail-inline share of the
+  ≈150M pool. Gates: differential + `ECO_HEAP_VALIDATE`, flag-on
+  self-compile byte-identity, full E2E once (teed), census re-run.
+- **U-T2.2′ — the toComparable site specifically** (likely subsumed by
+  U-T2.1′; listed so it cannot be silently dropped). 40% of residual Cons
+  plus its Custom shadow in one function. If the generic template bails
+  on it, a targeted rewrite is warranted — including the option of
+  changing the keying strategy itself (it builds `List String` comparable
+  keys; interning/hash-consing the key would delete the pool at source
+  rather than allocate it faster).
+- **U-T2.3′ — measurement discipline (standing).** Every census and wall
+  in this tier runs against the **chunks-ON baseline** (the default since
+  Aug 3); the corpus is now flag-on-shaped, so comparisons against
+  chunks-OFF need the full `.elm` touch (env-blind harness cache). Walls
+  always recorded with their majors (GC-trigger lottery). `elm-aws-codegen`
+  canary on any pass that wraps bodies in lets (`annotateCallStaging`
+  exponential).
+- **U-T2.4′ — user-workload fusion activation (recorded, NOT scheduled).**
+  Fusion survives only as a **generated-code quality** feature (series
+  axis 3), activated per-workload, never by self-compile evidence:
+  - *Activation:* a cheap adjacency census on the target workload
+    (`ECO_LIST_REPORT` combinator census + the L5 scoped MLIR adjacency
+    scan) showing a hot `map∘map`/`fold∘map`/`concatMap` pool.
+  - *Capture point (recorded in L5):* mono-level closure composition +
+    re-specialization in GlobalOpt over `ListCombinators` recognition —
+    NOT MLIR (lambdas are opaque `papExtend`s by then).
+  - *Owed before the first law lands:* the `Debug.log`/`Debug.crash`
+    ordering + ⊥-selection policy as an invariant note (fused callbacks
+    may interleave differently; producer/consumer ⊥ can shift — both
+    acceptable under `--optimize`, but write it down).
+  - *Context:* the perf-tune hand-fusions (`++`/`concatMap`/`allRes`,
+    −62.4M objects/−5.1%) remain the measured preview of what automatic
+    fusion buys when a pool exists; borrow-oracle sharing facts stay
+    optional (in-place reuse decisions belong to the tier-3 world).
+
+## 3. Related-but-separate (carried over)
+
+- **TRMC** (tail-recursion-modulo-cons): still out of scope. Chunk
+  templates + chaining consumed most of its spine-building value; revisit
+  only on user-workload evidence, and note it reduces recursion overhead
+  but does not remove allocation.
+- **Stale borrow-oracle citation:** the old §0 figure "`List.cons` is the
+  #1 owned kernel site (4,175 defaulting call sites)" predates chunks —
+  much of that traffic now routes through chunk builders. Re-run the
+  borrow census flag-on before quoting kernel-site numbers in any new
+  decision.
+
+## 4. Risks (carried over, updated by the as-builts)
+
+- **Inliner interactions are real, twice over:** `MonoInlineSimplify`
+  threshold-inlining silently defeated the L1 shunts until the blacklist
+  was upgraded to full non-candidacy — any new template/shunt symbol must
+  join the Generate blacklist when `list.chunks` is on. Body-copying
+  rewrites need `freshenLetBoundNames` (duplicate-let SSA-redefinition
+  lesson).
+- `annotateCallStaging` exponential (GlobalOpt phase 5, O(2^let-depth)) —
+  measure the `elm-aws-codegen` canary per U-T2.3′.
+- E2E/elm-tests cache race: serialize; `--target full` deletes
+  `bin/eco-compiler` (rebuild via `--target eco-compiler` for census runs).
+- Run E2E once, teed, grep the file.

@@ -12,7 +12,7 @@ remain the implementation specs / as-built records the tiers cite.
 | tier | file | theme | status |
 |---|---|---|---|
 | **1** | `opt-tier1-aggregate-promotion.md` | escape sizing + aggregate/scalar promotion + kernel sigs | **ACTIVE** |
-| 2 | `opt-tier2-cons-fusion.md` | list/Cons deforestation | SCOPING (activates on D-T1) |
+| 2 | `opt-tier2-cons-fusion.md` | residual list-traversal deletion (pairwise fusion CLOSED NO-GO by the chunked-list L5 census) | RESTRUCTURED 2026-08-04 |
 | 3 | `opt-tier3-rc-runtime.md` | RC runtime: arrays, B4/B5, mode-spec, drop-sliding | GATED (v2) |
 | 4 | `opt-tier4-parked.md` | parked/killed items + reactivation triggers | REGISTER |
 
