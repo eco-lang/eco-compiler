@@ -1089,8 +1089,25 @@ prior-ship / +sretf), never only paired.
 
 ### T1.3.9 — T1.3.6 revival: param-column aliasing (expected-value #3)
 
-**Status: PLANNED 2026-08-04 (same exploration; T1.3.6 stays
-default-off until this lands and re-measures).** The +4% regression
+**Status: CENSUS NO-GO 2026-08-04 — (a) NOT BUILT; widening stays
+default-off.** The accumulator-shape census (DEV-JS, sretr+srtf leg;
+strict criterion = every base leaf a verbatim `MonoTupleCreate` of
+loop params, consistent across leaves) measured **2 of 432
+admitted-worker events (0.5%) alias-eligible** — the `tailpair`
+fixture class is essentially absent from the real population. Real
+tail-func workers return COMPUTED results (`( result, finalState )`
+with let-bound computation), which is exactly why the result columns
+exist and why the widening regressed; param-column aliasing has
+nothing to alias. Ladder outcome: (a) dead; the standing revive
+conditions are **(b) cf-level exit-edge materialization** (block args
+on the exiting branch — scf.while cannot express exit-only values; a
+real emission rework, unscheduled) **or a heat-gated selection from
+dynamic profile data**. Fourth instance of the tier pattern: the
+fixture-class shape did not represent the population — census before
+machinery, every time.
+
+**Original spec follows (T1.3.6 stays
+default-off until (b) or heat gating lands and re-measures).** The +4% regression
 is mechanical: result slots are loop-carried scf.while state
 (`stateTypes = flatParamTypes ++ [I1] ++ resultSlots`), with fresh
 dummies minted per continue (`compileTailCallStep`) and all columns
@@ -1149,6 +1166,16 @@ the 6.8%-weighted `call:tup2` class (census §18.4). Steps are
 independently shippable and independently measurable; each failure mode
 (harness rot, predicate coverage, inline seams, statepoint discipline)
 is isolated to the step that owns it.
+
+**DEFAULT-ON VERDICT (decided 2026-08-04): the family stays
+DEFAULT-OFF.** All six flags (`aggp`, `ctori`, `sretr`, `psplit`,
+`sretf`, `srtf`) remain opt-in via env. Verification snapshot at the
+decision: family-on full E2E 1611/1611 (family-built compiler +
+family-compiled corpus, test caches touched for the env-blind-harness
+trap); solver+LSS+family bootstrap EXIT=0; the srtf widening excluded
+from the verification config by its measured-regression decision.
+Revisit trigger: dynamic per-site heat evidence or the tier-2 work
+changing the economics.
 
 **Follow-on order (2026-08-04, post-Runs-J/K):** `7 → 8 → 9` in
 expected-value order from the borrow-facts exploration — T1.3.7
