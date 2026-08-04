@@ -11,6 +11,21 @@ census-ranked residual units below are what remains.**
 for the series header and ordering rationale. Supersedes the
 `borrow-inference-phase{0..6}` series for sequencing.
 
+**SCOPE (tightened 2026-08-04): this tier contains only transforms that change
+the code eco *emits*** — i.e. things that make every compiled program faster,
+the compiler included. Hand optimizations of the compiler's *own Elm source*
+are a different category: they improve self-compile wall and nothing else, and
+they are sequenced separately. The former U-T2.2′
+(`toComparableMonoTypeHelper` key building) was exactly that, and moved out to
+**`plans/mono-comparable-key-optimization.md`**.
+
+Why the distinction is easy to lose: the `ECO_CONS_SITES` census that ranks
+everything here measures **the compiler compiling itself**, a workload that is
+simultaneously the product (axis 1) and the benchmark corpus (axis 3). A hot
+site in that census does not by itself say whether eco *generates* bad code
+for a pattern or whether one compiler function is written badly. Classify
+before scheduling.
+
 ---
 
 ## 0. What happened to this tier (record, so nobody re-plans it)
@@ -67,7 +82,11 @@ flag-on census run; chunk plan §6 L1.3/L3):
   symbolized)** — one LIFO push/pop churn loop building `List String`
   comparable type keys; it also drives a matching Custom pool via WorkItem
   wrappers. A stack, not a combinator chain: unfusable, and front-slack
-  amortization cannot help a stack (the §10/L3 NO-GO).
+  amortization cannot help a stack (the §10/L3 NO-GO). **Not a codegen
+  defect — a compiler-source defect** (`Data.Map`/`Data.Set` re-derive the
+  key on every operation), so the fix is **out of this tier**: see
+  `plans/mono-comparable-key-optimization.md`. Two *generalizable* patterns
+  extracted from it are recorded as §5 candidates below.
 - **Sub-4-element lists ≈61M** (kernel `reverse` n<4 cells fallback,
   LTO-inlined into the specs) — below any chunk threshold by design;
   irreducible.
@@ -94,15 +113,25 @@ data-ranked next levers, adopted as this tier's residuals.
   template generation in `Functions.elm` (BytesFusion precedent) is the
   recorded alternative altitude if backend capture proves awkward.
   **Sizing:** toComparable's 164.6M plus the tail-inline share of the
-  ≈150M pool. Gates: differential + `ECO_HEAP_VALIDATE`, flag-on
-  self-compile byte-identity, full E2E once (teed), census re-run.
-- **U-T2.2′ — the toComparable site specifically** (likely subsumed by
-  U-T2.1′; listed so it cannot be silently dropped). 40% of residual Cons
-  plus its Custom shadow in one function. If the generic template bails
-  on it, a targeted rewrite is warranted — including the option of
-  changing the keying strategy itself (it builds `List String` comparable
-  keys; interning/hash-consing the key would delete the pool at source
-  rather than allocate it faster).
+  ≈150M pool. **Double-count warning:** that 164.6M is also the target of
+  `plans/mono-comparable-key-optimization.md`. Whichever lands first shrinks
+  the other's headline number, and neither may claim the full figure after
+  the fact — re-run the census between them, and size U-T2.1′ on the
+  *remaining* pool if the key work goes first. Gates: differential +
+  `ECO_HEAP_VALIDATE`, flag-on self-compile byte-identity, full E2E once
+  (teed), census re-run.
+- **U-T2.2′ — MOVED OUT 2026-08-04, not dropped.** Was "the toComparable
+  site specifically". On inspection it is a **category-A** item: the driver
+  is `Data.Map`/`Data.Set` re-deriving the comparable on every operation
+  (`compiler/src/Data/Map.elm:110`), which no codegen pass can observe, so
+  no version of it makes a user program faster. Full analysis, sizing,
+  staging (K1–K4) and gates now live in
+  **`plans/mono-comparable-key-optimization.md`**. It remains a legitimate
+  self-compile-wall unit; it is simply not this tier's kind of work, and it
+  no longer gates U-T2.1′. Note U-T2.1′ may still *incidentally* capture the
+  site — it is a self-musttail function with a `List` accumulator parameter,
+  i.e. a textbook template candidate — which makes it a useful correctness
+  and sizing probe for the template pass.
 - **U-T2.3′ — measurement discipline (standing).** Every census and wall
   in this tier runs against the **chunks-ON baseline** (the default since
   Aug 3); the corpus is now flag-on-shaped, so comparisons against
@@ -153,3 +182,40 @@ data-ranked next levers, adopted as this tier's residuals.
 - E2E/elm-tests cache race: serialize; `--target full` deletes
   `bin/eco-compiler` (rebuild via `--target eco-compiler` for census runs).
 - Run E2E once, teed, grep the file.
+
+## 5. Candidate generated-code units surfaced by the key-site investigation (UNSIZED)
+
+Recorded 2026-08-04 while classifying the former U-T2.2′. Both are genuine
+category-B transforms — they would fire on any program eco compiles, and the
+compiler's own hot key-builder is merely one instance. **Neither is sized and
+neither is scheduled**; each needs a census before it can be admitted as a
+unit, exactly like every other item in this series.
+
+- **U-T2.5′ — CSE over pure calls.** Elm is pure and strict, so common
+  subexpression elimination of a repeated call to the same function on the
+  same arguments is *unconditionally sound* (modulo `Debug.*` ordering, which
+  needs the same written policy U-T2.4′ already owes). There is currently
+  **no Elm-level CSE pass** in `compiler/src/Compiler/GlobalOpt/` — the only
+  CSE in the pipeline is LLVM's, downstream of the boxing decisions that
+  matter. The motivating idiom is probe-then-insert
+  (`if Set.member (f x) s then … else Set.insert (f x) s`), which is
+  pervasive idiomatic Elm and rebuilds `f x` twice. *Census before
+  scheduling:* count repeated pure-call subexpressions per definition on the
+  self-compile corpus **and** at least one user workload — the tier pattern
+  (×4 so far) is that static censuses of this shape collapse at the
+  admissibility gate, so expect that outcome and let the data say otherwise.
+- **U-T2.6′ — sum-type wrapper unboxing.** A single-field-constructor sum
+  used as a work-stack element (`type WorkItem = WorkType MonoType |
+  WorkMarker String`) allocates one Custom object per stack entry. The
+  explicit-work-stack idiom is the standard Elm workaround for the absence of
+  guaranteed deep recursion, so this pool exists in user programs too, and
+  Custom is the **largest** true-allocation class (38.6% of 6.52B). *Census
+  before scheduling:* how much of the Custom pool is single-field wrappers
+  with a bounded, statically-known constructor set — the honest prior is that
+  the qualifying population is small, per the tier-1 T1.3.7/T1.3.8 record.
+
+Both interact with `plans/mono-comparable-key-optimization.md` K1/K2: if
+either pass ships, the corresponding hand-fix there becomes redundant. That
+makes the hand-fixes a cheap *measurement* of what these passes would be
+worth — do them first and read the delta, rather than treating them as
+competing work.
