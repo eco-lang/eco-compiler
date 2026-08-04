@@ -1,6 +1,7 @@
 module Compiler.Generate.MLIR.Context exposing
-    ( Context, FuncSignature, PendingLambda, TypeRegistry, VarInfo
-    , initContext, withInlineBodies, withEcoConfig
+    ( SplitParamInfo, SplitSpec(..), SretInfo, withSretPromoted, PsplitInfo, SlotPlan, withPsplitPromoted
+    , Context, FuncSignature, PendingLambda, TypeRegistry, VarInfo
+    , initContext, withInlineBodies, withEcoConfig, withCtorBySpec
     , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp, liveEcoValueVars, resetDefinedSsaVars
     , getOrCreateTypeIdForMonoType, registerKernelCall
     , buildSignatures, kernelFuncSignatureFromType, residualResultType
@@ -22,7 +23,7 @@ state during MLIR code generation.
 
 # Context Management
 
-@docs initContext, withInlineBodies, withEcoConfig
+@docs initContext, withInlineBodies, withEcoConfig, withCtorBySpec
 
 
 # Variable Management
@@ -84,6 +85,60 @@ type alias FuncSignature =
     , returnType : Mono.MonoType
     , evaluatorBoxesAll : Bool -- True for MonoExtern/MonoManagerLeaf: evaluator wrapper always has !eco.value params
     }
+
+
+{-| U-T1.3.3L: a tail-loop parameter carried as scalar slots. `slots` are
+the CURRENT-iteration slot SSA vars in layout order (each the stored form:
+unboxed primitive or boxed `!eco.value` per the layout); `split` carries
+what projection/materialization need. No aggregate type ever crosses an
+iteration boundary — each boxed slot is its own `!eco.value` loop var, so
+RS4GC relocates normally (no struct-across-statepoint hazard).
+-}
+type alias SplitParamInfo =
+    { slots : List ( String, MlirType )
+    , split : SplitSpec
+    }
+
+
+type SplitSpec
+    = SplitTuple Types.TupleLayout
+    | SplitCtor Types.CtorLayout
+
+
+{-| U-T1.3.3 result promotion: a function whose result is a locally
+constructed tuple2/3 on every return path (and with at least one direct
+destructuring call site) gets a `$sret` worker with one result PER FIELD;
+the original becomes a thin re-boxing shim.
+-}
+type alias SretInfo =
+    { layout : Types.TupleLayout
+    , slotTypes : List MlirType
+    }
+
+
+withSretPromoted : Dict.Dict Int SretInfo -> Context -> Context
+withSretPromoted d ctx =
+    { ctx | sretPromoted = d }
+
+
+{-| U-T1.3.5 param-side promotion: one plan per ORIGINAL param position
+(`Nothing` = unpromoted). A promoted position's boxed param is replaced
+by its per-field scalar slots on the `$psplit` worker's signature.
+-}
+type alias PsplitInfo =
+    { paramPlans : List (Maybe SlotPlan)
+    }
+
+
+type alias SlotPlan =
+    { spec : SplitSpec
+    , slotTypes : List MlirType
+    }
+
+
+withPsplitPromoted : Dict.Dict Int PsplitInfo -> Context -> Context
+withPsplitPromoted d ctx =
+    { ctx | psplitPromoted = d }
 
 
 {-| Derive a FuncSignature from a monomorphic function type.
@@ -162,6 +217,13 @@ type alias Context =
     , externBoxedVars : Set.Set String -- Local vars that alias extern/kernel functions (evaluator has all !eco.value params)
     , definedSsaVars : Set.Set String -- SSA variables defined in the current function scope (for safepoint filtering)
     , inlineBodies : Dict.Dict Int ( List ( Name.Name, Mono.MonoType ), Mono.MonoExpr )
+    , ctorBySpec : Dict.Dict Int Mono.CtorShape -- U-T1.3.2: SpecId -> ctor shape for saturated-ctor-call promotion (make.custom)
+    , fwdRefdLetNames : Set.Set String -- U-T1.3.2 precise sibling recovery: names of the CURRENT let chain referenced by an EARLIER sibling's RHS (closure-mediated forward refs); computed once per chain head in generateLet, restored on chain exit
+    , tailRecLetBody : Maybe Mono.MonoExpr -- U-T1.3.2t: TailRec.compileLetStep emits lets through a synthetic MonoUnit-body wrapper; this carries the REAL loop-body suffix so the promotion hook's escape walk can vet actual uses (Nothing everywhere else; cleared before nested emission)
+    , splitAggParams : Dict.Dict String SplitParamInfo
+    , sretPromoted : Dict.Dict Int SretInfo -- U-T1.3.3: SpecId -> promoted-result info (worker exists; call sites may migrate)
+    , psplitPromoted : Dict.Dict Int PsplitInfo -- U-T1.3.5: SpecId -> promoted-PARAM info ($psplit worker exists; free-slot sites may migrate)
+    , sretTailLayout : Maybe Types.TupleLayout -- U-T1.3.3: set ONLY while compiling an sret worker body's result spine -- U-T1.3.3L scalar-split loop variables: tail-loop params of promotable shape carried as N scalar slot vars instead of one boxed value; keyed by param name, installed for the scf.while after-region only
 
     -- ^ SpecId -> (params, body) of inlinable, non-recursive functions in
     -- the final MonoGraph. Used by the bytes-fusion reifier's
@@ -235,6 +297,13 @@ initContext mode registry signatures initialCtorShapes =
     , externBoxedVars = Set.empty
     , definedSsaVars = Set.empty
     , inlineBodies = Dict.empty
+    , ctorBySpec = Dict.empty
+    , fwdRefdLetNames = Set.empty
+    , tailRecLetBody = Nothing
+    , splitAggParams = Dict.empty
+    , sretPromoted = Dict.empty
+    , psplitPromoted = Dict.empty
+    , sretTailLayout = Nothing
     , ecoConfig = Config.default
     }
 
@@ -246,6 +315,15 @@ Typically called immediately after `initContext` with the result of
 withInlineBodies : Dict.Dict Int ( List ( Name.Name, Mono.MonoType ), Mono.MonoExpr ) -> Context -> Context
 withInlineBodies bodies ctx =
     { ctx | inlineBodies = bodies }
+
+
+{-| U-T1.3.2: install the SpecId → CtorShape index (built from the graph's
+`MonoCtor` nodes) used by aggregate promotion to recognise saturated
+constructor calls at let bindings.
+-}
+withCtorBySpec : Dict.Dict Int Mono.CtorShape -> Context -> Context
+withCtorBySpec d ctx =
+    { ctx | ctorBySpec = d }
 
 
 {-| Install the effective eco-config on a freshly-initialised Context.

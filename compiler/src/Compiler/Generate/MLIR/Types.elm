@@ -2,10 +2,10 @@ module Compiler.Generate.MLIR.Types exposing
     ( ecoValue, ecoInt, ecoFloat, ecoChar
     , monoTypeToAbi, monoTypeToOperand
     , mlirTypeToString
-    , isFunctionType, countTotalArity, isEcoValueType
+    , isFunctionType, countTotalArity, isEcoValueType, isAggTupleType, isAggCustomType, isAggValueType
     , isUnboxable, mlirTypeToKind, bitmapSetKind
     , RecordLayout, FieldInfo, TupleLayout, CtorLayout
-    , computeRecordLayout, computeTupleLayout, computeCtorLayout
+    , computeRecordLayout, computeTupleLayout, computeCtorLayout, tupleSlotTypes, ctorSlotTypes
     )
 
 {-| MLIR type definitions and conversions.
@@ -282,6 +282,39 @@ isEcoValueType ty =
             False
 
 
+{-| Check if an MLIR type is a VALUE-level tuple aggregate
+(`!eco.tuple2<...>` / `!eco.tuple3<...>`, U-T1.3.1 promoted form).
+-}
+isAggTupleType : MlirType -> Bool
+isAggTupleType ty =
+    case ty of
+        NamedStruct s ->
+            String.startsWith "eco.tuple2<" s || String.startsWith "eco.tuple3<" s
+
+        _ ->
+            False
+
+
+{-| Check if an MLIR type is a VALUE-level custom aggregate
+(`!eco.custom<...>`, U-T1.3.2 promoted ctor form).
+-}
+isAggCustomType : MlirType -> Bool
+isAggCustomType ty =
+    case ty of
+        NamedStruct s ->
+            String.startsWith "eco.custom<" s
+
+        _ ->
+            False
+
+
+{-| Any promoted value-aggregate form (tuple or custom).
+-}
+isAggValueType : MlirType -> Bool
+isAggValueType ty =
+    isAggTupleType ty || isAggCustomType ty
+
+
 {-| Check if an MlirType is an unboxable primitive type (i64, f64, or i16 for char).
 Primitive types are stored unboxed in the heap.
 -}
@@ -552,6 +585,39 @@ computeRecordLayout fields =
     , unboxedBitmap = unboxedBitmap
     , fields = indexedFields
     }
+
+
+{-| U-T1.3.3: the per-slot STORED MLIR types of a tuple layout — unboxed
+element ⇒ its ABI primitive, boxed ⇒ `!eco.value`. Shared by scalar-split
+loop vars, sret workers, and their call sites so the forms cannot drift.
+-}
+tupleSlotTypes : TupleLayout -> List MlirType
+tupleSlotTypes layout =
+    List.map
+        (\( elemTy, isUnboxed ) ->
+            if isUnboxed then
+                monoTypeToAbi elemTy
+
+            else
+                ecoValue
+        )
+        layout.elements
+
+
+{-| U-T1.3.5: the per-slot STORED MLIR types of a ctor layout — the
+custom-shape analog of `tupleSlotTypes`.
+-}
+ctorSlotTypes : CtorLayout -> List MlirType
+ctorSlotTypes layout =
+    List.map
+        (\f ->
+            if f.isUnboxed then
+                monoTypeToAbi f.monoType
+
+            else
+                ecoValue
+        )
+        layout.fields
 
 
 {-| Compute runtime layout for a tuple type.

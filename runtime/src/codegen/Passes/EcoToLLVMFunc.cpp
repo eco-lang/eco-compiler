@@ -96,6 +96,77 @@ struct KernelFuncOpLowering : public OpConversionPattern<func::FuncOp> {
     }
 };
 
+//===----------------------------------------------------------------------===//
+// U-T1.3.3 sret workers: multi-result func.func -> (slot ptr, args...) -> void
+//===----------------------------------------------------------------------===//
+
+/// A MULTI-RESULT func.func is an sret worker (the front end emits them for
+/// result-promoted functions; plans/opt-tier1-aggregate-promotion.md). The
+/// standard func-to-llvm pattern would pack multiple results into a literal
+/// LLVM struct return — a first-class aggregate that may carry
+/// ptr addrspace(1) elements, which RS4GC cannot relocate (REP_AGG_001) and
+/// which trips SelectionDAG's statepoint lowering for wide structs
+/// (CGEN_064). Instead: prepend a plain addrspace-0 slot pointer parameter
+/// and return void; the multi-operand eco.return arm (EcoToLLVMControlFlow)
+/// stores the fields, and the multi-result eco.call arm (EcoToLLVMClosures)
+/// allocates the slot and reloads them. No aggregate ever crosses the
+/// boundary.
+struct SretFuncOpLowering : public OpConversionPattern<func::FuncOp> {
+    SretFuncOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                       PatternBenefit benefit)
+        : OpConversionPattern(typeConverter, ctx, benefit) {}
+
+    LogicalResult
+    matchAndRewrite(func::FuncOp funcOp, OpAdaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        if (funcOp->hasAttr("is_kernel") ||
+            funcOp.getFunctionType().getNumResults() < 2)
+            return failure();
+
+        auto loc = funcOp.getLoc();
+        auto *ctx = rewriter.getContext();
+        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+        auto funcType = funcOp.getFunctionType();
+        SmallVector<Type> argTypes{ptrTy};
+        TypeConverter::SignatureConversion sig(funcType.getNumInputs());
+        sig.addInputs(ptrTy); // the slot: a NEW leading arg, mapped from nothing
+        for (auto [i, t] : llvm::enumerate(funcType.getInputs())) {
+            Type ct = getTypeConverter()->convertType(t);
+            if (!ct)
+                return failure();
+            argTypes.push_back(ct);
+            sig.addInputs(i, ct);
+        }
+
+        auto llvmFuncType =
+            LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(ctx), argTypes);
+        auto llvmFunc =
+            rewriter.create<LLVM::LLVMFuncOp>(loc, funcOp.getName(), llvmFuncType);
+        llvmFunc.setLinkage(funcOp.isPublic() ? LLVM::Linkage::External
+                                              : LLVM::Linkage::Internal);
+
+        // Carry every discardable attr across (logical types channel etc.).
+        for (NamedAttribute attr : funcOp->getAttrs()) {
+            StringRef n = attr.getName();
+            if (n == funcOp.getSymNameAttrName() ||
+                n == funcOp.getFunctionTypeAttrName() ||
+                n == "sym_visibility")
+                continue;
+            llvmFunc->setAttr(n, attr.getValue());
+        }
+
+        rewriter.inlineRegionBefore(funcOp.getBody(), llvmFunc.getBody(),
+                                    llvmFunc.end());
+        if (failed(rewriter.convertRegionTypes(&llvmFunc.getBody(),
+                                               *getTypeConverter(), &sig)))
+            return failure();
+
+        rewriter.eraseOp(funcOp);
+        return success();
+    }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -260,4 +331,5 @@ void eco::detail::populateEcoFuncPatterns(
     auto *ctx = patterns.getContext();
     // Add with higher benefit to ensure it runs before standard func-to-llvm patterns
     patterns.add<KernelFuncOpLowering>(typeConverter, ctx, runtime, /*benefit=*/10);
+    patterns.add<SretFuncOpLowering>(typeConverter, ctx, /*benefit=*/10);
 }

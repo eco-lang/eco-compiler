@@ -182,7 +182,10 @@ generateLambdaFuncNamed ctx lambda =
 
         ctxWithArgs : Ctx.Context
         ctxWithArgs =
-            { ctx | varMappings = varMappingsWithSiblings, nextVar = nextVarBase }
+            -- A lambda body is a NEW function: the enclosing loop's split-param
+            -- slot vars are out of scope here (captures of split params were
+            -- materialized at capture-collection time).
+            { ctx | varMappings = varMappingsWithSiblings, nextVar = nextVarBase, splitAggParams = Dict.empty, sretTailLayout = Nothing }
                 |> Ctx.resetDefinedSsaVars lambdaSsaVars
 
         -- Actual return type from the lambda (typed ABI)
@@ -295,7 +298,7 @@ generateLambdaFuncNamed ctx lambda =
                         ( [], ctxWithArgs )
 
             ( tailRecOps, ctx1 ) =
-                TailRec.compileTailFuncToWhile ctxForTailRec lambda.name paramArgPairs lambda.body actualResultType
+                TailRec.compileTailFuncToWhile ctxForTailRec lambda.name paramArgPairs (List.map Tuple.second lambda.params) lambda.body actualResultType Nothing
 
             bodyOps =
                 selfPrefixOps ++ tailRecOps

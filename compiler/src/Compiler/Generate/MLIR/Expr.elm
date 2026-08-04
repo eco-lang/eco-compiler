@@ -5,6 +5,7 @@ module Compiler.Generate.MLIR.Expr exposing
     , emitSafepointHints
     , createDummyValue
     , collectLetBoundNames, addPlaceholderMappings
+    , tupleBinderPromotable, aggBinderPromotableWith, paramSplitAdmissible, scanChainForwardRefs
     )
 
 {-| Expression generation for the MLIR backend.
@@ -342,19 +343,69 @@ createDummyValue ctx mlirType =
 
 
 {-| Generate MLIR code for a monomorphic expression.
+
+U-T1.3.3/6 result-spine hygiene: `sretTailLayout` is a RESULT-position
+flag. Only the spine arms (tuple literal, let/destruct bodies, case, if)
+may see it; every other node CLEARS it before compiling its subtree —
+emitted bodies contain inline-grafted code the selection walk never saw,
+and a leaked flag would make-promote a tuple whose consumer is a boxed
+sink (the `eco.papExtend` aggregate-operand incident).
 -}
 generateExpr : Ctx.Context -> Mono.MonoExpr -> ExprResult
-generateExpr ctx expr =
+generateExpr ctx0 expr =
+    let
+        ctx =
+            case ctx0.sretTailLayout of
+                Nothing ->
+                    ctx0
+
+                Just _ ->
+                    case expr of
+                        Mono.MonoTupleCreate _ _ _ ->
+                            ctx0
+
+                        Mono.MonoLet _ _ _ ->
+                            ctx0
+
+                        Mono.MonoDestruct _ _ _ ->
+                            ctx0
+
+                        Mono.MonoCase _ _ _ _ _ ->
+                            ctx0
+
+                        Mono.MonoIf _ _ _ ->
+                            ctx0
+
+                        _ ->
+                            { ctx0 | sretTailLayout = Nothing }
+    in
     case expr of
         Mono.MonoLiteral lit _ ->
             generateLiteral ctx lit
 
         Mono.MonoVarLocal name _ ->
-            let
-                ( varName, varType ) =
-                    Ctx.lookupVar ctx name
-            in
-            emptyResult ctx varName varType
+            case Dict.get name ctx.splitAggParams of
+                Just splitInfo ->
+                    -- U-T1.3.3L: whole-value use of a scalar-split loop param —
+                    -- materialize from the current slot vars (Elm values are
+                    -- immutable, so reconstruction is semantically transparent).
+                    let
+                        ( matOps, matVar, ctxM ) =
+                            Patterns.materializeSplitParam ctx splitInfo
+                    in
+                    { ops = matOps
+                    , resultVar = matVar
+                    , resultType = Types.ecoValue
+                    , ctx = ctxM
+                    , isTerminated = False
+                    }
+
+                Nothing ->
+                    let
+                        ( varName, varType ) =
+                            Ctx.lookupVar ctx name
+                    in
+                    emptyResult ctx varName varType
 
         Mono.MonoVarGlobal _ specId monoType ->
             generateVarGlobal ctx specId monoType
@@ -375,7 +426,17 @@ generateExpr ctx expr =
             generateTailCall ctx name args
 
         Mono.MonoIf branches final _ ->
-            generateIf ctx branches final
+            -- v1 sret scope cut: MonoIf is not part of the result spine
+            -- (selection rejects if-shaped tails); clear defensively but
+            -- RESTORE on the returned ctx (the leaf yield decision reads it).
+            let
+                res =
+                    generateIf { ctx | sretTailLayout = Nothing } branches final
+
+                resCtx =
+                    res.ctx
+            in
+            { res | ctx = { resCtx | sretTailLayout = ctx.sretTailLayout } }
 
         Mono.MonoLet def body _ ->
             case tryInlinedDecodeFusion ctx def body of
@@ -441,11 +502,46 @@ generateExpr ctx expr =
             generateRecordUpdate ctx record indexedUpdates layout monoType
 
         Mono.MonoTupleCreate _ elements monoType ->
-            let
-                layout =
-                    Types.computeTupleLayout (getTupleElements monoType)
-            in
-            generateTupleCreate ctx elements layout monoType
+            case ctx.sretTailLayout of
+                Just tailLayout ->
+                    -- U-T1.3.3: a tuple literal on an sret worker's RESULT
+                    -- spine emits the SSA make-form — the allocation is what
+                    -- the whole promotion removes. Elements compile with the
+                    -- flag cleared (they are not result positions), but the
+                    -- RETURNED ctx must carry the flag onward: the leaf
+                    -- machinery consults it to DECOMPOSE the yield (a leaked
+                    -- clear here made emitSpineYield fall back to a single
+                    -- aggregate yield — the block-crossing FCA crash).
+                    let
+                        res =
+                            -- SLOT-TYPE-EXACT, not arity: emitted bodies can
+                            -- contain inline-grafted tuples the selection walk
+                            -- never saw; a mismatching layout stays BOXED (the
+                            -- leaf coercion bridges via eco.from_heap).
+                            if
+                                Types.tupleSlotTypes (Types.computeTupleLayout (getTupleElements monoType))
+                                    == Types.tupleSlotTypes tailLayout
+                            then
+                                generateTupleCreateValue { ctx | sretTailLayout = Nothing } elements monoType
+
+                            else
+                                let
+                                    layout =
+                                        Types.computeTupleLayout (getTupleElements monoType)
+                                in
+                                generateTupleCreate { ctx | sretTailLayout = Nothing } elements layout monoType
+
+                        resCtx =
+                            res.ctx
+                    in
+                    { res | ctx = { resCtx | sretTailLayout = ctx.sretTailLayout } }
+
+                Nothing ->
+                    let
+                        layout =
+                            Types.computeTupleLayout (getTupleElements monoType)
+                    in
+                    generateTupleCreate ctx elements layout monoType
 
         Mono.MonoUnit ->
             generateUnit ctx
@@ -1164,6 +1260,18 @@ boxToEcoValue ctx var mlirTy =
     if Types.isEcoValueType mlirTy then
         ( [], var, ctx )
 
+    else if Types.isAggValueType mlirTy then
+        -- U-T1.3.3: an SSA value aggregate boxes via eco.to_heap (an
+        -- allocating construct-equivalent), never via eco.box.
+        let
+            ( heapVar, ctx1 ) =
+                Ctx.freshVar ctx
+
+            ( ctx2, toHeapOp ) =
+                Ops.ecoToHeap ctx1 (emitSafepointHints ctx1) heapVar ( var, mlirTy )
+        in
+        ( [ toHeapOp ], heapVar, ctx2 )
+
     else
         let
             ( boxedVar, ctx1 ) =
@@ -1253,6 +1361,18 @@ coerceResultToType ctx var actualTy expectedTy =
     else if Types.isEcoValueType expectedTy && not (Types.isEcoValueType actualTy) then
         -- Need primitive -> boxed
         boxToEcoValue ctx var actualTy
+
+    else if Types.isAggValueType expectedTy && Types.isEcoValueType actualTy then
+        -- U-T1.3.3: boxed -> SSA value aggregate (pure field loads); bridges
+        -- a boxed tuple onto an sret worker's aggregate result spine.
+        let
+            ( aggVar, ctx1 ) =
+                Ctx.freshVar ctx
+
+            ( ctx2, fromHeapOp ) =
+                Ops.ecoFromHeap ctx1 aggVar expectedTy var
+        in
+        ( [ fromHeapOp ], aggVar, ctx2 )
 
     else if not (Types.isEcoValueType expectedTy) && Types.isEcoValueType actualTy then
         -- Need boxed -> primitive
@@ -3047,12 +3167,298 @@ findKernelDecodeCall expr =
 -}
 generateSaturatedCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
 generateSaturatedCall ctx func args resultType callInfo =
-    case tryBytesEncodeFusion ctx func args of
-        Just fusedResult ->
-            fusedResult
+    case tryCtorInline ctx func args resultType of
+        Just inlined ->
+            inlined
 
         Nothing ->
-            generateSaturatedCallNoFusion ctx func args resultType callInfo
+            case tryPsplitCall ctx func args resultType of
+                Just migrated ->
+                    migrated
+
+                Nothing ->
+                    generateSaturatedCallFusionGate ctx func args resultType callInfo
+
+
+generateSaturatedCallFusionGate : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
+generateSaturatedCallFusionGate ctx func args resultType callInfo =
+    case () of
+        _ ->
+            case tryBytesEncodeFusion ctx func args of
+                Just fusedResult ->
+                    fusedResult
+
+                Nothing ->
+                    generateSaturatedCallNoFusion ctx func args resultType callInfo
+
+
+{-| U-T1.3.5 per-site call migration (plans/opt-tier1-aggregate-promotion.md):
+a saturated direct call to a `$psplit`-promoted callee migrates iff EVERY
+promoted position's argument is slot-available FOR FREE — an inline
+matching construct (elements compile straight into the slot args; the
+container never exists), a var already carried as slots
+(`ctx.splitAggParams`), or a make-promoted aggregate var (slot
+projections fold under SROA). Any other arg shape at a promoted position
+aborts migration and the site calls the boxed shim unchanged — the
+T1.3.3L rule: never migrate via eager heap projection (a loss).
+-}
+tryPsplitCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Maybe ExprResult
+tryPsplitCall ctx func args resultType =
+    if Dict.isEmpty ctx.psplitPromoted then
+        Nothing
+
+    else
+        case func of
+            Mono.MonoVarGlobal _ specId _ ->
+                case Dict.get specId ctx.psplitPromoted of
+                    Just info ->
+                        if
+                            (List.length args == List.length info.paramPlans)
+                                && List.all
+                                    (\( mPlan, arg ) ->
+                                        case mPlan of
+                                            Just plan ->
+                                                psplitArgFree ctx plan arg
+
+                                            Nothing ->
+                                                True
+                                    )
+                                    (List.map2 Tuple.pair info.paramPlans args)
+                        then
+                            Just (emitPsplitCall ctx specId info args resultType)
+
+                        else
+                            Nothing
+
+                    Nothing ->
+                        Nothing
+
+            _ ->
+                Nothing
+
+
+psplitArgFree : Ctx.Context -> Ctx.SlotPlan -> Mono.MonoExpr -> Bool
+psplitArgFree ctx plan arg =
+    case arg of
+        Mono.MonoTupleCreate _ es _ ->
+            case plan.spec of
+                Ctx.SplitTuple layout ->
+                    List.length es == layout.arity
+
+                _ ->
+                    False
+
+        Mono.MonoCall _ (Mono.MonoVarGlobal _ sid _) cargs _ _ ->
+            case ( plan.spec, Dict.get sid ctx.ctorBySpec ) of
+                ( Ctx.SplitCtor clayout, Just shape ) ->
+                    shape.name == clayout.name && List.length cargs == List.length clayout.fields
+
+                _ ->
+                    False
+
+        Mono.MonoVarLocal v _ ->
+            case Dict.get v ctx.splitAggParams of
+                Just entry ->
+                    List.map Tuple.second entry.slots == plan.slotTypes
+
+                Nothing ->
+                    case Dict.get v ctx.varMappings of
+                        Just vi ->
+                            vi.mlirType == psplitAggType plan
+
+                        Nothing ->
+                            False
+
+        _ ->
+            False
+
+
+psplitAggType : Ctx.SlotPlan -> MlirType
+psplitAggType plan =
+    case plan.spec of
+        Ctx.SplitTuple _ ->
+            Ops.aggTupleType plan.slotTypes
+
+        Ctx.SplitCtor _ ->
+            Ops.aggCustomType plan.slotTypes
+
+
+emitPsplitCall : Ctx.Context -> Int -> Ctx.PsplitInfo -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
+emitPsplitCall ctx specId info args resultType =
+    let
+        funcName =
+            specIdToFuncName ctx.registry specId
+
+        maybeSig =
+            Array.get specId ctx.signatures |> Maybe.andThen identity
+
+        sigParamAbi idx =
+            maybeSig
+                |> Maybe.andThen (\sig -> List.head (List.drop idx sig.paramTypes))
+                |> Maybe.map Types.monoTypeToAbi
+
+        ( opsRev, operandsRev, ctxA ) =
+            List.foldl
+                (\( idx, ( mPlan, arg ) ) ( opsAcc, argsAcc, ctxAcc ) ->
+                    case mPlan of
+                        Nothing ->
+                            let
+                                r =
+                                    generateExpr ctxAcc arg
+
+                                ( coOps, fv, ctxCo ) =
+                                    case sigParamAbi idx of
+                                        Just abiTy ->
+                                            coerceResultToType r.ctx r.resultVar r.resultType abiTy
+
+                                        Nothing ->
+                                            ( [], r.resultVar, r.ctx )
+
+                                fvTy =
+                                    Maybe.withDefault r.resultType (sigParamAbi idx)
+                            in
+                            ( List.reverse (r.ops ++ coOps) ++ opsAcc, ( fv, fvTy ) :: argsAcc, ctxCo )
+
+                        Just plan ->
+                            let
+                                ( sOps, slotPairs, ctxS ) =
+                                    emitPsplitSlotArg ctxAcc plan arg
+                            in
+                            ( List.reverse sOps ++ opsAcc, List.reverse slotPairs ++ argsAcc, ctxS )
+                )
+                ( [], [], ctx )
+                (List.indexedMap Tuple.pair (List.map2 Tuple.pair info.paramPlans args))
+
+        returnAbi =
+            case maybeSig of
+                Just sig ->
+                    Types.monoTypeToAbi sig.returnType
+
+                Nothing ->
+                    Types.monoTypeToAbi resultType
+
+        ( resultVar, ctxB ) =
+            Ctx.freshVar ctxA
+
+        ( ctxC, callOp ) =
+            Ops.ecoCallNamed ctxB (emitSafepointHints ctxB) resultVar (funcName ++ "$psplit") (List.reverse operandsRev) returnAbi
+    in
+    { ops = List.reverse opsRev ++ [ callOp ]
+    , resultVar = resultVar
+    , resultType = returnAbi
+    , ctx = ctxC
+    , isTerminated = False
+    }
+
+
+{-| Produce the slot operands for one promoted position (mirror of the
+free-check; keep the two in sync).
+-}
+emitPsplitSlotArg : Ctx.Context -> Ctx.SlotPlan -> Mono.MonoExpr -> ( List MlirOp, List ( String, MlirType ), Ctx.Context )
+emitPsplitSlotArg ctx plan arg =
+    let
+        inlineElements es =
+            List.foldl
+                (\( e, slotTy ) ( opsAcc, pairsAcc, ctxAcc ) ->
+                    let
+                        r =
+                            generateExpr ctxAcc e
+
+                        ( co, fv, ctxC ) =
+                            coerceResultToType r.ctx r.resultVar r.resultType slotTy
+                    in
+                    ( opsAcc ++ r.ops ++ co, pairsAcc ++ [ ( fv, slotTy ) ], ctxC )
+                )
+                ( [], [], ctx )
+                (List.map2 Tuple.pair es plan.slotTypes)
+    in
+    case arg of
+        Mono.MonoTupleCreate _ es _ ->
+            inlineElements es
+
+        Mono.MonoCall _ (Mono.MonoVarGlobal _ _ _) cargs _ _ ->
+            inlineElements cargs
+
+        Mono.MonoVarLocal v _ ->
+            case Dict.get v ctx.splitAggParams of
+                Just entry ->
+                    ( [], entry.slots, ctx )
+
+                Nothing ->
+                    let
+                        ( varName, varTy ) =
+                            Ctx.lookupVar ctx v
+
+                        ( opsRev, pairsRev, ctxOut ) =
+                            List.foldl
+                                (\( idx, slotTy ) ( oa, pa, ca ) ->
+                                    let
+                                        ( pv, ca1 ) =
+                                            Ctx.freshVar ca
+
+                                        ( ca2, projOp ) =
+                                            case plan.spec of
+                                                Ctx.SplitTuple layout ->
+                                                    if layout.arity == 2 then
+                                                        Ops.ecoProjectTuple2Agg ca1 pv idx slotTy ( varName, varTy )
+
+                                                    else
+                                                        Ops.ecoProjectTuple3Agg ca1 pv idx slotTy ( varName, varTy )
+
+                                                Ctx.SplitCtor _ ->
+                                                    Ops.ecoProjectCustomAgg ca1 pv idx slotTy ( varName, varTy )
+                                    in
+                                    ( projOp :: oa, ( pv, slotTy ) :: pa, ca2 )
+                                )
+                                ( [], [], ctx )
+                                (List.indexedMap Tuple.pair plan.slotTypes)
+                    in
+                    ( List.reverse opsRev, List.reverse pairsRev, ctxOut )
+
+        _ ->
+            crash "emitPsplitSlotArg: arg admitted by psplitArgFree but not emittable"
+
+
+{-| U-T1.3.2c ctor-call inlining (plans/opt-tier1-aggregate-promotion.md):
+a SATURATED direct call to a constructor emits `eco.construct.custom`
+directly in the caller — the call overhead vanishes and the construct
+gains the caller's HEAP_034 inline-alloc diamond. Slot preparation is the
+same per-field ABI coercion the ctor function's own body performs
+(`Functions.generateCtor`), so tag, bitmap, and heap layout are identical
+(CGEN_020/026). Nullary ctors are EXCLUDED: their calls resolve to
+CAF-memoized / interned singletons (CGEN_068) — a fresh construct would
+ADD allocation. Applies at every saturated call position; promotable
+LET-BOUND candidates never reach here (the T1.3.1 hook intercepts them
+upstream and emits `eco.make.custom`).
+-}
+tryCtorInline : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Maybe ExprResult
+tryCtorInline ctx func args resultType =
+    if not ctx.ecoConfig.ctorInline then
+        Nothing
+
+    else if isFunctionMonoType resultType then
+        -- staged result: not a saturated construction
+        Nothing
+
+    else
+        case func of
+            Mono.MonoVarGlobal _ specId _ ->
+                case Dict.get specId ctx.ctorBySpec of
+                    Just shape ->
+                        if
+                            (List.length args == List.length shape.fieldTypes)
+                                && not (List.isEmpty args)
+                        then
+                            Just (generateCustomCreateHeap ctx shape args)
+
+                        else
+                            Nothing
+
+                    Nothing ->
+                        Nothing
+
+            _ ->
+                Nothing
 
 
 generateSaturatedCallNoFusion : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
@@ -4691,12 +5097,174 @@ splitLetChain expr =
 -}
 generateLet : Ctx.Context -> Mono.MonoDef -> Mono.MonoExpr -> ExprResult
 generateLet ctx def body =
-    case detectMutualRecGroup def body of
-        Just ( members, restBody ) ->
-            generateLetGroup ctx members restBody
+    let
+        -- U-T1.3.2 precise sibling recovery: at each chain HEAD (first
+        -- binding of a MonoLet spine — detected because ancestors have not
+        -- listed it in currentLetSiblings), scan the whole chain once for
+        -- CLOSURE-MEDIATED FORWARD REFERENCES (an earlier sibling's RHS
+        -- mentioning a later binding). A direct value use-before-def is
+        -- impossible (canonicalization sorts value deps), so any such
+        -- occurrence is deferred/captured — fatal for promotion (the
+        -- capture would receive the aggregate). The set threads to every
+        -- descendant binding's hook via the context and is restored on
+        -- chain exit. Flag-gated and skipped for candidate-free chains, so
+        -- flag-off pays nothing.
+        headName =
+            case def of
+                Mono.MonoDef n _ ->
+                    n
 
-        Nothing ->
-            generateLetSingle ctx def body
+                Mono.MonoTailDef n _ _ ->
+                    n
+
+        isChainHead =
+            not (Dict.member headName ctx.currentLetSiblings)
+
+        ctxScanned =
+            if ctx.ecoConfig.aggPromote && isChainHead then
+                { ctx | fwdRefdLetNames = scanChainForwardRefs ctx def body }
+
+            else
+                ctx
+
+        result =
+            case detectMutualRecGroup def body of
+                Just ( members, restBody ) ->
+                    generateLetGroup ctxScanned members restBody
+
+                Nothing ->
+                    generateLetSingle ctxScanned def body
+
+        -- restore on chain exit (mirror the currentLetSiblings discipline)
+        resCtx =
+            result.ctx
+    in
+    { result | ctx = { resCtx | fwdRefdLetNames = ctx.fwdRefdLetNames } }
+
+
+{-| Collect the chain's (binder, rhs) links along the MonoLet spine (the
+same spine `collectLetBoundNames` walks), then compute which binders are
+referenced by an EARLIER link's RHS. Skips the walk entirely when the
+chain holds no promotion candidate (tuple literal / saturated ctor call).
+-}
+scanChainForwardRefs : Ctx.Context -> Mono.MonoDef -> Mono.MonoExpr -> Set.Set Name.Name
+scanChainForwardRefs ctx def body =
+    let
+        links =
+            chainLinks def body
+
+        isCandidateRhs rhs =
+            case rhs of
+                Mono.MonoTupleCreate _ _ _ ->
+                    True
+
+                Mono.MonoCall _ (Mono.MonoVarGlobal _ specId _) _ _ _ ->
+                    Dict.member specId ctx.ctorBySpec
+
+                _ ->
+                    False
+
+        hasCandidate =
+            List.any (\( _, rhs ) -> isCandidateRhs rhs) links
+    in
+    if List.length links < 2 || not hasCandidate then
+        Set.empty
+
+    else
+        -- For link i, every name bound at links > i that occurs in rhs_i is
+        -- forward-referenced. Walk back-to-front carrying the later-name set.
+        List.foldr
+            (\( name, rhs ) ( laterNames, acc ) ->
+                ( Set.insert name laterNames
+                , if Set.isEmpty laterNames then
+                    acc
+
+                  else
+                    Set.union acc (occursAnyNames laterNames rhs)
+                )
+            )
+            ( Set.empty, Set.empty )
+            links
+            |> Tuple.second
+
+
+chainLinks : Mono.MonoDef -> Mono.MonoExpr -> List ( Name.Name, Mono.MonoExpr )
+chainLinks def body =
+    let
+        link d =
+            case d of
+                Mono.MonoDef n rhs ->
+                    ( n, rhs )
+
+                Mono.MonoTailDef n _ rhs ->
+                    ( n, rhs )
+    in
+    link def
+        :: (case body of
+                Mono.MonoLet def2 body2 _ ->
+                    chainLinks def2 body2
+
+                _ ->
+                    []
+           )
+
+
+{-| Which of `targets` occur (in ANY reference form — var use, case
+scrutinee, destructure root, closure capture name) in `expr`.
+`MonoTraverse.foldExpr` visits every subexpression including closure
+capture exprs, decider inlines and jump bodies.
+-}
+occursAnyNames : Set.Set Name.Name -> Mono.MonoExpr -> Set.Set Name.Name
+occursAnyNames targets expr =
+    MonoTraverse.foldExpr
+        (\e acc ->
+            let
+                hit n a =
+                    if Set.member n targets then
+                        Set.insert n a
+
+                    else
+                        a
+            in
+            case e of
+                Mono.MonoVarLocal x _ ->
+                    hit x acc
+
+                Mono.MonoCase s1 s2 _ _ _ ->
+                    hit s1 (hit s2 acc)
+
+                Mono.MonoDestruct (Mono.MonoDestructor _ path _) _ _ ->
+                    case pathRootName path of
+                        Just r ->
+                            hit r acc
+
+                        Nothing ->
+                            acc
+
+                Mono.MonoClosure info _ _ ->
+                    List.foldl (\( c, _, _ ) a -> hit c a) acc info.captures
+
+                _ ->
+                    acc
+        )
+        Set.empty
+        expr
+
+
+pathRootName : Mono.MonoPath -> Maybe Name.Name
+pathRootName path =
+    case path of
+        Mono.MonoRoot r _ ->
+            Just r
+
+        Mono.MonoIndex _ _ _ sub ->
+            pathRootName sub
+
+        Mono.MonoField _ _ sub ->
+            pathRootName sub
+
+        Mono.MonoUnbox _ sub ->
+            pathRootName sub
 
 
 generateLetSingle : Ctx.Context -> Mono.MonoDef -> Mono.MonoExpr -> ExprResult
@@ -4734,155 +5302,244 @@ generateLetSingle ctx def body =
                 boundNames
 
         ctxWithPlaceholders =
-            { groupVarMappings | currentLetSiblings = letBoundSiblings }
+            -- tailRecLetBody is consumed by THIS binding's promotion hook
+            -- (from the incoming ctx); cleared here so nested emission
+            -- (RHS sub-lets etc.) can never misread it. sretTailLayout is a
+            -- RESULT-spine flag: the RHS is not a result position, so it is
+            -- cleared too (the let BODY restores it below).
+            { groupVarMappings | currentLetSiblings = letBoundSiblings, tailRecLetBody = Nothing, sretTailLayout = Nothing }
     in
     case def of
         Mono.MonoDef name expr ->
-            let
-                -- Look up the placeholder SSA var installed by addPlaceholderMappings.
-                -- This is "%name" with type !eco.value for each let-bound name.
-                ( placeholderVar, _ ) =
-                    Ctx.lookupVar ctxWithPlaceholders name
+            -- U-T1.3.3 per-site migration: a let-bound SATURATED direct
+            -- call to a result-promoted callee whose binder is consumed
+            -- only by destructure projections calls the $sret WORKER
+            -- (multi-result) and carries the fields as scalar slots — the
+            -- container never exists on this path.
+            case trySretLetBinding ctx ctxWithPlaceholders name expr body of
+                Just sretResult ->
+                    sretResult
 
-                -- Generate the bound expression with placeholders in scope.
-                rawResult : ExprResult
-                rawResult =
-                    generateExpr ctxWithPlaceholders expr
-
-                -- Force the bound expression's result SSA id to be the placeholder var.
-                -- When the RHS produces ops, forceResultVar renames the result to the
-                -- placeholder, so the defining op (e.g. eco.papCreate) directly defines
-                -- the placeholder SSA var that sibling closures captured.
-                --
-                -- When the RHS produces NO ops (e.g. a simple variable reference),
-                -- there is no defining op to rename, so we alias the let-bound name
-                -- to the existing SSA var instead.
-                -- Handle self-capturing closures (e.g., recursive helper in Array.foldr).
-                -- If a papCreate uses the placeholder var as a capture operand,
-                -- replace it with a Unit constant and mark the self-capture index.
-                -- The C++ lowering will patch the closure to point to itself.
-                ( fixedResult, _ ) =
-                    if hasSelfCapture placeholderVar rawResult.ops then
-                        let
-                            ( unitVar, ctxWithUnit ) =
-                                Ctx.freshVar rawResult.ctx
-
-                            ( ctxWithUnit2, unitOp ) =
-                                Ops.ecoConstantUnit ctxWithUnit unitVar
-
-                            resultWithUnit =
-                                { rawResult | ops = unitOp :: rawResult.ops, ctx = ctxWithUnit2 }
-                        in
-                        fixSelfCaptures placeholderVar unitVar ctxWithUnit2 resultWithUnit
-
-                    else
-                        ( rawResult, rawResult.ctx )
-
-                ( exprResult, effectiveVar ) =
-                    if List.isEmpty fixedResult.ops then
-                        ( fixedResult, fixedResult.resultVar )
-
-                    else if not (isVarDefinedInOps fixedResult.resultVar fixedResult.ops) then
-                        -- The result var is from an outer scope (not defined by this
-                        -- expression's ops), e.g. Debug.log returning an already-boxed
-                        -- value. Renaming would break SSA references, so just alias.
-                        ( fixedResult, fixedResult.resultVar )
-
-                    else if Set.member placeholderVar fixedResult.ctx.definedSsaVars then
-                        -- The placeholder was already force-defined by an earlier
-                        -- same-named let on this chain. Forcing again would emit a
-                        -- second definition of the same SSA id (invalid MLIR:
-                        -- "redefinition of SSA value"). Fail loudly: an upstream
-                        -- pass duplicated a let-bound name without alpha-renaming
-                        -- (see MonoInlineSimplify.freshenLetBoundNames).
-                        crash
-                            ("generateLetSingle: SSA placeholder "
-                                ++ placeholderVar
-                                ++ " for let-bound name '"
-                                ++ name
-                                ++ "' is already defined - duplicate let name reached codegen"
-                            )
-
-                    else
-                        ( forceResultVar placeholderVar fixedResult, placeholderVar )
-
-                -- Scope varMappings back to the outer let group's keys.
-                -- Inner let-bindings from inlined functions (e.g., identity x => let _v0 = x in _v0)
-                -- add entries to varMappings that must not leak into the outer scope.
-                -- We also clean definedSsaVars of any SSA vars that only the inner entries referenced.
-                scopedCtx : Ctx.Context
-                scopedCtx =
-                    -- Perf (#4): RHS evaluation only ADDS varMappings on top of
-                    -- ctxWithPlaceholders, so scoping back to the outer group = removing
-                    -- exactly the inner-only keys. The old code rebuilt the entire outer
-                    -- map from Dict.empty on every let (O(scope^2) down a let chain).
-                    -- Collect the inner-only entries; if there are none (the common case)
-                    -- share exprCtx unchanged, otherwise Dict.remove just those keys
-                    -- (structure-sharing). Equivalent because outerKeys ⊆ exprCtx keys.
+                Nothing ->
                     let
-                        exprCtx =
-                            exprResult.ctx
+                        -- Look up the placeholder SSA var installed by addPlaceholderMappings.
+                        -- This is "%name" with type !eco.value for each let-bound name.
+                        ( placeholderVar, _ ) =
+                            Ctx.lookupVar ctxWithPlaceholders name
 
-                        innerOnly =
-                            Dict.foldl
-                                (\k v acc ->
-                                    if Dict.member k ctxWithPlaceholders.varMappings then
-                                        acc
+                        -- Generate the bound expression with placeholders in scope.
+                        -- U-T1.3.1: a let-bound tuple literal whose every use in the
+                        -- body is a direct destructure projection is emitted in the
+                        -- VALUE-aggregate form (eco.make.tuple2/3 — no allocation);
+                        -- the binding's mapping then carries the aggregate type, so
+                        -- destructure reads route through the dual-form projection.
+                        -- U-T1.3.2 soundness guard (precise recovery): Elm
+                        -- let-siblings are mutually visible — an EARLIER sibling's
+                        -- closure RHS can capture a LATER binding, invisible to the
+                        -- body-suffix escape walk. generateLet scans each chain once
+                        -- (closure-mediated forward refs are the ONLY legal
+                        -- use-before-def form) into ctx.fwdRefdLetNames; a candidate
+                        -- may promote iff nothing earlier references it. The walker
+                        -- applies the same test to every alias it sanctions.
+                        -- U-T1.3.2t: TailRec.compileLetStep emits each loop-body
+                        -- let through a SYNTHETIC `MonoLet def MonoUnit` (the real
+                        -- body is compiled separately via compileStep) — walking the
+                        -- unit body would approve anything (the T1.3.2 incident).
+                        -- TailRec now hands the REAL loop-body suffix through
+                        -- `ctx.tailRecLetBody`; the walk runs on that. A unit body
+                        -- with NO real body attached is an unknown synthetic —
+                        -- never promote.
+                        ( analysisBody, promotionBodyOk ) =
+                            case body of
+                                Mono.MonoUnit ->
+                                    case ctx.tailRecLetBody of
+                                        Just realBody ->
+                                            ( realBody, True )
+
+                                        Nothing ->
+                                            ( body, False )
+
+                                _ ->
+                                    ( body, True )
+
+                        chainHeadSafe =
+                            promotionBodyOk && not (Set.member name ctx.fwdRefdLetNames)
+
+                        rawResult : ExprResult
+                        rawResult =
+                            case expr of
+                                Mono.MonoTupleCreate _ elements monoType ->
+                                    if
+                                        ctx.ecoConfig.aggPromote
+                                            && chainHeadSafe
+                                            && tupleBinderPromotable ctx.splitAggParams ctx.psplitPromoted ctx.fwdRefdLetNames name monoType analysisBody
+                                    then
+                                        generateTupleCreateValue ctxWithPlaceholders elements monoType
 
                                     else
-                                        ( k, v.ssaVar ) :: acc
-                                )
-                                []
-                                exprCtx.varMappings
+                                        generateExpr ctxWithPlaceholders expr
+
+                                -- U-T1.3.2: a saturated DIRECT ctor call bound by a let
+                                -- whose value never escapes is emitted as a VALUE-level
+                                -- eco.make.custom — the call AND the allocation both
+                                -- disappear. Safety falls out of the walker: any
+                                -- multi-ctor consumer needs tag dispatch on the root,
+                                -- which the decider rules reject, so admitted
+                                -- candidates are projection-only (single-ctor shapes).
+                                Mono.MonoCall _ (Mono.MonoVarGlobal _ specId _) cargs callResultType callInfo ->
+                                    case
+                                        if chainHeadSafe then
+                                            promotableCtorCall ctx name specId cargs callResultType callInfo analysisBody
+
+                                        else
+                                            Nothing
+                                    of
+                                        Just shape ->
+                                            generateCustomCreateValue ctxWithPlaceholders shape cargs
+
+                                        Nothing ->
+                                            generateExpr ctxWithPlaceholders expr
+
+                                _ ->
+                                    generateExpr ctxWithPlaceholders expr
+
+                        -- Force the bound expression's result SSA id to be the placeholder var.
+                        -- When the RHS produces ops, forceResultVar renames the result to the
+                        -- placeholder, so the defining op (e.g. eco.papCreate) directly defines
+                        -- the placeholder SSA var that sibling closures captured.
+                        --
+                        -- When the RHS produces NO ops (e.g. a simple variable reference),
+                        -- there is no defining op to rename, so we alias the let-bound name
+                        -- to the existing SSA var instead.
+                        -- Handle self-capturing closures (e.g., recursive helper in Array.foldr).
+                        -- If a papCreate uses the placeholder var as a capture operand,
+                        -- replace it with a Unit constant and mark the self-capture index.
+                        -- The C++ lowering will patch the closure to point to itself.
+                        ( fixedResult, _ ) =
+                            if hasSelfCapture placeholderVar rawResult.ops then
+                                let
+                                    ( unitVar, ctxWithUnit ) =
+                                        Ctx.freshVar rawResult.ctx
+
+                                    ( ctxWithUnit2, unitOp ) =
+                                        Ops.ecoConstantUnit ctxWithUnit unitVar
+
+                                    resultWithUnit =
+                                        { rawResult | ops = unitOp :: rawResult.ops, ctx = ctxWithUnit2 }
+                                in
+                                fixSelfCaptures placeholderVar unitVar ctxWithUnit2 resultWithUnit
+
+                            else
+                                ( rawResult, rawResult.ctx )
+
+                        ( exprResult, effectiveVar ) =
+                            if List.isEmpty fixedResult.ops then
+                                ( fixedResult, fixedResult.resultVar )
+
+                            else if not (isVarDefinedInOps fixedResult.resultVar fixedResult.ops) then
+                                -- The result var is from an outer scope (not defined by this
+                                -- expression's ops), e.g. Debug.log returning an already-boxed
+                                -- value. Renaming would break SSA references, so just alias.
+                                ( fixedResult, fixedResult.resultVar )
+
+                            else if Set.member placeholderVar fixedResult.ctx.definedSsaVars then
+                                -- The placeholder was already force-defined by an earlier
+                                -- same-named let on this chain. Forcing again would emit a
+                                -- second definition of the same SSA id (invalid MLIR:
+                                -- "redefinition of SSA value"). Fail loudly: an upstream
+                                -- pass duplicated a let-bound name without alpha-renaming
+                                -- (see MonoInlineSimplify.freshenLetBoundNames).
+                                crash
+                                    ("generateLetSingle: SSA placeholder "
+                                        ++ placeholderVar
+                                        ++ " for let-bound name '"
+                                        ++ name
+                                        ++ "' is already defined - duplicate let name reached codegen"
+                                    )
+
+                            else
+                                ( forceResultVar placeholderVar fixedResult, placeholderVar )
+
+                        -- Scope varMappings back to the outer let group's keys.
+                        -- Inner let-bindings from inlined functions (e.g., identity x => let _v0 = x in _v0)
+                        -- add entries to varMappings that must not leak into the outer scope.
+                        -- We also clean definedSsaVars of any SSA vars that only the inner entries referenced.
+                        scopedCtx : Ctx.Context
+                        scopedCtx =
+                            -- Perf (#4): RHS evaluation only ADDS varMappings on top of
+                            -- ctxWithPlaceholders, so scoping back to the outer group = removing
+                            -- exactly the inner-only keys. The old code rebuilt the entire outer
+                            -- map from Dict.empty on every let (O(scope^2) down a let chain).
+                            -- Collect the inner-only entries; if there are none (the common case)
+                            -- share exprCtx unchanged, otherwise Dict.remove just those keys
+                            -- (structure-sharing). Equivalent because outerKeys ⊆ exprCtx keys.
+                            let
+                                exprCtx =
+                                    exprResult.ctx
+
+                                innerOnly =
+                                    Dict.foldl
+                                        (\k v acc ->
+                                            if Dict.member k ctxWithPlaceholders.varMappings then
+                                                acc
+
+                                            else
+                                                ( k, v.ssaVar ) :: acc
+                                        )
+                                        []
+                                        exprCtx.varMappings
+                            in
+                            case innerOnly of
+                                [] ->
+                                    exprCtx
+
+                                _ ->
+                                    { exprCtx
+                                        | varMappings =
+                                            List.foldl (\( k, _ ) acc -> Dict.remove k acc) exprCtx.varMappings innerOnly
+                                        , definedSsaVars =
+                                            Set.diff exprCtx.definedSsaVars
+                                                (List.foldl (\( _, sv ) acc -> Set.insert sv acc) Set.empty innerOnly)
+                                    }
+
+                        -- Update varMappings for this name to use the effective SSA var,
+                        -- with the actual result type.
+                        ctx1 : Ctx.Context
+                        ctx1 =
+                            Ctx.addVarMapping name effectiveVar exprResult.resultType scopedCtx
+                                |> Ctx.addDecoderExpr name expr
+                                |> trackExternBoxedVar name expr
+
+                        bodyResult : ExprResult
+                        bodyResult =
+                            -- the let BODY is a result position when the let is on the
+                            -- sret worker's result spine — restore the flag the RHS
+                            -- compilation cleared.
+                            generateExpr { ctx1 | sretTailLayout = ctx.sretTailLayout } body
+
+                        -- Restore outer siblings on exit from the let-rec group
+                        bodyCtx : Ctx.Context
+                        bodyCtx =
+                            bodyResult.ctx
+
+                        ctxOut : Ctx.Context
+                        ctxOut =
+                            { bodyCtx | currentLetSiblings = outerSiblings }
+
+                        -- Propagate isTerminated when:
+                        -- 1. The bound expression is terminated (eco.case, eco.jump), AND
+                        --    the body is trivial (just returning the let-bound variable, so no body ops)
+                        -- 2. OR the body itself is terminated
+                        -- In these cases, the case alternatives already contain the correct returns.
+                        finalIsTerminated =
+                            (exprResult.isTerminated && List.isEmpty bodyResult.ops) || bodyResult.isTerminated
                     in
-                    case innerOnly of
-                        [] ->
-                            exprCtx
-
-                        _ ->
-                            { exprCtx
-                                | varMappings =
-                                    List.foldl (\( k, _ ) acc -> Dict.remove k acc) exprCtx.varMappings innerOnly
-                                , definedSsaVars =
-                                    Set.diff exprCtx.definedSsaVars
-                                        (List.foldl (\( _, sv ) acc -> Set.insert sv acc) Set.empty innerOnly)
-                            }
-
-                -- Update varMappings for this name to use the effective SSA var,
-                -- with the actual result type.
-                ctx1 : Ctx.Context
-                ctx1 =
-                    Ctx.addVarMapping name effectiveVar exprResult.resultType scopedCtx
-                        |> Ctx.addDecoderExpr name expr
-                        |> trackExternBoxedVar name expr
-
-                bodyResult : ExprResult
-                bodyResult =
-                    generateExpr ctx1 body
-
-                -- Restore outer siblings on exit from the let-rec group
-                bodyCtx : Ctx.Context
-                bodyCtx =
-                    bodyResult.ctx
-
-                ctxOut : Ctx.Context
-                ctxOut =
-                    { bodyCtx | currentLetSiblings = outerSiblings }
-
-                -- Propagate isTerminated when:
-                -- 1. The bound expression is terminated (eco.case, eco.jump), AND
-                --    the body is trivial (just returning the let-bound variable, so no body ops)
-                -- 2. OR the body itself is terminated
-                -- In these cases, the case alternatives already contain the correct returns.
-                finalIsTerminated =
-                    (exprResult.isTerminated && List.isEmpty bodyResult.ops) || bodyResult.isTerminated
-            in
-            { ops = exprResult.ops ++ bodyResult.ops
-            , resultVar = bodyResult.resultVar
-            , resultType = bodyResult.resultType
-            , ctx = ctxOut
-            , isTerminated = finalIsTerminated
-            }
+                    { ops = exprResult.ops ++ bodyResult.ops
+                    , resultVar = bodyResult.resultVar
+                    , resultType = bodyResult.resultType
+                    , ctx = ctxOut
+                    , isTerminated = finalIsTerminated
+                    }
 
         Mono.MonoTailDef name params tailBody ->
             -- For local tail-recursive functions:
@@ -5059,7 +5716,7 @@ generateLetSingle ctx def body =
 
                 -- Generate the let body
                 bodyResult =
-                    generateExpr ctx4 body
+                    generateExpr { ctx4 | sretTailLayout = ctx.sretTailLayout } body
 
                 bodyCtx =
                     bodyResult.ctx
@@ -5123,7 +5780,7 @@ generateLetGroup ctx members body =
                 boundNames
 
         ctxWithPlaceholders =
-            { groupVarMappings | currentLetSiblings = letBoundSiblings }
+            { groupVarMappings | currentLetSiblings = letBoundSiblings, sretTailLayout = Nothing }
 
         memberNameSet =
             Set.fromList memberNames
@@ -5362,7 +6019,7 @@ generateLetGroup ctx members body =
                 members
 
         bodyResult =
-            generateExpr ctxReady body
+            generateExpr { ctxReady | sretTailLayout = ctx.sretTailLayout } body
 
         bodyCtx =
             bodyResult.ctx
@@ -5552,10 +6209,10 @@ generateLeafWithJumps ctx choice jumpLookup resultTy =
                                 ( coerceOps, finalVar, ctx1 ) =
                                     coerceResultToType branchRes.ctx branchRes.resultVar actualTy resultTy
 
-                                ( ctx2, yieldOp ) =
-                                    Ops.ecoYield ctx1 finalVar resultTy
+                                ( yieldPreOps, yieldOp, ctx2 ) =
+                                    emitSpineYield ctx1 finalVar resultTy
                             in
-                            { ops = branchRes.ops ++ coerceOps ++ [ yieldOp ]
+                            { ops = branchRes.ops ++ coerceOps ++ yieldPreOps ++ [ yieldOp ]
                             , resultVar = finalVar
                             , resultType = resultTy
                             , ctx = ctx2
@@ -5573,10 +6230,10 @@ generateLeafWithJumps ctx choice jumpLookup resultTy =
                     ( coerceOps, finalVar, ctx1 ) =
                         coerceResultToType branchRes.ctx branchRes.resultVar actualTy resultTy
 
-                    ( ctx2, yieldOp ) =
-                        Ops.ecoYield ctx1 finalVar resultTy
+                    ( yieldPreOps, yieldOp, ctx2 ) =
+                        emitSpineYield ctx1 finalVar resultTy
                 in
-                { ops = branchRes.ops ++ coerceOps ++ [ yieldOp ]
+                { ops = branchRes.ops ++ coerceOps ++ yieldPreOps ++ [ yieldOp ]
                 , resultVar = finalVar
                 , resultType = resultTy
                 , ctx = ctx2
@@ -5614,10 +6271,10 @@ generateLeafWithJumps ctx choice jumpLookup resultTy =
                                         ( coerceOps, finalVar, ctx1 ) =
                                             coerceResultToType branchRes.ctx branchRes.resultVar actualTy resultTy
 
-                                        ( ctx2, yieldOp ) =
-                                            Ops.ecoYield ctx1 finalVar resultTy
+                                        ( yieldPreOps, yieldOp, ctx2 ) =
+                                            emitSpineYield ctx1 finalVar resultTy
                                     in
-                                    { ops = branchRes.ops ++ coerceOps ++ [ yieldOp ]
+                                    { ops = branchRes.ops ++ coerceOps ++ yieldPreOps ++ [ yieldOp ]
                                     , resultVar = finalVar
                                     , resultType = resultTy
                                     , ctx = ctx2
@@ -5635,10 +6292,10 @@ generateLeafWithJumps ctx choice jumpLookup resultTy =
                             ( coerceOps, finalVar, ctx1 ) =
                                 coerceResultToType branchRes.ctx branchRes.resultVar actualTy resultTy
 
-                            ( ctx2, yieldOp ) =
-                                Ops.ecoYield ctx1 finalVar resultTy
+                            ( yieldPreOps, yieldOp, ctx2 ) =
+                                emitSpineYield ctx1 finalVar resultTy
                         in
-                        { ops = branchRes.ops ++ coerceOps ++ [ yieldOp ]
+                        { ops = branchRes.ops ++ coerceOps ++ yieldPreOps ++ [ yieldOp ]
                         , resultVar = finalVar
                         , resultType = resultTy
                         , ctx = ctx2
@@ -5685,16 +6342,16 @@ generateChainForBoolADTWithJumps ctx path success failure jumpLookup resultTy =
         ( elseRegion, ctx1b ) =
             mkCaseRegionFromDecider elseRes resultTy
 
-        ( caseResultVar, ctxWithResult ) =
-            Ctx.freshVar ctx1b
-
-        ( ctx2, caseOp ) =
-            Ops.ecoCase ctxWithResult caseResultVar boolVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] resultTy
+        spineCase =
+            finishSpineCase ctx1b
+                resultTy
+                (\cS vS tS -> Ops.ecoCase cS vS boolVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] tS)
+                (\cM pairsM -> Ops.ecoCaseMany cM boolVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] pairsM)
     in
-    { ops = pathOps ++ [ caseOp ]
-    , resultVar = caseResultVar
-    , resultType = resultTy
-    , ctx = Ctx.ctxAfterBranchOp ctx1 ctx2 [ caseResultVar ]
+    { ops = pathOps ++ spineCase.ops
+    , resultVar = spineCase.resultVar
+    , resultType = spineCase.resultType
+    , ctx = Ctx.ctxAfterBranchOp ctx1 spineCase.ctx spineCase.newVars
     , isTerminated = False
     }
 
@@ -5732,16 +6389,16 @@ generateChainGeneralWithJumps ctx testChain success failure jumpLookup resultTy 
                 ( elseRegion, ctx1b ) =
                     mkCaseRegionFromDecider elseRes resultTy
 
-                ( caseResultVar, ctxWithResult ) =
-                    Ctx.freshVar ctx1b
-
-                ( ctx2, caseOp ) =
-                    Ops.ecoCase ctxWithResult caseResultVar condVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] resultTy
+                spineCase =
+                    finishSpineCase ctx1b
+                        resultTy
+                        (\cS vS tS -> Ops.ecoCase cS vS condVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] tS)
+                        (\cM pairsM -> Ops.ecoCaseMany cM condVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] pairsM)
             in
-            { ops = condOps ++ [ caseOp ]
-            , resultVar = caseResultVar
-            , resultType = resultTy
-            , ctx = Ctx.ctxAfterBranchOp ctx1 ctx2 [ caseResultVar ]
+            { ops = condOps ++ spineCase.ops
+            , resultVar = spineCase.resultVar
+            , resultType = spineCase.resultType
+            , ctx = Ctx.ctxAfterBranchOp ctx1 spineCase.ctx spineCase.newVars
             , isTerminated = False
             }
 
@@ -5770,16 +6427,16 @@ generateChainGeneralWithJumps ctx testChain success failure jumpLookup resultTy 
                 ( elseRegion, ctx1b ) =
                     mkCaseRegionFromDecider elseRes resultTy
 
-                ( caseResultVar, ctxWithResult ) =
-                    Ctx.freshVar ctx1b
-
-                ( ctx2, caseOp ) =
-                    Ops.ecoCase ctxWithResult caseResultVar firstVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] resultTy
+                spineCase =
+                    finishSpineCase ctx1b
+                        resultTy
+                        (\cS vS tS -> Ops.ecoCase cS vS firstVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] tS)
+                        (\cM pairsM -> Ops.ecoCaseMany cM firstVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] pairsM)
             in
-            { ops = firstOps ++ [ caseOp ]
-            , resultVar = caseResultVar
-            , resultType = resultTy
-            , ctx = Ctx.ctxAfterBranchOp ctx1 ctx2 [ caseResultVar ]
+            { ops = firstOps ++ spineCase.ops
+            , resultVar = spineCase.resultVar
+            , resultType = spineCase.resultType
+            , ctx = Ctx.ctxAfterBranchOp ctx1 spineCase.ctx spineCase.newVars
             , isTerminated = False
             }
 
@@ -5874,16 +6531,16 @@ generateBoolFanOutWithJumps ctx path edges fallback jumpLookup resultTy =
         ( elseRegion, ctx1b ) =
             mkCaseRegionFromDecider elseRes resultTy
 
-        ( caseResultVar, ctxWithResult ) =
-            Ctx.freshVar ctx1b
-
-        ( ctx2, caseOp ) =
-            Ops.ecoCase ctxWithResult caseResultVar boolVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] resultTy
+        spineCase =
+            finishSpineCase ctx1b
+                resultTy
+                (\cS vS tS -> Ops.ecoCase cS vS boolVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] tS)
+                (\cM pairsM -> Ops.ecoCaseMany cM boolVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] pairsM)
     in
-    { ops = pathOps ++ [ caseOp ]
-    , resultVar = caseResultVar
-    , resultType = resultTy
-    , ctx = Ctx.ctxAfterBranchOp ctx1 ctx2 [ caseResultVar ]
+    { ops = pathOps ++ spineCase.ops
+    , resultVar = spineCase.resultVar
+    , resultType = spineCase.resultType
+    , ctx = Ctx.ctxAfterBranchOp ctx1 spineCase.ctx spineCase.newVars
     , isTerminated = False
     }
 
@@ -5972,21 +6629,30 @@ generateFanOutGeneralWithJumps ctx path edges fallback jumpLookup resultTy =
         allRegions =
             edgeRegions ++ [ fallbackRegion ]
 
-        ( caseResultVar, ctxWithResult ) =
-            Ctx.freshVar ctx2a
+        spineCase =
+            finishSpineCase ctx2a
+                resultTy
+                (\cS vS tS ->
+                    case stringPatterns of
+                        Just patterns ->
+                            Ops.ecoCaseString cS vS scrutineeVar scrutineeType tags patterns allRegions tS
 
-        ( ctx3, caseOp ) =
-            case stringPatterns of
-                Just patterns ->
-                    Ops.ecoCaseString ctxWithResult caseResultVar scrutineeVar scrutineeType tags patterns allRegions resultTy
+                        Nothing ->
+                            Ops.ecoCase cS vS scrutineeVar scrutineeType caseKind tags allRegions tS
+                )
+                (\cM pairsM ->
+                    case stringPatterns of
+                        Just patterns ->
+                            Ops.ecoCaseStringMany cM scrutineeVar scrutineeType tags patterns allRegions pairsM
 
-                Nothing ->
-                    Ops.ecoCase ctxWithResult caseResultVar scrutineeVar scrutineeType caseKind tags allRegions resultTy
+                        Nothing ->
+                            Ops.ecoCaseMany cM scrutineeVar scrutineeType caseKind tags allRegions pairsM
+                )
     in
-    { ops = pathOps ++ [ caseOp ]
-    , resultVar = caseResultVar
-    , resultType = resultTy
-    , ctx = Ctx.ctxAfterBranchOp ctx1 ctx3 [ caseResultVar ]
+    { ops = pathOps ++ spineCase.ops
+    , resultVar = spineCase.resultVar
+    , resultType = spineCase.resultType
+    , ctx = Ctx.ctxAfterBranchOp ctx1 spineCase.ctx spineCase.newVars
     , isTerminated = False
     }
 
@@ -6057,10 +6723,11 @@ mkCaseRegionFromDecider exprRes resultTy =
                         coerceResultToType exprRes.ctx exprRes.resultVar exprRes.resultType resultTy
 
                     -- Emit eco.yield to terminate the alternative
-                    ( ctx2, yieldOp ) =
-                        Ops.ecoYield ctx1 finalVar resultTy
+                    -- (decomposed on the sret result spine)
+                    ( yieldPreOps, yieldOp, ctx2 ) =
+                        emitSpineYield ctx1 finalVar resultTy
                 in
-                ( mkRegionFromOps (exprRes.ops ++ coerceOps ++ [ yieldOp ]), ctx2 )
+                ( mkRegionFromOps (exprRes.ops ++ coerceOps ++ yieldPreOps ++ [ yieldOp ]), ctx2 )
 
 
 {-| Generate case expression control flow.
@@ -6080,7 +6747,30 @@ generateCase : Ctx.Context -> Name.Name -> Name.Name -> Mono.Decider Mono.MonoCh
 generateCase ctx _ _ decider jumps resultMonoType =
     let
         resultMlirType =
-            Types.monoTypeToAbi resultMonoType
+            -- U-T1.3.3: a case on the sret worker's result spine declares the
+            -- AGGREGATE result type; branch leaves coerce to it (make-form
+            -- branches directly, boxed leaves via eco.from_heap) so the
+            -- branches' constructions dissolve under SROA.
+            case ctx.sretTailLayout of
+                Just tailLayout ->
+                    case resultMonoType of
+                        Mono.MTuple ts ->
+                            -- SLOT-TYPE-EXACT for the same reason as the
+                            -- tuple-literal arm above.
+                            if
+                                Types.tupleSlotTypes (Types.computeTupleLayout ts)
+                                    == Types.tupleSlotTypes tailLayout
+                            then
+                                Ops.aggTupleType (Types.tupleSlotTypes tailLayout)
+
+                            else
+                                Types.monoTypeToAbi resultMonoType
+
+                        _ ->
+                            Types.monoTypeToAbi resultMonoType
+
+                Nothing ->
+                    Types.monoTypeToAbi resultMonoType
 
         -- Build jump lookup for inlining shared branches (yield-based mode)
         -- Instead of emitting joinpoints, we inline branch bodies directly
@@ -6423,6 +7113,1041 @@ generateTupleCreate ctx elements layout tupleType =
     , ctx = ctx4
     , isTerminated = False
     }
+
+
+
+-- ====== VALUE-AGGREGATE TUPLE PROMOTION (U-T1.3.1) ======
+
+
+{-| Escape check for a let-bound tuple literal (U-T1.3.1,
+`plans/opt-tier1-aggregate-promotion.md`): promotable iff every appearance
+of the binder — or of any ALIAS of it (`let a = t` chains, which the
+destructure sugar mints: `let (x,y) = t` compiles to
+`let _v = t; x := _v[0]; y := _v[1]`) — is either the sanctioned aliasing
+binding itself or a destructure PROJECTION (a `MonoDestruct` whose path
+steps through a matching `MonoIndex` immediately above the root). A bare
+value use (`MonoVarLocal` covers call args, returns, stores, captures,
+record bases), a case-scrutinee position, a whole-value destructure, or a
+rebind disqualifies. The walk is Mono-altitude, syntactic, and early-exit
+— deliberately NOT the borrow oracle (T1-R1) and NOT the deleted
+MLIR-level predicate (postmortem: 2/30,910). A dedicated recursion (not
+`MonoTraverse.foldExpr`) so the alias binding's own RHS var read is
+exempted and the alias set threads scope-wise through let bodies.
+
+Emission needs no alias handling: `generateLetSingle`'s no-ops alias path
+propagates the aggregate result type through `let a = t` bindings, and the
+dual-form projection keys off the root variable's context type.
+-}
+tupleBinderPromotable : Dict.Dict Name.Name Ctx.SplitParamInfo -> Dict.Dict Int Ctx.PsplitInfo -> Set.Set Name.Name -> Name.Name -> Mono.MonoType -> Mono.MonoExpr -> Bool
+tupleBinderPromotable splitParams psplitTable fwdRefd name tupleType body =
+    let
+        wantKind =
+            case tupleType of
+                Mono.MTuple ts ->
+                    if List.length ts == 2 then
+                        Just Mono.Tuple2Container
+
+                    else if List.length ts == 3 then
+                        Just Mono.Tuple3Container
+
+                    else
+                        Nothing
+
+                _ ->
+                    Nothing
+    in
+    case wantKind of
+        Nothing ->
+            False
+
+        Just kind ->
+            walkPromo kind fwdRefd (tailSplitAllowSet kind splitParams) (psplitAllowPositions kind psplitTable) (Set.singleton name) body /= Nothing
+
+
+{-| U-T1.3.2: is this let-bound expr a promotable saturated ctor call?
+Conditions: flag on; direct single-stage-saturated call; the callee SpecId
+is a `MonoCtor` (via `ctx.ctorBySpec`); arity matches the shape (and > 0 —
+nullary ctors are constants, not calls); and the escape walk admits every
+use with `CustomContainer <ctor>` as the matching projection kind (which
+also admits `MonoUnbox` steps — the single-field Can.Unbox unwrap).
+-}
+promotableCtorCall : Ctx.Context -> Name.Name -> Int -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> Mono.MonoExpr -> Maybe Mono.CtorShape
+promotableCtorCall ctx name specId cargs resultType callInfo body =
+    let
+        -- Mirror generateCall's own saturation criterion: CallDirectFlat
+        -- dispatches to the saturated path whenever the RESULT is not a
+        -- function type (ctor calls carry isSingleStageSaturated = False,
+        -- so the staging flag alone would reject every ctor call);
+        -- KnownSegmentation requires the staging flag. The arity==fields
+        -- check below independently guarantees saturation.
+        saturatedDirect =
+            case callInfo.callKind of
+                Mono.CallDirectFlat ->
+                    not (isFunctionMonoType resultType)
+
+                Mono.CallDirectKnownSegmentation ->
+                    callInfo.isSingleStageSaturated
+
+                _ ->
+                    False
+    in
+    if not ctx.ecoConfig.aggPromote then
+        Nothing
+
+    else if not saturatedDirect then
+        Nothing
+
+    else
+        case Dict.get specId ctx.ctorBySpec of
+            Just shape ->
+                if
+                    (List.length cargs == List.length shape.fieldTypes)
+                        && not (List.isEmpty cargs)
+                        && (walkPromo (Mono.CustomContainer shape.name) ctx.fwdRefdLetNames (tailSplitAllowSet (Mono.CustomContainer shape.name) ctx.splitAggParams) (psplitAllowPositions (Mono.CustomContainer shape.name) ctx.psplitPromoted) (Set.singleton name) body /= Nothing)
+                then
+                    Just shape
+
+                else
+                    Nothing
+
+            Nothing ->
+                Nothing
+
+
+{-| Kind-generic promotability entry (exposed for the unit gate): does the
+escape walk admit every use of `name` in `body` under `kind` as the
+matching projection container?
+-}
+aggBinderPromotableWith : Mono.ContainerKind -> Name.Name -> Mono.MonoExpr -> Bool
+aggBinderPromotableWith kind name body =
+    walkPromo kind Set.empty Set.empty Dict.empty (Set.singleton name) body /= Nothing
+
+
+{-| U-T1.3.3 DECOMPOSED YIELDS (the old pass's proven shape, recorded in
+CGEN_064 Phase 3.4#1): an aggregate case RESULT would become a
+struct-typed block argument crossing block boundaries — RS4GC rejects
+pointer-carrying first-class aggregates in its liveness sets. So a case
+on the result spine instead declares N SCALAR results: each alternative
+projects its aggregate into slots and multi-yields; a single
+`eco.make.*` right after the merge rebuilds the aggregate BLOCK-LOCALLY
+(dissolved by SROA; never live across a block boundary).
+`emitSpineYield` is the per-alternative half; `finishSpineCase` the
+case-construction half. Both are inert unless `ctx.sretTailLayout` is
+set AND the threaded result type is an aggregate.
+-}
+emitSpineYield : Ctx.Context -> String -> MlirType -> ( List MlirOp, MlirOp, Ctx.Context )
+emitSpineYield ctx finalVar resultTy =
+    case ctx.sretTailLayout of
+        Just layout ->
+            if Types.isAggValueType resultTy then
+                let
+                    slotTys =
+                        Types.tupleSlotTypes layout
+
+                    ( projOpsRev, pairsRev, ctxA ) =
+                        List.foldl
+                            (\( idx, slotTy ) ( opsAcc, pairsAcc, ctxAcc ) ->
+                                let
+                                    ( pv, ctxF ) =
+                                        Ctx.freshVar ctxAcc
+
+                                    ( ctxP, projOp ) =
+                                        if layout.arity == 2 then
+                                            Ops.ecoProjectTuple2Agg ctxF pv idx slotTy ( finalVar, resultTy )
+
+                                        else
+                                            Ops.ecoProjectTuple3Agg ctxF pv idx slotTy ( finalVar, resultTy )
+                                in
+                                ( projOp :: opsAcc, ( pv, slotTy ) :: pairsAcc, ctxP )
+                            )
+                            ( [], [], ctx )
+                            (List.indexedMap Tuple.pair slotTys)
+
+                    ( ctxB, yieldOp ) =
+                        Ops.ecoYieldMany ctxA (List.reverse pairsRev)
+                in
+                ( List.reverse projOpsRev, yieldOp, ctxB )
+
+            else
+                let
+                    ( ctxA, yieldOp ) =
+                        Ops.ecoYield ctx finalVar resultTy
+                in
+                ( [], yieldOp, ctxA )
+
+        Nothing ->
+            let
+                ( ctxA, yieldOp ) =
+                    Ops.ecoYield ctx finalVar resultTy
+            in
+            ( [], yieldOp, ctxA )
+
+
+type alias SpineCaseResult =
+    { ops : List MlirOp
+    , resultVar : String
+    , resultType : MlirType
+    , newVars : List String
+    , ctx : Ctx.Context
+    }
+
+
+finishSpineCase :
+    Ctx.Context
+    -> MlirType
+    -> (Ctx.Context -> String -> MlirType -> ( Ctx.Context, MlirOp ))
+    -> (Ctx.Context -> List ( String, MlirType ) -> ( Ctx.Context, MlirOp ))
+    -> SpineCaseResult
+finishSpineCase ctx resultTy buildSingle buildMany =
+    let
+        singlePath () =
+            let
+                ( v, ctxA ) =
+                    Ctx.freshVar ctx
+
+                ( ctxB, caseOp ) =
+                    buildSingle ctxA v resultTy
+            in
+            { ops = [ caseOp ], resultVar = v, resultType = resultTy, newVars = [ v ], ctx = ctxB }
+    in
+    case ctx.sretTailLayout of
+        Just layout ->
+            if Types.isAggValueType resultTy then
+                let
+                    slotTys =
+                        Types.tupleSlotTypes layout
+
+                    ( pairsRev, ctxA ) =
+                        List.foldl
+                            (\slotTy ( acc, c ) ->
+                                let
+                                    ( v, c1 ) =
+                                        Ctx.freshVar c
+                                in
+                                ( ( v, slotTy ) :: acc, c1 )
+                            )
+                            ( [], ctx )
+                            slotTys
+
+                    pairs =
+                        List.reverse pairsRev
+
+                    ( ctxB, caseOp ) =
+                        buildMany ctxA pairs
+
+                    ( aggVar, ctxC ) =
+                        Ctx.freshVar ctxB
+
+                    ( ctxD, makeOp ) =
+                        case pairs of
+                            [ a, b ] ->
+                                Ops.ecoMakeTuple2 ctxC aggVar a b
+
+                            [ a, b, c ] ->
+                                Ops.ecoMakeTuple3 ctxC aggVar a b c
+
+                            _ ->
+                                crash "finishSpineCase: slot arity not 2/3"
+                in
+                { ops = [ caseOp, makeOp ]
+                , resultVar = aggVar
+                , resultType = resultTy
+                , newVars = aggVar :: List.map Tuple.first pairs
+                , ctx = ctxD
+                }
+
+            else
+                singlePath ()
+
+        Nothing ->
+            singlePath ()
+
+
+{-| U-T1.3.3 per-site call migration. All conditions LOCAL:
+callee promoted (pre-pass) · saturated direct call · binder admitted by
+the SAME escape walk as tuple promotion (every use a projection; the
+chain-head forward-ref guard applies; TailRec's synthetic unit body
+resolved through `ctx.tailRecLetBody`). On admission: compile the args
+exactly as the plain direct-call path would, emit the multi-result call
+to `name$sret`, and bind the binder as scalar SLOTS in
+`ctx.splitAggParams` (the T1.3.3L consumer machinery — slot-read
+projections, materialize-on-whole-use — does the rest). The binder gets
+NO varMapping, so any bypass read crashes loudly.
+-}
+trySretLetBinding : Ctx.Context -> Ctx.Context -> Name.Name -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe ExprResult
+trySretLetBinding ctx ctxWithPlaceholders name expr body =
+    if Dict.isEmpty ctx.sretPromoted then
+        Nothing
+
+    else
+        case expr of
+            Mono.MonoCall _ (Mono.MonoVarGlobal _ specId _) cargs callResultType callInfo ->
+                case Dict.get specId ctx.sretPromoted of
+                    Just info ->
+                        let
+                            saturatedDirect =
+                                case callInfo.callKind of
+                                    Mono.CallDirectFlat ->
+                                        not (isFunctionMonoType callResultType)
+
+                                    Mono.CallDirectKnownSegmentation ->
+                                        callInfo.isSingleStageSaturated
+
+                                    _ ->
+                                        False
+
+                            ( analysisBody, promotionBodyOk ) =
+                                case body of
+                                    Mono.MonoUnit ->
+                                        case ctx.tailRecLetBody of
+                                            Just realBody ->
+                                                ( realBody, True )
+
+                                            Nothing ->
+                                                ( body, False )
+
+                                    _ ->
+                                        ( body, True )
+
+                            chainHeadSafe =
+                                promotionBodyOk && not (Set.member name ctx.fwdRefdLetNames)
+                        in
+                        if
+                            saturatedDirect
+                                && chainHeadSafe
+                                && tupleBinderPromotable ctx.splitAggParams ctx.psplitPromoted ctx.fwdRefdLetNames name callResultType analysisBody
+                        then
+                            Just (emitSretLetBinding ctx ctxWithPlaceholders name specId cargs info body)
+
+                        else
+                            Nothing
+
+                    Nothing ->
+                        Nothing
+
+            _ ->
+                Nothing
+
+
+emitSretLetBinding : Ctx.Context -> Ctx.Context -> Name.Name -> Int -> List Mono.MonoExpr -> Ctx.SretInfo -> Mono.MonoExpr -> ExprResult
+emitSretLetBinding ctx ctxWithPlaceholders name specId cargs info body =
+    let
+        outerSiblings =
+            ctx.currentLetSiblings
+
+        -- args exactly as the plain direct-call path prepares them
+        ( argOps, argsWithTypes, ctxA ) =
+            generateExprListTyped ctxWithPlaceholders cargs
+
+        funcName =
+            specIdToFuncName ctx.registry specId
+
+        maybeSig =
+            Array.get specId ctx.signatures |> Maybe.andThen identity
+
+        ( boxOps, argVarPairs, ctxB ) =
+            case maybeSig of
+                Just sig ->
+                    boxToMatchSignatureTyped ctxA argsWithTypes sig.paramTypes
+
+                Nothing ->
+                    ( [], argsWithTypes, ctxA )
+
+        ( resultPairsRev, ctxC ) =
+            List.foldl
+                (\slotTy ( acc, c ) ->
+                    let
+                        ( v, c1 ) =
+                            Ctx.freshVar c
+                    in
+                    ( ( v, slotTy ) :: acc, c1 )
+                )
+                ( [], ctxB )
+                info.slotTypes
+
+        resultPairs =
+            List.reverse resultPairsRev
+
+        ( ctxD, callOp ) =
+            Ops.ecoCallNamedMulti ctxC (emitSafepointHints ctxC) resultPairs (funcName ++ "$sret") argVarPairs
+
+        savedSplit =
+            ctxD.splitAggParams
+
+        ctxBody =
+            { ctxD
+                | varMappings = Dict.remove name ctxD.varMappings
+                , splitAggParams =
+                    Dict.insert name
+                        { slots = resultPairs, split = Ctx.SplitTuple info.layout }
+                        ctxD.splitAggParams
+                , sretTailLayout = ctx.sretTailLayout
+            }
+
+        bodyResult =
+            generateExpr ctxBody body
+
+        bodyCtx =
+            bodyResult.ctx
+
+        ctxOut =
+            case body of
+                Mono.MonoUnit ->
+                    -- TailRec's SYNTHETIC def-setup: the REAL loop body is
+                    -- compiled by compileStep from the ctx we return — the
+                    -- slot binding must PERSIST (same function-scoped
+                    -- lifetime as split loop params).
+                    { bodyCtx | currentLetSiblings = outerSiblings }
+
+                _ ->
+                    { bodyCtx
+                        | currentLetSiblings = outerSiblings
+                        , splitAggParams = savedSplit
+                        , varMappings = Dict.remove name bodyCtx.varMappings
+                    }
+    in
+    { ops = argOps ++ boxOps ++ [ callOp ] ++ bodyResult.ops
+    , resultVar = bodyResult.resultVar
+    , resultType = bodyResult.resultType
+    , ctx = ctxOut
+    , isTerminated = bodyResult.isTerminated
+    }
+
+
+{-| U-T1.3.3L: is a tail-func PARAM admissible for scalar splitting? Same
+escape discipline as promotion candidates — every use must be a projection
+(or the param passed at its OWN tail-call position); any whole-value use
+(call arg, capture, return, rebind) vetoes, because it would force a
+per-use rematerialization (an ADDED allocation) inside the loop.
+-}
+paramSplitAdmissible : Dict.Dict Int Ctx.PsplitInfo -> Mono.ContainerKind -> Name.Name -> Mono.MonoExpr -> Bool
+paramSplitAdmissible psplitTable kind name body =
+    walkPromo kind Set.empty (Set.singleton name) (psplitAllowPositions kind psplitTable) (Set.singleton name) body /= Nothing
+
+
+{-| U-T1.3.3L: the loop params whose scalar-split shape MATCHES this
+candidate kind — the only tail-call positions where a bare tracked var is
+slot-extracted rather than passed (and so does not escape).
+-}
+tailSplitAllowSet : Mono.ContainerKind -> Dict.Dict Name.Name Ctx.SplitParamInfo -> Set.Set Name.Name
+tailSplitAllowSet kind splitParams =
+    Dict.foldl
+        (\pName info acc ->
+            if splitMatchesKind kind info then
+                Set.insert pName acc
+
+            else
+                acc
+        )
+        Set.empty
+        splitParams
+
+
+splitMatchesKind : Mono.ContainerKind -> Ctx.SplitParamInfo -> Bool
+splitMatchesKind kind info =
+    specMatchesKind kind info.split
+
+
+specMatchesKind : Mono.ContainerKind -> Ctx.SplitSpec -> Bool
+specMatchesKind kind spec =
+    case ( kind, spec ) of
+        ( Mono.Tuple2Container, Ctx.SplitTuple layout ) ->
+            layout.arity == 2
+
+        ( Mono.Tuple3Container, Ctx.SplitTuple layout ) ->
+            layout.arity == 3
+
+        ( Mono.CustomContainer cname, Ctx.SplitCtor clayout ) ->
+            clayout.name == cname
+
+        _ ->
+            False
+
+
+{-| U-T1.3.5: per psplit-promoted callee, the argument POSITIONS whose
+slot plan shape-matches this candidate kind — the only call positions
+where a bare tracked var is slot-projected rather than passed boxed.
+-}
+psplitAllowPositions : Mono.ContainerKind -> Dict.Dict Int Ctx.PsplitInfo -> Dict.Dict Int (Set.Set Int)
+psplitAllowPositions kind table =
+    Dict.foldl
+        (\sid info acc ->
+            let
+                positions =
+                    List.indexedMap Tuple.pair info.paramPlans
+                        |> List.filterMap
+                            (\( i, mPlan ) ->
+                                case mPlan of
+                                    Just plan ->
+                                        if specMatchesKind kind plan.spec then
+                                            Just i
+
+                                        else
+                                            Nothing
+
+                                    Nothing ->
+                                        Nothing
+                            )
+                        |> Set.fromList
+            in
+            if Set.isEmpty positions then
+                acc
+
+            else
+                Dict.insert sid positions acc
+        )
+        Dict.empty
+        table
+
+
+isFunctionMonoType : Mono.MonoType -> Bool
+isFunctionMonoType ty =
+    case ty of
+        Mono.MFunction _ _ _ ->
+            True
+
+        _ ->
+            False
+
+
+{-| One walk step: `Nothing` = disqualified; `Just s` = fine so far, with
+`s` the (possibly grown) candidate∪alias name set. Aliases only grow
+through `MonoLet (MonoDef a (MonoVarLocal x))` with `x` already in the
+set, and only the LET BODY sees the grown set (scope discipline).
+-}
+walkPromo : Mono.ContainerKind -> Set.Set Name.Name -> Set.Set Name.Name -> Dict.Dict Int (Set.Set Int) -> Set.Set Name.Name -> Mono.MonoExpr -> Maybe (Set.Set Name.Name)
+walkPromo kind fwdRefd tailSplitOk callSplitOk s expr =
+    case expr of
+        Mono.MonoLiteral _ _ ->
+            Just s
+
+        Mono.MonoUnit ->
+            Just s
+
+        Mono.MonoVarLocal x _ ->
+            if Set.member x s then
+                Nothing
+
+            else
+                Just s
+
+        Mono.MonoVarGlobal _ _ _ ->
+            Just s
+
+        Mono.MonoVarKernel _ _ _ _ _ ->
+            Just s
+
+        Mono.MonoAccessorValue _ _ _ ->
+            Just s
+
+        Mono.MonoList _ es _ ->
+            walkPromoAll kind fwdRefd tailSplitOk callSplitOk s es
+
+        Mono.MonoTupleCreate _ es _ ->
+            walkPromoAll kind fwdRefd tailSplitOk callSplitOk s es
+
+        Mono.MonoRecordCreate fes _ ->
+            walkPromoAll kind fwdRefd tailSplitOk callSplitOk s (List.map Tuple.second fes)
+
+        Mono.MonoRecordAccess e _ _ ->
+            walkPromo kind fwdRefd tailSplitOk callSplitOk s e
+
+        Mono.MonoRecordUpdate base fes _ ->
+            walkPromo kind fwdRefd tailSplitOk callSplitOk s base
+                |> Maybe.andThen (\_ -> walkPromoAll kind fwdRefd tailSplitOk callSplitOk s (List.map Tuple.second fes))
+
+        Mono.MonoDestruct (Mono.MonoDestructor bound path _) inner _ ->
+            if Set.member bound s then
+                -- rebind of a tracked name
+                Nothing
+
+            else if promoPathOk kind s path then
+                walkPromo kind fwdRefd tailSplitOk callSplitOk s inner
+
+            else
+                Nothing
+
+        Mono.MonoCase s1 s2 decider jumps _ ->
+            if Set.member s1 s then
+                Nothing
+
+            else if Set.member s2 s then
+                -- T1.3.1b: a tracked tuple AS CASE SCRUTINEE is fine iff the
+                -- decision TREE only reaches it through matching Index
+                -- projections — with one exemption: a bare tracked root under
+                -- `Test.IsTuple` is safe (the emission ignores the path value
+                -- and emits `constant true`). `generateCase` itself never
+                -- touches the scrutinee var; branch-body destructs are walked
+                -- below like any other use.
+                if deciderScrutineeOk kind s decider then
+                    walkPromoDecider kind fwdRefd tailSplitOk callSplitOk s decider
+                        |> Maybe.andThen (\_ -> walkPromoAll kind fwdRefd tailSplitOk callSplitOk s (List.map Tuple.second jumps))
+
+                else
+                    Nothing
+
+            else
+                walkPromoDecider kind fwdRefd tailSplitOk callSplitOk s decider
+                    |> Maybe.andThen (\_ -> walkPromoAll kind fwdRefd tailSplitOk callSplitOk s (List.map Tuple.second jumps))
+
+        Mono.MonoIf branches final _ ->
+            walkPromoAll kind fwdRefd tailSplitOk callSplitOk s (final :: List.concatMap (\( c, b ) -> [ c, b ]) branches)
+
+        Mono.MonoLet (Mono.MonoDef x rhs) inner _ ->
+            if Set.member x s then
+                -- rebind of a tracked name
+                Nothing
+
+            else
+                case rhs of
+                    Mono.MonoVarLocal y _ ->
+                        if Set.member y s then
+                            if Set.member x fwdRefd then
+                                -- an EARLIER sibling captures the alias: the
+                                -- alias would carry the aggregate into that
+                                -- capture — do not promote (same rule as the
+                                -- candidate's own guard).
+                                Nothing
+
+                            else
+                                -- the sanctioned alias binding: don't walk the
+                                -- RHS (that var read IS the alias), track it.
+                                walkPromo kind fwdRefd tailSplitOk callSplitOk (Set.insert x s) inner
+
+                        else
+                            walkPromo kind fwdRefd tailSplitOk callSplitOk s inner
+
+                    _ ->
+                        walkPromo kind fwdRefd tailSplitOk callSplitOk s rhs
+                            |> Maybe.andThen (\_ -> walkPromo kind fwdRefd tailSplitOk callSplitOk s inner)
+
+        Mono.MonoLet (Mono.MonoTailDef x params rhs) inner _ ->
+            if Set.member x s || List.any (\( p, _ ) -> Set.member p s) params then
+                Nothing
+
+            else
+                -- U-T1.3.3L: tail calls inside the NESTED tail def target the
+                -- inner loop — its param names are unrelated to the enclosing
+                -- loop's split params, so the allowance must not leak in.
+                walkPromo kind fwdRefd Set.empty Dict.empty s rhs
+                    |> Maybe.andThen (\_ -> walkPromo kind fwdRefd tailSplitOk callSplitOk s inner)
+
+        Mono.MonoCall _ f args _ _ ->
+            -- U-T1.3.5: a BARE tracked var at a psplit-PROMOTED position of a
+            -- direct call does NOT escape — the migrated site slot-projects
+            -- the (make-form) aggregate instead of passing the boxed value;
+            -- if migration later aborts, the aggregate coerces through
+            -- eco.to_heap at the shim boundary (sound, allocation as today).
+            case f of
+                Mono.MonoVarGlobal _ calleeSid _ ->
+                    case Dict.get calleeSid callSplitOk of
+                        Just okPositions ->
+                            let
+                                argOk ( i, argE ) =
+                                    case argE of
+                                        Mono.MonoVarLocal v _ ->
+                                            not (Set.member v s) || Set.member i okPositions
+
+                                        _ ->
+                                            walkPromo kind fwdRefd tailSplitOk callSplitOk s argE /= Nothing
+                            in
+                            if List.all argOk (List.indexedMap Tuple.pair args) then
+                                Just s
+
+                            else
+                                Nothing
+
+                        Nothing ->
+                            walkPromoAll kind fwdRefd tailSplitOk callSplitOk s args
+
+                _ ->
+                    walkPromo kind fwdRefd tailSplitOk callSplitOk s f
+                        |> Maybe.andThen (\_ -> walkPromoAll kind fwdRefd tailSplitOk callSplitOk s args)
+
+        Mono.MonoTailCall _ args _ ->
+            -- U-T1.3.3L: a BARE tracked var passed at a scalar-split loop-param
+            -- position does NOT escape — the tail-call step extracts its slots
+            -- (aggregate projections, folded by SROA) instead of passing the
+            -- boxed value into the next iteration. Any other tracked use in an
+            -- argument still disqualifies.
+            let
+                argOk ( pName, argE ) =
+                    case argE of
+                        Mono.MonoVarLocal v _ ->
+                            not (Set.member v s) || Set.member pName tailSplitOk
+
+                        _ ->
+                            walkPromo kind fwdRefd tailSplitOk callSplitOk s argE /= Nothing
+            in
+            if List.all argOk args then
+                Just s
+
+            else
+                Nothing
+
+        Mono.MonoClosure info inner _ ->
+            if
+                List.any (\( p, _ ) -> Set.member p s) info.params
+                    || List.any (\( c, _, _ ) -> Set.member c s) info.captures
+            then
+                Nothing
+
+            else
+                -- Same scoping rule as the nested-tail-def arm: a closure body
+                -- is a different function; the split-position allowance for
+                -- tail-call args does not apply inside it.
+                walkPromoAll kind fwdRefd tailSplitOk callSplitOk s (List.map (\( _, e, _ ) -> e) info.captures)
+                    |> Maybe.andThen (\_ -> walkPromo kind fwdRefd Set.empty Dict.empty s inner)
+
+
+walkPromoAll : Mono.ContainerKind -> Set.Set Name.Name -> Set.Set Name.Name -> Dict.Dict Int (Set.Set Int) -> Set.Set Name.Name -> List Mono.MonoExpr -> Maybe (Set.Set Name.Name)
+walkPromoAll kind fwdRefd tailSplitOk callSplitOk s es =
+    List.foldl
+        (\e acc -> Maybe.andThen (\_ -> walkPromo kind fwdRefd tailSplitOk callSplitOk s e) acc)
+        (Just s)
+        es
+
+
+{-| T1.3.1b: check every decision-tree PATH position that can reach a
+tracked root. Chain test paths: a bare tracked root is allowed only under
+`Test.IsTuple` (emission: `constant true`, path value unused); any other
+test must project through a matching `DtIndex` first. FanOut dispatch
+paths must project (the dispatch emits `get_tag` on the path value — a
+bare aggregate there would be ill-typed; type-impossible for tuples, but
+enforced defensively). `DtUnbox` on a tracked root: defensively rejected.
+-}
+deciderScrutineeOk : Mono.ContainerKind -> Set.Set Name.Name -> Mono.Decider Mono.MonoChoice -> Bool
+deciderScrutineeOk kind s decider =
+    case decider of
+        Mono.Leaf _ ->
+            True
+
+        Mono.Chain tests success failure ->
+            List.all (\( p, t ) -> dtTestPathOk kind s p t) tests
+                && deciderScrutineeOk kind s success
+                && deciderScrutineeOk kind s failure
+
+        Mono.FanOut path edges fallback ->
+            dtProjectingPathOk kind s path
+                && List.all (\( _, d ) -> deciderScrutineeOk kind s d) edges
+                && deciderScrutineeOk kind s fallback
+
+
+dtTestPathOk : Mono.ContainerKind -> Set.Set Name.Name -> Mono.MonoDtPath -> DT.Test -> Bool
+dtTestPathOk kind s path test =
+    case path of
+        Mono.DtRoot r _ ->
+            if Set.member r s then
+                case test of
+                    Test.IsTuple ->
+                        True
+
+                    _ ->
+                        False
+
+            else
+                True
+
+        _ ->
+            dtProjectingPathOk kind s path
+
+
+{-| A DtPath whose VALUE is consumed (test other than IsTuple, or FanOut
+dispatch): wherever it reaches a tracked root, the step immediately above
+must be a matching `DtIndex` projection.
+-}
+dtProjectingPathOk : Mono.ContainerKind -> Set.Set Name.Name -> Mono.MonoDtPath -> Bool
+dtProjectingPathOk kind s path =
+    case path of
+        Mono.DtRoot r _ ->
+            not (Set.member r s)
+
+        Mono.DtIndex _ stepKind _ sub ->
+            case sub of
+                Mono.DtRoot r _ ->
+                    not (Set.member r s) || stepKind == kind
+
+                _ ->
+                    dtProjectingPathOk kind s sub
+
+        Mono.DtUnbox _ sub ->
+            case sub of
+                Mono.DtRoot r _ ->
+                    -- see promoPathOk's MonoUnbox arm.
+                    not (Set.member r s) || isCustomKind kind
+
+                _ ->
+                    dtProjectingPathOk kind s sub
+
+
+walkPromoDecider : Mono.ContainerKind -> Set.Set Name.Name -> Set.Set Name.Name -> Dict.Dict Int (Set.Set Int) -> Set.Set Name.Name -> Mono.Decider Mono.MonoChoice -> Maybe (Set.Set Name.Name)
+walkPromoDecider kind fwdRefd tailSplitOk callSplitOk s decider =
+    case decider of
+        Mono.Leaf (Mono.Inline e) ->
+            walkPromo kind fwdRefd tailSplitOk callSplitOk s e
+
+        Mono.Leaf (Mono.Jump _) ->
+            Just s
+
+        Mono.Chain _ success failure ->
+            walkPromoDecider kind fwdRefd tailSplitOk callSplitOk s success
+                |> Maybe.andThen (\_ -> walkPromoDecider kind fwdRefd tailSplitOk callSplitOk s failure)
+
+        Mono.FanOut _ edges fallback ->
+            List.foldl
+                (\( _, d ) acc -> Maybe.andThen (\_ -> walkPromoDecider kind fwdRefd tailSplitOk callSplitOk s d) acc)
+                (Just s)
+                edges
+                |> Maybe.andThen (\_ -> walkPromoDecider kind fwdRefd tailSplitOk callSplitOk s fallback)
+
+
+{-| A destructure path is compatible with the tracked set iff wherever it
+reaches a tracked `MonoRoot`, the step immediately above the root is a
+`MonoIndex` with the matching tuple ContainerKind (a real projection). A
+bare tracked root (whole-value read), a field/unbox step on a tracked
+root, or a mismatched container kind disqualifies.
+-}
+promoPathOk : Mono.ContainerKind -> Set.Set Name.Name -> Mono.MonoPath -> Bool
+promoPathOk kind s path =
+    case path of
+        Mono.MonoRoot r _ ->
+            not (Set.member r s)
+
+        Mono.MonoIndex _ stepKind _ sub ->
+            case sub of
+                Mono.MonoRoot r _ ->
+                    not (Set.member r s) || stepKind == kind
+
+                _ ->
+                    promoPathOk kind s sub
+
+        Mono.MonoField _ _ sub ->
+            case sub of
+                Mono.MonoRoot r _ ->
+                    not (Set.member r s)
+
+                _ ->
+                    promoPathOk kind s sub
+
+        Mono.MonoUnbox _ sub ->
+            case sub of
+                Mono.MonoRoot r _ ->
+                    -- Can.Unbox unwrap (single-ctor single-field): a field-0
+                    -- projection — fine for CUSTOM candidates, never for
+                    -- tuples.
+                    not (Set.member r s) || isCustomKind kind
+
+                _ ->
+                    promoPathOk kind s sub
+
+
+isCustomKind : Mono.ContainerKind -> Bool
+isCustomKind kind =
+    case kind of
+        Mono.CustomContainer _ ->
+            True
+
+        _ ->
+            False
+
+
+{-| Emit a promotable tuple literal in the VALUE-aggregate form:
+`eco.make.tuple2/3` producing `!eco.tuple2/3<...>` — no heap allocation,
+no GC-root hints (the result is not an `!eco.value`; its boxed elements'
+liveness is handled by RS4GC after SROA scalarises the struct —
+REP_AGG_001, pinned by `test/codegen/value_sroa_statepoint_llvm.mlir`).
+Element preparation (ordering, per-slot boxing discipline) mirrors
+`generateTupleCreate` exactly, so slot types agree with what the dual-form
+projection in `Patterns.generateMonoPath` expects.
+-}
+generateTupleCreateValue : Ctx.Context -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
+generateTupleCreateValue ctx elements monoType =
+    let
+        layout =
+            Types.computeTupleLayout (getTupleElements monoType)
+
+        ( _, ctxWithType ) =
+            Ctx.getOrCreateTypeIdForMonoType monoType ctx
+
+        ( elemOps, elemVarsWithTypes, ctx1 ) =
+            generateExprListTyped ctxWithType elements
+
+        ( boxOpsReversed, boxedElemVarsReversed, ctx2 ) =
+            List.foldl
+                (\( ( var, ssaType ), ( _, isUnboxed ) ) ( opsAcc, varsAcc, ctxAcc ) ->
+                    if isUnboxed then
+                        ( opsAcc, var :: varsAcc, ctxAcc )
+
+                    else
+                        let
+                            ( moreOps, boxedVar, newCtx ) =
+                                boxToEcoValue ctxAcc var ssaType
+                        in
+                        ( List.reverse moreOps ++ opsAcc, boxedVar :: varsAcc, newCtx )
+                )
+                ( [], [], ctx1 )
+                (List.map2 Tuple.pair elemVarsWithTypes layout.elements)
+
+        boxOps =
+            List.reverse boxOpsReversed
+
+        boxedElemVars =
+            List.reverse boxedElemVarsReversed
+
+        elemVarPairs : List ( String, MlirType )
+        elemVarPairs =
+            List.map2
+                (\v ( elemType, isUnboxed ) ->
+                    ( v
+                    , if isUnboxed then
+                        Types.monoTypeToAbi elemType
+
+                      else
+                        Types.ecoValue
+                    )
+                )
+                boxedElemVars
+                layout.elements
+
+        ( resultVar, ctx3 ) =
+            Ctx.freshVar ctx2
+
+        ( ctx4, makeOp ) =
+            case elemVarPairs of
+                [ a, b ] ->
+                    Ops.ecoMakeTuple2 ctx3 resultVar a b
+
+                [ a, b, c ] ->
+                    Ops.ecoMakeTuple3 ctx3 resultVar a b c
+
+                _ ->
+                    crash "generateTupleCreateValue: unreachable: tuples >3 elements rejected by canonicalization"
+    in
+    { ops = elemOps ++ boxOps ++ [ makeOp ]
+    , resultVar = resultVar
+    , resultType = Ops.aggTupleType (List.map Tuple.second elemVarPairs)
+    , ctx = ctx4
+    , isTerminated = False
+    }
+
+
+{-| U-T1.3.2: emit a promotable saturated ctor call as a VALUE-level
+`eco.make.custom` — the ctor call and the heap allocation both vanish.
+Slot preparation mirrors the heap call path's ABI coercion
+(`boxToMatchSignatureTyped` semantics, per-slot): each arg is coerced to
+the ctor layout's slot type (unboxed field ⇒ its ABI primitive, boxed
+field ⇒ `!eco.value`), exactly what the ctor function's own
+`eco.construct.custom` would have received (`Functions.generateCtor`).
+-}
+generateCustomCreateValue : Ctx.Context -> Mono.CtorShape -> List Mono.MonoExpr -> ExprResult
+generateCustomCreateValue ctx shape args =
+    let
+        layout =
+            Types.computeCtorLayout shape
+
+        ( prepOps, slotPairs, ctx2 ) =
+            prepareCtorSlots ctx layout args
+
+        ( resultVar, ctx3 ) =
+            Ctx.freshVar ctx2
+
+        ( ctx4, makeOp ) =
+            Ops.ecoMakeCustom ctx3 resultVar layout.tag (Just shape.name) slotPairs
+    in
+    { ops = prepOps ++ [ makeOp ]
+    , resultVar = resultVar
+    , resultType = Ops.aggCustomType (List.map Tuple.second slotPairs)
+    , ctx = ctx4
+    , isTerminated = False
+    }
+
+
+{-| U-T1.3.2c: the HEAP twin of `generateCustomCreateValue` — same slot
+preparation, but the terminal op is the allocating `eco.construct.custom`
+(result `!eco.value`, exactly what the ctor function's call would have
+returned). Used by `tryCtorInline` for saturated ctor calls that are NOT
+promotion candidates.
+-}
+generateCustomCreateHeap : Ctx.Context -> Mono.CtorShape -> List Mono.MonoExpr -> ExprResult
+generateCustomCreateHeap ctx shape args =
+    let
+        layout =
+            Types.computeCtorLayout shape
+
+        ( prepOps, slotPairs, ctx2 ) =
+            prepareCtorSlots ctx layout args
+
+        ( resultVar, ctx3 ) =
+            Ctx.freshVar ctx2
+
+        ( ctx4, constructOp ) =
+            Ops.ecoConstructCustom ctx3
+                (emitSafepointHints ctx3)
+                resultVar
+                layout.tag
+                (List.length layout.fields)
+                layout.unboxedBitmap
+                slotPairs
+                (Just (Name.toElmString layout.name))
+    in
+    { ops = prepOps ++ [ constructOp ]
+    , resultVar = resultVar
+    , resultType = Types.ecoValue
+    , ctx = ctx4
+    , isTerminated = False
+    }
+
+
+{-| Per-slot ABI coercion for a custom construction: each arg is coerced to
+the ctor layout's slot type (unboxed field ⇒ its ABI primitive, boxed
+field ⇒ `!eco.value`) — mirroring `boxToMatchSignatureTyped` semantics and
+`Functions.generateCtor`'s own argument ABI. Shared by the SSA-aggregate
+(`eco.make.custom`) and heap (`eco.construct.custom`) emitters so the two
+forms can never drift.
+-}
+prepareCtorSlots : Ctx.Context -> Types.CtorLayout -> List Mono.MonoExpr -> ( List MlirOp, List ( String, MlirType ), Ctx.Context )
+prepareCtorSlots ctx layout args =
+    let
+        ( argOps, argVarsWithTypes, ctx1 ) =
+            generateExprListTyped ctx args
+
+        ( coerceOpsRev, slotPairsRev, ctx2 ) =
+            List.foldl
+                (\( ( var, ssaType ), field ) ( opsAcc, pairsAcc, ctxAcc ) ->
+                    let
+                        target =
+                            if field.isUnboxed then
+                                Types.monoTypeToAbi field.monoType
+
+                            else
+                                Types.ecoValue
+                    in
+                    if ssaType == target then
+                        ( opsAcc, ( var, target ) :: pairsAcc, ctxAcc )
+
+                    else if Types.isEcoValueType target then
+                        let
+                            ( moreOps, boxedVar, newCtx ) =
+                                boxToEcoValue ctxAcc var ssaType
+                        in
+                        ( List.reverse moreOps ++ opsAcc, ( boxedVar, target ) :: pairsAcc, newCtx )
+
+                    else if Types.isEcoValueType ssaType then
+                        let
+                            ( unboxOps, unboxedVar, newCtx ) =
+                                Intrinsics.unboxToType ctxAcc var target
+                        in
+                        ( List.reverse unboxOps ++ opsAcc, ( unboxedVar, target ) :: pairsAcc, newCtx )
+
+                    else
+                        -- primitive-to-primitive mismatch cannot occur under
+                        -- MONO_029 layout connectivity; pass through.
+                        ( opsAcc, ( var, target ) :: pairsAcc, ctxAcc )
+                )
+                ( [], [], ctx1 )
+                (List.map2 Tuple.pair argVarsWithTypes layout.fields)
+    in
+    ( argOps ++ List.reverse coerceOpsRev, List.reverse slotPairsRev, ctx2 )
 
 
 

@@ -15,16 +15,19 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.Eco.Config as Config
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.MLIR.Context as Ctx
+import Compiler.Generate.MLIR.Expr as Expr
 import Compiler.Generate.MLIR.Functions as Functions
 import Compiler.Generate.MLIR.Lambdas as Lambdas
 import Compiler.Generate.MLIR.TypeTable as TypeTable
+import Compiler.Generate.MLIR.Types as Types
+import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Compiler.Generate.Mode as Mode
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Dict
 import Eco.File
 import Mlir.Bytecode.StreamEncode as StreamEncode
 import Mlir.Loc as Loc
-import Mlir.Mlir exposing (MlirModule, MlirOp)
+import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType)
 import Mlir.Pretty as Pretty
 import Set
 import System.IO as IO
@@ -152,6 +155,9 @@ streamMlirToWriter ecoConfig mode monoGraph0 writeChunk =
             Ctx.initContext mode registry signatures ctorShapes
                 |> Ctx.withInlineBodies (MonoInlineSimplify.buildBodyLookup monoGraph0)
                 |> Ctx.withEcoConfig ecoConfig
+                |> Ctx.withCtorBySpec (buildCtorBySpec nodes)
+                |> Ctx.withSretPromoted (buildSretPromoted ecoConfig nodes)
+                |> Ctx.withPsplitPromoted (buildPsplitPromoted ecoConfig ctorShapes (buildCtorBySpec nodes) (buildSretPromoted ecoConfig nodes) nodes)
 
         nodesList =
             Array.toIndexedList nodes
@@ -270,6 +276,9 @@ streamMlirBytecode ecoConfig mode monoGraph0 target =
             Ctx.initContext mode registry signatures ctorShapes
                 |> Ctx.withInlineBodies (MonoInlineSimplify.buildBodyLookup monoGraph0)
                 |> Ctx.withEcoConfig ecoConfig
+                |> Ctx.withCtorBySpec (buildCtorBySpec nodes)
+                |> Ctx.withSretPromoted (buildSretPromoted ecoConfig nodes)
+                |> Ctx.withPsplitPromoted (buildPsplitPromoted ecoConfig ctorShapes (buildCtorBySpec nodes) (buildSretPromoted ecoConfig nodes) nodes)
 
         nodesList =
             Array.toIndexedList nodes
@@ -365,3 +374,488 @@ streamNodesCollectEncode ctx0 remaining tables =
                     StreamEncode.collectAndEncodeOps nodeOps tables
             in
             streamNodesCollectEncode cleanCtx rest newTables
+
+
+{-| U-T1.3.3 result-promotion selection (census-revised rule,
+plans/opt-tier1-aggregate-promotion.md): a spec is promoted iff
+  (a) it is a zero-capture function whose result is a tuple2/3,
+  (b) every RESULT-spine leaf of its body is a tuple literal of that
+      arity (spine = let/destruct bodies + case branches; MonoIf is a
+      recorded v1 scope cut), and
+  (c) at least one LET-BOUND direct call site exists somewhere in the
+      graph (otherwise the worker+shim would be pure overhead).
+Leaf-ness is NOT required — the census measured it empty and it buys no
+soundness. Workers/shims emit in `Functions.generateSretWorkerAndShim`;
+sites migrate per-site in `Expr.trySretLetBinding`.
+-}
+buildSretPromoted : Config.EcoConfig -> Array (Maybe Mono.MonoNode) -> Dict.Dict Int Ctx.SretInfo
+buildSretPromoted config nodes =
+    if not config.sretResults then
+        Dict.empty
+
+    else
+        let
+            candidates =
+                Tuple.second
+                    (Array.foldl
+                        (\maybeNode ( specId, acc ) ->
+                            case maybeNode of
+                                Just (Mono.MonoDefine (Mono.MonoClosure cinfo cbody _) monoType) ->
+                                    if List.isEmpty cinfo.captures && not (List.isEmpty cinfo.params) then
+                                        case closureResultType monoType of
+                                            Mono.MTuple ts ->
+                                                let
+                                                    arity =
+                                                        List.length ts
+                                                in
+                                                if (arity == 2 || arity == 3) && sretTailOk (Types.tupleSlotTypes (Types.computeTupleLayout ts)) cbody then
+                                                    let
+                                                        layout =
+                                                            Types.computeTupleLayout ts
+                                                    in
+                                                    ( specId + 1
+                                                    , Dict.insert specId
+                                                        { layout = layout
+                                                        , slotTypes = Types.tupleSlotTypes layout
+                                                        }
+                                                        acc
+                                                    )
+
+                                                else
+                                                    ( specId + 1, acc )
+
+                                            _ ->
+                                                ( specId + 1, acc )
+
+                                    else
+                                        ( specId + 1, acc )
+
+                                Just (Mono.MonoTailFunc tparams tbody monoType) ->
+                                    -- U-T1.3.6: tail funcs promote too — the loop
+                                    -- carries DECOMPOSED result columns; a
+                                    -- MonoTailCall leaf is a continue, not a result.
+                                    -- Independently gated (ECO_SRET_TAILFUNC=0) so
+                                    -- the widening can be A/B'd apart from T1.3.3.
+                                    case Ctx.residualResultType (List.length tparams) monoType of
+                                        Mono.MTuple ts ->
+                                            let
+                                                arity =
+                                                    List.length ts
+                                            in
+                                            if config.sretTailFuncs && (arity == 2 || arity == 3) && sretTailFuncOk (Types.tupleSlotTypes (Types.computeTupleLayout ts)) tbody then
+                                                let
+                                                    layout =
+                                                        Types.computeTupleLayout ts
+                                                in
+                                                ( specId + 1
+                                                , Dict.insert specId
+                                                    { layout = layout
+                                                    , slotTypes = Types.tupleSlotTypes layout
+                                                    }
+                                                    acc
+                                                )
+
+                                            else
+                                                ( specId + 1, acc )
+
+                                        _ ->
+                                            ( specId + 1, acc )
+
+                                _ ->
+                                    ( specId + 1, acc )
+                        )
+                        ( 0, Dict.empty )
+                        nodes
+                    )
+
+            calledInLetPosition =
+                Array.foldl
+                    (\maybeNode acc ->
+                        case maybeNode of
+                            Just node ->
+                                nodeExprs node
+                                    |> List.foldl
+                                        (\e acc2 ->
+                                            MonoTraverse.foldExpr collectSretSites acc2 e
+                                        )
+                                        acc
+
+                            Nothing ->
+                                acc
+                    )
+                    Set.empty
+                    nodes
+        in
+        Dict.filter (\specId _ -> Set.member specId calledInLetPosition) candidates
+
+
+closureResultType : Mono.MonoType -> Mono.MonoType
+closureResultType monoType =
+    case monoType of
+        Mono.MFunction _ _ retType ->
+            retType
+
+        _ ->
+            monoType
+
+
+nodeExprs : Mono.MonoNode -> List Mono.MonoExpr
+nodeExprs node =
+    case node of
+        Mono.MonoDefine e _ ->
+            [ e ]
+
+        Mono.MonoTailFunc _ e _ ->
+            [ e ]
+
+        _ ->
+            []
+
+
+collectSretSites : Mono.MonoExpr -> Set.Set Int -> Set.Set Int
+collectSretSites e acc =
+    case e of
+        Mono.MonoLet (Mono.MonoDef _ (Mono.MonoCall _ (Mono.MonoVarGlobal _ specId _) _ _ _)) _ _ ->
+            Set.insert specId acc
+
+        _ ->
+            acc
+
+
+{-| U-T1.3.6: the result-spine walk for TAIL FUNCS — `MonoTailCall` is a
+loop CONTINUE (not a result leaf) and `MonoIf` is admissible (TailRec's
+`compileIfStep` threads the spine flag through `compileStep`, unlike
+Expr's `generateIf`).
+-}
+sretTailFuncOk : List MlirType -> Mono.MonoExpr -> Bool
+sretTailFuncOk slotTys e =
+    case e of
+        Mono.MonoTailCall _ _ _ ->
+            True
+
+        Mono.MonoTupleCreate _ _ leafTy ->
+            sretLeafMatches slotTys leafTy
+
+        Mono.MonoLet _ b _ ->
+            sretTailFuncOk slotTys b
+
+        Mono.MonoDestruct _ b _ ->
+            sretTailFuncOk slotTys b
+
+        Mono.MonoIf brs fin _ ->
+            List.all (sretTailFuncOk slotTys) (fin :: List.map Tuple.second brs)
+
+        Mono.MonoCase _ _ decider jumps _ ->
+            sretTailFuncDeciderOk slotTys decider
+                && List.all (\( _, je ) -> sretTailFuncOk slotTys je) jumps
+
+        _ ->
+            False
+
+
+sretTailFuncDeciderOk : List MlirType -> Mono.Decider Mono.MonoChoice -> Bool
+sretTailFuncDeciderOk slotTys d =
+    case d of
+        Mono.Leaf (Mono.Inline e) ->
+            sretTailFuncOk slotTys e
+
+        Mono.Leaf (Mono.Jump _) ->
+            True
+
+        Mono.Chain _ s f ->
+            sretTailFuncDeciderOk slotTys s && sretTailFuncDeciderOk slotTys f
+
+        Mono.FanOut _ edges fb ->
+            List.all (\( _, sub ) -> sretTailFuncDeciderOk slotTys sub) edges
+                && sretTailFuncDeciderOk slotTys fb
+
+
+{-| Leaf check compares the leaf tuple's SLOT TYPES against the
+function's result plan — arity alone is unsound: node-level result
+types can be differently specialized than the body's tuples (the
+stale-MVar hazard the TailRec destructor path documents), and a
+boxed-slot make where the plan says unboxed crashes emission.
+-}
+sretLeafMatches : List MlirType -> Mono.MonoType -> Bool
+sretLeafMatches slotTys leafMonoType =
+    case leafMonoType of
+        Mono.MTuple ts ->
+            (List.length ts == List.length slotTys)
+                && (Types.tupleSlotTypes (Types.computeTupleLayout ts) == slotTys)
+
+        _ ->
+            False
+
+
+sretTailOk : List MlirType -> Mono.MonoExpr -> Bool
+sretTailOk slotTys e =
+    case e of
+        Mono.MonoTupleCreate _ _ leafTy ->
+            sretLeafMatches slotTys leafTy
+
+        Mono.MonoLet _ b _ ->
+            sretTailOk slotTys b
+
+        Mono.MonoDestruct _ b _ ->
+            sretTailOk slotTys b
+
+        Mono.MonoCase _ _ decider jumps _ ->
+            sretDeciderTailOk slotTys decider
+                && List.all (\( _, je ) -> sretTailOk slotTys je) jumps
+
+        _ ->
+            False
+
+
+sretDeciderTailOk : List MlirType -> Mono.Decider Mono.MonoChoice -> Bool
+sretDeciderTailOk slotTys d =
+    case d of
+        Mono.Leaf (Mono.Inline e) ->
+            sretTailOk slotTys e
+
+        Mono.Leaf (Mono.Jump _) ->
+            True
+
+        Mono.Chain _ s f ->
+            sretDeciderTailOk slotTys s && sretDeciderTailOk slotTys f
+
+        Mono.FanOut _ edges fb ->
+            List.all (\( _, sub ) -> sretDeciderTailOk slotTys sub) edges
+                && sretDeciderTailOk slotTys fb
+
+
+{-| U-T1.3.5 param-side promotion selection
+(plans/opt-tier1-aggregate-promotion.md): a spec gains a `$psplit`
+worker iff it is a zero-capture non-tail function, NOT sret-promoted
+(v1 mutual exclusion), with ≥1 param whose shape is tuple2/3 or a
+single-ctor custom (2–6 fields) and whose EVERY body use is a
+projection (`Expr.paramSplitAdmissible` — the T1.3.3L walk, so worker
+bodies can never materialize), and ≥1 direct call site somewhere in the
+graph passes a CONSTRUCTISH argument at an eligible position (inline
+matching construct, or a var let-bound to one) — the win pre-check:
+without such a site the worker+shim pair is pure shim-hop overhead.
+-}
+buildPsplitPromoted : Config.EcoConfig -> Dict.Dict String (List Mono.CtorShape) -> Dict.Dict Int Mono.CtorShape -> Dict.Dict Int Ctx.SretInfo -> Array (Maybe Mono.MonoNode) -> Dict.Dict Int Ctx.PsplitInfo
+buildPsplitPromoted config ctorShapes ctorBySpec sretPromoted nodes =
+    if not config.psplitParams then
+        Dict.empty
+
+    else
+        let
+            planForParam ( name, monoTy ) body =
+                case monoTy of
+                    Mono.MTuple ts ->
+                        let
+                            ar =
+                                List.length ts
+                        in
+                        if (ar == 2 || ar == 3) then
+                            let
+                                layout =
+                                    Types.computeTupleLayout ts
+
+                                kind =
+                                    if ar == 2 then
+                                        Mono.Tuple2Container
+
+                                    else
+                                        Mono.Tuple3Container
+                            in
+                            if Expr.paramSplitAdmissible Dict.empty kind name body then
+                                Just { spec = Ctx.SplitTuple layout, slotTypes = Types.tupleSlotTypes layout }
+
+                            else
+                                Nothing
+
+                        else
+                            Nothing
+
+                    Mono.MCustom _ _ _ ->
+                        case Dict.get (Mono.toComparableLayoutKey monoTy) ctorShapes of
+                            Just [ shape ] ->
+                                if List.length shape.fieldTypes >= 2 && List.length shape.fieldTypes <= 6 then
+                                    let
+                                        clayout =
+                                            Types.computeCtorLayout shape
+                                    in
+                                    if Expr.paramSplitAdmissible Dict.empty (Mono.CustomContainer shape.name) name body then
+                                        Just { spec = Ctx.SplitCtor clayout, slotTypes = Types.ctorSlotTypes clayout }
+
+                                    else
+                                        Nothing
+
+                                else
+                                    Nothing
+
+                            _ ->
+                                Nothing
+
+                    _ ->
+                        Nothing
+
+            candidates =
+                Tuple.second
+                    (Array.foldl
+                        (\maybeNode ( specId, acc ) ->
+                            case maybeNode of
+                                Just (Mono.MonoDefine (Mono.MonoClosure cinfo cbody _) _) ->
+                                    if
+                                        List.isEmpty cinfo.captures
+                                            && not (List.isEmpty cinfo.params)
+                                            && not (Dict.member specId sretPromoted)
+                                    then
+                                        let
+                                            plans =
+                                                List.map (\p -> planForParam p cbody) cinfo.params
+                                        in
+                                        if List.any ((/=) Nothing) plans then
+                                            ( specId + 1, Dict.insert specId { paramPlans = plans } acc )
+
+                                        else
+                                            ( specId + 1, acc )
+
+                                    else
+                                        ( specId + 1, acc )
+
+                                _ ->
+                                    ( specId + 1, acc )
+                        )
+                        ( 0, Dict.empty )
+                        nodes
+                    )
+
+            justified =
+                Array.foldl
+                    (\maybeNode acc ->
+                        case maybeNode of
+                            Just node ->
+                                nodeExprs node
+                                    |> List.foldl
+                                        (\e acc2 ->
+                                            Tuple.second
+                                                (MonoTraverse.foldExpr (psplitSiteScan ctorBySpec candidates) ( Dict.empty, acc2 ) e)
+                                        )
+                                        acc
+
+                            Nothing ->
+                                acc
+                    )
+                    Set.empty
+                    nodes
+        in
+        Dict.filter (\specId _ -> Set.member specId justified) candidates
+
+
+{-| One fold step of the constructish-site scan: track binder shapes
+(overapproximate — scope is ignored, fine for a win pre-check), and mark
+callees justified when an eligible position receives a matching inline
+construct or a tracked binder.
+-}
+psplitSiteScan : Dict.Dict Int Mono.CtorShape -> Dict.Dict Int Ctx.PsplitInfo -> Mono.MonoExpr -> ( Dict.Dict String ( String, Int ), Set.Set Int ) -> ( Dict.Dict String ( String, Int ), Set.Set Int )
+psplitSiteScan ctorBySpec candidates e (( shapes, justified ) as acc) =
+    case e of
+        Mono.MonoLet (Mono.MonoDef x rhs) _ _ ->
+            case psplitConstructShape ctorBySpec rhs of
+                Just sh ->
+                    ( Dict.insert x sh shapes, justified )
+
+                Nothing ->
+                    acc
+
+        Mono.MonoCall _ (Mono.MonoVarGlobal _ fsid _) args _ _ ->
+            case Dict.get fsid candidates of
+                Just info ->
+                    let
+                        argOk plan arg =
+                            case psplitConstructShape ctorBySpec arg of
+                                Just sh ->
+                                    psplitShapeMatches plan sh
+
+                                Nothing ->
+                                    case arg of
+                                        Mono.MonoVarLocal v _ ->
+                                            case Dict.get v shapes of
+                                                Just sh ->
+                                                    psplitShapeMatches plan sh
+
+                                                Nothing ->
+                                                    False
+
+                                        _ ->
+                                            False
+
+                        anyHit =
+                            List.map2 Tuple.pair info.paramPlans args
+                                |> List.any
+                                    (\( mPlan, arg ) ->
+                                        case mPlan of
+                                            Just plan ->
+                                                argOk plan arg
+
+                                            Nothing ->
+                                                False
+                                    )
+                    in
+                    if anyHit then
+                        ( shapes, Set.insert fsid justified )
+
+                    else
+                        acc
+
+                Nothing ->
+                    acc
+
+        _ ->
+            acc
+
+
+psplitConstructShape : Dict.Dict Int Mono.CtorShape -> Mono.MonoExpr -> Maybe ( String, Int )
+psplitConstructShape ctorBySpec e =
+    case e of
+        Mono.MonoTupleCreate _ es _ ->
+            Just ( "t", List.length es )
+
+        Mono.MonoCall _ (Mono.MonoVarGlobal _ sid _) cargs _ _ ->
+            case Dict.get sid ctorBySpec of
+                Just shape ->
+                    if List.length cargs == List.length shape.fieldTypes then
+                        Just ( "c:" ++ shape.name, List.length cargs )
+
+                    else
+                        Nothing
+
+                Nothing ->
+                    Nothing
+
+        _ ->
+            Nothing
+
+
+psplitShapeMatches : Ctx.SlotPlan -> ( String, Int ) -> Bool
+psplitShapeMatches plan ( tag, n ) =
+    case plan.spec of
+        Ctx.SplitTuple layout ->
+            tag == "t" && n == layout.arity
+
+        Ctx.SplitCtor clayout ->
+            tag == ("c:" ++ clayout.name) && n == List.length clayout.fields
+
+
+{-| U-T1.3.2: SpecId → CtorShape for every `MonoCtor` node (aggregate
+promotion recognises saturated ctor calls at let bindings through this).
+-}
+buildCtorBySpec : Array (Maybe Mono.MonoNode) -> Dict.Dict Int Mono.CtorShape
+buildCtorBySpec nodes =
+    Tuple.second
+        (Array.foldl
+            (\maybeNode ( specId, acc ) ->
+                case maybeNode of
+                    Just (Mono.MonoCtor shape _) ->
+                        ( specId + 1, Dict.insert specId shape acc )
+
+                    _ ->
+                        ( specId + 1, acc )
+            )
+            ( 0, Dict.empty )
+            nodes
+        )

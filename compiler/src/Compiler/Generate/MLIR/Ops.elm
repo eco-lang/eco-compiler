@@ -1,9 +1,11 @@
 module Compiler.Generate.MLIR.Ops exposing
-    ( opBuilder, mlirOp, mkRegion, mkRegionTerminatedByOps, funcFunc, ecoGlobal
+    ( opBuilder, mlirOp, mkRegion, mkRegionTerminatedByOps, funcFunc, funcFuncMulti, ecoGlobal
     , ecoConstantUnit, ecoConstantEmptyRec, ecoConstantTrue, ecoConstantFalse, ecoConstantNil, ecoConstantNothing, ecoConstantEmptyString
     , ecoConstructList, ecoConstructTuple2, ecoConstructTuple3, ecoConstructRecord, ecoConstructCustom
     , ecoProjectListHead, ecoProjectListTail, ecoProjectTuple2, ecoProjectTuple3, ecoProjectRecord, ecoProjectCustom
-    , ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoNullaryOp, ecoTernaryOp, ecoCase, ecoCaseString, ecoGetTag
+    , ecoMakeTuple2, ecoMakeTuple3, ecoProjectTuple2Agg, ecoProjectTuple3Agg, aggTupleType
+    , ecoMakeCustom, ecoProjectCustomAgg, aggCustomType
+    , ecoCallNamed, ecoCallNamedMulti, ecoReturn, ecoReturnMulti, ecoFromHeap, ecoToHeap, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoNullaryOp, ecoTernaryOp, ecoCase, ecoCaseString, ecoGetTag
     , ecoArrayGet, ecoArraySet, ecoArrayLength
     , arithConstantInt, arithConstantInt32, arithConstantFloat, arithConstantBool, arithConstantChar, arithCmpI
     , scfWhile, scfCondition
@@ -425,6 +427,191 @@ ecoProjectTuple3 ctx resultVar field resultType tupleVar =
         |> opBuilder.build
 
 
+
+-- ====== VALUE-AGGREGATE OPS (U-T1.3.1, plans/opt-tier1-aggregate-promotion.md) ======
+
+
+{-| Render an SSA slot type for an aggregate type-parameter list.
+Slot types are only ever i64/f64/i16 (unboxed primitives) or a named eco
+type (boxed `!eco.value`) — the promoted form mirrors the heap layout's
+slot discipline exactly (CGEN_061: no heap-layout attrs on value ops).
+-}
+aggSlotTypeString : MlirType -> String
+aggSlotTypeString ty =
+    case ty of
+        I1 ->
+            "i1"
+
+        I8 ->
+            "i8"
+
+        I16 ->
+            "i16"
+
+        I32 ->
+            "i32"
+
+        I64 ->
+            "i64"
+
+        F64 ->
+            "f64"
+
+        NamedStruct s ->
+            "!" ++ s
+
+        FunctionType _ ->
+            -- Function types never appear as tuple slot SSA types (closures
+            -- are !eco.value); render defensively as the boxed form.
+            "!eco.value"
+
+
+{-| The parameterised value-tuple type, e.g. `!eco.tuple2<i64, !eco.value>`
+(as a `NamedStruct` so text and bytecode both render it verbatim — the
+bytecode path encodes NamedStruct as a dialect asm type).
+-}
+aggTupleType : List MlirType -> MlirType
+aggTupleType elemTypes =
+    let
+        arity =
+            if List.length elemTypes == 3 then
+                "eco.tuple3<"
+
+            else
+                "eco.tuple2<"
+    in
+    NamedStruct (arity ++ String.join ", " (List.map aggSlotTypeString elemTypes) ++ ">")
+
+
+{-| eco.make.tuple2 — build a VALUE-level 2-tuple (`!eco.tuple2<...>`), no
+heap allocation (Pure, CGEN_061; lowered to insertvalue chains by
+EcoToLLVMValueAgg and dissolved by SROA before RS4GC — REP_AGG_001).
+-}
+ecoMakeTuple2 : Ctx.Context -> String -> ( String, MlirType ) -> ( String, MlirType ) -> ( Ctx.Context, MlirOp )
+ecoMakeTuple2 ctx resultVar ( aVar, aType ) ( bVar, bType ) =
+    let
+        attrs =
+            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr aType, TypeAttr bType ])
+    in
+    mlirOp ctx "eco.make.tuple2"
+        |> opBuilder.withOperands [ aVar, bVar ]
+        |> opBuilder.withResults [ ( resultVar, aggTupleType [ aType, bType ] ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| eco.make.tuple3 — build a VALUE-level 3-tuple (`!eco.tuple3<...>`).
+-}
+ecoMakeTuple3 : Ctx.Context -> String -> ( String, MlirType ) -> ( String, MlirType ) -> ( String, MlirType ) -> ( Ctx.Context, MlirOp )
+ecoMakeTuple3 ctx resultVar ( aVar, aType ) ( bVar, bType ) ( cVar, cType ) =
+    let
+        attrs =
+            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr aType, TypeAttr bType, TypeAttr cType ])
+    in
+    mlirOp ctx "eco.make.tuple3"
+        |> opBuilder.withOperands [ aVar, bVar, cVar ]
+        |> opBuilder.withResults [ ( resultVar, aggTupleType [ aType, bType, cType ] ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| The parameterised value-custom type, e.g.
+`!eco.custom<i64, !eco.value>` (slot types per the ctor layout — tag is
+structural, on the op, never in the type: Q-B/CGEN_061).
+-}
+aggCustomType : List MlirType -> MlirType
+aggCustomType slotTypes =
+    NamedStruct ("eco.custom<" ++ String.join ", " (List.map aggSlotTypeString slotTypes) ++ ">")
+
+
+{-| eco.make.custom — build a VALUE-level custom (U-T1.3.2): no heap
+allocation; `tag` + `constructor` attrs mirror `eco.construct.custom`
+minus the heap-layout bitmap (value slots carry their types in the
+parameterised result type instead).
+-}
+ecoMakeCustom : Ctx.Context -> String -> Int -> Maybe String -> List ( String, MlirType ) -> ( Ctx.Context, MlirOp )
+ecoMakeCustom ctx resultVar tag maybeCtorName operands =
+    let
+        baseAttrs =
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing (List.map (\( _, t ) -> TypeAttr t) operands) )
+                , ( "tag", IntAttr Nothing tag )
+                ]
+
+        attrs =
+            case maybeCtorName of
+                Just n ->
+                    Dict.insert "constructor" (StringAttr n) baseAttrs
+
+                Nothing ->
+                    baseAttrs
+    in
+    mlirOp ctx "eco.make.custom"
+        |> opBuilder.withOperands (List.map Tuple.first operands)
+        |> opBuilder.withResults [ ( resultVar, aggCustomType (List.map Tuple.second operands) ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| eco.project.custom over a VALUE-level custom operand (see
+`ecoProjectTuple2Agg` for why `_operand_types` must carry the aggregate).
+-}
+ecoProjectCustomAgg : Ctx.Context -> String -> Int -> MlirType -> ( String, MlirType ) -> ( Ctx.Context, MlirOp )
+ecoProjectCustomAgg ctx resultVar fieldIndex resultType ( containerVar, containerType ) =
+    let
+        attrs =
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr containerType ] )
+                , ( "field_index", IntAttr Nothing fieldIndex )
+                ]
+    in
+    mlirOp ctx "eco.project.custom"
+        |> opBuilder.withOperands [ containerVar ]
+        |> opBuilder.withResults [ ( resultVar, resultType ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| eco.project.tuple2 over a VALUE-level tuple operand: identical to
+`ecoProjectTuple2` but `_operand_types` carries the aggregate type (the
+dual-form lowering dispatches on the converted operand type; the attr must
+not lie about it or the parse re-types the operand as `!eco.value`).
+-}
+ecoProjectTuple2Agg : Ctx.Context -> String -> Int -> MlirType -> ( String, MlirType ) -> ( Ctx.Context, MlirOp )
+ecoProjectTuple2Agg ctx resultVar field resultType ( tupleVar, tupleType ) =
+    let
+        attrs =
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr tupleType ] )
+                , ( "field", IntAttr Nothing field )
+                ]
+    in
+    mlirOp ctx "eco.project.tuple2"
+        |> opBuilder.withOperands [ tupleVar ]
+        |> opBuilder.withResults [ ( resultVar, resultType ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| eco.project.tuple3 over a VALUE-level tuple operand (see
+`ecoProjectTuple2Agg`).
+-}
+ecoProjectTuple3Agg : Ctx.Context -> String -> Int -> MlirType -> ( String, MlirType ) -> ( Ctx.Context, MlirOp )
+ecoProjectTuple3Agg ctx resultVar field resultType ( tupleVar, tupleType ) =
+    let
+        attrs =
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr tupleType ] )
+                , ( "field", IntAttr Nothing field )
+                ]
+    in
+    mlirOp ctx "eco.project.tuple3"
+        |> opBuilder.withOperands [ tupleVar ]
+        |> opBuilder.withResults [ ( resultVar, resultType ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
 {-| eco.project.record - extract field from a record
 -}
 ecoProjectRecord : Ctx.Context -> String -> Int -> MlirType -> String -> ( Ctx.Context, MlirOp )
@@ -532,6 +719,109 @@ ecoReturn ctx operand operandType =
         |> opBuilder.withOperands [ operand ]
         |> opBuilder.withAttrs attrs
         |> opBuilder.isTerminator True
+        |> opBuilder.build
+
+
+{-| U-T1.3.3: multi-operand eco.return — the terminator of an sret worker.
+The lowering (EcoToLLVMControlFlow's multi arm) stores each operand into
+the caller's slot immediately before returning void (CGEN_067).
+-}
+ecoReturnMulti : Ctx.Context -> List ( String, MlirType ) -> ( Ctx.Context, MlirOp )
+ecoReturnMulti ctx operandPairs =
+    let
+        attrs =
+            Dict.singleton "_operand_types"
+                (ArrayAttr Nothing (List.map (TypeAttr << Tuple.second) operandPairs))
+    in
+    mlirOp ctx "eco.return"
+        |> opBuilder.withOperands (List.map Tuple.first operandPairs)
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.isTerminator True
+        |> opBuilder.build
+
+
+{-| U-T1.3.3: multi-result direct call to an sret worker. The lowering
+(EcoToLLVMClosures' multi arm) allocates the slot in the caller's entry
+block, passes it as the leading argument, and reloads the fields.
+-}
+ecoCallNamedMulti : Ctx.Context -> List ( String, MlirType ) -> List ( String, MlirType ) -> String -> List ( String, MlirType ) -> ( Ctx.Context, MlirOp )
+ecoCallNamedMulti ctx gcRootHints resultPairs funcName operands =
+    let
+        ( rootNames, rootTypes ) =
+            List.unzip gcRootHints
+
+        allOperands =
+            List.map Tuple.first operands ++ rootNames
+
+        allTypes =
+            List.map Tuple.second operands ++ rootTypes
+
+        operandTypesAttr =
+            if List.isEmpty allOperands then
+                Dict.empty
+
+            else
+                Dict.singleton "_operand_types"
+                    (ArrayAttr Nothing (List.map TypeAttr allTypes))
+
+        gcRootsCountAttr =
+            if List.isEmpty gcRootHints then
+                Dict.empty
+
+            else
+                Dict.singleton "eco.gc_roots_count" (IntAttr Nothing (List.length gcRootHints))
+
+        attrs =
+            Dict.union operandTypesAttr
+                (Dict.union gcRootsCountAttr
+                    (Dict.singleton "callee" (SymbolRefAttr funcName))
+                )
+    in
+    mlirOp ctx "eco.call"
+        |> opBuilder.withOperands allOperands
+        |> opBuilder.withResults resultPairs
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| eco.to_heap — box an SSA value aggregate into a heap object (the
+allocating mirror of from_heap; GCRootCarrier).
+-}
+ecoToHeap : Ctx.Context -> List ( String, MlirType ) -> String -> ( String, MlirType ) -> ( Ctx.Context, MlirOp )
+ecoToHeap ctx gcRootHints resultVar ( aggVar, aggType ) =
+    let
+        ( rootNames, rootTypes ) =
+            List.unzip gcRootHints
+
+        attrs =
+            Dict.union
+                (Dict.singleton "_operand_types"
+                    (ArrayAttr Nothing (List.map TypeAttr (aggType :: rootTypes)))
+                )
+                (if List.isEmpty gcRootHints then
+                    Dict.empty
+
+                 else
+                    Dict.singleton "eco.gc_roots_count" (IntAttr Nothing (List.length gcRootHints))
+                )
+    in
+    mlirOp ctx "eco.to_heap"
+        |> opBuilder.withOperands (aggVar :: rootNames)
+        |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| U-T1.3.3: eco.from_heap — unbox a heap aggregate (addressed by
+`!eco.value`) into the corresponding SSA value aggregate. Pure loads;
+used to bridge a boxed value onto the aggregate result spine.
+-}
+ecoFromHeap : Ctx.Context -> String -> MlirType -> String -> ( Ctx.Context, MlirOp )
+ecoFromHeap ctx resultVar aggType operandVar =
+    mlirOp ctx "eco.from_heap"
+        |> opBuilder.withOperands [ operandVar ]
+        |> opBuilder.withResults [ ( resultVar, aggType ) ]
+        |> opBuilder.withAttrs (Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr Types.ecoValue ]))
         |> opBuilder.build
 
 
@@ -863,6 +1153,33 @@ funcFunc ctx funcName args returnType bodyRegion =
                         (FunctionType
                             { inputs = List.map Tuple.second args
                             , results = [ returnType ]
+                            }
+                        )
+                  )
+                ]
+    in
+    mlirOp ctx "func.func"
+        |> opBuilder.withRegions [ bodyRegion ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| U-T1.3.3: a MULTI-RESULT func.func — the sret worker form. The C++
+side (SretFuncOpLowering) recognises any func.func with 2+ results and
+lowers it to the (slot ptr, args...) -> void ABI.
+-}
+funcFuncMulti : Ctx.Context -> String -> List ( String, MlirType ) -> List MlirType -> MlirRegion -> ( Ctx.Context, MlirOp )
+funcFuncMulti ctx funcName args resultTypes bodyRegion =
+    let
+        attrs =
+            Dict.fromList
+                [ ( "sym_name", StringAttr funcName )
+                , ( "sym_visibility", VisibilityAttr Private )
+                , ( "function_type"
+                  , TypeAttr
+                        (FunctionType
+                            { inputs = List.map Tuple.second args
+                            , results = resultTypes
                             }
                         )
                   )

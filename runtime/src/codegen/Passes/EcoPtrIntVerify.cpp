@@ -441,7 +441,95 @@ struct FoldExtractValuePass : public PassInfoMixin<FoldExtractValuePass> {
             RecursivelyDeleteTriviallyDeadInstructions(originalAgg);
             changed = true;
         }
+
+        // Sweep dead insertvalue chains that arrive with NO extracts left:
+        // the pre-RS4GC AlwaysInliner folds extract(insertvalue) via
+        // InlineFunction's SimplifyInstruction while cloning `$cap` bodies,
+        // RAUWs the field values into the consumers, and leaves the cloned
+        // chain behind dead — nothing else between it and RS4GC deletes
+        // dead code, and the loop above only visits chains an extract still
+        // references. RS4GC asserts on the dead chain's own FCA operands
+        // (found via bisect-k, 2026-08-03: psplit call-site make+projections
+        // inside alwaysinline wrappers).
+        SmallVector<WeakTrackingVH, 16> deadChainHeads;
+        for (auto &BB : F)
+            for (auto &I : BB)
+                if (isa<InsertValueInst>(&I) && isInstructionTriviallyDead(&I))
+                    deadChainHeads.push_back(&I);
+        for (auto &VH : deadChainHeads) {
+            auto *I = dyn_cast_or_null<Instruction>((Value *)VH);
+            // Deleting one head can consume upstream links already collected.
+            if (I && isInstructionTriviallyDead(I)) {
+                RecursivelyDeleteTriviallyDeadInstructions(I);
+                changed = true;
+            }
+        }
         return changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
+    }
+};
+
+//===----------------------------------------------------------------------===//
+// FcaScanPass (forensic, env-gated)
+//===----------------------------------------------------------------------===//
+
+/// ECO_FCA_SCAN=1: report every instruction whose result or operand is an
+/// aggregate (struct/array) type carrying a ptr addrspace(1) — exactly the
+/// shapes RewriteStatepointsForGC aborts on with its bare
+/// "support for FCA unimplemented" assert. Runs between the
+/// mem2reg/SROA/FoldExtractValue cleanup and RS4GC, so anything it prints is
+/// a real survivor of the fold, with function/block/instruction context the
+/// LLVM assert never gives. Reports all offenders, then hard-errors.
+struct FcaScanPass : public PassInfoMixin<FcaScanPass> {
+    static bool aggWithGCPtr(Type *T) {
+        if (auto *PT = dyn_cast<PointerType>(T))
+            return PT->getAddressSpace() == 1;
+        if (auto *ST = dyn_cast<StructType>(T)) {
+            for (Type *E : ST->elements())
+                if (aggWithGCPtr(E))
+                    return true;
+            return false;
+        }
+        if (auto *AT = dyn_cast<ArrayType>(T))
+            return aggWithGCPtr(AT->getElementType());
+        return false;
+    }
+    static bool isAggregate(Type *T) {
+        return isa<StructType>(T) || isa<ArrayType>(T);
+    }
+
+    PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
+        if (!::getenv("ECO_FCA_SCAN"))
+            return PreservedAnalyses::all();
+        unsigned count = 0;
+        for (Function &F : M) {
+            if (F.isDeclaration())
+                continue;
+            for (BasicBlock &BB : F)
+                for (Instruction &I : BB) {
+                    bool bad = isAggregate(I.getType()) &&
+                               aggWithGCPtr(I.getType());
+                    if (!bad)
+                        for (Value *Op : I.operands())
+                            if (isAggregate(Op->getType()) &&
+                                aggWithGCPtr(Op->getType())) {
+                                bad = true;
+                                break;
+                            }
+                    if (bad) {
+                        ++count;
+                        errs() << "FCA-SCAN: fn=" << F.getName()
+                               << " block=" << BB.getName() << "\n  ";
+                        I.print(errs());
+                        errs() << "\n";
+                    }
+                }
+        }
+        if (count)
+            report_fatal_error(Twine("FCA-SCAN: ") + Twine(count) +
+                               " aggregate-with-gc-pointer instruction(s) "
+                               "survived the pre-RS4GC fold (see above)");
+        errs() << "FCA-SCAN: clean\n";
+        return PreservedAnalyses::all();
     }
 };
 
@@ -523,6 +611,9 @@ void eco::addEcoGCPipeline(ModulePassManager &MPM) {
         FPM.addPass(FoldExtractValuePass());
         MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
     }
+
+    // Forensic no-op unless ECO_FCA_SCAN=1 (see FcaScanPass above).
+    MPM.addPass(FcaScanPass());
 
     MPM.addPass(RewriteStatepointsForGC());
     // REP_LLVM_002: restore bare slot casts now that no inliner will ever see

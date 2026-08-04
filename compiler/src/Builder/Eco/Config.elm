@@ -232,6 +232,161 @@ applyEnvOverrides cfg =
                 (Utils.envLookupEnv "ECO_LIST_REPORT" |> Task.mapError never)
                     |> Task.map (\lrVal -> applyListReportOverride lrVal cfg22)
             )
+        |> Task.andThen
+            (\cfg23 ->
+                (Utils.envLookupEnv "ECO_AGG_PROMOTE" |> Task.mapError never)
+                    |> Task.map (\apVal -> applyAggPromoteOverride apVal cfg23)
+            )
+        |> Task.andThen
+            (\cfg24 ->
+                (Utils.envLookupEnv "ECO_CTOR_INLINE" |> Task.mapError never)
+                    |> Task.map (\ciVal -> applyCtorInlineOverride ciVal cfg24)
+            )
+        |> Task.andThen
+            (\cfg25 ->
+                (Utils.envLookupEnv "ECO_SRET_RESULTS" |> Task.mapError never)
+                    |> Task.map (\srVal -> applySretResultsOverride srVal cfg25)
+            )
+        |> Task.andThen
+            (\cfg26 ->
+                (Utils.envLookupEnv "ECO_PSPLIT_PARAMS" |> Task.mapError never)
+                    |> Task.map (\ppVal -> applyPsplitParamsOverride ppVal cfg26)
+            )
+        |> Task.andThen
+            (\cfg27 ->
+                (Utils.envLookupEnv "ECO_SRET_TAILFUNC" |> Task.mapError never)
+                    |> Task.map (\stVal -> applySretTailFuncOverride stVal cfg27)
+            )
+
+
+{-| `ECO_AGG_PROMOTE=1|true|yes`: U-T1.3.1 aggregate promotion — emit
+`eco.make.tuple2/3` for let-bound tuples the per-def use walk proves
+non-escaping. Artifact-affecting (folded into `Config.hash` as `aggp`), so
+flag-on builds never share flag-off caches. `0`/`off` disables.
+-}
+applyAggPromoteOverride : Maybe String -> EcoConfig -> EcoConfig
+applyAggPromoteOverride maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            cfg
+
+        Just raw ->
+            let
+                t =
+                    String.toLower (String.trim raw)
+            in
+            if t == "1" || t == "true" || t == "yes" || t == "on" then
+                { cfg | aggPromote = True }
+
+            else if t == "0" || t == "off" then
+                { cfg | aggPromote = False }
+
+            else
+                cfg
+
+
+{-| `ECO_CTOR_INLINE=1|true|yes`: U-T1.3.2c ctor-call inlining — saturated
+direct constructor calls emit `eco.construct.custom` in the caller instead
+of calling the ctor function. Hash-relevant ("ctori"), so flag-on builds
+never share flag-off caches. `0`/`off` disables.
+-}
+applyCtorInlineOverride : Maybe String -> EcoConfig -> EcoConfig
+applyCtorInlineOverride maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            cfg
+
+        Just raw ->
+            let
+                t =
+                    String.toLower (String.trim raw)
+            in
+            if t == "1" || t == "true" || t == "yes" || t == "on" then
+                { cfg | ctorInline = True }
+
+            else if t == "0" || t == "off" then
+                { cfg | ctorInline = False }
+
+            else
+                cfg
+
+
+{-| `ECO_SRET_RESULTS=1|true|yes`: U-T1.3.3 result promotion — eligible
+tuple-returning functions gain a multi-result `$sret` worker and
+destructuring call sites migrate to it. Hash-relevant ("sretr").
+`0`/`off` disables.
+-}
+applySretResultsOverride : Maybe String -> EcoConfig -> EcoConfig
+applySretResultsOverride maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            cfg
+
+        Just raw ->
+            let
+                t =
+                    String.toLower (String.trim raw)
+            in
+            if t == "1" || t == "true" || t == "yes" || t == "on" then
+                { cfg | sretResults = True }
+
+            else if t == "0" || t == "off" then
+                { cfg | sretResults = False }
+
+            else
+                cfg
+
+
+{-| `ECO_SRET_TAILFUNC=1|on`: U-T1.3.6 — enable the tail-func widening of
+sret result promotion (default OFF: measured ~+4% wall regression that
+cancels T1.3.3's win; see the tier-1 plan's T1.3.6 as-built). Hash-relevant
+when enabled ("srtf=1").
+-}
+applySretTailFuncOverride : Maybe String -> EcoConfig -> EcoConfig
+applySretTailFuncOverride maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            cfg
+
+        Just raw ->
+            let
+                t =
+                    String.toLower (String.trim raw)
+            in
+            if t == "1" || t == "true" || t == "yes" || t == "on" then
+                { cfg | sretTailFuncs = True }
+
+            else if t == "0" || t == "off" then
+                { cfg | sretTailFuncs = False }
+
+            else
+                cfg
+
+
+{-| `ECO_PSPLIT_PARAMS=1|true|yes`: U-T1.3.5 param-side promotion —
+projection-only aggregate params gain a `$psplit` scalar-params worker;
+free-slot call sites migrate. Hash-relevant ("psplit"). `0`/`off`
+disables.
+-}
+applyPsplitParamsOverride : Maybe String -> EcoConfig -> EcoConfig
+applyPsplitParamsOverride maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            cfg
+
+        Just raw ->
+            let
+                t =
+                    String.toLower (String.trim raw)
+            in
+            if t == "1" || t == "true" || t == "yes" || t == "on" then
+                { cfg | psplitParams = True }
+
+            else if t == "0" || t == "off" then
+                { cfg | psplitParams = False }
+
+            else
+                cfg
 
 
 {-| `ECO_BORROW=off|1|rc`: run the borrow-inference analysis (GlobalOpt

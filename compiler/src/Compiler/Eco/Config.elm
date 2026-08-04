@@ -39,6 +39,11 @@ type alias EcoConfig =
     , mono : MonoConfig
     , borrow : BorrowConfig
     , list : ListConfig
+    , aggPromote : Bool -- U-T1.3.1 (plans/opt-tier1-aggregate-promotion.md): emit eco.make.tuple2/3 for let-bound tuples proven non-escaping by the per-def use walk; env ECO_AGG_PROMOTE=1; artifact-affecting (hash token "aggp")
+    , ctorInline : Bool -- U-T1.3.2c (plans/opt-tier1-aggregate-promotion.md): saturated direct ctor calls emit eco.construct.custom inline in the caller (call overhead erased; nullary excluded — CAF-memoized singletons); env ECO_CTOR_INLINE=1; artifact-affecting (hash token "ctori")
+    , sretResults : Bool -- U-T1.3.3 (plans/opt-tier1-aggregate-promotion.md): result promotion via the sret ABI — functions returning a locally-constructed tuple2/3 gain a multi-result $sret worker (caller-slot ABI, CGEN_067); destructuring call sites migrate per-site; env ECO_SRET_RESULTS=1; artifact-affecting (hash token "sretr")
+    , psplitParams : Bool -- U-T1.3.5 (plans/opt-tier1-aggregate-promotion.md): param-side promotion — projection-only tuple2/3 / single-ctor-custom params gain a $psplit worker taking the fields as scalars; call sites with free-slot args migrate per-site; env ECO_PSPLIT_PARAMS=1; artifact-affecting (hash token "psplit")
+    , sretTailFuncs : Bool -- U-T1.3.6: widen sretResults selection to tail funcs (result columns through the while loop). Default OFF — measured REGRESSION ~+4% wall (2026-08-03 isolation A/B: it cancelled T1.3.3's −4% exactly; per-iteration slot-column carry in hot loops). Opt-in ECO_SRET_TAILFUNC=1 for future custom-result work; artifact-affecting when enabled (hash token "srtf=1"); no-op unless sretResults
     }
 
 
@@ -310,6 +315,11 @@ default =
     , mono = { engine = EngineSolver, diffDump = False, validate = False, borrowCensus0 = False, lss = defaultLss }
     , borrow = { enabled = False, reify = ROff, report = False, validate = False }
     , list = { chunks = True, report = False }
+    , aggPromote = False
+    , ctorInline = False
+    , sretResults = False
+    , psplitParams = False
+    , sretTailFuncs = False
     }
 
 
@@ -327,6 +337,11 @@ decoder =
         |> D.apply (D.optionalField "mono" monoDecoder default.mono)
         |> D.apply (D.optionalField "borrow" borrowDecoder default.borrow)
         |> D.apply (D.optionalField "list" listDecoder default.list)
+        |> D.apply (D.optionalField "aggPromote" D.bool default.aggPromote)
+        |> D.apply (D.optionalField "ctorInline" D.bool default.ctorInline)
+        |> D.apply (D.optionalField "sretResults" D.bool default.sretResults)
+        |> D.apply (D.optionalField "psplitParams" D.bool default.psplitParams)
+        |> D.apply (D.optionalField "sretTailFuncs" D.bool default.sretTailFuncs)
 
 
 {-| Decode the `list` block. Only `chunks` is JSON-configurable; `report`
@@ -646,6 +661,43 @@ hash cfg =
             -- (plans/chunked-list-representation.md).
             ++ (if cfg.list.chunks then
                     [ "lchunks=1" ]
+
+                else
+                    []
+               )
+            -- Aggregate-promotion token appears ONLY when enabled (default-off,
+            -- U-T1.3.1): promoting rewrites tuple constructs to eco.make.* in
+            -- generated MLIR, so flag-on artifacts must never share flag-off
+            -- caches; default configs hash exactly as before.
+            ++ (if cfg.aggPromote then
+                    [ "aggp=1" ]
+
+                else
+                    []
+               )
+            -- Ctor-inlining token, same posture as aggp: appears only when
+            -- enabled (default-off, U-T1.3.2c) — flag-on artifacts must never
+            -- share flag-off caches; default configs hash exactly as before.
+            ++ (if cfg.ctorInline then
+                    [ "ctori=1" ]
+
+                else
+                    []
+               )
+            ++ (if cfg.sretResults then
+                    [ "sretr=1" ]
+
+                else
+                    []
+               )
+            ++ (if cfg.psplitParams then
+                    [ "psplit=1" ]
+
+                else
+                    []
+               )
+            ++ (if cfg.sretTailFuncs then
+                    [ "srtf=1" ]
 
                 else
                     []

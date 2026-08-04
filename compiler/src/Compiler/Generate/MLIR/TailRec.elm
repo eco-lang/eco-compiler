@@ -33,6 +33,7 @@ import Compiler.Generate.MLIR.Patterns as Patterns
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Dict
+import Set
 import Mlir.Mlir exposing (MlirOp, MlirRegion(..), MlirType(..))
 import OrderedDict
 import Utils.Crash exposing (crash)
@@ -49,8 +50,28 @@ Contains information needed to compile step expressions.
 -}
 type alias LoopSpec =
     { funcName : String
-    , paramVars : List ( String, MlirType ) -- SSA vars for params (scf.while after-region block args)
+    , paramVars : List ( String, MlirType ) -- FLAT state slot vars (scf.while after-region block args; a split param contributes several)
+    , groups : List ParamGroup -- one per ORIGINAL param, in order (U-T1.3.3L)
     , retType : MlirType
+    , resultSlots : List MlirType -- U-T1.3.6: [ retType ] unpromoted; the N slot types for an sret tail func
+    , resultPlan : Maybe Ctx.SretInfo -- U-T1.3.6: Just = the loop result is carried DECOMPOSED (base steps project the make-form into slots)
+    }
+
+
+{-| U-T1.3.3L scalar-split loop variables: one group per ORIGINAL function
+param. An unsplit param contributes exactly one state slot (its ABI type);
+a split param (tuple2/3 or single-ctor custom, boxed at the ABI) is carried
+as its per-field slots instead — each boxed field its own `!eco.value`,
+each unboxed field its raw primitive. No aggregate crosses an iteration
+boundary, so RS4GC never sees a first-class struct live across an in-loop
+statepoint, and the per-iteration heap re-allocation of the carried value
+disappears wherever tail-call args can be slot-fed.
+-}
+type alias ParamGroup =
+    { origSsaName : String -- e.g. "%p" (the incoming function argument)
+    , elmName : String -- e.g. "p"
+    , slotTypes : List MlirType -- singleton for unsplit params
+    , split : Maybe Ctx.SplitSpec -- Just for split params
     }
 
 
@@ -65,8 +86,7 @@ type alias StepResult =
     { ops : List MlirOp
     , nextParams : List ( String, MlirType ) -- SSA vars for next iteration
     , doneVar : String -- i1: true = done, false = continue
-    , resultVar : String -- result when done
-    , resultType : MlirType -- type of resultVar (== loopSpec.retType)
+    , results : List ( String, MlirType ) -- result columns when done (singleton unless U-T1.3.6 promoted; types == loopSpec.resultSlots)
     , ctx : Ctx.Context
     }
 
@@ -86,13 +106,20 @@ compileTailFuncToWhile :
     Ctx.Context
     -> String -- func name
     -> List ( String, MlirType ) -- function args (already in context)
+    -> List Mono.MonoType -- Mono types of the function args (parallel list)
     -> Mono.MonoExpr -- body expression
     -> MlirType -- return type
+    -> Maybe Ctx.SretInfo -- U-T1.3.6: Just = emit the loop with DECOMPOSED result columns (the $sret worker form)
     -> ( List MlirOp, Ctx.Context )
-compileTailFuncToWhile ctx funcName paramPairs body retTy =
+compileTailFuncToWhile ctx funcName paramPairs paramMonoTypes body retTy resultPlan =
     let
+        -- U-T1.3.3L: plan the loop-state layout — which params carry as
+        -- scalar slots instead of one boxed aggregate.
+        groups =
+            planParamGroups ctx paramPairs paramMonoTypes body
+
         -- Step 1: Define initial state
-        -- Loop state = (p1..pn, done, result) where done starts as false
+        -- Loop state = (slots..., done, result) where done starts as false
         -- and result starts as a dummy value
         ( doneInitVar, ctx1 ) =
             Ctx.freshVar ctx
@@ -100,30 +127,66 @@ compileTailFuncToWhile ctx funcName paramPairs body retTy =
         ( ctx2, doneInitOp ) =
             Ops.arithConstantBool ctx1 doneInitVar False
 
-        ( resInitOps, resInitVar, ctx3 ) =
-            Expr.createDummyValue ctx2 retTy
+        resultSlots =
+            case resultPlan of
+                Just info ->
+                    info.slotTypes
+
+                Nothing ->
+                    [ retTy ]
+
+        ( resInitOpsRev, resInitVarsRev, ctx3 ) =
+            List.foldl
+                (\slotTy ( oAcc, vAcc, cAcc ) ->
+                    let
+                        ( dOps, dVar, cNext ) =
+                            Expr.createDummyValue cAcc slotTy
+                    in
+                    ( List.reverse dOps ++ oAcc, dVar :: vAcc, cNext )
+                )
+                ( [], [], ctx2 )
+                resultSlots
+
+        resInitOps =
+            List.reverse resInitOpsRev
+
+        resInitVars =
+            List.reverse resInitVarsRev
+
+        -- Step 2: Collect initial values for loop state.
+        -- Unsplit params enter as-is; split params enter as heap
+        -- projections of the incoming boxed argument (one per slot).
+        ( entryProjOpsRev, paramInitVarsRev, ctx3e ) =
+            List.foldl
+                (\g ( opsAcc, varsAcc, ctxAcc ) ->
+                    let
+                        ( gOps, gVars, ctxG ) =
+                            emitEntrySlotProjections ctxAcc g
+                    in
+                    ( List.reverse gOps ++ opsAcc, List.reverse gVars ++ varsAcc, ctxG )
+                )
+                ( [], [], ctx3 )
+                groups
+
+        paramInitVars =
+            List.reverse paramInitVarsRev
 
         initOps =
-            doneInitOp :: resInitOps
+            (doneInitOp :: resInitOps) ++ List.reverse entryProjOpsRev
 
-        -- Step 2: Collect initial values for loop state
-        -- Order: params..., done, result
-        paramInitVars =
-            List.map Tuple.first paramPairs
+        flatParamTypes =
+            List.concatMap .slotTypes groups
 
-        paramTypes =
-            List.map Tuple.second paramPairs
-
-        -- State types: (paramTypes..., i1, retTy)
+        -- State types: (flat slot types..., i1, result slots...)
         stateTypes =
-            paramTypes ++ [ I1, retTy ]
+            flatParamTypes ++ [ I1 ] ++ resultSlots
 
         initVars =
-            paramInitVars ++ [ doneInitVar, resInitVar ]
+            paramInitVars ++ [ doneInitVar ] ++ resInitVars
 
         -- Step 3: Allocate fresh SSA names for scf.while results
         ( resultVars, ctx4 ) =
-            allocateFreshVars ctx3 (List.length stateTypes)
+            allocateFreshVars ctx3e (List.length stateTypes)
 
         -- Build triples for scf.while: (resultVar, initVar, type)
         triples =
@@ -131,37 +194,40 @@ compileTailFuncToWhile ctx funcName paramPairs body retTy =
 
         -- Step 4: Build before-region (condition check)
         ( beforeRegion, beforeArgs, ctx5 ) =
-            buildBeforeRegion ctx4 stateTypes
+            buildBeforeRegion ctx4 stateTypes (List.length resultSlots)
 
         -- Step 5: Build after-region (loop body)
         loopSpec =
             { funcName = funcName
             , paramVars =
-                -- The after-region block args for params (first n args)
-                List.take (List.length paramPairs) (zip beforeArgs stateTypes)
+                -- The after-region block args for the flat param slots
+                List.take (List.length flatParamTypes) (zip beforeArgs stateTypes)
+            , groups = groups
             , retType = retTy
+            , resultSlots = resultSlots
+            , resultPlan = resultPlan
             }
 
-        -- Original parameter pairs (e.g., [("%acc", I64), ("%n", I64)])
-        -- These are needed to set up variable mappings in the after-region
-        originalParamPairs =
-            paramPairs
-
         ( afterRegion, ctx6 ) =
-            buildAfterRegion ctx5 stateTypes loopSpec body originalParamPairs
+            buildAfterRegion ctx5 stateTypes loopSpec body
 
         -- Step 6: Emit scf.while
         ( ctx7, whileOp ) =
             Ops.scfWhile ctx6 triples beforeRegion afterRegion
 
-        -- Step 7: Return the result (last element of scf.while results)
-        resFinalVar =
-            List.drop (List.length stateTypes - 1) resultVars
-                |> List.head
-                |> Maybe.withDefault "%error_no_result"
+        -- Step 7: Return the result column(s) — the last N scf.while results
+        -- (N = 1 unpromoted; the byte-identical historical path).
+        resFinalPairs =
+            List.drop (List.length stateTypes - List.length resultSlots) resultVars
+                |> (\vs -> List.map2 Tuple.pair vs resultSlots)
 
         ( ctx8, returnOp ) =
-            Ops.ecoReturn ctx7 resFinalVar retTy
+            case resFinalPairs of
+                [ ( v, ty ) ] ->
+                    Ops.ecoReturn ctx7 v ty
+
+                _ ->
+                    Ops.ecoReturnMulti ctx7 resFinalPairs
     in
     ( initOps ++ [ whileOp, returnOp ], ctx8 )
 
@@ -182,11 +248,12 @@ scf.condition(%continue) %params..., %done, %result
 buildBeforeRegion :
     Ctx.Context
     -> List MlirType
+    -> Int -- U-T1.3.6: number of trailing RESULT columns (1 unpromoted)
     -> ( MlirRegion, List String, Ctx.Context )
-buildBeforeRegion ctx stateTypes =
+buildBeforeRegion ctx stateTypes numResultSlots =
     let
         numParams =
-            List.length stateTypes - 2
+            List.length stateTypes - 1 - numResultSlots
 
         -- Allocate block args
         ( blockArgs, ctx1 ) =
@@ -240,9 +307,8 @@ buildAfterRegion :
     -> List MlirType
     -> LoopSpec
     -> Mono.MonoExpr
-    -> List ( String, MlirType ) -- original parameter pairs (e.g., [("%acc", I64)])
     -> ( MlirRegion, Ctx.Context )
-buildAfterRegion ctx stateTypes loopSpec body originalParamPairs =
+buildAfterRegion ctx stateTypes loopSpec body =
     let
         -- Allocate block args
         ( blockArgs, ctx1 ) =
@@ -255,7 +321,7 @@ buildAfterRegion ctx stateTypes loopSpec body originalParamPairs =
         numParams =
             List.length loopSpec.paramVars
 
-        -- The new block args for parameters (first numParams items)
+        -- The new block args for the flat param slots (first numParams items)
         newParamBlockArgs =
             List.take numParams blockArgPairs
 
@@ -266,7 +332,7 @@ buildAfterRegion ctx stateTypes loopSpec body originalParamPairs =
         -- Set up variable mappings for the block args
         -- Map original Elm names to new block argument SSA names
         ctxWithArgs =
-            setupVarMappings ctx1 originalParamPairs newParamBlockArgs
+            setupVarMappings ctx1 loopSpec.groups newParamBlockArgs
 
         -- Compile the step
         stepResult =
@@ -275,7 +341,7 @@ buildAfterRegion ctx stateTypes loopSpec body originalParamPairs =
         -- Build scf.yield with (nextParams..., done, result)
         -- Use actual types from stepResult
         yieldOperands =
-            stepResult.nextParams ++ [ ( stepResult.doneVar, I1 ), ( stepResult.resultVar, stepResult.resultType ) ]
+            stepResult.nextParams ++ [ ( stepResult.doneVar, I1 ) ] ++ stepResult.results
 
         ( ctx2, yieldOp ) =
             Ops.scfYieldMany stepResult.ctx yieldOperands
@@ -283,31 +349,398 @@ buildAfterRegion ctx stateTypes loopSpec body originalParamPairs =
         region =
             mkSingleBlockRegion blockArgPairs stepResult.ops yieldOp
     in
-    ( region, ctx2 )
+    -- The split-param table is loop-scoped: nothing outside the after-region
+    -- may resolve a param through it (the incoming boxed argument mapping is
+    -- restored by the caller's context discipline).
+    ( region, { ctx2 | splitAggParams = Dict.empty } )
 
 
 {-| Set up variable mappings so that parameter names in the body can be resolved.
 
-Takes the original parameter pairs (with SSA names like "%acc") and the new block
-argument pairs (with fresh SSA names like "%v5"), and updates the context's
-varMappings so that references to the original names resolve to the new block args.
+Walks the param GROUPS against the flat after-region block args. An unsplit
+param maps its Elm name to its single block arg. A split param instead (a)
+REMOVES its normal varMapping — any bypass read would silently see the
+pre-loop value, so `lookupVar` must crash loudly — and (b) registers its
+slot block-args in `ctx.splitAggParams`, which the emission layer
+(Patterns/Expr) consults FIRST for projections and whole-value uses.
 
 -}
-setupVarMappings : Ctx.Context -> List ( String, MlirType ) -> List ( String, MlirType ) -> Ctx.Context
-setupVarMappings ctx originalParamPairs newBlockArgPairs =
-    -- Zip the original and new pairs together, then update varMappings
-    List.foldl
-        (\( ( origSsaName, _ ), ( newSsaName, newType ) ) accCtx ->
-            -- Extract the Elm name by stripping the "%" prefix from the original SSA name
+setupVarMappings : Ctx.Context -> List ParamGroup -> List ( String, MlirType ) -> Ctx.Context
+setupVarMappings ctx groups newBlockArgPairs =
+    let
+        go gs argPairs accCtx accSplits =
+            case gs of
+                [] ->
+                    { accCtx | splitAggParams = accSplits }
+
+                g :: rest ->
+                    let
+                        n =
+                            List.length g.slotTypes
+
+                        slotArgs =
+                            List.take n argPairs
+
+                        remaining =
+                            List.drop n argPairs
+                    in
+                    case g.split of
+                        Nothing ->
+                            case slotArgs of
+                                [ ( newSsaName, newType ) ] ->
+                                    go rest remaining (Ctx.addVarMapping g.elmName newSsaName newType accCtx) accSplits
+
+                                _ ->
+                                    crash "TailRec.setupVarMappings: unsplit param group without exactly one block arg"
+
+                        Just spec ->
+                            go rest
+                                remaining
+                                { accCtx | varMappings = Dict.remove g.elmName accCtx.varMappings }
+                                (Dict.insert g.elmName { slots = slotArgs, split = spec } accSplits)
+    in
+    go groups newBlockArgPairs ctx Dict.empty
+
+
+
+-- ============================================================================
+-- ====== SCALAR-SPLIT PLANNING (U-T1.3.3L) ======
+-- ============================================================================
+
+
+{-| Decide, per original param, whether to carry it as scalar slots.
+
+Split iff the flag is on, the param is boxed (`!eco.value`) at the ABI, and
+its Mono type is a tuple2/3 or a SINGLE-constructor custom with 2..6 fields
+(single-FIELD customs are excluded: Can.Unbox types have no container to
+project — the value IS the field). Everything else carries unchanged.
+
+-}
+planParamGroups : Ctx.Context -> List ( String, MlirType ) -> List Mono.MonoType -> Mono.MonoExpr -> List ParamGroup
+planParamGroups ctx paramPairs paramMonoTypes body =
+    List.map2
+        (\( ssaName, mlirTy ) monoTy ->
             let
                 elmName =
-                    String.dropLeft 1 origSsaName
+                    String.dropLeft 1 ssaName
+
+                noSplit =
+                    { origSsaName = ssaName
+                    , elmName = elmName
+                    , slotTypes = [ mlirTy ]
+                    , split = Nothing
+                    }
+
+                -- WIN GATE (both must hold, or the split is a pessimization):
+                --   (a) admissibility — every body use of the param is a
+                --       projection (or the param at its own tail position);
+                --       a whole-value use would REMATERIALIZE (an added
+                --       allocation) each occurrence;
+                --   (b) argument policy — every tail-call arg at this
+                --       position is slot-feedable for free (pass-through,
+                --       a fresh matching local construct, or an inline
+                --       construct), and at least one is a fresh construct
+                --       (the allocation the split removes). A call-result
+                --       or projected-subtree arg would force EAGER per-slot
+                --       heap projections each iteration (e.g. Dict.get's
+                --       descent) — a loss, so it vetoes.
+                gated kind spec slotTys =
+                    if
+                        Expr.paramSplitAdmissible ctx.psplitPromoted kind elmName body
+                            && splitArgPolicy ctx spec elmName body
+                    then
+                        { origSsaName = ssaName
+                        , elmName = elmName
+                        , slotTypes = slotTys
+                        , split = Just spec
+                        }
+
+                    else
+                        noSplit
             in
-            -- Update the mapping: elmName -> newSsaName with the new type
-            Ctx.addVarMapping elmName newSsaName newType accCtx
+            if not ctx.ecoConfig.aggPromote || not (Types.isEcoValueType mlirTy) then
+                noSplit
+
+            else
+                case monoTy of
+                    Mono.MTuple ts ->
+                        if List.length ts == 2 || List.length ts == 3 then
+                            let
+                                layout =
+                                    Types.computeTupleLayout ts
+
+                                kind =
+                                    if List.length ts == 2 then
+                                        Mono.Tuple2Container
+
+                                    else
+                                        Mono.Tuple3Container
+                            in
+                            gated kind
+                                (Ctx.SplitTuple layout)
+                                (List.map
+                                    (\( elemTy, isUnboxed ) ->
+                                        if isUnboxed then
+                                            Types.monoTypeToAbi elemTy
+
+                                        else
+                                            Types.ecoValue
+                                    )
+                                    layout.elements
+                                )
+
+                        else
+                            noSplit
+
+                    Mono.MCustom _ _ _ ->
+                        case Dict.get (Mono.toComparableLayoutKey monoTy) ctx.typeRegistry.ctorShapes of
+                            Just [ shape ] ->
+                                if List.length shape.fieldTypes >= 2 && List.length shape.fieldTypes <= 6 then
+                                    let
+                                        clayout =
+                                            Types.computeCtorLayout shape
+                                    in
+                                    gated (Mono.CustomContainer shape.name)
+                                        (Ctx.SplitCtor clayout)
+                                        (List.map
+                                            (\f ->
+                                                if f.isUnboxed then
+                                                    Types.monoTypeToAbi f.monoType
+
+                                                else
+                                                    Types.ecoValue
+                                            )
+                                            clayout.fields
+                                        )
+
+                                else
+                                    noSplit
+
+                            _ ->
+                                noSplit
+
+                    _ ->
+                        noSplit
         )
-        ctx
-        (zip originalParamPairs newBlockArgPairs)
+        paramPairs
+        paramMonoTypes
+
+
+{-| Does an expression construct a FRESH value of the split shape? (A tuple
+literal of the right arity, or a saturated call of the single ctor.)
+-}
+isFreshConstruct : Ctx.Context -> Ctx.SplitSpec -> Mono.MonoExpr -> Bool
+isFreshConstruct ctx spec e =
+    case ( spec, e ) of
+        ( Ctx.SplitTuple layout, Mono.MonoTupleCreate _ es _ ) ->
+            List.length es == layout.arity
+
+        ( Ctx.SplitCtor clayout, Mono.MonoCall _ (Mono.MonoVarGlobal _ specId _) cargs _ _ ) ->
+            case Dict.get specId ctx.ctorBySpec of
+                Just shape ->
+                    shape.name == clayout.name && List.length cargs == List.length clayout.fields
+
+                Nothing ->
+                    False
+
+        _ ->
+            False
+
+
+{-| The tail-call argument policy of the win gate. Scans the loop body
+(excluding nested function bodies — their tail calls target inner loops)
+collecting (1) let binders whose RHS is a fresh matching construct and
+(2) every tail-call argument at this param position, then classifies.
+-}
+splitArgPolicy : Ctx.Context -> Ctx.SplitSpec -> String -> Mono.MonoExpr -> Bool
+splitArgPolicy ctx spec pName body =
+    let
+        ( binders, argsAt ) =
+            scanSplitPolicy ctx spec pName body ( Set.empty, [] )
+
+        classify e =
+            case e of
+                Mono.MonoVarLocal v _ ->
+                    if v == pName then
+                        Just False
+
+                    else if Set.member v binders then
+                        Just True
+
+                    else
+                        Nothing
+
+                _ ->
+                    if isFreshConstruct ctx spec e then
+                        Just True
+
+                    else
+                        Nothing
+
+        classes =
+            List.map classify argsAt
+    in
+    (not (List.isEmpty argsAt))
+        && List.all (\c -> c /= Nothing) classes
+        && List.member (Just True) classes
+
+
+scanSplitPolicy : Ctx.Context -> Ctx.SplitSpec -> String -> Mono.MonoExpr -> ( Set.Set String, List Mono.MonoExpr ) -> ( Set.Set String, List Mono.MonoExpr )
+scanSplitPolicy ctx spec pName expr (( binders, argsAcc ) as acc) =
+    case expr of
+        Mono.MonoLet (Mono.MonoDef x rhs) inner _ ->
+            let
+                acc1 =
+                    if isFreshConstruct ctx spec rhs then
+                        ( Set.insert x binders, argsAcc )
+
+                    else
+                        acc
+            in
+            scanSplitPolicy ctx spec pName inner acc1
+
+        Mono.MonoLet (Mono.MonoTailDef _ _ _) inner _ ->
+            -- nested tail func: its rhs's tail calls target the INNER loop
+            scanSplitPolicy ctx spec pName inner acc
+
+        Mono.MonoClosure _ _ _ ->
+            -- different function; no outer tail calls inside
+            acc
+
+        Mono.MonoTailCall _ args _ ->
+            let
+                atP =
+                    args
+                        |> List.filter (\( n, _ ) -> n == pName)
+                        |> List.map Tuple.second
+            in
+            ( binders, atP ++ argsAcc )
+
+        Mono.MonoCase _ _ decider jumps _ ->
+            let
+                accD =
+                    scanSplitPolicyDecider ctx spec pName decider acc
+            in
+            List.foldl (\( _, je ) a -> scanSplitPolicy ctx spec pName je a) accD jumps
+
+        Mono.MonoIf branches final _ ->
+            List.foldl (\( _, b ) a -> scanSplitPolicy ctx spec pName b a)
+                (scanSplitPolicy ctx spec pName final acc)
+                branches
+
+        Mono.MonoDestruct _ inner _ ->
+            scanSplitPolicy ctx spec pName inner acc
+
+        _ ->
+            acc
+
+
+scanSplitPolicyDecider : Ctx.Context -> Ctx.SplitSpec -> String -> Mono.Decider Mono.MonoChoice -> ( Set.Set String, List Mono.MonoExpr ) -> ( Set.Set String, List Mono.MonoExpr )
+scanSplitPolicyDecider ctx spec pName decider acc =
+    case decider of
+        Mono.Leaf (Mono.Inline e) ->
+            scanSplitPolicy ctx spec pName e acc
+
+        Mono.Leaf (Mono.Jump _) ->
+            acc
+
+        Mono.Chain _ success failure ->
+            scanSplitPolicyDecider ctx spec pName failure
+                (scanSplitPolicyDecider ctx spec pName success acc)
+
+        Mono.FanOut _ edges fallback ->
+            scanSplitPolicyDecider ctx
+                spec
+                pName
+                fallback
+                (List.foldl (\( _, d ) a -> scanSplitPolicyDecider ctx spec pName d a) acc edges)
+
+
+{-| Entry values for one param group. Unsplit: the incoming argument var
+itself, no ops. Split: heap-project each field of the incoming boxed
+argument at its STORED slot type (the same per-slot projections the body
+would have emitted; one-time cost at loop entry).
+-}
+emitEntrySlotProjections : Ctx.Context -> ParamGroup -> ( List MlirOp, List String, Ctx.Context )
+emitEntrySlotProjections ctx g =
+    case g.split of
+        Nothing ->
+            ( [], [ g.origSsaName ], ctx )
+
+        Just spec ->
+            projectSlotsFromHeap ctx spec g.slotTypes g.origSsaName
+
+
+{-| Heap-project all slots of a split shape out of a boxed container var.
+-}
+projectSlotsFromHeap : Ctx.Context -> Ctx.SplitSpec -> List MlirType -> String -> ( List MlirOp, List String, Ctx.Context )
+projectSlotsFromHeap ctx spec slotTypes containerVar =
+    let
+        projectOne idx slotTy ctxA rv =
+            case spec of
+                Ctx.SplitTuple layout ->
+                    if layout.arity == 2 then
+                        Ops.ecoProjectTuple2 ctxA rv idx slotTy containerVar
+
+                    else
+                        Ops.ecoProjectTuple3 ctxA rv idx slotTy containerVar
+
+                Ctx.SplitCtor _ ->
+                    Ops.ecoProjectCustom ctxA rv idx slotTy containerVar
+
+        ( opsRev, varsRev, ctxOut ) =
+            List.foldl
+                (\( idx, slotTy ) ( opsAcc, varsAcc, ctxAcc ) ->
+                    let
+                        ( rv, ctxF ) =
+                            Ctx.freshVar ctxAcc
+
+                        ( ctxP, op ) =
+                            projectOne idx slotTy ctxF rv
+                    in
+                    ( op :: opsAcc, rv :: varsAcc, ctxP )
+                )
+                ( [], [], ctx )
+                (List.indexedMap Tuple.pair slotTypes)
+    in
+    ( List.reverse opsRev, List.reverse varsRev, ctxOut )
+
+
+{-| Aggregate-project all slots of a split shape out of an SSA value
+aggregate (`!eco.tuple2/3<...>` / `!eco.custom<...>`) — folded to nothing
+by SROA/FoldExtractValue when the aggregate came from an `eco.make.*`.
+-}
+projectSlotsFromAgg : Ctx.Context -> Ctx.SplitSpec -> List MlirType -> ( String, MlirType ) -> ( List MlirOp, List String, Ctx.Context )
+projectSlotsFromAgg ctx spec slotTypes aggOperand =
+    let
+        projectOne idx slotTy ctxA rv =
+            case spec of
+                Ctx.SplitTuple layout ->
+                    if layout.arity == 2 then
+                        Ops.ecoProjectTuple2Agg ctxA rv idx slotTy aggOperand
+
+                    else
+                        Ops.ecoProjectTuple3Agg ctxA rv idx slotTy aggOperand
+
+                Ctx.SplitCtor _ ->
+                    Ops.ecoProjectCustomAgg ctxA rv idx slotTy aggOperand
+
+        ( opsRev, varsRev, ctxOut ) =
+            List.foldl
+                (\( idx, slotTy ) ( opsAcc, varsAcc, ctxAcc ) ->
+                    let
+                        ( rv, ctxF ) =
+                            Ctx.freshVar ctxAcc
+
+                        ( ctxP, op ) =
+                            projectOne idx slotTy ctxF rv
+                    in
+                    ( op :: opsAcc, rv :: varsAcc, ctxP )
+                )
+                ( [], [], ctx )
+                (List.indexedMap Tuple.pair slotTypes)
+    in
+    ( List.reverse opsRev, List.reverse varsRev, ctxOut )
 
 
 
@@ -374,50 +807,66 @@ compileTailCallStep :
     -> StepResult
 compileTailCallStep ctx loopSpec args =
     let
-        -- Loop parameters and their ABI MLIR types (e.g. Bool -> !eco.value)
-        paramTypes : Array MlirType
-        paramTypes =
-            loopSpec.paramVars
-                |> List.map Tuple.second
-                |> Array.fromList
-
-        -- Evaluate each argument expression and coerce to the loop's ABI param types.
+        -- U-T1.3.3L: args come per ORIGINAL param; each group expands to its
+        -- state slots. Unsplit groups keep the historical generate+coerce
+        -- path. Split groups feed their slots directly:
+        --   1. the SAME split param passed through -> reuse its current slot
+        --      vars, zero ops;
+        --   2. an SSA value-aggregate result (a promoted let-bound construct)
+        --      -> aggregate projections (folded away by SROA);
+        --   3. anything else -> coerce to a boxed value and heap-project
+        --      (never worse than the pre-split code).
         ( argOpsRev, argVarsRev, ctx1 ) =
             List.foldl
-                (\( index, ( _, argExpr ) ) ( opsAcc, varsAcc, ctxAcc ) ->
-                    let
-                        argResult =
-                            Expr.generateExpr ctxAcc argExpr
+                (\( g, ( _, argExpr ) ) ( opsAcc, varsAcc, ctxAcc ) ->
+                    case g.split of
+                        Nothing ->
+                            let
+                                argResult =
+                                    Expr.generateExpr ctxAcc argExpr
 
-                        expectedTy : MlirType
-                        expectedTy =
-                            case Array.get index paramTypes of
-                                Just ty ->
-                                    ty
+                                expectedTy : MlirType
+                                expectedTy =
+                                    case g.slotTypes of
+                                        [ ty ] ->
+                                            ty
 
-                                Nothing ->
-                                    crash
-                                        ("TailRec.compileTailCallStep: arity mismatch for tail call in "
-                                            ++ loopSpec.funcName
-                                        )
+                                        _ ->
+                                            crash
+                                                ("TailRec.compileTailCallStep: unsplit group arity in "
+                                                    ++ loopSpec.funcName
+                                                )
 
-                        ( coerceOps, finalVar, ctxCoerced ) =
-                            Expr.coerceResultToType
-                                argResult.ctx
-                                argResult.resultVar
-                                argResult.resultType
-                                expectedTy
+                                ( coerceOps, finalVar, ctxCoerced ) =
+                                    Expr.coerceResultToType
+                                        argResult.ctx
+                                        argResult.resultVar
+                                        argResult.resultType
+                                        expectedTy
 
-                        chunkOps =
-                            argResult.ops ++ coerceOps
-                    in
-                    ( List.reverse chunkOps ++ opsAcc
-                    , ( finalVar, expectedTy ) :: varsAcc
-                    , ctxCoerced
-                    )
+                                chunkOps =
+                                    argResult.ops ++ coerceOps
+                            in
+                            ( List.reverse chunkOps ++ opsAcc
+                            , ( finalVar, expectedTy ) :: varsAcc
+                            , ctxCoerced
+                            )
+
+                        Just spec ->
+                            let
+                                ( chunkOps, slotVars, ctxSlots ) =
+                                    compileSplitTailArg ctxAcc spec g argExpr
+
+                                slotPairs =
+                                    List.map2 Tuple.pair slotVars g.slotTypes
+                            in
+                            ( List.reverse chunkOps ++ opsAcc
+                            , List.reverse slotPairs ++ varsAcc
+                            , ctxSlots
+                            )
                 )
                 ( [], [], ctx )
-                (List.indexedMap Tuple.pair args)
+                (List.map2 Tuple.pair loopSpec.groups args)
 
         argOps =
             List.reverse argOpsRev
@@ -432,17 +881,135 @@ compileTailCallStep ctx loopSpec args =
         ( ctx3, doneOp ) =
             Ops.arithConstantBool ctx2 doneVar False
 
-        -- result = dummy (not used when continuing)
-        ( dummyOps, dummyVar, ctx4 ) =
-            Expr.createDummyValue ctx3 loopSpec.retType
+        -- result = dummies (not used when continuing); one per result slot
+        ( dummyOpsRev, dummyPairsRev, ctx4 ) =
+            List.foldl
+                (\slotTy ( oAcc, pAcc, cAcc ) ->
+                    let
+                        ( dOps, dVar, cNext ) =
+                            Expr.createDummyValue cAcc slotTy
+                    in
+                    ( List.reverse dOps ++ oAcc, ( dVar, slotTy ) :: pAcc, cNext )
+                )
+                ( [], [], ctx3 )
+                loopSpec.resultSlots
     in
-    { ops = argOps ++ [ doneOp ] ++ dummyOps
+    { ops = argOps ++ [ doneOp ] ++ List.reverse dummyOpsRev
     , nextParams = argVars
     , doneVar = doneVar
-    , resultVar = dummyVar
-    , resultType = loopSpec.retType
+    , results = List.reverse dummyPairsRev
     , ctx = ctx4
     }
+
+
+{-| Produce the next-iteration slot vars for one SPLIT param position.
+-}
+compileSplitTailArg : Ctx.Context -> Ctx.SplitSpec -> ParamGroup -> Mono.MonoExpr -> ( List MlirOp, List String, Ctx.Context )
+compileSplitTailArg ctx spec g argExpr =
+    let
+        passThrough =
+            case argExpr of
+                Mono.MonoVarLocal v _ ->
+                    case Dict.get v ctx.splitAggParams of
+                        Just info ->
+                            -- Same-shape pass-through only (slot types must
+                            -- agree exactly); otherwise fall to the generic
+                            -- explode below.
+                            if List.map Tuple.second info.slots == g.slotTypes then
+                                Just (List.map Tuple.first info.slots)
+
+                            else
+                                Nothing
+
+                        Nothing ->
+                            Nothing
+
+                _ ->
+                    Nothing
+    in
+    case passThrough of
+        Just slotVars ->
+            ( [], slotVars, ctx )
+
+        Nothing ->
+            case inlineConstructSlots ctx spec g argExpr of
+                Just result ->
+                    -- Fresh INLINE construct in tail position: compile the
+                    -- elements straight into the slots — the construction
+                    -- itself vanishes.
+                    result
+
+                Nothing ->
+                    let
+                        argResult =
+                            Expr.generateExpr ctx argExpr
+                    in
+                    if Types.isAggValueType argResult.resultType then
+                        projectSlotsFromAgg argResult.ctx spec g.slotTypes ( argResult.resultVar, argResult.resultType )
+                            |> (\( pOps, pVars, pCtx ) -> ( argResult.ops ++ pOps, pVars, pCtx ))
+
+                    else
+                        let
+                            ( coerceOps, boxedVar, ctxBoxed ) =
+                                Expr.coerceResultToType argResult.ctx argResult.resultVar argResult.resultType Types.ecoValue
+
+                            ( pOps, pVars, pCtx ) =
+                                projectSlotsFromHeap ctxBoxed spec g.slotTypes boxedVar
+                        in
+                        ( argResult.ops ++ coerceOps ++ pOps, pVars, pCtx )
+
+
+{-| Compile a fresh inline construct's elements directly to this group's
+slot types (the mirror of `isFreshConstruct` — keep the two in sync).
+-}
+inlineConstructSlots : Ctx.Context -> Ctx.SplitSpec -> ParamGroup -> Mono.MonoExpr -> Maybe ( List MlirOp, List String, Ctx.Context )
+inlineConstructSlots ctx spec g argExpr =
+    let
+        elementsFor =
+            case ( spec, argExpr ) of
+                ( Ctx.SplitTuple layout, Mono.MonoTupleCreate _ es _ ) ->
+                    if List.length es == layout.arity then
+                        Just es
+
+                    else
+                        Nothing
+
+                ( Ctx.SplitCtor clayout, Mono.MonoCall _ (Mono.MonoVarGlobal _ specId _) cargs _ _ ) ->
+                    case Dict.get specId ctx.ctorBySpec of
+                        Just shape ->
+                            if shape.name == clayout.name && List.length cargs == List.length clayout.fields then
+                                Just cargs
+
+                            else
+                                Nothing
+
+                        Nothing ->
+                            Nothing
+
+                _ ->
+                    Nothing
+    in
+    Maybe.map
+        (\es ->
+            let
+                ( opsRev, varsRev, ctxOut ) =
+                    List.foldl
+                        (\( e, slotTy ) ( opsAcc, varsAcc, ctxAcc ) ->
+                            let
+                                r =
+                                    Expr.generateExpr ctxAcc e
+
+                                ( co, fv, ctxC ) =
+                                    Expr.coerceResultToType r.ctx r.resultVar r.resultType slotTy
+                            in
+                            ( List.reverse (r.ops ++ co) ++ opsAcc, fv :: varsAcc, ctxC )
+                        )
+                        ( [], [], ctx )
+                        (List.map2 Tuple.pair es g.slotTypes)
+            in
+            ( List.reverse opsRev, List.reverse varsRev, ctxOut )
+        )
+        elementsFor
 
 
 
@@ -464,7 +1031,25 @@ compileBaseReturnStep :
 compileBaseReturnStep ctx loopSpec expr =
     let
         exprResult =
-            Expr.generateExpr ctx expr
+            -- U-T1.3.6: base exprs of a promoted tail func are RESULT-spine
+            -- positions — the T1.3.3 machinery (make-form tail literals,
+            -- decomposed case yields) applies via the same flag. The flag is
+            -- RESTORED on the result ctx: it would otherwise thread out of
+            -- the step machinery, across the node boundary, and poison the
+            -- NEXT function's emission (the postSolveDef incident).
+            case loopSpec.resultPlan of
+                Just info ->
+                    let
+                        raw =
+                            Expr.generateExpr { ctx | sretTailLayout = Just info.layout } expr
+
+                        rawCtx =
+                            raw.ctx
+                    in
+                    { raw | ctx = { rawCtx | sretTailLayout = ctx.sretTailLayout } }
+
+                Nothing ->
+                    Expr.generateExpr ctx expr
     in
     if exprResult.isTerminated then
         crash
@@ -472,15 +1057,55 @@ compileBaseReturnStep ctx loopSpec expr =
 
     else
         let
-            -- Coerce the expression result to the loop's result MLIR type.
-            -- This mirrors generateDefine/generateClosureFunc, which coerce to
-            -- the function's ABI return type before emitting eco.return.
-            ( coerceOps, finalVar, ctx1 ) =
-                Expr.coerceResultToType
-                    exprResult.ctx
-                    exprResult.resultVar
-                    exprResult.resultType
-                    loopSpec.retType
+            -- U-T1.3.6: for a promoted (sret) tail func the base value is
+            -- carried DECOMPOSED — coerce to the aggregate (make-form spine
+            -- results are already there; boxed fallbacks bridge via
+            -- eco.from_heap) and project the N slots block-locally.
+            ( coerceOps, resultPairs, ctx1 ) =
+                case loopSpec.resultPlan of
+                    Just info ->
+                        let
+                            aggTy =
+                                Ops.aggTupleType info.slotTypes
+
+                            ( cOps, aggVar, cCtx ) =
+                                Expr.coerceResultToType
+                                    exprResult.ctx
+                                    exprResult.resultVar
+                                    exprResult.resultType
+                                    aggTy
+
+                            ( projOpsRev, pairsRev, pCtx ) =
+                                List.foldl
+                                    (\( idx, slotTy ) ( oAcc, pAcc, cAcc ) ->
+                                        let
+                                            ( pv, cF ) =
+                                                Ctx.freshVar cAcc
+
+                                            ( cP, projOp ) =
+                                                if info.layout.arity == 2 then
+                                                    Ops.ecoProjectTuple2Agg cF pv idx slotTy ( aggVar, aggTy )
+
+                                                else
+                                                    Ops.ecoProjectTuple3Agg cF pv idx slotTy ( aggVar, aggTy )
+                                        in
+                                        ( projOp :: oAcc, ( pv, slotTy ) :: pAcc, cP )
+                                    )
+                                    ( [], [], cCtx )
+                                    (List.indexedMap Tuple.pair info.slotTypes)
+                        in
+                        ( cOps ++ List.reverse projOpsRev, List.reverse pairsRev, pCtx )
+
+                    Nothing ->
+                        let
+                            ( cOps, finalVar, cCtx ) =
+                                Expr.coerceResultToType
+                                    exprResult.ctx
+                                    exprResult.resultVar
+                                    exprResult.resultType
+                                    loopSpec.retType
+                        in
+                        ( cOps, [ ( finalVar, loopSpec.retType ) ], cCtx )
 
             -- done = true (base case)
             ( doneVar, ctx2 ) =
@@ -495,8 +1120,7 @@ compileBaseReturnStep ctx loopSpec expr =
         { ops = exprResult.ops ++ coerceOps ++ [ doneOp ]
         , nextParams = nextParams
         , doneVar = doneVar
-        , resultVar = finalVar
-        , resultType = loopSpec.retType
+        , results = resultPairs
         , ctx = ctx3
         }
 
@@ -513,7 +1137,7 @@ checkedYieldOperands : LoopSpec -> String -> List ( String, MlirType ) -> List (
 checkedYieldOperands loopSpec label operands =
     let
         expected =
-            List.map Tuple.second loopSpec.paramVars ++ [ I1, loopSpec.retType ]
+            List.map Tuple.second loopSpec.paramVars ++ [ I1 ] ++ loopSpec.resultSlots
 
         mismatches =
             List.map2 (\( _, actual ) exp -> ( actual, exp )) operands expected
@@ -661,9 +1285,8 @@ compileCaseChainStep ctx loopSpec testChain success failure jumpLookup =
                     checkedYieldOperands loopSpec
                         "then"
                         (thenStep.nextParams
-                            ++ [ ( thenStep.doneVar, I1 )
-                               , ( thenStep.resultVar, thenStep.resultType )
-                               ]
+                            ++ [ ( thenStep.doneVar, I1 ) ]
+                            ++ thenStep.results
                         )
 
                 ( thenYieldCtx, thenYieldOp ) =
@@ -683,9 +1306,8 @@ compileCaseChainStep ctx loopSpec testChain success failure jumpLookup =
                     checkedYieldOperands loopSpec
                         "else"
                         (elseStep.nextParams
-                            ++ [ ( elseStep.doneVar, I1 )
-                               , ( elseStep.resultVar, elseStep.resultType )
-                               ]
+                            ++ [ ( elseStep.doneVar, I1 ) ]
+                            ++ elseStep.results
                         )
 
                 ( elseYieldCtx, elseYieldOp ) =
@@ -701,10 +1323,10 @@ compileCaseChainStep ctx loopSpec testChain success failure jumpLookup =
                     List.map Tuple.second loopSpec.paramVars
 
                 ( caseResultNames, ctxWithResults ) =
-                    allocateFreshVars elseYieldCtx (numParams + 2)
+                    allocateFreshVars elseYieldCtx (numParams + 1 + List.length loopSpec.resultSlots)
 
                 caseResultPairs =
-                    zip caseResultNames (paramTypes ++ [ I1, loopSpec.retType ])
+                    zip caseResultNames (paramTypes ++ [ I1 ] ++ loopSpec.resultSlots)
 
                 ( ctxAfterCase, caseOp ) =
                     Ops.ecoCaseMany
@@ -724,16 +1346,13 @@ compileCaseChainStep ctx loopSpec testChain success failure jumpLookup =
                         |> List.head
                         |> Maybe.withDefault "%error_no_done"
 
-                resultResultVar =
-                    List.drop (numParams + 1) caseResultNames
-                        |> List.head
-                        |> Maybe.withDefault "%error_no_result"
+                resultPairsOut =
+                    List.drop (numParams + 1) caseResultPairs
             in
             { ops = firstOps ++ [ caseOp ]
             , nextParams = nextParamVars
             , doneVar = doneResultVar
-            , resultVar = resultResultVar
-            , resultType = loopSpec.retType
+            , results = resultPairsOut
             , ctx = Ctx.ctxAfterBranchOp ctx1 ctxAfterCase caseResultNames
             }
 
@@ -817,9 +1436,8 @@ compileCaseFanOutStep ctx loopSpec path edges fallback jumpLookup =
                             checkedYieldOperands loopSpec
                                 "fanout-edge"
                                 (subStep.nextParams
-                                    ++ [ ( subStep.doneVar, I1 )
-                                       , ( subStep.resultVar, subStep.resultType )
-                                       ]
+                                    ++ [ ( subStep.doneVar, I1 ) ]
+                                    ++ subStep.results
                                 )
 
                         ( yieldCtx, yieldOp ) =
@@ -844,9 +1462,8 @@ compileCaseFanOutStep ctx loopSpec path edges fallback jumpLookup =
             checkedYieldOperands loopSpec
                 "fanout-fallback"
                 (fallbackStep.nextParams
-                    ++ [ ( fallbackStep.doneVar, I1 )
-                       , ( fallbackStep.resultVar, fallbackStep.resultType )
-                       ]
+                    ++ [ ( fallbackStep.doneVar, I1 ) ]
+                    ++ fallbackStep.results
                 )
 
         ( fallbackYieldCtx, fallbackYieldOp ) =
@@ -866,10 +1483,10 @@ compileCaseFanOutStep ctx loopSpec path edges fallback jumpLookup =
             List.map Tuple.second loopSpec.paramVars
 
         ( caseResultNames, ctxWithResults ) =
-            allocateFreshVars fallbackYieldCtx (numParams + 2)
+            allocateFreshVars fallbackYieldCtx (numParams + 1 + List.length loopSpec.resultSlots)
 
         caseResultPairs =
-            zip caseResultNames (paramTypes ++ [ I1, loopSpec.retType ])
+            zip caseResultNames (paramTypes ++ [ I1 ] ++ loopSpec.resultSlots)
 
         -- Build eco.case / eco.case_string
         ( ctx3, caseOp ) =
@@ -902,16 +1519,13 @@ compileCaseFanOutStep ctx loopSpec path edges fallback jumpLookup =
                 |> List.head
                 |> Maybe.withDefault "%error_no_done"
 
-        resultResultVar =
-            List.drop (numParams + 1) caseResultNames
-                |> List.head
-                |> Maybe.withDefault "%error_no_result"
+        resultPairsOut =
+            List.drop (numParams + 1) caseResultPairs
     in
     { ops = pathOps ++ [ caseOp ]
     , nextParams = nextParamVars
     , doneVar = doneResultVar
-    , resultVar = resultResultVar
-    , resultType = loopSpec.retType
+    , results = resultPairsOut
     , ctx = Ctx.ctxAfterBranchOp ctx1 ctx3 caseResultNames
     }
 
@@ -973,7 +1587,7 @@ compileIfStep ctx loopSpec branches final =
 
                 -- Build then region that yields the step tuple
                 thenYieldOperands =
-                    checkedYieldOperands loopSpec "if-then" (thenStep.nextParams ++ [ ( thenStep.doneVar, I1 ), ( thenStep.resultVar, thenStep.resultType ) ])
+                    checkedYieldOperands loopSpec "if-then" (thenStep.nextParams ++ [ ( thenStep.doneVar, I1 ) ] ++ thenStep.results)
 
                 ( thenYieldCtx, thenYieldOp ) =
                     Ops.ecoYieldMany thenStep.ctx thenYieldOperands
@@ -987,7 +1601,7 @@ compileIfStep ctx loopSpec branches final =
 
                 -- Build else region that yields the step tuple
                 elseYieldOperands =
-                    checkedYieldOperands loopSpec "if-else" (elseStep.nextParams ++ [ ( elseStep.doneVar, I1 ), ( elseStep.resultVar, elseStep.resultType ) ])
+                    checkedYieldOperands loopSpec "if-else" (elseStep.nextParams ++ [ ( elseStep.doneVar, I1 ) ] ++ elseStep.results)
 
                 ( elseYieldCtx, elseYieldOp ) =
                     Ops.ecoYieldMany elseStep.ctx elseYieldOperands
@@ -1005,10 +1619,10 @@ compileIfStep ctx loopSpec branches final =
 
                 -- Allocate fresh names for the case results
                 ( caseResultNames, ctxWithResults ) =
-                    allocateFreshVars elseYieldCtx (numParams + 2)
+                    allocateFreshVars elseYieldCtx (numParams + 1 + List.length loopSpec.resultSlots)
 
                 caseResultPairs =
-                    zip caseResultNames (paramTypes ++ [ I1, loopSpec.retType ])
+                    zip caseResultNames (paramTypes ++ [ I1 ] ++ loopSpec.resultSlots)
 
                 -- eco.case on i1: tag 1 for True (then), tag 0 for False (else)
                 ( ctxAfterCase, caseOp ) =
@@ -1023,16 +1637,13 @@ compileIfStep ctx loopSpec branches final =
                         |> List.head
                         |> Maybe.withDefault "%error_no_done"
 
-                resultResultVar =
-                    List.drop (numParams + 1) caseResultNames
-                        |> List.head
-                        |> Maybe.withDefault "%error_no_result"
+                resultPairsOut =
+                    List.drop (numParams + 1) caseResultPairs
             in
             { ops = condRes.ops ++ condUnboxOps ++ [ caseOp ]
             , nextParams = nextParamVars
             , doneVar = doneResultVar
-            , resultVar = resultResultVar
-            , resultType = loopSpec.retType
+            , results = resultPairsOut
             , ctx = Ctx.ctxAfterBranchOp condCtx ctxAfterCase caseResultNames
             }
 
@@ -1105,24 +1716,42 @@ compileLetStep ctx loopSpec def body =
                 defSetupExpr =
                     Mono.MonoLet def Mono.MonoUnit Mono.MUnit
 
+                -- U-T1.3.2t: hand the promotion hook the REAL loop-body
+                -- suffix (the synthetic MonoUnit wrapper would otherwise show
+                -- the escape walk zero uses — the T1.3.2 incident), plus the
+                -- forward-ref scan over this chain suffix (unioned: earlier
+                -- positions' scans already flowed down via ctxForBody, so
+                -- position k sees refs from links 1..k-1 as well).
+                fwdScanned =
+                    if ctxReady.ecoConfig.aggPromote then
+                        Set.union ctxReady.fwdRefdLetNames (Expr.scanChainForwardRefs ctxReady def body)
+
+                    else
+                        ctxReady.fwdRefdLetNames
+
+                ctxReadyT =
+                    { ctxReady | tailRecLetBody = Just body, fwdRefdLetNames = fwdScanned }
+
                 defSetupResult =
-                    Expr.generateExpr ctxReady defSetupExpr
+                    Expr.generateExpr ctxReadyT defSetupExpr
 
                 ctxAfterDef =
                     defSetupResult.ctx
 
                 ctxForBody =
-                    { ctxAfterDef | currentLetSiblings = outerSiblings }
+                    { ctxAfterDef | currentLetSiblings = outerSiblings, tailRecLetBody = Nothing }
 
                 bodyStep =
                     compileStep ctxForBody loopSpec body
+
+                stepCtx =
+                    bodyStep.ctx
             in
             { ops = defSetupResult.ops ++ bodyStep.ops
             , nextParams = bodyStep.nextParams
             , doneVar = bodyStep.doneVar
-            , resultVar = bodyStep.resultVar
-            , resultType = bodyStep.resultType
-            , ctx = bodyStep.ctx
+            , results = bodyStep.results
+            , ctx = { stepCtx | fwdRefdLetNames = ctx.fwdRefdLetNames }
             }
 
         Mono.MonoTailDef _ _ _ ->
@@ -1156,8 +1785,7 @@ compileLetStep ctx loopSpec def body =
             { ops = defSetupResult.ops ++ bodyStep.ops
             , nextParams = bodyStep.nextParams
             , doneVar = bodyStep.doneVar
-            , resultVar = bodyStep.resultVar
-            , resultType = bodyStep.resultType
+            , results = bodyStep.results
             , ctx = bodyStep.ctx
             }
 
@@ -1224,8 +1852,7 @@ compileDestructStep ctx loopSpec (Mono.MonoDestructor name path destructorMonoTy
     { ops = pathOps ++ bodyStep.ops
     , nextParams = bodyStep.nextParams
     , doneVar = bodyStep.doneVar
-    , resultVar = bodyStep.resultVar
-    , resultType = bodyStep.resultType
+    , results = bodyStep.results
     , ctx = bodyStep.ctx
     }
 

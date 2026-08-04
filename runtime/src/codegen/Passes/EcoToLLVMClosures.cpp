@@ -2355,6 +2355,49 @@ struct CallOpLowering : public OpConversionPattern<CallOp> {
             // Direct call to a known function
             if (!isMusttail)
                 emitSafepointMarker(op, rewriter, runtime, liveRoots);
+            if (resultTypes.size() > 1) {
+                // U-T1.3.3 sret call: the callee is an sret worker
+                // ((slot, args...) -> void, SretFuncOpLowering). Allocate the
+                // slot in the CALLER's entry block (loop-safe: one fixed
+                // frame slot per call site, no per-iteration stack growth),
+                // pass it as the leading argument, and reload the fields
+                // immediately after the call. The slot is addrspace-0 host
+                // memory — RS4GC does not track it, which is sound because
+                // it only holds GC pointers inside the callee's
+                // store-before-return window and this reload window, with no
+                // intervening statepoint (CGEN_067); the loaded
+                // ptr addrspace(1) values are fresh SSA defs tracked
+                // normally from here on.
+                auto *ctx = rewriter.getContext();
+                auto structTy = LLVM::LLVMStructType::getLiteral(ctx, resultTypes);
+                auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+                Value slot;
+                {
+                    OpBuilder::InsertionGuard guard(rewriter);
+                    auto parent = op->getParentOfType<LLVM::LLVMFuncOp>();
+                    if (!parent)
+                        return op.emitError("sret eco.call outside llvm.func");
+                    rewriter.setInsertionPointToStart(&parent.getBody().front());
+                    Value one = rewriter.create<LLVM::ConstantOp>(
+                        loc, rewriter.getI32Type(),
+                        rewriter.getI32IntegerAttr(1));
+                    slot = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, structTy,
+                                                           one, /*alignment=*/8);
+                }
+                SmallVector<Value> callArgs{slot};
+                callArgs.append(realOperands.begin(), realOperands.end());
+                rewriter.create<func::CallOp>(loc, *callee, TypeRange{}, callArgs);
+                SmallVector<Value> loads;
+                for (auto [i, ft] : llvm::enumerate(resultTypes)) {
+                    Value gep = rewriter.create<LLVM::GEPOp>(
+                        loc, ptrTy, structTy, slot,
+                        ArrayRef<LLVM::GEPArg>{0, static_cast<int32_t>(i)});
+                    loads.push_back(
+                        rewriter.create<LLVM::LoadOp>(loc, ft, gep));
+                }
+                rewriter.replaceOp(op, loads);
+                return success();
+            }
             auto callOp = rewriter.create<func::CallOp>(loc, *callee, resultTypes, realOperands);
             rewriter.replaceOp(op, callOp.getResults());
         } else {

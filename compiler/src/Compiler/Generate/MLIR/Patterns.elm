@@ -1,4 +1,4 @@
-module Compiler.Generate.MLIR.Patterns exposing (generateMonoPath, generateMonoDtPath, generateMonoTest, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag, resolvePathResultType)
+module Compiler.Generate.MLIR.Patterns exposing (generateMonoPath, generateMonoDtPath, generateMonoTest, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag, resolvePathResultType, materializeSplitParam)
 
 {-| Pattern matching and path generation for MLIR code generation.
 
@@ -96,6 +96,59 @@ dtPathToMonoPath monoDt =
 -}
 generateMonoTest : Ctx.Context -> ( Mono.MonoDtPath, DT.Test ) -> ( List MlirOp, String, Ctx.Context )
 generateMonoTest ctx ( dtPath, test ) =
+    case splitTestFastPath ctx dtPath test of
+        Just result ->
+            result
+
+        Nothing ->
+            generateMonoTestGeneral ctx ( dtPath, test )
+
+
+{-| U-T1.3.3L: shape tests on a BARE scalar-split loop-param root are
+statically decided — the split shape IS the layout truth (IsTuple is
+always true; a single-ctor tag either matches or it doesn't). Without
+this, the general path would materialize the whole value each iteration
+just to read a known tag.
+-}
+splitTestFastPath : Ctx.Context -> Mono.MonoDtPath -> DT.Test -> Maybe ( List MlirOp, String, Ctx.Context )
+splitTestFastPath ctx dtPath test =
+    case dtPath of
+        Mono.DtRoot rootName _ ->
+            case Dict.get rootName ctx.splitAggParams of
+                Just info ->
+                    case ( test, info.split ) of
+                        ( Test.IsTuple, _ ) ->
+                            let
+                                ( resVar, ctx1 ) =
+                                    Ctx.freshVar ctx
+
+                                ( ctx2, constOp ) =
+                                    Ops.arithConstantBool ctx1 resVar True
+                            in
+                            Just ( [ constOp ], resVar, ctx2 )
+
+                        ( Test.IsCtor _ _ _ _ _, Ctx.SplitCtor clayout ) ->
+                            let
+                                ( resVar, ctx1 ) =
+                                    Ctx.freshVar ctx
+
+                                ( ctx2, constOp ) =
+                                    Ops.arithConstantBool ctx1 resVar (clayout.tag == testToTagInt test)
+                            in
+                            Just ( [ constOp ], resVar, ctx2 )
+
+                        _ ->
+                            Nothing
+
+                Nothing ->
+                    Nothing
+
+        _ ->
+            Nothing
+
+
+generateMonoTestGeneral : Ctx.Context -> ( Mono.MonoDtPath, DT.Test ) -> ( List MlirOp, String, Ctx.Context )
+generateMonoTestGeneral ctx ( dtPath, test ) =
     let
         targetType =
             case test of
@@ -291,6 +344,101 @@ generateMonoTest ctx ( dtPath, test ) =
             ( pathOps ++ [ constOp ], resVar, ctx3 )
 
 
+{-| U-T1.3.3L: materialize a scalar-split loop param back into a heap value
+(construct from the current slot vars). Used when a split param is consumed
+as a WHOLE value (bare var use / bare-root path). Elm values are immutable
+and equality is structural, so reconstruction is semantically transparent.
+-}
+materializeSplitParam : Ctx.Context -> Ctx.SplitParamInfo -> ( List MlirOp, String, Ctx.Context )
+materializeSplitParam ctx info =
+    let
+        ( resultVar, ctx1 ) =
+            Ctx.freshVar ctx
+
+        hints =
+            Ctx.liveEcoValueVars ctx1
+    in
+    case info.split of
+        Ctx.SplitTuple layout ->
+            case info.slots of
+                [ a, b ] ->
+                    let
+                        ( ctx2, op ) =
+                            Ops.ecoConstructTuple2 ctx1 hints resultVar a b layout.unboxedBitmap
+                    in
+                    ( [ op ], resultVar, ctx2 )
+
+                [ a, b, c ] ->
+                    let
+                        ( ctx2, op ) =
+                            Ops.ecoConstructTuple3 ctx1 hints resultVar a b c layout.unboxedBitmap
+                    in
+                    ( [ op ], resultVar, ctx2 )
+
+                _ ->
+                    Utils.Crash.crash "materializeSplitParam: tuple slot arity not 2/3"
+
+        Ctx.SplitCtor layout ->
+            let
+                ( ctx2, op ) =
+                    Ops.ecoConstructCustom ctx1 hints resultVar layout.tag (List.length info.slots) layout.unboxedBitmap info.slots (Just layout.name)
+            in
+            ( [ op ], resultVar, ctx2 )
+
+
+{-| U-T1.3.3L: coerce a slot var (already in its STORED form — unboxed
+primitive or boxed `!eco.value` per layout) to the path consumer's target
+type. Mirrors the box/unbox tails of the heap projection arms.
+-}
+coerceSlotToTarget : Ctx.Context -> String -> MlirType -> MlirType -> ( List MlirOp, String, Ctx.Context )
+coerceSlotToTarget ctx slotVar storedType targetType =
+    if storedType == targetType then
+        ( [], slotVar, ctx )
+
+    else if Types.isEcoValueType targetType && Types.isUnboxable storedType then
+        let
+            ( boxedVar, ctx1 ) =
+                Ctx.freshVar ctx
+
+            ( ctx2, boxOp ) =
+                boxPrimitive ctx1 boxedVar slotVar storedType
+        in
+        ( [ boxOp ], boxedVar, ctx2 )
+
+    else if Types.isEcoValueType storedType && (targetType == I1 || Types.isUnboxable targetType) then
+        Intrinsics.unboxToType ctx slotVar targetType
+
+    else
+        ( [], slotVar, ctx )
+
+
+{-| U-T1.3.3L: is this sub-path a DIRECT root naming a scalar-split loop
+param? (Deeper split roots are handled by the recursive descent — the
+inner navigation materializes.)
+-}
+splitRootOf : Ctx.Context -> Mono.MonoPath -> Maybe Ctx.SplitParamInfo
+splitRootOf ctx sub =
+    case sub of
+        Mono.MonoRoot rootName _ ->
+            Dict.get rootName ctx.splitAggParams
+
+        _ ->
+            Nothing
+
+
+{-| U-T1.3.3L: slot read for a split param — the "projection" is just the
+k-th slot var (no op), then target coercion.
+-}
+splitSlotRead : Ctx.Context -> Ctx.SplitParamInfo -> Int -> MlirType -> ( List MlirOp, String, Ctx.Context )
+splitSlotRead ctx info index targetType =
+    case List.head (List.drop index info.slots) of
+        Just ( slotVar, storedType ) ->
+            coerceSlotToTarget ctx slotVar storedType targetType
+
+        Nothing ->
+            Utils.Crash.crash "splitSlotRead: slot index out of range"
+
+
 {-| Internal helper for generateMonoPath that accumulates ops in reverse order
 to avoid quadratic ++ [ behavior.
 -}
@@ -298,6 +446,59 @@ generateMonoPathHelper : Ctx.Context -> Mono.MonoPath -> MlirType -> List MlirOp
 generateMonoPathHelper ctx path targetType revAcc =
     case path of
         Mono.MonoRoot name _ ->
+            case Dict.get name ctx.splitAggParams of
+                Just splitInfo ->
+                    -- U-T1.3.3L: whole-value read of a scalar-split loop
+                    -- param — materialize from the current slots, then the
+                    -- ordinary boxed-value coercion applies.
+                    let
+                        ( matOps, matVar, ctxM ) =
+                            materializeSplitParam ctx splitInfo
+
+                        ( coOps, finalVar, ctxC ) =
+                            coerceSlotToTarget ctxM matVar Types.ecoValue targetType
+                    in
+                    ( List.foldl (::) revAcc (matOps ++ coOps), finalVar, ctxC )
+
+                Nothing ->
+                    generateMonoRootOnHeap ctx name targetType revAcc
+
+
+        Mono.MonoIndex index containerKind resultType subPath ->
+            case splitRootOf ctx subPath of
+                Just splitInfo ->
+                    -- U-T1.3.3L: projection of a scalar-split loop param —
+                    -- the k-th slot var directly (no op), plus coercion.
+                    let
+                        ( slotOps, slotFinalVar, ctxSlot ) =
+                            splitSlotRead ctx splitInfo index targetType
+                    in
+                    ( List.foldl (::) revAcc slotOps, slotFinalVar, ctxSlot )
+
+                Nothing ->
+                    generateMonoIndexOnHeap ctx targetType revAcc index containerKind resultType subPath
+
+        Mono.MonoUnbox _ subPath ->
+            case splitRootOf ctx subPath of
+                Just splitInfo ->
+                    let
+                        ( slotOps, slotFinalVar, ctxSlot ) =
+                            splitSlotRead ctx splitInfo 0 targetType
+                    in
+                    ( List.foldl (::) revAcc slotOps, slotFinalVar, ctxSlot )
+
+                Nothing ->
+                    generateMonoUnboxOnHeap ctx targetType revAcc subPath
+
+        Mono.MonoField fieldName fieldResultType subPath ->
+            -- Record fields cannot sit directly above a split root (split
+            -- shapes are tuples/customs); a DEEPER split root is handled by
+            -- the recursive descent (the sub-navigation materializes).
+            generateMonoFieldOnHeap ctx targetType revAcc fieldName fieldResultType subPath
+
+
+generateMonoRootOnHeap : Ctx.Context -> Name.Name -> MlirType -> List MlirOp -> ( List MlirOp, String, Ctx.Context )
+generateMonoRootOnHeap ctx name targetType revAcc =
             let
                 ( varName, actualType ) =
                     Ctx.lookupVar ctx name
@@ -317,11 +518,55 @@ generateMonoPathHelper ctx path targetType revAcc =
             else
                 ( revAcc, varName, ctx )
 
-        Mono.MonoIndex index containerKind resultType subPath ->
+generateMonoIndexOnHeap : Ctx.Context -> MlirType -> List MlirOp -> Int -> Mono.ContainerKind -> Mono.MonoType -> Mono.MonoPath -> ( List MlirOp, String, Ctx.Context )
+generateMonoIndexOnHeap ctx targetType revAcc index containerKind resultType subPath =
             let
-                -- Navigate to the container object (always !eco.value)
+                -- Navigate to the container object (always !eco.value —
+                -- except a U-T1.3.1 promoted tuple root, which stays in its
+                -- value-aggregate form and is projected via the dual-form
+                -- lowering; `aggOperand` carries its type for the op attr).
                 ( revAcc1, subVar, ctx1 ) =
                     generateMonoPathHelper ctx subPath Types.ecoValue revAcc
+
+                aggOperand =
+                    case subPath of
+                        Mono.MonoRoot rootName _ ->
+                            let
+                                ( _, rootTy ) =
+                                    Ctx.lookupVar ctx rootName
+                            in
+                            if Types.isAggValueType rootTy then
+                                Just rootTy
+
+                            else
+                                Nothing
+
+                        _ ->
+                            Nothing
+
+                projCustom ctxP rv idx rt =
+                    case aggOperand of
+                        Just aggTy ->
+                            Ops.ecoProjectCustomAgg ctxP rv idx rt ( subVar, aggTy )
+
+                        Nothing ->
+                            Ops.ecoProjectCustom ctxP rv idx rt subVar
+
+                projTuple2 ctxP rv idx rt =
+                    case aggOperand of
+                        Just aggTy ->
+                            Ops.ecoProjectTuple2Agg ctxP rv idx rt ( subVar, aggTy )
+
+                        Nothing ->
+                            Ops.ecoProjectTuple2 ctxP rv idx rt subVar
+
+                projTuple3 ctxP rv idx rt =
+                    case aggOperand of
+                        Just aggTy ->
+                            Ops.ecoProjectTuple3Agg ctxP rv idx rt ( subVar, aggTy )
+
+                        Nothing ->
+                            Ops.ecoProjectTuple3 ctxP rv idx rt subVar
 
                 ( resultVar, ctx2 ) =
                     Ctx.freshVar ctx1
@@ -362,7 +607,7 @@ generateMonoPathHelper ctx path targetType revAcc =
                                         Ctx.freshVar ctx2
 
                                     ( ctx4, projectOp ) =
-                                        Ops.ecoProjectTuple2 ctx3_ primitiveVar index fieldAbiType subVar
+                                        projTuple2 ctx3_ primitiveVar index fieldAbiType
                                 in
                                 if Types.isEcoValueType targetType then
                                     let
@@ -384,7 +629,7 @@ generateMonoPathHelper ctx path targetType revAcc =
                                         Ctx.freshVar ctx2
 
                                     ( ctx4, projectOp ) =
-                                        Ops.ecoProjectTuple2 ctx3_ valVar index Types.ecoValue subVar
+                                        projTuple2 ctx3_ valVar index Types.ecoValue
                                 in
                                 if targetType == I1 then
                                     let
@@ -424,7 +669,7 @@ generateMonoPathHelper ctx path targetType revAcc =
                                         Ctx.freshVar ctx2
 
                                     ( ctx4, projectOp ) =
-                                        Ops.ecoProjectTuple3 ctx3_ primitiveVar index fieldAbiType subVar
+                                        projTuple3 ctx3_ primitiveVar index fieldAbiType
                                 in
                                 if Types.isEcoValueType targetType then
                                     let
@@ -446,7 +691,7 @@ generateMonoPathHelper ctx path targetType revAcc =
                                         Ctx.freshVar ctx2
 
                                     ( ctx4, projectOp ) =
-                                        Ops.ecoProjectTuple3 ctx3_ valVar index Types.ecoValue subVar
+                                        projTuple3 ctx3_ valVar index Types.ecoValue
                                 in
                                 if targetType == I1 then
                                     let
@@ -489,7 +734,7 @@ generateMonoPathHelper ctx path targetType revAcc =
                                                 Ctx.freshVar ctx2
 
                                             ( ctx4, projectOp ) =
-                                                Ops.ecoProjectCustom ctx3_ primitiveVar index fieldMlirType subVar
+                                                projCustom ctx3_ primitiveVar index fieldMlirType
                                         in
                                         if Types.isEcoValueType targetType then
                                             -- Caller wants eco.value, need to box the primitive
@@ -525,7 +770,7 @@ generateMonoPathHelper ctx path targetType revAcc =
                                                 Ctx.freshVar ctx2
 
                                             ( ctxP, projectOp ) =
-                                                Ops.ecoProjectCustom ctxV valVar index Types.ecoValue subVar
+                                                projCustom ctxV valVar index Types.ecoValue
 
                                             ( unboxOps, unboxedVar, ctxU ) =
                                                 Intrinsics.unboxToType ctxP valVar I1
@@ -535,7 +780,7 @@ generateMonoPathHelper ctx path targetType revAcc =
                                     else
                                         let
                                             ( ctx_, op ) =
-                                                Ops.ecoProjectCustom ctx2 resultVar index targetType subVar
+                                                projCustom ctx2 resultVar index targetType
                                         in
                                         ( [ op ], resultVar, ctx_ )
 
@@ -556,7 +801,7 @@ generateMonoPathHelper ctx path targetType revAcc =
                                                 Ctx.freshVar ctx2
 
                                             ( ctx4, projectOp ) =
-                                                Ops.ecoProjectCustom ctx3_ primitiveVar index fieldMlirType subVar
+                                                projCustom ctx3_ primitiveVar index fieldMlirType
                                         in
                                         if Types.isEcoValueType targetType then
                                             let
@@ -585,7 +830,7 @@ generateMonoPathHelper ctx path targetType revAcc =
                                                 Ctx.freshVar ctx2
 
                                             ( ctxP, projectOp ) =
-                                                Ops.ecoProjectCustom ctxV valVar index Types.ecoValue subVar
+                                                projCustom ctxV valVar index Types.ecoValue
 
                                             ( unboxOps, unboxedVar, ctxU ) =
                                                 Intrinsics.unboxToType ctxP valVar I1
@@ -595,7 +840,7 @@ generateMonoPathHelper ctx path targetType revAcc =
                                     else
                                         let
                                             ( ctx_, op ) =
-                                                Ops.ecoProjectCustom ctx2 resultVar index targetType subVar
+                                                projCustom ctx2 resultVar index targetType
                                         in
                                         ( [ op ], resultVar, ctx_ )
             in
@@ -604,7 +849,8 @@ generateMonoPathHelper ctx path targetType revAcc =
             , ctx3
             )
 
-        Mono.MonoField fieldName resultType subPath ->
+generateMonoFieldOnHeap : Ctx.Context -> MlirType -> List MlirOp -> Name.Name -> Mono.MonoType -> Mono.MonoPath -> ( List MlirOp, String, Ctx.Context )
+generateMonoFieldOnHeap ctx targetType revAcc fieldName resultType subPath =
             let
                 -- Navigate to the container object (always !eco.value)
                 ( revAcc1, subVar, ctx1 ) =
@@ -640,7 +886,8 @@ generateMonoPathHelper ctx path targetType revAcc =
             , ctx3
             )
 
-        Mono.MonoUnbox _ subPath ->
+generateMonoUnboxOnHeap : Ctx.Context -> MlirType -> List MlirOp -> Mono.MonoPath -> ( List MlirOp, String, Ctx.Context )
+generateMonoUnboxOnHeap ctx targetType revAcc subPath =
             -- MonoUnbox represents unwrapping a single-constructor type (Can.Unbox).
             -- For types like `Wrapper = Wrap Int`, MonoUnbox extracts the inner value.
             -- The resultType is the type of the inner value (the single field's type).
@@ -654,9 +901,35 @@ generateMonoPathHelper ctx path targetType revAcc =
                 containerType =
                     Mono.getMonoPathType subPath
 
-                -- Navigate to the container object (always !eco.value)
+                -- Navigate to the container object (always !eco.value —
+                -- except a U-T1.3.2 promoted custom root, projected via the
+                -- dual-form lowering; see the MonoIndex arm).
                 ( revAcc1, subVar, ctx1 ) =
                     generateMonoPathHelper ctx subPath Types.ecoValue revAcc
+
+                unboxAggOperand =
+                    case subPath of
+                        Mono.MonoRoot rootName _ ->
+                            let
+                                ( _, rootTy ) =
+                                    Ctx.lookupVar ctx rootName
+                            in
+                            if Types.isAggCustomType rootTy then
+                                Just rootTy
+
+                            else
+                                Nothing
+
+                        _ ->
+                            Nothing
+
+                projCustomUnbox ctxP rv rt =
+                    case unboxAggOperand of
+                        Just aggTy ->
+                            Ops.ecoProjectCustomAgg ctxP rv 0 rt ( subVar, aggTy )
+
+                        Nothing ->
+                            Ops.ecoProjectCustom ctxP rv 0 rt subVar
 
                 -- Look up the shape for this unbox type
                 typeKey =
@@ -685,7 +958,7 @@ generateMonoPathHelper ctx path targetType revAcc =
                                 -- Field is stored unboxed (as primitive)
                                 let
                                     ( ctx3, projectOp ) =
-                                        Ops.ecoProjectCustom ctx2 resultVar 0 fieldMlirType subVar
+                                        projCustomUnbox ctx2 resultVar fieldMlirType
                                 in
                                 if Types.isEcoValueType targetType then
                                     -- Caller wants eco.value, need to box
@@ -706,7 +979,7 @@ generateMonoPathHelper ctx path targetType revAcc =
                                 -- Field is stored boxed (as eco.value)
                                 let
                                     ( ctx3, projectOp ) =
-                                        Ops.ecoProjectCustom ctx2 resultVar 0 Types.ecoValue subVar
+                                        projCustomUnbox ctx2 resultVar Types.ecoValue
                                 in
                                 if targetType == I1 then
                                     -- Bool is stored as eco.value in custom types (never unboxed).

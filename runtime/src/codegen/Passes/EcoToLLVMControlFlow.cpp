@@ -38,6 +38,36 @@ struct ReturnOpLowering : public OpConversionPattern<ReturnOp> {
     LogicalResult
     matchAndRewrite(ReturnOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
+        // U-T1.3.3 sret worker return (CGEN_067): a MULTI-operand eco.return
+        // belongs to an sret worker — store each field into the caller's slot
+        // (the function's leading !llvm.ptr argument, prepended by
+        // SretFuncOpLowering) and return void. Emitting the stores AT the
+        // return point makes the store-before-return discipline STRUCTURAL:
+        // no statepoint or side effect can intervene between the first store
+        // and the terminator, so the stored ptr addrspace(1) fields are the
+        // callee's post-relocation forms and the slot (host stack memory,
+        // invisible to the GC) never holds a stale pointer across a
+        // collection (REP_AGG_001 / plans/opt-tier1-aggregate-promotion.md).
+        if (adaptor.getResults().size() > 1) {
+            auto parent = op->getParentOfType<LLVM::LLVMFuncOp>();
+            if (!parent)
+                return op.emitError("multi-operand eco.return outside llvm.func");
+            auto loc = op.getLoc();
+            auto *ctx = rewriter.getContext();
+            Value slot = parent.getArgument(0);
+            SmallVector<Type> fieldTys(adaptor.getResults().getTypes().begin(),
+                                       adaptor.getResults().getTypes().end());
+            auto structTy = LLVM::LLVMStructType::getLiteral(ctx, fieldTys);
+            auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+            for (auto [i, v] : llvm::enumerate(adaptor.getResults())) {
+                Value gep = rewriter.create<LLVM::GEPOp>(
+                    loc, ptrTy, structTy, slot,
+                    ArrayRef<LLVM::GEPArg>{0, static_cast<int32_t>(i)});
+                rewriter.create<LLVM::StoreOp>(loc, v, gep);
+            }
+            rewriter.replaceOpWithNewOp<func::ReturnOp>(op);
+            return success();
+        }
         rewriter.replaceOpWithNewOp<func::ReturnOp>(op, adaptor.getResults());
         return success();
     }

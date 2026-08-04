@@ -26,6 +26,7 @@ import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.TailRec as TailRec
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.Elm.Package as Pkg
+import Utils.Crash exposing (crash)
 import Compiler.Monomorphize.Registry as Registry
 import Compiler.Reporting.Annotation as A
 import Dict
@@ -434,7 +435,7 @@ generateNode ctx specId node =
         -- their own SSA scope. The dirty context carries stale var entries
         -- from the node's body compilation that must not leak to the next node.
         cleanCtx =
-            { dirtyCtx | varMappings = Dict.empty, definedSsaVars = Set.empty }
+            { dirtyCtx | varMappings = Dict.empty, definedSsaVars = Set.empty, sretTailLayout = Nothing, splitAggParams = Dict.empty }
     in
     ( finalOps, cleanCtx )
 
@@ -443,14 +444,10 @@ generateNodeInner : Ctx.Context -> String -> Mono.SpecId -> Mono.MonoNode -> ( L
 generateNodeInner ctx funcName specId node =
     case node of
         Mono.MonoDefine expr monoType ->
-            generateDefine ctx funcName True expr monoType
+            generateDefine ctx funcName True expr monoType (Dict.get specId ctx.sretPromoted) (Dict.get specId ctx.psplitPromoted)
 
         Mono.MonoTailFunc params expr monoType ->
-            let
-                ( op, ctx1 ) =
-                    generateTailFunc ctx funcName params expr monoType
-            in
-            ( [ op ], ctx1 )
+            generateTailFunc ctx funcName params expr monoType (Dict.get specId ctx.sretPromoted)
 
         Mono.MonoCtor ctorShape monoType ->
             let
@@ -528,10 +525,10 @@ generateNodeInner ctx funcName specId node =
         -- their lifecycle); port DECODER specs are plain MonoDefines above
         -- and memoize normally.
         Mono.MonoPortIncoming expr monoType ->
-            generateDefine ctx funcName False expr monoType
+            generateDefine ctx funcName False expr monoType Nothing Nothing
 
         Mono.MonoPortOutgoing expr monoType ->
-            generateDefine ctx funcName False expr monoType
+            generateDefine ctx funcName False expr monoType Nothing Nothing
 
 
 specIdToFuncName : Mono.SpecializationRegistry -> Mono.SpecId -> String
@@ -626,11 +623,11 @@ MVar E2E suite).
 -}
 
 
-generateDefine : Ctx.Context -> String -> Bool -> Mono.MonoExpr -> Mono.MonoType -> ( List MlirOp, Ctx.Context )
-generateDefine ctx funcName cafEligible expr monoType =
+generateDefine : Ctx.Context -> String -> Bool -> Mono.MonoExpr -> Mono.MonoType -> Maybe Ctx.SretInfo -> Maybe Ctx.PsplitInfo -> ( List MlirOp, Ctx.Context )
+generateDefine ctx funcName cafEligible expr monoType maybeSret maybePsplit =
     case expr of
         Mono.MonoClosure closureInfo body _ ->
-            generateClosureFunc ctx funcName closureInfo body monoType
+            generateClosureFunc ctx funcName closureInfo body monoType maybeSret maybePsplit
 
         _ ->
             -- Value (thunk) - wrap in nullary function
@@ -694,25 +691,26 @@ For closures with captures: generates both fast clone (captures + params)
 and generic clone (Closure\* + params).
 For zero-capture closures: generates just the original function.
 -}
-generateClosureFunc : Ctx.Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> ( List MlirOp, Ctx.Context )
-generateClosureFunc ctx funcName closureInfo body monoType =
+generateClosureFunc : Ctx.Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> Maybe Ctx.SretInfo -> Maybe Ctx.PsplitInfo -> ( List MlirOp, Ctx.Context )
+generateClosureFunc ctx funcName closureInfo body monoType maybeSret maybePsplit =
     let
         hasCaptures =
             not (List.isEmpty closureInfo.captures)
     in
     if hasCaptures then
-        -- Two-clone model: fast clone + generic clone
+        -- Two-clone model: fast clone + generic clone (sret selection
+        -- excludes captured closures, so maybeSret is Nothing here)
         generateClosureFuncWithClones ctx funcName closureInfo body monoType
 
     else
         -- Zero captures: single function (original lambda)
-        generateClosureFuncSingle ctx funcName closureInfo body monoType
+        generateClosureFuncSingle ctx funcName closureInfo body monoType maybeSret maybePsplit
 
 
 {-| Generate a single function for zero-capture closures.
 -}
-generateClosureFuncSingle : Ctx.Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> ( List MlirOp, Ctx.Context )
-generateClosureFuncSingle ctx funcName closureInfo body monoType =
+generateClosureFuncSingle : Ctx.Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> Maybe Ctx.SretInfo -> Maybe Ctx.PsplitInfo -> ( List MlirOp, Ctx.Context )
+generateClosureFuncSingle ctx funcName closureInfo body monoType maybeSret maybePsplit =
     let
         argPairs : List ( String, MlirType )
         argPairs =
@@ -790,7 +788,336 @@ generateClosureFuncSingle ctx funcName closureInfo body monoType =
                 extractedReturnType
                 funcOp
     in
-    ( [ funcOpWithLogical ], ctx2 )
+    case ( maybeSret, maybePsplit ) of
+        ( Nothing, Just psplitInfo ) ->
+            -- U-T1.3.5: emit the $psplit WORKER (scalar params) and the
+            -- projecting shim; the funcOp computed above is discarded.
+            generatePsplitWorkerAndShim ctx funcName closureInfo body extractedReturnType psplitInfo
+
+        ( Nothing, Nothing ) ->
+            ( [ funcOpWithLogical ], ctx2 )
+
+        ( Just sretInfo, _ ) ->
+            -- U-T1.3.3: emit the $sret WORKER (real body, multi-result ABI)
+            -- and REPLACE the original's body with a thin re-boxing shim so
+            -- non-migrated callers and function-as-value uses keep the boxed
+            -- ABI. The funcOp computed above is DISCARDED (its full-body ops
+            -- were computed; only the worker/shim pair is emitted).
+            generateSretWorkerAndShim ctx funcName closureInfo body extractedReturnType sretInfo
+
+
+{-| U-T1.3.3 result promotion: the `$sret` worker compiles the REAL body
+with `sretTailLayout` set (result-spine tuple literals emit the SSA
+make-form; result-spine cases declare aggregate results), coerces the
+final value to the aggregate (from_heap for boxed fallback shapes),
+projects each slot, and multi-returns. The C++ SretFuncOpLowering gives
+any multi-result func.func the (slot ptr, args...) -> void ABI. The shim
+re-boxes: multi-call the worker, construct the tuple, return.
+-}
+generateSretWorkerAndShim : Ctx.Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> Ctx.SretInfo -> ( List MlirOp, Ctx.Context )
+generateSretWorkerAndShim ctx funcName closureInfo body extractedReturnType sretInfo =
+    let
+        argPairs : List ( String, MlirType )
+        argPairs =
+            List.map
+                (\( name, ty ) -> ( "%" ++ name, Types.monoTypeToAbi ty ))
+                closureInfo.params
+
+        freshVarMappings : Dict.Dict String Ctx.VarInfo
+        freshVarMappings =
+            List.foldl
+                (\( name, ty ) acc ->
+                    Dict.insert name
+                        { ssaVar = "%" ++ name
+                        , mlirType = Types.monoTypeToAbi ty
+                        }
+                        acc
+                )
+                Dict.empty
+                closureInfo.params
+
+        paramSsaVars =
+            List.map (\( name, _ ) -> "%" ++ name) closureInfo.params
+
+        aggTy =
+            Ops.aggTupleType sretInfo.slotTypes
+
+        -- ---- WORKER ----
+        ctxWorker : Ctx.Context
+        ctxWorker =
+            { ctx
+                | nextVar = List.length closureInfo.params
+                , varMappings = freshVarMappings
+                , sretTailLayout = Just sretInfo.layout
+            }
+                |> Ctx.resetDefinedSsaVars paramSsaVars
+
+        workerRes : Expr.ExprResult
+        workerRes =
+            Expr.generateExpr ctxWorker body
+
+        ( wCoerceOps, wAggVar, wCtx1 ) =
+            if workerRes.isTerminated then
+                crash ("generateSretWorkerAndShim: terminated body in sret worker " ++ funcName)
+
+            else
+                Expr.coerceResultToType workerRes.ctx workerRes.resultVar workerRes.resultType aggTy
+
+        ( wProjOpsRev, wSlotPairsRev, wCtx2 ) =
+            List.foldl
+                (\( idx, slotTy ) ( opsAcc, pairsAcc, ctxAcc ) ->
+                    let
+                        ( pv, ctxF ) =
+                            Ctx.freshVar ctxAcc
+
+                        ( ctxP, projOp ) =
+                            if sretInfo.layout.arity == 2 then
+                                Ops.ecoProjectTuple2Agg ctxF pv idx slotTy ( wAggVar, aggTy )
+
+                            else
+                                Ops.ecoProjectTuple3Agg ctxF pv idx slotTy ( wAggVar, aggTy )
+                    in
+                    ( projOp :: opsAcc, ( pv, slotTy ) :: pairsAcc, ctxP )
+                )
+                ( [], [], wCtx1 )
+                (List.indexedMap Tuple.pair sretInfo.slotTypes)
+
+        ( wCtx3, wReturnOp ) =
+            Ops.ecoReturnMulti wCtx2 (List.reverse wSlotPairsRev)
+
+        workerRegion =
+            Ops.mkRegion argPairs (workerRes.ops ++ wCoerceOps ++ List.reverse wProjOpsRev) wReturnOp
+
+        ( wCtx4, workerOp ) =
+            Ops.funcFuncMulti wCtx3 (funcName ++ "$sret") argPairs sretInfo.slotTypes workerRegion
+
+        -- ---- SHIM ----
+        ctxShim : Ctx.Context
+        ctxShim =
+            { wCtx4
+                | nextVar = List.length closureInfo.params
+                , varMappings = freshVarMappings
+                , sretTailLayout = Nothing
+            }
+                |> Ctx.resetDefinedSsaVars paramSsaVars
+
+        ( sResultPairsRev, ctxS1 ) =
+            List.foldl
+                (\slotTy ( acc, c ) ->
+                    let
+                        ( v, c1 ) =
+                            Ctx.freshVar c
+                    in
+                    ( ( v, slotTy ) :: acc, c1 )
+                )
+                ( [], ctxShim )
+                sretInfo.slotTypes
+
+        sResultPairs =
+            List.reverse sResultPairsRev
+
+        ( ctxS2, sCallOp ) =
+            Ops.ecoCallNamedMulti ctxS1 [] sResultPairs (funcName ++ "$sret") argPairs
+
+        ( sBoxVar, ctxS3 ) =
+            Ctx.freshVar ctxS2
+
+        ( ctxS4, sConstructOp ) =
+            case sResultPairs of
+                [ a, b ] ->
+                    Ops.ecoConstructTuple2 ctxS3 [] sBoxVar a b sretInfo.layout.unboxedBitmap
+
+                [ a, b, c ] ->
+                    Ops.ecoConstructTuple3 ctxS3 [] sBoxVar a b c sretInfo.layout.unboxedBitmap
+
+                _ ->
+                    crash "generateSretWorkerAndShim: slot arity not 2/3"
+
+        ( _, sReturnOp ) =
+            Ops.ecoReturn ctxS4 sBoxVar Types.ecoValue
+
+        shimRegion =
+            Ops.mkRegion argPairs [ sCallOp, sConstructOp ] sReturnOp
+
+        ( ctxS5, shimOp ) =
+            Ops.funcFunc ctxS4 funcName argPairs Types.ecoValue shimRegion
+
+        argMonoTypes2 =
+            List.map Tuple.second closureInfo.params
+
+        shimWithLogical =
+            LogicalTypes.addLogicalTypesAttr
+                ctxS5.ecoConfig.logicalTypes.customMaxFields
+                ctxS5.typeRegistry.ctorShapes
+                argMonoTypes2
+                extractedReturnType
+                shimOp
+
+        ctxOut =
+            { ctxS5 | sretTailLayout = Nothing }
+    in
+    ( [ workerOp, shimWithLogical ], ctxOut )
+
+
+{-| U-T1.3.5: the `$psplit` worker takes each promoted param's FIELDS as
+separate scalar params (unboxed field ⇒ ABI primitive, boxed ⇒ its own
+`!eco.value`) — no aggregate type ever appears on the boundary, so the
+existing multi-param lowering handles everything (zero C++). The body
+binds each promoted param as SLOTS via `ctx.splitAggParams` (the
+T1.3.3L consumer machinery; admissibility guarantees every use is a
+projection, so materialization is impossible) with the varMapping
+REMOVED (bypass ⇒ loud `lookupVar` crash). The shim keeps the original
+boxed ABI: heap-project each promoted param's fields and call the
+worker.
+-}
+generatePsplitWorkerAndShim : Ctx.Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> Ctx.PsplitInfo -> ( List MlirOp, Ctx.Context )
+generatePsplitWorkerAndShim ctx funcName closureInfo body extractedReturnType psplitInfo =
+    let
+        returnType =
+            Types.monoTypeToAbi extractedReturnType
+
+        paramsWithPlans =
+            List.map2 Tuple.pair closureInfo.params psplitInfo.paramPlans
+
+        -- ---- WORKER signature + bindings ----
+        workerPieces =
+            List.map
+                (\( ( name, ty ), mPlan ) ->
+                    case mPlan of
+                        Just plan ->
+                            let
+                                slotPairs =
+                                    List.indexedMap
+                                        (\i slotTy -> ( "%" ++ name ++ "_s" ++ String.fromInt i, slotTy ))
+                                        plan.slotTypes
+                            in
+                            { args = slotPairs
+                            , bind = \c -> { c | splitAggParams = Dict.insert name { slots = slotPairs, split = plan.spec } c.splitAggParams }
+                            }
+
+                        Nothing ->
+                            let
+                                abiTy =
+                                    Types.monoTypeToAbi ty
+                            in
+                            { args = [ ( "%" ++ name, abiTy ) ]
+                            , bind = Ctx.addVarMapping name ("%" ++ name) abiTy
+                            }
+                )
+                paramsWithPlans
+
+        workerArgPairs =
+            List.concatMap .args workerPieces
+
+        ctxWorkerBase =
+            { ctx
+                | nextVar = List.length workerArgPairs
+                , varMappings = Dict.empty
+                , splitAggParams = Dict.empty
+                , sretTailLayout = Nothing
+            }
+                |> Ctx.resetDefinedSsaVars (List.map Tuple.first workerArgPairs)
+
+        ctxWorker =
+            List.foldl (\piece c -> piece.bind c) ctxWorkerBase workerPieces
+
+        workerRes : Expr.ExprResult
+        workerRes =
+            Expr.generateExpr ctxWorker body
+
+        workerRegion =
+            if workerRes.isTerminated then
+                Ops.mkRegionTerminatedByOps workerArgPairs workerRes.ops
+
+            else
+                let
+                    ( wCoerceOps, wFinalVar, wCtx1 ) =
+                        Expr.coerceResultToType workerRes.ctx workerRes.resultVar workerRes.resultType returnType
+
+                    ( _, wReturnOp ) =
+                        Ops.ecoReturn wCtx1 wFinalVar returnType
+                in
+                Ops.mkRegion workerArgPairs (workerRes.ops ++ wCoerceOps) wReturnOp
+
+        wResCtx =
+            workerRes.ctx
+
+        ( wCtx2, workerOp ) =
+            Ops.funcFunc { wResCtx | splitAggParams = ctx.splitAggParams } (funcName ++ "$psplit") workerArgPairs returnType workerRegion
+
+        -- ---- SHIM: original ABI; project promoted params; call worker ----
+        shimArgPairs =
+            List.map
+                (\( name, ty ) -> ( "%" ++ name, Types.monoTypeToAbi ty ))
+                closureInfo.params
+
+        ctxShim =
+            { wCtx2
+                | nextVar = List.length closureInfo.params
+                , varMappings = Dict.empty
+                , splitAggParams = Dict.empty
+                , sretTailLayout = Nothing
+            }
+                |> Ctx.resetDefinedSsaVars (List.map Tuple.first shimArgPairs)
+
+        ( sProjOpsRev, sCallArgsRev, ctxS1 ) =
+            List.foldl
+                (\( ( name, ty ), mPlan ) ( opsAcc, argsAcc, ctxAcc ) ->
+                    case mPlan of
+                        Nothing ->
+                            ( opsAcc, ( "%" ++ name, Types.monoTypeToAbi ty ) :: argsAcc, ctxAcc )
+
+                        Just plan ->
+                            List.foldl
+                                (\( idx, slotTy ) ( oa, aa, ca ) ->
+                                    let
+                                        ( pv, ca1 ) =
+                                            Ctx.freshVar ca
+
+                                        ( ca2, projOp ) =
+                                            case plan.spec of
+                                                Ctx.SplitTuple layout ->
+                                                    if layout.arity == 2 then
+                                                        Ops.ecoProjectTuple2 ca1 pv idx slotTy ("%" ++ name)
+
+                                                    else
+                                                        Ops.ecoProjectTuple3 ca1 pv idx slotTy ("%" ++ name)
+
+                                                Ctx.SplitCtor _ ->
+                                                    Ops.ecoProjectCustom ca1 pv idx slotTy ("%" ++ name)
+                                    in
+                                    ( projOp :: oa, ( pv, slotTy ) :: aa, ca2 )
+                                )
+                                ( opsAcc, argsAcc, ctxAcc )
+                                (List.indexedMap Tuple.pair plan.slotTypes)
+                )
+                ( [], [], ctxShim )
+                paramsWithPlans
+
+        ( sResultVar, ctxS2 ) =
+            Ctx.freshVar ctxS1
+
+        ( ctxS3, sCallOp ) =
+            Ops.ecoCallNamed ctxS2 [] sResultVar (funcName ++ "$psplit") (List.reverse sCallArgsRev) returnType
+
+        ( _, sReturnOp ) =
+            Ops.ecoReturn ctxS3 sResultVar returnType
+
+        shimRegion =
+            Ops.mkRegion shimArgPairs (List.reverse sProjOpsRev ++ [ sCallOp ]) sReturnOp
+
+        ( ctxS4, shimOp ) =
+            Ops.funcFunc ctxS3 funcName shimArgPairs returnType shimRegion
+
+        shimWithLogical =
+            LogicalTypes.addLogicalTypesAttr
+                ctxS4.ecoConfig.logicalTypes.customMaxFields
+                ctxS4.typeRegistry.ctorShapes
+                (List.map Tuple.second closureInfo.params)
+                extractedReturnType
+                shimOp
+    in
+    ( [ workerOp, shimWithLogical ], { ctxS4 | splitAggParams = ctx.splitAggParams } )
 
 
 {-| Generate two clones for closures with captures:
@@ -1071,8 +1398,8 @@ generateGenericCloneBodyFromSpecs ctx captureSpecs fastCloneName paramPairs retu
 -- ====== GENERATE TAIL FUNC ======
 
 
-generateTailFunc : Ctx.Context -> String -> List ( Name.Name, Mono.MonoType ) -> Mono.MonoExpr -> Mono.MonoType -> ( MlirOp, Ctx.Context )
-generateTailFunc ctx funcName params expr monoType =
+generateTailFunc : Ctx.Context -> String -> List ( Name.Name, Mono.MonoType ) -> Mono.MonoExpr -> Mono.MonoType -> Maybe Ctx.SretInfo -> ( List MlirOp, Ctx.Context )
+generateTailFunc ctx funcName params expr monoType maybeSret =
     let
         -- Function parameters use the original names (%n, %acc, ...) that
         -- the body expression expects.
@@ -1102,7 +1429,7 @@ generateTailFunc ctx funcName params expr monoType =
 
         ctxWithArgs : Ctx.Context
         ctxWithArgs =
-            { ctx | nextVar = List.length params, varMappings = freshVarMappings }
+            { ctx | nextVar = List.length params, varMappings = freshVarMappings, splitAggParams = Dict.empty }
                 |> Ctx.resetDefinedSsaVars paramSsaVarsTail
 
         -- monoType is the full curried function type (e.g., MFunction [MInt] (MFunction [MInt] MInt)).
@@ -1119,9 +1446,12 @@ generateTailFunc ctx funcName params expr monoType =
         retTy =
             Types.monoTypeToAbi actualReturnType
 
-        -- Use TailRec to compile the function body to scf.while
+        -- Use TailRec to compile the function body to scf.while.
+        -- U-T1.3.6: a promoted tail func's loop carries DECOMPOSED result
+        -- columns and terminates with a multi-operand eco.return — the
+        -- $sret worker form.
         ( bodyOps, ctx1 ) =
-            TailRec.compileTailFuncToWhile ctxWithArgs funcName funcArgPairs expr retTy
+            TailRec.compileTailFuncToWhile ctxWithArgs funcName funcArgPairs (List.map Tuple.second params) expr retTy maybeSret
 
         -- The body ops include init ops, scf.while, and eco.return
         -- We need to separate the non-terminator ops from the terminator
@@ -1161,7 +1491,74 @@ generateTailFunc ctx funcName params expr monoType =
                 actualReturnType
                 funcOp
     in
-    ( funcOpWithLogical, ctx2 )
+    case maybeSret of
+        Nothing ->
+            ( [ funcOpWithLogical ], ctx2 )
+
+        Just sretInfo ->
+            -- U-T1.3.6: the loop body above was compiled in worker form
+            -- (multi-result terminal); emit it as `name$sret` and add the
+            -- re-boxing shim under the original name. The funcOp built for
+            -- the plain path is DISCARDED (funcFuncMulti re-wraps the same
+            -- region ops with the multi-result signature).
+            let
+                ( wCtx, workerOp ) =
+                    Ops.funcFuncMulti ctx2 (funcName ++ "$sret") funcArgPairs sretInfo.slotTypes funcBodyRegion
+
+                ctxShim =
+                    { wCtx | nextVar = List.length params, varMappings = freshVarMappings, splitAggParams = Dict.empty }
+                        |> Ctx.resetDefinedSsaVars paramSsaVarsTail
+
+                ( sResultPairsRev, ctxS1 ) =
+                    List.foldl
+                        (\slotTy ( acc, c ) ->
+                            let
+                                ( v, c1 ) =
+                                    Ctx.freshVar c
+                            in
+                            ( ( v, slotTy ) :: acc, c1 )
+                        )
+                        ( [], ctxShim )
+                        sretInfo.slotTypes
+
+                sResultPairs =
+                    List.reverse sResultPairsRev
+
+                ( ctxS2, sCallOp ) =
+                    Ops.ecoCallNamedMulti ctxS1 [] sResultPairs (funcName ++ "$sret") funcArgPairs
+
+                ( sBoxVar, ctxS3 ) =
+                    Ctx.freshVar ctxS2
+
+                ( ctxS4, sConstructOp ) =
+                    case sResultPairs of
+                        [ a, b ] ->
+                            Ops.ecoConstructTuple2 ctxS3 [] sBoxVar a b sretInfo.layout.unboxedBitmap
+
+                        [ a, b, c ] ->
+                            Ops.ecoConstructTuple3 ctxS3 [] sBoxVar a b c sretInfo.layout.unboxedBitmap
+
+                        _ ->
+                            crash "generateTailFunc: sret slot arity not 2/3"
+
+                ( _, sReturnOp ) =
+                    Ops.ecoReturn ctxS4 sBoxVar Types.ecoValue
+
+                shimRegion =
+                    Ops.mkRegion funcArgPairs [ sCallOp, sConstructOp ] sReturnOp
+
+                ( ctxS5, shimOp ) =
+                    Ops.funcFunc ctxS4 funcName funcArgPairs Types.ecoValue shimRegion
+
+                shimWithLogical =
+                    LogicalTypes.addLogicalTypesAttr
+                        ctxS5.ecoConfig.logicalTypes.customMaxFields
+                        ctxS5.typeRegistry.ctorShapes
+                        argMonoTypes
+                        actualReturnType
+                        shimOp
+            in
+            ( [ workerOp, shimWithLogical ], ctxS5 )
 
 
 

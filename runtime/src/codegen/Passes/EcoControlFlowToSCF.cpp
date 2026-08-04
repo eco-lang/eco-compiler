@@ -157,6 +157,22 @@ struct StringCaseMemo : public RewriterBase::Listener {
 ///   ... scf.yield %v1 : T0
 /// } else {
 ///   ... scf.yield %v0 : T0
+/// U-T1.3.3: eco.case results may carry SSA value-aggregate types on an
+/// sret worker's result spine (tail position). The scf conversions here
+/// were never taught those types (and an scf.if region-type mismatch is
+/// the immediate failure) — such cases stay on the native eco.case
+/// lowering, whose result widening (Eco_AnyValueOrAggregate) already
+/// covers them. Tail position guarantees the merged aggregate feeds its
+/// consumer (yield chain or the worker's terminal projections) with no
+/// intervening statepoint, so no FCA is ever live across a safepoint.
+static bool hasAggregateResults(CaseOp op) {
+    for (Type t : op.getResultTypes())
+        if (isa<eco::Tuple2Type, eco::Tuple3Type, eco::RecordType,
+                eco::CustomType, eco::ConsType, eco::ClosureEnvType>(t))
+            return true;
+    return false;
+}
+
 /// }
 struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
     StringCaseMemo *stringCaseMemo;
@@ -165,6 +181,8 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
 
     LogicalResult matchAndRewrite(CaseOp op,
                                   PatternRewriter &rewriter) const override {
+        if (hasAggregateResults(op))
+            return failure();
         LLVM_DEBUG(llvm::dbgs() << "CaseToScfIfPattern: trying to match eco.case at "
                                  << op.getLoc() << "\n");
 
@@ -358,6 +376,8 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
 
     LogicalResult matchAndRewrite(CaseOp op,
                                   PatternRewriter &rewriter) const override {
+        if (hasAggregateResults(op))
+            return failure();
         auto alts = op.getAlternatives();
 
         // Only handle >2 alternatives
@@ -544,6 +564,8 @@ struct CaseToScfIfChainPattern : public OpRewritePattern<CaseOp> {
 
     LogicalResult matchAndRewrite(CaseOp op,
                                   PatternRewriter &rewriter) const override {
+        if (hasAggregateResults(op))
+            return failure();
         auto alts = op.getAlternatives();
 
         // Need >2 alternatives (2-way handled by CaseToScfIfPattern)
@@ -693,6 +715,8 @@ struct CaseStringToScfIfChainPattern : public OpRewritePattern<CaseOp> {
 
     LogicalResult matchAndRewrite(CaseOp op,
                                   PatternRewriter &rewriter) const override {
+        if (hasAggregateResults(op))
+            return failure();
         if (!isStringCase(op))
             return failure();
 
