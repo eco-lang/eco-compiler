@@ -1177,6 +1177,28 @@ from the verification config by its measured-regression decision.
 Revisit trigger: dynamic per-site heat evidence or the tier-2 work
 changing the economics.
 
+> **SUPERSEDED same day (2026-08-04, later user decision): ALL SIX
+> flags are DEFAULT-ON** (`Compiler/Eco/Config.elm default`), including
+> `srtf` with its measured ~+4% self-compile wall regression and
+> `sretf` (measured neutral) — explicitly accepted. Each flag's env var
+> `=0` disables individually; explicitly-disabled configs hash exactly
+> like the historical default-off caches (tokens appear only when
+> enabled). Verification at the flip, all under a CLEAN env (defaults
+> doing the work, no ECO_* set): Gate A JIT E2E **1619/1619** (corpus
+> touched + fully recompiled, 0 cached); `elm-tests` **13,047 pass**
+> with only the 12 pre-existing typechecker-workstream failures
+> (golden fingerprints + TYPE_007/groundedness — disjoint); Stage 4b
+> JS fixed point byte-identical; Gate B AOT **847/849** (the 2 = the
+> known standalone-harness flags/echo gap, fails identically flag-off);
+> Stage 8c native fixed point byte-identical; Stage 9 unified `eco` +
+> 9b `eco → eco-2` self-compile OK. Default-built `eco-compiler.mlir`
+> carries **343 `$sret` + 35 `$psplit`** worker symbols — identical to
+> the all-six env-on reference (the four-flag ship config carries 269
+> `$sret`; the delta is the srtf tail-func workers). One test updated:
+> `ProjectionContainerType` checker widened to accept the dual-form
+> aggregate containers (`!eco.tuple2/3<...>`, `!eco.custom<...>`) that
+> promotion legitimately emits — primitives still violate.
+
 **Follow-on order (2026-08-04, post-Runs-J/K):** `7 → 8 → 9` in
 expected-value order from the borrow-facts exploration — T1.3.7
 (psplit rejection census → self-fixpoint, cheapest, census-gated),

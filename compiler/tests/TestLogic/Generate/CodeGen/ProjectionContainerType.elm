@@ -3,8 +3,10 @@ module TestLogic.Generate.CodeGen.ProjectionContainerType exposing (expectProjec
 {-| Test logic for CGEN\_0E1: Projection Container Type invariant.
 
 All projection operations (eco.project.record, eco.project.custom, etc.)
-must have !eco.value as their container operand type. This prevents
-segfaults from treating primitives as heap pointers.
+must have !eco.value — or, for the dual-form ops under the U-T1.3
+value-aggregate promotions, the op's matching `!eco.tuple2/3<...>` /
+`!eco.custom<...>` aggregate — as their container operand type. This
+prevents segfaults from treating primitives as heap pointers.
 
 The dangerous pattern is: project -> eco.unbox -> project
 where eco.unbox produces a primitive that is incorrectly used as a container.
@@ -96,7 +98,7 @@ checkProjectionOp typeEnv op =
                     Nothing
 
                 Just containerType ->
-                    if isEcoValueType containerType then
+                    if containerTypeOk op.name containerType then
                         Nothing
 
                     else
@@ -106,7 +108,7 @@ checkProjectionOp typeEnv op =
                             , message =
                                 "projection container '"
                                     ++ containerName
-                                    ++ "' is not eco.value, got "
+                                    ++ "' is neither eco.value nor the op's aggregate form, got "
                                     ++ typeToString containerType
                             }
 
@@ -118,6 +120,41 @@ checkProjectionOp typeEnv op =
                     "projection op should have exactly 1 operand, has "
                         ++ String.fromInt (List.length op.operands)
                 }
+
+
+{-| A projection container must be `!eco.value` (the boxed heap form) or —
+since the U-T1.3.1/T1.3.2c value-aggregate promotions (default-on
+2026-08-04) — the MATCHING promoted aggregate form for the dual-form ops:
+`!eco.tuple2<...>` for `eco.project.tuple2`, `!eco.tuple3<...>` for
+`eco.project.tuple3`, `!eco.custom<...>` for `eco.project.custom`.
+Anything else — in particular a primitive produced by `eco.unbox` — is
+exactly the treat-a-primitive-as-a-heap-pointer class this invariant
+exists to catch. Record and list projections have no promoted form and
+stay `!eco.value`-only.
+-}
+containerTypeOk : String -> MlirType -> Bool
+containerTypeOk opName containerType =
+    if isEcoValueType containerType then
+        True
+
+    else
+        case containerType of
+            NamedStruct s ->
+                case opName of
+                    "eco.project.tuple2" ->
+                        String.startsWith "eco.tuple2<" s
+
+                    "eco.project.tuple3" ->
+                        String.startsWith "eco.tuple3<" s
+
+                    "eco.project.custom" ->
+                        String.startsWith "eco.custom<" s
+
+                    _ ->
+                        False
+
+            _ ->
+                False
 
 
 buildTypeEnvFromOp : MlirOp -> TypeEnv
