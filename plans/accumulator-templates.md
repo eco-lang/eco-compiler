@@ -1,8 +1,23 @@
 # Function-level accumulator templates — scratch-stack capture of TCO list builders
 
-**Status: NEW 2026-08-05, UNSIZED. Recognition census (AT1) before the
-rewrite. The infrastructure is ~80% built; the *justification* is the part
-that needs work.**
+**Status: D-AT PASSED 2026-08-05, and §4's argument #1 is now MEASURED
+rather than speculative. AT0 is answered — go straight to AT1 (recognition
+census), then AT2. The infrastructure is ~80% built.**
+
+> **LH1 result (`benchmarks/tier2-opt.md` Run H): `Cons` is 36.7% of all
+> promotion on subst (131,038,610 objects, 2,999 MiB) and 34.7% on solver —
+> seven times the ≥5% gate.** `Cons` is only ~10% of true allocation, so
+> list spines are retained at roughly **3× their allocation weight**: the
+> allocation census systematically *under*-ranked this unit while appearing
+> to over-rank it.
+>
+> **AT0 is answered without a second run, and it inverts §3's prior.**
+> `ConsChunk`+`ListBacking` together are **0.05%** of promotion against
+> `Cons`'s 36.7% — so the shipped chunk work captured combinator and
+> intermediate traffic, which was nursery garbage, and left the *retained*
+> list population untouched as cell spines. That is a clean, measured
+> explanation of why chunks bought −47.5% Cons and zero wall, and it means
+> the retention win §4 argued for is still entirely unclaimed.
 
 **Provenance:** `plans/opt-tier2-cons-fusion.md` U-T2.1′ (that plan's
 nominated payoff unit), rebased onto the retention finding. The architecture

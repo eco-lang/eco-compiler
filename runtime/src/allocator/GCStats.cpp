@@ -415,6 +415,44 @@ void GCStats::recordTLHAllocation(size_t bytes, Tag tag) {
     tlh_alloc_bytes_by_tag[idx] += bytes;
 }
 
+// LH1 (plans/live-heap-composition-census.md). Called from the minor-GC
+// evacuation paths in NurserySpace once per surviving/promoted object.
+// The scalar is bumped here rather than at the call site so the totals and
+// the per-kind histograms are incremented by the same statement and cannot
+// diverge; an out-of-range tag (defensive — a live object should never
+// carry Tag_Forward) still counts toward the scalar so promotion rates stay
+// comparable with pre-LH1 runs.
+// W1: bucket a Custom by field count (Header::size), clamping into the
+// overflow slot. Non-Custom tags never reach here.
+static inline int customArityBucket(uint32_t nfields) {
+    return nfields >= static_cast<uint32_t>(GCStats::CUSTOM_ARITY_BUCKETS)
+        ? GCStats::CUSTOM_ARITY_BUCKETS - 1
+        : static_cast<int>(nfields);
+}
+
+void GCStats::recordPromotion(Tag tag, size_t bytes, uint32_t nfields) {
+    objects_promoted++;
+    int idx = static_cast<int>(tag);
+    if (idx < 0 || idx >= NUM_ALLOC_TAGS) return;
+    promoted_count_by_tag[idx]++;
+    promoted_bytes_by_tag[idx] += bytes;
+    if (tag == Tag_Custom) {
+        int b = customArityBucket(nfields);
+        custom_promoted_by_nfields[b]++;
+        custom_promoted_bytes_by_nfields[b] += bytes;
+    }
+}
+
+void GCStats::recordSurvival(Tag tag, size_t bytes, uint32_t nfields) {
+    objects_survived++;
+    int idx = static_cast<int>(tag);
+    if (idx < 0 || idx >= NUM_ALLOC_TAGS) return;
+    survived_count_by_tag[idx]++;
+    survived_bytes_by_tag[idx] += bytes;
+    if (tag == Tag_Custom)
+        custom_survived_by_nfields[customArityBucket(nfields)]++;
+}
+
 // Helper: routes a per-tag mutator allocation event from a free function
 // (initHeaderForTag) to the calling thread's GCStats. Exposed via the
 // GC_STATS_TLH_RECORD_ALLOC macro; in stats-disabled builds the macro
@@ -782,10 +820,20 @@ void GCStats::combine(const GCStats& other) {
         utf8_widen_site_units[i] += other.utf8_widen_site_units[i];
     }
 
-    // Combine per-kind ThreadLocalHeap allocation counters.
+    // Combine per-kind ThreadLocalHeap allocation counters, and the LH1
+    // retention histograms alongside them.
     for (int i = 0; i < NUM_ALLOC_TAGS; i++) {
         tlh_alloc_count_by_tag[i] += other.tlh_alloc_count_by_tag[i];
         tlh_alloc_bytes_by_tag[i] += other.tlh_alloc_bytes_by_tag[i];
+        promoted_count_by_tag[i]  += other.promoted_count_by_tag[i];
+        promoted_bytes_by_tag[i]  += other.promoted_bytes_by_tag[i];
+        survived_count_by_tag[i]  += other.survived_count_by_tag[i];
+        survived_bytes_by_tag[i]  += other.survived_bytes_by_tag[i];
+    }
+    for (int i = 0; i < CUSTOM_ARITY_BUCKETS; i++) {
+        custom_promoted_by_nfields[i]       += other.custom_promoted_by_nfields[i];
+        custom_promoted_bytes_by_nfields[i] += other.custom_promoted_bytes_by_nfields[i];
+        custom_survived_by_nfields[i]       += other.custom_survived_by_nfields[i];
     }
 
     // Combine page residency histogram.
@@ -1296,6 +1344,126 @@ void GCStats::print() const {
         }
     }
 
+    // ========== Per-Kind Retention Histogram (LH1) ==========
+    //
+    // plans/live-heap-composition-census.md LH1. The retention analogue of
+    // the allocation histogram above, and the number that should rank
+    // optimization work: a copying nursery charges for SURVIVORS, not for
+    // allocation volume.
+    //
+    // Counted inside the collector, so unlike the allocation figures these
+    // are exact in the standard binary (the HEAP_034 inline-allocation
+    // fast path bypasses initHeaderForTag, never the evacuator). The only
+    // inline-alloc-sensitive column is surv%, whose DENOMINATOR is the
+    // mutator counter — it is flagged rather than silently wrong.
+    {
+        struct Row {
+            int tag;
+            uint64_t prom_c, prom_b, surv_c, surv_b, alloc_c;
+        };
+        Row rows[NUM_ALLOC_TAGS];
+        int n_rows = 0;
+        uint64_t tot_prom = 0, tot_surv = 0, tot_prom_b = 0;
+        uint64_t max_prom = 0;
+        for (int i = 0; i < NUM_ALLOC_TAGS; i++) {
+            uint64_t p = promoted_count_by_tag[i];
+            uint64_t s = survived_count_by_tag[i];
+            if (p == 0 && s == 0) continue;
+            rows[n_rows++] = {i, p, promoted_bytes_by_tag[i],
+                              s, survived_bytes_by_tag[i],
+                              tlh_alloc_count_by_tag[i]};
+            tot_prom += p;
+            tot_surv += s;
+            tot_prom_b += promoted_bytes_by_tag[i];
+            max_prom = std::max(max_prom, p);
+        }
+        if (tot_prom > 0 || tot_surv > 0) {
+            std::sort(rows, rows + n_rows, [](const Row& a, const Row& b) {
+                return a.prom_c > b.prom_c;
+            });
+
+            std::cout << "\nRetention by Object Kind"
+                      << " (promoted = survived a minor GC into old gen):"
+                      << std::endl;
+            std::cout << "  totals: promoted " << tot_prom << " ("
+                      << formatBytes(tot_prom_b) << "), copied-in-nursery "
+                      << tot_surv << std::endl;
+            std::cout << "  surv% = promoted/allocated; only meaningful "
+                         "under ECO_INLINE_ALLOC=0 (see LH1 note)"
+                      << std::endl;
+
+            const int BAR_WIDTH = 40;
+            for (int r = 0; r < n_rows; r++) {
+                const Row& row = rows[r];
+                double pct = (row.prom_c * 100.0) / (tot_prom ? tot_prom : 1);
+                double avg = row.prom_c
+                    ? static_cast<double>(row.prom_b) / row.prom_c : 0.0;
+                int bar_len = max_prom > 0
+                    ? static_cast<int>((row.prom_c * BAR_WIDTH) / max_prom)
+                    : 0;
+
+                std::cout << "  " << std::setw(18) << std::left
+                          << tagName(row.tag) << std::right << ": ";
+                for (int j = 0; j < bar_len; j++) std::cout << "█";
+                std::cout << " " << row.prom_c << " ("
+                          << std::fixed << std::setprecision(1) << pct
+                          << "% of promo, " << formatBytes(row.prom_b)
+                          << ", " << std::setprecision(1) << avg << " B avg"
+                          << ", copied " << row.surv_c;
+                if (row.alloc_c > 0) {
+                    double sr = (row.prom_c * 100.0) / row.alloc_c;
+                    std::cout << ", surv " << std::setprecision(2) << sr << "%";
+                    if (row.prom_c > row.alloc_c)
+                        std::cout << "!";  // inline-alloc-blind denominator
+                } else {
+                    std::cout << ", surv n/a";
+                }
+                std::cout << ")" << std::endl;
+            }
+        }
+    }
+
+    // ========== Custom Arity Breakdown (W1) ==========
+    //
+    // plans/sum-type-wrapper-unboxing.md W1. Splits the promoted Tag_Custom
+    // pool by field count. nfields==1 is an exact upper bound on the
+    // population that plan can address (single-ctor single-field unions are
+    // already Can.Unbox and never allocate a Custom at all).
+    {
+        uint64_t tot = 0, tot_b = 0;
+        for (int i = 0; i < CUSTOM_ARITY_BUCKETS; i++) {
+            tot += custom_promoted_by_nfields[i];
+            tot_b += custom_promoted_bytes_by_nfields[i];
+        }
+        if (tot > 0) {
+            std::cout << "\nPromoted Custom by Field Count (W1):" << std::endl;
+            uint64_t mx = 0;
+            for (int i = 0; i < CUSTOM_ARITY_BUCKETS; i++)
+                mx = std::max(mx, custom_promoted_by_nfields[i]);
+            const int BAR_WIDTH = 40;
+            for (int i = 0; i < CUSTOM_ARITY_BUCKETS; i++) {
+                uint64_t c = custom_promoted_by_nfields[i];
+                if (c == 0) continue;
+                double pct = (c * 100.0) / tot;
+                int bar_len = mx > 0
+                    ? static_cast<int>((c * BAR_WIDTH) / mx) : 0;
+                std::cout << "  " << std::setw(2) << i
+                          << (i == CUSTOM_ARITY_BUCKETS - 1 ? "+" : " ")
+                          << " field" << (i == 1 ? " " : "s")
+                          << std::setw(12) << std::right << ": ";
+                for (int j = 0; j < bar_len; j++) std::cout << "█";
+                std::cout << " " << c << " ("
+                          << std::fixed << std::setprecision(1) << pct
+                          << "% of promoted Custom, "
+                          << formatBytes(custom_promoted_bytes_by_nfields[i])
+                          << ", copied " << custom_survived_by_nfields[i]
+                          << ")" << std::endl;
+            }
+            std::cout << "  total promoted Custom: " << tot << " ("
+                      << formatBytes(tot_b) << ")" << std::endl;
+        }
+    }
+
     printAllocHistogram("Old-Gen Allocation Size Histogram",
                         oldgen_alloc_size_histogram,
                         OLDGEN_ALLOC_BUCKETS,
@@ -1520,6 +1688,15 @@ void GCStats::reset() {
     for (int i = 0; i < NUM_ALLOC_TAGS; i++) {
         tlh_alloc_count_by_tag[i] = 0;
         tlh_alloc_bytes_by_tag[i] = 0;
+        promoted_count_by_tag[i]  = 0;
+        promoted_bytes_by_tag[i]  = 0;
+        survived_count_by_tag[i]  = 0;
+        survived_bytes_by_tag[i]  = 0;
+    }
+    for (int i = 0; i < CUSTOM_ARITY_BUCKETS; i++) {
+        custom_promoted_by_nfields[i]       = 0;
+        custom_promoted_bytes_by_nfields[i] = 0;
+        custom_survived_by_nfields[i]       = 0;
     }
 
     // Reset page residency histogram.

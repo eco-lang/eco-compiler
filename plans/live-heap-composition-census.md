@@ -1,8 +1,17 @@
 # Live-heap composition census — measuring retention instead of allocation
 
-**Status: NEW 2026-08-05. The prerequisite for `plans/cse-pure-calls.md`,
+**Status: LH1 SHIPPED + MEASURED 2026-08-05 (`benchmarks/tier2-opt.md`
+Run H). LH2–LH5 open.** The prerequisite for `plans/cse-pure-calls.md`,
 `plans/accumulator-templates.md` and `plans/sum-type-wrapper-unboxing.md` —
-all three are admitted or rejected by the numbers this plan produces.**
+all three are admitted or rejected by the numbers this plan produces.
+
+> **LH1 RESULT — the ranking, measured for the first time.** Promotion is
+> **`Custom` 60.7% + `Cons` 36.7% = 97.4%** of everything retained (subst;
+> solver 61.8% + 34.7% = 96.5%). Everything else is ≤1.9%. **`Closure`
+> promotes 7,861 objects — 0.002% — against ~22% of true allocation.**
+> The allocation ranking and the retention ranking are nearly disjoint, so
+> the metric this series used for a year was not a proxy for the metric the
+> collector charges. **D-LH: both retention-gated successors PASS** (§3).
 
 **Provenance:** closing out `plans/opt-tier2-cons-fusion.md`, which ranked
 every one of its units by an `ECO_CONS_SITES` *allocation* census. That
@@ -119,6 +128,38 @@ chunk and K4 results imply it), `Custom`/`Closure` the reverse.
 macro discipline gives this for free — verify, don't assume); no change to
 emitted MLIR; full E2E once, teed.
 
+#### LH1 AS-BUILT (2026-08-05) — `benchmarks/tier2-opt.md` Run H
+
+`promoted_{count,bytes}_by_tag` + `survived_{count,bytes}_by_tag` in
+`GCStats` (`GCStats.hpp`), fed by new `recordPromotion` / `recordSurvival`
+(`GCStats.cpp`). **The scalar is bumped inside those two methods, not at the
+call site**, so `objects_promoted` and the histogram are incremented by one
+statement and cannot drift — that is the self-check, and it passed exactly
+on both engines (histogram total ≡ scalar, zero out-of-range tags).
+
+`GC_STATS_MINOR_INC_{PROMOTED,SURVIVORS}` were widened to `(stats, tag,
+bytes)` rather than adding parallel macros, so all **six** collector sites
+(`NurserySpace.cpp:1263/1326/1418/1437/1935/1949` — evacuate, the second
+evacuation path, and the Cons spine copier) are instrumented by
+construction and no path can be silently missed. The `static_cast<Tag>`
+lives in the macro because `Header::tag` is a `u32` bitfield. Merge and
+reset extended alongside `tlh_alloc_*_by_tag`. Report block prints
+count/%/bytes/avg + copied + surv%, with surv% flagged `!` when it exceeds
+100% (an inline-alloc-blind denominator, not a bug).
+
+Overhead nil: subst 3:46.03 vs Run G's 3:46.84 baseline, solver 5:43.46 vs
+5:43.01, and `out.mlir` byte-identical to Run G on both engines.
+
+**Two traps worth recording.** (1) `cmake --build build --target ecor`
+fails to link — pre-existing and unrelated: that target's source list
+(`CMakeLists.txt:383-396`) omits `PermanentSpace.cpp`, which the CAF report
+block at `GCStats.cpp` needs. It is `EXCLUDE_FROM_ALL` and already
+bit-rotted. (2) Ninja does **not** relink `bin/eco-compiler` when only the
+runtime C++ changes — the dependency is not in its graph. `rm -f
+"$BK/bin/eco-compiler"` and rebuild; keep the `.mlir` (codegen is
+unchanged) and the relink takes ~2 min instead of a full Stage-5
+regeneration.
+
 ### LH2 — promotion cause and age split
 
 Distinguish the three promotion sites and record the age at promotion.
@@ -188,15 +229,36 @@ been read properly.
 Each successor plan names the number it needs; this is the single place they
 are defined:
 
-| plan | admitted iff |
-|---|---|
-| `sum-type-wrapper-unboxing.md` | `Custom` **promoted** share ≥ 10% of promotion, AND single-field wrappers are a measurable slice of it |
-| `accumulator-templates.md` | `Cons`+`ConsChunk`+`ListBacking` **promoted** share ≥ 5%, or LH3 shows list spines dominating mark cost |
-| `cse-pure-calls.md` | not gated on retention (its win is deleted work, not deleted objects) — but LH1 tells it whether CSE's live-range extension is affordable, which is its main risk |
+| plan | admitted iff | **LH1 outcome** |
+|---|---|---|
+| `sum-type-wrapper-unboxing.md` | `Custom` **promoted** share ≥ 10% of promotion, AND single-field wrappers are a measurable slice of it | **PASS on the first clause at 60.7%/61.8% — 6× the gate.** Second clause is W1's remaining work |
+| `accumulator-templates.md` | `Cons`+`ConsChunk`+`ListBacking` **promoted** share ≥ 5%, or LH3 shows list spines dominating mark cost | **PASS at 36.8%/34.8% — 7× the gate** |
+| `cse-pure-calls.md` | not gated on retention (its win is deleted work, not deleted objects) — but LH1 tells it whether CSE's live-range extension is affordable, which is its main risk | **Answered, and it is a warning:** the two classes CSE would hold alive longer, `Custom` and `Cons`, are exactly the two that dominate retention. C-R1 (prefer near CSE to far CSE) is now measured policy, not caution |
 
 Record the outcome either way. A failed gate is a result, not a setback —
 this series has four precedents where a static census correctly killed a
 unit before it was built.
+
+### What LH1 also settled without being asked
+
+- **`Closure` is not a retention target and never was.** 7,861 promoted
+  (0.002%) against ~22% of true allocation. The HOF-elimination track's
+  remaining closure-allocation backlog cannot pay in GC time; if it pays it
+  is through instruction count, and must be argued that way.
+- **`Tuple2`/`Tuple3` likewise** — 0.6%/0.1% of promotion against ~19% of
+  allocation. Tier-1's aggregate-promotion work was right to be justified on
+  ABI and call overhead rather than on GC.
+- **Chunked lists did not convert the *retained* list population.**
+  `ConsChunk`+`ListBacking` are 0.05% of promotion while `Cons` is 36.7%:
+  chunks captured combinator/intermediate traffic, which was nursery
+  garbage, which is precisely why the track measured −47.5% Cons and zero
+  wall. **This answers `accumulator-templates.md` AT0 without a second
+  run** — and it converts that plan's argument #1 from speculation into the
+  measured case for AT2.
+- **The standard binary's allocation histogram reports literally zero for
+  `Record` and `Tuple3`** while the collector promotes 4.5M and 228K of
+  them. The inline-alloc blind spot is not merely an undercount for some
+  classes; it is total.
 
 ## 4. Risks
 

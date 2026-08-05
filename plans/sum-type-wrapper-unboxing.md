@@ -1,7 +1,16 @@
 # Sum-type wrapper unboxing — closing the `CtorOpts` gap
 
-**Status: NEW 2026-08-05, UNSIZED. Census (W1) before anything else, and it
-depends on `plans/live-heap-composition-census.md` LH1.**
+**Status: D-W PASSED 2026-08-05 on both clauses, but W1's dynamic half
+RE-AIMED the plan: build option (a) — generalized nullary embedding —
+first, not the payload unboxing this plan was named for. §3 W1 RESULT has
+the numbers; the static half of W1 is the remaining open work.**
+
+> **LH1 result (`benchmarks/tier2-opt.md` Run H): `Custom` is 60.7% of all
+> promotion on subst (216,982,024 objects, 6,794 MiB) and 61.8% on solver
+> (238,406,822, 7,466 MiB) — six times the ≥10% gate this plan set, and the
+> largest single retained class by a factor of 1.7 over everything else
+> combined.** For contrast, the standard binary's *allocation* histogram
+> ranks `Custom` sixth at 2.6%. Retention was the right question.
 
 **Provenance:** `plans/opt-tier2-cons-fusion.md` §5 U-T2.6′, surfaced while
 classifying the comparable-key work.
@@ -139,6 +148,59 @@ mutating an object the wrapper does not own; payloads are shared and
 immutable. Recorded here only so it is not re-proposed.
 
 ## 3. Units
+
+### W1 RESULT (2026-08-05) — the dynamic half, and it RE-AIMS the plan
+
+`benchmarks/tier2-opt.md` Run I. Custom's `Header.size` **is** the field
+count (`AllocatorCommon.hpp:268`), so the promoted `Custom` pool splits by
+arity directly. `nfields == 1` is an exact **upper bound** on option (b)'s
+addressable population — single-ctor single-field unions are already
+`Can.Unbox` and never allocate a `Custom` at all.
+
+| fields | subst promoted | % of promo'd Custom | bytes | solver | % |
+|---|---|---|---|---|---|
+| **0** | **19,727,577** | **9.1%** | 301 MiB | 23,839,766 | 10.0% |
+| **1** | **26,374,254** | **12.2%** | 604 MiB | 32,952,581 | 13.8% |
+| 2 | **121,871,271** | **56.2%** | 3,719 MiB | 125,064,224 | 52.5% |
+| 3 | 25,996,919 | 12.0% | 992 MiB | 27,867,003 | 11.7% |
+| 4 | 6,631,343 | 3.1% | 304 MiB | 8,320,287 | 3.5% |
+| 5 | 16,374,504 | 7.5% | 874 MiB | 20,356,805 | 8.5% |
+| 6 | 6,156 | 0.0% | 385 KiB | 6,156 | 0.0% |
+
+**Three findings, and the second one re-aims this plan:**
+
+1. **Option (b) — payload unboxing of multi-ctor single-field unions — is
+   capped at 12.2% of promoted `Custom` = 7.4% of total promotion**, and
+   that is the *upper bound* over all 1-field Customs regardless of union
+   shape. The genuinely admissible subset (every ctor single-field AND
+   pairwise tag-disjoint) is a strict, unmeasured subset of it. D-W's ≥3%
+   clause passes on the bound, but the bound is doing the work.
+2. **Option (a) — generalized nullary embedding — is nearly as large at
+   9.1% (5.5% of total promotion) and its win per object is TOTAL.** These
+   are 19.7M heap objects carrying **zero fields**: 16 bytes and a header
+   apiece for nothing but a constructor index, 301 MiB retained. Embedding
+   them removes the object entirely rather than shrinking it. They exist
+   only because their union has *some* non-nullary constructor, so `toOpts`
+   returns `Normal` and the nullary arms allocate alongside the rest —
+   `Can.Enum` requires **all** constructors nullary
+   (`Local.elm:526-538`), and `isEmbeddedConstantCtor` is a hard-coded
+   three-name list (`CtorTag.elm:68`).
+3. **The elephant is 2-field `Custom` at 56.2% / 3,719 MiB**, which this
+   plan cannot address at all. It is the single largest identified shape in
+   the retained heap and deserves its own investigation — see §6.
+
+**Revised recommendation: do W2 (option a) first and possibly only.** It is
+the simpler mechanism (a rule replacing a name list, on machinery that
+already ships), it carries none of option (b)'s tag-disjointness fragility
+or decision-tree rework, its population is within 3 points of (b)'s, and
+its per-object win is larger. Option (b) should not start until (a) has
+shipped and been re-measured — they overlap on the same unions, and after
+(a) removes the nullary arms the remaining case for (b) shrinks.
+
+**Still owed for option (a):** the static half — how many *distinct* unions
+and construction sites produce those 19.7M nullary Customs, and the
+constant-space budget needed to embed them (today only three reserved
+values exist: `False`=0x4, `True`=0x5, `Empty`=0x6, `CONSTANT_TAG`=0xFFFD).
 
 ### W1 — the census (gated on LH1)
 

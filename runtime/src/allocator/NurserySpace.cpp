@@ -1260,7 +1260,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
             promoted_objects->push_back(new_obj);
         }
 
-        GC_STATS_MINOR_INC_PROMOTED(stats);
+        GC_STATS_MINOR_INC_PROMOTED(stats, new_hdr->tag, size, new_hdr->size);
     }
 
     // Copy to to_space if not promoted.
@@ -1323,7 +1323,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         assertHeaderPreservedAcrossCopy(srcHdr, new_hdr);
 #endif
 
-        GC_STATS_MINOR_INC_SURVIVORS(stats);
+        GC_STATS_MINOR_INC_SURVIVORS(stats, new_hdr->tag, size, new_hdr->size);
     }
 
     // Leave forwarding pointer (as logical offset).
@@ -1415,7 +1415,7 @@ void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vecto
             promoted_objects->push_back(new_obj);
         }
 
-        GC_STATS_MINOR_INC_PROMOTED(stats);
+        GC_STATS_MINOR_INC_PROMOTED(stats, new_hdr->tag, size, new_hdr->size);
     }
 
     // Copy to to_space if not promoted.
@@ -1434,7 +1434,7 @@ void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vecto
         assertHeaderPreservedAcrossCopy(srcHdr, new_hdr);
 #endif
 
-        GC_STATS_MINOR_INC_SURVIVORS(stats);
+        GC_STATS_MINOR_INC_SURVIVORS(stats, new_hdr->tag, size, new_hdr->size);
     }
 
     // Leave forwarding pointer.
@@ -1932,7 +1932,7 @@ void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
             if (promoted_objects) {
                 promoted_objects->push_back(new_obj);
             }
-            GC_STATS_MINOR_INC_PROMOTED(stats);
+            GC_STATS_MINOR_INC_PROMOTED(stats, new_hdr->tag, size, new_hdr->size);
         } else {
             // Copy to to-space
             new_obj = copyToSpace(size);
@@ -1946,7 +1946,7 @@ void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
 #if ECO_HEAP_VALIDATE
             assertHeaderPreservedAcrossCopy(srcHdr, new_hdr);
 #endif
-            GC_STATS_MINOR_INC_SURVIVORS(stats);
+            GC_STATS_MINOR_INC_SURVIVORS(stats, new_hdr->tag, size, new_hdr->size);
         }
 
         // Leave forwarding pointer at original location

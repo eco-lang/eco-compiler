@@ -102,6 +102,59 @@ byte diff means the workload moved and walls are not comparable.
 
 ## Runs
 
+### 2026-08-05 22:20 UTC — Run I: W1 Custom arity census (**re-aims sum-type-wrapper-unboxing**)
+
+`plans/sum-type-wrapper-unboxing.md` W1 dynamic half. `Custom`'s `Header.size` IS
+the field count (`AllocatorCommon.hpp:268`), so the LH1 promotion histogram splits
+by arity for free. `nfields==1` is an exact UPPER BOUND on the payload-unboxing
+target (single-ctor single-field unions are already `Can.Unbox` and never allocate
+a Custom). **Result: 1-field is only 12.2%/13.8% of promoted Custom = 7.4% of total
+promotion; 2-field DOMINATES at 56.2%/52.5% (3,719 MiB) and is not addressable.
+The surprise is 0-field: 19.7M/23.8M promoted heap objects carrying ZERO data,
+9.1%/10.0%, 301 MiB** — nullary ctors that allocate only because their union has
+some non-nullary arm (`Can.Enum` needs ALL nullary; `isEmbeddedConstantCtor` is a
+hard-coded 3-name list). **Re-aims the plan onto option (a) generalized nullary
+embedding**: near-equal population, total per-object win, simpler mechanism.
+Walls not comparable (no warmup leg — composition run).
+
+| leg | wall | objects alloc'd | promoted | promoted Custom | 0-field | 1-field | 2-field |
+|---|---|---|---|---|---|---|---|
+| subst | 3:48.29 | 376,384,275 | 357,488,231 | 216,982,024 | 19,727,577 (9.1%) | 26,374,254 (12.2%) | **121,871,271 (56.2%)** |
+| solver | 5:49.89 | 579,055,813 | 385,666,258 | 238,406,822 | 23,839,766 (10.0%) | 32,952,581 (13.8%) | **125,064,224 (52.5%)** |
+
+### 2026-08-05 21:41 UTC — Run H: LH1 per-kind retention histogram (**instrumentation only; the ranking result**)
+
+`plans/live-heap-composition-census.md` LH1: per-tag promotion/survival
+histograms in `GCStats`, recorded at the six collector evacuation sites
+(`NurserySpace.cpp`). Counted INSIDE the collector, so — unlike the allocation
+histogram — these are exact in the standard binary. Self-check passes on both
+engines: histogram total ≡ the `objects_promoted` scalar, zero out-of-range tags.
+Walls and `out.mlir` sizes match Run G's baselines, so overhead is nil and the
+workload is unmoved. **Result: promotion is `Custom` 60.7%/61.8% + `Cons`
+36.7%/34.7% = 97.4%/96.5% of everything retained** (subst/solver). `Closure`
+promotes 7,861 objects — 0.002% — against ~22% of true allocation; `Tuple2`
+0.6% against ~19%. **The allocation ranking and the retention ranking are
+nearly disjoint.** D-LH gates: `sum-type-wrapper-unboxing` PASS (6× its ≥10%
+Custom gate), `accumulator-templates` PASS (7× its ≥5% list gate).
+
+| wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|
+| **3:46.03** subst (warmup 3:48.10; Run G base 3:46.84) | 5,178,596 kB | 376,384,275 | 18,298.94 MB | 848 | **357,488,231** (10,233 MiB) | 10 | 84.71 s | 12,959,381 B (≡ Run G) |
+| **5:43.46** solver (Run G base 5:43.01) | 5,389,204 kB | 579,055,813 | 46,273.95 MB | 1422 | **385,666,258** (11,226 MiB) | 12 | 113.02 s | 13,415,623 B (≡ Run G) |
+
+**Promoted-set composition (the LH1 deliverable):**
+
+| kind | subst promoted | % of promo | bytes | solver promoted | % of promo |
+|---|---|---|---|---|---|
+| `Custom` | 216,982,024 | **60.7%** | 6,794 MiB | 238,406,822 | **61.8%** |
+| `Cons` | 131,038,610 | **36.7%** | 2,999 MiB | 133,991,816 | **34.7%** |
+| `Record` | 4,496,356 | 1.3% | 211 MiB | 7,500,065 | 1.9% |
+| `Tuple2` | 2,215,169 | 0.6% | 51 MiB | 2,298,306 | 0.6% |
+| `StringUtf8Leaf` | 1,786,437 | 0.5% | 62 MiB | 1,975,084 | 0.5% |
+| `Array` | 352,317 | 0.1% | 89 MiB | 734,821 | 0.2% |
+| `ConsChunk`+`ListBacking` | 192,494 | 0.05% | 9 MiB | 217,682 | 0.06% |
+| `Closure` | **7,861** | **0.002%** | 415 KiB | (below cut) | — |
+
 ### 2026-08-05 19:30 UTC — Run G: K7 read-only interning for the `Disabled` callers (**subst −2.0% wall, −2.5% promotion, majors 10→9; solver unaffected**)
 
 `plans/mono-comparable-key-optimization.md` K7 §16: `Intern` gains a `ReadOnly`
@@ -281,3 +334,5 @@ matching the L1 hybrid-spines prediction) and the workload moved
 | E — K6 construction-time hash-consing, **subst −2.17% wall / −6.15% promotion / −16.4% max RSS; solver +0.93% (one extra major)** | 3:46.33 subst (5:40.54 solver) | 375,458,591 obj / 18,234.64 MB (solver: 576,877,132 / 46,106.28 MB) |
 | F — K6 extended to the SOLVER engine, **solver −5.07% wall / −7.04% promotion / −13.2% max RSS / majors 13→10; subst flat (+0.98%, within same-binary spread)** | 5:33.80 solver (3:45.56 subst) | 578,903,113 obj / 46,263.44 MB (subst: 376,270,422 / 18,293.01 MB) |
 | G — K7 read-only interning for the `Disabled` callers, **subst −2.0% wall / −2.5% promotion / majors 10→9 (coverage 42.04% → 0.15% disabled at a 98.06% hit rate); solver unaffected by construction and measured flat** | 3:41.83 subst (5:43.01 solver) | 376,384,280 obj / 18,298.94 MB (solver: 579,055,820 / 46,273.95 MB) |
+| I — **W1 Custom arity census**. Promoted Custom by field count: **0-field 9.1% (19.7M objects, ZERO data, 301 MiB), 1-field 12.2%, 2-field 56.2%**. Payload unboxing capped at 7.4% of total promotion; re-aimed onto generalized nullary embedding | 3:48.29 subst (5:49.89 solver) — no warmup, not wall-comparable | unchanged from Run H |
+| H — **LH1 per-kind retention histogram** (instrumentation only). **Promotion = Custom 60.7% + Cons 36.7% = 97.4%** (solver 61.8/34.7); Closure 0.002% of promotion against ~22% of allocation. Allocation ranking and retention ranking are near-disjoint. Self-check exact on both engines; walls and out.mlir ≡ Run G | 3:46.03 subst (5:43.46 solver) | 376,384,275 obj / 18,298.94 MB — **promoted 357,488,231 / 10,233 MiB** (solver: 579,055,813 / 46,273.95 MB — promoted 385,666,258 / 11,226 MiB) |

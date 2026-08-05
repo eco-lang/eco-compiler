@@ -188,6 +188,55 @@ public:
     uint64_t tlh_alloc_count_by_tag[NUM_ALLOC_TAGS] = {0};
     uint64_t tlh_alloc_bytes_by_tag[NUM_ALLOC_TAGS] = {0};
 
+    // ========== Per-Kind Retention Histograms (LH1) ==========
+    //
+    // plans/live-heap-composition-census.md LH1. The promotion/survival
+    // analogue of the allocation histogram above: which KINDS of object
+    // survive a minor GC, and which get promoted into old gen.
+    //
+    // Motivation (plan §0): a copying nursery charges for SURVIVORS, not
+    // for allocation volume, and three separate tracks have now measured
+    // wall following retention while allocation moved the other way (K6:
+    // +0.02% objects allocated, -7.04% promotion, -5.07% wall). Allocation
+    // counts alone cannot rank an optimization.
+    //
+    // IMPORTANT — these counters do NOT share the allocation counters'
+    // blind spot. tlh_alloc_*_by_tag is fed from initHeaderForTag, which
+    // the HEAP_034 inline-allocation fast path bypasses (~6-10x undercount
+    // unless lowered with ECO_INLINE_ALLOC=0). Promotion and survival are
+    // counted inside the COLLECTOR, which no mutator fast path can skip,
+    // so these figures are exact in the standard binary.
+    //
+    // Consequence: any ratio taken against tlh_alloc_*_by_tag (the
+    // "surv/alloc" column in the dump) is only meaningful on a
+    // census-lowered binary. The absolute counts always are.
+    uint64_t promoted_count_by_tag[NUM_ALLOC_TAGS] = {0};
+    uint64_t promoted_bytes_by_tag[NUM_ALLOC_TAGS] = {0};
+    uint64_t survived_count_by_tag[NUM_ALLOC_TAGS] = {0};
+    uint64_t survived_bytes_by_tag[NUM_ALLOC_TAGS] = {0};
+
+    // ========== Custom Arity Breakdown (W1) ==========
+    //
+    // plans/sum-type-wrapper-unboxing.md W1. LH1 established that Tag_Custom
+    // is ~61% of everything promoted; this splits that pool by FIELD COUNT
+    // (Custom's Header.size is exactly the field count — AllocatorCommon.hpp
+    // sizes it as sizeof(Custom) + size * sizeof(Unboxable)).
+    //
+    // Why field count is the right gate: the plan targets multi-constructor
+    // unions whose constructors each carry ONE field. A promoted 1-field
+    // Custom is a necessary condition for that shape, so the nfields==1
+    // share is an exact UPPER BOUND on the addressable population. If it is
+    // small the plan closes without the static census; only if it is large
+    // does the expensive shape classification need to run.
+    //
+    // Note single-ctor single-field unions cannot appear here at all: they
+    // are already Can.Unbox (Local.elm toOpts) and never allocate a Custom.
+    static constexpr int CUSTOM_ARITY_BUCKETS = 17;  // 0..15 fields, [16] = 16+
+
+    uint64_t custom_promoted_by_nfields[CUSTOM_ARITY_BUCKETS] = {0};
+    uint64_t custom_promoted_bytes_by_nfields[CUSTOM_ARITY_BUCKETS] = {0};
+    uint64_t custom_survived_by_nfields[CUSTOM_ARITY_BUCKETS] = {0};
+
     // ========== Old-Gen Page Residency Histogram ==========
     //
     // Snapshot taken once per major after finalizeMetaAfterMark and before
@@ -483,6 +532,14 @@ public:
     // dropped silently.
     void recordTLHAllocation(size_t bytes, Tag tag);
 
+    // LH1: one promoted / surviving object of `tag` occupying `bytes`.
+    // Each also bumps the matching scalar (objects_promoted /
+    // objects_survived) so the totals cannot drift from the histograms.
+    // `nfields` is Header::size, meaningful only for Tag_Custom (W1); other
+    // tags pass it harmlessly and it is ignored.
+    void recordPromotion(Tag tag, size_t bytes, uint32_t nfields);
+    void recordSurvival(Tag tag, size_t bytes, uint32_t nfields);
+
     // Records a single String allocation by heap-object byte size into the
     // String size-distribution histogram. Called from the allocString
     // helper before its large/inline-leaf dispatch, so each call lands in
@@ -653,11 +710,17 @@ void recordUtf8WidenSiteOnCurrentThread(int site, size_t units) noexcept;
     #define GC_STATS_MINOR_RECORD_GC_END(stats, elapsed_ns, freed) \
         do { (stats).recordMinorGCEnd(elapsed_ns, freed); } while(0)
 
-    #define GC_STATS_MINOR_INC_SURVIVORS(stats) \
-        do { (stats).objects_survived++; } while(0)
+    // LH1: survival/promotion are recorded WITH their tag and size, so the
+    // per-kind retention histograms cannot go stale relative to the
+    // scalars. Every caller sits in the collector and has both in scope.
+    // `tag` is read from Header::tag, a u32 bitfield, so the cast lives
+    // here rather than at each of the six collector call sites. `nfields`
+    // is Header::size (W1: the Custom arity split).
+    #define GC_STATS_MINOR_INC_SURVIVORS(stats, tag, bytes, nfields) \
+        do { (stats).recordSurvival(static_cast<Tag>(tag), (bytes), (nfields)); } while(0)
 
-    #define GC_STATS_MINOR_INC_PROMOTED(stats) \
-        do { (stats).objects_promoted++; } while(0)
+    #define GC_STATS_MINOR_INC_PROMOTED(stats, tag, bytes, nfields) \
+        do { (stats).recordPromotion(static_cast<Tag>(tag), (bytes), (nfields)); } while(0)
 
     // ========== Major GC Macros ==========
     #define GC_STATS_MAJOR_RECORD_GC_END(stats, elapsed_ns) \
@@ -700,8 +763,8 @@ void recordUtf8WidenSiteOnCurrentThread(int site, size_t units) noexcept;
     #define GC_STATS_UTF8_WIDEN(units) do {} while(0)
     #define GC_STATS_UTF8_WIDEN_SITE(site, units) do {} while(0)
     #define GC_STATS_MINOR_RECORD_GC_END(stats, elapsed_ns, freed) do {} while(0)
-    #define GC_STATS_MINOR_INC_SURVIVORS(stats) do {} while(0)
-    #define GC_STATS_MINOR_INC_PROMOTED(stats) do {} while(0)
+    #define GC_STATS_MINOR_INC_SURVIVORS(stats, tag, bytes, nfields) do {} while(0)
+    #define GC_STATS_MINOR_INC_PROMOTED(stats, tag, bytes, nfields) do {} while(0)
     #define GC_STATS_MAJOR_RECORD_GC_END(stats, elapsed_ns) do {} while(0)
     #define GC_STATS_MAJOR_INC_CONCURRENT_MARK(stats) do {} while(0)
     #define GC_STATS_MAJOR_INC_MARK_SWEEP(stats) do {} while(0)
