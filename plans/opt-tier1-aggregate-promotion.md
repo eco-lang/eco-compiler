@@ -12,9 +12,29 @@ remain the implementation specs / as-built records the tiers cite.
 | tier | file | theme | status |
 |---|---|---|---|
 | **1** | `opt-tier1-aggregate-promotion.md` | escape sizing + aggregate/scalar promotion + kernel sigs | **ACTIVE** |
-| 2 | `opt-tier2-cons-fusion.md` | residual list-traversal deletion (pairwise fusion CLOSED NO-GO by the chunked-list L5 census) | RESTRUCTURED 2026-08-04 |
+| 2 | `opt-tier2-cons-fusion.md` | residual list-traversal deletion | **CLOSED 2026-08-05** — record only; split into the four plans below |
 | 3 | `opt-tier3-rc-runtime.md` | RC runtime: arrays, B4/B5, mode-spec, drop-sliding | GATED (v2) |
 | 4 | `opt-tier4-parked.md` | parked/killed items + reactivation triggers | REGISTER |
+
+**Tier-2 successors (2026-08-05).** Tier 2 closed twice over: pairwise
+fusion was killed by the chunked-list L5 adjacency census, and its
+replacement units then lost their *ranking metric* when the comparable-key
+track showed for the third time that **wall follows retention, not
+allocation volume** (K6: +0.02% objects allocated, −7.04% promotion,
+**−5.07% wall**; see `opt-tier2-cons-fusion.md` §3). Its live work now lives
+in four separately-gated plans:
+
+| plan | gates on |
+|---|---|
+| `live-heap-composition-census.md` | — **run this first**; it defines the gate numbers for the next two |
+| `cse-pure-calls.md` | duplicate pure-call population at bounded distance |
+| `accumulator-templates.md` | list-class *promotion* share, or a hot capturable population |
+| `sum-type-wrapper-unboxing.md` | `Custom` *promotion* share ≥10% |
+
+**Series-wide measurement rule adopted 2026-08-05:** allocation-count
+deltas are no longer sufficient evidence to admit or reject a unit. Rank on
+retention (promotion, mark cost) or on deleted work; record walls with their
+major counts either way.
 
 ---
 
