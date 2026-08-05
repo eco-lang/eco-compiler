@@ -102,6 +102,38 @@ byte diff means the workload moved and walls are not comparable.
 
 ## Runs
 
+### 2026-08-05 16:00 UTC — Run F: K6 on the SOLVER engine (**solver −5.07% wall, −7.04% promotion, −13.2% RSS, 3 fewer majors**)
+
+`plans/mono-comparable-key-optimization.md` §15: the K6 `Intern` table threaded
+through the solver's own producers — `Store.classifyGo` and `Store.zonkToMono`'s
+`ZonkCtx` (the two recursive type builders), `Zonk.canTypeToMonoWithI`,
+`cachedSchemeMono`, and `Intern.widenSets` for the spec-registry key. Table home
+is a new `S.intern`, made room for by grouping the three M2 memos into
+`S.monoMemo` (`S` sat exactly at the native 32-slot record scan cap). Output
+**byte-identical** to BOTH baselines under BOTH engines (solver 13,414,246 B;
+subst 12,958,010 B) — sharing is still not observable. Interleaved same-source
+triples vs `eco-compiler-k4fix` (pre-K6) and `eco-compiler-k6-substonly`:
+**solver 5:33.80 vs 5:51.61 = −17.81 s (−5.07%)**, r1 −17.14 s (−4.85%); vs
+k6-substonly −20.65 s (−5.83%), r1 −4.45%. **Promotion −29.2M (−7.04%)**, **max
+RSS −847,728 kB (−13.15%)**, **majors 10 vs 13**, GC time −16.28 s — which
+covers 91% of the wall delta. The mechanism is RETENTION and the numbers say so
+cleanly: against k6-substonly, objects allocated move **+0.02%** (+140,659)
+while promotion falls 6.96% — this change allocates nothing and keeps 29M fewer
+objects alive. **Subst is flat**: +2.19 s (+0.98%) at −477 objects, +0.04%
+promotion, equal majors (9=9) — inside the 1.87–2.54 s same-binary spread
+measured across these rounds, and there is no mechanism for a real subst cost
+since the solver code does not execute there. Gates: elm-tests 13,061/12 known
+(3 new K6 tests incl. an `Intern.widenSets` ≡ `Mono.widenSets` differential),
+E2E 1619/1619, bootstrap green incl. BOTH fixed points. **Raw walls are NOT
+comparable to Run E** — the workload is the compiler's own source, which this
+change edits; all legs here compile the same tree, so the triples are internally
+valid.
+
+| wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|
+| **5:33.80** solver (k4fix 5:51.61, k6sub 5:54.45; r1 5:36.34/5:53.48/5:51.99) | 5,599,448 kB (k4fix 6,447,176; k6sub 6,432,136) | 578,903,113 (k4fix 594,600,469; k6sub 578,762,454) | 46,263.44 MB (k4fix 46,622.70) | 1438 (k4fix 1448) | 385,929,900 (66.7%; k4fix 415,153,413; k6sub 414,784,293) | 10 (k4fix 13; k6sub 13) | 105.92 s (k4fix 122.20; k6sub 124.37) | 13,414,246 B (≡ both) |
+| **3:45.56** subst (k4fix 3:58.36, k6sub 3:43.37) | 5,605,656 kB (k6sub 5,594,200) | 376,270,422 (k6sub 376,270,899) | 18,293.01 MB (k6sub 18,293.02) | 866 (=k6sub) | 367,270,883 (97.6%; k6sub 367,132,890) | 9 (=k6sub) | 83.10 s (k6sub 81.97) | 12,958,010 B (≡ both) |
+
 ### 2026-08-05 14:00 UTC — Run E: K6 construction-time hash-consing (**subst −2.17% wall, −16.4% RSS; solver flat**)
 
 `plans/mono-comparable-key-optimization.md` K6: an `Intern` table
@@ -227,3 +259,4 @@ matching the L1 hybrid-spines prediction) and the workload moved
 | D — K5 true interning (post-hoc graph pass), **+18.3% REGRESSION, reverted** | 4:39.50 | 616,215,747 obj / 23,860.96 MB |
 | C — mono-key K4 interning + bucket-churn fix, **wall −0.35% (≈flat); TRUE alloc −1.31% bytes** (census; the standard counter's −21.3% is inline-alloc-blind) | 3:48.71 | 393,315,712 obj / 18,633.70 MB (census: 3,933,552,762 / 154,614 MiB) |
 | E — K6 construction-time hash-consing, **subst −2.17% wall / −6.15% promotion / −16.4% max RSS; solver +0.93% (one extra major)** | 3:46.33 subst (5:40.54 solver) | 375,458,591 obj / 18,234.64 MB (solver: 576,877,132 / 46,106.28 MB) |
+| F — K6 extended to the SOLVER engine, **solver −5.07% wall / −7.04% promotion / −13.2% max RSS / majors 13→10; subst flat (+0.98%, within same-binary spread)** | 5:33.80 solver (3:45.56 subst) | 578,903,113 obj / 46,263.44 MB (subst: 376,270,422 / 18,293.01 MB) |

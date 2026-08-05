@@ -462,19 +462,20 @@ translate expr s0 =
 
                                     Ok ( monoExprs, s3 ) ->
                                         let
-                                            monoType =
+                                            ( monoType, s3b ) =
                                                 if Mono.containsAnyMVar monoType0 then
                                                     case monoExprs of
                                                         first :: _ ->
-                                                            Mono.mList (Mono.typeOf first)
+                                                            -- K6: this type is retained on the node.
+                                                            Engine.consS (Mono.mList (Mono.typeOf first)) s3
 
                                                         [] ->
-                                                            monoType0
+                                                            ( monoType0, s3 )
 
                                                 else
-                                                    monoType0
+                                                    ( monoType0, s3 )
                                         in
-                                        Ok ( Mono.MonoList region monoExprs monoType, s3 )
+                                        Ok ( Mono.MonoList region monoExprs monoType, s3b )
 
         TOpt.Call region func args meta ->
             translateCall region func args meta.tipe s0
@@ -580,7 +581,11 @@ translate expr s0 =
                                                     allExprs =
                                                         monoA :: monoB :: monoRest
                                                 in
-                                                Ok ( Mono.MonoTupleCreate region allExprs (Mono.mTuple (List.map Mono.typeOf allExprs)), s4 )
+                                                let
+                                                    ( tupleType, s5 ) =
+                                                        Engine.consS (Mono.mTuple (List.map Mono.typeOf allExprs)) s4
+                                                in
+                                                Ok ( Mono.MonoTupleCreate region allExprs tupleType, s5 )
 
         TOpt.Record fields meta ->
             -- Connect each field expr's type var to the record type's field slot
@@ -602,7 +607,11 @@ translate expr s0 =
                                 Err e
 
                             Ok ( monoFieldsRev, s2 ) ->
-                                Ok ( Mono.MonoRecordCreate monoFieldsRev (recordTypeFromFields monoFieldsRev), s2 )
+                                let
+                                    ( recType, s3 ) =
+                                        Engine.consS (recordTypeFromFields monoFieldsRev) s2
+                                in
+                                Ok ( Mono.MonoRecordCreate monoFieldsRev recType, s3 )
 
         TOpt.TrackedRecord _ fields meta ->
             -- M6: direct state-passing (desugared andThen/map) → byte-identical.
@@ -629,7 +638,11 @@ translate expr s0 =
                                 Err e
 
                             Ok ( monoFieldsRev, s2 ) ->
-                                Ok ( Mono.MonoRecordCreate monoFieldsRev (recordTypeFromFields monoFieldsRev), s2 )
+                                let
+                                    ( recType, s3 ) =
+                                        Engine.consS (recordTypeFromFields monoFieldsRev) s2
+                                in
+                                Ok ( Mono.MonoRecordCreate monoFieldsRev recType, s3 )
 
         TOpt.Access record _ fieldName meta ->
             translateAccess record fieldName meta s0
@@ -2495,17 +2508,28 @@ cachedSchemeMono key funcCanType =
                     Engine.succeed mt
 
                 Nothing ->
-                    Engine.andThen
-                        (\superStatic ->
-                            let
-                                mt =
-                                    Zonk.canTypeToMono superStatic funcCanType
-                            in
-                            Engine.map (\_ -> mt) (Engine.putSchemeMono key mt)
-                        )
-                        (Engine.getS (\s -> s.env.superStatic))
+                    computeSchemeMono key funcCanType
         )
         (Engine.lookupSchemeMono key)
+
+
+{-| The `cachedSchemeMono` miss path, as a direct state function so the K6
+hash-cons table threads through the classification (a scheme's MonoType is
+retained by the memo and reused at every call site of that global, so
+canonicalising it is what lets those uses share one object).
+-}
+computeSchemeMono : String -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
+computeSchemeMono key funcCanType s0 =
+    let
+        ( mt, intern1 ) =
+            Zonk.canTypeToMonoI s0.env.superStatic funcCanType s0.intern
+    in
+    case Engine.putSchemeMono key mt { s0 | intern = intern1 } of
+        Err e ->
+            Err e
+
+        Ok ( (), s1 ) ->
+            Ok ( mt, s1 )
 
 
 {-| Flow the closed callee's ground parameter types into the args: a ground arg
@@ -5117,7 +5141,12 @@ instantiateUnionType vars typeArgs canArgType =
                 convertedArg =
                     Analysis.convertCanTypeNameToMVarId nameToId canArgType
             in
-            Engine.map (\superTable -> Zonk.canTypeToMonoWith superTable subst convertedArg) (Engine.getS .superTable)
+            \s ->
+                let
+                    ( mt, intern1 ) =
+                        Zonk.canTypeToMonoWithI s.superTable subst convertedArg s.intern
+                in
+                Ok ( mt, { s | intern = intern1 } )
         )
         (allocFreshIds (List.length vars))
 

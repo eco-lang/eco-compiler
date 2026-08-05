@@ -20,6 +20,7 @@ invisible unless a lambda-set-bearing type is tested (§6 of
 
 -}
 
+import Compiler.AST.Intern as Intern
 import Compiler.AST.Monomorphized as Mono exposing (Constraint(..), LambdaSetAnno(..), MonoType(..))
 import Compiler.AST.TypeIds as TypeIds exposing (MVarId)
 import Bitwise
@@ -136,6 +137,59 @@ suite =
                             ++ String.fromInt distinctSpecKeys
                             ++ " distinct keys"
                         )
+        , Test.test "K6: Intern.widenSets keys identically to Mono.widenSets over the corpus" <|
+            -- The interned twin is a hand-copy of `Mono.widenSets` living in
+            -- `Compiler.AST.Intern` (that module cannot be imported by
+            -- `Monomorphized`, which it imports). An arm-for-arm divergence would
+            -- silently change the SPEC-REGISTRY KEY and therefore specialization
+            -- identity, with no compile error — this is the gate for that.
+            -- Key equality, not `==`: the threaded form rebuilds a record's field
+            -- dict by ascending insert where `Dict.map` preserves the input tree
+            -- shape, a difference `==` sees and `eqKeySpec` (which compares
+            -- `Dict.toList`) correctly does not.
+            \_ ->
+                corpus
+                    |> List.filter
+                        (\t ->
+                            not
+                                (Mono.eqKeySpec
+                                    (Tuple.first (Intern.widenSets t Intern.empty))
+                                    (Mono.widenSets t)
+                                )
+                        )
+                    |> List.map Mono.monoTypeToDebugString
+                    |> Expect.equalLists []
+        , Test.test "K6: hash-consing returns a type EQUAL to the one handed in (canonicalisation is not rewriting)" <|
+            \_ ->
+                corpus
+                    |> List.filter (\t -> Tuple.first (Intern.hashCons t Intern.empty) /= t)
+                    |> List.map Mono.monoTypeToDebugString
+                    |> Expect.equalLists []
+        , Test.test "K6: a disabled table is the identity, and an empty one shares equal structures" <|
+            \_ ->
+                let
+                    ( built, table ) =
+                        List.foldl
+                            (\t ( acc, i0 ) ->
+                                let
+                                    ( t1, i1 ) =
+                                        Intern.hashCons t i0
+                                in
+                                ( t1 :: acc, i1 )
+                            )
+                            ( [], Intern.empty )
+                            corpus
+
+                    -- Re-consing an already-canonical corpus must add nothing.
+                    sizeAfterReplay =
+                        Intern.size (List.foldl (\t i -> Tuple.second (Intern.hashCons t i)) table built)
+                in
+                Expect.equal
+                    ( List.length corpus, Intern.size table, True )
+                    ( List.length built
+                    , sizeAfterReplay
+                    , List.all (\t -> Tuple.first (Intern.hashCons t Intern.disabled) == t) corpus
+                    )
         , Test.test "the corpus exercises every encoder arm (guards the differential tests against passing vacuously)" <|
             \_ ->
                 let

@@ -8,8 +8,10 @@ module Compiler.MonoSolver.Engine exposing
     , insertVar, lookupVar, scoped
     , pushNumberMulti, popNumberMulti, isNumberMultiTarget, recordNumberInstance, numberMultiRootType
     , pushLocalMulti, popLocalMulti, isLocalMultiTarget, recordLocalInstance, localVarInfo
+    , MonoMemo, emptyMonoMemo
     , lookupSchemeMono, putSchemeMono, lookupKernelAbi, putKernelAbi
     , lookupCallMemo, putCallMemo
+    , consS
     , mvarIdKey, pointKey
     , memberIdFor, standaloneMemberIdFor, standaloneMemberGlobal, kernelMemberIdFor, standaloneMemberKernel, srcLambdaKey, trivialSignature, emptyLssStats
     , lambdaInstanceMemberId, lambdaInstanceMemberMaybe
@@ -39,6 +41,7 @@ original engine — see the module doc of `Compiler.MonoSolver.Monomorphize`).
 
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
+import Compiler.AST.Intern as Intern exposing (Intern)
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypeIds as TypeIds
@@ -130,6 +133,34 @@ type alias LssMemberTable =
     , globals : CoreDict.Dict Int TOpt.Global
     , kernels : CoreDict.Dict Int ( String, String, String )
     }
+
+
+{-| The M2 classification memos, GLOBAL (they survive `resetItem`; a
+ground/closed classification is item-independent):
+
+  - `schemeMono` — a CLOSED (var-free) callee scheme's classification, keyed by
+    `TOpt.toComparableGlobal`;
+  - `kernelAbiMono` — a kernel ABI derived at all-ground args, keyed by
+    `"home.name|argKeys"`;
+  - `callMemo` — an open-scheme call at all-ground args:
+    `(funcMonoType, resultMonoType, specId)`. D10 caches the specId so a hit
+    skips re-enqueue/re-serialize.
+
+These are ONE `S` field for the same reason `LssMemberTable` is: the engine
+self-hosts and `S` must stay within the native runtime's 32-slot record GC-scan
+cap. Grouping them made room for `S.intern` (K6).
+
+-}
+type alias MonoMemo =
+    { schemeMono : CoreDict.Dict String Mono.MonoType
+    , kernelAbiMono : CoreDict.Dict String Mono.MonoType
+    , callMemo : CoreDict.Dict String ( Mono.MonoType, Mono.MonoType, Mono.SpecId )
+    }
+
+
+emptyMonoMemo : MonoMemo
+emptyMonoMemo =
+    { schemeMono = CoreDict.empty, kernelAbiMono = CoreDict.empty, callMemo = CoreDict.empty }
 
 
 emptyMemberTable : LssMemberTable
@@ -304,10 +335,6 @@ type alias S =
     , superTable : Dict Int IO.SuperType -- static solver truth + Join-R harvested number-taint (zonk/key/Prune)
     , nextMVarId : TypeIds.MVarId
 
-    -- M2 caches (GLOBAL — survive resetItem; a ground/closed classification is
-    -- item-independent). schemeMono: a CLOSED (var-free) callee scheme's
-    -- classification, keyed by TOpt.toComparableGlobal. kernelAbiMono: a kernel
-    -- ABI derived at all-ground args, keyed by "home.name|argKeys".
     -- LSS (all GLOBAL — survive resetItem; signatures/members are per-run facts)
     , lssSignatures : CoreDict.Dict String LssSignature -- TOpt.toComparableGlobal -> signature
     , lssInProgress : CoreDict.Dict String () -- in-flight inference units (re-entry = EngineBug)
@@ -315,10 +342,15 @@ type alias S =
     , nextMemberId : Int -- shared supply, seeded past GlobalMVarState.nextLam
     , lssStats : LssStats
 
-    , schemeMono : CoreDict.Dict String Mono.MonoType
-    , kernelAbiMono : CoreDict.Dict String Mono.MonoType
-    , callMemo : CoreDict.Dict String ( Mono.MonoType, Mono.MonoType, Mono.SpecId ) -- open-scheme call at all-ground args: (funcMonoType, resultMonoType, specId) — D10 caches specId to skip re-enqueue/re-serialize on a hit
+    , monoMemo : MonoMemo -- the three classification memos (ONE field: see `MonoMemo` — S is at the runtime's 32-slot record scan cap)
     , nodeResolution : CoreDict.Dict String NodeResolution -- D13: per-GLOBAL node lookup + annotation-id set, keyed by TOpt.toComparableGlobal. Depends only on the immutable toptNodes, so it survives resetItem; a global with N specs resolves once instead of N times.
+
+    -- K6 (plans/mono-comparable-key-optimization.md §15): construction-time
+    -- hash-consing for MonoType. GLOBAL — survives resetItem, so every type the
+    -- run builds shares one canonical object per distinct structure. Threaded
+    -- into `Store.classifyGo` (which already carries S), `Store.zonkToMono`'s
+    -- `ZonkCtx`, and `Zonk.canTypeToMonoWithI`.
+    , intern : Intern
 
     -- M7: the 5 IMMUTABLE context fields (never updated after initState) live in
     -- one `env` sub-record, so each `{ s | … }` copies one `env` ref instead of
@@ -701,38 +733,47 @@ withScratchStore step s0 =
 Mirrors the original `enqueueSpec`: LIFO worklist (cons), `scheduled` dedups.
 -}
 enqueueSpec : Mono.Global -> Mono.MonoType -> Step Mono.SpecId
-enqueueSpec global monoType s =
+enqueueSpec global monoType s0 =
     -- A1: explicit trailing-S param (was `\s -> …`) → saturated callers avoid the
     -- per-call closure; body unchanged → byte-identical.
     -- E5: a global listed in lss.keyedGlobals routes into the budgeted keyed
     -- path even when global keying is off. The isEmpty short-circuit keeps
     -- the empty-config hot path free of the per-enqueue gkey string build.
     if
-        s.env.lss.enabled
-            && (s.env.lss.keyed
-                    || (not (CoreDict.isEmpty s.env.lssKeyedSet)
-                            && CoreDict.member (Mono.toComparableGlobal global) s.env.lssKeyedSet
+        s0.env.lss.enabled
+            && (s0.env.lss.keyed
+                    || (not (CoreDict.isEmpty s0.env.lssKeyedSet)
+                            && CoreDict.member (Mono.toComparableGlobal global) s0.env.lssKeyedSet
                        )
                )
     then
-        enqueueSpecKeyed global monoType s
+        enqueueSpecKeyed global monoType s0
 
     else
     let
-        ( specId, reg1, storedChanged ) =
-            if s.env.lss.enabled then
+        ( ( specId, reg1, storedChanged ), s ) =
+            if s0.env.lss.enabled then
                 -- §8.5, keyed=False (M2/M3): keys are today's keys — lambda
                 -- sets never fan out specializations; the stored demand is the
                 -- annotation JOIN of every admitted demand (LSS_010).
-                Registry.getOrCreateSpecIdKeyed global (Mono.widenSets monoType) monoType s.registry
+                -- K6: the widened KEY is hash-consed, so `eqKeySpec`'s
+                -- `identicalOr` can settle the registry probe on pointer
+                -- identity instead of walking the tree.
+                let
+                    ( keyType, intern1 ) =
+                        Intern.widenSets monoType s0.intern
+                in
+                ( Registry.getOrCreateSpecIdKeyed global keyType monoType s0.registry
+                , withIntern intern1 s0
+                )
 
             else
                 -- lss off (byte-identical path — no widenSets allocation).
                 let
                     ( sid, r ) =
-                        Registry.getOrCreateSpecId global monoType s.registry
+                        Registry.getOrCreateSpecId global monoType s0.registry
                 in
-                ( sid, r, False )
+                ( ( sid, r, False ), s0 )
     in
         if BitSet.member specId s.scheduled then
             if storedChanged then
@@ -802,23 +843,30 @@ type, or a join that changes nothing).
 an existing spec never burns budget.
 -}
 enqueueSpecKeyed : Mono.Global -> Mono.MonoType -> Step Mono.SpecId
-enqueueSpecKeyed global monoType s =
+enqueueSpecKeyed global monoType s0 =
     let
         gkey =
             Mono.toComparableGlobal global
 
         count =
-            Maybe.withDefault 0 (CoreDict.get gkey s.specCountByGlobal)
+            Maybe.withDefault 0 (CoreDict.get gkey s0.specCountByGlobal)
 
         underBudget =
-            count < s.env.lss.maxSpecsPerGlobal
+            count < s0.env.lss.maxSpecsPerGlobal
 
-        ( specId, reg1, storedChanged ) =
+        ( ( specId, reg1, storedChanged ), s ) =
             if underBudget then
-                Registry.getOrCreateSpecIdKeyed global monoType monoType s.registry
+                ( Registry.getOrCreateSpecIdKeyed global monoType monoType s0.registry, s0 )
 
             else
-                Registry.getOrCreateSpecIdKeyed global (Mono.widenSets monoType) monoType s.registry
+                -- K6: hash-cons the budget-widened key (see `enqueueSpec`).
+                let
+                    ( keyType, intern1 ) =
+                        Intern.widenSets monoType s0.intern
+                in
+                ( Registry.getOrCreateSpecIdKeyed global keyType monoType s0.registry
+                , withIntern intern1 s0
+                )
 
         created =
             reg1.nextId > s.registry.nextId
@@ -1153,32 +1201,105 @@ harvestSuperTableExcept excluded s =
 
 lookupSchemeMono : String -> Step (Maybe Mono.MonoType)
 lookupSchemeMono key =
-    getS (\s -> CoreDict.get key s.schemeMono)
+    getS (\s -> CoreDict.get key s.monoMemo.schemeMono)
 
 
 putSchemeMono : String -> Mono.MonoType -> Step ()
 putSchemeMono key monoType =
-    modifyS (\s -> { s | schemeMono = CoreDict.insert key monoType s.schemeMono })
+    modifyS
+        (\s ->
+            let
+                m =
+                    s.monoMemo
+            in
+            { s | monoMemo = { m | schemeMono = CoreDict.insert key monoType m.schemeMono } }
+        )
 
 
 lookupKernelAbi : String -> Step (Maybe Mono.MonoType)
 lookupKernelAbi key =
-    getS (\s -> CoreDict.get key s.kernelAbiMono)
+    getS (\s -> CoreDict.get key s.monoMemo.kernelAbiMono)
 
 
 putKernelAbi : String -> Mono.MonoType -> Step ()
 putKernelAbi key monoType =
-    modifyS (\s -> { s | kernelAbiMono = CoreDict.insert key monoType s.kernelAbiMono })
+    modifyS
+        (\s ->
+            let
+                m =
+                    s.monoMemo
+            in
+            { s | monoMemo = { m | kernelAbiMono = CoreDict.insert key monoType m.kernelAbiMono } }
+        )
 
 
 lookupCallMemo : String -> Step (Maybe ( Mono.MonoType, Mono.MonoType, Mono.SpecId ))
 lookupCallMemo key =
-    getS (\s -> CoreDict.get key s.callMemo)
+    getS (\s -> CoreDict.get key s.monoMemo.callMemo)
 
 
 putCallMemo : String -> ( Mono.MonoType, Mono.MonoType, Mono.SpecId ) -> Step ()
 putCallMemo key entry =
-    modifyS (\s -> { s | callMemo = CoreDict.insert key entry s.callMemo })
+    modifyS
+        (\s ->
+            let
+                m =
+                    s.monoMemo
+            in
+            { s | monoMemo = { m | callMemo = CoreDict.insert key entry m.callMemo } }
+        )
+
+
+
+-- ====== K6 INTERN TABLE ======
+
+
+{-| Canonicalise one already-built type against `S.intern`.
+
+Use it where a producer builds a single composite over children that are already
+canonical — only the top node needs a probe. The RECURSIVE producers
+(`Store.classifyGo`, `Store.zonkFlatC`, `Zonk.canTypeToMonoWithI`,
+`Intern.widenSets`) hash-cons bottom-up instead, which is what keeps each bucket
+confirm O(arity) rather than O(tree).
+
+Direct state in/out rather than a `Step`: every call site is in the engine's
+desugared direct-state style, where a `Result`-wrapped step would only have to be
+unwrapped again.
+
+-}
+consS : Mono.MonoType -> S -> ( Mono.MonoType, S )
+consS mt s =
+    let
+        ( mt1, intern1 ) =
+            Intern.hashCons mt s.intern
+    in
+    ( mt1, withIntern intern1 s )
+
+
+{-| Write a table back into `S` **only if it actually grew.**
+
+This guard is not a micro-optimization, it is what makes S-threaded
+hash-consing affordable. `consS` runs once per composite — order 10^7 times on a
+self-compile — and an unconditional `{ s | intern = … }` would put a 31-slot
+record copy on every one of them. It would also defeat `enqueueSpec`'s D2 path,
+whose entire purpose is to return `S` untouched when nothing changed. (The subst
+engine sidesteps this by threading a bare `Intern` through
+`applySubstPureI`'s recursion; the solver's producers already thread `S`, so it
+needs the guard instead.)
+
+Size is an EXACT test for "unchanged", not an approximation: `Intern.hashCons`
+either hits — returning the very table it was given — or inserts, and every
+insert increments the count `Data.HashMap` carries. So equal counts imply the
+same table value. `HashMap.size` reads that stored count, O(1).
+
+-}
+withIntern : Intern -> S -> S
+withIntern intern1 s =
+    if Intern.size intern1 == Intern.size s.intern then
+        s
+
+    else
+        { s | intern = intern1 }
 
 
 

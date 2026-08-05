@@ -34,6 +34,7 @@ defaults numbers; the shared Prune close does that (MONO_028).
 -}
 
 import Compiler.AST.Canonical as Can
+import Compiler.AST.Intern as Intern exposing (Intern)
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.Data.Id as Id
@@ -891,7 +892,30 @@ type alias ZonkCtx =
     , next : TypeIds.MVarId
     , lss : Maybe LssZonkAcc -- Just iff lss.enabled; keeps the off path lean
     , ecoReads : List IO.Variable -- MONO_029 stale-read barrier: vars read FREE while producing a CEcoValue residual (folded into S.ecoResidualReads)
+    , intern : Intern -- K6: hash-cons table, carried in from S and written back once by `zonkToMono`
     }
+
+
+{-| Hash-cons a freshly built composite against the ctx table (K6). Children are
+already canonical (zonk is post-order), so the bucket confirm is O(arity).
+
+The size guard is `Engine.withIntern`'s, for the same reason: this runs once per
+composite zonked, and a HIT (~99% of calls, plan §13) must not pay a `ZonkCtx`
+copy to store back a table that did not change. Equal counts imply the same
+table — `hashCons` either hits and returns its input, or inserts and increments.
+
+-}
+consC : Mono.MonoType -> ZonkCtx -> ( Mono.MonoType, ZonkCtx )
+consC mt c =
+    let
+        ( mt1, intern1 ) =
+            Intern.hashCons mt c.intern
+    in
+    if Intern.size intern1 == Intern.size c.intern then
+        ( mt1, c )
+
+    else
+        ( mt1, { c | intern = intern1 } )
 
 
 {-| Set-slot readback accumulator (maxSetSize policy + census counters,
@@ -916,7 +940,7 @@ zonkToMono var =
                 else
                     Nothing
         in
-        case zonkToMonoC s.superTable s.revMemo var { store = s.store, next = s.nextMVarId, lss = lssAcc, ecoReads = [] } of
+        case zonkToMonoC s.superTable s.revMemo var { store = s.store, next = s.nextMVarId, lss = lssAcc, ecoReads = [], intern = s.intern } of
             Err e ->
                 Err e
 
@@ -925,14 +949,14 @@ zonkToMono var =
                     s1 =
                         case c.ecoReads of
                             [] ->
-                                { s | store = c.store, nextMVarId = c.next }
+                                { s | store = c.store, nextMVarId = c.next, intern = c.intern }
 
                             reads ->
                                 let
                                     aux0 =
                                         s.itemAux
                                 in
-                                { s | store = c.store, nextMVarId = c.next, itemAux = { aux0 | ecoResidualReads = reads ++ aux0.ecoResidualReads } }
+                                { s | store = c.store, nextMVarId = c.next, intern = c.intern, itemAux = { aux0 | ecoResidualReads = reads ++ aux0.ecoResidualReads } }
                 in
                 Ok ( mt, foldZonkStats c s1 )
 
@@ -1056,7 +1080,7 @@ zonkFlatC superTable revMemo flat c0 =
                     Err e
 
                 Ok ( mArgs, c1 ) ->
-                    Ok ( classifyApp canonical name mArgs, c1 )
+                    Ok (classifyAppC canonical name mArgs c1)
 
         IO.Fun1 a b ->
             case zonkToMonoC superTable revMemo a c0 of
@@ -1069,7 +1093,7 @@ zonkFlatC superTable revMemo flat c0 =
                             Err e
 
                         Ok ( mb, c2 ) ->
-                            Ok ( Mono.mFunction Mono.LTop [ ma ] mb, c2 )
+                            Ok (consC (Mono.mFunction Mono.LTop [ ma ] mb) c2)
 
         IO.FunL a b setVar ->
             case zonkToMonoC superTable revMemo a c0 of
@@ -1086,7 +1110,7 @@ zonkFlatC superTable revMemo flat c0 =
                                 ( anno, c3 ) =
                                     zonkSetSlot setVar c2
                             in
-                            Ok ( Mono.mFunction anno [ ma ] mb, c3 )
+                            Ok (consC (Mono.mFunction anno [ ma ] mb) c3)
 
         IO.LambdaSet1 _ _ ->
             -- LSS_007: a LambdaSet1 only ever lives inside a FunL set slot,
@@ -1094,7 +1118,7 @@ zonkFlatC superTable revMemo flat c0 =
             Err (EngineBug "LambdaSet1 outside an arrow slot in zonkFlatC")
 
         IO.EmptyRecord1 ->
-            Ok ( Mono.mRecord Dict.empty, c0 )
+            Ok (consC (Mono.mRecord Dict.empty) c0)
 
         IO.Record1 fields ext ->
             case zonkRecordExtC superTable revMemo ext c0 of
@@ -1123,7 +1147,7 @@ zonkFlatC superTable revMemo flat c0 =
                                     Err e
 
                                 Ok ( mRest, c3 ) ->
-                                    Ok ( Mono.mTuple (ma :: mb :: mRest), c3 )
+                                    Ok (consC (Mono.mTuple (ma :: mb :: mRest)) c3)
 
 
 {-| Read a set slot back to an annotation. THE only producer of `LSet`. Runs
@@ -1214,7 +1238,7 @@ zonkRecordFieldsC : Dict.Dict Int IO.SuperType -> Array (Maybe TypeIds.MVarId) -
 zonkRecordFieldsC superTable revMemo fields base c0 =
     case fields of
         [] ->
-            Ok ( Mono.mRecord base, c0 )
+            Ok (consC (Mono.mRecord base) c0)
 
         ( k, p ) :: rest ->
             case zonkToMonoC superTable revMemo p c0 of
@@ -1240,6 +1264,15 @@ zonkRecordExtC superTable revMemo ext c0 =
                 _ ->
                     -- Open extension resolved to a var/other: no base fields.
                     Ok ( Dict.empty, c1 )
+
+
+{-| `classifyApp` hash-consed against a `ZonkCtx` (K6). Leaves (`MInt`, …) fall
+through `Intern.hashCons` untouched, so this costs one branch on the primitive
+arms.
+-}
+classifyAppC : IO.Canonical -> String -> List Mono.MonoType -> ZonkCtx -> ( Mono.MonoType, ZonkCtx )
+classifyAppC canonical name args c =
+    consC (classifyApp canonical name args) c
 
 
 classifyApp : IO.Canonical -> String -> List Mono.MonoType -> Mono.MonoType
@@ -1371,7 +1404,7 @@ classifyGo s aliasSubst canType =
                             -- (GlobalOpt flattens later per GOPT_016). Storeless
                             -- classification stamps LTop (sound-but-imprecise;
                             -- fast paths gate on signature triviality in M2).
-                            Ok ( Mono.mFunction Mono.LTop [ mFrom ] mTo, s2 )
+                            Ok (Engine.consS (Mono.mFunction Mono.LTop [ mFrom ] mTo) s2)
 
         Can.TType canonical name args ->
             case classifyList s aliasSubst args of
@@ -1379,7 +1412,7 @@ classifyGo s aliasSubst canType =
                     Err e
 
                 Ok ( mArgs, s1 ) ->
-                    Ok ( classifyApp canonical name mArgs, s1 )
+                    Ok (Engine.consS (classifyApp canonical name mArgs) s1)
 
         Can.TRecord fields maybeExtension ->
             case classifyRecordExt s aliasSubst maybeExtension of
@@ -1392,7 +1425,7 @@ classifyGo s aliasSubst canType =
                             Err e
 
                         Ok ( allFields, s2 ) ->
-                            Ok ( Mono.mRecord allFields, s2 )
+                            Ok (Engine.consS (Mono.mRecord allFields) s2)
 
         Can.TUnit ->
             Ok ( Mono.MUnit, s )
@@ -1413,7 +1446,7 @@ classifyGo s aliasSubst canType =
                                     Err e
 
                                 Ok ( mRest, s3 ) ->
-                                    Ok ( Mono.mTuple (ma :: mb :: mRest), s3 )
+                                    Ok (Engine.consS (Mono.mTuple (ma :: mb :: mRest)) s3)
 
         Can.TAlias _ _ _ (Can.Filled inner) ->
             classifyGo s aliasSubst inner

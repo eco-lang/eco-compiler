@@ -23,6 +23,7 @@ specialization is the new solver engine.
 
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
+import Compiler.AST.Intern as Intern
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypeIds as TypeIds
@@ -233,10 +234,9 @@ initState lssConfig currentModule nodes annotations globalTypeEnv mvarState =
     , lssMemberTable = Engine.emptyMemberTable
     , nextMemberId = Id.toComparable mvarState.nextLam
     , lssStats = Engine.emptyLssStats
-    , schemeMono = Dict.empty
-    , kernelAbiMono = Dict.empty
-    , callMemo = Dict.empty
+    , monoMemo = Engine.emptyMonoMemo
     , nodeResolution = Dict.empty
+    , intern = Intern.empty
     , env =
         { toptNodes = nodes
         , annotations = annotations

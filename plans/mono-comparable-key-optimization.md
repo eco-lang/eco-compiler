@@ -1,11 +1,16 @@
 # Mono comparable-key optimization (compiler-source refactor)
 
-**Status: K1 + K2 + K4 SHIPPED. K3 = NO-GO (premise refuted by measurement).**
+**Status: K1 + K2 + K4 + K6 SHIPPED (both engines). K3 = NO-GO (premise
+refuted by measurement). K5 = REVERTED (+18.3% regression).**
 
 - **K1 + K2** (2026-08-04, `benchmarks/tier2-opt.md` Run B): −1.2% wall,
   −2,706 MiB allocation, output byte-identical. §9.
 - **K3**: NO-GO. Construction is ~2× ALL comparison in the compiler, and a
   hash prefix would reorder keys and forfeit byte-identity anyway. §10.
+- **K6** (2026-08-05, Runs E + F): construction-time hash-consing. Subst
+  −2.17% wall / −6.15% promotion / −16.4% RSS (§14); solver **−5.07% wall /
+  −7.04% promotion / −13.2% RSS / majors 13→10** (§15). Byte-identical on both
+  engines. The mechanism is RETENTION, not allocation volume.
 - **K4** (2026-08-05, Run C): built by explicit decision AFTER §10 deferred
   it, accepting the loss of byte-identity. Implemented as hash-consing-lite.
   Verified by elm-tests + E2E 1619/1619 + bootstrap (BOTH fixed points).
@@ -696,71 +701,333 @@ while every other constructor has fewer than 5,000. A LAYOUT-only intern table
 (arrows erased) would be dramatically smaller and would still serve the codegen
 type registry and `ctorShapes`, which are the layout-keyed dictionaries.
 
-## 14. K6 — construction-time hash-consing: DESIGNED, NOT LANDED
+## 14. K6 — construction-time hash-consing (SHIPPED 2026-08-05)
 
 §13 established the case: 99.2% of type construction is duplicate work, so
-hash-consing at construction would be allocation-NEGATIVE — the opposite of
-§12's retrofit. This section records the design and the exact remaining work.
-**It was not implemented: the session ran out of runway before the 57-site
-cascade could be landed AND verified, and a half-threaded monomorphizer is
-worse than none.** The tree is on the §11 state.
+hash-consing at construction is allocation-NEGATIVE — the opposite of §12's
+retrofit. Built and landed; benchmarks are Run E in `benchmarks/tier2-opt.md`.
 
-### Why the payoff is bounded (derived, no new measurement needed)
+**Result: subst −2.17% wall, −6.15% promotion, −16.4% max RSS; solver flat
+(+0.93%, one extra major GC). Output byte-identical on both engines.** This is
+the first unit on the track whose measured win exceeds its predicted bound, and
+the reason is the one §13 flagged as unmeasurable from allocation counts:
+RETENTION. See "where the prediction was wrong" below.
 
-Sharing removes at most the 14.66M duplicate constructions. Against the
-**375.9M objects this workload promotes**, that is **≤3.9% of promotion even if
-every constructed type survived** — and most are substitution intermediates
-that die in the nursery. Allocation-side it is 0.376%. Since §11 established
-that GC cost here follows survivors, both mechanisms land under 1% of wall.
-That bound is why this is documented rather than shipped.
+### As built
 
-### Design (module written; kept at the scratch path below)
+`Compiler.AST.Intern` — `Intern = Intern (HashMap MonoType MonoType) | Disabled`,
+structure → canonical object, `hashCons : MonoType -> Intern -> ( MonoType, Intern )`.
+Composites probe; leaves and `MVar` pass through (nothing to share beyond the
+two words they occupy).
 
-`Compiler.AST.Intern`: `Intern = HashMap MonoType MonoType`, structure →
-canonical object, with `hashCons : MonoType -> Intern -> ( MonoType, Intern )`.
+**Canonicalisation is by EXACT structure (`==`), never by comparable-key
+equality.** The key equivalences deliberately merge distinct structures —
+`MVar _ CNumber` keys as `MInt` (D4), `MVar` ids are erased (MONO\_003) — so
+canonicalising by them would return a type that is *keyed* the same but *shaped*
+differently, silently changing emitted code. `specHashOf` is the bucket hash
+(equal structure ⇒ equal hash is all a hash must promise); `==` decides. No id
+field is needed, which is the simplification §12 lacked: the runtime's `eqHelp`
+returns at the first pointer comparison AT EVERY RECURSION LEVEL
+(`elm-kernel-cpp/src/core/Utils.cpp`), so with canonical children a bucket
+confirm is O(arity).
 
-**The one subtlety that must not be lost: canonicalisation is by EXACT
-structure (`==`), never by comparable-key equality.** The key equivalences
-deliberately merge distinct structures — `MVar _ CNumber` keys as `MInt` (D4),
-`MVar` ids are erased (MONO\_003) — so canonicalising by them would return a
-type that is *keyed* the same but *shaped* differently, silently changing
-emitted code. `specHashOf` is the bucket hash (equal structure ⇒ equal hash is
-all a hash must promise); `==` decides.
+Threading, in the order it was done:
 
-No id field is needed, which is the simplification §12 lacked: the runtime's
-structural equality short-circuits on pointer identity
-(`elm-kernel-cpp/src/core/Utils.cpp`), so canonical objects already compare in
-O(1). `eqKeySpec`/`eqKeyLayout` would gain an `a == b ||` fast path — sound
-because `==` is STRICTER than key equality.
+1. `TypeSubst.applySubstPure` split into a threaded core `applySubstPureI` plus
+   the original pure signature as a wrapper over `Intern.disabled`.
+   `applySubstList`/`applySubstLambdaChain` became `…I`. `resolveMonoVars` left
+   pure, so a `Can.TVar` result stays uncanonical (it is identity-preserving
+   where nothing changes, so it is usually already shared).
+2. `applySubstFiltered : … -> Intern -> ( MonoType, Intern )`.
+3. Table in **`MonoState.accum`**, not `ctx` as designed: `SpecAccum` is the
+   monotonic accumulator (`ctx` is the scope-entry/exit half), and it is the
+   cheaper record to update (7 fields vs 11).
+4. `applySubstFV : MonoState -> Substitution -> Can.Type -> ( MonoType, MonoState )`
+   plus `applySubstFVWithEnv` for the sites that read an env captured earlier
+   while threading a different state's table (the `stateAfterBody` instance
+   folds, `finishEagerLet`). 52 call sites converted;
+   `callResultMonoType` had to be threaded too (7 more sites, 2 of them inside
+   `if … then … else abiResultType`).
+5. `eqKeySpec`/`eqKeyLayout` route through `identicalOr`, which tries `a == b`
+   first — sound because `==` is STRICTER than key equality. Applied at the
+   ENTRY POINTS ONLY, not inside `eqKeyWith`'s recursion: a per-node retry would
+   make every MISS pay a structural walk twice.
 
-### Remaining work, in order
+**The plan's step-1 containment claim was WRONG.** `applySubstPure` has ~20
+callers outside `TypeSubst` (`Specialize` ×18, `Analysis`, `Monomorphize`).
+Hence the `Disabled` variant: those callers run the same traversal with
+hash-consing switched off, which costs one branch per composite and is strictly
+better than handing them a throwaway table that would allocate an insert per
+node.
 
-1. Thread `Intern` through `TypeSubst.applySubstPure` and its helpers
-   (`applySubstList`, `applySubstLambdaChain`). **This is contained** —
-   `applySubstPure` has no callers outside `TypeSubst`. Leave `resolveMonoVars`
-   pure (its results stay uncanonical: sound, just fewer pointer-equal probes).
-2. Make the entry point `applySubstFiltered` return `( MonoType, Intern )`.
-3. Put the table in `MonoState.ctx`; change
-   `applySubstFV : MonoState -> Substitution -> Can.Type -> MonoType` to return
-   `( MonoType, MonoState )`.
-4. Convert its **57 call sites** in `Specialize.elm`. Most are `let` bindings
-   (mechanical), but some sit in pure expression positions that need
-   restructuring, e.g.
-   `( name, applySubstFV state refinedSubst paramCanType )` inside a
-   `List.map` (→ threaded fold) and
-   `if not (Mono.containsAnyMVar (applySubstFV state subst rootCanType))`
-   (→ let-bind first).
-5. Add the `a == b ||` fast path to both key-equality functions.
-6. Gates: elm-tests, E2E, bootstrap (BOTH fixed points — byte-identity does not
-   apply, output ordering is unaffected but sharing is not observable anyway),
-   then benchmark against `bin/eco-compiler-k4fix`.
+### Where the §13/§14 prediction was wrong
 
-**THE RISK THAT DECIDES HOW TO DO STEP 4: state-threading bugs are SILENT.**
-Using `state` where `state1` is required type-checks — both are `MonoState`.
-Every other stage of this plan failed loudly (compile error, crash, or a red
-test); this one would not. Convert one call site at a time, and treat the
-bootstrap as the gate rather than the test suite.
+The bound was derived as "≤14.66M objects against 375.9M promoted = ≤3.9% of
+promotion **even if every constructed type survived**, and most die in the
+nursery". Measured: promotion fell **23.5M (−6.15%)** and max RSS fell **1.0 GB
+(−16.4%)** — more than the bound, because the bound counted only the duplicate
+CONSTRUCTIONS and not what they keep alive. A shared type is one object reached
+from N places; the duplicates it replaces were each reachable from a live
+`MonoNode`, so they were not nursery garbage at all. GC time (−5.71 s) accounts
+for the entire wall delta (−5.02 s): the mechanism is retention, exactly as §13
+suspected and could not size.
 
-Scratch artefacts from the attempt: `Intern-K6.elm` (the written module),
-`src-prek5/` and `tests-prek5/` (the verified §11 sources) under the session's
-tmp directory.
+### Scope limit: this is the SUBST engine only
+
+`MonoSolver` builds its `MonoType`s in `Zonk.canTypeToMonoWith` and never calls
+`TypeSubst`, so under the default solver engine K6's only live change is
+`identicalOr`. That measured objects −15.8M (−2.7%, from skipped
+`case ( a, b )` tuples) but wall +0.53%/+0.93%, which is one extra major GC
+(12 vs 11) at +0.03% promotion — a trigger crossing, not a per-op cost.
+**Extending the win to the default engine means threading `Zonk` the same way**;
+that is a separate unit and the census in §13 (measured on a subst self-compile)
+does not size it.
+
+> **SUPERSEDED 2026-08-05 by §15**, which did it — and found this paragraph
+> understated the job twice over. `Zonk` is not the solver's main producer
+> (`Store.classifyGo` and `Store.zonkToMono` are), and the largest NAMED one is
+> `Mono.widenSets` building spec-registry keys in `Engine`. Solver result:
+> −5.07% wall, −7.04% promotion, −13.2% RSS, majors 13→10.
+
+### Gates
+
+elm-tests 13,058 pass / 12 known pre-existing fails; E2E 1619/1619; bootstrap
+EXIT=0 with BOTH fixed points (Stage 4b JS, Stage 8c native). Output `.mlir`
+byte-identical to the K4+fix binary on the same source under BOTH engines — the
+strongest available evidence that sharing changed nothing observable.
+
+## 15. K6 on the SOLVER engine (SHIPPED 2026-08-05)
+
+§14 shipped K6 for `TypeSubst` only, so the DEFAULT engine got nothing from it
+but `identicalOr` (+0.93% wall, a trigger crossing). This unit threads the same
+table through the solver's own producers.
+
+**Result: solver −5.07% wall, −7.04% promotion, −13.15% max RSS, majors 13→10.
+Subst flat. Output byte-identical to BOTH baselines under BOTH engines.**
+Benchmarks are Run F in `benchmarks/tier2-opt.md`. This is the largest win on
+the whole track, and it is larger than the subst win it copies.
+
+A fresh solver-side duplicate-construction census (same instrument as §13, run
+under `ECO_MONO_ENGINE=solver`) sized the opportunity as slightly LARGER than
+subst's — **18,428,412 constructions for 163,146 distinct types, 99.1%
+duplicates** (subst: 14,778,865 / 116,322 / 99.2%):
+
+| constructor | calls | distinct | dup% |
+|---|---|---|---|
+| `mCustom` | 10,448,694 | 4,724 | 100.0% |
+| `mRecord` | 2,900,443 | 398 | 100.0% |
+| `mList` | 2,386,939 | 715 | 100.0% |
+| `mTuple` | 1,383,954 | 2,292 | 99.8% |
+| `mFunction` | 1,308,382 | 155,017 | 88.2% |
+| **TOTAL** | **18,428,412** | **163,146** | **99.1%** |
+
+### As built
+
+**The table lives in `S.intern`, and making room for it was the first problem.**
+`Engine.S` sat at EXACTLY the native runtime's 32-slot record GC-scan cap — the
+HEAP invariant that fails the self-compile at MLIR parse, not a style rule, and
+already documented in `Engine.elm` in two places. The three M2 classification
+memos (`schemeMono`, `kernelAbiMono`, `callMemo`) were therefore grouped into
+one `S.monoMemo : MonoMemo` field, exactly as `LssMemberTable` groups three
+LSS maps for the same reason. Contained change: the six accessors in `Engine`
+plus `initState`. `S` is now 31 fields.
+
+Threaded, in the order it was done:
+
+1. **`Store.zonkToMono`** — `ZonkCtx` gains an `intern` field, carried in from
+   `S` and written back ONCE by the wrapper (it already writes `store` and
+   `nextMVarId` there, so this is free). `zonkFlatC`'s five composite sites and
+   `zonkRecordFieldsC` hash-cons; `classifyApp` gained a `classifyAppC` wrapper.
+2. **`Store.classifyGo`** — the storeless classifier already threads `Engine.S`
+   whole, so its four composite sites just call `Engine.consS`. This is the
+   cheapest conversion on the track and the biggest single producer.
+3. **`Zonk.canTypeToMonoWithI`** — the threaded twin; `canTypeToMono` /
+   `canTypeToMonoWith` remain as wrappers over `Intern.disabled`, reusing §14's
+   pattern for the callers with no state (`Monomorphize`'s two entry-seeding
+   sites, and `translateGlobalCallGroundMemo`'s KEY construction — see below).
+4. **`Translate.cachedSchemeMono`** — split into a direct-state
+   `computeSchemeMono`. Plus `instantiateUnionType` and the four retained
+   literal node types (list, tuple, and two record-literal arms).
+5. **`Intern.widenSets`** — see below.
+
+**The scope this unit started from — "thread `Zonk`" — was short by its biggest
+item.** The census attributed ~1.2M constructions to
+`Mono.widenSets`, which is neither in `Zonk` nor `Translate`: it is the
+annotation-insensitive rebuild that produces the **spec-registry key** at
+`Engine.enqueueSpec`/`enqueueSpecKeyed`. That key is probed through
+`Mono.eqKeySpec`, whose §14 `identicalOr` fast path compares pointers first — so
+an uncanonicalised widen can never take the fast path K6 added, and forces a
+full structural walk on every enqueue. A threaded twin `Intern.widenSets` now
+does it (it lives in `Intern` because `Monomorphized` cannot import `Intern`,
+which imports it). Confirmed by reading `Registry`: only `keyType` is widened,
+`reverseMapping` stores the UNwidened `storeType`, so a widened type can never
+reach codegen. `MonoInlineSimplify`'s `mapNodeTypes Mono.widenSets` is left
+uninterned deliberately — that is a whole-graph rebuild, which is exactly what
+§12 measured at +18.3%.
+
+**Two things had to be got right or the win would have inverted.**
+
+- **`withIntern`: only write the table back when it actually grew.** `consS`
+  runs once per composite — order 10^7 times — and an unconditional
+  `{ s | intern = … }` puts a 31-slot record copy on every one of them, plus it
+  defeats `enqueueSpec`'s D2 path whose whole purpose is to return `S`
+  untouched. The subst side never faced this because `applySubstPureI` threads a
+  bare `Intern` through its recursion; the solver's producers thread `S`, so
+  they need the guard. Size is an EXACT test: `hashCons` either hits (returning
+  its input table) or inserts (incrementing the count `Data.HashMap` carries).
+  `ZonkCtx`'s `consC` has the same guard.
+- **`probe` no longer rebuilds the `Intern` wrapper on a hit.** §14's version
+  returned `( canonical, Intern m )`, allocating one wrapper per hit — and hits
+  are ~99% of calls. It now hands back the table value it was given. This is the
+  only change here that also affects the subst path.
+
+**Not converted, and why.** `Mono.overlayAnnotations` (the classify-structure /
+zonk-annotations merge that produces some final node types) rebuilds composites
+and its output IS retained — it is the obvious next candidate. It was left out
+because the census gave it no attribution, its output is EMITTED rather than
+used as a key (so a mistake there is more consequential than in `widenSets`),
+and each extra producer multiplies the bisect cost of a 25-minute build. Same
+for `KernelAbi.canTypeToMonoType_preserveVars` / `remapEcoVarsFresh`, which are
+memoized and shared with the subst engine. `translateGlobalCallGroundMemo`
+builds types purely to make a comparable KEY string and throws them away —
+interning those would pay a probe for nothing, since hash-consing never avoids
+the top node's allocation, only its retention. All of these remain sound
+uninterned; they simply share less.
+
+### One deliberate divergence in `Intern.widenSets`
+
+`Mono.widenSets` rebuilds a record with `Dict.map`, preserving the input
+dictionary's red-black tree SHAPE; threading state forces `Dict.foldl` + insert
+from empty, giving the canonical ascending-insert shape. Elm's `==` on `Dict` is
+structural over that tree, so the two can differ for an extension record whose
+base fields went in out of order — but only in the direction that makes MORE
+content-equal records compare equal, never fewer. `eqKeySpec` decides record
+equality on `Dict.toList` (content, not shape), so the set of colliding spec
+keys is identical either way and only the probe gets faster; `specHashOf` folds
+ascending, so the bucket hash is shape-independent too. Byte-identity confirms
+it. A new differential test pins `Intern.widenSets` against `Mono.widenSets`
+over the existing key-encoding corpus, because an arm-for-arm divergence would
+change specialization identity with no compile error.
+
+### Measured (Run F) — and the mechanism, stated cleanly
+
+Interleaved same-source triples, cold `eco-stuff` per leg, against BOTH
+`eco-compiler-k4fix` (pre-K6) and `eco-compiler-k6-substonly`:
+
+| solver | wall | max RSS | objects | promoted | major GC | GC time |
+|---|---|---|---|---|---|---|
+| k4fix (pre-K6) | 5:51.61 | 6,447,176 kB | 594,600,469 | 415,153,413 | 13 | 122.20 s |
+| k6-substonly | 5:54.45 | 6,432,136 kB | 578,762,454 | 414,784,293 | 13 | 124.37 s |
+| **this unit** | **5:33.80** | **5,599,448 kB** | 578,903,113 | **385,929,900** | **10** | **105.92 s** |
+
+−17.81 s (−5.07%) vs pre-K6, r1 −17.14 s (−4.85%); −20.65 s (−5.83%) vs
+subst-only, r1 −4.45%. **Against k6-substonly, objects allocated move +0.02%
+(+140,659) while promotion falls 6.96% and RSS falls 12.95%.** That is the
+retention mechanism with nothing else mixed in: this change allocates nothing
+and keeps 29.2M fewer objects alive. GC time (−16.28 s) covers 91% of the wall
+delta, and the three fewer major GCs are a CONSEQUENCE of the promotion drop,
+not the trigger lottery that flattered §14's solver number.
+
+Subst: +2.19 s (+0.98%) at **−477 objects**, +0.04% promotion, equal majors
+(9=9) — inside the 1.87–2.54 s same-binary spread these rounds measured, and
+with no mechanism for a real cost, since none of this code runs under subst.
+
+**Raw walls are not comparable to Run E**: the benchmark workload is the
+compiler's own source, which this change edits. Every leg here compiles the same
+tree, so the triples are internally valid; cross-run wall comparisons are not.
+
+### Where §14's prediction was wrong
+
+§14 called the solver extension "a separate unit" whose size §13's census could
+not predict, and guessed nothing further. Two things it could not have known:
+
+1. **The solver had MORE headroom than subst, not less** (18.4M constructions /
+   163K distinct vs 14.8M / 116K), and the win came out correspondingly larger
+   — −5.07% here against −2.17% for §14. (Each figure is against its own
+   same-source baseline; the two runs compile different trees, so treat this as
+   a direction, not a ratio.)
+2. **The largest named solver producer was not a `Zonk`/`Translate` type
+   builder at all** — it was `Mono.widenSets` building registry keys, in a file
+   neither §14 nor the follow-up brief pointed at.
+
+### Gates
+
+elm-tests 13,061 pass / 12 known pre-existing fails (the 3 extra passes are new
+K6 tests: the `widenSets` differential, hash-cons-preserves-equality, and
+disabled-is-identity/replay-adds-nothing). E2E 1619/1619. Bootstrap EXIT=0 with
+BOTH fixed points (Stage 4b JS, Stage 8c native). Output `.mlir` byte-identical
+to BOTH baseline binaries on the same source under BOTH engines — the strongest
+available evidence that solver-side sharing changed nothing observable.
+
+
+## 16. K7 — read-only interning for the `Disabled` callers (PROPOSED, not built)
+
+**Test this after the solver-conversion benchmark (§15) lands, not before** — it
+changes the same hot path and would confound that measurement.
+
+### The problem it solves
+
+`Intern` carries a `Disabled` variant so that traversal entry points with no
+state to thread (`TypeSubst.applySubstPure`, `Zonk.canTypeToMono` /
+`canTypeToMonoWith`) can run the threaded recursion with every `hashCons` as an
+identity. That is sound — sharing is never required for correctness — and the
+branch itself is nearly free: one predictable tag test against the cost of
+building a type node.
+
+**The cost is not the branch, it is COVERAGE.** Every type produced through a
+disabled traversal is uninterned, so it is never shared and stays separately
+retained — and retention is precisely the mechanism K6 wins by (§14: promotion
+−6.15%, RSS −1.0 GB). The disabled path therefore dilutes the win by an amount
+nobody has measured.
+
+### Why the obvious fixes are worse
+
+- **Hand those callers an empty table.** Strictly worse: each `hashCons` probes
+  (miss) then INSERTS, allocating map nodes per type node into a table that is
+  discarded on return. Even probe-without-insert pays a hash and a bucket walk
+  per node for nothing, which `Disabled` skips outright.
+- **Duplicate the traversal** as a separate pure implementation. ~100 lines of
+  substitution semantics in two copies, with drift risk. This plan has two
+  precedents against it: §12's `mapNodeTypesS` was a 377-line twin of
+  `mapNodeTypes`, and `Intern.widenSets` already must stay arm-for-arm identical
+  to `Mono.widenSets` or registry keys diverge SILENTLY.
+- **Thread all remaining callers.** The honest long-term fix, but it is the
+  cascade this plan has repeatedly bounded, with the silent `state`/`state1`
+  hazard at every site.
+
+### The proposal: probe, never insert, return no table
+
+```elm
+applySubstPureRO : Intern -> MVarEnv -> Substitution -> Can.Type MVarId -> Mono.MonoType
+```
+
+A hit returns the EXISTING canonical object — real sharing. A miss keeps the
+freshly built node. Nothing is inserted, so there is no updated table to return
+and **no state threading at any call site**: the caller supplies a table it
+already holds and forgets about it.
+
+Measured caller split for the pure `applySubstPure` (27 sites): **Specialize 18,
+Zonk 3, Translate 3, Engine 1, Monomorphize 1, Analysis 1.** The 18 in
+`Specialize` are the point — that module has `MonoState` in scope throughout (67
+references), so it can pass `accum.intern` read-only today. `Analysis` has no
+`MonoState` at all and would stay `Disabled`.
+
+**Why the hit rate should be high:** §13 counted only **4,992 distinct `MCustom`
+structures across an entire self-compile against 8,837,865 constructions**. The
+table saturates within a negligible fraction of the run, so by the time these
+callers probe, the structure they are building almost certainly exists already.
+
+### Prerequisite measurement (do this first — it may moot the whole stage)
+
+Instrument `hashCons` on the census build to count calls arriving with
+`Disabled` versus a live `Intern`. That gives the coverage split directly. If
+the disabled path carries a small share of the 14.8M (subst) / 18.4M (solver)
+constructions, this stage is not worth building; if it carries a large share,
+this is the cheap way to recover it.
+
+### Gates
+
+Unchanged from K6, and the cheap one still applies: interning is semantically
+transparent, so **`.mlir` must stay byte-identical** on both engines. Mixing
+interned and uninterned types remains sound — the `a == b ||` fast path simply
+falls back to the structural compare.
