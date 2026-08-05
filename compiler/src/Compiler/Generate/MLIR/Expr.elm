@@ -738,7 +738,7 @@ generateVarGlobal ctx specId monoType =
             -- No signature found - fall back to monoType-based logic
             -- This should only happen for constants, not functions.
             case monoType of
-                Mono.MFunction _ _ _ ->
+                Mono.MFunction _ _ _ _ ->
                     Utils.Crash.crash
                         ("generateVarGlobal: missing FuncSignature for function-typed global "
                             ++ specIdToFuncName ctx.registry specId
@@ -788,7 +788,7 @@ generateVarKernel ctx kernelPrefix home name monoType =
         Just _ ->
             -- Other intrinsic matched with zero args - but check if it's function-typed
             case monoType of
-                Mono.MFunction _ _ _ ->
+                Mono.MFunction _ _ _ _ ->
                     -- Kernels use total ABI arity (flattened), not stage arity
                     let
                         arity : Int
@@ -844,7 +844,7 @@ generateVarKernel ctx kernelPrefix home name monoType =
         Nothing ->
             -- No intrinsic match - check if this is a function type
             case monoType of
-                Mono.MFunction _ _ _ ->
+                Mono.MFunction _ _ _ _ ->
                     -- Kernels use total ABI arity (flattened), not stage arity
                     let
                         arity : Int
@@ -6778,7 +6778,7 @@ generateCase ctx _ _ decider jumps resultMonoType =
             case ctx.sretTailLayout of
                 Just tailLayout ->
                     case resultMonoType of
-                        Mono.MTuple ts ->
+                        Mono.MTuple _ ts ->
                             -- SLOT-TYPE-EXACT for the same reason as the
                             -- tuple-literal arm above.
                             if
@@ -7167,7 +7167,7 @@ tupleBinderPromotable splitParams psplitTable fwdRefd name tupleType body =
     let
         wantKind =
             case tupleType of
-                Mono.MTuple ts ->
+                Mono.MTuple _ ts ->
                     if List.length ts == 2 then
                         Just Mono.Tuple2Container
 
@@ -7697,7 +7697,7 @@ psplitAllowPositions kind table =
 isFunctionMonoType : Mono.MonoType -> Bool
 isFunctionMonoType ty =
     case ty of
-        Mono.MFunction _ _ _ ->
+        Mono.MFunction _ _ _ _ ->
             True
 
         _ ->
@@ -8373,7 +8373,7 @@ decodeSurrogatePair hi rest =
 getRecordFields : Mono.MonoType -> Dict.Dict Name.Name Mono.MonoType
 getRecordFields monoType =
     case monoType of
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             fields
 
         _ ->
@@ -8385,7 +8385,7 @@ getRecordFields monoType =
 getTupleElements : Mono.MonoType -> List Mono.MonoType
 getTupleElements monoType =
     case monoType of
-        Mono.MTuple elements ->
+        Mono.MTuple _ elements ->
             elements
 
         _ ->

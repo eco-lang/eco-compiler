@@ -263,9 +263,9 @@ assembleRawGraphFrom finalAccum lambdaCounter mainSpecIdVal flagsDecoderSpecId =
     in
     Mono.MonoGraph
         { nodes = nodesArray
-        , registry = { nextId = finalAccum.registry.nextId, mapping = Dict.empty, reverseMapping = finalAccum.registry.reverseMapping }
+        , registry = { nextId = finalAccum.registry.nextId, mapping = Mono.specKeyMapEmpty, reverseMapping = finalAccum.registry.reverseMapping }
         , main = mainInfo
-        , ctorShapes = Dict.empty
+        , ctorShapes = Mono.layoutMapEmpty
         , nextLambdaIndex = lambdaCounter
         , callEdges = callEdgesArray
         , specHasEffects = specHasEffects
@@ -447,10 +447,10 @@ processOneWorkItem specId rest state =
 specializeAccessorGlobal : Name -> Mono.MonoType -> MonoState -> ( Mono.MonoNode, MonoState )
 specializeAccessorGlobal fieldName monoType state =
     case monoType of
-        Mono.MFunction _ [ Mono.MRecord fields ] fieldType ->
+        Mono.MFunction _ _ [ Mono.MRecord _ fields ] fieldType ->
             let
                 recordType =
-                    Mono.MRecord fields
+                    Mono.mRecord fields
 
                 paramName =
                     "record"
@@ -464,7 +464,7 @@ specializeAccessorGlobal fieldName monoType state =
             ( Mono.MonoTailFunc [ ( paramName, recordType ) ] bodyExpr monoType, state )
 
         _ ->
-            Utils.Crash.crash "Monomorphize" "specializeAccessorGlobal" "Expected MFunction [MRecord ...] fieldType"
+            Utils.Crash.crash "Monomorphize" "specializeAccessorGlobal" "Expected Mono.mFunction [Mono.mRecord ...] fieldType"
 
 
 {-| Substitution mapping MVarIds to their concrete monomorphic types.

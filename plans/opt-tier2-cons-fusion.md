@@ -78,15 +78,21 @@ occurrences), and removed.
 Post-chaining cons-site tally (`ECO_CONS_SITES` return-address tally on the
 flag-on census run; chunk plan §6 L1.3/L3):
 
-- **`toComparableMonoTypeHelper` work-stack loop ≈164.6M (40% of
-  symbolized)** — one LIFO push/pop churn loop building `List String`
-  comparable type keys; it also drives a matching Custom pool via WorkItem
-  wrappers. A stack, not a combinator chain: unfusable, and front-slack
-  amortization cannot help a stack (the §10/L3 NO-GO). **Not a codegen
-  defect — a compiler-source defect** (`Data.Map`/`Data.Set` re-derive the
-  key on every operation), so the fix is **out of this tier**: see
-  `plans/mono-comparable-key-optimization.md`. Two *generalizable* patterns
-  extracted from it are recorded as §5 candidates below.
+- **~~`toComparableMonoTypeHelper` work-stack loop ≈164.6M (40% of
+  symbolized)~~ — SUPERSEDED 2026-08-04, the key work landed first.** It was
+  one LIFO push/pop churn loop building `List String` comparable type keys,
+  with a matching Custom pool via WorkItem wrappers; a stack, not a
+  combinator chain, so unfusable and immune to front-slack amortization (the
+  §10/L3 NO-GO). **Not a codegen defect — a compiler-source defect**
+  (`Data.Map`/`Data.Set` re-derive the key on every operation), so it was
+  **out of this tier**: `plans/mono-comparable-key-optimization.md` K1+K2
+  shipped it. **Post-K2 the site is `toComparableFragments` at 158.3M cons**
+  (still the #1 cons site, ~10× the next one) — the work stack and its
+  `List.reverse` are gone, but the fragment cells themselves remain, and
+  that plan's §10 closed K3/K4 as not worth their risk. Two *generalizable*
+  patterns extracted from it are recorded as §5 candidates below; the
+  WorkItem-unboxing one (§5) is now hand-fixed at this site only, so it
+  still stands as a pass.
 - **Sub-4-element lists ≈61M** (kernel `reverse` n<4 cells fallback,
   LTO-inlined into the specs) — below any chunk threshold by design;
   irreducible.
@@ -112,12 +118,18 @@ data-ranked next levers, adopted as this tier's residuals.
   sites, escaping self-call results, non-dominating heads). Mono-level
   template generation in `Functions.elm` (BytesFusion precedent) is the
   recorded alternative altitude if backend capture proves awkward.
-  **Sizing:** toComparable's 164.6M plus the tail-inline share of the
-  ≈150M pool. **Double-count warning:** that 164.6M is also the target of
-  `plans/mono-comparable-key-optimization.md`. Whichever lands first shrinks
-  the other's headline number, and neither may claim the full figure after
-  the fact — re-run the census between them, and size U-T2.1′ on the
-  *remaining* pool if the key work goes first. Gates: differential +
+  **Sizing (RE-CENSUSED 2026-08-04 — the key work went first, as the
+  double-count warning below required).** `toComparableFragments` is
+  **158.3M cons** post-K2 (was `toComparableMonoTypeHelper` ≈164.6M), plus
+  the tail-inline share of the ≈150M pool. The key work took its win in
+  BYTES, not cons cells: it deleted the WorkItem Custom pool (−61.6M) and
+  the `List.reverse` chunk backings (`ListBacking −10.1M/−2,973 MiB`,
+  `ConsChunk −28.1M`) while *raising* Cons by 116.7M — so this unit's cons
+  pool did not shrink and its headline number stands, but note the two
+  overlap at the same site. **Original double-count warning, still live for
+  any future ordering:** whichever lands first shrinks the other's headline
+  number, and neither may claim the full figure after the fact — re-run the
+  census between them. Gates: differential +
   `ECO_HEAP_VALIDATE`, flag-on self-compile byte-identity, full E2E once
   (teed), census re-run.
 - **U-T2.2′ — MOVED OUT 2026-08-04, not dropped.** Was "the toComparable

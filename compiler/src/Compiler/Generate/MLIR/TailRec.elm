@@ -463,7 +463,7 @@ planParamGroups ctx paramPairs paramMonoTypes body =
 
             else
                 case monoTy of
-                    Mono.MTuple ts ->
+                    Mono.MTuple _ ts ->
                         if List.length ts == 2 || List.length ts == 3 then
                             let
                                 layout =
@@ -492,8 +492,8 @@ planParamGroups ctx paramPairs paramMonoTypes body =
                         else
                             noSplit
 
-                    Mono.MCustom _ _ _ ->
-                        case Dict.get (Mono.toComparableLayoutKey monoTy) ctx.typeRegistry.ctorShapes of
+                    Mono.MCustom _ _ _ _ ->
+                        case Mono.layoutMapGet monoTy ctx.typeRegistry.ctorShapes of
                             Just [ shape ] ->
                                 if List.length shape.fieldTypes >= 2 && List.length shape.fieldTypes <= 6 then
                                     let

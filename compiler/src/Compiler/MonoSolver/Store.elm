@@ -346,7 +346,7 @@ loadRecordFieldsC superStatic fields c0 =
 alone (ignoring the module), so e.g. `String.String` and `Basics.String` are the
 same type there. Without this, `Unify` (which compares App1 homes) would reject
 those benign home differences. Non-primitive (custom) elm/core types keep their
-real home, which is needed for `MCustom`.
+real home, which is needed for `Mono.mCustom`.
 -}
 normalizePrimHome : IO.Canonical -> String -> IO.Canonical
 normalizePrimHome canonical name =
@@ -436,14 +436,14 @@ monoTypeToVarC lssOn monoType st =
         Mono.MUnit ->
             structS IO.Unit1 st
 
-        Mono.MList inner ->
+        Mono.MList _ inner ->
             let
                 ( p, st1 ) =
                     monoTypeToVarC lssOn inner st
             in
             structS (IO.App1 ModuleName.list "List" [ p ]) st1
 
-        Mono.MTuple elems ->
+        Mono.MTuple _ elems ->
             case elems of
                 a :: b :: rest ->
                     let
@@ -462,7 +462,7 @@ monoTypeToVarC lssOn monoType st =
                     -- Degenerate tuple; encode as a fresh var rather than crash.
                     freshVarS (IO.FlexVar Nothing) st
 
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             let
                 ( pFields, st1 ) =
                     recordFieldPointsC lssOn (Dict.toList fields) st
@@ -472,14 +472,14 @@ monoTypeToVarC lssOn monoType st =
             in
             structS (IO.Record1 pFields ext) st2
 
-        Mono.MCustom home name args ->
+        Mono.MCustom _ home name args ->
             let
                 ( pArgs, st1 ) =
                     monoListToVarC lssOn args st
             in
             structS (IO.App1 home name pArgs) st1
 
-        Mono.MFunction anno args result ->
+        Mono.MFunction _ anno args result ->
             -- Fold args right-to-left into nested Fun1 (one arg per arrow).
             -- Under lss, fold into FunL whose slots carry the annotation's
             -- content. Deliberate asymmetry with zonkSetSlot: a DEMAND's LTop
@@ -1069,7 +1069,7 @@ zonkFlatC superTable revMemo flat c0 =
                             Err e
 
                         Ok ( mb, c2 ) ->
-                            Ok ( Mono.MFunction Mono.LTop [ ma ] mb, c2 )
+                            Ok ( Mono.mFunction Mono.LTop [ ma ] mb, c2 )
 
         IO.FunL a b setVar ->
             case zonkToMonoC superTable revMemo a c0 of
@@ -1086,7 +1086,7 @@ zonkFlatC superTable revMemo flat c0 =
                                 ( anno, c3 ) =
                                     zonkSetSlot setVar c2
                             in
-                            Ok ( Mono.MFunction anno [ ma ] mb, c3 )
+                            Ok ( Mono.mFunction anno [ ma ] mb, c3 )
 
         IO.LambdaSet1 _ _ ->
             -- LSS_007: a LambdaSet1 only ever lives inside a FunL set slot,
@@ -1094,7 +1094,7 @@ zonkFlatC superTable revMemo flat c0 =
             Err (EngineBug "LambdaSet1 outside an arrow slot in zonkFlatC")
 
         IO.EmptyRecord1 ->
-            Ok ( Mono.MRecord Dict.empty, c0 )
+            Ok ( Mono.mRecord Dict.empty, c0 )
 
         IO.Record1 fields ext ->
             case zonkRecordExtC superTable revMemo ext c0 of
@@ -1123,7 +1123,7 @@ zonkFlatC superTable revMemo flat c0 =
                                     Err e
 
                                 Ok ( mRest, c3 ) ->
-                                    Ok ( Mono.MTuple (ma :: mb :: mRest), c3 )
+                                    Ok ( Mono.mTuple (ma :: mb :: mRest), c3 )
 
 
 {-| Read a set slot back to an annotation. THE only producer of `LSet`. Runs
@@ -1214,7 +1214,7 @@ zonkRecordFieldsC : Dict.Dict Int IO.SuperType -> Array (Maybe TypeIds.MVarId) -
 zonkRecordFieldsC superTable revMemo fields base c0 =
     case fields of
         [] ->
-            Ok ( Mono.MRecord base, c0 )
+            Ok ( Mono.mRecord base, c0 )
 
         ( k, p ) :: rest ->
             case zonkToMonoC superTable revMemo p c0 of
@@ -1234,7 +1234,7 @@ zonkRecordExtC superTable revMemo ext c0 =
 
         Ok ( mt, c1 ) ->
             case mt of
-                Mono.MRecord fields ->
+                Mono.MRecord _ fields ->
                     Ok ( fields, c1 )
 
                 _ ->
@@ -1273,16 +1273,16 @@ classifyApp canonical name args =
             "List" ->
                 case args of
                     [ inner ] ->
-                        Mono.MList inner
+                        Mono.mList inner
 
                     _ ->
-                        Mono.MList Mono.MUnit
+                        Mono.mList Mono.MUnit
 
             _ ->
-                Mono.MCustom canonical name args
+                Mono.mCustom canonical name args
 
     else
-        Mono.MCustom canonical name args
+        Mono.mCustom canonical name args
 
 
 -- residual classification (taint + id allocation) now lives in the
@@ -1371,7 +1371,7 @@ classifyGo s aliasSubst canType =
                             -- (GlobalOpt flattens later per GOPT_016). Storeless
                             -- classification stamps LTop (sound-but-imprecise;
                             -- fast paths gate on signature triviality in M2).
-                            Ok ( Mono.MFunction Mono.LTop [ mFrom ] mTo, s2 )
+                            Ok ( Mono.mFunction Mono.LTop [ mFrom ] mTo, s2 )
 
         Can.TType canonical name args ->
             case classifyList s aliasSubst args of
@@ -1392,7 +1392,7 @@ classifyGo s aliasSubst canType =
                             Err e
 
                         Ok ( allFields, s2 ) ->
-                            Ok ( Mono.MRecord allFields, s2 )
+                            Ok ( Mono.mRecord allFields, s2 )
 
         Can.TUnit ->
             Ok ( Mono.MUnit, s )
@@ -1413,7 +1413,7 @@ classifyGo s aliasSubst canType =
                                     Err e
 
                                 Ok ( mRest, s3 ) ->
-                                    Ok ( Mono.MTuple (ma :: mb :: mRest), s3 )
+                                    Ok ( Mono.mTuple (ma :: mb :: mRest), s3 )
 
         Can.TAlias _ _ _ (Can.Filled inner) ->
             classifyGo s aliasSubst inner
@@ -1478,7 +1478,7 @@ classifyRecordExt s aliasSubst maybeExtension =
 
                 Ok ( mt, s1 ) ->
                     case mt of
-                        Mono.MRecord baseFields ->
+                        Mono.MRecord _ baseFields ->
                             Ok ( baseFields, s1 )
 
                         _ ->

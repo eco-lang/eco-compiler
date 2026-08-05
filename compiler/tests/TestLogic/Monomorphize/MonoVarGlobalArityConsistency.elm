@@ -653,14 +653,14 @@ nodeKindName node =
 
 {-| Flatten a curried function type into total parameter count.
 
-For example, `MFunction [a] (MFunction [b] c)` has flattened arity 2.
+For example, `Mono.mFunction [a] (Mono.mFunction [b] c)` has flattened arity 2.
 Non-function types have flattened arity 0.
 
 -}
 getFlattenedArity : Mono.MonoType -> Int
 getFlattenedArity monoType =
     case monoType of
-        Mono.MFunction _ params result ->
+        Mono.MFunction _ _ params result ->
             List.length params + getFlattenedArity result
 
         _ ->

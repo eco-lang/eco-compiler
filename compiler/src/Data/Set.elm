@@ -1,7 +1,7 @@
 module Data.Set exposing
     ( EverySet
-    , empty, insert
-    , isEmpty, member, size
+    , empty, insert, insertKeyed
+    , isEmpty, member, memberKeyed, size
     , union, diff
     , toList, fromList
     , foldr, filter
@@ -22,12 +22,12 @@ Initial implementation from `Gizra/elm-all-set/1.0.1`.
 
 # Build
 
-@docs empty, insert
+@docs empty, insert, insertKeyed
 
 
 # Query
 
-@docs isEmpty, member, size
+@docs isEmpty, member, memberKeyed, size
 
 
 # Combine
@@ -82,6 +82,24 @@ isEmpty (EverySet d) =
 member : (a -> comparable) -> a -> EverySet comparable a -> Bool
 member toComparable k (EverySet d) =
     Dict.member toComparable k d
+
+
+{-| Membership test against a comparable key the caller has ALREADY built,
+and its insert counterpart. Use these when one expression both probes and
+inserts: `member` then `insert` derives the identical key twice, which for a
+`MonoType` key means walking the whole type twice (K1.2 of
+`plans/mono-comparable-key-optimization.md`).
+-}
+memberKeyed : comparable -> EverySet comparable a -> Bool
+memberKeyed comparableKey (EverySet d) =
+    Dict.memberKeyed comparableKey d
+
+
+{-| Insert a value under a comparable key the caller has already built. See `memberKeyed`.
+-}
+insertKeyed : comparable -> a -> EverySet comparable a -> EverySet comparable a
+insertKeyed comparableKey k (EverySet d) =
+    Dict.insertKeyed comparableKey k () d |> EverySet
 
 
 {-| Determine the number of elements in a set.

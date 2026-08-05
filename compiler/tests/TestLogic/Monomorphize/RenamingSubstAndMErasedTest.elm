@@ -70,7 +70,7 @@ suite =
         in
         r.fn 42
 
-Expected: The closure's MonoType should be MFunction [MInt] MInt, no CEcoValue.
+Expected: The closure's MonoType should be Mono.mFunction [MInt] MInt, no CEcoValue.
 
 -}
 identityInRecordModule : Src.Module
@@ -315,19 +315,19 @@ containsAnyMVar monoType =
         Mono.MVar _ _ ->
             True
 
-        Mono.MList inner ->
+        Mono.MList _ inner ->
             containsAnyMVar inner
 
-        Mono.MFunction _ args ret ->
+        Mono.MFunction _ _ args ret ->
             List.any containsAnyMVar args || containsAnyMVar ret
 
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             Dict.foldl (\_ fieldType acc -> acc || containsAnyMVar fieldType) False fields
 
-        Mono.MCustom _ _ args ->
+        Mono.MCustom _ _ _ args ->
             List.any containsAnyMVar args
 
-        Mono.MTuple elems ->
+        Mono.MTuple _ elems ->
             List.any containsAnyMVar elems
 
         _ ->
@@ -411,19 +411,19 @@ collectCEcoValueVars monoType =
             -- CNumber should have been resolved by the closing pass (resolveResidualNumbers, MONO_028)
             [ String.fromInt (Id.toComparable mvarId) ]
 
-        Mono.MList inner ->
+        Mono.MList _ inner ->
             collectCEcoValueVars inner
 
-        Mono.MFunction _ args ret ->
+        Mono.MFunction _ _ args ret ->
             List.concatMap collectCEcoValueVars args ++ collectCEcoValueVars ret
 
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             Dict.foldl (\_ fieldType acc -> acc ++ collectCEcoValueVars fieldType) [] fields
 
-        Mono.MCustom _ _ args ->
+        Mono.MCustom _ _ _ args ->
             List.concatMap collectCEcoValueVars args
 
-        Mono.MTuple elems ->
+        Mono.MTuple _ elems ->
             List.concatMap collectCEcoValueVars elems
 
         _ ->
@@ -479,23 +479,23 @@ monoTypeToString monoType =
         Mono.MUnit ->
             "MUnit"
 
-        Mono.MList inner ->
-            "MList (" ++ monoTypeToString inner ++ ")"
+        Mono.MList _ inner ->
+            "Mono.mList (" ++ monoTypeToString inner ++ ")"
 
-        Mono.MFunction _ args ret ->
-            "MFunction ["
+        Mono.MFunction _ _ args ret ->
+            "Mono.mFunction ["
                 ++ String.join ", " (List.map monoTypeToString args)
                 ++ "] "
                 ++ monoTypeToString ret
 
-        Mono.MCustom _ name args ->
-            "MCustom " ++ name ++ " [" ++ String.join ", " (List.map monoTypeToString args) ++ "]"
+        Mono.MCustom _ _ name args ->
+            "Mono.mCustom " ++ name ++ " [" ++ String.join ", " (List.map monoTypeToString args) ++ "]"
 
-        Mono.MRecord _ ->
-            "MRecord {...}"
+        Mono.MRecord _ _ ->
+            "Mono.mRecord {...}"
 
-        Mono.MTuple elems ->
-            "MTuple [" ++ String.join ", " (List.map monoTypeToString elems) ++ "]"
+        Mono.MTuple _ elems ->
+            "Mono.mTuple [" ++ String.join ", " (List.map monoTypeToString elems) ++ "]"
 
         Mono.MVar mvarId _ ->
             "MVar \"" ++ String.fromInt (Id.toComparable mvarId) ++ "\""

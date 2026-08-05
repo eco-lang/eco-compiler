@@ -466,7 +466,7 @@ translate expr s0 =
                                                 if Mono.containsAnyMVar monoType0 then
                                                     case monoExprs of
                                                         first :: _ ->
-                                                            Mono.MList (Mono.typeOf first)
+                                                            Mono.mList (Mono.typeOf first)
 
                                                         [] ->
                                                             monoType0
@@ -580,7 +580,7 @@ translate expr s0 =
                                                     allExprs =
                                                         monoA :: monoB :: monoRest
                                                 in
-                                                Ok ( Mono.MonoTupleCreate region allExprs (Mono.MTuple (List.map Mono.typeOf allExprs)), s4 )
+                                                Ok ( Mono.MonoTupleCreate region allExprs (Mono.mTuple (List.map Mono.typeOf allExprs)), s4 )
 
         TOpt.Record fields meta ->
             -- Connect each field expr's type var to the record type's field slot
@@ -860,14 +860,14 @@ specializePortBody incoming expr canType requestedMonoType =
                             let
                                 effectiveType =
                                     case requestedMonoType of
-                                        Mono.MFunction _ _ _ ->
+                                        Mono.MFunction _ _ _ _ ->
                                             requestedMonoType
 
                                         _ ->
                                             classifiedCan
                             in
                             case effectiveType of
-                                Mono.MFunction _ [ paramType ] resultType ->
+                                Mono.MFunction _ _ [ paramType ] resultType ->
                                     Engine.andThen
                                         (\lambdaId ->
                                             let
@@ -884,7 +884,7 @@ specializePortBody incoming expr canType requestedMonoType =
                                                     Mono.MonoLiteral (Mono.LStr portName) Mono.MString
 
                                                 leafKernel valueType =
-                                                    Mono.MonoVarKernel region "Elm" "Platform" "leaf" (Mono.MFunction Mono.LTop [ Mono.MString, valueType ] resultType)
+                                                    Mono.MonoVarKernel region "Elm" "Platform" "leaf" (Mono.mFunction Mono.LTop [ Mono.MString, valueType ] resultType)
 
                                                 closureInfo =
                                                     { lambdaId = lambdaId
@@ -924,7 +924,7 @@ specializePortBody incoming expr canType requestedMonoType =
                                                         let
                                                             encodedType =
                                                                 case Mono.typeOf encoderMono of
-                                                                    Mono.MFunction _ _ r ->
+                                                                    Mono.MFunction _ _ _ r ->
                                                                         r
 
                                                                     t ->
@@ -1018,7 +1018,7 @@ remapEcoVarsFresh nextId0 abiType =
                 Mono.MVar _ _ ->
                     ( t, ( mapping, nextId ) )
 
-                Mono.MFunction anno args r ->
+                Mono.MFunction _ anno args r ->
                     let
                         ( args1, acc1 ) =
                             List.foldr (\a ( accL, accS ) -> let ( a1, accS1 ) = go a accS in ( a1 :: accL, accS1 )) ( [], ( mapping, nextId ) ) args
@@ -1026,35 +1026,35 @@ remapEcoVarsFresh nextId0 abiType =
                         ( r1, acc2 ) =
                             go r acc1
                     in
-                    ( Mono.MFunction anno args1 r1, acc2 )
+                    ( Mono.mFunction anno args1 r1, acc2 )
 
-                Mono.MList e ->
+                Mono.MList _ e ->
                     let
                         ( e1, acc1 ) =
                             go e ( mapping, nextId )
                     in
-                    ( Mono.MList e1, acc1 )
+                    ( Mono.mList e1, acc1 )
 
-                Mono.MTuple es ->
+                Mono.MTuple _ es ->
                     let
                         ( es1, acc1 ) =
                             List.foldr (\a ( accL, accS ) -> let ( a1, accS1 ) = go a accS in ( a1 :: accL, accS1 )) ( [], ( mapping, nextId ) ) es
                     in
-                    ( Mono.MTuple es1, acc1 )
+                    ( Mono.mTuple es1, acc1 )
 
-                Mono.MCustom h n args ->
+                Mono.MCustom _ h n args ->
                     let
                         ( args1, acc1 ) =
                             List.foldr (\a ( accL, accS ) -> let ( a1, accS1 ) = go a accS in ( a1 :: accL, accS1 )) ( [], ( mapping, nextId ) ) args
                     in
-                    ( Mono.MCustom h n args1, acc1 )
+                    ( Mono.mCustom h n args1, acc1 )
 
-                Mono.MRecord fields ->
+                Mono.MRecord _ fields ->
                     let
                         ( fields1, acc1 ) =
                             Dict.foldr (\k v ( accD, accS ) -> let ( v1, accS1 ) = go v accS in ( Dict.insert k v1 accD, accS1 )) ( Dict.empty, ( mapping, nextId ) ) fields
                     in
-                    ( Mono.MRecord fields1, acc1 )
+                    ( Mono.mRecord fields1, acc1 )
 
                 _ ->
                     ( t, ( mapping, nextId ) )
@@ -1109,10 +1109,10 @@ monoKindDebug =
 monoKind : Mono.MonoType -> String
 monoKind mt =
     case mt of
-        Mono.MFunction _ ps r ->
+        Mono.MFunction _ _ ps r ->
             "(" ++ String.join "," (List.map monoKind ps) ++ "->" ++ monoKind r ++ ")"
 
-        Mono.MCustom _ n args ->
+        Mono.MCustom _ _ n args ->
             n ++ (if List.isEmpty args then "" else "<" ++ String.join "," (List.map monoKind args) ++ ">")
 
         Mono.MVar _ Mono.CNumber ->
@@ -1127,13 +1127,13 @@ monoKind mt =
         Mono.MFloat ->
             "F"
 
-        Mono.MList e ->
+        Mono.MList _ e ->
             "[" ++ monoKind e ++ "]"
 
-        Mono.MTuple es ->
+        Mono.MTuple _ es ->
             "T(" ++ String.join "," (List.map monoKind es) ++ ")"
 
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             "R{" ++ String.join "," (List.map (\( k, v ) -> k ++ ":" ++ monoKind v) (Dict.toList fields)) ++ "}"
 
         Mono.MString ->
@@ -1307,7 +1307,7 @@ extractFieldTypes n monoType =
 
     else
         case monoType of
-            Mono.MFunction _ args result ->
+            Mono.MFunction _ _ args result ->
                 args ++ extractFieldTypes (n - List.length args) result
 
             _ ->
@@ -1321,7 +1321,7 @@ extractCtorResultType n monoType =
 
     else
         case monoType of
-            Mono.MFunction _ _ result ->
+            Mono.MFunction _ _ _ result ->
                 extractCtorResultType (n - 1) result
 
             _ ->
@@ -1506,19 +1506,19 @@ monoTypeMentionsEco mt =
         Mono.MVar _ Mono.CEcoValue ->
             True
 
-        Mono.MFunction _ args r ->
+        Mono.MFunction _ _ args r ->
             List.any monoTypeMentionsEco args || monoTypeMentionsEco r
 
-        Mono.MList t ->
+        Mono.MList _ t ->
             monoTypeMentionsEco t
 
-        Mono.MTuple ts ->
+        Mono.MTuple _ ts ->
             List.any monoTypeMentionsEco ts
 
-        Mono.MCustom _ _ args ->
+        Mono.MCustom _ _ _ args ->
             List.any monoTypeMentionsEco args
 
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             Dict.foldl (\_ t acc -> acc || monoTypeMentionsEco t) False fields
 
         _ ->
@@ -1886,10 +1886,10 @@ kernelDevirtShapeOk home name funcMonoType =
 consTailAndResult : Mono.MonoType -> Maybe ( Mono.MonoType, Mono.MonoType )
 consTailAndResult funcMonoType =
     case funcMonoType of
-        Mono.MFunction _ [ _, tail ] result ->
+        Mono.MFunction _ _ [ _, tail ] result ->
             Just ( tail, result )
 
-        Mono.MFunction _ [ _ ] (Mono.MFunction _ [ tail ] result) ->
+        Mono.MFunction _ _ [ _ ] (Mono.MFunction _ _ [ tail ] result) ->
             Just ( tail, result )
 
         _ ->
@@ -1938,19 +1938,19 @@ containsCNumber t =
         Mono.MVar _ Mono.CNumber ->
             True
 
-        Mono.MFunction _ argTypes result ->
+        Mono.MFunction _ _ argTypes result ->
             List.any containsCNumber argTypes || containsCNumber result
 
-        Mono.MList elem ->
+        Mono.MList _ elem ->
             containsCNumber elem
 
-        Mono.MTuple elems ->
+        Mono.MTuple _ elems ->
             List.any containsCNumber elems
 
-        Mono.MCustom _ _ typeArgs ->
+        Mono.MCustom _ _ _ typeArgs ->
             List.any containsCNumber typeArgs
 
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             Dict.foldl (\_ ft acc -> acc || containsCNumber ft) False fields
 
         _ ->
@@ -2317,7 +2317,7 @@ peelResultAnno n t =
 
     else
         case t of
-            Mono.MFunction anno params ret ->
+            Mono.MFunction _ anno params ret ->
                 let
                     np =
                         List.length params
@@ -2326,7 +2326,7 @@ peelResultAnno n t =
                     peelResultAnno (n - np) ret
 
                 else
-                    Mono.MFunction anno (List.drop n params) ret
+                    Mono.mFunction anno (List.drop n params) ret
 
             _ ->
                 t
@@ -2476,7 +2476,7 @@ mFunctionParams n mt =
 
     else
         case mt of
-            Mono.MFunction _ (p :: _) result ->
+            Mono.MFunction _ _ (p :: _) result ->
                 p :: mFunctionParams (n - 1) result
 
             _ ->
@@ -2807,7 +2807,7 @@ peelResult n monoType =
 
     else
         case monoType of
-            Mono.MFunction _ _ result ->
+            Mono.MFunction _ _ _ result ->
                 peelResult (n - 1) result
 
             _ ->
@@ -3473,7 +3473,7 @@ currentMVarEnv =
 
 recordTypeFromFields : List ( Name, Mono.MonoExpr ) -> Mono.MonoType
 recordTypeFromFields fields =
-    Mono.MRecord (List.foldl (\( name, me ) acc -> Dict.insert name (Mono.typeOf me) acc) Dict.empty fields)
+    Mono.mRecord (List.foldl (\( name, me ) acc -> Dict.insert name (Mono.typeOf me) acc) Dict.empty fields)
 
 
 {-| Prefer the record's own field type when it is more concrete than the
@@ -3483,7 +3483,7 @@ approximated: use the field type only when the classified type still has a var).
 refineAccessType : Mono.MonoType -> Mono.MonoType -> Name -> Mono.MonoType
 refineAccessType classified recordType fieldName =
     case recordType of
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             case Dict.get fieldName fields of
                 Just fieldType ->
                     if Mono.containsAnyMVar classified then
@@ -3538,19 +3538,19 @@ sameShapeModuloNumeric a b =
         ( Mono.MFloat, Mono.MVar _ Mono.CNumber ) ->
             True
 
-        ( Mono.MFunction _ args1 r1, Mono.MFunction _ args2 r2 ) ->
+        ( Mono.MFunction _ _ args1 r1, Mono.MFunction _ _ args2 r2 ) ->
             List.length args1 == List.length args2 && List.all identity (List.map2 sameShapeModuloNumeric args1 args2) && sameShapeModuloNumeric r1 r2
 
-        ( Mono.MList e1, Mono.MList e2 ) ->
+        ( Mono.MList _ e1, Mono.MList _ e2 ) ->
             sameShapeModuloNumeric e1 e2
 
-        ( Mono.MTuple es1, Mono.MTuple es2 ) ->
+        ( Mono.MTuple _ es1, Mono.MTuple _ es2 ) ->
             List.length es1 == List.length es2 && List.all identity (List.map2 sameShapeModuloNumeric es1 es2)
 
-        ( Mono.MCustom h1 n1 args1, Mono.MCustom h2 n2 args2 ) ->
+        ( Mono.MCustom _ h1 n1 args1, Mono.MCustom _ h2 n2 args2 ) ->
             h1 == h2 && n1 == n2 && List.length args1 == List.length args2 && List.all identity (List.map2 sameShapeModuloNumeric args1 args2)
 
-        ( Mono.MRecord f1, Mono.MRecord f2 ) ->
+        ( Mono.MRecord _ f1, Mono.MRecord _ f2 ) ->
             Dict.keys f1 == Dict.keys f2 && List.all identity (List.map2 sameShapeModuloNumeric (Dict.values f1) (Dict.values f2))
 
         _ ->
@@ -3563,7 +3563,7 @@ sameShapeModuloNumeric a b =
 recordKeySubset : Mono.MonoType -> Mono.MonoType -> Bool
 recordKeySubset narrow full =
     case ( narrow, full ) of
-        ( Mono.MRecord nf, Mono.MRecord ff ) ->
+        ( Mono.MRecord _ nf, Mono.MRecord _ ff ) ->
             Dict.size nf < Dict.size ff && List.all (\k -> Dict.member k ff) (Dict.keys nf)
 
         _ ->
@@ -3606,16 +3606,16 @@ translateUpdate record updates canType s0 =
                                 Ok ( Mono.MonoRecordUpdate monoRecord monoUpdatesRev resultMonoType, s3 )
 
 
-{-| `MRecord (Dict.union resultFields recordFields)` from the two record types,
+{-| `Mono.mRecord (Dict.union resultFields recordFields)` from the two record types,
 matching the original Update result-type computation.
 -}
 unionRecordTypes : Mono.MonoType -> Mono.MonoType -> Mono.MonoType
 unionRecordTypes classified recordType =
     case ( classified, recordType ) of
-        ( Mono.MRecord resultFields, Mono.MRecord recordFields ) ->
-            Mono.MRecord (Dict.union resultFields recordFields)
+        ( Mono.MRecord _ resultFields, Mono.MRecord _ recordFields ) ->
+            Mono.mRecord (Dict.union resultFields recordFields)
 
-        ( Mono.MRecord _, _ ) ->
+        ( Mono.MRecord _ _, _ ) ->
             classified
 
         _ ->
@@ -3954,16 +3954,16 @@ isNumericFixableShape monoType =
         Mono.MVar _ Mono.CNumber ->
             True
 
-        Mono.MTuple elems ->
+        Mono.MTuple _ elems ->
             not (List.isEmpty elems) && List.all isNumericFixableShape elems
 
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             not (Dict.isEmpty fields) && List.all isNumericFixableShape (Dict.values fields)
 
-        Mono.MList elem ->
+        Mono.MList _ elem ->
             isNumericFixableShape elem
 
-        Mono.MCustom _ _ args ->
+        Mono.MCustom _ _ _ args ->
             -- A custom type with at least one numeric-fixable arg and no arg the
             -- recording couldn't re-type (mirrors the original engine's rule).
             List.any isNumericFixableShape args
@@ -3985,19 +3985,19 @@ monoTypeMentionsNumeric mt =
         Mono.MVar _ Mono.CNumber ->
             True
 
-        Mono.MList t ->
+        Mono.MList _ t ->
             monoTypeMentionsNumeric t
 
-        Mono.MTuple ts ->
+        Mono.MTuple _ ts ->
             List.any monoTypeMentionsNumeric ts
 
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             Dict.foldl (\_ t acc -> acc || monoTypeMentionsNumeric t) False fields
 
-        Mono.MCustom _ _ args ->
+        Mono.MCustom _ _ _ args ->
             List.any monoTypeMentionsNumeric args
 
-        Mono.MFunction _ args r ->
+        Mono.MFunction _ _ args r ->
             List.any monoTypeMentionsNumeric args || monoTypeMentionsNumeric r
 
         _ ->
@@ -4302,7 +4302,7 @@ refineRootInstance gte container path leaf =
 replaceCustomSlot : TypeEnv.GlobalTypeEnv -> Name -> Int -> Mono.MonoType -> Mono.MonoType -> Maybe Mono.MonoType
 replaceCustomSlot gte ctorName idx container leaf =
     case container of
-        Mono.MCustom home typeName typeArgs ->
+        Mono.MCustom _ home typeName typeArgs ->
             case Analysis.lookupUnion gte home typeName of
                 Just (Can.Union unionData) ->
                     findCtorArg ctorName idx unionData.alts
@@ -4313,7 +4313,7 @@ replaceCustomSlot gte ctorName idx container leaf =
                                         paramPosition paramName unionData.vars
                                             |> Maybe.map
                                                 (\pos ->
-                                                    Mono.MCustom home typeName (List.indexedMap (\i t -> if i == pos then leaf else t) typeArgs)
+                                                    Mono.mCustom home typeName (List.indexedMap (\i t -> if i == pos then leaf else t) typeArgs)
                                                 )
 
                                     _ ->
@@ -4333,7 +4333,7 @@ the single ctor's single field is a bare union type-param).
 replaceUnboxSlot : TypeEnv.GlobalTypeEnv -> Mono.MonoType -> Mono.MonoType -> Maybe Mono.MonoType
 replaceUnboxSlot gte container leaf =
     case container of
-        Mono.MCustom home typeName typeArgs ->
+        Mono.MCustom _ home typeName typeArgs ->
             case Analysis.lookupUnion gte home typeName of
                 Just (Can.Union unionData) ->
                     case unionData.alts of
@@ -4343,7 +4343,7 @@ replaceUnboxSlot gte container leaf =
                                     paramPosition paramName unionData.vars
                                         |> Maybe.map
                                             (\pos ->
-                                                Mono.MCustom home typeName (List.indexedMap (\i t -> if i == pos then leaf else t) typeArgs)
+                                                Mono.mCustom home typeName (List.indexedMap (\i t -> if i == pos then leaf else t) typeArgs)
                                             )
 
                                 _ ->
@@ -4404,7 +4404,7 @@ navigateType gte container path =
 customSlot : TypeEnv.GlobalTypeEnv -> Name -> Int -> Mono.MonoType -> Maybe Mono.MonoType
 customSlot gte ctorName idx container =
     case container of
-        Mono.MCustom home typeName typeArgs ->
+        Mono.MCustom _ home typeName typeArgs ->
             case Analysis.lookupUnion gte home typeName of
                 Just (Can.Union unionData) ->
                     findCtorArg ctorName idx unionData.alts
@@ -4429,7 +4429,7 @@ customSlot gte ctorName idx container =
 unboxSlot : TypeEnv.GlobalTypeEnv -> Mono.MonoType -> Maybe Mono.MonoType
 unboxSlot gte container =
     case container of
-        Mono.MCustom home typeName typeArgs ->
+        Mono.MCustom _ home typeName typeArgs ->
             case Analysis.lookupUnion gte home typeName of
                 Just (Can.Union unionData) ->
                     case unionData.alts of
@@ -4455,7 +4455,7 @@ unboxSlot gte container =
 tupleSlot : Mono.MonoType -> Int -> Maybe Mono.MonoType
 tupleSlot t i =
     case t of
-        Mono.MTuple elems ->
+        Mono.MTuple _ elems ->
             List.head (List.drop i elems)
 
         _ ->
@@ -4465,7 +4465,7 @@ tupleSlot t i =
 recordSlot : String -> Mono.MonoType -> Maybe Mono.MonoType
 recordSlot f t =
     case t of
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             Dict.get f fields
 
         _ ->
@@ -4475,9 +4475,9 @@ recordSlot f t =
 replaceIndexSlot : Mono.MonoType -> Int -> Mono.MonoType -> Maybe Mono.MonoType
 replaceIndexSlot t i leaf =
     case t of
-        Mono.MTuple elems ->
+        Mono.MTuple _ elems ->
             if i >= 0 && i < List.length elems then
-                Just (Mono.MTuple (List.indexedMap (\j x -> if j == i then leaf else x) elems))
+                Just (Mono.mTuple (List.indexedMap (\j x -> if j == i then leaf else x) elems))
 
             else
                 Nothing
@@ -4489,8 +4489,8 @@ replaceIndexSlot t i leaf =
 replaceRecordSlot : Mono.MonoType -> String -> Mono.MonoType -> Maybe Mono.MonoType
 replaceRecordSlot t f leaf =
     case t of
-        Mono.MRecord fields ->
-            Just (Mono.MRecord (Dict.insert f leaf fields))
+        Mono.MRecord _ fields ->
+            Just (Mono.mRecord (Dict.insert f leaf fields))
 
         _ ->
             Nothing
@@ -4960,7 +4960,7 @@ specializePath path =
             Engine.andThen
                 (\monoSubPath ->
                     case Mono.getMonoPathType monoSubPath of
-                        Mono.MRecord fields ->
+                        Mono.MRecord _ fields ->
                             case Dict.get fieldName fields of
                                 Just t ->
                                     Engine.succeed (Mono.MonoField fieldName t monoSubPath)
@@ -4969,7 +4969,7 @@ specializePath path =
                                     Engine.fail (EngineBug ("field not in record: " ++ fieldName))
 
                         _ ->
-                            Engine.fail (EngineBug "field projection: container not MRecord")
+                            Engine.fail (EngineBug "field projection: container not Mono.mRecord")
                 )
                 (specializePath subPath)
 
@@ -4997,7 +4997,7 @@ projIndexType kind index container =
     case kind of
         PList ->
             case container of
-                Mono.MList elem ->
+                Mono.MList _ elem ->
                     -- index 0 = head → element; otherwise = tail → the list itself
                     if index == 0 then
                         Engine.succeed elem
@@ -5006,11 +5006,11 @@ projIndexType kind index container =
                         Engine.succeed container
 
                 _ ->
-                    Engine.fail (EngineBug "list projection: container not MList")
+                    Engine.fail (EngineBug "list projection: container not Mono.mList")
 
         PTuple ->
             case container of
-                Mono.MTuple elems ->
+                Mono.MTuple _ elems ->
                     case List.head (List.drop index elems) of
                         Just t ->
                             Engine.succeed t
@@ -5019,7 +5019,7 @@ projIndexType kind index container =
                             Engine.fail (EngineBug "tuple projection: index out of range")
 
                 _ ->
-                    Engine.fail (EngineBug "tuple projection: container not MTuple")
+                    Engine.fail (EngineBug "tuple projection: container not Mono.mTuple")
 
         PCustom ctorName ->
             computeCustomFieldType ctorName index container
@@ -5028,7 +5028,7 @@ projIndexType kind index container =
 computeArrayElementType : Mono.MonoType -> Step Mono.MonoType
 computeArrayElementType container =
     case container of
-        Mono.MCustom _ "Array" [ elem ] ->
+        Mono.MCustom _ _ "Array" [ elem ] ->
             Engine.succeed elem
 
         _ ->
@@ -5038,7 +5038,7 @@ computeArrayElementType container =
 computeCustomFieldType : Name -> Int -> Mono.MonoType -> Step Mono.MonoType
 computeCustomFieldType ctorName index container =
     case container of
-        Mono.MCustom home typeName typeArgs ->
+        Mono.MCustom _ home typeName typeArgs ->
             Engine.andThen
                 (\gte ->
                     case Analysis.lookupUnion gte home typeName of
@@ -5056,13 +5056,13 @@ computeCustomFieldType ctorName index container =
                 (Engine.getS (\s -> s.env.globalTypeEnv))
 
         _ ->
-            Engine.fail (EngineBug "custom field projection: container not MCustom")
+            Engine.fail (EngineBug "custom field projection: container not Mono.mCustom")
 
 
 computeUnboxResultType : Mono.MonoType -> Step Mono.MonoType
 computeUnboxResultType container =
     case container of
-        Mono.MCustom home typeName typeArgs ->
+        Mono.MCustom _ home typeName typeArgs ->
             Engine.andThen
                 (\gte ->
                     case Analysis.lookupUnion gte home typeName of
@@ -5085,7 +5085,7 @@ computeUnboxResultType container =
                 (Engine.getS (\s -> s.env.globalTypeEnv))
 
         _ ->
-            Engine.fail (EngineBug "unbox: container not MCustom")
+            Engine.fail (EngineBug "unbox: container not Mono.mCustom")
 
 
 findCtorArg : Name -> Int -> List Can.Ctor -> Maybe (Can.Type Name)

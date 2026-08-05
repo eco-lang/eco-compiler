@@ -1,7 +1,7 @@
 module Data.Map exposing
     ( Dict
-    , empty, singleton, insert
-    , isEmpty, member, get, size
+    , empty, singleton, insert, insertKeyed
+    , isEmpty, member, memberKeyed, get, size
     , keys, values, toList, fromList
     , map, foldl, foldr, filter
     , union, diff
@@ -23,12 +23,12 @@ All functions in this module are stack safe and won't crash from recursing over 
 
 # Build
 
-@docs empty, singleton, insert
+@docs empty, singleton, insert, insertKeyed
 
 
 # Query
 
-@docs isEmpty, member, get, size
+@docs isEmpty, member, memberKeyed, get, size
 
 
 # Lists
@@ -143,6 +143,28 @@ size (D dict) =
 isEmpty : Dict c k v -> Bool
 isEmpty (D dict) =
     Dict.isEmpty dict
+
+
+{-| Membership test against a comparable key the caller has ALREADY built.
+
+`member`/`insert` take the key-derivation function and apply it on every
+operation, so the idiomatic probe-then-insert pair derives the identical key
+twice. For keys derived by walking a whole `MonoType` that is a full tree
+re-walk plus its allocation, per probe — build the key once in a `let` and
+pass it to these instead (K1.2 of
+`plans/mono-comparable-key-optimization.md`).
+
+-}
+memberKeyed : comparable -> Dict comparable k v -> Bool
+memberKeyed comparableKey (D dict) =
+    Dict.member comparableKey dict
+
+
+{-| Insert using a comparable key the caller has already built. See `memberKeyed`.
+-}
+insertKeyed : comparable -> k -> v -> Dict comparable k v -> Dict comparable k v
+insertKeyed comparableKey key value (D dict) =
+    D (Dict.insert comparableKey ( key, value ) dict)
 
 
 {-| Insert a key-value pair into a dictionary. Replaces value when there is

@@ -9,7 +9,7 @@ module Compiler.Monomorphize.Analysis exposing
 This module handles:
 
   - Dependency collection (finding global references)
-  - Custom type collection (finding all MCustom types)
+  - Custom type collection (finding all Mono.mCustom types)
   - Union type lookup
   - Ctor shape computation for the graph
 
@@ -48,7 +48,6 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Monomorphize.State as State exposing (MVarEnv, Substitution)
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Data.Map
-import Data.Set as EverySet exposing (EverySet)
 import Dict
 import System.TypeCheck.IO as IO
 import Utils.Crash
@@ -58,32 +57,34 @@ import Utils.Crash
 -- ========== CUSTOM TYPE COLLECTION ==========
 
 
-{-| Collect all MCustom types from a MonoType, recursively traversing nested structures.
+{-| Collect all Mono.mCustom types from a MonoType, recursively traversing nested structures.
 -}
-collectCustomTypesFromMonoType : Mono.MonoType -> EverySet String Mono.MonoType -> EverySet String Mono.MonoType
+collectCustomTypesFromMonoType : Mono.MonoType -> Mono.LayoutMap () -> Mono.LayoutMap ()
 collectCustomTypesFromMonoType monoType acc =
     case monoType of
-        Mono.MCustom _ _ args ->
-            -- Skip if already in set (avoids redundant toComparableLayoutKey calls)
-            if EverySet.member Mono.toComparableLayoutKey monoType acc then
+        Mono.MCustom _ _ _ args ->
+            -- K4: the probe and the insert both key on the hash the type already
+            -- carries. This used to build a full comparable string per probe (and
+            -- K1.2 had already halved it from two).
+            if Mono.layoutMapMember monoType acc then
                 acc
 
             else
                 -- Add this MCustom, then recurse into type args
                 List.foldl collectCustomTypesFromMonoType
-                    (EverySet.insert Mono.toComparableLayoutKey monoType acc)
+                    (Mono.layoutMapInsert monoType () acc)
                     args
 
-        Mono.MList elem ->
+        Mono.MList _ elem ->
             collectCustomTypesFromMonoType elem acc
 
-        Mono.MTuple elementTypes ->
+        Mono.MTuple _ elementTypes ->
             List.foldl collectCustomTypesFromMonoType acc elementTypes
 
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             Dict.foldl (\_ t a -> collectCustomTypesFromMonoType t a) acc fields
 
-        Mono.MFunction _ argTypes resultType ->
+        Mono.MFunction _ _ argTypes resultType ->
             List.foldl collectCustomTypesFromMonoType
                 (collectCustomTypesFromMonoType resultType acc)
                 argTypes
@@ -95,7 +96,7 @@ collectCustomTypesFromMonoType monoType acc =
 {-| Collect custom types from a MonoPath.
 The path contains intermediate container types that need their shapes computed.
 -}
-collectCustomTypesFromPath : Mono.MonoPath -> EverySet.EverySet String Mono.MonoType -> EverySet.EverySet String Mono.MonoType
+collectCustomTypesFromPath : Mono.MonoPath -> Mono.LayoutMap () -> Mono.LayoutMap ()
 collectCustomTypesFromPath path acc =
     case path of
         Mono.MonoRoot _ rootType ->
@@ -114,9 +115,9 @@ collectCustomTypesFromPath path acc =
                 (collectCustomTypesFromMonoType resultType acc)
 
 
-{-| Collect all MCustom types from a MonoExpr and its sub-expressions.
+{-| Collect all Mono.mCustom types from a MonoExpr and its sub-expressions.
 -}
-collectCustomTypesFromExpr : Mono.MonoExpr -> EverySet String Mono.MonoType -> EverySet String Mono.MonoType
+collectCustomTypesFromExpr : Mono.MonoExpr -> Mono.LayoutMap () -> Mono.LayoutMap ()
 collectCustomTypesFromExpr expr acc =
     let
         exprType =
@@ -226,7 +227,7 @@ collectCustomTypesFromExpr expr acc =
             let
                 fieldAcc =
                     case monoType of
-                        Mono.MRecord fieldDict ->
+                        Mono.MRecord _ fieldDict ->
                             Dict.foldl (\_ t a -> collectCustomTypesFromMonoType t a) accWithType fieldDict
 
                         _ ->
@@ -241,7 +242,7 @@ collectCustomTypesFromExpr expr acc =
             let
                 fieldAcc =
                     case monoType of
-                        Mono.MRecord fields ->
+                        Mono.MRecord _ fields ->
                             Dict.foldl (\_ t a -> collectCustomTypesFromMonoType t a) accWithType fields
 
                         _ ->
@@ -255,7 +256,7 @@ collectCustomTypesFromExpr expr acc =
             let
                 elemTypes =
                     case monoType of
-                        Mono.MTuple types ->
+                        Mono.MTuple _ types ->
                             types
 
                         _ ->
@@ -275,7 +276,7 @@ collectCustomTypesFromExpr expr acc =
 
 {-| Collect custom types from a decision tree.
 -}
-collectCustomTypesFromDecider : Mono.Decider Mono.MonoChoice -> EverySet String Mono.MonoType -> EverySet String Mono.MonoType
+collectCustomTypesFromDecider : Mono.Decider Mono.MonoChoice -> Mono.LayoutMap () -> Mono.LayoutMap ()
 collectCustomTypesFromDecider decider acc =
     case decider of
         Mono.Leaf choice ->
@@ -306,7 +307,7 @@ collectCustomTypesFromDecider decider acc =
 
 {-| Collect custom types from a MonoDtPath (decision tree path).
 -}
-collectCustomTypesFromDtPath : Mono.MonoDtPath -> EverySet String Mono.MonoType -> EverySet String Mono.MonoType
+collectCustomTypesFromDtPath : Mono.MonoDtPath -> Mono.LayoutMap () -> Mono.LayoutMap ()
 collectCustomTypesFromDtPath dtPath acc =
     case dtPath of
         Mono.DtRoot _ rootType ->
@@ -321,9 +322,9 @@ collectCustomTypesFromDtPath dtPath acc =
                 (collectCustomTypesFromMonoType resultType acc)
 
 
-{-| Collect all MCustom types from all nodes in the graph.
+{-| Collect all Mono.mCustom types from all nodes in the graph.
 -}
-collectAllCustomTypes : Array (Maybe Mono.MonoNode) -> EverySet String Mono.MonoType
+collectAllCustomTypes : Array (Maybe Mono.MonoNode) -> Mono.LayoutMap ()
 collectAllCustomTypes nodes =
     Array.foldl
         (\maybeNode acc ->
@@ -367,7 +368,7 @@ collectAllCustomTypes nodes =
                             collectCustomTypesFromExpr expr
                                 (collectCustomTypesFromMonoType monoType acc)
         )
-        EverySet.empty
+        Mono.layoutMapEmpty
         nodes
 
 
@@ -545,7 +546,7 @@ even those not directly used in code.
 computeCtorShapesForGraph :
     TypeEnv.GlobalTypeEnv
     -> Array (Maybe Mono.MonoNode)
-    -> Dict.Dict String (List Mono.CtorShape)
+    -> Mono.LayoutMap (List Mono.CtorShape)
 computeCtorShapesForGraph globalTypeEnv nodes =
     let
         customTypes =
@@ -553,11 +554,7 @@ computeCtorShapesForGraph globalTypeEnv nodes =
 
         processCustomType monoType acc =
             case monoType of
-                Mono.MCustom canonical typeName monoArgs ->
-                    let
-                        key =
-                            Mono.toComparableLayoutKey monoType
-                    in
+                Mono.MCustom _ canonical typeName monoArgs ->
                     case lookupUnion globalTypeEnv canonical typeName of
                         Nothing ->
                             Utils.Crash.crash
@@ -572,12 +569,12 @@ computeCtorShapesForGraph globalTypeEnv nodes =
                                 ( completeCtors, _ ) =
                                     buildCompleteCtorShapes canonical (State.initMVarEnv TypeIds.firstMVarId Dict.empty) unionData.vars monoArgs unionData.alts
                             in
-                            Dict.insert key completeCtors acc
+                            Mono.layoutMapInsert monoType completeCtors acc
 
                 _ ->
                     acc
 
-        dummyCompare _ _ =
-            EQ
     in
-    EverySet.foldr dummyCompare processCustomType Dict.empty customTypes
+    Mono.layoutMapFoldl (\monoType _ acc -> processCustomType monoType acc)
+        Mono.layoutMapEmpty
+        customTypes

@@ -272,7 +272,7 @@ monomorphicKernelTests =
                         preserveVars canType
                 in
                 Expect.equal result
-                    (Mono.MFunction Mono.LTop [ Mono.MInt ] (Mono.MFunction Mono.LTop [ Mono.MInt ] Mono.MInt))
+                    (Mono.mFunction Mono.LTop [ Mono.MInt ] (Mono.mFunction Mono.LTop [ Mono.MInt ] Mono.MInt))
         , Test.test "Basics.isInfinite : Float -> Bool" <|
             \_ ->
                 let
@@ -283,7 +283,7 @@ monomorphicKernelTests =
                         preserveVars canType
                 in
                 Expect.equal result
-                    (Mono.MFunction Mono.LTop [ Mono.MFloat ] Mono.MBool)
+                    (Mono.mFunction Mono.LTop [ Mono.MFloat ] Mono.MBool)
         , Test.test "String.lines : String -> List String" <|
             \_ ->
                 let
@@ -294,7 +294,7 @@ monomorphicKernelTests =
                         preserveVars canType
                 in
                 Expect.equal result
-                    (Mono.MFunction Mono.LTop [ Mono.MString ] (Mono.MList Mono.MString))
+                    (Mono.mFunction Mono.LTop [ Mono.MString ] (Mono.mList Mono.MString))
         ]
 
 
@@ -317,11 +317,11 @@ polymorphicKernelTests =
                         preserveVars canType
                 in
                 Expect.equal result
-                    (Mono.MFunction Mono.LTop
+                    (Mono.mFunction Mono.LTop
                         [ testMVarN 0 Mono.CEcoValue ]
-                        (Mono.MFunction Mono.LTop
-                            [ Mono.MList (testMVarN 0 Mono.CEcoValue) ]
-                            (Mono.MList (testMVarN 0 Mono.CEcoValue))
+                        (Mono.mFunction Mono.LTop
+                            [ Mono.mList (testMVarN 0 Mono.CEcoValue) ]
+                            (Mono.mList (testMVarN 0 Mono.CEcoValue))
                         )
                     )
         , Test.test "Utils.equal : a -> a -> Bool (preserves vars)" <|
@@ -334,9 +334,9 @@ polymorphicKernelTests =
                         preserveVars canType
                 in
                 Expect.equal result
-                    (Mono.MFunction Mono.LTop
+                    (Mono.mFunction Mono.LTop
                         [ testMVarN 0 Mono.CEcoValue ]
-                        (Mono.MFunction Mono.LTop
+                        (Mono.mFunction Mono.LTop
                             [ testMVarN 0 Mono.CEcoValue ]
                             Mono.MBool
                         )
@@ -352,7 +352,7 @@ polymorphicKernelTests =
                         preserveVars canType
                 in
                 Expect.equal result
-                    (Mono.MFunction Mono.LTop [ Mono.MInt ] Mono.MInt)
+                    (Mono.mFunction Mono.LTop [ Mono.MInt ] Mono.MInt)
         ]
 
 
@@ -375,9 +375,9 @@ debugKernelTests =
                         preserveVars canType
                 in
                 Expect.equal result
-                    (Mono.MFunction Mono.LTop
+                    (Mono.mFunction Mono.LTop
                         [ Mono.MString ]
-                        (Mono.MFunction Mono.LTop
+                        (Mono.mFunction Mono.LTop
                             [ testMVarN 0 Mono.CEcoValue ]
                             (testMVarN 0 Mono.CEcoValue)
                         )
@@ -392,7 +392,7 @@ debugKernelTests =
                         preserveVars canType
                 in
                 Expect.equal result
-                    (Mono.MFunction Mono.LTop
+                    (Mono.mFunction Mono.LTop
                         [ Mono.MString ]
                         (testMVarN 0 Mono.CEcoValue)
                     )
@@ -537,11 +537,11 @@ listModuleTests =
                 -- Expected C ABI: uint64_t cons(uint64_t head, uint64_t tail)
                 -- All args should be eco.value (MVar with CEcoValue)
                 Expect.equal result
-                    (Mono.MFunction Mono.LTop
+                    (Mono.mFunction Mono.LTop
                         [ testMVarN 0 Mono.CEcoValue ]
-                        (Mono.MFunction Mono.LTop
-                            [ Mono.MList (testMVarN 0 Mono.CEcoValue) ]
-                            (Mono.MList (testMVarN 0 Mono.CEcoValue))
+                        (Mono.mFunction Mono.LTop
+                            [ Mono.mList (testMVarN 0 Mono.CEcoValue) ]
+                            (Mono.mList (testMVarN 0 Mono.CEcoValue))
                         )
                     )
         ]
@@ -583,9 +583,9 @@ utilsModuleTests =
                 in
                 -- Expected C ABI: bool equal(uint64_t a, uint64_t b)
                 Expect.equal result
-                    (Mono.MFunction Mono.LTop
+                    (Mono.mFunction Mono.LTop
                         [ testMVarN 0 Mono.CEcoValue ]
-                        (Mono.MFunction Mono.LTop
+                        (Mono.mFunction Mono.LTop
                             [ testMVarN 0 Mono.CEcoValue ]
                             Mono.MBool
                         )
@@ -738,11 +738,11 @@ kernelAbiPreservationTests =
                 in
                 -- The ABI type should have MVar with CEcoValue, NOT MInt or MString
                 Expect.equal abiType
-                    (Mono.MFunction Mono.LTop
+                    (Mono.mFunction Mono.LTop
                         [ testMVarN 0 Mono.CEcoValue ]
-                        (Mono.MFunction Mono.LTop
-                            [ Mono.MList (testMVarN 0 Mono.CEcoValue) ]
-                            (Mono.MList (testMVarN 0 Mono.CEcoValue))
+                        (Mono.mFunction Mono.LTop
+                            [ Mono.mList (testMVarN 0 Mono.CEcoValue) ]
+                            (Mono.mList (testMVarN 0 Mono.CEcoValue))
                         )
                     )
         , Test.test "Utils.equal ABI is same whether called with Int or custom type" <|
@@ -756,9 +756,9 @@ kernelAbiPreservationTests =
                 in
                 -- Should NOT have MInt even if called at Int type
                 Expect.equal abiType
-                    (Mono.MFunction Mono.LTop
+                    (Mono.mFunction Mono.LTop
                         [ testMVarN 0 Mono.CEcoValue ]
-                        (Mono.MFunction Mono.LTop
+                        (Mono.mFunction Mono.LTop
                             [ testMVarN 0 Mono.CEcoValue ]
                             Mono.MBool
                         )
@@ -816,10 +816,10 @@ kernelAbiPreservationTests =
                             Mono.MInt ->
                                 True
 
-                            Mono.MFunction _ args ret ->
+                            Mono.MFunction _ _ args ret ->
                                 List.any containsMInt args || containsMInt ret
 
-                            Mono.MList inner ->
+                            Mono.MList _ inner ->
                                 containsMInt inner
 
                             _ ->

@@ -982,7 +982,7 @@ position, which is the hazard).
 isFnType : Mono.MonoType -> Bool
 isFnType t =
     case t of
-        Mono.MFunction _ _ _ ->
+        Mono.MFunction _ _ _ _ ->
             True
 
         _ ->
@@ -992,24 +992,24 @@ isFnType t =
 {-| pkg-`bytes` exclusion, TYPE side (plan DQ4): never hoist a value whose
 type reaches an elm/bytes type (Encoder/Decoder/Bytes) — those are
 fusion's operands; the strict reifier does not look through bare globals.
-`MFunction` is a barrier (encoder-RETURNING functions are fine).
+`Mono.mFunction` is a barrier (encoder-RETURNING functions are fine).
 -}
 typeTouchesBytes : Mono.MonoType -> Bool
 typeTouchesBytes t =
     case t of
-        Mono.MCustom (IO.Canonical pkg _) _ args ->
+        Mono.MCustom _ (IO.Canonical pkg _) _ args ->
             pkg == ( "elm", "bytes" ) || List.any typeTouchesBytes args
 
-        Mono.MList inner ->
+        Mono.MList _ inner ->
             typeTouchesBytes inner
 
-        Mono.MTuple items ->
+        Mono.MTuple _ items ->
             List.any typeTouchesBytes items
 
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             Dict.foldl (\_ ft acc -> acc || typeTouchesBytes ft) False fields
 
-        Mono.MFunction _ _ _ ->
+        Mono.MFunction _ _ _ _ ->
             False
 
         _ ->

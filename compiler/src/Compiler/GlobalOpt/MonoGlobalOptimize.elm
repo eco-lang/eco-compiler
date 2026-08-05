@@ -210,7 +210,7 @@ collectCaseLeafFunctionsGO monoDecider monoJumps =
                     case choice of
                         Mono.Inline expr ->
                             case Mono.typeOf expr of
-                                Mono.MFunction _ _ _ ->
+                                Mono.MFunction _ _ _ _ ->
                                     Mono.typeOf expr :: acc
 
                                 _ ->
@@ -220,7 +220,7 @@ collectCaseLeafFunctionsGO monoDecider monoJumps =
                             case Dict.get idx jumpDict of
                                 Just jumpExpr ->
                                     case Mono.typeOf jumpExpr of
-                                        Mono.MFunction _ _ _ ->
+                                        Mono.MFunction _ _ _ _ ->
                                             Mono.typeOf jumpExpr :: acc
 
                                         _ ->
@@ -311,7 +311,7 @@ processBranchResult home maybeNorm expr ctx =
 
         Just norm ->
             case Mono.typeOf processedExpr of
-                Mono.MFunction _ _ _ ->
+                Mono.MFunction _ _ _ _ ->
                     if Mono.segmentLengths (Mono.typeOf processedExpr) == norm.canonicalSeg then
                         ( processedExpr, ctx1 )
 
@@ -575,7 +575,7 @@ ensureCallableForNode :
     -> ( Mono.MonoExpr, GlobalCtx )
 ensureCallableForNode home expr monoType ctx =
     case monoType of
-        Mono.MFunction _ _ _ ->
+        Mono.MFunction _ _ _ _ ->
             let
                 stageArgTypes =
                     Mono.stageParamTypes monoType
@@ -605,7 +605,7 @@ ensureCallableForNode home expr monoType ctx =
 
                         flattenedFuncType =
                             -- Kernel-facing arrow: LTop (LSS_004).
-                            Mono.MFunction Mono.LTop kernelFlatArgTypes kernelFlatRetType
+                            Mono.mFunction Mono.LTop kernelFlatArgTypes kernelFlatRetType
                     in
                     makeAliasClosureGO home
                         (Mono.MonoVarKernel region kernelPrefix kernelHome name kernelAbiType)
@@ -964,7 +964,7 @@ rewriteIfForAbi home branches final resultType ctx0 =
                 |> List.filterMap
                     (\e ->
                         case Mono.typeOf e of
-                            Mono.MFunction _ _ _ ->
+                            Mono.MFunction _ _ _ _ ->
                                 Just (Mono.typeOf e)
 
                             _ ->
@@ -1658,8 +1658,8 @@ extendSourceArityEnv graph env def =
 
 {-| Get source arity for a callee, with fallback for unknown callees.
 For unknown callees (like function parameters), we use first-stage arity
-from the type's outermost MFunction layer. This correctly handles
-multi-stage function types like MFunction [Int] (MFunction [Int] Int)
+from the type's outermost Mono.mFunction layer. This correctly handles
+multi-stage function types like Mono.mFunction [Int] (Mono.mFunction [Int] Int)
 where the first-stage arity is 1, not the total arity of 2.
 
 Note: FlattenedExternal callees are handled separately by callModelForCallee
@@ -1688,7 +1688,7 @@ For non-function types, returns 0.
 firstStageArityFromType : Mono.MonoType -> Int
 firstStageArityFromType monoType =
     case monoType of
-        Mono.MFunction _ argTypes _ ->
+        Mono.MFunction _ _ argTypes _ ->
             List.length argTypes
 
         _ ->
@@ -1918,14 +1918,14 @@ calleeHasPolymorphicReturn env funcExpr =
             False
 
 
-{-| Peel `n` MFunction layers to get the return type of the n-th stage's evaluator.
+{-| Peel `n` Mono.mFunction layers to get the return type of the n-th stage's evaluator.
 
 For the saturating papExtend in a chained applyByStages, the relevant
 evaluator is the LAST stage in the chain (after consuming all
 `remainingStageArities`), not the first. So `n` is the number of stages
 applied, not 1.
 
-If the chain runs out of MFunction layers before `n` peels, returns the
+If the chain runs out of Mono.mFunction layers before `n` peels, returns the
 current type (defensive — should not happen for well-typed StageCurried
 calls).
 
@@ -1937,7 +1937,7 @@ peelStages n t =
 
     else
         case t of
-            Mono.MFunction _ _ body ->
+            Mono.MFunction _ _ _ body ->
                 peelStages (n - 1) body
 
             _ ->
@@ -1954,7 +1954,7 @@ Heuristic: peel by `totalArgsConsumed` (initialRemaining + sum of
 remainingStageArities). When the callee is a partial-application
 expression whose `Mono.typeOf` reports the _original_ function's full
 curried type rather than the partial-app's narrowed type (e.g. add of
-type `MFunction [Int] (MFunction [Int] Int)` seen at a 1-arg saturating
+type `Mono.mFunction [Int] (Mono.mFunction [Int] Int)` seen at a 1-arg saturating
 call), `totalArgsConsumed` undercounts. As a fallback when the peeled
 result is still a function but `MonoCall.resultType` is not, we walk all
 the way to `decomposeFunctionType`'s final body — that matches the

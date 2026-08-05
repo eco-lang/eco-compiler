@@ -181,7 +181,7 @@ checkNodeLayoutCompleteness specId node =
 checkTypeLayoutComplete : String -> Mono.MonoType -> List (() -> Expect.Expectation)
 checkTypeLayoutComplete context monoType =
     case monoType of
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             -- Check that record has valid shape
             -- Since MRecord is now a Dict, we just verify it's well-formed
             if Dict.size fields < 0 then
@@ -190,7 +190,7 @@ checkTypeLayoutComplete context monoType =
             else
                 []
 
-        Mono.MTuple elementTypes ->
+        Mono.MTuple _ elementTypes ->
             -- Check that tuple has valid shape
             if List.length elementTypes < 0 then
                 [ \() -> Expect.fail (context ++ ": Tuple has negative element count") ]
@@ -198,13 +198,13 @@ checkTypeLayoutComplete context monoType =
             else
                 []
 
-        Mono.MList elemType ->
+        Mono.MList _ elemType ->
             checkTypeLayoutComplete context elemType
 
-        Mono.MCustom _ _ typeArgs ->
+        Mono.MCustom _ _ _ typeArgs ->
             List.concatMap (checkTypeLayoutComplete context) typeArgs
 
-        Mono.MFunction _ paramTypes returnType ->
+        Mono.MFunction _ _ paramTypes returnType ->
             List.concatMap (checkTypeLayoutComplete context) paramTypes
                 ++ checkTypeLayoutComplete context returnType
 
@@ -345,7 +345,7 @@ collectExprRecordAccessIssues context expr =
 
                 checks =
                     case recordType of
-                        Mono.MRecord fields ->
+                        Mono.MRecord _ fields ->
                             -- Verify field exists in the record
                             case Dict.get fieldName fields of
                                 Just _ ->
@@ -366,7 +366,7 @@ collectExprRecordAccessIssues context expr =
 
                 checks =
                     case recordType of
-                        Mono.MRecord fields ->
+                        Mono.MRecord _ fields ->
                             -- Verify all update field names are valid
                             List.concatMap
                                 (\( fName, _ ) ->
@@ -449,7 +449,7 @@ collectCtorLayoutChecks (Mono.MonoGraph data) =
     -- For each entry in ctorShapes, verify consistency:
     -- - Constructor tags should be sequential (0, 1, 2, ...)
     -- - Field counts should be non-negative
-    Dict.foldl
+    Mono.layoutMapFoldl
         (\_ ctors acc ->
             acc
                 ++ (List.indexedMap

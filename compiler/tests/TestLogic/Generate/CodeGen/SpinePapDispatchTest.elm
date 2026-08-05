@@ -218,7 +218,7 @@ hasSingletonCalleeUse =
             case e of
                 Mono.MonoCall _ (Mono.MonoVarLocal _ t) _ _ _ ->
                     case t of
-                        Mono.MFunction (Mono.LSet [ _ ]) _ ret ->
+                        Mono.MFunction _ (Mono.LSet [ _ ]) _ ret ->
                             not (isFn ret)
 
                         _ ->
@@ -245,7 +245,7 @@ hasPapPrefixStamp =
 isSingletonFn : Mono.MonoType -> Bool
 isSingletonFn t =
     case t of
-        Mono.MFunction (Mono.LSet [ _ ]) _ _ ->
+        Mono.MFunction _ (Mono.LSet [ _ ]) _ _ ->
             True
 
         _ ->
@@ -255,7 +255,7 @@ isSingletonFn t =
 isFn : Mono.MonoType -> Bool
 isFn t =
     case t of
-        Mono.MFunction _ _ _ ->
+        Mono.MFunction _ _ _ _ ->
             True
 
         _ ->

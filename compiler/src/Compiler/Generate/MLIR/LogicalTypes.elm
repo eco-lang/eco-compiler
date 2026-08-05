@@ -87,7 +87,7 @@ type AggKind
 {-| Compute the logical description of a MonoType, consulting the
 ctor registry to recognise single-constructor customs.
 -}
-monoTypeToLogical : Int -> Dict String (List Mono.CtorShape) -> Mono.MonoType -> LogicalTypeDesc
+monoTypeToLogical : Int -> Mono.LayoutMap (List Mono.CtorShape) -> Mono.MonoType -> LogicalTypeDesc
 monoTypeToLogical customMaxFields ctorShapes ty =
     case ty of
         Mono.MInt ->
@@ -99,36 +99,36 @@ monoTypeToLogical customMaxFields ctorShapes ty =
         Mono.MChar ->
             LI16
 
-        Mono.MTuple [ a, b ] ->
+        Mono.MTuple _ [ a, b ] ->
             LTuple2 (kindOf a) (kindOf b)
 
-        Mono.MTuple [ a, b, c ] ->
+        Mono.MTuple _ [ a, b, c ] ->
             LTuple3 (kindOf a) (kindOf b) (kindOf c)
 
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             let
                 layout =
                     Types.computeRecordLayout fields
             in
             LRecord (List.map (kindOf << .monoType) layout.fields)
 
-        Mono.MList headType ->
+        Mono.MList _ headType ->
             -- Tail is recursive (List a), always boxed at the wire level.
             LCons (kindOf headType) AKValue
 
-        Mono.MCustom _ _ _ ->
+        Mono.MCustom _ _ _ _ ->
             customDescFor customMaxFields ctorShapes ty
 
         _ ->
             LValue
 
 
-{-| Try to build an `LCustom` for a single-constructor MCustom with
+{-| Try to build an `LCustom` for a single-constructor Mono.mCustom with
 ≤ `customMaxFields` fields; fall back to `LValue` otherwise.
 -}
-customDescFor : Int -> Dict String (List Mono.CtorShape) -> Mono.MonoType -> LogicalTypeDesc
+customDescFor : Int -> Mono.LayoutMap (List Mono.CtorShape) -> Mono.MonoType -> LogicalTypeDesc
 customDescFor customMaxFields ctorShapes ty =
-    case Dict.get (Mono.toComparableLayoutKey ty) ctorShapes of
+    case Mono.layoutMapGet ty ctorShapes of
         Just [ singleCtor ] ->
             let
                 fieldCount =
@@ -268,7 +268,7 @@ parameter / result MonoTypes. No-op for non-`func.func` ops.
 for recognising single-constructor customs.
 
 -}
-addLogicalTypesAttr : Int -> Dict String (List Mono.CtorShape) -> List Mono.MonoType -> Mono.MonoType -> MlirOp -> MlirOp
+addLogicalTypesAttr : Int -> Mono.LayoutMap (List Mono.CtorShape) -> List Mono.MonoType -> Mono.MonoType -> MlirOp -> MlirOp
 addLogicalTypesAttr customMaxFields ctorShapes argTypes resultType op =
     addLogicalDescsAttr
         (List.map (monoTypeToLogical customMaxFields ctorShapes) argTypes)

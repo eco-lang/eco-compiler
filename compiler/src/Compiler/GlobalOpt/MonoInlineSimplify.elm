@@ -388,7 +388,7 @@ fnResultSiteCensus nodes =
                     case maybeNode of
                         Just (MonoDefine (MonoClosure info body _) _) ->
                             case Mono.typeOf body of
-                                Mono.MFunction _ _ _ ->
+                                Mono.MFunction _ _ _ _ ->
                                     ( Dict.insert specId (List.length info.params) acc, specId + 1 )
 
                                 _ ->
@@ -738,7 +738,7 @@ raiseOne inlineConfig specId info body cty defTy =
                     -- cheap pure stage-1 per application) is the experiment
                     -- this flag exists to measure.
                     case Mono.typeOf body of
-                        Mono.MFunction _ stageTys retTy ->
+                        Mono.MFunction _ _ stageTys retTy ->
                             let
                                 freshParams =
                                     List.indexedMap
@@ -782,8 +782,8 @@ precision).
 flattenArrowOnce : Mono.MonoType -> Maybe Mono.MonoType
 flattenArrowOnce ty =
     case ty of
-        Mono.MFunction anno stage1 (Mono.MFunction _ stage2 ret) ->
-            Just (Mono.MFunction anno (stage1 ++ stage2) ret)
+        Mono.MFunction _ anno stage1 (Mono.MFunction _ _ stage2 ret) ->
+            Just (Mono.mFunction anno (stage1 ++ stage2) ret)
 
         _ ->
             Nothing
@@ -862,7 +862,7 @@ optimizeNodes :
     -> RewriteCtx
     -> Maybe Mono.MainInfo
     -> Mono.SpecializationRegistry
-    -> Dict String (List Mono.CtorShape)
+    -> Mono.LayoutMap (List Mono.CtorShape)
     -> List Mono.PortRegistration
     -> Maybe Mono.SpecId
     -> Dict Int Mono.MemberOrigin
@@ -1454,7 +1454,7 @@ hasCalledFunctionParam params body =
             List.filterMap
                 (\( n, pt ) ->
                     case pt of
-                        Mono.MFunction _ _ _ ->
+                        Mono.MFunction _ _ _ _ ->
                             Just n
 
                         _ ->
@@ -1539,7 +1539,7 @@ buildLoopifiables inlineConfig nodes =
                                         |> List.filterMap
                                             (\( i, ( pName, pType ) ) ->
                                                 case pType of
-                                                    Mono.MFunction _ _ _ ->
+                                                    Mono.MFunction _ _ _ _ ->
                                                         let
                                                             arity =
                                                                 flatArrowArity pType
@@ -1578,7 +1578,7 @@ Specialize.peelCallResult).
 flatArrowArity : Mono.MonoType -> Int
 flatArrowArity t =
     case t of
-        Mono.MFunction _ argTys ret ->
+        Mono.MFunction _ _ argTys ret ->
             List.length argTys + flatArrowArity ret
 
         _ ->
@@ -1955,7 +1955,7 @@ loopifyCall ctx region info qualifying args resultType =
                     )
 
         loopFnType =
-            Mono.MFunction Mono.LTop (List.map Tuple.second newParams) resultType
+            Mono.mFunction Mono.LTop (List.map Tuple.second newParams) resultType
 
         invocation =
             MonoCall region (MonoVarLocal sF loopFnType) remainingArgs resultType Mono.defaultCallInfo
@@ -2978,9 +2978,9 @@ createBindings ctx params args =
 rebuild produces.
 
 `peelCallResult` (Specialize.elm) already types a partial call node as the
-PEELED arrow — `MFunction anno remainingTypes result` — so the residual
+PEELED arrow — `Mono.mFunction anno remainingTypes result` — so the residual
 closure's type IS the call's result type, verbatim. The old construction
-wrapped it AGAIN (`MFunction LTop remTypes resultType` where resultType was
+wrapped it AGAIN (`Mono.mFunction LTop remTypes resultType` where resultType was
 itself the residual arrow), declaring a phantom extra application level:
 result-kind, staging, and arity metadata downstream all read the
 double-wrapped arrow, which is the root of the CGEN_056 result-type
@@ -2995,15 +2995,15 @@ historical behavior, and the guards that contain the legacy path remain.
 residualClosureType : List ( Name, Mono.MonoType ) -> Mono.MonoType -> Mono.MonoType
 residualClosureType remainingParams resultType =
     case resultType of
-        Mono.MFunction _ paramTypes _ ->
+        Mono.MFunction _ _ paramTypes _ ->
             if List.length paramTypes == List.length remainingParams then
                 resultType
 
             else
-                Mono.MFunction Mono.LTop (List.map Tuple.second remainingParams) resultType
+                Mono.mFunction Mono.LTop (List.map Tuple.second remainingParams) resultType
 
         _ ->
-            Mono.MFunction Mono.LTop (List.map Tuple.second remainingParams) resultType
+            Mono.mFunction Mono.LTop (List.map Tuple.second remainingParams) resultType
 
 
 wrapInLets : List Binding -> MonoExpr -> Mono.MonoType -> MonoExpr
@@ -3747,7 +3747,7 @@ forwardGo ctx name payload expr =
 isFunctionType : Mono.MonoType -> Bool
 isFunctionType t =
     case t of
-        Mono.MFunction _ _ _ ->
+        Mono.MFunction _ _ _ _ ->
             True
 
         _ ->
@@ -4501,7 +4501,7 @@ tryInlineCall ctx specId args resultType =
 
                         resultIsFunctionType =
                             case resultType of
-                                Mono.MFunction _ _ _ ->
+                                Mono.MFunction _ _ _ _ ->
                                     True
 
                                 _ ->

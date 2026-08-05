@@ -64,9 +64,9 @@ Note: tags may not be globally unique across different custom types,
 so we store a list of layouts per tag and check against all of them.
 
 -}
-buildTagToLayoutMap : Dict.Dict String (List Mono.CtorShape) -> Dict.Dict Int (List Types.CtorLayout)
+buildTagToLayoutMap : Mono.LayoutMap (List Mono.CtorShape) -> Dict.Dict Int (List Types.CtorLayout)
 buildTagToLayoutMap ctorShapes =
-    Dict.foldl
+    Mono.layoutMapFoldl
         (\_ shapes acc ->
             List.foldl addShapeToMap acc shapes
         )

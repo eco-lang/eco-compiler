@@ -64,35 +64,35 @@ freshRTy ty n =
             -- treat as a scalar rather than mint a resource.
             ( RScalar, n )
 
-        Mono.MList elemT ->
+        Mono.MList _ elemT ->
             let
                 ( elemRty, n1 ) =
                     freshRTy elemT (n + 1)
             in
             ( RList n elemRty, n1 )
 
-        Mono.MTuple ts ->
+        Mono.MTuple _ ts ->
             let
                 ( rtys, n1 ) =
                     freshRTyList ts (n + 1)
             in
             ( RTuple n rtys, n1 )
 
-        Mono.MRecord d ->
+        Mono.MRecord _ d ->
             let
                 ( fields, n1 ) =
                     freshRTyFields (Dict.toList d) (n + 1)
             in
             ( RRecord n fields, n1 )
 
-        Mono.MCustom _ _ args ->
+        Mono.MCustom _ _ _ args ->
             let
                 ( rtys, n1 ) =
                     freshRTyList args (n + 1)
             in
             ( RCustom n rtys, n1 )
 
-        Mono.MFunction _ _ _ ->
+        Mono.MFunction _ _ _ _ ->
             ( RClosure n, n + 1 )
 
 

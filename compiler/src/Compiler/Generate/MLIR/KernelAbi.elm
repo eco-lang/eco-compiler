@@ -509,20 +509,20 @@ monoTypeTag monoType =
         Mono.MUnit ->
             "MUnit"
 
-        Mono.MList _ ->
-            "MList"
+        Mono.MList _ _ ->
+            "Mono.mList"
 
-        Mono.MTuple _ ->
-            "MTuple"
+        Mono.MTuple _ _ ->
+            "Mono.mTuple"
 
-        Mono.MRecord _ ->
-            "MRecord"
+        Mono.MRecord _ _ ->
+            "Mono.mRecord"
 
-        Mono.MCustom _ n _ ->
-            "MCustom " ++ n
+        Mono.MCustom _ _ n _ ->
+            "Mono.mCustom " ++ n
 
-        Mono.MFunction _ _ _ ->
-            "MFunction"
+        Mono.MFunction _ _ _ _ ->
+            "Mono.mFunction"
 
         Mono.MVar _ Mono.CEcoValue ->
             "MVar CEcoValue"

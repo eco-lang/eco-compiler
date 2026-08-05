@@ -1314,7 +1314,7 @@ resolveRepresentative calleeType argCount memberInfo =
 
     else
         case calleeType of
-            Mono.MFunction _ fargs fret ->
+            Mono.MFunction _ _ fargs fret ->
                 if argCount == 0 then
                     Decline bumpShapeArityZero
 

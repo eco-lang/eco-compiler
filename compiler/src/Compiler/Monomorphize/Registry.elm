@@ -26,7 +26,6 @@ The registry maintains a bidirectional mapping between specialization keys
 
 import Array
 import Compiler.AST.Monomorphized as Mono exposing (Global, MonoType, SpecId, SpecializationRegistry)
-import Dict
 
 
 
@@ -38,7 +37,7 @@ import Dict
 emptyRegistry : SpecializationRegistry
 emptyRegistry =
     { nextId = 0
-    , mapping = Dict.empty
+    , mapping = Mono.specKeyMapEmpty
     , reverseMapping = Array.empty
     }
 
@@ -52,9 +51,9 @@ getOrCreateSpecId : Global -> MonoType -> SpecializationRegistry -> ( SpecId, Sp
 getOrCreateSpecId global monoType registry =
     let
         key =
-            Mono.toComparableSpecKey (Mono.SpecKey global monoType)
+            Mono.SpecKey global monoType
     in
-    case Dict.get key registry.mapping of
+    case Mono.specKeyMapGet key registry.mapping of
         Just specId ->
             ( specId, registry )
 
@@ -65,7 +64,7 @@ getOrCreateSpecId global monoType registry =
             in
             ( specId
             , { nextId = specId + 1
-              , mapping = Dict.insert key specId registry.mapping
+              , mapping = Mono.specKeyMapInsert key specId registry.mapping
               , reverseMapping = Array.push (Just ( global, monoType )) registry.reverseMapping
               }
             )
@@ -90,9 +89,9 @@ getOrCreateSpecIdKeyed : Global -> MonoType -> MonoType -> SpecializationRegistr
 getOrCreateSpecIdKeyed global keyType storeType registry =
     let
         key =
-            Mono.toComparableSpecKey (Mono.SpecKey global keyType)
+            Mono.SpecKey global keyType
     in
-    case Dict.get key registry.mapping of
+    case Mono.specKeyMapGet key registry.mapping of
         Just specId ->
             case Array.get specId registry.reverseMapping |> Maybe.andThen identity of
                 Just ( storedGlobal, storedType ) ->
@@ -127,7 +126,7 @@ getOrCreateSpecIdKeyed global keyType storeType registry =
             in
             ( specId
             , { nextId = specId + 1
-              , mapping = Dict.insert key specId registry.mapping
+              , mapping = Mono.specKeyMapInsert key specId registry.mapping
               , reverseMapping = Array.push (Just ( global, storeType )) registry.reverseMapping
               }
             , False

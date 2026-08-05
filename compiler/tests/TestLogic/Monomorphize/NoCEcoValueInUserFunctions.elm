@@ -123,14 +123,14 @@ checkNode specId node =
 
 {-| Check a node-level MonoType for CEcoValue in function-typed positions.
 
-Only flags violations when the MonoType is a function type (MFunction) since
+Only flags violations when the MonoType is a function type (Mono.mFunction) since
 MONO\_021 specifically targets function parameter and result types.
 
 -}
 checkNodeType : String -> String -> Mono.MonoType -> List Violation
 checkNodeType ctx nodeKind monoType =
     case monoType of
-        Mono.MFunction _ _ _ ->
+        Mono.MFunction _ _ _ _ ->
             let
                 cEcoVars =
                     collectCEcoValueVars monoType
@@ -341,7 +341,7 @@ checkTailDefParams ctx defName params =
 checkFunctionExprType : String -> String -> Mono.MonoType -> List Violation
 checkFunctionExprType ctx exprKind monoType =
     case monoType of
-        Mono.MFunction _ _ _ ->
+        Mono.MFunction _ _ _ _ ->
             let
                 cEcoVars =
                     collectCEcoValueVars monoType
@@ -404,20 +404,20 @@ collectCEcoValueVars monoType =
         Mono.MVar _ Mono.CNumber ->
             []
 
-        Mono.MList inner ->
+        Mono.MList _ inner ->
             collectCEcoValueVars inner
 
-        Mono.MFunction _ args result ->
+        Mono.MFunction _ _ args result ->
             List.concatMap collectCEcoValueVars args
                 ++ collectCEcoValueVars result
 
-        Mono.MTuple elems ->
+        Mono.MTuple _ elems ->
             List.concatMap collectCEcoValueVars elems
 
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             Dict.foldl (\_ fieldType acc -> acc ++ collectCEcoValueVars fieldType) [] fields
 
-        Mono.MCustom _ _ args ->
+        Mono.MCustom _ _ _ args ->
             List.concatMap collectCEcoValueVars args
 
         _ ->

@@ -297,7 +297,7 @@ matchGlobal facts g calleeType =
 decompose : Mono.MonoType -> ( List Mono.MonoType, Mono.MonoType )
 decompose ty =
     case ty of
-        Mono.MFunction _ params result ->
+        Mono.MFunction _ _ params result ->
             ( params, result )
 
         _ ->

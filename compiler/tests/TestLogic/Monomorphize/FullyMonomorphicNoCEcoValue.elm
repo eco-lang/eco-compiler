@@ -341,20 +341,20 @@ collectCEcoValueVars monoType =
             -- CNumber should have been resolved by the closing pass (resolveResidualNumbers, MONO_028)
             [ String.fromInt (Id.toComparable mvarId) ]
 
-        Mono.MList inner ->
+        Mono.MList _ inner ->
             collectCEcoValueVars inner
 
-        Mono.MFunction _ args result ->
+        Mono.MFunction _ _ args result ->
             List.concatMap collectCEcoValueVars args
                 ++ collectCEcoValueVars result
 
-        Mono.MTuple elems ->
+        Mono.MTuple _ elems ->
             List.concatMap collectCEcoValueVars elems
 
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             Dict.foldl (\_ fieldType acc -> acc ++ collectCEcoValueVars fieldType) [] fields
 
-        Mono.MCustom _ _ args ->
+        Mono.MCustom _ _ _ args ->
             List.concatMap collectCEcoValueVars args
 
         _ ->
@@ -403,13 +403,13 @@ monoTypeToString monoType =
         Mono.MUnit ->
             "()"
 
-        Mono.MList elementType ->
+        Mono.MList _ elementType ->
             "List " ++ monoTypeToString elementType
 
-        Mono.MTuple elements ->
+        Mono.MTuple _ elements ->
             "(" ++ String.join ", " (List.map monoTypeToString elements) ++ ")"
 
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             let
                 fieldStrs =
                     Dict.foldl
@@ -419,10 +419,10 @@ monoTypeToString monoType =
             in
             "{ " ++ String.join ", " fieldStrs ++ " }"
 
-        Mono.MCustom _ name _ ->
+        Mono.MCustom _ _ name _ ->
             name
 
-        Mono.MFunction _ params result ->
+        Mono.MFunction _ _ params result ->
             let
                 paramStr =
                     case params of

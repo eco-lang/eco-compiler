@@ -139,7 +139,7 @@ checkExpr specId frames expr acc =
 
         Mono.MonoTupleCreate _ elems nodeType ->
             case nodeType of
-                Mono.MTuple slotTypes ->
+                Mono.MTuple _ slotTypes ->
                     List.foldl
                         (\( i, ( elemExpr, slotType ) ) a ->
                             if abiKind (Mono.typeOf elemExpr) /= abiKind slotType then
@@ -212,7 +212,7 @@ checkPathChain specId name path acc =
             let
                 acc1 =
                     case Mono.getMonoPathType subPath of
-                        Mono.MTuple slotTypes ->
+                        Mono.MTuple _ slotTypes ->
                             case List.head (List.drop i slotTypes) of
                                 Just slotType ->
                                     if abiKind slotType /= abiKind elemType then

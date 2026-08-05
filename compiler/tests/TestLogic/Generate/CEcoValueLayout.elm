@@ -126,16 +126,16 @@ checkCEcoValueInLayoutPosition context monoType =
             -- CEcoValue at the top level is ok - it's erased at runtime
             []
 
-        Mono.MList elemType ->
+        Mono.MList _ elemType ->
             -- List element type can be CEcoValue (boxed reference)
             checkCEcoValueInLayoutPosition context elemType
 
-        Mono.MRecord _ ->
+        Mono.MRecord _ _ ->
             -- Record fields should not directly be CEcoValue in unboxed positions
             -- (For now, we just check the shape is valid)
             []
 
-        Mono.MTuple elementTypes ->
+        Mono.MTuple _ elementTypes ->
             -- Tuple elements should not directly be CEcoValue in unboxed positions
             if List.length elementTypes < 0 then
                 [ context ++ ": Tuple has invalid element count" ]
@@ -143,11 +143,11 @@ checkCEcoValueInLayoutPosition context monoType =
             else
                 []
 
-        Mono.MCustom _ _ typeArgs ->
+        Mono.MCustom _ _ _ typeArgs ->
             -- Custom type arguments can be CEcoValue (passed through)
             List.concatMap (checkCEcoValueInLayoutPosition context) typeArgs
 
-        Mono.MFunction _ paramTypes returnType ->
+        Mono.MFunction _ _ paramTypes returnType ->
             -- Function parameters and return types can contain CEcoValue
             List.concatMap (checkCEcoValueInLayoutPosition context) paramTypes
                 ++ checkCEcoValueInLayoutPosition context returnType

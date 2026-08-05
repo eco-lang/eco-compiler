@@ -12,7 +12,7 @@ against the corresponding prefix of the flattened key parameters.
 
 When the closure is fully saturated (same number of params as the flattened key),
 the result type must also match. When the closure returns a function (fewer params
-than the flattened key), the result type must be an MFunction whose flattening
+than the flattened key), the result type must be an Mono.mFunction whose flattening
 covers the remaining key parameter types and result type.
 
 @docs expectClosureSpecKeyConsistency, Violation
@@ -217,7 +217,7 @@ checkClosureParams ctx keyMonoType closureParams bodyType =
 
                         expectedBodyType =
                             -- Compared via monoTypeEq, which ignores annotations.
-                            Mono.MFunction Mono.LTop remainingKeyParams keyResultType
+                            Mono.mFunction Mono.LTop remainingKeyParams keyResultType
 
                         ( bodyParamTypes, bodyResultType ) =
                             flattenMFunction bodyType
@@ -252,9 +252,9 @@ checkClosureParams ctx keyMonoType closureParams bodyType =
 -- ============================================================================
 
 
-{-| Flatten an MFunction type by recursively peeling MFunction layers.
+{-| Flatten an Mono.mFunction type by recursively peeling Mono.mFunction layers.
 
-    flattenMFunction (MFunction [ a, b ] (MFunction [ c ] d))
+    flattenMFunction (Mono.mFunction [ a, b ] (Mono.mFunction [ c ] d))
         == ( [ a, b, c ], d )
 
     flattenMFunction MInt
@@ -264,7 +264,7 @@ checkClosureParams ctx keyMonoType closureParams bodyType =
 flattenMFunction : Mono.MonoType -> ( List Mono.MonoType, Mono.MonoType )
 flattenMFunction monoType =
     case monoType of
-        Mono.MFunction _ params result ->
+        Mono.MFunction _ _ params result ->
             let
                 ( restParams, finalResult ) =
                     flattenMFunction result
@@ -298,19 +298,19 @@ monoTypeEq a b =
         ( Mono.MUnit, Mono.MUnit ) ->
             True
 
-        ( Mono.MList a1, Mono.MList b1 ) ->
+        ( Mono.MList _ a1, Mono.MList _ b1 ) ->
             monoTypeEq a1 b1
 
-        ( Mono.MFunction _ aParams aResult, Mono.MFunction _ bParams bResult ) ->
+        ( Mono.MFunction _ _ aParams aResult, Mono.MFunction _ _ bParams bResult ) ->
             listEq monoTypeEq aParams bParams && monoTypeEq aResult bResult
 
-        ( Mono.MTuple aElems, Mono.MTuple bElems ) ->
+        ( Mono.MTuple _ aElems, Mono.MTuple _ bElems ) ->
             listEq monoTypeEq aElems bElems
 
-        ( Mono.MRecord aFields, Mono.MRecord bFields ) ->
+        ( Mono.MRecord _ aFields, Mono.MRecord _ bFields ) ->
             dictEq monoTypeEq aFields bFields
 
-        ( Mono.MCustom aHome aName aArgs, Mono.MCustom bHome bName bArgs ) ->
+        ( Mono.MCustom _ aHome aName aArgs, Mono.MCustom _ bHome bName bArgs ) ->
             aHome == bHome && aName == bName && listEq monoTypeEq aArgs bArgs
 
         ( Mono.MVar aId _, Mono.MVar bId _ ) ->
@@ -411,13 +411,13 @@ monoTypeToString monoType =
         Mono.MUnit ->
             "()"
 
-        Mono.MList elementType ->
+        Mono.MList _ elementType ->
             "List " ++ monoTypeToString elementType
 
-        Mono.MTuple elements ->
+        Mono.MTuple _ elements ->
             "(" ++ String.join ", " (List.map monoTypeToString elements) ++ ")"
 
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             let
                 fieldStrs =
                     Dict.foldl
@@ -427,10 +427,10 @@ monoTypeToString monoType =
             in
             "{ " ++ String.join ", " fieldStrs ++ " }"
 
-        Mono.MCustom _ name _ ->
+        Mono.MCustom _ _ name _ ->
             name
 
-        Mono.MFunction _ params result ->
+        Mono.MFunction _ _ params result ->
             let
                 paramStr =
                     case params of

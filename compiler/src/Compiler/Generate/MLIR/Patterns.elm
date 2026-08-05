@@ -37,7 +37,7 @@ import Utils.Crash
 getRecordFields : Mono.MonoType -> Dict.Dict Name.Name Mono.MonoType
 getRecordFields monoType =
     case monoType of
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             fields
 
         _ ->
@@ -932,11 +932,8 @@ generateMonoUnboxOnHeap ctx targetType revAcc subPath =
                             Ops.ecoProjectCustom ctxP rv 0 rt subVar
 
                 -- Look up the shape for this unbox type
-                typeKey =
-                    Mono.toComparableLayoutKey containerType
-
                 maybeShapes =
-                    Dict.get typeKey ctx1.typeRegistry.ctorShapes
+                    Mono.layoutMapGet containerType ctx1.typeRegistry.ctorShapes
             in
             case maybeShapes of
                 Just (shape :: _) ->
@@ -1092,12 +1089,9 @@ use that authoritative layout for projection to agree with the heap format.
 lookupCtorFieldInfo : Ctx.Context -> Mono.MonoType -> Name.Name -> Int -> Maybe Types.FieldInfo
 lookupCtorFieldInfo ctx containerType ctorName fieldIndex =
     let
-        typeKey =
-            Mono.toComparableLayoutKey containerType
-
         preferredShapes : Maybe (List Mono.CtorShape)
         preferredShapes =
-            Dict.get typeKey ctx.typeRegistry.ctorShapes
+            Mono.layoutMapGet containerType ctx.typeRegistry.ctorShapes
 
         preferred : Maybe Types.FieldInfo
         preferred =
@@ -1174,7 +1168,7 @@ findConcreteCtorField ctx referenceShapes ctorName fieldIndex =
 
                 concreteCandidates : List Types.FieldInfo
                 concreteCandidates =
-                    Dict.values ctx.typeRegistry.ctorShapes
+                    Mono.layoutMapValues ctx.typeRegistry.ctorShapes
                         |> List.filter sameUnion
                         |> List.filterMap (ctorFieldFromShapes ctorName fieldIndex)
                         |> List.filter fieldIsConcrete
@@ -1185,12 +1179,9 @@ findConcreteCtorField ctx referenceShapes ctorName fieldIndex =
 
                 firstInfo :: rest ->
                     let
-                        firstKey =
-                            Mono.toComparableLayoutKey firstInfo.monoType
-
                         allAgree =
                             List.all
-                                (\fi -> Mono.toComparableLayoutKey fi.monoType == firstKey)
+                                (\fi -> Mono.eqKeyLayout fi.monoType firstInfo.monoType)
                                 rest
                     in
                     if allAgree then

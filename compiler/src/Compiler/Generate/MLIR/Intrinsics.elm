@@ -661,7 +661,7 @@ stringIntrinsic name argTypes _ =
 arrayElementType : Mono.MonoType -> Maybe Mono.MonoType
 arrayElementType ty =
     case ty of
-        Mono.MCustom _ "Array" [ elt ] ->
+        Mono.MCustom _ _ "Array" [ elt ] ->
             Just elt
 
         _ ->

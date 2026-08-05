@@ -86,11 +86,11 @@ formatViolations violations =
 
 {-| Check all CtorShapes produce valid CtorLayouts via Types.computeCtorLayout.
 -}
-checkCtorShapesAgainstLayouts : Dict.Dict String (List Mono.CtorShape) -> List Violation
+checkCtorShapesAgainstLayouts : Mono.LayoutMap (List Mono.CtorShape) -> List Violation
 checkCtorShapesAgainstLayouts ctorShapes =
-    Dict.foldl
-        (\typeKey shapes acc ->
-            List.concatMap (checkShapeAgainstLayout typeKey) shapes ++ acc
+    Mono.layoutMapFoldl
+        (\keyType shapes acc ->
+            List.concatMap (checkShapeAgainstLayout (Mono.monoTypeToDebugString keyType)) shapes ++ acc
         )
         []
         ctorShapes
@@ -193,19 +193,19 @@ monoTypeToString monoType =
         Mono.MUnit ->
             "()"
 
-        Mono.MList elemType ->
+        Mono.MList _ elemType ->
             "List (" ++ monoTypeToString elemType ++ ")"
 
-        Mono.MTuple elemTypes ->
+        Mono.MTuple _ elemTypes ->
             "(" ++ String.join ", " (List.map monoTypeToString elemTypes) ++ ")"
 
-        Mono.MRecord _ ->
+        Mono.MRecord _ _ ->
             "{ ... }"
 
-        Mono.MCustom _ name _ ->
+        Mono.MCustom _ _ name _ ->
             name
 
-        Mono.MFunction _ params result ->
+        Mono.MFunction _ _ params result ->
             "(" ++ String.join ", " (List.map monoTypeToString params) ++ ") -> " ++ monoTypeToString result
 
         Mono.MVar mvarId _ ->
@@ -221,7 +221,7 @@ monoTypeToString monoType =
 {-| Check all MonoCtor nodes reference shapes that exist in ctorShapes.
 -}
 checkCtorNodesUseKnownShapes :
-    Dict.Dict String (List Mono.CtorShape)
+    Mono.LayoutMap (List Mono.CtorShape)
     -> Array.Array (Maybe Mono.MonoNode)
     -> List Violation
 checkCtorNodesUseKnownShapes ctorShapes nodes =
@@ -260,9 +260,9 @@ checkCtorNodesUseKnownShapes ctorShapes nodes =
 
 {-| Check if a CtorShape exists in the ctorShapes dictionary.
 -}
-shapeExistsInDict : Mono.CtorShape -> Dict.Dict String (List Mono.CtorShape) -> Bool
+shapeExistsInDict : Mono.CtorShape -> Mono.LayoutMap (List Mono.CtorShape) -> Bool
 shapeExistsInDict targetShape ctorShapes =
-    Dict.foldl
+    Mono.layoutMapFoldl
         (\_ shapes found ->
             found || List.any (\s -> s.name == targetShape.name && s.tag == targetShape.tag) shapes
         )

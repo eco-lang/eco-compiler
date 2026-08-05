@@ -3,8 +3,8 @@ module TestLogic.Generate.MonoTypeShape exposing (expectMonoTypesFullyElaborated
 {-| Test logic for invariant MONO\_001: MonoTypes are fully elaborated.
 
 At all stages past monomorphization, every type has a concrete MonoType shape:
-MInt, MFloat, MBool, MChar, MString, MUnit, MList, MTuple, MRecord, MCustom,
-MFunction. MVar should only appear with constraint CEcoValue.
+MInt, MFloat, MBool, MChar, MString, MUnit, Mono.mList, Mono.mTuple, Mono.mRecord, Mono.mCustom,
+Mono.mFunction. MVar should only appear with constraint CEcoValue.
 
 This module reuses the existing typed optimization pipeline to verify
 that monomorphization produces valid MonoTypes.
@@ -225,21 +225,21 @@ checkMonoType context monoType =
         Mono.MUnit ->
             []
 
-        Mono.MList elemType ->
+        Mono.MList _ elemType ->
             checkMonoType context elemType
 
-        Mono.MTuple _ ->
+        Mono.MTuple _ _ ->
             -- Tuple layout types are already elaborated
             []
 
-        Mono.MRecord _ ->
+        Mono.MRecord _ _ ->
             -- Record layout types are already elaborated
             []
 
-        Mono.MCustom _ _ typeArgs ->
+        Mono.MCustom _ _ _ typeArgs ->
             List.concatMap (checkMonoType context) typeArgs
 
-        Mono.MFunction _ paramTypes returnType ->
+        Mono.MFunction _ _ paramTypes returnType ->
             List.concatMap (checkMonoType context) paramTypes
                 ++ checkMonoType context returnType
 

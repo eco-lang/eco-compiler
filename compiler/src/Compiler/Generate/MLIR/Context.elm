@@ -246,9 +246,9 @@ Used by eco.dbg with arg\_type\_ids for typed debug printing.
 -}
 type alias TypeRegistry =
     { nextTypeId : Int
-    , typeIds : Dict.Dict String Int -- comparable key -> TypeId
+    , typeIds : Mono.LayoutMap Int -- K4: keyed by the type's stored layout hash, not a rebuilt string
     , typeInfos : List ( Int, Mono.MonoType ) -- List of (TypeId, MonoType) for building type table
-    , ctorShapes : Dict.Dict String (List Mono.CtorShape) -- type key -> ctor shapes for custom types
+    , ctorShapes : Mono.LayoutMap (List Mono.CtorShape) -- type -> ctor shapes for custom types
     }
 
 
@@ -276,7 +276,7 @@ falls back to `Nothing` and ELoop fusion is suppressed for closure-converted
 inline lambdas.
 
 -}
-initContext : Mode.Mode -> Mono.SpecializationRegistry -> Array (Maybe FuncSignature) -> Dict.Dict String (List Mono.CtorShape) -> Context
+initContext : Mode.Mode -> Mono.SpecializationRegistry -> Array (Maybe FuncSignature) -> Mono.LayoutMap (List Mono.CtorShape) -> Context
 initContext mode registry signatures initialCtorShapes =
     { nextVar = 0
     , nextOpId = 0
@@ -339,9 +339,9 @@ withEcoConfig cfg ctx =
 emptyTypeRegistry : TypeRegistry
 emptyTypeRegistry =
     { nextTypeId = 0
-    , typeIds = Dict.empty
+    , typeIds = Mono.layoutMapEmpty
     , typeInfos = []
-    , ctorShapes = Dict.empty
+    , ctorShapes = Mono.layoutMapEmpty
     }
 
 
@@ -357,23 +357,20 @@ getOrCreateTypeIdForMonoType monoType ctx =
         getNestedTypes : Mono.MonoType -> Context -> List Mono.MonoType
         getNestedTypes mt c =
             case mt of
-                Mono.MList elemType ->
+                Mono.MList _ elemType ->
                     [ elemType ]
 
-                Mono.MTuple elementTypes ->
+                Mono.MTuple _ elementTypes ->
                     elementTypes
 
-                Mono.MRecord fields ->
+                Mono.MRecord _ fields ->
                     Dict.values fields
 
-                Mono.MCustom _ _ args ->
+                Mono.MCustom _ _ _ args ->
                     -- Include type args and constructor field types
                     let
-                        customKey =
-                            Mono.toComparableLayoutKey mt
-
                         ctorShapesForType =
-                            Dict.get customKey c.typeRegistry.ctorShapes
+                            Mono.layoutMapGet mt c.typeRegistry.ctorShapes
                                 |> Maybe.withDefault []
 
                         fieldTypes =
@@ -381,12 +378,12 @@ getOrCreateTypeIdForMonoType monoType ctx =
                                 |> List.filter
                                     (\ft ->
                                         -- Exclude direct self-references to avoid infinite work
-                                        Mono.toComparableLayoutKey ft /= customKey
+                                        not (Mono.eqKeyLayout ft mt)
                                     )
                     in
                     args ++ fieldTypes
 
-                Mono.MFunction _ argTypes resultType ->
+                Mono.MFunction _ _ argTypes resultType ->
                     argTypes ++ [ resultType ]
 
                 Mono.MInt ->
@@ -414,13 +411,10 @@ getOrCreateTypeIdForMonoType monoType ctx =
         registerSingleType : Mono.MonoType -> Context -> Context
         registerSingleType mt c =
             let
-                typeKey =
-                    Mono.toComparableLayoutKey mt
-
                 reg =
                     c.typeRegistry
             in
-            case Dict.get typeKey reg.typeIds of
+            case Mono.layoutMapGet mt reg.typeIds of
                 Just _ ->
                     -- Already registered
                     c
@@ -432,34 +426,36 @@ getOrCreateTypeIdForMonoType monoType ctx =
 
                         newReg =
                             { nextTypeId = typeId + 1
-                            , typeIds = Dict.insert typeKey typeId reg.typeIds
+                            , typeIds = Mono.layoutMapInsert mt typeId reg.typeIds
                             , typeInfos = ( typeId, mt ) :: reg.typeInfos
                             , ctorShapes = reg.ctorShapes
                             }
                     in
                     { c | typeRegistry = newReg }
 
-        -- Process the worklist iteratively
-        -- We use two lists: 'pending' for types to explore, 'toRegister' for types in reverse topological order
-        processWorklist : List Mono.MonoType -> List Mono.MonoType -> Context -> Context
-        processWorklist pending toRegister c =
+        -- Process the worklist iteratively.
+        -- 'pending' holds types to explore; 'toRegister' holds them in reverse
+        -- topological order; 'queued' mirrors 'toRegister' for an O(log n)
+        -- already-queued test. That test was once a `List.any` REBUILDING a full
+        -- comparable string for every element of 'toRegister' on every step —
+        -- quadratic key construction over a list that grows with the program's
+        -- whole type set (K1.1). Under K4 no key is built here at all: every
+        -- probe reads the hash the type already carries.
+        processWorklist : List Mono.MonoType -> List Mono.MonoType -> Mono.LayoutMap () -> Context -> Context
+        processWorklist pending toRegister queued c =
             case pending of
                 [] ->
                     -- All types collected, now register them in order (deepest first)
                     List.foldl registerSingleType c toRegister
 
                 current :: rest ->
-                    let
-                        currentKey =
-                            Mono.toComparableLayoutKey current
-                    in
-                    if Dict.member currentKey c.typeRegistry.typeIds then
+                    if Mono.layoutMapMember current c.typeRegistry.typeIds then
                         -- Already registered, skip
-                        processWorklist rest toRegister c
+                        processWorklist rest toRegister queued c
 
-                    else if List.any (\t -> Mono.toComparableLayoutKey t == currentKey) toRegister then
+                    else if Mono.layoutMapMember current queued then
                         -- Already in toRegister list, skip
-                        processWorklist rest toRegister c
+                        processWorklist rest toRegister queued c
 
                     else
                         -- Add nested types to pending (they need to be processed first)
@@ -468,23 +464,30 @@ getOrCreateTypeIdForMonoType monoType ctx =
                             nested =
                                 getNestedTypes current c
                         in
-                        processWorklist (nested ++ rest) (current :: toRegister) c
+                        processWorklist (nested ++ rest)
+                            (current :: toRegister)
+                            (Mono.layoutMapInsert current () queued)
+                            c
 
-        -- Run the worklist starting with the requested type
-        finalCtx =
-            processWorklist [ monoType ] [] ctx
-
-        -- Look up the typeId for the original type
-        originalKey =
-            Mono.toComparableLayoutKey monoType
     in
-    case Dict.get originalKey finalCtx.typeRegistry.typeIds of
+    case Mono.layoutMapGet monoType ctx.typeRegistry.typeIds of
         Just typeId ->
-            ( typeId, finalCtx )
+            -- Already registered. The worklist would pop this type, find it in
+            -- typeIds and hand back an unchanged context, so skip it outright.
+            ( typeId, ctx )
 
         Nothing ->
-            -- This shouldn't happen, but provide a fallback
-            ( 0, finalCtx )
+            let
+                finalCtx =
+                    processWorklist [ monoType ] [] Mono.layoutMapEmpty ctx
+            in
+            case Mono.layoutMapGet monoType finalCtx.typeRegistry.typeIds of
+                Just typeId ->
+                    ( typeId, finalCtx )
+
+                Nothing ->
+                    -- This shouldn't happen, but provide a fallback
+                    ( 0, finalCtx )
 
 
 {-| Construct context for a sibling region in branching constructs.
@@ -740,7 +743,7 @@ insertKernelDecl ctx info =
 A staged-result definition carries more arrow layers in its (flattened) MonoType
 than it has value params — e.g. `mk : Int -> (Int -> Int)` defined as
 `mk a = \b -> ...` has ONE param but TWO flattened arrow args. Peeling the whole
-`MFunction` (dropping every arg in one node) would collapse to the leaf type
+`Mono.mFunction` (dropping every arg in one node) would collapse to the leaf type
 (`Int`), mistyping the spec as returning `Int` when it actually returns the closure
 `Int -> Int`. Drop exactly the consumed params so any residual arrows survive as a
 function-typed result. When params == args this is the ordinary leaf return type.
@@ -756,8 +759,8 @@ residualResultType numParams monoType =
         -- result. Decompose normalises flat vs nested MFunction forms; keep the
         -- outer arrow's annotation.
         case monoType of
-            Mono.MFunction anno _ _ ->
-                Mono.MFunction anno (List.drop numParams allArgTypes) finalLeaf
+            Mono.MFunction _ anno _ _ ->
+                Mono.mFunction anno (List.drop numParams allArgTypes) finalLeaf
 
             _ ->
                 finalLeaf
@@ -818,7 +821,7 @@ extractNodeSignature node =
 
         Mono.MonoExtern monoType ->
             case monoType of
-                Mono.MFunction _ _ _ ->
+                Mono.MFunction _ _ _ _ ->
                     let
                         ( argMonoTypes, resultMonoType ) =
                             Mono.decomposeFunctionType monoType
@@ -834,7 +837,7 @@ extractNodeSignature node =
 
         Mono.MonoManagerLeaf _ monoType ->
             case monoType of
-                Mono.MFunction _ _ _ ->
+                Mono.MFunction _ _ _ _ ->
                     let
                         ( argMonoTypes, resultMonoType ) =
                             Mono.decomposeFunctionType monoType

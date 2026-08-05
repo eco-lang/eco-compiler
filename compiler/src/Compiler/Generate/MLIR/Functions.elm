@@ -368,7 +368,7 @@ listShuntCall kernelName params resultTy =
     let
         kernelTy : Mono.MonoType
         kernelTy =
-            Mono.MFunction Mono.LTop (List.map Tuple.second params) resultTy
+            Mono.mFunction Mono.LTop (List.map Tuple.second params) resultTy
 
         defaultInfo : Mono.CallInfo
         defaultInfo =
@@ -748,7 +748,7 @@ generateClosureFuncSingle ctx funcName closureInfo body monoType maybeSret maybe
         extractedReturnType : Mono.MonoType
         extractedReturnType =
             case monoType of
-                Mono.MFunction _ _ retType ->
+                Mono.MFunction _ _ _ retType ->
                     retType
 
                 _ ->
@@ -1161,7 +1161,7 @@ generateClosureFuncWithClones ctx funcName closureInfo body monoType =
         extractedReturnType : Mono.MonoType
         extractedReturnType =
             case monoType of
-                Mono.MFunction _ _ retType ->
+                Mono.MFunction _ _ _ retType ->
                     retType
 
                 _ ->

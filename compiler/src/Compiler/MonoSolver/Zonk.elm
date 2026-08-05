@@ -89,16 +89,16 @@ canTypeToMonoWith superVars subst canType =
                     "List" ->
                         case monoArgs of
                             [ inner ] ->
-                                Mono.MList inner
+                                Mono.mList inner
 
                             _ ->
-                                Mono.MList Mono.MUnit
+                                Mono.mList Mono.MUnit
 
                     _ ->
-                        Mono.MCustom canonical name monoArgs
+                        Mono.mCustom canonical name monoArgs
 
             else
-                Mono.MCustom canonical name monoArgs
+                Mono.mCustom canonical name monoArgs
 
         Can.TRecord fields maybeExtension ->
             let
@@ -106,7 +106,7 @@ canTypeToMonoWith superVars subst canType =
                     case maybeExtension of
                         Just extMvarId ->
                             case Dict.get (Id.toComparable extMvarId) subst of
-                                Just (Mono.MRecord baseFieldsDict) ->
+                                Just (Mono.MRecord _ baseFieldsDict) ->
                                     baseFieldsDict
 
                                 _ ->
@@ -123,10 +123,10 @@ canTypeToMonoWith superVars subst canType =
                         baseFields
                         fields
             in
-            Mono.MRecord monoFields
+            Mono.mRecord monoFields
 
         Can.TTuple a b rest ->
-            Mono.MTuple (List.map (canTypeToMonoWith superVars subst) (a :: b :: rest))
+            Mono.mTuple (List.map (canTypeToMonoWith superVars subst) (a :: b :: rest))
 
         Can.TUnit ->
             Mono.MUnit
@@ -147,9 +147,9 @@ canTypeToMonoWith superVars subst canType =
             canTypeToMonoWith superVars newSubst inner
 
 
-{-| Collect a run of `TLambda`s into a nested one-arg-per-arrow `MFunction`,
+{-| Collect a run of `TLambda`s into a nested one-arg-per-arrow `Mono.mFunction`,
 exactly as `TypeSubst.applySubstLambdaChain` does (a -> b -> c becomes
-`MFunction [a] (MFunction [b] c)`; GlobalOpt flattens later per GOPT_016).
+`Mono.mFunction [a] (Mono.mFunction [b] c)`; GlobalOpt flattens later per GOPT_016).
 -}
 lambdaChain : Dict Int IO.SuperType -> Dict Int Mono.MonoType -> List (Can.Type TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Mono.MonoType
 lambdaChain superVars subst argsAcc to =
@@ -161,7 +161,7 @@ lambdaChain superVars subst argsAcc to =
             List.foldl
                 (\argType acc ->
                     -- Pure classification path: stamps LTop (design §6.2).
-                    Mono.MFunction Mono.LTop [ canTypeToMonoWith superVars subst argType ] acc
+                    Mono.mFunction Mono.LTop [ canTypeToMonoWith superVars subst argType ] acc
                 )
                 (canTypeToMonoWith superVars subst to)
                 argsAcc

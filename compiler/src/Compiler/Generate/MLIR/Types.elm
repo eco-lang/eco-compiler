@@ -212,19 +212,19 @@ monoTypeToOperand monoType =
         Mono.MUnit ->
             ecoValue
 
-        Mono.MList _ ->
+        Mono.MList _ _ ->
             ecoValue
 
-        Mono.MTuple _ ->
+        Mono.MTuple _ _ ->
             ecoValue
 
-        Mono.MRecord _ ->
+        Mono.MRecord _ _ ->
             ecoValue
 
-        Mono.MCustom _ _ _ ->
+        Mono.MCustom _ _ _ _ ->
             ecoValue
 
-        Mono.MFunction _ _ _ ->
+        Mono.MFunction _ _ _ _ ->
             -- Layout ignores the lambda-set annotation: an arrow is a boxed
             -- closure value regardless of its set (REP_* untouched).
             ecoValue
@@ -247,7 +247,7 @@ monoTypeToOperand monoType =
 isFunctionType : Mono.MonoType -> Bool
 isFunctionType monoType =
     case monoType of
-        Mono.MFunction _ _ _ ->
+        Mono.MFunction _ _ _ _ ->
             True
 
         _ ->
@@ -259,7 +259,7 @@ isFunctionType monoType =
 countTotalArity : Mono.MonoType -> Int
 countTotalArity monoType =
     case monoType of
-        Mono.MFunction _ argTypes result ->
+        Mono.MFunction _ _ argTypes result ->
             List.length argTypes + countTotalArity result
 
         _ ->
@@ -524,7 +524,7 @@ bitmapSetKind bitmap index kind =
 {-| Compute runtime layout for a record type, ordering fields to place unboxed values first.
 
 This is called during code generation to compute the layout from a record's
-field dictionary (stored in MRecord MonoType).
+field dictionary (stored in Mono.mRecord MonoType).
 
 -}
 computeRecordLayout : Dict Name Mono.MonoType -> RecordLayout
@@ -623,7 +623,7 @@ ctorSlotTypes layout =
 {-| Compute runtime layout for a tuple type.
 
 This is called during code generation to compute the layout from a tuple's
-element type list (stored in MTuple MonoType).
+element type list (stored in Mono.mTuple MonoType).
 
 -}
 computeTupleLayout : List Mono.MonoType -> TupleLayout

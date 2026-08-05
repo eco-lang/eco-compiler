@@ -374,7 +374,7 @@ in MonoGlobalOptimize.elm).
 firstStageArityFromMonoType : Mono.MonoType -> Int
 firstStageArityFromMonoType monoType =
     case monoType of
-        Mono.MFunction _ argTypes _ ->
+        Mono.MFunction _ _ argTypes _ ->
             List.length argTypes
 
         _ ->

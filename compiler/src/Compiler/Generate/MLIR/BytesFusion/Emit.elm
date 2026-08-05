@@ -1729,7 +1729,7 @@ fnExprReturnType fnExpr nArgs =
     Types.monoTypeToAbi (uncurryReturnType fnType nArgs)
 
 
-{-| Unwrap curried MFunction types to find the final return type after consuming N args.
+{-| Unwrap curried Mono.mFunction types to find the final return type after consuming N args.
 E.g. MFunction [MInt] (MFunction [MInt] MInt) with nArgs=2 -> MInt
 -}
 uncurryReturnType : Mono.MonoType -> Int -> Mono.MonoType
@@ -1739,7 +1739,7 @@ uncurryReturnType monoType remainingArgs =
 
     else
         case monoType of
-            Mono.MFunction _ params returnType ->
+            Mono.MFunction _ _ params returnType ->
                 let
                     consumed =
                         min (List.length params) remainingArgs

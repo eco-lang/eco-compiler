@@ -182,7 +182,7 @@ checkExpr ctx expr =
 checkShape : String -> Mono.MonoType -> Mono.MonoType -> List Violation
 checkShape ctx recordType resultType =
     case ( recordType, resultType ) of
-        ( Mono.MRecord rFields, Mono.MRecord resFields ) ->
+        ( Mono.MRecord _ rFields, Mono.MRecord _ resFields ) ->
             let
                 missing =
                     Dict.keys rFields
@@ -206,10 +206,10 @@ checkShape ctx recordType resultType =
                   }
                 ]
 
-        ( Mono.MRecord _, _ ) ->
+        ( Mono.MRecord _ _, _ ) ->
             [ { context = ctx
               , message =
-                    "MonoRecordUpdate shape violation: result type is not MRecord\n"
+                    "MonoRecordUpdate shape violation: result type is not Mono.mRecord\n"
                         ++ "  source record type: "
                         ++ Debug.toString recordType
                         ++ "\n"

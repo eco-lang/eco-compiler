@@ -351,7 +351,7 @@ canTypeToMonoType_preserveVars env canType =
                 ( toMono, env2 ) =
                     canTypeToMonoType_preserveVars env1 to
             in
-            ( Mono.MFunction Mono.LTop [ fromMono ] toMono, env2 )
+            ( Mono.mFunction Mono.LTop [ fromMono ] toMono, env2 )
 
         Can.TType canonical name args ->
             convertTType canTypeToMonoType_preserveVars env canonical name args
@@ -370,7 +370,7 @@ canTypeToMonoType_preserveVars env canType =
                         ( Dict.empty, env )
                         fields
             in
-            ( Mono.MRecord monoFields, env1 )
+            ( Mono.mRecord monoFields, env1 )
 
         Can.TTuple a b rest ->
             let
@@ -386,7 +386,7 @@ canTypeToMonoType_preserveVars env canType =
                         ( [], env )
                         (a :: b :: rest)
             in
-            ( Mono.MTuple (List.reverse revMonoTypes), env1 )
+            ( Mono.mTuple (List.reverse revMonoTypes), env1 )
 
         Can.TUnit ->
             ( Mono.MUnit, env )
@@ -446,13 +446,13 @@ convertTType convert env canonical name args =
             "List" ->
                 case monoArgs of
                     [ inner ] ->
-                        ( Mono.MList inner, env1 )
+                        ( Mono.mList inner, env1 )
 
                     _ ->
-                        ( Mono.MList Mono.MUnit, env1 )
+                        ( Mono.mList Mono.MUnit, env1 )
 
             _ ->
-                ( Mono.MCustom canonical name monoArgs, env1 )
+                ( Mono.mCustom canonical name monoArgs, env1 )
 
     else
-        ( Mono.MCustom canonical name monoArgs, env1 )
+        ( Mono.mCustom canonical name monoArgs, env1 )

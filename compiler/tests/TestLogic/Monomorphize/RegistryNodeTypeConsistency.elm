@@ -165,13 +165,13 @@ monoTypeToString monoType =
         Mono.MUnit ->
             "()"
 
-        Mono.MList elementType ->
+        Mono.MList _ elementType ->
             "List " ++ monoTypeToString elementType
 
-        Mono.MTuple elements ->
+        Mono.MTuple _ elements ->
             "(" ++ String.join ", " (List.map monoTypeToString elements) ++ ")"
 
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             let
                 fieldStrs =
                     Dict.foldl
@@ -181,10 +181,10 @@ monoTypeToString monoType =
             in
             "{ " ++ String.join ", " fieldStrs ++ " }"
 
-        Mono.MCustom _ name _ ->
+        Mono.MCustom _ _ name _ ->
             name
 
-        Mono.MFunction _ params result ->
+        Mono.MFunction _ _ params result ->
             let
                 paramStr =
                     case params of

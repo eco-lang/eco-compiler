@@ -403,7 +403,7 @@ buildSretPromoted config nodes =
                                 Just (Mono.MonoDefine (Mono.MonoClosure cinfo cbody _) monoType) ->
                                     if List.isEmpty cinfo.captures && not (List.isEmpty cinfo.params) then
                                         case closureResultType monoType of
-                                            Mono.MTuple ts ->
+                                            Mono.MTuple _ ts ->
                                                 let
                                                     arity =
                                                         List.length ts
@@ -437,7 +437,7 @@ buildSretPromoted config nodes =
                                     -- Independently gated (ECO_SRET_TAILFUNC=0) so
                                     -- the widening can be A/B'd apart from T1.3.3.
                                     case Ctx.residualResultType (List.length tparams) monoType of
-                                        Mono.MTuple ts ->
+                                        Mono.MTuple _ ts ->
                                             let
                                                 arity =
                                                     List.length ts
@@ -514,7 +514,7 @@ sretFreshFixpoint letPos nodes iter table =
                             Just (Mono.MonoDefine (Mono.MonoClosure cinfo cbody _) monoType) ->
                                 if List.isEmpty cinfo.captures && not (List.isEmpty cinfo.params) && not (Dict.member sid acc) && Set.member sid letPos then
                                     case closureResultType monoType of
-                                        Mono.MTuple ts ->
+                                        Mono.MTuple _ ts ->
                                             let
                                                 ar =
                                                     List.length ts
@@ -594,7 +594,7 @@ sretFreshDeciderOk table slotTys d =
 closureResultType : Mono.MonoType -> Mono.MonoType
 closureResultType monoType =
     case monoType of
-        Mono.MFunction _ _ retType ->
+        Mono.MFunction _ _ _ retType ->
             retType
 
         _ ->
@@ -681,7 +681,7 @@ boxed-slot make where the plan says unboxed crashes emission.
 sretLeafMatches : List MlirType -> Mono.MonoType -> Bool
 sretLeafMatches slotTys leafMonoType =
     case leafMonoType of
-        Mono.MTuple ts ->
+        Mono.MTuple _ ts ->
             (List.length ts == List.length slotTys)
                 && (Types.tupleSlotTypes (Types.computeTupleLayout ts) == slotTys)
 
@@ -737,7 +737,7 @@ graph passes a CONSTRUCTISH argument at an eligible position (inline
 matching construct, or a var let-bound to one) — the win pre-check:
 without such a site the worker+shim pair is pure shim-hop overhead.
 -}
-buildPsplitPromoted : Config.EcoConfig -> Dict.Dict String (List Mono.CtorShape) -> Dict.Dict Int Mono.CtorShape -> Dict.Dict Int Ctx.SretInfo -> Array (Maybe Mono.MonoNode) -> Dict.Dict Int Ctx.PsplitInfo
+buildPsplitPromoted : Config.EcoConfig -> Mono.LayoutMap (List Mono.CtorShape) -> Dict.Dict Int Mono.CtorShape -> Dict.Dict Int Ctx.SretInfo -> Array (Maybe Mono.MonoNode) -> Dict.Dict Int Ctx.PsplitInfo
 buildPsplitPromoted config ctorShapes ctorBySpec sretPromoted nodes =
     if not config.psplitParams then
         Dict.empty
@@ -758,7 +758,7 @@ justification hold under the FINAL table, which is exactly what emission
 requires (it consults the same table via `ctx.psplitPromoted`), so no
 admitted pass-through ever rematerializes in a worker body.
 -}
-psplitFixpoint : Dict.Dict String (List Mono.CtorShape) -> Dict.Dict Int Mono.CtorShape -> Dict.Dict Int Ctx.SretInfo -> Array (Maybe Mono.MonoNode) -> Int -> Dict.Dict Int Ctx.PsplitInfo -> Dict.Dict Int Ctx.PsplitInfo
+psplitFixpoint : Mono.LayoutMap (List Mono.CtorShape) -> Dict.Dict Int Mono.CtorShape -> Dict.Dict Int Ctx.SretInfo -> Array (Maybe Mono.MonoNode) -> Int -> Dict.Dict Int Ctx.PsplitInfo -> Dict.Dict Int Ctx.PsplitInfo
 psplitFixpoint ctorShapes ctorBySpec sretPromoted nodes iter prev =
     let
         next =
@@ -771,12 +771,12 @@ psplitFixpoint ctorShapes ctorBySpec sretPromoted nodes iter prev =
         psplitFixpoint ctorShapes ctorBySpec sretPromoted nodes (iter + 1) next
 
 
-psplitOnePass : Dict.Dict String (List Mono.CtorShape) -> Dict.Dict Int Mono.CtorShape -> Dict.Dict Int Ctx.SretInfo -> Array (Maybe Mono.MonoNode) -> Dict.Dict Int Ctx.PsplitInfo -> Dict.Dict Int Ctx.PsplitInfo
+psplitOnePass : Mono.LayoutMap (List Mono.CtorShape) -> Dict.Dict Int Mono.CtorShape -> Dict.Dict Int Ctx.SretInfo -> Array (Maybe Mono.MonoNode) -> Dict.Dict Int Ctx.PsplitInfo -> Dict.Dict Int Ctx.PsplitInfo
 psplitOnePass ctorShapes ctorBySpec sretPromoted nodes prev =
     let
             planForParam ( name, monoTy ) body =
                 case monoTy of
-                    Mono.MTuple ts ->
+                    Mono.MTuple _ ts ->
                         let
                             ar =
                                 List.length ts
@@ -802,8 +802,8 @@ psplitOnePass ctorShapes ctorBySpec sretPromoted nodes prev =
                         else
                             Nothing
 
-                    Mono.MCustom _ _ _ ->
-                        case Dict.get (Mono.toComparableLayoutKey monoTy) ctorShapes of
+                    Mono.MCustom _ _ _ _ ->
+                        case Mono.layoutMapGet monoTy ctorShapes of
                             Just [ shape ] ->
                                 if List.length shape.fieldTypes >= 2 && List.length shape.fieldTypes <= 6 then
                                     let

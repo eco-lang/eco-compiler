@@ -231,13 +231,13 @@ checkForCNumber context monoType =
         Mono.MVar _ Mono.CEcoValue ->
             []
 
-        Mono.MList elemType ->
+        Mono.MList _ elemType ->
             checkForCNumber context elemType
 
-        Mono.MCustom _ _ typeArgs ->
+        Mono.MCustom _ _ _ typeArgs ->
             List.concatMap (checkForCNumber context) typeArgs
 
-        Mono.MFunction _ paramTypes returnType ->
+        Mono.MFunction _ _ paramTypes returnType ->
             List.concatMap (checkForCNumber context) paramTypes
                 ++ checkForCNumber context returnType
 
@@ -410,13 +410,13 @@ checkNumericTypeResolved context monoType =
             -- CEcoValue is fine - it's not a numeric constraint
             []
 
-        Mono.MList elemType ->
+        Mono.MList _ elemType ->
             checkNumericTypeResolved context elemType
 
-        Mono.MCustom _ _ typeArgs ->
+        Mono.MCustom _ _ _ typeArgs ->
             List.concatMap (checkNumericTypeResolved context) typeArgs
 
-        Mono.MFunction _ paramTypes returnType ->
+        Mono.MFunction _ _ paramTypes returnType ->
             List.concatMap (checkNumericTypeResolved context) paramTypes
                 ++ checkNumericTypeResolved context returnType
 

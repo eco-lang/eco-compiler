@@ -1108,7 +1108,7 @@ type alias Census0 =
 {-| Borrow-inference Phase-0 throwaway census (U0.1): a cheap syntactic count
 over the final Mono graph — the Perceus-cost denominator. No solving; a raw
 upper bound with no liveness. Heap-typed = design §7.2 resources (MString,
-MList, MTuple, MRecord, MCustom, MFunction, MVar); MInt/MFloat/MBool/MChar/
+Mono.mList, Mono.mTuple, Mono.mRecord, Mono.mCustom, Mono.mFunction, MVar); MInt/MFloat/MBool/MChar/
 MUnit are unboxed non-resources. `wouldDups` counts EVERY heap-typed variable
 occurrence as a candidate dup; `wouldDrops` counts heap-typed binders
 (node-level MonoTailFunc params + MonoLet MonoDef/MonoTailDef bindings and
@@ -1141,19 +1141,19 @@ borrowCensus0Line (Mono.MonoGraph { nodes }) =
                 Mono.MString ->
                     True
 
-                Mono.MList _ ->
+                Mono.MList _ _ ->
                     True
 
-                Mono.MTuple _ ->
+                Mono.MTuple _ _ ->
                     True
 
-                Mono.MRecord _ ->
+                Mono.MRecord _ _ ->
                     True
 
-                Mono.MCustom _ _ _ ->
+                Mono.MCustom _ _ _ _ ->
                     True
 
-                Mono.MFunction _ _ _ ->
+                Mono.MFunction _ _ _ _ ->
                     True
 
                 Mono.MVar _ _ ->
@@ -1169,16 +1169,16 @@ borrowCensus0Line (Mono.MonoGraph { nodes }) =
                 Mono.MString ->
                     { a1 | strings = a1.strings + 1 }
 
-                Mono.MList _ ->
+                Mono.MList _ _ ->
                     { a1 | lists = a1.lists + 1 }
 
-                Mono.MRecord _ ->
+                Mono.MRecord _ _ ->
                     { a1 | records = a1.records + 1 }
 
-                Mono.MCustom _ _ _ ->
+                Mono.MCustom _ _ _ _ ->
                     { a1 | customs = a1.customs + 1 }
 
-                Mono.MFunction _ _ _ ->
+                Mono.MFunction _ _ _ _ ->
                     { a1 | closures = a1.closures + 1 }
 
                 _ ->

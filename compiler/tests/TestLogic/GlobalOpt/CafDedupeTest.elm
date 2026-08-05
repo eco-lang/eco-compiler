@@ -130,7 +130,7 @@ strTy =
 
 fnTy : Mono.MonoType
 fnTy =
-    Mono.MFunction Mono.LTop [ strTy ] strTy
+    Mono.mFunction Mono.LTop [ strTy ] strTy
 
 
 thunkBody : String -> Mono.MonoExpr
@@ -179,7 +179,7 @@ consumerNode refId =
 baseRegistry : Int -> Mono.SpecializationRegistry
 baseRegistry n =
     { nextId = n
-    , mapping = Dict.empty
+    , mapping = Mono.specKeyMapEmpty
     , reverseMapping =
         Array.fromList
             (List.map
@@ -195,7 +195,7 @@ mkGraph nodes ports =
         { nodes = Array.fromList nodes
         , main = Nothing
         , registry = baseRegistry (List.length nodes)
-        , ctorShapes = Dict.empty
+        , ctorShapes = Mono.layoutMapEmpty
         , nextLambdaIndex = 1
         , callEdges = Array.empty
         , specHasEffects = BitSet.empty

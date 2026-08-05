@@ -10,8 +10,8 @@ This test verifies that for tail-recursive functions:
 2.  The MonoTailFunc node's argument count and return type match
     the expected monomorphized function type.
 
-Note: Under the stage-aware design, MFunction types are nested (one per TLambda),
-not flattened. For `Int -> Int -> Int`, we get `MFunction [MInt] (MFunction [MInt] MInt)`.
+Note: Under the stage-aware design, Mono.mFunction types are nested (one per TLambda),
+not flattened. For `Int -> Int -> Int`, we get `Mono.mFunction [MInt] (Mono.mFunction [MInt] MInt)`.
 
 -}
 
@@ -39,7 +39,7 @@ import TestLogic.TestPipeline as Pipeline
 suite : Test
 suite =
     Test.describe "MonoTailFunc specialization type invariants (MONO_TAILFUNC_001)"
-        [ Test.test "sumHelper MonoTailFunc has nested MFunction [MInt] (MFunction [MInt] MInt)" <|
+        [ Test.test "sumHelper MonoTailFunc has nested Mono.mFunction [MInt] (Mono.mFunction [MInt] MInt)" <|
             \_ -> checkSumHelperMono
         , Test.test "MonoTailFunc arg count matches expected arity" <|
             \_ -> checkMonoTailFuncArity
@@ -62,7 +62,7 @@ suite =
         else
             sumHelper (acc + n) (n - 1)
 
-Expected MonoType: MFunction [MInt] (MFunction [MInt] MInt)
+Expected MonoType: Mono.mFunction [MInt] (Mono.mFunction [MInt] MInt)
 
 -}
 sumHelperModule : Src.Module
@@ -105,7 +105,7 @@ For sumHelper : Int -> Int -> Int, we expect:
 
   - MonoTailFunc with 2 arguments (acc: MInt, n: MInt)
   - Return type: MInt
-  - Overall function type: MFunction [MInt] (MFunction [MInt] MInt)
+  - Overall function type: Mono.mFunction [MInt] (Mono.mFunction [MInt] MInt)
 
 -}
 checkSumHelperMono : Expectation
@@ -141,7 +141,7 @@ checkMonoTailFuncArity =
 For sumHelper : Int -> Int -> Int, we expect:
 
   - MonoTailFunc with 2 arguments (acc: MInt, n: MInt)
-  - MonoType field: MFunction [MInt] (MFunction [MInt] MInt) (nested per stage-aware design)
+  - MonoType field: Mono.mFunction [MInt] (Mono.mFunction [MInt] MInt) (nested per stage-aware design)
 
 -}
 checkMonoTailFuncType : String -> Mono.MonoGraph -> Expectation
@@ -175,7 +175,7 @@ checkMonoTailFuncType funcName (Mono.MonoGraph data) =
 
                 -- Under stage-aware design, Int -> Int -> Int becomes nested MFunction
                 expectedMonoType =
-                    Mono.MFunction Mono.LTop [ Mono.MInt ] (Mono.MFunction Mono.LTop [ Mono.MInt ] Mono.MInt)
+                    Mono.mFunction Mono.LTop [ Mono.MInt ] (Mono.mFunction Mono.LTop [ Mono.MInt ] Mono.MInt)
 
                 -- Check argument types
                 argTypeErrors =
@@ -294,16 +294,16 @@ monoTypesMatch actual expected =
         ( Mono.MUnit, Mono.MUnit ) ->
             True
 
-        ( Mono.MList a, Mono.MList b ) ->
+        ( Mono.MList _ a, Mono.MList _ b ) ->
             monoTypesMatch a b
 
-        ( Mono.MFunction _ args1 ret1, Mono.MFunction _ args2 ret2 ) ->
+        ( Mono.MFunction _ _ args1 ret1, Mono.MFunction _ _ args2 ret2 ) ->
             List.length args1
                 == List.length args2
                 && List.all identity (List.map2 monoTypesMatch args1 args2)
                 && monoTypesMatch ret1 ret2
 
-        ( Mono.MCustom home1 name1 args1, Mono.MCustom home2 name2 args2 ) ->
+        ( Mono.MCustom _ home1 name1 args1, Mono.MCustom _ home2 name2 args2 ) ->
             home1 == home2 && name1 == name2 && List.length args1 == List.length args2
 
         ( Mono.MVar _ _, _ ) ->
@@ -337,23 +337,23 @@ monoTypeToString monoType =
         Mono.MUnit ->
             "MUnit"
 
-        Mono.MList inner ->
-            "MList (" ++ monoTypeToString inner ++ ")"
+        Mono.MList _ inner ->
+            "Mono.mList (" ++ monoTypeToString inner ++ ")"
 
-        Mono.MFunction _ args ret ->
-            "MFunction ["
+        Mono.MFunction _ _ args ret ->
+            "Mono.mFunction ["
                 ++ String.join ", " (List.map monoTypeToString args)
                 ++ "] "
                 ++ monoTypeToString ret
 
-        Mono.MCustom _ name args ->
-            "MCustom " ++ name ++ " [" ++ String.join ", " (List.map monoTypeToString args) ++ "]"
+        Mono.MCustom _ _ name args ->
+            "Mono.mCustom " ++ name ++ " [" ++ String.join ", " (List.map monoTypeToString args) ++ "]"
 
-        Mono.MRecord _ ->
-            "MRecord {...}"
+        Mono.MRecord _ _ ->
+            "Mono.mRecord {...}"
 
-        Mono.MTuple _ ->
-            "MTuple (...)"
+        Mono.MTuple _ _ ->
+            "Mono.mTuple (...)"
 
         Mono.MVar mvarId _ ->
             "MVar \"" ++ String.fromInt (Id.toComparable mvarId) ++ "\""

@@ -109,13 +109,13 @@ checkNodeArity specId node =
 
 {-| Flatten a curried function type into a list of argument types and a final return type.
 
-For example, `MFunction [a] (MFunction [b] c)` becomes `([a, b], c)`.
+For example, `Mono.mFunction [a] (Mono.mFunction [b] c)` becomes `([a, b], c)`.
 
 -}
 flattenFunctionType : Mono.MonoType -> ( List Mono.MonoType, Mono.MonoType )
 flattenFunctionType monoType =
     case monoType of
-        Mono.MFunction _ params result ->
+        Mono.MFunction _ _ params result ->
             let
                 ( innerParams, innerResult ) =
                     flattenFunctionType result
@@ -128,8 +128,8 @@ flattenFunctionType monoType =
 
 {-| Get the flattened arity (total number of parameters) from a function type.
 
-This computes the flattened arity by peeling nested MFunction layers.
-For example, `MFunction [a] (MFunction [b] c)` has flattened arity 2.
+This computes the flattened arity by peeling nested Mono.mFunction layers.
+For example, `Mono.mFunction [a] (Mono.mFunction [b] c)` has flattened arity 2.
 
 Used for MonoTailFunc checks (tail functions have all params flattened)
 and call site checks to prevent over-application.
@@ -144,9 +144,9 @@ getFlattenedArity monoType =
     List.length params
 
 
-{-| Get the stage arity (outermost MFunction argument count) from a function type.
+{-| Get the stage arity (outermost Mono.mFunction argument count) from a function type.
 
-For example, `MFunction [a] (MFunction [b] c)` has stage arity 1.
+For example, `Mono.mFunction [a] (Mono.mFunction [b] c)` has stage arity 1.
 
 Used for MonoClosure checks per MONO\_016: closureInfo.params length must
 equal the stage arity, not the flattened arity.
@@ -155,7 +155,7 @@ equal the stage arity, not the flattened arity.
 getStageArity : Mono.MonoType -> Int
 getStageArity monoType =
     case monoType of
-        Mono.MFunction _ params _ ->
+        Mono.MFunction _ _ params _ ->
             List.length params
 
         _ ->
@@ -165,7 +165,7 @@ getStageArity monoType =
 {-| Check that a type and expression have consistent arity.
 
 For closures, MONO\_016 requires that closureInfo.params length equals the
-stage arity (outermost MFunction argument count), not the flattened arity.
+stage arity (outermost Mono.mFunction argument count), not the flattened arity.
 
 Each closure takes exactly one "stage" of arguments. Nested lambdas like
 `\x -> \y -> expr` create separate closures, each with their own stage.

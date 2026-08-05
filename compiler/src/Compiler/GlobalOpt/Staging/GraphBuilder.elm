@@ -606,7 +606,7 @@ unifyTupleElementsAcrossBranches tupleBranches sg ctx =
 recordKeyFromType : Mono.MonoType -> String
 recordKeyFromType monoType =
     case monoType of
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             Dict.keys fields
                 |> List.sort
                 |> String.join ","
@@ -620,7 +620,7 @@ recordKeyFromType monoType =
 tupleKeyFromType : Mono.MonoType -> String
 tupleKeyFromType monoType =
     case monoType of
-        Mono.MTuple elements ->
+        Mono.MTuple _ elements ->
             "tuple" ++ String.fromInt (List.length elements)
 
         _ ->
@@ -632,7 +632,7 @@ tupleKeyFromType monoType =
 listKeyFromType : Mono.MonoType -> String
 listKeyFromType monoType =
     case monoType of
-        Mono.MList elemType ->
+        Mono.MList _ elemType ->
             "list:" ++ monoTypeToKey elemType
 
         _ ->
@@ -662,20 +662,20 @@ monoTypeToKey monoType =
         Mono.MUnit ->
             "Unit"
 
-        Mono.MFunction _ args ret ->
+        Mono.MFunction _ _ args ret ->
             -- Staging keys are layout keys: deliberately annotation-insensitive.
             "Fn(" ++ String.join "," (List.map monoTypeToKey args) ++ ")->" ++ monoTypeToKey ret
 
-        Mono.MList elem ->
+        Mono.MList _ elem ->
             "List(" ++ monoTypeToKey elem ++ ")"
 
-        Mono.MTuple elems ->
+        Mono.MTuple _ elems ->
             "Tuple(" ++ String.join "," (List.map monoTypeToKey elems) ++ ")"
 
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             "Record{" ++ String.join "," (Dict.keys fields) ++ "}"
 
-        Mono.MCustom _ name _ ->
+        Mono.MCustom _ _ name _ ->
             "Custom:" ++ name
 
         Mono.MVar _ _ ->

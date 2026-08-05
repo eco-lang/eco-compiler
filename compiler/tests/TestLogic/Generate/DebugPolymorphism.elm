@@ -196,7 +196,7 @@ Their type arguments should be MVar CEcoValue, not CNumber.
 checkDebugKernelType : String -> String -> Mono.MonoType -> List String
 checkDebugKernelType context name monoType =
     case monoType of
-        Mono.MFunction _ paramTypes returnType ->
+        Mono.MFunction _ _ paramTypes returnType ->
             -- Check parameter types for CNumber constraints (should not be present)
             checkNoCNumberInDebugArg (context ++ ", Debug." ++ name ++ " return") returnType
                 ++ (List.indexedMap
@@ -248,13 +248,13 @@ checkNoCNumberInDebugArg context monoType =
             -- CEcoValue is fine - Debug handles polymorphism at runtime
             []
 
-        Mono.MList elemType ->
+        Mono.MList _ elemType ->
             checkNoCNumberInDebugArg context elemType
 
-        Mono.MCustom _ _ typeArgs ->
+        Mono.MCustom _ _ _ typeArgs ->
             List.concatMap (checkNoCNumberInDebugArg context) typeArgs
 
-        Mono.MFunction _ paramTypes returnType ->
+        Mono.MFunction _ _ paramTypes returnType ->
             List.concatMap (checkNoCNumberInDebugArg context) paramTypes
                 ++ checkNoCNumberInDebugArg context returnType
 

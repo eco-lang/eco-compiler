@@ -1,5 +1,12 @@
 module Compiler.AST.Monomorphized exposing
     ( MonoType(..), Literal(..), Constraint(..)
+    , mList, mTuple, mRecord, mCustom, mFunction
+    , layoutHashOf, specHashOf, eqKeySpec, eqKeyLayout
+    , LayoutMap, layoutMapEmpty, layoutMapGet, layoutMapMember, layoutMapInsert
+    , layoutMapSize, layoutMapIsEmpty, layoutMapFoldl, layoutMapMap, layoutMapToList, layoutMapValues, layoutMapFromList
+    , SpecMap, specMapEmpty, specMapGet, specMapMember, specMapInsert
+    , specMapSize, specMapIsEmpty, specMapFoldl, specMapToList, specMapValues, specMapRemove, specMapSingleton
+    , SpecKeyMap, specKeyMapEmpty, specKeyMapGet, specKeyMapInsert, specKeyMapSize, globalHash
     , LambdaSetAnno(..), widenSets, eqLayout, shallowLayoutKey, headAnno, unionAnno, singletonHeadMember, joinAnnotations, overlayAnnotations
     , LambdaId(..)
     , Global(..), SpecKey(..), SpecId, SpecializationRegistry
@@ -60,6 +67,21 @@ This module defines the data structures for the monomorphized program
 # Types
 
 @docs MonoType, Literal, Constraint
+
+
+# Structural Hashes and Smart Constructors
+
+@docs MList, MTuple, MRecord, MCustom, MFunction
+@docs layoutHashOf, specHashOf, eqKeySpec, eqKeyLayout
+
+
+# MonoType-keyed Maps
+
+@docs LayoutMap, layoutMapEmpty, layoutMapGet, layoutMapMember, layoutMapInsert
+@docs layoutMapSize, layoutMapIsEmpty, layoutMapFoldl, layoutMapMap, layoutMapToList, layoutMapValues, layoutMapFromList
+@docs SpecMap, specMapEmpty, specMapGet, specMapMember, specMapInsert
+@docs specMapSize, specMapIsEmpty, specMapFoldl, specMapToList, specMapValues, specMapRemove, specMapSingleton
+@docs SpecKeyMap, specKeyMapEmpty, specKeyMapGet, specKeyMapInsert, specKeyMapSize, globalHash
 
 
 # Lambda Sets
@@ -156,7 +178,9 @@ import Compiler.AST.TypeIds as TypeIds exposing (MVarId)
 import Compiler.Data.BitSet exposing (BitSet)
 import Compiler.Data.Id as Id
 import Compiler.Data.Name exposing (Name)
+import Char
 import Compiler.Reporting.Annotation exposing (Region)
+import Data.HashMap as HashMap
 import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 
@@ -207,11 +231,11 @@ type MonoType
     | MChar
     | MString
     | MUnit
-    | MList MonoType
-    | MTuple (List MonoType) -- Element types (layout computed at codegen)
-    | MRecord (Dict Name MonoType) -- Field name -> type (layout computed at codegen)
-    | MCustom IO.Canonical Name (List MonoType)
-    | MFunction LambdaSetAnno (List MonoType) MonoType
+    | MList Int MonoType
+    | MTuple Int (List MonoType) -- Element types (layout computed at codegen)
+    | MRecord Int (Dict Name MonoType) -- Field name -> type (layout computed at codegen)
+    | MCustom Int IO.Canonical Name (List MonoType)
+    | MFunction Int LambdaSetAnno (List MonoType) MonoType
     | MVar MVarId Constraint
 
 
@@ -247,6 +271,556 @@ type Constraint
 
 
 -- ============================================================================
+-- ====== STRUCTURAL HASHES AND SMART CONSTRUCTORS (K4) ======
+-- ============================================================================
+
+
+{-| Every composite `MonoType` carries a PACKED pair of structural hashes in
+its leading `Int` field: `layoutHash * hashBase + specHash`, each of them in
+`[0, hashBase)`.
+
+They exist so a `MonoType`-keyed dictionary can key on an `Int` that is
+already in the value instead of on a comparable string it must first build by
+walking the type (K4 of `plans/mono-comparable-key-optimization.md`). The two
+hashes mirror the two comparable-key FLAVOURS exactly:
+
+  - `specHashOf` corresponds to `toComparableMonoType` (annotation-SENSITIVE);
+  - `layoutHashOf` corresponds to `toComparableLayoutKey` (arrows erased).
+
+The contract is one-directional: **equal keys imply equal hashes**, never the
+converse. These are hashes, not identities, so every hash-keyed lookup MUST
+confirm a candidate with `eqKeySpec` / `eqKeyLayout`, which are exactly key
+equality. `ComparableKeyEncodingTest` pins both halves of that contract.
+
+Hashes are computed ONCE, here, from the children's already-stored hashes:
+O(arity) per construction, never a tree walk, and never a string walk — only
+`String.length`, so that construction stays cheap. Names themselves are
+compared by the eq functions, on the rare bucket collision.
+
+**Build composite types ONLY through the smart constructors below.** A
+hand-written `MList 0 t` carries a wrong hash and would silently miss in every
+hash-keyed dictionary; the leading field is deliberately un-guessable so that
+the type checker forces you here.
+
+-}
+hashBase : Int
+hashBase =
+    -- 2^26. Two of these pack into 2^52, inside the exact-integer range of
+    -- both the native i64 and the JS-hosted double.
+    67108864
+
+
+packHashes : Int -> Int -> Int
+packHashes layoutH specH =
+    layoutH * hashBase + specH
+
+
+mixHash : Int -> Int -> Int
+mixHash h x =
+    modBy hashBase (h * 33 + modBy hashBase x + 7)
+
+
+{-| Annotation-INSENSITIVE structural hash — the `toComparableLayoutKey` side.
+-}
+layoutHashOf : MonoType -> Int
+layoutHashOf mt =
+    case mt of
+        MList h _ ->
+            h // hashBase
+
+        MTuple h _ ->
+            h // hashBase
+
+        MRecord h _ ->
+            h // hashBase
+
+        MCustom h _ _ _ ->
+            h // hashBase
+
+        MFunction h _ _ _ ->
+            h // hashBase
+
+        _ ->
+            leafKeyTag mt
+
+
+{-| Annotation-SENSITIVE structural hash — the `toComparableMonoType` side.
+-}
+specHashOf : MonoType -> Int
+specHashOf mt =
+    case mt of
+        MList h _ ->
+            modBy hashBase h
+
+        MTuple h _ ->
+            modBy hashBase h
+
+        MRecord h _ ->
+            modBy hashBase h
+
+        MCustom h _ _ _ ->
+            modBy hashBase h
+
+        MFunction h _ _ _ ->
+            modBy hashBase h
+
+        _ ->
+            leafKeyTag mt
+
+
+{-| The key identity of a leaf, or 0 for a composite. Note the two merges the
+comparable key performs and this must therefore perform too: `MVar _ CNumber`
+keys as `"I"`, exactly like `MInt` (D4 quiescence-before-defaulting), and a
+`MVar _ CEcoValue` drops its id (MONO\_003 layout erasure).
+-}
+leafKeyTag : MonoType -> Int
+leafKeyTag mt =
+    case mt of
+        MInt ->
+            1
+
+        MFloat ->
+            2
+
+        MBool ->
+            3
+
+        MChar ->
+            4
+
+        MString ->
+            5
+
+        MUnit ->
+            6
+
+        MVar _ constraint ->
+            case constraint of
+                CEcoValue ->
+                    7
+
+                CNumber ->
+                    1
+
+        _ ->
+            0
+
+
+annoHash : LambdaSetAnno -> Int
+annoHash anno =
+    case anno of
+        LTop ->
+            3
+
+        LSet members ->
+            List.foldl (\m h -> mixHash h m) 5 members
+
+
+{-| Smart constructor for `MList`. See the `hashBase` docs.
+-}
+mList : MonoType -> MonoType
+mList inner =
+    MList
+        (packHashes (mixHash 11 (layoutHashOf inner)) (mixHash 11 (specHashOf inner)))
+        inner
+
+
+{-| Smart constructor for `MTuple`. See the `hashBase` docs.
+-}
+mTuple : List MonoType -> MonoType
+mTuple elementTypes =
+    let
+        seed =
+            mixHash 12 (List.length elementTypes)
+    in
+    MTuple
+        (packHashes
+            (List.foldl (\t h -> mixHash h (layoutHashOf t)) seed elementTypes)
+            (List.foldl (\t h -> mixHash h (specHashOf t)) seed elementTypes)
+        )
+        elementTypes
+
+
+{-| Smart constructor for `MRecord`. See the `hashBase` docs.
+-}
+mRecord : Dict Name MonoType -> MonoType
+mRecord fields =
+    let
+        seed =
+            mixHash 13 (Dict.size fields)
+
+        fold hashOf =
+            Dict.foldl
+                (\name t h -> mixHash (mixHash h (String.length name)) (hashOf t))
+                seed
+                fields
+    in
+    MRecord (packHashes (fold layoutHashOf) (fold specHashOf)) fields
+
+
+{-| Smart constructor for `MCustom`. See the `hashBase` docs. Only the LENGTHS
+of the canonical and the type name enter the hash — hashing the characters
+would put a string walk on every construction, and the eq functions compare
+the names themselves when a bucket collides.
+-}
+mCustom : IO.Canonical -> Name -> List MonoType -> MonoType
+mCustom canonical name args =
+    let
+        (IO.Canonical ( author, project ) modName) =
+            canonical
+
+        seed =
+            mixHash
+                (mixHash
+                    (mixHash (mixHash (mixHash 14 (String.length name)) (String.length modName))
+                        (String.length project)
+                    )
+                    (String.length author)
+                )
+                (List.length args)
+    in
+    MCustom
+        (packHashes
+            (List.foldl (\t h -> mixHash h (layoutHashOf t)) seed args)
+            (List.foldl (\t h -> mixHash h (specHashOf t)) seed args)
+        )
+        canonical
+        name
+        args
+
+
+{-| Smart constructor for `MFunction`. See the `hashBase` docs. The lambda-set
+annotation enters the SPEC hash only — the layout hash must agree across
+arrows that differ solely in their sets, exactly as `toComparableLayoutKey`
+does.
+-}
+mFunction : LambdaSetAnno -> List MonoType -> MonoType -> MonoType
+mFunction anno args ret =
+    let
+        arity =
+            mixHash 15 (List.length args)
+
+        layoutSeed =
+            mixHash arity (layoutHashOf ret)
+
+        specSeed =
+            mixHash (mixHash arity (specHashOf ret)) (annoHash anno)
+    in
+    MFunction
+        (packHashes
+            (List.foldl (\t h -> mixHash h (layoutHashOf t)) layoutSeed args)
+            (List.foldl (\t h -> mixHash h (specHashOf t)) specSeed args)
+        )
+        anno
+        args
+        ret
+
+
+{-| Comparable-key equality for the SPECIALIZATION flavour:
+`eqKeySpec a b == (toComparableMonoType a == toComparableMonoType b)`, but
+allocation-free and with early exit. Use it to confirm a hash-keyed hit.
+-}
+eqKeySpec : MonoType -> MonoType -> Bool
+eqKeySpec a b =
+    identicalOr True a b
+
+
+{-| Comparable-key equality for the LAYOUT flavour:
+`eqKeyLayout a b == (toComparableLayoutKey a == toComparableLayoutKey b)`.
+
+Do NOT confuse this with `eqLayout`, which is STRICTER: its `a == b` fallback
+distinguishes `MVar` ids that the key erases and separates `MVar _ CNumber`
+from `MInt`, which the key deliberately merges.
+
+-}
+eqKeyLayout : MonoType -> MonoType -> Bool
+eqKeyLayout a b =
+    identicalOr False a b
+
+
+{-| Identity fast path for both key flavours (K6 of
+`plans/mono-comparable-key-optimization.md`).
+
+Sound in exactly the direction needed: `==` is STRICTER than key equality — it
+separates `MVar` ids and `MVar _ CNumber` from `MInt`, both of which the keys
+deliberately merge — so `a == b` implies key equality, while the converse does
+not hold and is never assumed.
+
+Cheap because the runtime's structural equality returns at the first pointer
+comparison (`eqHelp` in `elm-kernel-cpp/src/core/Utils.cpp`), and
+construction-time hash-consing (`Compiler.AST.Intern`) makes equal types the
+SAME object on the substitution paths. Applied only at the entry points, not
+inside `eqKeyWith`'s recursion: a per-node retry would make every MISS pay a
+structural walk twice.
+
+-}
+identicalOr : Bool -> MonoType -> MonoType -> Bool
+identicalOr annoSensitive a b =
+    (a == b) || eqKeyWith annoSensitive a b
+
+
+eqKeyWith : Bool -> MonoType -> MonoType -> Bool
+eqKeyWith annoSensitive a b =
+    case ( a, b ) of
+        ( MList _ xa, MList _ xb ) ->
+            eqKeyWith annoSensitive xa xb
+
+        ( MTuple _ xsa, MTuple _ xsb ) ->
+            eqKeyList annoSensitive xsa xsb
+
+        ( MRecord _ fieldsA, MRecord _ fieldsB ) ->
+            (Dict.size fieldsA == Dict.size fieldsB)
+                && eqKeyFields annoSensitive (Dict.toList fieldsA) (Dict.toList fieldsB)
+
+        ( MCustom _ homeA nameA argsA, MCustom _ homeB nameB argsB ) ->
+            nameA == nameB && homeA == homeB && eqKeyList annoSensitive argsA argsB
+
+        ( MFunction _ annoA argsA retA, MFunction _ annoB argsB retB ) ->
+            (not annoSensitive || annoA == annoB)
+                && eqKeyList annoSensitive argsA argsB
+                && eqKeyWith annoSensitive retA retB
+
+        _ ->
+            -- Leaves, including the two key merges recorded on `leafKeyTag`.
+            let
+                tagA =
+                    leafKeyTag a
+            in
+            tagA /= 0 && tagA == leafKeyTag b
+
+
+eqKeyList : Bool -> List MonoType -> List MonoType -> Bool
+eqKeyList annoSensitive xs ys =
+    case ( xs, ys ) of
+        ( [], [] ) ->
+            True
+
+        ( x :: restX, y :: restY ) ->
+            eqKeyWith annoSensitive x y && eqKeyList annoSensitive restX restY
+
+        _ ->
+            False
+
+
+eqKeyFields : Bool -> List ( Name, MonoType ) -> List ( Name, MonoType ) -> Bool
+eqKeyFields annoSensitive xs ys =
+    case ( xs, ys ) of
+        ( [], [] ) ->
+            True
+
+        ( ( na, ta ) :: restX, ( nb, tb ) :: restY ) ->
+            na == nb && eqKeyWith annoSensitive ta tb && eqKeyFields annoSensitive restX restY
+
+        _ ->
+            False
+
+
+-- ============================================================================
+-- ====== HASH-KEYED MONOTYPE MAPS (K4) ======
+-- ============================================================================
+
+
+{-| A dictionary keyed by `MonoType` under LAYOUT-key semantics — the
+`toComparableLayoutKey` flavour, where arrows compare equal whatever their
+lambda sets. Use it for layout-intent dictionaries: the MLIR type registry,
+`ctorShapes`, pattern container keys.
+-}
+type alias LayoutMap v =
+    HashMap.HashMap MonoType v
+
+
+{-| A dictionary keyed by `MonoType` under SPECIALIZATION-key semantics — the
+`toComparableMonoType` flavour, where lambda sets deliberately split entries.
+-}
+type alias SpecMap v =
+    HashMap.HashMap MonoType v
+
+
+{-| **The two flavours are the same TYPE but not interchangeable.** A map
+built and read with the layout pair behaves like `toComparableLayoutKey`; one
+built and read with the spec pair behaves like `toComparableMonoType`. Mixing
+them merges specialization keys with layout keys — the exact bug the M4 `==`
+audit exists to prevent, and one that is INVISIBLE with the flag off, because
+all-`LTop` graphs key identically under both. Always reach for the `layoutMap*`
+family or the `specMap*` family as a set, never a mixture.
+-}
+layoutMapEmpty : LayoutMap v
+layoutMapEmpty =
+    HashMap.empty
+
+
+layoutMapGet : MonoType -> LayoutMap v -> Maybe v
+layoutMapGet key m =
+    HashMap.get layoutHashOf eqKeyLayout key m
+
+
+layoutMapMember : MonoType -> LayoutMap v -> Bool
+layoutMapMember key m =
+    HashMap.member layoutHashOf eqKeyLayout key m
+
+
+layoutMapInsert : MonoType -> v -> LayoutMap v -> LayoutMap v
+layoutMapInsert key value m =
+    HashMap.insert layoutHashOf eqKeyLayout key value m
+
+
+layoutMapSize : LayoutMap v -> Int
+layoutMapSize m =
+    HashMap.size m
+
+
+layoutMapIsEmpty : LayoutMap v -> Bool
+layoutMapIsEmpty m =
+    HashMap.isEmpty m
+
+
+layoutMapFoldl : (MonoType -> v -> b -> b) -> b -> LayoutMap v -> b
+layoutMapFoldl step init m =
+    HashMap.foldl step init m
+
+
+layoutMapMap : (MonoType -> a -> b) -> LayoutMap a -> LayoutMap b
+layoutMapMap f m =
+    HashMap.map f m
+
+
+layoutMapToList : LayoutMap v -> List ( MonoType, v )
+layoutMapToList m =
+    HashMap.toList m
+
+
+layoutMapValues : LayoutMap v -> List v
+layoutMapValues m =
+    HashMap.values m
+
+
+layoutMapFromList : List ( MonoType, v ) -> LayoutMap v
+layoutMapFromList entries =
+    HashMap.fromList layoutHashOf eqKeyLayout entries
+
+
+{-| Hash of a `Global`. The NAME is hashed character by character (names are
+short and this decides bucket quality for same-shaped globals); the canonical
+contributes its lengths only. Cheaper either way than the string
+`toComparableGlobal` built per lookup.
+-}
+globalHash : Global -> Int
+globalHash g =
+    case g of
+        Global (IO.Canonical ( author, project ) modName) name ->
+            mixHash
+                (mixHash
+                    (mixHash (mixHash 21 (String.length author)) (String.length project))
+                    (String.length modName)
+                )
+                (stringHash name)
+
+        Accessor name ->
+            mixHash 22 (stringHash name)
+
+
+stringHash : String -> Int
+stringHash s =
+    String.foldl (\c h -> mixHash h (Char.toCode c)) 23 s
+
+
+{-| A map keyed by `SpecKey` — the specialization registry's key. Spec flavour
+throughout: two arrows that differ only in their lambda sets are DIFFERENT
+specializations.
+-}
+type alias SpecKeyMap v =
+    HashMap.HashMap SpecKey v
+
+
+specKeyHash : SpecKey -> Int
+specKeyHash (SpecKey global monoType) =
+    mixHash (globalHash global) (specHashOf monoType)
+
+
+specKeyEq : SpecKey -> SpecKey -> Bool
+specKeyEq (SpecKey g1 t1) (SpecKey g2 t2) =
+    g1 == g2 && eqKeySpec t1 t2
+
+
+specKeyMapEmpty : SpecKeyMap v
+specKeyMapEmpty =
+    HashMap.empty
+
+
+specKeyMapGet : SpecKey -> SpecKeyMap v -> Maybe v
+specKeyMapGet key m =
+    HashMap.get specKeyHash specKeyEq key m
+
+
+specKeyMapInsert : SpecKey -> v -> SpecKeyMap v -> SpecKeyMap v
+specKeyMapInsert key value m =
+    HashMap.insert specKeyHash specKeyEq key value m
+
+
+specKeyMapSize : SpecKeyMap v -> Int
+specKeyMapSize m =
+    HashMap.size m
+
+
+{-| Specialization-flavour map operations. See the flavour warning on
+`layoutMapEmpty`.
+-}
+specMapEmpty : SpecMap v
+specMapEmpty =
+    HashMap.empty
+
+
+specMapGet : MonoType -> SpecMap v -> Maybe v
+specMapGet key m =
+    HashMap.get specHashOf eqKeySpec key m
+
+
+specMapMember : MonoType -> SpecMap v -> Bool
+specMapMember key m =
+    HashMap.member specHashOf eqKeySpec key m
+
+
+specMapInsert : MonoType -> v -> SpecMap v -> SpecMap v
+specMapInsert key value m =
+    HashMap.insert specHashOf eqKeySpec key value m
+
+
+specMapSize : SpecMap v -> Int
+specMapSize m =
+    HashMap.size m
+
+
+specMapIsEmpty : SpecMap v -> Bool
+specMapIsEmpty m =
+    HashMap.isEmpty m
+
+
+specMapFoldl : (MonoType -> v -> b -> b) -> b -> SpecMap v -> b
+specMapFoldl step init m =
+    HashMap.foldl step init m
+
+
+specMapRemove : MonoType -> SpecMap v -> SpecMap v
+specMapRemove key m =
+    HashMap.remove specHashOf eqKeySpec key m
+
+
+specMapSingleton : MonoType -> v -> SpecMap v
+specMapSingleton key value =
+    specMapInsert key value specMapEmpty
+
+
+specMapToList : SpecMap v -> List ( MonoType, v )
+specMapToList m =
+    HashMap.toList m
+
+
+specMapValues : SpecMap v -> List v
+specMapValues m =
+    HashMap.values m
+
+
+-- ============================================================================
 -- ====== LAMBDA SETS ======
 -- ============================================================================
 
@@ -271,20 +845,20 @@ specialization keys).
 widenSets : MonoType -> MonoType
 widenSets monoType =
     case monoType of
-        MFunction _ args result ->
-            MFunction LTop (List.map widenSets args) (widenSets result)
+        MFunction _ _ args result ->
+            mFunction LTop (List.map widenSets args) (widenSets result)
 
-        MList inner ->
-            MList (widenSets inner)
+        MList _ inner ->
+            mList (widenSets inner)
 
-        MTuple elems ->
-            MTuple (List.map widenSets elems)
+        MTuple _ elems ->
+            mTuple (List.map widenSets elems)
 
-        MRecord fields ->
-            MRecord (Dict.map (\_ t -> widenSets t) fields)
+        MRecord _ fields ->
+            mRecord (Dict.map (\_ t -> widenSets t) fields)
 
-        MCustom home name args ->
-            MCustom home name (List.map widenSets args)
+        MCustom _ home name args ->
+            mCustom home name (List.map widenSets args)
 
         _ ->
             monoType
@@ -304,20 +878,20 @@ structure).
 eqLayout : MonoType -> MonoType -> Bool
 eqLayout a b =
     case ( a, b ) of
-        ( MFunction _ argsA retA, MFunction _ argsB retB ) ->
+        ( MFunction _ _ argsA retA, MFunction _ _ argsB retB ) ->
             eqLayoutList argsA argsB && eqLayout retA retB
 
-        ( MList xa, MList xb ) ->
+        ( MList _ xa, MList _ xb ) ->
             eqLayout xa xb
 
-        ( MTuple xsa, MTuple xsb ) ->
+        ( MTuple _ xsa, MTuple _ xsb ) ->
             eqLayoutList xsa xsb
 
-        ( MRecord fieldsA, MRecord fieldsB ) ->
+        ( MRecord _ fieldsA, MRecord _ fieldsB ) ->
             (Dict.size fieldsA == Dict.size fieldsB)
                 && eqLayoutFields (Dict.toList fieldsA) (Dict.toList fieldsB)
 
-        ( MCustom homeA nameA argsA, MCustom homeB nameB argsB ) ->
+        ( MCustom _ homeA nameA argsA, MCustom _ homeB nameB argsB ) ->
             nameA == nameB && homeA == homeB && eqLayoutList argsA argsB
 
         _ ->
@@ -394,19 +968,19 @@ shallowLayoutKey depth monoType =
             MVar _ CNumber ->
                 "I"
 
-            MList inner ->
+            MList _ inner ->
                 "L(" ++ shallowLayoutKey (depth - 1) inner ++ ")"
 
-            MTuple elems ->
+            MTuple _ elems ->
                 "T" ++ String.fromInt (List.length elems) ++ "(" ++ String.join "," (List.map (shallowLayoutKey (depth - 1)) elems) ++ ")"
 
-            MRecord fields ->
+            MRecord _ fields ->
                 "R" ++ String.fromInt (Dict.size fields) ++ "(" ++ String.join "," (Dict.keys fields) ++ ")"
 
-            MCustom _ name args ->
+            MCustom _ _ name args ->
                 "X" ++ name ++ String.fromInt (List.length args) ++ "(" ++ String.join "," (List.map (shallowLayoutKey (depth - 1)) args) ++ ")"
 
-            MFunction _ args ret ->
+            MFunction _ _ args ret ->
                 "A" ++ String.fromInt (List.length args) ++ "(" ++ String.join "," (List.map (shallowLayoutKey (depth - 1)) args) ++ "->" ++ shallowLayoutKey (depth - 1) ret ++ ")"
 
 
@@ -415,7 +989,7 @@ shallowLayoutKey depth monoType =
 headAnno : MonoType -> LambdaSetAnno
 headAnno monoType =
     case monoType of
-        MFunction anno _ _ ->
+        MFunction _ anno _ _ ->
             anno
 
         _ ->
@@ -436,33 +1010,33 @@ back to widening the whole type — always sound.
 joinAnnotations : MonoType -> MonoType -> MonoType
 joinAnnotations a b =
     case ( a, b ) of
-        ( MFunction annoA argsA retA, MFunction annoB argsB retB ) ->
+        ( MFunction _ annoA argsA retA, MFunction _ annoB argsB retB ) ->
             if List.length argsA == List.length argsB then
-                MFunction (unionAnno annoA annoB) (List.map2 joinAnnotations argsA argsB) (joinAnnotations retA retB)
+                mFunction (unionAnno annoA annoB) (List.map2 joinAnnotations argsA argsB) (joinAnnotations retA retB)
 
             else
                 widenSets a
 
-        ( MList xa, MList xb ) ->
-            MList (joinAnnotations xa xb)
+        ( MList _ xa, MList _ xb ) ->
+            mList (joinAnnotations xa xb)
 
-        ( MTuple xsa, MTuple xsb ) ->
+        ( MTuple _ xsa, MTuple _ xsb ) ->
             if List.length xsa == List.length xsb then
-                MTuple (List.map2 joinAnnotations xsa xsb)
+                mTuple (List.map2 joinAnnotations xsa xsb)
 
             else
                 widenSets a
 
-        ( MRecord fieldsA, MRecord fieldsB ) ->
+        ( MRecord _ fieldsA, MRecord _ fieldsB ) ->
             if Dict.keys fieldsA == Dict.keys fieldsB then
-                MRecord (Dict.map (\k ta -> joinAnnotations ta (Maybe.withDefault ta (Dict.get k fieldsB))) fieldsA)
+                mRecord (Dict.map (\k ta -> joinAnnotations ta (Maybe.withDefault ta (Dict.get k fieldsB))) fieldsA)
 
             else
                 widenSets a
 
-        ( MCustom homeA nameA argsA, MCustom homeB nameB argsB ) ->
+        ( MCustom _ homeA nameA argsA, MCustom _ homeB nameB argsB ) ->
             if homeA == homeB && nameA == nameB && List.length argsA == List.length argsB then
-                MCustom homeA nameA (List.map2 joinAnnotations argsA argsB)
+                mCustom homeA nameA (List.map2 joinAnnotations argsA argsB)
 
             else
                 widenSets a
@@ -494,33 +1068,33 @@ self-compile scale (eco.case result i64 vs !eco.value yields).
 overlayAnnotations : MonoType -> MonoType -> MonoType
 overlayAnnotations structural annoSource =
     case ( structural, annoSource ) of
-        ( MFunction annoA argsA retA, MFunction annoB argsB retB ) ->
+        ( MFunction _ annoA argsA retA, MFunction _ annoB argsB retB ) ->
             if List.length argsA == List.length argsB then
-                MFunction annoB (List.map2 overlayAnnotations argsA argsB) (overlayAnnotations retA retB)
+                mFunction annoB (List.map2 overlayAnnotations argsA argsB) (overlayAnnotations retA retB)
 
             else
-                MFunction annoA argsA retA
+                mFunction annoA argsA retA
 
-        ( MList xa, MList xb ) ->
-            MList (overlayAnnotations xa xb)
+        ( MList _ xa, MList _ xb ) ->
+            mList (overlayAnnotations xa xb)
 
-        ( MTuple xsa, MTuple xsb ) ->
+        ( MTuple _ xsa, MTuple _ xsb ) ->
             if List.length xsa == List.length xsb then
-                MTuple (List.map2 overlayAnnotations xsa xsb)
+                mTuple (List.map2 overlayAnnotations xsa xsb)
 
             else
                 structural
 
-        ( MRecord fieldsA, MRecord fieldsB ) ->
+        ( MRecord _ fieldsA, MRecord _ fieldsB ) ->
             if Dict.keys fieldsA == Dict.keys fieldsB then
-                MRecord (Dict.map (\k ta -> overlayAnnotations ta (Maybe.withDefault ta (Dict.get k fieldsB))) fieldsA)
+                mRecord (Dict.map (\k ta -> overlayAnnotations ta (Maybe.withDefault ta (Dict.get k fieldsB))) fieldsA)
 
             else
                 structural
 
-        ( MCustom homeA nameA argsA, MCustom homeB nameB argsB ) ->
+        ( MCustom _ homeA nameA argsA, MCustom _ homeB nameB argsB ) ->
             if homeA == homeB && nameA == nameB && List.length argsA == List.length argsB then
-                MCustom homeA nameA (List.map2 overlayAnnotations argsA argsB)
+                mCustom homeA nameA (List.map2 overlayAnnotations argsA argsB)
 
             else
                 structural
@@ -627,19 +1201,19 @@ typeHasResidualNumber isNumber monoType =
                 CEcoValue ->
                     isNumber mvarId
 
-        MList inner ->
+        MList _ inner ->
             typeHasResidualNumber isNumber inner
 
-        MTuple elems ->
+        MTuple _ elems ->
             List.any (typeHasResidualNumber isNumber) elems
 
-        MRecord fields ->
+        MRecord _ fields ->
             Dict.foldl (\_ t acc -> acc || typeHasResidualNumber isNumber t) False fields
 
-        MCustom _ _ args ->
+        MCustom _ _ _ args ->
             List.any (typeHasResidualNumber isNumber) args
 
-        MFunction _ args result ->
+        MFunction _ _ args result ->
             List.any (typeHasResidualNumber isNumber) args || typeHasResidualNumber isNumber result
 
         _ ->
@@ -661,21 +1235,21 @@ resolveNumberTypeRebuild isNumber monoType =
                     else
                         monoType
 
-        MList inner ->
-            MList (resolveNumberType isNumber inner)
+        MList _ inner ->
+            mList (resolveNumberType isNumber inner)
 
-        MTuple elems ->
-            MTuple (List.map (resolveNumberType isNumber) elems)
+        MTuple _ elems ->
+            mTuple (List.map (resolveNumberType isNumber) elems)
 
-        MRecord fields ->
-            MRecord (Dict.map (\_ t -> resolveNumberType isNumber t) fields)
+        MRecord _ fields ->
+            mRecord (Dict.map (\_ t -> resolveNumberType isNumber t) fields)
 
-        MCustom home name args ->
-            MCustom home name (List.map (resolveNumberType isNumber) args)
+        MCustom _ home name args ->
+            mCustom home name (List.map (resolveNumberType isNumber) args)
 
-        MFunction anno args result ->
+        MFunction _ anno args result ->
             -- Rebuilder: thread the annotation through (never stamp LTop here).
-            MFunction anno (List.map (resolveNumberType isNumber) args) (resolveNumberType isNumber result)
+            mFunction anno (List.map (resolveNumberType isNumber) args) (resolveNumberType isNumber result)
 
         MInt ->
             monoType
@@ -703,7 +1277,7 @@ For non-function types, returns the type itself.
 resultTypeOf : MonoType -> MonoType
 resultTypeOf monoType =
     case monoType of
-        MFunction _ _ result ->
+        MFunction _ _ _ result ->
             resultTypeOf result
 
         _ ->
@@ -718,19 +1292,19 @@ containsAnyMVar monoType =
         MVar _ _ ->
             True
 
-        MList t ->
+        MList _ t ->
             containsAnyMVar t
 
-        MFunction _ args result ->
+        MFunction _ _ args result ->
             containsAnyMVarList args || containsAnyMVar result
 
-        MTuple elems ->
+        MTuple _ elems ->
             containsAnyMVarList elems
 
-        MRecord fields ->
+        MRecord _ fields ->
             Dict.foldl (\_ t acc -> acc || containsAnyMVar t) False fields
 
-        MCustom _ _ args ->
+        MCustom _ _ _ args ->
             containsAnyMVarList args
 
         _ ->
@@ -783,7 +1357,7 @@ type alias SpecId =
 -}
 type alias SpecializationRegistry =
     { nextId : Int
-    , mapping : Dict String SpecId
+    , mapping : SpecKeyMap SpecId
     , reverseMapping : Array (Maybe ( Global, MonoType ))
     }
 
@@ -821,7 +1395,7 @@ type MonoGraph
         { nodes : Array (Maybe MonoNode)
         , main : Maybe MainInfo
         , registry : SpecializationRegistry
-        , ctorShapes : Dict String (List CtorShape)
+        , ctorShapes : LayoutMap (List CtorShape)
         , nextLambdaIndex : Int
         , callEdges : Array (Maybe (List Int)) -- Collected during monomorphization. Reuse in downstream passes instead of re-traversing MonoExpr trees.
         , specHasEffects : BitSet -- SpecIds whose node body references Debug.* kernels
@@ -1065,20 +1639,20 @@ monoTypeToDebugString monoType =
         MUnit ->
             "MUnit"
 
-        MList _ ->
-            "MList ..."
+        MList _ _ ->
+            "mList ..."
 
-        MTuple _ ->
-            "MTuple ..."
+        MTuple _ _ ->
+            "mTuple ..."
 
-        MRecord _ ->
-            "MRecord ..."
+        MRecord _ _ ->
+            "mRecord ..."
 
-        MCustom _ name _ ->
-            "MCustom " ++ name ++ " ..."
+        MCustom _ _ name _ ->
+            "mCustom " ++ name ++ " ..."
 
-        MFunction _ _ _ ->
-            "MFunction ..."
+        MFunction _ _ _ _ ->
+            "mFunction ..."
 
         MVar mvarId _ ->
             "MVar#" ++ String.fromInt (Id.toComparable mvarId)
@@ -1234,15 +1808,14 @@ are normalized to a canonical placeholder ID when building this comparable key,
 so fresh MVarIds do not produce distinct keys. `MVar _ CNumber` retains its
 numeric ID to preserve distinct numeric specializations.
 
-Uses a List String accumulator joined at the end for O(n) instead of O(n²)
-from repeated ++.
+Fragments are emitted straight into a `List String` and concatenated once,
+for O(n) instead of the O(n²) of repeated `++`. See `toComparableFragments`
+for the emission order and what it deliberately does NOT allocate.
 
 -}
 toComparableMonoType : MonoType -> String
 toComparableMonoType monoType =
-    toComparableMonoTypeHelper True [ WorkType monoType ] []
-        |> List.reverse
-        |> String.concat
+    String.concat (toComparableFragments True monoType [])
 
 
 {-| Annotation-INSENSITIVE comparable key: identical to
@@ -1261,136 +1834,136 @@ both functions produce byte-identical strings there.
 -}
 toComparableLayoutKey : MonoType -> String
 toComparableLayoutKey monoType =
-    toComparableMonoTypeHelper False [ WorkType monoType ] []
-        |> List.reverse
-        |> String.concat
+    String.concat (toComparableFragments False monoType [])
 
 
-{-| Work item for the tail-recursive type comparison helper.
--}
-type WorkItem
-    = WorkType MonoType
-    | WorkMarker String
+{-| Emit the comparable-key fragments for a MonoType in FORWARD order,
+prepended onto `tail`.
 
+The encoding is byte-identical to the explicit-work-stack helper this
+replaced: children are emitted LAST-TO-FIRST, because that stack was built
+with `List.foldl (::)` and therefore popped its children in reverse.
+Building forward onto a tail deletes three allocation pools that shape
+needed — the `WorkItem` wrappers, the work-stack cons cells and the
+`List.reverse` copy — leaving only the fragment cons cells themselves
+(K2 of `plans/mono-comparable-key-optimization.md`).
 
-{-| Tail-recursive helper using explicit work stack, accumulating string fragments in reverse.
-
-The work list contains either MonoTypes to process or string markers.
-We process each item, prepending fragments to the accumulator list and pushing
-any nested types onto the work stack for later processing. The caller reverses
-and concatenates the list once at the end.
+Stack depth is type NESTING depth, bounded by source syntax; breadth costs
+no stack, because the child walkers below recurse in tail position.
 
 -}
-toComparableMonoTypeHelper : Bool -> List WorkItem -> List String -> List String
-toComparableMonoTypeHelper annoSensitive work acc =
-    case work of
-        [] ->
-            acc
+toComparableFragments : Bool -> MonoType -> List String -> List String
+toComparableFragments annoSensitive mt tail =
+    case mt of
+        MInt ->
+            "I" :: tail
 
-        (WorkMarker s) :: rest ->
-            toComparableMonoTypeHelper annoSensitive rest (s :: acc)
+        MFloat ->
+            "F" :: tail
 
-        (WorkType mt) :: rest ->
-            case mt of
-                MInt ->
-                    toComparableMonoTypeHelper annoSensitive rest ("I" :: acc)
+        MBool ->
+            "B" :: tail
 
-                MFloat ->
-                    toComparableMonoTypeHelper annoSensitive rest ("F" :: acc)
+        MChar ->
+            "C" :: tail
 
-                MBool ->
-                    toComparableMonoTypeHelper annoSensitive rest ("B" :: acc)
+        MString ->
+            "S" :: tail
 
-                MChar ->
-                    toComparableMonoTypeHelper annoSensitive rest ("C" :: acc)
+        MUnit ->
+            "U" :: tail
 
-                MString ->
-                    toComparableMonoTypeHelper annoSensitive rest ("S" :: acc)
+        MVar _ constraint ->
+            case constraint of
+                CEcoValue ->
+                    -- Layout-erased: ignore numeric ID (MONO_003). All CEcoValue MVars
+                    -- produce the same key fragment so fresh IDs don't split specializations.
+                    "V" :: "0" :: "\u{0000}" :: "ecovalue" :: tail
 
-                MUnit ->
-                    toComparableMonoTypeHelper annoSensitive rest ("U" :: acc)
+                CNumber ->
+                    -- Quiescence-before-defaulting (D4): an OPEN number var is
+                    -- a residual that closes to Int (Float always manifests as
+                    -- bound MFloat, never open CNumber, at a locally-quiescent
+                    -- key point). Key it IDENTICALLY to MInt ("I") so open-number
+                    -- and explicit-Int instantiations of a global merge to one
+                    -- specialization (they are the same after
+                    -- the residual-number close in Prune), while Float ("F") stays distinct
+                    -- and the boxed CEcoValue sentinel ("V") stays distinct from
+                    -- i64. The MVarId is dropped so fresh ids never split specs.
+                    -- Callers apply `refreshConstraints` before keying so a
+                    -- number-tainted (Join-R) var reaches this arm.
+                    "I" :: tail
 
-                MVar _ constraint ->
-                    case constraint of
-                        CEcoValue ->
-                            -- Layout-erased: ignore numeric ID (MONO_003). All CEcoValue MVars
-                            -- produce the same key fragment so fresh IDs don't split specializations.
-                            toComparableMonoTypeHelper
-                                annoSensitive
-                                rest
-                                ("ecovalue" :: "\u{0000}" :: "0" :: "V" :: acc)
+        MList _ inner ->
+            "L(" :: toComparableFragments annoSensitive inner (")" :: tail)
 
-                        CNumber ->
-                            -- Quiescence-before-defaulting (D4): an OPEN number var is
-                            -- a residual that closes to Int (Float always manifests as
-                            -- bound MFloat, never open CNumber, at a locally-quiescent
-                            -- key point). Key it IDENTICALLY to MInt ("I") so open-number
-                            -- and explicit-Int instantiations of a global merge to one
-                            -- specialization (they are the same after
-                            -- the residual-number close in Prune), while Float ("F") stays distinct
-                            -- and the boxed CEcoValue sentinel ("V") stays distinct from
-                            -- i64. The MVarId is dropped so fresh ids never split specs.
-                            -- Callers apply `refreshConstraints` before keying so a
-                            -- number-tainted (Join-R) var reaches this arm.
-                            toComparableMonoTypeHelper annoSensitive rest ("I" :: acc)
+        MTuple _ elementTypes ->
+            "T"
+                :: String.fromInt (List.length elementTypes)
+                :: "("
+                :: toComparableFragmentsRev annoSensitive elementTypes (")" :: tail)
 
-                MList inner ->
-                    toComparableMonoTypeHelper
-                        annoSensitive
-                        (WorkType inner :: WorkMarker ")" :: rest)
-                        ("L(" :: acc)
+        MRecord _ fields ->
+            -- Dict.foldl walks ascending field order and PREPENDS, which lands the
+            -- fields in the same reverse order the work stack popped them — and
+            -- skips the `Dict.toList` pair list that version had to build.
+            "R("
+                :: Dict.foldl
+                    (\name ty acc -> name :: toComparableFragments annoSensitive ty acc)
+                    (")" :: tail)
+                    fields
 
-                MTuple elementTypes ->
-                    let
-                        newWork =
-                            List.foldl (\t w -> WorkType t :: w) (WorkMarker ")" :: rest) elementTypes
-                    in
-                    toComparableMonoTypeHelper annoSensitive newWork ("(" :: String.fromInt (List.length elementTypes) :: "T" :: acc)
+        MCustom _ canonical name args ->
+            let
+                (IO.Canonical ( author, project ) modName) =
+                    canonical
+            in
+            "X"
+                :: author
+                :: "\u{0000}"
+                :: project
+                :: "\u{0000}"
+                :: modName
+                :: "\u{0000}"
+                :: name
+                :: "("
+                :: toComparableFragmentsRev annoSensitive args (")" :: tail)
 
-                MRecord fields ->
-                    let
-                        newWork =
-                            List.foldl
-                                (\( name, ty ) w -> WorkMarker name :: WorkType ty :: w)
-                                (WorkMarker ")" :: rest)
-                                (Dict.toList fields)
-                    in
-                    toComparableMonoTypeHelper annoSensitive newWork ("R(" :: acc)
-
-                MCustom canonical name args ->
-                    let
-                        (IO.Canonical ( author, project ) modName) =
-                            canonical
-
-                        newWork =
-                            List.foldl (\t w -> WorkType t :: w) (WorkMarker ")" :: rest) args
-                    in
-                    toComparableMonoTypeHelper annoSensitive newWork ("(" :: name :: "\u{0000}" :: modName :: "\u{0000}" :: project :: "\u{0000}" :: author :: "X" :: acc)
-
-                MFunction anno args ret ->
-                    let
-                        -- LTop must keep today's exact "A(" fragment so that
-                        -- all-LTop graphs key byte-identically (M1 gate).
-                        annoKey =
-                            if annoSensitive then
-                                case anno of
-                                    LTop ->
-                                        "A("
-
-                                    LSet members ->
-                                        "A[" ++ String.join "," (List.map String.fromInt members) ++ "]("
-
-                            else
-                                -- toComparableLayoutKey: arrows key uniformly —
-                                -- layout-intent Dicts must not split on sets.
+        MFunction _ anno args ret ->
+            let
+                -- LTop must keep today's exact "A(" fragment so that
+                -- all-LTop graphs key byte-identically (M1 gate).
+                annoKey =
+                    if annoSensitive then
+                        case anno of
+                            LTop ->
                                 "A("
 
-                        newWork =
-                            List.foldl (\t w -> WorkType t :: w)
-                                (WorkMarker "->" :: WorkType ret :: WorkMarker ")" :: rest)
-                                args
-                    in
-                    toComparableMonoTypeHelper annoSensitive newWork (annoKey :: acc)
+                            LSet members ->
+                                "A[" ++ String.join "," (List.map String.fromInt members) ++ "]("
+
+                    else
+                        -- toComparableLayoutKey: arrows key uniformly —
+                        -- layout-intent Dicts must not split on sets.
+                        "A("
+            in
+            annoKey
+                :: toComparableFragmentsRev annoSensitive
+                    args
+                    ("->" :: toComparableFragments annoSensitive ret (")" :: tail))
+
+
+{-| Emit fragments for a list of types LAST-TO-FIRST, matching the pop order of
+the work stack this replaced. Tail-recursive, so breadth costs no stack.
+-}
+toComparableFragmentsRev : Bool -> List MonoType -> List String -> List String
+toComparableFragmentsRev annoSensitive types tail =
+    case types of
+        [] ->
+            tail
+
+        ty :: rest ->
+            toComparableFragmentsRev annoSensitive rest (toComparableFragments annoSensitive ty tail)
 
 
 {-| Convert a specialization key to a single comparable String for use in dictionaries.
@@ -1419,7 +1992,7 @@ toComparableSpecKey (SpecKey global monoType) =
 isFunctionType : MonoType -> Bool
 isFunctionType monoType =
     case monoType of
-        MFunction _ _ _ ->
+        MFunction _ _ _ _ ->
             True
 
         _ ->
@@ -1431,19 +2004,19 @@ isFunctionType monoType =
 countTotalArity : MonoType -> Int
 countTotalArity monoType =
     case monoType of
-        MFunction _ argTypes result ->
+        MFunction _ _ argTypes result ->
             List.length argTypes + countTotalArity result
 
         _ ->
             0
 
 
-{-| Stage parameter types: outermost MFunction argument list.
+{-| Stage parameter types: outermost mFunction argument list.
 -}
 stageParamTypes : MonoType -> List MonoType
 stageParamTypes monoType =
     case monoType of
-        MFunction _ argTypes _ ->
+        MFunction _ _ argTypes _ ->
             argTypes
 
         _ ->
@@ -1459,7 +2032,7 @@ For non-function types, returns the type itself.
 stageReturnType : MonoType -> MonoType
 stageReturnType monoType =
     case monoType of
-        MFunction _ _ result ->
+        MFunction _ _ _ result ->
             result
 
         other ->
@@ -1471,7 +2044,7 @@ stageReturnType monoType =
 decomposeFunctionType : MonoType -> ( List MonoType, MonoType )
 decomposeFunctionType monoType =
     case monoType of
-        MFunction _ argTypes result ->
+        MFunction _ _ argTypes result ->
             let
                 ( nestedArgs, finalResult ) =
                     decomposeFunctionType result
@@ -1597,7 +2170,7 @@ segmentLengths monoType =
     let
         go t acc =
             case t of
-                MFunction _ stageArgs stageRet ->
+                MFunction _ _ stageArgs stageRet ->
                     go stageRet (List.length stageArgs :: acc)
 
                 _ ->
@@ -1678,7 +2251,7 @@ chooseCanonicalSegmentation leafTypes =
             ( canonicalSeg, flatArgs, flatRet )
 
 
-{-| Rebuild a nested MFunction from flat args and a segmentation.
+{-| Rebuild a nested mFunction from flat args and a segmentation.
 buildSegmentedFunctionType anno [A,B,C,D] R [2,2] = MFunction anno [A,B] (MFunction anno [C,D] R)
 buildSegmentedFunctionType anno [A,B,C,D] R [4] = MFunction anno [A,B,C,D] R
 
@@ -1710,7 +2283,7 @@ buildSegmentedFunctionType anno flatArgs finalRet seg =
     in
     -- Build nested MFunction from inside out
     List.foldr
-        (\stageArgs acc -> MFunction anno stageArgs acc)
+        (\stageArgs acc -> mFunction anno stageArgs acc)
         finalRet
         stageArgsLists
 

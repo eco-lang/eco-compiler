@@ -103,7 +103,7 @@ strTy =
 
 fnTy : Mono.MonoType
 fnTy =
-    Mono.MFunction Mono.LTop [ strTy ] strTy
+    Mono.mFunction Mono.LTop [ strTy ] strTy
 
 
 closedCall : Mono.MonoExpr
@@ -169,7 +169,7 @@ testGraph =
         , main = Nothing
         , registry =
             { nextId = 3
-            , mapping = Dict.empty
+            , mapping = Mono.specKeyMapEmpty
             , reverseMapping =
                 Array.fromList
                     [ Just ( Mono.Global home "f", fnTy )
@@ -177,7 +177,7 @@ testGraph =
                     , Just ( Mono.Global home "n", fnTy )
                     ]
             }
-        , ctorShapes = Dict.empty
+        , ctorShapes = Mono.layoutMapEmpty
         , nextLambdaIndex = 3
         , callEdges = Array.empty
         , specHasEffects = BitSet.empty

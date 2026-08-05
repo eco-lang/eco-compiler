@@ -42,6 +42,7 @@ by MVarId (as Int via Id.toComparable), not by Name.
 -}
 
 import Compiler.AST.Canonical as Can
+import Compiler.AST.Intern as Intern exposing (Intern)
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeIds exposing (MVarId)
 import Compiler.Data.Id as Id
@@ -96,19 +97,19 @@ hasStaleConstraint env monoType =
         Mono.MVar mvarId stamped ->
             constraintOf mvarId env /= stamped
 
-        Mono.MList inner ->
+        Mono.MList _ inner ->
             hasStaleConstraint env inner
 
-        Mono.MTuple elems ->
+        Mono.MTuple _ elems ->
             List.any (hasStaleConstraint env) elems
 
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             Dict.foldl (\_ t acc -> acc || hasStaleConstraint env t) False fields
 
-        Mono.MCustom _ _ args ->
+        Mono.MCustom _ _ _ args ->
             List.any (hasStaleConstraint env) args
 
-        Mono.MFunction _ args result ->
+        Mono.MFunction _ _ args result ->
             List.any (hasStaleConstraint env) args || hasStaleConstraint env result
 
         _ ->
@@ -121,20 +122,20 @@ refreshConstraintsRebuild env monoType =
         Mono.MVar mvarId _ ->
             Mono.MVar mvarId (constraintOf mvarId env)
 
-        Mono.MList inner ->
-            Mono.MList (refreshConstraintsRebuild env inner)
+        Mono.MList _ inner ->
+            Mono.mList (refreshConstraintsRebuild env inner)
 
-        Mono.MTuple elems ->
-            Mono.MTuple (List.map (refreshConstraintsRebuild env) elems)
+        Mono.MTuple _ elems ->
+            Mono.mTuple (List.map (refreshConstraintsRebuild env) elems)
 
-        Mono.MRecord fields ->
-            Mono.MRecord (Dict.map (\_ t -> refreshConstraintsRebuild env t) fields)
+        Mono.MRecord _ fields ->
+            Mono.mRecord (Dict.map (\_ t -> refreshConstraintsRebuild env t) fields)
 
-        Mono.MCustom home name args ->
-            Mono.MCustom home name (List.map (refreshConstraintsRebuild env) args)
+        Mono.MCustom _ home name args ->
+            Mono.mCustom home name (List.map (refreshConstraintsRebuild env) args)
 
-        Mono.MFunction anno args result ->
-            Mono.MFunction anno (List.map (refreshConstraintsRebuild env) args) (refreshConstraintsRebuild env result)
+        Mono.MFunction _ anno args result ->
+            Mono.mFunction anno (List.map (refreshConstraintsRebuild env) args) (refreshConstraintsRebuild env result)
 
         _ ->
             monoType
@@ -264,7 +265,7 @@ normalizeMonoType env subst ty =
                 in
                 ( Mono.MVar root rootConstraint, subst1, env1 )
 
-        Mono.MFunction anno args ret ->
+        Mono.MFunction _ anno args ret ->
             let
                 ( argsNorm, subst1, env1 ) =
                     normalizeList env subst args
@@ -272,23 +273,23 @@ normalizeMonoType env subst ty =
                 ( retNorm, subst2, env2 ) =
                     normalizeMonoType env1 subst1 ret
             in
-            ( Mono.MFunction anno argsNorm retNorm, subst2, env2 )
+            ( Mono.mFunction anno argsNorm retNorm, subst2, env2 )
 
-        Mono.MList inner ->
+        Mono.MList _ inner ->
             let
                 ( innerNorm, subst1, env1 ) =
                     normalizeMonoType env subst inner
             in
-            ( Mono.MList innerNorm, subst1, env1 )
+            ( Mono.mList innerNorm, subst1, env1 )
 
-        Mono.MTuple elems ->
+        Mono.MTuple _ elems ->
             let
                 ( elemsNorm, subst1, env1 ) =
                     normalizeList env subst elems
             in
-            ( Mono.MTuple elemsNorm, subst1, env1 )
+            ( Mono.mTuple elemsNorm, subst1, env1 )
 
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             let
                 step k v ( accPair, s, e ) =
                     let
@@ -305,17 +306,17 @@ normalizeMonoType env subst ty =
                     Dict.foldl step ( ( False, fields ), subst, env ) fields
             in
             if changed then
-                ( Mono.MRecord fieldsNorm, subst1, env1 )
+                ( Mono.mRecord fieldsNorm, subst1, env1 )
 
             else
                 ( ty, subst1, env1 )
 
-        Mono.MCustom can name args ->
+        Mono.MCustom _ can name args ->
             let
                 ( argsNorm, subst1, env1 ) =
                     normalizeList env subst args
             in
-            ( Mono.MCustom can name argsNorm, subst1, env1 )
+            ( Mono.mCustom can name argsNorm, subst1, env1 )
 
         _ ->
             ( ty, subst, env )
@@ -416,7 +417,7 @@ unifyHelp env canType monoType subst =
         ( Can.TType (IO.Canonical ( "elm", "core" ) "String") "String" [], Mono.MString ) ->
             ( subst, env )
 
-        ( Can.TLambda from to, Mono.MFunction anno args ret ) ->
+        ( Can.TLambda from to, Mono.MFunction _ anno args ret ) ->
             case args of
                 [] ->
                     ( subst, env )
@@ -430,9 +431,9 @@ unifyHelp env canType monoType subst =
                         unifyHelp env1 to ret subst1
 
                     else
-                        unifyHelp env1 to (Mono.MFunction anno restArgs ret) subst1
+                        unifyHelp env1 to (Mono.mFunction anno restArgs ret) subst1
 
-        ( Can.TType _ _ args, Mono.MCustom _ _ monoArgs ) ->
+        ( Can.TType _ _ args, Mono.MCustom _ _ _ monoArgs ) ->
             List.foldl
                 (\( canArg, monoArg ) ( s, e ) ->
                     unifyHelp e canArg monoArg s
@@ -440,7 +441,7 @@ unifyHelp env canType monoType subst =
                 ( subst, env )
                 (List.map2 Tuple.pair args monoArgs)
 
-        ( Can.TType _ _ args, Mono.MList innerType ) ->
+        ( Can.TType _ _ args, Mono.MList _ innerType ) ->
             case args of
                 [ elemType ] ->
                     unifyHelp env elemType innerType subst
@@ -448,7 +449,7 @@ unifyHelp env canType monoType subst =
                 _ ->
                     ( subst, env )
 
-        ( Can.TRecord fields maybeExtension, Mono.MRecord monoFields ) ->
+        ( Can.TRecord fields maybeExtension, Mono.MRecord _ monoFields ) ->
             let
                 -- First unify matching fields
                 ( substWithFields, env1 ) =
@@ -471,12 +472,12 @@ unifyHelp env canType monoType subst =
                         remainingFields =
                             Dict.diff monoFields fields
                     in
-                    insertBinding env1 extMvarId (Mono.MRecord remainingFields) substWithFields
+                    insertBinding env1 extMvarId (Mono.mRecord remainingFields) substWithFields
 
                 Nothing ->
                     ( substWithFields, env1 )
 
-        ( Can.TTuple a b rest, Mono.MTuple monoTypes ) ->
+        ( Can.TTuple a b rest, Mono.MTuple _ monoTypes ) ->
             let
                 canTypes =
                     a :: b :: rest
@@ -548,7 +549,7 @@ unifyMonoMono env m1 m2 subst =
         ( _, Mono.MVar mvarId _ ) ->
             insertBinding env mvarId m1 subst
 
-        ( Mono.MFunction _ args1 ret1, Mono.MFunction _ args2 ret2 ) ->
+        ( Mono.MFunction _ _ args1 ret1, Mono.MFunction _ _ args2 ret2 ) ->
             let
                 ( substWithArgs, env1 ) =
                     List.foldl
@@ -558,16 +559,16 @@ unifyMonoMono env m1 m2 subst =
             in
             unifyMonoMono env1 ret1 ret2 substWithArgs
 
-        ( Mono.MList inner1, Mono.MList inner2 ) ->
+        ( Mono.MList _ inner1, Mono.MList _ inner2 ) ->
             unifyMonoMono env inner1 inner2 subst
 
-        ( Mono.MCustom _ _ args1, Mono.MCustom _ _ args2 ) ->
+        ( Mono.MCustom _ _ _ args1, Mono.MCustom _ _ _ args2 ) ->
             List.foldl
                 (\( a1, a2 ) ( s, e ) -> unifyMonoMono e a1 a2 s)
                 ( subst, env )
                 (List.map2 Tuple.pair args1 args2)
 
-        ( Mono.MRecord fields1, Mono.MRecord fields2 ) ->
+        ( Mono.MRecord _ fields1, Mono.MRecord _ fields2 ) ->
             -- Recurse into matching fields. Without this, re-binding a scheme var
             -- whose old and new monos are records (e.g. a `map`/fold combinator's
             -- element var bound to `{n:Float}` from the function and then re-unified
@@ -585,7 +586,7 @@ unifyMonoMono env m1 m2 subst =
                 ( subst, env )
                 fields2
 
-        ( Mono.MTuple ts1, Mono.MTuple ts2 ) ->
+        ( Mono.MTuple _ ts1, Mono.MTuple _ ts2 ) ->
             List.foldl
                 (\( t1, t2 ) ( s, e ) -> unifyMonoMono e t1 t2 s)
                 ( subst, env )
@@ -619,7 +620,7 @@ unifyArgsOnly env canFuncType argTypes subst =
             ( subst, env )
 
 
-{-| Extract parameter types from a MFunction type.
+{-| Extract parameter types from a Mono.mFunction type.
 When we have a function type MFunction [arg1, arg2, ...] returnType,
 this extracts the list of argument types [arg1, arg2, ...].
 For non-function types, returns an empty list.
@@ -627,7 +628,7 @@ For non-function types, returns an empty list.
 extractParamTypes : Mono.MonoType -> List Mono.MonoType
 extractParamTypes monoType =
     case monoType of
-        Mono.MFunction _ argTypes returnType ->
+        Mono.MFunction _ _ argTypes returnType ->
             argTypes ++ extractParamTypes returnType
 
         _ ->
@@ -679,7 +680,7 @@ resolveMonoVarsHelp visiting subst monoType =
                             Mono.CEcoValue ->
                                 ( False, monoType )
 
-        Mono.MFunction anno args ret ->
+        Mono.MFunction _ anno args ret ->
             let
                 ( argsChanged, newArgs ) =
                     listMapChanged (resolveMonoVarsHelp visiting subst) args
@@ -688,51 +689,51 @@ resolveMonoVarsHelp visiting subst monoType =
                     resolveMonoVarsHelp visiting subst ret
             in
             if argsChanged || retChanged then
-                ( True, Mono.MFunction anno newArgs newRet )
+                ( True, Mono.mFunction anno newArgs newRet )
 
             else
                 ( False, monoType )
 
-        Mono.MList inner ->
+        Mono.MList _ inner ->
             let
                 ( changed, newInner ) =
                     resolveMonoVarsHelp visiting subst inner
             in
             if changed then
-                ( True, Mono.MList newInner )
+                ( True, Mono.mList newInner )
 
             else
                 ( False, monoType )
 
-        Mono.MTuple elems ->
+        Mono.MTuple _ elems ->
             let
                 ( changed, newElems ) =
                     listMapChanged (resolveMonoVarsHelp visiting subst) elems
             in
             if changed then
-                ( True, Mono.MTuple newElems )
+                ( True, Mono.mTuple newElems )
 
             else
                 ( False, monoType )
 
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             let
                 ( changed, newFields ) =
                     dictMapChanged (resolveMonoVarsHelp visiting subst) fields
             in
             if changed then
-                ( True, Mono.MRecord newFields )
+                ( True, Mono.mRecord newFields )
 
             else
                 ( False, monoType )
 
-        Mono.MCustom can name args ->
+        Mono.MCustom _ can name args ->
             let
                 ( changed, newArgs ) =
                     listMapChanged (resolveMonoVarsHelp visiting subst) args
             in
             if changed then
-                ( True, Mono.MCustom can name newArgs )
+                ( True, Mono.mCustom can name newArgs )
 
             else
                 ( False, monoType )
@@ -745,9 +746,9 @@ resolveMonoVarsHelp visiting subst monoType =
 
 INVARIANT: Preserves TLambda staging exactly.
 
-    a -> b -> c becomes MFunction [a] (MFunction [b] c), NOT MFunction [a, b] c.
+    a -> b -> c becomes Mono.mFunction [a] (Mono.mFunction [b] c), NOT Mono.mFunction [a, b] c.
 
-Each TLambda in the Can.Type MVarId produces a single-arg MFunction. This preserves
+Each TLambda in the Can.Type MVarId produces a single-arg Mono.mFunction. This preserves
 Elm's curried semantics faithfully.
 
 GlobalOpt will flatten these types to match closure param counts (GOPT\_016).
@@ -756,6 +757,30 @@ The flattening happens there, not here, because Monomorphize is staging-agnostic
 -}
 applySubstPure : MVarEnv -> Substitution -> Can.Type MVarId -> Mono.MonoType
 applySubstPure env subst canType =
+    Tuple.first (applySubstPureI env subst canType Intern.disabled)
+
+
+{-| `applySubstPure` with a hash-consing table threaded through it (K6 of
+`plans/mono-comparable-key-optimization.md`).
+
+Every composite this traversal builds is offered to `Intern.hashCons`, so a
+structure that already exists is returned as the EXISTING object instead of a
+fresh one. A self-compile builds 14.8M type nodes for 116K distinct types
+(plan §13), and this is where nearly all of them are built.
+
+Children are canonicalised before their parent, so the bucket confirm inside
+`hashCons` compares child pointers rather than walking subtrees. The one
+exception is the `Can.TVar` branch, whose `resolveMonoVars` result is left
+uncanonical (that function is identity-preserving where nothing changes, so its
+output is already shared in the common case); a parent above such a child pays a
+structural compare on a bucket hit.
+
+Callers with no table to thread pass `Intern.disabled`, which turns every
+`hashCons` into an identity.
+
+-}
+applySubstPureI : MVarEnv -> Substitution -> Can.Type MVarId -> Intern -> ( Mono.MonoType, Intern )
+applySubstPureI env subst canType intern =
     case canType of
         Can.TVar mvarId ->
             let
@@ -764,7 +789,7 @@ applySubstPure env subst canType =
             in
             case Dict.get key subst of
                 Just monoType ->
-                    resolveMonoVars subst monoType
+                    ( resolveMonoVars subst monoType, intern )
 
                 Nothing ->
                     let
@@ -777,18 +802,18 @@ applySubstPure env subst canType =
                             -- as a residual. CNumber->MInt is discharged only by the
                             -- residual-number closing (fused into Prune) at the end
                             -- of monomorphization.
-                            Mono.MVar mvarId constraint
+                            ( Mono.MVar mvarId constraint, intern )
 
                         Mono.CEcoValue ->
-                            Mono.MVar mvarId constraint
+                            ( Mono.MVar mvarId constraint, intern )
 
         Can.TLambda from to ->
-            applySubstLambdaChain env subst [ from ] to
+            applySubstLambdaChainI env subst [ from ] to intern
 
         Can.TType canonical name args ->
             let
-                monoArgs =
-                    applySubstList env subst args
+                ( monoArgs, intern1 ) =
+                    applySubstListI env subst args intern
 
                 isElmCore =
                     case canonical of
@@ -801,33 +826,33 @@ applySubstPure env subst canType =
             if isElmCore then
                 case name of
                     "Int" ->
-                        Mono.MInt
+                        ( Mono.MInt, intern1 )
 
                     "Float" ->
-                        Mono.MFloat
+                        ( Mono.MFloat, intern1 )
 
                     "Bool" ->
-                        Mono.MBool
+                        ( Mono.MBool, intern1 )
 
                     "Char" ->
-                        Mono.MChar
+                        ( Mono.MChar, intern1 )
 
                     "String" ->
-                        Mono.MString
+                        ( Mono.MString, intern1 )
 
                     "List" ->
                         case monoArgs of
                             [ inner ] ->
-                                Mono.MList inner
+                                Intern.hashCons (Mono.mList inner) intern1
 
                             _ ->
-                                Mono.MList Mono.MUnit
+                                Intern.hashCons (Mono.mList Mono.MUnit) intern1
 
                     _ ->
-                        Mono.MCustom canonical name monoArgs
+                        Intern.hashCons (Mono.mCustom canonical name monoArgs) intern1
 
             else
-                Mono.MCustom canonical name monoArgs
+                Intern.hashCons (Mono.mCustom canonical name monoArgs) intern1
 
         Can.TRecord fields maybeExtension ->
             let
@@ -836,7 +861,7 @@ applySubstPure env subst canType =
                     case maybeExtension of
                         Just extMvarId ->
                             case Dict.get (Id.toComparable extMvarId) subst of
-                                Just (Mono.MRecord baseFieldsDict) ->
+                                Just (Mono.MRecord _ baseFieldsDict) ->
                                     baseFieldsDict
 
                                 _ ->
@@ -846,45 +871,69 @@ applySubstPure env subst canType =
                             Dict.empty
 
                 -- Convert explicit fields and merge into base using foldl
-                monoFields =
+                ( monoFields, intern1 ) =
                     Dict.foldl
-                        (\k (Can.FieldType _ t) acc ->
-                            Dict.insert k (applySubstPure env subst t) acc
+                        (\k (Can.FieldType _ t) ( acc, i ) ->
+                            let
+                                ( fieldMono, i1 ) =
+                                    applySubstPureI env subst t i
+                            in
+                            ( Dict.insert k fieldMono acc, i1 )
                         )
-                        baseFields
+                        ( baseFields, intern )
                         fields
             in
-            Mono.MRecord monoFields
+            Intern.hashCons (Mono.mRecord monoFields) intern1
 
         Can.TTuple a b rest ->
-            Mono.MTuple (applySubstList env subst (a :: b :: rest))
+            let
+                ( elems, intern1 ) =
+                    applySubstListI env subst (a :: b :: rest) intern
+            in
+            Intern.hashCons (Mono.mTuple elems) intern1
 
         Can.TUnit ->
-            Mono.MUnit
+            ( Mono.MUnit, intern )
 
         Can.TAlias _ _ _ (Can.Filled inner) ->
-            applySubstPure env subst inner
+            applySubstPureI env subst inner intern
 
         Can.TAlias _ _ args (Can.Holey inner) ->
             let
-                newSubst =
+                ( newSubst, intern1 ) =
                     List.foldl
-                        (\( paramId, t ) s ->
-                            Dict.insert (Id.toComparable paramId) (applySubstPure env subst t) s
+                        (\( paramId, t ) ( s, i ) ->
+                            let
+                                ( argMono, i1 ) =
+                                    applySubstPureI env subst t i
+                            in
+                            ( Dict.insert (Id.toComparable paramId) argMono s, i1 )
                         )
-                        subst
+                        ( subst, intern )
                         args
             in
-            applySubstPure env newSubst inner
+            applySubstPureI env newSubst inner intern1
 
 
-{-| Apply applySubstPure to a list of canonical types. Env-pure (MONO\_028 J5): the
-MVarEnv is read-only here — applySubstPure never taints or allocates fresh vars — so
-there is no env to thread back.
+{-| Apply applySubstPureI to a list of canonical types. Env-pure (MONO\_028 J5): the
+MVarEnv is read-only here — applySubstPureI never taints or allocates fresh vars — so
+there is no env to thread back. The Intern table IS threaded, left to right.
 -}
-applySubstList : MVarEnv -> Substitution -> List (Can.Type MVarId) -> List Mono.MonoType
-applySubstList env subst types =
-    List.map (applySubstPure env subst) types
+applySubstListI : MVarEnv -> Substitution -> List (Can.Type MVarId) -> Intern -> ( List Mono.MonoType, Intern )
+applySubstListI env subst types intern =
+    case types of
+        [] ->
+            ( [], intern )
+
+        t :: rest ->
+            let
+                ( head, intern1 ) =
+                    applySubstPureI env subst t intern
+
+                ( tail, intern2 ) =
+                    applySubstListI env subst rest intern1
+            in
+            ( head :: tail, intern2 )
 
 
 {-| Apply a substitution to a canonical type, but only for MVarIds that
@@ -899,13 +948,14 @@ applySubstFiltered :
     MVarEnv
     -> Substitution
     -> Can.Type MVarId
-    -> Mono.MonoType
-applySubstFiltered mvarEnv subst canType =
+    -> Intern
+    -> ( Mono.MonoType, Intern )
+applySubstFiltered mvarEnv subst canType intern =
     if Dict.size subst <= 8 then
         -- For small substitutions, filtering costs more than just applying
         -- the full subst directly (the overhead of building Set + Dict.filter
         -- exceeds any savings from a slightly smaller dict).
-        applySubstPure mvarEnv subst canType
+        applySubstPureI mvarEnv subst canType intern
 
     else
         let
@@ -927,7 +977,7 @@ applySubstFiltered mvarEnv subst canType =
                     (\key _ -> Set.member key reachableKeys)
                     subst
         in
-        applySubstPure mvarEnv filteredSubst canType
+        applySubstPureI mvarEnv filteredSubst canType intern
 
 
 {-| Compute the transitive closure of substitution keys reachable from
@@ -992,43 +1042,47 @@ collectMVarIdsFromMonoHelp monoType (( acc, seen ) as pair) =
             else
                 ( mvarId :: acc, Set.insert key seen )
 
-        Mono.MFunction _ args result ->
+        Mono.MFunction _ _ args result ->
             let
                 argsPair =
                     List.foldl (\a accPair -> collectMVarIdsFromMonoHelp a accPair) pair args
             in
             collectMVarIdsFromMonoHelp result argsPair
 
-        Mono.MList inner ->
+        Mono.MList _ inner ->
             collectMVarIdsFromMonoHelp inner pair
 
-        Mono.MTuple elements ->
+        Mono.MTuple _ elements ->
             List.foldl (\e accPair -> collectMVarIdsFromMonoHelp e accPair) pair elements
 
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             Dict.foldl (\_ t accPair -> collectMVarIdsFromMonoHelp t accPair) pair fields
 
-        Mono.MCustom _ _ args ->
+        Mono.MCustom _ _ _ args ->
             List.foldl (\a accPair -> collectMVarIdsFromMonoHelp a accPair) pair args
 
         _ ->
             pair
 
 
-{-| Collect a TLambda chain iteratively, then build the curried MFunction structure.
+{-| Collect a TLambda chain iteratively, then build the curried Mono.mFunction structure.
 -}
-applySubstLambdaChain : MVarEnv -> Substitution -> List (Can.Type MVarId) -> Can.Type MVarId -> Mono.MonoType
-applySubstLambdaChain env subst argsAcc to =
+applySubstLambdaChainI : MVarEnv -> Substitution -> List (Can.Type MVarId) -> Can.Type MVarId -> Intern -> ( Mono.MonoType, Intern )
+applySubstLambdaChainI env subst argsAcc to intern =
     case to of
         Can.TLambda from innerTo ->
-            applySubstLambdaChain env subst (from :: argsAcc) innerTo
+            applySubstLambdaChainI env subst (from :: argsAcc) innerTo intern
 
         _ ->
             List.foldl
-                (\argType acc ->
-                    Mono.MFunction Mono.LTop [ applySubstPure env subst argType ] acc
+                (\argType ( acc, i ) ->
+                    let
+                        ( argMono, i1 ) =
+                            applySubstPureI env subst argType i
+                    in
+                    Intern.hashCons (Mono.mFunction Mono.LTop [ argMono ] acc) i1
                 )
-                (applySubstPure env subst to)
+                (applySubstPureI env subst to intern)
                 argsAcc
 
 
@@ -1364,7 +1418,7 @@ unifyArgsOnly + applySubst + resolveMonoVars + unifyExtend sequence.
 
 Walks argTypes and argMonoTypes in lockstep, unifying each pair via unifyHelp.
 Then applies the resulting substitution to the result type, and constructs
-MFunction in one pass. Returns the updated substitution and the funcMonoType.
+Mono.mFunction in one pass. Returns the updated substitution and the funcMonoType.
 
 -}
 unifyCallSiteDirect :
@@ -1434,7 +1488,7 @@ unifyCallSiteDirectWithExpected env schemeArgTypes schemeResultType argMonoTypes
 
                         expectedResidualMono =
                             List.foldr
-                                (\argMono acc -> Mono.MFunction Mono.LTop [ argMono ] acc)
+                                (\argMono acc -> Mono.mFunction Mono.LTop [ argMono ] acc)
                                 callResultMono
                                 surplusArgMonos
                     in
@@ -1493,14 +1547,14 @@ unifyArgTypesZip env canArgs monoArgs subst =
             ( subst, env )
 
 
-{-| Build a curried MFunction mirroring the TLambda structure.
+{-| Build a curried Mono.mFunction mirroring the TLambda structure.
 Each scheme arg corresponds to one level of currying.
 -}
 buildCurriedFuncType : List (Can.Type MVarId) -> List Mono.MonoType -> Mono.MonoType -> Mono.MonoType
 buildCurriedFuncType schemeArgs resolvedArgs resultMono =
     case ( schemeArgs, resolvedArgs ) of
         ( _ :: schemeRest, arg :: argRest ) ->
-            Mono.MFunction Mono.LTop [ arg ] (buildCurriedFuncType schemeRest argRest resultMono)
+            Mono.mFunction Mono.LTop [ arg ] (buildCurriedFuncType schemeRest argRest resultMono)
 
         _ ->
             resultMono
@@ -1564,7 +1618,7 @@ normalizeAndOccursCheck env targetId subst ty =
                 in
                 Just ( Mono.MVar root rootConstraint, subst1, env1 )
 
-        Mono.MFunction anno args ret ->
+        Mono.MFunction _ anno args ret ->
             case normalizeAndOccursCheckList env targetId subst args of
                 Nothing ->
                     Nothing
@@ -1575,39 +1629,39 @@ normalizeAndOccursCheck env targetId subst ty =
                             Nothing
 
                         Just ( retNorm, subst2, env2 ) ->
-                            Just ( Mono.MFunction anno argsNorm retNorm, subst2, env2 )
+                            Just ( Mono.mFunction anno argsNorm retNorm, subst2, env2 )
 
-        Mono.MList inner ->
+        Mono.MList _ inner ->
             case normalizeAndOccursCheck env targetId subst inner of
                 Nothing ->
                     Nothing
 
                 Just ( innerNorm, subst1, env1 ) ->
-                    Just ( Mono.MList innerNorm, subst1, env1 )
+                    Just ( Mono.mList innerNorm, subst1, env1 )
 
-        Mono.MTuple elems ->
+        Mono.MTuple _ elems ->
             case normalizeAndOccursCheckList env targetId subst elems of
                 Nothing ->
                     Nothing
 
                 Just ( elemsNorm, subst1, env1 ) ->
-                    Just ( Mono.MTuple elemsNorm, subst1, env1 )
+                    Just ( Mono.mTuple elemsNorm, subst1, env1 )
 
-        Mono.MRecord fields ->
+        Mono.MRecord _ fields ->
             case normalizeAndOccursCheckDict env targetId subst fields of
                 Nothing ->
                     Nothing
 
                 Just ( fieldsNorm, subst1, env1 ) ->
-                    Just ( Mono.MRecord fieldsNorm, subst1, env1 )
+                    Just ( Mono.mRecord fieldsNorm, subst1, env1 )
 
-        Mono.MCustom can name args ->
+        Mono.MCustom _ can name args ->
             case normalizeAndOccursCheckList env targetId subst args of
                 Nothing ->
                     Nothing
 
                 Just ( argsNorm, subst1, env1 ) ->
-                    Just ( Mono.MCustom can name argsNorm, subst1, env1 )
+                    Just ( Mono.mCustom can name argsNorm, subst1, env1 )
 
         _ ->
             Just ( ty, subst, env )

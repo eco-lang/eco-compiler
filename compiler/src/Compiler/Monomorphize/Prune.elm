@@ -209,16 +209,16 @@ pruneUnreachableSpecs mvarEnv globalTypeEnv (Mono.MonoGraph record) =
         registry1 : Mono.SpecializationRegistry
         registry1 =
             { nextId = oldReg.nextId
-            , mapping = Dict.empty
+            , mapping = Mono.specKeyMapEmpty
             , reverseMapping = reverseMapping1
             }
 
         -- 4. Recompute ctorShapes from the pruned+closed nodes. Since nodes1 is
         -- already closed, the derived keys and fieldTypes are closed and consistent.
         -- The gated pass over fieldTypes is defensive (a no-op when already closed).
-        ctorShapes1 : Dict String (List Mono.CtorShape)
+        ctorShapes1 : Mono.LayoutMap (List Mono.CtorShape)
         ctorShapes1 =
-            Dict.map
+            Mono.layoutMapMap
                 (\_ shapes ->
                     List.map
                         (\shape ->

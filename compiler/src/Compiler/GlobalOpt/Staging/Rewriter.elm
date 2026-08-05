@@ -695,7 +695,7 @@ buildNestedCalls region calleeExpr params =
 countTotalArityFromType : Mono.MonoType -> Int
 countTotalArityFromType monoType =
     case monoType of
-        Mono.MFunction _ argTypes resultType ->
+        Mono.MFunction _ _ argTypes resultType ->
             List.length argTypes + countTotalArityFromType resultType
 
         _ ->
@@ -728,7 +728,7 @@ flattenTypeToArity targetArity monoType =
 
     else if List.length allArgs == targetArity then
         -- Already correct arity
-        Mono.MFunction anno allArgs finalResult
+        Mono.mFunction anno allArgs finalResult
 
     else if List.length allArgs > targetArity then
         -- More args than params - take first N, nest the rest
@@ -741,9 +741,9 @@ flattenTypeToArity targetArity monoType =
                     finalResult
 
                 else
-                    Mono.MFunction anno restArgs finalResult
+                    Mono.mFunction anno restArgs finalResult
         in
-        Mono.MFunction anno firstArgs nestedResult
+        Mono.mFunction anno firstArgs nestedResult
 
     else if List.isEmpty allArgs then
         -- Non-function type - return as-is

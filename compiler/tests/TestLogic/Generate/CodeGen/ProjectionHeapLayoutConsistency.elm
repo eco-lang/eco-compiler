@@ -4,8 +4,8 @@ module TestLogic.Generate.CodeGen.ProjectionHeapLayoutConsistency exposing (expe
 
 At every call site where a list value is passed as an argument, the caller's
 list element type and the callee's corresponding parameter element type must
-agree on unboxability. If the caller has `MList MInt` (unboxed i64 heads) but
-the callee expects `MList (MVar \_ CEcoValue)` (boxed !eco.value heads), the
+agree on unboxability. If the caller has `Mono.mList MInt` (unboxed i64 heads) but
+the callee expects `Mono.mList (MVar \_ CEcoValue)` (boxed !eco.value heads), the
 callee's `eco.project.list\_head` will reinterpret unboxed data as a heap pointer,
 causing a segfault at runtime.
 
@@ -223,7 +223,7 @@ lookupCalleeParamTypes registry specId =
     case Array.get specId registry.reverseMapping of
         Just (Just ( _, monoType )) ->
             case monoType of
-                Mono.MFunction _ paramTypes _ ->
+                Mono.MFunction _ _ paramTypes _ ->
                     Just paramTypes
 
                 _ ->
@@ -246,13 +246,13 @@ checkArgListTypes ctx calleeSpecId paramTypes args =
         |> List.concat
 
 
-{-| If both the caller's arg type and callee's param type are MList, check that
+{-| If both the caller's arg type and callee's param type are Mono.mList, check that
 the element types agree on unboxability.
 -}
 checkListArgConsistency : String -> Int -> Mono.MonoType -> Mono.MonoType -> List String
 checkListArgConsistency ctx calleeSpecId calleeParamType callerArgType =
     case ( calleeParamType, callerArgType ) of
-        ( Mono.MList calleeElem, Mono.MList callerElem ) ->
+        ( Mono.MList _ calleeElem, Mono.MList _ callerElem ) ->
             let
                 calleeUnboxed =
                     isUnboxableElem calleeElem
@@ -264,7 +264,7 @@ checkListArgConsistency ctx calleeSpecId calleeParamType callerArgType =
                 [ ctx
                     ++ " [REP_BOUNDARY_003]: List element unboxability mismatch at call to SpecId "
                     ++ String.fromInt calleeSpecId
-                    ++ ": caller has MList "
+                    ++ ": caller has Mono.mList "
                     ++ monoTypeLabel callerElem
                     ++ " ("
                     ++ (if callerUnboxed then
@@ -273,7 +273,7 @@ checkListArgConsistency ctx calleeSpecId calleeParamType callerArgType =
                         else
                             "boxed"
                        )
-                    ++ ") but callee expects MList "
+                    ++ ") but callee expects Mono.mList "
                     ++ monoTypeLabel calleeElem
                     ++ " ("
                     ++ (if calleeUnboxed then
@@ -304,8 +304,8 @@ checkListArgConsistency ctx calleeSpecId calleeParamType callerArgType =
 {-| Check that all specializations of the same Global function agree on
 list element unboxability.
 
-If Global "List.foldl" has two specializations, one with MList MInt (unboxed)
-and one with MList (MVar \_ CEcoValue) (boxed), that's a problem: code compiled
+If Global "List.foldl" has two specializations, one with Mono.mList MInt (unboxed)
+and one with Mono.mList (MVar \_ CEcoValue) (boxed), that's a problem: code compiled
 for the boxed specialization will misinterpret unboxed list heads when called
 with a list that was constructed with unboxed heads.
 
@@ -395,20 +395,20 @@ checkSpecializationConsistency registry =
         specsByGlobal
 
 
-{-| Collect all MList element types from a MonoType (there may be multiple
+{-| Collect all Mono.mList element types from a MonoType (there may be multiple
 if a function takes multiple list parameters with different element types).
 -}
 collectListElemTypes : Mono.MonoType -> List Mono.MonoType
 collectListElemTypes monoType =
     case monoType of
-        Mono.MList elemType ->
+        Mono.MList _ elemType ->
             [ elemType ]
 
-        Mono.MFunction _ argTypes returnType ->
+        Mono.MFunction _ _ argTypes returnType ->
             List.concatMap collectListElemTypes argTypes
                 ++ collectListElemTypes returnType
 
-        Mono.MTuple elemTypes ->
+        Mono.MTuple _ elemTypes ->
             List.concatMap collectListElemTypes elemTypes
 
         _ ->
@@ -477,8 +477,8 @@ monoTypeLabel t =
         Mono.MVar _ Mono.CNumber ->
             "MVar CNumber"
 
-        Mono.MList inner ->
-            "MList (" ++ monoTypeLabel inner ++ ")"
+        Mono.MList _ inner ->
+            "Mono.mList (" ++ monoTypeLabel inner ++ ")"
 
         _ ->
             "composite"

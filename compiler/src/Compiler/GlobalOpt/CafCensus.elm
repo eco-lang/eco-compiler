@@ -359,7 +359,7 @@ walkExpr expr =
                             CafHoist.typeTouchesBytes ty || bytesHeadedCensus expr
                         , fnType =
                             case ty of
-                                Mono.MFunction _ _ _ ->
+                                Mono.MFunction _ _ _ _ ->
                                     True
 
                                 _ ->

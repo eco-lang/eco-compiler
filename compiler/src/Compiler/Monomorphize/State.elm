@@ -46,6 +46,7 @@ the monomorphization process.
 
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
+import Compiler.AST.Intern as Intern exposing (Intern)
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypeIds exposing (MVarId)
@@ -166,6 +167,7 @@ type alias SpecAccum =
     , registry : Mono.SpecializationRegistry
     , schemeCache : SchemeInfoCache -- Cached type scheme metadata per global
     , ports : List Mono.PortRegistration -- Ports reached during specialization (PORT_003)
+    , intern : Intern -- Hash-consing table for constructed MonoTypes (K6)
     }
 
 
@@ -297,12 +299,12 @@ type alias LocalInstanceInfo =
 
     - defName  : the let-bound function we're currently multi-specializing
     - instances: all discovered (typeKey -> instance) mappings for this let,
-                 keyed by Mono.toComparableMonoType of the instance type.
+                 keyed by the instance MonoType itself, under spec-key semantics (K4).
 
 -}
 type alias LocalMultiState =
     { defName : Name
-    , instances : Dict String LocalInstanceInfo
+    , instances : Mono.SpecMap LocalInstanceInfo
     }
 
 
@@ -334,14 +336,14 @@ type alias ValueInstanceInfo =
     - defCanType : the canonical type of the value
     - def        : the original TOpt.Def MVarId
     - instances  : all discovered (typeKey -> instance) mappings,
-                   keyed by Mono.toComparableMonoType of the instance type.
+                   keyed by the instance MonoType itself, under spec-key semantics (K4).
 
 -}
 type alias ValueMultiState =
     { defName : Name
     , defCanType : Can.Type MVarId
     , def : TOpt.Def MVarId
-    , instances : Dict String ValueInstanceInfo
+    , instances : Mono.SpecMap ValueInstanceInfo
     }
 
 
@@ -357,6 +359,7 @@ initState currentModule toptNodes annotations globalTypeEnv mvarEnv =
         , registry = Registry.emptyRegistry
         , schemeCache = DataMap.empty
         , ports = []
+        , intern = Intern.empty
         }
     , ctx =
         { currentModule = currentModule

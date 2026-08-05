@@ -466,19 +466,19 @@ processItem specId s =
                 case global of
                     Mono.Accessor fieldName ->
                         case monoType of
-                            Mono.MFunction _ [ Mono.MRecord fields ] fieldType ->
+                            Mono.MFunction _ _ [ Mono.MRecord _ fields ] fieldType ->
                                 Ok
                                     (finishNode specId
                                         (Mono.MonoTailFunc
-                                            [ ( "record", Mono.MRecord fields ) ]
-                                            (Mono.MonoRecordAccess (Mono.MonoVarLocal "record" (Mono.MRecord fields)) fieldName fieldType)
+                                            [ ( "record", Mono.mRecord fields ) ]
+                                            (Mono.MonoRecordAccess (Mono.MonoVarLocal "record" (Mono.mRecord fields)) fieldName fieldType)
                                             monoType
                                         )
                                         sItem
                                     )
 
                             _ ->
-                                Err (EngineBug ("accessor global " ++ fieldName ++ ": expected MFunction [MRecord] fieldType"))
+                                Err (EngineBug ("accessor global " ++ fieldName ++ ": expected Mono.mFunction [Mono.mRecord] fieldType"))
 
                     Mono.Global home name ->
                         let
@@ -700,7 +700,7 @@ specializeNode name home node monoType s =
 
         TOpt.PortIncoming expr _ meta ->
             case monoType of
-                Mono.MFunction _ _ _ ->
+                Mono.MFunction _ _ _ _ ->
                     Engine.runStep (Translate.specializePort True expr meta.tipe monoType) s
 
                 _ ->
@@ -984,9 +984,9 @@ assembleRawGraph s mainSpecId flagsDecoderSpecId =
     in
     Mono.MonoGraph
         { nodes = nodesArray
-        , registry = { nextId = nextId, mapping = Dict.empty, reverseMapping = s.registry.reverseMapping }
+        , registry = { nextId = nextId, mapping = Mono.specKeyMapEmpty, reverseMapping = s.registry.reverseMapping }
         , main = Just (Mono.StaticMain mainSpecId)
-        , ctorShapes = Dict.empty
+        , ctorShapes = Mono.layoutMapEmpty
         , nextLambdaIndex = s.lambdaCounter
         , callEdges = callEdgesArray
         , specHasEffects = specHasEffects

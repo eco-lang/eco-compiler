@@ -76,19 +76,19 @@ resCount ty =
         Mono.MVar _ Mono.CNumber ->
             0
 
-        Mono.MList elem ->
+        Mono.MList _ elem ->
             1 + resCount elem
 
-        Mono.MTuple ts ->
+        Mono.MTuple _ ts ->
             1 + List.sum (List.map resCount ts)
 
-        Mono.MRecord d ->
+        Mono.MRecord _ d ->
             1 + List.sum (List.map resCount (Dict.values d))
 
-        Mono.MCustom _ _ args ->
+        Mono.MCustom _ _ _ args ->
             1 + List.sum (List.map resCount args)
 
-        Mono.MFunction _ _ _ ->
+        Mono.MFunction _ _ _ _ ->
             1
 
 

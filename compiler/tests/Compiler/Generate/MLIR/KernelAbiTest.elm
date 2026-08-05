@@ -80,7 +80,7 @@ suite =
                     let
                         abi =
                             KernelAbi.deriveKernelInstanceAbi
-                                (utilsCompareKey [ Mono.MList Mono.MInt, Mono.MList Mono.MInt ])
+                                (utilsCompareKey [ Mono.mList Mono.MInt, Mono.mList Mono.MInt ])
                     in
                     Expect.equal
                         { symbolName = "Elm_Kernel_Utils_compare"
@@ -170,8 +170,8 @@ suite =
                                 { prefix = "Elm"
                                 , home = "List"
                                 , name = "cons"
-                                , argTypes = [ Mono.MInt, Mono.MList Mono.MInt ]
-                                , resultType = Mono.MList Mono.MInt
+                                , argTypes = [ Mono.MInt, Mono.mList Mono.MInt ]
+                                , resultType = Mono.mList Mono.MInt
                                 }
                     in
                     Expect.equal
@@ -188,8 +188,8 @@ suite =
                                 { prefix = "Elm"
                                 , home = "List"
                                 , name = "cons"
-                                , argTypes = [ Mono.MString, Mono.MList Mono.MString ]
-                                , resultType = Mono.MList Mono.MString
+                                , argTypes = [ Mono.MString, Mono.mList Mono.MString ]
+                                , resultType = Mono.mList Mono.MString
                                 }
                     in
                     Expect.equal
@@ -493,7 +493,7 @@ basicsBinopKey opName operandType =
 
 orderType : Mono.MonoType
 orderType =
-    Mono.MCustom elmCoreBasics "Order" []
+    Mono.mCustom elmCoreBasics "Order" []
 
 
 boolType : Mono.MonoType

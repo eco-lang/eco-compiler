@@ -40,7 +40,7 @@ rather than creating an immediate Mono.Accessor virtual global.
 
 Defer when:
 
-  - The first parameter is not MRecord (row variable unresolved)
+  - The first parameter is not Mono.mRecord (row variable unresolved)
   - The result type is a function (accessor extracts a function-typed field, which
     causes arity mismatch: specializeAccessorGlobal creates a 1-param TailFunc but
     the flattened type arity would be > 1)
@@ -49,9 +49,9 @@ Defer when:
 accessorTypeNeedsDefer : MonoType -> Bool
 accessorTypeNeedsDefer monoType =
     case monoType of
-        MFunction _ ((MRecord _) :: _) resultType ->
+        MFunction _ _ ((MRecord _ _) :: _) resultType ->
             case resultType of
-                MFunction _ _ _ ->
+                MFunction _ _ _ _ ->
                     True
 
                 _ ->
@@ -198,9 +198,9 @@ where neither fields nor fieldType contain any MVar.
 maybeAccessorSigFromExpected : MonoType -> Maybe ( MonoType, MonoType )
 maybeAccessorSigFromExpected expectedType =
     case expectedType of
-        MFunction _ ((MRecord fields) :: []) fieldType ->
-            if not (Mono.containsAnyMVar (MRecord fields)) && not (Mono.containsAnyMVar fieldType) then
-                Just ( MRecord fields, fieldType )
+        MFunction _ _ ((MRecord _ fields) :: []) fieldType ->
+            if not (Mono.containsAnyMVar (Mono.mRecord fields)) && not (Mono.containsAnyMVar fieldType) then
+                Just ( Mono.mRecord fields, fieldType )
 
             else
                 Nothing
@@ -282,7 +282,7 @@ rewriteExpr home counter env maybeExpected expr =
             let
                 fieldTypes =
                     case monoType of
-                        MRecord ft ->
+                        MRecord _ ft ->
                             ft
 
                         _ ->
@@ -408,7 +408,7 @@ rewriteExpr home counter env maybeExpected expr =
             case ( funcInfo, newArgs ) of
                 ( VI_Accessor (AO_Field fieldName), firstArg :: [] ) ->
                     case Mono.typeOf firstArg of
-                        MRecord fields ->
+                        MRecord _ fields ->
                             let
                                 fieldType =
                                     Maybe.withDefault resultType (Dict.get fieldName fields)
@@ -426,12 +426,12 @@ rewriteExpr home counter env maybeExpected expr =
 
                 ( VI_Accessor (AO_Field fieldName), firstArg :: restArgs ) ->
                     case Mono.typeOf firstArg of
-                        MRecord fields ->
+                        MRecord _ fields ->
                             let
                                 intermediateType =
                                     Maybe.withDefault
                                         (case Mono.typeOf funcExpr1 of
-                                            MFunction _ _ rt ->
+                                            MFunction _ _ _ rt ->
                                                 rt
 
                                             _ ->
@@ -534,7 +534,7 @@ rewriteExpr home counter env maybeExpected expr =
 
                 bodyExpected =
                     case closureType of
-                        MFunction _ _ rt ->
+                        MFunction _ _ _ rt ->
                             Just rt
 
                         _ ->
@@ -568,7 +568,7 @@ rewriteExpr home counter env maybeExpected expr =
             let
                 elemExpectedTypes =
                     case t of
-                        MTuple elemTypes ->
+                        MTuple _ elemTypes ->
                             List.map Just elemTypes
 
                         _ ->
