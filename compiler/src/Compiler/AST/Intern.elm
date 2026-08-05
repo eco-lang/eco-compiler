@@ -1,5 +1,5 @@
 module Compiler.AST.Intern exposing
-    ( Intern, empty, disabled, size
+    ( Intern, empty, disabled, readOnly, size
     , hashCons, widenSets
     )
 
@@ -30,7 +30,11 @@ canonicalising by them would hand back a type that is *keyed* the same but
 hash is `specHashOf` (equal structure implies equal hash, which is all a hash
 must promise); `==` decides.
 
-@docs Intern, empty, disabled, size
+The table has three modes, and which one a traversal gets is purely about what
+its callers can carry (plan §16): a live `Intern` reads and registers,
+`readOnly` reads without registering, `disabled` does neither.
+
+@docs Intern, empty, disabled, readOnly, size
 @docs hashCons, widenSets
 
 -}
@@ -40,19 +44,33 @@ import Data.HashMap as HashMap
 import Dict
 
 
-{-| Structure → canonical object, or `Disabled`.
+{-| Structure → canonical object, a read-only view of one, or `Disabled`.
 
-`Disabled` exists because the threaded traversal in
-`Compiler.Monomorphize.TypeSubst` has callers that cannot supply a table:
-`applySubstPure` is public and is called from `Specialize`, `Analysis` and
-`Monomorphize` in positions with no state to thread. Those callers run the same
-traversal with `disabled`, which makes every `hashCons` an identity — sound
-(sharing is never required for correctness), and cheaper than handing them a
-throwaway table that would allocate an insert per node.
+`Disabled` exists because the threaded traversals here
+(`TypeSubst.applySubstPure`, `Zonk.canTypeToMono`) have callers with no table in
+reach at all — `Analysis.buildCtorShapeFromUnion` runs from `Prune`, after the
+monomorphizer's state is gone, and `Monomorphize`'s entry seeding runs before it
+exists. Those callers run the same traversal with `disabled`, which makes every
+`hashCons` an identity: sound (sharing is never required for correctness), and
+cheaper than handing them a throwaway table that would allocate an insert per
+node.
+
+`ReadOnly` (K7) is for the callers that DO hold a table but have nowhere to put
+an updated one — `Specialize`, which has `MonoState` in scope throughout and can
+therefore lend `accum.intern` to a traversal whose result is a bare type. It
+probes and hands back the canonical object on a hit, and on a miss keeps the
+freshly built node without inserting it. Because it never inserts, it never
+produces a new table, so a read-only traversal needs no state threading at any
+call site — only an extra ARGUMENT. See `readOnly`.
+
+Coverage measured on a self-compile (plan §16): before K7, 42.04% of composite
+`hashCons` calls under the subst engine arrived `Disabled` and were therefore
+never shared; the solver engine was already at 1.52% after §15.
 
 -}
 type Intern
     = Intern (HashMap.HashMap MonoType MonoType)
+    | ReadOnly (HashMap.HashMap MonoType MonoType)
     | Disabled
 
 
@@ -70,12 +88,45 @@ disabled =
     Disabled
 
 
+{-| A probe-only view of a table (K7 of
+`plans/mono-comparable-key-optimization.md`).
+
+Hand this to a traversal that has a table available but no way to thread an
+updated one back — `TypeSubst.applySubstPureRO` and its callers in
+`Monomorphize.Specialize`. Every composite the traversal builds is still offered
+to `hashCons`, so a structure the table already holds is returned as the
+EXISTING object (real sharing, and therefore real retention collapse); a
+structure it does not hold is kept as built and NOT registered.
+
+The table is never modified, so `hashCons` always returns the very value it was
+given and no caller has anything to write back.
+
+Idempotent, and `Disabled` stays disabled: the conversion is a view, not a
+decision about whether interning is wanted.
+
+-}
+readOnly : Intern -> Intern
+readOnly intern =
+    case intern of
+        Intern m ->
+            ReadOnly m
+
+        ReadOnly _ ->
+            intern
+
+        Disabled ->
+            intern
+
+
 {-| Number of distinct structures canonicalised so far.
 -}
 size : Intern -> Int
 size intern =
     case intern of
         Intern m ->
+            HashMap.size m
+
+        ReadOnly m ->
             HashMap.size m
 
         Disabled ->
@@ -115,6 +166,26 @@ hashCons mt intern =
                     -- they already occupy.
                     ( mt, intern )
 
+        ReadOnly m ->
+            case mt of
+                Mono.MList _ _ ->
+                    probeRO mt m intern
+
+                Mono.MTuple _ _ ->
+                    probeRO mt m intern
+
+                Mono.MRecord _ _ ->
+                    probeRO mt m intern
+
+                Mono.MCustom _ _ _ _ ->
+                    probeRO mt m intern
+
+                Mono.MFunction _ _ _ _ ->
+                    probeRO mt m intern
+
+                _ ->
+                    ( mt, intern )
+
 
 {-| `intern` is passed alongside its own unwrapped map so a HIT can hand the
 caller back the very table value it was given. Rebuilding `Intern m` there would
@@ -128,6 +199,23 @@ probe mt m intern =
 
         Nothing ->
             ( mt, Intern (HashMap.insert Mono.specHashOf eqExact mt mt m) )
+
+
+{-| The read-only probe: identical to `probe` on a hit, and a no-op on a miss.
+
+The table value is returned unchanged on BOTH paths, which is what makes a
+read-only traversal free of state threading — and it also means
+`Engine.withIntern`'s "did the table grow?" guard can never fire for one.
+
+-}
+probeRO : MonoType -> HashMap.HashMap MonoType MonoType -> Intern -> ( MonoType, Intern )
+probeRO mt m intern =
+    case HashMap.get Mono.specHashOf eqExact mt m of
+        Just canonical ->
+            ( canonical, intern )
+
+        Nothing ->
+            ( mt, intern )
 
 
 {-| EXACT structural equality — deliberately `==`, not `eqKeySpec`. See the

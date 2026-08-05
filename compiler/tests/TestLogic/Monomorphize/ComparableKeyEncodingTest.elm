@@ -190,6 +190,77 @@ suite =
                     , sizeAfterReplay
                     , List.all (\t -> Tuple.first (Intern.hashCons t Intern.disabled) == t) corpus
                     )
+        , Test.test "K7: a read-only table is transparent on both hit and miss, and never grows" <|
+            -- The two properties `TypeSubst.applySubstPureRO` relies on:
+            -- whatever comes back is EQUAL to what went in (so substituting the
+            -- canonical object for a fresh one cannot change emitted code), and
+            -- the table is returned unchanged whether the probe hit or missed.
+            -- The second is what removes the need for state threading at any
+            -- call site, and what keeps `Engine.withIntern`'s did-the-table-grow
+            -- guard from ever firing for a read-only probe.
+            --
+            -- Physical sharing itself is deliberately NOT asserted here: Elm has
+            -- no way to observe object identity, so the hit case and the miss
+            -- case are indistinguishable from inside the language. The
+            -- registered half and the unregistered half are exercised separately
+            -- so both code paths run.
+            \_ ->
+                let
+                    ( half, rest ) =
+                        ( List.take (List.length corpus // 2) corpus
+                        , List.drop (List.length corpus // 2) corpus
+                        )
+
+                    populated =
+                        List.foldl (\t i -> Tuple.second (Intern.hashCons t i)) Intern.empty half
+
+                    ro =
+                        Intern.readOnly populated
+
+                    -- The registered half: every probe HITS.
+                    hitsAreTransparent =
+                        List.all
+                            (\t ->
+                                let
+                                    ( canonical, i1 ) =
+                                        Intern.hashCons t ro
+                                in
+                                (canonical == t) && (Intern.size i1 == Intern.size ro)
+                            )
+                            half
+
+                    -- The unregistered half: every probe MISSES.
+                    missesArePreserved =
+                        List.all
+                            (\t ->
+                                let
+                                    ( kept, i1 ) =
+                                        Intern.hashCons t ro
+                                in
+                                (kept == t) && (Intern.size i1 == Intern.size ro)
+                            )
+                            rest
+                in
+                Expect.equal
+                    ( True, True, Intern.size populated )
+                    ( hitsAreTransparent
+                    , missesArePreserved
+                    , Intern.size (List.foldl (\t i -> Tuple.second (Intern.hashCons t i)) ro corpus)
+                    )
+        , Test.test "K7: readOnly leaves a disabled table disabled and is idempotent" <|
+            \_ ->
+                let
+                    populated =
+                        List.foldl (\t i -> Tuple.second (Intern.hashCons t i)) Intern.empty corpus
+                in
+                Expect.equal
+                    ( 0, Intern.size populated, True )
+                    ( Intern.size (Intern.readOnly Intern.disabled)
+                    , Intern.size (Intern.readOnly (Intern.readOnly populated))
+                    , List.all
+                        (\t -> Tuple.first (Intern.hashCons t (Intern.readOnly Intern.disabled)) == t)
+                        corpus
+                    )
         , Test.test "the corpus exercises every encoder arm (guards the differential tests against passing vacuously)" <|
             \_ ->
                 let

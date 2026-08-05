@@ -1,7 +1,8 @@
 # Mono comparable-key optimization (compiler-source refactor)
 
-**Status: K1 + K2 + K4 + K6 SHIPPED (both engines). K3 = NO-GO (premise
-refuted by measurement). K5 = REVERTED (+18.3% regression).**
+**Status: K1 + K2 + K4 + K6 SHIPPED (both engines), K7 SHIPPED (subst only —
+the solver has nothing left to recover). K3 = NO-GO (premise refuted by
+measurement). K5 = REVERTED (+18.3% regression).**
 
 - **K1 + K2** (2026-08-04, `benchmarks/tier2-opt.md` Run B): −1.2% wall,
   −2,706 MiB allocation, output byte-identical. §9.
@@ -11,6 +12,11 @@ refuted by measurement). K5 = REVERTED (+18.3% regression).**
   −2.17% wall / −6.15% promotion / −16.4% RSS (§14); solver **−5.07% wall /
   −7.04% promotion / −13.2% RSS / majors 13→10** (§15). Byte-identical on both
   engines. The mechanism is RETENTION, not allocation volume.
+- **K7** (2026-08-05, Run G): read-only interning for the callers that hold a
+  table but cannot thread one back. Subst **−1.85%/−2.21% wall, −2.52% objects
+  promoted, majors 10→9**; interned coverage of composite construction 57.96% →
+  **99.85%** at a 98.06% probe hit rate. Solver untouched by construction and
+  measured flat. Byte-identical on both engines. §16.
 - **K4** (2026-08-05, Run C): built by explicit decision AFTER §10 deferred
   it, accepting the loss of byte-identity. Implemented as hash-consing-lite.
   Verified by elm-tests + E2E 1619/1619 + bootstrap (BOTH fixed points).
@@ -960,74 +966,181 @@ to BOTH baseline binaries on the same source under BOTH engines — the stronges
 available evidence that solver-side sharing changed nothing observable.
 
 
-## 16. K7 — read-only interning for the `Disabled` callers (PROPOSED, not built)
+## 16. K7 — read-only interning for the `Disabled` callers (SHIPPED 2026-08-05, SUBST ONLY)
 
-**Test this after the solver-conversion benchmark (§15) lands, not before** — it
-changes the same hot path and would confound that measurement.
+**Result: subst −1.85% / −2.21% wall over two interleaved rounds, at −2.52%
+objects promoted and majors 10→9. The solver is unaffected — by construction,
+and measured so.** Output byte-identical on both engines. Interned coverage of
+composite construction under subst goes from **57.96% to 99.85%** of `hashCons`
+traffic at a measured **98.06%** probe hit rate; the solver needs none of it,
+because §15 already covers 98.48% of its traffic. Benchmarks are Run G in
+`benchmarks/tier2-opt.md`.
 
 ### The problem it solves
 
 `Intern` carries a `Disabled` variant so that traversal entry points with no
-state to thread (`TypeSubst.applySubstPure`, `Zonk.canTypeToMono` /
-`canTypeToMonoWith`) can run the threaded recursion with every `hashCons` as an
-identity. That is sound — sharing is never required for correctness — and the
-branch itself is nearly free: one predictable tag test against the cost of
-building a type node.
+state to thread (`TypeSubst.applySubstPure`, `Zonk.canTypeToMono`) can run the
+threaded recursion with every `hashCons` as an identity. That is sound — sharing
+is never required for correctness — and the branch itself is nearly free.
 
 **The cost is not the branch, it is COVERAGE.** Every type produced through a
 disabled traversal is uninterned, so it is never shared and stays separately
 retained — and retention is precisely the mechanism K6 wins by (§14: promotion
-−6.15%, RSS −1.0 GB). The disabled path therefore dilutes the win by an amount
-nobody has measured.
+−6.15%, RSS −1.0 GB).
 
-### Why the obvious fixes are worse
+### Step 0 — the prerequisite measurement, and what it changed
 
-- **Hand those callers an empty table.** Strictly worse: each `hashCons` probes
-  (miss) then INSERTS, allocating map nodes per type node into a table that is
-  discarded on return. Even probe-without-insert pays a hash and a bucket walk
-  per node for nothing, which `Disabled` skips outright.
-- **Duplicate the traversal** as a separate pure implementation. ~100 lines of
-  substitution semantics in two copies, with drift risk. This plan has two
-  precedents against it: §12's `mapNodeTypesS` was a 377-line twin of
-  `mapNodeTypes`, and `Intern.widenSets` already must stay arm-for-arm identical
-  to `Mono.widenSets` or registry keys diverge SILENTLY.
-- **Thread all remaining callers.** The honest long-term fix, but it is the
-  cascade this plan has repeatedly bounded, with the silent `state`/`state1`
-  hazard at every site.
+`Intern.hashCons` was instrumented on a DEV-JS census build
+(`design_docs/js-instrumenting-guide.md` pattern), counting composite calls by
+which table they arrived with. A second pass added a JS **shadow of the live
+table**, populated on every live miss exactly as the real one is, so the probe
+K7 *would* perform could be run on each disabled call and recorded as hit or
+miss. That simulation is exact rather than an estimate: equality is structural,
+so whether a probe hits does not depend on the children already being canonical
+(that only changes how fast the confirm runs).
 
-### The proposal: probe, never insert, return no table
+| composite `hashCons`, before K7 | subst | solver |
+|---|---|---|
+| calls | 11,303,063 | 13,714,369 |
+| LIVE table | 6,551,065 (57.96%) | 13,506,252 (98.48%) |
+| …its hit rate | 99.05% | 98.98% |
+| **DISABLED** | **4,751,998 (42.04%)** | **208,117 (1.52%)** |
+| **projected read-only HIT** | **4,659,371 = 98.05%** | 206,978 = 99.45% |
+| projected MISS (the pure cost) | 92,627 | 1,139 |
+| constructions never offered to `hashCons` | 3,603,499 (24.17%) | 4,749,548 (25.72%) |
 
-```elm
-applySubstPureRO : Intern -> MVarEnv -> Substitution -> Can.Type MVarId -> Mono.MonoType
-```
+Projected hit rate by kind (subst): MRecord 99.92%, MList 99.86%, MCustom
+99.64%, MTuple 97.72%, **MFunction 75.07%** — §13's shape exactly, lambda sets
+fragmenting the arrow space, and MFunction is only 300K of the 4.75M.
 
-A hit returns the EXISTING canonical object — real sharing. A miss keeps the
-freshly built node. Nothing is inserted, so there is no updated table to return
-and **no state threading at any call site**: the caller supplies a table it
-already holds and forgets about it.
+**Three things the measurement settled that the proposal had not.**
 
-Measured caller split for the pure `applySubstPure` (27 sites): **Specialize 18,
-Zonk 3, Translate 3, Engine 1, Monomorphize 1, Analysis 1.** The 18 in
-`Specialize` are the point — that module has `MonoState` in scope throughout (67
-references), so it can pass `accum.intern` read-only today. `Analysis` has no
-`MonoState` at all and would stay `Disabled`.
+1. **The disabled path is a SUBST-engine phenomenon.** `MonoSolver` never calls
+   `TypeSubst`, so 42% versus 1.5% is not a difference of degree — on the
+   DEFAULT engine there is nothing to recover, because §15 already threaded the
+   solver's own producers. K7 is a subst-only unit and was entered knowing that.
+2. **A second census attributed the 4.75M by SOURCE**, using an explicit
+   enter/exit tag per producer rather than JS stack frames (Elm's `F2`+ wrappers
+   leave every multi-argument function anonymous to V8, so stacks are useless
+   here — a trap worth recording). The split was **`applySubstPure`'s external
+   callers 3,378,523 (71.1%)**, **`unifyCallSiteDirectWithExpected`
+   1,356,378 (28.5%)**, `Analysis.buildCtorShapeFromUnion` 15,006 (0.3%),
+   `unifyHelp` 2,087, entry seeding 4. The second entry was NOT in the proposal's
+   caller list at all and is 28.5% of the opportunity for **five** call sites —
+   so it was included.
+3. **The proposal's caller counts were `grep` counts, not call sites.**
+   "Specialize 18, Zonk 3, Translate 3, Engine 1, Monomorphize 1, Analysis 1"
+   counts doc-comment mentions: `Zonk`, `Translate` and `Engine` contain **no
+   calls at all**, and `Specialize` has **16**. Real call sites outside
+   `TypeSubst`: Specialize 16, Monomorphize 1, Analysis 1.
 
-**Why the hit rate should be high:** §13 counted only **4,992 distinct `MCustom`
-structures across an entire self-compile against 8,837,865 constructions**. The
-table saturates within a negligible fraction of the run, so by the time these
-callers probe, the structure they are building almost certainly exists already.
+### As built
 
-### Prerequisite measurement (do this first — it may moot the whole stage)
+`Intern` gains a third mode. `ReadOnly (HashMap MonoType MonoType)` probes and
+never inserts, so `hashCons` returns **the very table value it was handed on
+both the hit and the miss path** — which is what removes state threading from
+every call site, and also means `Engine.withIntern`'s did-the-table-grow guard
+can never fire for one. `Intern.readOnly` converts a live table to that view; it
+is idempotent and leaves `Disabled` disabled, because the conversion is a view,
+not a decision about whether interning is wanted.
 
-Instrument `hashCons` on the census build to count calls arriving with
-`Disabled` versus a live `Intern`. That gives the coverage split directly. If
-the disabled path carries a small share of the 14.8M (subst) / 18.4M (solver)
-constructions, this stage is not worth building; if it carries a large share,
-this is the cheap way to recover it.
+`TypeSubst.applySubstPureRO : Intern -> MVarEnv -> Substitution -> Can.Type MVarId -> Mono.MonoType`
+is then a three-line wrapper over the EXISTING `applySubstPureI` recursion —
+no duplicated traversal, which is the trap §12 and `Intern.widenSets` both warn
+about. Converted:
+
+1. **`Specialize`, 16 call sites.** Eleven had `MonoState` in scope and now pass
+   `<state>.accum.intern` directly. Five are in helpers reached from the
+   destructor/decision-tree path (`specializeDestructor` → `specializePath` →
+   `computeIndexProjectionType` → `computeCustomFieldType`,
+   `computeUnboxResultType`, `specializeDtPath`, plus `specializeArg` and
+   `deriveKernelAbiType`); those gained a leading `Intern` parameter, threaded
+   from the state at the outermost caller. **Read-only threading is an ARGUMENT,
+   never a returned pair, so none of the `state`/`state1` hazard that this plan
+   has repeatedly bounded applies.**
+2. **`TypeSubst.unifyCallSiteDirectWithExpected`**, whose four internal
+   `applySubstPure` calls (the expected-result mono, the supplied and remaining
+   scheme args, the result) are 28.5% of the whole opportunity. It and its
+   `unifyCallSiteDirect` wrapper gained a leading `Intern`; that is 5 call sites
+   in `Specialize`, all with state in scope.
+
+**Not converted, and why.** `unifyHelp`'s `TAlias Holey` arm is 2,096 composites
+against a parameter added to a 20-site recursion plus 33 external callers.
+`Analysis.buildCtorShapeFromUnion` (15,006) runs from `Prune`, after the
+monomorphizer's state is gone; reaching it means threading `Prune` →
+`computeCtorShapesForGraph` → `buildCompleteCtorShapes` for 0.13% of composites.
+`Monomorphize.entryPointMonoType` is 4 calls. On the solver side,
+`translateGlobalCallGroundMemo`'s `Zonk.canTypeToMono` builds types purely to
+make a comparable KEY string and throws them away — a read-only probe there pays
+for nothing, since hash-consing never avoids the top node's allocation, only its
+retention.
+
+### Coverage as built (same census, subst)
+
+| composite `hashCons` | before | after |
+|---|---|---|
+| LIVE | 6,551,065 (57.96%) | 6,551,065 (57.96%) |
+| READ-ONLY | — | **4,734,892 (41.89%), hit 98.06%** (4,643,201 / 91,691) |
+| DISABLED | 4,751,998 (42.04%) | **17,106 (0.15%)** |
+
+The measured read-only hit rate, 98.06%, lands on the 98.05% the shadow-table
+simulation predicted. The residual disabled traffic is
+`Analysis.buildCtorShapeFromUnion` 15,006 + `unifyHelp` 2,096 + 4.
+
+### Measured (Run G)
+
+Interleaved same-source pairs against `eco-compiler-k6-both`, cold `eco-stuff`
+per leg, two rounds, both engines:
+
+| subst | wall | max RSS | objects | promoted | major GC | GC time |
+|---|---|---|---|---|---|---|
+| k6-both r1 | 3:47.47 | 5,177,980 kB | 376,387,209 | 366,746,517 | 10 | 85.54 s |
+| **K7 r1** | **3:43.26** | 5,176,224 kB | 376,384,280 | **357,488,232** | **9** | 82.48 s |
+| k6-both r2 | 3:46.84 | 5,178,332 kB | 376,387,209 | 366,746,517 | 10 | 84.92 s |
+| **K7 r2** | **3:41.83** | 5,176,332 kB | 376,384,280 | **357,488,232** | **9** | 81.40 s |
+
+−4.21 s (−1.85%) and −5.01 s (−2.21%). **Promotion falls 9,258,285 (−2.52%)
+while objects allocated move −2,929 (−0.0008%)** — the retention mechanism with
+nothing else mixed in, identical to the digit in both rounds because the figure
+is deterministic. GC time (−3.06 s / −3.52 s) covers 73% / 70% of the wall
+delta, and the tenth major GC disappears in both rounds.
+
+| solver | wall | objects | promoted | major GC |
+|---|---|---|---|---|
+| k6-both r1 | 5:39.38 | 579,055,819 | 385,666,259 | 12 |
+| K7 r1 | 5:42.93 | 579,056,004 | 385,666,258 | 12 |
+| k6-both r2 | 5:46.15 | 579,055,819 | 385,666,259 | 12 |
+| K7 r2 | 5:43.01 | 579,055,820 | 385,666,259 | 12 |
+
++3.55 s then −3.14 s: **noise in both directions**, which is the honest reading
+when objects move +185 / +1, promotion moves −1 / 0 and majors are 12=12. There
+is no mechanism for a solver delta either way — `MonoSolver` does not call
+`TypeSubst`, so not one line of this unit executes under it.
+
+**One thing K7 does NOT reproduce from K6: the RSS collapse.** §14 measured
+subst max RSS −16.4%; here it is −0.03%, flat, despite 4.6M more type nodes
+being shared. Peak RSS on this workload is set outside the monomorphizer, so
+promotion — not RSS — is the retention signal that moves. Recorded because the
+family's earlier entries have used RSS as the headline and it would be wrong to
+read its absence here as the sharing not happening: the promotion figure is
+unambiguous and deterministic.
+
+**Raw walls are not comparable to Runs E/F**: the benchmark workload is the
+compiler's own source, which this change edits. Every leg here compiles the same
+tree, so the pairs are internally valid; cross-run wall comparisons are not.
 
 ### Gates
 
-Unchanged from K6, and the cheap one still applies: interning is semantically
-transparent, so **`.mlir` must stay byte-identical** on both engines. Mixing
-interned and uninterned types remains sound — the `a == b ||` fast path simply
-falls back to the structural compare.
+Output `.mlir` **byte-identical** to `eco-compiler-k6-both` on the same source
+under BOTH engines — the cheapest and strongest check, since interning is
+semantically transparent. elm-tests 13,063 pass / 12 known pre-existing fails
+(the 2 extra passes are new K7 tests: read-only transparency + non-growth on
+both the hit and the miss half of the corpus, and `readOnly` idempotence /
+disabled-stays-disabled). E2E **1619/1619**. Bootstrap EXIT=0 with BOTH fixed points (Stage 4b JS, Stage 8c native).
+
+The K7 tests deliberately do NOT assert physical sharing: Elm cannot observe
+object identity, so the hit and miss cases are indistinguishable from inside the
+language. What they pin is the two properties the call sites depend on — the
+returned type is `==` to the one handed in, and the table comes back unchanged
+either way — with the registered and unregistered halves of the corpus exercised
+separately so both branches run.

@@ -15,6 +15,7 @@ into monomorphized form by applying type substitutions.
 import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.DecisionTree.TypedPath as TypedPath
+import Compiler.AST.Intern exposing (Intern)
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypeIds exposing (MVarId)
@@ -1064,7 +1065,8 @@ specializeNumberDestruct dname destructorPath destructorMeta rootName rootCanTyp
                                         destructorMeta
 
                                 monoDestructor =
-                                    specializeDestructor rewrittenDestructor
+                                    specializeDestructor stateT.accum.intern
+                                        rewrittenDestructor
                                         refinedSubst
                                         stateT.ctx.mvarEnv
                                         stateT.ctx.varEnv
@@ -1566,7 +1568,7 @@ specializeCtorViaScheme ctorName tag arity canType requestedMonoType state =
             TypeSubst.unify state1.ctx.mvarEnv schemeInfo.schemeType requestedMonoType
 
         ctorMonoType =
-            TypeSubst.applySubstPure mvarEnv1 subst schemeInfo.schemeType
+            TypeSubst.applySubstPureRO state1.accum.intern mvarEnv1 subst schemeInfo.schemeType
 
         shape =
             buildCtorShapeFromArity ctorName tag arity ctorMonoType
@@ -1638,7 +1640,7 @@ specializeNode ctorName node requestedMonoType state =
                     TypeSubst.unify state.ctx.mvarEnv canType requestedMonoType
 
                 monoType =
-                    TypeSubst.applySubstPure envU unifSubst canType
+                    TypeSubst.applySubstPureRO state.accum.intern envU unifSubst canType
 
                 enumHome =
                     case state.ctx.currentGlobal of
@@ -1830,7 +1832,7 @@ specializePortNode incoming expr canType requestedMonoType state =
                 Mono.MonoClosure closureInfo body requestedMonoType
 
             decoderMonoType =
-                TypeSubst.applySubstPure stateWithLambda.ctx.mvarEnv subst (TOpt.typeOf expr)
+                TypeSubst.applySubstPureRO stateWithLambda.accum.intern stateWithLambda.ctx.mvarEnv subst (TOpt.typeOf expr)
 
             ( decoderSpecId, state1 ) =
                 enqueueSpec portGlobal decoderMonoType stateWithLambda
@@ -1969,7 +1971,7 @@ specializeValueInCycle requestedCanonical requestedName requestedMonoType shared
             TOpt.typeOf expr
 
         monoTypeFromExpr =
-            TypeSubst.applySubstPure accState.ctx.mvarEnv sharedSubst canType
+            TypeSubst.applySubstPureRO accState.accum.intern accState.ctx.mvarEnv sharedSubst canType
 
         monoTypeForSpecId =
             if name == requestedName then
@@ -2141,7 +2143,7 @@ specializeFunc requestedCanonical requestedName requestedMonoType sharedSubst de
             getDefCanonicalType def
 
         monoTypeFromDef =
-            TypeSubst.applySubstPure accState.ctx.mvarEnv sharedSubst canType
+            TypeSubst.applySubstPureRO accState.accum.intern accState.ctx.mvarEnv sharedSubst canType
 
         -- For the requested function in this cycle, use the exact MonoType
         -- from the worklist (requestedMonoType) as the specialization key.
@@ -2197,7 +2199,7 @@ specializeFuncDefInCycle subst def state =
         TOpt.TailDef _ _ args body returnType _ ->
             let
                 monoArgs =
-                    List.map (specializeArg state.ctx.mvarEnv subst) args
+                    List.map (specializeArg state.accum.intern state.ctx.mvarEnv subst) args
 
                 ctx =
                     state.ctx
@@ -2238,7 +2240,7 @@ specializeFuncDefInCycle subst def state =
                 -- Context.extractNodeSignature expects this full function type and extracts
                 -- the actual return type from it.
                 monoFuncType =
-                    TypeSubst.applySubstPure state.ctx.mvarEnv augmentedSubstRaw returnType
+                    TypeSubst.applySubstPureRO state.accum.intern state.ctx.mvarEnv augmentedSubstRaw returnType
             in
             ( Mono.MonoTailFunc monoArgs monoBody monoFuncType, state1 )
 
@@ -2392,7 +2394,8 @@ specializeGeneralDestruct destructor body meta subst state =
                     ( destructor, subst, stateI0 )
 
         monoDestructor =
-            specializeDestructor effectiveDestructor
+            specializeDestructor stateForDestruct.accum.intern
+                effectiveDestructor
                 effectiveSubst
                 stateForDestruct.ctx.mvarEnv
                 stateForDestruct.ctx.varEnv
@@ -2739,7 +2742,7 @@ specializeExpr expr subst state =
                             meta.tipe
 
                 monoType =
-                    TypeSubst.applySubstPure state.ctx.mvarEnv subst schemeType
+                    TypeSubst.applySubstPureRO state.accum.intern state.ctx.mvarEnv subst schemeType
 
                 monoGlobal =
                     Mono.Global canonical name
@@ -2755,7 +2758,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 funcMonoType =
-                    deriveKernelAbiType state.ctx.mvarEnv ( "Debug", name ) canType subst
+                    deriveKernelAbiType state.accum.intern state.ctx.mvarEnv ( "Debug", name ) canType subst
             in
             ( Mono.MonoVarKernel region "Elm" "Debug" name funcMonoType, state )
 
@@ -2765,7 +2768,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 funcMonoType =
-                    deriveKernelAbiType state.ctx.mvarEnv ( home, name ) canType subst
+                    deriveKernelAbiType state.accum.intern state.ctx.mvarEnv ( home, name ) canType subst
             in
             ( Mono.MonoVarKernel region kernelPrefix home name funcMonoType, state )
 
@@ -2856,7 +2859,7 @@ specializeExpr expr subst state =
                         -- substForCall is sufficient to derive the single funcMonoType.
                         let
                             funcMonoType =
-                                TypeSubst.applySubstPure state1r.ctx.mvarEnv substForCall funcCanType
+                                TypeSubst.applySubstPureRO state1r.accum.intern state1r.ctx.mvarEnv substForCall funcCanType
 
                             -- applySubstPure is env-pure (J5), so no mvarEnv update.
                             state1m =
@@ -2897,6 +2900,7 @@ specializeExpr expr subst state =
                             -- J5: keep the call-site unify env and thread it downstream.
                             ( callSubst, funcMonoTypeRaw, callEnv ) =
                                 TypeSubst.unifyCallSiteDirectWithExpected
+                                    state1a.accum.intern
                                     state1a.ctx.mvarEnv
                                     schemeInfo.argTypes
                                     schemeInfo.resultType
@@ -2941,14 +2945,14 @@ specializeExpr expr subst state =
                         -- Direct unification: scheme MVarIds are freshened by buildSchemeInfo
                         -- J5: keep the call-site unify env and thread it downstream.
                         ( callSubst, _, callEnv ) =
-                            TypeSubst.unifyCallSiteDirect state1a.ctx.mvarEnv schemeInfo.argTypes schemeInfo.resultType argTypes substForCall
+                            TypeSubst.unifyCallSiteDirect state1a.accum.intern state1a.ctx.mvarEnv schemeInfo.argTypes schemeInfo.resultType argTypes substForCall
 
                         state1e =
                             setMVarEnv callEnv state1a
 
                         -- Kernel ABI derivation uses funcCanType directly (no renaming)
                         funcMonoType =
-                            deriveKernelAbiType state.ctx.mvarEnv ( home, name ) funcCanType callSubst
+                            deriveKernelAbiType state.accum.intern state.ctx.mvarEnv ( home, name ) funcCanType callSubst
 
                         paramTypes =
                             TypeSubst.extractParamTypes funcMonoType
@@ -2991,14 +2995,14 @@ specializeExpr expr subst state =
                         -- Direct unification: scheme MVarIds are freshened by buildSchemeInfo
                         -- J5: keep the call-site unify env and thread it downstream.
                         ( callSubst, _, callEnv ) =
-                            TypeSubst.unifyCallSiteDirect state1a.ctx.mvarEnv schemeInfo.argTypes schemeInfo.resultType argTypes substForCall
+                            TypeSubst.unifyCallSiteDirect state1a.accum.intern state1a.ctx.mvarEnv schemeInfo.argTypes schemeInfo.resultType argTypes substForCall
 
                         state1e =
                             setMVarEnv callEnv state1a
 
                         -- Kernel ABI derivation uses funcCanType directly (no renaming)
                         funcMonoType =
-                            deriveKernelAbiType state.ctx.mvarEnv ( "Debug", name ) funcCanType callSubst
+                            deriveKernelAbiType state.accum.intern state.ctx.mvarEnv ( "Debug", name ) funcCanType callSubst
 
                         paramTypes =
                             TypeSubst.extractParamTypes funcMonoType
@@ -3158,7 +3162,7 @@ specializeExpr expr subst state =
 
                                         -- J5: keep the call-site unify env and thread it downstream.
                                         ( callSubst, funcMonoTypeRaw, callEnv ) =
-                                            TypeSubst.unifyCallSiteDirect state1a.ctx.mvarEnv schemeInfo.argTypes schemeInfo.resultType argTypes substForCall
+                                            TypeSubst.unifyCallSiteDirect state1a.accum.intern state1a.ctx.mvarEnv schemeInfo.argTypes schemeInfo.resultType argTypes substForCall
 
                                         state1e =
                                             setMVarEnv callEnv state1a
@@ -4168,7 +4172,7 @@ processCallArg subst arg ( accArgs, accTypes, st ) =
                     accessorMeta.tipe
 
                 monoType =
-                    TypeSubst.applySubstPure st.ctx.mvarEnv subst accessorCanType
+                    TypeSubst.applySubstPureRO st.accum.intern st.ctx.mvarEnv subst accessorCanType
             in
             ( PendingAccessor region fieldName accessorCanType :: accArgs
             , monoType :: accTypes
@@ -4206,7 +4210,7 @@ processCallArg subst arg ( accArgs, accTypes, st ) =
                 -- concrete sibling arg / expected result; the Float instance is then
                 -- recorded against the callee's paramType in resolveProcessedArg.
                 ( PendingNumberValue name localCanType :: accArgs
-                , TypeSubst.applySubstPure st.ctx.mvarEnv subst localCanType :: accTypes
+                , TypeSubst.applySubstPureRO st.accum.intern st.ctx.mvarEnv subst localCanType :: accTypes
                 , st
                 )
 
@@ -4270,7 +4274,7 @@ processCallArg subst arg ( accArgs, accTypes, st ) =
                         -- defaulting, MONO_028), so the former applySubstKeepNumber
                         -- fork is redundant.
                         monoType =
-                            TypeSubst.applySubstPure st.ctx.mvarEnv subst canType
+                            TypeSubst.applySubstPureRO st.accum.intern st.ctx.mvarEnv subst canType
                     in
                     if Mono.containsAnyMVar monoType then
                         ( PendingExpr arg subst canType :: accArgs
@@ -4658,7 +4662,7 @@ specializeDef def subst state =
         TOpt.TailDef _ name args expr _ _ ->
             let
                 monoArgs =
-                    List.map (specializeArg state.ctx.mvarEnv subst) args
+                    List.map (specializeArg state.accum.intern state.ctx.mvarEnv subst) args
 
                 ctx =
                     state.ctx
@@ -4699,14 +4703,14 @@ specializeDef def subst state =
             ( Mono.MonoTailDef name monoArgs monoExpr, stateAfter )
 
 
-specializeDestructor : TOpt.Destructor MVarId -> Substitution -> MVarEnv -> VarEnv -> TypeEnv.GlobalTypeEnv -> Maybe Mono.Global -> Mono.MonoDestructor
-specializeDestructor (TOpt.Destructor name path meta) subst mvarEnv varEnv globalTypeEnv currentGlobal =
+specializeDestructor : Intern -> TOpt.Destructor MVarId -> Substitution -> MVarEnv -> VarEnv -> TypeEnv.GlobalTypeEnv -> Maybe Mono.Global -> Mono.MonoDestructor
+specializeDestructor intern (TOpt.Destructor name path meta) subst mvarEnv varEnv globalTypeEnv currentGlobal =
     let
         monoPath =
-            specializePath mvarEnv path varEnv globalTypeEnv currentGlobal name
+            specializePath intern mvarEnv path varEnv globalTypeEnv currentGlobal name
 
         monoType =
-            TypeSubst.applySubstPure mvarEnv subst meta.tipe
+            TypeSubst.applySubstPureRO intern mvarEnv subst meta.tipe
     in
     Mono.MonoDestructor name monoPath monoType
 
@@ -4719,26 +4723,26 @@ The path is structured from leaf (root variable) outward, so we:
 2.  Walk back out through the path, computing types at each step
 
 -}
-specializePath : MVarEnv -> TOpt.Path -> VarEnv -> TypeEnv.GlobalTypeEnv -> Maybe Mono.Global -> Name -> Mono.MonoPath
-specializePath mvarEnv path varEnv globalTypeEnv currentGlobal destructorName =
+specializePath : Intern -> MVarEnv -> TOpt.Path -> VarEnv -> TypeEnv.GlobalTypeEnv -> Maybe Mono.Global -> Name -> Mono.MonoPath
+specializePath intern mvarEnv path varEnv globalTypeEnv currentGlobal destructorName =
     case path of
         TOpt.Index index hint subPath ->
             let
                 monoSubPath =
-                    specializePath mvarEnv subPath varEnv globalTypeEnv currentGlobal destructorName
+                    specializePath intern mvarEnv subPath varEnv globalTypeEnv currentGlobal destructorName
 
                 containerType =
                     Mono.getMonoPathType monoSubPath
 
                 resultType =
-                    computeIndexProjectionType mvarEnv globalTypeEnv hint (Index.toMachine index) containerType
+                    computeIndexProjectionType intern mvarEnv globalTypeEnv hint (Index.toMachine index) containerType
             in
             Mono.MonoIndex (Index.toMachine index) (hintToKind hint) resultType monoSubPath
 
         TOpt.ArrayIndex idx subPath ->
             let
                 monoSubPath =
-                    specializePath mvarEnv subPath varEnv globalTypeEnv currentGlobal destructorName
+                    specializePath intern mvarEnv subPath varEnv globalTypeEnv currentGlobal destructorName
 
                 containerType =
                     Mono.getMonoPathType monoSubPath
@@ -4752,7 +4756,7 @@ specializePath mvarEnv path varEnv globalTypeEnv currentGlobal destructorName =
         TOpt.Field fieldName subPath ->
             let
                 monoSubPath =
-                    specializePath mvarEnv subPath varEnv globalTypeEnv currentGlobal destructorName
+                    specializePath intern mvarEnv subPath varEnv globalTypeEnv currentGlobal destructorName
 
                 recordType =
                     Mono.getMonoPathType monoSubPath
@@ -4782,14 +4786,14 @@ specializePath mvarEnv path varEnv globalTypeEnv currentGlobal destructorName =
         TOpt.Unbox subPath ->
             let
                 monoSubPath =
-                    specializePath mvarEnv subPath varEnv globalTypeEnv currentGlobal destructorName
+                    specializePath intern mvarEnv subPath varEnv globalTypeEnv currentGlobal destructorName
 
                 containerType =
                     Mono.getMonoPathType monoSubPath
 
                 -- Compute the result type by looking up the single field type of the container
                 resultType =
-                    computeUnboxResultType mvarEnv globalTypeEnv containerType
+                    computeUnboxResultType intern mvarEnv globalTypeEnv containerType
             in
             Mono.MonoUnbox resultType monoSubPath
 
@@ -4821,8 +4825,8 @@ debugGlobal mg =
 
 {-| Compute the result type of projecting at an index from a container.
 -}
-computeIndexProjectionType : MVarEnv -> TypeEnv.GlobalTypeEnv -> TOpt.ContainerHint -> Int -> Mono.MonoType -> Mono.MonoType
-computeIndexProjectionType mvarEnv globalTypeEnv hint index containerType =
+computeIndexProjectionType : Intern -> MVarEnv -> TypeEnv.GlobalTypeEnv -> TOpt.ContainerHint -> Int -> Mono.MonoType -> Mono.MonoType
+computeIndexProjectionType intern mvarEnv globalTypeEnv hint index containerType =
     case hint of
         TOpt.HintList ->
             case containerType of
@@ -4845,7 +4849,7 @@ computeIndexProjectionType mvarEnv globalTypeEnv hint index containerType =
             computeTupleElementType index containerType
 
         TOpt.HintCustom ctorName ->
-            computeCustomFieldType mvarEnv globalTypeEnv ctorName index containerType
+            computeCustomFieldType intern mvarEnv globalTypeEnv ctorName index containerType
 
 
 {-| Compute element type from a tuple at the given index.
@@ -4871,8 +4875,8 @@ This looks up the union definition to find the constructor's argument types,
 then applies the type variable substitution based on the monomorphized type arguments.
 
 -}
-computeCustomFieldType : MVarEnv -> TypeEnv.GlobalTypeEnv -> Name -> Int -> Mono.MonoType -> Mono.MonoType
-computeCustomFieldType mvarEnv globalTypeEnv ctorName index containerType =
+computeCustomFieldType : Intern -> MVarEnv -> TypeEnv.GlobalTypeEnv -> Name -> Int -> Mono.MonoType -> Mono.MonoType
+computeCustomFieldType intern mvarEnv globalTypeEnv ctorName index containerType =
     case containerType of
         Mono.MCustom _ moduleName typeName typeArgs ->
             case Analysis.lookupUnion globalTypeEnv moduleName typeName of
@@ -4917,7 +4921,7 @@ computeCustomFieldType mvarEnv globalTypeEnv ctorName index containerType =
                                         canArgTypeWithIds =
                                             Analysis.convertCanTypeNameToMVarId nameToId canArgType
                                     in
-                                    TypeSubst.applySubstPure mvarEnv1 typeVarSubst canArgTypeWithIds
+                                    TypeSubst.applySubstPureRO intern mvarEnv1 typeVarSubst canArgTypeWithIds
 
                                 [] ->
                                     Utils.Crash.crash ("Specialize.computeCustomFieldType: Constructor arg index " ++ String.fromInt index ++ " out of bounds for " ++ ctorName)
@@ -4940,8 +4944,8 @@ For Unbox paths, we need to find the single field type of the container.
 The container must be a single-constructor type (Can.Unbox option).
 
 -}
-computeUnboxResultType : MVarEnv -> TypeEnv.GlobalTypeEnv -> Mono.MonoType -> Mono.MonoType
-computeUnboxResultType mvarEnv globalTypeEnv containerType =
+computeUnboxResultType : Intern -> MVarEnv -> TypeEnv.GlobalTypeEnv -> Mono.MonoType -> Mono.MonoType
+computeUnboxResultType intern mvarEnv globalTypeEnv containerType =
     case containerType of
         Mono.MCustom _ moduleName typeName typeArgs ->
             case Analysis.lookupUnion globalTypeEnv moduleName typeName of
@@ -4984,7 +4988,7 @@ computeUnboxResultType mvarEnv globalTypeEnv containerType =
                                         canArgTypeWithIds =
                                             Analysis.convertCanTypeNameToMVarId nameToId canArgType
                                     in
-                                    TypeSubst.applySubstPure mvarEnv1 typeVarSubst canArgTypeWithIds
+                                    TypeSubst.applySubstPureRO intern mvarEnv1 typeVarSubst canArgTypeWithIds
 
                                 _ ->
                                     Utils.Crash.crash ("Specialize.computeUnboxResultType: Expected single-arg constructor but got " ++ String.fromInt (List.length ctorData.args) ++ " args for " ++ typeName)
@@ -5070,8 +5074,8 @@ dtHintToTOptHint hint =
 
 {-| Convert a DT.Path (TypedPath) to a MonoDtPath by resolving types from VarEnv.
 -}
-specializeDtPath : MVarEnv -> Name -> TypedPath.Path -> VarEnv -> TypeEnv.GlobalTypeEnv -> Mono.MonoDtPath
-specializeDtPath mvarEnv rootName dtPath varEnv globalTypeEnv =
+specializeDtPath : Intern -> MVarEnv -> Name -> TypedPath.Path -> VarEnv -> TypeEnv.GlobalTypeEnv -> Mono.MonoDtPath
+specializeDtPath intern mvarEnv rootName dtPath varEnv globalTypeEnv =
     let
         rootType =
             case State.lookupVar rootName varEnv of
@@ -5096,7 +5100,7 @@ specializeDtPath mvarEnv rootName dtPath varEnv globalTypeEnv =
                             Mono.dtPathType monoSubPath
 
                         resultType =
-                            computeIndexProjectionType mvarEnv globalTypeEnv (dtHintToTOptHint hint) (Index.toMachine index) containerType
+                            computeIndexProjectionType intern mvarEnv globalTypeEnv (dtHintToTOptHint hint) (Index.toMachine index) containerType
                     in
                     Mono.DtIndex (Index.toMachine index) (dtHintToKind hint) resultType monoSubPath
 
@@ -5109,7 +5113,7 @@ specializeDtPath mvarEnv rootName dtPath varEnv globalTypeEnv =
                             Mono.dtPathType monoSubPath
 
                         resultType =
-                            computeUnboxResultType mvarEnv globalTypeEnv containerType
+                            computeUnboxResultType intern mvarEnv globalTypeEnv containerType
                     in
                     Mono.DtUnbox resultType monoSubPath
     in
@@ -5136,7 +5140,7 @@ specializeDecider expectedMono rootName decider subst state =
                 monoTestChain =
                     List.map
                         (\( path, test ) ->
-                            ( specializeDtPath state.ctx.mvarEnv rootName path state.ctx.varEnv state.ctx.globalTypeEnv, test )
+                            ( specializeDtPath state.accum.intern state.ctx.mvarEnv rootName path state.ctx.varEnv state.ctx.globalTypeEnv, test )
                         )
                         testChain
 
@@ -5164,7 +5168,7 @@ specializeDecider expectedMono rootName decider subst state =
                     state.ctx.varEnv
 
                 monoPath =
-                    specializeDtPath state.ctx.mvarEnv rootName path state.ctx.varEnv state.ctx.globalTypeEnv
+                    specializeDtPath state.accum.intern state.ctx.mvarEnv rootName path state.ctx.varEnv state.ctx.globalTypeEnv
 
                 ( monoEdges, state1 ) =
                     specializeEdges expectedMono rootName edges subst state
@@ -5300,14 +5304,14 @@ callResultMonoType mvarEnv state callSubst canType =
 
 {-| Specialize a function argument by applying type substitution.
 -}
-specializeArg : MVarEnv -> Substitution -> ( A.Located Name, Can.Type MVarId ) -> ( Name, Mono.MonoType )
-specializeArg mvarEnv subst ( locName, canType ) =
+specializeArg : Intern -> MVarEnv -> Substitution -> ( A.Located Name, Can.Type MVarId ) -> ( Name, Mono.MonoType )
+specializeArg intern mvarEnv subst ( locName, canType ) =
     let
         name =
             A.toValue locName
 
         monoType =
-            TypeSubst.applySubstPure mvarEnv subst canType
+            TypeSubst.applySubstPureRO intern mvarEnv subst canType
     in
     ( name, monoType )
 
@@ -5434,13 +5438,13 @@ This is _call-site aware_:
           is fully monomorphic)
 
 -}
-deriveKernelAbiType : MVarEnv -> ( String, String ) -> Can.Type MVarId -> Substitution -> Mono.MonoType
-deriveKernelAbiType mvarEnv kernelId canFuncType callSubst =
+deriveKernelAbiType : Intern -> MVarEnv -> ( String, String ) -> Can.Type MVarId -> Substitution -> Mono.MonoType
+deriveKernelAbiType intern mvarEnv kernelId canFuncType callSubst =
     let
         -- Monomorphic function type at this use-site, after substitution.
         monoAfterSubst : Mono.MonoType
         monoAfterSubst =
-            TypeSubst.applySubstPure mvarEnv callSubst canFuncType
+            TypeSubst.applySubstPureRO intern mvarEnv callSubst canFuncType
 
         mode : KernelAbi.KernelAbiMode
         mode =

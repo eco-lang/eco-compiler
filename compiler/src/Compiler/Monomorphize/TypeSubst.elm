@@ -1,5 +1,5 @@
 module Compiler.Monomorphize.TypeSubst exposing
-    ( applySubstPure
+    ( applySubstPure, applySubstPureRO
     , extractParamTypes
     , unify, unifyExtend, unifyArgsOnly, unifyCallSiteDirect, unifyCallSiteDirectWithExpected
     , buildSchemeInfo, refreshSchemeInfo
@@ -16,7 +16,7 @@ by MVarId (as Int via Id.toComparable), not by Name.
 
 # Substitution
 
-@docs applySubstPure
+@docs applySubstPure, applySubstPureRO
 
 
 # Type Conversion
@@ -760,6 +760,31 @@ applySubstPure env subst canType =
     Tuple.first (applySubstPureI env subst canType Intern.disabled)
 
 
+{-| `applySubstPure` **reading** a hash-cons table without writing to it (K7 of
+`plans/mono-comparable-key-optimization.md`).
+
+`applySubstPure`'s callers hold no place to put an updated table, so before K7
+they ran the whole traversal with `Intern.disabled` and every type they built
+was uninterned — never shared, and therefore separately retained. That was 42%
+of all composite `hashCons` traffic on a subst self-compile (plan §16), diluting
+K6's win by exactly that much.
+
+This entry point closes the gap without any state threading: it probes the table
+and returns the EXISTING canonical object on a hit, and on a miss keeps the node
+it just built and registers nothing. Since nothing is registered there is no new
+table, so the caller passes a table it already holds and forgets about it — one
+extra ARGUMENT, never a returned pair, and none of the `state`/`state1` hazard
+that threading brings.
+
+Passing `Intern.disabled` is still valid and still means "no interning": the
+read-only view of a disabled table is a disabled table.
+
+-}
+applySubstPureRO : Intern -> MVarEnv -> Substitution -> Can.Type MVarId -> Mono.MonoType
+applySubstPureRO intern env subst canType =
+    Tuple.first (applySubstPureI env subst canType (Intern.readOnly intern))
+
+
 {-| `applySubstPure` with a hash-consing table threaded through it (K6 of
 `plans/mono-comparable-key-optimization.md`).
 
@@ -776,7 +801,9 @@ output is already shared in the common case); a parent above such a child pays a
 structural compare on a bucket hit.
 
 Callers with no table to thread pass `Intern.disabled`, which turns every
-`hashCons` into an identity.
+`hashCons` into an identity; callers that hold a table but cannot thread an
+updated one back go through `applySubstPureRO`, whose read-only view shares on a
+hit and registers nothing.
 
 -}
 applySubstPureI : MVarEnv -> Substitution -> Can.Type MVarId -> Intern -> ( Mono.MonoType, Intern )
@@ -1422,14 +1449,15 @@ Mono.mFunction in one pass. Returns the updated substitution and the funcMonoTyp
 
 -}
 unifyCallSiteDirect :
-    MVarEnv
+    Intern
+    -> MVarEnv
     -> List (Can.Type MVarId)
     -> Can.Type MVarId
     -> List Mono.MonoType
     -> Substitution
     -> ( Substitution, Mono.MonoType, MVarEnv )
-unifyCallSiteDirect env schemeArgTypes schemeResultType argMonoTypes baseSubst =
-    unifyCallSiteDirectWithExpected env schemeArgTypes schemeResultType argMonoTypes Nothing baseSubst
+unifyCallSiteDirect intern env schemeArgTypes schemeResultType argMonoTypes baseSubst =
+    unifyCallSiteDirectWithExpected intern env schemeArgTypes schemeResultType argMonoTypes Nothing baseSubst
 
 
 {-| Variant of unifyCallSiteDirect that additionally constrains the scheme by
@@ -1443,14 +1471,15 @@ a let-bound `swap : (ta, tb) -> (tb, ta)` passed as a first-class function
 would remain unresolved and get specialized as `(!eco.value, !eco.value)`.
 -}
 unifyCallSiteDirectWithExpected :
-    MVarEnv
+    Intern
+    -> MVarEnv
     -> List (Can.Type MVarId)
     -> Can.Type MVarId
     -> List Mono.MonoType
     -> Maybe (Can.Type MVarId)
     -> Substitution
     -> ( Substitution, Mono.MonoType, MVarEnv )
-unifyCallSiteDirectWithExpected env schemeArgTypes schemeResultType argMonoTypes maybeCallResultCanType baseSubst =
+unifyCallSiteDirectWithExpected intern env schemeArgTypes schemeResultType argMonoTypes maybeCallResultCanType baseSubst =
     let
         -- Unify each scheme arg type with the corresponding call-site mono type
         ( substAfterArgs0, env0 ) =
@@ -1469,7 +1498,7 @@ unifyCallSiteDirectWithExpected env schemeArgTypes schemeResultType argMonoTypes
                             buildCurriedCanType (List.drop (List.length argMonoTypes) schemeArgTypes) schemeResultType
 
                         callResultMono =
-                            applySubstPure env0 substAfterArgs0 callResultCanType
+                            applySubstPureRO intern env0 substAfterArgs0 callResultCanType
 
                         -- Over-application: when the call supplies MORE args than
                         -- the scheme's own arity, the surplus args are applied to
@@ -1511,18 +1540,18 @@ unifyCallSiteDirectWithExpected env schemeArgTypes schemeResultType argMonoTypes
             List.take (List.length argMonoTypes) schemeArgTypes
 
         resolvedSuppliedArgs =
-            List.map (applySubstPure env1 substAfterArgs) suppliedSchemeArgs
+            List.map (applySubstPureRO intern env1 substAfterArgs) suppliedSchemeArgs
 
         -- Resolve REMAINING scheme arg types through substitution
         remainingSchemeArgs =
             List.drop (List.length argMonoTypes) schemeArgTypes
 
         resolvedAllArgs =
-            resolvedSuppliedArgs ++ List.map (applySubstPure env1 substAfterArgs) remainingSchemeArgs
+            resolvedSuppliedArgs ++ List.map (applySubstPureRO intern env1 substAfterArgs) remainingSchemeArgs
 
         -- Apply substitution to result type
         resultMono =
-            applySubstPure env1 substAfterArgs schemeResultType
+            applySubstPureRO intern env1 substAfterArgs schemeResultType
 
         -- Build the function mono type directly
         funcMonoType =

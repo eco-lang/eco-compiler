@@ -102,6 +102,26 @@ byte diff means the workload moved and walls are not comparable.
 
 ## Runs
 
+### 2026-08-05 19:30 UTC — Run G: K7 read-only interning for the `Disabled` callers (**subst −2.0% wall, −2.5% promotion, majors 10→9; solver unaffected**)
+
+`plans/mono-comparable-key-optimization.md` K7 §16: `Intern` gains a `ReadOnly`
+mode that probes but never inserts, so `hashCons` returns the table it was handed
+on BOTH paths — a read-only traversal therefore needs no state threading, only an
+extra argument. `applySubstPureRO` wraps the EXISTING recursion; `Specialize`'s
+16 sites and `unifyCallSiteDirect*`'s 4 now lend `accum.intern`. Census: subst
+composite `hashCons` arriving `Disabled` **42.04% → 0.15%**, probe hit **98.06%**.
+Subst pairs **−4.21 s/−5.01 s (−1.85%/−2.21%)** at −9,258,285 promoted (−2.52%)
+and −2,929 objects; GC time covers 73%/70% of it, RSS flat (unlike Run E's
+−16.4% — peak RSS is set outside the monomorphizer here). **The solver never
+calls `TypeSubst`**, and measures so: objects +1, promotion =, majors 12=12, wall
++1.05%/−0.91% — noise both ways. `.mlir` **byte-identical** under BOTH engines.
+Gates: elm-tests 13,063/12 known, E2E **1619/1619**, bootstrap EXIT=0 (both fixed points).
+
+| wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|
+| **3:41.83** subst (base 3:46.84; r1 3:43.26/3:47.47) | 5,176,332 kB (base 5,178,332) | 376,384,280 (base 376,387,209) | 18,298.94 MB (base 18,299.04) | 848 (base 850) | **357,488,232** (95.0%; base 366,746,517) | **9** (base 10) | 81.40 s (base 84.92) | 12,959,381 B (≡ base) |
+| **5:43.01** solver (base 5:46.15; r1 5:42.93/5:39.38) | 5,386,172 kB (base 5,389,976) | 579,055,820 (base 579,055,819) | 46,273.95 MB (base 46,273.95) | 1422 (=base) | 385,666,259 (66.6%; =base) | 12 (=base) | 111.92 s (base 113.35) | 13,415,623 B (≡ base) |
+
 ### 2026-08-05 16:00 UTC — Run F: K6 on the SOLVER engine (**solver −5.07% wall, −7.04% promotion, −13.2% RSS, 3 fewer majors**)
 
 `plans/mono-comparable-key-optimization.md` §15: the K6 `Intern` table threaded
@@ -260,3 +280,4 @@ matching the L1 hybrid-spines prediction) and the workload moved
 | C — mono-key K4 interning + bucket-churn fix, **wall −0.35% (≈flat); TRUE alloc −1.31% bytes** (census; the standard counter's −21.3% is inline-alloc-blind) | 3:48.71 | 393,315,712 obj / 18,633.70 MB (census: 3,933,552,762 / 154,614 MiB) |
 | E — K6 construction-time hash-consing, **subst −2.17% wall / −6.15% promotion / −16.4% max RSS; solver +0.93% (one extra major)** | 3:46.33 subst (5:40.54 solver) | 375,458,591 obj / 18,234.64 MB (solver: 576,877,132 / 46,106.28 MB) |
 | F — K6 extended to the SOLVER engine, **solver −5.07% wall / −7.04% promotion / −13.2% max RSS / majors 13→10; subst flat (+0.98%, within same-binary spread)** | 5:33.80 solver (3:45.56 subst) | 578,903,113 obj / 46,263.44 MB (subst: 376,270,422 / 18,293.01 MB) |
+| G — K7 read-only interning for the `Disabled` callers, **subst −2.0% wall / −2.5% promotion / majors 10→9 (coverage 42.04% → 0.15% disabled at a 98.06% hit rate); solver unaffected by construction and measured flat** | 3:41.83 subst (5:43.01 solver) | 376,384,280 obj / 18,298.94 MB (solver: 579,055,820 / 46,273.95 MB) |
