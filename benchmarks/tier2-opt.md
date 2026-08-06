@@ -19,7 +19,9 @@ run in **max 10 lines of text** — no extensive write-ups; keep the labelled
 entries uniform in appearance, stats recorded, and briefness.
 
 **Summary table:** maintained at the **bottom of this file** — one row per
-run: label, wall time, total heap allocation. Just the table, no write-up.
+run: label, wall time, total heap allocation. Numbers are for the leg
+**with the run's optimization applied** only; baseline, A/B, and flavor
+numbers belong in the run entries. Just the table, no write-up.
 
 **Allocation-count caveat (census §18.3):** the standard binary's HEAP_034
 inline-alloc fast path bypasses the per-tag counter, so `Objects allocated`
@@ -102,20 +104,38 @@ byte diff means the workload moved and walls are not comparable.
 
 ## Runs
 
+### 2026-08-06 00:15 UTC — Run J: promotion-time list chunking (**P1 mean run = 1.69 ⇒ NO-GO; +5.7% wall when ON; REVERTED**)
+
+`plans/promotion-time-list-chunking.md` implemented (HEAP_041) and measured;
+the run RECORDS the plan's §5 P1/D-PC gate numbers. Same binary all legs,
+flavors = `ECO_PROMO_CHUNK` 0/1/2, interleaved pairs, byte-identity 0≡1≡2
+PASS. **P1: mean promotable run 1.69 (73% singletons; the gate wanted ≥8);
+only 11.2% of promoted Cons in chunkable runs. Mode 2 cost +12.6 s (+5.7%)
+wall — majors 9→11, +2.14M mutator view allocs — for −3.1% promotion /
+−1.2% RSS; the mode-1 peek alone +1.8%.** Lazy views 704 (§4(a) validated);
+self-checks EXACT. Gates were green (unit+E2E 1627/1627, ECO_HEAP_VALIDATE).
+Verdict NO-GO → implementation fully REVERTED 2026-08-06, including the
+latent validate-walker zero-stride fix it uncovered (LATENT AGAIN — see
+the plan's status note for the re-fix recipe). Plan closed.
+
+| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|---|
+| m0 off | **3:41.79** (r2 3:42.00) | 5,176,764 kB | 376,384,274 | 18,298.94 MB | 848 | 357,488,231 (95.0%) | 9 | 82.63 s | 12,959,381 B (≡ Run G) |
+| m1 measure | 3:45.33 (r2 3:46.45) | 5,176,836 kB | 376,384,274 | 18,298.94 MB | 848 | 357,488,231 (=m0) | 9 (=m0) | 84.53 s | 12,959,381 B (≡ m0) |
+| m2 on | 3:54.64 (r2 3:54.16; warmup 3:57.38) | 5,114,772 kB | 378,528,424 | 18,364.39 MB | 848 | **346,471,007** (91.5%) | **11** | 92.37 s | 12,959,381 B (≡ m0) |
+
 ### 2026-08-05 22:20 UTC — Run I: W1 Custom arity census (**re-aims sum-type-wrapper-unboxing**)
 
-`plans/sum-type-wrapper-unboxing.md` W1 dynamic half. `Custom`'s `Header.size` IS
-the field count (`AllocatorCommon.hpp:268`), so the LH1 promotion histogram splits
-by arity for free. `nfields==1` is an exact UPPER BOUND on the payload-unboxing
-target (single-ctor single-field unions are already `Can.Unbox` and never allocate
-a Custom). **Result: 1-field is only 12.2%/13.8% of promoted Custom = 7.4% of total
-promotion; 2-field DOMINATES at 56.2%/52.5% (3,719 MiB) and is not addressable.
-The surprise is 0-field: 19.7M/23.8M promoted heap objects carrying ZERO data,
-9.1%/10.0%, 301 MiB** — nullary ctors that allocate only because their union has
-some non-nullary arm (`Can.Enum` needs ALL nullary; `isEmbeddedConstantCtor` is a
-hard-coded 3-name list). **Re-aims the plan onto option (a) generalized nullary
-embedding**: near-equal population, total per-object win, simpler mechanism.
-Walls not comparable (no warmup leg — composition run).
+`plans/sum-type-wrapper-unboxing.md` W1 dynamic half: `Custom`'s
+`Header.size` IS the field count, so the LH1 promotion histogram splits by
+arity for free; `nfields==1` is an exact UPPER BOUND on the payload-unboxing
+target. **Result: 1-field is only 12.2%/13.8% of promoted Custom = 7.4% of
+total promotion; 2-field DOMINATES at 56.2%/52.5% and is not addressable.
+Surprise: 0-field = 19.7M/23.8M promoted objects carrying ZERO data
+(9.1%/10.0%, 301 MiB)** — nullary ctors that allocate only because their
+union has a non-nullary arm. **Re-aims the plan onto option (a) generalized
+nullary embedding**: near-equal population, total per-object win, simpler
+mechanism. Walls not comparable (no warmup leg — composition run).
 
 | leg | wall | objects alloc'd | promoted | promoted Custom | 0-field | 1-field | 2-field |
 |---|---|---|---|---|---|---|---|
@@ -125,17 +145,15 @@ Walls not comparable (no warmup leg — composition run).
 ### 2026-08-05 21:41 UTC — Run H: LH1 per-kind retention histogram (**instrumentation only; the ranking result**)
 
 `plans/live-heap-composition-census.md` LH1: per-tag promotion/survival
-histograms in `GCStats`, recorded at the six collector evacuation sites
-(`NurserySpace.cpp`). Counted INSIDE the collector, so — unlike the allocation
-histogram — these are exact in the standard binary. Self-check passes on both
-engines: histogram total ≡ the `objects_promoted` scalar, zero out-of-range tags.
-Walls and `out.mlir` sizes match Run G's baselines, so overhead is nil and the
-workload is unmoved. **Result: promotion is `Custom` 60.7%/61.8% + `Cons`
-36.7%/34.7% = 97.4%/96.5% of everything retained** (subst/solver). `Closure`
-promotes 7,861 objects — 0.002% — against ~22% of true allocation; `Tuple2`
-0.6% against ~19%. **The allocation ranking and the retention ranking are
-nearly disjoint.** D-LH gates: `sum-type-wrapper-unboxing` PASS (6× its ≥10%
-Custom gate), `accumulator-templates` PASS (7× its ≥5% list gate).
+histograms in `GCStats`, recorded inside the collector at the six
+evacuation sites (`NurserySpace.cpp`) — so exact in the standard binary,
+unlike the allocation histogram. Self-check passes on both engines
+(histogram total ≡ `objects_promoted`, zero out-of-range tags); walls and
+`out.mlir` match Run G, so overhead is nil and the workload unmoved.
+**Result: promotion = `Custom` 60.7%/61.8% + `Cons` 36.7%/34.7% =
+97.4%/96.5% of retention** (subst/solver); `Closure` 0.002% against ~22% of
+true allocation; `Tuple2` 0.6% against ~19%. **Allocation ranking and
+retention ranking are nearly disjoint.** D-LH gates: both PASS (6×/7×).
 
 | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|
@@ -157,18 +175,16 @@ Custom gate), `accumulator-templates` PASS (7× its ≥5% list gate).
 
 ### 2026-08-05 19:30 UTC — Run G: K7 read-only interning for the `Disabled` callers (**subst −2.0% wall, −2.5% promotion, majors 10→9; solver unaffected**)
 
-`plans/mono-comparable-key-optimization.md` K7 §16: `Intern` gains a `ReadOnly`
-mode that probes but never inserts, so `hashCons` returns the table it was handed
-on BOTH paths — a read-only traversal therefore needs no state threading, only an
-extra argument. `applySubstPureRO` wraps the EXISTING recursion; `Specialize`'s
-16 sites and `unifyCallSiteDirect*`'s 4 now lend `accum.intern`. Census: subst
-composite `hashCons` arriving `Disabled` **42.04% → 0.15%**, probe hit **98.06%**.
-Subst pairs **−4.21 s/−5.01 s (−1.85%/−2.21%)** at −9,258,285 promoted (−2.52%)
-and −2,929 objects; GC time covers 73%/70% of it, RSS flat (unlike Run E's
-−16.4% — peak RSS is set outside the monomorphizer here). **The solver never
-calls `TypeSubst`**, and measures so: objects +1, promotion =, majors 12=12, wall
-+1.05%/−0.91% — noise both ways. `.mlir` **byte-identical** under BOTH engines.
-Gates: elm-tests 13,063/12 known, E2E **1619/1619**, bootstrap EXIT=0 (both fixed points).
+`plans/mono-comparable-key-optimization.md` K7 §16: `Intern` gains a
+`ReadOnly` mode that probes but never inserts, so read-only traversals need
+no state threading — `applySubstPureRO` wraps the existing recursion;
+`Specialize`'s 16 sites and `unifyCallSiteDirect*`'s 4 lend `accum.intern`.
+Census: composite `hashCons` arriving `Disabled` 42.04% → 0.15%, probe hit
+98.06%. Subst pairs **−4.21/−5.01 s (−1.85%/−2.21%)** at −9.26M promoted
+(−2.52%); GC time covers 73%/70% of it, RSS flat. **The solver never calls
+`TypeSubst`** and measures flat (wall ±1% both ways, promotion =, majors
+12=12). `.mlir` byte-identical under BOTH engines. Gates: elm-tests
+13,063/12 known, E2E 1619/1619, bootstrap EXIT=0 (both fixed points).
 
 | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|
@@ -177,30 +193,16 @@ Gates: elm-tests 13,063/12 known, E2E **1619/1619**, bootstrap EXIT=0 (both fixe
 
 ### 2026-08-05 16:00 UTC — Run F: K6 on the SOLVER engine (**solver −5.07% wall, −7.04% promotion, −13.2% RSS, 3 fewer majors**)
 
-`plans/mono-comparable-key-optimization.md` §15: the K6 `Intern` table threaded
-through the solver's own producers — `Store.classifyGo` and `Store.zonkToMono`'s
-`ZonkCtx` (the two recursive type builders), `Zonk.canTypeToMonoWithI`,
-`cachedSchemeMono`, and `Intern.widenSets` for the spec-registry key. Table home
-is a new `S.intern`, made room for by grouping the three M2 memos into
-`S.monoMemo` (`S` sat exactly at the native 32-slot record scan cap). Output
-**byte-identical** to BOTH baselines under BOTH engines (solver 13,414,246 B;
-subst 12,958,010 B) — sharing is still not observable. Interleaved same-source
-triples vs `eco-compiler-k4fix` (pre-K6) and `eco-compiler-k6-substonly`:
-**solver 5:33.80 vs 5:51.61 = −17.81 s (−5.07%)**, r1 −17.14 s (−4.85%); vs
-k6-substonly −20.65 s (−5.83%), r1 −4.45%. **Promotion −29.2M (−7.04%)**, **max
-RSS −847,728 kB (−13.15%)**, **majors 10 vs 13**, GC time −16.28 s — which
-covers 91% of the wall delta. The mechanism is RETENTION and the numbers say so
-cleanly: against k6-substonly, objects allocated move **+0.02%** (+140,659)
-while promotion falls 6.96% — this change allocates nothing and keeps 29M fewer
-objects alive. **Subst is flat**: +2.19 s (+0.98%) at −477 objects, +0.04%
-promotion, equal majors (9=9) — inside the 1.87–2.54 s same-binary spread
-measured across these rounds, and there is no mechanism for a real subst cost
-since the solver code does not execute there. Gates: elm-tests 13,061/12 known
-(3 new K6 tests incl. an `Intern.widenSets` ≡ `Mono.widenSets` differential),
-E2E 1619/1619, bootstrap green incl. BOTH fixed points. **Raw walls are NOT
-comparable to Run E** — the workload is the compiler's own source, which this
-change edits; all legs here compile the same tree, so the triples are internally
-valid.
+`plans/mono-comparable-key-optimization.md` §15: the K6 `Intern` table
+threaded through the solver's own producers (`Store.classifyGo`,
+`zonkToMono`'s `ZonkCtx`, `canTypeToMonoWithI`, `cachedSchemeMono`,
+`Intern.widenSets`); table home = new `S.intern` (M2 memos grouped to fit
+the 32-slot record cap). Output byte-identical to both baselines under both
+engines. Interleaved triples: **solver −17.81 s (−5.07%), promotion −29.2M
+(−7.04%), max RSS −13.15%, majors 13→10**, GC −16.28 s = 91% of the wall
+delta; objects +0.02% — a pure RETENTION win. **Subst flat** (+0.98%,
+within same-binary spread). Gates: elm-tests 13,061/12, E2E 1619/1619,
+bootstrap both fixed points. NOT wall-comparable to Run E (workload moved).
 
 | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|
@@ -210,23 +212,15 @@ valid.
 ### 2026-08-05 14:00 UTC — Run E: K6 construction-time hash-consing (**subst −2.17% wall, −16.4% RSS; solver flat**)
 
 `plans/mono-comparable-key-optimization.md` K6: an `Intern` table
-(`Compiler.AST.Intern`, structure → canonical object, keyed by `specHashOf` and
-decided by EXACT `==`) threaded through `TypeSubst.applySubstPureI` and out
-through `applySubstFV`'s 52 `Specialize` call sites, plus an `a == b ||` fast
-path on `eqKeySpec`/`eqKeyLayout`. Output **byte-identical** both engines (subst
-12,956,798 B; solver 13,413,498 B) — sharing is not observable. Same-source
-interleaved pairs vs `eco-compiler-k4fix`: **subst 3:46.33 vs 3:51.35 = −5.02 s
-(−2.17%)**, r1 −4.90 s (−2.11%), equal majors (10=10); **promotion −23.5M
-(−6.15%)** and **max RSS −1,001,496 kB (−16.4%)** — the retention mechanism §13
-said no allocation count could predict, and GC time (−5.71 s) covers the whole
-wall delta. **Solver is +0.53%/+0.93%** (5:40.54 vs 5:37.39): K6 threads only
-the subst engine — `MonoSolver` builds its types in `Zonk`, not `TypeSubst` — so
-the only live change there is `identicalOr` (objects −15.8M from skipped
-`case ( a, b )` tuples), and the delta is one extra major GC (12 vs 11) at
-+0.03% promotion. Gates: elm-tests 13,058/12 known, E2E 1619/1619, bootstrap
-green incl. BOTH fixed points. No census leg: every figure that decides this
-(promotion, RSS, majors, GC time) is GC-measured, so the inline-alloc caveat
-touches only the `Objects allocated` percentage.
+(`Compiler.AST.Intern`, structure → canonical object, keyed by `specHashOf`,
+decided by exact `==`) threaded through `TypeSubst.applySubstPureI` and out
+through `applySubstFV`'s 52 `Specialize` call sites, plus an `a == b ||`
+fast path on `eqKeySpec`/`eqKeyLayout`. Output byte-identical both engines
+— sharing is not observable. Interleaved pairs vs pre-K6: **subst −5.02 s
+(−2.17%), promotion −23.5M (−6.15%), max RSS −16.4%**, equal majors, GC
+time −5.71 s covers the whole wall delta — the retention mechanism no
+allocation count could predict. **Solver +0.53%/+0.93%** (K6 threads only
+the subst engine; delta is one extra major). Gates all green, both engines.
 
 | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|
@@ -237,15 +231,13 @@ touches only the `Objects allocated` percentage.
 
 Global intern table handing out unique ids (plan §12), run at
 `Prune.pruneUnreachableSpecs` so BOTH engines' graphs are interned before
-GlobalOpt/codegen; id equality replaces the K4 confirm walk, with a structural
-fallback for uninterned types. Same source, equal majors (11=11), identical
-output size (12,978,169 B): **4:39.50 vs 3:56.35 = +43.2 s (+18.3%)**, objects
-**+221.9M (+56%)**, bytes +5,172 MB. Cause is structural, not tuning:
-retrofitting ids onto an already-built graph means REBUILDING every type in it
-(Elm values are immutable), which dwarfs confirm walks that the profile capped
-at ≤1.94% of runtime total. Conclusion: interning must happen at CONSTRUCTION
-or not at all — and that is the multi-day both-engine cascade (§12).
-**REVERTED**; the tree carries Run C's state.
+GlobalOpt/codegen; id equality replaces the K4 confirm walk. Same source,
+equal majors (11=11), identical output size: **4:39.50 vs 3:56.35 =
++43.2 s (+18.3%)**, objects **+221.9M (+56%)**. Cause is structural:
+retrofitting ids onto an already-built graph REBUILDS every type in it
+(immutability), dwarfing confirm walks the profile capped at ≤1.94% of
+runtime. Conclusion: interning must happen at CONSTRUCTION or not at all
+(the §12 cascade). **REVERTED**; the tree carries Run C's state.
 
 | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|
@@ -254,31 +246,16 @@ or not at all — and that is the multi-day both-engine cascade (§12).
 ### 2026-08-05 00:40 UTC — Run C: mono comparable-key K4 interning (**alloc −1.2% TRUE, wall FLAT**)
 
 `plans/mono-comparable-key-optimization.md` K4: `MonoType`'s five composite
-constructors carry a packed structural hash (`layoutHash * 2^26 + specHash`)
-built by smart constructors in O(arity); every layout- and spec-intent
-dictionary keys on that hash via a new bucketed `Data.HashMap`, so no
-comparable STRING is built for a dictionary operation any more (0
-`toComparableLayoutKey` call sites remain). **Output is NOT byte-identical by
-design** — iteration order changed — but it is the same SIZE (12,953,038 B
-both), the signature of a pure permutation of spec indices / type ids.
-Same-source interleaved vs the K1+K2 binary: **3:48.71 vs 3:49.51 = −0.80 s
-(−0.35%)** after the bucket-churn fix below (before it: 3:49.09 vs 3:49.17 =
-flat), equal majors (10=10), objects PROMOTED identical (375.9M).
-**The standard binary's counter read −13.5% objects / −21.3% bytes and is
-WRONG — the inline-alloc caveat above, which has now misread two consecutive
-runs.** Census legs (`ECO_INLINE_ALLOC=0`, same source, both binaries) give
-the true figure: **objects −66.7M (−1.67%), bytes −2,048 MiB (−1.31%)** —
-`Cons −149.0M (−27.1%)` and `StringRope −9.3M (−96.7%)` for the deleted
-fragment lists and key strings, against **`Tuple2 +88.5M`** and `Int +7.5M`
-(boxed hashes). A follow-up pass removed the `Data.HashMap` pair churn
-(`replaceInBucket` no longer returns `( bucket, added )` per step; `foldl` and
-`values` no longer materialise `( k, v )`), worth **−11.2M objects / −286 MiB**
-— which also PROVES bucket churn was never the bulk of that `Tuple2` pool; its
-remaining source is unattributed (`sortBy` is native and does not decorate).
-Gates: elm-tests 13,058/12 known, E2E 1619/1619, bootstrap green incl. BOTH
-fixed points. One real bug found and fixed: hash-ordered iteration broke a
-multi-specialization emission path (`eco.papCreate` out-of-scope SSA ref) —
-`Data.HashMap` iteration is now INSERTION-ordered.
+constructors carry a packed structural hash built by smart constructors in
+O(arity); every layout-/spec-intent dictionary keys on it via a new
+bucketed `Data.HashMap` — 0 `toComparableLayoutKey` call sites remain.
+Output NOT byte-identical by design (iteration order) but same SIZE — a
+pure permutation. Interleaved vs K1+K2: **−0.80 s (−0.35%) ≈ FLAT** (incl.
+a follow-up HashMap pair-churn fix worth −11.2M obj), equal majors,
+promotion identical. **The standard counter's −21.3% bytes is WRONG
+(inline-alloc blind); census truth: objects −1.67%, bytes −1.31%** (Cons
+−27.1%, Tuple2 +88.5M). Bug fixed: hash-ordered iteration broke codegen →
+`Data.HashMap` is now INSERTION-ordered. Gates all green.
 
 | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|
@@ -287,20 +264,15 @@ multi-specialization emission path (`eco.papCreate` out-of-scope SSA ref) —
 ### 2026-08-04 22:55 UTC — Run B: mono comparable-key K1+K2 (−1.2% wall, −2.7 GB alloc; byte-identical)
 
 `plans/mono-comparable-key-optimization.md` K1 (call-site amplifiers) + K2
-(work-stack helper → direct forward-building recursion). CATEGORY A: compiler
-source only, no pass changes. **Raw wall vs Run A is +2.6 s — that is DAY
-DRIFT**; the same-source interleaved pairs settle it: **new 3:45.45/3:44.55 vs
-old-binary 3:48.46/3:47.08 = −3.01 s/−2.53 s (−1.3%/−1.1%)**, equal majors
-(11=11) in both pairs. Byte-identity old≡new PASS ×3 (both pairs + census).
-Census legs (`ECO_INLINE_ALLOC=0`, identical workload): **bytes −2,706 MiB
-(−1.74%)**, objects +8.7M (+0.22%) — `Custom −61.6M` (the deleted `WorkItem`
-pool), `Tuple2 −10.2M` (`Dict.toList` pairs), `ListBacking −10.1M/−2,973 MiB`
-and `ConsChunk −28.1M` (the deleted `List.reverse`, a chunk-producing
-combinator), against `Cons +116.7M` — forward `::` building trades few large
-chunk backings for many small cells. Encoder is still the #1 cons site
-(158.3M). Gates: JS fixed point, elm-tests (12 known pre-existing fails), E2E
-**1619/1619**. Baseline census binary segfaults at exit before its tally
-(twice; totals unaffected).
+(work-stack helper → direct forward-building recursion); compiler source
+only, no pass changes. Raw wall vs Run A is +2.6 s = DAY DRIFT; the
+same-source interleaved pairs settle it: **−3.01/−2.53 s (−1.3%/−1.1%)**,
+equal majors in both pairs; byte-identity old≡new PASS ×3. Census legs:
+**bytes −2,706 MiB (−1.74%)**, objects +0.22% — `Custom −61.6M` (deleted
+`WorkItem` pool), `ListBacking −10.1M/−2,973 MiB`, `ConsChunk −28.1M`
+(deleted `List.reverse`) against `Cons +116.7M` — forward `::` trades few
+large chunk backings for many small cells. Encoder still the #1 cons site
+(158.3M). Gates: JS fixed point, elm-tests (12 known fails), E2E 1619/1619.
 
 | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|
@@ -327,12 +299,13 @@ matching the L1 hybrid-spines prediction) and the workload moved
 
 | run | wall (measured leg) | total heap allocation |
 |---|---|---|
-| A — tier-2 baseline (no track opts) | 3:42.84 | 454,405,404 obj / 23,471.22 MB |
-| B — mono-key K1+K2, **−1.2% vs old binary** (same-source pairs; raw wall is day drift) | 3:45.45 | 536,483,145 obj / 22,372.66 MB |
-| D — K5 true interning (post-hoc graph pass), **+18.3% REGRESSION, reverted** | 4:39.50 | 616,215,747 obj / 23,860.96 MB |
-| C — mono-key K4 interning + bucket-churn fix, **wall −0.35% (≈flat); TRUE alloc −1.31% bytes** (census; the standard counter's −21.3% is inline-alloc-blind) | 3:48.71 | 393,315,712 obj / 18,633.70 MB (census: 3,933,552,762 / 154,614 MiB) |
-| E — K6 construction-time hash-consing, **subst −2.17% wall / −6.15% promotion / −16.4% max RSS; solver +0.93% (one extra major)** | 3:46.33 subst (5:40.54 solver) | 375,458,591 obj / 18,234.64 MB (solver: 576,877,132 / 46,106.28 MB) |
-| F — K6 extended to the SOLVER engine, **solver −5.07% wall / −7.04% promotion / −13.2% max RSS / majors 13→10; subst flat (+0.98%, within same-binary spread)** | 5:33.80 solver (3:45.56 subst) | 578,903,113 obj / 46,263.44 MB (subst: 376,270,422 / 18,293.01 MB) |
-| G — K7 read-only interning for the `Disabled` callers, **subst −2.0% wall / −2.5% promotion / majors 10→9 (coverage 42.04% → 0.15% disabled at a 98.06% hit rate); solver unaffected by construction and measured flat** | 3:41.83 subst (5:43.01 solver) | 376,384,280 obj / 18,298.94 MB (solver: 579,055,820 / 46,273.95 MB) |
-| I — **W1 Custom arity census**. Promoted Custom by field count: **0-field 9.1% (19.7M objects, ZERO data, 301 MiB), 1-field 12.2%, 2-field 56.2%**. Payload unboxing capped at 7.4% of total promotion; re-aimed onto generalized nullary embedding | 3:48.29 subst (5:49.89 solver) — no warmup, not wall-comparable | unchanged from Run H |
-| H — **LH1 per-kind retention histogram** (instrumentation only). **Promotion = Custom 60.7% + Cons 36.7% = 97.4%** (solver 61.8/34.7); Closure 0.002% of promotion against ~22% of allocation. Allocation ranking and retention ranking are near-disjoint. Self-check exact on both engines; walls and out.mlir ≡ Run G | 3:46.03 subst (5:43.46 solver) | 376,384,275 obj / 18,298.94 MB — **promoted 357,488,231 / 10,233 MiB** (solver: 579,055,813 / 46,273.95 MB — promoted 385,666,258 / 11,226 MiB) |
+| A — tier-2 baseline | 3:42.84 | 454,405,404 obj / 23,471.22 MB |
+| B — mono-key K1+K2 | 3:45.45 | 536,483,145 obj / 22,372.66 MB |
+| C — mono-key K4 hash keys | 3:48.71 | 393,315,712 obj / 18,633.70 MB |
+| D — K5 true interning (reverted) | 4:39.50 | 616,215,747 obj / 23,860.96 MB |
+| E — K6 hash-consing (subst) | 3:46.33 | 375,458,591 obj / 18,234.64 MB |
+| F — K6 on solver (solver leg) | 5:33.80 | 578,903,113 obj / 46,263.44 MB |
+| G — K7 read-only interning (subst) | 3:41.83 | 376,384,280 obj / 18,298.94 MB |
+| H — LH1 retention census (subst) | 3:46.03 | 376,384,275 obj / 18,298.94 MB |
+| I — W1 Custom arity census (subst) | 3:48.29 | 376,384,275 obj / 18,298.94 MB |
+| J — promo-time chunking, mode 2 (reverted) | 3:54.64 | 378,528,424 obj / 18,364.39 MB |
