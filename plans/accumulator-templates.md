@@ -1,8 +1,15 @@
 # Function-level accumulator templates — scratch-stack capture of TCO list builders
 
-**Status: D-AT PASSED 2026-08-05, and §4's argument #1 is now MEASURED
-rather than speculative. AT0 is answered — go straight to AT1 (recognition
-census), then AT2. The infrastructure is ~80% built.**
+**Status: AT1 RUN 2026-08-06 (`benchmarks/tier2-opt.md` Run K) — AT2 and
+AT3 are NO-GO as specified. §5a below records the results. The premise of
+§1 is stale: musttail self-calls do not exist in today's emitted MLIR
+(0 of 2,157 self-call functions); TailRec.elm compiles ALL self-tail-
+recursion — top-level and lambdas — to `scf.while`, and phase 1 TODAY
+captures 443 loops in the default chunks-on build (the "captured ZERO"
+finding predates kernel-cons acceptance in `walkChain`). The only
+measurable residue is an exit-materialization extension of phase 1
+(ceiling 19.3M cons = 10% of residual cons traffic), gated on per-site
+retention evidence (LH4a bridge).**
 
 > **LH1 result (`benchmarks/tier2-opt.md` Run H): `Cons` is 36.7% of all
 > promotion on subst (131,038,610 objects, 2,999 MiB) and 34.7% on solver —
@@ -173,6 +180,55 @@ tally, or against LH4a's per-tag survival bridge).
 
 The static count is the number every previous unit in this series
 over-trusted. **The dynamic join is the deliverable.**
+
+### AT1 results (2026-08-06, Run K — static census + dynamic join)
+
+**Recognizer:** report-only, `ECO_LIST_TEMPLATE_DEBUG`-gated, runs before
+phases 1/2 mutate anything (`EcoListTemplate.cpp`, `[at1]` lines). Two
+detectors: the while-side classifier (mirrors `tryRewrite`'s checks and
+classifies each bail) and the plan-literal self-call argument-side
+detector. Debug-on/off outputs verified byte-identical. Dynamic leg:
+tier-2 methodology, `ECO_INLINE_ALLOC=0` binary, `ECO_CONS_SITES=1`,
+subst workload; promoted count ≡ Run H exactly (357,488,231), so the
+corpus is the standard one.
+
+**Static (full self-compile corpus, solver+LSS build engine):**
+
+| population | count | note |
+|---|---|---|
+| self-call fns with `musttail` | **0** / 2,157 | §1's premise does not exist |
+| self-call arg-side accumulators | ≈0 | 5 chain-breaks + 1 escape (`toComparableFragments`) |
+| phase-1 while captures TODAY | **443** | 411 LSS-specialized `List_foldl`, 17 `takeReverse`, 6 `repeatHelp`, 9 other |
+| `REVERSE_EXIT` (AT3 shape) | **3** | `flattenDecls` + 2 `takeWhileMemo$cap` |
+| `BASE_ESCAPE` | 179 | 84 = acc packed into record/tuple at exit; rest reverse-then-pack / callee-cons |
+| chain-breaks w/ partial cons | 6 | recursive-call tails (`getPatternNames`, `toJsonHelp`, …) |
+
+**Dynamic join (192.76M cons tallied = 5.0% of true 3.886B alloc;
+top-400 sites = 99.0% coverage, cutoff 12.5K):**
+
+- Every `REVERSE_EXIT`, chain-break, and self-call candidate is **below
+  the cutoff** — dynamically nil. AT3's 3 loops are cold.
+- `BASE_ESCAPE` carries **19.35M (10.0%)**: `traverseListGo$sret`
+  tuple2-pack family 13.25M (6.9%) + TypeSubst reverse-then-pack helpers
+  4.54M (2.4%). This is the *only* accumulator-shaped heat left, and it
+  needs a phase-1 extension (insert `finish` before the exit
+  materialization), not the function-level pass.
+- Out-of-shape residue: closure-wrapper/lambda HOF cons 71.9M (37.3%),
+  kernel C++ bulk 32.6M (16.9%), `typeEncoderS` 16.7M (8.7%),
+  `List_reverse` kernels 12.9M (6.7%) — none addressable by templates.
+- Residual cons allocation (192.8M) vs Run H promoted Cons (131.0M):
+  the surviving cons population is **majority-retained** — chunks +
+  captures already ate the nursery-garbage cons. Inference only;
+  per-site survival needs the LH4a bridge.
+
+**Verdict:** AT2 (argument-side function-level rewrite) and AT3 (reverse
+cancellation) are NO-GO — their populations are statically ≈0 and
+dynamically nil. TIER PATTERN ×6: the unit was scheduled against an
+architecture description that no longer held. The one defensible follow-on
+is **AT2′: exit-materialization capture** (allow the base to escape into a
+single `eco.make.tuple2`/`construct.record`/reverse-then-pack at the exit
+arm, finishing before the pack), ceiling 19.3M cons ≈ 0.5% of true
+allocation — schedule only with per-site retention evidence.
 
 ### D-AT — the gate
 
