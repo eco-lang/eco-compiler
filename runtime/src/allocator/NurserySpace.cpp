@@ -899,8 +899,15 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
             char* end  = blk.end_of_objects;
             while (scan < end) {
                 Header* h = getHeader(scan);
-                if (h->tag == 0 || h->tag > Tag_Forward) {
-                    // Uninitialized / swept / header sentinel — skip 8 bytes.
+                // Only a FULLY-ZERO word is uninitialized/swept filler.
+                // Testing `tag == 0` alone is wrong: Tag_Int == 0, so a
+                // promoted boxed Int (header word 16<<32 — every alloc
+                // path writes size = sizeof(ElmInt)) would be skipped by
+                // 8 and the walk would land on its VALUE word; a value of
+                // 25 decodes as Tag_Free with size 0 = zero stride = hang.
+                uint64_t raw_header;
+                memcpy(&raw_header, h, sizeof(raw_header));
+                if (raw_header == 0 || h->tag > Tag_Forward) {
                     scan += 8;
                     continue;
                 }
@@ -909,6 +916,12 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                     continue;
                 }
                 size_t obj_size = getObjectSize(scan);
+                if (obj_size == 0) {
+                    // Degenerate decode (e.g. Tag_Free size 0) — never a
+                    // real object; resync by 8 rather than loop forever.
+                    scan += 8;
+                    continue;
+                }
                 switch (h->tag) {
                     case Tag_Closure: {
                         Closure* cl = static_cast<Closure*>(static_cast<void*>(scan));

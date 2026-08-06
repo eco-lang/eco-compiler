@@ -114,8 +114,8 @@ only 11.2% of promoted Cons in chunkable runs. Mode 2 cost +12.6 s (+5.7%)
 wall — majors 9→11, +2.14M mutator view allocs — for −3.1% promotion /
 −1.2% RSS; the mode-1 peek alone +1.8%.** Lazy views 704; self-checks
 EXACT; gates green (unit+E2E 1627/1627, ECO_HEAP_VALIDATE). Verdict NO-GO
-→ fully REVERTED 2026-08-06, incl. the latent validate-walker zero-stride
-fix it uncovered (LATENT AGAIN — re-fix recipe in the plan's status note).
+→ fully REVERTED 2026-08-06; the latent validate-walker zero-stride fix
+it uncovered was re-landed standalone the same day, with a regression test.
 
 | leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|---|

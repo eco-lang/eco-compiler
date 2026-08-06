@@ -1951,8 +1951,10 @@ inline bool closureCapture(void* closure, Unboxable value, ParamKind kind) {
 #if ECO_HEAP_VALIDATE
     // Class 2 — closure capture bitmap consistency: the just-set bit at
     // position `idx` must match `kind`. Catches mis-encoded bitmaps at
-    // the construction site.
-    if (idx < 26) {
+    // the construction site. The bound must match the setter's `idx < 25`
+    // above: slots beyond 24 demote to boxed by design (50-bit bitmap =
+    // 25 typed slots), so there is no stored kind to check there.
+    if (idx < 25) {
         u64 stored = (cl->unboxed >> (idx * 2)) & 0x3ULL;
         u64 expected = (kind == PK_Boxed) ? 0ULL : static_cast<u64>(kind);
         if (stored != expected) {

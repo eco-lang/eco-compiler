@@ -486,3 +486,40 @@ Testing::TestCase testDeepListLocalityCopying("Deep list with two-pass spine cop
         alloc.getRootSet().removeRoot(&list.head);
     });
 });
+
+// ============================================================================
+// Regression: promoted boxed Ints vs the ECO_HEAP_VALIDATE old-gen walk
+// ============================================================================
+
+// The post-minor-GC old-gen integrity walk parses [start, end_of_objects) by
+// header. Tag_Int == 0, so classifying `tag == 0` as skippable filler steps
+// INTO a promoted boxed Int's value word; a value of 25 then decodes as
+// Tag_Free (enum value 25) with size 0, and the zero stride hangs the walk.
+// The values below are that adversarial payload. In non-validate builds the
+// walk is compiled out and this is a plain promotion roundtrip.
+Testing::UnitTest testPromotedBoxedIntsValidateWalk(
+    "Promoted boxed Ints with adversarial values survive the old-gen validate walk", []() {
+        auto& alloc = initAllocator();
+
+        std::vector<i64> values(64, 25);
+        RootedInts ints = createRootedIntsWithValues(alloc, values);
+        TEST_ASSERT(ints.size() == values.size());
+        ints.registerRoots(alloc);
+
+        promoteToOldGen(alloc);
+
+        // One more cycle so the validate walk parses the already-promoted
+        // Ints sitting in old gen.
+        allocateGarbageInts(alloc, 10);
+        alloc.minorGC();
+
+        for (size_t i = 0; i < ints.roots.size(); i++) {
+            void* obj = readBarrier(ints.roots[i]);
+            TEST_ASSERT(obj != nullptr);
+            TEST_ASSERT(alloc.isInOldGen(obj));
+            TEST_ASSERT(getHeader(obj)->tag == Tag_Int);
+            TEST_ASSERT(static_cast<ElmInt*>(obj)->value == 25);
+        }
+
+        ints.unregisterRoots(alloc);
+    });

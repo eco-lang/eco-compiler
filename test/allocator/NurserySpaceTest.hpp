@@ -16,3 +16,6 @@ extern Testing::TestCase testListLocalityImprovedByHybridDFS;
 extern Testing::TestCase testListSurvivesMultipleGCCyclesWithHybridDFS;
 extern Testing::TestCase testListSurvivesMultipleGCCyclesWithBFS;
 extern Testing::TestCase testDeepListLocalityCopying;
+
+// Regression: promoted boxed Ints vs the ECO_HEAP_VALIDATE old-gen walk
+extern Testing::UnitTest testPromotedBoxedIntsValidateWalk;

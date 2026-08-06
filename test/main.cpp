@@ -577,6 +577,7 @@ int main(int argc, char* argv[]) {
     nurseryTests.add(testListSurvivesMultipleGCCyclesWithHybridDFS);
     nurseryTests.add(testListSurvivesMultipleGCCyclesWithBFS);
     nurseryTests.add(testDeepListLocalityCopying);
+    nurseryTests.add(testPromotedBoxedIntsValidateWalk);
 
     Testing::TestSuite oldGenTests("OldGenSpace");
     oldGenTests.add(testOldGenAllocate);

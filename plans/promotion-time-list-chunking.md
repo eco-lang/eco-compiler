@@ -11,14 +11,13 @@ runs, and mode 2 cost +5.7% wall (majors 9→11, +2.14M mutator view
 allocations from chunk-tail materialization) against −3.1% promotion /
 −1.2% RSS; the peek alone (mode 1) costs +1.8%. The implementation was then
 REVERTED in full (user decision — no point carrying a default-off
-mechanism). NOTE: the revert also removed the LATENT validate-walker fix
-this work uncovered, so that bug is latent again — the old-gen check
-walkers (`NurserySpace.cpp` ~:863/:900) skip 8 bytes on `tag == 0`, but
-`Tag_Int == 0`, so the walk steps into a promoted boxed-Int VALUE word;
-value 25 decodes as `Tag_Free` size 0 → `getObjectSize` = 0 → zero stride
-→ infinite loop (any ECO_HEAP_VALIDATE run promoting consecutive small
-boxed Ints can hang). Re-fix: skip only fully-zero words, plus a
-zero-stride guard on the walk.
+mechanism). The revert also removed the LATENT validate-walker fix this
+work uncovered; it was RE-LANDED standalone 2026-08-06 (the old-gen check
+walk in `NurserySpace.cpp` now skips only fully-zero header words and
+resyncs on a zero `getObjectSize` stride — `Tag_Int == 0`, so a `tag == 0`
+skip stepped into promoted boxed-Int VALUE words, and value 25 decodes as
+`Tag_Free` size 0 = infinite loop), pinned by a `NurserySpaceTest`
+promotion roundtrip over value-25 boxed Ints.
 The §4(a) lazy-view design itself validated cleanly (704 materializations),
 so this file is the rebuild recipe if a long-list workload ever warrants
 it. §3.1's first-survival variant is pre-empted by the same histogram: the
