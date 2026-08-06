@@ -106,17 +106,16 @@ byte diff means the workload moved and walls are not comparable.
 
 ### 2026-08-06 00:15 UTC — Run J: promotion-time list chunking (**P1 mean run = 1.69 ⇒ NO-GO; +5.7% wall when ON; REVERTED**)
 
-`plans/promotion-time-list-chunking.md` implemented (HEAP_041) and measured;
-the run RECORDS the plan's §5 P1/D-PC gate numbers. Same binary all legs,
+`plans/promotion-time-list-chunking.md` implemented (HEAP_041), measured;
+RECORDS the plan's own §5 P1/D-PC gate numbers. Same binary all legs,
 flavors = `ECO_PROMO_CHUNK` 0/1/2, interleaved pairs, byte-identity 0≡1≡2
 PASS. **P1: mean promotable run 1.69 (73% singletons; the gate wanted ≥8);
 only 11.2% of promoted Cons in chunkable runs. Mode 2 cost +12.6 s (+5.7%)
 wall — majors 9→11, +2.14M mutator view allocs — for −3.1% promotion /
-−1.2% RSS; the mode-1 peek alone +1.8%.** Lazy views 704 (§4(a) validated);
-self-checks EXACT. Gates were green (unit+E2E 1627/1627, ECO_HEAP_VALIDATE).
-Verdict NO-GO → implementation fully REVERTED 2026-08-06, including the
-latent validate-walker zero-stride fix it uncovered (LATENT AGAIN — see
-the plan's status note for the re-fix recipe). Plan closed.
+−1.2% RSS; the mode-1 peek alone +1.8%.** Lazy views 704; self-checks
+EXACT; gates green (unit+E2E 1627/1627, ECO_HEAP_VALIDATE). Verdict NO-GO
+→ fully REVERTED 2026-08-06, incl. the latent validate-walker zero-stride
+fix it uncovered (LATENT AGAIN — re-fix recipe in the plan's status note).
 
 | leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|---|
