@@ -555,7 +555,60 @@ variant tracking the closure binder):
 > ≥ **2%** of allocation. `oc2:call-crossing` is recorded for a v2 and does
 > NOT count toward the gate (it stacks OC1 risk on OC2 risk).
 
-### OC2.1 — Mechanism (intra-def only, v1)
+### OC2.0 as-built (2026-08-07) — **D-OC2 FAILED: 0.13% vs ≥2% ⇒ OC2.1 NO-GO**
+
+**Built:** `Backend.oc2CensusReport` — self-contained consumption walk over
+every let-bound `MonoClosure` binder (callee-position saturated calls vs
+arity-mismatched PAP uses vs arg-position passes classified against
+`Borrow.deriveFacts` spec sigs + `KernelSigs` vs everything-else escape;
+all 18 `MonoExpr` arms; aliases counted escape — conservative for the
+gate; TailRec `MonoUnit` bodies skipped). Denominator = ALL closure
+creation sites (inline-arg lambdas are sites, never candidates). Behind
+`borrow.oracleOptReport` / `ECO_BORROW_OPT_REPORT=1` (report-only, NOT
+hashed), hooked into both MLIR write paths. NO Expr.elm changes.
+
+**Gates:** elm-tests 13,066 + known-12 POST_010; solver census-leg
+out.mlir `cmp`-identical to off; census cost +36.2s (+10.8%). Run K
+(2026-08-07 series) in `benchmarks/tier2-opt.md`.
+
+**The census (Stage-7a self-compile):**
+
+```
+solver: sites=14518 letBound=7417
+        direct-only=84  cross=884  pap=5  escape=6444  dead=0
+        weighted: direct-only=0.13  cross=1.35
+subst : sites=13681 letBound=6921
+        direct-only=79  cross=823  pap=5  escape=6014  dead=0
+        weighted: direct-only=0.13  cross=1.33
+```
+
+**Verdict (per the pre-registered rule): NO-GO — OC2.1/OC2.2 NOT built.**
+The tier pattern's eighth instance. Reading it honestly:
+
+- The site total cross-checks the escape census (`lit:clo` = 14,351 §18.2)
+  — the universe is right. Half of all closure sites are inline-arg
+  lambdas, structurally outside the intra-def class.
+- **87% of let-bound candidates escape**: the old escape program's
+  89%-closure-rejection figure reproduced at candidate level, now with
+  per-use cause. Bound closures exist to be passed — the intra-def
+  direct-call-only class is 84 sites (0.58% of sites, 0.13% weighted),
+  ~15× under the gate. Even perfect recovery of every candidate class
+  (upper bound 22.1% × 7417/14518 ≈ 11.3%) would ride mostly on `escape`
+  sites the mechanism cannot touch.
+- `cross` = 884 / 1.35% weighted is the only nontrivial signal: closures
+  passed exclusively to oracle-proven-borrowed positions (the OC1-composed
+  v2 class). Under the gate even if it were eligible, and its consumer is
+  the same closure-ABI surface — recorded, not scheduled.
+- `pap` = 5: papExtend traffic among LET-BOUND closures is negligible —
+  the historical 89% papExtend-rejection mass lives in the inline-arg and
+  escape populations, not here.
+
+**Consequence:** T1.3.4 stays parked with its record now census-backed at
+the candidate level; the OC series' closure-env track terminates. The OC
+series overall: OC1 dead (all routes), OC2 dead (this census), OC3
+remains the sole live track (clone census first).
+
+### OC2.1 — Mechanism (intra-def only, v1) — **NOT BUILT (D-OC2 NO-GO above)**
 
 For an admitted closure binding: emit the environment via
 `eco.make.closure_env` (`Ops.td:2942`; lowering `ClosureEnvMakeOpLowering`
