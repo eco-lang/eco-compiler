@@ -69,12 +69,19 @@ engine-agnostic). `enabled = False` reproduces today's pipeline byte-for-byte
 (the pass is not run). `reify = ROff` runs the analysis as an inert census
 oracle (graph returned unchanged); `RRc` (unused until B4) emits RC ops.
 `report`/`validate` are output-only and excluded from `hash`.
+
+`oracleOpt` (OC0.1, plans/borrow-oracle-consumers.md; env `ECO_BORROW_OPT=1`)
+opts a build into the oracle-coupled transforms (OC1+): the distilled facts
+are derived at MLIR-emission time (`Borrow.deriveFacts`) and consumed by
+codegen. ARTIFACT-AFFECTING — the only borrow knob in `hash` (token
+`bopt=1`); default off preserves T1-R1 for default builds.
 -}
 type alias BorrowConfig =
     { enabled : Bool
     , reify : BorrowReify
     , report : Bool
     , validate : Bool
+    , oracleOpt : Bool
     }
 
 
@@ -108,7 +115,6 @@ type alias MonoConfig =
     { engine : MonoEngine
     , diffDump : Bool
     , validate : Bool -- env ECO_MONO_VALIDATE=1, never from JSON: run the MONO_029 layout-agreement validator after mono and FAIL the compile on violations (output-only, excluded from hash — a failed compile is never cached)
-    , borrowCensus0 : Bool -- env ECO_BORROW_CENSUS0=1, never from JSON: Phase-0 throwaway Perceus-denominator census to stderr (output-only, excluded from hash; deleted when the B2 census lands)
     , lss : LssConfig
     }
 
@@ -313,8 +319,8 @@ default =
     , bytesFusion = { enabled = True }
     , logicalTypes = { customMaxFields = 8 }
     , cafMemo = { enabled = True, census = False, dedupe = False, hoist = { enabled = False, minNodes = 3, maxHoists = 8192 } }
-    , mono = { engine = EngineSolver, diffDump = False, validate = False, borrowCensus0 = False, lss = defaultLss }
-    , borrow = { enabled = False, reify = ROff, report = False, validate = False }
+    , mono = { engine = EngineSolver, diffDump = False, validate = False, lss = defaultLss }
+    , borrow = { enabled = False, reify = ROff, report = False, validate = False, oracleOpt = False }
     , list = { chunks = True, report = False }
 
     -- The ENTIRE tier-1 family DEFAULT-ON since 2026-08-04 (user
@@ -356,7 +362,7 @@ decoder =
 
 
 {-| Decode the `list` block. Only `chunks` is JSON-configurable; `report`
-is env-only (`ECO_LIST_REPORT=1`, borrowCensus0 precedent).
+is env-only (`ECO_LIST_REPORT=1`).
 -}
 listDecoder : D.Decoder x ListConfig
 listDecoder =
@@ -413,21 +419,24 @@ logicalTypesDecoder =
 
 {-| Decode the `borrow` block. `reify` is a string `"off"|"rc"`; `report`/
 `validate` are accepted from JSON for convenience but never affect `hash`.
+`oracleOpt` (OC0.1) is artifact-affecting (hash token `bopt=1`).
 -}
 borrowDecoder : D.Decoder x BorrowConfig
 borrowDecoder =
     D.pure
-        (\enabled reifyStr report validate ->
+        (\enabled reifyStr report validate oracleOpt ->
             { enabled = enabled
             , reify = Maybe.withDefault default.borrow.reify (borrowReifyFromString reifyStr)
             , report = report
             , validate = validate
+            , oracleOpt = oracleOpt
             }
         )
         |> D.apply (D.optionalField "enabled" D.bool default.borrow.enabled)
         |> D.apply (D.optionalField "reify" D.string "off")
         |> D.apply (D.optionalField "report" D.bool default.borrow.report)
         |> D.apply (D.optionalField "validate" D.bool default.borrow.validate)
+        |> D.apply (D.optionalField "oracleOpt" D.bool default.borrow.oracleOpt)
 
 
 {-| Parse a borrow-reify mode name (case-insensitive). `Nothing` on unknown.
@@ -455,7 +464,6 @@ monoDecoder =
             { engine = Maybe.withDefault default.mono.engine (monoEngineFromString s)
             , diffDump = default.mono.diffDump
             , validate = default.mono.validate
-            , borrowCensus0 = default.mono.borrowCensus0
             , lss = lss
             }
         )
@@ -717,6 +725,18 @@ hash cfg =
                )
             ++ (if cfg.sretTailFuncs then
                     [ "srtf=1" ]
+
+                else
+                    []
+               )
+            -- Borrow-oracle opt-in token (OC0.1, plans/borrow-oracle-
+            -- consumers.md): the FIRST artifact-affecting borrow knob — the
+            -- rest of the borrow block (enabled/reify/report/validate) stays
+            -- hash-inert. Appears ONLY when enabled (default-off), so every
+            -- existing config hashes exactly as before; opt builds must never
+            -- share caches with default builds.
+            ++ (if cfg.borrow.oracleOpt then
+                    [ "bopt=1" ]
 
                 else
                     []

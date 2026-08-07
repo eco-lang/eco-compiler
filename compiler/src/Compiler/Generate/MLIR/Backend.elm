@@ -22,6 +22,8 @@ import Compiler.Generate.MLIR.TypeTable as TypeTable
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Compiler.Generate.Mode as Mode
+import Compiler.GlobalOpt.Borrow as Borrow
+import Compiler.GlobalOpt.Borrow.Facts as BorrowFacts
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Dict
 import Eco.File
@@ -134,6 +136,20 @@ generateProgram mode monoGraph =
 -- ====== STREAMING ======
 
 
+{-| OC0.3 (plans/borrow-oracle-consumers.md): derive the distilled
+borrow-oracle facts from the graph being emitted — by construction the FINAL
+post-CafHoist graph, so the SpecId-keyed facts can never go stale against a
+pass that runs after GlobalOpt. Empty (and free) unless `borrow.oracleOpt`.
+-}
+deriveOracleFacts : Config.EcoConfig -> Mono.MonoGraph -> BorrowFacts.OracleFacts
+deriveOracleFacts ecoConfig monoGraph =
+    if ecoConfig.borrow.oracleOpt then
+        Borrow.deriveFacts monoGraph
+
+    else
+        BorrowFacts.emptyFacts
+
+
 {-| Stream MLIR text output to a writer function, emitting the module header,
 each top-level operation, and footer sequentially.
 -}
@@ -158,6 +174,7 @@ streamMlirToWriter ecoConfig mode monoGraph0 writeChunk =
                 |> Ctx.withCtorBySpec (buildCtorBySpec nodes)
                 |> Ctx.withSretPromoted (buildSretPromoted ecoConfig nodes)
                 |> Ctx.withPsplitPromoted (buildPsplitPromoted ecoConfig ctorShapes (buildCtorBySpec nodes) (buildSretPromoted ecoConfig nodes) nodes)
+                |> Ctx.withOracleFacts (deriveOracleFacts ecoConfig monoGraph0)
 
         nodesList =
             Array.toIndexedList nodes
@@ -279,6 +296,7 @@ streamMlirBytecode ecoConfig mode monoGraph0 target =
                 |> Ctx.withCtorBySpec (buildCtorBySpec nodes)
                 |> Ctx.withSretPromoted (buildSretPromoted ecoConfig nodes)
                 |> Ctx.withPsplitPromoted (buildPsplitPromoted ecoConfig ctorShapes (buildCtorBySpec nodes) (buildSretPromoted ecoConfig nodes) nodes)
+                |> Ctx.withOracleFacts (deriveOracleFacts ecoConfig monoGraph0)
 
         nodesList =
             Array.toIndexedList nodes

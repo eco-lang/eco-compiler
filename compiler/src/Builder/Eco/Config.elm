@@ -208,11 +208,6 @@ applyEnvOverrides cfg =
                     |> Task.map (\cdVal -> applyCafDedupeOverride cdVal cfg17)
             )
         |> Task.andThen
-            (\cfg18 ->
-                (Utils.envLookupEnv "ECO_BORROW_CENSUS0" |> Task.mapError never)
-                    |> Task.map (\bcVal -> applyBorrowCensus0Override bcVal cfg18)
-            )
-        |> Task.andThen
             (\cfg19 ->
                 (Utils.envLookupEnv "ECO_BORROW" |> Task.mapError never)
                     |> Task.map (\bVal -> applyBorrowOverride bVal cfg19)
@@ -261,6 +256,11 @@ applyEnvOverrides cfg =
             (\cfg26 ->
                 (Utils.envLookupEnv "ECO_SRET_FRESH" |> Task.mapError never)
                     |> Task.map (\sfVal -> applySretFreshOverride sfVal cfg26)
+            )
+        |> Task.andThen
+            (\cfg29 ->
+                (Utils.envLookupEnv "ECO_BORROW_OPT" |> Task.mapError never)
+                    |> Task.map (\boVal -> applyBorrowOptOverride boVal cfg29)
             )
 
 
@@ -620,35 +620,36 @@ applyValidateOverride maybeVal cfg =
         cfg
 
 
-{-| `ECO_BORROW_CENSUS0=1|true|yes`: emit the Phase-0 throwaway Perceus-denominator
-census (`borrow census0: …`) to stderr after GlobalOpt. Output-only, excluded from
-`Config.hash` (never referenced there), so flag-off caches are unaffected. Deleted
-when the B2 real census lands (borrow-inference Phase 2).
+{-| `ECO_BORROW_OPT=1|true|yes|on`: OC0.1 (plans/borrow-oracle-consumers.md) —
+opt this build into the oracle-coupled transforms. Enables the borrow pass and
+sets `borrow.oracleOpt`; the distilled facts are derived at MLIR-emission time
+from the final post-CafHoist graph (`Borrow.deriveFacts`). ARTIFACT-AFFECTING
+(folded into `Config.hash` as `bopt=1`), so opt builds never share caches with
+default builds. `0`/`off` disables `oracleOpt` only. Applied AFTER
+`ECO_BORROW`, so an explicit opt-in wins over `ECO_BORROW=0`'s disable.
 -}
-applyBorrowCensus0Override : Maybe String -> EcoConfig -> EcoConfig
-applyBorrowCensus0Override maybeVal cfg =
-    let
-        on =
-            case maybeVal of
-                Just v ->
-                    let
-                        t =
-                            String.toLower (String.trim v)
-                    in
-                    t == "1" || t == "true" || t == "yes"
+applyBorrowOptOverride : Maybe String -> EcoConfig -> EcoConfig
+applyBorrowOptOverride maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            cfg
 
-                Nothing ->
-                    False
-    in
-    if on then
-        let
-            mono =
-                cfg.mono
-        in
-        { cfg | mono = { mono | borrowCensus0 = True } }
+        Just raw ->
+            let
+                t =
+                    String.toLower (String.trim raw)
 
-    else
-        cfg
+                borrow =
+                    cfg.borrow
+            in
+            if t == "1" || t == "true" || t == "yes" || t == "on" then
+                { cfg | borrow = { borrow | enabled = True, oracleOpt = True } }
+
+            else if t == "0" || t == "off" then
+                { cfg | borrow = { borrow | oracleOpt = False } }
+
+            else
+                cfg
 
 
 {-| `ECO_MONO_LSS=0|1|keyed|unkeyed`: toggle lambda-set specialization. Unknown

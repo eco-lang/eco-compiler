@@ -1,5 +1,6 @@
 module Compiler.GlobalOpt.Borrow exposing
     ( BorrowStats, emptyStats, run, renderStats
+    , deriveFacts
     , analyzeDefForTest
     )
 
@@ -16,6 +17,10 @@ uniqueness oracle only; byte-identical emitted MLIR). The census is computed
 in a single pass AFTER the fixpoint converges, so intermediate iterations
 never contribute to the counters.
 
+`deriveFacts` (OC0.2, plans/borrow-oracle-consumers.md) is the codegen-facing
+readback: sig fixpoint + lambda sigs distilled to SpecId/member-keyed
+borrowed-param sets, invoked at MLIR-emission time under `borrow.oracleOpt`.
+
 `readbackSig` lives here (not in `Sig`) so `Sig` stays free of a `Solve`
 import (`Constrain` imports `Sig`; `Solve` imports `Constrain`).
 
@@ -28,6 +33,7 @@ import Compiler.Data.BitSet as BitSet
 import Compiler.Eco.Config as Config
 import Compiler.GlobalOpt.Borrow.Constrain as C
 import Compiler.GlobalOpt.Borrow.Dsu as Dsu
+import Compiler.GlobalOpt.Borrow.Facts as Facts
 import Compiler.GlobalOpt.Borrow.Lifetime as L exposing (Life(..), Lifetime(..))
 import Compiler.GlobalOpt.Borrow.LssFacts as LssFacts
 import Compiler.GlobalOpt.Borrow.Mode as Mode exposing (Mode(..))
@@ -239,6 +245,79 @@ solveSigs nodes =
 sigLookup : SigTable -> Mono.SpecId -> Maybe BorrowSig
 sigLookup table specId =
     Array.get specId table |> Maybe.andThen identity
+
+
+{-| OC0.2 (plans/borrow-oracle-consumers.md): derive the distilled oracle
+facts for codegen consumers. Runs the sig fixpoint + per-member lambda sigs
+ONLY — no census fold, no escape closure — so its wall toll is the sigs-only
+slice (measured in OC0.4), not the full report-mode analysis.
+
+Called at MLIR-emission time on the FINAL graph (post CafDedupe/CafHoist —
+those passes mutate the graph after GlobalOpt Phase 6, so facts derived
+inside the phase would be stale by emission). Keyed by SpecId / LSS member
+id only, so the facts carry no per-def state.
+-}
+deriveFacts : Mono.MonoGraph -> Facts.OracleFacts
+deriveFacts (Mono.MonoGraph { nodes }) =
+    let
+        ( table, _, _ ) =
+            solveSigs nodes
+
+        ( byMember, _ ) =
+            LssFacts.buildInstances nodes
+
+        bySpec =
+            Tuple.second
+                (Array.foldl
+                    (\maybeSig ( specId, acc ) ->
+                        case maybeSig of
+                            Just sig ->
+                                ( specId + 1, Dict.insert specId (distillSig sig) acc )
+
+                            Nothing ->
+                                ( specId + 1, acc )
+                    )
+                    ( 0, Dict.empty )
+                    table
+                )
+
+        byLambda =
+            Dict.map (\_ sig -> distillSig sig) (buildLambdaSigs table byMember)
+    in
+    { bySpec = bySpec
+    , byLambda = byLambda
+    }
+
+
+{-| A param index is "wholly borrowed" when its `SigTy` carries at least one
+heap position, EVERY position's mode is `Borrowed`, and the index appears in
+no `resultLts` coupling — the callee neither retains nor returns-any-alias-of
+the argument. Scalar params (empty `modes`) are excluded: membership in
+`borrowedParams` must mean "heap-carrying and proven borrowed", never
+"vacuously true".
+-}
+distillSig : BorrowSig -> Facts.CalleeParamFacts
+distillSig sig =
+    let
+        coupled =
+            List.foldl (\( _, s ) acc -> Set.union s acc) Set.empty sig.resultLts
+
+        whollyBorrowed sigTy =
+            not (Array.isEmpty sigTy.modes)
+                && Array.foldl (\m ok -> ok && m == Borrowed) True sigTy.modes
+
+        step sigTy ( i, acc ) =
+            ( i + 1
+            , if whollyBorrowed sigTy && not (Set.member i coupled) then
+                Set.insert i acc
+
+              else
+                acc
+            )
+    in
+    { borrowedParams =
+        Tuple.second (List.foldl step ( 0, Set.empty ) sig.params)
+    }
 
 
 {-| Index `registry.reverseMapping` (SpecId → (Global, MonoType)) into

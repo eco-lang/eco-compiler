@@ -1,7 +1,7 @@
 module Compiler.Generate.MLIR.Context exposing
     ( SplitParamInfo, SplitSpec(..), SretInfo, withSretPromoted, PsplitInfo, SlotPlan, withPsplitPromoted
     , Context, FuncSignature, PendingLambda, TypeRegistry, VarInfo
-    , initContext, withInlineBodies, withEcoConfig, withCtorBySpec
+    , initContext, withInlineBodies, withEcoConfig, withCtorBySpec, withOracleFacts
     , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp, liveEcoValueVars, resetDefinedSsaVars
     , getOrCreateTypeIdForMonoType, registerKernelCall
     , buildSignatures, kernelFuncSignatureFromType, residualResultType
@@ -23,7 +23,7 @@ state during MLIR code generation.
 
 # Context Management
 
-@docs initContext, withInlineBodies, withEcoConfig, withCtorBySpec
+@docs initContext, withInlineBodies, withEcoConfig, withCtorBySpec, withOracleFacts
 
 
 # Variable Management
@@ -62,6 +62,7 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
 import Compiler.Eco.Config as Config
 import Compiler.Generate.MLIR.KernelAbi as KernelAbi
+import Compiler.GlobalOpt.Borrow.Facts as BorrowFacts
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.Generate.Mode as Mode
 import Dict
@@ -238,6 +239,13 @@ type alias Context =
     -- bytes-fusion entry (`bytesFusion.enabled`) and tunes logical-type
     -- codegen (`logicalTypes.customMaxFields`). Installed via
     -- `withEcoConfig` at codegen entry; defaults reproduce prior behaviour.
+    , oracleFacts : BorrowFacts.OracleFacts
+
+    -- ^ OC0.3 (plans/borrow-oracle-consumers.md): distilled borrow-oracle
+    -- facts (SpecId/LSS-member-keyed borrowed-param sets), derived from the
+    -- FINAL post-CafHoist graph via `Borrow.deriveFacts` and installed at
+    -- codegen entry ONLY under `borrow.oracleOpt`. Empty otherwise;
+    -- consumers must treat empty as "no facts", never as a proof.
     }
 
 
@@ -305,6 +313,7 @@ initContext mode registry signatures initialCtorShapes =
     , psplitPromoted = Dict.empty
     , sretTailLayout = Nothing
     , ecoConfig = Config.default
+    , oracleFacts = BorrowFacts.emptyFacts
     }
 
 
@@ -332,6 +341,16 @@ Defaults to `Config.default` when not called.
 withEcoConfig : Config.EcoConfig -> Context -> Context
 withEcoConfig cfg ctx =
     { ctx | ecoConfig = cfg }
+
+
+{-| OC0.3 (plans/borrow-oracle-consumers.md): install the distilled
+borrow-oracle facts at codegen entry. Call with `Borrow.deriveFacts` output
+under `borrow.oracleOpt`, `BorrowFacts.emptyFacts` otherwise; defaults to
+empty when not called.
+-}
+withOracleFacts : BorrowFacts.OracleFacts -> Context -> Context
+withOracleFacts facts ctx =
+    { ctx | oracleFacts = facts }
 
 
 {-| Empty type registry for initialization.
