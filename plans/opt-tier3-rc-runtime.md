@@ -2,6 +2,61 @@
 
 **Status: GATED / DEFERRED — do not start. Reactivation trigger below.**
 
+> **Evidence update (2026-08-07, OC3.0a — `borrow-oracle-consumers.md`
+> as-built + Run K in `benchmarks/tier2-opt.md`):** the first DYNAMIC
+> sizing of this tier's payoff pool. JsArray copy-on-write churn on solver
+> self-compile = **34.72 GB = 13.8% of all allocated bytes** (set-clone
+> 143.66M calls/23.06 GB, push 95.56M/11.65 GB), ≈68% of array bytes. The
+> static uniqueness license (OC3.0b) got **0/198 sites** — every mutation
+> site lives inside elm/core's `Array` module with the array arriving as a
+> param, so the unique-vs-shared question is interprocedural and exactly
+> what the RC-1 `count==1` check answers dynamically. This is the
+> strongest quantified case yet for item 3 (arrays into `rcManaged`).
+>
+> **Evidence update 2 (2026-08-07, the Dict/Set codegen census — Run L in
+> `benchmarks/tier2-opt.md`):** the tree half, measured via a
+> lowering-time census (`ECO_DICTSET_CENSUS=1` at the build's lowering
+> step stamps a gcLeaf bump per `eco.construct.custom` in
+> Dict/Set/Data.Map/Data.Set functions; MLIR byte-identical, instrumented
+> binary output-identical, +3.5% wall). Solver self-compile:
+> **`dict` = 1,518,633,682 spine nodes / 76.68 GB; `set` = 136.79M /
+> 3.28 GB (the 1-field `Set_elm_builtin` wrappers — its tree nodes
+> attribute to `dict`); Data.Map/Data.Set dynamically negligible (they
+> delegate into Dict). Total = 1.657 B nodes / 79.99 GB = 31.9% of ALL
+> allocated bytes and 25.4% of all objects — 66% of the entire Custom
+> class (38.6%) is RB spine.** Avg node 50.5 B ≈ the 5-field RBNode
+> (sanity ✓). This is spine CONSTRUCTION in Dict/Set code — the upper
+> bound on reuse-eligible churn; the unique fraction is again the dynamic
+> RC-1 question (fresh-build vs update-of-shared needs `count==1`).
+> **Combined RC-1/reuse pool: arrays 13.8% + trees ≤31.9% ⇒ up to ~45% of
+> allocation bytes** — the Perceus rbtree showcase class, live in this
+> workload at scale. Design consequence discussed 2026-08-07 (recorded in
+> `borrow-oracle-consumers.md` OC3 as-built): the favored shape is RC as
+> a scoped OVERLAY on `rcManaged` classes (uniqueness oracle only, tracer
+> stays reclaim authority — saturation benign, letrec closure cycles
+> irrelevant), nursery-residency-gated first (sticky-saturate on
+> promotion), remembered-set escalation gated on
+> `unique_hit`/`promoted_fallback` telemetry; a one-bit sticky "shared"
+> flag (store-site sets, no drops) should be sized against full counts
+> before committing to the dup/drop op set.
+>
+> **Evidence update 3 (2026-08-07, the reuse-pair static census — Run M in
+> `benchmarks/tier2-opt.md`):** the static half of the reuse question,
+> closing the ladder. Per-def, per-SIZE-class pairing of oracle-proven
+> would-drops with same-size local allocations: **total pair ceiling
+> ≈10.4K sites**, dominated by `cons` (5,962) and 1–2-field wrapper
+> customs; **`cus5` — the RBNode class carrying 1.52B dynamic nodes — has
+> 28 static pairs vs 4,276 alloc sites.** The old spine arrives via the
+> tree param, so its death is caller-side/dynamic — the same
+> interprocedural wall as the arrays license (0/198). Consequence:
+> **STATIC Perceus reuse tokens (phase-6 item 7) have no population where
+> the dynamic mass lives — the correct v2 sequencing is dynamic RC-1
+> (`count==1` at the mutation/rebuild kernels) FIRST; reuse tokens remain
+> post-v2 at best.** The census triangle is now complete and unanimous:
+> dynamic churn huge (Runs K/L: arrays 13.8% + spine 31.9% of bytes),
+> static uniqueness license zero, static reuse pairs zero-where-it-counts
+> ⇒ the ~45% pool is reachable only through the dynamic overlay.
+
 **Series:** `plans/opt-tier{1..4}-*.md` — see `opt-tier1-aggregate-promotion.md`
 for the series header. Supersedes the `borrow-inference-phase{0..6}` series
 for sequencing; **`borrow-inference-phase5-rc-optimizations.md` remains THE
