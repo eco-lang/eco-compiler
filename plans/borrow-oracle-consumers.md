@@ -341,7 +341,125 @@ slow to iterate.
 > is then empirically dead on this workload, and only a user-workload rerun
 > revives it.
 
-### OC1.1 — Mechanism (two pre-specced variants; build only the gated winner)
+### OC1.0 as-built (2026-08-07) — **D-OC1 FAILED: 0.03% vs ≥3% ⇒ OC1.1 NO-GO**
+
+**Built:** `Expr.oc1CensusNode` (candidate discovery mirroring the
+`generateLet` hooks + `oc1Walk`, the collector mirror of `walkPromo` with
+the same alias/scope/nested-frame discipline; the real `walkPromo` verdict
+stays the drift-free ground truth) and `Backend.oc1CensusReport` (block
+classification against `Facts.borrowedParamsOf` + callee nodes +
+`KernelSigs`, bucket priority owned > closurecall > kernel > tail >
+captured > opaque > splittable, §18.3-weighted rendering). Report-only
+behind `borrow.oracleOptReport` / `ECO_BORROW_OPT_REPORT=1` (6th
+BorrowConfig field, NOT hashed), invoked from both MLIR write paths in
+`Builder/Generate.elm`. Census approximations (documented): `fwdRefd` /
+`splitAggParams` empty at census altitude; TailRec synthetic `MonoUnit`
+let bodies skipped; non-global callees NOT resolved through CallInfo/LSS
+stamps (classified `closurecall`).
+
+**Gates:** elm-tests 13,066 + known-12 POST_010; census-leg out.mlir
+`cmp`-identical to off (report-inertness PASS); `inconsistent = 0/0/0` on
+both graphs (the walker-mirror drift detector). Census cost +23.8s
+(+11.2%) over the subst baseline. Full legs in `benchmarks/tier2-opt.md`
+Run K.
+
+**The census (Stage-7a self-compile, 2026-08-07):**
+
+```
+subst : candidates tup2=440 tup3=10 custom=1125
+        intra 86/1/78  hard 171/4/337  inconsistent 0/0/0
+        splittable 0/0/1  captured 0/0/0  kernel 0/0/1  opaque 3/0/166
+        owned 28/5/406  tail 0/0/4  closurecall 152/0/132
+        weighted%: splittable=0.03 captured=0 kernel=0.03 opaque=5.83
+                   owned=15.3 tail=0.14 closurecall=11.16
+solver: candidates tup2=440 tup3=10 custom=1266
+        intra 85/1/84  hard 172/4/372  inconsistent 0/0/0
+        splittable 0/0/1  captured 0/0/0  kernel 0/0/1  opaque 3/0/167
+        owned 28/5/552  tail 0/0/4  closurecall 152/0/85
+        weighted%: splittable=0.03 captured=0 kernel=0.03 opaque=5.22
+                   owned=18.2 tail=0.12 closurecall=9.22
+```
+
+**Verdict (per the pre-registered rule): NO-GO.** The borrowed-splittable
+pool is ONE candidate and borrowed-captured is EMPTY — D-OC1 = 0.03%
+weighted on both graphs, two orders of magnitude under the gate. OC1.1 and
+OC1.2 are NOT built. The tier pattern's seventh instance, caught for the
+cost of a census. Reading the buckets honestly:
+
+- `owned` dominates (15.3–18.2% weighted): the callees genuinely retain
+  their arguments — the §15.2 genuine-owners lesson recurring at the
+  aggregate-argument boundary. The oracle is not leaving borrows on the
+  table here; the sites are correctly blocked.
+- `closurecall` (9.2–11.2% weighted, incl. 152 of 440 tup2 candidates) is
+  the ONLY possibly-recoverable mass: blocks whose callee is statically
+  unknown to the census (non-`MonoVarGlobal` callee). **OC1.0b — since
+  RUN (2026-08-07, as-built below): resolution found NOTHING (100%
+  `unres-dyn`); the bucket is definitively dead.**
+- `opaque` (~5–6%): borrowed-at-position but the callee's own param use is
+  not projection-only — the materialization-trap class, correctly parked.
+
+**Consequence for the series:** OC1's verdict is recorded, which
+discharges OC2's ordering constraint (OC2.0 may run on its own evidence
+whenever scheduled); OC3 was always independent. `opt-tier4-parked.md`
+row 5 updated with this outcome.
+
+### OC1.0b as-built (2026-08-07) — **lam-splittable = 0%: the closurecall bucket is definitively dead**
+
+**Built:** `Oc1ClosureCall` now carries the resolution material
+(`headAnno` singleton member of the callee type — the shipped B3.5
+set-resolution route, raw arg index; `CallInfo.fastEvaluator` stamp as
+fallback with `fastPapPrefix`-shifted indices), computed in the collector
+(`Expr.oc1Walk`); `Backend.oc1BlockKind` resolves against a
+LambdaId→member index inverted from `LssFacts.buildInstances` and
+classifies through `Facts.borrowedParamsOfLambda` + the representative
+instance's params/body via `paramSplitAdmissible`. New buckets:
+`lam-splittable` / `lam-opaque` / `lam-owned`, with the unresolved residue
+SPLIT BY CAUSE — `unres-dyn` (no anno, no stamp) / `unres-blocked` /
+`unres-noinst` — so a zero result is self-certifying, not silent. D-line:
+`D-OC1.0b lam-splittable` (gate ≥3%, consumer = OC2).
+
+**Gates:** elm-tests 13,066 + known-12; solver census leg out.mlir
+`cmp`-identical to solver off; `inconsistent=0/0/0`; solver census cost
++34.1s (+10.1%). Run L in `benchmarks/tier2-opt.md`.
+
+**The verdict: 0%, certified.** On the solver graph every single former
+`closurecall` block classified `unres-dyn` (152/0/86;
+`unres-blocked = 0`, `unres-noinst = 0`): at no blocking site does the
+callee carry a singleton lambda-set annotation or a `fastEvaluator`
+stamp. The mechanism worked and found nothing to resolve — by emission
+time AbiCloning has already devirtualized every singleton-set call to
+direct dispatch, so the closure-call residue blocking promotion
+candidates is TRUE dynamic dispatch, exactly T1.3.4's ordering-decision
+reason 1, now measured on this population. Subst control behaved as
+predicted (all-LTop ⇒ `unres-dyn` 152/0/133, lam-* zero).
+
+**Multi-set extension (2026-08-07, same day):** resolution widened from
+singletons to FULL member lists (`Oc1ClosureCall` carries the whole
+`LSet ms`); multi-member sets classify via the BORROW_006-style meet
+(`oc1SetKind`: any-owned wins, any-opaque next, `lamset-splittable` only
+on UNANIMITY — a set-wide uniform split ABI needs every member
+conforming; `unres-set` diagnoses member-unresolvable sets). Result:
+**`lamset-*` = 0 and `unres-set` = 0 — no multi-member set exists at any
+blocking site; the entire residue is `LTop`.** Consistent with the
+pipeline's shape: all-keyed specialization dissolves per-path
+multiplicity into singleton-keyed specializations (already devirtualized
+by AbiCloning), so only INTRINSIC multi-sets could appear here — and
+none do at these positions (or were `maxSetSize`-widened to LTop).
+`D-OC1.0b-set lamset-splittable = 0%`.
+
+**Consequence:** the last open OC1 bucket closes — the OC1 kill is now
+complete on every bucket and certified on all three resolution routes
+(singleton anno, fastEvaluator stamp, multi-set meet): `owned` =
+correctly blocked, `unres-dyn` = pure-LTop dynamic dispatch, `opaque` =
+mechanics, splittable pool = 1. The only remaining revive condition for
+tier-4 row 5 is a USER workload whose OC1.0 census clears the gate. For
+OC2, the negative is informative twice over: the closure-mediated
+call-argument population contains zero devirtualizable residue AND zero
+closed multi-sets, so OC2's case rests entirely on its own
+`oc2:direct-only` candidate census, and the "set-wide uniform ABI"
+consumer sketch has no population here.
+
+### OC1.1 — Mechanism (two pre-specced variants; build only the gated winner) — **NOT BUILT (D-OC1 NO-GO above)**
 
 Both variants share: flag = `borrow.oracleOpt` (hash `bopt=1`, OC0.1);
 admission tables built in `Backend.elm` where `oracleFacts` already arrives
