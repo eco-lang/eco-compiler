@@ -297,7 +297,17 @@ private:
     std::unordered_map<std::thread::id, std::unique_ptr<ThreadLocalHeap>> thread_heaps_;
 
     // Thread-local cache for fast access to current thread's heap (avoids map lookup).
-    static thread_local ThreadLocalHeap* tl_heap_;
+    // constinit: guarantees static initialization, so cross-TU accesses skip
+    // the C++ TLS dynamic-init guard (_ZTH wrapper + conditional call).
+    // tls_model("initial-exec"): forces the call-free %fs-relative access
+    // even under -fPIC (EcoRuntimeStatic compiles PIC without PIE, where
+    // the default general-dynamic model emits a __tls_get_addr call).
+    // Together these keep eco_bump_state's body call-free (Run L,
+    // benchmarks/tier2-opt.md). initial-exec is fine for executables and
+    // startup-loaded libs; the dlopen'd Node addon consumes one 8-byte
+    // slot of glibc's static-TLS surplus.
+    static constinit thread_local ThreadLocalHeap* tl_heap_
+        __attribute__((tls_model("initial-exec")));
 
     // ========== Internal Methods ==========
 

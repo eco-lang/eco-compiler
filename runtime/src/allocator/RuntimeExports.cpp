@@ -181,7 +181,15 @@ extern "C" void* eco_alloc_with_roots(uint32_t tag, uint64_t size,
 // the contents change (block advance / minor GC), and the expansion re-loads
 // them per allocation.
 extern "C" void* eco_bump_state(void) {
-    return Allocator::instance().bumpState();
+    // Call-free fast path (benchmarks/tier2-opt.md Run L): inline TLS read
+    // instead of the out-of-line Allocator::bumpState() call — 6
+    // instructions, no call, no TLS-init guard (see tl_heap_'s constinit +
+    // tls_model in Allocator.hpp). Only compiled Elm code calls this, and
+    // the runtime is initialized before any compiled code runs (the
+    // backend already declares it speculatable on exactly that basis), so
+    // Allocator::bumpState()'s tl_heap_ assert is deliberately not
+    // replicated here.
+    return Allocator::instance().getCurrentThreadHeap()->getNursery().bumpState();
 }
 
 // Slow path for the codegen inline nursery bump: the inline compare missed

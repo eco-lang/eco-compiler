@@ -104,6 +104,55 @@ byte diff means the workload moved and walls are not comparable.
 
 ## Runs
 
+### 2026-08-08 11:40 UTC — Run L: no_caller_saved_registers + call-free eco_bump_state (**FLAT; NCSR machinery reverted, call-free body + constinit TLS KEPT**)
+
+Run K's return-safe successor (`plans/preserve-cc-runtime-helpers.md`
+§residual (a)+(c)): `eco_bump_state` body made CALL-FREE (inline TLS read;
+6 instructions; required BOTH `constinit` — kills the cross-TU C++
+TLS-init guard — AND `tls_model("initial-exec")` — kills the
+`__tls_get_addr` call the -fPIC EcoRuntimeStatic compile emits; NCSR's
+save-set is decided at compile time even though the linker relaxes the
+call away). Arms: ncsr0 = call-free body, ccc callers; ncsr1 = + LLVM-side
+`no_caller_saved_registers` on 74,659 generated call sites. Return-value
+mechanics microtest-verified (rax excluded from saves — the thing Run K's
+CCs get wrong); text −438,920 B (−0.78%); 22 min of legs, zero faults;
+out.mlir byte-identical ncsr0≡ncsr1. **Interleaved pairs SPLIT: r1 −1.40 s
+(−0.63%), r2 +0.59 s (+0.27%) ⇒ FLAT** (majors 10≡10, GC stats
+identical). Int-heavy workload ⇒ xmm-relief structurally untestable.
+Verdict: mechanism proven, no wall win ⇒ NCSR flag+fixup REVERTED;
+call-free body + constinit/tls_model kept (strict improvements). Raw
+~−4 s vs Run K cc0 is cross-day — NOT claimable (day-drift lesson).
+
+| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|---|
+| ncsr0 m1 | **3:41.71** (warm 3:44.15) | 5,123,640 kB | 380,045,113 | 18,549.76 MB | 871 | 372,544,401 (98.0%) | 10 | 84.76 s | 12,955,155 B |
+| ncsr1 m1 | **3:40.31** (warm 3:41.28) | 5,122,776 kB | 380,045,113 | 18,549.76 MB | 871 | 372,544,401 (98.0%) | 10 | 82.99 s | 12,955,155 B (≡ ncsr0) |
+| ncsr0 m2 | 3:39.74 | 5,123,796 kB | 380,045,113 | 18,549.76 MB | 871 | 372,544,401 | 10 | 83.58 s | 12,955,155 B |
+| ncsr1 m2 | 3:40.33 | 5,122,916 kB | 380,045,113 | 18,549.76 MB | 871 | 372,544,401 | 10 | 83.15 s | 12,955,155 B |
+
+### 2026-08-08 00:05 UTC — Run K: preserve_most/preserve_all on GC runtime helpers (**FATAL: x86-64 preserve CCs clobber return values ⇒ both arms SIGSEGV; REVERTED**)
+
+`plans/preserve-cc-runtime-helpers.md`, three arms from one methodology:
+cc0 = untouched HEAD; cc1 = Step 1 (`ECO_PRESERVE_CC=1`: preserve_all
+`eco_bump_state` + preserve_most on 5 gc-leaf helpers; 6 funcs / 223,286
+call sites retagged, text −2.16 MB); cc2 = Step 2 (+ preserve_all
+`eco_alloc_inline_slow`/`eco_list_tail_hybrid`; 8 funcs / 302,363 sites).
+**cc1 AND cc2 SIGSEGV at 0.09 s** (first CAF, `Pretty_tightline`'s bump
+diamond reads `(%rax)` = 0): LLVM's x86-64 CSR sets for preserve_most/all
+include RAX — callee epilogue `pop %rax` DESTROYS the return value (asm-
+verified), so the conventions cannot carry returns on x86-64 (AArch64
+excludes X0–X8). Every primary target returns a value ⇒ plan unimplementable
+as designed; fully REVERTED. Bonus autopsy: helpers with non-inlined inner
+calls save 8 GPR + 16 xmm (bump_state) / 14 GPRs (scratch_push_boxed) per
+call — the "tiny callee ⇒ free" premise fails as compiled anyway. out.mlir
+12,955,155 B ≠ Run J (workload moved since); cc0 walls not J-comparable.
+
+| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|---|
+| cc0 baseline | **3:45.03** (warmup 3:44.14) | 5,155,212 kB | 380,045,107 | 18,549.76 MB | 871 | 372,544,400 (98.0%) | 10 | 83.61 s | 12,955,155 B |
+| cc1 Step 1 | **SIGSEGV @ 0.09 s** | — | — | — | — | — | — | — | — |
+| cc2 Step 2 | **SIGSEGV @ 0.09 s** | — | — | — | — | — | — | — | — |
+
 ### 2026-08-06 00:15 UTC — Run J: promotion-time list chunking (**P1 mean run = 1.69 ⇒ NO-GO; +5.7% wall when ON; REVERTED**)
 
 `plans/promotion-time-list-chunking.md` implemented (HEAP_041), measured;
@@ -308,3 +357,5 @@ matching the L1 hybrid-spines prediction) and the workload moved
 | H — LH1 retention census (subst) | 3:46.03 | 376,384,275 obj / 18,298.94 MB |
 | I — W1 Custom arity census (subst) | 3:48.29 | 376,384,275 obj / 18,298.94 MB |
 | J — promo-time chunking, mode 2 (reverted) | 3:54.64 | 378,528,424 obj / 18,364.39 MB |
+| K — preserve-cc GC helpers (SIGSEGV ×2, reverted) | crash @ 0.09 s (base 3:45.03) | n/a (base 380,045,107 obj / 18,549.76 MB) |
+| L — NCSR + call-free bump_state (flat; NCSR reverted, body kept) | 3:40.31 (ncsr0 3:41.71) | 380,045,113 obj / 18,549.76 MB |

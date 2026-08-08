@@ -141,7 +141,7 @@ void Allocator::dumpHeapState([[maybe_unused]] const char* label,
 }
 
 // Thread-local heap pointer for fast access.
-thread_local ThreadLocalHeap* Allocator::tl_heap_ = nullptr;
+constinit thread_local ThreadLocalHeap* Allocator::tl_heap_ = nullptr;
 
 Allocator::Allocator() :
     heap_base(nullptr), heap_reserved(0),
