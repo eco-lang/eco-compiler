@@ -757,11 +757,16 @@ true-leaf set. Record the regression before reaching for this.
 VERDICT: KEEP — −1.74 % wall with both flags, on identical allocation,
 identical minor AND major GC counts, and byte-identical emitted output
 (§5 C2). C0 5.27 % / 11,149 sites; C1 1.72 % self share.
-BLOCKING BEFORE DEFAULT-ON: §6.2 heap-validate leg and §6.3 flag-on
-bootstrap fixed point (both still unrun — C2 was taken ahead of them),
-plus §10.4's one fixture rework.** Per the user decision recorded in §5,
-the census gates were sizing information only; the track proceeded
-regardless of them.
+ALL CORRECTNESS GATES GREEN and the flag-on suite is now 1620/1620 with
+ZERO failures (2026-08-08): §6.1 E2E, §6.2 heap-validate (a flags-off
+control run proves the one GC failure there is pre-existing), §6.3
+flag-on bootstrap to a byte-identical Stage-8c fixed point, §6.4
+asm/stackmap spot-checks, §6.5 in-code structural assert (never fired).
+§10.4's fixture is reworked and §10.1's invariant rows CGEN_072/CGEN_073
+are appended. REMAINING BEFORE A DEFAULT-ON FLIP: §10.2 doc amendments,
+and the flip itself is a user decision (house pattern).** Per the user
+decision recorded in §5, the census gates were sizing information only;
+the track proceeded regardless of them.
 
 Step-1 verification as run: compiles clean under production flags
 (`-Wall -Wextra`, zero warnings); census-mode lowering of the self-host
@@ -852,12 +857,14 @@ hard-codes the pre-optimization expectation, NOT a bug:
   argument, not the property under test (which is the sret ABI:
   slot-pointer-first, void return, no FCA crossing the boundary).
 
-**Deliberately NOT patched here.** The flags are default-off, so the
-default build is unaffected, and silently rewriting a test's expectation
-to match a new optimization is how real regressions get hidden. The
-fixture needs a considered update — either a flag-aware landmark or a
-companion fixture asserting statepoint ABSENCE under the flag — and that
-belongs with the ship decision. Queued in §10.4. Note the RUN line
+**RESOLVED 2026-08-08 (§10.4): the flag-on suite is now 1620/1620.** The
+fix keeps every CHECK unchanged and makes the worker allocate, so its
+call stays statepointed in both modes — see §10.4. What follows is the
+original reasoning for not patching it reflexively, kept because the
+principle stands: silently rewriting a test's expectation to match a new
+optimization is how real regressions get hidden, so the divergence was
+first root-caused and recorded, and only then fixed in the direction
+that strengthens rather than weakens the probe. Note the RUN line
 cannot pin env per-fixture: `runSubprocessTest`
 (test/codegen/CodegenIsolatedTest.hpp:234) builds the command itself
 (`ecoc <path> -emit=<mode>`) and the subprocess inherits the ambient
@@ -1124,6 +1131,38 @@ tee output per CLAUDE.md)
    this work; (b) the census will be smaller in this tree (§1.2
    validation-call poison) — expected, not a bug; (c) check how much of
    the suite actually executed (line tally, not just exit code).
+
+   **MEASURED (2026-08-08) — PASSES. Instrument choice deviates from the
+   fold-proof precedent, deliberately:** configured
+   `cmake --preset build -B /work/build-val -DECO_HEAP_VALIDATE=ON` with
+   `ECO_LOWERING_VALIDATION=OFF`. Turning lowering-validation ON would
+   inject non-gc-leaf `eco_validate_nursery_hptr_bits` calls that poison
+   functions and SHRINK the stamped set (§1.2) — it would test less of
+   the very thing under test. Heap validation alone keeps the stamped
+   population at full size while arming the corruption detectors. Ran to
+   completion; no timeout needed. The A/B is what makes it conclusive:
+
+   | run | result | failures |
+   |---|---|---|
+   | flags ON, `--filter elm` (863 E2E tests = compiled code under GC) | **863/863 PASSED** | none; 1,722 `[gcfree]` lines prove non-vacuity |
+   | flags ON, full suite | 1618/1620 | `GCPressureTest.cpp:393` + the §10.4 sret fixture |
+   | **flags OFF, full suite (control)** | 1619/1620 | **`GCPressureTest.cpp:393` — identical** |
+
+   The ONLY delta the flags introduce across the whole 1620-test
+   validate suite is the one expected fixture divergence. **Zero
+   heap-corruption findings, zero `Falsifiable` lines.**
+   `GCPressureTest:393` is confirmed pre-existing by the flags-off
+   control — not merely by the memory note — and structurally cannot be
+   ours: it drives `alloc.minorGC()` and `Record*` directly in C++ and
+   never invokes the backend. It also passes when run alone under
+   `--filter`, so it is full-suite-state dependent (same shape as the
+   OldGen flake). It remains the OPEN
+   old→young-store-vs-no-write-barrier question, untouched by this work.
+
+   Reproduction gotcha: `--target test` does NOT build `ecoc`, which 10
+   E2E tests shell out to; without it they fail `exit 127` ("ecoc: not
+   found") and masquerade as real failures. Build `--target ecoc` in the
+   validate tree too.
 3. **Clean-env bootstrap to fixed point, flag-on** (self-compile is the
    gate — LSS lesson):
    `export NODE_OPTIONS="--max-old-space-size=12000"; ECO_GCFREE_LEAF=1 ECO_FP_LEAF=1 cmake --build build --target bootstrap`
@@ -1138,6 +1177,31 @@ tee output per CLAUDE.md)
    **Non-vacuity check:** the `[gcfree] … (mode=stamp)` census line must
    appear in the stage build output — if it does not, the stages did not
    re-lower and the gate is void.
+
+   **MEASURED (2026-08-08) — PASSES.** Run after an explicit
+   `--target clean`, so no stage could be reused stale. Zero
+   `FAILED:`/`ninja: build stopped` lines; the whole chain ran through
+   Stage 9b.
+
+   - **Stage 8c native fixed point: `eco-compiler-boot` ==
+     `eco-compiler-boot-2`, byte-identical** (both 70,572,696 B,
+     md5 `25c405783c9a036f4e994061ea946b05`). A flag-on compiler
+     compiling itself reproduces itself exactly — the self-compile gate
+     the LSS track established as decisive.
+   - **Non-vacuity: 5 `(mode=stamp)` census lines**, one per native
+     lowering in the chain, so every stage really did lower under the
+     flag. Four report the familiar `2372/44967` + 11,149 sites; the
+     fifth, Stage 9a's unified `eco` module, reports
+     `3684/87367 functions GC-free, 12098 direct call sites` — a bigger
+     module (kernel + compiler + backend) at a slightly lower 4.2 %
+     rate, which is a useful second data point on a different
+     population.
+   - Stage 9b: `eco` (236 MB) vs `eco-2` (67 MB) are NOT byte-equal —
+     **by design, not a regression.** compiler/CMakeLists.txt:969–975
+     states it explicitly: only `eco` embeds the LLVM/MLIR back-end, so
+     programs it produces differ by construction, and "a successful
+     Stage 9b self-compile is the success criterion". Do not add a cmp
+     here.
 4. **Asm/stackmap spot-check** (toolchain has `llvm-readobj` +
    `llvm-objdump` in `/opt/llvm-mlir/bin`). **Lower both spot-check
    binaries single-partition** — a default build splits into ~24
@@ -1227,7 +1291,21 @@ invariant rows if shipped.
 
 ## 10. Ship checklist (only on a C2 keep)
 
-### 10.1 Invariant rows (design_docs/invariants.csv — semicolon-delimited,
+### 10.1 Invariant rows — DONE (appended 2026-08-08)
+
+**CGEN_072 (GcLeafPropagation) and CGEN_073 (SelectiveFramePointers) are
+now in design_docs/invariants.csv**, both `status=enforced` — matching
+the flag-gated precedent CGEN_070, which is likewise `enforced` and
+likewise documents its flag-off inertness as part of the invariant.
+The shipped rows are fuller than the drafts below: they also record the
+attr-vs-name-prefix trap (the `eco_alloc_*_fast` family IS gc-leaf), the
+§2.5 post-RS4GC inlining exception, and the fact that statepoint
+lowering does not set `MachineFrameInfo::hasStackMap` (which is what
+makes the FP stamp load-bearing rather than decorative).
+
+Draft text retained below for provenance:
+
+### 10.1b Drafted rows (design_docs/invariants.csv — semicolon-delimited,
 columns `id;phase;category;status;description;source`)
 
 Next free IDs at HEAD: CGEN_072, CGEN_073 (highest existing CGEN_071;
@@ -1240,7 +1318,31 @@ CGEN_072;MLIR_Codegen;GcLeafPropagation;enforced;GC-free function propagation (p
 CGEN_073;MLIR_Codegen;SelectiveFramePointers;enforced;Selective frame pointers (plans/gc-free-function-propagation.md): under ECO_FP_LEAF=1 frame-pointer=all is stamped post-RS4GC only on defined functions containing a gc.statepoint or a call to eco_gc_push_stack_range (whole-body scan - matches the shadow-root prologue AND the rooted arg/capture-array sites in EcoToLLVMClosures.cpp; the over-stamp is deliberate and conservative - do not tighten to an entry-block scan); statepoint-free functions omit FP - sound because the GC stack walk is libunwind/CFI-driven (never an rbp chain) and a statepoint-free function's frame cannot be on the stack during a GC walk (all its calls are gc-leaf); blanket frame-pointer=all remains the flag-off default.;EcoBackend.cpp|EcoToLLVMClosures.cpp|ThreadLocalHeap.cpp|StackUnwind.cpp|CGEN_072
 ```
 
-### 10.2 Doc amendments
+### 10.2 Doc amendments — DONE (2026-08-08)
+
+All four landed, plus §10.3's two pre-existing rot fixes:
+
+- `design_docs/theory/pass_eco_to_llvm_theory.md` (LLVM libunwind §):
+  blanket stamp is now stated as the default, with the `ECO_FP_LEAF`
+  selective stamp, its soundness argument, and the
+  `hasStackMap`-is-not-set fact that makes the attr load-bearing.
+- `THEORY.md` item 3 (Leaf annotations): records propagation to
+  GENERATED functions and the attr-not-name-prefix contract.
+- `THEORY.md` item 5: the stale "walks the x86-64 frame pointer chain"
+  claim replaced with the actual libunwind/CFI cursor walk (§10.3), plus
+  the multi-blob stackmap caveat that cost a spot-check earlier.
+- `Passes/EcoPtrIntVerify.cpp`: the "no inliner will ever see them
+  again" justification now carries the CGEN_072 caveat.
+- `EcoBackend.cpp` alwaysinline-strip: notes that E1.4 forbids inlining
+  a STATEPOINTED body and CGEN_072 carves out the complementary case.
+- `plans/lss-dispatch-value-extraction.md` E1.4: amended in place —
+  "read it as 'nothing STATEPOINTED may'", not "nothing may ever".
+- `CLAUDE.md`: the non-existent `ninja-clang-lld-linux` preset replaced
+  with the real `build`/`dev`/`release` set (§10.3).
+
+Both touched C++ files recompile clean.
+
+### 10.2b Original amendment list
 
 - `design_docs/theory/pass_eco_to_llvm_theory.md:621–623`: "All emitted
   functions carry `frame-pointer=all` …" → describe the selective stamp
@@ -1254,7 +1356,29 @@ CGEN_073;MLIR_Codegen;SelectiveFramePointers;enforced;Selective frame pointers (
   (plans/lss-dispatch-value-extraction.md:402–428) with a pointer to
   this plan's exception argument.
 
-### 10.4 Test-fixture updates required by a default-on flip
+### 10.4 Test-fixture updates required by a default-on flip — DONE
+
+**Resolved 2026-08-08.** The fix keeps every CHECK pattern byte-for-byte
+unchanged (nothing weakened) and instead makes `@sret_pair_worker`
+ALLOCATE — it now does an `eco.construct.tuple2` before `eco.return`. A
+call-free worker body is provably GC-free, so under the flag it was
+stamped and its call correctly lost the statepoint the probe asserts; an
+allocating worker is poisoned, stays statepointed in BOTH flag modes,
+and the probe therefore pins the sret ABI under a statepointed call —
+which is the scenario sret exists for in the first place
+(REP_AGG_001/CGEN_064: an FCA carrying `ptr addrspace(1)` cannot cross a
+statepoint). A comment in the fixture explains why the body must not be
+"simplified" back. Verified: all ten patterns match flag-off AND
+flag-on, and the fixture passes through the real harness in both modes.
+
+Residual coverage gap to close at the default-on flip: nothing yet
+exercises an sret call that is NOT statepoint-wrapped (a non-allocating
+sret worker under the flag). That variant can only pass flag-on, so it
+must wait for the flip; add it then as a companion fixture.
+
+Historical detail (kept — the reasoning is what future readers need):
+
+### 10.4b Original analysis
 
 `test/codegen/value_sret_result_llvm.mlir` asserts
 `CHECK: gc.statepoint{{.*}}@sret_pair_worker, i32 3, i32 0, ptr`. Its

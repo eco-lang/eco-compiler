@@ -17,8 +17,19 @@
 
 module {
   // Public so neither internalization nor DCE removes the definition.
+  //
+  // The worker CONSTRUCTS before returning, so it allocates. That is
+  // load-bearing, not incidental: a call-free worker body is provably GC-free,
+  // so under ECO_GCFREE_LEAF=1 (CGEN_072) it is stamped gc-leaf-function and
+  // RS4GC correctly stops statepointing the call in the caller below — which
+  // would silently void this probe's caller-side statepoint check. Keeping the
+  // worker allocating pins the sret ABI under a statepointed call, which is the
+  // scenario sret exists for (REP_AGG_001/CGEN_064: an FCA carrying
+  // ptr addrspace(1) cannot cross a statepoint). Do NOT simplify this body back
+  // to a bare `eco.return %p, %a`.
   func.func @sret_pair_worker(%a: i64, %p: !eco.value) -> (!eco.value, i64) {
-    eco.return %p, %a : !eco.value, i64
+    %t = eco.construct.tuple2 %a, %p : i64, !eco.value -> !eco.value
+    eco.return %t, %a : !eco.value, i64
   }
 
   func.func @sret_pair_caller(%n: i64, %v: !eco.value) -> !eco.value {

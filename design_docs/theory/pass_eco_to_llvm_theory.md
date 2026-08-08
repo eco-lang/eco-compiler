@@ -620,7 +620,9 @@ Stack-map-derived roots now live in their own `StackMapRoots` class owned by `Th
 
 ### LLVM libunwind *(Apr 19-21, 2026)*
 
-`libunwind` is built directly into the JIT, with per-FDE `.eh_frame` registration for every emitted function. All emitted functions carry `frame-pointer=all` so libunwind can walk the stack reliably for stack-map scanning and for native-backtrace diagnostics.
+`libunwind` is built directly into the JIT, with per-FDE `.eh_frame` registration for every emitted function. By default all emitted functions carry `frame-pointer=all` so libunwind can walk the stack reliably for stack-map scanning and for native-backtrace diagnostics.
+
+Under `ECO_FP_LEAF=1` (CGEN_073) that stamp becomes selective: only functions containing a `gc.statepoint` or an `eco_gc_push_stack_range` registration keep `frame-pointer=all`, and statepoint-free functions release `rbp` as an allocatable callee-saved register. This is sound because the walk is CFI-driven rather than an `rbp` chain (see the stack-root walker in `ThreadLocalHeap.cpp`, which resolves each stack-map location's DWARF register through a libunwind cursor), and because a statepoint-free frame can never be live during a collection — all of its calls are gc-leaf, so no GC can begin beneath it. The attribute is load-bearing either way: `gc.statepoint` lowering does *not* set `MachineFrameInfo::hasStackMap`, so absent the attr LLVM would omit the frame pointer even in statepointed functions.
 
 ## eco.value → ptr addrspace(1)
 

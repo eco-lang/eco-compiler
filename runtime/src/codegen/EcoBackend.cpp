@@ -1659,6 +1659,11 @@ static void runCapInlinePrepass(Module &m) {
     // (Dev's explicit AlwaysInlinerPass, Cgu's -O2 inliner) on `$cap` bodies
     // that are statepointed by then — the E1.4-forbidden post-RS4GC inlining
     // that breaks relocation semantics. The attrs exist only for this pass.
+    //
+    // E1.4 still forbids inlining a STATEPOINTED body post-RS4GC, which is the
+    // hazard here. CGEN_072 carves out the complementary case: a stamped
+    // GC-free body holds no statepoint, so inlining it post-RS4GC is safe and
+    // is deliberately left enabled under ECO_GCFREE_LEAF=1.
     for (Function &f : m) {
         if (f.isDeclaration() || !f.getName().ends_with("$cap"))
             continue;

@@ -35,12 +35,19 @@ When Clause Code first starts running:
 
 ### Initial Setup
 ```bash
-# Configure build (release)
-cmake --preset ninja-clang-lld-linux
+# Configure build (RelWithDebInfo — the standard bootstrap config; use this
+# unless you specifically need one of the others)
+cmake --preset build
 
-# Configure build (debug)
-cmake --preset ninja-clang-lld-linux-debug
+# Configure build (Debug: full assertions + stats + kernel tracing)
+cmake --preset dev
+
+# Configure build (Release: static musl, shippable binary)
+cmake --preset release
 ```
+
+Run `cmake --list-presets` for the full set (also `mac-build`,
+`mac-frontend`, `win-build`, `win-frontend`).
 
 ### Building
 ```bash

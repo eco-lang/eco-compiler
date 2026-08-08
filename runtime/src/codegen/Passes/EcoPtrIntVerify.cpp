@@ -616,10 +616,18 @@ void eco::addEcoGCPipeline(ModulePassManager &MPM) {
     MPM.addPass(FcaScanPass());
 
     MPM.addPass(RewriteStatepointsForGC());
-    // REP_LLVM_002: restore bare slot casts now that no inliner will ever see
-    // them again (everything downstream is post-RS4GC). Must precede
-    // EcoPtrIntVerify so the validation build checks the restored casts —
-    // exactly today's verified IR shape.
+    // REP_LLVM_002: restore bare slot casts now that everything downstream is
+    // post-RS4GC. Must precede EcoPtrIntVerify so the validation build checks
+    // the restored casts — exactly today's verified IR shape.
+    //
+    // CAVEAT (CGEN_072): "no inliner will ever see them again" held only while
+    // every call to a defined generated function was a gc.statepoint intrinsic,
+    // which no inliner touches. Under ECO_GCFREE_LEAF=1 calls to stamped
+    // GC-free functions stay PLAIN, so the post-RS4GC -O2 inliner can splice a
+    // stamped body — restored bare casts and all — into a statepointed caller.
+    // That is sound because a stamped body contains no statepoint, so the
+    // inlined region lies strictly between the caller's statepoints, whose
+    // relocations are already explicit SSA and cannot be bridged by a fold.
     MPM.addPass(StripEcoCastBarriersPass());
 #ifdef ECO_LOWERING_VALIDATION
     // Run ptr<1>↔i64 boundary verification after RS4GC + barrier strip.

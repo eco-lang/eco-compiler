@@ -407,6 +407,17 @@ pipeline at `:161–182`); if any tier inlines post-RS4GC, stop and re-plan (tha
 would break relocation semantics). One sentence in the commit message stating
 where each tier rewrites statepoints.
 
+**Amended 2026-08-08 (CGEN_072, plans/gc-free-function-propagation.md):** the
+rule as stated above is about inlining a STATEPOINTED body post-RS4GC, and that
+remains forbidden. GC-free function propagation carves out the complementary
+case deliberately: under `ECO_GCFREE_LEAF=1`, calls to stamped GC-free functions
+stay plain rather than becoming `gc.statepoint` intrinsics, so the post-RS4GC
+`-O2` inliner CAN splice a stamped body into a statepointed caller. That is
+sound because a stamped body contains no statepoint by construction, so the
+inlined region lies strictly between the caller's statepoints, whose relocations
+are already explicit SSA. Do not read E1.4 as "nothing may ever inline
+post-RS4GC" — read it as "nothing STATEPOINTED may".
+
 ### E1.5 Gate
 
 Codegen suite green; `--target full` green; interleaved wall A/B ×3 per side on
