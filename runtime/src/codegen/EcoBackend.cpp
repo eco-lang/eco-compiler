@@ -32,6 +32,9 @@
 #include "llvm/Analysis/LoopAnalysisManager.h"
 #include "llvm/Passes/OptimizationLevel.h"
 #include "llvm/Transforms/Utils/SplitModule.h"
+#include "llvm/Transforms/Utils/Local.h"        // callsGCLeafFunction (GCFREE)
+#include "llvm/Analysis/TargetLibraryInfo.h"    // TargetLibraryInfo (GCFREE)
+#include "llvm/IR/Statepoint.h"                 // GCStatepointInst (GCFREE)
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include <cstdlib>  // getenv/strtoul (E1.3 threshold override)
@@ -71,6 +74,33 @@ struct MaybeScope {
     }
     std::optional<eco::LoweringStats::Scope> scope;
 };
+
+// GC-free function propagation (plans/gc-free-function-propagation.md).
+//
+// ECO_GCFREE_LEAF: unset/"0" = off (default); "c" = census only (analysis
+// runs, nothing is stamped, the module is byte-identical to a flag-off
+// run); "1" (any other value) = stamp gc-leaf-function on provably GC-free
+// generated functions so RS4GC skips statepointing calls to them.
+//
+// Lowering-affecting in stamp mode: census/A-B workflows must rebuild via
+// the delete-outputs discipline (ninja is env-blind, tier2-opt.md Phase 1).
+//
+// Defined HERE (not next to propagateGcFreeLeafAttrs, ~:1419) because the
+// stamp-mode structural assert lives in runRS4GCAndMaybeFramePointers
+// (~:651), ~750 lines earlier than that function.
+enum class GcFreeMode { Off, Census, Stamp };
+
+GcFreeMode gcFreeLeafMode() {
+    static const GcFreeMode mode = [] {
+        const char *e = ::getenv("ECO_GCFREE_LEAF");
+        if (!e || !*e || (e[0] == '0' && e[1] == '\0'))
+            return GcFreeMode::Off;
+        if (e[0] == 'c' && e[1] == '\0')
+            return GcFreeMode::Census;
+        return GcFreeMode::Stamp;
+    }();
+    return mode;
+}
 
 void dumpIRTo(const Module &m, const std::string &path, const char *tag) {
     std::error_code ec;
@@ -643,12 +673,86 @@ void runRS4GCAndMaybeFramePointers(Module &m, const RS4GCOptions &opts) {
     if (!opts.postDumpPath.empty())
         dumpIRTo(m, opts.postDumpPath, "rs4gc");
 
-    // Force frame pointers so libunwind can walk JIT/AOT frames for GC root
-    // discovery.
+    // GCFREE self-check (plans/gc-free-function-propagation.md §2.6): a
+    // stamped function that RS4GC still statepointed means the fixpoint was
+    // unsound — a wrongly-stamped function that allocates leaves unrelocated
+    // stale pointers in its callers. RS4GC processes a function on hasGC()
+    // alone (a callee's own gc-leaf attr does NOT stop it), so this scan is
+    // a real check, not a vacuous one. Placed after the post-RS4GC dump so a
+    // failing build still leaves the IR on disk. Stamp mode only.
+    if (gcFreeLeafMode() == GcFreeMode::Stamp) {
+        for (Function &f : m) {
+            if (f.isDeclaration() || !f.hasFnAttribute("gc-leaf-function"))
+                continue;
+            for (BasicBlock &bb : f)
+                for (Instruction &i : bb)
+                    if (auto *cb = dyn_cast<CallBase>(&i))
+                        if (isa<GCStatepointInst>(cb))
+                            report_fatal_error(
+                                Twine("[gcfree] stamped function contains a "
+                                      "statepoint after RS4GC: ") +
+                                f.getName());
+        }
+    }
+
+    // Frame pointers for GC root discovery. Blanket mode (default):
+    // frame-pointer=all on every defined function. ECO_FP_LEAF: only on
+    // functions that can hold GC-relevant frame state — ones containing a
+    // statepoint (their stackmap records are read mid-walk) or a stack-range
+    // registration (shadow-root prologue AND the rooted arg/capture-array
+    // sites in EcoToLLVMClosures.cpp; the over-stamp is deliberate — do NOT
+    // tighten this to an entry-block-only scan). Statepoint-free functions
+    // can never be on the stack during a GC walk (all their calls are
+    // gc-leaf, so no GC can begin beneath them), and the walker is CFI-driven
+    // anyway (ThreadLocalHeap.cpp collectStackRootsFromStackMap +
+    // StackUnwind.cpp), so they may release rbp as an allocatable register.
+    // plans/gc-free-function-propagation.md §3.
     if (opts.addFramePointerAttr) {
+        static const bool fpLeaf = [] {
+            const char *e = ::getenv("ECO_FP_LEAF");
+            return e && *e && !(e[0] == '0' && e[1] == '\0');
+        }();
+        unsigned numStamped = 0, numLeaf = 0;
         for (Function &F : m) {
-            if (!F.isDeclaration())
+            if (F.isDeclaration())
+                continue;
+            bool needsFP = !fpLeaf;
+            if (!needsFP) {
+                for (BasicBlock &bb : F) {
+                    for (Instruction &i : bb) {
+                        auto *cb = dyn_cast<CallBase>(&i);
+                        if (!cb)
+                            continue;
+                        if (isa<GCStatepointInst>(cb)) {
+                            needsFP = true;
+                            break;
+                        }
+                        if (Function *cf = cb->getCalledFunction();
+                            cf && cf->getName() == "eco_gc_push_stack_range") {
+                            needsFP = true;
+                            break;
+                        }
+                    }
+                    if (needsFP)
+                        break;
+                }
+            }
+            if (needsFP) {
                 F.addFnAttr("frame-pointer", "all");
+                ++numStamped;
+            } else {
+                ++numLeaf;
+            }
+        }
+        if (fpLeaf) {
+            // Single write: worker flavours run this concurrently and
+            // llvm::errs() is unbuffered — chained << would interleave.
+            std::string line;
+            raw_string_ostream os(line);
+            os << "[gcfree-fp] frame-pointer=all on " << numStamped
+               << " statepointed, omitted on " << numLeaf
+               << " statepoint-free functions\n";
+            llvm::errs() << os.str();
         }
     }
 }
@@ -1370,6 +1474,119 @@ static bool bodyIsGCCallFree(const Function &f) {
     return true;
 }
 
+// GC-free function propagation (plans/gc-free-function-propagation.md):
+// stamp gc-leaf-function on generated functions that provably cannot GC.
+// Runs once per module at the pre-RS4GC choke point; every RS4GC flavour
+// then skips statepointing direct calls to stamped functions.
+//
+// Poison = any call RS4GC would statepoint whose callee is not a defined
+// function in this module; poison propagates callee->caller to a fixed
+// point (an optimistic worklist: a cycle of poison-free functions stays
+// GC-free, which is correct — mutual recursion without allocation cannot
+// GC). The leaf predicate is llvm::callsGCLeafFunction, i.e. literally the
+// one RS4GC consults per call site, so the analysis cannot disagree with
+// the pass about what a leaf call is.
+//
+// At this point in the pipeline allocation is visible ONLY as calls: the
+// inline-alloc diamond's slow edge (eco_alloc_inline_slow, deliberately
+// not gc-leaf), eco_gc_alloc_region_slow, the boxed eco_alloc_* family,
+// and kernel externs. There is no write barrier and no safepoint poll.
+static void propagateGcFreeLeafAttrs(Module &m, GcFreeMode mode) {
+    TargetLibraryInfoImpl TLII(m.getTargetTriple());
+    TargetLibraryInfo TLI(TLII);
+
+    // Reverse call edges among defined functions, plus the poison seeds.
+    DenseMap<const Function *, SmallPtrSet<Function *, 8>> callers;
+    SmallVector<Function *, 128> worklist;
+    DenseSet<const Function *> poisoned;
+
+    unsigned numDefined = 0;
+    for (Function &f : m) {
+        if (f.isDeclaration())
+            continue;
+        ++numDefined;
+        bool poison = f.isInterposable(); // analyzed body may not be linked
+        for (BasicBlock &bb : f) {
+            if (poison)
+                break;
+            for (Instruction &i : bb) {
+                if (isa<LandingPadInst>(i)) { // EH: defensive, should not occur
+                    poison = true;
+                    break;
+                }
+                auto *cb = dyn_cast<CallBase>(&i);
+                if (!cb)
+                    continue;
+                if (!isa<CallInst>(cb)) { // invoke/callbr: defensive
+                    poison = true;
+                    break;
+                }
+                if (llvm::callsGCLeafFunction(cb, TLI))
+                    continue; // RS4GC's own per-call-site predicate
+                Function *callee = cb->getCalledFunction();
+                if (callee && !callee->isDeclaration() &&
+                    !callee->isInterposable()) {
+                    callers[callee].insert(&f); // resolved by the fixpoint
+                    continue;
+                }
+                poison = true; // indirect call, or non-gc-leaf declaration
+                break;
+            }
+        }
+        if (poison) {
+            poisoned.insert(&f);
+            worklist.push_back(&f);
+        }
+    }
+
+    while (!worklist.empty()) {
+        Function *g = worklist.pop_back_val();
+        auto it = callers.find(g);
+        if (it == callers.end())
+            continue;
+        for (Function *caller : it->second)
+            if (poisoned.insert(caller).second)
+                worklist.push_back(caller);
+    }
+
+    // Census. numSites = direct call sites that will lose their statepoint;
+    // counted BEFORE stamping, while callsGCLeafFunction still says false
+    // for calls to the about-to-be-stamped callees.
+    unsigned numFree = 0, numSites = 0;
+    SmallVector<Function *, 64> freeFns;
+    for (Function &f : m) {
+        if (f.isDeclaration())
+            continue;
+        if (!poisoned.count(&f)) {
+            ++numFree;
+            freeFns.push_back(&f);
+        }
+        for (BasicBlock &bb : f)
+            for (Instruction &i : bb)
+                if (auto *cb = dyn_cast<CallBase>(&i))
+                    if (Function *callee = cb->getCalledFunction())
+                        if (!callee->isDeclaration() &&
+                            !poisoned.count(callee) &&
+                            !llvm::callsGCLeafFunction(cb, TLI))
+                            ++numSites;
+    }
+
+    if (const char *dump = ::getenv("ECO_GCFREE_LEAF_DUMP")) {
+        std::ofstream out(dump);
+        for (Function *f : freeFns)
+            out << f->getName().str() << "\n";
+    }
+
+    if (mode == GcFreeMode::Stamp)
+        for (Function *f : freeFns)
+            f->addFnAttr("gc-leaf-function");
+
+    llvm::errs() << "[gcfree] " << numFree << "/" << numDefined
+                 << " functions GC-free, " << numSites
+                 << " direct call sites de-statepointed (mode="
+                 << (mode == GcFreeMode::Stamp ? "stamp" : "census") << ")\n";
+}
+
 static void runCapInlinePrepass(Module &m) {
     unsigned maxInsts = 64;
     if (const char *e = ::getenv("ECO_CAP_INLINE_MAX_INSTS"))
@@ -1481,6 +1698,16 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
     if (job.optLevel != CodeGenOptLevel::None) {
         MaybeScope s(job.stats, "  $cap inline prepass (serial)");
         runCapInlinePrepass(m);
+    }
+
+    // GC-free function propagation (plans/gc-free-function-propagation.md):
+    // must run at THIS choke point — post-marker-expansion + post-$cap-
+    // prepass (allocation is visible as non-gc-leaf calls), pre-partition
+    // (attrs then ride CloneModule / lazy deleteBody to every RS4GC
+    // flavour: serial, deferred, workers, single-partition inline).
+    if (gcFreeLeafMode() != GcFreeMode::Off) {
+        MaybeScope s(job.stats, "  gc-free leaf propagation (serial)");
+        propagateGcFreeLeafAttrs(m, gcFreeLeafMode());
     }
 
     RS4GCOptions rs4gcOpts;
