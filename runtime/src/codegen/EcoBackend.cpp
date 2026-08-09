@@ -960,9 +960,11 @@ struct CapHoistDecisions {
 //   cont:  %obj = phi [ %top, fast ], [ %r, slow ]
 //
 // The single compare preserves ALL GC-trigger semantics: NurserySpace's
-// bump.end is pre-clamped to min(block end, proactive-GC threshold trip)
-// (computeAllocEndForBlock), so both block exhaustion and threshold trips
-// miss into the statepointed slow call (block advance, then minor GC).
+// bump.end is pre-clamped to min(from-space extent end, proactive-GC
+// threshold trip) (computeAllocEnd), so both space exhaustion and threshold
+// trips miss into the statepointed slow call, which collects (HEAP_042: the
+// from-space is one contiguous extent, so a miss never means "step to the
+// next block").
 //
 // Address-space discipline: the bump slots are loaded/stored as
 // `ptr addrspace(1)` directly (the HPointer word IS the raw address, plan

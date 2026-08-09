@@ -789,12 +789,14 @@ void* OldGenSpace::tryAllocateFromFreeLists(size_t cls, size_t requested_size) {
 }
 
 // Approximate committed-to-cap ratio. Numerator is this thread's old-gen
-// committed bytes; denominator is `config_->max_heap_size / 2` as a stand-in
-// for the global old-gen cap. If Allocator later exposes a cheap
-// `getOldGenCapBytes()` / `getOldGenCommittedBytes()`, swap to that.
+// committed bytes; denominator is the global old-gen cap
+// (Allocator::getOldGenMaxBytes, HEAP_043) — NOT a locally re-derived
+// `max_heap_size / 2`, which stopped being the cap once the split became
+// configurable and which diverged from the real cap after any reset().
 double OldGenSpace::committedToCapRatio() const {
     if (config_ == nullptr || config_->max_heap_size == 0) return 0.0;
-    const size_t cap = config_->max_heap_size / 2;
+    const size_t cap = allocator_ ? allocator_->getOldGenMaxBytes()
+                                  : config_->oldGenCapBytes();
     if (cap == 0) return 0.0;
     const double ratio =
         static_cast<double>(getCommittedBytes()) / static_cast<double>(cap);

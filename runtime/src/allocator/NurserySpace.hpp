@@ -20,14 +20,20 @@ class NurserySpaceTestAccess;
 /**
  * Nursery with semi-space copying collector using Cheney's algorithm.
  *
- * The nursery consists of memory blocks organized into two sets: low_blocks_
- * and high_blocks_. One set serves as from-space (allocation target) and the
- * other as to-space (evacuation target), swapping roles after each GC.
+ * Each semi-space is ONE CONTIGUOUS EXTENT (HEAP_042): the logical prefix of
+ * a fixed-size slice of the low or high nursery region, both slices at the
+ * same slot index and always the same length. One extent is from-space
+ * (allocation target), the other to-space (evacuation target); they swap
+ * roles after each GC.
  *
- * Objects are allocated via bump pointer within the current block. When a
- * block fills, we advance to the next block. When all from-space blocks are
- * full, minorGC evacuates live objects to to-space (or promotes to old gen),
- * then swaps the from-space and to-space designations.
+ * Because the extent is contiguous, allocation is a single bump against a
+ * limit that spans the WHOLE from-space: there is no block advance, no
+ * object that cannot straddle an internal boundary, and no abandoned tail
+ * gap. A bump miss therefore has exactly one meaning — the proactive-GC
+ * threshold tripped (or, under the already-full fail-soft, the space is
+ * exhausted) — and exactly one response: run a minor GC. Evacuation is the
+ * same single bump into to-space, so the Cheney scan is the textbook
+ * two-pointer loop.
  */
 class NurserySpace {
 public:
@@ -35,18 +41,18 @@ public:
     ~NurserySpace();
 
     // Current bump-allocation state. These ARE the allocator's working fields
-    // (not a mirror): every update site — init/reset, block advance,
-    // post-minor-GC — keeps the exported view coherent by construction.
+    // (not a mirror): every update site — init/reset, post-minor-GC — keeps
+    // the exported view coherent by construction.
     // The layout (ptr at +0, end at +8) is ABI for the compiled-code inline
     // allocation fast path (HEAP_034, plans/inline-nursery-allocation.md):
     // eco_bump_state() exports this struct's address and the expandInlineAllocs
     // backend pass emits `load ptr/end; bump; compare; store` against it.
-    // `end` is pre-clamped to min(block end, proactive-GC threshold trip) by
-    // computeAllocEndForBlock, so the single compare preserves all GC-trigger
-    // semantics.
+    // `end` is pre-clamped to min(from-space extent end, proactive-GC
+    // threshold trip) by computeAllocEnd, so the single compare preserves all
+    // GC-trigger semantics.
     struct NurseryBump {
-        char* ptr;   // Bump pointer within current from-space block.
-        char* end;   // End address of current from-space block (clamped).
+        char* ptr;   // Bump pointer within the from-space extent.
+        char* end;   // Clamped limit (see computeAllocEnd).
     };
     static_assert(offsetof(NurseryBump, ptr) == 0 && offsetof(NurseryBump, end) == 8,
                   "NurseryBump layout is ABI for the inline-alloc expansion");
@@ -76,39 +82,33 @@ public:
 
 private:
     const HeapConfig* config_;      // Heap configuration parameters.
-    Allocator* allocator_;          // Back-reference for requesting new blocks.
+    Allocator* allocator_;          // Back-reference for slice acquire/grow.
 
-    // Block management using two separate address regions for semi-space copying.
-    // Low blocks come from lower addresses, high blocks from higher addresses.
-    // This separation enables O(1) from-space vs to-space checks using address ranges.
-    std::vector<char*> low_blocks_;   // Blocks from lower nursery region (sorted).
-    std::vector<char*> high_blocks_;  // Blocks from upper nursery region (sorted).
-    size_t block_size_;               // Size of each block in bytes.
-    bool from_is_low_;                // True if from-space is currently low_blocks_.
+    // This heap's nursery address estate (HEAP_042). `slice_.capacity` is the
+    // logical extent length of EACH side — one value, so the two semi-spaces
+    // are equal in size by construction rather than by assertion.
+    NurserySlicePair slice_;
+    bool from_is_low_;              // True if from-space is the low extent.
 
-    // Cached bounds for O(1) membership checks (updated when blocks change).
-    char* low_base_;                  // Start of first low block (low_blocks_.front()).
-    char* low_end_;                   // End of last low block (low_blocks_.back() + block_size_).
-    char* high_base_;                 // Start of first high block (high_blocks_.front()).
-    char* high_end_;                  // End of last high block (high_blocks_.back() + block_size_).
+    // Per-heap growth ceiling: min(the allocator's slice size, the config's
+    // per-side max). Cached at initialize/reset.
+    size_t growth_ceiling_bytes_;
+
+    // Exact extent bounds, used for the O(1) membership checks below. Unlike
+    // the block design's front()/back() span, these have no interior gaps and
+    // never cover another heap's memory.
+    char* low_base_;                // Low slice base.
+    char* low_end_;                 // low_base_ + capacity.
+    char* high_base_;               // High slice base.
+    char* high_end_;                // high_base_ + capacity.
 
     // Current allocation state (bump pointer allocation).
-    size_t current_from_idx_;         // Index of active from-space block.
-    NurseryBump bump_;                // {ptr, end} — see the public NurseryBump doc.
+    NurseryBump bump_;              // {ptr, end} — see the public doc.
 
     // GC state (active only during minorGC execution).
-    size_t current_to_idx_;           // Index of active to-space block for evacuation.
-    char* copy_ptr_;                  // Bump pointer for copying objects into to-space.
-    char* copy_end_;                  // End address of current to-space block.
-    size_t scan_block_idx_;           // Index of to-space block containing scan_ptr.
-    char* scan_ptr_;                  // Cheney scan pointer (next object to process).
-
-    // Recorded copy_ptr_ at the moment copyToSpace abandoned a to-space block.
-    // Valid only for block indices < current_to_idx_; used by the Cheney scan
-    // to skip the untouched tail gap that `copyToSpace` leaves behind when an
-    // object doesn't fit in the remaining space of the current block.
-    // Unused entry value = corresponding block_end (= block_start + block_size_).
-    std::vector<char*> block_end_of_objects_;
+    char* copy_ptr_;                // Bump pointer for copying into to-space.
+    char* copy_end_;                // To-space extent end.
+    char* scan_ptr_;                // Cheney scan pointer.
 
     // Growth tracking for adaptive nursery sizing. Mirrors
     // HeapConfig::nursery_growth_threshold; cached in initialize() so the
@@ -116,15 +116,13 @@ private:
     float growth_threshold_;
 
     // Cached `nursery_gc_threshold` from HeapConfig (the proactive minor-GC
-    // trigger fraction). Read once at init/reset, then consumed at block
-    // transitions to derive `alloc_end_`; never touched on the alloc fast
-    // path.
+    // trigger fraction). Read once at init/reset, then consumed by
+    // computeAllocEnd; never touched on the alloc fast path.
     float gc_threshold_;
 
-    // Cached total from-space capacity in bytes
-    // (= from_blocks.size() * block_size_). Updated whenever blocks are
-    // added/swapped so wouldExceedThreshold avoids the per-allocation
-    // multiply.
+    // Cached from-space capacity in bytes (== slice_.capacity; both sides are
+    // equal). Kept as a field so the threshold math and the validators don't
+    // reach through the slice each time.
     size_t from_capacity_bytes_;
 
     // Pre-computed `from_capacity_bytes_ * gc_threshold_`. The proactive-GC
@@ -157,12 +155,16 @@ private:
 
     // ========== Internal Methods ==========
 
-    // Initializes this nursery by requesting blocks from the Allocator.
+    // Initializes this nursery by acquiring a slice pair from the Allocator.
     // Legacy initialization path for backward compatibility with older tests.
     void initialize(Allocator* allocator, const HeapConfig* config);
 
-    // Initializes this nursery with pre-allocated memory from ThreadLocalHeap.
+    // Initializes this nursery with a slice pair, driven by ThreadLocalHeap.
     void initialize(ThreadLocalHeap* heap, const HeapConfig* config);
+
+    // Shared body of the two initialize() overloads: acquires the slice pair
+    // and seats every derived cache. `allocator_` must already be set.
+    void initializeFromConfig();
 
     // Performs minor GC, evacuating live objects to to_space or promoting to old gen.
     void minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_roots);
@@ -182,15 +184,11 @@ private:
     // From-space pre-evacuation walk (Class 3). Walks every header in the
     // allocated prefix of from-space at the start of minorGC and asserts
     // tag <= Tag_Forward and size sane. Catches mutator-side header
-    // corruption before it propagates into to-space via memcpy.
+    // corruption before it propagates into to-space via memcpy. Under the
+    // contiguous design this covers the ENTIRE prefix (the block design
+    // could only walk the current block — earlier blocks had untracked tail
+    // gaps), so it is a strictly stronger check.
     void preEvacuationFromSpaceWalk();
-
-    // block_end_of_objects_ post-condition (Class 3). At end of minorGC,
-    // walk every "completed" to-space block and verify the recorded
-    // end-of-objects matches a fresh linear scan. Detects tail-gap
-    // tracking bugs that would otherwise only manifest as ghost-header
-    // reads in the next cycle.
-    void verifyToSpaceBlockEndOfObjects();
 
     // Stale-pointer tripwire (validator-only; see Allocator::resolve and the
     // per-arg validation in eco_apply_closure / eco_apply_segmentation_unknown
@@ -202,8 +200,13 @@ private:
     void debugAssertValidNurseryPointer(void* ptr) const;
 #endif
 
+    // Base of the current from-/to-space extent.
+    inline char* fromBase() const { return from_is_low_ ? low_base_ : high_base_; }
+    inline char* toBase()   const { return from_is_low_ ? high_base_ : low_base_; }
+
     // Returns true if the pointer is within this nursery's address ranges.
-    // O(1) check using cached bounds (may include small gaps between blocks).
+    // O(1) and EXACT — the extents are contiguous, so unlike the block
+    // design's cached span this admits no interior gaps.
     // Inlined for performance as this is called frequently during GC.
     inline bool contains(void *ptr) const {
         char* p = static_cast<char*>(ptr);
@@ -212,7 +215,7 @@ private:
     }
 
     // Returns true if the pointer is in from-space (current allocation space).
-    // O(1) check using cached bounds. Inlined for performance.
+    // O(1) check using the extent bounds. Inlined for performance.
     inline bool isInFromSpace(void* ptr) const {
         char* p = static_cast<char*>(ptr);
         if (from_is_low_) {
@@ -223,7 +226,7 @@ private:
     }
 
     // Returns true if the pointer is in to-space (evacuation target during GC).
-    // O(1) check using cached bounds. Inlined for performance.
+    // O(1) check using the extent bounds. Inlined for performance.
     inline bool isInToSpace(void* ptr) const {
         char* p = static_cast<char*>(ptr);
         if (from_is_low_) {
@@ -233,72 +236,54 @@ private:
         }
     }
 
-    // Updates cached bounds after block changes.
+    // Re-derives the cached extent bounds from the slice base + capacity.
+    // MUST be called after every capacity change — growth is the only
+    // mid-life one, and stale bounds would make the next minor GC treat
+    // objects in the grown region as non-nursery and skip evacuating them.
     void updateBounds();
 
     // Returns the number of bytes currently allocated in the nursery.
     size_t bytesAllocated() const;
 
-    // Returns true if allocating size bytes would exceed the occupancy
-    // threshold. Retained for diagnostic call sites; the hot allocation
-    // path no longer invokes this — the threshold is folded into
-    // `alloc_end_` at block transitions instead. The `threshold` parameter
-    // is ignored; the cached `gc_threshold_` is used.
-    bool wouldExceedThreshold(size_t size, float threshold) const;
-
     // Recomputes capacity-derived caches (`from_capacity_bytes_`,
-    // `threshold_total_bytes_`) from the current from-space block count.
-    // Call after any operation that adds, removes, or swaps from-space
-    // blocks.
+    // `threshold_total_bytes_`) from the slice capacity. Call after any
+    // capacity change or space swap.
     void refreshCapacityCaches();
 
-    // Returns the address at which `alloc_end_` should be capped for the
-    // current from-space block (`block_start`) so a single
-    // `alloc_ptr_ + size <= alloc_end_` test enforces both block-fit and
+    // Returns the address at which `bump_.end` should be capped so a single
+    // `bump_.ptr + size <= bump_.end` test enforces both extent-fit and
     // proactive-GC threshold-fit. Allocation that would push total
-    // bytesAllocated past `threshold_total_bytes_` will fall through to
-    // the slow path and trigger `minorGC`.
-    char* computeAllocEndForBlock(char* block_start) const;
+    // bytesAllocated past `threshold_total_bytes_` falls through to the slow
+    // path and triggers `minorGC`.
+    char* computeAllocEnd() const;
 
-    // Resets the nursery to initial state (clears all blocks and stats).
-    // If new_config is provided, reconfigures with new parameters. Used for testing.
+    // Resets the nursery to initial state (releases and re-acquires the
+    // slice). If new_config is provided, reconfigures with new parameters.
+    // Used for testing.
     void reset(OldGenSpace &oldgen, const HeapConfig* new_config = nullptr);
 
-    // Allocation slow path - advances to next block or returns nullptr.
+    // Allocation slow path. Under the contiguous design a fast-path miss can
+    // only mean "GC now", so this exists to keep the stats bracket and the
+    // already-full fail-soft in one place.
     void* allocateSlow(size_t size);
 
     // Capacity guarantee for hoisted allocation checks (HEAP_041,
     // plans/capacity-check-hoisting.md). Establishes
-    // `bump_.end - bump_.ptr >= n` for this thread WITHOUT allocating, by
-    // advancing from-space blocks on GENUINE exhaustion only. Returns false
-    // when the caller must run a minor GC and retry.
-    //
-    // The `bump_.end < block_end` guard is load-bearing and mirrors
-    // allocateSlow's clamp-vs-exhaustion disambiguator: a clamped end means
-    // the proactive-GC threshold tripped INSIDE the current block, and the
-    // correct action is to signal GC. Advancing past a mid-block trip would
-    // land every subsequent block in computeAllocEndForBlock's already-full
-    // fail-soft clause (full block ends), silently disabling the proactive
-    // trigger for the rest of the nursery cycle.
+    // `bump_.end - bump_.ptr >= n` for this thread WITHOUT allocating.
+    // Returns false when the caller must run a minor GC and retry.
     bool ensureHeadroom(size_t n);
 
-    // Fail-soft escape for the tiny-config corner where a fresh block's
-    // CLAMPED end sits below n (threshold_total_bytes_ < n; unreachable at
-    // default config, reachable in small test heaps) — without it,
-    // ensureNursery would GC-loop. Unclamps the CURRENT block only, after
-    // rewinding current_from_idx_ to the block actually containing
-    // bump_.ptr (a false ensureHeadroom return may leave the index one past
-    // the end, the same transient allocateSlow leaves behind).
-    void failSoftUnclampCurrentBlock();
+    // Fail-soft escape for the tiny-config corner where the CLAMPED end sits
+    // below n (threshold_total_bytes_ < n; unreachable at default config,
+    // reachable in small test heaps) — without it, ensureNursery would
+    // GC-loop. Unclamps to the full from-space extent.
+    void failSoftUnclamp();
 
     // Allocates space in to-space during GC copying.
     void* copyToSpace(size_t size);
 
     // Returns true if scan pointer has more to process.
     bool scanHasMore() const;
-
-    // Advances scan pointer to next block if needed.
-    void advanceScanIfNeeded();
 
     // Checks occupancy after GC and grows if needed.
     void checkAndGrow();
@@ -370,25 +355,35 @@ public:
         return nursery.isInToSpace(ptr);
     }
 
-    static size_t fromBlockCount(const NurserySpace& nursery) {
-        return nursery.from_is_low_ ? nursery.low_blocks_.size() : nursery.high_blocks_.size();
-    }
-
-    static size_t toBlockCount(const NurserySpace& nursery) {
-        return nursery.from_is_low_ ? nursery.high_blocks_.size() : nursery.low_blocks_.size();
-    }
-
-    static size_t lowBlockCount(const NurserySpace& nursery) {
-        return nursery.low_blocks_.size();
-    }
-
-    static size_t highBlockCount(const NurserySpace& nursery) {
-        return nursery.high_blocks_.size();
-    }
-
     static void clearToSpaceFreeRegion(NurserySpace& nursery) {
         nursery.clearToSpaceFreeRegion();
     }
+
+    // ---- Contiguous extents (HEAP_042) ----
+
+    // Per-side capacity in bytes (equal for both semi-spaces).
+    static size_t capacity(const NurserySpace& nursery) {
+        return nursery.from_capacity_bytes_;
+    }
+
+    static char* fromBase(const NurserySpace& nursery) { return nursery.fromBase(); }
+    static char* toBase(const NurserySpace& nursery)   { return nursery.toBase(); }
+
+    static char* fromEnd(const NurserySpace& nursery) {
+        return nursery.fromBase() + nursery.from_capacity_bytes_;
+    }
+
+    static size_t growthCeiling(const NurserySpace& nursery) {
+        return nursery.growth_ceiling_bytes_;
+    }
+
+    static size_t sliceSlot(const NurserySpace& nursery) {
+        return nursery.slice_.slot;
+    }
+
+    static bool fromIsLow(const NurserySpace& nursery) { return nursery.from_is_low_; }
+
+    static void checkAndGrow(NurserySpace& nursery) { nursery.checkAndGrow(); }
 
     // ---- Capacity-check hoisting (HEAP_041) ----
 
@@ -396,8 +391,8 @@ public:
         return nursery.ensureHeadroom(n);
     }
 
-    static void failSoftUnclampCurrentBlock(NurserySpace& nursery) {
-        nursery.failSoftUnclampCurrentBlock();
+    static void failSoftUnclamp(NurserySpace& nursery) {
+        nursery.failSoftUnclamp();
     }
 
     // Bytes between the bump pointer and the CLAMPED end — exactly the
@@ -409,29 +404,15 @@ public:
     static char* bumpPtr(const NurserySpace& nursery) { return nursery.bump_.ptr; }
     static char* bumpEnd(const NurserySpace& nursery) { return nursery.bump_.end; }
 
-    static size_t currentFromIdx(const NurserySpace& nursery) {
-        return nursery.current_from_idx_;
-    }
-
-    static size_t blockSize(const NurserySpace& nursery) {
-        return nursery.block_size_;
-    }
-
-    static char* fromBlockAt(const NurserySpace& nursery, size_t i) {
-        const std::vector<char*>& from_blocks =
-            nursery.from_is_low_ ? nursery.low_blocks_ : nursery.high_blocks_;
-        return i < from_blocks.size() ? from_blocks[i] : nullptr;
-    }
-
     // Consumes headroom without going through allocate() so a test can park
-    // the bump pointer at an exact offset inside the current block.
+    // the bump pointer at an exact offset inside the extent.
     static void bumpBy(NurserySpace& nursery, size_t bytes) {
         nursery.bump_.ptr += bytes;
     }
 
-    // Forces the proactive-GC clamp to fire inside the current block, i.e.
-    // the state ensureHeadroom must NOT advance past.
-    static void clampCurrentBlockEnd(NurserySpace& nursery, size_t headroom) {
+    // Forces the proactive-GC clamp to fire inside the extent, i.e. the
+    // state ensureHeadroom must NOT advance past.
+    static void clampEnd(NurserySpace& nursery, size_t headroom) {
         nursery.bump_.end = nursery.bump_.ptr + headroom;
     }
 };

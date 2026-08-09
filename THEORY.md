@@ -50,13 +50,13 @@ Young objects live in the nursery, which uses Cheney's copying collector:
 
 This is optimal for high-churn, short-lived allocations. The cost of GC is proportional to survivors, not total allocations.
 
-**Two-region design**: The nursery uses two separate address regions (`low_blocks_` and `high_blocks_`) rather than interleaved blocks. One region serves as from-space, the other as to-space, swapping roles after each GC. This enables:
+**Two-region design** *(HEAP_042)*: each semi-space is ONE CONTIGUOUS EXTENT — the committed prefix of a fixed-size slice of the low or high half of the nursery region, both slices at the same slot index and always the same length. One extent is from-space, the other to-space, swapping roles after each GC. This enables:
 
-- **O(1) membership checks**: Simple bounds comparison (`ptr >= low_base_ && ptr < low_end_`) instead of O(log n) set lookup
-- **Dynamic growth**: When survivors exceed 75% of to-space capacity, both regions grow
-- **Unified block sizing**: Same block size as old gen (simpler memory layout)
+- **O(1) membership checks**: a bounds comparison (`ptr >= low_base_ && ptr < low_end_`) that is EXACT — the extent has no interior gaps and never spans another heap's memory
+- **Dynamic growth**: when survivors exceed the growth threshold, both extents are extended in place (same bases, larger capacity) — or neither is
+- **A bump limit that spans the whole space**: an allocation can never fail to fit "between blocks", so there is no block advance and a bump miss means exactly one thing — collect
 
-The key insight: by keeping from-space and to-space in separate address ranges, `isInFromSpace()` becomes a single bounds check cached in member variables (`low_base_`, `low_end_`, `high_base_`, `high_end_`).
+The key insight: by keeping from-space and to-space in separate address ranges, `isInFromSpace()` is a single bounds check cached in member variables (`low_base_`, `low_end_`, `high_base_`, `high_end_`). Making each range contiguous then removes the last reason for the allocator to have a slow path that is not a GC: the block design entered its slow path once per 512 KiB (312,952 times against 871 minor GCs on a self-compile), purely to step to the next block.
 
 ### Old Generation: Segregated-Fits + Big Bag of Pages with Mark-Driven Lazy Sweep
 
@@ -188,7 +188,7 @@ The allocator reserves a single large address space (1GB by default) via `mmap` 
 ```
 
 Physical memory is committed on demand:
-- Nursery: Blocks committed via `acquireNurseryBlockLow()`/`acquireNurseryBlockHigh()` as threads initialize or grow
+- Nursery: a slice pair claimed via `acquireNurserySlicePair()` when a thread initializes, its committed prefix extended by `growNurserySlicePair()` as the nursery grows (released slots retain their pages for the next heap that claims them)
 - Old gen: Committed via `acquireOldGenRegion()` when a thread initializes, grows as needed
 
 Each thread gets its own regions within these spaces. The Allocator tracks committed ranges and hands out contiguous chunks to each `ThreadLocalHeap`.
@@ -264,7 +264,7 @@ The `EcoGCPrepare` MLIR pass detects all potentially allocating operations and a
 
 **Allocation groups — single safepoint per group** *(Apr 16, 2026)*: Adjacent fixed-size allocations identified by `EcoGCPrepare` lower to a single fast/slow/merge CFG. The fast path calls `eco_gc_alloc_region_fast(totalBytes)` (a `gc-leaf-function`, never a safepoint); on null the slow path calls `eco_gc_alloc_region_slow(totalBytes)`, which is non-leaf and is therefore wrapped in a `gc.statepoint` by RS4GC. Each member is initialized at its offset via `eco_init_*_at` runtime functions (leaf) that write the header/fields into the reserved region and return the HPointer. Variable-size ops (`AllocateClosureOp`, `AllocateOp`) are excluded from groups; group size is capped below the 32 KiB large-object threshold.
 
-**Inline nursery allocation — the bump diamond** *(Jul 21, 2026; HEAP_034, `plans/inline-nursery-allocation.md`)*: fixed-size constructions do not call the runtime at all. `NurserySpace::NurseryBump{ptr, end}` (offsets 0/8, `static_assert`-pinned ABI) is exported by `eco_bump_state()` — declared `memory(none)` + `speculatable` + gc-leaf, because the *address* is thread-stable even though the contents move. `expandInlineAllocs` turns each `__eco_alloc_inline(SIZE)` marker into `load ptr; load end; gep +SIZE; icmp ugt; br` with the miss edge weighted 1 : 2²⁰: the fast arm publishes the new top and the merge block receives the object, while the cold arm makes the single statepointed call to `eco_alloc_inline_slow(SIZE)`. `end` is pre-clamped to `min(block end, proactive-GC threshold trip)` by `computeAllocEndForBlock`, so that **one unsigned compare encodes both block exhaustion and the GC trigger** — which is what lets the fast path be a genuine non-safepoint. The header word and every payload field are stored straight-line after the merge with no possible safepoint in between, so a GC can never observe a partially-initialized object.
+**Inline nursery allocation — the bump diamond** *(Jul 21, 2026; HEAP_034, `plans/inline-nursery-allocation.md`)*: fixed-size constructions do not call the runtime at all. `NurserySpace::NurseryBump{ptr, end}` (offsets 0/8, `static_assert`-pinned ABI) is exported by `eco_bump_state()` — declared `memory(none)` + `speculatable` + gc-leaf, because the *address* is thread-stable even though the contents move. `expandInlineAllocs` turns each `__eco_alloc_inline(SIZE)` marker into `load ptr; load end; gep +SIZE; icmp ugt; br` with the miss edge weighted 1 : 2²⁰: the fast arm publishes the new top and the merge block receives the object, while the cold arm makes the single statepointed call to `eco_alloc_inline_slow(SIZE)`. `end` is pre-clamped to `min(from-space extent end, proactive-GC threshold trip)` by `computeAllocEnd`, so that **one unsigned compare encodes both space exhaustion and the GC trigger** — which is what lets the fast path be a genuine non-safepoint. Since HEAP_042 made each semi-space contiguous, a miss on that compare means "collect", not "step to the next block". The header word and every payload field are stored straight-line after the merge with no possible safepoint in between, so a GC can never observe a partially-initialized object.
 
 **The capacity model — hoisting the check out of the callee** *(Aug 8, 2026; CGEN_074/HEAP_041, `plans/capacity-check-hoisting.md`)*: the *bump* is not the GC hazard; the *check* is. So the check can be hoisted while the bumps stay put. A **guarantee of N bytes** at program point P means `bump.end - bump.ptr >= N` on this thread, and entitles the straight-line code after P to bump up to N bytes with no checks at all — provided nothing in between can trigger a GC *or consume nursery headroom*. That last clause is a real distinction: gc-leaf does **not** imply bump-state-transparent (`eco_gc_alloc_region_fast` is gc-leaf yet bumps the same cursor), so such calls void a guarantee despite the attribute. Under `ECO_ALLOC_HOIST=1` a backend fixpoint computes a byte budget per function; a function whose only GC hazard is its own bounded allocation becomes *coverable*, its diamonds collapse to unchecked bumps, and its callers emit one **ensure diamond** — the same compare against the clamped `end`, with `eco_ensure_nursery_slow(N)` on the cold edge — sized for the whole run of allocations and covered calls that follows. Because the guarantee is measured against the *clamped* end, the proactive-GC decision is simply fronted for the covered region: trigger semantics are preserved and granularity coarsens by at most N bytes. A covered function ends up statepoint-free, so CGEN_072 stamps it gc-leaf and CGEN_073 drops its frame pointer — the mechanism composes with, rather than duplicates, the gc-free propagation above. **All three flags (`ECO_GCFREE_LEAF`, `ECO_FP_LEAF`, `ECO_ALLOC_HOIST`) are DEFAULT-ON as of Aug 9, 2026**; setting any of them to `0` is the escape hatch, and `=c` runs the analysis as a census without mutating the module.
 
@@ -398,9 +398,9 @@ Old gen objects only die during major GC. They can never move back to nursery.
 
 **Key state variables during GC**:
 - `from_is_low_`: Which region is currently from-space (flips after each GC)
-- `current_from_idx_`, `alloc_ptr_`: Bump pointer allocation state
-- `current_to_idx_`, `copy_ptr_`: Evacuation destination state
-- `scan_block_idx_`, `scan_ptr_`: Cheney scan position
+- `bump_.ptr` / `bump_.end`: bump-pointer allocation state; `end` is `min(from-space extent end, proactive-GC threshold trip)`
+- `copy_ptr_`, `copy_end_`: evacuation destination state (one contiguous extent)
+- `scan_ptr_`: Cheney scan position — the scan is simply `scan_ptr_ < copy_ptr_`
 
 The key questions for debugging:
 1. Was it correctly evacuated? (forwarding pointer left behind)

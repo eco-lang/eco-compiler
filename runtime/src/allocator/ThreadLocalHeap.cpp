@@ -147,7 +147,8 @@ ThreadLocalHeap::ThreadLocalHeap(Allocator* parent,
     assert(parent && "Parent allocator must not be null");
     assert(config && "Config must not be null");
     // Note: nursery_base and old_gen_base may be null if memory is allocated
-    // on demand via acquireNurseryBlock/acquireAllocBuffer.
+    // on demand — the nursery claims a slice pair (HEAP_042) and the old gen
+    // acquires buffers when they initialize.
 
     // Initialize old gen with reference to parent Allocator. The initialize
     // call now pre-commits `initial_old_gen_size` as one contiguous region
@@ -170,11 +171,9 @@ void* ThreadLocalHeap::allocate(size_t size, Tag tag) {
     }
 
     // Fast path. NurserySpace::allocate's bump-pointer compares against
-    // alloc_end_, which is pre-clamped at block-acquisition time to the
-    // earlier of (block end, proactive-GC threshold trip point) by
-    // computeAllocEndForBlock. So a single compare enforces both
-    // block-fit and threshold-fit; no separate wouldExceedThreshold call
-    // is needed on the hot path.
+    // bump_.end, which is pre-clamped to the earlier of (from-space extent
+    // end, proactive-GC threshold trip point) by computeAllocEnd. So a
+    // single compare enforces both space-fit and threshold-fit.
     void* obj = nursery_.allocate(size);
     if (obj) {
         initHeaderForTag(getHeader(obj), tag, size);
@@ -183,8 +182,8 @@ void* ThreadLocalHeap::allocate(size_t size, Tag tag) {
 
     // Slow path: nursery returned nullptr. This means either the threshold
     // tripped or the nursery is genuinely full. minorGC handles both —
-    // after evacuation, the from-space allocation pointer resets and a
-    // fresh alloc_end_ is computed.
+    // after evacuation, the bump pointer resumes after the survivors and a
+    // fresh clamped end is computed.
     minorGC();
     obj = nursery_.allocate(size);
     if (obj) {
@@ -192,8 +191,23 @@ void* ThreadLocalHeap::allocate(size_t size, Tag tag) {
         return obj;
     }
 
-    // Nursery allocation still failed after a GC — fatal. Cannot fall back
-    // to old-gen allocation: the object's fields would be filled in
+    // Still nothing: the survivors left less room below the PROACTIVE
+    // threshold than this object needs. Collecting again cannot help (no
+    // allocation has happened since), so drop the clamp for the rest of
+    // this cycle and use the extent — the same fail-soft computeAllocEnd
+    // applies when survivors already sit past the threshold, and the same
+    // rung ensureNursery has. (The block design masked this case with
+    // block-quantized threshold arithmetic plus a block advance; a
+    // byte-exact clamp over one extent needs it explicitly.)
+    nursery_.failSoftUnclamp();
+    obj = nursery_.allocate(size);
+    if (obj) {
+        initHeaderForTag(getHeader(obj), tag, size);
+        return obj;
+    }
+
+    // Nursery allocation still failed — genuinely out of space. Cannot fall
+    // back to old-gen allocation: the object's fields would be filled in
     // afterwards, potentially creating old→young pointers that violate
     // the generational GC invariant.
     assert(false && "Failed to allocate to nursery, it is full.");
@@ -223,6 +237,14 @@ void* ThreadLocalHeap::allocateSlow(size_t size, Tag tag) {
         return obj;
     }
 
+    // Post-GC threshold fail-soft — see ThreadLocalHeap::allocate.
+    nursery_.failSoftUnclamp();
+    obj = nursery_.allocate(size);
+    if (obj) {
+        initHeaderForTag(getHeader(obj), tag, size);
+        return obj;
+    }
+
     assert(false && "Failed to allocate after GC in slow path.");
     return nullptr;
 }
@@ -243,6 +265,13 @@ void* ThreadLocalHeap::allocateSlowRaw(size_t size) {
     minorGC();
 
     void* obj = nursery_.allocate(size);
+    if (obj) {
+        return obj;
+    }
+
+    // Post-GC threshold fail-soft — see ThreadLocalHeap::allocate.
+    nursery_.failSoftUnclamp();
+    obj = nursery_.allocate(size);
     if (obj) {
         return obj;
     }
@@ -269,11 +298,11 @@ void ThreadLocalHeap::ensureNursery(size_t n) {
         return;
     }
 
-    // Tiny-config corner: a fresh block whose CLAMPED end sits below n
+    // Tiny-config corner: a CLAMPED end that sits below n
     // (threshold_total_bytes_ < n) would GC-loop here. Fail soft exactly
-    // like computeAllocEndForBlock's already-full clause — unclamp the
-    // CURRENT block only, after restoring index/bump coherence.
-    nursery_.failSoftUnclampCurrentBlock();
+    // like computeAllocEnd's already-full clause — hand out the rest of the
+    // from-space extent.
+    nursery_.failSoftUnclamp();
     if (nursery_.ensureHeadroom(n)) {
         return;
     }
@@ -698,7 +727,13 @@ void ThreadLocalHeap::majorGC() {
 }
 
 bool ThreadLocalHeap::isNurseryNearFull(float threshold) const {
-    size_t total_capacity = config_->nurserySize() / 2;
+    // LIVE per-side capacity, not the CONFIGURED one: the nursery grows
+    // adaptively, and measuring a grown nursery against its initial size
+    // reported "near full" from ~20% occupancy onward. Callers: the
+    // safepoint gating in collectAtSafepoint (reachable only via
+    // __eco_safepoint_poll, which compiled code does not emit today) and
+    // the synthetic benchmark driver's pacing loop (main.cpp).
+    size_t total_capacity = nursery_.from_capacity_bytes_;  // friend access
     size_t usage = nursery_.bytesAllocated();
     return usage >= static_cast<size_t>(total_capacity * threshold);
 }

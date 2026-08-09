@@ -22,9 +22,11 @@ class ThreadLocalHeap;
  * Singleton that owns the unified heap address space. Each thread gets its own
  * ThreadLocalHeap with independent nursery, old gen, and GC stats.
  *
- * Memory layout:
- *   [0 .. heap_reserved/2)      - Old generation region (carved up per-thread)
- *   [heap_reserved/2 .. end)    - Nursery region (carved up per-thread)
+ * Memory layout (HEAP_043; the split is configurable via
+ * HeapConfig::nursery_region_bytes, 4 GiB of 24 GiB by default):
+ *   [0 .. nursery_offset)       - Old generation region (carved up per-thread)
+ *   [nursery_offset .. end)     - Nursery region: two halves, each carved into
+ *                                 fixed-size slices, one pair per heap
  *
  * Thread safety:
  *   - initThread() acquires mutex to allocate regions
@@ -219,12 +221,35 @@ public:
     // Returns committed bytes in the shared old-gen region (all threads).
     size_t getOldGenCommittedBytes() const { return old_gen_in_use_bytes_; }
 
+    // C0 census (TEMPORARY, plans/contiguous-nursery-space.md §3.3). Two
+    // DIFFERENT old-gen walls: the peak of the in-use figure above (the
+    // GlobalPressure trigger's numerator, which releases decrement) and the
+    // monotonic commit bump that acquireOldGenBlock tests against
+    // nursery_offset (the hard alloc-failure wall). The M2 default-split
+    // decision reads both.
+    size_t getOldGenInUsePeakBytes() const { return old_gen_in_use_peak_; }
+    size_t getOldGenCommitHighWaterBytes() const { return old_gen_committed; }
+
     // Returns committed bytes in the low / high nursery regions.
     size_t getNurseryLowCommittedBytes() const { return nursery_low_committed_; }
     size_t getNurseryHighCommittedBytes() const { return nursery_high_committed_; }
 
-    // Returns the start offset of the nursery region (== old-gen cap).
-    size_t getOldGenMaxBytes() const { return nursery_offset; }
+    // The old-gen address-space cap: where the nursery region begins
+    // (HEAP_043). THE single source of truth — every consumer (the
+    // GlobalPressure major-GC trigger, the post-major grow clamp, the
+    // sweep-pressure ratio) must route through here rather than re-deriving
+    // a cap from the config.
+    //
+    // min() with the config-derived cap so a reset() that shrinks
+    // max_heap_size scales the cap down with it: the RESERVATION is
+    // first-init-wins (nursery_offset never moves), but a test suite that
+    // reconfigures to an 8 MiB heap expects its pressure ratios measured
+    // against 8 MiB, not against the 24 GiB the process happened to reserve
+    // first.
+    size_t getOldGenMaxBytes() const {
+        const size_t config_cap = config_.oldGenCapBytes();
+        return config_cap < nursery_offset ? config_cap : nursery_offset;
+    }
 
     // Diagnostics: dumps heap state (old-gen + nursery commit counters plus
     // per-thread allocated_bytes and block counts) to stderr. The body is a
@@ -268,14 +293,36 @@ private:
     // Decremented when a block is returned via `releaseOldGenBlock`. Used
     // by `getOldGenCommittedBytes()` and tests; not used for mmap arithmetic.
     size_t old_gen_in_use_bytes_;
-    size_t nursery_offset;        // Byte offset where nursery region begins (heap midpoint).
+    // C0 census (TEMPORARY): running maximum of the field above, sampled at
+    // every increment via noteOldGenInUsePeak(). Reset with it.
+    size_t old_gen_in_use_peak_;
+    size_t nursery_offset;        // Byte offset where the nursery region begins (== old-gen cap).
     size_t nursery_low_committed_;   // Committed bytes in first half of nursery region.
     size_t nursery_high_committed_;  // Committed bytes in second half of nursery region.
-    // Free-lists of previously-released nursery blocks, reused by subsequent
-    // acquires before we bump the committed pointer. Entries are pairs of
-    // (block pointer, block size); acquires pop a block whose size matches.
-    std::vector<std::pair<char*, size_t>> nursery_low_freelist_;
-    std::vector<std::pair<char*, size_t>> nursery_high_freelist_;
+    // ---- Nursery slice slots (HEAP_042) ----
+    //
+    // The nursery region is carved into fixed-size slots; a heap owns the
+    // low and high slice at ONE slot index, giving it two contiguous
+    // semi-space extents. Geometry is derived from the config by
+    // rebuildNurserySliceTable() at initialize()/reset(); the region itself
+    // is first-init-wins.
+    //
+    // `retained_*` is the PHYSICAL high-water commit at the slot, kept
+    // across release so a respawned heap reuses committed pages (the former
+    // block free-lists' Issue-#40 role). It is tracked per side because a
+    // partially-failed grow may raise one side only. It may exceed the
+    // current owner's logical capacity — those pages are dormant. Retained
+    // records are dropped wholesale by reset(), which also re-derives the
+    // geometry: slot bases move when alloc_buffer_size or the block caps
+    // change, so a stale record would skip committing pages that were never
+    // mapped at the new base.
+    struct NurserySliceSlot {
+        bool   in_use        = false;
+        size_t retained_low  = 0;
+        size_t retained_high = 0;
+    };
+    std::vector<NurserySliceSlot> nursery_slots_;
+    size_t nursery_slice_bytes_;     // per-side slice size (0 before init)
     // Free list of previously-released old-gen blocks (pages or large blocks)
     // that have been returned by `releaseOldGenBlock`. The virtual mapping is
     // retained; physical RSS may have been dropped via `madvise(MADV_DONTNEED)`.
@@ -329,26 +376,45 @@ private:
     // Returns the total reserved heap size.
     size_t getHeapReserved() const { return heap_reserved; }
 
-    // Acquires a block of memory from the lower nursery region.
-    // Thread-safe: acquires thread_mutex_.
-    // First tries to reuse a block from the free-list populated by
-    // releaseNurseryBlockLow; if that's empty, bumps nursery_low_committed_.
-    char* acquireNurseryBlockLow(size_t size);
+    // C0 census (TEMPORARY): call after every increment of
+    // old_gen_in_use_bytes_. Callers already hold thread_mutex_.
+    void noteOldGenInUsePeak() {
+        if (old_gen_in_use_bytes_ > old_gen_in_use_peak_) {
+            old_gen_in_use_peak_ = old_gen_in_use_bytes_;
+        }
+    }
 
-    // Acquires a block of memory from the upper nursery region.
-    // Thread-safe: acquires thread_mutex_.
-    // First tries to reuse a block from the free-list; otherwise bumps the
-    // committed pointer.
-    char* acquireNurseryBlockHigh(size_t size);
+    // ---- Nursery slice API (HEAP_042; replaces the per-block acquire /
+    // release / free-list layer). All three are thread-safe. ----
 
-    // Returns a low-region nursery block to the free-list for reuse by a
-    // later acquireNurseryBlockLow. Called by ~NurserySpace when a
-    // ThreadLocalHeap is destroyed. Thread-safe.
-    void releaseNurseryBlockLow(char* block, size_t size);
+    // Recomputes slice geometry from the CURRENT config against the
+    // first-init region and rebuilds the slot table, dropping every
+    // retained-commit record (see NurserySliceSlot). Called by initialize()
+    // and reset(); must run after config_ and nursery_offset are settled.
+    void rebuildNurserySliceTable();
 
-    // Returns a high-region nursery block to the free-list for reuse by a
-    // later acquireNurseryBlockHigh. Thread-safe.
-    void releaseNurseryBlockHigh(char* block, size_t size);
+    // Claims a free slot with capacity `initial` (clamped to the slice
+    // size) and commits only the bytes not already retained at that slot,
+    // on both sides. Aborts loudly if every slot is taken — the message
+    // names the knobs that size the geometry. Returns a pair with
+    // capacity 0 if the commit itself failed.
+    NurserySlicePair acquireNurserySlicePair(size_t initial);
+
+    // Raises the pair's capacity by `delta` on BOTH sides, committing only
+    // the portion above the slot's retained commit. Returns false — leaving
+    // `pair.capacity` untouched — if the request exceeds the slice or
+    // either commit fails; a half-committed grow leaves the extra pages as
+    // dormant retained commit, never as a leak.
+    bool growNurserySlicePair(NurserySlicePair& pair, size_t delta);
+
+    // Frees the slot for reuse, RETAINING its committed pages.
+    void releaseNurserySlicePair(const NurserySlicePair& pair);
+
+    // Per-side slice size for the live geometry (0 before initialize()).
+    size_t getNurserySliceBytes() const { return nursery_slice_bytes_; }
+
+    // Number of slice slots per side.
+    size_t getNurserySliceSlotCount() const { return nursery_slots_.size(); }
 
     // Acquires a block of memory from the old gen region.
     // Thread-safe: acquires thread_mutex_.

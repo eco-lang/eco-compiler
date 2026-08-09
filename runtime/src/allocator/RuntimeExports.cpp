@@ -178,7 +178,7 @@ extern "C" void* eco_alloc_with_roots(uint32_t tag, uint64_t size,
 // Address of the calling thread's nursery bump state {ptr at +0, end at +8}.
 // Declared memory(none) + gc-leaf on the codegen side (expandInlineAllocs)
 // so LLVM can CSE/hoist it per function: the ADDRESS is thread-stable, only
-// the contents change (block advance / minor GC), and the expansion re-loads
+// the contents change (minor GC), and the expansion re-loads
 // them per allocation.
 extern "C" void* eco_bump_state(void) {
     // Call-free fast path (benchmarks/tier2-opt.md Run L): inline TLS read
@@ -192,8 +192,9 @@ extern "C" void* eco_bump_state(void) {
     return Allocator::instance().getCurrentThreadHeap()->getNursery().bumpState();
 }
 
-// Slow path for the codegen inline nursery bump: the inline compare missed
-// (current block exhausted or the proactive-GC threshold tripped). Returns
+// Slow path for the codegen inline nursery bump: the inline compare missed,
+// which under the contiguous from-space (HEAP_042) means one thing — the
+// proactive-GC threshold tripped, or the space is exhausted. Returns
 // UNINITIALIZED nursery storage — the caller stores the full header word and
 // every payload field before its next safepoint (HEAP_034). Never returns
 // null (aborts on OOM, HEAP_017 discipline). Statepointed: the ONLY
@@ -202,24 +203,21 @@ extern "C" void* eco_bump_state(void) {
 extern "C" HPtr eco_alloc_inline_slow(uint64_t size) {
     assert(size <= 4096 && (size & 7) == 0 &&
            "eco_alloc_inline_slow: size out of inline-alloc bounds");
-    // Try block advance without GC first — the inline compare only sees the
-    // CURRENT block's clamped end; the nursery may have further blocks.
-    void* obj = Allocator::instance().allocateFast(size);
-    if (!obj) {
-        obj = Allocator::instance().allocateSlowRaw(size);
-    }
-    return ptrToHPointer(obj);
+    // No pre-GC retry: with one contiguous extent the C++ compare tests the
+    // SAME clamped end the inline compare just failed, so `allocateFast`
+    // would be a guaranteed miss. (The block design retried it to pick up a
+    // block advance without collecting.)
+    return ptrToHPointer(Allocator::instance().allocateSlowRaw(size));
 }
 
 // Capacity guarantee for hoisted allocation checks (plans/
 // capacity-check-hoisting.md, CGEN_074 / HEAP_041): establishes
 // `bump_.end - bump_.ptr >= n` for the calling thread, allocating NOTHING.
 // `n` is a compile-time-constant run budget, 8-aligned, in (0, 4096]
-// (asserted). May advance nursery blocks (abandoning the current tail — an
-// already-tolerated state, see preEvacuationFromSpaceWalk's tail-gap note)
-// and may run a minor GC; the post-GC bump resumes MID-BLOCK after survivors,
-// so a post-GC advance may still be needed — hence the loop in
-// ensureHeadroom rather than a single-shot check.
+// (asserted). May run a minor GC; the post-GC bump resumes immediately after
+// the survivors, so the headroom test is a single comparison against the
+// contiguous from-space's clamped end (HEAP_042) rather than the block
+// design's advance loop.
 //
 // Deliberately NOT gc-leaf: this is the ONE statepoint of a covered region.
 // Values live across it are relocated by RS4GC as ordinary SSA. Called only

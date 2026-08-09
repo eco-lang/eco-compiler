@@ -209,38 +209,27 @@ before the assert fires. Also applied to the `evacuate` tag assertion.
 **Requires:** `#include <execinfo.h>` at the top of NurserySpace.cpp.
 
 ```cpp
-// In NurserySpace.cpp debugAssertValidNurseryPointer(), replace:
-//   assert(ok && "HPointer into nursery free region ...");
-// with:
+// NOTE (HEAP_042): this dump is now IN the tree — debugAssertValidNurseryPointer
+// carries it under ECO_HEAP_VALIDATE. The snippet below is kept as a reference
+// for the shape; since each semi-space became one contiguous extent it prints
+// two ranges instead of a per-block table.
 
     if (!ok) {
-        const std::vector<char*>& from_blocks = from_is_low_ ? low_blocks_ : high_blocks_;
-        const std::vector<char*>& to_blocks   = from_is_low_ ? high_blocks_ : low_blocks_;
+        char* fb = fromBase();
+        char* tb = toBase();
         std::fprintf(stderr,
             "[gc-debug] STALE nursery pointer: ptr=%p in_minor_gc=%d from_is_low=%d\n"
-            "  from_space: current_from_idx=%zu alloc_ptr=%p (%zu blocks)\n"
-            "  to_space:   current_to_idx=%zu   copy_ptr=%p  (%zu blocks)\n",
+            "  from_space: [%p,%p) alloc_ptr=%p%s\n"
+            "  to_space:   [%p,%p) copy_ptr=%p%s\n"
+            "  capacity=%zu KB/side slot=%zu\n",
             ptr, (int)in_minor_gc_, (int)from_is_low_,
-            current_from_idx_, (void*)alloc_ptr_, from_blocks.size(),
-            current_to_idx_,   (void*)copy_ptr_,  to_blocks.size());
-        for (size_t i = 0; i < from_blocks.size(); ++i) {
-            char* bs = from_blocks[i];
-            char* be = bs + block_size_;
-            const char* role = (i < current_from_idx_) ? "full"
-                             : (i == current_from_idx_ ? "cur" : "free");
-            std::fprintf(stderr, "  from[%zu]=%p..%p (%s)%s\n",
-                         i, (void*)bs, (void*)be, role,
-                         (ptr >= bs && ptr < be) ? " <-- PTR" : "");
-        }
-        for (size_t i = 0; i < to_blocks.size(); ++i) {
-            char* bs = to_blocks[i];
-            char* be = bs + block_size_;
-            const char* role = (i < current_to_idx_) ? "full"
-                             : (i == current_to_idx_ ? "cur" : "free");
-            std::fprintf(stderr, "  to  [%zu]=%p..%p (%s)%s\n",
-                         i, (void*)bs, (void*)be, role,
-                         (ptr >= bs && ptr < be) ? " <-- PTR" : "");
-        }
+            (void*)fb, (void*)(fb + from_capacity_bytes_), (void*)bump_.ptr,
+            (ptr >= fb && ptr < fb + from_capacity_bytes_)
+                ? "  <-- PTR IN FROM-SPACE" : "",
+            (void*)tb, (void*)(tb + from_capacity_bytes_), (void*)copy_ptr_,
+            (ptr >= tb && ptr < tb + from_capacity_bytes_)
+                ? "  <-- PTR IN TO-SPACE" : "",
+            from_capacity_bytes_ / 1024, slice_.slot);
         uint64_t* w = reinterpret_cast<uint64_t*>(ptr);
         std::fprintf(stderr, "  *ptr   = 0x%016lx\n", w[0]);
         std::fprintf(stderr, "  ptr[1] = 0x%016lx\n", w[1]);
@@ -248,10 +237,6 @@ before the assert fires. Also applied to the `evacuate` tag assertion.
         std::fprintf(stderr, "  ptr[3] = 0x%016lx\n", w[3]);
         std::fflush(stderr);
         void* bt[40];
-        int n = backtrace(bt, 40);
-        backtrace_symbols_fd(bt, n, fileno(stderr));
-    }
-    assert(ok && "HPointer into nursery free region (stale pointer into unallocated space)");
 ```
 
 ### 2. Scan parent tracking (LIVE — ECO_GC_DEBUG)

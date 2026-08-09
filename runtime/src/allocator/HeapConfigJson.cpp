@@ -160,6 +160,7 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
 
     static constexpr const char *kKnownKeys[] = {
         "max_heap_size",
+        "nursery_region_bytes",
         "initial_old_gen_size",
         "alloc_buffer_size",
         "nursery_block_count",
@@ -215,6 +216,8 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
 
     if (auto it = doc.find("max_heap_size"); it != doc.end())
         cfg.max_heap_size = parseByteSize(*it, "max_heap_size");
+    if (auto it = doc.find("nursery_region_bytes"); it != doc.end())
+        cfg.nursery_region_bytes = parseByteSize(*it, "nursery_region_bytes");
     if (auto it = doc.find("initial_old_gen_size"); it != doc.end())
         cfg.initial_old_gen_size = parseByteSize(*it, "initial_old_gen_size");
     if (auto it = doc.find("alloc_buffer_size"); it != doc.end())

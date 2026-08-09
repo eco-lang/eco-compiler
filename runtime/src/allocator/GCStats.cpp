@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstdio>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -740,9 +742,18 @@ void GCStats::combine(const GCStats& other) {
         nursery_size_bytes = other.nursery_size_bytes;
     }
 
-    // Capacity-check hoisting counters (HEAP_041): plain sums.
+    // Capacity-check hoisting counter (HEAP_041): a plain sum.
     ensure_slow_calls += other.ensure_slow_calls;
-    nursery_block_advances += other.nursery_block_advances;
+
+    // Old-gen walls are allocator-global: every contributor carries the same
+    // process-wide value, so merge by max (getCombinedStats then overwrites
+    // both from the live allocator).
+    if (other.oldgen_inuse_peak_bytes > oldgen_inuse_peak_bytes) {
+        oldgen_inuse_peak_bytes = other.oldgen_inuse_peak_bytes;
+    }
+    if (other.oldgen_hiwater_bytes > oldgen_hiwater_bytes) {
+        oldgen_hiwater_bytes = other.oldgen_hiwater_bytes;
+    }
 
     // Combine allocator-helper attribution.
     total_oldgen_alloc_in_minor_ns    += other.total_oldgen_alloc_in_minor_ns;
@@ -933,7 +944,6 @@ void GCStats::print() const {
 
     double nursery_mb = nursery_size_bytes / (1024.0 * 1024.0);
     std::cout << "  Nursery grow events:   " << std::setw(12) << nursery_grow_events << std::endl;
-    std::cout << "  Block advances:        " << std::setw(12) << nursery_block_advances << std::endl;
     std::cout << "  Ensure slow calls:     " << std::setw(12) << ensure_slow_calls << std::endl;
     std::cout << "  Maximum nursery size:  " << std::setw(12) << std::fixed << std::setprecision(2)
               << nursery_mb << " MB" << std::endl;
@@ -1029,6 +1039,32 @@ void GCStats::print() const {
     std::cout << "  Alloc-fail triggers:   " << std::setw(12) << major_gc_alloc_failure_triggers << std::endl;
     std::cout << "  Global-pressure trig.: " << std::setw(12) << major_gc_global_pressure_triggers << std::endl;
     std::cout << "  Garbage-frac triggers: " << std::setw(12) << major_gc_garbage_triggers << std::endl;
+
+    // Old-gen address-space walls (HEAP_043). Two different quantities: the
+    // in-use peak is what the GlobalPressure trigger compares against the
+    // cap; the high-water commit bump is what the hard alloc-failure wall
+    // trips on. Both are printed in MB against the live cap so an operator
+    // can tell "this workload needs a bigger old-gen share" from "this
+    // workload is nowhere near the cap".
+    {
+        const size_t cap = Allocator::instance().getOldGenMaxBytes();
+        const double mb = 1024.0 * 1024.0;
+        std::cout << "  Old-gen in-use peak:   " << std::setw(12)
+                  << std::fixed << std::setprecision(2)
+                  << (oldgen_inuse_peak_bytes / mb) << " MB";
+        if (cap > 0) {
+            std::cout << "  (" << std::setprecision(1)
+                      << (100.0 * oldgen_inuse_peak_bytes / cap) << "% of cap)";
+        }
+        std::cout << std::endl;
+        std::cout << "  Old-gen commit hiwtr:  " << std::setw(12)
+                  << std::fixed << std::setprecision(2)
+                  << (oldgen_hiwater_bytes / mb) << " MB";
+        if (cap > 0) {
+            std::cout << "  (cap " << std::setprecision(2) << (cap / mb) << " MB)";
+        }
+        std::cout << std::endl;
+    }
 
     // Split-header large-body minor-reclaim stats. Each minor GC tries to
     // free Tag_LargeStringHeader / Tag_LargeByteHeader bodies whose
@@ -1614,6 +1650,7 @@ void GCStats::print() const {
     }
 
     std::cout << std::endl;
+
 }
 
 // Resets all statistics to zero.
@@ -1630,7 +1667,8 @@ void GCStats::reset() {
     nursery_grow_events = 0;
     nursery_size_bytes = 0;
     ensure_slow_calls = 0;
-    nursery_block_advances = 0;
+    oldgen_inuse_peak_bytes = 0;
+    oldgen_hiwater_bytes    = 0;
     total_oldgen_alloc_in_minor_ns    = 0;
     total_oldgen_alloc_in_mutator_ns  = 0;
     total_post_sweep_shrink_ns        = 0;

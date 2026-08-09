@@ -35,6 +35,7 @@
 #include "allocator/EcoApplyClosureTypedTest.hpp"
 #include "allocator/GCPressureTest.hpp"
 #include "allocator/EnsureHeadroomTest.hpp"
+#include "allocator/NurseryContiguityTest.hpp"
 #include "allocator/SliceRepresentationTest.hpp"
 #include "allocator/AddressSpaceReservationTest.hpp"
 #include "allocator/HPointerLayoutTest.hpp"
@@ -826,6 +827,13 @@ int main(int argc, char* argv[]) {
     gcPressureTests->add(testEnsureAtClampedBlockGCsInsteadOfAdvancing);
     gcPressureTests->add(testEnsureFailSoftTinyConfigTerminates);
     gcPressureTests->add(testEnsureAbandonedTailsSurviveValidateWalk);
+    // Group G — contiguous nursery extents + the slice layer (HEAP_042).
+    // Reconfigures the heap geometry, so it rides the same fork isolation.
+    gcPressureTests->add(testNurseryExtentsAreContiguousAndMirrored);
+    gcPressureTests->add(testNurseryGrowthExtendsInPlaceAndSurvivesGC);
+    gcPressureTests->add(testNurserySliceReleaseRetainsCommitAcrossReacquire);
+    gcPressureTests->add(testNurserySliceGeometryRebuiltOnReconfigure);
+    gcPressureTests->add(testNurseryAllocEndFailSoftWhenSurvivorsPastThreshold);
 
     // Codegen tests (MLIR lowering and JIT execution) - parallel isolated execution
     //

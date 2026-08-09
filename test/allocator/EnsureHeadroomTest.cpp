@@ -1,12 +1,15 @@
 /**
  * The ensure primitive behind capacity-check hoisting (HEAP_041,
- * plans/capacity-check-hoisting.md §2.4 / §4 Step 2).
+ * plans/capacity-check-hoisting.md §2.4 / §4 Step 2), over the contiguous
+ * nursery (HEAP_042, plans/contiguous-nursery-space.md).
  *
  * `ThreadLocalHeap::ensureNursery(n)` must make `bump.end - bump.ptr >= n`
  * true WITHOUT allocating, so a covered straight-line run can then perform
- * UNCHECKED bumps totalling <= n bytes. These tests exercise the three arms
- * of its escalation ladder (advance-on-exhaustion / minor GC / fail-soft
- * unclamp) plus the state the abandoned tails leave behind.
+ * UNCHECKED bumps totalling <= n bytes. With one contiguous from-space
+ * extent the ladder has two live arms — minor GC, then the tiny-config
+ * fail-soft unclamp — because the block-advance arm (and its
+ * clamp-vs-exhaustion disambiguator) no longer exists: a miss can only mean
+ * "GC now".
  *
  * Tiny heaps are configured PROGRAMMATICALLY (initAllocator(cfg)) rather
  * than via ECO_HEAP_CONFIG — an env file would apply to every initialize in
@@ -15,8 +18,9 @@
  * The "unchecked bump" helper below is the C++ mirror of what the covered
  * expansion emits: load ptr, bump, store, then write the header and payload
  * in the merge position. It writes a REAL header every time, because the
- * ECO_HEAP_VALIDATE pre-evacuation walk parses [block_start, bump_.ptr) of
- * the current block by header.
+ * ECO_HEAP_VALIDATE pre-evacuation walk parses the WHOLE allocated prefix
+ * [fromBase, bump_.ptr) by header — under the contiguous design there are no
+ * tail gaps, so the walk is no longer restricted to one block.
  */
 
 #include "EnsureHeadroomTest.hpp"
@@ -81,27 +85,23 @@ void* uncheckedBumpInt(NurserySpace& nursery, i64 value) {
     return obj;
 }
 
-// The bump pointer must always sit inside the block current_from_idx_ names
-// — the coherence property failSoftUnclampCurrentBlock exists to restore.
+// The bump state must always lie inside the from-space extent, ordered
+// base <= ptr <= end <= extent end. Under the block design this needed an
+// index/pointer coherence check; contiguity reduces it to the ordering.
 void assertBumpCoherent(NurserySpace& nursery) {
-    const size_t idx = NTA::currentFromIdx(nursery);
-    char* block = NTA::fromBlockAt(nursery, idx);
-    EH_ASSERT(block != nullptr);
-    EH_ASSERT(NTA::bumpPtr(nursery) >= block);
-    EH_ASSERT(NTA::bumpPtr(nursery) <= block + NTA::blockSize(nursery));
-    EH_ASSERT(NTA::bumpEnd(nursery) >= block);
-    EH_ASSERT(NTA::bumpEnd(nursery) <= block + NTA::blockSize(nursery));
+    char* base = NTA::fromBase(nursery);
+    char* end  = NTA::fromEnd(nursery);
+    EH_ASSERT(base != nullptr);
+    EH_ASSERT(NTA::bumpPtr(nursery) >= base);
+    EH_ASSERT(NTA::bumpPtr(nursery) <= NTA::bumpEnd(nursery));
+    EH_ASSERT(NTA::bumpEnd(nursery) <= end);
 }
 
 #if ENABLE_GC_STATS
 // NurserySpace and ThreadLocalHeap keep SEPARATE GCStats objects (the printed
-// banner combines all three per-heap objects). minor_gc_count and
-// nursery_block_advances are recorded by the nursery; ensure_slow_calls by
-// the heap, at ensureNursery's entry.
+// banner combines all three per-heap objects). minor_gc_count is recorded by
+// the nursery; ensure_slow_calls by the heap, at ensureNursery's entry.
 uint64_t minors(NurserySpace& nursery) { return nursery.getStats().minor_gc_count; }
-uint64_t advances(NurserySpace& nursery) {
-    return nursery.getStats().nursery_block_advances;
-}
 uint64_t ensureCalls(ThreadLocalHeap* heap) {
     return heap->getStats().ensure_slow_calls;
 }
@@ -110,11 +110,11 @@ uint64_t ensureCalls(ThreadLocalHeap* heap) {
 } // namespace
 
 // ============================================================================
-// (a) The post-condition holds across block advances and across minor GCs
+// (a) The post-condition holds across minor GCs
 // ============================================================================
 
 Testing::TestCase testEnsureHeadroomPostconditionAcrossAdvanceAndGC(
-    "HEAP_041: ensure(n) guarantees n bytes across block advances and GCs",
+    "HEAP_041/042: ensure(n) guarantees n bytes across minor GCs",
     []() {
         auto& alloc = initAllocator(pressureHeapConfig());
         auto* heap = AllocatorTestAccess::getThreadHeap(alloc);
@@ -126,12 +126,11 @@ Testing::TestCase testEnsureHeadroomPostconditionAcrossAdvanceAndGC(
         constexpr size_t kUnits = 4;
         constexpr size_t kRun = kUnits * kCell;
         // 128 KiB of from-space at 64 B per run = 2048 runs per fill; this
-        // drives many block advances and dozens of minor GCs.
+        // drives dozens of minor GCs.
         constexpr size_t kRuns = 40000;
 
 #if ENABLE_GC_STATS
         const uint64_t minors0 = minors(nursery);
-        const uint64_t advances0 = advances(nursery);
         const uint64_t ensures0 = ensureCalls(heap);
 #endif
 
@@ -151,8 +150,8 @@ Testing::TestCase testEnsureHeadroomPostconditionAcrossAdvanceAndGC(
             EH_ASSERT(NTA::bumpPtr(nursery) <= NTA::bumpEnd(nursery));
 
             // Every so often force a GC mid-stream and re-assert immediately
-            // afterwards: the post-GC bump resumes mid-block after survivors,
-            // so this is the arm that needs the loop in ensureHeadroom.
+            // afterwards: the post-GC bump resumes right after the survivors,
+            // which is the state the guarantee must still hold in.
             if (i % 997 == 996) {
                 alloc.minorGC();
                 heap->ensureNursery(kRun);
@@ -162,25 +161,29 @@ Testing::TestCase testEnsureHeadroomPostconditionAcrossAdvanceAndGC(
         }
 
 #if ENABLE_GC_STATS
-        // Non-vacuity: this workload must actually have crossed both a block
-        // boundary and a GC, or the test proved nothing.
-        EH_ASSERT(advances(nursery) > advances0);
+        // Non-vacuity: this workload must actually have collected, or the
+        // test proved nothing. (The block design also asserted a block
+        // advance here; there is no such event any more — which is the
+        // point of HEAP_042.)
         EH_ASSERT(minors(nursery) > minors0);
         EH_ASSERT(ensureCalls(heap) - ensures0 >= kRuns);
 #endif
     });
 
 // ============================================================================
-// (b) A miss at a threshold-CLAMPED block goes to GC, never to a block advance
+// (b) A miss against the threshold-CLAMPED end goes to GC
 // ============================================================================
 //
-// This is the §2.4 disambiguator. Advancing past a mid-block proactive-GC trip
-// would land every subsequent block in computeAllocEndForBlock's already-full
-// fail-soft clause (full block ends), silently disabling the proactive trigger
-// for the rest of the nursery cycle — megabytes of drift, not "<= n bytes".
+// The clamp is what fronts the proactive-GC trigger for a covered run. Under
+// the block design this test also had to prove the miss was NOT read as block
+// exhaustion (which would have advanced past a mid-block trip and disabled
+// the trigger for the rest of the cycle). Contiguity removes that failure
+// mode by construction — there is nothing to advance to — so what remains to
+// pin is that a clamped miss still collects exactly once, and that the
+// extent is intact afterwards.
 
 Testing::TestCase testEnsureAtClampedBlockGCsInsteadOfAdvancing(
-    "HEAP_041: an ensure miss at a threshold-clamped block triggers GC, not an advance",
+    "HEAP_041/042: an ensure miss against the clamped end triggers exactly one GC",
     []() {
         auto& alloc = initAllocator(pressureHeapConfig());
         auto* heap = AllocatorTestAccess::getThreadHeap(alloc);
@@ -190,25 +193,26 @@ Testing::TestCase testEnsureAtClampedBlockGCsInsteadOfAdvancing(
         // Start from a known-clean bump state.
         alloc.minorGC();
 
-        // Put some real objects in the block first, so the pre-evacuation
-        // walk has something to parse and bump_.ptr is genuinely mid-block.
+        // Put some real objects in first, so the pre-evacuation walk has
+        // something to parse and bump_.ptr is genuinely mid-extent.
         heap->ensureNursery(16 * kCell);
         for (size_t j = 0; j < 16; ++j) {
             uncheckedBumpInt(nursery, static_cast<i64>(j));
         }
 
-        char* block = NTA::fromBlockAt(nursery, NTA::currentFromIdx(nursery));
-        EH_ASSERT(block != nullptr);
-        // Precondition: we are genuinely mid-block, not at its end.
-        EH_ASSERT(NTA::bumpPtr(nursery) < block + NTA::blockSize(nursery));
+        char* base = NTA::fromBase(nursery);
+        char* extent_end = NTA::fromEnd(nursery);
+        EH_ASSERT(base != nullptr);
+        // Precondition: mid-extent, not at its end.
+        EH_ASSERT(NTA::bumpPtr(nursery) > base);
+        EH_ASSERT(NTA::bumpPtr(nursery) < extent_end);
 
-        // Simulate the proactive-GC threshold tripping INSIDE this block.
-        NTA::clampCurrentBlockEnd(nursery, 8);
-        EH_ASSERT(NTA::bumpEnd(nursery) < block + NTA::blockSize(nursery));
+        // Simulate the proactive-GC threshold tripping here.
+        NTA::clampEnd(nursery, 8);
+        EH_ASSERT(NTA::bumpEnd(nursery) < extent_end);
 
 #if ENABLE_GC_STATS
         const uint64_t minors0 = minors(nursery);
-        const uint64_t advances0 = advances(nursery);
 #endif
 
         heap->ensureNursery(64);
@@ -217,10 +221,9 @@ Testing::TestCase testEnsureAtClampedBlockGCsInsteadOfAdvancing(
         assertBumpCoherent(nursery);
 
 #if ENABLE_GC_STATS
-        // Exactly one minor GC, and NO block advance: the clamp was read as a
-        // threshold trip, not as exhaustion.
+        // Exactly one minor GC: the clamped miss collected rather than
+        // silently handing out space past the trigger.
         EH_ASSERT(minors(nursery) == minors0 + 1);
-        EH_ASSERT(advances(nursery) == advances0);
 #endif
     });
 
@@ -228,22 +231,21 @@ Testing::TestCase testEnsureAtClampedBlockGCsInsteadOfAdvancing(
 // (c) The tiny-config fail-soft corner terminates and restores coherence
 // ============================================================================
 //
-// threshold_total_bytes_ < n makes even a FRESH block's clamped end too small,
-// so advance-then-GC can never satisfy the request and the ladder would loop.
-// The fail-soft arm unclamps the current block only — after rewinding
-// current_from_idx_ to the block actually holding bump_.ptr.
+// threshold_total_bytes_ < n makes even a freshly-collected extent's clamped
+// end too small, so GC-then-retry can never satisfy the request and the
+// ladder would loop. The fail-soft arm hands out the rest of the extent.
 
 Testing::TestCase testEnsureFailSoftTinyConfigTerminates(
-    "HEAP_041: ensure fail-soft unclamp terminates and restores index coherence",
+    "HEAP_041/042: ensure fail-soft unclamp terminates and keeps the extent coherent",
     []() {
         auto& alloc = initAllocator(tinyThresholdConfig());
         auto* heap = AllocatorTestAccess::getThreadHeap(alloc);
         EH_ASSERT(heap != nullptr);
         NurserySpace& nursery = heap->getNursery();
 
-        // Precondition for this corner: a fresh block's CLAMPED headroom is
-        // below the maximum budget. If this ever stops holding the test is
-        // no longer exercising the fail-soft arm.
+        // Precondition for this corner: the CLAMPED headroom is below the
+        // maximum budget. If this ever stops holding the test is no longer
+        // exercising the fail-soft arm.
         EH_ASSERT(NTA::headroom(nursery) < 4096);
 
         heap->ensureNursery(4096);
@@ -279,17 +281,19 @@ Testing::TestCase testEnsureFailSoftTinyConfigTerminates(
     });
 
 // ============================================================================
-// (d) Abandoned tails don't trip the validate walker
+// (d) The full-prefix validate walk survives a heavy unchecked-bump workload
 // ============================================================================
 //
-// ensureHeadroom's advance arm abandons the current block's tail. The
-// ECO_HEAP_VALIDATE pre-evacuation walk parses the CURRENT block only
-// ([block_start, bump_.ptr)), so tails in completed blocks are tolerated —
-// this test is the one that would catch it if that ever changed. Under a
-// non-validate build it degrades to a plain retention roundtrip.
+// The block design's pre-evacuation walk parsed the CURRENT block only,
+// because completed blocks carried tail gaps abandoned by ensure's advance
+// arm. Contiguity removes the gaps, so the walk now parses the ENTIRE
+// allocated prefix [fromBase, bump_.ptr) — a strictly stronger check, and
+// this is the test that exercises it: thousands of unchecked-bump runs
+// interleaved with collections, every byte of the prefix header-parseable.
+// Under a non-validate build it degrades to a plain retention roundtrip.
 
 Testing::TestCase testEnsureAbandonedTailsSurviveValidateWalk(
-    "HEAP_041: tails abandoned by ensure advances don't trip the validate walk",
+    "HEAP_042: the full-prefix validate walk parses an unchecked-bump workload",
     []() {
         auto& alloc = initAllocator(pressureHeapConfig());
         auto* heap = AllocatorTestAccess::getThreadHeap(alloc);
@@ -297,7 +301,7 @@ Testing::TestCase testEnsureAbandonedTailsSurviveValidateWalk(
         NurserySpace& nursery = heap->getNursery();
 
         // 512 B is the default ECO_ALLOC_HOIST_MAX_BYTES — the largest run a
-        // covered region can request, so the largest tail an advance abandons.
+        // covered region can request.
         constexpr size_t kRun = 512;
         constexpr size_t kUnits = kRun / kCell;
         constexpr size_t kRuns = 6000;
@@ -321,7 +325,7 @@ Testing::TestCase testEnsureAbandonedTailsSurviveValidateWalk(
             }
 
             // Drive the walk often: every explicit minorGC re-parses the
-            // current block and re-evacuates the rooted survivors.
+            // whole allocated prefix and re-evacuates the rooted survivors.
             if (i % 64 == 63) {
                 alloc.minorGC();
             }

@@ -70,8 +70,22 @@ constexpr size_t OS_PAGE_SIZE = 16384;
 constexpr size_t OS_PAGE_SIZE = 4096;
 #endif
 
-// Reserved virtual address space for the heap (24 GiB; ~12 GiB old gen + ~12 GiB nursery).
+// Reserved virtual address space for the heap (24 GiB; 20 GiB old gen +
+// 4 GiB nursery under the default split below).
 constexpr size_t DEFAULT_MAX_HEAP_SIZE = 24ULL * 1024 * 1024 * 1024;
+
+// Address space given to the NURSERY region, both halves together, when
+// HeapConfig::nursery_region_bytes is left at 0 (HEAP_043). The policy is
+// min(this, max_heap_size / 2), so the default degrades to the legacy half
+// split on heaps smaller than 8 GiB (every unit-test config) and takes
+// effect on the real 24 GiB reservation: 4 GiB nursery / 20 GiB old gen.
+//
+// 4 GiB = 2 GiB per side = 8 slice slots at the default 256 MiB slice, i.e.
+// 8 concurrently-alive ThreadLocalHeaps at full growth — while a
+// self-compile was measured to use exactly one 512 MiB nursery and 3.98 GiB
+// of old-gen high-water, so the old gen goes from 3x to 5x its observed
+// peak and the nursery keeps 4x the slots a single-threaded program needs.
+constexpr size_t DEFAULT_NURSERY_REGION_BYTES = 4ULL * 1024 * 1024 * 1024;
 
 // Size of one AllocBuffer / nursery block / old-gen BBoP page in bytes.
 constexpr size_t ALLOC_BUFFER_SIZE = 512 * 1024;
@@ -346,6 +360,32 @@ inline size_t getObjectSize(void *obj) {
 }
 
 // ============================================================================
+// Nursery slice estate (HEAP_042)
+// ============================================================================
+
+/**
+ * One ThreadLocalHeap's nursery address estate: two mirrored fixed-size
+ * slices of the low and high nursery regions, at the same slot index.
+ *
+ * `capacity` is the LOGICAL extent length of EACH side — the semi-space a
+ * NurserySpace actually bump-allocates and evacuates into, and the only
+ * quantity GC semantics (membership bounds, threshold, growth) may consult.
+ * It is one value because both sides always grow together.
+ *
+ * Distinct from it, and deliberately NOT exposed here: the slot's physical
+ * *retained commit*, kept privately by the Allocator so a released slot's
+ * pages can be reused by the next heap that claims the slot (the Issue-#40
+ * respawn path). Retained commit may exceed `capacity` — those pages are
+ * dormant, not part of any extent.
+ */
+struct NurserySlicePair {
+    char*  low_base  = nullptr;   // slice base in the low nursery region
+    char*  high_base = nullptr;   // mirrored slice base in the high region
+    size_t capacity  = 0;         // logical extent bytes, per side
+    size_t slot      = 0;         // slot index (bookkeeping / release)
+};
+
+// ============================================================================
 // Heap Configuration
 // ============================================================================
 
@@ -360,6 +400,20 @@ struct HeapConfig {
 
     // Reserved virtual address space for the heap.
     size_t max_heap_size = DEFAULT_MAX_HEAP_SIZE;
+
+    // Bytes of that reservation given to the NURSERY region (both low and
+    // high halves together); the old generation gets the rest (HEAP_043).
+    // 0 (the default) selects the default policy in nurseryRegionBytes():
+    // min(DEFAULT_NURSERY_REGION_BYTES, max_heap_size / 2).
+    //
+    // The default is deliberately lopsided in the old gen's favour: a
+    // nursery is capped at nursery_max_block_count * alloc_buffer_size per
+    // heap (512 MiB at defaults, measured to be exactly what a self-compile
+    // uses) while the old generation's cap is a hard wall on a monotonic
+    // commit bump. Splitting the reservation evenly gave the nursery ~24x
+    // more address space than one heap can use and cost the old gen half
+    // the heap. See plans/contiguous-nursery-space.md M2.
+    size_t nursery_region_bytes = 0;
 
     // Size of one AllocBuffer / nursery block / old-gen BBoP page in bytes.
     size_t alloc_buffer_size = ALLOC_BUFFER_SIZE;
@@ -480,6 +534,53 @@ struct HeapConfig {
     // Derived value: total nursery size in bytes.
     size_t nurserySize() const { return nursery_block_count * alloc_buffer_size; }
 
+    // ---- Nursery slice geometry (HEAP_042) ----
+    //
+    // The nursery region is carved into fixed-size per-heap SLICES, one pair
+    // (low + high) per ThreadLocalHeap, so every semi-space is a single
+    // contiguous extent. These helpers are the single source of truth for
+    // that geometry and are shared by Allocator::rebuildNurserySliceTable and
+    // validate() — keep them in agreement.
+
+    // Bytes of address space given to the nursery, both regions together.
+    // The old-gen cap is the complement: max_heap_size - this.
+    size_t nurseryRegionBytes() const {
+        if (nursery_region_bytes != 0) return nursery_region_bytes;
+        // Default policy: the constant, but never more than half the heap —
+        // so small heaps (every unit-test config) keep the legacy 50/50
+        // split and only a reservation big enough to matter gets the
+        // lopsided one.
+        const size_t half = max_heap_size / 2;
+        return DEFAULT_NURSERY_REGION_BYTES < half ? DEFAULT_NURSERY_REGION_BYTES
+                                                   : half;
+    }
+
+    // Config-derived old-gen address-space cap (the complement of the
+    // nursery region). Allocator::getOldGenMaxBytes() reports
+    // min(this, the live nursery_offset) so a reconfigure that shrinks the
+    // heap scales the cap down without ever exceeding the reservation.
+    size_t oldGenCapBytes() const { return max_heap_size - nurseryRegionBytes(); }
+
+    // Per-side (low or high) nursery region size.
+    size_t nurseryRegionPerSideBytes() const { return nurseryRegionBytes() / 2; }
+
+    // Per-side slice size: the config's max-growth size, CLAMPED to the
+    // region (so a small heap with a large block cap still gets one usable
+    // slot instead of zero) and rounded down to an alloc_buffer_size
+    // multiple (so growth quantization and page alignment both hold).
+    size_t nurserySliceBytes() const {
+        const size_t want = (nursery_max_block_count / 2) * alloc_buffer_size;
+        size_t s = want < nurseryRegionPerSideBytes()
+                       ? want : nurseryRegionPerSideBytes();
+        if (alloc_buffer_size != 0) s -= s % alloc_buffer_size;
+        return s;
+    }
+
+    // Per-side bytes a nursery starts with (half of nurserySize()).
+    size_t nurseryInitialPerSideBytes() const {
+        return (nursery_block_count / 2) * alloc_buffer_size;
+    }
+
     // Default constructor uses in-class member initializers.
     HeapConfig() = default;
 
@@ -507,19 +608,41 @@ struct HeapConfig {
         // ========== 2. Heap Partitioning Constraints ==========
         // Heap is split: [0, max/2) = old gen, [max/2, max) = nursery.
 
-        size_t old_gen_space = max_heap_size / 2;
+        size_t old_gen_space = oldGenCapBytes();
 
         if (initial_old_gen_size >= old_gen_space) {
             throw std::invalid_argument(
-                "initial_old_gen_size must be < max_heap_size / 2 "
-                "(old gen lives in first half of heap)");
+                "initial_old_gen_size must be < the old-gen region "
+                "(max_heap_size - nursery_region_bytes)");
         }
 
-        size_t nursery_size = nurserySize();
-        if (nursery_size >= old_gen_space) {
+        // The INITIAL nursery must fit its own region (the per-side slice
+        // check below is the sharp form; this keeps the coarse guard too).
+        if (nurserySize() >= nurseryRegionBytes()) {
             throw std::invalid_argument(
-                "nursery total size must be < max_heap_size / 2 "
-                "(nursery lives in second half of heap)");
+                "nursery total size must be < nursery_region_bytes "
+                "(the nursery must fit its own region)");
+        }
+
+        // Split sanity (HEAP_043). 0 means the legacy half split.
+        if (nursery_region_bytes != 0) {
+            if (nursery_region_bytes % (2 * alloc_buffer_size) != 0) {
+                throw std::invalid_argument(
+                    "nursery_region_bytes must be a multiple of "
+                    "2 * alloc_buffer_size (it is split into two "
+                    "block-quantized halves)");
+            }
+            if (nursery_region_bytes < nursery_max_block_count * alloc_buffer_size) {
+                throw std::invalid_argument(
+                    "nursery_region_bytes must admit at least one unclamped "
+                    "slice per side "
+                    "(>= nursery_max_block_count * alloc_buffer_size)");
+            }
+            if (nursery_region_bytes > max_heap_size / 2) {
+                throw std::invalid_argument(
+                    "nursery_region_bytes must be <= max_heap_size / 2 "
+                    "(the old gen never gets less than half the heap)");
+            }
         }
 
         // ========== 3. Nursery Block Constraints ==========
@@ -548,6 +671,28 @@ struct HeapConfig {
             throw std::invalid_argument(
                 "nursery_block_count must be <= nursery_max_block_count "
                 "(initial size cannot exceed the adaptive-growth cap)");
+        }
+
+        // Slice geometry (HEAP_042): each heap's semi-space is the committed
+        // prefix of ONE fixed-size slice, so the region must admit at least
+        // one slice per side and a slice must hold the initial nursery.
+        // nursery_max_block_count is deliberately NOT rejected when it
+        // overshoots the region — nurserySliceBytes() clamps it, preserving
+        // today's behaviour where an oversized growth cap merely stops
+        // growing early rather than failing to boot.
+        if (nurserySliceBytes() == 0) {
+            throw std::invalid_argument(
+                "nursery region is too small for one slice per side "
+                "(need at least alloc_buffer_size per side)");
+        }
+
+        if (nurseryInitialPerSideBytes() > nurserySliceBytes()) {
+            throw std::invalid_argument(
+                "nursery_block_count too large for the nursery region: the "
+                "initial per-side nursery must fit one slice "
+                "(nursery_block_count/2 * alloc_buffer_size <= "
+                "min(nursery_max_block_count/2 * alloc_buffer_size, "
+                "nursery region / 4))");
         }
 
         // ========== 4. AllocBuffer Constraints ==========
@@ -585,7 +730,7 @@ struct HeapConfig {
         }
         if (large_object_threshold > old_gen_space) {
             throw std::invalid_argument(
-                "large_object_threshold must be <= max_heap_size / 2 "
+                "large_object_threshold must be <= the old-gen region "
                 "(can't exceed old gen space)");
         }
         // Any object below large_object_threshold is allocated in the
@@ -646,6 +791,12 @@ struct HeapConfig {
             throw std::invalid_argument(
                 "major_gc_initiating_occupancy must be > "
                 "major_gc_target_utilization");
+        }
+
+        if (major_gc_global_pressure_fraction <= 0.0f ||
+            major_gc_global_pressure_fraction > 1.0f) {
+            throw std::invalid_argument(
+                "major_gc_global_pressure_fraction must be in (0.0, 1.0]");
         }
 
         if (major_gc_garbage_fraction < 0.0f ||

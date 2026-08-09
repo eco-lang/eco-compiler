@@ -162,7 +162,7 @@ HPtr eco_alloc_cons_uninit(uint32_t head_kind);
 
 // Address of the calling thread's nursery bump state {ptr at +0, end at +8}.
 void* eco_bump_state(void);
-// Inline-bump slow path: block advance / minor GC; returns UNINITIALIZED
+// Inline-bump slow path: minor GC; returns UNINITIALIZED
 // storage — caller stores header + all fields before its next safepoint.
 HPtr eco_alloc_inline_slow(uint64_t size);
 // Hoisted capacity check (plans/capacity-check-hoisting.md, HEAP_041): makes

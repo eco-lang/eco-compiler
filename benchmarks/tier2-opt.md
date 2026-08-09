@@ -104,6 +104,39 @@ byte diff means the workload moved and walls are not comparable.
 
 ## Runs
 
+### 2026-08-09 15:54 UTC — Run O: contiguous nursery extents + configurable old-gen/nursery split (**FLAT wall; KEEP — DEFAULT-ON, no flag**)
+
+`plans/contiguous-nursery-space.md` (HEAP_042/043). M1: each semi-space becomes
+ONE contiguous extent — a per-heap slice of the nursery region — so `bump_.end`
+spans the whole from-space and the block apparatus (block vectors, indices,
+clamp-vs-exhaustion disambiguator, tail-gap tracking) is DELETED. M2: the
+old-gen/nursery split becomes config (`nursery_region_bytes`), default 4 GiB
+nursery / 20 GiB old gen of the 24 GiB reservation. Arms: A = HEAD block
+nursery (the C0-census leg), B = M1 with `nursery_region_bytes: "12G"` (legacy
+layout), C = M1+M2 default — B and C are the SAME binary, two configs.
+**Both pairs SPLIT by leg (A→B measured −1.19% / warmup +1.08%; B→C +0.63% /
+−2.74%) ⇒ FLAT**, as the plan's caution prior predicted. Kept for the non-wall
+wins: **nursery slow-path entries 417,585 → 316 (1,321×)** — advances 312,952 →
+structurally 0, ensure cold calls 104,633 → 316 — plus **RSS −2.56%**. Trigger
+fidelity EXACT on all six legs (minors 871, majors 10 = 8 occupancy + 2 garbage
++ 0 pressure + 0 alloc-fail, 4 grow events to a 512 MB nursery); `out.mlir`
+`cmp`-identical across arms. Gates: unit + E2E `--target full` 1628/1628,
+heap-validate tree 1628/1628.
+
+| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | major GC | ensure calls | old-gen cap | out.mlir |
+|---|---|---|---|---|---|---|---|---|---|
+| C (M1+M2) measured | **3:36.18** | 5,012,240 kB | 379,768,314 | 18,537.46 MB | 871 | 10 | 316 | 20,480 MB | 12,955,155 B |
+| C warmup | 3:36.11 | 5,012,120 kB | 379,768,314 | 18,537.46 MB | 871 | 10 | 316 | 20,480 MB | ≡ |
+| B (M1 only) measured | **3:34.83** | 5,035,292 kB | 379,768,314 | 18,537.46 MB | 871 | 10 | 316 | 12,288 MB | ≡ |
+| B warmup | 3:42.20 | 5,134,464 kB | 379,768,478 | 18,537.46 MB | 871 | 10 | 315 | 12,288 MB | ≡ |
+| A (block) measured | 3:37.42 | 5,144,044 kB | 379,941,572 | 18,545.61 MB | 871 | 10 | 104,633 | 12,288 MB | ≡ (Run N) |
+| A warmup | 3:39.83 | 5,144,820 kB | — | — | — | — | — | 12,288 MB | — |
+
+Alloc-count delta is a COUNTING artifact (same class as Run N): an inline-alloc
+slow call satisfied by a block advance used to pass through the counted C++
+path; it is now served by the uncounted inline bump. Same-binary run-to-run
+spread on that counter is 164.
+
 ### 2026-08-09 00:00 UTC — Run N: capacity-check hoisting (**FLAT wall; KEEP by user decision — now DEFAULT-ON**)
 
 `plans/capacity-check-hoisting.md` (CGEN_074/HEAP_041): a coverable function's
@@ -392,3 +425,4 @@ matching the L1 hybrid-spines prediction) and the workload moved
 | L — NCSR + call-free bump_state (NCSR reverted) | 3:40.31 | 380,045,113 obj / 18,549.76 MB |
 | M — gc-free propagation + selective FP | 3:38.17 | 380,045,113 obj / 18,549.76 MB |
 | N — capacity-check hoisting | 3:37.44 | 379,941,572 obj / 18,545.61 MB |
+| O — contiguous nursery + address re-split | 3:36.18 | 379,768,314 obj / 18,537.46 MB |

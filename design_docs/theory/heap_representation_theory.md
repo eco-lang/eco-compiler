@@ -551,7 +551,7 @@ Liveness for old-gen objects is tracked in **per-block bitmaps** (1 bit per 8-by
 
 This prevents excessively large objects from fragmenting the nursery's semi-space copying collector.
 
-Large-object allocation is supported in-block as well: the nursery/old-gen spaces track a per-block `block_end_of_objects_` vector recording the real end-of-objects offset within each block. The Cheney scan uses this cutoff so it does not walk past the last live object into uninitialized tail bytes when a block contains a large object that did not fill it.
+Large-object allocation is supported in-block as well: the OLD GEN tracks a per-block end-of-objects offset (`BlockInfo.end_of_objects`, HEAP_024) so sweep and reference-fixup walks stop at the last live object rather than walking into uninitialized tail bytes. The nursery needed the same bookkeeping while it was block-structured, but no longer does: since HEAP_042 each semi-space is one contiguous extent, evacuation is a single bump, and the Cheney scan simply runs while `scan_ptr_ < copy_ptr_` — there are no tail gaps to describe.
 
 *(Apr 26, 2026)*: Released large blocks are kept in `free_large_blocks_`; `allocateLargeBlock` consults this list before asking the Allocator for a fresh page.
 

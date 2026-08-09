@@ -6,9 +6,13 @@
  *   - Thread-local heaps for each thread (nursery + old gen + stats).
  *   - Delegation to thread-local heaps for allocation and GC.
  *
- * Memory layout:
- *   [0 .. heap_reserved/2)      - Old generation region (carved up per-thread).
- *   [heap_reserved/2 .. end)    - Nursery region (carved up per-thread).
+ * Memory layout (HEAP_043 — the split is configuration, not a constant):
+ *   [0 .. nursery_offset)       - Old generation region (carved up per-thread),
+ *                                 where nursery_offset = max_heap_size
+ *                                 - nursery_region_bytes (20 GiB by default).
+ *   [nursery_offset .. end)     - Nursery region, halved into low and high
+ *                                 halves and carved into fixed-size slices,
+ *                                 one pair per thread heap (HEAP_042).
  */
 
 #include "Allocator.hpp"
@@ -145,9 +149,10 @@ constinit thread_local ThreadLocalHeap* Allocator::tl_heap_ = nullptr;
 
 Allocator::Allocator() :
     heap_base(nullptr), heap_reserved(0),
-    old_gen_committed(0), old_gen_in_use_bytes_(0),
+    old_gen_committed(0), old_gen_in_use_bytes_(0), old_gen_in_use_peak_(0),
     nursery_offset(0),
-    nursery_low_committed_(0), nursery_high_committed_(0), initialized(false) {
+    nursery_low_committed_(0), nursery_high_committed_(0),
+    nursery_slice_bytes_(0), initialized(false) {
     // Initialization happens in initialize() method.
 }
 
@@ -211,8 +216,14 @@ void Allocator::initialize(const HeapConfig& config) {
     // Set global heap_base for pointer conversion.
     g_heap_base = heap_base;
 
-    // Nursery region starts at halfway point.
-    nursery_offset = heap_reserved / 2;
+    // The nursery region occupies the TOP `nursery_region_bytes` of the
+    // reservation; the old generation gets everything below it (HEAP_043).
+    // Computed once — first init wins for the process lifetime, exactly as
+    // before (reset() re-derives slice geometry but never the region).
+    nursery_offset = heap_reserved - config_.nurseryRegionBytes();
+
+    // Slice geometry follows the config against that region (HEAP_042).
+    rebuildNurserySliceTable();
 
     runtime_start_ns_ = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -258,8 +269,9 @@ void Allocator::initThread() {
     }
 
     // Create ThreadLocalHeap.
-    // Memory is allocated on demand by NurserySpace (via acquireNurseryBlock)
-    // and OldGenSpace (via acquireAllocBuffer).
+    // Memory is allocated on demand by NurserySpace (via
+    // acquireNurserySlicePair, HEAP_042) and OldGenSpace (via
+    // acquireAllocBuffer).
     auto heap = std::make_unique<ThreadLocalHeap>(
         this,
         nullptr, 0,    // Nursery base/size - allocated on demand
@@ -427,124 +439,141 @@ size_t Allocator::getOldGenAllocatedBytes() const {
 }
 
 // ============================================================================
-// Region Allocation (for NurserySpace growth)
+// Nursery slice allocation (HEAP_042)
 // ============================================================================
+//
+// The nursery region's two halves are carved into `nursery_slots_.size()`
+// fixed-size slots each. A heap owns the low and high slice at ONE slot,
+// so both of its semi-spaces are single contiguous extents and the bump
+// limit can span the whole from-space instead of one 512 KiB block.
 
-// Acquires a block from the low nursery region.
-// Thread-safe: acquires thread_mutex_ to update shared committed counters.
-char* Allocator::acquireNurseryBlockLow(size_t size) {
-    std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+void Allocator::rebuildNurserySliceTable() {
+    // Region geometry is first-init-wins (nursery_offset never moves after
+    // initialize()); slice geometry follows the CURRENT config.
+    const size_t nursery_space = heap_reserved - nursery_offset;
+    const size_t per_side      = nursery_space / 2;
 
-    // Align size to 8 bytes.
-    size = (size + 7) & ~7;
-
-    // Reuse a previously-released block of the same size before growing.
-    for (auto it = nursery_low_freelist_.begin();
-         it != nursery_low_freelist_.end(); ++it) {
-        if (it->second == size) {
-            char* block = it->first;
-            nursery_low_freelist_.erase(it);
-            return block;
-        }
+    size_t want = (config_.nursery_max_block_count / 2) * config_.alloc_buffer_size;
+    if (want > per_side) want = per_side;         // clamp to the region
+    if (config_.alloc_buffer_size != 0) {
+        want -= want % config_.alloc_buffer_size;  // keep growth quantized
     }
+    nursery_slice_bytes_ = want;
 
-    // Nursery is split into two halves: low and high.
-    // Low region: [nursery_offset .. nursery_offset + nursery_space/2)
-    size_t nursery_space = heap_reserved - nursery_offset;
-    size_t low_region_size = nursery_space / 2;
-
-    // Check if we have space in low region.
-    if (nursery_low_committed_ + size > low_region_size) {
-        if (heapTraceEnabled()) {
-            dumpHeapState("acquireNurseryBlockLow OUT OF SPACE", size);
-        }
-        return nullptr;  // Out of low region address space.
-    }
-
-    // Commit physical memory for this block.
-    char* block_base = heap_base + nursery_offset + nursery_low_committed_;
-    void* result = Elm::platform::commitAt(block_base, size);
-
-    if (result == nullptr) {
-        return nullptr;
-    }
-
-    size_t before = nursery_low_committed_;
-    nursery_low_committed_ += size;
-
-    // Log every time the low-region commit counter crosses a milestone so
-    // the trace captures monotonic nursery growth without line-per-block noise.
-    if (heapTraceEnabled() &&
-        before / HEAP_TRACE_NURSERY_INTERVAL !=
-            nursery_low_committed_ / HEAP_TRACE_NURSERY_INTERVAL) {
-        dumpHeapState("nursery-low grew", size);
-    }
-
-    return block_base;
+    const size_t slots = (want == 0) ? 0 : (per_side / want);
+    // assign() also drops every retained-commit record, which is required:
+    // slot bases move whenever alloc_buffer_size or the block caps change.
+    nursery_slots_.assign(slots, NurserySliceSlot{});
 }
 
-void Allocator::releaseNurseryBlockLow(char* block, size_t size) {
+NurserySlicePair Allocator::acquireNurserySlicePair(size_t initial) {
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
-    size = (size + 7) & ~7;
-    nursery_low_freelist_.emplace_back(block, size);
+
+    if (initial > nursery_slice_bytes_) initial = nursery_slice_bytes_;
+
+    size_t slot = SIZE_MAX;
+    for (size_t i = 0; i < nursery_slots_.size(); ++i) {
+        if (!nursery_slots_[i].in_use) { slot = i; break; }
+    }
+    if (slot == SIZE_MAX) {
+        // Loud, not silent: a heap without a nursery cannot run, and the
+        // two knobs that size the geometry are the actionable information.
+        std::fprintf(stderr,
+            "[eco] FATAL: nursery slice slots exhausted (%zu slot(s) of "
+            "%zu MiB per side, region %zu MiB per side). Raise max_heap_size "
+            "(or nursery_region_bytes) to widen the region, or lower "
+            "nursery_max_block_count to shrink each slice.\n",
+            nursery_slots_.size(), nursery_slice_bytes_ / (1024 * 1024),
+            ((heap_reserved - nursery_offset) / 2) / (1024 * 1024));
+        std::fflush(stderr);
+        std::abort();
+    }
+
+    const size_t nursery_space     = heap_reserved - nursery_offset;
+    const size_t high_region_start = nursery_space / 2;
+
+    NurserySliceSlot& s = nursery_slots_[slot];
+    NurserySlicePair pair;
+    pair.low_base  = heap_base + nursery_offset + slot * nursery_slice_bytes_;
+    pair.high_base = heap_base + nursery_offset + high_region_start
+                                + slot * nursery_slice_bytes_;
+    pair.slot      = slot;
+    pair.capacity  = 0;
+
+    // Commit only what this slot has never had committed. Re-commitAt of a
+    // retained range would MAP_FIXED-remap it and DISCARD the pages, which
+    // is exactly what retention exists to avoid.
+    if (initial > s.retained_low) {
+        const size_t add = initial - s.retained_low;
+        if (Elm::platform::commitAt(pair.low_base + s.retained_low, add) == nullptr) {
+            if (heapTraceEnabled()) dumpHeapState("nursery slice low commit failed", add);
+            return pair;                     // capacity 0 == failure
+        }
+        s.retained_low = initial;
+        nursery_low_committed_ += add;
+    }
+    if (initial > s.retained_high) {
+        const size_t add = initial - s.retained_high;
+        if (Elm::platform::commitAt(pair.high_base + s.retained_high, add) == nullptr) {
+            if (heapTraceEnabled()) dumpHeapState("nursery slice high commit failed", add);
+            return pair;                     // capacity 0 == failure
+        }
+        s.retained_high = initial;
+        nursery_high_committed_ += add;
+    }
+
+    s.in_use     = true;
+    pair.capacity = initial;
+
+    if (heapTraceEnabled()) {
+        dumpHeapState("nursery slice acquired", initial);
+    }
+    return pair;
 }
 
-// Acquires a block from the high nursery region.
-// Thread-safe: acquires thread_mutex_ to update shared committed counters.
-char* Allocator::acquireNurseryBlockHigh(size_t size) {
+bool Allocator::growNurserySlicePair(NurserySlicePair& pair, size_t delta) {
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 
-    // Align size to 8 bytes.
-    size = (size + 7) & ~7;
+    if (delta == 0) return false;
+    const size_t new_cap = pair.capacity + delta;
+    if (new_cap > nursery_slice_bytes_) return false;
+    if (pair.slot >= nursery_slots_.size()) return false;
 
-    // Reuse a previously-released block of the same size before growing.
-    for (auto it = nursery_high_freelist_.begin();
-         it != nursery_high_freelist_.end(); ++it) {
-        if (it->second == size) {
-            char* block = it->first;
-            nursery_high_freelist_.erase(it);
-            return block;
+    NurserySliceSlot& s = nursery_slots_[pair.slot];
+
+    if (new_cap > s.retained_low) {
+        const size_t add = new_cap - s.retained_low;
+        if (Elm::platform::commitAt(pair.low_base + s.retained_low, add) == nullptr) {
+            return false;                    // capacity untouched
         }
+        s.retained_low = new_cap;
+        nursery_low_committed_ += add;
     }
-
-    // Nursery is split into two halves: low and high.
-    // High region: [nursery_offset + nursery_space/2 .. heap_reserved)
-    size_t nursery_space = heap_reserved - nursery_offset;
-    size_t high_region_start = nursery_space / 2;
-    size_t high_region_size = nursery_space - high_region_start;
-
-    // Check if we have space in high region.
-    if (nursery_high_committed_ + size > high_region_size) {
-        if (heapTraceEnabled()) {
-            dumpHeapState("acquireNurseryBlockHigh OUT OF SPACE", size);
+    if (new_cap > s.retained_high) {
+        const size_t add = new_cap - s.retained_high;
+        if (Elm::platform::commitAt(pair.high_base + s.retained_high, add) == nullptr) {
+            // The low side may already have grown its retained commit; that
+            // is dormant, accounted memory, not a leak, and capacity stays
+            // where it was so both extents remain equal.
+            return false;
         }
-        return nullptr;  // Out of high region address space.
+        s.retained_high = new_cap;
+        nursery_high_committed_ += add;
     }
 
-    // Commit physical memory for this block.
-    char* block_base = heap_base + nursery_offset + high_region_start + nursery_high_committed_;
-    void* result = Elm::platform::commitAt(block_base, size);
+    pair.capacity = new_cap;
 
-    if (result == nullptr) {
-        return nullptr;
+    if (heapTraceEnabled()) {
+        dumpHeapState("nursery slice grew", delta);
     }
-
-    size_t before = nursery_high_committed_;
-    nursery_high_committed_ += size;
-
-    if (heapTraceEnabled() &&
-        before / HEAP_TRACE_NURSERY_INTERVAL !=
-            nursery_high_committed_ / HEAP_TRACE_NURSERY_INTERVAL) {
-        dumpHeapState("nursery-high grew", size);
-    }
-
-    return block_base;
+    return true;
 }
 
-void Allocator::releaseNurseryBlockHigh(char* block, size_t size) {
+void Allocator::releaseNurserySlicePair(const NurserySlicePair& pair) {
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
-    size = (size + 7) & ~7;
-    nursery_high_freelist_.emplace_back(block, size);
+    if (pair.slot < nursery_slots_.size()) {
+        nursery_slots_[pair.slot].in_use = false;   // retained commit kept
+    }
 }
 
 // Acquires a block from the old gen region.
@@ -597,6 +626,7 @@ char* Allocator::acquireOldGenBlock(size_t size) {
             // Track it as in-use so getOldGenCommittedBytes() reflects
             // the round-trip correctly.
             old_gen_in_use_bytes_ += block_size;
+            noteOldGenInUsePeak();
 
             if (heapTraceEnabled()) {
                 dumpHeapState("oldgen reused released block", block_size);
@@ -628,6 +658,7 @@ char* Allocator::acquireOldGenBlock(size_t size) {
     size_t before = old_gen_committed;
     old_gen_committed += size;
     old_gen_in_use_bytes_ += size;
+    noteOldGenInUsePeak();
 
     if (page_request) {
         assert(old_gen_committed % kPageSize == 0 &&
@@ -758,6 +789,7 @@ char* Allocator::acquireOldGenRegion(size_t initial_size, size_t /*max_size*/) {
 
     old_gen_committed += initial_size;
     old_gen_in_use_bytes_ += initial_size;
+    noteOldGenInUsePeak();
     return region_base;
 }
 
@@ -790,14 +822,21 @@ void Allocator::reset(const HeapConfig* new_config) {
     // Reset committed memory tracking.
     old_gen_committed = 0;
     old_gen_in_use_bytes_ = 0;
+    old_gen_in_use_peak_ = 0;   // C0 census (TEMPORARY)
     nursery_low_committed_ = 0;
     nursery_high_committed_ = 0;
 
-    // Free-lists refer to blocks in the old committed range; they are no
-    // longer usable once we reset the bump pointers to 0.
-    nursery_low_freelist_.clear();
-    nursery_high_freelist_.clear();
     old_gen_free_blocks_.clear();
+
+    // Rebuild the nursery slice table against the (possibly new) config,
+    // dropping every retained-commit record: slot bases move when
+    // alloc_buffer_size or the block caps change, and a stale record would
+    // make the next acquire skip committing pages that were never mapped at
+    // the new base. Re-committing after a reset is the safe, cheap path —
+    // this mirrors the block free-list clear it replaces. Runs AFTER
+    // thread_heaps_.clear() above, whose ~NurserySpace calls
+    // releaseNurserySlicePair against the still-valid old table.
+    rebuildNurserySliceTable();
 }
 
 // ============================================================================
@@ -885,6 +924,11 @@ GCStats Allocator::getCombinedStats() const {
                 std::chrono::steady_clock::now().time_since_epoch()).count());
         combined.wall_time_ns = now_ns - runtime_start_ns_;
     }
+    // C0 census (TEMPORARY, plans/contiguous-nursery-space.md §3.3): both
+    // old-gen walls are allocator-global, so they are read from the live
+    // allocator rather than merged out of the per-thread stats.
+    combined.oldgen_inuse_peak_bytes = old_gen_in_use_peak_;
+    combined.oldgen_hiwater_bytes    = old_gen_committed;
     return combined;
 }
 #endif
