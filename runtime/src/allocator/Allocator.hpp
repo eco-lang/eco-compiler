@@ -116,6 +116,11 @@ public:
     // ThreadLocalHeap).
     void *bumpState();
 
+    // Capacity guarantee for a hoisted allocation check (HEAP_041): makes
+    // `bump.end - bump.ptr >= n` true without allocating. May GC.
+    // See ThreadLocalHeap::ensureNursery.
+    void ensureNursery(size_t n);
+
     // Slow-path region allocation: contiguous region, may GC.
     void *allocateRegionSlow(size_t total);
 

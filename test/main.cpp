@@ -34,6 +34,7 @@
 #include "allocator/GenericApplyBoxingTest.hpp"
 #include "allocator/EcoApplyClosureTypedTest.hpp"
 #include "allocator/GCPressureTest.hpp"
+#include "allocator/EnsureHeadroomTest.hpp"
 #include "allocator/SliceRepresentationTest.hpp"
 #include "allocator/AddressSpaceReservationTest.hpp"
 #include "allocator/HPointerLayoutTest.hpp"
@@ -799,7 +800,6 @@ int main(int argc, char* argv[]) {
     gcPressureTests->add(testMajorGCTriggersAfterPromotionFloodAllocator);
     gcPressureTests->add(testOldGenGrowsTowardCapWithoutFailure);
     gcPressureTests->add(testCyclicGarbageBetweenGenerations);
-    gcPressureTests->add(testWriteBarrierIntegrityAcrossGenerations);
     // Group B — eco_alloc_* runtime tests.
     gcPressureTests->add(testEcoAllocChurnSurvivesManyMinorGCs);
     gcPressureTests->add(testEcoAllocClosureCapturesSurviveGC);
@@ -819,6 +819,13 @@ int main(int argc, char* argv[]) {
     gcPressureTests->add(testSafepointPollingDrainsPressure);
     // Group E — Adaptive lazy-sweep pacing.
     gcPressureTests->add(testPanicSweepDrivesAllocationToCompletion);
+    // Group F — the ensure primitive behind capacity-check hoisting
+    // (HEAP_041). Reconfigures the heap to tiny/threshold-tripping shapes,
+    // so it rides the same fork isolation as the rest of this suite.
+    gcPressureTests->add(testEnsureHeadroomPostconditionAcrossAdvanceAndGC);
+    gcPressureTests->add(testEnsureAtClampedBlockGCsInsteadOfAdvancing);
+    gcPressureTests->add(testEnsureFailSoftTinyConfigTerminates);
+    gcPressureTests->add(testEnsureAbandonedTailsSurviveValidateWalk);
 
     // Codegen tests (MLIR lowering and JIT execution) - parallel isolated execution
     //

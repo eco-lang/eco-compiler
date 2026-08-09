@@ -740,6 +740,10 @@ void GCStats::combine(const GCStats& other) {
         nursery_size_bytes = other.nursery_size_bytes;
     }
 
+    // Capacity-check hoisting counters (HEAP_041): plain sums.
+    ensure_slow_calls += other.ensure_slow_calls;
+    nursery_block_advances += other.nursery_block_advances;
+
     // Combine allocator-helper attribution.
     total_oldgen_alloc_in_minor_ns    += other.total_oldgen_alloc_in_minor_ns;
     total_oldgen_alloc_in_mutator_ns  += other.total_oldgen_alloc_in_mutator_ns;
@@ -929,6 +933,8 @@ void GCStats::print() const {
 
     double nursery_mb = nursery_size_bytes / (1024.0 * 1024.0);
     std::cout << "  Nursery grow events:   " << std::setw(12) << nursery_grow_events << std::endl;
+    std::cout << "  Block advances:        " << std::setw(12) << nursery_block_advances << std::endl;
+    std::cout << "  Ensure slow calls:     " << std::setw(12) << ensure_slow_calls << std::endl;
     std::cout << "  Maximum nursery size:  " << std::setw(12) << std::fixed << std::setprecision(2)
               << nursery_mb << " MB" << std::endl;
     std::cout << std::endl;
@@ -1623,6 +1629,8 @@ void GCStats::reset() {
     bytes_freed = 0;
     nursery_grow_events = 0;
     nursery_size_bytes = 0;
+    ensure_slow_calls = 0;
+    nursery_block_advances = 0;
     total_oldgen_alloc_in_minor_ns    = 0;
     total_oldgen_alloc_in_mutator_ns  = 0;
     total_post_sweep_shrink_ns        = 0;

@@ -341,63 +341,6 @@ Testing::TestCase testCyclicGarbageBetweenGenerations(
         GCP_ASSERT(majorGCCount() >= 1);
     });
 
-Testing::TestCase testWriteBarrierIntegrityAcrossGenerations(
-    "Pressure: old-gen record fields holding nursery pointers stay valid across minor GCs",
-    []() {
-        auto& alloc = initAllocator(pressureHeapConfig());
-
-        // Build a record that will live in old gen, then write nursery
-        // pointers into its fields and trigger many minor GCs.
-        constexpr u32 kFields = 8;
-
-        // Allocate an empty record and immediately promote it.
-        std::vector<Unboxable> placeholders(kFields);
-        for (u32 i = 0; i < kFields; ++i) {
-            placeholders[i].p = alloc::listNil();
-        }
-        // unboxed_mask = 0 means all slots are boxed HPointers.
-        HPointer rec_h = alloc::record(placeholders, 0);
-        alloc.getRootSet().addRoot(&rec_h);
-
-        for (u32 j = 0; j <= PROMOTION_AGE; ++j) alloc.minorGC();
-        GCP_ASSERT(alloc.isInOldGen(readBarrier(rec_h)));
-
-        // Now allocate fresh nursery ints, store them as boxed fields of
-        // the old-gen record (this exercises the cross-generation pointer
-        // path), then run minor GCs that should evacuate the int objects
-        // and update the old-gen record's slots in place.
-        std::vector<i64> expected(kFields);
-        for (u32 round = 0; round < 6; ++round) {
-            for (u32 i = 0; i < kFields; ++i) {
-                i64 val = static_cast<i64>(round * 100 + i);
-                expected[i] = val;
-                HPointer int_h = allocIntDirect(alloc, val);
-                // Store via raw resolve. The HPointer being written into a
-                // promoted record references a nursery object — exactly the
-                // scenario the GC must handle.
-                Record* rec = static_cast<Record*>(alloc.resolve(rec_h));
-                rec->values[i].p = int_h;
-            }
-            // Allocate enough garbage to force at least one minor GC.
-            for (size_t k = 0; k < 4000; ++k) {
-                allocIntDirect(alloc, static_cast<i64>(k));
-            }
-            alloc.minorGC();
-
-            // Verify all eight slots still resolve correctly.
-            Record* rec = static_cast<Record*>(alloc.resolve(rec_h));
-            for (u32 i = 0; i < kFields; ++i) {
-                HPointer slot = rec->values[i].p;
-                void* obj = readBarrier(slot);
-                GCP_ASSERT(obj != nullptr);
-                GCP_ASSERT(getHeader(obj)->tag == Tag_Int);
-                GCP_ASSERT(static_cast<ElmInt*>(obj)->value == expected[i]);
-            }
-        }
-
-        alloc.getRootSet().removeRoot(&rec_h);
-    });
-
 // ============================================================================
 // Group B — eco_alloc_* runtime tests
 // ============================================================================

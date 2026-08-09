@@ -104,24 +104,60 @@ byte diff means the workload moved and walls are not comparable.
 
 ## Runs
 
+### 2026-08-09 00:00 UTC — Run N: capacity-check hoisting (**FLAT wall; KEEP by user decision — now DEFAULT-ON**)
+
+`plans/capacity-check-hoisting.md` (CGEN_074/HEAP_041): a coverable function's
+bump diamonds become UNCHECKED bumps (M1) and a root's own markers fold into
+straight-line runs (M2); each gets ONE ensure diamond, cold edge
+`eco_ensure_nursery_slow(runBytes)`. 7,498/49,149 (15.3%) coverable, 34,834
+runs, 38,958 markers unchecked. Arms off / gcfree (Run M's pair) / hoist.
+**hoist−gcfree SPLITS: r1 −0.59%, r2 +1.27% ⇒ FLAT** (gcfree spread 3.74 s);
+minors 871 every leg, out.mlir byte-identical, alloc delta a COUNTING artifact
+(covered bumps bypass the counter). Buys −5.32 MB binary, stackmaps −16.7%,
+slow-call sites −68.7%, stamped set 2,372→8,473 — but `.text` only −10 KB, so
+the win is METADATA. Gates green incl. validate + bootstrap 8c. DEFAULT-ON.
+
+| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|---|
+| hoist r1 | **3:37.44** (warm 3:39.37) | 5,144,296 kB | 379,941,572 | 18,545.61 MB | 871 | 372,493,275 (98.0%) | 10 | 86.59 s | 12,955,155 B |
+| hoist r2 | **3:38.40** (warm 3:38.52) | 5,144,596 kB | 379,941,572 | 18,545.61 MB | 871 | 372,493,275 (98.0%) | 10 | 86.53 s | 12,955,155 B (≡ r1) |
+| gcfree r1 | 3:38.72 (warm 3:34.98) | 5,076,612 kB | 380,045,113 | 18,549.76 MB | 871 | 372,544,401 (98.0%) | 10 | 85.93 s | 12,955,155 B (≡) |
+| gcfree r2 | 3:35.67 (warm 3:36.94) | 5,350,032 kB | 380,045,282 | 18,549.77 MB | 871 | 372,544,400 (98.0%) | 9 | 83.35 s | 12,955,155 B (≡) |
+| off r1 | 3:41.48 (warm 3:41.75) | 5,123,444 kB | 380,045,113 | 18,549.76 MB | 871 | 372,544,401 (98.0%) | 10 | 84.70 s | 12,955,155 B (≡) |
+| off r2 | 3:44.11 (warm 3:42.90) | 5,124,056 kB | 380,045,113 | 18,549.76 MB | 871 | 372,544,401 (98.0%) | 10 | 85.31 s | 12,955,155 B (≡) |
+
+### 2026-08-08 21:14 UTC — Run M: GC-free function propagation + selective frame pointers (**−1.72% wall; KEEP — DEFAULT-ON since 2026-08-09**)
+
+`plans/gc-free-function-propagation.md` (CGEN_072/073), both halves: a poison
+fixpoint over `llvm::callsGCLeafFunction` stamps `gc-leaf-function` on
+generated functions that provably cannot GC (2,372/44,967 = 5.27%), so RS4GC
+drops 11,149 call sites' statepoints; `frame-pointer=all` then goes only on
+statepointed/stack-range frames. Arms: gcfree0 off vs gcfree1 = both flags at
+BUILD time (Stage-6 flags; Stage 5 built once, shared). **Both rounds agree
+−3.87/−3.73 s (−1.74%/−1.69%), mean −1.72%** vs 1.55 s worst in-arm spread;
+alloc, minors, majors, promotion and `out.mlir` ALL IDENTICAL ⇒ pure code
+quality, not retention. Stackmaps −5.17%, text −2.06 MB. Gates: E2E 1620/1620,
+heap-validate (flags-off control), bootstrap 8c byte-identical. Env-gated.
+
+| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|---|
+| gcfree1 r1 | **3:38.17** (warm 3:38.20) | 5,119,604 kB | 380,045,113 | 18,549.76 MB | 871 | 372,544,401 (98.0%) | 10 | 85.83 s | 12,955,155 B |
+| gcfree1 r2 | **3:36.76** (warm 3:38.07) | 5,119,504 kB | 380,045,113 | 18,549.76 MB | 871 | 372,544,401 (98.0%) | 10 | 84.35 s | 12,955,155 B (≡ r1) |
+| gcfree0 r1 | 3:42.04 (warm 3:43.20) | 5,123,540 kB | 380,045,113 | 18,549.76 MB | 871 | 372,544,401 (98.0%) | 10 | 84.90 s | 12,955,155 B (≡ Run L) |
+| gcfree0 r2 | 3:40.49 (warm 3:43.97) | 5,123,992 kB | 380,045,113 | 18,549.76 MB | 871 | 372,544,401 (98.0%) | 10 | 84.11 s | 12,955,155 B (≡ r1) |
+
 ### 2026-08-08 11:40 UTC — Run L: no_caller_saved_registers + call-free eco_bump_state (**FLAT; NCSR machinery reverted, call-free body + constinit TLS KEPT**)
 
 Run K's return-safe successor (`plans/preserve-cc-runtime-helpers.md`
-§residual (a)+(c)): `eco_bump_state` body made CALL-FREE (inline TLS read;
-6 instructions; required BOTH `constinit` — kills the cross-TU C++
-TLS-init guard — AND `tls_model("initial-exec")` — kills the
-`__tls_get_addr` call the -fPIC EcoRuntimeStatic compile emits; NCSR's
-save-set is decided at compile time even though the linker relaxes the
-call away). Arms: ncsr0 = call-free body, ccc callers; ncsr1 = + LLVM-side
-`no_caller_saved_registers` on 74,659 generated call sites. Return-value
-mechanics microtest-verified (rax excluded from saves — the thing Run K's
-CCs get wrong); text −438,920 B (−0.78%); 22 min of legs, zero faults;
-out.mlir byte-identical ncsr0≡ncsr1. **Interleaved pairs SPLIT: r1 −1.40 s
-(−0.63%), r2 +0.59 s (+0.27%) ⇒ FLAT** (majors 10≡10, GC stats
-identical). Int-heavy workload ⇒ xmm-relief structurally untestable.
-Verdict: mechanism proven, no wall win ⇒ NCSR flag+fixup REVERTED;
-call-free body + constinit/tls_model kept (strict improvements). Raw
-~−4 s vs Run K cc0 is cross-day — NOT claimable (day-drift lesson).
+§residual (a)+(c)): `eco_bump_state` made CALL-FREE (inline TLS read, 6
+instructions; needed BOTH `constinit` and `tls_model("initial-exec")` to kill
+the TLS-init guard and the `__tls_get_addr` call). Arms: ncsr0 = call-free
+body; ncsr1 = + `no_caller_saved_registers` on 74,659 sites. rax-exclusion
+microtest-verified (Run K's actual bug); text −438,920 B (−0.78%); out.mlir
+byte-identical. **Pairs SPLIT: r1 −1.40 s (−0.63%), r2 +0.59 s (+0.27%) ⇒
+FLAT** (majors 10≡10). Int-heavy workload ⇒ xmm relief untestable. NCSR
+flag+fixup REVERTED; call-free body + constinit/tls_model KEPT. Raw ~−4 s vs
+Run K cc0 is cross-day — NOT claimable (day-drift lesson).
 
 | leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|---|
@@ -132,20 +168,16 @@ call-free body + constinit/tls_model kept (strict improvements). Raw
 
 ### 2026-08-08 00:05 UTC — Run K: preserve_most/preserve_all on GC runtime helpers (**FATAL: x86-64 preserve CCs clobber return values ⇒ both arms SIGSEGV; REVERTED**)
 
-`plans/preserve-cc-runtime-helpers.md`, three arms from one methodology:
-cc0 = untouched HEAD; cc1 = Step 1 (`ECO_PRESERVE_CC=1`: preserve_all
-`eco_bump_state` + preserve_most on 5 gc-leaf helpers; 6 funcs / 223,286
-call sites retagged, text −2.16 MB); cc2 = Step 2 (+ preserve_all
-`eco_alloc_inline_slow`/`eco_list_tail_hybrid`; 8 funcs / 302,363 sites).
+`plans/preserve-cc-runtime-helpers.md`, three arms: cc0 = HEAD; cc1 =
+preserve_all `eco_bump_state` + preserve_most on 5 gc-leaf helpers (6 funcs /
+223,286 sites, text −2.16 MB); cc2 = + preserve_all
+`eco_alloc_inline_slow`/`eco_list_tail_hybrid` (8 funcs / 302,363 sites).
 **cc1 AND cc2 SIGSEGV at 0.09 s** (first CAF, `Pretty_tightline`'s bump
 diamond reads `(%rax)` = 0): LLVM's x86-64 CSR sets for preserve_most/all
-include RAX — callee epilogue `pop %rax` DESTROYS the return value (asm-
-verified), so the conventions cannot carry returns on x86-64 (AArch64
-excludes X0–X8). Every primary target returns a value ⇒ plan unimplementable
-as designed; fully REVERTED. Bonus autopsy: helpers with non-inlined inner
-calls save 8 GPR + 16 xmm (bump_state) / 14 GPRs (scratch_push_boxed) per
-call — the "tiny callee ⇒ free" premise fails as compiled anyway. out.mlir
-12,955,155 B ≠ Run J (workload moved since); cc0 walls not J-comparable.
+include RAX, so the callee epilogue `pop %rax` DESTROYS the return value
+(asm-verified; AArch64 excludes X0–X8). Every target returns a value ⇒
+unimplementable as designed; fully REVERTED. Autopsy: "tiny callee ⇒ free"
+fails anyway (8 GPR + 16 xmm per bump_state call). cc0 not J-comparable.
 
 | leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|---|
@@ -295,15 +327,14 @@ runtime. Conclusion: interning must happen at CONSTRUCTION or not at all
 
 `plans/mono-comparable-key-optimization.md` K4: `MonoType`'s five composite
 constructors carry a packed structural hash built by smart constructors in
-O(arity); every layout-/spec-intent dictionary keys on it via a new
-bucketed `Data.HashMap` — 0 `toComparableLayoutKey` call sites remain.
-Output NOT byte-identical by design (iteration order) but same SIZE — a
-pure permutation. Interleaved vs K1+K2: **−0.80 s (−0.35%) ≈ FLAT** (incl.
-a follow-up HashMap pair-churn fix worth −11.2M obj), equal majors,
-promotion identical. **The standard counter's −21.3% bytes is WRONG
-(inline-alloc blind); census truth: objects −1.67%, bytes −1.31%** (Cons
-−27.1%, Tuple2 +88.5M). Bug fixed: hash-ordered iteration broke codegen →
-`Data.HashMap` is now INSERTION-ordered. Gates all green.
+O(arity); every layout-/spec-intent dictionary keys on it via a new bucketed
+`Data.HashMap` — 0 `toComparableLayoutKey` call sites remain. Output NOT
+byte-identical by design (iteration order) but same SIZE — a pure permutation.
+Interleaved vs K1+K2: **−0.80 s (−0.35%) ≈ FLAT** (incl. a follow-up HashMap
+pair-churn fix worth −11.2M obj), equal majors, promotion identical. **The standard counter's −21.3% bytes is WRONG (inline-alloc
+blind); census truth: objects −1.67%, bytes −1.31%** (Cons −27.1%, Tuple2
++88.5M). Bug fixed: hash-ordered iteration broke codegen ⇒ `Data.HashMap` is
+now INSERTION-ordered. Gates all green.
 
 | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|
@@ -356,6 +387,8 @@ matching the L1 hybrid-spines prediction) and the workload moved
 | G — K7 read-only interning (subst) | 3:41.83 | 376,384,280 obj / 18,298.94 MB |
 | H — LH1 retention census (subst) | 3:46.03 | 376,384,275 obj / 18,298.94 MB |
 | I — W1 Custom arity census (subst) | 3:48.29 | 376,384,275 obj / 18,298.94 MB |
-| J — promo-time chunking, mode 2 (reverted) | 3:54.64 | 378,528,424 obj / 18,364.39 MB |
-| K — preserve-cc GC helpers (SIGSEGV ×2, reverted) | crash @ 0.09 s (base 3:45.03) | n/a (base 380,045,107 obj / 18,549.76 MB) |
-| L — NCSR + call-free bump_state (flat; NCSR reverted, body kept) | 3:40.31 (ncsr0 3:41.71) | 380,045,113 obj / 18,549.76 MB |
+| J — promo-time chunking (reverted) | 3:54.64 | 378,528,424 obj / 18,364.39 MB |
+| K — preserve-cc GC helpers (reverted) | SIGSEGV @ 0.09 s | n/a |
+| L — NCSR + call-free bump_state (NCSR reverted) | 3:40.31 | 380,045,113 obj / 18,549.76 MB |
+| M — gc-free propagation + selective FP | 3:38.17 | 380,045,113 obj / 18,549.76 MB |
+| N — capacity-check hoisting | 3:37.44 | 379,941,572 obj / 18,545.61 MB |

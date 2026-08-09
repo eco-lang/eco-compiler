@@ -334,6 +334,12 @@ void *Allocator::bumpState() {
     return tl_heap_->getNursery().bumpState();
 }
 
+// Hoisted-capacity-check guarantee: headroom without allocation (HEAP_041).
+void Allocator::ensureNursery(size_t n) {
+    assert(tl_heap_ && "Thread not initialized - call initThread() first");
+    tl_heap_->ensureNursery(n);
+}
+
 // Slow-path region: contiguous allocation, may GC.
 void *Allocator::allocateRegionSlow(size_t total) {
     assert(tl_heap_ && "Thread not initialized - call initThread() first");

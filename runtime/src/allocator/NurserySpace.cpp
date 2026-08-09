@@ -294,6 +294,7 @@ void* NurserySpace::allocateSlow(size_t size) {
         if (current_from_idx_ < from_blocks.size()) {
             bump_.ptr = from_blocks[current_from_idx_];
             bump_.end = computeAllocEndForBlock(bump_.ptr);
+            GC_STATS_NURSERY_BLOCK_ADVANCE(stats);
 
             if (bump_.ptr + size <= bump_.end) {
                 result = bump_.ptr;
@@ -319,6 +320,76 @@ void* NurserySpace::allocateSlow(size_t size) {
 #endif
 
     return result;
+}
+
+// Capacity guarantee for hoisted allocation checks (HEAP_041,
+// plans/capacity-check-hoisting.md). Establishes `bump_.end - bump_.ptr >= n`
+// WITHOUT allocating anything; returns false when only a minor GC can satisfy
+// the request. See the header for why the clamp-vs-exhaustion guard is
+// load-bearing.
+bool NurserySpace::ensureHeadroom(size_t n) {
+    std::vector<char*>& from_blocks = from_is_low_ ? low_blocks_ : high_blocks_;
+
+    for (;;) {
+        if (static_cast<size_t>(bump_.end - bump_.ptr) >= n) {
+            return true;
+        }
+        if (current_from_idx_ >= from_blocks.size()) {
+            return false;  // From-space exhausted: caller GCs.
+        }
+
+        char* block_end = from_blocks[current_from_idx_] + block_size_;
+        if (bump_.end < block_end) {
+            // Threshold clamp fired inside this block: signal a minor GC,
+            // exactly like allocateSlow's disambiguator. Advancing here
+            // would disable the proactive trigger for the rest of the cycle.
+            return false;
+        }
+
+        // Genuine exhaustion: advance WITHOUT allocating, abandoning this
+        // block's tail (already a tolerated state — see the tail-gap note on
+        // preEvacuationFromSpaceWalk).
+        ++current_from_idx_;
+        if (current_from_idx_ >= from_blocks.size()) {
+            return false;  // From-space done: caller GCs.
+        }
+        bump_.ptr = from_blocks[current_from_idx_];
+        bump_.end = computeAllocEndForBlock(bump_.ptr);
+        GC_STATS_NURSERY_BLOCK_ADVANCE(stats);
+    }
+}
+
+void NurserySpace::failSoftUnclampCurrentBlock() {
+    std::vector<char*>& from_blocks = from_is_low_ ? low_blocks_ : high_blocks_;
+    if (from_blocks.empty()) {
+        return;
+    }
+
+    // RESTORE COHERENCE FIRST: a false ensureHeadroom return may leave
+    // current_from_idx_ one past the end (the same transient allocateSlow
+    // leaves behind, normally consumed by minorGC's reset). Recomputing an
+    // end for that index would index out of bounds and desync the index from
+    // bump_.ptr for the next allocateSlow. Rewind to the block that actually
+    // contains bump_.ptr.
+    if (current_from_idx_ >= from_blocks.size()) {
+        current_from_idx_ = from_blocks.size() - 1;
+    }
+    for (size_t i = 0; i < from_blocks.size(); ++i) {
+        if (bump_.ptr >= from_blocks[i] && bump_.ptr < from_blocks[i] + block_size_) {
+            current_from_idx_ = i;
+            break;
+        }
+    }
+    if (bump_.ptr < from_blocks[current_from_idx_] ||
+        bump_.ptr > from_blocks[current_from_idx_] + block_size_) {
+        // bump_.ptr is not inside any from-space block (only reachable if a
+        // prior advance ran off the end); re-seat it at the current block.
+        bump_.ptr = from_blocks[current_from_idx_];
+    }
+
+    // Unclamp the CURRENT block only — same fail-soft shape as
+    // computeAllocEndForBlock's already-full clause.
+    bump_.end = from_blocks[current_from_idx_] + block_size_;
 }
 
 // contains(), isInFromSpace(), isInToSpace() are now inline in the header.

@@ -165,6 +165,10 @@ void* eco_bump_state(void);
 // Inline-bump slow path: block advance / minor GC; returns UNINITIALIZED
 // storage — caller stores header + all fields before its next safepoint.
 HPtr eco_alloc_inline_slow(uint64_t size);
+// Hoisted capacity check (plans/capacity-check-hoisting.md, HEAP_041): makes
+// `bump.end - bump.ptr >= n` true for the calling thread WITHOUT allocating,
+// so a covered run may perform unchecked bumps totalling <= n bytes.
+void eco_ensure_nursery_slow(uint64_t n);
 void eco_store_tuple_field(HPtr tuple, uint32_t index, HPtr value);
 void eco_store_tuple_field_i64(HPtr tuple, uint32_t index, int64_t value);
 void eco_store_tuple_field_f64(HPtr tuple, uint32_t index, double value);

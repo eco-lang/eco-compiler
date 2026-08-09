@@ -104,6 +104,7 @@ add_executable(test
         allocator/GenericApplyBoxingTest.cpp
         allocator/EcoApplyClosureTypedTest.cpp
         allocator/GCPressureTest.cpp
+        allocator/EnsureHeadroomTest.cpp
         allocator/SliceRepresentationTest.cpp
         allocator/AddressSpaceReservationTest.cpp
         allocator/HPointerLayoutTest.cpp

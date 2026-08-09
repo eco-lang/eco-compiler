@@ -85,6 +85,17 @@ public:
     void* allocateSlowRaw(size_t size);
 
     /**
+     * Capacity guarantee for a hoisted allocation check (HEAP_041,
+     * plans/capacity-check-hoisting.md): establishes
+     * `bump.end - bump.ptr >= n` for this thread WITHOUT allocating, so a
+     * covered straight-line run can perform unchecked bumps totalling <= n.
+     * Advances blocks on genuine exhaustion, then minor-GCs, then fail-soft
+     * unclamps; aborts if still unsatisfiable. n must be 8-aligned, in
+     * (0, 4096].
+     */
+    void ensureNursery(size_t n);
+
+    /**
      * Slow-path region allocation: allocates a contiguous region of total bytes.
      * May trigger GC. Returns raw pointer to start of region.
      * Caller slices into per-object chunks and initializes headers inline.

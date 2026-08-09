@@ -9,7 +9,15 @@ extern Testing::TestCase testNurseryChurnPromotesRootedFraction;
 extern Testing::TestCase testMajorGCTriggersAfterPromotionFloodAllocator;
 extern Testing::TestCase testOldGenGrowsTowardCapWithoutFailure;
 extern Testing::TestCase testCyclicGarbageBetweenGenerations;
-extern Testing::TestCase testWriteBarrierIntegrityAcrossGenerations;
+// NOTE: testWriteBarrierIntegrityAcrossGenerations was REMOVED 2026-08-09.
+// It raw-stored nursery HPointers into a promoted old-gen Record and then
+// asserted the GC kept them alive — a heap state compiled Elm cannot produce
+// (values are immutable, so an old object never acquires a younger pointer),
+// which is precisely why the design carries no write barrier and no
+// remembered set and minor GC never scans old gen for roots. It only ever
+// "passed" in non-validate builds because the freed bytes happened to still
+// read back correctly; ECO_HEAP_VALIDATE's from-space poisoning exposed it.
+// Do not reinstate it without first adding a remembered set.
 
 // ============================================================================
 // Group B — eco_alloc_* runtime tests

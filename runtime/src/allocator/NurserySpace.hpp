@@ -267,6 +267,30 @@ private:
     // Allocation slow path - advances to next block or returns nullptr.
     void* allocateSlow(size_t size);
 
+    // Capacity guarantee for hoisted allocation checks (HEAP_041,
+    // plans/capacity-check-hoisting.md). Establishes
+    // `bump_.end - bump_.ptr >= n` for this thread WITHOUT allocating, by
+    // advancing from-space blocks on GENUINE exhaustion only. Returns false
+    // when the caller must run a minor GC and retry.
+    //
+    // The `bump_.end < block_end` guard is load-bearing and mirrors
+    // allocateSlow's clamp-vs-exhaustion disambiguator: a clamped end means
+    // the proactive-GC threshold tripped INSIDE the current block, and the
+    // correct action is to signal GC. Advancing past a mid-block trip would
+    // land every subsequent block in computeAllocEndForBlock's already-full
+    // fail-soft clause (full block ends), silently disabling the proactive
+    // trigger for the rest of the nursery cycle.
+    bool ensureHeadroom(size_t n);
+
+    // Fail-soft escape for the tiny-config corner where a fresh block's
+    // CLAMPED end sits below n (threshold_total_bytes_ < n; unreachable at
+    // default config, reachable in small test heaps) — without it,
+    // ensureNursery would GC-loop. Unclamps the CURRENT block only, after
+    // rewinding current_from_idx_ to the block actually containing
+    // bump_.ptr (a false ensureHeadroom return may leave the index one past
+    // the end, the same transient allocateSlow leaves behind).
+    void failSoftUnclampCurrentBlock();
+
     // Allocates space in to-space during GC copying.
     void* copyToSpace(size_t size);
 
@@ -364,6 +388,51 @@ public:
 
     static void clearToSpaceFreeRegion(NurserySpace& nursery) {
         nursery.clearToSpaceFreeRegion();
+    }
+
+    // ---- Capacity-check hoisting (HEAP_041) ----
+
+    static bool ensureHeadroom(NurserySpace& nursery, size_t n) {
+        return nursery.ensureHeadroom(n);
+    }
+
+    static void failSoftUnclampCurrentBlock(NurserySpace& nursery) {
+        nursery.failSoftUnclampCurrentBlock();
+    }
+
+    // Bytes between the bump pointer and the CLAMPED end — exactly the
+    // quantity ensureHeadroom guarantees.
+    static size_t headroom(const NurserySpace& nursery) {
+        return static_cast<size_t>(nursery.bump_.end - nursery.bump_.ptr);
+    }
+
+    static char* bumpPtr(const NurserySpace& nursery) { return nursery.bump_.ptr; }
+    static char* bumpEnd(const NurserySpace& nursery) { return nursery.bump_.end; }
+
+    static size_t currentFromIdx(const NurserySpace& nursery) {
+        return nursery.current_from_idx_;
+    }
+
+    static size_t blockSize(const NurserySpace& nursery) {
+        return nursery.block_size_;
+    }
+
+    static char* fromBlockAt(const NurserySpace& nursery, size_t i) {
+        const std::vector<char*>& from_blocks =
+            nursery.from_is_low_ ? nursery.low_blocks_ : nursery.high_blocks_;
+        return i < from_blocks.size() ? from_blocks[i] : nullptr;
+    }
+
+    // Consumes headroom without going through allocate() so a test can park
+    // the bump pointer at an exact offset inside the current block.
+    static void bumpBy(NurserySpace& nursery, size_t bytes) {
+        nursery.bump_.ptr += bytes;
+    }
+
+    // Forces the proactive-GC clamp to fire inside the current block, i.e.
+    // the state ensureHeadroom must NOT advance past.
+    static void clampCurrentBlockEnd(NurserySpace& nursery, size_t headroom) {
+        nursery.bump_.end = nursery.bump_.ptr + headroom;
     }
 };
 

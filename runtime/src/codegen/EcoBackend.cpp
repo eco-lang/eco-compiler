@@ -35,6 +35,8 @@
 #include "llvm/Transforms/Utils/Local.h"        // callsGCLeafFunction (GCFREE)
 #include "llvm/Analysis/TargetLibraryInfo.h"    // TargetLibraryInfo (GCFREE)
 #include "llvm/IR/Statepoint.h"                 // GCStatepointInst (GCFREE)
+#include "llvm/ADT/SCCIterator.h"               // scc_iterator (CAPHOIST)
+#include "llvm/IR/CFG.h"                        // GraphTraits<Function*> (CAPHOIST)
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include <cstdlib>  // getenv/strtoul (E1.3 threshold override)
@@ -75,12 +77,24 @@ struct MaybeScope {
     std::optional<eco::LoweringStats::Scope> scope;
 };
 
+// True when the caller NAMED an env variable, whatever its value. The
+// GC-free / capacity-hoisting passes are default-ON, so their one-line
+// summaries would otherwise print on every ordinary build; gating the
+// summaries on this keeps normal `eco make` output clean while every A/B
+// recipe — which always sets the variable explicitly, on every arm — still
+// gets its non-vacuity line.
+bool envNamed(const char *key) {
+    const char *e = ::getenv(key);
+    return e && *e;
+}
+
 // GC-free function propagation (plans/gc-free-function-propagation.md).
 //
-// ECO_GCFREE_LEAF: unset/"0" = off (default); "c" = census only (analysis
-// runs, nothing is stamped, the module is byte-identical to a flag-off
-// run); "1" (any other value) = stamp gc-leaf-function on provably GC-free
-// generated functions so RS4GC skips statepointing calls to them.
+// ECO_GCFREE_LEAF: unset (DEFAULT) or "1"/any other value = stamp
+// gc-leaf-function on provably GC-free generated functions so RS4GC skips
+// statepointing calls to them; "0" = off (escape hatch); "c" = census only
+// (analysis runs, nothing is stamped, the module is byte-identical to an
+// off run).
 //
 // Lowering-affecting in stamp mode: census/A-B workflows must rebuild via
 // the delete-outputs discipline (ninja is env-blind, tier2-opt.md Phase 1).
@@ -93,13 +107,69 @@ enum class GcFreeMode { Off, Census, Stamp };
 GcFreeMode gcFreeLeafMode() {
     static const GcFreeMode mode = [] {
         const char *e = ::getenv("ECO_GCFREE_LEAF");
-        if (!e || !*e || (e[0] == '0' && e[1] == '\0'))
+        if (!e || !*e)
+            return GcFreeMode::Stamp; // default-ON since 2026-08-09
+        if (e[0] == '0' && e[1] == '\0')
             return GcFreeMode::Off;
         if (e[0] == 'c' && e[1] == '\0')
             return GcFreeMode::Census;
         return GcFreeMode::Stamp;
     }();
     return mode;
+}
+
+// Capacity-check hoisting (plans/capacity-check-hoisting.md).
+//
+// ECO_ALLOC_HOIST: unset (DEFAULT) or "1"/any other value = transform;
+// "0" = off (escape hatch); "c" = census only (analysis runs, NOTHING is
+// mutated). The transform additionally requires gcFreeLeafMode() == Stamp —
+// without the CGEN_072 fixpoint the harvest is nil — which also holds by
+// default; if someone disables ONLY gcfree while explicitly asking for
+// hoisting, that is reported loudly rather than silently no-op'ing.
+enum class CapHoistMode { Off, Census, On };
+
+CapHoistMode capHoistMode() {
+    static const CapHoistMode mode = [] {
+        const char *e = ::getenv("ECO_ALLOC_HOIST");
+        if (!e || !*e)
+            return CapHoistMode::On; // default-ON since 2026-08-09
+        if (e[0] == '0' && e[1] == '\0')
+            return CapHoistMode::Off;
+        if (e[0] == 'c' && e[1] == '\0')
+            return CapHoistMode::Census;
+        return CapHoistMode::On;
+    }();
+    return mode;
+}
+
+// Per-run byte budget cap K. Default 512 (~20 Cons cells) — far below the
+// 512 KiB nursery block and the 8 KiB large-object threshold. Clamped to
+// [8, 4096] (4096 = the HEAP_034 per-marker hard bound) then rounded DOWN
+// to a multiple of 8, since every budget is an 8-multiple.
+unsigned capHoistMaxBytes() {
+    static const unsigned k = [] {
+        unsigned v = 512;
+        if (const char *e = ::getenv("ECO_ALLOC_HOIST_MAX_BYTES"))
+            v = (unsigned)strtoul(e, nullptr, 10);
+        if (v < 8)
+            v = 8;
+        if (v > 4096)
+            v = 4096;
+        return v & ~7u;
+    }();
+    return k;
+}
+
+// M2 (folding a ROOT function's OWN markers into a run) can be switched off
+// independently of M1 for A/B attribution: ECO_ALLOC_HOIST_M2=0 leaves every
+// own marker with its HEAP_034 diamond and instruments only calls into
+// covered functions. Default on — the C0 census was measured this way.
+bool capHoistFoldOwnMarkers() {
+    static const bool on = [] {
+        const char *e = ::getenv("ECO_ALLOC_HOIST_M2");
+        return !(e && e[0] == '0' && e[1] == '\0');
+    }();
+    return on;
 }
 
 void dumpIRTo(const Module &m, const std::string &path, const char *tag) {
@@ -708,9 +778,10 @@ void runRS4GCAndMaybeFramePointers(Module &m, const RS4GCOptions &opts) {
     // StackUnwind.cpp), so they may release rbp as an allocatable register.
     // plans/gc-free-function-propagation.md §3.
     if (opts.addFramePointerAttr) {
+        // Default-ON since 2026-08-09; ECO_FP_LEAF=0 is the escape hatch.
         static const bool fpLeaf = [] {
             const char *e = ::getenv("ECO_FP_LEAF");
-            return e && *e && !(e[0] == '0' && e[1] == '\0');
+            return !e || !*e || !(e[0] == '0' && e[1] == '\0');
         }();
         unsigned numStamped = 0, numLeaf = 0;
         for (Function &F : m) {
@@ -744,7 +815,7 @@ void runRS4GCAndMaybeFramePointers(Module &m, const RS4GCOptions &opts) {
                 ++numLeaf;
             }
         }
-        if (fpLeaf) {
+        if (fpLeaf && envNamed("ECO_FP_LEAF")) {
             // Single write: worker flavours run this concurrently and
             // llvm::errs() is unbuffered — chained << would interleave.
             std::string line;
@@ -854,6 +925,26 @@ static void expandInlineDerefs(Module &m) {
     }
 }
 
+// Capacity-check hoisting decisions (plans/capacity-check-hoisting.md,
+// CGEN_074) — the output of applyCapacityHoisting, consumed by
+// expandInlineAllocs to pick the expansion form per marker. Empty (or null)
+// means "expand everything as HEAP_034 diamonds", i.e. today's behaviour.
+struct CapHoistDecisions {
+    // M1: functions whose ENTIRE marker population expands unchecked. Their
+    // capacity guarantee is established by their callers (or, transitively,
+    // by their callers' callers).
+    DenseSet<Function *> coveredFns;
+    // M2: individual markers inside NON-covered functions that a
+    // caller-local ensure diamond covers. Disjoint from coveredFns by
+    // construction — covered functions are never run-scanned (plan §2.3).
+    DenseSet<CallInst *> uncheckedMarkers;
+
+    bool isUnchecked(CallInst *marker) const {
+        return coveredFns.contains(marker->getFunction()) ||
+               uncheckedMarkers.contains(marker);
+    }
+};
+
 // Inline nursery allocation (plans/inline-nursery-allocation.md, HEAP_034).
 // Expand each `__eco_alloc_inline(SIZE)` marker call into the bump-pointer
 // fast/slow diamond:
@@ -892,7 +983,13 @@ static void expandInlineDerefs(Module &m) {
 // before the `$cap` inline prepass, before partition splitting, and before
 // every RS4GC flavour. Idempotent / cheap when there are no markers
 // (ECO_INLINE_ALLOC=0 emits none).
-static void expandInlineAllocs(Module &m) {
+//
+// `decisions` (capacity-check hoisting, CGEN_074) selects the UNCHECKED form
+// for markers whose capacity was already guaranteed by a dominating ensure:
+// bump with no end-load, no compare, no slow edge and no phi. Null / empty
+// (the default, ECO_ALLOC_HOIST unset) means every marker keeps its diamond.
+static void expandInlineAllocs(Module &m,
+                               const CapHoistDecisions *decisions = nullptr) {
     Function *marker = m.getFunction("__eco_alloc_inline");
     if (!marker || marker->use_empty())
         return;
@@ -940,6 +1037,14 @@ static void expandInlineAllocs(Module &m) {
         if (auto *ci = dyn_cast<CallInst>(u))
             calls.push_back(ci);
 
+    // Bookkeeping cross-check for CGEN_074 (plan §2.6): how many markers the
+    // decisions claim, vs how many unchecked forms we actually emit.
+    unsigned expectUnchecked = 0, gotUnchecked = 0;
+    if (decisions)
+        for (CallInst *ci : calls)
+            if (decisions->isUnchecked(ci))
+                ++expectUnchecked;
+
     for (CallInst *ci : calls) {
         auto *sizeC = dyn_cast<ConstantInt>(ci->getArgOperand(0));
         if (!sizeC || sizeC->getZExtValue() == 0 ||
@@ -950,6 +1055,29 @@ static void expandInlineAllocs(Module &m) {
         IRBuilder<> b(ci);
         Value *state = b.CreateCall(bumpStateCallee, {}, "eco.bump.state");
         Value *top = b.CreateAlignedLoad(as1, state, Align(8), "eco.bump.top");
+
+        // Covered marker (CGEN_074): unchecked bump. The guarantee comes from
+        // a dominating ensure in this function, or — for a covered callee —
+        // from an ensure in its caller, which is why no local evidence of it
+        // appears here. No end-load, no compare, no slow edge, no phi, hence
+        // no statepoint: this is what makes the enclosing function stampable
+        // by the CGEN_072 fixpoint.
+        //
+        // The `ptr` load stays per-bump: store-to-load forwarding collapses a
+        // chain of bumps into register arithmetic where legal, and any
+        // intervening real call conservatively blocks it. Never cache it by
+        // hand across anything.
+        if (decisions && decisions->isUnchecked(ci)) {
+            Value *newTop = b.CreateGEP(i8Ty, top,
+                                        {b.getInt64(sizeC->getSExtValue())},
+                                        "eco.bump.new");
+            b.CreateAlignedStore(newTop, state, Align(8));
+            ci->replaceAllUsesWith(top);
+            ci->eraseFromParent();
+            ++gotUnchecked;
+            continue;
+        }
+
         Value *endp = b.CreateGEP(i8Ty, state, {b.getInt64(8)}, "eco.bump.endp");
         Value *end = b.CreateAlignedLoad(as1, endp, Align(8), "eco.bump.end");
         // Plain (non-inbounds) GEP: when the block is nearly full the bumped
@@ -981,6 +1109,10 @@ static void expandInlineAllocs(Module &m) {
     if (!marker->use_empty())
         report_fatal_error("expandInlineAllocs: surviving __eco_alloc_inline use");
     marker->eraseFromParent();
+
+    if (decisions && gotUnchecked != expectUnchecked)
+        report_fatal_error("expandInlineAllocs: CGEN_074 unchecked-marker "
+                           "bookkeeping mismatch");
 }
 
 // P2.5 R1b (plans/allocator-resolve-inlining.md). Expand each
@@ -1581,10 +1713,700 @@ static void propagateGcFreeLeafAttrs(Module &m, GcFreeMode mode) {
         for (Function *f : freeFns)
             f->addFnAttr("gc-leaf-function");
 
-    llvm::errs() << "[gcfree] " << numFree << "/" << numDefined
-                 << " functions GC-free, " << numSites
-                 << " direct call sites de-statepointed (mode="
-                 << (mode == GcFreeMode::Stamp ? "stamp" : "census") << ")\n";
+    // Quiet on ordinary default-ON builds; census mode always reports, and so
+    // does any run that named the variable (i.e. every A/B arm).
+    if (mode == GcFreeMode::Census || envNamed("ECO_GCFREE_LEAF"))
+        llvm::errs() << "[gcfree] " << numFree << "/" << numDefined
+                     << " functions GC-free, " << numSites
+                     << " direct call sites de-statepointed (mode="
+                     << (mode == GcFreeMode::Stamp ? "stamp" : "census")
+                     << ")\n";
+}
+
+// ---------------------------------------------------------------------
+// Capacity-check hoisting (plans/capacity-check-hoisting.md, CGEN_074).
+//
+// Census step: compute the coverable set (functions whose ONLY GC hazard
+// is their own bounded fixed-size inline allocation), their byte budgets,
+// and the run structure M1/M2 would instrument. Mutates NOTHING — the
+// transformation lands in a later step.
+//
+// Runs at the pre-expandInlineAllocs choke point, where __eco_alloc_inline
+// markers still carry their constant sizes and every other GC hazard is
+// already visible as a real call.
+// ---------------------------------------------------------------------
+
+// gc-leaf does NOT imply bump-state-transparent: these consume nursery
+// headroom despite their attr, so they void a capacity guarantee (plan
+// §2.1). eco_alloc_*_fast is declaration-only today; region_fast is live.
+static bool isHeadroomBreaker(const Function *f) {
+    if (!f)
+        return false;
+    StringRef n = f->getName();
+    return n == "eco_gc_alloc_region_fast" ||
+           (n.starts_with("eco_alloc_") && n.ends_with("_fast"));
+}
+
+// Blocks that sit inside a CFG cycle: a marker there can execute an
+// unbounded number of times, so its bytes are not a static budget.
+static void computeBlockCycles(Function &f,
+                               SmallPtrSetImpl<BasicBlock *> &inCycle) {
+    for (scc_iterator<Function *> it = scc_begin(&f); !it.isAtEnd(); ++it)
+        if (it.hasCycle()) // true for size>1 AND self-loops
+            for (BasicBlock *bb : *it)
+                inCycle.insert(bb);
+}
+
+namespace {
+enum class TopReason { None, Loop, Cycle, Budget, Other };
+
+struct CapHoistInfo {
+    uint64_t ownBytes = 0;
+    uint64_t budget = 0;
+    bool top = false; // ⊤ (unbounded / unanalyzable)
+    TopReason reason = TopReason::None;
+    bool eligible = false;
+    bool addrTaken = false;
+    bool nonLocal = false;
+    bool selfEdge = false;
+    SmallVector<std::pair<Function *, bool>, 8> callees; // (G, callInLoop)
+    SmallVector<CallInst *, 4> markers;                  // own, non-cycle
+    unsigned numSites = 0; // direct call sites from non-covered callers
+};
+
+struct TarjanNode {
+    unsigned index = 0;
+    unsigned low = 0;
+    bool onStack = false;
+    bool visited = false;
+};
+
+// One straight-line run: a maximal ordered subsequence of ELEMENTS within a
+// single basic block with no intervening breaker (plan §2.3). Recorded by the
+// scan, emitted afterwards — SplitBlockAndInsertIfThen at a run head moves the
+// run's tail into a new block, so an emit-while-scanning loop would re-visit
+// the moved tail, re-form the run and never terminate. Instruction pointers
+// stay valid across splits, which is what makes collect-first work (the same
+// hazard expandInlineAllocs survives the same way).
+struct CapHoistRun {
+    Instruction *head = nullptr; // first element: the ensure goes before it
+    Instruction *tail = nullptr; // last element: bounds the breaker re-check
+    uint64_t bytes = 0;
+    unsigned elems = 0;
+    unsigned covCalls = 0;
+    SmallVector<CallInst *, 4> ownMarkers;  // M2: expand these unchecked
+    SmallVector<CallInst *, 4> covCallSites; // for the §2.6(a) assert
+};
+} // namespace
+
+static void applyCapacityHoisting(Module &m, CapHoistMode mode,
+                                  CapHoistDecisions *decisions) {
+    Function *markerFn = m.getFunction("__eco_alloc_inline");
+    TargetLibraryInfoImpl TLII(m.getTargetTriple());
+    TargetLibraryInfo TLI(TLII);
+    const uint64_t K = capHoistMaxBytes();
+
+    // ---- Phase A: local scan -----------------------------------------
+    DenseMap<Function *, CapHoistInfo> info;
+    SmallVector<Function *, 256> defined;
+    for (Function &f : m)
+        if (!f.isDeclaration()) {
+            defined.push_back(&f);
+            info.try_emplace(&f); // pre-populate: no rehash during the DFS
+        }
+
+    for (Function *fp : defined) {
+        Function &f = *fp;
+        CapHoistInfo &fi = info.find(&f)->second;
+        fi.addrTaken = f.hasAddressTaken();
+        fi.nonLocal = !f.hasLocalLinkage();
+        // Non-eligible functions may still be ROOTS; they just cannot have
+        // their own checks hoisted into callers we cannot see.
+        fi.eligible = !f.isInterposable() && !fi.addrTaken && !fi.nonLocal;
+        if (f.isInterposable()) {
+            fi.top = true;
+            fi.reason = TopReason::Other;
+        }
+
+        SmallPtrSet<BasicBlock *, 16> inCycle;
+        computeBlockCycles(f, inCycle);
+
+        for (BasicBlock &bb : f) {
+            const bool blockInCycle = inCycle.count(&bb) != 0;
+            for (Instruction &i : bb) {
+                if (isa<LandingPadInst>(i)) { // EH: defensive
+                    fi.top = true;
+                    fi.reason = TopReason::Other;
+                    continue;
+                }
+                auto *cb = dyn_cast<CallBase>(&i);
+                if (!cb)
+                    continue;
+                if (!isa<CallInst>(cb)) { // invoke/callbr: defensive
+                    fi.top = true;
+                    fi.reason = TopReason::Other;
+                    continue;
+                }
+                Function *callee = cb->getCalledFunction();
+
+                // The marker test MUST precede callsGCLeafFunction:
+                // __eco_alloc_inline is itself declared gc-leaf, and its
+                // expansion is what carries the statepoint.
+                if (markerFn && callee == markerFn) {
+                    auto *szC = dyn_cast<ConstantInt>(cb->getArgOperand(0));
+                    uint64_t sz = szC ? szC->getZExtValue() : 0;
+                    if (!szC || sz == 0 || (sz & 7) != 0 || sz > 4096)
+                        report_fatal_error(
+                            "applyCapacityHoisting: __eco_alloc_inline size "
+                            "must be a constant, 8-aligned, in (0, 4096]");
+                    if (blockInCycle) {
+                        fi.top = true;
+                        if (fi.reason == TopReason::None)
+                            fi.reason = TopReason::Loop;
+                    } else {
+                        fi.ownBytes += sz;
+                        fi.markers.push_back(cast<CallInst>(cb));
+                    }
+                    continue;
+                }
+                if (isHeadroomBreaker(callee)) {
+                    fi.top = true;
+                    if (fi.reason == TopReason::None)
+                        fi.reason = TopReason::Other;
+                    continue;
+                }
+                if (llvm::callsGCLeafFunction(cb, TLI))
+                    continue; // transparent
+                if (callee && !callee->isDeclaration() &&
+                    !callee->isInterposable()) {
+                    fi.callees.push_back({callee, blockInCycle});
+                    if (callee == &f)
+                        fi.selfEdge = true;
+                    continue;
+                }
+                fi.top = true; // indirect, or non-leaf declaration
+                if (fi.reason == TopReason::None)
+                    fi.reason = TopReason::Other;
+            }
+        }
+    }
+
+    // ---- Phase B: budget accumulation over call-graph SCCs ------------
+    // Iterative Tarjan. SCCs are emitted in reverse topological order of
+    // the condensation, i.e. callees before callers — exactly the order
+    // accumulation needs. Boolean optimism does NOT transfer to budgets:
+    // an allocating cycle has unbounded aggregate demand.
+    DenseMap<Function *, TarjanNode> tj;
+    for (Function *fp : defined)
+        tj.try_emplace(fp);
+    SmallVector<Function *, 64> sccStack;
+    unsigned nextIndex = 0;
+    struct Frame {
+        Function *f;
+        unsigned childIdx;
+    };
+
+    auto contributionOf = [&](Function *g, bool &isTop) -> uint64_t {
+        const CapHoistInfo &gi = info.find(g)->second;
+        if (gi.top) {
+            isTop = true;
+            return 0;
+        }
+        if (gi.eligible)
+            return gi.budget;
+        // Non-eligible callee: leaf-equivalent only when it allocates
+        // nothing (CGEN_072 will stamp it GC-free). NEVER propagate a
+        // nonzero budget through one — it keeps its own checked diamonds
+        // and its slow edge would void the caller's guarantee.
+        if (gi.budget == 0)
+            return 0;
+        isTop = true;
+        return 0;
+    };
+
+    for (Function *root : defined) {
+        if (tj.find(root)->second.visited)
+            continue;
+        SmallVector<Frame, 32> work;
+        {
+            TarjanNode &rs = tj.find(root)->second;
+            rs.index = rs.low = nextIndex++;
+            rs.onStack = rs.visited = true;
+        }
+        sccStack.push_back(root);
+        work.push_back({root, 0});
+
+        while (!work.empty()) {
+            Function *f = work.back().f;
+            const unsigned ci = work.back().childIdx;
+            const CapHoistInfo &fi = info.find(f)->second;
+            if (ci < fi.callees.size()) {
+                work.back().childIdx = ci + 1; // write back BEFORE any push
+                Function *g = fi.callees[ci].first;
+                TarjanNode &gs = tj.find(g)->second;
+                if (!gs.visited) {
+                    gs.index = gs.low = nextIndex++;
+                    gs.onStack = gs.visited = true;
+                    sccStack.push_back(g);
+                    work.push_back({g, 0}); // no live refs held here
+                } else if (gs.onStack) {
+                    TarjanNode &fs = tj.find(f)->second;
+                    fs.low = std::min(fs.low, gs.index);
+                }
+                continue;
+            }
+            work.pop_back();
+            TarjanNode &fs = tj.find(f)->second;
+            if (!work.empty()) {
+                TarjanNode &ps = tj.find(work.back().f)->second;
+                ps.low = std::min(ps.low, fs.low);
+            }
+            if (fs.low != fs.index)
+                continue;
+
+            // Pop one SCC and resolve every member's budget.
+            SmallVector<Function *, 4> scc;
+            for (;;) {
+                Function *w = sccStack.pop_back_val();
+                tj.find(w)->second.onStack = false;
+                scc.push_back(w);
+                if (w == f)
+                    break;
+            }
+            const bool isCycle =
+                scc.size() > 1 || info.find(scc[0])->second.selfEdge;
+
+            if (isCycle) {
+                // Any allocation reachable from the cycle makes aggregate
+                // demand unbounded. A pure zero-byte cycle stays 0.
+                bool anyDemand = false;
+                SmallPtrSet<Function *, 8> members(scc.begin(), scc.end());
+                for (Function *w : scc) {
+                    const CapHoistInfo &wi = info.find(w)->second;
+                    if (wi.top || wi.ownBytes > 0) {
+                        anyDemand = true;
+                        break;
+                    }
+                    for (auto &e : wi.callees) {
+                        if (members.count(e.first))
+                            continue; // intra-SCC
+                        bool t = false;
+                        if (contributionOf(e.first, t) > 0 || t) {
+                            anyDemand = true;
+                            break;
+                        }
+                    }
+                    if (anyDemand)
+                        break;
+                }
+                for (Function *w : scc) {
+                    CapHoistInfo &wi = info.find(w)->second;
+                    if (anyDemand) {
+                        wi.top = true;
+                        if (wi.reason == TopReason::None)
+                            wi.reason = TopReason::Cycle;
+                    } else {
+                        wi.budget = 0;
+                    }
+                }
+                continue;
+            }
+
+            CapHoistInfo &si = info.find(scc[0])->second;
+            if (si.top)
+                continue;
+            uint64_t total = si.ownBytes;
+            bool isTop = false;
+            for (auto &e : si.callees) {
+                bool t = false;
+                uint64_t c = contributionOf(e.first, t);
+                if (t) {
+                    isTop = true;
+                    break;
+                }
+                // An in-loop call edge repeats unboundedly; only harmless
+                // when it contributes nothing.
+                if (e.second && c > 0) {
+                    isTop = true;
+                    break;
+                }
+                total += c;
+                if (total > K)
+                    break;
+            }
+            if (isTop) {
+                si.top = true;
+                if (si.reason == TopReason::None)
+                    si.reason = TopReason::Other;
+            } else if (total > K) {
+                si.top = true;
+                if (si.reason == TopReason::None)
+                    si.reason = TopReason::Budget;
+            } else {
+                si.budget = total;
+            }
+        }
+    }
+
+    // ---- Phase C: coverable set --------------------------------------
+    DenseSet<Function *> covered;
+    SmallVector<Function *, 64> coverableFns;
+    unsigned exclAddr = 0, exclLinkage = 0, exclLoop = 0, exclCycle = 0,
+             exclBudget = 0, exclOther = 0;
+    for (Function *fp : defined) {
+        const CapHoistInfo &fi = info.find(fp)->second;
+        if (fi.top) {
+            switch (fi.reason) {
+            case TopReason::Loop:   ++exclLoop;   break;
+            case TopReason::Cycle:  ++exclCycle;  break;
+            case TopReason::Budget: ++exclBudget; break;
+            default:                ++exclOther;  break;
+            }
+            continue;
+        }
+        if (fi.budget == 0)
+            continue; // already GC-free: CGEN_072's existing population
+        if (!fi.eligible) {
+            // Finite nonzero budget but uninstrumentable callers — the
+            // population a v2 callee-cloning extension would recover.
+            if (fi.addrTaken)
+                ++exclAddr;
+            else if (fi.nonLocal)
+                ++exclLinkage;
+            continue;
+        }
+        covered.insert(fp);
+        coverableFns.push_back(fp);
+    }
+
+    // ---- Phase D: run scan (phase 1 — scan and record, never emit) ----
+    // Covered functions are NEVER scanned: their guarantee is their
+    // caller's, so coveredFns and run-instrumented functions are disjoint.
+    const bool foldOwn = capHoistFoldOwnMarkers();
+    unsigned sites = 0, runsTotal = 0, runsSingleton = 0, runsMulti = 0,
+             foldedMarkers = 0;
+    SmallVector<CapHoistRun, 64> runs;
+    for (Function *fp : defined) {
+        if (covered.count(fp))
+            continue;
+        for (BasicBlock &bb : *fp) {
+            CapHoistRun run;
+            auto flushRun = [&]() {
+                if (run.elems > 0) {
+                    // Soundness vs profitability: a run with a covered call
+                    // MUST be emitted (the callee's unchecked bumps depend on
+                    // it — an obligation, never a heuristic); pure own-marker
+                    // runs need >= 2 units to be worth a check.
+                    if (run.covCalls >= 1 || run.elems >= 2) {
+                        ++runsTotal;
+                        if (run.elems == 1)
+                            ++runsSingleton;
+                        else
+                            ++runsMulti;
+                        foldedMarkers += run.ownMarkers.size();
+                        runs.push_back(run);
+                    }
+                }
+                run = CapHoistRun();
+            };
+            auto addElem = [&](Instruction *i, uint64_t b) {
+                if (run.bytes + b > K)
+                    flushRun(); // greedy K-split at an element boundary
+                if (run.elems == 0)
+                    run.head = i;
+                run.tail = i;
+                run.bytes += b;
+                ++run.elems;
+            };
+            for (Instruction &i : bb) {
+                auto *cb = dyn_cast<CallBase>(&i);
+                if (!cb)
+                    continue;
+                Function *callee = cb->getCalledFunction();
+                if (markerFn && callee == markerFn) {
+                    auto *szC = dyn_cast<ConstantInt>(cb->getArgOperand(0));
+                    const uint64_t c = szC ? szC->getZExtValue() : 0;
+                    // An own marker over K (or with M2 off) keeps its HEAP_034
+                    // diamond, whose slow edge can GC — a breaker.
+                    if (!foldOwn || !szC || c > K) {
+                        flushRun();
+                        continue;
+                    }
+                    addElem(&i, c);
+                    run.ownMarkers.push_back(cast<CallInst>(cb));
+                    continue;
+                }
+                if (isHeadroomBreaker(callee)) {
+                    flushRun();
+                    continue;
+                }
+                if (callee && covered.count(callee)) {
+                    addElem(&i, info.find(callee)->second.budget);
+                    ++run.covCalls;
+                    run.covCallSites.push_back(cast<CallInst>(cb));
+                    ++sites;
+                    ++info.find(callee)->second.numSites;
+                    continue;
+                }
+                if (llvm::callsGCLeafFunction(cb, TLI))
+                    continue; // transparent
+                flushRun();   // statepoint-capable: breaker
+            }
+            flushRun();
+        }
+    }
+
+    // ---- Phase D2: verification + emission (transform mode only) ------
+    //
+    // Everything here is analysis-bug containment first, codegen second. A
+    // wrong budget is heap corruption (bumps past the clamped `end`), and the
+    // CGEN_072 structural assert cannot see most of this class: a mis-covered
+    // function is never STAMPED, so that assert never looks at it.
+    unsigned emittedEnsures = 0;
+    if (mode == CapHoistMode::On) {
+        // Re-walk each recorded run over its ORIGINAL, still-unsplit block
+        // and re-derive the scanner's own conclusion instruction by
+        // instruction. This is the check that would catch a scanner that let
+        // a statepoint-capable call, or a gc-leaf-but-headroom-consuming one
+        // (plan §2.1: gc-leaf does NOT imply bump-state-transparent), sit
+        // inside a covered region.
+        for (const CapHoistRun &run : runs) {
+            DenseSet<const CallInst *> owns(run.ownMarkers.begin(),
+                                            run.ownMarkers.end());
+            DenseSet<const CallInst *> covs(run.covCallSites.begin(),
+                                            run.covCallSites.end());
+            bool sawTail = false;
+            for (Instruction *i = run.head; i; i = i->getNextNode()) {
+                if (auto *cb = dyn_cast<CallBase>(i)) {
+                    Function *callee = cb->getCalledFunction();
+                    auto *ci = dyn_cast<CallInst>(cb);
+                    const bool ok =
+                        (markerFn && callee == markerFn && ci && owns.count(ci)) ||
+                        (callee && covered.count(callee) && ci && covs.count(ci)) ||
+                        (!isHeadroomBreaker(callee) &&
+                         llvm::callsGCLeafFunction(cb, TLI));
+                    if (!ok)
+                        report_fatal_error(
+                            "applyCapacityHoisting: run in '" +
+                            Twine(run.head->getFunction()->getName()) +
+                            "' contains a call that voids its guarantee");
+                }
+                if (i == run.tail) {
+                    sawTail = true;
+                    break;
+                }
+            }
+            // head and tail always share a block, so falling off the end
+            // means the scanner recorded an inconsistent run.
+            if (!sawTail)
+                report_fatal_error("applyCapacityHoisting: run head/tail are "
+                                   "not in the same block");
+        }
+
+        LLVMContext &ctx = m.getContext();
+        Type *i64Ty = Type::getInt64Ty(ctx);
+        Type *i8Ty = Type::getInt8Ty(ctx);
+        PointerType *as0 = PointerType::get(ctx, 0);
+        PointerType *as1 = PointerType::get(ctx, 1);
+
+        // Same declaration + attributes expandInlineAllocs installs; whichever
+        // pass runs first wins and the other's getOrInsertFunction finds it.
+        FunctionCallee bumpStateCallee = m.getOrInsertFunction(
+            "eco_bump_state", FunctionType::get(as0, {}, /*isVarArg=*/false));
+        if (auto *bs = dyn_cast<Function>(bumpStateCallee.getCallee())) {
+            bs->setDoesNotAccessMemory();
+            bs->setDoesNotThrow();
+            bs->setWillReturn();
+            bs->setSpeculatable();
+            bs->addFnAttr("gc-leaf-function");
+        }
+
+        // eco_ensure_nursery_slow(i64) -> void (HEAP_041). Deliberately NOT
+        // gc-leaf: it is the ONE statepoint of a covered region, and it must
+        // stay an opaque memory clobber so no bump-state load is forwarded
+        // across it (on the cold edge ptr/end have both moved).
+        FunctionCallee ensureCallee = m.getOrInsertFunction(
+            "eco_ensure_nursery_slow",
+            FunctionType::get(Type::getVoidTy(ctx), {i64Ty},
+                              /*isVarArg=*/false));
+        if (auto *ef = dyn_cast<Function>(ensureCallee.getCallee()))
+            ef->setDoesNotThrow();
+
+        MDBuilder mdb(ctx);
+        // One miss per nursery block transition claimed by this run, plus one
+        // per minor GC — the same numerology as the HEAP_034 diamond.
+        MDNode *unlikely =
+            mdb.createBranchWeights(/*miss=*/1, /*cont=*/1u << 20);
+
+        for (const CapHoistRun &run : runs) {
+            IRBuilder<> b(run.head);
+            Value *state = b.CreateCall(bumpStateCallee, {}, "eco.bump.state");
+            Value *top = b.CreateAlignedLoad(as1, state, Align(8), "eco.ens.top");
+            Value *endp =
+                b.CreateGEP(i8Ty, state, {b.getInt64(8)}, "eco.ens.endp");
+            Value *end = b.CreateAlignedLoad(as1, endp, Align(8), "eco.ens.end");
+            // Plain (non-inbounds) GEP, as in the HEAP_034 diamond: when the
+            // block is nearly full the projected address may exceed the block
+            // end before the compare rejects it.
+            Value *need = b.CreateGEP(i8Ty, top,
+                                      {b.getInt64((int64_t)run.bytes)},
+                                      "eco.ens.need");
+            Value *miss = b.CreateICmpUGT(need, end, "eco.ens.miss");
+
+            // If-THEN (no else): the fast arm carries no instruction, so an
+            // else block would be spurious. The run's elements ride into the
+            // continuation block, which both edges reach.
+            Instruction *thenTerm = SplitBlockAndInsertIfThen(
+                miss, run.head, /*Unreachable=*/false, unlikely);
+            IRBuilder<> tb(thenTerm);
+            tb.CreateCall(ensureCallee,
+                          {ConstantInt::get(i64Ty, run.bytes)});
+            ++emittedEnsures;
+
+            for (CallInst *mk : run.ownMarkers)
+                decisions->uncheckedMarkers.insert(mk);
+        }
+
+        decisions->coveredFns.insert(covered.begin(), covered.end());
+
+        // §2.6(a): every direct call site to a covered function is either
+        // inside another covered function (whose own guarantee subsumes it)
+        // or a member of an emitted run. Covered functions are never
+        // address-taken, so every use IS a matched-FTy direct call.
+        DenseSet<const CallInst *> runMembers;
+        for (const CapHoistRun &run : runs)
+            runMembers.insert(run.covCallSites.begin(), run.covCallSites.end());
+        for (Function *f : covered) {
+            for (User *u : f->users()) {
+                auto *ci = dyn_cast<CallInst>(u);
+                if (!ci || ci->getCalledFunction() != f ||
+                    (!covered.count(ci->getFunction()) && !runMembers.count(ci)))
+                    report_fatal_error(
+                        "applyCapacityHoisting: unguaranteed use of covered "
+                        "function '" + Twine(f->getName()) + "'");
+            }
+        }
+
+        // §2.6(b): no covered function may retain a statepoint-capable or
+        // headroom-consuming call. A callee is admissible when it is covered
+        // (its budget is inside ours) or provably GC-free (budget 0, which
+        // CGEN_072's fixpoint stamps gc-leaf, so RS4GC skips it).
+        for (Function *f : covered) {
+            for (BasicBlock &bb : *f) {
+                for (Instruction &i : bb) {
+                    auto *cb = dyn_cast<CallBase>(&i);
+                    if (!cb)
+                        continue;
+                    Function *callee = cb->getCalledFunction();
+                    if (markerFn && callee == markerFn)
+                        continue;
+                    if (isHeadroomBreaker(callee))
+                        report_fatal_error(
+                            "applyCapacityHoisting: covered function '" +
+                            Twine(f->getName()) +
+                            "' calls a headroom-breaking leaf");
+                    if (callee && !callee->isDeclaration()) {
+                        auto it = info.find(callee);
+                        const bool gcFree = it != info.end() &&
+                                            !it->second.top &&
+                                            it->second.budget == 0;
+                        if (covered.count(callee) || gcFree)
+                            continue;
+                    }
+                    if (llvm::callsGCLeafFunction(cb, TLI))
+                        continue;
+                    report_fatal_error(
+                        "applyCapacityHoisting: covered function '" +
+                        Twine(f->getName()) +
+                        "' retains a statepoint-capable call");
+                }
+            }
+        }
+
+        // §2.6(c): ownership is exclusive — a covered function's markers are
+        // covered by ITS caller, never by a run inside itself.
+        for (CallInst *mk : decisions->uncheckedMarkers)
+            if (covered.count(mk->getFunction()))
+                report_fatal_error("applyCapacityHoisting: covered function "
+                                   "also holds run-emitted markers");
+    }
+
+    // ---- Phase E: census ---------------------------------------------
+    // Nullary-ctor slice: exactly one 16 B marker whose constant header
+    // word carries Tag_Custom (size 16 alone is ambiguous — BoxedPrim and
+    // RecordBase are also 16). This is the slice the cheaper CAF-slot
+    // alternative competes for.
+    unsigned nullaryFns = 0, nullarySites = 0;
+    for (Function *fp : coverableFns) {
+        const CapHoistInfo &fi = info.find(fp)->second;
+        if (fi.markers.size() != 1 || fi.ownBytes != 16 ||
+            fi.budget != fi.ownBytes)
+            continue;
+        CallInst *mk = fi.markers[0];
+        bool isCustom = false;
+        for (User *u : mk->users())
+            if (auto *st = dyn_cast<StoreInst>(u))
+                if (st->getPointerOperand() == mk)
+                    if (auto *hv = dyn_cast<ConstantInt>(st->getValueOperand()))
+                        isCustom = (hv->getZExtValue() & 0x1F) == 7; // TagCustom
+        if (isCustom) {
+            ++nullaryFns;
+            nullarySites += fi.numSites;
+        }
+    }
+
+    std::vector<uint64_t> budgets;
+    budgets.reserve(coverableFns.size());
+    for (Function *fp : coverableFns)
+        budgets.push_back(info.find(fp)->second.budget);
+    std::sort(budgets.begin(), budgets.end());
+    auto pct = [&](double p) -> uint64_t {
+        if (budgets.empty())
+            return 0;
+        size_t idx = (size_t)(p * (double)(budgets.size() - 1));
+        return budgets[idx];
+    };
+
+    if (const char *dump = ::getenv("ECO_ALLOC_HOIST_DUMP")) {
+        std::ofstream out(dump);
+        for (Function *fp : coverableFns) {
+            const CapHoistInfo &fi = info.find(fp)->second;
+            out << fp->getName().str() << ";" << fi.budget << ";"
+                << fi.numSites << ";coverable\n";
+        }
+        // The v2-cloning population, for sizing that extension.
+        for (Function *fp : defined) {
+            const CapHoistInfo &fi = info.find(fp)->second;
+            if (fi.top || fi.budget == 0 || fi.eligible)
+                continue;
+            out << fp->getName().str() << ";" << fi.budget << ";0;"
+                << (fi.addrTaken ? "excl_addrtaken" : "excl_linkage") << "\n";
+        }
+    }
+
+    std::string line;
+    raw_string_ostream os(line);
+    os << "[caphoist] coverable=" << coverableFns.size()
+       << " defined=" << defined.size() << " sites=" << sites
+       << " bytes_p50=" << pct(0.50) << " bytes_p90=" << pct(0.90)
+       << " bytes_max=" << (budgets.empty() ? 0 : budgets.back())
+       << " runs=" << runsTotal << " singleton=" << runsSingleton
+       << " multi=" << runsMulti << " folded_markers=" << foldedMarkers
+       << " excl_addrtaken=" << exclAddr << " excl_linkage=" << exclLinkage
+       << " excl_loop=" << exclLoop << " excl_cycle=" << exclCycle
+       << " excl_budget=" << exclBudget << " excl_other=" << exclOther
+       << " nullary=" << nullaryFns << " nullary_sites=" << nullarySites
+       << " K=" << K
+       << " mode=" << (mode == CapHoistMode::On ? "on" : "census");
+    if (mode == CapHoistMode::On)
+        os << " emitted=" << emittedEnsures
+           << " unchecked=" << decisions->uncheckedMarkers.size()
+           << " m2=" << (foldOwn ? 1 : 0);
+    os << "\n";
+    // Same rule as [gcfree]: silent on a default-ON build, loud whenever the
+    // run asked for a mode by name.
+    if (mode == CapHoistMode::Census || envNamed("ECO_ALLOC_HOIST"))
+        llvm::errs() << os.str();
 }
 
 static void runCapInlinePrepass(Module &m) {
@@ -1691,11 +2513,39 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
     }
     // Plan P2: expand inline-deref markers before RS4GC / partition splitting.
     expandInlineDerefs(m);
+
+    // Capacity-check hoisting (plans/capacity-check-hoisting.md, CGEN_074):
+    // must run HERE — after every other marker expansion (so all remaining
+    // GC hazards are real calls) but BEFORE expandInlineAllocs, while
+    // __eco_alloc_inline markers still carry their constant sizes.
+    // Census mode is analysis-only and runs regardless of ECO_GCFREE_LEAF;
+    // the transform needs the CGEN_072 fixpoint to harvest anything, so a
+    // misconfiguration is reported loudly rather than silently no-op'ing.
+    CapHoistDecisions capHoist;
+    if (capHoistMode() != CapHoistMode::Off) {
+        if (capHoistMode() == CapHoistMode::On &&
+            gcFreeLeafMode() != GcFreeMode::Stamp) {
+            // Both are default-ON, so this only happens when gcfree was
+            // turned OFF explicitly. Stay quiet unless hoisting was ALSO
+            // asked for by name — otherwise `ECO_GCFREE_LEAF=0` alone would
+            // print a warning about a flag the user never mentioned.
+            if (envNamed("ECO_ALLOC_HOIST"))
+                llvm::errs()
+                    << "[caphoist] inactive: capacity hoisting requires "
+                       "ECO_GCFREE_LEAF (stamp mode); it is currently off\n";
+        } else {
+            MaybeScope s(job.stats, "  capacity-hoist analysis (serial)");
+            applyCapacityHoisting(m, capHoistMode(), &capHoist);
+        }
+    }
+
     // Inline nursery allocation (HEAP_034): expand bump-diamond markers.
     // Before the $cap prepass so marker-bearing bodies are correctly
     // classified (the expanded diamond's slow call makes them non-GC-free
     // for bodyIsGCCallFree in the barriers-off fallback config).
-    expandInlineAllocs(m);
+    // CGEN_074's decisions select the unchecked form per marker; empty when
+    // hoisting is off or census-only.
+    expandInlineAllocs(m, &capHoist);
 
     // E1.3: `$cap` inline prepass — must precede EVERY RS4GC flavour (serial,
     // deferred, and per-partition; all are downstream of this point). Skipped

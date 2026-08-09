@@ -102,6 +102,13 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_inline_slow),
                 llvm::JITSymbolFlags::Exported);
 
+        // Capacity-check hoisting (plans/capacity-check-hoisting.md,
+        // HEAP_041): cold edge of an ensure diamond.
+        symbolMap[interner("eco_ensure_nursery_slow")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_ensure_nursery_slow),
+                llvm::JITSymbolFlags::Exported);
+
         // Fast allocation functions (bump-pointer only, no GC, return 0 on failure).
         symbolMap[interner("eco_alloc_custom_fast")] =
             llvm::orc::ExecutorSymbolDef(

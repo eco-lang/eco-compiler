@@ -73,6 +73,21 @@ public:
     // per-thread nursery rather than the sum across independent threads.
     uint64_t nursery_size_bytes = 0;
 
+    // ========== Capacity-check hoisting (HEAP_041) ==========
+    //
+    // Cold-edge invocations of eco_ensure_nursery_slow: an ensure diamond
+    // whose inline compare missed. Expected to be a tiny fraction of the
+    // ensure executions (fast-path hit rate ~= 1); its natural MAGNITUDE is
+    // the covered runs' share of `nursery_block_advances`, NOT of
+    // minor_gc_count (every block transition is claimed by whichever check —
+    // ordinary diamond or ensure — crosses it first).
+    uint64_t ensure_slow_calls = 0;
+    // From-space block transitions (advance without GC), counted at BOTH
+    // sites that perform one: allocateSlow's exhaustion arm and
+    // ensureHeadroom's. This is the denominator ensure_slow_calls is read
+    // against; nursery_grow_events counts adaptive GROWTH, not transitions.
+    uint64_t nursery_block_advances = 0;
+
     // ========== Minor GC Timing Stats ==========
     uint64_t total_minor_gc_time_ns = 0;
     uint64_t min_minor_gc_time_ns = UINT64_MAX;
@@ -707,6 +722,14 @@ void recordUtf8WidenSiteOnCurrentThread(int site, size_t units) noexcept;
     #define GC_STATS_UTF8_WIDEN_SITE(site, units) \
         do { ::Elm::recordUtf8WidenSiteOnCurrentThread((site), (units)); } while(0)
 
+    // Capacity-check hoisting (HEAP_041): a from-space block transition, and
+    // a cold-edge ensure call. Both are cold-path — counting is free.
+    #define GC_STATS_NURSERY_BLOCK_ADVANCE(stats) \
+        do { (stats).nursery_block_advances++; } while(0)
+
+    #define GC_STATS_ENSURE_SLOW_CALL(stats) \
+        do { (stats).ensure_slow_calls++; } while(0)
+
     #define GC_STATS_MINOR_RECORD_GC_END(stats, elapsed_ns, freed) \
         do { (stats).recordMinorGCEnd(elapsed_ns, freed); } while(0)
 
@@ -762,6 +785,8 @@ void recordUtf8WidenSiteOnCurrentThread(int site, size_t units) noexcept;
     #define GC_STATS_STRING_RECORD_ALLOC(bytes) do {} while(0)
     #define GC_STATS_UTF8_WIDEN(units) do {} while(0)
     #define GC_STATS_UTF8_WIDEN_SITE(site, units) do {} while(0)
+    #define GC_STATS_NURSERY_BLOCK_ADVANCE(stats) do {} while(0)
+    #define GC_STATS_ENSURE_SLOW_CALL(stats) do {} while(0)
     #define GC_STATS_MINOR_RECORD_GC_END(stats, elapsed_ns, freed) do {} while(0)
     #define GC_STATS_MINOR_INC_SURVIVORS(stats, tag, bytes, nfields) do {} while(0)
     #define GC_STATS_MINOR_INC_PROMOTED(stats, tag, bytes, nfields) do {} while(0)

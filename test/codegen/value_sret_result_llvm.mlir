@@ -27,6 +27,16 @@ module {
   // scenario sret exists for (REP_AGG_001/CGEN_064: an FCA carrying
   // ptr addrspace(1) cannot cross a statepoint). Do NOT simplify this body back
   // to a bare `eco.return %p, %a`.
+  //
+  // Capacity-check hoisting (CGEN_074, plans/capacity-check-hoisting.md) is the
+  // one transform that could break the implication "allocates ⇒ statepointed"
+  // this probe rests on: a coverable callee's diamonds become unchecked bumps
+  // and its call sites de-statepoint. This worker is NOT coverable, and the
+  // reason is the `public` above, not the allocation — coverability requires
+  // hasLocalLinkage(), because by-name external callers are invisible to
+  // hasAddressTaken(). Verified under ECO_GCFREE_LEAF=1 ECO_ALLOC_HOIST=1:
+  // `[caphoist] coverable=0 ... excl_linkage=1`, and the CHECK below still
+  // matches. Keeping the worker public is therefore load-bearing twice over.
   func.func @sret_pair_worker(%a: i64, %p: !eco.value) -> (!eco.value, i64) {
     %t = eco.construct.tuple2 %a, %p : i64, !eco.value -> !eco.value
     eco.return %t, %a : !eco.value, i64

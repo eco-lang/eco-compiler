@@ -211,6 +211,25 @@ extern "C" HPtr eco_alloc_inline_slow(uint64_t size) {
     return ptrToHPointer(obj);
 }
 
+// Capacity guarantee for hoisted allocation checks (plans/
+// capacity-check-hoisting.md, CGEN_074 / HEAP_041): establishes
+// `bump_.end - bump_.ptr >= n` for the calling thread, allocating NOTHING.
+// `n` is a compile-time-constant run budget, 8-aligned, in (0, 4096]
+// (asserted). May advance nursery blocks (abandoning the current tail — an
+// already-tolerated state, see preEvacuationFromSpaceWalk's tail-gap note)
+// and may run a minor GC; the post-GC bump resumes MID-BLOCK after survivors,
+// so a post-GC advance may still be needed — hence the loop in
+// ensureHeadroom rather than a single-shot check.
+//
+// Deliberately NOT gc-leaf: this is the ONE statepoint of a covered region.
+// Values live across it are relocated by RS4GC as ordinary SSA. Called only
+// from the cold edge of an ensure diamond, so the counter is free.
+extern "C" void eco_ensure_nursery_slow(uint64_t n) {
+    assert(n <= 4096 && (n & 7) == 0 &&
+           "eco_ensure_nursery_slow: budget out of inline-alloc bounds");
+    Allocator::instance().ensureNursery(static_cast<size_t>(n));
+}
+
 extern "C" HPtr eco_alloc_custom(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes) {
     // Calculate size: Header + ctor/unboxed (8 bytes) + fields
     size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable) + scalar_bytes;

@@ -251,6 +251,36 @@ void* ThreadLocalHeap::allocateSlowRaw(size_t size) {
     return nullptr;
 }
 
+void ThreadLocalHeap::ensureNursery(size_t n) {
+    // Cold edge of a hoisted capacity check (HEAP_041,
+    // plans/capacity-check-hoisting.md). Establishes
+    // `bump_.end - bump_.ptr >= n` and allocates NOTHING; the covered run's
+    // unchecked bumps consume the guarantee afterwards.
+    assert(n <= 4096 && (n & 7) == 0 &&
+           "ensureNursery: budget out of inline-alloc bounds");
+    GC_STATS_ENSURE_SLOW_CALL(stats_);
+
+    if (nursery_.ensureHeadroom(n)) {
+        return;
+    }
+
+    minorGC();
+    if (nursery_.ensureHeadroom(n)) {
+        return;
+    }
+
+    // Tiny-config corner: a fresh block whose CLAMPED end sits below n
+    // (threshold_total_bytes_ < n) would GC-loop here. Fail soft exactly
+    // like computeAllocEndForBlock's already-full clause — unclamp the
+    // CURRENT block only, after restoring index/bump coherence.
+    nursery_.failSoftUnclampCurrentBlock();
+    if (nursery_.ensureHeadroom(n)) {
+        return;
+    }
+
+    assert(false && "ensureNursery: cannot satisfy after GC (HEAP_017)");
+}
+
 void* ThreadLocalHeap::allocateRegionSlow(size_t total) {
     // Slow path for contiguous region allocation. May GC.
     // Caller handles header init for each sub-object.
