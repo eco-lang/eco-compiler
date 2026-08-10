@@ -59,6 +59,7 @@ type CompareKind
     = CompareIntKind
     | CompareFloatKind
     | CompareCharKind
+    | CompareStringKind
 
 
 
@@ -245,6 +246,11 @@ intrinsicOperandTypes intrinsic =
 
                 CompareCharKind ->
                     [ Types.ecoChar, Types.ecoChar ]
+
+                -- REP_ABI_001: String crosses every ABI as !eco.value. Never
+                -- unbox; unboxArgsForIntrinsic no-ops for boxed-expected slots.
+                CompareStringKind ->
+                    [ Types.ecoValue, Types.ecoValue ]
 
 
 
@@ -628,6 +634,12 @@ utilsIntrinsic name argTypes _ =
         ( "compare", [ Mono.MChar, Mono.MChar ] ) ->
             Just (CompareToOrder { kind = CompareCharKind })
 
+        -- String compares leave the boxed kernel root (Elm_Kernel_Utils_compare)
+        -- for a typed op; the remaining boxed-key compares (lists, tuples,
+        -- records, user comparables) still fall through to the kernel call.
+        ( "compare", [ Mono.MString, Mono.MString ] ) ->
+            Just (CompareToOrder { kind = CompareStringKind })
+
         _ ->
             Nothing
 
@@ -957,6 +969,9 @@ generateIntrinsicOp ctx intrinsic resultVar argVars =
 
                         CompareCharKind ->
                             ( "eco.char.cmp_order", Types.ecoChar, Types.ecoChar )
+
+                        CompareStringKind ->
+                            ( "eco.string.cmp_order", Types.ecoValue, Types.ecoValue )
             in
             case argVars of
                 [ lhs, rhs ] ->

@@ -1,5 +1,20 @@
 # Plan: `compare` → `Order` intrinsic + `case compare … of` rewrite
 
+> **STATUS 2026-08-10 — PARTIALLY SUPERSEDED.**
+> **Option 2 (the `CompareToOrder` intrinsic + Order singletons) SHIPPED** and
+> is the foundation everything since builds on.
+> **Option 1 (the TypedOptimized `case compare … of` rewrite) shipped DEAD and
+> has been deleted.** Its matcher accepted only `Can.VarTopLevel` /
+> `Can.VarKernel` callee heads, but `compare` is always an *import* and
+> canonicalizes to `Can.VarForeign`, so it never fired anywhere — and fixing it
+> pre-monomorphization would have been wrong regardless, because the Dict key
+> type is still polymorphic `comparable` there and the ungated rewrite costs
+> String keys a second full string walk on every right-descent.
+> The replacement is a **post-monomorphization MLIR peephole**:
+> `plans/string-cmp-order-intrinsic-and-postmono-compare-rewrite.md` (Phase B),
+> which also retires the three-`getOrder`-calls-per-compare lowering. See
+> CGEN_075.
+
 Two independent optimizations, sharing a runtime mechanism for cheap `Order`
 values:
 

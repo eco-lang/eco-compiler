@@ -47,6 +47,13 @@ std::unique_ptr<mlir::Pass> createCheckEcoClosureCapturesPass();
 // - Enables DCE of unused closures (P3)
 std::unique_ptr<mlir::Pass> createEcoPAPSimplifyPass();
 
+// Rewrites `compare` + case-on-Order into direct comparisons feeding nested
+// bool cases, deleting the Order materialization (and, for primitives, the
+// three getOrder calls per execution). Must run before UndefinedFunction: it
+// may insert the Elm_Kernel_Utils_cmp3 declaration.
+// See plans/string-cmp-order-intrinsic-and-postmono-compare-rewrite.md
+std::unique_ptr<mlir::Pass> createEcoCompareCaseRewritePass();
+
 // ========== Stage 2: Eco -> Standard MLIR (func/cf/arith) ==========
 
 // Analyzes and classifies joinpoints for SCF lowering eligibility.

@@ -92,211 +92,6 @@ boolType =
     Can.TType ModuleName.basics "Bool" []
 
 
-{-| Match `compare a b` (either as `Basics.compare` or as the kernel ref
-`Elm.Kernel.Utils.compare`) and return the two argument expressions. Both
-faces can occur because canonicalization sometimes routes `Basics.compare`
-references through the kernel directly.
--}
-matchCompareCall : Can.Expr -> Maybe ( Can.Expr, Can.Expr )
-matchCompareCall (A.At _ info) =
-    case info.node of
-        Can.Call (A.At _ funcInfo) [ a, b ] ->
-            case funcInfo.node of
-                Can.VarTopLevel callHome callName ->
-                    if callHome == ModuleName.basics && callName == "compare" then
-                        Just ( a, b )
-
-                    else
-                        Nothing
-
-                Can.VarKernel _ kernelHome kernelName ->
-                    if kernelHome == Name.utils && kernelName == "compare" then
-                        Just ( a, b )
-
-                    else
-                        Nothing
-
-                _ ->
-                    Nothing
-
-        _ ->
-            Nothing
-
-
-{-| Match three case branches against the `Order` constructors LT/EQ/GT
-(zero‑arg) in any order. Returns the bodies in canonical (LT, EQ, GT)
-order. Rejects wildcards / aliases / variable patterns since collapsing
-constructors would change which branch fires under the rewrite.
--}
-matchOrderBranches : List Can.CaseBranch -> Maybe ( Can.Expr, Can.Expr, Can.Expr )
-matchOrderBranches branches =
-    let
-        classify : Can.CaseBranch -> Maybe ( Name, Can.Expr )
-        classify (Can.CaseBranch (A.At _ patInfo) body) =
-            case patInfo.node of
-                Can.PCtor patData ->
-                    if patData.home == ModuleName.basics && patData.type_ == "Order" && List.isEmpty patData.args then
-                        case patData.name of
-                            "LT" ->
-                                Just ( "LT", body )
-
-                            "EQ" ->
-                                Just ( "EQ", body )
-
-                            "GT" ->
-                                Just ( "GT", body )
-
-                            _ ->
-                                Nothing
-
-                    else
-                        Nothing
-
-                _ ->
-                    Nothing
-    in
-    case List.map classify branches of
-        [ Just ( n1, e1 ), Just ( n2, e2 ), Just ( n3, e3 ) ] ->
-            let
-                pick : Name -> Maybe Can.Expr
-                pick target =
-                    if n1 == target then
-                        Just e1
-
-                    else if n2 == target then
-                        Just e2
-
-                    else if n3 == target then
-                        Just e3
-
-                    else
-                        Nothing
-            in
-            Maybe.map3 (\a b c -> ( a, b, c )) (pick "LT") (pick "EQ") (pick "GT")
-
-        _ ->
-            Nothing
-
-
-{-| Build the rewritten expression for `case compare a b of LT -> e1 ; EQ -> e2 ; GT -> e3`.
-The result is
-
-    let _vN = a in
-    let _vM = b in
-    if Basics.lt _vN _vM then e1
-    else if Basics.eq _vN _vM then e2
-    else e3
-
-Binding `a` and `b` to fresh names prevents double-evaluation under the two
-synthesized comparisons. After monomorphization, `Basics.lt`/`Basics.eq`
-collapse through their kernel-call bodies into `Utils.lt`/`Utils.equal`,
-which dispatch to primitive intrinsics for Int/Float/Char and stay as kernel
-calls for Strings and other comparables — still a win because the `Order`
-allocation is gone.
-
-The `optimizeBranch` argument is the optimizer to use for branch bodies; the
-caller picks `optimize` or its tail-position variant so we don't lose tail
-calls inside `e1`/`e2`/`e3`.
-
--}
-applyCompareToOrderRewrite :
-    (Can.Expr -> Names.Tracker (TOpt.Expr Name))
-    -> (Can.Expr -> Names.Tracker (TOpt.Expr Name))
-    -> ExprTypes
-    -> A.Region
-    -> Can.Type Name
-    -> Maybe IO.Variable
-    -> Can.Expr
-    -> Can.Expr
-    -> Can.Expr
-    -> Can.Expr
-    -> Can.Expr
-    -> Names.Tracker (TOpt.Expr Name)
-applyCompareToOrderRewrite optimizeBranch optimizeArg exprTypes region tipe tvar a b ltBody eqBody gtBody =
-    let
-        argType : Can.Type Name
-        argType =
-            case Array.get (A.toValue a).id exprTypes |> Maybe.andThen identity of
-                Just t ->
-                    t
-
-                Nothing ->
-                    Utils.Crash.crash "applyCompareToOrderRewrite: missing type for compare argument"
-
-        funcType : Can.Type Name
-        funcType =
-            Can.TLambda argType (Can.TLambda argType boolType)
-
-        meta : { tipe : Can.Type Name, tvar : Maybe IO.Variable }
-        meta =
-            { tipe = tipe, tvar = tvar }
-
-        boolMeta : { tipe : Can.Type Name, tvar : Maybe IO.Variable }
-        boolMeta =
-            { tipe = boolType, tvar = Nothing }
-
-        argMeta : { tipe : Can.Type Name, tvar : Maybe IO.Variable }
-        argMeta =
-            { tipe = argType, tvar = Nothing }
-    in
-    Names.generate
-        |> Names.andThen
-            (\tmpA ->
-                Names.generate
-                    |> Names.andThen
-                        (\tmpB ->
-                            optimizeArg a
-                                |> Names.andThen
-                                    (\optA ->
-                                        optimizeArg b
-                                            |> Names.andThen
-                                                (\optB ->
-                                                    optimizeBranch ltBody
-                                                        |> Names.andThen
-                                                            (\optLT ->
-                                                                optimizeBranch eqBody
-                                                                    |> Names.andThen
-                                                                        (\optEQ ->
-                                                                            optimizeBranch gtBody
-                                                                                |> Names.andThen
-                                                                                    (\optGT ->
-                                                                                        Names.registerGlobal region ModuleName.basics "lt" funcType Nothing
-                                                                                            |> Names.andThen
-                                                                                                (\ltFn ->
-                                                                                                    Names.registerGlobal region ModuleName.basics "eq" funcType Nothing
-                                                                                                        |> Names.map
-                                                                                                            (\eqFn ->
-                                                                                                                let
-                                                                                                                    varA =
-                                                                                                                        TOpt.VarLocal tmpA argMeta
-
-                                                                                                                    varB =
-                                                                                                                        TOpt.VarLocal tmpB argMeta
-
-                                                                                                                    ltCall =
-                                                                                                                        TOpt.Call region ltFn [ varA, varB ] boolMeta
-
-                                                                                                                    eqCall =
-                                                                                                                        TOpt.Call region eqFn [ varA, varB ] boolMeta
-
-                                                                                                                    ifExpr =
-                                                                                                                        TOpt.If [ ( ltCall, optLT ), ( eqCall, optEQ ) ] optGT meta
-
-                                                                                                                    wrapB =
-                                                                                                                        TOpt.Let (TOpt.Def region tmpB optB argType) ifExpr meta
-                                                                                                                in
-                                                                                                                TOpt.Let (TOpt.Def region tmpA optA argType) wrapB meta
-                                                                                                            )
-                                                                                                )
-                                                                                    )
-                                                                        )
-                                                            )
-                                                )
-                                    )
-                        )
-            )
-
-
 {-| Synthesize a TypedOptimized `Bool` literal carrying consistent Meta.
 Threading the outer `tvar` keeps the synthesized node mapped to the same
 solver variable as the surrounding expression.
@@ -842,49 +637,37 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                                             ( pattern, List.foldr (wrapDestruct tipe) obranch destructors )
                                         )
                             )
-
-                optimizeAsExpr : Can.Expr -> Names.Tracker (TOpt.Expr Name)
-                optimizeAsExpr can =
-                    optimize kernelEnv annotations exprTypes exprVars home cycle (TCanBuild.toTypedExpr exprTypes exprVars can)
             in
-            -- Try the `case compare a b of LT/EQ/GT` rewrite first; fall back
-            -- to the generic decision-tree path when the scrutinee or branches
-            -- don't fit the shape (see matchCompareCall / matchOrderBranches).
-            case ( matchCompareCall scrutinee, matchOrderBranches branches ) of
-                ( Just ( a, b ), Just ( ltBody, eqBody, gtBody ) ) ->
-                    applyCompareToOrderRewrite optimizeAsExpr optimizeAsExpr exprTypes region tipe tvar a b ltBody eqBody gtBody
+            Names.generate
+                |> Names.andThen
+                    (\temp ->
+                        optimize kernelEnv annotations exprTypes exprVars home cycle (TCanBuild.toTypedExpr exprTypes exprVars scrutinee)
+                            |> Names.andThen
+                                (\optScrutinee ->
+                                    case optScrutinee of
+                                        TOpt.VarLocal root _ ->
+                                            Names.traverse (optimizeBranch root) branches
+                                                |> Names.map (\optBranches -> Case.optimize temp root optBranches tipe tvar)
 
-                _ ->
-                    Names.generate
-                        |> Names.andThen
-                            (\temp ->
-                                optimize kernelEnv annotations exprTypes exprVars home cycle (TCanBuild.toTypedExpr exprTypes exprVars scrutinee)
-                                    |> Names.andThen
-                                        (\optScrutinee ->
-                                            case optScrutinee of
-                                                TOpt.VarLocal root _ ->
-                                                    Names.traverse (optimizeBranch root) branches
-                                                        |> Names.map (\optBranches -> Case.optimize temp root optBranches tipe tvar)
+                                        TOpt.TrackedVarLocal _ root _ ->
+                                            Names.traverse (optimizeBranch root) branches
+                                                |> Names.map (\optBranches -> Case.optimize temp root optBranches tipe tvar)
 
-                                                TOpt.TrackedVarLocal _ root _ ->
-                                                    Names.traverse (optimizeBranch root) branches
-                                                        |> Names.map (\optBranches -> Case.optimize temp root optBranches tipe tvar)
-
-                                                _ ->
-                                                    Names.traverse (optimizeBranch temp) branches
-                                                        |> Names.map
-                                                            (\optBranches ->
-                                                                let
-                                                                    scrutineeType =
-                                                                        TOpt.typeOf optScrutinee
-                                                                in
-                                                                TOpt.Let
-                                                                    (TOpt.Def region temp optScrutinee scrutineeType)
-                                                                    (Case.optimize temp temp optBranches tipe tvar)
-                                                                    { tipe = tipe, tvar = tvar }
-                                                            )
-                                        )
-                            )
+                                        _ ->
+                                            Names.traverse (optimizeBranch temp) branches
+                                                |> Names.map
+                                                    (\optBranches ->
+                                                        let
+                                                            scrutineeType =
+                                                                TOpt.typeOf optScrutinee
+                                                        in
+                                                        TOpt.Let
+                                                            (TOpt.Def region temp optScrutinee scrutineeType)
+                                                            (Case.optimize temp temp optBranches tipe tvar)
+                                                            { tipe = tipe, tvar = tvar }
+                                                    )
+                                )
+                    )
 
         Can.Accessor field ->
             Names.registerField field (TOpt.Accessor region field { tipe = tipe, tvar = tvar })
@@ -1174,49 +957,37 @@ optimizeTailExpr kernelEnv annotations exprTypes exprVars home cycle rootName ar
                 optimizeBranchTail : Can.Expr -> Names.Tracker (TOpt.Expr Name)
                 optimizeBranchTail can =
                     optimizeTail kernelEnv annotations exprTypes exprVars home cycle rootName argNames resultType (TCanBuild.toTypedExpr exprTypes exprVars can)
-
-                optimizeArgExpr : Can.Expr -> Names.Tracker (TOpt.Expr Name)
-                optimizeArgExpr can =
-                    optimize kernelEnv annotations exprTypes exprVars home cycle (TCanBuild.toTypedExpr exprTypes exprVars can)
             in
-            -- Same `case compare a b of LT/EQ/GT` rewrite as the non-tail
-            -- arm above; branch bodies stay tail-position so TCO inside them
-            -- is preserved.
-            case ( matchCompareCall scrutinee, matchOrderBranches branches ) of
-                ( Just ( a, b ), Just ( ltBody, eqBody, gtBody ) ) ->
-                    applyCompareToOrderRewrite optimizeBranchTail optimizeArgExpr exprTypes region tipe tvar a b ltBody eqBody gtBody
+            Names.generate
+                |> Names.andThen
+                    (\temp ->
+                        optimize kernelEnv annotations exprTypes exprVars home cycle (TCanBuild.toTypedExpr exprTypes exprVars scrutinee)
+                            |> Names.andThen
+                                (\optScrutinee ->
+                                    case optScrutinee of
+                                        TOpt.VarLocal root _ ->
+                                            Names.traverse (optimizeBranch root) branches
+                                                |> Names.map (\optBranches -> Case.optimize temp root optBranches tipe tvar)
 
-                _ ->
-                    Names.generate
-                        |> Names.andThen
-                            (\temp ->
-                                optimize kernelEnv annotations exprTypes exprVars home cycle (TCanBuild.toTypedExpr exprTypes exprVars scrutinee)
-                                    |> Names.andThen
-                                        (\optScrutinee ->
-                                            case optScrutinee of
-                                                TOpt.VarLocal root _ ->
-                                                    Names.traverse (optimizeBranch root) branches
-                                                        |> Names.map (\optBranches -> Case.optimize temp root optBranches tipe tvar)
+                                        TOpt.TrackedVarLocal _ root _ ->
+                                            Names.traverse (optimizeBranch root) branches
+                                                |> Names.map (\optBranches -> Case.optimize temp root optBranches tipe tvar)
 
-                                                TOpt.TrackedVarLocal _ root _ ->
-                                                    Names.traverse (optimizeBranch root) branches
-                                                        |> Names.map (\optBranches -> Case.optimize temp root optBranches tipe tvar)
-
-                                                _ ->
-                                                    Names.traverse (optimizeBranch temp) branches
-                                                        |> Names.map
-                                                            (\optBranches ->
-                                                                let
-                                                                    scrutineeType =
-                                                                        TOpt.typeOf optScrutinee
-                                                                in
-                                                                TOpt.Let
-                                                                    (TOpt.Def region temp optScrutinee scrutineeType)
-                                                                    (Case.optimize temp temp optBranches tipe tvar)
-                                                                    { tipe = tipe, tvar = tvar }
-                                                            )
-                                        )
-                            )
+                                        _ ->
+                                            Names.traverse (optimizeBranch temp) branches
+                                                |> Names.map
+                                                    (\optBranches ->
+                                                        let
+                                                            scrutineeType =
+                                                                TOpt.typeOf optScrutinee
+                                                        in
+                                                        TOpt.Let
+                                                            (TOpt.Def region temp optScrutinee scrutineeType)
+                                                            (Case.optimize temp temp optBranches tipe tvar)
+                                                            { tipe = tipe, tvar = tvar }
+                                                    )
+                                )
+                    )
 
         -- For other expressions, use regular optimization (not in tail position)
         _ ->

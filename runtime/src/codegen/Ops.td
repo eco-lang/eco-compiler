@@ -2748,6 +2748,50 @@ def Eco_CharCmpOrderOp : Eco_Op<"char.cmp_order", [Pure]> {
   let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
 }
 
+// String compare ops. Unlike the primitive cmp_order ops above (which read no
+// heap), these read string CONTENTS through their operands. [Pure] — i.e.
+// CSE/hoist/DCE-able — is sound only because Eco strings are immutable after
+// construction: every chars[]/byte write in StringOps.hpp targets a freshly
+// allocated, not-yet-published `out` object, and SSA dominance already prevents
+// motion above the operands' defs. If a mutable string form (in-place builder)
+// is ever added, revisit these traits FIRST.
+
+def Eco_StringCmpOrderOp : Eco_Op<"string.cmp_order", [Pure]> {
+  let summary = "Compare two strings; return Order singleton (LT/EQ/GT)";
+  let description = [{
+    Returns a pre-allocated Order Custom value as `!eco.value`. Operands are
+    boxed strings (REP_ABI_001: String crosses every ABI as `!eco.value`).
+    Empty is the embedded constant, ordered below every non-empty string.
+
+    ```mlir
+    %ord = eco.string.cmp_order %a, %b : !eco.value
+    ```
+  }];
+  let arguments = (ins Eco_Value:$lhs, Eco_Value:$rhs);
+  let results = (outs Eco_Value:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
+}
+
+def Eco_StringCmp3Op : Eco_Op<"string.cmp3", [Pure]> {
+  let summary = "Three-way compare of two strings; return an UNCLAMPED sign";
+  let description = [{
+    Returns a sign integer: negative if lhs < rhs, zero if equal, positive if
+    lhs > rhs. The magnitude is UNCLAMPED (a code-unit difference, a memcmp
+    result, or a size difference) — consumers must test `<0` / `==0` / `>0`
+    and never compare against ±1.
+
+    Produced by the compare-case rewrite (EcoCompareCaseRewrite) as the
+    Order-free replacement for `eco.string.cmp_order` feeding a case on Order.
+
+    ```mlir
+    %sign = eco.string.cmp3 %a, %b : !eco.value -> i64
+    ```
+  }];
+  let arguments = (ins Eco_Value:$lhs, Eco_Value:$rhs);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs) `->` type($result)";
+}
+
 //===----------------------------------------------------------------------===//
 // 12. Reference Counting Placeholders (Future Perceus Support)
 //===----------------------------------------------------------------------===//

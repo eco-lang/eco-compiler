@@ -1,4 +1,5 @@
 build/
+build-val/
 build-static/
 build-profile/
 worktrees/

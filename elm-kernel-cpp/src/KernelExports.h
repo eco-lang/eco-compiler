@@ -183,6 +183,17 @@ HPtr Elm_Kernel_Utils_compare(HPtr a, HPtr b);
 HPtr Elm_Kernel_Utils_compare_Int  (int64_t  a, int64_t  b);
 HPtr Elm_Kernel_Utils_compare_Float(double   a, double   b);
 HPtr Elm_Kernel_Utils_compare_Char (uint16_t a, uint16_t b);
+// Order-free three-way compare siblings, emitted by EcoCompareCaseRewrite.
+// Both return an UNCLAMPED sign (test <0/==0/>0, never ==+/-1) and MUST be
+// defined returning int64_t — see the return-width trap in UtilsExports.cpp.
+// eco_string_cmp3/eco_string_cmp_order are String-only and gc-leaf-safe;
+// Elm_Kernel_Utils_cmp3 is generic and stays statepointed.
+int64_t Elm_Kernel_Utils_cmp3(HPtr a, HPtr b);
+int64_t eco_string_cmp3(HPtr a, HPtr b);
+HPtr    eco_string_cmp_order(HPtr a, HPtr b);
+// Order singleton pick from an UNCLAMPED sign — the one gc-leaf call the
+// eco.*.cmp_order lowering makes in place of three getOrder calls (CGEN_075).
+HPtr    eco_order_from_sign(int64_t sign);
 HPtr Elm_Kernel_Utils_equal(HPtr a, HPtr b);
 HPtr Elm_Kernel_Utils_notEqual(HPtr a, HPtr b);
 HPtr Elm_Kernel_Utils_lt(HPtr a, HPtr b);

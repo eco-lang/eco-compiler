@@ -3,6 +3,7 @@
 #include "../KernelExports.h"
 #include "../ExportHelpers.hpp"
 #include "Utils.hpp"
+#include "allocator/StringOps.hpp"
 
 using namespace Elm;
 using namespace Elm::Kernel;
@@ -12,6 +13,52 @@ extern "C" {
 HPtr Elm_Kernel_Utils_compare(HPtr a, HPtr b) {
     HPointer result = Utils::compare(Export::toPtr(a.toBits()), Export::toPtr(b.toBits()));
     return HPtr::fromBits(Export::encode(result));
+}
+
+// Order-free sibling of Elm_Kernel_Utils_compare, emitted by the compare-case
+// rewrite (EcoCompareCaseRewrite) for residual boxed keys. NOT gc-leaf: the
+// generic `cmp` recurses over arbitrary heap shapes, and every kernel extern is
+// deliberately poison for gc-free propagation (CGEN_072).
+//
+// RETURN-WIDTH TRAP: this MUST be defined returning int64_t so the widening is
+// the C++ int->int64_t return conversion (sign-extending). Defining it `int`
+// under an i64 MLIR/LLVM declaration leaves RAX's upper 32 bits undefined on
+// SysV x86-64, and the i64 sign tests then read garbage.
+int64_t Elm_Kernel_Utils_cmp3(HPtr a, HPtr b) {
+    return Utils::cmp3(Export::toPtr(a.toBits()), Export::toPtr(b.toBits()));
+}
+
+// String three-way compare: the sign of StringOps::compare, UNCLAMPED.
+// gc-leaf-safe — StringOps::compare never allocates on the GC heap on any of
+// its four paths (leaf charCompare / both-UTF-8 memcmp / single-segment view /
+// general lockstep, whose only scratch is a C++-heap std::vector).
+// Lives here, not in RuntimeExports, because Export::toPtr's full resolution
+// (embedded-constant -> nullptr; isInHeap -> resolveFast; else raw non-heap
+// pointer for rodata literals) is required for parity with the kernel path,
+// and RuntimeExports' local hpointerToPtr is NOT equivalent.
+// Same return-width trap as above.
+int64_t eco_string_cmp3(HPtr a, HPtr b) {
+    void* pa = Export::toPtr(a.toBits());
+    void* pb = Export::toPtr(b.toBits());
+    if (pa == pb) return 0;  // includes both-Empty (both nullptr)
+    if (!pa) return -1;      // empty < non-empty
+    if (!pb) return 1;
+    return StringOps::compare(pa, pb);
+}
+
+// Phase C: pick an Order singleton from an UNCLAMPED sign in ONE gc-leaf call,
+// replacing the three unconditional Eco_Runtime_getOrder* calls (plus two
+// selects) that emitOrderSelect used to emit per cmp_order execution.
+HPtr eco_order_from_sign(int64_t sign) {
+    uint64_t enc = (sign < 0) ? Utils::getOrderLT()
+                 : (sign > 0) ? Utils::getOrderGT()
+                              : Utils::getOrderEQ();
+    return HPtr::fromBits(enc);
+}
+
+// One-call replacement for the three getOrder calls: sign + singleton pick.
+HPtr eco_string_cmp_order(HPtr a, HPtr b) {
+    return eco_order_from_sign(eco_string_cmp3(a, b));
 }
 
 // Phase B per-instance variants. Each takes the corresponding primitive ABI

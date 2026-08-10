@@ -456,6 +456,13 @@ HPointer compare(void* a, void* b) {
     return Export::decode(enc);
 }
 
+// Order-free sibling of `compare`: the same `cmp` result, handed back as a
+// sign int so callers can branch on it without materializing an Order value.
+// UNCLAMPED — see the header note.
+int cmp3(void* a, void* b) {
+    return cmp(a, b);
+}
+
 // ============================================================================
 // Equality Operations
 // ============================================================================

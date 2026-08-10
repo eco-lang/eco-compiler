@@ -62,6 +62,12 @@ void buildEcoToEcoPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     // PAP simplification: fuse closures, convert saturated PAPs to direct calls
     pm.addPass(eco::createEcoPAPSimplifyPass());
 
+    // compare + case-on-Order -> direct comparisons (deletes the Order
+    // round-trip). After PAPSimplify so closure-mediated compares are already
+    // direct calls; before UndefinedFunction, which validates the
+    // Elm_Kernel_Utils_cmp3 declaration this pass may insert.
+    pm.addPass(eco::createEcoCompareCaseRewritePass());
+
     // Generate external declarations for undefined functions (kernel functions, etc.)
     pm.addPass(eco::createUndefinedFunctionPass());
 }

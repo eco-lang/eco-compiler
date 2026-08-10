@@ -1005,9 +1005,37 @@ struct CharNeOpLowering : public OpConversionPattern<CharNeOp> {
 
 namespace {
 
+// Phase C (CGEN_075): fold the sign in SSA and let one gc-leaf call pick the
+// singleton, instead of calling all three getters unconditionally. Cost per
+// execution goes from 3 calls + 2 selects to 1 call + 2 selects. The selects
+// are now over i64 constants rather than ptr addrspace(1) values, which also
+// keeps three GC pointers from being materialized on every compare.
+// ECO_ORDER_FROM_SIGN=0 restores the three-call shape (A/B escape hatch).
+static bool orderFromSignEnabled() {
+    static const bool on = [] {
+        const char *e = ::getenv("ECO_ORDER_FROM_SIGN");
+        return !(e && e[0] == '0' && e[1] == '\0');
+    }();
+    return on;
+}
+
 static Value emitOrderSelect(Location loc, Value isLt, Value isGt,
                               const EcoRuntime &runtime,
                               ConversionPatternRewriter &rewriter) {
+    if (orderFromSignEnabled()) {
+        auto i64Ty = rewriter.getIntegerType(64);
+        Value neg1 = rewriter.create<LLVM::ConstantOp>(
+            loc, i64Ty, rewriter.getI64IntegerAttr(-1));
+        Value zero = rewriter.create<LLVM::ConstantOp>(
+            loc, i64Ty, rewriter.getI64IntegerAttr(0));
+        Value one = rewriter.create<LLVM::ConstantOp>(
+            loc, i64Ty, rewriter.getI64IntegerAttr(1));
+        Value gtOrEq = rewriter.create<LLVM::SelectOp>(loc, isGt, one, zero);
+        Value sign = rewriter.create<LLVM::SelectOp>(loc, isLt, neg1, gtOrEq);
+        auto fn = runtime.getOrCreateOrderFromSign(rewriter);
+        return rewriter.create<LLVM::CallOp>(loc, fn, ValueRange{sign})
+            .getResult();
+    }
     auto ltFn = runtime.getOrCreateGetOrderLT(rewriter);
     auto eqFn = runtime.getOrCreateGetOrderEQ(rewriter);
     auto gtFn = runtime.getOrCreateGetOrderGT(rewriter);
@@ -1079,6 +1107,43 @@ struct CharCmpOrderOpLowering : public OpConversionPattern<CharCmpOrderOp> {
         Value isGt = rewriter.create<arith::CmpIOp>(
             loc, arith::CmpIPredicate::ugt, adaptor.getLhs(), adaptor.getRhs());
         rewriter.replaceOp(op, emitOrderSelect(loc, isLt, isGt, runtime, rewriter));
+        return success();
+    }
+};
+
+// String compares can't use emitOrderSelect: the sign needs a call, so picking
+// the singleton in C++ costs ONE gc-leaf call instead of one call plus the
+// three getOrder calls the select shape would add.
+struct StringCmpOrderOpLowering : public OpConversionPattern<StringCmpOrderOp> {
+    const EcoRuntime &runtime;
+
+    StringCmpOrderOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                             const EcoRuntime &runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult
+    matchAndRewrite(StringCmpOrderOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto fn = runtime.getOrCreateStringCmpOrder(rewriter);
+        rewriter.replaceOpWithNewOp<LLVM::CallOp>(
+            op, fn, ValueRange{adaptor.getLhs(), adaptor.getRhs()});
+        return success();
+    }
+};
+
+struct StringCmp3OpLowering : public OpConversionPattern<StringCmp3Op> {
+    const EcoRuntime &runtime;
+
+    StringCmp3OpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                         const EcoRuntime &runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult
+    matchAndRewrite(StringCmp3Op op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto fn = runtime.getOrCreateStringCmp3(rewriter);
+        rewriter.replaceOpWithNewOp<LLVM::CallOp>(
+            op, fn, ValueRange{adaptor.getLhs(), adaptor.getRhs()});
         return success();
     }
 };
@@ -1188,4 +1253,6 @@ void eco::detail::populateEcoArithPatternsWithRuntime(
     patterns.add<IntCmpOrderOpLowering>(typeConverter, ctx, runtime);
     patterns.add<FloatCmpOrderOpLowering>(typeConverter, ctx, runtime);
     patterns.add<CharCmpOrderOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<StringCmpOrderOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<StringCmp3OpLowering>(typeConverter, ctx, runtime);
 }

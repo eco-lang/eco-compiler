@@ -38,6 +38,14 @@ uint64_t getOrderGT();
  */
 HPointer compare(void* a, void* b);
 
+/**
+ * Three-way compare returning a sign int (<0 / 0 / >0) instead of an Order
+ * value — the Order-free half of `compare`. The magnitude is UNCLAMPED: it may
+ * be a code-unit difference, a memcmp result, or a size difference, so callers
+ * must test the sign and never compare against +/-1.
+ */
+int cmp3(void* a, void* b);
+
 // ============================================================================
 // Equality Operations
 // ============================================================================

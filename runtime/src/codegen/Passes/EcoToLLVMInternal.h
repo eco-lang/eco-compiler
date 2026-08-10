@@ -696,6 +696,15 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateGetOrderEQ(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateGetOrderGT(mlir::OpBuilder &builder) const;
 
+    // Three-way string/generic compare helpers. Both return an UNCLAMPED sign
+    // int (test <0/==0/>0). The string ones are gc-leaf (StringOps::compare
+    // never touches the GC heap); Elm_Kernel_Utils_cmp3 is a kernel extern and
+    // stays statepointed.
+    mlir::LLVM::LLVMFuncOp getOrCreateOrderFromSign(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateStringCmp3(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateStringCmpOrder(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateUtilsCmp3(mlir::OpBuilder &builder) const;
+
     // Array functions
     mlir::LLVM::LLVMFuncOp getOrCreateCloneArray(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateArraySetFixKind(mlir::OpBuilder &builder) const;

@@ -277,6 +277,7 @@ set_source_files_properties(
 set_source_files_properties(
     Passes/RCElimination.cpp
     Passes/EcoPAPSimplify.cpp
+    Passes/EcoCompareCaseRewrite.cpp
     Passes/JoinpointNormalization.cpp
     Passes/EcoControlFlowToSCF.cpp
     Passes/EcoListTemplate.cpp
@@ -353,6 +354,7 @@ endif()
 add_mlir_library(EcoPasses
     Passes/RCElimination.cpp
     Passes/EcoPAPSimplify.cpp
+    Passes/EcoCompareCaseRewrite.cpp
     Passes/JoinpointNormalization.cpp
     Passes/EcoControlFlowToSCF.cpp
     Passes/EcoListTemplate.cpp

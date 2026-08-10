@@ -736,6 +736,12 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         KERNEL_SYM(Eco_Runtime_getOrderLT)
         KERNEL_SYM(Eco_Runtime_getOrderEQ)
         KERNEL_SYM(Eco_Runtime_getOrderGT)
+        // Three-way compare helpers: eco.string.cmp_order / eco.string.cmp3
+        // lowering, and the compare-case rewrite's boxed fallback.
+        KERNEL_SYM(eco_string_cmp_order)
+        KERNEL_SYM(eco_order_from_sign)
+        KERNEL_SYM(eco_string_cmp3)
+        KERNEL_SYM(Elm_Kernel_Utils_cmp3)
 
         // JsArray module
         KERNEL_SYM(Elm_Kernel_JsArray_empty)

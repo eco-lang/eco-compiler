@@ -929,6 +929,34 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateGetOrderGT(OpBuilder &builder) const {
     return getOrCreateFunc(builder, "Eco_Runtime_getOrderGT", funcTy, /*gcLeaf=*/true);
 }
 
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateOrderFromSign(OpBuilder &builder) const {
+    // eco_order_from_sign(sign: i64) -> hptr (one of the three Order singletons)
+    // gc-leaf: three loads from value-rooted slots, no GC inside.
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY});
+    return getOrCreateFunc(builder, "eco_order_from_sign", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateStringCmp3(OpBuilder &builder) const {
+    // eco_string_cmp3(a: hptr, b: hptr) -> i64 (UNCLAMPED sign)
+    // gc-leaf: StringOps::compare never allocates on the GC heap.
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {HPTR_TY, HPTR_TY});
+    return getOrCreateFunc(builder, "eco_string_cmp3", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateStringCmpOrder(OpBuilder &builder) const {
+    // eco_string_cmp_order(a: hptr, b: hptr) -> hptr (Order singleton)
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY, HPTR_TY});
+    return getOrCreateFunc(builder, "eco_string_cmp_order", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateUtilsCmp3(OpBuilder &builder) const {
+    // Elm_Kernel_Utils_cmp3(a: hptr, b: hptr) -> i64 (UNCLAMPED sign).
+    // NOT gc-leaf: generic cmp recurses over arbitrary heap shapes and every
+    // kernel extern is deliberately gc-free poison (CGEN_072).
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {HPTR_TY, HPTR_TY});
+    return getOrCreateFunc(builder, "Elm_Kernel_Utils_cmp3", funcTy);
+}
+
 //===----------------------------------------------------------------------===//
 // Array Functions
 //===----------------------------------------------------------------------===//
@@ -1233,6 +1261,8 @@ void EcoRuntime::materializeAllRuntimeDecls(OpBuilder &b) const {
     getOrCreateSlotToHPtr(b); getOrCreateHPtrToSlot(b);
     getOrCreateIntPow(b); getOrCreateUtilsEqual(b);
     getOrCreateGetOrderLT(b); getOrCreateGetOrderEQ(b); getOrCreateGetOrderGT(b);
+    getOrCreateStringCmp3(b); getOrCreateStringCmpOrder(b); getOrCreateUtilsCmp3(b);
+    getOrCreateOrderFromSign(b);
     getOrCreateCloneArray(b); getOrCreateArraySetFixKind(b); getOrCreateArrayEmpty(b);
     getOrCreateArraySingletonInt(b); getOrCreateArraySingletonFloat(b);
     getOrCreateArraySingletonChar(b); getOrCreateArraySingletonBox(b);
