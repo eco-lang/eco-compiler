@@ -1337,6 +1337,13 @@ gateIntrinsic ctx argsWithTypes intrinsic =
             else
                 Nothing
 
+        Intrinsics.StringOrderCompare _ ->
+            if ctx.ecoConfig.stringOrderIntrinsic then
+                Just intrinsic
+
+            else
+                Nothing
+
         Intrinsics.ConstructList { headMlirType } ->
             case ( ctx.ecoConfig.list.consIntrinsic, argsWithTypes ) of
                 ( True, [ ( _, headSsaTy ), _ ] ) ->
@@ -3826,13 +3833,13 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                                 ( resVar, ctx2 ) =
                                                     Ctx.freshVar ctx1b
 
-                                                ( ctx3, intrinsicOp ) =
-                                                    Intrinsics.generateIntrinsicOp ctx2 intrinsic resVar unboxedArgVars
+                                                ( ctx3, intrinsicOps ) =
+                                                    Intrinsics.generateIntrinsicOps ctx2 intrinsic resVar unboxedArgVars
 
                                                 intrinsicResultType =
                                                     Intrinsics.intrinsicResultMlirType intrinsic
                                             in
-                                            { ops = argOps ++ unboxOps ++ [ intrinsicOp ]
+                                            { ops = argOps ++ unboxOps ++ intrinsicOps
                                             , resultVar = resVar
                                             , resultType = intrinsicResultType
                                             , ctx = ctx3
@@ -4302,13 +4309,13 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                 ( resVar, ctx2 ) =
                                     Ctx.freshVar ctx1b
 
-                                ( ctx3, intrinsicOp ) =
-                                    Intrinsics.generateIntrinsicOp ctx2 intrinsic resVar unboxedArgVars
+                                ( ctx3, intrinsicOps ) =
+                                    Intrinsics.generateIntrinsicOps ctx2 intrinsic resVar unboxedArgVars
 
                                 intrinsicResType =
                                     Intrinsics.intrinsicResultMlirType intrinsic
                             in
-                            { ops = argOps ++ unboxOps ++ [ intrinsicOp ]
+                            { ops = argOps ++ unboxOps ++ intrinsicOps
                             , resultVar = resVar
                             , resultType = intrinsicResType
                             , ctx = ctx3

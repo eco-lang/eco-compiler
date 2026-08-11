@@ -1,11 +1,11 @@
-module Compiler.Generate.MLIR.Intrinsics exposing (Intrinsic(..), CompareKind(..), kernelIntrinsic, intrinsicResultMlirType, unboxArgsForIntrinsic, unboxToType, generateIntrinsicOp)
+module Compiler.Generate.MLIR.Intrinsics exposing (Intrinsic(..), CompareKind(..), kernelIntrinsic, intrinsicResultMlirType, unboxArgsForIntrinsic, unboxToType, generateIntrinsicOp, generateIntrinsicOps)
 
 {-| Intrinsic operations for the MLIR backend.
 
 This module defines intrinsics for core Elm operations that can be
 directly lowered to efficient MLIR operations without kernel calls.
 
-@docs Intrinsic, CompareKind, kernelIntrinsic, intrinsicResultMlirType, unboxArgsForIntrinsic, unboxToType, generateIntrinsicOp
+@docs Intrinsic, CompareKind, kernelIntrinsic, intrinsicResultMlirType, unboxArgsForIntrinsic, unboxToType, generateIntrinsicOp, generateIntrinsicOps
 
 -}
 
@@ -55,6 +55,7 @@ type Intrinsic
     | AppendString
     | AppendList
     | CompareToOrder { kind : CompareKind }
+    | StringOrderCompare { op : String }
 
 
 {-| Operand kind selector for the `Utils.compare` intrinsic.
@@ -164,6 +165,9 @@ intrinsicResultMlirType intrinsic =
 
         CompareToOrder _ ->
             Types.ecoValue
+
+        StringOrderCompare _ ->
+            I1
 
 
 {-| Get the expected operand types for an intrinsic operation.
@@ -286,6 +290,11 @@ intrinsicOperandTypes intrinsic =
                 -- unbox; unboxArgsForIntrinsic no-ops for boxed-expected slots.
                 CompareStringKind ->
                     [ Types.ecoValue, Types.ecoValue ]
+
+        StringOrderCompare _ ->
+            -- REP_ABI_001: String crosses every ABI as !eco.value; never unbox.
+            -- unboxArgsForIntrinsic no-ops on boxed-expected slots.
+            [ Types.ecoValue, Types.ecoValue ]
 
 
 
@@ -682,6 +691,22 @@ utilsIntrinsic name argTypes _ =
         -- ANY MVar operand -- falls through to `_ -> Nothing` below and keeps
         -- emitting eco.call @Elm_Kernel_Utils_append verbatim. The config gate
         -- is applied by Expr.gateIntrinsic, so this module stays config-free.
+        -- kernel-opt-06: String ordering joins `compare` at the intrinsic
+        -- boundary. Structural orderings (lists, tuples, records, user
+        -- comparables) still fall through to Elm_Kernel_Utils_{lt,le,gt,ge}.
+        -- The cmp3 sign is UNCLAMPED, so the test is always against 0.
+        ( "lt", [ Mono.MString, Mono.MString ] ) ->
+            Just (StringOrderCompare { op = "eco.int.lt" })
+
+        ( "le", [ Mono.MString, Mono.MString ] ) ->
+            Just (StringOrderCompare { op = "eco.int.le" })
+
+        ( "gt", [ Mono.MString, Mono.MString ] ) ->
+            Just (StringOrderCompare { op = "eco.int.gt" })
+
+        ( "ge", [ Mono.MString, Mono.MString ] ) ->
+            Just (StringOrderCompare { op = "eco.int.ge" })
+
         ( "append", [ Mono.MString, Mono.MString ] ) ->
             Just AppendString
 
@@ -1154,3 +1179,52 @@ generateIntrinsicOp ctx intrinsic resultVar argVars =
 
                 _ ->
                     Ops.ecoBinaryOp ctx opName resultVar ( "%error", lhsType ) ( "%error", rhsType ) Types.ecoValue
+
+        StringOrderCompare { op } ->
+            -- Multi-op intrinsic: both emission sites route through
+            -- generateIntrinsicOps. Kept only for case totality.
+            Ops.ecoBinaryOp ctx op resultVar ( "%error", Types.ecoInt ) ( "%error", Types.ecoInt ) I1
+
+
+{-| Emit an intrinsic that needs MORE THAN ONE op.
+
+`generateIntrinsicOp` returns a single `MlirOp`; `StringOrderCompare` needs
+three (the cmp3, the zero constant, the signed test). Rather than churn the
+existing single-op arms, this wraps them: anything that is not multi-op is
+delegated and wrapped in a singleton list, so both emission sites in `Expr.elm`
+can call this uniformly.
+
+-}
+generateIntrinsicOps : Ctx.Context -> Intrinsic -> String -> List String -> ( Ctx.Context, List MlirOp )
+generateIntrinsicOps ctx intrinsic resultVar argVars =
+    case intrinsic of
+        StringOrderCompare { op } ->
+            let
+                ( lhs, rhs ) =
+                    case argVars of
+                        [ a, b ] ->
+                            ( a, b )
+
+                        _ ->
+                            ( "%error", "%error" )
+
+                ( signVar, ctx1 ) =
+                    Ctx.freshVar ctx
+
+                ( ctx2, cmp3Op ) =
+                    Ops.ecoBinaryOp ctx1 "eco.string.cmp3" signVar ( lhs, Types.ecoValue ) ( rhs, Types.ecoValue ) Types.ecoInt
+
+                ( zeroVar, ctx3 ) =
+                    Ctx.freshVar ctx2
+
+                ( ctx4, zeroOp ) =
+                    Ops.arithConstantInt ctx3 zeroVar 0
+
+                ( ctx5, testOp ) =
+                    Ops.ecoBinaryOp ctx4 op resultVar ( signVar, Types.ecoInt ) ( zeroVar, Types.ecoInt ) I1
+            in
+            ( ctx5, [ cmp3Op, zeroOp, testOp ] )
+
+        _ ->
+            generateIntrinsicOp ctx intrinsic resultVar argVars
+                |> Tuple.mapSecond List.singleton

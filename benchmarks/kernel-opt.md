@@ -143,6 +143,35 @@ arms lowered from the same Stage-5 `.mlir`), which stays byte-identical.
 
 ## Runs
 
+### 2026-08-11 21:15 UTC — Run J: kernel-opt-06 String ordering → `eco.string.cmp3` (**FLAT — no regression; KEEP — DEFAULT-ON, `ECO_STRING_ORDER_INTRINSIC=0` escapes**)
+
+`plans/kernel-opt-06-string-ordering-cmp3.md`. `<`/`<=`/`>`/`>=` on two Strings
+now emit `eco.string.cmp3` plus ONE signed test against 0, replacing a boxed
+`Elm_Kernel_Utils_{lt,le,gt,ge}` call whose `HPtr` Bool was immediately
+`eco.unbox`-ed. Phase-0 reproduced the recorded baseline exactly (lt 79 / le 0 /
+gt 40 / ge 2). **Emission: lt 79→14, gt 40→10, ge 2→2, cmp3 1→96 — 95
+conversions, 95 new ops, exact 1:1**, inside the plan's predicted 95–100 range.
+The sign is UNCLAMPED, so the test is against 0 and must be SIGNED; CGEN_075
+gains clause (f) recording that, since an unsigned predicate would read −1 as a
+huge positive and invert every answer.
+
+Wall **−0.34%** ⇒ FLAT, as the plan predicted in bold — it is the fourth
+compare-family deletion to measure flat, and it changes no retention: the boxed
+Bool it removes was an embedded HPointer constant that never allocated.
+Counters identical, `-out.mlir` byte-identical both rounds. Gates: E2E
+**1639/1639 in BOTH flag states** and again default-on; elm-tests 13,085 / 12.
+
+**Owed to kernel-opt-03:** the surviving boxed comparison population is now
+**64 sites** (lt 14, le 0, gt 10, ge 2, compare 38) — well under the >200
+threshold 03's Phase 5 is gated on, so **that phase must not execute**.
+
+| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|---|
+| on r1 | **3:22.94** | 4,888,716 kB | 219,817,471 | 13,332.69 MB | 836 | 361,224,067 (164.3%) | 10 | 79.84 s | 12,932,396 B |
+| on r2 | **3:23.55** | 4,888,488 kB | ≡ | ≡ | 836 | ≡ | 10 | 80.26 s | ≡ |
+| off r1 | 3:24.86 | 4,887,332 kB | 219,817,640 | 13,332.70 MB | 836 | 361,224,058 | 10 | 79.80 s | ≡ |
+| off r2 | 3:23.02 | 4,888,656 kB | 219,817,474 | 13,332.69 MB | 836 | 361,224,059 | 10 | 79.50 s | ≡ |
+
 ### 2026-08-11 17:40 UTC — Run I: kernel-opt-05 `Utils_append` type split (**FLAT — no regression; KEEP — DEFAULT-ON, `ECO_APPEND_SPLIT=0` escapes**)
 
 `plans/kernel-opt-05-utils-append-type-split.md` Phases 1a/1b/3. `++` at mono
@@ -394,3 +423,4 @@ was 20,480 MB. Gates at that point: E2E `--target full` and heap-validate tree
 | G — kernel-opt-02 union-find cell merge | **3:23.45** (m1/m2 mean, **−4.46%**) | 219,915,761 obj / 13,335.64 MB (promoted −2.96%) |
 | H — kernel-opt-04 string.length inline | 3:22.75 (r1/r2 mean, −0.12% FLAT) | 219,915,775 obj / 13,335.65 MB |
 | I — kernel-opt-05 append type split | 3:25.07 (r1/r2 mean, +0.80% FLAT) | 219,913,079 obj / 13,335.56 MB |
+| J — kernel-opt-06 String ordering cmp3 | 3:23.25 (r1/r2 mean, −0.34% FLAT) | 219,817,471 obj / 13,332.69 MB |

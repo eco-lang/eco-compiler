@@ -110,6 +110,40 @@ right family for an UNCLAMPED signed sign. `Eco_Int = I<64>` and
 bare `I1` for the result — matching the shipped `IntComparison` arm
 (`Intrinsics.elm:835-841`).
 
+## Outcome — SHIPPED 2026-08-11 (benchmarks/kernel-opt.md Run J)
+
+DEFAULT-ON, `ECO_STRING_ORDER_INTRINSIC=0` escapes. Phase-0 baseline reproduced the recorded
+counts **exactly** (lt 79 / le 0 / gt 40 / ge 2). Emission delta: **lt 79 -> 14, gt 40 -> 10,
+ge 2 -> 2, le 0 -> 0**, against `eco.string.cmp3` **1 -> 96**. That is **95 conversions and 95
+new cmp3 ops**, an exact 1:1, and it lands inside the plan's predicted 95-100 range. Wall
+**-0.34% => FLAT**, as §Expected impact predicted; counters identical, `-out.mlir`
+byte-identical both rounds. Gates: E2E **1639/1639 in BOTH flag states** and again default-on;
+elm-tests 13,085 / 12 pre-existing.
+
+### Numbers owed to kernel-opt-03 (its Phase 5 is gated on these)
+
+kernel-opt-03's Phase 5 ("residual boxed compare/lt/gt/ge") may execute **only if** more than
+200 boxed `Utils_{compare,lt,le,gt,ge}` sites survive AND the Stage-7a dynamic `Utils_lt` row
+is still live. Measured after this item:
+
+| survivor | sites |
+|---|---:|
+| `Elm_Kernel_Utils_lt` | 14 |
+| `Elm_Kernel_Utils_le` | 0 |
+| `Elm_Kernel_Utils_gt` | 10 |
+| `Elm_Kernel_Utils_ge` | 2 |
+| `Elm_Kernel_Utils_compare` (residual, from the Aug-10 series) | 38 |
+| **total** | **64** |
+
+**64 < 200, so kernel-opt-03's Phase 5 MUST NOT execute.** The dynamic clause was not
+measured (the per-symbol census is not in the tree), so per 06's own wording 03 must treat
+that clause as unmet as well. Both conditions fail; the gate is closed, not deferred.
+
+Deviation: gating goes through `Expr.gateIntrinsic` rather than a new `Intrinsics.gateIntrinsic`
+(see the note at the head of this file). The multi-op emitter `generateIntrinsicOps` DID land in
+`Intrinsics.elm` as specified, since it needs the `Intrinsic` type and `Ops`; both `Expr.elm`
+emission sites now call it, and single-op intrinsics are delegated and wrapped in a singleton.
+
 ## Approach
 
 ### Phase 0 — attribution census (executed; re-run to refresh)

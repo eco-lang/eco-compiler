@@ -277,6 +277,11 @@ applyEnvOverrides cfg =
                 (Utils.envLookupEnv "ECO_APPEND_SPLIT" |> Task.mapError never)
                     |> Task.map (\asVal -> applyAppendSplitOverride asVal cfg31)
             )
+        |> Task.andThen
+            (\cfg32 ->
+                (Utils.envLookupEnv "ECO_STRING_ORDER_INTRINSIC" |> Task.mapError never)
+                    |> Task.map (\soVal -> applyStringOrderIntrinsicOverride soVal cfg32)
+            )
 
 
 {-| `ECO_AGG_PROMOTE=1|true|yes`: U-T1.3.1 aggregate promotion — emit
@@ -300,6 +305,32 @@ applyAggPromoteOverride maybeVal cfg =
 
             else if t == "0" || t == "off" then
                 { cfg | aggPromote = False }
+
+            else
+                cfg
+
+
+{-| `ECO_STRING_ORDER_INTRINSIC=1|true|yes|on` (`0|off` disables): kernel-opt-06
+-- lower `Utils.lt/le/gt/ge` on two Strings to `eco.string.cmp3` plus a signed
+test against 0, instead of a boxed kernel call whose Bool is immediately
+unboxed. Artifact-affecting (hash token `strord=1` when enabled).
+-}
+applyStringOrderIntrinsicOverride : Maybe String -> EcoConfig -> EcoConfig
+applyStringOrderIntrinsicOverride maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            cfg
+
+        Just raw ->
+            let
+                t =
+                    String.toLower (String.trim raw)
+            in
+            if t == "1" || t == "true" || t == "yes" || t == "on" then
+                { cfg | stringOrderIntrinsic = True }
+
+            else if t == "0" || t == "off" then
+                { cfg | stringOrderIntrinsic = False }
 
             else
                 cfg

@@ -47,6 +47,7 @@ type alias EcoConfig =
     , sretTailFuncs : Bool -- U-T1.3.6: widen sretResults selection to tail funcs (result columns through the while loop). DEFAULT-ON since 2026-08-04 (user decision, ACCEPTING the measured ~+4% wall self-compile regression — 2026-08-03 isolation A/B: it cancelled T1.3.3's −4% exactly; per-iteration slot-column carry in hot loops); env ECO_SRET_TAILFUNC=0 disables; artifact-affecting when enabled (hash token "srtf=1"); no-op unless sretResults
     , stringLengthOp : Bool -- kernel-opt-04: emit eco.string.length (an inline header-size load) instead of the Elm_Kernel_String_length call. DEFAULT-ON since 2026-08-11 (all 101 self-compile call sites convert; wall FLAT at -0.12%, so it ships for the deleted calls and statepoints, not a measured win); env kill switch ECO_STRING_LENGTH_OP=0; artifact-affecting (hash token "strlen=1" when enabled). The BACKEND knob ECO_STRING_LEN_INLINE=0 separately chooses a plain kernel call as the lowering, needing no compiler rebuild
     , appendSplit : Bool -- kernel-opt-05: split Elm_Kernel_Utils_append into typed eco.string.append / eco.list.append at mono sites that statically know the operand type. DEFAULT-ON since 2026-08-11 (3,468 self-compile sites -> 67; 2,695 string + 706 list; wall FLAT at +0.80%, so it ships for the typed boundary and the deleted runtime dispatch, not a measured win); env kill switch ECO_APPEND_SPLIT=0; artifact-affecting (hash token "apsplit=1" when enabled). Polymorphic residue (any MVar operand) keeps the kernel call
+    , stringOrderIntrinsic : Bool -- kernel-opt-06: lower Utils.lt/le/gt/ge on [MString,MString] to eco.string.cmp3 + a SIGNED sign test against 0, instead of the boxed kernel call + eco.unbox. DEFAULT-ON since 2026-08-11 (95 of 121 sites convert: lt 79->14, gt 40->10, ge 2->2; wall FLAT at -0.34%); env kill switch ECO_STRING_ORDER_INTRINSIC=0; artifact-affecting (hash token "strord=1")
     }
 
 
@@ -348,6 +349,7 @@ default =
     , sretTailFuncs = True
     , stringLengthOp = True
     , appendSplit = True
+    , stringOrderIntrinsic = True
     }
 
 
@@ -373,6 +375,7 @@ decoder =
         |> D.apply (D.optionalField "sretTailFuncs" D.bool default.sretTailFuncs)
         |> D.apply (D.optionalField "stringLengthOp" D.bool default.stringLengthOp)
         |> D.apply (D.optionalField "appendSplit" D.bool default.appendSplit)
+        |> D.apply (D.optionalField "stringOrderIntrinsic" D.bool default.stringOrderIntrinsic)
 
 
 {-| Decode the `list` block. Only `chunks` is JSON-configurable; `report`
@@ -766,6 +769,13 @@ hash cfg =
             -- flag-on artifacts must never share flag-off caches.
             ++ (if cfg.appendSplit then
                     [ "apsplit=1" ]
+
+                else
+                    []
+               )
+            -- kernel-opt-06: String ordering rewrites emitted MLIR.
+            ++ (if cfg.stringOrderIntrinsic then
+                    [ "strord=1" ]
 
                 else
                     []
