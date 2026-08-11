@@ -52,6 +52,8 @@ type Intrinsic
     | ArraySlice
     | ArrayAppendN
     | ConstructList { headMlirType : MlirType }
+    | AppendString
+    | AppendList
     | CompareToOrder { kind : CompareKind }
 
 
@@ -154,6 +156,12 @@ intrinsicResultMlirType intrinsic =
         ConstructList _ ->
             Types.ecoValue
 
+        AppendString ->
+            Types.ecoValue
+
+        AppendList ->
+            Types.ecoValue
+
         CompareToOrder _ ->
             Types.ecoValue
 
@@ -254,6 +262,14 @@ intrinsicOperandTypes intrinsic =
             -- ctor before unboxArgsForIntrinsic (its only caller). Present for
             -- exhaustiveness and as documentation of the operand shape.
             [ headMlirType, Types.ecoValue ]
+
+        -- REP_ABI_001: String and List cross every ABI as !eco.value. Never
+        -- unbox; unboxArgsForIntrinsic no-ops for boxed-expected slots.
+        AppendString ->
+            [ Types.ecoValue, Types.ecoValue ]
+
+        AppendList ->
+            [ Types.ecoValue, Types.ecoValue ]
 
         CompareToOrder { kind } ->
             case kind of
@@ -661,6 +677,25 @@ utilsIntrinsic name argTypes _ =
         -- records, user comparables) still fall through to the kernel call.
         ( "compare", [ Mono.MString, Mono.MString ] ) ->
             Just (CompareToOrder { kind = CompareStringKind })
+
+        -- ++ on statically-known String / List (kernel-opt-05). The residue --
+        -- ANY MVar operand -- falls through to `_ -> Nothing` below and keeps
+        -- emitting eco.call @Elm_Kernel_Utils_append verbatim. The config gate
+        -- is applied by Expr.gateIntrinsic, so this module stays config-free.
+        ( "append", [ Mono.MString, Mono.MString ] ) ->
+            Just AppendString
+
+        ( "append", [ Mono.MList _ _, Mono.MList _ _ ] ) ->
+            Just AppendList
+
+        -- Defensive: a mixed String/List pair violates `appendable a => a -> a
+        -- -> a`. These arms keep such a pair on the polymorphic kernel, which
+        -- still routes by runtime tag, rather than mis-dispatching it.
+        ( "append", [ Mono.MString, Mono.MList _ _ ] ) ->
+            Nothing
+
+        ( "append", [ Mono.MList _ _, Mono.MString ] ) ->
+            Nothing
 
         _ ->
             Nothing
@@ -1080,6 +1115,22 @@ generateIntrinsicOp ctx intrinsic resultVar argVars =
                         ( "%error", headMlirType )
                         ( "%error", Types.ecoValue )
                         (Types.isUnboxable headMlirType)
+
+        AppendString ->
+            case argVars of
+                [ lhs, rhs ] ->
+                    Ops.ecoBinaryOp ctx "eco.string.append" resultVar ( lhs, Types.ecoValue ) ( rhs, Types.ecoValue ) Types.ecoValue
+
+                _ ->
+                    Ops.ecoBinaryOp ctx "eco.string.append" resultVar ( "%error", Types.ecoValue ) ( "%error", Types.ecoValue ) Types.ecoValue
+
+        AppendList ->
+            case argVars of
+                [ lhs, rhs ] ->
+                    Ops.ecoBinaryOp ctx "eco.list.append" resultVar ( lhs, Types.ecoValue ) ( rhs, Types.ecoValue ) Types.ecoValue
+
+                _ ->
+                    Ops.ecoBinaryOp ctx "eco.list.append" resultVar ( "%error", Types.ecoValue ) ( "%error", Types.ecoValue ) Types.ecoValue
 
         CompareToOrder { kind } ->
             let

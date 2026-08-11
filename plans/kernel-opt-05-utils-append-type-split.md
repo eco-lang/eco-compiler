@@ -139,6 +139,35 @@ opens a typed boundary for later append-specific work.
   `POwned/POwned` + `resultAliases = [0,1]` — see Phase 3 for what the row
   *does* buy.
 
+## Outcome — SHIPPED 2026-08-11 (benchmarks/kernel-opt.md Run I)
+
+DEFAULT-ON, `ECO_APPEND_SPLIT=0` escapes. **Emission: 3,468 -> 67** `callee =
+@Elm_Kernel_Utils_append`, with **2,695 `eco.string.append` + 706 `eco.list.append` = 3,401**
+displaced (98.1%) -- an exact reconciliation with no leakage into the wrong typed op. The 67
+residue is the MVar-operand population falling through `utilsIntrinsic`'s final wildcard,
+exactly as designed. Wall **+0.80% => FLAT**, as §Expected impact predicted. Stage-5 `.mlir`
+**-6,773 B**, which is the IR-size purchase mechanism (2) claims and the only measurable one.
+Gates: E2E **1638/1638 in BOTH flag states**; elm-tests 13,085 / 12 pre-existing.
+
+Deviations from the plan as written, both deliberate:
+
+1. **No `AppendConfig` record and no `ECO_APPEND_CENSUS`.** The plan wanted a nested
+   `{ split, census }` with a census mode stamping `eco.append_kind` on fallback sites. This
+   loop measured the residue directly by counting `callee = @Elm_Kernel_Utils_append` in the
+   flag-on Stage-5 module, which answers the same question (how big is the residue) without a
+   second flag or an attribute channel. The flag is a plain `appendSplit : Bool`. If the
+   residue's *breakdown by kind* is ever wanted, the census is still worth building.
+2. **No one-sided arms.** §1b's `s_/_s/l_/_l` arms were gated on a Phase-0 census this loop did
+   not run, so only the two-sided `[MString, MString]` and `[MList _ _, MList _ _]` arms landed,
+   plus the two defensive mixed-pair arms that keep a String/List pair on the polymorphic
+   kernel. At 98.1% displacement the remaining headroom is at most 67 sites.
+3. **Gating via `Expr.gateIntrinsic`**, not a new `kernelIntrinsicCfg` (see the note at the
+   head of this file).
+
+Anchor note: item 07's `fprintf` deletion shifted every `Utils.cpp` line below :557 by -6, so
+this plan's `:829-853` / `:851-852` are stale; the live anchors are `:823-847` / `:845-846`,
+which is what the KernelFacts row carries.
+
 ## Approach
 
 ### Phase 0 — emission-side census (½–1 day, no new ops)

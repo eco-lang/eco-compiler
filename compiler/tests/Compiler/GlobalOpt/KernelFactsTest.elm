@@ -24,12 +24,12 @@ suite =
                     |> List.map Tuple.first
                     |> List.sort
                     |> Expect.equal (List.sort stampable)
-        , Test.test "3. the borrow shim reproduces the legacy 33 rows exactly" <|
+        , Test.test "3. the borrow shim reproduces the 34 audited borrow rows exactly" <|
             \_ ->
                 legacyBorrowGolden
                     |> List.map (\( k, sig ) -> ( k, Just sig ))
                     |> Expect.equal (List.map (\( k, _ ) -> ( k, KernelSigs.lookup k )) legacyBorrowGolden)
-        , Test.test "4. NO key outside the legacy 33 answers the borrow shim" <|
+        , Test.test "4. NO key outside those 34 answers the borrow shim" <|
             \_ ->
                 KF.rows
                     |> List.filter (\( k, _ ) -> KernelSigs.lookup k /= Nothing)
@@ -104,9 +104,11 @@ stampable =
 
 
 {-| Transcribed by hand from the PRE-CHANGE Borrow/KernelSigs.elm:51-167, before
-Phase 2 rewrote that file into a shim. All 33 rows, with `bb1`/`bb2` expanded
-inline. Do NOT regenerate from KernelFacts and do NOT import the shim's helpers
-— the whole point is that this is an independent copy.
+Phase 2 rewrote that file into a shim. The original 33 rows, with `bb1`/`bb2`
+expanded inline, PLUS the 34th that kernel-opt-05 added when it audited
+`(Utils, append)`'s borrow axes (OWNER over both string and list). Do NOT
+regenerate from KernelFacts and do NOT import the shim's helpers — the whole
+point is that this is an independent copy.
 -}
 legacyBorrowGolden : List ( ( String, String ), KernelSigs.KernelSig )
 legacyBorrowGolden =
@@ -143,4 +145,7 @@ legacyBorrowGolden =
     , ( ( "String", "toLower" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [] } )
     , ( ( "String", "toUpper" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [] } )
     , ( ( "String", "all" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [] } )
+
+    -- kernel-opt-05: the 34th audited borrow row.
+    , ( ( "Utils", "append" ), { params = [ KernelSigs.POwned, KernelSigs.POwned ], resultAliases = [ 0, 1 ] } )
     ]

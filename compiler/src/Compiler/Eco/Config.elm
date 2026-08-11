@@ -46,6 +46,7 @@ type alias EcoConfig =
     , sretFresh : Bool -- U-T1.3.8: widen sretResults selection to helper-mediated results — a result leaf that IS a direct call to an already-promoted callee with identical slots is admissible (selection fixpoint); emission feeds the multi-result $sret call through. DEFAULT-ON since 2026-08-04 (user decision; measured neutral, Run M); env ECO_SRET_FRESH=0 disables; artifact-affecting when enabled (hash token "sretf=1"); no-op unless sretResults
     , sretTailFuncs : Bool -- U-T1.3.6: widen sretResults selection to tail funcs (result columns through the while loop). DEFAULT-ON since 2026-08-04 (user decision, ACCEPTING the measured ~+4% wall self-compile regression — 2026-08-03 isolation A/B: it cancelled T1.3.3's −4% exactly; per-iteration slot-column carry in hot loops); env ECO_SRET_TAILFUNC=0 disables; artifact-affecting when enabled (hash token "srtf=1"); no-op unless sretResults
     , stringLengthOp : Bool -- kernel-opt-04: emit eco.string.length (an inline header-size load) instead of the Elm_Kernel_String_length call. DEFAULT-ON since 2026-08-11 (all 101 self-compile call sites convert; wall FLAT at -0.12%, so it ships for the deleted calls and statepoints, not a measured win); env kill switch ECO_STRING_LENGTH_OP=0; artifact-affecting (hash token "strlen=1" when enabled). The BACKEND knob ECO_STRING_LEN_INLINE=0 separately chooses a plain kernel call as the lowering, needing no compiler rebuild
+    , appendSplit : Bool -- kernel-opt-05: split Elm_Kernel_Utils_append into typed eco.string.append / eco.list.append at mono sites that statically know the operand type. DEFAULT-ON since 2026-08-11 (3,468 self-compile sites -> 67; 2,695 string + 706 list; wall FLAT at +0.80%, so it ships for the typed boundary and the deleted runtime dispatch, not a measured win); env kill switch ECO_APPEND_SPLIT=0; artifact-affecting (hash token "apsplit=1" when enabled). Polymorphic residue (any MVar operand) keeps the kernel call
     }
 
 
@@ -346,6 +347,7 @@ default =
     , sretFresh = True
     , sretTailFuncs = True
     , stringLengthOp = True
+    , appendSplit = True
     }
 
 
@@ -370,6 +372,7 @@ decoder =
         |> D.apply (D.optionalField "sretFresh" D.bool default.sretFresh)
         |> D.apply (D.optionalField "sretTailFuncs" D.bool default.sretTailFuncs)
         |> D.apply (D.optionalField "stringLengthOp" D.bool default.stringLengthOp)
+        |> D.apply (D.optionalField "appendSplit" D.bool default.appendSplit)
 
 
 {-| Decode the `list` block. Only `chunks` is JSON-configurable; `report`
@@ -755,6 +758,14 @@ hash cfg =
             -- explicitly-disabled configs hash exactly like today's defaults.
             ++ (if cfg.stringLengthOp then
                     [ "strlen=1" ]
+
+                else
+                    []
+               )
+            -- kernel-opt-05: the typed append ops rewrite emitted MLIR, so
+            -- flag-on artifacts must never share flag-off caches.
+            ++ (if cfg.appendSplit then
+                    [ "apsplit=1" ]
 
                 else
                     []

@@ -690,6 +690,24 @@ def Eco_ListTailOp : Eco_Op<"project.list_tail", [Pure]> {
   let assemblyFormat = "$list attr-dict `:` type($list) `->` type($tail)";
 }
 
+def Eco_ListAppendOp : Eco_Op<"list.append"> {
+  let summary = "Concatenate two Lists (a ++ b), typed";
+  let description = [{
+    Typed replacement for `Elm_Kernel_Utils_append` at `(List _, List _)` mono
+    sites. Accepts every spine form (Tag_Cons, Tag_ConsChunk, Nil embedded
+    constant). Allocates a VARIABLE number of cells (or one chunk chain), so it
+    is NOT fixed-size-groupable and is deliberately trait-free. The result
+    SHARES the rhs spine.
+
+    ```mlir
+    %l = eco.list.append %a, %b : !eco.value
+    ```
+  }];
+  let arguments = (ins Eco_Value:$lhs, Eco_Value:$rhs);
+  let results = (outs Eco_Value:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
+}
+
 //===----------------------------------------------------------------------===//
 // Tuple Operations
 //===----------------------------------------------------------------------===//
@@ -1166,6 +1184,26 @@ def Eco_StringCodeUnitAtOp : Eco_Op<"string.code_unit_at", [Pure]> {
   let arguments = (ins Eco_Value:$str, Eco_Int:$index);
   let results = (outs Eco_Char:$result);
   let assemblyFormat = "$str `,` $index attr-dict";
+}
+
+def Eco_StringAppendOp : Eco_Op<"string.append"> {
+  let summary = "Concatenate two Strings (a ++ b), typed";
+  let description = [{
+    Typed replacement for `Elm_Kernel_Utils_append` at `(String, String)` mono
+    sites. Operands are boxed strings (REP_ABI_001: String crosses every ABI as
+    `!eco.value`) and accept the FULL string-shape domain - leaf, UTF-8 view,
+    slice and rope - because either side may be a view. Allocates a
+    VARIABLE-size result (flat leaf below `string_flatten_limit`,
+    `Tag_StringRope` above), so it is NOT fixed-size-groupable and is
+    deliberately trait-free; RS4GC inserts the statepoint at the lowered call.
+
+    ```mlir
+    %s = eco.string.append %a, %b : !eco.value
+    ```
+  }];
+  let arguments = (ins Eco_Value:$lhs, Eco_Value:$rhs);
+  let results = (outs Eco_Value:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
 }
 
 //===----------------------------------------------------------------------===//

@@ -398,6 +398,9 @@ Only when all fourteen have a terminal disposition. Produce a report with:
 - **Kernel `.elm`/`.js` edits need the `~/.eco` seed cache nuked** for that package
   (`rm -rf ~/.eco/0.1.0/packages/eco/kernel`) or stage 2 fails with the old signature.
 - **A kernel/runtime C++ edit does not reach `--target eco-compiler`** — Shape B above.
+- **`Debug.log` prints containers with a space after each comma** — `[1, 2, 3]`, not
+  `[1,2,3]`, and `["a", "b"]`, not `["a","b"]`. Write E2E `-- CHECK:` lines that way or the
+  fixture fails on formatting while every value is correct. (Cost two gate re-runs.)
 - **Run test suites serially.** Concurrent E2E/unit suites corrupt
   `~/.eco/.../typed-artifacts.dat` and produce flaky mono crashes.
 - **Gate counts must be measured, not assumed.** `elm-tests` is already red on the pristine

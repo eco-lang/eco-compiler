@@ -143,6 +143,37 @@ arms lowered from the same Stage-5 `.mlir`), which stays byte-identical.
 
 ## Runs
 
+### 2026-08-11 17:40 UTC — Run I: kernel-opt-05 `Utils_append` type split (**FLAT — no regression; KEEP — DEFAULT-ON, `ECO_APPEND_SPLIT=0` escapes**)
+
+`plans/kernel-opt-05-utils-append-type-split.md` Phases 1a/1b/3. `++` at mono
+sites that statically know the operand type now emits typed `eco.string.append` /
+`eco.list.append` instead of the polymorphic `Elm_Kernel_Utils_append`, which
+re-derives the type at runtime from two tag loads and silently returns its first
+argument for any pair it does not recognise. **3,468 sites → 67, and the split
+reconciles exactly: 2,695 string + 706 list = 3,401 displaced (98.1%).** The 67
+residue is the `MVar`-operand population falling through `utilsIntrinsic`'s final
+wildcard, as designed.
+
+Wall **+0.80%** ⇒ FLAT, which is what §Expected impact predicted ("the deleted
+per-call dispatch is a handful of loads and branches, so wall could well be
+flat"). Counters identical, `-out.mlir` byte-identical both rounds. The purchase
+the plan actually claims is IR size, and it is real but small: Stage-5 `.mlir`
+**−6,773 B (−0.05%)** from the `eco.call` root tails that leave the IR. Both ops
+are deliberately trait-free and appear in none of EcoGCPrepare's four lists —
+they allocate variable-size results, so RS4GC statepoints the lowered calls and
+attaches roots from its own liveness. Phase 3 also filled the `(Utils, append)`
+borrow axes as `POwned/POwned` + `resultAliases = [0,1]` (OWNER over both string
+and list — the borrow upside is FALSE, per the census correction), which required
+growing kernel-opt-07's golden from 33 to 34 rows in the same change. Gates: E2E
+**1638/1638 in BOTH flag states** and again default-on; elm-tests 13,085 / 12.
+
+| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|---|
+| on r1 | **3:24.48** | 4,888,560 kB | 219,913,079 | 13,335.56 MB | 836 | 361,202,876 (164.2%) | 10 | 79.77 s | 12,939,141 B |
+| on r2 | **3:25.65** | 4,888,684 kB | ≡ | ≡ | 836 | ≡ | 10 | 80.39 s | ≡ |
+| off r1 | 3:24.26 | 4,901,736 kB | 219,913,243 | 13,335.57 MB | 836 | 361,202,867 | 10 | 79.11 s | ≡ |
+| off r2 | 3:22.62 | 4,903,676 kB | 219,913,082 | 13,335.56 MB | 836 | 361,202,868 | 10 | 78.97 s | ≡ |
+
 ### 2026-08-11 14:05 UTC — Run H: kernel-opt-04 `eco.string.length` + `eco.string.code_unit_at` (**FLAT — no regression; KEEP — DEFAULT-ON, `ECO_STRING_LENGTH_OP=0` escapes**)
 
 `plans/kernel-opt-04-string-length-code-unit-at.md`. `String.length` becomes an
@@ -362,3 +393,4 @@ was 20,480 MB. Gates at that point: E2E `--target full` and heap-validate tree
 | F — kernel-opt-01 cons → construct.list | 3:34.33 (r1/r2 mean) | 232,537,735 obj / 15,167.99 MB (inline-alloc counter-blind; retention unmoved) |
 | G — kernel-opt-02 union-find cell merge | **3:23.45** (m1/m2 mean, **−4.46%**) | 219,915,761 obj / 13,335.64 MB (promoted −2.96%) |
 | H — kernel-opt-04 string.length inline | 3:22.75 (r1/r2 mean, −0.12% FLAT) | 219,915,775 obj / 13,335.65 MB |
+| I — kernel-opt-05 append type split | 3:25.07 (r1/r2 mean, +0.80% FLAT) | 219,913,079 obj / 13,335.56 MB |

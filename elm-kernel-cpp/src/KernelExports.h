@@ -196,6 +196,10 @@ HPtr    eco_string_cmp_order(HPtr a, HPtr b);
 // bounds-check against eco.string.length first. gc-leaf-safe (charAt never
 // allocates), so the lowered call needs no rooting.
 uint16_t eco_string_code_unit_at(HPtr str, int64_t index);
+// kernel-opt-05: typed append exports for eco.string.append / eco.list.append.
+// NOT gc-leaf -- both allocate (flat leaf or rope; cells or a chunk chain).
+HPtr eco_string_append(HPtr a, HPtr b);
+HPtr eco_list_append(HPtr a, HPtr b);
 // Order singleton pick from an UNCLAMPED sign — the one gc-leaf call the
 // eco.*.cmp_order lowering makes in place of three getOrder calls (CGEN_075).
 HPtr    eco_order_from_sign(int64_t sign);

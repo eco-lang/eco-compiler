@@ -1308,15 +1308,30 @@ a deliberate divergence from the kernel path it replaces: `boxToMatchSignatureTy
 final arm silently passes a mismatched primitive through ("no boxing solution
 (e.g. i64 vs f64) — use actual type for now"); declining is safer.
 
-`StringLength` (kernel-opt-04) is a plain flag check — the classifier already pinned
-the saturated `[ MString ]` shape, and String crosses every ABI as `!eco.value`, so
-there is no SSA-type disagreement to test for.
+`StringLength` (kernel-opt-04) and `AppendString`/`AppendList` (kernel-opt-05) are
+plain flag checks — their classifiers already pinned the saturated mono shapes, and
+String and List both cross every ABI as `!eco.value`, so there is no SSA-type
+disagreement to test for.
 -}
 gateIntrinsic : Ctx.Context -> List ( String, MlirType ) -> Intrinsics.Intrinsic -> Maybe Intrinsics.Intrinsic
 gateIntrinsic ctx argsWithTypes intrinsic =
     case intrinsic of
         Intrinsics.StringLength ->
             if ctx.ecoConfig.stringLengthOp then
+                Just intrinsic
+
+            else
+                Nothing
+
+        Intrinsics.AppendString ->
+            if ctx.ecoConfig.appendSplit then
+                Just intrinsic
+
+            else
+                Nothing
+
+        Intrinsics.AppendList ->
+            if ctx.ecoConfig.appendSplit then
                 Just intrinsic
 
             else

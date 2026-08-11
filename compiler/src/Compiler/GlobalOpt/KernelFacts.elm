@@ -416,8 +416,16 @@ rows =
         }
       )
     , ( ( "Utils", "append" )
+        -- kernel-opt-05 filled the borrow axes: OWNER over BOTH string and list.
+        -- makeRope stores both operands as GC roots and ListOps::append aliases
+        -- the rhs into the result tail, and copy-vs-rope is a RUNTIME decision on
+        -- byte length that a static (home, name) sig cannot discriminate -- so
+        -- the poisoned heap args are not recoverable (borrow-inf-census.md:883-897
+        -- CORRECTION 2026-07-27).
       , { auditedPure
-            | gcAlloc = GcUnbounded
+            | params = [ POwned, POwned ]
+            , resultAliases = [ 0, 1 ]
+            , gcAlloc = GcUnbounded
             , cppAlloc = True
             , divergence = Just "unsupported tag pair silently returns the first argument (elm-kernel-cpp/src/core/Utils.cpp:845-846) instead of failing"
             , evidence = "elm-kernel-cpp/src/core/Utils.cpp:823-847; runtime/src/allocator/StringOps.hpp:477-537; runtime/src/allocator/ListOps.cpp:262"

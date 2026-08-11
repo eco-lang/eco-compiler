@@ -706,6 +706,10 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateStringLenInlineMarker(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateStringLength(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateStringCodeUnitAt(mlir::OpBuilder &builder) const;
+    // String/List append (eco.string.append / eco.list.append lowering).
+    // NOT gc-leaf: both callees allocate.
+    mlir::LLVM::LLVMFuncOp getOrCreateStringAppend(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateListAppend(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateUtilsCmp3(mlir::OpBuilder &builder) const;
 
     // Array functions

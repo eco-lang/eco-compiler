@@ -743,6 +743,9 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         KERNEL_SYM(eco_string_cmp3)
         // kernel-opt-04: eco.string.code_unit_at lowering
         KERNEL_SYM(eco_string_code_unit_at)
+        // kernel-opt-05: eco.string.append / eco.list.append lowering
+        KERNEL_SYM(eco_string_append)
+        KERNEL_SYM(eco_list_append)
         KERNEL_SYM(Elm_Kernel_Utils_cmp3)
 
         // JsArray module

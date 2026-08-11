@@ -974,6 +974,20 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateStringCodeUnitAt(OpBuilder &b) const {
     return getOrCreateFunc(b, "eco_string_code_unit_at", funcTy, /*gcLeaf=*/true);
 }
 
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateStringAppend(OpBuilder &builder) const {
+    // eco_string_append(a: hptr, b: hptr) -> hptr. Allocates (flat leaf or
+    // rope), so gcLeaf stays false and RS4GC statepoints the lowered call.
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY, HPTR_TY});
+    return getOrCreateFunc(builder, "eco_string_append", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateListAppend(OpBuilder &builder) const {
+    // eco_list_append(a: hptr, b: hptr) -> hptr. Allocates a variable number
+    // of cells; gcLeaf stays false.
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY, HPTR_TY});
+    return getOrCreateFunc(builder, "eco_list_append", funcTy);
+}
+
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateUtilsCmp3(OpBuilder &builder) const {
     // Elm_Kernel_Utils_cmp3(a: hptr, b: hptr) -> i64 (UNCLAMPED sign).
     // NOT gc-leaf: generic cmp recurses over arbitrary heap shapes and every
@@ -1296,6 +1310,7 @@ void EcoRuntime::materializeAllRuntimeDecls(OpBuilder &b) const {
     getOrCreateArrayPushInt(b); getOrCreateArrayPushFloat(b); getOrCreateArrayPushChar(b);
     getOrCreateArrayPushBox(b); getOrCreateArraySlice(b); getOrCreateArrayAppendN(b);
     getOrCreateStringFromInt(b); getOrCreateStringFromDouble(b);
+    getOrCreateStringAppend(b); getOrCreateListAppend(b);
     getOrCreateDbgPrint(b); getOrCreateDbgPrintInt(b); getOrCreateDbgPrintFloat(b);
     getOrCreateDbgPrintChar(b); getOrCreateDbgPrintTyped(b);
     getOrCreateAsin(b); getOrCreateAcos(b); getOrCreateAtan(b); getOrCreateAtan2(b);

@@ -1250,6 +1250,44 @@ struct ArrayLengthOpLowering : public OpConversionPattern<ArrayLengthOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// eco.string.append / eco.list.append -> typed runtime calls
+//===----------------------------------------------------------------------===//
+
+struct StringAppendOpLowering : public OpConversionPattern<StringAppendOp> {
+    const EcoRuntime &runtime;
+
+    StringAppendOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                           const EcoRuntime &runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult
+    matchAndRewrite(StringAppendOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto fn = runtime.getOrCreateStringAppend(rewriter);
+        rewriter.replaceOpWithNewOp<LLVM::CallOp>(
+            op, fn, ValueRange{adaptor.getLhs(), adaptor.getRhs()});
+        return success();
+    }
+};
+
+struct ListAppendOpLowering : public OpConversionPattern<ListAppendOp> {
+    const EcoRuntime &runtime;
+
+    ListAppendOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                         const EcoRuntime &runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult
+    matchAndRewrite(ListAppendOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto fn = runtime.getOrCreateListAppend(rewriter);
+        rewriter.replaceOpWithNewOp<LLVM::CallOp>(
+            op, fn, ValueRange{adaptor.getLhs(), adaptor.getRhs()});
+        return success();
+    }
+};
+
+//===----------------------------------------------------------------------===//
 // eco.string.length -> __eco_string_len_inline marker (expanded pre-RS4GC)
 //===----------------------------------------------------------------------===//
 
@@ -2151,6 +2189,8 @@ void eco::detail::populateEcoHeapPatterns(
     patterns.add<ArrayAppendNOpLowering>(typeConverter, ctx, runtime);
     patterns.add<StringFromIntOpLowering>(typeConverter, ctx, runtime);
     patterns.add<StringFromFloatOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<StringAppendOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<ListAppendOpLowering>(typeConverter, ctx, runtime);
     patterns.add<StringLengthOpLowering>(typeConverter, ctx, runtime);
     patterns.add<StringCodeUnitAtOpLowering>(typeConverter, ctx, runtime);
 }

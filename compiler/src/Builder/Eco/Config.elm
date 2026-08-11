@@ -272,6 +272,11 @@ applyEnvOverrides cfg =
                 (Utils.envLookupEnv "ECO_STRING_LENGTH_OP" |> Task.mapError never)
                     |> Task.map (\slVal -> applyStringLengthOpOverride slVal cfg30)
             )
+        |> Task.andThen
+            (\cfg31 ->
+                (Utils.envLookupEnv "ECO_APPEND_SPLIT" |> Task.mapError never)
+                    |> Task.map (\asVal -> applyAppendSplitOverride asVal cfg31)
+            )
 
 
 {-| `ECO_AGG_PROMOTE=1|true|yes`: U-T1.3.1 aggregate promotion — emit
@@ -295,6 +300,32 @@ applyAggPromoteOverride maybeVal cfg =
 
             else if t == "0" || t == "off" then
                 { cfg | aggPromote = False }
+
+            else
+                cfg
+
+
+{-| `ECO_APPEND_SPLIT=1|true|yes|on` (`0|off` disables): kernel-opt-05 -- emit
+typed `eco.string.append` / `eco.list.append` at mono sites that statically know
+the operand type, instead of the polymorphic `Elm_Kernel_Utils_append` call.
+Artifact-affecting (hash token `apsplit=1` when enabled).
+-}
+applyAppendSplitOverride : Maybe String -> EcoConfig -> EcoConfig
+applyAppendSplitOverride maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            cfg
+
+        Just raw ->
+            let
+                t =
+                    String.toLower (String.trim raw)
+            in
+            if t == "1" || t == "true" || t == "yes" || t == "on" then
+                { cfg | appendSplit = True }
+
+            else if t == "0" || t == "off" then
+                { cfg | appendSplit = False }
 
             else
                 cfg

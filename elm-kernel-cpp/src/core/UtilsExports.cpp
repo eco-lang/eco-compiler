@@ -4,6 +4,7 @@
 #include "../ExportHelpers.hpp"
 #include "Utils.hpp"
 #include "allocator/StringOps.hpp"
+#include "allocator/ListOps.hpp"
 
 using namespace Elm;
 using namespace Elm::Kernel;
@@ -166,6 +167,42 @@ HPtr Elm_Kernel_Utils_append(HPtr a, HPtr b) {
     // toPtr returns nullptr for embedded constants, so return either one directly.
     if (!ptrA && !ptrB) return a;
     HPointer result = Utils::append(ptrA, ptrB);
+    return HPtr::fromBits(Export::encode(result));
+}
+
+// Typed append exports for the eco.string.append / eco.list.append lowering
+// (plans/kernel-opt-05). Same backends the polymorphic Utils::append reaches --
+// never a "leaf-only" fast path: either operand may be a slice/rope/view
+// (string) or a chunk spine (list). NOT gc-leaf: both allocate.
+//
+// No StackRootGuard here, deliberately: neither wrapper allocates before its
+// backend call, so there is nothing to root. ListOps::append roots its own
+// operands on the chunk path; this is the identical calling shape
+// Utils::append uses today, so the rooting contract is unchanged.
+HPtr eco_string_append(HPtr a, HPtr b) {
+    void* pa = Export::toPtr(a.toBits());
+    void* pb = Export::toPtr(b.toBits());
+    // Both Empty embedded constants ("" ++ ""): toPtr yields nullptr for both.
+    if (!pa && !pb) return a;
+    // StringOps::append itself handles one-sided null and zero length, and
+    // roots across every allocation it performs.
+    HPointer result = StringOps::append(pa, pb);
+    return HPtr::fromBits(Export::encode(result));
+}
+
+HPtr eco_list_append(HPtr a, HPtr b) {
+    void* pa = Export::toPtr(a.toBits());
+    void* pb = Export::toPtr(b.toBits());
+    // Nil is the Empty embedded constant -> toPtr == nullptr.
+    if (!pa) return b;   // [] ++ b == b
+    if (!pb) return a;   // a ++ [] == a
+    auto& allocator = Allocator::instance();
+    // No allocation between the two wraps, so neither HPointer can go stale.
+    // Raw pa/pb are DEAD from here on -- never hold a resolved void* across
+    // ListOps::append, which allocates.
+    HPointer la = allocator.wrap(pa);
+    HPointer lb = allocator.wrap(pb);
+    HPointer result = ListOps::append(la, lb);
     return HPtr::fromBits(Export::encode(result));
 }
 
