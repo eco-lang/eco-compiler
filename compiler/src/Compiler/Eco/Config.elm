@@ -54,12 +54,20 @@ type alias EcoConfig =
 hybrid chunk spines; `chunks = False` (JSON `"chunks": false` or env
 `ECO_LIST_CHUNKS=0`) reproduces the pre-chunk pipeline byte-for-byte.
 `chunks` is artifact-affecting (hash token `lchunks=1` when enabled; L1.2+
-codegen consults it). `report` (env `ECO_LIST_REPORT=1`, never from JSON)
+codegen consults it). `consIntrinsic` (kernel-opt-01, DEFAULT TRUE since 2026-08-10) lowers saturated
+`x :: xs` to `eco.construct.list` instead of `Elm_Kernel_List_cons*`, so each
+cons pays the HEAP_034 inline nursery bump instead of a statepointed runtime
+call; env kill switch `ECO_LIST_CONS_INTRINSIC=0`, artifact-affecting (hash
+token `lcons=1` when enabled). Measured on the self-compile: all 4,304 kernel
+cons call sites convert, EcoListTemplate chunk parity is exact, and wall is
+FLAT (+0.36%, inside the noise band) — it ships for the deleted call sites and
+statepoints, not for a measured wall win. `report` (env `ECO_LIST_REPORT=1`, never from JSON)
 renders the combinator-recognition census to stderr — output-only,
 excluded from `hash`.
 -}
 type alias ListConfig =
     { chunks : Bool
+    , consIntrinsic : Bool
     , report : Bool
     }
 
@@ -321,7 +329,7 @@ default =
     , cafMemo = { enabled = True, census = False, dedupe = False, hoist = { enabled = False, minNodes = 3, maxHoists = 8192 } }
     , mono = { engine = EngineSolver, diffDump = False, validate = False, lss = defaultLss }
     , borrow = { enabled = False, reify = ROff, report = False, validate = False, oracleOpt = False }
-    , list = { chunks = True, report = False }
+    , list = { chunks = True, consIntrinsic = True, report = False }
 
     -- The ENTIRE tier-1 family DEFAULT-ON since 2026-08-04 (user
     -- decision, reversing the same-day default-off verdict). Ship config
@@ -366,8 +374,9 @@ is env-only (`ECO_LIST_REPORT=1`).
 -}
 listDecoder : D.Decoder x ListConfig
 listDecoder =
-    D.pure (\chunks -> { chunks = chunks, report = default.list.report })
+    D.pure (\chunks consIntrinsic -> { chunks = chunks, consIntrinsic = consIntrinsic, report = default.list.report })
         |> D.apply (D.optionalField "chunks" D.bool default.list.chunks)
+        |> D.apply (D.optionalField "consIntrinsic" D.bool default.list.consIntrinsic)
 
 
 {-| Decode the `inline` block. `report` is env-only in spirit but accepted
@@ -680,6 +689,15 @@ hash cfg =
             -- (plans/chunked-list-representation.md).
             ++ (if cfg.list.chunks then
                     [ "lchunks=1" ]
+
+                else
+                    []
+               )
+            -- kernel-opt-01: the cons intrinsic changes emitted code, so the
+            -- token appears ONLY when enabled and flag-off builds keep every
+            -- existing cache entry.
+            ++ (if cfg.list.consIntrinsic then
+                    [ "lcons=1" ]
 
                 else
                     []

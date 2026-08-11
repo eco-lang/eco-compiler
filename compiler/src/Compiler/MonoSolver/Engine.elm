@@ -918,9 +918,7 @@ seed) so the engine touches zero lines of the type checker.
 -}
 freshStore : IO.State
 freshStore =
-    { ioRefsWeight = Array.empty
-    , ioRefsPointInfo = Array.empty
-    , ioRefsDescriptor = Array.empty
+    { ioRefsPoint = Array.empty
     , ioRefsMVector = Array.empty
     , names =
         { taken = CoreDict.empty

@@ -554,12 +554,6 @@ static bool eqHelp(void* a, void* b, int depth) {
         if (isListNode(a) && isListNode(b)) {
             return eqListHybrid(a, b, depth);
         }
-        // TRACE: log tag mismatches to stderr for debugging.
-        static int traceCount = 0;
-        if (traceCount < 10) {
-            fprintf(stderr, "[eq] tag mismatch: %d vs %d\n", (int)tagA, (int)tagB);
-            traceCount++;
-        }
         return false;
     }
 

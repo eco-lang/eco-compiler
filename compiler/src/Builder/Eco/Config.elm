@@ -228,6 +228,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\lrVal -> applyListReportOverride lrVal cfg22)
             )
         |> Task.andThen
+            (\cfg22b ->
+                (Utils.envLookupEnv "ECO_LIST_CONS_INTRINSIC" |> Task.mapError never)
+                    |> Task.map (\lciVal -> applyListConsIntrinsicOverride lciVal cfg22b)
+            )
+        |> Task.andThen
             (\cfg23 ->
                 (Utils.envLookupEnv "ECO_AGG_PROMOTE" |> Task.mapError never)
                     |> Task.map (\apVal -> applyAggPromoteOverride apVal cfg23)
@@ -506,6 +511,34 @@ applyListChunksOverride maybeVal cfg =
 
             else if t == "0" || t == "off" then
                 { cfg | list = { listCfg | chunks = False } }
+
+            else
+                cfg
+
+
+{-| `ECO_LIST_CONS_INTRINSIC=1|true|yes|on` (`0|off` disables): lower saturated
+`x :: xs` to `eco.construct.list` instead of `Elm_Kernel_List_cons*`
+(kernel-opt-01). Artifact-affecting — hash token `lcons=1` when enabled.
+-}
+applyListConsIntrinsicOverride : Maybe String -> EcoConfig -> EcoConfig
+applyListConsIntrinsicOverride maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            cfg
+
+        Just raw ->
+            let
+                t =
+                    String.toLower (String.trim raw)
+
+                listCfg =
+                    cfg.list
+            in
+            if t == "1" || t == "true" || t == "yes" || t == "on" then
+                { cfg | list = { listCfg | consIntrinsic = True } }
+
+            else if t == "0" || t == "off" then
+                { cfg | list = { listCfg | consIntrinsic = False } }
 
             else
                 cfg

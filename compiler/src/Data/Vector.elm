@@ -61,23 +61,25 @@ imapM_ action ioRef =
     IORef.readIORefMVector ioRef
         |> IO.andThen
             (\value ->
+                -- kernel-opt-02 lane A': the accumulator this fold used to build
+                -- with `Array.push (Just newX)` was discarded wholesale by the
+                -- `IO.map (\_ -> ())` below — one array copy per element, pure
+                -- waste. Threading unit instead keeps the effects and their
+                -- order identical (`action i x` is still sequenced by the same
+                -- andThen chain, in the same order) and copies nothing.
                 Array.foldl
                     (\( i, maybeX ) ioAcc ->
                         case maybeX of
                             Just x ->
-                                IO.andThen
-                                    (\acc ->
-                                        IO.map (\newX -> Array.push (Just newX) acc)
-                                            (action i x)
-                                    )
-                                    ioAcc
+                                ioAcc
+                                    |> IO.andThen (\_ -> action i x)
+                                    |> IO.map (\_ -> ())
 
                             Nothing ->
                                 ioAcc
                     )
-                    (IO.pure Array.empty)
+                    (IO.pure ())
                     (Array.indexedMap Tuple.pair value)
-                    |> IO.map (\_ -> ())
             )
 
 

@@ -27,22 +27,20 @@ type alias TypeVar =
 {-| Snapshot of the solver's mutable arrays at the time of capture.
 -}
 type alias SolverState =
-    { descriptors : Array IO.Descriptor
-    , pointInfo : Array IO.PointInfo
-    , weights : Array Int
+    { cells : Array IO.PointCell
     }
 
 
-resolveVariableHelp : Array IO.PointInfo -> TypeVar -> TypeVar
-resolveVariableHelp pointInfo var =
+resolveVariableHelp : Array IO.PointCell -> TypeVar -> TypeVar
+resolveVariableHelp cells var =
     case var of
         IO.Pt idx ->
-            case Array.get idx pointInfo of
-                Just (IO.Link parent) ->
-                    resolveVariableHelp pointInfo parent
+            case Array.get idx cells of
+                Just (IO.Chain parent) ->
+                    resolveVariableHelp cells parent
 
                 _ ->
-                    -- Info or out of bounds: this is the root
+                    -- Root or out of bounds: this is the root
                     var
 
 
@@ -50,4 +48,4 @@ resolveVariableHelp pointInfo var =
 -}
 resolveVariable : SolverState -> TypeVar -> TypeVar
 resolveVariable state var =
-    resolveVariableHelp state.pointInfo var
+    resolveVariableHelp state.cells var

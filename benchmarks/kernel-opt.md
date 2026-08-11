@@ -143,6 +143,119 @@ arms lowered from the same Stage-5 `.mlir`), which stays byte-identical.
 
 ## Runs
 
+### 2026-08-11 11:20 UTC — Run G: kernel-opt-02 lane A + A′ — union-find cell merge (**−4.46% WALL — a REAL SIGNAL, the first in this series; KEEP, no flag**)
+
+`plans/kernel-opt-02-array-push-churn.md` lanes A + A′, selected by the Phase-0
+census (recorded in that plan's §Results). **Lane A:** the three index-synchronised
+`ioRefsWeight` / `ioRefsPointInfo` / `ioRefsDescriptor` arrays collapse to one
+`ioRefsPoint : Array PointCell` (`Root Int Descriptor | Chain Point`), so
+`UnionFind.fresh` does **1 `Array.push` instead of 3** and `union` does **2
+`Array.set`s instead of 3**; `get`/`set`/`modify` lose their second array read.
+12 files (7 compiler src + 5 test). **Lane A′:** `Data/Vector.imapM_` built an
+array with `Array.push` per element and discarded it — deleted.
+
+**G2, the load-bearing gate, passes: `out.mlir` byte-identical in both rounds** on
+the frozen 243-module corpus, so the merge preserved Point ids and every
+type-checking result exactly. (First attempt failed for the wrong reason — the
+promoted baseline binary predates item 01's default flip, so it emitted kernel
+cons calls while the new arm emitted `construct.list`; re-run with
+`ECO_LIST_CONS_INTRINSIC=1` forced on **both** arms, which is what these legs are.)
+
+Wall **−4.46%**, outside the ±2.8% band. **Retention moved with it** — `Objects
+promoted` −2.96%, minor GC 862 → 836, bytes allocated −12.08%, GC time −6.04% —
+which is exactly the channel this repo's measured record says wall tracks. Binary
+−32,448 B. Gates: E2E **1633/1633**; elm-tests 13,085 passed / 12 pre-existing
+failures, unchanged through a rewrite of the type checker's core.
+
+| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|---|
+| lane A m1 | **3:22.31** | 4,990,500 kB | 219,915,761 | 13,335.64 MB | 836 | 361,202,850 (164.2%) | 10 | 78.91 s | 12,939,423 B |
+| lane A m2 | **3:24.59** | 4,831,912 kB | 219,915,596 | ≡ | 836 | 361,202,851 | 10 | 79.66 s | ≡ |
+| base m1 | 3:33.38 | 5,085,100 kB | 232,557,637 | 15,167.93 MB | 862 | 372,239,194 (160.1%) | 10 | 84.61 s | ≡ |
+| base m2 | 3:32.51 | 5,084,740 kB | ≡ | ≡ | 862 | ≡ | 10 | 84.17 s | ≡ |
+
+### 2026-08-10 22:05 UTC — Run F: kernel-opt-01 `List.cons` → `eco.construct.list` (**FLAT — no regression; KEEP — DEFAULT-ON, `ECO_LIST_CONS_INTRINSIC=0` escapes**)
+
+`plans/kernel-opt-01-list-cons-construct-list.md`: a `"List"` arm in
+`kernelIntrinsic` lowers saturated `x :: xs` to `eco.construct.list`, so each cons
+pays the HEAP_034 inline bump instead of a statepointed `Elm_Kernel_List_cons*`
+call. **All 4,304 direct kernel cons sites convert to 0 — no declines at all**;
+`= eco.construct.list ` 13,496 → 17,808 (+4,312) against `eco.call` 100,261 →
+95,949 (−4,312), and the three kernel stubs leave the module. The +8 excess over
+the 4,304 conversions localizes to exactly 3 functions (`…encodeEntry_$_30250` +5,
+two `_tail_mono_inline_*` +2/+1) — cheaper bodies shifting inlining, 0.19%.
+EcoListTemplate parity is **bit-identical** (`rewritten=444`, `unwind rewritten=38`,
+`consRoots=0`, `headTy=0`, every bail counter equal), so the chunk rewriter absorbs
+exactly the links it did before. Arms are one frozen 243-module corpus, `-out.mlir`
+identical in both rounds **and** identical to the pre-change binary's output
+(flag-off inertness, proven — see the corrected Gate 3 in the plan). Wall +0.36% ⇒
+FLAT. Binary +29,008 B. Honest read: the plan called this "the highest-confidence
+wall bet in the series"; ~147M dynamic kernel calls per run became inline bumps and
+**the wall did not move** — the TIER pattern again.
+
+**Allocation counters are NOT comparable across these arms** (benchmarks caveat
+§18.3): the ON arm's conses take the HEAP_034 inline path, which bypasses the
+per-tag tally, so `Objects allocated` 379,488,362 → 232,537,735 (−38.7%) and
+`Bytes allocated` −18.1% are **counter blindness, not deleted allocation**. The
+proof is that the retention counters are unmoved: `Objects promoted` 372,240,140 →
+372,240,147 (+7 of 372M), minor 862 = 862, major 10 = 10. The `(160.1%)` promoted
+ratio is that same shrunken denominator, not a retention change.
+
+| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|---|
+| on r1 | **3:33.68** | 5,141,168 kB | 232,537,735 † | 15,167.99 MB † | 862 | 372,240,147 (160.1%) | 10 | 85.96 s | 12,943,401 B |
+| on r2 | **3:34.98** | 5,140,604 kB | ≡ | ≡ | 862 | ≡ | 10 | 86.38 s | ≡ |
+| off r1 | 3:33.94 | 5,141,004 kB | 379,488,362 | 18,524.25 MB | 862 | 372,240,140 (98.1%) | 10 | 84.86 s | ≡ |
+| off r2 | 3:33.19 | 5,141,136 kB | ≡ | ≡ | 862 | ≡ | 10 | 83.78 s | ≡ |
+
+† inline-alloc counter blindness, see above — not an allocation reduction.
+
+### 2026-08-10 20:36 UTC — Run E: kernel-opt-07 KernelFacts table (**FLAT — no regression; LANDED, no flag to flip**)
+
+`plans/kernel-opt-07-kernel-facts-table.md`: `Compiler/GlobalOpt/KernelFacts.elm`
+(52 rows = 48 kernel + 4 `Basics_*` ledger), `Borrow/KernelSigs.elm` demoted to a
+70-line shim, 7 new elm-test suites, and the `Utils_equal` stderr trace deleted
+(`Utils.cpp:557-562`). **Arms are the pre- and post-change compilers over a FROZEN
+pristine source tree** (staged in scratch), so both compile byte-identical input —
+and their `out.mlir` is **byte-identical in both rounds**, and byte-identical to
+Run D's. That is the inertness gate the plan asks G4/G5 to carry, on all 243
+modules rather than one file. Counters equal (promoted +63 of 372M); wall −1.30%,
+inside the band ⇒ FLAT. Binary **+173,400 B (+0.27%)** — the table's code and
+evidence strings outweigh the deleted trace, so the plan's "binary shrinks"
+prediction is wrong; Stage-5 `.mlir` +20,808 B. RSS is bimodal on this workload
+(~5,054 vs ~5,111 MB for the *same* binary — see Run B/C off-legs), so the −1.10%
+here is lottery, not signal. Gates: E2E 1632/1632; elm-tests 13066→13073 passed
+(exactly the 7 new suites), pre-existing 12 failures unchanged.
+
+| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|---|
+| post r1 | **3:30.70** | 5,054,148 kB | 379,488,337 | 18,524.23 MB | 862 | 372,250,180 (98.1%) | 10 | 82.46 s | 12,943,401 B |
+| post r2 | **3:32.91** | 5,054,156 kB | ≡ | ≡ | 862 | ≡ | 10 | 83.92 s | ≡ |
+| pre r1 | 3:34.72 | 5,110,592 kB | ≡ | 18,524.24 MB | 862 | 372,250,117 (98.1%) | 10 | 85.71 s | ≡ |
+| pre r2 | 3:34.45 | 5,110,020 kB | ≡ | ≡ | 862 | ≡ | 10 | 85.67 s | ≡ |
+
+Noise note: the `pre` arm is Run D's binary, and it measured 214.58 s here vs
+211.59 s there — **+1.42% for the same binary across sessions**, which is why the
+paired interleaved A/B is the comparison and Run D is only a trend line.
+
+### 2026-08-10 19:54 UTC — Run D: loop-entry baseline (**reference point for the 14-item kernel-opt loop; not a change**)
+
+Entry baseline for `guides/kernel-opt-loop.md`, which executes
+`plans/kernel-opt-01..14`. No source change: the tree is exactly Run C's, rebuilt
+from scratch with the standard track build env
+(`ECO_MONO_ENGINE=solver ECO_MONO_LSS=1 ECO_BORROW=1 ECO_AGG_PROMOTE=1`) after
+deleting `bin/eco-compiler{,.mlir}` and `eco-stuff` to defeat ninja's
+env-blindness; binary staged as `bin/eco-kopt-base`. It reproduces Run C: the
+counters are bit-identical apart from the 1-object jitter already documented as
+same-binary noise (tier2 Run O), and `out.mlir` is byte-identical at 12,943,401 B,
+so the workload is unmoved. Mean wall **3:31.59** over the two rounds; the 4.67 s
+spread between them is the protocol's ≈2.8% band, measured live.
+
+| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|---|
+| base r1 | **3:33.92** | 5,111,732 kB | 379,486,685 | 18,524.03 MB | 862 | 372,250,555 (98.1%) | 10 | 83.04 s | 12,943,401 B |
+| base r2 | **3:29.25** | 5,111,812 kB | ≡ | ≡ | 862 | ≡ | 10 | 81.13 s | ≡ |
+
 ### 2026-08-10 14:30 UTC — Run C: one-call Order materialization (**FLAT — no regression; KEEP — DEFAULT-ON, `ECO_ORDER_FROM_SIGN=0` escapes**)
 
 `plans/string-cmp-order-intrinsic-and-postmono-compare-rewrite.md` (CGEN_075)
@@ -214,3 +327,7 @@ was 20,480 MB. Gates at that point: E2E `--target full` and heap-validate tree
 | A — baseline (tier2 Run O) | 3:36.18 | 379,768,314 obj / 18,537.46 MB |
 | B — string cmp_order + compare→branch rewrite | 3:33.39 | 379,486,686 obj / 18,524.03 MB |
 | C — one-call Order materialization | 3:34.71 | 379,486,686 obj / 18,524.03 MB |
+| D — loop-entry baseline (no change) | 3:31.59 (r1/r2 mean) | 379,486,685 obj / 18,524.03 MB |
+| E — kernel-opt-07 KernelFacts table | 3:31.81 (r1/r2 mean) | 379,488,337 obj / 18,524.23 MB |
+| F — kernel-opt-01 cons → construct.list | 3:34.33 (r1/r2 mean) | 232,537,735 obj / 15,167.99 MB (inline-alloc counter-blind; retention unmoved) |
+| G — kernel-opt-02 union-find cell merge | **3:23.45** (m1/m2 mean, **−4.46%**) | 219,915,761 obj / 13,335.64 MB (promoted −2.96%) |

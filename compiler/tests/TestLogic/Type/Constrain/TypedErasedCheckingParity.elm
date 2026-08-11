@@ -879,9 +879,7 @@ runWithIdsPath :
                 , nodeVars : Array.Array (Maybe IO.Variable)
                 , annotationVars : Dict Name.Name IO.Variable
                 , solverState :
-                    { descriptors : Array.Array IO.Descriptor
-                    , pointInfo : Array.Array IO.PointInfo
-                    , weights : Array.Array Int
+                    { cells : Array.Array IO.PointCell
                     }
                 }
             )

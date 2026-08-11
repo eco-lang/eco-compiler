@@ -118,9 +118,7 @@ runTypeCheck :
                 , nodeVars : Array.Array (Maybe IO.Variable)
                 , annotationVars : Dict.Dict String IO.Variable
                 , solverState :
-                    { descriptors : Array.Array IO.Descriptor
-                    , pointInfo : Array.Array IO.PointInfo
-                    , weights : Array.Array Int
+                    { cells : Array.Array IO.PointCell
                     }
                 }
             )

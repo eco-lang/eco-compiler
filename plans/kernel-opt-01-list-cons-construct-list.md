@@ -875,13 +875,28 @@ analysis, attribution and gating are the work.
    `cmake --preset build -B /work/build-val -DECO_HEAP_VALIDATE=ON` then
    `ECO_LIST_CONS_INTRINSIC=1 cmake --build /work/build-val --target full 2>&1 | tee /tmp/test_val.txt`;
    suite count must match the main tree's.
-3. **Flag-off byte-identity:** requires the Phase-0 snapshot, so **take it before editing**
-   (add to Phase 0.1): `cp -p build/compiler/build-kernel/bin/eco-compiler.mlir
-   /tmp/base-eco-compiler.mlir`. Then, with the patch applied and the flag unset,
-   `rm -f build/compiler/build-kernel/bin/eco-compiler.mlir` (ninja is env-blind — see Phase 5),
-   `cmake --build build --target eco-compiler-mlir`, and
-   `cmp build/compiler/build-kernel/bin/eco-compiler.mlir /tmp/base-eco-compiler.mlir` — must be
-   identical.
+3. **Flag-off inertness — CORRECTED 2026-08-10 (v2 as written was unsatisfiable).**
+   v2 asked for `cmp` byte-identity of the Stage-5 `eco-compiler.mlir` against a Phase-0
+   snapshot. That gate **cannot pass for this item and never could**: `eco-compiler.mlir` is
+   the compiler compiling *itself*, and this plan adds ~120 lines of Elm to the compiler
+   (`listIntrinsic`/`consHeadAbi`/`boxedSlot` in Intrinsics.elm, `consIntrinsicFor`/
+   `coerceIntrinsicArgs` in Expr.elm, the `ListConfig` field), so the module legitimately
+   gains functions and shifts spec ids even flag-off. This is the identical defect
+   kernel-opt-06 found in its own gate 2 and fixed by moving to a fixed corpus; 01 inherited
+   the unfixed shape. **Measured: flag-off Stage-5 grew 13,418,910 → 13,427,958 B (+9,048).**
+
+   Two replacements, both executed:
+
+   a. **Emission inertness (counts, on the self-compile):** with the flag unset the kernel
+      cons counts must be EXACTLY the Phase-0 numbers — measured
+      `cons 4158 / _Int 91 / _Float 0 / _Char 55`, unchanged; `= eco.construct.list ` moves
+      only by the literals inside the newly added source (measured 13,491 → 13,496, +5).
+      Zero conversions with the flag off is the real claim, and this is what tests it.
+   b. **Output byte-identity on a FIXED corpus** (the plan-06 shape, and the stronger gate):
+      compile an unchanged source tree with the pre-change binary and with the new flag-off
+      binary and `cmp` the two `.mlir` outputs — must be identical. This loop uses the frozen
+      pristine tree already staged for the wall A/B, so the gate costs nothing extra and
+      covers all ~243 modules rather than one file.
 4. **Bootstrap to a NEW fixed point (flag-on):** `ECO_LIST_CONS_INTRINSIC=1 cmake --build build
    --target bootstrap 2>&1 | tee /tmp/bootstrap.txt`. On Linux, Stage 8c compares
    `eco-compiler-boot` ≡ `eco-compiler-boot-2` byte-for-byte on the linked **ELF**

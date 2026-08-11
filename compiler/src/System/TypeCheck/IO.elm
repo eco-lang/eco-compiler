@@ -3,7 +3,7 @@ module System.TypeCheck.IO exposing
     , IO, State, pure, apply, map, andThen, foldrM, foldM, traverseMapWithKey, forM_, mapM_
     , mapM, traverseList, traverseTuple
     , traverseArrayMaybe, foldMArray
-    , Point(..), PointInfo(..)
+    , Point(..), PointCell(..)
     , Descriptor, Content(..), SuperType(..), Mark(..), Variable, RootedVar, FlatType(..)
     , Canonical(..)
     , makeDescriptor
@@ -33,7 +33,7 @@ Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 
 # Point
 
-@docs Point, PointInfo
+@docs Point, PointCell
 
 
 # Compiler.Type.Type
@@ -76,9 +76,7 @@ state (with no references allocated) and returns only the computed value.
 -}
 unsafePerformIO : IO a -> a
 unsafePerformIO ioA =
-    { ioRefsWeight = Array.empty
-    , ioRefsPointInfo = Array.empty
-    , ioRefsDescriptor = Array.empty
+    { ioRefsPoint = Array.empty
     , ioRefsMVector = Array.empty
     , names = emptyNameState
     , nodeIds = emptyNodeIds
@@ -113,16 +111,14 @@ type alias IO a =
 
 Contains arrays acting as pseudo-mutable stores for:
 
-  - `ioRefsWeight`: Union-find weights for path compression
-  - `ioRefsPointInfo`: Point information (rank and parent links)
-  - `ioRefsDescriptor`: Type descriptors for type variables
+  - `ioRefsPoint`: the union-find cell per Point — weight and descriptor
+    inline on a root, or a link to the parent (kernel-opt-02 merged the former
+    three index-synchronised weight/pointInfo/descriptor arrays into this one)
   - `ioRefsMVector`: Additional mutable vector storage
 
 -}
 type alias State =
-    { ioRefsWeight : Array Int
-    , ioRefsPointInfo : Array PointInfo
-    , ioRefsDescriptor : Array Descriptor
+    { ioRefsPoint : Array PointCell
     , ioRefsMVector : Array (Array (Maybe (List Variable)))
     , names : NameState
     , nodeIds : NodeIdState
@@ -493,7 +489,7 @@ foldMArray f b arr =
 
 {-| A reference to a type variable in the union-find structure.
 
-Points are integer indices into the `ioRefsPointInfo` array in the State.
+Points are integer indices into the `ioRefsPoint` array in the State.
 Used to implement path compression and union-by-rank for type unification.
 
 -}
@@ -501,15 +497,22 @@ type Point
     = Pt Int
 
 
-{-| Information stored at a Point in the union-find structure.
+{-| The union-find cell for a Point.
 
-  - `Info rank weight`: A root node with its rank and weight
-  - `Link parent`: A non-root node pointing to its parent
+  - `Root weight descriptor`: a root, carrying its weight and its descriptor
+    INLINE
+  - `Chain parent`: a non-root node pointing at its parent
+
+kernel-opt-02 replaced the former `PointInfo = Info Int Int | Link Point` plus
+the separate `ioRefsWeight`/`ioRefsDescriptor` arrays with this single cell. The
+three arrays were index-synchronised — only `UnionFind.fresh` ever grew them, one
+element each — so `Info w d` stored two copies of the point's own index. The
+merge preserves the numeric Point ids exactly.
 
 -}
-type PointInfo
-    = Info Int Int
-    | Link Point
+type PointCell
+    = Root Int Descriptor
+    | Chain Point
 
 
 
@@ -518,7 +521,7 @@ type PointInfo
 
 {-| A type descriptor containing information about a type variable.
 
-Descriptors are stored in the `ioRefsDescriptor` array and referenced by Points.
+Descriptors are stored inline in the `ioRefsPoint` cell of their root Point.
 Each descriptor contains the actual type content, rank for generalization,
 marking for traversal algorithms, and an optional copy field for cloning.
 

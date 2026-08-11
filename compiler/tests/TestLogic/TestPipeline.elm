@@ -97,7 +97,7 @@ type alias TypeCheckArtifacts =
     , annotations : Dict Name.Name (Can.Annotation Name)
     , nodeTypes : Array (Maybe (Can.Type Name)) -- Pre-PostSolve
     , nodeVars : Array (Maybe IO.Variable)
-    , solverState : { descriptors : Array IO.Descriptor, pointInfo : Array IO.PointInfo, weights : Array Int }
+    , solverState : { cells : Array IO.PointCell }
     , annotationVars : Dict Name.Name IO.Variable
     }
 
@@ -111,7 +111,7 @@ type alias PostSolveArtifacts =
     , nodeTypesPost : PostSolve.NodeTypes -- After PostSolve
     , kernelEnv : KernelTypes.KernelTypeEnv
     , nodeVars : Array (Maybe IO.Variable)
-    , solverState : { descriptors : Array IO.Descriptor, pointInfo : Array IO.PointInfo, weights : Array Int }
+    , solverState : { cells : Array IO.PointCell }
     , annotationVars : Dict Name.Name IO.Variable
     }
 
@@ -502,7 +502,7 @@ runToMlir srcModule =
 
 {-| Run type checking with expression ID tracking.
 -}
-runWithIdsTypeCheck : Can.Module -> IO.IO (Result Int { annotations : Dict Name.Name (Can.Annotation Name), nodeTypes : Array (Maybe (Can.Type Name)), nodeVars : Array (Maybe IO.Variable), solverState : { descriptors : Array IO.Descriptor, pointInfo : Array IO.PointInfo, weights : Array Int }, annotationVars : Dict Name.Name IO.Variable })
+runWithIdsTypeCheck : Can.Module -> IO.IO (Result Int { annotations : Dict Name.Name (Can.Annotation Name), nodeTypes : Array (Maybe (Can.Type Name)), nodeVars : Array (Maybe IO.Variable), solverState : { cells : Array IO.PointCell }, annotationVars : Dict Name.Name IO.Variable })
 runWithIdsTypeCheck modul =
     ConstrainTyped.constrainWithIds modul
         |> IO.andThen

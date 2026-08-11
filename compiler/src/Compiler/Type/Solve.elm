@@ -98,9 +98,7 @@ runWithIds :
                 , nodeTypes : Array (Maybe (Can.Type Name))
                 , nodeVars : Array (Maybe Variable)
                 , solverState :
-                    { descriptors : Array Descriptor
-                    , pointInfo : Array IO.PointInfo
-                    , weights : Array Int
+                    { cells : Array IO.PointCell
                     }
                 }
             )
@@ -130,9 +128,7 @@ runWithIds constraint nodeVars =
                                                                     , nodeTypes = nodeTypes
                                                                     , nodeVars = nodeVars
                                                                     , solverState =
-                                                                        { descriptors = s.ioRefsDescriptor
-                                                                        , pointInfo = s.ioRefsPointInfo
-                                                                        , weights = s.ioRefsWeight
+                                                                        { cells = s.ioRefsPoint
                                                                         }
                                                                     }
                                                                 )

@@ -50,6 +50,7 @@ type Intrinsic
     | ArrayPush { elementMlirType : MlirType }
     | ArraySlice
     | ArrayAppendN
+    | ConstructList { headMlirType : MlirType }
     | CompareToOrder { kind : CompareKind }
 
 
@@ -146,6 +147,9 @@ intrinsicResultMlirType intrinsic =
         ArrayAppendN ->
             Types.ecoValue
 
+        ConstructList _ ->
+            Types.ecoValue
+
         CompareToOrder _ ->
             Types.ecoValue
 
@@ -235,6 +239,13 @@ intrinsicOperandTypes intrinsic =
         ArrayAppendN ->
             -- Elm arg order: appendN n dest source
             [ I64, Types.ecoValue, Types.ecoValue ]
+
+        ConstructList { headMlirType } ->
+            -- Elm arg order: cons head tail. Tail is ALWAYS boxed (Ops.td:636-642).
+            -- Never actually consulted: Expr.coerceIntrinsicArgs intercepts this
+            -- ctor before unboxArgsForIntrinsic (its only caller). Present for
+            -- exhaustiveness and as documentation of the operand shape.
+            [ headMlirType, Types.ecoValue ]
 
         CompareToOrder { kind } ->
             case kind of
@@ -329,6 +340,9 @@ kernelIntrinsic home name argTypes resultType =
 
         "JsArray" ->
             jsArrayIntrinsic name argTypes resultType
+
+        "List" ->
+            listIntrinsic name argTypes resultType
 
         "Char" ->
             charIntrinsic name argTypes resultType
@@ -764,6 +778,70 @@ jsArrayIntrinsic name argTypes resultType =
             Nothing
 
 
+{-| `List.cons` (`::`) -> `eco.construct.list` (kernel-opt-01). The head slot's
+2-bit kind is a HEAP layout decision (REP\_BOUNDARY\_002, invariants.csv:24) and must
+reproduce the axis `kernelInstanceSymbol` uses for the `_Int`/`_Float`/`_Char` C
+variants (Generate/MLIR/KernelAbi.elm:310-317). Anything outside that axis — an
+unsettled `CNumber` head, a scalar tail/result (the `kernelDevirtShapeOk` hazard,
+MonoSolver/Translate.elm:1869-1892), a non-binary application — DECLINES and keeps
+today's kernel call (whitelist discipline).
+
+The `Config`-level flag is applied by `Expr.consIntrinsicFor`, not here: this module
+takes no `EcoConfig`, and the SSA-type admissibility test needs Expr's view anyway.
+
+-}
+listIntrinsic : Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
+listIntrinsic name argTypes resultType =
+    case ( name, argTypes ) of
+        ( "cons", [ headTy, tailTy ] ) ->
+            case consHeadAbi headTy of
+                Just headMlirType ->
+                    if boxedSlot tailTy && boxedSlot resultType then
+                        Just (ConstructList { headMlirType = headMlirType })
+
+                    else
+                        Nothing
+
+                Nothing ->
+                    Nothing
+
+        _ ->
+            Nothing
+
+
+{-| The head's ABI type, or `Nothing` when the numeric axis is not settled.
+`MVar _ CNumber` maps to `i64` under `monoTypeToAbi` (Types.elm:170-172) but does
+NOT match the `_Int` suffix arm, so today's site calls the BOXED root symbol with an
+i64 head — an unsettled shape this intrinsic must not freeze into a heap layout.
+-}
+consHeadAbi : Mono.MonoType -> Maybe MlirType
+consHeadAbi headTy =
+    case headTy of
+        Mono.MInt ->
+            Just Types.ecoInt
+
+        Mono.MFloat ->
+            Just Types.ecoFloat
+
+        Mono.MChar ->
+            Just Types.ecoChar
+
+        Mono.MVar _ Mono.CNumber ->
+            Nothing
+
+        _ ->
+            if Types.isEcoValueType (Types.monoTypeToAbi headTy) then
+                Just Types.ecoValue
+
+            else
+                Nothing
+
+
+boxedSlot : Mono.MonoType -> Bool
+boxedSlot t =
+    Types.isEcoValueType (Types.monoTypeToAbi t)
+
+
 
 -- ====== INTRINSIC OP GENERATION ======
 
@@ -956,6 +1034,28 @@ generateIntrinsicOp ctx intrinsic resultVar argVars =
 
                 _ ->
                     Ops.ecoTernaryOp ctx "eco.array.append_n" resultVar ( "%error", I64 ) ( "%error", Types.ecoValue ) ( "%error", Types.ecoValue ) Types.ecoValue
+
+        ConstructList { headMlirType } ->
+            -- Elm arg order: cons head tail. HINT-FREE by construction
+            -- (kernel-opt-01 Phase 1): EcoGCPrepare recomputes and UNIONS the real
+            -- root set at this carrier (EcoGCPrepare.cpp:249-305), and
+            -- EcoListTemplate only absorbs hint-free links (EcoListTemplate.cpp:148-150).
+            case argVars of
+                [ headVar, tailVar ] ->
+                    Ops.ecoConstructList ctx
+                        []
+                        resultVar
+                        ( headVar, headMlirType )
+                        ( tailVar, Types.ecoValue )
+                        (Types.isUnboxable headMlirType)
+
+                _ ->
+                    Ops.ecoConstructList ctx
+                        []
+                        resultVar
+                        ( "%error", headMlirType )
+                        ( "%error", Types.ecoValue )
+                        (Types.isUnboxable headMlirType)
 
         CompareToOrder { kind } ->
             let

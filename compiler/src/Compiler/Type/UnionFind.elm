@@ -31,7 +31,7 @@ operations for unifying type variables and checking equivalence.
 
 -}
 
-import Data.IORef as IORef exposing (IORef(..))
+import Data.IORef as IORef
 import System.TypeCheck.IO as IO exposing (Descriptor, IO)
 import Utils.Crash exposing (crash)
 
@@ -45,33 +45,27 @@ This initializes a new singleton set with weight 1.
 -}
 fresh : IO.Descriptor -> IO IO.Point
 fresh value =
-    IORef.newIORefWeight 1
-        |> IO.andThen
-            (\(IORef weight) ->
-                IORef.newIORefDescriptor value
-                    |> IO.andThen (\(IORef desc) -> IORef.newIORefPointInfo (IO.Info weight desc))
-                    |> IO.map (\(IORef link) -> IO.Pt link)
-            )
+    IORef.newPointCell 1 value |> IO.map IO.Pt
 
 
 repr : IO.Point -> IO IO.Point
 repr ((IO.Pt ref) as point) =
-    IORef.readIORefPointInfo (IORef ref)
+    IORef.readPointCell ref
         |> IO.andThen
-            (\pInfo ->
-                case pInfo of
-                    IO.Info _ _ ->
+            (\cell ->
+                case cell of
+                    IO.Root _ _ ->
                         IO.pure point
 
-                    IO.Link ((IO.Pt ref1) as point1) ->
+                    IO.Chain ((IO.Pt ref1) as point1) ->
                         repr point1
                             |> IO.andThen
                                 (\point2 ->
                                     if point2 /= point1 then
-                                        IORef.readIORefPointInfo (IORef ref1)
+                                        IORef.readPointCell ref1
                                             |> IO.andThen
-                                                (\pInfo1 ->
-                                                    IORef.writeIORefPointInfo (IORef ref) pInfo1
+                                                (\cell1 ->
+                                                    IORef.writePointCell ref cell1
                                                         |> IO.map (\_ -> point2)
                                                 )
 
@@ -86,22 +80,22 @@ Follows links to find the representative element's descriptor.
 -}
 get : IO.Point -> IO Descriptor
 get ((IO.Pt ref) as point) =
-    IORef.readIORefPointInfo (IORef ref)
+    IORef.readPointCell ref
         |> IO.andThen
-            (\pInfo ->
-                case pInfo of
-                    IO.Info _ descRef ->
-                        IORef.readIORefDescriptor (IORef descRef)
+            (\cell ->
+                case cell of
+                    IO.Root _ desc ->
+                        IO.pure desc
 
-                    IO.Link (IO.Pt ref1) ->
-                        IORef.readIORefPointInfo (IORef ref1)
+                    IO.Chain (IO.Pt ref1) ->
+                        IORef.readPointCell ref1
                             |> IO.andThen
-                                (\link_ ->
-                                    case link_ of
-                                        IO.Info _ descRef ->
-                                            IORef.readIORefDescriptor (IORef descRef)
+                                (\cell1 ->
+                                    case cell1 of
+                                        IO.Root _ desc ->
+                                            IO.pure desc
 
-                                        IO.Link _ ->
+                                        IO.Chain _ ->
                                             repr point |> IO.andThen get
                                 )
             )
@@ -112,22 +106,22 @@ Follows links to update the representative element's descriptor.
 -}
 set : IO.Point -> Descriptor -> IO ()
 set ((IO.Pt ref) as point) newDesc =
-    IORef.readIORefPointInfo (IORef ref)
+    IORef.readPointCell ref
         |> IO.andThen
-            (\pInfo ->
-                case pInfo of
-                    IO.Info _ descRef ->
-                        IORef.writeIORefDescriptor (IORef descRef) newDesc
+            (\cell ->
+                case cell of
+                    IO.Root w _ ->
+                        IORef.writePointCell ref (IO.Root w newDesc)
 
-                    IO.Link (IO.Pt ref1) ->
-                        IORef.readIORefPointInfo (IORef ref1)
+                    IO.Chain (IO.Pt ref1) ->
+                        IORef.readPointCell ref1
                             |> IO.andThen
-                                (\link_ ->
-                                    case link_ of
-                                        IO.Info _ descRef ->
-                                            IORef.writeIORefDescriptor (IORef descRef) newDesc
+                                (\cell1 ->
+                                    case cell1 of
+                                        IO.Root w _ ->
+                                            IORef.writePointCell ref1 (IO.Root w newDesc)
 
-                                        IO.Link _ ->
+                                        IO.Chain _ ->
                                             repr point
                                                 |> IO.andThen
                                                     (\newPoint ->
@@ -142,22 +136,22 @@ Follows links to modify the representative element's descriptor in place.
 -}
 modify : IO.Point -> (Descriptor -> Descriptor) -> IO ()
 modify ((IO.Pt ref) as point) func =
-    IORef.readIORefPointInfo (IORef ref)
+    IORef.readPointCell ref
         |> IO.andThen
-            (\pInfo ->
-                case pInfo of
-                    IO.Info _ descRef ->
-                        IORef.modifyIORefDescriptor (IORef descRef) func
+            (\cell ->
+                case cell of
+                    IO.Root w desc ->
+                        IORef.writePointCell ref (IO.Root w (func desc))
 
-                    IO.Link (IO.Pt ref1) ->
-                        IORef.readIORefPointInfo (IORef ref1)
+                    IO.Chain (IO.Pt ref1) ->
+                        IORef.readPointCell ref1
                             |> IO.andThen
-                                (\link_ ->
-                                    case link_ of
-                                        IO.Info _ descRef ->
-                                            IORef.modifyIORefDescriptor (IORef descRef) func
+                                (\cell1 ->
+                                    case cell1 of
+                                        IO.Root w desc ->
+                                            IORef.writePointCell ref1 (IO.Root w (func desc))
 
-                                        IO.Link _ ->
+                                        IO.Chain _ ->
                                             repr point
                                                 |> IO.andThen (\newPoint -> modify newPoint func)
                                 )
@@ -176,40 +170,35 @@ union p1 p2 newDesc =
                 repr p2
                     |> IO.andThen
                         (\((IO.Pt ref2) as point2) ->
-                            IORef.readIORefPointInfo (IORef ref1)
+                            IORef.readPointCell ref1
                                 |> IO.andThen
-                                    (\pointInfo1 ->
-                                        IORef.readIORefPointInfo (IORef ref2)
+                                    (\cell1 ->
+                                        IORef.readPointCell ref2
                                             |> IO.andThen
-                                                (\pointInfo2 ->
-                                                    case ( pointInfo1, pointInfo2 ) of
-                                                        ( IO.Info w1 d1, IO.Info w2 d2 ) ->
+                                                (\cell2 ->
+                                                    case ( cell1, cell2 ) of
+                                                        ( IO.Root weight1 _, IO.Root weight2 _ ) ->
                                                             if point1 == point2 then
-                                                                IORef.writeIORefDescriptor (IORef d1) newDesc
+                                                                -- Descriptor-only update. The whole cell is
+                                                                -- rewritten now, so it must carry the EXISTING
+                                                                -- weight: writing newWeight here would double
+                                                                -- a self-union's weight and change the
+                                                                -- union-by-weight tree shape.
+                                                                IORef.writePointCell ref1 (IO.Root weight1 newDesc)
 
                                                             else
-                                                                IORef.readIORefWeight (IORef w1)
-                                                                    |> IO.andThen
-                                                                        (\weight1 ->
-                                                                            IORef.readIORefWeight (IORef w2)
-                                                                                |> IO.andThen
-                                                                                    (\weight2 ->
-                                                                                        let
-                                                                                            newWeight : Int
-                                                                                            newWeight =
-                                                                                                weight1 + weight2
-                                                                                        in
-                                                                                        if weight1 >= weight2 then
-                                                                                            IORef.writeIORefPointInfo (IORef ref2) (IO.Link point1)
-                                                                                                |> IO.andThen (\_ -> IORef.writeIORefWeight (IORef w1) newWeight)
-                                                                                                |> IO.andThen (\_ -> IORef.writeIORefDescriptor (IORef d1) newDesc)
+                                                                let
+                                                                    newWeight : Int
+                                                                    newWeight =
+                                                                        weight1 + weight2
+                                                                in
+                                                                if weight1 >= weight2 then
+                                                                    IORef.writePointCell ref2 (IO.Chain point1)
+                                                                        |> IO.andThen (\_ -> IORef.writePointCell ref1 (IO.Root newWeight newDesc))
 
-                                                                                        else
-                                                                                            IORef.writeIORefPointInfo (IORef ref1) (IO.Link point2)
-                                                                                                |> IO.andThen (\_ -> IORef.writeIORefWeight (IORef w2) newWeight)
-                                                                                                |> IO.andThen (\_ -> IORef.writeIORefDescriptor (IORef d2) newDesc)
-                                                                                    )
-                                                                        )
+                                                                else
+                                                                    IORef.writePointCell ref1 (IO.Chain point2)
+                                                                        |> IO.andThen (\_ -> IORef.writePointCell ref2 (IO.Root newWeight newDesc))
 
                                                         _ ->
                                                             crash "Unexpected pattern"
@@ -237,13 +226,13 @@ Returns True if the point has been merged into another equivalence class.
 -}
 redundant : IO.Point -> IO Bool
 redundant (IO.Pt ref) =
-    IORef.readIORefPointInfo (IORef ref)
+    IORef.readPointCell ref
         |> IO.map
-            (\pInfo ->
-                case pInfo of
-                    IO.Info _ _ ->
+            (\cell ->
+                case cell of
+                    IO.Root _ _ ->
                         False
 
-                    IO.Link _ ->
+                    IO.Chain _ ->
                         True
             )

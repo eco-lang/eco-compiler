@@ -251,11 +251,15 @@ walkTypeListForBinders state types vars acc =
 -}
 lookupContent : SolverState -> Int -> Maybe IO.Content
 lookupContent state rootIdx =
-    case Array.get rootIdx state.descriptors of
-        Just props ->
+    case Array.get rootIdx state.cells of
+        Just (IO.Root _ props) ->
             Just props.content
 
-        Nothing ->
+        _ ->
+            -- Chain or out of bounds. Every caller feeds this a rootIdx that
+            -- SolverSnapshot.resolveVariable just produced, so a Chain is
+            -- unreachable; answering Nothing is strictly safer than the old
+            -- code, which could not tell a root from a merged-away slot.
             Nothing
 
 

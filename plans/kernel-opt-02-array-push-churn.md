@@ -982,5 +982,80 @@ outcome is worth the S-sized Phase 0.
 
 ## Results
 
-*(Phase 0 output goes here: the `[array-census] engine=` table, the symbolized top-30,
-the H1 verdict, and the selected branch from §P0.5.)*
+### Phase 0 census — EXECUTED 2026-08-11 (cold Stage 7a, subst, frozen 243-module corpus)
+
+G0 green: with `ECO_ARRAY_PUSH_CENSUS` unset the instrumented binary emits **0** census
+lines and its `out.mlir` is **byte-identical** to the uninstrumented arm.
+
+```
+[array-census] total_calls=69,320,931  total_elems_copied=1,229,328,684
+engine=push_int   calls=4,792,816    elems=74,267,491    max=31  b33p=0
+engine=push_float calls=0            elems=0
+engine=push_char  calls=0            elems=0
+engine=push_box   calls=10,391,517   elems=158,444,051   max=31  b33p=0
+engine=clone_set  calls=54,132,415   elems=996,504,444   max=32  b33p=0
+engine=slice      calls=4,183        elems=112,698       max=32  b33p=0
+```
+
+**The plan's premise was 6.3× too high.** Predicted vs measured: push_int 30.6M → **4.79M**;
+push_box 64.8M → **10.39M**; push total 95.5M → **15.18M**; elements copied by push 1.48G →
+**232.7M**. The "~95.5M `eco.array.push` lowered calls" figure in §Goal is a static
+call-site-derived estimate, not a dynamic count, and must not be requoted.
+
+**H1: CONFIRMED (in substance), with a correction to how it must be measured.**
+First-frame attribution cannot answer H1 at all: elm/core's `Array.push` is NOT inlined into
+its callers, so 100% of `push_int` symbolizes to one `Array_push_$_11236` specialization.
+The census was extended with a second-frame (`__builtin_return_address(1)`) channel, which
+resolves it:
+
+| engine | calls | second-frame caller |
+|---|---:|---|
+| push_int | **4,739,084** (98.9%) | `Terminal_Main_lambda_9649$cap` |
+| push_int | 53,732 (1.1%) | `Compiler_GlobalOpt_Staging_UnionFind_ensureNode_$_34742$sret` |
+| push_box | **4,739,084** | `Terminal_Main_lambda_9640$cap` |
+| push_box | **4,739,084** | `__closure_wrapper_typed_Compiler_Data_OneOrMore_more_$_23204` |
+| push_box | 140,786 / 139,154 / 139,154 | `Array_insertTailInTree_$_*` (internal tail rebuild) |
+
+Three **identical** counts of 4,739,084 in a 1-int : 2-box pattern is exactly
+`Data/IORef.elm:60` (Int weight) + `:67` (PointInfo) + `:74` (Descriptor) — i.e.
+**`UnionFind.fresh` ran 4,739,084 times**. The driver symbols are inlined lambda
+specializations hoisted into `Terminal_Main`, not `Compiler_Type_*`; §P0.5's row-1 wording
+should be read as "resolves to the 1:2 fresh signature", since the `Compiler_Type_*` spelling
+depends on inlining that does not happen. The residue is exactly the one other `push_int`
+site §P1.0 predicted (`Staging/UnionFind.elm:179`), at 1.1% — §P1.0's site table is correct.
+Ratio clause: push_box / push_int = **2.168** (within the ±10% of 2× the row requires).
+
+**Selected branch: row 1 → Lane A**, but with two findings that materially reprice it and
+that a follow-on plan must own:
+
+1. **`Array.set` path-copying, not `Array.push`, is the copy engine.** `clone_set` moves
+   **996.5M of the 1.229G elements copied (81%)**; all pushes together move 19%. Lane A
+   removes 2 of 3 pushes per `fresh` and 1 of 3 clones per `union` — so against the measured
+   totals its ceiling is ≈155M push elements (12.6% of all copying) plus part of the union
+   share, not the "−66% of 1.48G" §Expected impact claims. Row 5 of §P0.5 fires: **`Array.set`
+   is the larger engine and needs its own plan.**
+### Lane A + A' outcome — SHIPPED 2026-08-11 (benchmarks/kernel-opt.md Run G)
+
+Both lanes landed. **Wall -4.46%** (mean 3:32.94 -> 3:23.45), the first result in this
+series outside the +/-2.8% noise band, and **retention moved with it**: `Objects promoted`
+-2.96%, minor GC 862 -> 836, `Bytes allocated` -12.08%, GC time -6.04%, binary -32,448 B.
+
+**G2 (semantic byte-identity) PASSED** in both rounds on the frozen 243-module corpus, so
+the merge preserved Point ids and every type-checking result exactly, as designed.
+Gates: E2E 1633/1633; elm-tests 13,085 passed / 12 pre-existing failures, unchanged.
+
+Two measurement notes worth keeping:
+- The first G2 attempt "failed" for the wrong reason: the baseline binary predated
+  kernel-opt-01's default flip, so it still emitted `eco.call @Elm_Kernel_List_cons` while
+  the new arm emitted `eco.construct.list` -- 7,300 diff lines that were entirely item 01.
+  Re-run with `ECO_LIST_CONS_INTRINSIC=1` forced on BOTH arms. After a default flip a
+  previously promoted baseline binary is not a valid A/B partner.
+- The realized delta beat the pre-build estimate (-18% of element copying predicted a flat
+  wall). Bytes allocated fell 12.08% -- more than the push arithmetic alone accounts for --
+  because the merge also deletes the three `IORef` wrapper allocations and the two
+  `IO.andThen` / one `IO.map` closures per `fresh` that P1.2 predicted but did not price.
+
+2. **There is no growable-vector usage anywhere.** `max` length is 31/32 and `b33p = 0` for
+   every engine, so the copying is *structural* to elm/core's 32-wide HAMT nodes, not
+   accidental churn. Lane C (overlay-RC in-place append) has nothing to bite on here; the
+   §P0.5 lane-C/BLOCKED row is definitively closed rather than deferred.

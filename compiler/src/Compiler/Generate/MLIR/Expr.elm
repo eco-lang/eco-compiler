@@ -1295,6 +1295,68 @@ boxToEcoValue ctx var mlirTy =
         ( [ boxOp ], boxedVar, ctx2 )
 
 
+{-| kernel-opt-01: gate + SSA-type admissibility for the cons intrinsic.
+Declines (⇒ today's kernel call) when the flag is off, or when a primitive head
+slot is fed by a DIFFERENT primitive SSA type (a layout disagreement we must never
+freeze into `head_kind`). Aggregate heads are admitted only into a BOXED slot,
+where `boxToEcoValue` emits `eco.to_heap`.
+
+Deliberate divergence from the kernel path this replaces: `boxToMatchSignatureTyped`'s
+final arm silently passes a mismatched primitive through ("no boxing solution
+(e.g. i64 vs f64) — use actual type for now"); here we DECLINE instead, so the site
+keeps its kernel call rather than freezing a disagreeing head kind into the heap.
+-}
+consIntrinsicFor : Ctx.Context -> List ( String, MlirType ) -> Intrinsics.Intrinsic -> Maybe Intrinsics.Intrinsic
+consIntrinsicFor ctx argsWithTypes intrinsic =
+    case intrinsic of
+        Intrinsics.ConstructList { headMlirType } ->
+            case ( ctx.ecoConfig.list.consIntrinsic, argsWithTypes ) of
+                ( True, [ ( _, headSsaTy ), _ ] ) ->
+                    if Types.isEcoValueType headMlirType then
+                        Just intrinsic
+
+                    else if Types.isEcoValueType headSsaTy || headSsaTy == headMlirType then
+                        Just intrinsic
+
+                    else
+                        Nothing
+
+                _ ->
+                    Nothing
+
+        _ ->
+            Just intrinsic
+
+
+{-| Coerce actual SSA args to an intrinsic's expected operand types. Only
+`ConstructList` needs the box direction (`unboxArgsForIntrinsic` only ever
+unboxes); every other intrinsic keeps exactly today's behaviour, so output is
+byte-identical when the flag is off and for all non-cons intrinsics when it is on.
+-}
+coerceIntrinsicArgs : Ctx.Context -> List ( String, MlirType ) -> Intrinsics.Intrinsic -> ( List MlirOp, List String, Ctx.Context )
+coerceIntrinsicArgs ctx argsWithTypes intrinsic =
+    case ( intrinsic, argsWithTypes ) of
+        ( Intrinsics.ConstructList { headMlirType }, [ ( headVar, headSsaTy ), ( tailVar, tailSsaTy ) ] ) ->
+            let
+                ( headOps, headVar1, ctxH ) =
+                    if Types.isEcoValueType headMlirType then
+                        boxToEcoValue ctx headVar headSsaTy
+
+                    else if Types.isEcoValueType headSsaTy then
+                        Intrinsics.unboxToType ctx headVar headMlirType
+
+                    else
+                        ( [], headVar, ctx )
+
+                ( tailOps, tailVar1, ctxT ) =
+                    boxToEcoValue ctxH tailVar tailSsaTy
+            in
+            ( headOps ++ tailOps, [ headVar1, tailVar1 ], ctxT )
+
+        _ ->
+            Intrinsics.unboxArgsForIntrinsic ctx argsWithTypes intrinsic
+
+
 {-| Box or unbox arguments (based on ACTUAL SSA types) to match the
 function's expected Mono types.
 -}
@@ -3722,13 +3784,16 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                             case maybeCoreInfo of
                                 Just ( moduleName, name ) ->
                                     -- This is a core module function - check for intrinsic
-                                    case Intrinsics.kernelIntrinsic moduleName name argTypes resultType of
+                                    case
+                                        Intrinsics.kernelIntrinsic moduleName name argTypes resultType
+                                            |> Maybe.andThen (consIntrinsicFor ctx1 argsWithTypes)
+                                    of
                                         Just intrinsic ->
                                             -- Generate intrinsic operation directly
                                             -- First unbox arguments if needed (e.g., eco.value -> i1 for Bool)
                                             let
                                                 ( unboxOps, unboxedArgVars, ctx1b ) =
-                                                    Intrinsics.unboxArgsForIntrinsic ctx1 argsWithTypes intrinsic
+                                                    coerceIntrinsicArgs ctx1 argsWithTypes intrinsic
 
                                                 ( resVar, ctx2 ) =
                                                     Ctx.freshVar ctx1b
@@ -4196,12 +4261,15 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                             }
 
                 _ ->
-                    case Intrinsics.kernelIntrinsic home name argTypes resultType of
+                    case
+                        Intrinsics.kernelIntrinsic home name argTypes resultType
+                            |> Maybe.andThen (consIntrinsicFor ctx1 argsWithTypes)
+                    of
                         Just intrinsic ->
                             let
                                 -- Unbox arguments if needed (e.g., !eco.value -> i64)
                                 ( unboxOps, unboxedArgVars, ctx1b ) =
-                                    Intrinsics.unboxArgsForIntrinsic ctx1 argsWithTypes intrinsic
+                                    coerceIntrinsicArgs ctx1 argsWithTypes intrinsic
 
                                 ( resVar, ctx2 ) =
                                     Ctx.freshVar ctx1b
