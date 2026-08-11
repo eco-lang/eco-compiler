@@ -1435,6 +1435,118 @@ static_assert(kHeaderSizeFieldOffset == 4,
 // expandGetTagMarkers' isConst. Marker (not an MLIR diamond) because
 // eco.string.length sits inside single-block scf regions -- same rationale as
 // __eco_get_tag_inline. MUST run before expandInlineDerefs. Cheap with no markers.
+static bool valueEqInlineEnabled() {  // ECO_VALUE_EQ_INLINE=0 -> bare call
+    static const bool on = [] {
+        const char *e = ::getenv("ECO_VALUE_EQ_INLINE");
+        return !(e && e[0] == '0' && e[1] == '\0');
+    }();
+    return on;
+}
+
+static bool valueEqGcLeafEnabled() {  // ECO_VALUE_EQ_GCLEAF=1 -> stamp
+    static const bool on = [] {
+        const char *e = ::getenv("ECO_VALUE_EQ_GCLEAF");
+        return e && e[0] == '1' && e[1] == '\0';
+    }();
+    return on;
+}
+
+// Expand each `__eco_value_eq(a, b) -> i1` marker into the word-equality diamond
+// (kernel-opt-03 Phase 2). MUST run before EVERY RewriteStatepointsForGC flavour
+// and before propagateGcFreeLeafAttrs (CGEN_072), so the fixpoint sees arm 3 as a
+// call to a gc-leaf declaration rather than an unknown marker.
+//
+//   head: %same = icmp eq ptr addrspace(1) %a, %b
+//         br %same, cont, test
+//   test: %aw = ptrtoint %a ; %bw = ptrtoint %b        (REP_LLVM_001(d): the i64s
+//         %any = icmp ne (and (or %aw,%bw), 4), 0       are consumed by or/and/icmp
+//         br %any, cont, slow                           in this SAME block)
+//   slow: %r  = call @Elm_Kernel_Utils_equal(%a, %b)
+//         %rb = icmp eq %r, inttoptr(0x5)
+//         br cont
+//   cont: %res = phi i1 [true, head], [false, test], [%rb, slow]
+//
+// NOTE (kernel-opt-03 Phase-0 census, 2026-08-11): the inline arms were measured
+// at 6.47% of non-Bool traffic against a 25% bar, so when Phase-3 emission is
+// eventually landed the shipped default should be ECO_VALUE_EQ_INLINE=0 (the bare
+// call below). Nothing emits eco.value.eq today, so the default here is moot and
+// is left ON so the codegen fixture exercises the diamond.
+static void expandValueEqFastPath(Module &m) {
+    LLVMContext &ctx = m.getContext();
+    Type *i1Ty = Type::getInt1Ty(ctx), *i64Ty = Type::getInt64Ty(ctx);
+    PointerType *as1 = PointerType::get(ctx, 1);
+    const uint64_t constBit = 1ULL << PTR_IND_BIT;                   // 0x4
+    const uint64_t trueWord = constBit | (uint64_t)Elm::Const_True;  // 0x5
+
+    Function *marker = m.getFunction("__eco_value_eq");
+    // Arm 3 needs the decl; create it only when there is a marker to expand.
+    FunctionCallee eqCallee;
+    if (marker)
+        eqCallee = m.getOrInsertFunction(
+            "Elm_Kernel_Utils_equal", FunctionType::get(as1, {as1, as1}, false));
+
+    // Module-wide gc-leaf stamp. MUST sit ABOVE the marker early-return: a module
+    // can call Elm_Kernel_Utils_equal with NO eco.value.eq in it, and those modules
+    // need the stamp too. getFunction, NOT getOrInsertFunction: never conjure the
+    // decl into a module that does not reference it.
+    if (Function *eqFn = m.getFunction("Elm_Kernel_Utils_equal"))
+        if (valueEqGcLeafEnabled())
+            eqFn->addFnAttr("gc-leaf-function");  // NEVER memory(none)/speculatable
+
+    if (!marker) return;  // pruned by EcoToLLVM.cpp when unused
+
+    SmallVector<CallInst *, 64> calls;
+    for (User *u : marker->users())
+        if (auto *ci = dyn_cast<CallInst>(u)) calls.push_back(ci);
+
+    for (CallInst *ci : calls) {
+        Value *a = ci->getArgOperand(0), *b = ci->getArgOperand(1);
+        IRBuilder<> b0(ci);
+        if (!valueEqInlineEnabled()) {  // A/B shape: today's codegen
+            Value *r = b0.CreateCall(eqCallee, {a, b}, "eq.r");
+            Value *tc = b0.CreateIntToPtr(ConstantInt::get(i64Ty, trueWord), as1);
+            ci->replaceAllUsesWith(b0.CreateICmpEQ(r, tc, "eq.res"));
+            ci->eraseFromParent();
+            continue;
+        }
+        BasicBlock *headBB = ci->getParent();
+        Function *F = headBB->getParent();
+        BasicBlock *contBB = headBB->splitBasicBlock(ci, "eq.done");
+        BasicBlock *testBB = BasicBlock::Create(ctx, "eq.test", F, contBB);
+        BasicBlock *slowBB = BasicBlock::Create(ctx, "eq.slow", F, contBB);
+
+        headBB->getTerminator()->eraseFromParent();
+        IRBuilder<> hb(headBB);
+        hb.CreateCondBr(hb.CreateICmpEQ(a, b, "eq.same"), contBB, testBB);
+
+        IRBuilder<> tb(testBB);
+        Value *aw = tb.CreatePtrToInt(a, i64Ty, "eq.aw");
+        Value *bw = tb.CreatePtrToInt(b, i64Ty, "eq.bw");
+        Value *any = tb.CreateICmpNE(
+            tb.CreateAnd(tb.CreateOr(aw, bw), ConstantInt::get(i64Ty, constBit)),
+            ConstantInt::get(i64Ty, 0), "eq.anyconst");
+        tb.CreateCondBr(any, contBB, slowBB);
+
+        IRBuilder<> sb(slowBB);
+        CallInst *r = sb.CreateCall(eqCallee, {a, b}, "eq.r");
+        Value *tc = sb.CreateIntToPtr(ConstantInt::get(i64Ty, trueWord), as1);
+        Value *rb = sb.CreateICmpEQ(r, tc, "eq.slowres");
+        sb.CreateBr(contBB);
+
+        IRBuilder<> pb(&*contBB->getFirstInsertionPt());
+        PHINode *phi = pb.CreatePHI(i1Ty, 3, "eq.res");
+        phi->addIncoming(ConstantInt::getTrue(ctx), headBB);
+        phi->addIncoming(ConstantInt::getFalse(ctx), testBB);
+        phi->addIncoming(rb, slowBB);
+
+        ci->replaceAllUsesWith(phi);
+        ci->eraseFromParent();
+    }
+    if (!marker->use_empty())
+        report_fatal_error("expandValueEqFastPath: surviving __eco_value_eq use");
+    marker->eraseFromParent();
+}
+
 static void expandStringLenMarkers(Module &m) {
     Function *marker = m.getFunction("__eco_string_len_inline");
     if (!marker || marker->use_empty()) {
@@ -2596,6 +2708,10 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
     // kernel-opt-04: eco.string.length markers. Same discipline again -- the
     // heap arm emits a __eco_resolve_fwd call that expandInlineDerefs consumes.
     expandStringLenMarkers(m);
+    // kernel-opt-03: eco.value.eq markers. Emits no __eco_resolve_fwd, but must
+    // still precede RS4GC and propagateGcFreeLeafAttrs so arm 3 is seen as a call
+    // to a gc-leaf declaration rather than an unknown marker.
+    expandValueEqFastPath(m);
     // Scratch-stack helpers (chunked-list Tier-B templates): mark and the
     // pushes never GC-allocate, so exempt them from RS4GC statepointing.
     // eco_scratch_finish allocates and must statepoint normally.

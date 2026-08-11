@@ -48,6 +48,7 @@ type alias EcoConfig =
     , stringLengthOp : Bool -- kernel-opt-04: emit eco.string.length (an inline header-size load) instead of the Elm_Kernel_String_length call. DEFAULT-ON since 2026-08-11 (all 101 self-compile call sites convert; wall FLAT at -0.12%, so it ships for the deleted calls and statepoints, not a measured win); env kill switch ECO_STRING_LENGTH_OP=0; artifact-affecting (hash token "strlen=1" when enabled). The BACKEND knob ECO_STRING_LEN_INLINE=0 separately chooses a plain kernel call as the lowering, needing no compiler rebuild
     , appendSplit : Bool -- kernel-opt-05: split Elm_Kernel_Utils_append into typed eco.string.append / eco.list.append at mono sites that statically know the operand type. DEFAULT-ON since 2026-08-11 (3,468 self-compile sites -> 67; 2,695 string + 706 list; wall FLAT at +0.80%, so it ships for the typed boundary and the deleted runtime dispatch, not a measured win); env kill switch ECO_APPEND_SPLIT=0; artifact-affecting (hash token "apsplit=1" when enabled). Polymorphic residue (any MVar operand) keeps the kernel call
     , stringOrderIntrinsic : Bool -- kernel-opt-06: lower Utils.lt/le/gt/ge on [MString,MString] to eco.string.cmp3 + a SIGNED sign test against 0, instead of the boxed kernel call + eco.unbox. DEFAULT-ON since 2026-08-11 (95 of 121 sites convert: lt 79->14, gt 40->10, ge 2->2; wall FLAT at -0.34%); env kill switch ECO_STRING_ORDER_INTRINSIC=0; artifact-affecting (hash token "strord=1")
+    , valueEq : Bool -- kernel-opt-03: lower boxed structural equality to eco.value.eq (word-equality / embedded-constant / kernel-call diamond) instead of a boxed Elm_Kernel_Utils_equal call + eco.unbox. DEFAULT-ON since 2026-08-11 (all 1,452 self-compile Utils_equal/notEqual sites convert; wall -1.84%, inside the noise band so recorded FLAT); env kill switch ECO_VALUE_EQ=0; artifact-affecting (hash token "veq=1"). Bool == is NOT gated by this -- it is unconditionally better
     }
 
 
@@ -350,6 +351,7 @@ default =
     , stringLengthOp = True
     , appendSplit = True
     , stringOrderIntrinsic = True
+    , valueEq = True
     }
 
 
@@ -376,6 +378,7 @@ decoder =
         |> D.apply (D.optionalField "stringLengthOp" D.bool default.stringLengthOp)
         |> D.apply (D.optionalField "appendSplit" D.bool default.appendSplit)
         |> D.apply (D.optionalField "stringOrderIntrinsic" D.bool default.stringOrderIntrinsic)
+        |> D.apply (D.optionalField "valueEq" D.bool default.valueEq)
 
 
 {-| Decode the `list` block. Only `chunks` is JSON-configurable; `report`
@@ -776,6 +779,13 @@ hash cfg =
             -- kernel-opt-06: String ordering rewrites emitted MLIR.
             ++ (if cfg.stringOrderIntrinsic then
                     [ "strord=1" ]
+
+                else
+                    []
+               )
+            -- kernel-opt-03: eco.value.eq emission rewrites the generated MLIR.
+            ++ (if cfg.valueEq then
+                    [ "veq=1" ]
 
                 else
                     []

@@ -282,6 +282,11 @@ applyEnvOverrides cfg =
                 (Utils.envLookupEnv "ECO_STRING_ORDER_INTRINSIC" |> Task.mapError never)
                     |> Task.map (\soVal -> applyStringOrderIntrinsicOverride soVal cfg32)
             )
+        |> Task.andThen
+            (\cfg33 ->
+                (Utils.envLookupEnv "ECO_VALUE_EQ" |> Task.mapError never)
+                    |> Task.map (\veVal -> applyValueEqOverride veVal cfg33)
+            )
 
 
 {-| `ECO_AGG_PROMOTE=1|true|yes`: U-T1.3.1 aggregate promotion — emit
@@ -305,6 +310,32 @@ applyAggPromoteOverride maybeVal cfg =
 
             else if t == "0" || t == "off" then
                 { cfg | aggPromote = False }
+
+            else
+                cfg
+
+
+{-| `ECO_VALUE_EQ=1|true|yes|on` (`0|off` disables): kernel-opt-03 -- lower boxed
+structural equality to `eco.value.eq`. Artifact-affecting (hash token `veq=1`).
+Bool `==` is deliberately NOT gated by this: it lowers to one `arith.xori` and is
+unconditionally better than the boxed kernel call.
+-}
+applyValueEqOverride : Maybe String -> EcoConfig -> EcoConfig
+applyValueEqOverride maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            cfg
+
+        Just raw ->
+            let
+                t =
+                    String.toLower (String.trim raw)
+            in
+            if t == "1" || t == "true" || t == "yes" || t == "on" then
+                { cfg | valueEq = True }
+
+            else if t == "0" || t == "off" then
+                { cfg | valueEq = False }
 
             else
                 cfg

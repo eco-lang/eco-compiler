@@ -28,6 +28,17 @@ static bool isAsciiCasePattern(llvm::StringRef s);
 
 namespace {
 
+/// kernel-opt-03 P3.5. Identical copy of the predicate in
+/// EcoControlFlowToSCF.cpp -- see the rationale there; both halves of the
+/// synthesized string-case path MUST be switched together.
+static bool valueEqStrCaseEnabled() {
+    static const bool on = [] {
+        const char *e = ::getenv("ECO_VALUE_EQ_STRCASE");
+        return e && e[0] == '1' && e[1] == '\0';
+    }();
+    return on;
+}
+
 //===----------------------------------------------------------------------===//
 // eco.return -> func.return
 //===----------------------------------------------------------------------===//
@@ -408,8 +419,14 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             }
         }
 
-        // Get the equality function
-        auto equalFunc = runtime.getOrCreateUtilsEqual(rewriter);
+        // kernel-opt-03 P3.5: under ECO_VALUE_EQ_STRCASE the boxed call + True-word
+        // decode collapses to one __eco_value_eq marker whose i1 result IS
+        // isEqual. Same expansion then covers these sites as every other
+        // eco.value.eq. The predicate is duplicated in EcoControlFlowToSCF.cpp,
+        // which handles the SCF half of this path; both MUST be switched together.
+        auto equalFunc = valueEqStrCaseEnabled()
+                             ? runtime.getOrCreateValueEqMarker(rewriter)
+                             : runtime.getOrCreateUtilsEqual(rewriter);
 
         // Generate comparison chain
         // For each pattern (except the last which is default), create:
@@ -473,18 +490,24 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                 }
             }
 
-            // Call Elm_Kernel_Utils_equal(scrutinee, patternValue) -> i64 (boxed Bool)
+            // Compare scrutinee against the pattern. Under ECO_VALUE_EQ_STRCASE
+            // the marker returns i1 directly; otherwise the kernel returns a
+            // boxed Bool that must be decoded against the True word.
             auto cmpCall = rewriter.create<LLVM::CallOp>(loc, equalFunc,
                 ValueRange{scrutinee, patternValue});
-            Value boxedResult = cmpCall.getResult();
-
-            // Unbox the result: compare with True constant (ptr<1>) to get i1
-            auto hptrTy = getHPtrLLVMType(*ctx);
-            Value trueI64 = rewriter.create<LLVM::ConstantOp>(
-                loc, i64Ty, value_enc::encodeConstant(value_enc::True));
-            Value trueConst = rewriter.create<LLVM::IntToPtrOp>(loc, hptrTy, trueI64);
-            Value isEqual = rewriter.create<LLVM::ICmpOp>(
-                loc, LLVM::ICmpPredicate::eq, boxedResult, trueConst);
+            Value isEqual;
+            if (valueEqStrCaseEnabled()) {
+                isEqual = cmpCall.getResult();
+            } else {
+                Value boxedResult = cmpCall.getResult();
+                auto hptrTy = getHPtrLLVMType(*ctx);
+                Value trueI64 = rewriter.create<LLVM::ConstantOp>(
+                    loc, i64Ty, value_enc::encodeConstant(value_enc::True));
+                Value trueConst =
+                    rewriter.create<LLVM::IntToPtrOp>(loc, hptrTy, trueI64);
+                isEqual = rewriter.create<LLVM::ICmpOp>(
+                    loc, LLVM::ICmpPredicate::eq, boxedResult, trueConst);
+            }
 
             // Save the current block (where comparison was built) before creating new blocks
             Block *compareBlock = rewriter.getInsertionBlock();

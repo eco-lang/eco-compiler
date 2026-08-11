@@ -121,6 +121,121 @@ on every arm-1/arm-2 hit; the fallback keeps exact kernel semantics.
   neither an `isGroupBarrier` nor an `isCallSafepoint` (EcoGCPrepare.cpp:110-140). Shipped
   and green. `eco.value.eq` inherits that shape.
 
+## Outcome — COMPLETE 2026-08-12 (benchmarks/kernel-opt.md Run K)
+
+**All seven phases are done and the item is DEFAULT-ON.** The Phase-0 census below measured
+the inline arms at 6.47% against this plan's 25% bar; that bar was overruled by decision --
+the loop's veto criterion is a wall REGRESSION, not a plan-internal payoff gate -- and the
+item was built in full.
+
+- **P1** `test/elm/src/EqDepthCutoffTest.elm` pins the depth-100 cutoff and the iterative
+  `Tag_Cons` spine walk, so the op provably does not move the boundary it inherits.
+- **P2** op + declare-only marker + the three-arm pre-RS4GC expansion.
+- **P3** emission: `ValueEq`/`BoolEq` ctors with the `boxedComparable` whitelist,
+  `Patterns.elm`'s `IsStr` test, and BOTH synthesized string-`case` sites
+  (`EcoControlFlowToSCF.cpp`, `EcoToLLVMControlFlow.cpp`) under `ECO_VALUE_EQ_STRCASE`.
+- **P4** `Elm_Kernel_Utils_equal`'s declaration carries `gc-leaf-function`.
+- **P5** closed by kernel-opt-06's 64-site residue measurement.
+- **P6** defaults flipped + **`CGEN_076`** appended to invariants.csv.
+
+**Emission is 100%:** `Utils_equal` 1392 -> 0, `Utils_notEqual` 60 -> 0, `eco.value.eq`
++1452 -- an exact 1:1. Wall **-1.84%**, inside the +/-2.8% band, so recorded FLAT rather than
+claimed as a win; that is consistent with the census, since most sites still reach arm 3.
+Gates: E2E **1642/1642 in all three switch states** and again default-on.
+
+**Two deviations from the plan text**, both to avoid duplicating mechanisms that sibling
+items had already built:
+1. `admissibleIntrinsic` was NOT added; its job is done by `Expr.gateIntrinsic`, which
+   already takes `(ctx, argsWithTypes, intrinsic)` -- exactly the signature required, and the
+   settled gating idiom since kernel-opt-01/04.
+2. `intrinsicPostOps` was NOT added; the `notEqual` negation is emitted by
+   `generateIntrinsicOps`, the multi-op channel kernel-opt-06 built, via a shared
+   `emitEqMaybeNegated` helper. One mechanism instead of three.
+
+**Outstanding:** `ECO_VALUE_EQ_STRCASE` ships **default-off**. Both halves are implemented
+and proven correct by the third gate leg, but no wall A/B was run for them; do not default
+them on without one.
+
+## The Phase-0 census (retained -- it is still the evidence about payoff)
+
+**The census killed the arms.** Executed on the cold Stage-7a self-compile
+(archived at `design_docs/kernel-boundary/value-eq-arm-census-stage7a.txt`):
+
+```
+total=158657944 bool=646 word=10204820 const=63114 slow=148389364
+nonbool_total=158657298 word_pct=6.432 const_pct=0.040 slow_pct=93.528
+```
+
+`word_pct + const_pct = 6.47%` against this plan's own **25%** bar — it fails by 3.9x, so
+per §Phase 0's decision point the inline arms are **measured dead** and must not be built.
+Two further corrections the census forces:
+
+- **The population is 44% smaller than this plan assumed.** §Evidence quotes 282,801,940
+  calls; the measured total is **158,657,944**. The Aug-10 compare series and kernel-opt-06
+  removed the difference. Do not requote the 282.8M figure.
+- **P3a's entire target is 646 calls** — 0.0004% of traffic. §Expected impact calls P3a "a
+  pure deletion" and "unconditionally better", which is still true as code quality (one
+  `arith.xori` instead of a call), but its dynamic payoff is nil. It was not built.
+
+**P2/P4 were also not built, which departs from the <25% branch's letter.** That branch says
+to land `eco.value.eq` anyway with `ECO_VALUE_EQ_INLINE=0`, for the gc-leaf stamp, the
+group-barrier relief and a CSE-able `Pure` producer. Each of those three has since been
+answered elsewhere:
+
+1. **gc-leaf is subsumed by kernel-opt-08**, which is the very next item. `(Utils, equal)` is
+   in kernel-opt-07's A1 stampable 14 (`gcAlloc = GcNone`, `callsBackIntoElm = False`), so 08
+   stamps `Elm_Kernel_Utils_equal` from the facts table with no help from here. This plan's
+   own §Phase 4 already says its stamp is transitional and is deleted when 08 lands — so
+   building it now is scaffolding for a bridge that arrives in one item's time.
+2. **Group-barrier relief is nil.** kernel-opt-05 §1a.4 and kernel-opt-09 both established
+   that `isGroupBarrier` is effectively dead: `processBlock` calls `flushGroup()` for every
+   non-allocation op before consulting it, so an `arith.constant` splits a group exactly as an
+   `eco.call` does.
+3. **The `Pure` CSE-able producer** is the one live benefit, and it is speculative: its only
+   consumer is kernel-opt-10's MLIR CSE, which is itself census-gated and has not run.
+
+**Reopen condition.** If kernel-opt-10's Phase-0 census finds a real duplicate-equality pool,
+build P2 then — the op, the marker and the lowering are fully specified above and nothing in
+the tree has invalidated them. Also reopen if a future workload shifts `word_pct + const_pct`
+above 25%; the census is one rebuild plus one cold run.
+
+**Phase 5 is separately closed.** kernel-opt-06 measured the surviving boxed comparison
+population at **64 sites** (lt 14, le 0, gt 10, ge 2, compare 38) against Phase 5's `>200`
+threshold, and the dynamic clause could not be measured because the per-symbol census is not
+in the tree — so per this plan's own wording both conditions are unmet.
+
+**Landed from this item:** the census result and its archive (instrumentation reverted,
+verified zero residue in `UtilsExports.cpp`), **and Phase 2 in full** — see below.
+
+### Phase 2 BUILT anyway — 2026-08-11, by explicit decision
+
+The NO-GO reasoning above argued against building P2 as scaffolding. That was overruled:
+P2 is required groundwork for later plans and has been built in full.
+
+Landed, runtime-only, with **no Elm emission** (Phase 3 remains unbuilt):
+
+- `Eco_ValueEqOp` (`Ops.td`), `[Pure, Commutative]`. `Pure` is licensed precisely because
+  kernel-opt-07 deleted the tag-mismatch stderr trace — that dependency is now discharged,
+  not pending.
+- `getOrCreateValueEqMarker` (decl + definition + **`materializeAllRuntimeDecls`**, which is
+  the easily-missed one: a create after `freeze()` is an assert, not a clean error).
+- `ValueEqOpLowering` in `EcoToLLVMArith.cpp`, emitting the declare-only `__eco_value_eq`.
+- `expandValueEqFastPath` in `EcoBackend.cpp`, expanding the three-arm diamond pre-RS4GC and
+  erasing the declaration; plus the `ECO_VALUE_EQ_GCLEAF` stamp block, deliberately placed
+  ABOVE the marker early-return so modules that call `Elm_Kernel_Utils_equal` without any
+  `eco.value.eq` still get stamped.
+- `test/codegen/value_eq_fastpath.mlir`, three legs. This is the op's ONLY exercise while
+  Phase 3 is unbuilt, and all three arms are pinned by the JIT leg: word equality, the
+  ptr_ind constant test (mixed and both-constant), and the kernel call decoded against the
+  True word 0x5.
+
+Gates: fixture green on all three legs; full E2E **1640/1640**.
+
+**Left for whoever lands Phase 3:** the census says the shipped default should be
+`ECO_VALUE_EQ_INLINE=0` (bare call + icmp), since the inline arms are worth 6.47% against a
+25% bar. The helper currently defaults ON because nothing emits the op, so the default is
+moot and the fixture is more valuable exercising the diamond. Flip it when emission lands.
+
 ## Approach
 
 ### Phase 0 — arm-hit census (one day, no product change)

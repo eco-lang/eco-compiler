@@ -707,6 +707,21 @@ private:
 // Pattern: eco.case with case_kind="str" -> nested scf.if chain
 //===----------------------------------------------------------------------===//
 
+/// kernel-opt-03 P3.4: opt the synthesized string-`case` if-chain into
+/// eco.value.eq. File-local by design -- this TU deliberately does not include
+/// EcoToLLVMInternal.h (that header pulls in the whole LLVM-lowering surface),
+/// so EcoToLLVMControlFlow.cpp carries an identical copy for its half of the
+/// same path. Both halves MUST be switched together. Same duplication pattern as
+/// getenv("ECO_CMPCASE") in EcoCompareCaseRewrite.cpp.
+static bool valueEqStrCaseEnabled() {
+    static const bool on = [] {
+        const char *e = ::getenv("ECO_VALUE_EQ_STRCASE");
+        return e && e[0] == '1' && e[1] == '\0';
+    }();
+    return on;
+}
+
+
 /// Lowers string case expressions to nested scf.if chains using
 /// Elm_Kernel_Utils_equal for string comparison. This allows string
 /// cases to be safely nested inside other SCF regions.
@@ -745,9 +760,12 @@ struct CaseStringToScfIfChainPattern : public OpRewritePattern<CaseOp> {
         auto resultTypes = getCaseResultTypes(op);
         Value scrutinee = op.getScrutinee();
 
-        // Ensure Elm_Kernel_Utils_equal is declared
-        auto module = op->getParentOfType<ModuleOp>();
-        ensureEqualDeclared(rewriter, module, loc);
+        // Ensure Elm_Kernel_Utils_equal is declared. Under ECO_VALUE_EQ_STRCASE
+        // no call is emitted, so declaring it would leave a dead func.func stub.
+        if (!valueEqStrCaseEnabled()) {
+            auto module = op->getParentOfType<ModuleOp>();
+            ensureEqualDeclared(rewriter, module, loc);
+        }
 
         // Build the if-chain from front to back
         auto ifOp = buildStringIfChain(rewriter, loc, scrutinee, alts,
@@ -791,11 +809,18 @@ private:
             auto strLitOp = rewriter.create<StringLiteralOp>(loc,
                 eco::ValueType::get(rewriter.getContext()), patternStr);
             auto ecoValueTy = eco::ValueType::get(rewriter.getContext());
-            auto callOp = rewriter.create<func::CallOp>(
-                loc, "Elm_Kernel_Utils_equal",
-                TypeRange{ecoValueTy},
-                ValueRange{scrutinee, strLitOp});
-            Value cond = rewriter.create<UnboxOp>(loc, rewriter.getI1Type(), callOp.getResult(0));
+            Value cond;
+            if (valueEqStrCaseEnabled()) {
+                cond = rewriter.create<eco::ValueEqOp>(
+                    loc, rewriter.getI1Type(), scrutinee, strLitOp);
+            } else {
+                auto callOp = rewriter.create<func::CallOp>(
+                    loc, "Elm_Kernel_Utils_equal",
+                    TypeRange{ecoValueTy},
+                    ValueRange{scrutinee, strLitOp});
+                cond = rewriter.create<UnboxOp>(loc, rewriter.getI1Type(),
+                                                callOp.getResult(0));
+            }
 
             auto ifOp = rewriter.create<scf::IfOp>(loc, resultTypes, cond,
                                                     /*withElseRegion=*/true);
@@ -827,17 +852,20 @@ private:
         auto strLitOp = rewriter.create<StringLiteralOp>(loc,
             eco::ValueType::get(rewriter.getContext()), patternStr);
 
-        // Call Elm_Kernel_Utils_equal(scrutinee, pattern_string)
+        // Call Elm_Kernel_Utils_equal(scrutinee, pattern_string), or under
+        // ECO_VALUE_EQ_STRCASE emit the typed op directly.
         auto ecoValueTy = eco::ValueType::get(rewriter.getContext());
-        auto callOp = rewriter.create<func::CallOp>(
-            loc, "Elm_Kernel_Utils_equal",
-            TypeRange{ecoValueTy},
-            ValueRange{scrutinee, strLitOp});
-        Value eqResult = callOp.getResult(0);
-
-        // Unbox the result to i1
         auto i1Ty = rewriter.getI1Type();
-        Value cond = rewriter.create<UnboxOp>(loc, i1Ty, eqResult);
+        Value cond;
+        if (valueEqStrCaseEnabled()) {
+            cond = rewriter.create<eco::ValueEqOp>(loc, i1Ty, scrutinee, strLitOp);
+        } else {
+            auto callOp = rewriter.create<func::CallOp>(
+                loc, "Elm_Kernel_Utils_equal",
+                TypeRange{ecoValueTy},
+                ValueRange{scrutinee, strLitOp});
+            cond = rewriter.create<UnboxOp>(loc, i1Ty, callOp.getResult(0));
+        }
 
         // Create scf.if
         auto ifOp = rewriter.create<scf::IfOp>(loc, resultTypes, cond,

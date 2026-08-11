@@ -1131,6 +1131,28 @@ struct StringCmpOrderOpLowering : public OpConversionPattern<StringCmpOrderOp> {
     }
 };
 
+// eco.value.eq -> the declare-only __eco_value_eq marker. The fast/slow diamond
+// cannot be built here: this pattern runs inside the Stage 2 dialect conversion,
+// which also lowers scf, so block surgery on a still-converting region is not
+// available. Emitting a marker and expanding it at LLVM-IR level pre-RS4GC is
+// the house idiom (HEAP_034 __eco_alloc_inline; P2 __eco_resolve_fwd).
+struct ValueEqOpLowering : public OpConversionPattern<ValueEqOp> {
+    const EcoRuntime &runtime;
+
+    ValueEqOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                      const EcoRuntime &runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult
+    matchAndRewrite(ValueEqOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto fn = runtime.getOrCreateValueEqMarker(rewriter);
+        rewriter.replaceOpWithNewOp<LLVM::CallOp>(
+            op, fn, ValueRange{adaptor.getLhs(), adaptor.getRhs()});
+        return success();
+    }
+};
+
 struct StringCmp3OpLowering : public OpConversionPattern<StringCmp3Op> {
     const EcoRuntime &runtime;
 
@@ -1255,4 +1277,5 @@ void eco::detail::populateEcoArithPatternsWithRuntime(
     patterns.add<CharCmpOrderOpLowering>(typeConverter, ctx, runtime);
     patterns.add<StringCmpOrderOpLowering>(typeConverter, ctx, runtime);
     patterns.add<StringCmp3OpLowering>(typeConverter, ctx, runtime);
+    patterns.add<ValueEqOpLowering>(typeConverter, ctx, runtime);
 }

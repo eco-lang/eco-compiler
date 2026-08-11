@@ -1,0 +1,3 @@
+[value-eq-census] total=158657944 bool=646 word=10204820 const=63114 slow=148389364 nonbool_total=158657298 word_pct=6.432 const_pct=0.040 slow_pct=93.528
+
+[gc-stats] normal exit — printing GC statistics

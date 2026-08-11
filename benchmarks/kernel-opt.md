@@ -143,6 +143,38 @@ arms lowered from the same Stage-5 `.mlir`), which stays byte-identical.
 
 ## Runs
 
+### 2026-08-12 01:30 UTC — Run K: kernel-opt-03 `eco.value.eq` emission (**FLAT — no regression; KEEP — DEFAULT-ON, `ECO_VALUE_EQ=0` escapes**)
+
+`plans/kernel-opt-03-value-eq-fastpath.md` Phases 1/3/4/6, completing the item
+(Phase 2 landed earlier; Phase 5 was closed by kernel-opt-06's 64-site residue).
+Boxed structural equality now emits `eco.value.eq`, which expands pre-RS4GC into
+word-equality → embedded-constant test → gc-leaf kernel call decoded against the
+True word. **Emission: `Utils_equal` 1392→0 and `Utils_notEqual` 60→0 against
+`eco.value.eq` +1452 — 100% conversion, exact 1:1.**
+
+Wall **−1.84%**: directionally good but **inside the ±2.8% band, so recorded
+FLAT**, not a win. That is consistent with the Phase-0 census, which measured the
+inline arms at only 6.47% of non-Bool traffic — most of the 1,452 sites still
+reach arm 3 and pay the call. Counters identical, `-out.mlir` byte-identical both
+rounds.
+
+`Elm_Kernel_Utils_equal`'s declaration now carries `gc-leaf-function` (Phase 4):
+kernel-opt-07 recorded it as one of the A1 stampable 14 and deleted the stderr
+trace that was its last observable effect. `CGEN_076` records the whole contract.
+Gates: E2E **1642/1642 in ALL THREE switch states** (off; `ECO_VALUE_EQ=1`;
+`ECO_VALUE_EQ=1 ECO_VALUE_EQ_STRCASE=1`) and again default-on.
+
+**Not measured:** `ECO_VALUE_EQ_STRCASE` ships **default-off** — the two
+synthesized string-`case` sites are implemented and proven correct, but no wall
+A/B was run for them, so they must not be defaulted on without one.
+
+| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|---|
+| on r1 | **3:22.93** | 4,894,736 kB | 219,818,234 | 13,332.70 MB | 836 | 361,223,661 (164.3%) | 10 | 79.47 s | 12,933,089 B |
+| on r2 | **3:20.32** | 4,888,020 kB | 219,818,067 | 13,332.69 MB | 836 | 361,223,662 | 10 | 78.44 s | ≡ |
+| off r1 | 3:25.29 | 4,884,248 kB | 219,818,070 | 13,332.70 MB | 836 | 361,223,654 | 10 | 80.93 s | ≡ |
+| off r2 | 3:25.54 | 4,884,284 kB | ≡ | ≡ | 836 | ≡ | 10 | 81.05 s | ≡ |
+
 ### 2026-08-11 21:15 UTC — Run J: kernel-opt-06 String ordering → `eco.string.cmp3` (**FLAT — no regression; KEEP — DEFAULT-ON, `ECO_STRING_ORDER_INTRINSIC=0` escapes**)
 
 `plans/kernel-opt-06-string-ordering-cmp3.md`. `<`/`<=`/`>`/`>=` on two Strings
@@ -424,3 +456,4 @@ was 20,480 MB. Gates at that point: E2E `--target full` and heap-validate tree
 | H — kernel-opt-04 string.length inline | 3:22.75 (r1/r2 mean, −0.12% FLAT) | 219,915,775 obj / 13,335.65 MB |
 | I — kernel-opt-05 append type split | 3:25.07 (r1/r2 mean, +0.80% FLAT) | 219,913,079 obj / 13,335.56 MB |
 | J — kernel-opt-06 String ordering cmp3 | 3:23.25 (r1/r2 mean, −0.34% FLAT) | 219,817,471 obj / 13,332.69 MB |
+| K — kernel-opt-03 eco.value.eq emission | 3:21.63 (r1/r2 mean, −1.84% FLAT) | 219,818,234 obj / 13,332.70 MB |

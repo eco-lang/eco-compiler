@@ -2876,6 +2876,38 @@ def Eco_StringCmp3Op : Eco_Op<"string.cmp3", [Pure]> {
   let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs) `->` type($result)";
 }
 
+def Eco_ValueEqOp : Eco_Op<"value.eq", [Pure, Commutative]> {
+  let summary = "Structural equality of two boxed values; returns i1";
+  let description = [{
+    Bit-exact replacement for a call to `Elm_Kernel_Utils_equal` followed by a
+    boxed-Bool decode. Operands are boxed (REP_ABI_001), the result is the SSA
+    i1 Bool.
+
+    Lowers to the declare-only marker `__eco_value_eq`, which
+    `expandValueEqFastPath` (EcoBackend.cpp) expands pre-RS4GC into:
+      (1) word equality -> true (Utils.cpp's `if (a == b) return true` runs
+          BEFORE the tag switch, so this never disagrees with the kernel --
+          pointer-equal closures included);
+      (2) either word has bit 2 (ptr_ind) set -> false, exactly
+          equalRespectingConstants;
+      (3) otherwise a gc-leaf call to Elm_Kernel_Utils_equal, decoded by
+          comparing against the True word (0x5).
+
+    `Pure` is sound for the same reason as eco.string.cmp_order: every Eco heap
+    value is immutable after construction, and SSA dominance already prevents
+    motion above the operands' defs. It ALSO required the tag-mismatch stderr
+    trace to be gone -- kernel-opt-07 deleted it, which is what unblocked this
+    trait; do not re-introduce an observable effect on the equality path.
+
+    ```mlir
+    %eq = eco.value.eq %a, %b : !eco.value
+    ```
+  }];
+  let arguments = (ins Eco_Value:$lhs, Eco_Value:$rhs);
+  let results = (outs Eco_Bool:$result);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
+}
+
 //===----------------------------------------------------------------------===//
 // 12. Reference Counting Placeholders (Future Perceus Support)
 //===----------------------------------------------------------------------===//

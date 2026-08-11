@@ -687,6 +687,7 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateHPtrToSlot(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateIntPow(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateUtilsEqual(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateValueEqMarker(mlir::OpBuilder &builder) const;
 
     // Order singleton getters used by eco.{int,float,char}.cmp_order. Each
     // returns the encoded HPointer of one of the three pre-allocated Order

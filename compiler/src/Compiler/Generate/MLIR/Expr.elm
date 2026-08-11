@@ -1344,6 +1344,20 @@ gateIntrinsic ctx argsWithTypes intrinsic =
             else
                 Nothing
 
+        Intrinsics.ValueEq _ ->
+            -- Two conditions, and the SSA one is why this cannot live in
+            -- Intrinsics: eco.value.eq needs BOTH operands to already be
+            -- !eco.value, but aggregate promotion / psplit can hand a tuple or
+            -- single-ctor custom to a call site as loose scalar slots, and the
+            -- intrinsic path only ever UNBOXES -- it has no boxing step, so it
+            -- would emit an ill-typed op. Declining routes the call back to the
+            -- untouched kernel branch.
+            if ctx.ecoConfig.valueEq && List.all (Tuple.second >> Types.isEcoValueType) argsWithTypes then
+                Just intrinsic
+
+            else
+                Nothing
+
         Intrinsics.ConstructList { headMlirType } ->
             case ( ctx.ecoConfig.list.consIntrinsic, argsWithTypes ) of
                 ( True, [ ( _, headSsaTy ), _ ] ) ->

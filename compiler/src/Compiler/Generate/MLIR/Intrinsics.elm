@@ -56,6 +56,8 @@ type Intrinsic
     | AppendList
     | CompareToOrder { kind : CompareKind }
     | StringOrderCompare { op : String }
+    | ValueEq { negate : Bool }
+    | BoolEq { negate : Bool }
 
 
 {-| Operand kind selector for the `Utils.compare` intrinsic.
@@ -167,6 +169,12 @@ intrinsicResultMlirType intrinsic =
             Types.ecoValue
 
         StringOrderCompare _ ->
+            I1
+
+        ValueEq _ ->
+            I1
+
+        BoolEq _ ->
             I1
 
 
@@ -295,6 +303,12 @@ intrinsicOperandTypes intrinsic =
             -- REP_ABI_001: String crosses every ABI as !eco.value; never unbox.
             -- unboxArgsForIntrinsic no-ops on boxed-expected slots.
             [ Types.ecoValue, Types.ecoValue ]
+
+        ValueEq _ ->
+            [ Types.ecoValue, Types.ecoValue ]
+
+        BoolEq _ ->
+            [ I1, I1 ]
 
 
 
@@ -672,6 +686,37 @@ utilsIntrinsic name argTypes _ =
         -- Compare-to-Order intrinsics: return one of the three pre-allocated
         -- Order singletons. Boxed-key compares (Strings, lists, tuples,
         -- records, user comparables) keep falling through to the kernel call.
+        -- kernel-opt-03 3a. Bool equality never needed the kernel: both sides are
+        -- already i1 in SSA, and the boxed round-trip was pure arm-1/arm-2
+        -- traffic. NOT config-gated -- one arith.xori is unconditionally better.
+        ( "equal", [ Mono.MBool, Mono.MBool ] ) ->
+            Just (BoolEq { negate = False })
+
+        ( "notEqual", [ Mono.MBool, Mono.MBool ] ) ->
+            Just (BoolEq { negate = True })
+
+        -- kernel-opt-03 3b. Everything whose ABI is unconditionally !eco.value.
+        -- MVar / MFunction are deliberately EXCLUDED (whitelist discipline, NOT
+        -- a divergence fix -- arm 1 agrees with eqHelp on every shape, closures
+        -- included, because `if (a == b) return true` precedes the tag switch):
+        -- MVar _ CNumber may still resolve to an UNBOXED MInt/MFloat so its SSA
+        -- type is not knowably !eco.value here, and MFunction's ABI may be a PAP.
+        -- The config gate and the ACTUAL SSA-type test are applied by
+        -- Expr.gateIntrinsic, which is the only place that can see them.
+        ( "equal", [ x, y ] ) ->
+            if boxedComparable x && x == y then
+                Just (ValueEq { negate = False })
+
+            else
+                Nothing
+
+        ( "notEqual", [ x, y ] ) ->
+            if boxedComparable x && x == y then
+                Just (ValueEq { negate = True })
+
+            else
+                Nothing
+
         ( "compare", [ Mono.MInt, Mono.MInt ] ) ->
             Just (CompareToOrder { kind = CompareIntKind })
 
@@ -759,6 +804,42 @@ stringIntrinsic name argTypes _ =
 
         _ ->
             Nothing
+
+
+{-| MonoTypes whose ABI representation is unconditionally `!eco.value`
+(REP\_ABI\_001) and whose kernel equality has no closure/primitive hazard.
+Whitelist discipline: anything not listed keeps today's boxed kernel call.
+
+The leading `Int` on the aggregate constructors is a STRUCTURAL HASH derived from
+the payload, not an identity, so `x == y` on two structurally identical types is
+`True` and the caller's `x == y` guard is a real same-type test.
+
+-}
+boxedComparable : Mono.MonoType -> Bool
+boxedComparable ty =
+    case ty of
+        Mono.MString ->
+            True
+
+        Mono.MUnit ->
+            True
+
+        Mono.MList _ _ ->
+            True
+
+        Mono.MTuple _ _ ->
+            True
+
+        Mono.MRecord _ _ ->
+            True
+
+        Mono.MCustom _ _ _ _ ->
+            True
+
+        _ ->
+            -- MInt/MFloat/MChar are handled by the primitive arms above and
+            -- MBool by 3a; MVar/MFunction deliberately fall through.
+            False
 
 
 arrayElementType : Mono.MonoType -> Maybe Mono.MonoType
@@ -1185,6 +1266,24 @@ generateIntrinsicOp ctx intrinsic resultVar argVars =
             -- generateIntrinsicOps. Kept only for case totality.
             Ops.ecoBinaryOp ctx op resultVar ( "%error", Types.ecoInt ) ( "%error", Types.ecoInt ) I1
 
+        ValueEq _ ->
+            -- Non-negated form; the negated one is multi-op and goes through
+            -- generateIntrinsicOps.
+            case argVars of
+                [ lhs, rhs ] ->
+                    Ops.ecoBinaryOp ctx "eco.value.eq" resultVar ( lhs, Types.ecoValue ) ( rhs, Types.ecoValue ) I1
+
+                _ ->
+                    Ops.ecoBinaryOp ctx "eco.value.eq" resultVar ( "%error", Types.ecoValue ) ( "%error", Types.ecoValue ) I1
+
+        BoolEq _ ->
+            case argVars of
+                [ lhs, rhs ] ->
+                    Ops.ecoBinaryOp ctx "eco.bool.xor" resultVar ( lhs, I1 ) ( rhs, I1 ) I1
+
+                _ ->
+                    Ops.ecoBinaryOp ctx "eco.bool.xor" resultVar ( "%error", I1 ) ( "%error", I1 ) I1
+
 
 {-| Emit an intrinsic that needs MORE THAN ONE op.
 
@@ -1225,6 +1324,50 @@ generateIntrinsicOps ctx intrinsic resultVar argVars =
             in
             ( ctx5, [ cmp3Op, zeroOp, testOp ] )
 
+        ValueEq { negate } ->
+            emitEqMaybeNegated ctx "eco.value.eq" Types.ecoValue negate resultVar argVars
+
+        BoolEq { negate } ->
+            -- xor IS notEqual, so the polarity is inverted relative to ValueEq.
+            emitEqMaybeNegated ctx "eco.bool.xor" I1 (not negate) resultVar argVars
+
         _ ->
             generateIntrinsicOp ctx intrinsic resultVar argVars
                 |> Tuple.mapSecond List.singleton
+
+
+{-| Emit a two-operand equality op, optionally followed by `eco.bool.not`.
+
+`notEqual` is emission-side negation -- there is deliberately no second MLIR op
+def for it. `eco.bool.not` lowers to `arith.xori %x, true`. When negating, the
+equality lands in a fresh temp and the NOT writes `resultVar`, so the caller's
+result variable always holds the final value.
+
+-}
+emitEqMaybeNegated : Ctx.Context -> String -> MlirType -> Bool -> String -> List String -> ( Ctx.Context, List MlirOp )
+emitEqMaybeNegated ctx opName operandTy negate resultVar argVars =
+    let
+        ( lhs, rhs ) =
+            case argVars of
+                [ a, b ] ->
+                    ( a, b )
+
+                _ ->
+                    ( "%error", "%error" )
+    in
+    if negate then
+        let
+            ( tmp, ctx1 ) =
+                Ctx.freshVar ctx
+
+            ( ctx2, eqOp ) =
+                Ops.ecoBinaryOp ctx1 opName tmp ( lhs, operandTy ) ( rhs, operandTy ) I1
+
+            ( ctx3, notOp ) =
+                Ops.ecoUnaryOp ctx2 "eco.bool.not" resultVar ( tmp, I1 ) I1
+        in
+        ( ctx3, [ eqOp, notOp ] )
+
+    else
+        Ops.ecoBinaryOp ctx opName resultVar ( lhs, operandTy ) ( rhs, operandTy ) I1
+            |> Tuple.mapSecond List.singleton

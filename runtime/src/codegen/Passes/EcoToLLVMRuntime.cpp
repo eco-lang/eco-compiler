@@ -908,9 +908,31 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateIntPow(OpBuilder &builder) const {
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateUtilsEqual(OpBuilder &builder) const {
-    // Elm_Kernel_Utils_equal(a: hptr, b: hptr) -> hptr (boxed Bool)
+    // Elm_Kernel_Utils_equal(a: hptr, b: hptr) -> hptr (boxed Bool).
+    //
+    // gc-leaf (kernel-opt-03 Phase 4): the equality path allocates nothing on the
+    // Eco heap and never calls back into Elm -- kernel-opt-07's KernelFacts row
+    // records it as one of the A1 stampable 14 (gcAlloc = GcNone,
+    // callsBackIntoElm = False), and 07 also deleted the tag-mismatch stderr
+    // trace that was its last observable effect. dictEq's std::vector working
+    // stacks are C++-heap, which is gc-leaf-COMPATIBLE.
+    //
+    // gc-leaf is the ONLY attribute this decl may carry: it takes !eco.value, so
+    // memory(*)/speculatable/willreturn are FORBIDDEN pre-RS4GC (REP_LLVM_002).
     auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY, HPTR_TY});
-    return getOrCreateFunc(builder, "Elm_Kernel_Utils_equal", funcTy);
+    return getOrCreateFunc(builder, "Elm_Kernel_Utils_equal", funcTy, /*gcLeaf=*/true);
+}
+
+// eco.value.eq marker: __eco_value_eq(a: hptr, b: hptr) -> i1. DECLARE-ONLY --
+// expandValueEqFastPath (EcoBackend.cpp, which spells the same literal) expands
+// every call before ANY RS4GC flavour and then erases this declaration; no
+// definition ever exists and no call reaches codegen. gc-leaf matches the other
+// declare-only markers and is belt-and-braces only. NEVER add
+// memory(none)/speculatable/willreturn: gc-leaf is the ONLY attribute a decl
+// carrying !eco.value may hold pre-RS4GC (REP_LLVM_002).
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateValueEqMarker(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I1_TY, {HPTR_TY, HPTR_TY});
+    return getOrCreateFunc(builder, "__eco_value_eq", funcTy, /*gcLeaf=*/true);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateGetOrderLT(OpBuilder &builder) const {
@@ -1299,6 +1321,7 @@ void EcoRuntime::materializeAllRuntimeDecls(OpBuilder &b) const {
     getOrCreateRegisterTypeGraph(b); getOrCreateDispatchStatsFast(b);
     getOrCreateSlotToHPtr(b); getOrCreateHPtrToSlot(b);
     getOrCreateIntPow(b); getOrCreateUtilsEqual(b);
+    getOrCreateValueEqMarker(b);
     getOrCreateGetOrderLT(b); getOrCreateGetOrderEQ(b); getOrCreateGetOrderGT(b);
     getOrCreateStringCmp3(b); getOrCreateStringCmpOrder(b); getOrCreateUtilsCmp3(b);
     getOrCreateStringLenInlineMarker(b); getOrCreateStringLength(b);

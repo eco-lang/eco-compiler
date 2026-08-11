@@ -1,4 +1,7 @@
-module Compiler.Generate.MLIR.Patterns exposing (generateMonoPath, generateMonoDtPath, generateMonoTest, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag, resolvePathResultType, materializeSplitParam)
+module Compiler.Generate.MLIR.Patterns exposing
+    ( generateMonoPath, generateMonoDtPath, generateMonoTest, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag, resolvePathResultType
+    , materializeSplitParam
+    )
 
 {-| Pattern matching and path generation for MLIR code generation.
 
@@ -281,13 +284,30 @@ generateMonoTestGeneral ctx ( dtPath, test ) =
                 ( eqVar, ctx4 ) =
                     Ctx.freshVar ctx3
 
-                ( ctx5, cmpOp ) =
-                    Ops.ecoCallNamed ctx4 (Ctx.liveEcoValueVars ctx4) eqVar "Elm_Kernel_Utils_equal" [ ( valVar, Types.ecoValue ), ( strVar, Types.ecoValue ) ] Types.ecoValue
+                -- kernel-opt-03: under `valueEq` the boxed call + unbox becomes
+                -- one eco.value.eq producing i1 directly. Both operands are
+                -- String, so they are !eco.value by REP_ABI_001 and the SSA-type
+                -- admissibility test Expr.gateIntrinsic applies elsewhere is
+                -- satisfied by construction here.
+                ( eqOps, resVar, ctx6 ) =
+                    if ctx.ecoConfig.valueEq then
+                        let
+                            ( ctx5, veqOp ) =
+                                Ops.ecoBinaryOp ctx4 "eco.value.eq" eqVar ( valVar, Types.ecoValue ) ( strVar, Types.ecoValue ) I1
+                        in
+                        ( [ veqOp ], eqVar, ctx5 )
 
-                ( unboxOps, resVar, ctx6 ) =
-                    Intrinsics.unboxToType ctx5 eqVar I1
+                    else
+                        let
+                            ( ctx5, cmpOp ) =
+                                Ops.ecoCallNamed ctx4 (Ctx.liveEcoValueVars ctx4) eqVar "Elm_Kernel_Utils_equal" [ ( valVar, Types.ecoValue ), ( strVar, Types.ecoValue ) ] Types.ecoValue
+
+                            ( unboxOps, unboxedVar, ctx5b ) =
+                                Intrinsics.unboxToType ctx5 eqVar I1
+                        in
+                        ( cmpOp :: unboxOps, unboxedVar, ctx5b )
             in
-            ( pathOps ++ [ strOp, cmpOp ] ++ unboxOps, resVar, ctx6 )
+            ( pathOps ++ [ strOp ] ++ eqOps, resVar, ctx6 )
 
         Test.IsCons ->
             let
@@ -463,7 +483,6 @@ generateMonoPathHelper ctx path targetType revAcc =
                 Nothing ->
                     generateMonoRootOnHeap ctx name targetType revAcc
 
-
         Mono.MonoIndex index containerKind resultType subPath ->
             case splitRootOf ctx subPath of
                 Just splitInfo ->
@@ -499,528 +518,531 @@ generateMonoPathHelper ctx path targetType revAcc =
 
 generateMonoRootOnHeap : Ctx.Context -> Name.Name -> MlirType -> List MlirOp -> ( List MlirOp, String, Ctx.Context )
 generateMonoRootOnHeap ctx name targetType revAcc =
-            let
-                ( varName, actualType ) =
-                    Ctx.lookupVar ctx name
-            in
-            if Types.isEcoValueType actualType && (targetType == I1 || Types.isUnboxable targetType) then
-                -- Variable stored boxed (per its ABI) but the path consumer
-                -- expects an unboxed primitive (i1 Bool test, or an i64/f64
-                -- destructor target whose recorded element type was erased —
-                -- the solver engine's residuals surface here; returning the
-                -- boxed var raw would LIE about the SSA type and miscompile).
-                let
-                    ( unboxOps, unboxedVar, ctxU ) =
-                        Intrinsics.unboxToType ctx varName targetType
-                in
-                ( List.foldl (::) revAcc unboxOps, unboxedVar, ctxU )
+    let
+        ( varName, actualType ) =
+            Ctx.lookupVar ctx name
+    in
+    if Types.isEcoValueType actualType && (targetType == I1 || Types.isUnboxable targetType) then
+        -- Variable stored boxed (per its ABI) but the path consumer
+        -- expects an unboxed primitive (i1 Bool test, or an i64/f64
+        -- destructor target whose recorded element type was erased —
+        -- the solver engine's residuals surface here; returning the
+        -- boxed var raw would LIE about the SSA type and miscompile).
+        let
+            ( unboxOps, unboxedVar, ctxU ) =
+                Intrinsics.unboxToType ctx varName targetType
+        in
+        ( List.foldl (::) revAcc unboxOps, unboxedVar, ctxU )
 
-            else
-                ( revAcc, varName, ctx )
+    else
+        ( revAcc, varName, ctx )
+
 
 generateMonoIndexOnHeap : Ctx.Context -> MlirType -> List MlirOp -> Int -> Mono.ContainerKind -> Mono.MonoType -> Mono.MonoPath -> ( List MlirOp, String, Ctx.Context )
 generateMonoIndexOnHeap ctx targetType revAcc index containerKind resultType subPath =
-            let
-                -- Navigate to the container object (always !eco.value —
-                -- except a U-T1.3.1 promoted tuple root, which stays in its
-                -- value-aggregate form and is projected via the dual-form
-                -- lowering; `aggOperand` carries its type for the op attr).
-                ( revAcc1, subVar, ctx1 ) =
-                    generateMonoPathHelper ctx subPath Types.ecoValue revAcc
+    let
+        -- Navigate to the container object (always !eco.value —
+        -- except a U-T1.3.1 promoted tuple root, which stays in its
+        -- value-aggregate form and is projected via the dual-form
+        -- lowering; `aggOperand` carries its type for the op attr).
+        ( revAcc1, subVar, ctx1 ) =
+            generateMonoPathHelper ctx subPath Types.ecoValue revAcc
 
-                aggOperand =
-                    case subPath of
-                        Mono.MonoRoot rootName _ ->
-                            let
-                                ( _, rootTy ) =
-                                    Ctx.lookupVar ctx rootName
-                            in
-                            if Types.isAggValueType rootTy then
-                                Just rootTy
-
-                            else
-                                Nothing
-
-                        _ ->
-                            Nothing
-
-                projCustom ctxP rv idx rt =
-                    case aggOperand of
-                        Just aggTy ->
-                            Ops.ecoProjectCustomAgg ctxP rv idx rt ( subVar, aggTy )
-
-                        Nothing ->
-                            Ops.ecoProjectCustom ctxP rv idx rt subVar
-
-                projTuple2 ctxP rv idx rt =
-                    case aggOperand of
-                        Just aggTy ->
-                            Ops.ecoProjectTuple2Agg ctxP rv idx rt ( subVar, aggTy )
-
-                        Nothing ->
-                            Ops.ecoProjectTuple2 ctxP rv idx rt subVar
-
-                projTuple3 ctxP rv idx rt =
-                    case aggOperand of
-                        Just aggTy ->
-                            Ops.ecoProjectTuple3Agg ctxP rv idx rt ( subVar, aggTy )
-
-                        Nothing ->
-                            Ops.ecoProjectTuple3 ctxP rv idx rt subVar
-
-                ( resultVar, ctx2 ) =
-                    Ctx.freshVar ctx1
-
-                -- Use type-specific projection ops based on ContainerKind.
-                -- This ensures correct heap layout access for each container type.
-                ( projectOps, projectVar, ctx3 ) =
-                    case containerKind of
-                        Mono.ListContainer ->
-                            if index == 0 then
-                                -- List head projection. Use targetType directly so the
-                                -- projection result matches what the caller stores in the
-                                -- context. Bool is !eco.value in heap storage (not unboxed),
-                                -- so targetType=EcoValue is correct for Bool.
-                                let
-                                    ( ctx_, op ) =
-                                        Ops.ecoProjectListHead ctx2 resultVar targetType subVar
-                                in
-                                ( [ op ], resultVar, ctx_ )
-
-                            else
-                                -- List tail (index 1)
-                                let
-                                    ( ctx_, op ) =
-                                        Ops.ecoProjectListTail ctx2 resultVar subVar
-                                in
-                                ( [ op ], resultVar, ctx_ )
-
-                        Mono.Tuple2Container ->
-                            let
-                                fieldAbiType =
-                                    Types.monoTypeToAbi resultType
-                            in
-                            if Types.isUnboxable fieldAbiType then
-                                -- Field is stored unboxed (Int/Float/Char) in the tuple
-                                let
-                                    ( primitiveVar, ctx3_ ) =
-                                        Ctx.freshVar ctx2
-
-                                    ( ctx4, projectOp ) =
-                                        projTuple2 ctx3_ primitiveVar index fieldAbiType
-                                in
-                                if Types.isEcoValueType targetType then
-                                    let
-                                        ( boxedVar, ctx5 ) =
-                                            Ctx.freshVar ctx4
-
-                                        ( ctx6, boxOp ) =
-                                            boxPrimitive ctx5 boxedVar primitiveVar fieldAbiType
-                                    in
-                                    ( [ projectOp, boxOp ], boxedVar, ctx6 )
-
-                                else
-                                    ( [ projectOp ], primitiveVar, ctx4 )
-
-                            else
-                                -- Field is stored boxed (!eco.value) in the tuple (includes Bool)
-                                let
-                                    ( valVar, ctx3_ ) =
-                                        Ctx.freshVar ctx2
-
-                                    ( ctx4, projectOp ) =
-                                        projTuple2 ctx3_ valVar index Types.ecoValue
-                                in
-                                if targetType == I1 then
-                                    let
-                                        ( unboxOps, unboxedVar, ctxU ) =
-                                            Intrinsics.unboxToType ctx4 valVar I1
-                                    in
-                                    ( projectOp :: unboxOps, unboxedVar, ctxU )
-
-                                else if Types.isUnboxable targetType then
-                                    -- MONO_029 violation: the recorded container
-                                    -- element type is erased (boxed) while the
-                                    -- destructor target is a concrete unboxable
-                                    -- primitive — two layout-disagreeing views of
-                                    -- one value. Tuple slots are LAYOUT-STATIC, so
-                                    -- NO emission is safe here (raw read is wrong if
-                                    -- the producer boxed; boxed read is wrong if it
-                                    -- stored raw). The monomorphizer must record
-                                    -- layout-equal views (solver: appShapeConnect
-                                    -- enrichFromEnv, R1 in
-                                    -- plans/solver-layout-connectivity-reconciliation.md).
-                                    -- Sentinels: SolverLayoutFoldMTest /
-                                    -- SolverLayoutFoldMCycleTest.
-                                    Utils.Crash.crash "MONO_029 layout disagreement: erased tuple2 element vs unboxable destructor target — see plans/solver-layout-connectivity-reconciliation.md"
-
-                                else
-                                    ( [ projectOp ], valVar, ctx4 )
-
-                        Mono.Tuple3Container ->
-                            let
-                                fieldAbiType =
-                                    Types.monoTypeToAbi resultType
-                            in
-                            if Types.isUnboxable fieldAbiType then
-                                -- Field is stored unboxed (Int/Float/Char) in the tuple
-                                let
-                                    ( primitiveVar, ctx3_ ) =
-                                        Ctx.freshVar ctx2
-
-                                    ( ctx4, projectOp ) =
-                                        projTuple3 ctx3_ primitiveVar index fieldAbiType
-                                in
-                                if Types.isEcoValueType targetType then
-                                    let
-                                        ( boxedVar, ctx5 ) =
-                                            Ctx.freshVar ctx4
-
-                                        ( ctx6, boxOp ) =
-                                            boxPrimitive ctx5 boxedVar primitiveVar fieldAbiType
-                                    in
-                                    ( [ projectOp, boxOp ], boxedVar, ctx6 )
-
-                                else
-                                    ( [ projectOp ], primitiveVar, ctx4 )
-
-                            else
-                                -- Field is stored boxed (!eco.value) in the tuple (includes Bool)
-                                let
-                                    ( valVar, ctx3_ ) =
-                                        Ctx.freshVar ctx2
-
-                                    ( ctx4, projectOp ) =
-                                        projTuple3 ctx3_ valVar index Types.ecoValue
-                                in
-                                if targetType == I1 then
-                                    let
-                                        ( unboxOps, unboxedVar, ctxU ) =
-                                            Intrinsics.unboxToType ctx4 valVar I1
-                                    in
-                                    ( projectOp :: unboxOps, unboxedVar, ctxU )
-
-                                else if Types.isUnboxable targetType then
-                                    -- MONO_029 violation — see the Tuple2 arm.
-                                    Utils.Crash.crash "MONO_029 layout disagreement: erased tuple3 element vs unboxable destructor target — see plans/solver-layout-connectivity-reconciliation.md"
-
-                                else
-                                    ( [ projectOp ], valVar, ctx4 )
-
-                        Mono.CustomContainer ctorName ->
-                            -- For custom types, we need to check if the field is stored unboxed
-                            -- by looking up the CtorLayout for this constructor.
-                            let
-                                containerType =
-                                    Mono.getMonoPathType subPath
-
-                                maybeFieldInfo =
-                                    lookupCtorFieldInfo ctx2 containerType ctorName index
-                            in
-                            case maybeFieldInfo of
-                                Just fieldInfo ->
-                                    if fieldInfo.isUnboxed then
-                                        -- Field is stored unboxed (as primitive).
-                                        -- Use fieldInfo.monoType (from the shape registry, always
-                                        -- fully substituted via buildCtorShapeFromUnion) rather
-                                        -- than the MonoPath's resultType, which can be stale or
-                                        -- polymorphic for specialized polymorphic ctors like
-                                        -- `Done a` at `a = Int` / `Float` / `Char`.
-                                        let
-                                            fieldMlirType =
-                                                Types.monoTypeToAbi fieldInfo.monoType
-
-                                            ( primitiveVar, ctx3_ ) =
-                                                Ctx.freshVar ctx2
-
-                                            ( ctx4, projectOp ) =
-                                                projCustom ctx3_ primitiveVar index fieldMlirType
-                                        in
-                                        if Types.isEcoValueType targetType then
-                                            -- Caller wants eco.value, need to box the primitive
-                                            let
-                                                ( boxedVar, ctx5 ) =
-                                                    Ctx.freshVar ctx4
-
-                                                ( ctx6, boxOp ) =
-                                                    boxPrimitive ctx5 boxedVar primitiveVar fieldMlirType
-                                            in
-                                            ( [ projectOp, boxOp ], boxedVar, ctx6 )
-
-                                        else
-                                            -- Caller wants primitive, return directly
-                                            ( [ projectOp ], primitiveVar, ctx4 )
-
-                                    else
-                                    -- Field is stored boxed (as eco.value). Project as
-                                    -- eco.value and add an eco.unbox if the caller wants
-                                    -- I1 (Bool scrutinee): the storage is an HPointer to
-                                    -- True/False constants (3<<40 vs 4<<40), so loading
-                                    -- the field directly as i1 reads only the low bit
-                                    -- of the HPointer, which is 0 for both True and
-                                    -- False — silently inverting Bool pattern tests.
-                                    -- Other targetTypes pass through unchanged because
-                                    -- the caller has set them to match the field's
-                                    -- storage. Mirrors Tuple2/Tuple3 handling.
-                                    if
-                                        targetType == I1
-                                    then
-                                        let
-                                            ( valVar, ctxV ) =
-                                                Ctx.freshVar ctx2
-
-                                            ( ctxP, projectOp ) =
-                                                projCustom ctxV valVar index Types.ecoValue
-
-                                            ( unboxOps, unboxedVar, ctxU ) =
-                                                Intrinsics.unboxToType ctxP valVar I1
-                                        in
-                                        ( projectOp :: unboxOps, unboxedVar, ctxU )
-
-                                    else
-                                        let
-                                            ( ctx_, op ) =
-                                                projCustom ctx2 resultVar index targetType
-                                        in
-                                        ( [ op ], resultVar, ctx_ )
-
-                                Nothing ->
-                                    -- Field is stored boxed (as eco.value) or no layout found.
-                                    -- Use the MonoPath's declared resultType to determine the
-                                    -- correct projection type (CGEN_004).
-                                    let
-                                        fieldMlirType =
-                                            Types.monoTypeToAbi resultType
-                                    in
-                                    if Types.isUnboxable fieldMlirType then
-                                        -- Field has a primitive type but layout lookup failed.
-                                        -- Project as the primitive type directly so we don't
-                                        -- introduce a spurious project→unbox sequence.
-                                        let
-                                            ( primitiveVar, ctx3_ ) =
-                                                Ctx.freshVar ctx2
-
-                                            ( ctx4, projectOp ) =
-                                                projCustom ctx3_ primitiveVar index fieldMlirType
-                                        in
-                                        if Types.isEcoValueType targetType then
-                                            let
-                                                ( boxedVar, ctx5 ) =
-                                                    Ctx.freshVar ctx4
-
-                                                ( ctx6, boxOp ) =
-                                                    boxPrimitive ctx5 boxedVar primitiveVar fieldMlirType
-                                            in
-                                            ( [ projectOp, boxOp ], boxedVar, ctx6 )
-
-                                        else
-                                            ( [ projectOp ], primitiveVar, ctx4 )
-
-                                    else
-                                    -- Field is non-primitive (eco.value), project as eco.value.
-                                    -- Same Bool/I1 unbox insertion as the field-info branch
-                                    -- above: an I1 target with a boxed source must go through
-                                    -- eco.unbox so the True/False HPointer constants are
-                                    -- compared via runtime semantics (REP_CONSTANT_003).
-                                    if
-                                        targetType == I1
-                                    then
-                                        let
-                                            ( valVar, ctxV ) =
-                                                Ctx.freshVar ctx2
-
-                                            ( ctxP, projectOp ) =
-                                                projCustom ctxV valVar index Types.ecoValue
-
-                                            ( unboxOps, unboxedVar, ctxU ) =
-                                                Intrinsics.unboxToType ctxP valVar I1
-                                        in
-                                        ( projectOp :: unboxOps, unboxedVar, ctxU )
-
-                                    else
-                                        let
-                                            ( ctx_, op ) =
-                                                projCustom ctx2 resultVar index targetType
-                                        in
-                                        ( [ op ], resultVar, ctx_ )
-            in
-            ( List.foldl (::) revAcc1 projectOps
-            , projectVar
-            , ctx3
-            )
-
-generateMonoFieldOnHeap : Ctx.Context -> MlirType -> List MlirOp -> Name.Name -> Mono.MonoType -> Mono.MonoPath -> ( List MlirOp, String, Ctx.Context )
-generateMonoFieldOnHeap ctx targetType revAcc fieldName resultType subPath =
-            let
-                -- Navigate to the container object (always !eco.value)
-                ( revAcc1, subVar, ctx1 ) =
-                    generateMonoPathHelper ctx subPath Types.ecoValue revAcc
-
-                ( resultVar, ctx2 ) =
-                    Ctx.freshVar ctx1
-
-                -- Compute record layout to get the field index
-                containerType =
-                    Mono.getMonoPathType subPath
-
-                layout =
-                    Types.computeRecordLayout (getRecordFields containerType)
-
-                fieldInfo =
-                    findFieldInfoByName fieldName layout.fields
-                        |> Maybe.withDefault
-                            { name = fieldName
-                            , index = 0
-                            , monoType = resultType
-                            , isUnboxed = False
-                            }
-
-                -- Project directly to the targetType using record projection.
-                -- MonoField is generated from TOpt.Field which is record field access.
-                -- Primitive types are stored unboxed and should be read directly.
-                ( ctx3, projectOp ) =
-                    Ops.ecoProjectRecord ctx2 resultVar fieldInfo.index targetType subVar
-            in
-            ( projectOp :: revAcc1
-            , resultVar
-            , ctx3
-            )
-
-generateMonoUnboxOnHeap : Ctx.Context -> MlirType -> List MlirOp -> Mono.MonoPath -> ( List MlirOp, String, Ctx.Context )
-generateMonoUnboxOnHeap ctx targetType revAcc subPath =
-            -- MonoUnbox represents unwrapping a single-constructor type (Can.Unbox).
-            -- For types like `Wrapper = Wrap Int`, MonoUnbox extracts the inner value.
-            -- The resultType is the type of the inner value (the single field's type).
-            --
-            -- We need to:
-            -- 1. Get the container (wrapper) value
-            -- 2. Look up the unbox type's single constructor layout
-            -- 3. Project field 0 with the appropriate type
-            -- 4. Box/unbox if needed to match targetType
-            let
-                containerType =
-                    Mono.getMonoPathType subPath
-
-                -- Navigate to the container object (always !eco.value —
-                -- except a U-T1.3.2 promoted custom root, projected via the
-                -- dual-form lowering; see the MonoIndex arm).
-                ( revAcc1, subVar, ctx1 ) =
-                    generateMonoPathHelper ctx subPath Types.ecoValue revAcc
-
-                unboxAggOperand =
-                    case subPath of
-                        Mono.MonoRoot rootName _ ->
-                            let
-                                ( _, rootTy ) =
-                                    Ctx.lookupVar ctx rootName
-                            in
-                            if Types.isAggCustomType rootTy then
-                                Just rootTy
-
-                            else
-                                Nothing
-
-                        _ ->
-                            Nothing
-
-                projCustomUnbox ctxP rv rt =
-                    case unboxAggOperand of
-                        Just aggTy ->
-                            Ops.ecoProjectCustomAgg ctxP rv 0 rt ( subVar, aggTy )
-
-                        Nothing ->
-                            Ops.ecoProjectCustom ctxP rv 0 rt subVar
-
-                -- Look up the shape for this unbox type
-                maybeShapes =
-                    Mono.layoutMapGet containerType ctx1.typeRegistry.ctorShapes
-            in
-            case maybeShapes of
-                Just (shape :: _) ->
-                    -- Found shape - compute layout and check if the single field is unboxed
+        aggOperand =
+            case subPath of
+                Mono.MonoRoot rootName _ ->
                     let
-                        layout =
-                            Types.computeCtorLayout shape
+                        ( _, rootTy ) =
+                            Ctx.lookupVar ctx rootName
                     in
-                    case layout.fields of
-                        fieldInfo :: _ ->
-                            let
-                                ( resultVar, ctx2 ) =
-                                    Ctx.freshVar ctx1
+                    if Types.isAggValueType rootTy then
+                        Just rootTy
 
-                                fieldMlirType =
-                                    Types.monoTypeToAbi fieldInfo.monoType
+                    else
+                        Nothing
+
+                _ ->
+                    Nothing
+
+        projCustom ctxP rv idx rt =
+            case aggOperand of
+                Just aggTy ->
+                    Ops.ecoProjectCustomAgg ctxP rv idx rt ( subVar, aggTy )
+
+                Nothing ->
+                    Ops.ecoProjectCustom ctxP rv idx rt subVar
+
+        projTuple2 ctxP rv idx rt =
+            case aggOperand of
+                Just aggTy ->
+                    Ops.ecoProjectTuple2Agg ctxP rv idx rt ( subVar, aggTy )
+
+                Nothing ->
+                    Ops.ecoProjectTuple2 ctxP rv idx rt subVar
+
+        projTuple3 ctxP rv idx rt =
+            case aggOperand of
+                Just aggTy ->
+                    Ops.ecoProjectTuple3Agg ctxP rv idx rt ( subVar, aggTy )
+
+                Nothing ->
+                    Ops.ecoProjectTuple3 ctxP rv idx rt subVar
+
+        ( resultVar, ctx2 ) =
+            Ctx.freshVar ctx1
+
+        -- Use type-specific projection ops based on ContainerKind.
+        -- This ensures correct heap layout access for each container type.
+        ( projectOps, projectVar, ctx3 ) =
+            case containerKind of
+                Mono.ListContainer ->
+                    if index == 0 then
+                        -- List head projection. Use targetType directly so the
+                        -- projection result matches what the caller stores in the
+                        -- context. Bool is !eco.value in heap storage (not unboxed),
+                        -- so targetType=EcoValue is correct for Bool.
+                        let
+                            ( ctx_, op ) =
+                                Ops.ecoProjectListHead ctx2 resultVar targetType subVar
+                        in
+                        ( [ op ], resultVar, ctx_ )
+
+                    else
+                        -- List tail (index 1)
+                        let
+                            ( ctx_, op ) =
+                                Ops.ecoProjectListTail ctx2 resultVar subVar
+                        in
+                        ( [ op ], resultVar, ctx_ )
+
+                Mono.Tuple2Container ->
+                    let
+                        fieldAbiType =
+                            Types.monoTypeToAbi resultType
+                    in
+                    if Types.isUnboxable fieldAbiType then
+                        -- Field is stored unboxed (Int/Float/Char) in the tuple
+                        let
+                            ( primitiveVar, ctx3_ ) =
+                                Ctx.freshVar ctx2
+
+                            ( ctx4, projectOp ) =
+                                projTuple2 ctx3_ primitiveVar index fieldAbiType
+                        in
+                        if Types.isEcoValueType targetType then
+                            let
+                                ( boxedVar, ctx5 ) =
+                                    Ctx.freshVar ctx4
+
+                                ( ctx6, boxOp ) =
+                                    boxPrimitive ctx5 boxedVar primitiveVar fieldAbiType
                             in
+                            ( [ projectOp, boxOp ], boxedVar, ctx6 )
+
+                        else
+                            ( [ projectOp ], primitiveVar, ctx4 )
+
+                    else
+                        -- Field is stored boxed (!eco.value) in the tuple (includes Bool)
+                        let
+                            ( valVar, ctx3_ ) =
+                                Ctx.freshVar ctx2
+
+                            ( ctx4, projectOp ) =
+                                projTuple2 ctx3_ valVar index Types.ecoValue
+                        in
+                        if targetType == I1 then
+                            let
+                                ( unboxOps, unboxedVar, ctxU ) =
+                                    Intrinsics.unboxToType ctx4 valVar I1
+                            in
+                            ( projectOp :: unboxOps, unboxedVar, ctxU )
+
+                        else if Types.isUnboxable targetType then
+                            -- MONO_029 violation: the recorded container
+                            -- element type is erased (boxed) while the
+                            -- destructor target is a concrete unboxable
+                            -- primitive — two layout-disagreeing views of
+                            -- one value. Tuple slots are LAYOUT-STATIC, so
+                            -- NO emission is safe here (raw read is wrong if
+                            -- the producer boxed; boxed read is wrong if it
+                            -- stored raw). The monomorphizer must record
+                            -- layout-equal views (solver: appShapeConnect
+                            -- enrichFromEnv, R1 in
+                            -- plans/solver-layout-connectivity-reconciliation.md).
+                            -- Sentinels: SolverLayoutFoldMTest /
+                            -- SolverLayoutFoldMCycleTest.
+                            Utils.Crash.crash "MONO_029 layout disagreement: erased tuple2 element vs unboxable destructor target — see plans/solver-layout-connectivity-reconciliation.md"
+
+                        else
+                            ( [ projectOp ], valVar, ctx4 )
+
+                Mono.Tuple3Container ->
+                    let
+                        fieldAbiType =
+                            Types.monoTypeToAbi resultType
+                    in
+                    if Types.isUnboxable fieldAbiType then
+                        -- Field is stored unboxed (Int/Float/Char) in the tuple
+                        let
+                            ( primitiveVar, ctx3_ ) =
+                                Ctx.freshVar ctx2
+
+                            ( ctx4, projectOp ) =
+                                projTuple3 ctx3_ primitiveVar index fieldAbiType
+                        in
+                        if Types.isEcoValueType targetType then
+                            let
+                                ( boxedVar, ctx5 ) =
+                                    Ctx.freshVar ctx4
+
+                                ( ctx6, boxOp ) =
+                                    boxPrimitive ctx5 boxedVar primitiveVar fieldAbiType
+                            in
+                            ( [ projectOp, boxOp ], boxedVar, ctx6 )
+
+                        else
+                            ( [ projectOp ], primitiveVar, ctx4 )
+
+                    else
+                        -- Field is stored boxed (!eco.value) in the tuple (includes Bool)
+                        let
+                            ( valVar, ctx3_ ) =
+                                Ctx.freshVar ctx2
+
+                            ( ctx4, projectOp ) =
+                                projTuple3 ctx3_ valVar index Types.ecoValue
+                        in
+                        if targetType == I1 then
+                            let
+                                ( unboxOps, unboxedVar, ctxU ) =
+                                    Intrinsics.unboxToType ctx4 valVar I1
+                            in
+                            ( projectOp :: unboxOps, unboxedVar, ctxU )
+
+                        else if Types.isUnboxable targetType then
+                            -- MONO_029 violation — see the Tuple2 arm.
+                            Utils.Crash.crash "MONO_029 layout disagreement: erased tuple3 element vs unboxable destructor target — see plans/solver-layout-connectivity-reconciliation.md"
+
+                        else
+                            ( [ projectOp ], valVar, ctx4 )
+
+                Mono.CustomContainer ctorName ->
+                    -- For custom types, we need to check if the field is stored unboxed
+                    -- by looking up the CtorLayout for this constructor.
+                    let
+                        containerType =
+                            Mono.getMonoPathType subPath
+
+                        maybeFieldInfo =
+                            lookupCtorFieldInfo ctx2 containerType ctorName index
+                    in
+                    case maybeFieldInfo of
+                        Just fieldInfo ->
                             if fieldInfo.isUnboxed then
-                                -- Field is stored unboxed (as primitive)
+                                -- Field is stored unboxed (as primitive).
+                                -- Use fieldInfo.monoType (from the shape registry, always
+                                -- fully substituted via buildCtorShapeFromUnion) rather
+                                -- than the MonoPath's resultType, which can be stale or
+                                -- polymorphic for specialized polymorphic ctors like
+                                -- `Done a` at `a = Int` / `Float` / `Char`.
                                 let
-                                    ( ctx3, projectOp ) =
-                                        projCustomUnbox ctx2 resultVar fieldMlirType
+                                    fieldMlirType =
+                                        Types.monoTypeToAbi fieldInfo.monoType
+
+                                    ( primitiveVar, ctx3_ ) =
+                                        Ctx.freshVar ctx2
+
+                                    ( ctx4, projectOp ) =
+                                        projCustom ctx3_ primitiveVar index fieldMlirType
                                 in
                                 if Types.isEcoValueType targetType then
-                                    -- Caller wants eco.value, need to box
+                                    -- Caller wants eco.value, need to box the primitive
                                     let
-                                        ( boxedVar, ctx4 ) =
-                                            Ctx.freshVar ctx3
+                                        ( boxedVar, ctx5 ) =
+                                            Ctx.freshVar ctx4
 
-                                        ( ctx5, boxOp ) =
-                                            boxPrimitive ctx4 boxedVar resultVar fieldMlirType
+                                        ( ctx6, boxOp ) =
+                                            boxPrimitive ctx5 boxedVar primitiveVar fieldMlirType
                                     in
-                                    ( boxOp :: projectOp :: revAcc1, boxedVar, ctx5 )
+                                    ( [ projectOp, boxOp ], boxedVar, ctx6 )
 
                                 else
                                     -- Caller wants primitive, return directly
-                                    ( projectOp :: revAcc1, resultVar, ctx3 )
+                                    ( [ projectOp ], primitiveVar, ctx4 )
 
                             else
-                                -- Field is stored boxed (as eco.value)
+                            -- Field is stored boxed (as eco.value). Project as
+                            -- eco.value and add an eco.unbox if the caller wants
+                            -- I1 (Bool scrutinee): the storage is an HPointer to
+                            -- True/False constants (3<<40 vs 4<<40), so loading
+                            -- the field directly as i1 reads only the low bit
+                            -- of the HPointer, which is 0 for both True and
+                            -- False — silently inverting Bool pattern tests.
+                            -- Other targetTypes pass through unchanged because
+                            -- the caller has set them to match the field's
+                            -- storage. Mirrors Tuple2/Tuple3 handling.
+                            if
+                                targetType == I1
+                            then
                                 let
-                                    ( ctx3, projectOp ) =
-                                        projCustomUnbox ctx2 resultVar Types.ecoValue
+                                    ( valVar, ctxV ) =
+                                        Ctx.freshVar ctx2
+
+                                    ( ctxP, projectOp ) =
+                                        projCustom ctxV valVar index Types.ecoValue
+
+                                    ( unboxOps, unboxedVar, ctxU ) =
+                                        Intrinsics.unboxToType ctxP valVar I1
                                 in
-                                if targetType == I1 then
-                                    -- Bool is stored as eco.value in custom types (never unboxed).
-                                    -- Project as eco.value, then unbox to i1.
+                                ( projectOp :: unboxOps, unboxedVar, ctxU )
+
+                            else
+                                let
+                                    ( ctx_, op ) =
+                                        projCustom ctx2 resultVar index targetType
+                                in
+                                ( [ op ], resultVar, ctx_ )
+
+                        Nothing ->
+                            -- Field is stored boxed (as eco.value) or no layout found.
+                            -- Use the MonoPath's declared resultType to determine the
+                            -- correct projection type (CGEN_004).
+                            let
+                                fieldMlirType =
+                                    Types.monoTypeToAbi resultType
+                            in
+                            if Types.isUnboxable fieldMlirType then
+                                -- Field has a primitive type but layout lookup failed.
+                                -- Project as the primitive type directly so we don't
+                                -- introduce a spurious project→unbox sequence.
+                                let
+                                    ( primitiveVar, ctx3_ ) =
+                                        Ctx.freshVar ctx2
+
+                                    ( ctx4, projectOp ) =
+                                        projCustom ctx3_ primitiveVar index fieldMlirType
+                                in
+                                if Types.isEcoValueType targetType then
                                     let
-                                        ( unboxOps, unboxedVar, ctxU ) =
-                                            Intrinsics.unboxToType ctx3 resultVar I1
+                                        ( boxedVar, ctx5 ) =
+                                            Ctx.freshVar ctx4
+
+                                        ( ctx6, boxOp ) =
+                                            boxPrimitive ctx5 boxedVar primitiveVar fieldMlirType
                                     in
-                                    ( List.foldl (::) (projectOp :: revAcc1) unboxOps, unboxedVar, ctxU )
-
-                                else if Types.isUnboxable targetType then
-                                    -- MONO_029 violation — see the Tuple2 arm.
-                                    Utils.Crash.crash "MONO_029 layout disagreement: erased unboxed-custom field vs unboxable destructor target — see plans/solver-layout-connectivity-reconciliation.md"
-
-                                else if Types.isUnboxable targetType then
-                                    -- Caller wants primitive, need to unbox
-                                    let
-                                        ( unboxedVar, ctx4 ) =
-                                            Ctx.freshVar ctx3
-
-                                        attrs =
-                                            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
-
-                                        ( ctx5, unboxOp ) =
-                                            Ops.mlirOp ctx4 "eco.unbox"
-                                                |> Ops.opBuilder.withOperands [ resultVar ]
-                                                |> Ops.opBuilder.withResults [ ( unboxedVar, targetType ) ]
-                                                |> Ops.opBuilder.withAttrs attrs
-                                                |> Ops.opBuilder.build
-                                    in
-                                    ( unboxOp :: projectOp :: revAcc1, unboxedVar, ctx5 )
+                                    ( [ projectOp, boxOp ], boxedVar, ctx6 )
 
                                 else
-                                    -- Caller wants eco.value, return directly
-                                    ( projectOp :: revAcc1, resultVar, ctx3 )
+                                    ( [ projectOp ], primitiveVar, ctx4 )
 
-                        [] ->
-                            -- No fields in layout - fall back to pass-through
-                            ( revAcc1, subVar, ctx1 )
+                            else
+                            -- Field is non-primitive (eco.value), project as eco.value.
+                            -- Same Bool/I1 unbox insertion as the field-info branch
+                            -- above: an I1 target with a boxed source must go through
+                            -- eco.unbox so the True/False HPointer constants are
+                            -- compared via runtime semantics (REP_CONSTANT_003).
+                            if
+                                targetType == I1
+                            then
+                                let
+                                    ( valVar, ctxV ) =
+                                        Ctx.freshVar ctx2
+
+                                    ( ctxP, projectOp ) =
+                                        projCustom ctxV valVar index Types.ecoValue
+
+                                    ( unboxOps, unboxedVar, ctxU ) =
+                                        Intrinsics.unboxToType ctxP valVar I1
+                                in
+                                ( projectOp :: unboxOps, unboxedVar, ctxU )
+
+                            else
+                                let
+                                    ( ctx_, op ) =
+                                        projCustom ctx2 resultVar index targetType
+                                in
+                                ( [ op ], resultVar, ctx_ )
+    in
+    ( List.foldl (::) revAcc1 projectOps
+    , projectVar
+    , ctx3
+    )
+
+
+generateMonoFieldOnHeap : Ctx.Context -> MlirType -> List MlirOp -> Name.Name -> Mono.MonoType -> Mono.MonoPath -> ( List MlirOp, String, Ctx.Context )
+generateMonoFieldOnHeap ctx targetType revAcc fieldName resultType subPath =
+    let
+        -- Navigate to the container object (always !eco.value)
+        ( revAcc1, subVar, ctx1 ) =
+            generateMonoPathHelper ctx subPath Types.ecoValue revAcc
+
+        ( resultVar, ctx2 ) =
+            Ctx.freshVar ctx1
+
+        -- Compute record layout to get the field index
+        containerType =
+            Mono.getMonoPathType subPath
+
+        layout =
+            Types.computeRecordLayout (getRecordFields containerType)
+
+        fieldInfo =
+            findFieldInfoByName fieldName layout.fields
+                |> Maybe.withDefault
+                    { name = fieldName
+                    , index = 0
+                    , monoType = resultType
+                    , isUnboxed = False
+                    }
+
+        -- Project directly to the targetType using record projection.
+        -- MonoField is generated from TOpt.Field which is record field access.
+        -- Primitive types are stored unboxed and should be read directly.
+        ( ctx3, projectOp ) =
+            Ops.ecoProjectRecord ctx2 resultVar fieldInfo.index targetType subVar
+    in
+    ( projectOp :: revAcc1
+    , resultVar
+    , ctx3
+    )
+
+
+generateMonoUnboxOnHeap : Ctx.Context -> MlirType -> List MlirOp -> Mono.MonoPath -> ( List MlirOp, String, Ctx.Context )
+generateMonoUnboxOnHeap ctx targetType revAcc subPath =
+    -- MonoUnbox represents unwrapping a single-constructor type (Can.Unbox).
+    -- For types like `Wrapper = Wrap Int`, MonoUnbox extracts the inner value.
+    -- The resultType is the type of the inner value (the single field's type).
+    --
+    -- We need to:
+    -- 1. Get the container (wrapper) value
+    -- 2. Look up the unbox type's single constructor layout
+    -- 3. Project field 0 with the appropriate type
+    -- 4. Box/unbox if needed to match targetType
+    let
+        containerType =
+            Mono.getMonoPathType subPath
+
+        -- Navigate to the container object (always !eco.value —
+        -- except a U-T1.3.2 promoted custom root, projected via the
+        -- dual-form lowering; see the MonoIndex arm).
+        ( revAcc1, subVar, ctx1 ) =
+            generateMonoPathHelper ctx subPath Types.ecoValue revAcc
+
+        unboxAggOperand =
+            case subPath of
+                Mono.MonoRoot rootName _ ->
+                    let
+                        ( _, rootTy ) =
+                            Ctx.lookupVar ctx rootName
+                    in
+                    if Types.isAggCustomType rootTy then
+                        Just rootTy
+
+                    else
+                        Nothing
 
                 _ ->
-                    -- No layout found - fall back to pass-through (treat as eco.value)
-                    -- This preserves backward compatibility for cases where layout isn't available.
+                    Nothing
+
+        projCustomUnbox ctxP rv rt =
+            case unboxAggOperand of
+                Just aggTy ->
+                    Ops.ecoProjectCustomAgg ctxP rv 0 rt ( subVar, aggTy )
+
+                Nothing ->
+                    Ops.ecoProjectCustom ctxP rv 0 rt subVar
+
+        -- Look up the shape for this unbox type
+        maybeShapes =
+            Mono.layoutMapGet containerType ctx1.typeRegistry.ctorShapes
+    in
+    case maybeShapes of
+        Just (shape :: _) ->
+            -- Found shape - compute layout and check if the single field is unboxed
+            let
+                layout =
+                    Types.computeCtorLayout shape
+            in
+            case layout.fields of
+                fieldInfo :: _ ->
+                    let
+                        ( resultVar, ctx2 ) =
+                            Ctx.freshVar ctx1
+
+                        fieldMlirType =
+                            Types.monoTypeToAbi fieldInfo.monoType
+                    in
+                    if fieldInfo.isUnboxed then
+                        -- Field is stored unboxed (as primitive)
+                        let
+                            ( ctx3, projectOp ) =
+                                projCustomUnbox ctx2 resultVar fieldMlirType
+                        in
+                        if Types.isEcoValueType targetType then
+                            -- Caller wants eco.value, need to box
+                            let
+                                ( boxedVar, ctx4 ) =
+                                    Ctx.freshVar ctx3
+
+                                ( ctx5, boxOp ) =
+                                    boxPrimitive ctx4 boxedVar resultVar fieldMlirType
+                            in
+                            ( boxOp :: projectOp :: revAcc1, boxedVar, ctx5 )
+
+                        else
+                            -- Caller wants primitive, return directly
+                            ( projectOp :: revAcc1, resultVar, ctx3 )
+
+                    else
+                        -- Field is stored boxed (as eco.value)
+                        let
+                            ( ctx3, projectOp ) =
+                                projCustomUnbox ctx2 resultVar Types.ecoValue
+                        in
+                        if targetType == I1 then
+                            -- Bool is stored as eco.value in custom types (never unboxed).
+                            -- Project as eco.value, then unbox to i1.
+                            let
+                                ( unboxOps, unboxedVar, ctxU ) =
+                                    Intrinsics.unboxToType ctx3 resultVar I1
+                            in
+                            ( List.foldl (::) (projectOp :: revAcc1) unboxOps, unboxedVar, ctxU )
+
+                        else if Types.isUnboxable targetType then
+                            -- MONO_029 violation — see the Tuple2 arm.
+                            Utils.Crash.crash "MONO_029 layout disagreement: erased unboxed-custom field vs unboxable destructor target — see plans/solver-layout-connectivity-reconciliation.md"
+
+                        else if Types.isUnboxable targetType then
+                            -- Caller wants primitive, need to unbox
+                            let
+                                ( unboxedVar, ctx4 ) =
+                                    Ctx.freshVar ctx3
+
+                                attrs =
+                                    Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
+
+                                ( ctx5, unboxOp ) =
+                                    Ops.mlirOp ctx4 "eco.unbox"
+                                        |> Ops.opBuilder.withOperands [ resultVar ]
+                                        |> Ops.opBuilder.withResults [ ( unboxedVar, targetType ) ]
+                                        |> Ops.opBuilder.withAttrs attrs
+                                        |> Ops.opBuilder.build
+                            in
+                            ( unboxOp :: projectOp :: revAcc1, unboxedVar, ctx5 )
+
+                        else
+                            -- Caller wants eco.value, return directly
+                            ( projectOp :: revAcc1, resultVar, ctx3 )
+
+                [] ->
+                    -- No fields in layout - fall back to pass-through
                     ( revAcc1, subVar, ctx1 )
+
+        _ ->
+            -- No layout found - fall back to pass-through (treat as eco.value)
+            -- This preserves backward compatibility for cases where layout isn't available.
+            ( revAcc1, subVar, ctx1 )
 
 
 {-| Resolve a `MonoPath`'s top-level result type, preferring a concrete
