@@ -42,6 +42,7 @@ type Intrinsic
     | CharFromInt
     | StringFromInt
     | StringFromFloat
+    | StringLength
     | ArrayGet { elementMlirType : MlirType }
     | ArraySet { elementMlirType : MlirType }
     | ArrayLength
@@ -132,6 +133,9 @@ intrinsicResultMlirType intrinsic =
         ArrayLength ->
             Types.ecoInt
 
+        StringLength ->
+            Types.ecoInt
+
         ArrayEmpty ->
             Types.ecoValue
 
@@ -220,6 +224,10 @@ intrinsicOperandTypes intrinsic =
 
         ArrayLength ->
             -- array : !eco.value
+            [ Types.ecoValue ]
+
+        StringLength ->
+            -- REP_ABI_001: String crosses every ABI as !eco.value; never unbox.
             [ Types.ecoValue ]
 
         ArrayEmpty ->
@@ -680,6 +688,15 @@ stringIntrinsic name argTypes _ =
         ( "fromNumber", [ Mono.MFloat ] ) ->
             Just StringFromFloat
 
+        -- kernel-opt-04. Requires the SATURATED shape: argTypes = [ MString ].
+        -- A bare `Elm.Kernel.String.length` reference reaches generateVarKernel
+        -- with argTypes = [] (Expr.elm:775) and therefore still falls through to
+        -- the papCreate/kernel-decl path -- whitelist discipline, unlisted forms
+        -- keep today's behaviour. The `stringLengthOp` config gate is applied by
+        -- Expr.gateIntrinsic, so this module stays config-free.
+        ( "length", [ Mono.MString ] ) ->
+            Just StringLength
+
         _ ->
             Nothing
 
@@ -990,6 +1007,13 @@ generateIntrinsicOp ctx intrinsic resultVar argVars =
                     List.head argVars |> Maybe.withDefault "%error"
             in
             Ops.ecoUnaryOp ctx "eco.string.from_int" resultVar ( operand, I64 ) Types.ecoValue
+
+        StringLength ->
+            let
+                operand =
+                    List.head argVars |> Maybe.withDefault "%error"
+            in
+            Ops.ecoUnaryOp ctx "eco.string.length" resultVar ( operand, Types.ecoValue ) Types.ecoInt
 
         StringFromFloat ->
             let

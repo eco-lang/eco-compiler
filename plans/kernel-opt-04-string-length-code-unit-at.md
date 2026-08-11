@@ -162,6 +162,29 @@ phase and for elm/parser-using user programs.
   `Tag_StringRope` above **32768** units; `STRING_TINY_SLICE_LIMIT = 128` units (:103)
   ⇒ `slice` allocates a `Tag_StringSlice` / `Tag_StringUtf8View` only above **128**.
 
+## Outcome — SHIPPED 2026-08-11 (benchmarks/kernel-opt.md Run H)
+
+DEFAULT-ON, `ECO_STRING_LENGTH_OP=0` escapes. **Emission: 101 → 0** `callee =
+@Elm_Kernel_String_length` against **0 → 101** `eco.string.length` on the self-compile —
+exact 1:1, no declines. (The Evidence section's 92 is the older `aggp-solver.mlir` corpus;
+101 is this tree.) Wall **−0.12% ⇒ FLAT**, as §Expected impact predicted; counters
+identical, `-out.mlir` byte-identical between arms, binary −8,336 B. Gates: E2E
+**1636/1636 in BOTH flag states** and again after the default flip; elm-tests unchanged.
+`test/codegen/string_code_unit_at.mlir` passes its JIT leg, which is what proves the
+`KERNEL_SYM` registration and the charAt contract (out-of-range / negative / empty → 0).
+
+**One deliberate deviation from §1c/§1d.** The plan threads `Config.EcoConfig` through
+`kernelIntrinsic`/`stringIntrinsic` so the classifier can consult the flag. This loop did
+not: kernel-opt-01 had already landed the opposite idiom — classify unconditionally in
+`Intrinsics.elm`, gate in `Expr.elm` where `ctx.ecoConfig` is already in hand — and adding
+a second mechanism would leave two ways to gate an intrinsic in the same dispatch. Item 01's
+`consIntrinsicFor` was generalized to `Expr.gateIntrinsic`, which now handles both
+`ConstructList` and `StringLength`. Consequences: `Intrinsics.elm` stays config-free (a real
+layering property — it answers "what op could this be", not "may we emit it here"),
+`kernelIntrinsic`'s arity is unchanged, and `IntrinsicsListConsTest` needed no edit. Plans
+05 and 06 each propose their own third and fourth mechanisms (`kernelIntrinsicCfg`,
+`gateIntrinsic`); **they should both use `Expr.gateIntrinsic` instead.**
+
 ## Approach
 
 ### Phase 0 — baseline confirmation (light, no code)

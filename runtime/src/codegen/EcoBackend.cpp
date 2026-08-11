@@ -54,6 +54,7 @@
 #include "llvm/Transforms/Utils/BasicBlockUtils.h" // SplitBlockAndInsertIfThen
 #include "../allocator/Heap.hpp"                   // TAG_BITS, Elm::Tag_Forward
 
+#include <cstddef>  // offsetof (kernel-opt-04 header-size probe)
 #include <cstdint>
 
 #include <atomic>
@@ -1409,6 +1410,93 @@ static void expandListCursorMarkers(Module &m) {
     expandListCursorMarker(m, "__eco_list_step_idx_inline", 5);
 }
 
+// kernel-opt-04. Byte offset of Header::size inside the 8-byte object header.
+// HEAP_025/HEAP_032: for EVERY String form this word IS the logical UTF-16
+// length. Deliberately NOT the array length offset (8, layout::ArrayLengthOffset)
+// -- arrays keep their length in a field AFTER the header, so a copy-paste from
+// ArrayLengthOpLowering would read the first two UTF-16 chars of a Tag_String leaf.
+static constexpr uint64_t kHeaderSizeFieldOffset = offsetof(Elm::Header, size);
+static_assert(kHeaderSizeFieldOffset == 4,
+              "Header::size moved; expandStringLenMarkers reads it directly");
+
+// Expand each `__eco_string_len_inline` marker into the exact observable
+// semantics of Elm_Kernel_String_length (StringExports.cpp:18-27):
+//
+//   ptr_ind set (ANY embedded constant) -> 0
+//       Empty  : the kernel's alloc::isEmptyString guard returns 0 directly.
+//       Others : Export::toPtr maps them to nullptr and StringOps::length's
+//                `if (!str) return 0;` returns 0 (unreachable for a String).
+//   otherwise -> resolve forwarding (HEAP_030) + load u32 at header offset 4
+//                + zext to i64   (no per-tag dispatch, HEAP_025/HEAP_032)
+//
+// The ptr_ind test -- not a whole-word `== 0x6` -- is what makes this exact: the
+// word test would dereference address 4/5 for a Bool constant where the kernel
+// returns 0. Chain shape and same-BB discipline are copied verbatim from
+// expandGetTagMarkers' isConst. Marker (not an MLIR diamond) because
+// eco.string.length sits inside single-block scf regions -- same rationale as
+// __eco_get_tag_inline. MUST run before expandInlineDerefs. Cheap with no markers.
+static void expandStringLenMarkers(Module &m) {
+    Function *marker = m.getFunction("__eco_string_len_inline");
+    if (!marker || marker->use_empty()) {
+        if (marker) marker->eraseFromParent();
+        return;
+    }
+
+    LLVMContext &ctx = m.getContext();
+    Type *i8Ty = Type::getInt8Ty(ctx);
+    Type *i32Ty = Type::getInt32Ty(ctx);
+    Type *i64Ty = Type::getInt64Ty(ctx);
+    PointerType *as1 = PointerType::get(ctx, 1);
+
+    FunctionCallee fwdMarker = m.getOrInsertFunction(
+        "__eco_resolve_fwd", FunctionType::get(as1, {as1}, /*isVarArg=*/false));
+    if (auto *ff = dyn_cast<Function>(fwdMarker.getCallee()))
+        ff->addFnAttr("gc-leaf-function");
+
+    SmallVector<CallInst *, 64> calls;
+    for (User *u : marker->users())
+        if (auto *ci = dyn_cast<CallInst>(u))
+            calls.push_back(ci);
+
+    for (CallInst *ci : calls) {
+        Value *v = ci->getArgOperand(0);
+        IRBuilder<> b(ci);
+        // ALL direct users of the ptrtoint stay in THIS block -- EcoPtrIntVerify
+        // accepts the bit-test chain same-BB only (REP_LLVM_001(d));
+        // downstream blocks never see `bits`.
+        Value *bits = b.CreatePtrToInt(v, i64Ty, "eco.strbits");
+        Value *ptrInd = b.CreateAnd(b.CreateLShr(bits, PTR_IND_BIT), 1);
+        Value *isConst =
+            b.CreateICmpNE(ptrInd, ConstantInt::get(i64Ty, 0), "eco.strconst");
+
+        Instruction *constTerm = nullptr, *heapTerm = nullptr;
+        SplitBlockAndInsertIfThenElse(isConst, ci, &constTerm, &heapTerm);
+        BasicBlock *contBB = ci->getParent();  // ci now lives in the join block
+        BasicBlock *constBB = constTerm->getParent();
+
+        IRBuilder<> hb(heapTerm);
+        CallInst *base = hb.CreateCall(fwdMarker, {v}, "eco.strbase");
+        Value *szp =
+            hb.CreateGEP(i8Ty, base, ConstantInt::get(i64Ty, kHeaderSizeFieldOffset),
+                         "eco.strszp");
+        Value *sz32 = hb.CreateAlignedLoad(i32Ty, szp, Align(4), "eco.strsz");
+        Value *sz64 = hb.CreateZExt(sz32, i64Ty, "eco.strlen");
+        BasicBlock *heapBB = heapTerm->getParent();
+
+        IRBuilder<> pb(&*contBB->getFirstInsertionPt());
+        PHINode *phi = pb.CreatePHI(i64Ty, 2, "eco.strlen.phi");
+        phi->addIncoming(ConstantInt::get(i64Ty, 0), constBB);
+        phi->addIncoming(sz64, heapBB);
+
+        ci->replaceAllUsesWith(phi);
+        ci->eraseFromParent();
+    }
+
+    if (!marker->use_empty())
+        report_fatal_error("expandStringLenMarkers: surviving marker use");
+    marker->eraseFromParent();
+}
+
 static void expandListProjMarkers(Module &m) {
     expandListProjMarker(m, "__eco_list_head_inline", /*slotOffset=*/8,
                          "eco_list_head_hybrid", /*slowIsGcLeaf=*/true);
@@ -2505,6 +2593,9 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
     expandListProjMarkers(m);
     // Mixed-spine cursor markers (EcoListCursor): same discipline.
     expandListCursorMarkers(m);
+    // kernel-opt-04: eco.string.length markers. Same discipline again -- the
+    // heap arm emits a __eco_resolve_fwd call that expandInlineDerefs consumes.
+    expandStringLenMarkers(m);
     // Scratch-stack helpers (chunked-list Tier-B templates): mark and the
     // pushes never GC-allocate, so exempt them from RS4GC statepointing.
     // eco_scratch_finish allocates and must statepoint normally.

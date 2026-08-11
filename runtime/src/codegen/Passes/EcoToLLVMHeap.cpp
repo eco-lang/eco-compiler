@@ -1250,6 +1250,51 @@ struct ArrayLengthOpLowering : public OpConversionPattern<ArrayLengthOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// eco.string.length -> __eco_string_len_inline marker (expanded pre-RS4GC)
+//===----------------------------------------------------------------------===//
+
+struct StringLengthOpLowering : public OpConversionPattern<StringLengthOp> {
+    const EcoRuntime &runtime;
+
+    StringLengthOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                           const EcoRuntime &runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult
+    matchAndRewrite(StringLengthOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto fn = stringLenInlineEnabled()
+                      ? runtime.getOrCreateStringLenInlineMarker(rewriter)
+                      : runtime.getOrCreateStringLength(rewriter);
+        rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, fn,
+                                                  ValueRange{adaptor.getStr()});
+        return success();
+    }
+};
+
+//===----------------------------------------------------------------------===//
+// eco.string.code_unit_at -> gc-leaf call to eco_string_code_unit_at
+//===----------------------------------------------------------------------===//
+
+struct StringCodeUnitAtOpLowering
+    : public OpConversionPattern<StringCodeUnitAtOp> {
+    const EcoRuntime &runtime;
+
+    StringCodeUnitAtOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                               const EcoRuntime &runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult
+    matchAndRewrite(StringCodeUnitAtOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto fn = runtime.getOrCreateStringCodeUnitAt(rewriter);
+        rewriter.replaceOpWithNewOp<LLVM::CallOp>(
+            op, fn, ValueRange{adaptor.getStr(), adaptor.getIndex()});
+        return success();
+    }
+};
+
+//===----------------------------------------------------------------------===//
 // eco.array.get -> resolve + GEP to elements[index] + load + type conversion
 //===----------------------------------------------------------------------===//
 
@@ -2106,4 +2151,6 @@ void eco::detail::populateEcoHeapPatterns(
     patterns.add<ArrayAppendNOpLowering>(typeConverter, ctx, runtime);
     patterns.add<StringFromIntOpLowering>(typeConverter, ctx, runtime);
     patterns.add<StringFromFloatOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<StringLengthOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<StringCodeUnitAtOpLowering>(typeConverter, ctx, runtime);
 }

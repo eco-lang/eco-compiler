@@ -267,6 +267,11 @@ applyEnvOverrides cfg =
                 (Utils.envLookupEnv "ECO_BORROW_OPT" |> Task.mapError never)
                     |> Task.map (\boVal -> applyBorrowOptOverride boVal cfg29)
             )
+        |> Task.andThen
+            (\cfg30 ->
+                (Utils.envLookupEnv "ECO_STRING_LENGTH_OP" |> Task.mapError never)
+                    |> Task.map (\slVal -> applyStringLengthOpOverride slVal cfg30)
+            )
 
 
 {-| `ECO_AGG_PROMOTE=1|true|yes`: U-T1.3.1 aggregate promotion — emit
@@ -290,6 +295,34 @@ applyAggPromoteOverride maybeVal cfg =
 
             else if t == "0" || t == "off" then
                 { cfg | aggPromote = False }
+
+            else
+                cfg
+
+
+{-| `ECO_STRING_LENGTH_OP=1|true|yes|on` (`0|off` disables): kernel-opt-04 —
+emit `eco.string.length` (an inline `header.size` load) instead of calling
+`Elm_Kernel_String_length`. Artifact-affecting (hash token `strlen=1` when
+enabled), so flag-on builds never share flag-off caches. The separate BACKEND
+knob `ECO_STRING_LEN_INLINE=0` chooses a plain kernel call as the lowering and
+needs no compiler rebuild.
+-}
+applyStringLengthOpOverride : Maybe String -> EcoConfig -> EcoConfig
+applyStringLengthOpOverride maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            cfg
+
+        Just raw ->
+            let
+                t =
+                    String.toLower (String.trim raw)
+            in
+            if t == "1" || t == "true" || t == "yes" || t == "on" then
+                { cfg | stringLengthOp = True }
+
+            else if t == "0" || t == "off" then
+                { cfg | stringLengthOp = False }
 
             else
                 cfg

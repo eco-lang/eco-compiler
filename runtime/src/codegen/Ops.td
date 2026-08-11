@@ -1122,6 +1122,52 @@ def Eco_StringFromFloatOp : Eco_Op<"string.from_float"> {
   let assemblyFormat = "$value attr-dict `:` type($value) `->` type($result)";
 }
 
+// String ops that READ heap through their operand. [Pure] is sound only because
+// Eco strings are immutable after construction (every chars[]/byte write in
+// StringOps.hpp targets a freshly allocated, not-yet-published `out` object) and
+// SSA dominance already prevents motion above the operand's def. If a mutable
+// string form (in-place builder) is ever added, revisit these traits FIRST.
+
+def Eco_StringLengthOp : Eco_Op<"string.length", [Pure]> {
+  let summary = "Logical UTF-16 length of a String (String.length)";
+  let description = [{
+    Reads `header.size`, which HEAP_025/HEAP_032 define as the logical UTF-16 unit
+    count for ALL SIX String forms (Tag_String, Tag_StringRope, Tag_StringSlice,
+    Tag_LargeStringHeader, Tag_StringUtf8View, Tag_StringUtf8Leaf) - so there is no
+    per-tag dispatch. Any embedded constant (ptr_ind set) yields 0. Result is an
+    unboxed Elm Int; the observable result is IDENTICAL to Elm_Kernel_String_length
+    (elm-kernel-cpp/src/core/StringExports.cpp:18-27).
+
+    ```mlir
+    %len = eco.string.length %s
+    ```
+  }];
+  let arguments = (ins Eco_Value:$str);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$str attr-dict";
+}
+
+def Eco_StringCodeUnitAtOp : Eco_Op<"string.code_unit_at", [Pure]> {
+  let summary = "UTF-16 code unit at index (GC-LEAF-CALL to StringOps::charAt)";
+  let description = [{
+    Tag-dispatched over all six String forms; iterative over ropes (deep trees
+    cannot blow the C stack). Allocation-free, so the lowered call is gc-leaf and
+    callers need no rooting.
+
+    OUT-OF-RANGE AND EMPTY YIELD 0, not a trap - this mirrors StringOps::charAt
+    and is a caveat to document, never to "fix": consumers must bounds-check
+    against `eco.string.length` first. Result is `i16` (Eco_Char); widening to
+    Elm Int is the consumer's job via `eco.char.toInt`.
+
+    ```mlir
+    %c = eco.string.code_unit_at %s, %i
+    ```
+  }];
+  let arguments = (ins Eco_Value:$str, Eco_Int:$index);
+  let results = (outs Eco_Char:$result);
+  let assemblyFormat = "$str `,` $index attr-dict";
+}
+
 //===----------------------------------------------------------------------===//
 // 4. Call and Closure Operations
 //===----------------------------------------------------------------------===//

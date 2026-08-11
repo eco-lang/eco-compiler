@@ -949,6 +949,31 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateStringCmpOrder(OpBuilder &builder) const
     return getOrCreateFunc(builder, "eco_string_cmp_order", funcTy, /*gcLeaf=*/true);
 }
 
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateStringLenInlineMarker(OpBuilder &b) const {
+    // __eco_string_len_inline(ptr as1) -> i64. kernel-opt-04 marker: gc-leaf,
+    // declare-only; expanded to the embedded-constant / header-load diamond by
+    // expandStringLenMarkers (EcoBackend.cpp) before every RS4GC flavour and
+    // before partition splitting, so it never reaches codegen.
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {HPTR_TY});
+    return getOrCreateFunc(b, "__eco_string_len_inline", funcTy, /*gcLeaf=*/true);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateStringLength(OpBuilder &b) const {
+    // Elm_Kernel_String_length(str: hptr) -> i64. NOT gc-leaf (today's
+    // behaviour); used only on the ECO_STRING_LEN_INLINE=0 A/B leg.
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {HPTR_TY});
+    return getOrCreateFunc(b, "Elm_Kernel_String_length", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateStringCodeUnitAt(OpBuilder &b) const {
+    // eco_string_code_unit_at(str: hptr, index: i64) -> i16. gc-leaf:
+    // StringOps::charAt never allocates on any of its six tag paths
+    // (StringOps.hpp:410-463 -- its only calls are Allocator::resolve),
+    // so callers need no rooting.
+    auto funcTy = LLVM::LLVMFunctionType::get(I16_TY, {HPTR_TY, I64_TY});
+    return getOrCreateFunc(b, "eco_string_code_unit_at", funcTy, /*gcLeaf=*/true);
+}
+
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateUtilsCmp3(OpBuilder &builder) const {
     // Elm_Kernel_Utils_cmp3(a: hptr, b: hptr) -> i64 (UNCLAMPED sign).
     // NOT gc-leaf: generic cmp recurses over arbitrary heap shapes and every
@@ -1262,6 +1287,8 @@ void EcoRuntime::materializeAllRuntimeDecls(OpBuilder &b) const {
     getOrCreateIntPow(b); getOrCreateUtilsEqual(b);
     getOrCreateGetOrderLT(b); getOrCreateGetOrderEQ(b); getOrCreateGetOrderGT(b);
     getOrCreateStringCmp3(b); getOrCreateStringCmpOrder(b); getOrCreateUtilsCmp3(b);
+    getOrCreateStringLenInlineMarker(b); getOrCreateStringLength(b);
+    getOrCreateStringCodeUnitAt(b);
     getOrCreateOrderFromSign(b);
     getOrCreateCloneArray(b); getOrCreateArraySetFixKind(b); getOrCreateArrayEmpty(b);
     getOrCreateArraySingletonInt(b); getOrCreateArraySingletonFloat(b);

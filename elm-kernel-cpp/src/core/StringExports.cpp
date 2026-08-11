@@ -26,6 +26,18 @@ int64_t Elm_Kernel_String_length(HPtr str) {
     return String::length(ptr);
 }
 
+// kernel-opt-04. Code unit at a 0-based index; 0 when out of range, when the
+// string is an embedded constant, or on a null resolve -- exactly
+// StringOps::charAt's contract (StringOps.hpp:401-463). gc-leaf-safe: charAt
+// allocates on none of its six tag paths (its only calls are
+// Allocator::resolve, which follows forwarding and never allocates), so
+// callers need no rooting.
+uint16_t eco_string_code_unit_at(HPtr str, int64_t index) {
+    void* p = Export::toPtr(str.toBits());
+    if (!p) return 0;                       // Const_Empty and friends
+    return Elm::StringOps::charAt(p, index);
+}
+
 HPtr Elm_Kernel_String_append(HPtr a, HPtr b) {
     HPointer result = String::append(Export::toPtr(a.toBits()), Export::toPtr(b.toBits()));
     return HPtr::fromBits(Export::encode(result));

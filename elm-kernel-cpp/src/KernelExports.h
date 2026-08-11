@@ -191,6 +191,11 @@ HPtr Elm_Kernel_Utils_compare_Char (uint16_t a, uint16_t b);
 int64_t Elm_Kernel_Utils_cmp3(HPtr a, HPtr b);
 int64_t eco_string_cmp3(HPtr a, HPtr b);
 HPtr    eco_string_cmp_order(HPtr a, HPtr b);
+// kernel-opt-04: UTF-16 code unit at a 0-based index (eco.string.code_unit_at).
+// Out-of-range / empty / embedded constant all yield 0 -- consumers must
+// bounds-check against eco.string.length first. gc-leaf-safe (charAt never
+// allocates), so the lowered call needs no rooting.
+uint16_t eco_string_code_unit_at(HPtr str, int64_t index);
 // Order singleton pick from an UNCLAMPED sign — the one gc-leaf call the
 // eco.*.cmp_order lowering makes in place of three getOrder calls (CGEN_075).
 HPtr    eco_order_from_sign(int64_t sign);

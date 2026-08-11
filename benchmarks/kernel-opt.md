@@ -143,6 +143,36 @@ arms lowered from the same Stage-5 `.mlir`), which stays byte-identical.
 
 ## Runs
 
+### 2026-08-11 14:05 UTC — Run H: kernel-opt-04 `eco.string.length` + `eco.string.code_unit_at` (**FLAT — no regression; KEEP — DEFAULT-ON, `ECO_STRING_LENGTH_OP=0` escapes**)
+
+`plans/kernel-opt-04-string-length-code-unit-at.md`. `String.length` becomes an
+INLINE-IR `eco.string.length`: a `__eco_string_len_inline` marker that
+`expandStringLenMarkers` turns into an embedded-constant test (`ptr_ind`, bit 2)
+plus, on the heap arm, `__eco_resolve_fwd` + a u32 load at `offsetof(Header,size)`
++ zext. One word serves all six String forms because HEAP_025/HEAP_032 define
+`header.size` as the logical UTF-16 count for every one of them, so there is no
+per-tag dispatch. **All 101 self-compile call sites convert: `callee =
+@Elm_Kernel_String_length` 101 → 0 against `eco.string.length` 0 → 101, exact 1:1
+with no declines.** Also lands `eco.string.code_unit_at` (a gc-leaf call to
+`StringOps::charAt`) with **no Elm emission** — it exists to unblock kernel-opt-14's
+String-HOF phase, so no wall is booked against it.
+
+Wall **−0.12%** ⇒ FLAT, and the plan said so up front: 75.6M calls is 2.06% of the
+kernel total, and this is call-deletion, not retention. Counters are identical
+(objects differ by 162 of 220M, documented same-binary noise; minor 836, major 10,
+promoted equal both arms), `-out.mlir` byte-identical in both rounds. Binary
+−8,336 B. Gates: E2E **1636/1636 in BOTH flag states** and again default-on;
+elm-tests 13,085 / 12 pre-existing, unchanged. `ptr_ind` was chosen over v1's
+`icmp eq 0x6`: the word test would dereference address 4/5 for a Bool constant
+where the kernel returns 0.
+
+| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|---|
+| on r1 | **3:24.65** | 4,894,268 kB | 219,915,775 | 13,335.65 MB | 836 | 361,202,849 (164.2%) | 10 | 79.92 s | 12,939,423 B |
+| on r2 | **3:20.84** | 4,884,244 kB | 219,915,613 | 13,335.64 MB | 836 | 361,202,850 | 10 | 78.16 s | ≡ |
+| off r1 | 3:22.47 | 4,888,640 kB | 219,915,616 | 13,335.65 MB | 836 | 361,202,842 | 10 | 78.45 s | ≡ |
+| off r2 | 3:23.49 | 4,888,544 kB | ≡ | ≡ | 836 | ≡ | 10 | 78.98 s | ≡ |
+
 ### 2026-08-11 11:20 UTC — Run G: kernel-opt-02 lane A + A′ — union-find cell merge (**−4.46% WALL — a REAL SIGNAL, the first in this series; KEEP, no flag**)
 
 `plans/kernel-opt-02-array-push-churn.md` lanes A + A′, selected by the Phase-0
@@ -331,3 +361,4 @@ was 20,480 MB. Gates at that point: E2E `--target full` and heap-validate tree
 | E — kernel-opt-07 KernelFacts table | 3:31.81 (r1/r2 mean) | 379,488,337 obj / 18,524.23 MB |
 | F — kernel-opt-01 cons → construct.list | 3:34.33 (r1/r2 mean) | 232,537,735 obj / 15,167.99 MB (inline-alloc counter-blind; retention unmoved) |
 | G — kernel-opt-02 union-find cell merge | **3:23.45** (m1/m2 mean, **−4.46%**) | 219,915,761 obj / 13,335.64 MB (promoted −2.96%) |
+| H — kernel-opt-04 string.length inline | 3:22.75 (r1/r2 mean, −0.12% FLAT) | 219,915,775 obj / 13,335.65 MB |

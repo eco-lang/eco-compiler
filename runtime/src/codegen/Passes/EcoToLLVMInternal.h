@@ -703,6 +703,9 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateOrderFromSign(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateStringCmp3(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateStringCmpOrder(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateStringLenInlineMarker(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateStringLength(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateStringCodeUnitAt(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateUtilsCmp3(mlir::OpBuilder &builder) const;
 
     // Array functions
@@ -769,6 +772,18 @@ inline bool inlineDerefExtEnabled() {
 inline bool inlineAllocEnabled() {
     static const bool enabled = [] {
         const char *e = ::getenv("ECO_INLINE_ALLOC");
+        return !(e && e[0] == '0' && e[1] == '\0');
+    }();
+    return enabled;
+}
+
+/// kernel-opt-04: expand eco.string.length to the inline header load.
+/// Default ON; `ECO_STRING_LEN_INLINE=0` lowers the op to a plain
+/// Elm_Kernel_String_length call instead (backend-only A/B leg, needing no
+/// compiler rebuild and no .mlir regeneration).
+inline bool stringLenInlineEnabled() {
+    static const bool enabled = [] {
+        const char *e = ::getenv("ECO_STRING_LEN_INLINE");
         return !(e && e[0] == '0' && e[1] == '\0');
     }();
     return enabled;

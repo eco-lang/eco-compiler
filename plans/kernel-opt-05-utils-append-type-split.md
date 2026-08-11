@@ -11,6 +11,13 @@ design_docs/kernel-boundary-reduction.md Q4.1 (type-split paragraph) + Q4.5 R2;
 dynamic census design_docs/kernel-boundary/kernel-census-dynamic-stage7a.txt;
 static census design_docs/kernel-boundary/callsite-census-self-compile.txt.
 
+> **Gating idiom (settled 2026-08-11, kernel-opt-01/04).** Do NOT add a new
+> config-gating mechanism to `Intrinsics.elm`. That module classifies
+> unconditionally and stays config-free; the flag check lives in
+> `Expr.gateIntrinsic`, which already handles `ConstructList` (01) and
+> `StringLength` (04). Add an arm there rather than a `kernelIntrinsicCfg` /
+> per-plan `gateIntrinsic` of your own.
+
 ## Files touched
 
 | File | Change |

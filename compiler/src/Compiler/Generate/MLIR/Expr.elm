@@ -1295,20 +1295,33 @@ boxToEcoValue ctx var mlirTy =
         ( [ boxOp ], boxedVar, ctx2 )
 
 
-{-| kernel-opt-01: gate + SSA-type admissibility for the cons intrinsic.
-Declines (⇒ today's kernel call) when the flag is off, or when a primitive head
-slot is fed by a DIFFERENT primitive SSA type (a layout disagreement we must never
-freeze into `head_kind`). Aggregate heads are admitted only into a BOXED slot,
-where `boxToEcoValue` emits `eco.to_heap`.
+{-| Config gate for flag-gated intrinsics, applied AFTER `Intrinsics.kernelIntrinsic`
+has classified the call. `Intrinsics` itself stays config-free — it answers "what
+op could this be", this answers "may we emit it here" — so a declining gate always
+falls through to today's kernel-call path (whitelist discipline).
 
-Deliberate divergence from the kernel path this replaces: `boxToMatchSignatureTyped`'s
+`ConstructList` (kernel-opt-01) additionally carries an SSA-type admissibility test:
+it declines when a primitive head slot is fed by a DIFFERENT primitive SSA type, a
+layout disagreement we must never freeze into `head_kind`. Aggregate heads are
+admitted only into a BOXED slot, where `boxToEcoValue` emits `eco.to_heap`. That is
+a deliberate divergence from the kernel path it replaces: `boxToMatchSignatureTyped`'s
 final arm silently passes a mismatched primitive through ("no boxing solution
-(e.g. i64 vs f64) — use actual type for now"); here we DECLINE instead, so the site
-keeps its kernel call rather than freezing a disagreeing head kind into the heap.
+(e.g. i64 vs f64) — use actual type for now"); declining is safer.
+
+`StringLength` (kernel-opt-04) is a plain flag check — the classifier already pinned
+the saturated `[ MString ]` shape, and String crosses every ABI as `!eco.value`, so
+there is no SSA-type disagreement to test for.
 -}
-consIntrinsicFor : Ctx.Context -> List ( String, MlirType ) -> Intrinsics.Intrinsic -> Maybe Intrinsics.Intrinsic
-consIntrinsicFor ctx argsWithTypes intrinsic =
+gateIntrinsic : Ctx.Context -> List ( String, MlirType ) -> Intrinsics.Intrinsic -> Maybe Intrinsics.Intrinsic
+gateIntrinsic ctx argsWithTypes intrinsic =
     case intrinsic of
+        Intrinsics.StringLength ->
+            if ctx.ecoConfig.stringLengthOp then
+                Just intrinsic
+
+            else
+                Nothing
+
         Intrinsics.ConstructList { headMlirType } ->
             case ( ctx.ecoConfig.list.consIntrinsic, argsWithTypes ) of
                 ( True, [ ( _, headSsaTy ), _ ] ) ->
@@ -3786,7 +3799,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                     -- This is a core module function - check for intrinsic
                                     case
                                         Intrinsics.kernelIntrinsic moduleName name argTypes resultType
-                                            |> Maybe.andThen (consIntrinsicFor ctx1 argsWithTypes)
+                                            |> Maybe.andThen (gateIntrinsic ctx1 argsWithTypes)
                                     of
                                         Just intrinsic ->
                                             -- Generate intrinsic operation directly
@@ -4263,7 +4276,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                 _ ->
                     case
                         Intrinsics.kernelIntrinsic home name argTypes resultType
-                            |> Maybe.andThen (consIntrinsicFor ctx1 argsWithTypes)
+                            |> Maybe.andThen (gateIntrinsic ctx1 argsWithTypes)
                     of
                         Just intrinsic ->
                             let

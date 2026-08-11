@@ -45,6 +45,7 @@ type alias EcoConfig =
     , psplitParams : Bool -- U-T1.3.5 (plans/opt-tier1-aggregate-promotion.md): param-side promotion — projection-only tuple2/3 / single-ctor-custom params gain a $psplit worker taking the fields as scalars; call sites with free-slot args migrate per-site; DEFAULT-ON since 2026-08-04 (ship config); env ECO_PSPLIT_PARAMS=0 disables; artifact-affecting (hash token "psplit")
     , sretFresh : Bool -- U-T1.3.8: widen sretResults selection to helper-mediated results — a result leaf that IS a direct call to an already-promoted callee with identical slots is admissible (selection fixpoint); emission feeds the multi-result $sret call through. DEFAULT-ON since 2026-08-04 (user decision; measured neutral, Run M); env ECO_SRET_FRESH=0 disables; artifact-affecting when enabled (hash token "sretf=1"); no-op unless sretResults
     , sretTailFuncs : Bool -- U-T1.3.6: widen sretResults selection to tail funcs (result columns through the while loop). DEFAULT-ON since 2026-08-04 (user decision, ACCEPTING the measured ~+4% wall self-compile regression — 2026-08-03 isolation A/B: it cancelled T1.3.3's −4% exactly; per-iteration slot-column carry in hot loops); env ECO_SRET_TAILFUNC=0 disables; artifact-affecting when enabled (hash token "srtf=1"); no-op unless sretResults
+    , stringLengthOp : Bool -- kernel-opt-04: emit eco.string.length (an inline header-size load) instead of the Elm_Kernel_String_length call. DEFAULT-ON since 2026-08-11 (all 101 self-compile call sites convert; wall FLAT at -0.12%, so it ships for the deleted calls and statepoints, not a measured win); env kill switch ECO_STRING_LENGTH_OP=0; artifact-affecting (hash token "strlen=1" when enabled). The BACKEND knob ECO_STRING_LEN_INLINE=0 separately chooses a plain kernel call as the lowering, needing no compiler rebuild
     }
 
 
@@ -344,6 +345,7 @@ default =
     , psplitParams = True
     , sretFresh = True
     , sretTailFuncs = True
+    , stringLengthOp = True
     }
 
 
@@ -367,6 +369,7 @@ decoder =
         |> D.apply (D.optionalField "psplitParams" D.bool default.psplitParams)
         |> D.apply (D.optionalField "sretFresh" D.bool default.sretFresh)
         |> D.apply (D.optionalField "sretTailFuncs" D.bool default.sretTailFuncs)
+        |> D.apply (D.optionalField "stringLengthOp" D.bool default.stringLengthOp)
 
 
 {-| Decode the `list` block. Only `chunks` is JSON-configurable; `report`
@@ -743,6 +746,15 @@ hash cfg =
                )
             ++ (if cfg.sretTailFuncs then
                     [ "srtf=1" ]
+
+                else
+                    []
+               )
+            -- kernel-opt-04: eco.string.length emission rewrites the generated
+            -- MLIR, so flag-on artifacts must never share flag-off caches;
+            -- explicitly-disabled configs hash exactly like today's defaults.
+            ++ (if cfg.stringLengthOp then
+                    [ "strlen=1" ]
 
                 else
                     []
