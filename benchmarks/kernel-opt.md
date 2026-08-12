@@ -143,7 +143,77 @@ arms lowered from the same Stage-5 `.mlir`), which stays byte-identical.
 
 ## Runs
 
-### 2026-08-13 08:40 UTC — Run Q: kernel-opt-10 MLIR project-of-construct folder + M4 CSE (**folder KEEP DEFAULT-ON, `ECO_MLIR_FOLD=0` escapes; CSE NO-GO — C-R1 REGRESSION, KEPT-DARK behind `ECO_MLIR_CSE=1`**)
+### 2026-08-13 14:30 UTC — Run R: kernel-opt-12 `eco.cse_safe` purity channel, 2×2 vs MLIR CSE (**attr FREE in both CSE states — KEEP DEFAULT-ON, `ECO_CALL_PURITY=0` escapes; CSE flip attempted and REVERTED — NaN-sharing miscompile**)
+
+The purity channel end to end: emission from KernelFacts `droppable` at the one
+`Ops.elm` choke point, `MemoryEffectOpInterface` on `Eco_CallOp` (attr present ⇒
+no effects; absent ⇒ conservative read+write), verifier arms
+(indirect/musttail/roots), the strip in EcoGCPrepare Step 4 — placed BEFORE the
+`isCallSafepoint` early-continue, discharging the item-09 hand-off — and the
+validator-build audit. Coverage census: **S = 4,330 stamped sites** of 85,437
+`eco.call` ops; top heads `Scheduler_andThen` 1,583, `Scheduler_succeed` 982,
+`List_reverse` 466, `Bytes_getStringWidth` 454. The mirroring audit PASSED
+including the alarming-looking rows: `MVar_put`/`Scheduler_*` CONSTRUCT task
+descriptions (allocate a closure + `taskBinding`), never perform them. S is
+~6,500 below the plan's prediction because items 01/03/05 deleted the predicted
+top contributors (`List_cons` 4,158, `Utils_equal` 1,357, most appends) — the
+series ate its own pool again, third time.
+
+**The 2×2 the user asked for (all four arms from the same current-tree Stage-5
+artifact, frozen-corpus race, 2 rounds):**
+
+| arm | exe | wall (mean) | promoted | minor GC |
+|---|---|---|---|---|
+| CSE off, no attr | 65,776,800 | 3:25.37 | 360,869,913 | 836 |
+| CSE off, **attr** | **byte-identical** | 3:24.85 | ≡ | ≡ |
+| CSE on, no attr | 65,482,112 | 3:23.29 | 357,228,556 | 834 |
+| CSE on, **attr** | 65,465,728 | 3:24.17 | **≡ (bit-identical)** | 834 |
+
+**The attr's marginal contribution is ~zero in BOTH states**: with CSE off the
+binary is byte-identical (nothing merges, and this tree has no unused droppable
+calls left to DCE); with CSE on, merging the 4,330 stamped calls buys exe
+−16,384 B and bit-identical GC counters. The plan's honest-expectation section
+called this: enabling infrastructure, no direct wall claim.
+
+**Two side-findings worth the run.** (i) On the PRE-SERIES corpus the attr alone
+deleted **1,126,208 B of exe** via the greedy driver's DCE (Trap F) — the effect
+is real and corpus-dependent; this series had already deleted those calls by
+other means. (ii) CSE's retention effect is ARTIFACT-DEPENDENT and swings sign:
++5.6M promoted on the item-11-era artifact (Run Q, with folder), **−3.64M on the
+current tree** — ±1% of promoted either way on the same workload, wall FLAT in
+both. **Decision and reversal.** The user applied keep-if-wall-flat and flipped
+`ECO_MLIR_CSE` default-on; the full E2E gate under the new default then failed
+**3 Float container-equality tests** (`ContainerEquality{,Custom,Record}FloatTest`,
+e.g. `pairNaNFirst: True` where structural equality demands `False`), and the
+flip was REVERTED. **Root cause — a genuine miscompile, and the item's best
+finding:** CSE merges two structurally identical NaN-containing constructs into
+ONE heap object; the equality kernel's pointer-equality fast path (identical to
+official Elm's `x === y` shortcut) then answers True before the NaN-aware field
+walk runs. Object identity IS observable in Elm through NaN, so kernel-opt-10's
+audit claim "dedup of an allocation is semantics-preserving … no observable
+object identity" is FALSE — for `eco.construct.*`, for `eco.box` of f64, and
+equally for merging `eco.cse_safe` kernel calls whose results can contain
+Floats (`List_reverse`, `Utils_append`). The same hazard is latent in
+kernel-opt-13's dark Mono CSE and is recorded in CSE_001. Sound enablement
+requires Allocate-on-result effects on the allocating pure ops
+(erasable-if-dead, never merged) plus a no-Float-reachable-in-result axis in
+KernelFacts — real design work, out of this loop's scope. Note the gate-shaped
+lesson: Run Q's CSE legs only ever ran the CODEGEN fixture subset under
+`ECO_MLIR_CSE=1`; the Float-equality tests live in the ELM suite, which first
+ran under CSE at this flip. Defaults get the full battery; env-var legs got a
+subset, and the difference was exactly where the bug was.
+
+An earlier 3-arm race was DISCARDED as invalid: its attr arms were lowered from
+a PRISTINE-corpus compile (the pre-series compiler), so it raced different
+compiler versions — visible as out.mlir 12,943,401 B (the pre-series size) and
++5.9% objects. Numbers from it appear nowhere.
+
+Gates: E2E **1656/1656** in both flag states and after the default flip (8 new
+`call_purity_*` fixtures); flag-off front-end output byte-identical to the
+item-12 baseline on the frozen corpus; `-out.mlir` identical across all four
+arms.
+
+### 2026-08-13 08:40 UTC — Run Q: kernel-opt-10 MLIR project-of-construct folder + M4 CSE (**folder KEEP DEFAULT-ON, `ECO_MLIR_FOLD=0` escapes; CSE KEPT-DARK — first for artifact-dependent retention, now for the NaN-sharing miscompile found in Run R's flip attempt**)
 
 Backend-only item at the M4 slot: (1) `EcoFoldProject`, seven `fold()` impls —
 six project-of-construct plus `get_tag`-of-construct.custom → constant ctor tag
@@ -154,13 +224,19 @@ lowered twice; the racing binaries differ only in M4-slot passes.
 
 **The A/B split the item in half.** Folder-only: counters bit-equal to off
 (promoted +1 object in 358M, majors 10, RSS +5 MB), 2,381 + 1 folds, exe
-−4,096 B, compile-time cost unmeasurable. **CSE is a C-R1 regression and its
-composition with the folder is worse than the sum**: both-on promoted
-**+5,601,772 (+1.56%)**, RSS **+330 MB (+6.9%)**, majors **10 → 11**, GC time
-**+7%**, wall +2.66% — the live-range-stretch signature the plan named as
-outcome (c), NO-GO. Mechanism: folds make more code structurally identical, CSE
-merges far more of it, and every merged value lives from its dominator to all
-former use sites. cse-only alone already shows majors 11 and +37K promoted.
+−4,096 B, compile-time cost unmeasurable. **CSE regressed retention ON THIS
+ARTIFACT**: both-on promoted **+5,601,772 (+1.56%)**, RSS **+330 MB (+6.9%)**,
+majors **10 → 11**, GC time **+7%**, wall +2.66% — the C-R1 live-range-stretch
+signature the plan named as outcome (c). cse-only alone showed majors 11 and
++37K promoted. **AMENDED 2026-08-13 (Run R): this verdict is a property of the
+item-11-era input artifact, not of the switch** — the identical fold+CSE
+composition on the item-13 artifact measures promoted **−3.64M**, RSS +6 MB,
+majors 10. Both measurements are bit-stable across rounds, so neither is noise;
+CSE's retention effect swings sign with the compiler artifact it is applied to
+(~±1% of promoted), with wall FLAT in both worlds. CSE was kept dark here on
+that instability. A subsequent default-on attempt (user decision under
+keep-if-wall-flat, 2026-08-13) was **REVERTED the same day for a correctness
+failure**, which retires the perf question entirely — see the Run R addendum.
 
 **Two real bugs found.** (i) Latent, in `EcoListCursor`: `walkStep` validates
 `hasOneUse` per RESULT, so one interior `scf.if` shared by two walk positions
@@ -700,4 +776,5 @@ was 20,480 MB. Gates at that point: E2E `--target full` and heap-validate tree
 | N — kernel-opt-09 leaf safepoints + inline-group split | 3:22.80 (r1/r2 mean, −0.23% FLAT) | 217,928,793 obj / 13,246.14 MB (counter-blind; retention unmoved. −798 safepoints, −4,173 out-of-line calls; binary −25,304 B) |
 | O — kernel-opt-11 mono DCE + kernel cost classes | 3:22.72 (r1/r2 mean, −0.50% vs base FLAT) | 217,912,477 obj / 13,245.85 MB (DCE ceiling 4 sites, 2 realized; cost classes move inlining, .mlir +1,341 B) |
 | P — kernel-opt-13 Mono CSE (default-OFF) | 3:21.32 (r1/r2 mean, −1.71% FLAT) | 221,523,797 obj / 13,408.16 MB (**+1.66% — the pass's own analysis cost**; 81 merges, .mlir −1,052 B; D-C gate failed 40×) |
-| Q — kernel-opt-10 MLIR folder ON / CSE NO-GO | 3:36.72 (fold r1/r2 mean, +0.76% FLAT; counters bit-equal) | folder: 2,382 folds, exe −4,096 B. CSE REJECTED: promoted +1.56%, RSS +6.9%, majors 10→11 (C-R1) |
+| Q — kernel-opt-10 MLIR folder ON / CSE dark | 3:36.72 (fold r1/r2 mean, +0.76% FLAT; counters bit-equal) | folder: 2,382 folds. CSE retention artifact-dependent (+1.56% here, −1.0% in R) — moot: R's flip attempt found the NaN-sharing miscompile |
+| R — kernel-opt-12 eco.cse_safe purity channel | 3:24.85 (attr, CSE off — FLAT; binary byte-identical to base) | attr Δ ≈ 0 in both CSE states; S=4,330. **CSE flip attempted → 3 NaN-equality failures → REVERTED**: merged allocations are observable through the pointer-eq fast path |

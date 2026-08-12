@@ -1219,7 +1219,8 @@ def Eco_StringAppendOp : Eco_Op<"string.append"> {
 
 def Eco_CallOp : Eco_Op<"call", [
     DeclareOpInterfaceMethods<SymbolUserOpInterface>,
-    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
+    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>,
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Call function or closure";
   let description = [{
@@ -1244,6 +1245,21 @@ def Eco_CallOp : Eco_Op<"call", [
 
     Set musttail = true for tail calls that must be compiled as proper
     tail calls (for tail recursion). The call must be in tail position.
+
+    Purity channel (kernel-opt-12). The discardable unit attribute
+    `eco.cse_safe` is stamped at emission for direct calls whose
+    Compiler.GlobalOpt.KernelFacts row derives `droppable`
+    (cseSafe && totality == Total). It licenses exactly two transforms:
+
+      * MERGE two identical calls that are in the same dominance scope;
+      * ERASE a call whose results are unused.
+
+    It does NOT license speculation or motion (eco.call implements no
+    ConditionallySpeculatable), and it is INVALID after EcoGCPrepare, which
+    appends GC roots to the operand list and strips the attribute. A call
+    WITHOUT the attribute reports conservative read+write on the default
+    resource — identical in practice to having no effect interface at all.
+    Never valid on an indirect call or a musttail call.
   }];
 
   let arguments = (ins

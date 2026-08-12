@@ -615,6 +615,16 @@ private:
         // an internal statepoint doesn't update these values, producing
         // stale HPointers that corrupt heap objects.
         for (auto &op : block) {
+            // kernel-opt-12: the Elm-level purity channel dies HERE. From the
+            // next statement on, calls carry appended root operands and any
+            // merge/motion would corrupt root bookkeeping. Stripping also
+            // reverts CallOp::getEffects to its conservative branch for all
+            // downstream passes. Sits BEFORE the early-continue on purpose:
+            // musttail calls and (kernel-opt-09) gc-leaf calls are not
+            // safepoints, but their attrs must die all the same.
+            if (isa<eco::CallOp>(&op))
+                op.removeAttr(eco::kCseSafeAttrName);
+
             if (!isCallSafepoint(&op)) continue;
 
             SmallVector<Value, 8> liveRoots = computeLiveRoots(liveness, &op);

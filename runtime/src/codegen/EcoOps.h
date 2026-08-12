@@ -29,4 +29,11 @@
 #define GET_OP_CLASSES
 #include "eco/EcoOps.h.inc"
 
+namespace eco {
+/// kernel-opt-12 purity channel: discardable unit attr on eco.call. Present
+/// iff the callee's KernelFacts row derives `droppable`. Stripped by
+/// EcoGCPrepare — see Ops.td's Eco_CallOp description for the license.
+inline constexpr llvm::StringLiteral kCseSafeAttrName{"eco.cse_safe"};
+} // namespace eco
+
 #endif // ECO_ECOOPS_H

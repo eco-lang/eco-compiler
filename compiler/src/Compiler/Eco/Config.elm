@@ -47,6 +47,7 @@ type alias EcoConfig =
     , stringOrderIntrinsic : Bool -- kernel-opt-06: lower Utils.lt/le/gt/ge on [MString,MString] to eco.string.cmp3 + a SIGNED sign test against 0, instead of the boxed kernel call + eco.unbox. DEFAULT-ON since 2026-08-11 (95 of 121 sites convert: lt 79->14, gt 40->10, ge 2->2; wall FLAT at -0.34%); env kill switch ECO_STRING_ORDER_INTRINSIC=0; artifact-affecting (hash token "strord=1")
     , valueEq : Bool -- kernel-opt-03: lower boxed structural equality to eco.value.eq (word-equality / embedded-constant / kernel-call diamond) instead of a boxed Elm_Kernel_Utils_equal call + eco.unbox. DEFAULT-ON since 2026-08-11 (all 1,452 self-compile Utils_equal/notEqual sites convert; wall -1.84%, inside the noise band so recorded FLAT); env kill switch ECO_VALUE_EQ=0; artifact-affecting (hash token "veq=1"). Bool == is NOT gated by this -- it is unconditionally better
     , kernelGcLeaf : Bool -- kernel-opt-08 (CGEN_072(f)/KERNEL_FACTS_001): stamp `eco.gc_leaf` on the func.func decl of every kernel whose KernelFacts row is gcLeafEligible, so the backend may attach gc-leaf-function and RS4GC skips statepointing its call sites. DEFAULT-ON since 2026-08-12 (10 of the 14 eligible kernels still have stubs to stamp -- the other 4 lost their call sites to kernel-opt-03/04/06; +2,223 de-statepointed sites, binary -287,952 B of which 99% is .llvm_stackmaps; wall FLAT at -1.25%); env kill switch ECO_KERNEL_GCLEAF_EMIT=0; artifact-affecting (hash token "kgcl=1"). The BACKEND kill switch ECO_KERNEL_GCLEAF=0 separately ignores an attr already in the .mlir
+    , callPurityAttrs : Bool -- kernel-opt-12 (plans/kernel-opt-12-eco-call-purity-attr.md): stamp `eco.cse_safe` on direct eco.call ops whose KernelFacts row derives `droppable` (cseSafe AND totality == Total); licenses MLIR merge+DCE of those calls before EcoGCPrepare, which strips the attr. DEFAULT-ON since 2026-08-13 (Run R: byte-identical binary with CSE off, exe -16 KB and bit-identical counters with CSE on -- free either way); env kill switch ECO_CALL_PURITY=0; artifact-affecting (hash token "cpur=1")
     , cse : CseConfig
     }
 
@@ -363,6 +364,7 @@ default =
         , kernelCostAlloc = 8
         , kernelCostHof = 20
         }
+    , callPurityAttrs = True
     , cse = { enabled = False, report = False, minCost = 5, maxPerDef = 64 }
     , bytesFusion = { enabled = True }
     , logicalTypes = { customMaxFields = 8 }
@@ -417,6 +419,7 @@ decoder =
         |> D.apply (D.optionalField "stringOrderIntrinsic" D.bool default.stringOrderIntrinsic)
         |> D.apply (D.optionalField "valueEq" D.bool default.valueEq)
         |> D.apply (D.optionalField "kernelGcLeaf" D.bool default.kernelGcLeaf)
+        |> D.apply (D.optionalField "callPurityAttrs" D.bool default.callPurityAttrs)
         |> D.apply (D.optionalField "cse" cseDecoder default.cse)
 
 
@@ -699,6 +702,12 @@ hash cfg =
                )
             ++ (if cfg.inline.kernelFactsDce then
                     [ "kfdce=1" ]
+
+                else
+                    []
+               )
+            ++ (if cfg.callPurityAttrs then
+                    [ "cpur=1" ]
 
                 else
                     []

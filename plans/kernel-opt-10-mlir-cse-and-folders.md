@@ -1067,3 +1067,34 @@ M4 comment reproduces its ordering rule verbatim — but with CSE dark, 12's
 benefit case must stand on the folder/other consumers or on flipping CSE with a
 retention story. 12 also still owes the `eco.cse_safe` strip hoist above
 `isCallSafepoint` (item-09 hand-off).
+
+### Amendment — 2026-08-13: CSE DEFAULT-ON by user decision
+
+Run R (kernel-opt-12's 2×2) re-measured the fold+CSE composition on the item-13
+artifact: promoted **−3.64M**, RSS +6 MB, majors 10 — the Run-Q regression did
+not reproduce. Both runs' counters are bit-stable, so CSE's retention effect is
+a property of the input artifact (~±1% promoted either way), with wall FLAT in
+both worlds. The user applied the loop's keep-if-wall-flat rule and flipped
+`ECO_MLIR_CSE` to default-ON (`EcoPipeline.cpp`), accepting counter volatility
+across future tree changes. `ECO_MLIR_CSE=0` remains the bisect switch; when
+suspecting it, look at GC counters and RSS — the wall stays flat in both
+directions. The shipping M4 slot is now folder + CSE, with kernel-opt-12's
+purity attrs in CSE's domain.
+
+### Amendment 2 — 2026-08-13, same day: the flip was REVERTED for a miscompile
+
+The full E2E battery under `ECO_MLIR_CSE` default-on failed
+`ContainerEquality{,Custom,Record}FloatTest`: CSE merged two structurally
+identical NaN-containing constructs into one object, and the equality kernel's
+pointer-equality fast path (official-Elm-identical) answered True where the
+NaN-aware walk answers False. **Phase 0.1's class-(b) parenthetical — "dedup of
+an allocation is semantics-preserving under a tracing GC with no observable
+object identity" — is FALSE: object identity is observable through NaN.** The
+hazard covers `eco.construct.*`, `eco.box` of f64, and merged calls returning
+Float-containing containers. CSE is dark again, now on correctness grounds;
+`cse_pure_dedup.mlir`'s construct-merge leg survives only because its fields are
+Ints. Sound enablement requires Allocate-on-result effects (erasable-if-dead,
+never merged) + a no-Float-reachable-in-result KernelFacts axis. Note also the
+gate lesson: the env-var legs had only ever run the codegen fixture subset; the
+Float tests live in the Elm suite, first exercised under CSE by the default
+flip. Defaults get the full battery — that asymmetry is where this bug hid.

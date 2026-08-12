@@ -870,6 +870,22 @@ LogicalResult CallOp::verify() {
   unsigned rootCount = getGCRootsCountAttr(getOperation());
   unsigned realOperandCount = operands.size() - rootCount;
 
+  // kernel-opt-12: the purity attr's structural preconditions. The rootCount
+  // arm is the only place the attr+roots combination is caught; the module
+  // verifier the PassManager runs after every pass makes it fire immediately
+  // after EcoGCPrepare if the strip there is ever removed.
+  if ((*this)->hasAttr(kCseSafeAttrName)) {
+    if (!calleeAttr)
+      return emitOpError("'eco.cse_safe' is only valid on a direct call "
+                         "(requires the 'callee' attribute)");
+    auto musttail = getMusttail();
+    if (musttail && *musttail)
+      return emitOpError("'eco.cse_safe' must not be set on a musttail call");
+    if (rootCount != 0)
+      return emitOpError("'eco.cse_safe' must not survive GC root attachment "
+                         "(a purity consumer is running after EcoGCPrepare)");
+  }
+
   // Case 1: Direct call (callee present)
   if (calleeAttr) {
     if (remainingArityAttr) {
@@ -908,6 +924,31 @@ LogicalResult CallOp::verify() {
   }
 
   return success();
+}
+
+//===----------------------------------------------------------------------===//
+// MemoryEffectOpInterface: CallOp
+//===----------------------------------------------------------------------===//
+
+// kernel-opt-12. `eco.cse_safe` present => report NO effects, which licenses
+// exactly {merge duplicates, erase if unused}. It does NOT license
+// speculation: we implement no ConditionallySpeculatable, so isSpeculatable()
+// stays false and LICM-style motion is impossible.
+//
+// Attr ABSENT => conservative read+write on the default resource. This is the
+// correctness-critical branch: declaring the interface at all removes the
+// "no interface => unknown effects" default, so every unstamped call must
+// claim effects explicitly or the whole program's calls become erasable.
+// The equivalence "read+write == no interface" is discharged empirically by
+// test/codegen/call_purity_attr_conservative.mlir, which was green BEFORE
+// this hunk landed.
+void CallOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+    if ((*this)->hasAttr(kCseSafeAttrName))
+        return; // no effects
+
+    effects.emplace_back(MemoryEffects::Read::get());
+    effects.emplace_back(MemoryEffects::Write::get());
 }
 
 //===----------------------------------------------------------------------===//

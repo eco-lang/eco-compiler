@@ -342,6 +342,11 @@ applyEnvOverrides cfg =
                 (Utils.envLookupEnv "ECO_CSE_MAX_PER_DEF" |> Task.mapError never)
                     |> Task.map (\v -> applyCseMaxPerDefOverride v cfgeco_cse_max_per_def)
             )
+        |> Task.andThen
+            (\cfgCpur ->
+                (Utils.envLookupEnv "ECO_CALL_PURITY" |> Task.mapError never)
+                    |> Task.map (\v -> applyCallPurityOverride v cfgCpur)
+            )
 
 
 {-| `ECO_AGG_PROMOTE=1|true|yes`: U-T1.3.1 aggregate promotion — emit
@@ -444,6 +449,31 @@ applyKernelCostAllocOverride =
 applyKernelCostHofOverride : Maybe String -> EcoConfig -> EcoConfig
 applyKernelCostHofOverride =
     applyKernelCostIntOverride (\n i -> { i | kernelCostHof = n })
+
+
+{-| `ECO_CALL_PURITY=1|0`: stamp `eco.cse_safe` on droppable direct kernel
+calls (kernel-opt-12). Artifact-affecting (hash token `cpur=1`), so flag-on
+builds never share flag-off caches. Unknown values are ignored.
+-}
+applyCallPurityOverride : Maybe String -> EcoConfig -> EcoConfig
+applyCallPurityOverride maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            cfg
+
+        Just raw ->
+            let
+                t =
+                    String.toLower (String.trim raw)
+            in
+            if t == "1" || t == "true" || t == "yes" || t == "on" then
+                { cfg | callPurityAttrs = True }
+
+            else if t == "0" || t == "off" then
+                { cfg | callPurityAttrs = False }
+
+            else
+                cfg
 
 
 {-| `ECO_CSE=1|0`: run the Mono-level CSE pass (kernel-opt-13).

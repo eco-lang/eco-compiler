@@ -1,16 +1,15 @@
 module Compiler.Generate.MLIR.Ops exposing
-    ( opBuilder, mlirOp, mkRegion, mkRegionTerminatedByOps, funcFunc, funcFuncMulti, ecoGlobal
+    ( opBuilder, mlirOp, mkRegion, mkRegionTerminatedByOps, funcFunc
     , ecoConstantUnit, ecoConstantEmptyRec, ecoConstantTrue, ecoConstantFalse, ecoConstantNil, ecoConstantNothing, ecoConstantEmptyString
     , ecoConstructList, ecoConstructTuple2, ecoConstructTuple3, ecoConstructRecord, ecoConstructCustom
     , ecoProjectListHead, ecoProjectListTail, ecoProjectTuple2, ecoProjectTuple3, ecoProjectRecord, ecoProjectCustom
-    , ecoMakeTuple2, ecoMakeTuple3, ecoProjectTuple2Agg, ecoProjectTuple3Agg, aggTupleType
-    , ecoMakeCustom, ecoProjectCustomAgg, aggCustomType
-    , ecoCallNamed, ecoCallNamedMulti, ecoReturn, ecoReturnMulti, ecoFromHeap, ecoToHeap, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoNullaryOp, ecoTernaryOp, ecoCase, ecoCaseString, ecoGetTag
+    , ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoNullaryOp, ecoTernaryOp, ecoCase, ecoCaseString, ecoGetTag
     , ecoArrayGet, ecoArraySet, ecoArrayLength
     , arithConstantInt, arithConstantInt32, arithConstantFloat, arithConstantBool, arithConstantChar, arithCmpI
     , scfWhile, scfCondition
     , ecoCaseMany, ecoCaseStringMany, ecoYieldMany, scfYieldMany
     , ecoPapCreateGroup, GroupSibling
+    , aggCustomType, aggTupleType, ecoCallNamedMulti, ecoFromHeap, ecoGlobal, ecoMakeCustom, ecoMakeTuple2, ecoMakeTuple3, ecoProjectCustomAgg, ecoProjectTuple2Agg, ecoProjectTuple3Agg, ecoReturnMulti, ecoToHeap, funcFuncMulti
     )
 
 {-| MLIR operation builders.
@@ -72,6 +71,7 @@ in the eco dialect and standard dialects (arith, scf, func).
 
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Types as Types
+import Compiler.GlobalOpt.KernelFacts as KernelFacts
 import Dict
 import Mlir.Mlir as Mlir
     exposing
@@ -114,7 +114,7 @@ The `kind` is a 2-bit constant code matching the runtime `Constant` enum and
 
   - False = 0
   - True = 1
-  - Empty = 2  (the unified empty constant: Unit, EmptyRec, Nil, Nothing, "")
+  - Empty = 2 (the unified empty constant: Unit, EmptyRec, Nil, Nothing, "")
 
 The five former empty constants now all emit kind 2; the type checker guarantees
 each is only produced/matched where its type is expected, so a shared bit pattern
@@ -434,7 +434,7 @@ ecoProjectTuple3 ctx resultVar field resultType tupleVar =
 {-| Render an SSA slot type for an aggregate type-parameter list.
 Slot types are only ever i64/f64/i16 (unboxed primitives) or a named eco
 type (boxed `!eco.value`) — the promoted form mirrors the heap layout's
-slot discipline exactly (CGEN_061: no heap-layout attrs on value ops).
+slot discipline exactly (CGEN\_061: no heap-layout attrs on value ops).
 -}
 aggSlotTypeString : MlirType -> String
 aggSlotTypeString ty =
@@ -484,8 +484,8 @@ aggTupleType elemTypes =
 
 
 {-| eco.make.tuple2 — build a VALUE-level 2-tuple (`!eco.tuple2<...>`), no
-heap allocation (Pure, CGEN_061; lowered to insertvalue chains by
-EcoToLLVMValueAgg and dissolved by SROA before RS4GC — REP_AGG_001).
+heap allocation (Pure, CGEN\_061; lowered to insertvalue chains by
+EcoToLLVMValueAgg and dissolved by SROA before RS4GC — REP\_AGG\_001).
 -}
 ecoMakeTuple2 : Ctx.Context -> String -> ( String, MlirType ) -> ( String, MlirType ) -> ( Ctx.Context, MlirOp )
 ecoMakeTuple2 ctx resultVar ( aVar, aType ) ( bVar, bType ) =
@@ -517,7 +517,7 @@ ecoMakeTuple3 ctx resultVar ( aVar, aType ) ( bVar, bType ) ( cVar, cType ) =
 
 {-| The parameterised value-custom type, e.g.
 `!eco.custom<i64, !eco.value>` (slot types per the ctor layout — tag is
-structural, on the op, never in the type: Q-B/CGEN_061).
+structural, on the op, never in the type: Q-B/CGEN\_061).
 -}
 aggCustomType : List MlirType -> MlirType
 aggCustomType slotTypes =
@@ -652,6 +652,19 @@ ecoProjectCustom ctx resultVar fieldIndex resultType containerVar =
 -- ====== ECO CALLS ======
 
 
+{-| kernel-opt-12: is this callee symbol safe to merge AND to erase?
+Whitelist discipline — anything the table does not list (every non-kernel
+symbol included) answers False and the emitter stamps nothing, which is
+exactly today's behaviour. `lookupSymbol` owns prefix + ABI-suffix
+normalisation (kernel-opt-07 cross-plan contract pt 3).
+-}
+calleeIsDroppable : String -> Bool
+calleeIsDroppable funcName =
+    KernelFacts.lookupSymbol funcName
+        |> Maybe.map KernelFacts.droppable
+        |> Maybe.withDefault False
+
+
 {-| eco.call - call a function by name
 -}
 ecoCallNamed : Ctx.Context -> List ( String, MlirType ) -> String -> String -> List ( String, MlirType ) -> MlirType -> ( Ctx.Context, MlirOp )
@@ -694,10 +707,23 @@ ecoCallNamed ctx gcRootHints resultVar funcName operands returnType =
             else
                 Dict.singleton "eco.gc_roots_count" (IntAttr Nothing (List.length gcRootHints))
 
+        -- kernel-opt-12: purity channel. Stamped ONLY for direct calls whose
+        -- KernelFacts row derives `droppable`. Unlisted callee => no attr =>
+        -- CallOp::getEffects reports conservative read+write (today's
+        -- behaviour). Never stamped when the flag is off.
+        csePurityAttr =
+            if ctx.ecoConfig.callPurityAttrs && calleeIsDroppable funcName then
+                Dict.singleton "eco.cse_safe" UnitAttr
+
+            else
+                Dict.empty
+
         attrs =
-            Dict.union operandTypesAttr
-                (Dict.union gcRootsCountAttr
-                    (Dict.singleton "callee" (SymbolRefAttr funcName))
+            Dict.union csePurityAttr
+                (Dict.union operandTypesAttr
+                    (Dict.union gcRootsCountAttr
+                        (Dict.singleton "callee" (SymbolRefAttr funcName))
+                    )
                 )
     in
     mlirOp ctxWithKernel "eco.call"
@@ -724,7 +750,7 @@ ecoReturn ctx operand operandType =
 
 {-| U-T1.3.3: multi-operand eco.return — the terminator of an sret worker.
 The lowering (EcoToLLVMControlFlow's multi arm) stores each operand into
-the caller's slot immediately before returning void (CGEN_067).
+the caller's slot immediately before returning void (CGEN\_067).
 -}
 ecoReturnMulti : Ctx.Context -> List ( String, MlirType ) -> ( Ctx.Context, MlirOp )
 ecoReturnMulti ctx operandPairs =
@@ -771,10 +797,21 @@ ecoCallNamedMulti ctx gcRootHints resultPairs funcName operands =
             else
                 Dict.singleton "eco.gc_roots_count" (IntAttr Nothing (List.length gcRootHints))
 
+        -- kernel-opt-12: same purity channel as ecoCallNamed — the $sret
+        -- worker path can also target a kernel.
+        csePurityAttr =
+            if ctx.ecoConfig.callPurityAttrs && calleeIsDroppable funcName then
+                Dict.singleton "eco.cse_safe" UnitAttr
+
+            else
+                Dict.empty
+
         attrs =
-            Dict.union operandTypesAttr
-                (Dict.union gcRootsCountAttr
-                    (Dict.singleton "callee" (SymbolRefAttr funcName))
+            Dict.union csePurityAttr
+                (Dict.union operandTypesAttr
+                    (Dict.union gcRootsCountAttr
+                        (Dict.singleton "callee" (SymbolRefAttr funcName))
+                    )
                 )
     in
     mlirOp ctx "eco.call"
@@ -784,8 +821,8 @@ ecoCallNamedMulti ctx gcRootHints resultPairs funcName operands =
         |> opBuilder.build
 
 
-{-| eco.to_heap — box an SSA value aggregate into a heap object (the
-allocating mirror of from_heap; GCRootCarrier).
+{-| eco.to\_heap — box an SSA value aggregate into a heap object (the
+allocating mirror of from\_heap; GCRootCarrier).
 -}
 ecoToHeap : Ctx.Context -> List ( String, MlirType ) -> String -> ( String, MlirType ) -> ( Ctx.Context, MlirOp )
 ecoToHeap ctx gcRootHints resultVar ( aggVar, aggType ) =
@@ -812,7 +849,7 @@ ecoToHeap ctx gcRootHints resultVar ( aggVar, aggType ) =
         |> opBuilder.build
 
 
-{-| U-T1.3.3: eco.from_heap — unbox a heap aggregate (addressed by
+{-| U-T1.3.3: eco.from\_heap — unbox a heap aggregate (addressed by
 `!eco.value`) into the corresponding SSA value aggregate. Pure loads;
 used to bridge a boxed value onto the aggregate result spine.
 -}

@@ -74,15 +74,26 @@ void buildEcoToEcoPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     pm.addPass(eco::createUndefinedFunctionPass());
 }
 
-// Kernel-opt-10 kill switches. Default OFF during bring-up; flipped at
-// Phase 5 once the gates are green.
+// Kernel-opt-10 kill switches.
 static bool envSwitch(const char *name, bool defaultOn) {
     const char *e = ::getenv(name);
     if (!e || !*e)
         return defaultOn;
     return !(e[0] == '0' && e[1] == '\0');
 }
-static bool ecoMlirCseEnabled() { return envSwitch("ECO_MLIR_CSE", false); } // KEPT-DARK: C-R1 regression, Run Q — promoted +1.6%, majors 10->11 composed with the folder
+// KEPT-DARK — and the reason is now CORRECTNESS, not performance. The 2026-08-13
+// default-on attempt failed three Float container-equality E2E tests: CSE merges
+// two structurally identical NaN-containing constructs into ONE object, and the
+// equality kernel's pointer-fast-path (same as official Elm's `x === y`
+// shortcut) then answers True where the NaN-aware structural walk answers
+// False. Object identity IS observable in Elm — via NaN — so "dedup of an
+// allocation is semantics-preserving" is false, for constructs, for eco.box of
+// f64, and for eco.cse_safe kernel calls returning Float-containing containers
+// (List_reverse). Sound enablement needs Allocate-on-result effects on the
+// allocating pure ops (erasable-if-dead, never merged) plus a
+// no-Float-reachable-in-result axis in KernelFacts. See benchmarks/kernel-opt.md
+// Runs Q/R and test/elm/src/ContainerEquality*FloatTest.elm.
+static bool ecoMlirCseEnabled() { return envSwitch("ECO_MLIR_CSE", false); }
 static bool ecoFoldProjectEnabled() { return envSwitch("ECO_MLIR_FOLD", true); } // DEFAULT-ON since 2026-08-13 (Run Q)
 
 void buildEcoToLLVMPipeline(PassManager &pm, const EcoPipelineOptions &opts) {

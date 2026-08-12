@@ -139,6 +139,18 @@ struct EcoGCLivenessAuditPass
             hadError = true;
         });
 
+        // kernel-opt-12: purity attrs must not survive EcoGCPrepare. If one
+        // does, a purity consumer has been ordered after the root append and
+        // is one merge away from a miscompile.
+        func.walk([&](eco::CallOp call) {
+            if (call->hasAttr(eco::kCseSafeAttrName)) {
+                call->emitError("[gc-purity] 'eco.cse_safe' survived "
+                                "EcoGCPrepare — a purity consumer is "
+                                "mis-ordered in the pipeline");
+                hadError = true;
+            }
+        });
+
         if (hadError) signalPassFailure();
 #endif
     }

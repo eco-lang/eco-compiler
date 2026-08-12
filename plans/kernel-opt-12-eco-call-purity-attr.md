@@ -1039,3 +1039,78 @@ Run tests ONCE, tee, then grep the file.
 - **Mirroring audit:** `/tmp/purity_by_symbol.txt` from Phase 2, reconciled row-by-row
   against the KernelFacts rows where `droppable` holds. Zero unexplained entries in either
   direction.
+
+---
+
+## Outcome — 2026-08-13: SHIPPED DEFAULT-ON (Run R)
+
+All five phases landed as planned; benchmarked as the 2×2 the loop requested
+(attr × MLIR CSE). `callPurityAttrs = True` since 2026-08-13; kill switch
+`ECO_CALL_PURITY=0`. Full numbers in `benchmarks/kernel-opt.md` Run R.
+
+**Phase 2 census: S = 4,330 of T = 85,437 → GO branch.** The plan predicted
+~10,400; the gap is items 01/03/05 having deleted the predicted top rows
+(`List_cons`, `Utils_equal`, most of `Utils_append`) before this item arrived.
+The mirroring audit passed — including `MVar_put` and `Scheduler_*`, which look
+effectful but CONSTRUCT task descriptions (closure + `taskBinding`) and are
+correctly `auditedPure` with evidence anchors.
+
+**The headline measurement: the attr is FREE, and buys ~nothing today.**
+CSE off ⇒ the lowered binary is BYTE-IDENTICAL (this tree has no unused
+droppable kernel calls left for Trap-F DCE). CSE on ⇒ exe −16,384 B and
+bit-identical GC counters. The value that remains is exactly what the plan's
+expected-impact section claimed and no more: one purity channel instead of
+per-pass name lists, the effect-model contract, and readiness for the day CSE
+returns. On the PRE-series corpus the attr alone deleted 1.1 MB of exe via
+greedy-driver DCE, so the mechanism is real — this series just already ate its
+food.
+
+**Side-finding recorded for whoever revisits ECO_MLIR_CSE:** CSE's retention
+effect swings SIGN across compiler artifacts — +5.6M promoted (Run Q, item-11
+artifact, with folder) vs −3.64M (current tree, same workload). Do not license
+CSE on a single favourable measurement.
+
+**A discarded invalid race:** the first 3-arm benchmark lowered the attr arms
+from a pristine-corpus compile — the PRE-series compiler — so it raced
+different compiler versions (out.mlir at the pre-series 12,943,401 B). Redone
+from one current-tree Stage-5 artifact. The frozen corpus is for racing
+WORKLOADS; the compiler's own next-stage artifact must come from the live tree.
+
+**Item-09 hand-off discharged:** the strip sits BEFORE Step 4's
+`isCallSafepoint` early-continue, so musttail and gc-leaf-relaxed calls are
+stripped too; fixture `call_purity_attr_roots.mlir` + the validator-build audit
+pin the ordering. Phase 5 notes: 10 reads `MemoryEffectOpInterface` via stock
+CSE (no attr-specific code, as designed); 09 reads `eco.gc_leaf` /
+`eco.callee_gc_leaf` only; 13 reads KernelFacts directly in Elm (`droppable` /
+`hoistable`) and never consults MLIR attrs.
+
+**Gates:** E2E **1656/1656** flag-on, flag-off, and after the flip; 8 new
+`call_purity_*` fixtures including the three verifier negatives and F5 (whose
+merge leg is meaningful only under `ECO_MLIR_CSE=1`, stated in its header);
+flag-off frozen-corpus output byte-identical. **Not run** (loop policy):
+heap-validate, bootstrap.
+
+### Amendment — 2026-08-13: `ECO_MLIR_CSE` flipped DEFAULT-ON
+
+Following this item's 2×2, the user applied the loop's keep-if-wall-flat rule
+to CSE itself: both artifacts measure wall FLAT, so it ships ON despite the
+sign-unstable retention effect (Run Q +5.6M promoted / Run R −3.64M). The
+shipping configuration is folder + CSE + purity attrs, and F5
+(`call_purity_cse_merge.mlir`) was upgraded from its flag-independent form to
+the CHECK/CHECK-NEXT sandwich pinning the kernel-call merge on the default
+path — it now fails under `ECO_MLIR_CSE=0` by design (slot_cast_barriers
+precedent).
+
+### Amendment 2 — 2026-08-13, same day: `ECO_MLIR_CSE` flip REVERTED
+
+The default-on gate failed three Float container-equality tests — CSE merged
+NaN-containing allocations and the pointer-eq fast path made the sharing
+observable (details in kernel-opt-10 Amendment 2 and Run R's addendum). CSE is
+dark again on correctness grounds. Consequence for THIS item: the merge half of
+`eco.cse_safe`'s licence is unsound as stated for kernels whose result can
+contain a Float (`List_reverse`, `Utils_append`) — the attr itself stays (it is
+inert without a consumer, and the DCE half is unaffected: deleting an unused
+call never creates sharing), but any future merge consumer must add a
+no-Float-reachable-in-result restriction. F5 reverted to its flag-independent
+form. `callPurityAttrs` remains DEFAULT-ON: measured free, and its Trap-F DCE
+value is real on corpora with unused droppable calls.
