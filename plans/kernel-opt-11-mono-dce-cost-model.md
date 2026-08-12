@@ -948,3 +948,99 @@ section is amended with the measured number rather than retrofitted with a story
 (Phase 0 census table, per-constant A/B ledger, and the D-K decision get appended here as
 they are measured. Empty until Phase 0 runs — deliberately, so an unmeasured claim cannot
 be mistaken for a measured one.)
+
+---
+
+## Results — 2026-08-12: SHIPPED, both flags DEFAULT-ON (Run O)
+
+All five phases landed. Benchmarked as Run O in `benchmarks/kernel-opt.md`.
+
+### Phase 0 census (fallback branch — kernel-opt-13 has not landed)
+
+Counters added to the `ECO_INLINE_REPORT=1` line as Phase 0 specifies for that
+branch, computed by a one-shot `censusDeadDefs` fold before the single
+`dropDeadDefs` call site (NOT inside `go`, which re-runs and would over-count by
+iteration depth). Self-compile, 261 modules:
+
+```
+letDCE=498 kernelLetDCE=0 deadLets=450 deadBareKernelVar=0 deadDroppableKernelLets=4
+```
+
+**The realizable ceiling for (a) on the entire compiler is FOUR sites.** Flag-on
+realizes **two** (`letDCE` 498 → 500, `kernelLetDCE=2`) — inside the predicted
+`kernelLetDCE ≤ deadDroppableKernelLets`, the gap being argument impurity.
+
+This is the number the plan asked to be recorded "regardless of value", and it
+sets the wall expectation at zero. (a) lands anyway, per the plan: for the
+enabling value and for ending the row-5 contradiction. The census is first-round
+only, so it under-reports the fixpoint — `letDCE=498 > deadLets=450` for exactly
+that reason.
+
+**Decision D-K: KEEP `False`.** `deadBareKernelVar / deadLets = 0 / 450 = 0.000`,
+far under the 0.005 criterion, and a clean zero rather than a marginal one. The
+shape does not arise in this corpus; the H6.1 F3 partial-forward path already
+consumes point-free kernel aliases. No follow-up step is owed.
+
+### Phase 1 — the policy, and a correction to it
+
+`design_docs/debug-log-ordering-policy.md` + invariant `OPT_DEBUG_ORDER_001`
+committed. **The plan's draft D-3 was false for this compiler and was corrected
+before landing**, which is the whole point of writing the policy down.
+
+Draft text: *"Relative order of two logging expressions is preserved."* Measured:
+
+```elm
+let n1 = Debug.log "n1" 1     -- named, dead
+    _  = Debug.log "w1" 2     -- wildcard
+    n2 = Debug.log "n2" 3     -- named, used
+    _  = Debug.log "w2" n2    -- wildcard
+in  …
+```
+emits **`n2, n1, w1, w2`**. Named `let` bindings run before wildcard statements
+and are not in source order among themselves. A wildcard-only sequence **is**
+order-preserving, which is why all 558 existing fixtures — which log almost
+exclusively through `_ = Debug.log …` — never noticed. Elm does not specify
+evaluation order within a `let` binding group, so this is
+unspecified-but-observable, not a defect. D-3 now states what actually holds and
+gives passes a *do-not-worsen* rule instead of a false guarantee.
+
+Consequence for the fixture: **two files, not one.** `DebugLogOrderingTest.elm`
+pins D-3 over a wildcard-only chain; `DebugLogNoDropTest.elm` pins D-1 with a
+single dead named binding. A single mixed fixture would have baked the
+unspecified named-vs-wildcard order into a gate. The plan's mandatory
+break-it-on-purpose check was run: swapping two `CHECK-NEXT` directives turns the
+suite RED, restoring turns it green, so `CHECK-NEXT` genuinely fires in the Elm
+host (its first non-`test/codegen` consumer) and no downgrade was needed.
+
+### Phases 2–4
+
+(a) as specified, at the one gate. (b) `CostClass`/`costClass` derived in
+`KernelFacts` (no stored field), `computeCost` threaded with `InlineConfig`, and
+`kernelCallCost` consulting `Intrinsics.kernelIntrinsic` first. **The layering
+question resolved in favour of the import**: `Compiler.Generate.MLIR.Intrinsics`
+into `GlobalOpt` is the first `GlobalOpt.* → Generate.*` edge in the tree, and it
+compiles — Elm rejects import cycles, so the build is the proof. The config
+predicate fallback was not needed. Phase 4 added the two justification comments;
+neither pass's behaviour changed.
+
+### Measured
+
+| | value |
+|---|---|
+| (a) ceiling / realized | 4 / **2** sites in 261 modules |
+| (b) effect on emitted code | `.mlir` **+1,341 B**, `letDCE` 498 → **441** |
+| flag-off inertness | **byte-identical** to the item-09 baseline, frozen corpus, both rounds |
+| wall, on vs off | **+0.56%** (FLAT) |
+| wall, on vs item-09 baseline | **−0.50%** (FLAT) |
+
+**Both flags flipped DEFAULT-ON.** The plan specified default-off for v1 with a
+later flip; the loop's rule is that a FLAT result is a keeper, so they go on now.
+**The per-constant A/B the plan mandates for (b)'s four knobs was NOT run** — the
+vector `1/4/8/20` is the audit-implied shape, not a measured optimum, and tuning
+it is owed to whoever wants more from it.
+
+**Gates:** E2E `--target full` **1646/1646** flag-off, 1646/1646 with both flags
+forced on, and 1646/1646 again after the default flip. `elm-tests` **13085 passed
+/ 12 failed** — exactly the pre-existing baseline, unchanged.
+**Not run** (removed from the loop by instruction): heap-validate tree,
+`--target bootstrap`.

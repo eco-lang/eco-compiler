@@ -11,7 +11,7 @@ values (emitting warnings), and surface errors as `Exit.Make`.
 -}
 
 import Builder.Reporting.Exit as Exit
-import Compiler.Eco.Config as Config exposing (EcoConfig)
+import Compiler.Eco.Config as Config exposing (EcoConfig, InlineConfig)
 import Compiler.Json.Decode as D
 import Eco.File
 import System.IO as IO exposing (FilePath)
@@ -292,6 +292,36 @@ applyEnvOverrides cfg =
                 (Utils.envLookupEnv "ECO_KERNEL_GCLEAF_EMIT" |> Task.mapError never)
                     |> Task.map (\kgVal -> applyKernelGcLeafEmitOverride kgVal cfgKgcl)
             )
+        |> Task.andThen
+            (\cfgKfdce ->
+                (Utils.envLookupEnv "ECO_KERNEL_FACTS_DCE" |> Task.mapError never)
+                    |> Task.map (\kdVal -> applyKernelFactsDceOverride kdVal cfgKfdce)
+            )
+        |> Task.andThen
+            (\cfgkernel_cost_classes ->
+                (Utils.envLookupEnv "ECO_KERNEL_COST_CLASSES" |> Task.mapError never)
+                    |> Task.map (\v -> applyKernelCostClassesOverride v cfgkernel_cost_classes)
+            )
+        |> Task.andThen
+            (\cfgkernel_cost_inline ->
+                (Utils.envLookupEnv "ECO_KERNEL_COST_INLINE" |> Task.mapError never)
+                    |> Task.map (\v -> applyKernelCostInlineOverride v cfgkernel_cost_inline)
+            )
+        |> Task.andThen
+            (\cfgkernel_cost_gcleaf ->
+                (Utils.envLookupEnv "ECO_KERNEL_COST_GCLEAF" |> Task.mapError never)
+                    |> Task.map (\v -> applyKernelCostGcLeafOverride v cfgkernel_cost_gcleaf)
+            )
+        |> Task.andThen
+            (\cfgkernel_cost_alloc ->
+                (Utils.envLookupEnv "ECO_KERNEL_COST_ALLOC" |> Task.mapError never)
+                    |> Task.map (\v -> applyKernelCostAllocOverride v cfgkernel_cost_alloc)
+            )
+        |> Task.andThen
+            (\cfgkernel_cost_hof ->
+                (Utils.envLookupEnv "ECO_KERNEL_COST_HOF" |> Task.mapError never)
+                    |> Task.map (\v -> applyKernelCostHofOverride v cfgkernel_cost_hof)
+            )
 
 
 {-| `ECO_AGG_PROMOTE=1|true|yes`: U-T1.3.1 aggregate promotion — emit
@@ -315,6 +345,111 @@ applyAggPromoteOverride maybeVal cfg =
 
             else if t == "0" || t == "off" then
                 { cfg | aggPromote = False }
+
+            else
+                cfg
+
+
+{-| `ECO_KERNEL_COST_CLASSES=1|0`: price kernel calls from their derived
+KernelFacts cost class instead of the flat 6 (kernel-opt-11 (b)).
+Artifact-affecting (hash token `kcc=<i>/<g>/<a>/<h>`). Unknown values ignored.
+-}
+applyKernelCostClassesOverride : Maybe String -> EcoConfig -> EcoConfig
+applyKernelCostClassesOverride maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            cfg
+
+        Just raw ->
+            let
+                t =
+                    String.toLower (String.trim raw)
+
+                inline =
+                    cfg.inline
+            in
+            if t == "1" || t == "true" || t == "yes" || t == "on" then
+                { cfg | inline = { inline | kernelCostClasses = True } }
+
+            else if t == "0" || t == "off" then
+                { cfg | inline = { inline | kernelCostClasses = False } }
+
+            else
+                cfg
+
+
+{-| The four cost constants (kernel-opt-11 (b)). Each is A/B'd solo, which is
+why they are config knobs rather than source constants: `Config.hash` keys the
+Details cache, and a source-constant change is invisible to it, so two legs
+would silently share `~/.eco` artifacts. A non-numeric or negative value is
+ignored.
+-}
+applyKernelCostIntOverride : (Int -> InlineConfig -> InlineConfig) -> Maybe String -> EcoConfig -> EcoConfig
+applyKernelCostIntOverride set maybeVal cfg =
+    case maybeVal |> Maybe.andThen (String.trim >> String.toInt) of
+        Just n ->
+            if n >= 0 then
+                { cfg | inline = set n cfg.inline }
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_KERNEL_COST_INLINE=<n>`: cost of a kernel call that lowers to an op.
+-}
+applyKernelCostInlineOverride : Maybe String -> EcoConfig -> EcoConfig
+applyKernelCostInlineOverride =
+    applyKernelCostIntOverride (\n i -> { i | kernelCostInline = n })
+
+
+{-| `ECO_KERNEL_COST_GCLEAF=<n>`: cost of a CGcLeaf kernel call.
+-}
+applyKernelCostGcLeafOverride : Maybe String -> EcoConfig -> EcoConfig
+applyKernelCostGcLeafOverride =
+    applyKernelCostIntOverride (\n i -> { i | kernelCostGcLeaf = n })
+
+
+{-| `ECO_KERNEL_COST_ALLOC=<n>`: cost of a CAlloc kernel call.
+-}
+applyKernelCostAllocOverride : Maybe String -> EcoConfig -> EcoConfig
+applyKernelCostAllocOverride =
+    applyKernelCostIntOverride (\n i -> { i | kernelCostAlloc = n })
+
+
+{-| `ECO_KERNEL_COST_HOF=<n>`: cost of a CHof kernel call.
+-}
+applyKernelCostHofOverride : Maybe String -> EcoConfig -> EcoConfig
+applyKernelCostHofOverride =
+    applyKernelCostIntOverride (\n i -> { i | kernelCostHof = n })
+
+
+{-| `ECO_KERNEL_FACTS_DCE=1|0`: let the dead-binding gate in
+`MonoInlineSimplify` drop a dead kernel call whose KernelFacts row is
+`droppable` (kernel-opt-11 (a)). Artifact-affecting (hash token `kfdce=1`), so
+flag-on builds never share flag-off caches. Unknown values are ignored.
+-}
+applyKernelFactsDceOverride : Maybe String -> EcoConfig -> EcoConfig
+applyKernelFactsDceOverride maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            cfg
+
+        Just raw ->
+            let
+                t =
+                    String.toLower (String.trim raw)
+
+                inline =
+                    cfg.inline
+            in
+            if t == "1" || t == "true" || t == "yes" || t == "on" then
+                { cfg | inline = { inline | kernelFactsDce = True } }
+
+            else if t == "0" || t == "off" then
+                { cfg | inline = { inline | kernelFactsDce = False } }
 
             else
                 cfg
@@ -781,7 +916,7 @@ applyDumpOverride maybeVal cfg =
         cfg
 
 
-{-| `ECO_MONO_VALIDATE=1`: run the MONO_029 layout-agreement validator
+{-| `ECO_MONO_VALIDATE=1`: run the MONO\_029 layout-agreement validator
 (Compiler.Monomorphize.ValidateLayout) after monomorphization and fail the
 compile on violations. Output-only debug/CI knob, never from JSON.
 -}
@@ -871,7 +1006,7 @@ applyLssOverride maybeVal cfg =
 
 {-| `ECO_MONO_LSS_MAX_SPECS=<n>`: override `mono.lss.maxSpecsPerGlobal`
 (the keyed-mode spec budget, design §8.5). Test/tuning knob — a tiny value
-forces the budget-exhausted widened-key + LSS_010-join fallback so the
+forces the budget-exhausted widened-key + LSS\_010-join fallback so the
 mixed-mode path can be exercised deliberately. Non-numeric values are
 ignored. Participates in the config hash via the `lssB=` token, so
 eco-stuff artifacts never alias across budgets.

@@ -68,10 +68,10 @@ import Compiler.Generate.MLIR.Backend as MLIR
 import Compiler.Generate.MLIR.Names as MLIRNames
 import Compiler.Generate.Mode as Mode
 import Compiler.GlobalOpt.AbiCloning as AbiCloning
+import Compiler.GlobalOpt.Borrow as Borrow
 import Compiler.GlobalOpt.CafCensus as CafCensus
 import Compiler.GlobalOpt.CafDedupe as CafDedupe
 import Compiler.GlobalOpt.CafHoist as CafHoist
-import Compiler.GlobalOpt.Borrow as Borrow
 import Compiler.GlobalOpt.ListCombinators as ListCombinators
 import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
@@ -885,6 +885,14 @@ renderInlineReportWith inlineConfig m graph =
             ++ String.fromInt m.loopifiable
             ++ " letDCE="
             ++ String.fromInt m.letEliminations
+            ++ " kernelLetDCE="
+            ++ String.fromInt m.kernelLetDCE
+            ++ " deadLets="
+            ++ String.fromInt m.deadLets
+            ++ " deadBareKernelVar="
+            ++ String.fromInt m.deadBareKernelVar
+            ++ " deadDroppableKernelLets="
+            ++ String.fromInt m.deadDroppableKernelLets
             ++ " closureDCE="
             ++ String.fromInt m.closureDCE
             ++ " raised="
@@ -1011,51 +1019,51 @@ runGlobalOptPhase lssReport listReport borrowCfg cafMemo stats simplifiedGraph =
             |> Task.andThen
                 (\_ ->
                     if lssReport then
-            -- GlobalOpt census line (stderr, like the mono census above):
-            -- staging wrapper insertions + AbiCloning singleton-upgrade
-            -- outcomes (design §9.4's retirement counters).
-            Task.io
-                (System.IO.writeLn System.IO.stderr
-                    ("lss globalopt: wrappersInserted="
-                        ++ String.fromInt goStats.wrappersInserted
-                        ++ " dispatchUpgraded="
-                        ++ String.fromInt goStats.abiCloning.dispatchUpgraded
-                        ++ " stampedPapPrefix="
-                        ++ String.fromInt goStats.abiCloning.stampedPapPrefix
-                        ++ " stampedStaged="
-                        ++ String.fromInt goStats.abiCloning.stampedStaged
-                        ++ " declinedBlocked="
-                        ++ String.fromInt goStats.abiCloning.declinedBlocked
-                        ++ " declinedNoInstance="
-                        ++ String.fromInt goStats.abiCloning.declinedNoInstance
-                        ++ " declinedShape="
-                        ++ String.fromInt goStats.abiCloning.declinedShape
-                        ++ " (arity="
-                        ++ String.fromInt goStats.abiCloning.declinedShapeArity
-                        ++ " [zero="
-                        ++ String.fromInt goStats.abiCloning.declinedShapeArityZero
-                        ++ " under="
-                        ++ String.fromInt goStats.abiCloning.declinedShapeArityUnder
-                        ++ " over="
-                        ++ String.fromInt goStats.abiCloning.declinedShapeArityOver
-                        ++ "] bucketMiss="
-                        ++ String.fromInt goStats.abiCloning.declinedShapeBucketMiss
-                        ++ " layout="
-                        ++ String.fromInt goStats.abiCloning.declinedShapeLayout
-                        ++ " char="
-                        ++ String.fromInt goStats.abiCloning.declinedShapeChar
-                        ++ " nonArrow="
-                        ++ String.fromInt goStats.abiCloning.declinedShapeNonArrow
-                        ++ ") declinedAbiMismatch="
-                        ++ String.fromInt goStats.abiCloning.declinedAbiMismatch
-                        ++ " multiInstanceGroups="
-                        ++ String.fromInt goStats.abiCloning.multiInstanceGroups
-                        ++ " stampedWrapperInstances="
-                        ++ String.fromInt goStats.abiCloning.stampedWrapperInstances
-                        ++ "\n"
-                        ++ abiCensusLines goStats.abiCloning
-                    )
-                )
+                        -- GlobalOpt census line (stderr, like the mono census above):
+                        -- staging wrapper insertions + AbiCloning singleton-upgrade
+                        -- outcomes (design §9.4's retirement counters).
+                        Task.io
+                            (System.IO.writeLn System.IO.stderr
+                                ("lss globalopt: wrappersInserted="
+                                    ++ String.fromInt goStats.wrappersInserted
+                                    ++ " dispatchUpgraded="
+                                    ++ String.fromInt goStats.abiCloning.dispatchUpgraded
+                                    ++ " stampedPapPrefix="
+                                    ++ String.fromInt goStats.abiCloning.stampedPapPrefix
+                                    ++ " stampedStaged="
+                                    ++ String.fromInt goStats.abiCloning.stampedStaged
+                                    ++ " declinedBlocked="
+                                    ++ String.fromInt goStats.abiCloning.declinedBlocked
+                                    ++ " declinedNoInstance="
+                                    ++ String.fromInt goStats.abiCloning.declinedNoInstance
+                                    ++ " declinedShape="
+                                    ++ String.fromInt goStats.abiCloning.declinedShape
+                                    ++ " (arity="
+                                    ++ String.fromInt goStats.abiCloning.declinedShapeArity
+                                    ++ " [zero="
+                                    ++ String.fromInt goStats.abiCloning.declinedShapeArityZero
+                                    ++ " under="
+                                    ++ String.fromInt goStats.abiCloning.declinedShapeArityUnder
+                                    ++ " over="
+                                    ++ String.fromInt goStats.abiCloning.declinedShapeArityOver
+                                    ++ "] bucketMiss="
+                                    ++ String.fromInt goStats.abiCloning.declinedShapeBucketMiss
+                                    ++ " layout="
+                                    ++ String.fromInt goStats.abiCloning.declinedShapeLayout
+                                    ++ " char="
+                                    ++ String.fromInt goStats.abiCloning.declinedShapeChar
+                                    ++ " nonArrow="
+                                    ++ String.fromInt goStats.abiCloning.declinedShapeNonArrow
+                                    ++ ") declinedAbiMismatch="
+                                    ++ String.fromInt goStats.abiCloning.declinedAbiMismatch
+                                    ++ " multiInstanceGroups="
+                                    ++ String.fromInt goStats.abiCloning.multiInstanceGroups
+                                    ++ " stampedWrapperInstances="
+                                    ++ String.fromInt goStats.abiCloning.stampedWrapperInstances
+                                    ++ "\n"
+                                    ++ abiCensusLines goStats.abiCloning
+                                )
+                            )
                             |> Task.map (\_ -> result)
 
                     else
@@ -1124,9 +1132,27 @@ abiCensusLines abi =
     in
     String.join "\n"
         [ "lss census declineByMember top20 (member:count:repSyms): " ++ declineTop
-        , "lss census multiSetSites |set|->sites: " ++ (if String.isEmpty multiHist then "(none)" else multiHist)
-        , "lss census multiSetMembers top12 (member:count:repSyms): " ++ (if String.isEmpty multiTop then "(none)" else multiTop)
-        , "lss census topSiteShapes (LTop callee shapes): " ++ (if String.isEmpty shapes then "(none)" else shapes)
+        , "lss census multiSetSites |set|->sites: "
+            ++ (if String.isEmpty multiHist then
+                    "(none)"
+
+                else
+                    multiHist
+               )
+        , "lss census multiSetMembers top12 (member:count:repSyms): "
+            ++ (if String.isEmpty multiTop then
+                    "(none)"
+
+                else
+                    multiTop
+               )
+        , "lss census topSiteShapes (LTop callee shapes): "
+            ++ (if String.isEmpty shapes then
+                    "(none)"
+
+                else
+                    shapes
+               )
         ]
 
 

@@ -1,10 +1,7 @@
 module Compiler.Eco.Config exposing
-    ( EcoConfig, InlineConfig, BytesFusionConfig, LogicalTypesConfig, CafMemoConfig, CafHoistConfig
-    , MonoEngine(..), MonoConfig, LssConfig
-    , BorrowConfig, BorrowReify(..)
-    , ListConfig
-    , default, defaultLss, decoder, hash, clamp
-    , monoEngineFromString, borrowReifyFromString
+    ( EcoConfig, InlineConfig, BytesFusionConfig, LogicalTypesConfig
+    , default, decoder, hash, clamp
+    , BorrowConfig, BorrowReify(..), CafHoistConfig, CafMemoConfig, ListConfig, LssConfig, MonoConfig, MonoEngine(..), borrowReifyFromString, defaultLss, monoEngineFromString
     )
 
 {-| Project-level tunable compiler settings, read from `eco-config.json`
@@ -61,7 +58,7 @@ hybrid chunk spines; `chunks = False` (JSON `"chunks": false` or env
 `chunks` is artifact-affecting (hash token `lchunks=1` when enabled; L1.2+
 codegen consults it). `consIntrinsic` (kernel-opt-01, DEFAULT TRUE since 2026-08-10) lowers saturated
 `x :: xs` to `eco.construct.list` instead of `Elm_Kernel_List_cons*`, so each
-cons pays the HEAP_034 inline nursery bump instead of a statepointed runtime
+cons pays the HEAP\_034 inline nursery bump instead of a statepointed runtime
 call; env kill switch `ECO_LIST_CONS_INTRINSIC=0`, artifact-affecting (hash
 token `lcons=1` when enabled). Measured on the self-compile: all 4,304 kernel
 cons call sites convert, EcoListTemplate chunk parity is exact, and wall is
@@ -88,6 +85,7 @@ opts a build into the oracle-coupled transforms (OC1+): the distilled facts
 are derived at MLIR-emission time (`Borrow.deriveFacts`) and consumed by
 codegen. ARTIFACT-AFFECTING — the only borrow knob in `hash` (token
 `bopt=1`); default off preserves T1-R1 for default builds.
+
 -}
 type alias BorrowConfig =
     { enabled : Bool
@@ -132,7 +130,7 @@ type alias MonoConfig =
     }
 
 
-{-| Lambda-set specialization knobs (design_docs/monomorphization/
+{-| Lambda-set specialization knobs (design\_docs/monomorphization/
 lambda-set-specialization-design.md §10). `enabled = False` must reproduce
 today's pipeline byte-for-byte: every arrow annotation is `LTop` and no set
 slots are minted in solver stores. Only meaningful under `EngineSolver`;
@@ -171,13 +169,14 @@ engine never consults this block, so `ECO_MONO_ENGINE=subst` builds are
 unaffected.
 
 `keyed = True` (2026-07-20, post-Fix-B): ALL-GLOBALS keying is the default.
-Sound since LSS_017 fork-qualified members (`plans/lss-fork-qualified-members.md`
+Sound since LSS\_017 fork-qualified members (`plans/lss-fork-qualified-members.md`
 — the singleton-representative hijack is fixed by construction) and measured
 free at run time (Run M, `benchmarks/runtime-calls.md`: coverage 6.81 % →
 13.22 %, identical total events, wall parity). `ECO_MONO_LSS=unkeyed` restores
 the selective-whitelist mode (`keyedGlobals`); `ECO_MONO_LSS=0` disables LSS
 entirely. Watch item: the elm-aws-codegen pathological-workload class (§11.7
 census note) — the M4 `maxSpecsPerGlobal` budget is the backstop.
+
 -}
 defaultLss : LssConfig
 defaultLss =
@@ -244,6 +243,12 @@ type alias InlineConfig =
     , arityRaise : Bool
     , raiseAppliedShareMin : Int
     , report : Bool
+    , kernelFactsDce : Bool -- kernel-opt-11 (a): let the dead-binding gate drop a dead kernel call whose KernelFacts row is `droppable` (cseSafe AND totality == Total, and every argument pure). DEFAULT-ON since 2026-08-12 (realizable ceiling on the whole 261-module self-compile is FOUR sites, of which 2 realize -- it ships for the enabling value and for ending the isPureExpr/CafHoist contradiction, NOT for a measured win); env kill switch ECO_KERNEL_FACTS_DCE=0; artifact-affecting (hash token "kfdce=1"). Widens ONLY MonoInlineSimplify's dead-let gate -- the H2.5/H6.1 partial-forward guards keep the legacy all-calls-impure predicate
+    , kernelCostClasses : Bool -- kernel-opt-11 (b): price a kernel call from its derived KernelFacts cost class (and from whether it lowers to an inline op) instead of the flat 6-per-call the inliner uses today. DEFAULT-ON since 2026-08-12 (changes real inlining decisions -- emitted .mlir +1,341 B, letDCE 498->441 -- wall FLAT at +0.56%); env kill switch ECO_KERNEL_COST_CLASSES=0; artifact-affecting (hash token "kcc=<i>/<g>/<a>/<h>", the whole vector, so every A/B leg is cache-disjoint). Independent of kernelFactsDce ON PURPOSE -- DCE deletes work, cost classes move inliner thresholds, and a shared flag would make per-constant attribution impossible
+    , kernelCostInline : Int -- cost of a kernel call that lowers to an inline op (Intrinsics.kernelIntrinsic says Just); no call is emitted at all
+    , kernelCostGcLeaf : Int -- cost of a CGcLeaf kernel call: no Elm GC, no C++ heap traffic, no callback
+    , kernelCostAlloc : Int -- cost of a CAlloc kernel call: allocates on the Elm or C++ heap
+    , kernelCostHof : Int -- cost of a CHof kernel call: re-enters Elm through a user closure
     }
 
 
@@ -254,7 +259,7 @@ type alias BytesFusionConfig =
 
 
 {-| CAF-memoization master switch (consumed by MLIR codegen —
-plans/caf-memoization-implementation.md, design_docs/caf-memoization-design.md).
+plans/caf-memoization-implementation.md, design\_docs/caf-memoization-design.md).
 `enabled = True` gives every qualifying nullary value thunk (`MonoDefine`
 non-closure, `!eco.value` ABI result, non-trivial body) a lazy once-init
 `eco.global` slot: the thunk body runs at most once per process and every
@@ -272,7 +277,7 @@ type alias CafMemoConfig =
 
 {-| CAF hoisting knobs (plans/caf-hoist-closed-expressions.md): closed
 expressions inside function bodies are hoisted to fresh nullary specs and
-memoized by the CGEN_068 slot machinery.
+memoized by the CGEN\_068 slot machinery.
 
   - `enabled`: master switch (env `ECO_CAF_HOIST=1|0`); artifact-affecting →
     hash token `cafh=1` when on.
@@ -328,6 +333,15 @@ default =
         -- The M3 census sweep picks any nonzero default.
         , raiseAppliedShareMin = 0
         , report = False
+        , kernelFactsDce = True
+
+        -- Starting vector. Today's uniform value is 6; these are the shape the
+        -- audit implies, not a measured optimum -- each is A/B'd solo.
+        , kernelCostClasses = True
+        , kernelCostInline = 1
+        , kernelCostGcLeaf = 4
+        , kernelCostAlloc = 8
+        , kernelCostHof = 20
         }
     , bytesFusion = { enabled = True }
     , logicalTypes = { customMaxFields = 8 }
@@ -410,6 +424,12 @@ inlineDecoder =
         |> D.apply (D.optionalField "arityRaise" D.bool default.inline.arityRaise)
         |> D.apply (D.optionalField "raiseAppliedShareMin" D.int default.inline.raiseAppliedShareMin)
         |> D.apply (D.optionalField "report" D.bool default.inline.report)
+        |> D.apply (D.optionalField "kernelFactsDce" D.bool default.inline.kernelFactsDce)
+        |> D.apply (D.optionalField "kernelCostClasses" D.bool default.inline.kernelCostClasses)
+        |> D.apply (D.optionalField "kernelCostInline" D.int default.inline.kernelCostInline)
+        |> D.apply (D.optionalField "kernelCostGcLeaf" D.int default.inline.kernelCostGcLeaf)
+        |> D.apply (D.optionalField "kernelCostAlloc" D.int default.inline.kernelCostAlloc)
+        |> D.apply (D.optionalField "kernelCostHof" D.int default.inline.kernelCostHof)
 
 
 bytesFusionDecoder : D.Decoder x BytesFusionConfig
@@ -641,6 +661,27 @@ hash cfg =
                             else
                                 []
                            )
+
+                else
+                    []
+               )
+            ++ (if cfg.inline.kernelFactsDce then
+                    [ "kfdce=1" ]
+
+                else
+                    []
+               )
+            -- The WHOLE vector, so each constant A/B leg is cache-disjoint.
+            ++ (if cfg.inline.kernelCostClasses then
+                    [ "kcc="
+                        ++ String.fromInt cfg.inline.kernelCostInline
+                        ++ "/"
+                        ++ String.fromInt cfg.inline.kernelCostGcLeaf
+                        ++ "/"
+                        ++ String.fromInt cfg.inline.kernelCostAlloc
+                        ++ "/"
+                        ++ String.fromInt cfg.inline.kernelCostHof
+                    ]
 
                 else
                     []

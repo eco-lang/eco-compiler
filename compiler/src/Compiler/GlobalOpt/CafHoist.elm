@@ -1,14 +1,19 @@
 module Compiler.GlobalOpt.CafHoist exposing
-    ( Stats, emptyStats, run, renderStats
-    , zeroRegions, fingerprintOf, typeTouchesBytes
+    ( Stats
+    , emptyStats
+    , fingerprintOf
+    , renderStats
+    , run
+    , typeTouchesBytes
+    , zeroRegions
     )
 
-{-| CAF hoisting (plans/caf-hoist-closed-expressions.md, CGEN_069).
+{-| CAF hoisting (plans/caf-hoist-closed-expressions.md, CGEN\_069).
 
 Moves every eligible MAXIMAL closed subexpression inside a function body —
 a subtree referencing no locals bound outside itself — into a freshly
 minted nullary `MonoDefine` spec, replacing the site with a
-`MonoVarGlobal`. The existing CAF slot machinery (CGEN_068) then evaluates
+`MonoVarGlobal`. The existing CAF slot machinery (CGEN\_068) then evaluates
 each hoisted expression once per process instead of once per call. The
 move is VERBATIM: CallInfo/staging/LSS annotations travel with the tree
 (all per-node — plan DQ3), and `MonoCase` jump indices are case-local.
@@ -40,7 +45,7 @@ Exclusions (plan DQ4/DQ6): pkg-`bytes`-typed or -headed candidates
 (fusion's reified form beats memoization and its strict reifier does not
 look through bare globals in operand position); Debug-containing subtrees
 (inner `Debug.log` cardinality is not changed silently); scalar-ABI
-results (HEAP_035); sizes below `minNodes`.
+results (HEAP\_035); sizes below `minNodes`.
 
 Determinism (plan DQ8): specId-order fold, structural traversal order,
 encounter-order minting during replacement; the dedupe Dict is only ever
@@ -390,6 +395,18 @@ collectChildren minNodes ctx expr =
             ( leafInfo, [], ctx )
 
         Mono.MonoVarKernel _ _ home _ _ ->
+            -- kernel-opt-11 Phase 4: the `home == "Debug"` test STAYS, and this
+            -- comment records why rather than replacing it with a KernelFacts
+            -- lookup. design_docs/debug-log-ordering-policy.md D-1/D-3 forbid
+            -- deleting or moving anything that transitively logs, and this pass
+            -- implements the strictest form of that: `hasDebug` => ineligible.
+            -- KernelFacts would give a FINER answer (per-row cseSafe), but the
+            -- table is whitelist-defaulted -- an unlisted kernel answers "not
+            -- safe" only because the consumer chooses to read it that way, and
+            -- this pass is default-off and unlisted-tolerant. Narrowing it here
+            -- would be a default-policy regression (kernel-opt-07 §6.F); the
+            -- fix for the table's optimism is listing the effectful rows, not
+            -- loosening this test.
             ( { leafInfo | hasDebug = home == "Debug" }, [], ctx )
 
         Mono.MonoUnit ->
@@ -952,7 +969,7 @@ candidateKind expr =
             False
 
 
-{-| Scalar-ABI results are outside the slot scope (HEAP_035): mirrors
+{-| Scalar-ABI results are outside the slot scope (HEAP\_035): mirrors
 Types.monoTypeToAbi without a Generate-layer import.
 -}
 valueAbi : Mono.MonoType -> Bool

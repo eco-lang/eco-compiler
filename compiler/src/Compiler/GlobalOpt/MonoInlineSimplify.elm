@@ -1,4 +1,7 @@
-module Compiler.GlobalOpt.MonoInlineSimplify exposing (Metrics, optimize, buildBodyLookup, countClosures, residualTaxonomy, functionResultCensus)
+module Compiler.GlobalOpt.MonoInlineSimplify exposing
+    ( Metrics, optimize, buildBodyLookup, countClosures
+    , functionResultCensus, residualTaxonomy
+    )
 
 {-| Mono IR Inliner and Simplifier.
 
@@ -25,6 +28,8 @@ import Compiler.AST.Monomorphized as Mono exposing (MonoExpr(..), MonoGraph(..),
 import Compiler.Data.BitSet as BitSet
 import Compiler.Data.Name exposing (Name)
 import Compiler.Eco.Config as Config
+import Compiler.Generate.MLIR.Intrinsics as Intrinsics
+import Compiler.GlobalOpt.KernelFacts as KernelFacts
 import Compiler.Graph as Graph
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.MonoTraverse as Traverse
@@ -58,6 +63,13 @@ type alias Metrics =
     , hofLoopified : Int
     , loopifiable : Int
     , letEliminations : Int
+
+    -- kernel-opt-11: attribution for the KernelFacts DCE widening, plus the
+    -- Phase-0 census counters (deadLets is the denominator for decision D-K).
+    , kernelLetDCE : Int
+    , deadLets : Int
+    , deadBareKernelVar : Int
+    , deadDroppableKernelLets : Int
     , closureDCE : Int
     , arityRaised : Int
     , arityRaiseSkipped : Int
@@ -204,6 +216,7 @@ the census says which mechanism gap dominates the residual allocations:
 
 Counts include closures nested inside other closures' bodies (they
 allocate when the outer body runs).
+
 -}
 residualTaxonomy : Config.InlineConfig -> MonoGraph -> List ( String, Int )
 residualTaxonomy inlineConfig (MonoGraph { nodes }) =
@@ -377,6 +390,7 @@ H6.2.5 Lever 2 refactor: the walk now tallies PER SPEC
 (`fnResultSiteCensus`), because the arity-raise gate needs each spec's
 applied share; the aggregate report derives from the per-spec census
 unchanged.
+
 -}
 fnResultSiteCensus : Array (Maybe MonoNode) -> Dict Int (Dict String Int)
 fnResultSiteCensus nodes =
@@ -649,7 +663,7 @@ inline+beta fixpoint collapses the chain. Existing call sites need no
 rewrite: a saturated-at-old-arity call is simply a strictly-partial call
 of the raised spec (a PAP — the same single allocation the closure cost
 today), and `annotateCallStaging` re-derives all staging AFTER this pass.
-The raised closure clears srcLambda/closureKind/captureAbi (LSS_009 — the
+The raised closure clears srcLambda/closureKind/captureAbi (LSS\_009 — the
 reshaped closure must not impersonate its source member). The hand-eta'd
 `TypeCheck.IO.map`/`foldrM` prove the raised shape is fully supported
 downstream — this pass mechanizes that source idiom.
@@ -657,6 +671,7 @@ downstream — this pass mechanizes that source idiom.
 Semantics note (why default-off): delaying a cheap PURE stage-1 body to
 application time is unobservable in Elm except for ⊥ timing (crash moves
 to first application) and `Debug.log` ordering.
+
 -}
 raiseStagedSpecs : Config.InlineConfig -> (Int -> Bool) -> Array (Maybe MonoNode) -> ( Array (Maybe MonoNode), ( Int, Int ) )
 raiseStagedSpecs inlineConfig allowSpec nodes =
@@ -1215,8 +1230,8 @@ sumBy f list =
     List.foldl (\x acc -> acc + f x) 0 list
 
 
-computeCost : MonoExpr -> Int
-computeCost expr =
+computeCost : Config.InlineConfig -> MonoExpr -> Int
+computeCost cfg expr =
     case expr of
         MonoLiteral _ _ ->
             1
@@ -1237,72 +1252,118 @@ computeCost expr =
             1
 
         MonoList _ items _ ->
-            3 + sumBy computeCost items
+            3 + sumBy (computeCost cfg) items
 
         MonoClosure _ body _ ->
-            5 + computeCost body
+            5 + computeCost cfg body
+
+        MonoCall _ ((MonoVarKernel _ _ home name _) as func) args resultTy _ ->
+            -- kernel-opt-11 (b). Flag-off this is byte-identical arithmetic to
+            -- the general arm below: `kernelCallCost` is not consulted and the
+            -- MonoVarKernel arm still scores 1, so the call still costs 6+args.
+            if cfg.kernelCostClasses then
+                kernelCallCost cfg home name args resultTy
+                    + sumBy (computeCost cfg) args
+
+            else
+                5 + computeCost cfg func + sumBy (computeCost cfg) args
 
         MonoCall _ func args _ _ ->
-            5 + computeCost func + sumBy computeCost args
+            5 + computeCost cfg func + sumBy (computeCost cfg) args
 
         MonoTailCall _ args _ ->
-            5 + sumBy (\( _, e ) -> computeCost e) args
+            5 + sumBy (\( _, e ) -> computeCost cfg e) args
 
         MonoIf branches final _ ->
-            2 + sumBy (\( c, t ) -> computeCost c + computeCost t) branches + computeCost final
+            2 + sumBy (\( c, t ) -> computeCost cfg c + computeCost cfg t) branches + computeCost cfg final
 
         MonoLet def body _ ->
-            2 + computeCostDef def + computeCost body
+            2 + computeCostDef cfg def + computeCost cfg body
 
         MonoDestruct _ inner _ ->
-            2 + computeCost inner
+            2 + computeCost cfg inner
 
         MonoCase _ _ decider branches _ ->
             -- Count the decider's Inline leaf bodies too: they are real code,
             -- and before the H2.0 case-guard lift this hole was masked (case
             -- bodies never inlined). Without it a case whose branches all
             -- live in Inline leaves costs 3 regardless of size.
-            3 + computeCostDecider decider + sumBy (\( _, e ) -> computeCost e) branches
+            3 + computeCostDecider cfg decider + sumBy (\( _, e ) -> computeCost cfg e) branches
 
         MonoRecordCreate fields _ ->
-            3 + sumBy (\( _, e ) -> computeCost e) fields
+            3 + sumBy (\( _, e ) -> computeCost cfg e) fields
 
         MonoRecordAccess inner _ _ ->
-            1 + computeCost inner
+            1 + computeCost cfg inner
 
         MonoRecordUpdate inner updates _ ->
-            3 + computeCost inner + sumBy (\( _, e ) -> computeCost e) updates
+            3 + computeCost cfg inner + sumBy (\( _, e ) -> computeCost cfg e) updates
 
         MonoTupleCreate _ items _ ->
-            3 + sumBy computeCost items
+            3 + sumBy (computeCost cfg) items
 
 
-computeCostDef : Mono.MonoDef -> Int
-computeCostDef def =
+computeCostDef : Config.InlineConfig -> Mono.MonoDef -> Int
+computeCostDef cfg def =
     case def of
         Mono.MonoDef _ bound ->
-            computeCost bound
+            computeCost cfg bound
 
         Mono.MonoTailDef _ _ bound ->
-            computeCost bound
+            computeCost cfg bound
 
 
-computeCostDecider : Mono.Decider Mono.MonoChoice -> Int
-computeCostDecider decider =
+computeCostDecider : Config.InlineConfig -> Mono.Decider Mono.MonoChoice -> Int
+computeCostDecider cfg decider =
     case decider of
         Mono.Leaf (Mono.Inline e) ->
-            computeCost e
+            computeCost cfg e
 
         Mono.Leaf (Mono.Jump _) ->
             0
 
         Mono.Chain _ success failure ->
-            1 + computeCostDecider success + computeCostDecider failure
+            1 + computeCostDecider cfg success + computeCostDecider cfg failure
 
         Mono.FanOut _ tests fallback ->
             1
-                + sumBy (\( _, d ) -> computeCostDecider d) tests
-                + computeCostDecider fallback
+                + sumBy (\( _, d ) -> computeCostDecider cfg d) tests
+                + computeCostDecider cfg fallback
+
+
+{-| Cost of the CALL ITSELF; the caller prices the arguments. Today every kernel
+call scores 6 (= the general arm's 5 plus the `MonoVarKernel` arm's 1), and an
+UNLISTED symbol keeps exactly that, so switching the flag on can only move rows
+the KernelFacts audit actually covers.
+
+Two axes, in priority order. A call that lowers to an inline op is not a call at
+all -- `Intrinsics.kernelIntrinsic` is the ground truth for that and is
+type-directed, which is correct post-mono; `Nothing` is treated as "not inline",
+the conservative answer. Otherwise the audited cost class decides, so a
+rope-allocating `Utils_append` no longer scores the same as an `eco.int.add`.
+
+-}
+kernelCallCost : Config.InlineConfig -> Name -> Name -> List MonoExpr -> Mono.MonoType -> Int
+kernelCallCost cfg home name args resultTy =
+    case Intrinsics.kernelIntrinsic home name (List.map Mono.typeOf args) resultTy of
+        Just _ ->
+            cfg.kernelCostInline
+
+        Nothing ->
+            case KernelFacts.lookup ( home, name ) of
+                Nothing ->
+                    6
+
+                Just facts ->
+                    case KernelFacts.costClass facts of
+                        KernelFacts.CGcLeaf ->
+                            cfg.kernelCostGcLeaf
+
+                        KernelFacts.CAlloc ->
+                            cfg.kernelCostAlloc
+
+                        KernelFacts.CHof ->
+                            cfg.kernelCostHof
 
 
 
@@ -1327,6 +1388,7 @@ type alias RewriteCtx =
     , specArities : Dict Int Int -- H2.5: param count per spec (incl. recursive), for application merging
     , loopifiables : Dict Int LoopifyInfo -- H5: tail-func specs whose closure param can be loopified
     , loopifyEnabled : Bool
+    , kernelFactsDce : Bool -- kernel-opt-11 (a): widen the dead-binding purity test to KernelFacts-droppable kernel calls
     , registry : Mono.SpecializationRegistry
     , whitelist : InlineWhitelist
     , maxInlinesPerFunction : Int
@@ -1346,6 +1408,13 @@ type alias InternalMetrics =
     , hofLoopified : Int
     , loopifiable : Int
     , letEliminations : Int
+
+    -- kernel-opt-11: attribution for the KernelFacts DCE widening, plus the
+    -- Phase-0 census counters (deadLets is the denominator for decision D-K).
+    , kernelLetDCE : Int
+    , deadLets : Int
+    , deadBareKernelVar : Int
+    , deadDroppableKernelLets : Int
     , closureDCE : Int
     , arityRaised : Int
     , arityRaiseSkipped : Int
@@ -1398,6 +1467,40 @@ bumpLetElimination ctx =
     { ctx | metrics = { m | letEliminations = m.letEliminations + 1 } }
 
 
+{-| kernel-opt-11: `letEliminations` counts every dead binding dropped and would
+blur old drops with new ones, so attribute the widening separately. Bumps
+`kernelLetDCE` only for the shape the new arm can license: a call whose callee is
+a kernel var. Flag-off this is `bumpLetElimination` exactly, because no such
+binding reaches here.
+-}
+bumpKernelDCE : RewriteCtx -> MonoExpr -> RewriteCtx
+bumpKernelDCE ctx bound =
+    let
+        m =
+            ctx.metrics
+
+        isKernelCall =
+            case bound of
+                MonoCall _ (MonoVarKernel _ _ _ _ _) _ _ _ ->
+                    True
+
+                _ ->
+                    False
+    in
+    { ctx
+        | metrics =
+            { m
+                | letEliminations = m.letEliminations + 1
+                , kernelLetDCE =
+                    if isKernelCall then
+                        m.kernelLetDCE + 1
+
+                    else
+                        m.kernelLetDCE
+            }
+    }
+
+
 bumpClosureDCE : RewriteCtx -> RewriteCtx
 bumpClosureDCE ctx =
     let
@@ -1446,6 +1549,7 @@ is pure code growth, the lambda escapes into data either way.
 The callee check is name-based without shadow tracking — sound as a
 heuristic: canonicalization forbids shadowing, and a false positive merely
 widens one candidate's budget.
+
 -}
 hasCalledFunctionParam : List ( Name, Mono.MonoType ) -> MonoExpr -> Bool
 hasCalledFunctionParam params body =
@@ -1478,6 +1582,7 @@ hasCalledFunctionParam params body =
             body
 
 
+
 -- ============================================================================
 -- ====== RECURSIVE-HOF LOOPIFICATION (H5) ======
 -- ============================================================================
@@ -1503,6 +1608,7 @@ the plan's original LSS-keyed spec-cloning formulation — the call-site
 literal makes the member identity self-evident, so v1 needs neither the
 solver engine nor keyed fan-out; variable-argument callers remain the
 LSS-based v2 extension.
+
 -}
 type alias LoopifyInfo =
     { params : List ( Name, Mono.MonoType )
@@ -1528,7 +1634,7 @@ buildLoopifiables inlineConfig nodes =
             (\maybeNode ( acc, specId ) ->
                 case maybeNode of
                     Just (MonoTailFunc params body _) ->
-                        if computeCost body > budget || referencesSpec specId body then
+                        if computeCost inlineConfig body > budget || referencesSpec specId body then
                             ( acc, specId + 1 )
 
                         else
@@ -2148,7 +2254,7 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
                                     Just ( params, body ) ->
                                         let
                                             cost =
-                                                computeCost body
+                                                computeCost inlineConfig body
 
                                             maybeGlobal =
                                                 Array.get specId registry.reverseMapping
@@ -2197,6 +2303,7 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
                 ( Dict.empty, 0 )
                 nodes
                 |> Tuple.first
+
         specArities =
             Array.foldl
                 (\maybeNode ( acc, specId ) ->
@@ -2251,6 +2358,7 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
     , specArities = specArities
     , loopifiables = loopifiables
     , loopifyEnabled = inlineConfig.loopify
+    , kernelFactsDce = inlineConfig.kernelFactsDce
     , registry = registry
     , whitelist = effectiveWhitelist
     , maxInlinesPerFunction = inlineConfig.maxPerFunction
@@ -2266,6 +2374,10 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
         , hofLoopified = 0
         , loopifiable = Dict.size loopifiables
         , letEliminations = 0
+        , kernelLetDCE = 0
+        , deadLets = 0
+        , deadBareKernelVar = 0
+        , deadDroppableKernelLets = 0
         , closureDCE = 0
 
         -- Overwritten by `optimize` from the raise pre-pass counters.
@@ -2983,7 +3095,7 @@ closure's type IS the call's result type, verbatim. The old construction
 wrapped it AGAIN (`Mono.mFunction LTop remTypes resultType` where resultType was
 itself the residual arrow), declaring a phantom extra application level:
 result-kind, staging, and arity metadata downstream all read the
-double-wrapped arrow, which is the root of the CGEN_056 result-type
+double-wrapped arrow, which is the root of the CGEN\_056 result-type
 mismatches and the runtime `spliceArgsForSaturatedCall` arity assert
 (plan H2.5, lesson 4).
 
@@ -2991,6 +3103,7 @@ The shape check is defensive: if some producer typed the call differently
 (non-arrow, or an arrow whose param count disagrees with the actual
 remaining params), fall back to the legacy construction — no worse than the
 historical behavior, and the guards that contain the legacy path remain.
+
 -}
 residualClosureType : List ( Name, Mono.MonoType ) -> Mono.MonoType -> Mono.MonoType
 residualClosureType remainingParams resultType =
@@ -3338,6 +3451,7 @@ source shadowing). Spliced entries adopt the outer entry's result type —
 within a chain every `MonoLet` node carries the chain tail's type
 (`wrapInLets` invariant). Only chains ENDING in a closure literal are
 flattened; the general rewrite is sound but this is the shape that pays.
+
 -}
 flattenClosureDef : ( Mono.MonoDef, Mono.MonoType ) -> List ( Mono.MonoDef, Mono.MonoType )
 flattenClosureDef (( d, t ) as entry) =
@@ -3393,6 +3507,7 @@ the whole chain in view. A def is forwardable only when ALL of:
 
 Forwarding one def can expose another (counts change), so the pass restarts
 until nothing forwards; each success removes a def, so this terminates.
+
 -}
 forwardInChain : RewriteCtx -> List ( Mono.MonoDef, Mono.MonoType ) -> MonoExpr -> ( List ( Mono.MonoDef, Mono.MonoType ), MonoExpr, RewriteCtx )
 forwardInChain ctx spine finalBody =
@@ -3535,7 +3650,7 @@ let):
     bound expressions. For closures this is a CORRECTNESS guard, not just a
     perf one: the forwarded body references outer names, and an enclosing
     closure's `ClosureInfo.captures` was already computed — injecting new
-    free variables into its body would violate CGEN_CLOSURE_003 (FV ⊆
+    free variables into its body would violate CGEN\_CLOSURE\_003 (FV ⊆
     params ∪ captures ∪ siblings). For tail-def bounds it is the sinking
     guard: a partial-application residue would allocate per loop iteration
     instead of once.
@@ -4648,7 +4763,8 @@ getInlinableBody node =
 Used only to keep case bodies out of `buildBodyLookup` — the bytes-fusion
 reifier's reify-time beta-reducer hasn't been verified against them. The
 inliner itself accepts case bodies (H2.0): eco.case is value-producing
-(CGEN_010/CGEN_045), not a terminator.
+(CGEN\_010/CGEN\_045), not a terminator.
+
 -}
 isCase : MonoExpr -> Bool
 isCase expr =
@@ -4733,10 +4849,85 @@ simplifyLetChain ctx chainExpr =
         ( finalBody1, ctx2 ) =
             simplifyLets ctx1 finalBody0
 
+        spineForward =
+            List.reverse spineSimplifiedRev
+
+        ctx2c =
+            censusDeadDefs ctx2 spineForward finalBody1
+
         ( keptSpine, ctx3 ) =
-            dropDeadDefs ctx2 (List.reverse spineSimplifiedRev) finalBody1
+            dropDeadDefs ctx2c spineForward finalBody1
     in
     ( List.foldr (\( d, t ) acc -> MonoLet d acc t) finalBody1 keptSpine, ctx3 )
+
+
+{-| kernel-opt-11 Phase 0 census. Classifies every DEAD binding on this spine
+once, for sizing the DCE widening and for decision D-K's `deadBareKernelVar /
+deadLets` ratio.
+
+Deliberately a SEPARATE one-shot fold rather than counters inside
+`dropDeadDefs`: that function re-runs itself while anything dropped, and a
+dead-but-KEPT binding (a bare `MonoVarKernel`, which the predicate refuses to
+drop) is revisited on every iteration, so a counter there over-counts by the
+iteration depth.
+
+Two honest limits. It sees only the FIRST round, so bindings that become dead
+after an earlier drop are not counted -- it under-reports the fixpoint.
+And `deadDroppableKernelLets` classifies on the CALLEE alone, while the
+transform additionally requires every argument to be pure, so it is an UPPER
+bound on what `kernelLetDCE` will realize; the gap is argument impurity and is
+expected, not a bug.
+
+-}
+censusDeadDefs : RewriteCtx -> List ( Mono.MonoDef, Mono.MonoType ) -> MonoExpr -> RewriteCtx
+censusDeadDefs ctx spine finalBody =
+    let
+        usesInDefs : Name -> List ( Mono.MonoDef, Mono.MonoType ) -> Int
+        usesInDefs name defs =
+            List.foldl (\( d, _ ) n -> n + countUsagesInDef name d) 0 defs
+
+        classify ( d, _ ) ( rest, m ) =
+            case d of
+                Mono.MonoTailDef _ _ _ ->
+                    ( List.drop 1 rest, m )
+
+                Mono.MonoDef _ _ ->
+                    let
+                        laterUses =
+                            usesInDefs (getDefName d) rest
+                                + countUsages (getDefName d) finalBody
+                    in
+                    if laterUses /= 0 then
+                        ( List.drop 1 rest, m )
+
+                    else
+                        ( List.drop 1 rest
+                        , case getDefBound d of
+                            MonoVarKernel _ _ _ _ _ ->
+                                { m
+                                    | deadLets = m.deadLets + 1
+                                    , deadBareKernelVar = m.deadBareKernelVar + 1
+                                }
+
+                            MonoCall _ (MonoVarKernel _ _ home name _) _ _ _ ->
+                                { m
+                                    | deadLets = m.deadLets + 1
+                                    , deadDroppableKernelLets =
+                                        if KernelFacts.droppableFor ( home, name ) then
+                                            m.deadDroppableKernelLets + 1
+
+                                        else
+                                            m.deadDroppableKernelLets
+                                }
+
+                            _ ->
+                                { m | deadLets = m.deadLets + 1 }
+                        )
+
+        ( _, metrics1 ) =
+            List.foldl classify ( List.drop 1 spine, ctx.metrics ) spine
+    in
+    { ctx | metrics = metrics1 }
 
 
 {-| One drop pass over the spine; re-runs itself while anything dropped.
@@ -4777,8 +4968,17 @@ dropDeadDefs ctx spine finalBody =
                                 else
                                     keep ()
 
-                            else if laterUses == 0 && isPureExpr bound then
-                                go earlierRev rest (bumpLetElimination c) True
+                            else if
+                                laterUses
+                                    == 0
+                                    && (if c.kernelFactsDce then
+                                            isDroppableExpr bound
+
+                                        else
+                                            isPureExpr bound
+                                       )
+                            then
+                                go earlierRev rest (bumpKernelDCE c bound) True
 
                             else
                                 keep ()
@@ -5095,12 +5295,32 @@ isClosure expr =
             False
 
 
-{-| Check if an expression is pure (no side effects).
-We're conservative here - only eliminate bindings we're certain are pure.
-Function calls might have side effects (like Debug.log), so we don't eliminate them.
+{-| Legacy predicate: every call is impure. Kept verbatim for the H2.5/H6.1
+partial-forward guards, which RELOCATE their arguments rather than delete them
+and are deliberately not part of the kernel-opt-11 widening.
 -}
 isPureExpr : MonoExpr -> Bool
-isPureExpr expr =
+isPureExpr =
+    isPureExprGen False
+
+
+{-| Dead-binding predicate: as `isPureExpr`, but additionally drops kernel calls
+the audited KernelFacts table certifies `droppable` (`cseSafe` AND
+`totality == Total`). Gated by `inline.kernelFactsDce`.
+-}
+isDroppableExpr : MonoExpr -> Bool
+isDroppableExpr =
+    isPureExprGen True
+
+
+{-| Check if an expression is pure (no side effects).
+We're conservative here - only eliminate bindings we're certain are pure.
+Function calls might have side effects (like Debug.log), so we don't eliminate
+them -- except, when `kDrop` is set, a saturated call to a kernel whose
+KernelFacts row is `droppable`.
+-}
+isPureExprGen : Bool -> MonoExpr -> Bool
+isPureExprGen kDrop expr =
     case expr of
         MonoLiteral _ _ ->
             True
@@ -5112,7 +5332,9 @@ isPureExpr expr =
             True
 
         MonoVarKernel _ _ _ _ _ ->
-            -- Kernel functions could have side effects
+            -- DEFERRED (decision D-K): a BARE kernel var in value position stays
+            -- impure-conservative. Widening it needs an arrow guard so no
+            -- unaudited nullary kernel constant slips through, and its own A/B.
             False
 
         MonoUnit ->
@@ -5122,72 +5344,100 @@ isPureExpr expr =
             True
 
         MonoList _ items _ ->
-            List.all isPureExpr items
+            List.all (isPureExprGen kDrop) items
 
         MonoClosure _ _ _ ->
             -- Closure creation is pure (evaluation is not)
             True
 
-        MonoCall _ _ _ _ _ ->
-            -- Function calls might have side effects
-            False
+        MonoCall _ callee args _ _ ->
+            case ( kDrop, callee ) of
+                ( True, MonoVarKernel _ _ home name kernelType ) ->
+                    -- Whitelist discipline: unlisted kernel => today's answer.
+                    --
+                    -- No separate HOF guard: KernelFacts validation V2 makes
+                    -- `cseSafe` imply `not callsBackIntoElm`, so `droppable`
+                    -- already excludes any kernel that re-enters Elm. That is a
+                    -- UNIT TEST, not a compile-time guarantee -- if V2 is ever
+                    -- relaxed, this arm must grow `&& not facts.callsBackIntoElm`.
+                    --
+                    -- The arity guard rejects OVER-application: extra args mean
+                    -- the kernel's result is applied further, which the row says
+                    -- nothing about. Under-application only mints a PAP, which
+                    -- the droppable bit already licenses.
+                    (case KernelFacts.lookup ( home, name ) of
+                        Just facts ->
+                            KernelFacts.droppable facts
+
+                        Nothing ->
+                            False
+                    )
+                        && (List.length args <= flatArrowArity kernelType)
+                        && List.all (isPureExprGen kDrop) args
+
+                _ ->
+                    -- Non-kernel callees, and everything flag-off: unchanged.
+                    False
 
         MonoTailCall _ _ _ ->
             -- Tail calls might have side effects
             False
 
         MonoIf branches final _ ->
-            List.all (\( c, t ) -> isPureExpr c && isPureExpr t) branches
-                && isPureExpr final
+            List.all (\( c, t ) -> isPureExprGen kDrop c && isPureExprGen kDrop t) branches
+                && isPureExprGen kDrop final
 
         MonoLet def body _ ->
-            isPureExprDef def && isPureExpr body
+            isPureExprDefGen kDrop def && isPureExprGen kDrop body
 
         MonoDestruct _ inner _ ->
-            isPureExpr inner
+            isPureExprGen kDrop inner
 
         MonoCase _ _ decider branches _ ->
-            isPureDecider decider && List.all (\( _, e ) -> isPureExpr e) branches
+            isPureDeciderGen kDrop decider
+                && List.all (\( _, e ) -> isPureExprGen kDrop e) branches
 
         MonoRecordCreate fields _ ->
-            List.all (\( _, e ) -> isPureExpr e) fields
+            List.all (\( _, e ) -> isPureExprGen kDrop e) fields
 
         MonoRecordAccess inner _ _ ->
-            isPureExpr inner
+            isPureExprGen kDrop inner
 
         MonoRecordUpdate inner updates _ ->
-            isPureExpr inner && List.all (\( _, e ) -> isPureExpr e) updates
+            isPureExprGen kDrop inner
+                && List.all (\( _, e ) -> isPureExprGen kDrop e) updates
 
         MonoTupleCreate _ items _ ->
-            List.all isPureExpr items
+            List.all (isPureExprGen kDrop) items
 
 
-isPureExprDef : Mono.MonoDef -> Bool
-isPureExprDef def =
+isPureExprDefGen : Bool -> Mono.MonoDef -> Bool
+isPureExprDefGen kDrop def =
     case def of
         Mono.MonoDef _ bound ->
-            isPureExpr bound
+            isPureExprGen kDrop bound
 
         Mono.MonoTailDef _ _ bound ->
-            isPureExpr bound
+            isPureExprGen kDrop bound
 
 
-isPureDecider : Mono.Decider Mono.MonoChoice -> Bool
-isPureDecider decider =
+isPureDeciderGen : Bool -> Mono.Decider Mono.MonoChoice -> Bool
+isPureDeciderGen kDrop decider =
     case decider of
         Mono.Leaf choice ->
             case choice of
                 Mono.Inline expr ->
-                    isPureExpr expr
+                    isPureExprGen kDrop expr
 
                 Mono.Jump _ ->
                     True
 
         Mono.Chain _ success failure ->
-            isPureDecider success && isPureDecider failure
+            isPureDeciderGen kDrop success && isPureDeciderGen kDrop failure
 
         Mono.FanOut _ tests fallback ->
-            List.all (\( _, d ) -> isPureDecider d) tests && isPureDecider fallback
+            List.all (\( _, d ) -> isPureDeciderGen kDrop d) tests
+                && isPureDeciderGen kDrop fallback
 
 
 countUsages : Name -> MonoExpr -> Int

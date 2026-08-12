@@ -3,6 +3,7 @@ module Compiler.GlobalOpt.KernelFacts exposing
     , lookup, lookupSymbol, splitSymbol, rows
     , canTriggerGC, gcLeafEligible, droppable, hoistable
     , gcLeafEligibleFor, droppableFor, hoistableFor
+    , CostClass(..), costClass
     , validationErrors
     )
 
@@ -44,6 +45,7 @@ measurement, not audit.
 @docs lookup, lookupSymbol, splitSymbol, rows
 @docs canTriggerGC, gcLeafEligible, droppable, hoistable
 @docs gcLeafEligibleFor, droppableFor, hoistableFor
+@docs CostClass, costClass
 @docs validationErrors
 
 -}
@@ -166,6 +168,35 @@ droppable f =
 hoistable : KernelFacts -> Bool
 hoistable f =
     f.cseSafe
+
+
+{-| Inliner cost class (kernel-opt-11 (b)), DERIVED — never stored.
+
+There is deliberately no `CInline` case: whether a symbol lowers to an inline op
+rather than a call is a property of `Generate.MLIR.Intrinsics`, not of this
+audit, and is queried there. This type says only what the AUDIT knows — whether
+the callee can allocate, and whether it can re-enter Elm.
+
+-}
+type CostClass
+    = CGcLeaf -- plain leaf call: no Elm GC, no C++ heap traffic, no callback
+    | CAlloc -- allocates on the Elm heap or the C++ heap
+    | CHof -- re-enters Elm through a user closure
+
+
+{-| Classify for the cost model. Ordered most-expensive-first: re-entering Elm
+dominates allocating, which dominates a plain leaf call.
+-}
+costClass : KernelFacts -> CostClass
+costClass f =
+    if f.callsBackIntoElm then
+        CHof
+
+    else if f.gcAlloc /= GcNone || f.cppAlloc then
+        CAlloc
+
+    else
+        CGcLeaf
 
 
 

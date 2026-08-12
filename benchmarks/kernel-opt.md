@@ -143,6 +143,47 @@ arms lowered from the same Stage-5 `.mlir`), which stays byte-identical.
 
 ## Runs
 
+### 2026-08-12 20:05 UTC — Run O: kernel-opt-11 mono DCE via KernelFacts + kernel cost classes (**FLAT — no regression; KEEP — both DEFAULT-ON, `ECO_KERNEL_FACTS_DCE=0` / `ECO_KERNEL_COST_CLASSES=0` escape**)
+
+Two independent consumers of the kernel-opt-07 table, both in
+`MonoInlineSimplify`. **(a)** `isPureExpr` generalizes to `isPureExprGen kDrop`,
+so the dead-binding gate can drop a dead saturated call to a kernel the table
+certifies `droppable` (`cseSafe && totality == Total`) with all args pure. The
+H2.5/H6.1 partial-forward guards keep the legacy all-calls-impure predicate.
+**(b)** `computeCost`'s flat 6-per-kernel-call becomes a derived `CostClass`
+(`CGcLeaf`/`CAlloc`/`CHof`) plus an inline-op oracle, so an `eco.int.add` no
+longer scores the same as a rope-allocating `Utils_append`.
+
+**Census first, and it is small: the DCE widening's realizable ceiling on the
+entire 261-module self-compile is FOUR sites** (`deadLets=450
+deadDroppableKernelLets=4`), of which **2 realize** — `letDCE` 498 → 500,
+`kernelLetDCE=2`, exactly the predicted `≤` relationship, the gap being argument
+impurity. (a) therefore ships for the enabling value and for ending the
+`isPureExpr`-says-impure / `CafHoist`-says-pure contradiction, **not** for a win.
+**Decision D-K settled by measurement: `deadBareKernelVar = 0 / 450`**, so a bare
+kernel var in value position stays impure-conservative.
+
+**(b) does change real inlining decisions:** emitted `.mlir` +1,341 B and
+`letDCE` 498 → 441 on the live self-compile. Wall FLAT.
+
+Arms are one binary under different env (these are runtime config). **Item-10
+flag-off is byte-identical to the item-09 baseline on the frozen corpus in both
+rounds** — the widening is fully gated. Gates: E2E **1646/1646** in both flag
+states and again after the default flip; `elm-tests` 13085 passed / 12 failed,
+exactly the pre-existing baseline.
+
+| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|---|
+| on r1 | **3:21.32** | 4,985,552 kB | 217,912,477 | 13,245.85 MB | 836 | 360,870,804 (165.6%) | 10 | 79.07 s | 12,930,050 B |
+| on r2 | **3:24.12** | 4,985,044 kB | ≡ | ≡ | 836 | ≡ | 10 | 80.61 s | ≡ |
+| off r1 | 3:22.47 | 4,916,816 kB | 217,944,793 | 13,246.63 MB | 836 | 360,789,971 | 10 | 79.48 s | 12,928,709 B |
+| off r2 | 3:20.72 | 4,981,396 kB | 217,944,629 | 13,246.62 MB | 836 | 360,789,973 | 10 | 78.84 s | ≡ |
+| base r1 † | 3:24.26 | 4,882,412 kB | 217,928,795 | 13,246.14 MB | 836 | 361,232,810 | 10 | 79.95 s | ≡ |
+| base r2 † | 3:23.20 | 4,882,936 kB | ≡ | ≡ | 836 | ≡ | 10 | 79.12 s | ≡ |
+
+† item-09 baseline binary, same frozen corpus. on vs off **+0.56%**, off vs base
+**−1.05%**, on vs base **−0.50%** — all FLAT.
+
 ### 2026-08-12 14:20 UTC — Run N: kernel-opt-09 gc-leaf safepoint relaxation + inline-group split (**FLAT — no regression; KEEP — both DEFAULT-ON, `ECO_GCPREPARE_LEAF_SAFEPOINT=0` / `ECO_GCPREPARE_SPLIT_INLINE_GROUPS=0` escape**)
 
 Two surviving phases of a plan whose headline transform the census killed.
@@ -572,3 +613,4 @@ was 20,480 MB. Gates at that point: E2E `--target full` and heap-validate tree
 | L — kernel-opt-03 STRCASE synthesized sites | 3:23.90 (r1/r2 mean, −0.22% FLAT) | 219,818,080 obj / 13,332.69 MB |
 | M — kernel-opt-08 kernel gc-leaf stamp | 3:23.62 (r1/r2 mean, −1.25% FLAT) | 219,767,579 obj / 13,331.32 MB (+2,223 de-statepointed sites; binary −287,952 B) |
 | N — kernel-opt-09 leaf safepoints + inline-group split | 3:22.80 (r1/r2 mean, −0.23% FLAT) | 217,928,793 obj / 13,246.14 MB (counter-blind; retention unmoved. −798 safepoints, −4,173 out-of-line calls; binary −25,304 B) |
+| O — kernel-opt-11 mono DCE + kernel cost classes | 3:22.72 (r1/r2 mean, −0.50% vs base FLAT) | 217,912,477 obj / 13,245.85 MB (DCE ceiling 4 sites, 2 realized; cost classes move inlining, .mlir +1,341 B) |

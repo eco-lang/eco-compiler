@@ -1,11 +1,11 @@
-module Compiler.GlobalOpt.CafDedupe exposing (Stats, emptyStats, run, renderStats)
+module Compiler.GlobalOpt.CafDedupe exposing (Stats, emptyStats, renderStats, run)
 
 {-| Top-level CAF spec dedupe (`ECO_CAF_DEDUPE=1`,
-design_docs/caf-memoization-design.md §12 follow-on; measured as Run Y).
+design\_docs/caf-memoization-design.md §12 follow-on; measured as Run Y).
 
 Monomorphization and LSS keying can mint multiple specs whose `MonoDefine`
 bodies and types are STRUCTURALLY IDENTICAL — each currently gets its own
-slot, guard, first evaluation, and cached copy. FORBID_OPT_003 forbids
+slot, guard, first evaluation, and cached copy. FORBID\_OPT\_003 forbids
 sharing across DIFFERENT layouts; identical `(body, type)` pairs have
 identical layouts by construction, so aliasing every reference to one
 canonical spec is sound.
@@ -14,7 +14,7 @@ Equality is EXACT: region-zeroed structural equality on bodies
 (`CafHoist.zeroRegions` — collision-impossible) plus `==` on the define
 type. Bodies containing `MonoClosure` never merge in practice (lambdaIds
 are minted fresh per clone and participate in `==` — which is exactly the
-LSS_009/017-safe behavior; no special-casing needed). Lambda-set
+LSS\_009/017-safe behavior; no special-casing needed). Lambda-set
 annotation differences in types also block merging (conservative: anno
 mismatches are reported nowhere near worth the LSS-soundness analysis).
 
@@ -89,6 +89,15 @@ fixpoint fuel graph stats =
         fixpoint (fuel - 1) graph1 merged
 
 
+{-| kernel-opt-11 Phase 4 note (no behaviour change). This round merges
+structurally equal `MonoDefine` specs with **no purity check at all** -- the
+justification is not that kernel calls are pure, but that merging two identical
+whole-spec DEFINITIONS does not change how many times either is EVALUATED, so
+design\_docs/debug-log-ordering-policy.md D-2 (which forbids merging two
+occurrences of a logging EXPRESSION) is not engaged. If this pass is ever
+widened from spec-level to expression-level merging, D-2 applies immediately and
+a `KernelFacts.hoistable` test becomes mandatory.
+-}
 oneRound : Mono.MonoGraph -> ( Mono.MonoGraph, Stats )
 oneRound ((Mono.MonoGraph g) as graph) =
     let
