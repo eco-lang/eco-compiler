@@ -16,7 +16,33 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <cstdlib>
+
 namespace eco {
+
+/// kernel-opt-09 Phase 3. `ECO_GCPREPARE_LEAF_SAFEPOINT=0` restores treating
+/// eco.calls stamped `eco.callee_gc_leaf` as call safepoints with full root
+/// operand lists. Default ON.
+///
+/// This lives HERE rather than in either .cpp because EcoGCPrepare's
+/// `isCallSafepoint` and EcoGCLivenessAudit's skip list must agree bit-for-bit:
+/// if the audit still expects roots on a call the transform stopped rooting,
+/// a validator build fails with false positives on correct IR.
+///
+/// Sound because the root operands are the MLIR-level list only. They are split
+/// off at lowering by `splitAdaptedRoots` and handed to `emitSafepointMarker`,
+/// which is a no-op — RS4GC inserts the real statepoints from LLVM's own
+/// liveness. Dropping them cannot perturb any OTHER call's root set either: the
+/// `Liveness` analysis is built once per function BEFORE any operand is
+/// appended, so `isDeadAfter` answers from a snapshot that this change does not
+/// touch.
+inline bool gcLeafSafepointRelaxed() {
+    static const bool on = [] {
+        const char *e = ::getenv("ECO_GCPREPARE_LEAF_SAFEPOINT");
+        return !(e && e[0] == '0' && e[1] == '\0');
+    }();
+    return on;
+}
 
 /// Returns true if a value has !eco.value type.
 inline bool isEcoValue(mlir::Value v) {

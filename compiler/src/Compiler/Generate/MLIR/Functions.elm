@@ -1992,7 +1992,7 @@ generateKernelDecl ctx info =
         region =
             Ops.mkRegion argPairs [ stubOp ] returnOp
 
-        attrs =
+        baseAttrs =
             Dict.fromList
                 [ ( "sym_name", StringAttr info.symbolName )
                 , ( "sym_visibility", VisibilityAttr Private )
@@ -2006,6 +2006,18 @@ generateKernelDecl ctx info =
                         )
                   )
                 ]
+
+        -- kernel-opt-08 / CGEN_072(f): the ONE declaration-level gc-leaf channel.
+        -- UnitAttr (presence == eligible) matching eco.caf_memo / eco.shadow_roots
+        -- / eco.list_chunks, because the C++ side tests hasAttr -- a BoolAttr False
+        -- would read as "present". kernel-opt-09's module marking pass reads this
+        -- SAME attr; there is no second one.
+        attrs =
+            if ctx.ecoConfig.kernelGcLeaf && info.gcLeaf then
+                Dict.insert "eco.gc_leaf" UnitAttr baseAttrs
+
+            else
+                baseAttrs
 
         ( ctxOut, funcOp ) =
             Ops.mlirOp ctx3 "func.func"

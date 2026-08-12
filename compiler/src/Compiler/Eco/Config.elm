@@ -49,6 +49,7 @@ type alias EcoConfig =
     , appendSplit : Bool -- kernel-opt-05: split Elm_Kernel_Utils_append into typed eco.string.append / eco.list.append at mono sites that statically know the operand type. DEFAULT-ON since 2026-08-11 (3,468 self-compile sites -> 67; 2,695 string + 706 list; wall FLAT at +0.80%, so it ships for the typed boundary and the deleted runtime dispatch, not a measured win); env kill switch ECO_APPEND_SPLIT=0; artifact-affecting (hash token "apsplit=1" when enabled). Polymorphic residue (any MVar operand) keeps the kernel call
     , stringOrderIntrinsic : Bool -- kernel-opt-06: lower Utils.lt/le/gt/ge on [MString,MString] to eco.string.cmp3 + a SIGNED sign test against 0, instead of the boxed kernel call + eco.unbox. DEFAULT-ON since 2026-08-11 (95 of 121 sites convert: lt 79->14, gt 40->10, ge 2->2; wall FLAT at -0.34%); env kill switch ECO_STRING_ORDER_INTRINSIC=0; artifact-affecting (hash token "strord=1")
     , valueEq : Bool -- kernel-opt-03: lower boxed structural equality to eco.value.eq (word-equality / embedded-constant / kernel-call diamond) instead of a boxed Elm_Kernel_Utils_equal call + eco.unbox. DEFAULT-ON since 2026-08-11 (all 1,452 self-compile Utils_equal/notEqual sites convert; wall -1.84%, inside the noise band so recorded FLAT); env kill switch ECO_VALUE_EQ=0; artifact-affecting (hash token "veq=1"). Bool == is NOT gated by this -- it is unconditionally better
+    , kernelGcLeaf : Bool -- kernel-opt-08 (CGEN_072(f)/KERNEL_FACTS_001): stamp `eco.gc_leaf` on the func.func decl of every kernel whose KernelFacts row is gcLeafEligible, so the backend may attach gc-leaf-function and RS4GC skips statepointing its call sites. DEFAULT-ON since 2026-08-12 (10 of the 14 eligible kernels still have stubs to stamp -- the other 4 lost their call sites to kernel-opt-03/04/06; +2,223 de-statepointed sites, binary -287,952 B of which 99% is .llvm_stackmaps; wall FLAT at -1.25%); env kill switch ECO_KERNEL_GCLEAF_EMIT=0; artifact-affecting (hash token "kgcl=1"). The BACKEND kill switch ECO_KERNEL_GCLEAF=0 separately ignores an attr already in the .mlir
     }
 
 
@@ -352,6 +353,7 @@ default =
     , appendSplit = True
     , stringOrderIntrinsic = True
     , valueEq = True
+    , kernelGcLeaf = True
     }
 
 
@@ -379,6 +381,7 @@ decoder =
         |> D.apply (D.optionalField "appendSplit" D.bool default.appendSplit)
         |> D.apply (D.optionalField "stringOrderIntrinsic" D.bool default.stringOrderIntrinsic)
         |> D.apply (D.optionalField "valueEq" D.bool default.valueEq)
+        |> D.apply (D.optionalField "kernelGcLeaf" D.bool default.kernelGcLeaf)
 
 
 {-| Decode the `list` block. Only `chunks` is JSON-configurable; `report`
@@ -786,6 +789,14 @@ hash cfg =
             -- kernel-opt-03: eco.value.eq emission rewrites the generated MLIR.
             ++ (if cfg.valueEq then
                     [ "veq=1" ]
+
+                else
+                    []
+               )
+            -- kernel-opt-08: gc-leaf stamping rewrites the emitted kernel decls,
+            -- so flag-on artifacts must never share flag-off caches.
+            ++ (if cfg.kernelGcLeaf then
+                    [ "kgcl=1" ]
 
                 else
                     []

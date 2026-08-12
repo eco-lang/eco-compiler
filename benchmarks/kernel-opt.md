@@ -143,6 +143,89 @@ arms lowered from the same Stage-5 `.mlir`), which stays byte-identical.
 
 ## Runs
 
+### 2026-08-12 14:20 UTC — Run N: kernel-opt-09 gc-leaf safepoint relaxation + inline-group split (**FLAT — no regression; KEEP — both DEFAULT-ON, `ECO_GCPREPARE_LEAF_SAFEPOINT=0` / `ECO_GCPREPARE_SPLIT_INLINE_GROUPS=0` escape**)
+
+Two surviving phases of a plan whose headline transform the census killed.
+**Phase 3:** a new module pass `EcoMarkGCLeafCalls` copies `eco.gc_leaf` from the
+kernel decl onto each direct `eco.call` as `eco.callee_gc_leaf`, and
+`EcoGCPrepare` stops treating those calls as safepoints. **Phase 2-pre:** a run
+of adjacent allocations whose members each have a call-free HEAP_034 inline
+lowering is no longer grouped — grouping such a run costs an out-of-line
+`eco_gc_alloc_region_fast` plus one `eco_init_*_at` per member where the
+ungrouped form makes no calls at all.
+
+**Phases 2 / 2A / 2B DROPPED** on the census: of 2,145 crossable merge windows,
+**2,105 (98.1%) are blocked by a real intra-group SSA dependency** and
+`mergeableLeaf` was **exactly 0** — the gc-leaf fact unlocks no merge anywhere in
+the module. Design-doc §8 row 3's "two diamonds where one sufficed, split by an
+opaque kernel call" does not hold on this tree.
+
+**Phase 3 is byte-identical by construction and was gated as such:** with split
+forced off in both arms, the produced `eco-compiler` is **identical** with the
+relaxation on and off. Its effect is MLIR-analysis-only — safepoints
+154,323 → 153,525 (**−798**, exactly the stamped-call count) and root operands
+527,779 → 525,246 (**−2,533**), all of which were discarded at lowering anyway.
+0.52% of one pass; it lands because it is free, not because it is big.
+
+**Phase 2-pre carries the whole measurable delta:** 1,385 groups covering 2,788
+objects stop being grouped, deleting **1,385 region calls + 2,788 init calls**.
+Binary **−25,304 B (−0.039%)**, split `.text` **+16,192** / `.llvm_stackmaps`
+**−40,104** — more inline code, but 1,385 fewer statepointed region diamonds.
+
+**Counter note — the allocation drop is HEAP_034 counter blindness, not deleted
+allocation.** `Objects allocated` −1,838,862 (−0.84%) and `Bytes allocated`
+−85.18 MB (−0.64%) are the 2,788 sites moving from the *counted* region path to
+the *uncounted* inline bump. `Objects promoted` moved by **+8 in 361 million**
+and minor/major cycles are identical at 836/10 — retention is untouched, so no
+real allocation was removed. Same lesson as Run F.
+
+Wall **−0.23%** ⇒ FLAT. `-out.mlir` byte-identical in both rounds. Gates: E2E
+**1643/1643** default-on and again with both kill switches; item-09-all-off
+build byte-identical to the pre-item-09 `eco-compiler`.
+
+| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|---|
+| on r1 | **3:22.92** | 4,903,096 kB | 217,928,793 | 13,246.14 MB | 836 | 361,232,810 (165.8%) | 10 | 79.62 s | 12,928,709 B |
+| on r2 | **3:22.68** | 4,903,332 kB | ≡ | ≡ | 836 | ≡ | 10 | 79.51 s | ≡ |
+| off r1 | 3:22.85 | 4,887,696 kB | 219,767,655 | 13,331.32 MB | 836 | 361,232,802 | 10 | 79.84 s | ≡ |
+| off r2 | 3:23.70 | 4,888,028 kB | ≡ | ≡ | 836 | ≡ | 10 | 80.03 s | ≡ |
+
+### 2026-08-12 08:33 UTC — Run M: kernel-opt-08 kernel `eco.gc_leaf` stamp (**FLAT — no regression; KEEP — DEFAULT-ON, `ECO_KERNEL_GCLEAF_EMIT=0` / backend `ECO_KERNEL_GCLEAF=0` escape**)
+
+Every kernel whose `KernelFacts` row is `gcLeafEligible` (14 rows, `gcAlloc =
+GcNone` and no call back into Elm) gets an `eco.gc_leaf` UnitAttr on its
+`func.func` decl; `KernelFuncOpLowering` reflects that into
+`passthrough = ["gc-leaf-function"]` so RS4GC skips statepointing the call
+sites. Eligibility is carried on `KernelDeclInfo` from the
+`KernelInstanceKey` — never reverse-parsed from the symbol — and OR-merged in
+`insertKernelDecl`. gc-leaf is the only attribute such a decl may hold
+pre-RS4GC (REP_LLVM_002), so the fixture's negative CHECKs are load-bearing.
+
+**Arms differ in how each binary was COMPILED, not in what it emits:**
+`eco-k08-on` was built by a compiler run with the flag on, so its own call
+sites are de-statepointed. Both then compile the frozen corpus with the flag
+off, and `-out.mlir` is byte-identical in both rounds — the self-consistency
+check still holds. Wall **−1.25%** ⇒ FLAT. Gates: E2E **1643/1643** in both
+flag states.
+
+**Coverage (`ECO_GCFREE_LEAF=c` on the same Stage-5 module):** 3,688 → 3,709
+GC-free functions (of 87,327) and **11,950 → 14,173 de-statepointed direct
+call sites (+2,223, +18.6%)**. Binary **−287,952 B (−0.439%)**, of which
+`.llvm_stackmaps` is −284,976 B and `.text` only −2,064 B — 99.0% metadata,
+which is precisely why the wall is flat.
+
+**10 of the 14 eligible kernels are actually stamped**, and the four absentees
+are this series eating its own seed corn: `Utils_equal`/`Utils_notEqual` no
+longer have stubs (Run K routed all 1,452 sites through `eco.value.eq`),
+`String_length` likewise (Run H), and `Utils_le` has zero sites (Run J).
+
+| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|---|
+| on r1 | **3:21.84** | 4,903,404 kB | 219,767,579 | 13,331.32 MB | 836 | 361,232,812 (164.4%) | 10 | 78.37 s | 12,928,651 B |
+| on r2 | **3:25.39** | 4,903,112 kB | ≡ | ≡ | 836 | ≡ | 10 | 81.69 s | ≡ |
+| off r1 | 3:27.32 | 4,929,412 kB | 219,767,740 | 13,331.33 MB | 836 | 361,232,748 | 10 | 81.12 s | ≡ |
+| off r2 | 3:25.08 | 4,908,216 kB | 219,767,582 | 13,331.32 MB | 836 | 361,232,804 | 10 | 80.95 s | ≡ |
+
 ### 2026-08-12 04:10 UTC — Run L: kernel-opt-03 `ECO_VALUE_EQ_STRCASE` (**FLAT — no regression; KEEP — DEFAULT-ON, `ECO_VALUE_EQ_STRCASE=0` escapes**)
 
 Closes the one switch Run K shipped unmeasured. Under `ECO_VALUE_EQ_STRCASE` the
@@ -487,3 +570,5 @@ was 20,480 MB. Gates at that point: E2E `--target full` and heap-validate tree
 | J — kernel-opt-06 String ordering cmp3 | 3:23.25 (r1/r2 mean, −0.34% FLAT) | 219,817,471 obj / 13,332.69 MB |
 | K — kernel-opt-03 eco.value.eq emission | 3:21.63 (r1/r2 mean, −1.84% FLAT) | 219,818,234 obj / 13,332.70 MB |
 | L — kernel-opt-03 STRCASE synthesized sites | 3:23.90 (r1/r2 mean, −0.22% FLAT) | 219,818,080 obj / 13,332.69 MB |
+| M — kernel-opt-08 kernel gc-leaf stamp | 3:23.62 (r1/r2 mean, −1.25% FLAT) | 219,767,579 obj / 13,331.32 MB (+2,223 de-statepointed sites; binary −287,952 B) |
+| N — kernel-opt-09 leaf safepoints + inline-group split | 3:22.80 (r1/r2 mean, −0.23% FLAT) | 217,928,793 obj / 13,246.14 MB (counter-blind; retention unmoved. −798 safepoints, −4,173 out-of-line calls; binary −25,304 B) |

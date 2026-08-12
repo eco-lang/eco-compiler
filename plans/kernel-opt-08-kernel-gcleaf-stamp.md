@@ -1081,3 +1081,67 @@ with retention and with deleted per-op work — inline nursery −9.6%, CAF memo
 - **Pilot-parity check:** the stamped set is the A1 14; every one of the seven pilot symbols it
   does not cover is classified per Phase 4's (i)–(iv), and the resulting set difference plus
   Δsites is written into this file and kernel-call-census.md §C2.1.
+
+---
+
+## Outcome — 2026-08-12: SHIPPED DEFAULT-ON (Run M)
+
+`kernelGcLeaf = True` in `Compiler/Eco/Config.elm`; front-end kill switch
+`ECO_KERNEL_GCLEAF_EMIT=0`, backend kill switch `ECO_KERNEL_GCLEAF=0`.
+Benchmarked as Run M in `benchmarks/kernel-opt.md`.
+
+**Census (`ECO_GCFREE_LEAF=c`, same Stage-5 module both arms):**
+
+| | flag off | flag on | Δ |
+|---|---|---|---|
+| functions GC-free | 3,688 / 87,327 | 3,709 / 87,327 | **+21** |
+| de-statepointed direct call sites | 11,950 | 14,173 | **+2,223 (+18.6%)** |
+| binary | 65,524,152 B | 65,236,200 B | **−287,952 B (−0.439%)** |
+| `.text` | 22,601,555 B | 22,599,491 B | −2,064 B |
+| `.llvm_stackmaps` | 22,962,544 B | 22,677,568 B | **−284,976 B** |
+
+99.0% of the shrink is stackmap metadata and only 0.7% is `.text` — which is
+the mechanical reason the wall is flat, and it is the sixth data point for
+"statepoint/metadata removal does not move wall". Wall −1.25%, inside the
+±2.8% band ⇒ FLAT, accepted under the loop's regression-only veto.
+
+**Pilot-parity: 10 stamped, not 14.** The stamped set is
+`Utils_compare/lt/gt/ge`, `String_contains/startsWith/endsWith`,
+`Bytes_width/getStringWidth/decodeFailure`. The four absentees are **not**
+misses — this series deleted their call sites before 08 arrived:
+
+| absent | why | classification |
+|---|---|---|
+| `Utils_equal`, `Utils_notEqual` | all 1,452 sites → `eco.value.eq` (kernel-opt-03, Run K) | (iii) no stub emitted |
+| `String_length` | all 101 sites → `eco.string.length` (kernel-opt-04, Run H) | (iii) no stub emitted |
+| `Utils_le` | zero sites in the corpus (observed in kernel-opt-06, Run J) | (iv) never instantiated |
+
+So the +2,223 comes from 10 symbols; the pilot's 20-declaration set is not a
+comparable denominator any more. `Utils_equal`'s de-statepointing is not lost —
+`getOrCreateUtilsEqual` is stamped directly via `attachGcLeafPassthrough`, so
+arm 3 of the `eco.value.eq` diamond carries gc-leaf without a `func.func` stub.
+
+**`numDefined` is 87,327, not the pilot's 44,967** — ~1.94×. Not investigated
+here; the ratio is stable across both arms so it cancels out of the Δ. Likely
+the pilot predates the monomorphizer/specialization growth of the intervening
+tracks. Flagged for whoever next quotes an absolute coverage percentage.
+
+**Gates run:** E2E `--target full` **1643/1643** flag-off, 1643/1643 with
+`ECO_KERNEL_GCLEAF_EMIT=1`, and again after the default flip; codegen golden
+`test/codegen/kernel_gcleaf_stamp.mlir`; frozen-corpus `-out.mlir`
+byte-identical between arms in both rounds.
+
+**Gates NOT run** (removed from the loop by instruction — see
+`guides/kernel-opt-loop.md` "Gates this loop deliberately does NOT run"):
+heap-validate tree, `--target bootstrap` fixed point, `elm-tests`.
+
+**Not built: the GCStats audit harness** (plan Phase 3). KERNEL_FACTS_001 was
+therefore written into `design_docs/invariants.csv` WITHOUT the harness clause,
+so the invariant does not claim enforcement it does not have. The permanent
+tripwire for a lying `GcNone` row remains unbuilt; that is the one piece of
+this plan still owed, and it is the precondition kernel-opt-09 inherits.
+
+**Hand-offs to kernel-opt-09:** `kernelGcLeafEnabled()` in
+`EcoToLLVMInternal.h` is the backend kill switch 09 must respect, and
+`attachGcLeafPassthrough()` is the shared idempotent stamper it should reuse
+rather than re-deriving eligibility.

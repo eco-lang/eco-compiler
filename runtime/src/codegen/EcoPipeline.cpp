@@ -96,6 +96,11 @@ void buildEcoToLLVMPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     // pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
 
     // Stage 2.5: GC preparation (root sets, allocation grouping, safepoint rewrite).
+    // Publish the per-callee cannot-GC fact as a call-local attr first: by here
+    // every kernel decl exists and every kernel call site is final (both
+    // EcoCompareCaseRewrite, which can mint Elm_Kernel_Utils_cmp3, and
+    // UndefinedFunction ran inside buildEcoToEcoPipeline above).
+    pm.addPass(eco::createEcoMarkGCLeafCallsPass());
     pm.addPass(eco::createEcoGCPreparePass());
 #ifdef ECO_LOWERING_VALIDATION
     pm.addNestedPass<func::FuncOp>(eco::createEcoGCLivenessAuditPass());

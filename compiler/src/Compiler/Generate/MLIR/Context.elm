@@ -61,6 +61,7 @@ import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
 import Compiler.Eco.Config as Config
+import Compiler.GlobalOpt.KernelFacts as KernelFacts
 import Compiler.Generate.MLIR.KernelAbi as KernelAbi
 import Compiler.GlobalOpt.Borrow.Facts as BorrowFacts
 import Compiler.Generate.MLIR.Types as Types
@@ -671,6 +672,14 @@ type alias KernelDeclInfo =
     { symbolName : String
     , abiArgTypes : List MlirType
     , abiResultType : MlirType
+    , gcLeaf : Bool
+
+    -- kernel-opt-08: `KernelFacts.gcLeafEligible` of the (home, name) row, and
+    -- False when there is no row. Also False on the legacy name-only path --
+    -- whitelist discipline: an unlisted kernel keeps today's poison-seed
+    -- behaviour. NEVER reverse-parse the symbol name to recover the key;
+    -- kernelInstanceSymbol appends _Int/_Float/_Char suffixes, so parsing would
+    -- be wrong for exactly the migrated kernels.
     }
 
 
@@ -691,6 +700,7 @@ registerKernelCall ctx name callSiteArgTypes callSiteReturnType =
         { symbolName = name
         , abiArgTypes = callSiteArgTypes
         , abiResultType = callSiteReturnType
+        , gcLeaf = False
         }
 
 
@@ -713,6 +723,10 @@ registerKernelInstance key ctx =
             { symbolName = abi.symbolName
             , abiArgTypes = abi.abiArgTypes
             , abiResultType = abi.abiResultType
+            , gcLeaf =
+                KernelFacts.lookup ( key.home, key.name )
+                    |> Maybe.map KernelFacts.gcLeafEligible
+                    |> Maybe.withDefault False
             }
     in
     ( abi, insertKernelDecl ctx info )
@@ -729,7 +743,15 @@ insertKernelDecl ctx info =
 
         Just existing ->
             if existing.abiArgTypes == info.abiArgTypes && existing.abiResultType == info.abiResultType then
-                ctx
+                -- OR-merge rather than dropping the new record. Only
+                -- registerKernelInstance ever supplies evidence (the legacy
+                -- name-only path always says False), so this can never
+                -- overwrite an audited False with a lie.
+                if info.gcLeaf && not existing.gcLeaf then
+                    { ctx | kernelDecls = Dict.insert info.symbolName { existing | gcLeaf = True } ctx.kernelDecls }
+
+                else
+                    ctx
 
             else
                 let

@@ -1063,3 +1063,162 @@ any future group-level optimization, and the census itself resolves a standing o
 9. Marking-pass inertness re-checked whenever 08 moves: with `ECO_KERNEL_GCLEAF=0` the
    Phase-0 acceptance `cmp` must still be silent even with every other gate on — that is the
    single-switch rollback promised in the flag table.
+
+---
+
+## Phase 1 census — RESULT and go/no-go decision (2026-08-12)
+
+Measured on the real workload (the backend lowering the compiler's own ~12 MB
+module during `--target eco-compiler`), `ECO_GCPREPARE_CENSUS=1`, one run:
+
+```
+[gcleaf-mark] 10 gc-leaf decls, 798 eco.call sites stamped
+[gcprepare-census] blocks=146205 groupable=80788 runs>=2=16005 runObjects=35533
+[gcprepare-census] windows=2145 noCall=1917 leafOnly=228 hardBarrier=0
+                   mergeableFree=40 mergeableLeaf=0 blockedDeps=2105 blockedSize=0
+[gcprepare-census] safepoints=154323 roots=527779 leafSafepoints=798 leafRoots=2533
+```
+
+**Reading the counters against the plan's decision table:**
+
+| Row | Value | Branch taken |
+|---|---|---|
+| `mergeableLeaf` < 500 **and** `mergeableFree` < 500 | 0 and 40 | **Descope Phase 2 entirely** |
+| `blockedDeps` dominates `mergeable*` | 2,105 of 2,145 windows = **98.1%** | **Descope; do not attempt operand-chasing** |
+| `runs>=2` ≥ 5,000 | **16,005** | **Phase 2-pre is a standalone win** (but see the correction below — only 1,385 of these become real groups) |
+
+**Phase 2 / 2A / 2B are DEAD, and the kernel-facts spine is not why.** Only 2,145
+merge windows exist in 146,205 blocks to begin with, and 98.1% of them are blocked
+by a real SSA dependency: the later allocation consumes a result produced inside
+the window or by the run it would join. That is the expected shape of
+Elm-generated IR — adjacent allocations are usually *nested* constructions
+(`Just (a, b)`: the tuple feeds the ctor), which is exactly the case
+`consumesGroupMemberResult` already closes the group for. The dependency is
+semantic, not an artefact of conservative barriers.
+
+**The gc-leaf fact buys zero merges: `mergeableLeaf = 0`.** 228 windows were
+crossable *only* because of the stamp (`leafOnly`), and **every one of those 228
+was then blocked by a dependency**. So the entire premise of design-doc §8 row 3
+— "two diamonds where one sufficed, split by an opaque kernel call" — does not
+hold on the current tree. Filed against that row.
+
+**`hardBarrier=0` is structural, not a finding.** The scan closes the run at a
+hard barrier rather than recording a window across it, so the counter can never
+be non-zero. `windows` therefore means *crossable* windows only; that is the
+number the decision needs, but the column name is misleading and is called out
+here so nobody later reads 0 as "no barriers exist".
+
+**What the census DID find, and it is not what the plan was looking for:**
+adjacent groupable allocations are common — `runs>=2=16005` covering 35,533
+objects — and every group that forms is lowered through the out-of-line
+`eco_gc_alloc_region_fast` + per-member `eco_init_*_at` call path, while a
+singleton next to it gets a call-free HEAP_034 inline bump. Grouping is
+currently a *pessimization* wherever the members would each lower inline. That
+makes Phase 2-pre a standalone item with nothing to do with kernel boundaries,
+and it is the only part of Phases 2/2-pre worth building.
+
+**CORRECTION — `runs>=2` is NOT the number of groups that form.** The first
+reading of this census said 16,005 groups / 44.0% of all groupable allocations.
+That is wrong. `scanBlockForMerges` counts maximal runs of *adjacent* groupable
+allocations; the real Step-1 grouping additionally closes a group at
+`consumesGroupMemberResult`, the intra-group SSA dependency. Instrumenting the
+actual split (`splitGroups`/`splitObjects`, added after the first run) gives the
+true figure:
+
+```
+[gcprepare-census] splitGroups=1385 splitObjects=2788 keptGroups=0 keptObjects=0
+```
+
+**1,385 groups covering 2,788 objects — 3.45% of the 80,788 groupable
+allocations, not 44.0%.** The same dependency wall that killed Phase 2 also
+eats 91% of the runs before they ever become groups. `keptGroups=0` says every
+real group was fully inline-eligible: there is not one `AllocateCtorOp` or
+`AllocateStringOp` group in the entire module, so the mixed-group fallback never
+fires on this workload.
+
+The transform still deletes **1,385 `eco_gc_alloc_region_fast` calls + 2,788
+`eco_init_*_at` calls = 4,173 out-of-line calls**, replacing them with 2,788
+inline bumps, and shrinks the binary 25,304 B. It is worth landing on those
+grounds. It is not the 44%-of-all-allocation lever the first reading implied,
+and no downstream plan should be sized off that number.
+
+**Phase 3 is small but real:** 798 stamped call sites are safepoints today,
+carrying 2,533 root operands — 0.52% of the 154,323 safepoints and 0.48% of the
+527,779 root operands. Those operands are computed by an O(block²) analysis and
+then **discarded at lowering**, so removing them is pure compile-time with a
+byte-identical binary. 0.5% of one pass is not going to show up on a wall clock;
+it lands because it is nearly free and because it is the correctness-shaped half
+of the plan.
+
+**Decision: ship Phase 0 (fact channel) + Phase 3 (safepoint relaxation) +
+Phase 2-pre (inline-bump group lowering). Drop Phases 2, 2A, 2B.**
+
+---
+
+## Outcome — 2026-08-12: SHIPPED, PARTIAL (Run N)
+
+**Landed:** Phase 0 (fact channel) + Phase 3 (safepoint relaxation) +
+Phase 2-pre (inline-eligible groups are not grouped), all DEFAULT-ON.
+**Dropped:** Phases 2 / 2A / 2B, on the Phase-1 census — see the decision
+section above. Contract written up as **CGEN_077**; KERNEL_FACTS_001 amended to
+name the marker pass now that it exists.
+
+**Flags** (all default-on, each independently reversible):
+
+| switch | effect |
+|---|---|
+| `ECO_GCLEAF_MARK=0` | `EcoMarkGCLeafCalls` stamps nothing; leaves kernel-opt-08 alone |
+| `ECO_GCPREPARE_LEAF_SAFEPOINT=0` | stamped calls are safepoints again (both consumers) |
+| `ECO_GCPREPARE_SPLIT_INLINE_GROUPS=0` | inline-eligible runs are grouped again |
+| `ECO_GCPREPARE_CENSUS=1` | prints the four census lines |
+| `ECO_KERNEL_GCLEAF=0` | kernel-opt-08's switch; the marking pass honours it |
+
+**Measured (Run N):**
+
+| | value |
+|---|---|
+| calls stamped `eco.callee_gc_leaf` | 798 (from 10 gc-leaf decls) |
+| safepoints | 154,323 → 153,525 (**−798**, exactly the stamped count) |
+| root operands | 527,779 → 525,246 (**−2,533**) |
+| groups no longer formed | **1,385**, covering 2,788 objects |
+| out-of-line calls deleted | **4,173** (1,385 region + 2,788 init) |
+| binary | −25,304 B; `.text` +16,192, `.llvm_stackmaps` −40,104 |
+| wall | −0.23% ⇒ FLAT |
+
+**Phase 3 acceptance held: byte-identical.** With the split forced off in both
+arms, the produced `eco-compiler` is identical with the relaxation on and off,
+confirming the analysis that the MLIR root operands are discarded at lowering.
+An earlier run of this gate reported DIFFERS; that was measurement error on my
+part — `EcoGCPrepare.cpp` was edited between the two arms and
+`--target eco-compiler` re-ran ninja for the second, so the arms differed by
+Phase 2-pre as well. Re-run on a frozen tree it passes, and the isolated
+Phase-2-pre arm accounts for exactly the −25,304 B that had shown up as the
+"failure". **Freeze `runtime/src` as well as `compiler/src` while an arm build
+is in flight** — the same trap the loop guide already records for the front end.
+
+**Whole-item inertness:** with both flags off, `eco-compiler` is byte-identical
+to the pre-item-09 build. The fact channel alone (stamping 798 attrs that
+nothing reads) is also byte-identical, verified separately via `ECO_GCLEAF_MARK`.
+
+**Fixture:** `test/codegen/gc_group_split_inline.mlir` pins both directions of
+the split and is the **first fixture the allocation-group lowering has ever
+had** — the plan's Phase-1 observation that `grep -rln 'gc_group' test/` returned
+nothing was correct.
+
+**Phase 3 has no fixture, deliberately.** It is byte-identical at LLVM level by
+design, and there is no emit mode between `EcoGCPrepare` and LLVM lowering
+(`-emit=mlir` dumps the input, `-emit=mlir-eco` stops before Stage 2.5), so a
+codegen fixture could only assert something untrue. Its evidence is the census
+delta and the byte-identity gate, both recorded above.
+
+**Gates run:** E2E `--target full` **1643/1643** default-on and again with both
+kill switches; the new fixture green; census `eco-compiler` byte-identical to
+baseline. **Not run** (removed from the loop by instruction): heap-validate
+tree, `--target bootstrap`, `elm-tests`.
+
+**Hand-off to kernel-opt-12:** the ordering hazard in Phase 3's write-up is now
+live. `isCallSafepoint` returns false for stamped calls, so a call that is both
+`eco.cse_safe` and `eco.callee_gc_leaf` short-circuits before Step 4's strip.
+**12 must hoist its `eco.cse_safe` strip above the `isCallSafepoint` guard**
+(EcoGCPrepare.cpp Step 4) or its "must not survive EcoGCPrepare" verifier will
+fire on those calls.

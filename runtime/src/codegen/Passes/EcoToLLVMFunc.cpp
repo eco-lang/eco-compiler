@@ -41,7 +41,12 @@ struct KernelFuncOpLowering : public OpConversionPattern<func::FuncOp> {
         // string case lowering's getOrCreateUtilsEqual), just erase the stub.
         // Route through EcoRuntime's O(1) symbol cache instead of
         // ModuleOp::lookupSymbol's O(N) module scan per kernel decl.
-        if (runtime.lookupSymbol<LLVM::LLVMFuncOp>(funcOp.getName())) {
+        if (auto existing =
+                runtime.lookupSymbol<LLVM::LLVMFuncOp>(funcOp.getName())) {
+            // kernel-opt-08: the func.func stub is the ONLY carrier of
+            // eco.gc_leaf and is about to be erased, so stamp the survivor first.
+            if (kernelGcLeafEnabled() && funcOp->hasAttr("eco.gc_leaf"))
+                attachGcLeafPassthrough(rewriter, existing);
             rewriter.eraseOp(funcOp);
             return success();
         }
@@ -88,6 +93,12 @@ struct KernelFuncOpLowering : public OpConversionPattern<func::FuncOp> {
 
         // Register in the symbol cache so a later duplicate kernel decl with
         // the same name is deduped via the O(1) lookup above.
+        // kernel-opt-08 / CGEN_072(f): reflect the audited fact onto the LLVM
+        // declaration. gc-leaf is the ONLY attribute this decl may carry
+        // pre-RS4GC (REP_LLVM_002).
+        if (kernelGcLeafEnabled() && funcOp->hasAttr("eco.gc_leaf"))
+            attachGcLeafPassthrough(rewriter, llvmFunc);
+
         runtime.cacheSymbol(llvmFunc);
 
         // Erase the original func.func

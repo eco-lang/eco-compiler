@@ -140,13 +140,11 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateFunc(
     builder.setInsertionPointToStart(module.getBody());
     auto newFunc = builder.create<LLVM::LLVMFuncOp>(module.getLoc(), name, funcType);
 
-    if (gcLeaf) {
-        SmallVector<Attribute> attrs;
-        if (auto existing = newFunc->getAttrOfType<ArrayAttr>("passthrough"))
-            attrs.append(existing.begin(), existing.end());
-        attrs.push_back(builder.getStringAttr("gc-leaf-function"));
-        newFunc->setAttr("passthrough", builder.getArrayAttr(attrs));
-    }
+    // kernel-opt-08: one shared implementation with KernelFuncOpLowering's
+    // stamp (attachGcLeafPassthrough, EcoToLLVMInternal.h). Behaviour-identical
+    // to the block this replaces, plus idempotence.
+    if (gcLeaf)
+        attachGcLeafPassthrough(builder, newFunc);
     if (auto nameAttr = newFunc->getAttrOfType<mlir::StringAttr>(
             mlir::SymbolTable::getSymbolAttrName()))
         symCache[nameAttr] = newFunc;

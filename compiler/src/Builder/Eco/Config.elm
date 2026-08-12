@@ -287,6 +287,11 @@ applyEnvOverrides cfg =
                 (Utils.envLookupEnv "ECO_VALUE_EQ" |> Task.mapError never)
                     |> Task.map (\veVal -> applyValueEqOverride veVal cfg33)
             )
+        |> Task.andThen
+            (\cfgKgcl ->
+                (Utils.envLookupEnv "ECO_KERNEL_GCLEAF_EMIT" |> Task.mapError never)
+                    |> Task.map (\kgVal -> applyKernelGcLeafEmitOverride kgVal cfgKgcl)
+            )
 
 
 {-| `ECO_AGG_PROMOTE=1|true|yes`: U-T1.3.1 aggregate promotion — emit
@@ -310,6 +315,33 @@ applyAggPromoteOverride maybeVal cfg =
 
             else if t == "0" || t == "off" then
                 { cfg | aggPromote = False }
+
+            else
+                cfg
+
+
+{-| `ECO_KERNEL_GCLEAF_EMIT=1|0`: force kernel gc-leaf attr emission on/off
+(kernel-opt-08; artifact-affecting, hash token `kgcl=1`). NOTE: this is the
+FRONT-END switch. The backend's independent kill switch is
+`ECO_KERNEL_GCLEAF=0`, which ignores an attr that is already in the `.mlir`.
+Unknown values are ignored.
+-}
+applyKernelGcLeafEmitOverride : Maybe String -> EcoConfig -> EcoConfig
+applyKernelGcLeafEmitOverride maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            cfg
+
+        Just raw ->
+            let
+                t =
+                    String.toLower (String.trim raw)
+            in
+            if t == "1" || t == "true" || t == "yes" || t == "on" then
+                { cfg | kernelGcLeaf = True }
+
+            else if t == "0" || t == "off" then
+                { cfg | kernelGcLeaf = False }
 
             else
                 cfg

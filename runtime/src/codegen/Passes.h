@@ -78,6 +78,14 @@ std::unique_ptr<mlir::Pass> createControlFlowLoweringPass();
 
 // ========== Stage 2.5: GC Preparation (before LLVM lowering) ==========
 
+// Copies `eco.gc_leaf` from a kernel func.func declaration onto each direct
+// eco.call of it, as the call-local unit attr `eco.callee_gc_leaf`. Reads the
+// decl attr kernel-opt-08 emits; writes the call attr EcoGCPrepare and
+// EcoGCLivenessAudit consume. Honours ECO_KERNEL_GCLEAF=0. Must run after every
+// pass that can mint a kernel decl or a kernel call site, and before
+// EcoGCPrepare.
+std::unique_ptr<mlir::Pass> createEcoMarkGCLeafCallsPass();
+
 // Computes GC root sets for all GCRootCarrier ops (allocations, calls,
 // PAP ops, construct ops) via SSA liveness analysis, unioned with each
 // op's front-end root hints. Groups adjacent allocations. Must run after

@@ -786,6 +786,41 @@ inline bool inlineAllocEnabled() {
 /// Default ON; `ECO_STRING_LEN_INLINE=0` lowers the op to a plain
 /// Elm_Kernel_String_length call instead (backend-only A/B leg, needing no
 /// compiler rebuild and no .mlir regeneration).
+/// Kill switch for kernel-declaration gc-leaf stamping (kernel-opt-08;
+/// CGEN_072(f), KERNEL_FACTS_001). Default ON: the backend honours the
+/// `eco.gc_leaf` attr the front end emits under config.kernelGcLeaf.
+/// `ECO_KERNEL_GCLEAF=0` ignores the attr entirely, restoring the "ALL kernel
+/// externs are poison seeds" behaviour WITHOUT recompiling the .mlir -- the
+/// bisection switch for a suspected lying facts row. kernel-opt-09's marking
+/// pass consults this same helper, which is why it is exported here rather
+/// than kept file-local.
+inline bool kernelGcLeafEnabled() {
+    static const bool enabled = [] {
+        const char *e = ::getenv("ECO_KERNEL_GCLEAF");
+        return !(e && e[0] == '0' && e[1] == '\0');
+    }();
+    return enabled;
+}
+
+/// Append "gc-leaf-function" to a declaration's `passthrough` array,
+/// idempotently. This is the ONLY attribute a declaration whose signature
+/// carries !eco.value may receive before RS4GC (REP_LLVM_002). NEVER add
+/// memory(*) / speculatable / willreturn here.
+inline void attachGcLeafPassthrough(mlir::OpBuilder &builder,
+                                    mlir::LLVM::LLVMFuncOp fn) {
+    llvm::SmallVector<mlir::Attribute> attrs;
+    if (auto existing = fn->getAttrOfType<mlir::ArrayAttr>("passthrough")) {
+        for (mlir::Attribute a : existing) {
+            if (auto str = llvm::dyn_cast<mlir::StringAttr>(a))
+                if (str.getValue() == "gc-leaf-function")
+                    return;  // already stamped -- idempotent
+            attrs.push_back(a);
+        }
+    }
+    attrs.push_back(builder.getStringAttr("gc-leaf-function"));
+    fn->setAttr("passthrough", builder.getArrayAttr(attrs));
+}
+
 inline bool stringLenInlineEnabled() {
     static const bool enabled = [] {
         const char *e = ::getenv("ECO_STRING_LEN_INLINE");

@@ -70,6 +70,14 @@ struct EcoGCLivenessAuditPass
                 if (musttail && *musttail) return;
             }
 
+            // Skip stamped gc-leaf calls, for the same reason as musttail:
+            // EcoGCPrepare's isCallSafepoint excludes them under
+            // ECO_GCPREPARE_LEAF_SAFEPOINT, so there is no root set to audit.
+            // Both sides read the one predicate in EcoGCLiveness.h; if they
+            // ever disagree this audit reports false positives on correct IR.
+            if (eco::gcLeafSafepointRelaxed() && op->hasAttr("eco.callee_gc_leaf"))
+                return;
+
             // Skip ops inside nested regions (scf.while/scf.if bodies).
             // EcoGCPrepare's per-block Liveness is blind to cross-iteration
             // uses of values captured into nested regions, and it works
