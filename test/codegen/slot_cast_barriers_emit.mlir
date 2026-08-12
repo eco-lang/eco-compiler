@@ -18,18 +18,26 @@
 // CHECK: llvm.call @__eco_slot_to_hptr({{.*}}) : (i64) -> !llvm.ptr<1>
 
 module {
+  // The projection lives in a SEPARATE function so `%pair` arrives as a block
+  // argument: kernel-opt-10's project-of-construct folder (default-on) folds a
+  // projection whose container is a VISIBLE construct, which would delete the
+  // very slot crossing this fixture pins. getDefiningOp on an argument is
+  // null, so the fold bails and the barrier is still emitted.
+  func.func private @readFirst(%pair: !eco.value) -> i64 {
+    // Boxed projection: load i64 slot word -> __eco_slot_to_hptr -> ptr<1>.
+    %first = eco.project.custom %pair[0] : !eco.value -> !eco.value
+    eco.dbg %first : !eco.value
+    %zero = arith.constant 0 : i64
+    return %zero : i64
+  }
+
   func.func @main() -> i64 {
     %i1 = arith.constant 41 : i64
     %i2 = arith.constant 1 : i64
     %b1 = eco.box %i1 : i64 -> !eco.value
     %b2 = eco.box %i2 : i64 -> !eco.value
     %pair = eco.construct.custom(%b1, %b2) {tag = 0 : i64, size = 2 : i64} : (!eco.value, !eco.value) -> !eco.value
-
-    // Boxed projection: load i64 slot word -> __eco_slot_to_hptr -> ptr<1>.
-    %first = eco.project.custom %pair[0] : !eco.value -> !eco.value
-    eco.dbg %first : !eco.value
-
-    %zero = arith.constant 0 : i64
-    return %zero : i64
+    %r = func.call @readFirst(%pair) : (!eco.value) -> i64
+    return %r : i64
   }
 }

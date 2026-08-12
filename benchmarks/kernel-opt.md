@@ -143,6 +143,52 @@ arms lowered from the same Stage-5 `.mlir`), which stays byte-identical.
 
 ## Runs
 
+### 2026-08-13 08:40 UTC — Run Q: kernel-opt-10 MLIR project-of-construct folder + M4 CSE (**folder KEEP DEFAULT-ON, `ECO_MLIR_FOLD=0` escapes; CSE NO-GO — C-R1 REGRESSION, KEPT-DARK behind `ECO_MLIR_CSE=1`**)
+
+Backend-only item at the M4 slot: (1) `EcoFoldProject`, seven `fold()` impls —
+six project-of-construct plus `get_tag`-of-construct.custom → constant ctor tag
+(the census extension's one survivor: pools were get_tag 443 / unbox-of-box 62 /
+`value.eq %a,%a` 0) — and (2) stock MLIR `createCSEPass()`, the first consumer
+the dialect's 102 `[Pure]` declarations have ever had. Arms: one Stage-5 `.mlir`
+lowered twice; the racing binaries differ only in M4-slot passes.
+
+**The A/B split the item in half.** Folder-only: counters bit-equal to off
+(promoted +1 object in 358M, majors 10, RSS +5 MB), 2,381 + 1 folds, exe
+−4,096 B, compile-time cost unmeasurable. **CSE is a C-R1 regression and its
+composition with the folder is worse than the sum**: both-on promoted
+**+5,601,772 (+1.56%)**, RSS **+330 MB (+6.9%)**, majors **10 → 11**, GC time
+**+7%**, wall +2.66% — the live-range-stretch signature the plan named as
+outcome (c), NO-GO. Mechanism: folds make more code structurally identical, CSE
+merges far more of it, and every merged value lives from its dominator to all
+former use sites. cse-only alone already shows majors 11 and +37K promoted.
+
+**Two real bugs found.** (i) Latent, in `EcoListCursor`: `walkStep` validates
+`hasOneUse` per RESULT, so one interior `scf.if` shared by two walk positions
+validates for both; `rebuildStep` then rebuilds it twice and the first walk's
+saved idx `Value` (a copy, not a use — RAUW never repairs it) dangles into the
+yield rebuild → SEGV. Un-triggerable before this item: it takes a dedup pass
+merging two step trees. Fixed with a disjointness bail (`cSharedTree`).
+(ii) The two `slot_cast_barriers_*` fixtures pinned barrier emission on
+projections the folder now legitimately deletes; made fold-proof by routing the
+construct through a function boundary.
+
+`num-cse'd` statistics aggregate to 0 under the nested parallel pipeline —
+unusable; volume was proved by exe deltas instead (cse-only −175,864 B,
+both −249,592 B). Gates: E2E **1648/1648** with the folder default-on and again
+with `ECO_MLIR_FOLD=0`; `-out.mlir` byte-identical all arms (front-end output is
+unaffected by backend flags, verified rather than assumed).
+
+| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|---|
+| fold r1 | **3:38.92** | 4,781,228 kB | 217,956,881 | 13,247.64 MB | 819 | 358,417,886 (164.4%) | 10 | 82.82 s | 12,930,050 B |
+| fold r2 | **3:34.51** | 4,781,496 kB | ≡ | ≡ | 819 | ≡ | 10 | 80.85 s | ≡ |
+| off r1 | 3:35.49 | 4,791,372 kB | 217,957,046 | 13,247.64 MB | 819 | 358,417,885 | 10 | 81.27 s | ≡ |
+| off r2 | 3:34.65 | 4,762,256 kB | ≡ | ≡ | 819 | ≡ | 10 | 80.31 s | ≡ |
+| cse r1 † | 3:36.59 | 4,804,268 kB | 217,942,537 | 13,247.20 MB | 822 | 358,455,269 | **11** | 82.91 s | ≡ |
+| both r1 † | 3:40.87 | **5,106,176 kB** | 217,942,523 | 13,247.20 MB | 820 | **364,019,657** | **11** | 86.77 s | ≡ |
+
+† one representative round shown; both r2 / cse r2 agree bit-for-bit on counters.
+
 ### 2026-08-12 16:05 UTC — Run P: kernel-opt-13 Mono-level CSE of pure calls (**FLAT — no regression; KEPT DEFAULT-OFF, `ECO_CSE=1` enables**)
 
 C1 census + C2 pass. **The D-C gate FAILED by a factor of 40** — `nearShareBp=5`
@@ -654,3 +700,4 @@ was 20,480 MB. Gates at that point: E2E `--target full` and heap-validate tree
 | N — kernel-opt-09 leaf safepoints + inline-group split | 3:22.80 (r1/r2 mean, −0.23% FLAT) | 217,928,793 obj / 13,246.14 MB (counter-blind; retention unmoved. −798 safepoints, −4,173 out-of-line calls; binary −25,304 B) |
 | O — kernel-opt-11 mono DCE + kernel cost classes | 3:22.72 (r1/r2 mean, −0.50% vs base FLAT) | 217,912,477 obj / 13,245.85 MB (DCE ceiling 4 sites, 2 realized; cost classes move inlining, .mlir +1,341 B) |
 | P — kernel-opt-13 Mono CSE (default-OFF) | 3:21.32 (r1/r2 mean, −1.71% FLAT) | 221,523,797 obj / 13,408.16 MB (**+1.66% — the pass's own analysis cost**; 81 merges, .mlir −1,052 B; D-C gate failed 40×) |
+| Q — kernel-opt-10 MLIR folder ON / CSE NO-GO | 3:36.72 (fold r1/r2 mean, +0.76% FLAT; counters bit-equal) | folder: 2,382 folds, exe −4,096 B. CSE REJECTED: promoted +1.56%, RSS +6.9%, majors 10→11 (C-R1) |

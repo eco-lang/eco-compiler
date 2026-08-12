@@ -8,6 +8,8 @@
 #include "EcoPipeline.h"
 #include "Passes.h"
 
+#include <cstdlib>
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -72,6 +74,17 @@ void buildEcoToEcoPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     pm.addPass(eco::createUndefinedFunctionPass());
 }
 
+// Kernel-opt-10 kill switches. Default OFF during bring-up; flipped at
+// Phase 5 once the gates are green.
+static bool envSwitch(const char *name, bool defaultOn) {
+    const char *e = ::getenv(name);
+    if (!e || !*e)
+        return defaultOn;
+    return !(e[0] == '0' && e[1] == '\0');
+}
+static bool ecoMlirCseEnabled() { return envSwitch("ECO_MLIR_CSE", false); } // KEPT-DARK: C-R1 regression, Run Q — promoted +1.6%, majors 10->11 composed with the folder
+static bool ecoFoldProjectEnabled() { return envSwitch("ECO_MLIR_FOLD", true); } // DEFAULT-ON since 2026-08-13 (Run Q)
+
 void buildEcoToLLVMPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     // Stage 1: Eco -> Eco transformations.
     buildEcoToEcoPipeline(pm, opts);
@@ -94,6 +107,24 @@ void buildEcoToLLVMPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     // byte-identity gate. Re-add createCanonicalizerPass() here if any GC or
     // codegen regression appears.
     // pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
+
+    // Kernel-opt-10 (M4 slot). Two func-nested passes, so they merge into ONE
+    // parallel sweep over the ~64k functions. They MUST stay before
+    // EcoGCPrepare: that pass appends root operands to carrier ops, after
+    // which "structurally identical" ops differ by root set and CSE would
+    // either miss every merge or merge ops with different root sets. Running
+    // here is GC-safe by the M4 argument above — fewer/earlier pure ops can
+    // only make liveness MORE conservative, and over-rooting is the safe
+    // direction.
+    //
+    // kernel-opt-12 ordering rule, reproduced verbatim as that plan requires:
+    // purity consumers MAY run anywhere in buildEcoToEcoPipeline or in
+    // buildEcoToLLVMPipeline up to and including THIS slot, and nowhere
+    // after it — `eco.cse_safe` is stripped by EcoGCPrepare precisely here.
+    if (ecoFoldProjectEnabled())
+        pm.addNestedPass<func::FuncOp>(eco::createEcoFoldProjectPass());
+    if (ecoMlirCseEnabled())
+        pm.addNestedPass<func::FuncOp>(createCSEPass());
 
     // Stage 2.5: GC preparation (root sets, allocation grouping, safepoint rewrite).
     // Publish the per-callee cannot-GC fact as a call-local attr first: by here

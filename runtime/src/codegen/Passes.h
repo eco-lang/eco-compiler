@@ -73,6 +73,11 @@ std::unique_ptr<mlir::Pass> createEcoListTemplatePass();
 /// declares __eco_list_tail_inline (chunk-compiled modules only).
 std::unique_ptr<mlir::Pass> createEcoListCursorPass();
 
+/// Folds eco.project.* / eco.get_tag of a dominating eco.construct.* to the
+/// constructed field operand / constant ctor tag (kernel-opt-10). Func-nested;
+/// runs at the M4 slot before EcoGCPrepare. No-op under ECO_MLIR_FOLD=0.
+std::unique_ptr<mlir::Pass> createEcoFoldProjectPass();
+
 // Lowers eco control flow ops (case, joinpoint, jump, return) to cf dialect.
 std::unique_ptr<mlir::Pass> createControlFlowLoweringPass();
 

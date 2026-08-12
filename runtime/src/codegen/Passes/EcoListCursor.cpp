@@ -71,6 +71,17 @@ struct WalkArg {
     // Operand slots through which the walked arg may legitimately appear on
     // the step tree (identity yields).
     SmallPtrSet<OpOperand *, 8> identSlots;
+    // Every op on the step tree (tail calls + interior scf.if/index_switch).
+    // Used by analyze to reject loops where two walk positions SHARE an
+    // interior op: walkStep's hasOneUse test is per RESULT, so one scf.if
+    // feeding two positions through different results validates for both --
+    // and rebuildStep would then rebuild it twice, the second rebuild erasing
+    // the first rebuild's op while the first walk's saved idx Value (a plain
+    // copy, not a use, so RAUW never repairs it) dangles into the yield
+    // rebuild. Shared trees could not arise before kernel-opt-10: it takes a
+    // dedup pass (M4 CSE) merging two step scf.ifs made structurally
+    // identical by the projection folder.
+    SmallPtrSet<Operation *, 8> treeOps;
     bool anyStep = false;
 };
 
@@ -115,6 +126,21 @@ struct EcoListCursorPass
             whiles++;
             SmallVector<WalkArg, 2> walks;
             analyze(w, walks);
+            // Disjointness: if any two walks share a step-tree op, skip the
+            // whole loop (conservative -- it stays un-rewritten and correct).
+            // See the treeOps comment on WalkArg for why sharing is fatal.
+            bool shared = false;
+            for (unsigned i = 0; i + 1 < walks.size() && !shared; ++i)
+                for (unsigned j = i + 1; j < walks.size() && !shared; ++j)
+                    for (Operation *op : walks[i].treeOps)
+                        if (walks[j].treeOps.count(op)) {
+                            shared = true;
+                            break;
+                        }
+            if (shared) {
+                cSharedTree++;
+                continue;
+            }
             if (!walks.empty()) {
                 rewrite(m, w, walks);
                 rewritten++;
@@ -137,7 +163,7 @@ struct EcoListCursorPass
 
     bool dbg = false;
     unsigned cPtrArgs = 0, cCondFwd = 0, cBadUse = 0, cNoStep = 0,
-             cTreeFail = 0;
+             cTreeFail = 0, cSharedTree = 0;
     SmallVector<Operation *, 16> badUseOps;
     std::map<std::string, unsigned> badCallees;
 
@@ -160,6 +186,7 @@ struct EcoListCursorPass
                 call.getArgOperands()[0] == argP &&
                 call.getResult().hasOneUse()) {
                 wa.tailCalls.push_back(call);
+                wa.treeOps.insert(call);
                 wa.anyStep = true;
                 return true;
             }
@@ -168,6 +195,7 @@ struct EcoListCursorPass
         if (isa<scf::IfOp, scf::IndexSwitchOp>(def)) {
             if (!v.hasOneUse())
                 return false;
+            wa.treeOps.insert(def);
             unsigned idx = cast<OpResult>(v).getResultNumber();
             for (Region &r : def->getRegions()) {
                 if (!r.hasOneBlock())

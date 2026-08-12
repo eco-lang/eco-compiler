@@ -5,6 +5,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "EcoOps.h"
+
+#include <cstdlib>
 #include "EcoDialect.h"
 #include "EcoTypes.h"
 
@@ -1056,6 +1058,133 @@ void PapCreateGroupOp::setGCRoots(ValueRange newRoots) {
     OpBuilder b(getOperation());
     getOperation()->setAttr("eco.gc_roots_count",
         b.getI64IntegerAttr(newRoots.size()));
+}
+
+//===----------------------------------------------------------------------===//
+// Projection Folders (kernel-opt-10)
+//===----------------------------------------------------------------------===//
+//
+// eco.project.X %c[i]  where %c = eco.construct.X(..., f_i, ...)   ==>   f_i
+// eco.get_tag %c       where %c = eco.construct.custom {tag = N}   ==>   N
+//
+// Legality: heap aggregates are write-once. The dialect states "No write
+// barriers needed due to Elm's immutability" (Ops.td) and RCElimination
+// hard-errors on every in-place mutator, so the field operand IS the value the
+// projection would load. get_tag's runtime contract (eco_get_tag,
+// RuntimeExports.cpp) returns Custom::ctor for a Tag_Custom object, which is
+// exactly the construct's `tag` attr.
+//
+// A fold returns an EXISTING value (or an attr) and never builds IR — the only
+// thing fold() may do. Dominance is free: the field is an operand of a defining
+// op that already dominates the projection.
+//
+// The guard demands EXACT SSA type equality. The construct verifiers tie the
+// 2-bit slot kind to the field's SSA type, BUT a kind=0 (boxed) slot legally
+// accepts an aggregate-typed or i1 operand which the construct lowering boxes
+// via eco.to_heap — there the projected !eco.value is NOT the operand, so the
+// fold must bail. Type equality is exactly that test.
+//
+// The index guard is against the DECLARED field count, never fields.size():
+// EcoGCPrepare splices root operands into the same variadic after the declared
+// fields, and a fold must never return a root.
+
+/// Shared guard: index within the declared field count and types identical.
+static Value foldConstructedField(ValueRange fields, int64_t declaredCount,
+                                  int64_t index, Type resultTy) {
+    if (index < 0 || index >= declaredCount)
+        return {};
+    if (static_cast<int64_t>(fields.size()) < declaredCount)
+        return {};
+    Value f = fields[index];
+    if (f.getType() != resultTy)
+        return {};
+    return f;
+}
+
+OpFoldResult CustomProjectOp::fold(FoldAdaptor) {
+    auto ctor = getContainer().getDefiningOp<eco::CustomConstructOp>();
+    if (!ctor)
+        return {};
+    // I64Attr accessors return uint64_t; cast so the guard's <0 arm catches a
+    // wrapped absurd value.
+    return foldConstructedField(ctor.getFields(),
+                                static_cast<int64_t>(ctor.getSize()),
+                                static_cast<int64_t>(getFieldIndex()),
+                                getResult().getType());
+}
+
+OpFoldResult RecordProjectOp::fold(FoldAdaptor) {
+    auto ctor = getRecord().getDefiningOp<eco::RecordConstructOp>();
+    if (!ctor)
+        return {};
+    return foldConstructedField(ctor.getFields(),
+                                static_cast<int64_t>(ctor.getFieldCount()),
+                                static_cast<int64_t>(getFieldIndex()),
+                                getResult().getType());
+}
+
+OpFoldResult Tuple2ProjectOp::fold(FoldAdaptor) {
+    auto ctor = getTuple().getDefiningOp<eco::Tuple2ConstructOp>();
+    if (!ctor)
+        return {};
+    SmallVector<Value, 2> fields{ctor.getA(), ctor.getB()};
+    return foldConstructedField(fields, 2, static_cast<int64_t>(getField()),
+                                getResult().getType());
+}
+
+OpFoldResult Tuple3ProjectOp::fold(FoldAdaptor) {
+    auto ctor = getTuple().getDefiningOp<eco::Tuple3ConstructOp>();
+    if (!ctor)
+        return {};
+    SmallVector<Value, 3> fields{ctor.getA(), ctor.getB(), ctor.getC()};
+    return foldConstructedField(fields, 3, static_cast<int64_t>(getField()),
+                                getResult().getType());
+}
+
+/// kernel-opt-10: the two list folds are gated separately because folding a
+/// list projection changes the loop shapes EcoListCursor pattern-matches, and
+/// the fold+CSE composition crashed that pass's rewrite on the self-compile
+/// module (each pass alone was clean). Default OFF; ECO_MLIR_FOLD_LIST=1 is
+/// the experiment switch. 137 static sites of the 5,131-site pool.
+static bool listFoldsEnabled() {
+    static const bool on = [] {
+        const char *e = ::getenv("ECO_MLIR_FOLD_LIST");
+        return e && *e && !(e[0] == '0' && e[1] == '\0');
+    }();
+    return on;
+}
+
+OpFoldResult ListHeadOp::fold(FoldAdaptor) {
+    if (!listFoldsEnabled())
+        return {};
+    auto ctor = getList().getDefiningOp<eco::ListConstructOp>();
+    if (!ctor)
+        return {};
+    // head_unboxed/head_kind are redundant here: type equality already implies
+    // the slot kind, because ListConstructOp derives head_kind from the head
+    // operand's SSA type.
+    SmallVector<Value, 1> f{ctor.getHead()};
+    return foldConstructedField(f, 1, 0, getResult().getType());
+}
+
+OpFoldResult ListTailOp::fold(FoldAdaptor) {
+    if (!listFoldsEnabled())
+        return {};
+    auto ctor = getList().getDefiningOp<eco::ListConstructOp>();
+    if (!ctor)
+        return {};
+    SmallVector<Value, 1> f{ctor.getTail()}; // tail is always !eco.value
+    return foldConstructedField(f, 1, 0, getResult().getType());
+}
+
+OpFoldResult GetTagOp::fold(FoldAdaptor) {
+    auto ctor = getValue().getDefiningOp<eco::CustomConstructOp>();
+    if (!ctor)
+        return {};
+    // eco_get_tag returns Custom::ctor for Tag_Custom — the construct's tag.
+    // Returned as an attr; the driver pass materializes the arith.constant.
+    return IntegerAttr::get(getResult().getType(),
+                            static_cast<int64_t>(ctor.getTag()));
 }
 
 //===----------------------------------------------------------------------===//

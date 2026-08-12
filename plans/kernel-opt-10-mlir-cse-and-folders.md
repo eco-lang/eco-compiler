@@ -972,3 +972,98 @@ A trivial-pool NO-GO is now unlikely on the numbers, but a *compile-time* NO-GO 
   counts across the M4 slot; `MLIR lowering pipeline` and `CSE` /
   `(anonymous namespace)::EcoFoldProjectPass` timing deltas against the M4 ~0.5 s budget;
   Stage-7b ELF size delta.
+
+---
+
+## Outcome — 2026-08-13: SPLIT VERDICT (Run Q)
+
+**Folder: SHIPPED DEFAULT-ON** (`ECO_MLIR_FOLD=0` escapes; `ECO_MLIR_FOLD_LIST=1`
+enables the two list folds, see below). **CSE: NO-GO, KEPT-DARK** (`ECO_MLIR_CSE=1`
+enables; the pass line and gate helper stay in the pipeline).
+
+### Census extension (pre-implementation, per instruction)
+
+Three fold-through patterns were sized before writing any folder, on a fresh
+955k-line dump:
+
+| pattern | pool | disposition |
+|---|---|---|
+| `get_tag` of `construct.custom` | 443 static | **built** — the one survivor |
+| `unbox` of `box` (type-matched) | 62 | skipped, recorded |
+| `value.eq %a, %a` | **0** | dead, recorded |
+
+Dynamically the get_tag fold fired **once** — the 443 static sites nearly all
+restructure into scrutinee positions before the M4 slot. Kept anyway: correct,
+free, and the count is now measured rather than guessed.
+
+### Measured (Run Q)
+
+| | folder-only | cse-only | both |
+|---|---|---|---|
+| folds / merges | 2,381 + 1 | exe −175,864 B | exe −249,592 B |
+| promoted vs off | **+1 object** | +37,384 | **+5,601,772 (+1.56%)** |
+| major GC | 10 | **11** | **11** |
+| RSS | +5 MB | +28 MB | **+330 MB (+6.9%)** |
+| wall | +0.76% FLAT | ~flat | +2.66% |
+
+**CSE is the plan's outcome (c) — the C-R1 live-range stretch — and the
+composition is super-additive**: folds make more code structurally identical,
+CSE merges far more of it, and every merged value lives from its dominator to
+every former use site. The plan's prescribed mitigation
+(`ECO_MLIR_FOLD_BLOCK_LOCAL=1`) constrains the folder, which the attribution
+shows is NOT the offender, so it cannot recover this; NO-GO per the plan's own
+decision rule. The wall number alone (+2.66%, inside the band) would have read
+FLAT — the exact GC counters are what convict it, which is the series' standing
+lesson about walls vs counters.
+
+**`num-cse'd`/`num-dce'd` statistics are unusable here** — they aggregate to 0
+under the nested parallel pipeline despite CSE demonstrably shrinking the exe by
+175 KB. The plan's fallback (artifact deltas) is what was used; whoever revisits
+CSE should not burn time on `--mlir-pass-statistics`.
+
+### The latent EcoListCursor bug (fixed here)
+
+fold+CSE segfaulted the pipeline; each pass alone was clean. Root cause in
+`EcoListCursor`, pre-existing: `walkStep` validates `hasOneUse` per RESULT, so
+one interior `scf.if` shared by two walk positions (result 0 → position 1,
+result 1 → position 2) validates for both. `rebuildStep` then rebuilds the
+shared op twice; the second rebuild erases the first rebuild's op while the
+first walk's saved idx `Value` — a plain copy, not a use, so RAUW never repairs
+it — dangles into the yield rebuild. Untriggerable before this item because
+nothing deduplicated step trees; CSE-after-fold merges two step `scf.if`s made
+structurally identical by folding. Fixed conservatively: walks now record their
+`treeOps` and any loop whose walks share an op is skipped (`cSharedTree`
+counter), staying un-rewritten and correct.
+
+### List folds: default-OFF behind `ECO_MLIR_FOLD_LIST`
+
+Gated off mid-investigation as a crash suspect; measurement then cleared them
+(the crash reproduces without them and they fired 0 times on this corpus —
+their 137 static sites are all type-mismatched or non-adjacent). Left dark
+because their value is zero here and they are the folds entangled with the
+cursor machinery; flipping them on is a one-env experiment for a corpus where
+list construction feeds projection.
+
+### Fixture collisions (both legitimate)
+
+`slot_cast_barriers_emit/strip.mlir` pinned REP_LLVM_002 barrier emission on
+projections the folder now deletes. Made fold-proof by moving the projections
+behind a function boundary (container arrives as a block argument ⇒
+`getDefiningOp` null ⇒ fold bails). New fixtures:
+`fold_project_of_construct.mlir` (semantics identical in both flag states,
+incl. the unboxed-head list path) and `cse_pure_dedup.mlir` (the Phase-0.1
+array-clone regression lock: `array.get` around an `array.set` still reads the
+pre-set array — fails loudly the day a writer mutates in place while
+`array.get` keeps `[Pure]`).
+
+**Gates:** E2E **1648/1648** with the folder default-on and again with
+`ECO_MLIR_FOLD=0`; codegen suite 378/378; compile-time budget met (on-legs
+{116.5, 120.6} vs off {118.4, 129.4} — no measurable cost); front-end
+`-out.mlir` byte-identical across all arms. **Not run** (loop policy):
+heap-validate tree, bootstrap.
+
+**Hand-off to kernel-opt-12:** its `eco.cse_safe` consumer slot exists and the
+M4 comment reproduces its ordering rule verbatim — but with CSE dark, 12's
+benefit case must stand on the folder/other consumers or on flipping CSE with a
+retention story. 12 also still owes the `eco.cse_safe` strip hoist above
+`isCallSafepoint` (item-09 hand-off).

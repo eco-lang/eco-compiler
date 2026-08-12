@@ -597,6 +597,7 @@ def Eco_GetTagOp : Eco_Op<"get_tag", [Pure]> {
   let results = (outs I32:$tag);
 
   let assemblyFormat = "$value attr-dict `:` type($value) `->` type($tag)";
+  let hasFolder = 1; // kernel-opt-10: fold through a dominating eco.construct.*
 }
 
 //===----------------------------------------------------------------------===//
@@ -665,6 +666,7 @@ def Eco_ListHeadOp : Eco_Op<"project.list_head", [Pure]> {
   let results = (outs Eco_AnyValueOrAggregate:$head);
 
   let assemblyFormat = "$list attr-dict `:` type($list) `->` type($head)";
+  let hasFolder = 1; // kernel-opt-10: fold through a dominating eco.construct.*
 }
 
 def Eco_ListTailOp : Eco_Op<"project.list_tail", [Pure]> {
@@ -688,6 +690,7 @@ def Eco_ListTailOp : Eco_Op<"project.list_tail", [Pure]> {
   let results = (outs Eco_Value:$tail);
 
   let assemblyFormat = "$list attr-dict `:` type($list) `->` type($tail)";
+  let hasFolder = 1; // kernel-opt-10: fold through a dominating eco.construct.*
 }
 
 def Eco_ListAppendOp : Eco_Op<"list.append"> {
@@ -793,6 +796,7 @@ def Eco_Tuple2ProjectOp : Eco_Op<"project.tuple2", [Pure]> {
   let results = (outs Eco_AnyValueOrAggregate:$result);
 
   let assemblyFormat = "$tuple `[` $field `]` attr-dict `:` type($tuple) `->` type($result)";
+  let hasFolder = 1; // kernel-opt-10: fold through a dominating eco.construct.*
 }
 
 def Eco_Tuple3ProjectOp : Eco_Op<"project.tuple3", [Pure]> {
@@ -813,6 +817,7 @@ def Eco_Tuple3ProjectOp : Eco_Op<"project.tuple3", [Pure]> {
   let results = (outs Eco_AnyValueOrAggregate:$result);
 
   let assemblyFormat = "$tuple `[` $field `]` attr-dict `:` type($tuple) `->` type($result)";
+  let hasFolder = 1; // kernel-opt-10: fold through a dominating eco.construct.*
 }
 
 //===----------------------------------------------------------------------===//
@@ -882,6 +887,7 @@ def Eco_RecordProjectOp : Eco_Op<"project.record", [Pure]> {
   let results = (outs Eco_AnyValueOrAggregate:$result);
 
   let assemblyFormat = "$record `[` $field_index `]` attr-dict `:` type($record) `->` type($result)";
+  let hasFolder = 1; // kernel-opt-10: fold through a dominating eco.construct.*
 }
 
 //===----------------------------------------------------------------------===//
@@ -959,6 +965,7 @@ def Eco_CustomProjectOp : Eco_Op<"project.custom", [Pure]> {
   let results = (outs Eco_AnyValueOrAggregate:$result);
 
   let assemblyFormat = "$container `[` $field_index `]` attr-dict `:` type($container) `->` type($result)";
+  let hasFolder = 1; // kernel-opt-10: fold through a dominating eco.construct.*
 }
 
 //===----------------------------------------------------------------------===//

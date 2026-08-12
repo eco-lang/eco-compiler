@@ -284,6 +284,7 @@ set_source_files_properties(
     Passes/EcoListCursor.cpp
     Passes/UndefinedFunction.cpp
     Passes/CheckEcoClosureCaptures.cpp
+    Passes/EcoFoldProject.cpp
     Passes/EcoGCPrepare.cpp
     Passes/EcoMarkGCLeafCalls.cpp
     Passes/EcoGCLivenessAudit.cpp
@@ -364,6 +365,7 @@ add_mlir_library(EcoPasses
     Passes/UndefinedFunction.cpp
     Passes/CheckEcoClosureCaptures.cpp
     # GC preparation pass (root sets, allocation grouping)
+    Passes/EcoFoldProject.cpp
     Passes/EcoGCPrepare.cpp
     Passes/EcoMarkGCLeafCalls.cpp
     # GC liveness audit (debug-only verification)
