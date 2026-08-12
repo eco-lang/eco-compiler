@@ -33,8 +33,10 @@ namespace {
 /// synthesized string-case path MUST be switched together.
 static bool valueEqStrCaseEnabled() {
     static const bool on = [] {
+        // DEFAULT-ON since 2026-08-12 (wall -0.22%, FLAT; out.mlir identical).
+        // ECO_VALUE_EQ_STRCASE=0 is the kill switch.
         const char *e = ::getenv("ECO_VALUE_EQ_STRCASE");
-        return e && e[0] == '1' && e[1] == '\0';
+        return !(e && e[0] == '0' && e[1] == '\0');
     }();
     return on;
 }

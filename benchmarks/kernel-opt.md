@@ -143,6 +143,35 @@ arms lowered from the same Stage-5 `.mlir`), which stays byte-identical.
 
 ## Runs
 
+### 2026-08-12 04:10 UTC — Run L: kernel-opt-03 `ECO_VALUE_EQ_STRCASE` (**FLAT — no regression; KEEP — DEFAULT-ON, `ECO_VALUE_EQ_STRCASE=0` escapes**)
+
+Closes the one switch Run K shipped unmeasured. Under `ECO_VALUE_EQ_STRCASE` the
+two SYNTHESIZED string-`case` sites — the SCF if-chain
+(`EcoControlFlowToSCF.cpp`) and the LLVM-level `lowerStringCase`
+(`EcoToLLVMControlFlow.cpp`) — emit `eco.value.eq` instead of a boxed
+`Elm_Kernel_Utils_equal` call plus a True-word decode. Both halves must be
+switched together, which is why one flag drives both. Flag-off also keeps
+`ensureEqualDeclared` so no dead `func.func` stub is left behind flag-on.
+
+**Backend-only flag, so this is the cheap A/B shape:** both arms are one Stage-5
+`.mlir` lowered twice, differing only by the env var at lowering time — no
+compiler rebuild, no `.mlir` regeneration. `-out.mlir` byte-identical in both
+rounds. Wall **−0.22%** ⇒ FLAT (−0.34% excluding the off-r1 outlier). Binary
+**+8,168 B**. Gates: E2E **1642/1642** default-on and again with the kill switch.
+
+**Counter note:** `off r1` is a GC-trigger-lottery outlier — 819 minor cycles and
++520K promoted against 836 / 361,223,669 on the other three legs, which agree
+bit-for-bit. Majors are 10 everywhere. The delta is FLAT under either reading.
+
+| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|---|
+| on r1 | **3:24.77** | 4,903,004 kB | 219,818,080 | 13,332.69 MB | 836 | 361,223,669 (164.3%) | 10 | 80.82 s | 12,933,089 B |
+| on r2 | **3:23.02** | 4,903,416 kB | ≡ | ≡ | 836 | ≡ | 10 | 79.21 s | ≡ |
+| off r1 † | 3:24.10 | 4,923,064 kB | 219,829,162 | 13,333.52 MB | 819 | 361,743,676 (164.6%) | 10 | 80.47 s | ≡ |
+| off r2 | 3:24.59 | 4,884,536 kB | 219,818,084 | 13,332.69 MB | 836 | 361,223,669 | 10 | 80.72 s | ≡ |
+
+† GC-trigger lottery, see above — not an effect of the flag.
+
 ### 2026-08-12 01:30 UTC — Run K: kernel-opt-03 `eco.value.eq` emission (**FLAT — no regression; KEEP — DEFAULT-ON, `ECO_VALUE_EQ=0` escapes**)
 
 `plans/kernel-opt-03-value-eq-fastpath.md` Phases 1/3/4/6, completing the item
@@ -457,3 +486,4 @@ was 20,480 MB. Gates at that point: E2E `--target full` and heap-validate tree
 | I — kernel-opt-05 append type split | 3:25.07 (r1/r2 mean, +0.80% FLAT) | 219,913,079 obj / 13,335.56 MB |
 | J — kernel-opt-06 String ordering cmp3 | 3:23.25 (r1/r2 mean, −0.34% FLAT) | 219,817,471 obj / 13,332.69 MB |
 | K — kernel-opt-03 eco.value.eq emission | 3:21.63 (r1/r2 mean, −1.84% FLAT) | 219,818,234 obj / 13,332.70 MB |
+| L — kernel-opt-03 STRCASE synthesized sites | 3:23.90 (r1/r2 mean, −0.22% FLAT) | 219,818,080 obj / 13,332.69 MB |

@@ -152,9 +152,11 @@ items had already built:
    `generateIntrinsicOps`, the multi-op channel kernel-opt-06 built, via a shared
    `emitEqMaybeNegated` helper. One mechanism instead of three.
 
-**Outstanding:** `ECO_VALUE_EQ_STRCASE` ships **default-off**. Both halves are implemented
-and proven correct by the third gate leg, but no wall A/B was run for them; do not default
-them on without one.
+**`ECO_VALUE_EQ_STRCASE` is now DEFAULT-ON too** (benchmarks/kernel-opt.md Run L): measured
+**-0.22%, FLAT**, `-out.mlir` byte-identical, binary +8,168 B, E2E 1642/1642 both default-on
+and with the kill switch. Because it is a backend-only flag the A/B was the cheap shape --
+one Stage-5 `.mlir` lowered twice, no compiler rebuild. Nothing about this item is now
+unmeasured.
 
 ## The Phase-0 census (retained -- it is still the evidence about payoff)
 
