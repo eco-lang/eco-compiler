@@ -72,7 +72,9 @@ import Compiler.GlobalOpt.Borrow as Borrow
 import Compiler.GlobalOpt.CafCensus as CafCensus
 import Compiler.GlobalOpt.CafDedupe as CafDedupe
 import Compiler.GlobalOpt.CafHoist as CafHoist
+import Compiler.GlobalOpt.CseCensus as CseCensus
 import Compiler.GlobalOpt.ListCombinators as ListCombinators
+import Compiler.GlobalOpt.MonoCse as MonoCse
 import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.MonoSolver.Diff as MonoDiff
@@ -842,7 +844,7 @@ runInlineSimplifyPhase ecoConfig stats monoGraph0 =
             Task.succeed simplifiedGraph
         )
         -- Hand off to a separate function so monoGraph0 goes out of scope
-        |> Task.andThen (runGlobalOptPhase ecoConfig.mono.lss.report ecoConfig.list.report ecoConfig.borrow ecoConfig.cafMemo stats)
+        |> Task.andThen (runGlobalOptPhase ecoConfig.mono.lss.report ecoConfig.list.report ecoConfig.borrow ecoConfig.cafMemo ecoConfig.cse stats)
 
 
 renderInlineReport : MonoInlineSimplify.Metrics -> Mono.MonoGraph -> String
@@ -927,13 +929,26 @@ renderInlineReportWith inlineConfig m graph =
 
 {-| Global optimization phase in its own scope so inline+simplify inputs are GC-eligible.
 -}
-runGlobalOptPhase : Bool -> Bool -> Config.BorrowConfig -> Config.CafMemoConfig -> FEStats.Handle -> Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
-runGlobalOptPhase lssReport listReport borrowCfg cafMemo stats simplifiedGraph =
+runGlobalOptPhase : Bool -> Bool -> Config.BorrowConfig -> Config.CafMemoConfig -> Config.CseConfig -> FEStats.Handle -> Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
+runGlobalOptPhase lssReport listReport borrowCfg cafMemo cseCfg stats simplifiedGraph =
     FEStats.withPhase stats
         FEStats.PhaseGlobalOpt
         (let
             ( goGraph, goStats ) =
                 MonoGlobalOptimize.globalOptimizeWithStats borrowCfg simplifiedGraph
+
+            -- kernel-opt-13 C2: bounded-scope CSE of pure calls. Runs HERE,
+            -- post-annotation, because it adds MonoLet bindings and
+            -- annotateCallStaging is O(2^let-depth); and BEFORE CafDedupe, so
+            -- CSE never has to reason about specs dedupe is about to merge away.
+            ( cseGraph, cseStats ) =
+                if cseCfg.enabled then
+                    MonoCse.run
+                        { minCost = cseCfg.minCost, maxPerDef = cseCfg.maxPerDef }
+                        goGraph
+
+                else
+                    ( goGraph, MonoCse.emptyStats )
 
             -- CAF spec dedupe (cafMemo.dedupe / ECO_CAF_DEDUPE=1): merge
             -- structurally identical nullary specs BEFORE census/hoist so
@@ -941,10 +956,10 @@ runGlobalOptPhase lssReport listReport borrowCfg cafMemo stats simplifiedGraph =
             -- the dedupe census.
             ( optimizedGraph, dedupeStats ) =
                 if cafMemo.dedupe then
-                    CafDedupe.run goGraph
+                    CafDedupe.run cseGraph
 
                 else
-                    ( goGraph, CafDedupe.emptyStats )
+                    ( cseGraph, CafDedupe.emptyStats )
 
             -- CAF hoisting (plans/caf-hoist-closed-expressions.md DQ3 order:
             -- GlobalOpt → census(pre) → hoist → hoist stats → census(post)).
@@ -976,6 +991,25 @@ runGlobalOptPhase lssReport listReport borrowCfg cafMemo stats simplifiedGraph =
           else
             Task.succeed ()
          )
+            |> Task.andThen
+                (\_ ->
+                    if cseCfg.enabled then
+                        writeLnErr (MonoCse.renderStats cseStats)
+
+                    else
+                        Task.succeed ()
+                )
+            |> Task.andThen
+                (\_ ->
+                    if cseCfg.report then
+                        -- kernel-opt-13 C1 census, on `goGraph` -- the same
+                        -- object `MonoCse.run` consumes, so the census numbers
+                        -- and the pass's input are the same graph. Output-only.
+                        writeLnErr (CseCensus.report "" cseCfg.minCost goGraph)
+
+                    else
+                        Task.succeed ()
+                )
             |> Task.andThen
                 (\_ ->
                     if cafMemo.census then

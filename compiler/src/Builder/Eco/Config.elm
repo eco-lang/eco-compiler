@@ -322,6 +322,26 @@ applyEnvOverrides cfg =
                 (Utils.envLookupEnv "ECO_KERNEL_COST_HOF" |> Task.mapError never)
                     |> Task.map (\v -> applyKernelCostHofOverride v cfgkernel_cost_hof)
             )
+        |> Task.andThen
+            (\cfgeco_cse ->
+                (Utils.envLookupEnv "ECO_CSE" |> Task.mapError never)
+                    |> Task.map (\v -> applyCseEnabledOverride v cfgeco_cse)
+            )
+        |> Task.andThen
+            (\cfgeco_cse_report ->
+                (Utils.envLookupEnv "ECO_CSE_REPORT" |> Task.mapError never)
+                    |> Task.map (\v -> applyCseReportOverride v cfgeco_cse_report)
+            )
+        |> Task.andThen
+            (\cfgeco_cse_min_cost ->
+                (Utils.envLookupEnv "ECO_CSE_MIN_COST" |> Task.mapError never)
+                    |> Task.map (\v -> applyCseMinCostOverride v cfgeco_cse_min_cost)
+            )
+        |> Task.andThen
+            (\cfgeco_cse_max_per_def ->
+                (Utils.envLookupEnv "ECO_CSE_MAX_PER_DEF" |> Task.mapError never)
+                    |> Task.map (\v -> applyCseMaxPerDefOverride v cfgeco_cse_max_per_def)
+            )
 
 
 {-| `ECO_AGG_PROMOTE=1|true|yes`: U-T1.3.1 aggregate promotion — emit
@@ -424,6 +444,71 @@ applyKernelCostAllocOverride =
 applyKernelCostHofOverride : Maybe String -> EcoConfig -> EcoConfig
 applyKernelCostHofOverride =
     applyKernelCostIntOverride (\n i -> { i | kernelCostHof = n })
+
+
+{-| `ECO_CSE=1|0`: run the Mono-level CSE pass (kernel-opt-13).
+Artifact-affecting (hash token `cse=1`). Unknown values are ignored.
+-}
+applyCseEnabledOverride : Maybe String -> EcoConfig -> EcoConfig
+applyCseEnabledOverride =
+    applyCseBoolOverride (\b c -> { c | enabled = b })
+
+
+{-| `ECO_CSE_REPORT=1|0`: emit the C1 census to stderr. **Output-only** — it
+contributes no hash token, so a census run shares the flag-off caches.
+-}
+applyCseReportOverride : Maybe String -> EcoConfig -> EcoConfig
+applyCseReportOverride =
+    applyCseBoolOverride (\b c -> { c | report = b })
+
+
+applyCseBoolOverride : (Bool -> Config.CseConfig -> Config.CseConfig) -> Maybe String -> EcoConfig -> EcoConfig
+applyCseBoolOverride set maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            cfg
+
+        Just raw ->
+            let
+                t =
+                    String.toLower (String.trim raw)
+            in
+            if t == "1" || t == "true" || t == "yes" || t == "on" then
+                { cfg | cse = set True cfg.cse }
+
+            else if t == "0" || t == "false" || t == "no" || t == "off" then
+                { cfg | cse = set False cfg.cse }
+
+            else
+                cfg
+
+
+applyCseIntOverride : (Int -> Config.CseConfig -> Config.CseConfig) -> Maybe String -> EcoConfig -> EcoConfig
+applyCseIntOverride set maybeVal cfg =
+    case maybeVal |> Maybe.andThen (String.trim >> String.toInt) of
+        Just n ->
+            if n >= 0 then
+                { cfg | cse = set n cfg.cse }
+
+            else
+                cfg
+
+        Nothing ->
+            cfg
+
+
+{-| `ECO_CSE_MIN_COST=<n>`: cost floor for a CSE candidate.
+-}
+applyCseMinCostOverride : Maybe String -> EcoConfig -> EcoConfig
+applyCseMinCostOverride =
+    applyCseIntOverride (\n c -> { c | minCost = n })
+
+
+{-| `ECO_CSE_MAX_PER_DEF=<n>`: cap on merge groups per definition body.
+-}
+applyCseMaxPerDefOverride : Maybe String -> EcoConfig -> EcoConfig
+applyCseMaxPerDefOverride =
+    applyCseIntOverride (\n c -> { c | maxPerDef = n })
 
 
 {-| `ECO_KERNEL_FACTS_DCE=1|0`: let the dead-binding gate in

@@ -1,7 +1,7 @@
 module Compiler.Eco.Config exposing
     ( EcoConfig, InlineConfig, BytesFusionConfig, LogicalTypesConfig
     , default, decoder, hash, clamp
-    , BorrowConfig, BorrowReify(..), CafHoistConfig, CafMemoConfig, ListConfig, LssConfig, MonoConfig, MonoEngine(..), borrowReifyFromString, defaultLss, monoEngineFromString
+    , BorrowConfig, BorrowReify(..), CafHoistConfig, CafMemoConfig, CseConfig, ListConfig, LssConfig, MonoConfig, MonoEngine(..), borrowReifyFromString, defaultLss, monoEngineFromString
     )
 
 {-| Project-level tunable compiler settings, read from `eco-config.json`
@@ -47,6 +47,26 @@ type alias EcoConfig =
     , stringOrderIntrinsic : Bool -- kernel-opt-06: lower Utils.lt/le/gt/ge on [MString,MString] to eco.string.cmp3 + a SIGNED sign test against 0, instead of the boxed kernel call + eco.unbox. DEFAULT-ON since 2026-08-11 (95 of 121 sites convert: lt 79->14, gt 40->10, ge 2->2; wall FLAT at -0.34%); env kill switch ECO_STRING_ORDER_INTRINSIC=0; artifact-affecting (hash token "strord=1")
     , valueEq : Bool -- kernel-opt-03: lower boxed structural equality to eco.value.eq (word-equality / embedded-constant / kernel-call diamond) instead of a boxed Elm_Kernel_Utils_equal call + eco.unbox. DEFAULT-ON since 2026-08-11 (all 1,452 self-compile Utils_equal/notEqual sites convert; wall -1.84%, inside the noise band so recorded FLAT); env kill switch ECO_VALUE_EQ=0; artifact-affecting (hash token "veq=1"). Bool == is NOT gated by this -- it is unconditionally better
     , kernelGcLeaf : Bool -- kernel-opt-08 (CGEN_072(f)/KERNEL_FACTS_001): stamp `eco.gc_leaf` on the func.func decl of every kernel whose KernelFacts row is gcLeafEligible, so the backend may attach gc-leaf-function and RS4GC skips statepointing its call sites. DEFAULT-ON since 2026-08-12 (10 of the 14 eligible kernels still have stubs to stamp -- the other 4 lost their call sites to kernel-opt-03/04/06; +2,223 de-statepointed sites, binary -287,952 B of which 99% is .llvm_stackmaps; wall FLAT at -1.25%); env kill switch ECO_KERNEL_GCLEAF_EMIT=0; artifact-affecting (hash token "kgcl=1"). The BACKEND kill switch ECO_KERNEL_GCLEAF=0 separately ignores an attr already in the .mlir
+    , cse : CseConfig
+    }
+
+
+{-| Mono-level CSE knobs (kernel-opt-13, executing plans/cse-pure-calls.md).
+
+`enabled` runs `MonoCse` over the post-GlobalOpt graph, merging structurally
+equal pure calls at bounded distance; DEFAULT-OFF, artifact-affecting (hash
+token `cse=1`). `report` is the C1 census, stderr-only and **excluded from
+`hash`** (pattern: `list.report`). `minCost` is the cost floor below which a
+candidate is not worth a let binding, and `maxPerDef` caps groups per body so a
+pathological definition cannot blow up compile time; both contribute a hash
+token only when `enabled` AND non-default.
+
+-}
+type alias CseConfig =
+    { enabled : Bool
+    , report : Bool
+    , minCost : Int
+    , maxPerDef : Int
     }
 
 
@@ -343,6 +363,7 @@ default =
         , kernelCostAlloc = 8
         , kernelCostHof = 20
         }
+    , cse = { enabled = False, report = False, minCost = 5, maxPerDef = 64 }
     , bytesFusion = { enabled = True }
     , logicalTypes = { customMaxFields = 8 }
     , cafMemo = { enabled = True, census = False, dedupe = False, hoist = { enabled = False, minNodes = 3, maxHoists = 8192 } }
@@ -396,6 +417,7 @@ decoder =
         |> D.apply (D.optionalField "stringOrderIntrinsic" D.bool default.stringOrderIntrinsic)
         |> D.apply (D.optionalField "valueEq" D.bool default.valueEq)
         |> D.apply (D.optionalField "kernelGcLeaf" D.bool default.kernelGcLeaf)
+        |> D.apply (D.optionalField "cse" cseDecoder default.cse)
 
 
 {-| Decode the `list` block. Only `chunks` is JSON-configurable; `report`
@@ -411,6 +433,16 @@ listDecoder =
 {-| Decode the `inline` block. `report` is env-only in spirit but accepted
 from JSON for convenience; it never affects `hash`.
 -}
+cseDecoder : D.Decoder x CseConfig
+cseDecoder =
+    -- `report` is deliberately NOT JSON-settable: it is env-only, so it can stay
+    -- out of `hash` without a project config silently changing the cache key.
+    D.pure (\enabled minCost maxPerDef -> CseConfig enabled default.cse.report minCost maxPerDef)
+        |> D.apply (D.optionalField "enabled" D.bool default.cse.enabled)
+        |> D.apply (D.optionalField "minCost" D.int default.cse.minCost)
+        |> D.apply (D.optionalField "maxPerDef" D.int default.cse.maxPerDef)
+
+
 inlineDecoder : D.Decoder x InlineConfig
 inlineDecoder =
     D.pure InlineConfig
@@ -667,6 +699,25 @@ hash cfg =
                )
             ++ (if cfg.inline.kernelFactsDce then
                     [ "kfdce=1" ]
+
+                else
+                    []
+               )
+            -- `cse.report` contributes NO token: it is output-only.
+            ++ (if cfg.cse.enabled then
+                    "cse=1"
+                        :: (if cfg.cse.minCost /= default.cse.minCost then
+                                [ "cseMin=" ++ String.fromInt cfg.cse.minCost ]
+
+                            else
+                                []
+                           )
+                        ++ (if cfg.cse.maxPerDef /= default.cse.maxPerDef then
+                                [ "cseMax=" ++ String.fromInt cfg.cse.maxPerDef ]
+
+                            else
+                                []
+                           )
 
                 else
                     []

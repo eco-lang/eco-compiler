@@ -634,9 +634,70 @@ Do not batch.
 
 ## C1 result
 
-*(to be filled in by Phase 0 — the census tables for self-compile (solver + subst legs) and
-elm-aws-codegen, the D-C verdict, and the date. This section is written whether the gate
-passes or fails; a recorded negative is the plan's deliverable in the likely branch.)*
+Measured 2026-08-12, self-compile corpus, `ECO_MONO_ENGINE=subst ECO_CSE_REPORT=1`.
+
+**Two runs are recorded because the first was wrong.** The first census gave
+`nearRedundant=1619 nearShareBp=109`; that was inflated by a path-encoding
+defect — every `Leaf (Inline _)` in a decider `Chain`/`FanOut` tree was given
+the same path step, so two distinct occurrences shared a path key, their common
+prefix swallowed both suffixes, and the pair classified as `b0_block`
+(trivially near) when it was nothing of the kind. The transform had the same
+defect and, before it was fixed, produced `unbound variable mono_cse_N` — a
+`MonoLet` that did not dominate its uses. **Do not quote the first numbers.**
+
+### Corrected census (decider leaves distinctly pathed)
+
+```
+cse-census: specs=30905 safeSpecs=17531 callOccs=147860 candidateOccs=69995 groups=1413 redundantOccs=1909
+cse-census dist: b0_block=2 b1_seq=26 b1c_probe=54 b2_branch=1672 b3_frame=155 b4_crossdef=0
+cse-census near: nearRedundant=82 nearShareBp=5 nearCost=645 loopNear=5 nearTop20Bp=9756
+cse-census blocked: shadowBlocked=0 callInfoBlocked=0 fnResultExcluded=8467 binderExcluded=8717 belowMinCost=0 debugExcluded=0
+cse-dce: deadLets=21341 deadPureLets=10358 deadDroppableKernelLets=423
+```
+
+**The census and the transform now agree exactly: `nearRedundant = 82` and
+`MonoCse` reports `merged = 82`.** That agreement is the strongest available
+evidence that both are correct, and it is the reason the first pair of numbers
+can be confidently discarded rather than merely doubted.
+
+### D-C gate: FAILS, by a factor of 40
+
+| criterion | required | measured | verdict |
+|---|---|---|---|
+| `nearShareBp` | ≥ 200 (2% of `callOccs`) | **5** (0.05%) | **FAIL** |
+| `nearTop20Bp` | ≥ 5000 | 9756 | pass |
+
+The plan's verdict is STOP at Phase 1. **C2 was built and benchmarked anyway on
+explicit instruction** — the loop's standing rule is that a plan-internal census
+bar is never a veto, only a wall regression is.
+
+### What the distribution actually says
+
+**`b2_branch = 1672` of 1,909 redundant occurrences (87.6%) is the dominant
+bucket** — pairs where NEITHER occurrence dominates the other, so both are
+guarded and merging one would evaluate it on a path that does not today. That
+is the C4 speculation territory the plan deliberately excludes from v1, and it
+is where essentially all of the redundancy lives.
+
+**The probe-then-insert idiom this plan targets is close to absent from this
+codebase:** `b1c_probe = 54`. Together with `b0_block = 2` and `b1_seq = 26`
+that is the entire admissible pool — 82 occurrences against 147,860 static call
+sites. The motivating example (`if Set.member (f x) s then … else Set.insert
+(f x) s`) is real Elm, but the compiler's own source does not write it.
+
+`loopNear = 5` — the dynamic-heat proxy is essentially zero, so even those 82
+merges are almost all in code that runs once.
+
+### Counters that are structurally zero and are NOT findings
+
+`shadowBlocked = 0` and `callInfoBlocked = 0` are **not measured** by the
+census: the shadow test is an LCA-level check only the pass performs (the pass
+reports it separately and also found 0 after the fix), and the dual
+`CallInfo`-zeroed grouping the plan asked for was never implemented.
+`b4_crossdef = 0` is structural — the census groups only within one body.
+`belowMinCost = 0` and `c1_4 = 0` are real but uninformative: a `MonoCall` costs
+`5 + func + args`, so the cheapest candidate is 6 and the default floor of 5
+excludes nothing. Anyone tuning `minCost` must start above 6.
 
 ## Flag & rollback
 
@@ -832,3 +893,79 @@ All of cse-pure-calls.md §5 (:181-204), plus the kernel-opt-series standards. R
 - Item-specific: the C1 distance-bucketed census table recorded in "C1 result" **regardless
   of D-C outcome**; crash-text E2E assertions re-checked after any merge of ⊥-capable calls
   (C4 only, by construction, in v1).
+
+---
+
+## Outcome — 2026-08-12: C1 GATE FAILED; C2 BUILT AND SHIPPED DEFAULT-OFF (Run P)
+
+All five phases executed. The D-C gate failed by 40×; C2 was built and
+benchmarked anyway on explicit instruction, since the loop's standing rule is
+that a plan-internal census bar is never a veto — only a wall regression is.
+
+**Landed:** `CsePurity.elm`, `CseCensus.elm`, `MonoCse.elm`, the `CseConfig`
+knobs (`ECO_CSE` / `ECO_CSE_REPORT` / `ECO_CSE_MIN_COST` / `ECO_CSE_MAX_PER_DEF`),
+the Generate.elm wiring, and invariant `CSE_001`. Phase 2 needed no work:
+`design_docs/debug-log-ordering-policy.md` was authored by kernel-opt-11, and
+its D-2 is exactly the prohibition this plan requires — `CsePurity` enforces it
+by construction.
+
+**Measured (Run P, frozen corpus):**
+
+| | value |
+|---|---|
+| merges | **81** (82 on the live tree) |
+| emitted `-out.mlir` | −1,052 B |
+| `Objects allocated` | **+3,611,190 (+1.66%)** — the pass's own analysis cost |
+| wall | −1.71% ⇒ FLAT |
+| gates | E2E **1646/1646** in both flag states |
+
+### Why it stays DEFAULT-OFF, unlike every other item in this series
+
+This is the first item where flag-on has a *measured cost*: the pass walks all
+30,905 specs and builds path keys for 69,995 candidates to find 81 merges, and
+that shows up as +1.66% allocation in the compiler. Elsewhere in this loop a
+FLAT wall meant "costs nothing, keep it on"; here FLAT means "the noise band is
+wider than both the cost and the benefit". Shipping it on would trade a
+measurable allocation increase for 81 static occurrences against a gate it
+missed by 40×. It is landed, correct, tested, and one env var from being live if
+the corpus ever changes.
+
+### Two real defects found, both by measurement rather than review
+
+1. **Decider path collision.** Every `Leaf (Inline _)` in a `Chain`/`FanOut`
+   shared one path step, so distinct occurrences collided on one key. In the
+   census this inflated `nearRedundant` 1619 vs 82 — a 20× overcount that would
+   have PASSED the first criterion and sent the plan down a false branch. In the
+   transform it produced a `MonoLet` that did not dominate its uses. Fixed by
+   giving each decider position a distinct key; `CSE_001` now records the
+   requirement.
+2. **Tail-def parameters were not binders.** The scope test tracked `MonoLet`
+   and `MonoDestruct` names only, so a candidate mentioning a `MonoTailDef`
+   parameter was hoisted above its binder — caught by
+   `test/elm/src/MultiLocalTailRecTest.elm` failing with
+   `lookupVar: unbound variable i`. The plan's own reasoning contains the seed
+   of this error: it says "every free local of the shape is by construction in
+   scope at the occurrences", which is true and beside the point, because the
+   binding goes at the LCA, not at the occurrence.
+
+A third hazard was fixed pre-emptively rather than by failure: a group's let
+binds the original first-occurrence subtree verbatim, so nested groups would
+dangle. `dropOverlapping` rejects any group whose occurrence subtrees overlap a
+kept group's.
+
+### What the census actually says about this codebase
+
+`b2_branch = 1672` of 1,909 redundant occurrences (87.6%) — pairs where neither
+occurrence dominates. Essentially all the Elm-level redundancy in this compiler
+is behind conditionals on both sides, which is C4 speculation territory and
+explicitly out of v1 scope. The probe-then-insert idiom the plan is named for
+(`b1c_probe`) accounts for **54 occurrences in 147,860 call sites**. The idiom
+is real Elm; the compiler's own source does not write it.
+
+`loopNear = 5`: even those 82 merges are almost entirely in code that runs once,
+so the dynamic-heat proxy the plan introduced to keep static censuses honest
+reports approximately nothing.
+
+**Gates NOT run** (removed from the loop by instruction): heap-validate tree,
+`--target bootstrap`. `elm-tests` was not re-run for this item — no
+`compiler/tests` suite was added or touched.

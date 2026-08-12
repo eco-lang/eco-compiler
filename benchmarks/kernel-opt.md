@@ -143,6 +143,45 @@ arms lowered from the same Stage-5 `.mlir`), which stays byte-identical.
 
 ## Runs
 
+### 2026-08-12 16:05 UTC — Run P: kernel-opt-13 Mono-level CSE of pure calls (**FLAT — no regression; KEPT DEFAULT-OFF, `ECO_CSE=1` enables**)
+
+C1 census + C2 pass. **The D-C gate FAILED by a factor of 40** — `nearShareBp=5`
+against a required 200 — and C2 was built and benchmarked anyway on instruction.
+
+**The census was wrong the first time and the error is worth recording.** Its
+first run reported `nearRedundant=1619 nearShareBp=109`; every `Leaf (Inline _)`
+in a decider `Chain`/`FanOut` shared one path step, so two distinct occurrences
+collided on one path key, their common prefix swallowed both suffixes and the
+pair classified as trivially-near. The transform had the identical defect and
+emitted a `MonoLet` that did not dominate its uses (`unbound variable
+mono_cse_N`). Corrected: **`nearRedundant=82`, and `MonoCse` independently
+reports `merged=82`** — census and transform agree exactly, which is what makes
+the corrected figure trustworthy and the first one discardable.
+
+**`b2_branch=1672` of 1,909 redundant occurrences (87.6%)** is the dominant
+bucket: pairs where neither occurrence dominates, i.e. C4 speculation
+territory. The probe-then-insert idiom this plan targets is close to absent
+from the compiler's own source — `b1c_probe=54`.
+
+**A second real defect the fixtures caught:** the scope test tracked `MonoLet`
+and `MonoDestruct` binders but not `MonoTailDef` PARAMETERS, so a candidate
+mentioning a tail-function parameter was hoisted above its binder
+(`MultiLocalTailRecTest`, `lookupVar: unbound variable i`). With parameters
+tracked, that group is correctly `shadowBlocked`.
+
+**Cost/benefit is the reason it stays off.** 81 merges on the frozen corpus and
+`-out.mlir` −1,052 B, against **`Objects allocated` +3,611,190 (+1.66%)** and
+bytes +1.23% — the pass's own analysis cost, since it walks all 30,905 specs and
+builds path keys for 69,995 candidates to find 81 merges. Wall **−1.71%** ⇒
+FLAT. Gates: E2E **1646/1646** in both flag states.
+
+| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|---|
+| on r1 | **3:21.43** | 4,969,684 kB | 221,523,797 | 13,408.16 MB | 838 | 360,780,815 (162.9%) | 10 | 79.03 s | 12,928,998 B |
+| on r2 | **3:21.20** | 4,970,400 kB | ≡ | ≡ | 838 | ≡ | 10 | 78.83 s | ≡ |
+| off r1 | 3:24.39 | 4,970,448 kB | 217,912,607 | 13,245.86 MB | 836 | 360,869,914 | 10 | 80.00 s | 12,930,050 B |
+| off r2 | 3:25.23 | 4,970,536 kB | ≡ | ≡ | 836 | ≡ | 10 | 80.66 s | ≡ |
+
 ### 2026-08-12 20:05 UTC — Run O: kernel-opt-11 mono DCE via KernelFacts + kernel cost classes (**FLAT — no regression; KEEP — both DEFAULT-ON, `ECO_KERNEL_FACTS_DCE=0` / `ECO_KERNEL_COST_CLASSES=0` escape**)
 
 Two independent consumers of the kernel-opt-07 table, both in
@@ -614,3 +653,4 @@ was 20,480 MB. Gates at that point: E2E `--target full` and heap-validate tree
 | M — kernel-opt-08 kernel gc-leaf stamp | 3:23.62 (r1/r2 mean, −1.25% FLAT) | 219,767,579 obj / 13,331.32 MB (+2,223 de-statepointed sites; binary −287,952 B) |
 | N — kernel-opt-09 leaf safepoints + inline-group split | 3:22.80 (r1/r2 mean, −0.23% FLAT) | 217,928,793 obj / 13,246.14 MB (counter-blind; retention unmoved. −798 safepoints, −4,173 out-of-line calls; binary −25,304 B) |
 | O — kernel-opt-11 mono DCE + kernel cost classes | 3:22.72 (r1/r2 mean, −0.50% vs base FLAT) | 217,912,477 obj / 13,245.85 MB (DCE ceiling 4 sites, 2 realized; cost classes move inlining, .mlir +1,341 B) |
+| P — kernel-opt-13 Mono CSE (default-OFF) | 3:21.32 (r1/r2 mean, −1.71% FLAT) | 221,523,797 obj / 13,408.16 MB (**+1.66% — the pass's own analysis cost**; 81 merges, .mlir −1,052 B; D-C gate failed 40×) |
