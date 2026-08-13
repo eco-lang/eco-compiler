@@ -1,0 +1,112 @@
+Time-weighted kernel census — Stage 7a, 2026-08-13
+
+Binary : fp-plain / fp-census, lowered from one full-opt Stage-5 artifact
+         (fp-plain is byte-size-identical to eco-kopt-final, 66,173,128 B)
+Workload: standard protocol, ECO_MONO_ENGINE=subst, cold eco-stuff
+         all 5 runs emit md5 1a03ef520e70f6d8418c0fe5836dfda1
+Sampling: perf -F 997 --call-graph dwarf, 3 cold runs
+Timing  : clean (unprofiled) run 3:28.75 wall, 208.7 s CPU
+          profiled runs 3:41.82 / 3:40.56 / 3:41.94 (~6.3% profiler overhead)
+
+runs=3  samples=662288  clean CPU=208.7s  exact kernel calls=264,377,100
+
+=== CPU partition (ownership; buckets are disjoint and sum to 100%) ===
+  gc           275006   41.52%   per-run spread 0.07pp
+  elm          217075   32.78%   per-run spread 0.27pp
+  other        148638   22.44%   per-run spread 0.23pp
+  kernel        21569    3.26%   per-run spread 0.07pp
+
+=== per-kernel: exact calls x sampled own-work time (kernel own work = 3.26% of CPU) ===
+symbol                                     calls    own%     +-   ns/call   incl%
+Elm_Kernel_Bytes_encode                  433,851   1.369  0.014    6584.2    1.38
+Elm_Kernel_Utils_equal               152,825,193   1.009  0.012      13.8    1.01
+Elm_Kernel_List_sortBy                 5,866,123   0.615  0.010     219.0    1.13
+Elm_Kernel_List_map2                   6,135,927   0.131  0.004      44.5    0.45
+elm_string_from_int                    7,230,197   0.038  0.002      10.9    0.05
+elm_array_push_box                     5,241,018   0.033  0.002      13.2    0.15
+Elm_Kernel_List_reverse               44,428,867   0.007  0.001       0.3    0.01
+Elm_Kernel_Utils_cmp3                    933,275   0.005  0.001      11.5    0.01
+Elm_Kernel_String_slice               10,406,463   0.005  0.001       1.0    0.01
+Elm_Kernel_String_uncons               9,936,174   0.005  0.001       1.0    0.00
+Elm_Kernel_String_startsWith           1,183,603   0.004  0.001       6.9    0.00
+Elm_Kernel_Bytes_getStringWidth        1,684,998   0.003  0.001       3.9    0.00  <-- below resolution
+Elm_Kernel_String_split                2,646,321   0.003  0.001       2.3    0.00  <-- below resolution
+Elm_Kernel_List_fromArray              2,646,321   0.003  0.001       2.3    0.00  <-- below resolution
+Elm_Kernel_List_toArray                4,183,915   0.003  0.001       1.4    0.00  <-- below resolution
+Elm_Kernel_Bytes_width                   798,245   0.003  0.001       7.1    0.00  <-- below resolution
+Elm_Kernel_String_all                    126,638   0.003  0.001      44.8    0.01  <-- below resolution
+Elm_Kernel_JsArray_initialize_Int        150,928   0.003  0.001      35.5    0.02  <-- below resolution
+Elm_Kernel_Bytes_read_u16                546,278   0.002  0.001       9.2    0.00  <-- below resolution
+elm_array_append_n                        99,963   0.002  0.001      44.1    0.00  <-- below resolution
+Elm_Kernel_Bytes_read_u8                 860,468   0.002  0.001       4.4    0.00  <-- below resolution
+Elm_Kernel_String_foldl                  197,573   0.002  0.001      17.5    0.03  <-- below resolution
+Elm_Kernel_JsArray_map                    14,071   0.001  0.000     201.6    0.08  <-- below resolution
+Elm_Kernel_Bytes_read_u32                291,738   0.001  0.000       7.6    0.00  <-- below resolution
+Elm_Kernel_JsArray_indexedMap_Int         60,300   0.001  0.000      36.6    0.36  <-- below resolution
+Elm_Kernel_Bytes_read_f64                289,409   0.001  0.000       5.4    0.00  <-- below resolution
+Elm_Kernel_String_contains                76,313   0.001  0.000      16.5    0.00  <-- below resolution
+Elm_Kernel_Bytes_read_string              65,394   0.001  0.000      19.3    0.00  <-- below resolution
+elm_array_push_int                        54,307   0.001  0.000      23.2    0.00  <-- below resolution
+Elm_Kernel_String_join                 4,183,915   0.000  0.000       0.2    0.00  <-- below resolution
+Elm_Kernel_List_take                     148,402   0.000  0.000       2.1    0.00  <-- below resolution
+Eco_Kernel_Order_register_gc_roots             0   0.000  0.000       n/a    0.00  <-- below resolution
+elm_string_from_double                        64   0.000  0.000    4923.7    0.00  <-- below resolution
+Eco_Kernel_Console_write                     282   0.000  0.000    1117.4    0.00  <-- below resolution
+Eco_Kernel_File_writeBytes                   533   0.000  0.000     591.2    0.00  <-- below resolution
+Elm_Kernel_List_map3                       4,747   0.000  0.000      66.4    0.00  <-- below resolution
+Elm_Kernel_List_concat                   156,289   0.000  0.000       2.0    0.00  <-- below resolution
+Elm_Kernel_JsArray_foldr                  27,738   0.000  0.000       0.0    0.00  <-- below resolution
+Eco_Kernel_MVar_drop                         316   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_Scheduler_spawn                   671   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_String_toFloat                      6   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_String_toLower                     15   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_Json_succeed                        1   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_String_lines                       40   0.000  0.000       0.0    0.00  <-- below resolution
+elm_array_slice                            4,293   0.000  0.000       0.0    0.00  <-- below resolution
+Eco_Kernel_File_dirExists                     30   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_Utils_append                      337   0.000  0.000       0.0    0.00  <-- below resolution
+Eco_Kernel_Http_fetch                          1   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_String_toInt                   16,470   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_Platform_registerFlagsDecoder             1   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_String_cons                       903   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_Scheduler_andThen              24,658   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_Platform_leaf                       1   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_String_indexes                  5,896   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_Utils_lt                          312   0.000  0.000       0.0    0.00  <-- below resolution
+Eco_Kernel_File_getCwd                         1   0.000  0.000       0.0    0.00  <-- below resolution
+Eco_Kernel_File_touch                          1   0.000  0.000       0.0    0.00  <-- below resolution
+Eco_Kernel_MVar_new                            1   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_Platform_batch                      1   0.000  0.000       0.0    0.00  <-- below resolution
+Eco_Kernel_File_createDir                    537   0.000  0.000       0.0    0.00  <-- below resolution
+Eco_Kernel_Env_rawArgs                         1   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_JsArray_foldl                 298,733   0.000  0.000       0.0    0.00  <-- below resolution
+Eco_Kernel_MVar_take                         925   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_String_endsWith                17,678   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_String_trim                         2   0.000  0.000       0.0    0.00  <-- below resolution
+Eco_Kernel_File_appDataDir                     2   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_JsArray_singleton                 252   0.000  0.000       0.0    0.00  <-- below resolution
+Eco_Kernel_File_fileExists                   674   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_String_map                        844   0.000  0.000       0.0    0.00  <-- below resolution
+Eco_Kernel_File_readString                   294   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_JsArray_initializeFromList_Int        35,728   0.000  0.000       0.0    0.00  <-- below resolution
+Eco_Kernel_MVar_read                       7,016   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_Utils_gt                           64   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_String_words                       11   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_Platform_worker                     1   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_String_toUpper                     39   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_String_foldr                    1,951   0.000  0.000       0.0    0.00  <-- below resolution
+Eco_Kernel_File_readBytes                     59   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_Scheduler_onError               4,027   0.000  0.000       0.0    0.00  <-- below resolution
+Eco_Kernel_File_unlock                         4   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_JsArray_empty                      34   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_String_fromList                   292   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_Scheduler_succeed              12,718   0.000  0.000       0.0    0.00  <-- below resolution
+Eco_Kernel_Env_lookup                         50   0.000  0.000       0.0    0.00  <-- below resolution
+Eco_Kernel_File_modificationTime             266   0.000  0.000       0.0    0.00  <-- below resolution
+Eco_Kernel_Process_exit                        1   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_Bytes_read_i32                  3,102   0.000  0.000       0.0    0.00  <-- below resolution
+Eco_Kernel_MVar_put                        1,925   0.000  0.000       0.0    0.00  <-- below resolution
+Eco_Kernel_File_lock                           4   0.000  0.000       0.0    0.00  <-- below resolution
+Eco_Kernel_File_canonicalize                   3   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_Time_now                            1   0.000  0.000       0.0    0.00  <-- below resolution
+Elm_Kernel_Bytes_decode                       66   0.000  0.000       0.0    0.02  <-- below resolution

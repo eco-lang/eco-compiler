@@ -143,6 +143,66 @@ arms lowered from the same Stage-5 `.mlir`), which stays byte-identical.
 
 ## Runs
 
+### 2026-08-13 — DONE: series close-out (bootstrap fixed point + cumulative A/B + dynamic re-census)
+
+**The loop is complete: 14 items executed, plus the item-15 soundness plan
+authored and deferred.** Dispositions: 10 KEPT-ON (01, 03+STRCASE, 04, 05, 06,
+07, 08, 09 partial, 11 both flags, 12 attr), 1 REAL WIN (02, −4.46%),
+2 KEPT-DARK (13 Mono CSE — census-failed but built; 10 MLIR CSE —
+correctness-blocked on NaN sharing, fix designed as kernel-opt-15),
+1 REJECTED (14 Elm-source List HOFs, Run S).
+
+**Bootstrap (run once at DONE, as the loop deferred):** `--target bootstrap`
+converges to a NEW fixed point — Stage 8c `eco-compiler-boot.mlir` ==
+`eco-compiler-boot-2.mlir` byte-identical, and the JS stages converge
+(`eco-boot.js` ≡ `-2.js` ≡ `-3.js`, 7,300,241 B). Expected NEW (the series
+deliberately changed emission); converged on the first re-establishment.
+
+**Cumulative A/B vs Run D (loop entry), frozen corpus:**
+
+| | Run D (2026-08-10) | final (2026-08-13) | Δ |
+|---|---|---|---|
+| wall | 3:31.59 | **3:23.96** (clean leg) | **−3.6%** |
+| objects allocated | 379,486,685 | 217,958,017 | −42.6% (partly HEAP_034 counter-blindness) |
+| promoted | 372,250,555 | 360,871,768 | **−3.1%** |
+| minor / major GC | 862 / 10 | 836 / 10 | −26 / = |
+| out.mlir | 12,943,401 | 12,933,556 | −9,845 (deliberate emission changes) |
+
+The final race's r1 leg (3:35.24, GC time 87.9 s) overlapped the running
+bootstrap build and is contention-contaminated; r2 (3:23.96, GC 81.9 s) agrees
+with the item-13-era measurement of the equivalent config (3:21.3/3:25.5) and
+is the quoted figure. Essentially all of the wall delta is item 02's
+union-find PointCell merge; the rest of the series was individually FLAT and
+collectively bought the boundary reduction below.
+
+**The dynamic re-census is the series' summary number** (§3(f) of
+`design_docs/kernel-boundary-reduction.md`; raw file
+`kernel-boundary/kernel-census-dynamic-stage7a-2026-08-13.txt`):
+**3,676,097,627 → 390,926,633 dynamic kernel calls (−89.4%)**, 98 → 88
+symbols, static direct sites → 6,574. The residue map: `Utils_equal` 252.6M
+(64.6% of what remains — deep structural equality is the next lever, via a
+structural-compare op or memoized comparison, NOT more inline arms),
+`List_reverse` 44.0M (kernel kept, Run S), `array_push_box` 32.5M, then the
+fold-shaped HOF band (`map2` 5.1M, `JsArray_foldl` 1.64M, `sortBy` 788K) —
+the §5b.1 rung-2 candidates.
+
+**Gates at close:** E2E **1656/1656** on the final tree (including the
+env-gated census instrumentation, off by default); elm-tests baseline
+13085/12 unchanged since item 10. **The heap-validate tree was never built in
+this loop** (removed from per-item gating by user decision 2026-08-10, per
+`guides/kernel-opt-loop.md` §"Gates this loop deliberately does NOT run") —
+that debt stands and should be paid before the next release cut.
+
+**The series' measured lessons, in one place:** wall follows retention and
+deleted per-op work, never call counts or metadata (≥6 confirmations);
+counters convict where walls stay silent (items 10-CSE, 14); censuses must be
+verified against their own transform (item 11's 20× decider overcount); an
+optimization's effect can be artifact-dependent and sign-unstable (CSE ±1%
+promoted); allocation dedup is observable through NaN × pointer-equality
+(item 12 → CSE_001); and the boundary was never the cost — the six MLIR-op
+ports were all FLAT-but-kept, the one Elm-source port was rejected on its
+idiom's allocation, and the selection principle now lives in §5b.1.
+
 ### 2026-08-13 22:30 UTC — Run S: kernel-opt-14 Elm-source List HOFs (**REJECTED — the loop's first true counter regression; flag machinery kept dark, kernels stay C++**)
 
 The full migration ladder was built and measured: P1 (un-shunt `List.reverse` —
@@ -186,8 +246,8 @@ measured clean, and the chunk win rides the shared already-rewritten
 `List_foldl` spec, delegation not duplication); the 2A overlay procedure with
 the `::`-operator finding (a module's own `infix` declaration is not usable in
 expression position inside itself — stock List.elm never does; use `cons`);
-the patched `List.elm` kept at `vendor/elm-core-patch/` as the reference
-implementation. **Phases 5/6 (JsArray/String HOFs) stay unstarted per the stop
+the patched `List.elm` preserved as the plan's inline Phase 3/4
+listings (the `vendor/` working copies were removed with the final revert). **Phases 5/6 (JsArray/String HOFs) stay unstarted per the stop
 rule; Phase 2B never paid; no kernel symbol deleted.** The plan's own honest
 framing held: heat was real, but wall follows retention and per-op work, and
 the Elm form ADDS per-op work here.

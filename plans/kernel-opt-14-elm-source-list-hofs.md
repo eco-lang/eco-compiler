@@ -1001,9 +1001,9 @@ Per symbol, all of:
 
 ## Outcome — 2026-08-13: REJECTED after full measurement (Run S)
 
-All of P0/P1/2A/P3/P4 were built and measured; the migration is reverted, the
-`shuntReverse` flag machinery is kept (default True), no kernel symbol was
-deleted, and 2B was never paid — exactly the plan's own decision tree, taken on
+All of P0/P1/2A/P3/P4 were built and measured; the migration is reverted IN FULL —
+including the `shuntReverse` flag machinery (a later, fuller revert than this
+section first recorded) — no kernel symbol was deleted, and 2B was never paid — exactly the plan's own decision tree, taken on
 the counters.
 
 **Correctness was flawless**: E2E 1656/1656 under the full migration (all 19
@@ -1041,8 +1041,10 @@ allocation than the boundary cost.
    messages out of a package that eco's builder reports opaquely.
 5. **2A overlay procedure verified end-to-end** including the mandatory cache
    invalidation list; a stock reinstall control confirmed the mechanism.
-   The patched `List.elm` (correct, tested, chunk-friendly) is kept at
-   `vendor/elm-core-patch/List.elm`; stock at `vendor/elm-core.stock/`.
+   The patched `List.elm` (correct, tested, chunk-friendly) survives as the
+   inline listings in this plan's Phase 3/4 sections plus the `cons`-operator
+   correction in finding 4 — the `vendor/` working copies were removed with
+   the final revert.
 6. **A future retry needs a different shape, not a different gate**: direct
    result construction without the accumulate+reverse double pass — e.g. an
    unwind-cons (non-tail) form leveraging `tryRewriteUnwind`, accepting native
