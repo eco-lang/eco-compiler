@@ -143,6 +143,55 @@ arms lowered from the same Stage-5 `.mlir`), which stays byte-identical.
 
 ## Runs
 
+### 2026-08-13 22:30 UTC — Run S: kernel-opt-14 Elm-source List HOFs (**REJECTED — the loop's first true counter regression; flag machinery kept dark, kernels stay C++**)
+
+The full migration ladder was built and measured: P1 (un-shunt `List.reverse` —
+compiler-only flag), 2A (elm/core overlay vehicle), P3 (`map2..map5` in Elm,
+accumulate+reverse), P4 (`sortBy`/`sortWith` as a stable Elm merge sort with a
+decorate/undecorate `sortBy`). **Correctness was never the problem: E2E
+1656/1656 under the full migration, including all 19 `Sort*` and the
+`ListMap*Float*` suites, and the chunk hard-gate IMPROVED (`rewritten` 446→518;
+all List HOF kernel callee counts → 0).** The rejection is entirely the GC
+counters.
+
+**The attribution matrix (frozen corpus; objects = counted allocations):**
+
+| arm | own-code migration | objects | RSS | majors | wall |
+|---|---|---|---|---|---|
+| base (item-13 binary) | none | 218.0M | 4.98 GB | 10 | 3:23.4 |
+| P1 workload-only (env off) | none (emission only) | 218.0M | 4.98 GB | 10 | 3:23.6 |
+| P1 in-binary (flip, stock core) | reverse | 209.0–210.3M | 4.7–5.1 GB† | **11–12** | 3:30.8–3:40.3† |
+| mapN-only binary | reverse+mapN | **353.2–354.6M** | 5.6–5.8 GB | 10 | 3:36.0–3:36.6 |
+| sorts-only binary | reverse+sorts | **353.5–354.9M** | 5.6 GB | 10 | 3:35.0–3:36.4 |
+| full binary | all | **352.8–354.6M** | 5.6 GB | 10 | 3:32.9–3:37.7 |
+
+† bimodal / GC-lottery legs; the majors movement is the stable signal.
+
+**The mechanism, from the by-kind census:** ConsChunk **6.2M → 146.3M
+(+140M nodes, +4.3 GB)** plus ListBacking +2.8M. The Elm idioms multiply
+whole-list materializations — `mapNHelp` builds acc then `reverse` rebuilds
+(2× per result); the merge sort materializes per level (×log n); `sortBy` adds
+decorate/undecorate (2 more) — where the C++ kernels built each result exactly
+once via the cursor driver. The chunk rewriter makes each pass cheap; nothing
+can undo the idiom's extra passes. Objects +61.6%, bytes +35.8%, RSS +13%,
+wall +2.9–3.7% — over the loop's bar with decisively worse counters.
+
+**Non-additivity was the tell** (mapN-only ≈ sorts-only ≈ full ≈ 354M): the
+cost is not per-function but the shared intermediate-materialization idiom
+saturating the same hot compile paths.
+
+**What survives:** the `shuntReverse` flag machinery (default True = shunt;
+`ECO_LIST_SHUNT_REVERSE=0` compiles the Elm body — its workload-side form
+measured clean, and the chunk win rides the shared already-rewritten
+`List_foldl` spec, delegation not duplication); the 2A overlay procedure with
+the `::`-operator finding (a module's own `infix` declaration is not usable in
+expression position inside itself — stock List.elm never does; use `cons`);
+the patched `List.elm` kept at `vendor/elm-core-patch/` as the reference
+implementation. **Phases 5/6 (JsArray/String HOFs) stay unstarted per the stop
+rule; Phase 2B never paid; no kernel symbol deleted.** The plan's own honest
+framing held: heat was real, but wall follows retention and per-op work, and
+the Elm form ADDS per-op work here.
+
 ### 2026-08-13 14:30 UTC — Run R: kernel-opt-12 `eco.cse_safe` purity channel, 2×2 vs MLIR CSE (**attr FREE in both CSE states — KEEP DEFAULT-ON, `ECO_CALL_PURITY=0` escapes; CSE flip attempted and REVERTED — NaN-sharing miscompile**)
 
 The purity channel end to end: emission from KernelFacts `droppable` at the one
@@ -778,3 +827,4 @@ was 20,480 MB. Gates at that point: E2E `--target full` and heap-validate tree
 | P — kernel-opt-13 Mono CSE (default-OFF) | 3:21.32 (r1/r2 mean, −1.71% FLAT) | 221,523,797 obj / 13,408.16 MB (**+1.66% — the pass's own analysis cost**; 81 merges, .mlir −1,052 B; D-C gate failed 40×) |
 | Q — kernel-opt-10 MLIR folder ON / CSE dark | 3:36.72 (fold r1/r2 mean, +0.76% FLAT; counters bit-equal) | folder: 2,382 folds. CSE retention artifact-dependent (+1.56% here, −1.0% in R) — moot: R's flip attempt found the NaN-sharing miscompile |
 | R — kernel-opt-12 eco.cse_safe purity channel | 3:24.85 (attr, CSE off — FLAT; binary byte-identical to base) | attr Δ ≈ 0 in both CSE states; S=4,330. **CSE flip attempted → 3 NaN-equality failures → REVERTED**: merged allocations are observable through the pointer-eq fast path |
+| S — kernel-opt-14 Elm-source List HOFs | REJECTED (objects +61.6%, ConsChunk 6.2M→146M, wall +2.9–3.7%) | E2E fully green; the accumulate+reverse/mergesort idioms multiply list materializations vs C++'s single pass; flag kept dark, kernels stay C++ |

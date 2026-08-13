@@ -996,3 +996,63 @@ Per symbol, all of:
    phase claims LSS reach, the
    dispatch census (`ECO_DISPATCH_STATS=1` + `benchmarks/dispatch-census.sh`) showing the callback
    moving from `sat`/`gen` into `fast`.
+
+---
+
+## Outcome — 2026-08-13: REJECTED after full measurement (Run S)
+
+All of P0/P1/2A/P3/P4 were built and measured; the migration is reverted, the
+`shuntReverse` flag machinery is kept (default True), no kernel symbol was
+deleted, and 2B was never paid — exactly the plan's own decision tree, taken on
+the counters.
+
+**Correctness was flawless**: E2E 1656/1656 under the full migration (all 19
+`Sort*` tests green without expectation edits, as the SWO analysis predicted;
+all `ListMap*Float*` green), kernel callee counts → 0 across the board, and the
+chunk hard-gate IMPROVED (`rewritten` 446→518, `whiles` +390).
+
+**The rejection is the by-kind census**: ConsChunk 6.2M → 146.3M (+4.3 GB).
+The accumulate+reverse idiom materializes every mapN result twice, the merge
+sort materializes per level, and `sortBy` adds decorate/undecorate — where the
+C++ cursor drivers built each result once. Objects +61.6%, bytes +35.8%,
+RSS +13%, wall +2.9–3.7%. The chunk rewriter cannot recover work the idiom
+itself adds. This confirms audit-02's implicit warning rather than the plan's
+hope: dissolving the boundary is worthless if the dissolved form does more
+allocation than the boundary cost.
+
+**Findings a future attempt needs:**
+1. **The plan's P1 hard-gate expectation was wrong in a benign way**: `rewritten`
+   does not rise when reverse un-shunts, because mono SHARES one already-rewritten
+   `List_foldl` spec across all 472 reverse bodies (delegation, not duplication).
+   Chunk preservation was proven at machine level (`List_foldl_$_198` contains
+   `eco_scratch_mark/push_boxed/finish`).
+2. **P1's flag-off identity gate is unsatisfiable as written** (the change lives
+   in the self-compile corpus — same as kernel-opt-01's Gate 3); the frozen
+   corpus is the valid identity vehicle, and it passed byte-identically.
+3. **In-binary vs workload-side measurement are different gates.** P1's
+   workload-side A/B was clean; the binary-resident form showed majors 10→11/12.
+   Every future migration must race a binary that CONTAINS the migrated code,
+   not just one that emits it.
+4. **Elm restriction found by the package build**: a module's own `infix`
+   declaration (`infix right 5 (::) = cons`, List.elm:41) is NOT usable in
+   expression position within that module — stock List.elm never does it; use
+   `cons` explicitly. The stock-elm local-package build
+   (`/tmp/corepkg && elm make src/List.elm`) is the way to get real error
+   messages out of a package that eco's builder reports opaquely.
+5. **2A overlay procedure verified end-to-end** including the mandatory cache
+   invalidation list; a stock reinstall control confirmed the mechanism.
+   The patched `List.elm` (correct, tested, chunk-friendly) is kept at
+   `vendor/elm-core-patch/List.elm`; stock at `vendor/elm-core.stock/`.
+6. **A future retry needs a different shape, not a different gate**: direct
+   result construction without the accumulate+reverse double pass — e.g. an
+   unwind-cons (non-tail) form leveraging `tryRewriteUnwind`, accepting native
+   stack depth limits, or a fused reverse-free accumulator contract. The
+   idiom, not the boundary, is what lost.
+
+**Deviations from the plan, recorded**: P0.4's instrumented dynamic re-census
+was skipped (nothing in items 07–13 touched reverse paths; the 42.7M ranking
+stood). The P3/P4 wall gates were run as one combined race plus isolation arms
+(mapN-only, sorts-only, full×stock — the 2×2 the non-additivity forced), which
+turned out to be the decisive instrumentation. Bootstrap/heap-validate not run
+(loop policy); moot after rejection since the shipped tree is byte-identical to
+pre-item state.
