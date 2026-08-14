@@ -711,6 +711,73 @@ def Eco_ListAppendOp : Eco_Op<"list.append"> {
   let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
 }
 
+def Eco_ListMapOp : Eco_Op<"list.map"> {
+  let summary = "Forward-iterating List.map template (chunk-built result)";
+  let description = [{
+    The compiler-authored replacement for elm/core's foldr-based `List.map`
+    body, emitted ONLY at call sites the front-end has licensed
+    (`plans/list-map-mlir-template.md`; policy `D-4a` in
+    `design_docs/debug-log-ordering-policy.md`). Applies `$callback` to every
+    element of `$input` **left to right** and builds the result in one
+    forward pass on the list scratch stack.
+
+    Licence, established front-end and never re-derived here: every member of
+    the callback's lambda set is transitively `Debug`-free, so the callback is
+    pure-or-⊥ and the order change is unobservable except in which element's ⊥
+    fires first (exactly D-4's latitude). An unlicensed site never emits this
+    op and keeps the foldr lowering.
+
+    Expanded by `EcoListTemplate` into a mark / cursor-loop / push /
+    `eco_scratch_finish_fwd` sequence — see that pass. The expansion happens
+    BEFORE `EcoGCPrepare`, which is why this op carries **no `$live_roots` and
+    does not implement `Eco_GCRootCarrierOpInterface`**: root operands could
+    never be populated on it, and the post-expansion SCF form is rooted by the
+    ordinary EcoGCPrepare/RS4GC path like any other loop.
+
+    `$callee` is the devirtualized fast-clone symbol (the `$cap` clone, or the
+    bare lambda symbol when the instance is captureless) taken from
+    AbiCloning's `fastEvaluator` stamp. When present, `$captures` carries the
+    instance's captures, already projected out of the closure at EMISSION so
+    the loop body never re-extracts them; the direct-call convention is
+    captures-then-params, no env pointer. When absent, the expansion falls
+    back to a generic apply of `$callback`.
+
+    `in_kind` / `out_kind` are 2-bit slot kinds (`00` boxed, `01` Int,
+    `10` Float, `11` Char) for the input element and the callback result,
+    derived SOLELY from SSA/mono types per REP_BOUNDARY_002/003. `List Bool`
+    is boxed (FORBID_CLOSURE_001); these are never a boolean is-boxed flag —
+    the `ListOps::take` kind-collapse defect class is the named anti-pattern.
+
+    **Deliberately NOT `Pure`.** The op allocates its observable result, and a
+    Pure allocating op is CSE-mergeable — the NaN-sharing miscompile that
+    keeps `ECO_MLIR_CSE` dark (`CSE_001`). Conservative effects stand until
+    kernel-opt-15 lands float-reachability.
+
+    ```mlir
+    %r = eco.list.map %xs, %f captures(%c0 : !eco.value)
+      {callee = @Foo_lambda_3$cap, in_kind = 1 : i64, out_kind = 0 : i64}
+      : !eco.value
+    ```
+  }];
+
+  let arguments = (ins
+    Eco_Value:$input,
+    Eco_Value:$callback,
+    Variadic<Eco_AnyValueOrAggregate>:$captures,
+    OptionalAttr<FlatSymbolRefAttr>:$callee,
+    DefaultValuedAttr<I64Attr, "0">:$in_kind,
+    DefaultValuedAttr<I64Attr, "0">:$out_kind
+  );
+  let results = (outs Eco_Value:$result);
+
+  let assemblyFormat = [{
+    $input `,` $callback (`captures` `(` $captures^ `:` type($captures) `)`)?
+    attr-dict `:` type($result)
+  }];
+
+  let hasVerifier = 1;
+}
+
 //===----------------------------------------------------------------------===//
 // Tuple Operations
 //===----------------------------------------------------------------------===//

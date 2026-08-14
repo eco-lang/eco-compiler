@@ -1923,6 +1923,39 @@ static void propagateGcFreeLeafAttrs(Module &m, GcFreeMode mode) {
                      << " direct call sites de-statepointed (mode="
                      << (mode == GcFreeMode::Stamp ? "stamp" : "census")
                      << ")\n";
+
+    // plans/list-map-mlir-template.md Goal 3 sizing. Counted HERE because
+    // this is the only point where the fixpoint's verdict exists.
+    //
+    // SCOPE, stated exactly: this is the whole devirtualized fast-clone
+    // population (`*$cap`), not template callees alone — `runEcoBackend`
+    // receives only the LLVM module, so the MLIR-side list of which clones a
+    // templated loop actually calls is not available here without a new
+    // EcoBackendJob field. A `$cap` clone is stamped iff it is
+    // allocation-free and call-clean, which is precisely the property that
+    // makes a templated loop over it statepoint-free, so this bounds the
+    // Goal-3 pool from above; the template-specific figure is the front end's
+    // `mapTemplate{... allocFreeCallbacks=}`, and the two are reconciled in
+    // the plan's Phase-3 record rather than conflated here.
+    //
+    // It UNDERCOUNTS in one known direction, and the direction matters:
+    // a small callback (<= ECO_CAP_INLINE_MAX_INSTS) was already spliced into
+    // its caller by the pre-RS4GC $cap inline prepass and has no surviving
+    // clone to stamp. Such a loop is statepoint-free too — trivially, with no
+    // stamp involved — so a low number here is not evidence against Goal 3.
+    if (envNamed("ECO_CAP_GCLEAF_REPORT")) {
+        unsigned capTotal = 0, capLeaf = 0;
+        for (Function &f : m) {
+            if (f.isDeclaration() || !f.getName().ends_with("$cap"))
+                continue;
+            ++capTotal;
+            if (f.hasFnAttribute("gc-leaf-function"))
+                ++capLeaf;
+        }
+        llvm::errs() << "[cap-gcleaf] calleeGcLeaf{stamped=" << capLeaf
+                     << " capClones=" << capTotal
+                     << "} (population = all $cap clones; see EcoBackend note)\n";
+    }
 }
 
 // ---------------------------------------------------------------------

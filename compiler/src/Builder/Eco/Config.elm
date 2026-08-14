@@ -233,6 +233,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\lciVal -> applyListConsIntrinsicOverride lciVal cfg22b)
             )
         |> Task.andThen
+            (\cfg22c ->
+                (Utils.envLookupEnv "ECO_LIST_MAP_TEMPLATE" |> Task.mapError never)
+                    |> Task.map (\lmtVal -> applyListMapTemplateOverride lmtVal cfg22c)
+            )
+        |> Task.andThen
             (\cfg23 ->
                 (Utils.envLookupEnv "ECO_AGG_PROMOTE" |> Task.mapError never)
                     |> Task.map (\apVal -> applyAggPromoteOverride apVal cfg23)
@@ -947,6 +952,36 @@ applyListConsIntrinsicOverride maybeVal cfg =
 
             else if t == "0" || t == "off" then
                 { cfg | list = { listCfg | consIntrinsic = False } }
+
+            else
+                cfg
+
+
+{-| `ECO_LIST_MAP_TEMPLATE=1|true|yes|on` (`0|off` disables): replace the body
+of a licensed `List.map` specialization with a forward-iterating
+`eco.list.map` op (plans/list-map-mlir-template.md). DEFAULT OFF.
+Artifact-affecting — hash token `lmapt=1` when enabled. Inert unless
+`list.chunks` is also on.
+-}
+applyListMapTemplateOverride : Maybe String -> EcoConfig -> EcoConfig
+applyListMapTemplateOverride maybeVal cfg =
+    case maybeVal of
+        Nothing ->
+            cfg
+
+        Just raw ->
+            let
+                t =
+                    String.toLower (String.trim raw)
+
+                listCfg =
+                    cfg.list
+            in
+            if t == "1" || t == "true" || t == "yes" || t == "on" then
+                { cfg | list = { listCfg | mapTemplate = True } }
+
+            else if t == "0" || t == "off" then
+                { cfg | list = { listCfg | mapTemplate = False } }
 
             else
                 cfg

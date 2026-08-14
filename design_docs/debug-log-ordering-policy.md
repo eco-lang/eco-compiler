@@ -62,6 +62,32 @@ E2E assertions on crash text must not depend on which occurrence produced it. Th
 the latitude kernel-opt-13 records for its C4 widening; C2/v1 does not use it, and
 kernel-opt-11's `droppable` (which requires `totality == Total`) cannot use it at all.
 
+**D-4a (element-order latitude for combinator templates — added with
+`plans/list-map-mlir-template.md`).** D-4's latitude extends to per-element
+application order: a lowering template that replaces an Elm-source list combinator
+body (e.g. foldr-based `List.map`) may apply the callback to elements in a different
+order than the replaced body iff (i) the applied callback specialization is
+**transitively Debug-free** — no `Debug.*` kernel reference reachable through its
+monomorphized call graph, computed per specialization, never assumed from
+`--optimize` (D-5 stands) — and (ii) the template applies the callback exactly once
+per element (no D-1 deletion, no D-2 merge). Such a callback is pure-or-⊥, so the
+only observable divergence is *which* element's ⊥ fires first: a crash/divergence
+occurs iff one occurred before, and the crash **message** may change — precisely
+D-4's licence. A callback that cannot be proven Debug-free keeps the source-order
+(right-to-left) lowering at that call site; this fallback is the pinnable behaviour
+and owes a fixture (a logging callback under `List.map` must emit in today's order,
+template flag on and off).
+
+The Debug-freedom proof is **not** the `CsePurity` fixpoint alone. That oracle's
+`scanBody` follows only `MonoVarGlobal` edges, so a `MonoCall` through a
+`MonoVarLocal` — a function-typed parameter or capture — contributes no poison, and
+`\x -> g x` with `g` a captured `Debug`-wrapping function would be wrongly licensed.
+A template claiming this latitude must additionally poison any lambda-set member
+whose body applies a function value that is not a resolved global/kernel/ctor
+(conservative), or recurse into such call sites' own lambda-set annotations to a
+fixpoint. Unknown/widened lambda sets, subst-engine graphs (no LSS member origins),
+or any Debug-tainted member ⇒ no licence ⇒ the source-order lowering.
+
 **D-5 (no `--optimize` latitude).** No pass may assume `Debug` is absent because
 `--optimize` was passed. Acquiring that latitude requires first making the native path
 run `checkForDebugUses` — a separate, deliberate change with its own gates.

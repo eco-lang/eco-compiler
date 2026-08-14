@@ -6,6 +6,7 @@ module Compiler.Generate.MLIR.Expr exposing
     , createDummyValue
     , collectLetBoundNames, addPlaceholderMappings
     , tupleBinderPromotable, aggBinderPromotableWith, paramSplitAdmissible, scanChainForwardRefs
+    , lambdaIdToString
     )
 
 {-| Expression generation for the MLIR backend.

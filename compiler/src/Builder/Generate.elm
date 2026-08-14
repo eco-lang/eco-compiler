@@ -74,6 +74,7 @@ import Compiler.GlobalOpt.CafDedupe as CafDedupe
 import Compiler.GlobalOpt.CafHoist as CafHoist
 import Compiler.GlobalOpt.CseCensus as CseCensus
 import Compiler.GlobalOpt.ListCombinators as ListCombinators
+import Compiler.GlobalOpt.MapTemplate as MapTemplate
 import Compiler.GlobalOpt.MonoCse as MonoCse
 import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
@@ -816,16 +817,43 @@ runInlineSimplifyPhase ecoConfig stats monoGraph0 =
             -- otherwise threshold-inlined everywhere, and the generation-time
             -- kernel shunt (Generate.MLIR.Functions.listChunksShunt) only
             -- rewrites the spec definitions, not pasted copies.
-            effectiveInlineConfig =
+            chunkBlacklist =
                 if ecoConfig.list.chunks then
-                    let
-                        cfg =
-                            ecoConfig.inline
-                    in
-                    { cfg | blacklist = cfg.blacklist ++ [ "List.reverse", "List.append", "List.concat", "List.take", "List.drop" ] }
+                    [ "List.reverse", "List.append", "List.concat", "List.take", "List.drop" ]
 
                 else
-                    ecoConfig.inline
+                    []
+
+            -- list.mapTemplate: same reason, one rung up. The template
+            -- replaces the `List.map` spec DEFINITION at generation time, so a
+            -- foldr body already pasted into a caller would keep the old
+            -- lowering and silently escape the template. Blacklisting is
+            -- name-level and wholesale by necessity: entries are qualified
+            -- source names matched by `globalToQualifiedName`, and this pass
+            -- runs BEFORE GlobalOpt/AbiCloning, so the licensed SET does not
+            -- exist yet and per-spec blacklisting is impossible. Consequence,
+            -- stated honestly: with the flag on, UNLICENSED map sites are
+            -- behaviourally identical to today but not necessarily
+            -- byte-identical — their specs stop being inline candidates.
+            -- Byte-identity is certified flag-OFF only (plan Gate 2).
+            mapTemplateBlacklist =
+                if ecoConfig.list.mapTemplate then
+                    [ "List.map" ]
+
+                else
+                    []
+
+            effectiveInlineConfig =
+                case chunkBlacklist ++ mapTemplateBlacklist of
+                    [] ->
+                        ecoConfig.inline
+
+                    extra ->
+                        let
+                            cfg =
+                                ecoConfig.inline
+                        in
+                        { cfg | blacklist = cfg.blacklist ++ extra }
 
             ( simplifiedGraph, inlineMetrics ) =
                 MonoInlineSimplify.optimize effectiveInlineConfig monoGraph0
@@ -844,7 +872,7 @@ runInlineSimplifyPhase ecoConfig stats monoGraph0 =
             Task.succeed simplifiedGraph
         )
         -- Hand off to a separate function so monoGraph0 goes out of scope
-        |> Task.andThen (runGlobalOptPhase ecoConfig.mono.lss.report ecoConfig.list.report ecoConfig.borrow ecoConfig.cafMemo ecoConfig.cse stats)
+        |> Task.andThen (runGlobalOptPhase ecoConfig ecoConfig.mono.lss.report ecoConfig.list.report ecoConfig.borrow ecoConfig.cafMemo ecoConfig.cse stats)
 
 
 renderInlineReport : MonoInlineSimplify.Metrics -> Mono.MonoGraph -> String
@@ -929,8 +957,8 @@ renderInlineReportWith inlineConfig m graph =
 
 {-| Global optimization phase in its own scope so inline+simplify inputs are GC-eligible.
 -}
-runGlobalOptPhase : Bool -> Bool -> Config.BorrowConfig -> Config.CafMemoConfig -> Config.CseConfig -> FEStats.Handle -> Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
-runGlobalOptPhase lssReport listReport borrowCfg cafMemo cseCfg stats simplifiedGraph =
+runGlobalOptPhase : Config.EcoConfig -> Bool -> Bool -> Config.BorrowConfig -> Config.CafMemoConfig -> Config.CseConfig -> FEStats.Handle -> Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
+runGlobalOptPhase mapTemplateCfg lssReport listReport borrowCfg cafMemo cseCfg stats simplifiedGraph =
     FEStats.withPhase stats
         FEStats.PhaseGlobalOpt
         (let
@@ -1046,6 +1074,28 @@ runGlobalOptPhase lssReport listReport borrowCfg cafMemo cseCfg stats simplified
                         -- stderr, like the LSS census; compared against the
                         -- L0 static census (§11.a) as the recognition gate.
                         writeLnErr (ListCombinators.report hoistedGraph)
+
+                    else
+                        Task.succeed ()
+                )
+            |> Task.andThen
+                (\_ ->
+                    if listReport then
+                        -- List.map template licence census
+                        -- (plans/list-map-mlir-template.md Gate 3:
+                        -- licensed + declined* == recognized). Rides on the
+                        -- same env flag as the combinator census and is
+                        -- derived from the SAME graph codegen will see, so the
+                        -- printed numbers are the numbers emission acts on.
+                        -- The derivation is repeated here rather than threaded
+                        -- out of Backend: this is a census-only path, and
+                        -- paying CsePurity.analyze twice under
+                        -- ECO_LIST_REPORT=1 is cheaper than a plumbing seam
+                        -- that could drift from what emission actually used.
+                        writeLnErr
+                            (MapTemplate.report
+                                (MapTemplate.derive mapTemplateCfg hoistedGraph)
+                            )
 
                     else
                         Task.succeed ()

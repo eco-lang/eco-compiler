@@ -61,3 +61,43 @@ close: 1656/1656. Heap-validate was never run in this loop (user decision);
 that debt stands. Next levers by residue heat: deep structural equality
 (`Utils_equal` 252.6M, 64.6% of remaining traffic), then the fold-shaped HOFs
 (rung 2), plus kernel-opt-15 to unblock MLIR CSE.
+
+## Post-loop item — 2026-08-14: `List.map` forward MLIR template (rung 2 trial)
+
+`plans/list-map-mlir-template.md` executed in full. **LANDED DEFAULT-OFF**
+(`list.mapTemplate`, env `ECO_LIST_MAP_TEMPLATE=1`; backend kill switch
+`ECO_LIST_MAP_EXPAND=0`). New invariant **CGEN_078**; policy **D-4a** added to
+`design_docs/debug-log-ordering-policy.md`; `HEAP_040` and `CGEN_072(a)`
+amended for `eco_scratch_finish_fwd`.
+
+**Built and proven.** New `eco.list.map` op + verifier; a three-component
+Debug-freedom licence oracle (`Compiler/GlobalOpt/MapTemplate.elm`) whose third
+component — a higher-order poison arm — is the one `CsePurity` lacks; a Phase-3
+expansion in `EcoListTemplate.cpp` (mark / cursor loop / push / `finish_fwd`).
+**Cursor pickup confirmed** (`rewritten=1`, no `eco_list_tail_hybrid` — a hard
+precondition, since that call is CGEN_072(a) poison), and **Goal 3
+demonstrated**: an allocation-free callback yields a statepoint-free loop body
+with the `$cap` callee called directly and stamped `gc-leaf-function`.
+
+**Gates:** E2E **1664/1664 in all three flag states**; **heap-validate
+1664/1664 flag-on** (this item paid the debt the loop deferred); flag-ON
+**bootstrap Stage-8c byte-identical**; elm-tests 13085/12 unchanged; corrected
+flag-off byte-identity 12/12.
+
+**Why default-OFF — the measurement refuted the plan's own hypothesis.**
+Allocation moved and retention did not: `Cons` allocated −5,834,272 (−1.40%),
+`ConsChunk` +2,791,153, net objects −3.09M — but **`Cons` promoted moved
+−0.002% and minor-GC count was IDENTICAL at 900**. The deleted cons cells were
+dead in the nursery. Wall −2.05% / RSS −2.06% / GC time −5.1% are consistent in
+sign but inside the ≈2.8% band ⇒ **FLAT**; the plausible attribution is the
+deleted foldr machinery (binary −291,816 B), not retention. Seventh
+confirmation of the series lesson: **wall follows retention, never allocation
+counts.**
+
+**The finding that should drive the next item:** the addressable pool is only
+**50 of 591 map specs (8.5%)**, and the blocker is the LICENCE, not the
+codegen — `declinedWidened` (LTop callback sets) is **425 / 72%**, which no
+work on this template can reach; a v2 generic-apply arm would add just 55 more
+(→17.8%). Before building `map2` / `filter` / `filterMap` on this same
+skeleton, improve how well LSS narrows callback sets — otherwise the rung-2
+family repeats this outcome four times.

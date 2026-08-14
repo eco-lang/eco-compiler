@@ -19,6 +19,7 @@ This module handles generation of all function types:
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
 import Compiler.Generate.MLIR.Context as Ctx
+import Compiler.GlobalOpt.MapTemplate as MapTemplate
 import Compiler.Generate.MLIR.Expr as Expr
 import Compiler.Generate.MLIR.LogicalTypes as LogicalTypes
 import Compiler.Generate.MLIR.Names as Names
@@ -444,7 +445,24 @@ generateNodeInner : Ctx.Context -> String -> Mono.SpecId -> Mono.MonoNode -> ( L
 generateNodeInner ctx funcName specId node =
     case node of
         Mono.MonoDefine expr monoType ->
-            generateDefine ctx funcName True expr monoType (Dict.get specId ctx.sretPromoted) (Dict.get specId ctx.psplitPromoted)
+            case ( MapTemplate.lookup specId ctx.mapTemplates, expr ) of
+                ( Just info, Mono.MonoClosure closureInfo _ _ ) ->
+                    -- plans/list-map-mlir-template.md: a LICENSED List.map
+                    -- spec's body is replaced wholesale by the forward
+                    -- template. Sret/psplit promotion cannot apply here (this
+                    -- returns a List, never a promotable aggregate), so the
+                    -- untouched legacy path stays reachable for every spec the
+                    -- licence declined — including via this emitter's own
+                    -- `Nothing`.
+                    case generateMapTemplateBody ctx funcName info closureInfo monoType of
+                        Just result ->
+                            result
+
+                        Nothing ->
+                            generateDefine ctx funcName True expr monoType (Dict.get specId ctx.sretPromoted) (Dict.get specId ctx.psplitPromoted)
+
+                _ ->
+                    generateDefine ctx funcName True expr monoType (Dict.get specId ctx.sretPromoted) (Dict.get specId ctx.psplitPromoted)
 
         Mono.MonoTailFunc params expr monoType ->
             generateTailFunc ctx funcName params expr monoType (Dict.get specId ctx.sretPromoted)
@@ -804,6 +822,164 @@ generateClosureFuncSingle ctx funcName closureInfo body monoType maybeSret maybe
             -- ABI. The funcOp computed above is DISCARDED (its full-body ops
             -- were computed; only the worker/shim pair is emitted).
             generateSretWorkerAndShim ctx funcName closureInfo body extractedReturnType sretInfo
+
+
+{-| plans/list-map-mlir-template.md Phase 1.4: emit a licensed `List.map`
+specialization as a single `eco.list.map` op instead of the elm/core foldr
+body.
+
+**The replacement is semantic and wholesale.** The spec's whole body becomes
+`eco.list.map %xs, %f {...}` + return; the `foldr`/`foldrHelper` call chain
+simply disappears from THIS function. The foldr specs themselves are untouched
+and remain for their other callers.
+
+Captures are projected out of the closure parameter ONCE, here, before the op —
+so the expansion's loop body never re-extracts them (they arrive as ordinary
+loop-invariant SSA operands and relocate like any other value). This mirrors
+`generateGenericCloneBodyFromSpecs`, which does the same projection for the
+generic clone.
+
+Declines to the caller (returning `Nothing`) rather than emitting something
+half-formed if the parameter row is not the expected `(f, xs)` shape — the
+`gateIntrinsic` discipline: a declining gate always falls through to today's
+untouched path.
+-}
+generateMapTemplateBody : Ctx.Context -> String -> MapTemplate.Info -> Mono.ClosureInfo -> Mono.MonoType -> Maybe ( List MlirOp, Ctx.Context )
+generateMapTemplateBody ctx funcName info closureInfo monoType =
+    case closureInfo.params of
+        [ ( callbackName, callbackMonoTy ), ( listName, listMonoTy ) ] ->
+            let
+                argPairs : List ( String, MlirType )
+                argPairs =
+                    [ ( "%" ++ callbackName, Types.monoTypeToAbi callbackMonoTy )
+                    , ( "%" ++ listName, Types.monoTypeToAbi listMonoTy )
+                    ]
+
+                extractedReturnType : Mono.MonoType
+                extractedReturnType =
+                    case monoType of
+                        Mono.MFunction _ _ _ retType ->
+                            retType
+
+                        _ ->
+                            monoType
+
+                returnType : MlirType
+                returnType =
+                    Types.monoTypeToAbi extractedReturnType
+
+                ctx0 : Ctx.Context
+                ctx0 =
+                    { ctx | nextVar = 2, varMappings = Dict.empty }
+                        |> Ctx.resetDefinedSsaVars
+                            [ "%" ++ callbackName, "%" ++ listName ]
+
+                -- The instance's capture row, in slot order, projected out of
+                -- the closure parameter exactly once.
+                captureAbiTypes : List MlirType
+                captureAbiTypes =
+                    List.map Types.monoTypeToAbi info.captureTypes
+
+                ( projectOpsRev, captureVarsRev, ctxProj ) =
+                    List.foldl
+                        (\( idx, capMlirTy ) ( accOps, accVars, accCtx ) ->
+                            let
+                                ( capVar, ctxA ) =
+                                    Ctx.freshVar accCtx
+
+                                ( ctxB, projectOp ) =
+                                    Ops.mlirOp ctxA "eco.project.closure"
+                                        |> Ops.opBuilder.withOperands [ "%" ++ callbackName ]
+                                        |> Ops.opBuilder.withResults [ ( capVar, capMlirTy ) ]
+                                        |> Ops.opBuilder.withAttrs
+                                            (Dict.fromList
+                                                [ ( "index", IntAttr Nothing idx )
+                                                , ( "is_unboxed"
+                                                  , BoolAttr (not (Types.isEcoValueType capMlirTy))
+                                                  )
+                                                ]
+                                            )
+                                        |> Ops.opBuilder.build
+                            in
+                            ( projectOp :: accOps, ( capVar, capMlirTy ) :: accVars, ctxB )
+                        )
+                        ( [], [], ctx0 )
+                        (List.indexedMap Tuple.pair captureAbiTypes)
+
+                captureVars : List ( String, MlirType )
+                captureVars =
+                    List.reverse captureVarsRev
+
+                -- The fast-clone symbol. A captureless instance IS its own
+                -- fast evaluator and Lambdas.elm emits it un-suffixed, so the
+                -- `$cap` suffix keys on the real capture count — the same
+                -- choice `generateFastDispatchCall` makes.
+                calleeSymbol : String
+                calleeSymbol =
+                    if List.isEmpty info.captureTypes then
+                        Expr.lambdaIdToString info.calleeLambdaId
+
+                    else
+                        Expr.lambdaIdToString info.calleeLambdaId ++ "$cap"
+
+                ( resultVar, ctxRes ) =
+                    Ctx.freshVar ctxProj
+
+                ( ctxOp, mapOp ) =
+                    Ops.mlirOp ctxRes "eco.list.map"
+                        |> Ops.opBuilder.withOperands
+                            (("%" ++ listName)
+                                :: ("%" ++ callbackName)
+                                :: List.map Tuple.first captureVars
+                            )
+                        |> Ops.opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
+                        |> Ops.opBuilder.withAttrs
+                            (Dict.fromList
+                                [ ( "callee", SymbolRefAttr calleeSymbol )
+                                , ( "in_kind", IntAttr Nothing info.inKind )
+                                , ( "out_kind", IntAttr Nothing info.outKind )
+                                , ( "_operand_types"
+                                  , ArrayAttr Nothing
+                                        (List.map TypeAttr
+                                            (Types.ecoValue
+                                                :: Types.ecoValue
+                                                :: List.map Tuple.second captureVars
+                                            )
+                                        )
+                                  )
+                                ]
+                            )
+                        |> Ops.opBuilder.build
+
+                ( coerceOps, finalVar, ctxCoerce ) =
+                    Expr.coerceResultToType ctxOp resultVar Types.ecoValue returnType
+
+                ( ctxRet, returnOp ) =
+                    Ops.ecoReturn ctxCoerce finalVar returnType
+
+                region : MlirRegion
+                region =
+                    Ops.mkRegion argPairs
+                        (List.reverse projectOpsRev ++ [ mapOp ] ++ coerceOps)
+                        returnOp
+
+                ( ctxFunc, funcOp ) =
+                    Ops.funcFunc ctxRet funcName argPairs returnType region
+
+                funcOpWithLogical =
+                    LogicalTypes.addLogicalTypesAttr
+                        ctxFunc.ecoConfig.logicalTypes.customMaxFields
+                        ctxFunc.typeRegistry.ctorShapes
+                        [ callbackMonoTy, listMonoTy ]
+                        extractedReturnType
+                        funcOp
+            in
+            Just ( [ funcOpWithLogical ], ctxFunc )
+
+        _ ->
+            -- Not the two-parameter shape the licence assumed. MapTemplate
+            -- already filters these, so this is belt-and-braces: decline.
+            Nothing
 
 
 {-| U-T1.3.3 result promotion: the `$sret` worker compiles the REAL body

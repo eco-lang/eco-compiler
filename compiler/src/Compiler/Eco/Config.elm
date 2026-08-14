@@ -84,13 +84,21 @@ call; env kill switch `ECO_LIST_CONS_INTRINSIC=0`, artifact-affecting (hash
 token `lcons=1` when enabled). Measured on the self-compile: all 4,304 kernel
 cons call sites convert, EcoListTemplate chunk parity is exact, and wall is
 FLAT (+0.36%, inside the noise band) — it ships for the deleted call sites and
-statepoints, not for a measured wall win. `report` (env `ECO_LIST_REPORT=1`, never from JSON)
-renders the combinator-recognition census to stderr — output-only,
-excluded from `hash`.
+statepoints, not for a measured wall win. `mapTemplate`
+(plans/list-map-mlir-template.md, DEFAULT FALSE at landing) replaces the body
+of a LICENSED `List.map` specialization with a forward-iterating
+`eco.list.map` op instead of the elm/core foldr lowering; licensing needs a
+transitive Debug-freedom proof on the callback (policy D-4a) and is computed
+by `Compiler.GlobalOpt.MapTemplate`. Env `ECO_LIST_MAP_TEMPLATE=1`;
+artifact-affecting (hash token `lmapt=1` when enabled); inert unless `chunks`
+is also on, since the scratch/chunk machinery is the substrate. `report` (env
+`ECO_LIST_REPORT=1`, never from JSON) renders the combinator-recognition
+census to stderr — output-only, excluded from `hash`.
 -}
 type alias ListConfig =
     { chunks : Bool
     , consIntrinsic : Bool
+    , mapTemplate : Bool
     , report : Bool
     }
 
@@ -371,7 +379,7 @@ default =
     , cafMemo = { enabled = True, census = False, dedupe = False, hoist = { enabled = False, minNodes = 3, maxHoists = 8192 } }
     , mono = { engine = EngineSolver, diffDump = False, validate = False, lss = defaultLss }
     , borrow = { enabled = False, reify = ROff, report = False, validate = False, oracleOpt = False }
-    , list = { chunks = True, consIntrinsic = True, report = False }
+    , list = { chunks = True, consIntrinsic = True, mapTemplate = False, report = False }
 
     -- The ENTIRE tier-1 family DEFAULT-ON since 2026-08-04 (user
     -- decision, reversing the same-day default-off verdict). Ship config
@@ -423,14 +431,22 @@ decoder =
         |> D.apply (D.optionalField "cse" cseDecoder default.cse)
 
 
-{-| Decode the `list` block. Only `chunks` is JSON-configurable; `report`
-is env-only (`ECO_LIST_REPORT=1`).
+{-| Decode the `list` block. `chunks`, `consIntrinsic` and `mapTemplate` are
+JSON-configurable; `report` is env-only (`ECO_LIST_REPORT=1`).
 -}
 listDecoder : D.Decoder x ListConfig
 listDecoder =
-    D.pure (\chunks consIntrinsic -> { chunks = chunks, consIntrinsic = consIntrinsic, report = default.list.report })
+    D.pure
+        (\chunks consIntrinsic mapTemplate ->
+            { chunks = chunks
+            , consIntrinsic = consIntrinsic
+            , mapTemplate = mapTemplate
+            , report = default.list.report
+            }
+        )
         |> D.apply (D.optionalField "chunks" D.bool default.list.chunks)
         |> D.apply (D.optionalField "consIntrinsic" D.bool default.list.consIntrinsic)
+        |> D.apply (D.optionalField "mapTemplate" D.bool default.list.mapTemplate)
 
 
 {-| Decode the `inline` block. `report` is env-only in spirit but accepted
@@ -814,6 +830,16 @@ hash cfg =
             -- existing cache entry.
             ++ (if cfg.list.consIntrinsic then
                     [ "lcons=1" ]
+
+                else
+                    []
+               )
+            -- list-map template: replaces licensed List.map spec BODIES, so a
+            -- flag-on artifact must never be served from a flag-off cache.
+            -- Token appears only when enabled, so every existing (default-off)
+            -- cache entry keys exactly as it did before this flag existed.
+            ++ (if cfg.list.mapTemplate then
+                    [ "lmapt=1" ]
 
                 else
                     []

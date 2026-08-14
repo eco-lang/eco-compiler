@@ -1306,6 +1306,58 @@ LogicalResult ConsMakeOp::verify() {
   return success();
 }
 
+LogicalResult ListMapOp::verify() {
+  // 2-bit slot kinds, both axes (REP_HEAP_002). Rejecting out-of-range here
+  // is the guard against the ListOps::take kind-collapse defect class: a
+  // boolean "is boxed" smuggled in as a kind would pass silently otherwise.
+  for (auto [what, kind] :
+       {std::make_pair("in_kind", getInKind()),
+        std::make_pair("out_kind", getOutKind())}) {
+    if (kind < 0 || kind > 3) {
+      return emitOpError(what) << " must be a 2-bit slot kind (0..3), got "
+                               << kind;
+    }
+  }
+
+  // Captures are only meaningful alongside a devirtualized callee: the
+  // expansion passes them positionally to that symbol (captures-then-params),
+  // and with no callee there is nothing to pass them to.
+  if (!getCalleeAttr() && !getCaptures().empty()) {
+    return emitOpError("captures require a callee attribute; a generic-apply "
+                       "eco.list.map must have none, got ")
+           << getCaptures().size();
+  }
+
+  // The callee, when named, must resolve to a real function whose parameter
+  // row is exactly captures-then-one-element. Catching arity disagreement
+  // here turns a silent miscompile at a licensed site into a verifier error.
+  if (auto callee = getCalleeAttr()) {
+    auto fn = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+        getOperation(), callee);
+    if (!fn) {
+      return emitOpError("callee '") << callee.getValue()
+             << "' does not resolve to a func.func";
+    }
+    size_t want = getCaptures().size() + 1;
+    if (fn.getNumArguments() != want) {
+      return emitOpError("callee '")
+             << callee.getValue() << "' takes " << fn.getNumArguments()
+             << " parameters but the template supplies " << want
+             << " (" << getCaptures().size() << " captures + 1 element)";
+    }
+    for (auto [i, cap] : llvm::enumerate(getCaptures())) {
+      if (cap.getType() != fn.getArgumentTypes()[i]) {
+        return emitOpError("capture ")
+               << i << " has type " << cap.getType()
+               << " but callee '" << callee.getValue() << "' expects "
+               << fn.getArgumentTypes()[i];
+      }
+    }
+  }
+
+  return success();
+}
+
 LogicalResult ClosureEnvMakeOp::verify() {
   auto resTy = cast<eco::ClosureEnvType>(getResult().getType());
   SmallVector<Type, 8> actual;

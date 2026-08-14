@@ -63,6 +63,7 @@ constexpr const char *kPushBoxedFn = "eco_scratch_push_boxed";
 constexpr const char *kPushScalarFn = "eco_scratch_push_scalar";
 constexpr const char *kFinishFn = "eco_scratch_finish";
 constexpr const char *kFinishFwdFn = "eco_scratch_finish_fwd";
+constexpr const char *kReverseFn = "Elm_Kernel_List_reverse";
 
 /// Debug counters (ECO_LIST_TEMPLATE_DEBUG=1): why candidates bailed.
 struct BailStats {
@@ -84,6 +85,27 @@ struct BailStats {
                 chainEmpty, baseUses, kinds, rewritten, wcBlockArg,
                 wcConsUses, wcConsRoots, wcHeadTy, wcRegionShape, wcMultiUse,
                 wcOtherOp);
+    }
+};
+
+/// Why `tryRewriteUnwind` declined, per function (ECO_LIST_TEMPLATE_DEBUG=1).
+///
+/// Added by plans/list-map-mlir-template.md Phase 0 to answer, with data,
+/// "why not just extend the existing unwind-cons rewriter to foldrHelper?".
+/// Counted twice: over ALL functions, and restricted to `List_foldrHelper_$_`
+/// symbols. Output-only — no artifact effect in any flag state.
+struct UnwindBailStats {
+    unsigned seen = 0, multiBlock = 0, retShape = 0, walkFail = 0,
+             noLinks = 0, noSelfCalls = 0, kindMix = 0, selfEscape = 0,
+             domFail = 0, useShape = 0, noOuter = 0, ok = 0;
+    void tally(const char *what) {
+        fprintf(stderr,
+                "[eco-list-template] unwind-bail(%s) seen=%u ok=%u "
+                "bail{multiBlock=%u retShape=%u walkFail=%u noLinks=%u "
+                "noSelfCalls=%u kindMix=%u selfEscape=%u domFail=%u "
+                "useShape=%u noOuter=%u}\n",
+                what, seen, ok, multiBlock, retShape, walkFail, noLinks,
+                noSelfCalls, kindMix, selfEscape, domFail, useShape, noOuter);
     }
 };
 
@@ -324,6 +346,16 @@ struct EcoListTemplatePass
         bool declsMade = false;
         BailStats bs;
         bool debug = std::getenv("ECO_LIST_TEMPLATE_DEBUG") != nullptr;
+
+        // Phase 3 FIRST: eco.list.map expands into its own final-form loop.
+        // Running it before the cons-accumulator rewriter keeps the two
+        // transforms independent -- the expansion's loop pushes directly and
+        // carries no cons chain, so the while-rewriter below finds nothing to
+        // do on it and cannot double-transform.
+        unsigned mapExpanded = expandListMaps(m, declsMade);
+        if (debug)
+            fprintf(stderr, "[eco-list-template] mapExpand{expanded=%u}\n",
+                    mapExpanded);
         // Post-order walk: inner loops are transformed before outer ones,
         // which is what keeps nested mark/finish pairs balanced.
         m.walk([&](scf::WhileOp w) {
@@ -340,12 +372,21 @@ struct EcoListTemplatePass
             if (!f.getBody().empty())
                 fns.push_back(f);
         unsigned unwindRewritten = 0;
-        for (auto f : fns)
-            if (tryRewriteUnwind(m, f, declsMade))
+        UnwindBailStats ubAll, ubFoldrHelper;
+        for (auto f : fns) {
+            bool isFh =
+                f.getSymName().contains("List_foldrHelper_$_");
+            if (tryRewriteUnwind(m, f, declsMade,
+                                 debug ? &ubAll : nullptr,
+                                 (debug && isFh) ? &ubFoldrHelper : nullptr))
                 unwindRewritten++;
-        if (debug)
+        }
+        if (debug) {
             fprintf(stderr, "[eco-list-template] unwind rewritten=%u\n",
                     unwindRewritten);
+            ubAll.tally("all");
+            ubFoldrHelper.tally("foldrHelper");
+        }
 
         if (debug) {
             bs.dump();
@@ -611,6 +652,319 @@ struct EcoListTemplatePass
     }
 
     //===------------------------------------------------------------------===//
+    // Phase 3: eco.list.map expansion (plans/list-map-mlir-template.md).
+    //
+    // The front-end emitted this op only for a LICENSED site — a `List.map`
+    // specialization whose callback is provably transitively Debug-free, so
+    // applying it left-to-right instead of foldr's right-to-left is within
+    // policy D-4a. Nothing here re-derives that licence; the op's presence IS
+    // the licence.
+    //
+    // Shape produced (one op -> one loop):
+    //
+    //   %m    = call @eco_scratch_mark()
+    //   %last = scf.while (%cur = %xs) {
+    //             %t = eco.get_tag %cur ; %c = cmpi eq %t, 1   // Cons|ConsChunk
+    //             scf.condition(%c) %cur
+    //           } do {
+    //           ^bb(%cur):
+    //             %x    = eco.project.list_head %cur      // typed per in_kind
+    //             %y    = <callback>                      // direct or generic
+    //             call @eco_scratch_push_{boxed,scalar}(%y[, out_kind])
+    //             %next = eco.project.list_tail %cur
+    //             scf.yield %next
+    //           }
+    //   %nil  = eco.constant Empty
+    //   %r    = call @eco_scratch_finish_fwd(%m, %nil, out_kind)
+    //
+    // Two properties this shape is chosen for, both load-bearing:
+    //
+    //  * It is EXACTLY the shape `EcoListCursor` recognizes (arg forwarded
+    //    through scf.condition; yield = tail projection; every other use a
+    //    get_tag or head projection). That pass then rewrites it to the
+    //    non-allocating (node, idx) cursor. This is not merely a speed win —
+    //    `eco_list_tail_hybrid` is CGEN_072(a) POISON, so without cursor
+    //    pickup the loop cannot go statepoint-free even for a gc-leaf
+    //    callback. Pickup is a hard precondition, checked by the pass's own
+    //    `rewritten` counter.
+    //
+    //  * The scratch stack is GC-visible by design (HEAP_040: boxed entries
+    //    are external-scanner roots, evacuated in place), so the callback may
+    //    allocate and GC freely between pushes, and a nested licensed map
+    //    inside the callback balances by mark discipline.
+    //
+    // Runs BEFORE EcoGCPrepare, so the cursor is an ordinary relocatable SSA
+    // value and RS4GC handles relocation across the callback — the stale
+    // -cursor bug class that bit kernelListMapN is structurally impossible.
+    //===------------------------------------------------------------------===//
+
+    /// `ECO_LIST_MAP_EXPAND=0`: emit the order-preserving collapse instead of
+    /// the forward template, for bisecting an already-emitted artifact
+    /// without recompiling the .mlir.
+    static bool mapExpandEnabled() {
+        const char *e = ::getenv("ECO_LIST_MAP_EXPAND");
+        if (!e || !*e)
+            return true;
+        return !(e[0] == '0' && e[1] == '\0');
+    }
+
+    /// The region's entry block, created with `argTys` if the region is still
+    /// empty. `scf::WhileOp`'s builder overloads differ on whether they
+    /// pre-create region blocks, and getting it wrong is a hard crash either
+    /// way (empty first block -> getTerminator assert; missing block ->
+    /// sentinel deref). Asking the region is the only stable answer.
+    static Block *ensureRegionBlock(OpBuilder &b, Region &r,
+                                    ArrayRef<Type> argTys, Location loc) {
+        if (!r.empty())
+            return &r.front();
+        SmallVector<Location, 4> locs(argTys.size(), loc);
+        return b.createBlock(&r, r.end(), argTys, locs);
+    }
+
+    /// The SSA type a head projection yields for a 2-bit element kind
+    /// (REP_BOUNDARY_001).
+    static Type headTypeForKind(MLIRContext *ctx, int64_t kind) {
+        switch (kind) {
+            case 1: return IntegerType::get(ctx, 64);
+            case 2: return Float64Type::get(ctx);
+            case 3: return IntegerType::get(ctx, 16);
+            default: return eco::ValueType::get(ctx);
+        }
+    }
+
+    /// Emit the push of one callback result. Boxed results push directly;
+    /// scalars are widened to the i64 bit pattern the scratch stack stores,
+    /// exactly as the cons-chain rewriter above does.
+    void emitPush(OpBuilder &b, Location loc, MLIRContext *ctx, Value y,
+                  int64_t outKind) {
+        Type i64 = IntegerType::get(ctx, 64);
+        if (isa<eco::ValueType>(y.getType())) {
+            b.create<eco::CallOp>(loc, TypeRange{}, ValueRange{y},
+                                  FlatSymbolRefAttr::get(ctx, kPushBoxedFn),
+                                  nullptr, nullptr);
+            return;
+        }
+        Value bits = y;
+        if (y.getType().isF64())
+            bits = b.create<arith::BitcastOp>(loc, i64, y);
+        else if (y.getType().isInteger(16))
+            bits = b.create<arith::ExtUIOp>(loc, i64, y);
+        Value kc = b.create<arith::ConstantOp>(loc, b.getI64IntegerAttr(outKind));
+        b.create<eco::CallOp>(loc, TypeRange{}, ValueRange{bits, kc},
+                              FlatSymbolRefAttr::get(ctx, kPushScalarFn),
+                              nullptr, nullptr);
+    }
+
+    /// Apply the callback to one element, honouring the devirtualization
+    /// attr. With a callee the call is DIRECT — captures-then-params, no env
+    /// pointer (the `$cap` convention `SaturatedPapToCallPattern` uses) —
+    /// which is what lets CGEN_072's propagation stamp it gc-leaf when the
+    /// callback allocates nothing. Without one, a generic saturated apply of
+    /// the closure value.
+    Value emitCallback(OpBuilder &b, Location loc, MLIRContext *ctx,
+                       eco::ListMapOp op, Value x, Type resultTy) {
+        if (auto callee = op.getCalleeAttr()) {
+            SmallVector<Value, 4> args(op.getCaptures().begin(),
+                                       op.getCaptures().end());
+            args.push_back(x);
+            auto call = b.create<eco::CallOp>(loc, TypeRange{resultTy}, args,
+                                              callee, nullptr, nullptr);
+            return call.getResults()[0];
+        }
+        // Generic arm: saturated indirect call through the closure value.
+        auto call = b.create<eco::CallOp>(
+            loc, TypeRange{resultTy}, ValueRange{op.getCallback(), x},
+            /*callee=*/nullptr, /*musttail=*/nullptr,
+            /*remaining_arity=*/b.getI64IntegerAttr(1));
+        return call.getResults()[0];
+    }
+
+    /// Build the cursor loop and return the mark whose entries it pushed.
+    /// `input` is walked; each element's callback result is pushed.
+    void emitForwardLoop(OpBuilder &b, Location loc, MLIRContext *ctx,
+                         eco::ListMapOp op, Value input, Type resultTy) {
+        Type value = eco::ValueType::get(ctx);
+        Type i32 = IntegerType::get(ctx, 32);
+
+        auto whileOp = b.create<scf::WhileOp>(loc, TypeRange{value},
+                                              ValueRange{input});
+
+        // Before region: non-empty test, forwarding the cursor unchanged.
+        // WhileOp::build already created both region blocks with the right
+        // argument types -- creating our own here would leave an empty first
+        // block and blow getYieldOp()'s terminator assertion.
+        {
+            OpBuilder::InsertionGuard guard(b);
+            Block *before =
+                ensureRegionBlock(b, whileOp.getBefore(), {value}, loc);
+            b.setInsertionPointToEnd(before);
+            Value cur = before->getArgument(0);
+            Value tag = b.create<eco::GetTagOp>(loc, i32, cur);
+            // eco_get_tag normalizes BOTH Tag_Cons and Tag_ConsChunk to the
+            // list Cons ctor tag (1); Nil is the Empty constant and never
+            // answers 1. So this one test covers every hybrid spine form.
+            Value one = b.create<arith::ConstantOp>(loc, b.getI32IntegerAttr(1));
+            Value nonEmpty = b.create<arith::CmpIOp>(
+                loc, arith::CmpIPredicate::eq, tag, one);
+            b.create<scf::ConditionOp>(loc, nonEmpty, ValueRange{cur});
+        }
+
+        // After region: project, apply, push, step.
+        {
+            OpBuilder::InsertionGuard guard(b);
+            Block *after =
+                ensureRegionBlock(b, whileOp.getAfter(), {value}, loc);
+            b.setInsertionPointToEnd(after);
+            Value cur = after->getArgument(0);
+            Type headTy = headTypeForKind(ctx, op.getInKind());
+            Value x = b.create<eco::ListHeadOp>(loc, headTy, cur);
+            Value y = emitCallback(b, loc, ctx, op, x, resultTy);
+            emitPush(b, loc, ctx, y, op.getOutKind());
+            Value next = b.create<eco::ListTailOp>(loc, value, cur);
+            b.create<scf::YieldOp>(loc, ValueRange{next});
+        }
+    }
+
+    /// `ECO_LIST_MAP_EXPAND=0` collapse: reverse the input, then walk the
+    /// reversed spine consing forward. That applies the callback in exactly
+    /// foldr's certified right-to-left order, so the kill switch is usable on
+    /// a LICENSED artifact without re-litigating D-4a — which a naive
+    /// forward-cons collapse would not be. A forward singly-linked spine
+    /// cannot be walked last-element-first in one loop, so the deliberate
+    /// double materialization is the price; it is a bisection-only arm.
+    Value emitOrderPreservingCollapse(OpBuilder &b, Location loc,
+                                      MLIRContext *ctx, eco::ListMapOp op,
+                                      Type resultTy) {
+        Type value = eco::ValueType::get(ctx);
+        Type i32 = IntegerType::get(ctx, 32);
+        Type i64 = IntegerType::get(ctx, 64);
+
+        Value reversed =
+            b.create<eco::CallOp>(
+                 loc, TypeRange{value}, ValueRange{op.getInput()},
+                 FlatSymbolRefAttr::get(ctx, kReverseFn), nullptr, nullptr)
+                .getResults()[0];
+
+        // Walk the reversed spine, consing each result onto the accumulator.
+        // Cons order over a reversed input reproduces the forward result.
+        Value nil = b.create<eco::ConstantOp>(loc, value,
+                                              eco::ConstantKind::Empty);
+        auto whileOp = b.create<scf::WhileOp>(loc, TypeRange{value, value},
+                                              ValueRange{reversed, nil});
+        {
+            OpBuilder::InsertionGuard guard(b);
+            Block *before = ensureRegionBlock(b, whileOp.getBefore(),
+                                              {value, value}, loc);
+            b.setInsertionPointToEnd(before);
+            Value cur = before->getArgument(0);
+            Value acc = before->getArgument(1);
+            Value tag = b.create<eco::GetTagOp>(loc, i32, cur);
+            Value one = b.create<arith::ConstantOp>(loc, b.getI32IntegerAttr(1));
+            Value nonEmpty = b.create<arith::CmpIOp>(
+                loc, arith::CmpIPredicate::eq, tag, one);
+            b.create<scf::ConditionOp>(loc, nonEmpty, ValueRange{cur, acc});
+        }
+        {
+            OpBuilder::InsertionGuard guard(b);
+            Block *after = ensureRegionBlock(b, whileOp.getAfter(),
+                                             {value, value}, loc);
+            b.setInsertionPointToEnd(after);
+            Value cur = after->getArgument(0);
+            Value acc = after->getArgument(1);
+            Type headTy = headTypeForKind(ctx, op.getInKind());
+            Value x = b.create<eco::ListHeadOp>(loc, headTy, cur);
+            Value y = emitCallback(b, loc, ctx, op, x, resultTy);
+            Value newAcc = b.create<eco::ListConstructOp>(
+                loc, value, y, acc, ValueRange{},
+                /*head_unboxed=*/!isa<eco::ValueType>(y.getType()),
+                /*head_kind=*/op.getOutKind());
+            Value next = b.create<eco::ListTailOp>(loc, value, cur);
+            b.create<scf::YieldOp>(loc, ValueRange{next, newAcc});
+        }
+        (void)i64;
+        return whileOp.getResult(1);
+    }
+
+    /// Expand every eco.list.map in the module. Returns how many fired.
+    unsigned expandListMaps(ModuleOp m, bool &declsMade) {
+        SmallVector<eco::ListMapOp, 16> ops;
+        m.walk([&](eco::ListMapOp op) { ops.push_back(op); });
+        if (ops.empty())
+            return 0;
+
+        MLIRContext *ctx = m.getContext();
+        Type i64 = IntegerType::get(ctx, 64);
+        Type value = eco::ValueType::get(ctx);
+        bool forward = mapExpandEnabled();
+
+        if (forward) {
+            if (!declsMade) {
+                declsMade = true;
+                ensureDecl(m, kMarkFn, FunctionType::get(ctx, {}, {i64}), {},
+                           {"i64"});
+                ensureDecl(m, kPushBoxedFn,
+                           FunctionType::get(ctx, {value}, {}), {"value"}, {});
+                ensureDecl(m, kPushScalarFn,
+                           FunctionType::get(ctx, {i64, i64}, {}),
+                           {"i64", "i64"}, {});
+                ensureDecl(m, kFinishFn,
+                           FunctionType::get(ctx, {i64, value, i64}, {value}),
+                           {"i64", "value", "i64"}, {"value"});
+            } else {
+                ensureDecl(m, kMarkFn, FunctionType::get(ctx, {}, {i64}), {},
+                           {"i64"});
+                ensureDecl(m, kPushBoxedFn,
+                           FunctionType::get(ctx, {value}, {}), {"value"}, {});
+                ensureDecl(m, kPushScalarFn,
+                           FunctionType::get(ctx, {i64, i64}, {}),
+                           {"i64", "i64"}, {});
+            }
+            ensureDecl(m, kFinishFwdFn,
+                       FunctionType::get(ctx, {i64, value, i64}, {value}),
+                       {"i64", "value", "i64"}, {"value"});
+        } else {
+            ensureDecl(m, kReverseFn, FunctionType::get(ctx, {value}, {value}),
+                       {"value"}, {"value"});
+        }
+
+        for (eco::ListMapOp op : ops) {
+            OpBuilder b(op);
+            Location loc = op.getLoc();
+            // The callback's SSA result type comes from out_kind, the same
+            // 2-bit kind the push and the finish agree on. Deriving all three
+            // from ONE attribute is what keeps the ListOps::take kind-collapse
+            // defect class out of this expansion.
+            Type resultTy = headTypeForKind(ctx, op.getOutKind());
+
+            Value replacement;
+            if (forward) {
+                auto mark = b.create<eco::CallOp>(
+                    loc, TypeRange{i64}, ValueRange{},
+                    FlatSymbolRefAttr::get(ctx, kMarkFn), nullptr, nullptr);
+                emitForwardLoop(b, loc, ctx, op, op.getInput(), resultTy);
+                Value nil = b.create<eco::ConstantOp>(loc, value,
+                                                      eco::ConstantKind::Empty);
+                Value kc = b.create<arith::ConstantOp>(
+                    loc, b.getI64IntegerAttr(op.getOutKind()));
+                replacement =
+                    b.create<eco::CallOp>(
+                         loc, TypeRange{value},
+                         ValueRange{mark.getResults()[0], nil, kc},
+                         FlatSymbolRefAttr::get(ctx, kFinishFwdFn), nullptr,
+                         nullptr)
+                        .getResults()[0];
+            } else {
+                replacement =
+                    emitOrderPreservingCollapse(b, loc, ctx, op, resultTy);
+            }
+
+            op.getResult().replaceAllUsesWith(replacement);
+            op.erase();
+        }
+        return static_cast<unsigned>(ops.size());
+    }
+
+    //===------------------------------------------------------------------===//
     // Phase 2: unwind-cons recursion.
     //
     // Shape: a function whose return value is a cons chain around either a
@@ -726,26 +1080,55 @@ struct EcoListTemplatePass
             setRunBarrier(run, run.front(), plan);
     }
 
-    bool tryRewriteUnwind(ModuleOp m, func::FuncOp f, bool &declsMade) {
-        if (!llvm::hasSingleElement(f.getBody()))
+    bool tryRewriteUnwind(ModuleOp m, func::FuncOp f, bool &declsMade,
+                          UnwindBailStats *all = nullptr,
+                          UnwindBailStats *fh = nullptr) {
+        // Phase-0 instrumentation: bump the same member on both scopes.
+        auto bump = [&](unsigned UnwindBailStats::*slot) {
+            if (all)
+                all->*slot += 1;
+            if (fh)
+                fh->*slot += 1;
+        };
+        bump(&UnwindBailStats::seen);
+
+        if (!llvm::hasSingleElement(f.getBody())) {
+            bump(&UnwindBailStats::multiBlock);
             return false;
+        }
         Operation *term = f.getBody().front().getTerminator();
         if (!term || term->getNumOperands() != 1 ||
-            !isa<eco::ValueType>(term->getOperand(0).getType()))
+            !isa<eco::ValueType>(term->getOperand(0).getType())) {
+            bump(&UnwindBailStats::retShape);
             return false;
-        if (!isa<eco::ReturnOp, func::ReturnOp>(term))
+        }
+        if (!isa<eco::ReturnOp, func::ReturnOp>(term)) {
+            bump(&UnwindBailStats::retShape);
             return false;
+        }
         StringRef name = f.getSymName();
 
         UnwindPlan plan;
         walkUnwind(term->getOperand(0), name, plan);
-        if (!plan.ok || plan.links.empty() || plan.selfCalls.empty())
+        if (!plan.ok) {
+            bump(&UnwindBailStats::walkFail);
             return false;
+        }
+        if (plan.links.empty()) {
+            bump(&UnwindBailStats::noLinks);
+            return false;
+        }
+        if (plan.selfCalls.empty()) {
+            bump(&UnwindBailStats::noSelfCalls);
+            return false;
+        }
 
         int64_t kind = plan.links.front().kind;
         for (auto &l : plan.links)
-            if (l.kind != kind || !l.pushAt)
+            if (l.kind != kind || !l.pushAt) {
+                bump(&UnwindBailStats::kindMix);
                 return false;
+            }
 
         // Every self-call in the body must be a chain leaf; otherwise a
         // recursive result escapes the accumulation.
@@ -755,40 +1138,54 @@ struct EcoListTemplatePass
             if (callee && callee.getValue() == name)
                 selfCallsInBody++;
         });
-        if (selfCallsInBody != plan.selfCalls.size())
+        if (selfCallsInBody != plan.selfCalls.size()) {
+            bump(&UnwindBailStats::selfEscape);
             return false;
+        }
 
         // Heads must dominate their push sites.
         DominanceInfo dom(f);
         for (auto &l : plan.links) {
             Value h = l.cons->getOperand(0);
             if (Operation *hd = h.getDefiningOp()) {
-                if (hd != l.pushAt && !dom.properlyDominates(hd, l.pushAt))
+                if (hd != l.pushAt && !dom.properlyDominates(hd, l.pushAt)) {
+                    bump(&UnwindBailStats::domFail);
                     return false;
+                }
             }
         }
 
         // Every module-wide use must be a direct, non-musttail eco.call.
         auto uses = SymbolTable::getSymbolUses(f, m);
-        if (!uses)
+        if (!uses) {
+            bump(&UnwindBailStats::useShape);
             return false;
+        }
         SmallVector<eco::CallOp, 8> outerSites;
         for (const SymbolTable::SymbolUse &u : *uses) {
             auto call = dyn_cast<eco::CallOp>(u.getUser());
             if (!call || !call.getCalleeAttr() ||
-                call.getCalleeAttr().getValue() != name)
+                call.getCalleeAttr().getValue() != name) {
+                bump(&UnwindBailStats::useShape);
                 return false;
+            }
             if (call->getParentOfType<func::FuncOp>() == f)
                 continue;  // recursion, handled by the chain rewrite
-            if (call.getMusttail() && *call.getMusttail())
+            if (call.getMusttail() && *call.getMusttail()) {
+                bump(&UnwindBailStats::useShape);
                 return false;
+            }
             if (call->getNumResults() != 1 ||
-                !isa<eco::ValueType>(call->getResult(0).getType()))
+                !isa<eco::ValueType>(call->getResult(0).getType())) {
+                bump(&UnwindBailStats::useShape);
                 return false;
+            }
             outerSites.push_back(call);
         }
-        if (outerSites.empty())
+        if (outerSites.empty()) {
+            bump(&UnwindBailStats::noOuter);
             return false;  // dead or closure-referenced-only function
+        }
 
         MLIRContext *ctx = m.getContext();
         Type i64 = IntegerType::get(ctx, 64);
@@ -857,6 +1254,7 @@ struct EcoListTemplatePass
             call->getResult(0).replaceAllUsesExcept(fin.getResults()[0],
                                                     fin);
         }
+        bump(&UnwindBailStats::ok);
         return true;
     }
 };

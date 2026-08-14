@@ -110,3 +110,25 @@ Eco_Kernel_File_lock                           4   0.000  0.000       0.0    0.0
 Eco_Kernel_File_canonicalize                   3   0.000  0.000       0.0    0.00  <-- below resolution
 Elm_Kernel_Time_now                            1   0.000  0.000       0.0    0.00  <-- below resolution
 Elm_Kernel_Bytes_decode                       66   0.000  0.000       0.0    0.02  <-- below resolution
+
+=== Per-symbol readouts (appendix, added 2026-08-13 with plans/list-map-mlir-template.md) ===
+Extraction: perf script | agg3.awk ownership aggregation per run; "sN" = run N
+(s1 = 221,147 samples, s2 = 219,881, s3 = 221,260; 3-run total 662,288).
+Self-sample sums over spec families (sed 's/_\$_[0-9]*//' grouping):
+
+List machinery, s1 only:
+  List_foldrHelper self=501   List_map self=53   List_foldl self=476
+  List_filter self=4          pool ~= 1,034/221,147 = 0.47% of CPU
+
+GC leaf of interest, s1 only:
+  _ZN3Elm12NurserySpace17evacuateListSpineE... self=5,315 (~2.4%)
+
+Dict family, 3-run sums (self / incl):
+  Dict_balance 19,663/33,636   Dict_insertHelp 14,241/80,413
+  Dict_get 9,029/45,695        Dict_foldl 7,385/205,061
+  Dict_foldr 2,797/6,430       Dict_insert 1,972/82,419
+  Dict_map 42/739              Dict family self total 55,905 = 8.44% of CPU
+
+Callback-dispatch survey (objdump, eco-kopt-final): 797 List_foldrHelper_$_N
+symbols; 0/797 contain eco_scratch_* calls; per-spec callback dispatch is
+mixed (some specs 7x eco_apply_closure_eval, some 0x apply + 7 direct calls).

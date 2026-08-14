@@ -49,6 +49,17 @@ run: label, wall time, total heap allocation. Numbers are for the arm
 if labelled as such); baseline, A/B and flavor numbers belong in the run
 entries. Just the table, no write-up.
 
+**READ THE SUMMARY TABLE DOWN A COLUMN AT YOUR PERIL.** Its wall column is
+comparable ACROSS ROWS only while the workload is unchanged, and the workload is
+**the compiler's own source** — so any item that adds compiler source enlarges it
+and shifts the absolute wall for every later run. The per-run `out.mlir` byte size
+is the tell, and it is deliberately NOT in this table; it lives in each run entry.
+Run T is the worked example: its 3:48 against Run R's 3:24 is corpus growth
+(+271,895 B of emitted MLIR since Run S, most of it predating Run T), not a
+regression — a control run of a binary containing NONE of Run T's change scored
+3:57.96 on the same corpus. **Compare walls only within a run, arm against arm,
+after confirming `out.mlir` matches.**
+
 **Allocation-count caveat (census §18.3):** the standard binary's HEAP_034
 inline-alloc fast path bypasses the per-tag counter, so `Objects allocated`
 undercounts codegen'd constructs (~6× on this workload). The figure is
@@ -537,6 +548,71 @@ longer have stubs (Run K routed all 1,452 sites through `eco.value.eq`),
 | off r1 | 3:27.32 | 4,929,412 kB | 219,767,740 | 13,331.33 MB | 836 | 361,232,748 | 10 | 81.12 s | ≡ |
 | off r2 | 3:25.08 | 4,908,216 kB | 219,767,582 | 13,331.32 MB | 836 | 361,232,804 | 10 | 80.95 s | ≡ |
 
+### 2026-08-14 09:05 UTC — Run T: `List.map` forward MLIR template (**FLAT — no regression; KEPT-DARK — landed DEFAULT-OFF, `ECO_LIST_MAP_TEMPLATE=1` enables**)
+
+`plans/list-map-mlir-template.md`. A licensed `List.map` spec's whole body becomes
+one `eco.list.map` op — forward cursor loop, devirtualized callback, scratch
+pushes, one `eco_scratch_finish_fwd` — replacing elm/core's foldr lowering.
+Licence is a transitive Debug-freedom proof on the callback (policy D-4a);
+**50 of 591 map specs qualify (8.5%)**, 425 declining on LTop callback sets.
+
+**Front-end artifact-affecting flag, so this is the expensive A/B shape** (item-01
+Phase-5): two Stage-5 builds from one tree, flag set only in the BUILD env, `.mlir`
++ binary deleted between arms (Ninja is env-blind). Workload legs run flag-UNSET;
+`-out.mlir` byte-identical across all four legs, so only the binary differs.
+Wall **−2.05%** ⇒ FLAT. Binary **−291,816 B**. Gates: E2E 1664/1664 in all three
+flag states, heap-validate 1664/1664 flag-on, flag-ON bootstrap Stage-8c
+byte-identical.
+
+**The counters are the finding, and they refute the plan's hypothesis.** The
+standard-binary allocation column is HEAP_034 counter-blind here in the
+*unfavourable* direction — it shows +1.29% objects because the template deletes
+UNCOUNTED inline cons and adds COUNTED chunk calls. The `ECO_INLINE_ALLOC=0` legs
+give the truth: **`Cons` allocated −5,834,272 (−1.40%)**, `ConsChunk` **+2,791,153
+(+35.5%)**, net objects **−3,090,035**. But **`Cons` PROMOTED moved −0.002% and
+minor-GC count is IDENTICAL at 900** — the deleted cons died in the nursery. Wall,
+RSS (−2.06%) and GC time (−5.1%) are consistent in sign but sub-threshold, and
+cannot be attributed to retention; the plausible source is the deleted foldr
+machinery itself (non-tail frames, per-frame root ranges, out-of-line head/tail).
+
+| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|---|
+| on r1 | **3:48.37** | 5,347,008 kB | 228,050,612 | 14,062.57 MB | 900 | 407,138,781 (178.5%) | 11 | 93.90 s | 13,205,451 B |
+| on r2 | **3:49.17** | 5,344,992 kB | 228,050,449 | 14,062.57 MB | 900 | 407,138,782 | 11 | 94.97 s | ≡ |
+| off r1 | 3:52.89 | 5,459,500 kB | 225,154,129 | 13,956.70 MB | 900 | 407,074,509 (180.8%) | 12 | 98.94 s | ≡ |
+| off r2 | 3:54.21 | 5,459,824 kB | 225,154,129 | 13,956.70 MB | 900 | 407,074,509 | 12 | 100.02 s | ≡ |
+
+**`ECO_INLINE_ALLOC=0` census legs** (both Stage-5 artifacts re-lowered with the
+inline-alloc path off; this is the only allocation column that means anything here):
+
+| leg | objects alloc'd | bytes alloc'd | `Cons` alloc'd | `ConsChunk` alloc'd | `Cons` promoted | minor GC |
+|---|---|---|---|---|---|---|
+| on | 4,037,332,291 | 160,674.08 MB | **410,390,748** | **10,648,356** | 149,907,357 | 900 |
+| off | 4,040,422,326 | 160,706.56 MB | **416,225,020** | **7,857,203** | 149,910,075 | 900 |
+
+**Run T's ABSOLUTE wall is NOT comparable to Runs D-S — the corpus grew, and a
+control run proves the change is exonerated.** The workload IS the compiler's own
+source, so this item's ~700 added lines enlarge it. Same pristine binary
+(`eco-lmt-base`, none of this item's code), two corpora:
+
+| corpus | out.mlir | wall | minor GC | major GC | promoted |
+|---|---|---|---|---|---|
+| pristine (this item's Phase-0 baseline) | 13,161,408 B | 3:31.13 | 865 | 10 | 374,827,174 |
+| current | 13,205,451 B | **3:57.96** | 900 | 12 | 407,132,733 |
+
+And on the CURRENT corpus, with `out.mlir` byte-identical across all three, the
+ordering is **ON (3:48.4) < OFF (3:52.9) < pristine (3:58.0)** — the binary
+carrying this change is the fastest of the three, and the one carrying none of it
+is the slowest. Cumulative corpus growth since the Run-S era is +271,895 B of
+emitted MLIR, of which **+227,852 predates this item** (the plan's own census
+work) and +44,043 is its source. Caveat, stated rather than glossed: +44 KB of
+output costing ~27 s is disproportionate and not fully accounted for — two extra
+majors at ~2.4 s each explains ~5 s and the +8.6% promotion some more, with
+majors 10->12 partly trigger lottery.
+
+Seventh confirmation of the series lesson: **wall follows retention and deleted
+per-op work, never allocation counts.** Allocation fell measurably; nothing moved.
+
 ### 2026-08-12 04:10 UTC — Run L: kernel-opt-03 `ECO_VALUE_EQ_STRCASE` (**FLAT — no regression; KEEP — DEFAULT-ON, `ECO_VALUE_EQ_STRCASE=0` escapes**)
 
 Closes the one switch Run K shipped unmeasured. Under `ECO_VALUE_EQ_STRCASE` the
@@ -888,3 +964,4 @@ was 20,480 MB. Gates at that point: E2E `--target full` and heap-validate tree
 | Q — kernel-opt-10 MLIR folder ON / CSE dark | 3:36.72 (fold r1/r2 mean, +0.76% FLAT; counters bit-equal) | folder: 2,382 folds. CSE retention artifact-dependent (+1.56% here, −1.0% in R) — moot: R's flip attempt found the NaN-sharing miscompile |
 | R — kernel-opt-12 eco.cse_safe purity channel | 3:24.85 (attr, CSE off — FLAT; binary byte-identical to base) | attr Δ ≈ 0 in both CSE states; S=4,330. **CSE flip attempted → 3 NaN-equality failures → REVERTED**: merged allocations are observable through the pointer-eq fast path |
 | S — kernel-opt-14 Elm-source List HOFs | REJECTED (objects +61.6%, ConsChunk 6.2M→146M, wall +2.9–3.7%) | E2E fully green; the accumulate+reverse/mergesort idioms multiply list materializations vs C++'s single pass; flag kept dark, kernels stay C++ |
+| T — List.map forward template (default-OFF) | 3:48.77 (r1/r2 mean, −2.05% FLAT) — **absolute wall NOT comparable to A–S: corpus grew +271,895 B; control binary with none of this change scored 3:57.96 on the same corpus** | 228,050,612 obj / 14,062.57 MB (counter-blind; TRUE: `Cons` alloc −1.40%, net −3.09M obj — but **promoted −0.002%, minors identical**; binary −291,816 B) |

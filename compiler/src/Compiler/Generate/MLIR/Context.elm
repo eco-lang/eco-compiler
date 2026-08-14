@@ -1,7 +1,7 @@
 module Compiler.Generate.MLIR.Context exposing
     ( SplitParamInfo, SplitSpec(..), SretInfo, withSretPromoted, PsplitInfo, SlotPlan, withPsplitPromoted
     , Context, FuncSignature, PendingLambda, TypeRegistry, VarInfo
-    , initContext, withInlineBodies, withEcoConfig, withCtorBySpec, withOracleFacts
+    , initContext, withInlineBodies, withEcoConfig, withCtorBySpec, withOracleFacts, withMapTemplates
     , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp, liveEcoValueVars, resetDefinedSsaVars
     , getOrCreateTypeIdForMonoType, registerKernelCall
     , buildSignatures, kernelFuncSignatureFromType, residualResultType
@@ -23,7 +23,7 @@ state during MLIR code generation.
 
 # Context Management
 
-@docs initContext, withInlineBodies, withEcoConfig, withCtorBySpec, withOracleFacts
+@docs initContext, withInlineBodies, withEcoConfig, withCtorBySpec, withOracleFacts, withMapTemplates
 
 
 # Variable Management
@@ -62,6 +62,7 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
 import Compiler.Eco.Config as Config
 import Compiler.GlobalOpt.KernelFacts as KernelFacts
+import Compiler.GlobalOpt.MapTemplate as MapTemplate
 import Compiler.Generate.MLIR.KernelAbi as KernelAbi
 import Compiler.GlobalOpt.Borrow.Facts as BorrowFacts
 import Compiler.Generate.MLIR.Types as Types
@@ -240,6 +241,14 @@ type alias Context =
     -- bytes-fusion entry (`bytesFusion.enabled`) and tunes logical-type
     -- codegen (`logicalTypes.customMaxFields`). Installed via
     -- `withEcoConfig` at codegen entry; defaults reproduce prior behaviour.
+    , mapTemplates : MapTemplate.Templates
+
+    -- ^ plans/list-map-mlir-template.md Phase 1.2: SpecId -> licence +
+    -- devirtualization facts for `List.map` specs whose callback is provably
+    -- transitively Debug-free (policy D-4a). Derived from the FINAL graph via
+    -- `MapTemplate.derive` and installed at codegen entry; `MapTemplate.empty`
+    -- when `list.mapTemplate` is off, which is what makes a flag-off compile
+    -- byte-identical. A missing entry means "no licence" — never a proof.
     , oracleFacts : BorrowFacts.OracleFacts
 
     -- ^ OC0.3 (plans/borrow-oracle-consumers.md): distilled borrow-oracle
@@ -314,6 +323,7 @@ initContext mode registry signatures initialCtorShapes =
     , psplitPromoted = Dict.empty
     , sretTailLayout = Nothing
     , ecoConfig = Config.default
+    , mapTemplates = MapTemplate.empty
     , oracleFacts = BorrowFacts.emptyFacts
     }
 
@@ -342,6 +352,15 @@ Defaults to `Config.default` when not called.
 withEcoConfig : Config.EcoConfig -> Context -> Context
 withEcoConfig cfg ctx =
     { ctx | ecoConfig = cfg }
+
+
+{-| plans/list-map-mlir-template.md: install the `List.map` licence table at
+codegen entry. Call with `MapTemplate.derive` output; defaults to
+`MapTemplate.empty` (no licences, so no op is ever emitted) when not called.
+-}
+withMapTemplates : MapTemplate.Templates -> Context -> Context
+withMapTemplates t ctx =
+    { ctx | mapTemplates = t }
 
 
 {-| OC0.3 (plans/borrow-oracle-consumers.md): install the distilled
