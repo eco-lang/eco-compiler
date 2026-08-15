@@ -38,7 +38,7 @@
  *   Kernel/runtime C++ that constructs an Elm list from a pre-collected batch
  *   of values MUST use one of:
  *   - alloc::listFromPointers     (input: std::vector<HPointer>)
- *   - alloc::listFromUnboxables   (input: std::vector<pair<Unboxable,bool>>)
+ *   - alloc::listFromUnboxables   (input: std::vector<pair<Unboxable,u8 kind>>)
  *   Hand-rolled loops over alloc::cons across a std::vector are forbidden.
  *
  * Pattern 3 — void* parameters:
@@ -1210,8 +1210,29 @@ inline HPointer listFromFloats(const std::vector<f64>& elements) {
     return result;
 }
 
+// A user callback reports only whether its result is a POINTER, never WHICH
+// unboxed kind it is, so an unboxed callback result can only be stored as Int
+// — the historical behaviour of the `cons(…, bool)` overload. Sound for Int
+// and boxed results; a Float- or Char-returning mapper routed through one of
+// those paths would be stored at the wrong kind. The LIVE map/indexedMap
+// exports do NOT route there (they carry `meta.result_kind` through
+// `kernelListMapN`), which is why this is a documented limitation and not a
+// live defect. Every path whose element kind IS knowable — anything copying
+// or permuting an existing list — passes the real kind instead.
+inline u8 kindFromBoxedFlag(bool is_boxed) {
+    return is_boxed ? static_cast<u8>(0) : static_cast<u8>(1);
+}
+
+// Build a list from (value, KIND) pairs.
+//
+// The second field is a 2-bit slot kind (0 = boxed pointer, 1 = Int,
+// 2 = Float, 3 = Char), NOT a boolean. It used to be `bool is_boxed`, which
+// collapsed every unboxed kind to Int: a Float list rebuilt through here came
+// back with its f64 bit patterns sitting in Int-kinded slots, so consumers
+// reading at the static (Float) kind — arithmetic folds, structural equality —
+// silently disagreed with the values `Debug.log` printed from the header.
 inline HPointer listFromUnboxables(
-        std::vector<std::pair<Unboxable, bool>>& elems,
+        std::vector<std::pair<Unboxable, u8>>& elems,
         HPointer tail = listNil(),
         bool reversed = false) {
     if (elems.empty()) return tail;
@@ -1221,8 +1242,8 @@ inline HPointer listFromUnboxables(
     size_t saved = rs.stackRangePoint();
 
     rs.pushStackRootRange(&result, 1, 1);
-    for (auto& [val, is_boxed] : elems) {
-        if (is_boxed) rs.pushStackRootRange(&val.p, 1, 1);
+    for (auto& [val, kind] : elems) {
+        if (kind == 0) rs.pushStackRootRange(&val.p, 1, 1);
     }
 
     // Chunked-list fast path (plans/chunked-list-representation.md §6): when
@@ -1236,13 +1257,13 @@ inline HPointer listFromUnboxables(
     // and the fill itself never allocates.
     if (eco_g_list_chunks && elems.size() >= 4) {
         bool uniform = true;
-        bool firstBoxed = elems[0].second;
-        for (auto& [val, is_boxed] : elems) {
+        u8 firstKind = elems[0].second;
+        for (auto& [val, kind] : elems) {
             (void)val;
-            if (is_boxed != firstBoxed) { uniform = false; break; }
+            if (kind != firstKind) { uniform = false; break; }
         }
         if (uniform) {
-            u8 kind = firstBoxed ? 0 : 1;
+            u8 kind = firstKind;
             u32 n = static_cast<u32>(elems.size());
             HPointer head = listChunkChain(n, kind, result);
             ListChainWriter w(head);
@@ -1257,8 +1278,8 @@ inline HPointer listFromUnboxables(
     }
 
     if (reversed) {
-        for (auto& [val, is_boxed] : elems) {
-            result = cons(val, result, is_boxed);
+        for (auto& [val, kind] : elems) {
+            result = cons(val, result, kind);
         }
     } else {
         for (auto it = elems.rbegin(); it != elems.rend(); ++it) {

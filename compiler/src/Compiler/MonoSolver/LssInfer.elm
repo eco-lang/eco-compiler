@@ -5,6 +5,7 @@ module Compiler.MonoSolver.LssInfer exposing
     , injectLambdaMemberQualified
     , injectSpineMemberId
     , kernelAliasOf
+    , spineDepthForGlobal
     )
 
 {-| Lambda-set signature inference (LSS design §7).
@@ -654,27 +655,39 @@ walkExpr letEnv expr s0 =
                     -- occurrence and every reference share ONE identity (a
                     -- split g|/k| identity would join to a 2-set and kill
                     -- every singleton consumer).
-                    standaloneMemberWith (Engine.kernelMemberIdFor ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name )) meta s0
+                    -- Kernels stay HEAD-ONLY at both mint sites: `kernelToSig`
+                    -- misaligns at inner arrows (it takes the first n modes of
+                    -- the full sig against a residual param row), so keeping
+                    -- `k|` members off inner arrows makes that hazard
+                    -- unreachable by construction.
+                    standaloneMemberWith (\_ -> 1) (Engine.kernelMemberIdFor ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name )) meta s0
 
                 Nothing ->
-                    standaloneMemberWith (Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal g) g) meta s0
+                    standaloneMemberWith (spineDepthForGlobal g) (Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal g) g) meta s0
 
         TOpt.VarEnum _ g _ meta ->
             -- E9: ctor mints register the Global for devirt lookup.
-            standaloneMemberWith (Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g) meta s0
+            standaloneMemberWith (spineDepthForGlobal g) (Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g) meta s0
 
         TOpt.VarBox _ g meta ->
-            standaloneMemberWith (Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g) meta s0
+            standaloneMemberWith (spineDepthForGlobal g) (Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g) meta s0
 
         TOpt.VarCycle _ home name meta ->
-            standaloneMemberWith (Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal (TOpt.Global home name)) (TOpt.Global home name)) meta s0
+            -- Head-only, deliberately: resolving a cycle member's arity needs
+            -- a by-name dig through the `TOpt.Cycle` def list, and the
+            -- translation-side twin has no VarCycle arm at all, so threading
+            -- it here would be asymmetric. Head-only is today's behaviour and
+            -- is sound.
+            standaloneMemberWith (\_ -> 1) (Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal (TOpt.Global home name)) (TOpt.Global home name)) meta s0
 
         TOpt.VarKernel _ kernelPrefix home name meta ->
             -- E9.2: kernel mints register (prefix, home, name) for devirt
             -- lookup — the "k|" key (and so the member id) is unchanged.
-            standaloneMemberWith (Engine.kernelMemberIdFor ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name )) meta s0
+            -- Head-only: see the kernel-alias arm above.
+            standaloneMemberWith (\_ -> 1) (Engine.kernelMemberIdFor ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name )) meta s0
 
         TOpt.Accessor _ field meta ->
+            -- `.field` is itself a chomper shape; this arm stays 1 forever.
             standaloneMember ("a|" ++ field) meta s0
 
         TOpt.VarLocal name meta ->
@@ -882,7 +895,56 @@ path instead.
 -}
 standaloneMember : String -> TOpt.Meta TypeIds.MVarId -> Step ()
 standaloneMember key =
-    standaloneMemberWith (Engine.memberIdFor key)
+    standaloneMemberWith (\_ -> 1) (Engine.memberIdFor key)
+
+
+{-| S.10 (F-5C): how many arrows of this standalone value's occurrence type
+are PARAMS, and therefore may carry its member id.
+
+The chomper bound is the soundness argument: the first `declaredArity` arrows
+ARE the parameters; arrow `declaredArity + 1` belongs to the returned value,
+and the TYPE cannot make that distinction (`A -> (B -> C)` is `A -> B -> C`).
+So the count comes from the DEFINITION, never the type.
+
+Returns 1 — today's head-only behaviour — when the flag is off, when the node
+cannot be resolved, and for eta-reduced/point-free definitions (zero params).
+`max 1` is exactly today's floor at every call site, which makes enabling the
+flag MONOTONE: sites only ever gain members at deeper arrows.
+
+-}
+spineDepthForGlobal : TOpt.Global -> Engine.S -> Int
+spineDepthForGlobal g s =
+    if not s.env.lss.spineArity then
+        1
+
+    else
+        max 1 (declaredArityOf g 8 s)
+
+
+declaredArityOf : TOpt.Global -> Int -> Engine.S -> Int
+declaredArityOf g fuel s =
+    if fuel <= 0 then
+        1
+
+    else
+        case DMap.get TOpt.toComparableGlobal g s.env.toptNodes of
+            Just (TOpt.Ctor _ arity _) ->
+                arity
+
+            Just (TOpt.Box _) ->
+                1
+
+            Just (TOpt.Link target) ->
+                declaredArityOf target (fuel - 1) s
+
+            Just (TOpt.Define (TOpt.Function _ params _ _) _ _) ->
+                List.length params
+
+            Just (TOpt.TrackedDefine _ (TOpt.Function _ params _ _) _ _) ->
+                List.length params
+
+            _ ->
+                1
 
 
 {-| E9.2: is the global an eta-free KERNEL ALIAS — a Define whose body is
@@ -912,8 +974,8 @@ devirt reverse map (globals AND ctors — `Can.Normal` ctors like `List.::`
 are VarGlobal/"g|"), and the kernel arm mints via `Engine.kernelMemberIdFor`
 for the E9.2 kernel reverse map; the accessor arm keeps the plain intern.
 -}
-standaloneMemberWith : Step Int -> TOpt.Meta TypeIds.MVarId -> Step ()
-standaloneMemberWith mint meta s0 =
+standaloneMemberWith : (Engine.S -> Int) -> Step Int -> TOpt.Meta TypeIds.MVarId -> Step ()
+standaloneMemberWith depthOf mint meta s0 =
     if canTypeIsArrow meta.tipe then
         case mint s0 of
             Err e ->
@@ -925,7 +987,7 @@ standaloneMemberWith mint meta s0 =
                         Err e
 
                     Ok ( funcVar, s2 ) ->
-                        injectSpineMemberId 1 mid funcVar s2
+                        injectSpineMemberId (depthOf s2) mid funcVar s2
 
     else
         Ok ( (), s0 )

@@ -115,7 +115,7 @@ HPointer map(MapperWithBoxed mapper, HPointer list) {
     // so entry addresses stay stable for the incremental registration below
     // (a std::vector reallocation would invalidate registered roots); the
     // accumulated roots are released by spine_guard's destructor.
-    std::vector<std::pair<Unboxable, bool>> mapped;
+    std::vector<std::pair<Unboxable, u8>> mapped;
     mapped.reserve(static_cast<size_t>(length(list)));
     // RootedListCursor walks hybrid spines (cells + chunk views) and
     // re-resolves after every callback, so the mapper may GC freely.
@@ -131,7 +131,7 @@ HPointer map(MapperWithBoxed mapper, HPointer list) {
             Elm::StackRootGuard iter_guard({head_root});
             result = mapper(head, is_boxed);
         }
-        mapped.push_back(result);
+        mapped.emplace_back(result.first, alloc::kindFromBoxedFlag(result.second));
         if (result.second) {
             rs.pushStackRootRange(&mapped.back().first.p, 1, 1);
         }
@@ -149,7 +149,7 @@ HPointer indexedMap(IndexedMapper mapper, HPointer list) {
 
     // Collect mapped values. See `map` for the rooting rationale (incl. the
     // incremental rooting of accumulated boxed results).
-    std::vector<std::pair<Unboxable, bool>> mapped;
+    std::vector<std::pair<Unboxable, u8>> mapped;
     mapped.reserve(static_cast<size_t>(length(list)));
     alloc::RootedListCursor cursor(list);
     Unboxable head;
@@ -164,7 +164,7 @@ HPointer indexedMap(IndexedMapper mapper, HPointer list) {
             Elm::StackRootGuard iter_guard({head_root});
             result = mapper(index, head, is_boxed);
         }
-        mapped.push_back(result);
+        mapped.emplace_back(result.first, alloc::kindFromBoxedFlag(result.second));
         if (result.second) {
             rs.pushStackRootRange(&mapped.back().first.p, 1, 1);
         }
@@ -185,7 +185,7 @@ HPointer filter(Predicate pred, HPointer list) {
     // accumulated boxed heads in `passing` must be rooted across pred()
     // (which can run user code that allocates). `passing` is reserved up
     // front so entry addresses stay stable for the incremental rooting.
-    std::vector<std::pair<Unboxable, bool>> passing;
+    std::vector<std::pair<Unboxable, u8>> passing;
     passing.reserve(static_cast<size_t>(length(list)));
     alloc::RootedListCursor cursor(list);
     Unboxable head;
@@ -200,7 +200,7 @@ HPointer filter(Predicate pred, HPointer list) {
             keep = pred(head, is_boxed);
         }
         if (keep) {
-            passing.emplace_back(head, is_boxed);
+            passing.emplace_back(head, head_kind);
             if (is_boxed) {
                 rs.pushStackRootRange(&passing.back().first.p, 1, 1);
             }
@@ -221,7 +221,7 @@ HPointer filterMap(FilterMapper mapper, HPointer list) {
     // the returned `maybeResult` must all be rooted across it — and so must
     // the boxed just-values already accumulated in `results` (rooted
     // incrementally below; reserve keeps their addresses stable).
-    std::vector<std::pair<Unboxable, bool>> results;
+    std::vector<std::pair<Unboxable, u8>> results;
     results.reserve(static_cast<size_t>(length(list)));
     alloc::RootedListCursor cursor(list);
     Unboxable head;
@@ -244,9 +244,9 @@ HPointer filterMap(FilterMapper mapper, HPointer list) {
                 Custom* just = static_cast<Custom*>(justCell);
                 if (just->header.tag == Tag_Custom && just->ctor == 0) {
                     // It's Just - extract the value; slot 0 kind 0 means boxed.
-                    bool val_boxed = fieldKind(just->unboxed, 0) == 0;
-                    results.emplace_back(just->values[0], val_boxed);
-                    if (val_boxed) {
+                    u8 val_kind = static_cast<u8>(fieldKind(just->unboxed, 0));
+                    results.emplace_back(just->values[0], val_kind);
+                    if (val_kind == 0) {
                         rs.pushStackRootRange(&results.back().first.p, 1, 1);
                     }
                 }
@@ -283,9 +283,9 @@ HPointer append(HPointer a, HPointer b) {
 
     // Small, mixed-kind, or chunks-off: collect a's prefix and build cells
     // back-to-front (n cells — a reverse-then-recons pass would pay 2n).
-    std::vector<std::pair<Unboxable, bool>> elements;
+    std::vector<std::pair<Unboxable, u8>> elements;
     for (alloc::ListCursor c(a); !c.done(); c.next()) {
-        elements.emplace_back(c.current(), c.currentKind() == 0);
+        elements.emplace_back(c.current(), c.currentKind());
     }
 
     return alloc::listFromUnboxables(elements, b);
@@ -333,11 +333,11 @@ HPointer concat(HPointer listOfLists) {
 
     // Flatten all elements (non-allocating nested walks over hybrid spines;
     // outer elements are lists, i.e. always boxed).
-    std::vector<std::pair<Unboxable, bool>> allElements;
+    std::vector<std::pair<Unboxable, u8>> allElements;
     for (alloc::ListCursor outer(listOfLists); !outer.done(); outer.next()) {
         for (alloc::ListCursor inner(outer.current().p); !inner.done();
              inner.next()) {
-            allElements.emplace_back(inner.current(), inner.currentKind() == 0);
+            allElements.emplace_back(inner.current(), inner.currentKind());
         }
     }
 
@@ -350,9 +350,9 @@ HPointer intersperse(Unboxable sep, bool sep_is_boxed, HPointer list) {
     auto& allocator = Allocator::instance();
 
     // Collect elements (non-allocating walk over hybrid spines).
-    std::vector<std::pair<Unboxable, bool>> elements;
+    std::vector<std::pair<Unboxable, u8>> elements;
     for (alloc::ListCursor c(list); !c.done(); c.next()) {
-        elements.emplace_back(c.current(), c.currentKind() == 0);
+        elements.emplace_back(c.current(), c.currentKind());
     }
 
     if (elements.size() <= 1) {
@@ -360,10 +360,10 @@ HPointer intersperse(Unboxable sep, bool sep_is_boxed, HPointer list) {
     }
 
     // Expand with separators interleaved
-    std::vector<std::pair<Unboxable, bool>> expanded;
+    std::vector<std::pair<Unboxable, u8>> expanded;
     expanded.reserve(elements.size() * 2 - 1);
     for (size_t i = 0; i < elements.size(); ++i) {
-        if (i > 0) expanded.emplace_back(sep, sep_is_boxed);
+        if (i > 0) expanded.emplace_back(sep, alloc::kindFromBoxedFlag(sep_is_boxed));
         expanded.push_back(elements[i]);
     }
 
@@ -376,10 +376,10 @@ HPointer take(i64 n, HPointer list) {
     auto& allocator = Allocator::instance();
 
     // Collect first n elements (non-allocating walk over hybrid spines).
-    std::vector<std::pair<Unboxable, bool>> elements;
+    std::vector<std::pair<Unboxable, u8>> elements;
     i64 count = 0;
     for (alloc::ListCursor c(list); !c.done() && count < n; c.next(), ++count) {
-        elements.emplace_back(c.current(), c.currentKind() == 0);
+        elements.emplace_back(c.current(), c.currentKind());
     }
 
     return alloc::listFromUnboxables(elements);
@@ -439,8 +439,8 @@ HPointer partition(Predicate pred, HPointer list) {
     // Accumulated boxed heads in passing/failing cross later pred() GC
     // points, so they are rooted incrementally as they are appended
     // (reserve keeps entry addresses stable; see `map`).
-    std::vector<std::pair<Unboxable, bool>> passing;
-    std::vector<std::pair<Unboxable, bool>> failing;
+    std::vector<std::pair<Unboxable, u8>> passing;
+    std::vector<std::pair<Unboxable, u8>> failing;
     const size_t listLen = static_cast<size_t>(length(list));
     passing.reserve(listLen);
     failing.reserve(listLen);
@@ -457,12 +457,12 @@ HPointer partition(Predicate pred, HPointer list) {
             pass = pred(head, is_boxed);
         }
         if (pass) {
-            passing.emplace_back(head, is_boxed);
+            passing.emplace_back(head, head_kind);
             if (is_boxed) {
                 rs.pushStackRootRange(&passing.back().first.p, 1, 1);
             }
         } else {
-            failing.emplace_back(head, is_boxed);
+            failing.emplace_back(head, head_kind);
             if (is_boxed) {
                 rs.pushStackRootRange(&failing.back().first.p, 1, 1);
             }
@@ -603,22 +603,22 @@ HPointer sortBy(KeyExtractor keyFn, HPointer list) {
     // rooted `elements` slots are re-read (post-GC-fixup) per comparison.
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
-    for (auto& [val, is_boxed] : elements) {
-        if (is_boxed) rs.pushStackRootRange(&val.p, 1, 1);
+    for (auto& [val, kind] : elements) {
+        if (kind == 0) rs.pushStackRootRange(&val.p, 1, 1);
     }
 
     std::vector<size_t> indices(elements.size());
     std::iota(indices.begin(), indices.end(), 0);
     std::sort(indices.begin(), indices.end(),
               [&](size_t ia, size_t ib) {
-                  i64 ka = keyFn(elements[ia].first, elements[ia].second);
+                  i64 ka = keyFn(elements[ia].first, elements[ia].second == 0);
                   // b's entry is read only after a's key extraction — a GC
                   // there updates the rooted slots in place.
-                  i64 kb = keyFn(elements[ib].first, elements[ib].second);
+                  i64 kb = keyFn(elements[ib].first, elements[ib].second == 0);
                   return ka < kb;
               });
 
-    std::vector<std::pair<Unboxable, bool>> sorted;
+    std::vector<std::pair<Unboxable, u8>> sorted;
     sorted.reserve(elements.size());
     for (size_t idx : indices) sorted.push_back(elements[idx]);
     rs.restoreStackRangePoint(saved);
@@ -635,19 +635,19 @@ HPointer sortWith(Comparator cmp, HPointer list) {
     // unrooted temporaries.
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
-    for (auto& [val, is_boxed] : elements) {
-        if (is_boxed) rs.pushStackRootRange(&val.p, 1, 1);
+    for (auto& [val, kind] : elements) {
+        if (kind == 0) rs.pushStackRootRange(&val.p, 1, 1);
     }
 
     std::vector<size_t> indices(elements.size());
     std::iota(indices.begin(), indices.end(), 0);
     std::sort(indices.begin(), indices.end(),
               [&](size_t ia, size_t ib) {
-                  return cmp(elements[ia].first, elements[ia].second,
-                             elements[ib].first, elements[ib].second) < 0;
+                  return cmp(elements[ia].first, elements[ia].second == 0,
+                             elements[ib].first, elements[ib].second == 0) < 0;
               });
 
-    std::vector<std::pair<Unboxable, bool>> sorted;
+    std::vector<std::pair<Unboxable, u8>> sorted;
     sorted.reserve(elements.size());
     for (size_t idx : indices) sorted.push_back(elements[idx]);
     rs.restoreStackRangePoint(saved);
@@ -665,7 +665,7 @@ HPointer maximum(HPointer list) {
                                        return a.first.i < b.first.i;
                                    });
 
-    return alloc::just(maxIt->first, maxIt->second);
+    return alloc::justKind(maxIt->first, maxIt->second);
 }
 
 HPointer minimum(HPointer list) {
@@ -679,7 +679,7 @@ HPointer minimum(HPointer list) {
                                        return a.first.i < b.first.i;
                                    });
 
-    return alloc::just(minIt->first, minIt->second);
+    return alloc::justKind(minIt->first, minIt->second);
 }
 
 HPointer map2(HPointer listA, HPointer listB) {
@@ -788,8 +788,8 @@ HPointer unzip(HPointer listOfPairs) {
     }
 
     auto& allocator = Allocator::instance();
-    std::vector<std::pair<Unboxable, bool>> firsts;
-    std::vector<std::pair<Unboxable, bool>> seconds;
+    std::vector<std::pair<Unboxable, u8>> firsts;
+    std::vector<std::pair<Unboxable, u8>> seconds;
 
     for (alloc::ListCursor c(listOfPairs); !c.done(); c.next()) {
         void* tupleObj = allocator.resolve(c.current().p);
@@ -797,11 +797,11 @@ HPointer unzip(HPointer listOfPairs) {
             Tuple2* tuple = static_cast<Tuple2*>(tupleObj);
             Header* hdr = getHeader(tupleObj);
 
-            bool aBoxed = tupleFieldKind(hdr->unboxed, 0) == 0;
-            bool bBoxed = tupleFieldKind(hdr->unboxed, 1) == 0;
+            u8 aKind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
+            u8 bKind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 1));
 
-            firsts.emplace_back(tuple->a, aBoxed);
-            seconds.emplace_back(tuple->b, bBoxed);
+            firsts.emplace_back(tuple->a, aKind);
+            seconds.emplace_back(tuple->b, bKind);
         }
     }
 

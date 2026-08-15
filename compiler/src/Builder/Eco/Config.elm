@@ -143,6 +143,11 @@ applyEnvOverrides cfg =
                     |> Task.map (\dfVal -> applyLssDevirtFnOverride dfVal cfg4c)
             )
         |> Task.andThen
+            (\cfg4d ->
+                (Utils.envLookupEnv "ECO_MONO_LSS_SPINE_ARITY" |> Task.mapError never)
+                    |> Task.map (\saVal -> applyLssSpineArityOverride saVal cfg4d)
+            )
+        |> Task.andThen
             (\cfg5 ->
                 (Utils.envLookupEnv "ECO_MONO_VALIDATE" |> Task.mapError never)
                     |> Task.map (\valVal -> applyValidateOverride valVal cfg5)
@@ -1168,6 +1173,26 @@ applyLssBudgetOverride maybeVal cfg =
             updateLss (\lss -> { lss | maxSpecsPerGlobal = n }) cfg
 
         Nothing ->
+            cfg
+
+
+{-| `ECO_MONO_LSS_SPINE_ARITY=1|0` (S.10, F-5C): inject standalone members
+through the first `declaredArity` arrows rather than the head arrow only, so
+partially-applied globals and ctors carry a resolvable member at the callback
+position. Default off. Artifact-affecting when enabled — participates in
+`Config.hash` via the `lssSA=` token, so eco-stuff artifacts never alias
+across the two modes.
+-}
+applyLssSpineArityOverride : Maybe String -> EcoConfig -> EcoConfig
+applyLssSpineArityOverride maybeVal cfg =
+    case Maybe.map String.trim maybeVal of
+        Just "1" ->
+            updateLss (\lss -> { lss | spineArity = True }) cfg
+
+        Just "0" ->
+            updateLss (\lss -> { lss | spineArity = False }) cfg
+
+        _ ->
             cfg
 
 

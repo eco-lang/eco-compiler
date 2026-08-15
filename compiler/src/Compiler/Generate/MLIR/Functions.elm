@@ -875,10 +875,18 @@ generateMapTemplateBody ctx funcName info closureInfo monoType =
                             [ "%" ++ callbackName, "%" ++ listName ]
 
                 -- The instance's capture row, in slot order, projected out of
-                -- the closure parameter exactly once.
+                -- the closure parameter exactly once. A `CalleeCtorSpec`
+                -- callback (F-5B: `List.map Just`) has NO captures by
+                -- construction, so the whole projection block below folds to
+                -- nothing for it.
                 captureAbiTypes : List MlirType
                 captureAbiTypes =
-                    List.map Types.monoTypeToAbi info.captureTypes
+                    case info.callee of
+                        MapTemplate.CalleeLambda _ captureTypes ->
+                            List.map Types.monoTypeToAbi captureTypes
+
+                        MapTemplate.CalleeCtorSpec _ ->
+                            []
 
                 ( projectOpsRev, captureVarsRev, ctxProj ) =
                     List.foldl
@@ -910,17 +918,24 @@ generateMapTemplateBody ctx funcName info closureInfo monoType =
                 captureVars =
                     List.reverse captureVarsRev
 
-                -- The fast-clone symbol. A captureless instance IS its own
-                -- fast evaluator and Lambdas.elm emits it un-suffixed, so the
-                -- `$cap` suffix keys on the real capture count — the same
-                -- choice `generateFastDispatchCall` makes.
+                -- The callee symbol. For a lambda: the fast-clone symbol; a
+                -- captureless instance IS its own fast evaluator and
+                -- Lambdas.elm emits it un-suffixed, so the `$cap` suffix keys
+                -- on the real capture count — the same choice
+                -- `generateFastDispatchCall` makes. For a ctor: the spec's
+                -- own function name, which needs no suffix decision.
                 calleeSymbol : String
                 calleeSymbol =
-                    if List.isEmpty info.captureTypes then
-                        Expr.lambdaIdToString info.calleeLambdaId
+                    case info.callee of
+                        MapTemplate.CalleeLambda lambdaId captureTypes ->
+                            if List.isEmpty captureTypes then
+                                Expr.lambdaIdToString lambdaId
 
-                    else
-                        Expr.lambdaIdToString info.calleeLambdaId ++ "$cap"
+                            else
+                                Expr.lambdaIdToString lambdaId ++ "$cap"
+
+                        MapTemplate.CalleeCtorSpec ctorSpecId ->
+                            specIdToFuncName ctx.registry ctorSpecId
 
                 ( resultVar, ctxRes ) =
                     Ctx.freshVar ctxProj

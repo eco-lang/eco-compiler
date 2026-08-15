@@ -993,7 +993,7 @@ assembleRawGraph s mainSpecId flagsDecoderSpecId =
         , specValueUsed = valueUsedWithMain
         , ports = s.ports
         , flagsDecoder = flagsDecoderSpecId
-        , lssMemberOrigins = buildMemberOrigins s.lssMemberTable
+        , lssMemberOrigins = buildMemberOrigins s.env.toptNodes s.lssMemberTable
         }
 
 
@@ -1002,15 +1002,15 @@ the 2-char key prefix (`g|`/`c|`/`k|`/`a|`; `l|` lambdas are skipped — resolve
 via the instance index). TOpt.Global payloads convert to Mono.Global here (the
 origin carries Monomorphized's own Global; this site imports TOpt).
 -}
-buildMemberOrigins : Engine.LssMemberTable -> Dict.Dict Int Mono.MemberOrigin
-buildMemberOrigins table =
+buildMemberOrigins : DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> Engine.LssMemberTable -> Dict.Dict Int Mono.MemberOrigin
+buildMemberOrigins toptNodes table =
     Dict.foldl
         (\key mid acc ->
             case String.left 2 key of
                 "g|" ->
                     case Dict.get mid table.globals of
                         Just g ->
-                            Dict.insert mid (Mono.OriginGlobal (toptToMono g)) acc
+                            Dict.insert mid (globalOrigin toptNodes g) acc
 
                         Nothing ->
                             acc
@@ -1039,6 +1039,64 @@ buildMemberOrigins table =
         )
         Dict.empty
         table.byKey
+
+
+{-| F-5A: a `g|` member whose node IS a constructor gets `OriginCtor`.
+
+Only nullary-enum and box constructors are minted under `c|`
+(`TypedOptimized.elm:155-156` — `VarEnum` / `VarBox`); every other
+constructor — `Just`, `List.::`, any user-defined unary ctor — canonicalizes
+to a `TOpt.VarGlobal` and lands under `g|`. Consumers read the origin to
+decide whether a member's evaluation can reach `Debug`, and CONSTRUCTING a
+value never can, so the key prefix must not be the answer.
+
+Link-chased, and eta-free ctor ALIASES are chased through their `Define`
+body: without that, `let w = Wrap in List.map w` declines while
+`List.map Wrap` licenses — an asymmetry with no explanation in the census.
+Depth-bounded so a malformed `Link` cycle cannot hang the compiler.
+(`LssInfer.kernelAliasOf` is the same pattern, but it runs against `Engine.S`
+and is not importable here.)
+
+-}
+globalOrigin : DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.Global -> Mono.MemberOrigin
+globalOrigin toptNodes g =
+    if ctorBackedGlobal toptNodes 8 g then
+        Mono.OriginCtor (toptToMono g)
+
+    else
+        Mono.OriginGlobal (toptToMono g)
+
+
+ctorBackedGlobal : DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> Int -> TOpt.Global -> Bool
+ctorBackedGlobal toptNodes fuel g =
+    if fuel <= 0 then
+        False
+
+    else
+        case DMap.get TOpt.toComparableGlobal g toptNodes of
+            Just (TOpt.Ctor _ _ _) ->
+                True
+
+            Just (TOpt.Box _) ->
+                True
+
+            Just (TOpt.Link target) ->
+                ctorBackedGlobal toptNodes (fuel - 1) target
+
+            Just (TOpt.Define (TOpt.VarBox _ target _) _ _) ->
+                ctorBackedGlobal toptNodes (fuel - 1) target
+
+            Just (TOpt.Define (TOpt.VarGlobal _ target _) _ _) ->
+                ctorBackedGlobal toptNodes (fuel - 1) target
+
+            Just (TOpt.TrackedDefine _ (TOpt.VarBox _ target _) _ _) ->
+                ctorBackedGlobal toptNodes (fuel - 1) target
+
+            Just (TOpt.TrackedDefine _ (TOpt.VarGlobal _ target _) _ _) ->
+                ctorBackedGlobal toptNodes (fuel - 1) target
+
+            _ ->
+                False
 
 
 toptToMono : TOpt.Global -> Mono.Global

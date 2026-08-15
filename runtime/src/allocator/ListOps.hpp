@@ -370,10 +370,14 @@ HPointer sortWith(Comparator cmp, HPointer list);
  * Converts a list to a std::vector of Unboxables.
  * Useful for interop and debugging.
  */
-inline std::vector<std::pair<Unboxable, bool>> toVector(HPointer list) {
-    std::vector<std::pair<Unboxable, bool>> result;
+// The pair's second field is the element's 2-bit SLOT KIND (0 = boxed), not a
+// boolean: a permutation or copy built from this vector must be able to
+// reproduce the input's representation exactly. Collapsing it to `is_boxed`
+// silently rewrote Float and Char lists as Int-kinded ones.
+inline std::vector<std::pair<Unboxable, u8>> toVector(HPointer list) {
+    std::vector<std::pair<Unboxable, u8>> result;
     for (alloc::ListCursor c(list); !c.done(); c.next()) {
-        result.emplace_back(c.current(), c.currentKind() == 0);
+        result.emplace_back(c.current(), c.currentKind());
     }
     return result;
 }

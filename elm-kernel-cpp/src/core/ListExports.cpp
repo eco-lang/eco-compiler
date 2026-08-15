@@ -674,20 +674,102 @@ HPtr Elm_Kernel_List_drop(int64_t n, HPtr list) {
     return HPtr::fromBits(Export::encode(result));
 }
 
+// Kind-preserving companion to listToVectorU64, for the SORT family.
+//
+// Sorting is a PERMUTATION: its result must carry the same element
+// representation as its input (REP_HEAP_002 — a `List Int` has Int-kind
+// cells). listToVectorU64 boxes every unboxed head so a user closure can be
+// called with it; rebuilding the result from that buffer alone yields
+// ALL-BOXED cells, which silently miscompiles every consumer that reads
+// elements at their STATIC kind — arithmetic folds read the pointer words as
+// numbers. Nothing crashes and `Debug.log` still prints correctly (the
+// printer consults the cell header), which is how it went unnoticed.
+//
+// `boxed` is exactly what listToVectorU64 produced: the closure-delivery view.
+// `kinds[i]` is element i's slot kind (0 = boxed) and `scalars[i]` is its
+// ORIGINAL Unboxable, meaningful ONLY when kinds[i] != 0. For a boxed element
+// `scalars[i]` holds an unrooted pointer copy that goes stale at the next GC,
+// so it must never be read — `listFromPermutation` reads `boxed[i]` for those.
+// Scalars for unboxed elements are plain values, immune to GC, so callers root
+// `boxed` alone, exactly as before.
+static void listToKindedVectors(HPointer list,
+                                std::vector<HPointer>& boxed,
+                                std::vector<uint8_t>& kinds,
+                                std::vector<Unboxable>& scalars) {
+    Allocator& allocator = Allocator::instance();
+
+    // Phase 1: raw spine walk, no allocation (hybrid spines: cells + chunk
+    // views via ListCursor).
+    struct Entry { Unboxable head; uint8_t kind; };
+    std::vector<Entry> entries;
+    for (alloc::ListCursor c(list); !c.done(); c.next()) {
+        entries.push_back(Entry{c.current(), c.currentKind()});
+    }
+
+    boxed.assign(entries.size(), HPointer{});
+    kinds.resize(entries.size());
+    scalars.resize(entries.size());
+    for (size_t i = 0; i < entries.size(); ++i) {
+        kinds[i] = entries[i].kind;
+        scalars[i] = entries[i].head;
+        if (entries[i].kind == 0) boxed[i] = entries[i].head.p;
+    }
+
+    // Phase 2: box the primitives under a root range covering the whole
+    // buffer; each boxElement may trigger a minor GC that moves the others.
+    auto& rs = allocator.getRootSet();
+    size_t saved = rs.stackRangePoint();
+    if (!boxed.empty()) {
+        rs.pushStackRootRange(boxed.data(), boxed.size(),
+                              /*hpointer_mask=*/~uint64_t(0));
+    }
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (kinds[i] != 0) {
+            boxed[i] = alloc::boxElement(scalars[i], kinds[i]);
+        }
+    }
+    rs.restoreStackRangePoint(saved);
+}
+
+// Rebuild a permutation of a kinded snapshot at its ORIGINAL element kinds.
+//
+// Boxed heads are taken from `boxed` (rooted and GC-updated by the caller);
+// unboxed heads from their scalars. Building the pair buffer never allocates,
+// so it is safe to call after the caller has dropped its root range —
+// `listFromUnboxables` roots its own working copy across the cons/chunk
+// allocations, the same self-rooting contract `listFromPointers` offers.
+static HPointer listFromPermutation(const std::vector<size_t>& indices,
+                                    const std::vector<HPointer>& boxed,
+                                    const std::vector<uint8_t>& kinds,
+                                    const std::vector<Unboxable>& scalars) {
+    std::vector<std::pair<Unboxable, u8>> elems;
+    elems.reserve(indices.size());
+    for (size_t idx : indices) {
+        if (kinds[idx] == 0) {
+            Unboxable v;
+            v.p = boxed[idx];
+            elems.emplace_back(v, static_cast<u8>(0));
+        } else {
+            elems.emplace_back(scalars[idx], kinds[idx]);
+        }
+    }
+    return alloc::listFromUnboxables(elems);
+}
+
 HPtr Elm_Kernel_List_sortBy(HPtr closure, HPtr list) {
     auto& allocator = Allocator::instance();
 
-    // Materialise input list once. listToVectorU64 may allocate (boxElement).
-    std::vector<uint64_t> elemEnc = listToVectorU64(Export::decode(list.toBits()));
-    if (elemEnc.empty()) {
+    // Materialise input list once, KEEPING each element's kind so the
+    // permutation can be rebuilt at the input's representation. May allocate
+    // (boxElement). `elements` is the contiguous HPointer buffer we range-root
+    // for the duration of the closure-driven key extraction.
+    std::vector<HPointer> elements;
+    std::vector<uint8_t> kinds;
+    std::vector<Unboxable> scalars;
+    listToKindedVectors(Export::decode(list.toBits()), elements, kinds, scalars);
+    if (elements.empty()) {
         return HPtr::fromBits(Export::encode(alloc::listNil()));
     }
-
-    // Move HPointer-encoded values into a contiguous HPointer buffer that we
-    // can range-root for the duration of the closure-driven key extraction.
-    std::vector<HPointer> elements;
-    elements.reserve(elemEnc.size());
-    for (uint64_t e : elemEnc) elements.push_back(Export::decode(e));
 
     HPointer closureHP = Export::decode(closure.toBits());
 
@@ -736,29 +818,28 @@ HPtr Elm_Kernel_List_sortBy(HPtr closure, HPtr list) {
         return order->ctor == 0;  // LT
     });
 
-    // Reorder elements; build the result list via the self-rooting helper
-    // (listFromPointers pins its working copy across each cons, so no
-    // unrooted mirror of the buffer crosses the cons GC points).
-    std::vector<HPointer> sorted;
-    sorted.reserve(elements.size());
-    for (size_t idx : indices) sorted.push_back(elements[idx]);
+    // Reorder elements AT THEIR ORIGINAL KINDS; the helper pins its working
+    // copy across each cons, so no unrooted mirror of the buffer crosses the
+    // cons GC points.
     rs.restoreStackRangePoint(saved);
 
-    HPointer result = alloc::listFromPointers(sorted);
+    HPointer result = listFromPermutation(indices, elements, kinds, scalars);
     return HPtr::fromBits(Export::encode(result));
 }
 
 HPtr Elm_Kernel_List_sortWith(HPtr closure, HPtr list) {
     auto& allocator = Allocator::instance();
 
-    std::vector<uint64_t> elemEnc = listToVectorU64(Export::decode(list.toBits()));
-    if (elemEnc.empty()) {
+    // Kinded snapshot (mirrors sortBy): `elements` is the boxed view the user
+    // comparator is called with, `kinds`/`scalars` carry the input's own
+    // representation so the permutation can be rebuilt at it.
+    std::vector<HPointer> elements;
+    std::vector<uint8_t> kinds;
+    std::vector<Unboxable> scalars;
+    listToKindedVectors(Export::decode(list.toBits()), elements, kinds, scalars);
+    if (elements.empty()) {
         return HPtr::fromBits(Export::encode(alloc::listNil()));
     }
-
-    std::vector<HPointer> elements;
-    elements.reserve(elemEnc.size());
-    for (uint64_t e : elemEnc) elements.push_back(Export::decode(e));
 
     HPointer closureHP = Export::decode(closure.toBits());
 
@@ -795,15 +876,11 @@ HPtr Elm_Kernel_List_sortWith(HPtr closure, HPtr list) {
         return lt;
     });
 
-    // Materialise the sorted order and build the result list via the
-    // self-rooting helper (listFromPointers pins its working copy across
-    // each cons).
-    std::vector<HPointer> sorted;
-    sorted.reserve(elements.size());
-    for (size_t idx : indices) sorted.push_back(elements[idx]);
+    // Materialise the sorted order AT THE ORIGINAL ELEMENT KINDS; the helper
+    // pins its working copy across each cons.
     rs.restoreStackRangePoint(saved);
 
-    HPointer result = alloc::listFromPointers(sorted);
+    HPointer result = listFromPermutation(indices, elements, kinds, scalars);
     return HPtr::fromBits(Export::encode(result));
 }
 

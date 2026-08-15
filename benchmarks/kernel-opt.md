@@ -548,6 +548,64 @@ longer have stubs (Run K routed all 1,452 sites through `eco.value.eq`),
 | off r1 | 3:27.32 | 4,929,412 kB | 219,767,740 | 13,331.33 MB | 836 | 361,232,748 | 10 | 81.12 s | ≡ |
 | off r2 | 3:25.08 | 4,908,216 kB | 219,767,582 | 13,331.32 MB | 836 | 361,232,804 | 10 | 80.95 s | ≡ |
 
+### 2026-08-14 21:40 UTC — Run U: map-template follow-ups F-1L…F-5C (**FLAT — no regression; licence pool 50 → 58; binary −325,912 B; still DEFAULT-OFF**)
+
+`plans/list-map-mlir-template.md` F-1L / F-2 / F-3 / F-4 / F-5A-B-C, all landed
+this session. Net licence movement on the self-compile at budget 64:
+**50 → 58 licensed of 592 recognized** — F-4's argument-taint rule REMOVED 2
+(a live D-4a hole: captured function values laundered through `List.any` /
+`List.sortWith`), F-3's callee resolution recovered 0, and F-5A+F-5B's
+ctor-as-callback arm ADDED 9 (`List.map Just` and friends; `declinedNoStamp`
+13 → 4, `declinedCtorUnresolved` 0).
+
+Same A/B shape as Run T (front-end artifact-affecting flag): two Stage-5 builds
+from one tree, flag set only in the BUILD env, `.mlir` + binary deleted between
+arms. Workload legs run flag-UNSET; `-out.mlir` **byte-identical across arms
+(13,244,058 B)**, so only the binary differs.
+
+| | template ON | template OFF | Δ |
+|---|---|---|---|
+| wall r1 / r2 | 3:54.43 / 3:52.18 | 3:53.63 / 3:56.54 | mean −0.76% ⇒ **FLAT** |
+| max RSS | 5,523,668 KB | 5,526,188 KB | −0.05% |
+| binary | 66,092,112 B | 66,418,024 B | **−325,912 B (−0.49%)** |
+| objects allocated | 227,631,274 | 226,690,246 | +0.42% (counter-blind, see Run T) |
+| bytes allocated | 14,185.38 MB | 14,143.22 MB | +0.30% |
+| minor / major GC | 913 / 11 | 914 / 11 | −1 / = |
+| objects promoted | 416,654,491 | 417,381,243 | −0.17% |
+| total GC/alloc | 98.14 s | 96.87 s | +1.3% |
+
+**Reads exactly like Run T, one item bigger.** The binary credit scales with the
+pool (−291,816 B at 50 specs, −325,912 B at 58), retention is unmoved
+(promoted −0.17%, minors 913 vs 914, majors equal), and wall is inside the
+noise band. The allocation column is HEAP_034 counter-blind in the
+unfavourable direction for the same reason Run T documented — the template
+deletes UNCOUNTED inline cons and adds COUNTED chunk calls.
+
+**F-2A budget sweep (measurement item, mirrored from the plan).** Ten flag-off
+Stage-5 legs on the frozen post-F-5 tree, plus flag-on legs for the licence
+pool:
+
+| N | wall r1 / r2 | mean | Δ vs 64 | artifact B | binary B | Δ binary | recognized `map` | licensed |
+|---|---|---|---|---|---|---|---|---|
+| **64** | 6:56.03 / 7:36.10 | 436.1 s | — | 13,710,047 | 66,418,024 | — | 592 | **58** |
+| 128 | 7:45.48 / 7:31.45 | 458.5 s | +5.1% | 13,904,958 | 66,991,792 | +0.86% | 599 | 61 |
+| 256 | 7:45.73 / 7:49.54 | 467.6 s | +7.2% | 14,152,621 | 67,464,104 | +1.57% | 625 | 69 |
+| 512 | 7:38.76 / 7:54.21 | 466.5 s | +7.0% | 14,384,050 | 68,200,968 | +2.68% | 678 | — |
+| 1024 | 7:43.42 / 7:40.85 | 462.1 s | +6.0% | 14,650,323 | 69,311,736 | +4.36% | 813 | 143 |
+
+The knee rule selects **N = 64, the incumbent**, so the default does not move
+(marginal gain 64→128 is +3 sites). **The wall column here is not usable**: the
+r1/r2 spread WITHIN N=64 is 40.1 s (9.2%), wider than the ±5% band the rule
+tests, and the trend is non-monotone (512 and 1024 beat 256). Binary size is
+the decisive axis — bit-identical across both rounds at every N.
+
+**Disposition: KEPT-DARK.** Everything stays behind `ECO_LIST_MAP_TEMPLATE`,
+default-off. F-4 is the reason the flag *could* now be considered — it closes
+the direct-arrow laundering channel that made a default-ON decision unsound —
+but the recorded residual (a closure in a concrete custom-type field is
+invisible to `arrowAnnos`) still wants `plans/effect-polymorphic-purity.md`
+before that argument is fully discharged.
+
 ### 2026-08-14 09:05 UTC — Run T: `List.map` forward MLIR template (**FLAT — no regression; KEPT-DARK — landed DEFAULT-OFF, `ECO_LIST_MAP_TEMPLATE=1` enables**)
 
 `plans/list-map-mlir-template.md`. A licensed `List.map` spec's whole body becomes
@@ -965,3 +1023,4 @@ was 20,480 MB. Gates at that point: E2E `--target full` and heap-validate tree
 | R — kernel-opt-12 eco.cse_safe purity channel | 3:24.85 (attr, CSE off — FLAT; binary byte-identical to base) | attr Δ ≈ 0 in both CSE states; S=4,330. **CSE flip attempted → 3 NaN-equality failures → REVERTED**: merged allocations are observable through the pointer-eq fast path |
 | S — kernel-opt-14 Elm-source List HOFs | REJECTED (objects +61.6%, ConsChunk 6.2M→146M, wall +2.9–3.7%) | E2E fully green; the accumulate+reverse/mergesort idioms multiply list materializations vs C++'s single pass; flag kept dark, kernels stay C++ |
 | T — List.map forward template (default-OFF) | 3:48.77 (r1/r2 mean, −2.05% FLAT) — **absolute wall NOT comparable to A–S: corpus grew +271,895 B; control binary with none of this change scored 3:57.96 on the same corpus** | 228,050,612 obj / 14,062.57 MB (counter-blind; TRUE: `Cons` alloc −1.40%, net −3.09M obj — but **promoted −0.002%, minors identical**; binary −291,816 B) |
+| U — map-template follow-ups F-1L…F-5C (default-OFF) | 3:53.31 (r1/r2 mean, −0.76% FLAT) | 227,631,274 obj / 14,185.38 MB (counter-blind as in T; promoted −0.17%, minors 913 vs 914, majors 11=11; binary −325,912 B; licence pool 50→58) |

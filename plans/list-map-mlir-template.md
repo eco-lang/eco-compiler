@@ -983,6 +983,35 @@ and the Gate-3 reconciliation instead of by an E2E `CHECK-MLIR`; recorded in
 `ListMapTemplateNestedTest.elm`. (c) v1 emits only at singleton-devirtualized
 sites — the recorded choice, now sized at 55 sites by `declinedMultiMember`.
 
+## Follow-ups — STATUS 2026-08-14: ALL SEVEN ITEMS EXECUTED
+
+| item | disposition | net effect on the licence pool |
+|---|---|---|
+| F-1L | LANDED | 0 (relabel; licence-identity byte-identical) |
+| F-2A | MEASURED — table below | — (knee = incumbent 64) |
+| F-2B | **NOT EXECUTED** (rule selected the incumbent) | — |
+| F-3 step 0 | LANDED (census) | 0 |
+| F-3 steps 2-4 | LANDED with F-4 | **0 recovered** |
+| F-4 | LANDED | **−2** (two LIVE D-4a violations closed) |
+| F-5A | LANDED | 0 (byte-identical, both flag states) |
+| F-5B | LANDED | **+9** |
+| F-5C | LANDED, default-off | 0 (measured no-op at any depth) |
+
+**50 → 58 licensed of 592 recognized.** Series gates: E2E 1,672/1,672 in both
+flag states; elm-tests 13,085/12 (baseline, unmoved); default-config bootstrap
+re-converges — Stage 8c `eco-compiler-boot.mlir` == `eco-compiler-boot-2.mlir`,
+byte-identical at 13,710,047 B; A/B recorded as Run U in
+`benchmarks/kernel-opt.md` (wall FLAT −0.76%, binary −325,912 B, retention
+unmoved, `out.mlir` byte-identical across arms).
+
+**The flag stays DEFAULT-OFF.** F-4 removed the direct-arrow laundering
+channel that blocked a default-ON argument, but its Traps (e) residual (a
+closure in a concrete custom-type field is invisible to `arrowAnnos`) is still
+open, so the fully discharged path remains
+`plans/effect-polymorphic-purity.md`.
+
+Per-item landing notes are inline in each section below.
+
 ## Follow-ups — implementation-ready (lowered 2026-08-14; v2 after a 4-lens adversarial review, 32 findings integrated)
 
 Four items, recorded here because the licence-census review surfaced them.
@@ -1027,6 +1056,24 @@ recognized == licensed
   + declinedChunksOff + declinedShape + declinedNoStamp           (existing)
 ```
 
+**ACHIEVED 2026-08-14 — every term exists and the equation balances exactly.**
+Final census on the self-compile, budget 64, flag on:
+
+```
+[map-template] mapTemplate{recognized=592 licensed=58 declinedDebug=0
+declinedOpaqueGlobal=50 declinedCalleeLocalLSet=0 declinedCalleeLocalLTop=3
+declinedCalleeOther=0 declinedArgTaint=2 declinedWidened=257
+declinedUnresolvedMember=163 declinedCtorUnresolved=0 declinedMultiMember=55
+declinedEngine=0 declinedChunksOff=0 declinedShape=0 declinedNoStamp=4}
+allocFreeCallbacks=28
+[map-template] argTaint{ltop=2 opaqueGlobal=0 memberPoison=0 closurePoison=0}
+```
+
+58 + 0 + 50 + 0 + 3 + 0 + 2 + 257 + 163 + 0 + 55 + 0 + 0 + 0 + 4 = **592**.
+The second line is an addition to the spec (F-4's landing gate needed a
+per-decline cause); it RE-PARTITIONS `declinedArgTaint` and never joins the
+sum.
+
 ### F-1L — honest decline counters (behaviour-preserving relabel)
 
 **Scope.** Rename the mislabelled decline cause. Licensing decisions are
@@ -1067,9 +1114,43 @@ the counter names change. All edits in
 
 **Pins and gates.**
 
-- **Flag-on byte-identity, exact procedure** (Ninja is env-blind, and the
-  artifact is `build/compiler/build-kernel/bin/eco-compiler.mlir` —
-  `ECO_COMPILER_MLIR`, `compiler/CMakeLists.txt:393`):
+- **CORRECTION (2026-08-14, execution): the byte-identity procedure below is
+  UNSATISFIABLE as written, for this item and every other item in this
+  section.** `eco-compiler.mlir` is Stage 5's output — the MLIR of the
+  COMPILER'S OWN SOURCE. Any edit to `MapTemplate.elm` is an edit to that
+  source, so the artifact necessarily differs (new record fields, renamed
+  constructors, added arms all emit). `cmp` can only fail. This is the same
+  class of error as the Gate-2 unsatisfiability recorded in the Run-T
+  session note.
+  **The satisfiable form, used instead — TWO BINARIES, ONE FROZEN CORPUS:**
+  build the pre-change binary, apply the change, build the post-change
+  binary, then run BOTH on the SAME corpus (the post-change compiler source)
+  with the flag on and `cmp` the two emitted `.mlir` files. That tests the
+  property the gate is actually for — *licensing decisions are unchanged* —
+  because emission reads only `bySpec`. Recipe:
+
+  ```bash
+  BK=build/compiler/build-kernel; SP=<scratch>
+  # before the change, and again after it:
+  rm -f $BK/bin/eco-compiler.mlir $BK/bin/eco-compiler && rm -rf $BK/eco-stuff
+  ECO_LIST_MAP_TEMPLATE=1 cmake --build build --target eco-compiler
+  cp -p $BK/bin/eco-compiler $SP/eco-compiler-{before,after}
+  # then, per binary, same corpus, same env:
+  ( cd $BK && rm -rf eco-stuff && ECO_LIST_MAP_TEMPLATE=1 $SP/eco-compiler-ARM \
+      make --optimize --kernel-package eco/compiler \
+      --local-package eco/kernel=/work/eco-kernel-cpp \
+      --output=bin/ARM-out.mlir /work/compiler/src/Terminal/Main.elm )
+  cmp $BK/bin/before-out.mlir $BK/bin/after-out.mlir   # MUST be identical
+  ```
+
+  The corpus must be the POST-change source for both arms (the pre-change
+  binary compiles it fine — it is just Elm input), otherwise the corpora
+  differ and the comparison means nothing.
+- **Flag-on byte-identity, original (unsatisfiable) procedure**, kept because
+  its build recipe is still the right way to produce each ARM (Ninja is
+  env-blind, and the artifact is
+  `build/compiler/build-kernel/bin/eco-compiler.mlir` — `ECO_COMPILER_MLIR`,
+  `compiler/CMakeLists.txt:393`):
 
   ```bash
   BK=build/compiler/build-kernel
@@ -1095,6 +1176,18 @@ the counter names change. All edits in
   allocFreeCallbacks=83` (sum = 812 exact).
 - elm-tests unchanged (13,085/12). No new fixtures — there is no behaviour
   to pin; the census delta IS the pin.
+
+**LANDED 2026-08-14** (with F-3 step 0 in the same build — both are pure
+relabels, so one licence-identity gate covers both; each item's evidence is
+still separately readable in the census line):
+
+- Census, budget 64, solver+LSS Stage 5: `declinedDebug 50 → 0`,
+  `declinedOpaqueGlobal 0 → 50`, `licensed` 50 unchanged, `recognized` 591
+  unchanged, every other counter unchanged, Gate-3 sum 591 exact.
+- **Licence identity: PASS.** Pre- and post-change binaries compiled the same
+  corpus flag-on to byte-identical MLIR (13,644,417 B both arms), per the
+  corrected two-binary procedure above.
+- elm-tests 13,085 passed / 12 failed — the recorded baseline, unmoved.
 
 ### F-2 — LSS specs-per-global budget: sweep (A), then default change (B)
 
@@ -1151,6 +1244,42 @@ Anchors already measured (2026-08-14): N=64 → licensed=50,
 `byBudget=50,642`; N=1024 → licensed=136, `byBudget=13,893`,
 `declinedMultiMember` 55→0.
 
+**MEASURED 2026-08-14 — the sweep, on the post-F-5 tree.** Ten flag-off legs
+(5 budgets × 2 rounds), plus flag-on legs for the licence pool. Corpus frozen
+across all legs.
+
+| N | Stage-5 wall r1 / r2 | mean | Δ vs 64 | max RSS (KB) | artifact B | binary B | Δ binary | recognized `map` | licensed (flag-on) | `byBudget` widened |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **64** | 6:56.03 / 7:36.10 | 436.1 s | — | 7,849,532 | 13,710,047 | 66,418,024 | — | 592 | **58** | 50,778 |
+| 128 | 7:45.48 / 7:31.45 | 458.5 s | +5.1% | 9,220,416 | 13,904,958 | 66,991,792 | +0.86% | 599 | 61 | 41,514 |
+| 256 | 7:45.73 / 7:49.54 | 467.6 s | +7.2% | 9,293,828 | 14,152,621 | 67,464,104 | +1.57% | 625 | 69 | 29,100 |
+| 512 | 7:38.76 / 7:54.21 | 466.5 s | +7.0% | 9,210,640 | 14,384,050 | 68,200,968 | +2.68% | 678 | — | 19,881 |
+| 1024 | 7:43.42 / 7:40.85 | 462.1 s | +6.0% | 9,350,188 | 14,650,323 | 69,311,736 | +4.36% | 813 | 143 | 13,910 |
+
+Marginal licensed gain: **64→128 = +3**, 128→256 = +8, 256→1024 = +74.
+
+**OUTCOME: the rule selects N = 64 — the incumbent default — so F-2B DOES NOT
+EXECUTE and this table is the deliverable.** N=64 satisfies every band
+trivially (its own baseline on wall and binary) and its next-step marginal
+gain is 3 sites, well under the 10-site threshold. Nothing larger qualifies:
+128 is the only other budget inside the +1% binary band, and it buys 3 sites.
+
+Two readings worth keeping:
+
+- **The wall axis cannot discriminate here and should not be quoted.** The
+  r1/r2 spread WITHIN N=64 is 40.1 s (9.2% of its own mean) — larger than the
+  entire +5% band the rule tests. Every N>64 sits 5-7% above 64 with no
+  monotone trend (512 and 1024 are *faster* than 256). Binary size is the
+  decisive axis because it is deterministic: identical to the byte across
+  both rounds at every N.
+- **The budget is not the lever for the licence pool.** Licensing RATE barely
+  moves — 9.8% (58/592) at 64, 10.2% at 128, 11.0% at 256, 17.6% at 1024 —
+  and most of the absolute growth is simply that more map specs EXIST at
+  higher budgets (592 → 813 recognized), because budget widening previously
+  merged specs under set-erased keys. Raising the budget 16× multiplies
+  emitted code by 4.36% to roughly double a pool that F-5B grew by 9 sites
+  for free.
+
 **Decision rule for the knee**: evaluated on the FLAG-OFF axes; choose the
 smallest `N` where the NEXT step's marginal `licensed` gain is < 10 sites
 AND FE wall (r1/r2 mean) is within **+5%** of N=64 AND binary growth is
@@ -1160,6 +1289,20 @@ to evaluate 1024's own marginal. If no N satisfies the bands, F-2B does
 not execute and the table is the outcome.
 
 #### F-2B — the default change (artifact-affecting; separate commit)
+
+**NOT EXECUTED (2026-08-14), by F-2A's own decision rule — the knee is the
+incumbent N = 64.** Steps 1-4 below were not performed and no default moved.
+Consequences worth stating, because they are easy to misread later:
+
+- The load-bearing cache-keying fix (`historicalLssBudgetDefault`) is NOT
+  needed and was NOT applied. The hazard it guards — an unset config emitting
+  no `lssB=` token before AND after a default flip while its artifacts differ
+  — exists only when `defaultLss.maxSpecsPerGlobal` actually changes. The
+  elision comparison at `Config.elm:811-812` is untouched, and step 2's
+  analysis stays here for whoever flips it.
+- No stale-cache regression test, no heap-validate leg at a new default, no
+  bootstrap-in-default-env re-establishment for THIS item.
+- `declinedMultiMember` was NOT re-sized: it stays 55 at the shipping budget.
 
 1. `compiler/src/Compiler/Eco/Config.elm`: `defaultLss.maxSpecsPerGlobal`
    64 → N (the knee).
@@ -1206,6 +1349,17 @@ not execute and the table is the outcome.
      `--target check` runs). The previously-documented
      `test/elm/eco-stuff/mlir` path does not exist and rm's it as a silent
      no-op.
+     **CORRECTION (2026-08-14, execution): purging only `…/eco-stuff/mlir` is
+     NOT ENOUGH when the compiler itself changed between legs.** The
+     per-suite DETAILS cache (`…/eco-stuff/0.1.0/…`) survives that purge and
+     still references the artifacts of the other leg, and the JIT runner then
+     dies with `CORRUPT CACHE` — measured here as 849 of 1,671 tests
+     "failing" with `Guida compilation failed (exit code 1)` on a flag-ON leg
+     that passed 1,671/1,671 once the fuller purge was used. Purge the WHOLE
+     per-suite tree between legs: `rm -rf build/test/*/eco-stuff`. The
+     tell is `CORRUPT CACHE` in the failure body (a missing per-target
+     artifact, `.eco` vs `.ecot`), never a wrong VALUE — a real codegen
+     regression fails the CHECK patterns instead.
    - **Heap-validate flag-ON leg at the new default** (v2 addition): the
      original Gate 4 validated only the 50 specs licensed at budget 64;
      the new default licenses up to ~86 more template expansions that have
@@ -1283,6 +1437,28 @@ machinery reaches them. **Split the counter first, build second.**
    as NOT-WORTH-BUILDING. **A zero closes steps 2-4 only** — step 1's
    member-verdict table is still built if/when F-4 proceeds (its
    dependency is unconditional).
+
+   **MEASURED 2026-08-14 (step 0 landed, budget 64, solver+LSS Stage 5):**
+
+   ```
+   [map-template] mapTemplate{recognized=591 licensed=50 declinedDebug=0
+   declinedOpaqueGlobal=50 declinedCalleeLocalLSet=1 declinedCalleeLocalLTop=3
+   declinedCalleeOther=0 declinedWidened=425 declinedMultiMember=55
+   declinedEngine=0 declinedChunksOff=0 declinedShape=0 declinedNoStamp=7}
+   allocFreeCallbacks=28
+   ```
+
+   Conservation holds (sum = 591); `declinedDebug 50 → 0` /
+   `declinedOpaqueGlobal 0 → 50` is F-1L's predicted move, exactly.
+   **Verdict: GO, but the addressable pool is ONE SPEC.** The old
+   `declinedHigherOrder = 4` splits 1 / 3 / 0, and only the `LSet` site is
+   recoverable — the hypothesis this step existed to test (that the
+   higher-order declines are mostly resolvable locals) is **disproved**:
+   ⊤-through-locals dominates here exactly as the LSS census predicted.
+   Steps 2-4 are therefore built as a HOOK CHOICE on the F-4 table (one
+   line: resolve callee-position sets through the settled table instead of
+   declining), not as standalone machinery — the honest justification is
+   that the table exists for F-4 regardless, not that 1 spec pays for it.
 1. **Member-verdict table** (shared with F-4; taint-aware BY CONSTRUCTION
    per the joint-architecture section):
    `memberVerdicts : Dict Int Verdict`, computed in `deriveLicensed` after
@@ -1485,6 +1661,69 @@ The `ECO_LIST_MAP_EXPAND=0` and heap-validate legs are NOT re-run for F-4
 `list.mapTemplate` default-ON requires this item (or the purity plan)
 landed, and with F-4-standalone the Traps (e) residual must be explicitly
 accepted in the default-ON decision record.**
+
+**LANDED 2026-08-14** (with F-3 steps 2-4 in the same build — the joint
+architecture makes them one landing; see F-3's note for why the callee wiring
+is a hook choice on this table).
+
+- Census on the self-compile, budget 64, flag on (both arms on ONE corpus,
+  the corrected two-binary method): `licensed 50 → 49`,
+  `declinedArgTaint 0 → 2`, `declinedCalleeLocalLSet 1 → 0`, every other
+  counter unmoved; Gate-3 sum 592 exact in both arms. (`recognized 591 → 592`
+  is this item's own code: `arrowAnnos` uses `List.concatMap`, which mints one
+  more `List.map` spec — it declines as `declinedWidened`, hence 425 → 426.)
+- **Regression enumeration (the blocking gate): PASS, collateral = 0.**
+  Enumerated by lowering both arms' bytecode with
+  `ecoc --emit=mlir` (the dump goes to STDERR) and diffing the enclosing
+  `func.func` of every `eco.list.map`: exactly one spec lost the template,
+  `List_map_$_35885`, whose callback is `Terminal_Main_lambda_32583` — a
+  two-capture closure that passes captured function values into `List.any`
+  and `List.map`, the exact laundering shape. The new `argTaint{}` census line
+  classifies both declines as **`ltop=2`** (opaqueGlobal / memberPoison /
+  closurePoison all 0): the arguments' arrow annotations are `LTop`, so
+  nothing whatsoever is known about what they hold. That is unprovable
+  provenance — genuine, not a shape-dispatch gap.
+- The F-3 callee resolution did NOT convert its one candidate into a licence:
+  that spec resolved its callee through the table and then met the taint rule,
+  moving `declinedCalleeLocalLSet → declinedArgTaint`. Recovery from F-3
+  steps 2-4 on this corpus is therefore **zero licensed specs**.
+- Instrument added while discharging the gate and KEPT: `PoisonArgTaint`
+  carries an `ArgCause`, and `report` emits a second
+  `[map-template] argTaint{ltop= opaqueGlobal= memberPoison= closurePoison=}`
+  line whenever the term is non-zero. It re-partitions one Gate-3 term and
+  never joins the sum.
+- E2E battery: **flag ON 1,670/1,670 PASS** (the 6 new fixtures included);
+  flag OFF 1,664 pre-existing PASS and the 11 `ListMapTemplate*` fixtures PASS.
+  The canaries' order pins hold in both states: `cmp: 2` then `cmp: 1`,
+  foldr's right-to-left.
+- **Unrelated defect found while writing the canaries — since FIXED under a
+  separate change (see the end of this note), pre-existing and
+  flag-independent:** `List.sum (List.sortWith compare [2,1])`
+  returns a pointer-like integer, and so does `List.foldl (+) 0` over the same
+  list, while `Debug.log` prints the list correctly. Cause:
+  `Elm_Kernel_List_sortWith` (`elm-kernel-cpp/src/core/ListExports.cpp:751`)
+  decodes every element as an `HPointer` and rebuilds via
+  `alloc::listFromPointers`, producing ALL-BOXED cells, while the static type
+  `List Int` tells codegen the elements are unboxed — so arithmetic folds read
+  the pointers as integers. The `ListOps::sortWith` path
+  (`runtime/src/allocator/ListOps.cpp:628`) preserves kinds via
+  `listFromUnboxables`; the export wrapper does not. `List.sortBy` shares the
+  shape (`:747`). Reproduced with the template flag OFF, so it is independent
+  of everything in this plan; the canaries were rewritten to pin the sorted
+  lists instead of a sum over them. **FIXED 2026-08-14**, and the root cause
+  turned out to be wider than the sort exports: `ListOps::toVector` /
+  `alloc::listFromUnboxables` carried `bool is_boxed` per element rather than
+  the 2-bit slot kind, collapsing Float and Char to Int on EVERY rebuild —
+  `List.take` and `List.concat` were live casualties too. The pair API now
+  carries `u8` kinds. Pinned by `ListSortWithKindPreservationTest`,
+  `ListSortByKindPreservationTest` and `ListRebuildKindPreservationTest`;
+  gated at E2E 1,675/1,675 in both flag states, stress 100/100, and
+  1,675/1,675 under `-DECO_HEAP_VALIDATE=ON`.
+- Method note for future items: the census is reproducible WITHOUT a native
+  rebuild by running the Stage-1 JS compiler
+  (`cmake --build build --target eco-boot`, ~30 s, then
+  `node bin/eco-boot-runner.js make …`). It reproduced the native census
+  line-for-line here, at roughly a third of the native cycle's cost.
 
 **Traps.** (a) The shape-dispatch rows in step 2 keep the decline rate
 sane — the annotation route alone would poison nearly every HOF-using
@@ -1735,6 +1974,52 @@ pass instead of `1`).
    figure is a session-local grep estimate with NO recorded provenance
    (v3) — re-measure it as part of this phase's Phase-0 and record the
    command and output here before using it as the target pool.
+
+**LANDED 2026-08-14 — implemented, gated, and MEASURED AS A NO-OP on this
+corpus. Keep it default-off; do not promote it without a consumer.**
+
+- Wiring exactly as specified: `spineArity` appended LAST in `LssConfig`,
+  `defaultLss` (False) and the POSITIONAL `lssDecoder` chain; env
+  `ECO_MONO_LSS_SPINE_ARITY` via `applyLssSpineArityOverride`; hash token
+  `lssSA=1`. Threaded arms: the `g|` and both `c|` mints in `LssInfer`, plus
+  the `standaloneArgMember` twin in `Translate`. Kernels stay head-only at
+  BOTH mint sites (the `kernelToSig` inner-arrow misalignment is then
+  unreachable), the accessor arm stays 1, and `VarCycle` stays 1 with the
+  reason recorded in the code (its translation-side twin has no VarCycle arm,
+  so threading it would be asymmetric).
+- Arity source: `TOpt.Ctor` arity directly, `Box ⇒ 1`, `Define` /
+  `TrackedDefine` of a `Function` → `List.length params`, Link-chased,
+  depth-bounded; eta-reduced/point-free → `max 1`, never 0, so enabling the
+  flag is MONOTONE.
+- **Gates.** Solver+LSS self-compile with the flag ON — the non-negotiable
+  one — completes clean. New inner-arrow pin `SpineStandalonePapTest.elm`
+  (partially applied 2- and 3-arity globals, a partially applied ctor, and a
+  pap flowing through `<<`) PASSES in both modes.
+- **Measurement: the flag changes NOTHING observable here.** Same corpus,
+  flag on vs off: emitted MLIR byte-identical (13,683,017 B both), LSS census
+  identical (`widened: bySize=462 byKernel=4102 byBudget=50778`;
+  `topSiteShapes global=14143 local=7361 kernel=3785`), `[map-template]`
+  census identical. To separate "no effect" from "not wired", the depth was
+  then FORCED on in code and re-measured, and forced again at a constant
+  depth of 4: **byte-identical in all three cases**. `injectSpineMemberId`
+  does write the member into each inner `FunL` slot as designed — the
+  annotations simply reach no decision that changes emission.
+- **Why, and what would change it:** the pool this was meant to unlock is
+  partial-application callbacks, and those members are `OriginGlobal`, which
+  the member table declines BY DESIGN (F-3 step 1 / F-4 Traps (d)). A
+  partially applied multi-arity CTOR declines too, through
+  `declinedCtorUnresolved` — F-5B's unary layout match IS the arity proof.
+  So F-5C hands the licence a resolvable member id that the licence still
+  cannot turn into a spec. It pays off only together with standalone-global
+  member resolution (the purity plan's index, or `LssFacts.matchGlobal`
+  machinery lifted into GlobalOpt) — not before.
+- Phase-0 figure re-measured, as the plan required (the "~212 static
+  partial-application sites" had no recorded provenance):
+  `grep -rn "List\.map (" compiler/src --include=*.elm | grep -v 'List\.map (\\' | wc -l`
+  → **217**; bare-identifier callbacks
+  (`grep -rnE "List\.map [A-Za-z_][A-Za-z0-9_.]*"`) → **588**. Both are
+  static greps over source text, not spec counts, and the census above shows
+  neither converts into a licence today.
 
 **Ordering and interactions**: F-5A before F-5B (B consumes A's origin);
 F-5C is independent of both (it enables MORE sites for the same licence);

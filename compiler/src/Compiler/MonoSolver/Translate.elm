@@ -3111,13 +3111,23 @@ injectArgLambdaMember arg canVar =
             \s -> Ok ( (), s )
 
 
+{-| S.10 (F-5C): the translation-side twin of `LssInfer`'s `g|`/`c|` mints.
+The depth must match its LssInfer counterpart exactly — a member injected to
+different depths on the two sides would name different arrow sets for the same
+value.
+-}
 standaloneArgMember : String -> TOpt.Global -> IO.Variable -> Step ()
-standaloneArgMember key g canVar =
+standaloneArgMember key g canVar s =
     Engine.andThen
-        (\mid -> LssInfer.injectSpineMemberId 1 mid canVar)
+        (\mid -> LssInfer.injectSpineMemberId (LssInfer.spineDepthForGlobal g s) mid canVar)
         (Engine.standaloneMemberIdFor key g)
+        s
 
 
+{-| Kernels stay HEAD-ONLY (see `LssInfer`'s kernel arms): `kernelToSig`
+misaligns at inner arrows, and keeping `k|` members off them makes that
+hazard unreachable.
+-}
 standaloneArgKernelMember : String -> ( Name, Name, Name ) -> IO.Variable -> Step ()
 standaloneArgKernelMember key k canVar =
     Engine.andThen

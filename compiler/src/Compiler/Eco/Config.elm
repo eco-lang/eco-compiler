@@ -186,6 +186,14 @@ type alias LssConfig =
     , maxSetSize : Int
     , maxSpecsPerGlobal : Int
     , report : Bool
+
+    -- S.10 (F-5C): inject standalone members through the first
+    -- `declaredArity` arrows instead of the head arrow only, so a
+    -- partially-applied global or ctor still carries a resolvable member at
+    -- the callback position. Default OFF: it is artifact-affecting when
+    -- enabled (hash token `lssSA=1`), and the soundness argument scopes it
+    -- to `g|`/`c|` mints — kernels stay head-only.
+    , spineArity : Bool
     }
 
 
@@ -216,6 +224,7 @@ defaultLss =
     , maxSetSize = 8
     , maxSpecsPerGlobal = 64
     , report = False
+    , spineArity = False
     }
 
 
@@ -579,6 +588,10 @@ lssDecoder =
         |> D.apply (D.optionalField "maxSetSize" D.int defaultLss.maxSetSize)
         |> D.apply (D.optionalField "maxSpecsPerGlobal" D.int defaultLss.maxSpecsPerGlobal)
         |> D.apply (D.optionalField "report" D.bool defaultLss.report)
+        -- APPEND ONLY, and LAST: this apply chain is POSITIONAL, so an
+        -- insertion anywhere above silently swaps two flags' values and still
+        -- type-checks (every field above is a Bool or an Int).
+        |> D.apply (D.optionalField "spineArity" D.bool defaultLss.spineArity)
 
 
 {-| Parse a monomorphizer-engine name (case-insensitive), used by both the JSON
@@ -810,6 +823,11 @@ hash cfg =
                         []
                     , if lss.maxSpecsPerGlobal /= defaultLss.maxSpecsPerGlobal then
                         [ "lssB=" ++ String.fromInt lss.maxSpecsPerGlobal ]
+
+                      else
+                        []
+                    , if lss.spineArity then
+                        [ "lssSA=1" ]
 
                       else
                         []

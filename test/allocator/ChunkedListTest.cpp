@@ -186,10 +186,10 @@ static void test_over_cap_chain() {
         // links, with a remainder-sized tail link.
         u32 maxElems = alloc::listBackingMaxElems();
         u32 n = maxElems * 2 + maxElems / 3 + 1;
-        std::vector<std::pair<Unboxable, bool>> elems(n);
+        std::vector<std::pair<Unboxable, u8>> elems(n);
         for (u32 i = 0; i < n; i++) {
             elems[i].first.i = static_cast<i64>(i) * 7 - 3;
-            elems[i].second = false;
+            elems[i].second = static_cast<u8>(1);  // Int slot kind
         }
         HPointer list = alloc::listFromUnboxables(elems);
 
@@ -229,10 +229,10 @@ static void test_over_cap_reversed_and_scratch() {
         eco_g_list_chunks = true;
 
         u32 n = alloc::listBackingMaxElems() + 17;
-        std::vector<std::pair<Unboxable, bool>> elems(n);
+        std::vector<std::pair<Unboxable, u8>> elems(n);
         for (u32 i = 0; i < n; i++) {
             elems[i].first.i = static_cast<i64>(i);
-            elems[i].second = false;
+            elems[i].second = static_cast<u8>(1);  // Int slot kind
         }
         HPointer rev =
             alloc::listFromUnboxables(elems, alloc::listNil(), true);
@@ -264,10 +264,10 @@ static void test_backward_cursor_foldr() {
 
         // Mixed spine: a few cells consed onto an over-cap chunk chain.
         u32 n = alloc::listBackingMaxElems() + 41;
-        std::vector<std::pair<Unboxable, bool>> elems(n);
+        std::vector<std::pair<Unboxable, u8>> elems(n);
         for (u32 i = 0; i < n; i++) {
             elems[i].first.i = static_cast<i64>(i);
-            elems[i].second = false;
+            elems[i].second = static_cast<u8>(1);  // Int slot kind
         }
         HPointer list = alloc::listFromUnboxables(elems);
         for (i64 v = -1; v >= -3; v--) {
