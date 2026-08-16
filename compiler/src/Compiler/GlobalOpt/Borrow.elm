@@ -157,14 +157,12 @@ runCensus graph =
 
         -- B3.5: build LSS handshake facts (instance index + per-member lambda
         -- sigs), computed once after the def-fixpoint converges.
-        ( byMember, blocked ) =
+        ( byMember, _ ) =
             LssFacts.buildInstances nodes
 
         facts =
-            { byMember = byMember
-            , blocked = blocked
+            { members = LssFacts.buildMemberTable nodes lssMemberOrigins
             , lambdaSigsByMember = buildLambdaSigs table byMember
-            , origins = lssMemberOrigins
             , globalIndex = buildGlobalIndex registry
             , sigs = sigLookup table
             }

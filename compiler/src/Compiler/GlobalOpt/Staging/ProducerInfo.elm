@@ -52,7 +52,7 @@ foldNode nodeId node acc =
         Mono.MonoDefine expr _ ->
             addProducersFromExpr expr acc
 
-        Mono.MonoTailFunc params body monoType ->
+        Mono.MonoTailFunc params body _ ->
             let
                 pid =
                     ProducerTailFunc nodeId
@@ -60,15 +60,11 @@ foldNode nodeId node acc =
                 seg =
                     detectNaturalSegFromParams params body
 
-                arity =
-                    Mono.countTotalArity monoType
-
                 key =
                     producerIdToKey pid
             in
             { acc
                 | naturalSeg = Dict.insert key seg acc.naturalSeg
-                , totalArity = Dict.insert key arity acc.totalArity
             }
 
         Mono.MonoExtern monoType ->
@@ -92,7 +88,6 @@ foldNode nodeId node acc =
             in
             { acc
                 | naturalSeg = Dict.insert key seg acc.naturalSeg
-                , totalArity = Dict.insert key arity acc.totalArity
             }
 
         Mono.MonoManagerLeaf _ monoType ->
@@ -115,7 +110,6 @@ foldNode nodeId node acc =
             in
             { acc
                 | naturalSeg = Dict.insert key seg acc.naturalSeg
-                , totalArity = Dict.insert key arity acc.totalArity
             }
 
         _ ->
@@ -141,7 +135,7 @@ kernelNameFromNodeId nodeId =
 addProducersFromExpr : Mono.MonoExpr -> ProducerInfo -> ProducerInfo
 addProducersFromExpr expr acc =
     case expr of
-        Mono.MonoClosure closureInfo body monoType ->
+        Mono.MonoClosure closureInfo body _ ->
             let
                 pid =
                     ProducerClosure closureInfo.lambdaId
@@ -149,16 +143,12 @@ addProducersFromExpr expr acc =
                 seg =
                     detectNaturalSegFromParams closureInfo.params body
 
-                arity =
-                    Mono.countTotalArity monoType
-
                 key =
                     producerIdToKey pid
 
                 acc1 =
                     { acc
                         | naturalSeg = Dict.insert key seg acc.naturalSeg
-                        , totalArity = Dict.insert key arity acc.totalArity
                     }
             in
             -- Also recurse into the body

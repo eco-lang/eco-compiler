@@ -351,16 +351,15 @@ deriveLicensed graph =
         purity =
             CsePurity.analyze graph
 
-        ( byMember, blocked ) =
-            LssFacts.buildInstances g.nodes
+        info : Dict Int LssFacts.MemberInfo
+        info =
+            LssFacts.buildMemberTable g.nodes g.lssMemberOrigins
 
         env : Env
         env =
             { purity = purity
-            , byMember = byMember
-            , blocked = blocked
-            , origins = g.lssMemberOrigins
-            , members = buildMemberTable purity byMember blocked g.lssMemberOrigins
+            , info = info
+            , verdicts = buildVerdictTable purity info
             , registry = g.registry
             }
 
@@ -402,10 +401,12 @@ deriveLicensed graph =
 
 type alias Env =
     { purity : CsePurity.Oracle
-    , byMember : Dict Int (List LssFacts.LambdaRef)
-    , blocked : Set Int
-    , origins : Dict Int Mono.MemberOrigin
-    , members : Dict Int Verdict
+
+    -- ONE table over the member universe (`LssFacts.MemberInfo`): blocked,
+    -- instance-bearing and standalone members are disjoint arms of a sum, not
+    -- three parallel dicts of the same key set.
+    , info : Dict Int LssFacts.MemberInfo
+    , verdicts : Dict Int Verdict
     , registry : Mono.SpecializationRegistry
     }
 
@@ -464,7 +465,7 @@ classifyBody env specId callbackName callbackType listType resultKind body acc =
             -- Unknown or widened set. Also the whole subst-engine population:
             -- `headAnno` is never `LSet` there, so subst compiles decline
             -- uniformly and the counter separates the two causes.
-            if Dict.isEmpty env.origins && Dict.isEmpty env.byMember then
+            if Dict.isEmpty env.info then
                 bump (\s -> { s | declinedEngine = s.declinedEngine + 1 }) acc
 
             else
@@ -615,8 +616,8 @@ Two routes, chosen by the member's ORIGIN:
 -}
 license : Env -> Int -> Int -> Name -> Mono.MonoType -> Mono.MonoType -> MonoExpr -> Templates -> Templates
 license env specId member callbackName callbackType listType body acc =
-    case Dict.get member env.origins of
-        Just (Mono.OriginCtor ctorGlobal) ->
+    case Dict.get member env.info of
+        Just (LssFacts.MemberStandalone (Mono.OriginCtor ctorGlobal)) ->
             case resolveSpecFor env ctorGlobal callbackType of
                 Just ctorSpecId ->
                     -- `allocFreeCallbacks` is NOT incremented: constructing a
@@ -689,8 +690,8 @@ from.
 -}
 licenseResolvedGlobal : Env -> Int -> Int -> Mono.MonoType -> Mono.MonoType -> Templates -> Templates
 licenseResolvedGlobal env specId member callbackType listType acc =
-    case Dict.get member env.origins of
-        Just (Mono.OriginGlobal g) ->
+    case Dict.get member env.info of
+        Just (LssFacts.MemberStandalone (Mono.OriginGlobal g)) ->
             case resolveSpecFor env g callbackType of
                 Just globalSpecId ->
                     if Set.member globalSpecId env.purity.safeSpecs then
@@ -1236,41 +1237,23 @@ blocked members are unresolvable. The settle pass then propagates poison
 along the edges to a fixed point.
 
 -}
-buildMemberTable : CsePurity.Oracle -> Dict Int (List LssFacts.LambdaRef) -> Set Int -> Dict Int Mono.MemberOrigin -> Dict Int Verdict
-buildMemberTable purity byMember blocked origins =
-    let
-        fromInstances : Dict Int Entry
-        fromInstances =
-            Dict.foldl
-                (\member refs acc ->
-                    Dict.insert member (combineInstances purity refs) acc
-                )
-                Dict.empty
-                byMember
+buildVerdictTable : CsePurity.Oracle -> Dict Int LssFacts.MemberInfo -> Dict Int Verdict
+buildVerdictTable purity info =
+    settle
+        (Dict.map
+            (\_ mi ->
+                case mi of
+                    LssFacts.MemberInstances refs ->
+                        combineInstances purity refs
 
-        withStandalone : Dict Int Entry
-        withStandalone =
-            Dict.foldl
-                (\member origin acc ->
-                    if Dict.member member acc then
-                        acc
+                    LssFacts.MemberStandalone origin ->
+                        { verdict = standaloneVerdict origin, edges = noEdges }
 
-                    else
-                        Dict.insert member { verdict = standaloneVerdict origin, edges = noEdges } acc
-                )
-                fromInstances
-                origins
-
-        withBlocked : Dict Int Entry
-        withBlocked =
-            Set.foldl
-                (\member acc ->
-                    Dict.insert member { verdict = PoisonUnresolved UnresolvedBlocked, edges = noEdges } acc
-                )
-                withStandalone
-                blocked
-    in
-    settle withBlocked
+                    LssFacts.MemberBlocked ->
+                        { verdict = PoisonUnresolved UnresolvedBlocked, edges = noEdges }
+            )
+            info
+        )
 
 
 {-| Every instance of a member must be clean: first-poison meet, edge union.
@@ -1425,7 +1408,7 @@ obligation, and "cannot tell" is a decline.
 -}
 debugFreedom : Env -> Int -> Verdict
 debugFreedom env member =
-    Maybe.withDefault (PoisonUnresolved UnresolvedMissing) (Dict.get member env.members)
+    Maybe.withDefault (PoisonUnresolved UnresolvedMissing) (Dict.get member env.verdicts)
 
 
 
@@ -1449,8 +1432,8 @@ allocation-free. The near-exact figure is the backend's `calleeGcLeaf` counter.
 -}
 allocationFree : Env -> Int -> Bool
 allocationFree env member =
-    case Dict.get member env.byMember of
-        Just (first :: rest) ->
+    case Dict.get member env.info of
+        Just (LssFacts.MemberInstances (first :: rest)) ->
             List.all (\ref -> noAllocIn ref.body) (first :: rest)
 
         _ ->

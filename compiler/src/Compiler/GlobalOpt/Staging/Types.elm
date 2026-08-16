@@ -148,7 +148,6 @@ Keys are producer ID strings (from producerIdToKey).
 -}
 type alias ProducerInfo =
     { naturalSeg : Dict String Segmentation
-    , totalArity : Dict String Int
     }
 
 
@@ -157,7 +156,6 @@ type alias ProducerInfo =
 emptyProducerInfo : ProducerInfo
 emptyProducerInfo =
     { naturalSeg = Dict.empty
-    , totalArity = Dict.empty
     }
 
 

@@ -1008,27 +1008,27 @@ buildMemberOrigins toptNodes table =
         (\key mid acc ->
             case String.left 2 key of
                 "g|" ->
-                    case Dict.get mid table.globals of
-                        Just g ->
+                    case Dict.get mid table.sources of
+                        Just (Engine.SourceGlobal g) ->
                             Dict.insert mid (globalOrigin toptNodes g) acc
 
-                        Nothing ->
+                        _ ->
                             acc
 
                 "c|" ->
-                    case Dict.get mid table.globals of
-                        Just g ->
+                    case Dict.get mid table.sources of
+                        Just (Engine.SourceGlobal g) ->
                             Dict.insert mid (Mono.OriginCtor (toptToMono g)) acc
 
-                        Nothing ->
+                        _ ->
                             acc
 
                 "k|" ->
-                    case Dict.get mid table.kernels of
-                        Just ( _, home, name ) ->
+                    case Dict.get mid table.sources of
+                        Just (Engine.SourceKernel ( _, home, name )) ->
                             Dict.insert mid (Mono.OriginKernel home name) acc
 
-                        Nothing ->
+                        _ ->
                             acc
 
                 "a|" ->

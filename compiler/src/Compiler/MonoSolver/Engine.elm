@@ -15,7 +15,7 @@ module Compiler.MonoSolver.Engine exposing
     , mvarIdKey, pointKey
     , memberIdFor, standaloneMemberIdFor, standaloneMemberGlobal, kernelMemberIdFor, standaloneMemberKernel, srcLambdaKey, trivialSignature, emptyLssStats
     , lambdaInstanceMemberId, lambdaInstanceMemberMaybe
-    , LssMemberTable, emptyMemberTable
+    , LssMemberTable, MemberSource(..), emptyMemberTable
     , bumpWidenedByKernel, withScratchStore
     , markDirty
     , ItemAux, emptyItemAux, clearedAux, restoredAux, clearResidualReads
@@ -122,16 +122,25 @@ type alias LssStats =
     }
 
 
-{-| Interned non-lambda member ids (§3.3 keys) + the E9 standalone-global
-and E9.2 kernel reverse maps. One S field for all three: the engine
-self-hosts and `S` must stay within the native runtime's 32-slot record
-GC-scan cap (HEAP invariant) — adding a 33rd top-level field to `S` fails
-the backend verifier on the self-compile.
+{-| What a standalone member REFERS to. A member id is a global/ctor or a
+kernel, never both, so the two reverse maps are arms of one sum rather than
+two dicts over the same id space — one tree, and `buildMemberOrigins`'s
+prefix dispatch reads it with a single lookup.
+-}
+type MemberSource
+    = SourceGlobal TOpt.Global
+    | SourceKernel ( String, String, String )
+
+
+{-| Interned non-lambda member ids (§3.3 keys) + the E9/E9.2 standalone
+reverse map. One S field for both: the engine self-hosts and `S` must stay
+within the native runtime's 32-slot record GC-scan cap (HEAP invariant) —
+adding a 33rd top-level field to `S` fails the backend verifier on the
+self-compile.
 -}
 type alias LssMemberTable =
     { byKey : CoreDict.Dict String Int
-    , globals : CoreDict.Dict Int TOpt.Global
-    , kernels : CoreDict.Dict Int ( String, String, String )
+    , sources : CoreDict.Dict Int MemberSource
     }
 
 
@@ -165,7 +174,7 @@ emptyMonoMemo =
 
 emptyMemberTable : LssMemberTable
 emptyMemberTable =
-    { byKey = CoreDict.empty, globals = CoreDict.empty, kernels = CoreDict.empty }
+    { byKey = CoreDict.empty, sources = CoreDict.empty }
 
 
 insertMemberKey : String -> Int -> LssMemberTable -> LssMemberTable
@@ -175,12 +184,12 @@ insertMemberKey key mid t =
 
 insertMemberGlobal : Int -> TOpt.Global -> LssMemberTable -> LssMemberTable
 insertMemberGlobal mid g t =
-    { t | globals = CoreDict.insert mid g t.globals }
+    { t | sources = CoreDict.insert mid (SourceGlobal g) t.sources }
 
 
 insertMemberKernel : Int -> ( String, String, String ) -> LssMemberTable -> LssMemberTable
 insertMemberKernel mid k t =
-    { t | kernels = CoreDict.insert mid k t.kernels }
+    { t | sources = CoreDict.insert mid (SourceKernel k) t.sources }
 
 
 emptyLssStats : LssStats
@@ -659,7 +668,7 @@ standaloneMemberIdFor key g s0 =
             Err e
 
         Ok ( mid, s1 ) ->
-            if CoreDict.member mid s1.lssMemberTable.globals then
+            if CoreDict.member mid s1.lssMemberTable.sources then
                 Ok ( mid, s1 )
 
             else
@@ -671,7 +680,15 @@ global/ctor reference.
 -}
 standaloneMemberGlobal : Int -> Step (Maybe TOpt.Global)
 standaloneMemberGlobal mid s =
-    Ok ( CoreDict.get mid s.lssMemberTable.globals, s )
+    Ok
+        ( case CoreDict.get mid s.lssMemberTable.sources of
+            Just (SourceGlobal g) ->
+                Just g
+
+            _ ->
+                Nothing
+        , s
+        )
 
 
 {-| E9.2 (LSS_016): intern a KERNEL member ("k|home.name" key — unchanged,
@@ -686,7 +703,7 @@ kernelMemberIdFor key k s0 =
             Err e
 
         Ok ( mid, s1 ) ->
-            if CoreDict.member mid s1.lssMemberTable.kernels then
+            if CoreDict.member mid s1.lssMemberTable.sources then
                 Ok ( mid, s1 )
 
             else
@@ -698,7 +715,15 @@ member is a kernel-value reference.
 -}
 standaloneMemberKernel : Int -> Step (Maybe ( String, String, String ))
 standaloneMemberKernel mid s =
-    Ok ( CoreDict.get mid s.lssMemberTable.kernels, s )
+    Ok
+        ( case CoreDict.get mid s.lssMemberTable.sources of
+            Just (SourceKernel k) ->
+                Just k
+
+            _ ->
+                Nothing
+        , s
+        )
 
 
 {-| Run a Step against a fresh scratch store, restoring the item's

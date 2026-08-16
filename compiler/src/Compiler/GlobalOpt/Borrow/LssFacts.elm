@@ -1,6 +1,6 @@
 module Compiler.GlobalOpt.Borrow.LssFacts exposing
-    ( Facts, LambdaRef, CalleeFacts(..), PoisonCause(..)
-    , buildInstances, query
+    ( Facts, LambdaRef, MemberInfo(..), CalleeFacts(..), PoisonCause(..)
+    , buildInstances, buildMemberTable, query
     )
 
 {-| LSS handshake facts (borrow-inference B3.5, design §10). Where LSS knows a
@@ -40,13 +40,26 @@ type alias LambdaRef =
     }
 
 
-type alias Facts =
-    { byMember : Dict Int (List LambdaRef)
-    , blocked : Set Int
-    , lambdaSigsByMember : Dict Int BorrowSig
+{-| What a lambda-set member IS — one arm per member, never two.
 
-    -- B3.5 standalone-member routing:
-    , origins : Dict Int Mono.MemberOrigin
+The three arms partition the member universe by construction: `buildInstances`
+EXCLUDES blocked members from the instance index, and standalone members
+(`g|`/`c|`/`k|`/`a|` keys) never carry closure instances (`l|` keys do). That
+is why this is one dict of a sum rather than three parallel dicts of the same
+key set — `resolveMember`'s dispatch becomes ONE lookup instead of a
+`Set.member` + `Dict.member` + `Dict.get` probe chain, and the graph carries
+one tree instead of three.
+
+-}
+type MemberInfo
+    = MemberBlocked
+    | MemberInstances (List LambdaRef)
+    | MemberStandalone Mono.MemberOrigin
+
+
+type alias Facts =
+    { members : Dict Int MemberInfo
+    , lambdaSigsByMember : Dict Int BorrowSig
     , globalIndex : Dict String (List ( Mono.MonoType, Mono.SpecId ))
     , sigs : Mono.SpecId -> Maybe BorrowSig
     }
@@ -116,6 +129,29 @@ buildInstances nodes =
                 raw
     in
     ( byMember, blocked )
+
+
+{-| The member universe as ONE table (see `MemberInfo`).
+
+Standalone origins seed it; blocked and instance members then claim their own
+ids. The three sources are disjoint by construction, so insertion order is
+immaterial — it is written origins-first only so the cheap map runs before the
+fold.
+
+-}
+buildMemberTable : Array (Maybe Mono.MonoNode) -> Dict Int Mono.MemberOrigin -> Dict Int MemberInfo
+buildMemberTable nodes origins =
+    let
+        ( byMember, blocked ) =
+            buildInstances nodes
+
+        fromOrigins =
+            Dict.foldl (\m o acc -> Dict.insert m (MemberStandalone o) acc) Dict.empty origins
+
+        withBlocked =
+            Set.foldl (\m acc -> Dict.insert m MemberBlocked acc) fromOrigins blocked
+    in
+    Dict.foldl (\m refs acc -> Dict.insert m (MemberInstances refs) acc) withBlocked byMember
 
 
 collectFromNode : Mono.SpecId -> Mono.MonoNode -> List ( Int, Bool, LambdaRef )
@@ -225,50 +261,51 @@ query facts calleeType =
 
 resolveMember : Facts -> Mono.MonoType -> Int -> CalleeFacts
 resolveMember facts calleeType m =
-    if Set.member m facts.blocked then
-        Poison PBlocked
+    case Dict.get m facts.members of
+        Just MemberBlocked ->
+            Poison PBlocked
 
-    else if Dict.member m facts.byMember then
-        -- lambda member → its computed lambda signature.
-        case Dict.get m facts.lambdaSigsByMember of
-            Just sig ->
-                Routed sig
+        Just (MemberInstances _) ->
+            -- lambda member → its computed lambda signature.
+            case Dict.get m facts.lambdaSigsByMember of
+                Just sig ->
+                    Routed sig
 
-            Nothing ->
-                Poison PNoSig
+                Nothing ->
+                    Poison PNoSig
 
-    else
         -- standalone member (global/ctor/kernel/accessor) via lssMemberOrigins.
-        case Dict.get m facts.origins of
-            Just (Mono.OriginKernel home name) ->
-                case KernelSigs.lookup ( home, name ) of
-                    Just ksig ->
-                        Routed (kernelToSig ksig calleeType)
+        Just (MemberStandalone origin) ->
+            case origin of
+                Mono.OriginKernel home name ->
+                    case KernelSigs.lookup ( home, name ) of
+                        Just ksig ->
+                            Routed (kernelToSig ksig calleeType)
 
-                    Nothing ->
-                        Poison PUnresolved
+                        Nothing ->
+                            Poison PUnresolved
 
-            Just (Mono.OriginCtor _) ->
-                Routed (constructSig calleeType)
+                Mono.OriginCtor _ ->
+                    Routed (constructSig calleeType)
 
-            Just (Mono.OriginAccessor _) ->
-                Routed (accessorSig calleeType)
+                Mono.OriginAccessor _ ->
+                    Routed (accessorSig calleeType)
 
-            Just (Mono.OriginGlobal g) ->
-                case matchGlobal facts g calleeType of
-                    Just specId ->
-                        case facts.sigs specId of
-                            Just sig ->
-                                Routed sig
+                Mono.OriginGlobal g ->
+                    case matchGlobal facts g calleeType of
+                        Just specId ->
+                            case facts.sigs specId of
+                                Just sig ->
+                                    Routed sig
 
-                            Nothing ->
-                                Poison PNoSig
+                                Nothing ->
+                                    Poison PNoSig
 
-                    Nothing ->
-                        Poison PUnresolved
+                        Nothing ->
+                            Poison PUnresolved
 
-            Nothing ->
-                Poison PUnresolved
+        Nothing ->
+            Poison PUnresolved
 
 
 {-| Resolve `OriginGlobal g` to a unique SpecId by layout-matching the callee
