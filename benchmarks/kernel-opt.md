@@ -548,6 +548,51 @@ longer have stubs (Run K routed all 1,452 sites through `eco.value.eq`),
 | off r1 | 3:27.32 | 4,929,412 kB | 219,767,740 | 13,331.33 MB | 836 | 361,232,748 | 10 | 81.12 s | ≡ |
 | off r2 | 3:25.08 | 4,908,216 kB | 219,767,582 | 13,331.32 MB | 836 | 361,232,804 | 10 | 80.95 s | ≡ |
 
+### 2026-08-16 05:20 UTC — Run V: map-template round 2, G-0…G-3 (**FLAT wall; binary −1,649,512 B; licence pool 58 → 297; still DEFAULT-OFF**)
+
+`plans/list-map-mlir-template.md` G-0/G-1/G-2/G-3. Four items against the
+post-F census, which left 534 of 592 map specs declining. **Licensed 58 → 297
+(9.8% → 50.2% of recognized)** — G-1 generic-apply arm +15, G-2 `CsePurity`
+ctor/enum seed +61, G-3 `OriginGlobal`→SpecId resolution +163. G-0 was a
+measurement-only counter split that sized the other three and found both
+funnels maximally favourable (`unresolved{blocked=0 global=163 missing=0}`,
+`multiMember{boxedResult=54 unboxedResult=1}`).
+
+Same A/B shape as Runs T and U: two Stage-5 builds from one tree, flag set only
+in the BUILD env; workload legs run flag-UNSET, `-out.mlir` **byte-identical
+across arms (13,249,278 B)**.
+
+| | template ON | template OFF | Δ |
+|---|---|---|---|
+| wall r1 / r2 | 4:03.79 / 4:02.94 | 4:02.01 / 4:01.20 | mean +0.74% ⇒ **FLAT** |
+| max RSS | 5,330,112 KB | 5,272,368 KB | +1.10% |
+| binary | 64,847,536 B | 66,497,048 B | **−1,649,512 B (−2.48%)** |
+| objects allocated | 237,455,932 | 227,290,386 | +4.47% (counter-blind — see below) |
+| bytes allocated | 14,521.69 MB | 14,211.45 MB | +2.18% (same blindness) |
+| minor / major GC | 915 / 12 | 914 / 12 | +1 / = |
+| objects promoted | 431,019,109 | 427,179,257 | **+0.90%** |
+| total GC/alloc | 104.41 s | 104.56 s | −0.14% |
+
+**The binary credit scales with the pool, exactly as Runs T and U predicted:**
+−291,816 B at 50 specs, −325,912 B at 58, **−1,649,512 B at 297** (≈5,500 B per
+licensed spec, flat across a 6× pool change).
+
+**The allocation column is the known HEAP_034 blindness, now 5× larger.** The
+per-tag dump identifies it: `ConsChunk` **7,876,357 → 14,130,511 (+79.4%)** —
+the template's scratch chunks, which the counter SEES — and `Cons`
+**48,785,794 → 52,342,739 (+7.3%)**, work moved off the uncounted inline-alloc
+fast path onto counted runtime allocation. The blind-free axes are the ones to
+judge on, and they are flat: promotion +0.90%, minors +1, majors EQUAL, GC time
+−0.14%, wall inside the noise band. A definitive allocation delta needs the
+`ECO_INLINE_ALLOC=0` legs (Run T's method); **those were not run here**, so the
++4.47% is reported as un-adjudicated rather than as a regression.
+
+**Disposition: KEPT-DARK.** Still `ECO_LIST_MAP_TEMPLATE`, default-off. The
+whole G series is inert in the default configuration (verified: emitted MLIR
+byte-identical to the pre-G compiler with the flag unset), because `derive`
+returns `empty` flag-off and G-2's oracle split leaves MonoCse's
+`mergeableSpecs` bit-identical.
+
 ### 2026-08-14 21:40 UTC — Run U: map-template follow-ups F-1L…F-5C (**FLAT — no regression; licence pool 50 → 58; binary −325,912 B; still DEFAULT-OFF**)
 
 `plans/list-map-mlir-template.md` F-1L / F-2 / F-3 / F-4 / F-5A-B-C, all landed
@@ -1023,4 +1068,5 @@ was 20,480 MB. Gates at that point: E2E `--target full` and heap-validate tree
 | R — kernel-opt-12 eco.cse_safe purity channel | 3:24.85 (attr, CSE off — FLAT; binary byte-identical to base) | attr Δ ≈ 0 in both CSE states; S=4,330. **CSE flip attempted → 3 NaN-equality failures → REVERTED**: merged allocations are observable through the pointer-eq fast path |
 | S — kernel-opt-14 Elm-source List HOFs | REJECTED (objects +61.6%, ConsChunk 6.2M→146M, wall +2.9–3.7%) | E2E fully green; the accumulate+reverse/mergesort idioms multiply list materializations vs C++'s single pass; flag kept dark, kernels stay C++ |
 | T — List.map forward template (default-OFF) | 3:48.77 (r1/r2 mean, −2.05% FLAT) — **absolute wall NOT comparable to A–S: corpus grew +271,895 B; control binary with none of this change scored 3:57.96 on the same corpus** | 228,050,612 obj / 14,062.57 MB (counter-blind; TRUE: `Cons` alloc −1.40%, net −3.09M obj — but **promoted −0.002%, minors identical**; binary −291,816 B) |
+| V — map-template round 2 G-0…G-3 (default-OFF) | 4:03.36 (r1/r2 mean, +0.74% FLAT) | 237,455,932 obj / 14,521.69 MB (counter-blind: ConsChunk +79.4%, Cons +7.3%; blind-free promoted +0.90%, majors 12=12; binary −1,649,512 B; licence pool 58→297) |
 | U — map-template follow-ups F-1L…F-5C (default-OFF) | 3:53.31 (r1/r2 mean, −0.76% FLAT) | 227,631,274 obj / 14,185.38 MB (counter-blind as in T; promoted −0.17%, minors 913 vs 914, majors 11=11; binary −325,912 B; licence pool 50→58) |

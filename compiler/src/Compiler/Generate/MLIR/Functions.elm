@@ -885,7 +885,10 @@ generateMapTemplateBody ctx funcName info closureInfo monoType =
                         MapTemplate.CalleeLambda _ captureTypes ->
                             List.map Types.monoTypeToAbi captureTypes
 
-                        MapTemplate.CalleeCtorSpec _ ->
+                        MapTemplate.CalleeSpec _ ->
+                            []
+
+                        MapTemplate.CalleeGeneric ->
                             []
 
                 ( projectOpsRev, captureVarsRev, ctxProj ) =
@@ -934,8 +937,24 @@ generateMapTemplateBody ctx funcName info closureInfo monoType =
                             else
                                 Expr.lambdaIdToString lambdaId ++ "$cap"
 
-                        MapTemplate.CalleeCtorSpec ctorSpecId ->
-                            specIdToFuncName ctx.registry ctorSpecId
+                        MapTemplate.CalleeSpec calleeSpecId ->
+                            specIdToFuncName ctx.registry calleeSpecId
+
+                        MapTemplate.CalleeGeneric ->
+                            -- Unused: `calleeAttrs` omits the attribute.
+                            ""
+
+                -- A generic-apply site names no symbol: `eco.list.map`'s
+                -- `callee` is an OptionalAttr, and `ListMapOp::verify`
+                -- REQUIRES its absence to come with zero captures.
+                calleeAttrs : List ( String, MlirAttr )
+                calleeAttrs =
+                    case info.callee of
+                        MapTemplate.CalleeGeneric ->
+                            []
+
+                        _ ->
+                            [ ( "callee", SymbolRefAttr calleeSymbol ) ]
 
                 ( resultVar, ctxRes ) =
                     Ctx.freshVar ctxProj
@@ -950,19 +969,20 @@ generateMapTemplateBody ctx funcName info closureInfo monoType =
                         |> Ops.opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
                         |> Ops.opBuilder.withAttrs
                             (Dict.fromList
-                                [ ( "callee", SymbolRefAttr calleeSymbol )
-                                , ( "in_kind", IntAttr Nothing info.inKind )
-                                , ( "out_kind", IntAttr Nothing info.outKind )
-                                , ( "_operand_types"
-                                  , ArrayAttr Nothing
-                                        (List.map TypeAttr
-                                            (Types.ecoValue
-                                                :: Types.ecoValue
-                                                :: List.map Tuple.second captureVars
+                                (calleeAttrs
+                                    ++ [ ( "in_kind", IntAttr Nothing info.inKind )
+                                       , ( "out_kind", IntAttr Nothing info.outKind )
+                                       , ( "_operand_types"
+                                         , ArrayAttr Nothing
+                                            (List.map TypeAttr
+                                                (Types.ecoValue
+                                                    :: Types.ecoValue
+                                                    :: List.map Tuple.second captureVars
+                                                )
                                             )
-                                        )
-                                  )
-                                ]
+                                         )
+                                       ]
+                                )
                             )
                         |> Ops.opBuilder.build
 

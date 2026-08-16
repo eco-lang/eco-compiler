@@ -2030,6 +2030,362 @@ first, F-5A/F-5C still stand unchanged (they are LSS/origin-side); F-5B's
 licence arm becomes a `memberVerdict`-consumer arm instead of a
 `debugFreedom` one — same shape, different oracle call.
 
+## Follow-ups round 2 — G-0..G-3 (lowered 2026-08-15, from the post-F-5 census)
+
+The F-* items left 534 declines of 592 recognized. Four buckets carry it, and
+three are addressable without new analysis machinery:
+
+| bucket | count | addressed by |
+|---|---|---|
+| `declinedWidened` (genuine ⊤) | 257 | nothing here — real LSS precision, research-scale |
+| `declinedUnresolvedMember` | 163 | **G-3**, gated by **G-0**'s split |
+| `declinedMultiMember` | 55 | **G-1** (policy only; every layer below already supports it) |
+| `declinedOpaqueGlobal` | 50 | **G-2** (`CsePurity` seed; its blocker died with F-4) |
+
+Landing order is **G-0 → G-1 → G-2 → G-3**. G-1 is independent of the oracle
+work; G-3 without G-2 mostly migrates declines from
+`declinedUnresolvedMember` to `declinedOpaqueGlobal` without licensing
+anything.
+
+**ALL FOUR LANDED 2026-08-15/16. Licensed 58 → 297 of 592 (9.8% → 50.2%).**
+
+| item | Δ licensed | running total |
+|---|---|---|
+| G-0 (measurement) | 0 | 58 |
+| G-1 generic-apply | +15 | 73 |
+| G-2 `CsePurity` seed | +61 | 134 |
+| G-3 `OriginGlobal`→SpecId | +163 | **297** |
+
+Residue: 257 `declinedWidened` (genuine ⊤ — untouched, and now 87% of what is
+left), 15 `declinedUnresolvedMember` (edge-propagated, see G-3), 13
+`declinedCalleeLocalLTop`, 5 `declinedArgTaint`, 4 `declinedNoStamp`, 1
+`declinedGenericUnboxed`. Gate-3 sums to 592 at every step.
+
+Series gates: E2E **1,675/1,675 in both flag states** after each item;
+`ECO_CSE=1` E2E 1,675/1,675 (the leg that caught G-2's unsoundness);
+elm-tests 13,085/12; **default-config artifacts byte-identical to the pre-G
+compiler** (13,715,536 B) so the whole series is inert until the flag is set;
+benchmark Run V in `benchmarks/kernel-opt.md` — wall FLAT (+0.74%), binary
+**−1,649,512 B (−2.48%)**, promotion +0.90%, majors equal.
+
+**The bootstrap fixed point was NOT re-run for this round** (it was for the F
+round): the default-config identity gate above proves the shipping
+configuration's artifacts are unchanged, which is what the bootstrap would
+re-establish. Run it before any default-ON decision.
+
+### G-0 — one census run that sizes G-1 and G-3 (measurement; no behaviour change)
+
+Two counters are funnels, and both need splitting before the items that
+consume them are worth building. Do BOTH in one instrumented compile — the
+Stage-1 JS loop reproduces the native census line-for-line (F-4 landing note),
+so this is ~10 minutes, not a native rebuild.
+
+1. **Split `declinedUnresolvedMember` three ways.** Give `PoisonUnresolved` a
+   payload exactly as F-4 gave `PoisonArgTaint` an `ArgCause`:
+   `PoisonUnresolved UnresolvedCause`, with
+   `UnresolvedCause = UnresolvedBlocked | UnresolvedGlobal | UnresolvedMissing`.
+   The three production sites in `MapTemplate` are: `buildMemberTable`'s
+   blocked-member seed (→ `UnresolvedBlocked`), `standaloneVerdict`'s
+   `Mono.OriginGlobal _` arm (→ `UnresolvedGlobal`), and `debugFreedom`'s
+   `Maybe.withDefault` on a table miss (→ `UnresolvedMissing`). Print them on
+   the existing second census line pattern, emitted only when the term is
+   non-zero:
+   `[map-template] unresolved{blocked= global= missing=}`.
+   **`UnresolvedGlobal` is the ONLY slice G-3 can address**; the other two are
+   structural (a blocked member has no scannable instance; a miss has neither
+   instance nor origin).
+2. **Split `declinedMultiMember` by result element kind.** G-1's generic arm
+   cannot name an unboxed callback result (see its Traps), so the addressable
+   share is the `out_kind == 0` sites. Add
+   `[map-template] multiMember{boxedResult= unboxedResult=}` computed from
+   `kindOfElement` on the SPEC's result type, which `classify` must thread
+   into `classifyBody` for this (it currently passes only `listType`).
+
+**Gates.** Counter-only: licence-identity byte-identical by the two-arm JS
+method (F-5A's recipe), Gate-3 sum unchanged at 592, elm-tests 13,085/12.
+**Deliverable is the two split lines recorded here**, plus a GO/NO-GO for G-3:
+proceed only if `unresolved{global=}` is a worthwhile share of 163.
+
+**MEASURED 2026-08-15 — both splits are as favourable as they could be:**
+
+```
+[map-template] unresolved{blocked=0 global=163 missing=0}
+[map-template] multiMember{boxedResult=54 unboxedResult=1}
+```
+
+The 15-counter census line is unchanged (592 / 58, every bucket), so the split
+is behaviour-preserving as intended.
+
+**Both GO, decisively.** `declinedUnresolvedMember` is not a three-way funnel
+on this corpus at all — **every one of the 163 is `UnresolvedGlobal`**, a bare
+global callback whose Global is exactly what G-3 layout-matches. There is no
+structural residue to write off: blocked members and table misses are both
+ZERO. Likewise G-1's `out_kind == 0` restriction costs exactly ONE site of 55.
+
+Revised addressable pools: **G-1 → 54, G-2 → 50, G-3 → up to 163**, against a
+current 58 licensed. G-3 is now clearly the largest prize and the one whose
+ambiguity rate (Trap (b)) is the remaining unknown.
+
+### G-1 — generic-apply arm for multi-member sets (~55 sites, no oracle work)
+
+The v1 singleton restriction is a POLICY decline, and every layer below the
+licence already implements the alternative — verified 2026-08-15:
+`OptionalAttr<FlatSymbolRefAttr>:$callee` (`Ops.td`), the verifier's own
+`"a generic-apply eco.list.map must have none"` arm (`EcoOps.cpp:1325`), and
+`EcoListTemplate.cpp:762-778`'s `emitCallback` fallback — a saturated indirect
+`eco::CallOp` through `op.getCallback()` with `remaining_arity = 1`. F-4's
+member-verdict table is what makes the licence side cheap: the meet is a
+lookup per member, not a new walk.
+
+**Steps.**
+
+1. `Info.callee` gains `CalleeGeneric`. Emission
+   (`Functions.elm:generateMapTemplateBody`) skips the capture-projection
+   block for it (as for `CalleeCtorSpec`) and omits the `callee` attribute
+   entirely; the op then carries `list`, `callback` and NO captures, which is
+   exactly the shape the verifier arm above demands.
+2. `classifyBody`'s `Mono.LSet _` arm stops declining: meet `debugFreedom`
+   over every member (first poison wins, as `combineInstances` does), and on
+   `Clean` license with `CalleeGeneric`.
+3. **`out_kind` is load-bearing and NOT free.** The expansion derives the
+   callback's SSA result type from it (`Type resultTy = headTypeForKind(ctx,
+   op.getOutKind())`, `EcoListTemplate.cpp:933-937`) AND uses it for the
+   result list's cells (`eco_scratch_finish_fwd(%m, %nil, out_kind)`, `:678`).
+   A generic apply yields `!eco.value`, so **v1 licenses the generic arm only
+   when the result element kind is 0** (boxed); anything else declines through
+   a new `declinedGenericUnboxed` counter. This is the same discipline that
+   makes F-5B's ctor arm sound with `out_kind = 0`, and G-0's second split
+   measures the residue.
+4. `allocFreeCallbacks` must NOT count generic sites: there is no
+   devirtualized callee, so CGEN_072's gc-leaf stamp cannot apply.
+
+**Traps.** (a) A multi-member set whose members disagree must decline — the
+meet is over ALL members, and a missing member id is `PoisonUnresolved`, not
+`Clean`. (b) The win is the loop/chunk/root-range work only; the per-element
+dispatch stays. Do not expect Run-U-style binary savings — the licensed body
+still contains a call through the closure. (c) The stamp path
+(`findCallbackStamp`) is bypassed, so nothing here may read `abi.returnType`;
+`inKind`/`outKind` both come from types.
+
+**Fixture.** `ListMapTemplateMultiMemberTest.elm` — an `if` that binds one of
+two distinct clean lambdas to the same variable, then maps it over a list of a
+BOXED element type (e.g. `List String`), so the set is a 2-member `LSet` and
+`out_kind == 0`. Behavioural CHECK in both flag states; the positive pin is
+the compile-and-grep (`licensed` gains 1; the artifact carries an
+`eco.list.map` with NO `callee` attribute).
+
+**Gates.** Full E2E both flag states (full per-suite cache purge); Gate-3 with
+the new counter; census delta recorded; flag-on licence identity NOT expected.
+
+**LANDED 2026-08-15 — licensed 58 → 73 (+15), and the redistribution is the
+more interesting number:**
+
+```
+[map-template] mapTemplate{recognized=592 licensed=73 declinedDebug=0
+declinedOpaqueGlobal=73 declinedCalleeLocalLSet=0 declinedCalleeLocalLTop=5
+declinedCalleeOther=0 declinedArgTaint=2 declinedWidened=257
+declinedUnresolvedMember=178 declinedCtorUnresolved=0 declinedGenericUnboxed=0
+declinedEngine=0 declinedChunksOff=0 declinedShape=0 declinedNoStamp=4}
+```
+
+The 55 multi-member sites split **15 licensed / 23 `declinedOpaqueGlobal` /
+15 `declinedUnresolvedMember` / 2 `declinedCalleeLocalLTop`** (sum 55, Gate-3
+total 592). So G-1's own yield is +15, but it also moved **38 sites into the
+buckets G-2 and G-3 address** — the three items compound rather than add.
+
+`declinedMultiMember` and `multiMemberBoxedResult` are RETIRED: after this item
+the member COUNT is not a reason to decline, only what the members are, so
+multi-member sites report the same causes singletons do through the shared
+`countDecline`. Gate-3 trades `declinedMultiMember` for `declinedGenericUnboxed`
+plus those shared terms. `declinedGenericUnboxed` measured **0** — the one
+unboxed-result site of G-0's split has a poisoned member and declines earlier.
+
+Artifact check on the emitted compiler: 74 `eco.list.map` ops, **58 with a
+`callee` attribute and 16 without** — the generic ops carry no captures
+operand, exactly the shape `ListMapOp::verify` requires, and one runs at
+`in_kind = 3` (Char elements, boxed result).
+
+**No synthetic fixture — recorded so the next person does not repeat it.**
+Three separate mechanisms were tried to build a 2-member callback set in a
+small `.elm` (a lambda returned from a global's `if`; an `if`-joined local, with
+and without a type annotation; a join through a container's element type) and
+ALL widened to `LTop`, declining as `declinedWidened=1`. The LSS census agrees
+that multi-set sites are rare (`multiSetSites |set|->sites: 2->1 3->1 5->1`).
+The pin is therefore the real corpus: 15 generic sites inside the emitted
+compiler, plus the two-binary A/B below, which EXECUTES that expansion path 15
+times on a real workload and requires byte-identical output.
+
+### G-2 — seed ctor/enum specs as safe in `CsePurity` (~50 sites)
+
+`bodyOf` (`CsePurity.elm:150-173`) returns `Nothing` for `MonoCtor`,
+`MonoEnum`, `MonoExtern` and `MonoManagerLeaf`, and the `Nothing` arm
+(`:99-106`) inserts into NEITHER `direct` NOR `edges` — so those specs can
+never be safe, and since `scanBody`'s `MonoVarGlobal` arm (`:189-190`) records
+a callee edge for ANY reference, merely mentioning `Just` poisons the
+mentioning spec and then its callers. Measured cost: `safeSpecs` = 17,531 of
+30,905, and all 50 of the template's `declinedOpaqueGlobal`.
+
+**The blocker is gone.** This item was forbidden while F-4 was unlanded
+("two-bugs-cancel": un-starving `Maybe.map` unmasks the global-HOF laundering
+variant `\x -> Maybe.map g x`, which was safe only by accident). F-4 landed
+2026-08-14 and catches that shape at argument position, so the pairing is
+discharged — cite this note in the landing commit.
+
+**Steps.** Split the `Nothing` arm by node kind: seed `MonoCtor` and
+`MonoEnum` into `direct` (construction is observation-free); keep
+`MonoExtern` (opaque) and `MonoManagerLeaf` (effects) absent. Do NOT give
+them `edges` entries — they have no callees. Replace the arm's comment, which
+is false on both clauses, with the measured facts.
+
+**CORRECTION (2026-08-15, execution): the step above is UNSOUND for the OTHER
+consumer, and the `ECO_CSE=1` gate is what caught it.** `CsePurity` was
+answering one question for two callers, and they are not the same question:
+
+- **"Can evaluating this reach `Debug`?"** — the D-2 question the template's
+  licence asks. A construction cannot, so ctors and enums belong in the safe
+  set.
+- **"May two structurally equal occurrences become ONE value?"** — what
+  MonoCse asks. A construction may NOT: allocation identity is observable
+  through `==`'s pointer-equality fast path, so merging two `Point nan nan`
+  allocations makes them compare EQUAL while `NaN == NaN` must be `False`.
+
+Seeding constructions into the single shared set turned
+`ContainerEqualityCustomFloatTest` red under `ECO_CSE=1` (`ptNaNFirst: True`,
+expected `False`) — the same NaN-sharing class that reverted the MLIR CSE flip
+in Run R. Verified as caused by this item, not pre-existing: disabling the
+seed alone turns the test green again.
+
+**The landed shape is therefore an ORACLE SPLIT.** `Oracle` gains a second
+field: `safeSpecs` is the Debug-freedom fixpoint WITH constructions seeded
+(the template's oracle), and `mergeableSpecs` is the pre-existing fixpoint
+WITHOUT them (MonoCse's oracle, reached through `isSafeExpr`/`isSafeCall`).
+CSE behaviour is bit-identical to before this item; only the template's answer
+widens. `ECO_CSE=1` full E2E: **1,675/1,675** after the split.
+
+**Blast radius, and why it is small.** `CsePurity` has exactly two consumers:
+`MonoCse` (`MonoCse.elm:158`) and `MapTemplate`. `mono.cse.enabled` is
+**False by default** (`Config.elm:385`), so this change is inert in the
+shipping configuration and its only default-path effect is on a flag-off
+template that licenses nothing. That makes the gate cheap — but run the CSE
+leg deliberately, because that is where it is NOT inert.
+
+**Gates.** Default-config licence identity (expected byte-identical, since
+both consumers are off); flag-ON census showing `declinedOpaqueGlobal` fall
+and `licensed` rise; **an `ECO_CSE=1` leg** (the env name is `ECO_CSE`, not
+`ECO_MONO_CSE`) — full E2E with CSE enabled, since the oracle it consumes just
+widened by ~13k specs and D-2 ordering is the property at risk; elm-tests;
+Gate-3.
+
+**LANDED 2026-08-15 — the largest single win of either round: licensed 73 →
+134 (+61), and `declinedOpaqueGlobal` 73 → ZERO.**
+
+```
+[map-template] mapTemplate{recognized=592 licensed=134 declinedDebug=0
+declinedOpaqueGlobal=0 declinedCalleeLocalLSet=0 declinedCalleeLocalLTop=13
+declinedCalleeOther=0 declinedArgTaint=5 declinedWidened=257
+declinedUnresolvedMember=178 declinedCtorUnresolved=0 declinedGenericUnboxed=1
+declinedEngine=0 declinedChunksOff=0 declinedShape=0 declinedNoStamp=4}
+allocFreeCallbacks=47
+[map-template] argTaint{ltop=2 opaqueGlobal=0 memberPoison=3 closurePoison=0}
+```
+
+The whole bucket redistributes: **61 licensed / 8 `declinedCalleeLocalLTop` /
+3 `declinedArgTaint` / 1 `declinedGenericUnboxed`** (sum 73; Gate-3 total 592).
+The upper bound stated when this was still F-1's oracle layer — "all 50 are
+starvation, so none is a genuine `Debug` decline" — held: nothing landed in
+`declinedDebug`, which is still 0.
+
+**Direct evidence for the two-bugs-cancel pairing.** `argTaint`'s breakdown
+gains `memberPoison=3`: three callbacks whose members became RESOLVABLE only
+because ctors left the poison set, and which F-4's argument rule then declined
+on their merits. Landing this item without F-4 would have licensed them. The
+in-code comment now says so, and names the plan section.
+
+`declinedGenericUnboxed` moves 0 → 1, which is G-0's predicted unboxed-result
+multi-member site finally reaching the kind check now that its members are
+Clean — the two counters agree exactly.
+
+`allocFreeCallbacks` 28 → 47: the newly licensed callbacks are mostly
+allocation-free, so CGEN_072's gc-leaf stamp has more to work with.
+
+### G-3 — resolve `OriginGlobal` members to a SpecId (up to 163, AFTER G-2)
+
+A `g|` member's origin names a Global, and a Global is one-to-many over
+SpecIds; the member table therefore answers `PoisonUnresolved` and every bare
+global callback (`List.map untag`) declines. The index needed to resolve it is
+a fold over `registry.reverseMapping`, which `MapTemplate` already holds as
+`env.registry` (added for F-5B) — `Borrow.elm:168`'s `buildGlobalIndex` is the
+same fold, and `LssFacts.matchGlobal` (`:278-290`) is the discipline to copy:
+**exactly one layout match, or decline.**
+
+**Steps.**
+
+1. Generalize F-5B's `CalleeCtorSpec Int` to `CalleeSpec Int` — a resolved
+   spec called with one element argument. The ctor arm becomes one producer of
+   it; emission is unchanged (`specIdToFuncName ctx.registry specId`).
+2. In `license`, add the `Mono.OriginGlobal g` arm: resolve with the same
+   `resolveCtorSpec` machinery (rename it `resolveSpecFor`), then require
+   `Set.member specId env.purity.safeSpecs` — the licence is a Debug-freedom
+   proof, and a resolved SpecId that the oracle cannot vouch for is
+   `PoisonOpaqueGlobal`, not `Clean`. Zero or ambiguous matches decline
+   through `declinedCtorUnresolved`, renamed `declinedSpecUnresolved`.
+3. `out_kind` follows the resolved spec's own return type, not 0 — unlike the
+   ctor arm, a global spec may return an unboxed scalar.
+
+**Traps.** (a) **Order matters**: without G-2, a resolved global that touches
+any constructor fails the `safeSpecs` test and the decline simply moves
+buckets — land G-2 first and re-census between. (b) **Ambiguity is
+unmeasured**: `eqLayout` is annotation-insensitive, so two specs of one global
+differing only in lambda sets are layout-equal and BOTH match, which must
+decline. Record the ambiguous count in the landing note — it is the number
+this item cannot reach. (c) Expect F-4 to claw some back: a resolved global
+callback whose body passes function values onward now declines through
+`declinedArgTaint` instead, which is correct.
+
+**Gates.** Full E2E both flag states; Gate-3 with the renamed counter; census
+delta attributing every newly-licensed spec; a spot-check of one emitted body
+against the resolved symbol; flag-on identity NOT expected.
+
+**LANDED 2026-08-15 — licensed 134 → 297 (+163), the largest item of the
+round:**
+
+```
+[map-template] mapTemplate{recognized=592 licensed=297 declinedDebug=0
+declinedOpaqueGlobal=0 declinedCalleeLocalLSet=0 declinedCalleeLocalLTop=13
+declinedCalleeOther=0 declinedArgTaint=5 declinedWidened=257
+declinedUnresolvedMember=15 declinedSpecUnresolved=0 declinedGenericUnboxed=1
+declinedEngine=0 declinedChunksOff=0 declinedShape=0 declinedNoStamp=4}
+[map-template] unresolved{blocked=0 global=15 missing=0}
+```
+
+**The ambiguity risk (Trap (b)) did not materialize: `declinedSpecUnresolved`
+is ZERO** — every one of the 163 resolutions found exactly one layout match,
+and `declinedOpaqueGlobal` stayed 0, so every resolved spec was also vouched
+for by the (G-2-widened) oracle. The two items compound exactly as predicted:
+G-3 without G-2 would have moved these into `declinedOpaqueGlobal` instead.
+
+**Correction found during execution — the arm belongs at the VERDICT site, not
+in `license`.** The first implementation added an `OriginGlobal` arm to
+`license` and changed nothing at all (licensed stayed 134), because
+`debugFreedom` answers `PoisonUnresolved` for such a member and `classifyBody`
+never calls `license`. Resolution needs the callback's TYPE, which exists only
+at the `classifyBody` site — `standaloneVerdict` sees the origin alone. The
+landed shape routes `PoisonUnresolved UnresolvedGlobal` to
+`licenseResolvedGlobal` from `classifyBody`.
+
+**The 15 residual `unresolved{global=}` are edge-propagated, not top-level.**
+They are closures whose BODY depends on an unresolvable global, so the verdict
+arrives through the settle pass; the callback member itself has no
+`OriginGlobal` entry and the resolution correctly does not apply. Reaching
+them needs resolution inside the member table, where no type context exists —
+recorded as this item's limit.
+
+Artifact: 298 `eco.list.map` ops, 267 with a `callee` and 31 generic.
+Spot-check of a resolved global:
+`func.func private @Terminal_Terminal_Internal_toName_$_51(%arg0: !eco.value) -> !eco.value`
+named as `callee` with zero captures — the verifier's
+`captures + 1 == callee params` holds. E2E **1,675/1,675 in both flag states**.
+
 ### Relationship to `plans/effect-polymorphic-purity.md`
 
 The precise fix — conditional per-spec/per-member summaries ("safe iff the

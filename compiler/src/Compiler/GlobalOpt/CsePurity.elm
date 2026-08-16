@@ -41,16 +41,33 @@ import Dict exposing (Dict)
 import Set exposing (Set)
 
 
-{-| Spec ids whose evaluation is observation-free.
+{-| Two different questions, and conflating them is a miscompile.
 
-A `Set Int` rather than `Compiler.Data.BitSet`: the fixpoint needs member
+`safeSpecs` answers **"can evaluating this reach `Debug`?"** — the
+`OPT_DEBUG_ORDER_001` D-2 question the `List.map` template's licence asks. A
+CONSTRUCTION cannot reach `Debug`, so ctor and enum specs belong here.
+
+`mergeableSpecs` answers **"may two structurally equal occurrences of this
+become ONE value?"** — what MonoCse asks. A construction may NOT: allocation
+identity is observable through `==`'s pointer-equality fast path, so merging
+two `Point nan nan` allocations makes them compare EQUAL when `NaN == NaN`
+must be `False`. Measured: seeding constructions into the merge oracle turned
+`ContainerEqualityCustomFloatTest` red under `ECO_CSE=1` (2026-08-15) — the
+same NaN-sharing class that reverted the MLIR CSE flip in Run R.
+
+`mergeableSpecs` is therefore the pre-2026-08-15 fixpoint, unchanged, and CSE
+behaviour is bit-identical to before the split.
+
+`Set Int` rather than `Compiler.Data.BitSet`: the fixpoint needs member
 REMOVAL and a membership count, and BitSet exposes neither (`size` is its bit
 capacity, and only `removeGrowing` exists). `analyze` runs once per compile over
 ~12k specs, so the log-factor is irrelevant next to getting the fixpoint right.
 
 -}
 type alias Oracle =
-    { safeSpecs : Set Int }
+    { safeSpecs : Set Int
+    , mergeableSpecs : Set Int
+    }
 
 
 {-| Number of specs classified safe; for the census line.
@@ -98,12 +115,43 @@ analyze (Mono.MonoGraph g) =
                         Just node ->
                             case bodyOf node of
                                 Nothing ->
-                                    -- Ctor/Enum/Extern/ManagerLeaf carry no
-                                    -- body. An extern is opaque, so it is NOT
-                                    -- safe; the rest are pure constructions,
-                                    -- but nothing calls them as specs, so the
-                                    -- conservative answer costs nothing.
-                                    ( sid + 1, acc )
+                                    -- Bodiless specs. `MonoCtor`/`MonoEnum`
+                                    -- ARE observation-free — a construction
+                                    -- cannot reach `Debug` — so they seed the
+                                    -- safe set with no edges. `MonoExtern` is
+                                    -- opaque and `MonoManagerLeaf` is an
+                                    -- effect stub: both stay absent, which is
+                                    -- permanent poison, as intended.
+                                    --
+                                    -- The previous comment claimed nothing
+                                    -- calls these as specs "so the
+                                    -- conservative answer costs nothing".
+                                    -- Both clauses were false: `scanBody`
+                                    -- records a callee edge for ANY
+                                    -- `MonoVarGlobal` reference, so merely
+                                    -- MENTIONING a ctor poisoned the
+                                    -- mentioning spec and then every caller.
+                                    -- Measured before this change: safeSpecs
+                                    -- 17,531 of 30,905, and all 50 of the
+                                    -- `List.map` template's
+                                    -- `declinedOpaqueGlobal`.
+                                    --
+                                    -- Seeding them is only SOUND alongside
+                                    -- the template's argument-position taint
+                                    -- rule: un-starving `Maybe.map` unmasks
+                                    -- `\x -> Maybe.map g x`, which was safe
+                                    -- by accident while `Maybe.map` itself
+                                    -- was poisoned. That rule landed
+                                    -- 2026-08-14 (plans/list-map-mlir-template.md
+                                    -- F-4); do not revert one without the
+                                    -- other.
+                                    ( sid + 1
+                                    , if isPureConstruction node then
+                                        { acc | constructions = Set.insert sid acc.constructions }
+
+                                      else
+                                        acc
+                                    )
 
                                 Just body ->
                                     let
@@ -122,7 +170,7 @@ analyze (Mono.MonoGraph g) =
                                       }
                                     )
                 )
-                ( 0, { direct = Set.empty, edges = Dict.empty } )
+                ( 0, { direct = Set.empty, constructions = Set.empty, edges = Dict.empty } )
                 g.nodes
                 |> Tuple.second
 
@@ -147,7 +195,29 @@ analyze (Mono.MonoGraph g) =
             else
                 settle next
     in
-    { safeSpecs = settle scan.direct }
+    { safeSpecs = settle (Set.union scan.direct scan.constructions)
+    , mergeableSpecs = settle scan.direct
+    }
+
+
+{-| Is this bodiless spec a pure CONSTRUCTION (so, observation-free)?
+
+`MonoCtor` builds a value and `MonoEnum` is a constant; neither can reach
+`Debug`. `MonoExtern` is opaque and `MonoManagerLeaf` runs effects, so both
+must stay unsafe. Nodes WITH bodies never reach here.
+
+-}
+isPureConstruction : Mono.MonoNode -> Bool
+isPureConstruction node =
+    case node of
+        Mono.MonoCtor _ _ ->
+            True
+
+        Mono.MonoEnum _ _ ->
+            True
+
+        _ ->
+            False
 
 
 bodyOf : Mono.MonoNode -> Maybe MonoExpr
@@ -217,7 +287,7 @@ isSafeExpr oracle root =
                         kernelCseSafe home name
 
                     MonoVarGlobal _ sid _ ->
-                        Set.member sid oracle.safeSpecs
+                        Set.member sid oracle.mergeableSpecs
 
                     MonoClosure _ _ _ ->
                         -- Creating a closure is pure, but v1 excludes closures

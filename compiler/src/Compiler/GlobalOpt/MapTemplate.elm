@@ -90,14 +90,25 @@ type alias Info =
 
 `CalleeLambda` is the v1 shape: a devirtualized closure instance, whose
 capture row emission projects out of the closure parameter once, before the
-loop. `CalleeCtorSpec` is F-5B's: a bare CONSTRUCTOR used as the callback
-(`List.map Just`). A ctor has no captures and no fast-clone symbol — it IS a
-spec — so emission names it directly and skips the projection block.
+loop. `CalleeSpec` is a RESOLVED SPEC used directly as the callback — F-5B's bare
+constructor (`List.map Just`) and G-3's bare global (`List.map untag`). Either
+way there are no captures and no fast-clone symbol: the callback IS a spec, so
+emission names it and skips the projection block. Constructors were first only
+because their `g|` member resolves to exactly one spec by construction; a
+global needs the same layout match plus a Debug-freedom proof.
+
+`CalleeGeneric` is G-1's: a MULTI-MEMBER callback set, where no single symbol
+can be named. Emission omits the `callee` attribute and passes no captures —
+the shape `ListMapOp::verify` demands ("a generic-apply eco.list.map must have
+none") and `EcoListTemplate`'s `emitCallback` falls back to, a saturated
+indirect call through the closure value. It buys the loop / chunk / root-range
+work, NOT the devirtualized dispatch.
 
 -}
 type Callee
     = CalleeLambda Mono.LambdaId (List Mono.MonoType)
-    | CalleeCtorSpec Int
+    | CalleeSpec Int
+    | CalleeGeneric
 
 
 {-| Why each recognized map spec was or was not licensed. Reconciles as
@@ -114,8 +125,8 @@ type alias Stats =
     , declinedArgTaint : Int
     , declinedWidened : Int
     , declinedUnresolvedMember : Int
-    , declinedCtorUnresolved : Int
-    , declinedMultiMember : Int
+    , declinedSpecUnresolved : Int
+    , declinedGenericUnboxed : Int
     , declinedEngine : Int
     , declinedChunksOff : Int
     , declinedShape : Int
@@ -127,6 +138,19 @@ type alias Stats =
     -- when the term is non-zero, because the landing gate for the taint rule
     -- is a per-decline genuine/collateral classification.
     , argTaintCauses : ArgTaintCauses
+
+    -- Breakdown of `declinedUnresolvedMember`, on the same footing as
+    -- `argTaintCauses`: a re-partition of one Gate-3 term, never part of the
+    -- sum. Only `global` is addressable (G-3).
+    , unresolvedCauses : UnresolvedCauses
+
+    }
+
+
+type alias UnresolvedCauses =
+    { blocked : Int
+    , global : Int
+    , missing : Int
     }
 
 
@@ -163,15 +187,29 @@ emptyStats =
     , declinedArgTaint = 0
     , declinedWidened = 0
     , declinedUnresolvedMember = 0
-    , declinedCtorUnresolved = 0
-    , declinedMultiMember = 0
+    , declinedSpecUnresolved = 0
+    , declinedGenericUnboxed = 0
     , declinedEngine = 0
     , declinedChunksOff = 0
     , declinedShape = 0
     , declinedNoStamp = 0
     , allocFreeCallbacks = 0
     , argTaintCauses = { ltop = 0, opaqueGlobal = 0, memberPoison = 0, closurePoison = 0 }
+    , unresolvedCauses = { blocked = 0, global = 0, missing = 0 }
     }
+
+
+bumpUnresolved : UnresolvedCause -> UnresolvedCauses -> UnresolvedCauses
+bumpUnresolved cause causes =
+    case cause of
+        UnresolvedBlocked ->
+            { causes | blocked = causes.blocked + 1 }
+
+        UnresolvedGlobal ->
+            { causes | global = causes.global + 1 }
+
+        UnresolvedMissing ->
+            { causes | missing = causes.missing + 1 }
 
 
 bumpCause : ArgCause -> ArgTaintCauses -> ArgTaintCauses
@@ -220,10 +258,10 @@ report { stats } =
         ++ String.fromInt stats.declinedWidened
         ++ " declinedUnresolvedMember="
         ++ String.fromInt stats.declinedUnresolvedMember
-        ++ " declinedCtorUnresolved="
-        ++ String.fromInt stats.declinedCtorUnresolved
-        ++ " declinedMultiMember="
-        ++ String.fromInt stats.declinedMultiMember
+        ++ " declinedSpecUnresolved="
+        ++ String.fromInt stats.declinedSpecUnresolved
+        ++ " declinedGenericUnboxed="
+        ++ String.fromInt stats.declinedGenericUnboxed
         ++ " declinedEngine="
         ++ String.fromInt stats.declinedEngine
         ++ " declinedChunksOff="
@@ -248,6 +286,19 @@ report { stats } =
                     ++ String.fromInt stats.argTaintCauses.closurePoison
                     ++ "}"
            )
+        ++ (if stats.declinedUnresolvedMember == 0 then
+                ""
+
+            else
+                "\n[map-template] unresolved{blocked="
+                    ++ String.fromInt stats.unresolvedCauses.blocked
+                    ++ " global="
+                    ++ String.fromInt stats.unresolvedCauses.global
+                    ++ " missing="
+                    ++ String.fromInt stats.unresolvedCauses.missing
+                    ++ "}"
+           )
+
 
 
 
@@ -370,10 +421,16 @@ decline leaves today's foldr lowering in place.
 classify : Env -> Int -> Mono.MonoNode -> Templates -> Templates
 classify env specId node acc =
     case node of
-        Mono.MonoDefine (MonoClosure closureInfo body _) _ ->
+        Mono.MonoDefine (MonoClosure closureInfo body _) specType ->
             case closureInfo.params of
                 [ ( callbackName, callbackType ), ( _, listType ) ] ->
-                    classifyBody env specId callbackName callbackType listType body acc
+                    -- `resultKind` is the element kind of the spec's RESULT
+                    -- list. The stamped path reads it off the callback's ABI
+                    -- return type instead; the arms that have no stamp (a
+                    -- ctor callee, and G-1's generic apply) need it from the
+                    -- type, and G-0's census needs it to size the pool the
+                    -- generic arm can actually take.
+                    classifyBody env specId callbackName callbackType listType (resultElemKind specType) body acc
 
                 _ ->
                     -- Not the two-parameter `map f xs` shape (a partially
@@ -384,8 +441,24 @@ classify env specId node acc =
             bump (\s -> { s | declinedShape = s.declinedShape + 1 }) acc
 
 
-classifyBody : Env -> Int -> Name -> Mono.MonoType -> Mono.MonoType -> MonoExpr -> Templates -> Templates
-classifyBody env specId callbackName callbackType listType body acc =
+{-| The element kind of a two-parameter map spec's result list.
+
+`MFunction _ _ _ result` peels the spec's own arrow; `kindOfElement` then
+answers the `List b` element kind, or 0 for anything that is not a list.
+
+-}
+resultElemKind : Mono.MonoType -> Int
+resultElemKind specType =
+    case specType of
+        Mono.MFunction _ _ _ result ->
+            kindOfElement result
+
+        _ ->
+            0
+
+
+classifyBody : Env -> Int -> Name -> Mono.MonoType -> Mono.MonoType -> Int -> MonoExpr -> Templates -> Templates
+classifyBody env specId callbackName callbackType listType resultKind body acc =
     case Mono.headAnno callbackType of
         Mono.LTop ->
             -- Unknown or widened set. Also the whole subst-engine population:
@@ -399,55 +472,127 @@ classifyBody env specId callbackName callbackType listType body acc =
 
         Mono.LSet [ member ] ->
             case debugFreedom env member of
-                PoisonDebug ->
-                    bump (\s -> { s | declinedDebug = s.declinedDebug + 1 }) acc
-
-                PoisonOpaqueGlobal ->
-                    bump (\s -> { s | declinedOpaqueGlobal = s.declinedOpaqueGlobal + 1 }) acc
-
-                PoisonHigherOrder HOLocalLSet ->
-                    bump (\s -> { s | declinedCalleeLocalLSet = s.declinedCalleeLocalLSet + 1 }) acc
-
-                PoisonHigherOrder HOLocalLTop ->
-                    bump (\s -> { s | declinedCalleeLocalLTop = s.declinedCalleeLocalLTop + 1 }) acc
-
-                PoisonHigherOrder HOOther ->
-                    bump (\s -> { s | declinedCalleeOther = s.declinedCalleeOther + 1 }) acc
-
-                PoisonArgTaint cause ->
-                    bump
-                        (\s ->
-                            { s
-                                | declinedArgTaint = s.declinedArgTaint + 1
-                                , argTaintCauses = bumpCause cause s.argTaintCauses
-                            }
-                        )
-                        acc
-
-                PoisonUnresolved ->
-                    -- NOT `declinedWidened`: the set here is a RESOLVED
-                    -- singleton, the member just could not be answered. That
-                    -- conflation is what hid bare-ctor callbacks (`List.map
-                    -- Just`) inside the ⊤ bucket. This counter is itself a
-                    -- THREE-way funnel — blocked members, `OriginGlobal`
-                    -- standalone members, and origins misses all ride into
-                    -- it; splitting THOSE apart needs the purity plan's cause
-                    -- tag. What this split buys is that `declinedWidened` now
-                    -- means only genuine `LTop`.
-                    bump (\s -> { s | declinedUnresolvedMember = s.declinedUnresolvedMember + 1 }) acc
-
                 Clean ->
                     license env specId member callbackName callbackType listType body acc
 
-        Mono.LSet _ ->
-            -- v1: singleton-devirtualized sites only (see the module header).
-            -- Counted SEPARATELY from declinedWidened on purpose: an unknown
-            -- (LTop) set is unlicensable in principle, whereas a multi-member
-            -- set is a v1 POLICY decline -- the op's callee attr is optional
-            -- and the expansion already has a generic-apply arm, so this
-            -- number is the size of the pool a v2 could recover. Conflating
-            -- the two would hide that.
-            bump (\s -> { s | declinedMultiMember = s.declinedMultiMember + 1 }) acc
+                PoisonUnresolved UnresolvedGlobal ->
+                    -- G-3: the table cannot answer a `g|` member (a Global is
+                    -- one-to-many over SpecIds), but HERE the callback's own
+                    -- type is in hand, which is exactly what the registry
+                    -- layout match needs. Resolution has to happen at this
+                    -- site rather than inside `standaloneVerdict`, which sees
+                    -- only the origin.
+                    licenseResolvedGlobal env specId member callbackType listType acc
+
+                poisoned ->
+                    countDecline poisoned acc
+
+        Mono.LSet members ->
+            licenseGeneric env specId members listType resultKind acc
+
+
+{-| Record a decline under the cause the verdict names.
+
+Shared by the singleton and multi-member paths so a decline reads the same
+whichever set shape produced it — which is what let G-1 retire
+`declinedMultiMember`: after it, the member COUNT is no longer a reason to
+decline, only what the members are.
+
+`Clean` is unreachable here (its callers license instead) and is total for
+exhaustiveness only.
+
+-}
+countDecline : Verdict -> Templates -> Templates
+countDecline verdict acc =
+    case verdict of
+        Clean ->
+            acc
+
+        PoisonDebug ->
+            bump (\s -> { s | declinedDebug = s.declinedDebug + 1 }) acc
+
+        PoisonOpaqueGlobal ->
+            bump (\s -> { s | declinedOpaqueGlobal = s.declinedOpaqueGlobal + 1 }) acc
+
+        PoisonHigherOrder HOLocalLSet ->
+            bump (\s -> { s | declinedCalleeLocalLSet = s.declinedCalleeLocalLSet + 1 }) acc
+
+        PoisonHigherOrder HOLocalLTop ->
+            bump (\s -> { s | declinedCalleeLocalLTop = s.declinedCalleeLocalLTop + 1 }) acc
+
+        PoisonHigherOrder HOOther ->
+            bump (\s -> { s | declinedCalleeOther = s.declinedCalleeOther + 1 }) acc
+
+        PoisonArgTaint cause ->
+            bump
+                (\s ->
+                    { s
+                        | declinedArgTaint = s.declinedArgTaint + 1
+                        , argTaintCauses = bumpCause cause s.argTaintCauses
+                    }
+                )
+                acc
+
+        PoisonUnresolved cause ->
+            bump
+                (\s ->
+                    { s
+                        | declinedUnresolvedMember = s.declinedUnresolvedMember + 1
+                        , unresolvedCauses = bumpUnresolved cause s.unresolvedCauses
+                    }
+                )
+                acc
+
+
+{-| G-1: a multi-member callback set, licensed through the generic arm.
+
+EVERY member must be `Clean` — the meet runs over all of them, and a member
+the table cannot answer is `PoisonUnresolved`, never `Clean`. The first
+poisoned member's verdict is what the census records.
+
+The `out_kind == 0` precondition is not policy: the expansion derives the
+callback's SSA result type from `out_kind` (`headTypeForKind(ctx,
+op.getOutKind())`) AND stamps the result list's cells with it, while a
+saturated indirect apply yields `!eco.value`. Licensing an unboxed result
+would either mistype the call or build a list whose cells disagree with their
+static element kind — the defect class the kernel `List.sortWith` fix closed.
+Measured 2026-08-15: the restriction costs 1 site of 55.
+
+-}
+licenseGeneric : Env -> Int -> List Int -> Mono.MonoType -> Int -> Templates -> Templates
+licenseGeneric env specId members listType resultKind acc =
+    let
+        meet =
+            List.foldl
+                (\member v ->
+                    if v == Clean then
+                        debugFreedom env member
+
+                    else
+                        v
+                )
+                Clean
+                members
+    in
+    case meet of
+        Clean ->
+            if resultKind == 0 then
+                -- `allocFreeCallbacks` stays 0 for these: with no
+                -- devirtualized callee there is no symbol for CGEN_072's
+                -- gc-leaf stamp to propagate through.
+                licenseWith specId
+                    { callee = CalleeGeneric
+                    , inKind = kindOfElement listType
+                    , outKind = 0
+                    }
+                    0
+                    acc
+
+            else
+                bump (\s -> { s | declinedGenericUnboxed = s.declinedGenericUnboxed + 1 }) acc
+
+        poisoned ->
+            countDecline poisoned acc
 
 
 {-| The callback is Debug-free; now emission needs a callee it can name.
@@ -472,12 +617,13 @@ license : Env -> Int -> Int -> Name -> Mono.MonoType -> Mono.MonoType -> MonoExp
 license env specId member callbackName callbackType listType body acc =
     case Dict.get member env.origins of
         Just (Mono.OriginCtor ctorGlobal) ->
-            case resolveCtorSpec env ctorGlobal callbackType of
+            case resolveSpecFor env ctorGlobal callbackType of
                 Just ctorSpecId ->
                     -- `allocFreeCallbacks` is NOT incremented: constructing a
-                    -- value allocates, by definition.
+                    -- value allocates, by definition. `outKind` is 0 because a
+                    -- constructor's result is always a heap value.
                     licenseWith specId
-                        { callee = CalleeCtorSpec ctorSpecId
+                        { callee = CalleeSpec ctorSpecId
                         , inKind = kindOfElement listType
                         , outKind = 0
                         }
@@ -490,7 +636,7 @@ license env specId member callbackName callbackType listType body acc =
                     -- would re-create exactly the conflation F-5A abolished,
                     -- and a resolution regression would then hide inside a
                     -- counter with three other causes.
-                    bump (\s -> { s | declinedCtorUnresolved = s.declinedCtorUnresolved + 1 }) acc
+                    bump (\s -> { s | declinedSpecUnresolved = s.declinedSpecUnresolved + 1 }) acc
 
         _ ->
             case findCallbackStamp callbackName body of
@@ -527,23 +673,80 @@ licenseWith specId info allocFreeInc acc =
     }
 
 
-{-| Which SpecId IS this constructor, at this callback's type?
+{-| G-3: a bare GLOBAL used as the callback (`List.map untag`).
+
+Two conditions, and the second is what makes this a licence rather than a
+guess: the registry layout match must be UNIQUE (`resolveSpecFor` declines
+zero-or-ambiguous, copying `LssFacts.matchGlobal`'s discipline), and the
+resolved spec must be one the purity oracle vouches for. A resolved-but-
+unvouched spec is `PoisonOpaqueGlobal` — resolving a SpecId proves WHICH code
+runs, never that it is `Debug`-free.
+
+`allocFreeCallbacks` is not incremented: whether the resolved spec allocates
+is `allocationFree`'s question and it has no instance index entry to answer
+from.
+
+-}
+licenseResolvedGlobal : Env -> Int -> Int -> Mono.MonoType -> Mono.MonoType -> Templates -> Templates
+licenseResolvedGlobal env specId member callbackType listType acc =
+    case Dict.get member env.origins of
+        Just (Mono.OriginGlobal g) ->
+            case resolveSpecFor env g callbackType of
+                Just globalSpecId ->
+                    if Set.member globalSpecId env.purity.safeSpecs then
+                        licenseWith specId
+                            { callee = CalleeSpec globalSpecId
+                            , inKind = kindOfElement listType
+                            , outKind = resultKindOfCallback callbackType
+                            }
+                            0
+                            acc
+
+                    else
+                        bump (\s -> { s | declinedOpaqueGlobal = s.declinedOpaqueGlobal + 1 }) acc
+
+                Nothing ->
+                    bump (\s -> { s | declinedSpecUnresolved = s.declinedSpecUnresolved + 1 }) acc
+
+        _ ->
+            countDecline (PoisonUnresolved UnresolvedGlobal) acc
+
+
+{-| The element kind the callback RETURNS, read off its own arrow.
+
+A constructor always yields a heap value, so F-5B pins `outKind = 0`; a global
+spec may return an unboxed scalar, and `out_kind` drives both the callback's
+SSA result type and the result list's cell kind in the expansion, so it must
+be the truth.
+
+-}
+resultKindOfCallback : Mono.MonoType -> Int
+resultKindOfCallback callbackType =
+    case callbackType of
+        Mono.MFunction _ _ _ result ->
+            kindOf result
+
+        _ ->
+            0
+
+
+{-| Which SpecId IS this global, at this callback's type?
 
 Constructors are registered at their FULL function type
 (`Translate.elm`'s ctor registration), so a layout match against the
 callback parameter's own type zero-matches any non-unary ctor — **the unary
 match IS the arity proof**, and no TOpt access is needed here (GlobalOpt has
-none). The type compared is `callbackType` itself, never a re-derived
-`elemType -> resultType`: `callbackType` is what the body's devirtualization
-registered, so the two cannot drift after a registry join rewrites the
-stored entry.
+none). The same match serves G-3's globals. The type compared is
+`callbackType` itself, never a re-derived `elemType -> resultType`:
+`callbackType` is what the body's devirtualization registered, so the two
+cannot drift after a registry join rewrites the stored entry.
 
 `eqLayout` is name-sensitive for `MCustom`, so an ambiguous match is
 effectively impossible; it is still rejected rather than guessed.
 
 -}
-resolveCtorSpec : Env -> Mono.Global -> Mono.MonoType -> Maybe Int
-resolveCtorSpec env ctorGlobal callbackType =
+resolveSpecFor : Env -> Mono.Global -> Mono.MonoType -> Maybe Int
+resolveSpecFor env ctorGlobal callbackType =
     let
         step entry ( idx, found, ambiguous ) =
             case entry of
@@ -647,7 +850,7 @@ type Verdict
     | PoisonOpaqueGlobal
     | PoisonHigherOrder HOKind
     | PoisonArgTaint ArgCause
-    | PoisonUnresolved
+    | PoisonUnresolved UnresolvedCause
 
 
 {-| Why an argument's provenance could not be proven.
@@ -667,6 +870,21 @@ type ArgCause
     | ArgOpaqueGlobal
     | ArgMemberPoison
     | ArgClosurePoison
+
+
+{-| Why a resolved singleton's member could not be answered.
+
+`declinedUnresolvedMember` is a THREE-way funnel and only one slice is
+addressable: `UnresolvedGlobal` names a `g|` member whose Global could be
+layout-matched to a SpecId (G-3), whereas a blocked member has no scannable
+instance and a miss has neither instance nor origin. Splitting them is what
+decides whether that resolution work is worth building.
+
+-}
+type UnresolvedCause
+    = UnresolvedBlocked
+    | UnresolvedGlobal
+    | UnresolvedMissing
 
 
 {-| Which untrusted callee shape poisoned the member.
@@ -1047,7 +1265,7 @@ buildMemberTable purity byMember blocked origins =
         withBlocked =
             Set.foldl
                 (\member acc ->
-                    Dict.insert member { verdict = PoisonUnresolved, edges = noEdges } acc
+                    Dict.insert member { verdict = PoisonUnresolved UnresolvedBlocked, edges = noEdges } acc
                 )
                 withStandalone
                 blocked
@@ -1103,7 +1321,7 @@ standaloneVerdict origin =
             Clean
 
         Mono.OriginGlobal _ ->
-            PoisonUnresolved
+            PoisonUnresolved UnresolvedGlobal
 
 
 {-| Propagate poison along the edges to a fixed point.
@@ -1127,7 +1345,7 @@ settle entries =
                         acc
 
                     else
-                        case Maybe.withDefault PoisonUnresolved (Dict.get member verdicts) of
+                        case Maybe.withDefault (PoisonUnresolved UnresolvedMissing) (Dict.get member verdicts) of
                             Clean ->
                                 acc
 
@@ -1207,7 +1425,7 @@ obligation, and "cannot tell" is a decline.
 -}
 debugFreedom : Env -> Int -> Verdict
 debugFreedom env member =
-    Maybe.withDefault PoisonUnresolved (Dict.get member env.members)
+    Maybe.withDefault (PoisonUnresolved UnresolvedMissing) (Dict.get member env.members)
 
 
 
