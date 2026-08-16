@@ -10,6 +10,9 @@ standard bootstrap workload. Append one labelled section per run.
 
 ## Recording instructions (fixed — keep every entry uniform)
 
+**Entry shape (fixed):** heading, then the results table(s), then **at most 10 lines**
+of prose. Nothing else — no preamble above the table, no appendices below the prose.
+
 **Per run:** give it a **label** (Run A, Run B, …). Record **wall time**,
 **max RSS**, and the **number and size of heap allocations** from the GC
 stats exit dump (`Objects allocated`, `Bytes allocated`), plus
@@ -154,133 +157,153 @@ arms lowered from the same Stage-5 `.mlir`), which stays byte-identical.
 
 ## Runs
 
-### 2026-08-13 — DONE: series close-out (bootstrap fixed point + cumulative A/B + dynamic re-census)
-
-**The loop is complete: 14 items executed, plus the item-15 soundness plan
-authored and deferred.** Dispositions: 10 KEPT-ON (01, 03+STRCASE, 04, 05, 06,
-07, 08, 09 partial, 11 both flags, 12 attr), 1 REAL WIN (02, −4.46%),
-2 KEPT-DARK (13 Mono CSE — census-failed but built; 10 MLIR CSE —
-correctness-blocked on NaN sharing, fix designed as kernel-opt-15),
-1 REJECTED (14 Elm-source List HOFs, Run S).
-
-**Bootstrap (run once at DONE, as the loop deferred):** `--target bootstrap`
-converges to a NEW fixed point — Stage 8c `eco-compiler-boot.mlir` ==
-`eco-compiler-boot-2.mlir` byte-identical, and the JS stages converge
-(`eco-boot.js` ≡ `-2.js` ≡ `-3.js`, 7,300,241 B). Expected NEW (the series
-deliberately changed emission); converged on the first re-establishment.
-
-**Cumulative A/B vs Run D (loop entry), frozen corpus:**
+### 2026-08-13 — DONE: kernel-opt series close-out (bootstrap fixed point + cumulative A/B + dynamic re-census)
 
 | | Run D (2026-08-10) | final (2026-08-13) | Δ |
 |---|---|---|---|
-| wall | 3:31.59 | **3:23.96** (clean leg) | **−3.6%** |
-| objects allocated | 379,486,685 | 217,958,017 | −42.6% (partly HEAP_034 counter-blindness) |
+| wall | 3:31.59 | **3:23.96** | **−3.6%** |
+| objects allocated | 379,486,685 | 217,958,017 | −42.6% |
 | promoted | 372,250,555 | 360,871,768 | **−3.1%** |
 | minor / major GC | 862 / 10 | 836 / 10 | −26 / = |
-| out.mlir | 12,943,401 | 12,933,556 | −9,845 (deliberate emission changes) |
+| out.mlir | 12,943,401 B | 12,933,556 B | −9,845 B |
 
-The final race's r1 leg (3:35.24, GC time 87.9 s) overlapped the running
-bootstrap build and is contention-contaminated; r2 (3:23.96, GC 81.9 s) agrees
-with the item-13-era measurement of the equivalent config (3:21.3/3:25.5) and
-is the quoted figure. Essentially all of the wall delta is item 02's
-union-find PointCell merge; the rest of the series was individually FLAT and
-collectively bought the boundary reduction below.
+| axis | before | after |
+|---|---|---|
+| dynamic kernel calls | 3,676,097,627 | **390,926,633 (−89.4%)** |
+| kernel symbols | 98 | 88 |
+| static direct sites | — | 6,574 |
 
-**The dynamic re-census is the series' summary number** (§3(f) of
-`design_docs/kernel-boundary-reduction.md`; raw file
-`kernel-boundary/kernel-census-dynamic-stage7a-2026-08-13.txt`):
-**3,676,097,627 → 390,926,633 dynamic kernel calls (−89.4%)**, 98 → 88
-symbols, static direct sites → 6,574. The residue map: `Utils_equal` 252.6M
-(64.6% of what remains — deep structural equality is the next lever, via a
-structural-compare op or memoized comparison, NOT more inline arms),
-`List_reverse` 44.0M (kernel kept, Run S), `array_push_box` 32.5M, then the
-fold-shaped HOF band (`map2` 5.1M, `JsArray_foldl` 1.64M, `sortBy` 788K) —
-the §5b.1 rung-2 candidates.
+14 items executed: 10 KEPT-ON, 1 REAL WIN (02, −4.46%), 2 KEPT-DARK (13 census-failed,
+10 correctness-blocked on NaN sharing), 1 REJECTED (14, Run S). `--target bootstrap`
+converges to a NEW fixed point (Stage 8c byte-identical; JS stages 7,300,241 B). The
+cumulative allocation figure is partly HEAP_034 counter-blindness. The r1 leg (3:35.24)
+overlapped the bootstrap build and is contention-contaminated; r2 is quoted. Residue map:
+`Utils_equal` 252.6M (64.6%), `List_reverse` 44.0M, `array_push_box` 32.5M, then the fold
+HOF band. Gates: E2E 1656/1656, elm-tests 13085/12. **Heap-validate was never built this
+loop** — that debt stands. Lessons: wall follows retention and deleted per-op work, never
+call counts; counters convict where walls stay silent; censuses must be verified against
+their own transform; allocation dedup is observable through NaN × pointer-equality.
 
-**Gates at close:** E2E **1656/1656** on the final tree (including the
-env-gated census instrumentation, off by default); elm-tests baseline
-13085/12 unchanged since item 10. **The heap-validate tree was never built in
-this loop** (removed from per-item gating by user decision 2026-08-10, per
-`guides/kernel-opt-loop.md` §"Gates this loop deliberately does NOT run") —
-that debt stands and should be paid before the next release cut.
+### 2026-08-16 05:20 UTC — Run V: map-template round 2, G-0…G-3 (**FLAT — no regression; KEPT-DARK, `ECO_LIST_MAP_TEMPLATE=1` enables**)
 
-**The series' measured lessons, in one place:** wall follows retention and
-deleted per-op work, never call counts or metadata (≥6 confirmations);
-counters convict where walls stay silent (items 10-CSE, 14); censuses must be
-verified against their own transform (item 11's 20× decider overcount); an
-optimization's effect can be artifact-dependent and sign-unstable (CSE ±1%
-promoted); allocation dedup is observable through NaN × pointer-equality
-(item 12 → CSE_001); and the boundary was never the cost — the six MLIR-op
-ports were all FLAT-but-kept, the one Elm-source port was rejected on its
-idiom's allocation, and the selection principle now lives in §5b.1.
+| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|---|
+| on r1 | **4:03.79** | 5,330,112 kB | 237,455,932 | 14,521.69 MB | 915 | 431,019,109 (181.5%) | 12 | 104.41 s | 13,249,278 B |
+| on r2 | **4:02.94** | 5,330,000 kB | ≡ | ≡ | 915 | ≡ | 12 | 104.15 s | ≡ |
+| off r1 | 4:02.01 | 5,272,368 kB | 227,290,386 | 14,211.45 MB | 914 | 427,179,257 (187.9%) | 12 | 104.56 s | ≡ |
+| off r2 | 4:01.20 | 5,272,396 kB | ≡ | ≡ | 914 | ≡ | 12 | 104.22 s | ≡ |
 
-### 2026-08-13 22:30 UTC — Run S: kernel-opt-14 Elm-source List HOFs (**REJECTED — the loop's first true counter regression; flag machinery kept dark, kernels stay C++**)
+| axis | on | off | Δ |
+|---|---|---|---|
+| binary | 64,847,536 B | 66,497,048 B | **−1,649,512 B (−2.48%)** |
+| licensed map specs | 297 / 592 | 0 | +297 |
+| `Cons` allocated | 52,342,739 | 48,785,794 | +7.3% |
+| `ConsChunk` allocated | 14,130,511 | 7,876,357 | +79.4% |
 
-The full migration ladder was built and measured: P1 (un-shunt `List.reverse` —
-compiler-only flag), 2A (elm/core overlay vehicle), P3 (`map2..map5` in Elm,
-accumulate+reverse), P4 (`sortBy`/`sortWith` as a stable Elm merge sort with a
-decorate/undecorate `sortBy`). **Correctness was never the problem: E2E
-1656/1656 under the full migration, including all 19 `Sort*` and the
-`ListMap*Float*` suites, and the chunk hard-gate IMPROVED (`rewritten` 446→518;
-all List HOF kernel callee counts → 0).** The rejection is entirely the GC
-counters.
+`plans/list-map-mlir-template.md` G-0…G-3: licensed **58 → 297 of 592** (G-1 generic-apply
++15, G-2 `CsePurity` ctor/enum seed +61, G-3 `OriginGlobal`→SpecId +163); G-0 was a
+measurement-only counter split that sized the other three. Wall **+0.74%** ⇒ FLAT. The
+binary credit scales with the pool — −291,816 B at 50 specs (T), −325,912 B at 58 (U),
+−1,649,512 B at 297 — ≈5,500 B per spec, flat across a 6× change. The allocation column is
+HEAP_034 counter-blindness at 5× Run T's scale, as the two `Cons*` rows show; the
+blind-free axes are flat (promotion +0.90%, minors +1, majors equal, GC −0.14%). The
+`ECO_INLINE_ALLOC=0` legs that would adjudicate it were **not run**, so +4.47% objects is
+un-adjudicated, not a regression. Gates: E2E 1,675/1,675 both flag states, `ECO_CSE=1`
+1,675/1,675, elm-tests 13,085/12, default-config artifacts byte-identical to pre-G.
 
-**The attribution matrix (frozen corpus; objects = counted allocations):**
+### 2026-08-14 21:40 UTC — Run U: map-template follow-ups F-1L…F-5C (**FLAT — no regression; KEPT-DARK, `ECO_LIST_MAP_TEMPLATE=1` enables**)
+
+| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|---|
+| on r1 | **3:54.43** | 5,523,668 kB | 227,631,274 | 14,185.38 MB | 913 | 416,654,491 | 11 | 98.14 s | 13,244,058 B |
+| on r2 | **3:52.18** | 5,523,296 kB | — † | — † | — † | — † | — † | — † | ≡ |
+| off r1 | 3:53.63 | 5,526,188 kB | 226,690,246 | 14,143.22 MB | 914 | 417,381,243 | 11 | 96.87 s | ≡ |
+| off r2 | 3:56.54 | 5,526,484 kB | — † | — † | — † | — † | — † | — † | ≡ |
+
+† r2 GC dumps were not retained for this run; wall and RSS are per-round. Binary: on
+66,092,112 B, off 66,418,024 B (**−325,912 B**).
+
+**F-2A budget sweep** (ten flag-off Stage-5 legs on the frozen post-F-5 tree; flag-on legs
+for the licence pool):
+
+| N | wall r1 / r2 | mean | Δ vs 64 | artifact B | binary B | Δ binary | recognized `map` | licensed |
+|---|---|---|---|---|---|---|---|---|
+| **64** | 6:56.03 / 7:36.10 | 436.1 s | — | 13,710,047 | 66,418,024 | — | 592 | **58** |
+| 128 | 7:45.48 / 7:31.45 | 458.5 s | +5.1% | 13,904,958 | 66,991,792 | +0.86% | 599 | 61 |
+| 256 | 7:45.73 / 7:49.54 | 467.6 s | +7.2% | 14,152,621 | 67,464,104 | +1.57% | 625 | 69 |
+| 512 | 7:38.76 / 7:54.21 | 466.5 s | +7.0% | 14,384,050 | 68,200,968 | +2.68% | 678 | — |
+| 1024 | 7:43.42 / 7:40.85 | 462.1 s | +6.0% | 14,650,323 | 69,311,736 | +4.36% | 813 | 143 |
+
+Licence pool **50 → 58 of 592**: F-4's argument-taint rule REMOVED 2 (a live D-4a hole —
+captured function values laundered through `List.any`/`List.sortWith`), F-3 recovered 0,
+F-5A+F-5B's ctor-as-callback arm ADDED 9. Wall **−0.76%** ⇒ FLAT; reads exactly like Run T
+one item bigger, same counter-blind allocation column, retention unmoved. The sweep's knee
+rule selects **N = 64, the incumbent**, so `maxSpecsPerGlobal` does not move (64→128 buys 3
+sites for +0.86% binary). **Its wall column is not usable** — the r1/r2 spread within N=64
+is 40.1 s (9.2%), wider than the ±5% band the rule tests, and the trend is non-monotone;
+binary size is the decisive axis. F-4 makes a default-ON decision arguable, but its recorded
+residual (a closure in a concrete custom-type field) wants the purity plan first.
+
+### 2026-08-14 09:05 UTC — Run T: `List.map` forward MLIR template (**FLAT — no regression; KEPT-DARK, `ECO_LIST_MAP_TEMPLATE=1` enables**)
+
+| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
+|---|---|---|---|---|---|---|---|---|---|
+| on r1 | **3:48.37** | 5,347,008 kB | 228,050,612 | 14,062.57 MB | 900 | 407,138,781 (178.5%) | 11 | 93.90 s | 13,205,451 B |
+| on r2 | **3:49.17** | 5,344,992 kB | 228,050,449 | 14,062.57 MB | 900 | 407,138,782 | 11 | 94.97 s | ≡ |
+| off r1 | 3:52.89 | 5,459,500 kB | 225,154,129 | 13,956.70 MB | 900 | 407,074,509 (180.8%) | 12 | 98.94 s | ≡ |
+| off r2 | 3:54.21 | 5,459,824 kB | ≡ | ≡ | 900 | ≡ | 12 | 100.02 s | ≡ |
+
+**`ECO_INLINE_ALLOC=0` census legs** (both Stage-5 artifacts re-lowered with the
+inline-alloc path off — the only allocation column here that means anything):
+
+| leg | objects alloc'd | bytes alloc'd | `Cons` alloc'd | `ConsChunk` alloc'd | `Cons` promoted | minor GC |
+|---|---|---|---|---|---|---|
+| on | 4,037,332,291 | 160,674.08 MB | **410,390,748** | **10,648,356** | 149,907,357 | 900 |
+| off | 4,040,422,326 | 160,706.56 MB | **416,225,020** | **7,857,203** | 149,910,075 | 900 |
+
+**Corpus-growth control** (same pristine binary carrying none of this item, two corpora):
+
+| corpus | out.mlir | wall | minor GC | major GC | promoted |
+|---|---|---|---|---|---|
+| pristine | 13,161,408 B | 3:31.13 | 865 | 10 | 374,827,174 |
+| current | 13,205,451 B | **3:57.96** | 900 | 12 | 407,132,733 |
+
+A licensed `List.map` spec's body becomes one `eco.list.map` op — forward cursor loop,
+devirtualized callback, scratch pushes, one `eco_scratch_finish_fwd`. **50 of 591 specs
+qualify (8.5%)**; 425 decline on LTop callback sets. Wall **−2.05%** ⇒ FLAT, binary
+**−291,816 B**. The standard allocation column is counter-blind in the *unfavourable*
+direction (+1.29% objects); the census legs give the truth — `Cons` −1.40%, `ConsChunk`
++35.5%, net −3,090,035 objects — but `Cons` promoted moved −0.002% with minors identical, so
+the deleted cons died in the nursery. **Absolute wall is NOT comparable to Runs A–S**: the
+workload is the compiler's own source and this item grew it (+271,895 B since Run S, of which
++227,852 predates the item); on the current corpus ON 3:48.4 < OFF 3:52.9 < pristine 3:58.0.
+Gates: E2E 1664/1664 all three flag states, heap-validate flag-on, bootstrap 8c identical.
+
+### 2026-08-13 22:30 UTC — Run S: kernel-opt-14 Elm-source List HOFs (**REJECTED — the loop's first true counter regression; kernels stay C++**)
 
 | arm | own-code migration | objects | RSS | majors | wall |
 |---|---|---|---|---|---|
 | base (item-13 binary) | none | 218.0M | 4.98 GB | 10 | 3:23.4 |
 | P1 workload-only (env off) | none (emission only) | 218.0M | 4.98 GB | 10 | 3:23.6 |
-| P1 in-binary (flip, stock core) | reverse | 209.0–210.3M | 4.7–5.1 GB† | **11–12** | 3:30.8–3:40.3† |
+| P1 in-binary (flip, stock core) | reverse | 209.0–210.3M | 4.7–5.1 GB † | **11–12** | 3:30.8–3:40.3 † |
 | mapN-only binary | reverse+mapN | **353.2–354.6M** | 5.6–5.8 GB | 10 | 3:36.0–3:36.6 |
 | sorts-only binary | reverse+sorts | **353.5–354.9M** | 5.6 GB | 10 | 3:35.0–3:36.4 |
 | full binary | all | **352.8–354.6M** | 5.6 GB | 10 | 3:32.9–3:37.7 |
 
 † bimodal / GC-lottery legs; the majors movement is the stable signal.
 
-**The mechanism, from the by-kind census:** ConsChunk **6.2M → 146.3M
-(+140M nodes, +4.3 GB)** plus ListBacking +2.8M. The Elm idioms multiply
-whole-list materializations — `mapNHelp` builds acc then `reverse` rebuilds
-(2× per result); the merge sort materializes per level (×log n); `sortBy` adds
-decorate/undecorate (2 more) — where the C++ kernels built each result exactly
-once via the cursor driver. The chunk rewriter makes each pass cheap; nothing
-can undo the idiom's extra passes. Objects +61.6%, bytes +35.8%, RSS +13%,
-wall +2.9–3.7% — over the loop's bar with decisively worse counters.
+The full ladder was built and measured: P1 (un-shunt `List.reverse`), 2A (elm/core overlay), P3
+(`map2..map5` in Elm), P4 (`sortBy`/`sortWith` as a stable Elm merge sort). **Correctness was
+never the problem** — E2E 1656/1656 under the full migration, and the chunk hard-gate IMPROVED
+(`rewritten` 446→518, all List HOF kernel callee counts → 0). The rejection is entirely the
+counters: ConsChunk **6.2M → 146.3M (+4.3 GB)** plus ListBacking +2.8M, because the Elm idioms
+multiply whole-list materializations (`mapNHelp` builds then reverses; the merge sort materializes
+per level; `sortBy` decorates) where the C++ kernels built each result once. Objects +61.6%, bytes
++35.8%, RSS +13%, wall +2.9–3.7%. **Non-additivity was the tell** (mapN-only ≈ sorts-only ≈ full ≈
+354M): the cost is the shared idiom, not any one function. The `shuntReverse` machinery and 2A
+overlay survive; no kernel symbol was deleted.
 
-**Non-additivity was the tell** (mapN-only ≈ sorts-only ≈ full ≈ 354M): the
-cost is not per-function but the shared intermediate-materialization idiom
-saturating the same hot compile paths.
-
-**What survives:** the `shuntReverse` flag machinery (default True = shunt;
-`ECO_LIST_SHUNT_REVERSE=0` compiles the Elm body — its workload-side form
-measured clean, and the chunk win rides the shared already-rewritten
-`List_foldl` spec, delegation not duplication); the 2A overlay procedure with
-the `::`-operator finding (a module's own `infix` declaration is not usable in
-expression position inside itself — stock List.elm never does; use `cons`);
-the patched `List.elm` preserved as the plan's inline Phase 3/4
-listings (the `vendor/` working copies were removed with the final revert). **Phases 5/6 (JsArray/String HOFs) stay unstarted per the stop
-rule; Phase 2B never paid; no kernel symbol deleted.** The plan's own honest
-framing held: heat was real, but wall follows retention and per-op work, and
-the Elm form ADDS per-op work here.
-
-### 2026-08-13 14:30 UTC — Run R: kernel-opt-12 `eco.cse_safe` purity channel, 2×2 vs MLIR CSE (**attr FREE in both CSE states — KEEP DEFAULT-ON, `ECO_CALL_PURITY=0` escapes; CSE flip attempted and REVERTED — NaN-sharing miscompile**)
-
-The purity channel end to end: emission from KernelFacts `droppable` at the one
-`Ops.elm` choke point, `MemoryEffectOpInterface` on `Eco_CallOp` (attr present ⇒
-no effects; absent ⇒ conservative read+write), verifier arms
-(indirect/musttail/roots), the strip in EcoGCPrepare Step 4 — placed BEFORE the
-`isCallSafepoint` early-continue, discharging the item-09 hand-off — and the
-validator-build audit. Coverage census: **S = 4,330 stamped sites** of 85,437
-`eco.call` ops; top heads `Scheduler_andThen` 1,583, `Scheduler_succeed` 982,
-`List_reverse` 466, `Bytes_getStringWidth` 454. The mirroring audit PASSED
-including the alarming-looking rows: `MVar_put`/`Scheduler_*` CONSTRUCT task
-descriptions (allocate a closure + `taskBinding`), never perform them. S is
-~6,500 below the plan's prediction because items 01/03/05 deleted the predicted
-top contributors (`List_cons` 4,158, `Utils_equal` 1,357, most appends) — the
-series ate its own pool again, third time.
-
-**The 2×2 the user asked for (all four arms from the same current-tree Stage-5
-artifact, frozen-corpus race, 2 rounds):**
+### 2026-08-13 14:30 UTC — Run R: kernel-opt-12 `eco.cse_safe` purity channel (**attr FREE in both CSE states — KEEP DEFAULT-ON, `ECO_CALL_PURITY=0` escapes; CSE flip attempted and REVERTED**)
 
 | arm | exe | wall (mean) | promoted | minor GC |
 |---|---|---|---|---|
@@ -289,90 +312,18 @@ artifact, frozen-corpus race, 2 rounds):**
 | CSE on, no attr | 65,482,112 | 3:23.29 | 357,228,556 | 834 |
 | CSE on, **attr** | 65,465,728 | 3:24.17 | **≡ (bit-identical)** | 834 |
 
-**The attr's marginal contribution is ~zero in BOTH states**: with CSE off the
-binary is byte-identical (nothing merges, and this tree has no unused droppable
-calls left to DCE); with CSE on, merging the 4,330 stamped calls buys exe
-−16,384 B and bit-identical GC counters. The plan's honest-expectation section
-called this: enabling infrastructure, no direct wall claim.
+The purity channel end to end: KernelFacts `droppable` emission, `MemoryEffectOpInterface` on
+`Eco_CallOp`, verifier arms, the EcoGCPrepare Step-4 strip. Coverage **S = 4,330 stamped sites**
+of 85,437 `eco.call`, ~6,500 below prediction because items 01/03/05 had already deleted the top
+contributors. **The attr's marginal contribution is ~zero in BOTH states**: CSE-off
+byte-identical, CSE-on −16,384 B with bit-identical counters. CSE's retention effect swings SIGN
+with the artifact (+5.6M in Run Q, −3.64M here). **The CSE default-on flip was REVERTED** — 3
+Float container-equality tests failed: CSE merges two NaN-containing constructs into one object,
+and the equality kernel's pointer-eq fast path answers True before the NaN-aware walk. Object
+identity IS observable through NaN (CSE_001). The env-var legs had only run the codegen subset;
+the Float tests are Elm-side.
 
-**Two side-findings worth the run.** (i) On the PRE-SERIES corpus the attr alone
-deleted **1,126,208 B of exe** via the greedy driver's DCE (Trap F) — the effect
-is real and corpus-dependent; this series had already deleted those calls by
-other means. (ii) CSE's retention effect is ARTIFACT-DEPENDENT and swings sign:
-+5.6M promoted on the item-11-era artifact (Run Q, with folder), **−3.64M on the
-current tree** — ±1% of promoted either way on the same workload, wall FLAT in
-both. **Decision and reversal.** The user applied keep-if-wall-flat and flipped
-`ECO_MLIR_CSE` default-on; the full E2E gate under the new default then failed
-**3 Float container-equality tests** (`ContainerEquality{,Custom,Record}FloatTest`,
-e.g. `pairNaNFirst: True` where structural equality demands `False`), and the
-flip was REVERTED. **Root cause — a genuine miscompile, and the item's best
-finding:** CSE merges two structurally identical NaN-containing constructs into
-ONE heap object; the equality kernel's pointer-equality fast path (identical to
-official Elm's `x === y` shortcut) then answers True before the NaN-aware field
-walk runs. Object identity IS observable in Elm through NaN, so kernel-opt-10's
-audit claim "dedup of an allocation is semantics-preserving … no observable
-object identity" is FALSE — for `eco.construct.*`, for `eco.box` of f64, and
-equally for merging `eco.cse_safe` kernel calls whose results can contain
-Floats (`List_reverse`, `Utils_append`). The same hazard is latent in
-kernel-opt-13's dark Mono CSE and is recorded in CSE_001. Sound enablement
-requires Allocate-on-result effects on the allocating pure ops
-(erasable-if-dead, never merged) plus a no-Float-reachable-in-result axis in
-KernelFacts — real design work, out of this loop's scope. Note the gate-shaped
-lesson: Run Q's CSE legs only ever ran the CODEGEN fixture subset under
-`ECO_MLIR_CSE=1`; the Float-equality tests live in the ELM suite, which first
-ran under CSE at this flip. Defaults get the full battery; env-var legs got a
-subset, and the difference was exactly where the bug was.
-
-An earlier 3-arm race was DISCARDED as invalid: its attr arms were lowered from
-a PRISTINE-corpus compile (the pre-series compiler), so it raced different
-compiler versions — visible as out.mlir 12,943,401 B (the pre-series size) and
-+5.9% objects. Numbers from it appear nowhere.
-
-Gates: E2E **1656/1656** in both flag states and after the default flip (8 new
-`call_purity_*` fixtures); flag-off front-end output byte-identical to the
-item-12 baseline on the frozen corpus; `-out.mlir` identical across all four
-arms.
-
-### 2026-08-13 08:40 UTC — Run Q: kernel-opt-10 MLIR project-of-construct folder + M4 CSE (**folder KEEP DEFAULT-ON, `ECO_MLIR_FOLD=0` escapes; CSE KEPT-DARK — first for artifact-dependent retention, now for the NaN-sharing miscompile found in Run R's flip attempt**)
-
-Backend-only item at the M4 slot: (1) `EcoFoldProject`, seven `fold()` impls —
-six project-of-construct plus `get_tag`-of-construct.custom → constant ctor tag
-(the census extension's one survivor: pools were get_tag 443 / unbox-of-box 62 /
-`value.eq %a,%a` 0) — and (2) stock MLIR `createCSEPass()`, the first consumer
-the dialect's 102 `[Pure]` declarations have ever had. Arms: one Stage-5 `.mlir`
-lowered twice; the racing binaries differ only in M4-slot passes.
-
-**The A/B split the item in half.** Folder-only: counters bit-equal to off
-(promoted +1 object in 358M, majors 10, RSS +5 MB), 2,381 + 1 folds, exe
-−4,096 B, compile-time cost unmeasurable. **CSE regressed retention ON THIS
-ARTIFACT**: both-on promoted **+5,601,772 (+1.56%)**, RSS **+330 MB (+6.9%)**,
-majors **10 → 11**, GC time **+7%**, wall +2.66% — the C-R1 live-range-stretch
-signature the plan named as outcome (c). cse-only alone showed majors 11 and
-+37K promoted. **AMENDED 2026-08-13 (Run R): this verdict is a property of the
-item-11-era input artifact, not of the switch** — the identical fold+CSE
-composition on the item-13 artifact measures promoted **−3.64M**, RSS +6 MB,
-majors 10. Both measurements are bit-stable across rounds, so neither is noise;
-CSE's retention effect swings sign with the compiler artifact it is applied to
-(~±1% of promoted), with wall FLAT in both worlds. CSE was kept dark here on
-that instability. A subsequent default-on attempt (user decision under
-keep-if-wall-flat, 2026-08-13) was **REVERTED the same day for a correctness
-failure**, which retires the perf question entirely — see the Run R addendum.
-
-**Two real bugs found.** (i) Latent, in `EcoListCursor`: `walkStep` validates
-`hasOneUse` per RESULT, so one interior `scf.if` shared by two walk positions
-validates for both; `rebuildStep` then rebuilds it twice and the first walk's
-saved idx `Value` (a copy, not a use — RAUW never repairs it) dangles into the
-yield rebuild → SEGV. Un-triggerable before this item: it takes a dedup pass
-merging two step trees. Fixed with a disjointness bail (`cSharedTree`).
-(ii) The two `slot_cast_barriers_*` fixtures pinned barrier emission on
-projections the folder now legitimately deletes; made fold-proof by routing the
-construct through a function boundary.
-
-`num-cse'd` statistics aggregate to 0 under the nested parallel pipeline —
-unusable; volume was proved by exe deltas instead (cse-only −175,864 B,
-both −249,592 B). Gates: E2E **1648/1648** with the folder default-on and again
-with `ECO_MLIR_FOLD=0`; `-out.mlir` byte-identical all arms (front-end output is
-unaffected by backend flags, verified rather than assumed).
+### 2026-08-13 08:40 UTC — Run Q: kernel-opt-10 MLIR project-of-construct folder + M4 CSE (**folder KEEP DEFAULT-ON, `ECO_MLIR_FOLD=0` escapes; CSE KEPT-DARK**)
 
 | leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|---|
@@ -383,39 +334,20 @@ unaffected by backend flags, verified rather than assumed).
 | cse r1 † | 3:36.59 | 4,804,268 kB | 217,942,537 | 13,247.20 MB | 822 | 358,455,269 | **11** | 82.91 s | ≡ |
 | both r1 † | 3:40.87 | **5,106,176 kB** | 217,942,523 | 13,247.20 MB | 820 | **364,019,657** | **11** | 86.77 s | ≡ |
 
-† one representative round shown; both r2 / cse r2 agree bit-for-bit on counters.
+† one representative round; both r2 / cse r2 agree bit-for-bit on counters.
 
-### 2026-08-12 16:05 UTC — Run P: kernel-opt-13 Mono-level CSE of pure calls (**FLAT — no regression; KEPT DEFAULT-OFF, `ECO_CSE=1` enables**)
+Backend-only item: (1) `EcoFoldProject`, seven `fold()` impls, and (2) stock MLIR
+`createCSEPass()` — the first consumer the dialect's 102 `[Pure]` declarations ever had.
+**The A/B split the item in half.** Folder-only: counters bit-equal to off (promoted +1 in
+358M), 2,382 folds, exe −4,096 B. **CSE regressed retention ON THIS ARTIFACT**: promoted
++1.56%, RSS +330 MB, majors 10 → 11, wall +2.66%. **AMENDED by Run R: that is a property of
+the item-11-era artifact, not the switch** — the same composition on the item-13 artifact
+measures promoted −3.64M. Both are bit-stable, so neither is noise; the sign swings with the
+artifact, wall FLAT in both worlds. A later default-on attempt was reverted for correctness
+(Run R). Two real bugs found: a latent `EcoListCursor` `hasOneUse`-per-RESULT dangle (SEGV,
+un-triggerable before a dedup pass) and two fixtures pinning now-folded projections.
 
-C1 census + C2 pass. **The D-C gate FAILED by a factor of 40** — `nearShareBp=5`
-against a required 200 — and C2 was built and benchmarked anyway on instruction.
-
-**The census was wrong the first time and the error is worth recording.** Its
-first run reported `nearRedundant=1619 nearShareBp=109`; every `Leaf (Inline _)`
-in a decider `Chain`/`FanOut` shared one path step, so two distinct occurrences
-collided on one path key, their common prefix swallowed both suffixes and the
-pair classified as trivially-near. The transform had the identical defect and
-emitted a `MonoLet` that did not dominate its uses (`unbound variable
-mono_cse_N`). Corrected: **`nearRedundant=82`, and `MonoCse` independently
-reports `merged=82`** — census and transform agree exactly, which is what makes
-the corrected figure trustworthy and the first one discardable.
-
-**`b2_branch=1672` of 1,909 redundant occurrences (87.6%)** is the dominant
-bucket: pairs where neither occurrence dominates, i.e. C4 speculation
-territory. The probe-then-insert idiom this plan targets is close to absent
-from the compiler's own source — `b1c_probe=54`.
-
-**A second real defect the fixtures caught:** the scope test tracked `MonoLet`
-and `MonoDestruct` binders but not `MonoTailDef` PARAMETERS, so a candidate
-mentioning a tail-function parameter was hoisted above its binder
-(`MultiLocalTailRecTest`, `lookupVar: unbound variable i`). With parameters
-tracked, that group is correctly `shadowBlocked`.
-
-**Cost/benefit is the reason it stays off.** 81 merges on the frozen corpus and
-`-out.mlir` −1,052 B, against **`Objects allocated` +3,611,190 (+1.66%)** and
-bytes +1.23% — the pass's own analysis cost, since it walks all 30,905 specs and
-builds path keys for 69,995 candidates to find 81 merges. Wall **−1.71%** ⇒
-FLAT. Gates: E2E **1646/1646** in both flag states.
+### 2026-08-12 20:05 UTC — Run P: kernel-opt-13 Mono-level CSE of pure calls (**FLAT — no regression; KEPT DEFAULT-OFF, `ECO_CSE=1` enables**)
 
 | leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|---|
@@ -424,34 +356,18 @@ FLAT. Gates: E2E **1646/1646** in both flag states.
 | off r1 | 3:24.39 | 4,970,448 kB | 217,912,607 | 13,245.86 MB | 836 | 360,869,914 | 10 | 80.00 s | 12,930,050 B |
 | off r2 | 3:25.23 | 4,970,536 kB | ≡ | ≡ | 836 | ≡ | 10 | 80.66 s | ≡ |
 
-### 2026-08-12 20:05 UTC — Run O: kernel-opt-11 mono DCE via KernelFacts + kernel cost classes (**FLAT — no regression; KEEP — both DEFAULT-ON, `ECO_KERNEL_FACTS_DCE=0` / `ECO_KERNEL_COST_CLASSES=0` escape**)
+C1 census + C2 pass. **The D-C gate FAILED by 40×** (`nearShareBp=5` against a required 200)
+and C2 was built and benchmarked anyway on instruction. **The census was wrong the first
+time**: every `Leaf (Inline _)` in a decider shared one path step, so two occurrences collided
+on one key — reported `nearRedundant=1619`, corrected to **82**, which `MonoCse` independently
+confirms as `merged=82`; the transform had the identical defect and emitted a non-dominating
+`MonoLet`. `b2_branch=1672` of 1,909 redundant occurrences (87.6%) is the dominant bucket, and
+the probe-then-insert idiom is nearly absent (`b1c_probe=54`). A second defect the fixtures
+caught: the scope test tracked `MonoLet` binders but not `MonoTailDef` PARAMETERS. It stays
+off on cost/benefit: 81 merges and −1,052 B of `.mlir` against **objects +1.66%**, the pass's
+own analysis cost over 30,905 specs. Wall −1.71% ⇒ FLAT. Gates: E2E 1646/1646 both states.
 
-Two independent consumers of the kernel-opt-07 table, both in
-`MonoInlineSimplify`. **(a)** `isPureExpr` generalizes to `isPureExprGen kDrop`,
-so the dead-binding gate can drop a dead saturated call to a kernel the table
-certifies `droppable` (`cseSafe && totality == Total`) with all args pure. The
-H2.5/H6.1 partial-forward guards keep the legacy all-calls-impure predicate.
-**(b)** `computeCost`'s flat 6-per-kernel-call becomes a derived `CostClass`
-(`CGcLeaf`/`CAlloc`/`CHof`) plus an inline-op oracle, so an `eco.int.add` no
-longer scores the same as a rope-allocating `Utils_append`.
-
-**Census first, and it is small: the DCE widening's realizable ceiling on the
-entire 261-module self-compile is FOUR sites** (`deadLets=450
-deadDroppableKernelLets=4`), of which **2 realize** — `letDCE` 498 → 500,
-`kernelLetDCE=2`, exactly the predicted `≤` relationship, the gap being argument
-impurity. (a) therefore ships for the enabling value and for ending the
-`isPureExpr`-says-impure / `CafHoist`-says-pure contradiction, **not** for a win.
-**Decision D-K settled by measurement: `deadBareKernelVar = 0 / 450`**, so a bare
-kernel var in value position stays impure-conservative.
-
-**(b) does change real inlining decisions:** emitted `.mlir` +1,341 B and
-`letDCE` 498 → 441 on the live self-compile. Wall FLAT.
-
-Arms are one binary under different env (these are runtime config). **Item-10
-flag-off is byte-identical to the item-09 baseline on the frozen corpus in both
-rounds** — the widening is fully gated. Gates: E2E **1646/1646** in both flag
-states and again after the default flip; `elm-tests` 13085 passed / 12 failed,
-exactly the pre-existing baseline.
+### 2026-08-12 16:05 UTC — Run O: kernel-opt-11 mono DCE via KernelFacts + kernel cost classes (**FLAT — no regression; KEEP — both DEFAULT-ON, `ECO_KERNEL_FACTS_DCE=0` / `ECO_KERNEL_COST_CLASSES=0` escape**)
 
 | leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|---|
@@ -462,48 +378,20 @@ exactly the pre-existing baseline.
 | base r1 † | 3:24.26 | 4,882,412 kB | 217,928,795 | 13,246.14 MB | 836 | 361,232,810 | 10 | 79.95 s | ≡ |
 | base r2 † | 3:23.20 | 4,882,936 kB | ≡ | ≡ | 836 | ≡ | 10 | 79.12 s | ≡ |
 
-† item-09 baseline binary, same frozen corpus. on vs off **+0.56%**, off vs base
-**−1.05%**, on vs base **−0.50%** — all FLAT.
+† item-09 baseline, same corpus. on vs off +0.56%, off vs base −1.05%, on vs base −0.50%.
+
+Two consumers of the kernel-opt-07 table, both in `MonoInlineSimplify`. **(a)** `isPureExpr`
+generalizes so the dead-binding gate can drop a dead saturated call to a `droppable` kernel
+with pure args. **(b)** `computeCost`'s flat 6-per-kernel-call becomes a derived `CostClass`
+plus an inline-op oracle. **Census first, and it is small: the DCE widening's ceiling on the
+entire 261-module self-compile is FOUR sites**, of which 2 realize — exactly the predicted
+`≤`, the gap being argument impurity. (a) ships for the enabling value and for ending the
+`isPureExpr`-says-impure / `CafHoist`-says-pure contradiction, not for a win; D-K settled by
+measurement (`deadBareKernelVar = 0 / 450`). (b) does change real inlining decisions: `.mlir`
++1,341 B, `letDCE` 498 → 441. Item-10 flag-off is byte-identical to the item-09 baseline.
+Gates: E2E 1646/1646 both states; elm-tests 13085/12 unchanged.
 
 ### 2026-08-12 14:20 UTC — Run N: kernel-opt-09 gc-leaf safepoint relaxation + inline-group split (**FLAT — no regression; KEEP — both DEFAULT-ON, `ECO_GCPREPARE_LEAF_SAFEPOINT=0` / `ECO_GCPREPARE_SPLIT_INLINE_GROUPS=0` escape**)
-
-Two surviving phases of a plan whose headline transform the census killed.
-**Phase 3:** a new module pass `EcoMarkGCLeafCalls` copies `eco.gc_leaf` from the
-kernel decl onto each direct `eco.call` as `eco.callee_gc_leaf`, and
-`EcoGCPrepare` stops treating those calls as safepoints. **Phase 2-pre:** a run
-of adjacent allocations whose members each have a call-free HEAP_034 inline
-lowering is no longer grouped — grouping such a run costs an out-of-line
-`eco_gc_alloc_region_fast` plus one `eco_init_*_at` per member where the
-ungrouped form makes no calls at all.
-
-**Phases 2 / 2A / 2B DROPPED** on the census: of 2,145 crossable merge windows,
-**2,105 (98.1%) are blocked by a real intra-group SSA dependency** and
-`mergeableLeaf` was **exactly 0** — the gc-leaf fact unlocks no merge anywhere in
-the module. Design-doc §8 row 3's "two diamonds where one sufficed, split by an
-opaque kernel call" does not hold on this tree.
-
-**Phase 3 is byte-identical by construction and was gated as such:** with split
-forced off in both arms, the produced `eco-compiler` is **identical** with the
-relaxation on and off. Its effect is MLIR-analysis-only — safepoints
-154,323 → 153,525 (**−798**, exactly the stamped-call count) and root operands
-527,779 → 525,246 (**−2,533**), all of which were discarded at lowering anyway.
-0.52% of one pass; it lands because it is free, not because it is big.
-
-**Phase 2-pre carries the whole measurable delta:** 1,385 groups covering 2,788
-objects stop being grouped, deleting **1,385 region calls + 2,788 init calls**.
-Binary **−25,304 B (−0.039%)**, split `.text` **+16,192** / `.llvm_stackmaps`
-**−40,104** — more inline code, but 1,385 fewer statepointed region diamonds.
-
-**Counter note — the allocation drop is HEAP_034 counter blindness, not deleted
-allocation.** `Objects allocated` −1,838,862 (−0.84%) and `Bytes allocated`
-−85.18 MB (−0.64%) are the 2,788 sites moving from the *counted* region path to
-the *uncounted* inline bump. `Objects promoted` moved by **+8 in 361 million**
-and minor/major cycles are identical at 836/10 — retention is untouched, so no
-real allocation was removed. Same lesson as Run F.
-
-Wall **−0.23%** ⇒ FLAT. `-out.mlir` byte-identical in both rounds. Gates: E2E
-**1643/1643** default-on and again with both kill switches; item-09-all-off
-build byte-identical to the pre-item-09 `eco-compiler`.
 
 | leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|---|
@@ -512,34 +400,18 @@ build byte-identical to the pre-item-09 `eco-compiler`.
 | off r1 | 3:22.85 | 4,887,696 kB | 219,767,655 | 13,331.32 MB | 836 | 361,232,802 | 10 | 79.84 s | ≡ |
 | off r2 | 3:23.70 | 4,888,028 kB | ≡ | ≡ | 836 | ≡ | 10 | 80.03 s | ≡ |
 
+Two surviving phases of a plan whose headline transform the census killed. **Phase 3:**
+`EcoMarkGCLeafCalls` copies `eco.gc_leaf` onto each direct call so `EcoGCPrepare` stops
+treating them as safepoints. **Phase 2-pre:** a run of adjacent allocations that each have a
+call-free HEAP_034 inline lowering is no longer grouped. **Phases 2/2A/2B DROPPED on the
+census**: of 2,145 crossable merge windows, 2,105 (98.1%) are blocked by a real SSA
+dependency and `mergeableLeaf` was **exactly 0**. Phase 3 is byte-identical by construction;
+its effect is analysis-only — safepoints −798, root operands −2,533. Phase 2-pre carries the
+delta: 1,385 groups stop being grouped, deleting 1,385 region + 2,788 init calls, binary
+−25,304 B. **The allocation drop is counter blindness** — objects −0.84% is those sites moving
+to the uncounted inline bump; promoted moved +8 in 361M. Wall −0.23% ⇒ FLAT; E2E 1643/1643.
+
 ### 2026-08-12 08:33 UTC — Run M: kernel-opt-08 kernel `eco.gc_leaf` stamp (**FLAT — no regression; KEEP — DEFAULT-ON, `ECO_KERNEL_GCLEAF_EMIT=0` / backend `ECO_KERNEL_GCLEAF=0` escape**)
-
-Every kernel whose `KernelFacts` row is `gcLeafEligible` (14 rows, `gcAlloc =
-GcNone` and no call back into Elm) gets an `eco.gc_leaf` UnitAttr on its
-`func.func` decl; `KernelFuncOpLowering` reflects that into
-`passthrough = ["gc-leaf-function"]` so RS4GC skips statepointing the call
-sites. Eligibility is carried on `KernelDeclInfo` from the
-`KernelInstanceKey` — never reverse-parsed from the symbol — and OR-merged in
-`insertKernelDecl`. gc-leaf is the only attribute such a decl may hold
-pre-RS4GC (REP_LLVM_002), so the fixture's negative CHECKs are load-bearing.
-
-**Arms differ in how each binary was COMPILED, not in what it emits:**
-`eco-k08-on` was built by a compiler run with the flag on, so its own call
-sites are de-statepointed. Both then compile the frozen corpus with the flag
-off, and `-out.mlir` is byte-identical in both rounds — the self-consistency
-check still holds. Wall **−1.25%** ⇒ FLAT. Gates: E2E **1643/1643** in both
-flag states.
-
-**Coverage (`ECO_GCFREE_LEAF=c` on the same Stage-5 module):** 3,688 → 3,709
-GC-free functions (of 87,327) and **11,950 → 14,173 de-statepointed direct
-call sites (+2,223, +18.6%)**. Binary **−287,952 B (−0.439%)**, of which
-`.llvm_stackmaps` is −284,976 B and `.text` only −2,064 B — 99.0% metadata,
-which is precisely why the wall is flat.
-
-**10 of the 14 eligible kernels are actually stamped**, and the four absentees
-are this series eating its own seed corn: `Utils_equal`/`Utils_notEqual` no
-longer have stubs (Run K routed all 1,452 sites through `eco.value.eq`),
-`String_length` likewise (Run H), and `Utils_le` has zero sites (Run J).
 
 | leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|---|
@@ -548,193 +420,18 @@ longer have stubs (Run K routed all 1,452 sites through `eco.value.eq`),
 | off r1 | 3:27.32 | 4,929,412 kB | 219,767,740 | 13,331.33 MB | 836 | 361,232,748 | 10 | 81.12 s | ≡ |
 | off r2 | 3:25.08 | 4,908,216 kB | 219,767,582 | 13,331.32 MB | 836 | 361,232,804 | 10 | 80.95 s | ≡ |
 
-### 2026-08-16 05:20 UTC — Run V: map-template round 2, G-0…G-3 (**FLAT wall; binary −1,649,512 B; licence pool 58 → 297; still DEFAULT-OFF**)
-
-`plans/list-map-mlir-template.md` G-0/G-1/G-2/G-3. Four items against the
-post-F census, which left 534 of 592 map specs declining. **Licensed 58 → 297
-(9.8% → 50.2% of recognized)** — G-1 generic-apply arm +15, G-2 `CsePurity`
-ctor/enum seed +61, G-3 `OriginGlobal`→SpecId resolution +163. G-0 was a
-measurement-only counter split that sized the other three and found both
-funnels maximally favourable (`unresolved{blocked=0 global=163 missing=0}`,
-`multiMember{boxedResult=54 unboxedResult=1}`).
-
-Same A/B shape as Runs T and U: two Stage-5 builds from one tree, flag set only
-in the BUILD env; workload legs run flag-UNSET, `-out.mlir` **byte-identical
-across arms (13,249,278 B)**.
-
-| | template ON | template OFF | Δ |
-|---|---|---|---|
-| wall r1 / r2 | 4:03.79 / 4:02.94 | 4:02.01 / 4:01.20 | mean +0.74% ⇒ **FLAT** |
-| max RSS | 5,330,112 KB | 5,272,368 KB | +1.10% |
-| binary | 64,847,536 B | 66,497,048 B | **−1,649,512 B (−2.48%)** |
-| objects allocated | 237,455,932 | 227,290,386 | +4.47% (counter-blind — see below) |
-| bytes allocated | 14,521.69 MB | 14,211.45 MB | +2.18% (same blindness) |
-| minor / major GC | 915 / 12 | 914 / 12 | +1 / = |
-| objects promoted | 431,019,109 | 427,179,257 | **+0.90%** |
-| total GC/alloc | 104.41 s | 104.56 s | −0.14% |
-
-**The binary credit scales with the pool, exactly as Runs T and U predicted:**
-−291,816 B at 50 specs, −325,912 B at 58, **−1,649,512 B at 297** (≈5,500 B per
-licensed spec, flat across a 6× pool change).
-
-**The allocation column is the known HEAP_034 blindness, now 5× larger.** The
-per-tag dump identifies it: `ConsChunk` **7,876,357 → 14,130,511 (+79.4%)** —
-the template's scratch chunks, which the counter SEES — and `Cons`
-**48,785,794 → 52,342,739 (+7.3%)**, work moved off the uncounted inline-alloc
-fast path onto counted runtime allocation. The blind-free axes are the ones to
-judge on, and they are flat: promotion +0.90%, minors +1, majors EQUAL, GC time
-−0.14%, wall inside the noise band. A definitive allocation delta needs the
-`ECO_INLINE_ALLOC=0` legs (Run T's method); **those were not run here**, so the
-+4.47% is reported as un-adjudicated rather than as a regression.
-
-**Disposition: KEPT-DARK.** Still `ECO_LIST_MAP_TEMPLATE`, default-off. The
-whole G series is inert in the default configuration (verified: emitted MLIR
-byte-identical to the pre-G compiler with the flag unset), because `derive`
-returns `empty` flag-off and G-2's oracle split leaves MonoCse's
-`mergeableSpecs` bit-identical.
-
-### 2026-08-14 21:40 UTC — Run U: map-template follow-ups F-1L…F-5C (**FLAT — no regression; licence pool 50 → 58; binary −325,912 B; still DEFAULT-OFF**)
-
-`plans/list-map-mlir-template.md` F-1L / F-2 / F-3 / F-4 / F-5A-B-C, all landed
-this session. Net licence movement on the self-compile at budget 64:
-**50 → 58 licensed of 592 recognized** — F-4's argument-taint rule REMOVED 2
-(a live D-4a hole: captured function values laundered through `List.any` /
-`List.sortWith`), F-3's callee resolution recovered 0, and F-5A+F-5B's
-ctor-as-callback arm ADDED 9 (`List.map Just` and friends; `declinedNoStamp`
-13 → 4, `declinedCtorUnresolved` 0).
-
-Same A/B shape as Run T (front-end artifact-affecting flag): two Stage-5 builds
-from one tree, flag set only in the BUILD env, `.mlir` + binary deleted between
-arms. Workload legs run flag-UNSET; `-out.mlir` **byte-identical across arms
-(13,244,058 B)**, so only the binary differs.
-
-| | template ON | template OFF | Δ |
-|---|---|---|---|
-| wall r1 / r2 | 3:54.43 / 3:52.18 | 3:53.63 / 3:56.54 | mean −0.76% ⇒ **FLAT** |
-| max RSS | 5,523,668 KB | 5,526,188 KB | −0.05% |
-| binary | 66,092,112 B | 66,418,024 B | **−325,912 B (−0.49%)** |
-| objects allocated | 227,631,274 | 226,690,246 | +0.42% (counter-blind, see Run T) |
-| bytes allocated | 14,185.38 MB | 14,143.22 MB | +0.30% |
-| minor / major GC | 913 / 11 | 914 / 11 | −1 / = |
-| objects promoted | 416,654,491 | 417,381,243 | −0.17% |
-| total GC/alloc | 98.14 s | 96.87 s | +1.3% |
-
-**Reads exactly like Run T, one item bigger.** The binary credit scales with the
-pool (−291,816 B at 50 specs, −325,912 B at 58), retention is unmoved
-(promoted −0.17%, minors 913 vs 914, majors equal), and wall is inside the
-noise band. The allocation column is HEAP_034 counter-blind in the
-unfavourable direction for the same reason Run T documented — the template
-deletes UNCOUNTED inline cons and adds COUNTED chunk calls.
-
-**F-2A budget sweep (measurement item, mirrored from the plan).** Ten flag-off
-Stage-5 legs on the frozen post-F-5 tree, plus flag-on legs for the licence
-pool:
-
-| N | wall r1 / r2 | mean | Δ vs 64 | artifact B | binary B | Δ binary | recognized `map` | licensed |
-|---|---|---|---|---|---|---|---|---|
-| **64** | 6:56.03 / 7:36.10 | 436.1 s | — | 13,710,047 | 66,418,024 | — | 592 | **58** |
-| 128 | 7:45.48 / 7:31.45 | 458.5 s | +5.1% | 13,904,958 | 66,991,792 | +0.86% | 599 | 61 |
-| 256 | 7:45.73 / 7:49.54 | 467.6 s | +7.2% | 14,152,621 | 67,464,104 | +1.57% | 625 | 69 |
-| 512 | 7:38.76 / 7:54.21 | 466.5 s | +7.0% | 14,384,050 | 68,200,968 | +2.68% | 678 | — |
-| 1024 | 7:43.42 / 7:40.85 | 462.1 s | +6.0% | 14,650,323 | 69,311,736 | +4.36% | 813 | 143 |
-
-The knee rule selects **N = 64, the incumbent**, so the default does not move
-(marginal gain 64→128 is +3 sites). **The wall column here is not usable**: the
-r1/r2 spread WITHIN N=64 is 40.1 s (9.2%), wider than the ±5% band the rule
-tests, and the trend is non-monotone (512 and 1024 beat 256). Binary size is
-the decisive axis — bit-identical across both rounds at every N.
-
-**Disposition: KEPT-DARK.** Everything stays behind `ECO_LIST_MAP_TEMPLATE`,
-default-off. F-4 is the reason the flag *could* now be considered — it closes
-the direct-arrow laundering channel that made a default-ON decision unsound —
-but the recorded residual (a closure in a concrete custom-type field is
-invisible to `arrowAnnos`) still wants `plans/effect-polymorphic-purity.md`
-before that argument is fully discharged.
-
-### 2026-08-14 09:05 UTC — Run T: `List.map` forward MLIR template (**FLAT — no regression; KEPT-DARK — landed DEFAULT-OFF, `ECO_LIST_MAP_TEMPLATE=1` enables**)
-
-`plans/list-map-mlir-template.md`. A licensed `List.map` spec's whole body becomes
-one `eco.list.map` op — forward cursor loop, devirtualized callback, scratch
-pushes, one `eco_scratch_finish_fwd` — replacing elm/core's foldr lowering.
-Licence is a transitive Debug-freedom proof on the callback (policy D-4a);
-**50 of 591 map specs qualify (8.5%)**, 425 declining on LTop callback sets.
-
-**Front-end artifact-affecting flag, so this is the expensive A/B shape** (item-01
-Phase-5): two Stage-5 builds from one tree, flag set only in the BUILD env, `.mlir`
-+ binary deleted between arms (Ninja is env-blind). Workload legs run flag-UNSET;
-`-out.mlir` byte-identical across all four legs, so only the binary differs.
-Wall **−2.05%** ⇒ FLAT. Binary **−291,816 B**. Gates: E2E 1664/1664 in all three
-flag states, heap-validate 1664/1664 flag-on, flag-ON bootstrap Stage-8c
-byte-identical.
-
-**The counters are the finding, and they refute the plan's hypothesis.** The
-standard-binary allocation column is HEAP_034 counter-blind here in the
-*unfavourable* direction — it shows +1.29% objects because the template deletes
-UNCOUNTED inline cons and adds COUNTED chunk calls. The `ECO_INLINE_ALLOC=0` legs
-give the truth: **`Cons` allocated −5,834,272 (−1.40%)**, `ConsChunk` **+2,791,153
-(+35.5%)**, net objects **−3,090,035**. But **`Cons` PROMOTED moved −0.002% and
-minor-GC count is IDENTICAL at 900** — the deleted cons died in the nursery. Wall,
-RSS (−2.06%) and GC time (−5.1%) are consistent in sign but sub-threshold, and
-cannot be attributed to retention; the plausible source is the deleted foldr
-machinery itself (non-tail frames, per-frame root ranges, out-of-line head/tail).
-
-| leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
-|---|---|---|---|---|---|---|---|---|---|
-| on r1 | **3:48.37** | 5,347,008 kB | 228,050,612 | 14,062.57 MB | 900 | 407,138,781 (178.5%) | 11 | 93.90 s | 13,205,451 B |
-| on r2 | **3:49.17** | 5,344,992 kB | 228,050,449 | 14,062.57 MB | 900 | 407,138,782 | 11 | 94.97 s | ≡ |
-| off r1 | 3:52.89 | 5,459,500 kB | 225,154,129 | 13,956.70 MB | 900 | 407,074,509 (180.8%) | 12 | 98.94 s | ≡ |
-| off r2 | 3:54.21 | 5,459,824 kB | 225,154,129 | 13,956.70 MB | 900 | 407,074,509 | 12 | 100.02 s | ≡ |
-
-**`ECO_INLINE_ALLOC=0` census legs** (both Stage-5 artifacts re-lowered with the
-inline-alloc path off; this is the only allocation column that means anything here):
-
-| leg | objects alloc'd | bytes alloc'd | `Cons` alloc'd | `ConsChunk` alloc'd | `Cons` promoted | minor GC |
-|---|---|---|---|---|---|---|
-| on | 4,037,332,291 | 160,674.08 MB | **410,390,748** | **10,648,356** | 149,907,357 | 900 |
-| off | 4,040,422,326 | 160,706.56 MB | **416,225,020** | **7,857,203** | 149,910,075 | 900 |
-
-**Run T's ABSOLUTE wall is NOT comparable to Runs D-S — the corpus grew, and a
-control run proves the change is exonerated.** The workload IS the compiler's own
-source, so this item's ~700 added lines enlarge it. Same pristine binary
-(`eco-lmt-base`, none of this item's code), two corpora:
-
-| corpus | out.mlir | wall | minor GC | major GC | promoted |
-|---|---|---|---|---|---|
-| pristine (this item's Phase-0 baseline) | 13,161,408 B | 3:31.13 | 865 | 10 | 374,827,174 |
-| current | 13,205,451 B | **3:57.96** | 900 | 12 | 407,132,733 |
-
-And on the CURRENT corpus, with `out.mlir` byte-identical across all three, the
-ordering is **ON (3:48.4) < OFF (3:52.9) < pristine (3:58.0)** — the binary
-carrying this change is the fastest of the three, and the one carrying none of it
-is the slowest. Cumulative corpus growth since the Run-S era is +271,895 B of
-emitted MLIR, of which **+227,852 predates this item** (the plan's own census
-work) and +44,043 is its source. Caveat, stated rather than glossed: +44 KB of
-output costing ~27 s is disproportionate and not fully accounted for — two extra
-majors at ~2.4 s each explains ~5 s and the +8.6% promotion some more, with
-majors 10->12 partly trigger lottery.
-
-Seventh confirmation of the series lesson: **wall follows retention and deleted
-per-op work, never allocation counts.** Allocation fell measurably; nothing moved.
+Every kernel whose `KernelFacts` row is `gcLeafEligible` (14 rows) gets an `eco.gc_leaf`
+UnitAttr on its decl; `KernelFuncOpLowering` reflects that into
+`passthrough = ["gc-leaf-function"]` so RS4GC skips statepointing the call sites. Eligibility
+rides on `KernelDeclInfo` from the `KernelInstanceKey`, never reverse-parsed from the symbol;
+gc-leaf is the only attribute such a decl may hold pre-RS4GC (REP_LLVM_002), so the fixture's
+negative CHECKs are load-bearing. Arms differ in how each binary was COMPILED, not in what it
+emits. Coverage: 3,688 → 3,709 GC-free functions and **11,950 → 14,173 de-statepointed call
+sites (+2,223)**. Binary **−287,952 B**, of which `.llvm_stackmaps` is −284,976 and `.text`
+only −2,064 — **99.0% metadata, which is precisely why the wall is flat** (−1.25% ⇒ FLAT).
+10 of the 14 eligible kernels are stamped; the absentees are Runs K, H, J eating the seed corn.
 
 ### 2026-08-12 04:10 UTC — Run L: kernel-opt-03 `ECO_VALUE_EQ_STRCASE` (**FLAT — no regression; KEEP — DEFAULT-ON, `ECO_VALUE_EQ_STRCASE=0` escapes**)
-
-Closes the one switch Run K shipped unmeasured. Under `ECO_VALUE_EQ_STRCASE` the
-two SYNTHESIZED string-`case` sites — the SCF if-chain
-(`EcoControlFlowToSCF.cpp`) and the LLVM-level `lowerStringCase`
-(`EcoToLLVMControlFlow.cpp`) — emit `eco.value.eq` instead of a boxed
-`Elm_Kernel_Utils_equal` call plus a True-word decode. Both halves must be
-switched together, which is why one flag drives both. Flag-off also keeps
-`ensureEqualDeclared` so no dead `func.func` stub is left behind flag-on.
-
-**Backend-only flag, so this is the cheap A/B shape:** both arms are one Stage-5
-`.mlir` lowered twice, differing only by the env var at lowering time — no
-compiler rebuild, no `.mlir` regeneration. `-out.mlir` byte-identical in both
-rounds. Wall **−0.22%** ⇒ FLAT (−0.34% excluding the off-r1 outlier). Binary
-**+8,168 B**. Gates: E2E **1642/1642** default-on and again with the kill switch.
-
-**Counter note:** `off r1` is a GC-trigger-lottery outlier — 819 minor cycles and
-+520K promoted against 836 / 361,223,669 on the other three legs, which agree
-bit-for-bit. Majors are 10 everywhere. The delta is FLAT under either reading.
 
 | leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|---|
@@ -743,32 +440,19 @@ bit-for-bit. Majors are 10 everywhere. The delta is FLAT under either reading.
 | off r1 † | 3:24.10 | 4,923,064 kB | 219,829,162 | 13,333.52 MB | 819 | 361,743,676 (164.6%) | 10 | 80.47 s | ≡ |
 | off r2 | 3:24.59 | 4,884,536 kB | 219,818,084 | 13,332.69 MB | 836 | 361,223,669 | 10 | 80.72 s | ≡ |
 
-† GC-trigger lottery, see above — not an effect of the flag.
+† GC-trigger lottery — 819 minor cycles and +520K promoted against 836 / 361,223,669 on the
+other three legs, which agree bit-for-bit. Majors are 10 everywhere; not an effect of the flag.
+
+Closes the one switch Run K shipped unmeasured. Under `ECO_VALUE_EQ_STRCASE` the two
+SYNTHESIZED string-`case` sites — the SCF if-chain and the LLVM-level `lowerStringCase` —
+emit `eco.value.eq` instead of a boxed `Elm_Kernel_Utils_equal` call plus a True-word decode.
+Both halves must be switched together, which is why one flag drives both; flag-off keeps
+`ensureEqualDeclared` so no dead stub is left behind flag-on. Backend-only flag, so this is
+the cheap A/B shape: one Stage-5 `.mlir` lowered twice, no compiler rebuild. Wall −0.22% ⇒
+FLAT (−0.34% excluding the off-r1 outlier). Binary +8,168 B. `-out.mlir` byte-identical in
+both rounds. Gates: E2E 1642/1642 default-on and again with the kill switch.
 
 ### 2026-08-12 01:30 UTC — Run K: kernel-opt-03 `eco.value.eq` emission (**FLAT — no regression; KEEP — DEFAULT-ON, `ECO_VALUE_EQ=0` escapes**)
-
-`plans/kernel-opt-03-value-eq-fastpath.md` Phases 1/3/4/6, completing the item
-(Phase 2 landed earlier; Phase 5 was closed by kernel-opt-06's 64-site residue).
-Boxed structural equality now emits `eco.value.eq`, which expands pre-RS4GC into
-word-equality → embedded-constant test → gc-leaf kernel call decoded against the
-True word. **Emission: `Utils_equal` 1392→0 and `Utils_notEqual` 60→0 against
-`eco.value.eq` +1452 — 100% conversion, exact 1:1.**
-
-Wall **−1.84%**: directionally good but **inside the ±2.8% band, so recorded
-FLAT**, not a win. That is consistent with the Phase-0 census, which measured the
-inline arms at only 6.47% of non-Bool traffic — most of the 1,452 sites still
-reach arm 3 and pay the call. Counters identical, `-out.mlir` byte-identical both
-rounds.
-
-`Elm_Kernel_Utils_equal`'s declaration now carries `gc-leaf-function` (Phase 4):
-kernel-opt-07 recorded it as one of the A1 stampable 14 and deleted the stderr
-trace that was its last observable effect. `CGEN_076` records the whole contract.
-Gates: E2E **1642/1642 in ALL THREE switch states** (off; `ECO_VALUE_EQ=1`;
-`ECO_VALUE_EQ=1 ECO_VALUE_EQ_STRCASE=1`) and again default-on.
-
-**Not measured:** `ECO_VALUE_EQ_STRCASE` ships **default-off** — the two
-synthesized string-`case` sites are implemented and proven correct, but no wall
-A/B was run for them, so they must not be defaulted on without one.
 
 | leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|---|
@@ -777,27 +461,17 @@ A/B was run for them, so they must not be defaulted on without one.
 | off r1 | 3:25.29 | 4,884,248 kB | 219,818,070 | 13,332.70 MB | 836 | 361,223,654 | 10 | 80.93 s | ≡ |
 | off r2 | 3:25.54 | 4,884,284 kB | ≡ | ≡ | 836 | ≡ | 10 | 81.05 s | ≡ |
 
+Phases 1/3/4/6 of `plans/kernel-opt-03-value-eq-fastpath.md`. Boxed structural equality now
+emits `eco.value.eq`, which expands pre-RS4GC into word-equality → embedded-constant test →
+gc-leaf kernel call decoded against the True word. **Emission: `Utils_equal` 1392→0 and
+`Utils_notEqual` 60→0 against `eco.value.eq` +1452 — 100% conversion, exact 1:1.** Wall −1.84%
+is directionally good but **inside the ±2.8% band, so recorded FLAT** — consistent with the
+Phase-0 census, which put the inline arms at only 6.47% of non-Bool traffic, so most of the
+1,452 sites still reach arm 3 and pay the call. `Elm_Kernel_Utils_equal` now carries
+`gc-leaf-function` (CGEN_076). **Not measured:** `ECO_VALUE_EQ_STRCASE` ships default-off —
+proven correct but no wall A/B (see Run L). Gates: E2E 1642/1642 in ALL THREE switch states.
+
 ### 2026-08-11 21:15 UTC — Run J: kernel-opt-06 String ordering → `eco.string.cmp3` (**FLAT — no regression; KEEP — DEFAULT-ON, `ECO_STRING_ORDER_INTRINSIC=0` escapes**)
-
-`plans/kernel-opt-06-string-ordering-cmp3.md`. `<`/`<=`/`>`/`>=` on two Strings
-now emit `eco.string.cmp3` plus ONE signed test against 0, replacing a boxed
-`Elm_Kernel_Utils_{lt,le,gt,ge}` call whose `HPtr` Bool was immediately
-`eco.unbox`-ed. Phase-0 reproduced the recorded baseline exactly (lt 79 / le 0 /
-gt 40 / ge 2). **Emission: lt 79→14, gt 40→10, ge 2→2, cmp3 1→96 — 95
-conversions, 95 new ops, exact 1:1**, inside the plan's predicted 95–100 range.
-The sign is UNCLAMPED, so the test is against 0 and must be SIGNED; CGEN_075
-gains clause (f) recording that, since an unsigned predicate would read −1 as a
-huge positive and invert every answer.
-
-Wall **−0.34%** ⇒ FLAT, as the plan predicted in bold — it is the fourth
-compare-family deletion to measure flat, and it changes no retention: the boxed
-Bool it removes was an embedded HPointer constant that never allocated.
-Counters identical, `-out.mlir` byte-identical both rounds. Gates: E2E
-**1639/1639 in BOTH flag states** and again default-on; elm-tests 13,085 / 12.
-
-**Owed to kernel-opt-03:** the surviving boxed comparison population is now
-**64 sites** (lt 14, le 0, gt 10, ge 2, compare 38) — well under the >200
-threshold 03's Phase 5 is gated on, so **that phase must not execute**.
 
 | leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|---|
@@ -806,29 +480,18 @@ threshold 03's Phase 5 is gated on, so **that phase must not execute**.
 | off r1 | 3:24.86 | 4,887,332 kB | 219,817,640 | 13,332.70 MB | 836 | 361,224,058 | 10 | 79.80 s | ≡ |
 | off r2 | 3:23.02 | 4,888,656 kB | 219,817,474 | 13,332.69 MB | 836 | 361,224,059 | 10 | 79.50 s | ≡ |
 
+`<`/`<=`/`>`/`>=` on two Strings now emit `eco.string.cmp3` plus ONE signed test against 0,
+replacing a boxed `Elm_Kernel_Utils_{lt,le,gt,ge}` call whose `HPtr` Bool was immediately
+`eco.unbox`-ed. **Emission: lt 79→14, gt 40→10, ge 2→2, cmp3 1→96 — 95 conversions, exact
+1:1**, inside the predicted range. The sign is UNCLAMPED, so the test must be SIGNED; CGEN_075
+gains clause (f), since an unsigned predicate would read −1 as huge positive and invert every
+answer. Wall −0.34% ⇒ FLAT, as the plan predicted in bold — the fourth compare-family deletion
+to measure flat, and it changes no retention (the boxed Bool it removes was an embedded
+HPointer constant that never allocated). **Owed to kernel-opt-03:** the surviving boxed
+comparison population is now 64 sites, under the >200 threshold its Phase 5 is gated on, so
+**that phase must not execute**. Gates: E2E 1639/1639 both states.
+
 ### 2026-08-11 17:40 UTC — Run I: kernel-opt-05 `Utils_append` type split (**FLAT — no regression; KEEP — DEFAULT-ON, `ECO_APPEND_SPLIT=0` escapes**)
-
-`plans/kernel-opt-05-utils-append-type-split.md` Phases 1a/1b/3. `++` at mono
-sites that statically know the operand type now emits typed `eco.string.append` /
-`eco.list.append` instead of the polymorphic `Elm_Kernel_Utils_append`, which
-re-derives the type at runtime from two tag loads and silently returns its first
-argument for any pair it does not recognise. **3,468 sites → 67, and the split
-reconciles exactly: 2,695 string + 706 list = 3,401 displaced (98.1%).** The 67
-residue is the `MVar`-operand population falling through `utilsIntrinsic`'s final
-wildcard, as designed.
-
-Wall **+0.80%** ⇒ FLAT, which is what §Expected impact predicted ("the deleted
-per-call dispatch is a handful of loads and branches, so wall could well be
-flat"). Counters identical, `-out.mlir` byte-identical both rounds. The purchase
-the plan actually claims is IR size, and it is real but small: Stage-5 `.mlir`
-**−6,773 B (−0.05%)** from the `eco.call` root tails that leave the IR. Both ops
-are deliberately trait-free and appear in none of EcoGCPrepare's four lists —
-they allocate variable-size results, so RS4GC statepoints the lowered calls and
-attaches roots from its own liveness. Phase 3 also filled the `(Utils, append)`
-borrow axes as `POwned/POwned` + `resultAliases = [0,1]` (OWNER over both string
-and list — the borrow upside is FALSE, per the census correction), which required
-growing kernel-opt-07's golden from 33 to 34 rows in the same change. Gates: E2E
-**1638/1638 in BOTH flag states** and again default-on; elm-tests 13,085 / 12.
 
 | leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|---|
@@ -837,28 +500,18 @@ growing kernel-opt-07's golden from 33 to 34 rows in the same change. Gates: E2E
 | off r1 | 3:24.26 | 4,901,736 kB | 219,913,243 | 13,335.57 MB | 836 | 361,202,867 | 10 | 79.11 s | ≡ |
 | off r2 | 3:22.62 | 4,903,676 kB | 219,913,082 | 13,335.56 MB | 836 | 361,202,868 | 10 | 78.97 s | ≡ |
 
+`++` at mono sites that statically know the operand type now emits typed `eco.string.append`
+/ `eco.list.append` instead of the polymorphic `Elm_Kernel_Utils_append`, which re-derives the
+type at runtime from two tag loads and silently returns its first argument for any pair it
+does not recognise. **3,468 sites → 67, and the split reconciles exactly: 2,695 string + 706
+list = 3,401 displaced (98.1%)**; the residue is the `MVar`-operand population falling through
+the final wildcard, as designed. Wall +0.80% ⇒ FLAT, which §Expected impact predicted. The
+purchase the plan claims is IR size, real but small: Stage-5 `.mlir` −6,773 B. Both ops are
+trait-free and appear in none of EcoGCPrepare's four lists — they allocate variable-size
+results, so RS4GC statepoints the lowered calls. Phase 3 filled the `(Utils, append)` borrow
+axes as POwned/POwned; the borrow upside is FALSE. Gates: E2E 1638/1638; elm-tests 13,085/12.
+
 ### 2026-08-11 14:05 UTC — Run H: kernel-opt-04 `eco.string.length` + `eco.string.code_unit_at` (**FLAT — no regression; KEEP — DEFAULT-ON, `ECO_STRING_LENGTH_OP=0` escapes**)
-
-`plans/kernel-opt-04-string-length-code-unit-at.md`. `String.length` becomes an
-INLINE-IR `eco.string.length`: a `__eco_string_len_inline` marker that
-`expandStringLenMarkers` turns into an embedded-constant test (`ptr_ind`, bit 2)
-plus, on the heap arm, `__eco_resolve_fwd` + a u32 load at `offsetof(Header,size)`
-+ zext. One word serves all six String forms because HEAP_025/HEAP_032 define
-`header.size` as the logical UTF-16 count for every one of them, so there is no
-per-tag dispatch. **All 101 self-compile call sites convert: `callee =
-@Elm_Kernel_String_length` 101 → 0 against `eco.string.length` 0 → 101, exact 1:1
-with no declines.** Also lands `eco.string.code_unit_at` (a gc-leaf call to
-`StringOps::charAt`) with **no Elm emission** — it exists to unblock kernel-opt-14's
-String-HOF phase, so no wall is booked against it.
-
-Wall **−0.12%** ⇒ FLAT, and the plan said so up front: 75.6M calls is 2.06% of the
-kernel total, and this is call-deletion, not retention. Counters are identical
-(objects differ by 162 of 220M, documented same-binary noise; minor 836, major 10,
-promoted equal both arms), `-out.mlir` byte-identical in both rounds. Binary
-−8,336 B. Gates: E2E **1636/1636 in BOTH flag states** and again default-on;
-elm-tests 13,085 / 12 pre-existing, unchanged. `ptr_ind` was chosen over v1's
-`icmp eq 0x6`: the word test would dereference address 4/5 for a Bool constant
-where the kernel returns 0.
 
 | leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|---|
@@ -867,29 +520,17 @@ where the kernel returns 0.
 | off r1 | 3:22.47 | 4,888,640 kB | 219,915,616 | 13,335.65 MB | 836 | 361,202,842 | 10 | 78.45 s | ≡ |
 | off r2 | 3:23.49 | 4,888,544 kB | ≡ | ≡ | 836 | ≡ | 10 | 78.98 s | ≡ |
 
+`String.length` becomes an INLINE-IR `eco.string.length`: a `__eco_string_len_inline` marker
+that `expandStringLenMarkers` turns into an embedded-constant test (`ptr_ind`, bit 2) plus, on
+the heap arm, `__eco_resolve_fwd` + a u32 load at `offsetof(Header,size)` + zext. One word
+serves all six String forms because HEAP_025/HEAP_032 define `header.size` as the logical
+UTF-16 count for every one, so there is no per-tag dispatch. **All 101 call sites convert,
+exact 1:1 with no declines.** Also lands `eco.string.code_unit_at` with **no Elm emission**, to
+unblock kernel-opt-14's String-HOF phase, so no wall is booked against it. Wall −0.12% ⇒ FLAT,
+as the plan said up front: 75.6M calls is 2.06% of the kernel total, and this is call-deletion,
+not retention. Binary −8,336 B. Gates: E2E 1636/1636 both states; elm-tests 13,085/12.
+
 ### 2026-08-11 11:20 UTC — Run G: kernel-opt-02 lane A + A′ — union-find cell merge (**−4.46% WALL — a REAL SIGNAL, the first in this series; KEEP, no flag**)
-
-`plans/kernel-opt-02-array-push-churn.md` lanes A + A′, selected by the Phase-0
-census (recorded in that plan's §Results). **Lane A:** the three index-synchronised
-`ioRefsWeight` / `ioRefsPointInfo` / `ioRefsDescriptor` arrays collapse to one
-`ioRefsPoint : Array PointCell` (`Root Int Descriptor | Chain Point`), so
-`UnionFind.fresh` does **1 `Array.push` instead of 3** and `union` does **2
-`Array.set`s instead of 3**; `get`/`set`/`modify` lose their second array read.
-12 files (7 compiler src + 5 test). **Lane A′:** `Data/Vector.imapM_` built an
-array with `Array.push` per element and discarded it — deleted.
-
-**G2, the load-bearing gate, passes: `out.mlir` byte-identical in both rounds** on
-the frozen 243-module corpus, so the merge preserved Point ids and every
-type-checking result exactly. (First attempt failed for the wrong reason — the
-promoted baseline binary predates item 01's default flip, so it emitted kernel
-cons calls while the new arm emitted `construct.list`; re-run with
-`ECO_LIST_CONS_INTRINSIC=1` forced on **both** arms, which is what these legs are.)
-
-Wall **−4.46%**, outside the ±2.8% band. **Retention moved with it** — `Objects
-promoted` −2.96%, minor GC 862 → 836, bytes allocated −12.08%, GC time −6.04% —
-which is exactly the channel this repo's measured record says wall tracks. Binary
-−32,448 B. Gates: E2E **1633/1633**; elm-tests 13,085 passed / 12 pre-existing
-failures, unchanged through a rewrite of the type checker's core.
 
 | leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|---|
@@ -898,32 +539,18 @@ failures, unchanged through a rewrite of the type checker's core.
 | base m1 | 3:33.38 | 5,085,100 kB | 232,557,637 | 15,167.93 MB | 862 | 372,239,194 (160.1%) | 10 | 84.61 s | ≡ |
 | base m2 | 3:32.51 | 5,084,740 kB | ≡ | ≡ | 862 | ≡ | 10 | 84.17 s | ≡ |
 
+**Lane A:** the three index-synchronised `ioRefsWeight` / `ioRefsPointInfo` /
+`ioRefsDescriptor` arrays collapse to one `ioRefsPoint : Array PointCell`, so `UnionFind.fresh`
+does **1 `Array.push` instead of 3** and `union` does **2 `Array.set`s instead of 3**;
+`get`/`set`/`modify` lose their second array read (12 files). **Lane A′:** `Data/Vector.imapM_`
+built an array with `Array.push` per element and discarded it — deleted. **G2, the load-bearing
+gate, passes: `out.mlir` byte-identical in both rounds**, so the merge preserved Point ids and
+every type-checking result exactly. Wall **−4.46%**, outside the band, and **retention moved
+with it**: promoted −2.96%, minor GC 862 → 836, bytes −12.08%, GC time −6.04% — exactly the
+channel this repo's record says wall tracks. Binary −32,448 B. Gates: E2E 1633/1633; elm-tests
+13,085/12 through a rewrite of the type checker's core.
+
 ### 2026-08-10 22:05 UTC — Run F: kernel-opt-01 `List.cons` → `eco.construct.list` (**FLAT — no regression; KEEP — DEFAULT-ON, `ECO_LIST_CONS_INTRINSIC=0` escapes**)
-
-`plans/kernel-opt-01-list-cons-construct-list.md`: a `"List"` arm in
-`kernelIntrinsic` lowers saturated `x :: xs` to `eco.construct.list`, so each cons
-pays the HEAP_034 inline bump instead of a statepointed `Elm_Kernel_List_cons*`
-call. **All 4,304 direct kernel cons sites convert to 0 — no declines at all**;
-`= eco.construct.list ` 13,496 → 17,808 (+4,312) against `eco.call` 100,261 →
-95,949 (−4,312), and the three kernel stubs leave the module. The +8 excess over
-the 4,304 conversions localizes to exactly 3 functions (`…encodeEntry_$_30250` +5,
-two `_tail_mono_inline_*` +2/+1) — cheaper bodies shifting inlining, 0.19%.
-EcoListTemplate parity is **bit-identical** (`rewritten=444`, `unwind rewritten=38`,
-`consRoots=0`, `headTy=0`, every bail counter equal), so the chunk rewriter absorbs
-exactly the links it did before. Arms are one frozen 243-module corpus, `-out.mlir`
-identical in both rounds **and** identical to the pre-change binary's output
-(flag-off inertness, proven — see the corrected Gate 3 in the plan). Wall +0.36% ⇒
-FLAT. Binary +29,008 B. Honest read: the plan called this "the highest-confidence
-wall bet in the series"; ~147M dynamic kernel calls per run became inline bumps and
-**the wall did not move** — the TIER pattern again.
-
-**Allocation counters are NOT comparable across these arms** (benchmarks caveat
-§18.3): the ON arm's conses take the HEAP_034 inline path, which bypasses the
-per-tag tally, so `Objects allocated` 379,488,362 → 232,537,735 (−38.7%) and
-`Bytes allocated` −18.1% are **counter blindness, not deleted allocation**. The
-proof is that the retention counters are unmoved: `Objects promoted` 372,240,140 →
-372,240,147 (+7 of 372M), minor 862 = 862, major 10 = 10. The `(160.1%)` promoted
-ratio is that same shrunken denominator, not a retention change.
 
 | leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|---|
@@ -932,24 +559,20 @@ ratio is that same shrunken denominator, not a retention change.
 | off r1 | 3:33.94 | 5,141,004 kB | 379,488,362 | 18,524.25 MB | 862 | 372,240,140 (98.1%) | 10 | 84.86 s | ≡ |
 | off r2 | 3:33.19 | 5,141,136 kB | ≡ | ≡ | 862 | ≡ | 10 | 83.78 s | ≡ |
 
-† inline-alloc counter blindness, see above — not an allocation reduction.
+† inline-alloc counter blindness, not an allocation reduction — see below.
+
+A `"List"` arm in `kernelIntrinsic` lowers saturated `x :: xs` to `eco.construct.list`, so
+each cons pays the HEAP_034 inline bump instead of a statepointed `Elm_Kernel_List_cons*` call.
+**All 4,304 direct kernel cons sites convert to 0 — no declines**; the three kernel stubs leave
+the module, and the +8 excess localizes to 3 functions (cheaper bodies shifting inlining).
+EcoListTemplate parity is bit-identical. **Allocation counters are NOT comparable across these
+arms** (§18.3): the ON arm's conses take the inline path, which bypasses the per-tag tally, so
+objects −38.7% is counter blindness. The proof is that retention is unmoved — promoted +7 of
+372M, minor 862 = 862, major 10 = 10. Wall +0.36% ⇒ FLAT; binary +29,008 B. Honest read: the
+plan called this "the highest-confidence wall bet in the series"; ~147M dynamic kernel calls
+became inline bumps and **the wall did not move** — the TIER pattern again.
 
 ### 2026-08-10 20:36 UTC — Run E: kernel-opt-07 KernelFacts table (**FLAT — no regression; LANDED, no flag to flip**)
-
-`plans/kernel-opt-07-kernel-facts-table.md`: `Compiler/GlobalOpt/KernelFacts.elm`
-(52 rows = 48 kernel + 4 `Basics_*` ledger), `Borrow/KernelSigs.elm` demoted to a
-70-line shim, 7 new elm-test suites, and the `Utils_equal` stderr trace deleted
-(`Utils.cpp:557-562`). **Arms are the pre- and post-change compilers over a FROZEN
-pristine source tree** (staged in scratch), so both compile byte-identical input —
-and their `out.mlir` is **byte-identical in both rounds**, and byte-identical to
-Run D's. That is the inertness gate the plan asks G4/G5 to carry, on all 243
-modules rather than one file. Counters equal (promoted +63 of 372M); wall −1.30%,
-inside the band ⇒ FLAT. Binary **+173,400 B (+0.27%)** — the table's code and
-evidence strings outweigh the deleted trace, so the plan's "binary shrinks"
-prediction is wrong; Stage-5 `.mlir` +20,808 B. RSS is bimodal on this workload
-(~5,054 vs ~5,111 MB for the *same* binary — see Run B/C off-legs), so the −1.10%
-here is lottery, not signal. Gates: E2E 1632/1632; elm-tests 13066→13073 passed
-(exactly the 7 new suites), pre-existing 12 failures unchanged.
 
 | leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|---|
@@ -958,40 +581,34 @@ here is lottery, not signal. Gates: E2E 1632/1632; elm-tests 13066→13073 passe
 | pre r1 | 3:34.72 | 5,110,592 kB | ≡ | 18,524.24 MB | 862 | 372,250,117 (98.1%) | 10 | 85.71 s | ≡ |
 | pre r2 | 3:34.45 | 5,110,020 kB | ≡ | ≡ | 862 | ≡ | 10 | 85.67 s | ≡ |
 
-Noise note: the `pre` arm is Run D's binary, and it measured 214.58 s here vs
-211.59 s there — **+1.42% for the same binary across sessions**, which is why the
-paired interleaved A/B is the comparison and Run D is only a trend line.
+`Compiler/GlobalOpt/KernelFacts.elm` (52 rows), `Borrow/KernelSigs.elm` demoted to a 70-line
+shim, 7 new elm-test suites, and the `Utils_equal` stderr trace deleted. **Arms are the pre-
+and post-change compilers over a FROZEN pristine source tree**, so both compile byte-identical
+input — and their `out.mlir` is byte-identical in both rounds, and to Run D's. That is the
+inertness gate the plan asks G4/G5 to carry, on all 243 modules rather than one file. Counters
+equal (promoted +63 of 372M); wall −1.30% ⇒ FLAT. Binary **+173,400 B**, so the plan's "binary
+shrinks" prediction is wrong. RSS is bimodal on this workload (~5,054 vs ~5,111 MB for the
+*same* binary), so the −1.10% here is lottery, not signal. The `pre` arm is Run D's binary and
+measured +1.42% slower across sessions — which is why the paired interleaved A/B is the
+comparison and Run D is only a trend line. Gates: E2E 1632/1632; elm-tests 13066→13073.
 
 ### 2026-08-10 19:54 UTC — Run D: loop-entry baseline (**reference point for the 14-item kernel-opt loop; not a change**)
-
-Entry baseline for `guides/kernel-opt-loop.md`, which executes
-`plans/kernel-opt-01..14`. No source change: the tree is exactly Run C's, rebuilt
-from scratch with the standard track build env
-(`ECO_MONO_ENGINE=solver ECO_MONO_LSS=1 ECO_BORROW=1 ECO_AGG_PROMOTE=1`) after
-deleting `bin/eco-compiler{,.mlir}` and `eco-stuff` to defeat ninja's
-env-blindness; binary staged as `bin/eco-kopt-base`. It reproduces Run C: the
-counters are bit-identical apart from the 1-object jitter already documented as
-same-binary noise (tier2 Run O), and `out.mlir` is byte-identical at 12,943,401 B,
-so the workload is unmoved. Mean wall **3:31.59** over the two rounds; the 4.67 s
-spread between them is the protocol's ≈2.8% band, measured live.
 
 | leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|---|
 | base r1 | **3:33.92** | 5,111,732 kB | 379,486,685 | 18,524.03 MB | 862 | 372,250,555 (98.1%) | 10 | 83.04 s | 12,943,401 B |
 | base r2 | **3:29.25** | 5,111,812 kB | ≡ | ≡ | 862 | ≡ | 10 | 81.13 s | ≡ |
 
-### 2026-08-10 14:30 UTC — Run C: one-call Order materialization (**FLAT — no regression; KEEP — DEFAULT-ON, `ECO_ORDER_FROM_SIGN=0` escapes**)
+Entry baseline for `guides/kernel-opt-loop.md`, which executes `plans/kernel-opt-01..14`.
+No source change: the tree is exactly Run C's, rebuilt from scratch with the standard track
+build env (`ECO_MONO_ENGINE=solver ECO_MONO_LSS=1 ECO_BORROW=1 ECO_AGG_PROMOTE=1`) after
+deleting `bin/eco-compiler{,.mlir}` and `eco-stuff` to defeat ninja's env-blindness; binary
+staged as `bin/eco-kopt-base`. It reproduces Run C: the counters are bit-identical apart
+from the 1-object jitter already documented as same-binary noise, and `out.mlir` is
+byte-identical, so the workload is unmoved. Mean wall **3:31.59**; the 4.67 s spread between
+the two rounds is the protocol's ≈2.8% band, measured live.
 
-`plans/string-cmp-order-intrinsic-and-postmono-compare-rewrite.md` (CGEN_075)
-phase C-v1: `emitOrderSelect` folds the sign in SSA and makes ONE gc-leaf
-`eco_order_from_sign(i64)` call instead of calling all three
-`Eco_Runtime_getOrder*` getters unconditionally — in the shipped binary
-**24 call instructions → 8 sites (4 call + 4 tail `jmp`)**, since the
-single-call shape ends the function. `.text` −240 B, stackmaps unchanged.
-FLAT: the rounds SPLIT (r1 +2.05%, r2 −0.51%), mean +0.76%, inside the band;
-the 165-object counter delta on off-r1 is documented same-binary noise (tier2
-Run O). Small by construction — B already rewrote 373 of 389 sites so only 8
-survive; this was the 881M-call/run lever *before* B. Gates: 1632/1632 both.
+### 2026-08-10 14:30 UTC — Run C: one-call Order materialization (**FLAT — no regression; KEEP — DEFAULT-ON, `ECO_ORDER_FROM_SIGN=0` escapes**)
 
 | leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|---|
@@ -1000,18 +617,16 @@ survive; this was the 881M-call/run lever *before* B. Gates: 1632/1632 both.
 | off r1 | 3:30.40 | 5,055,312 kB | 379,486,851 | ≡ | 862 | ≡ | 10 | 82.12 s | ≡ |
 | off r2 | 3:33.08 | 5,111,864 kB | 379,486,686 | ≡ | 862 | ≡ | 10 | 83.13 s | ≡ |
 
-### 2026-08-10 12:40 UTC — Run B: `eco.string.cmp_order` + post-mono compare→branch rewrite (**no regression; counters identical; KEEP — DEFAULT-ON, `ECO_CMPCASE=0` escapes**)
+CGEN_075 phase C-v1: `emitOrderSelect` folds the sign in SSA and makes ONE gc-leaf
+`eco_order_from_sign(i64)` call instead of calling all three `Eco_Runtime_getOrder*` getters
+unconditionally — in the shipped binary **24 call instructions → 8 sites** (4 call + 4 tail
+`jmp`), since the single-call shape ends the function. `.text` −240 B, stackmaps unchanged.
+FLAT: the rounds SPLIT (r1 +2.05%, r2 −0.51%), mean +0.76%, inside the band; the 165-object
+delta on off-r1 is documented same-binary noise. Small by construction — Run B already
+rewrote 373 of 389 sites so only 8 survive; this was the 881M-call/run lever *before* B.
+Gates: E2E 1632/1632 in both flag states.
 
-`plans/string-cmp-order-intrinsic-and-postmono-compare-rewrite.md` (CGEN_075),
-phases A+B+D. A: `Utils.compare [MString,MString]` selects `eco.string.cmp_order`
-over the boxed root — boxed `Utils_compare` sites 295 → 38 (250 of the 258 new
-string compares in `Dict_insertHelp`/`Dict_get`). B: an Eco→Eco peephole turns
-single-use compare + 3-arm case-on-Order into ordered lt/gt + nested bool cases
-— `[cmpcase] rewritten=373 skipped=16`. D: deleted the dead pre-mono rewrite
-(−242 lines). Arms are one Stage-5 `.mlir` lowered twice: `out.mlir` identical,
-counters equal ⇒ pure code quality; `.text` −46,784 B, stackmaps unchanged.
-Wall FLAT by the ≥3% bar (mean −2.08%, band ±2.8%); vs Run A also FLAT (phase A
-moves emitted code). Gates: E2E + heap-validate 1631/1631, bootstrap 8c identical.
+### 2026-08-10 12:40 UTC — Run B: `eco.string.cmp_order` + post-mono compare→branch rewrite (**FLAT — no regression; counters identical; KEEP — DEFAULT-ON, `ECO_CMPCASE=0` escapes**)
 
 | leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|---|
@@ -1024,49 +639,62 @@ moves emitted code). Gates: E2E + heap-validate 1631/1631, bootstrap 8c identica
 | off r3 | 3:35.11 (warm 3:36.23) | 5,115,612 kB | ≡ | ≡ | 862 | ≡ | 10 | — | ≡ |
 | off r4 | 3:38.06 (warm 3:34.83) | 5,116,068 kB | ≡ | ≡ | 862 | ≡ | 10 | 83.59 s | ≡ |
 
-### 2026-08-09 15:54 UTC — Run A: series baseline (**carried over from `benchmarks/tier2-opt.md` Run O — NOT re-measured**)
+CGEN_075 phases A+B+D. **A:** `Utils.compare [MString,MString]` selects
+`eco.string.cmp_order` over the boxed root — boxed `Utils_compare` sites 295 → 38 (250 of
+the 258 new string compares in `Dict_insertHelp`/`Dict_get`). **B:** an Eco→Eco peephole
+turns single-use compare + 3-arm case-on-Order into ordered lt/gt + nested bool cases —
+`[cmpcase] rewritten=373 skipped=16`. **D:** deleted the dead pre-mono rewrite (−242 lines).
+Arms are one Stage-5 `.mlir` lowered twice: `out.mlir` identical, counters equal ⇒ pure code
+quality; `.text` −46,784 B, stackmaps unchanged. Wall FLAT by the ≥3% bar (mean −2.08%,
+band ±2.8%); vs Run A also FLAT, since phase A moves emitted code. Entries here use the
+pre-2026-08-10 warmup+measured convention: measured first, throwaway warmup in brackets.
+Gates: E2E + heap-validate 1631/1631, bootstrap 8c identical.
 
-Series baseline, carried over from `benchmarks/tier2-opt.md` Run O (contiguous
-nursery extents + configurable old-gen/nursery split, HEAP_042/043,
-`plans/contiguous-nursery-space.md`) arm C = M1+M2 default. That run was FLAT on
-wall, kept for nursery slow-path entries 417,585 → 316 and RSS −2.56%. Every
-default-on tier-2 track optimization (gc-free propagation, capacity-check
-hoisting, contiguous nursery, inline nursery allocation) is therefore live here.
-`Objects promoted` and `GC time` are `—`: the source entry recorded `ensure
-calls` / `old-gen cap` instead, so capture both from Run B onward. Old-gen cap
-was 20,480 MB. Gates at that point: E2E `--target full` and heap-validate tree
-1628/1628.
+### 2026-08-09 15:54 UTC — Run A: series baseline (**carried over from `benchmarks/tier2-opt.md` Run O — NOT re-measured**)
 
 | leg | wall | max RSS | objects alloc'd | bytes alloc'd | minor GC | promoted | major GC | GC time | out.mlir |
 |---|---|---|---|---|---|---|---|---|---|
 | baseline measured | **3:36.18** | 5,012,240 kB | 379,768,314 | 18,537.46 MB | 871 | — | 10 | — | 12,955,155 B |
 | baseline warmup | 3:36.11 | 5,012,120 kB | ≡ | ≡ | 871 | — | 10 | — | ≡ |
 
+Series baseline, carried over from `benchmarks/tier2-opt.md` Run O (contiguous nursery extents
++ configurable old-gen/nursery split, HEAP_042/043) arm C = M1+M2 default. That run was FLAT on
+wall, kept for nursery slow-path entries 417,585 → 316 and RSS −2.56%. Every default-on tier-2
+track optimization (gc-free propagation, capacity-check hoisting, contiguous nursery, inline
+nursery allocation) is therefore live here. `Objects promoted` and `GC time` are `—` because
+the source entry recorded `ensure calls` / `old-gen cap` instead; both are captured from Run B
+onward. Old-gen cap was 20,480 MB. Gates: E2E `--target full`, heap-validate tree 1628/1628.
+
 ---
 
 ## Summary
 
-| run | wall | total heap allocation |
+One row per run. Wall is the arm with the run's optimization applied — its r1/r2 mean where
+two rounds were measured. Allocation is that same arm's `Objects allocated` / `Bytes
+allocated`. Caveats, counter-blindness notes and secondary figures belong in the run entry,
+never here.
+
+| run | wall | heap allocation |
 |---|---|---|
 | A — baseline (tier2 Run O) | 3:36.18 | 379,768,314 obj / 18,537.46 MB |
 | B — string cmp_order + compare→branch rewrite | 3:33.39 | 379,486,686 obj / 18,524.03 MB |
 | C — one-call Order materialization | 3:34.71 | 379,486,686 obj / 18,524.03 MB |
-| D — loop-entry baseline (no change) | 3:31.59 (r1/r2 mean) | 379,486,685 obj / 18,524.03 MB |
-| E — kernel-opt-07 KernelFacts table | 3:31.81 (r1/r2 mean) | 379,488,337 obj / 18,524.23 MB |
-| F — kernel-opt-01 cons → construct.list | 3:34.33 (r1/r2 mean) | 232,537,735 obj / 15,167.99 MB (inline-alloc counter-blind; retention unmoved) |
-| G — kernel-opt-02 union-find cell merge | **3:23.45** (m1/m2 mean, **−4.46%**) | 219,915,761 obj / 13,335.64 MB (promoted −2.96%) |
-| H — kernel-opt-04 string.length inline | 3:22.75 (r1/r2 mean, −0.12% FLAT) | 219,915,775 obj / 13,335.65 MB |
-| I — kernel-opt-05 append type split | 3:25.07 (r1/r2 mean, +0.80% FLAT) | 219,913,079 obj / 13,335.56 MB |
-| J — kernel-opt-06 String ordering cmp3 | 3:23.25 (r1/r2 mean, −0.34% FLAT) | 219,817,471 obj / 13,332.69 MB |
-| K — kernel-opt-03 eco.value.eq emission | 3:21.63 (r1/r2 mean, −1.84% FLAT) | 219,818,234 obj / 13,332.70 MB |
-| L — kernel-opt-03 STRCASE synthesized sites | 3:23.90 (r1/r2 mean, −0.22% FLAT) | 219,818,080 obj / 13,332.69 MB |
-| M — kernel-opt-08 kernel gc-leaf stamp | 3:23.62 (r1/r2 mean, −1.25% FLAT) | 219,767,579 obj / 13,331.32 MB (+2,223 de-statepointed sites; binary −287,952 B) |
-| N — kernel-opt-09 leaf safepoints + inline-group split | 3:22.80 (r1/r2 mean, −0.23% FLAT) | 217,928,793 obj / 13,246.14 MB (counter-blind; retention unmoved. −798 safepoints, −4,173 out-of-line calls; binary −25,304 B) |
-| O — kernel-opt-11 mono DCE + kernel cost classes | 3:22.72 (r1/r2 mean, −0.50% vs base FLAT) | 217,912,477 obj / 13,245.85 MB (DCE ceiling 4 sites, 2 realized; cost classes move inlining, .mlir +1,341 B) |
-| P — kernel-opt-13 Mono CSE (default-OFF) | 3:21.32 (r1/r2 mean, −1.71% FLAT) | 221,523,797 obj / 13,408.16 MB (**+1.66% — the pass's own analysis cost**; 81 merges, .mlir −1,052 B; D-C gate failed 40×) |
-| Q — kernel-opt-10 MLIR folder ON / CSE dark | 3:36.72 (fold r1/r2 mean, +0.76% FLAT; counters bit-equal) | folder: 2,382 folds. CSE retention artifact-dependent (+1.56% here, −1.0% in R) — moot: R's flip attempt found the NaN-sharing miscompile |
-| R — kernel-opt-12 eco.cse_safe purity channel | 3:24.85 (attr, CSE off — FLAT; binary byte-identical to base) | attr Δ ≈ 0 in both CSE states; S=4,330. **CSE flip attempted → 3 NaN-equality failures → REVERTED**: merged allocations are observable through the pointer-eq fast path |
-| S — kernel-opt-14 Elm-source List HOFs | REJECTED (objects +61.6%, ConsChunk 6.2M→146M, wall +2.9–3.7%) | E2E fully green; the accumulate+reverse/mergesort idioms multiply list materializations vs C++'s single pass; flag kept dark, kernels stay C++ |
-| T — List.map forward template (default-OFF) | 3:48.77 (r1/r2 mean, −2.05% FLAT) — **absolute wall NOT comparable to A–S: corpus grew +271,895 B; control binary with none of this change scored 3:57.96 on the same corpus** | 228,050,612 obj / 14,062.57 MB (counter-blind; TRUE: `Cons` alloc −1.40%, net −3.09M obj — but **promoted −0.002%, minors identical**; binary −291,816 B) |
-| V — map-template round 2 G-0…G-3 (default-OFF) | 4:03.36 (r1/r2 mean, +0.74% FLAT) | 237,455,932 obj / 14,521.69 MB (counter-blind: ConsChunk +79.4%, Cons +7.3%; blind-free promoted +0.90%, majors 12=12; binary −1,649,512 B; licence pool 58→297) |
-| U — map-template follow-ups F-1L…F-5C (default-OFF) | 3:53.31 (r1/r2 mean, −0.76% FLAT) | 227,631,274 obj / 14,185.38 MB (counter-blind as in T; promoted −0.17%, minors 913 vs 914, majors 11=11; binary −325,912 B; licence pool 50→58) |
+| D — loop-entry baseline | 3:31.59 | 379,486,685 obj / 18,524.03 MB |
+| E — kernel-opt-07 KernelFacts table | 3:31.81 | 379,488,337 obj / 18,524.23 MB |
+| F — kernel-opt-01 cons → construct.list | 3:34.33 | 232,537,735 obj / 15,167.99 MB |
+| G — kernel-opt-02 union-find cell merge | **3:23.45** | 219,915,761 obj / 13,335.64 MB |
+| H — kernel-opt-04 string.length inline | 3:22.75 | 219,915,775 obj / 13,335.65 MB |
+| I — kernel-opt-05 append type split | 3:25.07 | 219,913,079 obj / 13,335.56 MB |
+| J — kernel-opt-06 String ordering cmp3 | 3:23.25 | 219,817,471 obj / 13,332.69 MB |
+| K — kernel-opt-03 eco.value.eq emission | 3:21.63 | 219,818,234 obj / 13,332.70 MB |
+| L — kernel-opt-03 STRCASE synthesized sites | 3:23.90 | 219,818,080 obj / 13,332.69 MB |
+| M — kernel-opt-08 kernel gc-leaf stamp | 3:23.62 | 219,767,579 obj / 13,331.32 MB |
+| N — kernel-opt-09 leaf safepoints + inline-group split | 3:22.80 | 217,928,793 obj / 13,246.14 MB |
+| O — kernel-opt-11 mono DCE + kernel cost classes | 3:22.72 | 217,912,477 obj / 13,245.85 MB |
+| P — kernel-opt-13 Mono CSE | 3:21.32 | 221,523,797 obj / 13,408.16 MB |
+| Q — kernel-opt-10 MLIR folder | 3:36.72 | 217,956,881 obj / 13,247.64 MB |
+| R — kernel-opt-12 eco.cse_safe purity channel | 3:24.85 | — |
+| S — kernel-opt-14 Elm-source List HOFs | 3:32.9–3:37.7 | 352.8M–354.6M obj / — |
+| T — List.map forward template | 3:48.77 | 228,050,612 obj / 14,062.57 MB |
+| U — map-template follow-ups F-1L…F-5C | 3:53.31 | 227,631,274 obj / 14,185.38 MB |
+| V — map-template round 2 G-0…G-3 | 4:03.36 | 237,455,932 obj / 14,521.69 MB |
